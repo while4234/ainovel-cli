@@ -1,10 +1,13 @@
 package imp
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
@@ -259,7 +262,7 @@ func TestSplitFile_EmptyError(t *testing.T) {
 
 func TestSplitFile_GBKEncoded(t *testing.T) {
 	src := "第一章 起\n正文 A\n\n第二章 终\n正文 B\n"
-	data, err := simplifiedchinese.GB18030.NewEncoder().Bytes([]byte(src))
+	data, err := simplifiedchinese.GBK.NewEncoder().Bytes([]byte(src))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +296,59 @@ func TestSplitFile_UTF8BOM(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Title != "起" {
 		t.Fatalf("BOM file: %+v", got)
+	}
+}
+
+func TestSplitFile_UTF16BOM(t *testing.T) {
+	src := "第一章 起\n正文 A\n\n第二章 终\n正文 B\n"
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{name: "le", data: encodeUTF16WithBOM(src, binary.LittleEndian, []byte{0xFF, 0xFE})},
+		{name: "be", data: encodeUTF16WithBOM(src, binary.BigEndian, []byte{0xFE, 0xFF})},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "utf16.txt")
+			if err := os.WriteFile(path, tc.data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got, err := SplitFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 2 {
+				t.Fatalf("want 2, got %d", len(got))
+			}
+			if got[0].Title != "起" || got[1].Title != "终" {
+				t.Errorf("titles: %+v", got)
+			}
+		})
+	}
+}
+
+func TestSplitFile_InvalidUTF8BytesAreCleaned(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "invalid.txt")
+	data := []byte("第一章 起\n正文")
+	data = append(data, 0xFF)
+	data = append(data, []byte("继续。\n")...)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := SplitFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1, got %d", len(got))
+	}
+	if !utf8.ValidString(got[0].Title) || !utf8.ValidString(got[0].Content) {
+		t.Fatal("chapter text must be valid UTF-8")
 	}
 }
 
@@ -345,4 +401,15 @@ func TestSplitText_BracketWrapped(t *testing.T) {
 	if got[2].Title != "楔子" {
 		t.Errorf("bracket spkw title: %q", got[2].Title)
 	}
+}
+
+func encodeUTF16WithBOM(src string, order binary.ByteOrder, bom []byte) []byte {
+	units := utf16.Encode([]rune(src))
+	data := append([]byte{}, bom...)
+	var buf [2]byte
+	for _, unit := range units {
+		order.PutUint16(buf[:], unit)
+		data = append(data, buf[:]...)
+	}
+	return data
 }

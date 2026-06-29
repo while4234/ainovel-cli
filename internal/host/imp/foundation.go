@@ -36,8 +36,8 @@ func ReverseFoundation(ctx context.Context, llm LLMChat, systemPrompt string, ch
 		return nil, fmt.Errorf("llm is nil")
 	}
 
-	system := strings.ReplaceAll(systemPrompt, "${chapter_count}", fmt.Sprintf("%d", len(chapters)))
-	user := buildFoundationUserPrompt(chapters)
+	system := cleanLLMText(strings.ReplaceAll(systemPrompt, "${chapter_count}", fmt.Sprintf("%d", len(chapters))))
+	user := cleanLLMText(buildFoundationUserPrompt(chapters))
 
 	resp, err := llm.Generate(ctx, []agentcore.Message{
 		agentcore.SystemMsg(system),
@@ -60,8 +60,8 @@ func buildFoundationUserPrompt(chapters []Chapter) string {
 	fmt.Fprintf(&sb, "%d", len(chapters))
 	sb.WriteString(" 章正文。请严格按系统提示反推 foundation，输出五个 === TAG === 段。\n\n")
 	for i, ch := range chapters {
-		fmt.Fprintf(&sb, "## 第 %d 章：%s\n\n", i+1, ch.Title)
-		sb.WriteString(ch.Content)
+		fmt.Fprintf(&sb, "## 第 %d 章：%s\n\n", i+1, cleanLLMText(ch.Title))
+		sb.WriteString(cleanLLMText(ch.Content))
 		sb.WriteString("\n\n---\n\n")
 	}
 	return sb.String()
@@ -69,6 +69,7 @@ func buildFoundationUserPrompt(chapters []Chapter) string {
 
 // parseFoundationOutput 解析 LLM 输出的 envelope 并校验关键约束。
 func parseFoundationOutput(text string, expectChapters int) (*FoundationResult, error) {
+	text = cleanLLMText(text)
 	env := parseTaggedEnvelope(text)
 	if env == nil {
 		return nil, fmt.Errorf("no === TAG === envelope found in LLM output")
@@ -200,13 +201,97 @@ func PersistFoundation(ctx context.Context, st *store.Store, scale domain.Planni
 // decodeJSON 解析 JSON（数组或对象）并附上标签，便于调试。
 func decodeJSON(label, body string, out any) error {
 	body = stripFences(body)
-	if body == "" {
+	if strings.TrimSpace(body) == "" {
 		return fmt.Errorf("%s body is empty", label)
 	}
-	if err := json.Unmarshal([]byte(body), out); err != nil {
+	segment, err := extractJSONSegment(body)
+	if err != nil {
+		return fmt.Errorf("extract %s JSON: %w", label, err)
+	}
+	if err := json.Unmarshal([]byte(segment), out); err != nil {
 		return fmt.Errorf("parse %s JSON: %w", label, err)
 	}
 	return nil
+}
+
+// extractJSONSegment returns the first complete JSON object or array in an LLM section.
+func extractJSONSegment(body string) (string, error) {
+	body = strings.TrimSpace(body)
+	var firstInvalid string
+
+	for start := 0; start < len(body); start++ {
+		if body[start] != '{' && body[start] != '[' {
+			continue
+		}
+		end, ok := scanJSONEnd(body[start:])
+		if !ok {
+			continue
+		}
+
+		candidate := strings.TrimSpace(body[start : start+end])
+		if json.Valid([]byte(candidate)) {
+			return candidate, nil
+		}
+		if firstInvalid == "" {
+			firstInvalid = candidate
+		}
+	}
+
+	if firstInvalid != "" {
+		return firstInvalid, nil
+	}
+	return "", fmt.Errorf("no complete JSON object or array found")
+}
+
+func scanJSONEnd(s string) (int, bool) {
+	if len(s) == 0 {
+		return 0, false
+	}
+
+	stack := []byte{matchingJSONClose(s[0])}
+	inString := false
+	escaped := false
+
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			stack = append(stack, matchingJSONClose(c))
+		case '}', ']':
+			if len(stack) == 0 || c != stack[len(stack)-1] {
+				return 0, false
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func matchingJSONClose(open byte) byte {
+	if open == '{' {
+		return '}'
+	}
+	return ']'
 }
 
 // stripFences 去掉首尾 ``` 代码围栏（含语言标签），LLM 偶尔会自作主张包一层。

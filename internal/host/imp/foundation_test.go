@@ -169,6 +169,61 @@ func TestParseFoundation_FencedJSONStripped(t *testing.T) {
 	}
 }
 
+func TestParseFoundation_JSONWithTrailingFence(t *testing.T) {
+	characters := `[{"name":"A","role":"lead","description":"literal ] and escaped \" quote","arc":"arc","traits":["sharp"]}]`
+	src := replaceEnvelopeBody(t, validEnvelope, "CHARACTERS", characters+"\n```")
+
+	got, err := parseFoundationOutput(src, 2)
+	if err != nil {
+		t.Fatalf("trailing fence parse: %v", err)
+	}
+	if len(got.Characters) != 1 || got.Characters[0].Name != "A" {
+		t.Fatalf("characters: %+v", got.Characters)
+	}
+	if got.Characters[0].Description != "literal ] and escaped \" quote" {
+		t.Errorf("description: %q", got.Characters[0].Description)
+	}
+}
+
+func TestParseFoundation_JSONWithExplanatoryText(t *testing.T) {
+	rules := `[{"category":"society","rule":"rule with } inside string","boundary":"none"}]`
+	body := "Rules [draft] follow:\n```json\n" + rules + "\n```\nDone."
+	src := replaceEnvelopeBody(t, validEnvelope, "WORLD_RULES", body)
+
+	got, err := parseFoundationOutput(src, 2)
+	if err != nil {
+		t.Fatalf("explanatory text parse: %v", err)
+	}
+	if len(got.WorldRules) != 1 || got.WorldRules[0].Rule != "rule with } inside string" {
+		t.Errorf("world rules: %+v", got.WorldRules)
+	}
+}
+
+func TestParseFoundation_LegalJSONUnchanged(t *testing.T) {
+	got := mustParse(t, validEnvelope, 2)
+	if len(got.Characters) != 2 {
+		t.Errorf("characters: %+v", got.Characters)
+	}
+	if len(got.WorldRules) != 1 {
+		t.Errorf("world rules: %+v", got.WorldRules)
+	}
+	if len(got.Volumes) != 1 || len(domain.FlattenOutline(got.Volumes)) != 2 {
+		t.Errorf("volumes: %+v", got.Volumes)
+	}
+}
+
+func TestParseFoundation_DamagedJSONStillFails(t *testing.T) {
+	src := replaceEnvelopeBody(t, validEnvelope, "CHARACTERS", `[{"name":}]`)
+
+	_, err := parseFoundationOutput(src, 2)
+	if err == nil {
+		t.Fatal("want damaged JSON error")
+	}
+	if !strings.Contains(err.Error(), "parse characters JSON") {
+		t.Fatalf("want labeled parse error, got %v", err)
+	}
+}
+
 func TestPersistFoundation_PromotesPhaseToWriting(t *testing.T) {
 	dir := t.TempDir()
 	st := store.NewStore(dir)
@@ -212,4 +267,21 @@ func mustParse(t *testing.T, raw string, expect int) *FoundationResult {
 		t.Fatalf("parse helper: %v", err)
 	}
 	return fr
+}
+
+func replaceEnvelopeBody(t *testing.T, source, tag, body string) string {
+	t.Helper()
+	marker := "=== " + tag + " ==="
+	start := strings.Index(source, marker)
+	if start < 0 {
+		t.Fatalf("missing tag marker %q", marker)
+	}
+
+	bodyStart := start + len(marker)
+	next := strings.Index(source[bodyStart:], "\n=== ")
+	if next < 0 {
+		return source[:bodyStart] + "\n" + strings.TrimSpace(body) + "\n"
+	}
+	bodyEnd := bodyStart + next
+	return source[:bodyStart] + "\n" + strings.TrimSpace(body) + "\n" + source[bodyEnd:]
 }

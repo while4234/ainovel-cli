@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
@@ -96,6 +97,41 @@ func TestParseAnalyzer_MissingRequiredTag(t *testing.T) {
 	if _, err := parseAnalyzerOutput(bad); err == nil ||
 		!strings.Contains(err.Error(), "missing required tags") {
 		t.Fatalf("want missing-tag error, got %v", err)
+	}
+}
+
+func TestAnalyzeChapter_CleansInvalidUTF8BeforeLLM(t *testing.T) {
+	invalidByte := string([]byte{0xFF})
+	llm := &mockLLM{out: validAnalyzerEnvelope}
+
+	_, err := AnalyzeChapter(
+		context.Background(),
+		llm,
+		"system"+invalidByte,
+		1,
+		"初遇"+invalidByte,
+		"林晚翻开匿名信"+invalidByte+"继续追查。",
+		"# 前提"+invalidByte,
+		"- 林晚"+invalidByte,
+		[]domain.ForeshadowEntry{
+			{
+				ID:          "hk" + invalidByte,
+				Description: "旧案线索" + invalidByte,
+				PlantedAt:   1,
+				Status:      "planted" + invalidByte,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("AnalyzeChapter: %v", err)
+	}
+	if len(llm.got) != 2 {
+		t.Fatalf("want 2 LLM messages, got %d", len(llm.got))
+	}
+	for i, msg := range llm.got {
+		if !utf8.ValidString(msg.TextContent()) {
+			t.Fatalf("message %d must be valid UTF-8", i)
+		}
 	}
 }
 

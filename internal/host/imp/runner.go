@@ -174,8 +174,10 @@ func loadCharactersBlock(st *store.Store) string {
 
 func oneLine(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) > 200 {
-		return s[:200] + "…"
+	s = cleanLLMText(s)
+	runes := []rune(s)
+	if len(runes) > 200 {
+		return string(runes[:200]) + "..."
 	}
 	return s
 }

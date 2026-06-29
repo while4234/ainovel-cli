@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -195,5 +196,22 @@ func TestRunner_ResumeFromSkipsFoundation(t *testing.T) {
 	}
 	if llm.calls.Load() != 2 {
 		t.Errorf("want 2 chapter LLM calls (foundation skipped), got %d", llm.calls.Load())
+	}
+}
+
+func TestOneLineTruncatesRunesWithoutBreakingUTF8(t *testing.T) {
+	input := strings.Repeat("测", 201)
+
+	got := oneLine(input)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("oneLine returned invalid UTF-8")
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("truncated text should end with ellipsis marker: %q", got)
+	}
+	trimmed := strings.TrimSuffix(got, "...")
+	if len([]rune(trimmed)) != 200 {
+		t.Fatalf("truncated rune count: got %d want 200", len([]rune(trimmed)))
 	}
 }

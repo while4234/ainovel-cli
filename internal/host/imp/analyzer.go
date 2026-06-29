@@ -45,6 +45,13 @@ func AnalyzeChapter(
 	if llm == nil {
 		return nil, fmt.Errorf("llm is nil")
 	}
+
+	systemPrompt = cleanLLMText(systemPrompt)
+	chapterTitle = cleanLLMText(chapterTitle)
+	chapterContent = cleanLLMText(chapterContent)
+	premise = cleanLLMText(premise)
+	charactersBlock = cleanLLMText(charactersBlock)
+
 	if strings.TrimSpace(chapterContent) == "" {
 		return nil, fmt.Errorf("chapter %d: empty content", chapter)
 	}
@@ -68,6 +75,11 @@ func buildAnalyzerUserPrompt(
 	title, content, premise, charactersBlock string,
 	hooks []domain.ForeshadowEntry,
 ) string {
+	title = cleanLLMText(title)
+	content = cleanLLMText(content)
+	premise = cleanLLMText(premise)
+	charactersBlock = cleanLLMText(charactersBlock)
+
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "请分析第 %d 章正文，输出 9 个 === TAG === 段。\n\n", chapter)
 	if title != "" {
@@ -89,7 +101,10 @@ func buildAnalyzerUserPrompt(
 		sb.WriteString("## 已知伏笔池（请复用 ID，不要新造）\n\n")
 		for _, h := range hooks {
 			fmt.Fprintf(&sb, "- `%s` [%s]：%s（埋设于第 %d 章）\n",
-				h.ID, h.Status, h.Description, h.PlantedAt)
+				cleanLLMText(h.ID),
+				cleanLLMText(h.Status),
+				cleanLLMText(h.Description),
+				h.PlantedAt)
 		}
 		sb.WriteString("\n")
 	}
@@ -100,7 +115,13 @@ func buildAnalyzerUserPrompt(
 	return sb.String()
 }
 
+func cleanLLMText(text string) string {
+	text = strings.ToValidUTF8(text, "\uFFFD")
+	return strings.TrimPrefix(text, "\uFEFF")
+}
+
 func parseAnalyzerOutput(text string) (*ChapterAnalysis, error) {
+	text = cleanLLMText(text)
 	env := parseTaggedEnvelope(text)
 	if env == nil {
 		return nil, fmt.Errorf("no === TAG === envelope in analyzer output")
@@ -160,10 +181,17 @@ func parseAnalyzerOutput(text string) (*ChapterAnalysis, error) {
 // decodeOptionalArray 允许标签缺失或为空字符串；只在非空时解析。
 func decodeOptionalArray(label, body string, out any) error {
 	body = stripFences(body)
-	if body == "" || body == "[]" {
+	if strings.TrimSpace(body) == "" {
 		return nil
 	}
-	if err := json.Unmarshal([]byte(body), out); err != nil {
+	segment, err := extractJSONSegment(body)
+	if err != nil {
+		return fmt.Errorf("extract %s JSON: %w", label, err)
+	}
+	if segment == "[]" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(segment), out); err != nil {
 		return fmt.Errorf("parse %s JSON: %w", label, err)
 	}
 	return nil
