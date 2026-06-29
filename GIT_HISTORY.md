@@ -17,4 +17,5 @@
 
 | Date | Commit message | Type | Files | Validation | Notes |
 | --- | --- | --- | --- | --- | --- |
+| 2026-06-29 | feat: add global prompt prefix | feat | internal/globalprompt, assets prompt loading, agent/co-create/user-rules prompt wiring | `go test ./internal/globalprompt ./assets ./internal/userrules ./internal/host/... ./internal/agents/...`; `go vet` same scope; `go build ./cmd/ainovel-cli` passed. Full `go test ./...` still fails in bootstrap/notify/version due existing Windows assumptions. | Adds a replaceable global system prompt template and idempotent injection across built-in prompt assets, coordinator/subagents, co-create, user-rules normalizer, and writer summary system prompt. |
 | 2026-06-29 | feat: add novel adaptation mode | feat | startup/headless/TUI/host/tools/store/domain/docs/tests | Focused adaptation and entry tests passed; full `go test ./...` still fails in bootstrap/notify/version due existing Windows/config assumptions | Adds source snapshot storage, adaptation planning, writer tools, commit gate, TUI/headless entry, and README docs. |

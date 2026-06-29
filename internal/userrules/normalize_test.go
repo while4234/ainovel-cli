@@ -3,9 +3,11 @@ package userrules
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/globalprompt"
 )
 
 func TestExtractJSON_StripsCodeFences(t *testing.T) {
@@ -99,6 +101,21 @@ func TestNormalize_NilModelDegrades(t *testing.T) {
 	}
 	if cand.Structured.ChapterWords != nil {
 		t.Fatal("降级不应产出 structured")
+	}
+}
+
+func TestNormalize_InjectsGlobalPromptPrefix(t *testing.T) {
+	model := &scriptedModel{replies: []string{`{"preferences":"x"}`}}
+	n := NewNormalizer(model)
+
+	_ = n.Normalize(t.Context(), "startup_prompt", "少用套话")
+
+	systemPrompt := model.lastMsgs[0].TextContent()
+	if !strings.HasPrefix(systemPrompt, globalprompt.Text()) {
+		t.Fatalf("normalizer system prompt should start with global prompt:\n%s", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "规则归一化器") {
+		t.Fatalf("normalizer role prompt should remain after global prefix:\n%s", systemPrompt)
 	}
 }
 

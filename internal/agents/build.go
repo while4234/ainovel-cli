@@ -18,6 +18,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/agents/ctxpack"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/host/reminder"
 	"github.com/voocel/ainovel-cli/internal/rules"
 	"github.com/voocel/ainovel-cli/internal/store"
@@ -194,7 +195,7 @@ func BuildCoordinator(
 		Name:               "architect_short",
 		Description:        "短篇规划师：为单卷、单冲突、高密度故事生成紧凑设定与扁平大纲",
 		Model:              architectModel,
-		SystemPrompt:       bundle.Prompts.ArchitectShort,
+		SystemPrompt:       globalprompt.Apply(bundle.Prompts.ArchitectShort),
 		Tools:              architectTools,
 		MaxTurns:           15,
 		MaxRetries:         subagentMaxRetries,
@@ -211,7 +212,7 @@ func BuildCoordinator(
 		Name:                "architect_long",
 		Description:         "长篇规划师：为连载型、可持续升级的故事生成分层设定与卷弧大纲",
 		Model:               architectModel,
-		SystemPrompt:        bundle.Prompts.ArchitectLong,
+		SystemPrompt:        globalprompt.Apply(bundle.Prompts.ArchitectLong),
 		Tools:               architectTools,
 		MaxTurns:            20,
 		MaxRetries:          subagentMaxRetries,
@@ -234,7 +235,7 @@ func BuildCoordinator(
 		Name:               "writer",
 		Description:        "创作者：自主完成一章的构思、写作、自审和提交",
 		Model:              writerModel,
-		SystemPrompt:       writerPrompt,
+		SystemPrompt:       globalprompt.Apply(writerPrompt),
 		Tools:              writerTools,
 		MaxTurns:           30,
 		MaxRetries:         subagentMaxRetries,
@@ -266,7 +267,7 @@ func BuildCoordinator(
 				},
 				Summary: &corecontext.FullSummaryConfig{
 					PostSummaryHooks:    []corecontext.PostSummaryHook{restore.Hook()},
-					SystemPrompt:        ctxpack.WriterSummarySystemPrompt,
+					SystemPrompt:        globalprompt.Apply(ctxpack.WriterSummarySystemPrompt),
 					SummaryPrompt:       ctxpack.WriterSummaryPrompt,
 					UpdateSummaryPrompt: ctxpack.WriterUpdateSummaryPrompt,
 					TurnPrefixPrompt:    ctxpack.WriterTurnPrefixPrompt,
@@ -279,7 +280,7 @@ func BuildCoordinator(
 		Name:               "editor",
 		Description:        "审阅者：阅读原文，从结构和审美两个层面发现问题",
 		Model:              editorModel,
-		SystemPrompt:       bundle.Prompts.Editor,
+		SystemPrompt:       globalprompt.Apply(bundle.Prompts.Editor),
 		Tools:              editorTools,
 		MaxTurns:           20,
 		MaxRetries:         subagentMaxRetries,
@@ -311,7 +312,7 @@ func BuildCoordinator(
 
 	agent := agentcore.NewAgent(
 		agentcore.WithModel(coordinatorModel),
-		agentcore.WithSystemPrompt(bundle.Prompts.Coordinator),
+		agentcore.WithSystemPrompt(globalprompt.Apply(bundle.Prompts.Coordinator)),
 		agentcore.WithTools(subagentTool, contextTool, tools.NewSaveUserRulesTool(userRulesSvc), tools.NewReopenBookTool(store)),
 		agentcore.WithMaxTurns(100_000),
 		agentcore.WithOnMessage(coordinatorOnMessage),

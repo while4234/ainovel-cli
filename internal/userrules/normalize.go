@@ -16,6 +16,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
+	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/rules"
 )
 
@@ -60,7 +61,7 @@ func (n *Normalizer) Normalize(ctx context.Context, source, text string) rules.C
 	}
 
 	messages := []agentcore.Message{
-		{Role: agentcore.RoleSystem, Content: []agentcore.ContentBlock{agentcore.TextBlock(normalizerSystemPrompt)}},
+		{Role: agentcore.RoleSystem, Content: []agentcore.ContentBlock{agentcore.TextBlock(globalprompt.Apply(normalizerSystemPrompt))}},
 		{Role: agentcore.RoleUser, Content: []agentcore.ContentBlock{agentcore.TextBlock(text)}},
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/tools"
 )
 
@@ -78,16 +79,24 @@ func loadReferences(style string) tools.References {
 
 func loadPrompts() Prompts {
 	return Prompts{
-		Coordinator:      withSimulationGuidance(mustRead(promptsFS, "prompts/coordinator.md"), "coordinator"),
-		ArchitectShort:   withSimulationGuidance(mustRead(promptsFS, "prompts/architect-short.md"), "architect"),
-		ArchitectLong:    withSimulationGuidance(mustRead(promptsFS, "prompts/architect-long.md"), "architect"),
-		Writer:           withSimulationGuidance(mustRead(promptsFS, "prompts/writer.md"), "writer"),
-		Editor:           withSimulationGuidance(mustRead(promptsFS, "prompts/editor.md"), "editor"),
-		ImportFoundation: mustRead(promptsFS, "prompts/import-foundation.md"),
-		ImportAnalyzer:   mustRead(promptsFS, "prompts/import-chapter-analyzer.md"),
-		SimulationSource: mustRead(promptsFS, "prompts/simulation-source.md"),
-		SimulationMerge:  mustRead(promptsFS, "prompts/simulation-merge.md"),
+		Coordinator:      loadRolePrompt("prompts/coordinator.md", "coordinator"),
+		ArchitectShort:   loadRolePrompt("prompts/architect-short.md", "architect"),
+		ArchitectLong:    loadRolePrompt("prompts/architect-long.md", "architect"),
+		Writer:           loadRolePrompt("prompts/writer.md", "writer"),
+		Editor:           loadRolePrompt("prompts/editor.md", "editor"),
+		ImportFoundation: loadSystemPrompt("prompts/import-foundation.md"),
+		ImportAnalyzer:   loadSystemPrompt("prompts/import-chapter-analyzer.md"),
+		SimulationSource: loadSystemPrompt("prompts/simulation-source.md"),
+		SimulationMerge:  loadSystemPrompt("prompts/simulation-merge.md"),
 	}
+}
+
+func loadRolePrompt(path, role string) string {
+	return globalprompt.Apply(withSimulationGuidance(mustRead(promptsFS, path), role))
+}
+
+func loadSystemPrompt(path string) string {
+	return globalprompt.Apply(mustRead(promptsFS, path))
 }
 
 func withSimulationGuidance(prompt, role string) string {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -112,7 +113,7 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
-	msgs := []agentcore.Message{agentcore.SystemMsg(sysPrompt)}
+	msgs := []agentcore.Message{agentcore.SystemMsg(globalprompt.Apply(sysPrompt))}
 	for _, item := range history {
 		content := strings.TrimSpace(item.Content)
 		if content == "" {
