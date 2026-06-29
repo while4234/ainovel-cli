@@ -95,6 +95,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		state := t.prepareChapterContext(a.Chapter, &seed, warn)
 		seed.apply(result)
 		t.buildChapterContext(result, state, warn)
+		t.buildAdaptationChapterContext(result, a.Chapter, warn)
 		// 数据语义标注（治复读交代）：episodic 是已写入正文的备忘，不是待写素材。
 		// 只挂容器内，不进顶层镜像。
 		if epi, ok := result["episodic_memory"].(map[string]any); ok && len(epi) > 0 {
@@ -104,6 +105,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		// Coordinator/Architect 路径：只返回状态 + 结构化数据，不加载全量原文
 		t.buildProgressStatus(result)
 		t.buildArchitectContext(result, warn)
+		t.buildAdaptationPlanningContext(result, warn)
 	}
 
 	// 注入 working_memory.user_rules（canonical 路径）。架构师路径原本没有 working_memory，

@@ -44,6 +44,26 @@ const stageCoCreateSystemPrompt = `你是一个小说"阶段共创"助手。这�
 </draft>
 ` + coCreateProtocolTail
 
+const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用户已经提供了一本原小说，系统已完成原书切分和事实分析。你的任务不是续写原文，也不是从零原创一本新书，而是帮助用户明确"在主线尽量不走偏的情况下如何改编"。
+
+你必须基于下方"原书分析快照"提问和整理，不要凭空推翻原书主线；同时要把用户的关系线、女主戏份、虐心/纯爱等改编偏好落实成可执行 brief。
+
+你需要主动决定或询问改编粒度：
+- chapter：目标章节与原章节一一对应，最适合"主线不偏、逐章改写"。
+- arc：允许合并/拆分章节，但每章必须有 source refs 和保留事件。
+- free：允许重构章节结构，但卷/弧级主线、核心人物命运和改编目标必须写进 brief。
+
+每一轮回复严格按以下 XML 格式输出，包含四个标签，依次出现，每个标签都必须有正确的开闭标签：
+
+<reply>
+给用户看的中文自然回复：先回应用户的改编意图，再最多提出 1 到 2 个当前最关键的问题。如果改编目标已足够明确，告诉用户可以按 Ctrl+S 开始改编。
+</reply>
+
+<draft>
+当前完整的"改编 brief"，使用 Markdown：直接从二级标题开始，例如 "## 改编粒度"、"## 用户目标"、"## 主线保留规则"、"## 角色/关系改动"、"## 禁止偏离"、"## 逐章策略"。每一轮都要在已有结论上累积更新，吸收用户最新意图；即使本轮没有新增也要把完整 brief 原样再写一次。
+</draft>
+` + coCreateProtocolTail
+
 // coCreateProtocolTail 是两种共创模式共用的输出协议尾部（<ready> / <suggestions> + 输出规范）。
 // 两模式只在开场语境与 <draft> 语义上不同，协议完全一致。
 const coCreateProtocolTail = `
@@ -173,6 +193,45 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 	}
 	reply, err = parseCoCreateResponse(rawText)
 	return reply, err
+}
+
+func adaptSystemPrompt(st *store.Store) string {
+	return adaptCoCreateSystemPrompt + "\n\n## 原书分析快照\n\n" + adaptationSnapshot(st)
+}
+
+func adaptationSnapshot(st *store.Store) string {
+	if st == nil || st.Adaptation == nil {
+		return "尚未加载原书快照。"
+	}
+	manifest, manifestErr := st.Adaptation.LoadSourceManifest()
+	reports, reportsErr := st.Adaptation.LoadSourceReports()
+	if manifestErr != nil || reportsErr != nil {
+		return "原书快照读取失败，请提醒用户重新导入原小说路径。"
+	}
+	if manifest == nil {
+		return "尚未加载原书快照。"
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "- 来源：%s\n", manifest.SourcePath)
+	fmt.Fprintf(&sb, "- 原文章节数：%d\n", manifest.ChapterCount)
+	if len(reports) == 0 {
+		return sb.String()
+	}
+
+	sb.WriteString("\n### 章节事实摘要\n")
+	const maxReports = 30
+	for i, report := range reports {
+		if i >= maxReports {
+			fmt.Fprintf(&sb, "\n- 其余 %d 章已保存，可在写作阶段按 source refs 读取。\n", len(reports)-maxReports)
+			break
+		}
+		fmt.Fprintf(&sb, "- 第 %d 章《%s》：%s\n", report.Chapter, report.Title, truncate(report.Summary, 90))
+		if len(report.KeyEvents) > 0 {
+			fmt.Fprintf(&sb, "  关键事件：%s\n", strings.Join(report.KeyEvents, "；"))
+		}
+	}
+	return sb.String()
 }
 
 // coCreateLogEntry 是写入 meta/sessions/cocreate.jsonl 的一行结构。

@@ -190,12 +190,15 @@ func (m Model) handleBaseKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleMouseReporting()
 	case tea.KeyTab:
 		if m.mode == modeNew {
-			if m.cocreate != nil {
+			if m.cocreate != nil || m.adaptPreparing {
 				return m, nil
 			}
-			if m.startupMode == startupModeQuick {
+			switch m.startupMode {
+			case startupModeQuick:
 				m.startupMode = startupModeCoCreate
-			} else {
+			case startupModeCoCreate:
+				m.startupMode = startupModeAdapt
+			default:
 				m.startupMode = startupModeQuick
 			}
 			m.textarea.Placeholder = placeholderForNewMode(m.startupMode)
@@ -290,6 +293,9 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeNew:
 		m.err = nil
+		if m.adaptPreparing {
+			return m, nil
+		}
 		if m.startupMode == startupModeQuick {
 			plan, err := startup.PrepareQuick(startup.Request{
 				Mode:        startup.ModeQuick,
@@ -302,6 +308,12 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, startRuntime(m.runtime, plan)
+		}
+		if m.startupMode == startupModeAdapt {
+			m.adaptPreparing = true
+			m.textarea.Placeholder = "正在分析原小说，请稍候..."
+			m.textarea.Blur()
+			return m, prepareAdaptationSource(m.runtime, text)
 		}
 		m.cocreate = newCoCreateState(text)
 		return m, m.sendCoCreate()
@@ -524,6 +536,16 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case startResultMsg:
 		next, cmd := m.handleStartResultMsg(msg)
 		return next, cmd, true
+	case adaptPreparedMsg:
+		m.adaptPreparing = false
+		if msg.err != nil {
+			m.err = msg.err
+			m.textarea.Placeholder = placeholderForNewMode(m.startupMode)
+			return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus()), true
+		}
+		m.err = nil
+		m.cocreate = newAdaptCoCreateState(msg.sourcePath)
+		return m, m.sendCoCreate(), true
 	case cocreateDeltaMsg:
 		if m.cocreate == nil || msg.reqID != m.cocreate.reqID {
 			return m, nil, true

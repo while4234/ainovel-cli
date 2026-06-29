@@ -182,7 +182,11 @@ func renderWelcome(width, height int, errMsg string, mode startupMode) string {
 	feats := strings.Join(featLines, "\n")
 
 	// 输入提示
-	prompt := lipgloss.NewStyle().Foreground(bodyTextColor).Render("在下方输入你的小说需求开始创作")
+	promptText := "在下方输入你的小说需求开始创作"
+	if mode == startupModeAdapt {
+		promptText = "在下方输入原小说 txt/md 文件路径开始分析"
+	}
+	prompt := lipgloss.NewStyle().Foreground(bodyTextColor).Render(promptText)
 
 	modeLine := lipgloss.NewStyle().
 		Foreground(colorMuted).
@@ -193,6 +197,13 @@ func renderWelcome(width, height int, errMsg string, mode startupMode) string {
 		"写一部 12 章都市悬疑小说，主角是一名女法医",
 		"创作一部仙侠长篇，主角从凡人修炼至飞升",
 		"写一个科幻短篇，讲述 AI 觉醒后的伦理困境",
+	}
+	if mode == startupModeAdapt {
+		examples = []string{
+			"./novels/source.txt",
+			"D:\\小说\\原书.txt",
+			"~/books/source.md",
+		}
 	}
 	exStyle := lipgloss.NewStyle().Foreground(colorAccent)
 	dotStyle := lipgloss.NewStyle().Foreground(colorDim)
@@ -222,7 +233,7 @@ func renderWelcome(width, height int, errMsg string, mode startupMode) string {
 	b.WriteString(exBlock)
 	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(colorDim).Italic(true).
-		Render("Tab 切换模式 · 快速开始下 Enter 直接创作 · 共创规划下 Enter 进入对话"))
+		Render("Tab 切换模式 · 快速开始下 Enter 直接创作 · 共创规划下 Enter 进入对话 · 小说改编下 Enter 导入原文"))
 
 	if errMsg != "" {
 		b.WriteString("\n\n")

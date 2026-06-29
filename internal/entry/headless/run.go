@@ -1,6 +1,7 @@
 package headless
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -12,15 +13,17 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/logger"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
 type Options struct {
-	Prompt string
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
+	Prompt    string
+	AdaptPath string
+	Stdin     io.Reader
+	Stdout    io.Writer
+	Stderr    io.Writer
 }
 
 // Run 以无界面模式运行会话内核，直接消费 Engine 事件与流式输出。
@@ -53,7 +56,31 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 	defer func() { _, _ = diag.Export(store.NewStore(eng.Dir())) }()
 
 	prompt := strings.TrimSpace(opts.Prompt)
-	if prompt != "" {
+	if opts.AdaptPath != "" {
+		if prompt == "" {
+			return fmt.Errorf("headless 改编模式需要 --prompt 或 --prompt-file 作为改编 brief")
+		}
+		plan, err := startup.PrepareAdaptNovel(startup.Request{
+			Mode:        startup.ModeAdaptNovel,
+			UserPrompt:  prompt,
+			NovelPath:   opts.AdaptPath,
+			OutputDir:   eng.Dir(),
+			Interactive: false,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "headless 改编启动: %s\n", eng.Dir())
+		if err := runAdaptPreparation(context.Background(), eng, opts.AdaptPath, stderr); err != nil {
+			return err
+		}
+		if err := eng.PrepareUserRules(plan.RawPrompt); err != nil {
+			return err
+		}
+		if err := eng.StartAdaptationPrepared(plan.RawPrompt); err != nil {
+			return err
+		}
+	} else if prompt != "" {
 		plan, err := startup.PrepareQuick(startup.Request{
 			Mode:        startup.ModeQuick,
 			UserPrompt:  prompt,
@@ -92,6 +119,23 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 	}
 
 	return consume(eng, stdout, stderr, false)
+}
+
+func runAdaptPreparation(ctx context.Context, eng *host.Host, sourcePath string, stderr io.Writer) error {
+	ch, err := eng.PrepareAdaptationSource(ctx, sourcePath)
+	if err != nil {
+		return err
+	}
+	for ev := range ch {
+		writeAdaptEvent(stderr, ev)
+		if ev.Stage == adapt.StageError {
+			if ev.Err != nil {
+				return ev.Err
+			}
+			return fmt.Errorf("%s", ev.Message)
+		}
+	}
+	return nil
 }
 
 func consume(eng *host.Host, stdout, stderr io.Writer, roundHasContent bool) error {
@@ -177,6 +221,24 @@ func writeEvent(w io.Writer, ev host.Event) {
 		ts = "--:--:--"
 	}
 	fmt.Fprintf(w, "[%s] [%s] %s\n", ts, ev.Category, ev.Summary)
+}
+
+func writeAdaptEvent(w io.Writer, ev adapt.Event) {
+	if w == nil || strings.TrimSpace(ev.Message) == "" {
+		return
+	}
+	ts := ev.Time.Format("15:04:05")
+	if ts == "00:00:00" {
+		ts = "--:--:--"
+	}
+	msg := ev.Message
+	if ev.Total > 0 && ev.Current > 0 {
+		msg = fmt.Sprintf("%s (%d/%d)", msg, ev.Current, ev.Total)
+	}
+	if ev.Err != nil {
+		msg += ": " + ev.Err.Error()
+	}
+	fmt.Fprintf(w, "[%s] [ADAPT:%s] %s\n", ts, ev.Stage, msg)
 }
 
 func replayQueue(items []domain.RuntimeQueueItem, stdout, stderr io.Writer) (bool, error) {

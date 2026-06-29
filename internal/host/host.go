@@ -18,6 +18,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/agents/ctxpack"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/exp"
 	"github.com/voocel/ainovel-cli/internal/host/flow"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
@@ -278,6 +279,68 @@ func (h *Host) StartPrepared(promptText string) error {
 	}
 	// 主动派发一次首条指令：若已进入写作阶段（Phase=Writing），Host 立即下达；
 	// 规划阶段 Route 返回 nil，无副作用。
+	h.router.Dispatch()
+
+	h.mu.Lock()
+	h.lifecycle = lifecycleRunning
+	h.mu.Unlock()
+	go h.waitDone()
+	return nil
+}
+
+// StartAdaptationPrepared uses an analyzed source snapshot plus a confirmed
+// adaptation brief to prepare the new book foundation and enter writing.
+func (h *Host) StartAdaptationPrepared(brief string) error {
+	h.mu.Lock()
+	if h.lifecycle == lifecycleRunning {
+		h.mu.Unlock()
+		return fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		h.mu.Unlock()
+		return fmt.Errorf("阶段共创进行中，请先结束共创")
+	}
+	h.mu.Unlock()
+
+	brief = strings.TrimSpace(brief)
+	if brief == "" {
+		return fmt.Errorf("adaptation brief is required")
+	}
+	if err := h.budget.Refuse(); err != nil {
+		return err
+	}
+	if err := h.store.Checkpoints.Reset(); err != nil {
+		return fmt.Errorf("reset checkpoints: %w", err)
+	}
+	if err := h.store.Adaptation.Reset(); err != nil {
+		return fmt.Errorf("reset adaptation state: %w", err)
+	}
+	if err := h.store.Progress.Init("", 0); err != nil {
+		return fmt.Errorf("init progress: %w", err)
+	}
+
+	deps := adapt.Deps{
+		Store: h.store,
+		LLM:   h.models.ForRole("architect"),
+		Prompts: adapt.Prompts{
+			Foundation: h.bundle.Prompts.ImportFoundation,
+			Analyzer:   h.bundle.Prompts.ImportAnalyzer,
+		},
+	}
+	plan, err := adapt.PrepareRun(context.Background(), deps, brief)
+	if err != nil {
+		return err
+	}
+
+	slog.Info("开始小说改编", "module", "host", "prompt_len", len(brief), "granularity", plan.Granularity)
+	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "开始小说改编", Level: "info"})
+	h.refreshWriterRestore()
+	h.observer.setAborting(false)
+	h.router.ResetRepeat()
+	h.router.Enable()
+	if err := h.coordinator.Prompt(context.Background(), BuildAdaptationStartPrompt(*plan)); err != nil {
+		return fmt.Errorf("prompt: %w", err)
+	}
 	h.router.Dispatch()
 
 	h.mu.Lock()
@@ -1061,6 +1124,11 @@ func (h *Host) StageCoCreateStream(ctx context.Context, history []CoCreateMessag
 	return coCreateStream(ctx, h.models, h.store.Sessions, stageSystemPrompt(h.store), history, onProgress)
 }
 
+// AdaptCoCreateStream 改编共创：基于原书分析快照澄清改编目标。
+func (h *Host) AdaptCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
+	return coCreateStream(ctx, h.models, h.store.Sessions, adaptSystemPrompt(h.store), history, onProgress)
+}
+
 // stagePlanPrefix 把共创产出的"后续方向 brief"包装成一条阶段规划干预，交 Coordinator 裁定。
 // 只贴 [阶段规划] 事实标记 + 中性陈述，不写死"怎么落地"——具体路由（compass / architect /
 // save_user_rules）交给 coordinator.md 的「阶段规划」判据，避免与 prompt 形成第二真相源、
@@ -1153,6 +1221,9 @@ func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Eve
 	if err := h.guardExclusive("导入"); err != nil {
 		return nil, err
 	}
+	if err := h.store.Adaptation.Reset(); err != nil {
+		return nil, fmt.Errorf("reset adaptation state: %w", err)
+	}
 
 	deps := imp.Deps{
 		Store:      h.store,
@@ -1164,6 +1235,23 @@ func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Eve
 		},
 	}
 	return imp.Run(ctx, deps, opts)
+}
+
+// PrepareAdaptationSource analyzes a source novel for adaptation without
+// committing its chapters as final output.
+func (h *Host) PrepareAdaptationSource(ctx context.Context, sourcePath string) (<-chan adapt.Event, error) {
+	if err := h.guardExclusive("改编源书分析"); err != nil {
+		return nil, err
+	}
+	deps := adapt.Deps{
+		Store: h.store,
+		LLM:   h.models.ForRole("architect"),
+		Prompts: adapt.Prompts{
+			Foundation: h.bundle.Prompts.ImportFoundation,
+			Analyzer:   h.bundle.Prompts.ImportAnalyzer,
+		},
+	}
+	return adapt.RunSource(ctx, deps, adapt.Options{SourcePath: sourcePath})
 }
 
 // Simulate 读取 simulate 目录并生成或增量更新仿写画像。

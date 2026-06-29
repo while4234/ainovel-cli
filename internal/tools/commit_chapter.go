@@ -163,6 +163,9 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	if content == "" {
 		return nil, fmt.Errorf("no content found for chapter %d: %w", a.Chapter, errs.ErrToolPrecondition)
 	}
+	if err := t.ensureAdaptationGate(a.Chapter, content); err != nil {
+		return nil, err
+	}
 
 	now := time.Now().Format(time.RFC3339)
 	pending := domain.PendingCommit{
@@ -335,6 +338,28 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	return json.Marshal(commitOutput{CommitResult: result, RuleViolations: violations})
 }
 
+func (t *CommitChapterTool) ensureAdaptationGate(chapter int, content string) error {
+	if !t.store.Adaptation.Active() {
+		return nil
+	}
+	digest := store.TextSHA256(content)
+	passed, check, err := t.store.Adaptation.HasPassingCheck(chapter, digest)
+	if err != nil {
+		return fmt.Errorf("load adaptation check: %w: %w", errs.ErrStoreRead, err)
+	}
+	if passed {
+		return nil
+	}
+	switch {
+	case check == nil:
+		return fmt.Errorf("改编项目提交被拒：第 %d 章尚未通过 check_adaptation，请先对照原文 source refs 和改编契约校验草稿: %w", chapter, errs.ErrToolPrecondition)
+	case check.DraftSHA256 != digest:
+		return fmt.Errorf("改编项目提交被拒：第 %d 章通过校验的草稿 digest=%s，但当前草稿 digest=%s。请重新调用 check_adaptation: %w", chapter, check.DraftSHA256, digest, errs.ErrToolPrecondition)
+	default:
+		return fmt.Errorf("改编项目提交被拒：第 %d 章最近一次 check_adaptation 未通过，issues=%v: %w", chapter, check.Issues, errs.ErrToolPrecondition)
+	}
+}
+
 // checkRules 对章节正文做机械检查：内置产品底线 Lint（机制残留，始终执行）
 // + 用户规则 Check（读本书快照的 structured；快照缺失退到内置默认，保证机械底线始终在）。
 func (t *CommitChapterTool) checkRules(text string, wordCount int) []rules.Violation {
@@ -375,6 +400,9 @@ func (t *CommitChapterTool) executeRewriteCommit(
 		}
 		return nil, fmt.Errorf("第 %d 章 drafts 与 chapters 内容完全相同，未检测到%s改动。请先调 draft_chapter(mode=write, chapter=%d) 写入%s后的新正文，再 commit_chapter: %w",
 			chapter, mode, chapter, mode, errs.ErrToolPrecondition)
+	}
+	if err := t.ensureAdaptationGate(chapter, content); err != nil {
+		return nil, err
 	}
 
 	// 3. 覆盖终稿

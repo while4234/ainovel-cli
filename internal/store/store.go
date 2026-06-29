@@ -27,6 +27,7 @@ type Store struct {
 	Sessions    *SessionStore
 	Usage       *UsageStore
 	Simulation  *SimulationStore
+	Adaptation  *AdaptationStore
 
 	crossMu sync.Mutex // 保护跨域原子操作
 }
@@ -52,6 +53,7 @@ func NewStore(dir string) *Store {
 		Sessions:    NewSessionStore(newIO(dir)),
 		Usage:       NewUsageStore(newIO(dir)),
 		Simulation:  NewSimulationStore(newIO(dir)),
+		Adaptation:  NewAdaptationStore(newIO(dir)),
 	}
 }
 
@@ -127,6 +129,7 @@ func (s *Store) FoundationMissing() []string {
 func (s *Store) Init() error {
 	return s.Progress.io.EnsureDirs([]string{
 		"chapters", "summaries", "drafts", "reviews", "meta", "meta/runtime", "meta/runtime/tasks", "meta/sessions", "meta/sessions/agents",
+		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/checks",
 	})
 }
 

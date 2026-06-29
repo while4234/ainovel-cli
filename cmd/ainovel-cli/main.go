@@ -103,13 +103,13 @@ func runWithConfig(cfg bootstrap.Config, opts cliOptions, args []string) {
 		if err != nil {
 			die("error: %v", err)
 		}
-		if err := headless.Run(cfg, bundle, headless.Options{Prompt: prompt}); err != nil {
+		if err := headless.Run(cfg, bundle, headless.Options{Prompt: prompt, AdaptPath: opts.AdaptPath}); err != nil {
 			die("error: %v", err)
 		}
 		return
 	}
-	if opts.Prompt != "" || opts.PromptFile != "" {
-		die("error: --prompt/--prompt-file 仅能在 --headless 模式下使用")
+	if opts.Prompt != "" || opts.PromptFile != "" || opts.AdaptPath != "" {
+		die("error: --prompt/--prompt-file/--adapt 仅能在 --headless 模式下使用")
 	}
 	if err := tui.Run(cfg, bundle, versionInfo().Version); err != nil {
 		die("error: %v", err)
@@ -121,6 +121,7 @@ type cliOptions struct {
 	Headless      bool
 	Prompt        string
 	PromptFile    string
+	AdaptPath     string
 	Version       bool
 	Update        bool
 	UpdateVersion string
@@ -174,6 +175,12 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 			}
 			opts.PromptFile = argv[i+1]
 			i++
+		case "--adapt":
+			if i+1 >= len(argv) {
+				return opts, nil, fmt.Errorf("--adapt 缺少值")
+			}
+			opts.AdaptPath = argv[i+1]
+			i++
 		default:
 			args = append(args, argv[i])
 		}
@@ -181,11 +188,17 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 	if opts.Prompt != "" && opts.PromptFile != "" {
 		return opts, nil, fmt.Errorf("--prompt 和 --prompt-file 不能同时使用")
 	}
-	if opts.Version && (opts.Update || opts.ConfigPath != "" || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || len(args) > 0) {
+	if opts.Version && (opts.Update || opts.ConfigPath != "" || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || opts.AdaptPath != "" || len(args) > 0) {
 		return opts, nil, fmt.Errorf("version 不能与其他启动参数混用")
 	}
-	if opts.Update && (opts.ConfigPath != "" || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || len(args) > 0) {
+	if opts.Update && (opts.ConfigPath != "" || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || opts.AdaptPath != "" || len(args) > 0) {
 		return opts, nil, fmt.Errorf("update 不能与其他启动参数混用")
+	}
+	if opts.AdaptPath != "" && !opts.Headless {
+		return opts, nil, fmt.Errorf("--adapt 只能与 --headless 一起使用")
+	}
+	if opts.AdaptPath != "" && opts.Prompt == "" && opts.PromptFile == "" {
+		return opts, nil, fmt.Errorf("--adapt 需要同时提供 --prompt 或 --prompt-file 作为改编 brief")
 	}
 	return opts, args, nil
 }

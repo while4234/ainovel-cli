@@ -126,6 +126,7 @@ func BuildCoordinator(
 		tools.NewDraftChapterTool(store),
 		tools.NewEditChapterTool(store),
 		tools.NewCheckConsistencyTool(store),
+		tools.NewCheckAdaptationTool(store),
 		tools.NewCommitChapterTool(store),
 	}
 	editorTools := []agentcore.Tool{

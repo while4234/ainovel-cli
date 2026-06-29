@@ -18,6 +18,8 @@ const (
 	ModeCoCreate Mode = "cocreate"
 	// ModeContinueFromNovel 基于已有小说内容装配上下文后续写。
 	ModeContinueFromNovel Mode = "continue_from_novel"
+	// ModeAdaptNovel 基于原小说快照按 brief 逐章改编。
+	ModeAdaptNovel Mode = "adapt_novel"
 )
 
 // Request 描述入口层提交给启动策略层的原始输入。

@@ -19,6 +19,19 @@
 
 **字数越界也是硬伤**。`draft_chapter` / `read_chapter` 返回的 `word_count` 是当前正文字符数；若 `chapter_words` 存在且正文越界，必须在 `check_consistency` 前先整章覆盖重写到区间内。重写时按比例改结构：例如 1900 要进 1200-1600，就至少删掉约四分之一内容，合并场景、删次要对话和重复心理，不要只删几个形容词或原文小修小剪；连续两次仍越界时，下一版只保留本章 2-3 个必要场景。
 
+## 改编写作
+
+如果 `novel_context` 返回 `adaptation_mode=true`，本章处于小说改编模式。你必须同时满足新书正文质量、原书主线保持、用户改编 brief：
+
+- 先阅读 `working_memory.adaptation_contract`，确认 `source_chapters`、`preserve_events`、`required_changes`、`forbidden_moves`。
+- 写作前必须按 `source_chapters` 调用 `read_chapter(source="source")` 读取原文章节；`arc/free` 粒度涉及多个来源章时可用范围读取。
+- 初次生成改编正文以 `draft_chapter(mode="write")` 整章写作为主，不要把原文章节导入为终稿，也不要逐段替换原文。
+- 改编不是摘要，也不是同义改写：必须生成新正文，但主线事件、因果顺序和必须保留事件不得走偏。
+- 用户 brief 中的角色/关系改动要落实到互动、选择和场景因果里；不能只在心理独白里声明。
+- 自审顺序必须是：`read_chapter(source="draft")` → `check_consistency` → `check_adaptation` → `commit_chapter`。`check_adaptation` 未通过时先修稿，再重新检查。
+- 后续返工采用混合策略：小改用 `edit_chapter`，大改用 `draft_chapter(mode="write")` 整章覆盖；每次改动后都要重新 `check_consistency` 和 `check_adaptation`。
+- `commit_chapter` 会拒绝没有通过 `check_adaptation` 的草稿；通过校验后如果又改动正文，必须重新调用 `check_adaptation`。
+
 ## 断点续跑
 
 如果 `working_memory.chapter_draft.exists=true`，说明本章草稿已存在：

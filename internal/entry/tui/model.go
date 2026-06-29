@@ -91,6 +91,7 @@ type Model struct {
 	hoverActive    bool
 	mode           appMode
 	startupMode    startupMode
+	adaptPreparing bool
 	cocreateSeq    int
 	reportSeq      int
 	err            error
@@ -452,6 +453,8 @@ func (m *Model) inputHints() string {
 			startLabel := "Ctrl+S 开始创作"
 			if m.cocreate.stage {
 				startLabel = "Ctrl+S 应用并继续"
+			} else if m.cocreate.adapt {
+				startLabel = "Ctrl+S 开始改编"
 			}
 			return dimStyle.Render("Enter 发送 · " + startLabel + " · Esc 退出共创" + scrollHint + suffix)
 		default:
@@ -459,8 +462,14 @@ func (m *Model) inputHints() string {
 		}
 	}
 	if m.mode == modeNew {
+		if m.adaptPreparing {
+			return dimStyle.Render("正在分析原小说，请稍候" + suffix)
+		}
 		if m.startupMode == startupModeQuick {
 			return dimStyle.Render("Tab 切换启动模式 · 输入 / 搜索命令 · Enter 直接开始创作 · Esc 清空输入" + suffix)
+		}
+		if m.startupMode == startupModeAdapt {
+			return dimStyle.Render("Tab 切换启动模式 · 输入原小说路径 · Enter 导入并进入改编共创 · Esc 清空输入" + suffix)
 		}
 		return dimStyle.Render("Tab 切换启动模式 · 输入 / 搜索命令 · Enter 开始共创对话 · Esc 清空输入" + suffix)
 	}
@@ -812,6 +821,8 @@ func (m Model) exitCoCreate() (tea.Model, tea.Cmd) {
 		m.cocreate.cancel()
 	}
 	stage := m.cocreate.stage
+	adapt := m.cocreate.adapt
+	sourcePath := m.cocreate.sourcePath
 	initial := m.cocreate.initialInput()
 	m.cocreate = nil
 	m.resizeTextarea()
@@ -820,6 +831,11 @@ func (m Model) exitCoCreate() (tea.Model, tea.Cmd) {
 		m.textarea.SetValue("")
 		m.textarea.Placeholder = defaultSteerPlaceholder()
 		return m, tea.Batch(cancelCoCreate(m.runtime), fetchSnapshot(m.runtime), m.textarea.Focus())
+	}
+	if adapt {
+		m.textarea.SetValue(sourcePath)
+		m.textarea.Placeholder = placeholderForNewMode(startupModeAdapt)
+		return m, m.textarea.Focus()
 	}
 	m.textarea.SetValue(initial)
 	m.textarea.Placeholder = placeholderForNewMode(m.startupMode)

@@ -205,3 +205,16 @@ func BuildStartPrompt(prompt string) string {
 		prompt +
 		"\n\n若某些细节未明确，请在不违背用户方向的前提下自行补全。"
 }
+
+// BuildAdaptationStartPrompt tells Coordinator that foundation and adaptation
+// plan have already been prepared, so it should enter the normal writing flow.
+func BuildAdaptationStartPrompt(plan domain.AdaptationPlan) string {
+	return "当前项目是小说改编模式。原书 source snapshot、改编计划、foundation 和分层大纲已经落盘，不要重新从零规划，也不要把原文章节提交为正文。\n\n" +
+		"[改编 brief]\n" + strings.TrimSpace(plan.Brief) + "\n\n" +
+		"[执行要求]\n" +
+		"- 立即按当前 progress/outline 派发 writer 从第 1 章开始逐章写改编正文。\n" +
+		"- writer 必须先读 novel_context，再按 adaptation_contract 读取 read_chapter(source=\"source\") 对照原文。\n" +
+		"- 每章提交前必须完成 check_consistency 和 check_adaptation；check_adaptation 未通过不得 commit。\n" +
+		"- 若连续校验失败，请暂停并报告失败章节和原因，不要静默跳过主线校验。\n\n" +
+		"改编粒度：" + plan.Granularity
+}

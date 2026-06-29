@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/voocel/agentcore/schema"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -21,7 +22,7 @@ func NewReadChapterTool(store *store.Store) *ReadChapterTool {
 
 func (t *ReadChapterTool) Name() string { return "read_chapter" }
 func (t *ReadChapterTool) Description() string {
-	return "读取章节原文。可读终稿、草稿，或提取角色对话片段"
+	return "读取章节正文。可读终稿、草稿；改编模式下 source=source 可读取原文章节快照；也可提取角色对话片段"
 }
 func (t *ReadChapterTool) Label() string { return "读取章节" }
 
@@ -34,7 +35,7 @@ func (t *ReadChapterTool) Schema() map[string]any {
 		schema.Property("chapter", schema.Int("章节号（读单章时必填）")),
 		schema.Property("from", schema.Int("起始章节号（读范围时使用）")),
 		schema.Property("to", schema.Int("结束章节号（读范围时使用）")),
-		schema.Property("source", schema.Enum("来源", "final", "draft")).Required(),
+		schema.Property("source", schema.Enum("来源", "final", "draft", "source")).Required(),
 		schema.Property("character", schema.String("角色名（提取对话片段时使用）")),
 		schema.Property("max_runes", schema.Int("每章最大字符数（范围读取时截取，默认 2000）")),
 	)
@@ -84,7 +85,16 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 		if maxRunes <= 0 {
 			maxRunes = 2000
 		}
-		texts, err := t.store.Drafts.LoadChapterRange(a.From, a.To, maxRunes)
+		var texts map[int]string
+		var err error
+		if a.Source == "source" {
+			if !t.store.Adaptation.Active() {
+				return nil, fmt.Errorf("当前项目不是改编模式，无法读取 source 章节")
+			}
+			texts, err = t.store.Adaptation.LoadSourceChapterRange(a.From, a.To, maxRunes)
+		} else {
+			texts, err = t.store.Drafts.LoadChapterRange(a.From, a.To, maxRunes)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("load chapter range: %w", err)
 		}
@@ -101,8 +111,18 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 	}
 
 	var content string
+	var title string
 	var err error
 	switch a.Source {
+	case "source":
+		if !t.store.Adaptation.Active() {
+			return nil, fmt.Errorf("当前项目不是改编模式，无法读取 source 章节")
+		}
+		var src *domain.AdaptationSource
+		content, src, err = t.store.Adaptation.LoadSourceChapter(a.Chapter)
+		if src != nil {
+			title = src.Title
+		}
 	case "draft":
 		content, err = t.store.Drafts.LoadDraft(a.Chapter)
 	default: // final
@@ -125,6 +145,8 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 
 	return json.Marshal(map[string]any{
 		"chapter":    a.Chapter,
+		"title":      title,
+		"source":     a.Source,
 		"content":    content,
 		"word_count": len([]rune(content)),
 	})

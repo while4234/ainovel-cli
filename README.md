@@ -241,12 +241,13 @@ docker compose run --rm ainovel
 docker compose run --rm ainovel --headless --prompt "写一本悬疑短篇"
 ```
 
-进入 TUI 后，启动阶段支持两种前置交互：
+进入 TUI 后，启动阶段支持三种前置交互：
 
 - `快速开始`：一句话直接进入创作
 - `共创规划`：与 AI 多轮对话澄清需求，**右侧实时同步整理出的创作指令草稿**；AI 每轮主动提供 1-3 条引导建议，按数字键一键填入输入框，按 `Ctrl+S` 进入正式创作
+- `小说改编`：输入原小说 txt/md 路径，系统先切分并分析原书快照，再进入改编共创；按 `Ctrl+S` 后逐章生成新的改编正文
 
-两种模式最终都会收敛为同一份创作指令，再进入同一套创作引擎。
+三种模式最终都会收敛为同一套创作引擎。
 
 ### 管理多本小说
 
@@ -355,6 +356,20 @@ output/novel/meta/simulation_profile.json
 若提示**"未识别到任何章节"**，请确认文件确为分章小说文本（章节标题独占一行、位于行首）。
 
 > 导入是确定性回放，不经过 Coordinator；原文会逐字落盘为已完成章节，因此适合"续写同一本书"。如果只想借鉴设定做全新创作，请用普通方式起一本新书、在需求里描述想要的风格设定。
+
+## 小说改编
+
+`小说改编` 是启动模式，不等同于 `/import`：它会把原文章节保存到 `meta/adaptation/source_chapters/` 作为对照快照，生成原书分析和改编计划，但不会把原文章节写成最终正文。Writer 每章需要先读取对应 `source` 章节，再写新的改编正文，并在提交前通过 `check_consistency` 和 `check_adaptation`。
+
+TUI：启动栏按 `Tab` 切到 `小说改编`，输入原小说路径；分析完成后进入改编共创，确认 brief 后按 `Ctrl+S` 开始。
+
+Headless：
+
+```bash
+ainovel-cli --headless --adapt ./source.txt --prompt-file adapt.md
+```
+
+改编 brief 可以写明粒度和关系线目标，例如"逐章改写，主线不要走偏，强化女主互动，弱化另一个女主与男主的感情戏，改成单女主纯爱"。系统支持 `chapter` / `arc` / `free` 三档粒度；未明确时默认逐章对应。
 
 ## 导出
 

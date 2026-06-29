@@ -170,6 +170,82 @@ func (t *ContextTool) buildSimulationProfile(result map[string]any, sectionKey s
 	result["simulation_profile"] = true
 }
 
+func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapter int, warn func(string, error)) {
+	plan, err := t.store.Adaptation.LoadPlan()
+	warn("adaptation_plan", err)
+	if err != nil || plan == nil {
+		return
+	}
+	chapterPlan, ok := findAdaptationChapterPlan(plan, chapter)
+	if !ok {
+		return
+	}
+	working, ok := result["working_memory"].(map[string]any)
+	if !ok {
+		working = map[string]any{}
+		result["working_memory"] = working
+	}
+	result["adaptation_mode"] = true
+	working["adaptation"] = map[string]any{
+		"granularity":        plan.Granularity,
+		"brief":              plan.Brief,
+		"mainline_rules":     plan.MainlineRules,
+		"relationship_goals": plan.RelationshipGoals,
+	}
+	working["adaptation_contract"] = chapterPlan
+
+	reports, reportErr := t.store.Adaptation.LoadSourceReports()
+	warn("adaptation_source_reports", reportErr)
+	if reportErr == nil && len(reports) > 0 {
+		working["source_ref_reports"] = selectSourceReports(reports, chapterPlan.SourceChapters)
+	}
+}
+
+func (t *ContextTool) buildAdaptationPlanningContext(result map[string]any, warn func(string, error)) {
+	plan, err := t.store.Adaptation.LoadPlan()
+	warn("adaptation_plan", err)
+	if err != nil || plan == nil {
+		return
+	}
+	section, ok := result["planning_memory"].(map[string]any)
+	if !ok {
+		section = map[string]any{}
+		result["planning_memory"] = section
+	}
+	result["adaptation_mode"] = true
+	summary := map[string]any{
+		"granularity":        plan.Granularity,
+		"brief":              plan.Brief,
+		"mainline_rules":     plan.MainlineRules,
+		"relationship_goals": plan.RelationshipGoals,
+		"target_chapters":    len(plan.Chapters),
+	}
+	if manifest, manifestErr := t.store.Adaptation.LoadSourceManifest(); manifestErr == nil && manifest != nil {
+		summary["source_path"] = manifest.SourcePath
+		summary["source_chapters"] = manifest.ChapterCount
+	} else {
+		warn("adaptation_source_manifest", manifestErr)
+	}
+	section["adaptation_plan"] = summary
+}
+
+func selectSourceReports(reports []domain.AdaptationSourceReport, refs []int) []domain.AdaptationSourceReport {
+	if len(reports) == 0 || len(refs) == 0 {
+		return nil
+	}
+	want := make(map[int]struct{}, len(refs))
+	for _, ref := range refs {
+		want[ref] = struct{}{}
+	}
+	var selected []domain.AdaptationSourceReport
+	for _, report := range reports {
+		if _, ok := want[report.Chapter]; ok {
+			selected = append(selected, report)
+		}
+	}
+	return selected
+}
+
 func (t *ContextTool) buildBaseContext(result map[string]any, warn func(string, error)) {
 	if premise, err := t.store.Outline.LoadPremise(); err == nil && premise != "" {
 		result["premise"] = premise
