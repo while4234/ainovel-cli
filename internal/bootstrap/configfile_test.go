@@ -16,6 +16,22 @@ const validGlobal = `{
   "providers": { "openrouter": { "api_key": "sk-test-123456" } }
 }`
 
+func TestLoadConfigFileAllowsUTF8BOM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	data := append([]byte{0xef, 0xbb, 0xbf}, []byte(validGlobal)...)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatalf("LoadConfigFile should accept UTF-8 BOM: %v", err)
+	}
+	if cfg.Provider != "openrouter" || cfg.ModelName != "google/gemini-2.5-flash" {
+		t.Fatalf("unexpected config: provider=%q model=%q", cfg.Provider, cfg.ModelName)
+	}
+}
+
 // writeGlobal 在隔离的 HOME 下写入全局配置，并返回该 HOME。
 func writeGlobal(t *testing.T, content string) string {
 	t.Helper()

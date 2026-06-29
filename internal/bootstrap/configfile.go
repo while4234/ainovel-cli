@@ -120,12 +120,20 @@ func loadJSONFile(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	data = trimUTF8BOM(data)
 	cleaned := stripJSONComments(data)
 	var cfg Config
 	if err := json.Unmarshal(cleaned, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+func trimUTF8BOM(data []byte) []byte {
+	if len(data) >= 3 && data[0] == 0xef && data[1] == 0xbb && data[2] == 0xbf {
+		return data[3:]
+	}
+	return data
 }
 
 // mergeConfig 将 overlay 合并到 base 上。非零值字段覆盖，map 按 key 合并。
