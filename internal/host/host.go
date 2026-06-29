@@ -923,9 +923,12 @@ func (h *Host) SwitchModel(role, provider, model string) error {
 	if provider == "" || model == "" {
 		return fmt.Errorf("provider and model are required")
 	}
+	previousProvider, previousModel, _ := h.models.CurrentSelection(role)
 	if err := h.models.Swap(role, provider, model); err != nil {
 		return err
 	}
+	h.cfg.RememberModelCandidate(previousProvider, previousModel)
+	h.cfg.RememberModelCandidate(provider, model)
 	if role == "" || role == "default" {
 		h.cfg.Provider = provider
 		h.cfg.ModelName = model

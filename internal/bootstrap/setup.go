@@ -138,6 +138,7 @@ func RunSetup() (Config, error) {
 		Roles:     map[string]RoleConfig{},
 		Style:     "default",
 	}
+	cfg.RememberModelCandidate(providerName, modelName)
 
 	// 保存
 	path := DefaultConfigPath()

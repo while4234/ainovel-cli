@@ -423,6 +423,27 @@ func (c Config) CandidateModels(provider string) []string {
 	return models
 }
 
+// RememberModelCandidate persists a model under its provider so /model can keep
+// switching back to models that were selected earlier.
+func (c *Config) RememberModelCandidate(provider, model string) {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return
+	}
+	if c.Providers == nil {
+		c.Providers = make(map[string]ProviderConfig)
+	}
+	pc := c.Providers[provider]
+	for _, existing := range pc.Models {
+		if strings.TrimSpace(existing) == model {
+			return
+		}
+	}
+	pc.Models = append(pc.Models, model)
+	c.Providers[provider] = pc
+}
+
 func (c Config) validateModelRef(owner string, ref ModelRef) error {
 	if ref.Provider == "" || ref.Model == "" {
 		return fmt.Errorf("%s must have both provider and model: %w", owner, errs.ErrConfig)
