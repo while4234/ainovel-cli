@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -67,6 +68,7 @@ func (s *adaptPreparationState) appendEvent(ev adapt.Event, contentW int) {
 	s.total = ev.Total
 	if ev.Err != nil {
 		s.err = ev.Err
+		slog.Error("adaptation preparation failed", "module", "tui", "stage", ev.Stage, "message", ev.Message, "err", ev.Err)
 	} else if ev.Stage == adapt.StageError {
 		message := strings.TrimSpace(ev.Message)
 		if message == "" {
