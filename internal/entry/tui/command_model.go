@@ -297,10 +297,10 @@ func renderModelSwitchBar(width int, state *modelSwitchState) string {
 		Bold(true).
 		Render("/model 切换模型")
 
-	row1 := renderModelField("角色", state.roleLabel(), state.focus == modelFocusRole)
-	row2 := renderModelField("Provider", state.provider(), state.focus == modelFocusProvider)
-	row3 := renderModelField("模型", state.model(), state.focus == modelFocusModel)
-	row4 := renderModelField("推理强度", state.thinkingLabel(), state.focus == modelFocusThinking)
+	row1 := renderModelField("角色", state.roleLabel(), optionPosition(state.roleIdx, len(modelRoleOptions)), state.focus == modelFocusRole)
+	row2 := renderModelField("Provider", state.provider(), optionPosition(state.providerIdx, len(state.providers)), state.focus == modelFocusProvider)
+	row3 := renderModelField("模型", state.model(), optionPosition(state.modelIdx, len(state.models)), state.focus == modelFocusModel)
+	row4 := renderModelField("推理强度", state.thinkingLabel(), optionPosition(state.thinkingIdx, len(state.thinking)), state.focus == modelFocusThinking)
 	hint := lipgloss.NewStyle().
 		Foreground(colorDim).
 		Italic(true).
@@ -353,7 +353,14 @@ func renderModelSwitchBar(width int, state *modelSwitchState) string {
 	return strings.Join(append(append([]string{topBorder}, body...), bottomBorder), "\n")
 }
 
-func renderModelField(label, value string, focused bool) string {
+func optionPosition(index, total int) string {
+	if total <= 1 || index < 0 || index >= total {
+		return ""
+	}
+	return fmt.Sprintf("%d/%d", index+1, total)
+}
+
+func renderModelField(label, value, position string, focused bool) string {
 	if strings.TrimSpace(value) == "" {
 		value = "未设置"
 	}
@@ -365,5 +372,9 @@ func renderModelField(label, value string, focused bool) string {
 	if focused {
 		style = style.Foreground(colorAccent).Bold(true).Underline(true)
 	}
-	return labelText + style.Render("["+value+"]")
+	rendered := labelText + style.Render("["+value+"]")
+	if position == "" {
+		return rendered
+	}
+	return rendered + " " + lipgloss.NewStyle().Foreground(colorDim).Render(position)
 }

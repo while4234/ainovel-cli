@@ -12,6 +12,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/errs"
+	"github.com/voocel/ainovel-cli/internal/globalprompt"
 )
 
 // 长输出 + 长 ctx 场景下，reasoning-aware provider（mimo / deepseek-r1 等）
@@ -294,8 +295,9 @@ func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache m
 	if err != nil {
 		return nil, fmt.Errorf("provider %s (%s): %w: %w", providerKey, providerType, errs.ErrProvider, err)
 	}
-	cache[cacheKey] = m
-	return m, nil
+	wrapped := globalprompt.WrapModel(m)
+	cache[cacheKey] = wrapped
+	return wrapped, nil
 }
 
 type failoverModel struct {
