@@ -62,6 +62,22 @@ func TestService_GetOrBuild_LazyForOldBook(t *testing.T) {
 	}
 }
 
+func TestService_Build_CanOmitDefaultChapterWords(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	svc := NewServiceWithSystemDefaults(st, nil, rules.LoadOptions{}, rules.SystemDefaultsWithoutChapterWords())
+
+	snap, err := svc.Build(t.Context(), "")
+	if err != nil {
+		t.Fatalf("Build 不应报错：%v", err)
+	}
+	if snap.Structured.ChapterWords != nil {
+		t.Fatalf("外部来源快照不应含默认 chapter_words，got %+v", snap.Structured.ChapterWords)
+	}
+	if len(snap.Structured.ForbiddenPhrases) == 0 || len(snap.Structured.FatigueWords) == 0 {
+		t.Fatalf("外部来源快照仍应保留机械基线，got %+v", snap.Structured)
+	}
+}
+
 func TestService_AddRuntimeRule_PersistsAndReturnsCandidate(t *testing.T) {
 	svc, st := newDegradedService(t)
 

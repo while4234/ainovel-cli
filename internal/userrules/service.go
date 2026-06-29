@@ -15,21 +15,28 @@ import (
 //   - 开书/刷新（启动侧，确定性）：Build / GetOrBuild，由 Host 直接调用，不经 Coordinator。
 //   - 运行中更新（Coordinator 工具）：AddRuntimeRule，save_user_rules 工具壳复用。
 type Service struct {
-	store     *store.Store
-	norm      *Normalizer
-	rulesOpts rules.LoadOptions
+	store          *store.Store
+	norm           *Normalizer
+	rulesOpts      rules.LoadOptions
+	systemDefaults rules.Candidate
 }
 
 // NewService 构造服务。model 用于归一化（应为能力较强的模型）；model 为 nil 时
 // 所有来源降级为 raw preferences（仍可产出快照，机械检查由 system_defaults 兜底）。
 func NewService(st *store.Store, model agentcore.ChatModel, opts rules.LoadOptions) *Service {
-	return &Service{store: st, norm: NewNormalizer(model), rulesOpts: opts}
+	return NewServiceWithSystemDefaults(st, model, opts, rules.SystemDefaults())
+}
+
+// NewServiceWithSystemDefaults 构造带指定系统基线的服务。
+// 外部来源流程可用无默认章字数的基线，避免把导入原文章节或改编章节压进原创默认长度。
+func NewServiceWithSystemDefaults(st *store.Store, model agentcore.ChatModel, opts rules.LoadOptions, defaults rules.Candidate) *Service {
+	return &Service{store: st, norm: NewNormalizer(model), rulesOpts: opts, systemDefaults: defaults}
 }
 
 // Build 从静态来源（system_defaults + rules 文件 + 启动 prompt）归一化生成快照并落盘。
 // 开书/刷新时调用。startupPrompt 可空。
 func (s *Service) Build(ctx context.Context, startupPrompt string) (*rules.Snapshot, error) {
-	cands := []rules.Candidate{rules.SystemDefaults()}
+	cands := []rules.Candidate{s.systemDefaults}
 	for _, rs := range rules.RawFileSources(s.rulesOpts) {
 		cands = append(cands, s.norm.Normalize(ctx, rs.Label, rs.Text))
 	}

@@ -30,9 +30,9 @@ func TestBuildSnapshot_EmptyAndZeroAreAbsent(t *testing.T) {
 			ChapterWords: &WordRange{Min: 3000, Max: 6000},
 		}},
 		{Source: "startup_prompt", Structured: Structured{
-			Genre:            "",                       // 占位空串 → 不覆盖
+			Genre:            "",                         // 占位空串 → 不覆盖
 			ChapterWords:     &WordRange{Min: 0, Max: 0}, // 零值 → 不覆盖
-			ForbiddenPhrases: []string{"", "  "},        // 全空 → 丢弃
+			ForbiddenPhrases: []string{"", "  "},         // 全空 → 丢弃
 		}},
 	})
 	if snap.Structured.Genre != "修仙" {
@@ -120,5 +120,18 @@ func TestSystemDefaults_MatchesLegacyDefaultMD(t *testing.T) {
 	}
 	if len(d.FatigueWords) != 16 {
 		t.Fatalf("默认疲劳词应为 16 条，得到 %d", len(d.FatigueWords))
+	}
+}
+
+func TestSystemDefaultsWithoutChapterWords_KeepsMechanicalBaseline(t *testing.T) {
+	d := SystemDefaultsWithoutChapterWords().Structured
+	if d.ChapterWords != nil {
+		t.Fatalf("外部来源默认规则不应包含章字数，得到 %+v", d.ChapterWords)
+	}
+	if len(d.ForbiddenPhrases) != 4 {
+		t.Fatalf("默认禁语应保留，得到 %d 条", len(d.ForbiddenPhrases))
+	}
+	if len(d.FatigueWords) != 16 {
+		t.Fatalf("默认疲劳词应保留，得到 %d 条", len(d.FatigueWords))
 	}
 }

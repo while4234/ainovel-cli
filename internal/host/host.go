@@ -197,7 +197,17 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 // 归一化失败只降级不报错（增强路径）；只有快照无法落盘才返回 error 中止开书——
 // 后续运行将没有稳定事实源（见设计 §失败与降级）。
 func (h *Host) PrepareUserRules(rawPrompt string) error {
-	svc := userrules.NewService(h.store, h.models.Default, rules.DefaultOptions())
+	return h.prepareUserRules(rawPrompt, rules.SystemDefaults())
+}
+
+// PrepareExternalSourceUserRules 生成外部来源项目的用户规则快照。
+// 导入续写与小说改编应保留禁语/疲劳词等机械基线，但不套用原创项目的默认章字数。
+func (h *Host) PrepareExternalSourceUserRules(rawPrompt string) error {
+	return h.prepareUserRules(rawPrompt, rules.SystemDefaultsWithoutChapterWords())
+}
+
+func (h *Host) prepareUserRules(rawPrompt string, defaults rules.Candidate) error {
+	svc := userrules.NewServiceWithSystemDefaults(h.store, h.models.Default, rules.DefaultOptions(), defaults)
 	snap, err := svc.Build(context.Background(), rawPrompt)
 	if err != nil {
 		return fmt.Errorf("用户规则快照落盘失败，无法继续: %w", err)
@@ -1219,6 +1229,9 @@ func truncate(s string, maxRunes int) string {
 // 返回的事件通道由 imp.Run 关闭，调用方负责消费（满则丢弃以防阻塞分析协程）。
 func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Event, error) {
 	if err := h.guardExclusive("导入"); err != nil {
+		return nil, err
+	}
+	if err := h.PrepareExternalSourceUserRules(""); err != nil {
 		return nil, err
 	}
 	if err := h.store.Adaptation.Reset(); err != nil {

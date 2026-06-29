@@ -74,7 +74,7 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 		if err := runAdaptPreparation(context.Background(), eng, opts.AdaptPath, stderr); err != nil {
 			return err
 		}
-		if err := eng.PrepareUserRules(plan.RawPrompt); err != nil {
+		if err := eng.PrepareExternalSourceUserRules(plan.RawPrompt); err != nil {
 			return err
 		}
 		if err := eng.StartAdaptationPrepared(plan.RawPrompt); err != nil {

@@ -196,6 +196,16 @@ func SystemDefaults() Candidate {
 	}
 }
 
+// SystemDefaultsWithoutChapterWords returns the mechanical baseline for
+// external-source flows. Imported novels and adaptation projects inherit the
+// anti-AI-tone checks, but must not be squeezed into original-writing chapter
+// length defaults unless the user explicitly sets a chapter_words rule.
+func SystemDefaultsWithoutChapterWords() Candidate {
+	c := SystemDefaults()
+	c.Structured.ChapterWords = nil
+	return c
+}
+
 // sanitizeStructured 落实"空值/零值=字段缺失"：归一化器可能吐 genre:""、chapter_words.min:0
 // 这类占位（原型实测），必须当作未声明，避免污染合并与机械检查。
 func sanitizeStructured(s Structured) Structured {
