@@ -8,6 +8,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/utils"
 )
@@ -61,6 +62,8 @@ func (m Model) handleOverlayKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return m.handleBlockingModalKey(msg, m.handleAskUserKey)
 	case m.cocreate != nil:
 		return m.handleBlockingModalKey(msg, m.handleCoCreateKey)
+	case m.adaptPreparation != nil:
+		return m.handleBlockingModalKey(msg, m.handleAdaptPreparationKey)
 	case m.help != nil:
 		return m.handleBlockingModalKey(msg, m.handleHelpKey)
 	case m.modelSwitch != nil:
@@ -190,7 +193,7 @@ func (m Model) handleBaseKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toggleMouseReporting()
 	case tea.KeyTab:
 		if m.mode == modeNew {
-			if m.cocreate != nil || m.adaptPreparing {
+			if m.cocreate != nil || m.adaptPreparation != nil {
 				return m, nil
 			}
 			switch m.startupMode {
@@ -293,7 +296,7 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeNew:
 		m.err = nil
-		if m.adaptPreparing {
+		if m.adaptPreparation != nil {
 			return m, nil
 		}
 		if m.startupMode == startupModeQuick {
@@ -310,10 +313,17 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 			return m, startRuntime(m.runtime, plan)
 		}
 		if m.startupMode == startupModeAdapt {
-			m.adaptPreparing = true
+			m.adaptSeq++
+			state, listenCmd, err := startAdaptPreparation(m.runtime, m.adaptSeq, text, m.width, m.height)
+			if err != nil {
+				m.err = err
+				m.textarea.Placeholder = placeholderForNewMode(m.startupMode)
+				return m, nil
+			}
+			m.adaptPreparation = state
 			m.textarea.Placeholder = "正在分析原小说，请稍候..."
 			m.textarea.Blur()
-			return m, prepareAdaptationSource(m.runtime, text)
+			return m, listenCmd
 		}
 		m.cocreate = newCoCreateState(text)
 		return m, m.sendCoCreate()
@@ -521,6 +531,24 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 		return m, listenSimulationEvent(msg.reqID, msg.ch), true
+	case adaptEventMsg:
+		if m.adaptPreparation == nil || msg.reqID != m.adaptPreparation.reqID {
+			return m, nil, true
+		}
+		boxW, _ := reportModalSize(m.width, m.height)
+		m.adaptPreparation.appendEvent(msg.ev, paddedModalContentWidth(boxW))
+		if msg.ev.Stage == adapt.StageError {
+			m.err = m.adaptPreparation.err
+			return m, nil, true
+		}
+		if msg.ev.Stage == adapt.StageDone {
+			sourcePath := m.adaptPreparation.source
+			m.adaptPreparation = nil
+			m.err = nil
+			m.cocreate = newAdaptCoCreateState(sourcePath)
+			return m, m.sendCoCreate(), true
+		}
+		return m, listenAdaptEvent(msg.reqID, msg.ch), true
 	case exportDoneMsg:
 		if msg.err != nil {
 			m.applyEvent(host.Event{
@@ -536,16 +564,6 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case startResultMsg:
 		next, cmd := m.handleStartResultMsg(msg)
 		return next, cmd, true
-	case adaptPreparedMsg:
-		m.adaptPreparing = false
-		if msg.err != nil {
-			m.err = msg.err
-			m.textarea.Placeholder = placeholderForNewMode(m.startupMode)
-			return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus()), true
-		}
-		m.err = nil
-		m.cocreate = newAdaptCoCreateState(msg.sourcePath)
-		return m, m.sendCoCreate(), true
 	case cocreateDeltaMsg:
 		if m.cocreate == nil || msg.reqID != m.cocreate.reqID {
 			return m, nil, true

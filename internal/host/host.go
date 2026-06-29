@@ -322,8 +322,8 @@ func (h *Host) StartAdaptationPrepared(brief string) error {
 	if err := h.store.Checkpoints.Reset(); err != nil {
 		return fmt.Errorf("reset checkpoints: %w", err)
 	}
-	if err := h.store.Adaptation.Reset(); err != nil {
-		return fmt.Errorf("reset adaptation state: %w", err)
+	if err := h.store.Adaptation.ResetGenerated(); err != nil {
+		return fmt.Errorf("reset generated adaptation state: %w", err)
 	}
 	if err := h.store.Progress.Init("", 0); err != nil {
 		return fmt.Errorf("init progress: %w", err)

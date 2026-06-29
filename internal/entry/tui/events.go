@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,7 +9,6 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
-	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -47,10 +45,6 @@ type (
 		reqID int
 		reply host.CoCreateReply
 		err   error
-	}
-	adaptPreparedMsg struct {
-		sourcePath string
-		err        error
 	}
 	steerResultMsg     struct{}
 	continueResultMsg  struct{ err error }
@@ -162,26 +156,6 @@ func runCoCreate(rt *host.Host, state *cocreateState) tea.Cmd {
 		return nil
 	}
 	return tea.Batch(start, listenCoCreateDelta(state), listenCoCreateDone(state))
-}
-
-func prepareAdaptationSource(rt *host.Host, sourcePath string) tea.Cmd {
-	return func() tea.Msg {
-		ctx := context.Background()
-		ch, err := rt.PrepareAdaptationSource(ctx, sourcePath)
-		if err != nil {
-			return adaptPreparedMsg{sourcePath: sourcePath, err: err}
-		}
-		for ev := range ch {
-			if ev.Stage == adapt.StageError {
-				if ev.Err != nil {
-					err = ev.Err
-				} else {
-					err = fmt.Errorf("%s", ev.Message)
-				}
-			}
-		}
-		return adaptPreparedMsg{sourcePath: sourcePath, err: err}
-	}
 }
 
 func listenCoCreateDelta(state *cocreateState) tea.Cmd {

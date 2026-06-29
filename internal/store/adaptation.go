@@ -15,6 +15,7 @@ const (
 	adaptationRootDir          = "meta/adaptation"
 	adaptationSourceChapterDir = adaptationRootDir + "/source_chapters"
 	adaptationCheckDir         = adaptationRootDir + "/checks"
+	adaptationPlanFile         = adaptationRootDir + "/plan.json"
 )
 
 // AdaptationStore keeps source-novel snapshots and adaptation validation data.
@@ -24,6 +25,18 @@ func NewAdaptationStore(io *IO) *AdaptationStore { return &AdaptationStore{io: i
 
 func (s *AdaptationStore) Reset() error {
 	return os.RemoveAll(s.io.path(adaptationRootDir))
+}
+
+// ResetGenerated removes adaptation artifacts derived from a confirmed brief
+// while preserving the analyzed source-novel snapshot.
+func (s *AdaptationStore) ResetGenerated() error {
+	return s.io.WithWriteLock(func() error {
+		err := os.Remove(s.io.path(adaptationPlanFile))
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return os.RemoveAll(s.io.path(adaptationCheckDir))
+	})
 }
 
 func (s *AdaptationStore) SaveSourceManifest(manifest domain.AdaptationSourceManifest) error {
@@ -146,12 +159,12 @@ func (s *AdaptationStore) LoadSourceFoundation() (*domain.AdaptationSourceFounda
 
 func (s *AdaptationStore) SavePlan(plan domain.AdaptationPlan) error {
 	plan.Granularity = domain.NormalizeAdaptationGranularity(plan.Granularity)
-	return s.io.WriteJSON(adaptationRootDir+"/plan.json", plan)
+	return s.io.WriteJSON(adaptationPlanFile, plan)
 }
 
 func (s *AdaptationStore) LoadPlan() (*domain.AdaptationPlan, error) {
 	var plan domain.AdaptationPlan
-	if err := s.io.ReadJSON(adaptationRootDir+"/plan.json", &plan); err != nil {
+	if err := s.io.ReadJSON(adaptationPlanFile, &plan); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
