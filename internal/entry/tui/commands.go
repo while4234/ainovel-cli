@@ -153,6 +153,7 @@ func commandRegistryInstance() commandRegistry {
 			Group:       "writing",
 			Usage:       "/simulate",
 			Description: "读取 ./simulate 生成或增量更新仿写画像",
+			AutoExecute: true,
 			NeedsIdle:   true,
 			Run: func(m Model, args []string) (tea.Model, tea.Cmd) {
 				m.simSeq++

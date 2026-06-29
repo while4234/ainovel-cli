@@ -24,6 +24,25 @@ func TestSimulationCommandsAreRegisteredAndNeedIdle(t *testing.T) {
 	}
 }
 
+func TestSimulatePaletteItemAutoExecutes(t *testing.T) {
+	items := builtinCommandItems()
+	simulate, ok := findPaletteItem(items, "simulate")
+	if !ok {
+		t.Fatal("expected simulate palette item")
+	}
+	if !simulate.AutoExecute {
+		t.Fatal("/simulate has no args and should execute when accepted from the command palette")
+	}
+
+	importsim, ok := findPaletteItem(items, "importsim")
+	if !ok {
+		t.Fatal("expected importsim palette item")
+	}
+	if importsim.AutoExecute {
+		t.Fatal("/importsim requires a profile path and should not auto-execute")
+	}
+}
+
 func TestSimulationCommandsAreBlockedWhileRunning(t *testing.T) {
 	m := Model{snapshot: host.UISnapshot{IsRunning: true}, eventIndex: map[string]int{}}
 	next, _ := m.handleSlashCommand(slashCommand{name: "simulate"})
@@ -43,4 +62,13 @@ func hasPaletteItem(items []commandPaletteItem, name string) bool {
 		}
 	}
 	return false
+}
+
+func findPaletteItem(items []commandPaletteItem, name string) (commandPaletteItem, bool) {
+	for _, item := range items {
+		if item.Name == name {
+			return item, true
+		}
+	}
+	return commandPaletteItem{}, false
 }

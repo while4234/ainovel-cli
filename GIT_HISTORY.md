@@ -17,6 +17,7 @@
 
 | Date | Commit message | Type | Files | Validation | Notes |
 | --- | --- | --- | --- | --- | --- |
+| 2026-06-29 | fix: auto-run simulate from command palette | fix | TUI command registry/tests | `go test ./internal/entry/tui` passed using `C:\Program Files\Go\bin\go.exe`. | Makes `/simulate` execute immediately when accepted from the slash-command palette; the command has no args, so requiring a second Enter made it look like simulate did nothing. |
 | 2026-06-29 | fix: log adaptation preparation failures | fix | TUI adaptation preparation | `go test ./internal/entry/tui` passed using `C:\Program Files\Go\bin\go.exe`. | Writes complete source-analysis errors to `output/novel/logs/tui.log` so provider HTTP failures are not lost behind the modal width. |
 | 2026-06-29 | fix: tolerate UTF-8 BOM in config files | fix | bootstrap config file loader/tests | `go test ./internal/bootstrap` passed using `C:\Program Files\Go\bin\go.exe`. | Strips UTF-8 BOM before JSON comment removal/unmarshal so Windows-written config files no longer break startup with `invalid character 'ï'`. |
 | 2026-06-29 | fix: persist model switch candidates | fix | bootstrap config/setup, host model switching, bootstrap tests | `go test ./internal/bootstrap`; `go test ./internal/entry/tui`; `go test ./internal/host` passed using `C:\Program Files\Go\bin\go.exe`. | Keeps previously selected provider/model pairs in `providers.<name>.models` so switching from DeepSeek to GPT does not make DeepSeek disappear from `/model`. |
