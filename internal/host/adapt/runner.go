@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
@@ -71,56 +72,160 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 	total := len(chapters)
 	emit(StageSplitting, 0, total, fmt.Sprintf("原文切分完成：%d 章", total), nil)
 
-	if err := deps.Store.Adaptation.Reset(); err != nil {
-		return fmt.Errorf("reset adaptation store: %w", err)
-	}
-
-	sources := make([]domain.AdaptationSource, 0, total)
-	for i, ch := range chapters {
-		source, err := deps.Store.Adaptation.SaveSourceChapter(i+1, ch.Title, ch.Content)
-		if err != nil {
-			return fmt.Errorf("save source chapter %d: %w", i+1, err)
-		}
-		sources = append(sources, source)
-	}
-	manifest := domain.AdaptationSourceManifest{
-		SourcePath:   sourcePath,
-		ChapterCount: total,
-		Chapters:     sources,
-	}
-	if err := deps.Store.Adaptation.SaveSourceManifest(manifest); err != nil {
-		return fmt.Errorf("save source manifest: %w", err)
-	}
-
-	emit(StageFoundation, 0, total, "反推原书 foundation 快照...", nil)
-	fr, err := imp.ReverseFoundation(ctx, deps.LLM, deps.Prompts.Foundation, chapters)
+	manifest, sourceChanged, err := ensureSourceSnapshot(deps.Store.Adaptation, sourcePath, chapters)
 	if err != nil {
-		return fmt.Errorf("reverse source foundation: %w", err)
+		return err
 	}
-	if err := deps.Store.Adaptation.SaveSourceFoundation(toSourceFoundation(fr)); err != nil {
-		return fmt.Errorf("save source foundation: %w", err)
+	if !sourceChanged {
+		emit(StageSplitting, total, total, "源书快照匹配，继续使用已有分析产物", nil)
 	}
 
-	reports := make([]domain.AdaptationSourceReport, 0, total)
-	charactersBlock := charactersBlock(fr.Characters)
+	reportsChanged := false
 	for i, ch := range chapters {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		chapterNum := i + 1
+		source := manifest.Chapters[i]
+		existing, err := deps.Store.Adaptation.LoadSourceReport(chapterNum)
+		if err != nil {
+			return fmt.Errorf("load source report %d: %w", chapterNum, err)
+		}
+		if reusableSourceReport(existing, source.SHA256) {
+			emit(StageChapter, chapterNum, total, fmt.Sprintf("跳过第 %d/%d 章，单章分析已完成：%s", chapterNum, total, ch.Title), nil)
+			continue
+		}
 		emit(StageChapter, chapterNum, total, fmt.Sprintf("分析原文第 %d/%d 章：%s", chapterNum, total, ch.Title), nil)
-		analysis, err := imp.AnalyzeChapter(ctx, deps.LLM, deps.Prompts.Analyzer,
-			chapterNum, ch.Title, ch.Content, fr.Premise, charactersBlock, nil)
+		analysis, err := imp.AnalyzeChapterWithOptions(ctx, deps.LLM, deps.Prompts.Analyzer,
+			chapterNum, ch.Title, ch.Content, "", "", nil,
+			structuredCallOptions(StageChapter, chapterNum, total, emit))
 		if err != nil {
 			return fmt.Errorf("analyze source chapter %d: %w", chapterNum, err)
 		}
-		reports = append(reports, toSourceReport(chapterNum, ch.Title, analysis))
+		report := toSourceReport(chapterNum, ch.Title, analysis)
+		report.SourceSHA256 = source.SHA256
+		if err := deps.Store.Adaptation.SaveSourceReport(report); err != nil {
+			return fmt.Errorf("save source report %d: %w", chapterNum, err)
+		}
+		reportsChanged = true
+		if reports, err := deps.Store.Adaptation.LoadSourceReports(); err == nil {
+			_ = deps.Store.Adaptation.SaveSourceReports(reports)
+		}
+	}
+	reports, err := deps.Store.Adaptation.LoadCompleteSourceReports()
+	if err != nil {
+		return fmt.Errorf("load complete source reports: %w", err)
+	}
+	if len(reports) != total {
+		return fmt.Errorf("source reports incomplete: got %d, want %d", len(reports), total)
 	}
 	if err := deps.Store.Adaptation.SaveSourceReports(reports); err != nil {
 		return fmt.Errorf("save source reports: %w", err)
 	}
+	foundation, err := deps.Store.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return fmt.Errorf("load source foundation: %w", err)
+	}
+	if foundation != nil && !sourceChanged && !reportsChanged {
+		emit(StageFoundation, total, total, "源书 foundation 已存在，跳过聚合", nil)
+	} else {
+		emit(StageFoundation, total, total, "聚合逐章事实，生成源书 foundation...", nil)
+		fr, err := imp.MergeFoundationFromReports(ctx, deps.LLM, deps.Prompts.FoundationMerge, reports,
+			structuredCallOptions(StageFoundation, total, total, emit))
+		if err != nil {
+			return fmt.Errorf("merge source foundation: %w", err)
+		}
+		if err := deps.Store.Adaptation.SaveSourceFoundation(toSourceFoundation(fr)); err != nil {
+			return fmt.Errorf("save source foundation: %w", err)
+		}
+	}
 	emit(StageDone, total, total, fmt.Sprintf("原书分析完成：%d 章快照已保存", total), nil)
 	return nil
+}
+
+func ensureSourceSnapshot(adaptation *store.AdaptationStore, sourcePath string, chapters []imp.Chapter) (*domain.AdaptationSourceManifest, bool, error) {
+	next := buildSourceManifest(sourcePath, chapters)
+	existing, err := adaptation.LoadSourceManifest()
+	if err != nil {
+		return nil, false, fmt.Errorf("load source manifest: %w", err)
+	}
+	if sourceManifestMatches(existing, next) {
+		return existing, false, nil
+	}
+
+	if err := adaptation.Reset(); err != nil {
+		return nil, false, fmt.Errorf("reset adaptation store: %w", err)
+	}
+	sources := make([]domain.AdaptationSource, 0, len(chapters))
+	for i, ch := range chapters {
+		source, err := adaptation.SaveSourceChapter(i+1, ch.Title, ch.Content)
+		if err != nil {
+			return nil, false, fmt.Errorf("save source chapter %d: %w", i+1, err)
+		}
+		sources = append(sources, source)
+	}
+	next.Chapters = sources
+	if err := adaptation.SaveSourceManifest(next); err != nil {
+		return nil, false, fmt.Errorf("save source manifest: %w", err)
+	}
+	return &next, true, nil
+}
+
+func buildSourceManifest(sourcePath string, chapters []imp.Chapter) domain.AdaptationSourceManifest {
+	sources := make([]domain.AdaptationSource, 0, len(chapters))
+	for i, ch := range chapters {
+		content := strings.TrimSpace(ch.Content)
+		chapter := i + 1
+		sources = append(sources, domain.AdaptationSource{
+			Chapter: chapter,
+			Title:   strings.TrimSpace(ch.Title),
+			SHA256:  store.TextSHA256(content),
+			Path:    store.SourceChapterRelPath(chapter),
+			Runes:   utf8.RuneCountInString(content),
+		})
+	}
+	return domain.AdaptationSourceManifest{
+		SourcePath:   sourcePath,
+		ChapterCount: len(chapters),
+		Chapters:     sources,
+	}
+}
+
+func sourceManifestMatches(existing *domain.AdaptationSourceManifest, next domain.AdaptationSourceManifest) bool {
+	if existing == nil || existing.ChapterCount != next.ChapterCount || len(existing.Chapters) != len(next.Chapters) {
+		return false
+	}
+	for i := range next.Chapters {
+		if existing.Chapters[i].Chapter != next.Chapters[i].Chapter || existing.Chapters[i].SHA256 != next.Chapters[i].SHA256 {
+			return false
+		}
+	}
+	return true
+}
+
+func reusableSourceReport(report *domain.AdaptationSourceReport, sourceSHA256 string) bool {
+	return report != nil &&
+		strings.TrimSpace(report.SourceSHA256) != "" &&
+		report.SourceSHA256 == sourceSHA256 &&
+		strings.TrimSpace(report.Summary) != "" &&
+		len(report.KeyEvents) > 0
+}
+
+func structuredCallOptions(stage Stage, current, total int, emit func(Stage, int, int, string, error)) imp.StructuredCallOptions {
+	maxTokens := 4096
+	if stage == StageFoundation {
+		maxTokens = 8192
+	}
+	return imp.StructuredCallOptions{
+		MaxAttempts: 3,
+		MaxTokens:   maxTokens,
+		OnRetry: func(ev imp.StructuredRetryEvent) {
+			if emit == nil {
+				return
+			}
+			emit(stage, current, total, fmt.Sprintf("重试 %d/%d：%v", ev.Attempt, ev.MaxAttempts, ev.Err), ev.Err)
+		},
+	}
 }
 
 func PrepareRun(ctx context.Context, deps Deps, brief string) (*domain.AdaptationPlan, error) {
@@ -246,7 +351,9 @@ func toSourceReport(chapter int, title string, analysis *imp.ChapterAnalysis) do
 		Title:          title,
 		Summary:        analysis.Summary,
 		Characters:     append([]string(nil), analysis.Characters...),
+		CharacterFacts: append([]string(nil), analysis.CharacterFacts...),
 		KeyEvents:      append([]string(nil), analysis.KeyEvents...),
+		WorldRules:     append([]string(nil), analysis.WorldRules...),
 		HookType:       analysis.HookType,
 		DominantStrand: analysis.DominantStrand,
 		Timeline:       append([]domain.TimelineEvent(nil), analysis.TimelineEvents...),

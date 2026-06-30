@@ -29,6 +29,18 @@
 JSON 字符串数组：本章实际**出场**的角色名（不含仅被提及的）。
 例：`["林晚","陈沉"]`
 
+### === CHARACTER_FACTS ===
+
+JSON string array. Extract compact facts useful for later foundation merging:
+identity, motivation, capability, conflict pressure, relationship state, and
+important changes. Use only facts supported by this chapter. Output `[]` if none.
+
+### === WORLD_RULES ===
+
+JSON string array. Extract compact setting, faction, system, geography, social,
+magic/technology, or constraint facts supported by this chapter. Output `[]` if
+none.
+
 ### === KEY_EVENTS ===
 
 JSON 字符串数组：3-6 条本章关键事件，每条一句话。
@@ -81,6 +93,6 @@ JSON 数组，每条 `{entity, field, old_value, new_value, reason}`：
 ## 关键规则
 
 1. 一切从正文出发，不要臆造。
-2. 输出必须严格使用 9 个 TAG，顺序固定，**全部出现**（无内容用 `[]` 或留空字符串）。
+2. 输出必须严格使用上述 TAG，顺序固定，**全部出现**（无内容用 `[]` 或留空字符串）。
 3. JSON 段内字符串值的双引号必须转义为 `\"`、换行为 `\n`，禁止字面双引号或控制字符。
 4. **只输出标签和标签内的内容**，不要前置寒暄、不要后置总结。

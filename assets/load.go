@@ -20,15 +20,16 @@ var stylesFS embed.FS
 
 // Prompts 表示嵌入的提示词集合。
 type Prompts struct {
-	Coordinator      string
-	ArchitectShort   string
-	ArchitectLong    string
-	Writer           string
-	Editor           string
-	ImportFoundation string
-	ImportAnalyzer   string
-	SimulationSource string
-	SimulationMerge  string
+	Coordinator           string
+	ArchitectShort        string
+	ArchitectLong         string
+	Writer                string
+	Editor                string
+	ImportFoundation      string
+	ImportFoundationMerge string
+	ImportAnalyzer        string
+	SimulationSource      string
+	SimulationMerge       string
 }
 
 // Bundle 表示运行所需的静态资源集合。
@@ -79,15 +80,16 @@ func loadReferences(style string) tools.References {
 
 func loadPrompts() Prompts {
 	return Prompts{
-		Coordinator:      loadRolePrompt("prompts/coordinator.md", "coordinator"),
-		ArchitectShort:   loadRolePrompt("prompts/architect-short.md", "architect"),
-		ArchitectLong:    loadRolePrompt("prompts/architect-long.md", "architect"),
-		Writer:           loadRolePrompt("prompts/writer.md", "writer"),
-		Editor:           loadRolePrompt("prompts/editor.md", "editor"),
-		ImportFoundation: loadSystemPrompt("prompts/import-foundation.md"),
-		ImportAnalyzer:   loadSystemPrompt("prompts/import-chapter-analyzer.md"),
-		SimulationSource: loadSystemPrompt("prompts/simulation-source.md"),
-		SimulationMerge:  loadSystemPrompt("prompts/simulation-merge.md"),
+		Coordinator:           loadRolePrompt("prompts/coordinator.md", "coordinator"),
+		ArchitectShort:        loadRolePrompt("prompts/architect-short.md", "architect"),
+		ArchitectLong:         loadRolePrompt("prompts/architect-long.md", "architect"),
+		Writer:                loadRolePrompt("prompts/writer.md", "writer"),
+		Editor:                loadRolePrompt("prompts/editor.md", "editor"),
+		ImportFoundation:      loadSystemPrompt("prompts/import-foundation.md"),
+		ImportFoundationMerge: loadSystemPrompt("prompts/import-foundation-merge.md"),
+		ImportAnalyzer:        loadSystemPrompt("prompts/import-chapter-analyzer.md"),
+		SimulationSource:      loadSystemPrompt("prompts/simulation-source.md"),
+		SimulationMerge:       loadSystemPrompt("prompts/simulation-merge.md"),
 	}
 }
 

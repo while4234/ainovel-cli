@@ -28,6 +28,7 @@ type Options struct {
 }
 
 type Prompts struct {
-	Foundation string
-	Analyzer   string
+	Foundation      string
+	FoundationMerge string
+	Analyzer        string
 }

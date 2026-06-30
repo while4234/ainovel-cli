@@ -333,8 +333,9 @@ func (h *Host) StartAdaptationPrepared(brief string) error {
 		Store: h.store,
 		LLM:   h.models.ForRole("architect"),
 		Prompts: adapt.Prompts{
-			Foundation: h.bundle.Prompts.ImportFoundation,
-			Analyzer:   h.bundle.Prompts.ImportAnalyzer,
+			Foundation:      h.bundle.Prompts.ImportFoundation,
+			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
+			Analyzer:        h.bundle.Prompts.ImportAnalyzer,
 		},
 	}
 	plan, err := adapt.PrepareRun(context.Background(), deps, brief)
@@ -1261,13 +1262,31 @@ func (h *Host) PrepareAdaptationSource(ctx context.Context, sourcePath string) (
 	}
 	deps := adapt.Deps{
 		Store: h.store,
-		LLM:   h.models.ForRole("architect"),
+		LLM:   h.models.ForRoleWithFailover("architect", h.reportAdaptationFailover),
 		Prompts: adapt.Prompts{
-			Foundation: h.bundle.Prompts.ImportFoundation,
-			Analyzer:   h.bundle.Prompts.ImportAnalyzer,
+			Foundation:      h.bundle.Prompts.ImportFoundation,
+			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
+			Analyzer:        h.bundle.Prompts.ImportAnalyzer,
 		},
 	}
 	return adapt.RunSource(ctx, deps, adapt.Options{SourcePath: sourcePath})
+}
+
+func (h *Host) reportAdaptationFailover(ev bootstrap.FailoverEvent) {
+	from := ev.FromProvider + "/" + ev.FromModel
+	to := ev.ToProvider + "/" + ev.ToModel
+	slog.Warn("adaptation preparation provider failover",
+		"module", "host",
+		"from", from,
+		"to", to,
+		"reason", ev.Reason,
+		"err", ev.Err)
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("改编准备模型切换：%s -> %s（%s）", from, to, ev.Reason),
+		Level:    "warn",
+	})
 }
 
 // Simulate 读取 simulate 目录并生成或增量更新仿写画像。

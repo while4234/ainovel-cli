@@ -22,7 +22,9 @@ var (
 type ChapterAnalysis struct {
 	Summary             string
 	Characters          []string
+	CharacterFacts      []string
 	KeyEvents           []string
+	WorldRules          []string
 	TimelineEvents      []domain.TimelineEvent
 	ForeshadowUpdates   []domain.ForeshadowUpdate
 	RelationshipChanges []domain.RelationshipEntry
@@ -45,7 +47,47 @@ func AnalyzeChapter(
 	if llm == nil {
 		return nil, fmt.Errorf("llm is nil")
 	}
+	messages, err := buildAnalyzerMessages(systemPrompt, chapter, chapterTitle, chapterContent, premise, charactersBlock, activeHooks)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := llm.Generate(ctx, messages, nil)
+	if err != nil {
+		return nil, fmt.Errorf("llm generate ch%d: %w", chapter, err)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("ch%d: nil response", chapter)
+	}
+	return parseAnalyzerOutput(resp.Message.TextContent())
+}
 
+func AnalyzeChapterWithOptions(
+	ctx context.Context,
+	llm LLMChat,
+	systemPrompt string,
+	chapter int,
+	chapterTitle, chapterContent string,
+	premise, charactersBlock string,
+	activeHooks []domain.ForeshadowEntry,
+	opts StructuredCallOptions,
+) (*ChapterAnalysis, error) {
+	if llm == nil {
+		return nil, fmt.Errorf("llm is nil")
+	}
+	messages, err := buildAnalyzerMessages(systemPrompt, chapter, chapterTitle, chapterContent, premise, charactersBlock, activeHooks)
+	if err != nil {
+		return nil, err
+	}
+	return runStructuredCall(ctx, llm, messages, parseAnalyzerOutput, opts)
+}
+
+func buildAnalyzerMessages(
+	systemPrompt string,
+	chapter int,
+	chapterTitle, chapterContent string,
+	premise, charactersBlock string,
+	activeHooks []domain.ForeshadowEntry,
+) ([]agentcore.Message, error) {
 	systemPrompt = cleanLLMText(systemPrompt)
 	chapterTitle = cleanLLMText(chapterTitle)
 	chapterContent = cleanLLMText(chapterContent)
@@ -57,17 +99,10 @@ func AnalyzeChapter(
 	}
 
 	user := buildAnalyzerUserPrompt(chapter, chapterTitle, chapterContent, premise, charactersBlock, activeHooks)
-	resp, err := llm.Generate(ctx, []agentcore.Message{
+	return []agentcore.Message{
 		agentcore.SystemMsg(systemPrompt),
 		agentcore.UserMsg(user),
-	}, nil)
-	if err != nil {
-		return nil, fmt.Errorf("llm generate ch%d: %w", chapter, err)
-	}
-	if resp == nil {
-		return nil, fmt.Errorf("ch%d: nil response", chapter)
-	}
-	return parseAnalyzerOutput(resp.Message.TextContent())
+	}, nil
 }
 
 func buildAnalyzerUserPrompt(
@@ -150,6 +185,12 @@ func parseAnalyzerOutput(text string) (*ChapterAnalysis, error) {
 	}
 	if len(a.Characters) == 0 {
 		return nil, fmt.Errorf("characters array is empty")
+	}
+	if err := decodeOptionalArray("character_facts", env["CHARACTER_FACTS"], &a.CharacterFacts); err != nil {
+		return nil, err
+	}
+	if err := decodeOptionalArray("world_rules", env["WORLD_RULES"], &a.WorldRules); err != nil {
+		return nil, err
 	}
 	if err := decodeJSON("key_events", env["KEY_EVENTS"], &a.KeyEvents); err != nil {
 		return nil, err

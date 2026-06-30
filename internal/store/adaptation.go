@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -12,10 +13,13 @@ import (
 )
 
 const (
-	adaptationRootDir          = "meta/adaptation"
-	adaptationSourceChapterDir = adaptationRootDir + "/source_chapters"
-	adaptationCheckDir         = adaptationRootDir + "/checks"
-	adaptationPlanFile         = adaptationRootDir + "/plan.json"
+	adaptationRootDir              = "meta/adaptation"
+	adaptationSourceChapterDir     = adaptationRootDir + "/source_chapters"
+	adaptationSourceReportDir      = adaptationRootDir + "/source_reports"
+	adaptationSourceReportsFile    = adaptationRootDir + "/source_reports.json"
+	adaptationSourceFoundationFile = adaptationRootDir + "/source_foundation.json"
+	adaptationCheckDir             = adaptationRootDir + "/checks"
+	adaptationPlanFile             = adaptationRootDir + "/plan.json"
 )
 
 // AdaptationStore keeps source-novel snapshots and adaptation validation data.
@@ -128,12 +132,44 @@ func (s *AdaptationStore) LoadSourceChapterRange(from, to, maxRunes int) (map[in
 }
 
 func (s *AdaptationStore) SaveSourceReports(reports []domain.AdaptationSourceReport) error {
-	return s.io.WriteJSON(adaptationRootDir+"/source_reports.json", reports)
+	return s.io.WriteJSON(adaptationSourceReportsFile, reports)
+}
+
+func (s *AdaptationStore) SaveSourceReport(report domain.AdaptationSourceReport) error {
+	if report.Chapter <= 0 {
+		return fmt.Errorf("chapter must be > 0")
+	}
+	return s.io.WriteJSON(SourceReportRelPath(report.Chapter), report)
+}
+
+func (s *AdaptationStore) LoadSourceReport(chapter int) (*domain.AdaptationSourceReport, error) {
+	if chapter <= 0 {
+		return nil, fmt.Errorf("chapter must be > 0")
+	}
+	var report domain.AdaptationSourceReport
+	if err := s.io.ReadJSON(SourceReportRelPath(chapter), &report); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if report.Chapter == 0 {
+		report.Chapter = chapter
+	}
+	return &report, nil
 }
 
 func (s *AdaptationStore) LoadSourceReports() ([]domain.AdaptationSourceReport, error) {
+	dirReports, err := s.loadSourceReportDir()
+	if err != nil {
+		return nil, err
+	}
+	if len(dirReports) > 0 {
+		return dirReports, nil
+	}
+
 	var reports []domain.AdaptationSourceReport
-	if err := s.io.ReadJSON(adaptationRootDir+"/source_reports.json", &reports); err != nil {
+	if err := s.io.ReadJSON(adaptationSourceReportsFile, &reports); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
@@ -142,13 +178,70 @@ func (s *AdaptationStore) LoadSourceReports() ([]domain.AdaptationSourceReport, 
 	return reports, nil
 }
 
+func (s *AdaptationStore) LoadCompleteSourceReports() ([]domain.AdaptationSourceReport, error) {
+	manifest, err := s.LoadSourceManifest()
+	if err != nil || manifest == nil {
+		return nil, err
+	}
+	if manifest.ChapterCount <= 0 || len(manifest.Chapters) != manifest.ChapterCount {
+		return nil, nil
+	}
+
+	reports := make([]domain.AdaptationSourceReport, 0, len(manifest.Chapters))
+	for _, source := range manifest.Chapters {
+		report, err := s.LoadSourceReport(source.Chapter)
+		if err != nil || report == nil {
+			return nil, err
+		}
+		if !sourceReportMatches(*report, source.SHA256) {
+			return nil, nil
+		}
+		reports = append(reports, *report)
+	}
+	return reports, nil
+}
+
+func (s *AdaptationStore) loadSourceReportDir() ([]domain.AdaptationSourceReport, error) {
+	entries, err := os.ReadDir(s.io.path(adaptationSourceReportDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	reports := make([]domain.AdaptationSourceReport, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		var report domain.AdaptationSourceReport
+		rel := adaptationSourceReportDir + "/" + entry.Name()
+		if err := s.io.ReadJSON(rel, &report); err != nil {
+			return nil, err
+		}
+		reports = append(reports, report)
+	}
+	sort.SliceStable(reports, func(i, j int) bool {
+		return reports[i].Chapter < reports[j].Chapter
+	})
+	return reports, nil
+}
+
+func sourceReportMatches(report domain.AdaptationSourceReport, sha256 string) bool {
+	return strings.TrimSpace(report.SourceSHA256) != "" &&
+		report.SourceSHA256 == sha256 &&
+		strings.TrimSpace(report.Summary) != "" &&
+		len(report.KeyEvents) > 0
+}
+
 func (s *AdaptationStore) SaveSourceFoundation(foundation domain.AdaptationSourceFoundation) error {
-	return s.io.WriteJSON(adaptationRootDir+"/source_foundation.json", foundation)
+	return s.io.WriteJSON(adaptationSourceFoundationFile, foundation)
 }
 
 func (s *AdaptationStore) LoadSourceFoundation() (*domain.AdaptationSourceFoundation, error) {
 	var foundation domain.AdaptationSourceFoundation
-	if err := s.io.ReadJSON(adaptationRootDir+"/source_foundation.json", &foundation); err != nil {
+	if err := s.io.ReadJSON(adaptationSourceFoundationFile, &foundation); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
@@ -210,6 +303,10 @@ func (s *AdaptationStore) HasPassingCheck(chapter int, draftSHA256 string) (bool
 
 func SourceChapterRelPath(chapter int) string {
 	return fmt.Sprintf("%s/%04d.md", adaptationSourceChapterDir, chapter)
+}
+
+func SourceReportRelPath(chapter int) string {
+	return fmt.Sprintf("%s/%04d.json", adaptationSourceReportDir, chapter)
 }
 
 func TextSHA256(text string) string {

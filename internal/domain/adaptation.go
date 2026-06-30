@@ -28,9 +28,12 @@ type AdaptationSource struct {
 type AdaptationSourceReport struct {
 	Chapter        int                 `json:"chapter"`
 	Title          string              `json:"title"`
+	SourceSHA256   string              `json:"source_sha256,omitempty"`
 	Summary        string              `json:"summary"`
 	Characters     []string            `json:"characters,omitempty"`
+	CharacterFacts []string            `json:"character_facts,omitempty"`
 	KeyEvents      []string            `json:"key_events,omitempty"`
+	WorldRules     []string            `json:"world_rules,omitempty"`
 	HookType       string              `json:"hook_type,omitempty"`
 	DominantStrand string              `json:"dominant_strand,omitempty"`
 	Timeline       []TimelineEvent     `json:"timeline,omitempty"`
