@@ -30,7 +30,7 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Change Log
 
-- 2026-06-30 `b81f09b` `docs: record global CLI sync`: rebuild
+- 2026-06-30 `docs: record global CLI sync`: rebuild
   `D:\ainovel\ainovel-cli.exe` from `7bafcc6`, add `D:\ainovel` to the current
   user's PATH, and verify `ainovel-cli --version` from outside the repo in both
   PowerShell and cmd.
