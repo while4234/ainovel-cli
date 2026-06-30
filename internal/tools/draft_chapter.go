@@ -107,13 +107,7 @@ func (t *DraftChapterTool) Execute(_ context.Context, args json.RawMessage) (jso
 		); err != nil {
 			return nil, fmt.Errorf("checkpoint draft: %w", err)
 		}
-		return json.Marshal(map[string]any{
-			"written":    true,
-			"chapter":    a.Chapter,
-			"mode":       "append",
-			"word_count": utf8.RuneCountInString(full),
-			"next_step":  "先 read_chapter(source=draft) 回读草稿，再调用 check_consistency，最后 commit_chapter",
-		})
+		return json.Marshal(t.buildDraftResult(a.Chapter, "append", utf8.RuneCountInString(full)))
 	default: // write
 		if err := t.store.Drafts.SaveDraft(a.Chapter, a.Content); err != nil {
 			return nil, fmt.Errorf("save draft: %w", err)
@@ -124,12 +118,33 @@ func (t *DraftChapterTool) Execute(_ context.Context, args json.RawMessage) (jso
 		); err != nil {
 			return nil, fmt.Errorf("checkpoint draft: %w", err)
 		}
-		return json.Marshal(map[string]any{
-			"written":    true,
-			"chapter":    a.Chapter,
-			"mode":       "write",
-			"word_count": utf8.RuneCountInString(a.Content),
-			"next_step":  "先 read_chapter(source=draft) 回读草稿，再调用 check_consistency，最后 commit_chapter",
-		})
+		return json.Marshal(t.buildDraftResult(a.Chapter, "write", utf8.RuneCountInString(a.Content)))
 	}
+}
+
+func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount int) map[string]any {
+	result := map[string]any{
+		"written":    true,
+		"chapter":    chapter,
+		"mode":       mode,
+		"word_count": wordCount,
+		"next_step":  "先 read_chapter(source=draft) 回读草稿，再调用 check_consistency，最后 commit_chapter",
+	}
+	contract, issues, ok := adaptationWordContractStatus(t.store, chapter, wordCount)
+	if !ok {
+		return result
+	}
+	result["adaptation_word_contract"] = contract
+	result["word_contract_passed"] = len(issues) == 0
+	if len(issues) == 0 {
+		if contract.Hard {
+			result["next_step"] = "字数硬契约已满足：按 read_chapter(source=\"draft\") → check_consistency → check_adaptation → commit_chapter 继续。"
+		}
+		return result
+	}
+	result["word_contract_issues"] = issues
+	if repair := adaptationWordContractRepairStep(contract, issues, chapter); repair != "" {
+		result["next_step"] = repair
+	}
+	return result
 }

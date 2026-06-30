@@ -2,11 +2,13 @@ package reminder
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -31,6 +33,10 @@ var hardStopReasons = map[agentcore.StopReason]struct{}{
 // 在 baseline 之后若未出现指定 step 的 checkpoint，则拒绝 end_turn。
 // baseline 由调用方在 factory 时刻捕获，保证 per-run 语义正确。
 func newCheckpointDeltaGuard(st *store.Store, agentName string, requiredSteps []string, blockMsg string) agentcore.StopGuard {
+	return newCheckpointDeltaGuardFunc(st, agentName, requiredSteps, func() string { return blockMsg })
+}
+
+func newCheckpointDeltaGuardFunc(st *store.Store, agentName string, requiredSteps []string, blockMsg func() string) agentcore.StopGuard {
 	var baseline int64
 	if cp := st.Checkpoints.LatestGlobal(); cp != nil {
 		baseline = cp.Seq
@@ -68,16 +74,66 @@ func newCheckpointDeltaGuard(st *store.Store, agentName string, requiredSteps []
 		}
 		slog.Warn("subagent stop_guard 拦截 end_turn",
 			"module", "host.reminder", "agent", agentName, "turn", info.TurnIndex, "consecutive", n)
-		return agentcore.StopDecision{Allow: false, InjectMessage: blockMsg}
+		return agentcore.StopDecision{Allow: false, InjectMessage: blockMsg()}
 	}
 }
 
 // NewWriterStopGuard 要求 writer 本轮至少产生一次成功的 commit_chapter。
 func NewWriterStopGuard(st *store.Store) agentcore.StopGuard {
-	return newCheckpointDeltaGuard(st, "writer",
+	return newCheckpointDeltaGuardFunc(st, "writer",
 		[]string{"commit"},
-		"你必须调用 commit_chapter 提交本章后才能结束。draft_chapter 只是保存草稿，不算完成。",
+		func() string { return writerStopBlockMessage(st) },
 	)
+}
+
+func writerStopBlockMessage(st *store.Store) string {
+	const generic = "你必须调用 commit_chapter 提交本章后才能结束。draft_chapter 只是保存草稿，不算完成。"
+	if st == nil || !st.Adaptation.Active() {
+		return generic
+	}
+	progress, err := st.Progress.Load()
+	if err != nil || progress == nil {
+		return generic
+	}
+	chapter := progress.InProgressChapter
+	if chapter <= 0 {
+		chapter = progress.CurrentChapter
+	}
+	if chapter <= 0 {
+		return generic
+	}
+	plan, err := st.Adaptation.LoadPlan()
+	if err != nil || plan == nil || plan.Status != domain.AdaptationPlanStatusConfirmed ||
+		plan.RewritePolicy != domain.AdaptationRewritePreserveDetails {
+		return generic
+	}
+	var chapterPlan *domain.AdaptationChapterPlan
+	for i := range plan.Chapters {
+		if plan.Chapters[i].Chapter == chapter {
+			chapterPlan = &plan.Chapters[i]
+			break
+		}
+	}
+	if chapterPlan == nil {
+		return generic
+	}
+	_, wordCount, err := st.Drafts.LoadChapterContent(chapter)
+	if err != nil || wordCount == 0 {
+		return generic
+	}
+	if chapterPlan.TargetMinRunes > 0 && wordCount < chapterPlan.TargetMinRunes {
+		return fmt.Sprintf(
+			"第 %d 章草稿只有 %d 字，低于 preserve_details 硬区间 %d-%d 字。不要调用 commit_chapter，也不要只输出改动片段；先 read_chapter(source=\"source\", chapter=%d) 读取原文，再用 draft_chapter(mode=\"write\") 写入完整章节，保留未受改编目标影响的原文细节并只重写受影响部分。",
+			chapter, wordCount, chapterPlan.TargetMinRunes, chapterPlan.TargetMaxRunes, chapter,
+		)
+	}
+	if chapterPlan.TargetMaxRunes > 0 && wordCount > chapterPlan.TargetMaxRunes {
+		return fmt.Sprintf(
+			"第 %d 章草稿 %d 字，超过 preserve_details 硬区间 %d-%d 字。不要调用 commit_chapter；先按原文 source 对照重写完整章节并压缩到区间内。",
+			chapter, wordCount, chapterPlan.TargetMinRunes, chapterPlan.TargetMaxRunes,
+		)
+	}
+	return generic
 }
 
 // NewArchitectStopGuard 要求 architect 本轮至少落盘一次 save_foundation。

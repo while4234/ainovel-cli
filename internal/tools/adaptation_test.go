@@ -227,12 +227,16 @@ func TestPreserveDetailsWordContractRejectsCheckAndCommit(t *testing.T) {
 	var checkPayload struct {
 		Passed bool     `json:"passed"`
 		Issues []string `json:"issues"`
+		Next   string   `json:"next_step"`
 	}
 	if err := json.Unmarshal(raw, &checkPayload); err != nil {
 		t.Fatalf("Unmarshal check payload: %v", err)
 	}
 	if checkPayload.Passed || !issueContains(checkPayload.Issues, "adaptation_word_contract") {
 		t.Fatalf("check_adaptation should fail word contract, got %+v", checkPayload)
+	}
+	if !strings.Contains(checkPayload.Next, "不要再次调用 commit_chapter") {
+		t.Fatalf("check_adaptation should return repair next_step, got %q", checkPayload.Next)
 	}
 
 	if err := s.Adaptation.SaveCheck(domain.AdaptationCheck{
@@ -249,8 +253,79 @@ func TestPreserveDetailsWordContractRejectsCheckAndCommit(t *testing.T) {
 		"characters": []string{"主角"},
 		"key_events": []string{"主线事件"},
 	})
-	if _, err := NewCommitChapterTool(s).Execute(context.Background(), commitArgs); err == nil || !strings.Contains(err.Error(), "adaptation_word_contract") {
+	if _, err := NewCommitChapterTool(s).Execute(context.Background(), commitArgs); err == nil ||
+		!strings.Contains(err.Error(), "adaptation_word_contract") ||
+		!strings.Contains(err.Error(), "不要再次调用 commit_chapter") {
 		t.Fatalf("commit_chapter should independently reject word contract, got %v", err)
+	}
+}
+
+func TestPreserveDetailsPlanAndDraftSteerTowardFullSourceBackedChapter(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity:      domain.AdaptationGranularityChapter,
+		RewritePolicy:    domain.AdaptationRewritePreserveDetails,
+		WordTolerance:    0.15,
+		Brief:            "原著细节优先",
+		SourceTotalRunes: 100,
+		TargetTotalRunes: 100,
+		TargetMinRunes:   85,
+		TargetMaxRunes:   115,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "目标章",
+			SourceChapters: []int{1},
+			SourceRunes:    100,
+			TargetRunes:    100,
+			TargetMinRunes: 85,
+			TargetMaxRunes: 115,
+			SourceRange:    domain.SourceRange{From: 1, To: 1},
+		}},
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, []string{strings.Repeat("源", 100)})
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+
+	planRaw, err := NewPlanChapterTool(s).Execute(context.Background(), planArgs(1))
+	if err != nil {
+		t.Fatalf("plan_chapter Execute: %v", err)
+	}
+	var planPayload struct {
+		Next string `json:"next_step"`
+	}
+	if err := json.Unmarshal(planRaw, &planPayload); err != nil {
+		t.Fatalf("Unmarshal plan payload: %v", err)
+	}
+	for _, want := range []string{`read_chapter(source="source"`, "完整章节正文", "不能只写改动片段", "85-115"} {
+		if !strings.Contains(planPayload.Next, want) {
+			t.Fatalf("plan next_step missing %q: %q", want, planPayload.Next)
+		}
+	}
+
+	draftArgs, _ := json.Marshal(map[string]any{
+		"chapter": 1,
+		"content": strings.Repeat("改", 20),
+		"mode":    "write",
+	})
+	draftRaw, err := NewDraftChapterTool(s).Execute(context.Background(), draftArgs)
+	if err != nil {
+		t.Fatalf("draft_chapter Execute: %v", err)
+	}
+	var draftPayload struct {
+		WordContractPassed bool     `json:"word_contract_passed"`
+		WordContractIssues []string `json:"word_contract_issues"`
+		Next               string   `json:"next_step"`
+	}
+	if err := json.Unmarshal(draftRaw, &draftPayload); err != nil {
+		t.Fatalf("Unmarshal draft payload: %v", err)
+	}
+	if draftPayload.WordContractPassed || !issueContains(draftPayload.WordContractIssues, "低于硬区间") {
+		t.Fatalf("draft should report failed low word contract, got %+v", draftPayload)
+	}
+	for _, want := range []string{`不要再次调用 commit_chapter`, `read_chapter(source="source"`, "完整章节正文", "不是只写改动片段", "85-115"} {
+		if !strings.Contains(draftPayload.Next, want) {
+			t.Fatalf("draft next_step missing %q: %q", want, draftPayload.Next)
+		}
 	}
 }
 

@@ -98,6 +98,7 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 	if len(missingSourceRefs) > 0 {
 		issues = append(issues, fmt.Sprintf("source refs missing: %v", missingSourceRefs))
 	}
+	contract := buildAdaptationWordContract(t.store, plan, chapterPlan, a.Chapter, wordCount)
 	issues = append(issues, adaptationWordContractIssues(t.store, plan, chapterPlan, a.Chapter, wordCount)...)
 	passed := a.Passed && len(issues) == 0
 	digest := store.TextSHA256(content)
@@ -120,17 +121,20 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 		"word_count":               wordCount,
 		"issues":                   issues,
 		"source_refs":              sourceRefs,
-		"next_step":                adaptationCheckNextStep(passed),
+		"next_step":                adaptationCheckNextStep(passed, issues, contract, a.Chapter),
 		"chapter_plan":             chapterPlan,
 		"plan_granularity":         plan.Granularity,
 		"rewrite_policy":           plan.RewritePolicy,
-		"adaptation_word_contract": buildAdaptationWordContract(t.store, plan, chapterPlan, a.Chapter, wordCount),
+		"adaptation_word_contract": contract,
 	})
 }
 
-func adaptationCheckNextStep(passed bool) string {
+func adaptationCheckNextStep(passed bool, issues []string, contract adaptationWordContract, chapter int) string {
 	if passed {
 		return "改编校验通过：可以继续 check_consistency（如尚未执行）并 commit_chapter。"
+	}
+	if repair := adaptationWordContractRepairStep(contract, issues, chapter); repair != "" {
+		return "改编校验失败：" + repair + " 修正后重新调用 check_adaptation。"
 	}
 	return "改编校验失败：先按 issues 修正草稿，再重新调用 check_adaptation。"
 }

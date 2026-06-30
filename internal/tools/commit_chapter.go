@@ -359,6 +359,11 @@ func (t *CommitChapterTool) ensureAdaptationGate(chapter int, content string) er
 	}
 	wordCount := len([]rune(content))
 	if issues := adaptationWordContractIssues(t.store, plan, chapterPlan, chapter, wordCount); len(issues) > 0 {
+		contract := buildAdaptationWordContract(t.store, plan, chapterPlan, chapter, wordCount)
+		repair := adaptationWordContractRepairStep(contract, issues, chapter)
+		if repair != "" {
+			return fmt.Errorf("改编项目提交被拒：%s。%s: %w", issues[0], repair, errs.ErrToolPrecondition)
+		}
 		return fmt.Errorf("改编项目提交被拒：%s: %w", issues[0], errs.ErrToolPrecondition)
 	}
 	digest := store.TextSHA256(content)

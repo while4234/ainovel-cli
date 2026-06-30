@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/errs"
@@ -131,6 +132,47 @@ func adaptationWordContractIssues(st *store.Store, plan *domain.AdaptationPlan, 
 			contract.ProjectedTotalRunes, plan.TargetMinRunes, plan.TargetMaxRunes)}
 	}
 	return nil
+}
+
+func adaptationWordContractStatus(st *store.Store, chapter, actualRunes int) (adaptationWordContract, []string, bool) {
+	if st == nil || chapter <= 0 || !st.Adaptation.Active() {
+		return adaptationWordContract{}, nil, false
+	}
+	plan, err := st.Adaptation.LoadPlan()
+	if err != nil || plan == nil || plan.Status != domain.AdaptationPlanStatusConfirmed {
+		return adaptationWordContract{}, nil, false
+	}
+	chapterPlan, ok := findAdaptationChapterPlan(plan, chapter)
+	if !ok {
+		return adaptationWordContract{}, nil, false
+	}
+	contract := buildAdaptationWordContract(st, plan, chapterPlan, chapter, actualRunes)
+	return contract, adaptationWordContractIssues(st, plan, chapterPlan, chapter, actualRunes), true
+}
+
+func adaptationWordContractRepairStep(contract adaptationWordContract, issues []string, chapter int) string {
+	if len(issues) == 0 || !contract.Hard {
+		return ""
+	}
+	switch {
+	case contract.Scope != "total" && contract.TargetMinRunes > 0 && contract.ActualRunes < contract.TargetMinRunes:
+		return fmt.Sprintf(
+			"不要再次调用 commit_chapter，也不要只提交改动片段；preserve_details 不是只写改动片段。先调用 read_chapter(source=\"source\", chapter=%d) 读完整原文章节；再用 draft_chapter(mode=\"write\") 写入完整章节正文，把未受改编目标影响的原文细节/场景承接保留进草稿，只重写受影响部分；当前 %d 字，必须进入硬区间 %d-%d 字。",
+			chapter, contract.ActualRunes, contract.TargetMinRunes, contract.TargetMaxRunes,
+		)
+	case contract.Scope != "total" && contract.TargetMaxRunes > 0 && contract.ActualRunes > contract.TargetMaxRunes:
+		return fmt.Sprintf(
+			"不要再次调用 commit_chapter。先按 read_chapter(source=\"source\", chapter=%d) 对照原文，使用 draft_chapter(mode=\"write\") 重写完整章节并压缩到硬区间 %d-%d 字；当前 %d 字。",
+			chapter, contract.TargetMinRunes, contract.TargetMaxRunes, contract.ActualRunes,
+		)
+	case strings.Contains(issues[0], "当前总字数"):
+		return fmt.Sprintf(
+			"不要再次调用 commit_chapter。preserve_details 使用全书总字数硬契约，当前预计总字数 %d，必须回到 %d-%d；请重写当前完整章节以修正总量。",
+			contract.ProjectedTotalRunes, contract.TargetTotalMinRunes, contract.TargetTotalMaxRunes,
+		)
+	default:
+		return "不要再次调用 commit_chapter；先按 adaptation_word_contract 修正完整草稿并重新 check_adaptation。"
+	}
 }
 
 func projectedAdaptationTotalRunes(st *store.Store, chapter, actualRunes int) int {

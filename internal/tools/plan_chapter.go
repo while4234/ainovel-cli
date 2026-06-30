@@ -92,8 +92,33 @@ func (t *PlanChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 	return json.Marshal(map[string]any{
 		"planned":   true,
 		"chapter":   plan.Chapter,
-		"next_step": "立即调用 draft_chapter(chapter=本章节号, content=完整正文字符串) 写入正文，不要重复规划同一章",
+		"next_step": t.nextStepAfterPlan(plan.Chapter),
 	})
+}
+
+func (t *PlanChapterTool) nextStepAfterPlan(chapter int) string {
+	defaultStep := "立即调用 draft_chapter(chapter=本章节号, content=完整正文字符串) 写入正文，不要重复规划同一章"
+	if !t.store.Adaptation.Active() {
+		return defaultStep
+	}
+	plan, err := t.store.Adaptation.LoadPlan()
+	if err != nil || plan == nil || plan.Status != domain.AdaptationPlanStatusConfirmed {
+		return defaultStep
+	}
+	chapterPlan, ok := findAdaptationChapterPlan(plan, chapter)
+	if !ok {
+		return defaultStep
+	}
+	if plan.RewritePolicy == domain.AdaptationRewritePreserveDetails {
+		return fmt.Sprintf(
+			"改编 preserve_details 下一步：先按 source_chapters=%v 调用 read_chapter(source=\"source\", chapter=来源章号) 读取完整原文；再调用 draft_chapter(mode=\"write\") 写入完整章节正文。未受改编目标影响的原文细节要保留进草稿，不能只写改动片段；本章硬字数区间 %d-%d 字。",
+			chapterPlan.SourceChapters, chapterPlan.TargetMinRunes, chapterPlan.TargetMaxRunes,
+		)
+	}
+	return fmt.Sprintf(
+		"改编 full_rewrite 下一步：先按 source_chapters=%v 调用 read_chapter(source=\"source\", chapter=来源章号) 对照原文主线，再调用 draft_chapter(mode=\"write\") 写入完整新正文。",
+		chapterPlan.SourceChapters,
+	)
 }
 
 func decodeChapterPlanArgs(args json.RawMessage) (domain.ChapterPlan, error) {

@@ -168,6 +168,52 @@ func TestSubAgentGuard_NormalStopStillBlocks(t *testing.T) {
 	}
 }
 
+func TestSubAgentGuard_PreserveDetailsShortDraftRepairsBeforeCommit(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("init progress: %v", err)
+	}
+	if err := s.Progress.StartChapter(1); err != nil {
+		t.Fatalf("start chapter: %v", err)
+	}
+	if err := s.Adaptation.SavePlan(domain.AdaptationPlan{
+		Granularity:      domain.AdaptationGranularityChapter,
+		RewritePolicy:    domain.AdaptationRewritePreserveDetails,
+		WordTolerance:    0.15,
+		SourceTotalRunes: 100,
+		TargetTotalRunes: 100,
+		TargetMinRunes:   85,
+		TargetMaxRunes:   115,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "目标章",
+			SourceChapters: []int{1},
+			SourceRunes:    100,
+			TargetRunes:    100,
+			TargetMinRunes: 85,
+			TargetMaxRunes: 115,
+		}},
+	}); err != nil {
+		t.Fatalf("save adaptation plan: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, strings.Repeat("短", 20)); err != nil {
+		t.Fatalf("save draft: %v", err)
+	}
+
+	d := NewWriterStopGuard(s)(context.Background(), agentcore.StopInfo{
+		TurnIndex: 1,
+		Message:   agentcore.Message{StopReason: agentcore.StopReasonStop},
+	})
+	if d.Allow || d.Escalate {
+		t.Fatalf("short draft should be blocked with repair message, got %#v", d)
+	}
+	for _, want := range []string{"低于 preserve_details 硬区间", "不要调用 commit_chapter", `read_chapter(source="source"`, "完整章节"} {
+		if !strings.Contains(d.InjectMessage, want) {
+			t.Fatalf("inject message missing %q: %q", want, d.InjectMessage)
+		}
+	}
+}
+
 // TestStopGuard_NonConsecutiveTurnResetsCounter 验证：两次 block 之间 TurnIndex
 // 不相邻（中间 LLM 做了 tool call 或用户 resume）时，consecutive 计数重置。
 func TestStopGuard_NonConsecutiveTurnResetsCounter(t *testing.T) {
