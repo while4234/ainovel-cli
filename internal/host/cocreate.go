@@ -96,6 +96,14 @@ const (
 	CoCreateProgressReply    = "reply"
 )
 
+const (
+	coCreateMaxAttempts = 3
+	coCreateMaxTokens   = 2048
+	coCreateTimeout     = 180 * time.Second
+)
+
+var coCreateRetrySleep = sleepBeforeCoCreateRetry
+
 // 四段式 XML 标签输出。XML 风格比方括号 marker 更鲁棒——Claude/GPT 训练数据里
 // 大量 <thinking>...</thinking> 这类格式，模型几乎不会把 <reply> 改写成 <REWRITE>
 // 或其他变体；闭合标签也让流式中段截断更精确（不依赖找下一个 marker 来断尾）。
@@ -112,7 +120,7 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 	}
 
 	model := models.ForRole("thinking")
-	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, coCreateTimeout)
 	defer cancel()
 
 	msgs := []agentcore.Message{agentcore.SystemMsg(globalprompt.Apply(sysPrompt))}
@@ -130,6 +138,8 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 	}
 
 	var raw, thinking strings.Builder
+	var attempts int
+	var retryErrors []string
 
 	// 排查 "cocreate empty response" 等偶发问题需要看到模型实际返回什么。
 	// 每轮全程落盘到 <output>/meta/sessions/cocreate.jsonl，与正式创作的 session 日志同位。
@@ -142,6 +152,8 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 			Time:         time.Now(),
 			DurationMS:   time.Since(start).Milliseconds(),
 			InputHistory: history,
+			Attempts:     attempts,
+			RetryErrors:  retryErrors,
 			RawResponse:  raw.String(),
 			RawLen:       len([]rune(raw.String())),
 			Thinking:     thinking.String(),
@@ -153,12 +165,26 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 		})
 	}()
 
-	streamCh, err := model.GenerateStream(ctx, msgs, nil, agentcore.WithMaxTokens(2048))
+	var streamCh <-chan agentcore.StreamEvent
+	var streamed, done bool
+
+retry:
+	attempts++
+	raw.Reset()
+	thinking.Reset()
+	streamed = false
+	done = false
+
+	streamCh, err = model.GenerateStream(ctx, msgs, nil, agentcore.WithMaxTokens(coCreateMaxTokens))
 	if err != nil {
+		if ok, sleepErr := prepareCoCreateRetry(ctx, err, attempts, onProgress, &retryErrors); sleepErr != nil {
+			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", sleepErr)
+		} else if ok {
+			goto retry
+		}
 		return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", err)
 	}
 
-	var streamed bool
 	for ev := range streamCh {
 		switch ev.Type {
 		case agentcore.StreamEventThinkingDelta:
@@ -173,15 +199,36 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 				onProgress(CoCreateProgressReply, extractReplyPreview(raw.String()))
 			}
 		case agentcore.StreamEventDone:
+			done = true
 			if !streamed {
 				raw.WriteString(ev.Message.TextContent())
 			}
 		case agentcore.StreamEventError:
 			if ev.Err != nil {
+				if ok, sleepErr := prepareCoCreateRetry(ctx, ev.Err, attempts, onProgress, &retryErrors); sleepErr != nil {
+					return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", sleepErr)
+				} else if ok {
+					goto retry
+				}
 				return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", ev.Err)
 			}
-			return CoCreateReply{}, fmt.Errorf("cocreate generate failed")
+			streamErr := fmt.Errorf("cocreate generate failed: %w", agentcore.ErrProviderNetwork)
+			if ok, sleepErr := prepareCoCreateRetry(ctx, streamErr, attempts, onProgress, &retryErrors); sleepErr != nil {
+				return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", sleepErr)
+			} else if ok {
+				goto retry
+			}
+			return CoCreateReply{}, streamErr
 		}
+	}
+	if !done {
+		streamErr := fmt.Errorf("cocreate stream closed before done: %w", agentcore.ErrProviderNetwork)
+		if ok, sleepErr := prepareCoCreateRetry(ctx, streamErr, attempts, onProgress, &retryErrors); sleepErr != nil {
+			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", sleepErr)
+		} else if ok {
+			goto retry
+		}
+		return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", streamErr)
 	}
 
 	// Channel fallback：思考型模型（R1/GLM-Z1/QwQ 等）偶发把完整答案写进
@@ -196,6 +243,64 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 	}
 	reply, err = parseCoCreateResponse(rawText)
 	return reply, err
+}
+
+func prepareCoCreateRetry(ctx context.Context, err error, attempt int, onProgress func(kind, text string), retryErrors *[]string) (bool, error) {
+	if !shouldRetryCoCreate(ctx, err, attempt) {
+		return false, nil
+	}
+	if retryErrors != nil {
+		*retryErrors = append(*retryErrors, err.Error())
+	}
+	clearCoCreateProgress(onProgress)
+	if err := waitBeforeCoCreateRetry(ctx, attempt); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func shouldRetryCoCreate(ctx context.Context, err error, attempt int) bool {
+	if attempt >= coCreateMaxAttempts {
+		return false
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	return agentcore.IsFailoverEligible(err)
+}
+
+func clearCoCreateProgress(onProgress func(kind, text string)) {
+	if onProgress == nil {
+		return
+	}
+	onProgress(CoCreateProgressThinking, "")
+	onProgress(CoCreateProgressReply, "")
+}
+
+func waitBeforeCoCreateRetry(ctx context.Context, attempt int) error {
+	return coCreateRetrySleep(ctx, coCreateRetryDelay(attempt))
+}
+
+func coCreateRetryDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return time.Second
+	}
+	delay := time.Second << (attempt - 1)
+	if delay > 8*time.Second {
+		return 8 * time.Second
+	}
+	return delay
+}
+
+func sleepBeforeCoCreateRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func adaptSystemPrompt(st *store.Store) string {
@@ -243,6 +348,8 @@ type coCreateLogEntry struct {
 	Time         time.Time         `json:"time"`
 	DurationMS   int64             `json:"duration_ms"`
 	InputHistory []CoCreateMessage `json:"input_history"`
+	Attempts     int               `json:"attempts,omitempty"`
+	RetryErrors  []string          `json:"retry_errors,omitempty"`
 	RawResponse  string            `json:"raw_response"`
 	RawLen       int               `json:"raw_len"`
 	Thinking     string            `json:"thinking,omitempty"`
