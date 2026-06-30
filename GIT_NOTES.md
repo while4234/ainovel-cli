@@ -30,6 +30,11 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Change Log
 
+- 2026-06-30 pending `fix: choose adaptation mode before cocreate`: mode
+  selection for novel adaptation now happens immediately after source
+  preparation and before adaptation co-create. Validation passed for startup,
+  TUI, headless, host/adapt/flow, CLI parsing, and local/global build sync;
+  `internal/tools` still hit existing Windows TempDir cleanup failures only.
 - 2026-06-30 `3bb376f` `feat: stabilize adaptation source preparation`: pulled
   latest upstream code from GitHub.
 - 2026-06-30 `docs: record restart validation`: record successful local rebuild

@@ -61,7 +61,7 @@ func TestAdaptPreparationChapterEventContinuesListening(t *testing.T) {
 	}
 }
 
-func TestAdaptPreparationDoneEntersAdaptCoCreate(t *testing.T) {
+func TestAdaptPreparationDoneOpensModeSelectionBeforeCoCreate(t *testing.T) {
 	m := NewModel(&host.Host{}, nil, "")
 	m.adaptPreparation = newAdaptPreparationState(3, "source.txt", 120, 40, func() {})
 
@@ -82,11 +82,14 @@ func TestAdaptPreparationDoneEntersAdaptCoCreate(t *testing.T) {
 	if got.adaptPreparation != nil {
 		t.Fatalf("adapt preparation should close on done: %+v", got.adaptPreparation)
 	}
-	if got.cocreate == nil || !got.cocreate.adapt || got.cocreate.sourcePath != "source.txt" {
-		t.Fatalf("adapt co-create not started: %+v", got.cocreate)
+	if got.adaptConfirm == nil || got.adaptConfirm.sourcePath != "source.txt" {
+		t.Fatalf("adapt mode selection not opened: %+v", got.adaptConfirm)
 	}
-	if cmd == nil {
-		t.Fatal("done event should kick off co-create")
+	if got.cocreate != nil {
+		t.Fatalf("co-create should wait for mode selection: %+v", got.cocreate)
+	}
+	if cmd != nil {
+		t.Fatal("done event should not start co-create before mode selection")
 	}
 }
 

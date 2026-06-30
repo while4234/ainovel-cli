@@ -150,7 +150,7 @@ func (s *adaptPreparationState) refresh(contentW int) {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("Esc 关闭面板"))
 	default:
-		b.WriteString(okStyle.Render("源书分析完成，正在进入改编共创"))
+		b.WriteString(okStyle.Render("源书分析完成，正在进入模式选择"))
 	}
 
 	s.viewport.SetContent(b.String())

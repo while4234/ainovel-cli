@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -32,7 +33,7 @@ func (m startupMode) label() string {
 func (m startupMode) subtitle() string {
 	switch m {
 	case startupModeAdapt:
-		return "导入原文后进行改编共创"
+		return "导入原文后选择改编模式并开始"
 	case startupModeCoCreate:
 		return "先与 AI 对话澄清，再开始创作"
 	default:
@@ -43,7 +44,7 @@ func (m startupMode) subtitle() string {
 func placeholderForNewMode(mode startupMode) string {
 	switch mode {
 	case startupModeAdapt:
-		return "输入原小说路径，Enter 导入并进入改编共创"
+		return "输入原小说路径，Enter 导入并选择改编模式"
 	case startupModeCoCreate:
 		return "先输入你的核心想法，Enter 开始与 AI 共创"
 	default:
@@ -79,18 +80,21 @@ func errorText(err error) string {
 }
 
 type cocreateState struct {
-	session    *startup.CoCreateSession
-	stage      bool // true=阶段共创（运行中规划后续走向）；false=冷启动共创（启动前澄清需求）
-	adapt      bool // true=启动前小说改编共创
-	sourcePath string
-	awaiting   bool
-	reqID      int
-	cancel     context.CancelFunc // 取消当前 LLM 请求
-	deltaCh    chan cocreateStreamItem
-	doneCh     chan cocreateDoneMsg
-	convVP     viewport.Model
-	promptVP   viewport.Model
-	convFollow bool // true: 流式新内容自动滚到底；用户上滚后置 false 停止跟随
+	session            *startup.CoCreateSession
+	stage              bool // true=阶段共创（运行中规划后续走向）；false=冷启动共创（启动前澄清需求）
+	adapt              bool // true=启动前小说改编共创
+	sourcePath         string
+	adaptGranularity   string
+	adaptRewritePolicy string
+	adaptWordTolerance float64
+	awaiting           bool
+	reqID              int
+	cancel             context.CancelFunc // 取消当前 LLM 请求
+	deltaCh            chan cocreateStreamItem
+	doneCh             chan cocreateDoneMsg
+	convVP             viewport.Model
+	promptVP           viewport.Model
+	convFollow         bool // true: 流式新内容自动滚到底；用户上滚后置 false 停止跟随
 	// focusPrompt 决定 ↑↓/PgUp/PgDn/Home/End 滚哪一栏：false=左对话栏（默认），
 	// true=右创作指令栏。欢迎页已关鼠标上报（保留原生复制），右栏溢出靠 Tab 切焦点后键盘滚。
 	focusPrompt bool
@@ -120,8 +124,7 @@ const stageCoCreateOpener = "我先暂停一下，想和你一起规划接下来
 // 用户并未真打过，故不伪装成"你"的发言，改以系统行交代上下文（它仍以 stageCoCreateOpener
 // 发给 LLM，见 renderCoCreateConversationPanel 的 i==0 特判）。
 const stageCoCreateSystemLine = "已暂停创作，进入阶段共创 —— AI 会结合当前故事进度，和你一起规划接下来的走向。"
-const adaptCoCreateOpener = "我想基于这本小说做改编，请先根据原书分析帮我确认改编方向。"
-const adaptCoCreateSystemLine = "原书分析完成，进入改编共创 —— AI 会结合原书主线和章节事实，帮你确认改编目标。"
+const adaptCoCreateSystemLine = "原书分析和模式选择完成，进入改编共创 —— AI 会结合原书主线、章节事实和已选模式，帮你确认具体改编目标。"
 
 // newStageCoCreateState 创建阶段共创状态：seed 开场并标记 stage，使 runCoCreate 走
 // StageCoCreateStream、Ctrl+S 走 ResumeFromCoCreate。
@@ -132,10 +135,58 @@ func newStageCoCreateState() *cocreateState {
 }
 
 func newAdaptCoCreateState(sourcePath string) *cocreateState {
-	s := newCoCreateState(adaptCoCreateOpener)
+	return newAdaptCoCreateStateWithOptions(
+		sourcePath,
+		startup.DefaultAdaptationGranularity,
+		startup.DefaultAdaptationRewritePolicy,
+		startup.DefaultAdaptationWordTolerance,
+	)
+}
+
+func newAdaptCoCreateStateWithOptions(sourcePath, granularity, rewritePolicy string, wordTolerance float64) *cocreateState {
+	granularity = normalizeSelectedAdaptGranularity(granularity)
+	rewritePolicy = normalizeSelectedAdaptRewritePolicy(rewritePolicy)
+	if wordTolerance <= 0 {
+		wordTolerance = startup.DefaultAdaptationWordTolerance
+	}
+	s := newCoCreateState(adaptCoCreateOpener(granularity, rewritePolicy, wordTolerance))
 	s.adapt = true
 	s.sourcePath = strings.TrimSpace(sourcePath)
+	s.adaptGranularity = granularity
+	s.adaptRewritePolicy = rewritePolicy
+	s.adaptWordTolerance = wordTolerance
 	return s
+}
+
+func adaptCoCreateOpener(granularity, rewritePolicy string, wordTolerance float64) string {
+	return fmt.Sprintf(`我想基于这本小说做改编，已确认改编模式如下：
+
+granularity=%s
+rewrite_policy=%s
+word_tolerance=%.2f
+
+请基于原书分析帮我确认具体改编目标。不要再询问或改动 chapter/arc/free 与 full_rewrite/preserve_details 这两个模式选择。`,
+		granularity, rewritePolicy, wordTolerance)
+}
+
+func normalizeSelectedAdaptGranularity(value string) string {
+	value = strings.TrimSpace(value)
+	for _, choice := range adaptGranularityChoices {
+		if choice.value == value {
+			return value
+		}
+	}
+	return startup.DefaultAdaptationGranularity
+}
+
+func normalizeSelectedAdaptRewritePolicy(value string) string {
+	value = strings.TrimSpace(value)
+	for _, choice := range adaptRewriteChoices {
+		if choice.value == value {
+			return value
+		}
+	}
+	return startup.DefaultAdaptationRewritePolicy
 }
 
 func (s *cocreateState) appendUser(text string) {
@@ -178,9 +229,12 @@ func (s *cocreateState) suggestions() []string {
 func (s *cocreateState) buildPlan() (startup.Plan, error) {
 	if s.adapt {
 		return startup.PrepareAdaptNovel(startup.Request{
-			Mode:       startup.ModeAdaptNovel,
-			UserPrompt: s.draftPrompt(),
-			NovelPath:  s.sourcePath,
+			Mode:               startup.ModeAdaptNovel,
+			UserPrompt:         s.draftPrompt(),
+			NovelPath:          s.sourcePath,
+			AdaptGranularity:   s.adaptGranularity,
+			AdaptRewritePolicy: s.adaptRewritePolicy,
+			AdaptWordTolerance: s.adaptWordTolerance,
 		})
 	}
 	return s.session.BuildPlan()

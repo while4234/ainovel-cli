@@ -1,6 +1,7 @@
 package startup
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -18,7 +19,7 @@ func TestPrepareAdaptNovelDefaultsAndExplicitOptions(t *testing.T) {
 	if defaultPlan.AdaptGranularity != domain.AdaptationGranularityChapter {
 		t.Fatalf("default granularity=%s", defaultPlan.AdaptGranularity)
 	}
-	if defaultPlan.AdaptRewritePolicy != domain.AdaptationRewriteFullRewrite {
+	if defaultPlan.AdaptRewritePolicy != domain.AdaptationRewritePreserveDetails {
 		t.Fatalf("default rewrite policy=%s", defaultPlan.AdaptRewritePolicy)
 	}
 	if defaultPlan.AdaptWordTolerance != adapt.DefaultWordTolerance {
@@ -43,5 +44,19 @@ func TestPrepareAdaptNovelDefaultsAndExplicitOptions(t *testing.T) {
 	}
 	if explicitPlan.AdaptWordTolerance != 0.2 {
 		t.Fatalf("explicit tolerance=%v", explicitPlan.AdaptWordTolerance)
+	}
+}
+
+func TestDefaultAdaptationBriefIncludesSelectedContract(t *testing.T) {
+	brief := DefaultAdaptationBrief(domain.AdaptationGranularityArc, domain.AdaptationRewriteFullRewrite, 0.2)
+	for _, want := range []string{
+		"granularity=arc",
+		"rewrite_policy=full_rewrite",
+		"word_tolerance=0.20",
+		"## 主线保留规则",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Fatalf("brief missing %q:\n%s", want, brief)
+		}
 	}
 }

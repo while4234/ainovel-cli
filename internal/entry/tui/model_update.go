@@ -552,8 +552,9 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			sourcePath := m.adaptPreparation.source
 			m.adaptPreparation = nil
 			m.err = nil
-			m.cocreate = newAdaptCoCreateState(sourcePath)
-			return m, m.sendCoCreate(), true
+			m.adaptConfirm = newAdaptModeConfirmState(sourcePath)
+			m.textarea.Blur()
+			return m, nil, true
 		}
 		return m, listenAdaptEvent(msg.reqID, msg.ch), true
 	case exportDoneMsg:

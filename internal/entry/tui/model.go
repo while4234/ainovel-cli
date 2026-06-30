@@ -472,7 +472,7 @@ func (m *Model) inputHints() string {
 			return dimStyle.Render("Tab 切换启动模式 · 输入 / 搜索命令 · Enter 直接开始创作 · Esc 清空输入" + suffix)
 		}
 		if m.startupMode == startupModeAdapt {
-			return dimStyle.Render("Tab 切换启动模式 · 输入原小说路径 · Enter 导入并进入改编共创 · Esc 清空输入" + suffix)
+			return dimStyle.Render("Tab 切换启动模式 · 输入原小说路径 · Enter 导入并选择改编模式 · Esc 清空输入" + suffix)
 		}
 		return dimStyle.Render("Tab 切换启动模式 · 输入 / 搜索命令 · Enter 开始共创对话 · Esc 清空输入" + suffix)
 	}
@@ -753,12 +753,14 @@ func (m Model) handleCoCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(resumeFromCoCreate(m.runtime, draft), m.textarea.Focus())
 		}
 		if state.adapt {
-			m.adaptConfirm = newAdaptModeConfirmState(state)
-			m.cocreate = nil
-			m.err = nil
-			m.resizeTextarea()
+			plan, err := state.buildPlan()
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+			state.awaiting = true
 			m.textarea.Blur()
-			return m, nil
+			return m, startRuntime(m.runtime, plan)
 		}
 		// 冷启动共创：用整理好的创作指令开始创作。
 		plan, err := state.buildPlan()

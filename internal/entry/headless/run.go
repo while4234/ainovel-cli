@@ -65,15 +65,15 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 		}
 		granularity := opts.AdaptGranularity
 		if strings.TrimSpace(granularity) == "" {
-			granularity = domain.AdaptationGranularityChapter
+			granularity = startup.DefaultAdaptationGranularity
 		}
 		rewritePolicy := opts.AdaptRewritePolicy
 		if strings.TrimSpace(rewritePolicy) == "" {
-			rewritePolicy = domain.AdaptationRewriteFullRewrite
+			rewritePolicy = startup.DefaultAdaptationRewritePolicy
 		}
 		wordTolerance := opts.AdaptWordTolerance
 		if wordTolerance <= 0 {
-			wordTolerance = adapt.DefaultWordTolerance
+			wordTolerance = startup.DefaultAdaptationWordTolerance
 		}
 		plan, err := startup.PrepareAdaptNovel(startup.Request{
 			Mode:               startup.ModeAdaptNovel,
