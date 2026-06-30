@@ -60,6 +60,7 @@ type Model struct {
 	adaptPreparation *adaptPreparationState
 	help             *helpState
 	modelSwitch      *modelSwitchState
+	modelAdd         *modelAddState
 	report           *reportState
 	version          string
 	importer         *importState
@@ -611,6 +612,9 @@ func (m Model) View() string {
 	}
 	if m.simulator != nil {
 		return renderSimulationModal(m.width, m.height, m.simulator)
+	}
+	if m.modelAdd != nil {
+		return renderModelAddModal(m.width, m.height, m.modelAdd)
 	}
 
 	topBar := renderTopBar(m.snapshot, m.width, m.currentSpinnerFrame(), m.version)

@@ -9,6 +9,7 @@ import (
 const (
 	familyDeepSeek = "deepseek"
 	familyGPT      = "gpt"
+	familyGrok     = "grok"
 )
 
 //go:embed global-prompt-deepseek.md
@@ -16,6 +17,9 @@ var embeddedDeepSeekPrompt string
 
 //go:embed global-prompt-gpt.md
 var embeddedGPTPrompt string
+
+//go:embed global-prompt-grok.md
+var embeddedGrokPrompt string
 
 // Text returns the embedded global prompt template after trimming surrounding
 // whitespace. It keeps the historical default as the DeepSeek prompt.
@@ -30,6 +34,8 @@ func TextForModel(model string) string {
 	switch promptFamily(model) {
 	case familyGPT:
 		return strings.TrimSpace(embeddedGPTPrompt)
+	case familyGrok:
+		return strings.TrimSpace(embeddedGrokPrompt)
 	default:
 		return strings.TrimSpace(embeddedDeepSeekPrompt)
 	}
@@ -78,12 +84,16 @@ func Strip(systemPrompt string) string {
 func knownPrefixes() []string {
 	deepSeek := strings.TrimSpace(embeddedDeepSeekPrompt)
 	gpt := strings.TrimSpace(embeddedGPTPrompt)
-	prefixes := make([]string, 0, 2)
+	grok := strings.TrimSpace(embeddedGrokPrompt)
+	prefixes := make([]string, 0, 3)
 	if deepSeek != "" {
 		prefixes = append(prefixes, deepSeek)
 	}
 	if gpt != "" && gpt != deepSeek {
 		prefixes = append(prefixes, gpt)
+	}
+	if grok != "" && grok != deepSeek && grok != gpt {
+		prefixes = append(prefixes, grok)
 	}
 	sort.SliceStable(prefixes, func(i, j int) bool {
 		return len(prefixes[i]) > len(prefixes[j])
@@ -94,6 +104,10 @@ func knownPrefixes() []string {
 func promptFamily(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
 	switch {
+	case strings.Contains(model, "grok"):
+		return familyGrok
+	case strings.Contains(model, "xai"):
+		return familyGrok
 	case strings.Contains(model, "gpt"):
 		return familyGPT
 	case strings.Contains(model, "openai"):

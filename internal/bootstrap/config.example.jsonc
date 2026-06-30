@@ -2,7 +2,7 @@
   // 默认使用的 provider、model 和推理强度。
   // ★ provider 的值是下面 providers 里的一个 key 名（一根“指针”），不是协议名——
   //   改 provider 必须保证 providers 里有同名条目，否则启动会报“未配置凭证”。
-  //   运行时用 /model 面板切换会写回全局配置 ~/.ainovel/config.json。
+  //   运行时用 /model 面板切换，或用 /model add 添加模型，都会写回全局配置 ~/.ainovel/config.json。
   "provider": "openrouter",
   "model": "google/gemini-2.5-flash",
   // 可选。默认推理强度：off / low / medium / high / xhigh / max。
@@ -12,6 +12,7 @@
   // Provider 凭证库。key 自定义，用作上面 provider 字段引用的目标。
   // 已知 provider（openai/anthropic/gemini/openrouter/deepseek/qwen/glm/grok/mimo/ollama/bedrock）
   // 可省略 type；自定义代理必须显式声明 type 指明 API 协议。
+  // Grok 账号登录使用 auth:"grok_oauth"，token 存在 ~/.ainovel/auth/grok.json，不写入 config.json。
   "providers": {
     "openrouter": {
       "api_key": "sk-or-v1-xxx",
@@ -33,6 +34,14 @@
     "anthropic": {
       "api_key": "sk-ant-xxx",
       "models": ["claude-sonnet-4", "claude-opus-4"]
+    },
+    "grok-oauth": {
+      // /model add 选择 Grok 登录后会自动写入类似配置。
+      // base_url 留空时默认使用 https://api.x.ai/v1。
+      "type": "grok",
+      "auth": "grok_oauth",
+      "account_id": "default",
+      "models": ["grok-4.3-latest"]
     },
     "ollama": {
       // ollama / bedrock / 显式 type 的自定义代理可以省略 api_key

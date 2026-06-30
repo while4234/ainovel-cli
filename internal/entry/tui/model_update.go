@@ -28,6 +28,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return m.handleMouseMsg(msg)
 	default:
+		if next, cmd, handled := m.handleModelAddMsg(msg); handled {
+			return next, cmd
+		}
 		if next, cmd, handled := m.handleRuntimeMsg(msg); handled {
 			return next, cmd
 		}
@@ -68,6 +71,8 @@ func (m Model) handleOverlayKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return m.handleBlockingModalKey(msg, m.handleAdaptPreparationKey)
 	case m.help != nil:
 		return m.handleBlockingModalKey(msg, m.handleHelpKey)
+	case m.modelAdd != nil:
+		return m.handleBlockingModalKey(msg, m.handleModelAddKey)
 	case m.modelSwitch != nil:
 		return m.handleBlockingModalKey(msg, m.handleModelSwitchKey)
 	case m.report != nil:
@@ -398,7 +403,7 @@ func (m Model) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
-	if m.modelSwitch != nil || m.askState != nil {
+	if m.modelAdd != nil || m.modelSwitch != nil || m.askState != nil {
 		return m, nil
 	}
 	if pane, ok := m.paneAtMouse(msg.X, msg.Y); ok {

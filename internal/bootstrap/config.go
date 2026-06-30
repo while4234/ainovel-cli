@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -47,11 +48,13 @@ func CompactReserveTokens(window int) int {
 
 // ProviderConfig 定义单个 LLM 提供商的凭证。
 type ProviderConfig struct {
-	Type    string   `json:"type,omitempty"`     // API 协议类型（openai/anthropic/gemini），自定义代理时指定
-	API     string   `json:"api,omitempty"`      // OpenAI 协议 endpoint：chat（默认）/ responses
-	APIKey  string   `json:"api_key,omitempty"`  // API Key
-	BaseURL string   `json:"base_url,omitempty"` // API Base URL
-	Models  []string `json:"models,omitempty"`   // 可选模型列表，供 TUI 切换时展示
+	Type      string   `json:"type,omitempty"`       // API 协议类型（openai/anthropic/gemini），自定义代理时指定
+	Auth      string   `json:"auth,omitempty"`       // 认证模式：空/api_key/grok_oauth
+	AccountID string   `json:"account_id,omitempty"` // Grok OAuth 账号 ID；token 存在 ~/.ainovel/auth/grok.json
+	API       string   `json:"api,omitempty"`        // OpenAI 协议 endpoint：chat（默认）/ responses
+	APIKey    string   `json:"api_key,omitempty"`    // API Key
+	BaseURL   string   `json:"base_url,omitempty"`   // API Base URL
+	Models    []string `json:"models,omitempty"`     // 可选模型列表，供 TUI 切换时展示
 	// ExtraBody 透传给该 provider 每次请求的额外参数（如 temperature/top_p/min_p/
 	// presence_penalty，或厂商特有键如 nvidia 开 think 的 chat_template_kwargs）。
 	// OpenAI 兼容端逐字并入请求体（即 extra_body 约定）；值由用户自负其责。
@@ -61,12 +64,17 @@ type ProviderConfig struct {
 	Extra map[string]any `json:"extra,omitempty"`
 }
 
+const ProviderAuthGrokOAuth = "grok_oauth"
+
 // RequiresAPIKey 返回该 provider 是否必须显式配置 api_key。
 // 约定：
 // 1. ollama / bedrock 允许无 key；
 // 2. 显式指定 Type 的配置视为自定义代理，允许无 key；
 // 3. 其他 provider 默认要求 key，保持对官方托管接口的保守校验。
 func (pc ProviderConfig) RequiresAPIKey(name string) bool {
+	if strings.EqualFold(strings.TrimSpace(pc.Auth), ProviderAuthGrokOAuth) {
+		return false
+	}
 	switch name {
 	case "ollama", "bedrock":
 		return false
@@ -276,6 +284,8 @@ func validateProviderConfigText(name string, pc ProviderConfig) error {
 		value string
 	}{
 		{label: fmt.Sprintf("provider %q type", name), value: pc.Type},
+		{label: fmt.Sprintf("provider %q auth", name), value: pc.Auth},
+		{label: fmt.Sprintf("provider %q account_id", name), value: pc.AccountID},
 		{label: fmt.Sprintf("provider %q api", name), value: pc.API},
 		{label: fmt.Sprintf("provider %q api_key", name), value: pc.APIKey},
 		{label: fmt.Sprintf("provider %q base_url", name), value: pc.BaseURL},
@@ -295,7 +305,31 @@ func validateProviderConfigText(name string, pc ProviderConfig) error {
 	default:
 		return fmt.Errorf("provider %q api must be chat or responses: %w", name, errs.ErrConfig)
 	}
+	switch auth := strings.ToLower(strings.TrimSpace(pc.Auth)); auth {
+	case "", "api_key":
+	case ProviderAuthGrokOAuth:
+		providerType, err := pc.ProviderType(name)
+		if err != nil {
+			return fmt.Errorf("provider %q auth %q 无法解析 provider type: %w", name, auth, err)
+		}
+		if strings.ToLower(strings.TrimSpace(providerType)) != "grok" {
+			return fmt.Errorf("provider %q auth %q only supports grok type: %w", name, auth, errs.ErrConfig)
+		}
+		if pc.BaseURL != "" && !isGrokOAuthBaseURL(pc.BaseURL) {
+			return fmt.Errorf("provider %q grok_oauth base_url must be https://api.x.ai/v1 or empty: %w", name, errs.ErrConfig)
+		}
+	default:
+		return fmt.Errorf("provider %q auth must be api_key or grok_oauth: %w", name, errs.ErrConfig)
+	}
 	return nil
+}
+
+func isGrokOAuthBaseURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme == "https" && strings.EqualFold(parsed.Hostname(), "api.x.ai")
 }
 
 func validateConfigText(name, value string) error {

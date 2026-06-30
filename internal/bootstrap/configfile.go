@@ -164,6 +164,12 @@ func mergeConfig(base, overlay Config) Config {
 			if v.Type != "" {
 				existing.Type = v.Type
 			}
+			if v.Auth != "" {
+				existing.Auth = v.Auth
+			}
+			if v.AccountID != "" {
+				existing.AccountID = v.AccountID
+			}
 			if v.API != "" {
 				existing.API = v.API
 			}

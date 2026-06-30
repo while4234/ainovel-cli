@@ -66,12 +66,28 @@ func commandRegistryInstance() commandRegistry {
 		{
 			Name:        "model",
 			Group:       "system",
-			Usage:       "/model [role]",
-			Description: "切换默认或角色模型",
+			Usage:       "/model [role] | /model add [role]",
+			Description: "切换或添加默认/角色模型",
 			AutoExecute: true,
 			Run: func(m Model, args []string) (tea.Model, tea.Cmd) {
 				roleHint := ""
 				if len(args) > 0 {
+					if strings.EqualFold(args[0], "add") {
+						if len(args) > 1 {
+							roleHint = args[1]
+							if normalizeRoleKey(roleHint) == "" {
+								m.applyEvent(host.Event{
+									Time: time.Now(), Category: "ERROR", Summary: "未知角色：" + roleHint, Level: "error",
+								})
+								m.refreshEventViewport()
+								return m, nil
+							}
+						}
+						m.modelAdd = newModelAddState(m.runtime, roleHint)
+						m.modelSwitch = nil
+						m.textarea.Blur()
+						return m, nil
+					}
 					roleHint = args[0]
 					if normalizeRoleKey(roleHint) == "" {
 						m.applyEvent(host.Event{

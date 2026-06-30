@@ -259,6 +259,10 @@ docker compose run --rm ainovel --headless --prompt "写一本悬疑短篇"
 
 也可以手动创建配置文件，参考仓库根目录的 `config.example.jsonc`。首次引导也会复制一份到 `~/.ainovel/config.example.jsonc`，方便本机离线查看。
 
+初始化完成后也可以在 TUI 里继续添加模型：输入 `/model add [role]`，或打开 `/model [role]` 面板后按 `a`。添加向导支持给已有 provider 增加模型、新增常见厂商 provider、新增 OpenAI/Anthropic/Gemini/Grok 协议的自定义中转 API，以及 Grok 账号登录。新增成功后会立即切换当前选择的 role/default，并写回全局 `~/.ainovel/config.json`。
+
+Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可用，可以把浏览器回调 URL 或 `?code=...&state=...` 查询串粘贴回向导。access/refresh token 只保存在本机 `~/.ainovel/auth/grok.json`，`config.json` 只记录 `type:"grok"`、`auth:"grok_oauth"` 和 `account_id`。
+
 ```jsonc
 {
   "provider": "openrouter",
@@ -296,11 +300,13 @@ docker compose run --rm ainovel --headless --prompt "写一本悬疑短篇"
 
 > ⚠️ `provider`（以及 `roles.*.provider`）的值是 `providers` 里的 **key 名**——一根指针，不是协议名。项目级若把 `provider` 切到一个全局 `providers` 里不存在的账号，必须在项目级同时补上该账号的凭证（`api_key` / `base_url`），否则启动会报“未配置凭证”。
 
-`providers.<name>.models` 为可选字段，用于声明该 provider 下允许在 TUI `/model` 面板中切换的模型列表；如果未配置，系统会回退为当前配置文件里已经出现过的该 provider 模型。
+`providers.<name>.models` 为可选字段，用于声明该 provider 下允许在 TUI `/model` 面板中切换的模型列表；如果未配置，系统会回退为当前配置文件里已经出现过的该 provider 模型。运行时通过 `/model add` 添加的模型也会追加到这里。
 
-`reasoning_effort` 为默认推理强度，可选值为 `off` / `low` / `medium` / `high` / `xhigh` / `max`；省略或空字符串表示沿用模型/provider 默认。`roles.<role>.reasoning_effort` 可按角色覆盖，未配置时继承顶层 `reasoning_effort`。TUI `/model` 面板切换 provider、model 或推理强度后，会写回全局配置 `~/.ainovel/config.json`。
+`reasoning_effort` 为默认推理强度，可选值为 `off` / `low` / `medium` / `high` / `xhigh` / `max`；省略或空字符串表示沿用模型/provider 默认。`roles.<role>.reasoning_effort` 可按角色覆盖，未配置时继承顶层 `reasoning_effort`。TUI `/model` 面板切换 provider、model、推理强度，或 `/model add` 添加并切换模型后，都会写回全局配置 `~/.ainovel/config.json`。
 
 `providers.<name>.api` 仅对 `type: "openai"` 或内置 `openai` 生效，用于选择 OpenAI 协议 endpoint：`chat`（默认，`/v1/chat/completions`）或 `responses`（`/v1/responses`）。Codex 类代理通常需要配置为 `responses`。
+
+`providers.<name>.auth: "grok_oauth"` 表示使用 Grok 账号登录 token；该 provider 必须是 `type: "grok"`，可省略 `api_key`，`base_url` 留空时默认使用 `https://api.x.ai/v1`。
 
 `providers.<name>.extra` 为 provider 级配置，会传给底层 HTTP 客户端，适合配置 `user_agent`、`headers`、`anthropic_beta` 等代理识别字段；`providers.<name>.extra_body` 才是请求体扩展参数，两者不要混用。
 

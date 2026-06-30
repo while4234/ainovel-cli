@@ -74,3 +74,45 @@ func TestConfigResolveReasoningEffort(t *testing.T) {
 		t.Errorf("空默认下 writer 覆盖应生效，得 %q", got)
 	}
 }
+
+func TestGrokOAuthProviderAllowsMissingAPIKey(t *testing.T) {
+	cfg := Config{
+		Provider:  "grok-oauth",
+		ModelName: "grok-4.3-latest",
+		Providers: map[string]ProviderConfig{
+			"grok-oauth": {
+				Type:      "grok",
+				Auth:      ProviderAuthGrokOAuth,
+				AccountID: "default",
+				Models:    []string{"grok-4.3-latest"},
+			},
+		},
+	}
+
+	if cfg.Providers["grok-oauth"].RequiresAPIKey("grok-oauth") {
+		t.Fatal("grok_oauth provider should not require api_key in config")
+	}
+	if err := cfg.ValidateBase(); err != nil {
+		t.Fatalf("Grok OAuth config should validate without api_key: %v", err)
+	}
+	if got := cfg.CandidateModels("grok-oauth"); len(got) != 1 || got[0] != "grok-4.3-latest" {
+		t.Fatalf("grok candidates = %#v", got)
+	}
+}
+
+func TestGrokOAuthProviderRejectsNonGrokType(t *testing.T) {
+	cfg := Config{
+		Provider:  "xai-proxy",
+		ModelName: "grok-4.3-latest",
+		Providers: map[string]ProviderConfig{
+			"xai-proxy": {
+				Type: "openai",
+				Auth: ProviderAuthGrokOAuth,
+			},
+		},
+	}
+
+	if err := cfg.ValidateBase(); err == nil {
+		t.Fatal("grok_oauth should require provider type grok")
+	}
+}

@@ -7,6 +7,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/grokauth"
 )
 
 type modelRuntime interface {
@@ -16,7 +18,12 @@ type modelRuntime interface {
 	AvailableThinking(role string) []agentcore.ThinkingLevel
 	CurrentThinking(role string) string
 	SwitchModel(role, provider, model string) error
+	AddProviderModel(role, providerName string, providerConfig bootstrap.ProviderConfig, model string) error
 	SetRoleThinking(role, level string) error
+	StartGrokLogin(accountID, accountName string) (grokauth.LoginStart, error)
+	PollGrokLogin() (grokauth.LoginPoll, error)
+	CompleteGrokLogin(callbackInput string) (grokauth.AuthStatus, error)
+	GrokLoginStatus(accountID string) grokauth.AuthStatus
 }
 
 type modelSwitchFocus int
@@ -282,6 +289,13 @@ func (m Model) handleModelSwitchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.modelSwitch = nil
 		return m, tea.Batch(m.textarea.Focus(), fetchSnapshot(m.runtime))
+	case tea.KeyRunes:
+		if strings.EqualFold(msg.String(), "a") {
+			m.modelAdd = newModelAddState(m.runtime, state.role())
+			m.modelSwitch = nil
+			return m, nil
+		}
+		return m, nil
 	default:
 		return m, nil
 	}
@@ -304,7 +318,7 @@ func renderModelSwitchBar(width int, state *modelSwitchState) string {
 	hint := lipgloss.NewStyle().
 		Foreground(colorDim).
 		Italic(true).
-		Render("Tab 切字段   ←→ 切选项   Enter 应用   Esc 取消")
+		Render("Tab 切字段   ←→ 切选项   a 添加模型   Enter 应用   Esc 取消")
 	lines := []string{
 		row1,
 		row2,

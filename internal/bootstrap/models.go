@@ -13,6 +13,9 @@ import (
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
+	"github.com/voocel/ainovel-cli/internal/grokauth"
+	"github.com/voocel/litellm"
+	"github.com/voocel/litellm/provider/grok"
 )
 
 // 长输出 + 长 ctx 场景下，reasoning-aware provider（mimo / deepseek-r1 等）
@@ -171,6 +174,15 @@ func (ms *ModelSet) CurrentSelection(role string) (provider, model string, expli
 	return provider, model, false
 }
 
+// RegisterProvider updates the ModelSet config snapshot so a later Swap can
+// instantiate provider/model pairs added while the TUI is already running.
+func (ms *ModelSet) RegisterProvider(provider string, pc ProviderConfig) {
+	if ms.config.Providers == nil {
+		ms.config.Providers = make(map[string]ProviderConfig)
+	}
+	ms.config.Providers[provider] = pc
+}
+
 // Swap 切换默认模型或指定角色模型。
 // role 为空或 "default" 时切换默认模型；其他角色切换为显式覆盖。
 func (ms *ModelSet) Swap(role, provider, model string) error {
@@ -277,6 +289,17 @@ func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache m
 	if err != nil {
 		return nil, fmt.Errorf("解析 provider 类型失败: %w", err)
 	}
+	if strings.EqualFold(strings.TrimSpace(pc.Auth), ProviderAuthGrokOAuth) {
+		if strings.ToLower(strings.TrimSpace(providerType)) != "grok" {
+			return nil, fmt.Errorf("provider %s auth %q requires grok type: %w", providerKey, pc.Auth, errs.ErrConfig)
+		}
+		m, err := createGrokOAuthModel(providerKey, model, pc)
+		if err != nil {
+			return nil, err
+		}
+		cache[cacheKey] = m
+		return m, nil
+	}
 	providerExtra := cloneMap(pc.Extra)
 	if pc.API != "" {
 		if providerExtra == nil {
@@ -298,6 +321,74 @@ func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache m
 	wrapped := globalprompt.WrapModel(m)
 	cache[cacheKey] = wrapped
 	return wrapped, nil
+}
+
+func createGrokOAuthModel(providerKey, model string, pc ProviderConfig) (agentcore.ChatModel, error) {
+	headers, err := headersFromProviderExtra(pc.Extra)
+	if err != nil {
+		return nil, fmt.Errorf("provider %s extra.headers: %w", providerKey, err)
+	}
+	baseURL := strings.TrimSpace(pc.BaseURL)
+	if baseURL == "" {
+		baseURL = grokauth.DefaultBaseURL
+	}
+	provider, err := grok.New(grok.Config{
+		APIKeyFunc: func(ctx context.Context) (string, error) {
+			credentials, err := grokauth.ResolveRuntimeCredentials(ctx, pc.AccountID)
+			if err != nil {
+				return "", err
+			}
+			return credentials.APIKey, nil
+		},
+		BaseURL:                     baseURL,
+		Headers:                     headers,
+		UserAgent:                   stringFromProviderExtra(pc.Extra, "user_agent"),
+		AllowUnknownProviderOptions: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("provider %s (grok oauth): %w: %w", providerKey, errs.ErrProvider, err)
+	}
+	client, err := litellm.New(provider, litellm.WithStreamIdleTimeout(streamIdleTimeout))
+	if err != nil {
+		return nil, fmt.Errorf("provider %s (grok oauth): %w: %w", providerKey, errs.ErrProvider, err)
+	}
+	return globalprompt.WrapModel(llm.NewLiteLLMAdapter(model, client)), nil
+}
+
+func headersFromProviderExtra(extra map[string]any) (map[string]string, error) {
+	raw, ok := extra["headers"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	switch headers := raw.(type) {
+	case map[string]string:
+		out := make(map[string]string, len(headers))
+		for key, value := range headers {
+			out[key] = value
+		}
+		return out, nil
+	case map[string]any:
+		out := make(map[string]string, len(headers))
+		for key, value := range headers {
+			text, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("%q must be a string", key)
+			}
+			out[key] = text
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("must be an object")
+	}
+}
+
+func stringFromProviderExtra(extra map[string]any, key string) string {
+	value, ok := extra[key]
+	if !ok {
+		return ""
+	}
+	text, _ := value.(string)
+	return text
 }
 
 type failoverModel struct {

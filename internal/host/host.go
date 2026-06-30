@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/agents/ctxpack"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/exp"
 	"github.com/voocel/ainovel-cli/internal/host/flow"
@@ -965,6 +967,70 @@ func (h *Host) CurrentModelSelection(role string) (string, string, bool) {
 func (h *Host) SwitchModel(role, provider, model string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.switchModelLocked(role, provider, model)
+}
+
+func (h *Host) AddProviderModel(role, providerName string, providerConfig bootstrap.ProviderConfig, model string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	providerName = strings.TrimSpace(providerName)
+	model = strings.TrimSpace(model)
+	if providerName == "" || model == "" {
+		return fmt.Errorf("provider and model are required")
+	}
+	if !validModelRole(role) {
+		return fmt.Errorf("unknown role %q", role)
+	}
+	candidate := h.cfg
+	candidate.Providers = cloneProviderConfigs(h.cfg.Providers)
+	if existing, ok := h.cfg.Providers[providerName]; ok {
+		if !providerConfigCanAddModel(existing, providerConfig) {
+			return fmt.Errorf("provider %q already exists; use the existing provider flow to add models", providerName)
+		}
+		providerConfig = existing
+	} else {
+		if _, err := providerConfig.ProviderType(providerName); err != nil {
+			return err
+		}
+		candidate.Providers[providerName] = providerConfig
+	}
+	candidate.RememberModelCandidate(providerName, model)
+	providerConfig = candidate.Providers[providerName]
+	if err := validateAddedProviderModel(candidate, role, providerName, providerConfig, model); err != nil {
+		return err
+	}
+	h.cfg = candidate
+	h.models.RegisterProvider(providerName, providerConfig)
+	if err := h.switchModelLocked(role, providerName, model); err != nil {
+		return err
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("模型已添加：%s/%s", providerName, model),
+		Level:    "info",
+	})
+	return nil
+}
+
+func (h *Host) StartGrokLogin(accountID, accountName string) (grokauth.LoginStart, error) {
+	return grokauth.StartLogin(accountID, accountName)
+}
+
+func (h *Host) PollGrokLogin() (grokauth.LoginPoll, error) {
+	return grokauth.PollLogin(context.Background())
+}
+
+func (h *Host) CompleteGrokLogin(callbackInput string) (grokauth.AuthStatus, error) {
+	return grokauth.CompleteLogin(context.Background(), callbackInput)
+}
+
+func (h *Host) GrokLoginStatus(accountID string) grokauth.AuthStatus {
+	return grokauth.GetStatus(accountID)
+}
+
+func (h *Host) switchModelLocked(role, provider, model string) error {
 	if provider == "" || model == "" {
 		return fmt.Errorf("provider and model are required")
 	}
@@ -1031,6 +1097,54 @@ func (h *Host) SwitchModel(role, provider, model string) error {
 		Level:    "info",
 	})
 	return nil
+}
+
+func providerConfigCanAddModel(existing, incoming bootstrap.ProviderConfig) bool {
+	if providerConfigIsEmpty(incoming) {
+		return true
+	}
+	existing.Models = nil
+	incoming.Models = nil
+	return reflect.DeepEqual(existing, incoming)
+}
+
+func providerConfigIsEmpty(pc bootstrap.ProviderConfig) bool {
+	return pc.Type == "" &&
+		pc.Auth == "" &&
+		pc.AccountID == "" &&
+		pc.API == "" &&
+		pc.APIKey == "" &&
+		pc.BaseURL == "" &&
+		len(pc.Models) == 0 &&
+		len(pc.ExtraBody) == 0 &&
+		len(pc.Extra) == 0
+}
+
+func cloneProviderConfigs(providers map[string]bootstrap.ProviderConfig) map[string]bootstrap.ProviderConfig {
+	out := make(map[string]bootstrap.ProviderConfig, len(providers)+1)
+	for name, provider := range providers {
+		out[name] = provider
+	}
+	return out
+}
+
+func validModelRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "", "default", "coordinator", "architect", "writer", "editor":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateAddedProviderModel(cfg bootstrap.Config, role, provider string, pc bootstrap.ProviderConfig, model string) error {
+	cfg.Provider = provider
+	cfg.ModelName = model
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]bootstrap.ProviderConfig)
+	}
+	cfg.Providers[provider] = pc
+	return cfg.ValidateBase()
 }
 
 // concreteThinkingRoles 是可应用推理强度的具体角色（与 agents.ApplyThinking 路由一致）。

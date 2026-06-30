@@ -42,11 +42,46 @@ func TestApplyForModelSelectsGPTPrompt(t *testing.T) {
 	}
 }
 
+func TestApplyForModelSelectsGrokPrompt(t *testing.T) {
+	grokPrefix := TextForModel("xai/grok-4.3-latest")
+	deepSeekPrefix := TextForModel("deepseek/deepseek-v4-pro")
+	gptPrefix := TextForModel("openai/gpt-5.5")
+	if grokPrefix == "" {
+		t.Fatal("Grok global prompt must not be empty")
+	}
+	if grokPrefix == deepSeekPrefix || grokPrefix == gptPrefix {
+		t.Fatal("Grok prompt should be distinct from DeepSeek/GPT prompts")
+	}
+
+	got := ApplyForModel("grok-oauth/grok-4.3-latest", "role prompt")
+
+	if !strings.HasPrefix(got, grokPrefix+"\n\n") {
+		t.Fatalf("Grok prompt was not selected:\n%s", got)
+	}
+	if body := Strip(got); body != "role prompt" {
+		t.Fatalf("global prompt should strip back to the role prompt, got %q", body)
+	}
+}
+
 func TestApplyForModelReplacesExistingGlobalPrompt(t *testing.T) {
 	deepSeekPrompt := ApplyForModel("deepseek/deepseek-v4-pro", "role prompt")
 
 	got := ApplyForModel("openai/gpt-5.5", deepSeekPrompt)
 	wantPrefix := TextForModel("openai/gpt-5.5")
+
+	if !strings.HasPrefix(got, wantPrefix+"\n\n") {
+		t.Fatalf("model switch should replace the existing prefix:\n%s", got)
+	}
+	if strings.Count(got, "role prompt") != 1 {
+		t.Fatalf("role prompt should remain exactly once:\n%s", got)
+	}
+}
+
+func TestApplyForModelReplacesDeepSeekWithGrokPrompt(t *testing.T) {
+	deepSeekPrompt := ApplyForModel("deepseek/deepseek-v4-pro", "role prompt")
+
+	got := ApplyForModel("xai/grok-4.3-latest", deepSeekPrompt)
+	wantPrefix := TextForModel("xai/grok-4.3-latest")
 
 	if !strings.HasPrefix(got, wantPrefix+"\n\n") {
 		t.Fatalf("model switch should replace the existing prefix:\n%s", got)
