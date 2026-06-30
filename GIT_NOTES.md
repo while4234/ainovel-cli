@@ -26,14 +26,15 @@ intentional changes are committed and pushed to the configured GitHub remote
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: has known untracked local workspace directory `ds_xfk/`
 - Validation: latest pull, compile-only tests, local CLI build, and
-  cross-directory PATH smoke succeeded on 2026-06-30
+  cross-directory PATH/shim smoke succeeded on 2026-06-30
 
 ## Change Log
 
 - 2026-06-30 `docs: record global CLI sync`: rebuild
   `D:\ainovel\ainovel-cli.exe` from `7bafcc6`, add `D:\ainovel` to the current
-  user's PATH, and verify `ainovel-cli --version` from outside the repo in both
-  PowerShell and cmd.
+  user's PATH, install `D:\grok\bin\ainovel-cli.cmd` for already-opened PATH
+  environments, and verify `ainovel-cli --version` from outside the repo in
+  both PowerShell and cmd.
 - 2026-06-30 `7bafcc6` `fix: scope adaptation writer guidance`: pulled latest
   upstream code from GitHub and rebuilt the local runtime executable.
 - 2026-06-30 `1dd5d60` `fix: stabilize retries and TUI input rendering`: shared
