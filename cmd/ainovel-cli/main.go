@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/voocel/ainovel-cli/assets"
@@ -103,7 +104,13 @@ func runWithConfig(cfg bootstrap.Config, opts cliOptions, args []string) {
 		if err != nil {
 			die("error: %v", err)
 		}
-		if err := headless.Run(cfg, bundle, headless.Options{Prompt: prompt, AdaptPath: opts.AdaptPath}); err != nil {
+		if err := headless.Run(cfg, bundle, headless.Options{
+			Prompt:             prompt,
+			AdaptPath:          opts.AdaptPath,
+			AdaptGranularity:   opts.AdaptGranularity,
+			AdaptRewritePolicy: opts.AdaptRewritePolicy,
+			AdaptWordTolerance: opts.AdaptWordTolerance,
+		}); err != nil {
 			die("error: %v", err)
 		}
 		return
@@ -117,14 +124,17 @@ func runWithConfig(cfg bootstrap.Config, opts cliOptions, args []string) {
 }
 
 type cliOptions struct {
-	ConfigPath    string
-	Headless      bool
-	Prompt        string
-	PromptFile    string
-	AdaptPath     string
-	Version       bool
-	Update        bool
-	UpdateVersion string
+	ConfigPath         string
+	Headless           bool
+	Prompt             string
+	PromptFile         string
+	AdaptPath          string
+	AdaptGranularity   string
+	AdaptRewritePolicy string
+	AdaptWordTolerance float64
+	Version            bool
+	Update             bool
+	UpdateVersion      string
 }
 
 // parseCLIOptions 提取 CLI flag，返回选项和剩余参数。
@@ -181,6 +191,28 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 			}
 			opts.AdaptPath = argv[i+1]
 			i++
+		case "--adapt-granularity":
+			if i+1 >= len(argv) {
+				return opts, nil, fmt.Errorf("--adapt-granularity 缺少值")
+			}
+			opts.AdaptGranularity = argv[i+1]
+			i++
+		case "--adapt-rewrite-policy":
+			if i+1 >= len(argv) {
+				return opts, nil, fmt.Errorf("--adapt-rewrite-policy 缺少值")
+			}
+			opts.AdaptRewritePolicy = argv[i+1]
+			i++
+		case "--adapt-word-tolerance":
+			if i+1 >= len(argv) {
+				return opts, nil, fmt.Errorf("--adapt-word-tolerance 缺少值")
+			}
+			v, err := strconv.ParseFloat(argv[i+1], 64)
+			if err != nil || v <= 0 {
+				return opts, nil, fmt.Errorf("--adapt-word-tolerance 必须是大于 0 的数字")
+			}
+			opts.AdaptWordTolerance = v
+			i++
 		default:
 			args = append(args, argv[i])
 		}
@@ -200,7 +232,34 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 	if opts.AdaptPath != "" && opts.Prompt == "" && opts.PromptFile == "" {
 		return opts, nil, fmt.Errorf("--adapt 需要同时提供 --prompt 或 --prompt-file 作为改编 brief")
 	}
+	if opts.AdaptPath == "" && (opts.AdaptGranularity != "" || opts.AdaptRewritePolicy != "" || opts.AdaptWordTolerance > 0) {
+		return opts, nil, fmt.Errorf("--adapt-granularity/--adapt-rewrite-policy/--adapt-word-tolerance 只能与 --adapt 一起使用")
+	}
+	if opts.AdaptGranularity != "" && !validAdaptGranularity(opts.AdaptGranularity) {
+		return opts, nil, fmt.Errorf("--adapt-granularity 可选 chapter/arc/free")
+	}
+	if opts.AdaptRewritePolicy != "" && !validAdaptRewritePolicy(opts.AdaptRewritePolicy) {
+		return opts, nil, fmt.Errorf("--adapt-rewrite-policy 可选 full_rewrite/preserve_details")
+	}
 	return opts, args, nil
+}
+
+func validAdaptGranularity(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "chapter", "arc", "free":
+		return true
+	default:
+		return false
+	}
+}
+
+func validAdaptRewritePolicy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "full_rewrite", "preserve_details":
+		return true
+	default:
+		return false
+	}
 }
 
 func versionInfo() buildversion.Info {

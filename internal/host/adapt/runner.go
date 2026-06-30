@@ -3,6 +3,7 @@ package adapt
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
+
+const DefaultWordTolerance = 0.15
 
 type Deps struct {
 	Store   *store.Store
@@ -229,8 +232,33 @@ func structuredCallOptions(stage Stage, current, total int, emit func(Stage, int
 }
 
 func PrepareRun(ctx context.Context, deps Deps, brief string) (*domain.AdaptationPlan, error) {
-	brief = strings.TrimSpace(brief)
-	if brief == "" {
+	proposal, err := BuildAdaptationProposal(deps, ProposalOptions{
+		Brief:         brief,
+		Granularity:   inferGranularity(brief),
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ConfirmAdaptationProposal(ctx, deps, *proposal)
+}
+
+func BuildPlanFromBrief(brief string, reports []domain.AdaptationSourceReport) domain.AdaptationPlan {
+	return buildPlanFromInputs(ProposalOptions{
+		Brief:         brief,
+		Granularity:   inferGranularity(brief),
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}, reports, nil, domain.AdaptationPlanStatusConfirmed)
+}
+
+func BuildAdaptationProposal(deps Deps, opts ProposalOptions) (*domain.AdaptationPlan, error) {
+	if deps.Store == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	opts.Brief = strings.TrimSpace(opts.Brief)
+	if opts.Brief == "" {
 		return nil, fmt.Errorf("adaptation brief is required")
 	}
 	sourceFoundation, err := deps.Store.Adaptation.LoadSourceFoundation()
@@ -247,47 +275,185 @@ func PrepareRun(ctx context.Context, deps Deps, brief string) (*domain.Adaptatio
 	if len(reports) == 0 {
 		return nil, fmt.Errorf("source reports missing; import source first")
 	}
+	manifest, err := deps.Store.Adaptation.LoadSourceManifest()
+	if err != nil {
+		return nil, fmt.Errorf("load source manifest: %w", err)
+	}
+	if manifest == nil {
+		return nil, fmt.Errorf("source manifest missing; import source first")
+	}
 
-	plan := BuildPlanFromBrief(brief, reports)
-	if err := deps.Store.Adaptation.SavePlan(plan); err != nil {
-		return nil, fmt.Errorf("save adaptation plan: %w", err)
+	proposal := buildPlanFromInputs(opts, reports, manifest, domain.AdaptationPlanStatusProposal)
+	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
+		return nil, fmt.Errorf("save adaptation proposal: %w", err)
 	}
-	fr := toFoundationResult(sourceFoundation)
-	fr.Premise = adaptationPremise(fr.Premise, brief, plan)
-	if err := imp.PersistFoundation(ctx, deps.Store, planningTier(len(plan.Chapters)), fr); err != nil {
-		return nil, fmt.Errorf("persist adaptation foundation: %w", err)
-	}
-	return &plan, nil
+	return &proposal, nil
 }
 
-func BuildPlanFromBrief(brief string, reports []domain.AdaptationSourceReport) domain.AdaptationPlan {
-	granularity := inferGranularity(brief)
+func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.AdaptationPlan) (*domain.AdaptationPlan, error) {
+	if deps.Store == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	if strings.TrimSpace(proposal.Brief) == "" {
+		return nil, fmt.Errorf("adaptation proposal brief is required")
+	}
+	if len(proposal.Chapters) == 0 {
+		return nil, fmt.Errorf("adaptation proposal has no chapters")
+	}
+	sourceFoundation, err := deps.Store.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return nil, fmt.Errorf("load source foundation: %w", err)
+	}
+	if sourceFoundation == nil {
+		return nil, fmt.Errorf("source foundation missing; import source first")
+	}
+
+	proposal.Status = domain.AdaptationPlanStatusConfirmed
+	proposal.Granularity = domain.NormalizeAdaptationGranularity(proposal.Granularity)
+	proposal.RewritePolicy = domain.NormalizeAdaptationRewritePolicy(proposal.RewritePolicy)
+	if err := deps.Store.Adaptation.SavePlan(proposal); err != nil {
+		return nil, fmt.Errorf("save adaptation plan: %w", err)
+	}
+	_ = deps.Store.Adaptation.ClearProposal()
+	fr := toFoundationResult(sourceFoundation)
+	fr.Premise = adaptationPremise(fr.Premise, proposal.Brief, proposal)
+	if err := imp.PersistFoundation(ctx, deps.Store, planningTier(len(proposal.Chapters)), fr); err != nil {
+		return nil, fmt.Errorf("persist adaptation foundation: %w", err)
+	}
+	return &proposal, nil
+}
+
+func buildPlanFromInputs(opts ProposalOptions, reports []domain.AdaptationSourceReport, manifest *domain.AdaptationSourceManifest, status string) domain.AdaptationPlan {
+	opts.Brief = strings.TrimSpace(opts.Brief)
+	opts.Granularity = domain.NormalizeAdaptationGranularity(firstNonEmptyString(opts.Granularity, inferGranularity(opts.Brief)))
+	opts.RewritePolicy = domain.NormalizeAdaptationRewritePolicy(opts.RewritePolicy)
+	if opts.WordTolerance <= 0 {
+		opts.WordTolerance = DefaultWordTolerance
+	}
+
+	sourceRunesByChapter := sourceRunesByChapter(manifest)
+	sourceTotalRunes := 0
+	for _, report := range reports {
+		sourceTotalRunes += sourceRunesForReport(report, sourceRunesByChapter)
+	}
+
 	plan := domain.AdaptationPlan{
-		Granularity: granularity,
-		Brief:       strings.TrimSpace(brief),
+		Granularity:      opts.Granularity,
+		Status:           domain.NormalizeAdaptationPlanStatus(status),
+		RewritePolicy:    opts.RewritePolicy,
+		Brief:            opts.Brief,
+		WordTolerance:    opts.WordTolerance,
+		SourceTotalRunes: sourceTotalRunes,
+		TargetTotalRunes: sourceTotalRunes,
 		MainlineRules: []string{
 			"保留原书核心事件的因果顺序，不凭空跳过主线转折。",
 			"每章写作前先读取 source refs，对照必须保留事件和禁止偏离事项。",
 			"改动关系线时必须用场景行动承接，不能破坏原书主线动机。",
 		},
-		RelationshipGoals: extractRelationshipGoals(brief),
+		RelationshipGoals: extractRelationshipGoals(opts.Brief),
 		Chapters:          make([]domain.AdaptationChapterPlan, 0, len(reports)),
 	}
+	if opts.RewritePolicy == domain.AdaptationRewritePreserveDetails {
+		plan.TargetMinRunes, plan.TargetMaxRunes = runeRange(sourceTotalRunes, opts.WordTolerance)
+		plan.MainlineRules = append(plan.MainlineRules,
+			"原著细节优先：未受改编目标影响的剧情、场景和段落允许复用原文；受影响部分再重写。",
+			"字数契约为来源字数 ±15%（或用户显式容差），超出硬区间必须重新规划或重写。",
+		)
+	} else {
+		plan.MainlineRules = append(plan.MainlineRules,
+			"完全重写：不得直接搬运原文段落或逐段同义替换；只锁定来源映射、主线事件和用户改编目标。",
+		)
+	}
 	for _, report := range reports {
-		plan.Chapters = append(plan.Chapters, domain.AdaptationChapterPlan{
-			Chapter:         report.Chapter,
-			Title:           report.Title,
-			SourceChapters:  []int{report.Chapter},
-			PreserveEvents:  append([]string(nil), report.KeyEvents...),
-			RequiredChanges: []string{strings.TrimSpace(brief)},
-			ForbiddenMoves: []string{
-				"不要遗漏原章关键事件。",
-				"不要改变原章核心因果顺序，除非 brief 明确要求。",
-				"不要把原文直接同义替换成新正文。",
-			},
-		})
+		plan.Chapters = append(plan.Chapters, buildChapterPlan(report, opts, sourceRunesByChapter))
 	}
 	return plan
+}
+
+func buildChapterPlan(report domain.AdaptationSourceReport, opts ProposalOptions, sourceRunesByChapter map[int]int) domain.AdaptationChapterPlan {
+	sourceChapters := []int{report.Chapter}
+	sourceRunes := sourceRunesForReport(report, sourceRunesByChapter)
+	chapterPlan := domain.AdaptationChapterPlan{
+		Chapter:         report.Chapter,
+		Title:           report.Title,
+		SourceChapters:  sourceChapters,
+		SourceRunes:     sourceRunes,
+		TargetRunes:     sourceRunes,
+		SourceRange:     domain.SourceRange{From: report.Chapter, To: report.Chapter},
+		CoverageNote:    coverageNote(opts.Granularity, report.Chapter, report.Chapter),
+		PreserveEvents:  append([]string(nil), report.KeyEvents...),
+		RequiredChanges: []string{opts.Brief},
+		ForbiddenMoves: []string{
+			"不要遗漏原章关键事件。",
+			"不要改变原章核心因果顺序，除非 brief 明确要求。",
+		},
+	}
+	if opts.RewritePolicy == domain.AdaptationRewritePreserveDetails {
+		chapterPlan.TargetMinRunes, chapterPlan.TargetMaxRunes = runeRange(sourceRunes, opts.WordTolerance)
+		chapterPlan.ForbiddenMoves = append(chapterPlan.ForbiddenMoves,
+			"不要无故删除未受改编目标影响的原文细节。",
+		)
+	} else {
+		chapterPlan.ForbiddenMoves = append(chapterPlan.ForbiddenMoves,
+			"不要把原文直接同义替换成新正文。",
+		)
+	}
+	return chapterPlan
+}
+
+func sourceRunesByChapter(manifest *domain.AdaptationSourceManifest) map[int]int {
+	if manifest == nil {
+		return nil
+	}
+	out := make(map[int]int, len(manifest.Chapters))
+	for _, source := range manifest.Chapters {
+		out[source.Chapter] = source.Runes
+	}
+	return out
+}
+
+func sourceRunesForReport(report domain.AdaptationSourceReport, sourceRunesByChapter map[int]int) int {
+	if sourceRunesByChapter == nil {
+		return 0
+	}
+	return sourceRunesByChapter[report.Chapter]
+}
+
+func runeRange(sourceRunes int, tolerance float64) (int, int) {
+	if sourceRunes <= 0 {
+		return 0, 0
+	}
+	if tolerance <= 0 {
+		tolerance = DefaultWordTolerance
+	}
+	minRunes := int(math.Round(float64(sourceRunes) * (1 - tolerance)))
+	maxRunes := int(math.Round(float64(sourceRunes) * (1 + tolerance)))
+	if minRunes < 0 {
+		minRunes = 0
+	}
+	if maxRunes < minRunes {
+		maxRunes = minRunes
+	}
+	return minRunes, maxRunes
+}
+
+func coverageNote(granularity string, from, to int) string {
+	if from == to {
+		if granularity == domain.AdaptationGranularityChapter {
+			return fmt.Sprintf("目标章与原文第 %d 章一一对应。", from)
+		}
+		return fmt.Sprintf("目标章覆盖原文第 %d 章。", from)
+	}
+	return fmt.Sprintf("目标章覆盖原文第 %d-%d 章。", from, to)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func inferGranularity(brief string) string {
@@ -381,7 +547,15 @@ func adaptationPremise(sourcePremise, brief string, plan domain.AdaptationPlan) 
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n## 改编契约\n\n")
+	fmt.Fprintf(&sb, "- 契约状态：%s\n", plan.Status)
 	fmt.Fprintf(&sb, "- 改编粒度：%s\n", plan.Granularity)
+	fmt.Fprintf(&sb, "- 改写策略：%s\n", plan.RewritePolicy)
+	if plan.SourceTotalRunes > 0 {
+		fmt.Fprintf(&sb, "- 来源总字数：%d 字\n", plan.SourceTotalRunes)
+	}
+	if plan.TargetMinRunes > 0 || plan.TargetMaxRunes > 0 {
+		fmt.Fprintf(&sb, "- 目标总字数硬区间：%d-%d 字\n", plan.TargetMinRunes, plan.TargetMaxRunes)
+	}
 	fmt.Fprintf(&sb, "- 用户 brief：%s\n", strings.TrimSpace(brief))
 	for _, rule := range plan.MainlineRules {
 		fmt.Fprintf(&sb, "- 主线规则：%s\n", rule)

@@ -61,6 +61,9 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 	if plan == nil {
 		return nil, fmt.Errorf("当前项目不是改编模式，无法调用 check_adaptation: %w", errs.ErrToolPrecondition)
 	}
+	if plan.Status != domain.AdaptationPlanStatusConfirmed {
+		return nil, fmt.Errorf("改编计划尚未确认，无法调用 check_adaptation: %w", errs.ErrToolPrecondition)
+	}
 	chapterPlan, ok := findAdaptationChapterPlan(plan, a.Chapter)
 	if !ok {
 		return nil, fmt.Errorf("改编计划中没有第 %d 章，无法校验: %w", a.Chapter, errs.ErrToolPrecondition)
@@ -95,6 +98,7 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 	if len(missingSourceRefs) > 0 {
 		issues = append(issues, fmt.Sprintf("source refs missing: %v", missingSourceRefs))
 	}
+	issues = append(issues, adaptationWordContractIssues(t.store, plan, chapterPlan, a.Chapter, wordCount)...)
 	passed := a.Passed && len(issues) == 0
 	digest := store.TextSHA256(content)
 	check := domain.AdaptationCheck{
@@ -110,15 +114,17 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 	}
 
 	return json.Marshal(map[string]any{
-		"chapter":          a.Chapter,
-		"passed":           passed,
-		"draft_sha256":     digest,
-		"word_count":       wordCount,
-		"issues":           issues,
-		"source_refs":      sourceRefs,
-		"next_step":        adaptationCheckNextStep(passed),
-		"chapter_plan":     chapterPlan,
-		"plan_granularity": plan.Granularity,
+		"chapter":                  a.Chapter,
+		"passed":                   passed,
+		"draft_sha256":             digest,
+		"word_count":               wordCount,
+		"issues":                   issues,
+		"source_refs":              sourceRefs,
+		"next_step":                adaptationCheckNextStep(passed),
+		"chapter_plan":             chapterPlan,
+		"plan_granularity":         plan.Granularity,
+		"rewrite_policy":           plan.RewritePolicy,
+		"adaptation_word_contract": buildAdaptationWordContract(t.store, plan, chapterPlan, a.Chapter, wordCount),
 	})
 }
 

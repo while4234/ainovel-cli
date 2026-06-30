@@ -60,6 +60,8 @@ func (m Model) handleOverlayKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	switch {
 	case m.askState != nil:
 		return m.handleBlockingModalKey(msg, m.handleAskUserKey)
+	case m.adaptConfirm != nil:
+		return m.handleBlockingModalKey(msg, m.handleAdaptModeConfirmKey)
 	case m.cocreate != nil:
 		return m.handleBlockingModalKey(msg, m.handleCoCreateKey)
 	case m.adaptPreparation != nil:

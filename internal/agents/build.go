@@ -425,6 +425,12 @@ func writerExpandedChapterGate(st *store.Store) agentcore.ToolGate {
 		if chapter <= 0 {
 			return nil, nil
 		}
+		if err := tools.EnsureAdaptationChapterPlanned(st, chapter); err != nil {
+			return &agentcore.GateDecision{
+				Allowed: false,
+				Reason:  err.Error() + "。请重新生成并确认改编规模后再派 writer。",
+			}, nil
+		}
 		if err := tools.EnsureChapterExpanded(st, chapter); err != nil {
 			return &agentcore.GateDecision{
 				Allowed: false,

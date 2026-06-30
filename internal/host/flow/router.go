@@ -42,6 +42,10 @@ type State struct {
 
 	// 基础设定缺项（规划阶段的补齐信号）。
 	FoundationMissing []string
+
+	AdaptationActive          bool
+	AdaptationPlannedChapters map[int]struct{}
+	AdaptationMaxChapter      int
 }
 
 // Route 根据事实返回下一步指令；返回 nil 表示让 Coordinator LLM 自主裁定。
@@ -78,6 +82,9 @@ func Route(s State) *Instruction {
 	// 3. 重写/打磨队列优先（事实已在工具层落盘，Router 只照单派发）
 	if len(p.PendingRewrites) > 0 {
 		ch := p.PendingRewrites[0]
+		if !s.adaptationAllowsChapter(ch) {
+			return nil
+		}
 		verb := "重写"
 		if p.Flow == domain.FlowPolishing {
 			verb = "打磨"
@@ -142,6 +149,9 @@ func Route(s State) *Instruction {
 	if next <= 0 {
 		return nil
 	}
+	if !s.adaptationAllowsChapter(next) {
+		return nil
+	}
 	return &Instruction{
 		Agent:   "writer",
 		Task:    fmt.Sprintf("写第 %d 章", next),
@@ -152,6 +162,17 @@ func Route(s State) *Instruction {
 
 // FormatMessage 把 Instruction 格式化为发给 Coordinator 的用户消息。
 // 格式固定，便于 Coordinator prompt 识别与 LLM 直接响应。
+func (s State) adaptationAllowsChapter(chapter int) bool {
+	if !s.AdaptationActive {
+		return true
+	}
+	if chapter <= 0 {
+		return false
+	}
+	_, ok := s.AdaptationPlannedChapters[chapter]
+	return ok
+}
+
 func FormatMessage(i *Instruction) string {
 	return fmt.Sprintf(
 		"[Host 下达指令]\n下一步：调用 subagent(%s, %q)\nagent: %s\ntask: %q\n理由：%s\n这是流程层的明确指令，请立即执行；subagent 的 agent/task 参数必须原样使用上面的 agent/task，不要改写 task，不要先调 novel_context，不要先输出推理。",

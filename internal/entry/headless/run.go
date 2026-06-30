@@ -19,11 +19,14 @@ import (
 )
 
 type Options struct {
-	Prompt    string
-	AdaptPath string
-	Stdin     io.Reader
-	Stdout    io.Writer
-	Stderr    io.Writer
+	Prompt             string
+	AdaptPath          string
+	AdaptGranularity   string
+	AdaptRewritePolicy string
+	AdaptWordTolerance float64
+	Stdin              io.Reader
+	Stdout             io.Writer
+	Stderr             io.Writer
 }
 
 // Run 以无界面模式运行会话内核，直接消费 Engine 事件与流式输出。
@@ -60,24 +63,45 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 		if prompt == "" {
 			return fmt.Errorf("headless 改编模式需要 --prompt 或 --prompt-file 作为改编 brief")
 		}
+		granularity := opts.AdaptGranularity
+		if strings.TrimSpace(granularity) == "" {
+			granularity = domain.AdaptationGranularityChapter
+		}
+		rewritePolicy := opts.AdaptRewritePolicy
+		if strings.TrimSpace(rewritePolicy) == "" {
+			rewritePolicy = domain.AdaptationRewriteFullRewrite
+		}
+		wordTolerance := opts.AdaptWordTolerance
+		if wordTolerance <= 0 {
+			wordTolerance = adapt.DefaultWordTolerance
+		}
 		plan, err := startup.PrepareAdaptNovel(startup.Request{
-			Mode:        startup.ModeAdaptNovel,
-			UserPrompt:  prompt,
-			NovelPath:   opts.AdaptPath,
-			OutputDir:   eng.Dir(),
-			Interactive: false,
+			Mode:               startup.ModeAdaptNovel,
+			UserPrompt:         prompt,
+			NovelPath:          opts.AdaptPath,
+			OutputDir:          eng.Dir(),
+			Interactive:        false,
+			AdaptGranularity:   granularity,
+			AdaptRewritePolicy: rewritePolicy,
+			AdaptWordTolerance: wordTolerance,
 		})
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(stderr, "headless 改编启动: %s\n", eng.Dir())
+		fmt.Fprintf(stderr, "headless 改编启动: %s (granularity=%s rewrite_policy=%s word_tolerance=%.2f)\n",
+			eng.Dir(), plan.AdaptGranularity, plan.AdaptRewritePolicy, plan.AdaptWordTolerance)
 		if err := runAdaptPreparation(context.Background(), eng, opts.AdaptPath, stderr); err != nil {
 			return err
 		}
 		if err := eng.PrepareExternalSourceUserRules(plan.RawPrompt); err != nil {
 			return err
 		}
-		if err := eng.StartAdaptationPrepared(plan.RawPrompt); err != nil {
+		if err := eng.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
+			Brief:         plan.RawPrompt,
+			Granularity:   plan.AdaptGranularity,
+			RewritePolicy: plan.AdaptRewritePolicy,
+			WordTolerance: plan.AdaptWordTolerance,
+		}); err != nil {
 			return err
 		}
 	} else if prompt != "" {

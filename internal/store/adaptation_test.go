@@ -57,6 +57,54 @@ func TestAdaptationStoreSavesSourceSnapshotAndChecks(t *testing.T) {
 	}
 }
 
+func TestAdaptationProposalDoesNotActivateProject(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	proposal := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityChapter,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
+		Brief:         "按原著细节逐章改编",
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "第一章",
+			SourceChapters: []int{1},
+		}},
+	}
+	if err := s.Adaptation.SaveProposal(proposal); err != nil {
+		t.Fatalf("SaveProposal: %v", err)
+	}
+	if s.Adaptation.Active() {
+		t.Fatal("proposal-only adaptation should not be active")
+	}
+	if plan, err := s.Adaptation.LoadPlan(); err != nil || plan != nil {
+		t.Fatalf("LoadPlan should ignore proposal: plan=%+v err=%v", plan, err)
+	}
+	loaded, err := s.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if loaded == nil || loaded.Status != domain.AdaptationPlanStatusProposal {
+		t.Fatalf("proposal status mismatch: %+v", loaded)
+	}
+
+	if err := s.Adaptation.SavePlan(proposal); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	if !s.Adaptation.Active() {
+		t.Fatal("confirmed adaptation plan should be active")
+	}
+	confirmed, err := s.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan confirmed: %v", err)
+	}
+	if confirmed == nil || confirmed.Status != domain.AdaptationPlanStatusConfirmed {
+		t.Fatalf("confirmed status mismatch: %+v", confirmed)
+	}
+}
+
 func TestAdaptationStoreResetGeneratedPreservesSourceSnapshot(t *testing.T) {
 	s := NewStore(t.TempDir())
 	if err := s.Init(); err != nil {

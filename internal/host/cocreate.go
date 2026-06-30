@@ -49,10 +49,12 @@ const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用�
 
 你必须基于下方"原书分析快照"提问和整理，不要凭空推翻原书主线；同时要把用户的关系线、女主戏份、虐心/纯爱等改编偏好落实成可执行 brief。
 
-你需要主动决定或询问改编粒度：
+你需要主动决定或询问两条显式模式，draft 中必须固定写出 granularity=chapter|arc|free 和 rewrite_policy=full_rewrite|preserve_details：
 - chapter：目标章节与原章节一一对应，最适合"主线不偏、逐章改写"。
 - arc：允许合并/拆分章节，但每章必须有 source refs 和保留事件。
 - free：允许重构章节结构，但卷/弧级主线、核心人物命运和改编目标必须写进 brief。
+- full_rewrite：正文完全重写，禁止直接搬运原文段落。
+- preserve_details：原著细节优先，未受改编目标影响的剧情/段落允许复用原文，受影响部分再重写；默认建议 chapter + preserve_details + word_tolerance=0.15。
 
 每一轮回复严格按以下 XML 格式输出，包含四个标签，依次出现，每个标签都必须有正确的开闭标签：
 
@@ -61,7 +63,7 @@ const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用�
 </reply>
 
 <draft>
-当前完整的"改编 brief"，使用 Markdown：直接从二级标题开始，例如 "## 改编粒度"、"## 用户目标"、"## 主线保留规则"、"## 角色/关系改动"、"## 禁止偏离"、"## 逐章策略"。每一轮都要在已有结论上累积更新，吸收用户最新意图；即使本轮没有新增也要把完整 brief 原样再写一次。
+当前完整的"改编 brief"，使用 Markdown：直接从二级标题开始，例如 "## 改编模式"、"## 用户目标"、"## 主线保留规则"、"## 角色/关系改动"、"## 禁止偏离"、"## 逐章策略"。"## 改编模式" 中必须逐行写出 granularity=...、rewrite_policy=...、word_tolerance=...。每一轮都要在已有结论上累积更新，吸收用户最新意图；即使本轮没有新增也要把完整 brief 原样再写一次。
 </draft>
 ` + coCreateProtocolTail
 

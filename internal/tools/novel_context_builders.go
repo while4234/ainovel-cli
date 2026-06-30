@@ -186,13 +186,34 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 		result["working_memory"] = working
 	}
 	result["adaptation_mode"] = true
+	actualRunes := 0
+	if _, words, draftErr := t.store.Drafts.LoadChapterContent(chapter); draftErr == nil {
+		actualRunes = words
+	} else {
+		warn("adaptation_draft_words", draftErr)
+	}
 	working["adaptation"] = map[string]any{
 		"granularity":        plan.Granularity,
+		"status":             plan.Status,
+		"rewrite_policy":     plan.RewritePolicy,
+		"word_tolerance":     plan.WordTolerance,
 		"brief":              plan.Brief,
 		"mainline_rules":     plan.MainlineRules,
 		"relationship_goals": plan.RelationshipGoals,
+		"source_total_runes": plan.SourceTotalRunes,
+		"target_total_runes": plan.TargetTotalRunes,
+		"target_min_runes":   plan.TargetMinRunes,
+		"target_max_runes":   plan.TargetMaxRunes,
 	}
 	working["adaptation_contract"] = chapterPlan
+	working["adaptation_word_contract"] = buildAdaptationWordContract(t.store, plan, chapterPlan, chapter, actualRunes)
+	working["adaptation_source_coverage"] = map[string]any{
+		"chapter":         chapterPlan.Chapter,
+		"source_chapters": chapterPlan.SourceChapters,
+		"source_range":    chapterPlan.SourceRange,
+		"is_added":        chapterPlan.IsAdded,
+		"coverage_note":   chapterPlan.CoverageNote,
+	}
 
 	reports, reportErr := t.store.Adaptation.LoadSourceReports()
 	warn("adaptation_source_reports", reportErr)
@@ -215,10 +236,17 @@ func (t *ContextTool) buildAdaptationPlanningContext(result map[string]any, warn
 	result["adaptation_mode"] = true
 	summary := map[string]any{
 		"granularity":        plan.Granularity,
+		"status":             plan.Status,
+		"rewrite_policy":     plan.RewritePolicy,
+		"word_tolerance":     plan.WordTolerance,
 		"brief":              plan.Brief,
 		"mainline_rules":     plan.MainlineRules,
 		"relationship_goals": plan.RelationshipGoals,
 		"target_chapters":    len(plan.Chapters),
+		"source_total_runes": plan.SourceTotalRunes,
+		"target_total_runes": plan.TargetTotalRunes,
+		"target_min_runes":   plan.TargetMinRunes,
+		"target_max_runes":   plan.TargetMaxRunes,
 	}
 	if manifest, manifestErr := t.store.Adaptation.LoadSourceManifest(); manifestErr == nil && manifest != nil {
 		summary["source_path"] = manifest.SourcePath

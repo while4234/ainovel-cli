@@ -301,6 +301,15 @@ func (h *Host) StartPrepared(promptText string) error {
 // StartAdaptationPrepared uses an analyzed source snapshot plus a confirmed
 // adaptation brief to prepare the new book foundation and enter writing.
 func (h *Host) StartAdaptationPrepared(brief string) error {
+	return h.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
+		Brief:         brief,
+		Granularity:   domain.AdaptationGranularityChapter,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: adapt.DefaultWordTolerance,
+	})
+}
+
+func (h *Host) StartAdaptationPreparedWithOptions(options adapt.ProposalOptions) error {
 	h.mu.Lock()
 	if h.lifecycle == lifecycleRunning {
 		h.mu.Unlock()
@@ -312,9 +321,14 @@ func (h *Host) StartAdaptationPrepared(brief string) error {
 	}
 	h.mu.Unlock()
 
-	brief = strings.TrimSpace(brief)
-	if brief == "" {
+	options.Brief = strings.TrimSpace(options.Brief)
+	if options.Brief == "" {
 		return fmt.Errorf("adaptation brief is required")
+	}
+	options.Granularity = domain.NormalizeAdaptationGranularity(options.Granularity)
+	options.RewritePolicy = domain.NormalizeAdaptationRewritePolicy(options.RewritePolicy)
+	if options.WordTolerance <= 0 {
+		options.WordTolerance = adapt.DefaultWordTolerance
 	}
 	if err := h.budget.Refuse(); err != nil {
 		return err
@@ -338,12 +352,22 @@ func (h *Host) StartAdaptationPrepared(brief string) error {
 			Analyzer:        h.bundle.Prompts.ImportAnalyzer,
 		},
 	}
-	plan, err := adapt.PrepareRun(context.Background(), deps, brief)
+	proposal, err := adapt.BuildAdaptationProposal(deps, options)
+	if err != nil {
+		return err
+	}
+	plan, err := adapt.ConfirmAdaptationProposal(context.Background(), deps, *proposal)
 	if err != nil {
 		return err
 	}
 
-	slog.Info("开始小说改编", "module", "host", "prompt_len", len(brief), "granularity", plan.Granularity)
+	slog.Info("开始小说改编",
+		"module", "host",
+		"prompt_len", len(options.Brief),
+		"granularity", plan.Granularity,
+		"rewrite_policy", plan.RewritePolicy,
+		"word_tolerance", plan.WordTolerance,
+	)
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "开始小说改编", Level: "info"})
 	h.refreshWriterRestore()
 	h.observer.setAborting(false)
@@ -359,6 +383,26 @@ func (h *Host) StartAdaptationPrepared(brief string) error {
 	h.mu.Unlock()
 	go h.waitDone()
 	return nil
+}
+
+func (h *Host) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
+	options.Brief = strings.TrimSpace(options.Brief)
+	if options.Brief == "" {
+		return nil, fmt.Errorf("adaptation brief is required")
+	}
+	if options.WordTolerance <= 0 {
+		options.WordTolerance = adapt.DefaultWordTolerance
+	}
+	deps := adapt.Deps{
+		Store: h.store,
+		LLM:   h.models.ForRole("architect"),
+		Prompts: adapt.Prompts{
+			Foundation:      h.bundle.Prompts.ImportFoundation,
+			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
+			Analyzer:        h.bundle.Prompts.ImportAnalyzer,
+		},
+	}
+	return adapt.BuildAdaptationProposal(deps, options)
 }
 
 // Resume 恢复模式：从 checkpoint + progress 生成 resume prompt 并启动。

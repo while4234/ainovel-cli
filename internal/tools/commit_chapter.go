@@ -141,6 +141,10 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 
 	// 分层模式越界拦截：必须先于任何写操作，否则越界 commit 会把章节文件、摘要、
 	// Progress 都改坏。boundary 复用给下方第 6b 步算弧/卷信号。
+	if err := EnsureAdaptationChapterPlanned(t.store, a.Chapter); err != nil {
+		return nil, err
+	}
+
 	var boundary *store.ArcBoundary
 	if progress, perr := t.store.Progress.Load(); perr == nil && progress != nil && progress.Layered {
 		b, bErr := t.store.Outline.CheckArcBoundary(a.Chapter)
@@ -342,6 +346,21 @@ func (t *CommitChapterTool) ensureAdaptationGate(chapter int, content string) er
 	if !t.store.Adaptation.Active() {
 		return nil
 	}
+	plan, err := t.store.Adaptation.LoadPlan()
+	if err != nil {
+		return fmt.Errorf("load adaptation plan: %w: %w", errs.ErrStoreRead, err)
+	}
+	if plan == nil || plan.Status != domain.AdaptationPlanStatusConfirmed {
+		return fmt.Errorf("改编项目提交被拒：改编计划尚未确认: %w", errs.ErrToolPrecondition)
+	}
+	chapterPlan, ok := findAdaptationChapterPlan(plan, chapter)
+	if !ok {
+		return fmt.Errorf("改编项目提交被拒：confirmed plan 中没有第 %d 章: %w", chapter, errs.ErrToolPrecondition)
+	}
+	wordCount := len([]rune(content))
+	if issues := adaptationWordContractIssues(t.store, plan, chapterPlan, chapter, wordCount); len(issues) > 0 {
+		return fmt.Errorf("改编项目提交被拒：%s: %w", issues[0], errs.ErrToolPrecondition)
+	}
 	digest := store.TextSHA256(content)
 	passed, check, err := t.store.Adaptation.HasPassingCheck(chapter, digest)
 	if err != nil {
@@ -463,6 +482,8 @@ func (t *CommitChapterTool) executeRewriteCommit(
 	if drained && latest != nil {
 		reComplete := false
 		switch {
+		case t.adaptationPlanComplete(latest):
+			reComplete = true
 		case latest.Layered && latest.ReopenedFromComplete:
 			reComplete = t.layeredStructurallyComplete(latest)
 		case latest.Layered:
@@ -563,8 +584,12 @@ func loadCoreCharacterNameSet(s *store.Store) map[string]bool {
 //     防止模型在终点既不 append_volume 也不 complete_book，导致"写手裸跑越界章节 →
 //     越界守卫拦截 → 反复重试"的 livelock（《凡骨》ch204..347 案例的根因）。
 func (t *CommitChapterTool) applyCompletion(result *domain.CommitResult, progress *domain.Progress) bool {
-	if progress == nil {
+	if result == nil || progress == nil {
 		return false
+	}
+	if t.adaptationPlanComplete(progress) {
+		_ = t.store.Progress.MarkComplete()
+		return true
 	}
 	if progress.Layered {
 		if t.layeredBookComplete(progress) {
@@ -583,6 +608,26 @@ func (t *CommitChapterTool) applyCompletion(result *domain.CommitResult, progres
 // layeredStructurallyComplete 判定分层长篇是否"结构上写完"：返工队列空 + 无骨架弧待展开
 // + 所有已展开章节都已写。这是确定性的终态事实，不含伏笔/长线等语义判断——用作"防终态
 // 死循环"的安全网（返工排空后据此重新完结）。
+func (t *CommitChapterTool) adaptationPlanComplete(progress *domain.Progress) bool {
+	if progress == nil || !t.store.Adaptation.Active() {
+		return false
+	}
+	plan, err := t.store.Adaptation.LoadPlan()
+	if err != nil || plan == nil || len(plan.Chapters) == 0 {
+		return false
+	}
+	completed := make(map[int]struct{}, len(progress.CompletedChapters))
+	for _, chapter := range progress.CompletedChapters {
+		completed[chapter] = struct{}{}
+	}
+	for _, chapterPlan := range plan.Chapters {
+		if _, ok := completed[chapterPlan.Chapter]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (t *CommitChapterTool) layeredStructurallyComplete(progress *domain.Progress) bool {
 	// 1. 返工队列必须清空
 	if len(progress.PendingRewrites) > 0 {

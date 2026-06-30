@@ -8,6 +8,16 @@ const (
 	AdaptationGranularityFree    = "free"
 )
 
+const (
+	AdaptationPlanStatusProposal  = "proposal"
+	AdaptationPlanStatusConfirmed = "confirmed"
+)
+
+const (
+	AdaptationRewriteFullRewrite     = "full_rewrite"
+	AdaptationRewritePreserveDetails = "preserve_details"
+)
+
 // AdaptationSourceManifest records the imported source novel identity.
 type AdaptationSourceManifest struct {
 	SourcePath   string             `json:"source_path"`
@@ -54,20 +64,41 @@ type AdaptationSourceFoundation struct {
 // AdaptationPlan is the durable contract for rewriting the source as a new book.
 type AdaptationPlan struct {
 	Granularity       string                  `json:"granularity"`
+	Status            string                  `json:"status"`
+	RewritePolicy     string                  `json:"rewrite_policy"`
 	Brief             string                  `json:"brief"`
+	WordTolerance     float64                 `json:"word_tolerance,omitempty"`
+	SourceTotalRunes  int                     `json:"source_total_runes,omitempty"`
+	TargetTotalRunes  int                     `json:"target_total_runes,omitempty"`
+	TargetMinRunes    int                     `json:"target_min_runes,omitempty"`
+	TargetMaxRunes    int                     `json:"target_max_runes,omitempty"`
 	MainlineRules     []string                `json:"mainline_rules,omitempty"`
 	RelationshipGoals []string                `json:"relationship_goals,omitempty"`
 	Chapters          []AdaptationChapterPlan `json:"chapters"`
 }
 
+// SourceRange records the inclusive source chapter coverage for one target
+// chapter. It remains explicit even when SourceChapters has sparse anchors.
+type SourceRange struct {
+	From int `json:"from"`
+	To   int `json:"to"`
+}
+
 // AdaptationChapterPlan defines one target chapter's source anchors and edits.
 type AdaptationChapterPlan struct {
-	Chapter         int      `json:"chapter"`
-	Title           string   `json:"title"`
-	SourceChapters  []int    `json:"source_chapters"`
-	PreserveEvents  []string `json:"preserve_events,omitempty"`
-	RequiredChanges []string `json:"required_changes,omitempty"`
-	ForbiddenMoves  []string `json:"forbidden_moves,omitempty"`
+	Chapter         int         `json:"chapter"`
+	Title           string      `json:"title"`
+	SourceChapters  []int       `json:"source_chapters"`
+	SourceRunes     int         `json:"source_runes,omitempty"`
+	TargetRunes     int         `json:"target_runes,omitempty"`
+	TargetMinRunes  int         `json:"target_min_runes,omitempty"`
+	TargetMaxRunes  int         `json:"target_max_runes,omitempty"`
+	SourceRange     SourceRange `json:"source_range,omitempty"`
+	IsAdded         bool        `json:"is_added,omitempty"`
+	CoverageNote    string      `json:"coverage_note,omitempty"`
+	PreserveEvents  []string    `json:"preserve_events,omitempty"`
+	RequiredChanges []string    `json:"required_changes,omitempty"`
+	ForbiddenMoves  []string    `json:"forbidden_moves,omitempty"`
 }
 
 // AdaptationCheck is saved after a draft has been checked against the plan.
@@ -90,5 +121,26 @@ func NormalizeAdaptationGranularity(value string) string {
 		return AdaptationGranularityFree
 	default:
 		return AdaptationGranularityChapter
+	}
+}
+
+// NormalizeAdaptationRewritePolicy constrains rewrite policy. Empty and
+// unknown values fall back to full rewrite for compatibility with old
+// brief-only adaptation starts.
+func NormalizeAdaptationRewritePolicy(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case AdaptationRewritePreserveDetails:
+		return AdaptationRewritePreserveDetails
+	default:
+		return AdaptationRewriteFullRewrite
+	}
+}
+
+func NormalizeAdaptationPlanStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case AdaptationPlanStatusProposal:
+		return AdaptationPlanStatusProposal
+	default:
+		return AdaptationPlanStatusConfirmed
 	}
 }

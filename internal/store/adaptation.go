@@ -19,6 +19,7 @@ const (
 	adaptationSourceReportsFile    = adaptationRootDir + "/source_reports.json"
 	adaptationSourceFoundationFile = adaptationRootDir + "/source_foundation.json"
 	adaptationCheckDir             = adaptationRootDir + "/checks"
+	adaptationProposalFile         = adaptationRootDir + "/proposal.json"
 	adaptationPlanFile             = adaptationRootDir + "/plan.json"
 )
 
@@ -36,6 +37,10 @@ func (s *AdaptationStore) Reset() error {
 func (s *AdaptationStore) ResetGenerated() error {
 	return s.io.WithWriteLock(func() error {
 		err := os.Remove(s.io.path(adaptationPlanFile))
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		err = os.Remove(s.io.path(adaptationProposalFile))
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -251,7 +256,8 @@ func (s *AdaptationStore) LoadSourceFoundation() (*domain.AdaptationSourceFounda
 }
 
 func (s *AdaptationStore) SavePlan(plan domain.AdaptationPlan) error {
-	plan.Granularity = domain.NormalizeAdaptationGranularity(plan.Granularity)
+	normalizeAdaptationPlan(&plan)
+	plan.Status = domain.AdaptationPlanStatusConfirmed
 	return s.io.WriteJSON(adaptationPlanFile, plan)
 }
 
@@ -263,13 +269,40 @@ func (s *AdaptationStore) LoadPlan() (*domain.AdaptationPlan, error) {
 		}
 		return nil, err
 	}
-	plan.Granularity = domain.NormalizeAdaptationGranularity(plan.Granularity)
+	normalizeAdaptationPlan(&plan)
 	return &plan, nil
+}
+
+func (s *AdaptationStore) SaveProposal(plan domain.AdaptationPlan) error {
+	normalizeAdaptationPlan(&plan)
+	plan.Status = domain.AdaptationPlanStatusProposal
+	return s.io.WriteJSON(adaptationProposalFile, plan)
+}
+
+func (s *AdaptationStore) LoadProposal() (*domain.AdaptationPlan, error) {
+	var proposal domain.AdaptationPlan
+	if err := s.io.ReadJSON(adaptationProposalFile, &proposal); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	normalizeAdaptationPlan(&proposal)
+	proposal.Status = domain.AdaptationPlanStatusProposal
+	return &proposal, nil
+}
+
+func (s *AdaptationStore) ClearProposal() error {
+	err := os.Remove(s.io.path(adaptationProposalFile))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (s *AdaptationStore) Active() bool {
 	plan, err := s.LoadPlan()
-	return err == nil && plan != nil
+	return err == nil && plan != nil && plan.Status == domain.AdaptationPlanStatusConfirmed
 }
 
 func (s *AdaptationStore) SaveCheck(check domain.AdaptationCheck) error {
@@ -327,4 +360,13 @@ func truncateRunes(text string, maxRunes int) string {
 		return text
 	}
 	return string(runes[:maxRunes]) + "..."
+}
+
+func normalizeAdaptationPlan(plan *domain.AdaptationPlan) {
+	if plan == nil {
+		return
+	}
+	plan.Granularity = domain.NormalizeAdaptationGranularity(plan.Granularity)
+	plan.Status = domain.NormalizeAdaptationPlanStatus(plan.Status)
+	plan.RewritePolicy = domain.NormalizeAdaptationRewritePolicy(plan.RewritePolicy)
 }

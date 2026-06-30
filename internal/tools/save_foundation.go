@@ -70,6 +70,10 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 
 	result := map[string]any{"saved": true, "type": a.Type, "scale": a.Scale}
 
+	if t.store.Adaptation.Active() && (a.Type == "append_volume" || a.Type == "expand_arc") {
+		return nil, fmt.Errorf("改编模式已由 confirmed plan 锁定章节规模，不允许 %s；如需增删或重排章节，请重新生成规模提案并确认: %w", a.Type, errs.ErrToolPrecondition)
+	}
+
 	// 写作阶段禁止全量覆盖大纲，只允许增量操作（expand_arc / append_volume）
 	if (a.Type == "outline" || a.Type == "layered_outline") && t.isWriting() {
 		return nil, fmt.Errorf(

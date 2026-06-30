@@ -30,6 +30,10 @@ type Request struct {
 	NovelPath   string
 	OutputDir   string
 	Interactive bool
+
+	AdaptGranularity   string
+	AdaptRewritePolicy string
+	AdaptWordTolerance float64
 }
 
 // Plan 描述启动策略层产出的结果。
@@ -40,6 +44,10 @@ type Plan struct {
 	StartPrompt string // 已包装的 Coordinator 启动 prompt（BuildStartPrompt 产物）
 	RawPrompt   string // 用户原始创作要求（未包装）；供用户规则归一化使用，resume 模式为空
 	ResumeOnly  bool
+
+	AdaptGranularity   string
+	AdaptRewritePolicy string
+	AdaptWordTolerance float64
 }
 
 // ErrNotImplemented 标记占位策略尚未落地。

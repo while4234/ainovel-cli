@@ -27,6 +27,13 @@ type Options struct {
 	SourcePath string
 }
 
+type ProposalOptions struct {
+	Brief         string
+	Granularity   string
+	RewritePolicy string
+	WordTolerance float64
+}
+
 type Prompts struct {
 	Foundation      string
 	FoundationMerge string

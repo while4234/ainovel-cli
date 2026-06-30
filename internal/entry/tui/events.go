@@ -9,6 +9,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -116,7 +117,12 @@ func startRuntime(rt *host.Host, plan startup.Plan) tea.Cmd {
 			if err := rt.PrepareExternalSourceUserRules(plan.RawPrompt); err != nil {
 				return startResultMsg{err: err}
 			}
-			err = rt.StartAdaptationPrepared(plan.RawPrompt)
+			err = rt.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
+				Brief:         plan.RawPrompt,
+				Granularity:   plan.AdaptGranularity,
+				RewritePolicy: plan.AdaptRewritePolicy,
+				WordTolerance: plan.AdaptWordTolerance,
+			})
 		} else {
 			// 启动侧确定性生成本书用户规则快照（用原始 prompt 归一化），须在 StartPrepared 前。
 			if err := rt.PrepareUserRules(plan.RawPrompt); err != nil {

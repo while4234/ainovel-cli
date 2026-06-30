@@ -35,5 +35,18 @@ func LoadState(store *storepkg.Store) State {
 		}
 	}
 
+	if store.Adaptation.Active() {
+		if plan, perr := store.Adaptation.LoadPlan(); perr == nil && plan != nil {
+			s.AdaptationActive = true
+			s.AdaptationPlannedChapters = make(map[int]struct{}, len(plan.Chapters))
+			for _, chapterPlan := range plan.Chapters {
+				s.AdaptationPlannedChapters[chapterPlan.Chapter] = struct{}{}
+				if chapterPlan.Chapter > s.AdaptationMaxChapter {
+					s.AdaptationMaxChapter = chapterPlan.Chapter
+				}
+			}
+		}
+	}
+
 	return s
 }

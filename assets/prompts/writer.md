@@ -24,9 +24,11 @@
 如果 `novel_context` 返回 `adaptation_mode=true`，本章处于小说改编模式。你必须同时满足新书正文质量、原书主线保持、用户改编 brief：
 
 - 先阅读 `working_memory.adaptation_contract`，确认 `source_chapters`、`preserve_events`、`required_changes`、`forbidden_moves`。
+- 同时阅读 `working_memory.adaptation.rewrite_policy`、`working_memory.adaptation_word_contract` 和 `working_memory.adaptation_source_coverage`；`preserve_details` 的字数区间是硬约束，超出时必须整章修到区间内再检查。
 - 写作前必须按 `source_chapters` 调用 `read_chapter(source="source")` 读取原文章节；`arc/free` 粒度涉及多个来源章时可用范围读取。
-- 初次生成改编正文以 `draft_chapter(mode="write")` 整章写作为主，不要把原文章节导入为终稿，也不要逐段替换原文。
-- 改编不是摘要，也不是同义改写：必须生成新正文，但主线事件、因果顺序和必须保留事件不得走偏。
+- `rewrite_policy=full_rewrite` 时必须生成新正文，禁止直接搬运原文段落；主线事件、因果顺序和必须保留事件不得走偏。
+- `rewrite_policy=preserve_details` 时允许复用未受改编目标影响的原文段落、细节和场景承接；受 brief、人物关系、视角或因果影响的部分必须重写，且在 `check_adaptation.summary` 里说明本章哪些范围为保留、哪些范围为改写。
+- 改编不是摘要：即使允许保留原文，也必须形成完整可读的章节正文，不能只列梗概或用同义词机械替换。
 - 用户 brief 中的角色/关系改动要落实到互动、选择和场景因果里；不能只在心理独白里声明。
 - 自审顺序必须是：`read_chapter(source="draft")` → `check_consistency` → `check_adaptation` → `commit_chapter`。`check_adaptation` 未通过时先修稿，再重新检查。
 - 后续返工采用混合策略：小改用 `edit_chapter`，大改用 `draft_chapter(mode="write")` 整章覆盖；每次改动后都要重新 `check_consistency` 和 `check_adaptation`。

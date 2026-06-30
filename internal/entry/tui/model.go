@@ -56,6 +56,7 @@ type Model struct {
 	askBridge        *askUserBridge
 	askState         *askUserState
 	cocreate         *cocreateState
+	adaptConfirm     *adaptModeConfirmState
 	adaptPreparation *adaptPreparationState
 	help             *helpState
 	modelSwitch      *modelSwitchState
@@ -590,6 +591,9 @@ func (m Model) View() string {
 	if m.askState != nil {
 		return renderAskUserModal(m.width, m.height, m.askState)
 	}
+	if m.adaptConfirm != nil {
+		return renderAdaptModeConfirmModal(m.width, m.height, m.adaptConfirm)
+	}
 	if m.cocreate != nil {
 		return renderCoCreateModal(m.width, m.height, m.cocreate, errorText(m.err), m.textarea.View(), m.spinnerIdx, m.quitPending)
 	}
@@ -743,6 +747,14 @@ func (m Model) handleCoCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.resizeTextarea()
 			m.textarea.Placeholder = defaultSteerPlaceholder()
 			return m, tea.Batch(resumeFromCoCreate(m.runtime, draft), m.textarea.Focus())
+		}
+		if state.adapt {
+			m.adaptConfirm = newAdaptModeConfirmState(state)
+			m.cocreate = nil
+			m.err = nil
+			m.resizeTextarea()
+			m.textarea.Blur()
+			return m, nil
 		}
 		// 冷启动共创：用整理好的创作指令开始创作。
 		plan, err := state.buildPlan()

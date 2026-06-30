@@ -68,6 +68,9 @@ func (t *PlanChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 	if err := t.store.Progress.ValidateChapterWork(plan.Chapter); err != nil {
 		return nil, err
 	}
+	if err := EnsureAdaptationChapterPlanned(t.store, plan.Chapter); err != nil {
+		return nil, err
+	}
 	if err := EnsureChapterExpanded(t.store, plan.Chapter); err != nil {
 		return nil, err
 	}

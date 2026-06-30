@@ -202,6 +202,24 @@ func TestRoute_NormalContinue(t *testing.T) {
 	}
 }
 
+func TestRoute_AdaptationStopsAtConfirmedPlanBoundary(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3}, domain.FlowWriting)
+	p.TotalChapters = 4
+	got := Route(State{
+		Progress:         p,
+		AdaptationActive: true,
+		AdaptationPlannedChapters: map[int]struct{}{
+			1: {},
+			2: {},
+			3: {},
+		},
+		AdaptationMaxChapter: 3,
+	})
+	if got != nil {
+		t.Fatalf("adaptation router should not dispatch chapter outside confirmed plan, got %+v", got)
+	}
+}
+
 func TestRoute_ArcEndNonLayeredSkipsBoundary(t *testing.T) {
 	// 非 Layered 模式即使 ArcBoundary 非 nil 也不走弧末分支
 	p := &domain.Progress{
