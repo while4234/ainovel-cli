@@ -100,6 +100,140 @@ func TestSplitText_Volume(t *testing.T) {
 	}
 }
 
+func TestSplitText_VolumePrefixedChapterTitles(t *testing.T) {
+	src := `卷一 白蛇妖仙 引子
+引子正文。
+二
+引子第二节正文。
+
+卷一 白蛇妖仙 第一章 医大女鬼
+正文一。
+
+卷一 白蛇妖仙 灵异档案 白蛇异冢真实原形
+资料正文。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 2 {
+		t.Fatalf("want 2, got %d", len(got))
+	}
+	wantTitles := []string{"引子", "医大女鬼"}
+	for i, want := range wantTitles {
+		if got[i].Title != want {
+			t.Errorf("chapter %d title: got %q want %q", i+1, got[i].Title, want)
+		}
+	}
+	if !strings.Contains(got[0].Content, "二\n引子第二节正文") {
+		t.Errorf("bare Chinese numerals should stay inside chapter body: %q", got[0].Content)
+	}
+}
+
+func TestSplitText_NonStoryHeadingsAreBoundariesOnly(t *testing.T) {
+	src := `卷一 白蛇妖仙 尾声
+尾声正文。
+
+卷二 蛇指影魔预告
+预告正文不应进入上一章。
+
+卷一 白蛇妖仙 灵异档案 白蛇异冢真实原形
+资料正文不应成为章节。
+
+卷二 蛇指影魔 引子
+引子正文。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 2 {
+		t.Fatalf("want 2, got %d", len(got))
+	}
+	if got[0].Title != "尾声" || got[1].Title != "引子" {
+		t.Fatalf("titles: %+v", got)
+	}
+	if strings.Contains(got[0].Content, "预告正文") || strings.Contains(got[1].Content, "资料正文") {
+		t.Fatalf("non-story content leaked into chapters: %+v", got)
+	}
+}
+
+func TestSplitText_LegitimateChapterTitleMayContainPreviewWord(t *testing.T) {
+	src := `第一章 死亡预告
+正文一。
+
+第二章 真相
+正文二。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 2 {
+		t.Fatalf("want 2, got %d", len(got))
+	}
+	if got[0].Title != "死亡预告" {
+		t.Fatalf("title: got %q want %q", got[0].Title, "死亡预告")
+	}
+}
+
+func TestSplitText_BareChineseChapterNumber(t *testing.T) {
+	src := `第十章 纨绔子弟
+正文十。
+
+十一章 难以接受
+正文十一。
+
+廿一章　旗袍研究
+正文二十一。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 3 {
+		t.Fatalf("want 3, got %d", len(got))
+	}
+	wantTitles := []string{"纨绔子弟", "难以接受", "旗袍研究"}
+	for i, want := range wantTitles {
+		if got[i].Title != want {
+			t.Fatalf("chapter %d title: got %q want %q", i+1, got[i].Title, want)
+		}
+	}
+}
+
+func TestSplitText_InlineTrailingChapterHeading(t *testing.T) {
+	src := `第十二章 老谋深算
+上一章正文。
+一句话结束。”第十三章 最后清算
+下一章正文。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 2 {
+		t.Fatalf("want 2, got %d", len(got))
+	}
+	if got[0].Title != "老谋深算" || got[1].Title != "最后清算" {
+		t.Fatalf("titles: %+v", got)
+	}
+	if !strings.Contains(got[0].Content, "一句话结束。") || strings.Contains(got[1].Content, "一句话结束") {
+		t.Fatalf("inline split placed content incorrectly: %+v", got)
+	}
+}
+
+func TestSplitText_PureVolumeHeadingBeforeChapterIsSkipped(t *testing.T) {
+	src := `卷十四  藏镜罗刹
+引子一
+引子一正文。
+
+引子二
+引子二正文。
+
+第一章 幼女自尽
+第一章正文。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 3 {
+		t.Fatalf("want 3, got %d", len(got))
+	}
+	wantTitles := []string{"引子一", "引子二", "幼女自尽"}
+	for i, want := range wantTitles {
+		if got[i].Title != want {
+			t.Errorf("chapter %d title: got %q want %q", i+1, got[i].Title, want)
+		}
+	}
+	if strings.Contains(got[0].Title, "藏镜罗刹") {
+		t.Errorf("pure volume heading must not become a source chapter: %+v", got)
+	}
+}
+
 func TestSplitText_SpecialUnits(t *testing.T) {
 	src := `楔子
 古老的传说。
@@ -122,6 +256,19 @@ func TestSplitText_SpecialUnits(t *testing.T) {
 		if got[i].Title != w {
 			t.Errorf("unit %d title: got %q want %q", i+1, got[i].Title, w)
 		}
+	}
+}
+
+func TestSplitText_SpecialUnitNumericSubtitleFallsBackToKeyword(t *testing.T) {
+	src := `尾声 　　一
+尾声正文。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 1 {
+		t.Fatalf("want 1, got %d", len(got))
+	}
+	if got[0].Title != "尾声" {
+		t.Fatalf("title: got %q want %q", got[0].Title, "尾声")
 	}
 }
 
@@ -350,6 +497,75 @@ func TestSplitFile_InvalidUTF8BytesAreCleaned(t *testing.T) {
 	if !utf8.ValidString(got[0].Title) || !utf8.ValidString(got[0].Content) {
 		t.Fatal("chapter text must be valid UTF-8")
 	}
+}
+
+func TestSplitFile_ExternalGazFixture(t *testing.T) {
+	path := os.Getenv("AINOVEL_GAZ_FIXTURE")
+	if path == "" {
+		t.Skip("set AINOVEL_GAZ_FIXTURE to run the external gaz.txt splitter acceptance test")
+	}
+	got, err := SplitFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 237 {
+		t.Fatalf("gaz fixture chapters: got %d want 237", len(got))
+	}
+	assertChapterTitlesAt(t, got, 1, []string{
+		"引子", "医大女鬼", "一零六室", "又闻失心", "此人已死",
+		"白蛇异冢", "双鬼夜袭", "樟树秘道", "谁是女鬼", "幕后黑手",
+		"弃卒保帅", "夜探水道", "首脑落网", "尾声", "引子",
+		"夺命鬼影", "死亡威胁", "影楼老板", "十三年前", "忠犬弑主",
+	})
+	assertContainsTitleSequence(t, got, []string{"蛇指影魔 纤凌前传 彼得洛希卡", "引子", "九天化尸"})
+	assertContainsTitleSequence(t, got, []string{"伟哥与Sailor moon", "引子一", "引子二"})
+	assertContainsTitleSequence(t, got, []string{"引子一", "引子二", "幼_女自尽"})
+	assertContainsTitleSequence(t, got, []string{
+		"难以接受", "洞内对决", "关键提示", "神秘毒素", "密室凶案",
+		"楼顶之秘", "秘密信息", "通话录音", "鬼爪神功",
+	})
+	assertChapterTitlesAt(t, got, 218, []string{
+		"异香飘落", "轮回圣坛", "深入鬼穴", "尾声",
+		"引子", "人心难测", "母子连心", "邪教起源",
+		"五行引魂", "隐瞒真相", "拦途截劫", "重归于好", "覆雨翻云",
+		"密码解读", "人剑交易", "单刀赴会", "老谋深算", "最后清算",
+		"他的秘密", "尾声",
+	})
+	for i, ch := range got {
+		if ch.Title == "藏镜罗刹" || strings.Contains(ch.Title, "灵异档案") || strings.Contains(ch.Title, "预告") {
+			t.Fatalf("non-story heading became chapter %d: %q", i+1, ch.Title)
+		}
+	}
+}
+
+func assertChapterTitlesAt(t *testing.T, got []Chapter, start int, want []string) {
+	t.Helper()
+	for i, title := range want {
+		idx := start - 1 + i
+		if idx >= len(got) {
+			t.Fatalf("missing chapter %d, want title %q", idx+1, title)
+		}
+		if got[idx].Title != title {
+			t.Fatalf("chapter %d title: got %q want %q", idx+1, got[idx].Title, title)
+		}
+	}
+}
+
+func assertContainsTitleSequence(t *testing.T, got []Chapter, want []string) {
+	t.Helper()
+	for start := 0; start+len(want) <= len(got); start++ {
+		matched := true
+		for i, title := range want {
+			if got[start+i].Title != title {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return
+		}
+	}
+	t.Fatalf("missing title sequence: %v", want)
 }
 
 func TestSplitText_SectionAndAct(t *testing.T) {
