@@ -646,6 +646,83 @@ func TestContextToolSelectedMemoryIncludesGlobalReviewLessons(t *testing.T) {
 	}
 }
 
+func TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation(t *testing.T) {
+	plainStore := store.NewStore(t.TempDir())
+	if err := plainStore.Init(); err != nil {
+		t.Fatalf("Init plain store: %v", err)
+	}
+	if err := plainStore.Outline.SaveOutline([]domain.OutlineEntry{{Chapter: 1, Title: "开端", CoreEvent: "故事开始"}}); err != nil {
+		t.Fatalf("SaveOutline plain: %v", err)
+	}
+	if err := plainStore.Progress.Init("plain", 1); err != nil {
+		t.Fatalf("Init plain progress: %v", err)
+	}
+	refs := References{AdaptationWriter: "禁止使用（某某内心独白：...）这类补丁标签。"}
+	plainTool := NewContextTool(plainStore, refs, "default")
+	plainArgs, _ := json.Marshal(map[string]any{"chapter": 1})
+	plainRaw, err := plainTool.Execute(context.Background(), plainArgs)
+	if err != nil {
+		t.Fatalf("Execute plain: %v", err)
+	}
+	var plainPayload struct {
+		Working map[string]json.RawMessage `json:"working_memory"`
+	}
+	if err := json.Unmarshal(plainRaw, &plainPayload); err != nil {
+		t.Fatalf("Unmarshal plain: %v", err)
+	}
+	if _, ok := plainPayload.Working["adaptation_writing_guidance"]; ok {
+		t.Fatal("plain writing context must not include adaptation writer guidance")
+	}
+
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityChapter,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
+		Status:        domain.AdaptationPlanStatusConfirmed,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "目标章",
+			SourceChapters: []int{1},
+			SourceRunes:    100,
+			TargetRunes:    100,
+			TargetMinRunes: 85,
+			TargetMaxRunes: 115,
+		}},
+	}
+	adaptStore := newAdaptationToolStoreWithPlan(t, plan, []string{"原文主线事件。"})
+	if err := adaptStore.Outline.SaveOutline([]domain.OutlineEntry{{Chapter: 1, Title: "目标章", CoreEvent: "改编事件"}}); err != nil {
+		t.Fatalf("SaveOutline adapt: %v", err)
+	}
+	if err := adaptStore.Progress.Init("adapt", 1); err != nil {
+		t.Fatalf("Init adapt progress: %v", err)
+	}
+	adaptTool := NewContextTool(adaptStore, refs, "default")
+	adaptRaw, err := adaptTool.Execute(context.Background(), plainArgs)
+	if err != nil {
+		t.Fatalf("Execute adapt: %v", err)
+	}
+	var adaptPayload struct {
+		AdaptationMode bool                       `json:"adaptation_mode"`
+		Working        map[string]json.RawMessage `json:"working_memory"`
+	}
+	if err := json.Unmarshal(adaptRaw, &adaptPayload); err != nil {
+		t.Fatalf("Unmarshal adapt: %v", err)
+	}
+	if !adaptPayload.AdaptationMode {
+		t.Fatal("expected adaptation_mode=true")
+	}
+	rawGuidance, ok := adaptPayload.Working["adaptation_writing_guidance"]
+	if !ok {
+		t.Fatal("adaptation context should include adaptation writer guidance")
+	}
+	var guidance string
+	if err := json.Unmarshal(rawGuidance, &guidance); err != nil {
+		t.Fatalf("Unmarshal guidance: %v", err)
+	}
+	if !strings.Contains(guidance, "某某内心独白") {
+		t.Fatalf("guidance missing label rule: %q", guidance)
+	}
+}
+
 func TestContextToolKeepsFullForeshadowWhenRecallNotTriggered(t *testing.T) {
 	dir := t.TempDir()
 	s := store.NewStore(dir)

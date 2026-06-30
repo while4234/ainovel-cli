@@ -2,6 +2,7 @@ package tools
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/rules"
@@ -213,6 +214,9 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 		"source_range":    chapterPlan.SourceRange,
 		"is_added":        chapterPlan.IsAdded,
 		"coverage_note":   chapterPlan.CoverageNote,
+	}
+	if guidance := strings.TrimSpace(t.refs.AdaptationWriter); guidance != "" {
+		working["adaptation_writing_guidance"] = guidance
 	}
 
 	reports, reportErr := t.store.Adaptation.LoadSourceReports()

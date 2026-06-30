@@ -32,6 +32,7 @@ type References struct {
 	Differentiation  string // 通用差异化设计参考
 	ArcTemplates     string // 题材弧型模板（按 style 加载，可为空）
 	AntiAITone       string // 去 AI 味判据库（writer/editor 共用，全程注入）
+	AdaptationWriter string // 小说改编 Writer 专用追加规则（仅 adaptation_mode 注入）
 }
 
 // ContextTool 组装当前章节所需上下文。
