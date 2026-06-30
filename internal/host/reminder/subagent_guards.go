@@ -117,7 +117,7 @@ func writerStopBlockMessage(st *store.Store) string {
 	if chapterPlan == nil {
 		return generic
 	}
-	_, wordCount, err := st.Drafts.LoadChapterContent(chapter)
+	content, wordCount, err := st.Drafts.LoadChapterContent(chapter)
 	if err != nil || wordCount == 0 {
 		return generic
 	}
@@ -133,7 +133,82 @@ func writerStopBlockMessage(st *store.Store) string {
 			chapter, wordCount, chapterPlan.TargetMinRunes, chapterPlan.TargetMaxRunes,
 		)
 	}
+	if msg := writerAdaptationCheckBlockMessage(st, chapter, content, *chapterPlan); msg != "" {
+		return msg
+	}
 	return generic
+}
+
+func writerAdaptationCheckBlockMessage(st *store.Store, chapter int, content string, chapterPlan domain.AdaptationChapterPlan) string {
+	digest := store.TextSHA256(content)
+	check, err := st.Adaptation.LoadCheck(chapter)
+	if err != nil {
+		return fmt.Sprintf("第 %d 章无法读取 check_adaptation 结果：%v。不要调用 commit_chapter；先重新调用 check_adaptation。", chapter, err)
+	}
+	if check == nil {
+		return fmt.Sprintf(
+			"第 %d 章尚未通过 check_adaptation。不要调用 commit_chapter；先调用 check_adaptation。%s",
+			chapter, writerChangeEvidenceInstruction(chapter, chapterPlan),
+		)
+	}
+	if check.DraftSHA256 != digest {
+		return fmt.Sprintf(
+			"第 %d 章草稿已在上次 check_adaptation 后改变。不要调用 commit_chapter；必须对当前草稿重新调用 check_adaptation。%s",
+			chapter, writerChangeEvidenceInstruction(chapter, chapterPlan),
+		)
+	}
+	if check.Passed {
+		if writerNeedsChangeEvidence(chapterPlan) && len(check.ChangeEvidence) == 0 {
+			return fmt.Sprintf(
+				"第 %d 章 check_adaptation 记录缺少 change_evidence。不要调用 commit_chapter；重新调用 check_adaptation，并把证据放进 change_evidence 参数。%s",
+				chapter, writerChangeEvidenceInstruction(chapter, chapterPlan),
+			)
+		}
+		return ""
+	}
+	return fmt.Sprintf(
+		"第 %d 章最近一次 check_adaptation 未通过：%s。不要调用 commit_chapter；按失败原因修复后重新调用 check_adaptation。%s",
+		chapter, strings.Join(check.Issues, "；"), writerAdaptationIssueInstruction(chapter, chapterPlan, check.Issues),
+	)
+}
+
+func writerAdaptationIssueInstruction(chapter int, chapterPlan domain.AdaptationChapterPlan, issues []string) string {
+	for _, issue := range issues {
+		switch {
+		case strings.Contains(issue, "adaptation_change_evidence"):
+			return writerChangeEvidenceInstruction(chapter, chapterPlan)
+		case strings.Contains(issue, "adaptation_source_similarity"):
+			return fmt.Sprintf("先 read_chapter(source=\"source\", chapter=%d) 对照原文，保留未受影响段落，只把 required_changes 影响的完整场景单元重写为新的小说正文。", chapter)
+		case strings.Contains(issue, "adaptation_quality"):
+			return "先用 draft_chapter(mode=\"write\") 删除括号补丁、内心独白标签、仅为示意等 meta 文本，把内容写成正常小说叙述、动作、对白或潜台词。"
+		case strings.Contains(issue, "adaptation_word_contract"):
+			return fmt.Sprintf("先按 preserve_details 字数硬区间修复完整章节，再调用 check_adaptation。当前目标区间是 %d-%d 字。", chapterPlan.TargetMinRunes, chapterPlan.TargetMaxRunes)
+		}
+	}
+	return "不要把失败原因只写进 summary；需要把对应字段作为工具参数传入。"
+}
+
+func writerChangeEvidenceInstruction(chapter int, chapterPlan domain.AdaptationChapterPlan) string {
+	if !writerNeedsChangeEvidence(chapterPlan) {
+		return "本章没有 required_changes 时 change_evidence 可传 []。"
+	}
+	sourceChapter := 0
+	if len(chapterPlan.SourceChapters) > 0 {
+		sourceChapter = chapterPlan.SourceChapters[0]
+	}
+	return fmt.Sprintf(
+		"调用 check_adaptation 时必须传非空 change_evidence JSON array，不要只写在 summary。示例：check_adaptation({\"chapter\":%d,\"passed\":true,\"summary\":\"主线保留且改编目标已融入正文\",\"change_evidence\":[{\"source_chapter\":%d,\"source_anchor\":\"原文中被改动的场景锚点\",\"change\":\"说明 required_changes 中哪项被落实\",\"integration\":\"说明它如何自然出现在正文动作、对白、叙述或潜台词中\"}]})",
+		chapter, sourceChapter,
+	)
+}
+
+func writerNeedsChangeEvidence(chapterPlan domain.AdaptationChapterPlan) bool {
+	for _, change := range chapterPlan.RequiredChanges {
+		if strings.TrimSpace(change) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // NewArchitectStopGuard 要求 architect 本轮至少落盘一次 save_foundation。

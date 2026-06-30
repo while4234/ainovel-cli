@@ -102,6 +102,13 @@ func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.
 			}
 		}
 	}
+	if gate, issueVerdict := evaluateIssueSeverityGate(r.Issues); gate != "" {
+		upgradedVerdict := strongerReviewVerdict(finalVerdict, issueVerdict)
+		if upgradedVerdict != finalVerdict {
+			finalVerdict = upgradedVerdict
+			escalationReason = gate
+		}
+	}
 
 	affected := r.AffectedChapters
 	if finalVerdict == "rewrite" || finalVerdict == "polish" {
@@ -276,4 +283,42 @@ func evaluateScorecardGate(dimensions []domain.DimensionScore) string {
 		return fmt.Sprintf("polish: 部分维度需打磨 %v", polishIssues)
 	}
 	return ""
+}
+
+func evaluateIssueSeverityGate(issues []domain.ConsistencyIssue) (string, string) {
+	criticalCount := 0
+	errorCount := 0
+	for _, issue := range issues {
+		switch issue.Severity {
+		case "critical":
+			criticalCount++
+		case "error":
+			errorCount++
+		}
+	}
+	if criticalCount > 0 {
+		return fmt.Sprintf("rewrite: review issues include %d critical item(s)", criticalCount), "rewrite"
+	}
+	if errorCount > 0 {
+		return fmt.Sprintf("polish: review issues include %d error item(s)", errorCount), "polish"
+	}
+	return "", ""
+}
+
+func strongerReviewVerdict(current, candidate string) string {
+	if reviewVerdictRank(candidate) > reviewVerdictRank(current) {
+		return candidate
+	}
+	return current
+}
+
+func reviewVerdictRank(verdict string) int {
+	switch verdict {
+	case "rewrite":
+		return 2
+	case "polish":
+		return 1
+	default:
+		return 0
+	}
 }

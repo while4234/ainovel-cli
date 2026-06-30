@@ -133,7 +133,7 @@ func adaptationQualityRepairStep(issues []string, chapter int) string {
 		case strings.Contains(issue, "adaptation_source_similarity"):
 			return fmt.Sprintf("do not commit chapter %d; read source refs, keep unaffected paragraphs if needed, and rewrite every required-change scene unit as original prose", chapter)
 		case strings.Contains(issue, "adaptation_change_evidence"):
-			return fmt.Sprintf("do not commit chapter %d; call check_adaptation with change_evidence listing a source anchor, the change, and how it appears in prose", chapter)
+			return fmt.Sprintf("do not commit chapter %d; call check_adaptation with a non-empty change_evidence JSON array. Each item must include source_chapter or source_anchor, change, and integration. Do not put evidence only in summary", chapter)
 		}
 	}
 	return ""

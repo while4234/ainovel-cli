@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -184,6 +185,36 @@ func TestRoute_NeedsNewVolume(t *testing.T) {
 	got := Route(s)
 	if got == nil || got.Agent != "architect_long" || got.Reason != "卷末需决定追加新卷或结束全书" {
 		t.Fatalf("expected append_volume/complete_book dispatch, got %+v", got)
+	}
+}
+
+func TestRoute_AdaptationCompleteNeedsCompleteBook(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3}, domain.FlowWriting)
+	s := State{
+		Progress:      p,
+		LastCompleted: 3,
+		ArcBoundary: &storepkg.ArcBoundary{
+			IsArcEnd:       true,
+			IsVolumeEnd:    true,
+			Volume:         1,
+			Arc:            1,
+			NeedsNewVolume: true,
+		},
+		HasArcReview:       true,
+		HasArcSummary:      true,
+		HasVolumeSummary:   true,
+		AdaptationActive:   true,
+		AdaptationComplete: true,
+	}
+	got := Route(s)
+	if got == nil || got.Agent != "architect_long" {
+		t.Fatalf("expected architect_long complete_book dispatch, got %+v", got)
+	}
+	if got.Reason != "改编计划已完成，进入完结收尾" {
+		t.Fatalf("unexpected reason: %+v", got)
+	}
+	if !strings.Contains(got.Task, "complete_book") || !strings.Contains(got.Task, "不要 append_volume") {
+		t.Fatalf("task should force complete_book only, got %q", got.Task)
 	}
 }
 

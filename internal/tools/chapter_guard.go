@@ -154,6 +154,16 @@ func adaptationWordContractRepairStep(contract adaptationWordContract, issues []
 	if len(issues) == 0 || !contract.Hard {
 		return ""
 	}
+	hasWordContractIssue := false
+	for _, issue := range issues {
+		if strings.Contains(issue, "adaptation_word_contract") {
+			hasWordContractIssue = true
+			break
+		}
+	}
+	if !hasWordContractIssue {
+		return ""
+	}
 	switch {
 	case contract.Scope != "total" && contract.TargetMinRunes > 0 && contract.ActualRunes < contract.TargetMinRunes:
 		return fmt.Sprintf(

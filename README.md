@@ -58,7 +58,7 @@
 |--------|------|------|
 | **Coordinator** | 调度全局，处理评审裁定和用户干预 | `subagent` `novel_context` |
 | **Architect** | 生成前提、大纲、角色档案、世界规则 | `novel_context` `save_foundation` |
-| **Writer** | 自主完成一章的构思、写作、自审和提交 | `novel_context` `read_chapter` `plan_chapter` `draft_chapter` `check_consistency` `commit_chapter` |
+| **Writer** | 自主完成一章的构思、写作、自审和提交 | `novel_context` `read_chapter` `plan_chapter` `draft_chapter` `check_consistency` `check_adaptation` `commit_chapter` |
 | **Editor** | 阅读原文，从结构和审美两个层面审阅 | `novel_context` `read_chapter` `save_review` `save_arc_summary` `save_volume_summary` |
 
 ### 写作流程
@@ -79,7 +79,8 @@ Writer 按固定顺序完成每章（写作内容完全自主，工具调用顺�
 3. `plan_chapter` — 构思本章目标、冲突、情绪弧线
 4. `draft_chapter` — 写入整章正文
 5. `check_consistency` — 对照状态数据检查一致性（必须在 draft 之后）
-6. `commit_chapter` — 提交终稿，返回事实字段（`arc_end_reached` / `next_chapter` 等），下一步由 Reminder 驱动
+6. `check_adaptation` — 小说改编模式专用，对照原文和改编契约检查草稿
+7. `commit_chapter` — 提交终稿，返回事实字段（`arc_end_reached` / `next_chapter` 等），下一步由 Reminder 驱动
 
 ### 状态迁移规则
 

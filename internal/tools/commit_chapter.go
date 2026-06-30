@@ -604,6 +604,9 @@ func (t *CommitChapterTool) applyCompletion(result *domain.CommitResult, progres
 	if result == nil || progress == nil {
 		return false
 	}
+	if result.ReviewRequired {
+		return false
+	}
 	if t.adaptationPlanComplete(progress) {
 		_ = t.store.Progress.MarkComplete()
 		return true

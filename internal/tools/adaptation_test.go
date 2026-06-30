@@ -218,9 +218,10 @@ func TestPreserveDetailsWordContractRejectsCheckAndCommit(t *testing.T) {
 	}
 
 	checkArgs, _ := json.Marshal(map[string]any{
-		"chapter": 1,
-		"passed":  true,
-		"summary": "主线和改编目标均满足",
+		"chapter":         1,
+		"passed":          true,
+		"summary":         "主线和改编目标均满足",
+		"change_evidence": passingChangeEvidence(),
 	})
 	raw, err := NewCheckAdaptationTool(s).Execute(context.Background(), checkArgs)
 	if err != nil {
@@ -242,10 +243,11 @@ func TestPreserveDetailsWordContractRejectsCheckAndCommit(t *testing.T) {
 	}
 
 	if err := s.Adaptation.SaveCheck(domain.AdaptationCheck{
-		Chapter:     1,
-		DraftSHA256: store.TextSHA256(draft),
-		Passed:      true,
-		CheckedAt:   "2026-06-30T00:00:00Z",
+		Chapter:        1,
+		DraftSHA256:    store.TextSHA256(draft),
+		Passed:         true,
+		ChangeEvidence: passingDomainChangeEvidence(),
+		CheckedAt:      "2026-06-30T00:00:00Z",
 	}); err != nil {
 		t.Fatalf("SaveCheck override: %v", err)
 	}
@@ -332,14 +334,30 @@ func TestPreserveDetailsRequiresChangeEvidence(t *testing.T) {
 		t.Fatalf("check_adaptation Execute: %v", err)
 	}
 	var payload struct {
-		Passed bool     `json:"passed"`
-		Issues []string `json:"issues"`
+		Passed                 bool     `json:"passed"`
+		Issues                 []string `json:"issues"`
+		Next                   string   `json:"next_step"`
+		RequiredChangeEvidence struct {
+			Required bool   `json:"required"`
+			Field    string `json:"field"`
+			Note     string `json:"note"`
+		} `json:"required_change_evidence"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal payload: %v", err)
 	}
 	if payload.Passed || !issueContains(payload.Issues, "adaptation_change_evidence") {
 		t.Fatalf("expected missing evidence issue, got %+v", payload)
+	}
+	if !strings.Contains(payload.Next, "change_evidence") ||
+		!strings.Contains(payload.Next, "Do not put evidence only in summary") ||
+		strings.Contains(payload.Next, "adaptation_word_contract") {
+		t.Fatalf("next_step should directly request structured change_evidence, got %q", payload.Next)
+	}
+	if !payload.RequiredChangeEvidence.Required ||
+		payload.RequiredChangeEvidence.Field != "change_evidence" ||
+		!strings.Contains(payload.RequiredChangeEvidence.Note, "summary") {
+		t.Fatalf("required_change_evidence guidance missing, got %+v", payload.RequiredChangeEvidence)
 	}
 }
 
@@ -474,6 +492,15 @@ func passingChangeEvidence() []map[string]any {
 		"source_anchor":  "原文主线事件",
 		"change":         "将改编目标涉及的互动改写成连续场景",
 		"integration":    "通过动作、对白和场景因果融入正文",
+	}}
+}
+
+func passingDomainChangeEvidence() []domain.AdaptationChangeEvidence {
+	return []domain.AdaptationChangeEvidence{{
+		SourceChapter: 1,
+		SourceAnchor:  "原文主线事件",
+		Change:        "将改编目标涉及的互动改写成连续场景",
+		Integration:   "通过动作、对白和场景因果融入正文",
 	}}
 }
 

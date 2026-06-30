@@ -43,7 +43,7 @@ func (t *CheckAdaptationTool) Schema() map[string]any {
 		schema.Property("passed", schema.Bool("whether the draft satisfies the adaptation contract")).Required(),
 		schema.Property("summary", schema.String("review summary: preserved source events and implemented changes")),
 		schema.Property("issues", schema.Array("unmet requirements; any issue makes the check fail", schema.String(""))),
-		schema.Property("change_evidence", schema.Array("preserve_details only: evidence that required changes were integrated into prose", changeEvidenceSchema)),
+		schema.Property("change_evidence", schema.Array("preserve_details only: evidence that required changes were integrated into prose; pass [] only when no visible source change is required", changeEvidenceSchema)).Required(),
 	)
 }
 
@@ -134,6 +134,7 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 		"word_count":               wordCount,
 		"issues":                   issues,
 		"change_evidence":          changeEvidence,
+		"required_change_evidence": adaptationRequiredChangeEvidencePrompt(plan, chapterPlan),
 		"source_refs":              sourceRefs,
 		"next_step":                adaptationCheckNextStep(passed, issues, contract, a.Chapter),
 		"chapter_plan":             chapterPlan,
@@ -150,13 +151,47 @@ func adaptationCheckNextStep(passed bool, issues []string, contract adaptationWo
 	if repair := adaptationProseQualityRepairStep(issues, chapter); repair != "" {
 		return "adaptation check failed: " + repair
 	}
+	if repair := adaptationQualityRepairStep(issues, chapter); repair != "" {
+		return "adaptation check failed: " + repair + ". Then call check_adaptation again with the corrected tool arguments."
+	}
 	if repair := adaptationWordContractRepairStep(contract, issues, chapter); repair != "" {
 		return "adaptation check failed: " + repair + " Then call check_adaptation again."
 	}
-	if repair := adaptationQualityRepairStep(issues, chapter); repair != "" {
-		return "adaptation check failed: " + repair
-	}
 	return "adaptation check failed: fix issues, then call check_adaptation again."
+}
+
+func adaptationRequiredChangeEvidencePrompt(plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan) map[string]any {
+	if plan == nil ||
+		plan.RewritePolicy != domain.AdaptationRewritePreserveDetails ||
+		!adaptationRequiresVisibleChanges(chapterPlan) {
+		return map[string]any{
+			"required": false,
+		}
+	}
+	return map[string]any{
+		"required": true,
+		"field":    "change_evidence",
+		"note":     "Do not write evidence only in summary. Provide this field as a JSON array in the tool arguments.",
+		"item_schema": map[string]string{
+			"source_chapter": "source chapter number for the changed scene, or omit when source_anchor is enough",
+			"source_anchor":  "short source anchor or scene reference",
+			"change":         "required adaptation change that was applied",
+			"integration":    "how the change appears inside normal prose, not as a note",
+		},
+		"example": []domain.AdaptationChangeEvidence{{
+			SourceChapter: firstSourceChapter(chapterPlan),
+			SourceAnchor:  "原文章节中被改动的场景锚点",
+			Change:        "把改编 brief 要求的角色/关系/情节变化写入该场景",
+			Integration:   "说明变化如何自然出现在正文动作、对白、叙述或潜台词中，而不是括号说明",
+		}},
+	}
+}
+
+func firstSourceChapter(chapterPlan domain.AdaptationChapterPlan) int {
+	if len(chapterPlan.SourceChapters) == 0 {
+		return 0
+	}
+	return chapterPlan.SourceChapters[0]
 }
 
 func cleanIssueList(items []string) []string {

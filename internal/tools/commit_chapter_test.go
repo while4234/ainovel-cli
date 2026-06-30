@@ -416,6 +416,84 @@ func TestCommitChapterRejectsPolishWithoutDraftChange(t *testing.T) {
 	}
 }
 
+func TestCommitChapterAdaptationFinalChapterWaitsForReview(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityChapter,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, Title: "第一章", SourceChapters: []int{1}},
+			{Chapter: 2, Title: "第二章", SourceChapters: []int{2}},
+		},
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, []string{"源一", "源二"})
+	if err := s.Progress.Init("test", 0); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	foundation := NewSaveFoundationTool(s)
+	layeredArgs, _ := json.Marshal(map[string]any{
+		"type": "layered_outline",
+		"content": []map[string]any{{
+			"index": 1, "title": "卷一", "theme": "主题",
+			"arcs": []map[string]any{{
+				"index": 1, "title": "弧一", "goal": "目标",
+				"chapters": []map[string]any{
+					{"title": "第一章", "core_event": "起", "hook": "续"},
+					{"title": "第二章", "core_event": "终", "hook": "终"},
+				},
+			}},
+		}},
+		"scale": "long",
+	})
+	if _, err := foundation.Execute(context.Background(), layeredArgs); err != nil {
+		t.Fatalf("Execute layered: %v", err)
+	}
+	_ = s.Progress.UpdatePhase(domain.PhaseWriting)
+
+	tool := NewCommitChapterTool(s)
+	commit := func(chapter int) map[string]any {
+		draft := fmt.Sprintf("第 %d 章改编正文。", chapter)
+		if err := s.Drafts.SaveDraft(chapter, draft); err != nil {
+			t.Fatalf("SaveDraft %d: %v", chapter, err)
+		}
+		if err := s.Adaptation.SaveCheck(domain.AdaptationCheck{
+			Chapter:     chapter,
+			DraftSHA256: store.TextSHA256(draft),
+			Passed:      true,
+		}); err != nil {
+			t.Fatalf("SaveCheck %d: %v", chapter, err)
+		}
+		args, _ := json.Marshal(map[string]any{
+			"chapter":    chapter,
+			"summary":    "摘要",
+			"characters": []string{"主角"},
+			"key_events": []string{"事件"},
+		})
+		raw, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute ch%d: %v", chapter, err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("Unmarshal ch%d: %v", chapter, err)
+		}
+		return out
+	}
+
+	if bc, _ := commit(1)["book_complete"].(bool); bc {
+		t.Fatal("第 1 章不应完结")
+	}
+	final := commit(2)
+	if review, _ := final["review_required"].(bool); !review {
+		t.Fatalf("final chapter should require review, got %+v", final)
+	}
+	if bc, _ := final["book_complete"].(bool); bc {
+		t.Fatalf("final adaptation chapter must wait for editor review before completion, got %+v", final)
+	}
+	if p, _ := s.Progress.Load(); p.Phase == domain.PhaseComplete {
+		t.Fatal("phase must remain writing so flow router can dispatch editor")
+	}
+}
+
 // TestCommitChapterLayeredRejectsOutOfRangeChapter 验证分层模式下，
 // 章号越出 layered_outline 的 commit 必须硬失败，而不是 slog.Warn 放行。
 // 这是阻止"裁定误判后 writer 一路裸跑"的物理刹车（《凡骨》ch204..347 案例）。
@@ -475,12 +553,10 @@ func TestCommitChapterLayeredRejectsOutOfRangeChapter(t *testing.T) {
 	}
 }
 
-// TestCommitChapterLayeredAutoCompletesWhenDone 验证分层模式确定性完结兜底：
-// 大纲全部展开并写完 + 无骨架弧 + 无返工 + 活跃伏笔为零 + 指南针长线收束时，
-// 最后一章 commit 自动推 Phase=Complete，不依赖架构师主动调 complete_book。
-// 这是 9bf26a5 删掉分层自动完结后引入的 livelock 的修复（终卷末尾模型既不 append
-// 也不 complete → 写手裸跑越界死循环）。
-func TestCommitChapterLayeredAutoCompletesWhenDone(t *testing.T) {
+// TestCommitChapterLayeredWaitsForReviewWhenDone 验证分层终章不绕过弧/卷级评审：
+// 即使大纲全部展开并写完、活跃伏笔为零、指南针长线收束，commit_chapter 也只暴露
+// review_required 事实；后续由 Router 派 Editor 审阅/摘要，再让 Architect 调 complete_book。
+func TestCommitChapterLayeredWaitsForReviewWhenDone(t *testing.T) {
 	dir := t.TempDir()
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
@@ -542,12 +618,16 @@ func TestCommitChapterLayeredAutoCompletesWhenDone(t *testing.T) {
 		t.Fatal("写完第 1 章 phase 不应为 complete")
 	}
 
-	// 第 2 章（最后一章）：应自动完结
-	if bc, _ := commit(2)["book_complete"].(bool); !bc {
-		t.Fatal("写完最后一章应自动完结")
+	// 第 2 章（最后一章）：应等待弧/卷评审，不能直接完结。
+	final := commit(2)
+	if review, _ := final["review_required"].(bool); !review {
+		t.Fatalf("写完最后一章应触发评审，got %+v", final)
 	}
-	if p, _ := s.Progress.Load(); p.Phase != domain.PhaseComplete {
-		t.Fatalf("expected phase=complete, got %s", p.Phase)
+	if bc, _ := final["book_complete"].(bool); bc {
+		t.Fatalf("写完最后一章不应绕过评审自动完结，got %+v", final)
+	}
+	if p, _ := s.Progress.Load(); p.Phase == domain.PhaseComplete {
+		t.Fatal("phase 应保持 writing，等待 Router 派 Editor")
 	}
 }
 

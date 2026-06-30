@@ -214,6 +214,63 @@ func TestSubAgentGuard_PreserveDetailsShortDraftRepairsBeforeCommit(t *testing.T
 	}
 }
 
+func TestSubAgentGuard_PreserveDetailsMissingEvidenceRepairsBeforeCommit(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("init progress: %v", err)
+	}
+	if err := s.Progress.StartChapter(1); err != nil {
+		t.Fatalf("start chapter: %v", err)
+	}
+	if err := s.Adaptation.SavePlan(domain.AdaptationPlan{
+		Granularity:      domain.AdaptationGranularityChapter,
+		RewritePolicy:    domain.AdaptationRewritePreserveDetails,
+		Status:           domain.AdaptationPlanStatusConfirmed,
+		WordTolerance:    0.15,
+		SourceTotalRunes: 100,
+		TargetTotalRunes: 100,
+		TargetMinRunes:   85,
+		TargetMaxRunes:   115,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:         1,
+			Title:           "目标章",
+			SourceChapters:  []int{1},
+			SourceRunes:     100,
+			TargetRunes:     100,
+			TargetMinRunes:  85,
+			TargetMaxRunes:  115,
+			RequiredChanges: []string{"改写关系线"},
+		}},
+	}); err != nil {
+		t.Fatalf("save adaptation plan: %v", err)
+	}
+	draft := strings.Repeat("正", 100)
+	if err := s.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("save draft: %v", err)
+	}
+	if err := s.Adaptation.SaveCheck(domain.AdaptationCheck{
+		Chapter:     1,
+		DraftSHA256: store.TextSHA256(draft),
+		Passed:      false,
+		Issues:      []string{"adaptation_change_evidence: preserve_details with required_changes must provide change_evidence"},
+	}); err != nil {
+		t.Fatalf("save adaptation check: %v", err)
+	}
+
+	d := NewWriterStopGuard(s)(context.Background(), agentcore.StopInfo{
+		TurnIndex: 1,
+		Message:   agentcore.Message{StopReason: agentcore.StopReasonStop},
+	})
+	if d.Allow || d.Escalate {
+		t.Fatalf("missing evidence should be blocked with repair message, got %#v", d)
+	}
+	for _, want := range []string{"check_adaptation 未通过", "不要调用 commit_chapter", "change_evidence", "不要只写在 summary", "check_adaptation({"} {
+		if !strings.Contains(d.InjectMessage, want) {
+			t.Fatalf("inject message missing %q: %q", want, d.InjectMessage)
+		}
+	}
+}
+
 // TestStopGuard_NonConsecutiveTurnResetsCounter 验证：两次 block 之间 TurnIndex
 // 不相邻（中间 LLM 做了 tool call 或用户 resume）时，consecutive 计数重置。
 func TestStopGuard_NonConsecutiveTurnResetsCounter(t *testing.T) {

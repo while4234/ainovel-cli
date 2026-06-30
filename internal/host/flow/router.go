@@ -46,6 +46,7 @@ type State struct {
 	AdaptationActive          bool
 	AdaptationPlannedChapters map[int]struct{}
 	AdaptationMaxChapter      int
+	AdaptationComplete        bool
 }
 
 // Route 根据事实返回下一步指令；返回 nil 表示让 Coordinator LLM 自主裁定。
@@ -136,6 +137,13 @@ func Route(s State) *Instruction {
 				Reason: "下一弧骨架待展开",
 			}
 		case b.NeedsNewVolume:
+			if s.AdaptationComplete {
+				return &Instruction{
+					Agent:  "architect_long",
+					Task:   "改编计划章节、弧级评审、弧摘要和卷摘要均已完成；调用 save_foundation type=complete_book 完结全书，不要 append_volume",
+					Reason: "改编计划已完成，进入完结收尾",
+				}
+			}
 			return &Instruction{
 				Agent:  "architect_long",
 				Task:   "评估后调用 save_foundation type=append_volume（继续写）或 type=complete_book（全书结束）",

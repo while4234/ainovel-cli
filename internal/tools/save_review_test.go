@@ -306,3 +306,116 @@ func TestSaveReviewRejectsIssueWithoutEvidence(t *testing.T) {
 		t.Fatalf("expected issue evidence validation error, got %v", err)
 	}
 }
+
+func TestSaveReviewIssueErrorEscalatesAcceptToPolish(t *testing.T) {
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 10); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := s.Progress.MarkChapterComplete(3, 3000, "", ""); err != nil {
+		t.Fatalf("MarkChapterComplete: %v", err)
+	}
+
+	tool := NewSaveReviewTool(s)
+	args, err := json.Marshal(map[string]any{
+		"chapter":    3,
+		"scope":      "chapter",
+		"dimensions": passingReviewDimensions(),
+		"issues": []map[string]any{
+			{"type": "aesthetic", "severity": "error", "description": "meta label remains in prose", "evidence": "inner monologue label"},
+		},
+		"verdict": "accept",
+		"summary": "accepted by model despite an error issue",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["final_verdict"] != "polish" {
+		t.Fatalf("expected final_verdict polish, got %v", result["final_verdict"])
+	}
+	if !strings.Contains(result["escalation_reason"].(string), "error") {
+		t.Fatalf("expected issue severity escalation reason, got %v", result["escalation_reason"])
+	}
+	p, err := s.Progress.Load()
+	if err != nil {
+		t.Fatalf("Progress.Load: %v", err)
+	}
+	if p.Flow != domain.FlowPolishing {
+		t.Fatalf("expected polishing flow, got %s", p.Flow)
+	}
+	if len(p.PendingRewrites) != 1 || p.PendingRewrites[0] != 3 {
+		t.Fatalf("expected chapter 3 pending polish, got %v", p.PendingRewrites)
+	}
+}
+
+func TestSaveReviewIssueCriticalEscalatesPolishToRewrite(t *testing.T) {
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 10); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := s.Progress.MarkChapterComplete(3, 3000, "", ""); err != nil {
+		t.Fatalf("MarkChapterComplete: %v", err)
+	}
+
+	tool := NewSaveReviewTool(s)
+	args, err := json.Marshal(map[string]any{
+		"chapter":    3,
+		"scope":      "chapter",
+		"dimensions": passingReviewDimensions(),
+		"issues": []map[string]any{
+			{"type": "continuity", "severity": "critical", "description": "contradicts prior chapter", "evidence": "chapter 2 says the opposite"},
+		},
+		"verdict":           "polish",
+		"summary":           "model under-classified a critical issue",
+		"affected_chapters": []int{3},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["final_verdict"] != "rewrite" {
+		t.Fatalf("expected final_verdict rewrite, got %v", result["final_verdict"])
+	}
+	p, err := s.Progress.Load()
+	if err != nil {
+		t.Fatalf("Progress.Load: %v", err)
+	}
+	if p.Flow != domain.FlowRewriting {
+		t.Fatalf("expected rewriting flow, got %s", p.Flow)
+	}
+}
+
+func passingReviewDimensions() []map[string]any {
+	return []map[string]any{
+		{"dimension": "consistency", "score": 85, "comment": "ok"},
+		{"dimension": "character", "score": 85, "comment": "ok"},
+		{"dimension": "pacing", "score": 85, "comment": "ok"},
+		{"dimension": "continuity", "score": 85, "comment": "ok"},
+		{"dimension": "foreshadow", "score": 85, "comment": "ok"},
+		{"dimension": "hook", "score": 85, "comment": "ok"},
+		{"dimension": "aesthetic", "score": 85, "comment": "ok"},
+	}
+}
