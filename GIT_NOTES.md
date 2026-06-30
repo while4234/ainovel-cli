@@ -30,6 +30,10 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Change Log
 
+- 2026-06-30 `fix: bound TUI frame height`: top-level TUI rendering
+  now pads/truncates every view to the active terminal size, with a done-state
+  regression test covering stale multi-line input height so completed/export
+  prompts cannot keep scrolling as repeated old frames.
 - 2026-06-30 `docs: record global CLI sync`: rebuild
   `D:\ainovel\ainovel-cli.exe` from `7bafcc6`, add `D:\ainovel` to the current
   user's PATH, install `D:\grok\bin\ainovel-cli.cmd` for already-opened PATH

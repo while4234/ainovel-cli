@@ -588,38 +588,38 @@ func (m Model) View() string {
 		return "加载中..."
 	}
 	if m.width < 100 {
-		return lipgloss.NewStyle().
+		return fitTerminalFrame(lipgloss.NewStyle().
 			Width(m.width).Height(m.height).
 			AlignHorizontal(lipgloss.Center).
 			AlignVertical(lipgloss.Center).
-			Render("终端宽度不足，请至少扩展到 100 列")
+			Render("终端宽度不足，请至少扩展到 100 列"), m.width, m.height)
 	}
 	if m.askState != nil {
-		return renderAskUserModal(m.width, m.height, m.askState)
+		return fitTerminalFrame(renderAskUserModal(m.width, m.height, m.askState), m.width, m.height)
 	}
 	if m.adaptConfirm != nil {
-		return renderAdaptModeConfirmModal(m.width, m.height, m.adaptConfirm)
+		return fitTerminalFrame(renderAdaptModeConfirmModal(m.width, m.height, m.adaptConfirm), m.width, m.height)
 	}
 	if m.cocreate != nil {
-		return renderCoCreateModal(m.width, m.height, m.cocreate, errorText(m.err), m.textarea.View(), m.spinnerIdx, m.quitPending)
+		return fitTerminalFrame(renderCoCreateModal(m.width, m.height, m.cocreate, errorText(m.err), m.textarea.View(), m.spinnerIdx, m.quitPending), m.width, m.height)
 	}
 	if m.adaptPreparation != nil {
-		return renderAdaptPreparationModal(m.width, m.height, m.adaptPreparation)
+		return fitTerminalFrame(renderAdaptPreparationModal(m.width, m.height, m.adaptPreparation), m.width, m.height)
 	}
 	if m.help != nil {
-		return renderHelpModal(m.width, m.height, m.help)
+		return fitTerminalFrame(renderHelpModal(m.width, m.height, m.help), m.width, m.height)
 	}
 	if m.report != nil {
-		return renderReportModal(m.width, m.height, m.report)
+		return fitTerminalFrame(renderReportModal(m.width, m.height, m.report), m.width, m.height)
 	}
 	if m.importer != nil {
-		return renderImportModal(m.width, m.height, m.importer)
+		return fitTerminalFrame(renderImportModal(m.width, m.height, m.importer), m.width, m.height)
 	}
 	if m.simulator != nil {
-		return renderSimulationModal(m.width, m.height, m.simulator)
+		return fitTerminalFrame(renderSimulationModal(m.width, m.height, m.simulator), m.width, m.height)
 	}
 	if m.modelAdd != nil {
-		return renderModelAddModal(m.width, m.height, m.modelAdd)
+		return fitTerminalFrame(renderModelAddModal(m.width, m.height, m.modelAdd), m.width, m.height)
 	}
 
 	topBar := renderTopBar(m.snapshot, m.width, m.currentSpinnerFrame(), m.version)
@@ -667,7 +667,30 @@ func (m Model) View() string {
 		commandBar := renderCommandPalette(m.width, m.compItems, m.compIdx)
 		view = overlayAboveInput(view, commandBar, inputH)
 	}
-	return view
+	return fitTerminalFrame(view, m.width, m.height)
+}
+
+func fitTerminalFrame(view string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return view
+	}
+	view = strings.ReplaceAll(view, "\r\n", "\n")
+	view = strings.ReplaceAll(view, "\r", "\n")
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, line := range lines {
+		line = ansi.Truncate(line, width, "")
+		if pad := width - ansi.StringWidth(line); pad > 0 {
+			line += strings.Repeat(" ", pad)
+		}
+		lines[i] = line
+	}
+	for len(lines) < height {
+		lines = append(lines, strings.Repeat(" ", width))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // sendCoCreate 发起一轮共创请求，统一处理 reqID、textarea、placeholder。
