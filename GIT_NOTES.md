@@ -21,15 +21,19 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest upstream source commit: `68e1f33` `fix: auto-run simulate from palette`
+- Latest upstream source commit: `3bb376f` `feat: stabilize adaptation source preparation`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: has known untracked local workspace directory `ds_xfk/`
-- Validation: latest pull, compile-only tests, notes whitespace check, and local
-  CLI build succeeded on 2026-06-30
+- Validation: latest pull and compile-only tests succeeded on 2026-06-30;
+  restart/build smoke pending in the current maintenance pass
 
 ## Change Log
 
+- 2026-06-30 `3bb376f` `feat: stabilize adaptation source preparation`: pulled
+  latest upstream code from GitHub.
+- 2026-06-30 `docs: update git notes after latest pull`: refresh baseline
+  after updating to the latest GitHub code.
 - 2026-06-30 `68e1f33` `fix: auto-run simulate from palette`: pulled latest
   upstream code from GitHub.
 - 2026-06-30 `docs: add project git maintenance notes`: record project GitHub
