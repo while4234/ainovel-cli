@@ -27,12 +27,14 @@ type References struct {
 	ContentExpansion string
 	DialogueWriting  string
 	// V2
-	StyleReference   string // 风格补充参考（可为空）
-	LongformPlanning string // 通用长篇规划参考
-	Differentiation  string // 通用差异化设计参考
-	ArcTemplates     string // 题材弧型模板（按 style 加载，可为空）
-	AntiAITone       string // 去 AI 味判据库（writer/editor 共用，全程注入）
-	AdaptationWriter string // 小说改编 Writer 专用追加规则（仅 adaptation_mode 注入）
+	StyleReference                  string // 风格补充参考（可为空）
+	LongformPlanning                string // 通用长篇规划参考
+	Differentiation                 string // 通用差异化设计参考
+	ArcTemplates                    string // 题材弧型模板（按 style 加载，可为空）
+	AntiAITone                      string // 去 AI 味判据库（writer/editor 共用，全程注入）
+	AdaptationWriter                string // 小说改编 Writer 专用追加规则（仅 adaptation_mode 注入）
+	AdaptationEditorPreserveDetails string // preserve_details 改编 Editor 专用审阅规则
+	AdaptationEditorFullRewrite     string // full_rewrite 改编 Editor 专用审阅规则
 }
 
 // ContextTool 组装当前章节所需上下文。

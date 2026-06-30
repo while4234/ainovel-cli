@@ -10,18 +10,9 @@ import (
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
 )
 
-type adaptConfirmStep int
-
-const (
-	adaptConfirmGranularity adaptConfirmStep = iota
-	adaptConfirmRewritePolicy
-)
-
 type adaptModeConfirmState struct {
-	sourcePath    string
-	step          adaptConfirmStep
-	granularity   int
-	rewritePolicy int
+	sourcePath  string
+	granularity int
 }
 
 type adaptChoice struct {
@@ -31,21 +22,15 @@ type adaptChoice struct {
 }
 
 var adaptGranularityChoices = []adaptChoice{
-	{domain.AdaptationGranularityChapter, "chapter", "目标章节与原文章节一一对应"},
-	{domain.AdaptationGranularityArc, "arc", "允许合并/拆分，但每章保留来源范围"},
-	{domain.AdaptationGranularityFree, "free", "允许重构章节结构，但保留全书覆盖表"},
-}
-
-var adaptRewriteChoices = []adaptChoice{
-	{domain.AdaptationRewritePreserveDetails, "preserve_details", "未受影响内容可复用原文，字数为硬契约"},
-	{domain.AdaptationRewriteFullRewrite, "full_rewrite", "完全重写，不强制贴近原文字数"},
+	{domain.AdaptationGranularityChapter, "chapter", "One target chapter maps to one source chapter."},
+	{domain.AdaptationGranularityArc, "arc", "Allow chapter merge/split inside source arcs."},
+	{domain.AdaptationGranularityFree, "free", "Allow broader chapter restructuring while keeping source coverage."},
 }
 
 func newAdaptModeConfirmState(sourcePath string) *adaptModeConfirmState {
 	return &adaptModeConfirmState{
-		sourcePath:    strings.TrimSpace(sourcePath),
-		granularity:   0,
-		rewritePolicy: 0,
+		sourcePath:  strings.TrimSpace(sourcePath),
+		granularity: 0,
 	}
 }
 
@@ -54,7 +39,7 @@ func (s *adaptModeConfirmState) selectedGranularity() string {
 }
 
 func (s *adaptModeConfirmState) selectedRewritePolicy() string {
-	return adaptRewriteChoices[s.rewritePolicy].value
+	return domain.AdaptationRewritePolicyForGranularity(s.selectedGranularity())
 }
 
 func (s *adaptModeConfirmState) selectedTolerance() float64 {
@@ -68,39 +53,23 @@ func (m Model) handleAdaptModeConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.Type {
 	case tea.KeyEsc:
-		if state.step == adaptConfirmRewritePolicy {
-			state.step = adaptConfirmGranularity
-			return m, nil
-		}
 		m.adaptConfirm = nil
 		m.resizeTextarea()
 		m.textarea.SetValue(state.sourcePath)
 		m.setTextareaPlaceholder(placeholderForNewMode(startupModeAdapt))
 		return m, m.textarea.Focus()
-	case tea.KeyUp:
+	case tea.KeyUp, tea.KeyLeft:
 		state.moveChoice(-1)
 		return m, nil
-	case tea.KeyDown, tea.KeyTab:
-		state.moveChoice(1)
-		return m, nil
-	case tea.KeyLeft:
-		state.moveChoice(-1)
-		return m, nil
-	case tea.KeyRight:
+	case tea.KeyDown, tea.KeyTab, tea.KeyRight:
 		state.moveChoice(1)
 		return m, nil
 	case tea.KeyRunes:
-		if len(msg.Runes) == 1 {
-			if final := state.selectNumber(msg.Runes[0]); final {
-				return m.startAdaptCoCreateWithMode(state)
-			}
+		if len(msg.Runes) == 1 && state.selectNumber(msg.Runes[0]) {
+			return m.startAdaptCoCreateWithMode(state)
 		}
 		return m, nil
 	case tea.KeyEnter, tea.KeyCtrlS:
-		if state.step == adaptConfirmGranularity {
-			state.step = adaptConfirmRewritePolicy
-			return m, nil
-		}
 		return m.startAdaptCoCreateWithMode(state)
 	}
 	return m, nil
@@ -120,33 +89,16 @@ func (m Model) startAdaptCoCreateWithMode(state *adaptModeConfirmState) (tea.Mod
 }
 
 func (s *adaptModeConfirmState) moveChoice(delta int) {
-	switch s.step {
-	case adaptConfirmGranularity:
-		s.granularity = wrapIndex(s.granularity+delta, len(adaptGranularityChoices))
-	case adaptConfirmRewritePolicy:
-		s.rewritePolicy = wrapIndex(s.rewritePolicy+delta, len(adaptRewriteChoices))
-	}
+	s.granularity = wrapIndex(s.granularity+delta, len(adaptGranularityChoices))
 }
 
 func (s *adaptModeConfirmState) selectNumber(value rune) bool {
 	idx := int(value - '1')
-	switch s.step {
-	case adaptConfirmGranularity:
-		if idx < 0 || idx >= len(adaptGranularityChoices) {
-			return false
-		}
-		s.granularity = idx
-		s.step = adaptConfirmRewritePolicy
-		return false
-	case adaptConfirmRewritePolicy:
-		if idx < 0 || idx >= len(adaptRewriteChoices) {
-			return false
-		}
-		s.rewritePolicy = idx
-		return true
-	default:
+	if idx < 0 || idx >= len(adaptGranularityChoices) {
 		return false
 	}
+	s.granularity = idx
+	return true
 }
 
 func (s *adaptModeConfirmState) buildPlan() (startup.Plan, error) {
@@ -179,8 +131,8 @@ func renderAdaptModeConfirmModal(width, height int, state *adaptModeConfirmState
 	if boxW > 96 {
 		boxW = 96
 	}
-	if boxH > 24 {
-		boxH = 24
+	if boxH > 22 {
+		boxH = 22
 	}
 	contentW := paddedModalContentWidth(boxW)
 
@@ -188,29 +140,23 @@ func renderAdaptModeConfirmModal(width, height int, state *adaptModeConfirmState
 	dimStyle := lipgloss.NewStyle().Foreground(colorDim)
 	bodyStyle := lipgloss.NewStyle().Foreground(bodyTextColor)
 
-	var lines []string
-	if state.step == adaptConfirmGranularity {
-		lines = append(lines, titleStyle.Render("第 1 步：选择章节结构"))
-	} else {
-		lines = append(lines, titleStyle.Render("第 2 步：选择改写策略"))
+	lines := []string{
+		titleStyle.Render("选择章节结构"),
+		"",
+		bodyStyle.Render("Choose chapter structure. rewrite_policy is fixed by structure."),
+		"",
 	}
-	lines = append(lines, "")
-	lines = append(lines, bodyStyle.Render("小说准备完成后只做固定模式选择，不再让 AI 追问这些必选项。"))
-	lines = append(lines, "")
-	if state.step == adaptConfirmGranularity {
-		lines = append(lines, renderAdaptOptionRows(adaptGranularityChoices, state.granularity, contentW)...)
-		lines = append(lines, "")
-		lines = append(lines, dimStyle.Render("默认选中 chapter。↑↓/←→ 切换 · 1/2/3 直选 · Enter 下一步 · Esc 返回路径输入"))
-	} else {
-		lines = append(lines, dimStyle.Render("已选结构粒度："+state.selectedGranularity()))
-		lines = append(lines, "")
-		lines = append(lines, renderAdaptOptionRows(adaptRewriteChoices, state.rewritePolicy, contentW)...)
-		lines = append(lines, "")
-		lines = append(lines, dimStyle.Render("默认选中 preserve_details，字数容差固定为 ±15%。↑↓/←→ 切换 · 1/2 直选 · Enter 进入共创 · Esc 返回上一步"))
-	}
-	lines = append(lines, "")
+	lines = append(lines, renderAdaptOptionRows(adaptGranularityChoices, state.granularity, contentW)...)
+	lines = append(lines,
+		"",
+		dimStyle.Render("Fixed policy: chapter => preserve_details"),
+		dimStyle.Render("arc => full_rewrite; free => full_rewrite"),
+		dimStyle.Render("Selected rewrite_policy: "+state.selectedRewritePolicy()),
+		dimStyle.Render("Up/Down switch | 1/2/3 start | Enter start | Esc back"),
+		"",
+	)
 
-	modal := renderPaddedModalFrame(boxW, boxH, "小说改编模式确认", "",
+	modal := renderPaddedModalFrame(boxW, boxH, "Adaptation", "",
 		strings.Split(lipgloss.NewStyle().Width(contentW).Render(strings.Join(lines, "\n")), "\n"))
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
 }

@@ -24,7 +24,7 @@ func PrepareAdaptNovel(req Request) (Plan, error) {
 		return Plan{}, fmt.Errorf("novel path is required")
 	}
 	granularity := normalizeAdaptationGranularity(req.AdaptGranularity)
-	rewritePolicy := normalizeAdaptationRewritePolicy(req.AdaptRewritePolicy)
+	rewritePolicy := domain.AdaptationRewritePolicyForGranularity(granularity)
 	wordTolerance := req.AdaptWordTolerance
 	if wordTolerance <= 0 {
 		wordTolerance = DefaultAdaptationWordTolerance
@@ -41,7 +41,7 @@ func PrepareAdaptNovel(req Request) (Plan, error) {
 
 func DefaultAdaptationBrief(granularity, rewritePolicy string, wordTolerance float64) string {
 	granularity = normalizeAdaptationGranularity(granularity)
-	rewritePolicy = normalizeAdaptationRewritePolicy(rewritePolicy)
+	rewritePolicy = domain.AdaptationRewritePolicyForGranularity(granularity)
 	if wordTolerance <= 0 {
 		wordTolerance = DefaultAdaptationWordTolerance
 	}

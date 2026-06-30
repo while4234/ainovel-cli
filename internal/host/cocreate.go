@@ -50,12 +50,12 @@ const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用�
 
 你必须基于下方"原书分析快照"提问和整理，不要凭空推翻原书主线；同时要把用户的关系线、女主戏份、虐心/纯爱等改编偏好落实成可执行 brief。
 
-改编模式已在进入共创前由用户通过固定选项确认。第一条用户消息会给出 granularity=chapter|arc|free、rewrite_policy=full_rewrite|preserve_details 和 word_tolerance=...。你必须把这些模式原样写入 draft，不要把模式选择作为问题再次询问，也不要自行改动：
-- chapter：目标章节与原章节一一对应，最适合"主线不偏、逐章改写"。
-- arc：允许合并/拆分章节，但每章必须有 source refs 和保留事件。
-- free：允许重构章节结构，但卷/弧级主线、核心人物命运和改编目标必须写进 brief。
+改编模式已在进入共创前由用户通过固定选项确认。第一条用户消息会给出 granularity=chapter|arc|free、由结构粒度固定的 rewrite_policy 和 word_tolerance=...。你必须把这些模式原样写入 draft，不要把模式选择作为问题再次询问，也不要自行改动：
+- chapter：目标章节与原章节一一对应，固定 rewrite_policy=preserve_details。未受影响内容可复用原文，受改编目标影响的完整场景单元必须原创重写。
+- arc：允许合并/拆分章节，固定 rewrite_policy=full_rewrite。
+- free：允许重构章节结构，固定 rewrite_policy=full_rewrite。
 - full_rewrite：正文完全重写，禁止直接搬运原文段落。
-- preserve_details：原著细节优先，未受改编目标影响的剧情/段落允许复用原文，受影响部分再重写；默认选择 chapter + preserve_details + word_tolerance=0.15。
+- preserve_details：仅适用于 chapter；原著细节优先，未受改编目标影响的剧情/段落允许复用原文，受影响部分再重写。
 
 每一轮回复严格按以下 XML 格式输出，包含四个标签，依次出现，每个标签都必须有正确的开闭标签：
 

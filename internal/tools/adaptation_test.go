@@ -55,9 +55,10 @@ func TestCheckAdaptationStoresDraftDigest(t *testing.T) {
 
 	tool := NewCheckAdaptationTool(s)
 	args, _ := json.Marshal(map[string]any{
-		"chapter": 1,
-		"passed":  true,
-		"summary": "保留主线，落实女主互动",
+		"chapter":         1,
+		"passed":          true,
+		"summary":         "保留主线，落实女主互动",
+		"change_evidence": passingChangeEvidence(),
 	})
 	raw, err := tool.Execute(context.Background(), args)
 	if err != nil {
@@ -120,9 +121,10 @@ func TestCommitChapterRequiresPassingAdaptationCheck(t *testing.T) {
 	}
 
 	passArgs, _ := json.Marshal(map[string]any{
-		"chapter": 1,
-		"passed":  true,
-		"summary": "主线和改编目标均满足",
+		"chapter":         1,
+		"passed":          true,
+		"summary":         "主线和改编目标均满足",
+		"change_evidence": passingChangeEvidence(),
 	})
 	if _, err := check.Execute(context.Background(), passArgs); err != nil {
 		t.Fatalf("passing check Execute: %v", err)
@@ -260,6 +262,126 @@ func TestPreserveDetailsWordContractRejectsCheckAndCommit(t *testing.T) {
 	}
 }
 
+func TestPreserveDetailsRejectsLabelResidueAndCommit(t *testing.T) {
+	s := newAdaptationToolStore(t)
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	draft := "她停在原地。（内心独白仅为示意，实际融入动作：她低头避开视线。）"
+	if err := s.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	checkArgs, _ := json.Marshal(map[string]any{
+		"chapter":         1,
+		"passed":          true,
+		"summary":         "主线和改编目标均满足",
+		"change_evidence": passingChangeEvidence(),
+	})
+	raw, err := NewCheckAdaptationTool(s).Execute(context.Background(), checkArgs)
+	if err != nil {
+		t.Fatalf("check_adaptation Execute: %v", err)
+	}
+	var checkPayload struct {
+		Passed bool     `json:"passed"`
+		Issues []string `json:"issues"`
+		Next   string   `json:"next_step"`
+	}
+	if err := json.Unmarshal(raw, &checkPayload); err != nil {
+		t.Fatalf("Unmarshal check payload: %v", err)
+	}
+	if checkPayload.Passed || !issueContains(checkPayload.Issues, "adaptation_quality") {
+		t.Fatalf("check_adaptation should fail label residue, got %+v", checkPayload)
+	}
+	if !strings.Contains(checkPayload.Next, "删除所有") {
+		t.Fatalf("repair step should mention label cleanup, got %q", checkPayload.Next)
+	}
+
+	if err := s.Adaptation.SaveCheck(domain.AdaptationCheck{
+		Chapter:     1,
+		DraftSHA256: store.TextSHA256(draft),
+		Passed:      true,
+		CheckedAt:   "2026-06-30T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SaveCheck override: %v", err)
+	}
+	commitArgs, _ := json.Marshal(map[string]any{
+		"chapter":    1,
+		"summary":    "摘要",
+		"characters": []string{"主角"},
+		"key_events": []string{"主线事件"},
+	})
+	if _, err := NewCommitChapterTool(s).Execute(context.Background(), commitArgs); err == nil ||
+		!strings.Contains(err.Error(), "adaptation_quality") {
+		t.Fatalf("commit_chapter should reject label residue, got %v", err)
+	}
+}
+
+func TestPreserveDetailsRequiresChangeEvidence(t *testing.T) {
+	s := newAdaptationToolStore(t)
+	if err := s.Drafts.SaveDraft(1, "改编草稿正文。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	checkArgs, _ := json.Marshal(map[string]any{
+		"chapter": 1,
+		"passed":  true,
+		"summary": "主线和改编目标均满足",
+	})
+	raw, err := NewCheckAdaptationTool(s).Execute(context.Background(), checkArgs)
+	if err != nil {
+		t.Fatalf("check_adaptation Execute: %v", err)
+	}
+	var payload struct {
+		Passed bool     `json:"passed"`
+		Issues []string `json:"issues"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	if payload.Passed || !issueContains(payload.Issues, "adaptation_change_evidence") {
+		t.Fatalf("expected missing evidence issue, got %+v", payload)
+	}
+}
+
+func TestPreserveDetailsRejectsNearCopyWhenChangesRequired(t *testing.T) {
+	source := strings.Repeat("原文场景", 300)
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityChapter,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
+		Status:        domain.AdaptationPlanStatusConfirmed,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:         1,
+			Title:           "目标章",
+			SourceChapters:  []int{1},
+			RequiredChanges: []string{"改写关系线"},
+		}},
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, []string{source})
+	if err := s.Drafts.SaveDraft(1, source); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	checkArgs, _ := json.Marshal(map[string]any{
+		"chapter":         1,
+		"passed":          true,
+		"summary":         "主线和改编目标均满足",
+		"change_evidence": passingChangeEvidence(),
+	})
+	raw, err := NewCheckAdaptationTool(s).Execute(context.Background(), checkArgs)
+	if err != nil {
+		t.Fatalf("check_adaptation Execute: %v", err)
+	}
+	var payload struct {
+		Passed bool     `json:"passed"`
+		Issues []string `json:"issues"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	if payload.Passed || !issueContains(payload.Issues, "adaptation_source_similarity") {
+		t.Fatalf("expected near-copy issue, got %+v", payload)
+	}
+}
+
 func TestPreserveDetailsPlanAndDraftSteerTowardFullSourceBackedChapter(t *testing.T) {
 	plan := domain.AdaptationPlan{
 		Granularity:      domain.AdaptationGranularityChapter,
@@ -344,6 +466,15 @@ func TestAdaptationSaveFoundationRejectsAppendVolume(t *testing.T) {
 	if _, err := tool.Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "confirmed plan") {
 		t.Fatalf("append_volume should be rejected in adaptation mode, got %v", err)
 	}
+}
+
+func passingChangeEvidence() []map[string]any {
+	return []map[string]any{{
+		"source_chapter": 1,
+		"source_anchor":  "原文主线事件",
+		"change":         "将改编目标涉及的互动改写成连续场景",
+		"integration":    "通过动作、对白和场景因果融入正文",
+	}}
 }
 
 func issueContains(issues []string, sub string) bool {

@@ -53,19 +53,21 @@ func loadReferences(style string) tools.References {
 		style = "default"
 	}
 	refs := tools.References{
-		ChapterGuide:      mustRead(referencesFS, "references/chapter-guide.md"),
-		HookTechniques:    mustRead(referencesFS, "references/hook-techniques.md"),
-		QualityChecklist:  mustRead(referencesFS, "references/quality-checklist.md"),
-		OutlineTemplate:   mustRead(referencesFS, "references/outline-template.md"),
-		CharacterTemplate: mustRead(referencesFS, "references/character-template.md"),
-		ChapterTemplate:   mustRead(referencesFS, "references/chapter-template.md"),
-		Consistency:       mustRead(referencesFS, "references/consistency.md"),
-		ContentExpansion:  mustRead(referencesFS, "references/content-expansion.md"),
-		DialogueWriting:   mustRead(referencesFS, "references/dialogue-writing.md"),
-		LongformPlanning:  mustRead(referencesFS, "references/longform-planning.md"),
-		Differentiation:   mustRead(referencesFS, "references/differentiation.md"),
-		AntiAITone:        mustRead(referencesFS, "references/anti-ai-tone.md"),
-		AdaptationWriter:  mustRead(promptsFS, "prompts/writer-adaptation.md"),
+		ChapterGuide:                    mustRead(referencesFS, "references/chapter-guide.md"),
+		HookTechniques:                  mustRead(referencesFS, "references/hook-techniques.md"),
+		QualityChecklist:                mustRead(referencesFS, "references/quality-checklist.md"),
+		OutlineTemplate:                 mustRead(referencesFS, "references/outline-template.md"),
+		CharacterTemplate:               mustRead(referencesFS, "references/character-template.md"),
+		ChapterTemplate:                 mustRead(referencesFS, "references/chapter-template.md"),
+		Consistency:                     mustRead(referencesFS, "references/consistency.md"),
+		ContentExpansion:                mustRead(referencesFS, "references/content-expansion.md"),
+		DialogueWriting:                 mustRead(referencesFS, "references/dialogue-writing.md"),
+		LongformPlanning:                mustRead(referencesFS, "references/longform-planning.md"),
+		Differentiation:                 mustRead(referencesFS, "references/differentiation.md"),
+		AntiAITone:                      mustRead(referencesFS, "references/anti-ai-tone.md"),
+		AdaptationWriter:                mustRead(promptsFS, "prompts/writer-adaptation.md"),
+		AdaptationEditorPreserveDetails: mustRead(promptsFS, "prompts/editor-adaptation-preserve_details.md"),
+		AdaptationEditorFullRewrite:     mustRead(promptsFS, "prompts/editor-adaptation-full_rewrite.md"),
 	}
 	if style != "" && style != "default" {
 		genreDir := "references/genres/" + style + "/"

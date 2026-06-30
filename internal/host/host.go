@@ -306,7 +306,7 @@ func (h *Host) StartAdaptationPrepared(brief string) error {
 	return h.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
 		Brief:         brief,
 		Granularity:   domain.AdaptationGranularityChapter,
-		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
 		WordTolerance: adapt.DefaultWordTolerance,
 	})
 }
@@ -328,7 +328,7 @@ func (h *Host) StartAdaptationPreparedWithOptions(options adapt.ProposalOptions)
 		return fmt.Errorf("adaptation brief is required")
 	}
 	options.Granularity = domain.NormalizeAdaptationGranularity(options.Granularity)
-	options.RewritePolicy = domain.NormalizeAdaptationRewritePolicy(options.RewritePolicy)
+	options.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(options.Granularity)
 	if options.WordTolerance <= 0 {
 		options.WordTolerance = adapt.DefaultWordTolerance
 	}

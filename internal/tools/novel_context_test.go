@@ -657,7 +657,11 @@ func TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation(t *testing.
 	if err := plainStore.Progress.Init("plain", 1); err != nil {
 		t.Fatalf("Init plain progress: %v", err)
 	}
-	refs := References{AdaptationWriter: "禁止使用（某某内心独白：...）这类补丁标签。"}
+	refs := References{
+		AdaptationWriter:                "禁止使用（某某内心独白：...）这类补丁标签。",
+		AdaptationEditorPreserveDetails: "preserve_details 审阅：禁止内心独白仅为示意。",
+		AdaptationEditorFullRewrite:     "full_rewrite 审阅：禁止搬运原文。",
+	}
 	plainTool := NewContextTool(plainStore, refs, "default")
 	plainArgs, _ := json.Marshal(map[string]any{"chapter": 1})
 	plainRaw, err := plainTool.Execute(context.Background(), plainArgs)
@@ -672,6 +676,9 @@ func TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation(t *testing.
 	}
 	if _, ok := plainPayload.Working["adaptation_writing_guidance"]; ok {
 		t.Fatal("plain writing context must not include adaptation writer guidance")
+	}
+	if _, ok := plainPayload.Working["adaptation_editor_guidance"]; ok {
+		t.Fatal("plain writing context must not include adaptation editor guidance")
 	}
 
 	plan := domain.AdaptationPlan{
@@ -720,6 +727,17 @@ func TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation(t *testing.
 	}
 	if !strings.Contains(guidance, "某某内心独白") {
 		t.Fatalf("guidance missing label rule: %q", guidance)
+	}
+	rawEditorGuidance, ok := adaptPayload.Working["adaptation_editor_guidance"]
+	if !ok {
+		t.Fatal("adaptation context should include adaptation editor guidance")
+	}
+	var editorGuidance string
+	if err := json.Unmarshal(rawEditorGuidance, &editorGuidance); err != nil {
+		t.Fatalf("Unmarshal editor guidance: %v", err)
+	}
+	if !strings.Contains(editorGuidance, "preserve_details") || !strings.Contains(editorGuidance, "内心独白仅为示意") {
+		t.Fatalf("preserve-details editor guidance mismatch: %q", editorGuidance)
 	}
 }
 

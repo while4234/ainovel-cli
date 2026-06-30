@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -11,7 +12,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-// PlanChapterTool 保存章节构思，Agent 自主决定规划粒度。
+// PlanChapterTool saves the writer's chapter plan before drafting.
 type PlanChapterTool struct {
 	store *store.Store
 }
@@ -22,30 +23,29 @@ func NewPlanChapterTool(store *store.Store) *PlanChapterTool {
 
 func (t *PlanChapterTool) Name() string { return "plan_chapter" }
 func (t *PlanChapterTool) Description() string {
-	return "保存章节写作构思。Agent 自主决定规划粒度，不强制场景拆分"
+	return "Save a chapter writing plan and contract before drafting."
 }
-func (t *PlanChapterTool) Label() string { return "规划章节" }
+func (t *PlanChapterTool) Label() string { return "plan chapter" }
 
-// 写工具，禁止并发。
 func (t *PlanChapterTool) ReadOnly(_ json.RawMessage) bool        { return false }
 func (t *PlanChapterTool) ConcurrencySafe(_ json.RawMessage) bool { return false }
 
 func (t *PlanChapterTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("chapter", schema.Int("章节号")).Required(),
-		schema.Property("title", schema.String("章节标题")).Required(),
-		schema.Property("goal", schema.String("本章目标")).Required(),
-		schema.Property("conflict", schema.String("核心冲突")).Required(),
-		schema.Property("hook", schema.String("章末钩子")).Required(),
-		schema.Property("emotion_arc", schema.String("情绪曲线")),
-		schema.Property("notes", schema.String("自由备忘（任何你觉得写作时需要记住的东西）")),
-		schema.Property("required_beats", schema.Array("本章必须完成的推进项", schema.String(""))),
-		schema.Property("forbidden_moves", schema.Array("本章明确不能发生的推进", schema.String(""))),
-		schema.Property("continuity_checks", schema.Array("本章需特别核对的连续性点", schema.String(""))),
-		schema.Property("evaluation_focus", schema.Array("Editor 重点检查项", schema.String(""))),
-		schema.Property("emotion_target", schema.String("可选：本章希望读者主要感受到的情绪")),
-		schema.Property("payoff_points", schema.Array("可选：关键章希望回应的情节点或兑现点", schema.String(""))),
-		schema.Property("hook_goal", schema.String("可选：章末希望驱动的追读欲望或悬念目标")),
+		schema.Property("chapter", schema.Int("chapter number")).Required(),
+		schema.Property("title", schema.String("chapter title")).Required(),
+		schema.Property("goal", schema.String("chapter goal")).Required(),
+		schema.Property("conflict", schema.String("core conflict")).Required(),
+		schema.Property("hook", schema.String("ending hook")).Required(),
+		schema.Property("emotion_arc", schema.String("emotion arc")),
+		schema.Property("notes", schema.String("free-form planning notes")),
+		schema.Property("required_beats", schema.Array("required beats", schema.String(""))),
+		schema.Property("forbidden_moves", schema.Array("forbidden moves", schema.String(""))),
+		schema.Property("continuity_checks", schema.Array("continuity checks", schema.String(""))),
+		schema.Property("evaluation_focus", schema.Array("editor evaluation focus", schema.String(""))),
+		schema.Property("emotion_target", schema.String("optional target reader emotion")),
+		schema.Property("payoff_points", schema.Array("optional payoff points", schema.String(""))),
+		schema.Property("hook_goal", schema.String("optional hook goal")),
 	)
 }
 
@@ -62,7 +62,7 @@ func (t *PlanChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 			"chapter":   plan.Chapter,
 			"skipped":   true,
 			"completed": true,
-			"reason":    fmt.Sprintf("第 %d 章已提交完成，不能重新规划", plan.Chapter),
+			"reason":    fmt.Sprintf("chapter %d is already completed and cannot be replanned", plan.Chapter),
 		})
 	}
 	if err := t.store.Progress.ValidateChapterWork(plan.Chapter); err != nil {
@@ -74,6 +74,7 @@ func (t *PlanChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 	if err := EnsureChapterExpanded(t.store, plan.Chapter); err != nil {
 		return nil, err
 	}
+	plan = t.enrichAdaptationContract(plan)
 
 	if err := t.store.Drafts.SaveChapterPlan(plan); err != nil {
 		return nil, fmt.Errorf("save chapter plan: %w", err)
@@ -97,7 +98,7 @@ func (t *PlanChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 }
 
 func (t *PlanChapterTool) nextStepAfterPlan(chapter int) string {
-	defaultStep := "立即调用 draft_chapter(chapter=本章节号, content=完整正文字符串) 写入正文，不要重复规划同一章"
+	defaultStep := "Call draft_chapter(chapter=current, mode=\"write\", content=full chapter prose). Do not re-plan the same chapter."
 	if !t.store.Adaptation.Active() {
 		return defaultStep
 	}
@@ -111,14 +112,56 @@ func (t *PlanChapterTool) nextStepAfterPlan(chapter int) string {
 	}
 	if plan.RewritePolicy == domain.AdaptationRewritePreserveDetails {
 		return fmt.Sprintf(
-			"改编 preserve_details 下一步：先按 source_chapters=%v 调用 read_chapter(source=\"source\", chapter=来源章号) 读取完整原文；再调用 draft_chapter(mode=\"write\") 写入完整章节正文。未受改编目标影响的原文细节要保留进草稿，不能只写改动片段；本章硬字数区间 %d-%d 字。",
+			"preserve_details next step: first call read_chapter(source=\"source\", chapter=source_ref) for source_chapters=%v; then call draft_chapter(mode=\"write\") with 完整章节正文. Unaffected source paragraphs may be preserved, but required_changes scene units must be rewritten as prose; 不能只写改动片段 or add inner-monologue/meta labels. Hard range: %d-%d runes.",
 			chapterPlan.SourceChapters, chapterPlan.TargetMinRunes, chapterPlan.TargetMaxRunes,
 		)
 	}
 	return fmt.Sprintf(
-		"改编 full_rewrite 下一步：先按 source_chapters=%v 调用 read_chapter(source=\"source\", chapter=来源章号) 对照原文主线，再调用 draft_chapter(mode=\"write\") 写入完整新正文。",
+		"full_rewrite next step: first call read_chapter(source=\"source\", chapter=source_ref) for source_chapters=%v, then call draft_chapter(mode=\"write\") with complete new prose.",
 		chapterPlan.SourceChapters,
 	)
+}
+
+func (t *PlanChapterTool) enrichAdaptationContract(plan domain.ChapterPlan) domain.ChapterPlan {
+	if !t.store.Adaptation.Active() {
+		return plan
+	}
+	adaptPlan, err := t.store.Adaptation.LoadPlan()
+	if err != nil || adaptPlan == nil || adaptPlan.Status != domain.AdaptationPlanStatusConfirmed {
+		return plan
+	}
+	chapterPlan, ok := findAdaptationChapterPlan(adaptPlan, plan.Chapter)
+	if !ok {
+		return plan
+	}
+	plan.Contract.RequiredBeats = appendUniqueStrings(plan.Contract.RequiredBeats, chapterPlan.PreserveEvents...)
+	plan.Contract.RequiredBeats = appendUniqueStrings(plan.Contract.RequiredBeats, chapterPlan.RequiredChanges...)
+	plan.Contract.ForbiddenMoves = appendUniqueStrings(plan.Contract.ForbiddenMoves, chapterPlan.ForbiddenMoves...)
+	if adaptPlan.RewritePolicy == domain.AdaptationRewritePreserveDetails {
+		plan.Contract.EvaluationFocus = appendUniqueStrings(plan.Contract.EvaluationFocus,
+			"preserve_details: unaffected source paragraphs may remain; required_changes full scene units must be rewritten as original prose.",
+			"Do not express adaptation changes as parenthetical notes, inner-monologue labels, psychology labels, or 'only an example' text.",
+			"check_adaptation must include change_evidence describing which source scene was rewritten and how it appears naturally in prose.",
+		)
+	}
+	return plan
+}
+
+func appendUniqueStrings(items []string, extra ...string) []string {
+	seen := make(map[string]struct{}, len(items)+len(extra))
+	out := make([]string, 0, len(items)+len(extra))
+	for _, item := range append(items, extra...) {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func decodeChapterPlanArgs(args json.RawMessage) (domain.ChapterPlan, error) {

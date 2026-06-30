@@ -311,7 +311,7 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 
 	proposal.Status = domain.AdaptationPlanStatusConfirmed
 	proposal.Granularity = domain.NormalizeAdaptationGranularity(proposal.Granularity)
-	proposal.RewritePolicy = domain.NormalizeAdaptationRewritePolicy(proposal.RewritePolicy)
+	proposal.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(proposal.Granularity)
 	if err := deps.Store.Adaptation.SavePlan(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation plan: %w", err)
 	}
@@ -327,7 +327,7 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 func buildPlanFromInputs(opts ProposalOptions, reports []domain.AdaptationSourceReport, manifest *domain.AdaptationSourceManifest, status string) domain.AdaptationPlan {
 	opts.Brief = strings.TrimSpace(opts.Brief)
 	opts.Granularity = domain.NormalizeAdaptationGranularity(firstNonEmptyString(opts.Granularity, inferGranularity(opts.Brief)))
-	opts.RewritePolicy = domain.NormalizeAdaptationRewritePolicy(opts.RewritePolicy)
+	opts.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(opts.Granularity)
 	if opts.WordTolerance <= 0 {
 		opts.WordTolerance = DefaultWordTolerance
 	}

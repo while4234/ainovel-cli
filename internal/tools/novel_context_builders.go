@@ -218,11 +218,23 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 	if guidance := strings.TrimSpace(t.refs.AdaptationWriter); guidance != "" {
 		working["adaptation_writing_guidance"] = guidance
 	}
+	if guidance := strings.TrimSpace(t.adaptationEditorGuidance(plan.RewritePolicy)); guidance != "" {
+		working["adaptation_editor_guidance"] = guidance
+	}
 
 	reports, reportErr := t.store.Adaptation.LoadSourceReports()
 	warn("adaptation_source_reports", reportErr)
 	if reportErr == nil && len(reports) > 0 {
 		working["source_ref_reports"] = selectSourceReports(reports, chapterPlan.SourceChapters)
+	}
+}
+
+func (t *ContextTool) adaptationEditorGuidance(rewritePolicy string) string {
+	switch domain.NormalizeAdaptationRewritePolicy(rewritePolicy) {
+	case domain.AdaptationRewritePreserveDetails:
+		return t.refs.AdaptationEditorPreserveDetails
+	default:
+		return t.refs.AdaptationEditorFullRewrite
 	}
 }
 

@@ -39,11 +39,39 @@ func TestPrepareAdaptNovelDefaultsAndExplicitOptions(t *testing.T) {
 	if explicitPlan.AdaptGranularity != domain.AdaptationGranularityArc {
 		t.Fatalf("explicit granularity=%s", explicitPlan.AdaptGranularity)
 	}
-	if explicitPlan.AdaptRewritePolicy != domain.AdaptationRewritePreserveDetails {
+	if explicitPlan.AdaptRewritePolicy != domain.AdaptationRewriteFullRewrite {
 		t.Fatalf("explicit rewrite policy=%s", explicitPlan.AdaptRewritePolicy)
 	}
 	if explicitPlan.AdaptWordTolerance != 0.2 {
 		t.Fatalf("explicit tolerance=%v", explicitPlan.AdaptWordTolerance)
+	}
+}
+
+func TestPrepareAdaptNovelDerivesRewritePolicyFromGranularity(t *testing.T) {
+	cases := []struct {
+		name        string
+		granularity string
+		wantPolicy  string
+	}{
+		{name: "chapter", granularity: domain.AdaptationGranularityChapter, wantPolicy: domain.AdaptationRewritePreserveDetails},
+		{name: "arc", granularity: domain.AdaptationGranularityArc, wantPolicy: domain.AdaptationRewriteFullRewrite},
+		{name: "free", granularity: domain.AdaptationGranularityFree, wantPolicy: domain.AdaptationRewriteFullRewrite},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := PrepareAdaptNovel(Request{
+				UserPrompt:         "改编 brief",
+				NovelPath:          "source.txt",
+				AdaptGranularity:   tc.granularity,
+				AdaptRewritePolicy: domain.AdaptationRewritePreserveDetails,
+			})
+			if err != nil {
+				t.Fatalf("PrepareAdaptNovel: %v", err)
+			}
+			if plan.AdaptRewritePolicy != tc.wantPolicy {
+				t.Fatalf("rewrite policy=%s want %s", plan.AdaptRewritePolicy, tc.wantPolicy)
+			}
+		})
 	}
 }
 

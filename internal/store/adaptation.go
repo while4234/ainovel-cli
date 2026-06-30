@@ -368,5 +368,5 @@ func normalizeAdaptationPlan(plan *domain.AdaptationPlan) {
 	}
 	plan.Granularity = domain.NormalizeAdaptationGranularity(plan.Granularity)
 	plan.Status = domain.NormalizeAdaptationPlanStatus(plan.Status)
-	plan.RewritePolicy = domain.NormalizeAdaptationRewritePolicy(plan.RewritePolicy)
+	plan.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(plan.Granularity)
 }

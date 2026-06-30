@@ -140,11 +140,30 @@ func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount 
 		if contract.Hard {
 			result["next_step"] = "字数硬契约已满足：按 read_chapter(source=\"draft\") → check_consistency → check_adaptation → commit_chapter 继续。"
 		}
-		return result
 	}
-	result["word_contract_issues"] = issues
-	if repair := adaptationWordContractRepairStep(contract, issues, chapter); repair != "" {
-		result["next_step"] = repair
+	if len(issues) > 0 {
+		result["word_contract_issues"] = issues
+		if repair := adaptationWordContractRepairStep(contract, issues, chapter); repair != "" {
+			result["next_step"] = repair
+		}
+	}
+	if qualityIssues, ok := adaptationDraftQualityStatus(t.store, chapter, loadDraftTextForQuality(t.store, chapter)); ok && len(qualityIssues) > 0 {
+		result["adaptation_quality_passed"] = false
+		result["adaptation_quality_issues"] = qualityIssues
+		if repair := adaptationQualityRepairStep(qualityIssues, chapter); repair != "" {
+			result["next_step"] = repair
+		}
 	}
 	return result
+}
+
+func loadDraftTextForQuality(st *store.Store, chapter int) string {
+	if st == nil || chapter <= 0 {
+		return ""
+	}
+	text, err := st.Drafts.LoadDraft(chapter)
+	if err != nil {
+		return ""
+	}
+	return text
 }

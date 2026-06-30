@@ -28,7 +28,17 @@ func TestLoadKeepsAdaptationGuidanceOutOfBaseWriterPrompt(t *testing.T) {
 	if strings.Contains(bundle.Prompts.Writer, "某某内心独白") {
 		t.Fatal("base writer prompt must not include adaptation-only inner-monologue label guidance")
 	}
+	if strings.Contains(bundle.Prompts.Editor, "preserve-details adaptation") ||
+		strings.Contains(bundle.Prompts.Editor, "内心独白仅为示意") {
+		t.Fatal("base editor prompt must not include adaptation-only review guidance")
+	}
 	if !strings.Contains(bundle.References.AdaptationWriter, "某某内心独白") {
 		t.Fatal("adaptation writer guidance should carry the inner-monologue label rule")
+	}
+	if !strings.Contains(bundle.References.AdaptationEditorPreserveDetails, "内心独白仅为示意") {
+		t.Fatal("preserve-details editor guidance should carry the label residue rule")
+	}
+	if !strings.Contains(bundle.References.AdaptationEditorFullRewrite, "full_rewrite") {
+		t.Fatal("full-rewrite editor guidance should be loaded")
 	}
 }

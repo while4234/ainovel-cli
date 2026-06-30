@@ -366,12 +366,24 @@ func (t *CommitChapterTool) ensureAdaptationGate(chapter int, content string) er
 		}
 		return fmt.Errorf("改编项目提交被拒：%s: %w", issues[0], errs.ErrToolPrecondition)
 	}
+	if issues := adaptationDraftQualityIssues(t.store, plan, chapterPlan, chapter, content); len(issues) > 0 {
+		if repair := adaptationQualityRepairStep(issues, chapter); repair != "" {
+			return fmt.Errorf("改编项目提交被拒：%s。%s: %w", issues[0], repair, errs.ErrToolPrecondition)
+		}
+		return fmt.Errorf("改编项目提交被拒：%s: %w", issues[0], errs.ErrToolPrecondition)
+	}
 	digest := store.TextSHA256(content)
 	passed, check, err := t.store.Adaptation.HasPassingCheck(chapter, digest)
 	if err != nil {
 		return fmt.Errorf("load adaptation check: %w: %w", errs.ErrStoreRead, err)
 	}
 	if passed {
+		if issues := adaptationChangeEvidenceIssues(plan, chapterPlan, check.ChangeEvidence); len(issues) > 0 {
+			if repair := adaptationQualityRepairStep(issues, chapter); repair != "" {
+				return fmt.Errorf("adaptation commit rejected: %s. %s: %w", issues[0], repair, errs.ErrToolPrecondition)
+			}
+			return fmt.Errorf("adaptation commit rejected: %s: %w", issues[0], errs.ErrToolPrecondition)
+		}
 		return nil
 	}
 	switch {

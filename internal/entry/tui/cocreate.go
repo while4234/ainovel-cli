@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
@@ -158,7 +159,7 @@ func newAdaptCoCreateState(sourcePath string) *cocreateState {
 
 func newAdaptCoCreateStateWithOptions(sourcePath, granularity, rewritePolicy string, wordTolerance float64) *cocreateState {
 	granularity = normalizeSelectedAdaptGranularity(granularity)
-	rewritePolicy = normalizeSelectedAdaptRewritePolicy(rewritePolicy)
+	rewritePolicy = normalizeSelectedAdaptRewritePolicy(granularity, rewritePolicy)
 	if wordTolerance <= 0 {
 		wordTolerance = startup.DefaultAdaptationWordTolerance
 	}
@@ -177,6 +178,7 @@ func adaptCoCreateOpener(granularity, rewritePolicy string, wordTolerance float6
 granularity=%s
 rewrite_policy=%s
 word_tolerance=%.2f
+rewrite_policy_rule=chapter=>preserve_details;arc/free=>full_rewrite
 
 请基于原书分析帮我确认具体改编目标。不要再询问或改动 chapter/arc/free 与 full_rewrite/preserve_details 这两个模式选择。`,
 		granularity, rewritePolicy, wordTolerance)
@@ -192,14 +194,8 @@ func normalizeSelectedAdaptGranularity(value string) string {
 	return startup.DefaultAdaptationGranularity
 }
 
-func normalizeSelectedAdaptRewritePolicy(value string) string {
-	value = strings.TrimSpace(value)
-	for _, choice := range adaptRewriteChoices {
-		if choice.value == value {
-			return value
-		}
-	}
-	return startup.DefaultAdaptationRewritePolicy
+func normalizeSelectedAdaptRewritePolicy(granularity, _ string) string {
+	return domain.AdaptationRewritePolicyForGranularity(granularity)
 }
 
 func (s *cocreateState) appendUser(text string) {

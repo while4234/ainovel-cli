@@ -12,9 +12,6 @@ import (
 func TestAdaptModeConfirmDefaultsToPreserveDetailsChapter(t *testing.T) {
 	state := newAdaptModeConfirmState("source.txt")
 
-	if state.step != adaptConfirmGranularity {
-		t.Fatalf("step=%v, want granularity", state.step)
-	}
 	if state.selectedGranularity() != domain.AdaptationGranularityChapter {
 		t.Fatalf("granularity=%s", state.selectedGranularity())
 	}
@@ -39,26 +36,20 @@ func TestAdaptModeConfirmDefaultsToPreserveDetailsChapter(t *testing.T) {
 	}
 
 	rendered := renderAdaptModeConfirmModal(100, 30, state)
-	for _, want := range []string{"第 1 步", "chapter", "arc", "free"} {
+	for _, want := range []string{"选择章节结构", "chapter", "arc", "free", "chapter => preserve_details"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("confirm modal missing %q:\n%s", want, rendered)
 		}
 	}
 }
 
-func TestAdaptModeConfirmSelectsInTwoSteps(t *testing.T) {
+func TestAdaptModeConfirmSelectsGranularityInOneStep(t *testing.T) {
 	state := newAdaptModeConfirmState("source.txt")
-	if final := state.selectNumber('2'); final {
-		t.Fatal("granularity selection should advance, not finish")
-	}
-	if state.step != adaptConfirmRewritePolicy {
-		t.Fatalf("step=%v, want rewrite policy", state.step)
+	if final := state.selectNumber('2'); !final {
+		t.Fatal("granularity selection should finish")
 	}
 	if state.selectedGranularity() != domain.AdaptationGranularityArc {
 		t.Fatalf("granularity=%s", state.selectedGranularity())
-	}
-	if final := state.selectNumber('2'); !final {
-		t.Fatal("rewrite policy selection should finish")
 	}
 	if state.selectedRewritePolicy() != domain.AdaptationRewriteFullRewrite {
 		t.Fatalf("rewrite policy=%s", state.selectedRewritePolicy())
@@ -68,8 +59,6 @@ func TestAdaptModeConfirmSelectsInTwoSteps(t *testing.T) {
 func TestAdaptModeConfirmStartsCoCreateWithSelectedMode(t *testing.T) {
 	state := newAdaptModeConfirmState("source.txt")
 	state.granularity = 1
-	state.step = adaptConfirmRewritePolicy
-	state.rewritePolicy = 1
 
 	m := NewModel(&host.Host{}, nil, "")
 	m.adaptConfirm = state
@@ -101,7 +90,7 @@ func TestAdaptCoCreateBuildPlanUsesPreselectedMode(t *testing.T) {
 	state := newAdaptCoCreateStateWithOptions(
 		"source.txt",
 		domain.AdaptationGranularityArc,
-		domain.AdaptationRewriteFullRewrite,
+		domain.AdaptationRewritePreserveDetails,
 		0.2,
 	)
 	state.apply(host.CoCreateReply{
@@ -127,12 +116,12 @@ func TestAdaptCoCreateBuildPlanUsesPreselectedMode(t *testing.T) {
 	}
 }
 
-func TestAdaptModeConfirmRewriteStepRendersTwoPolicies(t *testing.T) {
+func TestAdaptModeConfirmFreeFixesFullRewrite(t *testing.T) {
 	state := newAdaptModeConfirmState("source.txt")
-	state.step = adaptConfirmRewritePolicy
+	state.granularity = 2
 
 	rendered := renderAdaptModeConfirmModal(100, 30, state)
-	for _, want := range []string{"第 2 步", "已选结构粒度：chapter", "preserve_details", "full_rewrite"} {
+	for _, want := range []string{"选择章节结构", "free => full_rewrite"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("confirm modal missing %q:\n%s", want, rendered)
 		}

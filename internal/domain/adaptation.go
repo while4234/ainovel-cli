@@ -103,12 +103,22 @@ type AdaptationChapterPlan struct {
 
 // AdaptationCheck is saved after a draft has been checked against the plan.
 type AdaptationCheck struct {
-	Chapter     int      `json:"chapter"`
-	DraftSHA256 string   `json:"draft_sha256"`
-	Passed      bool     `json:"passed"`
-	Summary     string   `json:"summary,omitempty"`
-	Issues      []string `json:"issues,omitempty"`
-	CheckedAt   string   `json:"checked_at"`
+	Chapter        int                        `json:"chapter"`
+	DraftSHA256    string                     `json:"draft_sha256"`
+	Passed         bool                       `json:"passed"`
+	Summary        string                     `json:"summary,omitempty"`
+	Issues         []string                   `json:"issues,omitempty"`
+	ChangeEvidence []AdaptationChangeEvidence `json:"change_evidence,omitempty"`
+	CheckedAt      string                     `json:"checked_at"`
+}
+
+// AdaptationChangeEvidence records how a required adaptation change was
+// integrated into prose instead of merely described as a patch note.
+type AdaptationChangeEvidence struct {
+	SourceChapter int    `json:"source_chapter,omitempty"`
+	SourceAnchor  string `json:"source_anchor,omitempty"`
+	Change        string `json:"change"`
+	Integration   string `json:"integration,omitempty"`
 }
 
 // NormalizeAdaptationGranularity keeps the plan granularity constrained to the
@@ -130,6 +140,18 @@ func NormalizeAdaptationGranularity(value string) string {
 func NormalizeAdaptationRewritePolicy(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case AdaptationRewritePreserveDetails:
+		return AdaptationRewritePreserveDetails
+	default:
+		return AdaptationRewriteFullRewrite
+	}
+}
+
+// AdaptationRewritePolicyForGranularity is the canonical policy mapping for
+// adaptation projects. preserve_details only works when target chapters map
+// one-to-one with source chapters; broader restructuring must use full rewrite.
+func AdaptationRewritePolicyForGranularity(granularity string) string {
+	switch NormalizeAdaptationGranularity(granularity) {
+	case AdaptationGranularityChapter:
 		return AdaptationRewritePreserveDetails
 	default:
 		return AdaptationRewriteFullRewrite
