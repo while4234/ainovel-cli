@@ -192,7 +192,7 @@ func (m Model) handleModelAddMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		}
 		state.grokStarted = true
 		state.authorizeURL = msg.result.AuthorizeURL
-		state.message = "浏览器登录已启动；完成后按 Enter 检查，或粘贴 callback URL 后 Enter"
+		state.message = "浏览器登录已启动；粘贴 xAI 页面显示的一次性代码后按 Enter"
 		return m, nil, true
 	case grokLoginPolledMsg:
 		state.submitting = false
@@ -207,7 +207,7 @@ func (m Model) handleModelAddMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		if msg.result.Message != "" {
 			state.message = msg.result.Message
 		} else {
-			state.message = "还没有收到 Grok 回调；完成浏览器登录后再按 Enter"
+			state.message = "还没有收到 Grok 登录结果；请粘贴 xAI 页面显示的一次性代码"
 		}
 		return m, nil, true
 	case grokLoginCompletedMsg:
@@ -691,7 +691,7 @@ func (s *modelAddState) renderModeRows(width int) []string {
 		if s.grokComplete {
 			loginValue = "登录完成"
 		} else if s.grokStarted {
-			loginValue = "按 Enter 检查；可粘贴 callback URL"
+			loginValue = "粘贴 xAI 页面显示的一次性代码"
 		}
 		rows = append(rows, renderModelAddChoice("Grok", loginValue, "", s.step == addStepGrokLogin))
 		if s.authorizeURL != "" {
@@ -699,7 +699,7 @@ func (s *modelAddState) renderModeRows(width int) []string {
 			rows = append(rows, lipgloss.NewStyle().Foreground(colorAccent).Render(truncate(s.authorizeURL, width)))
 		}
 		if s.callbackText != "" {
-			rows = append(rows, renderModelAddInput("登录后地址栏", "<已输入>", false, s.step == addStepGrokLogin))
+			rows = append(rows, renderModelAddInput("一次性代码", "<已输入>", false, s.step == addStepGrokLogin))
 		}
 		return rows
 	default:

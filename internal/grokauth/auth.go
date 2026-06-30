@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ var (
 	httpClient             = http.DefaultClient
 	activeDiscoveryURL     = discoveryURL
 	allowInsecureEndpoints bool
+	manualCodePattern      = regexp.MustCompile(`[A-Za-z0-9._-]{16,}`)
 
 	loginMu      sync.Mutex
 	activeLogin  *loginSession
@@ -596,8 +598,8 @@ func parseManualCallbackInput(raw string) (callbackValues, error) {
 		if err != nil {
 			return callbackValues{}, &AuthError{Code: "xai_callback_invalid", Message: "Invalid callback query string."}
 		}
-	} else if looksLikeBareCode(raw) {
-		return callbackValues{code: raw, manualBareCode: true}, nil
+	} else if code, ok := extractBareManualCode(raw); ok {
+		return callbackValues{code: code, manualBareCode: true}, nil
 	} else {
 		return callbackValues{}, &AuthError{Code: "xai_callback_invalid", Message: "Paste the callback URL after browser login, the one-time code shown by xAI, or a query string beginning with ?code=."}
 	}
@@ -634,11 +636,44 @@ func looksLikeCallbackQuery(raw string) bool {
 	return strings.Contains(lowered, "code=") || strings.Contains(lowered, "state=") || strings.Contains(lowered, "error=")
 }
 
-func looksLikeBareCode(raw string) bool {
-	if len(raw) < 16 || strings.ContainsAny(raw, " \t\r\n:/?=&") {
+func extractBareManualCode(raw string) (string, bool) {
+	raw = strings.TrimSpace(strings.Trim(raw, `"'`))
+	if raw == "" || strings.Contains(raw, "://") || strings.Contains(raw, "=") {
+		return "", false
+	}
+	collapsed := removeWhitespace(raw)
+	if isManualCodeToken(collapsed) {
+		return collapsed, true
+	}
+	matches := manualCodePattern.FindAllString(raw, -1)
+	longest := ""
+	for _, match := range matches {
+		if len(match) > len(longest) {
+			longest = match
+		}
+	}
+	if isManualCodeToken(longest) {
+		return longest, true
+	}
+	return "", false
+}
+
+func removeWhitespace(raw string) string {
+	var b strings.Builder
+	for _, r := range raw {
+		if r == ' ' || r == '\t' || r == '\r' || r == '\n' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isManualCodeToken(value string) bool {
+	if len(value) < 16 {
 		return false
 	}
-	for _, r := range raw {
+	for _, r := range value {
 		switch {
 		case r >= 'a' && r <= 'z':
 		case r >= 'A' && r <= 'Z':

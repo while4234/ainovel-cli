@@ -145,6 +145,19 @@ func TestManualLoginAcceptsBareCodeWhileSessionIsPending(t *testing.T) {
 	}
 }
 
+func TestManualLoginExtractsBareCodeFromWhitespaceAndPageText(t *testing.T) {
+	resetAuthTestState(t)
+
+	raw := "输入此代码以完成登录\r\n  hOQrsFbIo1Qy9tT9NVTssjcBGxlG5_DQRYkkWzabbSp3Cb7s2VH_4kgSbVShLpmNhStIesKDuI3kvxZQ2gAjpQ  "
+	callback, err := parseManualCallbackInput(raw)
+	if err != nil {
+		t.Fatalf("parseManualCallbackInput: %v", err)
+	}
+	if !callback.manualBareCode || callback.code == "" {
+		t.Fatalf("callback = %#v", callback)
+	}
+}
+
 func TestManualLoginAcceptsQueryWithoutQuestionMark(t *testing.T) {
 	resetAuthTestState(t)
 
