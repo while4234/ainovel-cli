@@ -18,8 +18,10 @@ func TestSaveReviewPersistsContractAssessment(t *testing.T) {
 	if err := s.Progress.Init("test", 10); err != nil {
 		t.Fatalf("Progress.Init: %v", err)
 	}
-	if err := s.Progress.MarkChapterComplete(3, 3000, "", ""); err != nil {
-		t.Fatalf("MarkChapterComplete: %v", err)
+	for ch := 1; ch <= 3; ch++ {
+		if err := s.Progress.MarkChapterComplete(ch, 3000, "", ""); err != nil {
+			t.Fatalf("MarkChapterComplete(%d): %v", ch, err)
+		}
 	}
 
 	tool := NewSaveReviewTool(s)
@@ -69,8 +71,10 @@ func TestSaveReviewRejectsMissingDimensions(t *testing.T) {
 	if err := s.Progress.Init("test", 10); err != nil {
 		t.Fatalf("Progress.Init: %v", err)
 	}
-	if err := s.Progress.MarkChapterComplete(3, 3000, "", ""); err != nil {
-		t.Fatalf("MarkChapterComplete: %v", err)
+	for ch := 1; ch <= 3; ch++ {
+		if err := s.Progress.MarkChapterComplete(ch, 3000, "", ""); err != nil {
+			t.Fatalf("MarkChapterComplete(%d): %v", ch, err)
+		}
 	}
 
 	tool := NewSaveReviewTool(s)
@@ -315,17 +319,19 @@ func TestSaveReviewIssueErrorEscalatesAcceptToPolish(t *testing.T) {
 	if err := s.Progress.Init("test", 10); err != nil {
 		t.Fatalf("Progress.Init: %v", err)
 	}
-	if err := s.Progress.MarkChapterComplete(3, 3000, "", ""); err != nil {
-		t.Fatalf("MarkChapterComplete: %v", err)
+	for ch := 1; ch <= 3; ch++ {
+		if err := s.Progress.MarkChapterComplete(ch, 3000, "", ""); err != nil {
+			t.Fatalf("MarkChapterComplete(%d): %v", ch, err)
+		}
 	}
 
 	tool := NewSaveReviewTool(s)
 	args, err := json.Marshal(map[string]any{
 		"chapter":    3,
-		"scope":      "chapter",
+		"scope":      "arc",
 		"dimensions": passingReviewDimensions(),
 		"issues": []map[string]any{
-			{"type": "aesthetic", "severity": "error", "description": "meta label remains in prose", "evidence": "inner monologue label"},
+			{"type": "aesthetic", "severity": "error", "description": "chapter 2 keeps a meta label in prose", "evidence": "inner monologue label"},
 		},
 		"verdict": "accept",
 		"summary": "accepted by model despite an error issue",
@@ -355,8 +361,8 @@ func TestSaveReviewIssueErrorEscalatesAcceptToPolish(t *testing.T) {
 	if p.Flow != domain.FlowPolishing {
 		t.Fatalf("expected polishing flow, got %s", p.Flow)
 	}
-	if len(p.PendingRewrites) != 1 || p.PendingRewrites[0] != 3 {
-		t.Fatalf("expected chapter 3 pending polish, got %v", p.PendingRewrites)
+	if len(p.PendingRewrites) != 1 || p.PendingRewrites[0] != 2 {
+		t.Fatalf("expected chapter 2 pending polish, got %v", p.PendingRewrites)
 	}
 }
 
@@ -417,5 +423,14 @@ func passingReviewDimensions() []map[string]any {
 		{"dimension": "foreshadow", "score": 85, "comment": "ok"},
 		{"dimension": "hook", "score": 85, "comment": "ok"},
 		{"dimension": "aesthetic", "score": 85, "comment": "ok"},
+	}
+}
+
+func TestInferAffectedChaptersFromIssuesParsesChineseChapter(t *testing.T) {
+	chapters := inferAffectedChaptersFromIssues([]domain.ConsistencyIssue{
+		{Description: "第3章中仍保留提示词残留", Evidence: "第3章出现示意文本"},
+	})
+	if len(chapters) != 1 || chapters[0] != 3 {
+		t.Fatalf("expected chapter 3, got %v", chapters)
 	}
 }

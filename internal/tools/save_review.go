@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/voocel/agentcore/schema"
@@ -112,6 +114,9 @@ func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.
 
 	affected := r.AffectedChapters
 	if finalVerdict == "rewrite" || finalVerdict == "polish" {
+		if len(affected) == 0 {
+			affected = inferAffectedChaptersFromIssues(r.Issues)
+		}
 		if len(affected) == 0 && r.Chapter > 0 {
 			affected = []int{r.Chapter}
 		}
@@ -321,4 +326,32 @@ func reviewVerdictRank(verdict string) int {
 	default:
 		return 0
 	}
+}
+
+var issueChapterPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`第\s*(\d+)\s*章`),
+	regexp.MustCompile(`(?i)\bchapter\s+(\d+)\b`),
+	regexp.MustCompile(`(?i)\bch\.?\s*(\d+)\b`),
+}
+
+func inferAffectedChaptersFromIssues(issues []domain.ConsistencyIssue) []int {
+	seen := map[int]struct{}{}
+	var chapters []int
+	for _, issue := range issues {
+		text := strings.Join([]string{issue.Description, issue.Evidence, issue.Suggestion}, "\n")
+		for _, pattern := range issueChapterPatterns {
+			for _, match := range pattern.FindAllStringSubmatch(text, -1) {
+				chapter, err := strconv.Atoi(match[1])
+				if err != nil || chapter <= 0 {
+					continue
+				}
+				if _, ok := seen[chapter]; ok {
+					continue
+				}
+				seen[chapter] = struct{}{}
+				chapters = append(chapters, chapter)
+			}
+		}
+	}
+	return chapters
 }
