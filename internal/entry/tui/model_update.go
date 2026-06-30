@@ -211,7 +211,7 @@ func (m Model) handleBaseKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			default:
 				m.startupMode = startupModeQuick
 			}
-			m.textarea.Placeholder = placeholderForNewMode(m.startupMode)
+			m.setTextareaPlaceholder(placeholderForNewMode(m.startupMode))
 			return m, nil
 		}
 		m.focusPane = (m.focusPane + 1) % focusPaneCount
@@ -324,11 +324,11 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 			state, listenCmd, err := startAdaptPreparation(m.runtime, m.adaptSeq, text, m.width, m.height)
 			if err != nil {
 				m.err = err
-				m.textarea.Placeholder = placeholderForNewMode(m.startupMode)
+				m.setTextareaPlaceholder(placeholderForNewMode(m.startupMode))
 				return m, nil
 			}
 			m.adaptPreparation = state
-			m.textarea.Placeholder = "正在分析原小说，请稍候..."
+			m.setTextareaPlaceholder("正在分析原小说，请稍候...")
 			m.textarea.Blur()
 			return m, listenCmd
 		}
@@ -457,7 +457,7 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		if msg.resumed && m.mode == modeNew {
 			enableMouse := m.enterRunning()
 			m.resizeTextarea()
-			m.textarea.Placeholder = defaultSteerPlaceholder()
+			m.setTextareaPlaceholder(defaultSteerPlaceholder())
 			return m, tea.Batch(fetchSnapshot(m.runtime), enableMouse), true
 		}
 		return m, fetchSnapshot(m.runtime), true
@@ -488,7 +488,7 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			// 完成态不锁输入框：停止自动续写，但用户仍可输入返工要求（modeDone 输入经
 			// Continue 唤醒新一轮 run，Coordinator 路由到 reopen_book），/export、/model
 			// 等命令也需可用，输入框必须保持聚焦（issue #27、#38）。
-			m.textarea.Placeholder = "创作已完成 · 可输入返工要求(如\"重写第3章\")、/export 导出，或输入 / 看命令"
+			m.setTextareaPlaceholder("创作已完成 · 可输入返工要求(如\"重写第3章\")、/export 导出，或输入 / 看命令")
 			return m, tea.Batch(fetchSnapshot(m.runtime), listenDone(m.runtime), m.textarea.Focus()), true
 		}
 		if m.abortPending {
@@ -496,13 +496,13 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			m.snapshot.RuntimeState = "paused"
 			m.syncRuntimePlaceholder()
 		} else {
-			m.textarea.Placeholder = "运行中断，输入任意内容恢复创作"
+			m.setTextareaPlaceholder("运行中断，输入任意内容恢复创作")
 		}
 		return m, tea.Batch(fetchSnapshot(m.runtime), listenDone(m.runtime)), true
 	case abortResultMsg:
 		if msg.stopped {
 			m.abortPending = true
-			m.textarea.Placeholder = "正在暂停创作..."
+			m.setTextareaPlaceholder("正在暂停创作...")
 		}
 		return m, nil, true
 	case reportLoadedMsg:
@@ -593,7 +593,7 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus()), true
 		}
 		m.err = nil
-		m.textarea.Placeholder = defaultSteerPlaceholder()
+		m.setTextareaPlaceholder(defaultSteerPlaceholder())
 		return m, tea.Batch(fetchSnapshot(m.runtime), listenDone(m.runtime), m.textarea.Focus()), true
 	case spinnerTickMsg:
 		m.spinnerIdx = (m.spinnerIdx + 1) % len(spinnerFrames)
@@ -670,11 +670,11 @@ func (m Model) handleStartResultMsg(msg startResultMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.cocreate != nil {
 			m.cocreate.awaiting = false
-			m.textarea.Placeholder = placeholderForCoCreate(m.cocreate)
+			m.setTextareaPlaceholder(placeholderForCoCreateError(m.cocreate))
 			return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus())
 		}
 		if m.mode == modeNew {
-			m.textarea.Placeholder = placeholderForNewMode(m.startupMode)
+			m.setTextareaPlaceholder(placeholderForNewMode(m.startupMode))
 			return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus())
 		}
 		return m, fetchSnapshot(m.runtime)
@@ -684,7 +684,7 @@ func (m Model) handleStartResultMsg(msg startResultMsg) (tea.Model, tea.Cmd) {
 		m.cocreate = nil
 		enableMouse := m.enterRunning()
 		m.resizeTextarea()
-		m.textarea.Placeholder = defaultSteerPlaceholder()
+		m.setTextareaPlaceholder(defaultSteerPlaceholder())
 		return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus(), enableMouse)
 	}
 
@@ -698,12 +698,12 @@ func (m Model) handleCoCreateDoneMsg(msg cocreateDoneMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.err = msg.err
 		m.cocreate.awaiting = false
-		m.textarea.Placeholder = placeholderForCoCreate(m.cocreate)
+		m.setTextareaPlaceholder(placeholderForCoCreateError(m.cocreate))
 		return m, m.textarea.Focus()
 	}
 	m.err = nil
 	m.cocreate.apply(msg.reply)
-	m.textarea.Placeholder = placeholderForCoCreate(m.cocreate)
+	m.setTextareaPlaceholder(placeholderForCoCreate(m.cocreate))
 	return m, m.textarea.Focus()
 }
 

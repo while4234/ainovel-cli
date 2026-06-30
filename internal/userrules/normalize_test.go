@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
@@ -155,6 +156,8 @@ func (m *scriptedModel) SupportsTools() bool { return false }
 // 反馈式重试：首轮吐坏 JSON、次轮才合法。Normalize 应成功，且次轮对话里带上了上一轮的
 // 坏输出与纠正提示（反馈式，而非原样盲重试）。
 func TestNormalize_FeedbackRetryRecovers(t *testing.T) {
+	defer stubNormalizeRetrySleep(t)()
+
 	model := &scriptedModel{replies: []string{
 		"这不是 JSON",
 		`{"structured":{"chapter_words":{"min":1200,"max":1600}},"preferences":"","uncertain":[]}`,
@@ -203,6 +206,8 @@ func TestNormalize_DisablesThinkingAndReservesTokens(t *testing.T) {
 
 // 全程坏 JSON：重试耗尽后降级，且恰好尝试 normalizeMaxAttempts 次。
 func TestNormalize_FeedbackRetryExhaustsThenDegrades(t *testing.T) {
+	defer stubNormalizeRetrySleep(t)()
+
 	model := &scriptedModel{replies: []string{"坏"}}
 	n := NewNormalizer(model)
 
@@ -213,4 +218,11 @@ func TestNormalize_FeedbackRetryExhaustsThenDegrades(t *testing.T) {
 	if model.calls != normalizeMaxAttempts {
 		t.Fatalf("应尝试 %d 次，实际 %d", normalizeMaxAttempts, model.calls)
 	}
+}
+
+func stubNormalizeRetrySleep(t *testing.T) func() {
+	t.Helper()
+	original := normalizeRetrySleep
+	normalizeRetrySleep = func(context.Context, time.Duration) error { return nil }
+	return func() { normalizeRetrySleep = original }
 }

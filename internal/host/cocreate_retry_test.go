@@ -9,7 +9,17 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
+
+func TestCoCreateRetryUsesSharedPolicy(t *testing.T) {
+	if coCreateMaxAttempts != retrypolicy.MaxAttempts {
+		t.Fatalf("coCreateMaxAttempts=%d, want %d", coCreateMaxAttempts, retrypolicy.MaxAttempts)
+	}
+	if got := coCreateRetryDelay(1); got != retrypolicy.Delay(1) {
+		t.Fatalf("retry delay=%s, want %s", got, retrypolicy.Delay(1))
+	}
+}
 
 func TestCoCreateStreamRetriesTransientStreamEOF(t *testing.T) {
 	restore := stubCoCreateRetrySleep(t)

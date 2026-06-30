@@ -17,6 +17,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
+	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/rules"
 )
 
@@ -25,9 +26,11 @@ import (
 // 留窄了思考会挤占 JSON 导致截断、解析失败。max_tokens 是上限不是计费量，调大不增成本。
 const normalizeMaxTokens = 8192
 
-// normalizeMaxAttempts 归一化总尝试次数（最多 2 次重试后降级，不做无界重试，见设计 §失败与降级）。
+// normalizeMaxAttempts 归一化总尝试次数（有限重试后降级，不做无界重试，见设计 §失败与降级）。
 // LLM 输出有随机性，解析失败再试常能拿到合法 JSON；瞬时网络抖动同理。
-const normalizeMaxAttempts = 3
+const normalizeMaxAttempts = retrypolicy.MaxAttempts
+
+var normalizeRetrySleep = retrypolicy.Wait
 
 // Normalizer 把单个来源的自然语言规则归一化成 rules.Candidate（单次 LLM 调用）。
 type Normalizer struct {
@@ -100,6 +103,11 @@ func (n *Normalizer) Normalize(ctx context.Context, source, text string) rules.C
 			"module", "rules", "source", source, "attempt", attempt, "err", lastErr)
 		if ctx.Err() != nil {
 			break // ctx 取消则重试也必失败，直接降级
+		}
+		if attempt < normalizeMaxAttempts {
+			if err := normalizeRetrySleep(ctx, retrypolicy.Delay(attempt)); err != nil {
+				break
+			}
 		}
 	}
 	return degraded(source, text)

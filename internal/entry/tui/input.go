@@ -19,6 +19,11 @@ func renderInputBox(inputView, hints string, snap host.UISnapshot, outputDir str
 
 	// 输入行：提示符 + 输入框
 	prompt := lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("❯ ")
+	inputW := innerW - ansi.StringWidth(prompt)
+	if inputW < 1 {
+		inputW = 1
+	}
+	inputView = fitInlineLine(firstRenderedLine(inputView), inputW)
 	inputLine := prompt + inputView
 
 	// 提示行：左快捷键，右进度

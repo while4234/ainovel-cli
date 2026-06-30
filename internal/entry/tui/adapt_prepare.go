@@ -192,8 +192,7 @@ func (m Model) handleAdaptPreparationKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		source := m.adaptPreparation.source
 		m.adaptPreparation = nil
 		m.textarea.SetValue(source)
-		m.textarea.Placeholder = placeholderForNewMode(startupModeAdapt)
-		m.refitTextareaHeight()
+		m.setTextareaPlaceholder(placeholderForNewMode(startupModeAdapt))
 		return m, m.textarea.Focus()
 	case tea.KeyUp:
 		m.adaptPreparation.viewport.ScrollUp(1)

@@ -72,6 +72,19 @@ func placeholderForCoCreate(state *cocreateState) string {
 	}
 }
 
+func placeholderForCoCreateError(state *cocreateState) string {
+	if state != nil && state.canStart() {
+		if state.adapt {
+			return "AI 回复失败；已有 brief 可按 Ctrl+S 开始改编，或输入补充后 Enter 重试"
+		}
+		if state.stage {
+			return "AI 回复失败；已有方向可按 Ctrl+S 应用，或输入补充后 Enter 重试"
+		}
+		return "AI 回复失败；已有指令可按 Ctrl+S 开始创作，或输入补充后 Enter 重试"
+	}
+	return "AI 回复失败；直接按 Enter 重试，或继续输入补充"
+}
+
 func errorText(err error) string {
 	if err == nil {
 		return ""
@@ -302,7 +315,7 @@ func renderCoCreateBody(width, height int, state *cocreateState, errMsg, inputVi
 		BorderForeground(colorDim).
 		Padding(0, 1).
 		Margin(0, 1).
-		Render(inputView)
+		Render(firstRenderedLine(inputView))
 
 	suggestionsBox := renderCoCreateSuggestions(innerW, state)
 	suggestionsH := 0
@@ -453,7 +466,7 @@ func renderCoCreateModal(width, height int, state *cocreateState, errMsg, inputV
 		// quitPending 与 inputHints() 一致；否则共创 modal 盖住底栏，用户感受不到"再按一次 Ctrl+C"。
 		hintLine = hintStyle.Foreground(lipgloss.Color("243")).Bold(true).Render("Press Ctrl+C again to exit")
 	} else {
-		hintLine = hintStyle.Foreground(colorDim).Italic(true).Render(coCreateHint(state))
+		hintLine = hintStyle.Foreground(colorDim).Italic(true).Render(coCreateHint(state, errMsg))
 	}
 
 	body := renderCoCreateBody(boxW-4, contentH, state, errMsg, inputView, spinnerFrame)
@@ -470,7 +483,19 @@ func renderCoCreateModal(width, height int, state *cocreateState, errMsg, inputV
 }
 
 // coCreateHint 根据状态生成简短键位提示，避免与 placeholder 重复语义。
-func coCreateHint(state *cocreateState) string {
+func coCreateHint(state *cocreateState, errMsg string) string {
+	if strings.TrimSpace(errMsg) != "" {
+		if state != nil && state.canStart() {
+			if state.adapt {
+				return "AI 回复失败 · Enter 重试 · Ctrl+S 开始改编 · Esc 退出"
+			}
+			if state.stage {
+				return "AI 回复失败 · Enter 重试 · Ctrl+S 应用方向 · Esc 退出"
+			}
+			return "AI 回复失败 · Enter 重试 · Ctrl+S 开始创作 · Esc 退出"
+		}
+		return "AI 回复失败 · Enter 重试 · Esc 退出"
+	}
 	switch {
 	case state == nil:
 		return "Enter 发送 · Esc 退出"
@@ -487,6 +512,15 @@ func coCreateHint(state *cocreateState) string {
 	default:
 		return "Enter 发送 · ↑↓ 滚对话 · 滚轮滚指令 · Esc 退出"
 	}
+}
+
+func firstRenderedLine(view string) string {
+	view = strings.ReplaceAll(view, "\r\n", "\n")
+	view = strings.ReplaceAll(view, "\r", "\n")
+	if idx := strings.IndexByte(view, '\n'); idx >= 0 {
+		return view[:idx]
+	}
+	return view
 }
 
 func renderCoCreateConversationPanel(width, height int, state *cocreateState, errMsg string, spinnerFrame int) string {
@@ -608,6 +642,15 @@ func renderCoCreatePromptPanel(width, height int, state *cocreateState) string {
 		readyLabel = "已可开始改编"
 	}
 	status := lipgloss.NewStyle().Foreground(colorDim).Render("继续对话中")
+	if state.canStart() {
+		startHint := "已有指令，可继续补充或开始创作"
+		if state.stage {
+			startHint = "已有方向，可继续补充或应用"
+		} else if state.adapt {
+			startHint = "已有 brief，可继续补充或开始改编"
+		}
+		status = lipgloss.NewStyle().Foreground(colorDim).Render(startHint)
+	}
 	if state.ready() {
 		status = lipgloss.NewStyle().Foreground(colorAccent).Render(readyLabel)
 	}

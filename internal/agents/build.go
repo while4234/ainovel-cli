@@ -20,6 +20,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/host/reminder"
+	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/rules"
 	"github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
@@ -41,7 +42,7 @@ func agentToRole(name string) string {
 // 配合 ToolsAreIdempotent=true 让 stream-idle / 503 / 短暂网络抖动这类 retryable
 // 错误能在 subagent 层就近重试，而不是把整个 subagent 抛回 coordinator 重派发。
 // 项目铁律一保证写类工具走 checkpoint+digest 幂等，重试是安全的。
-const subagentMaxRetries = 7
+const subagentMaxRetries = retrypolicy.MaxAttempts
 
 // UsageRecorder 是 BuildCoordinator 可选的用量回调；签名与 OnMessage 一致，
 // 每条 agent 消息都会调一次，由 Host 层负责聚合。nil 表示不追踪。

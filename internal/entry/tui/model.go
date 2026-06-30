@@ -531,22 +531,27 @@ func defaultSteerPlaceholder() string {
 	return "输入剧情干预，例如：把感情线提前到第4章"
 }
 
+func (m *Model) setTextareaPlaceholder(text string) {
+	m.textarea.Placeholder = text
+	m.refitTextareaHeight()
+}
+
 func (m *Model) syncRuntimePlaceholder() {
 	if m.mode != modeRunning || m.cocreate != nil {
 		return
 	}
 	switch m.snapshot.RuntimeState {
 	case "completed":
-		m.textarea.Placeholder = "创作已完成"
+		m.setTextareaPlaceholder("创作已完成")
 	case "pausing":
-		m.textarea.Placeholder = "正在暂停创作..."
+		m.setTextareaPlaceholder("正在暂停创作...")
 	case "paused":
-		m.textarea.Placeholder = "创作已暂停，输入任意内容继续创作"
+		m.setTextareaPlaceholder("创作已暂停，输入任意内容继续创作")
 	default:
 		if !m.snapshot.IsRunning {
-			m.textarea.Placeholder = "运行中断，输入任意内容恢复创作"
+			m.setTextareaPlaceholder("运行中断，输入任意内容恢复创作")
 		} else {
-			m.textarea.Placeholder = defaultSteerPlaceholder()
+			m.setTextareaPlaceholder(defaultSteerPlaceholder())
 		}
 	}
 }
@@ -671,7 +676,7 @@ func (m *Model) sendCoCreate() tea.Cmd {
 	m.cocreate.reqID = m.cocreateSeq
 	m.cocreate.awaiting = true
 	m.resizeTextarea()
-	m.textarea.Placeholder = placeholderForCoCreate(m.cocreate)
+	m.setTextareaPlaceholder(placeholderForCoCreate(m.cocreate))
 	m.textarea.Blur()
 	return runCoCreate(m.runtime, m.cocreate)
 }
@@ -749,7 +754,7 @@ func (m Model) handleCoCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cocreate = nil
 			m.err = nil
 			m.resizeTextarea()
-			m.textarea.Placeholder = defaultSteerPlaceholder()
+			m.setTextareaPlaceholder(defaultSteerPlaceholder())
 			return m, tea.Batch(resumeFromCoCreate(m.runtime, draft), m.textarea.Focus())
 		}
 		if state.adapt {
@@ -791,6 +796,10 @@ func (m Model) handleCoCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		text := utils.CleanInputLine(m.textarea.Value())
 		if text == "" {
+			if m.err != nil {
+				m.err = nil
+				return m, m.sendCoCreate()
+			}
 			return m, nil
 		}
 		m.err = nil
@@ -851,16 +860,16 @@ func (m Model) exitCoCreate() (tea.Model, tea.Cmd) {
 	// 阶段共创取消：清占用标记、保持暂停，回到运行台输入态（不回填合成开场）。
 	if stage {
 		m.textarea.SetValue("")
-		m.textarea.Placeholder = defaultSteerPlaceholder()
+		m.setTextareaPlaceholder(defaultSteerPlaceholder())
 		return m, tea.Batch(cancelCoCreate(m.runtime), fetchSnapshot(m.runtime), m.textarea.Focus())
 	}
 	if adapt {
 		m.textarea.SetValue(sourcePath)
-		m.textarea.Placeholder = placeholderForNewMode(startupModeAdapt)
+		m.setTextareaPlaceholder(placeholderForNewMode(startupModeAdapt))
 		return m, m.textarea.Focus()
 	}
 	m.textarea.SetValue(initial)
-	m.textarea.Placeholder = placeholderForNewMode(m.startupMode)
+	m.setTextareaPlaceholder(placeholderForNewMode(m.startupMode))
 	return m, m.textarea.Focus()
 }
 

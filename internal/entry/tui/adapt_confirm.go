@@ -75,8 +75,7 @@ func (m Model) handleAdaptModeConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.adaptConfirm = nil
 		m.resizeTextarea()
 		m.textarea.SetValue(state.sourcePath)
-		m.textarea.Placeholder = placeholderForNewMode(startupModeAdapt)
-		m.refitTextareaHeight()
+		m.setTextareaPlaceholder(placeholderForNewMode(startupModeAdapt))
 		return m, m.textarea.Focus()
 	case tea.KeyUp:
 		state.moveChoice(-1)

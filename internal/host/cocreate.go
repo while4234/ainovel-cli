@@ -9,6 +9,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
+	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -97,7 +98,7 @@ const (
 )
 
 const (
-	coCreateMaxAttempts = 3
+	coCreateMaxAttempts = retrypolicy.MaxAttempts
 	coCreateMaxTokens   = 2048
 	coCreateTimeout     = 180 * time.Second
 )
@@ -282,25 +283,11 @@ func waitBeforeCoCreateRetry(ctx context.Context, attempt int) error {
 }
 
 func coCreateRetryDelay(attempt int) time.Duration {
-	if attempt <= 0 {
-		return time.Second
-	}
-	delay := time.Second << (attempt - 1)
-	if delay > 8*time.Second {
-		return 8 * time.Second
-	}
-	return delay
+	return retrypolicy.Delay(attempt)
 }
 
 func sleepBeforeCoCreateRetry(ctx context.Context, delay time.Duration) error {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return retrypolicy.Wait(ctx, delay)
 }
 
 func adaptSystemPrompt(st *store.Store) string {

@@ -96,6 +96,29 @@ func TestAnalyzeChapterWithOptionsRetriesUnexpectedEOF(t *testing.T) {
 	}
 }
 
+func TestAnalyzeChapterWithOptionsDefaultsToSevenRetryAttempts(t *testing.T) {
+	llm := &scriptedStructuredLLM{
+		responses: []structuredLLMResponse{
+			{err: io.ErrUnexpectedEOF},
+			{err: io.ErrUnexpectedEOF},
+			{err: io.ErrUnexpectedEOF},
+			{err: io.ErrUnexpectedEOF},
+			{err: io.ErrUnexpectedEOF},
+			{err: io.ErrUnexpectedEOF},
+			{text: validAnalyzerEnvelope},
+		},
+	}
+
+	_, err := AnalyzeChapterWithOptions(context.Background(), llm, "system", 1, "Opening", "body", "", "", nil,
+		StructuredCallOptions{DisableStream: true, Sleep: noStructuredTestSleep})
+	if err != nil {
+		t.Fatalf("AnalyzeChapterWithOptions: %v", err)
+	}
+	if llm.calls != 7 {
+		t.Fatalf("calls=%d, want 7", llm.calls)
+	}
+}
+
 func TestAnalyzeChapterWithOptionsDoesNotReturnPartialStreamOnError(t *testing.T) {
 	llm := &scriptedStructuredLLM{
 		streams: [][]agentcore.StreamEvent{{

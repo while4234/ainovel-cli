@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
 
 type LLMStreamChat interface {
@@ -44,7 +45,7 @@ func runStructuredCall[T any](
 
 	maxAttempts := opts.MaxAttempts
 	if maxAttempts <= 0 {
-		maxAttempts = 3
+		maxAttempts = retrypolicy.MaxAttempts
 	}
 	formatRetried := false
 	currentMessages := append([]agentcore.Message(nil), messages...)
@@ -151,14 +152,7 @@ func waitBeforeStructuredRetry(ctx context.Context, opts StructuredCallOptions, 
 }
 
 func structuredRetryDelay(attempt int) time.Duration {
-	if attempt <= 0 {
-		return time.Second
-	}
-	delay := time.Second << (attempt - 1)
-	if delay > 8*time.Second {
-		return 8 * time.Second
-	}
-	return delay
+	return retrypolicy.Delay(attempt)
 }
 
 func formatRetryPrompt(err error) string {

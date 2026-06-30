@@ -17,19 +17,25 @@ tracked when they contain placeholders only.
 
 For this project, a completed future development task is not done until the
 intentional changes are committed and pushed to the configured GitHub remote
-(`origin`) unless the user explicitly says not to push for that task.
+(`github`) unless the user explicitly says not to push for that task.
 
 ## Current Baseline
 
 - Latest upstream source commit: `3bb376f` `feat: stabilize adaptation source preparation`
 - Branch: `main`
-- Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
+- Remote: `github` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: has known untracked local workspace directory `ds_xfk/`
 - Validation: latest pull, compile-only tests, local CLI build, and restart smoke
   succeeded on 2026-06-30
 
 ## Change Log
 
+- 2026-06-30 pending `fix: stabilize retries and TUI input rendering`: shared
+  retry policy now uses 7 attempts with increasing delay for co-create,
+  structured source analysis, user-rule normalization, and subagent calls. TUI
+  co-create failures now show an actionable retry/start prompt, and global input
+  rendering is clamped to one line so completed/export states do not flood the
+  terminal with repeated placeholders.
 - 2026-06-30 pending `fix: choose adaptation mode before cocreate`: mode
   selection for novel adaptation now happens immediately after source
   preparation and before adaptation co-create. Validation passed for startup,

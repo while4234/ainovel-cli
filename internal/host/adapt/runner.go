@@ -11,6 +11,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
+	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -220,7 +221,7 @@ func structuredCallOptions(stage Stage, current, total int, emit func(Stage, int
 		maxTokens = 8192
 	}
 	return imp.StructuredCallOptions{
-		MaxAttempts: 3,
+		MaxAttempts: retrypolicy.MaxAttempts,
 		MaxTokens:   maxTokens,
 		OnRetry: func(ev imp.StructuredRetryEvent) {
 			if emit == nil {
