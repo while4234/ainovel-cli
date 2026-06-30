@@ -695,10 +695,11 @@ func (s *modelAddState) renderModeRows(width int) []string {
 		}
 		rows = append(rows, renderModelAddChoice("Grok", loginValue, "", s.step == addStepGrokLogin))
 		if s.authorizeURL != "" {
+			rows = append(rows, lipgloss.NewStyle().Foreground(colorDim).Render("登录链接（不是 callback）："))
 			rows = append(rows, lipgloss.NewStyle().Foreground(colorAccent).Render(truncate(s.authorizeURL, width)))
 		}
 		if s.callbackText != "" {
-			rows = append(rows, renderModelAddInput("Callback", "<已输入>", false, s.step == addStepGrokLogin))
+			rows = append(rows, renderModelAddInput("登录后地址栏", "<已输入>", false, s.step == addStepGrokLogin))
 		}
 		return rows
 	default:

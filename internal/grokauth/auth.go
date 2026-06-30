@@ -157,10 +157,11 @@ type loginSession struct {
 }
 
 type callbackValues struct {
-	code        string
-	state       string
-	oauthError  string
-	description string
+	code           string
+	state          string
+	oauthError     string
+	description    string
+	manualBareCode bool
 }
 
 func StartLogin(accountID, accountName string) (LoginStart, error) {
@@ -377,7 +378,16 @@ func completeCallback(ctx context.Context, session *loginSession, callback callb
 	if callback.oauthError != "" {
 		return AuthStatus{}, &AuthError{Code: "xai_authorization_failed", Message: "xAI authorization failed: " + callback.oauthError}
 	}
-	if callback.state == "" || callback.state != session.state {
+	if callback.manualBareCode && callback.state == "" {
+		if session.status != loginStatePending || session.verifier == "" {
+			return AuthStatus{}, &AuthError{Code: "xai_login_session_missing", ReloginRequired: true, Message: "No active Grok login session. Start login again."}
+		}
+		callback.state = session.state
+	}
+	if callback.state == "" {
+		return AuthStatus{}, &AuthError{Code: "xai_state_mismatch", Message: "xAI authorization failed: state mismatch."}
+	}
+	if callback.state != session.state {
 		return AuthStatus{}, &AuthError{Code: "xai_state_mismatch", Message: "xAI authorization failed: state mismatch."}
 	}
 	if callback.code == "" {
@@ -567,27 +577,78 @@ func parseManualCallbackInput(raw string) (callbackValues, error) {
 	}
 	var query url.Values
 	if strings.HasPrefix(raw, "?") {
-		parsed, err := url.Parse(raw)
+		var err error
+		query, err = url.ParseQuery(strings.TrimPrefix(raw, "?"))
 		if err != nil {
 			return callbackValues{}, &AuthError{Code: "xai_callback_invalid", Message: "Invalid callback query string."}
 		}
-		query = parsed.Query()
-	} else {
-		parsed, err := url.Parse(raw)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-			return callbackValues{}, &AuthError{Code: "xai_callback_invalid", Message: "Paste the full callback URL or a query string beginning with ?code=."}
+	} else if parsed, ok := parseAbsoluteURL(raw); ok {
+		if isAuthorizeURL(parsed) {
+			return callbackValues{}, &AuthError{Code: "xai_callback_authorize_url", Message: "You pasted the Grok login URL, not the callback URL. Finish browser login first, then paste the address that starts with http://127.0.0.1:56121/callback?code=..., or paste the one-time code shown by xAI."}
 		}
 		if err := validateLoopbackCallbackURL(parsed); err != nil {
 			return callbackValues{}, err
 		}
 		query = parsed.Query()
+	} else if looksLikeCallbackQuery(raw) {
+		var err error
+		query, err = url.ParseQuery(raw)
+		if err != nil {
+			return callbackValues{}, &AuthError{Code: "xai_callback_invalid", Message: "Invalid callback query string."}
+		}
+	} else if looksLikeBareCode(raw) {
+		return callbackValues{code: raw, manualBareCode: true}, nil
+	} else {
+		return callbackValues{}, &AuthError{Code: "xai_callback_invalid", Message: "Paste the callback URL after browser login, the one-time code shown by xAI, or a query string beginning with ?code=."}
 	}
-	return callbackValues{
+	callback := callbackValues{
 		code:        query.Get("code"),
 		state:       query.Get("state"),
 		oauthError:  query.Get("error"),
 		description: query.Get("error_description"),
-	}, nil
+	}
+	if callback.oauthError == "" && callback.code != "" && callback.state == "" {
+		return callbackValues{}, &AuthError{Code: "xai_callback_state_missing", Message: "Callback is missing state. Please paste the full callback URL, or paste ?code=...&state=... from the browser address bar."}
+	}
+	return callback, nil
+}
+
+func parseAbsoluteURL(raw string) (*url.URL, bool) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, false
+	}
+	return parsed, true
+}
+
+func isAuthorizeURL(parsed *url.URL) bool {
+	path := strings.ToLower(parsed.Path)
+	return strings.EqualFold(parsed.Hostname(), "auth.x.ai") && strings.Contains(path, "authorize")
+}
+
+func looksLikeCallbackQuery(raw string) bool {
+	lowered := strings.ToLower(raw)
+	if !strings.Contains(raw, "=") {
+		return false
+	}
+	return strings.Contains(lowered, "code=") || strings.Contains(lowered, "state=") || strings.Contains(lowered, "error=")
+}
+
+func looksLikeBareCode(raw string) bool {
+	if len(raw) < 16 || strings.ContainsAny(raw, " \t\r\n:/?=&") {
+		return false
+	}
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validateLoopbackCallbackURL(parsed *url.URL) error {

@@ -111,6 +111,52 @@ func TestManualLoginRejectsStateMismatch(t *testing.T) {
 	}
 }
 
+func TestManualLoginRejectsAuthorizeURLWithSpecificError(t *testing.T) {
+	resetAuthTestState(t)
+
+	_, err := parseManualCallbackInput("https://auth.x.ai/oauth2/authorize?client_id=x")
+	if err == nil {
+		t.Fatal("expected authorize URL to be rejected")
+	}
+	authErr, ok := err.(*AuthError)
+	if !ok || authErr.Code != "xai_callback_authorize_url" {
+		t.Fatalf("error = %#v", err)
+	}
+	if !strings.Contains(authErr.Message, "not the callback URL") {
+		t.Fatalf("message should explain authorize-vs-callback mismatch: %q", authErr.Message)
+	}
+}
+
+func TestManualLoginAcceptsBareCodeWhileSessionIsPending(t *testing.T) {
+	resetAuthTestState(t)
+	server := newOAuthTestServer(t, 3600)
+	defer server.Close()
+	activeDiscoveryURL = server.URL + "/.well-known/openid-configuration"
+
+	if _, err := StartLogin("work", "Work"); err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	status, err := CompleteLogin(context.Background(), "hOQrsFbIo1Qy9tT9NVTssjcBGxlG5_DQRYkkWzabbSp3Cb7s2VH_4kgSbVShLpmNhStIesKDuI3kvxZQ2gAjpQ")
+	if err != nil {
+		t.Fatalf("CompleteLogin: %v", err)
+	}
+	if !status.LoggedIn {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestManualLoginAcceptsQueryWithoutQuestionMark(t *testing.T) {
+	resetAuthTestState(t)
+
+	callback, err := parseManualCallbackInput("code=auth-code&state=state-value")
+	if err != nil {
+		t.Fatalf("parseManualCallbackInput: %v", err)
+	}
+	if callback.code != "auth-code" || callback.state != "state-value" {
+		t.Fatalf("callback = %#v", callback)
+	}
+}
+
 func TestManualLoginAcceptsFullCallbackURL(t *testing.T) {
 	resetAuthTestState(t)
 	server := newOAuthTestServer(t, 3600)
