@@ -112,6 +112,61 @@ func TestWrapModelAppliesPromptForCurrentModel(t *testing.T) {
 	}
 }
 
+func TestWrapModelKeepsThinkingHistoryForNonGrokModels(t *testing.T) {
+	capture := &captureModel{provider: "openai", model: "gpt-5.5"}
+	wrapped := WrapModel(capture)
+
+	_, err := wrapped.Generate(context.Background(), []agentcore.Message{
+		agentcore.SystemMsg("role prompt"),
+		{
+			Role: agentcore.RoleAssistant,
+			Content: []agentcore.ContentBlock{
+				agentcore.ThinkingBlock("private reasoning"),
+				agentcore.TextBlock("answer"),
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if got := capture.messages[1].ThinkingContent(); got != "private reasoning" {
+		t.Fatalf("non-Grok history should keep thinking blocks, got %q", got)
+	}
+}
+
+func TestWrapModelNormalizesGrokThinkingHistoryForStream(t *testing.T) {
+	capture := &captureModel{provider: "grok", model: "grok-4.3-latest"}
+	wrapped := WrapModel(capture)
+
+	stream, err := wrapped.GenerateStream(context.Background(), []agentcore.Message{
+		agentcore.SystemMsg("role prompt"),
+		{
+			Role: agentcore.RoleAssistant,
+			Content: []agentcore.ContentBlock{
+				agentcore.ThinkingBlock("private reasoning"),
+				agentcore.TextBlock("answer"),
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+	for range stream {
+	}
+
+	if got := capture.messages[1].ThinkingContent(); got != "" {
+		t.Fatalf("Grok history should not replay provider-native thinking blocks, got %q", got)
+	}
+	text := capture.messages[1].TextContent()
+	if !strings.Contains(text, "<thinking>\nprivate reasoning\n</thinking>") {
+		t.Fatalf("Grok history should preserve reasoning as plain text context, got %q", text)
+	}
+	if !strings.Contains(text, "answer") {
+		t.Fatalf("Grok history should preserve assistant text, got %q", text)
+	}
+}
+
 type captureModel struct {
 	provider string
 	model    string
@@ -126,7 +181,8 @@ func (m *captureModel) Generate(_ context.Context, messages []agentcore.Message,
 	}}, nil
 }
 
-func (m *captureModel) GenerateStream(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+func (m *captureModel) GenerateStream(_ context.Context, messages []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	m.messages = messages
 	ch := make(chan agentcore.StreamEvent)
 	close(ch)
 	return ch, nil

@@ -25,11 +25,11 @@ type modelPromptWrapper struct {
 }
 
 func (m *modelPromptWrapper) Generate(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
-	return m.inner.Generate(ctx, m.apply(messages), tools, opts...)
+	return m.inner.Generate(ctx, m.prepare(messages), tools, opts...)
 }
 
 func (m *modelPromptWrapper) GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
-	return m.inner.GenerateStream(ctx, m.apply(messages), tools, opts...)
+	return m.inner.GenerateStream(ctx, m.prepare(messages), tools, opts...)
 }
 
 func (m *modelPromptWrapper) SupportsTools() bool {
@@ -65,6 +65,20 @@ func (m *modelPromptWrapper) Capabilities() llm.Capabilities {
 		return provider.Capabilities()
 	}
 	return llm.Capabilities{}
+}
+
+func (m *modelPromptWrapper) prepare(messages []agentcore.Message) []agentcore.Message {
+	if m.shouldNormalizeGrokHistory() {
+		// Grok's compat provider can return reasoning blocks, but rejects them
+		// when replayed as history on the next request.
+		messages = llm.TransformMessages(messages, "grok")
+	}
+	return m.apply(messages)
+}
+
+func (m *modelPromptWrapper) shouldNormalizeGrokHistory() bool {
+	model := strings.ToLower(m.promptModelName())
+	return strings.Contains(model, "grok") || strings.Contains(model, "xai")
 }
 
 func (m *modelPromptWrapper) apply(messages []agentcore.Message) []agentcore.Message {
