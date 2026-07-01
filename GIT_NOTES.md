@@ -20,6 +20,13 @@ For this project, a completed future development task is not done until the
 intentional changes are committed and pushed to the configured GitHub remote
 (`origin`) unless the user explicitly says not to push for that task.
 
+## Project Operating Preference
+
+For this project, after each completed generation or development task that
+changes the running project, backend, or Web UI, rebuild/restart the local
+`ainovel-cli.exe web` service and explicitly tell the user to refresh the Web
+page. The normal local Web URL is `http://127.0.0.1:9898`.
+
 ## Current Baseline
 
 - Latest source commit: `9d40f9b` `feat: add web grok oauth login`
@@ -27,9 +34,11 @@ intentional changes are committed and pushed to the configured GitHub remote
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: clean after the Grok OAuth Web feature commit, except for
   ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` was rebuilt after the Web UI
-  refresh using the project-local Go 1.25.5 toolchain. The
-  `D:\grok\bin\ainovel-cli.cmd` shim still points to `D:\ainovel\ainovel-cli.exe`.
+- Runtime: local `D:\ainovel\ainovel-cli.exe` was rebuilt after the Grok OAuth
+  Web work using the project-local Go 1.25.5 toolchain, then restarted on
+  `http://127.0.0.1:9898` with runtime root
+  `C:\Users\RondleLiu\.ainovel\novels-preview`. The `D:\grok\bin\ainovel-cli.cmd`
+  shim still points to `D:\ainovel\ainovel-cli.exe`.
 - Validation: `go test ./internal/entry/web`, `npm --prefix
   internal/entry/web/ui test`, `npm --prefix internal/entry/web/ui run build`,
   `git diff --check`, and Playwright local Web smoke checks succeeded on
