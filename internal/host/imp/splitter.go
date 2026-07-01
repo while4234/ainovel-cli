@@ -28,6 +28,9 @@ const ws = `\s\x{3000}`
 // cnNum 是章节编号可用的数字字符：阿拉伯 / 全角 / 中文小写 / 中文大写繁体（壹贰叁…萬）。
 const cnNum = `零〇○Ｏ０一二三四五六七八九十百千万两廿卅壹贰貳叁參肆伍陆陸柒捌玖拾佰仟萬兩\d`
 
+// parenthesizedCnNum 只包含中文数字，避免把正文列表里的 (1) 误判为章节。
+const parenthesizedCnNum = `零〇○一二三四五六七八九十百千万两廿卅壹贰貳叁參肆伍陆陸柒捌玖拾佰仟萬兩`
+
 // sub 是副标题捕获：取到行尾，但不吞掉右包裹符（】〗），留给结尾的可选闭括号。
 const sub = `[^】〗》\n]*`
 
@@ -92,6 +95,11 @@ var bareChineseChapterRegex = regexp.MustCompile(
 		`\s*章(?:` + titleSep + `(?P<title>` + sub + `))?[】〗]?[` + ws + `]*$`,
 )
 
+var parenthesizedChineseChapterRegex = regexp.MustCompile(
+	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` +
+		`(?P<title>[（(][` + ws + `]*[` + parenthesizedCnNum + `]+[` + ws + `]*[）)])[` + ws + `]*$`,
+)
+
 var nonStoryHeadingRegex = regexp.MustCompile(
 	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` + workTitlePrefix + `[【〖]?[` + ws + `]*` +
 		`(?:灵异档案(?:及编者语)?|编者语|闲话|.*预告)` +
@@ -100,6 +108,10 @@ var nonStoryHeadingRegex = regexp.MustCompile(
 
 var inlineTrailingChapterRegex = regexp.MustCompile(
 	`(?i)(?P<prefix>.+[。！？!?」”])(?P<title>第\s*(?:[` + cnNum + `]+)\s*(?:章|回|话|节|幕)[` + ws + `]+` + sub + `)$`,
+)
+
+var inlineTrailingParenthesizedChapterRegex = regexp.MustCompile(
+	`(?P<prefix>.+?)(?P<title>[（(][` + ws + `]*[` + parenthesizedCnNum + `]+[` + ws + `]*[）)])[` + ws + `]*$`,
 )
 
 // SplitFile 把单个文本文件切分成章节列表。
@@ -116,11 +128,12 @@ func SplitFile(path string) ([]Chapter, error) {
 }
 
 type splitMarker struct {
-	line          int
-	title         string
-	chapter       bool
-	volumeOnly    bool
-	fallbackTitle bool
+	line                int
+	title               string
+	chapter             bool
+	volumeOnly          bool
+	fallbackTitle       bool
+	parenthesizedNumber bool
 }
 
 // splitText 是纯函数版切分，便于单测。
@@ -130,14 +143,16 @@ func splitText(text string, pattern *regexp.Regexp) []Chapter {
 	for i, ln := range lines {
 		if mark, ok := parseMarker(ln, pattern, len(marks)+1); ok {
 			marks = append(marks, splitMarker{
-				line:          i,
-				title:         mark.title,
-				chapter:       mark.chapter,
-				volumeOnly:    mark.volumeOnly,
-				fallbackTitle: mark.fallbackTitle,
+				line:                i,
+				title:               mark.title,
+				chapter:             mark.chapter,
+				volumeOnly:          mark.volumeOnly,
+				fallbackTitle:       mark.fallbackTitle,
+				parenthesizedNumber: mark.parenthesizedNumber,
 			})
 		}
 	}
+	marks = filterInactiveParenthesizedNumberMarkers(marks)
 	if len(marks) == 0 {
 		return nil
 	}
@@ -176,10 +191,39 @@ func splitText(text string, pattern *regexp.Regexp) []Chapter {
 }
 
 type parsedMarker struct {
-	title         string
-	chapter       bool
-	volumeOnly    bool
-	fallbackTitle bool
+	title               string
+	chapter             bool
+	volumeOnly          bool
+	fallbackTitle       bool
+	parenthesizedNumber bool
+}
+
+func filterInactiveParenthesizedNumberMarkers(marks []splitMarker) []splitMarker {
+	ordinaryChapters := 0
+	parenthesizedChapters := 0
+	for _, mark := range marks {
+		if !mark.chapter {
+			continue
+		}
+		if mark.parenthesizedNumber {
+			parenthesizedChapters++
+			continue
+		}
+		ordinaryChapters++
+	}
+
+	if parenthesizedChapters == 0 || (ordinaryChapters == 0 && parenthesizedChapters >= 2) {
+		return marks
+	}
+
+	filtered := marks[:0]
+	for _, mark := range marks {
+		if mark.parenthesizedNumber {
+			continue
+		}
+		filtered = append(filtered, mark)
+	}
+	return filtered
 }
 
 func parseMarker(line string, pattern *regexp.Regexp, fallbackNum int) (parsedMarker, bool) {
@@ -205,6 +249,10 @@ func parseMarker(line string, pattern *regexp.Regexp, fallbackNum int) (parsedMa
 			fallbackTitle = true
 		}
 		return parsedMarker{title: title, chapter: true, fallbackTitle: fallbackTitle}, true
+	}
+	if loc := parenthesizedChineseChapterRegex.FindStringSubmatchIndex(line); loc != nil {
+		title := extractNamedGroup(line, parenthesizedChineseChapterRegex, loc, "title")
+		return parsedMarker{title: title, chapter: true, parenthesizedNumber: true}, true
 	}
 	if loc := workTitleChapterRegex.FindStringSubmatchIndex(line); loc != nil {
 		title := extractTitle(line, workTitleChapterRegex, loc, fallbackNum)
@@ -246,6 +294,10 @@ func repeatedTitleBeforeContent(lines []string, marks []splitMarker, idx int) bo
 
 var metadataOnlyLineRegex = regexp.MustCompile(`^(?:作者|字数)[:：]|^\d{4}(?:[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?)?$|^[*＊]{3,}$`)
 
+var sourceSiteNoiseLineRegex = regexp.MustCompile(
+	`^(?:\d{4}-\d{1,2}-\d{1,2}\d{1,2}:\d{2}#\d+|.*该用户已被删除|精华积分N/A帖子阅读权限注册N/A)$`,
+)
+
 func isMetadataOnlyLine(line string) bool {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -269,6 +321,14 @@ func nextMarkerFollowsOnlyBlankLines(lines []string, marks []splitMarker, idx in
 func normalizeChapterLines(lines []string) []string {
 	normalized := make([]string, 0, len(lines))
 	for _, line := range lines {
+		if prefix, title, ok := splitInlineTrailingParenthesizedChapter(line); ok {
+			if !isSourceSiteNoiseLine(prefix) {
+				normalized = append(normalized, line)
+				continue
+			}
+			normalized = append(normalized, title)
+			continue
+		}
 		prefix, title, ok := splitInlineTrailingChapter(line)
 		if !ok {
 			normalized = append(normalized, line)
@@ -280,6 +340,19 @@ func normalizeChapterLines(lines []string) []string {
 		normalized = append(normalized, title)
 	}
 	return normalized
+}
+
+func splitInlineTrailingParenthesizedChapter(line string) (string, string, bool) {
+	loc := inlineTrailingParenthesizedChapterRegex.FindStringSubmatchIndex(line)
+	if loc == nil {
+		return "", "", false
+	}
+	prefix := extractNamedGroup(line, inlineTrailingParenthesizedChapterRegex, loc, "prefix")
+	title := extractNamedGroup(line, inlineTrailingParenthesizedChapterRegex, loc, "title")
+	if prefix == "" || title == "" {
+		return "", "", false
+	}
+	return strings.TrimSpace(prefix), title, true
 }
 
 func splitInlineTrailingChapter(line string) (string, string, bool) {
@@ -380,5 +453,23 @@ func stripTrailingNoise(content string) string {
 	if loc := trailerRe.FindStringIndex(content); loc != nil {
 		return strings.TrimRight(content[:loc[0]], " \t\n")
 	}
-	return content
+	return stripTrailingSourceSiteNoise(content)
+}
+
+func stripTrailingSourceSiteNoise(content string) string {
+	lines := strings.Split(content, "\n")
+	end := len(lines)
+	for end > 0 {
+		line := strings.TrimSpace(lines[end-1])
+		if line == "" || isSourceSiteNoiseLine(line) {
+			end--
+			continue
+		}
+		break
+	}
+	return strings.Join(lines[:end], "\n")
+}
+
+func isSourceSiteNoiseLine(line string) bool {
+	return sourceSiteNoiseLineRegex.MatchString(strings.TrimSpace(line))
 }

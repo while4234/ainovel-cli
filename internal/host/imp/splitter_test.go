@@ -190,6 +190,53 @@ func TestSplitText_BareChineseChapterNumber(t *testing.T) {
 	}
 }
 
+func TestSplitText_ParenthesizedChineseChapterNumbers(t *testing.T) {
+	src := `（一）
+正文一。
+
+(二)
+正文二。
+2004-6-816:01#1
+
+free990614该用户已被删除
+
+精华积分N/A帖子阅读权限注册N/A（三）
+
+正文三。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 3 {
+		t.Fatalf("want 3, got %d", len(got))
+	}
+	assertChapterTitlesAt(t, got, 1, []string{"（一）", "(二)", "（三）"})
+	if strings.Contains(got[1].Content, "2004-6-8") ||
+		strings.Contains(got[1].Content, "该用户已被删除") ||
+		strings.Contains(got[1].Content, "精华积分") {
+		t.Fatalf("source-site metadata leaked into chapter body: %q", got[1].Content)
+	}
+	if !strings.HasPrefix(got[2].Content, "正文三") {
+		t.Fatalf("chapter 3 content: %q", got[2].Content)
+	}
+}
+
+func TestSplitText_ParenthesizedChineseMarkersDoNotOverrideStandardChapters(t *testing.T) {
+	src := `第一章 开始
+（一）
+小节正文。
+
+第二章 继续
+正文二。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 2 {
+		t.Fatalf("want 2, got %d", len(got))
+	}
+	assertChapterTitlesAt(t, got, 1, []string{"开始", "继续"})
+	if !strings.Contains(got[0].Content, "（一）") || !strings.Contains(got[0].Content, "小节正文") {
+		t.Fatalf("parenthesized section should stay in chapter body: %q", got[0].Content)
+	}
+}
+
 func TestSplitText_BracketedWorkTitlePrefix(t *testing.T) {
 	src := `【女神攻略】第二章 目睹
 正文二。
@@ -599,6 +646,29 @@ func TestSplitFile_ExternalNsglFixture(t *testing.T) {
 		"生病与睡觉", "糊涂人明白事", "二龙戏珠（上）", "二龙戏珠（下）第(1/8)页",
 		"一日千里", "真假救美", "医院迷情",
 	})
+}
+
+func TestSplitFile_ExternalMzdnhFixture(t *testing.T) {
+	path := os.Getenv("AINOVEL_MZDNH_FIXTURE")
+	if path == "" {
+		t.Skip("set AINOVEL_MZDNH_FIXTURE to run the external mzdnh.txt splitter acceptance test")
+	}
+	got, err := SplitFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 17 {
+		t.Fatalf("mzdnh fixture chapters: got %d want 17", len(got))
+	}
+	assertChapterTitlesAt(t, got, 1, []string{
+		"（一）", "（二）", "（三）", "（四）", "（五）", "（六）", "（七）", "（八）", "（九）",
+		"（十）", "（十一）", "（十二）", "（十三）", "（十四）", "（十五）", "（十六）", "（十七）",
+	})
+	for i, ch := range got {
+		if strings.Contains(ch.Content, "精华积分") || strings.Contains(ch.Content, "该用户已被删除") {
+			t.Fatalf("source-site metadata leaked into chapter %d: %q", i+1, ch.Content)
+		}
+	}
 }
 
 func assertChapterTitlesAt(t *testing.T, got []Chapter, start int, want []string) {
