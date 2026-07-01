@@ -204,6 +204,58 @@ func TestBuildAdaptationProposalChapterPreserveDetailsUsesSourceRuneRanges(t *te
 	}
 }
 
+func TestBuildAdaptationProposalFullRewriteDisablesWordTolerance(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	source, err := st.Adaptation.SaveSourceChapter(1, "One", strings.Repeat("A", 20))
+	if err != nil {
+		t.Fatalf("SaveSourceChapter: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: 1,
+		Chapters:     []domain.AdaptationSource{source},
+	}); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceFoundation(testSourceFoundation()); err != nil {
+		t.Fatalf("SaveSourceFoundation: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceReports([]domain.AdaptationSourceReport{
+		{Chapter: 1, Title: "One", KeyEvents: []string{"event one"}},
+	}); err != nil {
+		t.Fatalf("SaveSourceReports: %v", err)
+	}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st}, ProposalOptions{
+		Brief:         "按弧重写，主线稳定",
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
+		WordTolerance: 0.2,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if proposal.RewritePolicy != domain.AdaptationRewriteFullRewrite {
+		t.Fatalf("rewrite policy=%s", proposal.RewritePolicy)
+	}
+	if proposal.WordTolerance != 0 || proposal.TargetMinRunes != 0 || proposal.TargetMaxRunes != 0 {
+		t.Fatalf("full rewrite should not carry word ranges: %+v", proposal)
+	}
+	if len(proposal.Chapters) != 1 {
+		t.Fatalf("chapters=%d, want 1", len(proposal.Chapters))
+	}
+	chapter := proposal.Chapters[0]
+	if chapter.TargetMinRunes != 0 || chapter.TargetMaxRunes != 0 {
+		t.Fatalf("full rewrite chapter should not carry word ranges: %+v", chapter)
+	}
+	if chapter.SourceRunes != 20 || chapter.TargetRunes != 20 {
+		t.Fatalf("source/target runes should remain informational: %+v", chapter)
+	}
+}
+
 func testSourceFoundation() domain.AdaptationSourceFoundation {
 	return domain.AdaptationSourceFoundation{
 		Premise: "# Source Book\n\nA compact source premise.",

@@ -43,7 +43,10 @@ func (s *adaptModeConfirmState) selectedRewritePolicy() string {
 }
 
 func (s *adaptModeConfirmState) selectedTolerance() float64 {
-	return startup.DefaultAdaptationWordTolerance
+	return startup.AdaptationWordToleranceForGranularity(
+		s.selectedGranularity(),
+		startup.DefaultAdaptationWordTolerance,
+	)
 }
 
 func (m Model) handleAdaptModeConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

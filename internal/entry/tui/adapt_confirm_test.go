@@ -54,6 +54,9 @@ func TestAdaptModeConfirmSelectsGranularityInOneStep(t *testing.T) {
 	if state.selectedRewritePolicy() != domain.AdaptationRewriteFullRewrite {
 		t.Fatalf("rewrite policy=%s", state.selectedRewritePolicy())
 	}
+	if state.selectedTolerance() != 0 {
+		t.Fatalf("arc tolerance=%v", state.selectedTolerance())
+	}
 }
 
 func TestAdaptModeConfirmStartsCoCreateWithSelectedMode(t *testing.T) {
@@ -77,8 +80,12 @@ func TestAdaptModeConfirmStartsCoCreateWithSelectedMode(t *testing.T) {
 	if got.cocreate.adaptRewritePolicy != domain.AdaptationRewriteFullRewrite {
 		t.Fatalf("rewrite policy=%s", got.cocreate.adaptRewritePolicy)
 	}
+	if got.cocreate.adaptWordTolerance != 0 {
+		t.Fatalf("word tolerance=%v", got.cocreate.adaptWordTolerance)
+	}
 	if !strings.Contains(got.cocreate.initialInput(), "granularity=arc") ||
-		!strings.Contains(got.cocreate.initialInput(), "rewrite_policy=full_rewrite") {
+		!strings.Contains(got.cocreate.initialInput(), "rewrite_policy=full_rewrite") ||
+		!strings.Contains(got.cocreate.initialInput(), "word_tolerance=disabled") {
 		t.Fatalf("initial co-create input missing selected mode:\n%s", got.cocreate.initialInput())
 	}
 	if cmd == nil {
@@ -108,7 +115,7 @@ func TestAdaptCoCreateBuildPlanUsesPreselectedMode(t *testing.T) {
 	if plan.AdaptRewritePolicy != domain.AdaptationRewriteFullRewrite {
 		t.Fatalf("rewrite policy=%s", plan.AdaptRewritePolicy)
 	}
-	if plan.AdaptWordTolerance != 0.2 {
+	if plan.AdaptWordTolerance != 0 {
 		t.Fatalf("word tolerance=%v", plan.AdaptWordTolerance)
 	}
 	if !strings.Contains(plan.RawPrompt, "强化女主互动") {

@@ -369,4 +369,13 @@ func normalizeAdaptationPlan(plan *domain.AdaptationPlan) {
 	plan.Granularity = domain.NormalizeAdaptationGranularity(plan.Granularity)
 	plan.Status = domain.NormalizeAdaptationPlanStatus(plan.Status)
 	plan.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(plan.Granularity)
+	if plan.RewritePolicy != domain.AdaptationRewritePreserveDetails {
+		plan.WordTolerance = 0
+		plan.TargetMinRunes = 0
+		plan.TargetMaxRunes = 0
+		for i := range plan.Chapters {
+			plan.Chapters[i].TargetMinRunes = 0
+			plan.Chapters[i].TargetMaxRunes = 0
+		}
+	}
 }

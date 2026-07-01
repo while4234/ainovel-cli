@@ -71,10 +71,7 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 		if strings.TrimSpace(rewritePolicy) == "" {
 			rewritePolicy = startup.DefaultAdaptationRewritePolicy
 		}
-		wordTolerance := opts.AdaptWordTolerance
-		if wordTolerance <= 0 {
-			wordTolerance = startup.DefaultAdaptationWordTolerance
-		}
+		wordTolerance := startup.AdaptationWordToleranceForGranularity(granularity, opts.AdaptWordTolerance)
 		plan, err := startup.PrepareAdaptNovel(startup.Request{
 			Mode:               startup.ModeAdaptNovel,
 			UserPrompt:         prompt,
@@ -88,8 +85,11 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(stderr, "headless 改编启动: %s (granularity=%s rewrite_policy=%s word_tolerance=%.2f)\n",
-			eng.Dir(), plan.AdaptGranularity, plan.AdaptRewritePolicy, plan.AdaptWordTolerance)
+		fmt.Fprintf(stderr, "headless 改编启动: %s (granularity=%s rewrite_policy=%s word_tolerance=%s)\n",
+			eng.Dir(),
+			plan.AdaptGranularity,
+			plan.AdaptRewritePolicy,
+			startup.FormatAdaptationWordTolerance(plan.AdaptGranularity, plan.AdaptWordTolerance))
 		if err := runAdaptPreparation(context.Background(), eng, opts.AdaptPath, stderr); err != nil {
 			return err
 		}

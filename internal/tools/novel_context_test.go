@@ -741,6 +741,53 @@ func TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation(t *testing.
 	}
 }
 
+func TestContextToolShowsDisabledWordToleranceForFullRewrite(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity:    domain.AdaptationGranularityArc,
+		RewritePolicy:  domain.AdaptationRewritePreserveDetails,
+		Status:         domain.AdaptationPlanStatusConfirmed,
+		WordTolerance:  0.15,
+		TargetMinRunes: 85,
+		TargetMaxRunes: 115,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "目标章",
+			SourceChapters: []int{1},
+			SourceRunes:    100,
+			TargetRunes:    100,
+			TargetMinRunes: 85,
+			TargetMaxRunes: 115,
+		}},
+	}
+	adaptStore := newAdaptationToolStoreWithPlan(t, plan, []string{"原文主线事件。"})
+	if err := adaptStore.Outline.SaveOutline([]domain.OutlineEntry{{Chapter: 1, Title: "目标章", CoreEvent: "改编事件"}}); err != nil {
+		t.Fatalf("SaveOutline adapt: %v", err)
+	}
+	if err := adaptStore.Progress.Init("adapt", 1); err != nil {
+		t.Fatalf("Init adapt progress: %v", err)
+	}
+
+	tool := NewContextTool(adaptStore, References{}, "default")
+	args, _ := json.Marshal(map[string]any{"chapter": 1})
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Working map[string]json.RawMessage `json:"working_memory"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	var adaptation map[string]any
+	if err := json.Unmarshal(payload.Working["adaptation"], &adaptation); err != nil {
+		t.Fatalf("Unmarshal adaptation: %v", err)
+	}
+	if adaptation["word_tolerance"] != "disabled" {
+		t.Fatalf("word_tolerance=%v, want disabled", adaptation["word_tolerance"])
+	}
+}
+
 func TestContextToolKeepsFullForeshadowWhenRecallNotTriggered(t *testing.T) {
 	dir := t.TempDir()
 	s := store.NewStore(dir)

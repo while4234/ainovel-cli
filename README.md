@@ -385,7 +385,7 @@ Headless：
 ainovel-cli --headless --adapt ./source.txt --prompt-file adapt.md
 ```
 
-改编 brief 可以写明关系线目标，例如"主线不要走偏，强化女主互动，弱化另一个女主与男主的感情戏，改成单女主纯爱"。系统支持 `chapter` / `arc` / `free` 三档粒度，默认 `chapter`；改写策略由粒度固定：`chapter` 使用 `preserve_details` 且字数容差为 ±15%，`arc/free` 使用 `full_rewrite`。这些模式在改编共创前通过固定选项确认，不再由 AI 追问。
+改编 brief 可以写明关系线目标，例如"主线不要走偏，强化女主互动，弱化另一个女主与男主的感情戏，改成单女主纯爱"。系统支持 `chapter` / `arc` / `free` 三档粒度，默认 `chapter`；改写策略由粒度固定：`chapter` 使用 `preserve_details` 且字数容差为 ±15%，`arc/free` 使用 `full_rewrite`，不启用硬字数容差，只约束主线稳定、source coverage 和禁止搬运原文。若命令行在 `arc/free` 下传入 `--adapt-word-tolerance`，该值会被忽略并显示为 `disabled`。这些模式在改编共创前通过固定选项确认，不再由 AI 追问。
 
 ## 导出
 

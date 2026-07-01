@@ -328,9 +328,7 @@ func buildPlanFromInputs(opts ProposalOptions, reports []domain.AdaptationSource
 	opts.Brief = strings.TrimSpace(opts.Brief)
 	opts.Granularity = domain.NormalizeAdaptationGranularity(firstNonEmptyString(opts.Granularity, inferGranularity(opts.Brief)))
 	opts.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(opts.Granularity)
-	if opts.WordTolerance <= 0 {
-		opts.WordTolerance = DefaultWordTolerance
-	}
+	opts.WordTolerance = normalizeWordToleranceForRewritePolicy(opts.RewritePolicy, opts.WordTolerance)
 
 	sourceRunesByChapter := sourceRunesByChapter(manifest)
 	sourceTotalRunes := 0
@@ -436,6 +434,16 @@ func runeRange(sourceRunes int, tolerance float64) (int, int) {
 		maxRunes = minRunes
 	}
 	return minRunes, maxRunes
+}
+
+func normalizeWordToleranceForRewritePolicy(rewritePolicy string, tolerance float64) float64 {
+	if domain.NormalizeAdaptationRewritePolicy(rewritePolicy) != domain.AdaptationRewritePreserveDetails {
+		return 0
+	}
+	if tolerance <= 0 {
+		return DefaultWordTolerance
+	}
+	return tolerance
 }
 
 func coverageNote(granularity string, from, to int) string {

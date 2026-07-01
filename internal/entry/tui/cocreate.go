@@ -160,9 +160,7 @@ func newAdaptCoCreateState(sourcePath string) *cocreateState {
 func newAdaptCoCreateStateWithOptions(sourcePath, granularity, rewritePolicy string, wordTolerance float64) *cocreateState {
 	granularity = normalizeSelectedAdaptGranularity(granularity)
 	rewritePolicy = normalizeSelectedAdaptRewritePolicy(granularity, rewritePolicy)
-	if wordTolerance <= 0 {
-		wordTolerance = startup.DefaultAdaptationWordTolerance
-	}
+	wordTolerance = startup.AdaptationWordToleranceForGranularity(granularity, wordTolerance)
 	s := newCoCreateState(adaptCoCreateOpener(granularity, rewritePolicy, wordTolerance))
 	s.adapt = true
 	s.sourcePath = strings.TrimSpace(sourcePath)
@@ -173,15 +171,16 @@ func newAdaptCoCreateStateWithOptions(sourcePath, granularity, rewritePolicy str
 }
 
 func adaptCoCreateOpener(granularity, rewritePolicy string, wordTolerance float64) string {
+	wordToleranceLabel := startup.FormatAdaptationWordTolerance(granularity, wordTolerance)
 	return fmt.Sprintf(`我想基于这本小说做改编，已确认改编模式如下：
 
 granularity=%s
 rewrite_policy=%s
-word_tolerance=%.2f
+word_tolerance=%s
 rewrite_policy_rule=chapter=>preserve_details;arc/free=>full_rewrite
 
 请基于原书分析帮我确认具体改编目标。不要再询问或改动 chapter/arc/free 与 full_rewrite/preserve_details 这两个模式选择。`,
-		granularity, rewritePolicy, wordTolerance)
+		granularity, rewritePolicy, wordToleranceLabel)
 }
 
 func normalizeSelectedAdaptGranularity(value string) string {

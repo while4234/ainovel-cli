@@ -197,7 +197,7 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 		"granularity":        plan.Granularity,
 		"status":             plan.Status,
 		"rewrite_policy":     plan.RewritePolicy,
-		"word_tolerance":     plan.WordTolerance,
+		"word_tolerance":     adaptationWordToleranceForContext(plan),
 		"brief":              plan.Brief,
 		"mainline_rules":     plan.MainlineRules,
 		"relationship_goals": plan.RelationshipGoals,
@@ -254,7 +254,7 @@ func (t *ContextTool) buildAdaptationPlanningContext(result map[string]any, warn
 		"granularity":        plan.Granularity,
 		"status":             plan.Status,
 		"rewrite_policy":     plan.RewritePolicy,
-		"word_tolerance":     plan.WordTolerance,
+		"word_tolerance":     adaptationWordToleranceForContext(plan),
 		"brief":              plan.Brief,
 		"mainline_rules":     plan.MainlineRules,
 		"relationship_goals": plan.RelationshipGoals,
@@ -271,6 +271,13 @@ func (t *ContextTool) buildAdaptationPlanningContext(result map[string]any, warn
 		warn("adaptation_source_manifest", manifestErr)
 	}
 	section["adaptation_plan"] = summary
+}
+
+func adaptationWordToleranceForContext(plan *domain.AdaptationPlan) any {
+	if plan == nil || plan.RewritePolicy != domain.AdaptationRewritePreserveDetails {
+		return "disabled"
+	}
+	return plan.WordTolerance
 }
 
 func selectSourceReports(reports []domain.AdaptationSourceReport, refs []int) []domain.AdaptationSourceReport {

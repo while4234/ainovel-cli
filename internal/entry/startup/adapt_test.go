@@ -42,7 +42,7 @@ func TestPrepareAdaptNovelDefaultsAndExplicitOptions(t *testing.T) {
 	if explicitPlan.AdaptRewritePolicy != domain.AdaptationRewriteFullRewrite {
 		t.Fatalf("explicit rewrite policy=%s", explicitPlan.AdaptRewritePolicy)
 	}
-	if explicitPlan.AdaptWordTolerance != 0.2 {
+	if explicitPlan.AdaptWordTolerance != 0 {
 		t.Fatalf("explicit tolerance=%v", explicitPlan.AdaptWordTolerance)
 	}
 }
@@ -80,7 +80,7 @@ func TestDefaultAdaptationBriefIncludesSelectedContract(t *testing.T) {
 	for _, want := range []string{
 		"granularity=arc",
 		"rewrite_policy=full_rewrite",
-		"word_tolerance=0.20",
+		"word_tolerance=disabled",
 		"## 主线保留规则",
 	} {
 		if !strings.Contains(brief, want) {

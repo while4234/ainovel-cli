@@ -105,6 +105,48 @@ func TestAdaptationProposalDoesNotActivateProject(t *testing.T) {
 	}
 }
 
+func TestAdaptationStoreNormalizesFullRewriteWordTolerance(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if err := s.Adaptation.SavePlan(domain.AdaptationPlan{
+		Granularity:    domain.AdaptationGranularityArc,
+		RewritePolicy:  domain.AdaptationRewritePreserveDetails,
+		Brief:          "按弧重写",
+		WordTolerance:  0.15,
+		TargetMinRunes: 85,
+		TargetMaxRunes: 115,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "第一章",
+			SourceChapters: []int{1},
+			TargetMinRunes: 85,
+			TargetMaxRunes: 115,
+		}},
+	}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+
+	loaded, err := s.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("LoadPlan returned nil")
+	}
+	if loaded.RewritePolicy != domain.AdaptationRewriteFullRewrite {
+		t.Fatalf("rewrite policy=%s", loaded.RewritePolicy)
+	}
+	if loaded.WordTolerance != 0 || loaded.TargetMinRunes != 0 || loaded.TargetMaxRunes != 0 {
+		t.Fatalf("full rewrite plan should not keep hard word ranges: %+v", loaded)
+	}
+	if len(loaded.Chapters) != 1 || loaded.Chapters[0].TargetMinRunes != 0 || loaded.Chapters[0].TargetMaxRunes != 0 {
+		t.Fatalf("full rewrite chapter should not keep hard word ranges: %+v", loaded.Chapters)
+	}
+}
+
 func TestAdaptationStoreResetGeneratedPreservesSourceSnapshot(t *testing.T) {
 	s := NewStore(t.TempDir())
 	if err := s.Init(); err != nil {
