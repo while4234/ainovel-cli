@@ -137,6 +137,26 @@ func (m *SessionManager) ActiveProjectIDs() []string {
 	return ids
 }
 
+func (m *SessionManager) Project(id string) *ProjectSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessions[strings.TrimSpace(id)]
+}
+
+func (m *SessionManager) CloseProject(id string) bool {
+	id = strings.TrimSpace(id)
+	m.mu.Lock()
+	session, ok := m.sessions[id]
+	if ok {
+		delete(m.sessions, id)
+	}
+	m.mu.Unlock()
+	if ok {
+		session.Close()
+	}
+	return ok
+}
+
 func (m *SessionManager) CloseAll() {
 	m.mu.Lock()
 	sessions := make([]*ProjectSession, 0, len(m.sessions))
@@ -505,7 +525,7 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 	return s.runCoCreateLocked(ctx)
 }
 
-func (s *ProjectSession) SendCoCreate(ctx context.Context, text string) (webCoCreateState, error) {
+func (s *ProjectSession) SendCoCreate(ctx context.Context, text, source string) (webCoCreateState, error) {
 	unlock, err := s.beginAction()
 	if err != nil {
 		return webCoCreateState{}, err
@@ -515,7 +535,23 @@ func (s *ProjectSession) SendCoCreate(ctx context.Context, text string) (webCoCr
 	if s.cocreate == nil {
 		return webCoCreateState{}, fmt.Errorf("co-create has not started")
 	}
-	if err := s.cocreate.appendUser(text); err != nil {
+	if err := s.cocreate.appendUser(text, source); err != nil {
+		return webCoCreateState{}, err
+	}
+	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) ReviseCoCreate(ctx context.Context, req webCoCreateReviseRequest) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	if err := s.cocreate.reviseUser(req.MessageID, req.Text); err != nil {
 		return webCoCreateState{}, err
 	}
 	return s.runCoCreateLocked(ctx)

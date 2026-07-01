@@ -469,6 +469,7 @@ type fakeProjectHost struct {
 	pauseCoCreateCalls          int
 	resumeCoCreateCalls         int
 	cancelCoCreateCalls         int
+	closeCalls                  int
 	simulateDir                 string
 	importPath                  string
 	importNovelPath             string
@@ -831,6 +832,9 @@ func (f *fakeProjectHost) Done() <-chan struct{} {
 }
 
 func (f *fakeProjectHost) Close() {
+	f.mu.Lock()
+	f.closeCalls++
+	f.mu.Unlock()
 	f.closeOnce.Do(func() {
 		close(f.events)
 		close(f.stream)

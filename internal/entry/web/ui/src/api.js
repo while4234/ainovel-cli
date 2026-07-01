@@ -32,6 +32,19 @@ export function createProject(name) {
   });
 }
 
+export function renameProject(projectId, name) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name })
+  });
+}
+
+export function trashProject(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE'
+  });
+}
+
 export function getSnapshot(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/snapshot`);
 }
@@ -153,10 +166,17 @@ export function beginCoCreate(projectId, payload) {
   });
 }
 
-export function sendCoCreate(projectId, text) {
+export function sendCoCreate(projectId, text, source = 'custom') {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/send`, {
     method: 'POST',
-    body: JSON.stringify({ text })
+    body: JSON.stringify({ text, source })
+  });
+}
+
+export function reviseCoCreate(projectId, messageId, text) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/revise`, {
+    method: 'POST',
+    body: JSON.stringify({ message_id: messageId, text })
   });
 }
 

@@ -32,6 +32,18 @@ func (s *CoCreateSession) History() []host.CoCreateMessage {
 	return append([]host.CoCreateMessage(nil), s.history...)
 }
 
+func (s *CoCreateSession) ResetHistory(history []host.CoCreateMessage) {
+	if s == nil {
+		return
+	}
+	s.history = append([]host.CoCreateMessage(nil), history...)
+	s.draftPrompt = ""
+	s.ready = false
+	s.streamReply = ""
+	s.streamThinking = ""
+	s.suggestions = nil
+}
+
 func (s *CoCreateSession) ApplyReply(reply host.CoCreateReply) {
 	if s == nil {
 		return

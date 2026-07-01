@@ -19,14 +19,15 @@ import (
 const manifestVersion = 1
 
 type ProjectManifest struct {
-	Version        int       `json:"version"`
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	RootDir        string    `json:"root_dir"`
-	OutputDir      string    `json:"output_dir"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	LastAccessedAt time.Time `json:"last_accessed_at"`
+	Version        int        `json:"version"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	RootDir        string     `json:"root_dir"`
+	OutputDir      string     `json:"output_dir"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	LastAccessedAt time.Time  `json:"last_accessed_at"`
+	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
 }
 
 type ProjectStore struct {
@@ -95,6 +96,9 @@ func (s *ProjectStore) ListProjects() ([]ProjectManifest, error) {
 			}
 			return nil, err
 		}
+		if manifest.DeletedAt != nil {
+			continue
+		}
 		manifest = s.normalizeManifest(root, manifest)
 		projects = append(projects, manifest)
 	}
@@ -120,6 +124,9 @@ func (s *ProjectStore) OpenProject(id string) (ProjectManifest, error) {
 		return ProjectManifest{}, err
 	}
 	manifest = s.normalizeManifest(root, manifest)
+	if manifest.DeletedAt != nil {
+		return ProjectManifest{}, os.ErrNotExist
+	}
 	now := time.Now().UTC()
 	manifest.LastAccessedAt = now
 	manifest.UpdatedAt = now
@@ -130,6 +137,73 @@ func (s *ProjectStore) OpenProject(id string) (ProjectManifest, error) {
 		return ProjectManifest{}, err
 	}
 	return manifest, nil
+}
+
+func (s *ProjectStore) RenameProject(id, name string) (ProjectManifest, error) {
+	if err := validateProjectID(id); err != nil {
+		return ProjectManifest{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ProjectManifest{}, fmt.Errorf("project name is required")
+	}
+	root := filepath.Join(s.ProjectsDir(), id)
+	manifest, err := readProjectManifest(filepath.Join(root, "project.json"))
+	if err != nil {
+		return ProjectManifest{}, err
+	}
+	manifest = s.normalizeManifest(root, manifest)
+	if manifest.DeletedAt != nil {
+		return ProjectManifest{}, os.ErrNotExist
+	}
+	manifest.Name = name
+	manifest.UpdatedAt = time.Now().UTC()
+	if err := writeProjectManifest(manifest); err != nil {
+		return ProjectManifest{}, err
+	}
+	return manifest, nil
+}
+
+func (s *ProjectStore) TrashProject(id string) (ProjectManifest, string, error) {
+	if err := validateProjectID(id); err != nil {
+		return ProjectManifest{}, "", err
+	}
+	root := filepath.Join(s.ProjectsDir(), id)
+	manifest, err := readProjectManifest(filepath.Join(root, "project.json"))
+	if err != nil {
+		return ProjectManifest{}, "", err
+	}
+	manifest = s.normalizeManifest(root, manifest)
+	original := manifest
+	deletedAt := time.Now().UTC()
+	manifest.DeletedAt = &deletedAt
+	manifest.UpdatedAt = deletedAt
+	if err := writeProjectManifest(manifest); err != nil {
+		return ProjectManifest{}, "", err
+	}
+
+	trashDir := filepath.Join(s.RuntimeRoot, "trash", "projects")
+	if err := os.MkdirAll(trashDir, 0o755); err != nil {
+		_ = writeProjectManifest(original)
+		return ProjectManifest{}, "", fmt.Errorf("create trash dir: %w", err)
+	}
+	target := s.uniqueTrashProjectPath(trashDir, id, deletedAt)
+	if err := os.Rename(root, target); err != nil {
+		_ = writeProjectManifest(original)
+		return ProjectManifest{}, "", fmt.Errorf("move project to trash: %w", err)
+	}
+	return manifest, target, nil
+}
+
+func (s *ProjectStore) uniqueTrashProjectPath(trashDir, id string, deletedAt time.Time) string {
+	base := filepath.Join(trashDir, fmt.Sprintf("%s-%s", id, deletedAt.Format("20060102150405")))
+	target := base
+	for i := 2; ; i++ {
+		if _, err := os.Stat(target); os.IsNotExist(err) {
+			return target
+		}
+		target = fmt.Sprintf("%s-%d", base, i)
+	}
 }
 
 func (s *ProjectStore) OpenProjectHost(cfg bootstrap.Config, bundle assets.Bundle, manifest ProjectManifest) (*host.Host, error) {

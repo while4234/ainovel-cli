@@ -48,6 +48,25 @@ describe('co-create UI state', () => {
     expect(state.modeLocked).toBe(true);
   });
 
+  it('preserves editable message metadata from backend response', () => {
+    const state = coCreateStateFromResponse({
+      cocreate: {
+        kind: 'normal',
+        active: true,
+        messages: [
+          { id: 'm1', role: 'user', content: '写月城悬疑', editable: true, source: 'custom' },
+          { id: 'm2', role: 'assistant', content: '先确认主角。' },
+          { id: 'm3', role: 'user', content: '加强女主线', editable: true, source: 'suggestion' }
+        ],
+        ready: false,
+        suggestions: []
+      }
+    });
+
+    expect(state.messages[0]).toMatchObject({ id: 'm1', editable: true, source: 'custom' });
+    expect(state.messages[2]).toMatchObject({ id: 'm3', editable: true, source: 'suggestion' });
+  });
+
   it('merges stream progress without duplicating assistant messages or clearing errors', () => {
     const previous = {
       ...createCoCreateState(),

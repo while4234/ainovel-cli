@@ -34,9 +34,23 @@ type webCoCreateBeginRequest struct {
 	sourcePath string
 }
 
+type webCoCreateSendRequest struct {
+	Text   string `json:"text"`
+	Source string `json:"source"`
+}
+
+type webCoCreateReviseRequest struct {
+	MessageID string `json:"message_id"`
+	Text      string `json:"text"`
+}
+
 type webCoCreateMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	ID           string `json:"id"`
+	Role         string `json:"role"`
+	Content      string `json:"content"`
+	Editable     bool   `json:"editable,omitempty"`
+	Source       string `json:"source,omitempty"`
+	historyIndex int
 }
 
 type webCoCreateState struct {
@@ -61,6 +75,7 @@ type webCoCreateSession struct {
 	kind               string
 	session            *startup.CoCreateSession
 	messages           []webCoCreateMessage
+	nextMessageSeq     int
 	sourceFile         string
 	sourcePath         string
 	adaptGranularity   string
@@ -119,7 +134,7 @@ func (s *Server) handleProjectCoCreateSend(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	text, err := decodeTextRequest(r)
+	req, err := decodeCoCreateSendRequest(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -129,7 +144,30 @@ func (s *Server) handleProjectCoCreateSend(w http.ResponseWriter, r *http.Reques
 		writeProjectSessionError(w, err)
 		return
 	}
-	state, err := session.SendCoCreate(r.Context(), text)
+	state, err := session.SendCoCreate(r.Context(), req.Text, req.Source)
+	if err != nil {
+		writeCoCreateActionError(w, err, state)
+		return
+	}
+	writeCoCreateResponse(w, manifest, session, state)
+}
+
+func (s *Server) handleProjectCoCreateRevise(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req webCoCreateReviseRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid co-create revise request: "+err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	state, err := session.ReviseCoCreate(r.Context(), req)
 	if err != nil {
 		writeCoCreateActionError(w, err, state)
 		return
@@ -185,27 +223,27 @@ func newWebCoCreateSession(req webCoCreateBeginRequest) (*webCoCreateSession, er
 		if initial == "" {
 			return nil, fmt.Errorf("initial idea is required")
 		}
-		return &webCoCreateSession{
+		state := &webCoCreateSession{
 			kind:    kind,
 			session: startup.NewCoCreateSession(initial),
-			messages: []webCoCreateMessage{
-				{Role: "user", Content: initial},
-			},
-		}, nil
+		}
+		state.messages = append(state.messages, state.newMessage("user", initial, "custom", 0))
+		return state, nil
 	case webCoCreateKindStage:
 		initial := strings.TrimSpace(req.Initial)
 		if initial == "" {
 			initial = stageCoCreateOpener
 		}
-		messages := []webCoCreateMessage{{Role: "system", Content: stageCoCreateSystemLine}}
-		if initial != stageCoCreateOpener {
-			messages = append(messages, webCoCreateMessage{Role: "user", Content: initial})
+		state := &webCoCreateSession{
+			kind:    kind,
+			session: startup.NewCoCreateSession(initial),
 		}
-		return &webCoCreateSession{
-			kind:     kind,
-			session:  startup.NewCoCreateSession(initial),
-			messages: messages,
-		}, nil
+		messages := []webCoCreateMessage{state.newMessage("system", stageCoCreateSystemLine, "", -1)}
+		if initial != stageCoCreateOpener {
+			messages = append(messages, state.newMessage("user", initial, "custom", 0))
+		}
+		state.messages = messages
+		return state, nil
 	case webCoCreateKindAdapt:
 		granularity, ok := domain.StrictAdaptationGranularity(req.Mode)
 		if !ok {
@@ -217,36 +255,100 @@ func newWebCoCreateSession(req webCoCreateBeginRequest) (*webCoCreateSession, er
 		}
 		rewritePolicy := domain.AdaptationRewritePolicyForGranularity(granularity)
 		opener := adaptCoCreateOpener(granularity, rewritePolicy, tolerance)
-		return &webCoCreateSession{
+		state := &webCoCreateSession{
 			kind:               kind,
 			session:            startup.NewCoCreateSession(opener),
-			messages:           []webCoCreateMessage{{Role: "system", Content: adaptCoCreateSystemLine}},
 			sourceFile:         strings.TrimSpace(req.SourceFile),
 			sourcePath:         strings.TrimSpace(req.sourcePath),
 			adaptGranularity:   granularity,
 			adaptRewritePolicy: rewritePolicy,
 			adaptWordTolerance: tolerance,
-		}, nil
+		}
+		state.messages = []webCoCreateMessage{state.newMessage("system", adaptCoCreateSystemLine, "", -1)}
+		return state, nil
 	default:
 		return nil, fmt.Errorf("co-create kind must be one of normal, stage, adapt")
 	}
 }
 
-func (s *webCoCreateSession) appendUser(text string) error {
+func (s *webCoCreateSession) newMessage(role, content, source string, historyIndex int) webCoCreateMessage {
+	s.nextMessageSeq++
+	message := webCoCreateMessage{
+		ID:           fmt.Sprintf("m%d", s.nextMessageSeq),
+		Role:         role,
+		Content:      content,
+		Source:       coCreateMessageSource(source),
+		historyIndex: historyIndex,
+	}
+	message.Editable = role == "user" && historyIndex >= 0
+	return message
+}
+
+func coCreateMessageSource(source string) string {
+	switch strings.TrimSpace(source) {
+	case "suggestion":
+		return "suggestion"
+	case "custom":
+		return "custom"
+	default:
+		return ""
+	}
+}
+
+func (s *webCoCreateSession) appendUser(text, source string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return fmt.Errorf("text is required")
 	}
+	historyIndex := len(s.session.History())
 	s.session.AppendUser(text)
-	s.messages = append(s.messages, webCoCreateMessage{Role: "user", Content: text})
+	if coCreateMessageSource(source) == "" {
+		source = "custom"
+	}
+	s.messages = append(s.messages, s.newMessage("user", text, source, historyIndex))
 	return nil
 }
 
 func (s *webCoCreateSession) applyReply(reply host.CoCreateReply) {
+	historyIndex := len(s.session.History())
 	s.session.ApplyReply(reply)
 	if text := strings.TrimSpace(reply.Message); text != "" {
-		s.messages = append(s.messages, webCoCreateMessage{Role: "assistant", Content: text})
+		s.messages = append(s.messages, s.newMessage("assistant", text, "", historyIndex))
 	}
+}
+
+func (s *webCoCreateSession) reviseUser(messageID, text string) error {
+	messageID = strings.TrimSpace(messageID)
+	text = strings.TrimSpace(text)
+	if messageID == "" {
+		return fmt.Errorf("message_id is required")
+	}
+	if text == "" {
+		return fmt.Errorf("text is required")
+	}
+	for idx := range s.messages {
+		message := s.messages[idx]
+		if message.ID != messageID {
+			continue
+		}
+		if message.Role != "user" || !message.Editable || message.historyIndex < 0 {
+			return fmt.Errorf("message is not editable")
+		}
+		history := s.session.History()
+		if message.historyIndex >= len(history) || history[message.historyIndex].Role != "user" {
+			return fmt.Errorf("message history is no longer editable")
+		}
+		history = append([]host.CoCreateMessage(nil), history[:message.historyIndex+1]...)
+		history[message.historyIndex] = host.CoCreateMessage{Role: "user", Content: text}
+		s.session.ResetHistory(history)
+		s.messages = append([]webCoCreateMessage(nil), s.messages[:idx+1]...)
+		s.messages[idx].Content = text
+		if s.messages[idx].Source == "" {
+			s.messages[idx].Source = "custom"
+		}
+		return nil
+	}
+	return fmt.Errorf("message not found")
 }
 
 func (s *webCoCreateSession) requireReadyDraft() error {
@@ -300,6 +402,24 @@ rewrite_policy_rule=chapter=>preserve_details;arc/free=>full_rewrite
 		granularity, rewritePolicy, wordTolerance))
 }
 
+func decodeCoCreateSendRequest(r *http.Request) (webCoCreateSendRequest, error) {
+	var req webCoCreateSendRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		return req, fmt.Errorf("invalid request body: %w", err)
+	}
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" {
+		return req, fmt.Errorf("text is required")
+	}
+	switch strings.TrimSpace(req.Source) {
+	case "", "custom", "suggestion":
+		req.Source = strings.TrimSpace(req.Source)
+	default:
+		return req, fmt.Errorf("source must be custom or suggestion")
+	}
+	return req, nil
+}
+
 func decodeJSONBody(r *http.Request, target any) error {
 	if r.Body == nil {
 		return nil
@@ -341,6 +461,9 @@ func isBadCoCreateRequest(err error) bool {
 	text := err.Error()
 	return strings.Contains(text, "is required") ||
 		strings.Contains(text, "must be one of") ||
+		strings.Contains(text, "must be custom or suggestion") ||
+		strings.Contains(text, "not found") ||
+		strings.Contains(text, "not editable") ||
 		strings.Contains(text, "not ready") ||
 		strings.Contains(text, "has not started")
 }

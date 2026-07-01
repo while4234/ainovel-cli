@@ -209,10 +209,11 @@ h2 {
 
 .icon-button:focus-visible,
 .tool-button:focus-visible,
-.project-row:focus-visible,
+.project-open-button:focus-visible,
+.project-more-button:focus-visible,
 .side-tabs button:focus-visible,
 .adapt-mode:focus-within,
-.suggestion-chip:focus-visible {
+.suggestion-option:focus-visible {
   outline: none;
   box-shadow: var(--focus);
 }
@@ -314,51 +315,91 @@ h2 {
 
 .project-row {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 34px;
   align-items: center;
-  gap: 9px;
   min-height: 52px;
   width: 100%;
   border: 1px solid transparent;
   border-radius: var(--radius);
   background: transparent;
   color: #26323d;
-  text-align: left;
   transition:
     background-color 120ms ease,
     border-color 120ms ease,
     color 120ms ease;
 }
 
-.project-row svg {
+.project-open-button {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 50px;
+  border: 0;
+  border-radius: var(--radius);
+  padding: 0 4px 0 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.project-open-button svg,
+.project-more-button svg {
   color: var(--muted);
 }
 
-.project-row span {
+.project-open-button span {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.project-row strong,
-.project-row small {
+.project-open-button strong,
+.project-open-button small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.project-row strong {
+.project-open-button strong {
   color: var(--text);
   font-size: 14px;
 }
 
-.project-row small {
+.project-open-button small {
   color: var(--muted);
   font-size: 12px;
 }
 
+.project-more-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  opacity: 0;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    opacity 120ms ease;
+}
+
 .project-row:hover {
   background: #f1f6f8;
+}
+
+.project-row:hover .project-more-button,
+.project-more-button:focus-visible,
+.project-row.active .project-more-button {
+  opacity: 1;
+}
+
+.project-more-button:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-solid);
 }
 
 .project-row.active {
@@ -370,6 +411,120 @@ h2 {
 .project-row.active svg,
 .project-row.active strong {
   color: var(--accent);
+}
+
+.project-menu {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  width: 220px;
+  gap: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 6px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-md);
+}
+
+.project-menu button {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.project-menu button:hover {
+  background: var(--surface-subtle);
+}
+
+.project-menu span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-menu .danger {
+  color: var(--danger);
+}
+
+.dialog-backdrop {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(18, 26, 33, 0.18);
+}
+
+.compact-dialog {
+  display: grid;
+  width: min(360px, 100%);
+  gap: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-md);
+}
+
+.compact-dialog input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  color: var(--text);
+  outline: none;
+}
+
+.compact-dialog input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+.dialog-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-strong);
+}
+
+.dialog-title.danger {
+  color: var(--danger);
+}
+
+.dialog-copy {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.dialog-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.danger-action {
+  border-color: rgba(177, 59, 54, 0.42);
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.danger-action:hover {
+  border-color: #96302c;
+  background: #96302c;
 }
 
 .toolbar-actions {
@@ -815,6 +970,29 @@ h2 {
   background: var(--warn-soft);
 }
 
+.cocreate-message-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cocreate-message-head span {
+  border: 1px solid rgba(15, 111, 109, 0.22);
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: var(--accent-softer);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.icon-button.inline {
+  width: 28px;
+  min-height: 28px;
+  margin-left: auto;
+}
+
 .cocreate-message strong,
 .cocreate-preview strong {
   color: #40505c;
@@ -827,6 +1005,34 @@ h2 {
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.5;
+}
+
+.cocreate-edit-form {
+  display: grid;
+  gap: 6px;
+}
+
+.cocreate-edit-form textarea {
+  width: 100%;
+  min-height: 72px;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 8px;
+  resize: vertical;
+  color: var(--text);
+  outline: none;
+}
+
+.cocreate-edit-form textarea:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+.inline-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .cocreate-progress {
@@ -849,20 +1055,30 @@ h2 {
 }
 
 .suggestion-list {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 6px;
 }
 
-.suggestion-chip {
+.suggestion-option {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
   min-height: 32px;
   border: 1px solid rgba(15, 111, 109, 0.28);
-  border-radius: 999px;
-  padding: 0 10px;
+  border-radius: var(--radius);
+  padding: 7px 10px;
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 13px;
   font-weight: 800;
+  text-align: left;
+}
+
+.suggestion-option:hover {
+  border-color: rgba(15, 111, 109, 0.42);
+  background: var(--accent-softer);
 }
 
 .cocreate-form {

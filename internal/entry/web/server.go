@@ -236,6 +236,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch action {
+	case "":
+		s.handleProjectResource(w, r, id)
 	case "open":
 		s.handleProjectOpen(w, r, id)
 	case "snapshot":
@@ -298,6 +300,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectCoCreateBegin(w, r, id)
 	case "cocreate/send":
 		s.handleProjectCoCreateSend(w, r, id)
+	case "cocreate/revise":
+		s.handleProjectCoCreateRevise(w, r, id)
 	case "cocreate/commit":
 		s.handleProjectCoCreateCommit(w, r, id)
 	case "cocreate/cancel":
@@ -310,10 +314,48 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 func splitProjectRoute(path string) (string, string, bool) {
 	rest := strings.TrimPrefix(path, "/api/projects/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	if len(parts) < 2 {
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
 		return "", "", false
 	}
+	if len(parts) == 1 {
+		return parts[0], "", true
+	}
 	return parts[0], strings.Join(parts[1:], "/"), true
+}
+
+func (s *Server) handleProjectResource(w http.ResponseWriter, r *http.Request, id string) {
+	switch r.Method {
+	case http.MethodPatch:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid project request: "+err.Error())
+			return
+		}
+		manifest, err := s.store.RenameProject(id, req.Name)
+		if err != nil {
+			writeProjectManifestError(w, err)
+			return
+		}
+		if session := s.sessions.Project(id); session != nil {
+			session.SetManifest(manifest)
+		}
+		writeJSON(w, http.StatusOK, manifest)
+	case http.MethodDelete:
+		s.sessions.CloseProject(id)
+		manifest, target, err := s.store.TrashProject(id)
+		if err != nil {
+			writeProjectManifestError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"project":    manifest,
+			"trash_path": target,
+		})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request, id string) {
@@ -495,6 +537,19 @@ func parseAfter(r *http.Request) (int64, error) {
 func writeProjectSessionError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrProjectNotFound) {
 		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
+}
+
+func writeProjectManifestError(w http.ResponseWriter, err error) {
+	if os.IsNotExist(err) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if strings.Contains(err.Error(), "project name is required") ||
+		strings.Contains(err.Error(), "project id") {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeError(w, http.StatusInternalServerError, err.Error())

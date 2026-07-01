@@ -1,6 +1,10 @@
 package web
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +56,135 @@ func TestProjectManifestCreateListOpenTouches(t *testing.T) {
 	}
 	if !opened.LastAccessedAt.After(created.LastAccessedAt) {
 		t.Fatalf("LastAccessedAt was not updated: before=%s after=%s", created.LastAccessedAt, opened.LastAccessedAt)
+	}
+}
+
+func TestProjectRenameUpdatesNameWithoutMovingRoot(t *testing.T) {
+	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	created, err := store.CreateProject("Original")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	renamed, err := store.RenameProject(created.ID, "Renamed Novel")
+	if err != nil {
+		t.Fatalf("RenameProject: %v", err)
+	}
+	if renamed.ID != created.ID || renamed.RootDir != created.RootDir || renamed.OutputDir != created.OutputDir {
+		t.Fatalf("rename moved identity/path: before=%+v after=%+v", created, renamed)
+	}
+	if renamed.Name != "Renamed Novel" {
+		t.Fatalf("renamed name = %q", renamed.Name)
+	}
+	if !renamed.UpdatedAt.After(created.UpdatedAt) && !renamed.UpdatedAt.Equal(created.UpdatedAt) {
+		t.Fatalf("updated_at not preserved sensibly: before=%s after=%s", created.UpdatedAt, renamed.UpdatedAt)
+	}
+
+	if _, err := store.RenameProject(created.ID, "  "); err == nil {
+		t.Fatal("RenameProject accepted empty name")
+	}
+}
+
+func TestProjectTrashMovesProjectOutOfActiveList(t *testing.T) {
+	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	created, err := store.CreateProject("Trash Me")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	trashed, trashPath, err := store.TrashProject(created.ID)
+	if err != nil {
+		t.Fatalf("TrashProject: %v", err)
+	}
+	if trashed.ID != created.ID || trashed.DeletedAt == nil {
+		t.Fatalf("trashed manifest = %+v", trashed)
+	}
+	if _, err := os.Stat(created.RootDir); !os.IsNotExist(err) {
+		t.Fatalf("active project root still exists or unexpected error: %v", err)
+	}
+	if info, err := os.Stat(trashPath); err != nil || !info.IsDir() {
+		t.Fatalf("trash path = %q info=%v err=%v", trashPath, info, err)
+	}
+	projects, err := store.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("active projects after trash = %+v, want none", projects)
+	}
+	if _, _, err := store.TrashProject("missing-project"); err == nil {
+		t.Fatal("TrashProject accepted missing project")
+	}
+}
+
+func TestDeletedProjectManifestIsHiddenAndCannotOpen(t *testing.T) {
+	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	created, err := store.CreateProject("Stranded Deleted")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	deletedAt := time.Now().UTC()
+	created.DeletedAt = &deletedAt
+	if err := writeProjectManifest(created); err != nil {
+		t.Fatalf("write deleted manifest: %v", err)
+	}
+
+	projects, err := store.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("deleted project listed as active: %+v", projects)
+	}
+	if _, err := store.OpenProject(created.ID); !os.IsNotExist(err) {
+		t.Fatalf("OpenProject deleted err = %v, want os.IsNotExist", err)
+	}
+}
+
+func TestProjectResourceHandlersRenameAndTrashActiveProject(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Handler Project")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/projects/"+manifest.ID, bytes.NewBufferString(`{"name":"Handler Renamed"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var renamed ProjectManifest
+	if err := json.NewDecoder(rec.Body).Decode(&renamed); err != nil {
+		t.Fatalf("decode rename response: %v", err)
+	}
+	if renamed.Name != "Handler Renamed" || renamed.ID != manifest.ID || renamed.RootDir != manifest.RootDir {
+		t.Fatalf("renamed response = %+v", renamed)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/projects/"+manifest.ID, nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.closeCalls != 1 {
+		t.Fatalf("active session close calls = %d, want 1", fake.closeCalls)
+	}
+	var deleted struct {
+		Project   ProjectManifest `json:"project"`
+		TrashPath string          `json:"trash_path"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&deleted); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if deleted.Project.DeletedAt == nil || deleted.TrashPath == "" {
+		t.Fatalf("delete response = %+v", deleted)
+	}
+	if _, err := os.Stat(deleted.TrashPath); err != nil {
+		t.Fatalf("trash path missing: %v", err)
 	}
 }
 

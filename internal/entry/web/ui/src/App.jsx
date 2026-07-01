@@ -1,6 +1,7 @@
 import {
   Activity,
   BookOpen,
+  Check,
   CircleDot,
   Database,
   Download,
@@ -8,7 +9,9 @@ import {
   FileJson,
   ListRestart,
   MessageSquareText,
+  MoreHorizontal,
   PauseCircle,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -18,8 +21,10 @@ import {
   SlidersHorizontal,
   SquarePen,
   TestTube2,
+  Trash2,
   Upload,
-  WandSparkles
+  WandSparkles,
+  X
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -43,6 +48,8 @@ import {
   listProjects,
   pauseProject,
   pollGrokLogin,
+  renameProject,
+  reviseCoCreate,
   resumeProject,
   runProjectDiagnostic,
   sendCoCreate,
@@ -53,11 +60,11 @@ import {
   steerProject,
   switchProjectModel,
   testBackend,
+  trashProject,
   uploadAdaptationSource,
   uploadSimulationFiles
 } from './api.js';
 import {
-  applyCoCreateSuggestion,
   appendCoCreateInput,
   coCreateStateFromError,
   coCreateStateFromEvent,
@@ -179,6 +186,9 @@ export default function App() {
   const [activeProject, setActiveProject] = useState(null);
   const [workbench, setWorkbench] = useState(createWorkbenchState);
   const [newProjectName, setNewProjectName] = useState('');
+  const [projectMenu, setProjectMenu] = useState(null);
+  const [renameDialog, setRenameDialog] = useState(null);
+  const [deleteDialog, setDeleteDialog] = useState(null);
   const [composerText, setComposerText] = useState('');
   const [steerText, setSteerText] = useState('');
   const [sideView, setSideView] = useState('status');
@@ -198,6 +208,23 @@ export default function App() {
 
   const snapshot = workbench.snapshot;
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
+
+  const resetProjectScopedState = useCallback((clearProject = false) => {
+    lastSeqRef.current = 0;
+    setWorkbench(createWorkbenchState());
+    setSimulation(createSimulationState());
+    setAdaptation(createAdaptationState());
+    setExternalImport(createExternalImportState());
+    setExportJob(createExportState());
+    setDiagnostic(createDiagnosticState());
+    setCoCreate(createCoCreateState());
+    setModelConfig(null);
+    setCustomModel(createCustomModelState());
+    setBackendStatus(null);
+    if (clearProject) {
+      setActiveProject(null);
+    }
+  }, []);
 
   const refreshProjects = useCallback(async () => {
     const data = await listProjects();
@@ -219,20 +246,28 @@ export default function App() {
     loadShell();
   }, [loadShell]);
 
+  useEffect(() => {
+    if (!projectMenu) {
+      return undefined;
+    }
+    const closeMenu = () => setProjectMenu(null);
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') {
+        closeMenu();
+      }
+    };
+    window.addEventListener('click', closeMenu);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('click', closeMenu);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [projectMenu]);
+
   const openProject = useCallback(async (project) => {
     setBusy(true);
     setError('');
-    lastSeqRef.current = 0;
-    setWorkbench(createWorkbenchState());
-    setSimulation(createSimulationState());
-    setAdaptation(createAdaptationState());
-    setExternalImport(createExternalImportState());
-    setExportJob(createExportState());
-    setDiagnostic(createDiagnosticState());
-    setCoCreate(createCoCreateState());
-    setModelConfig(null);
-    setCustomModel(createCustomModelState());
-    setBackendStatus(null);
+    resetProjectScopedState();
     try {
       const [snapshotData, modelData, backendData] = await Promise.all([
         getSnapshot(project.id),
@@ -248,7 +283,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [resetProjectScopedState]);
 
   useEffect(() => {
     if (!activeProject?.id) {
@@ -315,6 +350,82 @@ export default function App() {
       setNewProjectName('');
       await refreshProjects();
       await openProject(project);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openProjectContextMenu = (event, project) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const menuWidth = 220;
+    const menuHeight = 112;
+    setProjectMenu({
+      project,
+      x: Math.min(event.clientX, Math.max(8, window.innerWidth - menuWidth - 8)),
+      y: Math.min(event.clientY, Math.max(8, window.innerHeight - menuHeight - 8))
+    });
+  };
+
+  const openProjectMoreMenu = (event, project) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 220;
+    setProjectMenu({
+      project,
+      x: Math.min(rect.left, Math.max(8, window.innerWidth - menuWidth - 8)),
+      y: rect.bottom + 6
+    });
+  };
+
+  const beginProjectRename = (project) => {
+    setProjectMenu(null);
+    setRenameDialog({ project, name: project.name || project.id });
+  };
+
+  const submitProjectRename = async (event) => {
+    event.preventDefault();
+    const project = renameDialog?.project;
+    const name = String(renameDialog?.name || '').trim();
+    if (!project || !name) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const updated = await renameProject(project.id, name);
+      setProjects((previous) => previous.map((item) => (item.id === updated.id ? updated : item)));
+      setActiveProject((previous) => (previous?.id === updated.id ? updated : previous));
+      setRenameDialog(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const beginProjectDelete = (project) => {
+    setProjectMenu(null);
+    setDeleteDialog({ project });
+  };
+
+  const confirmProjectDelete = async () => {
+    const project = deleteDialog?.project;
+    if (!project) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await trashProject(project.id);
+      setProjects((previous) => previous.filter((item) => item.id !== project.id));
+      if (activeProject?.id === project.id) {
+        resetProjectScopedState(true);
+      }
+      setDeleteDialog(null);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -690,7 +801,43 @@ export default function App() {
     setBusy(true);
     setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
     try {
-      const data = await sendCoCreate(activeProject.id, text);
+      const data = await sendCoCreate(activeProject.id, text, 'custom');
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      setCoCreate((previous) => coCreateStateFromError(err, previous));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitCoCreateSuggestion = async (suggestion) => {
+    const text = String(suggestion || '').trim();
+    const hasBackendSession = coCreate.active || coCreate.messages.length > 0;
+    if (!activeProject?.id || !text || !hasBackendSession || busy) {
+      return;
+    }
+    setBusy(true);
+    setCoCreate((previous) => ({ ...previous, status: 'running', error: '', input: '' }));
+    try {
+      const data = await sendCoCreate(activeProject.id, text, 'suggestion');
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      setCoCreate((previous) => coCreateStateFromError(err, previous));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reviseCoCreateMessage = async (messageId, text) => {
+    if (!activeProject?.id || !messageId || !String(text || '').trim() || busy) {
+      return;
+    }
+    setBusy(true);
+    setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
+    try {
+      const data = await reviseCoCreate(activeProject.id, messageId, text);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
     } catch (err) {
@@ -974,22 +1121,103 @@ export default function App() {
             <div className="empty-state">暂无项目</div>
           ) : (
             projects.map((project) => (
-              <button
+              <div
                 key={project.id}
                 className={project.id === activeProject?.id ? 'project-row active' : 'project-row'}
-                onClick={() => openProject(project)}
-                type="button"
+                onContextMenu={(event) => openProjectContextMenu(event, project)}
               >
-                <BookOpen size={17} />
-                <span>
-                  <strong>{project.name || project.id}</strong>
-                  <small>{formatDate(project.last_accessed_at || project.created_at)}</small>
-                </span>
-              </button>
+                <button className="project-open-button" onClick={() => openProject(project)} type="button">
+                  <BookOpen size={17} />
+                  <span>
+                    <strong>{project.name || project.id}</strong>
+                    <small>{formatDate(project.last_accessed_at || project.created_at)}</small>
+                  </span>
+                </button>
+                <button
+                  className="project-more-button"
+                  onClick={(event) => openProjectMoreMenu(event, project)}
+                  title="项目操作"
+                  type="button"
+                >
+                  <MoreHorizontal size={17} />
+                </button>
+              </div>
             ))
           )}
         </div>
+
+        {projectMenu ? (
+          <div
+            className="project-menu"
+            style={{ left: projectMenu.x, top: projectMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button onClick={() => beginProjectRename(projectMenu.project)} type="button">
+              <Pencil size={16} />
+              <span>重命名项目</span>
+            </button>
+            <button className="danger" onClick={() => beginProjectDelete(projectMenu.project)} type="button">
+              <Trash2 size={16} />
+              <span>移入回收站</span>
+            </button>
+          </div>
+        ) : null}
       </aside>
+
+      {renameDialog ? (
+        <div className="dialog-backdrop" onMouseDown={() => setRenameDialog(null)}>
+          <form className="compact-dialog" onMouseDown={(event) => event.stopPropagation()} onSubmit={submitProjectRename}>
+            <div className="dialog-title">
+              <Pencil size={17} />
+              <strong>重命名项目</strong>
+            </div>
+            <input
+              autoFocus
+              disabled={busy}
+              value={renameDialog.name}
+              onChange={(event) => setRenameDialog((previous) => ({ ...previous, name: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setRenameDialog(null);
+                }
+              }}
+            />
+            <div className="dialog-actions">
+              <button className="tool-button" disabled={busy} onClick={() => setRenameDialog(null)} type="button">
+                <X size={16} />
+                取消
+              </button>
+              <button className="tool-button accent" disabled={busy || !String(renameDialog.name || '').trim()} type="submit">
+                <Check size={16} />
+                保存
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {deleteDialog ? (
+        <div className="dialog-backdrop" onMouseDown={() => setDeleteDialog(null)}>
+          <div className="compact-dialog" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="dialog-title danger">
+              <Trash2 size={17} />
+              <strong>移入回收站？</strong>
+            </div>
+            <p className="dialog-copy">{deleteDialog.project.name || deleteDialog.project.id}</p>
+            <div className="dialog-actions">
+              <button className="tool-button" disabled={busy} onClick={() => setDeleteDialog(null)} type="button">
+                <X size={16} />
+                取消
+              </button>
+              <button className="tool-button danger-action" disabled={busy} onClick={confirmProjectDelete} type="button">
+                <Trash2 size={16} />
+                移入回收站
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <main className="writing-pane">
         <header className="workspace-toolbar">
@@ -1141,6 +1369,8 @@ export default function App() {
               adaptation={adaptation}
               onBegin={beginCoCreateFlow}
               onSubmit={submitCoCreate}
+              onSuggestion={submitCoCreateSuggestion}
+              onRevise={reviseCoCreateMessage}
               onCommit={commitCoCreateFlow}
               onCancel={cancelCoCreateFlow}
             />
@@ -1289,7 +1519,20 @@ const adaptationModes = [
   { value: 'free', label: 'free' }
 ];
 
-function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation, onBegin, onSubmit, onCommit, onCancel }) {
+function CoCreatePanel({
+  activeProject,
+  busy,
+  coCreate,
+  setCoCreate,
+  adaptation,
+  onBegin,
+  onSubmit,
+  onSuggestion,
+  onRevise,
+  onCommit,
+  onCancel
+}) {
+  const [editing, setEditing] = useState(null);
   const hasConversation = coCreate.messages.length > 0;
   const hasBackendSession = coCreate.active || hasConversation;
   const canBeginNormal = Boolean(activeProject && !busy && !hasBackendSession && coCreate.input.trim());
@@ -1339,9 +1582,59 @@ function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation,
             <div className="empty-state">暂无共创对话</div>
           ) : (
             coCreate.messages.map((message, index) => (
-              <div className={`cocreate-message ${message.role}`} key={`${message.role}-${index}`}>
-                <strong>{coCreateRoleLabel(message.role)}</strong>
-                <p>{message.content}</p>
+              <div className={`cocreate-message ${message.role}`} key={message.id || `${message.role}-${index}`}>
+                <div className="cocreate-message-head">
+                  <strong>{coCreateRoleLabel(message.role)}</strong>
+                  {message.source ? <span>{message.source === 'suggestion' ? '选项' : '补充'}</span> : null}
+                  {message.editable ? (
+                    <button
+                      className="icon-button inline"
+                      disabled={busy}
+                      onClick={() => setEditing({ id: message.id, text: message.content })}
+                      title="修改这次选择"
+                      type="button"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                  ) : null}
+                </div>
+                {editing?.id === message.id ? (
+                  <form
+                    className="cocreate-edit-form"
+                    onSubmit={async (event) => {
+                      event.preventDefault();
+                      const text = editing.text.trim();
+                      if (!text) {
+                        return;
+                      }
+                      await onRevise(message.id, text);
+                      setEditing(null);
+                    }}
+                  >
+                    <textarea
+                      autoFocus
+                      disabled={busy}
+                      value={editing.text}
+                      onChange={(event) => setEditing((previous) => ({ ...previous, text: event.target.value }))}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                          event.preventDefault();
+                          setEditing(null);
+                        }
+                      }}
+                    />
+                    <div className="inline-actions">
+                      <button className="icon-button" disabled={busy} onClick={() => setEditing(null)} title="取消" type="button">
+                        <X size={15} />
+                      </button>
+                      <button className="icon-button primary" disabled={busy || !editing.text.trim()} title="保存并重跑" type="submit">
+                        <Check size={15} />
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <p>{message.content}</p>
+                )}
               </div>
             ))
           )}
@@ -1369,12 +1662,13 @@ function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation,
           <div className="suggestion-list">
             {coCreate.suggestions.slice(0, 3).map((suggestion) => (
               <button
-                className="suggestion-chip"
+                className="suggestion-option"
                 disabled={busy}
                 key={suggestion}
-                onClick={() => setCoCreate((previous) => applyCoCreateSuggestion(previous, suggestion))}
+                onClick={() => onSuggestion(suggestion)}
                 type="button"
               >
+                <Send size={15} />
                 {suggestion}
               </button>
             ))}

@@ -29,27 +29,36 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source commit: `9d40f9b` `feat: add web grok oauth login`
-- Branch: `main`
+- Latest source change: branch `codex/web-project-cocreate-controls`,
+  `feat: improve web project and cocreate controls`.
+- Branch: `codex/web-project-cocreate-controls`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: clean after the Grok OAuth Web feature commit, except for
-  ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` was rebuilt after the Grok OAuth
-  Web work using the project-local Go 1.25.5 toolchain, then restarted on
+- Working tree: expected clean after the Web project/co-create controls commit,
+  except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
+  artifacts.
+- Runtime: local `D:\ainovel\ainovel-cli.exe` is rebuilt after the Web
+  project/co-create controls work using the project-local Go 1.25.5 toolchain,
+  then restarted on
   `http://127.0.0.1:9898` with runtime root
   `C:\Users\RondleLiu\.ainovel\novels-preview`. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: `go test ./internal/entry/web`, `npm --prefix
-  internal/entry/web/ui test`, `npm --prefix internal/entry/web/ui run build`,
-  `git diff --check`, and Playwright local Web smoke checks succeeded on
-  2026-07-01. The latest smoke check verified the Web `Grok 登录` model form
-  mode, defaults, controls, and guarded submit on `127.0.0.1:9902`. `go test
-  ./...` still has existing Windows environment-sensitive failures in
-  `internal/notify` (`sh` missing from PATH) and `internal/version`
-  (permission-mode assertion).
+- Validation: `npm --prefix internal/entry/web/ui test -- --run`,
+  `npm --prefix internal/entry/web/ui run build`,
+  `go test ./cmd/ainovel-cli ./internal/entry/web`, `git diff --check`, and a
+  Playwright local Web smoke check succeeded on 2026-07-01. The latest smoke
+  check verified project ellipsis menu, rename modal, active-title/list sync,
+  delete confirmation, active-project reset, and co-create panel rendering on a
+  temporary runtime. `go test ./...` still has existing Windows
+  environment-sensitive failures in `internal/notify` (`sh` missing from PATH)
+  and `internal/version` (permission-mode assertion).
 
 ## Change Log
 
+- 2026-07-01 `feat: improve web project and cocreate controls`: added Web
+  project rename and internal-trash APIs, ChatGPT-style project context menu
+  UI, active-session cleanup on trash, one-click equal-width co-create
+  suggestion buttons, editable pre-commit co-create user messages with revise
+  regeneration, backend/frontend tests, and regenerated embedded Vite assets.
 - 2026-07-01 `9d40f9b` `feat: add web grok oauth login`: added Web Grok OAuth
   login start/poll/complete/status APIs, surfaced the flow in the model add
   form, registered final Grok providers via `auth:"grok_oauth"` and
