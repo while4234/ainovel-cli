@@ -12,6 +12,8 @@ import (
 
 var modelConfigRoles = []string{"default", "coordinator", "architect", "writer", "editor"}
 
+var openAuthBrowser = openBrowser
+
 type apiModelConfig struct {
 	Providers      []apiModelProvider `json:"providers"`
 	Roles          []apiModelRoute    `json:"roles"`
@@ -208,6 +210,7 @@ func (s *Server) handleProjectGrokLoginStart(w http.ResponseWriter, r *http.Requ
 	var req struct {
 		AccountID   string `json:"account_id"`
 		AccountName string `json:"account_name"`
+		OpenBrowser bool   `json:"open_browser"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -223,10 +226,29 @@ func (s *Server) handleProjectGrokLoginStart(w http.ResponseWriter, r *http.Requ
 		writeProjectLifecycleError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	browserOpened := false
+	browserOpenError := ""
+	if req.OpenBrowser {
+		authorizeURL := strings.TrimSpace(login.AuthorizeURL)
+		if authorizeURL == "" {
+			browserOpenError = "Grok authorize URL is empty"
+		} else if err := openAuthBrowser(authorizeURL); err != nil {
+			browserOpenError = err.Error()
+		} else {
+			browserOpened = true
+		}
+	}
+	response := map[string]any{
 		"project": manifest,
 		"login":   login,
-	})
+	}
+	if req.OpenBrowser {
+		response["browser_opened"] = browserOpened
+		if browserOpenError != "" {
+			response["browser_open_error"] = browserOpenError
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleProjectGrokLoginPoll(w http.ResponseWriter, r *http.Request, id string) {

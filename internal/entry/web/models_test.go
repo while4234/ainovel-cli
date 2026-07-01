@@ -150,6 +150,45 @@ func TestProjectGrokLoginEndpointsUseHostFlow(t *testing.T) {
 	}
 }
 
+func TestProjectGrokLoginStartCanOpenAuthorizeURL(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Grok OAuth Browser Open")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.grokLoginStart = grokauth.LoginStart{
+		Status:               grokauth.AuthStatus{AccountID: "work", AccountName: "Work", ActiveLogin: "pending"},
+		AuthorizeURL:         "https://auth.x.ai/authorize",
+		RedirectURI:          "http://127.0.0.1:56121/callback",
+		ManualPasteSupported: true,
+		LoopbackListening:    true,
+	}
+
+	previousOpenAuthBrowser := openAuthBrowser
+	var openedURL string
+	openAuthBrowser = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+	t.Cleanup(func() {
+		openAuthBrowser = previousOpenAuthBrowser
+	})
+
+	var start struct {
+		Login         grokauth.LoginStart `json:"login"`
+		BrowserOpened bool                `json:"browser_opened"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/projects/"+manifest.ID+"/models/grok-login/start", `{"account_id":"work","account_name":"Work","open_browser":true}`, &start)
+	if openedURL != "https://auth.x.ai/authorize" {
+		t.Fatalf("opened URL = %q", openedURL)
+	}
+	if !start.BrowserOpened {
+		t.Fatalf("browser_opened = false, response = %+v", start)
+	}
+}
+
 func serveJSON(t *testing.T, handler http.Handler, method, path, body string, out any) {
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))

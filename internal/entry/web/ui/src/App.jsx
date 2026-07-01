@@ -986,36 +986,33 @@ export default function App() {
 
   const startGrokOAuthLogin = async () => {
     if (!activeProject?.id) {
+      setCustomModel((previous) => ({ ...previous, grok_message: '先打开一个项目，再启动 Grok 登录' }));
       return;
     }
-    let authWindow = null;
-    if (typeof window !== 'undefined') {
-      authWindow = window.open('about:blank', '_blank');
-    }
+    const authWindow = openPendingGrokAuthWindow();
     setBusy(true);
     setError('');
+    setCustomModel((previous) => ({ ...previous, grok_message: '正在创建 Grok OAuth 登录会话...' }));
     try {
-      const data = await startGrokLogin(activeProject.id, customModel.account_id, customModel.account_name);
+      const data = await startGrokLogin(activeProject.id, customModel.account_id, customModel.account_name, true);
       const login = data.login || null;
       const authorizeURL = grokAuthorizeURL(login);
-      if (authWindow && authorizeURL) {
-        authWindow.opener = null;
-        authWindow.location.href = authorizeURL;
-      } else if (authWindow) {
-        authWindow.close();
-      } else if (authorizeURL && typeof window !== 'undefined') {
-        window.open(authorizeURL, '_blank', 'noopener,noreferrer');
+      const browserOpened = Boolean(data.browser_opened || data.browserOpened);
+      const browserOpenError = String(data.browser_open_error || data.browserOpenError || '').trim();
+      let openedAuthorize = browserOpened;
+      if (browserOpened) {
+        closeGrokAuthWindow(authWindow);
+      } else {
+        openedAuthorize = navigateGrokAuthWindow(authWindow, authorizeURL);
       }
       setCustomModel((previous) => ({
         ...previous,
         grok_login: login,
         grok_status: grokStatusFromLogin(login) || previous.grok_status,
-        grok_message: grokLoginMessage(login) || '已创建 Grok OAuth 登录会话'
+        grok_message: grokLoginMessage(login) || grokOpenMessage(openedAuthorize, browserOpenError)
       }));
     } catch (err) {
-      if (authWindow) {
-        authWindow.close();
-      }
+      closeGrokAuthWindow(authWindow);
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
     } finally {
@@ -1025,6 +1022,7 @@ export default function App() {
 
   const pollGrokOAuthLogin = async () => {
     if (!activeProject?.id) {
+      setCustomModel((previous) => ({ ...previous, grok_message: '先打开一个项目，再检查 Grok 登录' }));
       return;
     }
     setBusy(true);
@@ -1048,6 +1046,7 @@ export default function App() {
 
   const completeGrokOAuthLogin = async () => {
     if (!activeProject?.id) {
+      setCustomModel((previous) => ({ ...previous, grok_message: '先打开一个项目，再完成 Grok 登录' }));
       return;
     }
     const callback = String(customModel.callback_input || '').trim();
@@ -1075,6 +1074,7 @@ export default function App() {
 
   const refreshGrokOAuthStatus = async () => {
     if (!activeProject?.id) {
+      setCustomModel((previous) => ({ ...previous, grok_message: '先打开一个项目，再检查当前账号' }));
       return;
     }
     setBusy(true);
@@ -1441,6 +1441,7 @@ export default function App() {
             <BackendPanel backend={backendStatus} busy={busy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
           ) : (
             <ModelPanel
+              activeProject={activeProject}
               runtime={runtime}
               modelConfig={modelConfig}
               customModel={customModel}
@@ -2325,6 +2326,7 @@ function BackendPanel({ backend, busy, onRefresh, onTest }) {
 }
 
 function ModelPanel({
+  activeProject,
   runtime,
   modelConfig,
   customModel,
@@ -2347,6 +2349,7 @@ function ModelPanel({
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
   const canAdd = canSubmitModelAdd(customModel, modelConfig);
+  const grokActionDisabled = busy || !activeProject?.id;
   return (
     <div className="side-content">
       <section className="model-summary">
@@ -2535,21 +2538,21 @@ function ModelPanel({
               onChange={(event) => setCustomModel((previous) => ({ ...previous, account_name: event.target.value }))}
             />
             <div className="grok-action-grid">
-              <button className="tool-button" disabled={busy} onClick={onStartGrokLogin} type="button">
+              <button className="tool-button" disabled={grokActionDisabled} onClick={onStartGrokLogin} type="button">
                 <Play size={16} />
                 Login
               </button>
-              <button className="tool-button" disabled={busy} onClick={onPollGrokLogin} type="button">
+              <button className="tool-button" disabled={grokActionDisabled} onClick={onPollGrokLogin} type="button">
                 <CircleDot size={16} />
                 Poll
               </button>
-              <button className="tool-button" disabled={busy} onClick={onRefreshGrokStatus} type="button">
+              <button className="tool-button" disabled={grokActionDisabled} onClick={onRefreshGrokStatus} type="button">
                 <RefreshCw size={16} />
                 Status
               </button>
               <button
                 className="tool-button"
-                disabled={busy || !String(customModel.callback_input || '').trim()}
+                disabled={grokActionDisabled || !String(customModel.callback_input || '').trim()}
                 onClick={onCompleteGrokLogin}
                 type="button"
               >
@@ -2580,7 +2583,7 @@ function ModelPanel({
           value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
           onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
         />
-        <button className="tool-button accent full-width" disabled={busy || !canAdd} type="submit">
+        <button className="tool-button accent full-width" disabled={busy || !activeProject?.id || !canAdd} type="submit">
           <Plus size={16} />
           Add and use
         </button>
@@ -2679,6 +2682,69 @@ function grokStatusFromLogin(login) {
 
 function grokAuthorizeURL(login) {
   return String(login?.authorize_url || login?.AuthorizeURL || '').trim();
+}
+
+function openPendingGrokAuthWindow() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    const authWindow = window.open('about:blank', '_blank');
+    if (!authWindow) {
+      return null;
+    }
+    authWindow.document.title = 'Grok OAuth';
+    authWindow.document.body.innerHTML = '<main style="font-family: system-ui, sans-serif; padding: 24px; line-height: 1.5;"><strong>正在打开 Grok 授权页面...</strong><p>如果这个页面没有自动跳转，请回到 AINovel 点击授权链接。</p></main>';
+    return authWindow;
+  } catch {
+    return null;
+  }
+}
+
+function closeGrokAuthWindow(authWindow) {
+  if (!authWindow) {
+    return;
+  }
+  try {
+    authWindow.close();
+  } catch {
+    // Ignore browser popup cleanup failures.
+  }
+}
+
+function navigateGrokAuthWindow(authWindow, authorizeURL) {
+  const url = String(authorizeURL || '').trim();
+  if (!url) {
+    closeGrokAuthWindow(authWindow);
+    return false;
+  }
+  if (authWindow) {
+    try {
+      authWindow.opener = null;
+      authWindow.location.replace(url);
+      return true;
+    } catch {
+      closeGrokAuthWindow(authWindow);
+    }
+  }
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  try {
+    return Boolean(window.open(url, '_blank', 'noopener,noreferrer'));
+  } catch {
+    return false;
+  }
+}
+
+function grokOpenMessage(openedAuthorize, browserOpenError) {
+  if (openedAuthorize) {
+    return '已打开 Grok 授权页面';
+  }
+  if (browserOpenError) {
+    return `授权链接已生成；后端打开浏览器失败：${browserOpenError}`;
+  }
+  return '授权链接已生成，请点击打开 Grok 授权页面';
 }
 
 function grokLoginDone(login) {

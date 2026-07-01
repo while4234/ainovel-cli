@@ -30,30 +30,33 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 ## Current Baseline
 
 - Latest source change: branch `codex/web-project-cocreate-controls`,
-  `feat: add word budget progress UI`.
+  `901c489` `fix: open web grok oauth login`.
 - Branch: `codex/web-project-cocreate-controls`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the Web project/co-create controls commit,
+- Working tree: expected clean after the Web Grok OAuth login fix commit,
   except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
   artifacts.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` is rebuilt after the Web
-  project/co-create controls work using the project-local Go 1.25.5 toolchain,
-  then restarted on
+- Runtime: local `D:\ainovel\ainovel-cli.exe` is rebuilt after the Web Grok
+  OAuth login fix using the project-local Go 1.25.5 toolchain, then restarted on
   `http://127.0.0.1:9898` with runtime root
   `C:\Users\RondleLiu\.ainovel\novels-preview`. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: `go test ./internal/domain ./internal/entry/startup ./internal/entry/web ./internal/tools ./internal/store ./internal/userrules ./cmd/ainovel-cli`,
-  `npm --prefix web test`, `npm --prefix internal/entry/web/ui test`,
-  `npm --prefix web run build`, `npm --prefix internal/entry/web/ui run build`,
-  `go build -o D:\ainovel\ainovel-cli.exe D:\ainovel\cmd\ainovel-cli`,
-  `git diff --check`, HTTP smoke checks for `/`, `/api/runtime`, and
-  `/api/projects` on `http://127.0.0.1:9898`, and Playwright desktop/narrow UI
-  checks succeeded on 2026-07-01. The latest runtime is on 9898 and 9904 has no
-  listener.
+- Validation: `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run "TestProjectGrokLogin|TestProjectModelAdd" -count=1`,
+  `npm --prefix internal/entry/web/ui test`,
+  `npm --prefix internal/entry/web/ui run build`,
+  `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -count=1`,
+  `.codex\tools\go1.25.5\go\bin\go.exe build -o D:\ainovel\ainovel-cli.exe D:\ainovel\cmd\ainovel-cli`,
+  `git diff --check`, and HTTP smoke checks for `/`, `/api/runtime`, and
+  `/api/projects` on `http://127.0.0.1:9898` passed on 2026-07-01. The latest
+  runtime is on 9898 and 9904 has no listener.
 
 ## Change Log
 
-- 2026-07-01 `feat: add word budget progress UI`: added workspace progress
+- 2026-07-01 `901c489` `fix: open web grok oauth login`: added an opt-in
+  backend system-browser opener for Web Grok OAuth login start, frontend pending
+  and no-project feedback, popup/manual-link fallbacks, API/backend tests, and
+  regenerated embedded Web static assets.
+- 2026-07-01 `7bee635` `feat: add word budget progress UI`: added workspace progress
   display, normal co-create total-word controls, sticky right-side co-create
   launch/planning area, overflow/mobile layout fixes, total-vs-per-chapter
   user-rule wording, regenerated embedded Vite assets, rebuilt the local binary,

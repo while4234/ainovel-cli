@@ -226,10 +226,10 @@ export function addProviderModel(projectId, payload) {
   });
 }
 
-export function startGrokLogin(projectId, accountId, accountName) {
+export function startGrokLogin(projectId, accountId, accountName, openBrowser = false) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/start`, {
     method: 'POST',
-    body: JSON.stringify({ account_id: accountId, account_name: accountName })
+    body: JSON.stringify({ account_id: accountId, account_name: accountName, open_browser: openBrowser })
   });
 }
 

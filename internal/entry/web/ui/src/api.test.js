@@ -3,6 +3,7 @@ import {
   renameProject,
   reviseCoCreate,
   sendCoCreate,
+  startGrokLogin,
   trashProject
 } from './api.js';
 
@@ -49,5 +50,20 @@ describe('web API helpers', () => {
       text: 'Keep a slower burn'
     });
     expect(fetchMock.mock.calls[1][0]).toBe('/api/projects/project-1/cocreate/revise');
+  });
+
+  it('can ask the backend to open the Grok authorization page', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await startGrokLogin('project-1', 'work', 'Work', true);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/models/grok-login/start', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        account_id: 'work',
+        account_name: 'Work',
+        open_browser: true
+      })
+    }));
   });
 });
