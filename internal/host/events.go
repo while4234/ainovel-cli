@@ -1,6 +1,7 @@
 package host
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -51,6 +52,7 @@ type UISnapshot struct {
 	TotalChapters      int
 	CompletedCount     int
 	TotalWordCount     int
+	WordBudget         *domain.WordBudget
 	InProgressChapter  int
 	PendingRewrites    []int
 	RewriteReason      string
@@ -199,11 +201,33 @@ func ReplayDeltaText(item domain.RuntimeQueueItem) string {
 }
 
 // BuildStartPrompt 将用户需求包装为 Coordinator 的启动 prompt。
+// BuildStartPrompt wraps the user request for Coordinator startup.
 func BuildStartPrompt(prompt string) string {
+	return BuildStartPromptWithBudget(prompt, nil)
+}
+
+// BuildStartPromptWithBudget wraps the user request and makes any full-book
+// length contract explicit before planning starts.
+func BuildStartPromptWithBudget(prompt string, budget *domain.WordBudget) string {
 	prompt = strings.TrimSpace(prompt)
-	return "请根据以下创作要求开始创作一部小说。进入规划后，Premise 第一行必须输出 `# 书名`。章节数量由你根据故事需要自行决定；若题材与冲突天然适合长篇连载，请优先规划为分层长篇结构，而不是压缩成短篇式梗概。\n\n[创作要求]\n" +
+	contract := formatWordBudgetStartBlock(budget)
+	return "请根据以下创作要求开始创作一部小说。进入规划后，premise 第一行必须输出 `# 书名`。章节数量由你根据故事需要自行决定；若题材与冲突天然适合长篇连载，请优先规划为分层长篇结构，而不是压缩成短篇式梗概。\n\n" +
+		contract +
+		"[创作要求]\n" +
 		prompt +
 		"\n\n若某些细节未明确，请在不违背用户方向的前提下自行补全。"
+}
+
+func formatWordBudgetStartBlock(budget *domain.WordBudget) string {
+	if budget == nil {
+		return ""
+	}
+	normalized, ok := budget.NormalizedNoChapterRecalc()
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("[篇幅契约]\n- target_total_words=%d，这是全书总字数，不是每章字数。\n- total_min_words=%d，total_max_words=%d；规划阶段必须让预计全书篇幅落在这个区间内。\n- 先决定 planned_chapters，再通过 save_foundation 落盘大纲；系统会据此计算每章推荐区间并在写作阶段注入 working_memory.word_budget。\n- writer 写每章时必须遵守 working_memory.word_budget.current_chapter.recommended_min_words / recommended_max_words，超出区间需整章重写后再 commit_chapter。\n\n",
+		normalized.TargetTotalWords, normalized.TotalMinWords, normalized.TotalMaxWords)
 }
 
 // BuildAdaptationStartPrompt tells Coordinator that foundation and adaptation

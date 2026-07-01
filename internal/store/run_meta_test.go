@@ -13,10 +13,11 @@ func TestSaveAndLoadRunMeta(t *testing.T) {
 	store := NewStore(dir)
 
 	meta := domain.RunMeta{
-		StartedAt: "2026-03-07T10:00:00+08:00",
-		Provider:  "openrouter",
-		Style:     "fantasy",
-		Model:     "gpt-4o",
+		StartedAt:  "2026-03-07T10:00:00+08:00",
+		Provider:   "openrouter",
+		Style:      "fantasy",
+		Model:      "gpt-4o",
+		WordBudget: domain.NewWordBudget(5000, "test"),
 	}
 	if err := store.RunMeta.Save(meta); err != nil {
 		t.Fatalf("SaveRunMeta: %v", err)
@@ -34,6 +35,9 @@ func TestSaveAndLoadRunMeta(t *testing.T) {
 	}
 	if loaded.Model != "gpt-4o" {
 		t.Errorf("model mismatch: %s", loaded.Model)
+	}
+	if loaded.WordBudget == nil || loaded.WordBudget.TargetTotalWords != 5000 {
+		t.Errorf("word budget mismatch: %+v", loaded.WordBudget)
 	}
 }
 
@@ -164,6 +168,7 @@ func TestInitRunMeta_PreservesHistory(t *testing.T) {
 		Provider:     "openai",
 		Style:        "fantasy",
 		Model:        "old-model",
+		WordBudget:   domain.NewWordBudget(5000, "test"),
 		SteerHistory: []domain.SteerEntry{{Input: "历史干预", Timestamp: "ts"}},
 		PendingSteer: "待处理",
 	})
@@ -186,6 +191,55 @@ func TestInitRunMeta_PreservesHistory(t *testing.T) {
 	}
 	if meta.PendingSteer != "待处理" {
 		t.Errorf("pending steer should be preserved, got %s", meta.PendingSteer)
+	}
+}
+
+func TestInitRunMeta_PreservesWordBudget(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	_ = store.RunMeta.Save(domain.RunMeta{
+		StartedAt:  "old",
+		Provider:   "openai",
+		Style:      "fantasy",
+		Model:      "old-model",
+		WordBudget: domain.NewWordBudget(5000, "test"),
+	})
+	if err := store.RunMeta.Init("suspense", "openrouter", "new-model"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	meta, err := store.RunMeta.Load()
+	if err != nil {
+		t.Fatalf("LoadRunMeta: %v", err)
+	}
+	if meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords != 5000 {
+		t.Fatalf("word budget should be preserved, got %+v", meta)
+	}
+}
+
+func TestSetWordBudget(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	budget := domain.NewWordBudget(5000, "quick_start").WithPlannedChapters(5)
+	if err := store.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	meta, err := store.RunMeta.Load()
+	if err != nil {
+		t.Fatalf("LoadRunMeta: %v", err)
+	}
+	if meta == nil || meta.WordBudget == nil {
+		t.Fatal("expected word budget")
+	}
+	if meta.WordBudget.TargetTotalWords != 5000 ||
+		meta.WordBudget.TotalMinWords != 4500 ||
+		meta.WordBudget.TotalMaxWords != 5500 ||
+		meta.WordBudget.PlannedChapters != 5 {
+		t.Fatalf("unexpected word budget: %+v", meta.WordBudget)
+	}
+	if meta.WordBudget.ChapterMinWords <= 0 || meta.WordBudget.ChapterMaxWords <= meta.WordBudget.ChapterMinWords {
+		t.Fatalf("unexpected chapter range: %+v", meta.WordBudget)
 	}
 }
 

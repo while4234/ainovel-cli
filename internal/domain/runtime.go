@@ -208,6 +208,7 @@ type RunMeta struct {
 	Style        string       `json:"style"`
 	Model        string       `json:"model"`
 	PlanningTier PlanningTier `json:"planning_tier,omitempty"`
+	WordBudget   *WordBudget  `json:"word_budget,omitempty"`
 	SteerHistory []SteerEntry `json:"steer_history,omitempty"`
 	PendingSteer string       `json:"pending_steer,omitempty"` // 未完成的 Steer 指令，中断恢复时重新注入
 }

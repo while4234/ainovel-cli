@@ -80,6 +80,56 @@ func TestSaveFoundationPremiseSetsNovelName(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationOutlineComputesWordBudget(t *testing.T) {
+	dir := t.TempDir()
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("test", 0); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget, _ := domain.NewWordBudgetFromTarget(100000, domain.WordBudgetSourcePrompt)
+	if err := store.RunMeta.SetWordBudget(budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	entries := make([]map[string]any, 0, 20)
+	for chapter := 1; chapter <= 20; chapter++ {
+		entries = append(entries, map[string]any{
+			"chapter":    chapter,
+			"title":      "chapter",
+			"core_event": "event",
+			"hook":       "hook",
+		})
+	}
+	args, err := json.Marshal(map[string]any{
+		"type":    "outline",
+		"content": entries,
+		"scale":   "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	meta, err := store.RunMeta.Load()
+	if err != nil {
+		t.Fatalf("LoadRunMeta: %v", err)
+	}
+	if meta == nil || meta.WordBudget == nil {
+		t.Fatal("expected word budget")
+	}
+	if meta.WordBudget.PlannedChapters != 20 ||
+		meta.WordBudget.ChapterMinWords != 4500 ||
+		meta.WordBudget.ChapterMaxWords != 5500 {
+		t.Fatalf("word budget = %+v", meta.WordBudget)
+	}
+}
+
 func TestSaveFoundationOutlineClearsLayeredStateWhenDowngrading(t *testing.T) {
 	dir := t.TempDir()
 	store := store.NewStore(dir)
@@ -147,6 +197,45 @@ func TestSaveFoundationOutlineClearsLayeredStateWhenDowngrading(t *testing.T) {
 	}
 	if meta.PlanningTier != domain.PlanningTierMid {
 		t.Fatalf("expected planning tier %q, got %q", domain.PlanningTierMid, meta.PlanningTier)
+	}
+}
+
+func TestSaveFoundationOutlinePlansWordBudget(t *testing.T) {
+	dir := t.TempDir()
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	budget := domain.NewWordBudget(5000, "test")
+	if err := store.RunMeta.SetWordBudget(budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	args, err := json.Marshal(map[string]any{
+		"type":    "outline",
+		"content": `[{"chapter":1,"title":"一","core_event":"开端","hook":"钩子"},{"chapter":2,"title":"二","core_event":"推进","hook":"钩子"},{"chapter":3,"title":"三","core_event":"收束","hook":"钩子"}]`,
+		"scale":   "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	meta, err := store.RunMeta.Load()
+	if err != nil {
+		t.Fatalf("LoadRunMeta: %v", err)
+	}
+	if meta == nil || meta.WordBudget == nil {
+		t.Fatal("expected word budget")
+	}
+	if meta.WordBudget.PlannedChapters != 3 {
+		t.Fatalf("planned chapters = %d, want 3", meta.WordBudget.PlannedChapters)
+	}
+	if meta.WordBudget.ChapterMinWords <= 0 || meta.WordBudget.ChapterMaxWords <= meta.WordBudget.ChapterMinWords {
+		t.Fatalf("unexpected chapter range: %+v", meta.WordBudget)
 	}
 }
 

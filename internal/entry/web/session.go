@@ -51,6 +51,7 @@ type projectHost interface {
 	Snapshot() host.UISnapshot
 	PrepareUserRules(string) error
 	PrepareExternalSourceUserRules(string) error
+	SetWordBudget(*domain.WordBudget) error
 	StartPrepared(string) error
 	Abort() bool
 	Resume() (string, error)
@@ -316,7 +317,7 @@ func (s *ProjectSession) GrokLoginStatus(accountID string) grokauth.AuthStatus {
 	return s.host.GrokLoginStatus(accountID)
 }
 
-func (s *ProjectSession) StartQuick(text string) error {
+func (s *ProjectSession) StartQuick(text string, targetTotalWords int) error {
 	unlock, err := s.beginAction()
 	if err != nil {
 		return err
@@ -324,15 +325,19 @@ func (s *ProjectSession) StartQuick(text string) error {
 	defer unlock()
 
 	plan, err := startup.PrepareQuick(startup.Request{
-		Mode:        startup.ModeQuick,
-		UserPrompt:  text,
-		OutputDir:   s.manifest.OutputDir,
-		Interactive: false,
+		Mode:             startup.ModeQuick,
+		UserPrompt:       text,
+		OutputDir:        s.manifest.OutputDir,
+		Interactive:      false,
+		TargetTotalWords: targetTotalWords,
 	})
 	if err != nil {
 		return err
 	}
 	if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+		return err
+	}
+	if err := s.persistWordBudget(plan.WordBudget); err != nil {
 		return err
 	}
 	if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
@@ -590,11 +595,14 @@ func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
 			return state.apiState(), err
 		}
 	default:
-		plan, err := state.session.BuildPlan()
+		plan, err := state.session.BuildPlanWithWordBudget(state.targetTotalWords)
 		if err != nil {
 			return state.apiState(), err
 		}
 		if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+			return state.apiState(), err
+		}
+		if err := s.persistWordBudget(plan.WordBudget); err != nil {
 			return state.apiState(), err
 		}
 		if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
@@ -605,6 +613,16 @@ func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
 	s.cocreate = nil
 	s.AppendSnapshot()
 	return api, nil
+}
+
+func (s *ProjectSession) persistWordBudget(budget *domain.WordBudget) error {
+	if budget == nil || budget.TargetTotalWords <= 0 {
+		return nil
+	}
+	if err := s.host.SetWordBudget(budget); err != nil {
+		return fmt.Errorf("save word budget: %w", err)
+	}
+	return nil
 }
 
 func (s *ProjectSession) CancelCoCreate() (webCoCreateState, error) {

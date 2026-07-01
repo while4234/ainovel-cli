@@ -112,6 +112,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			_ = t.store.Outline.ClearLayeredOutline()
 		}
 		result["chapters"] = len(entries)
+		if err := t.updateWordBudgetPlan(len(entries), result); err != nil {
+			return nil, err
+		}
 
 	case "layered_outline":
 		var volumes []domain.VolumeOutline
@@ -134,6 +137,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		result["volumes"] = len(volumes)
 		result["chapters"] = total
+		if err := t.updateWordBudgetPlan(total, result); err != nil {
+			return nil, err
+		}
 
 	case "characters":
 		var chars []domain.Character
@@ -169,6 +175,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		result["volume"] = a.Volume
 		result["arc"] = a.Arc
 		result["chapters"] = len(chapters)
+		if err := t.refreshWordBudgetPlan(result); err != nil {
+			return nil, err
+		}
 
 	case "append_volume":
 		if p, _ := t.store.Progress.Load(); p != nil && p.Phase == domain.PhaseComplete {
@@ -189,6 +198,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		if chCount > 0 {
 			result["chapters"] = chCount
+		}
+		if err := t.refreshWordBudgetPlan(result); err != nil {
+			return nil, err
 		}
 
 	case "complete_book":
@@ -335,4 +347,34 @@ func normalizeFoundationContent(raw json.RawMessage) (string, error) {
 func (t *SaveFoundationTool) isWriting() bool {
 	p, _ := t.store.Progress.Load()
 	return p != nil && p.Phase == domain.PhaseWriting
+}
+
+func (t *SaveFoundationTool) refreshWordBudgetPlan(result map[string]any) error {
+	progress, err := t.store.Progress.Load()
+	if err != nil {
+		return fmt.Errorf("load progress for word budget: %w: %w", errs.ErrStoreRead, err)
+	}
+	if progress == nil {
+		return nil
+	}
+	return t.updateWordBudgetPlan(progress.TotalChapters, result)
+}
+
+func (t *SaveFoundationTool) updateWordBudgetPlan(chapters int, result map[string]any) error {
+	if chapters <= 0 {
+		return nil
+	}
+	meta, err := t.store.RunMeta.Load()
+	if err != nil {
+		return fmt.Errorf("load run meta for word budget: %w: %w", errs.ErrStoreRead, err)
+	}
+	if meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords <= 0 {
+		return nil
+	}
+	next := meta.WordBudget.WithPlannedChapters(chapters)
+	if err := t.store.RunMeta.SetWordBudget(&next); err != nil {
+		return fmt.Errorf("save word budget plan: %w: %w", errs.ErrStoreWrite, err)
+	}
+	result["word_budget"] = next
+	return nil
 }

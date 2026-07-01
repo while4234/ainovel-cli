@@ -147,13 +147,23 @@ func (s *CoCreateSession) InitialInput() string {
 }
 
 func (s *CoCreateSession) BuildPlan() (Plan, error) {
+	return s.BuildPlanWithWordBudget(0)
+}
+
+func (s *CoCreateSession) BuildPlanWithWordBudget(targetTotalWords int) (Plan, error) {
 	if s == nil || !s.CanStart() {
 		return Plan{}, fmt.Errorf("cocreate draft prompt is required")
+	}
+	draft := s.DraftPrompt()
+	budget, err := wordBudgetForPrompt(targetTotalWords, draft)
+	if err != nil {
+		return Plan{}, err
 	}
 	return Plan{
 		Mode:        ModeCoCreate,
 		DisplayName: "共创规划",
-		StartPrompt: host.BuildStartPrompt(s.DraftPrompt()),
-		RawPrompt:   s.DraftPrompt(),
+		StartPrompt: host.BuildStartPromptWithBudget(draft, budget),
+		RawPrompt:   draft,
+		WordBudget:  budget,
 	}, nil
 }

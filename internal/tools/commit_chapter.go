@@ -170,6 +170,9 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	if err := t.ensureAdaptationGate(a.Chapter, content); err != nil {
 		return nil, err
 	}
+	if err := t.ensureWordBudgetGate(a.Chapter, wordCount); err != nil {
+		return nil, err
+	}
 
 	now := time.Now().Format(time.RFC3339)
 	pending := domain.PendingCommit{
@@ -398,6 +401,47 @@ func (t *CommitChapterTool) ensureAdaptationGate(chapter int, content string) er
 
 // checkRules 对章节正文做机械检查：内置产品底线 Lint（机制残留，始终执行）
 // + 用户规则 Check（读本书快照的 structured；快照缺失退到内置默认，保证机械底线始终在）。
+func (t *CommitChapterTool) ensureWordBudgetGate(chapter int, wordCount int) error {
+	if t.store.Adaptation.Active() {
+		return nil
+	}
+	meta, err := t.store.RunMeta.Load()
+	if err != nil {
+		return fmt.Errorf("load word budget: %w: %w", errs.ErrStoreRead, err)
+	}
+	if meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords <= 0 {
+		return nil
+	}
+	progress, err := t.store.Progress.Load()
+	if err != nil {
+		return fmt.Errorf("load progress for word budget: %w: %w", errs.ErrStoreRead, err)
+	}
+	runtime, runtimeOK := meta.WordBudget.Runtime(progress, chapter)
+	minWords, maxWords := 0, 0
+	if runtimeOK && runtime.CurrentChapter.Chapter > 0 {
+		minWords = runtime.CurrentChapter.RecommendedMinWords
+		maxWords = runtime.CurrentChapter.RecommendedMaxWords
+	} else {
+		var ok bool
+		minWords, maxWords, ok = meta.WordBudget.ChapterRange()
+		if !ok {
+			return nil
+		}
+	}
+	if wordCount >= minWords && wordCount <= maxWords {
+		return nil
+	}
+	direction := "低于"
+	if wordCount > maxWords {
+		direction = "超过"
+	}
+	return fmt.Errorf(
+		"普通创作字数预算拒绝提交：第 %d 章当前 %d 字，%s预算区间 %d-%d 字。全书目标 %d 字，已完成 %d 字，剩余目标 %d 字，剩余章节 %d。请先调用 draft_chapter(mode=\"write\", chapter=%d) 整章重写到预算区间内，再重新 read_chapter/check_consistency/commit_chapter: %w",
+		chapter, wordCount, direction, minWords, maxWords,
+		runtime.Target.TargetTotalWords, runtime.Progress.CompletedWords, runtime.Remaining.TargetWords, runtime.Remaining.Chapters,
+		chapter, errs.ErrToolPrecondition)
+}
+
 func (t *CommitChapterTool) checkRules(text string, wordCount int) []rules.Violation {
 	violations := rules.Lint(text)
 	structured := rules.SystemDefaults().Structured
@@ -438,6 +482,9 @@ func (t *CommitChapterTool) executeRewriteCommit(
 			chapter, mode, chapter, mode, errs.ErrToolPrecondition)
 	}
 	if err := t.ensureAdaptationGate(chapter, content); err != nil {
+		return nil, err
+	}
+	if err := t.ensureWordBudgetGate(chapter, wordCount); err != nil {
 		return nil, err
 	}
 

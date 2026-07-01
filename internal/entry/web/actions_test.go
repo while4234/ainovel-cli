@@ -46,6 +46,29 @@ func TestProjectStartQuickUsesPreparedStartupPrompt(t *testing.T) {
 	}
 }
 
+func TestProjectStartQuickPersistsTargetTotalWords(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Quick Budget")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/start", bytes.NewBufferString(`{"text":"写一部短篇小说","target_total_words":5000}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.setWordBudgetCalls != 1 || fake.wordBudget == nil || fake.wordBudget.TargetTotalWords != 5000 {
+		t.Fatalf("SetWordBudget calls=%d budget=%+v", fake.setWordBudgetCalls, fake.wordBudget)
+	}
+	if !strings.Contains(fake.startPreparedPrompt, "target_total_words=5000") {
+		t.Fatalf("start prompt missing target_total_words: %q", fake.startPreparedPrompt)
+	}
+}
+
 func TestProjectStartQuickRejectsProjectWithExistingBookState(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
 	defer server.Close()

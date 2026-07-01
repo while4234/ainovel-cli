@@ -211,6 +211,10 @@ func (h *Host) PrepareExternalSourceUserRules(rawPrompt string) error {
 	return h.prepareUserRules(rawPrompt, rules.SystemDefaultsWithoutChapterWords())
 }
 
+func (h *Host) SetWordBudget(budget *domain.WordBudget) error {
+	return h.store.RunMeta.SetWordBudget(budget)
+}
+
 func (h *Host) prepareUserRules(rawPrompt string, defaults rules.Candidate) error {
 	svc := userrules.NewServiceWithSystemDefaults(h.store, h.models.Default, rules.DefaultOptions(), defaults)
 	snap, err := svc.Build(context.Background(), rawPrompt)
@@ -843,6 +847,7 @@ func (h *Host) Snapshot() UISnapshot {
 	}
 	if meta, _ := h.store.RunMeta.Load(); meta != nil {
 		snap.PendingSteer = meta.PendingSteer
+		snap.WordBudget = meta.WordBudget
 	}
 
 	snap.Agents = h.observer.agentSnapshots()

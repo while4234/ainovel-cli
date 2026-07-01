@@ -25,11 +25,12 @@ const (
 )
 
 type webCoCreateBeginRequest struct {
-	Kind       string  `json:"kind"`
-	Initial    string  `json:"initial"`
-	SourceFile string  `json:"source_file"`
-	Mode       string  `json:"mode"`
-	Tolerance  float64 `json:"word_tolerance"`
+	Kind             string  `json:"kind"`
+	Initial          string  `json:"initial"`
+	SourceFile       string  `json:"source_file"`
+	Mode             string  `json:"mode"`
+	Tolerance        float64 `json:"word_tolerance"`
+	TargetTotalWords int     `json:"target_total_words"`
 
 	sourcePath string
 }
@@ -54,21 +55,22 @@ type webCoCreateMessage struct {
 }
 
 type webCoCreateState struct {
-	Kind           string               `json:"kind"`
-	Active         bool                 `json:"active"`
-	Messages       []webCoCreateMessage `json:"messages"`
-	DraftPrompt    string               `json:"draft_prompt"`
-	Ready          bool                 `json:"ready"`
-	Suggestions    []string             `json:"suggestions"`
-	StreamThinking string               `json:"stream_thinking,omitempty"`
-	StreamReply    string               `json:"stream_reply,omitempty"`
-	AdaptMode      string               `json:"adapt_mode,omitempty"`
-	RewritePolicy  string               `json:"rewrite_policy,omitempty"`
-	WordTolerance  float64              `json:"word_tolerance,omitempty"`
-	SourceFile     string               `json:"source_file,omitempty"`
-	CanStart       bool                 `json:"can_start"`
-	ModeLocked     bool                 `json:"mode_locked,omitempty"`
-	CommittedLabel string               `json:"committed_label,omitempty"`
+	Kind             string               `json:"kind"`
+	Active           bool                 `json:"active"`
+	Messages         []webCoCreateMessage `json:"messages"`
+	DraftPrompt      string               `json:"draft_prompt"`
+	Ready            bool                 `json:"ready"`
+	Suggestions      []string             `json:"suggestions"`
+	StreamThinking   string               `json:"stream_thinking,omitempty"`
+	StreamReply      string               `json:"stream_reply,omitempty"`
+	AdaptMode        string               `json:"adapt_mode,omitempty"`
+	RewritePolicy    string               `json:"rewrite_policy,omitempty"`
+	WordTolerance    float64              `json:"word_tolerance,omitempty"`
+	TargetTotalWords int                  `json:"target_total_words,omitempty"`
+	SourceFile       string               `json:"source_file,omitempty"`
+	CanStart         bool                 `json:"can_start"`
+	ModeLocked       bool                 `json:"mode_locked,omitempty"`
+	CommittedLabel   string               `json:"committed_label,omitempty"`
 }
 
 type webCoCreateSession struct {
@@ -81,6 +83,7 @@ type webCoCreateSession struct {
 	adaptGranularity   string
 	adaptRewritePolicy string
 	adaptWordTolerance float64
+	targetTotalWords   int
 }
 
 func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Request, id string) {
@@ -99,6 +102,10 @@ func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if strings.TrimSpace(req.Kind) == webCoCreateKindAdapt {
+		if req.TargetTotalWords != 0 {
+			writeError(w, http.StatusBadRequest, "target_total_words is only supported for normal co-create")
+			return
+		}
 		mode := strings.TrimSpace(req.Mode)
 		rewritePolicy, err := adaptationRewritePolicyForMode(mode)
 		if err != nil {
@@ -223,9 +230,14 @@ func newWebCoCreateSession(req webCoCreateBeginRequest) (*webCoCreateSession, er
 		if initial == "" {
 			return nil, fmt.Errorf("initial idea is required")
 		}
+		if req.TargetTotalWords < 0 {
+			return nil, fmt.Errorf("target_total_words must be a non-negative integer")
+		}
+		targetTotalWords := req.TargetTotalWords
 		state := &webCoCreateSession{
-			kind:    kind,
-			session: startup.NewCoCreateSession(initial),
+			kind:             kind,
+			session:          startup.NewCoCreateSession(initial),
+			targetTotalWords: targetTotalWords,
 		}
 		state.messages = append(state.messages, state.newMessage("user", initial, "custom", 0))
 		return state, nil
@@ -373,20 +385,21 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		return webCoCreateState{}
 	}
 	return webCoCreateState{
-		Kind:           s.kind,
-		Active:         true,
-		Messages:       append([]webCoCreateMessage(nil), s.messages...),
-		DraftPrompt:    s.draftPrompt(),
-		Ready:          s.session.Ready(),
-		Suggestions:    append([]string(nil), s.session.Suggestions()...),
-		StreamThinking: s.session.StreamThinking(),
-		StreamReply:    s.session.StreamReply(),
-		AdaptMode:      s.adaptGranularity,
-		RewritePolicy:  s.adaptRewritePolicy,
-		WordTolerance:  s.adaptWordTolerance,
-		SourceFile:     s.sourceFile,
-		CanStart:       s.session.Ready() && strings.TrimSpace(s.session.DraftPrompt()) != "",
-		ModeLocked:     s.kind == webCoCreateKindAdapt,
+		Kind:             s.kind,
+		Active:           true,
+		Messages:         append([]webCoCreateMessage(nil), s.messages...),
+		DraftPrompt:      s.draftPrompt(),
+		Ready:            s.session.Ready(),
+		Suggestions:      append([]string(nil), s.session.Suggestions()...),
+		StreamThinking:   s.session.StreamThinking(),
+		StreamReply:      s.session.StreamReply(),
+		AdaptMode:        s.adaptGranularity,
+		RewritePolicy:    s.adaptRewritePolicy,
+		WordTolerance:    s.adaptWordTolerance,
+		TargetTotalWords: s.targetTotalWords,
+		SourceFile:       s.sourceFile,
+		CanStart:         s.session.Ready() && strings.TrimSpace(s.session.DraftPrompt()) != "",
+		ModeLocked:       s.kind == webCoCreateKindAdapt,
 	}
 }
 
@@ -465,6 +478,7 @@ func isBadCoCreateRequest(err error) bool {
 		strings.Contains(text, "not found") ||
 		strings.Contains(text, "not editable") ||
 		strings.Contains(text, "not ready") ||
+		strings.Contains(text, "non-negative integer") ||
 		strings.Contains(text, "has not started")
 }
 

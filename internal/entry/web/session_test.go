@@ -446,6 +446,7 @@ type fakeProjectHost struct {
 	adaptCoCreateErr           error
 	prepareUserRulesErr        error
 	prepareExternalRulesErr    error
+	setWordBudgetErr           error
 	startPreparedErr           error
 	resumeFromCoCreateErr      error
 	requireAnalyzedAdaptSource bool
@@ -462,6 +463,7 @@ type fakeProjectHost struct {
 	abortCalls                  int
 	prepareRulesCalls           int
 	prepareExternalRulesCalls   int
+	setWordBudgetCalls          int
 	startPreparedCalls          int
 	cocreateCalls               int
 	stageCoCreateCalls          int
@@ -487,6 +489,7 @@ type fakeProjectHost struct {
 	grokStatusAccountID         string
 	preparedRulesPrompt         string
 	preparedExternalRulesPrompt string
+	wordBudget                  *domain.WordBudget
 	startPreparedPrompt         string
 	resumeCoCreateDraft         string
 	lastCoCreateHistory         []host.CoCreateMessage
@@ -544,6 +547,19 @@ func (f *fakeProjectHost) PrepareExternalSourceUserRules(prompt string) error {
 	f.prepareExternalRulesCalls++
 	f.preparedExternalRulesPrompt = prompt
 	return f.prepareExternalRulesErr
+}
+
+func (f *fakeProjectHost) SetWordBudget(budget *domain.WordBudget) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setWordBudgetCalls++
+	if budget == nil {
+		f.wordBudget = nil
+	} else {
+		copy := *budget
+		f.wordBudget = &copy
+	}
+	return f.setWordBudgetErr
 }
 
 func (f *fakeProjectHost) StartPrepared(prompt string) error {

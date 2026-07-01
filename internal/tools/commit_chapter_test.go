@@ -32,6 +32,79 @@ func TestCommitChapterSchemaDescribesFeedbackAsObject(t *testing.T) {
 	}
 }
 
+func TestCommitChapterRejectsWordBudgetOutOfRange(t *testing.T) {
+	dir := t.TempDir()
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("test", 5); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget := domain.NewWordBudget(5000, "test").WithPlannedChapters(5)
+	if err := store.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := store.Drafts.SaveDraft(1, strings.Repeat("短", 100)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	tool := NewCommitChapterTool(store)
+	args := commitChapterArgs(t, 1)
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "字数预算拒绝提交") {
+		t.Fatalf("expected word budget rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(dir + "/chapters/01.md"); !os.IsNotExist(statErr) {
+		t.Fatalf("chapter should not be persisted, stat err=%v", statErr)
+	}
+}
+
+func TestCommitChapterAllowsWordBudgetInRange(t *testing.T) {
+	dir := t.TempDir()
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("test", 5); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget := domain.NewWordBudget(5000, "test").WithPlannedChapters(5)
+	if err := store.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := store.Drafts.SaveDraft(1, strings.Repeat("正", 900)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	tool := NewCommitChapterTool(store)
+	if _, err := tool.Execute(context.Background(), commitChapterArgs(t, 1)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	progress, err := store.Progress.Load()
+	if err != nil {
+		t.Fatalf("LoadProgress: %v", err)
+	}
+	if progress == nil || progress.TotalWordCount != 900 || len(progress.CompletedChapters) != 1 {
+		t.Fatalf("unexpected progress: %+v", progress)
+	}
+}
+
+func commitChapterArgs(t *testing.T, chapter int) json.RawMessage {
+	t.Helper()
+	args, err := json.Marshal(map[string]any{
+		"chapter":         chapter,
+		"summary":         "测试提交",
+		"characters":      []string{"主角"},
+		"key_events":      []string{"推进"},
+		"timeline_events": []any{},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	return args
+}
+
 func TestCommitChapterRejectsNonPendingRewrite(t *testing.T) {
 	dir := t.TempDir()
 	store := store.NewStore(dir)
@@ -141,6 +214,44 @@ func TestCommitChapterAllowsPendingRewrite(t *testing.T) {
 	}
 	if pending != nil {
 		t.Fatalf("expected pending commit cleared, got %+v", pending)
+	}
+}
+
+// TestCommitChapterRejectsNonAdaptationOutsideWordBudget verifies the normal
+// creation word budget gate rejects drafts outside the current chapter range.
+func TestCommitChapterRejectsNonAdaptationOutsideWordBudget(t *testing.T) {
+	dir := t.TempDir()
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 2); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget, _ := domain.NewWordBudgetFromTarget(10000, domain.WordBudgetSourcePrompt)
+	planned := budget.WithPlannedChapters(2)
+	if err := s.RunMeta.SetWordBudget(&planned); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, strings.Repeat("a", 1000)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	tool := NewCommitChapterTool(s)
+	args, err := json.Marshal(map[string]any{
+		"chapter":    1,
+		"summary":    "too short",
+		"characters": []string{"hero"},
+		"key_events": []string{"event"},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), args); err == nil {
+		t.Fatalf("expected word budget rejection, got %v", err)
+	}
+	if _, err := os.Stat(dir + "/chapters/01.md"); !os.IsNotExist(err) {
+		t.Fatalf("chapter should not be persisted, stat err=%v", err)
 	}
 }
 

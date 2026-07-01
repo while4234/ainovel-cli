@@ -1,6 +1,10 @@
 package startup
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/voocel/ainovel-cli/internal/domain"
+)
 
 // startup 层承载“进入 Engine 之前”的启动编排。
 // 分层约定：
@@ -25,11 +29,12 @@ const (
 // Request 描述入口层提交给启动策略层的原始输入。
 // 宿主入口先收集用户输入，再由 startup 把它整理为可进入 Engine 的计划。
 type Request struct {
-	Mode        Mode
-	UserPrompt  string
-	NovelPath   string
-	OutputDir   string
-	Interactive bool
+	Mode             Mode
+	UserPrompt       string
+	NovelPath        string
+	OutputDir        string
+	Interactive      bool
+	TargetTotalWords int
 
 	AdaptGranularity   string
 	AdaptRewritePolicy string
@@ -44,6 +49,7 @@ type Plan struct {
 	StartPrompt string // 已包装的 Coordinator 启动 prompt（BuildStartPrompt 产物）
 	RawPrompt   string // 用户原始创作要求（未包装）；供用户规则归一化使用，resume 模式为空
 	ResumeOnly  bool
+	WordBudget  *domain.WordBudget
 
 	AdaptGranularity   string
 	AdaptRewritePolicy string
