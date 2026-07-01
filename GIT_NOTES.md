@@ -21,15 +21,23 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest upstream source commit: `7bafcc6` `fix: scope adaptation writer guidance`
+- Latest upstream source commit: `202b21b` `docs: clarify adaptation mode selection`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: has known untracked local workspace directory `ds_xfk/`
-- Validation: latest pull, compile-only tests, local CLI build, and
-  cross-directory PATH/shim smoke succeeded on 2026-06-30
+- Runtime: local `D:\ainovel\ainovel-cli.exe` rebuilt from `202b21b`; the
+  `D:\grok\bin\ainovel-cli.cmd` shim still points to that executable.
+- Validation: latest pull, local CLI build, PowerShell/cmd PATH smoke, and
+  focused Go package tests succeeded on 2026-07-01. Full light package test
+  set only failed in `internal/version` `TestReplaceExecutable` on Windows
+  permission bits (`-rw-rw-rw-` vs `0755`).
 
 ## Change Log
 
+- 2026-07-01 `202b21b` `docs: clarify adaptation mode selection`: pulled
+  latest upstream code, installed project-local Go 1.25.5 under ignored
+  `.codex/tools/`, rebuilt `D:\ainovel\ainovel-cli.exe`, and verified the
+  PowerShell/cmd `ainovel-cli` entrypoints show commit `202b21b`.
 - 2026-06-30 `fix: bound TUI frame height`: top-level TUI rendering
   now pads/truncates every view to the active terminal size, with a done-state
   regression test covering stale multi-line input height so completed/export
