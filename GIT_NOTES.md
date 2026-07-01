@@ -30,7 +30,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 ## Current Baseline
 
 - Latest source change: branch `codex/web-project-cocreate-controls`,
-  `901c489` `fix: open web grok oauth login`.
+  `5c9ff38` `fix: open web grok oauth login`.
 - Branch: `codex/web-project-cocreate-controls`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: expected clean after the Web Grok OAuth login fix commit,
@@ -52,7 +52,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-01 `901c489` `fix: open web grok oauth login`: added an opt-in
+- 2026-07-01 `5c9ff38` `fix: open web grok oauth login`: added an opt-in
   backend system-browser opener for Web Grok OAuth login start, frontend pending
   and no-project feedback, popup/manual-link fallbacks, API/backend tests, and
   regenerated embedded Web static assets.
