@@ -47,7 +47,6 @@ func runStructuredCall[T any](
 	if maxAttempts <= 0 {
 		maxAttempts = retrypolicy.MaxAttempts
 	}
-	formatRetried := false
 	currentMessages := append([]agentcore.Message(nil), messages...)
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -70,11 +69,10 @@ func runStructuredCall[T any](
 		if err == nil {
 			return parsed, nil
 		}
-		if formatRetried || attempt == maxAttempts {
+		if attempt == maxAttempts {
 			return zero, err
 		}
 
-		formatRetried = true
 		currentMessages = append(currentMessages, agentcore.UserMsg(formatRetryPrompt(err)))
 		if err := waitBeforeStructuredRetry(ctx, opts, attempt, maxAttempts, err); err != nil {
 			return zero, err

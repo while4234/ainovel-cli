@@ -134,7 +134,7 @@ func TestAnalyzeChapterWithOptionsDoesNotReturnPartialStreamOnError(t *testing.T
 	}
 }
 
-func TestAnalyzeChapterWithOptionsRetriesFormatOnce(t *testing.T) {
+func TestAnalyzeChapterWithOptionsRetriesFormat(t *testing.T) {
 	llm := &scriptedStructuredLLM{
 		responses: []structuredLLMResponse{
 			{text: "not tagged"},
@@ -152,6 +152,34 @@ func TestAnalyzeChapterWithOptionsRetriesFormatOnce(t *testing.T) {
 	}
 	if len(llm.got) != 2 || !strings.Contains(llm.got[1][2].TextContent(), "could not be parsed") {
 		t.Fatalf("format retry message not appended: %+v", llm.got)
+	}
+}
+
+func TestAnalyzeChapterWithOptionsRetriesRepeatedFormatFailures(t *testing.T) {
+	llm := &scriptedStructuredLLM{
+		responses: []structuredLLMResponse{
+			{text: "not tagged"},
+			{text: "=== SUMMARY ===\nstill missing required tags"},
+			{text: validAnalyzerEnvelope},
+		},
+	}
+
+	_, err := AnalyzeChapterWithOptions(context.Background(), llm, "system", 1, "Opening", "body", "", "", nil,
+		StructuredCallOptions{DisableStream: true, Sleep: noStructuredTestSleep})
+	if err != nil {
+		t.Fatalf("AnalyzeChapterWithOptions: %v", err)
+	}
+	if llm.calls != 3 {
+		t.Fatalf("calls=%d, want 3", llm.calls)
+	}
+	if len(llm.got) != 3 {
+		t.Fatalf("recorded calls=%d, want 3", len(llm.got))
+	}
+	for i := 1; i < len(llm.got); i++ {
+		lastMessage := llm.got[i][len(llm.got[i])-1]
+		if !strings.Contains(lastMessage.TextContent(), "could not be parsed") {
+			t.Fatalf("call %d missing format retry prompt: %+v", i+1, llm.got[i])
+		}
 	}
 }
 
