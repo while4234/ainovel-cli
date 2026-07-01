@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
@@ -34,6 +35,7 @@ type Options struct {
 }
 
 type Server struct {
+	cfgMu       sync.RWMutex
 	cfg         bootstrap.Config
 	bundle      assets.Bundle
 	runtimeRoot string
@@ -137,6 +139,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/runtime", s.handleRuntime)
+	mux.HandleFunc("/api/models", s.handleModels)
+	mux.HandleFunc("/api/models/default", s.handleDefaultModel)
 	mux.HandleFunc("/api/models/grok-login/", s.handleGrokLogin)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProject)
@@ -185,18 +189,39 @@ func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	cfg := s.currentConfig()
+	writeJSON(w, http.StatusOK, s.runtimePayload(cfg))
+}
+
+func (s *Server) currentConfig() bootstrap.Config {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return cloneWebConfig(s.cfg)
+}
+
+func (s *Server) setCurrentConfig(cfg bootstrap.Config) {
+	cfg = cloneWebConfig(cfg)
+	s.cfgMu.Lock()
+	s.cfg = cfg
+	s.cfgMu.Unlock()
+	if s.sessions != nil {
+		s.sessions.SetConfig(cfg)
+	}
+}
+
+func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
+	return map[string]any{
 		"runtime_root": s.runtimeRoot,
 		"projects_dir": s.store.ProjectsDir(),
 		"config": map[string]any{
-			"provider":         s.cfg.Provider,
-			"model":            s.cfg.ModelName,
-			"style":            s.cfg.Style,
-			"reasoning_effort": s.cfg.ReasoningEffort,
-			"roles":            s.cfg.Roles,
+			"provider":         cfg.Provider,
+			"model":            cfg.ModelName,
+			"style":            cfg.Style,
+			"reasoning_effort": cfg.ReasoningEffort,
+			"roles":            cfg.Roles,
 		},
 		"active_projects": s.sessions.ActiveProjectIDs(),
-	})
+	}
 }
 
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {

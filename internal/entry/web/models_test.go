@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -12,6 +13,72 @@ import (
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/grokauth"
 )
+
+func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := testWebConfig(t)
+	cfg.Providers["openai"] = bootstrap.ProviderConfig{
+		Type:   "openai",
+		APIKey: "sk-test",
+		Models: []string{"gpt-test", "gpt-next"},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+
+	var listed struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodGet, "/api/models", "", &listed)
+	if len(listed.Models.Providers) != 1 || listed.Models.Providers[0].Name != "openai" {
+		t.Fatalf("global providers = %+v", listed.Models.Providers)
+	}
+	if listed.Models.Roles[0].Provider != "openai" || listed.Models.Roles[0].Model != "gpt-test" {
+		t.Fatalf("global default route = %+v", listed.Models.Roles[0])
+	}
+
+	var switched struct {
+		Models  apiModelConfig `json:"models"`
+		Runtime struct {
+			Config struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			} `json:"config"`
+		} `json:"runtime"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/default", `{"provider":"openai","model":"gpt-next"}`, &switched)
+	if switched.Runtime.Config.Provider != "openai" || switched.Runtime.Config.Model != "gpt-next" {
+		t.Fatalf("runtime default = %+v", switched.Runtime.Config)
+	}
+	if got := server.currentConfig().ModelName; got != "gpt-next" {
+		t.Fatalf("server default model = %q, want gpt-next", got)
+	}
+
+	saved, err := bootstrap.LoadConfigFile(filepath.Join(home, ".ainovel", "config.json"))
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if saved.Provider != "openai" || saved.ModelName != "gpt-next" {
+		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
+	}
+
+	manifest, err := server.store.CreateProject("Global Default")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	session, _, err := server.sessions.Open(manifest.ID)
+	if err != nil {
+		t.Fatalf("Open session: %v", err)
+	}
+	if snap := session.Snapshot(); snap.ModelName != "gpt-next" {
+		t.Fatalf("new project model = %q, want gpt-next", snap.ModelName)
+	}
+	if _, err := os.Stat(ProjectConfigPath(manifest)); !os.IsNotExist(err) {
+		t.Fatalf("new project should inherit global default without project overlay, stat err=%v", err)
+	}
+}
 
 func TestProjectModelAddExistingProviderUsesEmptyConfig(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))

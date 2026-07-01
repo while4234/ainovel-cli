@@ -96,6 +96,12 @@ func NewSessionManager(cfg bootstrap.Config, bundle assets.Bundle, store *Projec
 	}
 }
 
+func (m *SessionManager) SetConfig(cfg bootstrap.Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg = cloneWebConfig(cfg)
+}
+
 func (m *SessionManager) Open(id string) (*ProjectSession, ProjectManifest, error) {
 	id = strings.TrimSpace(id)
 	if err := validateProjectID(id); err != nil {
@@ -114,7 +120,7 @@ func (m *SessionManager) Open(id string) (*ProjectSession, ProjectManifest, erro
 		return session, manifest, nil
 	}
 
-	h, err := m.store.OpenProjectHost(m.cfg, m.bundle, manifest)
+	h, err := m.store.OpenProjectHost(cloneWebConfig(m.cfg), m.bundle, manifest)
 	if err != nil {
 		return nil, ProjectManifest{}, err
 	}

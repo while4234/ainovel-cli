@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,6 +48,118 @@ type grokLoginCompleteRequest struct {
 
 type grokLoginStatusRequest struct {
 	AccountID string `json:"account_id"`
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	cfg := s.currentConfig()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models": s.globalModelConfig(cfg),
+	})
+}
+
+func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	provider := strings.TrimSpace(req.Provider)
+	model := strings.TrimSpace(req.Model)
+	if provider == "" || model == "" {
+		writeError(w, http.StatusBadRequest, "provider and model are required")
+		return
+	}
+
+	cfg := s.currentConfig()
+	if _, ok := cfg.Providers[provider]; !ok {
+		writeError(w, http.StatusBadRequest, "provider is not configured")
+		return
+	}
+	cfg.Provider = provider
+	cfg.ModelName = model
+	cfg.RememberModelCandidate(provider, model)
+	if err := cfg.ValidateBase(); err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	if err := saveWebConfig(cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.setCurrentConfig(cfg)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  s.globalModelConfig(cfg),
+		"runtime": s.runtimePayload(cfg),
+	})
+}
+
+func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
+	providers := configuredModelProviders(cfg)
+	outProviders := make([]apiModelProvider, 0, len(providers))
+	for _, provider := range providers {
+		outProviders = append(outProviders, apiModelProvider{
+			Name:   provider,
+			Models: cfg.CandidateModels(provider),
+		})
+	}
+	roles := make([]apiModelRoute, 0, len(modelConfigRoles))
+	for _, role := range modelConfigRoles {
+		normalized := normalizeModelRole(role)
+		provider := cfg.Provider
+		model := cfg.ModelName
+		explicit := normalized == "default"
+		if normalized != "default" {
+			if rc, ok := cfg.Roles[normalized]; ok && rc.Provider != "" && rc.Model != "" {
+				provider = rc.Provider
+				model = rc.Model
+				explicit = true
+			}
+		}
+		roles = append(roles, apiModelRoute{
+			Role:            normalized,
+			Provider:        provider,
+			Model:           model,
+			Explicit:        explicit,
+			ReasoningEffort: cfg.ResolveReasoningEffort(normalized),
+		})
+	}
+	return apiModelConfig{
+		Providers:      outProviders,
+		Roles:          roles,
+		ThinkingLevels: []string{"", "off", "low", "medium", "high", "xhigh", "max"},
+		ThinkingRule:   "default applies to coordinator, architect, writer, and editor unless that role has its own reasoning_effort",
+	}
+}
+
+func configuredModelProviders(cfg bootstrap.Config) []string {
+	providers := make([]string, 0, len(cfg.Providers))
+	for name := range cfg.Providers {
+		providers = append(providers, name)
+	}
+	sort.Strings(providers)
+	return providers
+}
+
+func saveWebConfig(cfg bootstrap.Config) error {
+	path := strings.TrimSpace(cfg.PersistPath)
+	if path == "" {
+		path = bootstrap.DefaultConfigPath()
+	}
+	if path == "" {
+		return nil
+	}
+	return bootstrap.SaveConfig(path, cfg)
 }
 
 func (s *Server) handleProjectModels(w http.ResponseWriter, r *http.Request, id string) {

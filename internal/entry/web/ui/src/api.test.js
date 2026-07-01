@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  getGlobalModels,
   renameProject,
   reviseCoCreate,
   sendCoCreate,
   startGrokLogin,
+  switchGlobalDefaultModel,
   trashProject
 } from './api.js';
 
@@ -78,6 +80,24 @@ describe('web API helpers', () => {
         account_id: 'default',
         account_name: 'Default',
         open_browser: true
+      })
+    }));
+  });
+
+  it('uses global model routes for default model controls', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await getGlobalModels();
+    await switchGlobalDefaultModel('openai', 'gpt-next');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/models', expect.objectContaining({
+      headers: {}
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/models/default', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        provider: 'openai',
+        model: 'gpt-next'
       })
     }));
   });

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildModelAddPayload,
   canSubmitModelAdd,
-  modelAddModeDefaults
+  modelAddModeDefaults,
+  modelOptionsForProvider
 } from './App.jsx';
 
 describe('model add helpers', () => {
@@ -54,5 +55,11 @@ describe('model add helpers', () => {
     expect(state.auth).toBe('grok_oauth');
     expect(state.account_id).toBe('default');
     expect(state.model).toBe('grok-4.3-latest');
+  });
+
+  it('keeps the current default model visible even when it is not listed', () => {
+    expect(modelOptionsForProvider([
+      { name: 'openai', models: ['gpt-a', 'gpt-b'] }
+    ], 'openai', 'gpt-custom')).toEqual(['gpt-custom', 'gpt-a', 'gpt-b']);
   });
 });

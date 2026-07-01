@@ -39,6 +39,7 @@ import {
   createProject,
   exportProject,
   getBackendStatus,
+  getGlobalModels,
   getGrokLoginStatus,
   getProjectModels,
   getRuntime,
@@ -58,6 +59,7 @@ import {
   startAdaptation,
   startGrokLogin,
   steerProject,
+  switchGlobalDefaultModel,
   switchProjectModel,
   testBackend,
   trashProject,
@@ -242,12 +244,19 @@ export default function App() {
     setProjects(data.projects || []);
   }, []);
 
+  const refreshGlobalModels = useCallback(async () => {
+    const data = await getGlobalModels();
+    setModelConfig(data.models || null);
+    return data.models || null;
+  }, []);
+
   const loadShell = useCallback(async () => {
     setError('');
     try {
-      const [runtimeData, projectsData] = await Promise.all([getRuntime(), listProjects()]);
+      const [runtimeData, projectsData, modelData] = await Promise.all([getRuntime(), listProjects(), getGlobalModels()]);
       setRuntime(runtimeData);
       setProjects(projectsData.projects || []);
+      setModelConfig(modelData.models || null);
     } catch (err) {
       setError(err.message);
     }
@@ -435,6 +444,7 @@ export default function App() {
       setProjects((previous) => previous.filter((item) => item.id !== project.id));
       if (activeProject?.id === project.id) {
         resetProjectScopedState(true);
+        await refreshGlobalModels();
       }
       setDeleteDialog(null);
     } catch (err) {
@@ -945,6 +955,27 @@ export default function App() {
     }
   };
 
+  const switchDefaultModel = async (provider, model) => {
+    if (!provider || !model) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = await switchGlobalDefaultModel(provider, model);
+      if (data.runtime) {
+        setRuntime(data.runtime);
+      }
+      if (!activeProject?.id) {
+        setModelConfig(data.models || null);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const changeThinking = async (role, level) => {
     if (!activeProject?.id) {
       return;
@@ -986,7 +1017,6 @@ export default function App() {
 
   const startGrokOAuthLogin = async () => {
     const authWindow = openPendingGrokAuthWindow();
-    setBusy(true);
     setError('');
     setCustomModel((previous) => ({ ...previous, grok_message: '正在创建 Grok OAuth 登录会话...' }));
     try {
@@ -1004,20 +1034,17 @@ export default function App() {
       setCustomModel((previous) => ({
         ...previous,
         grok_login: login,
-        grok_status: grokStatusFromLogin(login) || previous.grok_status,
+        grok_status: grokLoggedIn(previous.grok_status) ? previous.grok_status : grokStatusFromLogin(login) || previous.grok_status,
         grok_message: grokLoginMessage(login) || grokOpenMessage(openedAuthorize, browserOpenError)
       }));
     } catch (err) {
       closeGrokAuthWindow(authWindow);
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
-    } finally {
-      setBusy(false);
     }
   };
 
   const pollGrokOAuthLogin = async () => {
-    setBusy(true);
     setError('');
     try {
       const data = await pollGrokLogin(activeProject?.id);
@@ -1025,14 +1052,12 @@ export default function App() {
       setCustomModel((previous) => ({
         ...previous,
         grok_login: login,
-        grok_status: grokStatusFromLogin(login) || previous.grok_status,
+        grok_status: grokLoggedIn(previous.grok_status) ? previous.grok_status : grokStatusFromLogin(login) || previous.grok_status,
         grok_message: grokLoginMessage(login) || (grokLoginDone(login) ? 'Grok OAuth 已完成' : '等待 Grok OAuth 回调')
       }));
     } catch (err) {
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -1042,7 +1067,6 @@ export default function App() {
       setCustomModel((previous) => ({ ...previous, grok_message: '请粘贴 callback URL、query string 或一次性 code' }));
       return;
     }
-    setBusy(true);
     setError('');
     try {
       const data = await completeGrokLogin(activeProject?.id, callback);
@@ -1055,13 +1079,10 @@ export default function App() {
     } catch (err) {
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
-    } finally {
-      setBusy(false);
     }
   };
 
   const refreshGrokOAuthStatus = async () => {
-    setBusy(true);
     setError('');
     try {
       const data = await getGrokLoginStatus(activeProject?.id, customModel.account_id);
@@ -1073,8 +1094,6 @@ export default function App() {
     } catch (err) {
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -1431,6 +1450,7 @@ export default function App() {
               customModel={customModel}
               setCustomModel={setCustomModel}
               busy={busy}
+              onSwitchDefault={switchDefaultModel}
               onSwitch={switchModelRoute}
               onThinking={changeThinking}
               onAddCustom={submitCustomModel}
@@ -2316,6 +2336,7 @@ function ModelPanel({
   customModel,
   setCustomModel,
   busy,
+  onSwitchDefault,
   onSwitch,
   onThinking,
   onAddCustom,
@@ -2326,19 +2347,52 @@ function ModelPanel({
 }) {
   const config = runtime?.config || {};
   const roles = modelConfig?.roles || [];
+  const projectRoles = activeProject?.id ? roles : [];
   const providers = modelConfig?.providers || [];
   const levels = modelConfig?.thinking_levels || ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'];
   const providerMap = new Map(providers.map((provider) => [provider.name, provider.models || []]));
+  const defaultProvider = config.provider || providers[0]?.name || '';
+  const defaultModels = modelOptionsForProvider(providers, defaultProvider, config.model);
+  const defaultModel = config.model || defaultModels[0] || '';
   const selectedPreset = providerPresets.find((preset) => preset.provider === customModel.preset) || providerPresets[0];
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
   const canAdd = canSubmitModelAdd(customModel, modelConfig);
-  const grokActionDisabled = busy;
   return (
     <div className="side-content">
+      <section>
+        <div className="section-title">
+          <Settings size={17} />
+          <span>当前默认模型</span>
+        </div>
+        <div className="default-model-controls">
+          <select
+            disabled={busy || providers.length === 0}
+            value={defaultProvider}
+            onChange={(event) => {
+              const provider = event.target.value;
+              const models = modelOptionsForProvider(providers, provider, '');
+              onSwitchDefault(provider, models[0] || defaultModel);
+            }}
+          >
+            {providers.length === 0 ? <option value="">无 provider</option> : null}
+            {providers.map((provider) => (
+              <option key={provider.name} value={provider.name}>{provider.name}</option>
+            ))}
+          </select>
+          <select
+            disabled={busy || !defaultProvider || defaultModels.length === 0}
+            value={defaultModel}
+            onChange={(event) => onSwitchDefault(defaultProvider, event.target.value)}
+          >
+            {defaultModels.length === 0 ? <option value="">无 model</option> : null}
+            {defaultModels.map((model) => (
+              <option key={model} value={model}>{model}</option>
+            ))}
+          </select>
+        </div>
+      </section>
       <section className="model-summary">
-        <Metric label="Global provider" value={config.provider || '未配置'} />
-        <Metric label="Global model" value={config.model || '未配置'} />
         <Metric label="Style" value={config.style || 'default'} />
         <Metric label="Runtime" value={runtime?.runtime_root || '-'} />
       </section>
@@ -2348,10 +2402,10 @@ function ModelPanel({
           <span>项目模型</span>
         </div>
         <div className="model-route-list">
-          {roles.length === 0 ? (
+          {projectRoles.length === 0 ? (
             <div className="empty-state">打开项目后可配置模型</div>
           ) : (
-            roles.map((route) => (
+            projectRoles.map((route) => (
               <div className="model-route" key={route.role}>
                 <strong>{route.role}</strong>
                 <select
@@ -2522,21 +2576,21 @@ function ModelPanel({
               onChange={(event) => setCustomModel((previous) => ({ ...previous, account_name: event.target.value }))}
             />
             <div className="grok-action-grid">
-              <button className="tool-button" disabled={grokActionDisabled} onClick={onStartGrokLogin} type="button">
+              <button className="tool-button" onClick={onStartGrokLogin} type="button">
                 <Play size={16} />
                 Login
               </button>
-              <button className="tool-button" disabled={grokActionDisabled} onClick={onPollGrokLogin} type="button">
+              <button className="tool-button" onClick={onPollGrokLogin} type="button">
                 <CircleDot size={16} />
                 Poll
               </button>
-              <button className="tool-button" disabled={grokActionDisabled} onClick={onRefreshGrokStatus} type="button">
+              <button className="tool-button" onClick={onRefreshGrokStatus} type="button">
                 <RefreshCw size={16} />
                 Status
               </button>
               <button
                 className="tool-button"
-                disabled={grokActionDisabled || !String(customModel.callback_input || '').trim()}
+                disabled={!String(customModel.callback_input || '').trim()}
                 onClick={onCompleteGrokLogin}
                 type="button"
               >
@@ -2805,6 +2859,16 @@ export function modelAddModeDefaults(state, providers = []) {
     api_key: '',
     base_url: ''
   };
+}
+
+export function modelOptionsForProvider(providers = [], providerName = '', currentModel = '') {
+  const provider = providers.find((item) => item.name === providerName);
+  const models = [...(provider?.models || [])];
+  const selected = String(currentModel || '').trim();
+  if (selected && !models.includes(selected)) {
+    return [selected, ...models];
+  }
+  return models;
 }
 
 function modelAddPresetDefaults(state) {

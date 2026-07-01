@@ -198,6 +198,17 @@ export function getProjectModels(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models`);
 }
 
+export function getGlobalModels() {
+  return request('/api/models');
+}
+
+export function switchGlobalDefaultModel(provider, model) {
+  return request('/api/models/default', {
+    method: 'POST',
+    body: JSON.stringify({ provider, model })
+  });
+}
+
 export function switchProjectModel(projectId, role, provider, model) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/switch`, {
     method: 'POST',

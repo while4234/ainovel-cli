@@ -262,6 +262,7 @@ h2 {
 .adapt-brief,
 .cocreate-form textarea,
 .model-route select,
+.default-model-controls select,
 .field-label input,
 .field-label select,
 .custom-model-form input,
@@ -283,6 +284,7 @@ h2 {
 .create-project input,
 .composer input,
 .model-route select,
+.default-model-controls select,
 .field-label input,
 .field-label select,
 .custom-model-form input,
@@ -301,6 +303,7 @@ h2 {
 .custom-model-form textarea:focus,
 .field-label input:focus,
 .field-label select:focus,
+.default-model-controls select:focus,
 .model-route select:focus {
   border-color: var(--accent);
   box-shadow: var(--focus);
@@ -1503,6 +1506,17 @@ h2 {
   display: grid;
   gap: 8px;
   padding-top: 8px;
+}
+
+.default-model-controls {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.default-model-controls select {
+  width: 100%;
+  min-width: 0;
 }
 
 .model-route {
