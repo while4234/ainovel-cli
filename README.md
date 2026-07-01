@@ -215,6 +215,33 @@ ainovel-cli
 
 > Windows 或手动安装：前往 [Releases](https://github.com/voocel/ainovel-cli/releases/latest) 下载对应平台的包。
 
+### Web UI
+
+`ainovel-cli web` 会启动内置浏览器界面，默认监听 `http://127.0.0.1:9898`。发布包里的 Go 二进制已经嵌入了 Web 前端构建产物，不需要另开静态文件服务器。
+
+```bash
+ainovel-cli web
+ainovel-cli web --open
+ainovel-cli web --host 0.0.0.0 --port 9898
+ainovel-cli web --runtime-root D:\Ainovel\novels
+```
+
+Windows 用户不需要先在某本小说目录里打开终端。可以从 PowerShell、cmd、Windows Terminal 或快捷方式直接运行 `ainovel-cli web --open`，然后在浏览器里创建、打开和切换多本小说。
+
+Web UI 把每本小说保存为运行时项目，默认运行时根目录是：
+
+- Windows：`%USERPROFILE%\.ainovel\novels`
+- macOS / Linux：`~/.ainovel/novels`
+
+运行时根目录覆盖优先级从高到低是：
+
+1. `ainovel-cli web --runtime-root <path>`
+2. 环境变量 `AINOVEL_RUNTIME_ROOT`
+3. 配置文件字段 `runtime_root`（配置文件自身仍按 `~/.ainovel/config.json` → `./.ainovel/config.json` → `--config` 合并）
+4. 默认 `~/.ainovel/novels`
+
+Web 运行时根目录必须在仓库外；如果指到仓库目录或其子目录，启动会拒绝并提示换一个路径。每本小说位于 `<runtime-root>/projects/<project-id>/`，其输出仍在该项目自己的 `output/` 下。
+
 ### Docker
 
 Docker 镜像适合在服务器/NAS 上运行 headless 长任务，也可以用 `-it` 进入 TUI。配置和作品目录建议挂载到宿主机：
@@ -253,7 +280,9 @@ docker compose run --rm ainovel --headless --prompt "写一本悬疑短篇"
 
 ### 管理多本小说
 
-每本小说绑定到启动目录，产物落在 `{cwd}/output/novel/`。换目录启动 = 换一本，`cd` 回去启动 = 自动从最近 checkpoint 恢复。配置 `~/.ainovel/config.json` 全局共享，无需复制。
+TUI / headless 仍沿用目录即项目的方式：每本小说绑定到启动目录，产物落在 `{cwd}/output/novel/`。换目录启动 = 换一本，`cd` 回去启动 = 自动从最近 checkpoint 恢复。配置 `~/.ainovel/config.json` 全局共享，无需复制。
+
+Web UI 使用运行时根目录管理多本小说：运行 `ainovel-cli web` 后，在浏览器里创建和切换项目即可，不需要为每本小说 `cd` 到不同目录。项目数据落在 `<runtime-root>/projects/<project-id>/`，适合 Windows 桌面用户和需要同时管理多本书的场景。
 
 ### 配置文件
 
@@ -302,6 +331,8 @@ Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可
 
 > ⚠️ `provider`（以及 `roles.*.provider`）的值是 `providers` 里的 **key 名**——一根指针，不是协议名。项目级若把 `provider` 切到一个全局 `providers` 里不存在的账号，必须在项目级同时补上该账号的凭证（`api_key` / `base_url`），否则启动会报“未配置凭证”。
 
+`runtime_root` 只影响 Web UI 项目存储位置；TUI / headless 的作品目录仍由当前启动目录决定。Web UI 中 `--runtime-root` 和 `AINOVEL_RUNTIME_ROOT` 的优先级高于配置文件字段。
+
 `providers.<name>.models` 为可选字段，用于声明该 provider 下允许在 TUI `/model` 面板中切换的模型列表；如果未配置，系统会回退为当前配置文件里已经出现过的该 provider 模型。运行时通过 `/model add` 添加的模型也会追加到这里。
 
 `reasoning_effort` 为默认推理强度，可选值为 `off` / `low` / `medium` / `high` / `xhigh` / `max`；省略或空字符串表示沿用模型/provider 默认。`roles.<role>.reasoning_effort` 可按角色覆盖，未配置时继承顶层 `reasoning_effort`。TUI `/model` 面板切换 provider、model、推理强度，或 `/model add` 添加并切换模型后，都会写回全局配置 `~/.ainovel/config.json`。
@@ -345,6 +376,8 @@ output/novel/meta/simulation_profile.json
 ```
 
 `/importsim` 只接受本功能生成的 `simulation_profile.v1` JSON，并按语料指纹合并，重复来源会跳过。只导入可信来源的画像文件；导入内容会成为后续 Agent 的上下文参考。画像会以 compact 形式注入 `novel_context`，Coordinator、Architect、Writer、Editor 都能读取；各 Agent 只借鉴结构、节奏、钩子和吸引读者手法，不复制原文表达或专有设定。
+
+Web UI 的上传入口会把仿写语料保存到当前项目的 `simulate/` 目录，把导入的画像 JSON 保存到当前项目的 `profiles/imported/` 目录；小说改编上传的原文保存在当前项目的 `uploads/adaptation/` 目录。这些文件不会被写入仓库，也不会混到其他 Web 项目里。点击“分析”后，语料内容会按所选模型/provider 的正常调用路径发送给模型生成画像；不要上传没有授权处理的私人文本。
 
 ## 导入
 

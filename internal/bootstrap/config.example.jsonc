@@ -103,6 +103,12 @@
   //   "architect": { "provider": "openrouter", "model": "google/gemini-3.1-pro" }
   // },
 
+  // Web UI 项目运行时根目录。只影响 `ainovel-cli web`；TUI/headless 仍使用当前启动目录。
+  // 优先级：web --runtime-root > AINOVEL_RUNTIME_ROOT > config runtime_root > ~/.ainovel/novels。
+  // 必须放在仓库外；Web 会在该目录下创建 projects/<project-id>/。
+  // Windows 示例：
+  // "runtime_root": "D:/Ainovel/novels",
+
   // 写作风格：default / suspense / fantasy / romance。
   "style": "default"
 

@@ -8,10 +8,11 @@ supporting assets, documentation, scripts, and tests.
 ## Ignore And Secret Policy
 
 Local executables, generated build/release artifacts, workspaces, output
-directories, editor files, and local `.ainovel/` configuration are ignored.
-Never commit provider credentials, API keys, `.env` values, private keys,
-cookies, or raw local auth paths. Safe example configuration files may be
-tracked when they contain placeholders only.
+directories, the repo-local `novel/` runtime/user-data directory, editor files,
+and local `.ainovel/` configuration are ignored. Never commit provider
+credentials, API keys, `.env` values, private keys, cookies, or raw local auth
+paths. Safe example configuration files may be tracked when they contain
+placeholders only.
 
 ## Project GitHub Rule
 
@@ -21,20 +22,33 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest source commit: `d315035` `feat: add web simulation profile flow`
+- Latest source commit: `860d487` `feat: add web model admin status pages`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: clean for tracked files after PR-03 commit; known untracked
-  local runtime/workspace directory `novel/` remains intentionally unstaged.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` was last rebuilt from `202b21b`;
-  PR-03 validation used a temporary binary. The `D:\grok\bin\ainovel-cli.cmd`
-  shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: PR-03 focused Go package tests, canonical `npm --prefix web`
-  test/build, temporary CLI build, simulate upload/import API smoke, and
-  `git diff --check` succeeded on 2026-07-01.
+- Working tree: PR-07 packaging/docs/test changes are ready for commit; known
+  repo-local runtime/workspace directory `novel/` is ignored and must not be
+  touched for PR-07.
+- Runtime: local `D:\ainovel\ainovel-cli.exe` was rebuilt during PR-07
+  validation. The `D:\grok\bin\ainovel-cli.cmd` shim still points to
+  `D:\ainovel\ainovel-cli.exe`.
+- Validation: PR-07 requested Go package suite, `npm --prefix web` test/build,
+  `go build -o .\ainovel-cli.exe .\cmd\ainovel-cli`, and `git diff --check`
+  succeeded on 2026-07-01.
 
 ## Change Log
 
+- 2026-07-01 uncommitted PR-07 working tree: added Web UI static embed and
+  HTTP smoke coverage, CLI default parser regression, README Web runtime docs,
+  `runtime_root` config example comments, and `/novel/` ignore protection.
+- 2026-07-01 `860d487` `feat: add web model admin status pages`: added project
+  model routing, usage/cache reporting, backend status/testing APIs, UI tabs,
+  and project-overlay persistence fixes accepted by re-review.
+- 2026-07-01 `c084600` `feat: add web co-create workflow`: added normal,
+  stage, and adapt co-create flows with suggestion chips, stream state, and
+  ready draft launch/restore behavior accepted by re-review.
+- 2026-07-01 `66b4539` `feat: add web adaptation workflow`: added source upload,
+  preparation analysis, constrained `chapter` / `arc` / `free` mode selection,
+  rewrite policy mapping, and adaptation start UI/API accepted by re-review.
 - 2026-07-01 `d315035` `feat: add web simulation profile flow`: added project-scoped
   simulate file upload, analysis trigger, JSON profile import, upload safety
   checks, UI panel, and embedded assets accepted by review.

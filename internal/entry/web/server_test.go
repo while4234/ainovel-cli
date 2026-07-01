@@ -1,18 +1,133 @@
 package web
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"io/fs"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
+
+func TestStaticFSIncludesBuiltWebDist(t *testing.T) {
+	static := StaticFS()
+	index, err := fs.ReadFile(static, "index.html")
+	if err != nil {
+		t.Fatalf("embedded index.html missing; run npm --prefix web run build: %v", err)
+	}
+	if !bytes.Contains(index, []byte(`<div id="root"`)) {
+		t.Fatalf("embedded index.html does not look like the Web UI shell: %s", string(index))
+	}
+	assets, err := fs.ReadDir(static, "assets")
+	if err != nil {
+		t.Fatalf("embedded assets directory missing: %v", err)
+	}
+	if len(assets) == 0 {
+		t.Fatal("embedded assets directory is empty")
+	}
+}
+
+func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
+	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	defer server.Close()
+
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := httpServer.Client()
+	client.Timeout = 3 * time.Second
+
+	createResp, err := client.Post(httpServer.URL+"/api/projects", "application/json", bytes.NewBufferString(`{"name":"Smoke Novel"}`))
+	if err != nil {
+		t.Fatalf("create project request: %v", err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", createResp.StatusCode)
+	}
+	var manifest ProjectManifest
+	if err := json.NewDecoder(createResp.Body).Decode(&manifest); err != nil {
+		t.Fatalf("decode project manifest: %v", err)
+	}
+	if !isSameOrChild(runtimeRoot, manifest.RootDir) {
+		t.Fatalf("project root %q is not under runtime root %q", manifest.RootDir, runtimeRoot)
+	}
+	if repoRoot := FindRepositoryRoot("."); repoRoot != "" && isSameOrChild(repoRoot, manifest.RootDir) {
+		t.Fatalf("project root %q should not be inside repository %q", manifest.RootDir, repoRoot)
+	}
+
+	uploadReq := newClientMultipartUploadRequest(t, httpServer.URL+"/api/projects/"+manifest.ID+"/simulate/files", []testMultipartFile{
+		{field: "files", filename: "style-sample.txt", body: "voice and pacing sample"},
+	})
+	uploadResp, err := client.Do(uploadReq)
+	if err != nil {
+		t.Fatalf("upload request: %v", err)
+	}
+	defer uploadResp.Body.Close()
+	if uploadResp.StatusCode != http.StatusOK {
+		t.Fatalf("upload status = %d", uploadResp.StatusCode)
+	}
+	uploadedPath := filepath.Join(manifest.RootDir, "simulate", "style-sample.txt")
+	if _, err := os.Stat(uploadedPath); err != nil {
+		t.Fatalf("uploaded source should stay in project simulate dir: %v", err)
+	}
+
+	snapshotResp, err := client.Get(httpServer.URL + "/api/projects/" + manifest.ID + "/snapshot")
+	if err != nil {
+		t.Fatalf("snapshot request: %v", err)
+	}
+	defer snapshotResp.Body.Close()
+	if snapshotResp.StatusCode != http.StatusOK {
+		t.Fatalf("snapshot status = %d", snapshotResp.StatusCode)
+	}
+	var snapshotBody struct {
+		Project  ProjectManifest `json:"project"`
+		Snapshot map[string]any  `json:"snapshot"`
+	}
+	if err := json.NewDecoder(snapshotResp.Body).Decode(&snapshotBody); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if snapshotBody.Project.ID != manifest.ID || snapshotBody.Snapshot == nil {
+		t.Fatalf("snapshot response missing project or snapshot: %+v", snapshotBody)
+	}
+
+	eventsResp, err := client.Get(httpServer.URL + "/api/projects/" + manifest.ID + "/events?after=0")
+	if err != nil {
+		t.Fatalf("events request: %v", err)
+	}
+	defer eventsResp.Body.Close()
+	if eventsResp.StatusCode != http.StatusOK {
+		t.Fatalf("events status = %d", eventsResp.StatusCode)
+	}
+	if ctype := eventsResp.Header.Get("content-type"); !strings.HasPrefix(ctype, "text/event-stream") {
+		t.Fatalf("events content-type = %q", ctype)
+	}
+	reader := bufio.NewReader(eventsResp.Body)
+	var sawID, sawSnapshotEvent, sawSnapshotData bool
+	for i := 0; i < 20 && !(sawID && sawSnapshotEvent && sawSnapshotData); i++ {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read SSE line: %v", err)
+		}
+		line = strings.TrimSpace(line)
+		sawID = sawID || strings.HasPrefix(line, "id:")
+		sawSnapshotEvent = sawSnapshotEvent || line == "event: snapshot"
+		sawSnapshotData = sawSnapshotData || (strings.HasPrefix(line, "data:") && strings.Contains(line, `"type":"snapshot"`))
+	}
+	if !sawID || !sawSnapshotEvent || !sawSnapshotData {
+		t.Fatalf("SSE stream missing snapshot event: id=%v event=%v data=%v", sawID, sawSnapshotEvent, sawSnapshotData)
+	}
+}
 
 func TestHandlerCreatesProjectsUnderRuntimeRoot(t *testing.T) {
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
@@ -145,4 +260,32 @@ func TestAPIUsageFromSnapshotProjectsCacheFields(t *testing.T) {
 	if summary.MissingAssistantUsage != 1 {
 		t.Fatalf("missing usage = %d, want 1", summary.MissingAssistantUsage)
 	}
+}
+
+func newClientMultipartUploadRequest(t *testing.T, url string, files []testMultipartFile) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for _, file := range files {
+		field := file.field
+		if field == "" {
+			field = "files"
+		}
+		part, err := writer.CreateFormFile(field, file.filename)
+		if err != nil {
+			t.Fatalf("CreateFormFile: %v", err)
+		}
+		if _, err := part.Write([]byte(file.body)); err != nil {
+			t.Fatalf("write multipart part: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, &body)
+	if err != nil {
+		t.Fatalf("new upload request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req
 }

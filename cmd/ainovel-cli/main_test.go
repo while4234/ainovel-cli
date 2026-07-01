@@ -6,6 +6,19 @@ import (
 	"github.com/voocel/ainovel-cli/internal/entry/web"
 )
 
+func TestParseCLIOptionsDefaultStartsTUI(t *testing.T) {
+	opts, args, err := parseCLIOptions(nil)
+	if err != nil {
+		t.Fatalf("parseCLIOptions default: %v", err)
+	}
+	if len(args) != 0 {
+		t.Fatalf("unexpected args: %v", args)
+	}
+	if opts.Headless || opts.Web || opts.Version || opts.Update || opts.Prompt != "" || opts.PromptFile != "" || opts.AdaptPath != "" {
+		t.Fatalf("default options should leave interactive TUI mode selected: %+v", opts)
+	}
+}
+
 func TestParseCLIOptionsAdaptFlags(t *testing.T) {
 	opts, args, err := parseCLIOptions([]string{
 		"--headless",
