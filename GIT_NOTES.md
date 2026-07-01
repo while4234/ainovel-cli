@@ -21,12 +21,11 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest source commit: `f82119b` `docs: record pr02 web session workbench`
+- Latest source commit: `d315035` `feat: add web simulation profile flow`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: PR-03 simulate profile upload/import changes review passed and
-  are ready to commit; known untracked local runtime/workspace directory
-  `novel/` remains intentionally unstaged.
+- Working tree: clean for tracked files after PR-03 commit; known untracked
+  local runtime/workspace directory `novel/` remains intentionally unstaged.
 - Runtime: local `D:\ainovel\ainovel-cli.exe` was last rebuilt from `202b21b`;
   PR-03 validation used a temporary binary. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
@@ -36,7 +35,7 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Change Log
 
-- 2026-07-01 pending PR-03 simulate profile upload/import: added project-scoped
+- 2026-07-01 `d315035` `feat: add web simulation profile flow`: added project-scoped
   simulate file upload, analysis trigger, JSON profile import, upload safety
   checks, UI panel, and embedded assets accepted by review.
 - 2026-07-01 `7331eda` `feat: add web session workbench`: added project
