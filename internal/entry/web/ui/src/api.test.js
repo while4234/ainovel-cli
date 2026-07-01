@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  addGlobalProviderModel,
   getGlobalModels,
   renameProject,
   reviseCoCreate,
@@ -98,6 +99,31 @@ describe('web API helpers', () => {
       body: JSON.stringify({
         provider: 'openai',
         model: 'gpt-next'
+      })
+    }));
+  });
+
+  it('adds provider models through the global route when no project is active', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await addGlobalProviderModel({
+      role: 'default',
+      provider: 'grok-oauth',
+      model: 'grok-4.3-latest',
+      type: 'grok',
+      auth: 'grok_oauth',
+      account_id: 'default'
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/models/add', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        role: 'default',
+        provider: 'grok-oauth',
+        model: 'grok-4.3-latest',
+        type: 'grok',
+        auth: 'grok_oauth',
+        account_id: 'default'
       })
     }));
   });

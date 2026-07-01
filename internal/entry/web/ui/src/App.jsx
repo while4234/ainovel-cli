@@ -30,6 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeAdaptationSource,
   analyzeSimulation,
+  addGlobalProviderModel,
   addProviderModel,
   beginCoCreate,
   cancelCoCreate,
@@ -996,18 +997,26 @@ export default function App() {
   const submitCustomModel = async (event) => {
     event.preventDefault();
     const payload = buildModelAddPayload(customModel, modelConfig);
-    if (!activeProject?.id || !canSubmitModelAdd(customModel, modelConfig)) {
+    if (!canSubmitModelAdd(customModel, modelConfig)) {
       return;
     }
     setBusy(true);
     setError('');
     try {
-      const data = await addProviderModel(activeProject.id, payload);
-      setModelConfig(data.models || modelConfig);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      if (activeProject?.id) {
+        const data = await addProviderModel(activeProject.id, payload);
+        setModelConfig(data.models || modelConfig);
+        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+        const status = await getBackendStatus(activeProject.id);
+        setBackendStatus(status.backend || null);
+      } else {
+        const data = await addGlobalProviderModel(payload);
+        setModelConfig(data.models || modelConfig);
+        if (data.runtime) {
+          setRuntime(data.runtime);
+        }
+      }
       setCustomModel(createCustomModelState());
-      const status = await getBackendStatus(activeProject.id);
-      setBackendStatus(status.backend || null);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -2621,7 +2630,7 @@ function ModelPanel({
           value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
           onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
         />
-        <button className="tool-button accent full-width" disabled={busy || !activeProject?.id || !canAdd} type="submit">
+        <button className="tool-button accent full-width" disabled={busy || !canAdd} type="submit">
           <Plus size={16} />
           Add and use
         </button>

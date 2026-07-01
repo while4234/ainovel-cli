@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -102,6 +103,100 @@ func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 		"models":  s.globalModelConfig(cfg),
 		"runtime": s.runtimePayload(cfg),
 	})
+}
+
+func (s *Server) handleModelAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Role      string `json:"role"`
+		Provider  string `json:"provider"`
+		Model     string `json:"model"`
+		Type      string `json:"type"`
+		Auth      string `json:"auth"`
+		AccountID string `json:"account_id"`
+		APIKey    string `json:"api_key"`
+		BaseURL   string `json:"base_url"`
+		API       string `json:"api"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	pc := bootstrap.ProviderConfig{
+		Type:      strings.TrimSpace(req.Type),
+		Auth:      strings.TrimSpace(req.Auth),
+		AccountID: strings.TrimSpace(req.AccountID),
+		APIKey:    strings.TrimSpace(req.APIKey),
+		BaseURL:   strings.TrimSpace(req.BaseURL),
+		API:       strings.TrimSpace(req.API),
+	}
+	models, runtime, err := s.addGlobalProviderModel(req.Role, req.Provider, req.Model, pc)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  models,
+		"runtime": runtime,
+	})
+}
+
+func (s *Server) addGlobalProviderModel(role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, map[string]any, error) {
+	role = normalizeModelRole(role)
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return apiModelConfig{}, nil, fmt.Errorf("provider and model are required")
+	}
+	if !globalModelRoleAllowed(role) {
+		return apiModelConfig{}, nil, fmt.Errorf("unknown role %q", role)
+	}
+
+	cfg := s.currentConfig()
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]bootstrap.ProviderConfig)
+	}
+	if providerConfigRequestIsEmpty(pc) {
+		if _, ok := cfg.Providers[provider]; !ok {
+			return apiModelConfig{}, nil, fmt.Errorf("provider %q is not configured", provider)
+		}
+	} else {
+		pc.Models = []string{model}
+		cfg.Providers[provider] = pc
+	}
+	cfg.RememberModelCandidate(provider, model)
+	if role == "" || role == "default" {
+		cfg.Provider = provider
+		cfg.ModelName = model
+	} else {
+		if cfg.Roles == nil {
+			cfg.Roles = make(map[string]bootstrap.RoleConfig)
+		}
+		rc := cfg.Roles[role]
+		rc.Provider = provider
+		rc.Model = model
+		cfg.Roles[role] = rc
+	}
+	if err := cfg.ValidateBase(); err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	if err := saveWebConfig(cfg); err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	s.setCurrentConfig(cfg)
+	return s.globalModelConfig(cfg), s.runtimePayload(cfg), nil
+}
+
+func globalModelRoleAllowed(role string) bool {
+	for _, known := range modelConfigRoles {
+		if role == known {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {

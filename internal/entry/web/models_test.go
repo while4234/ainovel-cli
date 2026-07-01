@@ -80,6 +80,59 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 	}
 }
 
+func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+
+	var added struct {
+		Models  apiModelConfig `json:"models"`
+		Runtime struct {
+			Config struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			} `json:"config"`
+		} `json:"runtime"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", `{"role":"default","provider":"grok-oauth","model":"grok-4.3-latest","type":"grok","auth":"grok_oauth","account_id":"default"}`, &added)
+	if added.Runtime.Config.Provider != "grok-oauth" || added.Runtime.Config.Model != "grok-4.3-latest" {
+		t.Fatalf("runtime default = %+v", added.Runtime.Config)
+	}
+	if !modelConfigHasProvider(added.Models, "grok-oauth", "grok-4.3-latest") {
+		t.Fatalf("models missing grok provider: %+v", added.Models.Providers)
+	}
+	cfg := server.currentConfig()
+	pc := cfg.Providers["grok-oauth"]
+	if pc.Type != "grok" || pc.Auth != bootstrap.ProviderAuthGrokOAuth || pc.AccountID != "default" {
+		t.Fatalf("grok provider config = %+v", pc)
+	}
+
+	saved, err := bootstrap.LoadConfigFile(filepath.Join(home, ".ainovel", "config.json"))
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if saved.Provider != "grok-oauth" || saved.ModelName != "grok-4.3-latest" {
+		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
+	}
+}
+
+func modelConfigHasProvider(models apiModelConfig, providerName, modelName string) bool {
+	for _, provider := range models.Providers {
+		if provider.Name != providerName {
+			continue
+		}
+		for _, model := range provider.Models {
+			if model == modelName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestProjectModelAddExistingProviderUsesEmptyConfig(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
 	defer server.Close()

@@ -141,6 +141,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/runtime", s.handleRuntime)
 	mux.HandleFunc("/api/models", s.handleModels)
 	mux.HandleFunc("/api/models/default", s.handleDefaultModel)
+	mux.HandleFunc("/api/models/add", s.handleModelAdd)
 	mux.HandleFunc("/api/models/grok-login/", s.handleGrokLogin)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProject)

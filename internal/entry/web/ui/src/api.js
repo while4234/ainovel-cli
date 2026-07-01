@@ -237,6 +237,13 @@ export function addProviderModel(projectId, payload) {
   });
 }
 
+export function addGlobalProviderModel(payload) {
+  return request('/api/models/add', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
 function grokLoginPath(projectId, action) {
   if (!projectId) {
     return `/api/models/grok-login/${action}`;
