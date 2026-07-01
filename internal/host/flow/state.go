@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -26,7 +27,8 @@ func LoadState(store *storepkg.Store) State {
 		if boundary, berr := store.Outline.CheckArcBoundary(s.LastCompleted); berr == nil && boundary != nil {
 			s.ArcBoundary = boundary
 			if boundary.IsArcEnd {
-				s.HasArcReview = store.World.HasArcReview(s.LastCompleted)
+				s.HasArcReview = store.World.HasArcReview(s.LastCompleted) ||
+					store.Checkpoints.LatestByStep(domain.ArcScope(boundary.Volume, boundary.Arc), "review") != nil
 				s.HasArcSummary = store.Summaries.HasArcSummary(boundary.Volume, boundary.Arc)
 				if boundary.IsVolumeEnd {
 					s.HasVolumeSummary = store.Summaries.HasVolumeSummary(boundary.Volume)

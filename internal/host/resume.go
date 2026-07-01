@@ -99,7 +99,7 @@ func describeArcEndLabel(store *storepkg.Store, progress *domain.Progress) strin
 	}
 	vol, arc := boundary.Volume, boundary.Arc
 	switch {
-	case !store.World.HasArcReview(lastCh):
+	case !store.World.HasArcReview(lastCh) && store.Checkpoints.LatestByStep(domain.ArcScope(vol, arc), "review") == nil:
 		return fmt.Sprintf("恢复：弧末评审待处理（V%d A%d）", vol, arc)
 	case !store.Summaries.HasArcSummary(vol, arc):
 		return fmt.Sprintf("恢复：弧摘要待生成（V%d A%d）", vol, arc)
