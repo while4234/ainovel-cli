@@ -146,6 +146,9 @@ textarea:disabled {
 }
 
 .workspace-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   min-height: 50px;
 }
 
@@ -174,7 +177,7 @@ h1 {
 }
 
 h2 {
-  max-width: min(560px, 42vw);
+  max-width: 100%;
   overflow: hidden;
   font-size: 22px;
   line-height: 1.18;
@@ -529,9 +532,68 @@ h2 {
 
 .toolbar-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
+}
+
+.workspace-progress {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px 9px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: var(--shadow-sm);
+}
+
+.workspace-progress-meter {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.workspace-progress-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms ease;
+}
+
+.workspace-progress-items {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(130px, 1.35fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.workspace-progress-item {
+  min-width: 0;
+}
+
+.workspace-progress-item span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.workspace-progress-item strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--text-strong);
+  font-size: 13px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-pill {
@@ -606,7 +668,9 @@ h2 {
 }
 
 .stream-round {
+  min-width: 0;
   min-height: 76px;
+  overflow: hidden;
   border: 1px solid transparent;
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
@@ -616,6 +680,7 @@ h2 {
 
 .stream-round pre {
   margin: 0;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.68;
@@ -684,17 +749,23 @@ h2 {
 
 .event-row {
   display: grid;
-  grid-template-columns: 10px 80px 72px minmax(0, 1fr);
+  grid-template-columns: 10px minmax(64px, 80px) minmax(54px, 72px) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
+  min-width: 0;
   min-height: 34px;
   border-radius: var(--radius-sm);
   padding: 0 8px;
   color: #33404b;
 }
 
+.event-row > * {
+  min-width: 0;
+}
+
 .event-row span:last-child {
   overflow: hidden;
+  overflow-wrap: anywhere;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -893,6 +964,10 @@ h2 {
   gap: 8px;
 }
 
+.cocreate-panel {
+  overflow: hidden;
+}
+
 .tool-form {
   display: grid;
   gap: 8px;
@@ -942,12 +1017,17 @@ h2 {
 }
 
 .cocreate-dialog {
-  min-height: 156px;
+  display: flex;
+  min-height: 132px;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .cocreate-messages {
   display: grid;
-  max-height: 220px;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 8px;
   overflow: auto;
 }
@@ -1086,6 +1166,65 @@ h2 {
   gap: 8px;
 }
 
+.cocreate-sticky-workspace {
+  position: sticky;
+  z-index: 2;
+  bottom: 0;
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  background:
+    linear-gradient(180deg, rgba(251, 252, 254, 0), var(--bg-elevated) 12px),
+    var(--bg-elevated);
+}
+
+.cocreate-target {
+  display: grid;
+  gap: 8px;
+}
+
+.cocreate-target-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.target-option {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 0 6px;
+  background: var(--surface-solid);
+  color: #40505c;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.target-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.target-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-option.active {
+  border-color: rgba(15, 111, 109, 0.34);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .draft-preview {
   min-height: 116px;
   max-height: 220px;
@@ -1094,6 +1233,11 @@ h2 {
   border-radius: var(--radius);
   padding: 9px;
   background: var(--surface-solid);
+}
+
+.cocreate-sticky-workspace .draft-preview {
+  min-height: 96px;
+  max-height: min(24vh, 220px);
 }
 
 .draft-preview pre {
@@ -1499,6 +1643,22 @@ h2 {
     gap: 6px;
   }
 
+  .workspace-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar-actions {
+    justify-content: flex-start;
+  }
+
+  .workspace-progress-items {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workspace-progress-item.wide {
+    grid-column: 1 / -1;
+  }
+
   .tool-button {
     padding: 0 10px;
   }
@@ -1561,7 +1721,7 @@ h2 {
   }
 
   h2 {
-    max-width: 58vw;
+    max-width: 100%;
   }
 }
 
@@ -1572,7 +1732,7 @@ h2 {
 
   .workspace-toolbar {
     align-items: flex-start;
-    flex-direction: column;
+    grid-template-columns: 1fr;
   }
 
   .toolbar-actions {
@@ -1590,5 +1750,9 @@ h2 {
 
   .composer .tool-button {
     width: 100%;
+  }
+
+  .cocreate-target-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

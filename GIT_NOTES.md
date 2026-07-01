@@ -30,7 +30,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 ## Current Baseline
 
 - Latest source change: branch `codex/web-project-cocreate-controls`,
-  `feat: improve web project and cocreate controls`.
+  `feat: add word budget progress UI`.
 - Branch: `codex/web-project-cocreate-controls`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: expected clean after the Web project/co-create controls commit,
@@ -42,18 +42,26 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `http://127.0.0.1:9898` with runtime root
   `C:\Users\RondleLiu\.ainovel\novels-preview`. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: `npm --prefix internal/entry/web/ui test -- --run`,
-  `npm --prefix internal/entry/web/ui run build`,
-  `go test ./cmd/ainovel-cli ./internal/entry/web`, `git diff --check`, and a
-  Playwright local Web smoke check succeeded on 2026-07-01. The latest smoke
-  check verified project ellipsis menu, rename modal, active-title/list sync,
-  delete confirmation, active-project reset, and co-create panel rendering on a
-  temporary runtime. `go test ./...` still has existing Windows
-  environment-sensitive failures in `internal/notify` (`sh` missing from PATH)
-  and `internal/version` (permission-mode assertion).
+- Validation: `go test ./internal/domain ./internal/entry/startup ./internal/entry/web ./internal/tools ./internal/store ./internal/userrules ./cmd/ainovel-cli`,
+  `npm --prefix web test`, `npm --prefix internal/entry/web/ui test`,
+  `npm --prefix web run build`, `npm --prefix internal/entry/web/ui run build`,
+  `go build -o D:\ainovel\ainovel-cli.exe D:\ainovel\cmd\ainovel-cli`,
+  `git diff --check`, HTTP smoke checks for `/`, `/api/runtime`, and
+  `/api/projects` on `http://127.0.0.1:9898`, and Playwright desktop/narrow UI
+  checks succeeded on 2026-07-01. The latest runtime is on 9898 and 9904 has no
+  listener.
 
 ## Change Log
 
+- 2026-07-01 `feat: add word budget progress UI`: added workspace progress
+  display, normal co-create total-word controls, sticky right-side co-create
+  launch/planning area, overflow/mobile layout fixes, total-vs-per-chapter
+  user-rule wording, regenerated embedded Vite assets, rebuilt the local binary,
+  and restarted only port 9898.
+- 2026-07-01 `6549c2a` `Implement backend word budget contract`: added the
+  persisted `WordBudget` contract, quick/co-create payload handling, startup
+  prompt injection, `novel_context` runtime budget payload, outline-derived
+  chapter budgets, and non-adaptation commit gating.
 - 2026-07-01 `feat: improve web project and cocreate controls`: added Web
   project rename and internal-trash APIs, ChatGPT-style project context menu
   UI, active-session cleanup on trash, one-click equal-width co-create

@@ -240,7 +240,8 @@ structured 只允许以下字段(没有别的字段):
 - 只有用户明确、无歧义时才写入 structured。
 - forbidden_chars/forbidden_phrases 是 error 级:只有「不要出现X/禁用X/别写X」这类明确禁止才提升。
 - fatigue_words:只有同时给出「明确的词」和「明确的次数阈值」才提升;「少用X/别老用X」没给数字的放进 preferences,绝不自己发明阈值。
-- chapter_words:只有给出明确区间/上限/下限/目标字数才提升;「短一点/节奏快点」放进 preferences。
+- chapter_words:只有给出明确的每章/单章区间、上限、下限或目标字数才提升;「短一点/节奏快点」放进 preferences。
+- 全书/整本/总字数/一共/全文/短篇约 5000 字属于 total word budget，不属于 chapter_words；只有“每章/单章/一章 5000 字”才写入 chapter_words。
 - 不可机械检查、无明确阈值、依赖语境的,一律放 preferences。
 - 原则:宁可漏进 structured,也不要错误提升(那会每章误报)。
 

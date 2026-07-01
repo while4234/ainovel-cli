@@ -75,6 +75,13 @@ import { createWorkbenchState, eventStatus, reduceWebEvent } from './events.js';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 
+const coCreateTargetWordChoices = [
+  { value: '5000', label: '5,000' },
+  { value: '10000', label: '10,000' },
+  { value: '30000', label: '30,000' },
+  { value: 'custom', label: 'Custom' }
+];
+
 function createSimulationState() {
   return {
     files: [],
@@ -208,6 +215,10 @@ export default function App() {
 
   const snapshot = workbench.snapshot;
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
+  const workspaceProgress = useMemo(
+    () => deriveWorkspaceProgress(snapshot, workbench.eventRows),
+    [snapshot, workbench.eventRows]
+  );
 
   const resetProjectScopedState = useCallback((clearProject = false) => {
     lastSeqRef.current = 0;
@@ -776,11 +787,13 @@ export default function App() {
     setBusy(true);
     setCoCreate((previous) => ({ ...previous, kind, status: 'running', error: '', startMessage: '' }));
     try {
-      const payload = { kind, initial };
-      if (kind === 'adapt') {
-        payload.source_file = adaptation.sourceFile.relative_path;
-        payload.mode = adaptation.mode;
-      }
+      const payload = buildBeginCoCreatePayload({
+        kind,
+        initial,
+        sourceFile: adaptation.sourceFile?.relative_path,
+        mode: adaptation.mode,
+        targetTotalWords: resolveCoCreateTargetTotalWords(coCreate)
+      });
       const data = await beginCoCreate(activeProject.id, payload);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
@@ -1257,6 +1270,8 @@ export default function App() {
           </div>
         </header>
 
+        <WorkspaceProgress progress={workspaceProgress} />
+
         {error ? <div className="error-banner">{error}</div> : null}
 
         <div className="workbench-stack">
@@ -1446,6 +1461,35 @@ export default function App() {
   );
 }
 
+function WorkspaceProgress({ progress }) {
+  const chapterPercent = progress.totalChapters > 0
+    ? Math.min(100, Math.round((progress.completedChapters / progress.totalChapters) * 100))
+    : 0;
+  return (
+    <section className="workspace-progress" aria-label="Workspace progress">
+      <div className="workspace-progress-meter" aria-hidden="true">
+        <span style={{ width: `${chapterPercent}%` }} />
+      </div>
+      <div className="workspace-progress-items">
+        <ProgressItem label="Status" value={progress.statusLabel} />
+        <ProgressItem label="Chapters" value={progress.chapterLabel} />
+        <ProgressItem label="Current" value={progress.currentChapterLabel} />
+        <ProgressItem label="Words" value={progress.wordLabel} />
+        <ProgressItem label="Running" value={progress.runningLabel} wide />
+      </div>
+    </section>
+  );
+}
+
+function ProgressItem({ label, value, wide = false }) {
+  return (
+    <div className={`workspace-progress-item ${wide ? 'wide' : ''}`}>
+      <span>{label}</span>
+      <strong title={value}>{value}</strong>
+    </div>
+  );
+}
+
 function StatusPanel({ snapshot, activeProject, onSteer, steerText, setSteerText, busy }) {
   const outline = snapshot?.Outline || snapshot?.outline || [];
   const agents = snapshot?.Agents || snapshot?.agents || [];
@@ -1535,7 +1579,9 @@ function CoCreatePanel({
   const [editing, setEditing] = useState(null);
   const hasConversation = coCreate.messages.length > 0;
   const hasBackendSession = coCreate.active || hasConversation;
-  const canBeginNormal = Boolean(activeProject && !busy && !hasBackendSession && coCreate.input.trim());
+  const showTargetControls = !hasBackendSession && coCreate.kind !== 'adapt';
+  const targetTotalWords = resolveCoCreateTargetTotalWords(coCreate);
+  const canBeginNormal = Boolean(activeProject && !busy && !hasBackendSession && coCreate.input.trim() && targetTotalWords > 0);
   const canBeginStage = Boolean(activeProject && !busy && !hasBackendSession);
   const canBeginAdapt = Boolean(
     activeProject &&
@@ -1549,7 +1595,7 @@ function CoCreatePanel({
   const canCancel = Boolean(activeProject && !busy && hasBackendSession);
   const title = coCreateTitle(coCreate.kind);
   return (
-    <div className="side-content">
+    <div className="side-content cocreate-panel">
       {coCreate.error ? <div className="error-banner compact">{coCreate.error}</div> : null}
 
       <section className="cocreate-section">
@@ -1676,10 +1722,11 @@ function CoCreatePanel({
         </section>
       ) : null}
 
-      <form className="cocreate-form" onSubmit={hasBackendSession ? onSubmit : (event) => {
-        event.preventDefault();
-        onBegin('normal');
-      }}>
+      <div className="cocreate-sticky-workspace">
+        <form className="cocreate-form" onSubmit={hasBackendSession ? onSubmit : (event) => {
+          event.preventDefault();
+          onBegin('normal');
+        }}>
         <textarea
           aria-label="共创输入"
           disabled={!activeProject || busy}
@@ -1687,13 +1734,56 @@ function CoCreatePanel({
           value={coCreate.input}
           onChange={(event) => setCoCreate((previous) => appendCoCreateInput(previous, event.target.value))}
         />
+        {showTargetControls ? (
+          <div className="cocreate-target">
+            <div className="cocreate-target-options" aria-label="Target total words">
+              {coCreateTargetWordChoices.map((choice) => (
+                <label
+                  className={`target-option ${(coCreate.targetTotalWordsChoice || '5000') === choice.value ? 'active' : ''}`}
+                  key={choice.value}
+                >
+                  <input
+                    checked={(coCreate.targetTotalWordsChoice || '5000') === choice.value}
+                    disabled={!activeProject || busy}
+                    name="cocreate-target-total-words"
+                    type="radio"
+                    value={choice.value}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setCoCreate((previous) => ({
+                        ...previous,
+                        targetTotalWordsChoice: value,
+                        customTargetTotalWords: value === 'custom' ? previous.customTargetTotalWords || '' : previous.customTargetTotalWords
+                      }));
+                    }}
+                  />
+                  <span>{choice.label}</span>
+                </label>
+              ))}
+            </div>
+            {(coCreate.targetTotalWordsChoice || '5000') === 'custom' ? (
+              <label className="field-label">
+                <span>Target words</span>
+                <input
+                  disabled={!activeProject || busy}
+                  inputMode="numeric"
+                  min="1"
+                  placeholder="12000"
+                  type="number"
+                  value={coCreate.customTargetTotalWords || ''}
+                  onChange={(event) => setCoCreate((previous) => ({ ...previous, customTargetTotalWords: event.target.value }))}
+                />
+              </label>
+            ) : null}
+          </div>
+        ) : null}
         <button className="tool-button accent full-width" disabled={hasBackendSession ? !canSend : !canBeginNormal} type="submit">
           <Send size={16} />
           {hasBackendSession ? '发送' : '开始普通共创'}
         </button>
-      </form>
+        </form>
 
-      <section className="cocreate-section">
+        <section className="cocreate-section">
         <div className={`workflow-status ${coCreate.status}`}>
           <strong>{coCreateStatusText(coCreate.status, coCreate.ready)}</strong>
           <span>{coCreate.startMessage || (coCreate.ready ? 'draft prompt 已就绪' : '等待共创完成')}</span>
@@ -1711,7 +1801,8 @@ function CoCreatePanel({
             取消
           </button>
         </div>
-      </section>
+        </section>
+      </div>
     </div>
   );
 }
@@ -2740,6 +2831,177 @@ export function canSubmitModelAdd(state, modelConfig) {
     return false;
   }
   return true;
+}
+
+export function buildBeginCoCreatePayload({ kind, initial = '', sourceFile = '', mode = '', targetTotalWords = 0 } = {}) {
+  const payload = {
+    kind,
+    initial: String(initial || '').trim()
+  };
+  if (kind === 'adapt') {
+    payload.source_file = String(sourceFile || '').trim();
+    payload.mode = String(mode || '').trim();
+    return payload;
+  }
+  if (kind === 'normal' && targetTotalWords > 0) {
+    payload.target_total_words = targetTotalWords;
+  }
+  return payload;
+}
+
+export function resolveCoCreateTargetTotalWords(state = {}) {
+  const choice = String(state.targetTotalWordsChoice || '5000');
+  const raw = choice === 'custom' ? state.customTargetTotalWords : choice;
+  const value = Number(String(raw ?? '').trim());
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+export function deriveWorkspaceProgress(snapshot, eventRows = []) {
+  const completedChapters = numberValue(snapshot, 'CompletedCount', 'completed_count');
+  const totalChapters = numberValue(snapshot, 'TotalChapters', 'total_chapters');
+  const currentChapter = numberValue(snapshot, 'InProgressChapter', 'in_progress_chapter') ||
+    numberValue(snapshot, 'CurrentChapter', 'current_chapter');
+  const wordCount = numberValue(snapshot, 'TotalWordCount', 'total_word_count');
+  const rawWordBudget = valueByKey(snapshot, 'WordBudget', 'word_budget');
+  const wordBudget = objectValue(snapshot, 'WordBudget', 'word_budget');
+  const wordBudgetTarget = objectValue(wordBudget, 'Target', 'target');
+  const targetWords = numberValue(
+    snapshot,
+    'TargetTotalWords',
+    'target_total_words',
+    'TargetWords',
+    'target_words',
+    'TotalWordBudget',
+    'total_word_budget',
+    'WordBudgetTotal',
+    'word_budget_total'
+  ) || numberValue(wordBudget, 'TargetTotalWords', 'target_total_words') ||
+    numberValue(wordBudgetTarget, 'TargetTotalWords', 'target_total_words') ||
+    numberFromValue(rawWordBudget);
+  const statusLabel = textValue(snapshot, 'StatusLabel', 'status_label', 'RuntimeState', 'runtime_state') || 'idle';
+  const chapterLabel = totalChapters > 0 ? `${completedChapters}/${totalChapters}` : `${completedChapters}`;
+  const currentChapterLabel = currentChapter > 0 ? `Ch. ${currentChapter}` : '-';
+  const wordLabel = targetWords > 0
+    ? `${formatCompact(wordCount)} / ${formatCompact(targetWords)}`
+    : formatCompact(wordCount);
+  return {
+    statusLabel,
+    completedChapters,
+    totalChapters,
+    currentChapter,
+    wordCount,
+    targetWords,
+    chapterLabel,
+    currentChapterLabel,
+    wordLabel,
+    runningLabel: runningLabelFromSnapshot(snapshot) || runningLabelFromEventRows(eventRows) || 'idle'
+  };
+}
+
+function runningLabelFromSnapshot(snapshot) {
+  const agents = arrayValue(snapshot, 'Agents', 'agents');
+  const agent = agents.find(isRunningAgent);
+  if (!agent) {
+    return '';
+  }
+  const name = textValue(agent, 'Name', 'name') || 'agent';
+  const tool = textValue(agent, 'Tool', 'tool');
+  const summary = textValue(agent, 'Summary', 'summary');
+  const state = textValue(agent, 'State', 'state') || 'running';
+  if (tool) {
+    return `${name} / ${tool}`;
+  }
+  if (summary) {
+    return `${name} / ${summary}`;
+  }
+  return `${name} / ${state}`;
+}
+
+function runningLabelFromEventRows(eventRows) {
+  const row = [...(eventRows || [])].reverse().find((event) => {
+    const payload = eventPayload(event);
+    return Boolean(payload?.running || payload?.Running);
+  });
+  const event = eventPayload(row);
+  if (!event) {
+    return '';
+  }
+  const agent = textValue(event, 'agent', 'Agent');
+  const category = textValue(event, 'category', 'Category') || 'EVENT';
+  const summary = textValue(event, 'summary', 'Summary');
+  if (agent && summary) {
+    return `${agent} / ${summary}`;
+  }
+  if (agent) {
+    return `${agent} / ${category}`;
+  }
+  return summary || category;
+}
+
+function isRunningAgent(agent) {
+  const state = textValue(agent, 'State', 'state').toLowerCase();
+  const tool = textValue(agent, 'Tool', 'tool');
+  if (tool) {
+    return true;
+  }
+  return Boolean(state && !['idle', 'done', 'complete', 'completed', 'paused'].includes(state));
+}
+
+function eventPayload(row) {
+  return row?.event || row?.Event || null;
+}
+
+function arrayValue(source, ...keys) {
+  for (const key of keys) {
+    if (Array.isArray(source?.[key])) {
+      return source[key];
+    }
+  }
+  return [];
+}
+
+function objectValue(source, ...keys) {
+  for (const key of keys) {
+    const value = source?.[key];
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function valueByKey(source, ...keys) {
+  for (const key of keys) {
+    if (source?.[key] !== undefined && source?.[key] !== null) {
+      return source[key];
+    }
+  }
+  return null;
+}
+
+function numberValue(source, ...keys) {
+  for (const key of keys) {
+    const value = numberFromValue(source?.[key]);
+    if (value > 0) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+function numberFromValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function textValue(source, ...keys) {
+  for (const key of keys) {
+    const value = String(source?.[key] ?? '').trim();
+    if (value) {
+      return value;
+    }
+  }
+  return '';
 }
 
 function isFreshProject(snapshot) {
