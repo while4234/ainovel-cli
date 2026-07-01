@@ -242,6 +242,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectSnapshot(w, r, id)
 	case "resume":
 		s.handleProjectResume(w, r, id)
+	case "start":
+		s.handleProjectStart(w, r, id)
+	case "pause":
+		s.handleProjectPause(w, r, id)
 	case "continue":
 		s.handleProjectContinue(w, r, id)
 	case "steer":
@@ -254,6 +258,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectModelSwitch(w, r, id)
 	case "models/thinking":
 		s.handleProjectModelThinking(w, r, id)
+	case "models/add":
+		s.handleProjectModelAdd(w, r, id)
 	case "models/add-openai-compatible":
 		s.handleProjectModelAddOpenAICompatible(w, r, id)
 	case "usage":
@@ -262,6 +268,12 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectBackendStatus(w, r, id)
 	case "backend/test":
 		s.handleProjectBackendTest(w, r, id)
+	case "import":
+		s.handleProjectImport(w, r, id)
+	case "export":
+		s.handleProjectExport(w, r, id)
+	case "diag":
+		s.handleProjectDiag(w, r, id)
 	case "simulate/files":
 		s.handleProjectSimulateFiles(w, r, id)
 	case "simulate/analyze":

@@ -43,6 +43,20 @@ export function resumeProject(projectId) {
   });
 }
 
+export function startProject(projectId, text) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/start`, {
+    method: 'POST',
+    body: JSON.stringify({ text })
+  });
+}
+
+export function pauseProject(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/pause`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
 export function continueProject(projectId, text) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/continue`, {
     method: 'POST',
@@ -80,6 +94,32 @@ export function importSimulationProfile(projectId, file) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/simulate/import`, {
     method: 'POST',
     body
+  });
+}
+
+export function importExternalNovel(projectId, file, from = '') {
+  const body = new FormData();
+  body.append('source', file);
+  if (String(from || '').trim()) {
+    body.append('from', String(from).trim());
+  }
+  return request(`/api/projects/${encodeURIComponent(projectId)}/import`, {
+    method: 'POST',
+    body
+  });
+}
+
+export function exportProject(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/export`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function runProjectDiagnostic(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/diag`, {
+    method: 'POST',
+    body: JSON.stringify({})
   });
 }
 
@@ -154,6 +194,13 @@ export function setProjectThinking(projectId, role, level) {
 
 export function addOpenAICompatibleModel(projectId, payload) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/add-openai-compatible`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function addProviderModel(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/add`, {
     method: 'POST',
     body: JSON.stringify(payload)
   });

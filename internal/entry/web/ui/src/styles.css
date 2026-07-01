@@ -258,6 +258,8 @@ h2 {
 .adapt-brief,
 .cocreate-form textarea,
 .model-route select,
+.field-label input,
+.field-label select,
 .custom-model-form input,
 .custom-model-form select {
   width: 100%;
@@ -276,6 +278,8 @@ h2 {
 .create-project input,
 .composer input,
 .model-route select,
+.field-label input,
+.field-label select,
 .custom-model-form input,
 .custom-model-form select {
   height: 36px;
@@ -289,6 +293,8 @@ h2 {
 .cocreate-form textarea:focus,
 .custom-model-form input:focus,
 .custom-model-form select:focus,
+.field-label input:focus,
+.field-label select:focus,
 .model-route select:focus {
   border-color: var(--accent);
   box-shadow: var(--focus);
@@ -730,6 +736,43 @@ h2 {
   gap: 8px;
 }
 
+.tool-form {
+  display: grid;
+  gap: 8px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.field-label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.field-label span,
+.checkbox-row span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.checkbox-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
 .cocreate-mode-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -917,7 +960,8 @@ h2 {
 }
 
 .file-list,
-.simulation-events {
+.simulation-events,
+.finding-list {
   display: grid;
   gap: 6px;
 }
@@ -1007,6 +1051,45 @@ h2 {
 
 .simulation-event p {
   margin: 0;
+}
+
+.finding-row {
+  display: grid;
+  gap: 3px;
+  min-height: 64px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 8px 9px;
+  background: var(--surface-solid);
+}
+
+.finding-row.warning {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.finding-row.critical {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.finding-row.info {
+  border-left-color: var(--accent);
+}
+
+.finding-row strong,
+.finding-row span,
+.finding-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finding-row span,
+.finding-row small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .chapter-list,

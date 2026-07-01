@@ -253,9 +253,6 @@ func (s *webCoCreateSession) requireReadyDraft() error {
 	if s == nil {
 		return fmt.Errorf("co-create has not started")
 	}
-	if !s.session.Ready() {
-		return fmt.Errorf("co-create is not ready")
-	}
 	if strings.TrimSpace(s.draftPrompt()) == "" {
 		return fmt.Errorf("draft prompt is required")
 	}

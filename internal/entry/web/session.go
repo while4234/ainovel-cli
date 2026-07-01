@@ -14,8 +14,11 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	"github.com/voocel/ainovel-cli/internal/host/exp"
+	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
 )
 
@@ -48,6 +51,7 @@ type projectHost interface {
 	PrepareUserRules(string) error
 	PrepareExternalSourceUserRules(string) error
 	StartPrepared(string) error
+	Abort() bool
 	Resume() (string, error)
 	Continue(string) error
 	Steer(string) error
@@ -57,10 +61,12 @@ type projectHost interface {
 	PauseForCoCreate() bool
 	ResumeFromCoCreate(string) error
 	CancelCoCreate()
+	ImportFrom(context.Context, imp.Options) (<-chan imp.Event, error)
 	SimulateFromDir(context.Context, string) (<-chan sim.Event, error)
 	ImportSimulationProfile(context.Context, string) (<-chan sim.Event, error)
 	PrepareAdaptationSource(context.Context, string) (<-chan adapt.Event, error)
 	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
+	Export(context.Context, exp.Options) (*exp.Result, error)
 	ReplayQueue(int64) ([]domain.RuntimeQueueItem, error)
 	ConfiguredProviders() []string
 	ConfiguredModels(string) []string
@@ -243,12 +249,6 @@ func (s *ProjectSession) SetRoleThinking(role, level string) (apiModelConfig, er
 }
 
 func (s *ProjectSession) AddOpenAICompatibleModel(role, provider, model, baseURL, apiKey, api string) (apiModelConfig, error) {
-	unlock, err := s.beginAction()
-	if err != nil {
-		return apiModelConfig{}, err
-	}
-	defer unlock()
-
 	pc := bootstrap.ProviderConfig{
 		Type:    "openai",
 		API:     strings.TrimSpace(api),
@@ -258,11 +258,55 @@ func (s *ProjectSession) AddOpenAICompatibleModel(role, provider, model, baseURL
 	if pc.API == "" {
 		pc.API = "chat"
 	}
+	return s.AddProviderModel(role, provider, model, pc)
+}
+
+func (s *ProjectSession) AddProviderModel(role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return apiModelConfig{}, err
+	}
+	defer unlock()
+
 	if err := s.host.AddProviderModel(normalizeModelRole(role), provider, pc, model); err != nil {
 		return apiModelConfig{}, err
 	}
 	s.AppendSnapshot()
 	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) StartQuick(text string) error {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	plan, err := startup.PrepareQuick(startup.Request{
+		Mode:        startup.ModeQuick,
+		UserPrompt:  text,
+		OutputDir:   s.manifest.OutputDir,
+		Interactive: false,
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+		return err
+	}
+	if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
+		return err
+	}
+	s.AppendSnapshot()
+	return nil
+}
+
+func (s *ProjectSession) Pause() bool {
+	stopped := s.host.Abort()
+	if stopped {
+		s.AppendSnapshot()
+	}
+	return stopped
 }
 
 func (s *ProjectSession) Resume() (string, error) {
@@ -277,6 +321,33 @@ func (s *ProjectSession) Resume() (string, error) {
 		s.AppendSnapshot()
 	}
 	return label, err
+}
+
+func (s *ProjectSession) ImportExternalNovel(ctx context.Context, sourcePath string, resumeFrom int) ([]apiImportEvent, string, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, "", err
+	}
+	defer unlock()
+
+	events, err := s.host.ImportFrom(ctx, imp.Options{
+		SourcePath: sourcePath,
+		ResumeFrom: resumeFrom,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if events == nil {
+		return nil, "", fmt.Errorf("import event stream is nil")
+	}
+	apiEvents, err := s.consumeImportEvents(ctx, events)
+	if err != nil {
+		s.AppendSnapshot()
+		return apiEvents, "", err
+	}
+	label, err := s.host.Resume()
+	s.AppendSnapshot()
+	return apiEvents, label, err
 }
 
 func (s *ProjectSession) Continue(text string) error {
@@ -371,11 +442,22 @@ func (s *ProjectSession) StartAdaptationPrepared(options adapt.ProposalOptions) 
 	}
 	defer unlock()
 
+	if err := s.host.PrepareExternalSourceUserRules(options.Brief); err != nil {
+		return err
+	}
 	if err := s.host.StartAdaptationPreparedWithOptions(options); err != nil {
 		return err
 	}
 	s.AppendSnapshot()
 	return nil
+}
+
+func (s *ProjectSession) Export(ctx context.Context, opts exp.Options) (*exp.Result, error) {
+	result, err := s.host.Export(ctx, opts)
+	if err == nil {
+		s.AppendSnapshot()
+	}
+	return result, err
 }
 
 func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBeginRequest) (webCoCreateState, error) {
@@ -702,6 +784,33 @@ func (s *ProjectSession) consumeSimulationEvents(ctx context.Context, events <-c
 	}
 }
 
+func (s *ProjectSession) consumeImportEvents(ctx context.Context, events <-chan imp.Event) ([]apiImportEvent, error) {
+	var out []apiImportEvent
+	var runErr error
+	for {
+		select {
+		case <-ctx.Done():
+			return out, ctx.Err()
+		case ev, ok := <-events:
+			if !ok {
+				return out, runErr
+			}
+			apiEvent := apiImportEventFromImp(ev)
+			out = append(out, apiEvent)
+			s.appendImportEvent(apiEvent)
+			if ev.Err != nil {
+				message := strings.TrimSpace(ev.Message)
+				if message == "" {
+					message = ev.Err.Error()
+				} else {
+					message = fmt.Sprintf("%s: %v", message, ev.Err)
+				}
+				runErr = importRunError{message: message}
+			}
+		}
+	}
+}
+
 func (s *ProjectSession) consumeAdaptationEvents(ctx context.Context, events <-chan adapt.Event) ([]apiAdaptationEvent, error) {
 	var out []apiAdaptationEvent
 	var runErr error
@@ -739,6 +848,24 @@ func (s *ProjectSession) appendSimulationEvent(ev apiSimulationEvent) WebEvent {
 	return s.appendHostEvent(host.Event{
 		Time:     ev.Time,
 		Category: "SIMULATE",
+		Agent:    "web",
+		Summary:  ev.Message,
+		Detail:   ev.Error,
+		Kind:     ev.Stage,
+		Level:    level,
+	})
+}
+
+func (s *ProjectSession) appendImportEvent(ev apiImportEvent) WebEvent {
+	level := "info"
+	if ev.Error != "" {
+		level = "error"
+	} else if ev.Stage == string(imp.StageDone) {
+		level = "success"
+	}
+	return s.appendHostEvent(host.Event{
+		Time:     ev.Time,
+		Category: "IMPORT",
 		Agent:    "web",
 		Summary:  ev.Message,
 		Detail:   ev.Error,

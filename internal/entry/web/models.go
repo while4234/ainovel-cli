@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
 
@@ -105,6 +106,63 @@ func (s *Server) handleProjectModelThinking(w http.ResponseWriter, r *http.Reque
 		"models":   models,
 		"snapshot": session.Snapshot(),
 	})
+}
+
+func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Role      string `json:"role"`
+		Provider  string `json:"provider"`
+		Model     string `json:"model"`
+		Type      string `json:"type"`
+		Auth      string `json:"auth"`
+		AccountID string `json:"account_id"`
+		APIKey    string `json:"api_key"`
+		BaseURL   string `json:"base_url"`
+		API       string `json:"api"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	pc := bootstrap.ProviderConfig{
+		Type:      strings.TrimSpace(req.Type),
+		Auth:      strings.TrimSpace(req.Auth),
+		AccountID: strings.TrimSpace(req.AccountID),
+		APIKey:    strings.TrimSpace(req.APIKey),
+		BaseURL:   strings.TrimSpace(req.BaseURL),
+		API:       strings.TrimSpace(req.API),
+	}
+	if !providerConfigRequestIsEmpty(pc) {
+		pc.Models = []string{strings.TrimSpace(req.Model)}
+	}
+	models, err := session.AddProviderModel(req.Role, req.Provider, req.Model, pc)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"models":   models,
+		"snapshot": session.Snapshot(),
+	})
+}
+
+func providerConfigRequestIsEmpty(pc bootstrap.ProviderConfig) bool {
+	return pc.Type == "" &&
+		pc.Auth == "" &&
+		pc.AccountID == "" &&
+		pc.API == "" &&
+		pc.APIKey == "" &&
+		pc.BaseURL == ""
 }
 
 func (s *Server) handleProjectModelAddOpenAICompatible(w http.ResponseWriter, r *http.Request, id string) {

@@ -3,6 +3,7 @@ import {
   BookOpen,
   CircleDot,
   Database,
+  Download,
   FileText,
   FileJson,
   ListRestart,
@@ -24,21 +25,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeAdaptationSource,
   analyzeSimulation,
-  addOpenAICompatibleModel,
+  addProviderModel,
   beginCoCreate,
   cancelCoCreate,
   commitCoCreate,
   continueProject,
   createProject,
+  exportProject,
   getBackendStatus,
   getProjectModels,
   getRuntime,
   getSnapshot,
+  importExternalNovel,
   importSimulationProfile,
   listProjects,
+  pauseProject,
   resumeProject,
+  runProjectDiagnostic,
   sendCoCreate,
   setProjectThinking,
+  startProject,
   startAdaptation,
   steerProject,
   switchProjectModel,
@@ -85,16 +91,68 @@ function createAdaptationState() {
   };
 }
 
+function createExternalImportState() {
+  return {
+    sourceFile: null,
+    from: '',
+    status: 'idle',
+    events: [],
+    message: '',
+    error: ''
+  };
+}
+
+function createExportState() {
+  return {
+    path: '',
+    format: 'txt',
+    from: '',
+    to: '',
+    overwrite: false,
+    status: 'idle',
+    result: null,
+    message: '',
+    error: ''
+  };
+}
+
+function createDiagnosticState() {
+  return {
+    status: 'idle',
+    report: null,
+    runtime: null,
+    exportPath: '',
+    error: ''
+  };
+}
+
 function createCustomModelState() {
   return {
+    mode: 'existing',
     role: 'default',
     provider: '',
+    preset: 'deepseek',
+    type: 'openai',
     model: '',
     base_url: '',
     api_key: '',
     api: 'chat'
   };
 }
+
+const providerPresets = [
+  { label: 'DeepSeek', provider: 'deepseek', type: 'deepseek', model: 'deepseek-chat', requiresKey: true },
+  { label: 'OpenAI', provider: 'openai', type: 'openai', model: 'gpt-4.1', requiresKey: true },
+  { label: 'Anthropic', provider: 'anthropic', type: 'anthropic', model: 'claude-sonnet-4-5', requiresKey: true },
+  { label: 'Gemini', provider: 'gemini', type: 'gemini', model: 'gemini-2.5-pro', requiresKey: true },
+  { label: 'Qwen', provider: 'qwen', type: 'qwen', model: 'qwen-max', requiresKey: true },
+  { label: 'GLM', provider: 'glm', type: 'glm', model: 'glm-4.5', requiresKey: true },
+  { label: 'OpenRouter', provider: 'openrouter', type: 'openrouter', model: 'openai/gpt-4.1', requiresKey: true },
+  { label: 'Grok API Key', provider: 'grok', type: 'grok', model: 'grok-4.3-latest', requiresKey: true },
+  { label: 'Ollama', provider: 'ollama', type: 'ollama', base_url: 'http://localhost:11434', model: 'qwen3:8b', requiresKey: false }
+];
+
+const customProviderTypes = ['openai', 'anthropic', 'gemini', 'grok'];
 
 export default function App() {
   const [runtime, setRuntime] = useState(null);
@@ -107,6 +165,9 @@ export default function App() {
   const [sideView, setSideView] = useState('status');
   const [simulation, setSimulation] = useState(createSimulationState);
   const [adaptation, setAdaptation] = useState(createAdaptationState);
+  const [externalImport, setExternalImport] = useState(createExternalImportState);
+  const [exportJob, setExportJob] = useState(createExportState);
+  const [diagnostic, setDiagnostic] = useState(createDiagnosticState);
   const [coCreate, setCoCreate] = useState(createCoCreateState);
   const [modelConfig, setModelConfig] = useState(null);
   const [customModel, setCustomModel] = useState(createCustomModelState);
@@ -117,6 +178,7 @@ export default function App() {
   const lastSeqRef = useRef(0);
 
   const snapshot = workbench.snapshot;
+  const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
 
   const refreshProjects = useCallback(async () => {
     const data = await listProjects();
@@ -145,6 +207,9 @@ export default function App() {
     setWorkbench(createWorkbenchState());
     setSimulation(createSimulationState());
     setAdaptation(createAdaptationState());
+    setExternalImport(createExternalImportState());
+    setExportJob(createExportState());
+    setDiagnostic(createDiagnosticState());
     setCoCreate(createCoCreateState());
     setModelConfig(null);
     setCustomModel(createCustomModelState());
@@ -260,8 +325,12 @@ export default function App() {
     if (!text) {
       return;
     }
-    await runAction((projectId) => continueProject(projectId, text));
+    await runAction((projectId) => (quickStartAvailable ? startProject(projectId, text) : continueProject(projectId, text)));
     setComposerText('');
+  };
+
+  const pauseWriting = async () => {
+    await runAction((projectId) => pauseProject(projectId));
   };
 
   const submitSteer = async (event) => {
@@ -272,6 +341,104 @@ export default function App() {
     }
     await runAction((projectId) => steerProject(projectId, text));
     setSteerText('');
+  };
+
+  const importExternalSource = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!activeProject?.id || !file) {
+      return;
+    }
+    setBusy(true);
+    setExternalImport((previous) => ({
+      ...previous,
+      sourceFile: null,
+      status: 'running',
+      events: [],
+      message: '',
+      error: ''
+    }));
+    try {
+      const data = await importExternalNovel(activeProject.id, file, externalImport.from);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setExternalImport((previous) => ({
+        ...previous,
+        sourceFile: data.source_file || null,
+        status: 'done',
+        events: data.events || [],
+        message: data.label ? `已导入并恢复：${data.label}` : `已导入 ${data.source_file?.name || file.name}`,
+        error: ''
+      }));
+    } catch (err) {
+      setExternalImport((previous) => ({
+        ...previous,
+        status: 'error',
+        events: err.data?.events || previous.events,
+        error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runExport = async () => {
+    if (!activeProject?.id) {
+      return;
+    }
+    let from;
+    let to;
+    try {
+      from = optionalNonNegativeInt(exportJob.from, 'from');
+      to = optionalNonNegativeInt(exportJob.to, 'to');
+    } catch (err) {
+      setExportJob((previous) => ({ ...previous, error: err.message }));
+      return;
+    }
+    setBusy(true);
+    setExportJob((previous) => ({ ...previous, status: 'running', result: null, message: '', error: '' }));
+    try {
+      const data = await exportProject(activeProject.id, {
+        path: exportJob.path,
+        format: exportJob.format,
+        from,
+        to,
+        overwrite: exportJob.overwrite
+      });
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setExportJob((previous) => ({
+        ...previous,
+        status: 'done',
+        result: data.export || null,
+        message: data.export?.path ? `已导出 ${data.export.path}` : '导出完成',
+        error: ''
+      }));
+    } catch (err) {
+      setExportJob((previous) => ({ ...previous, status: 'error', error: err.message }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runDiagnostic = async () => {
+    if (!activeProject?.id) {
+      return;
+    }
+    setBusy(true);
+    setDiagnostic((previous) => ({ ...previous, status: 'running', error: '' }));
+    try {
+      const data = await runProjectDiagnostic(activeProject.id);
+      setDiagnostic({
+        status: 'done',
+        report: data.report || null,
+        runtime: data.runtime || null,
+        exportPath: data.export_path || '',
+        error: ''
+      });
+    } catch (err) {
+      setDiagnostic((previous) => ({ ...previous, status: 'error', error: err.message }));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const uploadSimulationSources = async (event) => {
@@ -618,13 +785,14 @@ export default function App() {
 
   const submitCustomModel = async (event) => {
     event.preventDefault();
-    if (!activeProject?.id || !customModel.provider.trim() || !customModel.model.trim()) {
+    const payload = buildModelAddPayload(customModel, modelConfig);
+    if (!activeProject?.id || !payload.provider || !payload.model) {
       return;
     }
     setBusy(true);
     setError('');
     try {
-      const data = await addOpenAICompatibleModel(activeProject.id, customModel);
+      const data = await addProviderModel(activeProject.id, payload);
       setModelConfig(data.models || modelConfig);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCustomModel(createCustomModelState());
@@ -712,6 +880,15 @@ export default function App() {
               Snapshot
             </button>
             <button
+              className="tool-button"
+              disabled={!activeProject || busy}
+              onClick={pauseWriting}
+              type="button"
+            >
+              <PauseCircle size={16} />
+              Pause
+            </button>
+            <button
               className="tool-button accent"
               disabled={!activeProject || busy}
               onClick={() => runAction(resumeProject)}
@@ -766,15 +943,15 @@ export default function App() {
 
         <form className="composer" onSubmit={submitContinue}>
           <input
-            aria-label="继续创作输入"
+            aria-label={quickStartAvailable ? '快速启动输入' : '继续创作输入'}
             disabled={!activeProject || busy}
-            placeholder="继续、补充或要求下一步..."
+            placeholder={quickStartAvailable ? '写下新书核心想法，直接启动...' : '继续、补充或要求下一步...'}
             value={composerText}
             onChange={(event) => setComposerText(event.target.value)}
           />
           <button className="tool-button accent" disabled={!activeProject || busy} type="submit">
-            <Send size={16} />
-            Continue
+            {quickStartAvailable ? <Play size={16} /> : <Send size={16} />}
+            {quickStartAvailable ? 'Start' : 'Continue'}
           </button>
         </form>
       </main>
@@ -796,6 +973,18 @@ export default function App() {
           <button className={sideView === 'adapt' ? 'active' : ''} onClick={() => setSideView('adapt')} title="改编" type="button">
             <FileText size={16} />
             改编
+          </button>
+          <button className={sideView === 'import' ? 'active' : ''} onClick={() => setSideView('import')} title="导入" type="button">
+            <Upload size={16} />
+            导入
+          </button>
+          <button className={sideView === 'export' ? 'active' : ''} onClick={() => setSideView('export')} title="导出" type="button">
+            <Download size={16} />
+            导出
+          </button>
+          <button className={sideView === 'diag' ? 'active' : ''} onClick={() => setSideView('diag')} title="诊断" type="button">
+            <Activity size={16} />
+            诊断
           </button>
           <button className={sideView === 'cache' ? 'active' : ''} onClick={() => setSideView('cache')} title="缓存" type="button">
             <Database size={16} />
@@ -848,6 +1037,29 @@ export default function App() {
                 setSideView('cocreate');
                 beginCoCreateFlow('adapt');
               }}
+            />
+          ) : sideView === 'import' ? (
+            <ImportPanel
+              activeProject={activeProject}
+              busy={busy}
+              externalImport={externalImport}
+              setExternalImport={setExternalImport}
+              onImport={importExternalSource}
+            />
+          ) : sideView === 'export' ? (
+            <ExportPanel
+              activeProject={activeProject}
+              busy={busy}
+              exportJob={exportJob}
+              setExportJob={setExportJob}
+              onExport={runExport}
+            />
+          ) : sideView === 'diag' ? (
+            <DiagnosticPanel
+              activeProject={activeProject}
+              busy={busy}
+              diagnostic={diagnostic}
+              onRun={runDiagnostic}
             />
           ) : sideView === 'cache' ? (
             <CachePanel snapshot={snapshot} />
@@ -1273,6 +1485,226 @@ function SimulationEventList({ events }) {
   );
 }
 
+function ImportPanel({ activeProject, busy, externalImport, setExternalImport, onImport }) {
+  const latest = latestSimulationEvent(externalImport.events);
+  return (
+    <div className="side-content">
+      {externalImport.error ? <div className="error-banner compact">{externalImport.error}</div> : null}
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <Upload size={17} />
+          <span>外部小说导入</span>
+        </div>
+        <div className="tool-form">
+          <label className="field-label">
+            <span>续写起点</span>
+            <input
+              disabled={busy}
+              inputMode="numeric"
+              min="0"
+              placeholder="0"
+              type="number"
+              value={externalImport.from}
+              onChange={(event) => setExternalImport((previous) => ({ ...previous, from: event.target.value }))}
+            />
+          </label>
+          <label className={`tool-button file-picker full ${!activeProject || busy ? 'disabled' : ''}`}>
+            <Upload size={16} />
+            上传并导入
+            <input
+              accept=".txt,.md,.markdown,text/plain,text/markdown"
+              disabled={!activeProject || busy}
+              onChange={onImport}
+              type="file"
+            />
+          </label>
+        </div>
+        {externalImport.message ? <div className="success-note">{externalImport.message}</div> : null}
+        <div className={`workflow-status ${externalImport.status}`}>
+          <strong>{workflowStatusText(externalImport.status)}</strong>
+          <span>{latest?.message || '等待导入文本'}</span>
+        </div>
+        {externalImport.sourceFile ? (
+          <div className="file-list">
+            <div className="file-row">
+              <span>{externalImport.sourceFile.name}</span>
+              <strong>{formatBytes(externalImport.sourceFile.size)}</strong>
+            </div>
+          </div>
+        ) : null}
+        <SimulationEventList events={externalImport.events} />
+      </section>
+    </div>
+  );
+}
+
+function ExportPanel({ activeProject, busy, exportJob, setExportJob, onExport }) {
+  const result = exportJob.result;
+  return (
+    <div className="side-content">
+      {exportJob.error ? <div className="error-banner compact">{exportJob.error}</div> : null}
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <Download size={17} />
+          <span>小说导出</span>
+        </div>
+        <div className="tool-form">
+          <label className="field-label">
+            <span>文件名</span>
+            <input
+              disabled={busy}
+              placeholder="留空使用默认文件名"
+              value={exportJob.path}
+              onChange={(event) => setExportJob((previous) => ({ ...previous, path: event.target.value }))}
+            />
+          </label>
+          <label className="field-label">
+            <span>格式</span>
+            <select
+              disabled={busy}
+              value={exportJob.format}
+              onChange={(event) => setExportJob((previous) => ({ ...previous, format: event.target.value }))}
+            >
+              <option value="txt">txt</option>
+              <option value="epub">epub</option>
+            </select>
+          </label>
+          <div className="field-grid">
+            <label className="field-label">
+              <span>from</span>
+              <input
+                disabled={busy}
+                inputMode="numeric"
+                min="0"
+                placeholder="0"
+                type="number"
+                value={exportJob.from}
+                onChange={(event) => setExportJob((previous) => ({ ...previous, from: event.target.value }))}
+              />
+            </label>
+            <label className="field-label">
+              <span>to</span>
+              <input
+                disabled={busy}
+                inputMode="numeric"
+                min="0"
+                placeholder="0"
+                type="number"
+                value={exportJob.to}
+                onChange={(event) => setExportJob((previous) => ({ ...previous, to: event.target.value }))}
+              />
+            </label>
+          </div>
+          <label className="checkbox-row">
+            <input
+              checked={exportJob.overwrite}
+              disabled={busy}
+              type="checkbox"
+              onChange={(event) => setExportJob((previous) => ({ ...previous, overwrite: event.target.checked }))}
+            />
+            <span>覆盖已有文件</span>
+          </label>
+          <button className="tool-button accent full-width" disabled={!activeProject || busy} onClick={onExport} type="button">
+            <Download size={16} />
+            Export
+          </button>
+        </div>
+        {exportJob.message ? <div className="success-note">{exportJob.message}</div> : null}
+        <div className={`workflow-status ${exportJob.status}`}>
+          <strong>{workflowStatusText(exportJob.status)}</strong>
+          <span>{result?.path || '等待导出'}</span>
+        </div>
+        {result ? (
+          <section className="metric-grid">
+            <Metric label="Chapters" value={result.chapters || 0} />
+            <Metric label="Bytes" value={formatBytes(result.bytes || 0)} />
+          </section>
+        ) : null}
+        {result?.skipped?.length ? <div className="success-note">跳过章节：{result.skipped.join(', ')}</div> : null}
+      </section>
+    </div>
+  );
+}
+
+function DiagnosticPanel({ activeProject, busy, diagnostic, onRun }) {
+  const report = diagnostic.report || {};
+  const runtime = diagnostic.runtime || {};
+  const stats = report.Stats || report.stats || {};
+  const findings = report.Findings || report.findings || [];
+  const actions = report.Actions || report.actions || [];
+  const repeats = runtime.Repeats || runtime.repeats || [];
+  return (
+    <div className="side-content">
+      {diagnostic.error ? <div className="error-banner compact">{diagnostic.error}</div> : null}
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <Activity size={17} />
+          <span>诊断</span>
+        </div>
+        <button className="tool-button accent full-width" disabled={!activeProject || busy} onClick={onRun} type="button">
+          <Activity size={16} />
+          Run diag
+        </button>
+        <div className={`workflow-status ${diagnostic.status}`}>
+          <strong>{workflowStatusText(diagnostic.status)}</strong>
+          <span>{diagnostic.exportPath || '等待诊断'}</span>
+        </div>
+      </section>
+
+      <section className="metric-grid">
+        <Metric label="章节" value={`${stats.CompletedChapters || stats.completed_chapters || 0}/${stats.TotalChapters || stats.total_chapters || 0}`} />
+        <Metric label="字数" value={stats.TotalWords || stats.total_words || 0} />
+        <Metric label="评分" value={formatScore(stats.AvgReviewScore || stats.avg_review_score || 0)} />
+        <Metric label="Actions" value={actions.length} />
+      </section>
+
+      <section>
+        <div className="section-title">
+          <Activity size={17} />
+          <span>发现</span>
+        </div>
+        <div className="finding-list">
+          {findings.length === 0 ? (
+            <div className="empty-state">暂无诊断发现</div>
+          ) : (
+            findings.slice(0, 12).map((finding, index) => (
+              <div className={`finding-row ${String(finding.Severity || finding.severity || '').toLowerCase()}`} key={`${finding.Rule || finding.rule}-${index}`}>
+                <strong>{finding.Title || finding.title || 'Untitled'}</strong>
+                <span>{finding.Category || finding.category || '-'} · {finding.Severity || finding.severity || '-'}</span>
+                <small>{finding.Suggestion || finding.suggestion || finding.Evidence || finding.evidence || '-'}</small>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+
+      <section>
+        <div className="section-title">
+          <ListRestart size={17} />
+          <span>运行信号</span>
+        </div>
+        <div className="agent-list">
+          <div className="backend-row">
+            <strong>{runtime.CurrentStep || runtime.current_step || 'no checkpoint'}</strong>
+            <span>{runtime.StuckStep || runtime.stuck_step ? `stuck ×${runtime.StuckCount || runtime.stuck_count || 0}` : 'no stuck signal'}</span>
+            <small>log errors ×{runtime.LogErrors || runtime.log_errors || 0} · warn ×{runtime.LogWarns || runtime.log_warns || 0}</small>
+          </div>
+          {repeats.slice(0, 4).map((repeat, index) => (
+            <div className="backend-row" key={`${repeat.Sig || repeat.sig}-${index}`}>
+              <strong>{repeat.Sig || repeat.sig}</strong>
+              <span>×{repeat.Count || repeat.count || 0}</span>
+              <small>近端重复信号</small>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function CachePanel({ snapshot }) {
   const roles = snapshot?.CachePerAgent || snapshot?.cache_per_agent || [];
   const models = snapshot?.CachePerModel || snapshot?.cache_per_model || [];
@@ -1380,6 +1812,8 @@ function ModelPanel({ runtime, modelConfig, customModel, setCustomModel, busy, o
   const providers = modelConfig?.providers || [];
   const levels = modelConfig?.thinking_levels || ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'];
   const providerMap = new Map(providers.map((provider) => [provider.name, provider.models || []]));
+  const selectedPreset = providerPresets.find((preset) => preset.provider === customModel.preset) || providerPresets[0];
+  const canAdd = canSubmitModelAdd(customModel, modelConfig);
   return (
     <div className="side-content">
       <section className="model-summary">
@@ -1440,7 +1874,7 @@ function ModelPanel({ runtime, modelConfig, customModel, setCustomModel, busy, o
       <form className="custom-model-form" onSubmit={onAddCustom}>
         <div className="section-title">
           <Settings size={17} />
-          <span>OpenAI-compatible</span>
+          <span>添加模型</span>
         </div>
         <select
           disabled={busy}
@@ -1451,40 +1885,108 @@ function ModelPanel({ runtime, modelConfig, customModel, setCustomModel, busy, o
             <option key={route.role} value={route.role}>{route.role}</option>
           ))}
         </select>
-        <input
+        <select
           disabled={busy}
-          placeholder="provider name"
-          value={customModel.provider}
-          onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
-        />
+          value={customModel.mode}
+          onChange={(event) => setCustomModel((previous) => modelAddModeDefaults({ ...previous, mode: event.target.value }, providers))}
+        >
+          <option value="existing">已有 provider</option>
+          <option value="preset">内置 provider</option>
+          <option value="custom">Custom Proxy</option>
+        </select>
+        {customModel.mode === 'existing' ? (
+          <select
+            disabled={busy || providers.length === 0}
+            value={customModel.provider || providers[0]?.name || ''}
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+          >
+            {providers.length === 0 ? <option value="">无 provider</option> : null}
+            {providers.map((provider) => (
+              <option key={provider.name} value={provider.name}>{provider.name}</option>
+            ))}
+          </select>
+        ) : null}
+        {customModel.mode === 'preset' ? (
+          <>
+            <select
+              disabled={busy}
+              value={customModel.preset}
+              onChange={(event) => setCustomModel((previous) => modelAddPresetDefaults({ ...previous, preset: event.target.value }))}
+            >
+              {providerPresets.map((preset) => (
+                <option key={preset.provider} value={preset.provider}>{preset.label}</option>
+              ))}
+            </select>
+            <input
+              disabled={busy}
+              placeholder="provider key"
+              value={customModel.provider || selectedPreset.provider}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+            />
+            <input
+              disabled={busy}
+              placeholder={selectedPreset.requiresKey ? 'API key' : 'API key 可空'}
+              type="password"
+              value={customModel.api_key}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, api_key: event.target.value }))}
+            />
+            <input
+              disabled={busy}
+              placeholder="base URL"
+              value={customModel.base_url}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, base_url: event.target.value }))}
+            />
+          </>
+        ) : null}
+        {customModel.mode === 'custom' ? (
+          <>
+            <input
+              disabled={busy}
+              placeholder="provider key"
+              value={customModel.provider}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+            />
+            <select
+              disabled={busy}
+              value={customModel.type}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, type: event.target.value }))}
+            >
+              {customProviderTypes.map((type) => (
+                <option key={type} value={type}>{type}</option>
+              ))}
+            </select>
+            {customModel.type === 'openai' ? (
+              <select
+                disabled={busy}
+                value={customModel.api}
+                onChange={(event) => setCustomModel((previous) => ({ ...previous, api: event.target.value }))}
+              >
+                <option value="chat">chat</option>
+                <option value="responses">responses</option>
+              </select>
+            ) : null}
+            <input
+              disabled={busy}
+              placeholder="API key 可空"
+              type="password"
+              value={customModel.api_key}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, api_key: event.target.value }))}
+            />
+            <input
+              disabled={busy}
+              placeholder="base URL"
+              value={customModel.base_url}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, base_url: event.target.value }))}
+            />
+          </>
+        ) : null}
         <input
           disabled={busy}
           placeholder="model"
-          value={customModel.model}
+          value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : '')}
           onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
         />
-        <input
-          disabled={busy}
-          placeholder="base URL"
-          value={customModel.base_url}
-          onChange={(event) => setCustomModel((previous) => ({ ...previous, base_url: event.target.value }))}
-        />
-        <input
-          disabled={busy}
-          placeholder="API key"
-          type="password"
-          value={customModel.api_key}
-          onChange={(event) => setCustomModel((previous) => ({ ...previous, api_key: event.target.value }))}
-        />
-        <select
-          disabled={busy}
-          value={customModel.api}
-          onChange={(event) => setCustomModel((previous) => ({ ...previous, api: event.target.value }))}
-        >
-          <option value="chat">chat</option>
-          <option value="responses">responses</option>
-        </select>
-        <button className="tool-button accent full-width" disabled={busy || !customModel.provider.trim() || !customModel.model.trim()} type="submit">
+        <button className="tool-button accent full-width" disabled={busy || !canAdd} type="submit">
           <Plus size={16} />
           Add and use
         </button>
@@ -1577,6 +2079,114 @@ function adaptationModeLabel(mode) {
   return adaptationModes.find((item) => item.value === mode)?.label || mode || '-';
 }
 
+function modelAddModeDefaults(state, providers) {
+  if (state.mode === 'preset') {
+    return modelAddPresetDefaults(state);
+  }
+  if (state.mode === 'custom') {
+    return {
+      ...state,
+      provider: String(state.provider || '').startsWith('custom-') ? state.provider : 'custom-openai',
+      type: state.type || 'openai',
+      model: state.model || 'model-name',
+      api: state.api || 'chat'
+    };
+  }
+  return {
+    ...state,
+    provider: providers.some((provider) => provider.name === state.provider) ? state.provider : providers[0]?.name || '',
+    type: '',
+    api: 'chat',
+    api_key: '',
+    base_url: ''
+  };
+}
+
+function modelAddPresetDefaults(state) {
+  const preset = providerPresets.find((item) => item.provider === state.preset) || providerPresets[0];
+  return {
+    ...state,
+    provider: preset.provider,
+    type: preset.type,
+    base_url: preset.base_url || '',
+    model: preset.model,
+    api: preset.api || 'chat'
+  };
+}
+
+function buildModelAddPayload(state, modelConfig) {
+  const role = state.role || 'default';
+  if (state.mode === 'existing') {
+    const providers = modelConfig?.providers || [];
+    return {
+      role,
+      provider: String(state.provider || providers[0]?.name || '').trim(),
+      model: String(state.model || '').trim()
+    };
+  }
+  if (state.mode === 'preset') {
+    const preset = providerPresets.find((item) => item.provider === state.preset) || providerPresets[0];
+    return {
+      role,
+      provider: String(state.provider || preset.provider).trim(),
+      model: String(state.model || preset.model).trim(),
+      type: preset.type,
+      api: preset.api || '',
+      api_key: String(state.api_key || '').trim(),
+      base_url: String(state.base_url || preset.base_url || '').trim()
+    };
+  }
+  return {
+    role,
+    provider: String(state.provider || '').trim(),
+    model: String(state.model || '').trim(),
+    type: String(state.type || 'openai').trim(),
+    api: state.type === 'openai' ? String(state.api || 'chat').trim() : '',
+    api_key: String(state.api_key || '').trim(),
+    base_url: String(state.base_url || '').trim()
+  };
+}
+
+function canSubmitModelAdd(state, modelConfig) {
+  const payload = buildModelAddPayload(state, modelConfig);
+  if (!payload.provider || !payload.model) {
+    return false;
+  }
+  if (state.mode === 'preset') {
+    const preset = providerPresets.find((item) => item.provider === state.preset) || providerPresets[0];
+    if (preset.requiresKey && !payload.api_key) {
+      return false;
+    }
+  }
+  if (state.mode === 'custom' && !payload.base_url) {
+    return false;
+  }
+  return true;
+}
+
+function isFreshProject(snapshot) {
+  if (!snapshot) {
+    return false;
+  }
+  return !String(snapshot.NovelName || snapshot.novel_name || '').trim() &&
+    !String(snapshot.Phase || snapshot.phase || '').trim() &&
+    Number(snapshot.TotalChapters || snapshot.total_chapters || 0) === 0 &&
+    Number(snapshot.CompletedCount || snapshot.completed_count || 0) === 0 &&
+    Number(snapshot.TotalWordCount || snapshot.total_word_count || 0) === 0;
+}
+
+function optionalNonNegativeInt(value, label) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return 0;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${label} 必须是非负整数`);
+  }
+  return parsed;
+}
+
 function formatCompact(value) {
   return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value || 0));
 }
@@ -1591,6 +2201,14 @@ function formatPercent(part, total) {
 
 function formatUSD(value) {
   return `$${Number(value || 0).toFixed(4)}`;
+}
+
+function formatScore(value) {
+  const score = Number(value || 0);
+  if (!score) {
+    return 'n/a';
+  }
+  return score.toFixed(1);
 }
 
 function formatBytes(value) {

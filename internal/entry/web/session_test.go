@@ -19,6 +19,8 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	"github.com/voocel/ainovel-cli/internal/host/exp"
+	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
 )
 
@@ -434,8 +436,10 @@ type fakeProjectHost struct {
 	steerErr                   error
 	simulateErr                error
 	importErr                  error
+	importNovelErr             error
 	adaptAnalyzeErr            error
 	adaptStartErr              error
+	exportErr                  error
 	cocreateErr                error
 	stageCoCreateErr           error
 	adaptCoCreateErr           error
@@ -450,8 +454,11 @@ type fakeProjectHost struct {
 	steerCalls                  int
 	simulateCalls               int
 	importCalls                 int
+	importNovelCalls            int
 	adaptAnalyzeCalls           int
 	adaptStartCalls             int
+	exportCalls                 int
+	abortCalls                  int
 	prepareRulesCalls           int
 	prepareExternalRulesCalls   int
 	startPreparedCalls          int
@@ -463,8 +470,15 @@ type fakeProjectHost struct {
 	cancelCoCreateCalls         int
 	simulateDir                 string
 	importPath                  string
+	importNovelPath             string
+	importNovelResumeFrom       int
 	adaptSourcePath             string
 	adaptOptions                adapt.ProposalOptions
+	exportOptions               exp.Options
+	addProviderRole             string
+	addProviderName             string
+	addProviderConfig           bootstrap.ProviderConfig
+	addProviderModel            string
 	preparedRulesPrompt         string
 	preparedExternalRulesPrompt string
 	startPreparedPrompt         string
@@ -475,6 +489,9 @@ type fakeProjectHost struct {
 	adaptCoCreateReply          host.CoCreateReply
 	cocreateProgress            []coCreateProgressStep
 	pauseCoCreateOK             bool
+	abortOK                     bool
+	exportResult                *exp.Result
+	addProviderErr              error
 
 	events    chan host.Event
 	stream    chan string
@@ -493,6 +510,7 @@ func newFakeProjectHost() *fakeProjectHost {
 		stream:          make(chan string),
 		done:            make(chan struct{}),
 		pauseCoCreateOK: true,
+		abortOK:         true,
 	}
 }
 
@@ -524,6 +542,13 @@ func (f *fakeProjectHost) StartPrepared(prompt string) error {
 	f.startPreparedCalls++
 	f.startPreparedPrompt = prompt
 	return f.startPreparedErr
+}
+
+func (f *fakeProjectHost) Abort() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.abortCalls++
+	return f.abortOK
 }
 
 func (f *fakeProjectHost) Resume() (string, error) {
@@ -626,6 +651,22 @@ func (f *fakeProjectHost) CancelCoCreate() {
 	f.cancelCoCreateCalls++
 }
 
+func (f *fakeProjectHost) ImportFrom(_ context.Context, opts imp.Options) (<-chan imp.Event, error) {
+	f.mu.Lock()
+	f.importNovelCalls++
+	f.importNovelPath = opts.SourcePath
+	f.importNovelResumeFrom = opts.ResumeFrom
+	err := f.importNovelErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	events := make(chan imp.Event, 2)
+	events <- imp.Event{Stage: imp.StageDone, Current: 1, Total: 1, Message: "novel imported"}
+	close(events)
+	return events, nil
+}
+
 func (f *fakeProjectHost) SimulateFromDir(_ context.Context, dir string) (<-chan sim.Event, error) {
 	f.mu.Lock()
 	f.simulateCalls++
@@ -682,6 +723,20 @@ func (f *fakeProjectHost) StartAdaptationPreparedWithOptions(options adapt.Propo
 	return f.adaptStartErr
 }
 
+func (f *fakeProjectHost) Export(_ context.Context, opts exp.Options) (*exp.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exportCalls++
+	f.exportOptions = opts
+	if f.exportErr != nil {
+		return nil, f.exportErr
+	}
+	if f.exportResult != nil {
+		return f.exportResult, nil
+	}
+	return &exp.Result{Path: opts.OutPath, Chapters: 1, Bytes: 12}, nil
+}
+
 func (f *fakeProjectHost) ReplayQueue(int64) ([]domain.RuntimeQueueItem, error) {
 	return nil, nil
 }
@@ -708,8 +763,14 @@ func (f *fakeProjectHost) SwitchModel(string, string, string) error {
 	return nil
 }
 
-func (f *fakeProjectHost) AddProviderModel(string, string, bootstrap.ProviderConfig, string) error {
-	return nil
+func (f *fakeProjectHost) AddProviderModel(role, providerName string, providerConfig bootstrap.ProviderConfig, model string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.addProviderRole = role
+	f.addProviderName = providerName
+	f.addProviderConfig = providerConfig
+	f.addProviderModel = model
+	return f.addProviderErr
 }
 
 func (f *fakeProjectHost) CurrentThinking(string) string {
