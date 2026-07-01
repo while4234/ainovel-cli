@@ -30,29 +30,39 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 ## Current Baseline
 
 - Latest source change: branch `codex/web-project-cocreate-controls`,
-  `6a52385` `fix: allow global web grok login`.
+  `af33ae7` `fix: add global web model providers`.
 - Branch: `codex/web-project-cocreate-controls`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the global Web Grok OAuth login fix commit,
+- Working tree: expected clean after the global Web model provider fix commits,
   except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
   artifacts.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` is rebuilt after the global Web
-  Grok OAuth login fix using the project-local Go 1.25.5 toolchain, then restarted on
+- Runtime: local `D:\ainovel\ainovel-cli.exe` is rebuilt after the Web default
+  model and global provider fixes using the project-local Go 1.25.5 toolchain, then restarted on
   `http://127.0.0.1:9898` with runtime root
-  `C:\Users\RondleLiu\.ainovel\novels-preview`. The `D:\grok\bin\ainovel-cli.cmd`
+  `C:\Users\RondleLiu\.ainovel\novels`. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run "TestGrokLogin|TestProjectGrokLogin" -count=1`,
+- Validation: `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run "TestGlobalModelsAndDefaultSwitch|TestGlobalModelAddGrokOAuthProvider|TestProjectGrokLogin|TestGrokLogin" -count=1`,
   `npm --prefix internal/entry/web/ui test`,
   `npm --prefix internal/entry/web/ui run build`,
   `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -count=1`,
   `.codex\tools\go1.25.5\go\bin\go.exe build -o D:\ainovel\ainovel-cli.exe D:\ainovel\cmd\ainovel-cli`,
-  `git diff --check`, HTTP smoke checks for `/`, `/api/runtime`, `/api/projects`,
-  and `POST /api/models/grok-login/status`, plus a Playwright no-project model
-  panel check passed on 2026-07-01. The latest runtime is on 9898 and 9904 has no
-  listener.
+  `git diff --check`, HTTP smoke checks for `/`, `/api/runtime`, `/api/models`,
+  `/api/projects`, and empty `POST /api/models/add`, plus a Playwright no-project
+  model panel check passed on 2026-07-01. The latest runtime is on 9898 and 9904
+  has no listener.
 
 ## Change Log
 
+- 2026-07-01 `af33ae7` `fix: add global web model providers`: added
+  `POST /api/models/add`, enabled no-project `Add and use` for global provider
+  registration, allowed logged-in Grok OAuth to become visible in the global
+  default model selector after confirmation, added backend/frontend coverage,
+  regenerated embedded Web assets, rebuilt the local binary, and restarted port 9898.
+- 2026-07-01 `aba5224` `feat: add web default model control`: added global
+  `/api/models` and `/api/models/default` endpoints, synchronized server/session
+  config snapshots for newly opened projects, added the Web "当前默认模型" selector,
+  kept Grok callback actions usable outside global busy state, added tests,
+  regenerated embedded Web assets, rebuilt the local binary, and restarted port 9898.
 - 2026-07-01 `6a52385` `fix: allow global web grok login`: added global Web
   Grok OAuth start/poll/complete/status endpoints, routed frontend Grok login
   calls to them when no project is active, kept Login/Poll/Status clickable
