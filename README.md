@@ -247,7 +247,7 @@ docker compose run --rm ainovel --headless --prompt "写一本悬疑短篇"
 
 - `快速开始`：一句话直接进入创作
 - `共创规划`：与 AI 多轮对话澄清需求，**右侧实时同步整理出的创作指令草稿**；AI 每轮主动提供 1-3 条引导建议，按数字键一键填入输入框，按 `Ctrl+S` 进入正式创作
-- `小说改编`：输入原小说 txt/md 路径，系统先切分并分析原书快照，再依次选择 `chapter/arc/free` 和 `full_rewrite/preserve_details`，随后进入改编共创；按 `Ctrl+S` 后逐章生成新的改编正文
+- `小说改编`：输入原小说 txt/md 路径，系统先切分并分析原书快照，再选择 `chapter/arc/free`；改写策略由结构固定（`chapter => preserve_details`，`arc/free => full_rewrite`），随后进入改编共创选择具体改编方向；按 `Ctrl+S` 后逐章生成新的改编正文
 
 三种模式最终都会收敛为同一套创作引擎。
 
@@ -373,7 +373,7 @@ output/novel/meta/simulation_profile.json
 
 `小说改编` 是启动模式，不等同于 `/import`：它会把原文章节保存到 `meta/adaptation/source_chapters/` 作为对照快照，生成原书分析和改编计划，但不会把原文章节写成最终正文。Writer 每章需要先读取对应 `source` 章节，再写新的改编正文，并在提交前通过 `check_consistency` 和 `check_adaptation`。
 
-TUI：启动栏按 `Tab` 切到 `小说改编`，输入原小说路径；分析完成后先做两步固定选择：第一步选择 `chapter` / `arc` / `free`，第二步选择 `full_rewrite` / `preserve_details`。模式确定后再进入改编共创，确认具体改编目标后按 `Ctrl+S` 开始。
+TUI：启动栏按 `Tab` 切到 `小说改编`，输入原小说路径；分析完成后只选择 `chapter` / `arc` / `free`。系统会按结构固定改写策略：`chapter => preserve_details`，`arc/free => full_rewrite`。模式确定后再进入改编共创，确认具体改编目标后按 `Ctrl+S` 开始。
 
 如果模型流式回复遇到临时 EOF、网络断开或服务端短暂抖动，CLI 会按统一退避策略最多尝试 7 次；重试仍失败时，TUI 会停留在当前共创/完成状态并显示明确错误提示，可直接按 `Enter` 重试、继续补充，或在已有 brief 足够时按 `Ctrl+S` 进入改编。
 
@@ -385,7 +385,7 @@ Headless：
 ainovel-cli --headless --adapt ./source.txt --prompt-file adapt.md
 ```
 
-改编 brief 可以写明关系线目标，例如"主线不要走偏，强化女主互动，弱化另一个女主与男主的感情戏，改成单女主纯爱"。系统支持 `chapter` / `arc` / `free` 三档粒度，默认 `chapter`；支持 `full_rewrite` / `preserve_details` 两种改写策略，默认 `preserve_details` 且字数容差为 ±15%。这些模式在改编共创前通过固定选项确认，不再由 AI 追问。
+改编 brief 可以写明关系线目标，例如"主线不要走偏，强化女主互动，弱化另一个女主与男主的感情戏，改成单女主纯爱"。系统支持 `chapter` / `arc` / `free` 三档粒度，默认 `chapter`；改写策略由粒度固定：`chapter` 使用 `preserve_details` 且字数容差为 ±15%，`arc/free` 使用 `full_rewrite`。这些模式在改编共创前通过固定选项确认，不再由 AI 追问。
 
 ## 导出
 
