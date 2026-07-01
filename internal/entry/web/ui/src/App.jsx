@@ -646,9 +646,14 @@ export default function App() {
     <div className="app-shell">
       <aside className="project-pane">
         <div className="pane-header">
-          <div>
-            <div className="eyebrow">ainovel</div>
-            <h1>小说工作台</h1>
+          <div className="brand-lockup">
+            <div className="brand-mark">
+              <BookOpen size={20} />
+            </div>
+            <div>
+              <div className="eyebrow">ainovel</div>
+              <h1>小说工作台</h1>
+            </div>
           </div>
           <button className="icon-button" onClick={loadShell} title="刷新项目列表" type="button">
             <RefreshCw size={18} />
@@ -691,7 +696,7 @@ export default function App() {
 
       <main className="writing-pane">
         <header className="workspace-toolbar">
-          <div>
+          <div className="workspace-heading">
             <div className="eyebrow">当前项目</div>
             <h2>{activeProject?.name || '未打开项目'}</h2>
           </div>
@@ -720,42 +725,44 @@ export default function App() {
 
         {error ? <div className="error-banner">{error}</div> : null}
 
-        <section className="stream-area" aria-label="实时创作流">
-          {activeProject ? (
-            workbench.streamRounds.map((round) => (
-              <article className="stream-round" key={round.id}>
-                {round.text ? <pre>{round.text}</pre> : <span className="muted">等待流式输出</span>}
-              </article>
-            ))
-          ) : (
-            <div className="no-project">
-              <SquarePen size={28} />
-              <strong>打开或创建一本小说</strong>
-              <span>项目列表和模型配置随时可用。</span>
-            </div>
-          )}
-        </section>
-
-        <section className="event-feed" aria-label="运行事件">
-          <div className="section-title">
-            <Activity size={17} />
-            <span>事件</span>
-          </div>
-          <div className="event-list">
-            {sortedEvents.length === 0 ? (
-              <div className="empty-state">暂无事件</div>
-            ) : (
-              sortedEvents.map((event) => (
-                <div className={`event-row ${eventStatus(event)}`} key={event.host_event_id || event.seq}>
-                  <span className="event-dot" />
-                  <span className="event-time">{formatTime(event.time)}</span>
-                  <strong>{event.event?.category || 'EVENT'}</strong>
-                  <span>{event.event?.summary || '无摘要'}</span>
-                </div>
+        <div className="workbench-stack">
+          <section className="stream-area" aria-label="实时创作流">
+            {activeProject ? (
+              workbench.streamRounds.map((round) => (
+                <article className="stream-round" key={round.id}>
+                  {round.text ? <pre>{round.text}</pre> : <span className="muted">等待流式输出</span>}
+                </article>
               ))
+            ) : (
+              <div className="no-project">
+                <SquarePen size={28} />
+                <strong>打开或创建一本小说</strong>
+                <span>从左侧选择项目，或创建一本新小说开始工作。</span>
+              </div>
             )}
-          </div>
-        </section>
+          </section>
+
+          <section className="event-feed" aria-label="运行事件">
+            <div className="section-title">
+              <Activity size={17} />
+              <span>事件</span>
+            </div>
+            <div className="event-list">
+              {sortedEvents.length === 0 ? (
+                <div className="empty-state">暂无事件</div>
+              ) : (
+                sortedEvents.map((event) => (
+                  <div className={`event-row ${eventStatus(event)}`} key={event.host_event_id || event.seq}>
+                    <span className="event-dot" />
+                    <span className="event-time">{formatTime(event.time)}</span>
+                    <strong>{event.event?.category || 'EVENT'}</strong>
+                    <span>{event.event?.summary || '无摘要'}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </div>
 
         <form className="composer" onSubmit={submitContinue}>
           <input
@@ -774,89 +781,91 @@ export default function App() {
 
       <aside className="status-pane">
         <div className="side-tabs">
-          <button className={sideView === 'status' ? 'active' : ''} onClick={() => setSideView('status')} type="button">
+          <button className={sideView === 'status' ? 'active' : ''} onClick={() => setSideView('status')} title="状态" type="button">
             <CircleDot size={16} />
             状态
           </button>
-          <button className={sideView === 'cocreate' ? 'active' : ''} onClick={() => setSideView('cocreate')} type="button">
+          <button className={sideView === 'cocreate' ? 'active' : ''} onClick={() => setSideView('cocreate')} title="共创" type="button">
             <MessageSquareText size={16} />
             共创
           </button>
-          <button className={sideView === 'simulate' ? 'active' : ''} onClick={() => setSideView('simulate')} type="button">
+          <button className={sideView === 'simulate' ? 'active' : ''} onClick={() => setSideView('simulate')} title="画像" type="button">
             <WandSparkles size={16} />
             画像
           </button>
-          <button className={sideView === 'adapt' ? 'active' : ''} onClick={() => setSideView('adapt')} type="button">
+          <button className={sideView === 'adapt' ? 'active' : ''} onClick={() => setSideView('adapt')} title="改编" type="button">
             <FileText size={16} />
             改编
           </button>
-          <button className={sideView === 'cache' ? 'active' : ''} onClick={() => setSideView('cache')} type="button">
+          <button className={sideView === 'cache' ? 'active' : ''} onClick={() => setSideView('cache')} title="缓存" type="button">
             <Database size={16} />
             缓存
           </button>
-          <button className={sideView === 'backend' ? 'active' : ''} onClick={() => setSideView('backend')} type="button">
+          <button className={sideView === 'backend' ? 'active' : ''} onClick={() => setSideView('backend')} title="后端" type="button">
             <Server size={16} />
             后端
           </button>
-          <button className={sideView === 'models' ? 'active' : ''} onClick={() => setSideView('models')} type="button">
+          <button className={sideView === 'models' ? 'active' : ''} onClick={() => setSideView('models')} title="模型" type="button">
             <Settings size={16} />
             模型
           </button>
         </div>
 
-        {sideView === 'status' ? (
-          <StatusPanel snapshot={snapshot} activeProject={activeProject} onSteer={submitSteer} steerText={steerText} setSteerText={setSteerText} busy={busy} />
-        ) : sideView === 'cocreate' ? (
-          <CoCreatePanel
-            activeProject={activeProject}
-            busy={busy}
-            coCreate={coCreate}
-            setCoCreate={setCoCreate}
-            adaptation={adaptation}
-            onBegin={beginCoCreateFlow}
-            onSubmit={submitCoCreate}
-            onCommit={commitCoCreateFlow}
-            onCancel={cancelCoCreateFlow}
-          />
-        ) : sideView === 'simulate' ? (
-          <SimulationPanel
-            activeProject={activeProject}
-            busy={busy}
-            simulation={simulation}
-            onUploadSources={uploadSimulationSources}
-            onAnalyze={runSimulationAnalysis}
-            onImportProfile={importSimulation}
-          />
-        ) : sideView === 'adapt' ? (
-          <AdaptationPanel
-            activeProject={activeProject}
-            busy={busy}
-            adaptation={adaptation}
-            setAdaptation={setAdaptation}
-            onUploadSource={uploadAdaptation}
-            onAnalyze={runAdaptationAnalysis}
-            onStart={startAdaptationRun}
-            onCoCreate={() => {
-              setSideView('cocreate');
-              beginCoCreateFlow('adapt');
-            }}
-          />
-        ) : sideView === 'cache' ? (
-          <CachePanel snapshot={snapshot} />
-        ) : sideView === 'backend' ? (
-          <BackendPanel backend={backendStatus} busy={busy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
-        ) : (
-          <ModelPanel
-            runtime={runtime}
-            modelConfig={modelConfig}
-            customModel={customModel}
-            setCustomModel={setCustomModel}
-            busy={busy}
-            onSwitch={switchModelRoute}
-            onThinking={changeThinking}
-            onAddCustom={submitCustomModel}
-          />
-        )}
+        <div className="side-panel">
+          {sideView === 'status' ? (
+            <StatusPanel snapshot={snapshot} activeProject={activeProject} onSteer={submitSteer} steerText={steerText} setSteerText={setSteerText} busy={busy} />
+          ) : sideView === 'cocreate' ? (
+            <CoCreatePanel
+              activeProject={activeProject}
+              busy={busy}
+              coCreate={coCreate}
+              setCoCreate={setCoCreate}
+              adaptation={adaptation}
+              onBegin={beginCoCreateFlow}
+              onSubmit={submitCoCreate}
+              onCommit={commitCoCreateFlow}
+              onCancel={cancelCoCreateFlow}
+            />
+          ) : sideView === 'simulate' ? (
+            <SimulationPanel
+              activeProject={activeProject}
+              busy={busy}
+              simulation={simulation}
+              onUploadSources={uploadSimulationSources}
+              onAnalyze={runSimulationAnalysis}
+              onImportProfile={importSimulation}
+            />
+          ) : sideView === 'adapt' ? (
+            <AdaptationPanel
+              activeProject={activeProject}
+              busy={busy}
+              adaptation={adaptation}
+              setAdaptation={setAdaptation}
+              onUploadSource={uploadAdaptation}
+              onAnalyze={runAdaptationAnalysis}
+              onStart={startAdaptationRun}
+              onCoCreate={() => {
+                setSideView('cocreate');
+                beginCoCreateFlow('adapt');
+              }}
+            />
+          ) : sideView === 'cache' ? (
+            <CachePanel snapshot={snapshot} />
+          ) : sideView === 'backend' ? (
+            <BackendPanel backend={backendStatus} busy={busy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
+          ) : (
+            <ModelPanel
+              runtime={runtime}
+              modelConfig={modelConfig}
+              customModel={customModel}
+              setCustomModel={setCustomModel}
+              busy={busy}
+              onSwitch={switchModelRoute}
+              onThinking={changeThinking}
+              onAddCustom={submitCustomModel}
+            />
+          )}
+        </div>
       </aside>
     </div>
   );
