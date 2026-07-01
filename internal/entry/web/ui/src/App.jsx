@@ -985,16 +985,12 @@ export default function App() {
   };
 
   const startGrokOAuthLogin = async () => {
-    if (!activeProject?.id) {
-      setCustomModel((previous) => ({ ...previous, grok_message: '先打开一个项目，再启动 Grok 登录' }));
-      return;
-    }
     const authWindow = openPendingGrokAuthWindow();
     setBusy(true);
     setError('');
     setCustomModel((previous) => ({ ...previous, grok_message: '正在创建 Grok OAuth 登录会话...' }));
     try {
-      const data = await startGrokLogin(activeProject.id, customModel.account_id, customModel.account_name, true);
+      const data = await startGrokLogin(activeProject?.id, customModel.account_id, customModel.account_name, true);
       const login = data.login || null;
       const authorizeURL = grokAuthorizeURL(login);
       const browserOpened = Boolean(data.browser_opened || data.browserOpened);
@@ -1021,14 +1017,10 @@ export default function App() {
   };
 
   const pollGrokOAuthLogin = async () => {
-    if (!activeProject?.id) {
-      setCustomModel((previous) => ({ ...previous, grok_message: '先打开一个项目，再检查 Grok 登录' }));
-      return;
-    }
     setBusy(true);
     setError('');
     try {
-      const data = await pollGrokLogin(activeProject.id);
+      const data = await pollGrokLogin(activeProject?.id);
       const login = data.login || null;
       setCustomModel((previous) => ({
         ...previous,
@@ -1045,10 +1037,6 @@ export default function App() {
   };
 
   const completeGrokOAuthLogin = async () => {
-    if (!activeProject?.id) {
-      setCustomModel((previous) => ({ ...previous, grok_message: '先打开一个项目，再完成 Grok 登录' }));
-      return;
-    }
     const callback = String(customModel.callback_input || '').trim();
     if (!callback) {
       setCustomModel((previous) => ({ ...previous, grok_message: '请粘贴 callback URL、query string 或一次性 code' }));
@@ -1057,7 +1045,7 @@ export default function App() {
     setBusy(true);
     setError('');
     try {
-      const data = await completeGrokLogin(activeProject.id, callback);
+      const data = await completeGrokLogin(activeProject?.id, callback);
       setCustomModel((previous) => ({
         ...previous,
         callback_input: '',
@@ -1073,14 +1061,10 @@ export default function App() {
   };
 
   const refreshGrokOAuthStatus = async () => {
-    if (!activeProject?.id) {
-      setCustomModel((previous) => ({ ...previous, grok_message: '先打开一个项目，再检查当前账号' }));
-      return;
-    }
     setBusy(true);
     setError('');
     try {
-      const data = await getGrokLoginStatus(activeProject.id, customModel.account_id);
+      const data = await getGrokLoginStatus(activeProject?.id, customModel.account_id);
       setCustomModel((previous) => ({
         ...previous,
         grok_status: data.status || null,
@@ -2349,7 +2333,7 @@ function ModelPanel({
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
   const canAdd = canSubmitModelAdd(customModel, modelConfig);
-  const grokActionDisabled = busy || !activeProject?.id;
+  const grokActionDisabled = busy;
   return (
     <div className="side-content">
       <section className="model-summary">

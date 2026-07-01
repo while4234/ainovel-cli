@@ -66,4 +66,19 @@ describe('web API helpers', () => {
       })
     }));
   });
+
+  it('uses global Grok login routes when no project is active', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await startGrokLogin('', 'default', 'Default', true);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/models/grok-login/start', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        account_id: 'default',
+        account_name: 'Default',
+        open_browser: true
+      })
+    }));
+  });
 });

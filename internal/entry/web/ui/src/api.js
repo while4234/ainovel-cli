@@ -226,29 +226,36 @@ export function addProviderModel(projectId, payload) {
   });
 }
 
+function grokLoginPath(projectId, action) {
+  if (!projectId) {
+    return `/api/models/grok-login/${action}`;
+  }
+  return `/api/projects/${encodeURIComponent(projectId)}/models/grok-login/${action}`;
+}
+
 export function startGrokLogin(projectId, accountId, accountName, openBrowser = false) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/start`, {
+  return request(grokLoginPath(projectId, 'start'), {
     method: 'POST',
     body: JSON.stringify({ account_id: accountId, account_name: accountName, open_browser: openBrowser })
   });
 }
 
 export function pollGrokLogin(projectId) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/poll`, {
+  return request(grokLoginPath(projectId, 'poll'), {
     method: 'POST',
     body: JSON.stringify({})
   });
 }
 
 export function completeGrokLogin(projectId, callback) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/complete`, {
+  return request(grokLoginPath(projectId, 'complete'), {
     method: 'POST',
     body: JSON.stringify({ callback })
   });
 }
 
 export function getGrokLoginStatus(projectId, accountId) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/status`, {
+  return request(grokLoginPath(projectId, 'status'), {
     method: 'POST',
     body: JSON.stringify({ account_id: accountId })
   });

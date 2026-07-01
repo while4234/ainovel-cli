@@ -13,6 +13,7 @@ import (
 var modelConfigRoles = []string{"default", "coordinator", "architect", "writer", "editor"}
 
 var openAuthBrowser = openBrowser
+var startGrokAuthLogin = grokauth.StartLogin
 
 type apiModelConfig struct {
 	Providers      []apiModelProvider `json:"providers"`
@@ -32,6 +33,20 @@ type apiModelRoute struct {
 	Model           string `json:"model"`
 	Explicit        bool   `json:"explicit"`
 	ReasoningEffort string `json:"reasoning_effort"`
+}
+
+type grokLoginStartRequest struct {
+	AccountID   string `json:"account_id"`
+	AccountName string `json:"account_name"`
+	OpenBrowser bool   `json:"open_browser"`
+}
+
+type grokLoginCompleteRequest struct {
+	Callback string `json:"callback"`
+}
+
+type grokLoginStatusRequest struct {
+	AccountID string `json:"account_id"`
 }
 
 func (s *Server) handleProjectModels(w http.ResponseWriter, r *http.Request, id string) {
@@ -207,11 +222,7 @@ func (s *Server) handleProjectGrokLoginStart(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req struct {
-		AccountID   string `json:"account_id"`
-		AccountName string `json:"account_name"`
-		OpenBrowser bool   `json:"open_browser"`
-	}
+	var req grokLoginStartRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -226,28 +237,11 @@ func (s *Server) handleProjectGrokLoginStart(w http.ResponseWriter, r *http.Requ
 		writeProjectLifecycleError(w, err)
 		return
 	}
-	browserOpened := false
-	browserOpenError := ""
-	if req.OpenBrowser {
-		authorizeURL := strings.TrimSpace(login.AuthorizeURL)
-		if authorizeURL == "" {
-			browserOpenError = "Grok authorize URL is empty"
-		} else if err := openAuthBrowser(authorizeURL); err != nil {
-			browserOpenError = err.Error()
-		} else {
-			browserOpened = true
-		}
-	}
 	response := map[string]any{
 		"project": manifest,
 		"login":   login,
 	}
-	if req.OpenBrowser {
-		response["browser_opened"] = browserOpened
-		if browserOpenError != "" {
-			response["browser_open_error"] = browserOpenError
-		}
-	}
+	addGrokBrowserOpenResult(response, login.AuthorizeURL, req.OpenBrowser)
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -277,9 +271,7 @@ func (s *Server) handleProjectGrokLoginComplete(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req struct {
-		Callback string `json:"callback"`
-	}
+	var req grokLoginCompleteRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -311,9 +303,7 @@ func (s *Server) handleProjectGrokLoginStatus(w http.ResponseWriter, r *http.Req
 	}
 	accountID := r.URL.Query().Get("account_id")
 	if r.Method == http.MethodPost {
-		var req struct {
-			AccountID string `json:"account_id"`
-		}
+		var req grokLoginStatusRequest
 		if err := decodeJSONBody(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -329,6 +319,114 @@ func (s *Server) handleProjectGrokLoginStatus(w http.ResponseWriter, r *http.Req
 		"project": manifest,
 		"status":  session.GrokLoginStatus(defaultGrokAccountID(accountID)),
 	})
+}
+
+func (s *Server) handleGrokLogin(w http.ResponseWriter, r *http.Request) {
+	action := strings.TrimPrefix(r.URL.Path, "/api/models/grok-login/")
+	switch action {
+	case "start":
+		s.handleGrokLoginStart(w, r)
+	case "poll":
+		s.handleGrokLoginPoll(w, r)
+	case "complete":
+		s.handleGrokLoginComplete(w, r)
+	case "status":
+		s.handleGrokLoginStatus(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) handleGrokLoginStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req grokLoginStartRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	login, err := startGrokAuthLogin(defaultGrokAccountID(req.AccountID), req.AccountName)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	response := map[string]any{"login": login}
+	addGrokBrowserOpenResult(response, login.AuthorizeURL, req.OpenBrowser)
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleGrokLoginPoll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	login, err := grokauth.PollLogin(r.Context())
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"login": login})
+}
+
+func (s *Server) handleGrokLoginComplete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req grokLoginCompleteRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Callback) == "" {
+		writeError(w, http.StatusBadRequest, "callback is required")
+		return
+	}
+	status, err := grokauth.CompleteLogin(r.Context(), req.Callback)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": status})
+}
+
+func (s *Server) handleGrokLoginStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	accountID := r.URL.Query().Get("account_id")
+	if r.Method == http.MethodPost {
+		var req grokLoginStatusRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		accountID = req.AccountID
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": grokauth.GetStatus(defaultGrokAccountID(accountID)),
+	})
+}
+
+func addGrokBrowserOpenResult(response map[string]any, authorizeURL string, openBrowser bool) {
+	if !openBrowser {
+		return
+	}
+	authorizeURL = strings.TrimSpace(authorizeURL)
+	if authorizeURL == "" {
+		response["browser_opened"] = false
+		response["browser_open_error"] = "Grok authorize URL is empty"
+		return
+	}
+	if err := openAuthBrowser(authorizeURL); err != nil {
+		response["browser_opened"] = false
+		response["browser_open_error"] = err.Error()
+		return
+	}
+	response["browser_opened"] = true
 }
 
 func defaultGrokAccountID(value string) string {
