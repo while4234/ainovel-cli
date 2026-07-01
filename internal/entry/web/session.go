@@ -62,6 +62,13 @@ type projectHost interface {
 	PrepareAdaptationSource(context.Context, string) (<-chan adapt.Event, error)
 	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
 	ReplayQueue(int64) ([]domain.RuntimeQueueItem, error)
+	ConfiguredProviders() []string
+	ConfiguredModels(string) []string
+	CurrentModelSelection(string) (string, string, bool)
+	SwitchModel(string, string, string) error
+	AddProviderModel(string, string, bootstrap.ProviderConfig, string) error
+	CurrentThinking(string) string
+	SetRoleThinking(string, string) error
 	Events() <-chan host.Event
 	Stream() <-chan string
 	Done() <-chan struct{}
@@ -169,6 +176,93 @@ func (s *ProjectSession) SetManifest(manifest ProjectManifest) {
 
 func (s *ProjectSession) Snapshot() host.UISnapshot {
 	return s.host.Snapshot()
+}
+
+func (s *ProjectSession) ModelConfig() apiModelConfig {
+	providers := s.host.ConfiguredProviders()
+	outProviders := make([]apiModelProvider, 0, len(providers))
+	for _, provider := range providers {
+		outProviders = append(outProviders, apiModelProvider{
+			Name:   provider,
+			Models: s.host.ConfiguredModels(provider),
+		})
+	}
+	roles := make([]apiModelRoute, 0, len(modelConfigRoles))
+	for _, role := range modelConfigRoles {
+		provider, model, explicit := s.host.CurrentModelSelection(role)
+		roles = append(roles, apiModelRoute{
+			Role:            normalizeModelRole(role),
+			Provider:        provider,
+			Model:           model,
+			Explicit:        explicit,
+			ReasoningEffort: s.host.CurrentThinking(role),
+		})
+	}
+	return apiModelConfig{
+		Providers: outProviders,
+		Roles:     roles,
+		ThinkingLevels: []string{
+			"",
+			"off",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		},
+		ThinkingRule: "default applies to coordinator, architect, writer, and editor unless that role has its own reasoning_effort",
+	}
+}
+
+func (s *ProjectSession) SwitchModel(role, provider, model string) (apiModelConfig, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return apiModelConfig{}, err
+	}
+	defer unlock()
+
+	if err := s.host.SwitchModel(normalizeModelRole(role), provider, model); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) SetRoleThinking(role, level string) (apiModelConfig, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return apiModelConfig{}, err
+	}
+	defer unlock()
+
+	if err := s.host.SetRoleThinking(normalizeModelRole(role), level); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) AddOpenAICompatibleModel(role, provider, model, baseURL, apiKey, api string) (apiModelConfig, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return apiModelConfig{}, err
+	}
+	defer unlock()
+
+	pc := bootstrap.ProviderConfig{
+		Type:    "openai",
+		API:     strings.TrimSpace(api),
+		APIKey:  strings.TrimSpace(apiKey),
+		BaseURL: strings.TrimSpace(baseURL),
+	}
+	if pc.API == "" {
+		pc.API = "chat"
+	}
+	if err := s.host.AddProviderModel(normalizeModelRole(role), provider, pc, model); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
 }
 
 func (s *ProjectSession) Resume() (string, error) {

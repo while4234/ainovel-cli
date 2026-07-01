@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
+	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
@@ -683,6 +684,40 @@ func (f *fakeProjectHost) StartAdaptationPreparedWithOptions(options adapt.Propo
 
 func (f *fakeProjectHost) ReplayQueue(int64) ([]domain.RuntimeQueueItem, error) {
 	return nil, nil
+}
+
+func (f *fakeProjectHost) ConfiguredProviders() []string {
+	return []string{"openrouter"}
+}
+
+func (f *fakeProjectHost) ConfiguredModels(provider string) []string {
+	if provider == "openrouter" {
+		return []string{"model-a", "model-b"}
+	}
+	return nil
+}
+
+func (f *fakeProjectHost) CurrentModelSelection(role string) (string, string, bool) {
+	if role == "" || role == "default" {
+		return "openrouter", "model-a", true
+	}
+	return "openrouter", "model-a", false
+}
+
+func (f *fakeProjectHost) SwitchModel(string, string, string) error {
+	return nil
+}
+
+func (f *fakeProjectHost) AddProviderModel(string, string, bootstrap.ProviderConfig, string) error {
+	return nil
+}
+
+func (f *fakeProjectHost) CurrentThinking(string) string {
+	return "medium"
+}
+
+func (f *fakeProjectHost) SetRoleThinking(string, string) error {
+	return nil
 }
 
 func (f *fakeProjectHost) Events() <-chan host.Event {

@@ -133,3 +133,39 @@ export function cancelCoCreate(projectId) {
     body: JSON.stringify({})
   });
 }
+
+export function getProjectModels(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models`);
+}
+
+export function switchProjectModel(projectId, role, provider, model) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/switch`, {
+    method: 'POST',
+    body: JSON.stringify({ role, provider, model })
+  });
+}
+
+export function setProjectThinking(projectId, role, level) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/thinking`, {
+    method: 'POST',
+    body: JSON.stringify({ role, level })
+  });
+}
+
+export function addOpenAICompatibleModel(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/add-openai-compatible`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function getBackendStatus(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/backend/status`);
+}
+
+export function testBackend(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/backend/test`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}

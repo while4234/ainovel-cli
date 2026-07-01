@@ -177,7 +177,10 @@ h2 {
 
 .create-project input:focus,
 .composer input:focus,
-.steer-form textarea:focus {
+.steer-form textarea:focus,
+.custom-model-form input:focus,
+.custom-model-form select:focus,
+.model-route select:focus {
   border-color: #0b746f;
   box-shadow: 0 0 0 3px rgba(11, 116, 111, 0.14);
 }
@@ -415,7 +418,7 @@ h2 {
 
 .side-tabs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   border-bottom: 1px solid #d5ded8;
 }
 
@@ -435,6 +438,13 @@ h2 {
 .side-tabs button.active {
   color: #0b746f;
   box-shadow: inset 0 -3px 0 #0b746f;
+}
+
+@media (max-width: 1200px) {
+  .side-tabs button {
+    gap: 3px;
+    font-size: 12px;
+  }
 }
 
 .side-content {
@@ -859,6 +869,91 @@ h2 {
 .agent-row {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+}
+
+.model-route-list,
+.custom-model-form {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.model-route {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.9fr) minmax(0, 1fr);
+  gap: 7px;
+  border: 1px solid #d8e1dc;
+  border-radius: 7px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+.model-route strong,
+.model-route span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-route span {
+  color: #63736d;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-route select,
+.custom-model-form input,
+.custom-model-form select {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid #cbd8d2;
+  border-radius: 7px;
+  padding: 0 8px;
+  background: #ffffff;
+  color: #202826;
+  outline: none;
+}
+
+.custom-model-form .section-title {
+  margin: 0 -14px;
+}
+
+.usage-row,
+.backend-row {
+  display: grid;
+  gap: 3px;
+  min-height: 62px;
+  border: 1px solid #d8e1dc;
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: #ffffff;
+}
+
+.usage-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.usage-row small,
+.backend-row small {
+  overflow: hidden;
+  color: #65766f;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-row small {
+  grid-column: span 2;
+}
+
+.backend-row.error {
+  border-color: #e0a5a1;
+  background: #fff6f5;
+}
+
+.backend-row.running {
+  border-color: #d9ccb1;
+  background: #fffaf0;
 }
 
 .empty-state {

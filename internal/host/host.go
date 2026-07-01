@@ -1023,6 +1023,7 @@ func (h *Host) AddProviderModel(role, providerName string, providerConfig bootst
 	}
 	candidate := h.cfg
 	candidate.Providers = cloneProviderConfigs(h.cfg.Providers)
+	_, providerWasConfigured := h.cfg.Providers[providerName]
 	if existing, ok := h.cfg.Providers[providerName]; ok {
 		if !providerConfigCanAddModel(existing, providerConfig) {
 			return fmt.Errorf("provider %q already exists; use the existing provider flow to add models", providerName)
@@ -1040,6 +1041,12 @@ func (h *Host) AddProviderModel(role, providerName string, providerConfig bootst
 		return err
 	}
 	h.cfg = candidate
+	if h.cfg.PersistProjectOverlay && !providerWasConfigured {
+		if h.cfg.PersistProviders == nil {
+			h.cfg.PersistProviders = make(map[string]bool)
+		}
+		h.cfg.PersistProviders[providerName] = true
+	}
 	h.models.RegisterProvider(providerName, providerConfig)
 	if err := h.switchModelLocked(role, providerName, model); err != nil {
 		return err
@@ -1092,10 +1099,10 @@ func (h *Host) switchModelLocked(role, provider, model string) error {
 		h.cfg.Roles[role] = rc
 	}
 	h.normalizeThinkingLocked(role)
-	if path := bootstrap.DefaultConfigPath(); path != "" {
-		if err := bootstrap.SaveConfig(path, h.cfg); err != nil {
-			slog.Warn("保存配置失败", "module", "host", "err", err)
-		}
+	h.recordProjectRouteLocked(role, provider, model)
+	h.syncProjectThinkingOverrideLocked(role)
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("保存配置失败", "module", "host", "err", err)
 	}
 	h.applyThinkingLocked(role)
 	// 切到未登记模型时打一行 warn，提示用户走了 128k 兜底——长篇容易被提前压缩。
@@ -1159,10 +1166,233 @@ func providerConfigIsEmpty(pc bootstrap.ProviderConfig) bool {
 		len(pc.Extra) == 0
 }
 
+func (h *Host) persistConfigLocked() error {
+	path := strings.TrimSpace(h.cfg.PersistPath)
+	if path == "" {
+		path = bootstrap.DefaultConfigPath()
+	}
+	if path == "" {
+		return nil
+	}
+	if h.cfg.PersistProjectOverlay {
+		return bootstrap.SaveConfig(path, h.projectOverlayConfigLocked())
+	}
+	return bootstrap.SaveConfig(path, h.cfg)
+}
+
+func (h *Host) projectOverlayConfigLocked() bootstrap.Config {
+	overlay := bootstrap.Config{}
+	if h.cfg.PersistProjectConfig != nil {
+		overlay = cloneProjectConfig(*h.cfg.PersistProjectConfig)
+	}
+	overlay.Providers = h.projectOverlayProvidersLocked(overlay)
+	return overlay
+}
+
+func (h *Host) ensureProjectOverlayLocked() *bootstrap.Config {
+	if !h.cfg.PersistProjectOverlay {
+		return nil
+	}
+	if h.cfg.PersistProjectConfig == nil {
+		h.cfg.PersistProjectConfig = &bootstrap.Config{}
+	}
+	return h.cfg.PersistProjectConfig
+}
+
+func (h *Host) recordProjectRouteLocked(role, provider, model string) {
+	overlay := h.ensureProjectOverlayLocked()
+	if overlay == nil {
+		return
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" || role == "default" {
+		overlay.Provider = provider
+		overlay.ModelName = model
+	} else {
+		if overlay.Roles == nil {
+			overlay.Roles = make(map[string]bootstrap.RoleConfig)
+		}
+		rc := overlay.Roles[role]
+		rc.Provider = provider
+		rc.Model = model
+		overlay.Roles[role] = rc
+	}
+	recordProjectProviderModel(overlay, provider, model)
+}
+
+func (h *Host) recordProjectThinkingLocked(role, level string) {
+	overlay := h.ensureProjectOverlayLocked()
+	if overlay == nil {
+		return
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" || role == "default" {
+		overlay.ReasoningEffort = level
+		return
+	}
+	if overlay.Roles == nil {
+		overlay.Roles = make(map[string]bootstrap.RoleConfig)
+	}
+	rc := overlay.Roles[role]
+	rc.ReasoningEffort = level
+	if roleConfigIsEmpty(rc) {
+		delete(overlay.Roles, role)
+		return
+	}
+	overlay.Roles[role] = rc
+}
+
+func (h *Host) syncProjectThinkingOverrideLocked(role string) {
+	overlay := h.ensureProjectOverlayLocked()
+	if overlay == nil {
+		return
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" || role == "default" {
+		if overlay.ReasoningEffort != "" {
+			overlay.ReasoningEffort = h.cfg.ReasoningEffort
+		}
+		return
+	}
+	if overlay.Roles == nil {
+		return
+	}
+	rc, ok := overlay.Roles[role]
+	if !ok || rc.ReasoningEffort == "" {
+		return
+	}
+	rc.ReasoningEffort = h.cfg.Roles[role].ReasoningEffort
+	overlay.Roles[role] = rc
+}
+
+func (h *Host) projectOverlayProvidersLocked(overlay bootstrap.Config) map[string]bootstrap.ProviderConfig {
+	providers := make(map[string]bootstrap.ProviderConfig)
+	for name, pc := range overlay.Providers {
+		if h.cfg.PersistProviders[name] || providerConfigHasPrivateConfig(pc) {
+			if current, ok := h.cfg.Providers[name]; ok {
+				providers[name] = cloneProviderConfig(current)
+			} else {
+				providers[name] = cloneProviderConfig(pc)
+			}
+			continue
+		}
+		if len(pc.Models) > 0 {
+			providers[name] = bootstrap.ProviderConfig{Models: append([]string(nil), pc.Models...)}
+		}
+	}
+
+	addRouteModel := func(provider, model string) {
+		provider = strings.TrimSpace(provider)
+		model = strings.TrimSpace(model)
+		if provider == "" || model == "" || providers[provider].APIKey != "" || h.cfg.PersistProviders[provider] {
+			if provider != "" && model != "" && h.cfg.PersistProviders[provider] {
+				pc := providers[provider]
+				pc.Models = appendUniqueString(pc.Models, model)
+				providers[provider] = pc
+			}
+			return
+		}
+		pc := providers[provider]
+		pc.Models = appendUniqueString(pc.Models, model)
+		providers[provider] = pc
+	}
+	addRouteModel(overlay.Provider, overlay.ModelName)
+	for _, rc := range overlay.Roles {
+		addRouteModel(rc.Provider, rc.Model)
+		for _, fallback := range rc.Fallbacks {
+			addRouteModel(fallback.Provider, fallback.Model)
+		}
+	}
+	if len(providers) == 0 {
+		return nil
+	}
+	return providers
+}
+
+func recordProjectProviderModel(cfg *bootstrap.Config, provider, model string) {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return
+	}
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]bootstrap.ProviderConfig)
+	}
+	pc := cfg.Providers[provider]
+	pc.Models = appendUniqueString(pc.Models, model)
+	cfg.Providers[provider] = pc
+}
+
+func roleConfigIsEmpty(rc bootstrap.RoleConfig) bool {
+	return rc.Provider == "" && rc.Model == "" && rc.ReasoningEffort == "" && len(rc.Fallbacks) == 0
+}
+
+func providerConfigHasPrivateConfig(pc bootstrap.ProviderConfig) bool {
+	return pc.Type != "" ||
+		pc.Auth != "" ||
+		pc.AccountID != "" ||
+		pc.API != "" ||
+		pc.APIKey != "" ||
+		pc.BaseURL != "" ||
+		len(pc.ExtraBody) > 0 ||
+		len(pc.Extra) > 0
+}
+
+func appendUniqueString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if strings.TrimSpace(existing) == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func cloneProjectConfig(cfg bootstrap.Config) bootstrap.Config {
+	out := cfg
+	out.PersistPath = ""
+	out.PersistProjectOverlay = false
+	out.PersistProviders = nil
+	out.PersistProjectConfig = nil
+	out.Providers = cloneProviderConfigs(cfg.Providers)
+	if cfg.Roles != nil {
+		out.Roles = make(map[string]bootstrap.RoleConfig, len(cfg.Roles))
+		for role, rc := range cfg.Roles {
+			rc.Fallbacks = append([]bootstrap.ModelRef(nil), rc.Fallbacks...)
+			out.Roles[role] = rc
+		}
+	}
+	return out
+}
+
 func cloneProviderConfigs(providers map[string]bootstrap.ProviderConfig) map[string]bootstrap.ProviderConfig {
+	if len(providers) == 0 {
+		return nil
+	}
 	out := make(map[string]bootstrap.ProviderConfig, len(providers)+1)
 	for name, provider := range providers {
-		out[name] = provider
+		out[name] = cloneProviderConfig(provider)
+	}
+	return out
+}
+
+func cloneProviderConfig(provider bootstrap.ProviderConfig) bootstrap.ProviderConfig {
+	provider.Models = append([]string(nil), provider.Models...)
+	provider.ExtraBody = cloneMapAny(provider.ExtraBody)
+	provider.Extra = cloneMapAny(provider.Extra)
+	return provider
+}
+
+func cloneMapAny(m map[string]any) map[string]any {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for key, value := range m {
+		out[key] = value
 	}
 	return out
 }
@@ -1275,6 +1505,7 @@ func (h *Host) SetRoleThinking(role, level string) error {
 	} else {
 		parsed, _ = agents.ResolveThinkingForModel(h.models.ForRole(role), parsed)
 	}
+	h.recordProjectThinkingLocked(role, string(parsed))
 	// 持久化：具体角色写 Roles[role].ReasoningEffort，default/"" 写顶层 ReasoningEffort。
 	if role == "" || role == "default" {
 		h.cfg.ReasoningEffort = string(parsed)
@@ -1286,10 +1517,8 @@ func (h *Host) SetRoleThinking(role, level string) error {
 		rc.ReasoningEffort = string(parsed)
 		h.cfg.Roles[role] = rc
 	}
-	if path := bootstrap.DefaultConfigPath(); path != "" {
-		if err := bootstrap.SaveConfig(path, h.cfg); err != nil {
-			slog.Warn("保存配置失败", "module", "host", "err", err)
-		}
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("保存配置失败", "module", "host", "err", err)
 	}
 
 	// 联动 live：具体角色直接应用；default 则遍历各具体角色按 ResolveReasoningEffort 重新应用

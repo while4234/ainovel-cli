@@ -136,6 +136,13 @@ func trimUTF8BOM(data []byte) []byte {
 	return data
 }
 
+// MergeConfig merges overlay into base. Scalar non-zero fields override, maps
+// merge by key. It is exported for the web runtime so project-level model
+// preferences can reuse the same semantics as CLI config loading.
+func MergeConfig(base, overlay Config) Config {
+	return mergeConfig(base, overlay)
+}
+
 // mergeConfig 将 overlay 合并到 base 上。非零值字段覆盖，map 按 key 合并。
 func mergeConfig(base, overlay Config) Config {
 	if overlay.Provider != "" {

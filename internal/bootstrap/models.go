@@ -242,6 +242,9 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 
 	// 创建角色覆盖模型
 	for role, rc := range cfg.Roles {
+		if rc.Provider == "" && rc.Model == "" {
+			continue
+		}
 		pc, ok := cfg.Providers[rc.Provider]
 		if !ok {
 			return nil, fmt.Errorf("role %s references unknown provider %q: %w", role, rc.Provider, errs.ErrConfig)

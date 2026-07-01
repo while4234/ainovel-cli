@@ -2,6 +2,7 @@ import {
   Activity,
   BookOpen,
   CircleDot,
+  Database,
   FileText,
   FileJson,
   ListRestart,
@@ -11,8 +12,11 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Server,
   Settings,
+  SlidersHorizontal,
   SquarePen,
+  TestTube2,
   Upload,
   WandSparkles
 } from 'lucide-react';
@@ -20,19 +24,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeAdaptationSource,
   analyzeSimulation,
+  addOpenAICompatibleModel,
   beginCoCreate,
   cancelCoCreate,
   commitCoCreate,
   continueProject,
   createProject,
+  getBackendStatus,
+  getProjectModels,
   getRuntime,
   getSnapshot,
   importSimulationProfile,
   listProjects,
   resumeProject,
   sendCoCreate,
+  setProjectThinking,
   startAdaptation,
   steerProject,
+  switchProjectModel,
+  testBackend,
   uploadAdaptationSource,
   uploadSimulationFiles
 } from './api.js';
@@ -75,6 +85,17 @@ function createAdaptationState() {
   };
 }
 
+function createCustomModelState() {
+  return {
+    role: 'default',
+    provider: '',
+    model: '',
+    base_url: '',
+    api_key: '',
+    api: 'chat'
+  };
+}
+
 export default function App() {
   const [runtime, setRuntime] = useState(null);
   const [projects, setProjects] = useState([]);
@@ -87,6 +108,9 @@ export default function App() {
   const [simulation, setSimulation] = useState(createSimulationState);
   const [adaptation, setAdaptation] = useState(createAdaptationState);
   const [coCreate, setCoCreate] = useState(createCoCreateState);
+  const [modelConfig, setModelConfig] = useState(null);
+  const [customModel, setCustomModel] = useState(createCustomModelState);
+  const [backendStatus, setBackendStatus] = useState(null);
   const [connection, setConnection] = useState('idle');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -122,10 +146,19 @@ export default function App() {
     setSimulation(createSimulationState());
     setAdaptation(createAdaptationState());
     setCoCreate(createCoCreateState());
+    setModelConfig(null);
+    setCustomModel(createCustomModelState());
+    setBackendStatus(null);
     try {
-      const data = await getSnapshot(project.id);
-      setActiveProject(data.project);
-      setWorkbench({ ...createWorkbenchState(), snapshot: data.snapshot });
+      const [snapshotData, modelData, backendData] = await Promise.all([
+        getSnapshot(project.id),
+        getProjectModels(project.id),
+        getBackendStatus(project.id)
+      ]);
+      setActiveProject(snapshotData.project);
+      setWorkbench({ ...createWorkbenchState(), snapshot: snapshotData.snapshot });
+      setModelConfig(modelData.models || null);
+      setBackendStatus(backendData.backend || null);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -515,6 +548,95 @@ export default function App() {
     }
   };
 
+  const refreshBackendStatus = async () => {
+    if (!activeProject?.id) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = await getBackendStatus(activeProject.id);
+      setBackendStatus(data.backend || null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runBackendTest = async () => {
+    if (!activeProject?.id) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = await testBackend(activeProject.id);
+      setBackendStatus(data.backend || null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const switchModelRoute = async (role, provider, model) => {
+    if (!activeProject?.id || !provider || !model) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = await switchProjectModel(activeProject.id, role, provider, model);
+      setModelConfig(data.models || modelConfig);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      const status = await getBackendStatus(activeProject.id);
+      setBackendStatus(status.backend || null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeThinking = async (role, level) => {
+    if (!activeProject?.id) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = await setProjectThinking(activeProject.id, role, level);
+      setModelConfig(data.models || modelConfig);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitCustomModel = async (event) => {
+    event.preventDefault();
+    if (!activeProject?.id || !customModel.provider.trim() || !customModel.model.trim()) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = await addOpenAICompatibleModel(activeProject.id, customModel);
+      setModelConfig(data.models || modelConfig);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCustomModel(createCustomModelState());
+      const status = await getBackendStatus(activeProject.id);
+      setBackendStatus(status.backend || null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const sortedEvents = useMemo(
     () => workbench.eventRows.slice().sort((a, b) => b.seq - a.seq),
     [workbench.eventRows]
@@ -668,6 +790,14 @@ export default function App() {
             <FileText size={16} />
             改编
           </button>
+          <button className={sideView === 'cache' ? 'active' : ''} onClick={() => setSideView('cache')} type="button">
+            <Database size={16} />
+            缓存
+          </button>
+          <button className={sideView === 'backend' ? 'active' : ''} onClick={() => setSideView('backend')} type="button">
+            <Server size={16} />
+            后端
+          </button>
           <button className={sideView === 'models' ? 'active' : ''} onClick={() => setSideView('models')} type="button">
             <Settings size={16} />
             模型
@@ -711,8 +841,21 @@ export default function App() {
               beginCoCreateFlow('adapt');
             }}
           />
+        ) : sideView === 'cache' ? (
+          <CachePanel snapshot={snapshot} />
+        ) : sideView === 'backend' ? (
+          <BackendPanel backend={backendStatus} busy={busy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
         ) : (
-          <ModelPanel runtime={runtime} />
+          <ModelPanel
+            runtime={runtime}
+            modelConfig={modelConfig}
+            customModel={customModel}
+            setCustomModel={setCustomModel}
+            busy={busy}
+            onSwitch={switchModelRoute}
+            onThinking={changeThinking}
+            onAddCustom={submitCustomModel}
+          />
         )}
       </aside>
     </div>
@@ -1121,35 +1264,223 @@ function SimulationEventList({ events }) {
   );
 }
 
-function ModelPanel({ runtime }) {
-  const config = runtime?.config || {};
-  const roles = Object.entries(config.roles || {});
+function CachePanel({ snapshot }) {
+  const roles = snapshot?.CachePerAgent || snapshot?.cache_per_agent || [];
+  const models = snapshot?.CachePerModel || snapshot?.cache_per_model || [];
+  const input = snapshot?.TotalInputTokens || 0;
+  const cacheRead = snapshot?.TotalCacheReadTokens || 0;
+  return (
+    <div className="side-content">
+      <section className="metric-grid">
+        <Metric label="Input" value={formatCompact(input)} />
+        <Metric label="Cache read" value={formatCompact(cacheRead)} />
+        <Metric label="Output" value={formatCompact(snapshot?.TotalOutputTokens || 0)} />
+        <Metric label="Cost" value={formatUSD(snapshot?.TotalCostUSD || 0)} />
+      </section>
+      <section className="model-summary">
+        <Metric label="Cache hit" value={formatPercent(cacheRead, input)} />
+        <Metric label="Saved" value={formatUSD(snapshot?.TotalSavedUSD || 0)} />
+        <Metric label="Recent hit" value={formatPercent(snapshot?.OverallRecentCacheRead || 0, snapshot?.OverallRecentInput || 0)} />
+        <Metric label="Usage gaps" value={snapshot?.MissingAssistantUsage || 0} />
+      </section>
+      <UsageList title="按角色" items={roles} labelKey="Role" />
+      <UsageList title="按模型" items={models} labelKey="Model" />
+    </div>
+  );
+}
+
+function UsageList({ title, items, labelKey }) {
+  return (
+    <section>
+      <div className="section-title">
+        <Database size={17} />
+        <span>{title}</span>
+      </div>
+      <div className="agent-list">
+        {items.length === 0 ? (
+          <div className="empty-state">暂无 usage 数据</div>
+        ) : (
+          items.map((item) => {
+            const label = item[labelKey] || item[labelKey.toLowerCase()] || 'unknown';
+            const input = item.Input || item.input || 0;
+            const cacheRead = item.CacheRead || item.cache_read || 0;
+            return (
+              <div className="usage-row" key={label}>
+                <strong>{label}</strong>
+                <span>{formatPercent(cacheRead, input)}</span>
+                <small>{formatCompact(input)} in / {formatCompact(item.Output || item.output || 0)} out</small>
+                <small>{formatUSD(item.Cost || item.cost || 0)}</small>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </section>
+  );
+}
+
+function BackendPanel({ backend, busy, onRefresh, onTest }) {
+  const calls = backend?.recent_calls || [];
   return (
     <div className="side-content">
       <section className="model-summary">
-        <Metric label="Provider" value={config.provider || '未配置'} />
-        <Metric label="Model" value={config.model || '未配置'} />
-        <Metric label="Style" value={config.style || 'default'} />
-        <Metric label="Runtime" value={runtime?.runtime_root || '-'} />
+        <Metric label="Status" value={backend?.status || 'unknown'} />
+        <Metric label="Provider" value={backend?.provider || '-'} />
+        <Metric label="Model" value={backend?.model || '-'} />
+        <Metric label="Runtime" value={backend?.runtime_state || '-'} />
       </section>
+      <div className="simulation-actions">
+        <button className="tool-button" disabled={busy} onClick={onRefresh} type="button">
+          <RefreshCw size={16} />
+          Refresh
+        </button>
+        <button className="tool-button accent" disabled={busy} onClick={onTest} type="button">
+          <TestTube2 size={16} />
+          Test
+        </button>
+      </div>
+      {backend?.manual_test ? (
+        <div className="success-note">{backend.manual_test.message}</div>
+      ) : null}
       <section>
         <div className="section-title">
-          <Settings size={17} />
-          <span>角色模型</span>
+          <Activity size={17} />
+          <span>最近调用</span>
         </div>
         <div className="agent-list">
-          {roles.length === 0 ? (
-            <div className="empty-state">使用默认模型</div>
+          {calls.length === 0 ? (
+            <div className="empty-state">暂无已完成调用</div>
           ) : (
-            roles.map(([role, value]) => (
-              <div className="agent-row" key={role}>
-                <strong>{role}</strong>
-                <span>{value.provider || config.provider}/{value.model || config.model}</span>
+            calls.map((call, index) => (
+              <div className={`backend-row ${call.failed ? 'error' : call.running ? 'running' : ''}`} key={`${call.time}-${index}`}>
+                <strong>{call.category || 'CALL'} / {call.agent || 'host'}</strong>
+                <span>{call.running ? 'running' : call.failed ? 'failed' : 'ok'} · {call.duration_ms || 0}ms</span>
+                <small>{call.summary || '-'}</small>
               </div>
             ))
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+function ModelPanel({ runtime, modelConfig, customModel, setCustomModel, busy, onSwitch, onThinking, onAddCustom }) {
+  const config = runtime?.config || {};
+  const roles = modelConfig?.roles || [];
+  const providers = modelConfig?.providers || [];
+  const levels = modelConfig?.thinking_levels || ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const providerMap = new Map(providers.map((provider) => [provider.name, provider.models || []]));
+  return (
+    <div className="side-content">
+      <section className="model-summary">
+        <Metric label="Global provider" value={config.provider || '未配置'} />
+        <Metric label="Global model" value={config.model || '未配置'} />
+        <Metric label="Style" value={config.style || 'default'} />
+        <Metric label="Runtime" value={runtime?.runtime_root || '-'} />
+      </section>
+      <section>
+        <div className="section-title">
+          <SlidersHorizontal size={17} />
+          <span>项目模型</span>
+        </div>
+        <div className="model-route-list">
+          {roles.length === 0 ? (
+            <div className="empty-state">打开项目后可配置模型</div>
+          ) : (
+            roles.map((route) => (
+              <div className="model-route" key={route.role}>
+                <strong>{route.role}</strong>
+                <select
+                  disabled={busy}
+                  value={route.provider}
+                  onChange={(event) => {
+                    const provider = event.target.value;
+                    const models = providerMap.get(provider) || [];
+                    onSwitch(route.role, provider, models[0] || route.model);
+                  }}
+                >
+                  {providers.map((provider) => (
+                    <option key={provider.name} value={provider.name}>{provider.name}</option>
+                  ))}
+                </select>
+                <select
+                  disabled={busy}
+                  value={route.model}
+                  onChange={(event) => onSwitch(route.role, route.provider, event.target.value)}
+                >
+                  {(providerMap.get(route.provider) || [route.model]).map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+                <select
+                  disabled={busy}
+                  value={route.reasoning_effort || ''}
+                  onChange={(event) => onThinking(route.role, event.target.value)}
+                >
+                  {levels.map((level) => (
+                    <option key={level || 'inherit'} value={level}>{level || 'inherit'}</option>
+                  ))}
+                </select>
+                <span>{route.explicit ? 'project' : 'global fallback'}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+      <form className="custom-model-form" onSubmit={onAddCustom}>
+        <div className="section-title">
+          <Settings size={17} />
+          <span>OpenAI-compatible</span>
+        </div>
+        <select
+          disabled={busy}
+          value={customModel.role}
+          onChange={(event) => setCustomModel((previous) => ({ ...previous, role: event.target.value }))}
+        >
+          {(roles.length ? roles : [{ role: 'default' }]).map((route) => (
+            <option key={route.role} value={route.role}>{route.role}</option>
+          ))}
+        </select>
+        <input
+          disabled={busy}
+          placeholder="provider name"
+          value={customModel.provider}
+          onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+        />
+        <input
+          disabled={busy}
+          placeholder="model"
+          value={customModel.model}
+          onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
+        />
+        <input
+          disabled={busy}
+          placeholder="base URL"
+          value={customModel.base_url}
+          onChange={(event) => setCustomModel((previous) => ({ ...previous, base_url: event.target.value }))}
+        />
+        <input
+          disabled={busy}
+          placeholder="API key"
+          type="password"
+          value={customModel.api_key}
+          onChange={(event) => setCustomModel((previous) => ({ ...previous, api_key: event.target.value }))}
+        />
+        <select
+          disabled={busy}
+          value={customModel.api}
+          onChange={(event) => setCustomModel((previous) => ({ ...previous, api: event.target.value }))}
+        >
+          <option value="chat">chat</option>
+          <option value="responses">responses</option>
+        </select>
+        <button className="tool-button accent full-width" disabled={busy || !customModel.provider.trim() || !customModel.model.trim()} type="submit">
+          <Plus size={16} />
+          Add and use
+        </button>
+      </form>
+      {modelConfig?.thinking_rule ? <div className="success-note">{modelConfig.thinking_rule}</div> : null}
     </div>
   );
 }
@@ -1235,6 +1566,22 @@ function coCreateStatusText(status, ready) {
 
 function adaptationModeLabel(mode) {
   return adaptationModes.find((item) => item.value === mode)?.label || mode || '-';
+}
+
+function formatCompact(value) {
+  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(Number(value || 0));
+}
+
+function formatPercent(part, total) {
+  const denominator = Number(total || 0);
+  if (!denominator) {
+    return 'n/a';
+  }
+  return `${Math.round((Number(part || 0) / denominator) * 100)}%`;
+}
+
+function formatUSD(value) {
+  return `$${Number(value || 0).toFixed(4)}`;
 }
 
 function formatBytes(value) {

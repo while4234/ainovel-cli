@@ -248,6 +248,20 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectSteer(w, r, id)
 	case "events":
 		s.handleProjectEvents(w, r, id)
+	case "models":
+		s.handleProjectModels(w, r, id)
+	case "models/switch":
+		s.handleProjectModelSwitch(w, r, id)
+	case "models/thinking":
+		s.handleProjectModelThinking(w, r, id)
+	case "models/add-openai-compatible":
+		s.handleProjectModelAddOpenAICompatible(w, r, id)
+	case "usage":
+		s.handleProjectUsage(w, r, id)
+	case "backend/status":
+		s.handleProjectBackendStatus(w, r, id)
+	case "backend/test":
+		s.handleProjectBackendTest(w, r, id)
 	case "simulate/files":
 		s.handleProjectSimulateFiles(w, r, id)
 	case "simulate/analyze":

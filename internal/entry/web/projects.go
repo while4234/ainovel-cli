@@ -137,8 +137,60 @@ func (s *ProjectStore) OpenProjectHost(cfg bootstrap.Config, bundle assets.Bundl
 	if err := s.ensureProjectDirs(manifest); err != nil {
 		return nil, err
 	}
+	projectConfigPath := ProjectConfigPath(manifest)
+	projectCfg, found, err := s.loadProjectConfig(manifest)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		cfg = bootstrap.MergeConfig(cfg, projectCfg)
+	}
 	cfg.OutputDir = manifest.OutputDir
+	cfg.PersistPath = projectConfigPath
+	cfg.PersistProjectOverlay = true
+	cfg.PersistProviders = projectOwnedProviders(projectCfg)
+	cfg.PersistProjectConfig = &projectCfg
 	return host.New(cfg, bundle)
+}
+
+func ProjectConfigPath(manifest ProjectManifest) string {
+	return filepath.Join(manifest.RootDir, ".ainovel", "config.json")
+}
+
+func (s *ProjectStore) loadProjectConfig(manifest ProjectManifest) (bootstrap.Config, bool, error) {
+	path := ProjectConfigPath(manifest)
+	cfg, err := bootstrap.LoadConfigFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return bootstrap.Config{}, false, nil
+		}
+		return bootstrap.Config{}, false, fmt.Errorf("load project config %s: %w", path, err)
+	}
+	return cfg, true, nil
+}
+
+func projectOwnedProviders(cfg bootstrap.Config) map[string]bool {
+	if len(cfg.Providers) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(cfg.Providers))
+	for name, pc := range cfg.Providers {
+		if providerHasPrivateConfig(pc) {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+func providerHasPrivateConfig(pc bootstrap.ProviderConfig) bool {
+	return pc.Type != "" ||
+		pc.Auth != "" ||
+		pc.AccountID != "" ||
+		pc.API != "" ||
+		pc.APIKey != "" ||
+		pc.BaseURL != "" ||
+		len(pc.ExtraBody) > 0 ||
+		len(pc.Extra) > 0
 }
 
 func (s *ProjectStore) normalizeManifest(root string, manifest ProjectManifest) ProjectManifest {
