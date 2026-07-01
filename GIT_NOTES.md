@@ -21,21 +21,21 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest upstream source commit: `202b21b` `docs: clarify adaptation mode selection`
+- Latest source commit: `4c5d7e8` `feat: add web runtime entrypoint`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: PR-01 Web entry/runtime-root isolation review passed and is
-  ready to commit; known untracked local runtime/workspace directory `novel/`
-  remains intentionally unstaged.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` rebuilt from `202b21b`; the
-  `D:\grok\bin\ainovel-cli.cmd` shim still points to that executable.
+- Working tree: clean for tracked files after PR-01 commit; known untracked
+  local runtime/workspace directory `novel/` remains intentionally unstaged.
+- Runtime: local `D:\ainovel\ainovel-cli.exe` was last rebuilt from `202b21b`;
+  PR-01 validation used a temporary binary. The `D:\grok\bin\ainovel-cli.cmd`
+  shim still points to `D:\ainovel\ainovel-cli.exe`.
 - Validation: PR-01 focused Go package tests, temporary CLI build, localhost Web
   smoke, and `git diff --check` succeeded on 2026-07-01. Frontend npm checks
   are not applicable yet because this PR has no `web/package.json`.
 
 ## Change Log
 
-- 2026-07-01 pending PR-01 Web entry/runtime-root isolation: added
+- 2026-07-01 `4c5d7e8` `feat: add web runtime entrypoint`: added
   `ainovel-cli web`, `internal/entry/web`, runtime-root and project manifest
   tests, and `Host.SimulateFromDir`; independent review passed and mechanical
   validation succeeded before commit.
