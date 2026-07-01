@@ -22,23 +22,30 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest source commit: `2017558` `feat: close web tui operation gaps`
+- Latest source commit: `9d40f9b` `feat: add web grok oauth login`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: clean except for the known untracked local `.playwright-mcp/`
-  browser/MCP artifact directory.
+- Working tree: clean after the Grok OAuth Web feature commit, except for
+  ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local `D:\ainovel\ainovel-cli.exe` was rebuilt after the Web UI
   refresh using the project-local Go 1.25.5 toolchain. The
   `D:\grok\bin\ainovel-cli.cmd` shim still points to `D:\ainovel\ainovel-cli.exe`.
 - Validation: `go test ./internal/entry/web`, `npm --prefix
   internal/entry/web/ui test`, `npm --prefix internal/entry/web/ui run build`,
   `git diff --check`, and Playwright local Web smoke checks succeeded on
-  2026-07-01. `go test ./...` still has existing Windows environment-sensitive
-  failures in `internal/notify` (`sh` missing from PATH) and `internal/version`
+  2026-07-01. The latest smoke check verified the Web `Grok 登录` model form
+  mode, defaults, controls, and guarded submit on `127.0.0.1:9902`. `go test
+  ./...` still has existing Windows environment-sensitive failures in
+  `internal/notify` (`sh` missing from PATH) and `internal/version`
   (permission-mode assertion).
 
 ## Change Log
 
+- 2026-07-01 `9d40f9b` `feat: add web grok oauth login`: added Web Grok OAuth
+  login start/poll/complete/status APIs, surfaced the flow in the model add
+  form, registered final Grok providers via `auth:"grok_oauth"` and
+  `account_id`, added backend/frontend tests, and regenerated embedded Vite
+  assets.
 - 2026-07-01 `2017558` `feat: close web tui operation gaps`: added Web APIs
   and UI controls for fresh quick start, pause/abort, external novel import,
   export, diagnostics, and generic model add; aligned Web adaptation/co-create
