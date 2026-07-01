@@ -22,24 +22,29 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest source commit: `860d487` `feat: add web model admin status pages`
+- Latest source commit: `6f38d2a` `style: refresh web workbench UI`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: PR-07 packaging/docs/test changes are ready for commit; known
-  repo-local runtime/workspace directory `novel/` is ignored and must not be
-  touched for PR-07.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` was rebuilt during PR-07
-  validation. The `D:\grok\bin\ainovel-cli.cmd` shim still points to
-  `D:\ainovel\ainovel-cli.exe`.
-- Validation: PR-07 requested Go package suite, `npm --prefix web` test/build,
-  `go build -o .\ainovel-cli.exe .\cmd\ainovel-cli`, and `git diff --check`
-  succeeded on 2026-07-01.
+- Working tree: clean except for the known untracked local `.playwright-mcp/`
+  browser/MCP artifact directory.
+- Runtime: local `D:\ainovel\ainovel-cli.exe` was rebuilt after the Web UI
+  refresh using the project-local Go 1.25.5 toolchain. The
+  `D:\grok\bin\ainovel-cli.cmd` shim still points to `D:\ainovel\ainovel-cli.exe`.
+- Validation: `npm test`, `npm run build`, `git diff --check`,
+  `go build -o .\ainovel-cli.exe .\cmd\ainovel-cli`, and Playwright embedded
+  backend preview checks at 1366x768, 1920x1080, 1180x768, 960x900, and
+  600x900 succeeded on 2026-07-01.
 
 ## Change Log
 
-- 2026-07-01 uncommitted PR-07 working tree: added Web UI static embed and
-  HTTP smoke coverage, CLI default parser regression, README Web runtime docs,
-  `runtime_root` config example comments, and `/novel/` ignore protection.
+- 2026-07-01 `6f38d2a` `style: refresh web workbench UI`: refreshed the React
+  Web UI with a Windows 11 Fluent-inspired light workbench, compact right
+  inspector tabs, fixed-height command bar, responsive narrow layout, and
+  regenerated embedded Vite assets.
+- 2026-07-01 `96a384b` `docs: finalize web packaging and smoke coverage`:
+  added Web UI static embed and HTTP smoke coverage, CLI default parser
+  regression, README Web runtime docs, `runtime_root` config example comments,
+  and `/novel/` ignore protection.
 - 2026-07-01 `860d487` `feat: add web model admin status pages`: added project
   model routing, usage/cache reporting, backend status/testing APIs, UI tabs,
   and project-overlay persistence fixes accepted by re-review.
