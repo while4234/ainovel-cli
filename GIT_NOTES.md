@@ -21,12 +21,11 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest source commit: `f294262` `docs: record pr01 web entrypoint`
+- Latest source commit: `7331eda` `feat: add web session workbench`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: PR-02 Web session/SSE/workbench changes review passed and are
-  ready to commit; known untracked local runtime/workspace directory `novel/`
-  remains intentionally unstaged.
+- Working tree: clean for tracked files after PR-02 commit; known untracked
+  local runtime/workspace directory `novel/` remains intentionally unstaged.
 - Runtime: local `D:\ainovel\ainovel-cli.exe` was last rebuilt from `202b21b`;
   PR-02 validation used a temporary binary. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
@@ -36,7 +35,7 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Change Log
 
-- 2026-07-01 pending PR-02 Web session manager and workbench: added project
+- 2026-07-01 `7331eda` `feat: add web session workbench`: added project
   session management, snapshot/resume/continue/steer/events APIs, SSE history
   replay, embedded React/Vite workbench, and concurrency/error-propagation
   fixes accepted by re-review.
