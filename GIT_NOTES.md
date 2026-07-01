@@ -21,20 +21,24 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest source commit: `7331eda` `feat: add web session workbench`
+- Latest source commit: `f82119b` `docs: record pr02 web session workbench`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: clean for tracked files after PR-02 commit; known untracked
-  local runtime/workspace directory `novel/` remains intentionally unstaged.
+- Working tree: PR-03 simulate profile upload/import changes review passed and
+  are ready to commit; known untracked local runtime/workspace directory
+  `novel/` remains intentionally unstaged.
 - Runtime: local `D:\ainovel\ainovel-cli.exe` was last rebuilt from `202b21b`;
-  PR-02 validation used a temporary binary. The `D:\grok\bin\ainovel-cli.cmd`
+  PR-03 validation used a temporary binary. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: PR-02 focused Go package tests, canonical `npm --prefix web`
-  install/test/build, temporary CLI build, localhost Web/API/SSE smoke, and
+- Validation: PR-03 focused Go package tests, canonical `npm --prefix web`
+  test/build, temporary CLI build, simulate upload/import API smoke, and
   `git diff --check` succeeded on 2026-07-01.
 
 ## Change Log
 
+- 2026-07-01 pending PR-03 simulate profile upload/import: added project-scoped
+  simulate file upload, analysis trigger, JSON profile import, upload safety
+  checks, UI panel, and embedded assets accepted by review.
 - 2026-07-01 `7331eda` `feat: add web session workbench`: added project
   session management, snapshot/resume/continue/steer/events APIs, SSE history
   replay, embedded React/Vite workbench, and concurrency/error-propagation

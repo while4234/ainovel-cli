@@ -2,27 +2,46 @@ import {
   Activity,
   BookOpen,
   CircleDot,
+  FileJson,
   ListRestart,
   Play,
   Plus,
   RefreshCw,
   Send,
   Settings,
-  SquarePen
+  SquarePen,
+  Upload,
+  WandSparkles
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  analyzeSimulation,
   continueProject,
   createProject,
   getRuntime,
   getSnapshot,
+  importSimulationProfile,
   listProjects,
   resumeProject,
-  steerProject
+  steerProject,
+  uploadSimulationFiles
 } from './api.js';
 import { createWorkbenchState, eventStatus, reduceWebEvent } from './events.js';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot'];
+
+function createSimulationState() {
+  return {
+    files: [],
+    uploadMessage: '',
+    analysisStatus: 'idle',
+    analysisEvents: [],
+    importStatus: 'idle',
+    importEvents: [],
+    importMessage: '',
+    error: ''
+  };
+}
 
 export default function App() {
   const [runtime, setRuntime] = useState(null);
@@ -33,6 +52,7 @@ export default function App() {
   const [composerText, setComposerText] = useState('');
   const [steerText, setSteerText] = useState('');
   const [sideView, setSideView] = useState('status');
+  const [simulation, setSimulation] = useState(createSimulationState);
   const [connection, setConnection] = useState('idle');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -65,6 +85,7 @@ export default function App() {
     setError('');
     lastSeqRef.current = 0;
     setWorkbench(createWorkbenchState());
+    setSimulation(createSimulationState());
     try {
       const data = await getSnapshot(project.id);
       setActiveProject(data.project);
@@ -176,6 +197,97 @@ export default function App() {
     }
     await runAction((projectId) => steerProject(projectId, text));
     setSteerText('');
+  };
+
+  const uploadSimulationSources = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!activeProject?.id || files.length === 0) {
+      return;
+    }
+    setBusy(true);
+    setSimulation((previous) => ({ ...previous, uploadMessage: '', error: '' }));
+    try {
+      const data = await uploadSimulationFiles(activeProject.id, files);
+      setSimulation((previous) => ({
+        ...previous,
+        files: data.files || [],
+        uploadMessage: data.message || `已上传 ${files.length} 个文件`,
+        error: ''
+      }));
+    } catch (err) {
+      setSimulation((previous) => ({ ...previous, error: err.message }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runSimulationAnalysis = async () => {
+    if (!activeProject?.id) {
+      return;
+    }
+    setBusy(true);
+    setSimulation((previous) => ({
+      ...previous,
+      analysisStatus: 'running',
+      analysisEvents: [],
+      error: ''
+    }));
+    try {
+      const data = await analyzeSimulation(activeProject.id);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setSimulation((previous) => ({
+        ...previous,
+        analysisStatus: 'done',
+        analysisEvents: data.events || [],
+        error: ''
+      }));
+    } catch (err) {
+      setSimulation((previous) => ({
+        ...previous,
+        analysisStatus: 'error',
+        analysisEvents: err.data?.events || previous.analysisEvents,
+        error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importSimulation = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!activeProject?.id || !file) {
+      return;
+    }
+    setBusy(true);
+    setSimulation((previous) => ({
+      ...previous,
+      importStatus: 'running',
+      importEvents: [],
+      importMessage: '',
+      error: ''
+    }));
+    try {
+      const data = await importSimulationProfile(activeProject.id, file);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setSimulation((previous) => ({
+        ...previous,
+        importStatus: 'done',
+        importEvents: data.events || [],
+        importMessage: data.imported_file?.name ? `已导入 ${data.imported_file.name}` : '画像已导入',
+        error: ''
+      }));
+    } catch (err) {
+      setSimulation((previous) => ({
+        ...previous,
+        importStatus: 'error',
+        importEvents: err.data?.events || previous.importEvents,
+        error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const sortedEvents = useMemo(
@@ -319,6 +431,10 @@ export default function App() {
             <CircleDot size={16} />
             状态
           </button>
+          <button className={sideView === 'simulate' ? 'active' : ''} onClick={() => setSideView('simulate')} type="button">
+            <WandSparkles size={16} />
+            画像
+          </button>
           <button className={sideView === 'models' ? 'active' : ''} onClick={() => setSideView('models')} type="button">
             <Settings size={16} />
             模型
@@ -327,6 +443,15 @@ export default function App() {
 
         {sideView === 'status' ? (
           <StatusPanel snapshot={snapshot} activeProject={activeProject} onSteer={submitSteer} steerText={steerText} setSteerText={setSteerText} busy={busy} />
+        ) : sideView === 'simulate' ? (
+          <SimulationPanel
+            activeProject={activeProject}
+            busy={busy}
+            simulation={simulation}
+            onUploadSources={uploadSimulationSources}
+            onAnalyze={runSimulationAnalysis}
+            onImportProfile={importSimulation}
+          />
         ) : (
           <ModelPanel runtime={runtime} />
         )}
@@ -402,6 +527,99 @@ function StatusPanel({ snapshot, activeProject, onSteer, steerText, setSteerText
   );
 }
 
+function SimulationPanel({ activeProject, busy, simulation, onUploadSources, onAnalyze, onImportProfile }) {
+  const latestAnalysis = latestSimulationEvent(simulation.analysisEvents);
+  const latestImport = latestSimulationEvent(simulation.importEvents);
+  return (
+    <div className="side-content">
+      {simulation.error ? <div className="error-banner compact">{simulation.error}</div> : null}
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <Upload size={17} />
+          <span>仿写画像</span>
+        </div>
+        <div className="simulation-actions">
+          <label className={`tool-button file-picker ${!activeProject || busy ? 'disabled' : ''}`}>
+            <Upload size={16} />
+            上传语料
+            <input
+              accept=".txt,.md,.markdown,text/plain,text/markdown"
+              disabled={!activeProject || busy}
+              multiple
+              onChange={onUploadSources}
+              type="file"
+            />
+          </label>
+          <button className="tool-button accent" disabled={!activeProject || busy} onClick={onAnalyze} type="button">
+            <WandSparkles size={16} />
+            分析
+          </button>
+        </div>
+        {simulation.uploadMessage ? <div className="success-note">{simulation.uploadMessage}</div> : null}
+        <div className="file-list">
+          {simulation.files.length === 0 ? (
+            <div className="empty-state">暂无上传语料</div>
+          ) : (
+            simulation.files.map((file) => (
+              <div className="file-row" key={file.name}>
+                <span>{file.name}</span>
+                <strong>{formatBytes(file.size)}</strong>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <WandSparkles size={17} />
+          <span>分析进度</span>
+        </div>
+        <div className={`workflow-status ${simulation.analysisStatus}`}>
+          <strong>{workflowStatusText(simulation.analysisStatus)}</strong>
+          <span>{latestAnalysis?.message || '等待分析'}</span>
+        </div>
+        <SimulationEventList events={simulation.analysisEvents} />
+      </section>
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <FileJson size={17} />
+          <span>加载画像</span>
+        </div>
+        <label className={`tool-button file-picker full ${!activeProject || busy ? 'disabled' : ''}`}>
+          <FileJson size={16} />
+          上传 JSON
+          <input accept=".json,application/json" disabled={!activeProject || busy} onChange={onImportProfile} type="file" />
+        </label>
+        <div className={`workflow-status ${simulation.importStatus}`}>
+          <strong>{workflowStatusText(simulation.importStatus)}</strong>
+          <span>{simulation.importMessage || latestImport?.message || '等待导入'}</span>
+        </div>
+        <SimulationEventList events={simulation.importEvents} />
+      </section>
+    </div>
+  );
+}
+
+function SimulationEventList({ events }) {
+  if (!events.length) {
+    return null;
+  }
+  return (
+    <div className="simulation-events">
+      {events.map((event, index) => (
+        <div className={event.error ? 'simulation-event error' : 'simulation-event'} key={`${event.stage}-${index}`}>
+          <span>{event.stage || 'event'}</span>
+          <strong>{event.current && event.total ? `${event.current}/${event.total}` : ''}</strong>
+          <p>{event.error || event.message}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ModelPanel({ runtime }) {
   const config = runtime?.config || {};
   const roles = Object.entries(config.roles || {});
@@ -460,4 +678,32 @@ function formatTime(value) {
     return '--:--:--';
   }
   return new Date(value).toLocaleTimeString();
+}
+
+function latestSimulationEvent(events) {
+  return events.length ? events[events.length - 1] : null;
+}
+
+function workflowStatusText(status) {
+  switch (status) {
+    case 'running':
+      return '进行中';
+    case 'done':
+      return '已完成';
+    case 'error':
+      return '出错';
+    default:
+      return '待处理';
+  }
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

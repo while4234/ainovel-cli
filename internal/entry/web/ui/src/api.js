@@ -1,15 +1,18 @@
 async function request(path, options = {}) {
+  const isFormData = options.body instanceof FormData;
   const response = await fetch(path, {
     ...options,
     headers: {
-      ...(options.body ? { 'content-type': 'application/json' } : {}),
+      ...(options.body && !isFormData ? { 'content-type': 'application/json' } : {}),
       ...options.headers
     }
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    throw new Error(data?.error || `${response.status} ${response.statusText}`);
+    const error = new Error(data?.error || `${response.status} ${response.statusText}`);
+    error.data = data;
+    throw error;
   }
   return data;
 }
@@ -51,5 +54,31 @@ export function steerProject(projectId, text) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/steer`, {
     method: 'POST',
     body: JSON.stringify({ text })
+  });
+}
+
+export function uploadSimulationFiles(projectId, files) {
+  const body = new FormData();
+  for (const file of files) {
+    body.append('files', file);
+  }
+  return request(`/api/projects/${encodeURIComponent(projectId)}/simulate/files`, {
+    method: 'POST',
+    body
+  });
+}
+
+export function analyzeSimulation(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/simulate/analyze`, {
+    method: 'POST'
+  });
+}
+
+export function importSimulationProfile(projectId, file) {
+  const body = new FormData();
+  body.append('profile', file);
+  return request(`/api/projects/${encodeURIComponent(projectId)}/simulate/import`, {
+    method: 'POST',
+    body
   });
 }

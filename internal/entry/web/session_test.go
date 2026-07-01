@@ -17,6 +17,7 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/sim"
 )
 
 func TestSessionManagerReusesActiveProjectHostConcurrently(t *testing.T) {
@@ -377,10 +378,16 @@ type fakeProjectHost struct {
 	resumeErr         error
 	continueErr       error
 	steerErr          error
+	simulateErr       error
+	importErr         error
 
 	resumeCalls   int
 	continueCalls int
 	steerCalls    int
+	simulateCalls int
+	importCalls   int
+	simulateDir   string
+	importPath    string
 
 	events    chan host.Event
 	stream    chan string
@@ -434,6 +441,36 @@ func (f *fakeProjectHost) Steer(string) error {
 	f.steerCalls++
 	defer f.mu.Unlock()
 	return f.steerErr
+}
+
+func (f *fakeProjectHost) SimulateFromDir(_ context.Context, dir string) (<-chan sim.Event, error) {
+	f.mu.Lock()
+	f.simulateCalls++
+	f.simulateDir = dir
+	err := f.simulateErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	events := make(chan sim.Event, 2)
+	events <- sim.Event{Stage: sim.StageDone, Message: "simulation complete"}
+	close(events)
+	return events, nil
+}
+
+func (f *fakeProjectHost) ImportSimulationProfile(_ context.Context, path string) (<-chan sim.Event, error) {
+	f.mu.Lock()
+	f.importCalls++
+	f.importPath = path
+	err := f.importErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	events := make(chan sim.Event, 2)
+	events <- sim.Event{Stage: sim.StageDone, Message: "profile imported"}
+	close(events)
+	return events, nil
 }
 
 func (f *fakeProjectHost) ReplayQueue(int64) ([]domain.RuntimeQueueItem, error) {

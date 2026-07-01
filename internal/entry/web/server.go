@@ -248,6 +248,12 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectSteer(w, r, id)
 	case "events":
 		s.handleProjectEvents(w, r, id)
+	case "simulate/files":
+		s.handleProjectSimulateFiles(w, r, id)
+	case "simulate/analyze":
+		s.handleProjectSimulateAnalyze(w, r, id)
+	case "simulate/import":
+		s.handleProjectSimulateImport(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
@@ -256,10 +262,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 func splitProjectRoute(path string) (string, string, bool) {
 	rest := strings.TrimPrefix(path, "/api/projects/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	if len(parts) != 2 {
+	if len(parts) < 2 {
 		return "", "", false
 	}
-	return parts[0], parts[1], true
+	return parts[0], strings.Join(parts[1:], "/"), true
 }
 
 func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request, id string) {

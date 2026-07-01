@@ -166,6 +166,7 @@ func (s *ProjectStore) ensureProjectDirs(manifest ProjectManifest) error {
 		filepath.Join(manifest.RootDir, "simulate"),
 		filepath.Join(manifest.RootDir, "uploads"),
 		filepath.Join(manifest.RootDir, "profiles"),
+		filepath.Join(manifest.RootDir, "profiles", "imported"),
 		manifest.OutputDir,
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

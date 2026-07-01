@@ -15,6 +15,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/sim"
 )
 
 var (
@@ -45,6 +46,8 @@ type projectHost interface {
 	Resume() (string, error)
 	Continue(string) error
 	Steer(string) error
+	SimulateFromDir(context.Context, string) (<-chan sim.Event, error)
+	ImportSimulationProfile(context.Context, string) (<-chan sim.Event, error)
 	ReplayQueue(int64) ([]domain.RuntimeQueueItem, error)
 	Events() <-chan host.Event
 	Stream() <-chan string
@@ -194,6 +197,44 @@ func (s *ProjectSession) Steer(text string) error {
 	}
 	s.AppendSnapshot()
 	return nil
+}
+
+func (s *ProjectSession) SimulateFromDir(ctx context.Context, dir string) ([]apiSimulationEvent, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	events, err := s.host.SimulateFromDir(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	if events == nil {
+		return nil, fmt.Errorf("simulation event stream is nil")
+	}
+	apiEvents, err := s.consumeSimulationEvents(ctx, events)
+	s.AppendSnapshot()
+	return apiEvents, err
+}
+
+func (s *ProjectSession) ImportSimulationProfile(ctx context.Context, path string) ([]apiSimulationEvent, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	events, err := s.host.ImportSimulationProfile(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if events == nil {
+		return nil, fmt.Errorf("simulation import event stream is nil")
+	}
+	apiEvents, err := s.consumeSimulationEvents(ctx, events)
+	s.AppendSnapshot()
+	return apiEvents, err
 }
 
 func (s *ProjectSession) beginAction() (func(), error) {
@@ -352,6 +393,51 @@ func (s *ProjectSession) appendHostEvent(ev host.Event) WebEvent {
 		Type:        webEventTypeHostEvent,
 		HostEventID: strings.TrimSpace(ev.ID),
 		Event:       apiHostEventFromHost(ev),
+	})
+}
+
+func (s *ProjectSession) consumeSimulationEvents(ctx context.Context, events <-chan sim.Event) ([]apiSimulationEvent, error) {
+	var out []apiSimulationEvent
+	var runErr error
+	for {
+		select {
+		case <-ctx.Done():
+			return out, ctx.Err()
+		case ev, ok := <-events:
+			if !ok {
+				return out, runErr
+			}
+			apiEvent := apiSimulationEventFromSim(ev)
+			out = append(out, apiEvent)
+			s.appendSimulationEvent(apiEvent)
+			if ev.Err != nil {
+				message := strings.TrimSpace(ev.Message)
+				if message == "" {
+					message = ev.Err.Error()
+				} else {
+					message = fmt.Sprintf("%s: %v", message, ev.Err)
+				}
+				runErr = simulationRunError{message: message}
+			}
+		}
+	}
+}
+
+func (s *ProjectSession) appendSimulationEvent(ev apiSimulationEvent) WebEvent {
+	level := "info"
+	if ev.Error != "" {
+		level = "error"
+	} else if ev.Stage == string(sim.StageDone) {
+		level = "success"
+	}
+	return s.appendHostEvent(host.Event{
+		Time:     ev.Time,
+		Category: "SIMULATE",
+		Agent:    "web",
+		Summary:  ev.Message,
+		Detail:   ev.Error,
+		Kind:     ev.Stage,
+		Level:    level,
 	})
 }
 
