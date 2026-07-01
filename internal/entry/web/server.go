@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -36,6 +38,8 @@ type Server struct {
 	bundle      assets.Bundle
 	runtimeRoot string
 	store       *ProjectStore
+	sessions    *SessionManager
+	static      fs.FS
 }
 
 func Run(ctx context.Context, cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
@@ -74,8 +78,11 @@ func Run(ctx context.Context, cfg bootstrap.Config, bundle assets.Bundle, opts O
 	}
 	defer listener.Close()
 
+	app := NewServer(cfg, bundle, runtimeRoot)
+	defer app.Close()
+
 	server := &http.Server{
-		Handler:           NewHandler(cfg, bundle, runtimeRoot),
+		Handler:           app.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	url := "http://" + listener.Addr().String()
@@ -109,13 +116,24 @@ func Run(ctx context.Context, cfg bootstrap.Config, bundle assets.Bundle, opts O
 	}
 }
 
-func NewHandler(cfg bootstrap.Config, bundle assets.Bundle, runtimeRoot string) http.Handler {
+func NewServer(cfg bootstrap.Config, bundle assets.Bundle, runtimeRoot string) *Server {
+	store := NewProjectStore(runtimeRoot)
 	s := &Server{
 		cfg:         cfg,
 		bundle:      bundle,
 		runtimeRoot: runtimeRoot,
-		store:       NewProjectStore(runtimeRoot),
+		store:       store,
+		static:      StaticFS(),
 	}
+	s.sessions = NewSessionManager(cfg, bundle, store)
+	return s
+}
+
+func NewHandler(cfg bootstrap.Config, bundle assets.Bundle, runtimeRoot string) http.Handler {
+	return NewServer(cfg, bundle, runtimeRoot).Handler()
+}
+
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/runtime", s.handleRuntime)
@@ -124,13 +142,41 @@ func NewHandler(cfg bootstrap.Config, bundle assets.Bundle, runtimeRoot string) 
 	return mux
 }
 
+func (s *Server) Close() {
+	if s.sessions != nil {
+		s.sessions.CloseAll()
+	}
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("content-type", "text/html; charset=utf-8")
-	_, _ = io.WriteString(w, indexHTML)
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if path == "" {
+		path = "index.html"
+	}
+	if strings.Contains(path, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := fs.ReadFile(s.static, path)
+	if err != nil {
+		data, err = fs.ReadFile(s.static, "index.html")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "web UI assets are not embedded; run npm --prefix web run build")
+			return
+		}
+		path = "index.html"
+	}
+	if ctype := mime.TypeByExtension(filepath.Ext(path)); ctype != "" {
+		w.Header().Set("content-type", ctype)
+	} else if path == "index.html" {
+		w.Header().Set("content-type", "text/html; charset=utf-8")
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +187,14 @@ func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"runtime_root": s.runtimeRoot,
 		"projects_dir": s.store.ProjectsDir(),
+		"config": map[string]any{
+			"provider":         s.cfg.Provider,
+			"model":            s.cfg.ModelName,
+			"style":            s.cfg.Style,
+			"reasoning_effort": s.cfg.ReasoningEffort,
+			"roles":            s.cfg.Roles,
+		},
+		"active_projects": s.sessions.ActiveProjectIDs(),
 	})
 }
 
@@ -176,28 +230,232 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/api/projects/")
-	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	if len(parts) != 2 || parts[1] != "open" {
+	id, action, ok := splitProjectRoute(r.URL.Path)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	switch action {
+	case "open":
+		s.handleProjectOpen(w, r, id)
+	case "snapshot":
+		s.handleProjectSnapshot(w, r, id)
+	case "resume":
+		s.handleProjectResume(w, r, id)
+	case "continue":
+		s.handleProjectContinue(w, r, id)
+	case "steer":
+		s.handleProjectSteer(w, r, id)
+	case "events":
+		s.handleProjectEvents(w, r, id)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func splitProjectRoute(path string) (string, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/projects/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	manifest, err := s.store.OpenProject(parts[0])
+	session, manifest, err := s.sessions.Open(id)
 	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, projectSnapshotResponse{
+		Project:  manifest,
+		Snapshot: session.Snapshot(),
+	})
+}
+
+func (s *Server) handleProjectSnapshot(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, projectSnapshotResponse{
+		Project:  manifest,
+		Snapshot: session.Snapshot(),
+	})
+}
+
+func (s *Server) handleProjectResume(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	label, err := session.Resume()
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	writeJSON(w, http.StatusOK, projectActionResponse{
+		Project:  manifest,
+		Snapshot: snapshot,
+		Label:    label,
+		Running:  snapshot.IsRunning,
+	})
+}
+
+func (s *Server) handleProjectContinue(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	text, err := decodeTextRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	if err := session.Continue(text); err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	writeJSON(w, http.StatusOK, projectActionResponse{
+		Project:  manifest,
+		Snapshot: snapshot,
+		Running:  snapshot.IsRunning,
+	})
+}
+
+func (s *Server) handleProjectSteer(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	text, err := decodeTextRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	if err := session.Steer(text); err != nil {
+		writeProjectSteerError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	writeJSON(w, http.StatusOK, projectActionResponse{
+		Project:  manifest,
+		Snapshot: snapshot,
+		Running:  snapshot.IsRunning,
+	})
+}
+
+func (s *Server) handleProjectEvents(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	after, err := parseAfter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, _, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	if err := session.ServeEvents(r.Context(), w, after); err != nil {
+		slog.Warn("serve web events failed", "module", "web", "project", id, "err", err)
+	}
+}
+
+type projectSnapshotResponse struct {
+	Project  ProjectManifest `json:"project"`
+	Snapshot any             `json:"snapshot"`
+}
+
+type projectActionResponse struct {
+	Project  ProjectManifest `json:"project"`
+	Snapshot any             `json:"snapshot"`
+	Label    string          `json:"label,omitempty"`
+	Running  bool            `json:"running"`
+}
+
+func decodeTextRequest(r *http.Request) (string, error) {
+	var req struct {
+		Text string `json:"text"`
+	}
+	if r.Body != nil {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if !errors.Is(err, io.EOF) {
+				return "", fmt.Errorf("invalid request body: %w", err)
+			}
+		}
+	}
+	text := strings.TrimSpace(req.Text)
+	if text == "" {
+		return "", fmt.Errorf("text is required")
+	}
+	return text, nil
+}
+
+func parseAfter(r *http.Request) (int64, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("after"))
+	if raw == "" {
+		raw = strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	}
+	if raw == "" {
+		return 0, nil
+	}
+	after, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || after < 0 {
+		return 0, fmt.Errorf("after must be a non-negative integer")
+	}
+	return after, nil
+}
+
+func writeProjectSessionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrProjectNotFound) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	h, err := s.store.OpenProjectHost(s.cfg, s.bundle, manifest)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	writeError(w, http.StatusInternalServerError, err.Error())
+}
+
+func writeProjectLifecycleError(w http.ResponseWriter, err error) {
+	writeError(w, http.StatusConflict, err.Error())
+}
+
+func writeProjectSteerError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrSessionActionInProgress) {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	h.Close()
-	writeJSON(w, http.StatusOK, manifest)
+	writeError(w, http.StatusInternalServerError, err.Error())
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -226,25 +484,3 @@ func openBrowser(url string) error {
 	cmd.Stderr = io.Discard
 	return cmd.Start()
 }
-
-const indexHTML = `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ainovel</title>
-  <style>
-    body { margin: 0; font-family: system-ui, sans-serif; background: #f7f7f4; color: #1f2428; }
-    main { max-width: 920px; margin: 12vh auto; padding: 0 24px; }
-    h1 { font-size: 34px; margin: 0 0 12px; }
-    p { color: #586069; line-height: 1.6; }
-    code { background: #ecebe6; padding: 2px 6px; border-radius: 4px; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>ainovel web</h1>
-    <p>Web server is running. Project APIs are available under <code>/api</code>.</p>
-  </main>
-</body>
-</html>`

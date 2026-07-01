@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
-	"github.com/voocel/ainovel-cli/internal/bootstrap"
 )
 
 func TestProjectManifestCreateListOpenTouches(t *testing.T) {
@@ -63,13 +62,7 @@ func TestOpenProjectHostUsesProjectOutputDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	cfg := bootstrap.Config{
-		Provider:  "openai",
-		ModelName: "gpt-test",
-		Providers: map[string]bootstrap.ProviderConfig{
-			"openai": {Type: "openai", APIKey: "sk-test"},
-		},
-	}
+	cfg := testWebConfig(t)
 
 	h, err := store.OpenProjectHost(cfg, assets.Load("default"), manifest)
 	if err != nil {

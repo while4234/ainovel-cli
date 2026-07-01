@@ -47,7 +47,7 @@ type (
 		reply host.CoCreateReply
 		err   error
 	}
-	steerResultMsg     struct{}
+	steerResultMsg     struct{ err error }
 	continueResultMsg  struct{ err error }
 	spinnerTickMsg     time.Time
 	toolSpinnerTickMsg time.Time // 事件流工具 spinner 独立 tick（更快、独立于顶栏/星星）
@@ -199,8 +199,8 @@ func listenCoCreateDone(state *cocreateState) tea.Cmd {
 
 func steerRuntime(rt *host.Host, text string) tea.Cmd {
 	return func() tea.Msg {
-		rt.Steer(text)
-		return steerResultMsg{}
+		err := rt.Steer(text)
+		return steerResultMsg{err: err}
 	}
 }
 

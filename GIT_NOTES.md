@@ -21,20 +21,25 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest source commit: `4c5d7e8` `feat: add web runtime entrypoint`
+- Latest source commit: `f294262` `docs: record pr01 web entrypoint`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: clean for tracked files after PR-01 commit; known untracked
-  local runtime/workspace directory `novel/` remains intentionally unstaged.
+- Working tree: PR-02 Web session/SSE/workbench changes review passed and are
+  ready to commit; known untracked local runtime/workspace directory `novel/`
+  remains intentionally unstaged.
 - Runtime: local `D:\ainovel\ainovel-cli.exe` was last rebuilt from `202b21b`;
-  PR-01 validation used a temporary binary. The `D:\grok\bin\ainovel-cli.cmd`
+  PR-02 validation used a temporary binary. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: PR-01 focused Go package tests, temporary CLI build, localhost Web
-  smoke, and `git diff --check` succeeded on 2026-07-01. Frontend npm checks
-  are not applicable yet because this PR has no `web/package.json`.
+- Validation: PR-02 focused Go package tests, canonical `npm --prefix web`
+  install/test/build, temporary CLI build, localhost Web/API/SSE smoke, and
+  `git diff --check` succeeded on 2026-07-01.
 
 ## Change Log
 
+- 2026-07-01 pending PR-02 Web session manager and workbench: added project
+  session management, snapshot/resume/continue/steer/events APIs, SSE history
+  replay, embedded React/Vite workbench, and concurrency/error-propagation
+  fixes accepted by re-review.
 - 2026-07-01 `4c5d7e8` `feat: add web runtime entrypoint`: added
   `ainovel-cli web`, `internal/entry/web`, runtime-root and project manifest
   tests, and `Host.SimulateFromDir`; independent review passed and mechanical

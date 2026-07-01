@@ -58,6 +58,9 @@ type Host struct {
 	streamCh chan string
 	done     chan struct{}
 
+	doneMu     sync.Mutex
+	doneClosed bool
+
 	mu         sync.Mutex
 	lifecycle  lifecycle
 	cocreating bool // 阶段共创占用：paused 窗口内堵住 import/simulate/continue 的并发介入
@@ -502,7 +505,11 @@ func (h *Host) Continue(text string) error {
 }
 
 // Steer 提交用户干预。
-func (h *Host) Steer(text string) {
+func (h *Host) Steer(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("text is required")
+	}
 	h.mu.Lock()
 	running := h.lifecycle == lifecycleRunning
 	h.mu.Unlock()
@@ -513,12 +520,16 @@ func (h *Host) Steer(text string) {
 	if running {
 		if _, err := h.coordinator.Inject(msg); err != nil {
 			slog.Error("steer inject 失败", "module", "host", "err", err)
+			return fmt.Errorf("steer inject: %w", err)
 		}
-		return
+		return nil
 	}
 	// 停机：持久化待下次启动 + 反馈系统状态（"已保存"是 USER 事件之外的系统提示）
-	_ = h.store.RunMeta.SetPendingSteer(text)
+	if err := h.store.RunMeta.SetPendingSteer(text); err != nil {
+		return fmt.Errorf("set pending steer: %w", err)
+	}
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "干预已保存，下次启动时生效", Level: "info"})
+	return nil
 }
 
 // Abort 暂停当前 coordinator。
@@ -567,7 +578,7 @@ func (h *Host) Close() {
 		slog.Warn("usage 退出前落盘失败", "module", "usage", "err", err)
 	}
 	h.closeOnce.Do(func() {
-		close(h.done)
+		h.closeDone()
 		close(h.events)
 		close(h.streamCh)
 	})
@@ -620,9 +631,30 @@ func (h *Host) waitDone() {
 		}
 	}
 
+	h.notifyDone()
+}
+
+func (h *Host) notifyDone() {
+	h.doneMu.Lock()
+	defer h.doneMu.Unlock()
+	if h.doneClosed || h.done == nil {
+		return
+	}
 	select {
 	case h.done <- struct{}{}:
 	default:
+	}
+}
+
+func (h *Host) closeDone() {
+	h.doneMu.Lock()
+	defer h.doneMu.Unlock()
+	if h.doneClosed {
+		return
+	}
+	h.doneClosed = true
+	if h.done != nil {
+		close(h.done)
 	}
 }
 
