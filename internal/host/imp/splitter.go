@@ -29,30 +29,51 @@ const ws = `\s\x{3000}`
 const cnNum = `零〇○Ｏ０一二三四五六七八九十百千万两廿卅壹贰貳叁參肆伍陆陸柒捌玖拾佰仟萬兩\d`
 
 // sub 是副标题捕获：取到行尾，但不吞掉右包裹符（】〗），留给结尾的可选闭括号。
-const sub = `[^】〗\n]*`
+const sub = `[^】〗》\n]*`
+
+// titleSep 是章节编号与副标题之间的常见分隔符。部分站点会用间隔号写作
+// 【第十五章·一日千里】，需要和冒号、空格同等处理。
+const titleSep = `[:：．\.·・•` + ws + `]+`
+
+// requiredWorkTitlePrefix 支持源站把书名放在章节号前，例如【女神攻略】第二章 目睹。
+const requiredWorkTitlePrefix = `[【〖《][^】〗》\n]{1,80}[】〗》][` + ws + `]*`
+const workTitlePrefix = `(?:` + requiredWorkTitlePrefix + `)?`
 
 const specialUnit = `序章|序幕|楔子|引子|前言|序言|尾声|终章|后记|番外|外传`
 
 var defaultChapterRegex = regexp.MustCompile(
-	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?[【〖]?[` + ws + `]*(?:` +
+	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` + workTitlePrefix + `[【〖]?[` + ws + `]*(?:` +
 		`第\s*(?:[` + cnNum + `]+)\s*(?:章|回|话|卷|节|幕)` +
-		`(?:[:：．\.` + ws + `]+(?P<cn>` + sub + `))?` +
+		`(?:` + titleSep + `(?P<cn>` + sub + `))?` +
 		`|` +
 		`卷\s*(?:[` + cnNum + `]+)` +
-		`(?:[:：．\.` + ws + `]+(?P<vol>` + sub + `))?` +
+		`(?:` + titleSep + `(?P<vol>` + sub + `))?` +
 		`|` +
 		`(?P<spkw>(?:(?:` + specialUnit + `)(?:[` + cnNum + `]+)?))` +
-		`(?:[:：．\.` + ws + `]+(?P<sp>` + sub + `))?` +
+		`(?:` + titleSep + `(?P<sp>` + sub + `))?` +
 		`|` +
 		`(?:Chapter\s+(?:\d+|[IVXLCDM]+)|(?P<enkw>Prologue|Epilogue))` +
-		`(?:[:：．\.` + ws + `]+(?P<en>` + sub + `))?` +
+		`(?:` + titleSep + `(?P<en>` + sub + `))?` +
+		`)[` + ws + `]*[】〗]?[` + ws + `]*$`,
+)
+
+var workTitleChapterRegex = regexp.MustCompile(
+	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` + requiredWorkTitlePrefix + `[【〖]?[` + ws + `]*(?:` +
+		`第\s*(?:[` + cnNum + `]+)\s*(?:章|回|话|卷|节|幕)` +
+		`(?:` + titleSep + `(?P<cn>` + sub + `)|(?P<cnCompact>` + sub + `))?` +
+		`|` +
+		`(?P<spkw>(?:(?:` + specialUnit + `)(?:[` + cnNum + `]+)?))` +
+		`(?:` + titleSep + `(?P<sp>` + sub + `))?` +
+		`|` +
+		`(?:Chapter\s+(?:\d+|[IVXLCDM]+)|(?P<enkw>Prologue|Epilogue))` +
+		`(?:` + titleSep + `(?P<en>` + sub + `))?` +
 		`)[` + ws + `]*[】〗]?[` + ws + `]*$`,
 )
 
 var volumePrefixRegex = regexp.MustCompile(
-	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?[【〖]?[` + ws + `]*` +
+	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` + workTitlePrefix + `[【〖]?[` + ws + `]*` +
 		`(?:第\s*(?:[` + cnNum + `]+)\s*卷|卷\s*(?:[` + cnNum + `]+))` +
-		`[:：．\.` + ws + `]+(?P<tail>` + sub + `)[】〗]?[` + ws + `]*$`,
+		titleSep + `(?P<tail>` + sub + `)[】〗]?[` + ws + `]*$`,
 )
 
 var chapterCueRegex = regexp.MustCompile(
@@ -62,19 +83,19 @@ var chapterCueRegex = regexp.MustCompile(
 
 var volumeNumberedChapterRegex = regexp.MustCompile(
 	`(?i)第\s*(?:[` + cnNum + `]+)\s*(?:章|回|话|节|幕)` +
-		`(?:[:：．\.` + ws + `]+(?P<title>` + sub + `))?`,
+		`(?:` + titleSep + `(?P<title>` + sub + `))?`,
 )
 
 var bareChineseChapterRegex = regexp.MustCompile(
-	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?[【〖]?[` + ws + `]*` +
+	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` + workTitlePrefix + `[【〖]?[` + ws + `]*` +
 		`(?:[十廿卅][一二三四五六七八九]?|[零〇○一二三四五六七八九十百千万两廿卅壹贰貳叁參肆伍陆陸柒捌玖拾佰仟萬兩]{2,})` +
-		`\s*章(?:[:：．\.` + ws + `]+(?P<title>` + sub + `))?[】〗]?[` + ws + `]*$`,
+		`\s*章(?:` + titleSep + `(?P<title>` + sub + `))?[】〗]?[` + ws + `]*$`,
 )
 
 var nonStoryHeadingRegex = regexp.MustCompile(
-	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?[【〖]?[` + ws + `]*` +
+	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` + workTitlePrefix + `[【〖]?[` + ws + `]*` +
 		`(?:灵异档案(?:及编者语)?|编者语|闲话|.*预告)` +
-		`(?:[:：．\.` + ws + `]+` + sub + `)?[】〗]?[` + ws + `]*$`,
+		`(?:` + titleSep + sub + `)?[】〗]?[` + ws + `]*$`,
 )
 
 var inlineTrailingChapterRegex = regexp.MustCompile(
@@ -123,6 +144,9 @@ func splitText(text string, pattern *regexp.Regexp) []Chapter {
 
 	for i := range marks {
 		if marks[i].volumeOnly && nextMarkerFollowsOnlyBlankLines(lines, marks, i) {
+			marks[i].chapter = false
+		}
+		if repeatedTitleBeforeContent(lines, marks, i) {
 			marks[i].chapter = false
 		}
 	}
@@ -182,6 +206,14 @@ func parseMarker(line string, pattern *regexp.Regexp, fallbackNum int) (parsedMa
 		}
 		return parsedMarker{title: title, chapter: true, fallbackTitle: fallbackTitle}, true
 	}
+	if loc := workTitleChapterRegex.FindStringSubmatchIndex(line); loc != nil {
+		title := extractTitle(line, workTitleChapterRegex, loc, fallbackNum)
+		return parsedMarker{
+			title:         title,
+			chapter:       true,
+			fallbackTitle: title == fmt.Sprintf("第%d章", fallbackNum),
+		}, true
+	}
 	if loc := pattern.FindStringSubmatchIndex(line); loc != nil {
 		title := extractTitle(line, pattern, loc, fallbackNum)
 		return parsedMarker{
@@ -195,6 +227,31 @@ func parseMarker(line string, pattern *regexp.Regexp, fallbackNum int) (parsedMa
 		return parsedMarker{title: strings.TrimSpace(line), chapter: false}, true
 	}
 	return parsedMarker{}, false
+}
+
+func repeatedTitleBeforeContent(lines []string, marks []splitMarker, idx int) bool {
+	if idx+1 >= len(marks) || !marks[idx].chapter || !marks[idx+1].chapter {
+		return false
+	}
+	if marks[idx].title == "" || marks[idx].title != marks[idx+1].title {
+		return false
+	}
+	for line := marks[idx].line + 1; line < marks[idx+1].line; line++ {
+		if !isMetadataOnlyLine(lines[line]) {
+			return false
+		}
+	}
+	return true
+}
+
+var metadataOnlyLineRegex = regexp.MustCompile(`^(?:作者|字数)[:：]|^\d{4}(?:[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?)?$|^[*＊]{3,}$`)
+
+func isMetadataOnlyLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return true
+	}
+	return metadataOnlyLineRegex.MatchString(line)
 }
 
 func nextMarkerFollowsOnlyBlankLines(lines []string, marks []splitMarker, idx int) bool {
@@ -282,7 +339,7 @@ func extractNamedGroup(line string, pattern *regexp.Regexp, loc []int, name stri
 // extractTitle 从匹配行提取章节标题；优先取命名捕获，否则回退章节号占位。
 func extractTitle(line string, pattern *regexp.Regexp, loc []int, fallbackNum int) string {
 	subnames := pattern.SubexpNames()
-	priority := []string{"cn", "vol", "sp", "en", "spkw", "enkw"}
+	priority := []string{"cn", "cnCompact", "vol", "sp", "en", "spkw", "enkw"}
 	for _, name := range priority {
 		idx := pattern.SubexpIndex(name)
 		if idx <= 0 {

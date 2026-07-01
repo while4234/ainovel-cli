@@ -190,6 +190,49 @@ func TestSplitText_BareChineseChapterNumber(t *testing.T) {
 	}
 }
 
+func TestSplitText_BracketedWorkTitlePrefix(t *testing.T) {
+	src := `【女神攻略】第二章 目睹
+正文二。
+
+【女神攻略】第九章银屏女神
+正文九。
+
+【女神攻略-同人续】第十五章 一日千里
+正文十五。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 3 {
+		t.Fatalf("want 3, got %d", len(got))
+	}
+	wantTitles := []string{"目睹", "银屏女神", "一日千里"}
+	for i, want := range wantTitles {
+		if got[i].Title != want {
+			t.Fatalf("chapter %d title: got %q want %q", i+1, got[i].Title, want)
+		}
+	}
+}
+
+func TestSplitText_RepeatedSourceTitleWithMetadataIsCollapsed(t *testing.T) {
+	src := `【女神攻略】第十三章 二龙戏珠（上）
+作者：ntr2017-03-02字数：13778
+第十三章 二龙戏珠（上）
+正文十三。
+
+【女神攻略-同人续】第十五章 一日千里
+2023年9月18日
+【第十五章·一日千里】
+正文十五。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 2 {
+		t.Fatalf("want 2, got %d", len(got))
+	}
+	assertChapterTitlesAt(t, got, 1, []string{"二龙戏珠（上）", "一日千里"})
+	if strings.Contains(got[0].Content, "作者：") || strings.Contains(got[1].Content, "2023年9月18日") {
+		t.Fatalf("metadata-only duplicate heading preface leaked into content: %+v", got)
+	}
+}
+
 func TestSplitText_InlineTrailingChapterHeading(t *testing.T) {
 	src := `第十二章 老谋深算
 上一章正文。
@@ -538,6 +581,26 @@ func TestSplitFile_ExternalGazFixture(t *testing.T) {
 	}
 }
 
+func TestSplitFile_ExternalNsglFixture(t *testing.T) {
+	path := os.Getenv("AINOVEL_NSGL_FIXTURE")
+	if path == "" {
+		t.Skip("set AINOVEL_NSGL_FIXTURE to run the external nsgl.txt splitter acceptance test")
+	}
+	got, err := SplitFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 17 {
+		t.Fatalf("nsgl fixture chapters: got %d want 17", len(got))
+	}
+	assertChapterTitlesAt(t, got, 1, []string{
+		"顾茹", "目睹", "浑水摸鱼", "黄雀在后", "谋划",
+		"手机！手机！", "漫长的一天", "车震？", "银屏女神", "璐璐的转变",
+		"生病与睡觉", "糊涂人明白事", "二龙戏珠（上）", "二龙戏珠（下）第(1/8)页",
+		"一日千里", "真假救美", "医院迷情",
+	})
+}
+
 func assertChapterTitlesAt(t *testing.T, got []Chapter, start int, want []string) {
 	t.Helper()
 	for i, title := range want {
@@ -605,17 +668,23 @@ func TestSplitText_BracketWrapped(t *testing.T) {
 〖第二章 云涌〗
 正文二。
 
+【第十五章·一日千里】
+正文三。
+
 【楔子】
 楔子正文。`
 	got := splitText(src, defaultChapterRegex)
-	if len(got) != 3 {
-		t.Fatalf("want 3, got %d", len(got))
+	if len(got) != 4 {
+		t.Fatalf("want 4, got %d", len(got))
 	}
 	if got[0].Title != "风起" || got[1].Title != "云涌" {
 		t.Errorf("titles: %+v", got)
 	}
-	if got[2].Title != "楔子" {
-		t.Errorf("bracket spkw title: %q", got[2].Title)
+	if got[2].Title != "一日千里" {
+		t.Errorf("middle-dot title: %q", got[2].Title)
+	}
+	if got[3].Title != "楔子" {
+		t.Errorf("bracket spkw title: %q", got[3].Title)
 	}
 }
 
