@@ -29,6 +29,7 @@ const (
 	webEventTypeStreamDelta = "stream_delta"
 	webEventTypeStreamClear = "stream_clear"
 	webEventTypeSnapshot    = "snapshot"
+	webEventTypeCoCreate    = "cocreate_state"
 
 	webEventHistoryLimit = 1000
 )
@@ -44,9 +45,18 @@ type SessionManager struct {
 
 type projectHost interface {
 	Snapshot() host.UISnapshot
+	PrepareUserRules(string) error
+	PrepareExternalSourceUserRules(string) error
+	StartPrepared(string) error
 	Resume() (string, error)
 	Continue(string) error
 	Steer(string) error
+	CoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	StageCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	AdaptCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	PauseForCoCreate() bool
+	ResumeFromCoCreate(string) error
+	CancelCoCreate()
 	SimulateFromDir(context.Context, string) (<-chan sim.Event, error)
 	ImportSimulationProfile(context.Context, string) (<-chan sim.Event, error)
 	PrepareAdaptationSource(context.Context, string) (<-chan adapt.Event, error)
@@ -133,6 +143,7 @@ type ProjectSession struct {
 	history     []WebEvent
 	hostEventAt map[string]int
 	subscribers map[chan WebEvent]struct{}
+	cocreate    *webCoCreateSession
 	closed      bool
 }
 
@@ -271,6 +282,144 @@ func (s *ProjectSession) StartAdaptationPrepared(options adapt.ProposalOptions) 
 	}
 	s.AppendSnapshot()
 	return nil
+}
+
+func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBeginRequest) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate != nil {
+		return s.cocreate.apiState(), fmt.Errorf("co-create already started")
+	}
+	state, err := newWebCoCreateSession(req)
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	if state.kind == webCoCreateKindStage {
+		if !s.host.PauseForCoCreate() {
+			return webCoCreateState{}, fmt.Errorf("cannot enter stage co-create")
+		}
+		s.AppendSnapshot()
+	}
+	s.cocreate = state
+	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) SendCoCreate(ctx context.Context, text string) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	if err := s.cocreate.appendUser(text); err != nil {
+		return webCoCreateState{}, err
+	}
+	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	if err := s.cocreate.requireReadyDraft(); err != nil {
+		return webCoCreateState{}, err
+	}
+	state := s.cocreate
+	switch state.kind {
+	case webCoCreateKindStage:
+		if err := s.host.ResumeFromCoCreate(state.draftPrompt()); err != nil {
+			return state.apiState(), err
+		}
+	case webCoCreateKindAdapt:
+		if err := s.host.PrepareExternalSourceUserRules(state.draftPrompt()); err != nil {
+			return state.apiState(), err
+		}
+		if err := s.host.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
+			Brief:         state.draftPrompt(),
+			SourcePath:    state.sourcePath,
+			Granularity:   state.adaptGranularity,
+			RewritePolicy: state.adaptRewritePolicy,
+			WordTolerance: state.adaptWordTolerance,
+		}); err != nil {
+			return state.apiState(), err
+		}
+	default:
+		plan, err := state.session.BuildPlan()
+		if err != nil {
+			return state.apiState(), err
+		}
+		if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+			return state.apiState(), err
+		}
+		if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
+			return state.apiState(), err
+		}
+	}
+	api := state.apiState()
+	s.cocreate = nil
+	s.AppendSnapshot()
+	return api, nil
+}
+
+func (s *ProjectSession) CancelCoCreate() (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	state := s.cocreate.apiState()
+	if s.cocreate.kind == webCoCreateKindStage {
+		s.host.CancelCoCreate()
+		s.AppendSnapshot()
+	}
+	s.cocreate = nil
+	return state, nil
+}
+
+func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateState, error) {
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	var stream func(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	switch s.cocreate.kind {
+	case webCoCreateKindStage:
+		stream = s.host.StageCoCreateStream
+	case webCoCreateKindAdapt:
+		stream = s.host.AdaptCoCreateStream
+	default:
+		stream = s.host.CoCreateStream
+	}
+	onProgress := func(kind, text string) {
+		if s.cocreate == nil {
+			return
+		}
+		s.cocreate.session.ApplyDelta(kind, text)
+		s.appendCoCreateState(s.cocreate.apiState())
+	}
+	reply, err := stream(ctx, s.cocreate.session.History(), onProgress)
+	if err != nil {
+		return s.cocreate.apiState(), err
+	}
+	s.cocreate.applyReply(reply)
+	s.appendCoCreateState(s.cocreate.apiState())
+	return s.cocreate.apiState(), nil
 }
 
 func (s *ProjectSession) beginAction() (func(), error) {
@@ -538,6 +687,13 @@ func (s *ProjectSession) appendStreamClear() WebEvent {
 	})
 }
 
+func (s *ProjectSession) appendCoCreateState(state webCoCreateState) WebEvent {
+	return s.append(WebEvent{
+		Type:     webEventTypeCoCreate,
+		CoCreate: &state,
+	})
+}
+
 func (s *ProjectSession) append(ev WebEvent) WebEvent {
 	if ev.Time.IsZero() {
 		ev.Time = time.Now().UTC()
@@ -605,14 +761,15 @@ func (s *ProjectSession) historyAfterLocked(after int64) []WebEvent {
 }
 
 type WebEvent struct {
-	Seq         int64           `json:"seq"`
-	Type        string          `json:"type"`
-	ProjectID   string          `json:"project_id"`
-	Time        time.Time       `json:"time"`
-	HostEventID string          `json:"host_event_id,omitempty"`
-	Event       *APIHostEvent   `json:"event,omitempty"`
-	Stream      *APIStreamEvent `json:"stream,omitempty"`
-	Snapshot    any             `json:"snapshot,omitempty"`
+	Seq         int64             `json:"seq"`
+	Type        string            `json:"type"`
+	ProjectID   string            `json:"project_id"`
+	Time        time.Time         `json:"time"`
+	HostEventID string            `json:"host_event_id,omitempty"`
+	Event       *APIHostEvent     `json:"event,omitempty"`
+	Stream      *APIStreamEvent   `json:"stream,omitempty"`
+	Snapshot    any               `json:"snapshot,omitempty"`
+	CoCreate    *webCoCreateState `json:"cocreate,omitempty"`
 }
 
 type APIHostEvent struct {

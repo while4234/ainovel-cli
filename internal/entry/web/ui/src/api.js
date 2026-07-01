@@ -105,3 +105,31 @@ export function startAdaptation(projectId, sourceFile, mode, brief) {
     body: JSON.stringify({ source_file: sourceFile, mode, brief })
   });
 }
+
+export function beginCoCreate(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/begin`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function sendCoCreate(projectId, text) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/send`, {
+    method: 'POST',
+    body: JSON.stringify({ text })
+  });
+}
+
+export function commitCoCreate(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/commit`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
+export function cancelCoCreate(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}

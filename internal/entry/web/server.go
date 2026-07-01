@@ -260,6 +260,14 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectAdaptAnalyze(w, r, id)
 	case "adapt/start":
 		s.handleProjectAdaptStart(w, r, id)
+	case "cocreate/begin":
+		s.handleProjectCoCreateBegin(w, r, id)
+	case "cocreate/send":
+		s.handleProjectCoCreateSend(w, r, id)
+	case "cocreate/commit":
+		s.handleProjectCoCreateCommit(w, r, id)
+	case "cocreate/cancel":
+		s.handleProjectCoCreateCancel(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}

@@ -183,6 +183,58 @@ func TestProjectSessionServeEventsHonorsAfter(t *testing.T) {
 	}
 }
 
+func TestProjectSessionPublishesCoCreateProgressWithoutWritingStream(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.cocreateProgress = []coCreateProgressStep{
+		{kind: host.CoCreateProgressThinking, text: "checking premise"},
+		{kind: host.CoCreateProgressReply, text: "先确认主角目标"},
+	}
+	fake.cocreateReply = host.CoCreateReply{
+		Message: "先确认主角目标",
+		Prompt:  "## 方向\n- 主角寻找失踪同伴",
+		Ready:   false,
+		Raw:     "<reply>先确认主角目标</reply><draft>## 方向\n- 主角寻找失踪同伴</draft><ready>false</ready><suggestions></suggestions>",
+	}
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	state, err := session.BeginCoCreate(context.Background(), webCoCreateBeginRequest{
+		Kind:    webCoCreateKindNormal,
+		Initial: "写一个月城悬疑",
+	})
+	if err != nil {
+		t.Fatalf("BeginCoCreate: %v", err)
+	}
+	if state.StreamReply != "" || len(state.Messages) != 2 {
+		t.Fatalf("final co-create state should clear preview and keep one assistant message: %+v", state)
+	}
+
+	var sawThinking, sawReply, sawStreamDelta bool
+	for _, ev := range session.HistoryAfter(0) {
+		if ev.Type == webEventTypeStreamDelta || ev.Type == webEventTypeStreamClear {
+			sawStreamDelta = true
+		}
+		if ev.Type != webEventTypeCoCreate || ev.CoCreate == nil {
+			continue
+		}
+		if ev.CoCreate.StreamThinking == "checking premise" {
+			sawThinking = true
+		}
+		if ev.CoCreate.StreamReply == "先确认主角目标" {
+			sawReply = true
+		}
+	}
+	if !sawThinking || !sawReply {
+		t.Fatalf("co-create progress events missing thinking=%v reply=%v", sawThinking, sawReply)
+	}
+	if sawStreamDelta {
+		t.Fatal("co-create progress polluted the main writing stream")
+	}
+}
+
 func TestProjectSessionAppendRacesWithUnsubscribe(t *testing.T) {
 	for iteration := range 100 {
 		session := newTestSessionWithoutHost("project-1")
@@ -383,19 +435,45 @@ type fakeProjectHost struct {
 	importErr                  error
 	adaptAnalyzeErr            error
 	adaptStartErr              error
+	cocreateErr                error
+	stageCoCreateErr           error
+	adaptCoCreateErr           error
+	prepareUserRulesErr        error
+	prepareExternalRulesErr    error
+	startPreparedErr           error
+	resumeFromCoCreateErr      error
 	requireAnalyzedAdaptSource bool
 
-	resumeCalls       int
-	continueCalls     int
-	steerCalls        int
-	simulateCalls     int
-	importCalls       int
-	adaptAnalyzeCalls int
-	adaptStartCalls   int
-	simulateDir       string
-	importPath        string
-	adaptSourcePath   string
-	adaptOptions      adapt.ProposalOptions
+	resumeCalls                 int
+	continueCalls               int
+	steerCalls                  int
+	simulateCalls               int
+	importCalls                 int
+	adaptAnalyzeCalls           int
+	adaptStartCalls             int
+	prepareRulesCalls           int
+	prepareExternalRulesCalls   int
+	startPreparedCalls          int
+	cocreateCalls               int
+	stageCoCreateCalls          int
+	adaptCoCreateCalls          int
+	pauseCoCreateCalls          int
+	resumeCoCreateCalls         int
+	cancelCoCreateCalls         int
+	simulateDir                 string
+	importPath                  string
+	adaptSourcePath             string
+	adaptOptions                adapt.ProposalOptions
+	preparedRulesPrompt         string
+	preparedExternalRulesPrompt string
+	startPreparedPrompt         string
+	resumeCoCreateDraft         string
+	lastCoCreateHistory         []host.CoCreateMessage
+	cocreateReply               host.CoCreateReply
+	stageCoCreateReply          host.CoCreateReply
+	adaptCoCreateReply          host.CoCreateReply
+	cocreateProgress            []coCreateProgressStep
+	pauseCoCreateOK             bool
 
 	events    chan host.Event
 	stream    chan string
@@ -403,11 +481,17 @@ type fakeProjectHost struct {
 	closeOnce sync.Once
 }
 
+type coCreateProgressStep struct {
+	kind string
+	text string
+}
+
 func newFakeProjectHost() *fakeProjectHost {
 	return &fakeProjectHost{
-		events: make(chan host.Event),
-		stream: make(chan string),
-		done:   make(chan struct{}),
+		events:          make(chan host.Event),
+		stream:          make(chan string),
+		done:            make(chan struct{}),
+		pauseCoCreateOK: true,
 	}
 }
 
@@ -415,6 +499,30 @@ func (f *fakeProjectHost) Snapshot() host.UISnapshot {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.snapshot
+}
+
+func (f *fakeProjectHost) PrepareUserRules(prompt string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prepareRulesCalls++
+	f.preparedRulesPrompt = prompt
+	return f.prepareUserRulesErr
+}
+
+func (f *fakeProjectHost) PrepareExternalSourceUserRules(prompt string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prepareExternalRulesCalls++
+	f.preparedExternalRulesPrompt = prompt
+	return f.prepareExternalRulesErr
+}
+
+func (f *fakeProjectHost) StartPrepared(prompt string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startPreparedCalls++
+	f.startPreparedPrompt = prompt
+	return f.startPreparedErr
 }
 
 func (f *fakeProjectHost) Resume() (string, error) {
@@ -449,6 +557,72 @@ func (f *fakeProjectHost) Steer(string) error {
 	f.steerCalls++
 	defer f.mu.Unlock()
 	return f.steerErr
+}
+
+func (f *fakeProjectHost) CoCreateStream(_ context.Context, history []host.CoCreateMessage, onProgress func(kind, text string)) (host.CoCreateReply, error) {
+	f.mu.Lock()
+	f.cocreateCalls++
+	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
+	reply := f.cocreateReply
+	err := f.cocreateErr
+	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)
+	f.mu.Unlock()
+	emitCoCreateProgress(progress, onProgress)
+	return reply, err
+}
+
+func (f *fakeProjectHost) StageCoCreateStream(_ context.Context, history []host.CoCreateMessage, onProgress func(kind, text string)) (host.CoCreateReply, error) {
+	f.mu.Lock()
+	f.stageCoCreateCalls++
+	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
+	reply := f.stageCoCreateReply
+	err := f.stageCoCreateErr
+	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)
+	f.mu.Unlock()
+	emitCoCreateProgress(progress, onProgress)
+	return reply, err
+}
+
+func (f *fakeProjectHost) AdaptCoCreateStream(_ context.Context, history []host.CoCreateMessage, onProgress func(kind, text string)) (host.CoCreateReply, error) {
+	f.mu.Lock()
+	f.adaptCoCreateCalls++
+	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
+	reply := f.adaptCoCreateReply
+	err := f.adaptCoCreateErr
+	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)
+	f.mu.Unlock()
+	emitCoCreateProgress(progress, onProgress)
+	return reply, err
+}
+
+func emitCoCreateProgress(progress []coCreateProgressStep, onProgress func(kind, text string)) {
+	if onProgress == nil {
+		return
+	}
+	for _, step := range progress {
+		onProgress(step.kind, step.text)
+	}
+}
+
+func (f *fakeProjectHost) PauseForCoCreate() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pauseCoCreateCalls++
+	return f.pauseCoCreateOK
+}
+
+func (f *fakeProjectHost) ResumeFromCoCreate(draft string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resumeCoCreateCalls++
+	f.resumeCoCreateDraft = draft
+	return f.resumeFromCoCreateErr
+}
+
+func (f *fakeProjectHost) CancelCoCreate() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cancelCoCreateCalls++
 }
 
 func (f *fakeProjectHost) SimulateFromDir(_ context.Context, dir string) (<-chan sim.Event, error) {

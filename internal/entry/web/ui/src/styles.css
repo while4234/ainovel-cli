@@ -415,7 +415,7 @@ h2 {
 
 .side-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   border-bottom: 1px solid #d5ded8;
 }
 
@@ -428,6 +428,7 @@ h2 {
   border: 0;
   background: transparent;
   color: #5b6c66;
+  font-size: 13px;
   font-weight: 800;
 }
 
@@ -511,6 +512,156 @@ h2 {
 
 .simulation-section {
   display: grid;
+  gap: 8px;
+}
+
+.cocreate-section {
+  display: grid;
+  gap: 8px;
+}
+
+.cocreate-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.cocreate-mode-grid .tool-button {
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.cocreate-dialog {
+  min-height: 156px;
+}
+
+.cocreate-messages {
+  display: grid;
+  max-height: 220px;
+  gap: 8px;
+  overflow: auto;
+}
+
+.cocreate-message {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #d8e1dc;
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: #ffffff;
+}
+
+.cocreate-message.assistant {
+  border-left: 3px solid #0b746f;
+}
+
+.cocreate-message.system {
+  border-color: #d9ccb1;
+  background: #fffaf0;
+}
+
+.cocreate-message strong {
+  color: #40504b;
+  font-size: 12px;
+}
+
+.cocreate-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.cocreate-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.cocreate-preview {
+  display: grid;
+  gap: 4px;
+  border: 1px dashed #bdd5cf;
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: #f6fbf8;
+}
+
+.cocreate-preview.thinking {
+  border-color: #d9ccb1;
+  background: #fffaf0;
+}
+
+.cocreate-preview strong {
+  color: #40504b;
+  font-size: 12px;
+}
+
+.cocreate-preview p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.suggestion-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.suggestion-chip {
+  min-height: 32px;
+  border: 1px solid #bdd5cf;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: #eef7f3;
+  color: #0b746f;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.cocreate-form {
+  display: grid;
+  gap: 8px;
+}
+
+.cocreate-form textarea {
+  width: 100%;
+  min-height: 78px;
+  border: 1px solid #cbd8d2;
+  border-radius: 7px;
+  padding: 10px;
+  resize: vertical;
+  background: #ffffff;
+  color: #202826;
+  outline: none;
+}
+
+.cocreate-form textarea:focus {
+  border-color: #0b746f;
+  box-shadow: 0 0 0 3px rgba(11, 116, 111, 0.14);
+}
+
+.draft-preview {
+  min-height: 116px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid #d8e1dc;
+  border-radius: 7px;
+  padding: 9px;
+  background: #ffffff;
+}
+
+.draft-preview pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.55;
+}
+
+.cocreate-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
 }
 

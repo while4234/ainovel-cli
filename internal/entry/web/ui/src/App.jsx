@@ -5,6 +5,8 @@ import {
   FileText,
   FileJson,
   ListRestart,
+  MessageSquareText,
+  PauseCircle,
   Play,
   Plus,
   RefreshCw,
@@ -18,6 +20,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeAdaptationSource,
   analyzeSimulation,
+  beginCoCreate,
+  cancelCoCreate,
+  commitCoCreate,
   continueProject,
   createProject,
   getRuntime,
@@ -25,14 +30,23 @@ import {
   importSimulationProfile,
   listProjects,
   resumeProject,
+  sendCoCreate,
   startAdaptation,
   steerProject,
   uploadAdaptationSource,
   uploadSimulationFiles
 } from './api.js';
+import {
+  applyCoCreateSuggestion,
+  appendCoCreateInput,
+  coCreateStateFromError,
+  coCreateStateFromEvent,
+  coCreateStateFromResponse,
+  createCoCreateState
+} from './cocreate.js';
 import { createWorkbenchState, eventStatus, reduceWebEvent } from './events.js';
 
-const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot'];
+const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 
 function createSimulationState() {
   return {
@@ -72,6 +86,7 @@ export default function App() {
   const [sideView, setSideView] = useState('status');
   const [simulation, setSimulation] = useState(createSimulationState);
   const [adaptation, setAdaptation] = useState(createAdaptationState);
+  const [coCreate, setCoCreate] = useState(createCoCreateState);
   const [connection, setConnection] = useState('idle');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -106,6 +121,7 @@ export default function App() {
     setWorkbench(createWorkbenchState());
     setSimulation(createSimulationState());
     setAdaptation(createAdaptationState());
+    setCoCreate(createCoCreateState());
     try {
       const data = await getSnapshot(project.id);
       setActiveProject(data.project);
@@ -129,11 +145,17 @@ export default function App() {
 
     const apply = (message) => {
       const event = JSON.parse(message.data);
+      if (event.seq <= lastSeqRef.current) {
+        return;
+      }
       setWorkbench((previous) => {
         const next = reduceWebEvent(previous, event);
         lastSeqRef.current = next.lastSeq;
         return next;
       });
+      if (event.type === 'cocreate_state') {
+        setCoCreate((previous) => coCreateStateFromEvent(event, previous));
+      }
       setConnection('live');
     };
 
@@ -408,6 +430,91 @@ export default function App() {
     }
   };
 
+  const beginCoCreateFlow = async (kind) => {
+    if (!activeProject?.id) {
+      return;
+    }
+    const initial = coCreate.input.trim();
+    if (kind === 'normal' && !initial) {
+      setCoCreate((previous) => ({ ...previous, error: '先输入一个核心想法' }));
+      return;
+    }
+    if (kind === 'adapt' && (!adaptation.sourceFile?.relative_path || adaptation.analysisStatus !== 'done')) {
+      setCoCreate((previous) => ({ ...previous, error: '先完成原文分析并选择模式' }));
+      return;
+    }
+    setBusy(true);
+    setCoCreate((previous) => ({ ...previous, kind, status: 'running', error: '', startMessage: '' }));
+    try {
+      const payload = { kind, initial };
+      if (kind === 'adapt') {
+        payload.source_file = adaptation.sourceFile.relative_path;
+        payload.mode = adaptation.mode;
+      }
+      const data = await beginCoCreate(activeProject.id, payload);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      setCoCreate((previous) => coCreateStateFromError(err, previous));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitCoCreate = async (event) => {
+    event.preventDefault();
+    const text = coCreate.input.trim();
+    const hasBackendSession = coCreate.active || coCreate.messages.length > 0;
+    if (!activeProject?.id || !text || !hasBackendSession) {
+      return;
+    }
+    setBusy(true);
+    setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
+    try {
+      const data = await sendCoCreate(activeProject.id, text);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      setCoCreate((previous) => coCreateStateFromError(err, previous));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const commitCoCreateFlow = async () => {
+    if (!activeProject?.id || !coCreate.ready || !coCreate.draftPrompt.trim()) {
+      return;
+    }
+    setBusy(true);
+    setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
+    try {
+      const data = await commitCoCreate(activeProject.id);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      setCoCreate((previous) => coCreateStateFromError(err, previous));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelCoCreateFlow = async () => {
+    if (!activeProject?.id || !coCreate.active) {
+      setCoCreate(createCoCreateState());
+      return;
+    }
+    setBusy(true);
+    try {
+      const data = await cancelCoCreate(activeProject.id);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate(createCoCreateState());
+    } catch (err) {
+      setCoCreate((previous) => coCreateStateFromError(err, previous));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const sortedEvents = useMemo(
     () => workbench.eventRows.slice().sort((a, b) => b.seq - a.seq),
     [workbench.eventRows]
@@ -549,6 +656,10 @@ export default function App() {
             <CircleDot size={16} />
             状态
           </button>
+          <button className={sideView === 'cocreate' ? 'active' : ''} onClick={() => setSideView('cocreate')} type="button">
+            <MessageSquareText size={16} />
+            共创
+          </button>
           <button className={sideView === 'simulate' ? 'active' : ''} onClick={() => setSideView('simulate')} type="button">
             <WandSparkles size={16} />
             画像
@@ -565,6 +676,18 @@ export default function App() {
 
         {sideView === 'status' ? (
           <StatusPanel snapshot={snapshot} activeProject={activeProject} onSteer={submitSteer} steerText={steerText} setSteerText={setSteerText} busy={busy} />
+        ) : sideView === 'cocreate' ? (
+          <CoCreatePanel
+            activeProject={activeProject}
+            busy={busy}
+            coCreate={coCreate}
+            setCoCreate={setCoCreate}
+            adaptation={adaptation}
+            onBegin={beginCoCreateFlow}
+            onSubmit={submitCoCreate}
+            onCommit={commitCoCreateFlow}
+            onCancel={cancelCoCreateFlow}
+          />
         ) : sideView === 'simulate' ? (
           <SimulationPanel
             activeProject={activeProject}
@@ -583,6 +706,10 @@ export default function App() {
             onUploadSource={uploadAdaptation}
             onAnalyze={runAdaptationAnalysis}
             onStart={startAdaptationRun}
+            onCoCreate={() => {
+              setSideView('cocreate');
+              beginCoCreateFlow('adapt');
+            }}
           />
         ) : (
           <ModelPanel runtime={runtime} />
@@ -665,10 +792,144 @@ const adaptationModes = [
   { value: 'free', label: 'free' }
 ];
 
-function AdaptationPanel({ activeProject, busy, adaptation, setAdaptation, onUploadSource, onAnalyze, onStart }) {
+function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation, onBegin, onSubmit, onCommit, onCancel }) {
+  const hasConversation = coCreate.messages.length > 0;
+  const hasBackendSession = coCreate.active || hasConversation;
+  const canBeginNormal = Boolean(activeProject && !busy && !hasBackendSession && coCreate.input.trim());
+  const canBeginStage = Boolean(activeProject && !busy && !hasBackendSession);
+  const canBeginAdapt = Boolean(
+    activeProject &&
+      !busy &&
+      !hasBackendSession &&
+      adaptation.sourceFile?.relative_path &&
+      adaptation.analysisStatus === 'done'
+  );
+  const canSend = Boolean(activeProject && !busy && hasBackendSession && coCreate.input.trim());
+  const canCommit = Boolean(activeProject && !busy && coCreate.ready && coCreate.draftPrompt.trim());
+  const canCancel = Boolean(activeProject && !busy && hasBackendSession);
+  const title = coCreateTitle(coCreate.kind);
+  return (
+    <div className="side-content">
+      {coCreate.error ? <div className="error-banner compact">{coCreate.error}</div> : null}
+
+      <section className="cocreate-section">
+        <div className="section-title">
+          <MessageSquareText size={17} />
+          <span>{title}</span>
+        </div>
+        <div className="cocreate-mode-grid">
+          <button className="tool-button" disabled={!canBeginNormal} onClick={() => onBegin('normal')} type="button">
+            <SquarePen size={16} />
+            普通
+          </button>
+          <button className="tool-button" disabled={!canBeginStage} onClick={() => onBegin('stage')} type="button">
+            <PauseCircle size={16} />
+            Stage
+          </button>
+          <button className="tool-button" disabled={!canBeginAdapt} onClick={() => onBegin('adapt')} type="button">
+            <FileText size={16} />
+            Adapt
+          </button>
+        </div>
+        {coCreate.modeLocked ? (
+          <div className="success-note">已锁定 {coCreate.adaptMode} / {coCreate.rewritePolicy}</div>
+        ) : null}
+      </section>
+
+      <section className="cocreate-section cocreate-dialog">
+        <div className="cocreate-messages">
+          {coCreate.messages.length === 0 ? (
+            <div className="empty-state">暂无共创对话</div>
+          ) : (
+            coCreate.messages.map((message, index) => (
+              <div className={`cocreate-message ${message.role}`} key={`${message.role}-${index}`}>
+                <strong>{coCreateRoleLabel(message.role)}</strong>
+                <p>{message.content}</p>
+              </div>
+            ))
+          )}
+        </div>
+        {coCreate.streamThinking || coCreate.streamReply ? (
+          <div className="cocreate-progress">
+            {coCreate.streamThinking ? (
+              <div className="cocreate-preview thinking">
+                <strong>Thinking</strong>
+                <p>{coCreate.streamThinking}</p>
+              </div>
+            ) : null}
+            {coCreate.streamReply ? (
+              <div className="cocreate-preview reply">
+                <strong>AI</strong>
+                <p>{coCreate.streamReply}</p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+
+      {coCreate.suggestions.length ? (
+        <section className="cocreate-section">
+          <div className="suggestion-list">
+            {coCreate.suggestions.slice(0, 3).map((suggestion) => (
+              <button
+                className="suggestion-chip"
+                disabled={busy}
+                key={suggestion}
+                onClick={() => setCoCreate((previous) => applyCoCreateSuggestion(previous, suggestion))}
+                type="button"
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <form className="cocreate-form" onSubmit={hasBackendSession ? onSubmit : (event) => {
+        event.preventDefault();
+        onBegin('normal');
+      }}>
+        <textarea
+          aria-label="共创输入"
+          disabled={!activeProject || busy}
+          placeholder={hasBackendSession ? '继续补充你的想法...' : '输入你的核心想法，或先进入 Stage/Adapt 共创'}
+          value={coCreate.input}
+          onChange={(event) => setCoCreate((previous) => appendCoCreateInput(previous, event.target.value))}
+        />
+        <button className="tool-button accent full-width" disabled={hasBackendSession ? !canSend : !canBeginNormal} type="submit">
+          <Send size={16} />
+          {hasBackendSession ? '发送' : '开始普通共创'}
+        </button>
+      </form>
+
+      <section className="cocreate-section">
+        <div className={`workflow-status ${coCreate.status}`}>
+          <strong>{coCreateStatusText(coCreate.status, coCreate.ready)}</strong>
+          <span>{coCreate.startMessage || (coCreate.ready ? 'draft prompt 已就绪' : '等待共创完成')}</span>
+        </div>
+        <div className="draft-preview">
+          {coCreate.draftPrompt ? <pre>{coCreate.draftPrompt}</pre> : <span className="muted">AI 会在这里整理 draft prompt</span>}
+        </div>
+        <div className="cocreate-actions">
+          <button className="tool-button accent" disabled={!canCommit} onClick={onCommit} type="button">
+            <Play size={16} />
+            启动
+          </button>
+          <button className="tool-button" disabled={!canCancel} onClick={onCancel} type="button">
+            <ListRestart size={16} />
+            取消
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AdaptationPanel({ activeProject, busy, adaptation, setAdaptation, onUploadSource, onAnalyze, onStart, onCoCreate }) {
   const latestAnalysis = latestSimulationEvent(adaptation.analysisEvents);
   const analyzed = adaptation.analysisStatus === 'done';
   const canAnalyze = Boolean(activeProject && adaptation.sourceFile && !busy && adaptation.analysisStatus !== 'running');
+  const canCoCreate = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy);
   const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.brief.trim());
   return (
     <div className="side-content">
@@ -752,6 +1013,10 @@ function AdaptationPanel({ activeProject, busy, adaptation, setAdaptation, onUpl
           <button className="tool-button accent full-width" disabled={!canStart} onClick={onStart} type="button">
             <Play size={16} />
             Start
+          </button>
+          <button className="tool-button full-width" disabled={!canCoCreate} onClick={onCoCreate} type="button">
+            <MessageSquareText size={16} />
+            进入共创
           </button>
           <div className={`workflow-status ${adaptation.startStatus}`}>
             <strong>{workflowStatusText(adaptation.startStatus)}</strong>
@@ -931,6 +1196,41 @@ function workflowStatusText(status) {
     default:
       return '待处理';
   }
+}
+
+function coCreateTitle(kind) {
+  switch (kind) {
+    case 'stage':
+      return '阶段共创';
+    case 'adapt':
+      return '改编共创';
+    default:
+      return '普通共创';
+  }
+}
+
+function coCreateRoleLabel(role) {
+  switch (role) {
+    case 'assistant':
+      return 'AI';
+    case 'system':
+      return '系统';
+    default:
+      return '你';
+  }
+}
+
+function coCreateStatusText(status, ready) {
+  if (status === 'running') {
+    return '进行中';
+  }
+  if (status === 'error') {
+    return '出错';
+  }
+  if (status === 'started') {
+    return '已启动';
+  }
+  return ready ? '已就绪' : '待处理';
 }
 
 function adaptationModeLabel(mode) {
