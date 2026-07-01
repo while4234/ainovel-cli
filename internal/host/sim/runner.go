@@ -52,8 +52,11 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 		}
 		pending := pendingSources(existing, sources)
 		if len(pending) == 0 {
-			emit(StageDone, 0, len(sources), "画像已是最新，未发现新增或变更文章", nil)
-			return
+			if !profileNeedsSynthesis(existing) {
+				emit(StageDone, 0, len(sources), "画像已是最新，未发现新增或变更文章", nil)
+				return
+			}
+			emit(StageMerge, len(sources), len(sources), "逐篇分析已完成，继续合成仿写画像...", nil)
 		}
 
 		reports := make([]domain.SimulationSourceReport, 0, len(pending))
@@ -63,24 +66,42 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 				return
 			}
 			emit(StageAnalyze, i+1, len(pending), fmt.Sprintf("分析仿写语料 %d/%d：%s", i+1, len(pending), source.RelativePath), nil)
-			report, err := AnalyzeSource(ctx, deps.LLM, deps.Prompts.Source, source)
+			report, err := analyzeSourceWithOptions(ctx, deps.LLM, deps.Prompts.Source, source, structuredJSONCallOptions{
+				OnRetry: func(ev structuredJSONRetryEvent) {
+					emit(StageAnalyze, i+1, len(pending), fmt.Sprintf("重试 %d/%d：%v", ev.Attempt, ev.MaxAttempts, ev.Err), ev.Err)
+				},
+			})
 			if err != nil {
 				emit(StageError, i+1, len(pending), "语料分析失败", err)
 				return
 			}
 			reports = append(reports, *report)
+			profile := buildProfile(existing, opts.SourceDir, []scannedSource{source}, []domain.SimulationSourceReport{*report}, existingSynthesis(existing), time.Now())
+			if err := deps.Store.Simulation.Save(profile); err != nil {
+				emit(StageError, i+1, len(pending), "保存逐篇分析进度失败", err)
+				return
+			}
+			existing = &profile
 		}
 
 		allReports := mergeSourceReports(existing, reports)
-		emit(StageMerge, len(pending), len(pending), "合并仿写画像...", nil)
-		synthesis, err := MergeSynthesis(ctx, deps.LLM, deps.Prompts.Merge, existing, allReports)
+		mergeCurrent, mergeTotal := len(pending), len(pending)
+		if len(pending) == 0 {
+			mergeCurrent, mergeTotal = len(allReports), len(allReports)
+		}
+		emit(StageMerge, mergeCurrent, mergeTotal, "合并仿写画像...", nil)
+		synthesis, err := mergeSynthesisWithOptions(ctx, deps.LLM, deps.Prompts.Merge, existing, allReports, structuredJSONCallOptions{
+			OnRetry: func(ev structuredJSONRetryEvent) {
+				emit(StageMerge, mergeCurrent, mergeTotal, fmt.Sprintf("重试 %d/%d：%v", ev.Attempt, ev.MaxAttempts, ev.Err), ev.Err)
+			},
+		})
 		if err != nil {
-			emit(StageError, len(pending), len(pending), "画像合并失败", err)
+			emit(StageError, mergeCurrent, mergeTotal, "画像合并失败", err)
 			return
 		}
-		profile := buildProfile(existing, opts.SourceDir, pending, reports, *synthesis, time.Now())
+		profile := buildProfile(existing, opts.SourceDir, nil, nil, *synthesis, time.Now())
 		if err := deps.Store.Simulation.Save(profile); err != nil {
-			emit(StageError, len(pending), len(pending), "保存仿写画像失败", err)
+			emit(StageError, mergeCurrent, mergeTotal, "保存仿写画像失败", err)
 			return
 		}
 		emit(StageDone, len(pending), len(pending), fmt.Sprintf("仿写画像已更新：新增/变更 %d 篇，累计 %d 篇", len(pending), len(profile.Corpus.Sources)), nil)
@@ -89,25 +110,29 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 }
 
 func AnalyzeSource(ctx context.Context, llm LLMChat, systemPrompt string, source scannedSource) (*domain.SimulationSourceReport, error) {
+	return analyzeSourceWithOptions(ctx, llm, systemPrompt, source, structuredJSONCallOptions{})
+}
+
+func analyzeSourceWithOptions(ctx context.Context, llm LLMChat, systemPrompt string, source scannedSource, opts structuredJSONCallOptions) (*domain.SimulationSourceReport, error) {
 	if strings.TrimSpace(systemPrompt) == "" {
 		return nil, fmt.Errorf("source prompt is required")
 	}
-	resp, err := llm.Generate(ctx, []agentcore.Message{
+	messages := []agentcore.Message{
 		agentcore.SystemMsg(systemPrompt),
 		agentcore.UserMsg(buildSourceUserPrompt(source)),
-	}, nil)
+	}
+	report, err := runStructuredJSONCall(ctx, llm, messages, func(text string) (domain.SimulationSourceReport, error) {
+		var report domain.SimulationSourceReport
+		if err := parseJSONPayload(text, &report); err != nil {
+			return report, fmt.Errorf("parse source report %s: %w", source.RelativePath, err)
+		}
+		if strings.TrimSpace(report.Summary) == "" {
+			return report, fmt.Errorf("source report %s: summary is required", source.RelativePath)
+		}
+		return report, nil
+	}, opts)
 	if err != nil {
-		return nil, fmt.Errorf("llm analyze %s: %w", source.RelativePath, err)
-	}
-	if resp == nil {
-		return nil, fmt.Errorf("llm analyze %s: nil response", source.RelativePath)
-	}
-	var report domain.SimulationSourceReport
-	if err := parseJSONPayload(resp.Message.TextContent(), &report); err != nil {
-		return nil, fmt.Errorf("parse source report %s: %w", source.RelativePath, err)
-	}
-	if strings.TrimSpace(report.Summary) == "" {
-		return nil, fmt.Errorf("source report %s: summary is required", source.RelativePath)
+		return nil, fmt.Errorf("analyze source %s: %w", source.RelativePath, err)
 	}
 	now := time.Now().Format(time.RFC3339)
 	report.RelativePath = source.RelativePath
@@ -118,22 +143,26 @@ func AnalyzeSource(ctx context.Context, llm LLMChat, systemPrompt string, source
 }
 
 func MergeSynthesis(ctx context.Context, llm LLMChat, systemPrompt string, existing *domain.SimulationProfile, reports []domain.SimulationSourceReport) (*domain.SimulationSynthesis, error) {
+	return mergeSynthesisWithOptions(ctx, llm, systemPrompt, existing, reports, structuredJSONCallOptions{})
+}
+
+func mergeSynthesisWithOptions(ctx context.Context, llm LLMChat, systemPrompt string, existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, opts structuredJSONCallOptions) (*domain.SimulationSynthesis, error) {
 	if strings.TrimSpace(systemPrompt) == "" {
 		return nil, fmt.Errorf("merge prompt is required")
 	}
-	resp, err := llm.Generate(ctx, []agentcore.Message{
+	messages := []agentcore.Message{
 		agentcore.SystemMsg(systemPrompt),
 		agentcore.UserMsg(buildMergeUserPrompt(existing, reports)),
-	}, nil)
+	}
+	synthesis, err := runStructuredJSONCall(ctx, llm, messages, func(text string) (domain.SimulationSynthesis, error) {
+		var synthesis domain.SimulationSynthesis
+		if err := parseJSONPayload(text, &synthesis); err != nil {
+			return synthesis, fmt.Errorf("parse synthesis: %w", err)
+		}
+		return synthesis, nil
+	}, opts)
 	if err != nil {
-		return nil, fmt.Errorf("llm merge profile: %w", err)
-	}
-	if resp == nil {
-		return nil, fmt.Errorf("llm merge profile: nil response")
-	}
-	var synthesis domain.SimulationSynthesis
-	if err := parseJSONPayload(resp.Message.TextContent(), &synthesis); err != nil {
-		return nil, fmt.Errorf("parse synthesis: %w", err)
+		return nil, fmt.Errorf("merge profile: %w", err)
 	}
 	return &synthesis, nil
 }
@@ -142,9 +171,18 @@ func pendingSources(existing *domain.SimulationProfile, sources []scannedSource)
 	if existing == nil {
 		return sources
 	}
-	known := make(map[string]struct{}, len(existing.Corpus.Sources))
-	for _, source := range existing.Corpus.Sources {
-		known[domain.SimulationSourceFingerprint(source.RelativePath, source.SHA256)] = struct{}{}
+	known := make(map[string]struct{}, len(existing.SourceReports))
+	for _, report := range existing.SourceReports {
+		if strings.TrimSpace(report.Summary) == "" {
+			continue
+		}
+		fingerprint := strings.TrimSpace(report.Fingerprint)
+		if fingerprint == "" && report.RelativePath != "" && report.SHA256 != "" {
+			fingerprint = domain.SimulationSourceFingerprint(report.RelativePath, report.SHA256)
+		}
+		if fingerprint != "" {
+			known[fingerprint] = struct{}{}
+		}
 	}
 	var pending []scannedSource
 	for _, source := range sources {
@@ -154,6 +192,51 @@ func pendingSources(existing *domain.SimulationProfile, sources []scannedSource)
 		pending = append(pending, source)
 	}
 	return pending
+}
+
+func existingSynthesis(existing *domain.SimulationProfile) domain.SimulationSynthesis {
+	if existing == nil {
+		return domain.SimulationSynthesis{}
+	}
+	return existing.Synthesis
+}
+
+func profileNeedsSynthesis(existing *domain.SimulationProfile) bool {
+	return existing != nil && len(existing.SourceReports) > 0 && synthesisIsEmpty(existing.Synthesis)
+}
+
+func synthesisIsEmpty(s domain.SimulationSynthesis) bool {
+	return len(s.Style.NarrativeVoice) == 0 &&
+		len(s.Style.SentenceRhythm) == 0 &&
+		len(s.Style.ProseTexture) == 0 &&
+		len(s.Style.Perspective) == 0 &&
+		len(s.Style.Mood) == 0 &&
+		len(s.Style.DoNotCopy) == 0 &&
+		len(s.Lexicon.CommonWords) == 0 &&
+		len(s.Lexicon.EmotionWords) == 0 &&
+		len(s.Lexicon.SceneWords) == 0 &&
+		len(s.Lexicon.TransitionWords) == 0 &&
+		len(s.Lexicon.SignaturePhrases) == 0 &&
+		len(s.PlotDesign.OpeningPatterns) == 0 &&
+		len(s.PlotDesign.EscalationPatterns) == 0 &&
+		len(s.PlotDesign.TurningPointPatterns) == 0 &&
+		len(s.PlotDesign.PayoffPatterns) == 0 &&
+		len(s.HookDesign.HookTypes) == 0 &&
+		len(s.HookDesign.Placement) == 0 &&
+		len(s.HookDesign.CliffhangerPatterns) == 0 &&
+		len(s.HookDesign.PayoffRules) == 0 &&
+		len(s.PacingDensity.SceneDensity) == 0 &&
+		len(s.PacingDensity.InformationRelease) == 0 &&
+		len(s.PacingDensity.DialogueActionRatio) == 0 &&
+		len(s.PacingDensity.CompressionRules) == 0 &&
+		len(s.ReaderEngagement.Methods) == 0 &&
+		len(s.ReaderEngagement.EmotionalDrivers) == 0 &&
+		len(s.ReaderEngagement.ProgressionRewards) == 0 &&
+		len(s.ReaderEngagement.AntiPatterns) == 0 &&
+		len(s.RoleGuidance.Coordinator) == 0 &&
+		len(s.RoleGuidance.Architect) == 0 &&
+		len(s.RoleGuidance.Writer) == 0 &&
+		len(s.RoleGuidance.Editor) == 0
 }
 
 func buildProfile(

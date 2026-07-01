@@ -17,11 +17,17 @@ import (
 
 type scriptedLLM struct {
 	responses []string
+	errors    []error
+	got       [][]agentcore.Message
 	calls     atomic.Int32
 }
 
-func (s *scriptedLLM) Generate(_ context.Context, _ []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+func (s *scriptedLLM) Generate(_ context.Context, messages []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
 	idx := int(s.calls.Add(1)) - 1
+	s.got = append(s.got, append([]agentcore.Message(nil), messages...))
+	if idx < len(s.errors) && s.errors[idx] != nil {
+		return nil, s.errors[idx]
+	}
 	if idx >= len(s.responses) {
 		return nil, fmt.Errorf("scriptedLLM exhausted at call %d", idx+1)
 	}
@@ -176,7 +182,138 @@ func TestRunnerIncrementallyAnalyzesNewAndChangedSources(t *testing.T) {
 	}
 }
 
+func TestRunnerPersistsAnalyzedSourcesBeforeFailureAndResumes(t *testing.T) {
+	dir := t.TempDir()
+	sourceDir := filepath.Join(dir, "simulate")
+	writeSimulationSource(t, sourceDir, "a.txt", "first")
+	writeSimulationSource(t, sourceDir, "b.txt", "second")
+	writeSimulationSource(t, sourceDir, "c.txt", "third")
+
+	st := store.NewStore(filepath.Join(dir, "output", "novel"))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	firstLLM := &scriptedLLM{
+		responses: []string{
+			validSourceReportJSON("a tone"),
+			validSourceReportJSON("b tone"),
+		},
+		errors: []error{nil, nil, fmt.Errorf("out of credits")},
+	}
+	events := collectRun(t, st, firstLLM, sourceDir)
+	if err := lastRunError(events); err == nil || !strings.Contains(err.Error(), "out of credits") {
+		t.Fatalf("first run error = %v, want out of credits", err)
+	}
+	if got := firstLLM.calls.Load(); got != 3 {
+		t.Fatalf("first run calls = %d, want 3", got)
+	}
+	profile, err := st.Simulation.Load()
+	if err != nil {
+		t.Fatalf("Load profile: %v", err)
+	}
+	if profile == nil || len(profile.Corpus.Sources) != 2 || len(profile.SourceReports) != 2 {
+		t.Fatalf("partial profile should persist two successful sources: %+v", profile)
+	}
+	if !synthesisIsEmpty(profile.Synthesis) {
+		t.Fatalf("partial profile should not have synthesis yet: %+v", profile.Synthesis)
+	}
+
+	resumeLLM := &scriptedLLM{responses: []string{
+		validSourceReportJSON("c tone"),
+		validSynthesisJSON("resumed synthesis"),
+	}}
+	drainRun(t, st, resumeLLM, sourceDir)
+	if got := resumeLLM.calls.Load(); got != 2 {
+		t.Fatalf("resume calls = %d, want only remaining source plus synthesis", got)
+	}
+	profile, err = st.Simulation.Load()
+	if err != nil {
+		t.Fatalf("Load resumed profile: %v", err)
+	}
+	if len(profile.Corpus.Sources) != 3 || len(profile.SourceReports) != 3 {
+		t.Fatalf("resumed profile should contain three sources: %+v", profile)
+	}
+	if synthesisIsEmpty(profile.Synthesis) {
+		t.Fatal("resumed profile should have synthesis")
+	}
+}
+
+func TestRunnerResumesMergeWithoutReanalyzingCompletedSources(t *testing.T) {
+	dir := t.TempDir()
+	sourceDir := filepath.Join(dir, "simulate")
+	writeSimulationSource(t, sourceDir, "a.txt", "first")
+	writeSimulationSource(t, sourceDir, "b.txt", "second")
+
+	st := store.NewStore(filepath.Join(dir, "output", "novel"))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	firstLLM := &scriptedLLM{
+		responses: []string{
+			validSourceReportJSON("a tone"),
+			validSourceReportJSON("b tone"),
+		},
+		errors: []error{nil, nil, fmt.Errorf("merge credits exhausted")},
+	}
+	events := collectRun(t, st, firstLLM, sourceDir)
+	if err := lastRunError(events); err == nil || !strings.Contains(err.Error(), "merge credits exhausted") {
+		t.Fatalf("first run error = %v, want merge credits exhausted", err)
+	}
+	profile, err := st.Simulation.Load()
+	if err != nil {
+		t.Fatalf("Load profile: %v", err)
+	}
+	if profile == nil || len(profile.SourceReports) != 2 || !synthesisIsEmpty(profile.Synthesis) {
+		t.Fatalf("merge-failed profile should keep reports but no synthesis: %+v", profile)
+	}
+
+	resumeLLM := &scriptedLLM{responses: []string{validSynthesisJSON("merge only")}}
+	drainRun(t, st, resumeLLM, sourceDir)
+	if got := resumeLLM.calls.Load(); got != 1 {
+		t.Fatalf("resume calls = %d, want only synthesis", got)
+	}
+}
+
+func TestAnalyzeSourceRetriesMalformedJSON(t *testing.T) {
+	defer stubStructuredJSONRetrySleep(t)()
+	source := scannedSource{
+		SimulationSource: domain.SimulationSource{
+			RelativePath: "a.txt",
+			SHA256:       "abc",
+			Fingerprint:  domain.SimulationSourceFingerprint("a.txt", "abc"),
+		},
+		content: "body",
+	}
+	llm := &scriptedLLM{responses: []string{
+		"not json",
+		validSourceReportJSON("fixed tone"),
+	}}
+
+	report, err := AnalyzeSource(context.Background(), llm, "source prompt", source)
+	if err != nil {
+		t.Fatalf("AnalyzeSource: %v", err)
+	}
+	if report.Summary != "fixed tone" {
+		t.Fatalf("summary = %q, want fixed tone", report.Summary)
+	}
+	if got := llm.calls.Load(); got != 2 {
+		t.Fatalf("calls = %d, want 2", got)
+	}
+	if len(llm.got) != 2 || len(llm.got[1]) != 3 || !strings.Contains(llm.got[1][2].TextContent(), "could not be parsed") {
+		t.Fatalf("retry prompt not appended: %+v", llm.got)
+	}
+}
+
 func drainRun(t *testing.T, st *store.Store, llm *scriptedLLM, sourceDir string) {
+	t.Helper()
+	for _, ev := range collectRun(t, st, llm, sourceDir) {
+		if ev.Err != nil {
+			t.Fatalf("simulate errored: %v", ev.Err)
+		}
+	}
+}
+
+func collectRun(t *testing.T, st *store.Store, llm *scriptedLLM, sourceDir string) []Event {
 	t.Helper()
 	events, err := Run(context.Background(), Deps{
 		Store:   st,
@@ -186,11 +323,37 @@ func drainRun(t *testing.T, st *store.Store, llm *scriptedLLM, sourceDir string)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	var collected []Event
 	for ev := range events {
-		if ev.Err != nil {
-			t.Fatalf("simulate errored: %v", ev.Err)
+		collected = append(collected, ev)
+	}
+	return collected
+}
+
+func lastRunError(events []Event) error {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Err != nil {
+			return events[i].Err
 		}
 	}
+	return nil
+}
+
+func writeSimulationSource(t *testing.T, sourceDir, name, content string) {
+	t.Helper()
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stubStructuredJSONRetrySleep(t *testing.T) func() {
+	t.Helper()
+	original := structuredJSONRetrySleep
+	structuredJSONRetrySleep = func(context.Context, time.Duration) error { return nil }
+	return func() { structuredJSONRetrySleep = original }
 }
 
 func sourceHashForPath(t *testing.T, profile *domain.SimulationProfile, rel string) string {
