@@ -30,28 +30,34 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 ## Current Baseline
 
 - Latest source change: branch `codex/web-project-cocreate-controls`,
-  `5c9ff38` `fix: open web grok oauth login`.
+  `6a52385` `fix: allow global web grok login`.
 - Branch: `codex/web-project-cocreate-controls`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the Web Grok OAuth login fix commit,
+- Working tree: expected clean after the global Web Grok OAuth login fix commit,
   except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
   artifacts.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` is rebuilt after the Web Grok
-  OAuth login fix using the project-local Go 1.25.5 toolchain, then restarted on
+- Runtime: local `D:\ainovel\ainovel-cli.exe` is rebuilt after the global Web
+  Grok OAuth login fix using the project-local Go 1.25.5 toolchain, then restarted on
   `http://127.0.0.1:9898` with runtime root
   `C:\Users\RondleLiu\.ainovel\novels-preview`. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run "TestProjectGrokLogin|TestProjectModelAdd" -count=1`,
+- Validation: `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run "TestGrokLogin|TestProjectGrokLogin" -count=1`,
   `npm --prefix internal/entry/web/ui test`,
   `npm --prefix internal/entry/web/ui run build`,
   `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -count=1`,
   `.codex\tools\go1.25.5\go\bin\go.exe build -o D:\ainovel\ainovel-cli.exe D:\ainovel\cmd\ainovel-cli`,
-  `git diff --check`, and HTTP smoke checks for `/`, `/api/runtime`, and
-  `/api/projects` on `http://127.0.0.1:9898` passed on 2026-07-01. The latest
-  runtime is on 9898 and 9904 has no listener.
+  `git diff --check`, HTTP smoke checks for `/`, `/api/runtime`, `/api/projects`,
+  and `POST /api/models/grok-login/status`, plus a Playwright no-project model
+  panel check passed on 2026-07-01. The latest runtime is on 9898 and 9904 has no
+  listener.
 
 ## Change Log
 
+- 2026-07-01 `6a52385` `fix: allow global web grok login`: added global Web
+  Grok OAuth start/poll/complete/status endpoints, routed frontend Grok login
+  calls to them when no project is active, kept Login/Poll/Status clickable
+  without an open project, added backend/frontend coverage, regenerated embedded
+  Web assets, rebuilt the local binary, and restarted port 9898.
 - 2026-07-01 `5c9ff38` `fix: open web grok oauth login`: added an opt-in
   backend system-browser opener for Web Grok OAuth login start, frontend pending
   and no-project feedback, popup/manual-link fallbacks, API/backend tests, and
