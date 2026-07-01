@@ -119,6 +119,7 @@ func startRuntime(rt *host.Host, plan startup.Plan) tea.Cmd {
 			}
 			err = rt.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
 				Brief:         plan.RawPrompt,
+				SourcePath:    plan.AdaptSourcePath,
 				Granularity:   plan.AdaptGranularity,
 				RewritePolicy: plan.AdaptRewritePolicy,
 				WordTolerance: plan.AdaptWordTolerance,

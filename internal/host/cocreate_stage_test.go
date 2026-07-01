@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
@@ -146,6 +147,78 @@ func TestStageCoCreate_OccupancyBlocksConcurrentEntries(t *testing.T) {
 	h.CancelCoCreate()
 	if h.cocreating {
 		t.Fatal("退出后占用标记应解除")
+	}
+}
+
+func TestStartAdaptationPreparedPrematureDoesNotResetExistingState(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("normal project", 8); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	progress, err := st.Progress.Load()
+	if err != nil {
+		t.Fatalf("Progress.Load: %v", err)
+	}
+	progress.CompletedChapters = []int{1, 2}
+	progress.TotalWordCount = 12345
+	if err := st.Progress.Save(progress); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	if _, err := st.Checkpoints.Append(domain.GlobalScope(), "normal_step", "chapters/002.md", "digest-normal"); err != nil {
+		t.Fatalf("Checkpoints.Append: %v", err)
+	}
+	if err := st.Adaptation.SavePlan(domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityChapter,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
+		Brief:         "old generated adaptation",
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Old",
+			SourceChapters: []int{1},
+		}},
+	}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	if err := st.Adaptation.SaveCheck(domain.AdaptationCheck{
+		Chapter:     1,
+		DraftSHA256: store.TextSHA256("old draft"),
+		Passed:      true,
+		CheckedAt:   "2026-07-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SaveCheck: %v", err)
+	}
+
+	h := &Host{
+		store:     st,
+		lifecycle: lifecycleIdle,
+		events:    make(chan Event, 16),
+	}
+	err = h.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
+		Brief:       "turn this into suspense",
+		Granularity: domain.AdaptationGranularityChapter,
+	})
+	if err == nil || !strings.Contains(err.Error(), "analyze source first") {
+		t.Fatalf("StartAdaptationPreparedWithOptions error = %v, want analyze-source precondition", err)
+	}
+	gotProgress, err := st.Progress.Load()
+	if err != nil {
+		t.Fatalf("Progress.Load after failed start: %v", err)
+	}
+	if gotProgress == nil || gotProgress.NovelName != "normal project" || gotProgress.TotalChapters != 8 ||
+		gotProgress.TotalWordCount != 12345 || len(gotProgress.CompletedChapters) != 2 {
+		t.Fatalf("progress mutated after failed start: %+v", gotProgress)
+	}
+	if checkpoints := st.Checkpoints.All(); len(checkpoints) != 1 || checkpoints[0].Step != "normal_step" {
+		t.Fatalf("checkpoints mutated after failed start: %+v", checkpoints)
+	}
+	if plan, err := st.Adaptation.LoadPlan(); err != nil || plan == nil || plan.Brief != "old generated adaptation" {
+		t.Fatalf("adaptation plan mutated after failed start: plan=%+v err=%v", plan, err)
+	}
+	if check, err := st.Adaptation.LoadCheck(1); err != nil || check == nil || !check.Passed {
+		t.Fatalf("adaptation check mutated after failed start: check=%+v err=%v", check, err)
 	}
 }
 

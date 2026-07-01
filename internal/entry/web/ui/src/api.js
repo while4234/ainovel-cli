@@ -82,3 +82,26 @@ export function importSimulationProfile(projectId, file) {
     body
   });
 }
+
+export function uploadAdaptationSource(projectId, file) {
+  const body = new FormData();
+  body.append('source', file);
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/source`, {
+    method: 'POST',
+    body
+  });
+}
+
+export function analyzeAdaptationSource(projectId, sourceFile) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/analyze`, {
+    method: 'POST',
+    body: JSON.stringify({ source_file: sourceFile })
+  });
+}
+
+export function startAdaptation(projectId, sourceFile, mode, brief) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/start`, {
+    method: 'POST',
+    body: JSON.stringify({ source_file: sourceFile, mode, brief })
+  });
+}

@@ -134,6 +134,19 @@ func NormalizeAdaptationGranularity(value string) string {
 	}
 }
 
+func StrictAdaptationGranularity(value string) (string, bool) {
+	switch strings.TrimSpace(value) {
+	case AdaptationGranularityChapter:
+		return AdaptationGranularityChapter, true
+	case AdaptationGranularityArc:
+		return AdaptationGranularityArc, true
+	case AdaptationGranularityFree:
+		return AdaptationGranularityFree, true
+	default:
+		return "", false
+	}
+}
+
 // NormalizeAdaptationRewritePolicy constrains rewrite policy. Empty and
 // unknown values fall back to full rewrite for compatibility with old
 // brief-only adaptation starts.

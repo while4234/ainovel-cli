@@ -140,6 +140,10 @@ h2 {
   font-weight: 700;
 }
 
+.tool-button.full-width {
+  width: 100%;
+}
+
 .primary,
 .accent {
   border-color: #0b746f;
@@ -411,7 +415,7 @@ h2 {
 
 .side-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-bottom: 1px solid #d5ded8;
 }
 
@@ -488,6 +492,23 @@ h2 {
   padding: 10px;
 }
 
+.adapt-brief {
+  width: 100%;
+  min-height: 86px;
+  border: 1px solid #cbd8d2;
+  border-radius: 7px;
+  padding: 10px;
+  resize: vertical;
+  background: #ffffff;
+  color: #202826;
+  outline: none;
+}
+
+.adapt-brief:focus {
+  border-color: #0b746f;
+  box-shadow: 0 0 0 3px rgba(11, 116, 111, 0.14);
+}
+
 .simulation-section {
   display: grid;
   gap: 8px;
@@ -528,6 +549,37 @@ h2 {
   color: #315f38;
   font-size: 13px;
   font-weight: 700;
+}
+
+.adapt-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.adapt-mode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border: 1px solid #cdd9d3;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #40504b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.adapt-mode input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.adapt-mode.active {
+  border-color: #0b746f;
+  background: #eef7f3;
+  color: #0b746f;
 }
 
 .file-list,

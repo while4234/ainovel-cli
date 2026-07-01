@@ -36,6 +36,7 @@ func PrepareAdaptNovel(req Request) (Plan, error) {
 		AdaptGranularity:   granularity,
 		AdaptRewritePolicy: rewritePolicy,
 		AdaptWordTolerance: wordTolerance,
+		AdaptSourcePath:    strings.TrimSpace(req.NovelPath),
 	}, nil
 }
 

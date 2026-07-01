@@ -17,6 +17,7 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
 )
 
@@ -372,22 +373,29 @@ type fakeProjectHost struct {
 
 	snapshot host.UISnapshot
 
-	resumeStarted     chan struct{}
-	resumeStartedOnce sync.Once
-	releaseResume     chan struct{}
-	resumeErr         error
-	continueErr       error
-	steerErr          error
-	simulateErr       error
-	importErr         error
+	resumeStarted              chan struct{}
+	resumeStartedOnce          sync.Once
+	releaseResume              chan struct{}
+	resumeErr                  error
+	continueErr                error
+	steerErr                   error
+	simulateErr                error
+	importErr                  error
+	adaptAnalyzeErr            error
+	adaptStartErr              error
+	requireAnalyzedAdaptSource bool
 
-	resumeCalls   int
-	continueCalls int
-	steerCalls    int
-	simulateCalls int
-	importCalls   int
-	simulateDir   string
-	importPath    string
+	resumeCalls       int
+	continueCalls     int
+	steerCalls        int
+	simulateCalls     int
+	importCalls       int
+	adaptAnalyzeCalls int
+	adaptStartCalls   int
+	simulateDir       string
+	importPath        string
+	adaptSourcePath   string
+	adaptOptions      adapt.ProposalOptions
 
 	events    chan host.Event
 	stream    chan string
@@ -471,6 +479,32 @@ func (f *fakeProjectHost) ImportSimulationProfile(_ context.Context, path string
 	events <- sim.Event{Stage: sim.StageDone, Message: "profile imported"}
 	close(events)
 	return events, nil
+}
+
+func (f *fakeProjectHost) PrepareAdaptationSource(_ context.Context, sourcePath string) (<-chan adapt.Event, error) {
+	f.mu.Lock()
+	f.adaptAnalyzeCalls++
+	f.adaptSourcePath = sourcePath
+	err := f.adaptAnalyzeErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	events := make(chan adapt.Event, 2)
+	events <- adapt.Event{Stage: adapt.StageDone, Message: "adaptation source analyzed"}
+	close(events)
+	return events, nil
+}
+
+func (f *fakeProjectHost) StartAdaptationPreparedWithOptions(options adapt.ProposalOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adaptStartCalls++
+	f.adaptOptions = options
+	if f.requireAnalyzedAdaptSource && options.SourcePath != f.adaptSourcePath {
+		return fmt.Errorf("adaptation source %q has not completed analysis", options.SourcePath)
+	}
+	return f.adaptStartErr
 }
 
 func (f *fakeProjectHost) ReplayQueue(int64) ([]domain.RuntimeQueueItem, error) {

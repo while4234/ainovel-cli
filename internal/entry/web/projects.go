@@ -165,6 +165,7 @@ func (s *ProjectStore) ensureProjectDirs(manifest ProjectManifest) error {
 		manifest.RootDir,
 		filepath.Join(manifest.RootDir, "simulate"),
 		filepath.Join(manifest.RootDir, "uploads"),
+		filepath.Join(manifest.RootDir, "uploads", "adaptation"),
 		filepath.Join(manifest.RootDir, "profiles"),
 		filepath.Join(manifest.RootDir, "profiles", "imported"),
 		manifest.OutputDir,

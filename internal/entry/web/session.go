@@ -15,6 +15,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
 )
 
@@ -48,6 +49,8 @@ type projectHost interface {
 	Steer(string) error
 	SimulateFromDir(context.Context, string) (<-chan sim.Event, error)
 	ImportSimulationProfile(context.Context, string) (<-chan sim.Event, error)
+	PrepareAdaptationSource(context.Context, string) (<-chan adapt.Event, error)
+	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
 	ReplayQueue(int64) ([]domain.RuntimeQueueItem, error)
 	Events() <-chan host.Event
 	Stream() <-chan string
@@ -237,6 +240,39 @@ func (s *ProjectSession) ImportSimulationProfile(ctx context.Context, path strin
 	return apiEvents, err
 }
 
+func (s *ProjectSession) PrepareAdaptationSource(ctx context.Context, sourcePath string) ([]apiAdaptationEvent, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	events, err := s.host.PrepareAdaptationSource(ctx, sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	if events == nil {
+		return nil, fmt.Errorf("adaptation event stream is nil")
+	}
+	apiEvents, err := s.consumeAdaptationEvents(ctx, events)
+	s.AppendSnapshot()
+	return apiEvents, err
+}
+
+func (s *ProjectSession) StartAdaptationPrepared(options adapt.ProposalOptions) error {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	if err := s.host.StartAdaptationPreparedWithOptions(options); err != nil {
+		return err
+	}
+	s.AppendSnapshot()
+	return nil
+}
+
 func (s *ProjectSession) beginAction() (func(), error) {
 	if !s.actionMu.TryLock() {
 		return nil, ErrSessionActionInProgress
@@ -423,6 +459,33 @@ func (s *ProjectSession) consumeSimulationEvents(ctx context.Context, events <-c
 	}
 }
 
+func (s *ProjectSession) consumeAdaptationEvents(ctx context.Context, events <-chan adapt.Event) ([]apiAdaptationEvent, error) {
+	var out []apiAdaptationEvent
+	var runErr error
+	for {
+		select {
+		case <-ctx.Done():
+			return out, ctx.Err()
+		case ev, ok := <-events:
+			if !ok {
+				return out, runErr
+			}
+			apiEvent := apiAdaptationEventFromAdapt(ev)
+			out = append(out, apiEvent)
+			s.appendAdaptationEvent(apiEvent)
+			if ev.Err != nil {
+				message := strings.TrimSpace(ev.Message)
+				if message == "" {
+					message = ev.Err.Error()
+				} else {
+					message = fmt.Sprintf("%s: %v", message, ev.Err)
+				}
+				runErr = adaptationRunError{message: message}
+			}
+		}
+	}
+}
+
 func (s *ProjectSession) appendSimulationEvent(ev apiSimulationEvent) WebEvent {
 	level := "info"
 	if ev.Error != "" {
@@ -433,6 +496,24 @@ func (s *ProjectSession) appendSimulationEvent(ev apiSimulationEvent) WebEvent {
 	return s.appendHostEvent(host.Event{
 		Time:     ev.Time,
 		Category: "SIMULATE",
+		Agent:    "web",
+		Summary:  ev.Message,
+		Detail:   ev.Error,
+		Kind:     ev.Stage,
+		Level:    level,
+	})
+}
+
+func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
+	level := "info"
+	if ev.Error != "" {
+		level = "error"
+	} else if ev.Stage == string(adapt.StageDone) {
+		level = "success"
+	}
+	return s.appendHostEvent(host.Event{
+		Time:     ev.Time,
+		Category: "ADAPT",
 		Agent:    "web",
 		Summary:  ev.Message,
 		Detail:   ev.Error,

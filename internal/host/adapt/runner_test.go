@@ -61,9 +61,11 @@ func TestPrepareRunWorksAfterResetGenerated(t *testing.T) {
 	if err := st.Adaptation.SaveSourceFoundation(testSourceFoundation()); err != nil {
 		t.Fatalf("SaveSourceFoundation: %v", err)
 	}
-	if err := st.Adaptation.SaveSourceReports([]domain.AdaptationSourceReport{
-		{Chapter: 1, Title: "Opening", KeyEvents: []string{"Ari accepts the call"}},
-	}); err != nil {
+	report := domain.AdaptationSourceReport{Chapter: 1, Title: "Opening", SourceSHA256: source.SHA256, Summary: "Ari starts", KeyEvents: []string{"Ari accepts the call"}}
+	if err := st.Adaptation.SaveSourceReport(report); err != nil {
+		t.Fatalf("SaveSourceReport: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceReports([]domain.AdaptationSourceReport{report}); err != nil {
 		t.Fatalf("SaveSourceReports: %v", err)
 	}
 	if err := st.Adaptation.SavePlan(domain.AdaptationPlan{
@@ -152,11 +154,17 @@ func TestBuildAdaptationProposalChapterPreserveDetailsUsesSourceRuneRanges(t *te
 	if err := st.Adaptation.SaveSourceFoundation(testSourceFoundation()); err != nil {
 		t.Fatalf("SaveSourceFoundation: %v", err)
 	}
-	if err := st.Adaptation.SaveSourceReports([]domain.AdaptationSourceReport{
-		{Chapter: 1, Title: "One", KeyEvents: []string{"event one"}},
-		{Chapter: 2, Title: "Two", KeyEvents: []string{"event two"}},
-		{Chapter: 3, Title: "Three", KeyEvents: []string{"event three"}},
-	}); err != nil {
+	reports := []domain.AdaptationSourceReport{
+		{Chapter: 1, Title: "One", SourceSHA256: source1.SHA256, Summary: "one", KeyEvents: []string{"event one"}},
+		{Chapter: 2, Title: "Two", SourceSHA256: source2.SHA256, Summary: "two", KeyEvents: []string{"event two"}},
+		{Chapter: 3, Title: "Three", SourceSHA256: source3.SHA256, Summary: "three", KeyEvents: []string{"event three"}},
+	}
+	for _, report := range reports {
+		if err := st.Adaptation.SaveSourceReport(report); err != nil {
+			t.Fatalf("SaveSourceReport %d: %v", report.Chapter, err)
+		}
+	}
+	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
 		t.Fatalf("SaveSourceReports: %v", err)
 	}
 

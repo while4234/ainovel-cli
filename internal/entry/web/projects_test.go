@@ -23,6 +23,7 @@ func TestProjectManifestCreateListOpenTouches(t *testing.T) {
 		created.RootDir,
 		filepath.Join(created.RootDir, "simulate"),
 		filepath.Join(created.RootDir, "uploads"),
+		filepath.Join(created.RootDir, "uploads", "adaptation"),
 		filepath.Join(created.RootDir, "profiles"),
 		created.OutputDir,
 	} {

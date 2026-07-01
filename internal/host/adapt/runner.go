@@ -199,12 +199,24 @@ func sourceManifestMatches(existing *domain.AdaptationSourceManifest, next domai
 	if existing == nil || existing.ChapterCount != next.ChapterCount || len(existing.Chapters) != len(next.Chapters) {
 		return false
 	}
+	if !sameSourcePath(existing.SourcePath, next.SourcePath) {
+		return false
+	}
 	for i := range next.Chapters {
 		if existing.Chapters[i].Chapter != next.Chapters[i].Chapter || existing.Chapters[i].SHA256 != next.Chapters[i].SHA256 {
 			return false
 		}
 	}
 	return true
+}
+
+func sameSourcePath(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return a == b
+	}
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
 func reusableSourceReport(report *domain.AdaptationSourceReport, sourceSHA256 string) bool {
@@ -262,6 +274,16 @@ func BuildAdaptationProposal(deps Deps, opts ProposalOptions) (*domain.Adaptatio
 	if opts.Brief == "" {
 		return nil, fmt.Errorf("adaptation brief is required")
 	}
+	granularity, ok := domain.StrictAdaptationGranularity(opts.Granularity)
+	if !ok {
+		return nil, fmt.Errorf("adaptation mode must be one of chapter, arc, free")
+	}
+	opts.Granularity = granularity
+	opts.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(opts.Granularity)
+	manifest, reports, err := ValidatePreparedSource(deps.Store, opts.SourcePath)
+	if err != nil {
+		return nil, err
+	}
 	sourceFoundation, err := deps.Store.Adaptation.LoadSourceFoundation()
 	if err != nil {
 		return nil, fmt.Errorf("load source foundation: %w", err)
@@ -269,26 +291,54 @@ func BuildAdaptationProposal(deps Deps, opts ProposalOptions) (*domain.Adaptatio
 	if sourceFoundation == nil {
 		return nil, fmt.Errorf("source foundation missing; import source first")
 	}
-	reports, err := deps.Store.Adaptation.LoadSourceReports()
-	if err != nil {
-		return nil, fmt.Errorf("load source reports: %w", err)
-	}
-	if len(reports) == 0 {
-		return nil, fmt.Errorf("source reports missing; import source first")
-	}
-	manifest, err := deps.Store.Adaptation.LoadSourceManifest()
-	if err != nil {
-		return nil, fmt.Errorf("load source manifest: %w", err)
-	}
-	if manifest == nil {
-		return nil, fmt.Errorf("source manifest missing; import source first")
-	}
 
 	proposal := buildPlanFromInputs(opts, reports, manifest, domain.AdaptationPlanStatusProposal)
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation proposal: %w", err)
 	}
 	return &proposal, nil
+}
+
+func ValidatePreparedSource(st *store.Store, sourcePath string) (*domain.AdaptationSourceManifest, []domain.AdaptationSourceReport, error) {
+	if st == nil {
+		return nil, nil, fmt.Errorf("store is required")
+	}
+	manifest, err := st.Adaptation.LoadSourceManifest()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load source manifest: %w", err)
+	}
+	if manifest == nil || manifest.ChapterCount <= 0 || len(manifest.Chapters) != manifest.ChapterCount {
+		return nil, nil, fmt.Errorf("source manifest missing or incomplete; analyze source first")
+	}
+	if sourcePath = strings.TrimSpace(sourcePath); sourcePath != "" {
+		absPath, err := filepath.Abs(sourcePath)
+		if err == nil {
+			sourcePath = absPath
+		}
+		chapters, err := imp.SplitFile(sourcePath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("split selected adaptation source: %w", err)
+		}
+		next := buildSourceManifest(sourcePath, chapters)
+		if !sourceManifestMatches(manifest, next) {
+			return nil, nil, fmt.Errorf("selected adaptation source has not been analyzed; run adaptation source analysis first")
+		}
+	}
+	reports, err := st.Adaptation.LoadCompleteSourceReports()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load source reports: %w", err)
+	}
+	if len(reports) != manifest.ChapterCount {
+		return nil, nil, fmt.Errorf("source reports incomplete or stale; analyze source first")
+	}
+	foundation, err := st.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load source foundation: %w", err)
+	}
+	if foundation == nil {
+		return nil, nil, fmt.Errorf("source foundation missing; analyze source first")
+	}
+	return manifest, reports, nil
 }
 
 func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.AdaptationPlan) (*domain.AdaptationPlan, error) {

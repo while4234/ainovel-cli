@@ -330,22 +330,20 @@ func (h *Host) StartAdaptationPreparedWithOptions(options adapt.ProposalOptions)
 	if options.Brief == "" {
 		return fmt.Errorf("adaptation brief is required")
 	}
-	options.Granularity = domain.NormalizeAdaptationGranularity(options.Granularity)
+	granularity, ok := domain.StrictAdaptationGranularity(options.Granularity)
+	if !ok {
+		return fmt.Errorf("adaptation mode must be one of chapter, arc, free")
+	}
+	options.Granularity = granularity
 	options.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(options.Granularity)
 	if options.WordTolerance <= 0 {
 		options.WordTolerance = adapt.DefaultWordTolerance
 	}
-	if err := h.budget.Refuse(); err != nil {
+	if _, _, err := adapt.ValidatePreparedSource(h.store, options.SourcePath); err != nil {
 		return err
 	}
-	if err := h.store.Checkpoints.Reset(); err != nil {
-		return fmt.Errorf("reset checkpoints: %w", err)
-	}
-	if err := h.store.Adaptation.ResetGenerated(); err != nil {
-		return fmt.Errorf("reset generated adaptation state: %w", err)
-	}
-	if err := h.store.Progress.Init("", 0); err != nil {
-		return fmt.Errorf("init progress: %w", err)
+	if err := h.budget.Refuse(); err != nil {
+		return err
 	}
 
 	deps := adapt.Deps{
@@ -360,6 +358,15 @@ func (h *Host) StartAdaptationPreparedWithOptions(options adapt.ProposalOptions)
 	proposal, err := adapt.BuildAdaptationProposal(deps, options)
 	if err != nil {
 		return err
+	}
+	if err := h.store.Checkpoints.Reset(); err != nil {
+		return fmt.Errorf("reset checkpoints: %w", err)
+	}
+	if err := h.store.Adaptation.ResetGenerated(); err != nil {
+		return fmt.Errorf("reset generated adaptation state: %w", err)
+	}
+	if err := h.store.Progress.Init("", 0); err != nil {
+		return fmt.Errorf("init progress: %w", err)
 	}
 	plan, err := adapt.ConfirmAdaptationProposal(context.Background(), deps, *proposal)
 	if err != nil {

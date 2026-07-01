@@ -254,6 +254,12 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectSimulateAnalyze(w, r, id)
 	case "simulate/import":
 		s.handleProjectSimulateImport(w, r, id)
+	case "adapt/source":
+		s.handleProjectAdaptSource(w, r, id)
+	case "adapt/analyze":
+		s.handleProjectAdaptAnalyze(w, r, id)
+	case "adapt/start":
+		s.handleProjectAdaptStart(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}

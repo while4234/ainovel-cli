@@ -2,6 +2,7 @@ import {
   Activity,
   BookOpen,
   CircleDot,
+  FileText,
   FileJson,
   ListRestart,
   Play,
@@ -15,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  analyzeAdaptationSource,
   analyzeSimulation,
   continueProject,
   createProject,
@@ -23,7 +25,9 @@ import {
   importSimulationProfile,
   listProjects,
   resumeProject,
+  startAdaptation,
   steerProject,
+  uploadAdaptationSource,
   uploadSimulationFiles
 } from './api.js';
 import { createWorkbenchState, eventStatus, reduceWebEvent } from './events.js';
@@ -43,6 +47,20 @@ function createSimulationState() {
   };
 }
 
+function createAdaptationState() {
+  return {
+    sourceFile: null,
+    uploadMessage: '',
+    analysisStatus: 'idle',
+    analysisEvents: [],
+    mode: 'chapter',
+    brief: '',
+    startStatus: 'idle',
+    startMessage: '',
+    error: ''
+  };
+}
+
 export default function App() {
   const [runtime, setRuntime] = useState(null);
   const [projects, setProjects] = useState([]);
@@ -53,6 +71,7 @@ export default function App() {
   const [steerText, setSteerText] = useState('');
   const [sideView, setSideView] = useState('status');
   const [simulation, setSimulation] = useState(createSimulationState);
+  const [adaptation, setAdaptation] = useState(createAdaptationState);
   const [connection, setConnection] = useState('idle');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -86,6 +105,7 @@ export default function App() {
     lastSeqRef.current = 0;
     setWorkbench(createWorkbenchState());
     setSimulation(createSimulationState());
+    setAdaptation(createAdaptationState());
     try {
       const data = await getSnapshot(project.id);
       setActiveProject(data.project);
@@ -290,6 +310,104 @@ export default function App() {
     }
   };
 
+  const uploadAdaptation = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!activeProject?.id || !file) {
+      return;
+    }
+    setBusy(true);
+    setAdaptation((previous) => ({
+      ...previous,
+      sourceFile: null,
+      uploadMessage: '',
+      analysisStatus: 'idle',
+      analysisEvents: [],
+      startStatus: 'idle',
+      startMessage: '',
+      error: ''
+    }));
+    try {
+      const data = await uploadAdaptationSource(activeProject.id, file);
+      setAdaptation((previous) => ({
+        ...previous,
+        sourceFile: data.source_file || null,
+        uploadMessage: data.message || `已上传 ${file.name}`,
+        error: ''
+      }));
+    } catch (err) {
+      setAdaptation((previous) => ({ ...previous, error: err.message }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runAdaptationAnalysis = async () => {
+    if (!activeProject?.id || !adaptation.sourceFile?.relative_path) {
+      return;
+    }
+    setBusy(true);
+    setAdaptation((previous) => ({
+      ...previous,
+      analysisStatus: 'running',
+      analysisEvents: [],
+      startStatus: 'idle',
+      startMessage: '',
+      error: ''
+    }));
+    try {
+      const data = await analyzeAdaptationSource(activeProject.id, adaptation.sourceFile.relative_path);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setAdaptation((previous) => ({
+        ...previous,
+        analysisStatus: 'done',
+        analysisEvents: data.events || [],
+        error: ''
+      }));
+    } catch (err) {
+      setAdaptation((previous) => ({
+        ...previous,
+        analysisStatus: 'error',
+        analysisEvents: err.data?.events || previous.analysisEvents,
+        error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startAdaptationRun = async () => {
+    if (!activeProject?.id || adaptation.analysisStatus !== 'done') {
+      return;
+    }
+    setBusy(true);
+    setAdaptation((previous) => ({
+      ...previous,
+      startStatus: 'running',
+      startMessage: '',
+      error: ''
+    }));
+    try {
+      const data = await startAdaptation(activeProject.id, adaptation.sourceFile.relative_path, adaptation.mode, adaptation.brief);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setAdaptation((previous) => ({
+        ...previous,
+        startStatus: 'done',
+        startMessage: `${adaptationModeLabel(data.mode)} / ${data.rewrite_policy}`,
+        error: ''
+      }));
+    } catch (err) {
+      setAdaptation((previous) => ({
+        ...previous,
+        startStatus: 'error',
+        startMessage: '',
+        error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const sortedEvents = useMemo(
     () => workbench.eventRows.slice().sort((a, b) => b.seq - a.seq),
     [workbench.eventRows]
@@ -435,6 +553,10 @@ export default function App() {
             <WandSparkles size={16} />
             画像
           </button>
+          <button className={sideView === 'adapt' ? 'active' : ''} onClick={() => setSideView('adapt')} type="button">
+            <FileText size={16} />
+            改编
+          </button>
           <button className={sideView === 'models' ? 'active' : ''} onClick={() => setSideView('models')} type="button">
             <Settings size={16} />
             模型
@@ -451,6 +573,16 @@ export default function App() {
             onUploadSources={uploadSimulationSources}
             onAnalyze={runSimulationAnalysis}
             onImportProfile={importSimulation}
+          />
+        ) : sideView === 'adapt' ? (
+          <AdaptationPanel
+            activeProject={activeProject}
+            busy={busy}
+            adaptation={adaptation}
+            setAdaptation={setAdaptation}
+            onUploadSource={uploadAdaptation}
+            onAnalyze={runAdaptationAnalysis}
+            onStart={startAdaptationRun}
           />
         ) : (
           <ModelPanel runtime={runtime} />
@@ -523,6 +655,110 @@ function StatusPanel({ snapshot, activeProject, onSteer, steerText, setSteerText
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+const adaptationModes = [
+  { value: 'chapter', label: 'chapter' },
+  { value: 'arc', label: 'arc' },
+  { value: 'free', label: 'free' }
+];
+
+function AdaptationPanel({ activeProject, busy, adaptation, setAdaptation, onUploadSource, onAnalyze, onStart }) {
+  const latestAnalysis = latestSimulationEvent(adaptation.analysisEvents);
+  const analyzed = adaptation.analysisStatus === 'done';
+  const canAnalyze = Boolean(activeProject && adaptation.sourceFile && !busy && adaptation.analysisStatus !== 'running');
+  const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.brief.trim());
+  return (
+    <div className="side-content">
+      {adaptation.error ? <div className="error-banner compact">{adaptation.error}</div> : null}
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <Upload size={17} />
+          <span>小说改编</span>
+        </div>
+        <div className="simulation-actions">
+          <label className={`tool-button file-picker full ${!activeProject || busy ? 'disabled' : ''}`}>
+            <Upload size={16} />
+            上传原文
+            <input
+              accept=".txt,.md,.markdown,text/plain,text/markdown"
+              disabled={!activeProject || busy}
+              onChange={onUploadSource}
+              type="file"
+            />
+          </label>
+        </div>
+        {adaptation.uploadMessage ? <div className="success-note">{adaptation.uploadMessage}</div> : null}
+        <div className="file-list">
+          {adaptation.sourceFile ? (
+            <div className="file-row">
+              <span>{adaptation.sourceFile.name}</span>
+              <strong>{formatBytes(adaptation.sourceFile.size)}</strong>
+            </div>
+          ) : (
+            <div className="empty-state">暂无上传原文</div>
+          )}
+        </div>
+      </section>
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <WandSparkles size={17} />
+          <span>原文分析</span>
+        </div>
+        <button className="tool-button accent full-width" disabled={!canAnalyze} onClick={onAnalyze} type="button">
+          <WandSparkles size={16} />
+          分析
+        </button>
+        <div className={`workflow-status ${adaptation.analysisStatus}`}>
+          <strong>{workflowStatusText(adaptation.analysisStatus)}</strong>
+          <span>{latestAnalysis?.message || '等待分析'}</span>
+        </div>
+        <SimulationEventList events={adaptation.analysisEvents} />
+      </section>
+
+      {analyzed ? (
+        <section className="simulation-section">
+          <div className="section-title">
+            <BookOpen size={17} />
+            <span>模式与启动</span>
+          </div>
+          <div className="adapt-mode-grid" role="radiogroup" aria-label="改编模式">
+            {adaptationModes.map((mode) => (
+              <label className={adaptation.mode === mode.value ? 'adapt-mode active' : 'adapt-mode'} key={mode.value}>
+                <input
+                  checked={adaptation.mode === mode.value}
+                  disabled={busy}
+                  name="adapt-mode"
+                  onChange={() => setAdaptation((previous) => ({ ...previous, mode: mode.value }))}
+                  type="radio"
+                  value={mode.value}
+                />
+                <span>{mode.label}</span>
+              </label>
+            ))}
+          </div>
+          <textarea
+            className="adapt-brief"
+            aria-label="改编方向"
+            disabled={busy}
+            placeholder="改编方向..."
+            value={adaptation.brief}
+            onChange={(event) => setAdaptation((previous) => ({ ...previous, brief: event.target.value }))}
+          />
+          <button className="tool-button accent full-width" disabled={!canStart} onClick={onStart} type="button">
+            <Play size={16} />
+            Start
+          </button>
+          <div className={`workflow-status ${adaptation.startStatus}`}>
+            <strong>{workflowStatusText(adaptation.startStatus)}</strong>
+            <span>{adaptation.startMessage || '等待启动'}</span>
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -695,6 +931,10 @@ function workflowStatusText(status) {
     default:
       return '待处理';
   }
+}
+
+function adaptationModeLabel(mode) {
+  return adaptationModes.find((item) => item.value === mode)?.label || mode || '-';
 }
 
 function formatBytes(value) {
