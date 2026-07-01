@@ -24,16 +24,21 @@ intentional changes are committed and pushed to the configured GitHub remote
 - Latest upstream source commit: `202b21b` `docs: clarify adaptation mode selection`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: has known untracked local workspace directory `ds_xfk/`
+- Working tree: PR-01 Web entry/runtime-root isolation review passed and is
+  ready to commit; known untracked local runtime/workspace directory `novel/`
+  remains intentionally unstaged.
 - Runtime: local `D:\ainovel\ainovel-cli.exe` rebuilt from `202b21b`; the
   `D:\grok\bin\ainovel-cli.cmd` shim still points to that executable.
-- Validation: latest pull, local CLI build, PowerShell/cmd PATH smoke, and
-  focused Go package tests succeeded on 2026-07-01. Full light package test
-  set only failed in `internal/version` `TestReplaceExecutable` on Windows
-  permission bits (`-rw-rw-rw-` vs `0755`).
+- Validation: PR-01 focused Go package tests, temporary CLI build, localhost Web
+  smoke, and `git diff --check` succeeded on 2026-07-01. Frontend npm checks
+  are not applicable yet because this PR has no `web/package.json`.
 
 ## Change Log
 
+- 2026-07-01 pending PR-01 Web entry/runtime-root isolation: added
+  `ainovel-cli web`, `internal/entry/web`, runtime-root and project manifest
+  tests, and `Host.SimulateFromDir`; independent review passed and mechanical
+  validation succeeded before commit.
 - 2026-07-01 `202b21b` `docs: clarify adaptation mode selection`: pulled
   latest upstream code, installed project-local Go 1.25.5 under ignored
   `.codex/tools/`, rebuilt `D:\ainovel\ainovel-cli.exe`, and verified the
@@ -74,6 +79,8 @@ intentional changes are committed and pushed to the configured GitHub remote
 ## Rollback Notes
 
 - To inspect the latest upstream pull: `git log --oneline --decorate -5`.
+- To inspect or revert PR-01 after commit, use `git show --stat <commit>` or
+  `git revert <commit>`; do not touch `novel/`.
 - To undo only the local notes commit after review, use `git revert <commit>`.
-- Do not delete or stage `ds_xfk/` unless the user explicitly asks to track that
-  local workspace.
+- Do not delete or stage `novel/` unless the user explicitly asks to track that
+  local runtime/workspace directory.

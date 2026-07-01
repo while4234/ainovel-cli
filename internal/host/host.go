@@ -1449,13 +1449,23 @@ func (h *Host) reportAdaptationFailover(ev bootstrap.FailoverEvent) {
 
 // Simulate 读取 simulate 目录并生成或增量更新仿写画像。
 func (h *Host) Simulate(ctx context.Context) (<-chan sim.Event, error) {
-	if err := h.guardExclusive("生成仿写画像"); err != nil {
-		return nil, err
-	}
-
 	wd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("get working dir: %w", err)
+	}
+	return h.SimulateFromDir(ctx, filepath.Join(wd, "simulate"))
+}
+
+// SimulateFromDir reads the supplied simulate source directory. Web projects use
+// this to keep uploaded corpus files inside the selected project root, while
+// Simulate keeps the legacy cwd/simulate behavior for CLI and TUI users.
+func (h *Host) SimulateFromDir(ctx context.Context, dir string) (<-chan sim.Event, error) {
+	if err := h.guardExclusive("生成仿写画像"); err != nil {
+		return nil, err
+	}
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil, fmt.Errorf("simulate source dir is required")
 	}
 	deps := sim.Deps{
 		Store: h.store,
@@ -1465,7 +1475,7 @@ func (h *Host) Simulate(ctx context.Context) (<-chan sim.Event, error) {
 			Merge:  h.bundle.Prompts.SimulationMerge,
 		},
 	}
-	return sim.Run(ctx, deps, sim.Options{SourceDir: filepath.Join(wd, "simulate")})
+	return sim.Run(ctx, deps, sim.Options{SourceDir: dir})
 }
 
 // ImportSimulationProfile 导入此前生成的仿写画像。

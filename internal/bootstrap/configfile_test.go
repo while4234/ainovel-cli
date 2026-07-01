@@ -206,6 +206,16 @@ func TestMergeConfig_ProviderExtraFields(t *testing.T) {
 	}
 }
 
+func TestMergeConfigRuntimeRoot(t *testing.T) {
+	base := Config{RuntimeRoot: "base-root"}
+	overlay := Config{RuntimeRoot: "web-root"}
+
+	cfg := mergeConfig(base, overlay)
+	if cfg.RuntimeRoot != "web-root" {
+		t.Fatalf("RuntimeRoot = %q, want web-root", cfg.RuntimeRoot)
+	}
+}
+
 // 根因 2（issue #37 核心复现）：项目级覆盖 provider 但没声明对应 providers 凭证，
 // ValidateBase 必须报 config 错误（而非放行后在更深处崩溃）。
 func TestValidateBase_ProviderOverrideWithoutCredentials(t *testing.T) {

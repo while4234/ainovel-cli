@@ -123,6 +123,9 @@ type Config struct {
 	// 运行时字段（不序列化到 JSON）
 	OutputDir string `json:"-"` // 输出根目录
 
+	// WebRuntimeRoot is the optional config-file override for web project storage.
+	RuntimeRoot string `json:"runtime_root,omitempty"`
+
 	// 默认 LLM 配置
 	Provider  string `json:"provider"` // 默认 provider（Providers map 中的 key）
 	ModelName string `json:"model"`    // 默认模型名

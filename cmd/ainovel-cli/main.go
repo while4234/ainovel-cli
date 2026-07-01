@@ -11,6 +11,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/entry/headless"
 	"github.com/voocel/ainovel-cli/internal/entry/tui"
+	"github.com/voocel/ainovel-cli/internal/entry/web"
 	"github.com/voocel/ainovel-cli/internal/rules"
 	buildversion "github.com/voocel/ainovel-cli/internal/version"
 )
@@ -40,7 +41,16 @@ func main() {
 		}
 		return
 	}
-	headlessMode = opts.Headless
+	headlessMode = opts.Headless || opts.Web
+
+	if opts.Web {
+		cfg, err := bootstrap.LoadConfig(opts.ConfigPath)
+		if err != nil {
+			die("config: %v", err)
+		}
+		runWithConfig(cfg, opts, args)
+		return
+	}
 
 	// 首次引导
 	if bootstrap.NeedsSetup(opts.ConfigPath) {
@@ -94,6 +104,24 @@ func stdinIsTerminal() bool {
 func runWithConfig(cfg bootstrap.Config, opts cliOptions, args []string) {
 	rules.EnsureHomeRulesDir()
 
+	if opts.Web {
+		if len(args) > 0 {
+			die("error: web 不接受位置参数: %s", strings.Join(args, " "))
+		}
+		bundle := assets.Load(cfg.Style)
+		if err := web.Run(context.Background(), cfg, bundle, web.Options{
+			Host:        opts.WebHost,
+			Port:        opts.WebPort,
+			RuntimeRoot: opts.WebRuntimeRoot,
+			Open:        opts.WebOpen,
+			Stdout:      os.Stdout,
+			Stderr:      os.Stderr,
+		}); err != nil {
+			die("web: %v", err)
+		}
+		return
+	}
+
 	if len(args) > 0 {
 		die("error: 不再支持命令行直接传入小说需求，请启动后在 TUI 输入框中输入")
 	}
@@ -135,6 +163,11 @@ type cliOptions struct {
 	Version            bool
 	Update             bool
 	UpdateVersion      string
+	Web                bool
+	WebHost            string
+	WebPort            int
+	WebRuntimeRoot     string
+	WebOpen            bool
 }
 
 // parseCLIOptions 提取 CLI flag，返回选项和剩余参数。
@@ -165,6 +198,17 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 			if i+1 < len(argv) {
 				return opts, nil, fmt.Errorf("update 只接受一个可选版本参数")
 			}
+		case "web":
+			if opts.Version || opts.Update || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || opts.AdaptPath != "" || opts.AdaptGranularity != "" || opts.AdaptRewritePolicy != "" || opts.AdaptWordTolerance > 0 || len(args) > 0 {
+				return opts, nil, fmt.Errorf("web 不能与其他启动模式或位置参数混用")
+			}
+			opts.Web = true
+			opts.WebHost = web.DefaultHost
+			opts.WebPort = web.DefaultPort
+			if err := parseWebOptions(&opts, argv[i+1:]); err != nil {
+				return opts, nil, err
+			}
+			return opts, nil, nil
 		case "--config":
 			if i+1 >= len(argv) {
 				return opts, nil, fmt.Errorf("--config 缺少值")
@@ -242,6 +286,52 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 		return opts, nil, fmt.Errorf("--adapt-rewrite-policy 可选 full_rewrite/preserve_details")
 	}
 	return opts, args, nil
+}
+
+func parseWebOptions(opts *cliOptions, argv []string) error {
+	for i := 0; i < len(argv); i++ {
+		switch argv[i] {
+		case "--host":
+			if i+1 >= len(argv) {
+				return fmt.Errorf("--host 缺少值")
+			}
+			opts.WebHost = strings.TrimSpace(argv[i+1])
+			i++
+		case "--port":
+			if i+1 >= len(argv) {
+				return fmt.Errorf("--port 缺少值")
+			}
+			port, err := strconv.Atoi(argv[i+1])
+			if err != nil || port <= 0 || port > 65535 {
+				return fmt.Errorf("--port 必须是 1-65535 的整数")
+			}
+			opts.WebPort = port
+			i++
+		case "--runtime-root":
+			if i+1 >= len(argv) {
+				return fmt.Errorf("--runtime-root 缺少值")
+			}
+			opts.WebRuntimeRoot = argv[i+1]
+			i++
+		case "--open":
+			opts.WebOpen = true
+		case "--config":
+			if i+1 >= len(argv) {
+				return fmt.Errorf("--config 缺少值")
+			}
+			opts.ConfigPath = argv[i+1]
+			i++
+		default:
+			return fmt.Errorf("web 不支持参数 %q", argv[i])
+		}
+	}
+	if opts.WebHost == "" {
+		return fmt.Errorf("--host 不能为空")
+	}
+	if opts.WebPort == 0 {
+		opts.WebPort = web.DefaultPort
+	}
+	return nil
 }
 
 func validAdaptGranularity(value string) bool {

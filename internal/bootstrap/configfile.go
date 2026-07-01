@@ -153,6 +153,9 @@ func mergeConfig(base, overlay Config) Config {
 	if overlay.ContextWindow > 0 {
 		base.ContextWindow = overlay.ContextWindow
 	}
+	if overlay.RuntimeRoot != "" {
+		base.RuntimeRoot = overlay.RuntimeRoot
+	}
 
 	// Providers: overlay 的 key 覆盖 base 同名 key
 	if len(overlay.Providers) > 0 {
