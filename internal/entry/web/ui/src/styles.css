@@ -261,7 +261,8 @@ h2 {
 .field-label input,
 .field-label select,
 .custom-model-form input,
-.custom-model-form select {
+.custom-model-form select,
+.custom-model-form textarea {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--line-strong);
@@ -293,6 +294,7 @@ h2 {
 .cocreate-form textarea:focus,
 .custom-model-form input:focus,
 .custom-model-form select:focus,
+.custom-model-form textarea:focus,
 .field-label input:focus,
 .field-label select:focus,
 .model-route select:focus {
@@ -1173,6 +1175,59 @@ h2 {
 
 .custom-model-form .section-title {
   margin: 0;
+}
+
+.custom-model-form textarea {
+  min-height: 78px;
+  padding: 9px 10px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.grok-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.grok-login-link,
+.grok-status {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 9px;
+  background: var(--surface-solid);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.grok-login-link {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.grok-login-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.grok-status {
+  display: grid;
+  gap: 3px;
+}
+
+.grok-status strong {
+  color: var(--text);
+}
+
+.grok-status.ready {
+  border-color: rgba(37, 130, 80, 0.24);
+  background: var(--success-soft);
+  color: #236241;
 }
 
 .usage-row,

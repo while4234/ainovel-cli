@@ -262,6 +262,14 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectModelAdd(w, r, id)
 	case "models/add-openai-compatible":
 		s.handleProjectModelAddOpenAICompatible(w, r, id)
+	case "models/grok-login/start":
+		s.handleProjectGrokLoginStart(w, r, id)
+	case "models/grok-login/poll":
+		s.handleProjectGrokLoginPoll(w, r, id)
+	case "models/grok-login/complete":
+		s.handleProjectGrokLoginComplete(w, r, id)
+	case "models/grok-login/status":
+		s.handleProjectGrokLoginStatus(w, r, id)
 	case "usage":
 		s.handleProjectUsage(w, r, id)
 	case "backend/status":

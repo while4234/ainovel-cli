@@ -206,6 +206,34 @@ export function addProviderModel(projectId, payload) {
   });
 }
 
+export function startGrokLogin(projectId, accountId, accountName) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/start`, {
+    method: 'POST',
+    body: JSON.stringify({ account_id: accountId, account_name: accountName })
+  });
+}
+
+export function pollGrokLogin(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/poll`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
+export function completeGrokLogin(projectId, callback) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/complete`, {
+    method: 'POST',
+    body: JSON.stringify({ callback })
+  });
+}
+
+export function getGrokLoginStatus(projectId, accountId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/status`, {
+    method: 'POST',
+    body: JSON.stringify({ account_id: accountId })
+  });
+}
+
 export function getBackendStatus(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/backend/status`);
 }

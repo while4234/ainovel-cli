@@ -15,6 +15,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
+	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/exp"
@@ -73,6 +74,10 @@ type projectHost interface {
 	CurrentModelSelection(string) (string, string, bool)
 	SwitchModel(string, string, string) error
 	AddProviderModel(string, string, bootstrap.ProviderConfig, string) error
+	StartGrokLogin(string, string) (grokauth.LoginStart, error)
+	PollGrokLogin() (grokauth.LoginPoll, error)
+	CompleteGrokLogin(string) (grokauth.AuthStatus, error)
+	GrokLoginStatus(string) grokauth.AuthStatus
 	CurrentThinking(string) string
 	SetRoleThinking(string, string) error
 	Events() <-chan host.Event
@@ -273,6 +278,22 @@ func (s *ProjectSession) AddProviderModel(role, provider, model string, pc boots
 	}
 	s.AppendSnapshot()
 	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) StartGrokLogin(accountID, accountName string) (grokauth.LoginStart, error) {
+	return s.host.StartGrokLogin(accountID, accountName)
+}
+
+func (s *ProjectSession) PollGrokLogin() (grokauth.LoginPoll, error) {
+	return s.host.PollGrokLogin()
+}
+
+func (s *ProjectSession) CompleteGrokLogin(callbackInput string) (grokauth.AuthStatus, error) {
+	return s.host.CompleteGrokLogin(callbackInput)
+}
+
+func (s *ProjectSession) GrokLoginStatus(accountID string) grokauth.AuthStatus {
+	return s.host.GrokLoginStatus(accountID)
 }
 
 func (s *ProjectSession) StartQuick(text string) error {

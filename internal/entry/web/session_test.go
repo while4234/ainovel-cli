@@ -17,6 +17,7 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/exp"
@@ -479,6 +480,10 @@ type fakeProjectHost struct {
 	addProviderName             string
 	addProviderConfig           bootstrap.ProviderConfig
 	addProviderModel            string
+	grokStartAccountID          string
+	grokStartAccountName        string
+	grokCompleteCallback        string
+	grokStatusAccountID         string
 	preparedRulesPrompt         string
 	preparedExternalRulesPrompt string
 	startPreparedPrompt         string
@@ -492,6 +497,10 @@ type fakeProjectHost struct {
 	abortOK                     bool
 	exportResult                *exp.Result
 	addProviderErr              error
+	grokLoginStart              grokauth.LoginStart
+	grokLoginPoll               grokauth.LoginPoll
+	grokCompleteStatus          grokauth.AuthStatus
+	grokStatus                  grokauth.AuthStatus
 
 	events    chan host.Event
 	stream    chan string
@@ -771,6 +780,34 @@ func (f *fakeProjectHost) AddProviderModel(role, providerName string, providerCo
 	f.addProviderConfig = providerConfig
 	f.addProviderModel = model
 	return f.addProviderErr
+}
+
+func (f *fakeProjectHost) StartGrokLogin(accountID, accountName string) (grokauth.LoginStart, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grokStartAccountID = accountID
+	f.grokStartAccountName = accountName
+	return f.grokLoginStart, nil
+}
+
+func (f *fakeProjectHost) PollGrokLogin() (grokauth.LoginPoll, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.grokLoginPoll, nil
+}
+
+func (f *fakeProjectHost) CompleteGrokLogin(callbackInput string) (grokauth.AuthStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grokCompleteCallback = callbackInput
+	return f.grokCompleteStatus, nil
+}
+
+func (f *fakeProjectHost) GrokLoginStatus(accountID string) grokauth.AuthStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grokStatusAccountID = accountID
+	return f.grokStatus
 }
 
 func (f *fakeProjectHost) CurrentThinking(string) string {

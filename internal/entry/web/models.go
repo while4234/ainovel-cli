@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
 
@@ -197,6 +198,122 @@ func (s *Server) handleProjectModelAddOpenAICompatible(w http.ResponseWriter, r 
 		"models":   models,
 		"snapshot": session.Snapshot(),
 	})
+}
+
+func (s *Server) handleProjectGrokLoginStart(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		AccountID   string `json:"account_id"`
+		AccountName string `json:"account_name"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	login, err := session.StartGrokLogin(defaultGrokAccountID(req.AccountID), req.AccountName)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": manifest,
+		"login":   login,
+	})
+}
+
+func (s *Server) handleProjectGrokLoginPoll(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	login, err := session.PollGrokLogin()
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": manifest,
+		"login":   login,
+	})
+}
+
+func (s *Server) handleProjectGrokLoginComplete(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Callback string `json:"callback"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Callback) == "" {
+		writeError(w, http.StatusBadRequest, "callback is required")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	status, err := session.CompleteGrokLogin(req.Callback)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": manifest,
+		"status":  status,
+	})
+}
+
+func (s *Server) handleProjectGrokLoginStatus(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	accountID := r.URL.Query().Get("account_id")
+	if r.Method == http.MethodPost {
+		var req struct {
+			AccountID string `json:"account_id"`
+		}
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		accountID = req.AccountID
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": manifest,
+		"status":  session.GrokLoginStatus(defaultGrokAccountID(accountID)),
+	})
+}
+
+func defaultGrokAccountID(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return grokauth.DefaultAccountID
+	}
+	return value
 }
 
 func (s *Server) handleProjectUsage(w http.ResponseWriter, r *http.Request, id string) {
