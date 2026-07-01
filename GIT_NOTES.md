@@ -22,7 +22,7 @@ intentional changes are committed and pushed to the configured GitHub remote
 
 ## Current Baseline
 
-- Latest source commit: `6f38d2a` `style: refresh web workbench UI`
+- Latest source commit: `2017558` `feat: close web tui operation gaps`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: clean except for the known untracked local `.playwright-mcp/`
@@ -30,13 +30,19 @@ intentional changes are committed and pushed to the configured GitHub remote
 - Runtime: local `D:\ainovel\ainovel-cli.exe` was rebuilt after the Web UI
   refresh using the project-local Go 1.25.5 toolchain. The
   `D:\grok\bin\ainovel-cli.cmd` shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: `npm test`, `npm run build`, `git diff --check`,
-  `go build -o .\ainovel-cli.exe .\cmd\ainovel-cli`, and Playwright embedded
-  backend preview checks at 1366x768, 1920x1080, 1180x768, 960x900, and
-  600x900 succeeded on 2026-07-01.
+- Validation: `go test ./internal/entry/web`, `npm --prefix
+  internal/entry/web/ui test`, `npm --prefix internal/entry/web/ui run build`,
+  `git diff --check`, and Playwright local Web smoke checks succeeded on
+  2026-07-01. `go test ./...` still has existing Windows environment-sensitive
+  failures in `internal/notify` (`sh` missing from PATH) and `internal/version`
+  (permission-mode assertion).
 
 ## Change Log
 
+- 2026-07-01 `2017558` `feat: close web tui operation gaps`: added Web APIs
+  and UI controls for fresh quick start, pause/abort, external novel import,
+  export, diagnostics, and generic model add; aligned Web adaptation/co-create
+  behavior with TUI and regenerated embedded Vite assets.
 - 2026-07-01 `6f38d2a` `style: refresh web workbench UI`: refreshed the React
   Web UI with a Windows 11 Fluent-inspired light workbench, compact right
   inspector tabs, fixed-height command bar, responsive narrow layout, and
