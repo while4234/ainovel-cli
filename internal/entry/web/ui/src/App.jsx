@@ -103,6 +103,32 @@ const coCreateStructureChoices = [
   { value: 'chapters', label: '分章节', hint: '每章 3000-5000 字' }
 ];
 
+function readWindowScrollPosition() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  return { x: window.scrollX || 0, y: window.scrollY || 0 };
+}
+
+function restoreWindowScrollPosition(position) {
+  if (!position || typeof window === 'undefined') {
+    return;
+  }
+  const restore = () => window.scrollTo(position.x, position.y);
+  restore();
+  if (typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(restore);
+  }
+  window.setTimeout(restore, 0);
+}
+
+function runWithWindowScrollPreserved(action) {
+  const position = readWindowScrollPosition();
+  const result = action?.();
+  restoreWindowScrollPosition(position);
+  return result;
+}
+
 function createSimulationState() {
   return {
     files: [],
@@ -1293,7 +1319,7 @@ export default function App() {
       return;
     }
     const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
-    let initial = coCreate.input.trim();
+    let initial = String(options.initial ?? coCreate.input).trim();
     if (kind === 'normal' && !initial) {
       if (coCreate.intakeActive && options.confirmIntake) {
         initial = coCreate.intakeInitial.trim();
@@ -1820,7 +1846,7 @@ export default function App() {
         <header className="workspace-toolbar">
           <div className="workspace-heading">
             <div className="eyebrow">当前项目</div>
-            <h2>{activeProject?.name || '未打开项目'}</h2>
+            <h2>{activeProject?.name || ''}</h2>
           </div>
           <div className="toolbar-actions">
             <StatusPill status={connection} />
@@ -2018,8 +2044,10 @@ export default function App() {
               onLoadLibrary={loadNovelFromLibraryEntry}
               onSaveNovel={saveAnalyzedNovelToLibrary}
               onCoCreate={() => {
-                setSideView('cocreate');
-                beginCoCreateFlow('adapt');
+                runWithWindowScrollPreserved(() => {
+                  setSideView('cocreate');
+                  return beginCoCreateFlow('adapt', { initial: adaptation.brief });
+                });
               }}
             />
           ) : sideView === 'import' ? (
@@ -2613,7 +2641,8 @@ function AdaptationPanel({
   const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.brief.trim());
   const canConfirm = Boolean(activeProject && !busy && proposal.proposalReady && isAdaptationProposalCurrent(adaptation));
   const canSaveNovel = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.librarySaveName.trim());
-  const updateProposalInput = (changes) => {
+  const updateProposalInput = (changes, options = {}) => {
+    const scrollPosition = options.preserveWindowScroll ? readWindowScrollPosition() : null;
     setAdaptation((previous) => ({
       ...previous,
       ...changes,
@@ -2621,6 +2650,7 @@ function AdaptationPanel({
       startStatus: 'idle',
       startMessage: ''
     }));
+    restoreWindowScrollPosition(scrollPosition);
   };
   return (
     <div className="side-content">
@@ -2719,7 +2749,7 @@ function AdaptationPanel({
                   checked={adaptation.mode === mode.value}
                   disabled={busy}
                   name="adapt-mode"
-                  onChange={() => updateProposalInput({ mode: mode.value })}
+                  onChange={() => updateProposalInput({ mode: mode.value }, { preserveWindowScroll: true })}
                   type="radio"
                   value={mode.value}
                 />
@@ -2739,7 +2769,7 @@ function AdaptationPanel({
             <span><strong>生成提案</strong>：结局、关系线和改写重点已经明确时，直接拆成可确认的逐章策略。</span>
             <span><strong>进入共创</strong>：还在纠结结局、女主戏份、虐心/纯爱比重或悬疑侧重时，先让 AI 给选项再补充。</span>
           </div>
-          <button className="tool-button accent full-width" disabled={!canStart} onClick={onStart} type="button">
+          <button className="tool-button accent full-width" disabled={!canStart} onClick={() => runWithWindowScrollPreserved(onStart)} type="button">
             <Play size={16} />
             生成提案
           </button>
@@ -2764,13 +2794,13 @@ function AdaptationPanel({
                   <ChapterRow item={chapter} key={`proposal-${chapter.chapter}-${chapter.title}`} />
                 ))}
               </div>
-              <button className="tool-button accent full-width" disabled={!canConfirm} onClick={onConfirm} type="button">
+              <button className="tool-button accent full-width" disabled={!canConfirm} onClick={() => runWithWindowScrollPreserved(onConfirm)} type="button">
                 <Check size={16} />
                 确认并启动
               </button>
             </div>
           ) : null}
-          <button className="tool-button full-width" disabled={!canCoCreate} onClick={onCoCreate} type="button">
+          <button className="tool-button full-width" disabled={!canCoCreate} onClick={() => runWithWindowScrollPreserved(onCoCreate)} type="button">
             <MessageSquareText size={16} />
             进入共创
           </button>
