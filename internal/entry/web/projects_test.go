@@ -117,6 +117,53 @@ func TestProjectTrashMovesProjectOutOfActiveList(t *testing.T) {
 	}
 }
 
+func TestProjectTrashListRestoreAndEmpty(t *testing.T) {
+	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	created, err := store.CreateProject("Trash Lifecycle")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, _, err := store.TrashProject(created.ID); err != nil {
+		t.Fatalf("TrashProject: %v", err)
+	}
+
+	trashed, err := store.ListTrashProjects()
+	if err != nil {
+		t.Fatalf("ListTrashProjects: %v", err)
+	}
+	if len(trashed) != 1 || trashed[0].ID != created.ID || trashed[0].DeletedAt == nil {
+		t.Fatalf("trash projects = %+v", trashed)
+	}
+
+	restored, err := store.RestoreTrashProject(created.ID)
+	if err != nil {
+		t.Fatalf("RestoreTrashProject: %v", err)
+	}
+	if restored.ID != created.ID || restored.DeletedAt != nil || restored.RootDir != created.RootDir {
+		t.Fatalf("restored = %+v, created=%+v", restored, created)
+	}
+	if _, err := os.Stat(restored.RootDir); err != nil {
+		t.Fatalf("restored root missing: %v", err)
+	}
+	if active, err := store.ListProjects(); err != nil || len(active) != 1 {
+		t.Fatalf("active projects after restore = %+v err=%v", active, err)
+	}
+
+	if _, _, err := store.TrashProject(created.ID); err != nil {
+		t.Fatalf("TrashProject again: %v", err)
+	}
+	removed, err := store.EmptyTrashProjects()
+	if err != nil {
+		t.Fatalf("EmptyTrashProjects: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if trashed, err := store.ListTrashProjects(); err != nil || len(trashed) != 0 {
+		t.Fatalf("trash after empty = %+v err=%v", trashed, err)
+	}
+}
+
 func TestDeletedProjectManifestIsHiddenAndCannotOpen(t *testing.T) {
 	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
 	created, err := store.CreateProject("Stranded Deleted")
@@ -185,6 +232,63 @@ func TestProjectResourceHandlersRenameAndTrashActiveProject(t *testing.T) {
 	}
 	if _, err := os.Stat(deleted.TrashPath); err != nil {
 		t.Fatalf("trash path missing: %v", err)
+	}
+}
+
+func TestTrashProjectHandlersListRestoreAndEmpty(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Trash Handler")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, _, err := server.store.TrashProject(manifest.ID); err != nil {
+		t.Fatalf("TrashProject: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/trash/projects", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list trash status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var listed struct {
+		Projects []ProjectManifest `json:"projects"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Projects) != 1 || listed.Projects[0].ID != manifest.ID {
+		t.Fatalf("listed trash = %+v", listed.Projects)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/trash/projects/"+manifest.ID+"/restore", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restore status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if active, err := server.store.ListProjects(); err != nil || len(active) != 1 {
+		t.Fatalf("active after restore = %+v err=%v", active, err)
+	}
+
+	if _, _, err := server.store.TrashProject(manifest.ID); err != nil {
+		t.Fatalf("TrashProject again: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/api/trash/projects", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var emptied struct {
+		Removed int `json:"removed"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&emptied); err != nil {
+		t.Fatalf("decode empty response: %v", err)
+	}
+	if emptied.Removed != 1 {
+		t.Fatalf("removed = %d, want 1", emptied.Removed)
 	}
 }
 

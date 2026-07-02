@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildBeginCoCreatePayload,
+  buildCoCreateIntakeInitial,
   deriveWorkspaceProgress,
+  isProjectRunning,
+  resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords
 } from './App.jsx';
 
@@ -32,6 +35,7 @@ describe('co-create begin payload helpers', () => {
   });
 
   it('resolves preset and custom total word choices', () => {
+    expect(resolveCoCreateTargetTotalWords({})).toBe(0);
     expect(resolveCoCreateTargetTotalWords({ targetTotalWordsChoice: '30000' })).toBe(30000);
     expect(resolveCoCreateTargetTotalWords({
       targetTotalWordsChoice: 'custom',
@@ -41,6 +45,19 @@ describe('co-create begin payload helpers', () => {
       targetTotalWordsChoice: 'custom',
       customTargetTotalWords: '12.5'
     })).toBe(0);
+  });
+
+  it('builds intake prompt with total-word and short-story structure rules', () => {
+    const prompt = buildCoCreateIntakeInitial('写未来地球赛博悬疑', {
+      targetTotalWords: 5000,
+      structureChoice: 'single'
+    });
+
+    expect(resolveCoCreateStructureChoice({ structureChoice: 'unknown' })).toBe('single');
+    expect(prompt).toContain('target_total_words=5000');
+    expect(prompt).toContain('全书总字数');
+    expect(prompt).toContain('3000-5000');
+    expect(prompt).toContain('不要拆成多个章节');
   });
 });
 
@@ -80,5 +97,12 @@ describe('workspace progress derivation', () => {
     ]);
 
     expect(progress.runningLabel).toBe('architect / planning volume');
+  });
+
+  it('detects running snapshots for pause controls', () => {
+    expect(isProjectRunning({ IsRunning: true, RuntimeState: 'paused' })).toBe(true);
+    expect(isProjectRunning({ RuntimeState: 'running', Agents: [] })).toBe(true);
+    expect(isProjectRunning({ RuntimeState: 'paused', Agents: [{ Name: 'writer', State: 'idle' }] })).toBe(false);
+    expect(isProjectRunning({ RuntimeState: '', Agents: [{ Name: 'writer', State: 'working' }] })).toBe(true);
   });
 });

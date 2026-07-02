@@ -387,12 +387,12 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 	return webCoCreateState{
 		Kind:             s.kind,
 		Active:           true,
-		Messages:         append([]webCoCreateMessage(nil), s.messages...),
+		Messages:         webCoCreateDisplayMessages(s.kind, s.messages),
 		DraftPrompt:      s.draftPrompt(),
 		Ready:            s.session.Ready(),
 		Suggestions:      append([]string(nil), s.session.Suggestions()...),
 		StreamThinking:   s.session.StreamThinking(),
-		StreamReply:      s.session.StreamReply(),
+		StreamReply:      normalizeWebCoCreateText(s.kind, s.session.StreamReply()),
 		AdaptMode:        s.adaptGranularity,
 		RewritePolicy:    s.adaptRewritePolicy,
 		WordTolerance:    s.adaptWordTolerance,
@@ -401,6 +401,33 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		CanStart:         s.session.Ready() && strings.TrimSpace(s.session.DraftPrompt()) != "",
 		ModeLocked:       s.kind == webCoCreateKindAdapt,
 	}
+}
+
+func webCoCreateDisplayMessages(kind string, messages []webCoCreateMessage) []webCoCreateMessage {
+	out := append([]webCoCreateMessage(nil), messages...)
+	for i := range out {
+		if out[i].Role == "assistant" {
+			out[i].Content = normalizeWebCoCreateText(kind, out[i].Content)
+		}
+	}
+	return out
+}
+
+func normalizeWebCoCreateText(kind string, text string) string {
+	if text == "" {
+		return ""
+	}
+	return strings.NewReplacer(
+		"可以按 Ctrl+S 把方向交给创作引擎、继续创作", "可以点击「启动」把方向交给创作引擎并继续创作",
+		"可以按 Ctrl+S 应用方向并继续创作", "可以点击「启动」应用方向并继续创作",
+		"可以按 Ctrl+S 开始改编", "可以点击「启动」开始改编",
+		"可以按 Ctrl+S 开始创作", "可以点击「启动」开始创作",
+		"按 Ctrl+S 把方向交给创作引擎、继续创作", "点击「启动」把方向交给创作引擎并继续创作",
+		"按 Ctrl+S 应用方向并继续创作", "点击「启动」应用方向并继续创作",
+		"按 Ctrl+S 开始改编", "点击「启动」开始改编",
+		"按 Ctrl+S 开始创作", "点击「启动」开始创作",
+		"Ctrl+S", "点击「启动」",
+	).Replace(text)
 }
 
 func adaptCoCreateOpener(granularity, rewritePolicy string, wordTolerance float64) string {

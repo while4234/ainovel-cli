@@ -56,7 +56,7 @@ export function appendStreamDelta(rounds, text) {
     ...last,
     text: `${last.text || ''}${text}`
   };
-  return next;
+  return compactStreamRounds(next);
 }
 
 export function startStreamRound(rounds) {
@@ -65,7 +65,50 @@ export function startStreamRound(rounds) {
   if (last && !String(last.text || '').trim()) {
     return next;
   }
-  return [...next, { id: `round-${next.length}`, text: '' }];
+  return compactStreamRounds([...next, { id: `round-${next.length}`, text: '' }]);
+}
+
+export function compactStreamRounds(rounds, limit = 4) {
+  const compacted = [];
+  for (const round of rounds || []) {
+    const text = String(round?.text || '');
+    const isEmpty = !text.trim();
+    if (isEmpty) {
+      if (round === rounds[rounds.length - 1] || compacted.length === 0) {
+        compacted.push({ ...round, text: '' });
+      }
+      continue;
+    }
+    const previous = compacted[compacted.length - 1];
+    if (previous && streamRoundsOverlap(previous.text, text)) {
+      compacted[compacted.length - 1] =
+        text.length >= String(previous.text || '').length ? { ...round, text } : previous;
+      continue;
+    }
+    compacted.push({ ...round, text });
+  }
+  const last = compacted[compacted.length - 1];
+  const nonEmpty = compacted.filter((round) => String(round.text || '').trim());
+  const tail = nonEmpty.slice(-limit);
+  if (last && !String(last.text || '').trim()) {
+    return [...tail, last];
+  }
+  return tail.length ? tail : [{ id: 'round-0', text: '' }];
+}
+
+function streamRoundsOverlap(a, b) {
+  const left = streamSignature(a);
+  const right = streamSignature(b);
+  if (left.length < 120 || right.length < 120) {
+    return false;
+  }
+  const prefix = left.slice(0, Math.min(240, left.length));
+  const otherPrefix = right.slice(0, Math.min(240, right.length));
+  return right.startsWith(prefix) || left.startsWith(otherPrefix);
+}
+
+function streamSignature(text) {
+  return String(text || '').replace(/\s+/g, '');
 }
 
 export function eventStatus(event) {

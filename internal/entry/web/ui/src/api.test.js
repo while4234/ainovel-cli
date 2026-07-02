@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addGlobalProviderModel,
+  emptyTrashProjects,
   getGlobalModels,
+  listTrashProjects,
   renameProject,
+  restoreTrashProject,
   reviseCoCreate,
   sendCoCreate,
   startGrokLogin,
@@ -27,12 +30,24 @@ describe('web API helpers', () => {
 
     await renameProject('project-1', 'Renamed');
     await trashProject('project-1');
+    await listTrashProjects();
+    await restoreTrashProject('project-1');
+    await emptyTrashProjects();
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project-1', expect.objectContaining({
       method: 'PATCH',
       body: JSON.stringify({ name: 'Renamed' })
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1', expect.objectContaining({
+      method: 'DELETE'
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/trash/projects', expect.objectContaining({
+      headers: {}
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/trash/projects/project-1/restore', expect.objectContaining({
+      method: 'POST'
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/trash/projects', expect.objectContaining({
       method: 'DELETE'
     }));
   });

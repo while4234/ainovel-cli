@@ -145,6 +145,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/models/grok-login/", s.handleGrokLogin)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProject)
+	mux.HandleFunc("/api/trash/projects", s.handleTrashProjects)
+	mux.HandleFunc("/api/trash/projects/", s.handleTrashProject)
 	return mux
 }
 
@@ -254,6 +256,61 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (s *Server) handleTrashProjects(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		projects, err := s.store.ListTrashProjects()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
+	case http.MethodDelete:
+		removed, err := s.store.EmptyTrashProjects()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleTrashProject(w http.ResponseWriter, r *http.Request) {
+	id, action, ok := splitTrashProjectRoute(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if action != "restore" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	manifest, err := s.store.RestoreTrashProject(id)
+	if err != nil {
+		writeProjectManifestError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"project": manifest})
+}
+
+func splitTrashProjectRoute(path string) (string, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/trash/projects/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return "", "", false
+	}
+	if len(parts) == 1 {
+		return parts[0], "", true
+	}
+	return parts[0], strings.Join(parts[1:], "/"), true
 }
 
 func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {

@@ -899,11 +899,12 @@ func (h *Host) fillContextStatus(snap *UISnapshot) {
 func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 	if premise, _ := h.store.Outline.LoadPremise(); premise != "" {
 		snap.Premise = truncate(premise, 80)
+		snap.PremiseFull = premise
 	}
 	if outline, _ := h.store.Outline.LoadOutline(); len(outline) > 0 {
 		for _, e := range outline {
 			snap.Outline = append(snap.Outline, OutlineSnapshot{
-				Chapter: e.Chapter, Title: e.Title, CoreEvent: e.CoreEvent,
+				Chapter: e.Chapter, Title: e.Title, CoreEvent: e.CoreEvent, Hook: e.Hook, Scenes: append([]string(nil), e.Scenes...),
 			})
 		}
 	}
@@ -922,6 +923,7 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 		}
 	}
 	if chars, _ := h.store.Characters.Load(); len(chars) > 0 {
+		snap.CharacterDetails = append([]domain.Character(nil), chars...)
 		for _, c := range chars {
 			label := c.Name
 			if c.Role != "" {
@@ -929,6 +931,9 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 			}
 			snap.Characters = append(snap.Characters, label)
 		}
+	}
+	if rules, _ := h.store.World.LoadWorldRules(); len(rules) > 0 {
+		snap.WorldRules = append([]domain.WorldRule(nil), rules...)
 	}
 	if ledger, _ := h.store.Cast.Load(); len(ledger) > 0 {
 		snap.SupportingCount = len(ledger)

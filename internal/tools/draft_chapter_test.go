@@ -101,3 +101,32 @@ func TestDraftChapterRejectsUnexpandedLayeredChapter(t *testing.T) {
 		t.Fatalf("unexpanded chapter should not become in progress")
 	}
 }
+
+func TestDraftChapterRejectsRepeatedLongSentences(t *testing.T) {
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+
+	repeated := "雨水敲打废弃通风管，远处霓虹在积水里闪烁，空气里混着金属和臭氧的气味。"
+	content := repeated + repeated + repeated + repeated + "他拔出接口线，强迫自己继续向节点深处移动。"
+	args, err := json.Marshal(map[string]any{
+		"chapter": 1,
+		"content": content,
+		"mode":    "write",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = NewDraftChapterTool(s).Execute(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "repeat") {
+		t.Fatalf("expected repeated prose rejection, got %v", err)
+	}
+	if draft, _ := s.Drafts.LoadDraft(1); draft != "" {
+		t.Fatalf("repeated draft should not be saved, got %q", draft)
+	}
+}

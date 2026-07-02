@@ -3,11 +3,184 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
+
+func TestSaveFoundationSchemaAllowsMissingType(t *testing.T) {
+	tool := NewSaveFoundationTool(store.NewStore(t.TempDir()))
+	required := schemaRequiredNames(tool.Schema())
+	if required["type"] {
+		t.Fatal("type must not be schema-required; missing type should reach Execute for recovery")
+	}
+	if !required["content"] {
+		t.Fatal("content should remain schema-required")
+	}
+}
+
+func TestSaveFoundationInfersPremiseFromMarkdownWhenTypeMissing(t *testing.T) {
+	dir := t.TempDir()
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("novel", 0); err != nil {
+		t.Fatalf("Init progress: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	args, err := json.Marshal(map[string]any{
+		"content": "# 夜审暗潮\n\n## 题材和基调\n悬疑、审讯、权力反转。",
+		"scale":   "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	res, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["type"] != "premise" {
+		t.Fatalf("type = %v, want premise", result["type"])
+	}
+	premise, err := store.Outline.LoadPremise()
+	if err != nil {
+		t.Fatalf("LoadPremise: %v", err)
+	}
+	if !strings.Contains(premise, "夜审暗潮") {
+		t.Fatalf("premise was not saved: %q", premise)
+	}
+}
+
+func TestSaveFoundationMissingTypeCompletesFoundationWhenOnlyPremiseMissing(t *testing.T) {
+	dir := t.TempDir()
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("novel", 0); err != nil {
+		t.Fatalf("Init progress: %v", err)
+	}
+	tool := NewSaveFoundationTool(store)
+
+	steps := []map[string]any{
+		{
+			"type": "outline",
+			"content": []map[string]any{
+				{"chapter": 1, "title": "初次对峙", "core_event": "侦探第一次审问嫌疑人", "hook": "嫌疑人反问她为何害怕真相"},
+			},
+			"scale": "short",
+		},
+		{
+			"type": "characters",
+			"content": []map[string]any{
+				{"name": "林岚", "role": "私家侦探", "description": "冷静但有伤痕", "arc": "从控制到承认失控", "traits": []string{"敏锐"}},
+			},
+		},
+		{
+			"type": "world_rules",
+			"content": []map[string]any{
+				{"category": "society", "rule": "私人调查必须避开警方监听", "boundary": "不能凭空获得证据"},
+			},
+		},
+	}
+	for _, step := range steps {
+		args, _ := json.Marshal(step)
+		if _, err := tool.Execute(context.Background(), args); err != nil {
+			t.Fatalf("Execute setup %v: %v", step["type"], err)
+		}
+	}
+
+	args, err := json.Marshal(map[string]any{
+		"content": "# 夜审暗潮\n\n## 题材和基调\n短篇悬疑。",
+	})
+	if err != nil {
+		t.Fatalf("Marshal final premise: %v", err)
+	}
+	res, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute final premise: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["foundation_ready"] != true {
+		t.Fatalf("foundation_ready = %v, want true", result["foundation_ready"])
+	}
+	if result["phase"] != string(domain.PhaseWriting) {
+		t.Fatalf("phase = %v, want %s", result["phase"], domain.PhaseWriting)
+	}
+}
+
+func TestSaveFoundationInfersTypeWhenFoundationAlreadyComplete(t *testing.T) {
+	dir := t.TempDir()
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("novel", 0); err != nil {
+		t.Fatalf("Init progress: %v", err)
+	}
+	tool := NewSaveFoundationTool(store)
+
+	for _, step := range []map[string]any{
+		{"type": "premise", "content": "# 夜审暗潮\n\n## 题材和基调\n短篇悬疑。"},
+		{"type": "outline", "content": []map[string]any{{"chapter": 1, "title": "初次对峙", "core_event": "审问", "hook": "反问"}}},
+		{"type": "characters", "content": []map[string]any{{"name": "林岚", "role": "侦探", "description": "敏锐", "arc": "转变", "traits": []string{"冷静"}}}},
+		{"type": "world_rules", "content": []map[string]any{{"category": "society", "rule": "证据必须可追溯", "boundary": "不能凭空破案"}}},
+	} {
+		args, _ := json.Marshal(step)
+		if _, err := tool.Execute(context.Background(), args); err != nil {
+			t.Fatalf("Execute setup %v: %v", step["type"], err)
+		}
+	}
+
+	args, err := json.Marshal(map[string]any{
+		"content": []map[string]any{
+			{"name": "林岚", "role": "侦探", "description": "更新后的角色描述", "arc": "继续转变", "traits": []string{"冷静", "执着"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	res, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute inferred complete foundation update: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["type"] != "characters" {
+		t.Fatalf("type = %v, want characters", result["type"])
+	}
+}
+
+func schemaRequiredNames(s map[string]any) map[string]bool {
+	result := map[string]bool{}
+	switch required := s["required"].(type) {
+	case []string:
+		for _, name := range required {
+			result[name] = true
+		}
+	case []any:
+		for _, raw := range required {
+			if name, ok := raw.(string); ok {
+				result[name] = true
+			}
+		}
+	}
+	return result
+}
 
 func TestSaveFoundationPersistsPlanningTier(t *testing.T) {
 	dir := t.TempDir()

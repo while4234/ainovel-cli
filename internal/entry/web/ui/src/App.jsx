@@ -38,6 +38,7 @@ import {
   completeGrokLogin,
   continueProject,
   createProject,
+  emptyTrashProjects,
   exportProject,
   getBackendStatus,
   getGlobalModels,
@@ -48,9 +49,11 @@ import {
   importExternalNovel,
   importSimulationProfile,
   listProjects,
+  listTrashProjects,
   pauseProject,
   pollGrokLogin,
   renameProject,
+  restoreTrashProject,
   reviseCoCreate,
   resumeProject,
   runProjectDiagnostic,
@@ -79,10 +82,16 @@ import { createWorkbenchState, eventStatus, reduceWebEvent } from './events.js';
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 
 const coCreateTargetWordChoices = [
-  { value: '5000', label: '5,000' },
-  { value: '10000', label: '10,000' },
-  { value: '30000', label: '30,000' },
-  { value: 'custom', label: 'Custom' }
+  { value: '5000', label: '短篇 5,000', hint: '通常不分章节' },
+  { value: '30000', label: '中篇 30,000', hint: '约 6-10 章' },
+  { value: '100000', label: '长篇 100,000', hint: '约 20-30 章' },
+  { value: 'custom', label: '自定义', hint: '输入总字数' }
+];
+
+const coCreateStructureChoices = [
+  { value: 'single', label: '不分章节', hint: '一气呵成' },
+  { value: 'auto', label: 'AI 判断', hint: '按篇幅规划' },
+  { value: 'chapters', label: '分章节', hint: '每章 3000-5000 字' }
 ];
 
 function createSimulationState() {
@@ -193,6 +202,8 @@ const customProviderTypes = ['openai', 'anthropic', 'gemini', 'grok'];
 export default function App() {
   const [runtime, setRuntime] = useState(null);
   const [projects, setProjects] = useState([]);
+  const [trashProjects, setTrashProjects] = useState([]);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [activeProject, setActiveProject] = useState(null);
   const [workbench, setWorkbench] = useState(createWorkbenchState);
   const [newProjectName, setNewProjectName] = useState('');
@@ -218,6 +229,7 @@ export default function App() {
 
   const snapshot = workbench.snapshot;
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
+  const projectRunning = isProjectRunning(snapshot);
   const workspaceProgress = useMemo(
     () => deriveWorkspaceProgress(snapshot, workbench.eventRows),
     [snapshot, workbench.eventRows]
@@ -243,6 +255,11 @@ export default function App() {
   const refreshProjects = useCallback(async () => {
     const data = await listProjects();
     setProjects(data.projects || []);
+  }, []);
+
+  const refreshTrashProjects = useCallback(async () => {
+    const data = await listTrashProjects();
+    setTrashProjects(data.projects || []);
   }, []);
 
   const refreshGlobalModels = useCallback(async () => {
@@ -443,11 +460,65 @@ export default function App() {
     try {
       await trashProject(project.id);
       setProjects((previous) => previous.filter((item) => item.id !== project.id));
+      if (trashOpen) {
+        await refreshTrashProjects();
+      }
       if (activeProject?.id === project.id) {
         resetProjectScopedState(true);
         await refreshGlobalModels();
       }
       setDeleteDialog(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleTrash = async () => {
+    const nextOpen = !trashOpen;
+    setTrashOpen(nextOpen);
+    if (!nextOpen) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await refreshTrashProjects();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restoreProjectFromTrash = async (project) => {
+    if (!project?.id) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = await restoreTrashProject(project.id);
+      const restored = data.project || project;
+      setTrashProjects((previous) => previous.filter((item) => item.id !== restored.id));
+      await refreshProjects();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const emptyProjectTrash = async () => {
+    if (!window.confirm('清空回收站后无法从这里恢复，确定清空吗？')) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await emptyTrashProjects();
+      setTrashProjects([]);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -473,6 +544,10 @@ export default function App() {
 
   const submitContinue = async (event) => {
     event.preventDefault();
+    if (projectRunning) {
+      await pauseWriting();
+      return;
+    }
     const text = composerText.trim();
     if (!text) {
       return;
@@ -782,14 +857,52 @@ export default function App() {
     }
   };
 
-  const beginCoCreateFlow = async (kind) => {
+  const beginCoCreateFlow = async (kind, options = {}) => {
     if (!activeProject?.id) {
       return;
     }
-    const initial = coCreate.input.trim();
+    const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
+    let initial = coCreate.input.trim();
+    if (kind === 'normal' && !initial) {
+      if (coCreate.intakeActive && options.confirmIntake) {
+        initial = coCreate.intakeInitial.trim();
+      }
+    }
     if (kind === 'normal' && !initial) {
       setCoCreate((previous) => ({ ...previous, error: '先输入一个核心想法' }));
       return;
+    }
+    if (kind === 'normal' && !hasBackendSession && !coCreate.intakeActive && !options.confirmIntake) {
+      setCoCreate((previous) => ({
+        ...previous,
+        kind: 'normal',
+        intakeActive: true,
+        intakeInitial: initial,
+        targetTotalWordsChoice: previous.targetTotalWordsChoice || '5000',
+        structureChoice: previous.structureChoice || 'single',
+        input: '',
+        messages: buildCoCreateIntakeMessages(initial),
+        ready: false,
+        suggestions: [],
+        streamThinking: '',
+        streamReply: '',
+        status: 'idle',
+        startMessage: '',
+        error: ''
+      }));
+      return;
+    }
+    let targetTotalWords = resolveCoCreateTargetTotalWords(coCreate);
+    let structureChoice = resolveCoCreateStructureChoice(coCreate);
+    if (kind === 'normal' && coCreate.intakeActive) {
+      if (targetTotalWords <= 0) {
+        setCoCreate((previous) => ({ ...previous, error: '先确认目标字数' }));
+        return;
+      }
+      initial = buildCoCreateIntakeInitial(coCreate.intakeInitial || initial, {
+        targetTotalWords,
+        structureChoice
+      });
     }
     if (kind === 'adapt' && (!adaptation.sourceFile?.relative_path || adaptation.analysisStatus !== 'done')) {
       setCoCreate((previous) => ({ ...previous, error: '先完成原文分析并选择模式' }));
@@ -803,7 +916,7 @@ export default function App() {
         initial,
         sourceFile: adaptation.sourceFile?.relative_path,
         mode: adaptation.mode,
-        targetTotalWords: resolveCoCreateTargetTotalWords(coCreate)
+        targetTotalWords
       });
       const data = await beginCoCreate(activeProject.id, payload);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
@@ -818,7 +931,7 @@ export default function App() {
   const submitCoCreate = async (event) => {
     event.preventDefault();
     const text = coCreate.input.trim();
-    const hasBackendSession = coCreate.active || coCreate.messages.length > 0;
+    const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
     if (!activeProject?.id || !text || !hasBackendSession) {
       return;
     }
@@ -837,7 +950,7 @@ export default function App() {
 
   const submitCoCreateSuggestion = async (suggestion) => {
     const text = String(suggestion || '').trim();
-    const hasBackendSession = coCreate.active || coCreate.messages.length > 0;
+    const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
     if (!activeProject?.id || !text || !hasBackendSession || busy) {
       return;
     }
@@ -1171,6 +1284,43 @@ export default function App() {
           )}
         </div>
 
+        <section className="trash-panel">
+          <button className="trash-toggle" disabled={busy} onClick={toggleTrash} type="button">
+            <Trash2 size={16} />
+            <span>回收站</span>
+            <small>{trashOpen ? '收起' : '查看'}</small>
+          </button>
+          {trashOpen ? (
+            <div className="trash-list">
+              {trashProjects.length === 0 ? (
+                <div className="empty-state">回收站为空</div>
+              ) : (
+                trashProjects.map((project) => (
+                  <div className="trash-row" key={project.id}>
+                    <span>
+                      <strong>{project.name || project.id}</strong>
+                      <small>{formatDate(project.deleted_at || project.updated_at)}</small>
+                    </span>
+                    <button
+                      className="icon-button"
+                      disabled={busy}
+                      onClick={() => restoreProjectFromTrash(project)}
+                      title="恢复项目"
+                      type="button"
+                    >
+                      <ListRestart size={16} />
+                    </button>
+                  </div>
+                ))
+              )}
+              <button className="tool-button full-width" disabled={busy || trashProjects.length === 0} onClick={emptyProjectTrash} type="button">
+                <Trash2 size={16} />
+                清空回收站
+              </button>
+            </div>
+          ) : null}
+        </section>
+
         {projectMenu ? (
           <div
             className="project-menu"
@@ -1268,7 +1418,7 @@ export default function App() {
               type="button"
             >
               <PauseCircle size={16} />
-              Pause
+              暂停
             </button>
             <button
               className="tool-button accent"
@@ -1277,7 +1427,7 @@ export default function App() {
               type="button"
             >
               <Play size={16} />
-              Resume
+              恢复
             </button>
           </div>
         </header>
@@ -1328,14 +1478,14 @@ export default function App() {
         <form className="composer" onSubmit={submitContinue}>
           <input
             aria-label={quickStartAvailable ? '快速启动输入' : '继续创作输入'}
-            disabled={!activeProject || busy}
+            disabled={!activeProject || busy || projectRunning}
             placeholder={quickStartAvailable ? '写下新书核心想法，直接启动...' : '继续、补充或要求下一步...'}
             value={composerText}
             onChange={(event) => setComposerText(event.target.value)}
           />
-          <button className="tool-button accent" disabled={!activeProject || busy} type="submit">
-            {quickStartAvailable ? <Play size={16} /> : <Send size={16} />}
-            {quickStartAvailable ? 'Start' : 'Continue'}
+          <button className={`tool-button ${projectRunning ? '' : 'accent'}`} disabled={!activeProject || busy} type="submit">
+            {projectRunning ? <PauseCircle size={16} /> : quickStartAvailable ? <Play size={16} /> : <Send size={16} />}
+            {projectRunning ? '暂停' : quickStartAvailable ? '启动' : '继续'}
           </button>
         </form>
       </main>
@@ -1386,7 +1536,15 @@ export default function App() {
 
         <div className="side-panel">
           {sideView === 'status' ? (
-            <StatusPanel snapshot={snapshot} activeProject={activeProject} onSteer={submitSteer} steerText={steerText} setSteerText={setSteerText} busy={busy} />
+            <StatusPanel
+              snapshot={snapshot}
+              activeProject={activeProject}
+              onPause={pauseWriting}
+              onSteer={submitSteer}
+              steerText={steerText}
+              setSteerText={setSteerText}
+              busy={busy}
+            />
           ) : sideView === 'cocreate' ? (
             <CoCreatePanel
               activeProject={activeProject}
@@ -1395,6 +1553,7 @@ export default function App() {
               setCoCreate={setCoCreate}
               adaptation={adaptation}
               onBegin={beginCoCreateFlow}
+              onConfirmIntake={() => beginCoCreateFlow('normal', { confirmIntake: true })}
               onSubmit={submitCoCreate}
               onSuggestion={submitCoCreateSuggestion}
               onRevise={reviseCoCreateMessage}
@@ -1504,9 +1663,14 @@ function ProgressItem({ label, value, wide = false }) {
   );
 }
 
-function StatusPanel({ snapshot, activeProject, onSteer, steerText, setSteerText, busy }) {
+function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, setSteerText, busy }) {
   const outline = snapshot?.Outline || snapshot?.outline || [];
   const agents = snapshot?.Agents || snapshot?.agents || [];
+  const premise = textValue(snapshot, 'PremiseFull', 'premise_full', 'Premise', 'premise');
+  const characterDetails = arrayValue(snapshot, 'CharacterDetails', 'character_details');
+  const worldRules = arrayValue(snapshot, 'WorldRules', 'world_rules');
+  const hasFoundation = Boolean(premise || outline.length || characterDetails.length || worldRules.length);
+  const running = isProjectRunning(snapshot);
   return (
     <div className="side-content">
       <section className="metric-grid">
@@ -1515,6 +1679,13 @@ function StatusPanel({ snapshot, activeProject, onSteer, steerText, setSteerText
         <Metric label="当前" value={snapshot?.CurrentChapter || snapshot?.InProgressChapter || 0} />
         <Metric label="字数" value={snapshot?.TotalWordCount || 0} />
       </section>
+
+      <div className="runtime-actions">
+        <button className="tool-button" disabled={!activeProject || busy || !running} onClick={onPause} type="button">
+          <PauseCircle size={16} />
+          暂停
+        </button>
+      </div>
 
       <form className="steer-form" onSubmit={onSteer}>
         <textarea
@@ -1526,7 +1697,7 @@ function StatusPanel({ snapshot, activeProject, onSteer, steerText, setSteerText
         />
         <button className="tool-button" disabled={!activeProject || busy} type="submit">
           <Send size={16} />
-          Steer
+          干预
         </button>
       </form>
 
@@ -1584,6 +1755,7 @@ function CoCreatePanel({
   setCoCreate,
   adaptation,
   onBegin,
+  onConfirmIntake,
   onSubmit,
   onSuggestion,
   onRevise,
@@ -1592,22 +1764,34 @@ function CoCreatePanel({
 }) {
   const [editing, setEditing] = useState(null);
   const hasConversation = coCreate.messages.length > 0;
-  const hasBackendSession = coCreate.active || hasConversation;
-  const showTargetControls = !hasBackendSession && coCreate.kind !== 'adapt';
+  const hasBackendSession = coCreate.active || (hasConversation && !coCreate.intakeActive);
+  const showIntakeControls = coCreate.intakeActive && !hasBackendSession;
   const targetTotalWords = resolveCoCreateTargetTotalWords(coCreate);
-  const canBeginNormal = Boolean(activeProject && !busy && !hasBackendSession && coCreate.input.trim() && targetTotalWords > 0);
-  const canBeginStage = Boolean(activeProject && !busy && !hasBackendSession);
+  const canBeginNormal = Boolean(activeProject && !busy && !hasBackendSession && !coCreate.intakeActive && coCreate.input.trim());
+  const canBeginStage = Boolean(activeProject && !busy && !hasBackendSession && !coCreate.intakeActive);
   const canBeginAdapt = Boolean(
     activeProject &&
       !busy &&
       !hasBackendSession &&
+      !coCreate.intakeActive &&
       adaptation.sourceFile?.relative_path &&
       adaptation.analysisStatus === 'done'
   );
   const canSend = Boolean(activeProject && !busy && hasBackendSession && coCreate.input.trim());
+  const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
   const canCommit = Boolean(activeProject && !busy && coCreate.ready && coCreate.draftPrompt.trim());
-  const canCancel = Boolean(activeProject && !busy && hasBackendSession);
+  const canCancel = Boolean(activeProject && !busy && (hasBackendSession || coCreate.intakeActive));
   const title = coCreateTitle(coCreate.kind);
+  const handleCoCreateFormSubmit = (event) => {
+    event.preventDefault();
+    if (hasBackendSession) {
+      onSubmit(event);
+    } else if (showIntakeControls) {
+      onConfirmIntake();
+    } else {
+      onBegin('normal');
+    }
+  };
   return (
     <div className="side-content cocreate-panel">
       {coCreate.error ? <div className="error-banner compact">{coCreate.error}</div> : null}
@@ -1737,27 +1921,30 @@ function CoCreatePanel({
       ) : null}
 
       <div className="cocreate-sticky-workspace">
-        <form className="cocreate-form" onSubmit={hasBackendSession ? onSubmit : (event) => {
-          event.preventDefault();
-          onBegin('normal');
-        }}>
+        <form className="cocreate-form" onSubmit={handleCoCreateFormSubmit}>
         <textarea
           aria-label="共创输入"
-          disabled={!activeProject || busy}
-          placeholder={hasBackendSession ? '继续补充你的想法...' : '输入你的核心想法，或先进入 Stage/Adapt 共创'}
+          disabled={!activeProject || busy || showIntakeControls}
+          placeholder={
+            showIntakeControls
+              ? '先确认篇幅和结构...'
+              : hasBackendSession ? '继续补充你的想法...' : '输入你的核心想法，或先进入 Stage/Adapt 共创'
+          }
           value={coCreate.input}
           onChange={(event) => setCoCreate((previous) => appendCoCreateInput(previous, event.target.value))}
         />
-        {showTargetControls ? (
-          <div className="cocreate-target">
-            <div className="cocreate-target-options" aria-label="Target total words">
+        {showIntakeControls ? (
+          <div className="cocreate-intake">
+            <div className="intake-question">
+              <strong>目标字数</strong>
+              <div className="cocreate-target-options" aria-label="Target total words">
               {coCreateTargetWordChoices.map((choice) => (
                 <label
-                  className={`target-option ${(coCreate.targetTotalWordsChoice || '5000') === choice.value ? 'active' : ''}`}
+                  className={`target-option ${coCreate.targetTotalWordsChoice === choice.value ? 'active' : ''}`}
                   key={choice.value}
                 >
                   <input
-                    checked={(coCreate.targetTotalWordsChoice || '5000') === choice.value}
+                    checked={coCreate.targetTotalWordsChoice === choice.value}
                     disabled={!activeProject || busy}
                     name="cocreate-target-total-words"
                     type="radio"
@@ -1767,17 +1954,23 @@ function CoCreatePanel({
                       setCoCreate((previous) => ({
                         ...previous,
                         targetTotalWordsChoice: value,
-                        customTargetTotalWords: value === 'custom' ? previous.customTargetTotalWords || '' : previous.customTargetTotalWords
+                        customTargetTotalWords: value === 'custom' ? previous.customTargetTotalWords || '' : previous.customTargetTotalWords,
+                        structureChoice:
+                          previous.structureChoice === 'single' && value !== '5000' && value !== 'custom'
+                            ? 'auto'
+                            : previous.structureChoice
                       }));
                     }}
                   />
                   <span>{choice.label}</span>
+                  <small>{choice.hint}</small>
                 </label>
               ))}
+              </div>
             </div>
-            {(coCreate.targetTotalWordsChoice || '5000') === 'custom' ? (
+            {coCreate.targetTotalWordsChoice === 'custom' ? (
               <label className="field-label">
-                <span>Target words</span>
+                <span>总字数</span>
                 <input
                   disabled={!activeProject || busy}
                   inputMode="numeric"
@@ -1789,11 +1982,38 @@ function CoCreatePanel({
                 />
               </label>
             ) : null}
+            <div className="intake-question">
+              <strong>结构形式</strong>
+              <div className="cocreate-target-options structure" aria-label="Story structure">
+                {coCreateStructureChoices.map((choice) => (
+                  <label
+                    className={`target-option ${resolveCoCreateStructureChoice(coCreate) === choice.value ? 'active' : ''}`}
+                    key={choice.value}
+                  >
+                    <input
+                      checked={resolveCoCreateStructureChoice(coCreate) === choice.value}
+                      disabled={!activeProject || busy}
+                      name="cocreate-structure"
+                      type="radio"
+                      value={choice.value}
+                      onChange={(event) => {
+                        setCoCreate((previous) => ({
+                          ...previous,
+                          structureChoice: event.target.value
+                        }));
+                      }}
+                    />
+                    <span>{choice.label}</span>
+                    <small>{choice.hint}</small>
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
         ) : null}
-        <button className="tool-button accent full-width" disabled={hasBackendSession ? !canSend : !canBeginNormal} type="submit">
+        <button className="tool-button accent full-width" disabled={hasBackendSession ? !canSend : showIntakeControls ? !canConfirmIntake : !canBeginNormal} type="submit">
           <Send size={16} />
-          {hasBackendSession ? '发送' : '开始普通共创'}
+          {hasBackendSession ? '发送' : showIntakeControls ? '确认并开始共创' : '开始普通共创'}
         </button>
         </form>
 
@@ -2333,6 +2553,73 @@ function BackendPanel({ backend, busy, onRefresh, onTest }) {
             ))
           )}
         </div>
+      </section>
+
+      <section className="foundation-section">
+        <div className="section-title">
+          <BookOpen size={17} />
+          <span>设定</span>
+        </div>
+        {!hasFoundation ? (
+          <div className="empty-state">暂无设定</div>
+        ) : (
+          <div className="foundation-stack">
+            {premise ? (
+              <div className="foundation-block">
+                <strong>小说设定</strong>
+                <p>{premise}</p>
+              </div>
+            ) : null}
+            {outline.length ? (
+              <div className="foundation-block">
+                <strong>章节大纲</strong>
+                <div className="outline-detail-list">
+                  {outline.map((item) => (
+                    <div className="outline-detail" key={`detail-${item.Chapter || item.chapter}-${item.Title || item.title}`}>
+                      <b>{item.Chapter || item.chapter}. {item.Title || item.title || '未命名章节'}</b>
+                      {textValue(item, 'CoreEvent', 'core_event') ? <p>{textValue(item, 'CoreEvent', 'core_event')}</p> : null}
+                      {textValue(item, 'Hook', 'hook') ? <p>{textValue(item, 'Hook', 'hook')}</p> : null}
+                      {arrayValue(item, 'Scenes', 'scenes').length ? (
+                        <ul>
+                          {arrayValue(item, 'Scenes', 'scenes').map((scene, index) => (
+                            <li key={`${item.Chapter || item.chapter}-scene-${index}`}>{scene}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {characterDetails.length ? (
+              <div className="foundation-block">
+                <strong>角色</strong>
+                <div className="foundation-chip-list">
+                  {characterDetails.map((character) => (
+                    <span key={textValue(character, 'Name', 'name')}>
+                      {textValue(character, 'Name', 'name')}
+                      {textValue(character, 'Role', 'role') ? ` / ${textValue(character, 'Role', 'role')}` : ''}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {worldRules.length ? (
+              <div className="foundation-block">
+                <strong>世界规则</strong>
+                <ul>
+                  {worldRules.slice(0, 12).map((rule, index) => (
+                    <li key={`${textValue(rule, 'Category', 'category')}-${index}`}>
+                      {textValue(rule, 'Category', 'category') ? `${textValue(rule, 'Category', 'category')}：` : ''}
+                      {textValue(rule, 'Rule', 'rule')}
+                      {textValue(rule, 'Boundary', 'boundary') ? `（边界：${textValue(rule, 'Boundary', 'boundary')}）` : ''}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        )}
       </section>
     </div>
   );
@@ -2973,10 +3260,45 @@ export function buildBeginCoCreatePayload({ kind, initial = '', sourceFile = '',
 }
 
 export function resolveCoCreateTargetTotalWords(state = {}) {
-  const choice = String(state.targetTotalWordsChoice || '5000');
+  const choice = String(state.targetTotalWordsChoice || '');
   const raw = choice === 'custom' ? state.customTargetTotalWords : choice;
   const value = Number(String(raw ?? '').trim());
   return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+export function resolveCoCreateStructureChoice(state = {}) {
+  const choice = String(state.structureChoice || 'single');
+  return coCreateStructureChoices.some((item) => item.value === choice) ? choice : 'single';
+}
+
+export function buildCoCreateIntakeMessages(initial = '') {
+  const content = String(initial || '').trim();
+  return [
+    {
+      id: 'intake-user',
+      role: 'user',
+      content
+    },
+    {
+      id: 'intake-assistant',
+      role: 'assistant',
+      content: '开始前先确认两个问题：目标字数是多少？结构要不分章节、由 AI 判断，还是明确分章节？'
+    }
+  ];
+}
+
+export function buildCoCreateIntakeInitial(initial = '', options = {}) {
+  const targetTotalWords = Number(options.targetTotalWords || 0);
+  const structureChoice = resolveCoCreateStructureChoice({ structureChoice: options.structureChoice });
+  const structureText = {
+    single: '不分章节，一气呵成；如工具必须保存 outline，只保存 1 个正文条目',
+    auto: '由 AI 根据总字数自动判断章节数',
+    chapters: '分章节；常规单章正文按 3000-5000 字估算'
+  }[structureChoice];
+  const shortRule = targetTotalWords > 0 && targetTotalWords <= 8000
+    ? '\n- 该目标属于短篇篇幅；除非用户明确选择分章节，否则按一篇连续短篇规划，不要拆成多个章节。'
+    : '';
+  return `${String(initial || '').trim()}\n\n[共创前确认]\n- target_total_words=${targetTotalWords}，这是全书总字数，不是每章字数。\n- 结构偏好：${structureText}。\n- 常规小说单章正文约 3000-5000 字；规划章节数必须按总字数估算。${shortRule}`;
 }
 
 export function deriveWorkspaceProgress(snapshot, eventRows = []) {
@@ -3019,6 +3341,23 @@ export function deriveWorkspaceProgress(snapshot, eventRows = []) {
     wordLabel,
     runningLabel: runningLabelFromSnapshot(snapshot) || runningLabelFromEventRows(eventRows) || 'idle'
   };
+}
+
+export function isProjectRunning(snapshot) {
+  if (!snapshot) {
+    return false;
+  }
+  if (snapshot.IsRunning === true || snapshot.is_running === true) {
+    return true;
+  }
+  const status = textValue(snapshot, 'StatusLabel', 'status_label', 'RuntimeState', 'runtime_state').toLowerCase();
+  if (['running', 'working', 'busy'].includes(status)) {
+    return true;
+  }
+  if (['paused', 'ready', 'idle', 'done', 'complete', 'completed', 'error'].includes(status)) {
+    return false;
+  }
+  return arrayValue(snapshot, 'Agents', 'agents').some(isRunningAgent);
 }
 
 function runningLabelFromSnapshot(snapshot) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/voocel/agentcore/schema"
@@ -65,6 +66,9 @@ func (t *DraftChapterTool) Execute(_ context.Context, args json.RawMessage) (jso
 	}
 	if a.Content == "" {
 		return nil, fmt.Errorf("content must not be empty: %w", errs.ErrToolArgs)
+	}
+	if issue := repeatedDraftContentIssue(a.Content); issue != "" {
+		return nil, fmt.Errorf("draft_chapter content appears to repeat existing prose (%s). Use draft_chapter(mode=\"write\") with a clean full-chapter rewrite; remove duplicated sentences instead of appending the same draft again: %w", issue, errs.ErrToolArgs)
 	}
 	if err := t.store.Progress.ValidateChapterWork(a.Chapter); err != nil {
 		return nil, err
@@ -166,4 +170,50 @@ func loadDraftTextForQuality(st *store.Store, chapter int) string {
 		return ""
 	}
 	return text
+}
+
+func repeatedDraftContentIssue(content string) string {
+	sentences := splitDraftSentences(content)
+	seen := map[string]int{}
+	repeatedSentences := 0
+	repeatedRunes := 0
+	for _, sentence := range sentences {
+		normalized := normalizeDraftSentence(sentence)
+		runes := utf8.RuneCountInString(normalized)
+		if runes < 24 {
+			continue
+		}
+		seen[normalized]++
+		if seen[normalized] > 1 {
+			repeatedSentences++
+			repeatedRunes += runes
+		}
+	}
+	if repeatedSentences >= 3 || repeatedRunes >= 180 {
+		return fmt.Sprintf("%d repeated long sentence(s), about %d repeated characters", repeatedSentences, repeatedRunes)
+	}
+	return ""
+}
+
+func splitDraftSentences(content string) []string {
+	var sentences []string
+	var current strings.Builder
+	for _, r := range content {
+		current.WriteRune(r)
+		switch r {
+		case '。', '！', '？', '；', '.', '!', '?', ';', '\n':
+			if sentence := strings.TrimSpace(current.String()); sentence != "" {
+				sentences = append(sentences, sentence)
+			}
+			current.Reset()
+		}
+	}
+	if sentence := strings.TrimSpace(current.String()); sentence != "" {
+		sentences = append(sentences, sentence)
+	}
+	return sentences
+}
+
+func normalizeDraftSentence(sentence string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(sentence)), "")
 }

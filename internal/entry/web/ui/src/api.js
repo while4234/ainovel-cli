@@ -25,6 +25,10 @@ export function listProjects() {
   return request('/api/projects');
 }
 
+export function listTrashProjects() {
+  return request('/api/trash/projects');
+}
+
 export function createProject(name) {
   return request('/api/projects', {
     method: 'POST',
@@ -41,6 +45,19 @@ export function renameProject(projectId, name) {
 
 export function trashProject(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE'
+  });
+}
+
+export function restoreTrashProject(projectId) {
+  return request(`/api/trash/projects/${encodeURIComponent(projectId)}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
+export function emptyTrashProjects() {
+  return request('/api/trash/projects', {
     method: 'DELETE'
   });
 }

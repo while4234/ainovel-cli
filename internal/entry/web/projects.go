@@ -192,7 +192,141 @@ func (s *ProjectStore) TrashProject(id string) (ProjectManifest, string, error) 
 		_ = writeProjectManifest(original)
 		return ProjectManifest{}, "", fmt.Errorf("move project to trash: %w", err)
 	}
+	manifest.RootDir = target
+	manifest.OutputDir = filepath.Join(target, "output")
+	if err := writeProjectManifest(manifest); err != nil {
+		return ProjectManifest{}, "", fmt.Errorf("rewrite trash manifest: %w", err)
+	}
 	return manifest, target, nil
+}
+
+func (s *ProjectStore) ListTrashProjects() ([]ProjectManifest, error) {
+	entries, err := os.ReadDir(s.trashProjectsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list trash projects: %w", err)
+	}
+	projects := make([]ProjectManifest, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		root := filepath.Join(s.trashProjectsDir(), entry.Name())
+		manifest, err := readProjectManifest(filepath.Join(root, "project.json"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		manifest = s.normalizeManifest(root, manifest)
+		if manifest.DeletedAt == nil {
+			continue
+		}
+		manifest.RootDir = root
+		manifest.OutputDir = filepath.Join(root, "output")
+		projects = append(projects, manifest)
+	}
+	sort.Slice(projects, func(i, j int) bool {
+		if projects[i].DeletedAt != nil && projects[j].DeletedAt != nil && !projects[i].DeletedAt.Equal(*projects[j].DeletedAt) {
+			return projects[i].DeletedAt.After(*projects[j].DeletedAt)
+		}
+		return projects[i].ID < projects[j].ID
+	})
+	return projects, nil
+}
+
+func (s *ProjectStore) RestoreTrashProject(id string) (ProjectManifest, error) {
+	if err := validateProjectID(id); err != nil {
+		return ProjectManifest{}, err
+	}
+	manifest, root, err := s.findTrashedProject(id)
+	if err != nil {
+		return ProjectManifest{}, err
+	}
+	target := filepath.Join(s.ProjectsDir(), id)
+	if _, err := os.Stat(target); err == nil {
+		return ProjectManifest{}, fmt.Errorf("project %s already exists", id)
+	} else if !os.IsNotExist(err) {
+		return ProjectManifest{}, err
+	}
+	if err := os.MkdirAll(s.ProjectsDir(), 0o755); err != nil {
+		return ProjectManifest{}, fmt.Errorf("create projects dir: %w", err)
+	}
+	now := time.Now().UTC()
+	manifest.RootDir = target
+	manifest.OutputDir = filepath.Join(target, "output")
+	manifest.DeletedAt = nil
+	manifest.UpdatedAt = now
+	manifest.LastAccessedAt = now
+	if err := os.Rename(root, target); err != nil {
+		return ProjectManifest{}, fmt.Errorf("restore project: %w", err)
+	}
+	if err := s.ensureProjectDirs(manifest); err != nil {
+		return ProjectManifest{}, err
+	}
+	if err := writeProjectManifest(manifest); err != nil {
+		return ProjectManifest{}, err
+	}
+	return manifest, nil
+}
+
+func (s *ProjectStore) EmptyTrashProjects() (int, error) {
+	entries, err := os.ReadDir(s.trashProjectsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("list trash projects: %w", err)
+	}
+	removed := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(s.trashProjectsDir(), entry.Name())); err != nil {
+			return removed, fmt.Errorf("empty trash project %s: %w", entry.Name(), err)
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func (s *ProjectStore) findTrashedProject(id string) (ProjectManifest, string, error) {
+	entries, err := os.ReadDir(s.trashProjectsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ProjectManifest{}, "", os.ErrNotExist
+		}
+		return ProjectManifest{}, "", fmt.Errorf("list trash projects: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		root := filepath.Join(s.trashProjectsDir(), entry.Name())
+		manifest, err := readProjectManifest(filepath.Join(root, "project.json"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return ProjectManifest{}, "", err
+		}
+		if manifest.ID != id || manifest.DeletedAt == nil {
+			continue
+		}
+		manifest = s.normalizeManifest(root, manifest)
+		manifest.RootDir = root
+		manifest.OutputDir = filepath.Join(root, "output")
+		return manifest, root, nil
+	}
+	return ProjectManifest{}, "", os.ErrNotExist
+}
+
+func (s *ProjectStore) trashProjectsDir() string {
+	return filepath.Join(s.RuntimeRoot, "trash", "projects")
 }
 
 func (s *ProjectStore) uniqueTrashProjectPath(trashDir, id string, deletedAt time.Time) string {

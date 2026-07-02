@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -32,7 +33,7 @@ func (t *SaveFoundationTool) ConcurrencySafe(_ json.RawMessage) bool { return fa
 
 func (t *SaveFoundationTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("type", schema.Enum("设定类型", "premise", "outline", "layered_outline", "characters", "world_rules", "expand_arc", "append_volume", "update_compass", "complete_book")).Required(),
+		schema.Property("type", schema.Enum("设定类型。建议显式传；若缺失，工具会在内容和当前缺失项唯一明确时自动推断。", "premise", "outline", "layered_outline", "characters", "world_rules", "expand_arc", "append_volume", "update_compass", "complete_book")),
 		schema.Property("content", map[string]any{
 			"description": "内容。premise 传 Markdown 字符串；其他类型直接传 JSON 数组或对象即可，也兼容传 JSON 字符串。expand_arc 时传章节数组。",
 		}).Required(),
@@ -56,6 +57,14 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	content, err := normalizeFoundationContent(a.Content)
 	if err != nil {
 		return nil, err
+	}
+	a.Type = strings.TrimSpace(a.Type)
+	if a.Type == "" {
+		inferred, inferErr := t.inferFoundationType(content)
+		if inferErr != nil {
+			return nil, inferErr
+		}
+		a.Type = inferred
 	}
 	if a.Scale != "" {
 		switch domain.PlanningTier(a.Scale) {
@@ -342,6 +351,119 @@ func normalizeFoundationContent(raw json.RawMessage) (string, error) {
 		return "", fmt.Errorf("invalid content: expected Markdown string or valid JSON value: %w", errs.ErrToolArgs)
 	}
 	return string(raw), nil
+}
+
+func (t *SaveFoundationTool) inferFoundationType(content string) (string, error) {
+	content = strings.TrimSpace(content)
+	missing := t.store.FoundationMissing()
+	if len(missing) == 1 {
+		if inferred := foundationTypeFromMissing(missing[0]); inferred != "" {
+			return inferred, nil
+		}
+	}
+
+	if looksLikePremiseMarkdown(content) && foundationMissingAllows(missing, "premise") {
+		return "premise", nil
+	}
+	if inferred := inferFoundationTypeFromJSON(content); inferred != "" {
+		if len(missing) == 0 || foundationMissingAllows(missing, inferred) {
+			return inferred, nil
+		}
+	}
+	if looksLikePremiseMarkdown(content) && len(missing) == 0 {
+		return "premise", nil
+	}
+
+	if len(missing) > 0 {
+		return "", fmt.Errorf("save_foundation requires type because content is ambiguous; current missing foundation=%s: %w", strings.Join(missing, ","), errs.ErrToolArgs)
+	}
+	return "", fmt.Errorf("save_foundation requires type because foundation is already complete and content is ambiguous: %w", errs.ErrToolArgs)
+}
+
+func foundationTypeFromMissing(missing string) string {
+	switch missing {
+	case "premise", "outline", "characters", "world_rules":
+		return missing
+	case "compass":
+		return "update_compass"
+	default:
+		return ""
+	}
+}
+
+func foundationMissingAllows(missing []string, typeName string) bool {
+	if len(missing) == 0 {
+		return false
+	}
+	missingName := typeName
+	if typeName == "update_compass" {
+		missingName = "compass"
+	}
+	for _, item := range missing {
+		if item == missingName {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikePremiseMarkdown(content string) bool {
+	if content == "" || strings.HasPrefix(content, "{") || strings.HasPrefix(content, "[") {
+		return false
+	}
+	return strings.HasPrefix(content, "#") ||
+		strings.Contains(content, "\n## ") ||
+		strings.Contains(content, "\n# ")
+}
+
+func inferFoundationTypeFromJSON(content string) string {
+	var value any
+	if err := json.Unmarshal([]byte(content), &value); err != nil {
+		return ""
+	}
+	switch v := value.(type) {
+	case []any:
+		if len(v) == 0 {
+			return ""
+		}
+		first, _ := v[0].(map[string]any)
+		return inferFoundationTypeFromObject(first, true)
+	case map[string]any:
+		return inferFoundationTypeFromObject(v, false)
+	default:
+		return ""
+	}
+}
+
+func inferFoundationTypeFromObject(obj map[string]any, fromArray bool) string {
+	if len(obj) == 0 {
+		return ""
+	}
+	if _, ok := obj["ending_direction"]; ok {
+		return "update_compass"
+	}
+	if hasAnyKey(obj, "chapter", "core_event", "hook", "scenes") {
+		return "outline"
+	}
+	if hasAnyKey(obj, "name", "role", "description", "arc", "traits", "aliases") {
+		return "characters"
+	}
+	if hasAnyKey(obj, "category", "rule", "boundary") {
+		return "world_rules"
+	}
+	if fromArray && hasAnyKey(obj, "index", "arcs") {
+		return "layered_outline"
+	}
+	return ""
+}
+
+func hasAnyKey(obj map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if _, ok := obj[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *SaveFoundationTool) isWriting() bool {

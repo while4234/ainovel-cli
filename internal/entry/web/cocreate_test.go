@@ -94,6 +94,41 @@ func TestProjectCoCreatePersistsTargetTotalWords(t *testing.T) {
 	}
 }
 
+func TestProjectCoCreateWebCopyUsesStartButtonInsteadOfCtrlS(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Copy")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateProgress = []coCreateProgressStep{{kind: "reply", text: "可以按 Ctrl+S 开始创作。"}}
+	fake.cocreateReply = webCoCreateReply("可以按 Ctrl+S 开始创作。", "## 主题\n- 月城追凶", true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"normal","initial":"写一个月城悬疑"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode begin response: %v", err)
+	}
+	got := response.CoCreate.StreamReply + "\n"
+	for _, message := range response.CoCreate.Messages {
+		got += message.Content + "\n"
+	}
+	if strings.Contains(got, "Ctrl+S") {
+		t.Fatalf("web co-create copy should not mention Ctrl+S: %q", got)
+	}
+	if !strings.Contains(got, "点击「启动」") {
+		t.Fatalf("web co-create copy should mention start button: %q", got)
+	}
+}
+
 func TestProjectCoCreateSuggestionSendAndReviseTruncatesHistory(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
 	defer server.Close()

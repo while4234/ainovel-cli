@@ -419,6 +419,68 @@ h2 {
   color: var(--accent);
 }
 
+.trash-panel {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.trash-toggle {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0 9px;
+  background: var(--surface-solid);
+  color: var(--text);
+  font-weight: 800;
+  text-align: left;
+}
+
+.trash-toggle small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trash-list {
+  display: grid;
+  gap: 6px;
+}
+
+.trash-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 6px;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 5px 6px 5px 9px;
+  background: var(--surface-solid);
+}
+
+.trash-row span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.trash-row strong,
+.trash-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trash-row small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .project-menu {
   position: fixed;
   z-index: 30;
@@ -953,6 +1015,12 @@ h2 {
   gap: 8px;
 }
 
+.runtime-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
 .steer-form textarea,
 .adapt-brief,
 .cocreate-form textarea {
@@ -1184,9 +1252,20 @@ h2 {
     var(--bg-elevated);
 }
 
-.cocreate-target {
+.cocreate-target,
+.cocreate-intake {
   display: grid;
   gap: 8px;
+}
+
+.intake-question {
+  display: grid;
+  gap: 6px;
+}
+
+.intake-question > strong {
+  color: var(--text-strong);
+  font-size: 12px;
 }
 
 .cocreate-target-options {
@@ -1195,15 +1274,20 @@ h2 {
   gap: 6px;
 }
 
+.cocreate-target-options.structure {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .target-option {
-  display: inline-flex;
+  display: grid;
   min-width: 0;
-  min-height: 32px;
-  align-items: center;
-  justify-content: center;
+  min-height: 46px;
+  align-content: center;
+  justify-items: center;
+  gap: 2px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
-  padding: 0 6px;
+  padding: 6px;
   background: var(--surface-solid);
   color: #40505c;
   font-size: 12px;
@@ -1218,6 +1302,16 @@ h2 {
 
 .target-option span {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-option small {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1499,6 +1593,80 @@ h2 {
 
 .agent-row span {
   color: var(--muted);
+}
+
+.foundation-section {
+  padding-bottom: 16px;
+}
+
+.foundation-stack,
+.foundation-block,
+.outline-detail-list,
+.outline-detail {
+  display: grid;
+  gap: 8px;
+}
+
+.foundation-block {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.foundation-block > strong,
+.outline-detail b {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.foundation-block p,
+.outline-detail p {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.foundation-block ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.foundation-block li {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.outline-detail {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  background: var(--surface-solid);
+}
+
+.foundation-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.foundation-chip-list span {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(15, 111, 109, 0.22);
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: var(--accent-softer);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .model-route-list,
