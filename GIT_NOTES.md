@@ -49,7 +49,8 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `git diff --check` passed with CRLF warnings only; live Playwright validation
   verified that the saved `free` / `full_rewrite` proposal is restored after a
   service restart and shows an enabled confirm-and-start button in the adapt
-  panel.
+  panel; after confirmation, the live snapshot reported `IsRunning=true`,
+  `StatusLabel=RUNNING`, a confirmed adaptation plan, and 17 target chapters.
 
 ## Change Log
 
