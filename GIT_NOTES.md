@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `d3cc4d6`
+- Latest source change: branch `main`, `07eeaae`
   `fix: make adapt cocreate proposal start robust`, making Web adaptation
   co-create reliably generate a proposal, restore saved proposal state after
   refresh/restart, and surface the confirmation step in the adapt panel.
@@ -53,7 +53,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-03 `d3cc4d6` `fix: make adapt cocreate proposal start robust`:
+- 2026-07-03 `07eeaae` `fix: make adapt cocreate proposal start robust`:
   restored Web adapt co-create mode/source state across refresh/restart,
   changed adapt co-create commit to build a proposal instead of silently doing
   nothing, made planner parsing tolerant of common JSON shapes, added a
