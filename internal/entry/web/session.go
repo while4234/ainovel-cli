@@ -67,6 +67,8 @@ type projectHost interface {
 	SimulateFromDir(context.Context, string) (<-chan sim.Event, error)
 	ImportSimulationProfile(context.Context, string) (<-chan sim.Event, error)
 	PrepareAdaptationSource(context.Context, string) (<-chan adapt.Event, error)
+	BuildAdaptationProposal(adapt.ProposalOptions) (*domain.AdaptationPlan, error)
+	ConfirmAdaptationProposal() (*domain.AdaptationPlan, error)
 	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
 	Export(context.Context, exp.Options) (*exp.Result, error)
 	ReplayQueue(int64) ([]domain.RuntimeQueueItem, error)
@@ -504,6 +506,39 @@ func (s *ProjectSession) StartAdaptationPrepared(options adapt.ProposalOptions) 
 	return nil
 }
 
+func (s *ProjectSession) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	if err := s.host.PrepareExternalSourceUserRules(options.Brief); err != nil {
+		return nil, err
+	}
+	proposal, err := s.host.BuildAdaptationProposal(options)
+	if err != nil {
+		return nil, err
+	}
+	s.AppendSnapshot()
+	return proposal, nil
+}
+
+func (s *ProjectSession) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	plan, err := s.host.ConfirmAdaptationProposal()
+	if err != nil {
+		return nil, err
+	}
+	s.AppendSnapshot()
+	return plan, nil
+}
+
 func (s *ProjectSession) Export(ctx context.Context, opts exp.Options) (*exp.Result, error) {
 	result, err := s.host.Export(ctx, opts)
 	if err == nil {
@@ -591,15 +626,17 @@ func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
 		if err := s.host.PrepareExternalSourceUserRules(state.draftPrompt()); err != nil {
 			return state.apiState(), err
 		}
-		if err := s.host.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
+		proposal, err := s.host.BuildAdaptationProposal(adapt.ProposalOptions{
 			Brief:         state.draftPrompt(),
 			SourcePath:    state.sourcePath,
 			Granularity:   state.adaptGranularity,
 			RewritePolicy: state.adaptRewritePolicy,
 			WordTolerance: state.adaptWordTolerance,
-		}); err != nil {
+		})
+		if err != nil {
 			return state.apiState(), err
 		}
+		state.adaptationProposal = proposal
 	default:
 		plan, err := state.session.BuildPlanWithWordBudget(state.targetTotalWords)
 		if err != nil {

@@ -757,10 +757,55 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 	_ = deps.Store.Adaptation.ClearProposal()
 	fr := toFoundationResult(sourceFoundation)
 	fr.Premise = adaptationPremise(fr.Premise, proposal.Brief, proposal)
+	fr.Volumes = adaptationTargetVolumes(proposal)
+	if fr.Compass == nil {
+		fr.Compass = &domain.StoryCompass{
+			EndingDirection: strings.TrimSpace(proposal.Brief),
+			EstimatedScale:  fmt.Sprintf("%d chapters", len(proposal.Chapters)),
+		}
+	}
 	if err := imp.PersistFoundation(ctx, deps.Store, planningTier(len(proposal.Chapters)), fr); err != nil {
 		return nil, fmt.Errorf("persist adaptation foundation: %w", err)
 	}
 	return &proposal, nil
+}
+
+func adaptationTargetVolumes(plan domain.AdaptationPlan) []domain.VolumeOutline {
+	entries := adaptationTargetOutline(plan)
+	if len(entries) == 0 {
+		return nil
+	}
+	return []domain.VolumeOutline{{
+		Index: 1,
+		Title: "Adaptation",
+		Theme: firstNonEmptyString(strings.TrimSpace(plan.Brief), "Confirmed adaptation plan"),
+		Arcs: []domain.ArcOutline{{
+			Index:    1,
+			Title:    firstNonEmptyString(plan.Granularity, "adaptation"),
+			Goal:     strings.TrimSpace(plan.Brief),
+			Chapters: entries,
+		}},
+	}}
+}
+
+func adaptationTargetOutline(plan domain.AdaptationPlan) []domain.OutlineEntry {
+	entries := make([]domain.OutlineEntry, 0, len(plan.Chapters))
+	for idx, chapter := range plan.Chapters {
+		number := chapter.Chapter
+		if number <= 0 {
+			number = idx + 1
+		}
+		title := firstNonEmptyString(chapter.Title, chapter.OutlineEntry.Title, fmt.Sprintf("Chapter %d", number))
+		coreEvent := firstNonEmptyString(chapter.CoreEvent, chapter.CoverageNote, strings.Join(chapter.PreserveEvents, "；"))
+		entries = append(entries, domain.OutlineEntry{
+			Chapter:   number,
+			Title:     title,
+			CoreEvent: coreEvent,
+			Hook:      chapter.Hook,
+			Scenes:    append([]string(nil), chapter.Scenes...),
+		})
+	}
+	return entries
 }
 
 func buildPlanFromInputs(opts ProposalOptions, reports []domain.AdaptationSourceReport, manifest *domain.AdaptationSourceManifest, status string) domain.AdaptationPlan {

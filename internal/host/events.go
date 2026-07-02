@@ -98,19 +98,22 @@ type UISnapshot struct {
 	CachePerModel []AgentCacheStat
 
 	// 基础设定
-	Premise          string
-	PremiseFull      string
-	Outline          []OutlineSnapshot
-	Characters       []string
-	CharacterDetails []domain.Character
-	WorldRules       []domain.WorldRule
-	SupportingCount  int      // 配角名册中的次要角色总数
-	RecentSupporting []string // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
-	Layered          bool
-	CurrentVolumeArc string
-	NextVolumeTitle  string
-	CompassDirection string
-	CompassScale     string
+	Premise            string
+	PremiseFull        string
+	Outline            []OutlineSnapshot
+	Characters         []string
+	CharacterDetails   []domain.Character
+	WorldRules         []domain.WorldRule
+	SupportingCount    int      // 配角名册中的次要角色总数
+	RecentSupporting   []string // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
+	Layered            bool
+	CurrentVolumeArc   string
+	NextVolumeTitle    string
+	CompassDirection   string
+	CompassScale       string
+	SimulationProfile  *domain.SimulationCompactProfile
+	AdaptationProposal *domain.AdaptationPlan
+	AdaptationPlan     *domain.AdaptationPlan
 
 	// 详情
 	LastCommitSummary  string

@@ -55,22 +55,23 @@ type webCoCreateMessage struct {
 }
 
 type webCoCreateState struct {
-	Kind             string               `json:"kind"`
-	Active           bool                 `json:"active"`
-	Messages         []webCoCreateMessage `json:"messages"`
-	DraftPrompt      string               `json:"draft_prompt"`
-	Ready            bool                 `json:"ready"`
-	Suggestions      []string             `json:"suggestions"`
-	StreamThinking   string               `json:"stream_thinking,omitempty"`
-	StreamReply      string               `json:"stream_reply,omitempty"`
-	AdaptMode        string               `json:"adapt_mode,omitempty"`
-	RewritePolicy    string               `json:"rewrite_policy,omitempty"`
-	WordTolerance    float64              `json:"word_tolerance,omitempty"`
-	TargetTotalWords int                  `json:"target_total_words,omitempty"`
-	SourceFile       string               `json:"source_file,omitempty"`
-	CanStart         bool                 `json:"can_start"`
-	ModeLocked       bool                 `json:"mode_locked,omitempty"`
-	CommittedLabel   string               `json:"committed_label,omitempty"`
+	Kind             string                 `json:"kind"`
+	Active           bool                   `json:"active"`
+	Messages         []webCoCreateMessage   `json:"messages"`
+	DraftPrompt      string                 `json:"draft_prompt"`
+	Ready            bool                   `json:"ready"`
+	Suggestions      []string               `json:"suggestions"`
+	StreamThinking   string                 `json:"stream_thinking,omitempty"`
+	StreamReply      string                 `json:"stream_reply,omitempty"`
+	AdaptMode        string                 `json:"adapt_mode,omitempty"`
+	RewritePolicy    string                 `json:"rewrite_policy,omitempty"`
+	WordTolerance    float64                `json:"word_tolerance,omitempty"`
+	TargetTotalWords int                    `json:"target_total_words,omitempty"`
+	SourceFile       string                 `json:"source_file,omitempty"`
+	Proposal         *domain.AdaptationPlan `json:"proposal,omitempty"`
+	CanStart         bool                   `json:"can_start"`
+	ModeLocked       bool                   `json:"mode_locked,omitempty"`
+	CommittedLabel   string                 `json:"committed_label,omitempty"`
 }
 
 type webCoCreateSession struct {
@@ -84,6 +85,7 @@ type webCoCreateSession struct {
 	adaptRewritePolicy string
 	adaptWordTolerance float64
 	targetTotalWords   int
+	adaptationProposal *domain.AdaptationPlan
 }
 
 func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Request, id string) {
@@ -398,6 +400,7 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		WordTolerance:    s.adaptWordTolerance,
 		TargetTotalWords: s.targetTotalWords,
 		SourceFile:       s.sourceFile,
+		Proposal:         s.adaptationProposal,
 		CanStart:         s.session.Ready() && strings.TrimSpace(s.session.DraftPrompt()) != "",
 		ModeLocked:       s.kind == webCoCreateKindAdapt,
 	}
@@ -512,6 +515,9 @@ func isBadCoCreateRequest(err error) bool {
 }
 
 func coCreateCommitLabel(kind string) string {
+	if kind == webCoCreateKindAdapt {
+		return "adaptation proposal generated"
+	}
 	switch kind {
 	case webCoCreateKindStage:
 		return "阶段方向已应用"

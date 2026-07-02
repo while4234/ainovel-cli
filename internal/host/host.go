@@ -319,90 +319,29 @@ func (h *Host) StartAdaptationPrepared(brief string) error {
 }
 
 func (h *Host) StartAdaptationPreparedWithOptions(options adapt.ProposalOptions) error {
-	h.mu.Lock()
-	if h.lifecycle == lifecycleRunning {
-		h.mu.Unlock()
-		return fmt.Errorf("already running")
-	}
-	if h.cocreating {
-		h.mu.Unlock()
-		return fmt.Errorf("阶段共创进行中，请先结束共创")
-	}
-	h.mu.Unlock()
-
 	options.Brief = strings.TrimSpace(options.Brief)
 	if options.Brief == "" {
 		return fmt.Errorf("adaptation brief is required")
 	}
-	granularity, ok := domain.StrictAdaptationGranularity(options.Granularity)
-	if !ok {
-		return fmt.Errorf("adaptation mode must be one of chapter, arc, free")
-	}
-	options.Granularity = granularity
-	options.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(options.Granularity)
-	if options.WordTolerance <= 0 {
-		options.WordTolerance = adapt.DefaultWordTolerance
-	}
-	if _, _, err := adapt.ValidatePreparedSource(h.store, options.SourcePath); err != nil {
+	if _, err := h.BuildAdaptationProposal(options); err != nil {
 		return err
 	}
-	if err := h.budget.Refuse(); err != nil {
-		return err
-	}
-
-	deps := adapt.Deps{
-		Store: h.store,
-		LLM:   h.models.ForRole("architect"),
-		Prompts: adapt.Prompts{
-			Foundation:      h.bundle.Prompts.ImportFoundation,
-			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
-			Analyzer:        h.bundle.Prompts.ImportAnalyzer,
-			Planner:         h.bundle.Prompts.AdaptationPlanner,
-		},
-	}
-	proposal, err := adapt.BuildAdaptationProposal(deps, options)
-	if err != nil {
-		return err
-	}
-	if err := h.store.Checkpoints.Reset(); err != nil {
-		return fmt.Errorf("reset checkpoints: %w", err)
-	}
-	if err := h.store.Adaptation.ResetGenerated(); err != nil {
-		return fmt.Errorf("reset generated adaptation state: %w", err)
-	}
-	if err := h.store.Progress.Init("", 0); err != nil {
-		return fmt.Errorf("init progress: %w", err)
-	}
-	plan, err := adapt.ConfirmAdaptationProposal(context.Background(), deps, *proposal)
-	if err != nil {
-		return err
-	}
-
-	slog.Info("开始小说改编",
-		"module", "host",
-		"prompt_len", len(options.Brief),
-		"granularity", plan.Granularity,
-		"rewrite_policy", plan.RewritePolicy,
-		"word_tolerance", plan.WordTolerance,
-	)
-	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "开始小说改编", Level: "info"})
-	h.refreshWriterRestore()
-	h.observer.setAborting(false)
-	h.router.ResetRepeat()
-	h.router.Enable()
-	if err := h.coordinator.Prompt(context.Background(), BuildAdaptationStartPrompt(*plan)); err != nil {
-		return fmt.Errorf("prompt: %w", err)
-	}
-	h.router.Dispatch()
-
-	h.mu.Lock()
-	h.lifecycle = lifecycleRunning
-	h.mu.Unlock()
-	go h.waitDone()
-	return nil
+	_, err := h.ConfirmAdaptationProposal()
+	return err
 }
 
 func (h *Host) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
+	h.mu.Lock()
+	if h.lifecycle == lifecycleRunning {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("co-create is active")
+	}
+	h.mu.Unlock()
+
 	options.Brief = strings.TrimSpace(options.Brief)
 	if options.Brief == "" {
 		return nil, fmt.Errorf("adaptation brief is required")
@@ -410,9 +349,77 @@ func (h *Host) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.A
 	if options.WordTolerance <= 0 {
 		options.WordTolerance = adapt.DefaultWordTolerance
 	}
-	deps := adapt.Deps{
+	return adapt.BuildAdaptationProposal(h.adaptationDeps(), options)
+}
+
+func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
+	h.mu.Lock()
+	if h.lifecycle == lifecycleRunning {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("co-create is active")
+	}
+	h.mu.Unlock()
+
+	if err := h.budget.Refuse(); err != nil {
+		return nil, err
+	}
+	proposal, err := h.store.Adaptation.LoadProposal()
+	if err != nil {
+		return nil, err
+	}
+	if proposal == nil {
+		return nil, fmt.Errorf("adaptation proposal is required")
+	}
+	if err := h.store.Checkpoints.Reset(); err != nil {
+		return nil, fmt.Errorf("reset checkpoints: %w", err)
+	}
+	if err := h.store.Adaptation.ResetGenerated(); err != nil {
+		return nil, fmt.Errorf("reset generated adaptation state: %w", err)
+	}
+	if err := h.store.Progress.Init("", len(proposal.Chapters)); err != nil {
+		return nil, fmt.Errorf("init progress: %w", err)
+	}
+
+	plan, err := adapt.ConfirmAdaptationProposal(context.Background(), h.adaptationDeps(), *proposal)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("start adaptation",
+		"module", "host",
+		"prompt_len", len(plan.Brief),
+		"granularity", plan.Granularity,
+		"rewrite_policy", plan.RewritePolicy,
+		"word_tolerance", plan.WordTolerance,
+	)
+	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "start adaptation", Level: "info"})
+	h.refreshWriterRestore()
+	h.observer.setAborting(false)
+	h.router.ResetRepeat()
+	h.router.Enable()
+	if err := h.coordinator.Prompt(context.Background(), BuildAdaptationStartPrompt(*plan)); err != nil {
+		return nil, fmt.Errorf("prompt: %w", err)
+	}
+	h.router.Dispatch()
+
+	h.mu.Lock()
+	h.lifecycle = lifecycleRunning
+	h.mu.Unlock()
+	go h.waitDone()
+	return plan, nil
+}
+
+func (h *Host) adaptationDeps() adapt.Deps {
+	var llm imp.LLMChat
+	if h.models != nil {
+		llm = h.models.ForRole("architect")
+	}
+	return adapt.Deps{
 		Store: h.store,
-		LLM:   h.models.ForRole("architect"),
+		LLM:   llm,
 		Prompts: adapt.Prompts{
 			Foundation:      h.bundle.Prompts.ImportFoundation,
 			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
@@ -420,7 +427,6 @@ func (h *Host) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.A
 			Planner:         h.bundle.Prompts.AdaptationPlanner,
 		},
 	}
-	return adapt.BuildAdaptationProposal(deps, options)
 }
 
 // Resume 恢复模式：从 checkpoint + progress 生成 resume prompt 并启动。
@@ -923,6 +929,15 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 				}
 			}
 		}
+	}
+	if profile, _ := h.store.Simulation.Load(); profile != nil {
+		snap.SimulationProfile = domain.CompactSimulationProfile(profile)
+	}
+	if proposal, _ := h.store.Adaptation.LoadProposal(); proposal != nil {
+		snap.AdaptationProposal = proposal
+	}
+	if plan, _ := h.store.Adaptation.LoadPlan(); plan != nil {
+		snap.AdaptationPlan = plan
 	}
 	if chars, _ := h.store.Characters.Load(); len(chars) > 0 {
 		snap.CharacterDetails = append([]domain.Character(nil), chars...)

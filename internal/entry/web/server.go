@@ -378,6 +378,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectAdaptSource(w, r, id)
 	case "adapt/analyze":
 		s.handleProjectAdaptAnalyze(w, r, id)
+	case "adapt/proposal":
+		s.handleProjectAdaptProposal(w, r, id)
+	case "adapt/confirm":
+		s.handleProjectAdaptConfirm(w, r, id)
 	case "adapt/start":
 		s.handleProjectAdaptStart(w, r, id)
 	case "cocreate/begin":

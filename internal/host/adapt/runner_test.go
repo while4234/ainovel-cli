@@ -128,6 +128,80 @@ func TestPrepareRunWorksAfterResetGenerated(t *testing.T) {
 	}
 }
 
+func TestConfirmAdaptationProposalPersistsTargetOutlinesAndProgress(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceFoundation(testSourceFoundation()); err != nil {
+		t.Fatalf("SaveSourceFoundation: %v", err)
+	}
+	proposal := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityArc,
+		Status:        domain.AdaptationPlanStatusProposal,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Brief:         "merge three source chapters into two target chapters",
+		Chapters: []domain.AdaptationChapterPlan{
+			{
+				Chapter:        1,
+				Title:          "Merged Opening",
+				SourceChapters: []int{1, 2},
+				OutlineEntry: domain.OutlineEntry{
+					CoreEvent: "Ari combines the first two source turns.",
+					Hook:      "A shared clue reframes both turns.",
+					Scenes:    []string{"station", "archive"},
+				},
+			},
+			{
+				Chapter:        2,
+				Title:          "Target Turn",
+				SourceChapters: []int{3},
+				OutlineEntry: domain.OutlineEntry{
+					CoreEvent: "Ari pays off the third source turn.",
+					Hook:      "The next door opens.",
+					Scenes:    []string{"roof"},
+				},
+			},
+		},
+	}
+
+	confirmed, err := ConfirmAdaptationProposal(context.Background(), Deps{Store: st}, proposal)
+	if err != nil {
+		t.Fatalf("ConfirmAdaptationProposal: %v", err)
+	}
+	if confirmed.Status != domain.AdaptationPlanStatusConfirmed {
+		t.Fatalf("confirmed status=%q, want confirmed", confirmed.Status)
+	}
+	flat, err := st.Outline.LoadOutline()
+	if err != nil {
+		t.Fatalf("LoadOutline: %v", err)
+	}
+	if len(flat) != 2 || flat[0].Title != "Merged Opening" || flat[1].Title != "Target Turn" {
+		t.Fatalf("flat outline should come from target plan: %+v", flat)
+	}
+	layered, err := st.Outline.LoadLayeredOutline()
+	if err != nil {
+		t.Fatalf("LoadLayeredOutline: %v", err)
+	}
+	if got := domain.TotalChapters(layered); got != 2 {
+		t.Fatalf("layered target chapters=%d, want 2: %+v", got, layered)
+	}
+	progress, err := st.Progress.Load()
+	if err != nil {
+		t.Fatalf("Load progress: %v", err)
+	}
+	if progress == nil || progress.TotalChapters != 2 || len(progress.CompletedChapters) != 0 {
+		t.Fatalf("progress should be reset to target count: %+v", progress)
+	}
+	savedPlan, err := st.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan: %v", err)
+	}
+	if savedPlan == nil || savedPlan.Status != domain.AdaptationPlanStatusConfirmed || len(savedPlan.Chapters) != 2 {
+		t.Fatalf("confirmed plan not saved: %+v", savedPlan)
+	}
+}
+
 func TestBuildAdaptationProposalChapterPreserveDetailsUsesSourceRuneRanges(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

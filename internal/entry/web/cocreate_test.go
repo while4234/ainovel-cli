@@ -369,18 +369,30 @@ func TestProjectAdaptCoCreateLocksSelectedModeOnCommit(t *testing.T) {
 	if fake.prepareExternalRulesCalls != 1 {
 		t.Fatalf("PrepareExternalSourceUserRules calls = %d, want 1", fake.prepareExternalRulesCalls)
 	}
-	if fake.adaptStartCalls != 1 {
-		t.Fatalf("StartAdaptationPrepared calls = %d, want 1", fake.adaptStartCalls)
+	if fake.adaptStartCalls != 0 {
+		t.Fatalf("StartAdaptationPrepared calls = %d, want 0 before confirm", fake.adaptStartCalls)
 	}
-	if fake.adaptOptions.Granularity != domain.AdaptationGranularityArc {
-		t.Fatalf("adapt granularity = %q, want arc", fake.adaptOptions.Granularity)
+	if fake.adaptProposalCalls != 1 {
+		t.Fatalf("BuildAdaptationProposal calls = %d, want 1", fake.adaptProposalCalls)
 	}
-	if fake.adaptOptions.RewritePolicy != domain.AdaptationRewriteFullRewrite {
-		t.Fatalf("adapt rewrite policy = %q, want full_rewrite", fake.adaptOptions.RewritePolicy)
+	if fake.adaptProposalOptions.Granularity != domain.AdaptationGranularityArc {
+		t.Fatalf("adapt granularity = %q, want arc", fake.adaptProposalOptions.Granularity)
+	}
+	if fake.adaptProposalOptions.RewritePolicy != domain.AdaptationRewriteFullRewrite {
+		t.Fatalf("adapt rewrite policy = %q, want full_rewrite", fake.adaptProposalOptions.RewritePolicy)
 	}
 	wantSourcePath := filepath.Join(manifest.RootDir, "uploads", "adaptation", "source.txt")
-	if fake.adaptOptions.SourcePath != wantSourcePath {
-		t.Fatalf("adapt source path = %q, want %q", fake.adaptOptions.SourcePath, wantSourcePath)
+	if fake.adaptProposalOptions.SourcePath != wantSourcePath {
+		t.Fatalf("adapt source path = %q, want %q", fake.adaptProposalOptions.SourcePath, wantSourcePath)
+	}
+	var response struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode commit response: %v", err)
+	}
+	if response.CoCreate.Proposal == nil || response.CoCreate.Proposal.Status != domain.AdaptationPlanStatusProposal {
+		t.Fatalf("adapt commit should return proposal, got %+v", response.CoCreate.Proposal)
 	}
 }
 
