@@ -772,6 +772,8 @@ type fakeProjectHost struct {
 	addProviderName             string
 	addProviderConfig           bootstrap.ProviderConfig
 	addProviderModel            string
+	removeProviderName          string
+	removeProviderModel         string
 	switchRole                  string
 	switchProvider              string
 	switchModel                 string
@@ -793,8 +795,10 @@ type fakeProjectHost struct {
 	abortOK                     bool
 	exportResult                *exp.Result
 	addProviderErr              error
+	removeProviderErr           error
 	setCoCreateTimeoutErr       error
 	switchCalls                 int
+	removeProviderCalls         int
 	setCoCreateTimeoutCalls     int
 	coCreateTimeoutSeconds      int
 	grokLoginStart              grokauth.LoginStart
@@ -1167,6 +1171,15 @@ func (f *fakeProjectHost) AddProviderModel(role, providerName string, providerCo
 	f.addProviderConfig = providerConfig
 	f.addProviderModel = model
 	return f.addProviderErr
+}
+
+func (f *fakeProjectHost) RemoveProviderModel(providerName, model string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removeProviderCalls++
+	f.removeProviderName = providerName
+	f.removeProviderModel = model
+	return f.removeProviderErr
 }
 
 func (f *fakeProjectHost) StartGrokLogin(accountID, accountName string) (grokauth.LoginStart, error) {

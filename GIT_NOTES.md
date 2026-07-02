@@ -30,10 +30,10 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 ## Current Baseline
 
 - Latest source change: branch `main`,
-  `bba6eea` `fix: persist web cocreate runtime`, after fetching GitHub,
-  rebasing the local maintenance commit, and rebuilding/restarting the local
-  Web service.
-- Latest maintenance commit: pending this notes update.
+  pending `feat: add web model deletion`, adding global and project-scoped
+  model delete APIs, config cleanup, frontend delete controls, tests, rebuilt
+  static assets, and a local Web restart.
+- Latest maintenance commit: `ff9d2c4` `docs: record latest update and restart`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: expected clean after the restart notes commit, except for
@@ -42,20 +42,27 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `scripts\restart-web.ps1` using the project-local Go 1.25.5 toolchain, then
   restarted on `http://127.0.0.1:9898` with runtime root
   `C:\Users\RondleLiu\.ainovel\novels-preview`; listener PID after restart was
-  `236716`.
-- Validation: `git fetch --all --prune` updated `origin/main` from `79703a9`
-  to `bba6eea`; `git rebase origin/main` preserved the local maintenance
-  commit on top of the latest source. The first `.\restart-web.cmd` attempt
-  failed because `go` was not on PATH; rerunning it with
-  `D:\ainovel\.codex\tools\go1.25.5\go\bin` temporarily prepended to PATH
-  passed, including Web UI and Go builds plus readiness wait. Independent
-  probes returned `GET / -> 200`, `GET /api/runtime -> ok`, and
-  `GET /api/projects -> ok`. Generated static files had only build-time EOL
-  drift and were restored to keep the working tree clean.
+  `272124`.
+- Validation: project-local `gofmt` passed; focused backend delete tests
+  passed; `npm --prefix internal\entry\web\ui test -- --run` passed with 48
+  tests; targeted package tests passed; `go test ./...` passed; Vite Web build
+  passed;
+  `git diff --check` passed with CRLF warnings only; `restart-web.cmd -Port
+  9898 -RuntimeRoot C:\Users\RondleLiu\.ainovel\novels-preview` rebuilt and
+  restarted the Web service; `GET /` returned 200; `GET /api/models` returned
+  configured providers; a live default-model delete probe returned 409 without
+  mutation; Playwright CLI verified the `删除模型` panel and disabled default
+  delete button.
 
 ## Change Log
 
-- 2026-07-02 `pending` `docs: record latest update and restart`: fetched
+- 2026-07-02 `pending` `feat: add web model deletion`: added global and
+  project-scoped model deletion, protects the active default route, removes
+  deleted routes from role/fallback config, refreshes in-memory model routing,
+  persists updated config, exposes Web delete controls, rebuilds embedded Web
+  assets, restarts `http://127.0.0.1:9898`, and verifies backend/frontend/live
+  browser behavior.
+- 2026-07-02 `ff9d2c4` `docs: record latest update and restart`: fetched
   latest `origin/main` from `79703a9` to `bba6eea`, rebased the local
   maintenance commit, rebuilt and restarted the local Web service via
   `.\restart-web.cmd` with the project-local Go 1.25.5 toolchain on PATH,

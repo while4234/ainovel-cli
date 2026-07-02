@@ -183,6 +183,63 @@ func (ms *ModelSet) RegisterProvider(provider string, pc ProviderConfig) {
 	ms.config.Providers[provider] = pc
 }
 
+// ApplyConfig refreshes the ModelSet after provider/model routes are removed
+// or otherwise changed outside Swap. Existing role wrappers are swapped to the
+// new target where possible so already-built agents stop using deleted models.
+func (ms *ModelSet) ApplyConfig(cfg Config) error {
+	cfg.FillDefaults()
+	if err := cfg.ValidateBase(); err != nil {
+		return err
+	}
+
+	cache := make(map[string]agentcore.ChatModel)
+	defaultModel, err := createModelFromConfig(cfg.Provider, cfg.ModelName, cfg.DefaultProviderConfig(), cache)
+	if err != nil {
+		return fmt.Errorf("default model: %w", err)
+	}
+
+	nextModels := make(map[string]*SwappableModel)
+	nextFallbacks := make(map[string][]modelTarget)
+	for role, rc := range cfg.Roles {
+		if rc.Provider == "" && rc.Model == "" {
+			continue
+		}
+		pc, ok := cfg.Providers[rc.Provider]
+		if !ok {
+			return fmt.Errorf("role %s references unknown provider %q: %w", role, rc.Provider, errs.ErrConfig)
+		}
+		model, err := createModelFromConfig(rc.Provider, rc.Model, pc, cache)
+		if err != nil {
+			return fmt.Errorf("role %s model: %w", role, err)
+		}
+		if existing, ok := ms.models[role]; ok {
+			existing.Swap(rc.Provider, rc.Model, model)
+			nextModels[role] = existing
+		} else {
+			nextModels[role] = NewSwappableModel(rc.Provider, rc.Model, model)
+		}
+		targets, err := buildFallbackTargets(role, rc.Fallbacks, cfg, cache)
+		if err != nil {
+			return err
+		}
+		if len(targets) > 0 {
+			nextFallbacks[role] = targets
+		}
+	}
+
+	for role, existing := range ms.models {
+		if _, ok := nextModels[role]; ok {
+			continue
+		}
+		existing.Swap(cfg.Provider, cfg.ModelName, defaultModel)
+	}
+	ms.Default.Swap(cfg.Provider, cfg.ModelName, defaultModel)
+	ms.models = nextModels
+	ms.fallbacks = nextFallbacks
+	ms.config = cfg
+	return nil
+}
+
 // Swap 切换默认模型或指定角色模型。
 // role 为空或 "default" 时切换默认模型；其他角色切换为显式覆盖。
 func (ms *ModelSet) Swap(role, provider, model string) error {
@@ -255,30 +312,37 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 		}
 		ms.models[role] = NewSwappableModel(rc.Provider, rc.Model, m)
 		slog.Info("角色模型分配", "module", "config", "role", role, "provider", rc.Provider, "model", rc.Model)
-		if len(rc.Fallbacks) == 0 {
-			continue
-		}
-
-		targets := make([]modelTarget, 0, len(rc.Fallbacks))
-		for _, fallback := range rc.Fallbacks {
-			fpc, ok := cfg.Providers[fallback.Provider]
-			if !ok {
-				return nil, fmt.Errorf("role %s fallback references unknown provider %q: %w", role, fallback.Provider, errs.ErrConfig)
-			}
-			fm, err := createModelFromConfig(fallback.Provider, fallback.Model, fpc, cache)
-			if err != nil {
-				return nil, fmt.Errorf("role %s fallback %s/%s: %w", role, fallback.Provider, fallback.Model, err)
-			}
-			targets = append(targets, modelTarget{
-				provider: fallback.Provider,
-				name:     fallback.Model,
-				model:    fm,
-			})
+		targets, err := buildFallbackTargets(role, rc.Fallbacks, cfg, cache)
+		if err != nil {
+			return nil, err
 		}
 		ms.fallbacks[role] = targets
 	}
 
 	return ms, nil
+}
+
+func buildFallbackTargets(role string, fallbacks []ModelRef, cfg Config, cache map[string]agentcore.ChatModel) ([]modelTarget, error) {
+	if len(fallbacks) == 0 {
+		return nil, nil
+	}
+	targets := make([]modelTarget, 0, len(fallbacks))
+	for _, fallback := range fallbacks {
+		fpc, ok := cfg.Providers[fallback.Provider]
+		if !ok {
+			return nil, fmt.Errorf("role %s fallback references unknown provider %q: %w", role, fallback.Provider, errs.ErrConfig)
+		}
+		fm, err := createModelFromConfig(fallback.Provider, fallback.Model, fpc, cache)
+		if err != nil {
+			return nil, fmt.Errorf("role %s fallback %s/%s: %w", role, fallback.Provider, fallback.Model, err)
+		}
+		targets = append(targets, modelTarget{
+			provider: fallback.Provider,
+			name:     fallback.Model,
+			model:    fm,
+		})
+	}
+	return targets, nil
 }
 
 // NewProviderModel creates one provider/model instance without mutating a ModelSet.

@@ -327,6 +327,13 @@ export function setGlobalCoCreateTimeout(seconds) {
   });
 }
 
+export function deleteGlobalProviderModel(provider, model) {
+  return request('/api/models', {
+    method: 'DELETE',
+    body: JSON.stringify({ provider, model })
+  });
+}
+
 export function switchProjectModel(projectId, role, provider, model) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/switch`, {
     method: 'POST',
@@ -345,6 +352,13 @@ export function setProjectCoCreateTimeout(projectId, seconds) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/cocreate-timeout`, {
     method: 'POST',
     body: JSON.stringify({ seconds })
+  });
+}
+
+export function deleteProviderModel(projectId, provider, model) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models`, {
+    method: 'DELETE',
+    body: JSON.stringify({ provider, model })
   });
 }
 

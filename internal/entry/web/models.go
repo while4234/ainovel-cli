@@ -57,6 +57,11 @@ type coCreateTimeoutRequest struct {
 	TimeoutSeconds int `json:"timeout_seconds"`
 }
 
+type modelDeleteRequest struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
 func (r coCreateTimeoutRequest) value() int {
 	if r.TimeoutSeconds != 0 {
 		return r.TimeoutSeconds
@@ -65,14 +70,17 @@ func (r coCreateTimeoutRequest) value() int {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		cfg := s.currentConfig()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"models": s.globalModelConfig(cfg),
+		})
+	case http.MethodDelete:
+		s.handleModelDelete(w, r)
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
 	}
-	cfg := s.currentConfig()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"models": s.globalModelConfig(cfg),
-	})
 }
 
 func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
@@ -214,6 +222,29 @@ func (s *Server) handleModelAdd(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleModelDelete(w http.ResponseWriter, r *http.Request) {
+	var req modelDeleteRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cfg := s.currentConfig()
+	next, err := host.RemoveProviderModelFromConfig(cfg, req.Provider, req.Model)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	if err := saveWebConfig(next); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.setCurrentConfig(next)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  s.globalModelConfig(next),
+		"runtime": s.runtimePayload(next),
+	})
+}
+
 func (s *Server) addGlobalProviderModel(role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, map[string]any, error) {
 	role = normalizeModelRole(role)
 	provider = strings.TrimSpace(provider)
@@ -329,19 +360,22 @@ func saveWebConfig(cfg bootstrap.Config) error {
 }
 
 func (s *Server) handleProjectModels(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		session, manifest, err := s.sessions.Open(id)
+		if err != nil {
+			writeProjectSessionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"project": manifest,
+			"models":  session.ModelConfig(),
+		})
+	case http.MethodDelete:
+		s.handleProjectModelDelete(w, r, id)
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
 	}
-	session, manifest, err := s.sessions.Open(id)
-	if err != nil {
-		writeProjectSessionError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"project": manifest,
-		"models":  session.ModelConfig(),
-	})
 }
 
 func (s *Server) handleProjectModelSwitch(w http.ResponseWriter, r *http.Request, id string) {
@@ -469,6 +503,29 @@ func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, i
 		pc.Models = []string{strings.TrimSpace(req.Model)}
 	}
 	models, err := session.AddProviderModel(req.Role, req.Provider, req.Model, pc)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"models":   models,
+		"snapshot": session.Snapshot(),
+	})
+}
+
+func (s *Server) handleProjectModelDelete(w http.ResponseWriter, r *http.Request, id string) {
+	var req modelDeleteRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	models, err := session.RemoveProviderModel(req.Provider, req.Model)
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return

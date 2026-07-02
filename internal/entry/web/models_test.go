@@ -158,6 +158,27 @@ func TestProjectCoCreateTimeoutUsesProjectHost(t *testing.T) {
 	}
 }
 
+func TestProjectModelDeleteUsesProjectHost(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Project Model Delete")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	var response struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodDelete, "/api/projects/"+manifest.ID+"/models", `{"provider":"openrouter","model":"model-b"}`, &response)
+	if fake.removeProviderCalls != 1 || fake.removeProviderName != "openrouter" || fake.removeProviderModel != "model-b" {
+		t.Fatalf("remove model args calls=%d provider=%q model=%q", fake.removeProviderCalls, fake.removeProviderName, fake.removeProviderModel)
+	}
+	if response.Models.Roles[0].Provider != "openrouter" {
+		t.Fatalf("models response = %+v", response.Models)
+	}
+}
+
 func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	home := testTempDir(t)
 	t.Setenv("HOME", home)
@@ -194,6 +215,70 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	}
 	if saved.Provider != "grok-oauth" || saved.ModelName != "grok-4.3-latest" {
 		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
+	}
+}
+
+func TestGlobalModelDeleteRemovesProviderAndRoleRoute(t *testing.T) {
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
+	cfg.Providers["proxy"] = bootstrap.ProviderConfig{
+		Type:   "openai",
+		APIKey: "sk-proxy",
+		Models: []string{"proxy-model"},
+	}
+	cfg.Roles = map[string]bootstrap.RoleConfig{
+		"writer": {Provider: "proxy", Model: "proxy-model"},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	var deleted struct {
+		Models  apiModelConfig `json:"models"`
+		Runtime struct {
+			Config struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			} `json:"config"`
+		} `json:"runtime"`
+	}
+	serveJSON(t, server.Handler(), http.MethodDelete, "/api/models", `{"provider":"proxy","model":"proxy-model"}`, &deleted)
+	if modelConfigHasProvider(deleted.Models, "proxy", "proxy-model") {
+		t.Fatalf("deleted models still include proxy: %+v", deleted.Models.Providers)
+	}
+	if route := findModelRoute(deleted.Models.Roles, "writer"); route.Provider != "openai" || route.Model != "gpt-test" || route.Explicit {
+		t.Fatalf("writer route after delete = %+v", route)
+	}
+	if deleted.Runtime.Config.Provider != "openai" || deleted.Runtime.Config.Model != "gpt-test" {
+		t.Fatalf("runtime default after delete = %+v", deleted.Runtime.Config)
+	}
+
+	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	if _, ok := saved.Providers["proxy"]; ok {
+		t.Fatalf("saved providers still include proxy: %+v", saved.Providers["proxy"])
+	}
+	if _, ok := saved.Roles["writer"]; ok {
+		t.Fatalf("saved writer route still exists: %+v", saved.Roles["writer"])
+	}
+}
+
+func TestGlobalModelDeleteRejectsCurrentDefault(t *testing.T) {
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/models", bytes.NewBufferString(`{"provider":"openai","model":"gpt-test"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete default status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := server.currentConfig().Provider + "/" + server.currentConfig().ModelName; got != "openai/gpt-test" {
+		t.Fatalf("default changed after rejected delete: %s", got)
 	}
 }
 

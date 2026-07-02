@@ -5,6 +5,8 @@ import {
   clearProjectTrash,
   confirmAdaptationProposal,
   createProject,
+  deleteGlobalProviderModel,
+  deleteProviderModel,
   emptyTrashProjects,
   getGlobalModels,
   listNovelLibrary,
@@ -244,6 +246,28 @@ describe('web API helpers', () => {
         type: 'grok',
         auth: 'grok_oauth',
         account_id: 'default'
+      })
+    }));
+  });
+
+  it('deletes provider models through global and project model routes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await deleteGlobalProviderModel('proxy', 'proxy-model');
+    await deleteProviderModel('project-1', 'proxy', 'proxy-model');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/models', expect.objectContaining({
+      method: 'DELETE',
+      body: JSON.stringify({
+        provider: 'proxy',
+        model: 'proxy-model'
+      })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/models', expect.objectContaining({
+      method: 'DELETE',
+      body: JSON.stringify({
+        provider: 'proxy',
+        model: 'proxy-model'
       })
     }));
   });

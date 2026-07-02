@@ -86,6 +86,7 @@ type projectHost interface {
 	CurrentModelSelection(string) (string, string, bool)
 	SwitchModel(string, string, string) error
 	AddProviderModel(string, string, bootstrap.ProviderConfig, string) error
+	RemoveProviderModel(string, string) error
 	StartGrokLogin(string, string) (grokauth.LoginStart, error)
 	PollGrokLogin() (grokauth.LoginPoll, error)
 	CompleteGrokLogin(string) (grokauth.AuthStatus, error)
@@ -368,6 +369,14 @@ func (s *ProjectSession) AddOpenAICompatibleModel(role, provider, model, baseURL
 
 func (s *ProjectSession) AddProviderModel(role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, error) {
 	if err := s.host.AddProviderModel(normalizeModelRole(role), provider, pc, model); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) RemoveProviderModel(provider, model string) (apiModelConfig, error) {
+	if err := s.host.RemoveProviderModel(provider, model); err != nil {
 		return apiModelConfig{}, err
 	}
 	s.AppendSnapshot()

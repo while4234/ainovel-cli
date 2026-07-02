@@ -40,6 +40,8 @@ import {
   completeGrokLogin,
   continueProject,
   createProject,
+  deleteGlobalProviderModel,
+  deleteProviderModel,
   emptyTrashProjects,
   exportProject,
   getBackendStatus,
@@ -1587,6 +1589,34 @@ export default function App() {
     }
   };
 
+  const deleteModelRoute = async (provider, model) => {
+    if (!provider || !model) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = activeProject?.id
+        ? await deleteProviderModel(activeProject.id, provider, model)
+        : await deleteGlobalProviderModel(provider, model);
+      setModelConfig(data.models || modelConfig);
+      if (data.runtime) {
+        setRuntime(data.runtime);
+      }
+      if (data.snapshot) {
+        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      }
+      if (activeProject?.id) {
+        const status = await getBackendStatus(activeProject.id);
+        setBackendStatus(status.backend || null);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const submitCustomModel = async (event) => {
     event.preventDefault();
     const payload = buildModelAddPayload(customModel, modelConfig);
@@ -2122,6 +2152,7 @@ export default function App() {
               onSwitch={switchModelRoute}
               onThinking={changeThinking}
               onCoCreateTimeout={changeCoCreateTimeout}
+              onDeleteModel={deleteModelRoute}
               onAddCustom={submitCustomModel}
               onStartGrokLogin={startGrokOAuthLogin}
               onPollGrokLogin={pollGrokOAuthLogin}
@@ -3547,6 +3578,7 @@ function ModelPanel({
   onSwitch,
   onThinking,
   onCoCreateTimeout,
+  onDeleteModel,
   onAddCustom,
   onStartGrokLogin,
   onPollGrokLogin,
@@ -3562,11 +3594,34 @@ function ModelPanel({
   const defaultProvider = config.provider || providers[0]?.name || '';
   const defaultModels = modelOptionsForProvider(providers, defaultProvider, config.model);
   const defaultModel = config.model || defaultModels[0] || '';
+  const activeDefaultRoute = roles.find((route) => route.role === 'default') || { provider: defaultProvider, model: defaultModel };
+  const [deleteTarget, setDeleteTarget] = useState({ provider: '', model: '' });
+  const deleteProvider = deleteTarget.provider || providers[0]?.name || '';
+  const deleteModels = modelOptionsForProvider(providers, deleteProvider, deleteTarget.model);
+  const deleteModel = deleteTarget.model || deleteModels[0] || '';
+  const deleteIsDefault = activeDefaultRoute.provider === deleteProvider && activeDefaultRoute.model === deleteModel;
+  const canDeleteModel = Boolean(deleteProvider && deleteModel && !deleteIsDefault);
   const coCreateTimeoutSeconds = modelConfig?.cocreate_timeout_seconds || config.cocreate_timeout_seconds || 60;
   const [coCreateTimeoutDraft, setCoCreateTimeoutDraft] = useState(String(coCreateTimeoutSeconds));
   useEffect(() => {
     setCoCreateTimeoutDraft(String(coCreateTimeoutSeconds));
   }, [coCreateTimeoutSeconds]);
+  useEffect(() => {
+    if (providers.length === 0) {
+      if (deleteTarget.provider || deleteTarget.model) {
+        setDeleteTarget({ provider: '', model: '' });
+      }
+      return;
+    }
+    const provider = providers.some((item) => item.name === deleteTarget.provider)
+      ? deleteTarget.provider
+      : providers[0].name;
+    const models = modelOptionsForProvider(providers, provider, deleteTarget.model);
+    const model = models.includes(deleteTarget.model) ? deleteTarget.model : models[0] || '';
+    if (provider !== deleteTarget.provider || model !== deleteTarget.model) {
+      setDeleteTarget({ provider, model });
+    }
+  }, [providers, deleteTarget.provider, deleteTarget.model]);
   const coCreateTimeoutValue = Number(coCreateTimeoutDraft);
   const canSaveCoCreateTimeout = Number.isInteger(coCreateTimeoutValue) &&
     coCreateTimeoutValue >= 1 &&
@@ -3692,6 +3747,53 @@ function ModelPanel({
             ))
           )}
         </div>
+      </section>
+      <section>
+        <div className="section-title">
+          <Trash2 size={17} />
+          <span>删除模型</span>
+        </div>
+        <form
+          className="model-delete-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onDeleteModel(deleteProvider, deleteModel);
+          }}
+        >
+          <select
+            disabled={busy || providers.length === 0}
+            value={deleteProvider}
+            onChange={(event) => {
+              const provider = event.target.value;
+              const models = modelOptionsForProvider(providers, provider, '');
+              setDeleteTarget({ provider, model: models[0] || '' });
+            }}
+          >
+            {providers.length === 0 ? <option value="">无 provider</option> : null}
+            {providers.map((provider) => (
+              <option key={provider.name} value={provider.name}>{provider.name}</option>
+            ))}
+          </select>
+          <select
+            disabled={busy || !deleteProvider || deleteModels.length === 0}
+            value={deleteModel}
+            onChange={(event) => setDeleteTarget((previous) => ({ ...previous, model: event.target.value }))}
+          >
+            {deleteModels.length === 0 ? <option value="">无 model</option> : null}
+            {deleteModels.map((model) => (
+              <option key={model} value={model}>{model}</option>
+            ))}
+          </select>
+          <button
+            className="tool-button danger"
+            disabled={busy || !canDeleteModel}
+            title={deleteIsDefault ? '请先切换默认模型' : '删除模型'}
+            type="submit"
+          >
+            <Trash2 size={16} />
+            删除
+          </button>
+        </form>
       </section>
       <form className="custom-model-form" onSubmit={onAddCustom}>
         <div className="section-title">

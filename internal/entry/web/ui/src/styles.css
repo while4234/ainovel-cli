@@ -1950,6 +1950,7 @@ h2 {
 }
 
 .model-route-list,
+.model-delete-form,
 .custom-model-form {
   display: grid;
   gap: 8px;
@@ -1977,6 +1978,16 @@ h2 {
 
 .model-timeout-form .tool-button {
   min-width: 82px;
+}
+
+.tool-button.danger {
+  border-color: rgba(177, 59, 54, 0.35);
+  color: var(--danger);
+}
+
+.tool-button.danger:hover {
+  border-color: rgba(177, 59, 54, 0.5);
+  background: var(--danger-soft);
 }
 
 .model-route {

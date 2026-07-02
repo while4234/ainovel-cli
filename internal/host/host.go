@@ -1103,6 +1103,38 @@ func (h *Host) AddProviderModel(role, providerName string, providerConfig bootst
 	return nil
 }
 
+func (h *Host) RemoveProviderModel(providerName, model string) error {
+	providerName = strings.TrimSpace(providerName)
+	model = strings.TrimSpace(model)
+	if providerName == "" || model == "" {
+		return fmt.Errorf("provider and model are required")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	candidate, err := RemoveProviderModelFromConfig(h.cfg, providerName, model)
+	if err != nil {
+		return err
+	}
+	if err := h.models.ApplyConfig(candidate); err != nil {
+		return err
+	}
+	h.cfg = candidate
+	h.removeProjectProviderModelLocked(providerName, model)
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("保存配置失败", "module", "host", "err", err)
+	}
+	h.applyThinkingLocked("default")
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("模型已删除：%s/%s", providerName, model),
+		Level:    "info",
+	})
+	return nil
+}
+
 func AddProviderModelToConfig(ctx context.Context, cfg bootstrap.Config, role, providerName string, providerConfig bootstrap.ProviderConfig, model string) (bootstrap.Config, error) {
 	providerName = strings.TrimSpace(providerName)
 	model = strings.TrimSpace(model)
@@ -1124,6 +1156,56 @@ func AddProviderModelToConfig(ctx context.Context, cfg bootstrap.Config, role, p
 		return bootstrap.Config{}, err
 	}
 	return SelectProviderModelInConfig(candidate, role, providerName, model)
+}
+
+func RemoveProviderModelFromConfig(cfg bootstrap.Config, providerName, model string) (bootstrap.Config, error) {
+	providerName = strings.TrimSpace(providerName)
+	model = strings.TrimSpace(model)
+	if providerName == "" || model == "" {
+		return bootstrap.Config{}, fmt.Errorf("provider and model are required")
+	}
+	if _, ok := cfg.Providers[providerName]; !ok {
+		return bootstrap.Config{}, fmt.Errorf("provider %q is not configured", providerName)
+	}
+	if cfg.Provider == providerName && cfg.ModelName == model {
+		return bootstrap.Config{}, fmt.Errorf("cannot delete the current default model; switch default model first")
+	}
+	if !configHasProviderModel(cfg, providerName, model) {
+		return bootstrap.Config{}, fmt.Errorf("model %q is not configured for provider %q", model, providerName)
+	}
+
+	candidate := cfg
+	candidate.Providers = cloneProviderConfigs(cfg.Providers)
+	if cfg.Roles != nil {
+		candidate.Roles = make(map[string]bootstrap.RoleConfig, len(cfg.Roles))
+		for name, rc := range cfg.Roles {
+			rc.Fallbacks = append([]bootstrap.ModelRef(nil), rc.Fallbacks...)
+			candidate.Roles[name] = rc
+		}
+	}
+
+	pc := candidate.Providers[providerName]
+	pc.Models = removeModelCandidate(pc.Models, model)
+	candidate.Providers[providerName] = pc
+	for role, rc := range candidate.Roles {
+		if rc.Provider == providerName && rc.Model == model {
+			rc.Provider = ""
+			rc.Model = ""
+		}
+		rc.Fallbacks = removeModelRef(rc.Fallbacks, providerName, model)
+		if roleConfigIsEmpty(rc) {
+			delete(candidate.Roles, role)
+			continue
+		}
+		candidate.Roles[role] = rc
+	}
+	if len(candidate.CandidateModels(providerName)) == 0 {
+		delete(candidate.Providers, providerName)
+	}
+	if err := candidate.ValidateBase(); err != nil {
+		return bootstrap.Config{}, err
+	}
+	return candidate, nil
 }
 
 func SelectProviderModelInConfig(cfg bootstrap.Config, role, provider, model string) (bootstrap.Config, error) {
@@ -1395,6 +1477,46 @@ func (h *Host) syncProjectThinkingOverrideLocked(role string) {
 	overlay.Roles[role] = rc
 }
 
+func (h *Host) removeProjectProviderModelLocked(provider, model string) {
+	overlay := h.ensureProjectOverlayLocked()
+	if overlay == nil {
+		return
+	}
+	if overlay.Provider == provider && overlay.ModelName == model {
+		overlay.Provider = ""
+		overlay.ModelName = ""
+	}
+	for role, rc := range overlay.Roles {
+		if rc.Provider == provider && rc.Model == model {
+			rc.Provider = ""
+			rc.Model = ""
+		}
+		rc.Fallbacks = removeModelRef(rc.Fallbacks, provider, model)
+		if roleConfigIsEmpty(rc) {
+			delete(overlay.Roles, role)
+			continue
+		}
+		overlay.Roles[role] = rc
+	}
+	if pc, ok := overlay.Providers[provider]; ok {
+		pc.Models = removeModelCandidate(pc.Models, model)
+		if len(h.cfg.CandidateModels(provider)) == 0 {
+			delete(overlay.Providers, provider)
+		} else {
+			overlay.Providers[provider] = pc
+		}
+	}
+	if len(overlay.Providers) == 0 {
+		overlay.Providers = nil
+	}
+	if len(overlay.Roles) == 0 {
+		overlay.Roles = nil
+	}
+	if h.cfg.PersistProviders != nil && len(h.cfg.CandidateModels(provider)) == 0 {
+		delete(h.cfg.PersistProviders, provider)
+	}
+}
+
 func (h *Host) projectOverlayProvidersLocked(overlay bootstrap.Config) map[string]bootstrap.ProviderConfig {
 	providers := make(map[string]bootstrap.ProviderConfig)
 	for name, pc := range overlay.Providers {
@@ -1437,6 +1559,40 @@ func (h *Host) projectOverlayProvidersLocked(overlay bootstrap.Config) map[strin
 		return nil
 	}
 	return providers
+}
+
+func configHasProviderModel(cfg bootstrap.Config, provider, model string) bool {
+	for _, candidate := range cfg.CandidateModels(provider) {
+		if strings.TrimSpace(candidate) == model {
+			return true
+		}
+	}
+	return false
+}
+
+func removeModelCandidate(values []string, model string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == model {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func removeModelRef(values []bootstrap.ModelRef, provider, model string) []bootstrap.ModelRef {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]bootstrap.ModelRef, 0, len(values))
+	for _, value := range values {
+		if value.Provider == provider && value.Model == model {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }
 
 func recordProjectProviderModel(cfg *bootstrap.Config, provider, model string) {
