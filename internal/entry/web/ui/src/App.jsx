@@ -155,6 +155,24 @@ function resetAdaptationProjectState(previous) {
   };
 }
 
+function restoreAdaptationProjectState(previous, status) {
+  const next = resetAdaptationProjectState(previous);
+  if (!status) {
+    return next;
+  }
+  const sourceFile = status.source_file || status.sourceFile || null;
+  const analysisStatus = String(status.analysis_status || status.analysisStatus || next.analysisStatus || 'idle').trim() || 'idle';
+  return {
+    ...next,
+    sourceFile,
+    uploadMessage: status.message || (sourceFile ? '已恢复上传原文' : ''),
+    analysisStatus,
+    analysisEvents: Array.isArray(status.analysis_events || status.analysisEvents)
+      ? (status.analysis_events || status.analysisEvents)
+      : []
+  };
+}
+
 function createExternalImportState() {
   return {
     sourceFile: null,
@@ -267,7 +285,9 @@ export default function App() {
   const snapshot = workbench.snapshot;
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
   const projectRunning = isProjectRunning(snapshot);
+  const adaptationAnalysisRunning = adaptation.analysisStatus === 'running';
   const projectActionBusy = busy || projectRunning;
+  const projectPauseAvailable = projectRunning || adaptationAnalysisRunning;
 
   const resetProjectScopedState = useCallback((clearProject = false) => {
     lastSeqRef.current = 0;
@@ -400,6 +420,7 @@ export default function App() {
       ]);
       setActiveProject(snapshotData.project);
       setWorkbench({ ...createWorkbenchState(), snapshot: snapshotData.snapshot });
+      setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation));
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);
     } catch (err) {
@@ -640,7 +661,28 @@ export default function App() {
   };
 
   const pauseWriting = async () => {
-    await runAction((projectId) => pauseProject(projectId));
+    if (!activeProject?.id) {
+      return;
+    }
+    setError('');
+    try {
+      const data = await pauseProject(activeProject.id);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      if (data.stopped) {
+        setAdaptation((previous) => (
+          previous.analysisStatus === 'running'
+            ? {
+              ...previous,
+              analysisStatus: 'paused',
+              analysisEvents: appendPausedAnalysisEvent(previous.analysisEvents),
+              error: ''
+            }
+            : previous
+        ));
+      }
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const submitSteer = async (event) => {
@@ -1039,11 +1081,12 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
+      const paused = isPausedActionError(err);
       setAdaptation((previous) => ({
         ...previous,
-        analysisStatus: 'error',
+        analysisStatus: paused ? 'paused' : 'error',
         analysisEvents: err.data?.events || previous.analysisEvents,
-        error: err.message
+        error: paused ? '' : err.message
       }));
     } finally {
       setBusy(false);
@@ -1704,7 +1747,7 @@ export default function App() {
             </button>
             <button
               className="tool-button"
-              disabled={!activeProject || busy || !projectRunning}
+              disabled={!activeProject || !projectPauseAvailable}
               onClick={pauseWriting}
               type="button"
             >
@@ -2607,7 +2650,7 @@ function SimulationEventList({ events }) {
   return (
     <div className="simulation-events">
       {events.map((event, index) => (
-        <div className={event.error ? 'simulation-event error' : 'simulation-event'} key={`${event.stage}-${index}`}>
+        <div className={event.error ? 'simulation-event error' : event.stage === 'paused' ? 'simulation-event paused' : 'simulation-event'} key={`${event.stage}-${index}`}>
           <span>{event.stage || 'event'}</span>
           <strong>{event.current && event.total ? `${event.current}/${event.total}` : ''}</strong>
           <p>{event.error || event.message}</p>
@@ -3387,10 +3430,36 @@ function latestSimulationEvent(events) {
   return events.length ? events[events.length - 1] : null;
 }
 
+function appendPausedAnalysisEvent(events) {
+  const current = Array.isArray(events) ? events : [];
+  const latest = latestSimulationEvent(current);
+  if (latest?.stage === 'paused') {
+    return current;
+  }
+  return [
+    ...current,
+    {
+      time: new Date().toISOString(),
+      stage: 'paused',
+      current: 0,
+      total: latest?.total || 0,
+      message: '原文分析已暂停，可再次点击分析继续'
+    }
+  ];
+}
+
+function isPausedActionError(err) {
+  const message = String(err?.message || '').toLowerCase();
+  const events = err?.data?.events || [];
+  return message.includes('paused') || message.includes('暂停') || events.some((event) => event?.stage === 'paused');
+}
+
 function workflowStatusText(status) {
   switch (status) {
     case 'running':
       return '进行中';
+    case 'paused':
+      return '已暂停';
     case 'done':
       return '已完成';
     case 'error':

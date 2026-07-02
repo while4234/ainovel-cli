@@ -10,6 +10,7 @@ const (
 	StageFoundation Stage = "foundation"
 	StageChapter    Stage = "chapter"
 	StagePlan       Stage = "plan"
+	StagePaused     Stage = "paused"
 	StageDone       Stage = "done"
 	StageError      Stage = "error"
 )

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 type apiAdaptationEvent struct {
@@ -30,6 +32,21 @@ type adaptationRunError struct {
 
 func (e adaptationRunError) Error() string {
 	return e.message
+}
+
+type adaptationPausedError struct {
+	message string
+}
+
+func (e adaptationPausedError) Error() string {
+	return e.message
+}
+
+type apiAdaptationStatus struct {
+	SourceFile     *apiUploadedFile     `json:"source_file,omitempty"`
+	AnalysisStatus string               `json:"analysis_status"`
+	AnalysisEvents []apiAdaptationEvent `json:"analysis_events,omitempty"`
+	Message        string               `json:"message,omitempty"`
 }
 
 func (s *Server) handleProjectAdaptSource(w http.ResponseWriter, r *http.Request, id string) {
@@ -90,7 +107,9 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	events, err := session.PrepareAdaptationSource(r.Context(), sourcePath)
+	// Source analysis is a long-running job. Keep its lifetime tied to the
+	// project session so a browser reconnect does not cancel the analysis.
+	events, err := session.PrepareAdaptationSource(context.Background(), sourcePath)
 	if err != nil {
 		writeAdaptationActionError(w, err, events)
 		return
@@ -258,6 +277,155 @@ func projectAdaptationUploadDir(manifest ProjectManifest) string {
 	return filepath.Join(manifest.RootDir, "uploads", "adaptation")
 }
 
+func projectAdaptationStatus(manifest ProjectManifest) (apiAdaptationStatus, error) {
+	status := apiAdaptationStatus{AnalysisStatus: "idle"}
+	sourceDir := projectAdaptationUploadDir(manifest)
+	st := storepkg.NewStore(manifest.OutputDir)
+
+	adaptationManifest, err := st.Adaptation.LoadSourceManifest()
+	if err != nil {
+		return status, err
+	}
+	if adaptationManifest != nil {
+		sourceFile, err := uploadedFileFromPath(sourceDir, adaptationManifest.SourcePath)
+		if err != nil {
+			return status, err
+		}
+		status.SourceFile = sourceFile
+		status.AnalysisStatus = adaptationAnalysisStatus(st, adaptationManifest)
+		status.Message = adaptationStatusMessage(status.AnalysisStatus)
+		status.AnalysisEvents = adaptationStatusEvents(status.AnalysisStatus, adaptationManifest.ChapterCount)
+		return status, nil
+	}
+
+	sourceFile, err := latestAdaptationUpload(sourceDir)
+	if err != nil {
+		return status, err
+	}
+	if sourceFile != nil {
+		status.SourceFile = sourceFile
+		status.Message = "已恢复上传原文"
+	}
+	return status, nil
+}
+
+func adaptationAnalysisStatus(st *storepkg.Store, manifest *domain.AdaptationSourceManifest) string {
+	if manifest == nil || manifest.ChapterCount <= 0 {
+		return "idle"
+	}
+	reports, err := st.Adaptation.LoadCompleteSourceReports()
+	if err != nil || len(reports) != manifest.ChapterCount {
+		return "paused"
+	}
+	foundation, err := st.Adaptation.LoadSourceFoundation()
+	if err != nil || foundation == nil {
+		return "paused"
+	}
+	return "done"
+}
+
+func adaptationStatusMessage(status string) string {
+	switch status {
+	case "done":
+		return "已恢复原文分析"
+	case "paused":
+		return "已恢复部分原文分析，可继续分析"
+	default:
+		return "已恢复上传原文"
+	}
+}
+
+func adaptationStatusEvents(status string, total int) []apiAdaptationEvent {
+	if status != "done" && status != "paused" {
+		return nil
+	}
+	stage := adapt.StageDone
+	current := total
+	message := "原文分析已恢复"
+	if status == "paused" {
+		stage = adapt.StagePaused
+		current = 0
+		message = "原文分析未完成，可再次点击分析继续"
+	}
+	return []apiAdaptationEvent{{
+		Time:    time.Now().UTC(),
+		Stage:   string(stage),
+		Current: current,
+		Total:   total,
+		Message: message,
+	}}
+}
+
+func uploadedFileFromPath(sourceDir, sourcePath string) (*apiUploadedFile, error) {
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return nil, nil
+	}
+	if !filepath.IsAbs(sourcePath) {
+		sourcePath = filepath.Join(sourceDir, sourcePath)
+	}
+	sourcePath = filepath.Clean(sourcePath)
+	if !isSameOrChild(sourceDir, sourcePath) || filepath.Clean(sourceDir) == sourcePath {
+		return nil, nil
+	}
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, nil
+	}
+	rel, err := filepath.Rel(sourceDir, sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	file := apiUploadedFile{
+		Name:         filepath.Base(sourcePath),
+		OriginalName: filepath.Base(sourcePath),
+		Size:         info.Size(),
+		RelativePath: filepath.ToSlash(rel),
+	}
+	return &file, nil
+}
+
+func latestAdaptationUpload(sourceDir string) (*apiUploadedFile, error) {
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var latest *apiUploadedFile
+	var latestMod time.Time
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if _, ok := textUploadExtensions[strings.ToLower(filepath.Ext(entry.Name()))]; !ok {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		file := apiUploadedFile{
+			Name:         entry.Name(),
+			OriginalName: entry.Name(),
+			Size:         info.Size(),
+			RelativePath: filepath.ToSlash(entry.Name()),
+		}
+		if latest == nil || info.ModTime().After(latestMod) || (info.ModTime().Equal(latestMod) && file.Name > latest.Name) {
+			latest = &file
+			latestMod = info.ModTime()
+		}
+	}
+	return latest, nil
+}
+
 func adaptationRewritePolicyForMode(mode string) (string, error) {
 	switch mode {
 	case domain.AdaptationGranularityChapter:
@@ -272,8 +440,11 @@ func adaptationRewritePolicyForMode(mode string) (string, error) {
 func writeAdaptationActionError(w http.ResponseWriter, err error, events []apiAdaptationEvent) {
 	status := http.StatusInternalServerError
 	var runErr adaptationRunError
+	var pausedErr adaptationPausedError
 	switch {
 	case errors.Is(err, ErrSessionActionInProgress):
+		status = http.StatusConflict
+	case errors.As(err, &pausedErr):
 		status = http.StatusConflict
 	case errors.As(err, &runErr):
 		status = http.StatusBadRequest

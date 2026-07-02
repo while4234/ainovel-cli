@@ -441,9 +441,15 @@ func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request, id st
 		writeProjectSessionError(w, err)
 		return
 	}
+	adaptation, err := projectAdaptationStatus(manifest)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, projectSnapshotResponse{
-		Project:  manifest,
-		Snapshot: session.Snapshot(),
+		Project:    manifest,
+		Snapshot:   session.Snapshot(),
+		Adaptation: adaptation,
 	})
 }
 
@@ -457,9 +463,15 @@ func (s *Server) handleProjectSnapshot(w http.ResponseWriter, r *http.Request, i
 		writeProjectSessionError(w, err)
 		return
 	}
+	adaptation, err := projectAdaptationStatus(manifest)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, projectSnapshotResponse{
-		Project:  manifest,
-		Snapshot: session.Snapshot(),
+		Project:    manifest,
+		Snapshot:   session.Snapshot(),
+		Adaptation: adaptation,
 	})
 }
 
@@ -562,8 +574,9 @@ func (s *Server) handleProjectEvents(w http.ResponseWriter, r *http.Request, id 
 }
 
 type projectSnapshotResponse struct {
-	Project  ProjectManifest `json:"project"`
-	Snapshot any             `json:"snapshot"`
+	Project    ProjectManifest     `json:"project"`
+	Snapshot   any                 `json:"snapshot"`
+	Adaptation apiAdaptationStatus `json:"adaptation"`
 }
 
 type projectActionResponse struct {

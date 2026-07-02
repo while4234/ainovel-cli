@@ -1578,6 +1578,12 @@ textarea::placeholder {
   background: var(--warn-soft);
 }
 
+.workflow-status.paused,
+.simulation-event.paused {
+  border-color: #f3d58b;
+  background: var(--warn-soft);
+}
+
 .workflow-status.done {
   border-color: #cae8d1;
   background: var(--success-soft);

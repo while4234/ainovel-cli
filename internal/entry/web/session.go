@@ -239,14 +239,17 @@ type ProjectSession struct {
 	manifest ProjectManifest
 	host     projectHost
 
-	mu          sync.Mutex
-	actionMu    sync.Mutex
-	nextSeq     int64
-	history     []WebEvent
-	hostEventAt map[string]int
-	subscribers map[chan WebEvent]struct{}
-	cocreate    *webCoCreateSession
-	closed      bool
+	mu             sync.Mutex
+	actionMu       sync.Mutex
+	actionCancelMu sync.Mutex
+	actionCancel   context.CancelFunc
+	actionKind     string
+	nextSeq        int64
+	history        []WebEvent
+	hostEventAt    map[string]int
+	subscribers    map[chan WebEvent]struct{}
+	cocreate       *webCoCreateSession
+	closed         bool
 }
 
 func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession, error) {
@@ -389,11 +392,18 @@ func (s *ProjectSession) StartQuick(text string) error {
 }
 
 func (s *ProjectSession) Pause() bool {
+	canceledKind, canceledAction := s.cancelCurrentAction()
 	stopped := s.host.Abort()
+	if canceledAction {
+		s.appendActionCanceledEvent(canceledKind)
+	}
 	if stopped {
 		s.AppendSnapshot()
 	}
-	return stopped
+	if canceledAction && !stopped {
+		s.AppendSnapshot()
+	}
+	return stopped || canceledAction
 }
 
 func (s *ProjectSession) Resume() (string, error) {
@@ -504,7 +514,7 @@ func (s *ProjectSession) ImportSimulationProfile(ctx context.Context, path strin
 }
 
 func (s *ProjectSession) PrepareAdaptationSource(ctx context.Context, sourcePath string) ([]apiAdaptationEvent, error) {
-	unlock, err := s.beginAction()
+	ctx, unlock, err := s.beginCancellableAction(ctx, "adaptation_analysis")
 	if err != nil {
 		return nil, err
 	}
@@ -690,6 +700,51 @@ func (s *ProjectSession) beginAction() (func(), error) {
 		return nil, ErrSessionActionInProgress
 	}
 	return s.actionMu.Unlock, nil
+}
+
+func (s *ProjectSession) beginCancellableAction(parent context.Context, kind string) (context.Context, func(), error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, nil, err
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	s.setActionCancel(kind, cancel)
+	return ctx, func() {
+		s.clearActionCancel()
+		cancel()
+		unlock()
+	}, nil
+}
+
+func (s *ProjectSession) setActionCancel(kind string, cancel context.CancelFunc) {
+	s.actionCancelMu.Lock()
+	defer s.actionCancelMu.Unlock()
+	s.actionKind = strings.TrimSpace(kind)
+	s.actionCancel = cancel
+}
+
+func (s *ProjectSession) clearActionCancel() {
+	s.actionCancelMu.Lock()
+	defer s.actionCancelMu.Unlock()
+	s.actionKind = ""
+	s.actionCancel = nil
+}
+
+func (s *ProjectSession) cancelCurrentAction() (string, bool) {
+	s.actionCancelMu.Lock()
+	defer s.actionCancelMu.Unlock()
+	if s.actionCancel == nil {
+		return "", false
+	}
+	kind := s.actionKind
+	cancel := s.actionCancel
+	s.actionKind = ""
+	s.actionCancel = nil
+	cancel()
+	return kind, true
 }
 
 func (s *ProjectSession) AppendSnapshot() WebEvent {
@@ -904,6 +959,16 @@ func (s *ProjectSession) consumeAdaptationEvents(ctx context.Context, events <-c
 	for {
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				ev := apiAdaptationEvent{
+					Time:    time.Now().UTC(),
+					Stage:   string(adapt.StagePaused),
+					Message: "原文分析已暂停，可再次点击分析继续",
+				}
+				out = append(out, ev)
+				s.appendAdaptationEvent(ev)
+				return out, adaptationPausedError{message: ev.Message}
+			}
 			return out, ctx.Err()
 		case ev, ok := <-events:
 			if !ok {
@@ -965,6 +1030,8 @@ func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
 	level := "info"
 	if ev.Error != "" {
 		level = "error"
+	} else if ev.Stage == string(adapt.StagePaused) {
+		level = "warn"
 	} else if ev.Stage == string(adapt.StageDone) {
 		level = "success"
 	}
@@ -976,6 +1043,21 @@ func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
 		Detail:   ev.Error,
 		Kind:     ev.Stage,
 		Level:    level,
+	})
+}
+
+func (s *ProjectSession) appendActionCanceledEvent(kind string) WebEvent {
+	summary := "当前操作已请求暂停"
+	if kind == "adaptation_analysis" {
+		summary = "原文分析已请求暂停"
+	}
+	return s.appendHostEvent(host.Event{
+		Time:     time.Now().UTC(),
+		Category: "SYSTEM",
+		Agent:    "web",
+		Summary:  summary,
+		Kind:     "paused",
+		Level:    "warn",
 	})
 }
 

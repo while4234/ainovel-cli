@@ -154,6 +154,44 @@ func TestProjectSessionAllowsModelSwitchDuringAction(t *testing.T) {
 	}
 }
 
+func TestProjectSessionPauseCancelsAdaptationAnalysis(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.adaptAnalyzeStarted = make(chan struct{})
+	fake.blockAdaptAnalyze = true
+
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	analysisErr := make(chan error, 1)
+	go func() {
+		_, err := session.PrepareAdaptationSource(context.Background(), "source.txt")
+		analysisErr <- err
+	}()
+
+	select {
+	case <-fake.adaptAnalyzeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("adaptation analysis did not start")
+	}
+
+	if !session.Pause() {
+		t.Fatal("Pause should report a canceled adaptation action")
+	}
+
+	select {
+	case err := <-analysisErr:
+		var paused adaptationPausedError
+		if !errors.As(err, &paused) {
+			t.Fatalf("analysis error = %v, want adaptationPausedError", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("adaptation analysis did not stop after pause")
+	}
+}
+
 func TestProjectSessionUpsertsHostEventsByID(t *testing.T) {
 	session := newTestSessionWithoutHost("project-1")
 	start := time.Now().UTC()
@@ -490,6 +528,7 @@ type fakeProjectHost struct {
 	startPreparedErr           error
 	resumeFromCoCreateErr      error
 	requireAnalyzedAdaptSource bool
+	blockAdaptAnalyze          bool
 
 	resumeCalls                 int
 	continueCalls               int
@@ -514,6 +553,7 @@ type fakeProjectHost struct {
 	importPath                  string
 	importNovelPath             string
 	importNovelResumeFrom       int
+	adaptAnalyzeStarted         chan struct{}
 	adaptSourcePath             string
 	adaptOptions                adapt.ProposalOptions
 	exportOptions               exp.Options
@@ -756,9 +796,20 @@ func (f *fakeProjectHost) PrepareAdaptationSource(_ context.Context, sourcePath 
 	f.adaptAnalyzeCalls++
 	f.adaptSourcePath = sourcePath
 	err := f.adaptAnalyzeErr
+	started := f.adaptAnalyzeStarted
+	block := f.blockAdaptAnalyze
+	if started != nil {
+		f.adaptAnalyzeStarted = nil
+	}
 	f.mu.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	if started != nil {
+		close(started)
+	}
+	if block {
+		return make(chan adapt.Event), nil
 	}
 	events := make(chan adapt.Event, 2)
 	events <- adapt.Event{Stage: adapt.StageDone, Message: "adaptation source analyzed"}

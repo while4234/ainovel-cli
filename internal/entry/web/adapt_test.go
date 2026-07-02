@@ -137,6 +137,37 @@ func TestProjectAdaptAnalyzeUsesProjectAdaptationUploadPath(t *testing.T) {
 	}
 }
 
+func TestProjectSnapshotRestoresUploadedAdaptationSource(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt Restore")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	uploadAdaptationSourceForTest(t, server, manifest, "source.txt", "Chapter 1\nsource body")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response projectSnapshotResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if response.Adaptation.SourceFile == nil {
+		t.Fatalf("snapshot did not restore adaptation source: %+v", response.Adaptation)
+	}
+	if response.Adaptation.SourceFile.RelativePath != "source.txt" {
+		t.Fatalf("restored source relative path = %q, want source.txt", response.Adaptation.SourceFile.RelativePath)
+	}
+	if response.Adaptation.AnalysisStatus != "idle" {
+		t.Fatalf("analysis status = %q, want idle", response.Adaptation.AnalysisStatus)
+	}
+}
+
 func TestProjectAdaptAnalyzeRejectsUnsafeSourceFile(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
 	defer server.Close()
