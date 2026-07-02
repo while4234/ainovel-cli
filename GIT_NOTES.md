@@ -30,10 +30,11 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 ## Current Baseline
 
 - Latest source change: branch `codex/web-project-cocreate-controls`,
-  `074fd6b` `fix: stabilize web short story creation`.
+  `a83b2af` `feat: surface adaptation planning state in UI`, completing the
+  five-step adaptation proposal/word-budget/UI PR pipeline.
 - Branch: `codex/web-project-cocreate-controls`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the global Web model provider fix commits,
+- Working tree: expected clean after the adaptation proposal/word-budget/UI commits,
   except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
   artifacts.
 - Runtime: local Web validation binary `D:\ainovel\.codex\bin\ainovel-cli-fixed.exe`
@@ -41,16 +42,26 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   Go 1.25.5 toolchain, then restarted on `http://127.0.0.1:9898` with runtime root
   `C:\Users\RondleLiu\.ainovel\novels`. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/tools -run "DraftChapter|CommitChapter.*WordBudget|SaveFoundation.*Outline" -count=1`,
-  `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web ./internal/tools ./internal/host -count=1`,
-  `git diff --check`, rebuild to `.codex\bin\ainovel-cli-fixed.exe`, Web service
-  restart on port 9898, and a real Web normal co-create acceptance project
-  `untitled-novel-20260702003401-f05856` passed on 2026-07-02 with `phase=complete`,
-  `chapters=1/1`, `words=4508`, `target=5000`, `planned_chapters=1`, and
-  runtime event `ERROR_COUNT=0`.
+- Validation: `npm --prefix internal/entry/web/ui test -- --run` passed
+  5 files / 31 tests; `npm --prefix internal/entry/web/ui run build` passed;
+  `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host ./internal/store ./internal/tools ./internal/host/adapt ./internal/domain -count=1`
+  passed; `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -count=1`
+  passed; `git diff --check` passed with LF-to-CRLF warnings only. Full
+  `.codex\tools\go1.25.5\go\bin\go.exe test ./... -count=1` was attempted and
+  still fails only on existing Windows-sensitive tests: `internal/notify`
+  requires `sh` on PATH, and `internal/version` expects Unix executable mode
+  bits.
 
 ## Change Log
 
+- 2026-07-02 `a83b2af` `feat: surface adaptation planning state in UI`:
+  completed the strict-agent adaptation proposal/UI pipeline after independent
+  review and fix rounds. The sequence added additive planning contracts
+  (`c772872`), real `arc/free` planner-backed proposals (`0e91abc`), explicit
+  build/confirm/start flow (`91be2eb`), persisted hard/soft adaptation word
+  budgets (`1cccc2f`), and snapshot/UI visibility for loaded profiles,
+  creative blueprints, proposals, full outlines, budget/source coverage, and
+  safe stale-proposal handling (`a83b2af`). UI assets were rebuilt.
 - 2026-07-02 `074fd6b` `fix: stabilize web short story creation`: changed
   normal creation word-budget misses and repeated-draft detection from hard
   local errors into structured tool feedback, added draft-stage word-budget
