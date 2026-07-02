@@ -230,6 +230,64 @@ func TestProjectSessionUpsertsHostEventsByID(t *testing.T) {
 	}
 }
 
+func TestProjectSessionBuildAdaptationProposalEmitsLifecycleEvent(t *testing.T) {
+	host := newFakeProjectHost()
+	session := newTestSessionWithHost("project-1", host)
+
+	_, err := session.BuildAdaptationProposal(adapt.ProposalOptions{
+		SourcePath:    "source.txt",
+		Granularity:   "free",
+		RewritePolicy: "full_rewrite",
+		Brief:         "make it bittersweet",
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+
+	ev := requireSingleAdaptProposalEvent(t, session)
+	if ev.HostEventID == "" || ev.Event.ID != ev.HostEventID {
+		t.Fatalf("proposal event ID mismatch: %+v", ev)
+	}
+	if ev.Event.Running {
+		t.Fatalf("proposal event should be completed: %+v", ev.Event)
+	}
+	if ev.Event.Category != "ADAPT" || ev.Event.Kind != "proposal" || ev.Event.Level != "success" {
+		t.Fatalf("unexpected proposal event metadata: %+v", ev.Event)
+	}
+	if ev.Event.FinishedAt == nil {
+		t.Fatalf("proposal event should include finished_at: %+v", ev.Event)
+	}
+	if !strings.Contains(ev.Event.Summary, "free") {
+		t.Fatalf("summary should include mode, got %q", ev.Event.Summary)
+	}
+}
+
+func TestProjectSessionBuildAdaptationProposalEmitsFailedLifecycleEvent(t *testing.T) {
+	host := newFakeProjectHost()
+	host.adaptProposalErr = errors.New("planner timeout")
+	session := newTestSessionWithHost("project-1", host)
+
+	_, err := session.BuildAdaptationProposal(adapt.ProposalOptions{
+		SourcePath:  "source.txt",
+		Granularity: "arc",
+		Brief:       "focus on emotional tension",
+	})
+	if !errors.Is(err, host.adaptProposalErr) {
+		t.Fatalf("BuildAdaptationProposal error = %v, want %v", err, host.adaptProposalErr)
+	}
+
+	ev := requireSingleAdaptProposalEvent(t, session)
+	if !ev.Event.Failed || ev.Event.Level != "error" {
+		t.Fatalf("proposal event should be failed error: %+v", ev.Event)
+	}
+	if ev.Event.Running || ev.Event.FinishedAt == nil {
+		t.Fatalf("failed proposal event should be completed: %+v", ev.Event)
+	}
+	if !strings.Contains(ev.Event.Detail, "planner timeout") {
+		t.Fatalf("failed proposal detail = %q", ev.Event.Detail)
+	}
+}
+
 func TestProjectSessionServeEventsHonorsAfter(t *testing.T) {
 	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	manifest, err := store.CreateProject("SSE After")
@@ -501,6 +559,29 @@ func newTestSessionWithoutHost(projectID string) *ProjectSession {
 		hostEventAt: make(map[string]int),
 		subscribers: make(map[chan WebEvent]struct{}),
 	}
+}
+
+func newTestSessionWithHost(projectID string, h projectHost) *ProjectSession {
+	session := newTestSessionWithoutHost(projectID)
+	session.host = h
+	return session
+}
+
+func requireSingleAdaptProposalEvent(t *testing.T, session *ProjectSession) WebEvent {
+	t.Helper()
+	var proposalEvents []WebEvent
+	for _, ev := range session.HistoryAfter(0) {
+		if ev.Type == webEventTypeHostEvent &&
+			ev.Event != nil &&
+			ev.Event.Category == "ADAPT" &&
+			ev.Event.Kind == "proposal" {
+			proposalEvents = append(proposalEvents, ev)
+		}
+	}
+	if len(proposalEvents) != 1 {
+		t.Fatalf("proposal event count = %d, want 1: %+v", len(proposalEvents), proposalEvents)
+	}
+	return proposalEvents[0]
 }
 
 type fakeProjectHost struct {

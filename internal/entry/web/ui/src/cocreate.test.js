@@ -5,7 +5,8 @@ import {
   coCreateStateFromError,
   coCreateStateFromEvent,
   coCreateStateFromResponse,
-  createCoCreateState
+  createCoCreateState,
+  visibleCoCreateSuggestions
 } from './cocreate.js';
 
 describe('co-create UI state', () => {
@@ -20,6 +21,15 @@ describe('co-create UI state', () => {
 
     expect(next.input).toBe('改成双主角');
     expect(edited.input).toBe('改成双主角，但保留慢热节奏');
+  });
+
+  it('tracks whether pending input came from a suggestion', () => {
+    const suggested = applyCoCreateSuggestion(createCoCreateState(), 'keep the bittersweet ending');
+    const edited = appendCoCreateInput(suggested, 'keep the bittersweet ending, but soften the final scene');
+
+    expect(suggested.input).toBe('keep the bittersweet ending');
+    expect(suggested.inputSource).toBe('suggestion');
+    expect(edited.inputSource).toBe('custom');
   });
 
   it('accepts free input without requiring a suggestion', () => {
@@ -65,6 +75,67 @@ describe('co-create UI state', () => {
 
     expect(state.messages[0]).toMatchObject({ id: 'm1', editable: true, source: 'custom' });
     expect(state.messages[2]).toMatchObject({ id: 'm3', editable: true, source: 'suggestion' });
+  });
+
+  it('shows parsed suggestions while waiting for user input', () => {
+    const state = coCreateStateFromResponse({
+      cocreate: {
+        kind: 'adapt',
+        active: true,
+        messages: [
+          { id: 'm1', role: 'system', content: 'adapt co-create started' },
+          { id: 'm2', role: 'assistant', content: '请选择方向。' }
+        ],
+        ready: false,
+        suggestions: [
+          '保持黑暗虐心但稍微调整女主心理线',
+          '改成双向救赎结局，让女主活下来',
+          '削弱性虐尺度，加强情感拉扯'
+        ]
+      }
+    });
+
+    expect(state.status).toBe('waiting');
+    expect(state.suggestions).toEqual([
+      '保持黑暗虐心但稍微调整女主心理线',
+      '改成双向救赎结局，让女主活下来',
+      '削弱性虐尺度，加强情感拉扯'
+    ]);
+  });
+
+  it('extracts fallback suggestions from numbered assistant questions', () => {
+    const suggestions = visibleCoCreateSuggestions({
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            '1. **感情基调定位**：你希望保持这种黑暗残酷的基调，还是往纯爱方向调整？或者某种中间态（比如虐恋+救赎）？',
+            '2. **女主袁可欣的结局**：你希望保留这个悲剧结局，还是打算改变她的命运？'
+          ].join('\n')
+        }
+      ],
+      suggestions: null
+    });
+
+    expect(suggestions).toEqual([
+      '保持这种黑暗残酷的基调',
+      '往纯爱方向调整',
+      '某种中间态（比如虐恋+救赎）'
+    ]);
+  });
+
+  it('adds context to short fallback choices from assistant questions', () => {
+    const suggestions = visibleCoCreateSuggestions({
+      messages: [
+        {
+          role: 'assistant',
+          content: '- **结局改动**：原书结局是袁可欣自杀、安少廷陷入循环。你想保留、反转还是拓展？'
+        }
+      ],
+      suggestions: null
+    });
+
+    expect(suggestions).toEqual(['结局改动：保留', '结局改动：反转', '结局改动：拓展']);
   });
 
   it('merges stream progress without duplicating assistant messages or clearing errors', () => {

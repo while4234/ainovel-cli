@@ -3,6 +3,7 @@ export function createCoCreateState() {
     kind: 'normal',
     active: false,
     input: '',
+    inputSource: '',
     messages: [],
     draftPrompt: '',
     ready: false,
@@ -51,17 +52,25 @@ export function coCreateStateFromBackend(data, previous = createCoCreateState(),
       error: options.error ?? previous.error
     };
   }
-  const status = options.status || (data.committed_label ? 'started' : data.ready ? 'ready' : data.active ? 'running' : 'idle');
+  const messages = Array.isArray(data.messages) ? data.messages : [];
+  const streamThinking = data.stream_thinking || '';
+  const streamReply = data.stream_reply || '';
+  const suggestions = visibleCoCreateSuggestions({
+    messages,
+    suggestions: data.suggestions,
+    streamReply
+  });
+  const status = options.status || coCreateStatusFromBackend(data, streamThinking, streamReply);
   return {
     ...previous,
     kind: data.kind || previous.kind || 'normal',
     active: Boolean(data.active && !data.committed_label),
-    messages: data.messages || [],
+    messages,
     draftPrompt: data.draft_prompt || '',
     ready: Boolean(data.ready),
-    suggestions: data.suggestions || [],
-    streamThinking: data.stream_thinking || '',
-    streamReply: data.stream_reply || '',
+    suggestions,
+    streamThinking,
+    streamReply,
     intakeActive: false,
     intakeInitial: '',
     targetTotalWordsChoice: previous.targetTotalWordsChoice || '',
@@ -73,20 +82,126 @@ export function coCreateStateFromBackend(data, previous = createCoCreateState(),
     adaptMode: data.adapt_mode || '',
     rewritePolicy: data.rewrite_policy || '',
     modeLocked: Boolean(data.mode_locked),
-    input: options.preserveInput ? previous.input : ''
+    input: options.preserveInput ? previous.input : '',
+    inputSource: options.preserveInput ? previous.inputSource || '' : ''
   };
+}
+
+function coCreateStatusFromBackend(data, streamThinking, streamReply) {
+  if (data.committed_label) {
+    return 'started';
+  }
+  if (data.ready) {
+    return 'ready';
+  }
+  if (streamThinking || streamReply) {
+    return 'running';
+  }
+  return data.active ? 'waiting' : 'idle';
+}
+
+export function visibleCoCreateSuggestions({ suggestions = [], messages = [], streamReply = '' } = {}) {
+  const explicit = normalizeCoCreateSuggestions(suggestions);
+  if (explicit.length) {
+    return explicit;
+  }
+  return extractCoCreateSuggestions(streamReply || latestAssistantMessage(messages));
+}
+
+function normalizeCoCreateSuggestions(suggestions) {
+  if (!Array.isArray(suggestions)) {
+    return [];
+  }
+  return uniqueNonEmpty(suggestions.map(cleanSuggestionText)).slice(0, 3);
+}
+
+function latestAssistantMessage(messages) {
+  if (!Array.isArray(messages)) {
+    return '';
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'assistant') {
+      return messages[index]?.content || '';
+    }
+  }
+  return '';
+}
+
+function extractCoCreateSuggestions(text) {
+  const candidates = [];
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    const match = rawLine.match(/^\s*(?:[-*•]\s+|\d+[.、)]\s+)(.+)$/);
+    if (!match) {
+      continue;
+    }
+    const rawCandidate = match[1].trim();
+    const line = cleanSuggestionText(rawCandidate);
+    const choices = splitChoiceQuestion(rawCandidate);
+    candidates.push(...(choices.length ? choices : [line]));
+  }
+  return uniqueNonEmpty(candidates)
+    .filter((item) => item.length >= 4 && item.length <= 120)
+    .slice(0, 3);
+}
+
+function splitChoiceQuestion(line) {
+  const markdownHeadingMatch = line.match(/^\*\*([^*]+?)\*\*[：:]\s*(.*)$/);
+  const plainHeadingMatch = markdownHeadingMatch ? null : line.match(/^([^：:]{2,24})[：:]\s*(.*)$/);
+  const headingMatch = markdownHeadingMatch || plainHeadingMatch;
+  const heading = headingMatch ? cleanSuggestionText(headingMatch[1]) : '';
+  const body = headingMatch ? headingMatch[2] : line;
+  const promptMatch = body.match(/(?:你希望|你想|你打算)(.+)$/);
+  if (!promptMatch) {
+    return [];
+  }
+  const question = promptMatch[1].replace(/[？?。；;]+/g, '，');
+  return question
+    .split(/(?:，)?(?:还是|或者|或是)|[、,，/]/)
+    .map((item) => withChoiceContext(cleanSuggestionText(item.replace(/^打算/, '')), heading))
+    .filter((item) => item.length >= 4 && item.length <= 80);
+}
+
+function withChoiceContext(choice, heading) {
+  if (!choice) {
+    return '';
+  }
+  return heading && choice.length <= 6 ? `${heading}：${choice}` : choice;
+}
+
+function cleanSuggestionText(text) {
+  return String(text || '')
+    .replace(/\*\*/g, '')
+    .replace(/^[：:，,、\s]+/g, '')
+    .replace(/[？?。；;：:，,、]+$/g, '')
+    .trim();
+}
+
+function uniqueNonEmpty(values) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    const text = cleanSuggestionText(value);
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    out.push(text);
+  }
+  return out;
 }
 
 export function applyCoCreateSuggestion(state, suggestion) {
   return {
     ...state,
-    input: String(suggestion || '')
+    input: String(suggestion || ''),
+    inputSource: 'suggestion'
   };
 }
 
 export function appendCoCreateInput(state, text) {
   return {
     ...state,
-    input: text
+    input: text,
+    inputSource: 'custom'
   };
 }

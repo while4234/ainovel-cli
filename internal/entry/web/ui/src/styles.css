@@ -42,14 +42,18 @@
 html,
 body,
 #root {
-  min-height: 100%;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  min-height: 0;
   background: var(--bg);
+  overscroll-behavior: none;
 }
 
 button,
@@ -75,6 +79,9 @@ textarea:disabled {
   display: grid;
   grid-template-columns: minmax(224px, 264px) minmax(520px, 1fr) minmax(430px, 520px);
   height: 100vh;
+  height: 100dvh;
+  max-height: 100vh;
+  max-height: 100dvh;
   overflow: hidden;
   background: var(--bg);
 }
@@ -751,6 +758,56 @@ h2 {
   line-height: 1.68;
 }
 
+.cocreate-workspace-output {
+  background: linear-gradient(180deg, rgba(241, 250, 249, 0.46), rgba(255, 255, 255, 0.82)), var(--surface-solid);
+}
+
+.cocreate-workspace-thread {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 100%;
+}
+
+.cocreate-workspace-message {
+  min-height: 0;
+  border-color: rgba(15, 111, 109, 0.2);
+  background: var(--surface-solid);
+}
+
+.cocreate-workspace-message.assistant,
+.cocreate-workspace-message.thinking {
+  background: var(--accent-softer);
+}
+
+.cocreate-workspace-message.user {
+  border-left-color: var(--line-strong);
+  background: var(--surface-subtle);
+}
+
+.cocreate-workspace-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cocreate-workspace-head strong {
+  color: var(--accent);
+}
+
+.cocreate-workspace-head span {
+  border: 1px solid rgba(15, 111, 109, 0.22);
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: var(--accent-softer);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .muted,
 .empty-state,
 .no-project span {
@@ -1040,7 +1097,8 @@ h2 {
 }
 
 .cocreate-panel {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .tool-form {
@@ -1093,8 +1151,8 @@ h2 {
 
 .cocreate-dialog {
   display: flex;
-  min-height: 132px;
-  flex: 1 1 auto;
+  min-height: 280px;
+  flex: 1 0 280px;
   flex-direction: column;
   overflow: hidden;
 }
@@ -1102,7 +1160,7 @@ h2 {
 .cocreate-messages {
   display: grid;
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 150px;
   gap: 8px;
   overflow: auto;
 }
@@ -1213,6 +1271,17 @@ h2 {
   display: grid;
   grid-template-columns: 1fr;
   gap: 6px;
+}
+
+.cocreate-dialog-suggestions {
+  flex: 0 0 auto;
+  max-height: 132px;
+  overflow: auto;
+}
+
+.cocreate-side-suggestions {
+  max-height: 176px;
+  overflow: auto;
 }
 
 .suggestion-option {
@@ -1354,6 +1423,10 @@ h2 {
   gap: 8px;
 }
 
+.cocreate-status-compact .cocreate-actions {
+  grid-template-columns: 1fr;
+}
+
 .simulation-actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1426,6 +1499,22 @@ h2 {
 .adapt-mode.active {
   border-color: rgba(15, 111, 109, 0.34);
   background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.adapt-action-help {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(15, 111, 109, 0.18);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  background: rgba(15, 111, 109, 0.06);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.adapt-action-help strong {
   color: var(--accent);
 }
 
@@ -2021,10 +2110,11 @@ h2 {
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: 220px minmax(620px, 1fr) 420px;
-    height: auto;
-    min-height: 100vh;
-    overflow: auto;
+    grid-template-rows: minmax(160px, 22vh) minmax(0, 1fr) minmax(280px, 42vh);
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .project-pane,
@@ -2044,7 +2134,7 @@ h2 {
   }
 
   .writing-pane {
-    min-height: 620px;
+    min-height: 0;
     padding: 14px;
   }
 

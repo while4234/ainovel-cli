@@ -13,10 +13,26 @@ describe('ui styles', () => {
     expect(css).toMatch(/grid-template-columns:\s*minmax\(224px,\s*264px\)\s*minmax\(520px,\s*1fr\)\s*minmax\(430px,\s*520px\);/);
   });
 
+  it('keeps document scrolling locked to internal panes', () => {
+    expect(css).toMatch(/html,\s*[\r\n]+body,\s*[\r\n]+#root\s*{[^}]*height:\s*100%;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/body\s*{[^}]*overscroll-behavior:\s*none;/s);
+    expect(css).toMatch(/\.app-shell\s*{[^}]*height:\s*100dvh;[^}]*overflow:\s*hidden;/s);
+    expect(css).not.toMatch(/\.app-shell\s*{[^}]*overflow:\s*auto;/s);
+  });
+
   it('keeps side content inside the pane without horizontal scrolling', () => {
     expect(css).toMatch(/\.side-content\s*{[^}]*overflow-x:\s*hidden;/s);
     expect(css).toMatch(/\.simulation-section,\s*[\r\n]+\.cocreate-section\s*{[^}]*max-width:\s*100%;/s);
     expect(css).toMatch(/\.profile-status span\s*{[^}]*white-space:\s*nowrap;/s);
+  });
+
+  it('keeps co-create waiting controls compact', () => {
+    expect(css).toMatch(/\.cocreate-dialog\s*{[^}]*min-height:\s*280px;/s);
+    expect(css).toMatch(/\.cocreate-dialog-suggestions\s*{[^}]*max-height:\s*132px;/s);
+    expect(css).toMatch(/\.cocreate-side-suggestions\s*{[^}]*max-height:\s*176px;/s);
+    expect(css).toMatch(/\.cocreate-workspace-output\s*{/);
+    expect(css).toMatch(/\.cocreate-workspace-message\.assistant,\s*[\r\n]+\.cocreate-workspace-message\.thinking\s*{/);
+    expect(css).toMatch(/\.cocreate-status-compact \.cocreate-actions\s*{[^}]*grid-template-columns:\s*1fr;/s);
   });
 
   it('stacks project model controls at matching widths', () => {

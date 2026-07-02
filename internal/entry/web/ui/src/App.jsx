@@ -80,6 +80,7 @@ import {
 } from './api.js';
 import {
   appendCoCreateInput,
+  applyCoCreateSuggestion,
   coCreateStateFromError,
   coCreateStateFromEvent,
   coCreateStateFromResponse,
@@ -1339,7 +1340,7 @@ export default function App() {
       return;
     }
     setBusy(true);
-    setCoCreate((previous) => ({ ...previous, kind, status: 'running', error: '', startMessage: '' }));
+    setCoCreate((previous) => ({ ...previous, kind, status: 'running', error: '', startMessage: '', suggestions: [] }));
     try {
       const payload = buildBeginCoCreatePayload({
         kind,
@@ -1366,9 +1367,9 @@ export default function App() {
       return;
     }
     setBusy(true);
-    setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
+    setCoCreate((previous) => ({ ...previous, status: 'running', error: '', suggestions: [] }));
     try {
-      const data = await sendCoCreate(activeProject.id, text, 'custom');
+      const data = await sendCoCreate(activeProject.id, text, coCreate.inputSource || 'custom');
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
     } catch (err) {
@@ -1378,23 +1379,13 @@ export default function App() {
     }
   };
 
-  const submitCoCreateSuggestion = async (suggestion) => {
+  const submitCoCreateSuggestion = (suggestion) => {
     const text = String(suggestion || '').trim();
     const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
     if (!activeProject?.id || !text || !hasBackendSession || busy) {
       return;
     }
-    setBusy(true);
-    setCoCreate((previous) => ({ ...previous, status: 'running', error: '', input: '' }));
-    try {
-      const data = await sendCoCreate(activeProject.id, text, 'suggestion');
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
-    } catch (err) {
-      setCoCreate((previous) => coCreateStateFromError(err, previous));
-    } finally {
-      setBusy(false);
-    }
+    setCoCreate((previous) => applyCoCreateSuggestion({ ...previous, error: '' }, text));
   };
 
   const reviseCoCreateMessage = async (messageId, text) => {
@@ -1653,6 +1644,7 @@ export default function App() {
     () => workbench.eventRows.slice().sort((a, b) => b.seq - a.seq),
     [workbench.eventRows]
   );
+  const showCoCreateWorkspace = sideView === 'cocreate' && hasCoCreateWorkspaceContent(coCreate);
 
   return (
     <div className="app-shell">
@@ -1867,13 +1859,17 @@ export default function App() {
         {error ? <div className="error-banner">{error}</div> : null}
 
         <div className="workbench-stack">
-          <section className="stream-area" aria-label="实时创作流">
+          <section className={`stream-area ${showCoCreateWorkspace ? 'cocreate-workspace-output' : ''}`} aria-label="实时创作流">
             {activeProject ? (
+              showCoCreateWorkspace ? (
+                <CoCreateWorkspace coCreate={coCreate} />
+              ) : (
               workbench.streamRounds.map((round) => (
                 <article className="stream-round" key={round.id}>
                   {round.text ? <pre>{round.text}</pre> : <span className="muted">等待流式输出</span>}
                 </article>
               ))
+              )
             ) : (
               <div className="no-project">
                 <SquarePen size={28} />
@@ -1989,6 +1985,7 @@ export default function App() {
               onRevise={reviseCoCreateMessage}
               onCommit={commitCoCreateFlow}
               onCancel={cancelCoCreateFlow}
+              workspaceTranscript={showCoCreateWorkspace}
             />
           ) : sideView === 'simulate' ? (
             <SimulationPanel
@@ -2101,6 +2098,54 @@ function ProgressItem({ label, value, wide = false }) {
     <div className={`workspace-progress-item ${wide ? 'wide' : ''}`}>
       <span>{label}</span>
       <strong title={value}>{value}</strong>
+    </div>
+  );
+}
+
+function hasCoCreateWorkspaceContent(coCreate) {
+  return Boolean(
+    coCreate?.streamThinking ||
+      coCreate?.streamReply ||
+      (Array.isArray(coCreate?.messages) && coCreate.messages.some((message) => message?.role !== 'system' && message?.content))
+  );
+}
+
+function CoCreateWorkspace({ coCreate }) {
+  const messages = Array.isArray(coCreate.messages)
+    ? coCreate.messages.filter((message) => message?.role !== 'system' && message?.content)
+    : [];
+  return (
+    <div className="cocreate-workspace-thread">
+      {messages.length === 0 && !coCreate.streamThinking && !coCreate.streamReply ? (
+        <article className="stream-round">
+          <span className="muted">等待共创输出</span>
+        </article>
+      ) : null}
+      {messages.map((message, index) => (
+        <article className={`stream-round cocreate-workspace-message ${message.role}`} key={message.id || `${message.role}-${index}`}>
+          <div className="cocreate-workspace-head">
+            <strong>{coCreateRoleLabel(message.role)}</strong>
+            {message.source ? <span>{message.source === 'suggestion' ? '选项' : '补充'}</span> : null}
+          </div>
+          <pre>{message.content}</pre>
+        </article>
+      ))}
+      {coCreate.streamThinking ? (
+        <article className="stream-round cocreate-workspace-message thinking">
+          <div className="cocreate-workspace-head">
+            <strong>Thinking</strong>
+          </div>
+          <pre>{coCreate.streamThinking}</pre>
+        </article>
+      ) : null}
+      {coCreate.streamReply ? (
+        <article className="stream-round cocreate-workspace-message assistant">
+          <div className="cocreate-workspace-head">
+            <strong>AI</strong>
+          </div>
+          <pre>{coCreate.streamReply}</pre>
+        </article>
+      ) : null}
     </div>
   );
 }
@@ -2219,7 +2264,8 @@ function CoCreatePanel({
   onSuggestion,
   onRevise,
   onCommit,
-  onCancel
+  onCancel,
+  workspaceTranscript = false
 }) {
   const [editing, setEditing] = useState(null);
   const hasConversation = coCreate.messages.length > 0;
@@ -2240,6 +2286,27 @@ function CoCreatePanel({
   const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
   const canCommit = Boolean(activeProject && !busy && coCreate.ready && coCreate.draftPrompt.trim());
   const canCancel = Boolean(activeProject && !busy && (hasBackendSession || coCreate.intakeActive));
+  const visibleSuggestions = coCreate.suggestions.slice(0, 3);
+  const showDraftWorkspace = Boolean(coCreate.ready || coCreate.draftPrompt.trim());
+  const suggestionList = visibleSuggestions.length ? (
+    <div
+      className={`suggestion-list ${workspaceTranscript ? 'cocreate-side-suggestions' : 'cocreate-dialog-suggestions'}`}
+      aria-label="AI 建议"
+    >
+      {visibleSuggestions.map((suggestion) => (
+        <button
+          className="suggestion-option"
+          disabled={busy}
+          key={suggestion}
+          onClick={() => onSuggestion(suggestion)}
+          type="button"
+        >
+          <SquarePen size={15} />
+          {suggestion}
+        </button>
+      ))}
+    </div>
+  ) : null;
   const title = coCreateTitle(coCreate.kind);
   const handleCoCreateFormSubmit = (event) => {
     event.preventDefault();
@@ -2279,6 +2346,9 @@ function CoCreatePanel({
         ) : null}
       </section>
 
+      {workspaceTranscript ? (
+        suggestionList ? <section className="cocreate-section cocreate-side-suggestion-section">{suggestionList}</section> : null
+      ) : (
       <section className="cocreate-section cocreate-dialog">
         <div className="cocreate-messages">
           {coCreate.messages.length === 0 ? (
@@ -2358,26 +2428,9 @@ function CoCreatePanel({
             ) : null}
           </div>
         ) : null}
+        {suggestionList}
       </section>
-
-      {coCreate.suggestions.length ? (
-        <section className="cocreate-section">
-          <div className="suggestion-list">
-            {coCreate.suggestions.slice(0, 3).map((suggestion) => (
-              <button
-                className="suggestion-option"
-                disabled={busy}
-                key={suggestion}
-                onClick={() => onSuggestion(suggestion)}
-                type="button"
-              >
-                <Send size={15} />
-                {suggestion}
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
+      )}
 
       <div className="cocreate-sticky-workspace">
         <form className="cocreate-form" onSubmit={handleCoCreateFormSubmit}>
@@ -2476,19 +2529,23 @@ function CoCreatePanel({
         </button>
         </form>
 
-        <section className="cocreate-section">
+        <section className={`cocreate-section ${showDraftWorkspace ? '' : 'cocreate-status-compact'}`}>
         <div className={`workflow-status ${coCreate.status}`}>
           <strong>{coCreateStatusText(coCreate.status, coCreate.ready)}</strong>
-          <span>{coCreate.startMessage || (coCreate.ready ? 'draft prompt 已就绪' : '等待共创完成')}</span>
+          <span>{coCreateStatusDetail(coCreate)}</span>
         </div>
+        {showDraftWorkspace ? (
         <div className="draft-preview">
           {coCreate.draftPrompt ? <pre>{coCreate.draftPrompt}</pre> : <span className="muted">AI 会在这里整理 draft prompt</span>}
         </div>
+        ) : null}
         <div className="cocreate-actions">
-          <button className="tool-button accent" disabled={!canCommit} onClick={onCommit} type="button">
-            <Play size={16} />
-            启动
-          </button>
+          {showDraftWorkspace ? (
+            <button className="tool-button accent" disabled={!canCommit} onClick={onCommit} type="button">
+              <Play size={16} />
+              启动
+            </button>
+          ) : null}
           <button className="tool-button" disabled={!canCancel} onClick={onCancel} type="button">
             <ListRestart size={16} />
             取消
@@ -2678,6 +2735,10 @@ function AdaptationPanel({
             value={adaptation.brief}
             onChange={(event) => updateProposalInput({ brief: event.target.value })}
           />
+          <div className="adapt-action-help" role="note">
+            <span><strong>生成提案</strong>：结局、关系线和改写重点已经明确时，直接拆成可确认的逐章策略。</span>
+            <span><strong>进入共创</strong>：还在纠结结局、女主戏份、虐心/纯爱比重或悬疑侧重时，先让 AI 给选项再补充。</span>
+          </div>
           <button className="tool-button accent full-width" disabled={!canStart} onClick={onStart} type="button">
             <Play size={16} />
             生成提案
@@ -3768,6 +3829,9 @@ function coCreateStatusText(status, ready) {
   if (status === 'running') {
     return '进行中';
   }
+  if (status === 'waiting') {
+    return '待补充';
+  }
   if (status === 'error') {
     return '出错';
   }
@@ -3775,6 +3839,22 @@ function coCreateStatusText(status, ready) {
     return '已启动';
   }
   return ready ? '已就绪' : '待处理';
+}
+
+function coCreateStatusDetail(coCreate) {
+  if (coCreate.startMessage) {
+    return coCreate.startMessage;
+  }
+  if (coCreate.ready) {
+    return 'draft prompt 已就绪';
+  }
+  if (coCreate.status === 'running') {
+    return 'AI 正在整理方向';
+  }
+  if (coCreate.status === 'waiting') {
+    return coCreate.suggestions.length ? '可点选 AI 建议，或直接补充你的想法' : '等待你补充方向';
+  }
+  return '等待共创开始';
 }
 
 function adaptationModeLabel(mode) {

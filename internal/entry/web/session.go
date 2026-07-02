@@ -565,13 +565,17 @@ func (s *ProjectSession) BuildAdaptationProposal(options adapt.ProposalOptions) 
 	}
 	defer unlock()
 
+	eventID, startedAt := s.appendAdaptationProposalStarted(options)
 	if err := s.host.PrepareExternalSourceUserRules(options.Brief); err != nil {
+		s.appendAdaptationProposalFinished(eventID, startedAt, options, err)
 		return nil, err
 	}
 	proposal, err := s.host.BuildAdaptationProposal(options)
 	if err != nil {
+		s.appendAdaptationProposalFinished(eventID, startedAt, options, err)
 		return nil, err
 	}
+	s.appendAdaptationProposalFinished(eventID, startedAt, options, nil)
 	s.AppendSnapshot()
 	return proposal, nil
 }
@@ -1123,6 +1127,59 @@ func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
 		Kind:     ev.Stage,
 		Level:    level,
 	})
+}
+
+func (s *ProjectSession) appendAdaptationProposalStarted(options adapt.ProposalOptions) (string, time.Time) {
+	startedAt := time.Now().UTC()
+	eventID := fmt.Sprintf("adapt-proposal-%d", startedAt.UnixNano())
+	s.appendHostEvent(host.Event{
+		ID:       eventID,
+		Time:     startedAt,
+		Category: "ADAPT",
+		Agent:    "web",
+		Summary:  adaptationProposalEventSummary("正在生成改编提案", options),
+		Kind:     "proposal",
+		Level:    "info",
+	})
+	return eventID, startedAt
+}
+
+func (s *ProjectSession) appendAdaptationProposalFinished(eventID string, startedAt time.Time, options adapt.ProposalOptions, err error) {
+	if eventID == "" {
+		return
+	}
+	finishedAt := time.Now().UTC()
+	summary := adaptationProposalEventSummary("改编提案已生成", options)
+	level := "success"
+	var detail string
+	var failed bool
+	if err != nil {
+		summary = adaptationProposalEventSummary("改编提案生成失败", options)
+		level = "error"
+		detail = err.Error()
+		failed = true
+	}
+	s.appendHostEvent(host.Event{
+		ID:         eventID,
+		Time:       startedAt,
+		FinishedAt: finishedAt,
+		Failed:     failed,
+		Category:   "ADAPT",
+		Agent:      "web",
+		Summary:    summary,
+		Detail:     detail,
+		Kind:       "proposal",
+		Level:      level,
+		Duration:   finishedAt.Sub(startedAt),
+	})
+}
+
+func adaptationProposalEventSummary(action string, options adapt.ProposalOptions) string {
+	mode := strings.TrimSpace(options.Granularity)
+	if mode == "" {
+		return action
+	}
+	return fmt.Sprintf("%s（%s）", action, mode)
 }
 
 func (s *ProjectSession) appendActionCanceledEvent(kind string) WebEvent {
