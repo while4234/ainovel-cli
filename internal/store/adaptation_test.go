@@ -2,6 +2,7 @@ package store
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -178,6 +179,69 @@ func TestAdaptationPlanLoadNormalizesLegacyAndNestedWordBudget(t *testing.T) {
 	}
 	if nestedChapter.CoreEvent != "combined event" || nestedChapter.Hook != "new hook" || len(nestedChapter.Scenes) != 2 {
 		t.Fatalf("outline fields not preserved: %+v", nestedChapter.OutlineEntry)
+	}
+}
+
+func TestAdaptationPlanPersistsSourceDerivedSoftBudgets(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	source1, err := s.Adaptation.SaveSourceChapter(1, "One", strings.Repeat("a", 100))
+	if err != nil {
+		t.Fatalf("SaveSourceChapter 1: %v", err)
+	}
+	source2, err := s.Adaptation.SaveSourceChapter(2, "Two", strings.Repeat("b", 50))
+	if err != nil {
+		t.Fatalf("SaveSourceChapter 2: %v", err)
+	}
+	if err := s.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: 2,
+		Chapters:     []domain.AdaptationSource{source1, source2},
+	}); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityArc,
+		Brief:       "soft default budgets",
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, Title: "One", SourceChapters: []int{1}},
+			{Chapter: 2, Title: "Two", SourceChapters: []int{2}},
+		},
+	}
+	if err := s.Adaptation.SavePlan(plan); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	first, err := s.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan first: %v", err)
+	}
+	reloaded := NewStore(s.Dir())
+	second, err := reloaded.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan second: %v", err)
+	}
+
+	if first.TargetTotalRunes != 150 || first.TargetMinRunes != 128 || first.TargetMaxRunes != 172 {
+		t.Fatalf("plan totals = %+v", first)
+	}
+	if first.Chapters[0].WordBudget == nil || first.Chapters[0].TargetRunes != 100 ||
+		first.Chapters[0].TargetMinRunes != 85 || first.Chapters[0].TargetMaxRunes != 115 {
+		t.Fatalf("chapter 1 budget = %+v", first.Chapters[0])
+	}
+	if first.Chapters[1].WordBudget == nil || first.Chapters[1].TargetRunes != 50 ||
+		first.Chapters[1].TargetMinRunes != 43 || first.Chapters[1].TargetMaxRunes != 57 {
+		t.Fatalf("chapter 2 budget = %+v", first.Chapters[1])
+	}
+	if second.TargetTotalRunes != first.TargetTotalRunes ||
+		second.TargetMinRunes != first.TargetMinRunes ||
+		second.TargetMaxRunes != first.TargetMaxRunes ||
+		second.Chapters[0].TargetMinRunes != first.Chapters[0].TargetMinRunes ||
+		second.Chapters[1].TargetMaxRunes != first.Chapters[1].TargetMaxRunes {
+		t.Fatalf("budgets changed across reload: first=%+v second=%+v", first, second)
 	}
 }
 

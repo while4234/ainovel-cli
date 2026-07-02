@@ -141,7 +141,10 @@ func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount 
 	}
 	result["adaptation_word_contract"] = contract
 	result["word_contract_passed"] = len(issues) == 0
-	if len(issues) == 0 {
+	if len(contract.Warnings) > 0 {
+		result["word_contract_warnings"] = contract.Warnings
+	}
+	if len(issues) == 0 && normalWordBudgetAllowsDraftNextStep(result) {
 		if contract.Hard {
 			result["next_step"] = "字数硬契约已满足：按 read_chapter(source=\"draft\") → check_consistency → check_adaptation → commit_chapter 继续。"
 		}
@@ -162,6 +165,11 @@ func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount 
 	return result
 }
 
+func normalWordBudgetAllowsDraftNextStep(result map[string]any) bool {
+	passed, ok := result["word_budget_passed"].(bool)
+	return !ok || passed
+}
+
 func repeatedDraftRejection(chapter int, mode string, issue string) map[string]any {
 	if mode == "" {
 		mode = "write"
@@ -180,7 +188,7 @@ func repeatedDraftRejection(chapter int, mode string, issue string) map[string]a
 }
 
 func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chapter int, wordCount int) {
-	if t.store == nil || t.store.Adaptation.Active() {
+	if t.store == nil {
 		return
 	}
 	meta, err := t.store.RunMeta.Load()

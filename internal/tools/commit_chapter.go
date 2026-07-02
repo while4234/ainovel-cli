@@ -446,9 +446,6 @@ func (r wordBudgetGateRejection) result() map[string]any {
 }
 
 func (t *CommitChapterTool) checkWordBudgetGate(chapter int, wordCount int) (*wordBudgetGateRejection, error) {
-	if t.store.Adaptation.Active() {
-		return nil, nil
-	}
 	meta, err := t.store.RunMeta.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load word budget: %w: %w", errs.ErrStoreRead, err)
