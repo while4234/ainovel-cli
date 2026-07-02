@@ -30,29 +30,33 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 ## Current Baseline
 
 - Latest source change: branch `codex/web-project-cocreate-controls`,
-  `af33ae7` `fix: add global web model providers`.
+  `074fd6b` `fix: stabilize web short story creation`.
 - Branch: `codex/web-project-cocreate-controls`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: expected clean after the global Web model provider fix commits,
   except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
   artifacts.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` is rebuilt after the Web default
-  model and global provider fixes using the project-local Go 1.25.5 toolchain, then restarted on
-  `http://127.0.0.1:9898` with runtime root
+- Runtime: local Web validation binary `D:\ainovel\.codex\bin\ainovel-cli-fixed.exe`
+  is rebuilt after the Web short-story creation fixes using the project-local
+  Go 1.25.5 toolchain, then restarted on `http://127.0.0.1:9898` with runtime root
   `C:\Users\RondleLiu\.ainovel\novels`. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run "TestGlobalModelsAndDefaultSwitch|TestGlobalModelAddGrokOAuthProvider|TestProjectGrokLogin|TestGrokLogin" -count=1`,
-  `npm --prefix internal/entry/web/ui test`,
-  `npm --prefix internal/entry/web/ui run build`,
-  `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -count=1`,
-  `.codex\tools\go1.25.5\go\bin\go.exe build -o D:\ainovel\ainovel-cli.exe D:\ainovel\cmd\ainovel-cli`,
-  `git diff --check`, HTTP smoke checks for `/`, `/api/runtime`, `/api/models`,
-  `/api/projects`, and empty `POST /api/models/add`, plus a Playwright no-project
-  model panel check passed on 2026-07-01. The latest runtime is on 9898 and 9904
-  has no listener.
+- Validation: `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/tools -run "DraftChapter|CommitChapter.*WordBudget|SaveFoundation.*Outline" -count=1`,
+  `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web ./internal/tools ./internal/host -count=1`,
+  `git diff --check`, rebuild to `.codex\bin\ainovel-cli-fixed.exe`, Web service
+  restart on port 9898, and a real Web normal co-create acceptance project
+  `untitled-novel-20260702003401-f05856` passed on 2026-07-02 with `phase=complete`,
+  `chapters=1/1`, `words=4508`, `target=5000`, `planned_chapters=1`, and
+  runtime event `ERROR_COUNT=0`.
 
 ## Change Log
 
+- 2026-07-02 `074fd6b` `fix: stabilize web short story creation`: changed
+  normal creation word-budget misses and repeated-draft detection from hard
+  local errors into structured tool feedback, added draft-stage word-budget
+  guidance, normalized one-entry outline chapter numbers, removed remaining
+  Ctrl+S start copy from Web co-create responses, and verified a real 5000-word
+  one-entry Web co-create completed without local ERROR.
 - 2026-07-01 `af33ae7` `fix: add global web model providers`: added
   `POST /api/models/add`, enabled no-project `Add and use` for global provider
   registration, allowed logged-in Grok OAuth to become visible in the global
