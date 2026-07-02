@@ -50,8 +50,12 @@ import {
   getSnapshot,
   importExternalNovel,
   importSimulationProfile,
+  listNovelLibrary,
   listProjects,
+  listSimulationLibrary,
   listTrashProjects,
+  loadNovelFromLibrary,
+  loadSimulationFromLibrary,
   pauseProject,
   pollGrokLogin,
   renameProject,
@@ -59,6 +63,8 @@ import {
   reviseCoCreate,
   resumeProject,
   runProjectDiagnostic,
+  saveNovelToLibrary,
+  saveSimulationToLibrary,
   sendCoCreate,
   setProjectThinking,
   startProject,
@@ -69,6 +75,7 @@ import {
   testBackend,
   trashProject,
   uploadAdaptationSource,
+  uploadSimulationLibrary,
   uploadSimulationFiles
 } from './api.js';
 import {
@@ -104,6 +111,15 @@ function createSimulationState() {
     importStatus: 'idle',
     importEvents: [],
     importMessage: '',
+    libraryQuery: '',
+    libraryStatus: 'idle',
+    libraryItems: [],
+    libraryMessage: '',
+    libraryError: '',
+    saveDialogOpen: false,
+    saveName: '',
+    saveStatus: 'idle',
+    saveError: '',
     error: ''
   };
 }
@@ -119,7 +135,77 @@ function createAdaptationState() {
     proposalKey: '',
     startStatus: 'idle',
     startMessage: '',
+    libraryQuery: '',
+    libraryStatus: 'idle',
+    libraryItems: [],
+    libraryMessage: '',
+    libraryError: '',
+    librarySaveName: '',
+    librarySaveStatus: 'idle',
+    librarySaveError: '',
     error: ''
+  };
+}
+
+function resetSimulationProjectState(previous) {
+  return {
+    ...createSimulationState(),
+    libraryQuery: previous.libraryQuery,
+    libraryStatus: previous.libraryStatus,
+    libraryItems: previous.libraryItems,
+    libraryMessage: previous.libraryMessage,
+    libraryError: previous.libraryError
+  };
+}
+
+function restoreSimulationProjectState(previous, status) {
+  const next = resetSimulationProjectState(previous);
+  if (!status) {
+    return next;
+  }
+  const importedFile = status.imported_file || status.importedFile || null;
+  const importEvents = status.import_events || status.importEvents;
+  const importStatus = String(status.import_status || status.importStatus || (importedFile ? 'done' : next.importStatus) || 'idle').trim() || 'idle';
+  return {
+    ...next,
+    importStatus,
+    importEvents: Array.isArray(importEvents) ? importEvents : [],
+    importMessage: status.message || (importedFile ? `已恢复画像：${simulationProfileLabel(importedFile)}` : '')
+  };
+}
+
+function simulationProfileLabel(file) {
+  const name = textValue(file, 'name', 'Name', 'relative_path', 'RelativePath');
+  const fileName = fileNameFromPath(name) || name;
+  return fileName.replace(/\.json$/i, '') || fileName;
+}
+
+function resetAdaptationProjectState(previous) {
+  return {
+    ...createAdaptationState(),
+    libraryQuery: previous.libraryQuery,
+    libraryStatus: previous.libraryStatus,
+    libraryItems: previous.libraryItems,
+    libraryMessage: previous.libraryMessage,
+    libraryError: previous.libraryError
+  };
+}
+
+function restoreAdaptationProjectState(previous, status) {
+  const next = resetAdaptationProjectState(previous);
+  if (!status) {
+    return next;
+  }
+  const sourceFile = status.source_file || status.sourceFile || null;
+  const analysisStatus = String(status.analysis_status || status.analysisStatus || next.analysisStatus || 'idle').trim() || 'idle';
+  return {
+    ...next,
+    sourceFile,
+    uploadMessage: status.message || (sourceFile ? '已恢复上传原文' : ''),
+    analysisStatus,
+    analysisEvents: Array.isArray(status.analysis_events || status.analysisEvents)
+      ? (status.analysis_events || status.analysisEvents)
+      : []
   };
 }
 
@@ -240,8 +326,8 @@ export default function App() {
   const resetProjectScopedState = useCallback((clearProject = false) => {
     lastSeqRef.current = 0;
     setWorkbench(createWorkbenchState());
-    setSimulation(createSimulationState());
-    setAdaptation(createAdaptationState());
+    setSimulation(resetSimulationProjectState);
+    setAdaptation(resetAdaptationProjectState);
     setExternalImport(createExternalImportState());
     setExportJob(createExportState());
     setDiagnostic(createDiagnosticState());
@@ -262,6 +348,57 @@ export default function App() {
   const refreshTrashProjects = useCallback(async () => {
     const data = await listTrashProjects();
     setTrashProjects(data.projects || []);
+  }, []);
+
+  const loadInitialLibraries = useCallback(async () => {
+    setSimulation((previous) => ({
+      ...previous,
+      libraryStatus: 'running',
+      libraryError: '',
+      libraryMessage: ''
+    }));
+    setAdaptation((previous) => ({
+      ...previous,
+      libraryStatus: 'running',
+      libraryError: '',
+      libraryMessage: ''
+    }));
+
+    const [simulationResult, novelResult] = await Promise.allSettled([
+      listSimulationLibrary(''),
+      listNovelLibrary('')
+    ]);
+
+    setSimulation((previous) => (
+      simulationResult.status === 'fulfilled'
+        ? {
+          ...previous,
+          libraryStatus: 'done',
+          libraryItems: libraryItemsFromResponse(simulationResult.value),
+          libraryMessage: libraryMessageFromResponse(simulationResult.value),
+          libraryError: ''
+        }
+        : {
+          ...previous,
+          libraryStatus: 'error',
+          libraryError: simulationResult.reason?.message || String(simulationResult.reason || '')
+        }
+    ));
+    setAdaptation((previous) => (
+      novelResult.status === 'fulfilled'
+        ? {
+          ...previous,
+          libraryStatus: 'done',
+          libraryItems: libraryItemsFromResponse(novelResult.value),
+          libraryMessage: libraryMessageFromResponse(novelResult.value),
+          libraryError: ''
+        }
+        : {
+          ...previous,
+          libraryStatus: 'error',
+          libraryError: novelResult.reason?.message || String(novelResult.reason || '')
+        }
+    ));
   }, []);
 
   const refreshGlobalModels = useCallback(async () => {
@@ -285,6 +422,10 @@ export default function App() {
   useEffect(() => {
     loadShell();
   }, [loadShell]);
+
+  useEffect(() => {
+    loadInitialLibraries();
+  }, [loadInitialLibraries]);
 
   useEffect(() => {
     if (!projectMenu) {
@@ -316,6 +457,8 @@ export default function App() {
       ]);
       setActiveProject(snapshotData.project);
       setWorkbench({ ...createWorkbenchState(), snapshot: snapshotData.snapshot });
+      setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
+      setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation));
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);
     } catch (err) {
@@ -711,6 +854,10 @@ export default function App() {
         ...previous,
         analysisStatus: 'done',
         analysisEvents: data.events || [],
+        saveDialogOpen: true,
+        saveName: '',
+        saveStatus: 'idle',
+        saveError: '',
         error: ''
       }));
     } catch (err) {
@@ -719,6 +866,136 @@ export default function App() {
         analysisStatus: 'error',
         analysisEvents: err.data?.events || previous.analysisEvents,
         error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshSimulationLibrary = async () => {
+    const query = simulation.libraryQuery;
+    setSimulation((previous) => ({
+      ...previous,
+      libraryStatus: 'running',
+      libraryError: '',
+      libraryMessage: ''
+    }));
+    try {
+      const data = await listSimulationLibrary(query);
+      setSimulation((previous) => ({
+        ...previous,
+        libraryStatus: 'done',
+        libraryItems: libraryItemsFromResponse(data),
+        libraryMessage: libraryMessageFromResponse(data),
+        libraryError: ''
+      }));
+    } catch (err) {
+      setSimulation((previous) => ({
+        ...previous,
+        libraryStatus: 'error',
+        libraryError: err.message
+      }));
+    }
+  };
+
+  const uploadSimulationProfilesToLibrary = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (files.length === 0) {
+      return;
+    }
+    const query = simulation.libraryQuery;
+    setSimulation((previous) => ({
+      ...previous,
+      libraryStatus: 'running',
+      libraryError: '',
+      libraryMessage: ''
+    }));
+    try {
+      const uploadData = await uploadSimulationLibrary(files);
+      const listData = await listSimulationLibrary(query);
+      setSimulation((previous) => ({
+        ...previous,
+        libraryStatus: 'done',
+        libraryItems: libraryItemsFromResponse(listData),
+        libraryMessage: libraryMessageFromResponse(uploadData) || `已上传 ${files.length} 个画像 JSON`,
+        libraryError: ''
+      }));
+    } catch (err) {
+      setSimulation((previous) => ({
+        ...previous,
+        libraryStatus: 'error',
+        libraryError: err.message
+      }));
+    }
+  };
+
+  const saveSimulationProfileToLibrary = async () => {
+    const name = simulation.saveName.trim();
+    if (!activeProject?.id || !name) {
+      return;
+    }
+    const query = simulation.libraryQuery;
+    setSimulation((previous) => ({ ...previous, saveStatus: 'running', saveError: '' }));
+    try {
+      const saveData = await saveSimulationToLibrary(activeProject.id, name);
+      const listData = await listSimulationLibrary(query);
+      setSimulation((previous) => ({
+        ...previous,
+        libraryStatus: 'done',
+        libraryItems: libraryItemsFromResponse(listData),
+        libraryMessage: libraryMessageFromResponse(saveData) || `已添加画像：${name}`,
+        libraryError: '',
+        saveDialogOpen: false,
+        saveName: '',
+        saveStatus: 'done',
+        saveError: ''
+      }));
+    } catch (err) {
+      setSimulation((previous) => ({ ...previous, saveStatus: 'error', saveError: err.message }));
+    }
+  };
+
+  const closeSimulationSaveDialog = () => {
+    setSimulation((previous) => ({
+      ...previous,
+      saveDialogOpen: false,
+      saveName: '',
+      saveStatus: 'idle',
+      saveError: ''
+    }));
+  };
+
+  const loadSimulationProfileFromLibrary = async (entry) => {
+    const name = libraryEntryName(entry);
+    if (!activeProject?.id || !name) {
+      return;
+    }
+    setBusy(true);
+    setSimulation((previous) => ({
+      ...previous,
+      libraryStatus: 'running',
+      libraryError: '',
+      libraryMessage: ''
+    }));
+    try {
+      const data = await loadSimulationFromLibrary(activeProject.id, name);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setSimulation((previous) => ({
+        ...previous,
+        libraryStatus: 'done',
+        libraryMessage: libraryMessageFromResponse(data) || `已从仿写画像库加载：${name}`,
+        importStatus: 'done',
+        importEvents: data.events || [],
+        importMessage: libraryMessageFromResponse(data) || `已加载画像：${name}`,
+        error: '',
+        libraryError: ''
+      }));
+    } catch (err) {
+      setSimulation((previous) => ({
+        ...previous,
+        libraryStatus: 'error',
+        libraryError: err.message
       }));
     } finally {
       setBusy(false);
@@ -742,11 +1019,16 @@ export default function App() {
     try {
       const data = await importSimulationProfile(activeProject.id, file);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      const libraryNote = data.library_saved
+        ? '，已同步到仿写画像库'
+        : data.warning
+          ? `，画像库未同步：${data.warning}`
+          : '';
       setSimulation((previous) => ({
         ...previous,
         importStatus: 'done',
         importEvents: data.events || [],
-        importMessage: data.imported_file?.name ? `已导入 ${data.imported_file.name}` : '画像已导入',
+        importMessage: data.imported_file?.name ? `已导入 ${data.imported_file.name}${libraryNote}` : `画像已导入${libraryNote}`,
         error: ''
       }));
     } catch (err) {
@@ -829,6 +1111,105 @@ export default function App() {
         analysisStatus: 'error',
         analysisEvents: err.data?.events || previous.analysisEvents,
         error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const refreshNovelLibrary = async () => {
+    const query = adaptation.libraryQuery;
+    setAdaptation((previous) => ({
+      ...previous,
+      libraryStatus: 'running',
+      libraryError: '',
+      libraryMessage: ''
+    }));
+    try {
+      const data = await listNovelLibrary(query);
+      setAdaptation((previous) => ({
+        ...previous,
+        libraryStatus: 'done',
+        libraryItems: libraryItemsFromResponse(data),
+        libraryMessage: libraryMessageFromResponse(data),
+        libraryError: ''
+      }));
+    } catch (err) {
+      setAdaptation((previous) => ({
+        ...previous,
+        libraryStatus: 'error',
+        libraryError: err.message
+      }));
+    }
+  };
+
+  const saveAnalyzedNovelToLibrary = async () => {
+    const name = adaptation.librarySaveName.trim();
+    const sourceFile = adaptation.sourceFile?.relative_path;
+    if (!activeProject?.id || !name || !sourceFile || adaptation.analysisStatus !== 'done') {
+      return;
+    }
+    const query = adaptation.libraryQuery;
+    setAdaptation((previous) => ({ ...previous, librarySaveStatus: 'running', librarySaveError: '' }));
+    try {
+      const saveData = await saveNovelToLibrary(activeProject.id, name, sourceFile);
+      const listData = await listNovelLibrary(query);
+      setAdaptation((previous) => ({
+        ...previous,
+        libraryStatus: 'done',
+        libraryItems: libraryItemsFromResponse(listData),
+        libraryMessage: libraryMessageFromResponse(saveData) || `已保存小说：${name}`,
+        libraryError: '',
+        librarySaveName: '',
+        librarySaveStatus: 'done',
+        librarySaveError: ''
+      }));
+    } catch (err) {
+      setAdaptation((previous) => ({ ...previous, librarySaveStatus: 'error', librarySaveError: err.message }));
+    }
+  };
+
+  const loadNovelFromLibraryEntry = async (entry) => {
+    const name = libraryEntryName(entry);
+    if (!activeProject?.id || !name) {
+      return;
+    }
+    setBusy(true);
+    setAdaptation((previous) => ({
+      ...previous,
+      libraryStatus: 'running',
+      libraryError: '',
+      libraryMessage: ''
+    }));
+    try {
+      const data = await loadNovelFromLibrary(activeProject.id, name);
+      const sourceFile = sourceFileFromNovelLoad(data, entry, name);
+      setWorkbench((previous) => ({
+        ...previous,
+        snapshot: clearAdaptationProposalSnapshot(data.snapshot || previous.snapshot)
+      }));
+      setAdaptation((previous) => ({
+        ...previous,
+        sourceFile,
+        uploadMessage: libraryMessageFromResponse(data) || `已从小说仓库加载：${name}`,
+        analysisStatus: 'done',
+        analysisEvents: data.events || [],
+        proposalKey: '',
+        startStatus: 'idle',
+        startMessage: '',
+        libraryStatus: 'done',
+        libraryMessage: libraryMessageFromResponse(data) || `已加载已分析小说：${name}`,
+        libraryError: '',
+        librarySaveName: '',
+        librarySaveStatus: 'idle',
+        librarySaveError: '',
+        error: ''
+      }));
+    } catch (err) {
+      setAdaptation((previous) => ({
+        ...previous,
+        libraryStatus: 'error',
+        libraryError: err.message
       }));
     } finally {
       setBusy(false);
@@ -1615,9 +1996,15 @@ export default function App() {
               busy={busy}
               snapshot={snapshot}
               simulation={simulation}
+              setSimulation={setSimulation}
               onUploadSources={uploadSimulationSources}
               onAnalyze={runSimulationAnalysis}
               onImportProfile={importSimulation}
+              onRefreshLibrary={refreshSimulationLibrary}
+              onUploadLibrary={uploadSimulationProfilesToLibrary}
+              onLoadLibrary={loadSimulationProfileFromLibrary}
+              onSaveToLibrary={saveSimulationProfileToLibrary}
+              onCloseSaveDialog={closeSimulationSaveDialog}
             />
           ) : sideView === 'adapt' ? (
             <AdaptationPanel
@@ -1630,6 +2017,9 @@ export default function App() {
               onAnalyze={runAdaptationAnalysis}
               onStart={startAdaptationRun}
               onConfirm={confirmAdaptationRun}
+              onRefreshLibrary={refreshNovelLibrary}
+              onLoadLibrary={loadNovelFromLibraryEntry}
+              onSaveNovel={saveAnalyzedNovelToLibrary}
               onCoCreate={() => {
                 setSideView('cocreate');
                 beginCoCreateFlow('adapt');
@@ -1661,7 +2051,7 @@ export default function App() {
           ) : sideView === 'cache' ? (
             <CachePanel snapshot={snapshot} />
           ) : sideView === 'backend' ? (
-            <BackendPanel backend={backendStatus} busy={busy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
+            <BackendPanel backend={backendStatus} snapshot={snapshot} busy={busy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
           ) : (
             <ModelPanel
               activeProject={activeProject}
@@ -2159,14 +2549,30 @@ function ChapterRow({ item }) {
   );
 }
 
-function AdaptationPanel({ activeProject, busy, snapshot, adaptation, setAdaptation, onUploadSource, onAnalyze, onStart, onConfirm, onCoCreate }) {
+function AdaptationPanel({
+  activeProject,
+  busy,
+  snapshot,
+  adaptation,
+  setAdaptation,
+  onUploadSource,
+  onAnalyze,
+  onStart,
+  onConfirm,
+  onRefreshLibrary,
+  onLoadLibrary,
+  onSaveNovel,
+  onCoCreate
+}) {
   const latestAnalysis = latestSimulationEvent(adaptation.analysisEvents);
   const analyzed = adaptation.analysisStatus === 'done';
   const proposal = getVisibleAdaptationProposalReview(snapshot, adaptation);
+  const libraryBusy = adaptation.libraryStatus === 'running';
   const canAnalyze = Boolean(activeProject && adaptation.sourceFile && !busy && adaptation.analysisStatus !== 'running');
   const canCoCreate = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy);
   const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.brief.trim());
   const canConfirm = Boolean(activeProject && !busy && proposal.proposalReady && isAdaptationProposalCurrent(adaptation));
+  const canSaveNovel = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.librarySaveName.trim());
   const updateProposalInput = (changes) => {
     setAdaptation((previous) => ({
       ...previous,
@@ -2179,6 +2585,29 @@ function AdaptationPanel({ activeProject, busy, snapshot, adaptation, setAdaptat
   return (
     <div className="side-content">
       {adaptation.error ? <div className="error-banner compact">{adaptation.error}</div> : null}
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <Database size={17} />
+          <span>小说仓库</span>
+        </div>
+        <LibrarySearch
+          disabled={busy || libraryBusy}
+          label="搜索小说仓库"
+          placeholder="搜索已分析小说"
+          query={adaptation.libraryQuery}
+          onQueryChange={(value) => setAdaptation((previous) => ({ ...previous, libraryQuery: value }))}
+          onRefresh={onRefreshLibrary}
+        />
+        <LibraryList
+          canLoad={Boolean(activeProject && !busy)}
+          emptyText="暂无小说条目"
+          items={adaptation.libraryItems}
+          loading={libraryBusy}
+          onLoad={onLoadLibrary}
+        />
+        <LibraryFeedback error={adaptation.libraryError} message={adaptation.libraryMessage} />
+      </section>
 
       <section className="simulation-section">
         <div className="section-title">
@@ -2223,6 +2652,17 @@ function AdaptationPanel({ activeProject, busy, snapshot, adaptation, setAdaptat
           <strong>{workflowStatusText(adaptation.analysisStatus)}</strong>
           <span>{latestAnalysis?.message || '等待分析'}</span>
         </div>
+        {analyzed ? (
+          <LibrarySaveRow
+            disabled={!canSaveNovel}
+            error={adaptation.librarySaveError}
+            name={adaptation.librarySaveName}
+            placeholder="小说仓库名称"
+            saving={adaptation.librarySaveStatus === 'running'}
+            onNameChange={(value) => setAdaptation((previous) => ({ ...previous, librarySaveName: value, librarySaveError: '' }))}
+            onSave={onSaveNovel}
+          />
+        ) : null}
         <SimulationEventList events={adaptation.analysisEvents} />
       </section>
 
@@ -2300,13 +2740,29 @@ function AdaptationPanel({ activeProject, busy, snapshot, adaptation, setAdaptat
   );
 }
 
-function SimulationPanel({ activeProject, busy, snapshot, simulation, onUploadSources, onAnalyze, onImportProfile }) {
+function SimulationPanel({
+  activeProject,
+  busy,
+  snapshot,
+  simulation,
+  setSimulation,
+  onUploadSources,
+  onAnalyze,
+  onImportProfile,
+  onRefreshLibrary,
+  onUploadLibrary,
+  onLoadLibrary,
+  onSaveToLibrary,
+  onCloseSaveDialog
+}) {
   const latestAnalysis = latestSimulationEvent(simulation.analysisEvents);
   const latestImport = latestSimulationEvent(simulation.importEvents);
   const profile = getSimulationProfileStatus(snapshot);
+  const libraryBusy = simulation.libraryStatus === 'running';
   return (
-    <div className="side-content">
-      {simulation.error ? <div className="error-banner compact">{simulation.error}</div> : null}
+    <>
+      <div className="side-content">
+        {simulation.error ? <div className="error-banner compact">{simulation.error}</div> : null}
 
       <section className="snapshot-summary-card">
         <div className="section-title">
@@ -2323,6 +2779,34 @@ function SimulationPanel({ activeProject, busy, snapshot, simulation, onUploadSo
           </div>
         ) : null}
         {profile.signals.length ? <p>{profile.signals.join(' / ')}</p> : null}
+      </section>
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <Database size={17} />
+          <span>仿写画像库</span>
+        </div>
+        <LibrarySearch
+          disabled={busy || libraryBusy}
+          label="搜索仿写画像库"
+          placeholder="搜索画像名称"
+          query={simulation.libraryQuery}
+          onQueryChange={(value) => setSimulation((previous) => ({ ...previous, libraryQuery: value }))}
+          onRefresh={onRefreshLibrary}
+        />
+        <label className={`tool-button file-picker full ${busy || libraryBusy ? 'disabled' : ''}`}>
+          <Upload size={16} />
+          上传 JSON 到库
+          <input accept=".json,application/json" disabled={busy || libraryBusy} multiple onChange={onUploadLibrary} type="file" />
+        </label>
+        <LibraryList
+          canLoad={Boolean(activeProject && !busy)}
+          emptyText="暂无画像条目"
+          items={simulation.libraryItems}
+          loading={libraryBusy}
+          onLoad={onLoadLibrary}
+        />
+        <LibraryFeedback error={simulation.libraryError} message={simulation.libraryMessage} />
       </section>
 
       <section className="simulation-section">
@@ -2390,6 +2874,135 @@ function SimulationPanel({ activeProject, busy, snapshot, simulation, onUploadSo
         </div>
         <SimulationEventList events={simulation.importEvents} />
       </section>
+      </div>
+      {simulation.saveDialogOpen ? (
+        <SimulationSaveDialog
+          busy={busy}
+          simulation={simulation}
+          setSimulation={setSimulation}
+          onClose={onCloseSaveDialog}
+          onSave={onSaveToLibrary}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function LibrarySearch({ disabled, label, placeholder, query, onQueryChange, onRefresh }) {
+  return (
+    <form className="library-search" onSubmit={(event) => {
+      event.preventDefault();
+      onRefresh();
+    }}>
+      <input
+        aria-label={label}
+        disabled={disabled}
+        placeholder={placeholder}
+        value={query}
+        onChange={(event) => onQueryChange(event.target.value)}
+      />
+      <button className="icon-button" disabled={disabled} title="刷新" type="submit">
+        <RefreshCw size={16} />
+      </button>
+    </form>
+  );
+}
+
+function LibraryList({ canLoad, emptyText, items, loading, onLoad }) {
+  if (loading && items.length === 0) {
+    return <div className="empty-state">加载中...</div>;
+  }
+  if (items.length === 0) {
+    return <div className="empty-state">{emptyText}</div>;
+  }
+  return (
+    <div className="library-list">
+      {items.map((entry, index) => {
+        const name = libraryEntryName(entry);
+        const meta = libraryEntryMeta(entry);
+        return (
+          <button
+            className="library-row"
+            disabled={!canLoad || !name}
+            key={`${name || 'library-entry'}-${index}`}
+            onClick={() => onLoad(entry)}
+            title={name}
+            type="button"
+          >
+            <span className="library-entry">
+              <strong>{name || '未命名条目'}</strong>
+              <small>{meta || '可加载到当前项目'}</small>
+            </span>
+            <span className="library-load">加载</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function LibraryFeedback({ error, message }) {
+  if (error) {
+    return <div className="error-banner compact">{error}</div>;
+  }
+  if (message) {
+    return <div className="success-note">{message}</div>;
+  }
+  return null;
+}
+
+function LibrarySaveRow({ disabled, error, name, placeholder, saving, onNameChange, onSave }) {
+  return (
+    <div className="library-save-stack">
+      <div className="library-save-row">
+        <input
+          disabled={saving}
+          placeholder={placeholder}
+          value={name}
+          onChange={(event) => onNameChange(event.target.value)}
+        />
+        <button className="tool-button" disabled={disabled || saving} onClick={onSave} type="button">
+          <Plus size={16} />
+          保存
+        </button>
+      </div>
+      {error ? <div className="error-banner compact">{error}</div> : null}
+    </div>
+  );
+}
+
+function SimulationSaveDialog({ busy, simulation, setSimulation, onClose, onSave }) {
+  const saving = simulation.saveStatus === 'running';
+  const canSave = Boolean(simulation.saveName.trim()) && !busy && !saving;
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div aria-modal="true" className="confirm-dialog" role="dialog" aria-labelledby="simulation-save-title">
+        <div className="section-title">
+          <Database size={17} />
+          <span id="simulation-save-title">添加到仿写画像库</span>
+        </div>
+        <div className="confirm-dialog-body">
+          <input
+            aria-label="画像名称"
+            autoFocus
+            disabled={saving}
+            placeholder="输入画像名称"
+            value={simulation.saveName}
+            onChange={(event) => setSimulation((previous) => ({ ...previous, saveName: event.target.value, saveError: '' }))}
+          />
+          {simulation.saveError ? <div className="error-banner compact">{simulation.saveError}</div> : null}
+        </div>
+        <div className="dialog-actions">
+          <button className="tool-button" disabled={saving} onClick={onClose} type="button">
+            <ListRestart size={16} />
+            暂不添加
+          </button>
+          <button className="tool-button accent" disabled={!canSave} onClick={onSave} type="button">
+            <Plus size={16} />
+            添加
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2686,8 +3299,13 @@ function UsageList({ title, items, labelKey }) {
   );
 }
 
-function BackendPanel({ backend, busy, onRefresh, onTest }) {
+function BackendPanel({ backend, snapshot, busy, onRefresh, onTest }) {
   const calls = backend?.recent_calls || [];
+  const outline = getSnapshotOutlineRows(snapshot);
+  const premise = textValue(snapshot, 'PremiseFull', 'premise_full', 'Premise', 'premise');
+  const characterDetails = arrayValue(snapshot, 'CharacterDetails', 'character_details');
+  const worldRules = arrayValue(snapshot, 'WorldRules', 'world_rules');
+  const hasFoundation = Boolean(premise || outline.length || characterDetails.length || worldRules.length);
   return (
     <div className="side-content">
       <section className="model-summary">
@@ -3845,6 +4463,87 @@ function textValue(source, ...keys) {
     }
   }
   return '';
+}
+
+function libraryItemsFromResponse(data) {
+  const candidates = [
+    data?.items,
+    data?.entries,
+    data?.profiles,
+    data?.simulations,
+    data?.novels,
+    data?.library
+  ];
+  return candidates.find((candidate) => Array.isArray(candidate)) || [];
+}
+
+function libraryMessageFromResponse(data) {
+  return String(data?.message || data?.Message || '').trim();
+}
+
+function libraryEntryName(entry) {
+  if (typeof entry === 'string') {
+    return entry.trim();
+  }
+  const sourceFile = entry?.source_file || entry?.sourceFile || entry?.file;
+  return textValue(entry, 'name', 'Name', 'title', 'Title', 'id', 'ID', 'profile_name', 'novel_name') ||
+    textValue(sourceFile, 'name', 'Name', 'relative_path', 'RelativePath');
+}
+
+function libraryEntryMeta(entry) {
+  if (!entry || typeof entry === 'string') {
+    return '';
+  }
+  const sourceFile = entry.source_file || entry.sourceFile || entry.file;
+  const parts = [
+    textValue(entry, 'description', 'Description', 'summary', 'Summary'),
+    textValue(sourceFile, 'name', 'Name'),
+    formatOptionalBytes(entry.size || entry.Size || sourceFile?.size || sourceFile?.Size),
+    formatOptionalDate(entry.updated_at || entry.UpdatedAt || entry.created_at || entry.CreatedAt)
+  ].filter(Boolean);
+  return parts.slice(0, 2).join(' · ');
+}
+
+function sourceFileFromNovelLoad(data, entry, name) {
+  const source = data?.source_file || data?.sourceFile || data?.file || entry?.source_file || entry?.sourceFile || entry?.file || entry;
+  if (source && typeof source === 'object') {
+    const relativePath = textValue(source, 'relative_path', 'RelativePath', 'path', 'Path', 'name', 'Name') || name;
+    return {
+      name: textValue(source, 'name', 'Name') || fileNameFromPath(relativePath),
+      original_name: textValue(source, 'original_name', 'OriginalName') || textValue(source, 'name', 'Name') || name,
+      size: Number(source.size || source.Size || 0),
+      relative_path: relativePath
+    };
+  }
+  const relativePath = String(source || name || '').trim();
+  return {
+    name: fileNameFromPath(relativePath) || name,
+    original_name: fileNameFromPath(relativePath) || name,
+    size: 0,
+    relative_path: relativePath || name
+  };
+}
+
+function fileNameFromPath(path) {
+  const value = String(path || '').trim();
+  if (!value) {
+    return '';
+  }
+  const parts = value.split(/[\\/]/);
+  return parts[parts.length - 1] || value;
+}
+
+function formatOptionalBytes(value) {
+  const size = Number(value || 0);
+  return size > 0 ? formatBytes(size) : '';
+}
+
+function formatOptionalDate(value) {
+  if (!value) {
+    return '';
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString();
 }
 
 function isFreshProject(snapshot) {
