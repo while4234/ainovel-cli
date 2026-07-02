@@ -68,7 +68,7 @@ func (t *DraftChapterTool) Execute(_ context.Context, args json.RawMessage) (jso
 		return nil, fmt.Errorf("content must not be empty: %w", errs.ErrToolArgs)
 	}
 	if issue := repeatedDraftContentIssue(a.Content); issue != "" {
-		return nil, fmt.Errorf("draft_chapter content appears to repeat existing prose (%s). Use draft_chapter(mode=\"write\") with a clean full-chapter rewrite; remove duplicated sentences instead of appending the same draft again: %w", issue, errs.ErrToolArgs)
+		return json.Marshal(repeatedDraftRejection(a.Chapter, a.Mode, issue))
 	}
 	if err := t.store.Progress.ValidateChapterWork(a.Chapter); err != nil {
 		return nil, err
@@ -134,6 +134,7 @@ func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount 
 		"word_count": wordCount,
 		"next_step":  "先 read_chapter(source=draft) 回读草稿，再调用 check_consistency，最后 commit_chapter",
 	}
+	t.addNormalWordBudgetStatus(result, chapter, wordCount)
 	contract, issues, ok := adaptationWordContractStatus(t.store, chapter, wordCount)
 	if !ok {
 		return result
@@ -159,6 +160,67 @@ func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount 
 		}
 	}
 	return result
+}
+
+func repeatedDraftRejection(chapter int, mode string, issue string) map[string]any {
+	if mode == "" {
+		mode = "write"
+	}
+	return map[string]any{
+		"written":                 false,
+		"chapter":                 chapter,
+		"mode":                    mode,
+		"repeated_draft_rejected": true,
+		"reason":                  fmt.Sprintf("draft_chapter content appears to repeat existing prose (%s)", issue),
+		"next_step": fmt.Sprintf(
+			"不要追加或重复提交同一段正文。请调用 draft_chapter(mode=\"write\", chapter=%d) 进行干净的整章重写，删除重复句，并满足本章字数预算后再 read_chapter/check_consistency/commit_chapter。",
+			chapter,
+		),
+	}
+}
+
+func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chapter int, wordCount int) {
+	if t.store == nil || t.store.Adaptation.Active() {
+		return
+	}
+	meta, err := t.store.RunMeta.Load()
+	if err != nil || meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords <= 0 {
+		return
+	}
+	progress, err := t.store.Progress.Load()
+	if err != nil {
+		return
+	}
+	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
+	if !ok || runtime.CurrentChapter.Chapter <= 0 {
+		return
+	}
+	minWords := runtime.CurrentChapter.RecommendedMinWords
+	maxWords := runtime.CurrentChapter.RecommendedMaxWords
+	result["word_budget"] = map[string]any{
+		"min_words":              minWords,
+		"max_words":              maxWords,
+		"target_total_words":     runtime.Target.TargetTotalWords,
+		"completed_words":        runtime.Progress.CompletedWords,
+		"remaining_target_words": runtime.Remaining.TargetWords,
+		"remaining_chapters":     runtime.Remaining.Chapters,
+	}
+	if wordCount >= minWords && wordCount <= maxWords {
+		result["word_budget_passed"] = true
+		return
+	}
+	result["word_budget_passed"] = false
+	direction := "低于"
+	if wordCount > maxWords {
+		direction = "高于"
+	}
+	result["word_budget_issues"] = []string{
+		fmt.Sprintf("第 %d 章草稿%s预算区间：当前 %d 字，要求 %d-%d 字。", chapter, direction, wordCount, minWords, maxWords),
+	}
+	result["next_step"] = fmt.Sprintf(
+		"不要调用 commit_chapter。请调用 draft_chapter(mode=\"write\", chapter=%d) 干净地整章重写到 %d-%d 字，再 read_chapter(source=\"draft\")、check_consistency、commit_chapter。",
+		chapter, minWords, maxWords,
+	)
 }
 
 func loadDraftTextForQuality(st *store.Store, chapter int) string {

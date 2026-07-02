@@ -51,9 +51,19 @@ func TestCommitChapterRejectsWordBudgetOutOfRange(t *testing.T) {
 
 	tool := NewCommitChapterTool(store)
 	args := commitChapterArgs(t, 1)
-	_, err := tool.Execute(context.Background(), args)
-	if err == nil || !strings.Contains(err.Error(), "字数预算拒绝提交") {
-		t.Fatalf("expected word budget rejection, got %v", err)
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute should return structured word budget rejection, got error %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["word_budget_rejected"] != true || result["committed"] != false {
+		t.Fatalf("expected word budget rejection result, got %v", result)
+	}
+	if next, _ := result["next_step"].(string); !strings.Contains(next, "不要再次调用 commit_chapter") {
+		t.Fatalf("next_step should steer rewrite, got %q", next)
 	}
 	if _, statErr := os.Stat(dir + "/chapters/01.md"); !os.IsNotExist(statErr) {
 		t.Fatalf("chapter should not be persisted, stat err=%v", statErr)
@@ -247,8 +257,16 @@ func TestCommitChapterRejectsNonAdaptationOutsideWordBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if _, err := tool.Execute(context.Background(), args); err == nil {
-		t.Fatalf("expected word budget rejection, got %v", err)
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute should return structured word budget rejection, got error %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["word_budget_rejected"] != true || result["committed"] != false {
+		t.Fatalf("expected word budget rejection result, got %v", result)
 	}
 	if _, err := os.Stat(dir + "/chapters/01.md"); !os.IsNotExist(err) {
 		t.Fatalf("chapter should not be persisted, stat err=%v", err)

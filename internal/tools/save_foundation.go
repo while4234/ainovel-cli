@@ -110,6 +110,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := decode("outline", &entries); err != nil {
 			return nil, err
 		}
+		normalizeOutlineEntryChapters(entries)
 		if err := t.store.Outline.SaveOutline(entries); err != nil {
 			return nil, fmt.Errorf("save outline: %w: %w", errs.ErrStoreWrite, err)
 		}
@@ -469,6 +470,14 @@ func hasAnyKey(obj map[string]any, keys ...string) bool {
 func (t *SaveFoundationTool) isWriting() bool {
 	p, _ := t.store.Progress.Load()
 	return p != nil && p.Phase == domain.PhaseWriting
+}
+
+func normalizeOutlineEntryChapters(entries []domain.OutlineEntry) {
+	for i := range entries {
+		if entries[i].Chapter <= 0 {
+			entries[i].Chapter = i + 1
+		}
+	}
 }
 
 func (t *SaveFoundationTool) refreshWordBudgetPlan(result map[string]any) error {

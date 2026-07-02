@@ -670,6 +670,43 @@ func TestSaveFoundationAcceptsDirectJSONArrayContent(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationNormalizesNonPositiveOutlineChapters(t *testing.T) {
+	dir := t.TempDir()
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	args, err := json.Marshal(map[string]any{
+		"type": "outline",
+		"content": []map[string]any{
+			{
+				"chapter":    0,
+				"title":      "正文",
+				"core_event": "短篇一气呵成",
+				"hook":       "真相反转",
+				"scenes":     []string{"开端", "反转", "收束"},
+			},
+		},
+		"scale": "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	outline, err := store.Outline.LoadOutline()
+	if err != nil {
+		t.Fatalf("LoadOutline: %v", err)
+	}
+	if len(outline) != 1 || outline[0].Chapter != 1 {
+		t.Fatalf("outline chapter not normalized: %+v", outline)
+	}
+}
+
 // completeBookSetup 建一份处于 writing 阶段的最小 Store，用于 complete_book 系列测试。
 // complete_book 不校验 layered_outline 章节齐全（判定责任在 LLM 的"完结判定清单"），
 // 工具层只校验 PendingRewrites 为空、progress 已初始化。
