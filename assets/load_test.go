@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
 )
@@ -40,5 +41,54 @@ func TestLoadKeepsAdaptationGuidanceOutOfBaseWriterPrompt(t *testing.T) {
 	}
 	if !strings.Contains(bundle.References.AdaptationEditorFullRewrite, "full_rewrite") {
 		t.Fatal("full-rewrite editor guidance should be loaded")
+	}
+}
+
+func TestStyleCatalogUsesMarkdownHeadingLabels(t *testing.T) {
+	catalog := StyleCatalog()
+	labelsByID := make(map[string]string, len(catalog))
+	for _, item := range catalog {
+		labelsByID[item.ID] = item.Label
+	}
+
+	want := map[string]string{
+		"default":  "通用写作风格",
+		"fantasy":  "奇幻冒险风格",
+		"romance":  "言情风格",
+		"suspense": "悬疑推理风格",
+	}
+	for id, label := range want {
+		if labelsByID[id] != label {
+			t.Fatalf("style %s label = %q, want %q; catalog=%+v", id, labelsByID[id], label, catalog)
+		}
+	}
+}
+
+func TestStyleCatalogFromFSDiscoversAdditionalMarkdown(t *testing.T) {
+	fsys := fstest.MapFS{
+		"styles/default.md":     {Data: []byte("## 通用写作风格\nbody")},
+		"styles/new-style.md":   {Data: []byte("  ## 新增风格  \nbody")},
+		"styles/no-heading.md":  {Data: []byte("\nbody")},
+		"styles/ignored.txt":    {Data: []byte("## ignored")},
+		"styles/nested/file.md": {Data: []byte("## nested")},
+	}
+
+	catalog := styleCatalogFromFS(fsys, "styles")
+	labelsByID := make(map[string]string, len(catalog))
+	for _, item := range catalog {
+		labelsByID[item.ID] = item.Label
+	}
+
+	if labelsByID["new-style"] != "新增风格" {
+		t.Fatalf("new-style label = %q, want 新增风格; catalog=%+v", labelsByID["new-style"], catalog)
+	}
+	if labelsByID["no-heading"] != "no-heading" {
+		t.Fatalf("no-heading label = %q, want id fallback", labelsByID["no-heading"])
+	}
+	if _, ok := labelsByID["ignored"]; ok {
+		t.Fatalf("non-markdown file should be ignored: %+v", catalog)
+	}
+	if _, ok := labelsByID["file"]; ok {
+		t.Fatalf("nested markdown file should be ignored: %+v", catalog)
 	}
 }

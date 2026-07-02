@@ -1,6 +1,7 @@
 import {
   Activity,
   BookOpen,
+  Check,
   CircleDot,
   Database,
   Download,
@@ -8,7 +9,9 @@ import {
   FileJson,
   ListRestart,
   MessageSquareText,
+  MoreHorizontal,
   PauseCircle,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -18,8 +21,10 @@ import {
   SlidersHorizontal,
   SquarePen,
   TestTube2,
+  Trash2,
   Upload,
-  WandSparkles
+  WandSparkles,
+  X
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -28,6 +33,7 @@ import {
   addProviderModel,
   beginCoCreate,
   cancelCoCreate,
+  clearProjectTrash,
   commitCoCreate,
   completeGrokLogin,
   continueProject,
@@ -41,17 +47,21 @@ import {
   importExternalNovel,
   importSimulationProfile,
   listNovelLibrary,
+  listProjectTrash,
   listProjects,
   listSimulationLibrary,
+  listStyles,
   loadNovelFromLibrary,
   loadSimulationFromLibrary,
   pauseProject,
   pollGrokLogin,
+  renameProject,
   resumeProject,
   runProjectDiagnostic,
   saveNovelToLibrary,
   saveSimulationToLibrary,
   sendCoCreate,
+  setProjectStyle,
   setProjectThinking,
   startProject,
   startAdaptation,
@@ -59,6 +69,7 @@ import {
   steerProject,
   switchProjectModel,
   testBackend,
+  trashProject,
   uploadSimulationLibrary,
   uploadAdaptationSource,
   uploadSimulationFiles
@@ -116,6 +127,28 @@ function createAdaptationState() {
     librarySaveStatus: 'idle',
     librarySaveError: '',
     error: ''
+  };
+}
+
+function resetSimulationProjectState(previous) {
+  return {
+    ...createSimulationState(),
+    libraryQuery: previous.libraryQuery,
+    libraryStatus: previous.libraryStatus,
+    libraryItems: previous.libraryItems,
+    libraryMessage: previous.libraryMessage,
+    libraryError: previous.libraryError
+  };
+}
+
+function resetAdaptationProjectState(previous) {
+  return {
+    ...createAdaptationState(),
+    libraryQuery: previous.libraryQuery,
+    libraryStatus: previous.libraryStatus,
+    libraryItems: previous.libraryItems,
+    libraryMessage: previous.libraryMessage,
+    libraryError: previous.libraryError
   };
 }
 
@@ -203,6 +236,13 @@ export default function App() {
   const [activeProject, setActiveProject] = useState(null);
   const [workbench, setWorkbench] = useState(createWorkbenchState);
   const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectStyle, setNewProjectStyle] = useState('default');
+  const [styleOptions, setStyleOptions] = useState([]);
+  const [defaultStyle, setDefaultStyle] = useState('default');
+  const [projectMenu, setProjectMenu] = useState(null);
+  const [renameDialog, setRenameDialog] = useState(null);
+  const [deleteDialog, setDeleteDialog] = useState(null);
+  const [trashDialog, setTrashDialog] = useState(null);
   const [composerText, setComposerText] = useState('');
   const [steerText, setSteerText] = useState('');
   const [sideView, setSideView] = useState('status');
@@ -223,17 +263,88 @@ export default function App() {
   const snapshot = workbench.snapshot;
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
 
+  const resetProjectScopedState = useCallback((clearProject = false) => {
+    lastSeqRef.current = 0;
+    setWorkbench(createWorkbenchState());
+    setSimulation(resetSimulationProjectState);
+    setAdaptation(resetAdaptationProjectState);
+    setExternalImport(createExternalImportState());
+    setExportJob(createExportState());
+    setDiagnostic(createDiagnosticState());
+    setCoCreate(createCoCreateState());
+    setModelConfig(null);
+    setCustomModel(createCustomModelState());
+    setBackendStatus(null);
+    if (clearProject) {
+      setActiveProject(null);
+    }
+  }, []);
+
   const refreshProjects = useCallback(async () => {
     const data = await listProjects();
     setProjects(data.projects || []);
   }, []);
 
+  const loadInitialLibraries = useCallback(async () => {
+    setSimulation((previous) => ({
+      ...previous,
+      libraryStatus: 'running',
+      libraryError: '',
+      libraryMessage: ''
+    }));
+    setAdaptation((previous) => ({
+      ...previous,
+      libraryStatus: 'running',
+      libraryError: '',
+      libraryMessage: ''
+    }));
+    const [simulationResult, novelResult] = await Promise.allSettled([
+      listSimulationLibrary(''),
+      listNovelLibrary('')
+    ]);
+    setSimulation((previous) => (
+      simulationResult.status === 'fulfilled'
+        ? {
+          ...previous,
+          libraryStatus: 'done',
+          libraryItems: libraryItemsFromResponse(simulationResult.value),
+          libraryMessage: libraryMessageFromResponse(simulationResult.value),
+          libraryError: ''
+        }
+        : {
+          ...previous,
+          libraryStatus: 'error',
+          libraryError: simulationResult.reason?.message || String(simulationResult.reason || '')
+        }
+    ));
+    setAdaptation((previous) => (
+      novelResult.status === 'fulfilled'
+        ? {
+          ...previous,
+          libraryStatus: 'done',
+          libraryItems: libraryItemsFromResponse(novelResult.value),
+          libraryMessage: libraryMessageFromResponse(novelResult.value),
+          libraryError: ''
+        }
+        : {
+          ...previous,
+          libraryStatus: 'error',
+          libraryError: novelResult.reason?.message || String(novelResult.reason || '')
+        }
+    ));
+  }, []);
+
   const loadShell = useCallback(async () => {
     setError('');
     try {
-      const [runtimeData, projectsData] = await Promise.all([getRuntime(), listProjects()]);
+      const [runtimeData, projectsData, stylesData] = await Promise.all([getRuntime(), listProjects(), listStyles()]);
+      const styles = styleItemsFromResponse(stylesData);
+      const fallbackStyle = firstAvailableStyle(stylesData?.default_style || runtimeData?.config?.style || 'default', styles);
       setRuntime(runtimeData);
       setProjects(projectsData.projects || []);
+      setStyleOptions(styles);
+      setDefaultStyle(fallbackStyle);
+      setNewProjectStyle((previous) => firstAvailableStyle(previous, styles, fallbackStyle));
     } catch (err) {
       setError(err.message);
     }
@@ -243,20 +354,32 @@ export default function App() {
     loadShell();
   }, [loadShell]);
 
+  useEffect(() => {
+    loadInitialLibraries();
+  }, [loadInitialLibraries]);
+
+  useEffect(() => {
+    if (!projectMenu) {
+      return undefined;
+    }
+    const closeMenu = () => setProjectMenu(null);
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') {
+        closeMenu();
+      }
+    };
+    window.addEventListener('click', closeMenu);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('click', closeMenu);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [projectMenu]);
+
   const openProject = useCallback(async (project) => {
     setBusy(true);
     setError('');
-    lastSeqRef.current = 0;
-    setWorkbench(createWorkbenchState());
-    setSimulation(createSimulationState());
-    setAdaptation(createAdaptationState());
-    setExternalImport(createExternalImportState());
-    setExportJob(createExportState());
-    setDiagnostic(createDiagnosticState());
-    setCoCreate(createCoCreateState());
-    setModelConfig(null);
-    setCustomModel(createCustomModelState());
-    setBackendStatus(null);
+    resetProjectScopedState();
     try {
       const [snapshotData, modelData, backendData] = await Promise.all([
         getSnapshot(project.id),
@@ -272,7 +395,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [resetProjectScopedState]);
 
   useEffect(() => {
     if (!activeProject?.id) {
@@ -335,7 +458,7 @@ export default function App() {
     setBusy(true);
     setError('');
     try {
-      const project = await createProject(newProjectName);
+      const project = await createProject(newProjectName, newProjectStyle || defaultStyle);
       setNewProjectName('');
       await refreshProjects();
       await openProject(project);
@@ -343,6 +466,114 @@ export default function App() {
       setError(err.message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const openProjectContextMenu = (event, project) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const menuWidth = 220;
+    const menuHeight = 112;
+    setProjectMenu({
+      project,
+      x: Math.min(event.clientX, Math.max(8, window.innerWidth - menuWidth - 8)),
+      y: Math.min(event.clientY, Math.max(8, window.innerHeight - menuHeight - 8))
+    });
+  };
+
+  const openProjectMoreMenu = (event, project) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 220;
+    setProjectMenu({
+      project,
+      x: Math.min(rect.left, Math.max(8, window.innerWidth - menuWidth - 8)),
+      y: rect.bottom + 6
+    });
+  };
+
+  const beginProjectRename = (project) => {
+    setProjectMenu(null);
+    setRenameDialog({ project, name: project.name || project.id });
+  };
+
+  const submitProjectRename = async (event) => {
+    event.preventDefault();
+    const project = renameDialog?.project;
+    const name = String(renameDialog?.name || '').trim();
+    if (!project || !name) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const updated = await renameProject(project.id, name);
+      setProjects((previous) => previous.map((item) => (item.id === updated.id ? updated : item)));
+      setActiveProject((previous) => (previous?.id === updated.id ? updated : previous));
+      setRenameDialog(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const beginProjectDelete = (project) => {
+    setProjectMenu(null);
+    setDeleteDialog({ project });
+  };
+
+  const confirmProjectDelete = async () => {
+    const project = deleteDialog?.project;
+    if (!project) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await trashProject(project.id);
+      setProjects((previous) => previous.filter((item) => item.id !== project.id));
+      if (activeProject?.id === project.id) {
+        resetProjectScopedState(true);
+      }
+      setDeleteDialog(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openProjectTrash = async () => {
+    setTrashDialog({ status: 'running', projects: [], trashDir: '', error: '', message: '' });
+    try {
+      const data = await listProjectTrash();
+      setTrashDialog({
+        status: 'done',
+        projects: data.projects || [],
+        trashDir: data.trash_dir || '',
+        error: '',
+        message: ''
+      });
+    } catch (err) {
+      setTrashDialog({ status: 'error', projects: [], trashDir: '', error: err.message, message: '' });
+    }
+  };
+
+  const clearProjectTrashDialog = async () => {
+    setTrashDialog((previous) => ({ ...(previous || {}), status: 'running', error: '', message: '' }));
+    try {
+      const data = await clearProjectTrash();
+      setTrashDialog((previous) => ({
+        ...(previous || {}),
+        status: 'done',
+        projects: [],
+        error: '',
+        message: `已清空 ${data.deleted_count || 0} 个项目`
+      }));
+    } catch (err) {
+      setTrashDialog((previous) => ({ ...(previous || {}), status: 'error', error: err.message }));
     }
   };
 
@@ -355,6 +586,30 @@ export default function App() {
     try {
       const data = await action(activeProject.id);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeProjectStyle = async (style) => {
+    if (!activeProject?.id || !style) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = await setProjectStyle(activeProject.id, style);
+      const [modelData, backendData] = await Promise.all([
+        getProjectModels(activeProject.id),
+        getBackendStatus(activeProject.id)
+      ]);
+      setActiveProject(data.project || activeProject);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setModelConfig(modelData.models || null);
+      setBackendStatus(backendData.backend || null);
+      await refreshProjects();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1213,9 +1468,14 @@ export default function App() {
               <h1>小说工作台</h1>
             </div>
           </div>
-          <button className="icon-button" onClick={loadShell} title="刷新项目列表" type="button">
-            <RefreshCw size={18} />
-          </button>
+          <div className="pane-actions">
+            <button className="icon-button" onClick={loadShell} title="刷新项目列表" type="button">
+              <RefreshCw size={18} />
+            </button>
+            <button className="icon-button" onClick={openProjectTrash} title="查看回收站" type="button">
+              <Trash2 size={18} />
+            </button>
+          </div>
         </div>
 
         <form className="create-project" onSubmit={createAndOpen}>
@@ -1228,6 +1488,16 @@ export default function App() {
           <button className="icon-button primary" disabled={busy} title="创建项目" type="submit">
             <Plus size={18} />
           </button>
+          <select
+            aria-label="新项目文风"
+            disabled={busy || styleOptions.length === 0}
+            value={newProjectStyle}
+            onChange={(event) => setNewProjectStyle(event.target.value)}
+          >
+            {styleOptions.map((style) => (
+              <option key={style.id} value={style.id}>{style.label}</option>
+            ))}
+          </select>
         </form>
 
         <div className="project-list" aria-label="项目列表">
@@ -1235,22 +1505,146 @@ export default function App() {
             <div className="empty-state">暂无项目</div>
           ) : (
             projects.map((project) => (
-              <button
+              <div
                 key={project.id}
                 className={project.id === activeProject?.id ? 'project-row active' : 'project-row'}
-                onClick={() => openProject(project)}
-                type="button"
+                onContextMenu={(event) => openProjectContextMenu(event, project)}
               >
-                <BookOpen size={17} />
-                <span>
-                  <strong>{project.name || project.id}</strong>
-                  <small>{formatDate(project.last_accessed_at || project.created_at)}</small>
-                </span>
-              </button>
+                <button className="project-open-button" onClick={() => openProject(project)} type="button">
+                  <BookOpen size={17} />
+                  <span>
+                    <strong>{project.name || project.id}</strong>
+                    <small>{formatDate(project.last_accessed_at || project.created_at)}</small>
+                  </span>
+                </button>
+                <button
+                  className="project-more-button"
+                  onClick={(event) => openProjectMoreMenu(event, project)}
+                  title="项目操作"
+                  type="button"
+                >
+                  <MoreHorizontal size={17} />
+                </button>
+              </div>
             ))
           )}
         </div>
+
+        {projectMenu ? (
+          <div
+            className="project-menu"
+            style={{ left: projectMenu.x, top: projectMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button onClick={() => beginProjectRename(projectMenu.project)} type="button">
+              <Pencil size={16} />
+              <span>重命名项目</span>
+            </button>
+            <button className="danger" onClick={() => beginProjectDelete(projectMenu.project)} type="button">
+              <Trash2 size={16} />
+              <span>移入回收站</span>
+            </button>
+          </div>
+        ) : null}
       </aside>
+
+      {renameDialog ? (
+        <div className="dialog-backdrop" onMouseDown={() => setRenameDialog(null)}>
+          <form className="compact-dialog" onMouseDown={(event) => event.stopPropagation()} onSubmit={submitProjectRename}>
+            <div className="dialog-title">
+              <Pencil size={17} />
+              <strong>重命名项目</strong>
+            </div>
+            <input
+              autoFocus
+              disabled={busy}
+              value={renameDialog.name}
+              onChange={(event) => setRenameDialog((previous) => ({ ...previous, name: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setRenameDialog(null);
+                }
+              }}
+            />
+            <div className="dialog-actions">
+              <button className="tool-button" disabled={busy} onClick={() => setRenameDialog(null)} type="button">
+                <X size={16} />
+                取消
+              </button>
+              <button className="tool-button accent" disabled={busy || !String(renameDialog.name || '').trim()} type="submit">
+                <Check size={16} />
+                保存
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {deleteDialog ? (
+        <div className="dialog-backdrop" onMouseDown={() => setDeleteDialog(null)}>
+          <div className="compact-dialog" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="dialog-title danger">
+              <Trash2 size={17} />
+              <strong>移入回收站？</strong>
+            </div>
+            <p className="dialog-copy">{deleteDialog.project.name || deleteDialog.project.id}</p>
+            <div className="dialog-actions">
+              <button className="tool-button" disabled={busy} onClick={() => setDeleteDialog(null)} type="button">
+                <X size={16} />
+                取消
+              </button>
+              <button className="tool-button danger-action" disabled={busy} onClick={confirmProjectDelete} type="button">
+                <Trash2 size={16} />
+                移入回收站
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {trashDialog ? (
+        <div className="dialog-backdrop" onMouseDown={() => setTrashDialog(null)}>
+          <div className="compact-dialog trash-dialog" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="dialog-title">
+              <Trash2 size={17} />
+              <strong>项目回收站</strong>
+            </div>
+            {trashDialog.error ? <div className="error-banner compact">{trashDialog.error}</div> : null}
+            {trashDialog.message ? <div className="success-note">{trashDialog.message}</div> : null}
+            <div className="trash-list">
+              {trashDialog.status === 'running' ? (
+                <div className="empty-state">正在加载回收站</div>
+              ) : trashDialog.projects.length === 0 ? (
+                <div className="empty-state">回收站为空</div>
+              ) : (
+                trashDialog.projects.map((project) => (
+                  <div className="trash-row" key={`${project.id}-${project.deleted_at || project.updated_at}`}>
+                    <strong>{project.name || project.id}</strong>
+                    <small>{formatDate(project.deleted_at || project.updated_at)}</small>
+                  </div>
+                ))
+              )}
+            </div>
+            {trashDialog.trashDir ? <p className="dialog-copy">{trashDialog.trashDir}</p> : null}
+            <div className="dialog-actions">
+              <button className="tool-button" disabled={trashDialog.status === 'running'} onClick={() => setTrashDialog(null)} type="button">
+                <X size={16} />
+                关闭
+              </button>
+              <button
+                className="tool-button danger-action"
+                disabled={trashDialog.status === 'running' || trashDialog.projects.length === 0}
+                onClick={clearProjectTrashDialog}
+                type="button"
+              >
+                <Trash2 size={16} />
+                清空回收站
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <main className="writing-pane">
         <header className="workspace-toolbar">
@@ -1267,7 +1661,7 @@ export default function App() {
               type="button"
             >
               <ListRestart size={16} />
-              Snapshot
+              快照
             </button>
             <button
               className="tool-button"
@@ -1276,7 +1670,7 @@ export default function App() {
               type="button"
             >
               <PauseCircle size={16} />
-              Pause
+              暂停
             </button>
             <button
               className="tool-button accent"
@@ -1285,7 +1679,7 @@ export default function App() {
               type="button"
             >
               <Play size={16} />
-              Resume
+              继续
             </button>
           </div>
         </header>
@@ -1322,7 +1716,7 @@ export default function App() {
                   <div className={`event-row ${eventStatus(event)}`} key={event.host_event_id || event.seq}>
                     <span className="event-dot" />
                     <span className="event-time">{formatTime(event.time)}</span>
-                    <strong>{event.event?.category || 'EVENT'}</strong>
+                    <strong>{event.event?.category || '事件'}</strong>
                     <span>{event.event?.summary || '无摘要'}</span>
                   </div>
                 ))
@@ -1341,7 +1735,7 @@ export default function App() {
           />
           <button className="tool-button accent" disabled={!activeProject || busy} type="submit">
             {quickStartAvailable ? <Play size={16} /> : <Send size={16} />}
-            {quickStartAvailable ? 'Start' : 'Continue'}
+            {quickStartAvailable ? '启动' : '继续'}
           </button>
         </form>
       </main>
@@ -1392,7 +1786,16 @@ export default function App() {
 
         <div className="side-panel">
           {sideView === 'status' ? (
-            <StatusPanel snapshot={snapshot} activeProject={activeProject} onSteer={submitSteer} steerText={steerText} setSteerText={setSteerText} busy={busy} />
+            <StatusPanel
+              snapshot={snapshot}
+              activeProject={activeProject}
+              styles={styleOptions}
+              onStyleChange={changeProjectStyle}
+              onSteer={submitSteer}
+              steerText={steerText}
+              setSteerText={setSteerText}
+              busy={busy}
+            />
           ) : sideView === 'cocreate' ? (
             <CoCreatePanel
               activeProject={activeProject}
@@ -1468,6 +1871,7 @@ export default function App() {
             <ModelPanel
               runtime={runtime}
               modelConfig={modelConfig}
+              styles={styleOptions}
               customModel={customModel}
               setCustomModel={setCustomModel}
               busy={busy}
@@ -1486,16 +1890,39 @@ export default function App() {
   );
 }
 
-function StatusPanel({ snapshot, activeProject, onSteer, steerText, setSteerText, busy }) {
+function StatusPanel({ snapshot, activeProject, styles, onStyleChange, onSteer, steerText, setSteerText, busy }) {
   const outline = snapshot?.Outline || snapshot?.outline || [];
   const agents = snapshot?.Agents || snapshot?.agents || [];
+  const currentStyle = snapshotStyle(snapshot);
+  const currentStyleLabel = styleLabelForID(currentStyle, styles);
+  const styleEditable = Boolean(activeProject && canEditProjectStyle(snapshot));
   return (
     <div className="side-content">
       <section className="metric-grid">
-        <Metric label="状态" value={snapshot?.RuntimeState || snapshot?.runtime_state || 'idle'} />
+        <Metric label="状态" value={runtimeStateLabel(snapshot?.RuntimeState || snapshot?.runtime_state || 'idle')} />
         <Metric label="章节" value={`${snapshot?.CompletedCount || 0}/${snapshot?.TotalChapters || 0}`} />
         <Metric label="当前" value={snapshot?.CurrentChapter || snapshot?.InProgressChapter || 0} />
+        <Metric label="文风" value={currentStyleLabel || currentStyle || '-'} />
         <Metric label="字数" value={snapshot?.TotalWordCount || 0} />
+      </section>
+
+      <section>
+        <div className="section-title">
+          <SlidersHorizontal size={17} />
+          <span>文风</span>
+        </div>
+        <label className="field-label">
+          <span>项目文风</span>
+          <select
+            disabled={!styleEditable || busy || styles.length === 0}
+            value={currentStyle}
+            onChange={(event) => onStyleChange(event.target.value)}
+          >
+            {styles.map((style) => (
+              <option key={style.id} value={style.id}>{style.label}</option>
+            ))}
+          </select>
+        </label>
       </section>
 
       <form className="steer-form" onSubmit={onSteer}>
@@ -1508,7 +1935,7 @@ function StatusPanel({ snapshot, activeProject, onSteer, steerText, setSteerText
         />
         <button className="tool-button" disabled={!activeProject || busy} type="submit">
           <Send size={16} />
-          Steer
+          干预
         </button>
       </form>
 
@@ -1534,11 +1961,11 @@ function StatusPanel({ snapshot, activeProject, onSteer, steerText, setSteerText
       <section>
         <div className="section-title">
           <Activity size={17} />
-          <span>Agents</span>
+          <span>智能体</span>
         </div>
         <div className="agent-list">
           {agents.length === 0 ? (
-            <div className="empty-state">暂无 agent 状态</div>
+            <div className="empty-state">暂无智能体状态</div>
           ) : (
             agents.map((agent) => (
               <div className="agent-row" key={agent.Name || agent.name}>
@@ -2388,19 +2815,19 @@ function BackendPanel({ backend, busy, onRefresh, onTest }) {
   return (
     <div className="side-content">
       <section className="model-summary">
-        <Metric label="Status" value={backend?.status || 'unknown'} />
-        <Metric label="Provider" value={backend?.provider || '-'} />
-        <Metric label="Model" value={backend?.model || '-'} />
-        <Metric label="Runtime" value={backend?.runtime_state || '-'} />
+        <Metric label="状态" value={runtimeStateLabel(backend?.status || 'unknown')} />
+        <Metric label="供应商" value={backend?.provider || '-'} />
+        <Metric label="模型" value={backend?.model || '-'} />
+        <Metric label="运行状态" value={runtimeStateLabel(backend?.runtime_state || '-')} />
       </section>
       <div className="simulation-actions">
         <button className="tool-button" disabled={busy} onClick={onRefresh} type="button">
           <RefreshCw size={16} />
-          Refresh
+          刷新
         </button>
         <button className="tool-button accent" disabled={busy} onClick={onTest} type="button">
           <TestTube2 size={16} />
-          Test
+          测试
         </button>
       </div>
       {backend?.manual_test ? (
@@ -2417,8 +2844,8 @@ function BackendPanel({ backend, busy, onRefresh, onTest }) {
           ) : (
             calls.map((call, index) => (
               <div className={`backend-row ${call.failed ? 'error' : call.running ? 'running' : ''}`} key={`${call.time}-${index}`}>
-                <strong>{call.category || 'CALL'} / {call.agent || 'host'}</strong>
-                <span>{call.running ? 'running' : call.failed ? 'failed' : 'ok'} · {call.duration_ms || 0}ms</span>
+                <strong>{call.category || '调用'} / {call.agent || '主机'}</strong>
+                <span>{call.running ? '运行中' : call.failed ? '失败' : '正常'} · {call.duration_ms || 0}ms</span>
                 <small>{call.summary || '-'}</small>
               </div>
             ))
@@ -2432,6 +2859,7 @@ function BackendPanel({ backend, busy, onRefresh, onTest }) {
 function ModelPanel({
   runtime,
   modelConfig,
+  styles,
   customModel,
   setCustomModel,
   busy,
@@ -2455,10 +2883,10 @@ function ModelPanel({
   return (
     <div className="side-content">
       <section className="model-summary">
-        <Metric label="Global provider" value={config.provider || '未配置'} />
-        <Metric label="Global model" value={config.model || '未配置'} />
-        <Metric label="Style" value={config.style || 'default'} />
-        <Metric label="Runtime" value={runtime?.runtime_root || '-'} />
+        <Metric label="全局供应商" value={config.provider || '未配置'} />
+        <Metric label="全局模型" value={config.model || '未配置'} />
+        <Metric label="文风" value={styleLabelForID(config.style || 'default', styles)} />
+        <Metric label="运行目录" value={runtime?.runtime_root || '-'} />
       </section>
       <section>
         <div className="section-title">
@@ -2642,15 +3070,15 @@ function ModelPanel({
             <div className="grok-action-grid">
               <button className="tool-button" disabled={busy} onClick={onStartGrokLogin} type="button">
                 <Play size={16} />
-                Login
+                登录
               </button>
               <button className="tool-button" disabled={busy} onClick={onPollGrokLogin} type="button">
                 <CircleDot size={16} />
-                Poll
+                轮询
               </button>
               <button className="tool-button" disabled={busy} onClick={onRefreshGrokStatus} type="button">
                 <RefreshCw size={16} />
-                Status
+                状态
               </button>
               <button
                 className="tool-button"
@@ -2659,7 +3087,7 @@ function ModelPanel({
                 type="button"
               >
                 <Send size={16} />
-                Complete
+                完成
               </button>
             </div>
             {grokURL ? (
@@ -2687,7 +3115,7 @@ function ModelPanel({
         />
         <button className="tool-button accent full-width" disabled={busy || !canAdd} type="submit">
           <Plus size={16} />
-          Add and use
+          添加并使用
         </button>
       </form>
       {modelConfig?.thinking_rule ? <div className="success-note">{modelConfig.thinking_rule}</div> : null}
@@ -2705,7 +3133,43 @@ function Metric({ label, value }) {
 }
 
 function StatusPill({ status }) {
-  return <span className={`status-pill ${status}`}>{status}</span>;
+  return <span className={`status-pill ${status}`}>{connectionStatusLabel(status)}</span>;
+}
+
+function connectionStatusLabel(status) {
+  switch (status) {
+    case 'live':
+      return '在线';
+    case 'connecting':
+      return '连接中';
+    case 'reconnecting':
+      return '重连中';
+    default:
+      return '空闲';
+  }
+}
+
+function runtimeStateLabel(status) {
+  const value = String(status || '').trim();
+  switch (value.toLowerCase()) {
+    case 'idle':
+      return '空闲';
+    case 'running':
+      return '运行中';
+    case 'paused':
+      return '已暂停';
+    case 'complete':
+    case 'completed':
+    case 'done':
+      return '已完成';
+    case 'error':
+    case 'failed':
+      return '出错';
+    case 'unknown':
+      return '未知';
+    default:
+      return value || '-';
+  }
 }
 
 function libraryItemsFromResponse(data) {
@@ -3031,6 +3495,47 @@ export function canSubmitModelAdd(state, modelConfig) {
     return false;
   }
   return true;
+}
+
+export function styleItemsFromResponse(data) {
+  const items = Array.isArray(data?.styles) ? data.styles : [];
+  return items
+    .map((item) => {
+      const id = String(item?.id || '').trim();
+      const label = String(item?.label || '').trim() || id;
+      return { id, label };
+    })
+    .filter((item) => item.id);
+}
+
+export function firstAvailableStyle(preferred, styles, fallback = 'default') {
+  const items = Array.isArray(styles) ? styles : [];
+  const preferredID = String(preferred || '').trim();
+  if (preferredID && items.some((style) => style.id === preferredID)) {
+    return preferredID;
+  }
+  const fallbackID = String(fallback || '').trim();
+  if (fallbackID && items.some((style) => style.id === fallbackID)) {
+    return fallbackID;
+  }
+  return items[0]?.id || fallbackID || preferredID || 'default';
+}
+
+export function styleLabelForID(style, styles) {
+  const id = String(style || '').trim();
+  if (!id) {
+    return '';
+  }
+  const items = Array.isArray(styles) ? styles : [];
+  return items.find((item) => item.id === id)?.label || id;
+}
+
+function snapshotStyle(snapshot) {
+  return String(snapshot?.Style || snapshot?.style || 'default').trim() || 'default';
+}
+
+export function canEditProjectStyle(snapshot) {
+  return isFreshProject(snapshot);
 }
 
 function isFreshProject(snapshot) {

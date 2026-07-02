@@ -26,14 +26,48 @@ export function getRuntime() {
   return request('/api/runtime');
 }
 
+export function listStyles() {
+  return request('/api/styles');
+}
+
 export function listProjects() {
   return request('/api/projects');
 }
 
-export function createProject(name) {
+export function createProject(name, style) {
   return request('/api/projects', {
     method: 'POST',
+    body: JSON.stringify({ name, style })
+  });
+}
+
+export function renameProject(projectId, name) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
     body: JSON.stringify({ name })
+  });
+}
+
+export function trashProject(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE'
+  });
+}
+
+export function listProjectTrash() {
+  return request('/api/projects/trash');
+}
+
+export function clearProjectTrash() {
+  return request('/api/projects/trash', {
+    method: 'DELETE'
+  });
+}
+
+export function setProjectStyle(projectId, style) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/style`, {
+    method: 'PUT',
+    body: JSON.stringify({ style })
   });
 }
 

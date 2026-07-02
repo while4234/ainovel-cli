@@ -19,14 +19,15 @@ import (
 const manifestVersion = 1
 
 type ProjectManifest struct {
-	Version        int       `json:"version"`
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	RootDir        string    `json:"root_dir"`
-	OutputDir      string    `json:"output_dir"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	LastAccessedAt time.Time `json:"last_accessed_at"`
+	Version        int        `json:"version"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	RootDir        string     `json:"root_dir"`
+	OutputDir      string     `json:"output_dir"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	LastAccessedAt time.Time  `json:"last_accessed_at"`
+	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
 }
 
 type ProjectStore struct {
@@ -41,7 +42,30 @@ func (s *ProjectStore) ProjectsDir() string {
 	return filepath.Join(s.RuntimeRoot, "projects")
 }
 
+func (s *ProjectStore) ProjectTrashDir() string {
+	return filepath.Join(s.RuntimeRoot, "trash", "projects")
+}
+
 func (s *ProjectStore) CreateProject(name string) (ProjectManifest, error) {
+	return s.createProject(name)
+}
+
+func (s *ProjectStore) CreateProjectWithStyle(name, style string) (ProjectManifest, error) {
+	style = assets.NormalizeStyleID(style)
+	if !assets.HasStyle(style) {
+		return ProjectManifest{}, fmt.Errorf("unknown style %q", style)
+	}
+	manifest, err := s.createProject(name)
+	if err != nil {
+		return ProjectManifest{}, err
+	}
+	if err := s.SaveProjectStyle(manifest, style); err != nil {
+		return ProjectManifest{}, err
+	}
+	return manifest, nil
+}
+
+func (s *ProjectStore) createProject(name string) (ProjectManifest, error) {
 	if err := EnsureRuntimeRoot(s.RuntimeRoot); err != nil {
 		return ProjectManifest{}, err
 	}
@@ -95,6 +119,9 @@ func (s *ProjectStore) ListProjects() ([]ProjectManifest, error) {
 			}
 			return nil, err
 		}
+		if manifest.DeletedAt != nil {
+			continue
+		}
 		manifest = s.normalizeManifest(root, manifest)
 		projects = append(projects, manifest)
 	}
@@ -119,6 +146,9 @@ func (s *ProjectStore) OpenProject(id string) (ProjectManifest, error) {
 	if err != nil {
 		return ProjectManifest{}, err
 	}
+	if manifest.DeletedAt != nil {
+		return ProjectManifest{}, os.ErrNotExist
+	}
 	manifest = s.normalizeManifest(root, manifest)
 	now := time.Now().UTC()
 	manifest.LastAccessedAt = now
@@ -130,6 +160,147 @@ func (s *ProjectStore) OpenProject(id string) (ProjectManifest, error) {
 		return ProjectManifest{}, err
 	}
 	return manifest, nil
+}
+
+func (s *ProjectStore) RenameProject(id, name string) (ProjectManifest, error) {
+	if err := validateProjectID(strings.TrimSpace(id)); err != nil {
+		return ProjectManifest{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ProjectManifest{}, fmt.Errorf("project name is required")
+	}
+	root := filepath.Join(s.ProjectsDir(), strings.TrimSpace(id))
+	manifest, err := readProjectManifest(filepath.Join(root, "project.json"))
+	if err != nil {
+		return ProjectManifest{}, err
+	}
+	if manifest.DeletedAt != nil {
+		return ProjectManifest{}, os.ErrNotExist
+	}
+	manifest = s.normalizeManifest(root, manifest)
+	manifest.Name = name
+	manifest.UpdatedAt = time.Now().UTC()
+	if err := writeProjectManifest(manifest); err != nil {
+		return ProjectManifest{}, err
+	}
+	return manifest, nil
+}
+
+func (s *ProjectStore) TrashProject(id string) (ProjectManifest, string, error) {
+	id = strings.TrimSpace(id)
+	if err := validateProjectID(id); err != nil {
+		return ProjectManifest{}, "", err
+	}
+	root := filepath.Join(s.ProjectsDir(), id)
+	manifest, err := readProjectManifest(filepath.Join(root, "project.json"))
+	if err != nil {
+		return ProjectManifest{}, "", err
+	}
+	if manifest.DeletedAt != nil {
+		return ProjectManifest{}, "", os.ErrNotExist
+	}
+	manifest = s.normalizeManifest(root, manifest)
+	deletedAt := time.Now().UTC()
+	manifest.DeletedAt = &deletedAt
+	manifest.UpdatedAt = deletedAt
+	if err := writeProjectManifest(manifest); err != nil {
+		return ProjectManifest{}, "", err
+	}
+
+	trashDir := s.ProjectTrashDir()
+	if err := os.MkdirAll(trashDir, 0o755); err != nil {
+		return ProjectManifest{}, "", fmt.Errorf("create trash dir: %w", err)
+	}
+	target := s.uniqueTrashProjectPath(trashDir, id, deletedAt)
+	if err := os.Rename(root, target); err != nil {
+		manifest.DeletedAt = nil
+		_ = writeProjectManifest(manifest)
+		return ProjectManifest{}, "", fmt.Errorf("move project to trash: %w", err)
+	}
+	manifest.RootDir = target
+	manifest.OutputDir = filepath.Join(target, "output")
+	if err := writeProjectManifest(manifest); err != nil {
+		return ProjectManifest{}, "", err
+	}
+	return manifest, target, nil
+}
+
+func (s *ProjectStore) ListTrashedProjects() ([]ProjectManifest, error) {
+	entries, err := os.ReadDir(s.ProjectTrashDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list project trash: %w", err)
+	}
+	projects := make([]ProjectManifest, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		root := filepath.Join(s.ProjectTrashDir(), entry.Name())
+		manifest, err := readProjectManifest(filepath.Join(root, "project.json"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		manifest = s.normalizeManifest(root, manifest)
+		if manifest.DeletedAt == nil {
+			deletedAt := manifest.UpdatedAt
+			manifest.DeletedAt = &deletedAt
+		}
+		projects = append(projects, manifest)
+	}
+	sort.Slice(projects, func(i, j int) bool {
+		left := projects[i].UpdatedAt
+		right := projects[j].UpdatedAt
+		if projects[i].DeletedAt != nil {
+			left = *projects[i].DeletedAt
+		}
+		if projects[j].DeletedAt != nil {
+			right = *projects[j].DeletedAt
+		}
+		if !left.Equal(right) {
+			return left.After(right)
+		}
+		return projects[i].ID < projects[j].ID
+	})
+	return projects, nil
+}
+
+func (s *ProjectStore) ClearProjectTrash() (int, error) {
+	trashDir := s.ProjectTrashDir()
+	entries, err := os.ReadDir(trashDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read project trash: %w", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			count++
+		}
+	}
+	if err := os.RemoveAll(trashDir); err != nil {
+		return 0, fmt.Errorf("clear project trash: %w", err)
+	}
+	return count, nil
+}
+
+func (s *ProjectStore) uniqueTrashProjectPath(trashDir, id string, deletedAt time.Time) string {
+	base := filepath.Join(trashDir, fmt.Sprintf("%s-%s", id, deletedAt.Format("20060102150405")))
+	path := base
+	for i := 2; ; i++ {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return path
+		}
+		path = fmt.Sprintf("%s-%d", base, i)
+	}
 }
 
 func (s *ProjectStore) OpenProjectHost(cfg bootstrap.Config, bundle assets.Bundle, manifest ProjectManifest) (*host.Host, error) {
@@ -145,6 +316,8 @@ func (s *ProjectStore) OpenProjectHost(cfg bootstrap.Config, bundle assets.Bundl
 	if found {
 		cfg = bootstrap.MergeConfig(cfg, projectCfg)
 	}
+	cfg.Style = assets.NormalizeStyleID(cfg.Style)
+	bundle = assets.Load(cfg.Style)
 	cfg.OutputDir = manifest.OutputDir
 	cfg.PersistPath = projectConfigPath
 	cfg.PersistProjectOverlay = true
@@ -167,6 +340,22 @@ func (s *ProjectStore) loadProjectConfig(manifest ProjectManifest) (bootstrap.Co
 		return bootstrap.Config{}, false, fmt.Errorf("load project config %s: %w", path, err)
 	}
 	return cfg, true, nil
+}
+
+func (s *ProjectStore) SaveProjectStyle(manifest ProjectManifest, style string) error {
+	style = assets.NormalizeStyleID(style)
+	if !assets.HasStyle(style) {
+		return fmt.Errorf("unknown style %q", style)
+	}
+	cfg, found, err := s.loadProjectConfig(manifest)
+	if err != nil {
+		return err
+	}
+	if !found {
+		cfg = bootstrap.Config{}
+	}
+	cfg.Style = style
+	return bootstrap.SaveConfig(ProjectConfigPath(manifest), cfg)
 }
 
 func projectOwnedProviders(cfg bootstrap.Config) map[string]bool {

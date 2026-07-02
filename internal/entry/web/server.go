@@ -139,9 +139,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/runtime", s.handleRuntime)
+	mux.HandleFunc("/api/styles", s.handleStyles)
 	mux.HandleFunc("/api/libraries/simulation", s.handleSimulationLibrary)
 	mux.HandleFunc("/api/libraries/simulation/upload", s.handleSimulationLibraryUpload)
 	mux.HandleFunc("/api/libraries/novels", s.handleNovelLibrary)
+	mux.HandleFunc("/api/projects/trash", s.handleProjectTrash)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProject)
 	return mux
@@ -214,7 +216,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
 	case http.MethodPost:
 		var req struct {
-			Name string `json:"name"`
+			Name  string `json:"name"`
+			Style string `json:"style"`
 		}
 		if r.Body != nil {
 			defer r.Body.Close()
@@ -223,7 +226,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		manifest, err := s.store.CreateProject(req.Name)
+		style, err := s.resolveStyleID(req.Style)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		manifest, err := s.store.CreateProjectWithStyle(req.Name, style)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -241,6 +249,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch action {
+	case "":
+		s.handleProjectResource(w, r, id)
 	case "open":
 		s.handleProjectOpen(w, r, id)
 	case "snapshot":
@@ -267,6 +277,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectModelAdd(w, r, id)
 	case "models/add-openai-compatible":
 		s.handleProjectModelAddOpenAICompatible(w, r, id)
+	case "style":
+		s.handleProjectStyle(w, r, id)
 	case "models/grok-login/start":
 		s.handleProjectGrokLoginStart(w, r, id)
 	case "models/grok-login/poll":
@@ -323,10 +335,72 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 func splitProjectRoute(path string) (string, string, bool) {
 	rest := strings.TrimPrefix(path, "/api/projects/")
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	if len(parts) < 2 {
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
 		return "", "", false
 	}
+	if len(parts) == 1 {
+		return parts[0], "", true
+	}
 	return parts[0], strings.Join(parts[1:], "/"), true
+}
+
+func (s *Server) handleProjectResource(w http.ResponseWriter, r *http.Request, id string) {
+	switch r.Method {
+	case http.MethodPatch:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid project request: "+err.Error())
+			return
+		}
+		manifest, err := s.store.RenameProject(id, req.Name)
+		if err != nil {
+			writeProjectManifestError(w, err)
+			return
+		}
+		if session := s.sessions.Project(id); session != nil {
+			session.SetManifest(manifest)
+		}
+		writeJSON(w, http.StatusOK, manifest)
+	case http.MethodDelete:
+		s.sessions.CloseProject(id)
+		manifest, target, err := s.store.TrashProject(id)
+		if err != nil {
+			writeProjectManifestError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"project":    manifest,
+			"trash_path": target,
+		})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleProjectTrash(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		projects, err := s.store.ListTrashedProjects()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"projects":  projects,
+			"trash_dir": s.store.ProjectTrashDir(),
+		})
+	case http.MethodDelete:
+		count, err := s.store.ClearProjectTrash()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"deleted_count": count})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request, id string) {
@@ -508,6 +582,19 @@ func parseAfter(r *http.Request) (int64, error) {
 func writeProjectSessionError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrProjectNotFound) {
 		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
+}
+
+func writeProjectManifestError(w http.ResponseWriter, err error) {
+	if errors.Is(err, os.ErrNotExist) {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if strings.Contains(err.Error(), "project name is required") ||
+		strings.Contains(err.Error(), "project id") {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeError(w, http.StatusInternalServerError, err.Error())

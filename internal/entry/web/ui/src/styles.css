@@ -209,7 +209,8 @@ h2 {
 
 .icon-button:focus-visible,
 .tool-button:focus-visible,
-.project-row:focus-visible,
+.project-open-button:focus-visible,
+.project-more-button:focus-visible,
 .library-row:focus-visible,
 .side-tabs button:focus-visible,
 .adapt-mode:focus-within,
@@ -246,6 +247,12 @@ h2 {
   background: var(--accent-hover);
 }
 
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .create-project {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px;
@@ -254,6 +261,7 @@ h2 {
 }
 
 .create-project input,
+.create-project select,
 .composer input,
 .steer-form textarea,
 .adapt-brief,
@@ -281,6 +289,7 @@ h2 {
 }
 
 .create-project input,
+.create-project select,
 .composer input,
 .model-route select,
 .field-label input,
@@ -295,6 +304,7 @@ h2 {
 }
 
 .create-project input:focus,
+.create-project select:focus,
 .composer input:focus,
 .steer-form textarea:focus,
 .adapt-brief:focus,
@@ -312,6 +322,10 @@ h2 {
   box-shadow: var(--focus);
 }
 
+.create-project select {
+  grid-column: 1 / -1;
+}
+
 .project-list {
   display: flex;
   flex: 1;
@@ -324,51 +338,92 @@ h2 {
 
 .project-row {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 34px;
   align-items: center;
-  gap: 9px;
   min-height: 52px;
   width: 100%;
   border: 1px solid transparent;
   border-radius: var(--radius);
   background: transparent;
   color: #26323d;
-  text-align: left;
   transition:
     background-color 120ms ease,
     border-color 120ms ease,
     color 120ms ease;
 }
 
-.project-row svg {
+.project-open-button {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  min-height: 50px;
+  border: 0;
+  border-radius: var(--radius);
+  padding: 0 4px 0 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.project-open-button svg,
+.project-more-button svg {
   color: var(--muted);
 }
 
-.project-row span {
+.project-open-button span {
   display: grid;
   min-width: 0;
   gap: 2px;
 }
 
-.project-row strong,
-.project-row small {
+.project-open-button strong,
+.project-open-button small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.project-row strong {
+.project-open-button strong {
   color: var(--text);
   font-size: 14px;
 }
 
-.project-row small {
+.project-open-button small {
   color: var(--muted);
   font-size: 12px;
 }
 
+.project-more-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  opacity: 0;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    opacity 120ms ease;
+}
+
 .project-row:hover {
   background: #f1f6f8;
+}
+
+.project-row:hover .project-more-button,
+.project-more-button:focus-visible,
+.project-row.active .project-more-button {
+  opacity: 1;
+}
+
+.project-more-button:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-solid);
 }
 
 .project-row.active {
@@ -380,6 +435,47 @@ h2 {
 .project-row.active svg,
 .project-row.active strong {
   color: var(--accent);
+}
+
+.project-menu {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  width: 220px;
+  gap: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 6px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-md);
+}
+
+.project-menu button {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.project-menu button:hover {
+  background: var(--surface-subtle);
+}
+
+.project-menu span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-menu .danger {
+  color: var(--danger);
 }
 
 .toolbar-actions {
@@ -1008,6 +1104,110 @@ h2 {
   color: #236241;
   font-size: 13px;
   font-weight: 700;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(18, 26, 33, 0.18);
+}
+
+.compact-dialog {
+  display: grid;
+  width: min(380px, 100%);
+  gap: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-md);
+}
+
+.compact-dialog input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  color: var(--text);
+  outline: none;
+}
+
+.compact-dialog input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+.compact-dialog .dialog-actions {
+  padding: 0;
+}
+
+.dialog-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-strong);
+}
+
+.dialog-title.danger {
+  color: var(--danger);
+}
+
+.dialog-copy {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.danger-action {
+  border-color: rgba(177, 59, 54, 0.42);
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.danger-action:hover {
+  border-color: #96302c;
+  background: #96302c;
+}
+
+.trash-dialog {
+  width: min(460px, 100%);
+}
+
+.trash-list {
+  display: grid;
+  max-height: 240px;
+  gap: 6px;
+  overflow: auto;
+}
+
+.trash-row {
+  display: grid;
+  gap: 3px;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 9px;
+  background: var(--surface-solid);
+}
+
+.trash-row strong,
+.trash-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trash-row small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .modal-backdrop {

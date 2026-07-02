@@ -26,6 +26,7 @@ import (
 var (
 	ErrProjectNotFound         = errors.New("project not found")
 	ErrSessionActionInProgress = errors.New("project action already in progress")
+	ErrProjectStyleLocked      = errors.New("project style is locked")
 )
 
 const (
@@ -126,6 +127,63 @@ func (m *SessionManager) Open(id string) (*ProjectSession, ProjectManifest, erro
 	return session, manifest, nil
 }
 
+func (m *SessionManager) SetProjectStyle(id, style string) (*ProjectSession, ProjectManifest, error) {
+	id = strings.TrimSpace(id)
+	if err := validateProjectID(id); err != nil {
+		return nil, ProjectManifest{}, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+	}
+	style = assets.NormalizeStyleID(style)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	manifest, err := m.store.OpenProject(id)
+	if err != nil {
+		return nil, ProjectManifest{}, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+	}
+	session, ok := m.sessions[id]
+	if !ok {
+		h, err := m.store.OpenProjectHost(m.cfg, m.bundle, manifest)
+		if err != nil {
+			return nil, ProjectManifest{}, err
+		}
+		session, err = NewProjectSession(manifest, h)
+		if err != nil {
+			h.Close()
+			return nil, ProjectManifest{}, err
+		}
+		m.sessions[id] = session
+	}
+
+	unlock, err := session.beginAction()
+	if err != nil {
+		return nil, ProjectManifest{}, err
+	}
+	defer unlock()
+
+	snapshot := session.Snapshot()
+	if snapshot.IsRunning || snapshotHasExistingBook(snapshot) {
+		return nil, ProjectManifest{}, fmt.Errorf("%w: cannot change style after writing has started", ErrProjectStyleLocked)
+	}
+
+	session.Close()
+	delete(m.sessions, id)
+	if err := m.store.SaveProjectStyle(manifest, style); err != nil {
+		return nil, ProjectManifest{}, err
+	}
+	h, err := m.store.OpenProjectHost(m.cfg, m.bundle, manifest)
+	if err != nil {
+		return nil, ProjectManifest{}, err
+	}
+	next, err := NewProjectSession(manifest, h)
+	if err != nil {
+		h.Close()
+		return nil, ProjectManifest{}, err
+	}
+	m.sessions[id] = next
+	return next, manifest, nil
+}
+
 func (m *SessionManager) ActiveProjectIDs() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -135,6 +193,26 @@ func (m *SessionManager) ActiveProjectIDs() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func (m *SessionManager) Project(id string) *ProjectSession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessions[strings.TrimSpace(id)]
+}
+
+func (m *SessionManager) CloseProject(id string) bool {
+	id = strings.TrimSpace(id)
+	m.mu.Lock()
+	session, ok := m.sessions[id]
+	if ok {
+		delete(m.sessions, id)
+	}
+	m.mu.Unlock()
+	if ok {
+		session.Close()
+	}
+	return ok
 }
 
 func (m *SessionManager) CloseAll() {

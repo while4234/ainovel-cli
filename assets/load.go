@@ -3,6 +3,8 @@ package assets
 import (
 	"embed"
 	"fmt"
+	"io/fs"
+	"sort"
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
@@ -39,8 +41,15 @@ type Bundle struct {
 	Styles     map[string]string
 }
 
+// StyleDescriptor 是 Web/API 展示用的写作风格条目。
+type StyleDescriptor struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
 // Load 返回指定风格对应的资源集合。
 func Load(style string) Bundle {
+	style = NormalizeStyleID(style)
 	return Bundle{
 		References: loadReferences(style),
 		Prompts:    loadPrompts(),
@@ -48,10 +57,33 @@ func Load(style string) Bundle {
 	}
 }
 
-func loadReferences(style string) tools.References {
+// NormalizeStyleID 返回配置中实际使用的 style id。
+func NormalizeStyleID(style string) string {
+	style = strings.TrimSpace(style)
 	if style == "" {
-		style = "default"
+		return "default"
 	}
+	return style
+}
+
+// StyleCatalog 返回嵌入的写作风格目录，显示名来自 Markdown 第一行标题。
+func StyleCatalog() []StyleDescriptor {
+	return styleCatalogFromFS(stylesFS, "styles")
+}
+
+// HasStyle 判断 style id 是否存在于嵌入资源中。
+func HasStyle(style string) bool {
+	style = NormalizeStyleID(style)
+	for _, item := range StyleCatalog() {
+		if item.ID == style {
+			return true
+		}
+	}
+	return false
+}
+
+func loadReferences(style string) tools.References {
+	style = NormalizeStyleID(style)
 	refs := tools.References{
 		ChapterGuide:                    mustRead(referencesFS, "references/chapter-guide.md"),
 		HookTechniques:                  mustRead(referencesFS, "references/hook-techniques.md"),
@@ -132,6 +164,50 @@ func loadStyles() map[string]string {
 		styles[name] = string(data)
 	}
 	return styles
+}
+
+func styleCatalogFromFS(fsys fs.FS, dir string) []StyleDescriptor {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return nil
+	}
+	styles := make([]StyleDescriptor, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+			continue
+		}
+		id := entry.Name()[:len(entry.Name())-len(".md")]
+		data, err := fs.ReadFile(fsys, dir+"/"+entry.Name())
+		if err != nil {
+			continue
+		}
+		styles = append(styles, StyleDescriptor{
+			ID:    id,
+			Label: styleLabel(id, string(data)),
+		})
+	}
+	sort.Slice(styles, func(i, j int) bool {
+		if styles[i].Label != styles[j].Label {
+			return styles[i].Label < styles[j].Label
+		}
+		return styles[i].ID < styles[j].ID
+	})
+	return styles
+}
+
+func styleLabel(id, content string) string {
+	firstLine := content
+	if idx := strings.IndexAny(firstLine, "\r\n"); idx >= 0 {
+		firstLine = firstLine[:idx]
+	}
+	firstLine = strings.TrimPrefix(firstLine, "\ufeff")
+	label := strings.TrimSpace(firstLine)
+	label = strings.TrimLeft(label, "#")
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return id
+	}
+	return label
 }
 
 func mustRead(fs embed.FS, path string) string {

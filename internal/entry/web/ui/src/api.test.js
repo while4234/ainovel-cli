@@ -1,10 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  clearProjectTrash,
+  createProject,
+  listProjectTrash,
+  listStyles,
   listNovelLibrary,
   listSimulationLibrary,
   loadNovelFromLibrary,
+  renameProject,
   saveNovelToLibrary,
   saveSimulationToLibrary,
+  setProjectStyle,
+  trashProject,
   uploadSimulationLibrary
 } from './api.js';
 
@@ -22,6 +29,46 @@ afterEach(() => {
 });
 
 describe('library API helpers', () => {
+  it('lists styles from the style catalog route', async () => {
+    mockFetch({ styles: [{ id: 'fantasy', label: 'Fantasy' }] });
+
+    await listStyles();
+
+    expect(fetch.mock.calls[0][0]).toBe('/api/styles');
+  });
+
+  it('sends project style when creating and updating projects', async () => {
+    mockFetch({ ok: true });
+
+    await createProject('New Book', 'fantasy');
+    await setProjectStyle('project 1', 'romance');
+
+    expect(fetch.mock.calls[0][0]).toBe('/api/projects');
+    expect(fetch.mock.calls[0][1].method).toBe('POST');
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ name: 'New Book', style: 'fantasy' });
+    expect(fetch.mock.calls[1][0]).toBe('/api/projects/project%201/style');
+    expect(fetch.mock.calls[1][1].method).toBe('PUT');
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ style: 'romance' });
+  });
+
+  it('sends project rename, trash, and trash clearing requests', async () => {
+    mockFetch({ ok: true });
+
+    await renameProject('project 1', 'Renamed Book');
+    await trashProject('project 1');
+    await listProjectTrash();
+    await clearProjectTrash();
+
+    expect(fetch.mock.calls[0][0]).toBe('/api/projects/project%201');
+    expect(fetch.mock.calls[0][1].method).toBe('PATCH');
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ name: 'Renamed Book' });
+    expect(fetch.mock.calls[1][0]).toBe('/api/projects/project%201');
+    expect(fetch.mock.calls[1][1].method).toBe('DELETE');
+    expect(fetch.mock.calls[2][0]).toBe('/api/projects/trash');
+    expect(fetch.mock.calls[3][0]).toBe('/api/projects/trash');
+    expect(fetch.mock.calls[3][1].method).toBe('DELETE');
+  });
+
   it('encodes simulation and novel library search queries', async () => {
     mockFetch({ items: [] });
 

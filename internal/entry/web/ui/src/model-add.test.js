@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildModelAddPayload,
+  canEditProjectStyle,
   canSubmitModelAdd,
-  modelAddModeDefaults
+  firstAvailableStyle,
+  modelAddModeDefaults,
+  styleItemsFromResponse,
+  styleLabelForID
 } from './App.jsx';
 
 describe('model add helpers', () => {
@@ -54,5 +58,40 @@ describe('model add helpers', () => {
     expect(state.auth).toBe('grok_oauth');
     expect(state.account_id).toBe('default');
     expect(state.model).toBe('grok-4.3-latest');
+  });
+});
+
+describe('style helpers', () => {
+  const styles = [
+    { id: 'default', label: 'General style' },
+    { id: 'fantasy', label: 'Fantasy adventure style' }
+  ];
+
+  it('normalizes style catalog responses for display', () => {
+    expect(styleItemsFromResponse({
+      styles: [
+        { id: ' fantasy ', label: ' Fantasy adventure style ' },
+        { id: 'plain', label: '' },
+        { id: '', label: 'ignored' }
+      ]
+    })).toEqual([
+      { id: 'fantasy', label: 'Fantasy adventure style' },
+      { id: 'plain', label: 'plain' }
+    ]);
+  });
+
+  it('uses stable fallback and label behavior for styles', () => {
+    expect(firstAvailableStyle('fantasy', styles)).toBe('fantasy');
+    expect(firstAvailableStyle('missing', styles, 'default')).toBe('default');
+    expect(firstAvailableStyle('missing', [{ id: 'suspense', label: 'Suspense' }], 'default')).toBe('suspense');
+    expect(styleLabelForID('fantasy', styles)).toBe('Fantasy adventure style');
+    expect(styleLabelForID('unknown', styles)).toBe('unknown');
+  });
+
+  it('allows style editing only before a book has started', () => {
+    expect(canEditProjectStyle({})).toBe(true);
+    expect(canEditProjectStyle({ NovelName: 'Started book' })).toBe(false);
+    expect(canEditProjectStyle({ TotalChapters: 12 })).toBe(false);
+    expect(canEditProjectStyle(null)).toBe(false);
   });
 });
