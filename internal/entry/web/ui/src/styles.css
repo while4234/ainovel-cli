@@ -73,7 +73,7 @@ textarea:disabled {
 
 .app-shell {
   display: grid;
-  grid-template-columns: minmax(224px, 264px) minmax(360px, 1fr) minmax(500px, 620px);
+  grid-template-columns: minmax(224px, 264px) minmax(520px, 1fr) minmax(430px, 520px);
   height: 100vh;
   overflow: hidden;
   background: var(--bg);
@@ -1857,7 +1857,7 @@ h2 {
 
 .model-route {
   display: grid;
-  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 7px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1878,7 +1878,6 @@ h2 {
   font-weight: 700;
 }
 
-.model-route select:nth-of-type(2),
 .model-route span {
   grid-column: 1 / -1;
 }
@@ -1986,7 +1985,7 @@ h2 {
 
 @media (max-width: 1180px) {
   .app-shell {
-    grid-template-columns: minmax(210px, 240px) minmax(320px, 1fr) minmax(430px, 500px);
+    grid-template-columns: minmax(210px, 240px) minmax(440px, 1fr) minmax(380px, 450px);
   }
 
   .toolbar-actions {
