@@ -29,31 +29,33 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `codex/web-project-cocreate-controls`,
-  `a83b2af` `feat: surface adaptation planning state in UI`, completing the
-  five-step adaptation proposal/word-budget/UI PR pipeline.
-- Branch: `codex/web-project-cocreate-controls`
+- Latest source change: branch `main`,
+  `79703a9` `Merge github/main and refresh web build`, after fast-forwarding
+  from GitHub and rebuilding/restarting the local Web service.
+- Latest maintenance commit: pending this notes update.
+- Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the adaptation proposal/word-budget/UI commits,
-  except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
-  artifacts.
-- Runtime: local Web validation binary `D:\ainovel\.codex\bin\ainovel-cli-fixed.exe`
-  is rebuilt after the Web short-story creation fixes using the project-local
-  Go 1.25.5 toolchain, then restarted on `http://127.0.0.1:9898` with runtime root
-  `C:\Users\RondleLiu\.ainovel\novels`. The `D:\grok\bin\ainovel-cli.cmd`
-  shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: `npm --prefix internal/entry/web/ui test -- --run` passed
-  5 files / 31 tests; `npm --prefix internal/entry/web/ui run build` passed;
-  `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host ./internal/store ./internal/tools ./internal/host/adapt ./internal/domain -count=1`
-  passed; `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -count=1`
-  passed; `git diff --check` passed with LF-to-CRLF warnings only. Full
-  `.codex\tools\go1.25.5\go\bin\go.exe test ./... -count=1` was attempted and
-  still fails only on existing Windows-sensitive tests: `internal/notify`
-  requires `sh` on PATH, and `internal/version` expects Unix executable mode
-  bits.
+- Working tree: expected clean after the restart notes commit, except for
+  ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
+- Runtime: local Web executable `D:\ainovel\ainovel-cli.exe` was rebuilt by
+  `scripts\restart-web.ps1` using the project-local Go 1.25.5 toolchain, then
+  restarted on `http://127.0.0.1:9898` with runtime root
+  `C:\Users\RondleLiu\.ainovel\novels-preview`; listener PID after restart was
+  `89184`. Port `9904` had no listener.
+- Validation: `git pull --ff-only` fast-forwarded `main` from `d53f3c3` to
+  `79703a9`; `scripts\restart-web.ps1 -Port 9898` passed, including Web UI
+  and Go builds plus readiness wait; independent probes returned `GET / -> 200`,
+  `GET /api/runtime -> ok`, and `GET /api/projects -> ok`. Generated static
+  files had only EOL drift after build and were restored to keep the working
+  tree clean.
 
 ## Change Log
 
+- 2026-07-02 `pending` `docs: record latest pull and restart`: pulled latest
+  `origin/main` with `git pull --ff-only`, fast-forwarded to `79703a9`, rebuilt
+  and restarted the local Web service via `scripts\restart-web.ps1 -Port 9898`,
+  verified `http://127.0.0.1:9898`, `/api/runtime`, `/api/projects`, and
+  confirmed port 9904 had no listener.
 - 2026-07-02 `a83b2af` `feat: surface adaptation planning state in UI`:
   completed the strict-agent adaptation proposal/UI pipeline after independent
   review and fix rounds. The sequence added additive planning contracts
