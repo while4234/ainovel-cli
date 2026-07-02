@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/assets"
@@ -79,6 +80,40 @@ func TestSimulationLibraryUploadSearchAndLoad(t *testing.T) {
 	wantImportPath := filepath.Join(manifest.RootDir, "profiles", "imported", "voice.json")
 	if fake.importPath != wantImportPath {
 		t.Fatalf("import path = %q, want %q", fake.importPath, wantImportPath)
+	}
+
+	realManifest, err := server.store.CreateProject("Restore Simulation Library")
+	if err != nil {
+		t.Fatalf("CreateProject real: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+realManifest.ID+"/simulate/library/load", bytes.NewBufferString(`{"name":"voice"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("real load status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(realManifest.OutputDir, "meta", "simulation_profile.json")); err != nil {
+		t.Fatalf("simulation profile was not imported into project output: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/projects/"+realManifest.ID+"/snapshot", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var snapshot projectSnapshotResponse
+	if err := json.NewDecoder(rec.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if snapshot.Simulation.ImportStatus != "done" {
+		t.Fatalf("simulation import status = %q, want done", snapshot.Simulation.ImportStatus)
+	}
+	if snapshot.Simulation.ImportedFile == nil || snapshot.Simulation.ImportedFile.Name != "voice.json" {
+		t.Fatalf("simulation imported file = %+v, want voice.json", snapshot.Simulation.ImportedFile)
+	}
+	if !strings.Contains(snapshot.Simulation.Message, "voice") {
+		t.Fatalf("simulation message = %q, want profile name", snapshot.Simulation.Message)
 	}
 }
 

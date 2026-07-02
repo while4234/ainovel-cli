@@ -441,16 +441,12 @@ func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request, id st
 		writeProjectSessionError(w, err)
 		return
 	}
-	adaptation, err := projectAdaptationStatus(manifest)
+	response, err := buildProjectSnapshotResponse(session, manifest)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, projectSnapshotResponse{
-		Project:    manifest,
-		Snapshot:   session.Snapshot(),
-		Adaptation: adaptation,
-	})
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleProjectSnapshot(w http.ResponseWriter, r *http.Request, id string) {
@@ -463,16 +459,12 @@ func (s *Server) handleProjectSnapshot(w http.ResponseWriter, r *http.Request, i
 		writeProjectSessionError(w, err)
 		return
 	}
-	adaptation, err := projectAdaptationStatus(manifest)
+	response, err := buildProjectSnapshotResponse(session, manifest)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, projectSnapshotResponse{
-		Project:    manifest,
-		Snapshot:   session.Snapshot(),
-		Adaptation: adaptation,
-	})
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleProjectResume(w http.ResponseWriter, r *http.Request, id string) {
@@ -577,6 +569,24 @@ type projectSnapshotResponse struct {
 	Project    ProjectManifest     `json:"project"`
 	Snapshot   any                 `json:"snapshot"`
 	Adaptation apiAdaptationStatus `json:"adaptation"`
+	Simulation apiSimulationStatus `json:"simulation"`
+}
+
+func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManifest) (projectSnapshotResponse, error) {
+	adaptation, err := projectAdaptationStatus(manifest)
+	if err != nil {
+		return projectSnapshotResponse{}, err
+	}
+	simulation, err := projectSimulationStatus(manifest)
+	if err != nil {
+		return projectSnapshotResponse{}, err
+	}
+	return projectSnapshotResponse{
+		Project:    manifest,
+		Snapshot:   session.Snapshot(),
+		Adaptation: adaptation,
+		Simulation: simulation,
+	}, nil
 }
 
 type projectActionResponse struct {

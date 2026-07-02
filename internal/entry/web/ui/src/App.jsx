@@ -144,6 +144,28 @@ function resetSimulationProjectState(previous) {
   };
 }
 
+function restoreSimulationProjectState(previous, status) {
+  const next = resetSimulationProjectState(previous);
+  if (!status) {
+    return next;
+  }
+  const importedFile = status.imported_file || status.importedFile || null;
+  const importEvents = status.import_events || status.importEvents;
+  const importStatus = String(status.import_status || status.importStatus || (importedFile ? 'done' : next.importStatus) || 'idle').trim() || 'idle';
+  return {
+    ...next,
+    importStatus,
+    importEvents: Array.isArray(importEvents) ? importEvents : [],
+    importMessage: status.message || (importedFile ? `已恢复画像：${simulationProfileLabel(importedFile)}` : '')
+  };
+}
+
+function simulationProfileLabel(file) {
+  const name = firstString(file, ['name', 'Name', 'relative_path', 'RelativePath']);
+  const fileName = fileNameFromPath(name) || name;
+  return fileName.replace(/\.json$/i, '') || fileName;
+}
+
 function resetAdaptationProjectState(previous) {
   return {
     ...createAdaptationState(),
@@ -420,6 +442,7 @@ export default function App() {
       ]);
       setActiveProject(snapshotData.project);
       setWorkbench({ ...createWorkbenchState(), snapshot: snapshotData.snapshot });
+      setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
       setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation));
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);

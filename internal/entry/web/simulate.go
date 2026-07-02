@@ -46,6 +46,13 @@ type apiSimulationEvent struct {
 	Error   string    `json:"error,omitempty"`
 }
 
+type apiSimulationStatus struct {
+	ImportedFile *apiUploadedFile     `json:"imported_file,omitempty"`
+	ImportStatus string               `json:"import_status"`
+	ImportEvents []apiSimulationEvent `json:"import_events,omitempty"`
+	Message      string               `json:"message,omitempty"`
+}
+
 type pendingUpload struct {
 	apiUploadedFile
 	data []byte
@@ -428,6 +435,74 @@ func projectSimulateDir(manifest ProjectManifest) string {
 
 func projectImportedProfilesDir(manifest ProjectManifest) string {
 	return filepath.Join(manifest.RootDir, "profiles", "imported")
+}
+
+func projectSimulationStatus(manifest ProjectManifest) (apiSimulationStatus, error) {
+	status := apiSimulationStatus{ImportStatus: "idle"}
+	if _, err := findProjectSimulationProfile(manifest); err != nil {
+		return status, nil
+	}
+	importedFile, err := latestImportedSimulationProfile(projectImportedProfilesDir(manifest))
+	if err != nil {
+		return status, err
+	}
+	if importedFile == nil {
+		return status, nil
+	}
+	status.ImportedFile = importedFile
+	status.ImportStatus = "done"
+	status.Message = fmt.Sprintf("已恢复画像：%s", simulationProfileDisplayName(importedFile.Name))
+	status.ImportEvents = []apiSimulationEvent{{
+		Time:    time.Now().UTC(),
+		Stage:   string(sim.StageDone),
+		Current: 1,
+		Total:   1,
+		Message: status.Message,
+	}}
+	return status, nil
+}
+
+func latestImportedSimulationProfile(sourceDir string) (*apiUploadedFile, error) {
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var latest *apiUploadedFile
+	var latestMod time.Time
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if _, ok := profileUploadExtensions[strings.ToLower(filepath.Ext(entry.Name()))]; !ok {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		file := apiUploadedFile{
+			Name:         entry.Name(),
+			OriginalName: entry.Name(),
+			Size:         info.Size(),
+			RelativePath: filepath.ToSlash(entry.Name()),
+		}
+		if latest == nil || info.ModTime().After(latestMod) || (info.ModTime().Equal(latestMod) && file.Name > latest.Name) {
+			latest = &file
+			latestMod = info.ModTime()
+		}
+	}
+	return latest, nil
+}
+
+func simulationProfileDisplayName(name string) string {
+	display := strings.TrimSuffix(name, filepath.Ext(name))
+	if strings.TrimSpace(display) == "" {
+		return name
+	}
+	return display
 }
 
 func writeUploadValidationError(w http.ResponseWriter, err error) {
