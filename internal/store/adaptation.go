@@ -369,4 +369,51 @@ func normalizeAdaptationPlan(plan *domain.AdaptationPlan) {
 	plan.Granularity = domain.NormalizeAdaptationGranularity(plan.Granularity)
 	plan.Status = domain.NormalizeAdaptationPlanStatus(plan.Status)
 	plan.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(plan.Granularity)
+	for i := range plan.Chapters {
+		normalizeAdaptationChapterPlan(&plan.Chapters[i], plan.WordTolerance)
+	}
+}
+
+func normalizeAdaptationChapterPlan(chapter *domain.AdaptationChapterPlan, tolerance float64) {
+	if chapter == nil {
+		return
+	}
+	chapter.OutlineEntry.Chapter = chapter.Chapter
+	chapter.OutlineEntry.Title = chapter.Title
+
+	if chapter.WordBudget == nil {
+		if chapter.SourceRunes > 0 || chapter.TargetRunes > 0 || chapter.TargetMinRunes > 0 || chapter.TargetMaxRunes > 0 || tolerance > 0 {
+			chapter.WordBudget = &domain.AdaptationChapterWordBudget{}
+		}
+	}
+	if chapter.WordBudget == nil {
+		return
+	}
+	if chapter.WordBudget.SourceRunes <= 0 {
+		chapter.WordBudget.SourceRunes = chapter.SourceRunes
+	}
+	if chapter.WordBudget.TargetRunes <= 0 {
+		chapter.WordBudget.TargetRunes = chapter.TargetRunes
+	}
+	if chapter.WordBudget.MinRunes <= 0 {
+		chapter.WordBudget.MinRunes = chapter.TargetMinRunes
+	}
+	if chapter.WordBudget.MaxRunes <= 0 {
+		chapter.WordBudget.MaxRunes = chapter.TargetMaxRunes
+	}
+	if chapter.WordBudget.Tolerance <= 0 {
+		chapter.WordBudget.Tolerance = tolerance
+	}
+	if chapter.SourceRunes <= 0 {
+		chapter.SourceRunes = chapter.WordBudget.SourceRunes
+	}
+	if chapter.TargetRunes <= 0 {
+		chapter.TargetRunes = chapter.WordBudget.TargetRunes
+	}
+	if chapter.TargetMinRunes <= 0 {
+		chapter.TargetMinRunes = chapter.WordBudget.MinRunes
+	}
+	if chapter.TargetMaxRunes <= 0 {
+		chapter.TargetMaxRunes = chapter.WordBudget.MaxRunes
+	}
 }

@@ -39,4 +39,5 @@ type Prompts struct {
 	Foundation      string
 	FoundationMerge string
 	Analyzer        string
+	Planner         string
 }

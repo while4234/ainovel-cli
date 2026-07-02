@@ -357,6 +357,7 @@ func (h *Host) StartAdaptationPreparedWithOptions(options adapt.ProposalOptions)
 			Foundation:      h.bundle.Prompts.ImportFoundation,
 			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
 			Analyzer:        h.bundle.Prompts.ImportAnalyzer,
+			Planner:         h.bundle.Prompts.AdaptationPlanner,
 		},
 	}
 	proposal, err := adapt.BuildAdaptationProposal(deps, options)
@@ -416,6 +417,7 @@ func (h *Host) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.A
 			Foundation:      h.bundle.Prompts.ImportFoundation,
 			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
 			Analyzer:        h.bundle.Prompts.ImportAnalyzer,
+			Planner:         h.bundle.Prompts.AdaptationPlanner,
 		},
 	}
 	return adapt.BuildAdaptationProposal(deps, options)
@@ -1703,6 +1705,7 @@ func (h *Host) PrepareAdaptationSource(ctx context.Context, sourcePath string) (
 			Foundation:      h.bundle.Prompts.ImportFoundation,
 			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
 			Analyzer:        h.bundle.Prompts.ImportAnalyzer,
+			Planner:         h.bundle.Prompts.AdaptationPlanner,
 		},
 	}
 	return adapt.RunSource(ctx, deps, adapt.Options{SourcePath: sourcePath})

@@ -105,6 +105,82 @@ func TestAdaptationProposalDoesNotActivateProject(t *testing.T) {
 	}
 }
 
+func TestAdaptationPlanLoadNormalizesLegacyAndNestedWordBudget(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	legacy := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityChapter,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
+		Brief:         "legacy",
+		WordTolerance: 0.15,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Legacy",
+			SourceChapters: []int{1},
+			SourceRunes:    1000,
+			TargetRunes:    1100,
+			TargetMinRunes: 900,
+			TargetMaxRunes: 1200,
+		}},
+	}
+	if err := s.Adaptation.io.WriteJSON(adaptationPlanFile, legacy); err != nil {
+		t.Fatalf("WriteJSON legacy: %v", err)
+	}
+	loadedLegacy, err := s.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan legacy: %v", err)
+	}
+	chapter := loadedLegacy.Chapters[0]
+	if loadedLegacy.Status != domain.AdaptationPlanStatusConfirmed {
+		t.Fatalf("legacy status = %q, want confirmed", loadedLegacy.Status)
+	}
+	if chapter.WordBudget == nil || chapter.WordBudget.TargetRunes != 1100 || chapter.WordBudget.MinRunes != 900 || chapter.WordBudget.Tolerance != 0.15 {
+		t.Fatalf("legacy word budget not mirrored: %+v", chapter.WordBudget)
+	}
+	if chapter.TargetRunes != 1100 || chapter.TargetMinRunes != 900 || chapter.TargetMaxRunes != 1200 {
+		t.Fatalf("legacy target fields changed: %+v", chapter)
+	}
+
+	nested := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityArc,
+		Status:      domain.AdaptationPlanStatusProposal,
+		Brief:       "nested",
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Nested",
+			SourceChapters: []int{1, 2},
+			OutlineEntry: domain.OutlineEntry{
+				CoreEvent: "combined event",
+				Hook:      "new hook",
+				Scenes:    []string{"first", "second"},
+			},
+			WordBudget: &domain.AdaptationChapterWordBudget{
+				SourceRunes: 2000,
+				TargetRunes: 2300,
+				MinRunes:    2100,
+				MaxRunes:    2500,
+			},
+		}},
+	}
+	if err := s.Adaptation.io.WriteJSON(adaptationProposalFile, nested); err != nil {
+		t.Fatalf("WriteJSON nested: %v", err)
+	}
+	loadedNested, err := s.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal nested: %v", err)
+	}
+	nestedChapter := loadedNested.Chapters[0]
+	if nestedChapter.TargetRunes != 2300 || nestedChapter.TargetMinRunes != 2100 || nestedChapter.TargetMaxRunes != 2500 {
+		t.Fatalf("nested word budget did not backfill legacy fields: %+v", nestedChapter)
+	}
+	if nestedChapter.CoreEvent != "combined event" || nestedChapter.Hook != "new hook" || len(nestedChapter.Scenes) != 2 {
+		t.Fatalf("outline fields not preserved: %+v", nestedChapter.OutlineEntry)
+	}
+}
+
 func TestAdaptationStoreResetGeneratedPreservesSourceSnapshot(t *testing.T) {
 	s := NewStore(t.TempDir())
 	if err := s.Init(); err != nil {
