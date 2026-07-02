@@ -37,6 +37,54 @@ func TestStaticFSIncludesBuiltWebDist(t *testing.T) {
 	}
 }
 
+func TestStaticIndexDisablesBrowserCache(t *testing.T) {
+	handler := NewHandler(bootstrap.Config{}, assets.Bundle{}, filepath.Join(testTempDir(t), "runtime"))
+
+	for _, path := range []string{"/", "/workspace/route"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body=%s", path, rec.Code, rec.Body.String())
+		}
+		cacheControl := rec.Header().Get("cache-control")
+		if !strings.Contains(cacheControl, "no-store") || !strings.Contains(cacheControl, "max-age=0") {
+			t.Fatalf("%s cache-control = %q, want no-store and max-age=0", path, cacheControl)
+		}
+		if rec.Header().Get("pragma") != "no-cache" {
+			t.Fatalf("%s pragma = %q, want no-cache", path, rec.Header().Get("pragma"))
+		}
+		if rec.Header().Get("expires") != "0" {
+			t.Fatalf("%s expires = %q, want 0", path, rec.Header().Get("expires"))
+		}
+	}
+}
+
+func TestStaticAssetsCanUseImmutableCache(t *testing.T) {
+	static := StaticFS()
+	entries, err := fs.ReadDir(static, "assets")
+	if err != nil {
+		t.Fatalf("read embedded assets: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("embedded assets directory is empty")
+	}
+	handler := NewHandler(bootstrap.Config{}, assets.Bundle{}, filepath.Join(testTempDir(t), "runtime"))
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/"+entries[0].Name(), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("asset status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	cacheControl := rec.Header().Get("cache-control")
+	if !strings.Contains(cacheControl, "immutable") || !strings.Contains(cacheControl, "max-age=31536000") {
+		t.Fatalf("asset cache-control = %q, want immutable hashed asset cache", cacheControl)
+	}
+}
+
 func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
 	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
 	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)

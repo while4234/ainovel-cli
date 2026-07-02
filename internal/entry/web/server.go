@@ -191,8 +191,21 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	} else if path == "index.html" {
 		w.Header().Set("content-type", "text/html; charset=utf-8")
 	}
+	setStaticCacheHeaders(w, path)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+func setStaticCacheHeaders(w http.ResponseWriter, path string) {
+	if path == "index.html" {
+		w.Header().Set("cache-control", "no-store, no-cache, must-revalidate, max-age=0")
+		w.Header().Set("pragma", "no-cache")
+		w.Header().Set("expires", "0")
+		return
+	}
+	if strings.HasPrefix(path, "assets/") {
+		w.Header().Set("cache-control", "public, max-age=31536000, immutable")
+	}
 }
 
 func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
