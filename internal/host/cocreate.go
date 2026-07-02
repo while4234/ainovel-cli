@@ -71,7 +71,7 @@ const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用�
 // coCreateProtocolTail 是两种共创模式共用的输出协议尾部（<ready> / <suggestions> + 输出规范）。
 // 两模式只在开场语境与 <draft> 语义上不同，协议完全一致。
 const coCreateProtocolTail = `
-<ready>false</ready>
+<ready>true|false</ready>
 
 <suggestions>
 1-3 条"用户接下来可能想说的话"，每行一条以 "- " 开头。这是用户卡壳时的引导，
@@ -88,7 +88,7 @@ const coCreateProtocolTail = `
 - 标签名只能小写英文，不要改写成 <REPLY> / <REWRITE> / <回复> 等任何变体。
 - 标签外不要添加任何说明、思考或代码围栏。
 - <draft> 内允许多行 Markdown，直接换行书写，不需要任何转义。
-- <ready> 只写 true 或 false。信息已足够时填 true。
+- <ready> 只写 true 或 false，不要写 true|false。只要当前 <draft> 已经可以直接交给创作引擎执行，或你没有必须继续追问的关键问题，就必须填 true；只有还缺少会阻塞执行的核心信息时才填 false。
 - <ready>true</ready> 时 <suggestions> 可以为空（保留空标签 <suggestions></suggestions> 即可）。`
 
 // CoCreateProgressKind 标识流式回调的内容类型。
@@ -101,9 +101,50 @@ const (
 	coCreateMaxAttempts = retrypolicy.MaxAttempts
 	coCreateMaxTokens   = 2048
 	coCreateTimeout     = 180 * time.Second
+	coCreateModelRole   = "architect"
 )
 
 var coCreateRetrySleep = sleepBeforeCoCreateRetry
+
+type coCreateModelIdentity struct {
+	Provider string
+	Model    string
+}
+
+func newCoCreateModelIdentity(model agentcore.ChatModel) coCreateModelIdentity {
+	var identity coCreateModelIdentity
+	if model == nil {
+		return identity
+	}
+	if provider, ok := model.(interface{ ProviderName() string }); ok {
+		identity.Provider = strings.TrimSpace(provider.ProviderName())
+	}
+	identity.Model = strings.TrimSpace(bootstrap.ModelName(model))
+	return identity
+}
+
+func (i coCreateModelIdentity) label() string {
+	switch {
+	case i.Provider != "" && i.Model != "":
+		return i.Provider + "/" + i.Model
+	case i.Model != "":
+		return i.Model
+	case i.Provider != "":
+		return i.Provider
+	default:
+		return ""
+	}
+}
+
+func (i coCreateModelIdentity) wrapError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if label := i.label(); label != "" {
+		return fmt.Errorf("selected model %s: %w", label, err)
+	}
+	return err
+}
 
 // 四段式 XML 标签输出。XML 风格比方括号 marker 更鲁棒——Claude/GPT 训练数据里
 // 大量 <thinking>...</thinking> 这类格式，模型几乎不会把 <reply> 改写成 <REWRITE>
@@ -120,7 +161,8 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 		return CoCreateReply{}, fmt.Errorf("cocreate history is empty")
 	}
 
-	model := models.ForRole("thinking")
+	model := models.ForRole(coCreateModelRole)
+	modelIdentity := newCoCreateModelIdentity(model)
 	ctx, cancel := context.WithTimeout(ctx, coCreateTimeout)
 	defer cancel()
 
@@ -150,19 +192,22 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 			return
 		}
 		_ = sessions.LogCoCreate(coCreateLogEntry{
-			Time:         time.Now(),
-			DurationMS:   time.Since(start).Milliseconds(),
-			InputHistory: history,
-			Attempts:     attempts,
-			RetryErrors:  retryErrors,
-			RawResponse:  raw.String(),
-			RawLen:       len([]rune(raw.String())),
-			Thinking:     thinking.String(),
-			ParsedReply:  reply.Message,
-			ParsedDraft:  reply.Prompt,
-			ParsedReady:  reply.Ready,
-			ParsedSugs:   reply.Suggestions,
-			Error:        errString(err),
+			Time:             time.Now(),
+			DurationMS:       time.Since(start).Milliseconds(),
+			ModelRole:        coCreateModelRole,
+			SelectedProvider: modelIdentity.Provider,
+			SelectedModel:    modelIdentity.Model,
+			InputHistory:     history,
+			Attempts:         attempts,
+			RetryErrors:      retryErrors,
+			RawResponse:      raw.String(),
+			RawLen:           len([]rune(raw.String())),
+			Thinking:         thinking.String(),
+			ParsedReply:      reply.Message,
+			ParsedDraft:      reply.Prompt,
+			ParsedReady:      reply.Ready,
+			ParsedSugs:       reply.Suggestions,
+			Error:            errString(err),
 		})
 	}()
 
@@ -179,11 +224,11 @@ retry:
 	streamCh, err = model.GenerateStream(ctx, msgs, nil, agentcore.WithMaxTokens(coCreateMaxTokens))
 	if err != nil {
 		if ok, sleepErr := prepareCoCreateRetry(ctx, err, attempts, onProgress, &retryErrors); sleepErr != nil {
-			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", sleepErr)
+			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
 		} else if ok {
 			goto retry
 		}
-		return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", err)
+		return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(err))
 	}
 
 	for ev := range streamCh {
@@ -207,29 +252,29 @@ retry:
 		case agentcore.StreamEventError:
 			if ev.Err != nil {
 				if ok, sleepErr := prepareCoCreateRetry(ctx, ev.Err, attempts, onProgress, &retryErrors); sleepErr != nil {
-					return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", sleepErr)
+					return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
 				} else if ok {
 					goto retry
 				}
-				return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", ev.Err)
+				return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(ev.Err))
 			}
 			streamErr := fmt.Errorf("cocreate generate failed: %w", agentcore.ErrProviderNetwork)
 			if ok, sleepErr := prepareCoCreateRetry(ctx, streamErr, attempts, onProgress, &retryErrors); sleepErr != nil {
-				return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", sleepErr)
+				return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
 			} else if ok {
 				goto retry
 			}
-			return CoCreateReply{}, streamErr
+			return CoCreateReply{}, modelIdentity.wrapError(streamErr)
 		}
 	}
 	if !done {
 		streamErr := fmt.Errorf("cocreate stream closed before done: %w", agentcore.ErrProviderNetwork)
 		if ok, sleepErr := prepareCoCreateRetry(ctx, streamErr, attempts, onProgress, &retryErrors); sleepErr != nil {
-			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", sleepErr)
+			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
 		} else if ok {
 			goto retry
 		}
-		return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", streamErr)
+		return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(streamErr))
 	}
 
 	// Channel fallback：思考型模型（R1/GLM-Z1/QwQ 等）偶发把完整答案写进
@@ -332,19 +377,22 @@ func adaptationSnapshot(st *store.Store) string {
 // coCreateLogEntry 是写入 meta/sessions/cocreate.jsonl 的一行结构。
 // 字段命名贴近 jsonl 直查习惯（snake_case），方便 jq 过滤。
 type coCreateLogEntry struct {
-	Time         time.Time         `json:"time"`
-	DurationMS   int64             `json:"duration_ms"`
-	InputHistory []CoCreateMessage `json:"input_history"`
-	Attempts     int               `json:"attempts,omitempty"`
-	RetryErrors  []string          `json:"retry_errors,omitempty"`
-	RawResponse  string            `json:"raw_response"`
-	RawLen       int               `json:"raw_len"`
-	Thinking     string            `json:"thinking,omitempty"`
-	ParsedReply  string            `json:"parsed_reply"`
-	ParsedDraft  string            `json:"parsed_draft"`
-	ParsedReady  bool              `json:"parsed_ready"`
-	ParsedSugs   []string          `json:"parsed_sugs,omitempty"`
-	Error        string            `json:"error,omitempty"`
+	Time             time.Time         `json:"time"`
+	DurationMS       int64             `json:"duration_ms"`
+	ModelRole        string            `json:"model_role,omitempty"`
+	SelectedProvider string            `json:"selected_provider,omitempty"`
+	SelectedModel    string            `json:"selected_model,omitempty"`
+	InputHistory     []CoCreateMessage `json:"input_history"`
+	Attempts         int               `json:"attempts,omitempty"`
+	RetryErrors      []string          `json:"retry_errors,omitempty"`
+	RawResponse      string            `json:"raw_response"`
+	RawLen           int               `json:"raw_len"`
+	Thinking         string            `json:"thinking,omitempty"`
+	ParsedReply      string            `json:"parsed_reply"`
+	ParsedDraft      string            `json:"parsed_draft"`
+	ParsedReady      bool              `json:"parsed_ready"`
+	ParsedSugs       []string          `json:"parsed_sugs,omitempty"`
+	Error            string            `json:"error,omitempty"`
 }
 
 func errString(err error) string {

@@ -91,7 +91,7 @@ function coCreateStatusFromBackend(data, streamThinking, streamReply) {
   if (data.committed_label) {
     return 'started';
   }
-  if (data.ready) {
+  if (data.ready || String(data.draft_prompt || '').trim()) {
     return 'ready';
   }
   if (streamThinking || streamReply) {

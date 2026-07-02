@@ -611,7 +611,14 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 	defer unlock()
 
 	if s.cocreate != nil {
-		return s.cocreate.apiState(), fmt.Errorf("co-create already started")
+		if !s.cocreate.failed {
+			return s.cocreate.apiState(), fmt.Errorf("co-create already started")
+		}
+		if s.cocreate.kind == webCoCreateKindStage {
+			s.host.CancelCoCreate()
+			s.AppendSnapshot()
+		}
+		s.cocreate = nil
 	}
 	state, err := newWebCoCreateSession(req)
 	if err != nil {
@@ -763,13 +770,20 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 		s.cocreate.session.ApplyDelta(kind, text)
 		s.appendCoCreateState(s.cocreate.apiState())
 	}
+	s.cocreate.failed = false
+	eventID, startedAt := s.appendCoCreateRunStarted(s.cocreate.kind)
 	reply, err := stream(ctx, s.cocreate.session.History(), onProgress)
 	if err != nil {
-		return s.cocreate.apiState(), err
+		s.cocreate.failed = true
+		state := s.cocreate.apiState()
+		s.appendCoCreateRunFinished(eventID, startedAt, state, err)
+		return state, err
 	}
 	s.cocreate.applyReply(reply)
-	s.appendCoCreateState(s.cocreate.apiState())
-	return s.cocreate.apiState(), nil
+	state := s.cocreate.apiState()
+	s.appendCoCreateState(state)
+	s.appendCoCreateRunFinished(eventID, startedAt, state, nil)
+	return state, nil
 }
 
 func (s *ProjectSession) beginAction() (func(), error) {
@@ -1195,6 +1209,84 @@ func (s *ProjectSession) appendActionCanceledEvent(kind string) WebEvent {
 		Kind:     "paused",
 		Level:    "warn",
 	})
+}
+
+func (s *ProjectSession) appendCoCreateRunStarted(kind string) (string, time.Time) {
+	startedAt := time.Now().UTC()
+	eventID := fmt.Sprintf("cocreate-%s-%d", coCreateEventKind(kind), startedAt.UnixNano())
+	s.appendHostEvent(host.Event{
+		ID:       eventID,
+		Time:     startedAt,
+		Category: "COCREATE",
+		Agent:    "web",
+		Summary:  coCreateRunningSummary(kind),
+		Kind:     coCreateEventKind(kind),
+		Level:    "info",
+	})
+	return eventID, startedAt
+}
+
+func (s *ProjectSession) appendCoCreateRunFinished(eventID string, startedAt time.Time, state webCoCreateState, runErr error) {
+	if eventID == "" {
+		return
+	}
+	finishedAt := time.Now().UTC()
+	failed := runErr != nil
+	level := "success"
+	summary := coCreateFinishedSummary(state.Kind, state.Ready)
+	detail := ""
+	if failed {
+		level = "error"
+		summary = coCreateKindLabel(state.Kind) + "失败"
+		detail = runErr.Error()
+	}
+	s.appendHostEvent(host.Event{
+		ID:         eventID,
+		Time:       startedAt,
+		FinishedAt: finishedAt,
+		Failed:     failed,
+		Category:   "COCREATE",
+		Agent:      "web",
+		Summary:    summary,
+		Detail:     detail,
+		Kind:       coCreateEventKind(state.Kind),
+		Level:      level,
+		Duration:   finishedAt.Sub(startedAt),
+	})
+}
+
+func coCreateEventKind(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case webCoCreateKindStage:
+		return webCoCreateKindStage
+	case webCoCreateKindAdapt:
+		return webCoCreateKindAdapt
+	default:
+		return webCoCreateKindNormal
+	}
+}
+
+func coCreateKindLabel(kind string) string {
+	switch coCreateEventKind(kind) {
+	case webCoCreateKindStage:
+		return "阶段共创"
+	case webCoCreateKindAdapt:
+		return "改编共创"
+	default:
+		return "普通共创"
+	}
+}
+
+func coCreateRunningSummary(kind string) string {
+	return coCreateKindLabel(kind) + "：AI 正在整理回复"
+}
+
+func coCreateFinishedSummary(kind string, ready bool) string {
+	label := coCreateKindLabel(kind)
+	if ready {
+		return label + "：方向已就绪"
+	}
+	return label + "：AI 已回复，等待补充"
 }
 
 func (s *ProjectSession) appendStreamDelta(delta string) WebEvent {

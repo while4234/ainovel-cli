@@ -1432,7 +1432,7 @@ export default function App() {
   };
 
   const commitCoCreateFlow = async () => {
-    if (!activeProject?.id || !coCreate.ready || !coCreate.draftPrompt.trim()) {
+    if (!activeProject?.id || !coCreate.draftPrompt.trim()) {
       return;
     }
     setBusy(true);
@@ -1518,6 +1518,10 @@ export default function App() {
 
   const switchDefaultModel = async (provider, model) => {
     if (!provider || !model) {
+      return;
+    }
+    if (activeProject?.id) {
+      await switchModelRoute('default', provider, model);
       return;
     }
     setBusy(true);
@@ -2139,11 +2143,40 @@ function hasCoCreateWorkspaceContent(coCreate) {
 }
 
 function CoCreateWorkspace({ coCreate }) {
+  const threadRef = useRef(null);
+  const bottomRef = useRef(null);
+  const stickToBottomRef = useRef(true);
   const messages = Array.isArray(coCreate.messages)
     ? coCreate.messages.filter((message) => message?.role !== 'system' && message?.content)
     : [];
+  const scrollSignature = [
+    messages.length,
+    messages.map((message) => String(message.content || '').length).join(','),
+    String(coCreate.streamThinking || '').length,
+    String(coCreate.streamReply || '').length
+  ].join(':');
+
+  useEffect(() => {
+    const scrollParent = coCreateWorkspaceScrollParent(threadRef.current);
+    if (!scrollParent) {
+      return undefined;
+    }
+    const updateStickiness = () => {
+      stickToBottomRef.current = isNearScrollBottom(scrollParent);
+    };
+    updateStickiness();
+    scrollParent.addEventListener('scroll', updateStickiness, { passive: true });
+    return () => scrollParent.removeEventListener('scroll', updateStickiness);
+  }, []);
+
+  useEffect(() => {
+    if (stickToBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ block: 'end' });
+    }
+  }, [scrollSignature]);
+
   return (
-    <div className="cocreate-workspace-thread">
+    <div className="cocreate-workspace-thread" ref={threadRef}>
       {messages.length === 0 && !coCreate.streamThinking && !coCreate.streamReply ? (
         <article className="stream-round">
           <span className="muted">等待共创输出</span>
@@ -2174,8 +2207,20 @@ function CoCreateWorkspace({ coCreate }) {
           <pre>{coCreate.streamReply}</pre>
         </article>
       ) : null}
+      <div className="cocreate-workspace-bottom" aria-hidden="true" ref={bottomRef} />
     </div>
   );
+}
+
+function coCreateWorkspaceScrollParent(node) {
+  return node?.closest?.('.stream-area') || null;
+}
+
+function isNearScrollBottom(element) {
+  if (!element) {
+    return true;
+  }
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= 96;
 }
 
 function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, setSteerText, busy }) {
@@ -2312,10 +2357,11 @@ function CoCreatePanel({
   );
   const canSend = Boolean(activeProject && !busy && hasBackendSession && coCreate.input.trim());
   const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
-  const canCommit = Boolean(activeProject && !busy && coCreate.ready && coCreate.draftPrompt.trim());
+  const hasDraftPrompt = Boolean(coCreate.draftPrompt.trim());
+  const canCommit = Boolean(activeProject && !busy && hasDraftPrompt);
   const canCancel = Boolean(activeProject && !busy && (hasBackendSession || coCreate.intakeActive));
   const visibleSuggestions = coCreate.suggestions.slice(0, 3);
-  const showDraftWorkspace = Boolean(coCreate.ready || coCreate.draftPrompt.trim());
+  const showDraftWorkspace = Boolean(coCreate.ready || hasDraftPrompt);
   const suggestionList = visibleSuggestions.length ? (
     <div
       className={`suggestion-list ${workspaceTranscript ? 'cocreate-side-suggestions' : 'cocreate-dialog-suggestions'}`}
@@ -2559,7 +2605,7 @@ function CoCreatePanel({
 
         <section className={`cocreate-section ${showDraftWorkspace ? '' : 'cocreate-status-compact'}`}>
         <div className={`workflow-status ${coCreate.status}`}>
-          <strong>{coCreateStatusText(coCreate.status, coCreate.ready)}</strong>
+          <strong>{coCreateStatusText(coCreate.status, coCreate.ready, hasDraftPrompt)}</strong>
           <span>{coCreateStatusDetail(coCreate)}</span>
         </div>
         {showDraftWorkspace ? (
@@ -3855,7 +3901,7 @@ function coCreateRoleLabel(role) {
   }
 }
 
-function coCreateStatusText(status, ready) {
+function coCreateStatusText(status, ready, hasDraftPrompt = false) {
   if (status === 'running') {
     return '进行中';
   }
@@ -3868,7 +3914,10 @@ function coCreateStatusText(status, ready) {
   if (status === 'started') {
     return '已启动';
   }
-  return ready ? '已就绪' : '待处理';
+  if (ready || status === 'ready' || hasDraftPrompt) {
+    return '已就绪';
+  }
+  return '待处理';
 }
 
 function coCreateStatusDetail(coCreate) {
@@ -3877,6 +3926,9 @@ function coCreateStatusDetail(coCreate) {
   }
   if (coCreate.ready) {
     return 'draft prompt 已就绪';
+  }
+  if (coCreate.draftPrompt?.trim()) {
+    return '已有 draft，可点击启动，或继续补充';
   }
   if (coCreate.status === 'running') {
     return 'AI 正在整理方向';

@@ -79,6 +79,7 @@ type webCoCreateSession struct {
 	session            *startup.CoCreateSession
 	messages           []webCoCreateMessage
 	nextMessageSeq     int
+	failed             bool
 	sourceFile         string
 	sourcePath         string
 	adaptGranularity   string
@@ -279,6 +280,11 @@ func newWebCoCreateSession(req webCoCreateBeginRequest) (*webCoCreateSession, er
 			adaptWordTolerance: tolerance,
 		}
 		state.messages = []webCoCreateMessage{state.newMessage("system", adaptCoCreateSystemLine, "", -1)}
+		if initial := strings.TrimSpace(req.Initial); initial != "" {
+			historyIndex := len(state.session.History())
+			state.session.AppendUser(initial)
+			state.messages = append(state.messages, state.newMessage("user", initial, "custom", historyIndex))
+		}
 		return state, nil
 	default:
 		return nil, fmt.Errorf("co-create kind must be one of normal, stage, adapt")

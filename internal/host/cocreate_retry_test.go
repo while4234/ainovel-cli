@@ -89,6 +89,32 @@ func TestCoCreateStreamDoesNotRetryCancellation(t *testing.T) {
 	}
 }
 
+func TestCoCreateStreamErrorIncludesSelectedModel(t *testing.T) {
+	restore := stubCoCreateRetrySleep(t)
+	defer restore()
+
+	model := &scriptedCoCreateModel{
+		streams: [][]agentcore.StreamEvent{{
+			{Type: agentcore.StreamEventError, Err: context.Canceled},
+		}},
+	}
+
+	_, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		"system",
+		[]CoCreateMessage{{Role: "user", Content: "start"}},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("coCreateStream should fail")
+	}
+	if !strings.Contains(err.Error(), "selected model test/scripted-cocreate") {
+		t.Fatalf("err = %v, want selected model label", err)
+	}
+}
+
 type scriptedCoCreateModel struct {
 	streams     [][]agentcore.StreamEvent
 	streamCalls int

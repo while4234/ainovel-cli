@@ -58,6 +58,22 @@ describe('co-create UI state', () => {
     expect(state.modeLocked).toBe(true);
   });
 
+  it('allows a draft prompt to be started even when the model keeps ready false', () => {
+    const state = coCreateStateFromResponse({
+      cocreate: {
+        kind: 'adapt',
+        active: true,
+        draft_prompt: '## 改编 brief\n- 已经可以执行',
+        ready: false,
+        suggestions: []
+      }
+    });
+
+    expect(state.status).toBe('ready');
+    expect(state.ready).toBe(false);
+    expect(state.draftPrompt).toContain('已经可以执行');
+  });
+
   it('preserves editable message metadata from backend response', () => {
     const state = coCreateStateFromResponse({
       cocreate: {

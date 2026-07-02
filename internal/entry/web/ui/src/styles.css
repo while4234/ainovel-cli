@@ -764,15 +764,28 @@ h2 {
 
 .cocreate-workspace-thread {
   display: grid;
+  flex: 0 0 auto;
   align-content: start;
   gap: 10px;
   min-height: 100%;
+  width: 100%;
 }
 
 .cocreate-workspace-message {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
+  max-height: min(42vh, 380px);
+  overflow: hidden;
   border-color: rgba(15, 111, 109, 0.2);
   background: var(--surface-solid);
+}
+
+.cocreate-workspace-message pre {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
 }
 
 .cocreate-workspace-message.assistant,
@@ -783,6 +796,10 @@ h2 {
 .cocreate-workspace-message.user {
   border-left-color: var(--line-strong);
   background: var(--surface-subtle);
+}
+
+.cocreate-workspace-bottom {
+  min-height: 1px;
 }
 
 .cocreate-workspace-head {
@@ -1308,6 +1325,12 @@ h2 {
 .cocreate-form {
   display: grid;
   gap: 8px;
+}
+
+.cocreate-form textarea {
+  max-height: min(24vh, 180px);
+  overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .cocreate-sticky-workspace {

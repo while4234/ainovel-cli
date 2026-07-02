@@ -32,6 +32,10 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.cocreate-side-suggestions\s*{[^}]*max-height:\s*176px;/s);
     expect(css).toMatch(/\.cocreate-workspace-output\s*{/);
     expect(css).toMatch(/\.cocreate-workspace-message\.assistant,\s*[\r\n]+\.cocreate-workspace-message\.thinking\s*{/);
+    expect(css).toMatch(/\.cocreate-workspace-message\s*{[^}]*max-height:\s*min\(42vh,\s*380px\);[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.cocreate-workspace-message pre\s*{[^}]*overflow:\s*auto;/s);
+    expect(css).toMatch(/\.cocreate-workspace-bottom\s*{[^}]*min-height:\s*1px;/s);
+    expect(css).toMatch(/\.cocreate-form textarea\s*{[^}]*max-height:\s*min\(24vh,\s*180px\);[^}]*overflow:\s*auto;/s);
     expect(css).toMatch(/\.cocreate-status-compact \.cocreate-actions\s*{[^}]*grid-template-columns:\s*1fr;/s);
   });
 

@@ -345,7 +345,7 @@ func TestProjectAdaptCoCreateLocksSelectedModeOnCommit(t *testing.T) {
 		true,
 	)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"arc"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"arc","initial":"Keep the ending, but make the heroine survive."}`))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -357,6 +357,9 @@ func TestProjectAdaptCoCreateLocksSelectedModeOnCommit(t *testing.T) {
 	}
 	if len(fake.lastCoCreateHistory) == 0 || !strings.Contains(fake.lastCoCreateHistory[0].Content, "granularity=arc") {
 		t.Fatalf("adapt opener did not lock arc mode: %+v", fake.lastCoCreateHistory)
+	}
+	if len(fake.lastCoCreateHistory) < 2 || fake.lastCoCreateHistory[1].Content != "Keep the ending, but make the heroine survive." {
+		t.Fatalf("adapt initial brief was not sent to model history: %+v", fake.lastCoCreateHistory)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))

@@ -376,6 +376,126 @@ func TestProjectSessionPublishesCoCreateProgressWithoutWritingStream(t *testing.
 	}
 }
 
+func TestProjectSessionPublishesCoCreateHostEventsByKind(t *testing.T) {
+	cases := []struct {
+		name string
+		kind string
+		req  webCoCreateBeginRequest
+	}{
+		{
+			name: "normal",
+			kind: webCoCreateKindNormal,
+			req: webCoCreateBeginRequest{
+				Kind:    webCoCreateKindNormal,
+				Initial: "write a moon mystery",
+			},
+		},
+		{
+			name: "stage",
+			kind: webCoCreateKindStage,
+			req: webCoCreateBeginRequest{
+				Kind: webCoCreateKindStage,
+			},
+		},
+		{
+			name: "adapt",
+			kind: webCoCreateKindAdapt,
+			req: webCoCreateBeginRequest{
+				Kind: webCoCreateKindAdapt,
+				Mode: domain.AdaptationGranularityFree,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeProjectHost()
+			reply := host.CoCreateReply{
+				Message: "confirmed",
+				Prompt:  "## plan\n- keep going",
+				Ready:   false,
+				Raw:     "<reply>confirmed</reply><draft>## plan\n- keep going</draft><ready>false</ready><suggestions></suggestions>",
+			}
+			fake.cocreateReply = reply
+			fake.stageCoCreateReply = reply
+			fake.adaptCoCreateReply = reply
+			session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+			if err != nil {
+				t.Fatalf("NewProjectSession: %v", err)
+			}
+			defer session.Close()
+
+			if _, err := session.BeginCoCreate(context.Background(), tc.req); err != nil {
+				t.Fatalf("BeginCoCreate: %v", err)
+			}
+
+			var got *APIHostEvent
+			for _, ev := range session.HistoryAfter(0) {
+				if ev.Type == webEventTypeHostEvent && ev.Event != nil && ev.Event.Category == "COCREATE" {
+					got = ev.Event
+				}
+			}
+			if got == nil {
+				t.Fatalf("missing COCREATE host event in history")
+			}
+			if got.Kind != tc.kind {
+				t.Fatalf("event kind = %q, want %q", got.Kind, tc.kind)
+			}
+			if got.Running || got.Failed || got.Level == "error" {
+				t.Fatalf("event should be completed successfully, got %+v", got)
+			}
+			if strings.TrimSpace(got.Summary) == "" {
+				t.Fatalf("event summary should not be empty: %+v", got)
+			}
+		})
+	}
+}
+
+func TestProjectSessionBeginCoCreateCanRetryAfterFailure(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.cocreateErr = errors.New("upstream unavailable")
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	if _, err := session.BeginCoCreate(context.Background(), webCoCreateBeginRequest{
+		Kind:    webCoCreateKindNormal,
+		Initial: "first brief",
+	}); err == nil {
+		t.Fatal("BeginCoCreate should fail")
+	}
+
+	fake.cocreateErr = nil
+	fake.cocreateReply = host.CoCreateReply{
+		Message: "ok",
+		Prompt:  "## plan\n- continue",
+		Ready:   false,
+		Raw:     "<reply>ok</reply><draft>## plan\n- continue</draft><ready>false</ready><suggestions></suggestions>",
+	}
+	state, err := session.BeginCoCreate(context.Background(), webCoCreateBeginRequest{
+		Kind:    webCoCreateKindNormal,
+		Initial: "retry brief",
+	})
+	if err != nil {
+		t.Fatalf("BeginCoCreate retry: %v", err)
+	}
+	if fake.cocreateCalls != 2 {
+		t.Fatalf("co-create calls = %d, want 2", fake.cocreateCalls)
+	}
+	if len(state.Messages) != 2 {
+		t.Fatalf("message count = %d, want 2: %+v", len(state.Messages), state.Messages)
+	}
+	if state.Messages[0].Content != "retry brief" {
+		t.Fatalf("retry should replace failed history, got first message %q", state.Messages[0].Content)
+	}
+	for _, message := range state.Messages {
+		if message.Content == "first brief" {
+			t.Fatalf("failed history leaked into retry: %+v", state.Messages)
+		}
+	}
+}
+
 func TestProjectSessionAppendRacesWithUnsubscribe(t *testing.T) {
 	for iteration := range 100 {
 		session := newTestSessionWithoutHost("project-1")
