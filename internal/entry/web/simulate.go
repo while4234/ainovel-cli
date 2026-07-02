@@ -166,12 +166,16 @@ func (s *Server) handleProjectSimulateImport(w http.ResponseWriter, r *http.Requ
 		writeSimulationActionError(w, err, events)
 		return
 	}
+	libraryItem, librarySaved, libraryWarning := s.trySaveImportedSimulationProfile(profile)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":       manifest,
 		"snapshot":      session.Snapshot(),
 		"imported_file": profile.apiUploadedFile,
 		"events":        events,
 		"running":       session.Snapshot().IsRunning,
+		"library_saved": librarySaved,
+		"library_item":  libraryItem,
+		"warning":       libraryWarning,
 	})
 }
 

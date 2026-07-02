@@ -17,6 +17,11 @@ async function request(path, options = {}) {
   return data;
 }
 
+function queryPath(path, q) {
+  const query = String(q || '').trim();
+  return query ? `${path}?q=${encodeURIComponent(query)}` : path;
+}
+
 export function getRuntime() {
   return request('/api/runtime');
 }
@@ -97,6 +102,35 @@ export function importSimulationProfile(projectId, file) {
   });
 }
 
+export function listSimulationLibrary(q) {
+  return request(queryPath('/api/libraries/simulation', q));
+}
+
+export function uploadSimulationLibrary(files) {
+  const body = new FormData();
+  for (const file of files) {
+    body.append('files', file);
+  }
+  return request('/api/libraries/simulation/upload', {
+    method: 'POST',
+    body
+  });
+}
+
+export function saveSimulationToLibrary(projectId, name) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/simulate/library/save`, {
+    method: 'POST',
+    body: JSON.stringify({ name })
+  });
+}
+
+export function loadSimulationFromLibrary(projectId, name) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/simulate/library/load`, {
+    method: 'POST',
+    body: JSON.stringify({ name })
+  });
+}
+
 export function importExternalNovel(projectId, file, from = '') {
   const body = new FormData();
   body.append('source', file);
@@ -143,6 +177,24 @@ export function startAdaptation(projectId, sourceFile, mode, brief) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/start`, {
     method: 'POST',
     body: JSON.stringify({ source_file: sourceFile, mode, brief })
+  });
+}
+
+export function listNovelLibrary(q) {
+  return request(queryPath('/api/libraries/novels', q));
+}
+
+export function saveNovelToLibrary(projectId, name, sourceFile) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/library/save`, {
+    method: 'POST',
+    body: JSON.stringify({ name, source_file: sourceFile })
+  });
+}
+
+export function loadNovelFromLibrary(projectId, name) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/library/load`, {
+    method: 'POST',
+    body: JSON.stringify({ name })
   });
 }
 

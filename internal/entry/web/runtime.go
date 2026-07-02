@@ -71,6 +71,14 @@ func EnsureRuntimeRoot(root string) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("create runtime root %s: %w", root, err)
 	}
+	for _, dir := range []string{
+		filepath.Join(root, "simulation_library"),
+		filepath.Join(root, "novel_library"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create runtime library dir %s: %w", dir, err)
+		}
+	}
 	info, err := os.Stat(root)
 	if err != nil {
 		return fmt.Errorf("inspect runtime root %s: %w", root, err)

@@ -39,6 +39,7 @@ type Server struct {
 	runtimeRoot string
 	store       *ProjectStore
 	sessions    *SessionManager
+	libraries   *LibraryService
 	static      fs.FS
 }
 
@@ -123,6 +124,7 @@ func NewServer(cfg bootstrap.Config, bundle assets.Bundle, runtimeRoot string) *
 		bundle:      bundle,
 		runtimeRoot: runtimeRoot,
 		store:       store,
+		libraries:   NewLibraryService(runtimeRoot),
 		static:      StaticFS(),
 	}
 	s.sessions = NewSessionManager(cfg, bundle, store)
@@ -137,6 +139,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/runtime", s.handleRuntime)
+	mux.HandleFunc("/api/libraries/simulation", s.handleSimulationLibrary)
+	mux.HandleFunc("/api/libraries/simulation/upload", s.handleSimulationLibraryUpload)
+	mux.HandleFunc("/api/libraries/novels", s.handleNovelLibrary)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProject)
 	return mux
@@ -288,12 +293,20 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectSimulateAnalyze(w, r, id)
 	case "simulate/import":
 		s.handleProjectSimulateImport(w, r, id)
+	case "simulate/library/save":
+		s.handleProjectSimulationLibrarySave(w, r, id)
+	case "simulate/library/load":
+		s.handleProjectSimulationLibraryLoad(w, r, id)
 	case "adapt/source":
 		s.handleProjectAdaptSource(w, r, id)
 	case "adapt/analyze":
 		s.handleProjectAdaptAnalyze(w, r, id)
 	case "adapt/start":
 		s.handleProjectAdaptStart(w, r, id)
+	case "adapt/library/save":
+		s.handleProjectNovelLibrarySave(w, r, id)
+	case "adapt/library/load":
+		s.handleProjectNovelLibraryLoad(w, r, id)
 	case "cocreate/begin":
 		s.handleProjectCoCreateBegin(w, r, id)
 	case "cocreate/send":

@@ -231,9 +231,17 @@ func TestBuildAdaptationProposalFullRewriteDisablesWordTolerance(t *testing.T) {
 	if err := st.Adaptation.SaveSourceFoundation(testSourceFoundation()); err != nil {
 		t.Fatalf("SaveSourceFoundation: %v", err)
 	}
-	if err := st.Adaptation.SaveSourceReports([]domain.AdaptationSourceReport{
-		{Chapter: 1, Title: "One", KeyEvents: []string{"event one"}},
-	}); err != nil {
+	report := domain.AdaptationSourceReport{
+		Chapter:      1,
+		Title:        "One",
+		SourceSHA256: source.SHA256,
+		Summary:      "one",
+		KeyEvents:    []string{"event one"},
+	}
+	if err := st.Adaptation.SaveSourceReport(report); err != nil {
+		t.Fatalf("SaveSourceReport: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceReports([]domain.AdaptationSourceReport{report}); err != nil {
 		t.Fatalf("SaveSourceReports: %v", err)
 	}
 

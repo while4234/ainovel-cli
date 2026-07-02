@@ -210,6 +210,7 @@ h2 {
 .icon-button:focus-visible,
 .tool-button:focus-visible,
 .project-row:focus-visible,
+.library-row:focus-visible,
 .side-tabs button:focus-visible,
 .adapt-mode:focus-within,
 .suggestion-chip:focus-visible {
@@ -260,6 +261,9 @@ h2 {
 .model-route select,
 .field-label input,
 .field-label select,
+.library-search input,
+.library-save-row input,
+.confirm-dialog-body input,
 .custom-model-form input,
 .custom-model-form select,
 .custom-model-form textarea {
@@ -281,6 +285,9 @@ h2 {
 .model-route select,
 .field-label input,
 .field-label select,
+.library-search input,
+.library-save-row input,
+.confirm-dialog-body input,
 .custom-model-form input,
 .custom-model-form select {
   height: 36px;
@@ -295,6 +302,9 @@ h2 {
 .custom-model-form input:focus,
 .custom-model-form select:focus,
 .custom-model-form textarea:focus,
+.library-search input:focus,
+.library-save-row input:focus,
+.confirm-dialog-body input:focus,
 .field-label input:focus,
 .field-label select:focus,
 .model-route select:focus {
@@ -899,6 +909,76 @@ h2 {
   gap: 8px;
 }
 
+.library-search,
+.library-save-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 8px;
+}
+
+.library-save-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.library-save-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.library-list {
+  display: grid;
+  max-height: 176px;
+  gap: 6px;
+  overflow: auto;
+}
+
+.library-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  background: var(--surface-solid);
+  color: var(--text);
+  text-align: left;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.library-row:hover {
+  border-color: #b9c8d5;
+  background: #f8fbfd;
+}
+
+.library-entry {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.library-entry strong,
+.library-entry small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-entry small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.library-load {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .file-picker {
   position: relative;
 }
@@ -928,6 +1008,43 @@ h2 {
   color: #236241;
   font-size: 13px;
   font-weight: 700;
+}
+
+.modal-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(18, 26, 33, 0.28);
+}
+
+.confirm-dialog {
+  display: grid;
+  width: min(360px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-md);
+}
+
+.confirm-dialog-body {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.dialog-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.dialog-actions .tool-button {
+  min-width: 0;
 }
 
 .adapt-mode-grid {
