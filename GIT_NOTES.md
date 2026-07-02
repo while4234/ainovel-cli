@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `0bac765`
+- Latest source change: branch `main`, `5c0d9a4`
   `fix: preserve multi-turn adapt cocreate drafts`, making Web adaptation
   co-create consolidate multi-turn planning before proposal generation and
   reject unusable planner output instead of silently saving a fallback plan.
@@ -55,7 +55,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-03 `0bac765` `fix: preserve multi-turn adapt cocreate drafts`:
+- 2026-07-03 `5c0d9a4` `fix: preserve multi-turn adapt cocreate drafts`:
   tracks co-create draft freshness, repairs missing/stale/regressed drafts,
   keeps all user planning turns in repair context, runs a final consolidation
   before multi-turn adapt proposal generation, clears stale adapt co-create
