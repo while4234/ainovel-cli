@@ -277,10 +277,19 @@ func projectAdaptationUploadDir(manifest ProjectManifest) string {
 	return filepath.Join(manifest.RootDir, "uploads", "adaptation")
 }
 
-func projectAdaptationStatus(manifest ProjectManifest) (apiAdaptationStatus, error) {
+func projectAdaptationStatus(manifest ProjectManifest, analysisRunning bool) (apiAdaptationStatus, error) {
 	status := apiAdaptationStatus{AnalysisStatus: "idle"}
 	sourceDir := projectAdaptationUploadDir(manifest)
 	st := storepkg.NewStore(manifest.OutputDir)
+
+	applyRunning := func() {
+		if !analysisRunning {
+			return
+		}
+		status.AnalysisStatus = "running"
+		status.Message = "原文分析进行中"
+		status.AnalysisEvents = adaptationStatusEvents("running", latestAdaptationTotal(status.AnalysisEvents))
+	}
 
 	adaptationManifest, err := st.Adaptation.LoadSourceManifest()
 	if err != nil {
@@ -295,6 +304,7 @@ func projectAdaptationStatus(manifest ProjectManifest) (apiAdaptationStatus, err
 		status.AnalysisStatus = adaptationAnalysisStatus(st, adaptationManifest)
 		status.Message = adaptationStatusMessage(status.AnalysisStatus)
 		status.AnalysisEvents = adaptationStatusEvents(status.AnalysisStatus, adaptationManifest.ChapterCount)
+		applyRunning()
 		return status, nil
 	}
 
@@ -306,6 +316,7 @@ func projectAdaptationStatus(manifest ProjectManifest) (apiAdaptationStatus, err
 		status.SourceFile = sourceFile
 		status.Message = "已恢复上传原文"
 	}
+	applyRunning()
 	return status, nil
 }
 
@@ -326,6 +337,8 @@ func adaptationAnalysisStatus(st *storepkg.Store, manifest *domain.AdaptationSou
 
 func adaptationStatusMessage(status string) string {
 	switch status {
+	case "running":
+		return "原文分析进行中"
 	case "done":
 		return "已恢复原文分析"
 	case "paused":
@@ -336,13 +349,17 @@ func adaptationStatusMessage(status string) string {
 }
 
 func adaptationStatusEvents(status string, total int) []apiAdaptationEvent {
-	if status != "done" && status != "paused" {
+	if status != "done" && status != "paused" && status != "running" {
 		return nil
 	}
 	stage := adapt.StageDone
 	current := total
 	message := "原文分析已恢复"
-	if status == "paused" {
+	if status == "running" {
+		stage = adapt.StageChapter
+		current = 0
+		message = "原文分析进行中"
+	} else if status == "paused" {
 		stage = adapt.StagePaused
 		current = 0
 		message = "原文分析未完成，可再次点击分析继续"
@@ -354,6 +371,15 @@ func adaptationStatusEvents(status string, total int) []apiAdaptationEvent {
 		Total:   total,
 		Message: message,
 	}}
+}
+
+func latestAdaptationTotal(events []apiAdaptationEvent) int {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Total > 0 {
+			return events[i].Total
+		}
+	}
+	return 0
 }
 
 func uploadedFileFromPath(sourceDir, sourcePath string) (*apiUploadedFile, error) {

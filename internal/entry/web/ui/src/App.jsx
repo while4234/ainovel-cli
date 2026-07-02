@@ -308,7 +308,7 @@ export default function App() {
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
   const projectRunning = isProjectRunning(snapshot);
   const adaptationAnalysisRunning = adaptation.analysisStatus === 'running';
-  const projectActionBusy = busy || projectRunning;
+  const projectActionBusy = busy || projectRunning || adaptationAnalysisRunning;
   const projectPauseAvailable = projectRunning || adaptationAnalysisRunning;
 
   const resetProjectScopedState = useCallback((clearProject = false) => {
@@ -475,6 +475,9 @@ export default function App() {
       });
       if (event.type === 'cocreate_state') {
         setCoCreate((previous) => coCreateStateFromEvent(event, previous));
+      }
+      if (event.type === 'host_event') {
+        setAdaptation((previous) => applyAdaptationHostEvent(previous, event));
       }
       setConnection('live');
     };
@@ -3469,6 +3472,52 @@ function appendPausedAnalysisEvent(events) {
       message: '原文分析已暂停，可再次点击分析继续'
     }
   ];
+}
+
+export function applyAdaptationHostEvent(state, webEvent) {
+  const adaptationEvent = adaptationEventFromHostEvent(webEvent);
+  if (!adaptationEvent) {
+    return state;
+  }
+  return {
+    ...state,
+    analysisStatus: adaptationStatusFromEvent(adaptationEvent),
+    analysisEvents: [...(Array.isArray(state.analysisEvents) ? state.analysisEvents : []), adaptationEvent],
+    error: adaptationEvent.error ? adaptationEvent.error : ''
+  };
+}
+
+function adaptationEventFromHostEvent(webEvent) {
+  const event = webEvent?.event;
+  if (String(event?.category || '').toUpperCase() !== 'ADAPT') {
+    return null;
+  }
+  const stage = String(event.kind || '').trim() || 'event';
+  const failed = Boolean(event.failed || event.level === 'error' || stage.toLowerCase() === 'error');
+  const message = String(event.summary || event.detail || '').trim();
+  const error = failed ? String(event.detail || event.summary || '').trim() : '';
+  return {
+    time: event.time || webEvent.time || new Date().toISOString(),
+    stage,
+    current: Number(event.current || 0),
+    total: Number(event.total || 0),
+    message,
+    error
+  };
+}
+
+function adaptationStatusFromEvent(event) {
+  const stage = String(event?.stage || '').toLowerCase();
+  if (event?.error || stage === 'error') {
+    return 'error';
+  }
+  if (stage === 'done') {
+    return 'done';
+  }
+  if (stage === 'paused') {
+    return 'paused';
+  }
+  return 'running';
 }
 
 function isPausedActionError(err) {

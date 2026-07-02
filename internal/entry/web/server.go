@@ -573,7 +573,7 @@ type projectSnapshotResponse struct {
 }
 
 func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManifest) (projectSnapshotResponse, error) {
-	adaptation, err := projectAdaptationStatus(manifest)
+	adaptation, err := projectAdaptationStatus(manifest, session.isActionRunning(projectActionKindAdaptationAnalysis))
 	if err != nil {
 		return projectSnapshotResponse{}, err
 	}

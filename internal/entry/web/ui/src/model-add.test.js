@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyAdaptationHostEvent,
   buildModelAddPayload,
   canEditProjectStyle,
   canSubmitModelAdd,
@@ -71,6 +72,50 @@ describe('model add helpers', () => {
     expect(state.provider).toBe('custom-openai');
     expect(state.model).toBe('');
     expect(canSubmitModelAdd({ ...state, base_url: 'https://proxy.example/v1' }, null)).toBe(false);
+  });
+});
+
+describe('adaptation event helpers', () => {
+  it('keeps refreshed adaptation analysis running from ADAPT stream events', () => {
+    const previous = {
+      analysisStatus: 'paused',
+      analysisEvents: [{ stage: 'paused', message: '原文分析未完成' }],
+      error: 'stale'
+    };
+
+    const next = applyAdaptationHostEvent(previous, {
+      type: 'host_event',
+      event: {
+        category: 'ADAPT',
+        kind: 'chapter',
+        summary: '分析原文第 49/140 章：第49章',
+        time: '2026-07-02T08:10:13Z'
+      }
+    });
+
+    expect(next.analysisStatus).toBe('running');
+    expect(next.error).toBe('');
+    expect(next.analysisEvents.at(-1)).toMatchObject({
+      stage: 'chapter',
+      message: '分析原文第 49/140 章：第49章'
+    });
+  });
+
+  it('marks adaptation analysis as done or error from terminal ADAPT events', () => {
+    const running = { analysisStatus: 'running', analysisEvents: [], error: '' };
+
+    const done = applyAdaptationHostEvent(running, {
+      type: 'host_event',
+      event: { category: 'ADAPT', kind: 'done', summary: '原书分析完成：140 章快照已保存' }
+    });
+    const failed = applyAdaptationHostEvent(done, {
+      type: 'host_event',
+      event: { category: 'ADAPT', kind: 'error', level: 'error', detail: 'source reports incomplete' }
+    });
+
+    expect(done.analysisStatus).toBe('done');
+    expect(failed.analysisStatus).toBe('error');
+    expect(failed.error).toBe('source reports incomplete');
   });
 });
 

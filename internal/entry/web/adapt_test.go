@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -165,6 +167,59 @@ func TestProjectSnapshotRestoresUploadedAdaptationSource(t *testing.T) {
 	}
 	if response.Adaptation.AnalysisStatus != "idle" {
 		t.Fatalf("analysis status = %q, want idle", response.Adaptation.AnalysisStatus)
+	}
+}
+
+func TestProjectSnapshotReportsActiveAdaptationAnalysis(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt Active Snapshot")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	uploadAdaptationSourceForTest(t, server, manifest, "source.txt", "Chapter 1\nsource body")
+	fake := installFakeSession(t, server, manifest)
+	fake.adaptAnalyzeStarted = make(chan struct{})
+	fake.blockAdaptAnalyze = true
+	session := server.sessions.Project(manifest.ID)
+
+	analysisErr := make(chan error, 1)
+	go func() {
+		_, err := session.PrepareAdaptationSource(context.Background(), filepath.Join(manifest.RootDir, "uploads", "adaptation", "source.txt"))
+		analysisErr <- err
+	}()
+
+	select {
+	case <-fake.adaptAnalyzeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("adaptation analysis did not start")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response projectSnapshotResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if response.Adaptation.AnalysisStatus != "running" {
+		t.Fatalf("analysis status = %q, want running", response.Adaptation.AnalysisStatus)
+	}
+	if len(response.Adaptation.AnalysisEvents) == 0 || response.Adaptation.AnalysisEvents[0].Stage != "chapter" {
+		t.Fatalf("analysis events = %+v, want running chapter event", response.Adaptation.AnalysisEvents)
+	}
+
+	if !session.Pause() {
+		t.Fatal("Pause should stop the active adaptation analysis")
+	}
+	select {
+	case <-analysisErr:
+	case <-time.After(time.Second):
+		t.Fatal("adaptation analysis did not stop")
 	}
 }
 

@@ -37,6 +37,8 @@ const (
 	webEventTypeCoCreate    = "cocreate_state"
 
 	webEventHistoryLimit = 1000
+
+	projectActionKindAdaptationAnalysis = "adaptation_analysis"
 )
 
 type SessionManager struct {
@@ -514,7 +516,7 @@ func (s *ProjectSession) ImportSimulationProfile(ctx context.Context, path strin
 }
 
 func (s *ProjectSession) PrepareAdaptationSource(ctx context.Context, sourcePath string) ([]apiAdaptationEvent, error) {
-	ctx, unlock, err := s.beginCancellableAction(ctx, "adaptation_analysis")
+	ctx, unlock, err := s.beginCancellableAction(ctx, projectActionKindAdaptationAnalysis)
 	if err != nil {
 		return nil, err
 	}
@@ -717,6 +719,12 @@ func (s *ProjectSession) beginCancellableAction(parent context.Context, kind str
 		cancel()
 		unlock()
 	}, nil
+}
+
+func (s *ProjectSession) isActionRunning(kind string) bool {
+	s.actionCancelMu.Lock()
+	defer s.actionCancelMu.Unlock()
+	return s.actionCancel != nil && s.actionKind == strings.TrimSpace(kind)
 }
 
 func (s *ProjectSession) setActionCancel(kind string, cancel context.CancelFunc) {
@@ -1048,7 +1056,7 @@ func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
 
 func (s *ProjectSession) appendActionCanceledEvent(kind string) WebEvent {
 	summary := "当前操作已请求暂停"
-	if kind == "adaptation_analysis" {
+	if kind == projectActionKindAdaptationAnalysis {
 		summary = "原文分析已请求暂停"
 	}
 	return s.appendHostEvent(host.Event{
