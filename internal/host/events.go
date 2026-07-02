@@ -112,8 +112,12 @@ type UISnapshot struct {
 	CompassDirection   string
 	CompassScale       string
 	SimulationProfile  *domain.SimulationCompactProfile
+	SimulationSummary  *SimulationProfileSummary
+	CreativeBlueprint  *CreativeBlueprintSummary
 	AdaptationProposal *domain.AdaptationPlan
 	AdaptationPlan     *domain.AdaptationPlan
+	ProposalSummary    *AdaptationPlanSummary
+	AdaptationSummary  *AdaptationPlanSummary
 
 	// 详情
 	LastCommitSummary  string
@@ -124,11 +128,77 @@ type UISnapshot struct {
 
 // OutlineSnapshot 是大纲条目的展示摘要。
 type OutlineSnapshot struct {
-	Chapter   int
-	Title     string
-	CoreEvent string
-	Hook      string
-	Scenes    []string
+	Chapter          int
+	Title            string
+	CoreEvent        string
+	Hook             string
+	Scenes           []string
+	WrittenWordCount int
+	WordBudget       *ChapterBudgetSnapshot
+	SourceCoverage   *SourceCoverageSnapshot
+	PreserveEvents   []string
+	RequiredChanges  []string
+	ForbiddenMoves   []string
+	CoverageNote     string
+}
+
+type SimulationProfileSummary struct {
+	Loaded        bool
+	Version       string
+	UpdatedAt     string
+	SourceCount   int
+	SourceFiles   []string
+	StyleSignals  []string
+	HookSignals   []string
+	ReaderSignals []string
+}
+
+type CreativeBlueprintSummary struct {
+	Loaded           bool
+	NovelName        string
+	Premise          string
+	OutlineChapters  int
+	CharacterCount   int
+	WorldRuleCount   int
+	Layered          bool
+	CompassDirection string
+	CompassScale     string
+}
+
+type AdaptationPlanSummary struct {
+	Loaded            bool
+	Status            string
+	Granularity       string
+	RewritePolicy     string
+	Brief             string
+	ChapterCount      int
+	SourceTotalRunes  int
+	TargetTotalRunes  int
+	TargetMinRunes    int
+	TargetMaxRunes    int
+	WordTolerance     float64
+	MainlineRules     []string
+	RelationshipGoals []string
+}
+
+type ChapterBudgetSnapshot struct {
+	TargetWords int
+	MinWords    int
+	MaxWords    int
+	SourceRunes int
+	TargetRunes int
+	MinRunes    int
+	MaxRunes    int
+	Tolerance   float64
+}
+
+type SourceCoverageSnapshot struct {
+	Chapters []int
+	From     int
+	To       int
+	Runes    int
+	IsAdded  bool
+	Note     string
 }
 
 // AgentSnapshot 是 Agent 状态的展示投影。

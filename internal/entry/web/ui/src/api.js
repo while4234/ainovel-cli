@@ -176,6 +176,20 @@ export function startAdaptation(projectId, sourceFile, mode, brief) {
   });
 }
 
+export function buildAdaptationProposal(projectId, sourceFile, mode, brief) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/proposal`, {
+    method: 'POST',
+    body: JSON.stringify({ source_file: sourceFile, mode, brief })
+  });
+}
+
+export function confirmAdaptationProposal(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
 export function beginCoCreate(projectId, payload) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/begin`, {
     method: 'POST',

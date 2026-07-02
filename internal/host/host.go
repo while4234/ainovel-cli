@@ -905,16 +905,36 @@ func (h *Host) fillContextStatus(snap *UISnapshot) {
 
 // fillDetails 填充详情区:设定、角色、最近 commit/review/摘要。
 func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
+	var proposal *domain.AdaptationPlan
+	if loaded, _ := h.store.Adaptation.LoadProposal(); loaded != nil {
+		proposal = loaded
+		snap.AdaptationProposal = loaded
+		snap.ProposalSummary = adaptationPlanSummary(loaded)
+	}
+	var plan *domain.AdaptationPlan
+	if loaded, _ := h.store.Adaptation.LoadPlan(); loaded != nil {
+		plan = loaded
+		snap.AdaptationPlan = loaded
+		snap.AdaptationSummary = adaptationPlanSummary(loaded)
+	}
+	adaptationChapters := activeAdaptationChapters(plan, proposal)
+
 	if premise, _ := h.store.Outline.LoadPremise(); premise != "" {
 		snap.Premise = truncate(premise, 80)
 		snap.PremiseFull = premise
 	}
 	if outline, _ := h.store.Outline.LoadOutline(); len(outline) > 0 {
 		for _, e := range outline {
-			snap.Outline = append(snap.Outline, OutlineSnapshot{
-				Chapter: e.Chapter, Title: e.Title, CoreEvent: e.CoreEvent, Hook: e.Hook, Scenes: append([]string(nil), e.Scenes...),
-			})
+			var adaptation *domain.AdaptationChapterPlan
+			if chapter, ok := adaptationChapters[e.Chapter]; ok {
+				adaptation = &chapter
+			}
+			snap.Outline = append(snap.Outline, outlineSnapshotFromEntry(e, progress, snap.WordBudget, adaptation))
 		}
+	} else if plan != nil {
+		snap.Outline = outlineSnapshotsFromAdaptation(plan, progress, snap.WordBudget)
+	} else if proposal != nil {
+		snap.Outline = outlineSnapshotsFromAdaptation(proposal, progress, snap.WordBudget)
 	}
 	if progress != nil && progress.Layered {
 		if compass, _ := h.store.Outline.LoadCompass(); compass != nil {
@@ -932,12 +952,7 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 	}
 	if profile, _ := h.store.Simulation.Load(); profile != nil {
 		snap.SimulationProfile = domain.CompactSimulationProfile(profile)
-	}
-	if proposal, _ := h.store.Adaptation.LoadProposal(); proposal != nil {
-		snap.AdaptationProposal = proposal
-	}
-	if plan, _ := h.store.Adaptation.LoadPlan(); plan != nil {
-		snap.AdaptationPlan = plan
+		snap.SimulationSummary = simulationProfileSummary(snap.SimulationProfile)
 	}
 	if chars, _ := h.store.Characters.Load(); len(chars) > 0 {
 		snap.CharacterDetails = append([]domain.Character(nil), chars...)
@@ -990,6 +1005,7 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 			}
 		}
 	}
+	snap.CreativeBlueprint = creativeBlueprintSummary(snap)
 }
 
 func deriveStatusLabel(s UISnapshot) string {

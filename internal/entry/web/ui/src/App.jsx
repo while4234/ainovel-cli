@@ -33,8 +33,10 @@ import {
   addGlobalProviderModel,
   addProviderModel,
   beginCoCreate,
+  buildAdaptationProposal,
   cancelCoCreate,
   commitCoCreate,
+  confirmAdaptationProposal,
   completeGrokLogin,
   continueProject,
   createProject,
@@ -60,7 +62,6 @@ import {
   sendCoCreate,
   setProjectThinking,
   startProject,
-  startAdaptation,
   startGrokLogin,
   steerProject,
   switchGlobalDefaultModel,
@@ -115,6 +116,7 @@ function createAdaptationState() {
     analysisEvents: [],
     mode: 'chapter',
     brief: '',
+    proposalKey: '',
     startStatus: 'idle',
     startMessage: '',
     error: ''
@@ -766,12 +768,17 @@ export default function App() {
       return;
     }
     setBusy(true);
+    setWorkbench((previous) => ({
+      ...previous,
+      snapshot: clearAdaptationProposalSnapshot(previous.snapshot)
+    }));
     setAdaptation((previous) => ({
       ...previous,
       sourceFile: null,
       uploadMessage: '',
       analysisStatus: 'idle',
       analysisEvents: [],
+      proposalKey: '',
       startStatus: 'idle',
       startMessage: '',
       error: ''
@@ -806,7 +813,10 @@ export default function App() {
     }));
     try {
       const data = await analyzeAdaptationSource(activeProject.id, adaptation.sourceFile.relative_path);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setWorkbench((previous) => ({
+        ...previous,
+        snapshot: clearAdaptationProposalSnapshot(data.snapshot || previous.snapshot)
+      }));
       setAdaptation((previous) => ({
         ...previous,
         analysisStatus: 'done',
@@ -829,6 +839,45 @@ export default function App() {
     if (!activeProject?.id || adaptation.analysisStatus !== 'done') {
       return;
     }
+    const proposalKey = buildAdaptationProposalKey(adaptation);
+    setBusy(true);
+    setWorkbench((previous) => ({
+      ...previous,
+      snapshot: clearAdaptationProposalSnapshot(previous.snapshot)
+    }));
+    setAdaptation((previous) => ({
+      ...previous,
+      proposalKey: '',
+      startStatus: 'running',
+      startMessage: '',
+      error: ''
+    }));
+    try {
+      const data = await buildAdaptationProposal(activeProject.id, adaptation.sourceFile.relative_path, adaptation.mode, adaptation.brief);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setAdaptation((previous) => ({
+        ...previous,
+        proposalKey,
+        startStatus: 'done',
+        startMessage: `提案已生成：${adaptationModeLabel(data.mode)} / ${data.rewrite_policy}`,
+        error: ''
+      }));
+    } catch (err) {
+      setAdaptation((previous) => ({
+        ...previous,
+        startStatus: 'error',
+        startMessage: '',
+        error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmAdaptationRun = async () => {
+    if (!activeProject?.id || !isAdaptationProposalCurrent(adaptation)) {
+      return;
+    }
     setBusy(true);
     setAdaptation((previous) => ({
       ...previous,
@@ -837,12 +886,12 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await startAdaptation(activeProject.id, adaptation.sourceFile.relative_path, adaptation.mode, adaptation.brief);
+      const data = await confirmAdaptationProposal(activeProject.id);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setAdaptation((previous) => ({
         ...previous,
         startStatus: 'done',
-        startMessage: `${adaptationModeLabel(data.mode)} / ${data.rewrite_policy}`,
+        startMessage: '提案已确认，写作已启动',
         error: ''
       }));
     } catch (err) {
@@ -1564,6 +1613,7 @@ export default function App() {
             <SimulationPanel
               activeProject={activeProject}
               busy={busy}
+              snapshot={snapshot}
               simulation={simulation}
               onUploadSources={uploadSimulationSources}
               onAnalyze={runSimulationAnalysis}
@@ -1573,11 +1623,13 @@ export default function App() {
             <AdaptationPanel
               activeProject={activeProject}
               busy={busy}
+              snapshot={snapshot}
               adaptation={adaptation}
               setAdaptation={setAdaptation}
               onUploadSource={uploadAdaptation}
               onAnalyze={runAdaptationAnalysis}
               onStart={startAdaptationRun}
+              onConfirm={confirmAdaptationRun}
               onCoCreate={() => {
                 setSideView('cocreate');
                 beginCoCreateFlow('adapt');
@@ -1664,11 +1716,13 @@ function ProgressItem({ label, value, wide = false }) {
 }
 
 function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, setSteerText, busy }) {
-  const outline = snapshot?.Outline || snapshot?.outline || [];
+  const outline = getSnapshotOutlineRows(snapshot);
   const agents = snapshot?.Agents || snapshot?.agents || [];
   const premise = textValue(snapshot, 'PremiseFull', 'premise_full', 'Premise', 'premise');
   const characterDetails = arrayValue(snapshot, 'CharacterDetails', 'character_details');
   const worldRules = arrayValue(snapshot, 'WorldRules', 'world_rules');
+  const blueprint = getCreativeBlueprint(snapshot);
+  const adaptationReview = getAdaptationProposalReview(snapshot);
   const hasFoundation = Boolean(premise || outline.length || characterDetails.length || worldRules.length);
   const running = isProjectRunning(snapshot);
   return (
@@ -1701,6 +1755,41 @@ function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, set
         </button>
       </form>
 
+      {blueprint.loaded ? (
+        <section className="snapshot-summary-card">
+          <div className="section-title">
+            <BookOpen size={17} />
+            <span>创作蓝图</span>
+          </div>
+          <div className="summary-metrics">
+            <Metric label="大纲" value={blueprint.outlineChapters} />
+            <Metric label="角色" value={blueprint.characterCount} />
+            <Metric label="规则" value={blueprint.worldRuleCount} />
+            <Metric label="结构" value={blueprint.layered ? '分层' : '扁平'} />
+          </div>
+          {blueprint.premise ? <p>{blueprint.premise}</p> : null}
+          {blueprint.compassDirection || blueprint.compassScale ? (
+            <small>{[blueprint.compassDirection, blueprint.compassScale].filter(Boolean).join(' / ')}</small>
+          ) : null}
+        </section>
+      ) : null}
+
+      {adaptationReview.loaded ? (
+        <section className="snapshot-summary-card">
+          <div className="section-title">
+            <FileText size={17} />
+            <span>改编方向</span>
+          </div>
+          <div className="summary-metrics">
+            <Metric label="状态" value={adaptationReview.status || '-'} />
+            <Metric label="模式" value={adaptationReview.granularity || '-'} />
+            <Metric label="章节" value={adaptationReview.chapterCount || 0} />
+            <Metric label="目标" value={adaptationReview.targetTotalRunes ? formatCompact(adaptationReview.targetTotalRunes) : '-'} />
+          </div>
+          {adaptationReview.brief ? <p>{adaptationReview.brief}</p> : null}
+        </section>
+      ) : null}
+
       <section>
         <div className="section-title">
           <BookOpen size={17} />
@@ -1710,11 +1799,8 @@ function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, set
           {outline.length === 0 ? (
             <div className="empty-state">暂无大纲</div>
           ) : (
-            outline.slice(0, 12).map((item) => (
-              <div className="chapter-row" key={`${item.Chapter || item.chapter}-${item.Title || item.title}`}>
-                <span>{item.Chapter || item.chapter}</span>
-                <strong>{item.Title || item.title || '未命名章节'}</strong>
-              </div>
+            outline.map((item) => (
+              <ChapterRow item={item} key={`${item.chapter}-${item.title}`} />
             ))
           )}
         </div>
@@ -2041,12 +2127,55 @@ function CoCreatePanel({
   );
 }
 
-function AdaptationPanel({ activeProject, busy, adaptation, setAdaptation, onUploadSource, onAnalyze, onStart, onCoCreate }) {
+function ChapterRow({ item }) {
+  const scenes = item.scenes || [];
+  const budget = item.wordBudget;
+  const coverage = item.sourceCoverage;
+  const budgetLabel = budget?.targetRunes
+    ? `${formatCompact(budget.targetRunes)} 字`
+    : budget?.targetWords ? `${formatCompact(budget.targetWords)} 字` : '';
+  const rangeLabel = budget?.minRunes && budget?.maxRunes
+    ? `${formatCompact(budget.minRunes)}-${formatCompact(budget.maxRunes)}`
+    : budget?.minWords && budget?.maxWords ? `${formatCompact(budget.minWords)}-${formatCompact(budget.maxWords)}` : '';
+  const sourceLabel = coverage
+    ? coverage.isAdded ? '新增' : coverage.from && coverage.to ? `原 ${coverage.from}-${coverage.to}` : coverage.chapters?.length ? `原 ${coverage.chapters.join(',')}` : ''
+    : '';
+  return (
+    <div className="chapter-row">
+      <span>{item.chapter || '-'}</span>
+      <div className="chapter-row-main">
+        <strong>{item.title || '未命名章节'}</strong>
+        {item.coreEvent ? <small>{item.coreEvent}</small> : null}
+        {item.hook ? <small>钩子：{item.hook}</small> : null}
+        <div className="chapter-meta-line">
+          {sourceLabel ? <em>{sourceLabel}</em> : null}
+          {budgetLabel ? <em>预算 {budgetLabel}{rangeLabel ? ` (${rangeLabel})` : ''}</em> : null}
+          {item.writtenWordCount > 0 ? <em>已写 {formatCompact(item.writtenWordCount)}</em> : null}
+          {scenes.length ? <em>{scenes.length} 场</em> : null}
+        </div>
+        {scenes.length ? <p>{scenes.join(' / ')}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function AdaptationPanel({ activeProject, busy, snapshot, adaptation, setAdaptation, onUploadSource, onAnalyze, onStart, onConfirm, onCoCreate }) {
   const latestAnalysis = latestSimulationEvent(adaptation.analysisEvents);
   const analyzed = adaptation.analysisStatus === 'done';
+  const proposal = getVisibleAdaptationProposalReview(snapshot, adaptation);
   const canAnalyze = Boolean(activeProject && adaptation.sourceFile && !busy && adaptation.analysisStatus !== 'running');
   const canCoCreate = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy);
   const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.brief.trim());
+  const canConfirm = Boolean(activeProject && !busy && proposal.proposalReady && isAdaptationProposalCurrent(adaptation));
+  const updateProposalInput = (changes) => {
+    setAdaptation((previous) => ({
+      ...previous,
+      ...changes,
+      proposalKey: '',
+      startStatus: 'idle',
+      startMessage: ''
+    }));
+  };
   return (
     <div className="side-content">
       {adaptation.error ? <div className="error-banner compact">{adaptation.error}</div> : null}
@@ -2110,7 +2239,7 @@ function AdaptationPanel({ activeProject, busy, adaptation, setAdaptation, onUpl
                   checked={adaptation.mode === mode.value}
                   disabled={busy}
                   name="adapt-mode"
-                  onChange={() => setAdaptation((previous) => ({ ...previous, mode: mode.value }))}
+                  onChange={() => updateProposalInput({ mode: mode.value })}
                   type="radio"
                   value={mode.value}
                 />
@@ -2124,12 +2253,39 @@ function AdaptationPanel({ activeProject, busy, adaptation, setAdaptation, onUpl
             disabled={busy}
             placeholder="改编方向..."
             value={adaptation.brief}
-            onChange={(event) => setAdaptation((previous) => ({ ...previous, brief: event.target.value }))}
+            onChange={(event) => updateProposalInput({ brief: event.target.value })}
           />
           <button className="tool-button accent full-width" disabled={!canStart} onClick={onStart} type="button">
             <Play size={16} />
-            Start
+            生成提案
           </button>
+          {proposal.loaded ? (
+            <div className="proposal-review">
+              <div className="section-title">
+                <FileText size={17} />
+                <span>提案确认</span>
+              </div>
+              <div className={`workflow-status ${proposal.proposalReady ? 'ready' : proposal.confirmed ? 'done' : 'idle'}`}>
+                <strong>{proposal.confirmed ? '已确认' : proposal.proposalReady ? '待确认' : proposal.status || '等待提案'}</strong>
+                <span>{proposal.chapterCount} 章 / {proposal.granularity || '-'} / {proposal.rewritePolicy || '-'}</span>
+              </div>
+              {proposal.brief ? <p>{proposal.brief}</p> : null}
+              {proposal.rules.length ? (
+                <ul>
+                  {proposal.rules.slice(0, 4).map((rule, index) => <li key={`proposal-rule-${index}`}>{rule}</li>)}
+                </ul>
+              ) : null}
+              <div className="proposal-chapter-list">
+                {proposal.chapters.map((chapter) => (
+                  <ChapterRow item={chapter} key={`proposal-${chapter.chapter}-${chapter.title}`} />
+                ))}
+              </div>
+              <button className="tool-button accent full-width" disabled={!canConfirm} onClick={onConfirm} type="button">
+                <Check size={16} />
+                确认并启动
+              </button>
+            </div>
+          ) : null}
           <button className="tool-button full-width" disabled={!canCoCreate} onClick={onCoCreate} type="button">
             <MessageSquareText size={16} />
             进入共创
@@ -2144,12 +2300,30 @@ function AdaptationPanel({ activeProject, busy, adaptation, setAdaptation, onUpl
   );
 }
 
-function SimulationPanel({ activeProject, busy, simulation, onUploadSources, onAnalyze, onImportProfile }) {
+function SimulationPanel({ activeProject, busy, snapshot, simulation, onUploadSources, onAnalyze, onImportProfile }) {
   const latestAnalysis = latestSimulationEvent(simulation.analysisEvents);
   const latestImport = latestSimulationEvent(simulation.importEvents);
+  const profile = getSimulationProfileStatus(snapshot);
   return (
     <div className="side-content">
       {simulation.error ? <div className="error-banner compact">{simulation.error}</div> : null}
+
+      <section className="snapshot-summary-card">
+        <div className="section-title">
+          <FileJson size={17} />
+          <span>当前画像</span>
+        </div>
+        <div className={`workflow-status ${profile.loaded ? 'done' : 'idle'}`}>
+          <strong>{profile.loaded ? '已加载' : '未加载'}</strong>
+          <span>{profile.loaded ? `${profile.sourceCount} 篇语料${profile.updatedAt ? ` / ${profile.updatedAt}` : ''}` : '上传或导入画像后会出现在这里'}</span>
+        </div>
+        {profile.sourceFiles.length ? (
+          <div className="foundation-chip-list">
+            {profile.sourceFiles.slice(0, 6).map((file) => <span key={file}>{file}</span>)}
+          </div>
+        ) : null}
+        {profile.signals.length ? <p>{profile.signals.join(' / ')}</p> : null}
+      </section>
 
       <section className="simulation-section">
         <div className="section-title">
@@ -3343,6 +3517,151 @@ export function deriveWorkspaceProgress(snapshot, eventRows = []) {
   };
 }
 
+export function getSimulationProfileStatus(snapshot) {
+  const summary = objectValue(snapshot, 'SimulationSummary', 'simulationSummary', 'simulation_summary');
+  const profile = objectValue(snapshot, 'SimulationProfile', 'simulationProfile', 'simulation_profile');
+  const loaded = Boolean(
+    valueByKey(summary, 'Loaded', 'loaded') ||
+    summary ||
+    profile
+  );
+  const sourceFiles = arrayValue(summary, 'SourceFiles', 'sourceFiles', 'source_files');
+  const fallbackFiles = arrayValue(profile, 'SourceFiles', 'sourceFiles', 'source_files');
+  const styleSignals = arrayValue(summary, 'StyleSignals', 'styleSignals', 'style_signals');
+  const hookSignals = arrayValue(summary, 'HookSignals', 'hookSignals', 'hook_signals');
+  const readerSignals = arrayValue(summary, 'ReaderSignals', 'readerSignals', 'reader_signals');
+  return {
+    loaded,
+    version: textValue(summary, 'Version', 'version') || textValue(profile, 'Version', 'version'),
+    updatedAt: textValue(summary, 'UpdatedAt', 'updatedAt', 'updated_at') || textValue(profile, 'UpdatedAt', 'updatedAt', 'updated_at'),
+    sourceCount: numberValue(summary, 'SourceCount', 'sourceCount', 'source_count') ||
+      numberValue(profile, 'SourceCount', 'sourceCount', 'source_count'),
+    sourceFiles: sourceFiles.length ? sourceFiles : fallbackFiles,
+    signals: [...styleSignals, ...hookSignals, ...readerSignals].filter(Boolean).slice(0, 6)
+  };
+}
+
+export function getCreativeBlueprint(snapshot) {
+  const summary = objectValue(snapshot, 'CreativeBlueprint', 'creativeBlueprint', 'creative_blueprint');
+  const outline = getSnapshotOutlineRows(snapshot);
+  const loaded = Boolean(valueByKey(summary, 'Loaded', 'loaded') || summary || outline.length);
+  return {
+    loaded,
+    novelName: textValue(summary, 'NovelName', 'novelName', 'novel_name') ||
+      textValue(snapshot, 'NovelName', 'novelName', 'novel_name'),
+    premise: textValue(summary, 'Premise', 'premise') ||
+      textValue(snapshot, 'Premise', 'premise'),
+    outlineChapters: numberValue(summary, 'OutlineChapters', 'outlineChapters', 'outline_chapters') || outline.length,
+    characterCount: numberValue(summary, 'CharacterCount', 'characterCount', 'character_count') ||
+      arrayValue(snapshot, 'CharacterDetails', 'characterDetails', 'character_details').length,
+    worldRuleCount: numberValue(summary, 'WorldRuleCount', 'worldRuleCount', 'world_rule_count') ||
+      arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules').length,
+    layered: Boolean(valueByKey(summary, 'Layered', 'layered') || valueByKey(snapshot, 'Layered', 'layered')),
+    compassDirection: textValue(summary, 'CompassDirection', 'compassDirection', 'compass_direction') ||
+      textValue(snapshot, 'CompassDirection', 'compassDirection', 'compass_direction'),
+    compassScale: textValue(summary, 'CompassScale', 'compassScale', 'compass_scale') ||
+      textValue(snapshot, 'CompassScale', 'compassScale', 'compass_scale')
+  };
+}
+
+export function getAdaptationProposalReview(snapshot) {
+  const proposalSummary = objectValue(snapshot, 'ProposalSummary', 'proposalSummary', 'proposal_summary');
+  const adaptationSummary = objectValue(snapshot, 'AdaptationSummary', 'adaptationSummary', 'adaptation_summary');
+  const rawProposal = objectValue(snapshot, 'AdaptationProposal', 'adaptationProposal', 'adaptation_proposal');
+  const rawPlan = objectValue(snapshot, 'AdaptationPlan', 'adaptationPlan', 'adaptation_plan');
+  const summary = proposalSummary || adaptationSummary;
+  const plan = rawProposal || rawPlan;
+  const status = textValue(summary, 'Status', 'status') || textValue(plan, 'Status', 'status');
+  const chapters = getSnapshotOutlineRows(snapshot);
+  const fallbackChapters = chapters.length ? chapters : rowsFromAdaptationPlan(plan);
+  const rules = [
+    ...arrayValue(summary, 'MainlineRules', 'mainlineRules', 'mainline_rules'),
+    ...arrayValue(summary, 'RelationshipGoals', 'relationshipGoals', 'relationship_goals'),
+    ...arrayValue(plan, 'MainlineRules', 'mainlineRules', 'mainline_rules'),
+    ...arrayValue(plan, 'RelationshipGoals', 'relationshipGoals', 'relationship_goals')
+  ].filter(Boolean);
+  const loaded = Boolean(summary || plan);
+  const confirmed = status === 'confirmed' || Boolean(rawPlan && !rawProposal);
+  return {
+    loaded,
+    confirmed,
+    proposalReady: loaded && !confirmed && (status === 'proposal' || Boolean(rawProposal)),
+    status,
+    granularity: textValue(summary, 'Granularity', 'granularity') || textValue(plan, 'Granularity', 'granularity'),
+    rewritePolicy: textValue(summary, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy') || textValue(plan, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy'),
+    brief: textValue(summary, 'Brief', 'brief') || textValue(plan, 'Brief', 'brief'),
+    chapterCount: numberValue(summary, 'ChapterCount', 'chapterCount', 'chapter_count') || fallbackChapters.length,
+    sourceTotalRunes: numberValue(summary, 'SourceTotalRunes', 'sourceTotalRunes', 'source_total_runes') ||
+      numberValue(plan, 'SourceTotalRunes', 'sourceTotalRunes', 'source_total_runes'),
+    targetTotalRunes: numberValue(summary, 'TargetTotalRunes', 'targetTotalRunes', 'target_total_runes') ||
+      numberValue(plan, 'TargetTotalRunes', 'targetTotalRunes', 'target_total_runes'),
+    rules,
+    chapters: fallbackChapters
+  };
+}
+
+export function getVisibleAdaptationProposalReview(snapshot, adaptation = {}) {
+  const review = getAdaptationProposalReview(snapshot);
+  if (!review.loaded || isAdaptationProposalCurrent(adaptation)) {
+    return { ...review, stale: false };
+  }
+  return {
+    ...review,
+    loaded: false,
+    proposalReady: false,
+    stale: true,
+    rules: [],
+    chapters: []
+  };
+}
+
+export function isAdaptationProposalCurrent(adaptation = {}) {
+  const proposalKey = String(adaptation.proposalKey || '');
+  return Boolean(proposalKey && proposalKey === buildAdaptationProposalKey(adaptation));
+}
+
+export function buildAdaptationProposalKey({ sourceFile = '', mode = '', brief = '' } = {}) {
+  const sourcePath = typeof sourceFile === 'string' ? sourceFile : sourceFile?.relative_path || '';
+  return JSON.stringify([
+    String(sourcePath || '').trim(),
+    String(mode || '').trim(),
+    String(brief || '').trim()
+  ]);
+}
+
+export function clearAdaptationProposalSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return snapshot;
+  }
+  const proposalKeys = [
+    'AdaptationProposal',
+    'adaptationProposal',
+    'adaptation_proposal',
+    'ProposalSummary',
+    'proposalSummary',
+    'proposal_summary'
+  ];
+  if (!proposalKeys.some((key) => Object.prototype.hasOwnProperty.call(snapshot, key))) {
+    return snapshot;
+  }
+  const next = { ...snapshot };
+  for (const key of proposalKeys) {
+    delete next[key];
+  }
+  return next;
+}
+
+export function getSnapshotOutlineRows(snapshot) {
+  const rows = arrayValue(snapshot, 'Outline', 'outline');
+  if (rows.length) {
+    return rows.map(normalizeOutlineRow);
+  }
+  return rowsFromAdaptationPlan(
+    objectValue(snapshot, 'AdaptationProposal', 'adaptationProposal', 'adaptation_proposal') ||
+    objectValue(snapshot, 'AdaptationPlan', 'adaptationPlan', 'adaptation_plan')
+  );
+}
+
 export function isProjectRunning(snapshot) {
   if (!snapshot) {
     return false;
@@ -3358,6 +3677,68 @@ export function isProjectRunning(snapshot) {
     return false;
   }
   return arrayValue(snapshot, 'Agents', 'agents').some(isRunningAgent);
+}
+
+function rowsFromAdaptationPlan(plan) {
+  return arrayValue(plan, 'Chapters', 'chapters').map(normalizeOutlineRow);
+}
+
+function normalizeOutlineRow(row) {
+  const chapter = numberValue(row, 'Chapter', 'chapter');
+  const wordBudget = normalizeChapterBudget(row);
+  const sourceCoverage = normalizeSourceCoverage(row);
+  return {
+    chapter,
+    title: textValue(row, 'Title', 'title') || `第 ${chapter || '?'} 章`,
+    coreEvent: textValue(row, 'CoreEvent', 'coreEvent', 'core_event'),
+    hook: textValue(row, 'Hook', 'hook'),
+    scenes: arrayValue(row, 'Scenes', 'scenes'),
+    writtenWordCount: numberValue(row, 'WrittenWordCount', 'writtenWordCount', 'written_word_count'),
+    wordBudget,
+    sourceCoverage,
+    preserveEvents: arrayValue(row, 'PreserveEvents', 'preserveEvents', 'preserve_events'),
+    requiredChanges: arrayValue(row, 'RequiredChanges', 'requiredChanges', 'required_changes'),
+    forbiddenMoves: arrayValue(row, 'ForbiddenMoves', 'forbiddenMoves', 'forbidden_moves'),
+    coverageNote: textValue(row, 'CoverageNote', 'coverageNote', 'coverage_note') || sourceCoverage?.note || ''
+  };
+}
+
+function normalizeChapterBudget(row) {
+  const budget = objectValue(row, 'WordBudget', 'wordBudget', 'word_budget') || row;
+  const normalized = {
+    targetWords: numberValue(budget, 'TargetWords', 'targetWords', 'target_words'),
+    minWords: numberValue(budget, 'MinWords', 'minWords', 'min_words'),
+    maxWords: numberValue(budget, 'MaxWords', 'maxWords', 'max_words'),
+    sourceRunes: numberValue(budget, 'SourceRunes', 'sourceRunes', 'source_runes') ||
+      numberValue(row, 'SourceRunes', 'sourceRunes', 'source_runes'),
+    targetRunes: numberValue(budget, 'TargetRunes', 'targetRunes', 'target_runes') ||
+      numberValue(row, 'TargetRunes', 'targetRunes', 'target_runes'),
+    minRunes: numberValue(budget, 'MinRunes', 'minRunes', 'min_runes') ||
+      numberValue(row, 'TargetMinRunes', 'targetMinRunes', 'target_min_runes'),
+    maxRunes: numberValue(budget, 'MaxRunes', 'maxRunes', 'max_runes') ||
+      numberValue(row, 'TargetMaxRunes', 'targetMaxRunes', 'target_max_runes'),
+    tolerance: numberValue(budget, 'Tolerance', 'tolerance')
+  };
+  return Object.values(normalized).some((value) => Number(value) > 0) ? normalized : null;
+}
+
+function normalizeSourceCoverage(row) {
+  const coverage = objectValue(row, 'SourceCoverage', 'sourceCoverage', 'source_coverage') || row;
+  const chapters = arrayValue(coverage, 'Chapters', 'chapters', 'SourceChapters', 'sourceChapters', 'source_chapters');
+  const from = numberValue(coverage, 'From', 'from') || numberValue(row, 'SourceRangeFrom', 'sourceRangeFrom', 'source_range_from');
+  const to = numberValue(coverage, 'To', 'to') || numberValue(row, 'SourceRangeTo', 'sourceRangeTo', 'source_range_to');
+  const range = objectValue(row, 'SourceRange', 'sourceRange', 'source_range');
+  const normalized = {
+    chapters,
+    from: from || numberValue(range, 'From', 'from'),
+    to: to || numberValue(range, 'To', 'to'),
+    runes: numberValue(coverage, 'Runes', 'runes') || numberValue(row, 'SourceRunes', 'sourceRunes', 'source_runes'),
+    isAdded: Boolean(valueByKey(coverage, 'IsAdded', 'isAdded', 'is_added') || valueByKey(row, 'IsAdded', 'isAdded', 'is_added')),
+    note: textValue(coverage, 'Note', 'note') || textValue(row, 'CoverageNote', 'coverageNote', 'coverage_note')
+  };
+  return normalized.chapters.length || normalized.from || normalized.to || normalized.runes || normalized.isAdded || normalized.note
+    ? normalized
+    : null;
 }
 
 function runningLabelFromSnapshot(snapshot) {

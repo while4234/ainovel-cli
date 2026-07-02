@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAdaptationProposalKey,
   buildBeginCoCreatePayload,
   buildCoCreateIntakeInitial,
+  clearAdaptationProposalSnapshot,
   deriveWorkspaceProgress,
+  getAdaptationProposalReview,
+  getVisibleAdaptationProposalReview,
+  getSimulationProfileStatus,
+  getSnapshotOutlineRows,
   isProjectRunning,
   resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords
@@ -104,5 +110,136 @@ describe('workspace progress derivation', () => {
     expect(isProjectRunning({ RuntimeState: 'running', Agents: [] })).toBe(true);
     expect(isProjectRunning({ RuntimeState: 'paused', Agents: [{ Name: 'writer', State: 'idle' }] })).toBe(false);
     expect(isProjectRunning({ RuntimeState: '', Agents: [{ Name: 'writer', State: 'working' }] })).toBe(true);
+  });
+
+  it('normalizes full outline rows with camel, Pascal, and snake fallback fields', () => {
+    const rows = getSnapshotOutlineRows({
+      outline: [
+        {
+          chapter: 13,
+          title: '雨巷录音',
+          coreEvent: '主角确认录音来自未来',
+          hook: '门外脚步声同步响起',
+          scenes: ['事务所', '雨巷'],
+          writtenWordCount: 4200,
+          wordBudget: { targetRunes: 4500, minRunes: 3900, maxRunes: 5100 },
+          sourceCoverage: { chapters: [4, 5], from: 4, to: 5, runes: 3800 }
+        },
+        {
+          Chapter: 14,
+          Title: '旧门牌',
+          CoreEvent: '门牌指向失踪者家属',
+          Scenes: ['老楼'],
+          WrittenWordCount: 0,
+          WordBudget: { TargetWords: 4000, MinWords: 3500, MaxWords: 4500 }
+        }
+      ]
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      chapter: 13,
+      title: '雨巷录音',
+      coreEvent: '主角确认录音来自未来',
+      hook: '门外脚步声同步响起',
+      writtenWordCount: 4200
+    });
+    expect(rows[0].wordBudget.targetRunes).toBe(4500);
+    expect(rows[0].sourceCoverage.from).toBe(4);
+    expect(rows[1].wordBudget.targetWords).toBe(4000);
+  });
+
+  it('falls back to adaptation proposal chapters for old snapshots without Outline', () => {
+    const review = getAdaptationProposalReview({
+      adaptationProposal: {
+        status: 'proposal',
+        granularity: 'free',
+        rewrite_policy: 'full_rewrite',
+        brief: '改成雨城悬疑',
+        chapters: [
+          {
+            chapter: 1,
+            title: '旧录音',
+            core_event: '发现时间错位',
+            source_chapters: [1, 2],
+            target_runes: 3000,
+            target_min_runes: 2600,
+            target_max_runes: 3400
+          }
+        ]
+      }
+    });
+
+    expect(review.loaded).toBe(true);
+    expect(review.proposalReady).toBe(true);
+    expect(review.chapterCount).toBe(1);
+    expect(review.chapters[0].sourceCoverage.chapters).toEqual([1, 2]);
+    expect(review.chapters[0].wordBudget.targetRunes).toBe(3000);
+  });
+
+  it('hides stale adaptation proposals after source upload or proposal input changes', () => {
+    const snapshot = {
+      ProposalSummary: {
+        Status: 'proposal',
+        Granularity: 'free',
+        RewritePolicy: 'full_rewrite',
+        Brief: 'Make it a mystery',
+        ChapterCount: 1
+      },
+      AdaptationProposal: {
+        status: 'proposal',
+        granularity: 'free',
+        rewrite_policy: 'full_rewrite',
+        brief: 'Make it a mystery',
+        chapters: [{ chapter: 1, title: 'Old plan' }]
+      }
+    };
+    const currentAdaptation = {
+      sourceFile: { relative_path: 'old.txt' },
+      mode: 'free',
+      brief: 'Make it a mystery'
+    };
+    currentAdaptation.proposalKey = buildAdaptationProposalKey(currentAdaptation);
+
+    expect(getVisibleAdaptationProposalReview(snapshot, currentAdaptation).proposalReady).toBe(true);
+
+    const uploadedSnapshot = clearAdaptationProposalSnapshot(snapshot);
+    const afterUpload = {
+      sourceFile: { relative_path: 'new.txt' },
+      mode: 'free',
+      brief: 'Make it a mystery',
+      proposalKey: ''
+    };
+    const afterUploadReview = getVisibleAdaptationProposalReview(uploadedSnapshot, afterUpload);
+
+    expect(getAdaptationProposalReview(uploadedSnapshot).loaded).toBe(false);
+    expect(afterUploadReview.loaded).toBe(false);
+    expect(afterUploadReview.proposalReady).toBe(false);
+
+    const changedBriefReview = getVisibleAdaptationProposalReview(snapshot, {
+      ...currentAdaptation,
+      brief: 'Make it a romance'
+    });
+
+    expect(changedBriefReview.loaded).toBe(false);
+    expect(changedBriefReview.proposalReady).toBe(false);
+    expect(changedBriefReview.stale).toBe(true);
+  });
+
+  it('reports imported simulation profiles as loaded after refresh', () => {
+    const profile = getSimulationProfileStatus({
+      SimulationSummary: {
+        Loaded: true,
+        SourceCount: 2,
+        SourceFiles: ['a.txt', 'b.txt'],
+        StyleSignals: ['近景冷调'],
+        HookSignals: ['章尾反转']
+      }
+    });
+
+    expect(profile.loaded).toBe(true);
+    expect(profile.sourceCount).toBe(2);
+    expect(profile.sourceFiles).toEqual(['a.txt', 'b.txt']);
+    expect(profile.signals).toContain('章尾反转');
   });
 });

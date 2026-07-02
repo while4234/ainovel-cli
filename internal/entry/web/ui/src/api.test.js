@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addGlobalProviderModel,
+  buildAdaptationProposal,
+  confirmAdaptationProposal,
   emptyTrashProjects,
   getGlobalModels,
   listTrashProjects,
@@ -68,6 +70,26 @@ describe('web API helpers', () => {
       text: 'Keep a slower burn'
     });
     expect(fetchMock.mock.calls[1][0]).toBe('/api/projects/project-1/cocreate/revise');
+  });
+
+  it('uses explicit adaptation proposal and confirm routes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await buildAdaptationProposal('project-1', 'source.txt', 'free', 'Make it a mystery');
+    await confirmAdaptationProposal('project-1');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project-1/adapt/proposal', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        source_file: 'source.txt',
+        mode: 'free',
+        brief: 'Make it a mystery'
+      })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/adapt/confirm', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({})
+    }));
   });
 
   it('can ask the backend to open the Grok authorization page', async () => {

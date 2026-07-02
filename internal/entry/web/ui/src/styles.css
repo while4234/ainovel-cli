@@ -1572,11 +1572,55 @@ h2 {
 .chapter-row {
   grid-template-columns: 32px minmax(0, 1fr);
   gap: 8px;
+  align-items: start;
+  padding: 8px 9px;
 }
 
 .chapter-row span {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+.chapter-row-main,
+.proposal-review,
+.snapshot-summary-card {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.chapter-row-main small,
+.chapter-row-main p,
+.snapshot-summary-card p,
+.proposal-review p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.chapter-row-main p,
+.snapshot-summary-card p,
+.proposal-review p {
+  color: var(--muted);
+}
+
+.chapter-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.chapter-meta-line em {
+  border: 1px solid rgba(15, 111, 109, 0.16);
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: var(--accent-softer);
+  color: var(--accent);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
 }
 
 .chapter-row strong,
@@ -1597,6 +1641,50 @@ h2 {
 
 .foundation-section {
   padding-bottom: 16px;
+}
+
+.snapshot-summary-card,
+.proposal-review {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 9px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-sm);
+}
+
+.summary-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.summary-metrics .metric {
+  min-height: 48px;
+  padding: 7px;
+}
+
+.summary-metrics .metric strong {
+  font-size: 14px;
+}
+
+.proposal-review ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.proposal-review li {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.proposal-chapter-list {
+  display: grid;
+  gap: 6px;
+  max-height: 360px;
+  overflow: auto;
 }
 
 .foundation-stack,
