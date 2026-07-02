@@ -11,7 +11,8 @@ import {
   getSnapshotOutlineRows,
   isProjectRunning,
   resolveCoCreateStructureChoice,
-  resolveCoCreateTargetTotalWords
+  resolveCoCreateTargetTotalWords,
+  simulationProfileSummaryText
 } from './App.jsx';
 
 describe('co-create begin payload helpers', () => {
@@ -241,5 +242,17 @@ describe('workspace progress derivation', () => {
     expect(profile.sourceCount).toBe(2);
     expect(profile.sourceFiles).toEqual(['a.txt', 'b.txt']);
     expect(profile.signals).toContain('章尾反转');
+  });
+
+  it('summarizes simulation profiles without timestamps or source filenames', () => {
+    expect(simulationProfileSummaryText({
+      loaded: true,
+      sourceCount: 143,
+      updatedAt: '2026-07-02T15:28:13+08:00',
+      sourceFiles: ['001_第一章_新的科目.txt']
+    })).toBe('143 篇语料');
+
+    expect(simulationProfileSummaryText({ loaded: true, sourceCount: 0 })).toBe('画像已加载');
+    expect(simulationProfileSummaryText({ loaded: false })).toBe('上传或导入画像后会出现在这里');
   });
 });

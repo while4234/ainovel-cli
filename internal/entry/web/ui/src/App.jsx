@@ -2112,7 +2112,6 @@ function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, set
   const characterDetails = arrayValue(snapshot, 'CharacterDetails', 'character_details');
   const worldRules = arrayValue(snapshot, 'WorldRules', 'world_rules');
   const blueprint = getCreativeBlueprint(snapshot);
-  const adaptationReview = getAdaptationProposalReview(snapshot);
   const hasFoundation = Boolean(premise || outline.length || characterDetails.length || worldRules.length);
   const running = isProjectRunning(snapshot);
   return (
@@ -2161,22 +2160,6 @@ function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, set
           {blueprint.compassDirection || blueprint.compassScale ? (
             <small>{[blueprint.compassDirection, blueprint.compassScale].filter(Boolean).join(' / ')}</small>
           ) : null}
-        </section>
-      ) : null}
-
-      {adaptationReview.loaded ? (
-        <section className="snapshot-summary-card">
-          <div className="section-title">
-            <FileText size={17} />
-            <span>改编方向</span>
-          </div>
-          <div className="summary-metrics">
-            <Metric label="状态" value={adaptationReview.status || '-'} />
-            <Metric label="模式" value={adaptationReview.granularity || '-'} />
-            <Metric label="章节" value={adaptationReview.chapterCount || 0} />
-            <Metric label="目标" value={adaptationReview.targetTotalRunes ? formatCompact(adaptationReview.targetTotalRunes) : '-'} />
-          </div>
-          {adaptationReview.brief ? <p>{adaptationReview.brief}</p> : null}
         </section>
       ) : null}
 
@@ -2758,6 +2741,7 @@ function SimulationPanel({
   const latestAnalysis = latestSimulationEvent(simulation.analysisEvents);
   const latestImport = latestSimulationEvent(simulation.importEvents);
   const profile = getSimulationProfileStatus(snapshot);
+  const profileStatusText = simulationProfileSummaryText(profile);
   const libraryBusy = simulation.libraryStatus === 'running';
   return (
     <>
@@ -2769,15 +2753,10 @@ function SimulationPanel({
           <FileJson size={17} />
           <span>当前画像</span>
         </div>
-        <div className={`workflow-status ${profile.loaded ? 'done' : 'idle'}`}>
+        <div className={`workflow-status profile-status ${profile.loaded ? 'done' : 'idle'}`}>
           <strong>{profile.loaded ? '已加载' : '未加载'}</strong>
-          <span>{profile.loaded ? `${profile.sourceCount} 篇语料${profile.updatedAt ? ` / ${profile.updatedAt}` : ''}` : '上传或导入画像后会出现在这里'}</span>
+          <span title={profileStatusText}>{profileStatusText}</span>
         </div>
-        {profile.sourceFiles.length ? (
-          <div className="foundation-chip-list">
-            {profile.sourceFiles.slice(0, 6).map((file) => <span key={file}>{file}</span>)}
-          </div>
-        ) : null}
         {profile.signals.length ? <p>{profile.signals.join(' / ')}</p> : null}
       </section>
 
@@ -4157,6 +4136,13 @@ export function getSimulationProfileStatus(snapshot) {
     sourceFiles: sourceFiles.length ? sourceFiles : fallbackFiles,
     signals: [...styleSignals, ...hookSignals, ...readerSignals].filter(Boolean).slice(0, 6)
   };
+}
+
+export function simulationProfileSummaryText(profile) {
+  if (!profile?.loaded) {
+    return '上传或导入画像后会出现在这里';
+  }
+  return profile.sourceCount ? `${profile.sourceCount} 篇语料` : '画像已加载';
 }
 
 export function getCreativeBlueprint(snapshot) {
