@@ -667,6 +667,246 @@ func (s *webCoCreateSession) applyReply(reply host.CoCreateReply) {
 	}
 }
 
+func (s *webCoCreateSession) draftNeedsRepair(reply host.CoCreateReply, previousDraft string) bool {
+	if s == nil || s.session == nil {
+		return false
+	}
+	prompt := strings.TrimSpace(reply.Prompt)
+	if prompt == "" {
+		return true
+	}
+	if draftPromptRegressed(previousDraft, prompt) {
+		return true
+	}
+	if strings.TrimSpace(previousDraft) != "" && prompt == strings.TrimSpace(previousDraft) && s.session.DraftStale() {
+		return true
+	}
+	return false
+}
+
+func (s *webCoCreateSession) currentDraftNeedsRepair() (bool, string) {
+	if s == nil || s.session == nil {
+		return false, ""
+	}
+	currentDraft := s.draftPrompt()
+	if strings.TrimSpace(currentDraft) == "" {
+		return false, ""
+	}
+	baseDraft := s.previousStableDraft(currentDraft)
+	if s.latestHistoryDraftNeedsRepair(currentDraft) {
+		return true, baseDraft
+	}
+	if containsDraftOmissionPlaceholder(currentDraft) {
+		return true, baseDraft
+	}
+	if baseDraft != "" && draftPromptRegressed(baseDraft, currentDraft) {
+		return true, baseDraft
+	}
+	return false, currentDraft
+}
+
+func (s *webCoCreateSession) shouldConsolidateDraftBeforeCommit() bool {
+	if s == nil || s.session == nil || s.kind != webCoCreateKindAdapt || !s.session.DraftFresh() {
+		return false
+	}
+	return coCreatePlanningUserMessageCount(s.kind, s.session.History()) > 1
+}
+
+func coCreatePlanningUserMessageCount(kind string, history []host.CoCreateMessage) int {
+	count := 0
+	start := 0
+	if len(history) > 0 && coCreateLogMessageHidden(kind, 0, history[0]) {
+		start = 1
+	}
+	for idx := start; idx < len(history); idx++ {
+		message := history[idx]
+		if strings.TrimSpace(message.Role) != "user" || strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func (s *webCoCreateSession) latestHistoryDraftNeedsRepair(currentDraft string) bool {
+	if s == nil || s.session == nil {
+		return false
+	}
+	history := s.session.History()
+	for idx := len(history) - 1; idx >= 0; idx-- {
+		message := history[idx]
+		if strings.TrimSpace(message.Role) != "assistant" {
+			continue
+		}
+		draft := extractCoCreateLogTag(message.Content, "draft")
+		if draft == "" {
+			continue
+		}
+		if containsDraftOmissionPlaceholder(draft) {
+			return true
+		}
+		baseDraft := previousStableDraftInHistory(history[:idx], currentDraft)
+		return baseDraft != "" && draftPromptRegressed(baseDraft, draft)
+	}
+	return false
+}
+
+func (s *webCoCreateSession) previousStableDraft(currentDraft string) string {
+	if s == nil || s.session == nil {
+		return ""
+	}
+	currentDraft = strings.TrimSpace(currentDraft)
+	return previousStableDraftInHistory(s.session.History(), currentDraft)
+}
+
+func previousStableDraftInHistory(history []host.CoCreateMessage, currentDraft string) string {
+	currentDraft = strings.TrimSpace(currentDraft)
+	skippedCurrent := currentDraft == ""
+	for idx := len(history) - 1; idx >= 0; idx-- {
+		message := history[idx]
+		if strings.TrimSpace(message.Role) != "assistant" {
+			continue
+		}
+		draft := extractCoCreateLogTag(message.Content, "draft")
+		if draft == "" {
+			continue
+		}
+		if !skippedCurrent && strings.TrimSpace(draft) == currentDraft {
+			skippedCurrent = true
+			continue
+		}
+		if !containsDraftOmissionPlaceholder(draft) {
+			return draft
+		}
+	}
+	if containsDraftOmissionPlaceholder(currentDraft) {
+		return ""
+	}
+	return currentDraft
+}
+
+func draftPromptRegressed(previousDraft, nextDraft string) bool {
+	previousDraft = strings.TrimSpace(previousDraft)
+	nextDraft = strings.TrimSpace(nextDraft)
+	if previousDraft == "" || nextDraft == "" {
+		return false
+	}
+	if containsDraftOmissionPlaceholder(nextDraft) {
+		return true
+	}
+	previousLen := len([]rune(previousDraft))
+	nextLen := len([]rune(nextDraft))
+	return previousLen >= 1200 && nextLen < previousLen*2/3
+}
+
+func containsDraftOmissionPlaceholder(draft string) bool {
+	draft = strings.ToLower(strings.TrimSpace(draft))
+	if draft == "" {
+		return false
+	}
+	placeholders := []string{
+		"同上",
+		"如上",
+		"前述",
+		"前文",
+		"前面",
+		"此前",
+		"已完整记录",
+		"不再重复",
+		"不赘述",
+		"见上",
+		"same as above",
+		"as above",
+	}
+	for _, placeholder := range placeholders {
+		if strings.Contains(draft, placeholder) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *webCoCreateSession) draftRepairHistory(reply host.CoCreateReply, previousDraft string) []host.CoCreateMessage {
+	if s == nil || s.session == nil {
+		return nil
+	}
+	history := compactDraftRepairHistory(s.session.History(), previousDraft)
+	if raw := strings.TrimSpace(reply.Raw); raw != "" {
+		history = append(history, host.CoCreateMessage{Role: "assistant", Content: raw})
+	} else if message := strings.TrimSpace(reply.Message); message != "" {
+		history = append(history, host.CoCreateMessage{Role: "assistant", Content: message})
+	}
+	history = append(history, host.CoCreateMessage{Role: "user", Content: coCreateDraftRepairInstruction(s.kind, previousDraft)})
+	return history
+}
+
+func compactDraftRepairHistory(history []host.CoCreateMessage, previousDraft string) []host.CoCreateMessage {
+	out := make([]host.CoCreateMessage, 0, len(history)+2)
+	if len(history) > 0 {
+		out = append(out, history[0])
+	}
+	if previousDraft = strings.TrimSpace(previousDraft); previousDraft != "" {
+		out = append(out, host.CoCreateMessage{
+			Role:    "assistant",
+			Content: "<draft>\n" + previousDraft + "\n</draft>",
+		})
+	}
+	recentAssistant := recentNonDraftAssistantIndexes(history, 3)
+	for idx := 1; idx < len(history); idx++ {
+		message := history[idx]
+		role := strings.TrimSpace(message.Role)
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		if role == "user" {
+			out = append(out, message)
+			continue
+		}
+		if _, ok := recentAssistant[idx]; ok {
+			out = append(out, message)
+		}
+	}
+	return out
+}
+
+func recentNonDraftAssistantIndexes(history []host.CoCreateMessage, limit int) map[int]struct{} {
+	out := make(map[int]struct{})
+	if limit <= 0 {
+		return out
+	}
+	for idx := len(history) - 1; idx >= 1 && len(out) < limit; idx-- {
+		message := history[idx]
+		if strings.TrimSpace(message.Role) != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" || extractCoCreateLogTag(content, "draft") != "" {
+			continue
+		}
+		out[idx] = struct{}{}
+	}
+	return out
+}
+
+func coCreateDraftRepairInstruction(kind string, previousDraft string) string {
+	instruction := `Internal draft consolidation request:
+The previous response did not produce a stable, complete <draft>, or the draft did not absorb the latest user discussion.
+Update the previous stable draft with all confirmed planning decisions from the user messages above, especially turns after the previous stable draft, then return the normal four XML tags: <reply>, <draft>, <ready>, <suggestions>.
+Do not paste the chat transcript into <draft>. Distill confirmed decisions into one executable Markdown draft.
+The <draft> must be complete, current, and preserve the previous stable draft while adding the latest confirmed decisions.
+If required decisions are still missing, write the known decisions plus a "pending decisions" section in <draft> and set <ready>false</ready>.
+Never use placeholders such as "same as above", "同上", "已完整记录", "不再重复", or "见上"; the draft must be self-contained.`
+	if kind == webCoCreateKindAdapt {
+		instruction += `
+For adaptation co-create, preserve the selected granularity, rewrite_policy, and word_tolerance exactly as originally provided. Do not ask the user to choose chapter/arc/free again.`
+	}
+	if previousDraft = strings.TrimSpace(previousDraft); previousDraft != "" {
+		instruction += "\n\nPrevious stable draft to preserve and merge:\n<previous_draft>\n" + previousDraft + "\n</previous_draft>"
+	}
+	return strings.TrimSpace(instruction)
+}
+
 func (s *webCoCreateSession) reviseUser(messageID, text string) error {
 	messageID = strings.TrimSpace(messageID)
 	text = strings.TrimSpace(text)
@@ -708,6 +948,9 @@ func (s *webCoCreateSession) requireReadyDraft() error {
 	if strings.TrimSpace(s.draftPrompt()) == "" {
 		return fmt.Errorf("draft prompt is required")
 	}
+	if s.session == nil || !s.session.DraftFresh() {
+		return fmt.Errorf("co-create draft is not up to date; continue co-create until the latest discussion is consolidated")
+	}
 	return nil
 }
 
@@ -721,6 +964,10 @@ func (s *webCoCreateSession) draftPrompt() string {
 func (s *webCoCreateSession) apiState() webCoCreateState {
 	if s == nil {
 		return webCoCreateState{}
+	}
+	canStart := s.session.CanStart()
+	if needsRepair, _ := s.currentDraftNeedsRepair(); needsRepair {
+		canStart = false
 	}
 	return webCoCreateState{
 		Kind:             s.kind,
@@ -737,7 +984,7 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		TargetTotalWords: s.targetTotalWords,
 		SourceFile:       s.sourceFile,
 		Proposal:         s.adaptationProposal,
-		CanStart:         s.session.CanStart(),
+		CanStart:         canStart,
 		ModeLocked:       s.kind == webCoCreateKindAdapt,
 	}
 }

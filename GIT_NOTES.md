@@ -29,31 +29,38 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `07eeaae`
-  `fix: make adapt cocreate proposal start robust`, making Web adaptation
-  co-create reliably generate a proposal, restore saved proposal state after
-  refresh/restart, and surface the confirmation step in the adapt panel.
-- Previous source commit: `5686e26` `feat: add web model deletion`.
+- Latest source change: branch `main`, `0bac765`
+  `fix: preserve multi-turn adapt cocreate drafts`, making Web adaptation
+  co-create consolidate multi-turn planning before proposal generation and
+  reject unusable planner output instead of silently saving a fallback plan.
+- Previous source commit: `fae38b4`
+  `docs: record adapt cocreate launch validation`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the restart notes commit, except for
+- Working tree: expected clean after the adapt co-create consolidation commit,
+  except for
   ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web executable `D:\ainovel\ainovel-cli.exe` was rebuilt by
   `restart-web.cmd` using the project-local Go 1.25.5 toolchain on PATH, then
   restarted on `http://127.0.0.1:9898` with runtime root
   `C:\Users\RondleLiu\.ainovel\novels-preview`; listener PID after the final
-  restart was `11292`.
-- Validation: project-local `gofmt` passed; targeted adapt/Web tests passed;
-  `go test ./... -count=1` passed; `npm test` in
-  `internal\entry\web\ui` passed with 49 tests; Vite Web build passed;
-  `git diff --check` passed with CRLF warnings only; live Playwright validation
-  verified that the saved `free` / `full_rewrite` proposal is restored after a
-  service restart and shows an enabled confirm-and-start button in the adapt
-  panel; after confirmation, the live snapshot reported `IsRunning=true`,
-  `StatusLabel=RUNNING`, a confirmed adaptation plan, and 17 target chapters.
+  restart was `31712`.
+- Validation: project-local `gofmt` passed; targeted
+  `go test ./internal/entry/web ./internal/entry/startup ./internal/host/adapt`
+  passed; `go test ./...` passed; `git diff --check` passed with CRLF warnings
+  only; live HTTP smoke test returned 200 for `http://127.0.0.1:9898/`; current
+  adapt/free co-create snapshot metadata reported `READY`, `can_start=true`,
+  and 15 visible user planning messages, so Start will run final consolidation
+  before building a proposal.
 
 ## Change Log
 
+- 2026-07-03 `0bac765` `fix: preserve multi-turn adapt cocreate drafts`:
+  tracks co-create draft freshness, repairs missing/stale/regressed drafts,
+  keeps all user planning turns in repair context, runs a final consolidation
+  before multi-turn adapt proposal generation, clears stale adapt co-create
+  checkpoints, and rejects planner no-chapter output instead of silently saving
+  a fallback proposal.
 - 2026-07-03 `07eeaae` `fix: make adapt cocreate proposal start robust`:
   restored Web adapt co-create mode/source state across refresh/restart,
   changed adapt co-create commit to build a proposal instead of silently doing

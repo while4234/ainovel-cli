@@ -25,6 +25,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/host/exp"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 var (
@@ -633,6 +634,8 @@ func (s *ProjectSession) ConfirmAdaptationProposal() (*domain.AdaptationPlan, er
 	if err != nil {
 		return nil, err
 	}
+	s.cocreate = nil
+	s.clearCoCreateCheckpoint()
 	s.AppendSnapshot()
 	return plan, nil
 }
@@ -721,10 +724,29 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 	if s.cocreate == nil {
 		return webCoCreateState{}, fmt.Errorf("co-create has not started")
 	}
+	state := s.cocreate
+	needsRepair, repairBaseDraft := state.currentDraftNeedsRepair()
+	needsFinalConsolidation := false
+	if state.session == nil || !state.session.DraftFresh() {
+		needsRepair = true
+		if repairBaseDraft == "" {
+			repairBaseDraft = state.draftPrompt()
+		}
+	}
+	if !needsRepair && state.shouldConsolidateDraftBeforeCommit() {
+		needsFinalConsolidation = true
+		if repairBaseDraft == "" {
+			repairBaseDraft = state.draftPrompt()
+		}
+	}
+	if needsRepair || needsFinalConsolidation {
+		if err := s.repairCoCreateDraftForCommitLocked(ctx, state, repairBaseDraft); err != nil {
+			return state.apiState(), err
+		}
+	}
 	if err := s.cocreate.requireReadyDraft(); err != nil {
 		return webCoCreateState{}, err
 	}
-	state := s.cocreate
 	switch state.kind {
 	case webCoCreateKindStage:
 		if err := s.host.ResumeFromCoCreate(state.draftPrompt()); err != nil {
@@ -788,6 +810,10 @@ func (s *ProjectSession) restoreCoCreateCheckpoint() error {
 	if path == "" {
 		return nil
 	}
+	if s.coCreateRestoreBlockedByAdaptationState() {
+		s.clearCoCreateCheckpoint()
+		return nil
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s.restoreCoCreateCheckpointFromLog()
@@ -812,6 +838,23 @@ func (s *ProjectSession) restoreCoCreateCheckpoint() error {
 	s.cocreate = state
 	s.appendCoCreateState(state.apiState())
 	return nil
+}
+
+func (s *ProjectSession) coCreateRestoreBlockedByAdaptationState() bool {
+	s.mu.Lock()
+	outputDir := strings.TrimSpace(s.manifest.OutputDir)
+	s.mu.Unlock()
+	if outputDir == "" {
+		return false
+	}
+	st := storepkg.NewStore(outputDir)
+	if plan, err := st.Adaptation.LoadPlan(); err == nil && plan != nil && len(plan.Chapters) > 0 {
+		return true
+	}
+	if proposal, err := st.Adaptation.LoadProposal(); err == nil && proposal != nil && len(proposal.Chapters) > 0 {
+		return true
+	}
+	return false
 }
 
 func (s *ProjectSession) restoreCoCreateCheckpointFromLog() error {
@@ -997,20 +1040,24 @@ func (s *ProjectSession) CancelCoCreate() (webCoCreateState, error) {
 	return state, nil
 }
 
-func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateState, error) {
+type webCoCreateStreamFunc func(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+
+func (s *ProjectSession) coCreateStreamFuncLocked() (webCoCreateStreamFunc, error) {
 	if s.cocreate == nil {
-		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+		return nil, fmt.Errorf("co-create has not started")
 	}
-	var stream func(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
 	switch s.cocreate.kind {
 	case webCoCreateKindStage:
-		stream = s.host.StageCoCreateStream
+		return s.host.StageCoCreateStream, nil
 	case webCoCreateKindAdapt:
-		stream = s.host.AdaptCoCreateStream
+		return s.host.AdaptCoCreateStream, nil
 	default:
-		stream = s.host.CoCreateStream
+		return s.host.CoCreateStream, nil
 	}
-	onProgress := func(kind, text string) {
+}
+
+func (s *ProjectSession) coCreateProgressHandlerLocked() func(kind, text string) {
+	return func(kind, text string) {
 		if s.cocreate == nil {
 			return
 		}
@@ -1018,8 +1065,72 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 		s.appendCoCreateState(s.cocreate.apiState())
 		s.saveCoCreateCheckpoint()
 	}
+}
+
+func (s *ProjectSession) repairCoCreateDraftForCommitLocked(ctx context.Context, state *webCoCreateSession, previousDraft string) error {
+	if state == nil {
+		return fmt.Errorf("co-create has not started")
+	}
+	stream, err := s.coCreateStreamFuncLocked()
+	if err != nil {
+		return err
+	}
+	onProgress := s.coCreateProgressHandlerLocked()
+	eventID, startedAt := s.appendCoCreateRunStarted(state.kind)
+	streamReply := ""
+	if state.session != nil {
+		streamReply = state.session.StreamReply()
+	}
+	repairSeed := host.CoCreateReply{Message: streamReply, Raw: streamReply}
+	repairReply, err := stream(ctx, state.draftRepairHistory(repairSeed, previousDraft), onProgress)
+	if err != nil {
+		state.failed = true
+		api := state.apiState()
+		s.saveCoCreateCheckpoint()
+		s.appendCoCreateState(api)
+		err = fmt.Errorf("repair co-create draft: %w", err)
+		s.appendCoCreateRunFinished(eventID, startedAt, api, err)
+		return err
+	}
+	if strings.TrimSpace(repairReply.Prompt) == "" {
+		state.failed = true
+		api := state.apiState()
+		s.saveCoCreateCheckpoint()
+		s.appendCoCreateState(api)
+		err := fmt.Errorf("repair co-create draft: model did not return a draft")
+		s.appendCoCreateRunFinished(eventID, startedAt, api, err)
+		return err
+	}
+	if state.draftNeedsRepair(repairReply, previousDraft) {
+		state.failed = true
+		api := state.apiState()
+		s.saveCoCreateCheckpoint()
+		s.appendCoCreateState(api)
+		err := fmt.Errorf("repair co-create draft: model returned an incomplete draft")
+		s.appendCoCreateRunFinished(eventID, startedAt, api, err)
+		return err
+	}
+	state.failed = false
+	state.applyReply(repairReply)
+	api := state.apiState()
+	s.saveCoCreateCheckpoint()
+	s.appendCoCreateState(api)
+	s.appendCoCreateRunFinished(eventID, startedAt, api, nil)
+	return nil
+}
+
+func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateState, error) {
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	stream, err := s.coCreateStreamFuncLocked()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	onProgress := s.coCreateProgressHandlerLocked()
 	s.cocreate.failed = false
 	eventID, startedAt := s.appendCoCreateRunStarted(s.cocreate.kind)
+	previousDraft := s.cocreate.draftPrompt()
 	reply, err := stream(ctx, s.cocreate.session.History(), onProgress)
 	if err != nil {
 		s.cocreate.failed = true
@@ -1027,6 +1138,40 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 		s.saveCoCreateCheckpoint()
 		s.appendCoCreateRunFinished(eventID, startedAt, state, err)
 		return state, err
+	}
+	if s.cocreate.draftNeedsRepair(reply, previousDraft) {
+		repairReply, repairErr := stream(ctx, s.cocreate.draftRepairHistory(reply, previousDraft), onProgress)
+		if repairErr != nil {
+			s.cocreate.applyReply(reply)
+			s.cocreate.failed = true
+			state := s.cocreate.apiState()
+			s.saveCoCreateCheckpoint()
+			s.appendCoCreateState(state)
+			err := fmt.Errorf("repair co-create draft: %w", repairErr)
+			s.appendCoCreateRunFinished(eventID, startedAt, state, err)
+			return state, err
+		}
+		if strings.TrimSpace(repairReply.Prompt) == "" {
+			s.cocreate.applyReply(reply)
+			s.cocreate.failed = true
+			state := s.cocreate.apiState()
+			s.saveCoCreateCheckpoint()
+			s.appendCoCreateState(state)
+			err := fmt.Errorf("repair co-create draft: model did not return a draft")
+			s.appendCoCreateRunFinished(eventID, startedAt, state, err)
+			return state, err
+		}
+		if s.cocreate.draftNeedsRepair(repairReply, previousDraft) {
+			s.cocreate.applyReply(reply)
+			s.cocreate.failed = true
+			state := s.cocreate.apiState()
+			s.saveCoCreateCheckpoint()
+			s.appendCoCreateState(state)
+			err := fmt.Errorf("repair co-create draft: model returned an incomplete draft")
+			s.appendCoCreateRunFinished(eventID, startedAt, state, err)
+			return state, err
+		}
+		reply = repairReply
 	}
 	s.cocreate.applyReply(reply)
 	state := s.cocreate.apiState()

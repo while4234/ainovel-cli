@@ -805,6 +805,9 @@ type fakeProjectHost struct {
 	cocreateReply               host.CoCreateReply
 	stageCoCreateReply          host.CoCreateReply
 	adaptCoCreateReply          host.CoCreateReply
+	cocreateReplies             []host.CoCreateReply
+	stageCoCreateReplies        []host.CoCreateReply
+	adaptCoCreateReplies        []host.CoCreateReply
 	cocreateProgress            []coCreateProgressStep
 	pauseCoCreateOK             bool
 	abortOK                     bool
@@ -830,6 +833,15 @@ type fakeProjectHost struct {
 type coCreateProgressStep struct {
 	kind string
 	text string
+}
+
+func popCoCreateReply(queue *[]host.CoCreateReply, fallback host.CoCreateReply) host.CoCreateReply {
+	if queue == nil || len(*queue) == 0 {
+		return fallback
+	}
+	reply := (*queue)[0]
+	*queue = (*queue)[1:]
+	return reply
 }
 
 func newFakeProjectHost() *fakeProjectHost {
@@ -930,7 +942,7 @@ func (f *fakeProjectHost) CoCreateStream(_ context.Context, history []host.CoCre
 	f.mu.Lock()
 	f.cocreateCalls++
 	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
-	reply := f.cocreateReply
+	reply := popCoCreateReply(&f.cocreateReplies, f.cocreateReply)
 	err := f.cocreateErr
 	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)
 	f.mu.Unlock()
@@ -942,7 +954,7 @@ func (f *fakeProjectHost) StageCoCreateStream(_ context.Context, history []host.
 	f.mu.Lock()
 	f.stageCoCreateCalls++
 	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
-	reply := f.stageCoCreateReply
+	reply := popCoCreateReply(&f.stageCoCreateReplies, f.stageCoCreateReply)
 	err := f.stageCoCreateErr
 	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)
 	f.mu.Unlock()
@@ -954,7 +966,7 @@ func (f *fakeProjectHost) AdaptCoCreateStream(_ context.Context, history []host.
 	f.mu.Lock()
 	f.adaptCoCreateCalls++
 	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
-	reply := f.adaptCoCreateReply
+	reply := popCoCreateReply(&f.adaptCoCreateReplies, f.adaptCoCreateReply)
 	err := f.adaptCoCreateErr
 	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)
 	f.mu.Unlock()

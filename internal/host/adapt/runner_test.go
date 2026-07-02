@@ -474,7 +474,7 @@ func TestBuildAdaptationProposalFillsMissingPlannerConstants(t *testing.T) {
 	}
 }
 
-func TestBuildAdaptationProposalFallsBackWhenPlannerHasNoChapters(t *testing.T) {
+func TestBuildAdaptationProposalRejectsPlannerWithNoChapters(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -489,37 +489,25 @@ func TestBuildAdaptationProposalFallsBackWhenPlannerHasNoChapters(t *testing.T) 
 		"prompt_version": "v1"
 	}`}}}
 
-	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+	_, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
 		Brief:       brief,
 		Granularity: domain.AdaptationGranularityFree,
 	})
-	if err != nil {
-		t.Fatalf("BuildAdaptationProposal: %v", err)
+	if err == nil {
+		t.Fatal("BuildAdaptationProposal should reject planner output with no chapters")
+	}
+	if !strings.Contains(err.Error(), "planner proposal has no chapters") {
+		t.Fatalf("error = %v, want no-chapters planner error", err)
 	}
 	if llm.calls != 1 {
 		t.Fatalf("planner calls=%d, want 1", llm.calls)
-	}
-	if proposal.Status != domain.AdaptationPlanStatusProposal ||
-		proposal.Granularity != domain.AdaptationGranularityFree ||
-		proposal.RewritePolicy != domain.AdaptationRewriteFullRewrite ||
-		proposal.Brief != brief {
-		t.Fatalf("fallback proposal constants mismatch: %+v", proposal)
-	}
-	if len(proposal.Chapters) != 2 {
-		t.Fatalf("fallback chapters=%d, want source chapter count", len(proposal.Chapters))
-	}
-	if proposal.Chapters[0].WordBudget == nil || proposal.Chapters[0].WordBudget.TargetRunes <= 0 {
-		t.Fatalf("fallback chapter should include word budget: %+v", proposal.Chapters[0])
-	}
-	if proposal.Planner == nil || !strings.Contains(strings.Join([]string(proposal.Planner.Notes), "\n"), "deterministic proposal") {
-		t.Fatalf("fallback planner notes missing: %+v", proposal.Planner)
 	}
 	saved, err := st.Adaptation.LoadProposal()
 	if err != nil {
 		t.Fatalf("LoadProposal: %v", err)
 	}
-	if saved == nil || len(saved.Chapters) != 2 {
-		t.Fatalf("fallback proposal not saved: %+v", saved)
+	if saved != nil {
+		t.Fatalf("unusable planner output should not save proposal: %+v", saved)
 	}
 }
 

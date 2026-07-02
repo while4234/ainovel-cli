@@ -3,7 +3,6 @@ package adapt
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -316,10 +315,7 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 	} else {
 		proposal, err = buildPlanFromPlanner(ctx, deps, opts, reports, manifest, sourceFoundation)
 		if err != nil {
-			if !isPlannerFallbackEligible(err) {
-				return nil, err
-			}
-			proposal = buildPlannerFallbackPlan(opts, reports, manifest, err)
+			return nil, fmt.Errorf("build %s adaptation proposal from planner: %w", opts.Granularity, err)
 		}
 	}
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
@@ -378,11 +374,6 @@ func (e plannerUnusableOutputError) Error() string {
 
 func (e plannerUnusableOutputError) Unwrap() error {
 	return e.err
-}
-
-func isPlannerFallbackEligible(err error) bool {
-	var unusable plannerUnusableOutputError
-	return errors.As(err, &unusable)
 }
 
 func buildAdaptationPlannerUserPrompt(
