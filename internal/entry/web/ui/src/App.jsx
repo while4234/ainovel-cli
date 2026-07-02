@@ -1454,6 +1454,19 @@ export default function App() {
     () => workbench.eventRows.slice().sort((a, b) => b.seq - a.seq),
     [workbench.eventRows]
   );
+  const coCreateWorkspaceOpen = Boolean(
+    activeProject &&
+      (sideView === 'cocreate' ||
+        coCreate.active ||
+        coCreate.messages.length > 0 ||
+        coCreate.streamThinking ||
+        coCreate.streamReply ||
+        coCreate.draftPrompt)
+  );
+  const activeWritingPaneClassName = coCreateWorkspaceOpen ? 'writing-pane is-cocreate' : 'writing-pane';
+  const activeWorkbenchClassName = coCreateWorkspaceOpen ? 'workbench-stack cocreate-workbench' : 'workbench-stack';
+  const writingPaneClassName = activeProject ? activeWritingPaneClassName : 'writing-pane is-empty';
+  const workbenchClassName = activeProject ? activeWorkbenchClassName : 'workbench-stack is-empty';
 
   return (
     <div className="app-shell">
@@ -1646,7 +1659,7 @@ export default function App() {
         </div>
       ) : null}
 
-      <main className="writing-pane">
+      <main className={writingPaneClassName}>
         <header className="workspace-toolbar">
           <div className="workspace-heading">
             <div className="eyebrow">当前项目</div>
@@ -1686,58 +1699,72 @@ export default function App() {
 
         {error ? <div className="error-banner">{error}</div> : null}
 
-        <div className="workbench-stack">
-          <section className="stream-area" aria-label="实时创作流">
-            {activeProject ? (
-              workbench.streamRounds.map((round) => (
-                <article className="stream-round" key={round.id}>
-                  {round.text ? <pre>{round.text}</pre> : <span className="muted">等待流式输出</span>}
-                </article>
-              ))
-            ) : (
+        <div className={workbenchClassName}>
+          {coCreateWorkspaceOpen ? (
+            <CoCreateWorkspace coCreate={coCreate} />
+          ) : (
+            <section className="stream-area" aria-label="实时创作流">
+              {activeProject ? (
+                workbench.streamRounds.map((round) => (
+                  <article className="stream-round" key={round.id}>
+                    {round.text ? <pre>{round.text}</pre> : <span className="muted">等待流式输出</span>}
+                  </article>
+                ))
+              ) : (
               <div className="no-project">
                 <SquarePen size={28} />
                 <strong>打开或创建一本小说</strong>
                 <span>从左侧选择项目，或创建一本新小说开始工作。</span>
               </div>
-            )}
-          </section>
-
-          <section className="event-feed" aria-label="运行事件">
-            <div className="section-title">
-              <Activity size={17} />
-              <span>事件</span>
-            </div>
-            <div className="event-list">
-              {sortedEvents.length === 0 ? (
-                <div className="empty-state">暂无事件</div>
-              ) : (
-                sortedEvents.map((event) => (
-                  <div className={`event-row ${eventStatus(event)}`} key={event.host_event_id || event.seq}>
-                    <span className="event-dot" />
-                    <span className="event-time">{formatTime(event.time)}</span>
-                    <strong>{event.event?.category || '事件'}</strong>
-                    <span>{event.event?.summary || '无摘要'}</span>
-                  </div>
-                ))
               )}
-            </div>
-          </section>
+            </section>
+          )}
+
+          {coCreateWorkspaceOpen ? null : (
+            <section className="event-feed" aria-label="运行事件">
+              <div className="section-title">
+                <Activity size={17} />
+                <span>事件</span>
+              </div>
+              <div className="event-list">
+                {sortedEvents.length === 0 ? (
+                  <div className="empty-state">暂无事件</div>
+                ) : (
+                  sortedEvents.map((event) => (
+                    <div className={`event-row ${eventStatus(event)}`} key={event.host_event_id || event.seq}>
+                      <span className="event-dot" />
+                      <span className="event-time">{formatTime(event.time)}</span>
+                      <strong>{event.event?.category || '事件'}</strong>
+                      <span>{event.event?.summary || '无摘要'}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          )}
         </div>
 
-        <form className="composer" onSubmit={submitContinue}>
-          <input
-            aria-label={quickStartAvailable ? '快速启动输入' : '继续创作输入'}
-            disabled={!activeProject || busy}
-            placeholder={quickStartAvailable ? '写下新书核心想法，直接启动...' : '继续、补充或要求下一步...'}
-            value={composerText}
-            onChange={(event) => setComposerText(event.target.value)}
-          />
-          <button className="tool-button accent" disabled={!activeProject || busy} type="submit">
-            {quickStartAvailable ? <Play size={16} /> : <Send size={16} />}
-            {quickStartAvailable ? '启动' : '继续'}
-          </button>
-        </form>
+        {coCreateWorkspaceOpen ? null : (
+          <form className="composer" onSubmit={submitContinue}>
+            <input
+              aria-label={quickStartAvailable ? '快速启动输入' : '继续创作输入'}
+              disabled={!activeProject || busy}
+              placeholder={quickStartAvailable ? '写下新书核心想法，直接启动...' : '继续、补充或要求下一步...'}
+              value={composerText}
+              onChange={(event) => setComposerText(event.target.value)}
+            />
+            <button
+              aria-label={quickStartAvailable ? '启动' : '继续'}
+              className="tool-button accent"
+              disabled={!activeProject || busy}
+              title={quickStartAvailable ? '启动' : '继续'}
+              type="submit"
+            >
+              {quickStartAvailable ? <Play size={16} /> : <Send size={16} />}
+              {quickStartAvailable ? '启动' : '继续'}
+            </button>
+          </form>
+        )}
       </main>
 
       <aside className="status-pane">
@@ -1986,6 +2013,54 @@ const adaptationModes = [
   { value: 'free', label: 'free' }
 ];
 
+function CoCreateWorkspace({ coCreate }) {
+  const hasMessages = coCreate.messages.length > 0;
+  const hasStream = Boolean(coCreate.streamThinking || coCreate.streamReply);
+  const hasContent = hasMessages || hasStream || coCreate.ready || coCreate.status === 'running';
+  return (
+    <section className="cocreate-workspace-panel" aria-label="共创分析流程">
+      <div className="cocreate-workspace-header">
+        <span>共创工作区</span>
+        <h3>{coCreateTitle(coCreate.kind)}</h3>
+        <p>分析过程会在这里展开，右侧只保留你的选择、输入和最终启动摘要。</p>
+      </div>
+      <div className="cocreate-timeline">
+        {!hasContent ? (
+          <div className="cocreate-empty">
+            <MessageSquareText size={34} />
+            <strong>开始一次共创</strong>
+            <span>在右侧输入核心想法，或进入 Stage / Adapt 共创。</span>
+          </div>
+        ) : null}
+        {coCreate.messages.map((message, index) => (
+          <article className={`cocreate-workspace-message ${message.role}`} key={`${message.role}-${index}`}>
+            <strong>{coCreateRoleLabel(message.role)}</strong>
+            <p>{message.content}</p>
+          </article>
+        ))}
+        {coCreate.streamThinking ? (
+          <article className="cocreate-workspace-message thinking">
+            <strong>Thinking</strong>
+            <p>{coCreate.streamThinking}</p>
+          </article>
+        ) : null}
+        {coCreate.streamReply ? (
+          <article className="cocreate-workspace-message assistant live">
+            <strong>AI</strong>
+            <p>{coCreate.streamReply}</p>
+          </article>
+        ) : null}
+        {coCreate.ready ? (
+          <article className="cocreate-ready-note">
+            <Check size={17} />
+            <span>共创已完成，右侧可以查看总结并启动。</span>
+          </article>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation, onBegin, onSubmit, onCommit, onCancel }) {
   const hasConversation = coCreate.messages.length > 0;
   const hasBackendSession = coCreate.active || hasConversation;
@@ -2030,35 +2105,11 @@ function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation,
         ) : null}
       </section>
 
-      <section className="cocreate-section cocreate-dialog">
-        <div className="cocreate-messages">
-          {coCreate.messages.length === 0 ? (
-            <div className="empty-state">暂无共创对话</div>
-          ) : (
-            coCreate.messages.map((message, index) => (
-              <div className={`cocreate-message ${message.role}`} key={`${message.role}-${index}`}>
-                <strong>{coCreateRoleLabel(message.role)}</strong>
-                <p>{message.content}</p>
-              </div>
-            ))
-          )}
+      <section className="cocreate-section cocreate-reading-note">
+        <div className="workflow-status">
+          <strong>分析流程</strong>
+          <span>{hasBackendSession ? '已移到中间工作区，右侧用于继续决策。' : '开始后会显示在中间工作区。'}</span>
         </div>
-        {coCreate.streamThinking || coCreate.streamReply ? (
-          <div className="cocreate-progress">
-            {coCreate.streamThinking ? (
-              <div className="cocreate-preview thinking">
-                <strong>Thinking</strong>
-                <p>{coCreate.streamThinking}</p>
-              </div>
-            ) : null}
-            {coCreate.streamReply ? (
-              <div className="cocreate-preview reply">
-                <strong>AI</strong>
-                <p>{coCreate.streamReply}</p>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
       </section>
 
       {coCreate.suggestions.length ? (
@@ -2096,7 +2147,11 @@ function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation,
         </button>
       </form>
 
-      <section className="cocreate-section">
+      <section className="cocreate-section cocreate-result">
+        <div className="section-title">
+          <FileJson size={17} />
+          <span>总结与启动</span>
+        </div>
         <div className={`workflow-status ${coCreate.status}`}>
           <strong>{coCreateStatusText(coCreate.status, coCreate.ready)}</strong>
           <span>{coCreate.startMessage || (coCreate.ready ? 'draft prompt 已就绪' : '等待共创完成')}</span>
