@@ -82,7 +82,7 @@ import {
   coCreateStateFromResponse,
   createCoCreateState
 } from './cocreate.js';
-import { createWorkbenchState, eventStatus, reduceWebEvent } from './events.js';
+import { createWorkbenchState, eventStatus, reduceWebEvent, visibleStreamRounds } from './events.js';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 
@@ -1467,6 +1467,8 @@ export default function App() {
   const activeWorkbenchClassName = coCreateWorkspaceOpen ? 'workbench-stack cocreate-workbench' : 'workbench-stack';
   const writingPaneClassName = activeProject ? activeWritingPaneClassName : 'writing-pane is-empty';
   const workbenchClassName = activeProject ? activeWorkbenchClassName : 'workbench-stack is-empty';
+  const showComposer = Boolean(activeProject && !coCreateWorkspaceOpen);
+  const streamRounds = visibleStreamRounds(workbench.streamRounds);
 
   return (
     <div className="app-shell">
@@ -1705,7 +1707,7 @@ export default function App() {
           ) : (
             <section className="stream-area" aria-label="实时创作流">
               {activeProject ? (
-                workbench.streamRounds.map((round) => (
+                streamRounds.map((round) => (
                   <article className="stream-round" key={round.id}>
                     {round.text ? <pre>{round.text}</pre> : <span className="muted">等待流式输出</span>}
                   </article>
@@ -1744,7 +1746,7 @@ export default function App() {
           )}
         </div>
 
-        {coCreateWorkspaceOpen ? null : (
+        {showComposer ? (
           <form className="composer" onSubmit={submitContinue}>
             <input
               aria-label={quickStartAvailable ? '快速启动输入' : '继续创作输入'}
@@ -1764,7 +1766,7 @@ export default function App() {
               {quickStartAvailable ? '启动' : '继续'}
             </button>
           </form>
-        )}
+        ) : null}
       </main>
 
       <aside className="status-pane">

@@ -68,6 +68,23 @@ export function startStreamRound(rounds) {
   return [...next, { id: `round-${next.length}`, text: '' }];
 }
 
+export function visibleStreamRounds(rounds) {
+  if (!Array.isArray(rounds) || rounds.length === 0) {
+    return [{ id: 'round-0', text: '' }];
+  }
+  const last = rounds[rounds.length - 1];
+  if (String(last?.text || '').trim()) {
+    return [last];
+  }
+  for (let index = rounds.length - 2; index >= 0; index -= 1) {
+    const round = rounds[index];
+    if (String(round?.text || '').trim()) {
+      return [round];
+    }
+  }
+  return [last];
+}
+
 export function eventStatus(event) {
   if (event?.event?.running) {
     return 'running';
