@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/errs"
@@ -29,6 +30,12 @@ const CompactRatio = 0.85
 // 一章正文 8-15k——会出现"压完立刻又超"。8000 兜底保证最坏场景下还有半轮缓冲。
 const MinCompactReserve = 8000
 
+const (
+	DefaultCoCreateTimeoutSeconds = 60
+	MinCoCreateTimeoutSeconds     = 1
+	MaxCoCreateTimeoutSeconds     = 3600
+)
+
 // CompactReserveTokens 按 CompactRatio 反算 ReserveTokens 并应用 MinCompactReserve floor：
 //
 //	threshold = window - reserve = window * CompactRatio
@@ -44,6 +51,32 @@ func CompactReserveTokens(window int) int {
 		return MinCompactReserve
 	}
 	return reserve
+}
+
+func NormalizeCoCreateTimeoutSeconds(seconds int) (int, error) {
+	if seconds == 0 {
+		return DefaultCoCreateTimeoutSeconds, nil
+	}
+	if seconds < MinCoCreateTimeoutSeconds || seconds > MaxCoCreateTimeoutSeconds {
+		return 0, fmt.Errorf(
+			"cocreate_timeout_seconds must be between %d and %d",
+			MinCoCreateTimeoutSeconds,
+			MaxCoCreateTimeoutSeconds,
+		)
+	}
+	return seconds, nil
+}
+
+func (c Config) EffectiveCoCreateTimeoutSeconds() int {
+	seconds, err := NormalizeCoCreateTimeoutSeconds(c.CoCreateTimeoutSeconds)
+	if err != nil {
+		return DefaultCoCreateTimeoutSeconds
+	}
+	return seconds
+}
+
+func (c Config) CoCreateTimeout() time.Duration {
+	return time.Duration(c.EffectiveCoCreateTimeoutSeconds()) * time.Second
 }
 
 // ProviderConfig 定义单个 LLM 提供商的凭证。
@@ -146,6 +179,8 @@ type Config struct {
 	// ReasoningEffort 顶层默认推理强度（off/low/medium/high/xhigh/max），空=不覆盖（沿用模型/provider 默认）。
 	// 角色未单独配置 reasoning_effort 时回落到此值。
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// CoCreateTimeoutSeconds 是 Web 共创单次模型调用超时；0 表示使用默认 60 秒。
+	CoCreateTimeoutSeconds int `json:"cocreate_timeout_seconds,omitempty"`
 
 	// Provider 凭证库
 	Providers map[string]ProviderConfig `json:"providers,omitempty"`
@@ -197,6 +232,9 @@ func (c *Config) ValidateBase() error {
 		return err
 	}
 	if err := validateConfigText("model", c.ModelName); err != nil {
+		return err
+	}
+	if _, err := NormalizeCoCreateTimeoutSeconds(c.CoCreateTimeoutSeconds); err != nil {
 		return err
 	}
 

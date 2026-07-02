@@ -793,7 +793,10 @@ type fakeProjectHost struct {
 	abortOK                     bool
 	exportResult                *exp.Result
 	addProviderErr              error
+	setCoCreateTimeoutErr       error
 	switchCalls                 int
+	setCoCreateTimeoutCalls     int
+	coCreateTimeoutSeconds      int
 	grokLoginStart              grokauth.LoginStart
 	grokLoginPoll               grokauth.LoginPoll
 	grokCompleteStatus          grokauth.AuthStatus
@@ -1200,6 +1203,23 @@ func (f *fakeProjectHost) CurrentThinking(string) string {
 
 func (f *fakeProjectHost) SetRoleThinking(string, string) error {
 	return nil
+}
+
+func (f *fakeProjectHost) CurrentCoCreateTimeoutSeconds() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.coCreateTimeoutSeconds > 0 {
+		return f.coCreateTimeoutSeconds
+	}
+	return bootstrap.DefaultCoCreateTimeoutSeconds
+}
+
+func (f *fakeProjectHost) SetCoCreateTimeoutSeconds(seconds int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setCoCreateTimeoutCalls++
+	f.coCreateTimeoutSeconds = seconds
+	return f.setCoCreateTimeoutErr
 }
 
 func (f *fakeProjectHost) Events() <-chan host.Event {

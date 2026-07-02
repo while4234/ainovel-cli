@@ -43,6 +43,7 @@ func TestCoCreateStreamRetriesTransientStreamEOF(t *testing.T) {
 		context.Background(),
 		newCoCreateModelSet(model),
 		nil,
+		time.Second,
 		"system",
 		[]CoCreateMessage{{Role: "user", Content: "start"}},
 		func(kind, text string) {
@@ -77,6 +78,7 @@ func TestCoCreateStreamDoesNotRetryCancellation(t *testing.T) {
 		context.Background(),
 		newCoCreateModelSet(model),
 		nil,
+		time.Second,
 		"system",
 		[]CoCreateMessage{{Role: "user", Content: "start"}},
 		nil,
@@ -103,6 +105,7 @@ func TestCoCreateStreamErrorIncludesSelectedModel(t *testing.T) {
 		context.Background(),
 		newCoCreateModelSet(model),
 		nil,
+		time.Second,
 		"system",
 		[]CoCreateMessage{{Role: "user", Content: "start"}},
 		nil,

@@ -1672,6 +1672,43 @@ func (h *Host) SetRoleThinking(role, level string) error {
 	return nil
 }
 
+func (h *Host) CurrentCoCreateTimeoutSeconds() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg.EffectiveCoCreateTimeoutSeconds()
+}
+
+func (h *Host) SetCoCreateTimeoutSeconds(seconds int) error {
+	normalized, err := bootstrap.NormalizeCoCreateTimeoutSeconds(seconds)
+	if err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.cfg.CoCreateTimeoutSeconds = normalized
+	if overlay := h.ensureProjectOverlayLocked(); overlay != nil {
+		overlay.CoCreateTimeoutSeconds = normalized
+	}
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("保存配置失败", "module", "host", "err", err)
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("共创超时已设置为 %d 秒", normalized),
+		Level:    "info",
+	})
+	return nil
+}
+
+func (h *Host) coCreateTimeout() time.Duration {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg.CoCreateTimeout()
+}
+
 // ── 事件回放 ──
 
 func (h *Host) ReplayQueue(afterSeq int64) ([]domain.RuntimeQueueItem, error) {
@@ -1685,18 +1722,18 @@ func (h *Host) ReplayQueue(afterSeq int64) ([]domain.RuntimeQueueItem, error) {
 
 // CoCreateStream 冷启动共创：从零澄清需求，产出整本书的创作指令。
 func (h *Host) CoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
-	return coCreateStream(ctx, h.models, h.store.Sessions, coCreateSystemPrompt, history, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), coCreateSystemPrompt, history, onProgress)
 }
 
 // StageCoCreateStream 阶段共创：在已写内容的基础上规划后续方向。
 // 系统提示 = 阶段 prompt + 当前故事状态摘要，让助手知道"已经写了什么"。
 func (h *Host) StageCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
-	return coCreateStream(ctx, h.models, h.store.Sessions, stageSystemPrompt(h.store), history, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), stageSystemPrompt(h.store), history, onProgress)
 }
 
 // AdaptCoCreateStream 改编共创：基于原书分析快照澄清改编目标。
 func (h *Host) AdaptCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
-	return coCreateStream(ctx, h.models, h.store.Sessions, adaptSystemPrompt(h.store), history, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), adaptSystemPrompt(h.store), history, onProgress)
 }
 
 // stagePlanPrefix 把共创产出的"后续方向 brief"包装成一条阶段规划干预，交 Coordinator 裁定。

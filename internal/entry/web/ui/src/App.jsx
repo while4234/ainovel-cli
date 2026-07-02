@@ -66,6 +66,8 @@ import {
   saveNovelToLibrary,
   saveSimulationToLibrary,
   sendCoCreate,
+  setGlobalCoCreateTimeout,
+  setProjectCoCreateTimeout,
   setProjectThinking,
   startProject,
   startGrokLogin,
@@ -484,6 +486,7 @@ export default function App() {
       ]);
       setActiveProject(snapshotData.project);
       setWorkbench({ ...createWorkbenchState(), snapshot: snapshotData.snapshot });
+      setCoCreate((previous) => coCreateStateFromResponse(snapshotData, previous));
       setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
       setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation));
       setModelConfig(modelData.models || null);
@@ -1558,6 +1561,32 @@ export default function App() {
     }
   };
 
+  const changeCoCreateTimeout = async (seconds) => {
+    const value = Number(seconds);
+    if (!Number.isInteger(value) || value < 1 || value > 3600) {
+      setError('共创超时必须是 1-3600 秒之间的整数');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = activeProject?.id
+        ? await setProjectCoCreateTimeout(activeProject.id, value)
+        : await setGlobalCoCreateTimeout(value);
+      setModelConfig(data.models || modelConfig);
+      if (data.runtime) {
+        setRuntime(data.runtime);
+      }
+      if (data.snapshot) {
+        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const submitCustomModel = async (event) => {
     event.preventDefault();
     const payload = buildModelAddPayload(customModel, modelConfig);
@@ -2092,6 +2121,7 @@ export default function App() {
               onSwitchDefault={switchDefaultModel}
               onSwitch={switchModelRoute}
               onThinking={changeThinking}
+              onCoCreateTimeout={changeCoCreateTimeout}
               onAddCustom={submitCustomModel}
               onStartGrokLogin={startGrokOAuthLogin}
               onPollGrokLogin={pollGrokOAuthLogin}
@@ -2145,7 +2175,6 @@ function hasCoCreateWorkspaceContent(coCreate) {
 function CoCreateWorkspace({ coCreate }) {
   const threadRef = useRef(null);
   const bottomRef = useRef(null);
-  const stickToBottomRef = useRef(true);
   const messages = Array.isArray(coCreate.messages)
     ? coCreate.messages.filter((message) => message?.role !== 'system' && message?.content)
     : [];
@@ -2157,22 +2186,7 @@ function CoCreateWorkspace({ coCreate }) {
   ].join(':');
 
   useEffect(() => {
-    const scrollParent = coCreateWorkspaceScrollParent(threadRef.current);
-    if (!scrollParent) {
-      return undefined;
-    }
-    const updateStickiness = () => {
-      stickToBottomRef.current = isNearScrollBottom(scrollParent);
-    };
-    updateStickiness();
-    scrollParent.addEventListener('scroll', updateStickiness, { passive: true });
-    return () => scrollParent.removeEventListener('scroll', updateStickiness);
-  }, []);
-
-  useEffect(() => {
-    if (stickToBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ block: 'end' });
-    }
+    bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [scrollSignature]);
 
   return (
@@ -2210,17 +2224,6 @@ function CoCreateWorkspace({ coCreate }) {
       <div className="cocreate-workspace-bottom" aria-hidden="true" ref={bottomRef} />
     </div>
   );
-}
-
-function coCreateWorkspaceScrollParent(node) {
-  return node?.closest?.('.stream-area') || null;
-}
-
-function isNearScrollBottom(element) {
-  if (!element) {
-    return true;
-  }
-  return element.scrollHeight - element.scrollTop - element.clientHeight <= 96;
 }
 
 function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, setSteerText, busy }) {
@@ -3543,6 +3546,7 @@ function ModelPanel({
   onSwitchDefault,
   onSwitch,
   onThinking,
+  onCoCreateTimeout,
   onAddCustom,
   onStartGrokLogin,
   onPollGrokLogin,
@@ -3558,6 +3562,16 @@ function ModelPanel({
   const defaultProvider = config.provider || providers[0]?.name || '';
   const defaultModels = modelOptionsForProvider(providers, defaultProvider, config.model);
   const defaultModel = config.model || defaultModels[0] || '';
+  const coCreateTimeoutSeconds = modelConfig?.cocreate_timeout_seconds || config.cocreate_timeout_seconds || 60;
+  const [coCreateTimeoutDraft, setCoCreateTimeoutDraft] = useState(String(coCreateTimeoutSeconds));
+  useEffect(() => {
+    setCoCreateTimeoutDraft(String(coCreateTimeoutSeconds));
+  }, [coCreateTimeoutSeconds]);
+  const coCreateTimeoutValue = Number(coCreateTimeoutDraft);
+  const canSaveCoCreateTimeout = Number.isInteger(coCreateTimeoutValue) &&
+    coCreateTimeoutValue >= 1 &&
+    coCreateTimeoutValue <= 3600 &&
+    coCreateTimeoutValue !== coCreateTimeoutSeconds;
   const selectedPreset = providerPresets.find((preset) => preset.provider === customModel.preset) || providerPresets[0];
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
@@ -3599,6 +3613,36 @@ function ModelPanel({
       <section className="model-summary">
         <Metric label="Style" value={config.style || 'default'} />
         <Metric label="Runtime" value={runtime?.runtime_root || '-'} />
+      </section>
+      <section>
+        <div className="section-title">
+          <Activity size={17} />
+          <span>共创请求超时</span>
+        </div>
+        <form
+          className="model-timeout-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onCoCreateTimeout(coCreateTimeoutValue);
+          }}
+        >
+          <label className="field-label">
+            <span>秒</span>
+            <input
+              disabled={busy}
+              inputMode="numeric"
+              max="3600"
+              min="1"
+              type="number"
+              value={coCreateTimeoutDraft}
+              onChange={(event) => setCoCreateTimeoutDraft(event.target.value)}
+            />
+          </label>
+          <button className="tool-button" disabled={busy || !canSaveCoCreateTimeout} type="submit">
+            <Check size={16} />
+            保存
+          </button>
+        </form>
       </section>
       <section>
         <div className="section-title">

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
@@ -18,6 +20,8 @@ const (
 	webCoCreateKindNormal = "normal"
 	webCoCreateKindStage  = "stage"
 	webCoCreateKindAdapt  = "adapt"
+
+	webCoCreateCheckpointVersion = 1
 
 	stageCoCreateOpener     = "我先暂停一下，想和你一起规划接下来的走向。"
 	stageCoCreateSystemLine = "已暂停创作，进入阶段共创。AI 会结合当前故事进度，和你一起规划接下来的走向。"
@@ -52,6 +56,43 @@ type webCoCreateMessage struct {
 	Editable     bool   `json:"editable,omitempty"`
 	Source       string `json:"source,omitempty"`
 	historyIndex int
+}
+
+type webCoCreateMessageCheckpoint struct {
+	ID           string `json:"id"`
+	Role         string `json:"role"`
+	Content      string `json:"content"`
+	Editable     bool   `json:"editable,omitempty"`
+	Source       string `json:"source,omitempty"`
+	HistoryIndex int    `json:"history_index"`
+}
+
+type webCoCreateCheckpoint struct {
+	Version            int                            `json:"version"`
+	UpdatedAt          time.Time                      `json:"updated_at"`
+	Kind               string                         `json:"kind"`
+	Session            startup.CoCreateSnapshot       `json:"session"`
+	Messages           []webCoCreateMessageCheckpoint `json:"messages"`
+	NextMessageSeq     int                            `json:"next_message_seq"`
+	Failed             bool                           `json:"failed,omitempty"`
+	SourceFile         string                         `json:"source_file,omitempty"`
+	SourcePath         string                         `json:"source_path,omitempty"`
+	AdaptGranularity   string                         `json:"adapt_granularity,omitempty"`
+	AdaptRewritePolicy string                         `json:"adapt_rewrite_policy,omitempty"`
+	AdaptWordTolerance float64                        `json:"adapt_word_tolerance,omitempty"`
+	TargetTotalWords   int                            `json:"target_total_words,omitempty"`
+	AdaptationProposal *domain.AdaptationPlan         `json:"adaptation_proposal,omitempty"`
+}
+
+type webCoCreateLogEntry struct {
+	InputHistory      []host.CoCreateMessage `json:"input_history"`
+	RawResponse       string                 `json:"raw_response"`
+	Thinking          string                 `json:"thinking"`
+	ParsedReply       string                 `json:"parsed_reply"`
+	ParsedDraft       string                 `json:"parsed_draft"`
+	ParsedReady       bool                   `json:"parsed_ready"`
+	ParsedSuggestions []string               `json:"parsed_sugs"`
+	Error             string                 `json:"error"`
 }
 
 type webCoCreateState struct {
@@ -304,6 +345,277 @@ func (s *webCoCreateSession) newMessage(role, content, source string, historyInd
 	return message
 }
 
+func (s *webCoCreateSession) checkpoint(now time.Time) webCoCreateCheckpoint {
+	if s == nil {
+		return webCoCreateCheckpoint{}
+	}
+	messages := make([]webCoCreateMessageCheckpoint, 0, len(s.messages))
+	for _, message := range s.messages {
+		messages = append(messages, webCoCreateMessageCheckpoint{
+			ID:           message.ID,
+			Role:         message.Role,
+			Content:      message.Content,
+			Editable:     message.Editable,
+			Source:       message.Source,
+			HistoryIndex: message.historyIndex,
+		})
+	}
+	return webCoCreateCheckpoint{
+		Version:            webCoCreateCheckpointVersion,
+		UpdatedAt:          now.UTC(),
+		Kind:               s.kind,
+		Session:            s.session.Snapshot(),
+		Messages:           messages,
+		NextMessageSeq:     s.nextMessageSeq,
+		Failed:             s.failed,
+		SourceFile:         s.sourceFile,
+		SourcePath:         s.sourcePath,
+		AdaptGranularity:   s.adaptGranularity,
+		AdaptRewritePolicy: s.adaptRewritePolicy,
+		AdaptWordTolerance: s.adaptWordTolerance,
+		TargetTotalWords:   s.targetTotalWords,
+		AdaptationProposal: s.adaptationProposal,
+	}
+}
+
+func webCoCreateSessionFromCheckpoint(checkpoint webCoCreateCheckpoint) (*webCoCreateSession, error) {
+	if checkpoint.Version != webCoCreateCheckpointVersion {
+		return nil, fmt.Errorf("unsupported co-create checkpoint version %d", checkpoint.Version)
+	}
+	kind := strings.TrimSpace(checkpoint.Kind)
+	if kind == "" {
+		kind = webCoCreateKindNormal
+	}
+	switch kind {
+	case webCoCreateKindNormal, webCoCreateKindStage, webCoCreateKindAdapt:
+	default:
+		return nil, fmt.Errorf("unsupported co-create kind %q", checkpoint.Kind)
+	}
+	if len(checkpoint.Session.History) == 0 {
+		return nil, fmt.Errorf("co-create checkpoint history is empty")
+	}
+	messages := make([]webCoCreateMessage, 0, len(checkpoint.Messages))
+	for _, message := range checkpoint.Messages {
+		messages = append(messages, webCoCreateMessage{
+			ID:           message.ID,
+			Role:         message.Role,
+			Content:      message.Content,
+			Editable:     message.Editable,
+			Source:       message.Source,
+			historyIndex: message.HistoryIndex,
+		})
+	}
+	nextMessageSeq := checkpoint.NextMessageSeq
+	if nextMessageSeq < len(messages) {
+		nextMessageSeq = len(messages)
+	}
+	return &webCoCreateSession{
+		kind:               kind,
+		session:            startup.NewCoCreateSessionFromSnapshot(checkpoint.Session),
+		messages:           messages,
+		nextMessageSeq:     nextMessageSeq,
+		failed:             checkpoint.Failed,
+		sourceFile:         strings.TrimSpace(checkpoint.SourceFile),
+		sourcePath:         strings.TrimSpace(checkpoint.SourcePath),
+		adaptGranularity:   strings.TrimSpace(checkpoint.AdaptGranularity),
+		adaptRewritePolicy: strings.TrimSpace(checkpoint.AdaptRewritePolicy),
+		adaptWordTolerance: checkpoint.AdaptWordTolerance,
+		targetTotalWords:   checkpoint.TargetTotalWords,
+		adaptationProposal: checkpoint.AdaptationProposal,
+	}, nil
+}
+
+func webCoCreateSessionFromLogEntry(entry webCoCreateLogEntry) (*webCoCreateSession, error) {
+	history := cleanCoCreateLogHistory(entry.InputHistory)
+	if len(history) == 0 {
+		return nil, fmt.Errorf("co-create log history is empty")
+	}
+	kind := inferWebCoCreateKindFromLog(history)
+	draftPrompt, ready, suggestions := coCreateLogDraftState(entry, history)
+	sessionHistory := append([]host.CoCreateMessage(nil), history...)
+	assistantMessage := strings.TrimSpace(entry.ParsedReply)
+	if assistantMessage == "" {
+		assistantMessage = extractCoCreateLogTag(entry.RawResponse, "reply")
+	}
+	if strings.TrimSpace(entry.Error) == "" {
+		raw := strings.TrimSpace(entry.RawResponse)
+		if raw == "" {
+			raw = assistantMessage
+		}
+		if raw != "" {
+			sessionHistory = append(sessionHistory, host.CoCreateMessage{Role: "assistant", Content: raw})
+		}
+	}
+	state := &webCoCreateSession{
+		kind:    kind,
+		session: startup.NewCoCreateSessionFromSnapshot(startup.CoCreateSnapshot{History: sessionHistory, DraftPrompt: draftPrompt, Ready: ready, Suggestions: suggestions}),
+		failed:  strings.TrimSpace(entry.Error) != "",
+	}
+	if kind == webCoCreateKindAdapt {
+		state.adaptGranularity, state.adaptRewritePolicy, state.adaptWordTolerance = coCreateLogAdaptOptions(history[0].Content)
+	}
+	state.messages = webCoCreateMessagesFromLog(kind, history, assistantMessage, strings.TrimSpace(entry.Error) == "")
+	return state, nil
+}
+
+func cleanCoCreateLogHistory(history []host.CoCreateMessage) []host.CoCreateMessage {
+	out := make([]host.CoCreateMessage, 0, len(history))
+	for _, message := range history {
+		role := strings.TrimSpace(message.Role)
+		content := strings.TrimSpace(message.Content)
+		if role == "" || content == "" {
+			continue
+		}
+		switch role {
+		case "user", "assistant", "system":
+			out = append(out, host.CoCreateMessage{Role: role, Content: content})
+		}
+	}
+	return out
+}
+
+func inferWebCoCreateKindFromLog(history []host.CoCreateMessage) string {
+	if len(history) == 0 {
+		return webCoCreateKindNormal
+	}
+	first := history[0].Content
+	if strings.Contains(first, "granularity=") && strings.Contains(first, "rewrite_policy=") {
+		return webCoCreateKindAdapt
+	}
+	if strings.TrimSpace(first) == strings.TrimSpace(stageCoCreateOpener) {
+		return webCoCreateKindStage
+	}
+	return webCoCreateKindNormal
+}
+
+func coCreateLogAdaptOptions(opener string) (string, string, float64) {
+	granularity := strings.TrimSpace(coCreateLogKey(opener, "granularity"))
+	if normalized, ok := domain.StrictAdaptationGranularity(granularity); ok {
+		granularity = normalized
+	} else {
+		granularity = domain.AdaptationGranularityChapter
+	}
+	rewritePolicy := strings.TrimSpace(coCreateLogKey(opener, "rewrite_policy"))
+	if rewritePolicy == "" {
+		rewritePolicy = domain.AdaptationRewritePolicyForGranularity(granularity)
+	}
+	tolerance := adapt.DefaultWordTolerance
+	if raw := strings.TrimSpace(coCreateLogKey(opener, "word_tolerance")); raw != "" && raw != "disabled" {
+		if parsed, err := strconv.ParseFloat(raw, 64); err == nil && parsed > 0 {
+			tolerance = parsed
+		}
+	}
+	return granularity, rewritePolicy, tolerance
+}
+
+func coCreateLogKey(text, key string) string {
+	for _, line := range strings.Split(text, "\n") {
+		left, right, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || strings.TrimSpace(left) != key {
+			continue
+		}
+		return strings.TrimSpace(right)
+	}
+	return ""
+}
+
+func coCreateLogDraftState(entry webCoCreateLogEntry, history []host.CoCreateMessage) (string, bool, []string) {
+	draft := strings.TrimSpace(entry.ParsedDraft)
+	ready := entry.ParsedReady
+	suggestions := append([]string(nil), entry.ParsedSuggestions...)
+	if draft != "" {
+		return draft, ready, suggestions
+	}
+	for idx := len(history) - 1; idx >= 0; idx-- {
+		if history[idx].Role != "assistant" {
+			continue
+		}
+		draft = extractCoCreateLogTag(history[idx].Content, "draft")
+		if draft == "" {
+			continue
+		}
+		ready = strings.EqualFold(strings.TrimSpace(extractCoCreateLogTag(history[idx].Content, "ready")), "true")
+		if len(suggestions) == 0 && len(history) > 0 && history[len(history)-1].Role == "assistant" {
+			suggestions = splitCoCreateLogSuggestions(extractCoCreateLogTag(history[idx].Content, "suggestions"))
+		}
+		return draft, ready, suggestions
+	}
+	return draft, ready, suggestions
+}
+
+func splitCoCreateLogSuggestions(text string) []string {
+	var suggestions []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "-* "))
+		if line != "" {
+			suggestions = append(suggestions, line)
+		}
+	}
+	return suggestions
+}
+
+func extractCoCreateLogTag(text, tag string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	start := strings.Index(text, open)
+	if start < 0 {
+		return ""
+	}
+	start += len(open)
+	end := strings.Index(text[start:], close)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(text[start : start+end])
+}
+
+func webCoCreateMessagesFromLog(kind string, history []host.CoCreateMessage, assistantMessage string, appendAssistant bool) []webCoCreateMessage {
+	state := &webCoCreateSession{kind: kind}
+	if kind == webCoCreateKindAdapt {
+		state.messages = append(state.messages, state.newMessage("system", adaptCoCreateSystemLine, "", -1))
+	}
+	if kind == webCoCreateKindStage {
+		state.messages = append(state.messages, state.newMessage("system", stageCoCreateSystemLine, "", -1))
+	}
+	for idx, message := range history {
+		if coCreateLogMessageHidden(kind, idx, message) {
+			continue
+		}
+		content := message.Content
+		source := ""
+		if message.Role == "assistant" {
+			if reply := extractCoCreateLogTag(content, "reply"); reply != "" {
+				content = reply
+			}
+		} else if message.Role == "user" {
+			source = "custom"
+		}
+		state.messages = append(state.messages, state.newMessage(message.Role, content, source, idx))
+	}
+	if appendAssistant && strings.TrimSpace(assistantMessage) != "" {
+		state.messages = append(state.messages, state.newMessage("assistant", assistantMessage, "", len(history)))
+	}
+	return state.messages
+}
+
+func coCreateLogMessageHidden(kind string, index int, message host.CoCreateMessage) bool {
+	if index != 0 || message.Role != "user" {
+		return false
+	}
+	switch kind {
+	case webCoCreateKindAdapt:
+		return strings.Contains(message.Content, "granularity=") && strings.Contains(message.Content, "rewrite_policy=")
+	case webCoCreateKindStage:
+		return strings.TrimSpace(message.Content) == strings.TrimSpace(stageCoCreateOpener)
+	default:
+		return false
+	}
+}
+
 func coCreateMessageSource(source string) string {
 	switch strings.TrimSpace(source) {
 	case "suggestion":
@@ -407,7 +719,7 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		TargetTotalWords: s.targetTotalWords,
 		SourceFile:       s.sourceFile,
 		Proposal:         s.adaptationProposal,
-		CanStart:         s.session.Ready() && strings.TrimSpace(s.session.DraftPrompt()) != "",
+		CanStart:         s.session.CanStart(),
 		ModeLocked:       s.kind == webCoCreateKindAdapt,
 	}
 }

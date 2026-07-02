@@ -1,11 +1,15 @@
 package web
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -39,6 +43,8 @@ const (
 	webEventHistoryLimit = 1000
 
 	projectActionKindAdaptationAnalysis = "adaptation_analysis"
+	webCoCreateCheckpointRelPath        = "meta/sessions/web-cocreate-checkpoint.json"
+	webCoCreateLogRelPath               = "meta/sessions/cocreate.jsonl"
 )
 
 type SessionManager struct {
@@ -86,6 +92,8 @@ type projectHost interface {
 	GrokLoginStatus(string) grokauth.AuthStatus
 	CurrentThinking(string) string
 	SetRoleThinking(string, string) error
+	CurrentCoCreateTimeoutSeconds() int
+	SetCoCreateTimeoutSeconds(int) error
 	Events() <-chan host.Event
 	Stream() <-chan string
 	Done() <-chan struct{}
@@ -267,6 +275,9 @@ func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession
 	if err := session.seedHistory(); err != nil {
 		return nil, err
 	}
+	if err := session.restoreCoCreateCheckpoint(); err != nil {
+		slog.Warn("restore co-create checkpoint failed", "module", "web", "project", manifest.ID, "err", err)
+	}
 	go session.pump()
 	return session, nil
 }
@@ -302,8 +313,9 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 		})
 	}
 	return apiModelConfig{
-		Providers: outProviders,
-		Roles:     roles,
+		Providers:              outProviders,
+		Roles:                  roles,
+		CoCreateTimeoutSeconds: s.host.CurrentCoCreateTimeoutSeconds(),
 		ThinkingLevels: []string{
 			"",
 			"off",
@@ -327,6 +339,14 @@ func (s *ProjectSession) SwitchModel(role, provider, model string) (apiModelConf
 
 func (s *ProjectSession) SetRoleThinking(role, level string) (apiModelConfig, error) {
 	if err := s.host.SetRoleThinking(normalizeModelRole(role), level); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) SetCoCreateTimeoutSeconds(seconds int) (apiModelConfig, error) {
+	if err := s.host.SetCoCreateTimeoutSeconds(seconds); err != nil {
 		return apiModelConfig{}, err
 	}
 	s.AppendSnapshot()
@@ -631,6 +651,7 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 		s.AppendSnapshot()
 	}
 	s.cocreate = state
+	s.saveCoCreateCheckpoint()
 	return s.runCoCreateLocked(ctx)
 }
 
@@ -647,6 +668,7 @@ func (s *ProjectSession) SendCoCreate(ctx context.Context, text, source string) 
 	if err := s.cocreate.appendUser(text, source); err != nil {
 		return webCoCreateState{}, err
 	}
+	s.saveCoCreateCheckpoint()
 	return s.runCoCreateLocked(ctx)
 }
 
@@ -663,6 +685,7 @@ func (s *ProjectSession) ReviseCoCreate(ctx context.Context, req webCoCreateRevi
 	if err := s.cocreate.reviseUser(req.MessageID, req.Text); err != nil {
 		return webCoCreateState{}, err
 	}
+	s.saveCoCreateCheckpoint()
 	return s.runCoCreateLocked(ctx)
 }
 
@@ -717,6 +740,7 @@ func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
 	}
 	api := state.apiState()
 	s.cocreate = nil
+	s.clearCoCreateCheckpoint()
 	s.AppendSnapshot()
 	return api, nil
 }
@@ -729,6 +753,205 @@ func (s *ProjectSession) persistWordBudget(budget *domain.WordBudget) error {
 		return fmt.Errorf("save word budget: %w", err)
 	}
 	return nil
+}
+
+func (s *ProjectSession) CoCreateState() *webCoCreateState {
+	if s.cocreate == nil {
+		return nil
+	}
+	state := s.cocreate.apiState()
+	return &state
+}
+
+func (s *ProjectSession) restoreCoCreateCheckpoint() error {
+	path := s.coCreateCheckpointPath()
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return s.restoreCoCreateCheckpointFromLog()
+	}
+	if err != nil {
+		return err
+	}
+	var checkpoint webCoCreateCheckpoint
+	if err := json.Unmarshal(data, &checkpoint); err != nil {
+		return fmt.Errorf("decode %s: %w", path, err)
+	}
+	state, err := webCoCreateSessionFromCheckpoint(checkpoint)
+	if err != nil {
+		return fmt.Errorf("restore %s: %w", path, err)
+	}
+	if state.kind == webCoCreateKindStage && !s.host.PauseForCoCreate() {
+		return fmt.Errorf("restore %s: cannot re-enter stage co-create", path)
+	}
+	s.cocreate = state
+	s.appendCoCreateState(state.apiState())
+	return nil
+}
+
+func (s *ProjectSession) restoreCoCreateCheckpointFromLog() error {
+	path := s.coCreateLogPath()
+	if path == "" {
+		return nil
+	}
+	entry, ok, err := latestWebCoCreateLogEntry(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	state, err := webCoCreateSessionFromLogEntry(entry)
+	if err != nil {
+		return fmt.Errorf("restore %s: %w", path, err)
+	}
+	if err := s.fillCoCreateAdaptationSource(state); err != nil {
+		return fmt.Errorf("restore %s: %w", path, err)
+	}
+	if state.kind == webCoCreateKindStage && !s.host.PauseForCoCreate() {
+		return fmt.Errorf("restore %s: cannot re-enter stage co-create", path)
+	}
+	s.cocreate = state
+	s.saveCoCreateCheckpoint()
+	s.appendCoCreateState(state.apiState())
+	return nil
+}
+
+func latestWebCoCreateLogEntry(path string) (webCoCreateLogEntry, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return webCoCreateLogEntry{}, false, err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	var latest webCoCreateLogEntry
+	found := false
+	for scanner.Scan() {
+		var entry webCoCreateLogEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue
+		}
+		if len(cleanCoCreateLogHistory(entry.InputHistory)) == 0 {
+			continue
+		}
+		latest = entry
+		found = true
+	}
+	if err := scanner.Err(); err != nil {
+		return webCoCreateLogEntry{}, false, err
+	}
+	return latest, found, nil
+}
+
+func (s *ProjectSession) fillCoCreateAdaptationSource(state *webCoCreateSession) error {
+	if state == nil || state.kind != webCoCreateKindAdapt || strings.TrimSpace(state.sourcePath) != "" {
+		return nil
+	}
+	s.mu.Lock()
+	manifest := s.manifest
+	s.mu.Unlock()
+	status, err := projectAdaptationStatus(manifest, false)
+	if err != nil {
+		return err
+	}
+	if status.SourceFile == nil || strings.TrimSpace(status.SourceFile.RelativePath) == "" {
+		return nil
+	}
+	sourceFile := strings.TrimSpace(status.SourceFile.RelativePath)
+	sourcePath, err := adaptationSourcePathFromName(sourceFile, manifest, false)
+	if err != nil {
+		return err
+	}
+	state.sourceFile = sourceFile
+	state.sourcePath = sourcePath
+	return nil
+}
+
+func (s *ProjectSession) saveCoCreateCheckpoint() {
+	if err := s.writeCoCreateCheckpoint(); err != nil {
+		slog.Warn("save co-create checkpoint failed", "module", "web", "project", s.projectID(), "err", err)
+	}
+}
+
+func (s *ProjectSession) writeCoCreateCheckpoint() error {
+	if s.cocreate == nil {
+		return nil
+	}
+	path := s.coCreateCheckpointPath()
+	if path == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(s.cocreate.checkpoint(time.Now()), "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func (s *ProjectSession) clearCoCreateCheckpoint() {
+	path := s.coCreateCheckpointPath()
+	if path == "" {
+		return
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Warn("clear co-create checkpoint failed", "module", "web", "project", s.projectID(), "err", err)
+	}
+}
+
+func (s *ProjectSession) coCreateCheckpointPath() string {
+	s.mu.Lock()
+	outputDir := strings.TrimSpace(s.manifest.OutputDir)
+	s.mu.Unlock()
+	if outputDir == "" {
+		return ""
+	}
+	return filepath.Join(outputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))
+}
+
+func (s *ProjectSession) coCreateLogPath() string {
+	s.mu.Lock()
+	outputDir := strings.TrimSpace(s.manifest.OutputDir)
+	s.mu.Unlock()
+	if outputDir == "" {
+		return ""
+	}
+	return filepath.Join(outputDir, filepath.FromSlash(webCoCreateLogRelPath))
+}
+
+func (s *ProjectSession) projectID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.manifest.ID
 }
 
 func (s *ProjectSession) CancelCoCreate() (webCoCreateState, error) {
@@ -747,6 +970,7 @@ func (s *ProjectSession) CancelCoCreate() (webCoCreateState, error) {
 		s.AppendSnapshot()
 	}
 	s.cocreate = nil
+	s.clearCoCreateCheckpoint()
 	return state, nil
 }
 
@@ -769,6 +993,7 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 		}
 		s.cocreate.session.ApplyDelta(kind, text)
 		s.appendCoCreateState(s.cocreate.apiState())
+		s.saveCoCreateCheckpoint()
 	}
 	s.cocreate.failed = false
 	eventID, startedAt := s.appendCoCreateRunStarted(s.cocreate.kind)
@@ -776,11 +1001,13 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 	if err != nil {
 		s.cocreate.failed = true
 		state := s.cocreate.apiState()
+		s.saveCoCreateCheckpoint()
 		s.appendCoCreateRunFinished(eventID, startedAt, state, err)
 		return state, err
 	}
 	s.cocreate.applyReply(reply)
 	state := s.cocreate.apiState()
+	s.saveCoCreateCheckpoint()
 	s.appendCoCreateState(state)
 	s.appendCoCreateRunFinished(eventID, startedAt, state, nil)
 	return state, nil

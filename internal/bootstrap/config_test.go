@@ -2,6 +2,20 @@ package bootstrap
 
 import "testing"
 
+func TestCoCreateTimeoutDefaultsAndValidation(t *testing.T) {
+	cfg := Config{}
+	if got := cfg.EffectiveCoCreateTimeoutSeconds(); got != DefaultCoCreateTimeoutSeconds {
+		t.Fatalf("default timeout = %d, want %d", got, DefaultCoCreateTimeoutSeconds)
+	}
+	cfg.CoCreateTimeoutSeconds = 45
+	if got := cfg.EffectiveCoCreateTimeoutSeconds(); got != 45 {
+		t.Fatalf("configured timeout = %d, want 45", got)
+	}
+	if _, err := NormalizeCoCreateTimeoutSeconds(MaxCoCreateTimeoutSeconds + 1); err == nil {
+		t.Fatal("timeout above max should be rejected")
+	}
+}
+
 func TestRememberModelCandidateKeepsSwitchedAwayProviderSelectable(t *testing.T) {
 	cfg := Config{
 		Provider:  "deepseek",

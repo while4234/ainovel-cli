@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,6 +61,129 @@ func TestProjectCoCreateSuggestionsAndCommitUseDraftPrompt(t *testing.T) {
 	}
 	if !strings.Contains(fake.startPreparedPrompt, "[创作要求]\n## 主题\n- 月城追凶") {
 		t.Fatalf("StartPrepared prompt should wrap draft prompt, got %q", fake.startPreparedPrompt)
+	}
+	if _, err := os.Stat(filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))); !os.IsNotExist(err) {
+		t.Fatalf("co-create checkpoint should be cleared after commit, stat err=%v", err)
+	}
+}
+
+func TestProjectCoCreateCheckpointRestoresAfterSessionRestart(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Restore")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply("继续确认。", "## 方向\n- 保留慢热纯爱", false, "加强日常互动")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"normal","initial":"写一个纯爱故事"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	checkpointPath := filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))
+	if _, err := os.Stat(checkpointPath); err != nil {
+		t.Fatalf("co-create checkpoint should exist at %s: %v", checkpointPath, err)
+	}
+
+	server.sessions.CloseProject(manifest.ID)
+	installFakeSession(t, server, manifest)
+
+	req = httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var restored struct {
+		CoCreate *webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if restored.CoCreate == nil || !restored.CoCreate.Active {
+		t.Fatalf("restored co-create state = %+v, want active", restored.CoCreate)
+	}
+	if restored.CoCreate.DraftPrompt != "## 方向\n- 保留慢热纯爱" {
+		t.Fatalf("restored draft = %q", restored.CoCreate.DraftPrompt)
+	}
+	if len(restored.CoCreate.Messages) != 2 || restored.CoCreate.Messages[0].Role != "user" || restored.CoCreate.Messages[1].Role != "assistant" {
+		t.Fatalf("restored messages = %+v", restored.CoCreate.Messages)
+	}
+}
+
+func TestProjectCoCreateRestoresFromLegacyLog(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Legacy CoCreate Restore")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	opener := strings.Join([]string{
+		"Please adapt this novel.",
+		"",
+		"granularity=free",
+		"rewrite_policy=" + domain.AdaptationRewritePolicyForGranularity(domain.AdaptationGranularityFree),
+		"word_tolerance=0.15",
+	}, "\n")
+	assistantRaw := strings.Join([]string{
+		"<reply>ready to start</reply>",
+		"<draft>## restored draft\n- keep current direction</draft>",
+		"<ready>true</ready>",
+		"<suggestions><suggestion>write chapter one</suggestion></suggestions>",
+	}, "")
+	entry := webCoCreateLogEntry{
+		InputHistory: []host.CoCreateMessage{
+			{Role: "user", Content: opener},
+			{Role: "user", Content: "core adaptation idea"},
+			{Role: "assistant", Content: assistantRaw},
+			{Role: "user", Content: "move the first period to high school"},
+		},
+		Error: "context deadline exceeded",
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal legacy log: %v", err)
+	}
+	logPath := filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateLogRelPath))
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir legacy log dir: %v", err)
+	}
+	if err := os.WriteFile(logPath, append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("write legacy log: %v", err)
+	}
+
+	installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var restored struct {
+		CoCreate *webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if restored.CoCreate == nil || !restored.CoCreate.Active {
+		t.Fatalf("restored co-create state = %+v, want active", restored.CoCreate)
+	}
+	if restored.CoCreate.Kind != webCoCreateKindAdapt || restored.CoCreate.SourceFile != "source.txt" {
+		t.Fatalf("restored adapt state kind=%q source=%q", restored.CoCreate.Kind, restored.CoCreate.SourceFile)
+	}
+	if !restored.CoCreate.CanStart || restored.CoCreate.DraftPrompt != "## restored draft\n- keep current direction" {
+		t.Fatalf("restored draft/can_start = %q/%v", restored.CoCreate.DraftPrompt, restored.CoCreate.CanStart)
+	}
+	if len(restored.CoCreate.Messages) != 4 || restored.CoCreate.Messages[0].Role != "system" || restored.CoCreate.Messages[3].Content != "move the first period to high school" {
+		t.Fatalf("restored messages = %+v", restored.CoCreate.Messages)
+	}
+	if _, err := os.Stat(filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))); err != nil {
+		t.Fatalf("legacy restore should write checkpoint: %v", err)
 	}
 }
 

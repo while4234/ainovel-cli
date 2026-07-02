@@ -107,6 +107,57 @@ func TestGlobalModelSwitchRoutePersistsRole(t *testing.T) {
 	}
 }
 
+func TestGlobalCoCreateTimeoutPersists(t *testing.T) {
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	var response struct {
+		Models  apiModelConfig `json:"models"`
+		Runtime struct {
+			Config struct {
+				CoCreateTimeoutSeconds int `json:"cocreate_timeout_seconds"`
+			} `json:"config"`
+		} `json:"runtime"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/cocreate-timeout", `{"seconds":45}`, &response)
+	if response.Models.CoCreateTimeoutSeconds != 45 || response.Runtime.Config.CoCreateTimeoutSeconds != 45 {
+		t.Fatalf("timeout response models=%d runtime=%d", response.Models.CoCreateTimeoutSeconds, response.Runtime.Config.CoCreateTimeoutSeconds)
+	}
+	if got := server.currentConfig().CoCreateTimeoutSeconds; got != 45 {
+		t.Fatalf("server timeout = %d, want 45", got)
+	}
+	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	if saved.CoCreateTimeoutSeconds != 45 {
+		t.Fatalf("saved timeout = %d, want 45", saved.CoCreateTimeoutSeconds)
+	}
+}
+
+func TestProjectCoCreateTimeoutUsesProjectHost(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Project Timeout")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	var response struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/projects/"+manifest.ID+"/models/cocreate-timeout", `{"seconds":30}`, &response)
+	if fake.setCoCreateTimeoutCalls != 1 || fake.coCreateTimeoutSeconds != 30 {
+		t.Fatalf("host timeout calls=%d seconds=%d", fake.setCoCreateTimeoutCalls, fake.coCreateTimeoutSeconds)
+	}
+	if response.Models.CoCreateTimeoutSeconds != 30 {
+		t.Fatalf("response timeout = %d, want 30", response.Models.CoCreateTimeoutSeconds)
+	}
+}
+
 func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	home := testTempDir(t)
 	t.Setenv("HOME", home)

@@ -16,6 +16,8 @@ import {
   restoreTrashProject,
   reviseCoCreate,
   sendCoCreate,
+  setGlobalCoCreateTimeout,
+  setProjectCoCreateTimeout,
   setProjectStyle,
   startGrokLogin,
   switchGlobalDefaultModel,
@@ -202,6 +204,22 @@ describe('web API helpers', () => {
         provider: 'deepseek',
         model: 'deepseek-chat'
       })
+    }));
+  });
+
+  it('sends co-create timeout updates to global and project model routes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await setGlobalCoCreateTimeout(60);
+    await setProjectCoCreateTimeout('project-1', 30);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/models/cocreate-timeout', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ seconds: 60 })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/models/cocreate-timeout', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ seconds: 30 })
     }));
   });
 

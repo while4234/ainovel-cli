@@ -100,7 +100,6 @@ const (
 const (
 	coCreateMaxAttempts = retrypolicy.MaxAttempts
 	coCreateMaxTokens   = 2048
-	coCreateTimeout     = 180 * time.Second
 	coCreateModelRole   = "architect"
 )
 
@@ -156,14 +155,17 @@ const (
 	tagSuggestions = "suggestions"
 )
 
-func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, sysPrompt string, history []CoCreateMessage, onProgress func(kind, text string)) (reply CoCreateReply, err error) {
+func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, timeout time.Duration, sysPrompt string, history []CoCreateMessage, onProgress func(kind, text string)) (reply CoCreateReply, err error) {
 	if len(history) == 0 {
 		return CoCreateReply{}, fmt.Errorf("cocreate history is empty")
+	}
+	if timeout <= 0 {
+		timeout = time.Duration(bootstrap.DefaultCoCreateTimeoutSeconds) * time.Second
 	}
 
 	model := models.ForRole(coCreateModelRole)
 	modelIdentity := newCoCreateModelIdentity(model)
-	ctx, cancel := context.WithTimeout(ctx, coCreateTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	msgs := []agentcore.Message{agentcore.SystemMsg(globalprompt.Apply(sysPrompt))}
@@ -194,6 +196,7 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 		_ = sessions.LogCoCreate(coCreateLogEntry{
 			Time:             time.Now(),
 			DurationMS:       time.Since(start).Milliseconds(),
+			TimeoutSeconds:   int(timeout.Seconds()),
 			ModelRole:        coCreateModelRole,
 			SelectedProvider: modelIdentity.Provider,
 			SelectedModel:    modelIdentity.Model,
@@ -379,6 +382,7 @@ func adaptationSnapshot(st *store.Store) string {
 type coCreateLogEntry struct {
 	Time             time.Time         `json:"time"`
 	DurationMS       int64             `json:"duration_ms"`
+	TimeoutSeconds   int               `json:"timeout_seconds,omitempty"`
 	ModelRole        string            `json:"model_role,omitempty"`
 	SelectedProvider string            `json:"selected_provider,omitempty"`
 	SelectedModel    string            `json:"selected_model,omitempty"`

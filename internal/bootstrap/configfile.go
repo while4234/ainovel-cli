@@ -154,6 +154,9 @@ func mergeConfig(base, overlay Config) Config {
 	if overlay.ReasoningEffort != "" {
 		base.ReasoningEffort = overlay.ReasoningEffort
 	}
+	if overlay.CoCreateTimeoutSeconds > 0 {
+		base.CoCreateTimeoutSeconds = overlay.CoCreateTimeoutSeconds
+	}
 	if overlay.Style != "" {
 		base.Style = overlay.Style
 	}

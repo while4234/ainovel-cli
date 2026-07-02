@@ -1967,6 +1967,18 @@ h2 {
   min-width: 0;
 }
 
+.model-timeout-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding-top: 8px;
+}
+
+.model-timeout-form .tool-button {
+  min-width: 82px;
+}
+
 .model-route {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

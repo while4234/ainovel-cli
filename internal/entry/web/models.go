@@ -18,10 +18,11 @@ var openAuthBrowser = openBrowser
 var startGrokAuthLogin = grokauth.StartLogin
 
 type apiModelConfig struct {
-	Providers      []apiModelProvider `json:"providers"`
-	Roles          []apiModelRoute    `json:"roles"`
-	ThinkingLevels []string           `json:"thinking_levels"`
-	ThinkingRule   string             `json:"thinking_rule"`
+	Providers              []apiModelProvider `json:"providers"`
+	Roles                  []apiModelRoute    `json:"roles"`
+	ThinkingLevels         []string           `json:"thinking_levels"`
+	ThinkingRule           string             `json:"thinking_rule"`
+	CoCreateTimeoutSeconds int                `json:"cocreate_timeout_seconds"`
 }
 
 type apiModelProvider struct {
@@ -49,6 +50,18 @@ type grokLoginCompleteRequest struct {
 
 type grokLoginStatusRequest struct {
 	AccountID string `json:"account_id"`
+}
+
+type coCreateTimeoutRequest struct {
+	Seconds        int `json:"seconds"`
+	TimeoutSeconds int `json:"timeout_seconds"`
+}
+
+func (r coCreateTimeoutRequest) value() int {
+	if r.TimeoutSeconds != 0 {
+		return r.TimeoutSeconds
+	}
+	return r.Seconds
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +140,38 @@ func (s *Server) handleModelSwitch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"models":  models,
 		"runtime": runtime,
+	})
+}
+
+func (s *Server) handleCoCreateTimeout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req coCreateTimeoutRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	seconds, err := bootstrap.NormalizeCoCreateTimeoutSeconds(req.value())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cfg := s.currentConfig()
+	cfg.CoCreateTimeoutSeconds = seconds
+	if err := cfg.ValidateBase(); err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	if err := saveWebConfig(cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.setCurrentConfig(cfg)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  s.globalModelConfig(cfg),
+		"runtime": s.runtimePayload(cfg),
 	})
 }
 
@@ -255,10 +300,11 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 		})
 	}
 	return apiModelConfig{
-		Providers:      outProviders,
-		Roles:          roles,
-		ThinkingLevels: []string{"", "off", "low", "medium", "high", "xhigh", "max"},
-		ThinkingRule:   "default applies to coordinator, architect, writer, and editor unless that role has its own reasoning_effort",
+		Providers:              outProviders,
+		Roles:                  roles,
+		ThinkingLevels:         []string{"", "off", "low", "medium", "high", "xhigh", "max"},
+		ThinkingRule:           "default applies to coordinator, architect, writer, and editor unless that role has its own reasoning_effort",
+		CoCreateTimeoutSeconds: cfg.EffectiveCoCreateTimeoutSeconds(),
 	}
 }
 
@@ -348,6 +394,33 @@ func (s *Server) handleProjectModelThinking(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	models, err := session.SetRoleThinking(req.Role, req.Level)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"models":   models,
+		"snapshot": session.Snapshot(),
+	})
+}
+
+func (s *Server) handleProjectCoCreateTimeout(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req coCreateTimeoutRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	models, err := session.SetCoCreateTimeoutSeconds(req.value())
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return

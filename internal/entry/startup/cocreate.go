@@ -17,11 +17,45 @@ type CoCreateSession struct {
 	suggestions    []string
 }
 
+type CoCreateSnapshot struct {
+	History        []host.CoCreateMessage `json:"history"`
+	DraftPrompt    string                 `json:"draft_prompt,omitempty"`
+	Ready          bool                   `json:"ready,omitempty"`
+	StreamReply    string                 `json:"stream_reply,omitempty"`
+	StreamThinking string                 `json:"stream_thinking,omitempty"`
+	Suggestions    []string               `json:"suggestions,omitempty"`
+}
+
 func NewCoCreateSession(initial string) *CoCreateSession {
 	return &CoCreateSession{
 		history: []host.CoCreateMessage{
 			{Role: "user", Content: strings.TrimSpace(initial)},
 		},
+	}
+}
+
+func NewCoCreateSessionFromSnapshot(snapshot CoCreateSnapshot) *CoCreateSession {
+	return &CoCreateSession{
+		history:        append([]host.CoCreateMessage(nil), snapshot.History...),
+		draftPrompt:    strings.TrimSpace(snapshot.DraftPrompt),
+		ready:          snapshot.Ready,
+		streamReply:    strings.TrimSpace(snapshot.StreamReply),
+		streamThinking: strings.TrimSpace(snapshot.StreamThinking),
+		suggestions:    append([]string(nil), snapshot.Suggestions...),
+	}
+}
+
+func (s *CoCreateSession) Snapshot() CoCreateSnapshot {
+	if s == nil {
+		return CoCreateSnapshot{}
+	}
+	return CoCreateSnapshot{
+		History:        append([]host.CoCreateMessage(nil), s.history...),
+		DraftPrompt:    s.draftPrompt,
+		Ready:          s.ready,
+		StreamReply:    s.streamReply,
+		StreamThinking: s.streamThinking,
+		Suggestions:    append([]string(nil), s.suggestions...),
 	}
 }
 

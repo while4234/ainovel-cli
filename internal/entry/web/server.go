@@ -148,6 +148,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/models", s.handleModels)
 	mux.HandleFunc("/api/models/default", s.handleDefaultModel)
 	mux.HandleFunc("/api/models/switch", s.handleModelSwitch)
+	mux.HandleFunc("/api/models/cocreate-timeout", s.handleCoCreateTimeout)
 	mux.HandleFunc("/api/models/add", s.handleModelAdd)
 	mux.HandleFunc("/api/models/grok-login/", s.handleGrokLogin)
 	mux.HandleFunc("/api/projects/trash", s.handleProjectTrash)
@@ -238,11 +239,12 @@ func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
 		"runtime_root": s.runtimeRoot,
 		"projects_dir": s.store.ProjectsDir(),
 		"config": map[string]any{
-			"provider":         cfg.Provider,
-			"model":            cfg.ModelName,
-			"style":            cfg.Style,
-			"reasoning_effort": cfg.ReasoningEffort,
-			"roles":            cfg.Roles,
+			"provider":                 cfg.Provider,
+			"model":                    cfg.ModelName,
+			"style":                    cfg.Style,
+			"reasoning_effort":         cfg.ReasoningEffort,
+			"cocreate_timeout_seconds": cfg.EffectiveCoCreateTimeoutSeconds(),
+			"roles":                    cfg.Roles,
 		},
 		"active_projects": s.sessions.ActiveProjectIDs(),
 	}
@@ -371,6 +373,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectModelSwitch(w, r, id)
 	case "models/thinking":
 		s.handleProjectModelThinking(w, r, id)
+	case "models/cocreate-timeout":
+		s.handleProjectCoCreateTimeout(w, r, id)
 	case "models/add":
 		s.handleProjectModelAdd(w, r, id)
 	case "models/add-openai-compatible":
@@ -649,6 +653,7 @@ type projectSnapshotResponse struct {
 	Snapshot   any                 `json:"snapshot"`
 	Adaptation apiAdaptationStatus `json:"adaptation"`
 	Simulation apiSimulationStatus `json:"simulation"`
+	CoCreate   *webCoCreateState   `json:"cocreate,omitempty"`
 }
 
 func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManifest) (projectSnapshotResponse, error) {
@@ -665,6 +670,7 @@ func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManif
 		Snapshot:   session.Snapshot(),
 		Adaptation: adaptation,
 		Simulation: simulation,
+		CoCreate:   session.CoCreateState(),
 	}, nil
 }
 

@@ -320,6 +320,13 @@ export function switchGlobalDefaultModel(provider, model) {
   });
 }
 
+export function setGlobalCoCreateTimeout(seconds) {
+  return request('/api/models/cocreate-timeout', {
+    method: 'POST',
+    body: JSON.stringify({ seconds })
+  });
+}
+
 export function switchProjectModel(projectId, role, provider, model) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/switch`, {
     method: 'POST',
@@ -331,6 +338,13 @@ export function setProjectThinking(projectId, role, level) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/thinking`, {
     method: 'POST',
     body: JSON.stringify({ role, level })
+  });
+}
+
+export function setProjectCoCreateTimeout(projectId, seconds) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/cocreate-timeout`, {
+    method: 'POST',
+    body: JSON.stringify({ seconds })
   });
 }
 
