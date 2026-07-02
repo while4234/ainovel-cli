@@ -226,6 +226,17 @@ ainovel-cli web --host 0.0.0.0 --port 9898
 ainovel-cli web --runtime-root D:\Ainovel\novels
 ```
 
+仓库开发环境下，重启 Web 只使用根目录的一键脚本：
+
+```powershell
+.\restart-web.cmd
+.\restart-web.cmd -Port 9898
+.\restart-web.cmd -Port 9898 -RuntimeRoot "$env:USERPROFILE\.ainovel\novels-preview"
+.\restart-web.cmd -Port 9898 -StopPorts 9898,9901
+```
+
+这个脚本会按相对路径定位仓库，先构建 `internal/entry/web/ui`，再构建 Go 二进制到临时文件；构建成功后才停止旧端口、覆盖 `ainovel-cli.exe`、启动 Web 并检查 `/api/runtime` 和项目列表。运行时根目录解析顺序是：`-RuntimeRoot`、`AINOVEL_WEB_RUNTIME_ROOT`、`AINOVEL_RUNTIME_ROOT`、已存在的 `~/.ainovel/novels-preview`、最后退回 CLI 默认配置。后续开发重启请统一使用这个脚本，快速复用现有构建时可加 `-NoBuild`。
+
 Windows 用户不需要先在某本小说目录里打开终端。可以从 PowerShell、cmd、Windows Terminal 或快捷方式直接运行 `ainovel-cli web --open`，然后在浏览器里创建、打开和切换多本小说。
 
 Web UI 把每本小说保存为运行时项目，默认运行时根目录是：
