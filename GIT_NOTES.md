@@ -30,8 +30,9 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 ## Current Baseline
 
 - Latest source change: branch `main`,
-  `79703a9` `Merge github/main and refresh web build`, after fast-forwarding
-  from GitHub and rebuilding/restarting the local Web service.
+  `bba6eea` `fix: persist web cocreate runtime`, after fetching GitHub,
+  rebasing the local maintenance commit, and rebuilding/restarting the local
+  Web service.
 - Latest maintenance commit: pending this notes update.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
@@ -41,17 +42,26 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `scripts\restart-web.ps1` using the project-local Go 1.25.5 toolchain, then
   restarted on `http://127.0.0.1:9898` with runtime root
   `C:\Users\RondleLiu\.ainovel\novels-preview`; listener PID after restart was
-  `89184`. Port `9904` had no listener.
-- Validation: `git pull --ff-only` fast-forwarded `main` from `d53f3c3` to
-  `79703a9`; `scripts\restart-web.ps1 -Port 9898` passed, including Web UI
-  and Go builds plus readiness wait; independent probes returned `GET / -> 200`,
-  `GET /api/runtime -> ok`, and `GET /api/projects -> ok`. Generated static
-  files had only EOL drift after build and were restored to keep the working
-  tree clean.
+  `236716`.
+- Validation: `git fetch --all --prune` updated `origin/main` from `79703a9`
+  to `bba6eea`; `git rebase origin/main` preserved the local maintenance
+  commit on top of the latest source. The first `.\restart-web.cmd` attempt
+  failed because `go` was not on PATH; rerunning it with
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin` temporarily prepended to PATH
+  passed, including Web UI and Go builds plus readiness wait. Independent
+  probes returned `GET / -> 200`, `GET /api/runtime -> ok`, and
+  `GET /api/projects -> ok`. Generated static files had only build-time EOL
+  drift and were restored to keep the working tree clean.
 
 ## Change Log
 
-- 2026-07-02 `pending` `docs: record latest pull and restart`: pulled latest
+- 2026-07-02 `pending` `docs: record latest update and restart`: fetched
+  latest `origin/main` from `79703a9` to `bba6eea`, rebased the local
+  maintenance commit, rebuilt and restarted the local Web service via
+  `.\restart-web.cmd` with the project-local Go 1.25.5 toolchain on PATH,
+  stopped old PID `89184`, started PID `236716`, and verified
+  `http://127.0.0.1:9898` plus `/api/runtime`.
+- 2026-07-02 `fef41a9` `docs: record latest pull and restart`: pulled latest
   `origin/main` with `git pull --ff-only`, fast-forwarded to `79703a9`, rebuilt
   and restarted the local Web service via `scripts\restart-web.ps1 -Port 9898`,
   verified `http://127.0.0.1:9898`, `/api/runtime`, `/api/projects`, and
