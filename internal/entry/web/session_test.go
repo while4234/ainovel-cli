@@ -15,8 +15,13 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
+	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	"github.com/voocel/ainovel-cli/internal/host/exp"
+	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
 )
 
@@ -179,6 +184,58 @@ func TestProjectSessionServeEventsHonorsAfter(t *testing.T) {
 	}
 	if !strings.Contains(body, "event: snapshot") {
 		t.Fatalf("SSE replay should include current snapshot: %s", body)
+	}
+}
+
+func TestProjectSessionPublishesCoCreateProgressWithoutWritingStream(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.cocreateProgress = []coCreateProgressStep{
+		{kind: host.CoCreateProgressThinking, text: "checking premise"},
+		{kind: host.CoCreateProgressReply, text: "先确认主角目标"},
+	}
+	fake.cocreateReply = host.CoCreateReply{
+		Message: "先确认主角目标",
+		Prompt:  "## 方向\n- 主角寻找失踪同伴",
+		Ready:   false,
+		Raw:     "<reply>先确认主角目标</reply><draft>## 方向\n- 主角寻找失踪同伴</draft><ready>false</ready><suggestions></suggestions>",
+	}
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	state, err := session.BeginCoCreate(context.Background(), webCoCreateBeginRequest{
+		Kind:    webCoCreateKindNormal,
+		Initial: "写一个月城悬疑",
+	})
+	if err != nil {
+		t.Fatalf("BeginCoCreate: %v", err)
+	}
+	if state.StreamReply != "" || len(state.Messages) != 2 {
+		t.Fatalf("final co-create state should clear preview and keep one assistant message: %+v", state)
+	}
+
+	var sawThinking, sawReply, sawStreamDelta bool
+	for _, ev := range session.HistoryAfter(0) {
+		if ev.Type == webEventTypeStreamDelta || ev.Type == webEventTypeStreamClear {
+			sawStreamDelta = true
+		}
+		if ev.Type != webEventTypeCoCreate || ev.CoCreate == nil {
+			continue
+		}
+		if ev.CoCreate.StreamThinking == "checking premise" {
+			sawThinking = true
+		}
+		if ev.CoCreate.StreamReply == "先确认主角目标" {
+			sawReply = true
+		}
+	}
+	if !sawThinking || !sawReply {
+		t.Fatalf("co-create progress events missing thinking=%v reply=%v", sawThinking, sawReply)
+	}
+	if sawStreamDelta {
+		t.Fatal("co-create progress polluted the main writing stream")
 	}
 }
 
@@ -372,22 +429,78 @@ type fakeProjectHost struct {
 
 	snapshot host.UISnapshot
 
-	resumeStarted     chan struct{}
-	resumeStartedOnce sync.Once
-	releaseResume     chan struct{}
-	resumeErr         error
-	continueErr       error
-	steerErr          error
-	simulateErr       error
-	importErr         error
+	resumeStarted              chan struct{}
+	resumeStartedOnce          sync.Once
+	releaseResume              chan struct{}
+	resumeErr                  error
+	continueErr                error
+	steerErr                   error
+	simulateErr                error
+	importErr                  error
+	importNovelErr             error
+	adaptAnalyzeErr            error
+	adaptStartErr              error
+	exportErr                  error
+	cocreateErr                error
+	stageCoCreateErr           error
+	adaptCoCreateErr           error
+	prepareUserRulesErr        error
+	prepareExternalRulesErr    error
+	startPreparedErr           error
+	resumeFromCoCreateErr      error
+	requireAnalyzedAdaptSource bool
 
-	resumeCalls   int
-	continueCalls int
-	steerCalls    int
-	simulateCalls int
-	importCalls   int
-	simulateDir   string
-	importPath    string
+	resumeCalls                 int
+	continueCalls               int
+	steerCalls                  int
+	simulateCalls               int
+	importCalls                 int
+	importNovelCalls            int
+	adaptAnalyzeCalls           int
+	adaptStartCalls             int
+	exportCalls                 int
+	abortCalls                  int
+	prepareRulesCalls           int
+	prepareExternalRulesCalls   int
+	startPreparedCalls          int
+	cocreateCalls               int
+	stageCoCreateCalls          int
+	adaptCoCreateCalls          int
+	pauseCoCreateCalls          int
+	resumeCoCreateCalls         int
+	cancelCoCreateCalls         int
+	simulateDir                 string
+	importPath                  string
+	importNovelPath             string
+	importNovelResumeFrom       int
+	adaptSourcePath             string
+	adaptOptions                adapt.ProposalOptions
+	exportOptions               exp.Options
+	addProviderRole             string
+	addProviderName             string
+	addProviderConfig           bootstrap.ProviderConfig
+	addProviderModel            string
+	grokStartAccountID          string
+	grokStartAccountName        string
+	grokCompleteCallback        string
+	grokStatusAccountID         string
+	preparedRulesPrompt         string
+	preparedExternalRulesPrompt string
+	startPreparedPrompt         string
+	resumeCoCreateDraft         string
+	lastCoCreateHistory         []host.CoCreateMessage
+	cocreateReply               host.CoCreateReply
+	stageCoCreateReply          host.CoCreateReply
+	adaptCoCreateReply          host.CoCreateReply
+	cocreateProgress            []coCreateProgressStep
+	pauseCoCreateOK             bool
+	abortOK                     bool
+	exportResult                *exp.Result
+	addProviderErr              error
+	grokLoginStart              grokauth.LoginStart
+	grokLoginPoll               grokauth.LoginPoll
+	grokCompleteStatus          grokauth.AuthStatus
+	grokStatus                  grokauth.AuthStatus
 
 	events    chan host.Event
 	stream    chan string
@@ -395,11 +508,18 @@ type fakeProjectHost struct {
 	closeOnce sync.Once
 }
 
+type coCreateProgressStep struct {
+	kind string
+	text string
+}
+
 func newFakeProjectHost() *fakeProjectHost {
 	return &fakeProjectHost{
-		events: make(chan host.Event),
-		stream: make(chan string),
-		done:   make(chan struct{}),
+		events:          make(chan host.Event),
+		stream:          make(chan string),
+		done:            make(chan struct{}),
+		pauseCoCreateOK: true,
+		abortOK:         true,
 	}
 }
 
@@ -407,6 +527,37 @@ func (f *fakeProjectHost) Snapshot() host.UISnapshot {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.snapshot
+}
+
+func (f *fakeProjectHost) PrepareUserRules(prompt string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prepareRulesCalls++
+	f.preparedRulesPrompt = prompt
+	return f.prepareUserRulesErr
+}
+
+func (f *fakeProjectHost) PrepareExternalSourceUserRules(prompt string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prepareExternalRulesCalls++
+	f.preparedExternalRulesPrompt = prompt
+	return f.prepareExternalRulesErr
+}
+
+func (f *fakeProjectHost) StartPrepared(prompt string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startPreparedCalls++
+	f.startPreparedPrompt = prompt
+	return f.startPreparedErr
+}
+
+func (f *fakeProjectHost) Abort() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.abortCalls++
+	return f.abortOK
 }
 
 func (f *fakeProjectHost) Resume() (string, error) {
@@ -443,6 +594,88 @@ func (f *fakeProjectHost) Steer(string) error {
 	return f.steerErr
 }
 
+func (f *fakeProjectHost) CoCreateStream(_ context.Context, history []host.CoCreateMessage, onProgress func(kind, text string)) (host.CoCreateReply, error) {
+	f.mu.Lock()
+	f.cocreateCalls++
+	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
+	reply := f.cocreateReply
+	err := f.cocreateErr
+	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)
+	f.mu.Unlock()
+	emitCoCreateProgress(progress, onProgress)
+	return reply, err
+}
+
+func (f *fakeProjectHost) StageCoCreateStream(_ context.Context, history []host.CoCreateMessage, onProgress func(kind, text string)) (host.CoCreateReply, error) {
+	f.mu.Lock()
+	f.stageCoCreateCalls++
+	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
+	reply := f.stageCoCreateReply
+	err := f.stageCoCreateErr
+	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)
+	f.mu.Unlock()
+	emitCoCreateProgress(progress, onProgress)
+	return reply, err
+}
+
+func (f *fakeProjectHost) AdaptCoCreateStream(_ context.Context, history []host.CoCreateMessage, onProgress func(kind, text string)) (host.CoCreateReply, error) {
+	f.mu.Lock()
+	f.adaptCoCreateCalls++
+	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
+	reply := f.adaptCoCreateReply
+	err := f.adaptCoCreateErr
+	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)
+	f.mu.Unlock()
+	emitCoCreateProgress(progress, onProgress)
+	return reply, err
+}
+
+func emitCoCreateProgress(progress []coCreateProgressStep, onProgress func(kind, text string)) {
+	if onProgress == nil {
+		return
+	}
+	for _, step := range progress {
+		onProgress(step.kind, step.text)
+	}
+}
+
+func (f *fakeProjectHost) PauseForCoCreate() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pauseCoCreateCalls++
+	return f.pauseCoCreateOK
+}
+
+func (f *fakeProjectHost) ResumeFromCoCreate(draft string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resumeCoCreateCalls++
+	f.resumeCoCreateDraft = draft
+	return f.resumeFromCoCreateErr
+}
+
+func (f *fakeProjectHost) CancelCoCreate() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cancelCoCreateCalls++
+}
+
+func (f *fakeProjectHost) ImportFrom(_ context.Context, opts imp.Options) (<-chan imp.Event, error) {
+	f.mu.Lock()
+	f.importNovelCalls++
+	f.importNovelPath = opts.SourcePath
+	f.importNovelResumeFrom = opts.ResumeFrom
+	err := f.importNovelErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	events := make(chan imp.Event, 2)
+	events <- imp.Event{Stage: imp.StageDone, Current: 1, Total: 1, Message: "novel imported"}
+	close(events)
+	return events, nil
+}
+
 func (f *fakeProjectHost) SimulateFromDir(_ context.Context, dir string) (<-chan sim.Event, error) {
 	f.mu.Lock()
 	f.simulateCalls++
@@ -473,8 +706,116 @@ func (f *fakeProjectHost) ImportSimulationProfile(_ context.Context, path string
 	return events, nil
 }
 
+func (f *fakeProjectHost) PrepareAdaptationSource(_ context.Context, sourcePath string) (<-chan adapt.Event, error) {
+	f.mu.Lock()
+	f.adaptAnalyzeCalls++
+	f.adaptSourcePath = sourcePath
+	err := f.adaptAnalyzeErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	events := make(chan adapt.Event, 2)
+	events <- adapt.Event{Stage: adapt.StageDone, Message: "adaptation source analyzed"}
+	close(events)
+	return events, nil
+}
+
+func (f *fakeProjectHost) StartAdaptationPreparedWithOptions(options adapt.ProposalOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adaptStartCalls++
+	f.adaptOptions = options
+	if f.requireAnalyzedAdaptSource && options.SourcePath != f.adaptSourcePath {
+		return fmt.Errorf("adaptation source %q has not completed analysis", options.SourcePath)
+	}
+	return f.adaptStartErr
+}
+
+func (f *fakeProjectHost) Export(_ context.Context, opts exp.Options) (*exp.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.exportCalls++
+	f.exportOptions = opts
+	if f.exportErr != nil {
+		return nil, f.exportErr
+	}
+	if f.exportResult != nil {
+		return f.exportResult, nil
+	}
+	return &exp.Result{Path: opts.OutPath, Chapters: 1, Bytes: 12}, nil
+}
+
 func (f *fakeProjectHost) ReplayQueue(int64) ([]domain.RuntimeQueueItem, error) {
 	return nil, nil
+}
+
+func (f *fakeProjectHost) ConfiguredProviders() []string {
+	return []string{"openrouter"}
+}
+
+func (f *fakeProjectHost) ConfiguredModels(provider string) []string {
+	if provider == "openrouter" {
+		return []string{"model-a", "model-b"}
+	}
+	return nil
+}
+
+func (f *fakeProjectHost) CurrentModelSelection(role string) (string, string, bool) {
+	if role == "" || role == "default" {
+		return "openrouter", "model-a", true
+	}
+	return "openrouter", "model-a", false
+}
+
+func (f *fakeProjectHost) SwitchModel(string, string, string) error {
+	return nil
+}
+
+func (f *fakeProjectHost) AddProviderModel(role, providerName string, providerConfig bootstrap.ProviderConfig, model string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.addProviderRole = role
+	f.addProviderName = providerName
+	f.addProviderConfig = providerConfig
+	f.addProviderModel = model
+	return f.addProviderErr
+}
+
+func (f *fakeProjectHost) StartGrokLogin(accountID, accountName string) (grokauth.LoginStart, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grokStartAccountID = accountID
+	f.grokStartAccountName = accountName
+	return f.grokLoginStart, nil
+}
+
+func (f *fakeProjectHost) PollGrokLogin() (grokauth.LoginPoll, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.grokLoginPoll, nil
+}
+
+func (f *fakeProjectHost) CompleteGrokLogin(callbackInput string) (grokauth.AuthStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grokCompleteCallback = callbackInput
+	return f.grokCompleteStatus, nil
+}
+
+func (f *fakeProjectHost) GrokLoginStatus(accountID string) grokauth.AuthStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.grokStatusAccountID = accountID
+	return f.grokStatus
+}
+
+func (f *fakeProjectHost) CurrentThinking(string) string {
+	return "medium"
+}
+
+func (f *fakeProjectHost) SetRoleThinking(string, string) error {
+	return nil
 }
 
 func (f *fakeProjectHost) Events() <-chan host.Event {

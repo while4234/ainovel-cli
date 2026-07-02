@@ -48,6 +48,7 @@ type Plan struct {
 	AdaptGranularity   string
 	AdaptRewritePolicy string
 	AdaptWordTolerance float64
+	AdaptSourcePath    string
 }
 
 // ErrNotImplemented 标记占位策略尚未落地。

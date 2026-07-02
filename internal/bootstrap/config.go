@@ -122,6 +122,20 @@ var knownRoles = map[string]bool{
 type Config struct {
 	// 运行时字段（不序列化到 JSON）
 	OutputDir string `json:"-"` // 输出根目录
+	// PersistPath overrides where runtime model/thinking changes are saved.
+	// Empty keeps the legacy CLI behavior of writing ~/.ainovel/config.json.
+	PersistPath string `json:"-"`
+	// PersistProjectOverlay saves only project-level route preferences and safe
+	// provider metadata at PersistPath, leaving global credentials untouched.
+	PersistProjectOverlay bool `json:"-"`
+	// PersistProviders marks project-owned providers whose credentials/config
+	// should be persisted in the project overlay. Inherited global providers are
+	// written without secrets.
+	PersistProviders map[string]bool `json:"-"`
+	// PersistProjectConfig is the project-owned overlay as loaded from
+	// .ainovel/config.json. Web project mutations update this snapshot so
+	// persistence can avoid serializing inherited global defaults/routes.
+	PersistProjectConfig *Config `json:"-"`
 
 	// WebRuntimeRoot is the optional config-file override for web project storage.
 	RuntimeRoot string `json:"runtime_root,omitempty"`
@@ -233,8 +247,14 @@ func (c *Config) ValidateBase() error {
 		if !knownRoles[role] {
 			return fmt.Errorf("unknown role %q in roles config (valid: coordinator/architect/writer/editor): %w", role, errs.ErrConfig)
 		}
+		if rc.Provider == "" && rc.Model == "" {
+			if len(rc.Fallbacks) > 0 {
+				return fmt.Errorf("role %q fallbacks require a primary provider and model: %w", role, errs.ErrConfig)
+			}
+			continue
+		}
 		if rc.Provider == "" || rc.Model == "" {
-			return fmt.Errorf("role %q must have both provider and model: %w", role, errs.ErrConfig)
+			return fmt.Errorf("role %q must have both provider and model when either is set: %w", role, errs.ErrConfig)
 		}
 		if err := c.validateModelRef(
 			fmt.Sprintf("role %q", role),

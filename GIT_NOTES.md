@@ -8,10 +8,11 @@ supporting assets, documentation, scripts, and tests.
 ## Ignore And Secret Policy
 
 Local executables, generated build/release artifacts, workspaces, output
-directories, editor files, and local `.ainovel/` configuration are ignored.
-Never commit provider credentials, API keys, `.env` values, private keys,
-cookies, or raw local auth paths. Safe example configuration files may be
-tracked when they contain placeholders only.
+directories, the repo-local `novel/` runtime/user-data directory, editor files,
+and local `.ainovel/` configuration are ignored. Never commit provider
+credentials, API keys, `.env` values, private keys, cookies, or raw local auth
+paths. Safe example configuration files may be tracked when they contain
+placeholders only.
 
 ## Project GitHub Rule
 
@@ -19,22 +20,62 @@ For this project, a completed future development task is not done until the
 intentional changes are committed and pushed to the configured GitHub remote
 (`origin`) unless the user explicitly says not to push for that task.
 
+## Project Operating Preference
+
+For this project, after each completed generation or development task that
+changes the running project, backend, or Web UI, rebuild/restart the local
+`ainovel-cli.exe web` service and explicitly tell the user to refresh the Web
+page. The normal local Web URL is `http://127.0.0.1:9898`.
+
 ## Current Baseline
 
-- Latest source commit: `d315035` `feat: add web simulation profile flow`
+- Latest source commit: `9d40f9b` `feat: add web grok oauth login`
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: clean for tracked files after PR-03 commit; known untracked
-  local runtime/workspace directory `novel/` remains intentionally unstaged.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` was last rebuilt from `202b21b`;
-  PR-03 validation used a temporary binary. The `D:\grok\bin\ainovel-cli.cmd`
+- Working tree: clean after the Grok OAuth Web feature commit, except for
+  ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
+- Runtime: local `D:\ainovel\ainovel-cli.exe` was rebuilt after the Grok OAuth
+  Web work using the project-local Go 1.25.5 toolchain, then restarted on
+  `http://127.0.0.1:9898` with runtime root
+  `C:\Users\RondleLiu\.ainovel\novels-preview`. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: PR-03 focused Go package tests, canonical `npm --prefix web`
-  test/build, temporary CLI build, simulate upload/import API smoke, and
-  `git diff --check` succeeded on 2026-07-01.
+- Validation: `go test ./internal/entry/web`, `npm --prefix
+  internal/entry/web/ui test`, `npm --prefix internal/entry/web/ui run build`,
+  `git diff --check`, and Playwright local Web smoke checks succeeded on
+  2026-07-01. The latest smoke check verified the Web `Grok 登录` model form
+  mode, defaults, controls, and guarded submit on `127.0.0.1:9902`. `go test
+  ./...` still has existing Windows environment-sensitive failures in
+  `internal/notify` (`sh` missing from PATH) and `internal/version`
+  (permission-mode assertion).
 
 ## Change Log
 
+- 2026-07-01 `9d40f9b` `feat: add web grok oauth login`: added Web Grok OAuth
+  login start/poll/complete/status APIs, surfaced the flow in the model add
+  form, registered final Grok providers via `auth:"grok_oauth"` and
+  `account_id`, added backend/frontend tests, and regenerated embedded Vite
+  assets.
+- 2026-07-01 `2017558` `feat: close web tui operation gaps`: added Web APIs
+  and UI controls for fresh quick start, pause/abort, external novel import,
+  export, diagnostics, and generic model add; aligned Web adaptation/co-create
+  behavior with TUI and regenerated embedded Vite assets.
+- 2026-07-01 `6f38d2a` `style: refresh web workbench UI`: refreshed the React
+  Web UI with a Windows 11 Fluent-inspired light workbench, compact right
+  inspector tabs, fixed-height command bar, responsive narrow layout, and
+  regenerated embedded Vite assets.
+- 2026-07-01 `96a384b` `docs: finalize web packaging and smoke coverage`:
+  added Web UI static embed and HTTP smoke coverage, CLI default parser
+  regression, README Web runtime docs, `runtime_root` config example comments,
+  and `/novel/` ignore protection.
+- 2026-07-01 `860d487` `feat: add web model admin status pages`: added project
+  model routing, usage/cache reporting, backend status/testing APIs, UI tabs,
+  and project-overlay persistence fixes accepted by re-review.
+- 2026-07-01 `c084600` `feat: add web co-create workflow`: added normal,
+  stage, and adapt co-create flows with suggestion chips, stream state, and
+  ready draft launch/restore behavior accepted by re-review.
+- 2026-07-01 `66b4539` `feat: add web adaptation workflow`: added source upload,
+  preparation analysis, constrained `chapter` / `arc` / `free` mode selection,
+  rewrite policy mapping, and adaptation start UI/API accepted by re-review.
 - 2026-07-01 `d315035` `feat: add web simulation profile flow`: added project-scoped
   simulate file upload, analysis trigger, JSON profile import, upload safety
   checks, UI panel, and embedded assets accepted by review.

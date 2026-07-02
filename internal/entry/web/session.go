@@ -14,7 +14,12 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/entry/startup"
+	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	"github.com/voocel/ainovel-cli/internal/host/exp"
+	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
 )
 
@@ -28,6 +33,7 @@ const (
 	webEventTypeStreamDelta = "stream_delta"
 	webEventTypeStreamClear = "stream_clear"
 	webEventTypeSnapshot    = "snapshot"
+	webEventTypeCoCreate    = "cocreate_state"
 
 	webEventHistoryLimit = 1000
 )
@@ -43,12 +49,37 @@ type SessionManager struct {
 
 type projectHost interface {
 	Snapshot() host.UISnapshot
+	PrepareUserRules(string) error
+	PrepareExternalSourceUserRules(string) error
+	StartPrepared(string) error
+	Abort() bool
 	Resume() (string, error)
 	Continue(string) error
 	Steer(string) error
+	CoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	StageCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	AdaptCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	PauseForCoCreate() bool
+	ResumeFromCoCreate(string) error
+	CancelCoCreate()
+	ImportFrom(context.Context, imp.Options) (<-chan imp.Event, error)
 	SimulateFromDir(context.Context, string) (<-chan sim.Event, error)
 	ImportSimulationProfile(context.Context, string) (<-chan sim.Event, error)
+	PrepareAdaptationSource(context.Context, string) (<-chan adapt.Event, error)
+	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
+	Export(context.Context, exp.Options) (*exp.Result, error)
 	ReplayQueue(int64) ([]domain.RuntimeQueueItem, error)
+	ConfiguredProviders() []string
+	ConfiguredModels(string) []string
+	CurrentModelSelection(string) (string, string, bool)
+	SwitchModel(string, string, string) error
+	AddProviderModel(string, string, bootstrap.ProviderConfig, string) error
+	StartGrokLogin(string, string) (grokauth.LoginStart, error)
+	PollGrokLogin() (grokauth.LoginPoll, error)
+	CompleteGrokLogin(string) (grokauth.AuthStatus, error)
+	GrokLoginStatus(string) grokauth.AuthStatus
+	CurrentThinking(string) string
+	SetRoleThinking(string, string) error
 	Events() <-chan host.Event
 	Stream() <-chan string
 	Done() <-chan struct{}
@@ -130,6 +161,7 @@ type ProjectSession struct {
 	history     []WebEvent
 	hostEventAt map[string]int
 	subscribers map[chan WebEvent]struct{}
+	cocreate    *webCoCreateSession
 	closed      bool
 }
 
@@ -157,6 +189,147 @@ func (s *ProjectSession) Snapshot() host.UISnapshot {
 	return s.host.Snapshot()
 }
 
+func (s *ProjectSession) ModelConfig() apiModelConfig {
+	providers := s.host.ConfiguredProviders()
+	outProviders := make([]apiModelProvider, 0, len(providers))
+	for _, provider := range providers {
+		outProviders = append(outProviders, apiModelProvider{
+			Name:   provider,
+			Models: s.host.ConfiguredModels(provider),
+		})
+	}
+	roles := make([]apiModelRoute, 0, len(modelConfigRoles))
+	for _, role := range modelConfigRoles {
+		provider, model, explicit := s.host.CurrentModelSelection(role)
+		roles = append(roles, apiModelRoute{
+			Role:            normalizeModelRole(role),
+			Provider:        provider,
+			Model:           model,
+			Explicit:        explicit,
+			ReasoningEffort: s.host.CurrentThinking(role),
+		})
+	}
+	return apiModelConfig{
+		Providers: outProviders,
+		Roles:     roles,
+		ThinkingLevels: []string{
+			"",
+			"off",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		},
+		ThinkingRule: "default applies to coordinator, architect, writer, and editor unless that role has its own reasoning_effort",
+	}
+}
+
+func (s *ProjectSession) SwitchModel(role, provider, model string) (apiModelConfig, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return apiModelConfig{}, err
+	}
+	defer unlock()
+
+	if err := s.host.SwitchModel(normalizeModelRole(role), provider, model); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) SetRoleThinking(role, level string) (apiModelConfig, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return apiModelConfig{}, err
+	}
+	defer unlock()
+
+	if err := s.host.SetRoleThinking(normalizeModelRole(role), level); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) AddOpenAICompatibleModel(role, provider, model, baseURL, apiKey, api string) (apiModelConfig, error) {
+	pc := bootstrap.ProviderConfig{
+		Type:    "openai",
+		API:     strings.TrimSpace(api),
+		APIKey:  strings.TrimSpace(apiKey),
+		BaseURL: strings.TrimSpace(baseURL),
+	}
+	if pc.API == "" {
+		pc.API = "chat"
+	}
+	return s.AddProviderModel(role, provider, model, pc)
+}
+
+func (s *ProjectSession) AddProviderModel(role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return apiModelConfig{}, err
+	}
+	defer unlock()
+
+	if err := s.host.AddProviderModel(normalizeModelRole(role), provider, pc, model); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) StartGrokLogin(accountID, accountName string) (grokauth.LoginStart, error) {
+	return s.host.StartGrokLogin(accountID, accountName)
+}
+
+func (s *ProjectSession) PollGrokLogin() (grokauth.LoginPoll, error) {
+	return s.host.PollGrokLogin()
+}
+
+func (s *ProjectSession) CompleteGrokLogin(callbackInput string) (grokauth.AuthStatus, error) {
+	return s.host.CompleteGrokLogin(callbackInput)
+}
+
+func (s *ProjectSession) GrokLoginStatus(accountID string) grokauth.AuthStatus {
+	return s.host.GrokLoginStatus(accountID)
+}
+
+func (s *ProjectSession) StartQuick(text string) error {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	plan, err := startup.PrepareQuick(startup.Request{
+		Mode:        startup.ModeQuick,
+		UserPrompt:  text,
+		OutputDir:   s.manifest.OutputDir,
+		Interactive: false,
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+		return err
+	}
+	if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
+		return err
+	}
+	s.AppendSnapshot()
+	return nil
+}
+
+func (s *ProjectSession) Pause() bool {
+	stopped := s.host.Abort()
+	if stopped {
+		s.AppendSnapshot()
+	}
+	return stopped
+}
+
 func (s *ProjectSession) Resume() (string, error) {
 	unlock, err := s.beginAction()
 	if err != nil {
@@ -169,6 +342,33 @@ func (s *ProjectSession) Resume() (string, error) {
 		s.AppendSnapshot()
 	}
 	return label, err
+}
+
+func (s *ProjectSession) ImportExternalNovel(ctx context.Context, sourcePath string, resumeFrom int) ([]apiImportEvent, string, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, "", err
+	}
+	defer unlock()
+
+	events, err := s.host.ImportFrom(ctx, imp.Options{
+		SourcePath: sourcePath,
+		ResumeFrom: resumeFrom,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if events == nil {
+		return nil, "", fmt.Errorf("import event stream is nil")
+	}
+	apiEvents, err := s.consumeImportEvents(ctx, events)
+	if err != nil {
+		s.AppendSnapshot()
+		return apiEvents, "", err
+	}
+	label, err := s.host.Resume()
+	s.AppendSnapshot()
+	return apiEvents, label, err
 }
 
 func (s *ProjectSession) Continue(text string) error {
@@ -235,6 +435,188 @@ func (s *ProjectSession) ImportSimulationProfile(ctx context.Context, path strin
 	apiEvents, err := s.consumeSimulationEvents(ctx, events)
 	s.AppendSnapshot()
 	return apiEvents, err
+}
+
+func (s *ProjectSession) PrepareAdaptationSource(ctx context.Context, sourcePath string) ([]apiAdaptationEvent, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	events, err := s.host.PrepareAdaptationSource(ctx, sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	if events == nil {
+		return nil, fmt.Errorf("adaptation event stream is nil")
+	}
+	apiEvents, err := s.consumeAdaptationEvents(ctx, events)
+	s.AppendSnapshot()
+	return apiEvents, err
+}
+
+func (s *ProjectSession) StartAdaptationPrepared(options adapt.ProposalOptions) error {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	if err := s.host.PrepareExternalSourceUserRules(options.Brief); err != nil {
+		return err
+	}
+	if err := s.host.StartAdaptationPreparedWithOptions(options); err != nil {
+		return err
+	}
+	s.AppendSnapshot()
+	return nil
+}
+
+func (s *ProjectSession) Export(ctx context.Context, opts exp.Options) (*exp.Result, error) {
+	result, err := s.host.Export(ctx, opts)
+	if err == nil {
+		s.AppendSnapshot()
+	}
+	return result, err
+}
+
+func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBeginRequest) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate != nil {
+		return s.cocreate.apiState(), fmt.Errorf("co-create already started")
+	}
+	state, err := newWebCoCreateSession(req)
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	if state.kind == webCoCreateKindStage {
+		if !s.host.PauseForCoCreate() {
+			return webCoCreateState{}, fmt.Errorf("cannot enter stage co-create")
+		}
+		s.AppendSnapshot()
+	}
+	s.cocreate = state
+	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) SendCoCreate(ctx context.Context, text string) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	if err := s.cocreate.appendUser(text); err != nil {
+		return webCoCreateState{}, err
+	}
+	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	if err := s.cocreate.requireReadyDraft(); err != nil {
+		return webCoCreateState{}, err
+	}
+	state := s.cocreate
+	switch state.kind {
+	case webCoCreateKindStage:
+		if err := s.host.ResumeFromCoCreate(state.draftPrompt()); err != nil {
+			return state.apiState(), err
+		}
+	case webCoCreateKindAdapt:
+		if err := s.host.PrepareExternalSourceUserRules(state.draftPrompt()); err != nil {
+			return state.apiState(), err
+		}
+		if err := s.host.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
+			Brief:         state.draftPrompt(),
+			SourcePath:    state.sourcePath,
+			Granularity:   state.adaptGranularity,
+			RewritePolicy: state.adaptRewritePolicy,
+			WordTolerance: state.adaptWordTolerance,
+		}); err != nil {
+			return state.apiState(), err
+		}
+	default:
+		plan, err := state.session.BuildPlan()
+		if err != nil {
+			return state.apiState(), err
+		}
+		if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+			return state.apiState(), err
+		}
+		if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
+			return state.apiState(), err
+		}
+	}
+	api := state.apiState()
+	s.cocreate = nil
+	s.AppendSnapshot()
+	return api, nil
+}
+
+func (s *ProjectSession) CancelCoCreate() (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	state := s.cocreate.apiState()
+	if s.cocreate.kind == webCoCreateKindStage {
+		s.host.CancelCoCreate()
+		s.AppendSnapshot()
+	}
+	s.cocreate = nil
+	return state, nil
+}
+
+func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateState, error) {
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	var stream func(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	switch s.cocreate.kind {
+	case webCoCreateKindStage:
+		stream = s.host.StageCoCreateStream
+	case webCoCreateKindAdapt:
+		stream = s.host.AdaptCoCreateStream
+	default:
+		stream = s.host.CoCreateStream
+	}
+	onProgress := func(kind, text string) {
+		if s.cocreate == nil {
+			return
+		}
+		s.cocreate.session.ApplyDelta(kind, text)
+		s.appendCoCreateState(s.cocreate.apiState())
+	}
+	reply, err := stream(ctx, s.cocreate.session.History(), onProgress)
+	if err != nil {
+		return s.cocreate.apiState(), err
+	}
+	s.cocreate.applyReply(reply)
+	s.appendCoCreateState(s.cocreate.apiState())
+	return s.cocreate.apiState(), nil
 }
 
 func (s *ProjectSession) beginAction() (func(), error) {
@@ -423,6 +805,60 @@ func (s *ProjectSession) consumeSimulationEvents(ctx context.Context, events <-c
 	}
 }
 
+func (s *ProjectSession) consumeImportEvents(ctx context.Context, events <-chan imp.Event) ([]apiImportEvent, error) {
+	var out []apiImportEvent
+	var runErr error
+	for {
+		select {
+		case <-ctx.Done():
+			return out, ctx.Err()
+		case ev, ok := <-events:
+			if !ok {
+				return out, runErr
+			}
+			apiEvent := apiImportEventFromImp(ev)
+			out = append(out, apiEvent)
+			s.appendImportEvent(apiEvent)
+			if ev.Err != nil {
+				message := strings.TrimSpace(ev.Message)
+				if message == "" {
+					message = ev.Err.Error()
+				} else {
+					message = fmt.Sprintf("%s: %v", message, ev.Err)
+				}
+				runErr = importRunError{message: message}
+			}
+		}
+	}
+}
+
+func (s *ProjectSession) consumeAdaptationEvents(ctx context.Context, events <-chan adapt.Event) ([]apiAdaptationEvent, error) {
+	var out []apiAdaptationEvent
+	var runErr error
+	for {
+		select {
+		case <-ctx.Done():
+			return out, ctx.Err()
+		case ev, ok := <-events:
+			if !ok {
+				return out, runErr
+			}
+			apiEvent := apiAdaptationEventFromAdapt(ev)
+			out = append(out, apiEvent)
+			s.appendAdaptationEvent(apiEvent)
+			if ev.Err != nil {
+				message := strings.TrimSpace(ev.Message)
+				if message == "" {
+					message = ev.Err.Error()
+				} else {
+					message = fmt.Sprintf("%s: %v", message, ev.Err)
+				}
+				runErr = adaptationRunError{message: message}
+			}
+		}
+	}
+}
+
 func (s *ProjectSession) appendSimulationEvent(ev apiSimulationEvent) WebEvent {
 	level := "info"
 	if ev.Error != "" {
@@ -433,6 +869,42 @@ func (s *ProjectSession) appendSimulationEvent(ev apiSimulationEvent) WebEvent {
 	return s.appendHostEvent(host.Event{
 		Time:     ev.Time,
 		Category: "SIMULATE",
+		Agent:    "web",
+		Summary:  ev.Message,
+		Detail:   ev.Error,
+		Kind:     ev.Stage,
+		Level:    level,
+	})
+}
+
+func (s *ProjectSession) appendImportEvent(ev apiImportEvent) WebEvent {
+	level := "info"
+	if ev.Error != "" {
+		level = "error"
+	} else if ev.Stage == string(imp.StageDone) {
+		level = "success"
+	}
+	return s.appendHostEvent(host.Event{
+		Time:     ev.Time,
+		Category: "IMPORT",
+		Agent:    "web",
+		Summary:  ev.Message,
+		Detail:   ev.Error,
+		Kind:     ev.Stage,
+		Level:    level,
+	})
+}
+
+func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
+	level := "info"
+	if ev.Error != "" {
+		level = "error"
+	} else if ev.Stage == string(adapt.StageDone) {
+		level = "success"
+	}
+	return s.appendHostEvent(host.Event{
+		Time:     ev.Time,
+		Category: "ADAPT",
 		Agent:    "web",
 		Summary:  ev.Message,
 		Detail:   ev.Error,
@@ -454,6 +926,13 @@ func (s *ProjectSession) appendStreamClear() WebEvent {
 	return s.append(WebEvent{
 		Type:   webEventTypeStreamClear,
 		Stream: &APIStreamEvent{Clear: true},
+	})
+}
+
+func (s *ProjectSession) appendCoCreateState(state webCoCreateState) WebEvent {
+	return s.append(WebEvent{
+		Type:     webEventTypeCoCreate,
+		CoCreate: &state,
 	})
 }
 
@@ -524,14 +1003,15 @@ func (s *ProjectSession) historyAfterLocked(after int64) []WebEvent {
 }
 
 type WebEvent struct {
-	Seq         int64           `json:"seq"`
-	Type        string          `json:"type"`
-	ProjectID   string          `json:"project_id"`
-	Time        time.Time       `json:"time"`
-	HostEventID string          `json:"host_event_id,omitempty"`
-	Event       *APIHostEvent   `json:"event,omitempty"`
-	Stream      *APIStreamEvent `json:"stream,omitempty"`
-	Snapshot    any             `json:"snapshot,omitempty"`
+	Seq         int64             `json:"seq"`
+	Type        string            `json:"type"`
+	ProjectID   string            `json:"project_id"`
+	Time        time.Time         `json:"time"`
+	HostEventID string            `json:"host_event_id,omitempty"`
+	Event       *APIHostEvent     `json:"event,omitempty"`
+	Stream      *APIStreamEvent   `json:"stream,omitempty"`
+	Snapshot    any               `json:"snapshot,omitempty"`
+	CoCreate    *webCoCreateState `json:"cocreate,omitempty"`
 }
 
 type APIHostEvent struct {

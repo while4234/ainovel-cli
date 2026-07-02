@@ -98,6 +98,7 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 		}
 		if err := eng.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
 			Brief:         plan.RawPrompt,
+			SourcePath:    opts.AdaptPath,
 			Granularity:   plan.AdaptGranularity,
 			RewritePolicy: plan.AdaptRewritePolicy,
 			WordTolerance: plan.AdaptWordTolerance,

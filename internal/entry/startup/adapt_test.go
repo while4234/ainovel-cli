@@ -25,6 +25,9 @@ func TestPrepareAdaptNovelDefaultsAndExplicitOptions(t *testing.T) {
 	if defaultPlan.AdaptWordTolerance != adapt.DefaultWordTolerance {
 		t.Fatalf("default tolerance=%v", defaultPlan.AdaptWordTolerance)
 	}
+	if defaultPlan.AdaptSourcePath != "source.txt" {
+		t.Fatalf("adapt source path=%q", defaultPlan.AdaptSourcePath)
+	}
 
 	explicitPlan, err := PrepareAdaptNovel(Request{
 		UserPrompt:         "改编 brief",

@@ -242,18 +242,66 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectSnapshot(w, r, id)
 	case "resume":
 		s.handleProjectResume(w, r, id)
+	case "start":
+		s.handleProjectStart(w, r, id)
+	case "pause":
+		s.handleProjectPause(w, r, id)
 	case "continue":
 		s.handleProjectContinue(w, r, id)
 	case "steer":
 		s.handleProjectSteer(w, r, id)
 	case "events":
 		s.handleProjectEvents(w, r, id)
+	case "models":
+		s.handleProjectModels(w, r, id)
+	case "models/switch":
+		s.handleProjectModelSwitch(w, r, id)
+	case "models/thinking":
+		s.handleProjectModelThinking(w, r, id)
+	case "models/add":
+		s.handleProjectModelAdd(w, r, id)
+	case "models/add-openai-compatible":
+		s.handleProjectModelAddOpenAICompatible(w, r, id)
+	case "models/grok-login/start":
+		s.handleProjectGrokLoginStart(w, r, id)
+	case "models/grok-login/poll":
+		s.handleProjectGrokLoginPoll(w, r, id)
+	case "models/grok-login/complete":
+		s.handleProjectGrokLoginComplete(w, r, id)
+	case "models/grok-login/status":
+		s.handleProjectGrokLoginStatus(w, r, id)
+	case "usage":
+		s.handleProjectUsage(w, r, id)
+	case "backend/status":
+		s.handleProjectBackendStatus(w, r, id)
+	case "backend/test":
+		s.handleProjectBackendTest(w, r, id)
+	case "import":
+		s.handleProjectImport(w, r, id)
+	case "export":
+		s.handleProjectExport(w, r, id)
+	case "diag":
+		s.handleProjectDiag(w, r, id)
 	case "simulate/files":
 		s.handleProjectSimulateFiles(w, r, id)
 	case "simulate/analyze":
 		s.handleProjectSimulateAnalyze(w, r, id)
 	case "simulate/import":
 		s.handleProjectSimulateImport(w, r, id)
+	case "adapt/source":
+		s.handleProjectAdaptSource(w, r, id)
+	case "adapt/analyze":
+		s.handleProjectAdaptAnalyze(w, r, id)
+	case "adapt/start":
+		s.handleProjectAdaptStart(w, r, id)
+	case "cocreate/begin":
+		s.handleProjectCoCreateBegin(w, r, id)
+	case "cocreate/send":
+		s.handleProjectCoCreateSend(w, r, id)
+	case "cocreate/commit":
+		s.handleProjectCoCreateCommit(w, r, id)
+	case "cocreate/cancel":
+		s.handleProjectCoCreateCancel(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}
