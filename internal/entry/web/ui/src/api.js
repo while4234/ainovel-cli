@@ -34,6 +34,10 @@ export function listProjects() {
   return request('/api/projects');
 }
 
+export function listTrashProjects() {
+  return request('/api/trash/projects');
+}
+
 export function createProject(name, style) {
   return request('/api/projects', {
     method: 'POST',
@@ -60,6 +64,19 @@ export function listProjectTrash() {
 
 export function clearProjectTrash() {
   return request('/api/projects/trash', {
+    method: 'DELETE'
+  });
+}
+
+export function restoreTrashProject(projectId) {
+  return request(`/api/trash/projects/${encodeURIComponent(projectId)}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
+export function emptyTrashProjects() {
+  return request('/api/trash/projects', {
     method: 'DELETE'
   });
 }
@@ -232,6 +249,20 @@ export function loadNovelFromLibrary(projectId, name) {
   });
 }
 
+export function buildAdaptationProposal(projectId, sourceFile, mode, brief) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/proposal`, {
+    method: 'POST',
+    body: JSON.stringify({ source_file: sourceFile, mode, brief })
+  });
+}
+
+export function confirmAdaptationProposal(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
 export function beginCoCreate(projectId, payload) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/begin`, {
     method: 'POST',
@@ -239,10 +270,17 @@ export function beginCoCreate(projectId, payload) {
   });
 }
 
-export function sendCoCreate(projectId, text) {
+export function sendCoCreate(projectId, text, source = 'custom') {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/send`, {
     method: 'POST',
-    body: JSON.stringify({ text })
+    body: JSON.stringify({ text, source })
+  });
+}
+
+export function reviseCoCreate(projectId, messageId, text) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/revise`, {
+    method: 'POST',
+    body: JSON.stringify({ message_id: messageId, text })
   });
 }
 
@@ -272,6 +310,13 @@ export function switchGlobalModel(role, provider, model) {
   return request('/api/models/switch', {
     method: 'POST',
     body: JSON.stringify({ role, provider, model })
+  });
+}
+
+export function switchGlobalDefaultModel(provider, model) {
+  return request('/api/models/default', {
+    method: 'POST',
+    body: JSON.stringify({ provider, model })
   });
 }
 
@@ -310,29 +355,36 @@ export function addGlobalProviderModel(payload) {
   });
 }
 
-export function startGrokLogin(projectId, accountId, accountName) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/start`, {
+function grokLoginPath(projectId, action) {
+  if (!projectId) {
+    return `/api/models/grok-login/${action}`;
+  }
+  return `/api/projects/${encodeURIComponent(projectId)}/models/grok-login/${action}`;
+}
+
+export function startGrokLogin(projectId, accountId, accountName, openBrowser = false) {
+  return request(grokLoginPath(projectId, 'start'), {
     method: 'POST',
-    body: JSON.stringify({ account_id: accountId, account_name: accountName })
+    body: JSON.stringify({ account_id: accountId, account_name: accountName, open_browser: openBrowser })
   });
 }
 
 export function pollGrokLogin(projectId) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/poll`, {
+  return request(grokLoginPath(projectId, 'poll'), {
     method: 'POST',
     body: JSON.stringify({})
   });
 }
 
 export function completeGrokLogin(projectId, callback) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/complete`, {
+  return request(grokLoginPath(projectId, 'complete'), {
     method: 'POST',
     body: JSON.stringify({ callback })
   });
 }
 
 export function getGrokLoginStatus(projectId, accountId) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/models/grok-login/status`, {
+  return request(grokLoginPath(projectId, 'status'), {
     method: 'POST',
     body: JSON.stringify({ account_id: accountId })
   });

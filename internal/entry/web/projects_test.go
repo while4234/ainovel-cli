@@ -16,7 +16,7 @@ import (
 )
 
 func TestProjectManifestCreateListOpenTouches(t *testing.T) {
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 
 	created, err := store.CreateProject("My Test Novel")
 	if err != nil {
@@ -60,7 +60,7 @@ func TestProjectManifestCreateListOpenTouches(t *testing.T) {
 }
 
 func TestProjectRenameUpdatesNameWithoutMovingRoot(t *testing.T) {
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	created, err := store.CreateProject("Original")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -76,8 +76,8 @@ func TestProjectRenameUpdatesNameWithoutMovingRoot(t *testing.T) {
 	if renamed.Name != "Renamed Novel" {
 		t.Fatalf("renamed name = %q", renamed.Name)
 	}
-	if renamed.UpdatedAt.Before(created.UpdatedAt) {
-		t.Fatalf("updated_at moved backwards: before=%s after=%s", created.UpdatedAt, renamed.UpdatedAt)
+	if !renamed.UpdatedAt.After(created.UpdatedAt) && !renamed.UpdatedAt.Equal(created.UpdatedAt) {
+		t.Fatalf("updated_at not preserved sensibly: before=%s after=%s", created.UpdatedAt, renamed.UpdatedAt)
 	}
 
 	if _, err := store.RenameProject(created.ID, "  "); err == nil {
@@ -86,7 +86,7 @@ func TestProjectRenameUpdatesNameWithoutMovingRoot(t *testing.T) {
 }
 
 func TestProjectTrashMovesProjectOutOfActiveList(t *testing.T) {
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	created, err := store.CreateProject("Trash Me")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -112,21 +112,14 @@ func TestProjectTrashMovesProjectOutOfActiveList(t *testing.T) {
 	if len(projects) != 0 {
 		t.Fatalf("active projects after trash = %+v, want none", projects)
 	}
-	trashedProjects, err := store.ListTrashedProjects()
-	if err != nil {
-		t.Fatalf("ListTrashedProjects: %v", err)
-	}
-	if len(trashedProjects) != 1 || trashedProjects[0].ID != created.ID {
-		t.Fatalf("trashed projects = %+v, want deleted project", trashedProjects)
-	}
 	if _, _, err := store.TrashProject("missing-project"); err == nil {
 		t.Fatal("TrashProject accepted missing project")
 	}
 }
 
-func TestProjectTrashCanBeCleared(t *testing.T) {
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
-	created, err := store.CreateProject("Clear Trash")
+func TestProjectTrashListRestoreAndEmpty(t *testing.T) {
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
+	created, err := store.CreateProject("Trash Lifecycle")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
@@ -134,20 +127,45 @@ func TestProjectTrashCanBeCleared(t *testing.T) {
 		t.Fatalf("TrashProject: %v", err)
 	}
 
-	count, err := store.ClearProjectTrash()
+	trashed, err := store.ListTrashProjects()
 	if err != nil {
-		t.Fatalf("ClearProjectTrash: %v", err)
+		t.Fatalf("ListTrashProjects: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("cleared count = %d, want 1", count)
+	if len(trashed) != 1 || trashed[0].ID != created.ID || trashed[0].DeletedAt == nil {
+		t.Fatalf("trash projects = %+v", trashed)
 	}
-	if _, err := os.Stat(store.ProjectTrashDir()); !os.IsNotExist(err) {
-		t.Fatalf("trash dir still exists or unexpected error: %v", err)
+
+	restored, err := store.RestoreTrashProject(created.ID)
+	if err != nil {
+		t.Fatalf("RestoreTrashProject: %v", err)
+	}
+	if restored.ID != created.ID || restored.DeletedAt != nil || restored.RootDir != created.RootDir {
+		t.Fatalf("restored = %+v, created=%+v", restored, created)
+	}
+	if _, err := os.Stat(restored.RootDir); err != nil {
+		t.Fatalf("restored root missing: %v", err)
+	}
+	if active, err := store.ListProjects(); err != nil || len(active) != 1 {
+		t.Fatalf("active projects after restore = %+v err=%v", active, err)
+	}
+
+	if _, _, err := store.TrashProject(created.ID); err != nil {
+		t.Fatalf("TrashProject again: %v", err)
+	}
+	removed, err := store.EmptyTrashProjects()
+	if err != nil {
+		t.Fatalf("EmptyTrashProjects: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if trashed, err := store.ListTrashProjects(); err != nil || len(trashed) != 0 {
+		t.Fatalf("trash after empty = %+v err=%v", trashed, err)
 	}
 }
 
 func TestDeletedProjectManifestIsHiddenAndCannotOpen(t *testing.T) {
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	created, err := store.CreateProject("Stranded Deleted")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -170,14 +188,14 @@ func TestDeletedProjectManifestIsHiddenAndCannotOpen(t *testing.T) {
 	}
 }
 
-func TestProjectResourceHandlersRenameTrashAndClear(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+func TestProjectResourceHandlersRenameAndTrashActiveProject(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Handler Project")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	installFakeSession(t, server, manifest)
+	fake := installFakeSession(t, server, manifest)
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/projects/"+manifest.ID, bytes.NewBufferString(`{"name":"Handler Renamed"}`))
 	rec := httptest.NewRecorder()
@@ -199,8 +217,8 @@ func TestProjectResourceHandlersRenameTrashAndClear(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if session := server.sessions.Project(manifest.ID); session != nil {
-		t.Fatal("deleted active project session was not closed")
+	if fake.closeCalls != 1 {
+		t.Fatalf("active session close calls = %d, want 1", fake.closeCalls)
 	}
 	var deleted struct {
 		Project   ProjectManifest `json:"project"`
@@ -215,47 +233,117 @@ func TestProjectResourceHandlersRenameTrashAndClear(t *testing.T) {
 	if _, err := os.Stat(deleted.TrashPath); err != nil {
 		t.Fatalf("trash path missing: %v", err)
 	}
+}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/projects/trash", nil)
+func TestTrashProjectHandlersListRestoreAndEmpty(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Trash Handler")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, _, err := server.store.TrashProject(manifest.ID); err != nil {
+		t.Fatalf("TrashProject: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/trash/projects", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list trash status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var listed struct {
+		Projects []ProjectManifest `json:"projects"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Projects) != 1 || listed.Projects[0].ID != manifest.ID {
+		t.Fatalf("listed trash = %+v", listed.Projects)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/trash/projects/"+manifest.ID+"/restore", nil)
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("trash list status = %d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("restore status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if active, err := server.store.ListProjects(); err != nil || len(active) != 1 {
+		t.Fatalf("active after restore = %+v err=%v", active, err)
+	}
+
+	if _, _, err := server.store.TrashProject(manifest.ID); err != nil {
+		t.Fatalf("TrashProject again: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/api/trash/projects", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var emptied struct {
+		Removed int `json:"removed"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&emptied); err != nil {
+		t.Fatalf("decode empty response: %v", err)
+	}
+	if emptied.Removed != 1 {
+		t.Fatalf("removed = %d, want 1", emptied.Removed)
+	}
+}
+
+func TestLegacyProjectTrashHandlersListAndClear(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Legacy Trash Handler")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, _, err := server.store.TrashProject(manifest.ID); err != nil {
+		t.Fatalf("TrashProject: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/trash", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("legacy list status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var listed struct {
 		Projects []ProjectManifest `json:"projects"`
 		TrashDir string            `json:"trash_dir"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&listed); err != nil {
-		t.Fatalf("decode trash list: %v", err)
+		t.Fatalf("decode legacy list response: %v", err)
 	}
 	if len(listed.Projects) != 1 || listed.Projects[0].ID != manifest.ID || listed.TrashDir == "" {
-		t.Fatalf("trash list = %+v", listed)
+		t.Fatalf("legacy trash list = %+v", listed)
 	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/api/projects/trash", nil)
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("clear trash status = %d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("legacy clear status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var cleared struct {
 		DeletedCount int `json:"deleted_count"`
+		Removed      int `json:"removed"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&cleared); err != nil {
-		t.Fatalf("decode clear response: %v", err)
+		t.Fatalf("decode legacy clear response: %v", err)
 	}
-	if cleared.DeletedCount != 1 {
-		t.Fatalf("cleared count = %d, want 1", cleared.DeletedCount)
+	if cleared.DeletedCount != 1 || cleared.Removed != 1 {
+		t.Fatalf("legacy clear response = %+v", cleared)
 	}
 }
 
 func TestOpenProjectHostUsesProjectOutputDir(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	manifest, err := store.CreateProject("Output Isolation")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -276,11 +364,11 @@ func TestOpenProjectHostUsesProjectOutputDir(t *testing.T) {
 }
 
 func TestOpenProjectHostUsesProjectModelOverrideAndGlobalFallback(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	projectOverride, err := store.CreateProject("Project Override")
 	if err != nil {
 		t.Fatalf("CreateProject override: %v", err)
@@ -326,11 +414,11 @@ func TestOpenProjectHostUsesProjectModelOverrideAndGlobalFallback(t *testing.T) 
 }
 
 func TestProjectModelPersistenceWritesSecretFreeOverlay(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	manifest, err := store.CreateProject("Secret Free Overlay")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -365,11 +453,11 @@ func TestProjectModelPersistenceWritesSecretFreeOverlay(t *testing.T) {
 }
 
 func TestProjectRoleSwitchPersistsOnlyExplicitRoleOverlay(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	manifest, err := store.CreateProject("Role Overlay")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -434,11 +522,11 @@ func TestProjectRoleSwitchPersistsOnlyExplicitRoleOverlay(t *testing.T) {
 }
 
 func TestProjectRoleThinkingPersistsOnlyRoleScopeAndFallsBack(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	manifest, err := store.CreateProject("Thinking Overlay")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -489,11 +577,11 @@ func TestProjectRoleThinkingPersistsOnlyRoleScopeAndFallsBack(t *testing.T) {
 }
 
 func TestProjectOwnedProviderSecretPreservedWhileInheritedProviderRedacted(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	manifest, err := store.CreateProject("Owned Provider Overlay")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)

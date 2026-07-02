@@ -23,7 +23,7 @@ func planArgs(chapter int) json.RawMessage {
 }
 
 func TestPlanChapterRejectsUnexpandedLayeredChapter(t *testing.T) {
-	st := store.NewStore(t.TempDir())
+	st := store.NewStore(testStoreDir(t))
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestPlanChapterRejectsUnexpandedLayeredChapter(t *testing.T) {
 }
 
 func TestPlanChapterAllowsExpandedLayeredChapter(t *testing.T) {
-	st := store.NewStore(t.TempDir())
+	st := store.NewStore(testStoreDir(t))
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

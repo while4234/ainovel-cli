@@ -12,7 +12,7 @@ import (
 // completedBook 构造一本已完结的 N 章小说（phase=complete，CompletedChapters=1..n）。
 func completedBook(t *testing.T, n int) *store.Store {
 	t.Helper()
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestReopenBookReopensCompletedBook(t *testing.T) {
 
 func TestReopenBookRejectsNonCompleteBook(t *testing.T) {
 	// 写作中（未完结）的书不能 reopen
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

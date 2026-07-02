@@ -22,7 +22,7 @@ type testMultipartFile struct {
 }
 
 func TestProjectSimulateFilesUploadSavesSourcesUnderProject(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 
 	manifest, err := server.store.CreateProject("Simulation Upload")
@@ -116,7 +116,7 @@ func TestProjectSimulateFilesRejectsUnsafeEmptyAndDuplicateNames(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+			server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 			defer server.Close()
 			manifest, err := server.store.CreateProject(c.name)
 			if err != nil {
@@ -142,7 +142,7 @@ func TestProjectSimulateFilesRejectsUnsafeEmptyAndDuplicateNames(t *testing.T) {
 }
 
 func TestProjectSimulateAnalyzeUsesProjectSimulateDir(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Analyze Project Dir")
 	if err != nil {
@@ -167,7 +167,7 @@ func TestProjectSimulateAnalyzeUsesProjectSimulateDir(t *testing.T) {
 }
 
 func TestProjectSimulateImportSavesJSONUnderImportedProfilesAndCallsHost(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Import Profile")
 	if err != nil {
@@ -194,7 +194,7 @@ func TestProjectSimulateImportSavesJSONUnderImportedProfilesAndCallsHost(t *test
 }
 
 func TestProjectSimulateImportUsesExistingHostImportBehavior(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Real Import Profile")
 	if err != nil {
@@ -224,7 +224,7 @@ func TestProjectSimulateImportUsesExistingHostImportBehavior(t *testing.T) {
 }
 
 func TestProjectSimulateImportRejectsBadJSON(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Bad Profile")
 	if err != nil {

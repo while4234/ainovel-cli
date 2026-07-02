@@ -13,10 +13,15 @@ func PrepareQuick(req Request) (Plan, error) {
 	if prompt == "" {
 		return Plan{}, fmt.Errorf("prompt is required")
 	}
+	budget, err := wordBudgetForPrompt(req.TargetTotalWords, prompt)
+	if err != nil {
+		return Plan{}, err
+	}
 	return Plan{
 		Mode:        ModeQuick,
 		DisplayName: "快速开始",
-		StartPrompt: host.BuildStartPrompt(prompt),
+		StartPrompt: host.BuildStartPromptWithBudget(prompt, budget),
 		RawPrompt:   prompt,
+		WordBudget:  budget,
 	}, nil
 }

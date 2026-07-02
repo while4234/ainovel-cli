@@ -1,25 +1,12 @@
-package web
+package tools
 
 import (
 	"os"
 	"testing"
 	"time"
-
-	"github.com/voocel/ainovel-cli/internal/bootstrap"
 )
 
-func testWebConfig(t *testing.T) bootstrap.Config {
-	t.Helper()
-	return bootstrap.Config{
-		Provider:  "openai",
-		ModelName: "gpt-test",
-		Providers: map[string]bootstrap.ProviderConfig{
-			"openai": {Type: "openai", APIKey: "sk-test"},
-		},
-	}
-}
-
-func testTempDir(t *testing.T) string {
+func testStoreDir(t *testing.T) string {
 	t.Helper()
 
 	dir := t.TempDir()

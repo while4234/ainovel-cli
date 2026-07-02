@@ -26,6 +26,9 @@ func TestLoadPromptsApplyGlobalPrompt(t *testing.T) {
 
 func TestLoadKeepsAdaptationGuidanceOutOfBaseWriterPrompt(t *testing.T) {
 	bundle := Load("")
+	if !strings.Contains(bundle.Prompts.AdaptationPlanner, "Adaptation Planner") {
+		t.Fatal("adaptation planner prompt should be loaded")
+	}
 	if strings.Contains(bundle.Prompts.Writer, "某某内心独白") {
 		t.Fatal("base writer prompt must not include adaptation-only inner-monologue label guidance")
 	}

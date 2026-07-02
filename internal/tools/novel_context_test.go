@@ -13,7 +13,7 @@ import (
 )
 
 func TestContextToolInjectsStyleStats(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	st := store.NewStore(dir)
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -66,6 +66,51 @@ func TestContextToolInjectsStyleStats(t *testing.T) {
 	}
 }
 
+func TestContextToolInjectsWordBudget(t *testing.T) {
+	dir := testStoreDir(t)
+	st := store.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 2); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget, _ := domain.NewWordBudgetFromTarget(10000, domain.WordBudgetSourcePrompt)
+	planned := budget.WithPlannedChapters(2)
+	if err := st.RunMeta.SetWordBudget(&planned); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	tool := NewContextTool(st, References{}, "default")
+	raw, err := tool.Execute(context.Background(), json.RawMessage(`{"chapter":1}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	working, ok := result["working_memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("working_memory missing: %+v", result)
+	}
+	wordBudget, ok := working["word_budget"].(map[string]any)
+	if !ok {
+		t.Fatalf("word_budget missing: %+v", working)
+	}
+	target := wordBudget["target"].(map[string]any)
+	current := wordBudget["current_chapter"].(map[string]any)
+	if got := int(target["target_total_words"].(float64)); got != 10000 {
+		t.Fatalf("target_total_words = %d, want 10000", got)
+	}
+	if got := int(current["recommended_min_words"].(float64)); got != 4500 {
+		t.Fatalf("recommended_min_words = %d, want 4500", got)
+	}
+	if got := int(current["recommended_max_words"].(float64)); got != 5500 {
+		t.Fatalf("recommended_max_words = %d, want 5500", got)
+	}
+}
+
 func keysOf(m map[string]json.RawMessage) []string {
 	var keys []string
 	for k := range m {
@@ -75,7 +120,7 @@ func keysOf(m map[string]json.RawMessage) []string {
 }
 
 func TestContextToolReportsWarningsForCorruptedState(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -130,7 +175,7 @@ func containsWarning(warnings []string, key string) bool {
 }
 
 func TestContextToolChapterModeIncludesWorkingAndReferenceFields(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -269,8 +314,68 @@ func TestContextToolChapterModeIncludesWorkingAndReferenceFields(t *testing.T) {
 	}
 }
 
+func TestContextToolInjectsWordBudgetForArchitectAndWriter(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("budget", 5); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.Progress.MarkChapterComplete(1, 800, "", ""); err != nil {
+		t.Fatalf("MarkChapterComplete: %v", err)
+	}
+	budget := domain.NewWordBudget(5000, "test").WithPlannedChapters(5)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	tool := NewContextTool(s, References{}, "default")
+	for name, chapter := range map[string]int{"architect": 0, "writer": 2} {
+		args, err := json.Marshal(map[string]any{"chapter": chapter})
+		if err != nil {
+			t.Fatalf("[%s] Marshal: %v", name, err)
+		}
+		result, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("[%s] Execute: %v", name, err)
+		}
+		var payload struct {
+			Working map[string]json.RawMessage `json:"working_memory"`
+		}
+		if err := json.Unmarshal(result, &payload); err != nil {
+			t.Fatalf("[%s] Unmarshal: %v", name, err)
+		}
+		raw, ok := payload.Working["word_budget"]
+		if !ok {
+			t.Fatalf("[%s] expected working_memory.word_budget", name)
+		}
+		var got struct {
+			Target struct {
+				TargetTotalWords int `json:"target_total_words"`
+				PlannedChapters  int `json:"planned_chapters"`
+			} `json:"target"`
+			CurrentChapter *struct {
+				Chapter             int `json:"chapter"`
+				RecommendedMinWords int `json:"recommended_min_words"`
+				RecommendedMaxWords int `json:"recommended_max_words"`
+			} `json:"current_chapter"`
+		}
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("[%s] Unmarshal word budget: %v", name, err)
+		}
+		if got.Target.TargetTotalWords != 5000 || got.Target.PlannedChapters != 5 {
+			t.Fatalf("[%s] unexpected word budget: %+v", name, got)
+		}
+		if chapter > 0 && (got.CurrentChapter == nil || got.CurrentChapter.Chapter != chapter || got.CurrentChapter.RecommendedMinWords <= 0 || got.CurrentChapter.RecommendedMaxWords <= got.CurrentChapter.RecommendedMinWords) {
+			t.Fatalf("[%s] unexpected current chapter budget: %+v", name, got.CurrentChapter)
+		}
+	}
+}
+
 func TestContextToolArchitectModeIncludesPlanningAndFoundation(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -434,7 +539,7 @@ func TestTrimByBudgetRemovesMirroredMemoryKeys(t *testing.T) {
 }
 
 func TestContextToolSelectedMemoryRecallsStoryThreadsAndReviewLessons(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -535,7 +640,7 @@ func TestContextToolSelectedMemoryRecallsStoryThreadsAndReviewLessons(t *testing
 // 这正是相关性召回的盲区（独自悬挂太久、却没在本章撞上关键词的那根线）。
 // 近期埋下的伏笔（账龄 < 阈值）不应被误标为"未回收"。
 func TestContextToolSelectedMemorySurfacesAgingForeshadow(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -597,7 +702,7 @@ func TestContextToolSelectedMemorySurfacesAgingForeshadow(t *testing.T) {
 }
 
 func TestContextToolSelectedMemoryIncludesGlobalReviewLessons(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -647,7 +752,7 @@ func TestContextToolSelectedMemoryIncludesGlobalReviewLessons(t *testing.T) {
 }
 
 func TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation(t *testing.T) {
-	plainStore := store.NewStore(t.TempDir())
+	plainStore := store.NewStore(testStoreDir(t))
 	if err := plainStore.Init(); err != nil {
 		t.Fatalf("Init plain store: %v", err)
 	}
@@ -789,7 +894,7 @@ func TestContextToolShowsDisabledWordToleranceForFullRewrite(t *testing.T) {
 }
 
 func TestContextToolKeepsFullForeshadowWhenRecallNotTriggered(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -833,7 +938,7 @@ func TestContextToolKeepsFullForeshadowWhenRecallNotTriggered(t *testing.T) {
 }
 
 func TestContextToolFallsBackToFullForeshadowWhenSelectionIsTooSparse(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -892,7 +997,7 @@ func containsRecallSummary(items []domain.RecallItem, want string) bool {
 }
 
 func TestContextToolInjectsRewriteBriefForPendingRewriteChapter(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -952,7 +1057,7 @@ func TestContextToolInjectsRewriteBriefForPendingRewriteChapter(t *testing.T) {
 }
 
 func TestContextToolOmitsRewriteBriefForNormalChapter(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -983,7 +1088,7 @@ func TestContextToolOmitsRewriteBriefForNormalChapter(t *testing.T) {
 func TestContextToolDoesNotInjectUserDirectives(t *testing.T) {
 	// save_directive 已移除：novel_context 不再注入 working_memory.user_directives，
 	// 长期写作要求统一走 user_rules。锁死这条，防止回归。
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)

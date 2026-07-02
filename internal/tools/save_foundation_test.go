@@ -3,14 +3,187 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
+func TestSaveFoundationSchemaAllowsMissingType(t *testing.T) {
+	tool := NewSaveFoundationTool(store.NewStore(testStoreDir(t)))
+	required := schemaRequiredNames(tool.Schema())
+	if required["type"] {
+		t.Fatal("type must not be schema-required; missing type should reach Execute for recovery")
+	}
+	if !required["content"] {
+		t.Fatal("content should remain schema-required")
+	}
+}
+
+func TestSaveFoundationInfersPremiseFromMarkdownWhenTypeMissing(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("novel", 0); err != nil {
+		t.Fatalf("Init progress: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	args, err := json.Marshal(map[string]any{
+		"content": "# 夜审暗潮\n\n## 题材和基调\n悬疑、审讯、权力反转。",
+		"scale":   "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	res, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["type"] != "premise" {
+		t.Fatalf("type = %v, want premise", result["type"])
+	}
+	premise, err := store.Outline.LoadPremise()
+	if err != nil {
+		t.Fatalf("LoadPremise: %v", err)
+	}
+	if !strings.Contains(premise, "夜审暗潮") {
+		t.Fatalf("premise was not saved: %q", premise)
+	}
+}
+
+func TestSaveFoundationMissingTypeCompletesFoundationWhenOnlyPremiseMissing(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("novel", 0); err != nil {
+		t.Fatalf("Init progress: %v", err)
+	}
+	tool := NewSaveFoundationTool(store)
+
+	steps := []map[string]any{
+		{
+			"type": "outline",
+			"content": []map[string]any{
+				{"chapter": 1, "title": "初次对峙", "core_event": "侦探第一次审问嫌疑人", "hook": "嫌疑人反问她为何害怕真相"},
+			},
+			"scale": "short",
+		},
+		{
+			"type": "characters",
+			"content": []map[string]any{
+				{"name": "林岚", "role": "私家侦探", "description": "冷静但有伤痕", "arc": "从控制到承认失控", "traits": []string{"敏锐"}},
+			},
+		},
+		{
+			"type": "world_rules",
+			"content": []map[string]any{
+				{"category": "society", "rule": "私人调查必须避开警方监听", "boundary": "不能凭空获得证据"},
+			},
+		},
+	}
+	for _, step := range steps {
+		args, _ := json.Marshal(step)
+		if _, err := tool.Execute(context.Background(), args); err != nil {
+			t.Fatalf("Execute setup %v: %v", step["type"], err)
+		}
+	}
+
+	args, err := json.Marshal(map[string]any{
+		"content": "# 夜审暗潮\n\n## 题材和基调\n短篇悬疑。",
+	})
+	if err != nil {
+		t.Fatalf("Marshal final premise: %v", err)
+	}
+	res, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute final premise: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["foundation_ready"] != true {
+		t.Fatalf("foundation_ready = %v, want true", result["foundation_ready"])
+	}
+	if result["phase"] != string(domain.PhaseWriting) {
+		t.Fatalf("phase = %v, want %s", result["phase"], domain.PhaseWriting)
+	}
+}
+
+func TestSaveFoundationInfersTypeWhenFoundationAlreadyComplete(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("novel", 0); err != nil {
+		t.Fatalf("Init progress: %v", err)
+	}
+	tool := NewSaveFoundationTool(store)
+
+	for _, step := range []map[string]any{
+		{"type": "premise", "content": "# 夜审暗潮\n\n## 题材和基调\n短篇悬疑。"},
+		{"type": "outline", "content": []map[string]any{{"chapter": 1, "title": "初次对峙", "core_event": "审问", "hook": "反问"}}},
+		{"type": "characters", "content": []map[string]any{{"name": "林岚", "role": "侦探", "description": "敏锐", "arc": "转变", "traits": []string{"冷静"}}}},
+		{"type": "world_rules", "content": []map[string]any{{"category": "society", "rule": "证据必须可追溯", "boundary": "不能凭空破案"}}},
+	} {
+		args, _ := json.Marshal(step)
+		if _, err := tool.Execute(context.Background(), args); err != nil {
+			t.Fatalf("Execute setup %v: %v", step["type"], err)
+		}
+	}
+
+	args, err := json.Marshal(map[string]any{
+		"content": []map[string]any{
+			{"name": "林岚", "role": "侦探", "description": "更新后的角色描述", "arc": "继续转变", "traits": []string{"冷静", "执着"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	res, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute inferred complete foundation update: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["type"] != "characters" {
+		t.Fatalf("type = %v, want characters", result["type"])
+	}
+}
+
+func schemaRequiredNames(s map[string]any) map[string]bool {
+	result := map[string]bool{}
+	switch required := s["required"].(type) {
+	case []string:
+		for _, name := range required {
+			result[name] = true
+		}
+	case []any:
+		for _, raw := range required {
+			if name, ok := raw.(string); ok {
+				result[name] = true
+			}
+		}
+	}
+	return result
+}
+
 func TestSaveFoundationPersistsPlanningTier(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -43,7 +216,7 @@ func TestSaveFoundationPersistsPlanningTier(t *testing.T) {
 }
 
 func TestSaveFoundationPremiseSetsNovelName(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -80,8 +253,58 @@ func TestSaveFoundationPremiseSetsNovelName(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationOutlineComputesWordBudget(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("test", 0); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget, _ := domain.NewWordBudgetFromTarget(100000, domain.WordBudgetSourcePrompt)
+	if err := store.RunMeta.SetWordBudget(budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	entries := make([]map[string]any, 0, 20)
+	for chapter := 1; chapter <= 20; chapter++ {
+		entries = append(entries, map[string]any{
+			"chapter":    chapter,
+			"title":      "chapter",
+			"core_event": "event",
+			"hook":       "hook",
+		})
+	}
+	args, err := json.Marshal(map[string]any{
+		"type":    "outline",
+		"content": entries,
+		"scale":   "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	meta, err := store.RunMeta.Load()
+	if err != nil {
+		t.Fatalf("LoadRunMeta: %v", err)
+	}
+	if meta == nil || meta.WordBudget == nil {
+		t.Fatal("expected word budget")
+	}
+	if meta.WordBudget.PlannedChapters != 20 ||
+		meta.WordBudget.ChapterMinWords != 4500 ||
+		meta.WordBudget.ChapterMaxWords != 5500 {
+		t.Fatalf("word budget = %+v", meta.WordBudget)
+	}
+}
+
 func TestSaveFoundationOutlineClearsLayeredStateWhenDowngrading(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -150,8 +373,47 @@ func TestSaveFoundationOutlineClearsLayeredStateWhenDowngrading(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationOutlinePlansWordBudget(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	budget := domain.NewWordBudget(5000, "test")
+	if err := store.RunMeta.SetWordBudget(budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	args, err := json.Marshal(map[string]any{
+		"type":    "outline",
+		"content": `[{"chapter":1,"title":"一","core_event":"开端","hook":"钩子"},{"chapter":2,"title":"二","core_event":"推进","hook":"钩子"},{"chapter":3,"title":"三","core_event":"收束","hook":"钩子"}]`,
+		"scale":   "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	meta, err := store.RunMeta.Load()
+	if err != nil {
+		t.Fatalf("LoadRunMeta: %v", err)
+	}
+	if meta == nil || meta.WordBudget == nil {
+		t.Fatal("expected word budget")
+	}
+	if meta.WordBudget.PlannedChapters != 3 {
+		t.Fatalf("planned chapters = %d, want 3", meta.WordBudget.PlannedChapters)
+	}
+	if meta.WordBudget.ChapterMinWords <= 0 || meta.WordBudget.ChapterMaxWords <= meta.WordBudget.ChapterMinWords {
+		t.Fatalf("unexpected chapter range: %+v", meta.WordBudget)
+	}
+}
+
 func TestSaveFoundationAppendVolume(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -210,7 +472,7 @@ func TestSaveFoundationAppendVolume(t *testing.T) {
 }
 
 func TestSaveFoundationAppendVolumeValidation(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -255,7 +517,7 @@ func TestSaveFoundationAppendVolumeValidation(t *testing.T) {
 // TestSaveFoundationAppendVolumeRejectsAfterComplete 验证 Phase=Complete 后不允许 append_volume。
 // 取代旧的"Final 卷拒绝追加"语义（Final 字段已删除）。
 func TestSaveFoundationAppendVolumeRejectsAfterComplete(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -284,7 +546,7 @@ func TestSaveFoundationAppendVolumeRejectsAfterComplete(t *testing.T) {
 }
 
 func TestSaveFoundationUpdateCompass(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -317,7 +579,7 @@ func TestSaveFoundationUpdateCompass(t *testing.T) {
 }
 
 func TestSaveFoundationUpdateCompassOverridesLastUpdated(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -353,7 +615,7 @@ func TestSaveFoundationUpdateCompassOverridesLastUpdated(t *testing.T) {
 }
 
 func TestSaveFoundationUpdateCompassRequiresDirection(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -371,7 +633,7 @@ func TestSaveFoundationUpdateCompassRequiresDirection(t *testing.T) {
 }
 
 func TestSaveFoundationAcceptsDirectJSONArrayContent(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -408,12 +670,49 @@ func TestSaveFoundationAcceptsDirectJSONArrayContent(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationNormalizesNonPositiveOutlineChapters(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	args, err := json.Marshal(map[string]any{
+		"type": "outline",
+		"content": []map[string]any{
+			{
+				"chapter":    0,
+				"title":      "正文",
+				"core_event": "短篇一气呵成",
+				"hook":       "真相反转",
+				"scenes":     []string{"开端", "反转", "收束"},
+			},
+		},
+		"scale": "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	outline, err := store.Outline.LoadOutline()
+	if err != nil {
+		t.Fatalf("LoadOutline: %v", err)
+	}
+	if len(outline) != 1 || outline[0].Chapter != 1 {
+		t.Fatalf("outline chapter not normalized: %+v", outline)
+	}
+}
+
 // completeBookSetup 建一份处于 writing 阶段的最小 Store，用于 complete_book 系列测试。
 // complete_book 不校验 layered_outline 章节齐全（判定责任在 LLM 的"完结判定清单"），
 // 工具层只校验 PendingRewrites 为空、progress 已初始化。
 func completeBookSetup(t *testing.T) *store.Store {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -451,7 +750,7 @@ func TestSaveFoundationCompleteBookPushesPhaseComplete(t *testing.T) {
 
 func TestSaveFoundationCompleteBookRejectsBeforeWriting(t *testing.T) {
 	// 规划阶段误调 complete_book 必须被拒，否则会直接跳过整本写作。
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)

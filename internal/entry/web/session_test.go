@@ -26,7 +26,7 @@ import (
 )
 
 func TestSessionManagerReusesActiveProjectHostConcurrently(t *testing.T) {
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	manifest, err := store.CreateProject("Concurrent Session")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -231,7 +231,7 @@ func TestProjectSessionUpsertsHostEventsByID(t *testing.T) {
 }
 
 func TestProjectSessionServeEventsHonorsAfter(t *testing.T) {
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	manifest, err := store.CreateProject("SSE After")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -421,7 +421,7 @@ func TestProjectSteerAPIPropagatesHostErrors(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+			server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 			defer server.Close()
 
 			manifest, err := server.store.CreateProject(c.name)
@@ -455,7 +455,7 @@ func TestProjectSteerAPIPropagatesHostErrors(t *testing.T) {
 }
 
 func TestProjectAPIErrorPaths(t *testing.T) {
-	handler := NewHandler(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	handler := NewHandler(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/bad..id/snapshot", nil)
 	rec := httptest.NewRecorder()
@@ -518,6 +518,8 @@ type fakeProjectHost struct {
 	importErr                  error
 	importNovelErr             error
 	adaptAnalyzeErr            error
+	adaptProposalErr           error
+	adaptConfirmErr            error
 	adaptStartErr              error
 	exportErr                  error
 	cocreateErr                error
@@ -525,6 +527,7 @@ type fakeProjectHost struct {
 	adaptCoCreateErr           error
 	prepareUserRulesErr        error
 	prepareExternalRulesErr    error
+	setWordBudgetErr           error
 	startPreparedErr           error
 	resumeFromCoCreateErr      error
 	requireAnalyzedAdaptSource bool
@@ -537,11 +540,14 @@ type fakeProjectHost struct {
 	importCalls                 int
 	importNovelCalls            int
 	adaptAnalyzeCalls           int
+	adaptProposalCalls          int
+	adaptConfirmCalls           int
 	adaptStartCalls             int
 	exportCalls                 int
 	abortCalls                  int
 	prepareRulesCalls           int
 	prepareExternalRulesCalls   int
+	setWordBudgetCalls          int
 	startPreparedCalls          int
 	cocreateCalls               int
 	stageCoCreateCalls          int
@@ -549,12 +555,16 @@ type fakeProjectHost struct {
 	pauseCoCreateCalls          int
 	resumeCoCreateCalls         int
 	cancelCoCreateCalls         int
+	closeCalls                  int
 	simulateDir                 string
 	importPath                  string
 	importNovelPath             string
 	importNovelResumeFrom       int
 	adaptAnalyzeStarted         chan struct{}
 	adaptSourcePath             string
+	adaptProposalOptions        adapt.ProposalOptions
+	adaptProposal               *domain.AdaptationPlan
+	adaptConfirmedPlan          *domain.AdaptationPlan
 	adaptOptions                adapt.ProposalOptions
 	exportOptions               exp.Options
 	addProviderRole             string
@@ -570,6 +580,7 @@ type fakeProjectHost struct {
 	grokStatusAccountID         string
 	preparedRulesPrompt         string
 	preparedExternalRulesPrompt string
+	wordBudget                  *domain.WordBudget
 	startPreparedPrompt         string
 	resumeCoCreateDraft         string
 	lastCoCreateHistory         []host.CoCreateMessage
@@ -628,6 +639,19 @@ func (f *fakeProjectHost) PrepareExternalSourceUserRules(prompt string) error {
 	f.prepareExternalRulesCalls++
 	f.preparedExternalRulesPrompt = prompt
 	return f.prepareExternalRulesErr
+}
+
+func (f *fakeProjectHost) SetWordBudget(budget *domain.WordBudget) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setWordBudgetCalls++
+	if budget == nil {
+		f.wordBudget = nil
+	} else {
+		copy := *budget
+		f.wordBudget = &copy
+	}
+	return f.setWordBudgetErr
 }
 
 func (f *fakeProjectHost) StartPrepared(prompt string) error {
@@ -828,6 +852,63 @@ func (f *fakeProjectHost) StartAdaptationPreparedWithOptions(options adapt.Propo
 	return f.adaptStartErr
 }
 
+func (f *fakeProjectHost) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adaptProposalCalls++
+	f.adaptProposalOptions = options
+	if f.requireAnalyzedAdaptSource && options.SourcePath != f.adaptSourcePath {
+		return nil, fmt.Errorf("adaptation source %q has not completed analysis", options.SourcePath)
+	}
+	if f.adaptProposalErr != nil {
+		return nil, f.adaptProposalErr
+	}
+	if f.adaptProposal != nil {
+		copy := *f.adaptProposal
+		return &copy, nil
+	}
+	return &domain.AdaptationPlan{
+		Granularity:   options.Granularity,
+		Status:        domain.AdaptationPlanStatusProposal,
+		RewritePolicy: options.RewritePolicy,
+		Brief:         options.Brief,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Target One",
+			SourceChapters: []int{1},
+			OutlineEntry: domain.OutlineEntry{
+				Chapter:   1,
+				Title:     "Target One",
+				CoreEvent: "target event",
+			},
+		}},
+	}, nil
+}
+
+func (f *fakeProjectHost) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adaptConfirmCalls++
+	if f.adaptConfirmErr != nil {
+		return nil, f.adaptConfirmErr
+	}
+	if f.adaptConfirmedPlan != nil {
+		copy := *f.adaptConfirmedPlan
+		return &copy, nil
+	}
+	return &domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityChapter,
+		Status:        domain.AdaptationPlanStatusConfirmed,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
+		Brief:         "confirmed",
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Target One",
+			SourceChapters: []int{1},
+		}},
+	}, nil
+}
+
 func (f *fakeProjectHost) Export(_ context.Context, opts exp.Options) (*exp.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -933,6 +1014,9 @@ func (f *fakeProjectHost) Done() <-chan struct{} {
 }
 
 func (f *fakeProjectHost) Close() {
+	f.mu.Lock()
+	f.closeCalls++
+	f.mu.Unlock()
 	f.closeOnce.Do(func() {
 		close(f.events)
 		close(f.stream)

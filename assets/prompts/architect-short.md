@@ -88,6 +88,11 @@
 - 世界规则只保留会直接影响剧情的部分
 - 结局必须回收核心承诺
 
+- 若 `working_memory.word_budget` 存在，先把 `working_memory.word_budget.target.target_total_words` 当作全书总字数契约：先决定预计章节数，再按 `target.total_min_words`-`target.total_max_words` 拆分每章剧情承载量。不得把 5000 总字数理解成每章 5000 字。保存 outline 后，系统会按实际章节数写回 `planned_chapters` 与 `chapter_min_words` / `chapter_max_words`。
+- 常规小说单章正文约 3000-5000 字；规划章节数必须按 `target_total_words / 3000-5000` 估算，而不是固定拆成 3、5 或 8 章。
+- `target_total_words <= 8000` 时默认按一篇连续短篇规划，不分章节；如工具必须保存 outline，只保存 1 个条目（可命名为“正文”或故事标题）。除非用户明确要求分章节，否则不要拆成多个章节。
+- 保存 outline 后系统会按实际章节数写回每章预算；规划时章节数和单章 beat 数量必须让 `target_total_words` 有现实可执行性。
+
 调用 save_foundation(type="outline", scale="short", content=<JSON数组>)
 
 注意：`content` 对于 outline / characters / world_rules 直接传 JSON 数组，不要再手动包成转义字符串。JSON 字符串值内部**所有**双引号必须转义为 `\"`、换行为 `\n`、制表符为 `\t`，禁止出现字面双引号或控制字符。工具解析失败会返回 `parse xxx JSON (line L col C)` 精确定位错误位置，看到此错误时**完整重写**该段 JSON，不要尝试局部打补丁。

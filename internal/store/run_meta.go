@@ -58,6 +58,7 @@ func (s *RunMetaStore) Init(style, provider, model string) error {
 			meta.SteerHistory = existing.SteerHistory
 			meta.PendingSteer = existing.PendingSteer
 			meta.PlanningTier = existing.PlanningTier
+			meta.WordBudget = existing.WordBudget
 		}
 		return s.saveUnlocked(meta)
 	})
@@ -119,6 +120,30 @@ func (s *RunMetaStore) SetPlanningTier(tier domain.PlanningTier) error {
 			meta = &domain.RunMeta{}
 		}
 		meta.PlanningTier = tier
+		return s.saveUnlocked(*meta)
+	})
+}
+
+// SetWordBudget records or clears the book-level word budget contract.
+func (s *RunMetaStore) SetWordBudget(budget *domain.WordBudget) error {
+	return s.io.WithWriteLock(func() error {
+		meta, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if meta == nil {
+			meta = &domain.RunMeta{}
+		}
+		if budget == nil {
+			meta.WordBudget = nil
+			return s.saveUnlocked(*meta)
+		}
+		normalized, ok := budget.Normalized()
+		if !ok {
+			meta.WordBudget = nil
+			return s.saveUnlocked(*meta)
+		}
+		meta.WordBudget = &normalized
 		return s.saveUnlocked(*meta)
 	})
 }

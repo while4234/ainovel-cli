@@ -17,7 +17,7 @@ import (
 )
 
 func TestProjectAdaptSourceUploadSavesSourceUnderProjectUploads(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 
 	manifest, err := server.store.CreateProject("Adapt Upload")
@@ -90,7 +90,7 @@ func TestProjectAdaptSourceRejectsUnsafeAndMultipleFiles(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+			server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 			defer server.Close()
 			manifest, err := server.store.CreateProject(c.name)
 			if err != nil {
@@ -111,7 +111,7 @@ func TestProjectAdaptSourceRejectsUnsafeAndMultipleFiles(t *testing.T) {
 }
 
 func TestProjectAdaptAnalyzeUsesProjectAdaptationUploadPath(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Adapt Analyze")
 	if err != nil {
@@ -140,7 +140,7 @@ func TestProjectAdaptAnalyzeUsesProjectAdaptationUploadPath(t *testing.T) {
 }
 
 func TestProjectSnapshotRestoresUploadedAdaptationSource(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Adapt Restore")
 	if err != nil {
@@ -171,7 +171,7 @@ func TestProjectSnapshotRestoresUploadedAdaptationSource(t *testing.T) {
 }
 
 func TestProjectSnapshotReportsActiveAdaptationAnalysis(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Adapt Active Snapshot")
 	if err != nil {
@@ -224,7 +224,7 @@ func TestProjectSnapshotReportsActiveAdaptationAnalysis(t *testing.T) {
 }
 
 func TestProjectAdaptAnalyzeRejectsUnsafeSourceFile(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Unsafe Analyze")
 	if err != nil {
@@ -256,7 +256,7 @@ func TestProjectAdaptStartStrictModesMapRewritePolicy(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.mode, func(t *testing.T) {
-			server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+			server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 			defer server.Close()
 			manifest, err := server.store.CreateProject("Adapt Start " + c.mode)
 			if err != nil {
@@ -288,8 +288,82 @@ func TestProjectAdaptStartStrictModesMapRewritePolicy(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptProposalBuildsWithoutStartingWriter(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt Proposal")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/proposal", bytes.NewBufferString(`{"source_file":"source.txt","mode":"free","brief":"adapt as a new mystery"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proposal status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.prepareExternalRulesCalls != 1 {
+		t.Fatalf("PrepareExternalSourceUserRules calls=%d, want 1", fake.prepareExternalRulesCalls)
+	}
+	if fake.adaptProposalCalls != 1 {
+		t.Fatalf("BuildAdaptationProposal calls=%d, want 1", fake.adaptProposalCalls)
+	}
+	if fake.adaptStartCalls != 0 || fake.adaptConfirmCalls != 0 {
+		t.Fatalf("proposal must not start or confirm: start=%d confirm=%d", fake.adaptStartCalls, fake.adaptConfirmCalls)
+	}
+	if fake.adaptProposalOptions.Granularity != domain.AdaptationGranularityFree ||
+		fake.adaptProposalOptions.RewritePolicy != domain.AdaptationRewriteFullRewrite {
+		t.Fatalf("proposal options = %+v", fake.adaptProposalOptions)
+	}
+	var response struct {
+		Proposal domain.AdaptationPlan `json:"proposal"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode proposal: %v", err)
+	}
+	if response.Proposal.Status != domain.AdaptationPlanStatusProposal {
+		t.Fatalf("proposal status = %q, want proposal", response.Proposal.Status)
+	}
+}
+
+func TestProjectAdaptConfirmStartsFromSavedProposal(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt Confirm")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/confirm", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.adaptConfirmCalls != 1 {
+		t.Fatalf("ConfirmAdaptationProposal calls=%d, want 1", fake.adaptConfirmCalls)
+	}
+	if fake.adaptStartCalls != 0 {
+		t.Fatalf("legacy adapt start calls=%d, want 0", fake.adaptStartCalls)
+	}
+	var response struct {
+		Plan domain.AdaptationPlan `json:"plan"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode confirm: %v", err)
+	}
+	if response.Plan.Status != domain.AdaptationPlanStatusConfirmed {
+		t.Fatalf("plan status = %q, want confirmed", response.Plan.Status)
+	}
+}
+
 func TestProjectAdaptStartFailsAfterNewUploadUntilAnalyzeCompletes(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Stale Adapt Source")
 	if err != nil {
@@ -345,7 +419,7 @@ func TestProjectAdaptStartFailsAfterNewUploadUntilAnalyzeCompletes(t *testing.T)
 }
 
 func TestProjectAdaptStartRequiresSourceFile(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Missing Adapt Source")
 	if err != nil {
@@ -365,7 +439,7 @@ func TestProjectAdaptStartRequiresSourceFile(t *testing.T) {
 }
 
 func TestProjectAdaptStartRejectsUnsupportedMode(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Bad Adapt Mode")
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -32,7 +33,7 @@ func (t *SaveFoundationTool) ConcurrencySafe(_ json.RawMessage) bool { return fa
 
 func (t *SaveFoundationTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("type", schema.Enum("设定类型", "premise", "outline", "layered_outline", "characters", "world_rules", "expand_arc", "append_volume", "update_compass", "complete_book")).Required(),
+		schema.Property("type", schema.Enum("设定类型。建议显式传；若缺失，工具会在内容和当前缺失项唯一明确时自动推断。", "premise", "outline", "layered_outline", "characters", "world_rules", "expand_arc", "append_volume", "update_compass", "complete_book")),
 		schema.Property("content", map[string]any{
 			"description": "内容。premise 传 Markdown 字符串；其他类型直接传 JSON 数组或对象即可，也兼容传 JSON 字符串。expand_arc 时传章节数组。",
 		}).Required(),
@@ -56,6 +57,14 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	content, err := normalizeFoundationContent(a.Content)
 	if err != nil {
 		return nil, err
+	}
+	a.Type = strings.TrimSpace(a.Type)
+	if a.Type == "" {
+		inferred, inferErr := t.inferFoundationType(content)
+		if inferErr != nil {
+			return nil, inferErr
+		}
+		a.Type = inferred
 	}
 	if a.Scale != "" {
 		switch domain.PlanningTier(a.Scale) {
@@ -101,6 +110,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := decode("outline", &entries); err != nil {
 			return nil, err
 		}
+		normalizeOutlineEntryChapters(entries)
 		if err := t.store.Outline.SaveOutline(entries); err != nil {
 			return nil, fmt.Errorf("save outline: %w: %w", errs.ErrStoreWrite, err)
 		}
@@ -112,6 +122,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			_ = t.store.Outline.ClearLayeredOutline()
 		}
 		result["chapters"] = len(entries)
+		if err := t.updateWordBudgetPlan(len(entries), result); err != nil {
+			return nil, err
+		}
 
 	case "layered_outline":
 		var volumes []domain.VolumeOutline
@@ -134,6 +147,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		result["volumes"] = len(volumes)
 		result["chapters"] = total
+		if err := t.updateWordBudgetPlan(total, result); err != nil {
+			return nil, err
+		}
 
 	case "characters":
 		var chars []domain.Character
@@ -169,6 +185,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		result["volume"] = a.Volume
 		result["arc"] = a.Arc
 		result["chapters"] = len(chapters)
+		if err := t.refreshWordBudgetPlan(result); err != nil {
+			return nil, err
+		}
 
 	case "append_volume":
 		if p, _ := t.store.Progress.Load(); p != nil && p.Phase == domain.PhaseComplete {
@@ -189,6 +208,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		if chCount > 0 {
 			result["chapters"] = chCount
+		}
+		if err := t.refreshWordBudgetPlan(result); err != nil {
+			return nil, err
 		}
 
 	case "complete_book":
@@ -332,7 +354,158 @@ func normalizeFoundationContent(raw json.RawMessage) (string, error) {
 	return string(raw), nil
 }
 
+func (t *SaveFoundationTool) inferFoundationType(content string) (string, error) {
+	content = strings.TrimSpace(content)
+	missing := t.store.FoundationMissing()
+	if len(missing) == 1 {
+		if inferred := foundationTypeFromMissing(missing[0]); inferred != "" {
+			return inferred, nil
+		}
+	}
+
+	if looksLikePremiseMarkdown(content) && foundationMissingAllows(missing, "premise") {
+		return "premise", nil
+	}
+	if inferred := inferFoundationTypeFromJSON(content); inferred != "" {
+		if len(missing) == 0 || foundationMissingAllows(missing, inferred) {
+			return inferred, nil
+		}
+	}
+	if looksLikePremiseMarkdown(content) && len(missing) == 0 {
+		return "premise", nil
+	}
+
+	if len(missing) > 0 {
+		return "", fmt.Errorf("save_foundation requires type because content is ambiguous; current missing foundation=%s: %w", strings.Join(missing, ","), errs.ErrToolArgs)
+	}
+	return "", fmt.Errorf("save_foundation requires type because foundation is already complete and content is ambiguous: %w", errs.ErrToolArgs)
+}
+
+func foundationTypeFromMissing(missing string) string {
+	switch missing {
+	case "premise", "outline", "characters", "world_rules":
+		return missing
+	case "compass":
+		return "update_compass"
+	default:
+		return ""
+	}
+}
+
+func foundationMissingAllows(missing []string, typeName string) bool {
+	if len(missing) == 0 {
+		return false
+	}
+	missingName := typeName
+	if typeName == "update_compass" {
+		missingName = "compass"
+	}
+	for _, item := range missing {
+		if item == missingName {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikePremiseMarkdown(content string) bool {
+	if content == "" || strings.HasPrefix(content, "{") || strings.HasPrefix(content, "[") {
+		return false
+	}
+	return strings.HasPrefix(content, "#") ||
+		strings.Contains(content, "\n## ") ||
+		strings.Contains(content, "\n# ")
+}
+
+func inferFoundationTypeFromJSON(content string) string {
+	var value any
+	if err := json.Unmarshal([]byte(content), &value); err != nil {
+		return ""
+	}
+	switch v := value.(type) {
+	case []any:
+		if len(v) == 0 {
+			return ""
+		}
+		first, _ := v[0].(map[string]any)
+		return inferFoundationTypeFromObject(first, true)
+	case map[string]any:
+		return inferFoundationTypeFromObject(v, false)
+	default:
+		return ""
+	}
+}
+
+func inferFoundationTypeFromObject(obj map[string]any, fromArray bool) string {
+	if len(obj) == 0 {
+		return ""
+	}
+	if _, ok := obj["ending_direction"]; ok {
+		return "update_compass"
+	}
+	if hasAnyKey(obj, "chapter", "core_event", "hook", "scenes") {
+		return "outline"
+	}
+	if hasAnyKey(obj, "name", "role", "description", "arc", "traits", "aliases") {
+		return "characters"
+	}
+	if hasAnyKey(obj, "category", "rule", "boundary") {
+		return "world_rules"
+	}
+	if fromArray && hasAnyKey(obj, "index", "arcs") {
+		return "layered_outline"
+	}
+	return ""
+}
+
+func hasAnyKey(obj map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if _, ok := obj[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *SaveFoundationTool) isWriting() bool {
 	p, _ := t.store.Progress.Load()
 	return p != nil && p.Phase == domain.PhaseWriting
+}
+
+func normalizeOutlineEntryChapters(entries []domain.OutlineEntry) {
+	for i := range entries {
+		if entries[i].Chapter <= 0 {
+			entries[i].Chapter = i + 1
+		}
+	}
+}
+
+func (t *SaveFoundationTool) refreshWordBudgetPlan(result map[string]any) error {
+	progress, err := t.store.Progress.Load()
+	if err != nil {
+		return fmt.Errorf("load progress for word budget: %w: %w", errs.ErrStoreRead, err)
+	}
+	if progress == nil {
+		return nil
+	}
+	return t.updateWordBudgetPlan(progress.TotalChapters, result)
+}
+
+func (t *SaveFoundationTool) updateWordBudgetPlan(chapters int, result map[string]any) error {
+	if chapters <= 0 {
+		return nil
+	}
+	meta, err := t.store.RunMeta.Load()
+	if err != nil {
+		return fmt.Errorf("load run meta for word budget: %w: %w", errs.ErrStoreRead, err)
+	}
+	if meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords <= 0 {
+		return nil
+	}
+	next := meta.WordBudget.WithPlannedChapters(chapters)
+	if err := t.store.RunMeta.SetWordBudget(&next); err != nil {
+		return fmt.Errorf("save word budget plan: %w: %w", errs.ErrStoreWrite, err)
+	}
+	result["word_budget"] = next
+	return nil
 }

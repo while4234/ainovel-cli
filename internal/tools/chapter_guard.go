@@ -57,28 +57,33 @@ func EnsureAdaptationChapterPlanned(st *store.Store, chapter int) error {
 }
 
 type adaptationWordContract struct {
-	RewritePolicy       string  `json:"rewrite_policy"`
-	Hard                bool    `json:"hard"`
-	Scope               string  `json:"scope,omitempty"`
-	Chapter             int     `json:"chapter"`
-	SourceRunes         int     `json:"source_runes,omitempty"`
-	TargetRunes         int     `json:"target_runes,omitempty"`
-	TargetMinRunes      int     `json:"target_min_runes,omitempty"`
-	TargetMaxRunes      int     `json:"target_max_runes,omitempty"`
-	ActualRunes         int     `json:"actual_runes,omitempty"`
-	SourceTotalRunes    int     `json:"source_total_runes,omitempty"`
-	TargetTotalRunes    int     `json:"target_total_runes,omitempty"`
-	TargetTotalMinRunes int     `json:"target_total_min_runes,omitempty"`
-	TargetTotalMaxRunes int     `json:"target_total_max_runes,omitempty"`
-	ProjectedTotalRunes int     `json:"projected_total_runes,omitempty"`
-	TotalDeltaRunes     int     `json:"total_delta_runes,omitempty"`
-	TotalDeltaRatio     float64 `json:"total_delta_ratio,omitempty"`
+	RewritePolicy       string   `json:"rewrite_policy"`
+	Hard                bool     `json:"hard"`
+	BudgetPolicy        string   `json:"budget_policy"`
+	Scope               string   `json:"scope,omitempty"`
+	Chapter             int      `json:"chapter"`
+	SourceRunes         int      `json:"source_runes,omitempty"`
+	TargetRunes         int      `json:"target_runes,omitempty"`
+	TargetMinRunes      int      `json:"target_min_runes,omitempty"`
+	TargetMaxRunes      int      `json:"target_max_runes,omitempty"`
+	ActualRunes         int      `json:"actual_runes,omitempty"`
+	SourceTotalRunes    int      `json:"source_total_runes,omitempty"`
+	TargetTotalRunes    int      `json:"target_total_runes,omitempty"`
+	TargetTotalMinRunes int      `json:"target_total_min_runes,omitempty"`
+	TargetTotalMaxRunes int      `json:"target_total_max_runes,omitempty"`
+	ProjectedTotalRunes int      `json:"projected_total_runes,omitempty"`
+	TotalDeltaRunes     int      `json:"total_delta_runes,omitempty"`
+	TotalDeltaRatio     float64  `json:"total_delta_ratio,omitempty"`
+	Warnings            []string `json:"warnings,omitempty"`
 }
 
 func buildAdaptationWordContract(st *store.Store, plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan, chapter, actualRunes int) adaptationWordContract {
+	rewritePolicy := domain.NormalizeAdaptationRewritePolicy(plan.RewritePolicy)
+	hard := rewritePolicy == domain.AdaptationRewritePreserveDetails
 	contract := adaptationWordContract{
-		RewritePolicy:       domain.NormalizeAdaptationRewritePolicy(plan.RewritePolicy),
-		Hard:                plan.RewritePolicy == domain.AdaptationRewritePreserveDetails,
+		RewritePolicy:       rewritePolicy,
+		Hard:                hard,
+		BudgetPolicy:        "soft",
 		Chapter:             chapter,
 		SourceRunes:         chapterPlan.SourceRunes,
 		TargetRunes:         chapterPlan.TargetRunes,
@@ -90,8 +95,8 @@ func buildAdaptationWordContract(st *store.Store, plan *domain.AdaptationPlan, c
 		TargetTotalMinRunes: plan.TargetMinRunes,
 		TargetTotalMaxRunes: plan.TargetMaxRunes,
 	}
-	if plan.RewritePolicy != domain.AdaptationRewritePreserveDetails {
-		return contract
+	if hard {
+		contract.BudgetPolicy = "hard"
 	}
 	if plan.Granularity == domain.AdaptationGranularityFree {
 		contract.Scope = "total"
@@ -104,6 +109,7 @@ func buildAdaptationWordContract(st *store.Store, plan *domain.AdaptationPlan, c
 		contract.TotalDeltaRatio = float64(contract.TotalDeltaRunes) / float64(plan.TargetTotalRunes)
 		contract.TotalDeltaRatio = math.Round(contract.TotalDeltaRatio*10000) / 10000
 	}
+	contract.Warnings = adaptationWordContractWarningsForContract(plan, contract)
 	return contract
 }
 
@@ -132,6 +138,41 @@ func adaptationWordContractIssues(st *store.Store, plan *domain.AdaptationPlan, 
 			contract.ProjectedTotalRunes, plan.TargetMinRunes, plan.TargetMaxRunes)}
 	}
 	return nil
+}
+
+func adaptationWordContractWarnings(st *store.Store, plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan, chapter, actualRunes int) []string {
+	if plan == nil || plan.RewritePolicy == domain.AdaptationRewritePreserveDetails {
+		return nil
+	}
+	contract := buildAdaptationWordContract(st, plan, chapterPlan, chapter, actualRunes)
+	return append([]string(nil), contract.Warnings...)
+}
+
+func adaptationWordContractWarningsForContract(plan *domain.AdaptationPlan, contract adaptationWordContract) []string {
+	if plan == nil || contract.Hard || contract.ActualRunes <= 0 {
+		return nil
+	}
+	var warnings []string
+	if contract.Scope != "total" && contract.TargetMinRunes > 0 && contract.ActualRunes < contract.TargetMinRunes {
+		warnings = append(warnings, fmt.Sprintf("adaptation_word_contract_soft: chapter %d has %d runes, below soft range %d-%d",
+			contract.Chapter, contract.ActualRunes, contract.TargetMinRunes, contract.TargetMaxRunes))
+	}
+	if contract.Scope != "total" && contract.TargetMaxRunes > 0 && contract.ActualRunes > contract.TargetMaxRunes {
+		warnings = append(warnings, fmt.Sprintf("adaptation_word_contract_soft: chapter %d has %d runes, above soft range %d-%d",
+			contract.Chapter, contract.ActualRunes, contract.TargetMinRunes, contract.TargetMaxRunes))
+	}
+	if !isLastAdaptationChapter(plan, contract.Chapter) {
+		return warnings
+	}
+	if contract.TargetTotalMinRunes > 0 && contract.ProjectedTotalRunes < contract.TargetTotalMinRunes {
+		warnings = append(warnings, fmt.Sprintf("adaptation_word_contract_soft: projected total %d is below soft range %d-%d",
+			contract.ProjectedTotalRunes, contract.TargetTotalMinRunes, contract.TargetTotalMaxRunes))
+	}
+	if contract.TargetTotalMaxRunes > 0 && contract.ProjectedTotalRunes > contract.TargetTotalMaxRunes {
+		warnings = append(warnings, fmt.Sprintf("adaptation_word_contract_soft: projected total %d is above soft range %d-%d",
+			contract.ProjectedTotalRunes, contract.TargetTotalMinRunes, contract.TargetTotalMaxRunes))
+	}
+	return warnings
 }
 
 func adaptationWordContractStatus(st *store.Store, chapter, actualRunes int) (adaptationWordContract, []string, bool) {

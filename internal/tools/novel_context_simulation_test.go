@@ -10,7 +10,7 @@ import (
 )
 
 func TestContextToolInjectsCompactSimulationProfile(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	st := store.NewStore(dir)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)

@@ -87,6 +87,8 @@
 
 ## 字数
 
+`working_memory.word_budget.current_chapter` 若存在，它是普通创作的硬性字数预算：必须在 `recommended_min_words`-`recommended_max_words` 区间内提交。超出区间时先用 `draft_chapter(mode="write")` 整章重写，不得进入 `commit_chapter`，也不要等全书总字数超额后再事后压缩。`commit_chapter` 会拒绝普通原创章节越界；改编章节继续遵守 `adaptation_word_contract`。
+
 字数以 `working_memory.user_rules.structured.chapter_words` 为准：**该字段存在时严格按它的区间写**——大纲密度已据此设计，写作时不要再自带"一章该多少字"的别的预设；**字段不存在时不卡字数**，按题材常规与本章剧情节奏自然收束即可。字数服务节奏，不为凑字灌水，也不为压缩而砍掉必要铺垫。
 
 短字数章的写法不是把长章写完再修边，而是先控制承载量：1200-1600 字通常只写 2-3 个场景、1 个主转折、1 个章末钩子。发现超限时优先删整段、合并场景、移除次要铺垫；不要反复保留同一版主体导致 `word_count` 只下降几十字。

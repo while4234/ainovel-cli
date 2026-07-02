@@ -29,27 +29,78 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source commit: `9d40f9b` `feat: add web grok oauth login`
-- Branch: `main`
+- Latest source change: branch `codex/web-project-cocreate-controls`,
+  `a83b2af` `feat: surface adaptation planning state in UI`, completing the
+  five-step adaptation proposal/word-budget/UI PR pipeline.
+- Branch: `codex/web-project-cocreate-controls`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: clean after the Grok OAuth Web feature commit, except for
-  ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
-- Runtime: local `D:\ainovel\ainovel-cli.exe` was rebuilt after the Grok OAuth
-  Web work using the project-local Go 1.25.5 toolchain, then restarted on
-  `http://127.0.0.1:9898` with runtime root
-  `C:\Users\RondleLiu\.ainovel\novels-preview`. The `D:\grok\bin\ainovel-cli.cmd`
+- Working tree: expected clean after the adaptation proposal/word-budget/UI commits,
+  except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
+  artifacts.
+- Runtime: local Web validation binary `D:\ainovel\.codex\bin\ainovel-cli-fixed.exe`
+  is rebuilt after the Web short-story creation fixes using the project-local
+  Go 1.25.5 toolchain, then restarted on `http://127.0.0.1:9898` with runtime root
+  `C:\Users\RondleLiu\.ainovel\novels`. The `D:\grok\bin\ainovel-cli.cmd`
   shim still points to `D:\ainovel\ainovel-cli.exe`.
-- Validation: `go test ./internal/entry/web`, `npm --prefix
-  internal/entry/web/ui test`, `npm --prefix internal/entry/web/ui run build`,
-  `git diff --check`, and Playwright local Web smoke checks succeeded on
-  2026-07-01. The latest smoke check verified the Web `Grok 登录` model form
-  mode, defaults, controls, and guarded submit on `127.0.0.1:9902`. `go test
-  ./...` still has existing Windows environment-sensitive failures in
-  `internal/notify` (`sh` missing from PATH) and `internal/version`
-  (permission-mode assertion).
+- Validation: `npm --prefix internal/entry/web/ui test -- --run` passed
+  5 files / 31 tests; `npm --prefix internal/entry/web/ui run build` passed;
+  `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host ./internal/store ./internal/tools ./internal/host/adapt ./internal/domain -count=1`
+  passed; `.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -count=1`
+  passed; `git diff --check` passed with LF-to-CRLF warnings only. Full
+  `.codex\tools\go1.25.5\go\bin\go.exe test ./... -count=1` was attempted and
+  still fails only on existing Windows-sensitive tests: `internal/notify`
+  requires `sh` on PATH, and `internal/version` expects Unix executable mode
+  bits.
 
 ## Change Log
 
+- 2026-07-02 `a83b2af` `feat: surface adaptation planning state in UI`:
+  completed the strict-agent adaptation proposal/UI pipeline after independent
+  review and fix rounds. The sequence added additive planning contracts
+  (`c772872`), real `arc/free` planner-backed proposals (`0e91abc`), explicit
+  build/confirm/start flow (`91be2eb`), persisted hard/soft adaptation word
+  budgets (`1cccc2f`), and snapshot/UI visibility for loaded profiles,
+  creative blueprints, proposals, full outlines, budget/source coverage, and
+  safe stale-proposal handling (`a83b2af`). UI assets were rebuilt.
+- 2026-07-02 `074fd6b` `fix: stabilize web short story creation`: changed
+  normal creation word-budget misses and repeated-draft detection from hard
+  local errors into structured tool feedback, added draft-stage word-budget
+  guidance, normalized one-entry outline chapter numbers, removed remaining
+  Ctrl+S start copy from Web co-create responses, and verified a real 5000-word
+  one-entry Web co-create completed without local ERROR.
+- 2026-07-01 `af33ae7` `fix: add global web model providers`: added
+  `POST /api/models/add`, enabled no-project `Add and use` for global provider
+  registration, allowed logged-in Grok OAuth to become visible in the global
+  default model selector after confirmation, added backend/frontend coverage,
+  regenerated embedded Web assets, rebuilt the local binary, and restarted port 9898.
+- 2026-07-01 `aba5224` `feat: add web default model control`: added global
+  `/api/models` and `/api/models/default` endpoints, synchronized server/session
+  config snapshots for newly opened projects, added the Web "当前默认模型" selector,
+  kept Grok callback actions usable outside global busy state, added tests,
+  regenerated embedded Web assets, rebuilt the local binary, and restarted port 9898.
+- 2026-07-01 `6a52385` `fix: allow global web grok login`: added global Web
+  Grok OAuth start/poll/complete/status endpoints, routed frontend Grok login
+  calls to them when no project is active, kept Login/Poll/Status clickable
+  without an open project, added backend/frontend coverage, regenerated embedded
+  Web assets, rebuilt the local binary, and restarted port 9898.
+- 2026-07-01 `5c9ff38` `fix: open web grok oauth login`: added an opt-in
+  backend system-browser opener for Web Grok OAuth login start, frontend pending
+  and no-project feedback, popup/manual-link fallbacks, API/backend tests, and
+  regenerated embedded Web static assets.
+- 2026-07-01 `7bee635` `feat: add word budget progress UI`: added workspace progress
+  display, normal co-create total-word controls, sticky right-side co-create
+  launch/planning area, overflow/mobile layout fixes, total-vs-per-chapter
+  user-rule wording, regenerated embedded Vite assets, rebuilt the local binary,
+  and restarted only port 9898.
+- 2026-07-01 `6549c2a` `Implement backend word budget contract`: added the
+  persisted `WordBudget` contract, quick/co-create payload handling, startup
+  prompt injection, `novel_context` runtime budget payload, outline-derived
+  chapter budgets, and non-adaptation commit gating.
+- 2026-07-01 `feat: improve web project and cocreate controls`: added Web
+  project rename and internal-trash APIs, ChatGPT-style project context menu
+  UI, active-session cleanup on trash, one-click equal-width co-create
+  suggestion buttons, editable pre-commit co-create user messages with revise
+  regeneration, backend/frontend tests, and regenerated embedded Vite assets.
 - 2026-07-01 `9d40f9b` `feat: add web grok oauth login`: added Web Grok OAuth
   login start/poll/complete/status APIs, surfaced the flow in the model add
   form, registered final Grok providers via `auth:"grok_oauth"` and

@@ -61,9 +61,7 @@ func (s *Server) handleProjectStyle(w http.ResponseWriter, r *http.Request, id s
 }
 
 func (s *Server) defaultStyleID() string {
-	s.configMu.Lock()
-	style := assets.NormalizeStyleID(s.cfg.Style)
-	s.configMu.Unlock()
+	style := assets.NormalizeStyleID(s.currentConfig().Style)
 	if assets.HasStyle(style) {
 		return style
 	}

@@ -11,7 +11,7 @@ import (
 )
 
 func TestReadChapterSourceRequiresAdaptationProject(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -261,6 +261,192 @@ func TestPreserveDetailsWordContractRejectsCheckAndCommit(t *testing.T) {
 		!strings.Contains(err.Error(), "adaptation_word_contract") ||
 		!strings.Contains(err.Error(), "不要再次调用 commit_chapter") {
 		t.Fatalf("commit_chapter should independently reject word contract, got %v", err)
+	}
+}
+
+func TestFullRewriteSoftWordContractWarnsWithoutFailingCheckOrCommit(t *testing.T) {
+	source := strings.Repeat("s", 100)
+	draft := strings.Repeat("d", 20)
+	plan := domain.AdaptationPlan{
+		Granularity:      domain.AdaptationGranularityArc,
+		RewritePolicy:    domain.AdaptationRewriteFullRewrite,
+		WordTolerance:    0.15,
+		Brief:            "full rewrite soft budget",
+		SourceTotalRunes: 100,
+		TargetTotalRunes: 100,
+		TargetMinRunes:   85,
+		TargetMaxRunes:   115,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Target",
+			SourceChapters: []int{1},
+			SourceRunes:    100,
+			TargetRunes:    100,
+			TargetMinRunes: 85,
+			TargetMaxRunes: 115,
+			SourceRange:    domain.SourceRange{From: 1, To: 1},
+		}},
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, []string{source})
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	checkArgs, _ := json.Marshal(map[string]any{
+		"chapter": 1,
+		"passed":  true,
+		"summary": "soft budget warning only",
+	})
+	raw, err := NewCheckAdaptationTool(s).Execute(context.Background(), checkArgs)
+	if err != nil {
+		t.Fatalf("check_adaptation Execute: %v", err)
+	}
+	var checkPayload struct {
+		Passed   bool     `json:"passed"`
+		Issues   []string `json:"issues"`
+		Warnings []string `json:"word_contract_warnings"`
+		Contract struct {
+			Hard         bool     `json:"hard"`
+			BudgetPolicy string   `json:"budget_policy"`
+			Warnings     []string `json:"warnings"`
+		} `json:"adaptation_word_contract"`
+	}
+	if err := json.Unmarshal(raw, &checkPayload); err != nil {
+		t.Fatalf("Unmarshal check payload: %v", err)
+	}
+	if !checkPayload.Passed || len(checkPayload.Issues) != 0 {
+		t.Fatalf("soft budget should not fail check: %+v", checkPayload)
+	}
+	if checkPayload.Contract.Hard || checkPayload.Contract.BudgetPolicy != "soft" ||
+		!issueContains(checkPayload.Warnings, "adaptation_word_contract_soft") ||
+		!issueContains(checkPayload.Contract.Warnings, "adaptation_word_contract_soft") {
+		t.Fatalf("soft warning contract missing: %+v", checkPayload)
+	}
+
+	commitArgs, _ := json.Marshal(map[string]any{
+		"chapter":    1,
+		"summary":    "鎽樿",
+		"characters": []string{"涓昏"},
+		"key_events": []string{"涓荤嚎浜嬩欢"},
+	})
+	if _, err := NewCommitChapterTool(s).Execute(context.Background(), commitArgs); err != nil {
+		t.Fatalf("commit should allow soft adaptation budget warning: %v", err)
+	}
+}
+
+func TestAdaptationCommitStillEnforcesRunMetaWordBudget(t *testing.T) {
+	source := strings.Repeat("s", 100)
+	draft := strings.Repeat("d", 50)
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Brief:         "normal budget still hard",
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Target",
+			SourceChapters: []int{1},
+			SourceRange:    domain.SourceRange{From: 1, To: 1},
+		}},
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, []string{source})
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	checkArgs, _ := json.Marshal(map[string]any{
+		"chapter": 1,
+		"passed":  true,
+		"summary": "soft adaptation budget only",
+	})
+	if _, err := NewCheckAdaptationTool(s).Execute(context.Background(), checkArgs); err != nil {
+		t.Fatalf("check_adaptation Execute: %v", err)
+	}
+
+	commitArgs, _ := json.Marshal(map[string]any{
+		"chapter":    1,
+		"summary":    "鎽樿",
+		"characters": []string{"涓昏"},
+		"key_events": []string{"涓荤嚎浜嬩欢"},
+	})
+	raw, err := NewCommitChapterTool(s).Execute(context.Background(), commitArgs)
+	if err != nil {
+		t.Fatalf("commit should return normal budget rejection payload, got error: %v", err)
+	}
+	var payload struct {
+		Committed          bool `json:"committed"`
+		WordBudgetRejected bool `json:"word_budget_rejected"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal commit payload: %v", err)
+	}
+	if payload.Committed || !payload.WordBudgetRejected {
+		t.Fatalf("expected normal word budget rejection, got %+v", payload)
+	}
+}
+
+func TestAdaptationDraftPreservesRunMetaWordBudgetFailureGuidance(t *testing.T) {
+	source := strings.Repeat("s", 50)
+	draft := strings.Repeat("abcde", 10)
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityChapter,
+		Status:        domain.AdaptationPlanStatusConfirmed,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
+		Brief:         "hard adaptation budget passes while normal budget fails",
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Target",
+			SourceChapters: []int{1},
+			SourceRunes:    50,
+			TargetRunes:    50,
+			TargetMinRunes: 45,
+			TargetMaxRunes: 55,
+			SourceRange:    domain.SourceRange{From: 1, To: 1},
+		}},
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, []string{source})
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	raw, err := NewDraftChapterTool(s).Execute(context.Background(), mustJSON(t, map[string]any{
+		"chapter": 1,
+		"content": draft,
+		"mode":    "write",
+	}))
+	if err != nil {
+		t.Fatalf("draft_chapter Execute: %v", err)
+	}
+	var payload struct {
+		WordBudgetPassed   bool     `json:"word_budget_passed"`
+		WordContractPassed bool     `json:"word_contract_passed"`
+		WordContractIssues []string `json:"word_contract_issues"`
+		Next               string   `json:"next_step"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal draft payload: %v", err)
+	}
+	if payload.WordBudgetPassed {
+		t.Fatalf("normal word budget should fail, got %+v", payload)
+	}
+	if !payload.WordContractPassed || len(payload.WordContractIssues) > 0 {
+		t.Fatalf("adaptation word contract should pass, got %+v", payload)
+	}
+	if !strings.Contains(payload.Next, `draft_chapter(mode="write", chapter=1)`) ||
+		strings.Contains(payload.Next, "check_adaptation") {
+		t.Fatalf("next_step should keep normal budget rewrite guidance, got %q", payload.Next)
 	}
 }
 
@@ -515,7 +701,7 @@ func issueContains(issues []string, sub string) bool {
 
 func newAdaptationToolStore(t *testing.T) *store.Store {
 	t.Helper()
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -555,7 +741,7 @@ func newAdaptationToolStore(t *testing.T) *store.Store {
 
 func newAdaptationToolStoreWithPlan(t *testing.T, plan domain.AdaptationPlan, sourceTexts []string) *store.Store {
 	t.Helper()
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

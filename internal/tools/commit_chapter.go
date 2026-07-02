@@ -170,6 +170,11 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	if err := t.ensureAdaptationGate(a.Chapter, content); err != nil {
 		return nil, err
 	}
+	if budgetRejection, err := t.checkWordBudgetGate(a.Chapter, wordCount); err != nil {
+		return nil, err
+	} else if budgetRejection != nil {
+		return json.Marshal(budgetRejection.result())
+	}
 
 	now := time.Now().Format(time.RFC3339)
 	pending := domain.PendingCommit{
@@ -398,6 +403,92 @@ func (t *CommitChapterTool) ensureAdaptationGate(chapter int, content string) er
 
 // checkRules 对章节正文做机械检查：内置产品底线 Lint（机制残留，始终执行）
 // + 用户规则 Check（读本书快照的 structured；快照缺失退到内置默认，保证机械底线始终在）。
+type wordBudgetGateRejection struct {
+	chapter              int
+	wordCount            int
+	direction            string
+	minWords             int
+	maxWords             int
+	targetTotalWords     int
+	completedWords       int
+	remainingTargetWords int
+	remainingChapters    int
+}
+
+func (r wordBudgetGateRejection) message() string {
+	return fmt.Sprintf(
+		"普通创作字数预算拒绝提交：第 %d 章当前 %d 字，%s预算区间 %d-%d 字。全书目标 %d 字，已完成 %d 字，剩余目标 %d 字，剩余章节 %d。",
+		r.chapter, r.wordCount, r.direction, r.minWords, r.maxWords,
+		r.targetTotalWords, r.completedWords, r.remainingTargetWords, r.remainingChapters,
+	)
+}
+
+func (r wordBudgetGateRejection) result() map[string]any {
+	return map[string]any{
+		"committed":            false,
+		"chapter":              r.chapter,
+		"word_count":           r.wordCount,
+		"word_budget_rejected": true,
+		"reason":               r.message(),
+		"word_budget": map[string]any{
+			"min_words":              r.minWords,
+			"max_words":              r.maxWords,
+			"target_total_words":     r.targetTotalWords,
+			"completed_words":        r.completedWords,
+			"remaining_target_words": r.remainingTargetWords,
+			"remaining_chapters":     r.remainingChapters,
+		},
+		"next_step": fmt.Sprintf(
+			"不要再次调用 commit_chapter。请先调用 draft_chapter(mode=\"write\", chapter=%d) 整章重写到 %d-%d 字，再重新 read_chapter(source=\"draft\")、check_consistency、commit_chapter。",
+			r.chapter, r.minWords, r.maxWords,
+		),
+	}
+}
+
+func (t *CommitChapterTool) checkWordBudgetGate(chapter int, wordCount int) (*wordBudgetGateRejection, error) {
+	meta, err := t.store.RunMeta.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load word budget: %w: %w", errs.ErrStoreRead, err)
+	}
+	if meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords <= 0 {
+		return nil, nil
+	}
+	progress, err := t.store.Progress.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load progress for word budget: %w: %w", errs.ErrStoreRead, err)
+	}
+	runtime, runtimeOK := meta.WordBudget.Runtime(progress, chapter)
+	minWords, maxWords := 0, 0
+	if runtimeOK && runtime.CurrentChapter.Chapter > 0 {
+		minWords = runtime.CurrentChapter.RecommendedMinWords
+		maxWords = runtime.CurrentChapter.RecommendedMaxWords
+	} else {
+		var ok bool
+		minWords, maxWords, ok = meta.WordBudget.ChapterRange()
+		if !ok {
+			return nil, nil
+		}
+	}
+	if wordCount >= minWords && wordCount <= maxWords {
+		return nil, nil
+	}
+	direction := "低于"
+	if wordCount > maxWords {
+		direction = "超过"
+	}
+	return &wordBudgetGateRejection{
+		chapter:              chapter,
+		wordCount:            wordCount,
+		direction:            direction,
+		minWords:             minWords,
+		maxWords:             maxWords,
+		targetTotalWords:     runtime.Target.TargetTotalWords,
+		completedWords:       runtime.Progress.CompletedWords,
+		remainingTargetWords: runtime.Remaining.TargetWords,
+		remainingChapters:    runtime.Remaining.Chapters,
+	}, nil
+}
+
 func (t *CommitChapterTool) checkRules(text string, wordCount int) []rules.Violation {
 	violations := rules.Lint(text)
 	structured := rules.SystemDefaults().Structured
@@ -439,6 +530,11 @@ func (t *CommitChapterTool) executeRewriteCommit(
 	}
 	if err := t.ensureAdaptationGate(chapter, content); err != nil {
 		return nil, err
+	}
+	if budgetRejection, err := t.checkWordBudgetGate(chapter, wordCount); err != nil {
+		return nil, err
+	} else if budgetRejection != nil {
+		return json.Marshal(budgetRejection.result())
 	}
 
 	// 3. 覆盖终稿

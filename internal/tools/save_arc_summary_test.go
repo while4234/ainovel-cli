@@ -10,7 +10,7 @@ import (
 )
 
 func TestSaveArcSummaryPersistsStyleRulesDialogueObjects(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestSaveArcSummaryPersistsStyleRulesDialogueObjects(t *testing.T) {
 }
 
 func TestSaveArcSummaryRejectsDialogueStringArray(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

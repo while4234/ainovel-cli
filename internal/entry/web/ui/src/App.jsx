@@ -33,61 +33,67 @@ import {
   addGlobalProviderModel,
   addProviderModel,
   beginCoCreate,
+  buildAdaptationProposal,
   cancelCoCreate,
-  clearProjectTrash,
   commitCoCreate,
+  confirmAdaptationProposal,
   completeGrokLogin,
   continueProject,
   createProject,
+  emptyTrashProjects,
   exportProject,
   getBackendStatus,
-  getGrokLoginStatus,
   getGlobalModels,
+  getGrokLoginStatus,
   getProjectModels,
   getRuntime,
   getSnapshot,
   importExternalNovel,
   importSimulationProfile,
-  listNovelLibrary,
-  listProjectTrash,
   listProjects,
-  listSimulationLibrary,
-  listStyles,
-  loadNovelFromLibrary,
-  loadSimulationFromLibrary,
+  listTrashProjects,
   pauseProject,
   pollGrokLogin,
   renameProject,
+  restoreTrashProject,
+  reviseCoCreate,
   resumeProject,
   runProjectDiagnostic,
-  saveNovelToLibrary,
-  saveSimulationToLibrary,
   sendCoCreate,
-  setProjectStyle,
   setProjectThinking,
   startProject,
-  startAdaptation,
   startGrokLogin,
   steerProject,
+  switchGlobalDefaultModel,
   switchProjectModel,
-  switchGlobalModel,
   testBackend,
   trashProject,
-  uploadSimulationLibrary,
   uploadAdaptationSource,
   uploadSimulationFiles
 } from './api.js';
 import {
-  applyCoCreateSuggestion,
   appendCoCreateInput,
   coCreateStateFromError,
   coCreateStateFromEvent,
   coCreateStateFromResponse,
   createCoCreateState
 } from './cocreate.js';
-import { createWorkbenchState, eventStatus, reduceWebEvent, visibleStreamRounds } from './events.js';
+import { createWorkbenchState, eventStatus, reduceWebEvent } from './events.js';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
+
+const coCreateTargetWordChoices = [
+  { value: '5000', label: '短篇 5,000', hint: '通常不分章节' },
+  { value: '30000', label: '中篇 30,000', hint: '约 6-10 章' },
+  { value: '100000', label: '长篇 100,000', hint: '约 20-30 章' },
+  { value: 'custom', label: '自定义', hint: '输入总字数' }
+];
+
+const coCreateStructureChoices = [
+  { value: 'single', label: '不分章节', hint: '一气呵成' },
+  { value: 'auto', label: 'AI 判断', hint: '按篇幅规划' },
+  { value: 'chapters', label: '分章节', hint: '每章 3000-5000 字' }
+];
 
 function createSimulationState() {
   return {
@@ -98,15 +104,6 @@ function createSimulationState() {
     importStatus: 'idle',
     importEvents: [],
     importMessage: '',
-    libraryQuery: '',
-    libraryStatus: 'idle',
-    libraryItems: [],
-    libraryMessage: '',
-    libraryError: '',
-    saveDialogOpen: false,
-    saveName: '',
-    saveStatus: 'idle',
-    saveError: '',
     error: ''
   };
 }
@@ -119,79 +116,10 @@ function createAdaptationState() {
     analysisEvents: [],
     mode: 'chapter',
     brief: '',
+    proposalKey: '',
     startStatus: 'idle',
     startMessage: '',
-    libraryQuery: '',
-    libraryStatus: 'idle',
-    libraryItems: [],
-    libraryMessage: '',
-    libraryError: '',
-    librarySaveName: '',
-    librarySaveStatus: 'idle',
-    librarySaveError: '',
     error: ''
-  };
-}
-
-function resetSimulationProjectState(previous) {
-  return {
-    ...createSimulationState(),
-    libraryQuery: previous.libraryQuery,
-    libraryStatus: previous.libraryStatus,
-    libraryItems: previous.libraryItems,
-    libraryMessage: previous.libraryMessage,
-    libraryError: previous.libraryError
-  };
-}
-
-function restoreSimulationProjectState(previous, status) {
-  const next = resetSimulationProjectState(previous);
-  if (!status) {
-    return next;
-  }
-  const importedFile = status.imported_file || status.importedFile || null;
-  const importEvents = status.import_events || status.importEvents;
-  const importStatus = String(status.import_status || status.importStatus || (importedFile ? 'done' : next.importStatus) || 'idle').trim() || 'idle';
-  return {
-    ...next,
-    importStatus,
-    importEvents: Array.isArray(importEvents) ? importEvents : [],
-    importMessage: status.message || (importedFile ? `已恢复画像：${simulationProfileLabel(importedFile)}` : '')
-  };
-}
-
-function simulationProfileLabel(file) {
-  const name = firstString(file, ['name', 'Name', 'relative_path', 'RelativePath']);
-  const fileName = fileNameFromPath(name) || name;
-  return fileName.replace(/\.json$/i, '') || fileName;
-}
-
-function resetAdaptationProjectState(previous) {
-  return {
-    ...createAdaptationState(),
-    libraryQuery: previous.libraryQuery,
-    libraryStatus: previous.libraryStatus,
-    libraryItems: previous.libraryItems,
-    libraryMessage: previous.libraryMessage,
-    libraryError: previous.libraryError
-  };
-}
-
-function restoreAdaptationProjectState(previous, status) {
-  const next = resetAdaptationProjectState(previous);
-  if (!status) {
-    return next;
-  }
-  const sourceFile = status.source_file || status.sourceFile || null;
-  const analysisStatus = String(status.analysis_status || status.analysisStatus || next.analysisStatus || 'idle').trim() || 'idle';
-  return {
-    ...next,
-    sourceFile,
-    uploadMessage: status.message || (sourceFile ? '已恢复上传原文' : ''),
-    analysisStatus,
-    analysisEvents: Array.isArray(status.analysis_events || status.analysisEvents)
-      ? (status.analysis_events || status.analysisEvents)
-      : []
   };
 }
 
@@ -276,16 +204,14 @@ const customProviderTypes = ['openai', 'anthropic', 'gemini', 'grok'];
 export default function App() {
   const [runtime, setRuntime] = useState(null);
   const [projects, setProjects] = useState([]);
+  const [trashProjects, setTrashProjects] = useState([]);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [activeProject, setActiveProject] = useState(null);
   const [workbench, setWorkbench] = useState(createWorkbenchState);
   const [newProjectName, setNewProjectName] = useState('');
-  const [newProjectStyle, setNewProjectStyle] = useState('default');
-  const [styleOptions, setStyleOptions] = useState([]);
-  const [defaultStyle, setDefaultStyle] = useState('default');
   const [projectMenu, setProjectMenu] = useState(null);
   const [renameDialog, setRenameDialog] = useState(null);
   const [deleteDialog, setDeleteDialog] = useState(null);
-  const [trashDialog, setTrashDialog] = useState(null);
   const [composerText, setComposerText] = useState('');
   const [steerText, setSteerText] = useState('');
   const [sideView, setSideView] = useState('status');
@@ -300,22 +226,22 @@ export default function App() {
   const [backendStatus, setBackendStatus] = useState(null);
   const [connection, setConnection] = useState('idle');
   const [busy, setBusy] = useState(false);
-  const [modelBusy, setModelBusy] = useState(false);
   const [error, setError] = useState('');
   const lastSeqRef = useRef(0);
 
   const snapshot = workbench.snapshot;
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
   const projectRunning = isProjectRunning(snapshot);
-  const adaptationAnalysisRunning = adaptation.analysisStatus === 'running';
-  const projectActionBusy = busy || projectRunning || adaptationAnalysisRunning;
-  const projectPauseAvailable = projectRunning || adaptationAnalysisRunning;
+  const workspaceProgress = useMemo(
+    () => deriveWorkspaceProgress(snapshot, workbench.eventRows),
+    [snapshot, workbench.eventRows]
+  );
 
   const resetProjectScopedState = useCallback((clearProject = false) => {
     lastSeqRef.current = 0;
     setWorkbench(createWorkbenchState());
-    setSimulation(resetSimulationProjectState);
-    setAdaptation(resetAdaptationProjectState);
+    setSimulation(createSimulationState());
+    setAdaptation(createAdaptationState());
     setExternalImport(createExternalImportState());
     setExportJob(createExportState());
     setDiagnostic(createDiagnosticState());
@@ -333,72 +259,24 @@ export default function App() {
     setProjects(data.projects || []);
   }, []);
 
-  const loadInitialLibraries = useCallback(async () => {
-    setSimulation((previous) => ({
-      ...previous,
-      libraryStatus: 'running',
-      libraryError: '',
-      libraryMessage: ''
-    }));
-    setAdaptation((previous) => ({
-      ...previous,
-      libraryStatus: 'running',
-      libraryError: '',
-      libraryMessage: ''
-    }));
-    const [simulationResult, novelResult] = await Promise.allSettled([
-      listSimulationLibrary(''),
-      listNovelLibrary('')
-    ]);
-    setSimulation((previous) => (
-      simulationResult.status === 'fulfilled'
-        ? {
-          ...previous,
-          libraryStatus: 'done',
-          libraryItems: libraryItemsFromResponse(simulationResult.value),
-          libraryMessage: libraryMessageFromResponse(simulationResult.value),
-          libraryError: ''
-        }
-        : {
-          ...previous,
-          libraryStatus: 'error',
-          libraryError: simulationResult.reason?.message || String(simulationResult.reason || '')
-        }
-    ));
-    setAdaptation((previous) => (
-      novelResult.status === 'fulfilled'
-        ? {
-          ...previous,
-          libraryStatus: 'done',
-          libraryItems: libraryItemsFromResponse(novelResult.value),
-          libraryMessage: libraryMessageFromResponse(novelResult.value),
-          libraryError: ''
-        }
-        : {
-          ...previous,
-          libraryStatus: 'error',
-          libraryError: novelResult.reason?.message || String(novelResult.reason || '')
-        }
-    ));
+  const refreshTrashProjects = useCallback(async () => {
+    const data = await listTrashProjects();
+    setTrashProjects(data.projects || []);
+  }, []);
+
+  const refreshGlobalModels = useCallback(async () => {
+    const data = await getGlobalModels();
+    setModelConfig(data.models || null);
+    return data.models || null;
   }, []);
 
   const loadShell = useCallback(async () => {
     setError('');
     try {
-      const [runtimeData, projectsData, stylesData, modelData] = await Promise.all([
-        getRuntime(),
-        listProjects(),
-        listStyles(),
-        getGlobalModels()
-      ]);
-      const styles = styleItemsFromResponse(stylesData);
-      const fallbackStyle = firstAvailableStyle(stylesData?.default_style || runtimeData?.config?.style || 'default', styles);
+      const [runtimeData, projectsData, modelData] = await Promise.all([getRuntime(), listProjects(), getGlobalModels()]);
       setRuntime(runtimeData);
       setProjects(projectsData.projects || []);
       setModelConfig(modelData.models || null);
-      setStyleOptions(styles);
-      setDefaultStyle(fallbackStyle);
-      setNewProjectStyle((previous) => firstAvailableStyle(previous, styles, fallbackStyle));
     } catch (err) {
       setError(err.message);
     }
@@ -407,10 +285,6 @@ export default function App() {
   useEffect(() => {
     loadShell();
   }, [loadShell]);
-
-  useEffect(() => {
-    loadInitialLibraries();
-  }, [loadInitialLibraries]);
 
   useEffect(() => {
     if (!projectMenu) {
@@ -442,8 +316,6 @@ export default function App() {
       ]);
       setActiveProject(snapshotData.project);
       setWorkbench({ ...createWorkbenchState(), snapshot: snapshotData.snapshot });
-      setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
-      setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation));
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);
     } catch (err) {
@@ -475,9 +347,6 @@ export default function App() {
       });
       if (event.type === 'cocreate_state') {
         setCoCreate((previous) => coCreateStateFromEvent(event, previous));
-      }
-      if (event.type === 'host_event') {
-        setAdaptation((previous) => applyAdaptationHostEvent(previous, event));
       }
       setConnection('live');
     };
@@ -517,7 +386,7 @@ export default function App() {
     setBusy(true);
     setError('');
     try {
-      const project = await createProject(newProjectName, newProjectStyle || defaultStyle);
+      const project = await createProject(newProjectName);
       setNewProjectName('');
       await refreshProjects();
       await openProject(project);
@@ -593,8 +462,12 @@ export default function App() {
     try {
       await trashProject(project.id);
       setProjects((previous) => previous.filter((item) => item.id !== project.id));
+      if (trashOpen) {
+        await refreshTrashProjects();
+      }
       if (activeProject?.id === project.id) {
         resetProjectScopedState(true);
+        await refreshGlobalModels();
       }
       setDeleteDialog(null);
     } catch (err) {
@@ -604,35 +477,54 @@ export default function App() {
     }
   };
 
-  const openProjectTrash = async () => {
-    setTrashDialog({ status: 'running', projects: [], trashDir: '', error: '', message: '' });
+  const toggleTrash = async () => {
+    const nextOpen = !trashOpen;
+    setTrashOpen(nextOpen);
+    if (!nextOpen) {
+      return;
+    }
+    setBusy(true);
+    setError('');
     try {
-      const data = await listProjectTrash();
-      setTrashDialog({
-        status: 'done',
-        projects: data.projects || [],
-        trashDir: data.trash_dir || '',
-        error: '',
-        message: ''
-      });
+      await refreshTrashProjects();
     } catch (err) {
-      setTrashDialog({ status: 'error', projects: [], trashDir: '', error: err.message, message: '' });
+      setError(err.message);
+    } finally {
+      setBusy(false);
     }
   };
 
-  const clearProjectTrashDialog = async () => {
-    setTrashDialog((previous) => ({ ...(previous || {}), status: 'running', error: '', message: '' }));
+  const restoreProjectFromTrash = async (project) => {
+    if (!project?.id) {
+      return;
+    }
+    setBusy(true);
+    setError('');
     try {
-      const data = await clearProjectTrash();
-      setTrashDialog((previous) => ({
-        ...(previous || {}),
-        status: 'done',
-        projects: [],
-        error: '',
-        message: `已清空 ${data.deleted_count || 0} 个项目`
-      }));
+      const data = await restoreTrashProject(project.id);
+      const restored = data.project || project;
+      setTrashProjects((previous) => previous.filter((item) => item.id !== restored.id));
+      await refreshProjects();
     } catch (err) {
-      setTrashDialog((previous) => ({ ...(previous || {}), status: 'error', error: err.message }));
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const emptyProjectTrash = async () => {
+    if (!window.confirm('清空回收站后无法从这里恢复，确定清空吗？')) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await emptyTrashProjects();
+      setTrashProjects([]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -652,34 +544,14 @@ export default function App() {
     }
   };
 
-  const changeProjectStyle = async (style) => {
-    if (!activeProject?.id || !style) {
-      return;
-    }
-    setBusy(true);
-    setError('');
-    try {
-      const data = await setProjectStyle(activeProject.id, style);
-      const [modelData, backendData] = await Promise.all([
-        getProjectModels(activeProject.id),
-        getBackendStatus(activeProject.id)
-      ]);
-      setActiveProject(data.project || activeProject);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      setModelConfig(modelData.models || null);
-      setBackendStatus(backendData.backend || null);
-      await refreshProjects();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const submitContinue = async (event) => {
     event.preventDefault();
+    if (projectRunning) {
+      await pauseWriting();
+      return;
+    }
     const text = composerText.trim();
-    if (!text || projectRunning) {
+    if (!text) {
       return;
     }
     await runAction((projectId) => (quickStartAvailable ? startProject(projectId, text) : continueProject(projectId, text)));
@@ -687,28 +559,7 @@ export default function App() {
   };
 
   const pauseWriting = async () => {
-    if (!activeProject?.id) {
-      return;
-    }
-    setError('');
-    try {
-      const data = await pauseProject(activeProject.id);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      if (data.stopped) {
-        setAdaptation((previous) => (
-          previous.analysisStatus === 'running'
-            ? {
-              ...previous,
-              analysisStatus: 'paused',
-              analysisEvents: appendPausedAnalysisEvent(previous.analysisEvents),
-              error: ''
-            }
-            : previous
-        ));
-      }
-    } catch (err) {
-      setError(err.message);
-    }
+    await runAction((projectId) => pauseProject(projectId));
   };
 
   const submitSteer = async (event) => {
@@ -860,10 +711,6 @@ export default function App() {
         ...previous,
         analysisStatus: 'done',
         analysisEvents: data.events || [],
-        saveDialogOpen: true,
-        saveName: '',
-        saveStatus: 'idle',
-        saveError: '',
         error: ''
       }));
     } catch (err) {
@@ -872,136 +719,6 @@ export default function App() {
         analysisStatus: 'error',
         analysisEvents: err.data?.events || previous.analysisEvents,
         error: err.message
-      }));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const refreshSimulationLibrary = async () => {
-    const query = simulation.libraryQuery;
-    setSimulation((previous) => ({
-      ...previous,
-      libraryStatus: 'running',
-      libraryError: '',
-      libraryMessage: ''
-    }));
-    try {
-      const data = await listSimulationLibrary(query);
-      setSimulation((previous) => ({
-        ...previous,
-        libraryStatus: 'done',
-        libraryItems: libraryItemsFromResponse(data),
-        libraryMessage: libraryMessageFromResponse(data),
-        libraryError: ''
-      }));
-    } catch (err) {
-      setSimulation((previous) => ({
-        ...previous,
-        libraryStatus: 'error',
-        libraryError: err.message
-      }));
-    }
-  };
-
-  const uploadSimulationProfilesToLibrary = async (event) => {
-    const files = Array.from(event.target.files || []);
-    event.target.value = '';
-    if (files.length === 0) {
-      return;
-    }
-    const query = simulation.libraryQuery;
-    setSimulation((previous) => ({
-      ...previous,
-      libraryStatus: 'running',
-      libraryError: '',
-      libraryMessage: ''
-    }));
-    try {
-      const uploadData = await uploadSimulationLibrary(files);
-      const listData = await listSimulationLibrary(query);
-      setSimulation((previous) => ({
-        ...previous,
-        libraryStatus: 'done',
-        libraryItems: libraryItemsFromResponse(listData),
-        libraryMessage: libraryMessageFromResponse(uploadData) || `已上传 ${files.length} 个画像 JSON`,
-        libraryError: ''
-      }));
-    } catch (err) {
-      setSimulation((previous) => ({
-        ...previous,
-        libraryStatus: 'error',
-        libraryError: err.message
-      }));
-    }
-  };
-
-  const saveSimulationProfileToLibrary = async () => {
-    const name = simulation.saveName.trim();
-    if (!activeProject?.id || !name) {
-      return;
-    }
-    const query = simulation.libraryQuery;
-    setSimulation((previous) => ({ ...previous, saveStatus: 'running', saveError: '' }));
-    try {
-      const saveData = await saveSimulationToLibrary(activeProject.id, name);
-      const listData = await listSimulationLibrary(query);
-      setSimulation((previous) => ({
-        ...previous,
-        libraryStatus: 'done',
-        libraryItems: libraryItemsFromResponse(listData),
-        libraryMessage: libraryMessageFromResponse(saveData) || `已添加画像：${name}`,
-        libraryError: '',
-        saveDialogOpen: false,
-        saveName: '',
-        saveStatus: 'done',
-        saveError: ''
-      }));
-    } catch (err) {
-      setSimulation((previous) => ({ ...previous, saveStatus: 'error', saveError: err.message }));
-    }
-  };
-
-  const closeSimulationSaveDialog = () => {
-    setSimulation((previous) => ({
-      ...previous,
-      saveDialogOpen: false,
-      saveName: '',
-      saveStatus: 'idle',
-      saveError: ''
-    }));
-  };
-
-  const loadSimulationProfileFromLibrary = async (entry) => {
-    const name = libraryEntryName(entry);
-    if (!activeProject?.id || !name) {
-      return;
-    }
-    setBusy(true);
-    setSimulation((previous) => ({
-      ...previous,
-      libraryStatus: 'running',
-      libraryError: '',
-      libraryMessage: ''
-    }));
-    try {
-      const data = await loadSimulationFromLibrary(activeProject.id, name);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      setSimulation((previous) => ({
-        ...previous,
-        libraryStatus: 'done',
-        libraryMessage: libraryMessageFromResponse(data) || `已从仿写画像库加载：${name}`,
-        importStatus: 'done',
-        importEvents: data.events || [],
-        importMessage: libraryMessageFromResponse(data) || `已加载画像：${name}`,
-        error: '',
-        libraryError: ''
-      }));
-    } catch (err) {
-      setSimulation((previous) => ({
-        ...previous,
-        libraryStatus: 'error',
-        libraryError: err.message
       }));
     } finally {
       setBusy(false);
@@ -1025,16 +742,11 @@ export default function App() {
     try {
       const data = await importSimulationProfile(activeProject.id, file);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      const libraryNote = data.library_saved
-        ? '，已同步到仿写画像库'
-        : data.warning
-          ? `，画像库未同步：${data.warning}`
-          : '';
       setSimulation((previous) => ({
         ...previous,
         importStatus: 'done',
         importEvents: data.events || [],
-        importMessage: data.imported_file?.name ? `已导入 ${data.imported_file.name}${libraryNote}` : `画像已导入${libraryNote}`,
+        importMessage: data.imported_file?.name ? `已导入 ${data.imported_file.name}` : '画像已导入',
         error: ''
       }));
     } catch (err) {
@@ -1056,17 +768,19 @@ export default function App() {
       return;
     }
     setBusy(true);
+    setWorkbench((previous) => ({
+      ...previous,
+      snapshot: clearAdaptationProposalSnapshot(previous.snapshot)
+    }));
     setAdaptation((previous) => ({
       ...previous,
       sourceFile: null,
       uploadMessage: '',
       analysisStatus: 'idle',
       analysisEvents: [],
+      proposalKey: '',
       startStatus: 'idle',
       startMessage: '',
-      librarySaveName: '',
-      librarySaveStatus: 'idle',
-      librarySaveError: '',
       error: ''
     }));
     try {
@@ -1099,7 +813,10 @@ export default function App() {
     }));
     try {
       const data = await analyzeAdaptationSource(activeProject.id, adaptation.sourceFile.relative_path);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setWorkbench((previous) => ({
+        ...previous,
+        snapshot: clearAdaptationProposalSnapshot(data.snapshot || previous.snapshot)
+      }));
       setAdaptation((previous) => ({
         ...previous,
         analysisStatus: 'done',
@@ -1107,107 +824,11 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
-      const paused = isPausedActionError(err);
       setAdaptation((previous) => ({
         ...previous,
-        analysisStatus: paused ? 'paused' : 'error',
+        analysisStatus: 'error',
         analysisEvents: err.data?.events || previous.analysisEvents,
-        error: paused ? '' : err.message
-      }));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const refreshNovelLibrary = async () => {
-    const query = adaptation.libraryQuery;
-    setAdaptation((previous) => ({
-      ...previous,
-      libraryStatus: 'running',
-      libraryError: '',
-      libraryMessage: ''
-    }));
-    try {
-      const data = await listNovelLibrary(query);
-      setAdaptation((previous) => ({
-        ...previous,
-        libraryStatus: 'done',
-        libraryItems: libraryItemsFromResponse(data),
-        libraryMessage: libraryMessageFromResponse(data),
-        libraryError: ''
-      }));
-    } catch (err) {
-      setAdaptation((previous) => ({
-        ...previous,
-        libraryStatus: 'error',
-        libraryError: err.message
-      }));
-    }
-  };
-
-  const saveAnalyzedNovelToLibrary = async () => {
-    const name = adaptation.librarySaveName.trim();
-    const sourceFile = adaptation.sourceFile?.relative_path;
-    if (!activeProject?.id || !name || !sourceFile || adaptation.analysisStatus !== 'done') {
-      return;
-    }
-    const query = adaptation.libraryQuery;
-    setAdaptation((previous) => ({ ...previous, librarySaveStatus: 'running', librarySaveError: '' }));
-    try {
-      const saveData = await saveNovelToLibrary(activeProject.id, name, sourceFile);
-      const listData = await listNovelLibrary(query);
-      setAdaptation((previous) => ({
-        ...previous,
-        libraryStatus: 'done',
-        libraryItems: libraryItemsFromResponse(listData),
-        libraryMessage: libraryMessageFromResponse(saveData) || `已保存小说：${name}`,
-        libraryError: '',
-        librarySaveName: '',
-        librarySaveStatus: 'done',
-        librarySaveError: ''
-      }));
-    } catch (err) {
-      setAdaptation((previous) => ({ ...previous, librarySaveStatus: 'error', librarySaveError: err.message }));
-    }
-  };
-
-  const loadNovelFromLibraryEntry = async (entry) => {
-    const name = libraryEntryName(entry);
-    if (!activeProject?.id || !name) {
-      return;
-    }
-    setBusy(true);
-    setAdaptation((previous) => ({
-      ...previous,
-      libraryStatus: 'running',
-      libraryError: '',
-      libraryMessage: ''
-    }));
-    try {
-      const data = await loadNovelFromLibrary(activeProject.id, name);
-      const sourceFile = sourceFileFromNovelLoad(data, entry, name);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      setAdaptation((previous) => ({
-        ...previous,
-        sourceFile,
-        uploadMessage: libraryMessageFromResponse(data) || `已从小说仓库加载：${name}`,
-        analysisStatus: 'done',
-        analysisEvents: data.events || [],
-        startStatus: 'idle',
-        startMessage: '',
-        libraryStatus: 'done',
-        libraryMessage: libraryMessageFromResponse(data) || `已加载已分析小说：${name}`,
-        libraryError: '',
-        librarySaveName: '',
-        librarySaveStatus: 'idle',
-        librarySaveError: '',
-        error: ''
-      }));
-    } catch (err) {
-      setAdaptation((previous) => ({
-        ...previous,
-        libraryStatus: 'error',
-        libraryError: err.message
+        error: err.message
       }));
     } finally {
       setBusy(false);
@@ -1218,20 +839,27 @@ export default function App() {
     if (!activeProject?.id || adaptation.analysisStatus !== 'done') {
       return;
     }
+    const proposalKey = buildAdaptationProposalKey(adaptation);
     setBusy(true);
+    setWorkbench((previous) => ({
+      ...previous,
+      snapshot: clearAdaptationProposalSnapshot(previous.snapshot)
+    }));
     setAdaptation((previous) => ({
       ...previous,
+      proposalKey: '',
       startStatus: 'running',
       startMessage: '',
       error: ''
     }));
     try {
-      const data = await startAdaptation(activeProject.id, adaptation.sourceFile.relative_path, adaptation.mode, adaptation.brief);
+      const data = await buildAdaptationProposal(activeProject.id, adaptation.sourceFile.relative_path, adaptation.mode, adaptation.brief);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setAdaptation((previous) => ({
         ...previous,
+        proposalKey,
         startStatus: 'done',
-        startMessage: `${adaptationModeLabel(data.mode)} / ${data.rewrite_policy}`,
+        startMessage: `提案已生成：${adaptationModeLabel(data.mode)} / ${data.rewrite_policy}`,
         error: ''
       }));
     } catch (err) {
@@ -1246,14 +874,84 @@ export default function App() {
     }
   };
 
-  const beginCoCreateFlow = async (kind) => {
+  const confirmAdaptationRun = async () => {
+    if (!activeProject?.id || !isAdaptationProposalCurrent(adaptation)) {
+      return;
+    }
+    setBusy(true);
+    setAdaptation((previous) => ({
+      ...previous,
+      startStatus: 'running',
+      startMessage: '',
+      error: ''
+    }));
+    try {
+      const data = await confirmAdaptationProposal(activeProject.id);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setAdaptation((previous) => ({
+        ...previous,
+        startStatus: 'done',
+        startMessage: '提案已确认，写作已启动',
+        error: ''
+      }));
+    } catch (err) {
+      setAdaptation((previous) => ({
+        ...previous,
+        startStatus: 'error',
+        startMessage: '',
+        error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const beginCoCreateFlow = async (kind, options = {}) => {
     if (!activeProject?.id) {
       return;
     }
-    const initial = coCreate.input.trim();
+    const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
+    let initial = coCreate.input.trim();
+    if (kind === 'normal' && !initial) {
+      if (coCreate.intakeActive && options.confirmIntake) {
+        initial = coCreate.intakeInitial.trim();
+      }
+    }
     if (kind === 'normal' && !initial) {
       setCoCreate((previous) => ({ ...previous, error: '先输入一个核心想法' }));
       return;
+    }
+    if (kind === 'normal' && !hasBackendSession && !coCreate.intakeActive && !options.confirmIntake) {
+      setCoCreate((previous) => ({
+        ...previous,
+        kind: 'normal',
+        intakeActive: true,
+        intakeInitial: initial,
+        targetTotalWordsChoice: previous.targetTotalWordsChoice || '5000',
+        structureChoice: previous.structureChoice || 'single',
+        input: '',
+        messages: buildCoCreateIntakeMessages(initial),
+        ready: false,
+        suggestions: [],
+        streamThinking: '',
+        streamReply: '',
+        status: 'idle',
+        startMessage: '',
+        error: ''
+      }));
+      return;
+    }
+    let targetTotalWords = resolveCoCreateTargetTotalWords(coCreate);
+    let structureChoice = resolveCoCreateStructureChoice(coCreate);
+    if (kind === 'normal' && coCreate.intakeActive) {
+      if (targetTotalWords <= 0) {
+        setCoCreate((previous) => ({ ...previous, error: '先确认目标字数' }));
+        return;
+      }
+      initial = buildCoCreateIntakeInitial(coCreate.intakeInitial || initial, {
+        targetTotalWords,
+        structureChoice
+      });
     }
     if (kind === 'adapt' && (!adaptation.sourceFile?.relative_path || adaptation.analysisStatus !== 'done')) {
       setCoCreate((previous) => ({ ...previous, error: '先完成原文分析并选择模式' }));
@@ -1262,11 +960,13 @@ export default function App() {
     setBusy(true);
     setCoCreate((previous) => ({ ...previous, kind, status: 'running', error: '', startMessage: '' }));
     try {
-      const payload = { kind, initial };
-      if (kind === 'adapt') {
-        payload.source_file = adaptation.sourceFile.relative_path;
-        payload.mode = adaptation.mode;
-      }
+      const payload = buildBeginCoCreatePayload({
+        kind,
+        initial,
+        sourceFile: adaptation.sourceFile?.relative_path,
+        mode: adaptation.mode,
+        targetTotalWords
+      });
       const data = await beginCoCreate(activeProject.id, payload);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
@@ -1280,14 +980,50 @@ export default function App() {
   const submitCoCreate = async (event) => {
     event.preventDefault();
     const text = coCreate.input.trim();
-    const hasBackendSession = coCreate.active || coCreate.messages.length > 0;
+    const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
     if (!activeProject?.id || !text || !hasBackendSession) {
       return;
     }
     setBusy(true);
     setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
     try {
-      const data = await sendCoCreate(activeProject.id, text);
+      const data = await sendCoCreate(activeProject.id, text, 'custom');
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      setCoCreate((previous) => coCreateStateFromError(err, previous));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitCoCreateSuggestion = async (suggestion) => {
+    const text = String(suggestion || '').trim();
+    const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
+    if (!activeProject?.id || !text || !hasBackendSession || busy) {
+      return;
+    }
+    setBusy(true);
+    setCoCreate((previous) => ({ ...previous, status: 'running', error: '', input: '' }));
+    try {
+      const data = await sendCoCreate(activeProject.id, text, 'suggestion');
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      setCoCreate((previous) => coCreateStateFromError(err, previous));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reviseCoCreateMessage = async (messageId, text) => {
+    if (!activeProject?.id || !messageId || !String(text || '').trim() || busy) {
+      return;
+    }
+    setBusy(true);
+    setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
+    try {
+      const data = await reviseCoCreate(activeProject.id, messageId, text);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
     } catch (err) {
@@ -1364,27 +1100,42 @@ export default function App() {
   };
 
   const switchModelRoute = async (role, provider, model) => {
+    if (!activeProject?.id || !provider || !model) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = await switchProjectModel(activeProject.id, role, provider, model);
+      setModelConfig(data.models || modelConfig);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      const status = await getBackendStatus(activeProject.id);
+      setBackendStatus(status.backend || null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const switchDefaultModel = async (provider, model) => {
     if (!provider || !model) {
       return;
     }
-    setModelBusy(true);
+    setBusy(true);
     setError('');
     try {
-      if (activeProject?.id) {
-        const data = await switchProjectModel(activeProject.id, role, provider, model);
-        setModelConfig(data.models || modelConfig);
-        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-        const status = await getBackendStatus(activeProject.id);
-        setBackendStatus(status.backend || null);
-      } else {
-        const data = await switchGlobalModel(role, provider, model);
-        setModelConfig(data.models || modelConfig);
-        setRuntime(data.runtime || runtime);
+      const data = await switchGlobalDefaultModel(provider, model);
+      if (data.runtime) {
+        setRuntime(data.runtime);
+      }
+      if (!activeProject?.id) {
+        setModelConfig(data.models || null);
       }
     } catch (err) {
       setError(err.message);
     } finally {
-      setModelBusy(false);
+      setBusy(false);
     }
   };
 
@@ -1392,7 +1143,7 @@ export default function App() {
     if (!activeProject?.id) {
       return;
     }
-    setModelBusy(true);
+    setBusy(true);
     setError('');
     try {
       const data = await setProjectThinking(activeProject.id, role, level);
@@ -1401,7 +1152,7 @@ export default function App() {
     } catch (err) {
       setError(err.message);
     } finally {
-      setModelBusy(false);
+      setBusy(false);
     }
   };
 
@@ -1411,7 +1162,7 @@ export default function App() {
     if (!canSubmitModelAdd(customModel, modelConfig)) {
       return;
     }
-    setModelBusy(true);
+    setBusy(true);
     setError('');
     try {
       if (activeProject?.id) {
@@ -1423,91 +1174,73 @@ export default function App() {
       } else {
         const data = await addGlobalProviderModel(payload);
         setModelConfig(data.models || modelConfig);
-        setRuntime(data.runtime || runtime);
+        if (data.runtime) {
+          setRuntime(data.runtime);
+        }
       }
       setCustomModel(createCustomModelState());
     } catch (err) {
       setError(err.message);
     } finally {
-      setModelBusy(false);
+      setBusy(false);
     }
   };
 
   const startGrokOAuthLogin = async () => {
-    if (!activeProject?.id) {
-      return;
-    }
-    let authWindow = null;
-    if (typeof window !== 'undefined') {
-      authWindow = window.open('about:blank', '_blank');
-    }
-    setModelBusy(true);
+    const authWindow = openPendingGrokAuthWindow();
     setError('');
+    setCustomModel((previous) => ({ ...previous, grok_message: '正在创建 Grok OAuth 登录会话...' }));
     try {
-      const data = await startGrokLogin(activeProject.id, customModel.account_id, customModel.account_name);
+      const data = await startGrokLogin(activeProject?.id, customModel.account_id, customModel.account_name, true);
       const login = data.login || null;
       const authorizeURL = grokAuthorizeURL(login);
-      if (authWindow && authorizeURL) {
-        authWindow.opener = null;
-        authWindow.location.href = authorizeURL;
-      } else if (authWindow) {
-        authWindow.close();
-      } else if (authorizeURL && typeof window !== 'undefined') {
-        window.open(authorizeURL, '_blank', 'noopener,noreferrer');
+      const browserOpened = Boolean(data.browser_opened || data.browserOpened);
+      const browserOpenError = String(data.browser_open_error || data.browserOpenError || '').trim();
+      let openedAuthorize = browserOpened;
+      if (browserOpened) {
+        closeGrokAuthWindow(authWindow);
+      } else {
+        openedAuthorize = navigateGrokAuthWindow(authWindow, authorizeURL);
       }
       setCustomModel((previous) => ({
         ...previous,
         grok_login: login,
-        grok_status: grokStatusFromLogin(login) || previous.grok_status,
-        grok_message: grokLoginMessage(login) || '已创建 Grok OAuth 登录会话'
+        grok_status: grokLoggedIn(previous.grok_status) ? previous.grok_status : grokStatusFromLogin(login) || previous.grok_status,
+        grok_message: grokLoginMessage(login) || grokOpenMessage(openedAuthorize, browserOpenError)
       }));
     } catch (err) {
-      if (authWindow) {
-        authWindow.close();
-      }
+      closeGrokAuthWindow(authWindow);
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
-    } finally {
-      setModelBusy(false);
     }
   };
 
   const pollGrokOAuthLogin = async () => {
-    if (!activeProject?.id) {
-      return;
-    }
-    setModelBusy(true);
     setError('');
     try {
-      const data = await pollGrokLogin(activeProject.id);
+      const data = await pollGrokLogin(activeProject?.id);
       const login = data.login || null;
       setCustomModel((previous) => ({
         ...previous,
         grok_login: login,
-        grok_status: grokStatusFromLogin(login) || previous.grok_status,
+        grok_status: grokLoggedIn(previous.grok_status) ? previous.grok_status : grokStatusFromLogin(login) || previous.grok_status,
         grok_message: grokLoginMessage(login) || (grokLoginDone(login) ? 'Grok OAuth 已完成' : '等待 Grok OAuth 回调')
       }));
     } catch (err) {
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
-    } finally {
-      setModelBusy(false);
     }
   };
 
   const completeGrokOAuthLogin = async () => {
-    if (!activeProject?.id) {
-      return;
-    }
     const callback = String(customModel.callback_input || '').trim();
     if (!callback) {
       setCustomModel((previous) => ({ ...previous, grok_message: '请粘贴 callback URL、query string 或一次性 code' }));
       return;
     }
-    setModelBusy(true);
     setError('');
     try {
-      const data = await completeGrokLogin(activeProject.id, callback);
+      const data = await completeGrokLogin(activeProject?.id, callback);
       setCustomModel((previous) => ({
         ...previous,
         callback_input: '',
@@ -1517,19 +1250,13 @@ export default function App() {
     } catch (err) {
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
-    } finally {
-      setModelBusy(false);
     }
   };
 
   const refreshGrokOAuthStatus = async () => {
-    if (!activeProject?.id) {
-      return;
-    }
-    setModelBusy(true);
     setError('');
     try {
-      const data = await getGrokLoginStatus(activeProject.id, customModel.account_id);
+      const data = await getGrokLoginStatus(activeProject?.id, customModel.account_id);
       setCustomModel((previous) => ({
         ...previous,
         grok_status: data.status || null,
@@ -1538,8 +1265,6 @@ export default function App() {
     } catch (err) {
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
-    } finally {
-      setModelBusy(false);
     }
   };
 
@@ -1547,21 +1272,6 @@ export default function App() {
     () => workbench.eventRows.slice().sort((a, b) => b.seq - a.seq),
     [workbench.eventRows]
   );
-  const coCreateWorkspaceOpen = Boolean(
-    activeProject &&
-      (sideView === 'cocreate' ||
-        coCreate.active ||
-        coCreate.messages.length > 0 ||
-        coCreate.streamThinking ||
-        coCreate.streamReply ||
-        coCreate.draftPrompt)
-  );
-  const activeWritingPaneClassName = coCreateWorkspaceOpen ? 'writing-pane is-cocreate' : 'writing-pane';
-  const activeWorkbenchClassName = coCreateWorkspaceOpen ? 'workbench-stack cocreate-workbench' : 'workbench-stack';
-  const writingPaneClassName = activeProject ? activeWritingPaneClassName : 'writing-pane is-empty';
-  const workbenchClassName = activeProject ? activeWorkbenchClassName : 'workbench-stack is-empty';
-  const showComposer = Boolean(activeProject && !coCreateWorkspaceOpen);
-  const streamRounds = visibleStreamRounds(workbench.streamRounds);
 
   return (
     <div className="app-shell">
@@ -1576,14 +1286,9 @@ export default function App() {
               <h1>小说工作台</h1>
             </div>
           </div>
-          <div className="pane-actions">
-            <button className="icon-button" onClick={loadShell} title="刷新项目列表" type="button">
-              <RefreshCw size={18} />
-            </button>
-            <button className="icon-button" onClick={openProjectTrash} title="查看回收站" type="button">
-              <Trash2 size={18} />
-            </button>
-          </div>
+          <button className="icon-button" onClick={loadShell} title="刷新项目列表" type="button">
+            <RefreshCw size={18} />
+          </button>
         </div>
 
         <form className="create-project" onSubmit={createAndOpen}>
@@ -1596,16 +1301,6 @@ export default function App() {
           <button className="icon-button primary" disabled={busy} title="创建项目" type="submit">
             <Plus size={18} />
           </button>
-          <select
-            aria-label="新项目文风"
-            disabled={busy || styleOptions.length === 0}
-            value={newProjectStyle}
-            onChange={(event) => setNewProjectStyle(event.target.value)}
-          >
-            {styleOptions.map((style) => (
-              <option key={style.id} value={style.id}>{style.label}</option>
-            ))}
-          </select>
         </form>
 
         <div className="project-list" aria-label="项目列表">
@@ -1637,6 +1332,43 @@ export default function App() {
             ))
           )}
         </div>
+
+        <section className="trash-panel">
+          <button className="trash-toggle" disabled={busy} onClick={toggleTrash} type="button">
+            <Trash2 size={16} />
+            <span>回收站</span>
+            <small>{trashOpen ? '收起' : '查看'}</small>
+          </button>
+          {trashOpen ? (
+            <div className="trash-list">
+              {trashProjects.length === 0 ? (
+                <div className="empty-state">回收站为空</div>
+              ) : (
+                trashProjects.map((project) => (
+                  <div className="trash-row" key={project.id}>
+                    <span>
+                      <strong>{project.name || project.id}</strong>
+                      <small>{formatDate(project.deleted_at || project.updated_at)}</small>
+                    </span>
+                    <button
+                      className="icon-button"
+                      disabled={busy}
+                      onClick={() => restoreProjectFromTrash(project)}
+                      title="恢复项目"
+                      type="button"
+                    >
+                      <ListRestart size={16} />
+                    </button>
+                  </div>
+                ))
+              )}
+              <button className="tool-button full-width" disabled={busy || trashProjects.length === 0} onClick={emptyProjectTrash} type="button">
+                <Trash2 size={16} />
+                清空回收站
+              </button>
+            </div>
+          ) : null}
+        </section>
 
         {projectMenu ? (
           <div
@@ -1711,50 +1443,7 @@ export default function App() {
         </div>
       ) : null}
 
-      {trashDialog ? (
-        <div className="dialog-backdrop" onMouseDown={() => setTrashDialog(null)}>
-          <div className="compact-dialog trash-dialog" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="dialog-title">
-              <Trash2 size={17} />
-              <strong>项目回收站</strong>
-            </div>
-            {trashDialog.error ? <div className="error-banner compact">{trashDialog.error}</div> : null}
-            {trashDialog.message ? <div className="success-note">{trashDialog.message}</div> : null}
-            <div className="trash-list">
-              {trashDialog.status === 'running' ? (
-                <div className="empty-state">正在加载回收站</div>
-              ) : trashDialog.projects.length === 0 ? (
-                <div className="empty-state">回收站为空</div>
-              ) : (
-                trashDialog.projects.map((project) => (
-                  <div className="trash-row" key={`${project.id}-${project.deleted_at || project.updated_at}`}>
-                    <strong>{project.name || project.id}</strong>
-                    <small>{formatDate(project.deleted_at || project.updated_at)}</small>
-                  </div>
-                ))
-              )}
-            </div>
-            {trashDialog.trashDir ? <p className="dialog-copy">{trashDialog.trashDir}</p> : null}
-            <div className="dialog-actions">
-              <button className="tool-button" disabled={trashDialog.status === 'running'} onClick={() => setTrashDialog(null)} type="button">
-                <X size={16} />
-                关闭
-              </button>
-              <button
-                className="tool-button danger-action"
-                disabled={trashDialog.status === 'running' || trashDialog.projects.length === 0}
-                onClick={clearProjectTrashDialog}
-                type="button"
-              >
-                <Trash2 size={16} />
-                清空回收站
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <main className={writingPaneClassName}>
+      <main className="writing-pane">
         <header className="workspace-toolbar">
           <div className="workspace-heading">
             <div className="eyebrow">当前项目</div>
@@ -1764,16 +1453,16 @@ export default function App() {
             <StatusPill status={connection} />
             <button
               className="tool-button"
-              disabled={!activeProject || projectActionBusy}
+              disabled={!activeProject || busy}
               onClick={() => openProject(activeProject)}
               type="button"
             >
               <ListRestart size={16} />
-              快照
+              Snapshot
             </button>
             <button
               className="tool-button"
-              disabled={!activeProject || !projectPauseAvailable}
+              disabled={!activeProject || busy}
               onClick={pauseWriting}
               type="button"
             >
@@ -1782,84 +1471,72 @@ export default function App() {
             </button>
             <button
               className="tool-button accent"
-              disabled={!activeProject || projectActionBusy}
+              disabled={!activeProject || busy}
               onClick={() => runAction(resumeProject)}
               type="button"
             >
               <Play size={16} />
-              继续
+              恢复
             </button>
           </div>
         </header>
 
+        <WorkspaceProgress progress={workspaceProgress} />
+
         {error ? <div className="error-banner">{error}</div> : null}
 
-        <div className={workbenchClassName}>
-          {coCreateWorkspaceOpen ? (
-            <CoCreateWorkspace coCreate={coCreate} />
-          ) : (
-            <section className="stream-area" aria-label="实时创作流">
-              {activeProject ? (
-                streamRounds.map((round) => (
-                  <article className="stream-round" key={round.id}>
-                    {round.text ? <pre>{round.text}</pre> : <span className="muted">等待流式输出</span>}
-                  </article>
-                ))
-              ) : (
+        <div className="workbench-stack">
+          <section className="stream-area" aria-label="实时创作流">
+            {activeProject ? (
+              workbench.streamRounds.map((round) => (
+                <article className="stream-round" key={round.id}>
+                  {round.text ? <pre>{round.text}</pre> : <span className="muted">等待流式输出</span>}
+                </article>
+              ))
+            ) : (
               <div className="no-project">
                 <SquarePen size={28} />
                 <strong>打开或创建一本小说</strong>
                 <span>从左侧选择项目，或创建一本新小说开始工作。</span>
               </div>
-              )}
-            </section>
-          )}
+            )}
+          </section>
 
-          {coCreateWorkspaceOpen ? null : (
-            <section className="event-feed" aria-label="运行事件">
-              <div className="section-title">
-                <Activity size={17} />
-                <span>事件</span>
-              </div>
-              <div className="event-list">
-                {sortedEvents.length === 0 ? (
-                  <div className="empty-state">暂无事件</div>
-                ) : (
-                  sortedEvents.map((event) => (
-                    <div className={`event-row ${eventStatus(event)}`} key={event.host_event_id || event.seq}>
-                      <span className="event-dot" />
-                      <span className="event-time">{formatTime(event.time)}</span>
-                      <strong>{event.event?.category || '事件'}</strong>
-                      <span>{event.event?.summary || '无摘要'}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
-          )}
+          <section className="event-feed" aria-label="运行事件">
+            <div className="section-title">
+              <Activity size={17} />
+              <span>事件</span>
+            </div>
+            <div className="event-list">
+              {sortedEvents.length === 0 ? (
+                <div className="empty-state">暂无事件</div>
+              ) : (
+                sortedEvents.map((event) => (
+                  <div className={`event-row ${eventStatus(event)}`} key={event.host_event_id || event.seq}>
+                    <span className="event-dot" />
+                    <span className="event-time">{formatTime(event.time)}</span>
+                    <strong>{event.event?.category || 'EVENT'}</strong>
+                    <span>{event.event?.summary || '无摘要'}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
         </div>
 
-        {showComposer ? (
-          <form className="composer" onSubmit={submitContinue}>
-            <input
-              aria-label={quickStartAvailable ? '快速启动输入' : '继续创作输入'}
-              disabled={!activeProject || projectActionBusy}
-              placeholder={quickStartAvailable ? '写下新书核心想法，直接启动...' : '继续、补充或要求下一步...'}
-              value={composerText}
-              onChange={(event) => setComposerText(event.target.value)}
-            />
-            <button
-              aria-label={quickStartAvailable ? '启动' : '继续'}
-              className="tool-button accent"
-              disabled={!activeProject || projectActionBusy}
-              title={quickStartAvailable ? '启动' : '继续'}
-              type="submit"
-            >
-              {quickStartAvailable ? <Play size={16} /> : <Send size={16} />}
-              {quickStartAvailable ? '启动' : '继续'}
-            </button>
-          </form>
-        ) : null}
+        <form className="composer" onSubmit={submitContinue}>
+          <input
+            aria-label={quickStartAvailable ? '快速启动输入' : '继续创作输入'}
+            disabled={!activeProject || busy || projectRunning}
+            placeholder={quickStartAvailable ? '写下新书核心想法，直接启动...' : '继续、补充或要求下一步...'}
+            value={composerText}
+            onChange={(event) => setComposerText(event.target.value)}
+          />
+          <button className={`tool-button ${projectRunning ? '' : 'accent'}`} disabled={!activeProject || busy} type="submit">
+            {projectRunning ? <PauseCircle size={16} /> : quickStartAvailable ? <Play size={16} /> : <Send size={16} />}
+            {projectRunning ? '暂停' : quickStartAvailable ? '启动' : '继续'}
+          </button>
+        </form>
       </main>
 
       <aside className="status-pane">
@@ -1911,8 +1588,7 @@ export default function App() {
             <StatusPanel
               snapshot={snapshot}
               activeProject={activeProject}
-              styles={styleOptions}
-              onStyleChange={changeProjectStyle}
+              onPause={pauseWriting}
               onSteer={submitSteer}
               steerText={steerText}
               setSteerText={setSteerText}
@@ -1926,7 +1602,10 @@ export default function App() {
               setCoCreate={setCoCreate}
               adaptation={adaptation}
               onBegin={beginCoCreateFlow}
+              onConfirmIntake={() => beginCoCreateFlow('normal', { confirmIntake: true })}
               onSubmit={submitCoCreate}
+              onSuggestion={submitCoCreateSuggestion}
+              onRevise={reviseCoCreateMessage}
               onCommit={commitCoCreateFlow}
               onCancel={cancelCoCreateFlow}
             />
@@ -1934,29 +1613,23 @@ export default function App() {
             <SimulationPanel
               activeProject={activeProject}
               busy={busy}
+              snapshot={snapshot}
               simulation={simulation}
-              setSimulation={setSimulation}
               onUploadSources={uploadSimulationSources}
               onAnalyze={runSimulationAnalysis}
               onImportProfile={importSimulation}
-              onRefreshLibrary={refreshSimulationLibrary}
-              onUploadLibrary={uploadSimulationProfilesToLibrary}
-              onLoadLibrary={loadSimulationProfileFromLibrary}
-              onSaveToLibrary={saveSimulationProfileToLibrary}
-              onCloseSaveDialog={closeSimulationSaveDialog}
             />
           ) : sideView === 'adapt' ? (
             <AdaptationPanel
               activeProject={activeProject}
               busy={busy}
+              snapshot={snapshot}
               adaptation={adaptation}
               setAdaptation={setAdaptation}
               onUploadSource={uploadAdaptation}
               onAnalyze={runAdaptationAnalysis}
               onStart={startAdaptationRun}
-              onRefreshLibrary={refreshNovelLibrary}
-              onLoadLibrary={loadNovelFromLibraryEntry}
-              onSaveNovel={saveAnalyzedNovelToLibrary}
+              onConfirm={confirmAdaptationRun}
               onCoCreate={() => {
                 setSideView('cocreate');
                 beginCoCreateFlow('adapt');
@@ -1991,13 +1664,13 @@ export default function App() {
             <BackendPanel backend={backendStatus} busy={busy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
           ) : (
             <ModelPanel
-              runtime={runtime}
               activeProject={activeProject}
+              runtime={runtime}
               modelConfig={modelConfig}
-              styles={styleOptions}
               customModel={customModel}
               setCustomModel={setCustomModel}
-              busy={modelBusy}
+              busy={busy}
+              onSwitchDefault={switchDefaultModel}
               onSwitch={switchModelRoute}
               onThinking={changeThinking}
               onAddCustom={submitCustomModel}
@@ -2013,40 +1686,60 @@ export default function App() {
   );
 }
 
-function StatusPanel({ snapshot, activeProject, styles, onStyleChange, onSteer, steerText, setSteerText, busy }) {
-  const outline = snapshot?.Outline || snapshot?.outline || [];
+function WorkspaceProgress({ progress }) {
+  const chapterPercent = progress.totalChapters > 0
+    ? Math.min(100, Math.round((progress.completedChapters / progress.totalChapters) * 100))
+    : 0;
+  return (
+    <section className="workspace-progress" aria-label="Workspace progress">
+      <div className="workspace-progress-meter" aria-hidden="true">
+        <span style={{ width: `${chapterPercent}%` }} />
+      </div>
+      <div className="workspace-progress-items">
+        <ProgressItem label="Status" value={progress.statusLabel} />
+        <ProgressItem label="Chapters" value={progress.chapterLabel} />
+        <ProgressItem label="Current" value={progress.currentChapterLabel} />
+        <ProgressItem label="Words" value={progress.wordLabel} />
+        <ProgressItem label="Running" value={progress.runningLabel} wide />
+      </div>
+    </section>
+  );
+}
+
+function ProgressItem({ label, value, wide = false }) {
+  return (
+    <div className={`workspace-progress-item ${wide ? 'wide' : ''}`}>
+      <span>{label}</span>
+      <strong title={value}>{value}</strong>
+    </div>
+  );
+}
+
+function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, setSteerText, busy }) {
+  const outline = getSnapshotOutlineRows(snapshot);
   const agents = snapshot?.Agents || snapshot?.agents || [];
-  const currentStyle = snapshotStyle(snapshot);
-  const currentStyleLabel = styleLabelForID(currentStyle, styles);
-  const styleEditable = Boolean(activeProject && canEditProjectStyle(snapshot));
+  const premise = textValue(snapshot, 'PremiseFull', 'premise_full', 'Premise', 'premise');
+  const characterDetails = arrayValue(snapshot, 'CharacterDetails', 'character_details');
+  const worldRules = arrayValue(snapshot, 'WorldRules', 'world_rules');
+  const blueprint = getCreativeBlueprint(snapshot);
+  const adaptationReview = getAdaptationProposalReview(snapshot);
+  const hasFoundation = Boolean(premise || outline.length || characterDetails.length || worldRules.length);
+  const running = isProjectRunning(snapshot);
   return (
     <div className="side-content">
       <section className="metric-grid">
-        <Metric label="状态" value={runtimeStateLabel(snapshot?.RuntimeState || snapshot?.runtime_state || 'idle')} />
+        <Metric label="状态" value={snapshot?.RuntimeState || snapshot?.runtime_state || 'idle'} />
         <Metric label="章节" value={`${snapshot?.CompletedCount || 0}/${snapshot?.TotalChapters || 0}`} />
         <Metric label="当前" value={snapshot?.CurrentChapter || snapshot?.InProgressChapter || 0} />
-        <Metric label="文风" value={currentStyleLabel || currentStyle || '-'} />
         <Metric label="字数" value={snapshot?.TotalWordCount || 0} />
       </section>
 
-      <section>
-        <div className="section-title">
-          <SlidersHorizontal size={17} />
-          <span>文风</span>
-        </div>
-        <label className="field-label">
-          <span>项目文风</span>
-          <select
-            disabled={!styleEditable || busy || styles.length === 0}
-            value={currentStyle}
-            onChange={(event) => onStyleChange(event.target.value)}
-          >
-            {styles.map((style) => (
-              <option key={style.id} value={style.id}>{style.label}</option>
-            ))}
-          </select>
-        </label>
-      </section>
+      <div className="runtime-actions">
+        <button className="tool-button" disabled={!activeProject || busy || !running} onClick={onPause} type="button">
+          <PauseCircle size={16} />
+          暂停
+        </button>
+      </div>
 
       <form className="steer-form" onSubmit={onSteer}>
         <textarea
@@ -2062,6 +1755,41 @@ function StatusPanel({ snapshot, activeProject, styles, onStyleChange, onSteer, 
         </button>
       </form>
 
+      {blueprint.loaded ? (
+        <section className="snapshot-summary-card">
+          <div className="section-title">
+            <BookOpen size={17} />
+            <span>创作蓝图</span>
+          </div>
+          <div className="summary-metrics">
+            <Metric label="大纲" value={blueprint.outlineChapters} />
+            <Metric label="角色" value={blueprint.characterCount} />
+            <Metric label="规则" value={blueprint.worldRuleCount} />
+            <Metric label="结构" value={blueprint.layered ? '分层' : '扁平'} />
+          </div>
+          {blueprint.premise ? <p>{blueprint.premise}</p> : null}
+          {blueprint.compassDirection || blueprint.compassScale ? (
+            <small>{[blueprint.compassDirection, blueprint.compassScale].filter(Boolean).join(' / ')}</small>
+          ) : null}
+        </section>
+      ) : null}
+
+      {adaptationReview.loaded ? (
+        <section className="snapshot-summary-card">
+          <div className="section-title">
+            <FileText size={17} />
+            <span>改编方向</span>
+          </div>
+          <div className="summary-metrics">
+            <Metric label="状态" value={adaptationReview.status || '-'} />
+            <Metric label="模式" value={adaptationReview.granularity || '-'} />
+            <Metric label="章节" value={adaptationReview.chapterCount || 0} />
+            <Metric label="目标" value={adaptationReview.targetTotalRunes ? formatCompact(adaptationReview.targetTotalRunes) : '-'} />
+          </div>
+          {adaptationReview.brief ? <p>{adaptationReview.brief}</p> : null}
+        </section>
+      ) : null}
+
       <section>
         <div className="section-title">
           <BookOpen size={17} />
@@ -2071,11 +1799,8 @@ function StatusPanel({ snapshot, activeProject, styles, onStyleChange, onSteer, 
           {outline.length === 0 ? (
             <div className="empty-state">暂无大纲</div>
           ) : (
-            outline.slice(0, 12).map((item) => (
-              <div className="chapter-row" key={`${item.Chapter || item.chapter}-${item.Title || item.title}`}>
-                <span>{item.Chapter || item.chapter}</span>
-                <strong>{item.Title || item.title || '未命名章节'}</strong>
-              </div>
+            outline.map((item) => (
+              <ChapterRow item={item} key={`${item.chapter}-${item.title}`} />
             ))
           )}
         </div>
@@ -2084,11 +1809,11 @@ function StatusPanel({ snapshot, activeProject, styles, onStyleChange, onSteer, 
       <section>
         <div className="section-title">
           <Activity size={17} />
-          <span>智能体</span>
+          <span>Agents</span>
         </div>
         <div className="agent-list">
           {agents.length === 0 ? (
-            <div className="empty-state">暂无智能体状态</div>
+            <div className="empty-state">暂无 agent 状态</div>
           ) : (
             agents.map((agent) => (
               <div className="agent-row" key={agent.Name || agent.name}>
@@ -2109,72 +1834,52 @@ const adaptationModes = [
   { value: 'free', label: 'free' }
 ];
 
-function CoCreateWorkspace({ coCreate }) {
-  const hasMessages = coCreate.messages.length > 0;
-  const hasStream = Boolean(coCreate.streamThinking || coCreate.streamReply);
-  const hasContent = hasMessages || hasStream || coCreate.ready || coCreate.status === 'running';
-  return (
-    <section className="cocreate-workspace-panel" aria-label="共创分析流程">
-      <div className="cocreate-workspace-header">
-        <span>共创工作区</span>
-        <h3>{coCreateTitle(coCreate.kind)}</h3>
-        <p>分析过程会在这里展开，右侧只保留你的选择、输入和最终启动摘要。</p>
-      </div>
-      <div className="cocreate-timeline">
-        {!hasContent ? (
-          <div className="cocreate-empty">
-            <MessageSquareText size={34} />
-            <strong>开始一次共创</strong>
-            <span>在右侧输入核心想法，或进入 Stage / Adapt 共创。</span>
-          </div>
-        ) : null}
-        {coCreate.messages.map((message, index) => (
-          <article className={`cocreate-workspace-message ${message.role}`} key={`${message.role}-${index}`}>
-            <strong>{coCreateRoleLabel(message.role)}</strong>
-            <p>{message.content}</p>
-          </article>
-        ))}
-        {coCreate.streamThinking ? (
-          <article className="cocreate-workspace-message thinking">
-            <strong>Thinking</strong>
-            <p>{coCreate.streamThinking}</p>
-          </article>
-        ) : null}
-        {coCreate.streamReply ? (
-          <article className="cocreate-workspace-message assistant live">
-            <strong>AI</strong>
-            <p>{coCreate.streamReply}</p>
-          </article>
-        ) : null}
-        {coCreate.ready ? (
-          <article className="cocreate-ready-note">
-            <Check size={17} />
-            <span>共创已完成，右侧可以查看总结并启动。</span>
-          </article>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation, onBegin, onSubmit, onCommit, onCancel }) {
+function CoCreatePanel({
+  activeProject,
+  busy,
+  coCreate,
+  setCoCreate,
+  adaptation,
+  onBegin,
+  onConfirmIntake,
+  onSubmit,
+  onSuggestion,
+  onRevise,
+  onCommit,
+  onCancel
+}) {
+  const [editing, setEditing] = useState(null);
   const hasConversation = coCreate.messages.length > 0;
-  const hasBackendSession = coCreate.active || hasConversation;
-  const canBeginNormal = Boolean(activeProject && !busy && !hasBackendSession && coCreate.input.trim());
-  const canBeginStage = Boolean(activeProject && !busy && !hasBackendSession);
+  const hasBackendSession = coCreate.active || (hasConversation && !coCreate.intakeActive);
+  const showIntakeControls = coCreate.intakeActive && !hasBackendSession;
+  const targetTotalWords = resolveCoCreateTargetTotalWords(coCreate);
+  const canBeginNormal = Boolean(activeProject && !busy && !hasBackendSession && !coCreate.intakeActive && coCreate.input.trim());
+  const canBeginStage = Boolean(activeProject && !busy && !hasBackendSession && !coCreate.intakeActive);
   const canBeginAdapt = Boolean(
     activeProject &&
       !busy &&
       !hasBackendSession &&
+      !coCreate.intakeActive &&
       adaptation.sourceFile?.relative_path &&
       adaptation.analysisStatus === 'done'
   );
   const canSend = Boolean(activeProject && !busy && hasBackendSession && coCreate.input.trim());
+  const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
   const canCommit = Boolean(activeProject && !busy && coCreate.ready && coCreate.draftPrompt.trim());
-  const canCancel = Boolean(activeProject && !busy && hasBackendSession);
+  const canCancel = Boolean(activeProject && !busy && (hasBackendSession || coCreate.intakeActive));
   const title = coCreateTitle(coCreate.kind);
+  const handleCoCreateFormSubmit = (event) => {
+    event.preventDefault();
+    if (hasBackendSession) {
+      onSubmit(event);
+    } else if (showIntakeControls) {
+      onConfirmIntake();
+    } else {
+      onBegin('normal');
+    }
+  };
   return (
-    <div className="side-content">
+    <div className="side-content cocreate-panel">
       {coCreate.error ? <div className="error-banner compact">{coCreate.error}</div> : null}
 
       <section className="cocreate-section">
@@ -2201,11 +1906,85 @@ function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation,
         ) : null}
       </section>
 
-      <section className="cocreate-section cocreate-reading-note">
-        <div className="workflow-status">
-          <strong>分析流程</strong>
-          <span>{hasBackendSession ? '已移到中间工作区，右侧用于继续决策。' : '开始后会显示在中间工作区。'}</span>
+      <section className="cocreate-section cocreate-dialog">
+        <div className="cocreate-messages">
+          {coCreate.messages.length === 0 ? (
+            <div className="empty-state">暂无共创对话</div>
+          ) : (
+            coCreate.messages.map((message, index) => (
+              <div className={`cocreate-message ${message.role}`} key={message.id || `${message.role}-${index}`}>
+                <div className="cocreate-message-head">
+                  <strong>{coCreateRoleLabel(message.role)}</strong>
+                  {message.source ? <span>{message.source === 'suggestion' ? '选项' : '补充'}</span> : null}
+                  {message.editable ? (
+                    <button
+                      className="icon-button inline"
+                      disabled={busy}
+                      onClick={() => setEditing({ id: message.id, text: message.content })}
+                      title="修改这次选择"
+                      type="button"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                  ) : null}
+                </div>
+                {editing?.id === message.id ? (
+                  <form
+                    className="cocreate-edit-form"
+                    onSubmit={async (event) => {
+                      event.preventDefault();
+                      const text = editing.text.trim();
+                      if (!text) {
+                        return;
+                      }
+                      await onRevise(message.id, text);
+                      setEditing(null);
+                    }}
+                  >
+                    <textarea
+                      autoFocus
+                      disabled={busy}
+                      value={editing.text}
+                      onChange={(event) => setEditing((previous) => ({ ...previous, text: event.target.value }))}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                          event.preventDefault();
+                          setEditing(null);
+                        }
+                      }}
+                    />
+                    <div className="inline-actions">
+                      <button className="icon-button" disabled={busy} onClick={() => setEditing(null)} title="取消" type="button">
+                        <X size={15} />
+                      </button>
+                      <button className="icon-button primary" disabled={busy || !editing.text.trim()} title="保存并重跑" type="submit">
+                        <Check size={15} />
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <p>{message.content}</p>
+                )}
+              </div>
+            ))
+          )}
         </div>
+        {coCreate.streamThinking || coCreate.streamReply ? (
+          <div className="cocreate-progress">
+            {coCreate.streamThinking ? (
+              <div className="cocreate-preview thinking">
+                <strong>Thinking</strong>
+                <p>{coCreate.streamThinking}</p>
+              </div>
+            ) : null}
+            {coCreate.streamReply ? (
+              <div className="cocreate-preview reply">
+                <strong>AI</strong>
+                <p>{coCreate.streamReply}</p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       {coCreate.suggestions.length ? (
@@ -2213,12 +1992,13 @@ function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation,
           <div className="suggestion-list">
             {coCreate.suggestions.slice(0, 3).map((suggestion) => (
               <button
-                className="suggestion-chip"
+                className="suggestion-option"
                 disabled={busy}
                 key={suggestion}
-                onClick={() => setCoCreate((previous) => applyCoCreateSuggestion(previous, suggestion))}
+                onClick={() => onSuggestion(suggestion)}
                 type="button"
               >
+                <Send size={15} />
                 {suggestion}
               </button>
             ))}
@@ -2226,28 +2006,104 @@ function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation,
         </section>
       ) : null}
 
-      <form className="cocreate-form" onSubmit={hasBackendSession ? onSubmit : (event) => {
-        event.preventDefault();
-        onBegin('normal');
-      }}>
+      <div className="cocreate-sticky-workspace">
+        <form className="cocreate-form" onSubmit={handleCoCreateFormSubmit}>
         <textarea
           aria-label="共创输入"
-          disabled={!activeProject || busy}
-          placeholder={hasBackendSession ? '继续补充你的想法...' : '输入你的核心想法，或先进入 Stage/Adapt 共创'}
+          disabled={!activeProject || busy || showIntakeControls}
+          placeholder={
+            showIntakeControls
+              ? '先确认篇幅和结构...'
+              : hasBackendSession ? '继续补充你的想法...' : '输入你的核心想法，或先进入 Stage/Adapt 共创'
+          }
           value={coCreate.input}
           onChange={(event) => setCoCreate((previous) => appendCoCreateInput(previous, event.target.value))}
         />
-        <button className="tool-button accent full-width" disabled={hasBackendSession ? !canSend : !canBeginNormal} type="submit">
+        {showIntakeControls ? (
+          <div className="cocreate-intake">
+            <div className="intake-question">
+              <strong>目标字数</strong>
+              <div className="cocreate-target-options" aria-label="Target total words">
+              {coCreateTargetWordChoices.map((choice) => (
+                <label
+                  className={`target-option ${coCreate.targetTotalWordsChoice === choice.value ? 'active' : ''}`}
+                  key={choice.value}
+                >
+                  <input
+                    checked={coCreate.targetTotalWordsChoice === choice.value}
+                    disabled={!activeProject || busy}
+                    name="cocreate-target-total-words"
+                    type="radio"
+                    value={choice.value}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setCoCreate((previous) => ({
+                        ...previous,
+                        targetTotalWordsChoice: value,
+                        customTargetTotalWords: value === 'custom' ? previous.customTargetTotalWords || '' : previous.customTargetTotalWords,
+                        structureChoice:
+                          previous.structureChoice === 'single' && value !== '5000' && value !== 'custom'
+                            ? 'auto'
+                            : previous.structureChoice
+                      }));
+                    }}
+                  />
+                  <span>{choice.label}</span>
+                  <small>{choice.hint}</small>
+                </label>
+              ))}
+              </div>
+            </div>
+            {coCreate.targetTotalWordsChoice === 'custom' ? (
+              <label className="field-label">
+                <span>总字数</span>
+                <input
+                  disabled={!activeProject || busy}
+                  inputMode="numeric"
+                  min="1"
+                  placeholder="12000"
+                  type="number"
+                  value={coCreate.customTargetTotalWords || ''}
+                  onChange={(event) => setCoCreate((previous) => ({ ...previous, customTargetTotalWords: event.target.value }))}
+                />
+              </label>
+            ) : null}
+            <div className="intake-question">
+              <strong>结构形式</strong>
+              <div className="cocreate-target-options structure" aria-label="Story structure">
+                {coCreateStructureChoices.map((choice) => (
+                  <label
+                    className={`target-option ${resolveCoCreateStructureChoice(coCreate) === choice.value ? 'active' : ''}`}
+                    key={choice.value}
+                  >
+                    <input
+                      checked={resolveCoCreateStructureChoice(coCreate) === choice.value}
+                      disabled={!activeProject || busy}
+                      name="cocreate-structure"
+                      type="radio"
+                      value={choice.value}
+                      onChange={(event) => {
+                        setCoCreate((previous) => ({
+                          ...previous,
+                          structureChoice: event.target.value
+                        }));
+                      }}
+                    />
+                    <span>{choice.label}</span>
+                    <small>{choice.hint}</small>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
+        <button className="tool-button accent full-width" disabled={hasBackendSession ? !canSend : showIntakeControls ? !canConfirmIntake : !canBeginNormal} type="submit">
           <Send size={16} />
-          {hasBackendSession ? '发送' : '开始普通共创'}
+          {hasBackendSession ? '发送' : showIntakeControls ? '确认并开始共创' : '开始普通共创'}
         </button>
-      </form>
+        </form>
 
-      <section className="cocreate-section cocreate-result">
-        <div className="section-title">
-          <FileJson size={17} />
-          <span>总结与启动</span>
-        </div>
+        <section className="cocreate-section">
         <div className={`workflow-status ${coCreate.status}`}>
           <strong>{coCreateStatusText(coCreate.status, coCreate.ready)}</strong>
           <span>{coCreate.startMessage || (coCreate.ready ? 'draft prompt 已就绪' : '等待共创完成')}</span>
@@ -2265,57 +2121,64 @@ function CoCreatePanel({ activeProject, busy, coCreate, setCoCreate, adaptation,
             取消
           </button>
         </div>
-      </section>
+        </section>
+      </div>
     </div>
   );
 }
 
-function AdaptationPanel({
-  activeProject,
-  busy,
-  adaptation,
-  setAdaptation,
-  onUploadSource,
-  onAnalyze,
-  onStart,
-  onRefreshLibrary,
-  onLoadLibrary,
-  onSaveNovel,
-  onCoCreate
-}) {
+function ChapterRow({ item }) {
+  const scenes = item.scenes || [];
+  const budget = item.wordBudget;
+  const coverage = item.sourceCoverage;
+  const budgetLabel = budget?.targetRunes
+    ? `${formatCompact(budget.targetRunes)} 字`
+    : budget?.targetWords ? `${formatCompact(budget.targetWords)} 字` : '';
+  const rangeLabel = budget?.minRunes && budget?.maxRunes
+    ? `${formatCompact(budget.minRunes)}-${formatCompact(budget.maxRunes)}`
+    : budget?.minWords && budget?.maxWords ? `${formatCompact(budget.minWords)}-${formatCompact(budget.maxWords)}` : '';
+  const sourceLabel = coverage
+    ? coverage.isAdded ? '新增' : coverage.from && coverage.to ? `原 ${coverage.from}-${coverage.to}` : coverage.chapters?.length ? `原 ${coverage.chapters.join(',')}` : ''
+    : '';
+  return (
+    <div className="chapter-row">
+      <span>{item.chapter || '-'}</span>
+      <div className="chapter-row-main">
+        <strong>{item.title || '未命名章节'}</strong>
+        {item.coreEvent ? <small>{item.coreEvent}</small> : null}
+        {item.hook ? <small>钩子：{item.hook}</small> : null}
+        <div className="chapter-meta-line">
+          {sourceLabel ? <em>{sourceLabel}</em> : null}
+          {budgetLabel ? <em>预算 {budgetLabel}{rangeLabel ? ` (${rangeLabel})` : ''}</em> : null}
+          {item.writtenWordCount > 0 ? <em>已写 {formatCompact(item.writtenWordCount)}</em> : null}
+          {scenes.length ? <em>{scenes.length} 场</em> : null}
+        </div>
+        {scenes.length ? <p>{scenes.join(' / ')}</p> : null}
+      </div>
+    </div>
+  );
+}
+
+function AdaptationPanel({ activeProject, busy, snapshot, adaptation, setAdaptation, onUploadSource, onAnalyze, onStart, onConfirm, onCoCreate }) {
   const latestAnalysis = latestSimulationEvent(adaptation.analysisEvents);
   const analyzed = adaptation.analysisStatus === 'done';
-  const libraryBusy = adaptation.libraryStatus === 'running';
+  const proposal = getVisibleAdaptationProposalReview(snapshot, adaptation);
   const canAnalyze = Boolean(activeProject && adaptation.sourceFile && !busy && adaptation.analysisStatus !== 'running');
   const canCoCreate = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy);
   const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.brief.trim());
-  const canSaveNovel = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.librarySaveName.trim());
+  const canConfirm = Boolean(activeProject && !busy && proposal.proposalReady && isAdaptationProposalCurrent(adaptation));
+  const updateProposalInput = (changes) => {
+    setAdaptation((previous) => ({
+      ...previous,
+      ...changes,
+      proposalKey: '',
+      startStatus: 'idle',
+      startMessage: ''
+    }));
+  };
   return (
     <div className="side-content">
       {adaptation.error ? <div className="error-banner compact">{adaptation.error}</div> : null}
-
-      <section className="simulation-section">
-        <div className="section-title">
-          <Database size={17} />
-          <span>小说仓库</span>
-        </div>
-        <LibrarySearch
-          disabled={busy || libraryBusy}
-          label="搜索小说仓库"
-          placeholder="搜索已分析小说"
-          query={adaptation.libraryQuery}
-          onQueryChange={(value) => setAdaptation((previous) => ({ ...previous, libraryQuery: value }))}
-          onRefresh={onRefreshLibrary}
-        />
-        <LibraryList
-          canLoad={Boolean(activeProject && !busy)}
-          emptyText="暂无小说条目"
-          items={adaptation.libraryItems}
-          loading={libraryBusy}
-          onLoad={onLoadLibrary}
-        />
-        <LibraryFeedback error={adaptation.libraryError} message={adaptation.libraryMessage} />
-      </section>
 
       <section className="simulation-section">
         <div className="section-title">
@@ -2360,17 +2223,6 @@ function AdaptationPanel({
           <strong>{workflowStatusText(adaptation.analysisStatus)}</strong>
           <span>{latestAnalysis?.message || '等待分析'}</span>
         </div>
-        {analyzed ? (
-          <LibrarySaveRow
-            disabled={!canSaveNovel}
-            error={adaptation.librarySaveError}
-            name={adaptation.librarySaveName}
-            placeholder="小说仓库名称"
-            saving={adaptation.librarySaveStatus === 'running'}
-            onNameChange={(value) => setAdaptation((previous) => ({ ...previous, librarySaveName: value, librarySaveError: '' }))}
-            onSave={onSaveNovel}
-          />
-        ) : null}
         <SimulationEventList events={adaptation.analysisEvents} />
       </section>
 
@@ -2387,7 +2239,7 @@ function AdaptationPanel({
                   checked={adaptation.mode === mode.value}
                   disabled={busy}
                   name="adapt-mode"
-                  onChange={() => setAdaptation((previous) => ({ ...previous, mode: mode.value }))}
+                  onChange={() => updateProposalInput({ mode: mode.value })}
                   type="radio"
                   value={mode.value}
                 />
@@ -2401,12 +2253,39 @@ function AdaptationPanel({
             disabled={busy}
             placeholder="改编方向..."
             value={adaptation.brief}
-            onChange={(event) => setAdaptation((previous) => ({ ...previous, brief: event.target.value }))}
+            onChange={(event) => updateProposalInput({ brief: event.target.value })}
           />
           <button className="tool-button accent full-width" disabled={!canStart} onClick={onStart} type="button">
             <Play size={16} />
-            启动改编
+            生成提案
           </button>
+          {proposal.loaded ? (
+            <div className="proposal-review">
+              <div className="section-title">
+                <FileText size={17} />
+                <span>提案确认</span>
+              </div>
+              <div className={`workflow-status ${proposal.proposalReady ? 'ready' : proposal.confirmed ? 'done' : 'idle'}`}>
+                <strong>{proposal.confirmed ? '已确认' : proposal.proposalReady ? '待确认' : proposal.status || '等待提案'}</strong>
+                <span>{proposal.chapterCount} 章 / {proposal.granularity || '-'} / {proposal.rewritePolicy || '-'}</span>
+              </div>
+              {proposal.brief ? <p>{proposal.brief}</p> : null}
+              {proposal.rules.length ? (
+                <ul>
+                  {proposal.rules.slice(0, 4).map((rule, index) => <li key={`proposal-rule-${index}`}>{rule}</li>)}
+                </ul>
+              ) : null}
+              <div className="proposal-chapter-list">
+                {proposal.chapters.map((chapter) => (
+                  <ChapterRow item={chapter} key={`proposal-${chapter.chapter}-${chapter.title}`} />
+                ))}
+              </div>
+              <button className="tool-button accent full-width" disabled={!canConfirm} onClick={onConfirm} type="button">
+                <Check size={16} />
+                确认并启动
+              </button>
+            </div>
+          ) : null}
           <button className="tool-button full-width" disabled={!canCoCreate} onClick={onCoCreate} type="button">
             <MessageSquareText size={16} />
             进入共创
@@ -2421,55 +2300,30 @@ function AdaptationPanel({
   );
 }
 
-function SimulationPanel({
-  activeProject,
-  busy,
-  simulation,
-  setSimulation,
-  onUploadSources,
-  onAnalyze,
-  onImportProfile,
-  onRefreshLibrary,
-  onUploadLibrary,
-  onLoadLibrary,
-  onSaveToLibrary,
-  onCloseSaveDialog
-}) {
+function SimulationPanel({ activeProject, busy, snapshot, simulation, onUploadSources, onAnalyze, onImportProfile }) {
   const latestAnalysis = latestSimulationEvent(simulation.analysisEvents);
   const latestImport = latestSimulationEvent(simulation.importEvents);
-  const libraryBusy = simulation.libraryStatus === 'running';
+  const profile = getSimulationProfileStatus(snapshot);
   return (
-    <>
-      <div className="side-content">
-        {simulation.error ? <div className="error-banner compact">{simulation.error}</div> : null}
+    <div className="side-content">
+      {simulation.error ? <div className="error-banner compact">{simulation.error}</div> : null}
 
-        <section className="simulation-section">
-          <div className="section-title">
-            <Database size={17} />
-            <span>仿写画像库</span>
+      <section className="snapshot-summary-card">
+        <div className="section-title">
+          <FileJson size={17} />
+          <span>当前画像</span>
+        </div>
+        <div className={`workflow-status ${profile.loaded ? 'done' : 'idle'}`}>
+          <strong>{profile.loaded ? '已加载' : '未加载'}</strong>
+          <span>{profile.loaded ? `${profile.sourceCount} 篇语料${profile.updatedAt ? ` / ${profile.updatedAt}` : ''}` : '上传或导入画像后会出现在这里'}</span>
+        </div>
+        {profile.sourceFiles.length ? (
+          <div className="foundation-chip-list">
+            {profile.sourceFiles.slice(0, 6).map((file) => <span key={file}>{file}</span>)}
           </div>
-          <LibrarySearch
-            disabled={busy || libraryBusy}
-            label="搜索仿写画像库"
-            placeholder="搜索画像名称"
-            query={simulation.libraryQuery}
-            onQueryChange={(value) => setSimulation((previous) => ({ ...previous, libraryQuery: value }))}
-            onRefresh={onRefreshLibrary}
-          />
-          <label className={`tool-button file-picker full ${busy || libraryBusy ? 'disabled' : ''}`}>
-            <Upload size={16} />
-            上传 JSON 到库
-            <input accept=".json,application/json" disabled={busy || libraryBusy} multiple onChange={onUploadLibrary} type="file" />
-          </label>
-          <LibraryList
-            canLoad={Boolean(activeProject && !busy)}
-            emptyText="暂无画像条目"
-            items={simulation.libraryItems}
-            loading={libraryBusy}
-            onLoad={onLoadLibrary}
-          />
-          <LibraryFeedback error={simulation.libraryError} message={simulation.libraryMessage} />
-        </section>
+        ) : null}
+        {profile.signals.length ? <p>{profile.signals.join(' / ')}</p> : null}
+      </section>
 
       <section className="simulation-section">
         <div className="section-title">
@@ -2536,135 +2390,6 @@ function SimulationPanel({
         </div>
         <SimulationEventList events={simulation.importEvents} />
       </section>
-      </div>
-      {simulation.saveDialogOpen ? (
-        <SimulationSaveDialog
-          busy={busy}
-          simulation={simulation}
-          setSimulation={setSimulation}
-          onClose={onCloseSaveDialog}
-          onSave={onSaveToLibrary}
-        />
-      ) : null}
-    </>
-  );
-}
-
-function LibrarySearch({ disabled, label, placeholder, query, onQueryChange, onRefresh }) {
-  return (
-    <form className="library-search" onSubmit={(event) => {
-      event.preventDefault();
-      onRefresh();
-    }}>
-      <input
-        aria-label={label}
-        disabled={disabled}
-        placeholder={placeholder}
-        value={query}
-        onChange={(event) => onQueryChange(event.target.value)}
-      />
-      <button className="icon-button" disabled={disabled} title="刷新" type="submit">
-        <RefreshCw size={16} />
-      </button>
-    </form>
-  );
-}
-
-function LibraryList({ canLoad, emptyText, items, loading, onLoad }) {
-  if (loading && items.length === 0) {
-    return <div className="empty-state">加载中...</div>;
-  }
-  if (items.length === 0) {
-    return <div className="empty-state">{emptyText}</div>;
-  }
-  return (
-    <div className="library-list">
-      {items.map((entry, index) => {
-        const name = libraryEntryName(entry);
-        const meta = libraryEntryMeta(entry);
-        return (
-          <button
-            className="library-row"
-            disabled={!canLoad || !name}
-            key={`${name || 'library-entry'}-${index}`}
-            onClick={() => onLoad(entry)}
-            title={name}
-            type="button"
-          >
-            <span className="library-entry">
-              <strong>{name || '未命名条目'}</strong>
-              <small>{meta || '可加载到当前项目'}</small>
-            </span>
-            <span className="library-load">加载</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function LibraryFeedback({ error, message }) {
-  if (error) {
-    return <div className="error-banner compact">{error}</div>;
-  }
-  if (message) {
-    return <div className="success-note">{message}</div>;
-  }
-  return null;
-}
-
-function LibrarySaveRow({ disabled, error, name, placeholder, saving, onNameChange, onSave }) {
-  return (
-    <div className="library-save-stack">
-      <div className="library-save-row">
-        <input
-          disabled={saving}
-          placeholder={placeholder}
-          value={name}
-          onChange={(event) => onNameChange(event.target.value)}
-        />
-        <button className="tool-button" disabled={disabled || saving} onClick={onSave} type="button">
-          <Plus size={16} />
-          保存
-        </button>
-      </div>
-      {error ? <div className="error-banner compact">{error}</div> : null}
-    </div>
-  );
-}
-
-function SimulationSaveDialog({ busy, simulation, setSimulation, onClose, onSave }) {
-  const saving = simulation.saveStatus === 'running';
-  const canSave = Boolean(simulation.saveName.trim()) && !busy && !saving;
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <div aria-modal="true" className="confirm-dialog" role="dialog" aria-labelledby="simulation-save-title">
-        <div className="section-title">
-          <Database size={17} />
-          <span id="simulation-save-title">添加到仿写画像库</span>
-        </div>
-        <div className="confirm-dialog-body">
-          <input
-            aria-label="画像名称"
-            autoFocus
-            disabled={saving}
-            placeholder="输入画像名称"
-            value={simulation.saveName}
-            onChange={(event) => setSimulation((previous) => ({ ...previous, saveName: event.target.value, saveError: '' }))}
-          />
-          {simulation.saveError ? <div className="error-banner compact">{simulation.saveError}</div> : null}
-        </div>
-        <div className="dialog-actions">
-          <button className="tool-button" disabled={saving} onClick={onClose} type="button">
-            <ListRestart size={16} />
-            暂不添加
-          </button>
-          <button className="tool-button accent" disabled={!canSave} onClick={onSave} type="button">
-            <Plus size={16} />
-            添加
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -2676,7 +2401,7 @@ function SimulationEventList({ events }) {
   return (
     <div className="simulation-events">
       {events.map((event, index) => (
-        <div className={event.error ? 'simulation-event error' : event.stage === 'paused' ? 'simulation-event paused' : 'simulation-event'} key={`${event.stage}-${index}`}>
+        <div className={event.error ? 'simulation-event error' : 'simulation-event'} key={`${event.stage}-${index}`}>
           <span>{event.stage || 'event'}</span>
           <strong>{event.current && event.total ? `${event.current}/${event.total}` : ''}</strong>
           <p>{event.error || event.message}</p>
@@ -2966,19 +2691,19 @@ function BackendPanel({ backend, busy, onRefresh, onTest }) {
   return (
     <div className="side-content">
       <section className="model-summary">
-        <Metric label="状态" value={runtimeStateLabel(backend?.status || 'unknown')} />
-        <Metric label="供应商" value={backend?.provider || '-'} />
-        <Metric label="模型" value={backend?.model || '-'} />
-        <Metric label="运行状态" value={runtimeStateLabel(backend?.runtime_state || '-')} />
+        <Metric label="Status" value={backend?.status || 'unknown'} />
+        <Metric label="Provider" value={backend?.provider || '-'} />
+        <Metric label="Model" value={backend?.model || '-'} />
+        <Metric label="Runtime" value={backend?.runtime_state || '-'} />
       </section>
       <div className="simulation-actions">
         <button className="tool-button" disabled={busy} onClick={onRefresh} type="button">
           <RefreshCw size={16} />
-          刷新
+          Refresh
         </button>
         <button className="tool-button accent" disabled={busy} onClick={onTest} type="button">
           <TestTube2 size={16} />
-          测试
+          Test
         </button>
       </div>
       {backend?.manual_test ? (
@@ -2995,26 +2720,93 @@ function BackendPanel({ backend, busy, onRefresh, onTest }) {
           ) : (
             calls.map((call, index) => (
               <div className={`backend-row ${call.failed ? 'error' : call.running ? 'running' : ''}`} key={`${call.time}-${index}`}>
-                <strong>{call.category || '调用'} / {call.agent || '主机'}</strong>
-                <span>{call.running ? '运行中' : call.failed ? '失败' : '正常'} · {call.duration_ms || 0}ms</span>
+                <strong>{call.category || 'CALL'} / {call.agent || 'host'}</strong>
+                <span>{call.running ? 'running' : call.failed ? 'failed' : 'ok'} · {call.duration_ms || 0}ms</span>
                 <small>{call.summary || '-'}</small>
               </div>
             ))
           )}
         </div>
       </section>
+
+      <section className="foundation-section">
+        <div className="section-title">
+          <BookOpen size={17} />
+          <span>设定</span>
+        </div>
+        {!hasFoundation ? (
+          <div className="empty-state">暂无设定</div>
+        ) : (
+          <div className="foundation-stack">
+            {premise ? (
+              <div className="foundation-block">
+                <strong>小说设定</strong>
+                <p>{premise}</p>
+              </div>
+            ) : null}
+            {outline.length ? (
+              <div className="foundation-block">
+                <strong>章节大纲</strong>
+                <div className="outline-detail-list">
+                  {outline.map((item) => (
+                    <div className="outline-detail" key={`detail-${item.Chapter || item.chapter}-${item.Title || item.title}`}>
+                      <b>{item.Chapter || item.chapter}. {item.Title || item.title || '未命名章节'}</b>
+                      {textValue(item, 'CoreEvent', 'core_event') ? <p>{textValue(item, 'CoreEvent', 'core_event')}</p> : null}
+                      {textValue(item, 'Hook', 'hook') ? <p>{textValue(item, 'Hook', 'hook')}</p> : null}
+                      {arrayValue(item, 'Scenes', 'scenes').length ? (
+                        <ul>
+                          {arrayValue(item, 'Scenes', 'scenes').map((scene, index) => (
+                            <li key={`${item.Chapter || item.chapter}-scene-${index}`}>{scene}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {characterDetails.length ? (
+              <div className="foundation-block">
+                <strong>角色</strong>
+                <div className="foundation-chip-list">
+                  {characterDetails.map((character) => (
+                    <span key={textValue(character, 'Name', 'name')}>
+                      {textValue(character, 'Name', 'name')}
+                      {textValue(character, 'Role', 'role') ? ` / ${textValue(character, 'Role', 'role')}` : ''}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {worldRules.length ? (
+              <div className="foundation-block">
+                <strong>世界规则</strong>
+                <ul>
+                  {worldRules.slice(0, 12).map((rule, index) => (
+                    <li key={`${textValue(rule, 'Category', 'category')}-${index}`}>
+                      {textValue(rule, 'Category', 'category') ? `${textValue(rule, 'Category', 'category')}：` : ''}
+                      {textValue(rule, 'Rule', 'rule')}
+                      {textValue(rule, 'Boundary', 'boundary') ? `（边界：${textValue(rule, 'Boundary', 'boundary')}）` : ''}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
 
 function ModelPanel({
-  runtime,
   activeProject,
+  runtime,
   modelConfig,
-  styles,
   customModel,
   setCustomModel,
   busy,
+  onSwitchDefault,
   onSwitch,
   onThinking,
   onAddCustom,
@@ -3024,39 +2816,66 @@ function ModelPanel({
   onRefreshGrokStatus
 }) {
   const config = runtime?.config || {};
-  const hasActiveProject = Boolean(activeProject?.id);
   const roles = modelConfig?.roles || [];
+  const projectRoles = activeProject?.id ? roles : [];
   const providers = modelConfig?.providers || [];
   const levels = modelConfig?.thinking_levels || ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'];
   const providerMap = new Map(providers.map((provider) => [provider.name, provider.models || []]));
+  const defaultProvider = config.provider || providers[0]?.name || '';
+  const defaultModels = modelOptionsForProvider(providers, defaultProvider, config.model);
+  const defaultModel = config.model || defaultModels[0] || '';
   const selectedPreset = providerPresets.find((preset) => preset.provider === customModel.preset) || providerPresets[0];
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
   const canAdd = canSubmitModelAdd(customModel, modelConfig);
-  const routeScopeLabel = (route) => {
-    if (!hasActiveProject) {
-      return route.role === 'default' ? 'global default' : (route.explicit ? 'global role' : 'global fallback');
-    }
-    return route.explicit ? 'project' : 'global fallback';
-  };
   return (
     <div className="side-content">
+      <section>
+        <div className="section-title">
+          <Settings size={17} />
+          <span>当前默认模型</span>
+        </div>
+        <div className="default-model-controls">
+          <select
+            disabled={busy || providers.length === 0}
+            value={defaultProvider}
+            onChange={(event) => {
+              const provider = event.target.value;
+              const models = modelOptionsForProvider(providers, provider, '');
+              onSwitchDefault(provider, models[0] || defaultModel);
+            }}
+          >
+            {providers.length === 0 ? <option value="">无 provider</option> : null}
+            {providers.map((provider) => (
+              <option key={provider.name} value={provider.name}>{provider.name}</option>
+            ))}
+          </select>
+          <select
+            disabled={busy || !defaultProvider || defaultModels.length === 0}
+            value={defaultModel}
+            onChange={(event) => onSwitchDefault(defaultProvider, event.target.value)}
+          >
+            {defaultModels.length === 0 ? <option value="">无 model</option> : null}
+            {defaultModels.map((model) => (
+              <option key={model} value={model}>{model}</option>
+            ))}
+          </select>
+        </div>
+      </section>
       <section className="model-summary">
-        <Metric label="全局供应商" value={config.provider || '未配置'} />
-        <Metric label="全局模型" value={config.model || '未配置'} />
-        <Metric label="文风" value={styleLabelForID(config.style || 'default', styles)} />
-        <Metric label="运行目录" value={runtime?.runtime_root || '-'} />
+        <Metric label="Style" value={config.style || 'default'} />
+        <Metric label="Runtime" value={runtime?.runtime_root || '-'} />
       </section>
       <section>
         <div className="section-title">
           <SlidersHorizontal size={17} />
-          <span>{hasActiveProject ? '项目模型' : '全局模型'}</span>
+          <span>项目模型</span>
         </div>
         <div className="model-route-list">
-          {roles.length === 0 ? (
-            <div className="empty-state">{hasActiveProject ? '打开项目后可配置模型' : '暂无全局模型配置'}</div>
+          {projectRoles.length === 0 ? (
+            <div className="empty-state">打开项目后可配置模型</div>
           ) : (
-            roles.map((route) => (
+            projectRoles.map((route) => (
               <div className="model-route" key={route.role}>
                 <strong>{route.role}</strong>
                 <select
@@ -3082,7 +2901,7 @@ function ModelPanel({
                   ))}
                 </select>
                 <select
-                  disabled={busy || !hasActiveProject}
+                  disabled={busy}
                   value={route.reasoning_effort || ''}
                   onChange={(event) => onThinking(route.role, event.target.value)}
                 >
@@ -3090,7 +2909,7 @@ function ModelPanel({
                     <option key={level || 'inherit'} value={level}>{level || 'inherit'}</option>
                   ))}
                 </select>
-                <span>{routeScopeLabel(route)}</span>
+                <span>{route.explicit ? 'project' : 'global fallback'}</span>
               </div>
             ))
           )}
@@ -3145,7 +2964,7 @@ function ModelPanel({
             </select>
             <input
               disabled={busy}
-              placeholder="供应商名称 / 显示名"
+              placeholder="provider key"
               value={customModel.provider || selectedPreset.provider}
               onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
             />
@@ -3168,7 +2987,7 @@ function ModelPanel({
           <>
             <input
               disabled={busy}
-              placeholder="供应商名称 / 显示名"
+              placeholder="provider key"
               value={customModel.provider}
               onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
             />
@@ -3210,7 +3029,7 @@ function ModelPanel({
           <>
             <input
               disabled={busy}
-              placeholder="供应商名称 / 显示名"
+              placeholder="provider key"
               value={customModel.provider}
               onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
             />
@@ -3227,26 +3046,26 @@ function ModelPanel({
               onChange={(event) => setCustomModel((previous) => ({ ...previous, account_name: event.target.value }))}
             />
             <div className="grok-action-grid">
-              <button className="tool-button" disabled={busy} onClick={onStartGrokLogin} type="button">
+              <button className="tool-button" onClick={onStartGrokLogin} type="button">
                 <Play size={16} />
-                登录
+                Login
               </button>
-              <button className="tool-button" disabled={busy} onClick={onPollGrokLogin} type="button">
+              <button className="tool-button" onClick={onPollGrokLogin} type="button">
                 <CircleDot size={16} />
-                轮询
+                Poll
               </button>
-              <button className="tool-button" disabled={busy} onClick={onRefreshGrokStatus} type="button">
+              <button className="tool-button" onClick={onRefreshGrokStatus} type="button">
                 <RefreshCw size={16} />
-                状态
+                Status
               </button>
               <button
                 className="tool-button"
-                disabled={busy || !String(customModel.callback_input || '').trim()}
+                disabled={!String(customModel.callback_input || '').trim()}
                 onClick={onCompleteGrokLogin}
                 type="button"
               >
                 <Send size={16} />
-                完成
+                Complete
               </button>
             </div>
             {grokURL ? (
@@ -3268,15 +3087,14 @@ function ModelPanel({
         ) : null}
         <input
           disabled={busy}
-          placeholder="模型名称"
+          placeholder="model"
           value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
           onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
         />
         <button className="tool-button accent full-width" disabled={busy || !canAdd} type="submit">
           <Plus size={16} />
-          添加并使用
+          Add and use
         </button>
-        <p className="model-add-note">添加前会先进行一次基础生成连接测试；测试失败不会保存或切换模型。</p>
       </form>
       {modelConfig?.thinking_rule ? <div className="success-note">{modelConfig.thinking_rule}</div> : null}
     </div>
@@ -3293,149 +3111,7 @@ function Metric({ label, value }) {
 }
 
 function StatusPill({ status }) {
-  return <span className={`status-pill ${status}`}>{connectionStatusLabel(status)}</span>;
-}
-
-function connectionStatusLabel(status) {
-  switch (status) {
-    case 'live':
-      return '在线';
-    case 'connecting':
-      return '连接中';
-    case 'reconnecting':
-      return '重连中';
-    default:
-      return '空闲';
-  }
-}
-
-function runtimeStateLabel(status) {
-  const value = String(status || '').trim();
-  switch (value.toLowerCase()) {
-    case 'idle':
-      return '空闲';
-    case 'running':
-      return '运行中';
-    case 'paused':
-      return '已暂停';
-    case 'complete':
-    case 'completed':
-    case 'done':
-      return '已完成';
-    case 'error':
-    case 'failed':
-      return '出错';
-    case 'unknown':
-      return '未知';
-    default:
-      return value || '-';
-  }
-}
-
-function isProjectRunning(snapshot) {
-  if (!snapshot) {
-    return false;
-  }
-  if (snapshot.IsRunning || snapshot.is_running) {
-    return true;
-  }
-  const state = String(snapshot.RuntimeState || snapshot.runtime_state || '').trim().toLowerCase();
-  return state === 'running' || state === 'pausing';
-}
-
-function libraryItemsFromResponse(data) {
-  const candidates = [
-    data?.items,
-    data?.entries,
-    data?.profiles,
-    data?.simulations,
-    data?.novels,
-    data?.library
-  ];
-  const items = candidates.find((candidate) => Array.isArray(candidate));
-  return items || [];
-}
-
-function libraryMessageFromResponse(data) {
-  return String(data?.message || data?.Message || '').trim();
-}
-
-function libraryEntryName(entry) {
-  if (typeof entry === 'string') {
-    return entry.trim();
-  }
-  const sourceFile = entry?.source_file || entry?.sourceFile || entry?.file;
-  return firstString(entry, ['name', 'Name', 'title', 'Title', 'id', 'ID', 'profile_name', 'novel_name']) ||
-    firstString(sourceFile, ['name', 'Name', 'relative_path', 'RelativePath']);
-}
-
-function libraryEntryMeta(entry) {
-  if (!entry || typeof entry === 'string') {
-    return '';
-  }
-  const sourceFile = entry.source_file || entry.sourceFile || entry.file;
-  const parts = [
-    firstString(entry, ['description', 'Description', 'summary', 'Summary']),
-    firstString(sourceFile, ['name', 'Name']),
-    formatOptionalBytes(entry.size || entry.Size || sourceFile?.size || sourceFile?.Size),
-    formatOptionalDate(entry.updated_at || entry.UpdatedAt || entry.created_at || entry.CreatedAt)
-  ].filter(Boolean);
-  return parts.slice(0, 2).join(' · ');
-}
-
-function sourceFileFromNovelLoad(data, entry, name) {
-  const source = data?.source_file || data?.sourceFile || data?.file || entry?.source_file || entry?.sourceFile || entry?.file || entry;
-  if (source && typeof source === 'object') {
-    const relativePath = firstString(source, ['relative_path', 'RelativePath', 'path', 'Path', 'name', 'Name']) || name;
-    return {
-      name: firstString(source, ['name', 'Name']) || fileNameFromPath(relativePath),
-      original_name: firstString(source, ['original_name', 'OriginalName']) || firstString(source, ['name', 'Name']) || name,
-      size: Number(source.size || source.Size || 0),
-      relative_path: relativePath
-    };
-  }
-  const relativePath = String(source || name || '').trim();
-  return {
-    name: fileNameFromPath(relativePath) || name,
-    original_name: fileNameFromPath(relativePath) || name,
-    size: 0,
-    relative_path: relativePath || name
-  };
-}
-
-function firstString(source, keys) {
-  if (!source || typeof source !== 'object') {
-    return '';
-  }
-  for (const key of keys) {
-    const value = String(source[key] || '').trim();
-    if (value) {
-      return value;
-    }
-  }
-  return '';
-}
-
-function fileNameFromPath(path) {
-  const value = String(path || '').trim();
-  if (!value) {
-    return '';
-  }
-  const parts = value.split(/[\\/]/);
-  return parts[parts.length - 1] || value;
-}
-
-function formatOptionalBytes(value) {
-  const size = Number(value || 0);
-  return size > 0 ? formatBytes(size) : '';
-}
-
-function formatOptionalDate(value) {
-  if (!value) {
-    return '';
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString();
+  return <span className={`status-pill ${status}`}>{status}</span>;
 }
 
 function formatDate(value) {
@@ -3456,82 +3132,10 @@ function latestSimulationEvent(events) {
   return events.length ? events[events.length - 1] : null;
 }
 
-function appendPausedAnalysisEvent(events) {
-  const current = Array.isArray(events) ? events : [];
-  const latest = latestSimulationEvent(current);
-  if (latest?.stage === 'paused') {
-    return current;
-  }
-  return [
-    ...current,
-    {
-      time: new Date().toISOString(),
-      stage: 'paused',
-      current: 0,
-      total: latest?.total || 0,
-      message: '原文分析已暂停，可再次点击分析继续'
-    }
-  ];
-}
-
-export function applyAdaptationHostEvent(state, webEvent) {
-  const adaptationEvent = adaptationEventFromHostEvent(webEvent);
-  if (!adaptationEvent) {
-    return state;
-  }
-  return {
-    ...state,
-    analysisStatus: adaptationStatusFromEvent(adaptationEvent),
-    analysisEvents: [...(Array.isArray(state.analysisEvents) ? state.analysisEvents : []), adaptationEvent],
-    error: adaptationEvent.error ? adaptationEvent.error : ''
-  };
-}
-
-function adaptationEventFromHostEvent(webEvent) {
-  const event = webEvent?.event;
-  if (String(event?.category || '').toUpperCase() !== 'ADAPT') {
-    return null;
-  }
-  const stage = String(event.kind || '').trim() || 'event';
-  const failed = Boolean(event.failed || event.level === 'error' || stage.toLowerCase() === 'error');
-  const message = String(event.summary || event.detail || '').trim();
-  const error = failed ? String(event.detail || event.summary || '').trim() : '';
-  return {
-    time: event.time || webEvent.time || new Date().toISOString(),
-    stage,
-    current: Number(event.current || 0),
-    total: Number(event.total || 0),
-    message,
-    error
-  };
-}
-
-function adaptationStatusFromEvent(event) {
-  const stage = String(event?.stage || '').toLowerCase();
-  if (event?.error || stage === 'error') {
-    return 'error';
-  }
-  if (stage === 'done') {
-    return 'done';
-  }
-  if (stage === 'paused') {
-    return 'paused';
-  }
-  return 'running';
-}
-
-function isPausedActionError(err) {
-  const message = String(err?.message || '').toLowerCase();
-  const events = err?.data?.events || [];
-  return message.includes('paused') || message.includes('暂停') || events.some((event) => event?.stage === 'paused');
-}
-
 function workflowStatusText(status) {
   switch (status) {
     case 'running':
       return '进行中';
-    case 'paused':
-      return '已暂停';
     case 'done':
       return '已完成';
     case 'error':
@@ -3588,6 +3192,69 @@ function grokAuthorizeURL(login) {
   return String(login?.authorize_url || login?.AuthorizeURL || '').trim();
 }
 
+function openPendingGrokAuthWindow() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    const authWindow = window.open('about:blank', '_blank');
+    if (!authWindow) {
+      return null;
+    }
+    authWindow.document.title = 'Grok OAuth';
+    authWindow.document.body.innerHTML = '<main style="font-family: system-ui, sans-serif; padding: 24px; line-height: 1.5;"><strong>正在打开 Grok 授权页面...</strong><p>如果这个页面没有自动跳转，请回到 AINovel 点击授权链接。</p></main>';
+    return authWindow;
+  } catch {
+    return null;
+  }
+}
+
+function closeGrokAuthWindow(authWindow) {
+  if (!authWindow) {
+    return;
+  }
+  try {
+    authWindow.close();
+  } catch {
+    // Ignore browser popup cleanup failures.
+  }
+}
+
+function navigateGrokAuthWindow(authWindow, authorizeURL) {
+  const url = String(authorizeURL || '').trim();
+  if (!url) {
+    closeGrokAuthWindow(authWindow);
+    return false;
+  }
+  if (authWindow) {
+    try {
+      authWindow.opener = null;
+      authWindow.location.replace(url);
+      return true;
+    } catch {
+      closeGrokAuthWindow(authWindow);
+    }
+  }
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  try {
+    return Boolean(window.open(url, '_blank', 'noopener,noreferrer'));
+  } catch {
+    return false;
+  }
+}
+
+function grokOpenMessage(openedAuthorize, browserOpenError) {
+  if (openedAuthorize) {
+    return '已打开 Grok 授权页面';
+  }
+  if (browserOpenError) {
+    return `授权链接已生成；后端打开浏览器失败：${browserOpenError}`;
+  }
+  return '授权链接已生成，请点击打开 Grok 授权页面';
+}
+
 function grokLoginDone(login) {
   return Boolean(login?.done || login?.Done);
 }
@@ -3628,14 +3295,14 @@ export function modelAddModeDefaults(state, providers = []) {
     return modelAddPresetDefaults(state);
   }
   if (state.mode === 'custom') {
-      return {
-        ...state,
-        provider: String(state.provider || '').startsWith('custom-') ? state.provider : 'custom-openai',
-        type: state.type || 'openai',
-        model: state.model === 'model-name' ? '' : state.model,
-        api: state.api || 'chat',
-        auth: ''
-      };
+    return {
+      ...state,
+      provider: String(state.provider || '').startsWith('custom-') ? state.provider : 'custom-openai',
+      type: state.type || 'openai',
+      model: state.model || 'model-name',
+      api: state.api || 'chat',
+      auth: ''
+    };
   }
   if (state.mode === 'grok_oauth') {
     const model = !state.model || state.model === 'model-name' ? grokOAuthDefaults.model : state.model;
@@ -3662,6 +3329,16 @@ export function modelAddModeDefaults(state, providers = []) {
     api_key: '',
     base_url: ''
   };
+}
+
+export function modelOptionsForProvider(providers = [], providerName = '', currentModel = '') {
+  const provider = providers.find((item) => item.name === providerName);
+  const models = [...(provider?.models || [])];
+  const selected = String(currentModel || '').trim();
+  if (selected && !models.includes(selected)) {
+    return [selected, ...models];
+  }
+  return models;
 }
 
 function modelAddPresetDefaults(state) {
@@ -3740,45 +3417,434 @@ export function canSubmitModelAdd(state, modelConfig) {
   return true;
 }
 
-export function styleItemsFromResponse(data) {
-  const items = Array.isArray(data?.styles) ? data.styles : [];
-  return items
-    .map((item) => {
-      const id = String(item?.id || '').trim();
-      const label = String(item?.label || '').trim() || id;
-      return { id, label };
-    })
-    .filter((item) => item.id);
+export function buildBeginCoCreatePayload({ kind, initial = '', sourceFile = '', mode = '', targetTotalWords = 0 } = {}) {
+  const payload = {
+    kind,
+    initial: String(initial || '').trim()
+  };
+  if (kind === 'adapt') {
+    payload.source_file = String(sourceFile || '').trim();
+    payload.mode = String(mode || '').trim();
+    return payload;
+  }
+  if (kind === 'normal' && targetTotalWords > 0) {
+    payload.target_total_words = targetTotalWords;
+  }
+  return payload;
 }
 
-export function firstAvailableStyle(preferred, styles, fallback = 'default') {
-  const items = Array.isArray(styles) ? styles : [];
-  const preferredID = String(preferred || '').trim();
-  if (preferredID && items.some((style) => style.id === preferredID)) {
-    return preferredID;
-  }
-  const fallbackID = String(fallback || '').trim();
-  if (fallbackID && items.some((style) => style.id === fallbackID)) {
-    return fallbackID;
-  }
-  return items[0]?.id || fallbackID || preferredID || 'default';
+export function resolveCoCreateTargetTotalWords(state = {}) {
+  const choice = String(state.targetTotalWordsChoice || '');
+  const raw = choice === 'custom' ? state.customTargetTotalWords : choice;
+  const value = Number(String(raw ?? '').trim());
+  return Number.isInteger(value) && value > 0 ? value : 0;
 }
 
-export function styleLabelForID(style, styles) {
-  const id = String(style || '').trim();
-  if (!id) {
+export function resolveCoCreateStructureChoice(state = {}) {
+  const choice = String(state.structureChoice || 'single');
+  return coCreateStructureChoices.some((item) => item.value === choice) ? choice : 'single';
+}
+
+export function buildCoCreateIntakeMessages(initial = '') {
+  const content = String(initial || '').trim();
+  return [
+    {
+      id: 'intake-user',
+      role: 'user',
+      content
+    },
+    {
+      id: 'intake-assistant',
+      role: 'assistant',
+      content: '开始前先确认两个问题：目标字数是多少？结构要不分章节、由 AI 判断，还是明确分章节？'
+    }
+  ];
+}
+
+export function buildCoCreateIntakeInitial(initial = '', options = {}) {
+  const targetTotalWords = Number(options.targetTotalWords || 0);
+  const structureChoice = resolveCoCreateStructureChoice({ structureChoice: options.structureChoice });
+  const structureText = {
+    single: '不分章节，一气呵成；如工具必须保存 outline，只保存 1 个正文条目',
+    auto: '由 AI 根据总字数自动判断章节数',
+    chapters: '分章节；常规单章正文按 3000-5000 字估算'
+  }[structureChoice];
+  const shortRule = targetTotalWords > 0 && targetTotalWords <= 8000
+    ? '\n- 该目标属于短篇篇幅；除非用户明确选择分章节，否则按一篇连续短篇规划，不要拆成多个章节。'
+    : '';
+  return `${String(initial || '').trim()}\n\n[共创前确认]\n- target_total_words=${targetTotalWords}，这是全书总字数，不是每章字数。\n- 结构偏好：${structureText}。\n- 常规小说单章正文约 3000-5000 字；规划章节数必须按总字数估算。${shortRule}`;
+}
+
+export function deriveWorkspaceProgress(snapshot, eventRows = []) {
+  const completedChapters = numberValue(snapshot, 'CompletedCount', 'completed_count');
+  const totalChapters = numberValue(snapshot, 'TotalChapters', 'total_chapters');
+  const currentChapter = numberValue(snapshot, 'InProgressChapter', 'in_progress_chapter') ||
+    numberValue(snapshot, 'CurrentChapter', 'current_chapter');
+  const wordCount = numberValue(snapshot, 'TotalWordCount', 'total_word_count');
+  const rawWordBudget = valueByKey(snapshot, 'WordBudget', 'word_budget');
+  const wordBudget = objectValue(snapshot, 'WordBudget', 'word_budget');
+  const wordBudgetTarget = objectValue(wordBudget, 'Target', 'target');
+  const targetWords = numberValue(
+    snapshot,
+    'TargetTotalWords',
+    'target_total_words',
+    'TargetWords',
+    'target_words',
+    'TotalWordBudget',
+    'total_word_budget',
+    'WordBudgetTotal',
+    'word_budget_total'
+  ) || numberValue(wordBudget, 'TargetTotalWords', 'target_total_words') ||
+    numberValue(wordBudgetTarget, 'TargetTotalWords', 'target_total_words') ||
+    numberFromValue(rawWordBudget);
+  const statusLabel = textValue(snapshot, 'StatusLabel', 'status_label', 'RuntimeState', 'runtime_state') || 'idle';
+  const chapterLabel = totalChapters > 0 ? `${completedChapters}/${totalChapters}` : `${completedChapters}`;
+  const currentChapterLabel = currentChapter > 0 ? `Ch. ${currentChapter}` : '-';
+  const wordLabel = targetWords > 0
+    ? `${formatCompact(wordCount)} / ${formatCompact(targetWords)}`
+    : formatCompact(wordCount);
+  return {
+    statusLabel,
+    completedChapters,
+    totalChapters,
+    currentChapter,
+    wordCount,
+    targetWords,
+    chapterLabel,
+    currentChapterLabel,
+    wordLabel,
+    runningLabel: runningLabelFromSnapshot(snapshot) || runningLabelFromEventRows(eventRows) || 'idle'
+  };
+}
+
+export function getSimulationProfileStatus(snapshot) {
+  const summary = objectValue(snapshot, 'SimulationSummary', 'simulationSummary', 'simulation_summary');
+  const profile = objectValue(snapshot, 'SimulationProfile', 'simulationProfile', 'simulation_profile');
+  const loaded = Boolean(
+    valueByKey(summary, 'Loaded', 'loaded') ||
+    summary ||
+    profile
+  );
+  const sourceFiles = arrayValue(summary, 'SourceFiles', 'sourceFiles', 'source_files');
+  const fallbackFiles = arrayValue(profile, 'SourceFiles', 'sourceFiles', 'source_files');
+  const styleSignals = arrayValue(summary, 'StyleSignals', 'styleSignals', 'style_signals');
+  const hookSignals = arrayValue(summary, 'HookSignals', 'hookSignals', 'hook_signals');
+  const readerSignals = arrayValue(summary, 'ReaderSignals', 'readerSignals', 'reader_signals');
+  return {
+    loaded,
+    version: textValue(summary, 'Version', 'version') || textValue(profile, 'Version', 'version'),
+    updatedAt: textValue(summary, 'UpdatedAt', 'updatedAt', 'updated_at') || textValue(profile, 'UpdatedAt', 'updatedAt', 'updated_at'),
+    sourceCount: numberValue(summary, 'SourceCount', 'sourceCount', 'source_count') ||
+      numberValue(profile, 'SourceCount', 'sourceCount', 'source_count'),
+    sourceFiles: sourceFiles.length ? sourceFiles : fallbackFiles,
+    signals: [...styleSignals, ...hookSignals, ...readerSignals].filter(Boolean).slice(0, 6)
+  };
+}
+
+export function getCreativeBlueprint(snapshot) {
+  const summary = objectValue(snapshot, 'CreativeBlueprint', 'creativeBlueprint', 'creative_blueprint');
+  const outline = getSnapshotOutlineRows(snapshot);
+  const loaded = Boolean(valueByKey(summary, 'Loaded', 'loaded') || summary || outline.length);
+  return {
+    loaded,
+    novelName: textValue(summary, 'NovelName', 'novelName', 'novel_name') ||
+      textValue(snapshot, 'NovelName', 'novelName', 'novel_name'),
+    premise: textValue(summary, 'Premise', 'premise') ||
+      textValue(snapshot, 'Premise', 'premise'),
+    outlineChapters: numberValue(summary, 'OutlineChapters', 'outlineChapters', 'outline_chapters') || outline.length,
+    characterCount: numberValue(summary, 'CharacterCount', 'characterCount', 'character_count') ||
+      arrayValue(snapshot, 'CharacterDetails', 'characterDetails', 'character_details').length,
+    worldRuleCount: numberValue(summary, 'WorldRuleCount', 'worldRuleCount', 'world_rule_count') ||
+      arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules').length,
+    layered: Boolean(valueByKey(summary, 'Layered', 'layered') || valueByKey(snapshot, 'Layered', 'layered')),
+    compassDirection: textValue(summary, 'CompassDirection', 'compassDirection', 'compass_direction') ||
+      textValue(snapshot, 'CompassDirection', 'compassDirection', 'compass_direction'),
+    compassScale: textValue(summary, 'CompassScale', 'compassScale', 'compass_scale') ||
+      textValue(snapshot, 'CompassScale', 'compassScale', 'compass_scale')
+  };
+}
+
+export function getAdaptationProposalReview(snapshot) {
+  const proposalSummary = objectValue(snapshot, 'ProposalSummary', 'proposalSummary', 'proposal_summary');
+  const adaptationSummary = objectValue(snapshot, 'AdaptationSummary', 'adaptationSummary', 'adaptation_summary');
+  const rawProposal = objectValue(snapshot, 'AdaptationProposal', 'adaptationProposal', 'adaptation_proposal');
+  const rawPlan = objectValue(snapshot, 'AdaptationPlan', 'adaptationPlan', 'adaptation_plan');
+  const summary = proposalSummary || adaptationSummary;
+  const plan = rawProposal || rawPlan;
+  const status = textValue(summary, 'Status', 'status') || textValue(plan, 'Status', 'status');
+  const chapters = getSnapshotOutlineRows(snapshot);
+  const fallbackChapters = chapters.length ? chapters : rowsFromAdaptationPlan(plan);
+  const rules = [
+    ...arrayValue(summary, 'MainlineRules', 'mainlineRules', 'mainline_rules'),
+    ...arrayValue(summary, 'RelationshipGoals', 'relationshipGoals', 'relationship_goals'),
+    ...arrayValue(plan, 'MainlineRules', 'mainlineRules', 'mainline_rules'),
+    ...arrayValue(plan, 'RelationshipGoals', 'relationshipGoals', 'relationship_goals')
+  ].filter(Boolean);
+  const loaded = Boolean(summary || plan);
+  const confirmed = status === 'confirmed' || Boolean(rawPlan && !rawProposal);
+  return {
+    loaded,
+    confirmed,
+    proposalReady: loaded && !confirmed && (status === 'proposal' || Boolean(rawProposal)),
+    status,
+    granularity: textValue(summary, 'Granularity', 'granularity') || textValue(plan, 'Granularity', 'granularity'),
+    rewritePolicy: textValue(summary, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy') || textValue(plan, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy'),
+    brief: textValue(summary, 'Brief', 'brief') || textValue(plan, 'Brief', 'brief'),
+    chapterCount: numberValue(summary, 'ChapterCount', 'chapterCount', 'chapter_count') || fallbackChapters.length,
+    sourceTotalRunes: numberValue(summary, 'SourceTotalRunes', 'sourceTotalRunes', 'source_total_runes') ||
+      numberValue(plan, 'SourceTotalRunes', 'sourceTotalRunes', 'source_total_runes'),
+    targetTotalRunes: numberValue(summary, 'TargetTotalRunes', 'targetTotalRunes', 'target_total_runes') ||
+      numberValue(plan, 'TargetTotalRunes', 'targetTotalRunes', 'target_total_runes'),
+    rules,
+    chapters: fallbackChapters
+  };
+}
+
+export function getVisibleAdaptationProposalReview(snapshot, adaptation = {}) {
+  const review = getAdaptationProposalReview(snapshot);
+  if (!review.loaded || isAdaptationProposalCurrent(adaptation)) {
+    return { ...review, stale: false };
+  }
+  return {
+    ...review,
+    loaded: false,
+    proposalReady: false,
+    stale: true,
+    rules: [],
+    chapters: []
+  };
+}
+
+export function isAdaptationProposalCurrent(adaptation = {}) {
+  const proposalKey = String(adaptation.proposalKey || '');
+  return Boolean(proposalKey && proposalKey === buildAdaptationProposalKey(adaptation));
+}
+
+export function buildAdaptationProposalKey({ sourceFile = '', mode = '', brief = '' } = {}) {
+  const sourcePath = typeof sourceFile === 'string' ? sourceFile : sourceFile?.relative_path || '';
+  return JSON.stringify([
+    String(sourcePath || '').trim(),
+    String(mode || '').trim(),
+    String(brief || '').trim()
+  ]);
+}
+
+export function clearAdaptationProposalSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return snapshot;
+  }
+  const proposalKeys = [
+    'AdaptationProposal',
+    'adaptationProposal',
+    'adaptation_proposal',
+    'ProposalSummary',
+    'proposalSummary',
+    'proposal_summary'
+  ];
+  if (!proposalKeys.some((key) => Object.prototype.hasOwnProperty.call(snapshot, key))) {
+    return snapshot;
+  }
+  const next = { ...snapshot };
+  for (const key of proposalKeys) {
+    delete next[key];
+  }
+  return next;
+}
+
+export function getSnapshotOutlineRows(snapshot) {
+  const rows = arrayValue(snapshot, 'Outline', 'outline');
+  if (rows.length) {
+    return rows.map(normalizeOutlineRow);
+  }
+  return rowsFromAdaptationPlan(
+    objectValue(snapshot, 'AdaptationProposal', 'adaptationProposal', 'adaptation_proposal') ||
+    objectValue(snapshot, 'AdaptationPlan', 'adaptationPlan', 'adaptation_plan')
+  );
+}
+
+export function isProjectRunning(snapshot) {
+  if (!snapshot) {
+    return false;
+  }
+  if (snapshot.IsRunning === true || snapshot.is_running === true) {
+    return true;
+  }
+  const status = textValue(snapshot, 'StatusLabel', 'status_label', 'RuntimeState', 'runtime_state').toLowerCase();
+  if (['running', 'working', 'busy'].includes(status)) {
+    return true;
+  }
+  if (['paused', 'ready', 'idle', 'done', 'complete', 'completed', 'error'].includes(status)) {
+    return false;
+  }
+  return arrayValue(snapshot, 'Agents', 'agents').some(isRunningAgent);
+}
+
+function rowsFromAdaptationPlan(plan) {
+  return arrayValue(plan, 'Chapters', 'chapters').map(normalizeOutlineRow);
+}
+
+function normalizeOutlineRow(row) {
+  const chapter = numberValue(row, 'Chapter', 'chapter');
+  const wordBudget = normalizeChapterBudget(row);
+  const sourceCoverage = normalizeSourceCoverage(row);
+  return {
+    chapter,
+    title: textValue(row, 'Title', 'title') || `第 ${chapter || '?'} 章`,
+    coreEvent: textValue(row, 'CoreEvent', 'coreEvent', 'core_event'),
+    hook: textValue(row, 'Hook', 'hook'),
+    scenes: arrayValue(row, 'Scenes', 'scenes'),
+    writtenWordCount: numberValue(row, 'WrittenWordCount', 'writtenWordCount', 'written_word_count'),
+    wordBudget,
+    sourceCoverage,
+    preserveEvents: arrayValue(row, 'PreserveEvents', 'preserveEvents', 'preserve_events'),
+    requiredChanges: arrayValue(row, 'RequiredChanges', 'requiredChanges', 'required_changes'),
+    forbiddenMoves: arrayValue(row, 'ForbiddenMoves', 'forbiddenMoves', 'forbidden_moves'),
+    coverageNote: textValue(row, 'CoverageNote', 'coverageNote', 'coverage_note') || sourceCoverage?.note || ''
+  };
+}
+
+function normalizeChapterBudget(row) {
+  const budget = objectValue(row, 'WordBudget', 'wordBudget', 'word_budget') || row;
+  const normalized = {
+    targetWords: numberValue(budget, 'TargetWords', 'targetWords', 'target_words'),
+    minWords: numberValue(budget, 'MinWords', 'minWords', 'min_words'),
+    maxWords: numberValue(budget, 'MaxWords', 'maxWords', 'max_words'),
+    sourceRunes: numberValue(budget, 'SourceRunes', 'sourceRunes', 'source_runes') ||
+      numberValue(row, 'SourceRunes', 'sourceRunes', 'source_runes'),
+    targetRunes: numberValue(budget, 'TargetRunes', 'targetRunes', 'target_runes') ||
+      numberValue(row, 'TargetRunes', 'targetRunes', 'target_runes'),
+    minRunes: numberValue(budget, 'MinRunes', 'minRunes', 'min_runes') ||
+      numberValue(row, 'TargetMinRunes', 'targetMinRunes', 'target_min_runes'),
+    maxRunes: numberValue(budget, 'MaxRunes', 'maxRunes', 'max_runes') ||
+      numberValue(row, 'TargetMaxRunes', 'targetMaxRunes', 'target_max_runes'),
+    tolerance: numberValue(budget, 'Tolerance', 'tolerance')
+  };
+  return Object.values(normalized).some((value) => Number(value) > 0) ? normalized : null;
+}
+
+function normalizeSourceCoverage(row) {
+  const coverage = objectValue(row, 'SourceCoverage', 'sourceCoverage', 'source_coverage') || row;
+  const chapters = arrayValue(coverage, 'Chapters', 'chapters', 'SourceChapters', 'sourceChapters', 'source_chapters');
+  const from = numberValue(coverage, 'From', 'from') || numberValue(row, 'SourceRangeFrom', 'sourceRangeFrom', 'source_range_from');
+  const to = numberValue(coverage, 'To', 'to') || numberValue(row, 'SourceRangeTo', 'sourceRangeTo', 'source_range_to');
+  const range = objectValue(row, 'SourceRange', 'sourceRange', 'source_range');
+  const normalized = {
+    chapters,
+    from: from || numberValue(range, 'From', 'from'),
+    to: to || numberValue(range, 'To', 'to'),
+    runes: numberValue(coverage, 'Runes', 'runes') || numberValue(row, 'SourceRunes', 'sourceRunes', 'source_runes'),
+    isAdded: Boolean(valueByKey(coverage, 'IsAdded', 'isAdded', 'is_added') || valueByKey(row, 'IsAdded', 'isAdded', 'is_added')),
+    note: textValue(coverage, 'Note', 'note') || textValue(row, 'CoverageNote', 'coverageNote', 'coverage_note')
+  };
+  return normalized.chapters.length || normalized.from || normalized.to || normalized.runes || normalized.isAdded || normalized.note
+    ? normalized
+    : null;
+}
+
+function runningLabelFromSnapshot(snapshot) {
+  const agents = arrayValue(snapshot, 'Agents', 'agents');
+  const agent = agents.find(isRunningAgent);
+  if (!agent) {
     return '';
   }
-  const items = Array.isArray(styles) ? styles : [];
-  return items.find((item) => item.id === id)?.label || id;
+  const name = textValue(agent, 'Name', 'name') || 'agent';
+  const tool = textValue(agent, 'Tool', 'tool');
+  const summary = textValue(agent, 'Summary', 'summary');
+  const state = textValue(agent, 'State', 'state') || 'running';
+  if (tool) {
+    return `${name} / ${tool}`;
+  }
+  if (summary) {
+    return `${name} / ${summary}`;
+  }
+  return `${name} / ${state}`;
 }
 
-function snapshotStyle(snapshot) {
-  return String(snapshot?.Style || snapshot?.style || 'default').trim() || 'default';
+function runningLabelFromEventRows(eventRows) {
+  const row = [...(eventRows || [])].reverse().find((event) => {
+    const payload = eventPayload(event);
+    return Boolean(payload?.running || payload?.Running);
+  });
+  const event = eventPayload(row);
+  if (!event) {
+    return '';
+  }
+  const agent = textValue(event, 'agent', 'Agent');
+  const category = textValue(event, 'category', 'Category') || 'EVENT';
+  const summary = textValue(event, 'summary', 'Summary');
+  if (agent && summary) {
+    return `${agent} / ${summary}`;
+  }
+  if (agent) {
+    return `${agent} / ${category}`;
+  }
+  return summary || category;
 }
 
-export function canEditProjectStyle(snapshot) {
-  return isFreshProject(snapshot);
+function isRunningAgent(agent) {
+  const state = textValue(agent, 'State', 'state').toLowerCase();
+  const tool = textValue(agent, 'Tool', 'tool');
+  if (tool) {
+    return true;
+  }
+  return Boolean(state && !['idle', 'done', 'complete', 'completed', 'paused'].includes(state));
+}
+
+function eventPayload(row) {
+  return row?.event || row?.Event || null;
+}
+
+function arrayValue(source, ...keys) {
+  for (const key of keys) {
+    if (Array.isArray(source?.[key])) {
+      return source[key];
+    }
+  }
+  return [];
+}
+
+function objectValue(source, ...keys) {
+  for (const key of keys) {
+    const value = source?.[key];
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function valueByKey(source, ...keys) {
+  for (const key of keys) {
+    if (source?.[key] !== undefined && source?.[key] !== null) {
+      return source[key];
+    }
+  }
+  return null;
+}
+
+function numberValue(source, ...keys) {
+  for (const key of keys) {
+    const value = numberFromValue(source?.[key]);
+    if (value > 0) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+function numberFromValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function textValue(source, ...keys) {
+  for (const key of keys) {
+    const value = String(source?.[key] ?? '').trim();
+    if (value) {
+      return value;
+    }
+  }
+  return '';
 }
 
 function isFreshProject(snapshot) {

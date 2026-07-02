@@ -80,7 +80,7 @@ func (n *Notifier) deliver(nt Notification) {
 // runCommand 执行用户配置的命令：字段经环境变量传入（一行 curl 零依赖、无注入
 // 风险），完整 JSON 同时写 stdin（复杂分发场景自行解析）。超时由 ctx 强杀。
 func runCommand(ctx context.Context, command string, nt Notification) error {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd := shellCommand(ctx, command)
 	cmd.Env = append(os.Environ(),
 		"NOTIFY_KIND="+nt.Kind,
 		"NOTIFY_LEVEL="+nt.Level,
@@ -93,6 +93,13 @@ func runCommand(ctx context.Context, command string, nt Notification) error {
 }
 
 // runSystem 内置桌面通知：只覆盖"人在电脑旁"的场景，找不到命令静默降级。
+func shellCommand(ctx context.Context, command string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-Command", command)
+	}
+	return exec.CommandContext(ctx, "sh", "-c", command)
+}
+
 func runSystem(ctx context.Context, nt Notification) error {
 	switch runtime.GOOS {
 	case "darwin":

@@ -107,6 +107,7 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 		issues = append(issues, fmt.Sprintf("source refs missing: %v", missingSourceRefs))
 	}
 	contract := buildAdaptationWordContract(t.store, plan, chapterPlan, a.Chapter, wordCount)
+	warnings := adaptationWordContractWarnings(t.store, plan, chapterPlan, a.Chapter, wordCount)
 	issues = append(issues, adaptationWordContractIssues(t.store, plan, chapterPlan, a.Chapter, wordCount)...)
 	issues = append(issues, adaptationDraftQualityIssues(t.store, plan, chapterPlan, a.Chapter, content)...)
 	changeEvidence := cleanChangeEvidence(a.ChangeEvidence)
@@ -133,6 +134,7 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 		"draft_sha256":             digest,
 		"word_count":               wordCount,
 		"issues":                   issues,
+		"word_contract_warnings":   warnings,
 		"change_evidence":          changeEvidence,
 		"required_change_evidence": adaptationRequiredChangeEvidencePrompt(plan, chapterPlan),
 		"source_refs":              sourceRefs,

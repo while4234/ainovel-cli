@@ -1,7 +1,9 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,6 +13,9 @@ import (
 )
 
 var modelConfigRoles = []string{"default", "coordinator", "architect", "writer", "editor"}
+
+var openAuthBrowser = openBrowser
+var startGrokAuthLogin = grokauth.StartLogin
 
 type apiModelConfig struct {
 	Providers      []apiModelProvider `json:"providers"`
@@ -32,30 +37,75 @@ type apiModelRoute struct {
 	ReasoningEffort string `json:"reasoning_effort"`
 }
 
-type apiModelAddRequest struct {
-	Role      string `json:"role"`
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
-	Type      string `json:"type"`
-	Auth      string `json:"auth"`
-	AccountID string `json:"account_id"`
-	APIKey    string `json:"api_key"`
-	BaseURL   string `json:"base_url"`
-	API       string `json:"api"`
+type grokLoginStartRequest struct {
+	AccountID   string `json:"account_id"`
+	AccountName string `json:"account_name"`
+	OpenBrowser bool   `json:"open_browser"`
 }
 
-func (s *Server) handleGlobalModels(w http.ResponseWriter, r *http.Request) {
+type grokLoginCompleteRequest struct {
+	Callback string `json:"callback"`
+}
+
+type grokLoginStatusRequest struct {
+	AccountID string `json:"account_id"`
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	s.configMu.Lock()
-	models := apiModelConfigFromConfig(s.cfg)
-	s.configMu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+	cfg := s.currentConfig()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models": s.globalModelConfig(cfg),
+	})
 }
 
-func (s *Server) handleGlobalModelSwitch(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	provider := strings.TrimSpace(req.Provider)
+	model := strings.TrimSpace(req.Model)
+	if provider == "" || model == "" {
+		writeError(w, http.StatusBadRequest, "provider and model are required")
+		return
+	}
+
+	cfg := s.currentConfig()
+	if _, ok := cfg.Providers[provider]; !ok {
+		writeError(w, http.StatusBadRequest, "provider is not configured")
+		return
+	}
+	cfg.Provider = provider
+	cfg.ModelName = model
+	cfg.RememberModelCandidate(provider, model)
+	if err := cfg.ValidateBase(); err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	if err := saveWebConfig(cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.setCurrentConfig(cfg)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  s.globalModelConfig(cfg),
+		"runtime": s.runtimePayload(cfg),
+	})
+}
+
+func (s *Server) handleModelSwitch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -69,87 +119,133 @@ func (s *Server) handleGlobalModelSwitch(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	s.configMu.Lock()
-	candidate, err := host.SelectProviderModelInConfig(s.cfg, normalizeModelRole(req.Role), req.Provider, req.Model)
-	if err == nil {
-		err = s.saveGlobalConfigLocked(candidate)
-	}
-	if err == nil {
-		s.cfg = candidate
-		s.sessions.UpdateConfig(candidate)
-	}
-	response := s.globalModelResponseLocked()
-	s.configMu.Unlock()
+	models, runtime, err := s.addGlobalProviderModel(req.Role, req.Provider, req.Model, bootstrap.ProviderConfig{})
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  models,
+		"runtime": runtime,
+	})
 }
 
-func (s *Server) handleGlobalModelAdd(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleModelAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req apiModelAddRequest
+	var req struct {
+		Role      string `json:"role"`
+		Provider  string `json:"provider"`
+		Model     string `json:"model"`
+		Type      string `json:"type"`
+		Auth      string `json:"auth"`
+		AccountID string `json:"account_id"`
+		APIKey    string `json:"api_key"`
+		BaseURL   string `json:"base_url"`
+		API       string `json:"api"`
+	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	pc := providerConfigFromModelAddRequest(req)
-
-	s.configMu.Lock()
-	candidate, err := host.AddProviderModelToConfig(r.Context(), s.cfg, normalizeModelRole(req.Role), req.Provider, pc, req.Model)
-	if err == nil {
-		err = s.saveGlobalConfigLocked(candidate)
+	pc := bootstrap.ProviderConfig{
+		Type:      strings.TrimSpace(req.Type),
+		Auth:      strings.TrimSpace(req.Auth),
+		AccountID: strings.TrimSpace(req.AccountID),
+		APIKey:    strings.TrimSpace(req.APIKey),
+		BaseURL:   strings.TrimSpace(req.BaseURL),
+		API:       strings.TrimSpace(req.API),
 	}
-	if err == nil {
-		s.cfg = candidate
-		s.sessions.UpdateConfig(candidate)
-	}
-	response := s.globalModelResponseLocked()
-	s.configMu.Unlock()
+	models, runtime, err := s.addGlobalProviderModel(req.Role, req.Provider, req.Model, pc)
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  models,
+		"runtime": runtime,
+	})
 }
 
-func (s *Server) globalModelResponseLocked() map[string]any {
-	return map[string]any{
-		"models":  apiModelConfigFromConfig(s.cfg),
-		"runtime": s.runtimePayloadLocked(),
+func (s *Server) addGlobalProviderModel(role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, map[string]any, error) {
+	role = normalizeModelRole(role)
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return apiModelConfig{}, nil, fmt.Errorf("provider and model are required")
 	}
+	if !globalModelRoleAllowed(role) {
+		return apiModelConfig{}, nil, fmt.Errorf("unknown role %q", role)
+	}
+
+	cfg := s.currentConfig()
+	if cfg.Providers == nil {
+		cfg.Providers = make(map[string]bootstrap.ProviderConfig)
+	}
+	if providerConfigRequestIsEmpty(pc) {
+		if _, ok := cfg.Providers[provider]; !ok {
+			return apiModelConfig{}, nil, fmt.Errorf("provider %q is not configured", provider)
+		}
+	} else {
+		pc.Models = []string{model}
+		cfg.Providers[provider] = pc
+	}
+	cfg.RememberModelCandidate(provider, model)
+	if role == "" || role == "default" {
+		cfg.Provider = provider
+		cfg.ModelName = model
+	} else {
+		if cfg.Roles == nil {
+			cfg.Roles = make(map[string]bootstrap.RoleConfig)
+		}
+		rc := cfg.Roles[role]
+		rc.Provider = provider
+		rc.Model = model
+		cfg.Roles[role] = rc
+	}
+	if err := cfg.ValidateBase(); err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	if err := saveWebConfig(cfg); err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	s.setCurrentConfig(cfg)
+	return s.globalModelConfig(cfg), s.runtimePayload(cfg), nil
 }
 
-func (s *Server) saveGlobalConfigLocked(cfg bootstrap.Config) error {
-	path := strings.TrimSpace(cfg.PersistPath)
-	if path == "" {
-		path = bootstrap.DefaultConfigPath()
+func globalModelRoleAllowed(role string) bool {
+	for _, known := range modelConfigRoles {
+		if role == known {
+			return true
+		}
 	}
-	if path == "" {
-		return nil
-	}
-	return bootstrap.SaveConfig(path, cfg)
+	return false
 }
 
-func apiModelConfigFromConfig(cfg bootstrap.Config) apiModelConfig {
-	providers := make([]apiModelProvider, 0, len(cfg.Providers))
-	for name := range cfg.Providers {
-		providers = append(providers, apiModelProvider{
-			Name:   name,
-			Models: cfg.CandidateModels(name),
+func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
+	providers := configuredModelProviders(cfg)
+	outProviders := make([]apiModelProvider, 0, len(providers))
+	for _, provider := range providers {
+		outProviders = append(outProviders, apiModelProvider{
+			Name:   provider,
+			Models: cfg.CandidateModels(provider),
 		})
 	}
-	sortModelProviders(providers)
-
 	roles := make([]apiModelRoute, 0, len(modelConfigRoles))
 	for _, role := range modelConfigRoles {
 		normalized := normalizeModelRole(role)
-		provider, model, explicit := configModelSelection(cfg, normalized)
+		provider := cfg.Provider
+		model := cfg.ModelName
+		explicit := normalized == "default"
+		if normalized != "default" {
+			if rc, ok := cfg.Roles[normalized]; ok && rc.Provider != "" && rc.Model != "" {
+				provider = rc.Provider
+				model = rc.Model
+				explicit = true
+			}
+		}
 		roles = append(roles, apiModelRoute{
 			Role:            normalized,
 			Provider:        provider,
@@ -159,42 +255,31 @@ func apiModelConfigFromConfig(cfg bootstrap.Config) apiModelConfig {
 		})
 	}
 	return apiModelConfig{
-		Providers: providers,
-		Roles:     roles,
-		ThinkingLevels: []string{
-			"",
-			"off",
-			"low",
-			"medium",
-			"high",
-			"xhigh",
-			"max",
-		},
-		ThinkingRule: "default applies to coordinator, architect, writer, and editor unless that role has its own reasoning_effort",
+		Providers:      outProviders,
+		Roles:          roles,
+		ThinkingLevels: []string{"", "off", "low", "medium", "high", "xhigh", "max"},
+		ThinkingRule:   "default applies to coordinator, architect, writer, and editor unless that role has its own reasoning_effort",
 	}
 }
 
-func sortModelProviders(providers []apiModelProvider) {
-	for i := 1; i < len(providers); i++ {
-		current := providers[i]
-		j := i - 1
-		for j >= 0 && providers[j].Name > current.Name {
-			providers[j+1] = providers[j]
-			j--
-		}
-		providers[j+1] = current
+func configuredModelProviders(cfg bootstrap.Config) []string {
+	providers := make([]string, 0, len(cfg.Providers))
+	for name := range cfg.Providers {
+		providers = append(providers, name)
 	}
+	sort.Strings(providers)
+	return providers
 }
 
-func configModelSelection(cfg bootstrap.Config, role string) (string, string, bool) {
-	role = normalizeModelRole(role)
-	if role == "default" {
-		return cfg.Provider, cfg.ModelName, true
+func saveWebConfig(cfg bootstrap.Config) error {
+	path := strings.TrimSpace(cfg.PersistPath)
+	if path == "" {
+		path = bootstrap.DefaultConfigPath()
 	}
-	if rc, ok := cfg.Roles[role]; ok && strings.TrimSpace(rc.Provider) != "" && strings.TrimSpace(rc.Model) != "" {
-		return rc.Provider, rc.Model, true
+	if path == "" {
+		return nil
 	}
-	return cfg.Provider, cfg.ModelName, false
+	return bootstrap.SaveConfig(path, cfg)
 }
 
 func (s *Server) handleProjectModels(w http.ResponseWriter, r *http.Request, id string) {
@@ -279,7 +364,17 @@ func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, i
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req apiModelAddRequest
+	var req struct {
+		Role      string `json:"role"`
+		Provider  string `json:"provider"`
+		Model     string `json:"model"`
+		Type      string `json:"type"`
+		Auth      string `json:"auth"`
+		AccountID string `json:"account_id"`
+		APIKey    string `json:"api_key"`
+		BaseURL   string `json:"base_url"`
+		API       string `json:"api"`
+	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -289,20 +384,6 @@ func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, i
 		writeProjectSessionError(w, err)
 		return
 	}
-	pc := providerConfigFromModelAddRequest(req)
-	models, err := session.AddProviderModel(req.Role, req.Provider, req.Model, pc)
-	if err != nil {
-		writeProjectLifecycleError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"project":  manifest,
-		"models":   models,
-		"snapshot": session.Snapshot(),
-	})
-}
-
-func providerConfigFromModelAddRequest(req apiModelAddRequest) bootstrap.ProviderConfig {
 	pc := bootstrap.ProviderConfig{
 		Type:      strings.TrimSpace(req.Type),
 		Auth:      strings.TrimSpace(req.Auth),
@@ -314,7 +395,16 @@ func providerConfigFromModelAddRequest(req apiModelAddRequest) bootstrap.Provide
 	if !providerConfigRequestIsEmpty(pc) {
 		pc.Models = []string{strings.TrimSpace(req.Model)}
 	}
-	return pc
+	models, err := session.AddProviderModel(req.Role, req.Provider, req.Model, pc)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"models":   models,
+		"snapshot": session.Snapshot(),
+	})
 }
 
 func providerConfigRequestIsEmpty(pc bootstrap.ProviderConfig) bool {
@@ -365,10 +455,7 @@ func (s *Server) handleProjectGrokLoginStart(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req struct {
-		AccountID   string `json:"account_id"`
-		AccountName string `json:"account_name"`
-	}
+	var req grokLoginStartRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -383,10 +470,12 @@ func (s *Server) handleProjectGrokLoginStart(w http.ResponseWriter, r *http.Requ
 		writeProjectLifecycleError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"project": manifest,
 		"login":   login,
-	})
+	}
+	addGrokBrowserOpenResult(response, login.AuthorizeURL, req.OpenBrowser)
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleProjectGrokLoginPoll(w http.ResponseWriter, r *http.Request, id string) {
@@ -415,9 +504,7 @@ func (s *Server) handleProjectGrokLoginComplete(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req struct {
-		Callback string `json:"callback"`
-	}
+	var req grokLoginCompleteRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -449,9 +536,7 @@ func (s *Server) handleProjectGrokLoginStatus(w http.ResponseWriter, r *http.Req
 	}
 	accountID := r.URL.Query().Get("account_id")
 	if r.Method == http.MethodPost {
-		var req struct {
-			AccountID string `json:"account_id"`
-		}
+		var req grokLoginStatusRequest
 		if err := decodeJSONBody(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -467,6 +552,114 @@ func (s *Server) handleProjectGrokLoginStatus(w http.ResponseWriter, r *http.Req
 		"project": manifest,
 		"status":  session.GrokLoginStatus(defaultGrokAccountID(accountID)),
 	})
+}
+
+func (s *Server) handleGrokLogin(w http.ResponseWriter, r *http.Request) {
+	action := strings.TrimPrefix(r.URL.Path, "/api/models/grok-login/")
+	switch action {
+	case "start":
+		s.handleGrokLoginStart(w, r)
+	case "poll":
+		s.handleGrokLoginPoll(w, r)
+	case "complete":
+		s.handleGrokLoginComplete(w, r)
+	case "status":
+		s.handleGrokLoginStatus(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) handleGrokLoginStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req grokLoginStartRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	login, err := startGrokAuthLogin(defaultGrokAccountID(req.AccountID), req.AccountName)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	response := map[string]any{"login": login}
+	addGrokBrowserOpenResult(response, login.AuthorizeURL, req.OpenBrowser)
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleGrokLoginPoll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	login, err := grokauth.PollLogin(r.Context())
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"login": login})
+}
+
+func (s *Server) handleGrokLoginComplete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req grokLoginCompleteRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Callback) == "" {
+		writeError(w, http.StatusBadRequest, "callback is required")
+		return
+	}
+	status, err := grokauth.CompleteLogin(r.Context(), req.Callback)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": status})
+}
+
+func (s *Server) handleGrokLoginStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	accountID := r.URL.Query().Get("account_id")
+	if r.Method == http.MethodPost {
+		var req grokLoginStatusRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		accountID = req.AccountID
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": grokauth.GetStatus(defaultGrokAccountID(accountID)),
+	})
+}
+
+func addGrokBrowserOpenResult(response map[string]any, authorizeURL string, openBrowser bool) {
+	if !openBrowser {
+		return
+	}
+	authorizeURL = strings.TrimSpace(authorizeURL)
+	if authorizeURL == "" {
+		response["browser_opened"] = false
+		response["browser_open_error"] = "Grok authorize URL is empty"
+		return
+	}
+	if err := openAuthBrowser(authorizeURL); err != nil {
+		response["browser_opened"] = false
+		response["browser_open_error"] = err.Error()
+		return
+	}
+	response["browser_opened"] = true
 }
 
 func defaultGrokAccountID(value string) string {

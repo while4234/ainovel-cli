@@ -38,7 +38,7 @@ func TestStaticFSIncludesBuiltWebDist(t *testing.T) {
 }
 
 func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
-	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
 	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
 	defer server.Close()
 
@@ -130,7 +130,7 @@ func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
 }
 
 func TestHandlerCreatesProjectsUnderRuntimeRoot(t *testing.T) {
-	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
 	handler := NewHandler(bootstrap.Config{}, assets.Bundle{}, runtimeRoot)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewBufferString(`{"name":"Web Novel"}`))
@@ -160,7 +160,7 @@ func TestHandlerCreatesProjectsUnderRuntimeRoot(t *testing.T) {
 }
 
 func TestModelConfigResponseRedactsProviderSecrets(t *testing.T) {
-	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
 	handler := NewHandler(testWebConfig(t), assets.Load("default"), runtimeRoot)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewBufferString(`{"name":"Secret Safety"}`))
@@ -190,7 +190,7 @@ func TestModelConfigResponseRedactsProviderSecrets(t *testing.T) {
 }
 
 func TestBackendManualTestEndpointIsNoTokenCall(t *testing.T) {
-	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
 	handler := NewHandler(testWebConfig(t), assets.Load("default"), runtimeRoot)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewBufferString(`{"name":"Backend Test"}`))

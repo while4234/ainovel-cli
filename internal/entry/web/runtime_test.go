@@ -10,18 +10,18 @@ import (
 )
 
 func TestResolveRuntimeRootPriority(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	repo := t.TempDir()
+	repo := testTempDir(t)
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	cfgRoot := filepath.Join(t.TempDir(), "config")
-	envRoot := filepath.Join(t.TempDir(), "env")
-	flagRoot := filepath.Join(t.TempDir(), "flag")
+	cfgRoot := filepath.Join(testTempDir(t), "config")
+	envRoot := filepath.Join(testTempDir(t), "env")
+	flagRoot := filepath.Join(testTempDir(t), "flag")
 	t.Setenv(EnvRuntimeRoot, envRoot)
 
 	got, source, err := ResolveRuntimeRoot(flagRoot, bootstrap.Config{RuntimeRoot: cfgRoot}, repo)
@@ -69,7 +69,7 @@ func mustCanonicalPath(t *testing.T, path string) string {
 }
 
 func TestResolveRuntimeRootRejectsRepositoryPath(t *testing.T) {
-	repo := t.TempDir()
+	repo := testTempDir(t)
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestResolveRuntimeRootRejectsRepositoryPath(t *testing.T) {
 }
 
 func TestEnsureRuntimeRootCreatesAndRejectsFile(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "missing", "novels")
+	root := filepath.Join(testTempDir(t), "missing", "novels")
 	if err := EnsureRuntimeRoot(root); err != nil {
 		t.Fatalf("EnsureRuntimeRoot creates missing root: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestEnsureRuntimeRootCreatesAndRejectsFile(t *testing.T) {
 		t.Fatalf("runtime root was not created as directory: info=%v err=%v", info, err)
 	}
 
-	filePath := filepath.Join(t.TempDir(), "not-a-dir")
+	filePath := filepath.Join(testTempDir(t), "not-a-dir")
 	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}

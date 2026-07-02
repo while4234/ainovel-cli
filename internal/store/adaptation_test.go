@@ -2,6 +2,7 @@ package store
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -105,45 +106,142 @@ func TestAdaptationProposalDoesNotActivateProject(t *testing.T) {
 	}
 }
 
-func TestAdaptationStoreNormalizesFullRewriteWordTolerance(t *testing.T) {
+func TestAdaptationPlanLoadNormalizesLegacyAndNestedWordBudget(t *testing.T) {
 	s := NewStore(t.TempDir())
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 
-	if err := s.Adaptation.SavePlan(domain.AdaptationPlan{
-		Granularity:    domain.AdaptationGranularityArc,
-		RewritePolicy:  domain.AdaptationRewritePreserveDetails,
-		Brief:          "按弧重写",
-		WordTolerance:  0.15,
-		TargetMinRunes: 85,
-		TargetMaxRunes: 115,
+	legacy := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityChapter,
+		RewritePolicy: domain.AdaptationRewritePreserveDetails,
+		Brief:         "legacy",
+		WordTolerance: 0.15,
 		Chapters: []domain.AdaptationChapterPlan{{
 			Chapter:        1,
-			Title:          "第一章",
+			Title:          "Legacy",
 			SourceChapters: []int{1},
-			TargetMinRunes: 85,
-			TargetMaxRunes: 115,
+			SourceRunes:    1000,
+			TargetRunes:    1100,
+			TargetMinRunes: 900,
+			TargetMaxRunes: 1200,
 		}},
-	}); err != nil {
-		t.Fatalf("SavePlan: %v", err)
+	}
+	if err := s.Adaptation.io.WriteJSON(adaptationPlanFile, legacy); err != nil {
+		t.Fatalf("WriteJSON legacy: %v", err)
+	}
+	loadedLegacy, err := s.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan legacy: %v", err)
+	}
+	chapter := loadedLegacy.Chapters[0]
+	if loadedLegacy.Status != domain.AdaptationPlanStatusConfirmed {
+		t.Fatalf("legacy status = %q, want confirmed", loadedLegacy.Status)
+	}
+	if chapter.WordBudget == nil || chapter.WordBudget.TargetRunes != 1100 || chapter.WordBudget.MinRunes != 900 || chapter.WordBudget.Tolerance != 0.15 {
+		t.Fatalf("legacy word budget not mirrored: %+v", chapter.WordBudget)
+	}
+	if chapter.TargetRunes != 1100 || chapter.TargetMinRunes != 900 || chapter.TargetMaxRunes != 1200 {
+		t.Fatalf("legacy target fields changed: %+v", chapter)
 	}
 
-	loaded, err := s.Adaptation.LoadPlan()
+	nested := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityArc,
+		Status:      domain.AdaptationPlanStatusProposal,
+		Brief:       "nested",
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Nested",
+			SourceChapters: []int{1, 2},
+			OutlineEntry: domain.OutlineEntry{
+				CoreEvent: "combined event",
+				Hook:      "new hook",
+				Scenes:    []string{"first", "second"},
+			},
+			WordBudget: &domain.AdaptationChapterWordBudget{
+				SourceRunes: 2000,
+				TargetRunes: 2300,
+				MinRunes:    2100,
+				MaxRunes:    2500,
+			},
+		}},
+	}
+	if err := s.Adaptation.io.WriteJSON(adaptationProposalFile, nested); err != nil {
+		t.Fatalf("WriteJSON nested: %v", err)
+	}
+	loadedNested, err := s.Adaptation.LoadProposal()
 	if err != nil {
-		t.Fatalf("LoadPlan: %v", err)
+		t.Fatalf("LoadProposal nested: %v", err)
 	}
-	if loaded == nil {
-		t.Fatal("LoadPlan returned nil")
+	nestedChapter := loadedNested.Chapters[0]
+	if nestedChapter.TargetRunes != 2300 || nestedChapter.TargetMinRunes != 2100 || nestedChapter.TargetMaxRunes != 2500 {
+		t.Fatalf("nested word budget did not backfill legacy fields: %+v", nestedChapter)
 	}
-	if loaded.RewritePolicy != domain.AdaptationRewriteFullRewrite {
-		t.Fatalf("rewrite policy=%s", loaded.RewritePolicy)
+	if nestedChapter.CoreEvent != "combined event" || nestedChapter.Hook != "new hook" || len(nestedChapter.Scenes) != 2 {
+		t.Fatalf("outline fields not preserved: %+v", nestedChapter.OutlineEntry)
 	}
-	if loaded.WordTolerance != 0 || loaded.TargetMinRunes != 0 || loaded.TargetMaxRunes != 0 {
-		t.Fatalf("full rewrite plan should not keep hard word ranges: %+v", loaded)
+}
+
+func TestAdaptationPlanPersistsSourceDerivedSoftBudgets(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
 	}
-	if len(loaded.Chapters) != 1 || loaded.Chapters[0].TargetMinRunes != 0 || loaded.Chapters[0].TargetMaxRunes != 0 {
-		t.Fatalf("full rewrite chapter should not keep hard word ranges: %+v", loaded.Chapters)
+
+	source1, err := s.Adaptation.SaveSourceChapter(1, "One", strings.Repeat("a", 100))
+	if err != nil {
+		t.Fatalf("SaveSourceChapter 1: %v", err)
+	}
+	source2, err := s.Adaptation.SaveSourceChapter(2, "Two", strings.Repeat("b", 50))
+	if err != nil {
+		t.Fatalf("SaveSourceChapter 2: %v", err)
+	}
+	if err := s.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: 2,
+		Chapters:     []domain.AdaptationSource{source1, source2},
+	}); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityArc,
+		Brief:       "soft default budgets",
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, Title: "One", SourceChapters: []int{1}},
+			{Chapter: 2, Title: "Two", SourceChapters: []int{2}},
+		},
+	}
+	if err := s.Adaptation.SavePlan(plan); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	first, err := s.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan first: %v", err)
+	}
+	reloaded := NewStore(s.Dir())
+	second, err := reloaded.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan second: %v", err)
+	}
+
+	if first.TargetTotalRunes != 150 || first.TargetMinRunes != 128 || first.TargetMaxRunes != 172 {
+		t.Fatalf("plan totals = %+v", first)
+	}
+	if first.Chapters[0].WordBudget == nil || first.Chapters[0].TargetRunes != 100 ||
+		first.Chapters[0].TargetMinRunes != 85 || first.Chapters[0].TargetMaxRunes != 115 {
+		t.Fatalf("chapter 1 budget = %+v", first.Chapters[0])
+	}
+	if first.Chapters[1].WordBudget == nil || first.Chapters[1].TargetRunes != 50 ||
+		first.Chapters[1].TargetMinRunes != 43 || first.Chapters[1].TargetMaxRunes != 57 {
+		t.Fatalf("chapter 2 budget = %+v", first.Chapters[1])
+	}
+	if second.TargetTotalRunes != first.TargetTotalRunes ||
+		second.TargetMinRunes != first.TargetMinRunes ||
+		second.TargetMaxRunes != first.TargetMaxRunes ||
+		second.Chapters[0].TargetMinRunes != first.Chapters[0].TargetMinRunes ||
+		second.Chapters[1].TargetMaxRunes != first.Chapters[1].TargetMaxRunes {
+		t.Fatalf("budgets changed across reload: first=%+v second=%+v", first, second)
 	}
 }
 

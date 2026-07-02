@@ -67,6 +67,7 @@ type AdaptationPlan struct {
 	Status            string                  `json:"status"`
 	RewritePolicy     string                  `json:"rewrite_policy"`
 	Brief             string                  `json:"brief"`
+	Planner           *AdaptationPlannerMeta  `json:"planner,omitempty"`
 	WordTolerance     float64                 `json:"word_tolerance,omitempty"`
 	SourceTotalRunes  int                     `json:"source_total_runes,omitempty"`
 	TargetTotalRunes  int                     `json:"target_total_runes,omitempty"`
@@ -77,6 +78,15 @@ type AdaptationPlan struct {
 	Chapters          []AdaptationChapterPlan `json:"chapters"`
 }
 
+// AdaptationPlannerMeta records how an adaptation plan or proposal was made.
+type AdaptationPlannerMeta struct {
+	Prompt        string   `json:"prompt,omitempty"`
+	PromptVersion string   `json:"prompt_version,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	GeneratedAt   string   `json:"generated_at,omitempty"`
+	Notes         []string `json:"notes,omitempty"`
+}
+
 // SourceRange records the inclusive source chapter coverage for one target
 // chapter. It remains explicit even when SourceChapters has sparse anchors.
 type SourceRange struct {
@@ -84,21 +94,34 @@ type SourceRange struct {
 	To   int `json:"to"`
 }
 
+// AdaptationChapterWordBudget is the additive nested chapter word-budget
+// contract. The legacy top-level TargetRunes/TargetMinRunes/TargetMaxRunes
+// fields remain authoritative for old readers and are mirrored by the store.
+type AdaptationChapterWordBudget struct {
+	SourceRunes int     `json:"source_runes,omitempty"`
+	TargetRunes int     `json:"target_runes,omitempty"`
+	MinRunes    int     `json:"min_runes,omitempty"`
+	MaxRunes    int     `json:"max_runes,omitempty"`
+	Tolerance   float64 `json:"tolerance,omitempty"`
+}
+
 // AdaptationChapterPlan defines one target chapter's source anchors and edits.
 type AdaptationChapterPlan struct {
-	Chapter         int         `json:"chapter"`
-	Title           string      `json:"title"`
-	SourceChapters  []int       `json:"source_chapters"`
-	SourceRunes     int         `json:"source_runes,omitempty"`
-	TargetRunes     int         `json:"target_runes,omitempty"`
-	TargetMinRunes  int         `json:"target_min_runes,omitempty"`
-	TargetMaxRunes  int         `json:"target_max_runes,omitempty"`
-	SourceRange     SourceRange `json:"source_range,omitempty"`
-	IsAdded         bool        `json:"is_added,omitempty"`
-	CoverageNote    string      `json:"coverage_note,omitempty"`
-	PreserveEvents  []string    `json:"preserve_events,omitempty"`
-	RequiredChanges []string    `json:"required_changes,omitempty"`
-	ForbiddenMoves  []string    `json:"forbidden_moves,omitempty"`
+	OutlineEntry
+	Chapter         int                          `json:"chapter"`
+	Title           string                       `json:"title"`
+	SourceChapters  []int                        `json:"source_chapters"`
+	SourceRunes     int                          `json:"source_runes,omitempty"`
+	TargetRunes     int                          `json:"target_runes,omitempty"`
+	TargetMinRunes  int                          `json:"target_min_runes,omitempty"`
+	TargetMaxRunes  int                          `json:"target_max_runes,omitempty"`
+	WordBudget      *AdaptationChapterWordBudget `json:"word_budget,omitempty"`
+	SourceRange     SourceRange                  `json:"source_range,omitempty"`
+	IsAdded         bool                         `json:"is_added,omitempty"`
+	CoverageNote    string                       `json:"coverage_note,omitempty"`
+	PreserveEvents  []string                     `json:"preserve_events,omitempty"`
+	RequiredChanges []string                     `json:"required_changes,omitempty"`
+	ForbiddenMoves  []string                     `json:"forbidden_moves,omitempty"`
 }
 
 // AdaptationCheck is saved after a draft has been checked against the plan.

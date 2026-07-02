@@ -14,7 +14,7 @@ import (
 )
 
 func TestStylesEndpointReturnsMarkdownHeadingLabels(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/styles", nil)
@@ -38,7 +38,7 @@ func TestStylesEndpointReturnsMarkdownHeadingLabels(t *testing.T) {
 }
 
 func TestCreateProjectWithStyleWritesProjectOverlay(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewBufferString(`{"name":"Styled Novel","style":"fantasy"}`))
@@ -59,7 +59,7 @@ func TestCreateProjectWithStyleWritesProjectOverlay(t *testing.T) {
 }
 
 func TestCreateProjectRejectsUnknownStyle(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewBufferString(`{"name":"Bad Style","style":"missing-style"}`))
@@ -75,11 +75,11 @@ func TestCreateProjectRejectsUnknownStyle(t *testing.T) {
 }
 
 func TestOpenProjectHostUsesProjectStyleOverride(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	store := NewProjectStore(filepath.Join(t.TempDir(), "novels"))
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	manifest, err := store.CreateProjectWithStyle("Project Style", "fantasy")
 	if err != nil {
 		t.Fatalf("CreateProjectWithStyle: %v", err)
@@ -98,7 +98,7 @@ func TestOpenProjectHostUsesProjectStyleOverride(t *testing.T) {
 }
 
 func TestProjectStyleCanChangeBeforeWritingStarts(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProjectWithStyle("Fresh Style", "default")
 	if err != nil {
@@ -119,7 +119,7 @@ func TestProjectStyleCanChangeBeforeWritingStarts(t *testing.T) {
 }
 
 func TestProjectStyleChangeRejectsStartedProject(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProjectWithStyle("Locked Style", "default")
 	if err != nil {

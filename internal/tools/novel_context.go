@@ -121,6 +121,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	}
 
 	t.buildUserRules(result)
+	t.buildWordBudget(result, a.Chapter)
 
 	if len(warnings) > 0 {
 		result["_warnings"] = warnings

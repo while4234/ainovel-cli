@@ -10,7 +10,7 @@ import (
 )
 
 func TestReadChapterFinal(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -43,7 +43,7 @@ func TestReadChapterFinal(t *testing.T) {
 }
 
 func TestReadChapterDraft(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -71,7 +71,7 @@ func TestReadChapterDraft(t *testing.T) {
 }
 
 func TestReadChapterDialogue(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -105,7 +105,7 @@ func TestReadChapterDialogue(t *testing.T) {
 }
 
 func TestReadChapterRange(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -135,7 +135,7 @@ func TestReadChapterRange(t *testing.T) {
 }
 
 func TestDraftChapterWrite(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -190,7 +190,7 @@ func TestDraftChapterWrite(t *testing.T) {
 }
 
 func TestDraftChapterAppend(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -231,7 +231,7 @@ func TestDraftChapterAppend(t *testing.T) {
 }
 
 func TestReadChapterMissingReturnsJSON(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -253,7 +253,7 @@ func TestReadChapterMissingReturnsJSON(t *testing.T) {
 }
 
 func TestPlanChapterMarksInProgress(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -287,7 +287,7 @@ func TestPlanChapterMarksInProgress(t *testing.T) {
 }
 
 func TestDraftChapterRejectsCompleted(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)

@@ -122,6 +122,14 @@ func TestNormalize_InjectsGlobalPromptPrefix(t *testing.T) {
 
 // scriptedModel 是最小 fake ChatModel：按调用次序吐预设回复，并记录最后一轮收到的
 // messages，供断言反馈式重试是否把纠正提示并入了下一轮对话。回复用尽后重复最后一条。
+func TestNormalizerPromptDistinguishesTotalAndChapterWords(t *testing.T) {
+	for _, want := range []string{"全书/整本/总字数", "不属于 chapter_words", "每章/单章/一章 5000 字"} {
+		if !strings.Contains(normalizerSystemPrompt, want) {
+			t.Fatalf("normalizer prompt should contain %q", want)
+		}
+	}
+}
+
 type scriptedModel struct {
 	replies  []string
 	calls    int

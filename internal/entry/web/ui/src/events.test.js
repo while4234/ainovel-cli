@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   appendStreamDelta,
+  compactStreamRounds,
   createWorkbenchState,
   mergeEventRows,
   reduceWebEvent,
-  startStreamRound,
-  visibleStreamRounds
+  startStreamRound
 } from './events.js';
 
 describe('web event reducer', () => {
@@ -57,15 +57,15 @@ describe('web event reducer', () => {
     ]);
   });
 
-  it('shows only the current stream round in the main panel', () => {
-    const rounds = [
-      { id: 'round-0', text: '第一段' },
-      { id: 'round-1', text: '第二段' },
-      { id: 'round-2', text: '' }
-    ];
-
-    expect(visibleStreamRounds(rounds)).toEqual([
-      { id: 'round-1', text: '第二段' }
+  it('collapses repeated draft stream rounds after refresh', () => {
+    const first = '雨水敲打通风管，霓虹在远处闪烁。'.repeat(12);
+    const second = `${first}他终于拔出接口线，继续向节点深处移动。`;
+    const rounds = compactStreamRounds([
+      { id: 'round-0', text: first },
+      { id: 'round-1', text: second }
     ]);
+
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].text).toBe(second);
   });
 });

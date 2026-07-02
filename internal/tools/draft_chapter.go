@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/voocel/agentcore/schema"
@@ -65,6 +66,9 @@ func (t *DraftChapterTool) Execute(_ context.Context, args json.RawMessage) (jso
 	}
 	if a.Content == "" {
 		return nil, fmt.Errorf("content must not be empty: %w", errs.ErrToolArgs)
+	}
+	if issue := repeatedDraftContentIssue(a.Content); issue != "" {
+		return json.Marshal(repeatedDraftRejection(a.Chapter, a.Mode, issue))
 	}
 	if err := t.store.Progress.ValidateChapterWork(a.Chapter); err != nil {
 		return nil, err
@@ -130,13 +134,17 @@ func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount 
 		"word_count": wordCount,
 		"next_step":  "先 read_chapter(source=draft) 回读草稿，再调用 check_consistency，最后 commit_chapter",
 	}
+	t.addNormalWordBudgetStatus(result, chapter, wordCount)
 	contract, issues, ok := adaptationWordContractStatus(t.store, chapter, wordCount)
 	if !ok {
 		return result
 	}
 	result["adaptation_word_contract"] = contract
 	result["word_contract_passed"] = len(issues) == 0
-	if len(issues) == 0 {
+	if len(contract.Warnings) > 0 {
+		result["word_contract_warnings"] = contract.Warnings
+	}
+	if len(issues) == 0 && normalWordBudgetAllowsDraftNextStep(result) {
 		if contract.Hard {
 			result["next_step"] = "字数硬契约已满足：按 read_chapter(source=\"draft\") → check_consistency → check_adaptation → commit_chapter 继续。"
 		}
@@ -157,6 +165,72 @@ func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount 
 	return result
 }
 
+func normalWordBudgetAllowsDraftNextStep(result map[string]any) bool {
+	passed, ok := result["word_budget_passed"].(bool)
+	return !ok || passed
+}
+
+func repeatedDraftRejection(chapter int, mode string, issue string) map[string]any {
+	if mode == "" {
+		mode = "write"
+	}
+	return map[string]any{
+		"written":                 false,
+		"chapter":                 chapter,
+		"mode":                    mode,
+		"repeated_draft_rejected": true,
+		"reason":                  fmt.Sprintf("draft_chapter content appears to repeat existing prose (%s)", issue),
+		"next_step": fmt.Sprintf(
+			"不要追加或重复提交同一段正文。请调用 draft_chapter(mode=\"write\", chapter=%d) 进行干净的整章重写，删除重复句，并满足本章字数预算后再 read_chapter/check_consistency/commit_chapter。",
+			chapter,
+		),
+	}
+}
+
+func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chapter int, wordCount int) {
+	if t.store == nil {
+		return
+	}
+	meta, err := t.store.RunMeta.Load()
+	if err != nil || meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords <= 0 {
+		return
+	}
+	progress, err := t.store.Progress.Load()
+	if err != nil {
+		return
+	}
+	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
+	if !ok || runtime.CurrentChapter.Chapter <= 0 {
+		return
+	}
+	minWords := runtime.CurrentChapter.RecommendedMinWords
+	maxWords := runtime.CurrentChapter.RecommendedMaxWords
+	result["word_budget"] = map[string]any{
+		"min_words":              minWords,
+		"max_words":              maxWords,
+		"target_total_words":     runtime.Target.TargetTotalWords,
+		"completed_words":        runtime.Progress.CompletedWords,
+		"remaining_target_words": runtime.Remaining.TargetWords,
+		"remaining_chapters":     runtime.Remaining.Chapters,
+	}
+	if wordCount >= minWords && wordCount <= maxWords {
+		result["word_budget_passed"] = true
+		return
+	}
+	result["word_budget_passed"] = false
+	direction := "低于"
+	if wordCount > maxWords {
+		direction = "高于"
+	}
+	result["word_budget_issues"] = []string{
+		fmt.Sprintf("第 %d 章草稿%s预算区间：当前 %d 字，要求 %d-%d 字。", chapter, direction, wordCount, minWords, maxWords),
+	}
+	result["next_step"] = fmt.Sprintf(
+		"不要调用 commit_chapter。请调用 draft_chapter(mode=\"write\", chapter=%d) 干净地整章重写到 %d-%d 字，再 read_chapter(source=\"draft\")、check_consistency、commit_chapter。",
+		chapter, minWords, maxWords,
+	)
+}
+
 func loadDraftTextForQuality(st *store.Store, chapter int) string {
 	if st == nil || chapter <= 0 {
 		return ""
@@ -166,4 +240,50 @@ func loadDraftTextForQuality(st *store.Store, chapter int) string {
 		return ""
 	}
 	return text
+}
+
+func repeatedDraftContentIssue(content string) string {
+	sentences := splitDraftSentences(content)
+	seen := map[string]int{}
+	repeatedSentences := 0
+	repeatedRunes := 0
+	for _, sentence := range sentences {
+		normalized := normalizeDraftSentence(sentence)
+		runes := utf8.RuneCountInString(normalized)
+		if runes < 24 {
+			continue
+		}
+		seen[normalized]++
+		if seen[normalized] > 1 {
+			repeatedSentences++
+			repeatedRunes += runes
+		}
+	}
+	if repeatedSentences >= 3 || repeatedRunes >= 180 {
+		return fmt.Sprintf("%d repeated long sentence(s), about %d repeated characters", repeatedSentences, repeatedRunes)
+	}
+	return ""
+}
+
+func splitDraftSentences(content string) []string {
+	var sentences []string
+	var current strings.Builder
+	for _, r := range content {
+		current.WriteRune(r)
+		switch r {
+		case '。', '！', '？', '；', '.', '!', '?', ';', '\n':
+			if sentence := strings.TrimSpace(current.String()); sentence != "" {
+				sentences = append(sentences, sentence)
+			}
+			current.Reset()
+		}
+	}
+	if sentence := strings.TrimSpace(current.String()); sentence != "" {
+		sentences = append(sentences, sentence)
+	}
+	return sentences
+}
+
+func normalizeDraftSentence(sentence string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(sentence)), "")
 }

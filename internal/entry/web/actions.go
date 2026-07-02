@@ -27,7 +27,7 @@ func (s *Server) handleProjectStart(w http.ResponseWriter, r *http.Request, id s
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	text, err := decodeTextRequest(r)
+	req, err := decodeProjectStartRequest(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -41,7 +41,7 @@ func (s *Server) handleProjectStart(w http.ResponseWriter, r *http.Request, id s
 		writeError(w, http.StatusConflict, "project already has writing state; use continue/resume or create a new project")
 		return
 	}
-	if err := session.StartQuick(text); err != nil {
+	if err := session.StartQuick(req.Text, req.TargetTotalWords); err != nil {
 		writeProjectLifecycleError(w, err)
 		return
 	}
@@ -51,6 +51,26 @@ func (s *Server) handleProjectStart(w http.ResponseWriter, r *http.Request, id s
 		Snapshot: snapshot,
 		Running:  snapshot.IsRunning,
 	})
+}
+
+type projectStartRequest struct {
+	Text             string `json:"text"`
+	TargetTotalWords int    `json:"target_total_words"`
+}
+
+func decodeProjectStartRequest(r *http.Request) (projectStartRequest, error) {
+	var req projectStartRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		return req, fmt.Errorf("invalid request body: %w", err)
+	}
+	req.Text = strings.TrimSpace(req.Text)
+	if req.Text == "" {
+		return req, fmt.Errorf("text is required")
+	}
+	if req.TargetTotalWords < 0 {
+		return req, fmt.Errorf("target_total_words must be a non-negative integer")
+	}
+	return req, nil
 }
 
 func (s *Server) handleProjectPause(w http.ResponseWriter, r *http.Request, id string) {

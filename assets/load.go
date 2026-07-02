@@ -30,6 +30,7 @@ type Prompts struct {
 	ImportFoundation      string
 	ImportFoundationMerge string
 	ImportAnalyzer        string
+	AdaptationPlanner     string
 	SimulationSource      string
 	SimulationMerge       string
 }
@@ -123,6 +124,7 @@ func loadPrompts() Prompts {
 		ImportFoundation:      loadSystemPrompt("prompts/import-foundation.md"),
 		ImportFoundationMerge: loadSystemPrompt("prompts/import-foundation-merge.md"),
 		ImportAnalyzer:        loadSystemPrompt("prompts/import-chapter-analyzer.md"),
+		AdaptationPlanner:     loadSystemPrompt("prompts/adaptation-planner.md"),
 		SimulationSource:      loadSystemPrompt("prompts/simulation-source.md"),
 		SimulationMerge:       loadSystemPrompt("prompts/simulation-merge.md"),
 	}

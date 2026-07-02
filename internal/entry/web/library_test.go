@@ -17,7 +17,7 @@ import (
 )
 
 func TestSimulationLibraryUploadSearchAndLoad(t *testing.T) {
-	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
 	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
 	defer server.Close()
 
@@ -118,7 +118,7 @@ func TestSimulationLibraryUploadSearchAndLoad(t *testing.T) {
 }
 
 func TestProjectSimulationImportAlsoAddsLibraryEntry(t *testing.T) {
-	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
 	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Import Simulation Library")
@@ -155,7 +155,7 @@ func TestProjectSimulationImportAlsoAddsLibraryEntry(t *testing.T) {
 }
 
 func TestNovelLibrarySaveLoadRewritesManifestAndSkipsAnalyze(t *testing.T) {
-	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
 	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
 	defer server.Close()
 

@@ -181,6 +181,97 @@ func (s *Server) handleProjectAdaptStart(w http.ResponseWriter, r *http.Request,
 	})
 }
 
+func (s *Server) handleProjectAdaptProposal(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	options, mode, rewritePolicy, err := decodeAdaptationProposalRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	sourcePath, err := adaptationSourcePathFromName(options.SourcePath, manifest, false)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	options.SourcePath = sourcePath
+	proposal, err := session.BuildAdaptationProposal(options)
+	if err != nil {
+		writeAdaptationStartError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":        manifest,
+		"snapshot":       snapshot,
+		"proposal":       proposal,
+		"mode":           mode,
+		"rewrite_policy": rewritePolicy,
+		"running":        snapshot.IsRunning,
+	})
+}
+
+func (s *Server) handleProjectAdaptConfirm(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	plan, err := session.ConfirmAdaptationProposal()
+	if err != nil {
+		writeAdaptationStartError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"snapshot": snapshot,
+		"plan":     plan,
+		"running":  snapshot.IsRunning,
+	})
+}
+
+func decodeAdaptationProposalRequest(r *http.Request) (adapt.ProposalOptions, string, string, error) {
+	var req struct {
+		Mode       string `json:"mode"`
+		Brief      string `json:"brief"`
+		SourceFile string `json:"source_file"`
+	}
+	if r.Body != nil {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			return adapt.ProposalOptions{}, "", "", fmt.Errorf("invalid adaptation proposal request: %w", err)
+		}
+	}
+	mode := strings.TrimSpace(req.Mode)
+	rewritePolicy, err := adaptationRewritePolicyForMode(mode)
+	if err != nil {
+		return adapt.ProposalOptions{}, "", "", err
+	}
+	brief := strings.TrimSpace(req.Brief)
+	if brief == "" {
+		return adapt.ProposalOptions{}, "", "", fmt.Errorf("adaptation brief is required")
+	}
+	return adapt.ProposalOptions{
+		Brief:         brief,
+		SourcePath:    strings.TrimSpace(req.SourceFile),
+		Granularity:   mode,
+		RewritePolicy: rewritePolicy,
+		WordTolerance: adapt.DefaultWordTolerance,
+	}, mode, rewritePolicy, nil
+}
+
 func adaptationSourcePathFromRequest(r *http.Request, manifest ProjectManifest) (string, error) {
 	var req struct {
 		SourceFile string `json:"source_file"`

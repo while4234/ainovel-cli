@@ -14,7 +14,7 @@ import (
 
 // TestEditChapterAppliesEdit 正常路径：drafts 已有内容，唯一匹配替换成功。
 func TestEditChapterAppliesEdit(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -50,7 +50,7 @@ func TestEditChapterAppliesEdit(t *testing.T) {
 
 // TestEditChapterSeedsFromFinalChapter drafts 不存在但 chapters 有 → 自动从 chapters 播种。
 func TestEditChapterSeedsFromFinalChapter(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -105,7 +105,7 @@ func TestEditChapterSeedsFromFinalChapter(t *testing.T) {
 
 // TestEditChapterRejectsCompletedWithoutQueue 已完成且不在重写队列中 → 拒绝。
 func TestEditChapterRejectsCompletedWithoutQueue(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -141,7 +141,7 @@ func TestEditChapterRejectsCompletedWithoutQueue(t *testing.T) {
 
 // TestEditChapterRejectsAmbiguousMatch 多处匹配且未开 replace_all → 报错。
 func TestEditChapterRejectsAmbiguousMatch(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -166,7 +166,7 @@ func TestEditChapterRejectsAmbiguousMatch(t *testing.T) {
 
 // TestEditChapterReplaceAll replace_all=true 时所有匹配均被替换。
 func TestEditChapterReplaceAll(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -200,7 +200,7 @@ func TestEditChapterReplaceAll(t *testing.T) {
 
 // TestEditChapterRejectsEmptyOldString 空 old_string → 参数非法。
 func TestEditChapterRejectsEmptyOldString(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -226,7 +226,7 @@ func TestEditChapterRejectsEmptyOldString(t *testing.T) {
 
 // TestEditChapterRejectsNoDraftNoFinal drafts 与 chapters 都不存在 → 报错提示先 draft_chapter。
 func TestEditChapterRejectsNoDraftNoFinal(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -253,7 +253,7 @@ func TestEditChapterRejectsNoDraftNoFinal(t *testing.T) {
 // TestEditChapterWorksWithCommitValidation 整条链路：edit_chapter → commit_chapter 成功 drain 队列。
 // 验证新工具与 commit_chapter 的 drafts≠chapters 硬校验配合良好。
 func TestEditChapterWorksWithCommitValidation(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)

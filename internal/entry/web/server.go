@@ -35,8 +35,8 @@ type Options struct {
 }
 
 type Server struct {
+	cfgMu       sync.RWMutex
 	cfg         bootstrap.Config
-	configMu    sync.Mutex
 	bundle      assets.Bundle
 	runtimeRoot string
 	store       *ProjectStore
@@ -145,12 +145,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/libraries/simulation", s.handleSimulationLibrary)
 	mux.HandleFunc("/api/libraries/simulation/upload", s.handleSimulationLibraryUpload)
 	mux.HandleFunc("/api/libraries/novels", s.handleNovelLibrary)
-	mux.HandleFunc("/api/models/add", s.handleGlobalModelAdd)
-	mux.HandleFunc("/api/models/switch", s.handleGlobalModelSwitch)
-	mux.HandleFunc("/api/models", s.handleGlobalModels)
+	mux.HandleFunc("/api/models", s.handleModels)
+	mux.HandleFunc("/api/models/default", s.handleDefaultModel)
+	mux.HandleFunc("/api/models/switch", s.handleModelSwitch)
+	mux.HandleFunc("/api/models/add", s.handleModelAdd)
+	mux.HandleFunc("/api/models/grok-login/", s.handleGrokLogin)
 	mux.HandleFunc("/api/projects/trash", s.handleProjectTrash)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProject)
+	mux.HandleFunc("/api/trash/projects", s.handleTrashProjects)
+	mux.HandleFunc("/api/trash/projects/", s.handleTrashProject)
 	return mux
 }
 
@@ -196,41 +200,39 @@ func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	s.configMu.Lock()
-	payload := s.runtimePayloadLocked()
-	s.configMu.Unlock()
-	writeJSON(w, http.StatusOK, payload)
+	cfg := s.currentConfig()
+	writeJSON(w, http.StatusOK, s.runtimePayload(cfg))
 }
 
-func (s *Server) runtimePayloadLocked() map[string]any {
+func (s *Server) currentConfig() bootstrap.Config {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return cloneWebConfig(s.cfg)
+}
+
+func (s *Server) setCurrentConfig(cfg bootstrap.Config) {
+	cfg = cloneWebConfig(cfg)
+	s.cfgMu.Lock()
+	s.cfg = cfg
+	s.cfgMu.Unlock()
+	if s.sessions != nil {
+		s.sessions.SetConfig(cfg)
+	}
+}
+
+func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
 	return map[string]any{
-		"runtime_root":    s.runtimeRoot,
-		"projects_dir":    s.store.ProjectsDir(),
-		"config":          runtimeConfigPayload(s.cfg),
+		"runtime_root": s.runtimeRoot,
+		"projects_dir": s.store.ProjectsDir(),
+		"config": map[string]any{
+			"provider":         cfg.Provider,
+			"model":            cfg.ModelName,
+			"style":            cfg.Style,
+			"reasoning_effort": cfg.ReasoningEffort,
+			"roles":            cfg.Roles,
+		},
 		"active_projects": s.sessions.ActiveProjectIDs(),
 	}
-}
-
-func runtimeConfigPayload(cfg bootstrap.Config) map[string]any {
-	return map[string]any{
-		"provider":         cfg.Provider,
-		"model":            cfg.ModelName,
-		"style":            cfg.Style,
-		"reasoning_effort": cfg.ReasoningEffort,
-		"roles":            cloneRuntimeRoles(cfg.Roles),
-	}
-}
-
-func cloneRuntimeRoles(roles map[string]bootstrap.RoleConfig) map[string]bootstrap.RoleConfig {
-	if len(roles) == 0 {
-		return nil
-	}
-	out := make(map[string]bootstrap.RoleConfig, len(roles))
-	for role, rc := range roles {
-		rc.Fallbacks = append([]bootstrap.ModelRef(nil), rc.Fallbacks...)
-		out[role] = rc
-	}
-	return out
 }
 
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
@@ -268,6 +270,61 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (s *Server) handleTrashProjects(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		projects, err := s.store.ListTrashProjects()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"projects": projects})
+	case http.MethodDelete:
+		removed, err := s.store.EmptyTrashProjects()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Server) handleTrashProject(w http.ResponseWriter, r *http.Request) {
+	id, action, ok := splitTrashProjectRoute(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if action != "restore" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	manifest, err := s.store.RestoreTrashProject(id)
+	if err != nil {
+		writeProjectManifestError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"project": manifest})
+}
+
+func splitTrashProjectRoute(path string) (string, string, bool) {
+	rest := strings.TrimPrefix(path, "/api/trash/projects/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return "", "", false
+	}
+	if len(parts) == 1 {
+		return parts[0], "", true
+	}
+	return parts[0], strings.Join(parts[1:], "/"), true
 }
 
 func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
@@ -341,6 +398,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectAdaptSource(w, r, id)
 	case "adapt/analyze":
 		s.handleProjectAdaptAnalyze(w, r, id)
+	case "adapt/proposal":
+		s.handleProjectAdaptProposal(w, r, id)
+	case "adapt/confirm":
+		s.handleProjectAdaptConfirm(w, r, id)
 	case "adapt/start":
 		s.handleProjectAdaptStart(w, r, id)
 	case "adapt/library/save":
@@ -351,6 +412,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectCoCreateBegin(w, r, id)
 	case "cocreate/send":
 		s.handleProjectCoCreateSend(w, r, id)
+	case "cocreate/revise":
+		s.handleProjectCoCreateRevise(w, r, id)
 	case "cocreate/commit":
 		s.handleProjectCoCreateCommit(w, r, id)
 	case "cocreate/cancel":
@@ -410,7 +473,7 @@ func (s *Server) handleProjectResource(w http.ResponseWriter, r *http.Request, i
 func (s *Server) handleProjectTrash(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		projects, err := s.store.ListTrashedProjects()
+		projects, err := s.store.ListTrashProjects()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -420,12 +483,15 @@ func (s *Server) handleProjectTrash(w http.ResponseWriter, r *http.Request) {
 			"trash_dir": s.store.ProjectTrashDir(),
 		})
 	case http.MethodDelete:
-		count, err := s.store.ClearProjectTrash()
+		count, err := s.store.EmptyTrashProjects()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"deleted_count": count})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deleted_count": count,
+			"removed":       count,
+		})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}

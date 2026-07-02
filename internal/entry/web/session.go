@@ -54,6 +54,7 @@ type projectHost interface {
 	Snapshot() host.UISnapshot
 	PrepareUserRules(string) error
 	PrepareExternalSourceUserRules(string) error
+	SetWordBudget(*domain.WordBudget) error
 	StartPrepared(string) error
 	Abort() bool
 	Resume() (string, error)
@@ -69,6 +70,8 @@ type projectHost interface {
 	SimulateFromDir(context.Context, string) (<-chan sim.Event, error)
 	ImportSimulationProfile(context.Context, string) (<-chan sim.Event, error)
 	PrepareAdaptationSource(context.Context, string) (<-chan adapt.Event, error)
+	BuildAdaptationProposal(adapt.ProposalOptions) (*domain.AdaptationPlan, error)
+	ConfirmAdaptationProposal() (*domain.AdaptationPlan, error)
 	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
 	Export(context.Context, exp.Options) (*exp.Result, error)
 	ReplayQueue(int64) ([]domain.RuntimeQueueItem, error)
@@ -98,10 +101,10 @@ func NewSessionManager(cfg bootstrap.Config, bundle assets.Bundle, store *Projec
 	}
 }
 
-func (m *SessionManager) UpdateConfig(cfg bootstrap.Config) {
+func (m *SessionManager) SetConfig(cfg bootstrap.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.cfg = cfg
+	m.cfg = cloneWebConfig(cfg)
 }
 
 func (m *SessionManager) Open(id string) (*ProjectSession, ProjectManifest, error) {
@@ -122,7 +125,7 @@ func (m *SessionManager) Open(id string) (*ProjectSession, ProjectManifest, erro
 		return session, manifest, nil
 	}
 
-	h, err := m.store.OpenProjectHost(m.cfg, m.bundle, manifest)
+	h, err := m.store.OpenProjectHost(cloneWebConfig(m.cfg), m.bundle, manifest)
 	if err != nil {
 		return nil, ProjectManifest{}, err
 	}
@@ -367,7 +370,7 @@ func (s *ProjectSession) GrokLoginStatus(accountID string) grokauth.AuthStatus {
 	return s.host.GrokLoginStatus(accountID)
 }
 
-func (s *ProjectSession) StartQuick(text string) error {
+func (s *ProjectSession) StartQuick(text string, targetTotalWords int) error {
 	unlock, err := s.beginAction()
 	if err != nil {
 		return err
@@ -375,15 +378,19 @@ func (s *ProjectSession) StartQuick(text string) error {
 	defer unlock()
 
 	plan, err := startup.PrepareQuick(startup.Request{
-		Mode:        startup.ModeQuick,
-		UserPrompt:  text,
-		OutputDir:   s.manifest.OutputDir,
-		Interactive: false,
+		Mode:             startup.ModeQuick,
+		UserPrompt:       text,
+		OutputDir:        s.manifest.OutputDir,
+		Interactive:      false,
+		TargetTotalWords: targetTotalWords,
 	})
 	if err != nil {
 		return err
 	}
 	if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+		return err
+	}
+	if err := s.persistWordBudget(plan.WordBudget); err != nil {
 		return err
 	}
 	if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
@@ -551,6 +558,39 @@ func (s *ProjectSession) StartAdaptationPrepared(options adapt.ProposalOptions) 
 	return nil
 }
 
+func (s *ProjectSession) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	if err := s.host.PrepareExternalSourceUserRules(options.Brief); err != nil {
+		return nil, err
+	}
+	proposal, err := s.host.BuildAdaptationProposal(options)
+	if err != nil {
+		return nil, err
+	}
+	s.AppendSnapshot()
+	return proposal, nil
+}
+
+func (s *ProjectSession) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	plan, err := s.host.ConfirmAdaptationProposal()
+	if err != nil {
+		return nil, err
+	}
+	s.AppendSnapshot()
+	return plan, nil
+}
+
 func (s *ProjectSession) Export(ctx context.Context, opts exp.Options) (*exp.Result, error) {
 	result, err := s.host.Export(ctx, opts)
 	if err == nil {
@@ -583,7 +623,7 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 	return s.runCoCreateLocked(ctx)
 }
 
-func (s *ProjectSession) SendCoCreate(ctx context.Context, text string) (webCoCreateState, error) {
+func (s *ProjectSession) SendCoCreate(ctx context.Context, text, source string) (webCoCreateState, error) {
 	unlock, err := s.beginAction()
 	if err != nil {
 		return webCoCreateState{}, err
@@ -593,7 +633,23 @@ func (s *ProjectSession) SendCoCreate(ctx context.Context, text string) (webCoCr
 	if s.cocreate == nil {
 		return webCoCreateState{}, fmt.Errorf("co-create has not started")
 	}
-	if err := s.cocreate.appendUser(text); err != nil {
+	if err := s.cocreate.appendUser(text, source); err != nil {
+		return webCoCreateState{}, err
+	}
+	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) ReviseCoCreate(ctx context.Context, req webCoCreateReviseRequest) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	if err := s.cocreate.reviseUser(req.MessageID, req.Text); err != nil {
 		return webCoCreateState{}, err
 	}
 	return s.runCoCreateLocked(ctx)
@@ -622,21 +678,26 @@ func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
 		if err := s.host.PrepareExternalSourceUserRules(state.draftPrompt()); err != nil {
 			return state.apiState(), err
 		}
-		if err := s.host.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
+		proposal, err := s.host.BuildAdaptationProposal(adapt.ProposalOptions{
 			Brief:         state.draftPrompt(),
 			SourcePath:    state.sourcePath,
 			Granularity:   state.adaptGranularity,
 			RewritePolicy: state.adaptRewritePolicy,
 			WordTolerance: state.adaptWordTolerance,
-		}); err != nil {
+		})
+		if err != nil {
 			return state.apiState(), err
 		}
+		state.adaptationProposal = proposal
 	default:
-		plan, err := state.session.BuildPlan()
+		plan, err := state.session.BuildPlanWithWordBudget(state.targetTotalWords)
 		if err != nil {
 			return state.apiState(), err
 		}
 		if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+			return state.apiState(), err
+		}
+		if err := s.persistWordBudget(plan.WordBudget); err != nil {
 			return state.apiState(), err
 		}
 		if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
@@ -647,6 +708,16 @@ func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
 	s.cocreate = nil
 	s.AppendSnapshot()
 	return api, nil
+}
+
+func (s *ProjectSession) persistWordBudget(budget *domain.WordBudget) error {
+	if budget == nil || budget.TargetTotalWords <= 0 {
+		return nil
+	}
+	if err := s.host.SetWordBudget(budget); err != nil {
+		return fmt.Errorf("save word budget: %w", err)
+	}
+	return nil
 }
 
 func (s *ProjectSession) CancelCoCreate() (webCoCreateState, error) {

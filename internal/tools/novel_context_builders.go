@@ -152,6 +152,28 @@ func (t *ContextTool) buildUserRules(result map[string]any) {
 	working["user_rules"] = snap.Payload()
 }
 
+func (t *ContextTool) buildWordBudget(result map[string]any, chapter int) {
+	meta, err := t.store.RunMeta.Load()
+	if err != nil || meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords <= 0 {
+		return
+	}
+	progress, perr := t.store.Progress.Load()
+	if perr != nil {
+		return
+	}
+	payload, ok := meta.WordBudget.Runtime(progress, chapter)
+	if !ok {
+		return
+	}
+	working, ok := result["working_memory"].(map[string]any)
+	if !ok {
+		working = map[string]any{}
+		result["working_memory"] = working
+	}
+	working["word_budget"] = payload
+	result["word_budget"] = payload
+}
+
 func (t *ContextTool) buildSimulationProfile(result map[string]any, sectionKey string, warn func(string, error)) {
 	profile, err := t.store.Simulation.Load()
 	if err != nil {

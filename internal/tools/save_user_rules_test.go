@@ -14,7 +14,7 @@ import (
 // nil 模型 → 归一化降级；空 LoadOptions → 不读真实磁盘。
 func newDegradedTool(t *testing.T) (*SaveUserRulesTool, *store.Store) {
 	t.Helper()
-	st := store.NewStore(t.TempDir())
+	st := store.NewStore(testStoreDir(t))
 	svc := userrules.NewService(st, nil, rules.LoadOptions{})
 	return NewSaveUserRulesTool(svc), st
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -256,7 +257,7 @@ func (s *AdaptationStore) LoadSourceFoundation() (*domain.AdaptationSourceFounda
 }
 
 func (s *AdaptationStore) SavePlan(plan domain.AdaptationPlan) error {
-	normalizeAdaptationPlan(&plan)
+	s.normalizeAdaptationPlan(&plan)
 	plan.Status = domain.AdaptationPlanStatusConfirmed
 	return s.io.WriteJSON(adaptationPlanFile, plan)
 }
@@ -269,12 +270,12 @@ func (s *AdaptationStore) LoadPlan() (*domain.AdaptationPlan, error) {
 		}
 		return nil, err
 	}
-	normalizeAdaptationPlan(&plan)
+	s.normalizeAdaptationPlan(&plan)
 	return &plan, nil
 }
 
 func (s *AdaptationStore) SaveProposal(plan domain.AdaptationPlan) error {
-	normalizeAdaptationPlan(&plan)
+	s.normalizeAdaptationPlan(&plan)
 	plan.Status = domain.AdaptationPlanStatusProposal
 	return s.io.WriteJSON(adaptationProposalFile, plan)
 }
@@ -287,7 +288,7 @@ func (s *AdaptationStore) LoadProposal() (*domain.AdaptationPlan, error) {
 		}
 		return nil, err
 	}
-	normalizeAdaptationPlan(&proposal)
+	s.normalizeAdaptationPlan(&proposal)
 	proposal.Status = domain.AdaptationPlanStatusProposal
 	return &proposal, nil
 }
@@ -362,20 +363,188 @@ func truncateRunes(text string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
-func normalizeAdaptationPlan(plan *domain.AdaptationPlan) {
+func (s *AdaptationStore) normalizeAdaptationPlan(plan *domain.AdaptationPlan) {
+	manifest, _ := s.LoadSourceManifest()
+	normalizeAdaptationPlan(plan, manifest)
+}
+
+func normalizeAdaptationPlan(plan *domain.AdaptationPlan, manifest *domain.AdaptationSourceManifest) {
 	if plan == nil {
 		return
 	}
 	plan.Granularity = domain.NormalizeAdaptationGranularity(plan.Granularity)
 	plan.Status = domain.NormalizeAdaptationPlanStatus(plan.Status)
 	plan.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(plan.Granularity)
-	if plan.RewritePolicy != domain.AdaptationRewritePreserveDetails {
-		plan.WordTolerance = 0
-		plan.TargetMinRunes = 0
-		plan.TargetMaxRunes = 0
-		for i := range plan.Chapters {
-			plan.Chapters[i].TargetMinRunes = 0
-			plan.Chapters[i].TargetMaxRunes = 0
+	deriveBudgets := shouldDeriveAdaptationBudgets(plan)
+	tolerance := plan.WordTolerance
+	if tolerance <= 0 && deriveBudgets {
+		tolerance = defaultAdaptationWordTolerance
+		plan.WordTolerance = tolerance
+	}
+	sourceRunes := adaptationSourceRunesByChapter(manifest)
+	for i := range plan.Chapters {
+		normalizeAdaptationChapterPlan(&plan.Chapters[i], tolerance, sourceRunes, deriveBudgets)
+	}
+	if deriveBudgets {
+		normalizeAdaptationPlanTotals(plan)
+	}
+}
+
+func normalizeAdaptationChapterPlan(chapter *domain.AdaptationChapterPlan, tolerance float64, sourceRunes map[int]int, deriveBudgets bool) {
+	if chapter == nil {
+		return
+	}
+	chapter.OutlineEntry.Chapter = chapter.Chapter
+	chapter.OutlineEntry.Title = chapter.Title
+
+	if chapter.WordBudget == nil {
+		if chapter.SourceRunes > 0 || chapter.TargetRunes > 0 || chapter.TargetMinRunes > 0 || chapter.TargetMaxRunes > 0 {
+			chapter.WordBudget = &domain.AdaptationChapterWordBudget{}
 		}
 	}
+	if deriveBudgets && chapter.SourceRunes <= 0 {
+		chapter.SourceRunes = sumAdaptationSourceRunes(chapter.SourceChapters, sourceRunes)
+	}
+	if deriveBudgets && chapter.SourceRunes <= 0 && chapter.SourceRange.From > 0 && chapter.SourceRange.To >= chapter.SourceRange.From {
+		for sourceChapter := chapter.SourceRange.From; sourceChapter <= chapter.SourceRange.To; sourceChapter++ {
+			chapter.SourceRunes += sourceRunes[sourceChapter]
+		}
+	}
+	if deriveBudgets && chapter.TargetRunes <= 0 && chapter.SourceRunes > 0 {
+		chapter.TargetRunes = chapter.SourceRunes
+	}
+	if chapter.TargetMinRunes <= 0 && chapter.TargetMaxRunes <= 0 && chapter.TargetRunes > 0 {
+		chapter.TargetMinRunes, chapter.TargetMaxRunes = adaptationRuneRange(chapter.TargetRunes, tolerance)
+	}
+	if chapter.WordBudget == nil && (chapter.SourceRunes > 0 || chapter.TargetRunes > 0 || chapter.TargetMinRunes > 0 || chapter.TargetMaxRunes > 0) {
+		chapter.WordBudget = &domain.AdaptationChapterWordBudget{}
+	}
+	if chapter.WordBudget == nil {
+		return
+	}
+	if chapter.WordBudget.SourceRunes <= 0 {
+		chapter.WordBudget.SourceRunes = chapter.SourceRunes
+	}
+	if chapter.WordBudget.TargetRunes <= 0 {
+		chapter.WordBudget.TargetRunes = chapter.TargetRunes
+	}
+	if chapter.WordBudget.MinRunes <= 0 {
+		chapter.WordBudget.MinRunes = chapter.TargetMinRunes
+	}
+	if chapter.WordBudget.MaxRunes <= 0 {
+		chapter.WordBudget.MaxRunes = chapter.TargetMaxRunes
+	}
+	if chapter.WordBudget.Tolerance <= 0 {
+		chapter.WordBudget.Tolerance = tolerance
+	}
+	if chapter.SourceRunes <= 0 {
+		chapter.SourceRunes = chapter.WordBudget.SourceRunes
+	}
+	if chapter.TargetRunes <= 0 {
+		chapter.TargetRunes = chapter.WordBudget.TargetRunes
+	}
+	if chapter.TargetMinRunes <= 0 {
+		chapter.TargetMinRunes = chapter.WordBudget.MinRunes
+	}
+	if chapter.TargetMaxRunes <= 0 {
+		chapter.TargetMaxRunes = chapter.WordBudget.MaxRunes
+	}
+}
+
+const defaultAdaptationWordTolerance = 0.15
+
+func shouldDeriveAdaptationBudgets(plan *domain.AdaptationPlan) bool {
+	if plan == nil {
+		return false
+	}
+	if plan.RewritePolicy != domain.AdaptationRewritePreserveDetails {
+		return true
+	}
+	if plan.WordTolerance > 0 ||
+		plan.SourceTotalRunes > 0 ||
+		plan.TargetTotalRunes > 0 ||
+		plan.TargetMinRunes > 0 ||
+		plan.TargetMaxRunes > 0 {
+		return true
+	}
+	for _, chapter := range plan.Chapters {
+		if chapter.WordBudget != nil ||
+			chapter.SourceRunes > 0 ||
+			chapter.TargetRunes > 0 ||
+			chapter.TargetMinRunes > 0 ||
+			chapter.TargetMaxRunes > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeAdaptationPlanTotals(plan *domain.AdaptationPlan) {
+	if plan == nil {
+		return
+	}
+	sourceTotal := 0
+	targetTotal := 0
+	targetMin := 0
+	targetMax := 0
+	for _, chapter := range plan.Chapters {
+		sourceTotal += chapter.SourceRunes
+		targetTotal += chapter.TargetRunes
+		targetMin += chapter.TargetMinRunes
+		targetMax += chapter.TargetMaxRunes
+	}
+	if plan.SourceTotalRunes <= 0 {
+		plan.SourceTotalRunes = sourceTotal
+	}
+	if plan.TargetTotalRunes <= 0 {
+		plan.TargetTotalRunes = targetTotal
+	}
+	if plan.TargetMinRunes <= 0 {
+		plan.TargetMinRunes = targetMin
+	}
+	if plan.TargetMaxRunes <= 0 {
+		plan.TargetMaxRunes = targetMax
+	}
+	if plan.TargetMinRunes <= 0 && plan.TargetMaxRunes <= 0 && plan.TargetTotalRunes > 0 {
+		plan.TargetMinRunes, plan.TargetMaxRunes = adaptationRuneRange(plan.TargetTotalRunes, plan.WordTolerance)
+	}
+}
+
+func adaptationSourceRunesByChapter(manifest *domain.AdaptationSourceManifest) map[int]int {
+	if manifest == nil {
+		return nil
+	}
+	out := make(map[int]int, len(manifest.Chapters))
+	for _, source := range manifest.Chapters {
+		if source.Chapter > 0 && source.Runes > 0 {
+			out[source.Chapter] = source.Runes
+		}
+	}
+	return out
+}
+
+func sumAdaptationSourceRunes(chapters []int, sourceRunes map[int]int) int {
+	total := 0
+	for _, chapter := range chapters {
+		total += sourceRunes[chapter]
+	}
+	return total
+}
+
+func adaptationRuneRange(target int, tolerance float64) (int, int) {
+	if target <= 0 {
+		return 0, 0
+	}
+	if tolerance <= 0 {
+		tolerance = defaultAdaptationWordTolerance
+	}
+	minRunes := int(math.Round(float64(target) * (1 - tolerance)))
+	maxRunes := int(math.Round(float64(target) * (1 + tolerance)))
+	if minRunes < 1 {
+		minRunes = 1
+	}
+	if maxRunes < minRunes {
+		maxRunes = minRunes
+	}
+	return minRunes, maxRunes
 }

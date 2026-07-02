@@ -2,8 +2,10 @@ package notify
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +34,7 @@ func TestCommandChannelEnvAndStdin(t *testing.T) {
 	envFile := filepath.Join(dir, "env.txt")
 	jsonFile := filepath.Join(dir, "stdin.json")
 
-	n := New(`echo "$NOTIFY_KIND|$NOTIFY_LEVEL|$NOTIFY_TITLE|$NOTIFY_BODY" > `+envFile+` && cat > `+jsonFile, nil)
+	n := New(notificationCaptureCommand(envFile, jsonFile), nil)
 	nt := Notification{Kind: "budget", Level: "warn", Title: "ainovel: 预算", Body: "已花费 $8.00"}
 	n.deliver(nt) // 同步调用以便断言
 
@@ -58,7 +60,7 @@ func TestCommandChannelEnvAndStdin(t *testing.T) {
 }
 
 func TestCommandChannelTimeoutKill(t *testing.T) {
-	n := New("sleep 30", nil)
+	n := New(longRunningCommand(), nil)
 	n.timeout = 200 * time.Millisecond
 
 	start := time.Now()
@@ -66,4 +68,34 @@ func TestCommandChannelTimeoutKill(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("超时未强杀, 阻塞 %v", elapsed)
 	}
+}
+
+func notificationCaptureCommand(envFile, jsonFile string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(
+			"[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); $envLine = $env:NOTIFY_KIND + '|' + $env:NOTIFY_LEVEL + '|' + $env:NOTIFY_TITLE + '|' + $env:NOTIFY_BODY; [IO.File]::WriteAllText(%s, $envLine); [IO.File]::WriteAllText(%s, [Console]::In.ReadToEnd())",
+			powerShellQuote(envFile),
+			powerShellQuote(jsonFile),
+		)
+	}
+	return fmt.Sprintf(
+		`printf '%%s' "$NOTIFY_KIND|$NOTIFY_LEVEL|$NOTIFY_TITLE|$NOTIFY_BODY" > %s && cat > %s`,
+		shellQuote(envFile),
+		shellQuote(jsonFile),
+	)
+}
+
+func longRunningCommand() string {
+	if runtime.GOOS == "windows" {
+		return "Start-Sleep -Seconds 30"
+	}
+	return "sleep 30"
+}
+
+func powerShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }

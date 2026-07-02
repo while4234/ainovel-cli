@@ -2,147 +2,175 @@ package web
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/grokauth"
-	hostpkg "github.com/voocel/ainovel-cli/internal/host"
 )
 
-func TestGlobalModelAddWithoutProjectPersistsAndUpdatesRuntime(t *testing.T) {
-	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
-		return nil
-	})
-	defer restore()
+func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
+	home := testTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	cfg := testWebConfig(t)
-	cfg.PersistPath = filepath.Join(t.TempDir(), "config.json")
-	server := NewServer(cfg, assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	cfg.Providers["openai"] = bootstrap.ProviderConfig{
+		Type:   "openai",
+		APIKey: "sk-test",
+		Models: []string{"gpt-test", "gpt-next"},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 
-	var body struct {
+	var listed struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodGet, "/api/models", "", &listed)
+	if len(listed.Models.Providers) != 1 || listed.Models.Providers[0].Name != "openai" {
+		t.Fatalf("global providers = %+v", listed.Models.Providers)
+	}
+	if listed.Models.Roles[0].Provider != "openai" || listed.Models.Roles[0].Model != "gpt-test" {
+		t.Fatalf("global default route = %+v", listed.Models.Roles[0])
+	}
+
+	var switched struct {
 		Models  apiModelConfig `json:"models"`
 		Runtime struct {
-			Config map[string]any `json:"config"`
+			Config struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			} `json:"config"`
 		} `json:"runtime"`
 	}
-	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", `{
-		"role":"default",
-		"provider":"yuanai-deepseek",
-		"model":"deepseek-v4-pro",
-		"type":"openai",
-		"api":"chat",
-		"api_key":"sk-new",
-		"base_url":"https://yuanyuaicloud.cn/v1"
-	}`, &body)
-
-	if body.Runtime.Config["provider"] != "yuanai-deepseek" || body.Runtime.Config["model"] != "deepseek-v4-pro" {
-		t.Fatalf("runtime config = %+v", body.Runtime.Config)
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/default", `{"provider":"openai","model":"gpt-next"}`, &switched)
+	if switched.Runtime.Config.Provider != "openai" || switched.Runtime.Config.Model != "gpt-next" {
+		t.Fatalf("runtime default = %+v", switched.Runtime.Config)
 	}
-	defaultRoute := findModelRoute(body.Models.Roles, "default")
-	if defaultRoute.Provider != "yuanai-deepseek" || defaultRoute.Model != "deepseek-v4-pro" {
-		t.Fatalf("default route = %+v", defaultRoute)
+	if got := server.currentConfig().ModelName; got != "gpt-next" {
+		t.Fatalf("server default model = %q, want gpt-next", got)
+	}
+
+	saved, err := bootstrap.LoadConfigFile(filepath.Join(home, ".ainovel", "config.json"))
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if saved.Provider != "openai" || saved.ModelName != "gpt-next" {
+		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
+	}
+
+	manifest, err := server.store.CreateProject("Global Default")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	session, _, err := server.sessions.Open(manifest.ID)
+	if err != nil {
+		t.Fatalf("Open session: %v", err)
+	}
+	if snap := session.Snapshot(); snap.ModelName != "gpt-next" {
+		t.Fatalf("new project model = %q, want gpt-next", snap.ModelName)
+	}
+	if _, err := os.Stat(ProjectConfigPath(manifest)); !os.IsNotExist(err) {
+		t.Fatalf("new project should inherit global default without project overlay, stat err=%v", err)
+	}
+}
+
+func TestGlobalModelSwitchRoutePersistsRole(t *testing.T) {
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
+	cfg.Providers["deepseek"] = bootstrap.ProviderConfig{
+		Type:   "openai",
+		APIKey: "sk-test",
+		Models: []string{"deepseek-chat"},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	var switched struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/switch", `{"role":"writer","provider":"deepseek","model":"deepseek-chat"}`, &switched)
+	if route := findModelRoute(switched.Models.Roles, "writer"); route.Provider != "deepseek" || route.Model != "deepseek-chat" || !route.Explicit {
+		t.Fatalf("writer route = %+v", route)
 	}
 	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
 	if err != nil {
 		t.Fatalf("LoadConfigFile: %v", err)
 	}
-	if saved.Provider != "yuanai-deepseek" || saved.ModelName != "deepseek-v4-pro" {
-		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
-	}
-	if saved.Providers["yuanai-deepseek"].APIKey != "sk-new" {
-		t.Fatalf("saved provider = %+v", saved.Providers["yuanai-deepseek"])
+	if saved.Roles["writer"].Provider != "deepseek" || saved.Roles["writer"].Model != "deepseek-chat" {
+		t.Fatalf("saved writer role = %+v", saved.Roles["writer"])
 	}
 }
 
-func TestGlobalModelAddWithoutProjectRejectsFailedProbe(t *testing.T) {
-	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
-		return errors.New("probe rejected")
-	})
-	defer restore()
+func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
+	home := testTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
-	cfg := testWebConfig(t)
-	cfg.PersistPath = filepath.Join(t.TempDir(), "config.json")
-	server := NewServer(cfg, assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/models/add", bytes.NewBufferString(`{
-		"role":"default",
-		"provider":"broken-proxy",
-		"model":"deepseek-v4-pro",
-		"type":"openai",
-		"api_key":"sk-new",
-		"base_url":"https://proxy.example/v1"
-	}`))
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "probe rejected") {
-		t.Fatalf("global model add status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	if _, err := bootstrap.LoadConfigFile(cfg.PersistPath); err == nil {
-		t.Fatal("failed probe should not persist global config")
-	}
-	var runtime struct {
-		Config map[string]any `json:"config"`
-	}
-	serveJSON(t, server.Handler(), http.MethodGet, "/api/runtime", ``, &runtime)
-	if runtime.Config["provider"] != "openai" || runtime.Config["model"] != "gpt-test" {
-		t.Fatalf("runtime changed after failed probe: %+v", runtime.Config)
-	}
-}
-
-func TestGlobalModelSwitchWithoutProjectPersistsDefault(t *testing.T) {
-	cfg := testWebConfig(t)
-	cfg.PersistPath = filepath.Join(t.TempDir(), "config.json")
-	cfg.Providers["yuanai-deepseek"] = bootstrap.ProviderConfig{
-		Type:    "openai",
-		API:     "chat",
-		APIKey:  "sk-new",
-		BaseURL: "https://yuanyuaicloud.cn/v1",
-		Models:  []string{"deepseek-v4-pro"},
-	}
-	server := NewServer(cfg, assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
-	defer server.Close()
-
-	var body struct {
+	var added struct {
 		Models  apiModelConfig `json:"models"`
 		Runtime struct {
-			Config map[string]any `json:"config"`
+			Config struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			} `json:"config"`
 		} `json:"runtime"`
 	}
-	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/switch", `{
-		"role":"default",
-		"provider":"yuanai-deepseek",
-		"model":"deepseek-v4-pro"
-	}`, &body)
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", `{"role":"default","provider":"grok-oauth","model":"grok-4.3-latest","type":"grok","auth":"grok_oauth","account_id":"default"}`, &added)
+	if added.Runtime.Config.Provider != "grok-oauth" || added.Runtime.Config.Model != "grok-4.3-latest" {
+		t.Fatalf("runtime default = %+v", added.Runtime.Config)
+	}
+	if !modelConfigHasProvider(added.Models, "grok-oauth", "grok-4.3-latest") {
+		t.Fatalf("models missing grok provider: %+v", added.Models.Providers)
+	}
+	cfg := server.currentConfig()
+	pc := cfg.Providers["grok-oauth"]
+	if pc.Type != "grok" || pc.Auth != bootstrap.ProviderAuthGrokOAuth || pc.AccountID != "default" {
+		t.Fatalf("grok provider config = %+v", pc)
+	}
 
-	if body.Runtime.Config["provider"] != "yuanai-deepseek" {
-		t.Fatalf("runtime config = %+v", body.Runtime.Config)
-	}
-	if route := findModelRoute(body.Models.Roles, "default"); route.Provider != "yuanai-deepseek" || route.Model != "deepseek-v4-pro" {
-		t.Fatalf("default route = %+v", route)
-	}
-	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
+	saved, err := bootstrap.LoadConfigFile(filepath.Join(home, ".ainovel", "config.json"))
 	if err != nil {
-		t.Fatalf("LoadConfigFile: %v", err)
+		t.Fatalf("load saved config: %v", err)
 	}
-	if saved.Provider != "yuanai-deepseek" || saved.ModelName != "deepseek-v4-pro" {
+	if saved.Provider != "grok-oauth" || saved.ModelName != "grok-4.3-latest" {
 		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
 	}
+}
+
+func modelConfigHasProvider(models apiModelConfig, providerName, modelName string) bool {
+	for _, provider := range models.Providers {
+		if provider.Name != providerName {
+			continue
+		}
+		for _, model := range provider.Models {
+			if model == modelName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findModelRoute(routes []apiModelRoute, role string) apiModelRoute {
+	for _, route := range routes {
+		if route.Role == role {
+			return route
+		}
+	}
+	return apiModelRoute{}
 }
 
 func TestProjectModelAddExistingProviderUsesEmptyConfig(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Existing Model Add")
 	if err != nil {
@@ -165,17 +193,8 @@ func TestProjectModelAddExistingProviderUsesEmptyConfig(t *testing.T) {
 	}
 }
 
-func findModelRoute(routes []apiModelRoute, role string) apiModelRoute {
-	for _, route := range routes {
-		if route.Role == role {
-			return route
-		}
-	}
-	return apiModelRoute{}
-}
-
 func TestProjectModelAddPresetPassesProviderConfig(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Preset Model Add")
 	if err != nil {
@@ -199,7 +218,7 @@ func TestProjectModelAddPresetPassesProviderConfig(t *testing.T) {
 }
 
 func TestProjectModelAddGrokOAuthPassesProviderConfig(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Grok OAuth Model Add")
 	if err != nil {
@@ -229,7 +248,7 @@ func TestProjectModelAddGrokOAuthPassesProviderConfig(t *testing.T) {
 }
 
 func TestProjectGrokLoginEndpointsUseHostFlow(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Grok OAuth Login")
 	if err != nil {
@@ -284,6 +303,83 @@ func TestProjectGrokLoginEndpointsUseHostFlow(t *testing.T) {
 	serveJSON(t, server.Handler(), http.MethodPost, "/api/projects/"+manifest.ID+"/models/grok-login/status", `{"account_id":"work"}`, &status)
 	if fake.grokStatusAccountID != "work" || !status.Status.LoggedIn {
 		t.Fatalf("status accountID=%q status=%+v", fake.grokStatusAccountID, status.Status)
+	}
+}
+
+func TestProjectGrokLoginStartCanOpenAuthorizeURL(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Grok OAuth Browser Open")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.grokLoginStart = grokauth.LoginStart{
+		Status:               grokauth.AuthStatus{AccountID: "work", AccountName: "Work", ActiveLogin: "pending"},
+		AuthorizeURL:         "https://auth.x.ai/authorize",
+		RedirectURI:          "http://127.0.0.1:56121/callback",
+		ManualPasteSupported: true,
+		LoopbackListening:    true,
+	}
+
+	previousOpenAuthBrowser := openAuthBrowser
+	var openedURL string
+	openAuthBrowser = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+	t.Cleanup(func() {
+		openAuthBrowser = previousOpenAuthBrowser
+	})
+
+	var start struct {
+		Login         grokauth.LoginStart `json:"login"`
+		BrowserOpened bool                `json:"browser_opened"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/projects/"+manifest.ID+"/models/grok-login/start", `{"account_id":"work","account_name":"Work","open_browser":true}`, &start)
+	if openedURL != "https://auth.x.ai/authorize" {
+		t.Fatalf("opened URL = %q", openedURL)
+	}
+	if !start.BrowserOpened {
+		t.Fatalf("browser_opened = false, response = %+v", start)
+	}
+}
+
+func TestGrokLoginStartCanRunWithoutProject(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	previousStartGrokAuthLogin := startGrokAuthLogin
+	startGrokAuthLogin = func(accountID, accountName string) (grokauth.LoginStart, error) {
+		if accountID != "work" || accountName != "Work" {
+			t.Fatalf("start args accountID=%q accountName=%q", accountID, accountName)
+		}
+		return grokauth.LoginStart{
+			Status:               grokauth.AuthStatus{AccountID: accountID, AccountName: accountName, ActiveLogin: "pending"},
+			AuthorizeURL:         "https://auth.x.ai/authorize",
+			RedirectURI:          "http://127.0.0.1:56121/callback",
+			ManualPasteSupported: true,
+			LoopbackListening:    true,
+		}, nil
+	}
+	previousOpenAuthBrowser := openAuthBrowser
+	var openedURL string
+	openAuthBrowser = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+	t.Cleanup(func() {
+		startGrokAuthLogin = previousStartGrokAuthLogin
+		openAuthBrowser = previousOpenAuthBrowser
+	})
+
+	var start struct {
+		Login         grokauth.LoginStart `json:"login"`
+		BrowserOpened bool                `json:"browser_opened"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/grok-login/start", `{"account_id":"work","account_name":"Work","open_browser":true}`, &start)
+	if openedURL != "https://auth.x.ai/authorize" || !start.BrowserOpened {
+		t.Fatalf("openedURL=%q browser_opened=%v", openedURL, start.BrowserOpened)
 	}
 }
 

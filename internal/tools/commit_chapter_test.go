@@ -13,7 +13,7 @@ import (
 )
 
 func TestCommitChapterSchemaDescribesFeedbackAsObject(t *testing.T) {
-	tool := NewCommitChapterTool(store.NewStore(t.TempDir()))
+	tool := NewCommitChapterTool(store.NewStore(testStoreDir(t)))
 	schema := tool.Schema()
 	props, ok := schema["properties"].(map[string]any)
 	if !ok {
@@ -32,8 +32,91 @@ func TestCommitChapterSchemaDescribesFeedbackAsObject(t *testing.T) {
 	}
 }
 
+func TestCommitChapterRejectsWordBudgetOutOfRange(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("test", 5); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget := domain.NewWordBudget(5000, "test").WithPlannedChapters(5)
+	if err := store.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := store.Drafts.SaveDraft(1, strings.Repeat("短", 100)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	tool := NewCommitChapterTool(store)
+	args := commitChapterArgs(t, 1)
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute should return structured word budget rejection, got error %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["word_budget_rejected"] != true || result["committed"] != false {
+		t.Fatalf("expected word budget rejection result, got %v", result)
+	}
+	if next, _ := result["next_step"].(string); !strings.Contains(next, "不要再次调用 commit_chapter") {
+		t.Fatalf("next_step should steer rewrite, got %q", next)
+	}
+	if _, statErr := os.Stat(dir + "/chapters/01.md"); !os.IsNotExist(statErr) {
+		t.Fatalf("chapter should not be persisted, stat err=%v", statErr)
+	}
+}
+
+func TestCommitChapterAllowsWordBudgetInRange(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("test", 5); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget := domain.NewWordBudget(5000, "test").WithPlannedChapters(5)
+	if err := store.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := store.Drafts.SaveDraft(1, strings.Repeat("正", 900)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	tool := NewCommitChapterTool(store)
+	if _, err := tool.Execute(context.Background(), commitChapterArgs(t, 1)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	progress, err := store.Progress.Load()
+	if err != nil {
+		t.Fatalf("LoadProgress: %v", err)
+	}
+	if progress == nil || progress.TotalWordCount != 900 || len(progress.CompletedChapters) != 1 {
+		t.Fatalf("unexpected progress: %+v", progress)
+	}
+}
+
+func commitChapterArgs(t *testing.T, chapter int) json.RawMessage {
+	t.Helper()
+	args, err := json.Marshal(map[string]any{
+		"chapter":         chapter,
+		"summary":         "测试提交",
+		"characters":      []string{"主角"},
+		"key_events":      []string{"推进"},
+		"timeline_events": []any{},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	return args
+}
+
 func TestCommitChapterRejectsNonPendingRewrite(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -87,7 +170,7 @@ func TestCommitChapterRejectsNonPendingRewrite(t *testing.T) {
 }
 
 func TestCommitChapterAllowsPendingRewrite(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	store := store.NewStore(dir)
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -144,10 +227,56 @@ func TestCommitChapterAllowsPendingRewrite(t *testing.T) {
 	}
 }
 
+// TestCommitChapterRejectsNonAdaptationOutsideWordBudget verifies the normal
+// creation word budget gate rejects drafts outside the current chapter range.
+func TestCommitChapterRejectsNonAdaptationOutsideWordBudget(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 2); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget, _ := domain.NewWordBudgetFromTarget(10000, domain.WordBudgetSourcePrompt)
+	planned := budget.WithPlannedChapters(2)
+	if err := s.RunMeta.SetWordBudget(&planned); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, strings.Repeat("a", 1000)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	tool := NewCommitChapterTool(s)
+	args, err := json.Marshal(map[string]any{
+		"chapter":    1,
+		"summary":    "too short",
+		"characters": []string{"hero"},
+		"key_events": []string{"event"},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute should return structured word budget rejection, got error %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["word_budget_rejected"] != true || result["committed"] != false {
+		t.Fatalf("expected word budget rejection result, got %v", result)
+	}
+	if _, err := os.Stat(dir + "/chapters/01.md"); !os.IsNotExist(err) {
+		t.Fatalf("chapter should not be persisted, stat err=%v", err)
+	}
+}
+
 // TestCommitChapterUpdatesCastLedger 验证：commit_chapter 把本章 characters 累加进 cast_ledger，
 // cast_intros 提供的 brief_role 被采用，且 characters.json 中的核心角色不进入 ledger。
 func TestCommitChapterUpdatesCastLedger(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -212,7 +341,7 @@ func TestCommitChapterUpdatesCastLedger(t *testing.T) {
 // TestCommitChapterNonLayeredRecompletesAfterRework 验证非分层书完本后经 reopen 返工，
 // 改完章节 commit、队列排空时能自动重新回到 complete（补 drain 后判完结的非分层分支）。
 func TestCommitChapterNonLayeredRecompletesAfterRework(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -282,7 +411,7 @@ func TestCommitChapterNonLayeredRecompletesAfterRework(t *testing.T) {
 // 反证：若 reopen 路径仍用质量级 layeredBookComplete，本例 open thread 会让其返 false、
 // book_complete 为假，测试即失败。
 func TestCommitChapterLayeredReopenRecompletesDespiteOpenThread(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -365,7 +494,7 @@ func TestCommitChapterLayeredReopenRecompletesDespiteOpenThread(t *testing.T) {
 }
 
 func TestCommitChapterRejectsPolishWithoutDraftChange(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -498,7 +627,7 @@ func TestCommitChapterAdaptationFinalChapterWaitsForReview(t *testing.T) {
 // 章号越出 layered_outline 的 commit 必须硬失败，而不是 slog.Warn 放行。
 // 这是阻止"裁定误判后 writer 一路裸跑"的物理刹车（《凡骨》ch204..347 案例）。
 func TestCommitChapterLayeredRejectsOutOfRangeChapter(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -557,7 +686,7 @@ func TestCommitChapterLayeredRejectsOutOfRangeChapter(t *testing.T) {
 // 即使大纲全部展开并写完、活跃伏笔为零、指南针长线收束，commit_chapter 也只暴露
 // review_required 事实；后续由 Router 派 Editor 审阅/摘要，再让 Architect 调 complete_book。
 func TestCommitChapterLayeredWaitsForReviewWhenDone(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -634,7 +763,7 @@ func TestCommitChapterLayeredWaitsForReviewWhenDone(t *testing.T) {
 // TestCommitChapterLayeredNoAutoCompleteWithOpenThreads 验证保守性：仍有活跃长线时
 // 即使章节写满也不自动完结，把"是否继续"的裁定权留给架构师。
 func TestCommitChapterLayeredNoAutoCompleteWithOpenThreads(t *testing.T) {
-	dir := t.TempDir()
+	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)

@@ -16,7 +16,7 @@ import (
 )
 
 func TestProjectCoCreateSuggestionsAndCommitUseDraftPrompt(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("CoCreate")
 	if err != nil {
@@ -63,8 +63,193 @@ func TestProjectCoCreateSuggestionsAndCommitUseDraftPrompt(t *testing.T) {
 	}
 }
 
+func TestProjectCoCreatePersistsTargetTotalWords(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Budget")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply("可以开始。", "## 主题\n- 5000 字短篇", true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"normal","initial":"写一部短篇","target_total_words":5000}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("commit status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.setWordBudgetCalls != 1 || fake.wordBudget == nil || fake.wordBudget.TargetTotalWords != 5000 {
+		t.Fatalf("SetWordBudget calls=%d budget=%+v", fake.setWordBudgetCalls, fake.wordBudget)
+	}
+	if !strings.Contains(fake.startPreparedPrompt, "target_total_words=5000") {
+		t.Fatalf("start prompt missing word budget contract: %q", fake.startPreparedPrompt)
+	}
+}
+
+func TestProjectCoCreateWebCopyUsesStartButtonInsteadOfCtrlS(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Copy")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateProgress = []coCreateProgressStep{{kind: "reply", text: "可以按 Ctrl+S 开始创作。"}}
+	fake.cocreateReply = webCoCreateReply("可以按 Ctrl+S 开始创作。", "## 主题\n- 月城追凶", true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"normal","initial":"写一个月城悬疑"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode begin response: %v", err)
+	}
+	got := response.CoCreate.StreamReply + "\n"
+	for _, message := range response.CoCreate.Messages {
+		got += message.Content + "\n"
+	}
+	if strings.Contains(got, "Ctrl+S") {
+		t.Fatalf("web co-create copy should not mention Ctrl+S: %q", got)
+	}
+	if !strings.Contains(got, "点击「启动」") {
+		t.Fatalf("web co-create copy should mention start button: %q", got)
+	}
+}
+
+func TestProjectCoCreateSuggestionSendAndReviseTruncatesHistory(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Revise")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply("继续确认。", "## 方向\n- 初始", false, "加强女主线")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"normal","initial":"写月城悬疑"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/send", bytes.NewBufferString(`{"text":"加强女主线","source":"suggestion"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("send status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var sent struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&sent); err != nil {
+		t.Fatalf("decode send response: %v", err)
+	}
+	var suggestionMessage webCoCreateMessage
+	for _, message := range sent.CoCreate.Messages {
+		if message.Role == "user" && message.Content == "加强女主线" {
+			suggestionMessage = message
+			break
+		}
+	}
+	if suggestionMessage.ID == "" || !suggestionMessage.Editable || suggestionMessage.Source != "suggestion" {
+		t.Fatalf("suggestion message metadata = %+v", suggestionMessage)
+	}
+	if fake.cocreateCalls != 2 {
+		t.Fatalf("co-create calls after send = %d, want 2", fake.cocreateCalls)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/revise", bytes.NewBufferString(`{"message_id":`+strconvQuote(suggestionMessage.ID)+`,"text":"加强女主线，但保留慢热节奏"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revise status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.cocreateCalls != 3 {
+		t.Fatalf("co-create calls after revise = %d, want 3", fake.cocreateCalls)
+	}
+	if len(fake.lastCoCreateHistory) != 3 {
+		t.Fatalf("history after revise = %+v, want 3 entries", fake.lastCoCreateHistory)
+	}
+	if got := fake.lastCoCreateHistory[2].Content; got != "加强女主线，但保留慢热节奏" {
+		t.Fatalf("revised history content = %q", got)
+	}
+	var revised struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&revised); err != nil {
+		t.Fatalf("decode revise response: %v", err)
+	}
+	for _, message := range revised.CoCreate.Messages {
+		if message.Content == "加强女主线" {
+			t.Fatalf("old suggestion survived after revise: %+v", revised.CoCreate.Messages)
+		}
+	}
+}
+
+func TestProjectCoCreateRejectsInvalidSourceAndNonEditableRevise(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Rejects")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply("先确认。", "## 方向", false)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"normal","initial":"写月城悬疑"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var begun struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&begun); err != nil {
+		t.Fatalf("decode begin response: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/send", bytes.NewBufferString(`{"text":"随便补充","source":"bad"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid source status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	assistantID := ""
+	for _, message := range begun.CoCreate.Messages {
+		if message.Role == "assistant" {
+			assistantID = message.ID
+			break
+		}
+	}
+	if assistantID == "" {
+		t.Fatalf("assistant message id not found: %+v", begun.CoCreate.Messages)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/revise", bytes.NewBufferString(`{"message_id":`+strconvQuote(assistantID)+`,"text":"改掉 AI 消息"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("non-editable revise status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestProjectStageCoCreatePausesAndResumesWithDraft(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Stage CoCreate")
 	if err != nil {
@@ -100,7 +285,7 @@ func TestProjectStageCoCreatePausesAndResumesWithDraft(t *testing.T) {
 }
 
 func TestProjectStageCoCreateFailureKeepsStateCancelable(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Stage CoCreate Failure")
 	if err != nil {
@@ -146,7 +331,7 @@ func TestProjectStageCoCreateFailureKeepsStateCancelable(t *testing.T) {
 }
 
 func TestProjectAdaptCoCreateLocksSelectedModeOnCommit(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Adapt CoCreate")
 	if err != nil {
@@ -184,18 +369,51 @@ func TestProjectAdaptCoCreateLocksSelectedModeOnCommit(t *testing.T) {
 	if fake.prepareExternalRulesCalls != 1 {
 		t.Fatalf("PrepareExternalSourceUserRules calls = %d, want 1", fake.prepareExternalRulesCalls)
 	}
-	if fake.adaptStartCalls != 1 {
-		t.Fatalf("StartAdaptationPrepared calls = %d, want 1", fake.adaptStartCalls)
+	if fake.adaptStartCalls != 0 {
+		t.Fatalf("StartAdaptationPrepared calls = %d, want 0 before confirm", fake.adaptStartCalls)
 	}
-	if fake.adaptOptions.Granularity != domain.AdaptationGranularityArc {
-		t.Fatalf("adapt granularity = %q, want arc", fake.adaptOptions.Granularity)
+	if fake.adaptProposalCalls != 1 {
+		t.Fatalf("BuildAdaptationProposal calls = %d, want 1", fake.adaptProposalCalls)
 	}
-	if fake.adaptOptions.RewritePolicy != domain.AdaptationRewriteFullRewrite {
-		t.Fatalf("adapt rewrite policy = %q, want full_rewrite", fake.adaptOptions.RewritePolicy)
+	if fake.adaptProposalOptions.Granularity != domain.AdaptationGranularityArc {
+		t.Fatalf("adapt granularity = %q, want arc", fake.adaptProposalOptions.Granularity)
+	}
+	if fake.adaptProposalOptions.RewritePolicy != domain.AdaptationRewriteFullRewrite {
+		t.Fatalf("adapt rewrite policy = %q, want full_rewrite", fake.adaptProposalOptions.RewritePolicy)
 	}
 	wantSourcePath := filepath.Join(manifest.RootDir, "uploads", "adaptation", "source.txt")
-	if fake.adaptOptions.SourcePath != wantSourcePath {
-		t.Fatalf("adapt source path = %q, want %q", fake.adaptOptions.SourcePath, wantSourcePath)
+	if fake.adaptProposalOptions.SourcePath != wantSourcePath {
+		t.Fatalf("adapt source path = %q, want %q", fake.adaptProposalOptions.SourcePath, wantSourcePath)
+	}
+	var response struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode commit response: %v", err)
+	}
+	if response.CoCreate.Proposal == nil || response.CoCreate.Proposal.Status != domain.AdaptationPlanStatusProposal {
+		t.Fatalf("adapt commit should return proposal, got %+v", response.CoCreate.Proposal)
+	}
+}
+
+func TestProjectAdaptCoCreateRejectsTargetTotalWords(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt Budget Reject")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"arc","target_total_words":5000}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("adapt begin status = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	if fake.adaptCoCreateCalls != 0 {
+		t.Fatalf("adapt co-create should not start, calls=%d", fake.adaptCoCreateCalls)
 	}
 }
 

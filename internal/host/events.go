@@ -1,6 +1,7 @@
 package host
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -51,6 +52,7 @@ type UISnapshot struct {
 	TotalChapters      int
 	CompletedCount     int
 	TotalWordCount     int
+	WordBudget         *domain.WordBudget
 	InProgressChapter  int
 	PendingRewrites    []int
 	RewriteReason      string
@@ -96,16 +98,26 @@ type UISnapshot struct {
 	CachePerModel []AgentCacheStat
 
 	// 基础设定
-	Premise          string
-	Outline          []OutlineSnapshot
-	Characters       []string
-	SupportingCount  int      // 配角名册中的次要角色总数
-	RecentSupporting []string // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
-	Layered          bool
-	CurrentVolumeArc string
-	NextVolumeTitle  string
-	CompassDirection string
-	CompassScale     string
+	Premise            string
+	PremiseFull        string
+	Outline            []OutlineSnapshot
+	Characters         []string
+	CharacterDetails   []domain.Character
+	WorldRules         []domain.WorldRule
+	SupportingCount    int      // 配角名册中的次要角色总数
+	RecentSupporting   []string // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
+	Layered            bool
+	CurrentVolumeArc   string
+	NextVolumeTitle    string
+	CompassDirection   string
+	CompassScale       string
+	SimulationProfile  *domain.SimulationCompactProfile
+	SimulationSummary  *SimulationProfileSummary
+	CreativeBlueprint  *CreativeBlueprintSummary
+	AdaptationProposal *domain.AdaptationPlan
+	AdaptationPlan     *domain.AdaptationPlan
+	ProposalSummary    *AdaptationPlanSummary
+	AdaptationSummary  *AdaptationPlanSummary
 
 	// 详情
 	LastCommitSummary  string
@@ -116,9 +128,77 @@ type UISnapshot struct {
 
 // OutlineSnapshot 是大纲条目的展示摘要。
 type OutlineSnapshot struct {
-	Chapter   int
-	Title     string
-	CoreEvent string
+	Chapter          int
+	Title            string
+	CoreEvent        string
+	Hook             string
+	Scenes           []string
+	WrittenWordCount int
+	WordBudget       *ChapterBudgetSnapshot
+	SourceCoverage   *SourceCoverageSnapshot
+	PreserveEvents   []string
+	RequiredChanges  []string
+	ForbiddenMoves   []string
+	CoverageNote     string
+}
+
+type SimulationProfileSummary struct {
+	Loaded        bool
+	Version       string
+	UpdatedAt     string
+	SourceCount   int
+	SourceFiles   []string
+	StyleSignals  []string
+	HookSignals   []string
+	ReaderSignals []string
+}
+
+type CreativeBlueprintSummary struct {
+	Loaded           bool
+	NovelName        string
+	Premise          string
+	OutlineChapters  int
+	CharacterCount   int
+	WorldRuleCount   int
+	Layered          bool
+	CompassDirection string
+	CompassScale     string
+}
+
+type AdaptationPlanSummary struct {
+	Loaded            bool
+	Status            string
+	Granularity       string
+	RewritePolicy     string
+	Brief             string
+	ChapterCount      int
+	SourceTotalRunes  int
+	TargetTotalRunes  int
+	TargetMinRunes    int
+	TargetMaxRunes    int
+	WordTolerance     float64
+	MainlineRules     []string
+	RelationshipGoals []string
+}
+
+type ChapterBudgetSnapshot struct {
+	TargetWords int
+	MinWords    int
+	MaxWords    int
+	SourceRunes int
+	TargetRunes int
+	MinRunes    int
+	MaxRunes    int
+	Tolerance   float64
+}
+
+type SourceCoverageSnapshot struct {
+	Chapters []int
+	From     int
+	To       int
+	Runes    int
+	IsAdded  bool
+	Note     string
 }
 
 // AgentSnapshot 是 Agent 状态的展示投影。
@@ -199,11 +279,33 @@ func ReplayDeltaText(item domain.RuntimeQueueItem) string {
 }
 
 // BuildStartPrompt 将用户需求包装为 Coordinator 的启动 prompt。
+// BuildStartPrompt wraps the user request for Coordinator startup.
 func BuildStartPrompt(prompt string) string {
+	return BuildStartPromptWithBudget(prompt, nil)
+}
+
+// BuildStartPromptWithBudget wraps the user request and makes any full-book
+// length contract explicit before planning starts.
+func BuildStartPromptWithBudget(prompt string, budget *domain.WordBudget) string {
 	prompt = strings.TrimSpace(prompt)
-	return "请根据以下创作要求开始创作一部小说。进入规划后，Premise 第一行必须输出 `# 书名`。章节数量由你根据故事需要自行决定；若题材与冲突天然适合长篇连载，请优先规划为分层长篇结构，而不是压缩成短篇式梗概。\n\n[创作要求]\n" +
+	contract := formatWordBudgetStartBlock(budget)
+	return "请根据以下创作要求开始创作一部小说。进入规划后，premise 第一行必须输出 `# 书名`。章节数量由你根据故事需要自行决定；若题材与冲突天然适合长篇连载，请优先规划为分层长篇结构，而不是压缩成短篇式梗概。\n\n" +
+		contract +
+		"[创作要求]\n" +
 		prompt +
 		"\n\n若某些细节未明确，请在不违背用户方向的前提下自行补全。"
+}
+
+func formatWordBudgetStartBlock(budget *domain.WordBudget) string {
+	if budget == nil {
+		return ""
+	}
+	normalized, ok := budget.NormalizedNoChapterRecalc()
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("[篇幅契约]\n- target_total_words=%d，这是全书总字数，不是每章字数。\n- total_min_words=%d，total_max_words=%d；规划阶段必须让预计全书篇幅落在这个区间内。\n- 常规小说单章正文约 3000-5000 字；planned_chapters 必须按 target_total_words / 3000-5000 估算。\n- 若 target_total_words <= 8000，默认按一篇连续短篇规划，不分章节；除非用户明确要求分章节，outline 只保存 1 个正文条目。\n- 先决定 planned_chapters，再通过 save_foundation 落盘大纲；系统会据此计算每章推荐区间并在写作阶段注入 working_memory.word_budget。\n- writer 写每章时必须遵守 working_memory.word_budget.current_chapter.recommended_min_words / recommended_max_words，超出区间需整章重写后再 commit_chapter。\n\n",
+		normalized.TargetTotalWords, normalized.TotalMinWords, normalized.TotalMaxWords)
 }
 
 // BuildAdaptationStartPrompt tells Coordinator that foundation and adaptation

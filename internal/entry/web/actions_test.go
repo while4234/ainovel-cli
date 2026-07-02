@@ -17,7 +17,7 @@ import (
 )
 
 func TestProjectStartQuickUsesPreparedStartupPrompt(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Quick Start")
 	if err != nil {
@@ -46,8 +46,31 @@ func TestProjectStartQuickUsesPreparedStartupPrompt(t *testing.T) {
 	}
 }
 
+func TestProjectStartQuickPersistsTargetTotalWords(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Quick Budget")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/start", bytes.NewBufferString(`{"text":"写一部短篇小说","target_total_words":5000}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.setWordBudgetCalls != 1 || fake.wordBudget == nil || fake.wordBudget.TargetTotalWords != 5000 {
+		t.Fatalf("SetWordBudget calls=%d budget=%+v", fake.setWordBudgetCalls, fake.wordBudget)
+	}
+	if !strings.Contains(fake.startPreparedPrompt, "target_total_words=5000") {
+		t.Fatalf("start prompt missing target_total_words: %q", fake.startPreparedPrompt)
+	}
+}
+
 func TestProjectStartQuickRejectsProjectWithExistingBookState(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Existing State")
 	if err != nil {
@@ -69,7 +92,7 @@ func TestProjectStartQuickRejectsProjectWithExistingBookState(t *testing.T) {
 }
 
 func TestProjectPauseCallsAbort(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Pause")
 	if err != nil {
@@ -93,7 +116,7 @@ func TestProjectPauseCallsAbort(t *testing.T) {
 }
 
 func TestProjectImportSavesSourceUnderProjectAndResumes(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("External Import")
 	if err != nil {
@@ -124,7 +147,7 @@ func TestProjectImportSavesSourceUnderProjectAndResumes(t *testing.T) {
 }
 
 func TestProjectExportUsesProjectExportsDir(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Export")
 	if err != nil {
@@ -159,7 +182,7 @@ func TestProjectExportUsesProjectExportsDir(t *testing.T) {
 }
 
 func TestProjectExportRejectsAbsolutePath(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Unsafe Export")
 	if err != nil {
@@ -180,7 +203,7 @@ func TestProjectExportRejectsAbsolutePath(t *testing.T) {
 }
 
 func TestProjectDiagReturnsReportAndWritesExport(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Diagnostics")
 	if err != nil {

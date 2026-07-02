@@ -11,7 +11,7 @@ import (
 )
 
 func TestSaveReviewPersistsContractAssessment(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestSaveReviewPersistsContractAssessment(t *testing.T) {
 }
 
 func TestSaveReviewRejectsMissingDimensions(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestSaveReviewRejectsMissingDimensions(t *testing.T) {
 }
 
 func TestSaveReviewRejectsDimensionWithoutComment(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestSaveReviewRejectsDimensionWithoutComment(t *testing.T) {
 }
 
 func TestSaveReviewRejectsUnfinishedAffectedChapter(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestSaveReviewRejectsUnfinishedAffectedChapter(t *testing.T) {
 // 不一致 verdict（如 score=85 却填 warning）不再报错，而是被覆写成正确值（pass）。
 // 防回归 issue：弱模型 score/verdict 打架曾导致 save_review 反复失败。
 func TestSaveReviewDerivesVerdictFromScore(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestSaveReviewDerivesVerdictFromScore(t *testing.T) {
 }
 
 func TestSaveReviewRejectsMissingAffectedChaptersForRewrite(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestSaveReviewRejectsMissingAffectedChaptersForRewrite(t *testing.T) {
 }
 
 func TestSaveReviewRejectsIssueWithoutEvidence(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestSaveReviewRejectsIssueWithoutEvidence(t *testing.T) {
 }
 
 func TestSaveReviewIssueErrorEscalatesAcceptToPolish(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestSaveReviewIssueErrorEscalatesAcceptToPolish(t *testing.T) {
 }
 
 func TestSaveReviewIssueCriticalEscalatesPolishToRewrite(t *testing.T) {
-	s := store.NewStore(t.TempDir())
+	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
