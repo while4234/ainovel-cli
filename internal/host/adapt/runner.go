@@ -2,6 +2,7 @@ package adapt
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
@@ -16,6 +18,12 @@ import (
 )
 
 const DefaultWordTolerance = 0.15
+
+const (
+	adaptationPlannerPromptName    = "adaptation-planner"
+	adaptationPlannerPromptVersion = "v1"
+	adaptationPlannerMaxTokens     = 8192
+)
 
 type Deps struct {
 	Store   *store.Store
@@ -280,6 +288,9 @@ func BuildAdaptationProposal(deps Deps, opts ProposalOptions) (*domain.Adaptatio
 	}
 	opts.Granularity = granularity
 	opts.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(opts.Granularity)
+	if opts.WordTolerance <= 0 {
+		opts.WordTolerance = DefaultWordTolerance
+	}
 	manifest, reports, err := ValidatePreparedSource(deps.Store, opts.SourcePath)
 	if err != nil {
 		return nil, err
@@ -292,11 +303,389 @@ func BuildAdaptationProposal(deps Deps, opts ProposalOptions) (*domain.Adaptatio
 		return nil, fmt.Errorf("source foundation missing; import source first")
 	}
 
-	proposal := buildPlanFromInputs(opts, reports, manifest, domain.AdaptationPlanStatusProposal)
+	var proposal domain.AdaptationPlan
+	if opts.Granularity == domain.AdaptationGranularityChapter {
+		proposal = buildPlanFromInputs(opts, reports, manifest, domain.AdaptationPlanStatusProposal)
+	} else {
+		proposal, err = buildPlanFromPlanner(context.Background(), deps, opts, reports, manifest, sourceFoundation)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation proposal: %w", err)
 	}
 	return &proposal, nil
+}
+
+func buildPlanFromPlanner(
+	ctx context.Context,
+	deps Deps,
+	opts ProposalOptions,
+	reports []domain.AdaptationSourceReport,
+	manifest *domain.AdaptationSourceManifest,
+	sourceFoundation *domain.AdaptationSourceFoundation,
+) (domain.AdaptationPlan, error) {
+	var zero domain.AdaptationPlan
+	if deps.LLM == nil {
+		return zero, fmt.Errorf("planner llm is required for %s adaptation proposals", opts.Granularity)
+	}
+	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+	if systemPrompt == "" {
+		systemPrompt = "# Adaptation Planner\n\nReturn only one JSON adaptation plan proposal."
+	}
+	userPrompt, err := buildAdaptationPlannerUserPrompt(opts, reports, manifest, sourceFoundation)
+	if err != nil {
+		return zero, err
+	}
+	resp, err := deps.LLM.Generate(ctx, []agentcore.Message{
+		agentcore.SystemMsg(systemPrompt),
+		agentcore.UserMsg(userPrompt),
+	}, nil, agentcore.WithMaxTokens(adaptationPlannerMaxTokens), agentcore.WithJSONMode())
+	if err != nil {
+		return zero, fmt.Errorf("planner llm generate: %w", err)
+	}
+	if resp == nil {
+		return zero, fmt.Errorf("planner llm returned nil response")
+	}
+	proposal, err := parsePlannerProposal(resp.Message.TextContent())
+	if err != nil {
+		return zero, err
+	}
+	if err := validatePlannerProposal(&proposal, opts, reports, manifest, deps.LLM); err != nil {
+		return zero, err
+	}
+	return proposal, nil
+}
+
+func buildAdaptationPlannerUserPrompt(
+	opts ProposalOptions,
+	reports []domain.AdaptationSourceReport,
+	manifest *domain.AdaptationSourceManifest,
+	sourceFoundation *domain.AdaptationSourceFoundation,
+) (string, error) {
+	input := struct {
+		Brief            string                             `json:"brief"`
+		Granularity      string                             `json:"granularity"`
+		RewritePolicy    string                             `json:"rewrite_policy"`
+		WordTolerance    float64                            `json:"word_tolerance"`
+		SourceManifest   *domain.AdaptationSourceManifest   `json:"source_manifest"`
+		SourceFoundation *domain.AdaptationSourceFoundation `json:"source_foundation"`
+		SourceReports    []domain.AdaptationSourceReport    `json:"source_reports"`
+		Requirements     []string                           `json:"requirements"`
+	}{
+		Brief:            opts.Brief,
+		Granularity:      opts.Granularity,
+		RewritePolicy:    opts.RewritePolicy,
+		WordTolerance:    opts.WordTolerance,
+		SourceManifest:   manifest,
+		SourceFoundation: sourceFoundation,
+		SourceReports:    reports,
+		Requirements: []string{
+			"Return exactly one JSON AdaptationPlan object and no prose.",
+			"status must be proposal; rewrite_policy must be full_rewrite for arc/free.",
+			"Target chapters must be numbered continuously from 1.",
+			"Every target chapter must include legal source_chapters anchors within the analyzed source range.",
+			"Every source chapter must be covered by at least one target chapter.",
+			"Added chapters must still include source_chapters anchors.",
+			"Every chapter must include non-empty core_event, hook, scenes, and word_budget.",
+		},
+	}
+	raw, err := json.MarshalIndent(input, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal planner input: %w", err)
+	}
+	return "Use the following analyzed source foundation and reports to plan the adaptation proposal.\n\n```json\n" +
+		string(raw) + "\n```", nil
+}
+
+func parsePlannerProposal(text string) (domain.AdaptationPlan, error) {
+	var proposal domain.AdaptationPlan
+	segment, err := extractPlannerJSONSegment(text)
+	if err != nil {
+		return proposal, fmt.Errorf("extract planner proposal JSON: %w", err)
+	}
+	if err := json.Unmarshal([]byte(segment), &proposal); err != nil {
+		return proposal, fmt.Errorf("parse planner proposal JSON: %w", err)
+	}
+	return proposal, nil
+}
+
+func extractPlannerJSONSegment(text string) (string, error) {
+	text = strings.TrimSpace(strings.TrimPrefix(strings.ToValidUTF8(text, "\uFFFD"), "\uFEFF"))
+	var firstInvalid string
+	for start := 0; start < len(text); start++ {
+		if text[start] != '{' {
+			continue
+		}
+		end, ok := scanPlannerJSONEnd(text[start:])
+		if !ok {
+			continue
+		}
+		candidate := strings.TrimSpace(text[start : start+end])
+		if json.Valid([]byte(candidate)) {
+			return candidate, nil
+		}
+		if firstInvalid == "" {
+			firstInvalid = candidate
+		}
+	}
+	if firstInvalid != "" {
+		return firstInvalid, nil
+	}
+	return "", fmt.Errorf("no complete JSON object found")
+}
+
+func scanPlannerJSONEnd(s string) (int, bool) {
+	stack := []byte{'}'}
+	inString := false
+	escaped := false
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			stack = append(stack, '}')
+		case '[':
+			stack = append(stack, ']')
+		case '}', ']':
+			if len(stack) == 0 || c != stack[len(stack)-1] {
+				return 0, false
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func validatePlannerProposal(
+	proposal *domain.AdaptationPlan,
+	opts ProposalOptions,
+	reports []domain.AdaptationSourceReport,
+	manifest *domain.AdaptationSourceManifest,
+	llm imp.LLMChat,
+) error {
+	if proposal == nil {
+		return fmt.Errorf("planner proposal is nil")
+	}
+	if manifest == nil || manifest.ChapterCount <= 0 {
+		return fmt.Errorf("source manifest missing")
+	}
+	if strings.TrimSpace(proposal.Granularity) != opts.Granularity {
+		return fmt.Errorf("planner granularity=%q, want %q", proposal.Granularity, opts.Granularity)
+	}
+	if strings.TrimSpace(proposal.Status) != domain.AdaptationPlanStatusProposal {
+		return fmt.Errorf("planner status=%q, want proposal", proposal.Status)
+	}
+	if strings.TrimSpace(proposal.RewritePolicy) != domain.AdaptationRewriteFullRewrite {
+		return fmt.Errorf("planner rewrite_policy=%q, want full_rewrite", proposal.RewritePolicy)
+	}
+	if strings.TrimSpace(proposal.Brief) != opts.Brief {
+		return fmt.Errorf("planner brief does not match requested brief")
+	}
+	if len(proposal.Chapters) == 0 {
+		return fmt.Errorf("planner proposal has no chapters")
+	}
+	if opts.WordTolerance <= 0 {
+		opts.WordTolerance = DefaultWordTolerance
+	}
+
+	sourceRunesByChapter := sourceRunesByChapter(manifest)
+	covered := make(map[int]bool, manifest.ChapterCount)
+	sourceTotalRunes := 0
+	for _, report := range reports {
+		sourceTotalRunes += sourceRunesForReport(report, sourceRunesByChapter)
+	}
+
+	targetTotalRunes := 0
+	targetMinRunes := 0
+	targetMaxRunes := 0
+	for i := range proposal.Chapters {
+		chapter := &proposal.Chapters[i]
+		if chapter.Chapter != i+1 {
+			return fmt.Errorf("planner target chapters must be continuous: got chapter %d at index %d", chapter.Chapter, i)
+		}
+		if strings.TrimSpace(chapter.Title) == "" {
+			return fmt.Errorf("planner chapter %d title is empty", chapter.Chapter)
+		}
+		if strings.TrimSpace(chapter.CoreEvent) == "" {
+			return fmt.Errorf("planner chapter %d core_event is empty", chapter.Chapter)
+		}
+		if strings.TrimSpace(chapter.Hook) == "" {
+			return fmt.Errorf("planner chapter %d hook is empty", chapter.Chapter)
+		}
+		if len(trimmedNonEmpty(chapter.Scenes)) == 0 {
+			return fmt.Errorf("planner chapter %d scenes are empty", chapter.Chapter)
+		}
+		chapter.Scenes = trimmedNonEmpty(chapter.Scenes)
+		if err := validatePlannerWordBudget(chapter, opts.WordTolerance); err != nil {
+			return err
+		}
+		if len(chapter.SourceChapters) == 0 {
+			if chapter.IsAdded {
+				return fmt.Errorf("planner added chapter %d has no source anchors", chapter.Chapter)
+			}
+			return fmt.Errorf("planner chapter %d has no source coverage", chapter.Chapter)
+		}
+		minSource, maxSource := 0, 0
+		seenInChapter := map[int]bool{}
+		for _, sourceChapter := range chapter.SourceChapters {
+			if sourceChapter <= 0 || sourceChapter > manifest.ChapterCount {
+				return fmt.Errorf("planner chapter %d references invalid source chapter %d", chapter.Chapter, sourceChapter)
+			}
+			if seenInChapter[sourceChapter] {
+				return fmt.Errorf("planner chapter %d repeats source chapter %d", chapter.Chapter, sourceChapter)
+			}
+			seenInChapter[sourceChapter] = true
+			covered[sourceChapter] = true
+			if minSource == 0 || sourceChapter < minSource {
+				minSource = sourceChapter
+			}
+			if sourceChapter > maxSource {
+				maxSource = sourceChapter
+			}
+		}
+		if chapter.SourceRange.From == 0 && chapter.SourceRange.To == 0 {
+			chapter.SourceRange = domain.SourceRange{From: minSource, To: maxSource}
+		}
+		if chapter.SourceRange.From <= 0 || chapter.SourceRange.To < chapter.SourceRange.From || chapter.SourceRange.To > manifest.ChapterCount {
+			return fmt.Errorf("planner chapter %d has invalid source_range %d-%d", chapter.Chapter, chapter.SourceRange.From, chapter.SourceRange.To)
+		}
+		for _, sourceChapter := range chapter.SourceChapters {
+			if sourceChapter < chapter.SourceRange.From || sourceChapter > chapter.SourceRange.To {
+				return fmt.Errorf("planner chapter %d source chapter %d falls outside source_range %d-%d", chapter.Chapter, sourceChapter, chapter.SourceRange.From, chapter.SourceRange.To)
+			}
+		}
+		targetTotalRunes += chapter.WordBudget.TargetRunes
+		targetMinRunes += chapter.WordBudget.MinRunes
+		targetMaxRunes += chapter.WordBudget.MaxRunes
+	}
+	for sourceChapter := 1; sourceChapter <= manifest.ChapterCount; sourceChapter++ {
+		if !covered[sourceChapter] {
+			return fmt.Errorf("planner proposal does not cover source chapter %d", sourceChapter)
+		}
+	}
+	if err := validatePlannerProposalTotal("target_total_runes", proposal.TargetTotalRunes, targetTotalRunes); err != nil {
+		return err
+	}
+	if err := validatePlannerProposalTotal("target_min_runes", proposal.TargetMinRunes, targetMinRunes); err != nil {
+		return err
+	}
+	if err := validatePlannerProposalTotal("target_max_runes", proposal.TargetMaxRunes, targetMaxRunes); err != nil {
+		return err
+	}
+
+	proposal.Status = domain.AdaptationPlanStatusProposal
+	proposal.Granularity = opts.Granularity
+	proposal.RewritePolicy = domain.AdaptationRewriteFullRewrite
+	proposal.Brief = opts.Brief
+	proposal.WordTolerance = opts.WordTolerance
+	proposal.SourceTotalRunes = sourceTotalRunes
+	proposal.TargetTotalRunes = targetTotalRunes
+	proposal.TargetMinRunes = targetMinRunes
+	proposal.TargetMaxRunes = targetMaxRunes
+	if proposal.Planner == nil {
+		proposal.Planner = &domain.AdaptationPlannerMeta{}
+	}
+	if strings.TrimSpace(proposal.Planner.Prompt) == "" {
+		proposal.Planner.Prompt = adaptationPlannerPromptName
+	}
+	if strings.TrimSpace(proposal.Planner.PromptVersion) == "" {
+		proposal.Planner.PromptVersion = adaptationPlannerPromptVersion
+	}
+	if strings.TrimSpace(proposal.Planner.GeneratedAt) == "" {
+		proposal.Planner.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if strings.TrimSpace(proposal.Planner.Model) == "" {
+		if namer, ok := llm.(interface{ ModelName() string }); ok {
+			proposal.Planner.Model = namer.ModelName()
+		}
+	}
+	return nil
+}
+
+func validatePlannerWordBudget(chapter *domain.AdaptationChapterPlan, tolerance float64) error {
+	if chapter.WordBudget == nil {
+		return fmt.Errorf("planner chapter %d word_budget is missing", chapter.Chapter)
+	}
+	if chapter.WordBudget.TargetRunes <= 0 {
+		return fmt.Errorf("planner chapter %d word_budget.target_runes must be > 0", chapter.Chapter)
+	}
+	if chapter.WordBudget.MinRunes <= 0 {
+		return fmt.Errorf("planner chapter %d word_budget.min_runes must be > 0", chapter.Chapter)
+	}
+	if chapter.WordBudget.MaxRunes < chapter.WordBudget.MinRunes {
+		return fmt.Errorf("planner chapter %d word_budget max < min", chapter.Chapter)
+	}
+	if chapter.WordBudget.TargetRunes < chapter.WordBudget.MinRunes || chapter.WordBudget.TargetRunes > chapter.WordBudget.MaxRunes {
+		return fmt.Errorf("planner chapter %d word_budget.target_runes must be within min_runes..max_runes", chapter.Chapter)
+	}
+	if chapter.WordBudget.Tolerance <= 0 {
+		chapter.WordBudget.Tolerance = tolerance
+	}
+	if chapter.SourceRunes <= 0 {
+		chapter.SourceRunes = chapter.WordBudget.SourceRunes
+	}
+	if err := validatePlannerChapterBudgetField(chapter.Chapter, "target_runes", &chapter.TargetRunes, "word_budget.target_runes", chapter.WordBudget.TargetRunes); err != nil {
+		return err
+	}
+	if err := validatePlannerChapterBudgetField(chapter.Chapter, "target_min_runes", &chapter.TargetMinRunes, "word_budget.min_runes", chapter.WordBudget.MinRunes); err != nil {
+		return err
+	}
+	if err := validatePlannerChapterBudgetField(chapter.Chapter, "target_max_runes", &chapter.TargetMaxRunes, "word_budget.max_runes", chapter.WordBudget.MaxRunes); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePlannerChapterBudgetField(chapter int, field string, legacy *int, nestedField string, nestedValue int) error {
+	if legacy == nil {
+		return nil
+	}
+	if *legacy > 0 {
+		if *legacy != nestedValue {
+			return fmt.Errorf("planner chapter %d %s=%d conflicts with %s=%d", chapter, field, *legacy, nestedField, nestedValue)
+		}
+		return nil
+	}
+	*legacy = nestedValue
+	return nil
+}
+
+func validatePlannerProposalTotal(field string, provided int, derived int) error {
+	if provided > 0 && provided != derived {
+		return fmt.Errorf("planner %s=%d conflicts with derived chapter total %d", field, provided, derived)
+	}
+	return nil
+}
+
+func trimmedNonEmpty(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func ValidatePreparedSource(st *store.Store, sourcePath string) (*domain.AdaptationSourceManifest, []domain.AdaptationSourceReport, error) {

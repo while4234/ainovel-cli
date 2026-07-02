@@ -2,6 +2,7 @@ package adapt
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -89,12 +90,12 @@ func TestPrepareRunWorksAfterResetGenerated(t *testing.T) {
 		t.Fatalf("ResetGenerated: %v", err)
 	}
 
-	brief := "arc rewrite with warmer relationship beats"
+	brief := "chapter rewrite with warmer relationship beats"
 	plan, err := PrepareRun(context.Background(), Deps{Store: st}, brief)
 	if err != nil {
 		t.Fatalf("PrepareRun: %v", err)
 	}
-	if plan.Brief != brief || plan.Granularity != domain.AdaptationGranularityArc {
+	if plan.Brief != brief || plan.Granularity != domain.AdaptationGranularityChapter {
 		t.Fatalf("plan mismatch: %+v", plan)
 	}
 	if len(plan.Chapters) != 1 || len(plan.Chapters[0].SourceChapters) != 1 || plan.Chapters[0].SourceChapters[0] != 1 {
@@ -210,6 +211,331 @@ func TestBuildAdaptationProposalChapterPreserveDetailsUsesSourceRuneRanges(t *te
 	if proposal.SourceTotalRunes != 60 || proposal.TargetTotalRunes != 60 || proposal.TargetMinRunes != 51 || proposal.TargetMaxRunes != 69 {
 		t.Fatalf("total range mismatch: %+v", proposal)
 	}
+}
+
+func TestBuildAdaptationProposalArcUsesPlannerForFewerTargetChapters(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30})
+	brief := "arc restructure"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc restructure",
+		"chapters": [
+			{
+				"chapter": 1,
+				"title": "Merged opening",
+				"core_event": "Ari combines the first two source turns.",
+				"hook": "A shared clue reframes both turns.",
+				"scenes": ["station", "archive"],
+				"source_chapters": [1, 2],
+				"source_range": {"from": 1, "to": 2},
+				"word_budget": {"source_runes": 30, "target_runes": 35, "min_runes": 30, "max_runes": 40, "tolerance": 0.15}
+			},
+			{
+				"chapter": 2,
+				"title": "New turn",
+				"core_event": "Ari pays off the third source turn.",
+				"hook": "The choice opens the next door.",
+				"scenes": ["roof"],
+				"source_chapters": [3],
+				"source_range": {"from": 3, "to": 3},
+				"word_budget": {"source_runes": 30, "target_runes": 32, "min_runes": 28, "max_runes": 38, "tolerance": 0.15}
+			}
+		]
+	}`}}}
+
+	proposal, err := BuildAdaptationProposal(Deps{
+		Store: st,
+		LLM:   llm,
+		Prompts: Prompts{
+			Planner: "planner system prompt",
+		},
+	}, ProposalOptions{
+		Brief:       brief,
+		Granularity: domain.AdaptationGranularityArc,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("planner calls=%d, want 1", llm.calls)
+	}
+	if len(llm.got) != 1 || !strings.Contains(llm.got[0][0].TextContent(), "planner system prompt") {
+		t.Fatalf("planner prompt not sent: %+v", llm.got)
+	}
+	plannerInput := llm.got[0][1].TextContent()
+	if !strings.Contains(plannerInput, `"source_foundation"`) || !strings.Contains(plannerInput, `"source_reports"`) {
+		t.Fatalf("planner input should include source foundation and reports: %s", plannerInput)
+	}
+	if proposal.Status != domain.AdaptationPlanStatusProposal || proposal.RewritePolicy != domain.AdaptationRewriteFullRewrite {
+		t.Fatalf("proposal mode fields mismatch: %+v", proposal)
+	}
+	if len(proposal.Chapters) != 2 {
+		t.Fatalf("chapters=%d, want planner-provided 2", len(proposal.Chapters))
+	}
+	if got := proposal.Chapters[0].SourceChapters; len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("merged source anchors not preserved: %+v", got)
+	}
+	if proposal.TargetTotalRunes != 67 {
+		t.Fatalf("target total=%d, want summed planner budget 67", proposal.TargetTotalRunes)
+	}
+	if st.Adaptation.Active() {
+		t.Fatal("proposal should not activate adaptation project")
+	}
+	savedPlan, err := st.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan: %v", err)
+	}
+	if savedPlan != nil {
+		t.Fatalf("BuildAdaptationProposal should not save confirmed plan: %+v", savedPlan)
+	}
+}
+
+func TestBuildAdaptationProposalFreeUsesPlannerForMoreTargetChapters(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20})
+	brief := "free restructure"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"granularity": "free",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "free restructure",
+		"planner": {"prompt": "adaptation-planner", "prompt_version": "v1", "model": "fake"},
+		"chapters": [
+			{
+				"chapter": 1,
+				"title": "Opening focus",
+				"core_event": "Ari reframes the first source turn.",
+				"hook": "The clue points inward.",
+				"scenes": ["station"],
+				"source_chapters": [1],
+				"word_budget": {"source_runes": 10, "target_runes": 12, "min_runes": 10, "max_runes": 15, "tolerance": 0.15}
+			},
+			{
+				"chapter": 2,
+				"title": "Inserted bridge",
+				"core_event": "Ari makes the missing emotional choice visible.",
+				"hook": "The bridge forces a confession.",
+				"scenes": ["alley"],
+				"source_chapters": [1],
+				"is_added": true,
+				"word_budget": {"source_runes": 0, "target_runes": 10, "min_runes": 8, "max_runes": 12, "tolerance": 0.15}
+			},
+			{
+				"chapter": 3,
+				"title": "Second turn",
+				"core_event": "Ari resolves the second source turn.",
+				"hook": "The cost is named.",
+				"scenes": ["archive"],
+				"source_chapters": [2],
+				"word_budget": {"source_runes": 20, "target_runes": 22, "min_runes": 18, "max_runes": 25, "tolerance": 0.15}
+			}
+		]
+	}`}}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       brief,
+		Granularity: domain.AdaptationGranularityFree,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if len(proposal.Chapters) != 3 {
+		t.Fatalf("chapters=%d, want planner-provided 3", len(proposal.Chapters))
+	}
+	if !proposal.Chapters[1].IsAdded || len(proposal.Chapters[1].SourceChapters) != 1 || proposal.Chapters[1].SourceChapters[0] != 1 {
+		t.Fatalf("added chapter should keep source anchor: %+v", proposal.Chapters[1])
+	}
+	if proposal.Chapters[1].SourceRange.From != 1 || proposal.Chapters[1].SourceRange.To != 1 {
+		t.Fatalf("added chapter source range should be derived from anchor: %+v", proposal.Chapters[1].SourceRange)
+	}
+	if proposal.Planner == nil || proposal.Planner.Prompt != "adaptation-planner" || proposal.Planner.Model != "fake" {
+		t.Fatalf("planner metadata not preserved: %+v", proposal.Planner)
+	}
+}
+
+func TestBuildAdaptationProposalRejectsInvalidPlannerOutput(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20})
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"granularity": "arc",
+		"status": "confirmed",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc restructure",
+		"chapters": [
+			{
+				"chapter": 1,
+				"title": "Invalid",
+				"core_event": "Ari moves.",
+				"hook": "A bad status is rejected.",
+				"scenes": ["station"],
+				"source_chapters": [1, 2],
+				"word_budget": {"source_runes": 30, "target_runes": 30, "min_runes": 25, "max_runes": 35, "tolerance": 0.15}
+			}
+		]
+	}`}}}
+
+	if _, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       "arc restructure",
+		Granularity: domain.AdaptationGranularityArc,
+	}); err == nil {
+		t.Fatal("BuildAdaptationProposal should reject invalid planner output")
+	}
+	proposal, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if proposal != nil {
+		t.Fatalf("invalid planner output should not save proposal: %+v", proposal)
+	}
+}
+
+func TestBuildAdaptationProposalRejectsInvalidPlannerWordBudgets(t *testing.T) {
+	cases := []struct {
+		name          string
+		planFields    string
+		chapterFields string
+		wordBudget    string
+		wantErr       string
+	}{
+		{
+			name:       "proposal target total conflicts with chapter budgets",
+			planFields: `"target_total_runes": 31`,
+			wordBudget: `"source_runes": 30, "target_runes": 30, "min_runes": 25, "max_runes": 35, "tolerance": 0.15`,
+			wantErr:    "target_total_runes",
+		},
+		{
+			name:          "legacy chapter target conflicts with nested budget",
+			chapterFields: `"target_runes": 31`,
+			wordBudget:    `"source_runes": 30, "target_runes": 30, "min_runes": 25, "max_runes": 35, "tolerance": 0.15`,
+			wantErr:       "target_runes",
+		},
+		{
+			name:          "legacy chapter target min conflicts with nested budget",
+			chapterFields: `"target_min_runes": 24`,
+			wordBudget:    `"source_runes": 30, "target_runes": 30, "min_runes": 25, "max_runes": 35, "tolerance": 0.15`,
+			wantErr:       "target_min_runes",
+		},
+		{
+			name:          "legacy chapter target max conflicts with nested budget",
+			chapterFields: `"target_max_runes": 36`,
+			wordBudget:    `"source_runes": 30, "target_runes": 30, "min_runes": 25, "max_runes": 35, "tolerance": 0.15`,
+			wantErr:       "target_max_runes",
+		},
+		{
+			name:       "nested target falls outside nested min max",
+			wordBudget: `"source_runes": 30, "target_runes": 40, "min_runes": 25, "max_runes": 35, "tolerance": 0.15`,
+			wantErr:    "within min_runes..max_runes",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := store.NewStore(t.TempDir())
+			if err := st.Init(); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			seedPreparedAdaptationSource(t, st, []int{10, 20})
+			llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: plannerBudgetProposalJSON(tc.planFields, tc.chapterFields, tc.wordBudget)}}}
+
+			if _, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+				Brief:       "arc restructure",
+				Granularity: domain.AdaptationGranularityArc,
+			}); err == nil {
+				t.Fatal("BuildAdaptationProposal should reject invalid planner word budget")
+			} else if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error=%q, want substring %q", err.Error(), tc.wantErr)
+			}
+			proposal, err := st.Adaptation.LoadProposal()
+			if err != nil {
+				t.Fatalf("LoadProposal: %v", err)
+			}
+			if proposal != nil {
+				t.Fatalf("invalid planner word budget should not save proposal: %+v", proposal)
+			}
+		})
+	}
+}
+
+func plannerBudgetProposalJSON(planFields string, chapterFields string, wordBudget string) string {
+	if strings.TrimSpace(planFields) != "" {
+		planFields = strings.TrimSpace(planFields) + ","
+	}
+	if strings.TrimSpace(chapterFields) != "" {
+		chapterFields = strings.TrimSpace(chapterFields) + ","
+	}
+	return fmt.Sprintf(`{
+		%s
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc restructure",
+		"chapters": [
+			{
+				%s
+				"chapter": 1,
+				"title": "Budgeted",
+				"core_event": "Ari merges both source turns.",
+				"hook": "The budget contradiction must be caught.",
+				"scenes": ["station"],
+				"source_chapters": [1, 2],
+				"source_range": {"from": 1, "to": 2},
+				"word_budget": {%s}
+			}
+		]
+	}`, planFields, chapterFields, wordBudget)
+}
+
+func seedPreparedAdaptationSource(t *testing.T, st *store.Store, runeCounts []int) []domain.AdaptationSourceReport {
+	t.Helper()
+	sources := make([]domain.AdaptationSource, 0, len(runeCounts))
+	reports := make([]domain.AdaptationSourceReport, 0, len(runeCounts))
+	for i, runeCount := range runeCounts {
+		chapter := i + 1
+		title := "Source"
+		body := strings.Repeat("a", runeCount)
+		source, err := st.Adaptation.SaveSourceChapter(chapter, title, body)
+		if err != nil {
+			t.Fatalf("SaveSourceChapter %d: %v", chapter, err)
+		}
+		sources = append(sources, source)
+		report := domain.AdaptationSourceReport{
+			Chapter:      chapter,
+			Title:        title,
+			SourceSHA256: source.SHA256,
+			Summary:      "source summary",
+			KeyEvents:    []string{"source event"},
+		}
+		if err := st.Adaptation.SaveSourceReport(report); err != nil {
+			t.Fatalf("SaveSourceReport %d: %v", chapter, err)
+		}
+		reports = append(reports, report)
+	}
+	if err := st.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: len(sources),
+		Chapters:     sources,
+	}); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceFoundation(testSourceFoundation()); err != nil {
+		t.Fatalf("SaveSourceFoundation: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
+		t.Fatalf("SaveSourceReports: %v", err)
+	}
+	return reports
 }
 
 func testSourceFoundation() domain.AdaptationSourceFoundation {
