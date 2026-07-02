@@ -202,7 +202,7 @@ func (s *Server) handleProjectAdaptProposal(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	options.SourcePath = sourcePath
-	proposal, err := session.BuildAdaptationProposal(options)
+	proposal, err := session.BuildAdaptationProposalContext(r.Context(), options)
 	if err != nil {
 		writeAdaptationStartError(w, err)
 		return

@@ -244,7 +244,7 @@ func TestProjectSessionBuildAdaptationProposalEmitsLifecycleEvent(t *testing.T) 
 		t.Fatalf("BuildAdaptationProposal: %v", err)
 	}
 
-	ev := requireSingleAdaptProposalEvent(t, session)
+	ev := requireFinishedAdaptProposalEvent(t, session)
 	if ev.HostEventID == "" || ev.Event.ID != ev.HostEventID {
 		t.Fatalf("proposal event ID mismatch: %+v", ev)
 	}
@@ -276,7 +276,7 @@ func TestProjectSessionBuildAdaptationProposalEmitsFailedLifecycleEvent(t *testi
 		t.Fatalf("BuildAdaptationProposal error = %v, want %v", err, host.adaptProposalErr)
 	}
 
-	ev := requireSingleAdaptProposalEvent(t, session)
+	ev := requireFinishedAdaptProposalEvent(t, session)
 	if !ev.Event.Failed || ev.Event.Level != "error" {
 		t.Fatalf("proposal event should be failed error: %+v", ev.Event)
 	}
@@ -687,21 +687,36 @@ func newTestSessionWithHost(projectID string, h projectHost) *ProjectSession {
 	return session
 }
 
-func requireSingleAdaptProposalEvent(t *testing.T, session *ProjectSession) WebEvent {
+func requireFinishedAdaptProposalEvent(t *testing.T, session *ProjectSession) WebEvent {
 	t.Helper()
 	var proposalEvents []WebEvent
+	var finished *WebEvent
+	var sawPlannerRequest bool
 	for _, ev := range session.HistoryAfter(0) {
 		if ev.Type == webEventTypeHostEvent &&
 			ev.Event != nil &&
 			ev.Event.Category == "ADAPT" &&
 			ev.Event.Kind == "proposal" {
 			proposalEvents = append(proposalEvents, ev)
+			if ev.Event.FinishedAt != nil {
+				copy := ev
+				finished = &copy
+			}
+			if strings.Contains(ev.Event.Detail, "planner request") {
+				sawPlannerRequest = true
+			}
 		}
 	}
-	if len(proposalEvents) != 1 {
-		t.Fatalf("proposal event count = %d, want 1: %+v", len(proposalEvents), proposalEvents)
+	if len(proposalEvents) != 2 {
+		t.Fatalf("proposal event count = %d, want 2: %+v", len(proposalEvents), proposalEvents)
 	}
-	return proposalEvents[0]
+	if !sawPlannerRequest {
+		t.Fatalf("proposal events should include planner request progress: %+v", proposalEvents)
+	}
+	if finished == nil {
+		t.Fatalf("proposal events should include finished lifecycle event: %+v", proposalEvents)
+	}
+	return *finished
 }
 
 type fakeProjectHost struct {
@@ -1060,7 +1075,7 @@ func (f *fakeProjectHost) StartAdaptationPreparedWithOptions(options adapt.Propo
 	return f.adaptStartErr
 }
 
-func (f *fakeProjectHost) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
+func (f *fakeProjectHost) BuildAdaptationProposalContext(_ context.Context, options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.adaptProposalCalls++

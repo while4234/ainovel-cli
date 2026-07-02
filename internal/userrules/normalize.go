@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/rules"
@@ -41,15 +40,10 @@ type Normalizer struct {
 // NewNormalizer 用一个 ChatModel 构造归一化器。归一化是一次性启动工具，
 // 应传入能力较强的模型（如 ModelSet 的默认模型），不必跟随写作的弱模型。
 //
-// 归一化是机械抽取、不需要推理：能关思考就关（腾出 max_tokens 给 JSON、省 latency 与成本）。
-// 用模型自身的思考策略 Resolve(off)——支持关闭就关，不支持（o 系等总在思考的模型）则回落
-// ThinkingAuto（provider 默认），由 normalizeMaxTokens 的思考预算兜底避免截断。
+// 归一化是机械抽取、不需要推理，但不同 OpenAI 兼容后端对 thinking=off 的支持并不稳定。
+// 这里不显式下发 thinking 字段，由 normalizeMaxTokens 的思考预算兜底避免截断。
 func NewNormalizer(model agentcore.ChatModel) *Normalizer {
-	thinking := agentcore.ThinkingAuto
-	if model != nil {
-		thinking, _ = llm.ThinkingPolicyFor(model).Resolve(agentcore.ThinkingOff)
-	}
-	return &Normalizer{model: model, thinking: thinking}
+	return &Normalizer{model: model, thinking: agentcore.ThinkingAuto}
 }
 
 // Normalize 归一化一个来源。永不返回 error——失败时返回 degraded Candidate

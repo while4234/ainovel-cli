@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyAdaptationProposalSnapshot,
   buildAdaptationProposalKey,
   buildBeginCoCreatePayload,
   buildCoCreateIntakeInitial,
@@ -176,6 +177,45 @@ describe('workspace progress derivation', () => {
     expect(review.chapterCount).toBe(1);
     expect(review.chapters[0].sourceCoverage.chapters).toEqual([1, 2]);
     expect(review.chapters[0].wordBudget.targetRunes).toBe(3000);
+  });
+
+  it('restores visible adaptation proposal state from a co-create commit snapshot', () => {
+    const snapshot = {
+      ProposalSummary: {
+        Status: 'proposal',
+        Granularity: 'free',
+        RewritePolicy: 'full_rewrite',
+        Brief: 'Make the mystery structure richer',
+        ChapterCount: 2
+      },
+      AdaptationProposal: {
+        status: 'proposal',
+        granularity: 'free',
+        rewrite_policy: 'full_rewrite',
+        brief: 'Make the mystery structure richer',
+        chapters: [
+          { chapter: 1, title: 'Opening' },
+          { chapter: 2, title: 'Reveal' }
+        ]
+      }
+    };
+    const previous = {
+      sourceFile: { relative_path: 'source.txt' },
+      mode: 'chapter',
+      brief: '',
+      proposalKey: '',
+      startStatus: 'idle',
+      startMessage: '',
+      error: 'old error'
+    };
+
+    const next = applyAdaptationProposalSnapshot(previous, snapshot);
+
+    expect(next.mode).toBe('free');
+    expect(next.brief).toBe('Make the mystery structure richer');
+    expect(next.error).toBe('');
+    expect(next.proposalKey).toBe(buildAdaptationProposalKey(next));
+    expect(getVisibleAdaptationProposalReview(snapshot, next).proposalReady).toBe(true);
   });
 
   it('hides stale adaptation proposals after source upload or proposal input changes', () => {

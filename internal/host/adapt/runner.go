@@ -3,9 +3,11 @@ package adapt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -275,8 +277,15 @@ func BuildPlanFromBrief(brief string, reports []domain.AdaptationSourceReport) d
 }
 
 func BuildAdaptationProposal(deps Deps, opts ProposalOptions) (*domain.AdaptationPlan, error) {
+	return BuildAdaptationProposalContext(context.Background(), deps, opts)
+}
+
+func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts ProposalOptions) (*domain.AdaptationPlan, error) {
 	if deps.Store == nil {
 		return nil, fmt.Errorf("store is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	opts.Brief = strings.TrimSpace(opts.Brief)
 	if opts.Brief == "" {
@@ -288,9 +297,7 @@ func BuildAdaptationProposal(deps Deps, opts ProposalOptions) (*domain.Adaptatio
 	}
 	opts.Granularity = granularity
 	opts.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(opts.Granularity)
-	if opts.WordTolerance <= 0 {
-		opts.WordTolerance = DefaultWordTolerance
-	}
+	opts.WordTolerance = normalizeProposalWordTolerance(opts.Granularity, opts.WordTolerance)
 	manifest, reports, err := ValidatePreparedSource(deps.Store, opts.SourcePath)
 	if err != nil {
 		return nil, err
@@ -307,9 +314,12 @@ func BuildAdaptationProposal(deps Deps, opts ProposalOptions) (*domain.Adaptatio
 	if opts.Granularity == domain.AdaptationGranularityChapter {
 		proposal = buildPlanFromInputs(opts, reports, manifest, domain.AdaptationPlanStatusProposal)
 	} else {
-		proposal, err = buildPlanFromPlanner(context.Background(), deps, opts, reports, manifest, sourceFoundation)
+		proposal, err = buildPlanFromPlanner(ctx, deps, opts, reports, manifest, sourceFoundation)
 		if err != nil {
-			return nil, err
+			if !isPlannerFallbackEligible(err) {
+				return nil, err
+			}
+			proposal = buildPlannerFallbackPlan(opts, reports, manifest, err)
 		}
 	}
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
@@ -350,12 +360,29 @@ func buildPlanFromPlanner(
 	}
 	proposal, err := parsePlannerProposal(resp.Message.TextContent())
 	if err != nil {
-		return zero, err
+		return zero, plannerUnusableOutputError{err: err}
 	}
 	if err := validatePlannerProposal(&proposal, opts, reports, manifest, deps.LLM); err != nil {
 		return zero, err
 	}
 	return proposal, nil
+}
+
+type plannerUnusableOutputError struct {
+	err error
+}
+
+func (e plannerUnusableOutputError) Error() string {
+	return e.err.Error()
+}
+
+func (e plannerUnusableOutputError) Unwrap() error {
+	return e.err
+}
+
+func isPlannerFallbackEligible(err error) bool {
+	var unusable plannerUnusableOutputError
+	return errors.As(err, &unusable)
 }
 
 func buildAdaptationPlannerUserPrompt(
@@ -400,20 +427,167 @@ func buildAdaptationPlannerUserPrompt(
 }
 
 func parsePlannerProposal(text string) (domain.AdaptationPlan, error) {
-	var proposal domain.AdaptationPlan
-	segment, err := extractPlannerJSONSegment(text)
+	segments, err := extractPlannerJSONSegments(text)
 	if err != nil {
-		return proposal, fmt.Errorf("extract planner proposal JSON: %w", err)
+		return domain.AdaptationPlan{}, fmt.Errorf("extract planner proposal JSON: %w", err)
 	}
-	if err := json.Unmarshal([]byte(segment), &proposal); err != nil {
-		return proposal, fmt.Errorf("parse planner proposal JSON: %w", err)
+	var firstProposal domain.AdaptationPlan
+	var firstShape string
+	var firstErr error
+	for _, segment := range segments {
+		proposal, err := decodePlannerProposalJSON([]byte(segment))
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if firstShape == "" {
+			firstShape = plannerProposalShapeSummary([]byte(segment))
+			firstProposal = proposal
+		}
+		if len(proposal.Chapters) > 0 {
+			return proposal, nil
+		}
+	}
+	if firstErr != nil && firstShape == "" {
+		return domain.AdaptationPlan{}, fmt.Errorf("parse planner proposal JSON: %w", firstErr)
+	}
+	if firstShape != "" {
+		return firstProposal, fmt.Errorf("planner proposal has no chapters (%s)", firstShape)
+	}
+	return domain.AdaptationPlan{}, fmt.Errorf("planner proposal has no decodable JSON object")
+}
+
+var plannerEnvelopeKeys = []string{
+	"proposal",
+	"adaptation_proposal",
+	"adaptationProposal",
+	"adaptation_plan",
+	"adaptationPlan",
+	"plan",
+	"result",
+	"data",
+	"output",
+	"draft",
+}
+
+var plannerChapterAliasKeys = []string{
+	"chapters",
+	"chapter_plans",
+	"chapterPlans",
+	"target_chapters",
+	"targetChapters",
+	"target_chapter_plans",
+	"targetChapterPlans",
+	"planned_chapters",
+	"plannedChapters",
+	"adaptation_chapters",
+	"adaptationChapters",
+	"adapted_chapters",
+	"adaptedChapters",
+	"rewrite_chapters",
+	"rewriteChapters",
+	"chapter_outline",
+	"chapterOutline",
+	"chapter_outlines",
+	"chapterOutlines",
+	"outline_chapters",
+	"outlineChapters",
+	"planned_outline",
+	"plannedOutline",
+	"target_outline",
+	"targetOutline",
+	"chapter_proposals",
+	"chapterProposals",
+	"sections",
+	"outline",
+}
+
+func decodePlannerProposalJSON(data []byte) (domain.AdaptationPlan, error) {
+	var proposal domain.AdaptationPlan
+	if err := json.Unmarshal(data, &proposal); err != nil {
+		return proposal, err
+	}
+	fillPlannerChapterAliases(data, &proposal)
+	if len(proposal.Chapters) > 0 {
+		return proposal, nil
+	}
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return proposal, nil
+	}
+	for _, key := range plannerEnvelopeKeys {
+		raw := envelope[key]
+		if len(raw) == 0 || raw[0] != '{' {
+			continue
+		}
+		nested, err := decodePlannerProposalJSON(raw)
+		if err == nil && len(nested.Chapters) > 0 {
+			return nested, nil
+		}
 	}
 	return proposal, nil
 }
 
-func extractPlannerJSONSegment(text string) (string, error) {
+func fillPlannerChapterAliases(data []byte, proposal *domain.AdaptationPlan) {
+	if proposal == nil || len(proposal.Chapters) > 0 {
+		return
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return
+	}
+	for _, key := range plannerChapterAliasKeys {
+		raw := object[key]
+		if len(raw) == 0 || raw[0] != '[' {
+			continue
+		}
+		var chapters []domain.AdaptationChapterPlan
+		if err := json.Unmarshal(raw, &chapters); err != nil {
+			continue
+		}
+		if len(chapters) > 0 {
+			proposal.Chapters = chapters
+			return
+		}
+	}
+}
+
+func plannerProposalShapeSummary(data []byte) string {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return "invalid object"
+	}
+	keys := sortedRawMessageKeys(object)
+	parts := []string{"top-level keys: " + strings.Join(keys, ",")}
+	for _, key := range plannerEnvelopeKeys {
+		raw := object[key]
+		if len(raw) == 0 || raw[0] != '{' {
+			continue
+		}
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &nested); err == nil {
+			parts = append(parts, key+" keys: "+strings.Join(sortedRawMessageKeys(nested), ","))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func sortedRawMessageKeys(object map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func extractPlannerJSONSegments(text string) ([]string, error) {
 	text = strings.TrimSpace(strings.TrimPrefix(strings.ToValidUTF8(text, "\uFFFD"), "\uFEFF"))
 	var firstInvalid string
+	var segments []string
 	for start := 0; start < len(text); start++ {
 		if text[start] != '{' {
 			continue
@@ -424,16 +598,20 @@ func extractPlannerJSONSegment(text string) (string, error) {
 		}
 		candidate := strings.TrimSpace(text[start : start+end])
 		if json.Valid([]byte(candidate)) {
-			return candidate, nil
+			segments = append(segments, candidate)
+			continue
 		}
 		if firstInvalid == "" {
 			firstInvalid = candidate
 		}
 	}
-	if firstInvalid != "" {
-		return firstInvalid, nil
+	if len(segments) > 0 {
+		return segments, nil
 	}
-	return "", fmt.Errorf("no complete JSON object found")
+	if firstInvalid != "" {
+		return []string{firstInvalid}, nil
+	}
+	return nil, fmt.Errorf("no complete JSON object found")
 }
 
 func scanPlannerJSONEnd(s string) (int, bool) {
@@ -489,14 +667,15 @@ func validatePlannerProposal(
 	if manifest == nil || manifest.ChapterCount <= 0 {
 		return fmt.Errorf("source manifest missing")
 	}
+	fillMissingPlannerProposalConstants(proposal, opts)
 	if strings.TrimSpace(proposal.Granularity) != opts.Granularity {
 		return fmt.Errorf("planner granularity=%q, want %q", proposal.Granularity, opts.Granularity)
 	}
 	if strings.TrimSpace(proposal.Status) != domain.AdaptationPlanStatusProposal {
 		return fmt.Errorf("planner status=%q, want proposal", proposal.Status)
 	}
-	if strings.TrimSpace(proposal.RewritePolicy) != domain.AdaptationRewriteFullRewrite {
-		return fmt.Errorf("planner rewrite_policy=%q, want full_rewrite", proposal.RewritePolicy)
+	if strings.TrimSpace(proposal.RewritePolicy) != opts.RewritePolicy {
+		return fmt.Errorf("planner rewrite_policy=%q, want %q", proposal.RewritePolicy, opts.RewritePolicy)
 	}
 	if strings.TrimSpace(proposal.Brief) != opts.Brief {
 		return fmt.Errorf("planner brief does not match requested brief")
@@ -504,9 +683,7 @@ func validatePlannerProposal(
 	if len(proposal.Chapters) == 0 {
 		return fmt.Errorf("planner proposal has no chapters")
 	}
-	if opts.WordTolerance <= 0 {
-		opts.WordTolerance = DefaultWordTolerance
-	}
+	opts.WordTolerance = normalizeProposalWordTolerance(opts.Granularity, opts.WordTolerance)
 
 	sourceRunesByChapter := sourceRunesByChapter(manifest)
 	covered := make(map[int]bool, manifest.ChapterCount)
@@ -668,6 +845,32 @@ func validatePlannerChapterBudgetField(chapter int, field string, legacy *int, n
 	}
 	*legacy = nestedValue
 	return nil
+}
+
+func fillMissingPlannerProposalConstants(proposal *domain.AdaptationPlan, opts ProposalOptions) {
+	if proposal == nil {
+		return
+	}
+	if strings.TrimSpace(proposal.Granularity) == "" {
+		proposal.Granularity = opts.Granularity
+	}
+	if strings.TrimSpace(proposal.Status) == "" {
+		proposal.Status = domain.AdaptationPlanStatusProposal
+	}
+	if strings.TrimSpace(proposal.RewritePolicy) == "" {
+		proposal.RewritePolicy = opts.RewritePolicy
+	}
+	proposal.Brief = opts.Brief
+}
+
+func normalizeProposalWordTolerance(granularity string, wordTolerance float64) float64 {
+	if domain.AdaptationRewritePolicyForGranularity(granularity) != domain.AdaptationRewritePreserveDetails {
+		return 0
+	}
+	if wordTolerance <= 0 {
+		return DefaultWordTolerance
+	}
+	return wordTolerance
 }
 
 func validatePlannerProposalTotal(field string, provided int, derived int) error {
@@ -850,6 +1053,26 @@ func buildPlanFromInputs(opts ProposalOptions, reports []domain.AdaptationSource
 	for _, report := range reports {
 		plan.Chapters = append(plan.Chapters, buildChapterPlan(report, opts, sourceRunesByChapter))
 	}
+	if plan.TargetMinRunes <= 0 {
+		plan.TargetMinRunes = plan.TargetTotalRunes
+	}
+	if plan.TargetMaxRunes <= 0 {
+		plan.TargetMaxRunes = plan.TargetTotalRunes
+	}
+	return plan
+}
+
+func buildPlannerFallbackPlan(opts ProposalOptions, reports []domain.AdaptationSourceReport, manifest *domain.AdaptationSourceManifest, plannerErr error) domain.AdaptationPlan {
+	plan := buildPlanFromInputs(opts, reports, manifest, domain.AdaptationPlanStatusProposal)
+	plan.Planner = &domain.AdaptationPlannerMeta{
+		Prompt:        adaptationPlannerPromptName,
+		PromptVersion: adaptationPlannerPromptVersion,
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		Notes: domain.TextList{
+			"planner output was unusable; generated a deterministic proposal from analyzed source reports",
+			"planner error: " + plannerErr.Error(),
+		},
+	}
 	return plan
 }
 
@@ -880,6 +1103,19 @@ func buildChapterPlan(report domain.AdaptationSourceReport, opts ProposalOptions
 		chapterPlan.ForbiddenMoves = append(chapterPlan.ForbiddenMoves,
 			"不要把原文直接同义替换成新正文。",
 		)
+	}
+	if chapterPlan.TargetMinRunes <= 0 {
+		chapterPlan.TargetMinRunes = chapterPlan.TargetRunes
+	}
+	if chapterPlan.TargetMaxRunes <= 0 {
+		chapterPlan.TargetMaxRunes = chapterPlan.TargetRunes
+	}
+	chapterPlan.WordBudget = &domain.AdaptationChapterWordBudget{
+		SourceRunes: sourceRunes,
+		TargetRunes: chapterPlan.TargetRunes,
+		MinRunes:    chapterPlan.TargetMinRunes,
+		MaxRunes:    chapterPlan.TargetMaxRunes,
+		Tolerance:   opts.WordTolerance,
 	}
 	return chapterPlan
 }

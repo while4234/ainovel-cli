@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 const (
 	AdaptationGranularityChapter = "chapter"
@@ -84,7 +87,31 @@ type AdaptationPlannerMeta struct {
 	PromptVersion string   `json:"prompt_version,omitempty"`
 	Model         string   `json:"model,omitempty"`
 	GeneratedAt   string   `json:"generated_at,omitempty"`
-	Notes         []string `json:"notes,omitempty"`
+	Notes         TextList `json:"notes,omitempty"`
+}
+
+// TextList accepts either a JSON string or an array of strings. Planner models
+// often compress singleton note arrays into one string; the stored shape stays
+// an array after normal marshaling.
+type TextList []string
+
+func (l *TextList) UnmarshalJSON(data []byte) error {
+	var values []string
+	if err := json.Unmarshal(data, &values); err == nil {
+		*l = values
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		*l = nil
+		return nil
+	}
+	*l = []string{value}
+	return nil
 }
 
 // SourceRange records the inclusive source chapter coverage for one target
@@ -103,6 +130,34 @@ type AdaptationChapterWordBudget struct {
 	MinRunes    int     `json:"min_runes,omitempty"`
 	MaxRunes    int     `json:"max_runes,omitempty"`
 	Tolerance   float64 `json:"tolerance,omitempty"`
+}
+
+func (b *AdaptationChapterWordBudget) UnmarshalJSON(data []byte) error {
+	type budgetAlias AdaptationChapterWordBudget
+	var raw struct {
+		budgetAlias
+		SourceWords int `json:"source_words,omitempty"`
+		TargetWords int `json:"target_words,omitempty"`
+		MinWords    int `json:"min_words,omitempty"`
+		MaxWords    int `json:"max_words,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*b = AdaptationChapterWordBudget(raw.budgetAlias)
+	if b.SourceRunes <= 0 {
+		b.SourceRunes = raw.SourceWords
+	}
+	if b.TargetRunes <= 0 {
+		b.TargetRunes = raw.TargetWords
+	}
+	if b.MinRunes <= 0 {
+		b.MinRunes = raw.MinWords
+	}
+	if b.MaxRunes <= 0 {
+		b.MaxRunes = raw.MaxWords
+	}
+	return nil
 }
 
 // AdaptationChapterPlan defines one target chapter's source anchors and edits.

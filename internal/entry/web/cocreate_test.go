@@ -13,6 +13,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
 
@@ -111,6 +112,89 @@ func TestProjectCoCreateCheckpointRestoresAfterSessionRestart(t *testing.T) {
 	}
 	if len(restored.CoCreate.Messages) != 2 || restored.CoCreate.Messages[0].Role != "user" || restored.CoCreate.Messages[1].Role != "assistant" {
 		t.Fatalf("restored messages = %+v", restored.CoCreate.Messages)
+	}
+}
+
+func TestProjectAdaptCoCreateCheckpointRestoresModeAndCommits(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Restore")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	opener := strings.Join([]string{
+		"Please adapt this novel.",
+		"",
+		"granularity=free",
+		"rewrite_policy=" + domain.AdaptationRewritePolicyForGranularity(domain.AdaptationGranularityFree),
+		"word_tolerance=0.15",
+	}, "\n")
+	checkpoint := webCoCreateCheckpoint{
+		Version: webCoCreateCheckpointVersion,
+		Kind:    webCoCreateKindAdapt,
+		Session: startup.CoCreateSnapshot{
+			History: []host.CoCreateMessage{
+				{Role: "user", Content: opener},
+				{Role: "user", Content: "core adaptation idea"},
+			},
+			DraftPrompt: "## restored draft\n- keep current direction",
+			Ready:       false,
+		},
+	}
+	data, err := json.Marshal(checkpoint)
+	if err != nil {
+		t.Fatalf("marshal checkpoint: %v", err)
+	}
+	checkpointPath := filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))
+	if err := os.MkdirAll(filepath.Dir(checkpointPath), 0o755); err != nil {
+		t.Fatalf("mkdir checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(checkpointPath, data, 0o644); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var restored struct {
+		CoCreate *webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if restored.CoCreate == nil || restored.CoCreate.AdaptMode != domain.AdaptationGranularityFree || restored.CoCreate.WordTolerance != 0 {
+		t.Fatalf("restored adapt options = %+v", restored.CoCreate)
+	}
+	if restored.CoCreate.SourceFile != "source.txt" || !restored.CoCreate.CanStart {
+		t.Fatalf("restored source/can_start = %+v", restored.CoCreate)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("commit status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.adaptStartCalls != 0 {
+		t.Fatalf("StartAdaptationPrepared calls = %d, want 0 before proposal confirm", fake.adaptStartCalls)
+	}
+	if fake.adaptProposalCalls != 1 {
+		t.Fatalf("BuildAdaptationProposal calls = %d, want 1", fake.adaptProposalCalls)
+	}
+	if fake.adaptProposalOptions.Granularity != domain.AdaptationGranularityFree ||
+		fake.adaptProposalOptions.RewritePolicy != domain.AdaptationRewriteFullRewrite ||
+		fake.adaptProposalOptions.WordTolerance != 0 {
+		t.Fatalf("adapt proposal options = %+v", fake.adaptProposalOptions)
+	}
+	wantSourcePath := filepath.Join(manifest.RootDir, "uploads", "adaptation", "source.txt")
+	if fake.adaptProposalOptions.SourcePath != wantSourcePath {
+		t.Fatalf("adapt source path = %q, want %q", fake.adaptProposalOptions.SourcePath, wantSourcePath)
 	}
 }
 
@@ -497,7 +581,7 @@ func TestProjectAdaptCoCreateLocksSelectedModeOnCommit(t *testing.T) {
 		t.Fatalf("PrepareExternalSourceUserRules calls = %d, want 1", fake.prepareExternalRulesCalls)
 	}
 	if fake.adaptStartCalls != 0 {
-		t.Fatalf("StartAdaptationPrepared calls = %d, want 0 before confirm", fake.adaptStartCalls)
+		t.Fatalf("StartAdaptationPrepared calls = %d, want 0 before proposal confirm", fake.adaptStartCalls)
 	}
 	if fake.adaptProposalCalls != 1 {
 		t.Fatalf("BuildAdaptationProposal calls = %d, want 1", fake.adaptProposalCalls)
@@ -517,6 +601,9 @@ func TestProjectAdaptCoCreateLocksSelectedModeOnCommit(t *testing.T) {
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
 		t.Fatalf("decode commit response: %v", err)
+	}
+	if response.CoCreate.Active {
+		t.Fatalf("adapt commit should leave co-create after start, got %+v", response.CoCreate)
 	}
 	if response.CoCreate.Proposal == nil || response.CoCreate.Proposal.Status != domain.AdaptationPlanStatusProposal {
 		t.Fatalf("adapt commit should return proposal, got %+v", response.CoCreate.Proposal)

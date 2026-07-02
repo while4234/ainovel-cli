@@ -76,7 +76,7 @@ type projectHost interface {
 	SimulateFromDir(context.Context, string) (<-chan sim.Event, error)
 	ImportSimulationProfile(context.Context, string) (<-chan sim.Event, error)
 	PrepareAdaptationSource(context.Context, string) (<-chan adapt.Event, error)
-	BuildAdaptationProposal(adapt.ProposalOptions) (*domain.AdaptationPlan, error)
+	BuildAdaptationProposalContext(context.Context, adapt.ProposalOptions) (*domain.AdaptationPlan, error)
 	ConfirmAdaptationProposal() (*domain.AdaptationPlan, error)
 	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
 	Export(context.Context, exp.Options) (*exp.Result, error)
@@ -588,24 +588,37 @@ func (s *ProjectSession) StartAdaptationPrepared(options adapt.ProposalOptions) 
 }
 
 func (s *ProjectSession) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
+	return s.BuildAdaptationProposalContext(context.Background(), options)
+}
+
+func (s *ProjectSession) BuildAdaptationProposalContext(ctx context.Context, options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
 	unlock, err := s.beginAction()
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
 
+	proposal, err := s.buildAdaptationProposal(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	s.AppendSnapshot()
+	return proposal, nil
+}
+
+func (s *ProjectSession) buildAdaptationProposal(ctx context.Context, options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
 	eventID, startedAt := s.appendAdaptationProposalStarted(options)
 	if err := s.host.PrepareExternalSourceUserRules(options.Brief); err != nil {
 		s.appendAdaptationProposalFinished(eventID, startedAt, options, err)
 		return nil, err
 	}
-	proposal, err := s.host.BuildAdaptationProposal(options)
+	s.appendAdaptationProposalPlannerRequested(options)
+	proposal, err := s.host.BuildAdaptationProposalContext(ctx, options)
 	if err != nil {
 		s.appendAdaptationProposalFinished(eventID, startedAt, options, err)
 		return nil, err
 	}
 	s.appendAdaptationProposalFinished(eventID, startedAt, options, nil)
-	s.AppendSnapshot()
 	return proposal, nil
 }
 
@@ -698,7 +711,7 @@ func (s *ProjectSession) ReviseCoCreate(ctx context.Context, req webCoCreateRevi
 	return s.runCoCreateLocked(ctx)
 }
 
-func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
+func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, error) {
 	unlock, err := s.beginAction()
 	if err != nil {
 		return webCoCreateState{}, err
@@ -718,10 +731,7 @@ func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
 			return state.apiState(), err
 		}
 	case webCoCreateKindAdapt:
-		if err := s.host.PrepareExternalSourceUserRules(state.draftPrompt()); err != nil {
-			return state.apiState(), err
-		}
-		proposal, err := s.host.BuildAdaptationProposal(adapt.ProposalOptions{
+		proposal, err := s.buildAdaptationProposal(ctx, adapt.ProposalOptions{
 			Brief:         state.draftPrompt(),
 			SourcePath:    state.sourcePath,
 			Granularity:   state.adaptGranularity,
@@ -750,6 +760,7 @@ func (s *ProjectSession) CommitCoCreate() (webCoCreateState, error) {
 	api := state.apiState()
 	s.cocreate = nil
 	s.clearCoCreateCheckpoint()
+	api.Active = false
 	s.AppendSnapshot()
 	return api, nil
 }
@@ -790,6 +801,9 @@ func (s *ProjectSession) restoreCoCreateCheckpoint() error {
 	}
 	state, err := webCoCreateSessionFromCheckpoint(checkpoint)
 	if err != nil {
+		return fmt.Errorf("restore %s: %w", path, err)
+	}
+	if err := s.fillCoCreateAdaptationSource(state); err != nil {
 		return fmt.Errorf("restore %s: %w", path, err)
 	}
 	if state.kind == webCoCreateKindStage && !s.host.PauseForCoCreate() {
@@ -1392,6 +1406,18 @@ func (s *ProjectSession) appendAdaptationProposalStarted(options adapt.ProposalO
 		Level:    "info",
 	})
 	return eventID, startedAt
+}
+
+func (s *ProjectSession) appendAdaptationProposalPlannerRequested(options adapt.ProposalOptions) {
+	s.appendHostEvent(host.Event{
+		Time:     time.Now().UTC(),
+		Category: "ADAPT",
+		Agent:    "web",
+		Summary:  adaptationProposalEventSummary("已完成规则归一化，正在请求改编规划模型", options),
+		Detail:   "planner request may take a few minutes for long free/full rewrite proposals",
+		Kind:     "proposal",
+		Level:    "info",
+	})
 }
 
 func (s *ProjectSession) appendAdaptationProposalFinished(eventID string, startedAt time.Time, options adapt.ProposalOptions, err error) {

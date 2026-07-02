@@ -308,7 +308,7 @@ func TestBuildAdaptationProposalArcUsesPlannerForFewerTargetChapters(t *testing.
 				"scenes": ["station", "archive"],
 				"source_chapters": [1, 2],
 				"source_range": {"from": 1, "to": 2},
-				"word_budget": {"source_runes": 30, "target_runes": 35, "min_runes": 30, "max_runes": 40, "tolerance": 0.15}
+				"word_budget": {"source_words": 30, "target_words": 35, "min_words": 30, "max_words": 40, "tolerance": 0.15}
 			},
 			{
 				"chapter": 2,
@@ -433,6 +433,184 @@ func TestBuildAdaptationProposalFreeUsesPlannerForMoreTargetChapters(t *testing.
 	}
 	if proposal.Planner == nil || proposal.Planner.Prompt != "adaptation-planner" || proposal.Planner.Model != "fake" {
 		t.Fatalf("planner metadata not preserved: %+v", proposal.Planner)
+	}
+}
+
+func TestBuildAdaptationProposalFillsMissingPlannerConstants(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20})
+	brief := "arc restructure"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"brief": "model-side summary",
+		"chapters": [
+			{
+				"chapter": 1,
+				"title": "Merged opening",
+				"core_event": "Ari combines both source turns.",
+				"hook": "A shared clue reframes both turns.",
+				"scenes": ["station", "archive"],
+				"source_chapters": [1, 2],
+				"source_range": {"from": 1, "to": 2},
+				"word_budget": {"source_runes": 30, "target_runes": 35, "min_runes": 30, "max_runes": 40, "tolerance": 0.15}
+			}
+		]
+	}`}}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       brief,
+		Granularity: domain.AdaptationGranularityArc,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if proposal.Granularity != domain.AdaptationGranularityArc ||
+		proposal.Status != domain.AdaptationPlanStatusProposal ||
+		proposal.RewritePolicy != domain.AdaptationRewriteFullRewrite ||
+		proposal.Brief != brief {
+		t.Fatalf("proposal constants were not restored: %+v", proposal)
+	}
+}
+
+func TestBuildAdaptationProposalFallsBackWhenPlannerHasNoChapters(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20})
+	brief := "free restructure"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"generated_at": "2026-07-02T00:00:00Z",
+		"model": "fake",
+		"notes": "metadata only",
+		"prompt": "adaptation-planner",
+		"prompt_version": "v1"
+	}`}}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       brief,
+		Granularity: domain.AdaptationGranularityFree,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("planner calls=%d, want 1", llm.calls)
+	}
+	if proposal.Status != domain.AdaptationPlanStatusProposal ||
+		proposal.Granularity != domain.AdaptationGranularityFree ||
+		proposal.RewritePolicy != domain.AdaptationRewriteFullRewrite ||
+		proposal.Brief != brief {
+		t.Fatalf("fallback proposal constants mismatch: %+v", proposal)
+	}
+	if len(proposal.Chapters) != 2 {
+		t.Fatalf("fallback chapters=%d, want source chapter count", len(proposal.Chapters))
+	}
+	if proposal.Chapters[0].WordBudget == nil || proposal.Chapters[0].WordBudget.TargetRunes <= 0 {
+		t.Fatalf("fallback chapter should include word budget: %+v", proposal.Chapters[0])
+	}
+	if proposal.Planner == nil || !strings.Contains(strings.Join([]string(proposal.Planner.Notes), "\n"), "deterministic proposal") {
+		t.Fatalf("fallback planner notes missing: %+v", proposal.Planner)
+	}
+	saved, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if saved == nil || len(saved.Chapters) != 2 {
+		t.Fatalf("fallback proposal not saved: %+v", saved)
+	}
+}
+
+func TestParsePlannerProposalAcceptsNestedChapterAliases(t *testing.T) {
+	proposal, err := parsePlannerProposal(`{
+		"adaptation_proposal": {
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free rewrite",
+			"planner": {"notes": "singleton note"},
+			"chapter_plans": [
+				{
+					"chapter": 1,
+					"title": "Opening",
+					"core_event": "A new opening reframes the source.",
+					"hook": "The last image unsettles the lead.",
+					"scenes": ["room", "street"],
+					"source_chapters": [1],
+					"source_range": {"from": 1, "to": 1},
+					"word_budget": {"source_runes": 10, "target_runes": 20, "min_runes": 10, "max_runes": 30}
+				}
+			]
+		}
+	}`)
+	if err != nil {
+		t.Fatalf("parsePlannerProposal: %v", err)
+	}
+	if proposal.Granularity != domain.AdaptationGranularityFree || len(proposal.Chapters) != 1 {
+		t.Fatalf("nested proposal not decoded: %+v", proposal)
+	}
+	if proposal.Chapters[0].Title != "Opening" || proposal.Chapters[0].CoreEvent == "" {
+		t.Fatalf("chapter alias not decoded: %+v", proposal.Chapters[0])
+	}
+	if proposal.Planner == nil || len(proposal.Planner.Notes) != 1 || proposal.Planner.Notes[0] != "singleton note" {
+		t.Fatalf("planner string note not decoded: %+v", proposal.Planner)
+	}
+}
+
+func TestParsePlannerProposalAcceptsTargetChapterPlanAlias(t *testing.T) {
+	proposal, err := parsePlannerProposal(`{
+		"granularity": "free",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "free rewrite",
+		"targetChapterPlans": [
+			{
+				"chapter": 1,
+				"title": "Opening",
+				"core_event": "A new opening reframes the source.",
+				"hook": "The last image unsettles the lead.",
+				"scenes": ["room", "street"],
+				"source_chapters": [1],
+				"source_range": {"from": 1, "to": 1},
+				"word_budget": {"source_runes": 10, "target_runes": 20, "min_runes": 10, "max_runes": 30}
+			}
+		]
+	}`)
+	if err != nil {
+		t.Fatalf("parsePlannerProposal: %v", err)
+	}
+	if len(proposal.Chapters) != 1 || proposal.Chapters[0].Title != "Opening" {
+		t.Fatalf("targetChapterPlans alias not decoded: %+v", proposal.Chapters)
+	}
+}
+
+func TestParsePlannerProposalSkipsLeadingMetadataObject(t *testing.T) {
+	proposal, err := parsePlannerProposal(`{"prompt":"adaptation-planner","prompt_version":"v1","model":"fake","notes":"metadata only"}
+	{
+		"granularity": "free",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "free rewrite",
+		"chapters": [
+			{
+				"chapter": 1,
+				"title": "Opening",
+				"core_event": "A new opening reframes the source.",
+				"hook": "The last image unsettles the lead.",
+				"scenes": ["room", "street"],
+				"source_chapters": [1],
+				"source_range": {"from": 1, "to": 1},
+				"word_budget": {"source_runes": 10, "target_runes": 20, "min_runes": 10, "max_runes": 30}
+			}
+		]
+	}`)
+	if err != nil {
+		t.Fatalf("parsePlannerProposal: %v", err)
+	}
+	if len(proposal.Chapters) != 1 || proposal.Chapters[0].Title != "Opening" {
+		t.Fatalf("leading metadata object should be skipped: %+v", proposal.Chapters)
 	}
 }
 

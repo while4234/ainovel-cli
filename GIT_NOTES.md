@@ -29,33 +29,37 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`,
-  pending `feat: add web model deletion`, adding global and project-scoped
-  model delete APIs, config cleanup, frontend delete controls, tests, rebuilt
-  static assets, and a local Web restart.
-- Latest maintenance commit: `ff9d2c4` `docs: record latest update and restart`.
+- Latest source change: branch `main`, `d3cc4d6`
+  `fix: make adapt cocreate proposal start robust`, making Web adaptation
+  co-create reliably generate a proposal, restore saved proposal state after
+  refresh/restart, and surface the confirmation step in the adapt panel.
+- Previous source commit: `5686e26` `feat: add web model deletion`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
 - Working tree: expected clean after the restart notes commit, except for
   ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web executable `D:\ainovel\ainovel-cli.exe` was rebuilt by
-  `scripts\restart-web.ps1` using the project-local Go 1.25.5 toolchain, then
+  `restart-web.cmd` using the project-local Go 1.25.5 toolchain on PATH, then
   restarted on `http://127.0.0.1:9898` with runtime root
-  `C:\Users\RondleLiu\.ainovel\novels-preview`; listener PID after restart was
-  `272124`.
-- Validation: project-local `gofmt` passed; focused backend delete tests
-  passed; `npm --prefix internal\entry\web\ui test -- --run` passed with 48
-  tests; targeted package tests passed; `go test ./...` passed; Vite Web build
-  passed;
-  `git diff --check` passed with CRLF warnings only; `restart-web.cmd -Port
-  9898 -RuntimeRoot C:\Users\RondleLiu\.ainovel\novels-preview` rebuilt and
-  restarted the Web service; `GET /` returned 200; `GET /api/models` returned
-  configured providers; a live default-model delete probe returned 409 without
-  mutation; Playwright CLI verified the `删除模型` panel and disabled default
-  delete button.
+  `C:\Users\RondleLiu\.ainovel\novels-preview`; listener PID after the final
+  restart was `11292`.
+- Validation: project-local `gofmt` passed; targeted adapt/Web tests passed;
+  `go test ./... -count=1` passed; `npm test` in
+  `internal\entry\web\ui` passed with 49 tests; Vite Web build passed;
+  `git diff --check` passed with CRLF warnings only; live Playwright validation
+  verified that the saved `free` / `full_rewrite` proposal is restored after a
+  service restart and shows an enabled confirm-and-start button in the adapt
+  panel.
 
 ## Change Log
 
+- 2026-07-03 `d3cc4d6` `fix: make adapt cocreate proposal start robust`:
+  restored Web adapt co-create mode/source state across refresh/restart,
+  changed adapt co-create commit to build a proposal instead of silently doing
+  nothing, made planner parsing tolerant of common JSON shapes, added a
+  deterministic proposal fallback for unusable planner output, synchronized the
+  frontend proposal key after co-create commit, and regenerated embedded Web
+  assets.
 - 2026-07-02 `pending` `feat: add web model deletion`: added global and
   project-scoped model deletion, protects the active default route, removes
   deleted routes from role/fallback config, refreshes in-memory model routing,
@@ -94,7 +98,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   regenerated embedded Web assets, rebuilt the local binary, and restarted port 9898.
 - 2026-07-01 `aba5224` `feat: add web default model control`: added global
   `/api/models` and `/api/models/default` endpoints, synchronized server/session
-  config snapshots for newly opened projects, added the Web "当前默认模型" selector,
+  config snapshots for newly opened projects, added the Web "瑜版挸澧犳妯款吇濡€崇€? selector,
   kept Grok callback actions usable outside global busy state, added tests,
   regenerated embedded Web assets, rebuilt the local binary, and restarted port 9898.
 - 2026-07-01 `6a52385` `fix: allow global web grok login`: added global Web

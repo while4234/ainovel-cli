@@ -331,6 +331,10 @@ func (h *Host) StartAdaptationPreparedWithOptions(options adapt.ProposalOptions)
 }
 
 func (h *Host) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
+	return h.BuildAdaptationProposalContext(context.Background(), options)
+}
+
+func (h *Host) BuildAdaptationProposalContext(ctx context.Context, options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
 	h.mu.Lock()
 	if h.lifecycle == lifecycleRunning {
 		h.mu.Unlock()
@@ -346,10 +350,7 @@ func (h *Host) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.A
 	if options.Brief == "" {
 		return nil, fmt.Errorf("adaptation brief is required")
 	}
-	if options.WordTolerance <= 0 {
-		options.WordTolerance = adapt.DefaultWordTolerance
-	}
-	return adapt.BuildAdaptationProposal(h.adaptationDeps(), options)
+	return adapt.BuildAdaptationProposalContext(ctx, h.adaptationDeps(), options)
 }
 
 func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {

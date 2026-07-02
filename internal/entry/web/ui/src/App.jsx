@@ -222,14 +222,14 @@ function resetAdaptationProjectState(previous) {
   };
 }
 
-function restoreAdaptationProjectState(previous, status) {
+function restoreAdaptationProjectState(previous, status, snapshot) {
   const next = resetAdaptationProjectState(previous);
   if (!status) {
-    return next;
+    return applyAdaptationProposalSnapshot(next, snapshot);
   }
   const sourceFile = status.source_file || status.sourceFile || null;
   const analysisStatus = String(status.analysis_status || status.analysisStatus || next.analysisStatus || 'idle').trim() || 'idle';
-  return {
+  return applyAdaptationProposalSnapshot({
     ...next,
     sourceFile,
     uploadMessage: status.message || (sourceFile ? '已恢复上传原文' : ''),
@@ -237,7 +237,29 @@ function restoreAdaptationProjectState(previous, status) {
     analysisEvents: Array.isArray(status.analysis_events || status.analysisEvents)
       ? (status.analysis_events || status.analysisEvents)
       : []
+  }, snapshot);
+}
+
+export function applyAdaptationProposalSnapshot(previous, snapshot) {
+  const review = getAdaptationProposalReview(snapshot);
+  if (!review.loaded) {
+    return previous;
+  }
+  const mode = review.granularity || previous.mode;
+  const brief = review.brief || previous.brief;
+  const sourceFile = previous.sourceFile;
+  const next = {
+    ...previous,
+    mode,
+    brief,
+    startStatus: 'done',
+    startMessage: review.confirmed ? '提案已确认，写作已启动' : '提案已生成，可在改编面板确认启动',
+    error: ''
   };
+  if (sourceFile?.relative_path && mode && brief) {
+    next.proposalKey = buildAdaptationProposalKey({ sourceFile, mode, brief });
+  }
+  return next;
 }
 
 function createExternalImportState() {
@@ -490,7 +512,7 @@ export default function App() {
       setWorkbench({ ...createWorkbenchState(), snapshot: snapshotData.snapshot });
       setCoCreate((previous) => coCreateStateFromResponse(snapshotData, previous));
       setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
-      setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation));
+      setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation, snapshotData.snapshot));
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);
     } catch (err) {
@@ -1446,6 +1468,10 @@ export default function App() {
       const data = await commitCoCreate(activeProject.id);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+      if ((data.cocreate?.kind || coCreate.kind) === 'adapt') {
+        setAdaptation((previous) => applyAdaptationProposalSnapshot(previous, data.snapshot));
+        setSideView('adapt');
+      }
     } catch (err) {
       setCoCreate((previous) => coCreateStateFromError(err, previous));
     } finally {

@@ -164,9 +164,7 @@ func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Reque
 		req.Mode = mode
 		req.sourcePath = sourcePath
 		req.SourceFile = strings.TrimSpace(req.SourceFile)
-		if req.Tolerance <= 0 {
-			req.Tolerance = adapt.DefaultWordTolerance
-		}
+		req.Tolerance = startup.AdaptationWordToleranceForGranularity(mode, req.Tolerance)
 		if rewritePolicy == "" {
 			writeError(w, http.StatusBadRequest, "adaptation rewrite policy is required")
 			return
@@ -236,7 +234,7 @@ func (s *Server) handleProjectCoCreateCommit(w http.ResponseWriter, r *http.Requ
 		writeProjectSessionError(w, err)
 		return
 	}
-	state, err := session.CommitCoCreate()
+	state, err := session.CommitCoCreate(r.Context())
 	if err != nil {
 		writeCoCreateActionError(w, err, state)
 		return
@@ -305,11 +303,8 @@ func newWebCoCreateSession(req webCoCreateBeginRequest) (*webCoCreateSession, er
 		if !ok {
 			return nil, fmt.Errorf("adaptation mode must be one of chapter, arc, free")
 		}
-		tolerance := req.Tolerance
-		if tolerance <= 0 {
-			tolerance = adapt.DefaultWordTolerance
-		}
 		rewritePolicy := domain.AdaptationRewritePolicyForGranularity(granularity)
+		tolerance := startup.AdaptationWordToleranceForGranularity(granularity, req.Tolerance)
 		opener := adaptCoCreateOpener(granularity, rewritePolicy, tolerance)
 		state := &webCoCreateSession{
 			kind:               kind,
@@ -409,6 +404,10 @@ func webCoCreateSessionFromCheckpoint(checkpoint webCoCreateCheckpoint) (*webCoC
 	if nextMessageSeq < len(messages) {
 		nextMessageSeq = len(messages)
 	}
+	adaptGranularity, adaptRewritePolicy, adaptWordTolerance := checkpoint.AdaptGranularity, checkpoint.AdaptRewritePolicy, checkpoint.AdaptWordTolerance
+	if kind == webCoCreateKindAdapt {
+		adaptGranularity, adaptRewritePolicy, adaptWordTolerance = coCreateCheckpointAdaptOptions(checkpoint)
+	}
 	return &webCoCreateSession{
 		kind:               kind,
 		session:            startup.NewCoCreateSessionFromSnapshot(checkpoint.Session),
@@ -417,12 +416,31 @@ func webCoCreateSessionFromCheckpoint(checkpoint webCoCreateCheckpoint) (*webCoC
 		failed:             checkpoint.Failed,
 		sourceFile:         strings.TrimSpace(checkpoint.SourceFile),
 		sourcePath:         strings.TrimSpace(checkpoint.SourcePath),
-		adaptGranularity:   strings.TrimSpace(checkpoint.AdaptGranularity),
-		adaptRewritePolicy: strings.TrimSpace(checkpoint.AdaptRewritePolicy),
-		adaptWordTolerance: checkpoint.AdaptWordTolerance,
+		adaptGranularity:   adaptGranularity,
+		adaptRewritePolicy: adaptRewritePolicy,
+		adaptWordTolerance: adaptWordTolerance,
 		targetTotalWords:   checkpoint.TargetTotalWords,
 		adaptationProposal: checkpoint.AdaptationProposal,
 	}, nil
+}
+
+func coCreateCheckpointAdaptOptions(checkpoint webCoCreateCheckpoint) (string, string, float64) {
+	granularity := strings.TrimSpace(checkpoint.AdaptGranularity)
+	rewritePolicy := strings.TrimSpace(checkpoint.AdaptRewritePolicy)
+	wordTolerance := checkpoint.AdaptWordTolerance
+	if (granularity == "" || rewritePolicy == "") && len(checkpoint.Session.History) > 0 {
+		logGranularity, logRewritePolicy, logWordTolerance := coCreateLogAdaptOptions(checkpoint.Session.History[0].Content)
+		if granularity == "" {
+			granularity = logGranularity
+		}
+		if rewritePolicy == "" {
+			rewritePolicy = logRewritePolicy
+		}
+		if wordTolerance <= 0 {
+			wordTolerance = logWordTolerance
+		}
+	}
+	return normalizeWebAdaptCoCreateOptions(granularity, rewritePolicy, wordTolerance)
 }
 
 func webCoCreateSessionFromLogEntry(entry webCoCreateLogEntry) (*webCoCreateSession, error) {
@@ -505,7 +523,7 @@ func coCreateLogAdaptOptions(opener string) (string, string, float64) {
 			tolerance = parsed
 		}
 	}
-	return granularity, rewritePolicy, tolerance
+	return normalizeWebAdaptCoCreateOptions(granularity, rewritePolicy, tolerance)
 }
 
 func coCreateLogKey(text, key string) string {
@@ -754,15 +772,28 @@ func normalizeWebCoCreateText(kind string, text string) string {
 }
 
 func adaptCoCreateOpener(granularity, rewritePolicy string, wordTolerance float64) string {
+	wordToleranceLabel := startup.FormatAdaptationWordTolerance(granularity, wordTolerance)
 	return strings.TrimSpace(fmt.Sprintf(`我想基于这本小说做改编，已确认改编模式如下：
 
 granularity=%s
 rewrite_policy=%s
-word_tolerance=%.2f
+word_tolerance=%s
 rewrite_policy_rule=chapter=>preserve_details;arc/free=>full_rewrite
 
 请基于原书分析帮我确认具体改编目标。不要再询问或改动 chapter/arc/free 与 full_rewrite/preserve_details 这两个模式选择。`,
-		granularity, rewritePolicy, wordTolerance))
+		granularity, rewritePolicy, wordToleranceLabel))
+}
+
+func normalizeWebAdaptCoCreateOptions(granularity, rewritePolicy string, wordTolerance float64) (string, string, float64) {
+	normalizedGranularity, ok := domain.StrictAdaptationGranularity(strings.TrimSpace(granularity))
+	if !ok {
+		normalizedGranularity = domain.AdaptationGranularityChapter
+	}
+	normalizedRewritePolicy := strings.TrimSpace(rewritePolicy)
+	if normalizedRewritePolicy == "" {
+		normalizedRewritePolicy = domain.AdaptationRewritePolicyForGranularity(normalizedGranularity)
+	}
+	return normalizedGranularity, normalizedRewritePolicy, startup.AdaptationWordToleranceForGranularity(normalizedGranularity, wordTolerance)
 }
 
 func decodeCoCreateSendRequest(r *http.Request) (webCoCreateSendRequest, error) {
@@ -834,7 +865,7 @@ func isBadCoCreateRequest(err error) bool {
 
 func coCreateCommitLabel(kind string) string {
 	if kind == webCoCreateKindAdapt {
-		return "adaptation proposal generated"
+		return "改编提案已生成"
 	}
 	switch kind {
 	case webCoCreateKindStage:
