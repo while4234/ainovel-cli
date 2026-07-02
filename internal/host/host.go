@@ -1010,9 +1010,6 @@ func (h *Host) SwitchModel(role, provider, model string) error {
 }
 
 func (h *Host) AddProviderModel(role, providerName string, providerConfig bootstrap.ProviderConfig, model string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	providerName = strings.TrimSpace(providerName)
 	model = strings.TrimSpace(model)
 	if providerName == "" || model == "" {
@@ -1021,23 +1018,26 @@ func (h *Host) AddProviderModel(role, providerName string, providerConfig bootst
 	if !validModelRole(role) {
 		return fmt.Errorf("unknown role %q", role)
 	}
-	candidate := h.cfg
-	candidate.Providers = cloneProviderConfigs(h.cfg.Providers)
-	_, providerWasConfigured := h.cfg.Providers[providerName]
-	if existing, ok := h.cfg.Providers[providerName]; ok {
-		if !providerConfigCanAddModel(existing, providerConfig) {
-			return fmt.Errorf("provider %q already exists; use the existing provider flow to add models", providerName)
-		}
-		providerConfig = existing
-	} else {
-		if _, err := providerConfig.ProviderType(providerName); err != nil {
-			return err
-		}
-		candidate.Providers[providerName] = providerConfig
+
+	h.mu.Lock()
+	candidate, providerConfig, _, err := h.prepareAddedProviderModelLocked(role, providerName, providerConfig, model)
+	h.mu.Unlock()
+	if err != nil {
+		return err
 	}
-	candidate.RememberModelCandidate(providerName, model)
-	providerConfig = candidate.Providers[providerName]
-	if err := validateAddedProviderModel(candidate, role, providerName, providerConfig, model); err != nil {
+	probeModel, err := bootstrap.NewProviderModel(providerName, model, providerConfig)
+	if err != nil {
+		return err
+	}
+	if err := addedModelConnectivityProbe(context.Background(), probeModel); err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	candidate, providerConfig, providerWasConfigured, err := h.prepareAddedProviderModelLocked(role, providerName, providerConfig, model)
+	if err != nil {
 		return err
 	}
 	h.cfg = candidate
@@ -1058,6 +1058,29 @@ func (h *Host) AddProviderModel(role, providerName string, providerConfig bootst
 		Level:    "info",
 	})
 	return nil
+}
+
+func (h *Host) prepareAddedProviderModelLocked(role, providerName string, providerConfig bootstrap.ProviderConfig, model string) (bootstrap.Config, bootstrap.ProviderConfig, bool, error) {
+	candidate := h.cfg
+	candidate.Providers = cloneProviderConfigs(h.cfg.Providers)
+	_, providerWasConfigured := h.cfg.Providers[providerName]
+	if existing, ok := h.cfg.Providers[providerName]; ok {
+		if !providerConfigCanAddModel(existing, providerConfig) {
+			return bootstrap.Config{}, bootstrap.ProviderConfig{}, false, fmt.Errorf("provider %q already exists; use the existing provider flow to add models", providerName)
+		}
+		providerConfig = existing
+	} else {
+		if _, err := providerConfig.ProviderType(providerName); err != nil {
+			return bootstrap.Config{}, bootstrap.ProviderConfig{}, false, err
+		}
+		candidate.Providers[providerName] = providerConfig
+	}
+	candidate.RememberModelCandidate(providerName, model)
+	providerConfig = candidate.Providers[providerName]
+	if err := validateAddedProviderModel(candidate, role, providerName, providerConfig, model); err != nil {
+		return bootstrap.Config{}, bootstrap.ProviderConfig{}, false, err
+	}
+	return candidate, providerConfig, providerWasConfigured, nil
 }
 
 func (h *Host) StartGrokLogin(accountID, accountName string) (grokauth.LoginStart, error) {

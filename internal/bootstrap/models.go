@@ -281,6 +281,11 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 	return ms, nil
 }
 
+// NewProviderModel creates one provider/model instance without mutating a ModelSet.
+func NewProviderModel(providerKey, model string, pc ProviderConfig) (agentcore.ChatModel, error) {
+	return createModelFromConfig(providerKey, model, pc, make(map[string]agentcore.ChatModel))
+}
+
 // createModelFromConfig 创建或复用 ChatModel 实例。
 func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache map[string]agentcore.ChatModel) (agentcore.ChatModel, error) {
 	cacheKey := providerKey + "|" + model

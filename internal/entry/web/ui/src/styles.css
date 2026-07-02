@@ -1725,6 +1725,13 @@ textarea::placeholder {
   resize: vertical;
 }
 
+.model-add-note {
+  margin: -2px 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .grok-action-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

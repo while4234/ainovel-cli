@@ -257,6 +257,7 @@ export default function App() {
   const [backendStatus, setBackendStatus] = useState(null);
   const [connection, setConnection] = useState('idle');
   const [busy, setBusy] = useState(false);
+  const [modelBusy, setModelBusy] = useState(false);
   const [error, setError] = useState('');
   const lastSeqRef = useRef(0);
 
@@ -1286,7 +1287,7 @@ export default function App() {
     if (!activeProject?.id || !provider || !model) {
       return;
     }
-    setBusy(true);
+    setModelBusy(true);
     setError('');
     try {
       const data = await switchProjectModel(activeProject.id, role, provider, model);
@@ -1297,7 +1298,7 @@ export default function App() {
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(false);
+      setModelBusy(false);
     }
   };
 
@@ -1305,7 +1306,7 @@ export default function App() {
     if (!activeProject?.id) {
       return;
     }
-    setBusy(true);
+    setModelBusy(true);
     setError('');
     try {
       const data = await setProjectThinking(activeProject.id, role, level);
@@ -1314,7 +1315,7 @@ export default function App() {
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(false);
+      setModelBusy(false);
     }
   };
 
@@ -1324,7 +1325,7 @@ export default function App() {
     if (!activeProject?.id || !canSubmitModelAdd(customModel, modelConfig)) {
       return;
     }
-    setBusy(true);
+    setModelBusy(true);
     setError('');
     try {
       const data = await addProviderModel(activeProject.id, payload);
@@ -1336,7 +1337,7 @@ export default function App() {
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(false);
+      setModelBusy(false);
     }
   };
 
@@ -1348,7 +1349,7 @@ export default function App() {
     if (typeof window !== 'undefined') {
       authWindow = window.open('about:blank', '_blank');
     }
-    setBusy(true);
+    setModelBusy(true);
     setError('');
     try {
       const data = await startGrokLogin(activeProject.id, customModel.account_id, customModel.account_name);
@@ -1375,7 +1376,7 @@ export default function App() {
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
     } finally {
-      setBusy(false);
+      setModelBusy(false);
     }
   };
 
@@ -1383,7 +1384,7 @@ export default function App() {
     if (!activeProject?.id) {
       return;
     }
-    setBusy(true);
+    setModelBusy(true);
     setError('');
     try {
       const data = await pollGrokLogin(activeProject.id);
@@ -1398,7 +1399,7 @@ export default function App() {
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
     } finally {
-      setBusy(false);
+      setModelBusy(false);
     }
   };
 
@@ -1411,7 +1412,7 @@ export default function App() {
       setCustomModel((previous) => ({ ...previous, grok_message: '请粘贴 callback URL、query string 或一次性 code' }));
       return;
     }
-    setBusy(true);
+    setModelBusy(true);
     setError('');
     try {
       const data = await completeGrokLogin(activeProject.id, callback);
@@ -1425,7 +1426,7 @@ export default function App() {
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
     } finally {
-      setBusy(false);
+      setModelBusy(false);
     }
   };
 
@@ -1433,7 +1434,7 @@ export default function App() {
     if (!activeProject?.id) {
       return;
     }
-    setBusy(true);
+    setModelBusy(true);
     setError('');
     try {
       const data = await getGrokLoginStatus(activeProject.id, customModel.account_id);
@@ -1446,7 +1447,7 @@ export default function App() {
       setError(err.message);
       setCustomModel((previous) => ({ ...previous, grok_message: err.message }));
     } finally {
-      setBusy(false);
+      setModelBusy(false);
     }
   };
 
@@ -1903,7 +1904,7 @@ export default function App() {
               styles={styleOptions}
               customModel={customModel}
               setCustomModel={setCustomModel}
-              busy={busy}
+              busy={modelBusy}
               onSwitch={switchModelRoute}
               onThinking={changeThinking}
               onAddCustom={submitCustomModel}
@@ -3174,6 +3175,7 @@ function ModelPanel({
           <Plus size={16} />
           添加并使用
         </button>
+        <p className="model-add-note">添加前会先进行一次基础生成连接测试；测试失败不会保存或切换模型。</p>
       </form>
       {modelConfig?.thinking_rule ? <div className="success-note">{modelConfig.thinking_rule}</div> : null}
     </div>

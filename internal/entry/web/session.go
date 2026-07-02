@@ -304,12 +304,6 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 }
 
 func (s *ProjectSession) SwitchModel(role, provider, model string) (apiModelConfig, error) {
-	unlock, err := s.beginAction()
-	if err != nil {
-		return apiModelConfig{}, err
-	}
-	defer unlock()
-
 	if err := s.host.SwitchModel(normalizeModelRole(role), provider, model); err != nil {
 		return apiModelConfig{}, err
 	}
@@ -318,12 +312,6 @@ func (s *ProjectSession) SwitchModel(role, provider, model string) (apiModelConf
 }
 
 func (s *ProjectSession) SetRoleThinking(role, level string) (apiModelConfig, error) {
-	unlock, err := s.beginAction()
-	if err != nil {
-		return apiModelConfig{}, err
-	}
-	defer unlock()
-
 	if err := s.host.SetRoleThinking(normalizeModelRole(role), level); err != nil {
 		return apiModelConfig{}, err
 	}
@@ -345,12 +333,6 @@ func (s *ProjectSession) AddOpenAICompatibleModel(role, provider, model, baseURL
 }
 
 func (s *ProjectSession) AddProviderModel(role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, error) {
-	unlock, err := s.beginAction()
-	if err != nil {
-		return apiModelConfig{}, err
-	}
-	defer unlock()
-
 	if err := s.host.AddProviderModel(normalizeModelRole(role), provider, pc, model); err != nil {
 		return apiModelConfig{}, err
 	}

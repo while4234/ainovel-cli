@@ -113,6 +113,47 @@ func TestProjectSessionRejectsConcurrentResumeContinue(t *testing.T) {
 	}
 }
 
+func TestProjectSessionAllowsModelSwitchDuringAction(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.resumeStarted = make(chan struct{})
+	fake.releaseResume = make(chan struct{})
+
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	resumeErr := make(chan error, 1)
+	go func() {
+		_, err := session.Resume()
+		resumeErr <- err
+	}()
+
+	select {
+	case <-fake.resumeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("resume did not enter host call")
+	}
+
+	if _, err := session.SwitchModel("writer", "proxy-openai", "deepseek-chat"); err != nil {
+		t.Fatalf("model switch during action returned error: %v", err)
+	}
+	if fake.switchCalls != 1 || fake.switchRole != "writer" || fake.switchProvider != "proxy-openai" || fake.switchModel != "deepseek-chat" {
+		t.Fatalf("switch args calls=%d role=%q provider=%q model=%q", fake.switchCalls, fake.switchRole, fake.switchProvider, fake.switchModel)
+	}
+	close(fake.releaseResume)
+
+	select {
+	case err := <-resumeErr:
+		if err != nil {
+			t.Fatalf("resume returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resume did not complete")
+	}
+}
+
 func TestProjectSessionUpsertsHostEventsByID(t *testing.T) {
 	session := newTestSessionWithoutHost("project-1")
 	start := time.Now().UTC()
@@ -480,6 +521,9 @@ type fakeProjectHost struct {
 	addProviderName             string
 	addProviderConfig           bootstrap.ProviderConfig
 	addProviderModel            string
+	switchRole                  string
+	switchProvider              string
+	switchModel                 string
 	grokStartAccountID          string
 	grokStartAccountName        string
 	grokCompleteCallback        string
@@ -497,6 +541,7 @@ type fakeProjectHost struct {
 	abortOK                     bool
 	exportResult                *exp.Result
 	addProviderErr              error
+	switchCalls                 int
 	grokLoginStart              grokauth.LoginStart
 	grokLoginPoll               grokauth.LoginPoll
 	grokCompleteStatus          grokauth.AuthStatus
@@ -768,7 +813,13 @@ func (f *fakeProjectHost) CurrentModelSelection(role string) (string, string, bo
 	return "openrouter", "model-a", false
 }
 
-func (f *fakeProjectHost) SwitchModel(string, string, string) error {
+func (f *fakeProjectHost) SwitchModel(role, provider, model string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.switchCalls++
+	f.switchRole = role
+	f.switchProvider = provider
+	f.switchModel = model
 	return nil
 }
 
