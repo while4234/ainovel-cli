@@ -32,6 +32,171 @@ type apiModelRoute struct {
 	ReasoningEffort string `json:"reasoning_effort"`
 }
 
+type apiModelAddRequest struct {
+	Role      string `json:"role"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Type      string `json:"type"`
+	Auth      string `json:"auth"`
+	AccountID string `json:"account_id"`
+	APIKey    string `json:"api_key"`
+	BaseURL   string `json:"base_url"`
+	API       string `json:"api"`
+}
+
+func (s *Server) handleGlobalModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	s.configMu.Lock()
+	models := apiModelConfigFromConfig(s.cfg)
+	s.configMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+func (s *Server) handleGlobalModelSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Role     string `json:"role"`
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	s.configMu.Lock()
+	candidate, err := host.SelectProviderModelInConfig(s.cfg, normalizeModelRole(req.Role), req.Provider, req.Model)
+	if err == nil {
+		err = s.saveGlobalConfigLocked(candidate)
+	}
+	if err == nil {
+		s.cfg = candidate
+		s.sessions.UpdateConfig(candidate)
+	}
+	response := s.globalModelResponseLocked()
+	s.configMu.Unlock()
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleGlobalModelAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req apiModelAddRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	pc := providerConfigFromModelAddRequest(req)
+
+	s.configMu.Lock()
+	candidate, err := host.AddProviderModelToConfig(r.Context(), s.cfg, normalizeModelRole(req.Role), req.Provider, pc, req.Model)
+	if err == nil {
+		err = s.saveGlobalConfigLocked(candidate)
+	}
+	if err == nil {
+		s.cfg = candidate
+		s.sessions.UpdateConfig(candidate)
+	}
+	response := s.globalModelResponseLocked()
+	s.configMu.Unlock()
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) globalModelResponseLocked() map[string]any {
+	return map[string]any{
+		"models":  apiModelConfigFromConfig(s.cfg),
+		"runtime": s.runtimePayloadLocked(),
+	}
+}
+
+func (s *Server) saveGlobalConfigLocked(cfg bootstrap.Config) error {
+	path := strings.TrimSpace(cfg.PersistPath)
+	if path == "" {
+		path = bootstrap.DefaultConfigPath()
+	}
+	if path == "" {
+		return nil
+	}
+	return bootstrap.SaveConfig(path, cfg)
+}
+
+func apiModelConfigFromConfig(cfg bootstrap.Config) apiModelConfig {
+	providers := make([]apiModelProvider, 0, len(cfg.Providers))
+	for name := range cfg.Providers {
+		providers = append(providers, apiModelProvider{
+			Name:   name,
+			Models: cfg.CandidateModels(name),
+		})
+	}
+	sortModelProviders(providers)
+
+	roles := make([]apiModelRoute, 0, len(modelConfigRoles))
+	for _, role := range modelConfigRoles {
+		normalized := normalizeModelRole(role)
+		provider, model, explicit := configModelSelection(cfg, normalized)
+		roles = append(roles, apiModelRoute{
+			Role:            normalized,
+			Provider:        provider,
+			Model:           model,
+			Explicit:        explicit,
+			ReasoningEffort: cfg.ResolveReasoningEffort(normalized),
+		})
+	}
+	return apiModelConfig{
+		Providers: providers,
+		Roles:     roles,
+		ThinkingLevels: []string{
+			"",
+			"off",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		},
+		ThinkingRule: "default applies to coordinator, architect, writer, and editor unless that role has its own reasoning_effort",
+	}
+}
+
+func sortModelProviders(providers []apiModelProvider) {
+	for i := 1; i < len(providers); i++ {
+		current := providers[i]
+		j := i - 1
+		for j >= 0 && providers[j].Name > current.Name {
+			providers[j+1] = providers[j]
+			j--
+		}
+		providers[j+1] = current
+	}
+}
+
+func configModelSelection(cfg bootstrap.Config, role string) (string, string, bool) {
+	role = normalizeModelRole(role)
+	if role == "default" {
+		return cfg.Provider, cfg.ModelName, true
+	}
+	if rc, ok := cfg.Roles[role]; ok && strings.TrimSpace(rc.Provider) != "" && strings.TrimSpace(rc.Model) != "" {
+		return rc.Provider, rc.Model, true
+	}
+	return cfg.Provider, cfg.ModelName, false
+}
+
 func (s *Server) handleProjectModels(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -114,17 +279,7 @@ func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, i
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req struct {
-		Role      string `json:"role"`
-		Provider  string `json:"provider"`
-		Model     string `json:"model"`
-		Type      string `json:"type"`
-		Auth      string `json:"auth"`
-		AccountID string `json:"account_id"`
-		APIKey    string `json:"api_key"`
-		BaseURL   string `json:"base_url"`
-		API       string `json:"api"`
-	}
+	var req apiModelAddRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -134,6 +289,20 @@ func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, i
 		writeProjectSessionError(w, err)
 		return
 	}
+	pc := providerConfigFromModelAddRequest(req)
+	models, err := session.AddProviderModel(req.Role, req.Provider, req.Model, pc)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"models":   models,
+		"snapshot": session.Snapshot(),
+	})
+}
+
+func providerConfigFromModelAddRequest(req apiModelAddRequest) bootstrap.ProviderConfig {
 	pc := bootstrap.ProviderConfig{
 		Type:      strings.TrimSpace(req.Type),
 		Auth:      strings.TrimSpace(req.Auth),
@@ -145,16 +314,7 @@ func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, i
 	if !providerConfigRequestIsEmpty(pc) {
 		pc.Models = []string{strings.TrimSpace(req.Model)}
 	}
-	models, err := session.AddProviderModel(req.Role, req.Provider, req.Model, pc)
-	if err != nil {
-		writeProjectLifecycleError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"project":  manifest,
-		"models":   models,
-		"snapshot": session.Snapshot(),
-	})
+	return pc
 }
 
 func providerConfigRequestIsEmpty(pc bootstrap.ProviderConfig) bool {

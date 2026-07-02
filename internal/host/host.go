@@ -1020,7 +1020,7 @@ func (h *Host) AddProviderModel(role, providerName string, providerConfig bootst
 	}
 
 	h.mu.Lock()
-	candidate, providerConfig, _, err := h.prepareAddedProviderModelLocked(role, providerName, providerConfig, model)
+	_, providerConfig, _, err := prepareAddedProviderModelConfig(h.cfg, role, providerName, providerConfig, model)
 	h.mu.Unlock()
 	if err != nil {
 		return err
@@ -1036,7 +1036,7 @@ func (h *Host) AddProviderModel(role, providerName string, providerConfig bootst
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	candidate, providerConfig, providerWasConfigured, err := h.prepareAddedProviderModelLocked(role, providerName, providerConfig, model)
+	candidate, providerConfig, providerWasConfigured, err := prepareAddedProviderModelConfig(h.cfg, role, providerName, providerConfig, model)
 	if err != nil {
 		return err
 	}
@@ -1060,11 +1060,75 @@ func (h *Host) AddProviderModel(role, providerName string, providerConfig bootst
 	return nil
 }
 
-func (h *Host) prepareAddedProviderModelLocked(role, providerName string, providerConfig bootstrap.ProviderConfig, model string) (bootstrap.Config, bootstrap.ProviderConfig, bool, error) {
-	candidate := h.cfg
-	candidate.Providers = cloneProviderConfigs(h.cfg.Providers)
-	_, providerWasConfigured := h.cfg.Providers[providerName]
-	if existing, ok := h.cfg.Providers[providerName]; ok {
+func AddProviderModelToConfig(ctx context.Context, cfg bootstrap.Config, role, providerName string, providerConfig bootstrap.ProviderConfig, model string) (bootstrap.Config, error) {
+	providerName = strings.TrimSpace(providerName)
+	model = strings.TrimSpace(model)
+	if providerName == "" || model == "" {
+		return bootstrap.Config{}, fmt.Errorf("provider and model are required")
+	}
+	if !validModelRole(role) {
+		return bootstrap.Config{}, fmt.Errorf("unknown role %q", role)
+	}
+	candidate, providerConfig, _, err := prepareAddedProviderModelConfig(cfg, role, providerName, providerConfig, model)
+	if err != nil {
+		return bootstrap.Config{}, err
+	}
+	probeModel, err := bootstrap.NewProviderModel(providerName, model, providerConfig)
+	if err != nil {
+		return bootstrap.Config{}, err
+	}
+	if err := addedModelConnectivityProbe(ctx, probeModel); err != nil {
+		return bootstrap.Config{}, err
+	}
+	return SelectProviderModelInConfig(candidate, role, providerName, model)
+}
+
+func SelectProviderModelInConfig(cfg bootstrap.Config, role, provider, model string) (bootstrap.Config, error) {
+	role = strings.ToLower(strings.TrimSpace(role))
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return bootstrap.Config{}, fmt.Errorf("provider and model are required")
+	}
+	if !validModelRole(role) {
+		return bootstrap.Config{}, fmt.Errorf("unknown role %q", role)
+	}
+	if _, ok := cfg.Providers[provider]; !ok {
+		return bootstrap.Config{}, fmt.Errorf("provider %q is not configured", provider)
+	}
+	candidate := cfg
+	candidate.Providers = cloneProviderConfigs(cfg.Providers)
+	if cfg.Roles != nil {
+		candidate.Roles = make(map[string]bootstrap.RoleConfig, len(cfg.Roles))
+		for name, rc := range cfg.Roles {
+			rc.Fallbacks = append([]bootstrap.ModelRef(nil), rc.Fallbacks...)
+			candidate.Roles[name] = rc
+		}
+	}
+	candidate.RememberModelCandidate(provider, model)
+	if role == "" || role == "default" {
+		candidate.Provider = provider
+		candidate.ModelName = model
+	} else {
+		if candidate.Roles == nil {
+			candidate.Roles = make(map[string]bootstrap.RoleConfig)
+		}
+		rc := candidate.Roles[role]
+		rc.Provider = provider
+		rc.Model = model
+		candidate.Roles[role] = rc
+	}
+	if err := candidate.ValidateBase(); err != nil {
+		return bootstrap.Config{}, err
+	}
+	return candidate, nil
+}
+
+func prepareAddedProviderModelConfig(cfg bootstrap.Config, role, providerName string, providerConfig bootstrap.ProviderConfig, model string) (bootstrap.Config, bootstrap.ProviderConfig, bool, error) {
+	candidate := cfg
+	candidate.Providers = cloneProviderConfigs(cfg.Providers)
+	_, providerWasConfigured := cfg.Providers[providerName]
+	if existing, ok := cfg.Providers[providerName]; ok {
 		if !providerConfigCanAddModel(existing, providerConfig) {
 			return bootstrap.Config{}, bootstrap.ProviderConfig{}, false, fmt.Errorf("provider %q already exists; use the existing provider flow to add models", providerName)
 		}

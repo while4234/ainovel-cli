@@ -264,6 +264,17 @@ export function getProjectModels(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models`);
 }
 
+export function getGlobalModels() {
+  return request('/api/models');
+}
+
+export function switchGlobalModel(role, provider, model) {
+  return request('/api/models/switch', {
+    method: 'POST',
+    body: JSON.stringify({ role, provider, model })
+  });
+}
+
 export function switchProjectModel(projectId, role, provider, model) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/switch`, {
     method: 'POST',
@@ -287,6 +298,13 @@ export function addOpenAICompatibleModel(projectId, payload) {
 
 export function addProviderModel(projectId, payload) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/add`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function addGlobalProviderModel(payload) {
+  return request('/api/models/add', {
     method: 'POST',
     body: JSON.stringify(payload)
   });

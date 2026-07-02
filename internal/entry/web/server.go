@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
@@ -35,6 +36,7 @@ type Options struct {
 
 type Server struct {
 	cfg         bootstrap.Config
+	configMu    sync.Mutex
 	bundle      assets.Bundle
 	runtimeRoot string
 	store       *ProjectStore
@@ -143,6 +145,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/libraries/simulation", s.handleSimulationLibrary)
 	mux.HandleFunc("/api/libraries/simulation/upload", s.handleSimulationLibraryUpload)
 	mux.HandleFunc("/api/libraries/novels", s.handleNovelLibrary)
+	mux.HandleFunc("/api/models/add", s.handleGlobalModelAdd)
+	mux.HandleFunc("/api/models/switch", s.handleGlobalModelSwitch)
+	mux.HandleFunc("/api/models", s.handleGlobalModels)
 	mux.HandleFunc("/api/projects/trash", s.handleProjectTrash)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProject)
@@ -191,18 +196,41 @@ func (s *Server) handleRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"runtime_root": s.runtimeRoot,
-		"projects_dir": s.store.ProjectsDir(),
-		"config": map[string]any{
-			"provider":         s.cfg.Provider,
-			"model":            s.cfg.ModelName,
-			"style":            s.cfg.Style,
-			"reasoning_effort": s.cfg.ReasoningEffort,
-			"roles":            s.cfg.Roles,
-		},
+	s.configMu.Lock()
+	payload := s.runtimePayloadLocked()
+	s.configMu.Unlock()
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) runtimePayloadLocked() map[string]any {
+	return map[string]any{
+		"runtime_root":    s.runtimeRoot,
+		"projects_dir":    s.store.ProjectsDir(),
+		"config":          runtimeConfigPayload(s.cfg),
 		"active_projects": s.sessions.ActiveProjectIDs(),
-	})
+	}
+}
+
+func runtimeConfigPayload(cfg bootstrap.Config) map[string]any {
+	return map[string]any{
+		"provider":         cfg.Provider,
+		"model":            cfg.ModelName,
+		"style":            cfg.Style,
+		"reasoning_effort": cfg.ReasoningEffort,
+		"roles":            cloneRuntimeRoles(cfg.Roles),
+	}
+}
+
+func cloneRuntimeRoles(roles map[string]bootstrap.RoleConfig) map[string]bootstrap.RoleConfig {
+	if len(roles) == 0 {
+		return nil
+	}
+	out := make(map[string]bootstrap.RoleConfig, len(roles))
+	for role, rc := range roles {
+		rc.Fallbacks = append([]bootstrap.ModelRef(nil), rc.Fallbacks...)
+		out[role] = rc
+	}
+	return out
 }
 
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {

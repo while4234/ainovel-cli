@@ -59,6 +59,19 @@ describe('model add helpers', () => {
     expect(state.account_id).toBe('default');
     expect(state.model).toBe('grok-4.3-latest');
   });
+
+  it('does not invent a placeholder model name for custom proxy mode', () => {
+    const state = modelAddModeDefaults({
+      mode: 'custom',
+      role: 'default',
+      provider: '',
+      model: ''
+    });
+
+    expect(state.provider).toBe('custom-openai');
+    expect(state.model).toBe('');
+    expect(canSubmitModelAdd({ ...state, base_url: 'https://proxy.example/v1' }, null)).toBe(false);
+  });
 });
 
 describe('style helpers', () => {

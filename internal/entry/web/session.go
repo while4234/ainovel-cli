@@ -96,6 +96,12 @@ func NewSessionManager(cfg bootstrap.Config, bundle assets.Bundle, store *Projec
 	}
 }
 
+func (m *SessionManager) UpdateConfig(cfg bootstrap.Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg = cfg
+}
+
 func (m *SessionManager) Open(id string) (*ProjectSession, ProjectManifest, error) {
 	id = strings.TrimSpace(id)
 	if err := validateProjectID(id); err != nil {

@@ -30,6 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeAdaptationSource,
   analyzeSimulation,
+  addGlobalProviderModel,
   addProviderModel,
   beginCoCreate,
   cancelCoCreate,
@@ -41,6 +42,7 @@ import {
   exportProject,
   getBackendStatus,
   getGrokLoginStatus,
+  getGlobalModels,
   getProjectModels,
   getRuntime,
   getSnapshot,
@@ -68,6 +70,7 @@ import {
   startGrokLogin,
   steerProject,
   switchProjectModel,
+  switchGlobalModel,
   testBackend,
   trashProject,
   uploadSimulationLibrary,
@@ -263,6 +266,8 @@ export default function App() {
 
   const snapshot = workbench.snapshot;
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
+  const projectRunning = isProjectRunning(snapshot);
+  const projectActionBusy = busy || projectRunning;
 
   const resetProjectScopedState = useCallback((clearProject = false) => {
     lastSeqRef.current = 0;
@@ -338,11 +343,17 @@ export default function App() {
   const loadShell = useCallback(async () => {
     setError('');
     try {
-      const [runtimeData, projectsData, stylesData] = await Promise.all([getRuntime(), listProjects(), listStyles()]);
+      const [runtimeData, projectsData, stylesData, modelData] = await Promise.all([
+        getRuntime(),
+        listProjects(),
+        listStyles(),
+        getGlobalModels()
+      ]);
       const styles = styleItemsFromResponse(stylesData);
       const fallbackStyle = firstAvailableStyle(stylesData?.default_style || runtimeData?.config?.style || 'default', styles);
       setRuntime(runtimeData);
       setProjects(projectsData.projects || []);
+      setModelConfig(modelData.models || null);
       setStyleOptions(styles);
       setDefaultStyle(fallbackStyle);
       setNewProjectStyle((previous) => firstAvailableStyle(previous, styles, fallbackStyle));
@@ -621,7 +632,7 @@ export default function App() {
   const submitContinue = async (event) => {
     event.preventDefault();
     const text = composerText.trim();
-    if (!text) {
+    if (!text || projectRunning) {
       return;
     }
     await runAction((projectId) => (quickStartAvailable ? startProject(projectId, text) : continueProject(projectId, text)));
@@ -1284,17 +1295,23 @@ export default function App() {
   };
 
   const switchModelRoute = async (role, provider, model) => {
-    if (!activeProject?.id || !provider || !model) {
+    if (!provider || !model) {
       return;
     }
     setModelBusy(true);
     setError('');
     try {
-      const data = await switchProjectModel(activeProject.id, role, provider, model);
-      setModelConfig(data.models || modelConfig);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      const status = await getBackendStatus(activeProject.id);
-      setBackendStatus(status.backend || null);
+      if (activeProject?.id) {
+        const data = await switchProjectModel(activeProject.id, role, provider, model);
+        setModelConfig(data.models || modelConfig);
+        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+        const status = await getBackendStatus(activeProject.id);
+        setBackendStatus(status.backend || null);
+      } else {
+        const data = await switchGlobalModel(role, provider, model);
+        setModelConfig(data.models || modelConfig);
+        setRuntime(data.runtime || runtime);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1322,18 +1339,24 @@ export default function App() {
   const submitCustomModel = async (event) => {
     event.preventDefault();
     const payload = buildModelAddPayload(customModel, modelConfig);
-    if (!activeProject?.id || !canSubmitModelAdd(customModel, modelConfig)) {
+    if (!canSubmitModelAdd(customModel, modelConfig)) {
       return;
     }
     setModelBusy(true);
     setError('');
     try {
-      const data = await addProviderModel(activeProject.id, payload);
-      setModelConfig(data.models || modelConfig);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      if (activeProject?.id) {
+        const data = await addProviderModel(activeProject.id, payload);
+        setModelConfig(data.models || modelConfig);
+        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+        const status = await getBackendStatus(activeProject.id);
+        setBackendStatus(status.backend || null);
+      } else {
+        const data = await addGlobalProviderModel(payload);
+        setModelConfig(data.models || modelConfig);
+        setRuntime(data.runtime || runtime);
+      }
       setCustomModel(createCustomModelState());
-      const status = await getBackendStatus(activeProject.id);
-      setBackendStatus(status.backend || null);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1672,7 +1695,7 @@ export default function App() {
             <StatusPill status={connection} />
             <button
               className="tool-button"
-              disabled={!activeProject || busy}
+              disabled={!activeProject || projectActionBusy}
               onClick={() => openProject(activeProject)}
               type="button"
             >
@@ -1681,7 +1704,7 @@ export default function App() {
             </button>
             <button
               className="tool-button"
-              disabled={!activeProject || busy}
+              disabled={!activeProject || busy || !projectRunning}
               onClick={pauseWriting}
               type="button"
             >
@@ -1690,7 +1713,7 @@ export default function App() {
             </button>
             <button
               className="tool-button accent"
-              disabled={!activeProject || busy}
+              disabled={!activeProject || projectActionBusy}
               onClick={() => runAction(resumeProject)}
               type="button"
             >
@@ -1751,7 +1774,7 @@ export default function App() {
           <form className="composer" onSubmit={submitContinue}>
             <input
               aria-label={quickStartAvailable ? '快速启动输入' : '继续创作输入'}
-              disabled={!activeProject || busy}
+              disabled={!activeProject || projectActionBusy}
               placeholder={quickStartAvailable ? '写下新书核心想法，直接启动...' : '继续、补充或要求下一步...'}
               value={composerText}
               onChange={(event) => setComposerText(event.target.value)}
@@ -1759,7 +1782,7 @@ export default function App() {
             <button
               aria-label={quickStartAvailable ? '启动' : '继续'}
               className="tool-button accent"
-              disabled={!activeProject || busy}
+              disabled={!activeProject || projectActionBusy}
               title={quickStartAvailable ? '启动' : '继续'}
               type="submit"
             >
@@ -1900,6 +1923,7 @@ export default function App() {
           ) : (
             <ModelPanel
               runtime={runtime}
+              activeProject={activeProject}
               modelConfig={modelConfig}
               styles={styleOptions}
               customModel={customModel}
@@ -2916,6 +2940,7 @@ function BackendPanel({ backend, busy, onRefresh, onTest }) {
 
 function ModelPanel({
   runtime,
+  activeProject,
   modelConfig,
   styles,
   customModel,
@@ -2930,6 +2955,7 @@ function ModelPanel({
   onRefreshGrokStatus
 }) {
   const config = runtime?.config || {};
+  const hasActiveProject = Boolean(activeProject?.id);
   const roles = modelConfig?.roles || [];
   const providers = modelConfig?.providers || [];
   const levels = modelConfig?.thinking_levels || ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -2938,6 +2964,12 @@ function ModelPanel({
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
   const canAdd = canSubmitModelAdd(customModel, modelConfig);
+  const routeScopeLabel = (route) => {
+    if (!hasActiveProject) {
+      return route.role === 'default' ? 'global default' : (route.explicit ? 'global role' : 'global fallback');
+    }
+    return route.explicit ? 'project' : 'global fallback';
+  };
   return (
     <div className="side-content">
       <section className="model-summary">
@@ -2949,11 +2981,11 @@ function ModelPanel({
       <section>
         <div className="section-title">
           <SlidersHorizontal size={17} />
-          <span>项目模型</span>
+          <span>{hasActiveProject ? '项目模型' : '全局模型'}</span>
         </div>
         <div className="model-route-list">
           {roles.length === 0 ? (
-            <div className="empty-state">打开项目后可配置模型</div>
+            <div className="empty-state">{hasActiveProject ? '打开项目后可配置模型' : '暂无全局模型配置'}</div>
           ) : (
             roles.map((route) => (
               <div className="model-route" key={route.role}>
@@ -2981,7 +3013,7 @@ function ModelPanel({
                   ))}
                 </select>
                 <select
-                  disabled={busy}
+                  disabled={busy || !hasActiveProject}
                   value={route.reasoning_effort || ''}
                   onChange={(event) => onThinking(route.role, event.target.value)}
                 >
@@ -2989,7 +3021,7 @@ function ModelPanel({
                     <option key={level || 'inherit'} value={level}>{level || 'inherit'}</option>
                   ))}
                 </select>
-                <span>{route.explicit ? 'project' : 'global fallback'}</span>
+                <span>{routeScopeLabel(route)}</span>
               </div>
             ))
           )}
@@ -3044,7 +3076,7 @@ function ModelPanel({
             </select>
             <input
               disabled={busy}
-              placeholder="provider key"
+              placeholder="供应商名称 / 显示名"
               value={customModel.provider || selectedPreset.provider}
               onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
             />
@@ -3067,7 +3099,7 @@ function ModelPanel({
           <>
             <input
               disabled={busy}
-              placeholder="provider key"
+              placeholder="供应商名称 / 显示名"
               value={customModel.provider}
               onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
             />
@@ -3109,7 +3141,7 @@ function ModelPanel({
           <>
             <input
               disabled={busy}
-              placeholder="provider key"
+              placeholder="供应商名称 / 显示名"
               value={customModel.provider}
               onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
             />
@@ -3167,7 +3199,7 @@ function ModelPanel({
         ) : null}
         <input
           disabled={busy}
-          placeholder="model"
+          placeholder="模型名称"
           value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
           onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
         />
@@ -3229,6 +3261,17 @@ function runtimeStateLabel(status) {
     default:
       return value || '-';
   }
+}
+
+function isProjectRunning(snapshot) {
+  if (!snapshot) {
+    return false;
+  }
+  if (snapshot.IsRunning || snapshot.is_running) {
+    return true;
+  }
+  const state = String(snapshot.RuntimeState || snapshot.runtime_state || '').trim().toLowerCase();
+  return state === 'running' || state === 'pausing';
 }
 
 function libraryItemsFromResponse(data) {
@@ -3444,14 +3487,14 @@ export function modelAddModeDefaults(state, providers = []) {
     return modelAddPresetDefaults(state);
   }
   if (state.mode === 'custom') {
-    return {
-      ...state,
-      provider: String(state.provider || '').startsWith('custom-') ? state.provider : 'custom-openai',
-      type: state.type || 'openai',
-      model: state.model || 'model-name',
-      api: state.api || 'chat',
-      auth: ''
-    };
+      return {
+        ...state,
+        provider: String(state.provider || '').startsWith('custom-') ? state.provider : 'custom-openai',
+        type: state.type || 'openai',
+        model: state.model === 'model-name' ? '' : state.model,
+        api: state.api || 'chat',
+        auth: ''
+      };
   }
   if (state.mode === 'grok_oauth') {
     const model = !state.model || state.model === 'model-name' ? grokOAuthDefaults.model : state.model;

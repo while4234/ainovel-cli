@@ -12,6 +12,14 @@ const addedModelProbeTimeout = 15 * time.Second
 
 var addedModelConnectivityProbe = probeAddedModelConnectivity
 
+func SetAddedModelConnectivityProbeForTest(probe func(context.Context, agentcore.ChatModel) error) func() {
+	previous := addedModelConnectivityProbe
+	addedModelConnectivityProbe = probe
+	return func() {
+		addedModelConnectivityProbe = previous
+	}
+}
+
 func probeAddedModelConnectivity(ctx context.Context, model agentcore.ChatModel) error {
 	if model == nil {
 		return fmt.Errorf("模型连接测试失败: model is nil")

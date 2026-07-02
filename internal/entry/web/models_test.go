@@ -2,16 +2,144 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/grokauth"
+	hostpkg "github.com/voocel/ainovel-cli/internal/host"
 )
+
+func TestGlobalModelAddWithoutProjectPersistsAndUpdatesRuntime(t *testing.T) {
+	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
+		return nil
+	})
+	defer restore()
+
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(t.TempDir(), "config.json")
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+
+	var body struct {
+		Models  apiModelConfig `json:"models"`
+		Runtime struct {
+			Config map[string]any `json:"config"`
+		} `json:"runtime"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", `{
+		"role":"default",
+		"provider":"yuanai-deepseek",
+		"model":"deepseek-v4-pro",
+		"type":"openai",
+		"api":"chat",
+		"api_key":"sk-new",
+		"base_url":"https://yuanyuaicloud.cn/v1"
+	}`, &body)
+
+	if body.Runtime.Config["provider"] != "yuanai-deepseek" || body.Runtime.Config["model"] != "deepseek-v4-pro" {
+		t.Fatalf("runtime config = %+v", body.Runtime.Config)
+	}
+	defaultRoute := findModelRoute(body.Models.Roles, "default")
+	if defaultRoute.Provider != "yuanai-deepseek" || defaultRoute.Model != "deepseek-v4-pro" {
+		t.Fatalf("default route = %+v", defaultRoute)
+	}
+	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	if saved.Provider != "yuanai-deepseek" || saved.ModelName != "deepseek-v4-pro" {
+		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
+	}
+	if saved.Providers["yuanai-deepseek"].APIKey != "sk-new" {
+		t.Fatalf("saved provider = %+v", saved.Providers["yuanai-deepseek"])
+	}
+}
+
+func TestGlobalModelAddWithoutProjectRejectsFailedProbe(t *testing.T) {
+	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
+		return errors.New("probe rejected")
+	})
+	defer restore()
+
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(t.TempDir(), "config.json")
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/models/add", bytes.NewBufferString(`{
+		"role":"default",
+		"provider":"broken-proxy",
+		"model":"deepseek-v4-pro",
+		"type":"openai",
+		"api_key":"sk-new",
+		"base_url":"https://proxy.example/v1"
+	}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "probe rejected") {
+		t.Fatalf("global model add status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := bootstrap.LoadConfigFile(cfg.PersistPath); err == nil {
+		t.Fatal("failed probe should not persist global config")
+	}
+	var runtime struct {
+		Config map[string]any `json:"config"`
+	}
+	serveJSON(t, server.Handler(), http.MethodGet, "/api/runtime", ``, &runtime)
+	if runtime.Config["provider"] != "openai" || runtime.Config["model"] != "gpt-test" {
+		t.Fatalf("runtime changed after failed probe: %+v", runtime.Config)
+	}
+}
+
+func TestGlobalModelSwitchWithoutProjectPersistsDefault(t *testing.T) {
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(t.TempDir(), "config.json")
+	cfg.Providers["yuanai-deepseek"] = bootstrap.ProviderConfig{
+		Type:    "openai",
+		API:     "chat",
+		APIKey:  "sk-new",
+		BaseURL: "https://yuanyuaicloud.cn/v1",
+		Models:  []string{"deepseek-v4-pro"},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
+	defer server.Close()
+
+	var body struct {
+		Models  apiModelConfig `json:"models"`
+		Runtime struct {
+			Config map[string]any `json:"config"`
+		} `json:"runtime"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/switch", `{
+		"role":"default",
+		"provider":"yuanai-deepseek",
+		"model":"deepseek-v4-pro"
+	}`, &body)
+
+	if body.Runtime.Config["provider"] != "yuanai-deepseek" {
+		t.Fatalf("runtime config = %+v", body.Runtime.Config)
+	}
+	if route := findModelRoute(body.Models.Roles, "default"); route.Provider != "yuanai-deepseek" || route.Model != "deepseek-v4-pro" {
+		t.Fatalf("default route = %+v", route)
+	}
+	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	if saved.Provider != "yuanai-deepseek" || saved.ModelName != "deepseek-v4-pro" {
+		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
+	}
+}
 
 func TestProjectModelAddExistingProviderUsesEmptyConfig(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(t.TempDir(), "runtime"))
@@ -35,6 +163,15 @@ func TestProjectModelAddExistingProviderUsesEmptyConfig(t *testing.T) {
 	if fake.addProviderConfig.Type != "" || fake.addProviderConfig.APIKey != "" || len(fake.addProviderConfig.Models) != 0 {
 		t.Fatalf("existing provider should use empty config: %+v", fake.addProviderConfig)
 	}
+}
+
+func findModelRoute(routes []apiModelRoute, role string) apiModelRoute {
+	for _, route := range routes {
+		if route.Role == role {
+			return route
+		}
+	}
+	return apiModelRoute{}
 }
 
 func TestProjectModelAddPresetPassesProviderConfig(t *testing.T) {

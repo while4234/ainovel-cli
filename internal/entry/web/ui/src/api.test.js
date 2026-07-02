@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   clearProjectTrash,
   createProject,
+  addGlobalProviderModel,
+  getGlobalModels,
   listProjectTrash,
   listStyles,
   listNovelLibrary,
@@ -11,6 +13,7 @@ import {
   saveNovelToLibrary,
   saveSimulationToLibrary,
   setProjectStyle,
+  switchGlobalModel,
   trashProject,
   uploadSimulationLibrary
 } from './api.js';
@@ -67,6 +70,25 @@ describe('library API helpers', () => {
     expect(fetch.mock.calls[2][0]).toBe('/api/projects/trash');
     expect(fetch.mock.calls[3][0]).toBe('/api/projects/trash');
     expect(fetch.mock.calls[3][1].method).toBe('DELETE');
+  });
+
+  it('uses global model routes without a project id', async () => {
+    mockFetch({ ok: true });
+
+    await getGlobalModels();
+    await switchGlobalModel('default', 'yuanai-deepseek', 'deepseek-v4-pro');
+    await addGlobalProviderModel({ provider: 'yuanai-deepseek', model: 'deepseek-v4-pro' });
+
+    expect(fetch.mock.calls[0][0]).toBe('/api/models');
+    expect(fetch.mock.calls[1][0]).toBe('/api/models/switch');
+    expect(fetch.mock.calls[1][1].method).toBe('POST');
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({
+      role: 'default',
+      provider: 'yuanai-deepseek',
+      model: 'deepseek-v4-pro'
+    });
+    expect(fetch.mock.calls[2][0]).toBe('/api/models/add');
+    expect(fetch.mock.calls[2][1].method).toBe('POST');
   });
 
   it('encodes simulation and novel library search queries', async () => {
