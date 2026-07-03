@@ -195,6 +195,37 @@ describe('workspace progress derivation', () => {
     expect(review.chapters[0].wordBudget.targetRunes).toBe(3000);
   });
 
+  it('deduplicates proposal volumes mirrored in summary and plan', () => {
+    const review = getAdaptationProposalReview({
+      ProposalSummary: {
+        Status: 'proposal',
+        ChapterCount: 4,
+        Volumes: [
+          { Index: 1, Title: 'Opening summary', TargetFrom: 1, TargetTo: 2 },
+          { Index: 2, Title: 'Ending summary', TargetFrom: 3, TargetTo: 4 }
+        ]
+      },
+      AdaptationProposal: {
+        status: 'proposal',
+        chapters: [
+          { chapter: 1, title: 'One' },
+          { chapter: 2, title: 'Two' },
+          { chapter: 3, title: 'Three' },
+          { chapter: 4, title: 'Four' }
+        ],
+        volumes: [
+          { index: 1, title: 'Opening plan', target_from: 1, target_to: 2, source_from: 1, source_to: 1 },
+          { index: 2, title: 'Ending plan', target_from: 3, target_to: 4, source_from: 2, source_to: 2 }
+        ]
+      }
+    });
+
+    expect(review.volumes).toHaveLength(2);
+    expect(review.volumes.map((volume) => volume.index)).toEqual([1, 2]);
+    expect(review.volumes.map((volume) => volume.title)).toEqual(['Opening plan', 'Ending plan']);
+    expect(review.volumes.map((volume) => [volume.targetFrom, volume.targetTo])).toEqual([[1, 2], [3, 4]]);
+  });
+
   it('restores visible adaptation proposal state from a co-create commit snapshot', () => {
     const snapshot = {
       ProposalSummary: {

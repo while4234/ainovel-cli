@@ -5389,7 +5389,7 @@ export function buildAdaptationRevisionPayload(adaptation = {}, proposal = {}) {
 }
 
 function normalizeProposalVolumes(volumes, chapterCount = 0) {
-  return (volumes || [])
+  const normalized = (volumes || [])
     .map((volume, index) => {
       const targetFrom = numberValue(volume, 'TargetFrom', 'targetFrom', 'target_from');
       const targetTo = numberValue(volume, 'TargetTo', 'targetTo', 'target_to');
@@ -5407,6 +5407,39 @@ function normalizeProposalVolumes(volumes, chapterCount = 0) {
     })
     .filter((volume) => volume.targetFrom > 0 && volume.targetTo >= volume.targetFrom && (!chapterCount || volume.targetTo <= chapterCount))
     .sort((a, b) => a.targetFrom - b.targetFrom || a.index - b.index);
+  return dedupeProposalVolumes(normalized);
+}
+
+function dedupeProposalVolumes(volumes) {
+  const out = [];
+  const seen = new Map();
+  for (const volume of volumes) {
+    const key = `${volume.targetFrom}:${volume.targetTo}`;
+    const existingIndex = seen.get(key);
+    if (existingIndex === undefined) {
+      seen.set(key, out.length);
+      out.push(volume);
+      continue;
+    }
+    out[existingIndex] = mergeProposalVolume(out[existingIndex], volume);
+  }
+  return out;
+}
+
+function mergeProposalVolume(existing, next) {
+  return {
+    ...existing,
+    ...next,
+    index: existing.index,
+    targetFrom: existing.targetFrom,
+    targetTo: existing.targetTo,
+    title: next.title || existing.title,
+    theme: next.theme || existing.theme,
+    goal: next.goal || existing.goal,
+    summary: next.summary || existing.summary,
+    sourceFrom: next.sourceFrom || existing.sourceFrom,
+    sourceTo: next.sourceTo || existing.sourceTo
+  };
 }
 
 function clampChapterSelection(value, chapterCount = 0) {
