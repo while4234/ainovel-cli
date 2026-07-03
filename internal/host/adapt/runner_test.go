@@ -1642,14 +1642,41 @@ func TestReviseAdaptationProposalAllowsFinalVolumeEndingExpansion(t *testing.T) 
 	}
 }
 
-func TestReviseAdaptationProposalRejectsRequiredVolumeExpansionWithoutNewChapters(t *testing.T) {
+func TestReviseAdaptationProposalLetsModelChooseVolumeExpansionForNaturalInstruction(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
 	saveRevisionTestProposal(t, st)
-	unchangedSkeleton := plannerVolumeRevisionSkeletonJSON(3, 9, 12, 3, 4)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: plannerVolumeRevisionSkeletonJSON(3, 9, 14, 3, 4)},
+		{text: plannerRevisionProposalJSON(9, 14, 3, 4)},
+	}}
+
+	updated, err := ReviseAdaptationProposal(context.Background(), Deps{Store: st, LLM: llm}, ProposalRevisionOptions{
+		VolumeIndex: 3,
+		Instruction: "加上更多日常纯爱的言情章节，一直写到男女主结婚、怀孕、生了个女儿",
+	})
+	if err != nil {
+		t.Fatalf("ReviseAdaptationProposal: %v", err)
+	}
+	if len(updated.Chapters) != 14 || updated.Volumes[2].TargetTo != 14 {
+		t.Fatalf("model-selected expansion was not applied: chapters=%d volumes=%+v", len(updated.Chapters), updated.Volumes)
+	}
+	if !strings.Contains(llm.got[0][len(llm.got[0])-1].TextContent(), "expansion_decision") {
+		t.Fatalf("volume skeleton prompt should ask the model for an expansion decision")
+	}
+}
+
+func TestReviseAdaptationProposalRejectsModelExpansionDecisionWithoutNewChapters(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	saveRevisionTestProposal(t, st)
+	unchangedSkeleton := plannerVolumeRevisionSkeletonJSONWithDecision(3, 9, 12, 3, 4, "expand")
 	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
 		{text: unchangedSkeleton},
 		{text: unchangedSkeleton},
@@ -1663,7 +1690,7 @@ func TestReviseAdaptationProposalRejectsRequiredVolumeExpansionWithoutNewChapter
 	if err == nil {
 		t.Fatalf("ReviseAdaptationProposal succeeded without required expansion: %+v", updated)
 	}
-	if !strings.Contains(err.Error(), "did not exceed original target_to") {
+	if !strings.Contains(err.Error(), "model chose expansion") {
 		t.Fatalf("error should explain missing expansion, got: %v", err)
 	}
 	saved, err := st.Adaptation.LoadProposal()
@@ -1672,6 +1699,34 @@ func TestReviseAdaptationProposalRejectsRequiredVolumeExpansionWithoutNewChapter
 	}
 	if saved == nil || len(saved.Chapters) != 12 || saved.Volumes[2].TargetTo != 12 || saved.Volumes[2].Title != "Final volume" {
 		t.Fatalf("proposal should remain unchanged after failed expansion: %+v", saved)
+	}
+}
+
+func TestReviseAdaptationProposalRepairsVolumeDetailMissingWordBudget(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	saveRevisionTestProposal(t, st)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: plannerVolumeRevisionSkeletonJSON(3, 9, 14, 3, 4)},
+		{text: plannerRevisionProposalJSONMissingWordBudget(9, 14)},
+		{text: plannerRevisionProposalJSON(9, 14, 3, 4)},
+	}}
+
+	updated, err := ReviseAdaptationProposal(context.Background(), Deps{Store: st, LLM: llm}, ProposalRevisionOptions{
+		VolumeIndex: 3,
+		Instruction: "加上更多恋爱日常章节",
+	})
+	if err != nil {
+		t.Fatalf("ReviseAdaptationProposal: %v", err)
+	}
+	if llm.calls != 3 {
+		t.Fatalf("planner calls=%d, want skeleton + detail + detail repair", llm.calls)
+	}
+	if len(updated.Chapters) != 14 || updated.Chapters[8].WordBudget == nil {
+		t.Fatalf("repaired proposal should include expanded chapters with word budgets: %+v", updated.Chapters[8])
 	}
 }
 
@@ -1895,6 +1950,15 @@ func plannerBatchProposalJSONWithOmittedBudget(from, to, sourceFrom, sourceTo in
 }
 
 func plannerVolumeRevisionSkeletonJSON(index, from, to, sourceFrom, sourceTo int) string {
+	originalTo := map[int]int{1: 4, 2: 8, 3: 12}[index]
+	decision := "keep"
+	if originalTo > 0 && to > originalTo {
+		decision = "expand"
+	}
+	return plannerVolumeRevisionSkeletonJSONWithDecision(index, from, to, sourceFrom, sourceTo, decision)
+}
+
+func plannerVolumeRevisionSkeletonJSONWithDecision(index, from, to, sourceFrom, sourceTo int, decision string) string {
 	return fmt.Sprintf(`{
 		"granularity": "free",
 		"status": "proposal",
@@ -1905,13 +1969,15 @@ func plannerVolumeRevisionSkeletonJSON(index, from, to, sourceFrom, sourceTo int
 			"index": %d,
 			"title": "Revised volume %d",
 			"theme": "rebalanced pressure",
+			"expansion_decision": %q,
+			"expansion_reason": "model judged the revised volume scope.",
 			"summary": "Replanned volume beats.",
 			"target_from": %d,
 			"target_to": %d,
 			"source_from": %d,
 			"source_to": %d
 		}]
-	}`, to-from+1, index, index, from, to, sourceFrom, sourceTo)
+	}`, to-from+1, index, index, decision, from, to, sourceFrom, sourceTo)
 }
 
 func plannerRevisionProposalJSON(from, to, sourceFrom, sourceTo int) string {
@@ -1938,6 +2004,26 @@ func plannerRevisionProposalJSON(from, to, sourceFrom, sourceTo int) string {
 			"required_changes": ["apply the revision"],
 			"forbidden_moves": ["drop the source anchor"]
 		}`, chapter, chapter, chapter, chapter, sourceChapter, sourceChapter, sourceChapter, sourceRunes, targetRunes, targetRunes-1, targetRunes+1))
+	}
+	return fmt.Sprintf(`{
+		"granularity": "free",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "chunk",
+		"chapters": [%s]
+	}`, strings.Join(chapters, ","))
+}
+
+func plannerRevisionProposalJSONMissingWordBudget(from, to int) string {
+	var chapters []string
+	for chapter := from; chapter <= to; chapter++ {
+		chapters = append(chapters, fmt.Sprintf(`{
+			"chapter": %d,
+			"title": "Incomplete revised %d",
+			"core_event": "Incomplete revised event %d.",
+			"hook": "Incomplete revised hook %d.",
+			"scenes": ["repair-needed"]
+		}`, chapter, chapter, chapter, chapter))
 	}
 	return fmt.Sprintf(`{
 		"granularity": "free",

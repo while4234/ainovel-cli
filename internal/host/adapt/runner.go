@@ -439,6 +439,7 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 			revisionText,
 			batch,
 			expansionMaxTo,
+			plannerBatchChapterValidator(proposalOptionsFromPlan(updated), manifest),
 			opts.EmitProgress,
 			batchOrdinal,
 			totalBatches,
@@ -472,13 +473,12 @@ func reviseAdaptationProposalVolumeContext(
 	updated.Volumes = normalizeAdaptationProposalVolumes(updated.Volumes, len(updated.Chapters))
 	originalBatch := proposalRevisionVolumeBatch(updated, opts.VolumeIndex, from, to)
 	allowExpansion := shouldAllowProposalRevisionExpansion(proposal, opts, from, to)
-	requireExpansion := allowExpansion && proposalRevisionInstructionRequiresExpansion(opts.Instruction)
 	expansionMaxTo := to
 	if allowExpansion {
 		expansionMaxTo = to + adaptationPlannerRevisionExpansionMax
 	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, fmt.Sprintf("请求第 %d 卷剧情重规划：第 %d-%d 章", opts.VolumeIndex, from, to), nil)
-	skeletonPrompt, err := buildAdaptationProposalVolumeRevisionSkeletonPrompt(opts, updated, originalBatch, expansionMaxTo, requireExpansion, manifest, sourceFoundation, reportsForPlannerBatch(reports, originalBatch))
+	skeletonPrompt, err := buildAdaptationProposalVolumeRevisionSkeletonPrompt(opts, updated, originalBatch, expansionMaxTo, manifest, sourceFoundation, reportsForPlannerBatch(reports, originalBatch))
 	if err != nil {
 		return nil, err
 	}
@@ -496,7 +496,7 @@ func reviseAdaptationProposalVolumeContext(
 	if err != nil {
 		return nil, fmt.Errorf("planner volume revision skeleton llm generate: %w", err)
 	}
-	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, originalBatch, expansionMaxTo, allowExpansion, requireExpansion, manifest, opts.EmitProgress)
+	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, originalBatch, expansionMaxTo, allowExpansion, manifest, opts.EmitProgress)
 	if err != nil {
 		return nil, fmt.Errorf("planner volume revision skeleton: %w", err)
 	}
@@ -543,6 +543,7 @@ func reviseAdaptationProposalVolumeContext(
 			batchPrompt,
 			batchText,
 			detailBatch,
+			plannerBatchChapterValidator(detailOpts, manifest),
 			opts.EmitProgress,
 			idx+1,
 			len(detailBatches),
@@ -952,6 +953,9 @@ func shouldAllowProposalRevisionExpansion(proposal domain.AdaptationPlan, opts P
 	if from <= 0 || from > to {
 		return false
 	}
+	if opts.VolumeIndex > 0 {
+		return true
+	}
 	if opts.VolumeIndex <= 0 && to != len(proposal.Chapters) {
 		return false
 	}
@@ -998,40 +1002,30 @@ func proposalRevisionInstructionRequestsExpansion(instruction string) bool {
 	return false
 }
 
-func proposalRevisionInstructionRequiresExpansion(instruction string) bool {
-	text := strings.ToLower(strings.TrimSpace(instruction))
+func normalizeProposalVolumeExpansionDecision(decision string) string {
+	text := strings.ToLower(strings.TrimSpace(decision))
 	if text == "" {
-		return false
+		return ""
 	}
-	keywords := []string{
-		"add chapter",
-		"add chapters",
-		"append chapter",
-		"append chapters",
-		"extra chapter",
-		"extra chapters",
-		"new chapter",
-		"new chapters",
-		"add plot",
-		"new plot",
-		"append plot",
-		"supplement",
-		"补充",
-		"新增",
-		"添加",
-		"增加",
-		"扩展",
-		"扩写",
-		"加章",
-		"补章",
-		"尾声",
+	keepWords := []string{
+		"keep", "same", "unchanged", "no expansion", "no change", "remain", "fixed",
+		"保持", "不变", "不扩", "无需", "原章数", "维持",
 	}
-	for _, keyword := range keywords {
-		if strings.Contains(text, keyword) {
-			return true
+	for _, word := range keepWords {
+		if strings.Contains(text, word) {
+			return "keep"
 		}
 	}
-	return false
+	expandWords := []string{
+		"expand", "expanded", "increase", "increased", "add", "append", "extra", "more", "new",
+		"扩章", "增加", "新增", "添加", "加章", "补章", "扩展", "扩写",
+	}
+	for _, word := range expandWords {
+		if strings.Contains(text, word) {
+			return "expand"
+		}
+	}
+	return text
 }
 
 func proposalRevisionChanged(original, updated domain.AdaptationPlan) bool {
@@ -1169,7 +1163,6 @@ func buildAdaptationProposalVolumeRevisionSkeletonPrompt(
 	proposal domain.AdaptationPlan,
 	volume plannerSkeletonBatch,
 	expansionMaxTo int,
-	expansionRequired bool,
 	manifest *domain.AdaptationSourceManifest,
 	sourceFoundation *domain.AdaptationSourceFoundation,
 	reports []domain.AdaptationSourceReport,
@@ -1191,17 +1184,13 @@ func buildAdaptationProposalVolumeRevisionSkeletonPrompt(
 		"source_from and source_to must stay within the analyzed source manifest.",
 		"Use the user's revision instruction to re-plan the volume's plot structure before detailed chapter planning.",
 	}
-	if expansionRequired {
+	if expansionAllowed {
 		requirements = append(requirements,
-			"The user's instruction asks to add or supplement plot content, so target_to must be greater than original_target_to.",
-			"target_to must not exceed target_to_max.",
-			"Add enough chapter slots for the new plot beats before detailed chapter planning.",
-			"Do not leave gaps; later volumes will be shifted by the application.",
-		)
-	} else if expansionAllowed {
-		requirements = append(requirements,
-			"If the instruction requires added plot beats or chapters, increase target_to for this volume.",
-			"target_to may be greater than original_target_to but must not exceed target_to_max.",
+			`You must decide whether the revision needs more chapter slots. Set expansion_decision to "expand" or "keep".`,
+			`Use "expand" when the requested story change needs added chapters, extra relationship beats, daily romance scenes, epilogue-like life stages, marriage, pregnancy, childbirth, or other new plot space.`,
+			`Use "keep" only when the requested change can be fully handled inside the current chapter count without compressing or losing the user's intent.`,
+			`If expansion_decision is "expand", increase target_to for this volume; target_to must not exceed target_to_max.`,
+			`If expansion_decision is "keep", target_to must remain original_target_to.`,
 			"Do not leave gaps; later volumes will be shifted by the application.",
 		)
 	} else {
@@ -1212,7 +1201,6 @@ func buildAdaptationProposalVolumeRevisionSkeletonPrompt(
 	input := struct {
 		Instruction       string                             `json:"instruction"`
 		ExpansionAllowed  bool                               `json:"expansion_allowed"`
-		ExpansionRequired bool                               `json:"expansion_required"`
 		OriginalTargetTo  int                                `json:"original_target_to"`
 		TargetToMax       int                                `json:"target_to_max"`
 		Granularity       string                             `json:"granularity"`
@@ -1232,7 +1220,6 @@ func buildAdaptationProposalVolumeRevisionSkeletonPrompt(
 	}{
 		Instruction:       strings.TrimSpace(opts.Instruction),
 		ExpansionAllowed:  expansionAllowed,
-		ExpansionRequired: expansionRequired,
 		OriginalTargetTo:  volume.TargetTo,
 		TargetToMax:       expansionMaxTo,
 		Granularity:       proposal.Granularity,
@@ -1257,7 +1244,7 @@ func buildAdaptationProposalVolumeRevisionSkeletonPrompt(
 	return fmt.Sprintf(
 		"Re-plan the selected adaptation proposal volume before detailed chapter planning.\n\n"+
 			"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must contain a batches array with exactly one revised volume batch. Do not return chapter details here.\n"+
-			"Required JSON shape: {\"granularity\":\"%s\",\"status\":\"proposal\",\"rewrite_policy\":\"%s\",\"brief\":\"...\",\"target_chapter_count\":%d,\"batches\":[{\"index\":%d,\"title\":\"...\",\"theme\":\"...\",\"target_from\":%d,\"target_to\":%d,\"source_from\":%d,\"source_to\":%d,\"summary\":\"...\"}]}.\n\n"+
+			"Required JSON shape: {\"granularity\":\"%s\",\"status\":\"proposal\",\"rewrite_policy\":\"%s\",\"brief\":\"...\",\"target_chapter_count\":%d,\"batches\":[{\"index\":%d,\"title\":\"...\",\"theme\":\"...\",\"expansion_decision\":\"expand|keep\",\"expansion_reason\":\"...\",\"target_from\":%d,\"target_to\":%d,\"source_from\":%d,\"source_to\":%d,\"summary\":\"...\"}]}.\n\n"+
 			"Volume revision input:\n```json\n%s\n```",
 		proposal.Granularity,
 		proposal.RewritePolicy,
@@ -1492,6 +1479,8 @@ type plannerSkeletonBatch struct {
 	Theme              string   `json:"theme,omitempty"`
 	Goal               string   `json:"goal,omitempty"`
 	Summary            string   `json:"summary,omitempty"`
+	ExpansionDecision  string   `json:"expansion_decision,omitempty"`
+	ExpansionReason    string   `json:"expansion_reason,omitempty"`
 	TargetFrom         int      `json:"target_from"`
 	TargetTo           int      `json:"target_to"`
 	TargetChapterCount int      `json:"chapter_count,omitempty"`
@@ -1517,6 +1506,8 @@ func (b *plannerSkeletonBatch) UnmarshalJSON(data []byte) error {
 	b.TargetChapterCount = firstJSONInt(object, b.TargetChapterCount, "chapter_count", "target_chapter_count", "chapters", "count")
 	b.SourceFrom = firstJSONInt(object, b.SourceFrom, "source_from", "sourceStart", "source_start", "source_chapter_from")
 	b.SourceTo = firstJSONInt(object, b.SourceTo, "source_to", "sourceEnd", "source_end", "source_chapter_to")
+	b.ExpansionDecision = firstJSONString(object, b.ExpansionDecision, "expansion_decision", "expansionDecision", "chapter_count_decision", "chapterCountDecision")
+	b.ExpansionReason = firstJSONString(object, b.ExpansionReason, "expansion_reason", "expansionReason", "chapter_count_reason", "chapterCountReason")
 	if rawRange := object["target_range"]; len(rawRange) > 0 {
 		var r struct {
 			From  int `json:"from"`
@@ -1658,6 +1649,7 @@ func buildPlanFromPlannerChunked(
 			batchPrompt,
 			batchText,
 			batch,
+			plannerBatchChapterValidator(opts, manifest),
 			opts.EmitProgress,
 			batchOrdinal+1,
 			len(detailBatches),
@@ -2064,6 +2056,74 @@ func shouldRetryPlannerGenerate(ctx context.Context, err error, attempt int) boo
 	return strings.Contains(msg, "nil response") || strings.Contains(msg, "empty response")
 }
 
+type plannerBatchChapterValidatorFunc func([]domain.AdaptationChapterPlan) error
+
+func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.AdaptationSourceManifest) plannerBatchChapterValidatorFunc {
+	opts.WordTolerance = normalizeProposalWordTolerance(opts.Granularity, opts.WordTolerance)
+	sourceRunesByChapter := sourceRunesByChapter(manifest)
+	chapterCount := 0
+	if manifest != nil {
+		chapterCount = manifest.ChapterCount
+	}
+	return func(chapters []domain.AdaptationChapterPlan) error {
+		for idx := range chapters {
+			chapter := &chapters[idx]
+			if strings.TrimSpace(chapter.Title) == "" {
+				return fmt.Errorf("planner chapter %d title is empty", chapter.Chapter)
+			}
+			if strings.TrimSpace(chapter.CoreEvent) == "" {
+				return fmt.Errorf("planner chapter %d core_event is empty", chapter.Chapter)
+			}
+			if strings.TrimSpace(chapter.Hook) == "" {
+				return fmt.Errorf("planner chapter %d hook is empty", chapter.Chapter)
+			}
+			if len(trimmedNonEmpty(chapter.Scenes)) == 0 {
+				return fmt.Errorf("planner chapter %d scenes are empty", chapter.Chapter)
+			}
+			chapter.Scenes = trimmedNonEmpty(chapter.Scenes)
+			fillPlannerChapterWordBudgetDefaults(chapter, sourceRunesByChapter, opts.WordTolerance)
+			if err := validatePlannerWordBudget(chapter, opts.WordTolerance); err != nil {
+				return err
+			}
+			if len(chapter.SourceChapters) == 0 {
+				if chapter.IsAdded {
+					return fmt.Errorf("planner added chapter %d has no source anchors", chapter.Chapter)
+				}
+				return fmt.Errorf("planner chapter %d has no source coverage", chapter.Chapter)
+			}
+			minSource, maxSource := 0, 0
+			seenInChapter := map[int]bool{}
+			for _, sourceChapter := range chapter.SourceChapters {
+				if sourceChapter <= 0 || sourceChapter > chapterCount {
+					return fmt.Errorf("planner chapter %d references invalid source chapter %d", chapter.Chapter, sourceChapter)
+				}
+				if seenInChapter[sourceChapter] {
+					return fmt.Errorf("planner chapter %d repeats source chapter %d", chapter.Chapter, sourceChapter)
+				}
+				seenInChapter[sourceChapter] = true
+				if minSource == 0 || sourceChapter < minSource {
+					minSource = sourceChapter
+				}
+				if sourceChapter > maxSource {
+					maxSource = sourceChapter
+				}
+			}
+			if chapter.SourceRange.From == 0 && chapter.SourceRange.To == 0 {
+				chapter.SourceRange = domain.SourceRange{From: minSource, To: maxSource}
+			}
+			if chapter.SourceRange.From <= 0 || chapter.SourceRange.To < chapter.SourceRange.From || chapter.SourceRange.To > chapterCount {
+				return fmt.Errorf("planner chapter %d has invalid source_range %d-%d", chapter.Chapter, chapter.SourceRange.From, chapter.SourceRange.To)
+			}
+			for _, sourceChapter := range chapter.SourceChapters {
+				if sourceChapter < chapter.SourceRange.From || sourceChapter > chapter.SourceRange.To {
+					return fmt.Errorf("planner chapter %d source chapter %d falls outside source_range %d-%d", chapter.Chapter, sourceChapter, chapter.SourceRange.From, chapter.SourceRange.To)
+				}
+			}
+		}
+		return nil
+	}
+}
+
 func collectPlannerBatchChaptersWithRepair(
 	ctx context.Context,
 	llm imp.LLMChat,
@@ -2071,6 +2131,7 @@ func collectPlannerBatchChaptersWithRepair(
 	originalPrompt string,
 	initialText string,
 	batch plannerSkeletonBatch,
+	validate plannerBatchChapterValidatorFunc,
 	emit ProgressEmitter,
 	current int,
 	total int,
@@ -2081,7 +2142,14 @@ func collectPlannerBatchChaptersWithRepair(
 	for attempt := 0; ; attempt++ {
 		chapters, missing, partial, parseErr := parsePlannerBatchPartial(text, batch)
 		if partial && len(missing) == 0 {
-			return chapters, nil
+			if validate == nil {
+				return chapters, nil
+			}
+			if err := validate(chapters); err == nil {
+				return chapters, nil
+			} else {
+				lastErr = err
+			}
 		}
 		if partial && len(missing) > 0 {
 			missingErr := parseErr
@@ -2090,11 +2158,22 @@ func collectPlannerBatchChaptersWithRepair(
 			}
 			filled, fillErr := fillMissingPlannerBatchChapters(ctx, llm, systemPrompt, originalPrompt, text, batch, chapters, missing, missingErr, emit, current, total, label)
 			if fillErr == nil {
-				return filled, nil
+				if validate == nil {
+					return filled, nil
+				}
+				if err := validate(filled); err == nil {
+					return filled, nil
+				} else {
+					lastErr = err
+				}
 			}
-			lastErr = fillErr
+			if fillErr != nil {
+				lastErr = fillErr
+			}
 		} else {
-			lastErr = parseErr
+			if lastErr == nil {
+				lastErr = parseErr
+			}
 		}
 		if lastErr == nil {
 			lastErr = fmt.Errorf("planner batch returned no usable chapters")
@@ -2120,14 +2199,13 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 	originalBatch plannerSkeletonBatch,
 	expansionMaxTo int,
 	allowExpansion bool,
-	requireExpansion bool,
 	manifest *domain.AdaptationSourceManifest,
 	emit ProgressEmitter,
 ) (plannerSkeletonBatch, error) {
 	text := initialText
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		batch, err := parseProposalVolumeRevisionSkeleton(text, originalBatch, expansionMaxTo, allowExpansion, requireExpansion, manifest)
+		batch, err := parseProposalVolumeRevisionSkeleton(text, originalBatch, expansionMaxTo, allowExpansion, manifest)
 		if err == nil {
 			return batch, nil
 		}
@@ -2136,7 +2214,7 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 			return plannerSkeletonBatch{}, lastErr
 		}
 		emitAdaptProgress(emit, StagePlan, attempt+1, adaptationPlannerRepairMaxAttempts, fmt.Sprintf("卷剧情重规划返回不符合结构，正在修复第 %d/%d 次：%v", attempt+1, adaptationPlannerRepairMaxAttempts, lastErr), lastErr)
-		repairedText, repairErr := repairProposalVolumeRevisionSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, originalBatch, expansionMaxTo, allowExpansion, requireExpansion, lastErr, emit)
+		repairedText, repairErr := repairProposalVolumeRevisionSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, originalBatch, expansionMaxTo, allowExpansion, lastErr, emit)
 		if repairErr != nil {
 			return plannerSkeletonBatch{}, repairErr
 		}
@@ -2144,15 +2222,15 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 	}
 }
 
-func parseProposalVolumeRevisionSkeleton(text string, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, requireExpansion bool, manifest *domain.AdaptationSourceManifest) (plannerSkeletonBatch, error) {
+func parseProposalVolumeRevisionSkeleton(text string, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, manifest *domain.AdaptationSourceManifest) (plannerSkeletonBatch, error) {
 	skeleton, err := parsePlannerSkeleton(text)
 	if err != nil {
 		return plannerSkeletonBatch{}, err
 	}
-	return normalizeProposalVolumeRevisionSkeletonBatch(skeleton, originalBatch, expansionMaxTo, allowExpansion, requireExpansion, manifest)
+	return normalizeProposalVolumeRevisionSkeletonBatch(skeleton, originalBatch, expansionMaxTo, allowExpansion, manifest)
 }
 
-func normalizeProposalVolumeRevisionSkeletonBatch(skeleton plannerSkeleton, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, requireExpansion bool, manifest *domain.AdaptationSourceManifest) (plannerSkeletonBatch, error) {
+func normalizeProposalVolumeRevisionSkeletonBatch(skeleton plannerSkeleton, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, manifest *domain.AdaptationSourceManifest) (plannerSkeletonBatch, error) {
 	if manifest == nil || manifest.ChapterCount <= 0 {
 		return plannerSkeletonBatch{}, fmt.Errorf("source manifest missing")
 	}
@@ -2184,11 +2262,27 @@ func normalizeProposalVolumeRevisionSkeletonBatch(skeleton plannerSkeleton, orig
 	if !allowExpansion && batch.TargetTo != originalBatch.TargetTo {
 		return plannerSkeletonBatch{}, fmt.Errorf("volume revision changed chapter count without an expansion request")
 	}
-	if requireExpansion && batch.TargetTo <= originalBatch.TargetTo {
-		return plannerSkeletonBatch{}, fmt.Errorf("volume revision expansion requested but target_to=%d did not exceed original target_to %d", batch.TargetTo, originalBatch.TargetTo)
-	}
 	if batch.TargetTo > expansionMaxTo {
 		return plannerSkeletonBatch{}, fmt.Errorf("volume revision target_to=%d exceeds max %d", batch.TargetTo, expansionMaxTo)
+	}
+	if allowExpansion {
+		decision := normalizeProposalVolumeExpansionDecision(batch.ExpansionDecision)
+		if decision == "" {
+			return plannerSkeletonBatch{}, fmt.Errorf("volume revision skeleton missing expansion_decision")
+		}
+		batch.ExpansionDecision = decision
+		switch decision {
+		case "expand":
+			if batch.TargetTo <= originalBatch.TargetTo {
+				return plannerSkeletonBatch{}, fmt.Errorf("volume revision model chose expansion but target_to=%d did not exceed original target_to %d", batch.TargetTo, originalBatch.TargetTo)
+			}
+		case "keep":
+			if batch.TargetTo != originalBatch.TargetTo {
+				return plannerSkeletonBatch{}, fmt.Errorf("volume revision model chose keep but changed target_to from %d to %d", originalBatch.TargetTo, batch.TargetTo)
+			}
+		default:
+			return plannerSkeletonBatch{}, fmt.Errorf("volume revision expansion_decision=%q, want expand or keep", batch.ExpansionDecision)
+		}
 	}
 	batch.TargetChapterCount = batch.TargetTo - batch.TargetFrom + 1
 	if batch.SourceFrom <= 0 || batch.SourceTo <= 0 {
@@ -2227,7 +2321,6 @@ func repairProposalVolumeRevisionSkeletonText(
 	originalBatch plannerSkeletonBatch,
 	expansionMaxTo int,
 	allowExpansion bool,
-	requireExpansion bool,
 	previousErr error,
 	emit ProgressEmitter,
 ) (string, error) {
@@ -2239,10 +2332,12 @@ func repairProposalVolumeRevisionSkeletonText(
 		"Do not return chapter details or a chapters array.",
 		"Do not return markdown or explanations.",
 	}
-	if requireExpansion {
-		requirements = append(requirements, fmt.Sprintf("The batch target_to must be greater than %d and must not exceed %d.", originalBatch.TargetTo, expansionMaxTo))
-	} else if allowExpansion {
-		requirements = append(requirements, fmt.Sprintf("The batch target_to may increase but must not exceed %d.", expansionMaxTo))
+	if allowExpansion {
+		requirements = append(requirements,
+			`The batch must include expansion_decision as either "expand" or "keep".`,
+			fmt.Sprintf(`If expansion_decision is "expand", target_to must be greater than %d and must not exceed %d.`, originalBatch.TargetTo, expansionMaxTo),
+			fmt.Sprintf(`If expansion_decision is "keep", target_to must remain %d.`, originalBatch.TargetTo),
+		)
 	} else {
 		requirements = append(requirements, fmt.Sprintf("The batch target_to must remain %d.", originalBatch.TargetTo))
 	}
@@ -2268,6 +2363,7 @@ func collectProposalRevisionBatchChaptersWithRepair(
 	initialText string,
 	batch plannerSkeletonBatch,
 	expansionMaxTo int,
+	validate plannerBatchChapterValidatorFunc,
 	emit ProgressEmitter,
 	current int,
 	total int,
@@ -2281,7 +2377,14 @@ func collectProposalRevisionBatchChaptersWithRepair(
 	for attempt := 0; ; attempt++ {
 		chapters, missing, partial, parseErr := parseProposalRevisionBatchPartial(text, batch, expansionMaxTo)
 		if partial && len(missing) == 0 {
-			return chapters, nil
+			if validate == nil {
+				return chapters, nil
+			}
+			if err := validate(chapters); err == nil {
+				return chapters, nil
+			} else {
+				lastErr = err
+			}
 		}
 		if partial && len(missing) > 0 {
 			missingErr := parseErr
@@ -2292,11 +2395,22 @@ func collectProposalRevisionBatchChaptersWithRepair(
 			fillBatch.TargetTo = max(batch.TargetTo, maxChapterInPlans(chapters))
 			filled, fillErr := fillMissingPlannerBatchChapters(ctx, llm, systemPrompt, originalPrompt, text, fillBatch, chapters, missing, missingErr, emit, current, total, label)
 			if fillErr == nil {
-				return filled, nil
+				if validate == nil {
+					return filled, nil
+				}
+				if err := validate(filled); err == nil {
+					return filled, nil
+				} else {
+					lastErr = err
+				}
 			}
-			lastErr = fillErr
+			if fillErr != nil {
+				lastErr = fillErr
+			}
 		} else {
-			lastErr = parseErr
+			if lastErr == nil {
+				lastErr = parseErr
+			}
 		}
 		if lastErr == nil {
 			lastErr = fmt.Errorf("planner revision returned no usable chapters")

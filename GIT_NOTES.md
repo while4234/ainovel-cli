@@ -29,7 +29,14 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `55c4162`
+- Latest source change: branch `main`, pending
+  `fix: let adaptation volume planner choose expansion`:
+  selected-volume proposal revisions now always give the volume skeleton model
+  an explicit `expansion_decision` choice (`expand` or `keep`) instead of using
+  local keywords to force expansion. Detail batches are validated before merge;
+  missing or invalid `word_budget`/chapter fields now trigger the existing
+  batch repair loop instead of failing only at final proposal validation.
+- Previous source change: `55c4162`
   `fix: enforce adaptation volume expansion revisions`:
   selected-volume proposal revisions now distinguish optional expansion from
   required expansion. If the user's volume revision asks to add/supplement plot
@@ -105,7 +112,27 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   current user project `untitled-novel-20260703215407-d41d36` still has saved
   proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
 
+  Model-decision expansion follow-up validation passed:
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -run "TestReviseAdaptationProposal" -count=1`;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -count=1`;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web ./internal/host ./internal/host/adapt -count=1`;
+  `git diff --check` passed with CRLF warnings only;
+  `.\restart-web.cmd -Port 9898` rebuilt the Web UI and Go executable, stopped
+  PID `10368`, and restarted Web as PID `5276`;
+  `GET /api/runtime` and `/api/projects` returned HTTP 200;
+  current user project `untitled-novel-20260703215407-d41d36` still has saved
+  proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
+
 ## Change Log
+
+- 2026-07-04 `pending` `fix: let adaptation volume planner choose expansion`:
+  selected-volume proposal revisions now ask the model to return
+  `expansion_decision:"expand"` or `"keep"` during volume re-planning, and the
+  backend validates that the decision matches the returned `target_to`.
+  Volume/detail batch validation now runs before merge/save so missing
+  `word_budget` and related chapter contract issues enter the repair loop
+  instead of surfacing only as final validation failures. Failed revisions still
+  do not overwrite the last saved proposal.
 
 - 2026-07-04 `55c4162` `fix: enforce adaptation volume expansion revisions`:
   when a selected-volume proposal revision explicitly asks to add/supplement
