@@ -555,6 +555,159 @@ func TestBuildAdaptationProposalFreeUsesChunkedPlannerForLongTargetChapters(t *t
 	}
 }
 
+func TestBuildAdaptationProposalFreeDefaultsLongSourceToChunkedPlanner(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	runeCounts := make([]int, 17)
+	for i := range runeCounts {
+		runeCounts[i] = 10 + i
+	}
+	seedPreparedAdaptationSource(t, st, runeCounts)
+	brief := "free long-form expansion without an explicit chapter count"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free long-form expansion without an explicit chapter count",
+			"target_chapter_count": 18,
+			"batches": [
+				{"index": 1, "title": "Opening volume", "theme": "orientation", "target_from": 1, "target_to": 8, "source_from": 1, "source_to": 8, "summary": "establish the new premise"},
+				{"index": 2, "title": "Pressure volume", "theme": "choice", "target_from": 9, "target_to": 16, "source_from": 9, "source_to": 16, "summary": "expand the middle"},
+				{"index": 3, "title": "Resolution volume", "theme": "payoff", "target_from": 17, "target_to": 18, "source_from": 17, "source_to": 17, "summary": "resolve the ending"}
+			]
+		}`},
+		{text: plannerBatchProposalJSON(1, 8, 1, 8)},
+		{text: plannerBatchProposalJSON(9, 16, 9, 16)},
+		{text: plannerBatchProposalJSON(17, 18, 17, 17)},
+	}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       brief,
+		Granularity: domain.AdaptationGranularityFree,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 4 {
+		t.Fatalf("planner calls=%d, want default skeleton + 3 batch calls", llm.calls)
+	}
+	if len(proposal.Chapters) != 18 {
+		t.Fatalf("chapters=%d, want 18", len(proposal.Chapters))
+	}
+	if proposal.Planner == nil || proposal.Planner.PromptVersion != "v1-chunked" {
+		t.Fatalf("planner metadata should mark chunked run: %+v", proposal.Planner)
+	}
+	firstPrompt := llm.got[0][1].TextContent()
+	if !strings.Contains(firstPrompt, `"target_chapter_hint": 18`) {
+		t.Fatalf("skeleton prompt should carry default target chapter hint: %s", firstPrompt)
+	}
+}
+
+func TestBuildAdaptationProposalCoversSparseSourceAnchorsByExplicitRange(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30})
+	brief := "arc restructure"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc restructure",
+		"chapters": [
+			{
+				"chapter": 1,
+				"title": "Merged opening",
+				"core_event": "Ari merges the first two source turns.",
+				"hook": "The merged pressure points forward.",
+				"scenes": ["station"],
+				"source_chapters": [1],
+				"source_range": {"from": 1, "to": 2},
+				"preserve_events": ["source event"],
+				"required_changes": ["merge the first span"],
+				"forbidden_moves": ["drop the second source chapter"]
+			},
+			{
+				"chapter": 2,
+				"title": "Closing turn",
+				"core_event": "Ari resolves the final source turn.",
+				"hook": "The ending opens a new question.",
+				"scenes": ["archive"],
+				"source_chapters": [3],
+				"source_range": {"from": 3, "to": 3},
+				"preserve_events": ["source event"],
+				"required_changes": ["adapt the final span"],
+				"forbidden_moves": ["drop the final source chapter"]
+			}
+		]
+	}`}}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       brief,
+		Granularity: domain.AdaptationGranularityArc,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("planner calls=%d, want single planner call", llm.calls)
+	}
+	if proposal.Chapters[0].WordBudget == nil || proposal.Chapters[0].WordBudget.SourceRunes != 30 {
+		t.Fatalf("explicit source_range should drive covered source runes: %+v", proposal.Chapters[0])
+	}
+	if got := proposal.Chapters[0].SourceChapters; len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("explicit source_range should expand saved source_chapters for later tools: %+v", proposal.Chapters[0])
+	}
+}
+
+func TestBuildAdaptationProposalClearsChunkedRuntimeAfterFinalValidationFailure(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	brief := "free restructure into 20 chapters"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free restructure into 20 chapters",
+			"target_chapter_count": 20,
+			"batches": [
+				{"index": 1, "title": "Opening volume", "theme": "orientation", "target_from": 1, "target_to": 8, "source_from": 1, "source_to": 2, "summary": "establish the new premise"},
+				{"index": 2, "title": "Pressure volume", "theme": "choice", "target_from": 9, "target_to": 16, "source_from": 2, "source_to": 3, "summary": "expand the central conflict"},
+				{"index": 3, "title": "Resolution volume", "theme": "payoff", "target_from": 17, "target_to": 20, "source_from": 3, "source_to": 4, "summary": "resolve the adapted ending"}
+			]
+		}`},
+		{text: plannerBatchProposalJSON(1, 8, 1, 1)},
+		{text: plannerBatchProposalJSON(9, 16, 2, 2)},
+		{text: plannerBatchProposalJSON(17, 20, 3, 3)},
+	}}
+
+	_, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:              brief,
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
+	})
+	if err == nil {
+		t.Fatal("BuildAdaptationProposal should fail when final coverage omits a source chapter")
+	}
+	if !strings.Contains(err.Error(), "planner proposal does not cover source chapter 4") {
+		t.Fatalf("error=%v, want missing source chapter 4", err)
+	}
+	if runtime, runtimeErr := st.Adaptation.LoadProposalRuntime(); runtimeErr != nil || runtime != nil {
+		t.Fatalf("runtime should be cleared after final validation failure: runtime=%+v err=%v", runtime, runtimeErr)
+	}
+	if saved, savedErr := st.Adaptation.LoadProposal(); savedErr != nil || saved != nil {
+		t.Fatalf("invalid proposal should not be saved: proposal=%+v err=%v", saved, savedErr)
+	}
+}
+
 func TestBuildAdaptationProposalResumesChunkedPlannerRuntimeAfterBatchFailure(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

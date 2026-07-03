@@ -29,33 +29,49 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, commit `331162c`
-  `fix: restore web cocreate action controls`: restores Web co-create option
-  visibility from paragraph-style AI questions, honors backend `can_start` for
-  the launch gate, caps the right-pane draft preview so action buttons remain
-  reachable, and rebuilds embedded Web assets.
-- Previous source commit: `1d60987`
-  `docs: record latest restart check`, following `ea18f61`
-  `docs: record latest pull and restart`.
+- Latest source change: branch `main`, current `HEAD`
+  `fix: stabilize adaptation proposal coverage`: routes long source-backed
+  free/arc proposals through the chunked planner even when the brief omits an
+  explicit chapter count, treats explicit `source_range` as coverage, expands
+  sparse source anchors for later writer tools, and clears bad chunked runtime
+  checkpoints after final validation failure.
+- Previous source change: `331162c`
+  `fix: restore web cocreate action controls`.
 - Earlier planner stability checkpoint: `411c1df`
   `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the co-create UI fix is pushed,
+- Working tree: expected clean after the adaptation coverage fix is pushed,
   except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
   artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
-  source commit `331162c`; the restarted process is PID `36560`.
-- Validation: `npm.cmd --prefix internal\entry\web\ui test -- --run` passed;
-  `npm.cmd --prefix internal\entry\web\ui run build` passed;
-  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run TestProjectCoCreate -count=1`
+  current `HEAD`; the restarted process is PID `41644`.
+- Validation:
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -run "TestBuildAdaptationProposal(FreeDefaultsLongSourceToChunkedPlanner|CoversSparseSourceAnchorsByExplicitRange|ClearsChunkedRuntimeAfterFinalValidationFailure|FreeUsesChunkedPlannerForLongTargetChapters|ResumesChunkedPlannerRuntimeAfterBatchFailure)$" -count=1 -v`
+  passed;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -count=1`
+  passed;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run TestProjectSessionBuildAdaptationProposal -count=1`
   passed; `git diff --check` passed with CRLF warnings only;
-  `.\restart-web.cmd -Port 9898` rebuilt and restarted Web, stopping PID
-  `15252` and starting PID `36560`; `GET /`, `/api/runtime`, and
-  `/api/projects` returned HTTP 200.
+  `.\restart-web.cmd -Port 9898` rebuilt and restarted Web twice during live
+  validation, most recently stopping PID `34544` and starting PID `41644`;
+  `GET /api/runtime` and `/api/projects` returned HTTP 200.
+  Live retry for project `untitled-novel-20260703122424-2e6c6b` generated an
+  18-chapter free/full_rewrite proposal covering all 17 source chapters,
+  confirmed it into `plan.json`, and started writing chapter 1
+  (`RuntimeState=running`, `Phase=writing`, `InProgressChapter=1`).
 
 ## Change Log
 
+- 2026-07-03 current `HEAD` `fix: stabilize adaptation proposal coverage`: default
+  long source-backed `arc`/`free` proposals into chunked planning when no
+  explicit target chapter count is present, count explicit `source_range`
+  coverage and expand sparse `source_chapters` before saving, clear invalid
+  chunked proposal runtime checkpoints on final validation failure, add
+  regression tests for the `does not cover source chapter` failure class,
+  rebuild/restart Web on `http://127.0.0.1:9898` as PID `41644`, and verify the
+  failed project now has a confirmed 18-chapter adaptation plan and active
+  chapter-1 writing run.
 - 2026-07-03 `331162c` `fix: restore web cocreate action controls`: consumes
   backend `can_start` in the React co-create state, disables launch until the
   draft is fresh/startable, parses paragraph-style AI choice questions into

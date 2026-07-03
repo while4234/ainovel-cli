@@ -30,6 +30,7 @@ const (
 	adaptationPlannerSkeletonMaxTokens   = 4096
 	adaptationPlannerChunkedMinChapters  = 18
 	adaptationPlannerRecommendedBatchMax = 8
+	adaptationPlannerSourceChunkedMin    = adaptationPlannerRecommendedBatchMax * 2
 	adaptationPlannerRevisionBatchMax    = 8
 	adaptationPlannerRepairMaxAttempts   = 2
 	adaptationPlannerGenerateMaxAttempts = retrypolicy.MaxAttempts
@@ -472,11 +473,26 @@ func buildPlanFromPlanner(
 	manifest *domain.AdaptationSourceManifest,
 	sourceFoundation *domain.AdaptationSourceFoundation,
 ) (domain.AdaptationPlan, error) {
-	targetChapterCount := normalizeTargetChapterCount(opts.TargetChapterCount, inferTargetChapterCount(opts.Brief))
+	targetChapterCount := plannerTargetChapterCount(opts, manifest)
 	if targetChapterCount >= adaptationPlannerChunkedMinChapters {
 		return buildPlanFromPlannerChunked(ctx, deps, opts, reports, manifest, sourceFoundation, targetChapterCount)
 	}
 	return buildPlanFromPlannerSingle(ctx, deps, opts, reports, manifest, sourceFoundation)
+}
+
+func plannerTargetChapterCount(opts ProposalOptions, manifest *domain.AdaptationSourceManifest) int {
+	if explicit := normalizeTargetChapterCount(opts.TargetChapterCount, inferTargetChapterCount(opts.Brief)); explicit > 0 {
+		return explicit
+	}
+	if manifest == nil || manifest.ChapterCount < adaptationPlannerSourceChunkedMin {
+		return 0
+	}
+	switch domain.NormalizeAdaptationGranularity(opts.Granularity) {
+	case domain.AdaptationGranularityArc, domain.AdaptationGranularityFree:
+		return max(manifest.ChapterCount, adaptationPlannerChunkedMinChapters)
+	default:
+		return 0
+	}
 }
 
 func cloneAdaptationPlan(plan domain.AdaptationPlan) domain.AdaptationPlan {
@@ -1183,6 +1199,7 @@ func buildPlanFromPlannerChunked(
 		fmt.Sprintf("chunked planner: %d target chapters across %d model-planned batches", skeleton.TargetChapterCount, len(skeleton.Batches)),
 	)
 	if err := validatePlannerProposal(&proposal, opts, reports, manifest, deps.LLM); err != nil {
+		_ = deps.Store.Adaptation.ClearProposalRuntime()
 		return zero, err
 	}
 	return proposal, nil
@@ -2948,6 +2965,7 @@ func validatePlannerProposal(
 	targetMaxRunes := 0
 	for i := range proposal.Chapters {
 		chapter := &proposal.Chapters[i]
+		sourceRangeExplicit := chapter.SourceRange.From > 0 || chapter.SourceRange.To > 0
 		if chapter.Chapter != i+1 {
 			return fmt.Errorf("planner target chapters must be continuous: got chapter %d at index %d", chapter.Chapter, i)
 		}
@@ -3001,6 +3019,12 @@ func validatePlannerProposal(
 		for _, sourceChapter := range chapter.SourceChapters {
 			if sourceChapter < chapter.SourceRange.From || sourceChapter > chapter.SourceRange.To {
 				return fmt.Errorf("planner chapter %d source chapter %d falls outside source_range %d-%d", chapter.Chapter, sourceChapter, chapter.SourceRange.From, chapter.SourceRange.To)
+			}
+		}
+		if sourceRangeExplicit {
+			chapter.SourceChapters = expandSourceChaptersForRange(chapter.SourceChapters, chapter.SourceRange.From, chapter.SourceRange.To)
+			for sourceChapter := chapter.SourceRange.From; sourceChapter <= chapter.SourceRange.To; sourceChapter++ {
+				covered[sourceChapter] = true
 			}
 		}
 		targetTotalRunes += chapter.WordBudget.TargetRunes
@@ -3153,11 +3177,43 @@ func fillPlannerChapterWordBudgetDefaults(chapter *domain.AdaptationChapterPlan,
 	}
 }
 
+func expandSourceChaptersForRange(chapters []int, from, to int) []int {
+	if from <= 0 || to < from {
+		return append([]int(nil), chapters...)
+	}
+	seen := make(map[int]bool, len(chapters)+to-from+1)
+	out := make([]int, 0, len(chapters)+to-from+1)
+	for _, chapter := range chapters {
+		if chapter <= 0 || seen[chapter] {
+			continue
+		}
+		seen[chapter] = true
+		out = append(out, chapter)
+	}
+	for chapter := from; chapter <= to; chapter++ {
+		if seen[chapter] {
+			continue
+		}
+		seen[chapter] = true
+		out = append(out, chapter)
+	}
+	sort.Ints(out)
+	return out
+}
+
 func sourceRunesForChapterAnchors(chapter *domain.AdaptationChapterPlan, sourceRunesByChapter map[int]int) int {
 	if chapter == nil || len(sourceRunesByChapter) == 0 {
 		return 0
 	}
 	total := 0
+	if chapter.SourceRange.From > 0 && chapter.SourceRange.To >= chapter.SourceRange.From {
+		for sourceChapter := chapter.SourceRange.From; sourceChapter <= chapter.SourceRange.To; sourceChapter++ {
+			total += sourceRunesByChapter[sourceChapter]
+		}
+		if total > 0 {
+			return total
+		}
+	}
 	seen := map[int]bool{}
 	for _, sourceChapter := range chapter.SourceChapters {
 		if sourceChapter <= 0 || seen[sourceChapter] {
@@ -3169,13 +3225,7 @@ func sourceRunesForChapterAnchors(chapter *domain.AdaptationChapterPlan, sourceR
 	if total > 0 {
 		return total
 	}
-	if chapter.SourceRange.From <= 0 || chapter.SourceRange.To < chapter.SourceRange.From {
-		return 0
-	}
-	for sourceChapter := chapter.SourceRange.From; sourceChapter <= chapter.SourceRange.To; sourceChapter++ {
-		total += sourceRunesByChapter[sourceChapter]
-	}
-	return total
+	return 0
 }
 
 func validatePlannerChapterBudgetField(chapter int, field string, legacy *int, nestedField string, nestedValue int) error {
