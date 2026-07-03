@@ -29,21 +29,20 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, current `HEAD`
-  `fix: stabilize adaptation proposal coverage`: routes long source-backed
-  free/arc proposals through the chunked planner even when the brief omits an
-  explicit chapter count, treats explicit `source_range` as coverage, expands
-  sparse source anchors for later writer tools, and clears bad chunked runtime
-  checkpoints after final validation failure.
+- Latest source change: branch `main`, `67a1759`
+  `fix: remove stage wording from adaptation guidance`: removes "舞台" phrasing
+  from adaptation/longform guidance so the prompts avoid dance/stage
+  associations while preserving the label-ban behavior.
+- Previous source change: `2f68cc2`
+  `fix: stabilize adaptation proposal coverage`.
 - Previous source change: `331162c`
   `fix: restore web cocreate action controls`.
 - Earlier planner stability checkpoint: `411c1df`
   `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the adaptation coverage fix is pushed,
-  except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
-  artifacts.
+- Working tree: expected clean after the wording cleanup commit, plus ignored
+  local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
   current `HEAD`; the restarted process is PID `41644`.
 - Validation:
@@ -60,9 +59,15 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   18-chapter free/full_rewrite proposal covering all 17 source chapters,
   confirmed it into `plan.json`, and started writing chapter 1
   (`RuntimeState=running`, `Phase=writing`, `InProgressChapter=1`).
+  Focused wording validation passed:
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./assets ./internal/tools -run 'TestLoadKeepsAdaptationGuidanceOutOfBaseWriterPrompt|TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation'`.
 
 ## Change Log
 
+- 2026-07-04 `67a1759` `fix: remove stage wording from adaptation guidance`:
+  replace "舞台提示" with "提示性括注" and "舞台大小" with "故事规模"; confirmed no
+  `舞蹈` / `跳舞` / `舞台` / word-boundary `dance` / `dancing` terms remain in
+  tracked project text outside historical Git notes.
 - 2026-07-03 current `HEAD` `fix: stabilize adaptation proposal coverage`: default
   long source-backed `arc`/`free` proposals into chunked planning when no
   explicit target chapter count is present, count explicit `source_range`
