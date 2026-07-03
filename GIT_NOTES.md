@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `e07ffcb`
+- Latest source change: branch `main`, `78c3fa6`
   `fix: chunk long-form adaptation planner proposals`, making Web adaptation
   proposal generation infer long target chapter counts, ask the model for a
   high-level skeleton first, expand model-planned batches in separate calls,
@@ -58,7 +58,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-03 `e07ffcb` `fix: chunk long-form adaptation planner proposals`:
+- 2026-07-03 `78c3fa6` `fix: chunk long-form adaptation planner proposals`:
   added target chapter-count inference for adaptation briefs, routed long
   `arc/free` proposals through a model-driven skeleton plus batch-detail
   planner flow, preserved strict proposal validation and no-activation proposal
