@@ -62,6 +62,7 @@ import {
   pollGrokLogin,
   renameProject,
   restoreTrashProject,
+  reviseAdaptationProposal,
   reviseCoCreate,
   resumeProject,
   runProjectDiagnostic,
@@ -166,6 +167,14 @@ function createAdaptationState() {
     proposalKey: '',
     startStatus: 'idle',
     startMessage: '',
+    revisionMode: 'chapter',
+    revisionChapter: '1',
+    revisionFromChapter: '1',
+    revisionToChapter: '1',
+    revisionVolume: '1',
+    revisionInstruction: '',
+    revisionStatus: 'idle',
+    revisionMessage: '',
     libraryQuery: '',
     libraryStatus: 'idle',
     libraryItems: [],
@@ -254,6 +263,10 @@ export function applyAdaptationProposalSnapshot(previous, snapshot) {
     brief,
     startStatus: 'done',
     startMessage: review.confirmed ? '提案已确认，写作已启动' : '提案已生成，可在改编面板确认启动',
+    revisionChapter: clampChapterSelection(previous.revisionChapter, review.chapterCount),
+    revisionFromChapter: clampChapterSelection(previous.revisionFromChapter, review.chapterCount),
+    revisionToChapter: clampChapterSelection(previous.revisionToChapter, review.chapterCount),
+    revisionVolume: clampVolumeSelection(previous.revisionVolume, review.volumes.length),
     error: ''
   };
   if (sourceFile?.relative_path && mode && brief) {
@@ -375,6 +388,11 @@ export default function App() {
     () => deriveWorkspaceProgress(snapshot, workbench.eventRows),
     [snapshot, workbench.eventRows]
   );
+  const adaptationProposalReview = useMemo(
+    () => getVisibleAdaptationProposalReview(snapshot, adaptation),
+    [snapshot, adaptation]
+  );
+  const showAdaptationProposalWorkspace = sideView === 'adapt' && adaptationProposalReview.proposalReady;
 
   const resetProjectScopedState = useCallback((clearProject = false) => {
     lastSeqRef.current = 0;
@@ -1298,6 +1316,12 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
+      try {
+        const snapshotData = await getSnapshot(activeProject.id);
+        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
+      } catch {
+        // Keep the original planner error visible when snapshot refresh also fails.
+      }
       setAdaptation((previous) => ({
         ...previous,
         startStatus: 'error',
@@ -1330,6 +1354,12 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
+      try {
+        const snapshotData = await getSnapshot(activeProject.id);
+        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
+      } catch {
+        // Keep the original confirmation error visible when snapshot refresh also fails.
+      }
       setAdaptation((previous) => ({
         ...previous,
         startStatus: 'error',
@@ -1950,7 +1980,7 @@ export default function App() {
             </button>
             <button
               className="tool-button"
-              disabled={!activeProject || busy}
+              disabled={!activeProject || !projectRunning}
               onClick={pauseWriting}
               type="button"
             >
@@ -2024,7 +2054,7 @@ export default function App() {
             value={composerText}
             onChange={(event) => setComposerText(event.target.value)}
           />
-          <button className={`tool-button ${projectRunning ? '' : 'accent'}`} disabled={!activeProject || busy} type="submit">
+          <button className={`tool-button ${projectRunning ? '' : 'accent'}`} disabled={!activeProject || (busy && !projectRunning)} type="submit">
             {projectRunning ? <PauseCircle size={16} /> : quickStartAvailable ? <Play size={16} /> : <Send size={16} />}
             {projectRunning ? '暂停' : quickStartAvailable ? '启动' : '继续'}
           </button>
@@ -2302,7 +2332,7 @@ function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, set
       </section>
 
       <div className="runtime-actions">
-        <button className="tool-button" disabled={!activeProject || busy || !running} onClick={onPause} type="button">
+        <button className="tool-button" disabled={!activeProject || !running} onClick={onPause} type="button">
           <PauseCircle size={16} />
           暂停
         </button>
@@ -4434,6 +4464,10 @@ export function deriveWorkspaceProgress(snapshot, eventRows = []) {
   const wordLabel = targetWords > 0
     ? `${formatCompact(wordCount)} / ${formatCompact(targetWords)}`
     : formatCompact(wordCount);
+  const snapshotLoaded = Boolean(snapshot);
+  const runningLabel = snapshotLoaded && !isProjectRunning(snapshot)
+    ? 'idle'
+    : runningLabelFromSnapshot(snapshot) || runningLabelFromEventRows(eventRows) || 'idle';
   return {
     statusLabel,
     completedChapters,
@@ -4444,7 +4478,7 @@ export function deriveWorkspaceProgress(snapshot, eventRows = []) {
     chapterLabel,
     currentChapterLabel,
     wordLabel,
-    runningLabel: runningLabelFromSnapshot(snapshot) || runningLabelFromEventRows(eventRows) || 'idle'
+    runningLabel
   };
 }
 
@@ -4518,6 +4552,10 @@ export function getAdaptationProposalReview(snapshot) {
     ...arrayValue(plan, 'MainlineRules', 'mainlineRules', 'mainline_rules'),
     ...arrayValue(plan, 'RelationshipGoals', 'relationshipGoals', 'relationship_goals')
   ].filter(Boolean);
+  const volumes = normalizeProposalVolumes([
+    ...arrayValue(summary, 'Volumes', 'volumes'),
+    ...arrayValue(plan, 'Volumes', 'volumes')
+  ], fallbackChapters.length);
   const loaded = Boolean(summary || plan);
   const confirmed = status === 'confirmed' || Boolean(rawPlan && !rawProposal);
   return {
@@ -4534,6 +4572,7 @@ export function getAdaptationProposalReview(snapshot) {
     targetTotalRunes: numberValue(summary, 'TargetTotalRunes', 'targetTotalRunes', 'target_total_runes') ||
       numberValue(plan, 'TargetTotalRunes', 'targetTotalRunes', 'target_total_runes'),
     rules,
+    volumes,
     chapters: fallbackChapters
   };
 }
@@ -4549,6 +4588,7 @@ export function getVisibleAdaptationProposalReview(snapshot, adaptation = {}) {
     proposalReady: false,
     stale: true,
     rules: [],
+    volumes: [],
     chapters: []
   };
 }
@@ -4619,6 +4659,52 @@ export function isProjectRunning(snapshot) {
 
 function rowsFromAdaptationPlan(plan) {
   return arrayValue(plan, 'Chapters', 'chapters').map(normalizeOutlineRow);
+}
+
+function normalizeProposalVolumes(volumes, chapterCount = 0) {
+  return (volumes || [])
+    .map((volume, index) => {
+      const targetFrom = numberValue(volume, 'TargetFrom', 'targetFrom', 'target_from');
+      const targetTo = numberValue(volume, 'TargetTo', 'targetTo', 'target_to');
+      return {
+        index: numberValue(volume, 'Index', 'index') || index + 1,
+        title: textValue(volume, 'Title', 'title') || `第 ${targetFrom || '?'}-${targetTo || '?'} 章`,
+        theme: textValue(volume, 'Theme', 'theme'),
+        goal: textValue(volume, 'Goal', 'goal'),
+        summary: textValue(volume, 'Summary', 'summary'),
+        targetFrom,
+        targetTo,
+        sourceFrom: numberValue(volume, 'SourceFrom', 'sourceFrom', 'source_from'),
+        sourceTo: numberValue(volume, 'SourceTo', 'sourceTo', 'source_to')
+      };
+    })
+    .filter((volume) => volume.targetFrom > 0 && volume.targetTo >= volume.targetFrom && (!chapterCount || volume.targetTo <= chapterCount))
+    .sort((a, b) => a.targetFrom - b.targetFrom || a.index - b.index);
+}
+
+function clampChapterSelection(value, chapterCount = 0) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  if (!chapterCount) {
+    return parsed > 0 ? String(parsed) : '1';
+  }
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return '1';
+  }
+  return String(Math.min(parsed, chapterCount));
+}
+
+function clampVolumeSelection(value, volumeCount = 0) {
+  if (String(value || '') === 'all') {
+    return 'all';
+  }
+  const parsed = Number.parseInt(String(value || ''), 10);
+  if (!volumeCount) {
+    return 'all';
+  }
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return 'all';
+  }
+  return String(Math.min(parsed, volumeCount));
 }
 
 function normalizeOutlineRow(row) {

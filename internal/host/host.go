@@ -353,6 +353,24 @@ func (h *Host) BuildAdaptationProposalContext(ctx context.Context, options adapt
 	return adapt.BuildAdaptationProposalContext(ctx, h.adaptationDeps(), options)
 }
 
+func (h *Host) ReviseAdaptationProposalContext(ctx context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
+	h.mu.Lock()
+	if h.lifecycle == lifecycleRunning {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("co-create is active")
+	}
+	h.mu.Unlock()
+
+	if err := h.budget.Refuse(); err != nil {
+		return nil, err
+	}
+	return adapt.ReviseAdaptationProposalContext(ctx, h.adaptationDeps(), options)
+}
+
 func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 	h.mu.Lock()
 	if h.lifecycle == lifecycleRunning {

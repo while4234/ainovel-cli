@@ -436,6 +436,49 @@ func TestBuildAdaptationProposalFreeUsesPlannerForMoreTargetChapters(t *testing.
 	}
 }
 
+func TestBuildAdaptationProposalSinglePlannerPromptHasExplicitJSONContract(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20})
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc restructure",
+		"chapters": [
+			{
+				"chapter": 1,
+				"title": "Opening",
+				"core_event": "Ari adapts the source.",
+				"hook": "The clue points onward.",
+				"scenes": ["archive"],
+				"source_chapters": [1, 2],
+				"source_range": {"from": 1, "to": 2},
+				"word_budget": {"source_runes": 30, "target_runes": 32, "min_runes": 30, "max_runes": 34, "tolerance": 0.15},
+				"preserve_events": ["source event"],
+				"required_changes": ["adapt the beat"],
+				"forbidden_moves": ["drop the source anchor"]
+			}
+		]
+	}`}}}
+
+	if _, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       "arc restructure",
+		Granularity: domain.AdaptationGranularityArc,
+	}); err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	prompt := llm.got[0][1].TextContent()
+	if !strings.Contains(prompt, "top-level object must contain a chapters array") ||
+		!strings.Contains(prompt, "Required shape") ||
+		!strings.Contains(prompt, `Invalid shapes: {"chapter":1`) ||
+		!strings.Contains(prompt, "Every chapter field must be an integer") {
+		t.Fatalf("single planner prompt should contain explicit JSON contract: %s", prompt)
+	}
+}
+
 func TestBuildAdaptationProposalFreeUsesChunkedPlannerForLongTargetChapters(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -464,8 +507,9 @@ func TestBuildAdaptationProposalFreeUsesChunkedPlannerForLongTargetChapters(t *t
 	}}
 
 	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
-		Brief:       brief,
-		Granularity: domain.AdaptationGranularityFree,
+		Brief:              brief,
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
 	})
 	if err != nil {
 		t.Fatalf("BuildAdaptationProposal: %v", err)
@@ -484,13 +528,18 @@ func TestBuildAdaptationProposalFreeUsesChunkedPlannerForLongTargetChapters(t *t
 	}
 	firstPrompt := llm.got[0][1].TextContent()
 	if !strings.Contains(firstPrompt, `"target_chapter_hint": 20`) ||
-		!strings.Contains(firstPrompt, "do not mechanically split chapters") {
+		!strings.Contains(firstPrompt, "do not mechanically split chapters") ||
+		!strings.Contains(firstPrompt, "top-level object must contain a batches array") ||
+		!strings.Contains(firstPrompt, "Do not return chapter details") {
 		t.Fatalf("skeleton prompt should carry long-form target and model-planned split instruction: %s", firstPrompt)
 	}
 	secondBatchPrompt := llm.got[2][1].TextContent()
 	if !strings.Contains(secondBatchPrompt, `"target_from": 9`) ||
-		!strings.Contains(secondBatchPrompt, `"target_to": 16`) {
-		t.Fatalf("batch prompt should use skeleton-provided range: %s", secondBatchPrompt)
+		!strings.Contains(secondBatchPrompt, `"target_to": 16`) ||
+		!strings.Contains(secondBatchPrompt, `top-level object must be {"chapters":[...]}`) ||
+		!strings.Contains(secondBatchPrompt, "Return exactly 8 chapter objects") ||
+		!strings.Contains(secondBatchPrompt, `Invalid shapes: {"chapter":9`) {
+		t.Fatalf("batch prompt should use skeleton-provided range and explicit JSON contract: %s", secondBatchPrompt)
 	}
 	saved, err := st.Adaptation.LoadProposal()
 	if err != nil {
@@ -501,6 +550,168 @@ func TestBuildAdaptationProposalFreeUsesChunkedPlannerForLongTargetChapters(t *t
 	}
 	if st.Adaptation.Active() {
 		t.Fatal("proposal should not activate adaptation project")
+	}
+}
+
+func TestBuildAdaptationProposalRepairsChunkedSkeletonWithoutBatches(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	brief := "free restructure into 20 chapters"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"overall_arc": "model returned a high level arc but no machine usable batches",
+			"key_turns": ["call", "choice", "return"],
+			"pair": {"lead": "Ari", "partner": "Bea"}
+		}`},
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free restructure into 20 chapters",
+			"target_chapter_count": 20,
+			"batches": [
+				{"index": 1, "title": "Opening volume", "theme": "orientation", "target_from": 1, "target_to": 8, "source_from": 1, "source_to": 2, "summary": "establish the new premise"},
+				{"index": 2, "title": "Pressure volume", "theme": "choice", "target_from": 9, "target_to": 16, "source_from": 2, "source_to": 3, "summary": "expand the central conflict"},
+				{"index": 3, "title": "Resolution volume", "theme": "payoff", "target_from": 17, "target_to": 20, "source_from": 3, "source_to": 4, "summary": "resolve the adapted ending"}
+			]
+		}`},
+		{text: plannerBatchProposalJSON(1, 8, 1, 2)},
+		{text: plannerBatchProposalJSON(9, 16, 2, 3)},
+		{text: plannerBatchProposalJSON(17, 20, 3, 4)},
+	}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:              brief,
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 5 {
+		t.Fatalf("planner calls=%d, want skeleton + repair + 3 batch calls", llm.calls)
+	}
+	repairPrompt := llm.got[1][1].TextContent()
+	if !strings.Contains(repairPrompt, "previous planner response could not be used") ||
+		!strings.Contains(repairPrompt, "top-level batches array") ||
+		!strings.Contains(repairPrompt, "overall_arc") {
+		t.Fatalf("repair prompt should explain missing-batches schema failure: %s", repairPrompt)
+	}
+	if len(proposal.Chapters) != 20 {
+		t.Fatalf("chapters=%d, want 20", len(proposal.Chapters))
+	}
+	saved, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if saved == nil || len(saved.Chapters) != 20 {
+		t.Fatalf("repaired chunked proposal should be saved: %+v", saved)
+	}
+}
+
+func TestBuildAdaptationProposalRepairsChunkedBatchWithoutChapters(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	brief := "free restructure into 20 chapters"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free restructure into 20 chapters",
+			"target_chapter_count": 20,
+			"batches": [
+				{"index": 1, "title": "Opening volume", "theme": "orientation", "target_from": 1, "target_to": 8, "source_from": 1, "source_to": 2, "summary": "establish the new premise"},
+				{"index": 2, "title": "Pressure volume", "theme": "choice", "target_from": 9, "target_to": 16, "source_from": 2, "source_to": 3, "summary": "expand the central conflict"},
+				{"index": 3, "title": "Resolution volume", "theme": "payoff", "target_from": 17, "target_to": 20, "source_from": 3, "source_to": 4, "summary": "resolve the adapted ending"}
+			]
+		}`},
+		{text: `{"summary":"batch outline only","key_turns":["setup","decision"]}`},
+		{text: `{
+			"chapter": "第1章",
+			"title": "Only one chapter",
+			"core_event": "The model still returned one chapter object instead of a chapters array.",
+			"hook": "The schema is still wrong.",
+			"scenes": ["station"],
+			"source_chapters": [1],
+			"source_range": {"from": 1, "to": 1},
+			"word_budget": {"source_runes": 10, "target_runes": 12, "min_runes": 10, "max_runes": 14, "tolerance": 0.15},
+			"preserve_events": ["source event"],
+			"required_changes": ["repair the shape"],
+			"forbidden_moves": ["single chapter object"]
+		}`},
+		{text: plannerBatchProposalJSON(1, 8, 1, 2)},
+		{text: plannerBatchProposalJSON(9, 16, 2, 3)},
+		{text: plannerBatchProposalJSON(17, 20, 3, 4)},
+	}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:              brief,
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 6 {
+		t.Fatalf("planner calls=%d, want skeleton + failed batch + two repairs + remaining batches", llm.calls)
+	}
+	repairPrompt := llm.got[2][1].TextContent()
+	if !strings.Contains(repairPrompt, "shaped exactly like") ||
+		!strings.Contains(repairPrompt, "chapters 1 through 8") {
+		t.Fatalf("batch repair prompt should explain chapter schema failure: %s", repairPrompt)
+	}
+	secondRepairPrompt := llm.got[3][1].TextContent()
+	if !strings.Contains(secondRepairPrompt, "chapter count=1, want 8") ||
+		!strings.Contains(secondRepairPrompt, "Only one chapter") {
+		t.Fatalf("second batch repair prompt should include single-object failure feedback: %s", secondRepairPrompt)
+	}
+	if len(proposal.Chapters) != 20 {
+		t.Fatalf("chapters=%d, want 20", len(proposal.Chapters))
+	}
+}
+
+func TestParsePlannerProposalCollectsLooseChapterObjects(t *testing.T) {
+	proposal, err := parsePlannerProposal(`
+		{"chapter":1,"title":"Loose One","coreEvent":"Ari finds the first clue.","hook":"The clue points onward.","scenes":["archive"],"sourceChapters":[1],"sourceRange":{"from":1,"to":1},"wordBudget":{"sourceRunes":10,"targetRunes":12,"minRunes":11,"maxRunes":13,"tolerance":0.15},"preserveEvents":["first source beat"],"requiredChanges":["adapt first beat"],"forbiddenMoves":["drop first anchor"]}
+		{"chapter":2,"title":"Loose Two","coreEvent":"Ari chooses the second path.","hook":"The new route opens.","scenes":["station"],"sourceChapters":[2],"sourceRange":{"from":2,"to":2},"wordBudget":{"sourceRunes":20,"targetRunes":22,"minRunes":21,"maxRunes":23,"tolerance":0.15},"preserveEvents":["second source beat"],"requiredChanges":["adapt second beat"],"forbiddenMoves":["drop second anchor"]}
+	`)
+	if err != nil {
+		t.Fatalf("parsePlannerProposal: %v", err)
+	}
+	if len(proposal.Chapters) != 2 || proposal.Chapters[0].Title != "Loose One" || proposal.Chapters[1].Title != "Loose Two" {
+		t.Fatalf("loose chapter objects were not collected: %+v", proposal.Chapters)
+	}
+	if proposal.Chapters[0].CoreEvent == "" || proposal.Chapters[0].WordBudget == nil || len(proposal.Chapters[0].SourceChapters) != 1 {
+		t.Fatalf("loose chapter aliases were not normalized: %+v", proposal.Chapters[0])
+	}
+}
+
+func TestParsePlannerProposalCollectsSingleChapterObjectWithTextChapter(t *testing.T) {
+	proposal, err := parsePlannerProposal(`{
+		"chapter": "第1章",
+		"title": "Text Chapter Number",
+		"core_event": "Ari finds the first clue.",
+		"hook": "The clue points onward.",
+		"scenes": ["archive"],
+		"source_chapters": [1],
+		"source_range": {"from": 1, "to": 1},
+		"word_budget": {"source_runes": 10, "target_runes": 12, "min_runes": 11, "max_runes": 13, "tolerance": 0.15},
+		"preserve_events": ["first source beat"],
+		"required_changes": ["adapt first beat"],
+		"forbidden_moves": ["drop first anchor"]
+	}`)
+	if err != nil {
+		t.Fatalf("parsePlannerProposal: %v", err)
+	}
+	if len(proposal.Chapters) != 1 || proposal.Chapters[0].Chapter != 1 || proposal.Chapters[0].Title != "Text Chapter Number" {
+		t.Fatalf("text chapter object was not normalized: %+v", proposal.Chapters)
 	}
 }
 
@@ -523,8 +734,9 @@ func TestBuildAdaptationProposalRejectsChunkedSkeletonThatShrinksLongTarget(t *t
 	}`}}}
 
 	_, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
-		Brief:       brief,
-		Granularity: domain.AdaptationGranularityFree,
+		Brief:              brief,
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 60,
 	})
 	if err == nil {
 		t.Fatal("BuildAdaptationProposal should reject a skeleton that ignores the long target")

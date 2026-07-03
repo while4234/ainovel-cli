@@ -417,6 +417,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectAdaptAnalyze(w, r, id)
 	case "adapt/proposal":
 		s.handleProjectAdaptProposal(w, r, id)
+	case "adapt/proposal/revise":
+		s.handleProjectAdaptProposalRevise(w, r, id)
 	case "adapt/confirm":
 		s.handleProjectAdaptConfirm(w, r, id)
 	case "adapt/start":

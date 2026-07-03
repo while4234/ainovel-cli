@@ -171,6 +171,7 @@ type AdaptationPlanSummary struct {
 	Granularity       string
 	RewritePolicy     string
 	Brief             string
+	Volumes           []domain.AdaptationVolumePlan
 	ChapterCount      int
 	SourceTotalRunes  int
 	TargetTotalRunes  int

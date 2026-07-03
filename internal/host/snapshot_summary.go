@@ -54,6 +54,7 @@ func adaptationPlanSummary(plan *domain.AdaptationPlan) *AdaptationPlanSummary {
 		Granularity:       plan.Granularity,
 		RewritePolicy:     plan.RewritePolicy,
 		Brief:             plan.Brief,
+		Volumes:           append([]domain.AdaptationVolumePlan(nil), plan.Volumes...),
 		ChapterCount:      len(plan.Chapters),
 		SourceTotalRunes:  plan.SourceTotalRunes,
 		TargetTotalRunes:  plan.TargetTotalRunes,

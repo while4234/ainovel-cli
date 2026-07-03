@@ -218,6 +218,55 @@ func (s *Server) handleProjectAdaptProposal(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (s *Server) handleProjectAdaptProposalRevise(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Target      string `json:"target"`
+		FromChapter int    `json:"from_chapter"`
+		ToChapter   int    `json:"to_chapter"`
+		VolumeIndex int    `json:"volume_index"`
+		Instruction string `json:"instruction"`
+	}
+	if r.Body != nil {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid adaptation proposal revision request: "+err.Error())
+			return
+		}
+	}
+	options := adapt.ProposalRevisionOptions{
+		Target:      strings.TrimSpace(req.Target),
+		FromChapter: req.FromChapter,
+		ToChapter:   req.ToChapter,
+		VolumeIndex: req.VolumeIndex,
+		Instruction: strings.TrimSpace(req.Instruction),
+	}
+	if options.Instruction == "" {
+		writeError(w, http.StatusBadRequest, "revision instruction is required")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	proposal, err := session.ReviseAdaptationProposalContext(r.Context(), options)
+	if err != nil {
+		writeAdaptationStartError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"snapshot": snapshot,
+		"proposal": proposal,
+		"running":  snapshot.IsRunning,
+	})
+}
+
 func (s *Server) handleProjectAdaptConfirm(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

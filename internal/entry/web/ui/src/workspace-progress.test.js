@@ -94,7 +94,7 @@ describe('workspace progress derivation', () => {
 
   it('falls back to running event rows when no agent is active', () => {
     const progress = deriveWorkspaceProgress({
-      RuntimeState: 'paused',
+      RuntimeState: 'running',
       CompletedCount: 1,
       TotalChapters: 5,
       TotalWordCount: 5000,
@@ -105,6 +105,21 @@ describe('workspace progress derivation', () => {
     ]);
 
     expect(progress.runningLabel).toBe('architect / planning volume');
+  });
+
+  it('ignores stale running event rows when the latest snapshot is idle', () => {
+    const progress = deriveWorkspaceProgress({
+      RuntimeState: 'idle',
+      StatusLabel: 'READY',
+      CompletedCount: 1,
+      TotalChapters: 5,
+      TotalWordCount: 5000,
+      Agents: []
+    }, [
+      { seq: 1, event: { running: true, agent: 'web', summary: 'generating proposal' } }
+    ]);
+
+    expect(progress.runningLabel).toBe('idle');
   });
 
   it('detects running snapshots for pause controls', () => {

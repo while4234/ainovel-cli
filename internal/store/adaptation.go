@@ -385,9 +385,45 @@ func normalizeAdaptationPlan(plan *domain.AdaptationPlan, manifest *domain.Adapt
 	for i := range plan.Chapters {
 		normalizeAdaptationChapterPlan(&plan.Chapters[i], tolerance, sourceRunes, deriveBudgets)
 	}
+	plan.Volumes = normalizeAdaptationVolumes(plan.Volumes, len(plan.Chapters))
 	if deriveBudgets {
 		normalizeAdaptationPlanTotals(plan)
 	}
+}
+
+func normalizeAdaptationVolumes(volumes []domain.AdaptationVolumePlan, chapterCount int) []domain.AdaptationVolumePlan {
+	if len(volumes) == 0 || chapterCount <= 0 {
+		return nil
+	}
+	out := make([]domain.AdaptationVolumePlan, 0, len(volumes))
+	for _, volume := range volumes {
+		if volume.TargetFrom <= 0 || volume.TargetTo < volume.TargetFrom || volume.TargetTo > chapterCount {
+			continue
+		}
+		if volume.Index <= 0 {
+			volume.Index = len(out) + 1
+		}
+		volume.Title = strings.TrimSpace(volume.Title)
+		volume.Theme = strings.TrimSpace(volume.Theme)
+		volume.Goal = strings.TrimSpace(volume.Goal)
+		volume.Summary = strings.TrimSpace(volume.Summary)
+		if volume.Title == "" {
+			volume.Title = fmt.Sprintf("第 %d-%d 章", volume.TargetFrom, volume.TargetTo)
+		}
+		out = append(out, volume)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TargetFrom == out[j].TargetFrom {
+			return out[i].Index < out[j].Index
+		}
+		return out[i].TargetFrom < out[j].TargetFrom
+	})
+	for i := range out {
+		if out[i].Index <= 0 {
+			out[i].Index = i + 1
+		}
+	}
+	return out
 }
 
 func normalizeAdaptationChapterPlan(chapter *domain.AdaptationChapterPlan, tolerance float64, sourceRunes map[int]int, deriveBudgets bool) {

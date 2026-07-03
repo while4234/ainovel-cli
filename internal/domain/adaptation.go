@@ -71,6 +71,7 @@ type AdaptationPlan struct {
 	RewritePolicy     string                  `json:"rewrite_policy"`
 	Brief             string                  `json:"brief"`
 	Planner           *AdaptationPlannerMeta  `json:"planner,omitempty"`
+	Volumes           []AdaptationVolumePlan  `json:"volumes,omitempty"`
 	WordTolerance     float64                 `json:"word_tolerance,omitempty"`
 	SourceTotalRunes  int                     `json:"source_total_runes,omitempty"`
 	TargetTotalRunes  int                     `json:"target_total_runes,omitempty"`
@@ -79,6 +80,21 @@ type AdaptationPlan struct {
 	MainlineRules     []string                `json:"mainline_rules,omitempty"`
 	RelationshipGoals []string                `json:"relationship_goals,omitempty"`
 	Chapters          []AdaptationChapterPlan `json:"chapters"`
+}
+
+// AdaptationVolumePlan is the planner's durable high-level grouping for a
+// proposal. It is model-chosen for long-form plans and remains optional for
+// shorter works that do not naturally need volumes.
+type AdaptationVolumePlan struct {
+	Index      int    `json:"index"`
+	Title      string `json:"title"`
+	Theme      string `json:"theme,omitempty"`
+	Goal       string `json:"goal,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+	TargetFrom int    `json:"target_from"`
+	TargetTo   int    `json:"target_to"`
+	SourceFrom int    `json:"source_from,omitempty"`
+	SourceTo   int    `json:"source_to,omitempty"`
 }
 
 // AdaptationPlannerMeta records how an adaptation plan or proposal was made.

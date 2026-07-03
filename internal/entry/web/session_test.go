@@ -286,6 +286,75 @@ func TestProjectSessionBuildAdaptationProposalEmitsFailedLifecycleEvent(t *testi
 	if !strings.Contains(ev.Event.Detail, "planner timeout") {
 		t.Fatalf("failed proposal detail = %q", ev.Event.Detail)
 	}
+	history := session.HistoryAfter(0)
+	if len(history) == 0 || history[len(history)-1].Type != webEventTypeSnapshot {
+		t.Fatalf("failed proposal should publish a final snapshot event: %+v", history)
+	}
+}
+
+func TestProjectSessionBuildAdaptationProposalShowsRunningAndCancels(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.snapshot = hostpkgSnapshotIdle()
+	fake.adaptProposalStarted = make(chan struct{})
+	fake.blockAdaptProposal = true
+	session := newTestSessionWithHost("project-1", fake)
+
+	proposalErr := make(chan error, 1)
+	go func() {
+		_, err := session.BuildAdaptationProposalContext(context.Background(), adapt.ProposalOptions{
+			SourcePath:  "source.txt",
+			Granularity: "free",
+			Brief:       "expand into a long safe outline",
+		})
+		proposalErr <- err
+	}()
+
+	select {
+	case <-fake.adaptProposalStarted:
+	case <-time.After(time.Second):
+		t.Fatal("adaptation proposal generation did not start")
+	}
+
+	snap := session.Snapshot()
+	if !snap.IsRunning || snap.RuntimeState != "running" || snap.StatusLabel != "RUNNING" {
+		t.Fatalf("proposal snapshot should be running, got %+v", snap)
+	}
+	if !hasRunningActionAgent(snap.Agents, projectActionKindAdaptationProposal) {
+		t.Fatalf("proposal snapshot should include running proposal agent: %+v", snap.Agents)
+	}
+
+	if !session.Pause() {
+		t.Fatal("Pause should report a canceled proposal action")
+	}
+
+	select {
+	case err := <-proposalErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("proposal error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("adaptation proposal did not stop after pause")
+	}
+
+	snap = session.Snapshot()
+	if snap.IsRunning || snap.RuntimeState == "running" || snap.StatusLabel == "RUNNING" {
+		t.Fatalf("proposal snapshot should be idle after cancellation, got %+v", snap)
+	}
+	ev := requireFinishedAdaptProposalEvent(t, session)
+	if !ev.Event.Failed || ev.Event.Level != "error" || !strings.Contains(ev.Event.Detail, "改编提案生成已取消") {
+		t.Fatalf("proposal cancel should finish as a visible failed event: %+v", ev.Event)
+	}
+	history := session.HistoryAfter(0)
+	if len(history) == 0 || history[len(history)-1].Type != webEventTypeSnapshot {
+		t.Fatalf("proposal cancel should publish a final idle snapshot: %+v", history)
+	}
+	finalSnap, ok := history[len(history)-1].Snapshot.(host.UISnapshot)
+	if !ok {
+		t.Fatalf("final snapshot type = %T, want host.UISnapshot", history[len(history)-1].Snapshot)
+	}
+	if finalSnap.IsRunning {
+		t.Fatalf("proposal cancel final snapshot should be idle: %+v", finalSnap)
+	}
 }
 
 func TestProjectSessionServeEventsHonorsAfter(t *testing.T) {
@@ -719,6 +788,22 @@ func requireFinishedAdaptProposalEvent(t *testing.T, session *ProjectSession) We
 	return *finished
 }
 
+func hostpkgSnapshotIdle() host.UISnapshot {
+	return host.UISnapshot{
+		RuntimeState: "idle",
+		StatusLabel:  "READY",
+	}
+}
+
+func hasRunningActionAgent(agents []host.AgentSnapshot, kind string) bool {
+	for _, agent := range agents {
+		if agent.State == "running" && agent.TaskKind == kind {
+			return true
+		}
+	}
+	return false
+}
+
 type fakeProjectHost struct {
 	mu sync.Mutex
 
@@ -748,6 +833,7 @@ type fakeProjectHost struct {
 	resumeFromCoCreateErr      error
 	requireAnalyzedAdaptSource bool
 	blockAdaptAnalyze          bool
+	blockAdaptProposal         bool
 
 	resumeCalls                 int
 	continueCalls               int
@@ -777,9 +863,12 @@ type fakeProjectHost struct {
 	importNovelPath             string
 	importNovelResumeFrom       int
 	adaptAnalyzeStarted         chan struct{}
+	adaptProposalStarted        chan struct{}
 	adaptSourcePath             string
 	adaptProposalOptions        adapt.ProposalOptions
+	adaptRevisionOptions        adapt.ProposalRevisionOptions
 	adaptProposal               *domain.AdaptationPlan
+	adaptRevisionProposal       *domain.AdaptationPlan
 	adaptConfirmedPlan          *domain.AdaptationPlan
 	adaptOptions                adapt.ProposalOptions
 	exportOptions               exp.Options
@@ -823,6 +912,7 @@ type fakeProjectHost struct {
 	grokLoginPoll               grokauth.LoginPoll
 	grokCompleteStatus          grokauth.AuthStatus
 	grokStatus                  grokauth.AuthStatus
+	adaptRevisionCalls          int
 
 	events    chan host.Event
 	stream    chan string
@@ -1087,19 +1177,36 @@ func (f *fakeProjectHost) StartAdaptationPreparedWithOptions(options adapt.Propo
 	return f.adaptStartErr
 }
 
-func (f *fakeProjectHost) BuildAdaptationProposalContext(_ context.Context, options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
+func (f *fakeProjectHost) BuildAdaptationProposalContext(ctx context.Context, options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.adaptProposalCalls++
 	f.adaptProposalOptions = options
-	if f.requireAnalyzedAdaptSource && options.SourcePath != f.adaptSourcePath {
+	err := f.adaptProposalErr
+	proposal := f.adaptProposal
+	started := f.adaptProposalStarted
+	block := f.blockAdaptProposal
+	requireAnalyzed := f.requireAnalyzedAdaptSource
+	analyzedSource := f.adaptSourcePath
+	if started != nil {
+		f.adaptProposalStarted = nil
+	}
+	f.mu.Unlock()
+
+	if started != nil {
+		close(started)
+	}
+	if block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if requireAnalyzed && options.SourcePath != analyzedSource {
 		return nil, fmt.Errorf("adaptation source %q has not completed analysis", options.SourcePath)
 	}
-	if f.adaptProposalErr != nil {
-		return nil, f.adaptProposalErr
+	if err != nil {
+		return nil, err
 	}
-	if f.adaptProposal != nil {
-		copy := *f.adaptProposal
+	if proposal != nil {
+		copy := *proposal
 		return &copy, nil
 	}
 	return &domain.AdaptationPlan{
@@ -1116,6 +1223,31 @@ func (f *fakeProjectHost) BuildAdaptationProposalContext(_ context.Context, opti
 				Title:     "Target One",
 				CoreEvent: "target event",
 			},
+		}},
+	}, nil
+}
+
+func (f *fakeProjectHost) ReviseAdaptationProposalContext(_ context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adaptRevisionCalls++
+	f.adaptRevisionOptions = options
+	if f.adaptProposalErr != nil {
+		return nil, f.adaptProposalErr
+	}
+	if f.adaptRevisionProposal != nil {
+		copy := *f.adaptRevisionProposal
+		return &copy, nil
+	}
+	return &domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityFree,
+		Status:        domain.AdaptationPlanStatusProposal,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Brief:         "revised",
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Revised Target One",
+			SourceChapters: []int{1},
 		}},
 	}, nil
 }

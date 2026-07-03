@@ -256,6 +256,13 @@ export function buildAdaptationProposal(projectId, sourceFile, mode, brief) {
   });
 }
 
+export function reviseAdaptationProposal(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/proposal/revise`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  });
+}
+
 export function confirmAdaptationProposal(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/confirm`, {
     method: 'POST',

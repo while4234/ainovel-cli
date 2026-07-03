@@ -37,6 +37,14 @@ type ProposalOptions struct {
 	TargetChapterCount int
 }
 
+type ProposalRevisionOptions struct {
+	Target      string
+	FromChapter int
+	ToChapter   int
+	VolumeIndex int
+	Instruction string
+}
+
 type Prompts struct {
 	Foundation      string
 	FoundationMerge string

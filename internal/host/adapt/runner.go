@@ -30,6 +30,8 @@ const (
 	adaptationPlannerSkeletonMaxTokens   = 4096
 	adaptationPlannerChunkedMinChapters  = 18
 	adaptationPlannerRecommendedBatchMax = 8
+	adaptationPlannerRevisionBatchMax    = 8
+	adaptationPlannerRepairMaxAttempts   = 2
 )
 
 var (
@@ -337,6 +339,102 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 	return &proposal, nil
 }
 
+func ReviseAdaptationProposal(ctx context.Context, deps Deps, opts ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
+	return ReviseAdaptationProposalContext(ctx, deps, opts)
+}
+
+func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
+	if deps.Store == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	if deps.LLM == nil {
+		return nil, fmt.Errorf("planner llm is required for adaptation proposal revision")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	opts.Instruction = strings.TrimSpace(opts.Instruction)
+	if opts.Instruction == "" {
+		return nil, fmt.Errorf("revision instruction is required")
+	}
+	proposal, err := deps.Store.Adaptation.LoadProposal()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation proposal: %w", err)
+	}
+	if proposal == nil || len(proposal.Chapters) == 0 {
+		return nil, fmt.Errorf("adaptation proposal is required")
+	}
+	from, to, err := resolveProposalRevisionRange(*proposal, opts)
+	if err != nil {
+		return nil, err
+	}
+	manifest, reports, err := ValidatePreparedSource(deps.Store, "")
+	if err != nil {
+		return nil, err
+	}
+	sourceFoundation, err := deps.Store.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return nil, fmt.Errorf("load source foundation: %w", err)
+	}
+	if sourceFoundation == nil {
+		return nil, fmt.Errorf("source foundation missing; analyze source first")
+	}
+
+	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+	if systemPrompt == "" {
+		systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested proposal revision."
+	}
+	updated := cloneAdaptationPlan(*proposal)
+	updated.Volumes = normalizeAdaptationProposalVolumes(updated.Volumes, len(updated.Chapters))
+	for chunkFrom := from; chunkFrom <= to; chunkFrom += adaptationPlannerRevisionBatchMax {
+		chunkTo := min(to, chunkFrom+adaptationPlannerRevisionBatchMax-1)
+		batch := proposalRevisionBatch(updated, chunkFrom, chunkTo)
+		revisionPrompt, err := buildAdaptationProposalRevisionUserPrompt(opts, updated, batch, manifest, sourceFoundation, reportsForPlannerBatch(reports, batch))
+		if err != nil {
+			return nil, err
+		}
+		revisionText, err := generatePlannerText(ctx, deps.LLM, systemPrompt, revisionPrompt, adaptationPlannerMaxTokens)
+		if err != nil {
+			return nil, fmt.Errorf("planner revision %d-%d llm generate: %w", chunkFrom, chunkTo, err)
+		}
+		var revisedChapters []domain.AdaptationChapterPlan
+		for attempt := 0; ; attempt++ {
+			revisionPlan, parseErr := parsePlannerProposal(revisionText)
+			if parseErr == nil {
+				revisedChapters, parseErr = normalizePlannerBatchChapters(revisionPlan.Chapters, batch)
+			}
+			if parseErr == nil {
+				break
+			}
+			if attempt >= adaptationPlannerRepairMaxAttempts {
+				return nil, fmt.Errorf("planner revision %d-%d: %w", chunkFrom, chunkTo, parseErr)
+			}
+			revisionText, err = repairPlannerBatchText(ctx, deps.LLM, systemPrompt, revisionPrompt, revisionText, batch, parseErr)
+			if err != nil {
+				return nil, fmt.Errorf("planner revision %d-%d: %w", chunkFrom, chunkTo, err)
+			}
+		}
+		if err := replaceProposalChapterRange(&updated, chunkFrom, chunkTo, revisedChapters); err != nil {
+			return nil, err
+		}
+	}
+	validateOpts := proposalOptionsFromPlan(updated)
+	if err := validatePlannerProposal(&updated, validateOpts, reports, manifest, deps.LLM); err != nil {
+		return nil, fmt.Errorf("revised adaptation proposal invalid: %w", err)
+	}
+	updated.Volumes = normalizeAdaptationProposalVolumes(updated.Volumes, len(updated.Chapters))
+	if updated.Planner == nil {
+		updated.Planner = &domain.AdaptationPlannerMeta{}
+	}
+	updated.Planner.Notes = append(updated.Planner.Notes,
+		fmt.Sprintf("proposal revised for target %s (%d-%d): %s", firstNonEmptyString(strings.TrimSpace(opts.Target), fmt.Sprintf("%d-%d", from, to)), from, to, opts.Instruction),
+	)
+	if err := deps.Store.Adaptation.SaveProposal(updated); err != nil {
+		return nil, fmt.Errorf("save revised adaptation proposal: %w", err)
+	}
+	return &updated, nil
+}
+
 func buildPlanFromPlanner(
 	ctx context.Context,
 	deps Deps,
@@ -350,6 +448,303 @@ func buildPlanFromPlanner(
 		return buildPlanFromPlannerChunked(ctx, deps, opts, reports, manifest, sourceFoundation, targetChapterCount)
 	}
 	return buildPlanFromPlannerSingle(ctx, deps, opts, reports, manifest, sourceFoundation)
+}
+
+func cloneAdaptationPlan(plan domain.AdaptationPlan) domain.AdaptationPlan {
+	out := plan
+	out.MainlineRules = append([]string(nil), plan.MainlineRules...)
+	out.RelationshipGoals = append([]string(nil), plan.RelationshipGoals...)
+	out.Volumes = append([]domain.AdaptationVolumePlan(nil), plan.Volumes...)
+	out.Chapters = make([]domain.AdaptationChapterPlan, len(plan.Chapters))
+	for i := range plan.Chapters {
+		out.Chapters[i] = cloneAdaptationChapterPlan(plan.Chapters[i])
+	}
+	if plan.Planner != nil {
+		planner := *plan.Planner
+		planner.Notes = append(domain.TextList(nil), plan.Planner.Notes...)
+		out.Planner = &planner
+	}
+	return out
+}
+
+func cloneAdaptationChapterPlan(chapter domain.AdaptationChapterPlan) domain.AdaptationChapterPlan {
+	out := chapter
+	out.SourceChapters = append([]int(nil), chapter.SourceChapters...)
+	out.Scenes = append([]string(nil), chapter.Scenes...)
+	out.PreserveEvents = append([]string(nil), chapter.PreserveEvents...)
+	out.RequiredChanges = append([]string(nil), chapter.RequiredChanges...)
+	out.ForbiddenMoves = append([]string(nil), chapter.ForbiddenMoves...)
+	if chapter.WordBudget != nil {
+		budget := *chapter.WordBudget
+		out.WordBudget = &budget
+	}
+	return out
+}
+
+func resolveProposalRevisionRange(proposal domain.AdaptationPlan, opts ProposalRevisionOptions) (int, int, error) {
+	chapterCount := len(proposal.Chapters)
+	if chapterCount == 0 {
+		return 0, 0, fmt.Errorf("adaptation proposal has no chapters")
+	}
+	if opts.VolumeIndex > 0 {
+		return revisionRangeFromVolume(proposal, opts.VolumeIndex)
+	}
+	if opts.VolumeIndex < 0 {
+		return 1, chapterCount, nil
+	}
+	if opts.FromChapter > 0 || opts.ToChapter > 0 {
+		from := opts.FromChapter
+		to := opts.ToChapter
+		if to <= 0 {
+			to = from
+		}
+		return normalizeRevisionChapterRange(from, to, chapterCount)
+	}
+	target := strings.TrimSpace(opts.Target)
+	if target == "" {
+		return 0, 0, fmt.Errorf("revision target is required")
+	}
+	lower := strings.ToLower(target)
+	if target == "全卷" || target == "全部卷" || strings.Contains(lower, "all volumes") || strings.Contains(lower, "all-volumes") || strings.Contains(lower, "all_volumes") {
+		return 1, chapterCount, nil
+	}
+	if strings.Contains(target, "卷") || strings.Contains(lower, "volume") || strings.HasPrefix(lower, "vol") {
+		index := parseFlexiblePositiveInt(target)
+		if index <= 0 {
+			return 0, 0, fmt.Errorf("revision volume target %q is invalid", target)
+		}
+		return revisionRangeFromVolume(proposal, index)
+	}
+	numbers := positiveIntsFromText(target)
+	if len(numbers) == 0 {
+		return 0, 0, fmt.Errorf("revision target %q must name a chapter, range, or volume", target)
+	}
+	from := numbers[0]
+	to := from
+	if len(numbers) > 1 {
+		to = numbers[1]
+	}
+	return normalizeRevisionChapterRange(from, to, chapterCount)
+}
+
+func revisionRangeFromVolume(proposal domain.AdaptationPlan, index int) (int, int, error) {
+	volumes := normalizeAdaptationProposalVolumes(proposal.Volumes, len(proposal.Chapters))
+	for _, volume := range volumes {
+		if volume.Index == index {
+			return normalizeRevisionChapterRange(volume.TargetFrom, volume.TargetTo, len(proposal.Chapters))
+		}
+	}
+	return 0, 0, fmt.Errorf("volume %d not found in adaptation proposal", index)
+}
+
+func normalizeRevisionChapterRange(from, to, chapterCount int) (int, int, error) {
+	if from <= 0 {
+		return 0, 0, fmt.Errorf("revision chapter range must start at a positive chapter")
+	}
+	if to <= 0 {
+		to = from
+	}
+	if from > to {
+		from, to = to, from
+	}
+	if to > chapterCount {
+		return 0, 0, fmt.Errorf("revision chapter range %d-%d exceeds proposal chapter count %d", from, to, chapterCount)
+	}
+	return from, to, nil
+}
+
+func positiveIntsFromText(text string) []int {
+	var numbers []int
+	var token strings.Builder
+	flush := func() {
+		if token.Len() == 0 {
+			return
+		}
+		if value := parseFlexiblePositiveInt(token.String()); value > 0 {
+			numbers = append(numbers, value)
+		}
+		token.Reset()
+	}
+	for _, r := range text {
+		if (r >= '0' && r <= '9') || isChineseChapterNumberRune(r) {
+			token.WriteRune(r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return numbers
+}
+
+func proposalRevisionBatch(plan domain.AdaptationPlan, from, to int) plannerSkeletonBatch {
+	sourceFrom, sourceTo := sourceRangeForProposalChapters(plan.Chapters, from, to)
+	return plannerSkeletonBatch{
+		Index:              1,
+		TargetFrom:         from,
+		TargetTo:           to,
+		TargetChapterCount: to - from + 1,
+		SourceFrom:         sourceFrom,
+		SourceTo:           sourceTo,
+		Title:              fmt.Sprintf("revision %d-%d", from, to),
+		Summary:            "revise the selected proposal chapters",
+	}
+}
+
+func sourceRangeForProposalChapters(chapters []domain.AdaptationChapterPlan, from, to int) (int, int) {
+	sourceFrom, sourceTo := 0, 0
+	for _, chapter := range chapters {
+		if chapter.Chapter < from || chapter.Chapter > to {
+			continue
+		}
+		values := append([]int(nil), chapter.SourceChapters...)
+		if chapter.SourceRange.From > 0 {
+			values = append(values, chapter.SourceRange.From)
+		}
+		if chapter.SourceRange.To > 0 {
+			values = append(values, chapter.SourceRange.To)
+		}
+		minSource, maxSource := minMaxPositive(values)
+		if minSource > 0 && (sourceFrom == 0 || minSource < sourceFrom) {
+			sourceFrom = minSource
+		}
+		if maxSource > sourceTo {
+			sourceTo = maxSource
+		}
+	}
+	return sourceFrom, sourceTo
+}
+
+func proposalOptionsFromPlan(plan domain.AdaptationPlan) ProposalOptions {
+	granularity := domain.NormalizeAdaptationGranularity(plan.Granularity)
+	return ProposalOptions{
+		Brief:         strings.TrimSpace(plan.Brief),
+		Granularity:   granularity,
+		RewritePolicy: domain.AdaptationRewritePolicyForGranularity(granularity),
+		WordTolerance: plan.WordTolerance,
+	}
+}
+
+func replaceProposalChapterRange(plan *domain.AdaptationPlan, from, to int, chapters []domain.AdaptationChapterPlan) error {
+	if plan == nil {
+		return fmt.Errorf("proposal is nil")
+	}
+	if len(chapters) != to-from+1 {
+		return fmt.Errorf("revised chapter count=%d, want %d", len(chapters), to-from+1)
+	}
+	for idx := range chapters {
+		want := from + idx
+		if chapters[idx].Chapter != want {
+			return fmt.Errorf("revised chapter %d at index %d, want %d", chapters[idx].Chapter, idx, want)
+		}
+		replaced := false
+		for existingIdx := range plan.Chapters {
+			if plan.Chapters[existingIdx].Chapter == want {
+				plan.Chapters[existingIdx] = cloneAdaptationChapterPlan(chapters[idx])
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			return fmt.Errorf("proposal chapter %d not found", want)
+		}
+	}
+	return nil
+}
+
+func buildAdaptationProposalRevisionUserPrompt(
+	opts ProposalRevisionOptions,
+	proposal domain.AdaptationPlan,
+	batch plannerSkeletonBatch,
+	manifest *domain.AdaptationSourceManifest,
+	sourceFoundation *domain.AdaptationSourceFoundation,
+	reports []domain.AdaptationSourceReport,
+) (string, error) {
+	selected := proposalChaptersInRange(proposal.Chapters, batch.TargetFrom, batch.TargetTo)
+	before := proposalChapterByNumber(proposal.Chapters, batch.TargetFrom-1)
+	after := proposalChapterByNumber(proposal.Chapters, batch.TargetTo+1)
+	input := struct {
+		Instruction       string                             `json:"instruction"`
+		TargetFrom        int                                `json:"target_from"`
+		TargetTo          int                                `json:"target_to"`
+		Granularity       string                             `json:"granularity"`
+		RewritePolicy     string                             `json:"rewrite_policy"`
+		Brief             string                             `json:"brief"`
+		MainlineRules     []string                           `json:"mainline_rules,omitempty"`
+		RelationshipGoals []string                           `json:"relationship_goals,omitempty"`
+		Volumes           []domain.AdaptationVolumePlan      `json:"volumes,omitempty"`
+		NeighborBefore    *domain.AdaptationChapterPlan      `json:"neighbor_before,omitempty"`
+		NeighborAfter     *domain.AdaptationChapterPlan      `json:"neighbor_after,omitempty"`
+		SelectedChapters  []domain.AdaptationChapterPlan     `json:"selected_chapters"`
+		SourceManifest    *domain.AdaptationSourceManifest   `json:"source_manifest"`
+		SourceFoundation  *domain.AdaptationSourceFoundation `json:"source_foundation"`
+		SourceReports     []domain.AdaptationSourceReport    `json:"source_reports"`
+		Requirements      []string                           `json:"requirements"`
+	}{
+		Instruction:       strings.TrimSpace(opts.Instruction),
+		TargetFrom:        batch.TargetFrom,
+		TargetTo:          batch.TargetTo,
+		Granularity:       proposal.Granularity,
+		RewritePolicy:     proposal.RewritePolicy,
+		Brief:             proposal.Brief,
+		MainlineRules:     append([]string(nil), proposal.MainlineRules...),
+		RelationshipGoals: append([]string(nil), proposal.RelationshipGoals...),
+		Volumes:           normalizeAdaptationProposalVolumes(proposal.Volumes, len(proposal.Chapters)),
+		NeighborBefore:    before,
+		NeighborAfter:     after,
+		SelectedChapters:  selected,
+		SourceManifest:    manifest,
+		SourceFoundation:  sourceFoundation,
+		SourceReports:     reports,
+		Requirements: []string{
+			"Return exactly one JSON object and no prose.",
+			"The top-level JSON object must be {\"chapters\":[...]} and must not be a single chapter object.",
+			"Return only the selected target chapters, but return the complete selected range.",
+			"Do not change chapter numbers or chapter count.",
+			"Use integer chapter values from target_from through target_to.",
+			"Keep source_chapters anchors valid and preserve essential source events unless the user's instruction explicitly changes emphasis.",
+			"Maintain continuity with neighbor_before and neighbor_after.",
+			"Every returned chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
+		},
+	}
+	raw, err := json.MarshalIndent(input, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal proposal revision input: %w", err)
+	}
+	return fmt.Sprintf(
+		"Revise the selected adaptation proposal chapters using the user's instruction. Keep the rest of the proposal unchanged.\n\n"+
+			"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must be {\"chapters\":[...]}.\n"+
+			"Return exactly %d chapter objects, numbered with integer chapter values from %d through %d.\n"+
+			"Invalid shapes: {\"chapter\":%d,...}; {\"summary\":\"...\"}; {\"key_turns\":[...]}; markdown text outside JSON.\n\n"+
+			"Revision input:\n```json\n%s\n```",
+		batch.TargetTo-batch.TargetFrom+1,
+		batch.TargetFrom,
+		batch.TargetTo,
+		batch.TargetFrom,
+		string(raw),
+	), nil
+}
+
+func proposalChaptersInRange(chapters []domain.AdaptationChapterPlan, from, to int) []domain.AdaptationChapterPlan {
+	out := make([]domain.AdaptationChapterPlan, 0, to-from+1)
+	for _, chapter := range chapters {
+		if chapter.Chapter >= from && chapter.Chapter <= to {
+			out = append(out, cloneAdaptationChapterPlan(chapter))
+		}
+	}
+	return out
+}
+
+func proposalChapterByNumber(chapters []domain.AdaptationChapterPlan, number int) *domain.AdaptationChapterPlan {
+	if number <= 0 {
+		return nil
+	}
+	for _, chapter := range chapters {
+		if chapter.Chapter == number {
+			copy := cloneAdaptationChapterPlan(chapter)
+			return &copy
+		}
+	}
+	return nil
 }
 
 func normalizeTargetChapterCount(values ...int) int {
@@ -634,12 +1029,22 @@ func buildPlanFromPlannerChunked(
 	if err != nil {
 		return zero, fmt.Errorf("planner skeleton llm generate: %w", err)
 	}
-	skeleton, err := parsePlannerSkeleton(skeletonText)
-	if err != nil {
-		return zero, fmt.Errorf("planner skeleton: %w", err)
-	}
-	if err := normalizePlannerSkeleton(&skeleton, opts, manifest, targetChapterHint); err != nil {
-		return zero, fmt.Errorf("planner skeleton: %w", err)
+	var skeleton plannerSkeleton
+	for attempt := 0; ; attempt++ {
+		skeleton, err = parsePlannerSkeleton(skeletonText)
+		if err == nil {
+			err = normalizePlannerSkeleton(&skeleton, opts, manifest, targetChapterHint)
+		}
+		if err == nil {
+			break
+		}
+		if !plannerSkeletonErrorRepairable(err) || attempt >= adaptationPlannerRepairMaxAttempts {
+			return zero, fmt.Errorf("planner skeleton: %w", err)
+		}
+		skeletonText, err = repairPlannerSkeletonText(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, err)
+		if err != nil {
+			return zero, fmt.Errorf("planner skeleton: %w", err)
+		}
 	}
 
 	chapters := make([]domain.AdaptationChapterPlan, 0, skeleton.TargetChapterCount)
@@ -652,13 +1057,30 @@ func buildPlanFromPlannerChunked(
 		if err != nil {
 			return zero, fmt.Errorf("planner batch %d llm generate: %w", batch.Index, err)
 		}
-		batchPlan, err := parsePlannerProposal(batchText)
-		if err != nil {
-			return zero, fmt.Errorf("planner batch %d: %w", batch.Index, err)
+		var batchPlan domain.AdaptationPlan
+		var batchChapters []domain.AdaptationChapterPlan
+		for attempt := 0; ; attempt++ {
+			batchPlan, err = parsePlannerProposal(batchText)
+			if err == nil {
+				batchChapters, err = normalizePlannerBatchChapters(batchPlan.Chapters, batch)
+			}
+			if err != nil {
+				if attempt >= adaptationPlannerRepairMaxAttempts {
+					return zero, fmt.Errorf("planner batch %d: %w", batch.Index, err)
+				}
+				batchText, err = repairPlannerBatchText(ctx, deps.LLM, systemPrompt, batchPrompt, batchText, batch, err)
+				if err != nil {
+					return zero, fmt.Errorf("planner batch %d: %w", batch.Index, err)
+				}
+				continue
+			}
+			break
 		}
-		batchChapters, err := normalizePlannerBatchChapters(batchPlan.Chapters, batch)
-		if err != nil {
-			return zero, fmt.Errorf("planner batch %d: %w", batch.Index, err)
+		if len(batchChapters) == 0 {
+			if err != nil {
+				return zero, fmt.Errorf("planner batch %d: %w", batch.Index, err)
+			}
+			return zero, fmt.Errorf("planner batch %d: no chapters", batch.Index)
 		}
 		chapters = append(chapters, batchChapters...)
 	}
@@ -668,6 +1090,7 @@ func buildPlanFromPlannerChunked(
 		Status:            domain.AdaptationPlanStatusProposal,
 		RewritePolicy:     opts.RewritePolicy,
 		Brief:             opts.Brief,
+		Volumes:           adaptationVolumesFromSkeleton(skeleton),
 		WordTolerance:     opts.WordTolerance,
 		MainlineRules:     append([]string(nil), skeleton.MainlineRules...),
 		RelationshipGoals: append([]string(nil), skeleton.RelationshipGoals...),
@@ -688,6 +1111,14 @@ func buildPlanFromPlannerChunked(
 	return proposal, nil
 }
 
+func plannerSkeletonErrorRepairable(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return !strings.Contains(message, "ignores requested long-form target")
+}
+
 func generatePlannerText(ctx context.Context, llm imp.LLMChat, systemPrompt string, userPrompt string, maxTokens int) (string, error) {
 	resp, err := llm.Generate(ctx, []agentcore.Message{
 		agentcore.SystemMsg(systemPrompt),
@@ -700,6 +1131,87 @@ func generatePlannerText(ctx context.Context, llm imp.LLMChat, systemPrompt stri
 		return "", fmt.Errorf("planner llm returned nil response")
 	}
 	return resp.Message.TextContent(), nil
+}
+
+func repairPlannerSkeletonText(
+	ctx context.Context,
+	llm imp.LLMChat,
+	systemPrompt string,
+	originalPrompt string,
+	previousText string,
+	previousErr error,
+) (string, error) {
+	repairPrompt := buildPlannerRepairPrompt("skeleton", originalPrompt, previousText, previousErr, []string{
+		"Return exactly one JSON skeleton object and no prose.",
+		"The JSON must have a top-level batches array.",
+		"Each batch must have target_from, target_to, source_from, source_to, title, theme or goal, and summary.",
+		"Do not return only overall_arc, key_turns, pair, notes, markdown, or explanation.",
+	})
+	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens)
+	if err != nil {
+		return "", fmt.Errorf("planner skeleton repair llm generate: %w", err)
+	}
+	return text, nil
+}
+
+func repairPlannerBatchText(
+	ctx context.Context,
+	llm imp.LLMChat,
+	systemPrompt string,
+	originalPrompt string,
+	previousText string,
+	batch plannerSkeletonBatch,
+	previousErr error,
+) (string, error) {
+	repairPrompt := buildPlannerRepairPrompt(
+		fmt.Sprintf("batch %d", batch.Index),
+		originalPrompt,
+		previousText,
+		previousErr,
+		[]string{
+			"Return exactly one JSON object and no prose.",
+			fmt.Sprintf("The top-level object must be shaped exactly like {\"chapters\":[...]} with exactly chapters %d through %d.", batch.TargetFrom, batch.TargetTo),
+			"Do not return a single chapter object. Do not return only the missing chapter. Return the full requested batch.",
+			"Every chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
+			"Do not return only summaries, key_turns, overall_arc, markdown, or explanation.",
+		},
+	)
+	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens)
+	if err != nil {
+		return "", fmt.Errorf("planner batch repair llm generate: %w", err)
+	}
+	return text, nil
+}
+
+func buildPlannerRepairPrompt(step string, originalPrompt string, previousText string, previousErr error, requirements []string) string {
+	input := struct {
+		Step           string   `json:"step"`
+		Error          string   `json:"error"`
+		Requirements   []string `json:"requirements"`
+		PreviousOutput string   `json:"previous_output"`
+	}{
+		Step:           step,
+		Error:          fmt.Sprint(previousErr),
+		Requirements:   requirements,
+		PreviousOutput: truncatePlannerFeedback(previousText),
+	}
+	raw, err := json.MarshalIndent(input, "", "  ")
+	if err != nil {
+		raw = []byte(`{"error":"marshal repair input failed"}`)
+	}
+	return "The previous planner response could not be used by the application schema. Repair the response using the original planning request and the error feedback below.\n\n" +
+		"Original planning request:\n```text\n" + originalPrompt + "\n```\n\n" +
+		"Repair feedback:\n```json\n" + string(raw) + "\n```"
+}
+
+func truncatePlannerFeedback(text string) string {
+	text = strings.TrimSpace(text)
+	const maxRunes = 6000
+	if len([]rune(text)) <= maxRunes {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:maxRunes]) + "\n...[truncated]"
 }
 
 func buildAdaptationPlannerSkeletonUserPrompt(
@@ -732,10 +1244,13 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 		SourceReports:       reports,
 		Requirements: []string{
 			"Return exactly one JSON skeleton object and no prose.",
+			"Do not wrap the JSON in markdown fences.",
 			"Do not return the final AdaptationPlan here.",
+			"Do not include a chapters array in the skeleton step; chapter details are generated in later batch calls.",
 			"Choose the target chapter count and divide it into model-planned batches/volumes.",
 			"If target_chapter_hint is present, honor that long-form scale instead of shrinking the proposal to a short outline.",
 			"Each batch must include target_from, target_to, source_from, source_to, title, theme/goal, and summary.",
+			"target_from and target_to must be integers, not labels like \"第1章\".",
 			"Keep each batch small enough for a later detail call, preferably no more than recommended_batch_max target chapters.",
 			"All target chapter ranges must be continuous from 1 through target_chapter_count.",
 			"The source ranges across batches must collectively cover every source chapter.",
@@ -746,7 +1261,9 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 		return "", fmt.Errorf("marshal planner skeleton input: %w", err)
 	}
 	return "Plan the high-level long-form adaptation skeleton first. Use the current model to choose the volume/batch structure; do not mechanically split chapters.\n\n" +
-		"Return JSON shaped like {\"granularity\":\"...\",\"status\":\"proposal\",\"rewrite_policy\":\"...\",\"brief\":\"...\",\"target_chapter_count\":60,\"mainline_rules\":[],\"relationship_goals\":[],\"batches\":[{\"index\":1,\"title\":\"...\",\"theme\":\"...\",\"target_from\":1,\"target_to\":8,\"source_from\":1,\"source_to\":3,\"summary\":\"...\"}]}.\n\n" +
+		"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must contain a batches array. Do not return chapter details in this step.\n\n" +
+		"Required JSON shape:\n" +
+		"{\"granularity\":\"...\",\"status\":\"proposal\",\"rewrite_policy\":\"...\",\"brief\":\"...\",\"target_chapter_count\":60,\"mainline_rules\":[],\"relationship_goals\":[],\"batches\":[{\"index\":1,\"title\":\"...\",\"theme\":\"...\",\"target_from\":1,\"target_to\":8,\"source_from\":1,\"source_to\":3,\"summary\":\"...\"}]}.\n\n" +
 		"Planning input:\n```json\n" + string(raw) + "\n```", nil
 }
 
@@ -763,6 +1280,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 		Granularity      string                             `json:"granularity"`
 		RewritePolicy    string                             `json:"rewrite_policy"`
 		WordTolerance    float64                            `json:"word_tolerance"`
+		ExpectedChapters int                                `json:"expected_chapters"`
 		SourceManifest   *domain.AdaptationSourceManifest   `json:"source_manifest"`
 		SourceFoundation *domain.AdaptationSourceFoundation `json:"source_foundation"`
 		Skeleton         plannerSkeleton                    `json:"skeleton"`
@@ -774,6 +1292,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 		Granularity:      opts.Granularity,
 		RewritePolicy:    opts.RewritePolicy,
 		WordTolerance:    opts.WordTolerance,
+		ExpectedChapters: batch.TargetTo - batch.TargetFrom + 1,
 		SourceManifest:   manifest,
 		SourceFoundation: sourceFoundation,
 		Skeleton:         skeleton,
@@ -781,9 +1300,12 @@ func buildAdaptationPlannerBatchUserPrompt(
 		SourceReports:    reports,
 		Requirements: []string{
 			"Return exactly one JSON object and no prose.",
-			"Return only the chapters for the requested batch.",
+			"The top-level JSON object must be shaped exactly like {\"chapters\":[...]} and must not be a single chapter object.",
+			"Return only the chapters for the requested batch, but return the complete requested batch.",
+			"chapters length must equal expected_chapters.",
 			"Use absolute target chapter numbers from batch.target_from through batch.target_to.",
-			"Every returned chapter must include title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
+			"Every chapter field must be an integer absolute target chapter number, not a string label like \"第1章\".",
+			"Every returned chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
 			"Every source_chapters value must be within the batch source range and valid for the analyzed source.",
 			"Added/bridging chapters must still include source_chapters anchors.",
 			"Use the user's adaptation brief and the skeleton batch goal; do not ignore earlier user planning.",
@@ -793,7 +1315,26 @@ func buildAdaptationPlannerBatchUserPrompt(
 	if err != nil {
 		return "", fmt.Errorf("marshal planner batch input: %w", err)
 	}
-	return fmt.Sprintf("Expand model-planned adaptation batch %d into concrete chapter plans.\n\nPlanning input:\n```json\n%s\n```", batch.Index, string(raw)), nil
+	expected := batch.TargetTo - batch.TargetFrom + 1
+	return fmt.Sprintf(
+		"Expand model-planned adaptation batch %d into concrete chapter plans.\n\n"+
+			"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must be {\"chapters\":[...]}.\n"+
+			"Return exactly %d chapter objects, numbered with integer chapter values from %d through %d. Do not return one standalone chapter object. Do not return only a summary, outline, or key_turns.\n\n"+
+			"Minimal valid shape:\n"+
+			"{\"chapters\":[{\"chapter\":%d,\"title\":\"...\",\"core_event\":\"...\",\"hook\":\"...\",\"scenes\":[\"...\"],\"source_chapters\":[%d],\"source_range\":{\"from\":%d,\"to\":%d},\"word_budget\":{\"source_runes\":1000,\"target_runes\":1500,\"min_runes\":1400,\"max_runes\":1600,\"tolerance\":0.15},\"preserve_events\":[\"...\"],\"required_changes\":[\"...\"],\"forbidden_moves\":[\"...\"]}]}\n\n"+
+			"Invalid shapes: {\"chapter\":%d,...}; {\"summary\":\"...\"}; {\"key_turns\":[...]}; markdown text outside JSON.\n\n"+
+			"Planning input:\n```json\n%s\n```",
+		batch.Index,
+		expected,
+		batch.TargetFrom,
+		batch.TargetTo,
+		batch.TargetFrom,
+		batch.SourceFrom,
+		batch.SourceFrom,
+		batch.SourceTo,
+		batch.TargetFrom,
+		string(raw),
+	), nil
 }
 
 func parsePlannerSkeleton(text string) (plannerSkeleton, error) {
@@ -996,6 +1537,80 @@ func normalizePlannerBatchChapters(chapters []domain.AdaptationChapterPlan, batc
 	return out, nil
 }
 
+func adaptationVolumesFromSkeleton(skeleton plannerSkeleton) []domain.AdaptationVolumePlan {
+	volumes := make([]domain.AdaptationVolumePlan, 0, len(skeleton.Batches))
+	for _, batch := range skeleton.Batches {
+		title := strings.TrimSpace(batch.Title)
+		theme := strings.TrimSpace(batch.Theme)
+		goal := strings.TrimSpace(batch.Goal)
+		summary := strings.TrimSpace(batch.Summary)
+		if title == "" {
+			title = fmt.Sprintf("第 %d-%d 章", batch.TargetFrom, batch.TargetTo)
+		}
+		volumes = append(volumes, domain.AdaptationVolumePlan{
+			Index:      batch.Index,
+			Title:      title,
+			Theme:      theme,
+			Goal:       goal,
+			Summary:    summary,
+			TargetFrom: batch.TargetFrom,
+			TargetTo:   batch.TargetTo,
+			SourceFrom: batch.SourceFrom,
+			SourceTo:   batch.SourceTo,
+		})
+	}
+	return normalizeAdaptationProposalVolumes(volumes, skeleton.TargetChapterCount)
+}
+
+func normalizeAdaptationProposalVolumes(volumes []domain.AdaptationVolumePlan, chapterCount int) []domain.AdaptationVolumePlan {
+	if len(volumes) == 0 || chapterCount <= 0 {
+		return nil
+	}
+	out := make([]domain.AdaptationVolumePlan, 0, len(volumes))
+	for _, volume := range volumes {
+		if volume.TargetFrom <= 0 || volume.TargetTo < volume.TargetFrom || volume.TargetTo > chapterCount {
+			continue
+		}
+		if volume.Index <= 0 {
+			volume.Index = len(out) + 1
+		}
+		volume.Title = strings.TrimSpace(volume.Title)
+		volume.Theme = strings.TrimSpace(volume.Theme)
+		volume.Goal = strings.TrimSpace(volume.Goal)
+		volume.Summary = strings.TrimSpace(volume.Summary)
+		if volume.Title == "" {
+			volume.Title = fmt.Sprintf("第 %d-%d 章", volume.TargetFrom, volume.TargetTo)
+		}
+		out = append(out, volume)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TargetFrom == out[j].TargetFrom {
+			return out[i].Index < out[j].Index
+		}
+		return out[i].TargetFrom < out[j].TargetFrom
+	})
+	for i := range out {
+		if out[i].Index <= 0 {
+			out[i].Index = i + 1
+		}
+	}
+	return out
+}
+
+func adaptationVolumesCoverChapters(volumes []domain.AdaptationVolumePlan, chapterCount int) bool {
+	if len(volumes) == 0 || chapterCount <= 0 {
+		return false
+	}
+	next := 1
+	for _, volume := range normalizeAdaptationProposalVolumes(volumes, chapterCount) {
+		if volume.TargetFrom != next {
+			return false
+		}
+		next = volume.TargetTo + 1
+	}
+	return next == chapterCount+1
+}
+
 func reportsForPlannerBatch(reports []domain.AdaptationSourceReport, batch plannerSkeletonBatch) []domain.AdaptationSourceReport {
 	out := make([]domain.AdaptationSourceReport, 0, len(reports))
 	for _, report := range reports {
@@ -1004,6 +1619,24 @@ func reportsForPlannerBatch(reports []domain.AdaptationSourceReport, batch plann
 		}
 	}
 	return out
+}
+
+func hasAnyRawKey(object map[string]json.RawMessage, keys ...string) bool {
+	for _, key := range keys {
+		if _, ok := object[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func firstJSONRaw(object map[string]json.RawMessage, keys ...string) json.RawMessage {
+	for _, key := range keys {
+		if raw := object[key]; len(raw) > 0 {
+			return raw
+		}
+	}
+	return nil
 }
 
 func firstJSONInt(object map[string]json.RawMessage, current int, keys ...string) int {
@@ -1025,9 +1658,122 @@ func firstJSONInt(object map[string]json.RawMessage, current int, keys ...string
 		}
 		var text string
 		if err := json.Unmarshal(raw, &text); err == nil {
-			if parsed, err := strconv.Atoi(strings.TrimSpace(text)); err == nil && parsed > 0 {
+			if parsed := parseFlexiblePositiveInt(text); parsed > 0 {
 				return parsed
 			}
+		}
+	}
+	return current
+}
+
+func parseFlexiblePositiveInt(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	if parsed, err := strconv.Atoi(text); err == nil && parsed > 0 {
+		return parsed
+	}
+	var digits strings.Builder
+	for _, r := range text {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+			continue
+		}
+		if digits.Len() > 0 {
+			break
+		}
+	}
+	if digits.Len() > 0 {
+		if parsed, err := strconv.Atoi(digits.String()); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	var chinese strings.Builder
+	for _, r := range text {
+		if isChineseChapterNumberRune(r) {
+			chinese.WriteRune(r)
+			continue
+		}
+		if chinese.Len() > 0 {
+			break
+		}
+	}
+	if chinese.Len() > 0 {
+		return parseChineseChapterNumber(chinese.String())
+	}
+	return 0
+}
+
+func isChineseChapterNumberRune(r rune) bool {
+	switch r {
+	case '一', '二', '两', '三', '四', '五', '六', '七', '八', '九', '十', '百':
+		return true
+	default:
+		return false
+	}
+}
+
+func firstJSONString(object map[string]json.RawMessage, current string, keys ...string) string {
+	if strings.TrimSpace(current) != "" {
+		return current
+	}
+	for _, key := range keys {
+		raw := object[key]
+		if len(raw) == 0 {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err == nil {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				return value
+			}
+		}
+	}
+	return current
+}
+
+func firstJSONStringArray(object map[string]json.RawMessage, current []string, keys ...string) []string {
+	if len(current) > 0 {
+		return current
+	}
+	for _, key := range keys {
+		raw := object[key]
+		if len(raw) == 0 {
+			continue
+		}
+		var values []string
+		if err := json.Unmarshal(raw, &values); err == nil && len(values) > 0 {
+			return values
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err == nil {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				return []string{value}
+			}
+		}
+	}
+	return current
+}
+
+func firstJSONIntArray(object map[string]json.RawMessage, current []int, keys ...string) []int {
+	if len(current) > 0 {
+		return current
+	}
+	for _, key := range keys {
+		raw := object[key]
+		if len(raw) == 0 {
+			continue
+		}
+		var values []int
+		if err := json.Unmarshal(raw, &values); err == nil && len(values) > 0 {
+			return values
+		}
+		var value int
+		if err := json.Unmarshal(raw, &value); err == nil && value > 0 {
+			return []int{value}
 		}
 	}
 	return current
@@ -1095,19 +1841,26 @@ func buildAdaptationPlannerUserPrompt(
 		SourceReports:    reports,
 		Requirements: []string{
 			"Return exactly one JSON AdaptationPlan object and no prose.",
+			"Do not wrap the JSON in markdown fences.",
+			"The top-level JSON object must contain a chapters array and must not be a single chapter object.",
 			"status must be proposal; rewrite_policy must be full_rewrite for arc/free.",
 			"Target chapters must be numbered continuously from 1.",
+			"Every chapter field must be an integer, not a string label like \"第1章\".",
 			"Every target chapter must include legal source_chapters anchors within the analyzed source range.",
 			"Every source chapter must be covered by at least one target chapter.",
 			"Added chapters must still include source_chapters anchors.",
-			"Every chapter must include non-empty core_event, hook, scenes, and word_budget.",
+			"Every chapter must include chapter, title, non-empty core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
 		},
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal planner input: %w", err)
 	}
-	return "Use the following analyzed source foundation and reports to plan the adaptation proposal.\n\n```json\n" +
+	return "Use the following analyzed source foundation and reports to plan the adaptation proposal.\n\n" +
+		"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must contain a chapters array.\n" +
+		"Required shape: {\"granularity\":\"...\",\"status\":\"proposal\",\"rewrite_policy\":\"...\",\"brief\":\"...\",\"chapters\":[{\"chapter\":1,\"title\":\"...\",\"core_event\":\"...\",\"hook\":\"...\",\"scenes\":[\"...\"],\"source_chapters\":[1],\"source_range\":{\"from\":1,\"to\":1},\"word_budget\":{\"source_runes\":1000,\"target_runes\":1500,\"min_runes\":1400,\"max_runes\":1600,\"tolerance\":0.15},\"preserve_events\":[\"...\"],\"required_changes\":[\"...\"],\"forbidden_moves\":[\"...\"]}]}.\n" +
+		"Invalid shapes: {\"chapter\":1,...}; {\"summary\":\"...\"}; {\"key_turns\":[...]}; markdown text outside JSON.\n\n" +
+		"Planning input:\n```json\n" +
 		string(raw) + "\n```", nil
 }
 
@@ -1119,6 +1872,7 @@ func parsePlannerProposal(text string) (domain.AdaptationPlan, error) {
 	var firstProposal domain.AdaptationPlan
 	var firstShape string
 	var firstErr error
+	var looseChapters []domain.AdaptationChapterPlan
 	for _, segment := range segments {
 		proposal, err := decodePlannerProposalJSON([]byte(segment))
 		if err != nil {
@@ -1134,6 +1888,12 @@ func parsePlannerProposal(text string) (domain.AdaptationPlan, error) {
 		if len(proposal.Chapters) > 0 {
 			return proposal, nil
 		}
+		if chapter, ok := decodePlannerChapterJSON([]byte(segment)); ok {
+			looseChapters = append(looseChapters, chapter)
+		}
+	}
+	if len(looseChapters) > 0 {
+		return domain.AdaptationPlan{Chapters: looseChapters}, nil
 	}
 	if firstErr != nil && firstShape == "" {
 		return domain.AdaptationPlan{}, fmt.Errorf("parse planner proposal JSON: %w", firstErr)
@@ -1214,6 +1974,75 @@ func decodePlannerProposalJSON(data []byte) (domain.AdaptationPlan, error) {
 		}
 	}
 	return proposal, nil
+}
+
+func decodePlannerChapterJSON(data []byte) (domain.AdaptationChapterPlan, bool) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil || !plannerChapterObjectShape(object) {
+		return domain.AdaptationChapterPlan{}, false
+	}
+	var chapter domain.AdaptationChapterPlan
+	_ = json.Unmarshal(data, &chapter)
+	fillPlannerSingleChapterAliases(object, &chapter)
+	if chapter.Chapter <= 0 {
+		return domain.AdaptationChapterPlan{}, false
+	}
+	if strings.TrimSpace(chapter.Title) == "" &&
+		strings.TrimSpace(chapter.CoreEvent) == "" &&
+		strings.TrimSpace(chapter.Hook) == "" &&
+		len(chapter.Scenes) == 0 {
+		return domain.AdaptationChapterPlan{}, false
+	}
+	return chapter, true
+}
+
+func plannerChapterObjectShape(object map[string]json.RawMessage) bool {
+	if len(object) == 0 || !hasAnyRawKey(object, "chapter", "Chapter") {
+		return false
+	}
+	return hasAnyRawKey(object,
+		"title", "Title",
+		"core_event", "coreEvent", "CoreEvent",
+		"hook", "Hook",
+		"scenes", "Scenes",
+		"source_chapters", "sourceChapters", "SourceChapters",
+		"source_range", "sourceRange", "SourceRange",
+		"word_budget", "wordBudget", "WordBudget",
+		"preserve_events", "preserveEvents", "PreserveEvents",
+		"required_changes", "requiredChanges", "RequiredChanges",
+		"forbidden_moves", "forbiddenMoves", "ForbiddenMoves",
+	)
+}
+
+func fillPlannerSingleChapterAliases(object map[string]json.RawMessage, chapter *domain.AdaptationChapterPlan) {
+	if chapter == nil {
+		return
+	}
+	chapter.Chapter = firstJSONInt(object, chapter.Chapter, "chapter", "Chapter")
+	chapter.Title = firstJSONString(object, chapter.Title, "title", "Title")
+	chapter.CoreEvent = firstJSONString(object, chapter.CoreEvent, "core_event", "coreEvent", "CoreEvent")
+	chapter.Hook = firstJSONString(object, chapter.Hook, "hook", "Hook")
+	chapter.Scenes = firstJSONStringArray(object, chapter.Scenes, "scenes", "Scenes")
+	chapter.SourceChapters = firstJSONIntArray(object, chapter.SourceChapters, "source_chapters", "sourceChapters", "SourceChapters")
+	chapter.PreserveEvents = firstJSONStringArray(object, chapter.PreserveEvents, "preserve_events", "preserveEvents", "PreserveEvents")
+	chapter.RequiredChanges = firstJSONStringArray(object, chapter.RequiredChanges, "required_changes", "requiredChanges", "RequiredChanges")
+	chapter.ForbiddenMoves = firstJSONStringArray(object, chapter.ForbiddenMoves, "forbidden_moves", "forbiddenMoves", "ForbiddenMoves")
+	if chapter.WordBudget == nil {
+		if raw := firstJSONRaw(object, "word_budget", "wordBudget", "WordBudget"); len(raw) > 0 {
+			var budget domain.AdaptationChapterWordBudget
+			if err := json.Unmarshal(raw, &budget); err == nil {
+				chapter.WordBudget = &budget
+			}
+		}
+	}
+	if chapter.SourceRange.From == 0 && chapter.SourceRange.To == 0 {
+		if raw := firstJSONRaw(object, "source_range", "sourceRange", "SourceRange"); len(raw) > 0 {
+			var sourceRange domain.SourceRange
+			if err := json.Unmarshal(raw, &sourceRange); err == nil {
+				chapter.SourceRange = sourceRange
+			}
+		}
+	}
 }
 
 func fillPlannerChapterAliases(data []byte, proposal *domain.AdaptationPlan) {
@@ -1464,6 +2293,7 @@ func validatePlannerProposal(
 	proposal.TargetTotalRunes = targetTotalRunes
 	proposal.TargetMinRunes = targetMinRunes
 	proposal.TargetMaxRunes = targetMaxRunes
+	proposal.Volumes = normalizeAdaptationProposalVolumes(proposal.Volumes, len(proposal.Chapters))
 	if proposal.Planner == nil {
 		proposal.Planner = &domain.AdaptationPlannerMeta{}
 	}
@@ -1662,6 +2492,27 @@ func adaptationTargetVolumes(plan domain.AdaptationPlan) []domain.VolumeOutline 
 	entries := adaptationTargetOutline(plan)
 	if len(entries) == 0 {
 		return nil
+	}
+	volumes := normalizeAdaptationProposalVolumes(plan.Volumes, len(entries))
+	if adaptationVolumesCoverChapters(volumes, len(entries)) {
+		out := make([]domain.VolumeOutline, 0, len(volumes))
+		for _, volume := range volumes {
+			volumeEntries := append([]domain.OutlineEntry(nil), entries[volume.TargetFrom-1:volume.TargetTo]...)
+			title := firstNonEmptyString(volume.Title, fmt.Sprintf("Volume %d", volume.Index))
+			goal := firstNonEmptyString(volume.Goal, volume.Summary, volume.Theme, strings.TrimSpace(plan.Brief))
+			out = append(out, domain.VolumeOutline{
+				Index: volume.Index,
+				Title: title,
+				Theme: firstNonEmptyString(volume.Theme, volume.Summary, strings.TrimSpace(plan.Brief)),
+				Arcs: []domain.ArcOutline{{
+					Index:    1,
+					Title:    title,
+					Goal:     goal,
+					Chapters: volumeEntries,
+				}},
+			})
+		}
+		return out
 	}
 	return []domain.VolumeOutline{{
 		Index: 1,

@@ -44,6 +44,9 @@ const (
 	webEventHistoryLimit = 1000
 
 	projectActionKindAdaptationAnalysis = "adaptation_analysis"
+	projectActionKindAdaptationProposal = "adaptation_proposal"
+	projectActionKindAdaptationRevision = "adaptation_proposal_revision"
+	webAdaptationProposalTimeout        = 15 * time.Minute
 	webCoCreateCheckpointRelPath        = "meta/sessions/web-cocreate-checkpoint.json"
 	webCoCreateLogRelPath               = "meta/sessions/cocreate.jsonl"
 )
@@ -78,6 +81,7 @@ type projectHost interface {
 	ImportSimulationProfile(context.Context, string) (<-chan sim.Event, error)
 	PrepareAdaptationSource(context.Context, string) (<-chan adapt.Event, error)
 	BuildAdaptationProposalContext(context.Context, adapt.ProposalOptions) (*domain.AdaptationPlan, error)
+	ReviseAdaptationProposalContext(context.Context, adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error)
 	ConfirmAdaptationProposal() (*domain.AdaptationPlan, error)
 	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
 	Export(context.Context, exp.Options) (*exp.Result, error)
@@ -291,7 +295,8 @@ func (s *ProjectSession) SetManifest(manifest ProjectManifest) {
 }
 
 func (s *ProjectSession) Snapshot() host.UISnapshot {
-	return s.host.Snapshot()
+	snap := s.host.Snapshot()
+	return s.overlayActionSnapshot(snap)
 }
 
 func (s *ProjectSession) ModelConfig() apiModelConfig {
@@ -593,17 +598,28 @@ func (s *ProjectSession) BuildAdaptationProposal(options adapt.ProposalOptions) 
 }
 
 func (s *ProjectSession) BuildAdaptationProposalContext(ctx context.Context, options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
-	unlock, err := s.beginAction()
+	actionCtx, unlock, err := s.beginCancellableAction(ctx, projectActionKindAdaptationProposal)
 	if err != nil {
 		return nil, err
 	}
-	defer unlock()
+	finished := false
+	defer func() {
+		if !finished {
+			unlock()
+			s.AppendSnapshot()
+		}
+	}()
 
-	proposal, err := s.buildAdaptationProposal(ctx, options)
+	s.AppendSnapshot()
+	proposalCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
+	defer cancel()
+	proposal, err := s.buildAdaptationProposal(proposalCtx, options)
+	unlock()
+	finished = true
+	s.AppendSnapshot()
 	if err != nil {
 		return nil, err
 	}
-	s.AppendSnapshot()
 	return proposal, nil
 }
 
@@ -616,11 +632,64 @@ func (s *ProjectSession) buildAdaptationProposal(ctx context.Context, options ad
 	s.appendAdaptationProposalPlannerRequested(options)
 	proposal, err := s.host.BuildAdaptationProposalContext(ctx, options)
 	if err != nil {
+		err = adaptationProposalRunError(err)
 		s.appendAdaptationProposalFinished(eventID, startedAt, options, err)
 		return nil, err
 	}
 	s.appendAdaptationProposalFinished(eventID, startedAt, options, nil)
 	return proposal, nil
+}
+
+func adaptationProposalRunError(err error) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("改编提案生成超过 %s 仍未完成，已自动停止；请缩小单次目标或重试分批提案: %w", webAdaptationProposalTimeout, err)
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("改编提案生成已取消: %w", err)
+	default:
+		return err
+	}
+}
+
+func (s *ProjectSession) ReviseAdaptationProposalContext(ctx context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
+	actionCtx, unlock, err := s.beginCancellableAction(ctx, projectActionKindAdaptationRevision)
+	if err != nil {
+		return nil, err
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			unlock()
+			s.AppendSnapshot()
+		}
+	}()
+
+	s.AppendSnapshot()
+	revisionCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
+	defer cancel()
+	eventID, startedAt := s.appendAdaptationProposalRevisionStarted(options)
+	proposal, err := s.host.ReviseAdaptationProposalContext(revisionCtx, options)
+	unlock()
+	finished = true
+	s.AppendSnapshot()
+	if err != nil {
+		err = adaptationProposalRevisionRunError(err)
+		s.appendAdaptationProposalRevisionFinished(eventID, startedAt, options, err)
+		return nil, err
+	}
+	s.appendAdaptationProposalRevisionFinished(eventID, startedAt, options, nil)
+	return proposal, nil
+}
+
+func adaptationProposalRevisionRunError(err error) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("改编提案修订超过 %s 仍未完成，已自动停止；请缩小章节范围后重试: %w", webAdaptationProposalTimeout, err)
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("改编提案修订已取消: %w", err)
+	default:
+		return err
+	}
 }
 
 func (s *ProjectSession) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
@@ -1211,6 +1280,59 @@ func (s *ProjectSession) isActionRunning(kind string) bool {
 	return s.actionCancel != nil && s.actionKind == strings.TrimSpace(kind)
 }
 
+func (s *ProjectSession) currentActionKind() string {
+	s.actionCancelMu.Lock()
+	defer s.actionCancelMu.Unlock()
+	return s.actionKind
+}
+
+func (s *ProjectSession) overlayActionSnapshot(snap host.UISnapshot) host.UISnapshot {
+	agent, ok := sessionActionAgentSnapshot(s.currentActionKind())
+	if !ok {
+		return snap
+	}
+	snap.IsRunning = true
+	snap.RuntimeState = "running"
+	snap.StatusLabel = "RUNNING"
+	snap.Agents = append(snap.Agents, agent)
+	return snap
+}
+
+func sessionActionAgentSnapshot(kind string) (host.AgentSnapshot, bool) {
+	now := time.Now().UTC()
+	switch kind {
+	case projectActionKindAdaptationAnalysis:
+		return host.AgentSnapshot{
+			Name:      "web",
+			State:     "running",
+			TaskKind:  kind,
+			Summary:   "正在分析原文",
+			Tool:      "原文分析",
+			UpdatedAt: now,
+		}, true
+	case projectActionKindAdaptationProposal:
+		return host.AgentSnapshot{
+			Name:      "web",
+			State:     "running",
+			TaskKind:  kind,
+			Summary:   "正在生成改编提案",
+			Tool:      "生成改编提案",
+			UpdatedAt: now,
+		}, true
+	case projectActionKindAdaptationRevision:
+		return host.AgentSnapshot{
+			Name:      "web",
+			State:     "running",
+			TaskKind:  kind,
+			Summary:   "正在修订改编提案",
+			Tool:      "修订改编提案",
+			UpdatedAt: now,
+		}, true
+	default:
+		return host.AgentSnapshot{}, false
+	}
+}
+
 func (s *ProjectSession) setActionCancel(kind string, cancel context.CancelFunc) {
 	s.actionCancelMu.Lock()
 	defer s.actionCancelMu.Unlock()
@@ -1242,7 +1364,7 @@ func (s *ProjectSession) cancelCurrentAction() (string, bool) {
 func (s *ProjectSession) AppendSnapshot() WebEvent {
 	return s.append(WebEvent{
 		Type:     webEventTypeSnapshot,
-		Snapshot: s.host.Snapshot(),
+		Snapshot: s.Snapshot(),
 	})
 }
 
@@ -1595,6 +1717,51 @@ func (s *ProjectSession) appendAdaptationProposalFinished(eventID string, starte
 	})
 }
 
+func (s *ProjectSession) appendAdaptationProposalRevisionStarted(options adapt.ProposalRevisionOptions) (string, time.Time) {
+	startedAt := time.Now().UTC()
+	eventID := fmt.Sprintf("adapt-proposal-revision-%d", startedAt.UnixNano())
+	s.appendHostEvent(host.Event{
+		ID:       eventID,
+		Time:     startedAt,
+		Category: "ADAPT",
+		Agent:    "web",
+		Summary:  adaptationProposalRevisionEventSummary("正在修订改编提案", options),
+		Kind:     "proposal_revision",
+		Level:    "info",
+	})
+	return eventID, startedAt
+}
+
+func (s *ProjectSession) appendAdaptationProposalRevisionFinished(eventID string, startedAt time.Time, options adapt.ProposalRevisionOptions, err error) {
+	if eventID == "" {
+		return
+	}
+	finishedAt := time.Now().UTC()
+	summary := adaptationProposalRevisionEventSummary("改编提案修订已完成", options)
+	level := "success"
+	var detail string
+	var failed bool
+	if err != nil {
+		summary = adaptationProposalRevisionEventSummary("改编提案修订失败", options)
+		level = "error"
+		detail = err.Error()
+		failed = true
+	}
+	s.appendHostEvent(host.Event{
+		ID:         eventID,
+		Time:       startedAt,
+		FinishedAt: finishedAt,
+		Failed:     failed,
+		Category:   "ADAPT",
+		Agent:      "web",
+		Summary:    summary,
+		Detail:     detail,
+		Kind:       "proposal_revision",
+		Level:      level,
+		Duration:   finishedAt.Sub(startedAt),
+	})
+}
+
 func adaptationProposalEventSummary(action string, options adapt.ProposalOptions) string {
 	mode := strings.TrimSpace(options.Granularity)
 	if mode == "" {
@@ -1603,10 +1770,33 @@ func adaptationProposalEventSummary(action string, options adapt.ProposalOptions
 	return fmt.Sprintf("%s（%s）", action, mode)
 }
 
+func adaptationProposalRevisionEventSummary(action string, options adapt.ProposalRevisionOptions) string {
+	target := strings.TrimSpace(options.Target)
+	if target == "" {
+		if options.VolumeIndex < 0 {
+			target = "全卷"
+		} else if options.VolumeIndex > 0 {
+			target = fmt.Sprintf("卷 %d", options.VolumeIndex)
+		} else if options.FromChapter > 0 && options.ToChapter > 0 && options.FromChapter != options.ToChapter {
+			target = fmt.Sprintf("第 %d-%d 章", options.FromChapter, options.ToChapter)
+		} else if options.FromChapter > 0 {
+			target = fmt.Sprintf("第 %d 章", options.FromChapter)
+		}
+	}
+	if target == "" {
+		return action
+	}
+	return fmt.Sprintf("%s（%s）", action, target)
+}
+
 func (s *ProjectSession) appendActionCanceledEvent(kind string) WebEvent {
 	summary := "当前操作已请求暂停"
 	if kind == projectActionKindAdaptationAnalysis {
 		summary = "原文分析已请求暂停"
+	} else if kind == projectActionKindAdaptationProposal {
+		summary = "改编提案生成已请求暂停"
+	} else if kind == projectActionKindAdaptationRevision {
+		summary = "改编提案修订已请求暂停"
 	}
 	return s.appendHostEvent(host.Event{
 		Time:     time.Now().UTC(),
