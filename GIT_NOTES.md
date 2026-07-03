@@ -29,26 +29,42 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, commit `1ed3100`
+- Latest source change: branch `main`, commit `411c1df`
+  `fix: retry adaptation planner calls`, adding shared 7-attempt retry handling
+  for adaptation planner model calls, keeping schema-repair attempts finite,
+  filling missing planner `word_budget` values from source anchors, and covering
+  both regressions with backend tests.
+- Previous source commit: `1ed3100`
   `fix: stabilize long-form adaptation proposal batches`, limiting long-form
   planner detail calls to eight chapters, filling missing chapters with
   context-aware local repair prompts, surfacing proposal/revision progress in
   Web events, and recomputing proposal totals after revision.
-- Previous source commit: `4caea45`
+- Earlier proposal foundation checkpoint: `4caea45`
   `checkpoint: persist adaptation proposal review foundation`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the long-form proposal batch checkpoint,
+- Working tree: expected clean after the planner retry and budget-fallback
+  checkpoint,
   except for
   ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web was restarted on `http://127.0.0.1:9898` after the
-  planner/event fix and responded with HTTP 200.
+  planner retry fix and responded with HTTP 200.
 - Validation: `go test ./...` passed; `go test ./internal/host/adapt
-  ./internal/entry/web` passed; `git diff --check` passed with Windows LF/CRLF
-  warnings only; local Web returned HTTP 200 after restart.
+  ./internal/entry/web` passed; `npm test` in `internal/entry/web/ui` passed;
+  `git diff --check` passed with Windows LF/CRLF warnings only; local Web
+  returned HTTP 200 after restart. A safe live E2E project generated and
+  persisted a 20-chapter / 4-volume proposal, then successfully revised one
+  chapter, a 3-chapter range, and the fourth volume.
 
 ## Change Log
 
+- 2026-07-03 `411c1df` `fix: retry adaptation planner calls`: wraps adaptation
+  planner model calls in the shared 7-attempt retry policy with visible progress
+  messages, keeps malformed-JSON/schema repairs bounded, fills missing
+  `word_budget` data locally from legacy budget fields or source chapter anchors,
+  adds regression tests for transient model failure and missing chapter budgets,
+  restarts `http://127.0.0.1:9898`, and verifies a safe 20-chapter / 4-volume
+  proposal plus single-chapter, range, and volume proposal revisions.
 - 2026-07-03 `1ed3100` `fix: stabilize long-form adaptation proposal batches`:
   keeps model-chosen long-form skeleton/volume planning but splits oversized
   detail ranges into at most eight chapters per model call, fills partial
