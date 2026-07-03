@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, commit `d88e553`
+- Latest source change: branch `main`, commit `331162c`
   `fix: restore web cocreate action controls`: restores Web co-create option
   visibility from paragraph-style AI questions, honors backend `can_start` for
   the launch gate, caps the right-pane draft preview so action buttons remain
@@ -45,7 +45,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
   artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
-  source commit `d88e553`; the restarted process is PID `36560`.
+  source commit `331162c`; the restarted process is PID `36560`.
 - Validation: `npm.cmd --prefix internal\entry\web\ui test -- --run` passed;
   `npm.cmd --prefix internal\entry\web\ui run build` passed;
   `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run TestProjectCoCreate -count=1`
@@ -56,7 +56,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-03 `d88e553` `fix: restore web cocreate action controls`: consumes
+- 2026-07-03 `331162c` `fix: restore web cocreate action controls`: consumes
   backend `can_start` in the React co-create state, disables launch until the
   draft is fresh/startable, parses paragraph-style AI choice questions into
   clickable suggestions, keeps long right-pane draft previews scrollable so
