@@ -262,6 +262,49 @@ func TestProjectSessionBuildAdaptationProposalEmitsLifecycleEvent(t *testing.T) 
 	}
 }
 
+func TestProjectSessionBuildAdaptationProposalAppendsProgressEvents(t *testing.T) {
+	host := newFakeProjectHost()
+	session := newTestSessionWithHost("project-1", host)
+
+	_, err := session.BuildAdaptationProposal(adapt.ProposalOptions{
+		SourcePath:    "source.txt",
+		Granularity:   "free",
+		RewritePolicy: "full_rewrite",
+		Brief:         "make progress visible",
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+
+	history := session.HistoryAfter(0)
+	progress := requireHostEventSummary(t, history, "test proposal progress")
+	if progress.HostEventID != "" || progress.Event.Category != "ADAPT" || progress.Event.Kind != string(adapt.StagePlan) || progress.Event.Level != "info" {
+		t.Fatalf("unexpected proposal progress event: %+v", progress)
+	}
+	warn := requireHostEventSummary(t, history, "test proposal repair")
+	if warn.HostEventID != "" || warn.Event.Level != "warn" || !strings.Contains(warn.Event.Detail, "missing chapter") {
+		t.Fatalf("recoverable proposal progress should be warn with detail: %+v", warn)
+	}
+}
+
+func TestProjectSessionReviseAdaptationProposalAppendsProgressEvents(t *testing.T) {
+	host := newFakeProjectHost()
+	session := newTestSessionWithHost("project-1", host)
+
+	_, err := session.ReviseAdaptationProposalContext(context.Background(), adapt.ProposalRevisionOptions{
+		FromChapter: 1,
+		Instruction: "tighten the opening",
+	})
+	if err != nil {
+		t.Fatalf("ReviseAdaptationProposalContext: %v", err)
+	}
+
+	progress := requireHostEventSummary(t, session.HistoryAfter(0), "test revision progress")
+	if progress.HostEventID != "" || progress.Event.Category != "ADAPT" || progress.Event.Kind != string(adapt.StagePlan) || progress.Event.Level != "info" {
+		t.Fatalf("unexpected revision progress event: %+v", progress)
+	}
+}
+
 func TestProjectSessionBuildAdaptationProposalEmitsFailedLifecycleEvent(t *testing.T) {
 	host := newFakeProjectHost()
 	host.adaptProposalErr = errors.New("planner timeout")
@@ -788,6 +831,17 @@ func requireFinishedAdaptProposalEvent(t *testing.T, session *ProjectSession) We
 	return *finished
 }
 
+func requireHostEventSummary(t *testing.T, history []WebEvent, summary string) WebEvent {
+	t.Helper()
+	for _, ev := range history {
+		if ev.Type == webEventTypeHostEvent && ev.Event != nil && ev.Event.Summary == summary {
+			return ev
+		}
+	}
+	t.Fatalf("host event summary %q not found in history: %+v", summary, history)
+	return WebEvent{}
+}
+
 func hostpkgSnapshotIdle() host.UISnapshot {
 	return host.UISnapshot{
 		RuntimeState: "idle",
@@ -1183,6 +1237,7 @@ func (f *fakeProjectHost) BuildAdaptationProposalContext(ctx context.Context, op
 	f.adaptProposalOptions = options
 	err := f.adaptProposalErr
 	proposal := f.adaptProposal
+	emit := options.EmitProgress
 	started := f.adaptProposalStarted
 	block := f.blockAdaptProposal
 	requireAnalyzed := f.requireAnalyzedAdaptSource
@@ -1204,6 +1259,10 @@ func (f *fakeProjectHost) BuildAdaptationProposalContext(ctx context.Context, op
 	}
 	if err != nil {
 		return nil, err
+	}
+	if emit != nil {
+		emit(adapt.StagePlan, 1, 3, "test proposal progress", nil)
+		emit(adapt.StagePlan, 2, 3, "test proposal repair", errors.New("missing chapter"))
 	}
 	if proposal != nil {
 		copy := *proposal
@@ -1229,15 +1288,24 @@ func (f *fakeProjectHost) BuildAdaptationProposalContext(ctx context.Context, op
 
 func (f *fakeProjectHost) ReviseAdaptationProposalContext(_ context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.adaptRevisionCalls++
 	f.adaptRevisionOptions = options
+	emit := options.EmitProgress
 	if f.adaptProposalErr != nil {
+		f.mu.Unlock()
 		return nil, f.adaptProposalErr
 	}
 	if f.adaptRevisionProposal != nil {
 		copy := *f.adaptRevisionProposal
+		f.mu.Unlock()
+		if emit != nil {
+			emit(adapt.StagePlan, 1, 1, "test revision progress", nil)
+		}
 		return &copy, nil
+	}
+	f.mu.Unlock()
+	if emit != nil {
+		emit(adapt.StagePlan, 1, 1, "test revision progress", nil)
 	}
 	return &domain.AdaptationPlan{
 		Granularity:   domain.AdaptationGranularityFree,

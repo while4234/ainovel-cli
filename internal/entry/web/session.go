@@ -630,6 +630,7 @@ func (s *ProjectSession) buildAdaptationProposal(ctx context.Context, options ad
 		return nil, err
 	}
 	s.appendAdaptationProposalPlannerRequested(options)
+	options.EmitProgress = s.adaptationProposalProgressEmitter()
 	proposal, err := s.host.BuildAdaptationProposalContext(ctx, options)
 	if err != nil {
 		err = adaptationProposalRunError(err)
@@ -668,6 +669,7 @@ func (s *ProjectSession) ReviseAdaptationProposalContext(ctx context.Context, op
 	revisionCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
 	defer cancel()
 	eventID, startedAt := s.appendAdaptationProposalRevisionStarted(options)
+	options.EmitProgress = s.adaptationProposalProgressEmitter()
 	proposal, err := s.host.ReviseAdaptationProposalContext(revisionCtx, options)
 	unlock()
 	finished = true
@@ -1658,6 +1660,35 @@ func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
 		Kind:     ev.Stage,
 		Level:    level,
 	})
+}
+
+func (s *ProjectSession) adaptationProposalProgressEmitter() adapt.ProgressEmitter {
+	return func(stage adapt.Stage, current int, total int, message string, err error) {
+		level := "info"
+		detail := ""
+		if err != nil {
+			detail = err.Error()
+			if stage == adapt.StageError {
+				level = "error"
+			} else {
+				level = "warn"
+			}
+		} else if stage == adapt.StageDone {
+			level = "success"
+		}
+		if strings.TrimSpace(message) == "" && detail != "" {
+			message = detail
+		}
+		s.appendHostEvent(host.Event{
+			Time:     time.Now().UTC(),
+			Category: "ADAPT",
+			Agent:    "web",
+			Summary:  message,
+			Detail:   detail,
+			Kind:     string(stage),
+			Level:    level,
+		})
+	}
 }
 
 func (s *ProjectSession) appendAdaptationProposalStarted(options adapt.ProposalOptions) (string, time.Time) {

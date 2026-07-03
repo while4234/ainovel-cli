@@ -323,9 +323,11 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 	if sourceFoundation == nil {
 		return nil, fmt.Errorf("source foundation missing; import source first")
 	}
+	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "改编规划准备完成，正在选择提案生成方式", nil)
 
 	var proposal domain.AdaptationPlan
 	if opts.Granularity == domain.AdaptationGranularityChapter {
+		emitAdaptProgress(opts.EmitProgress, StagePlan, len(reports), len(reports), "按逐章模式生成改编提案", nil)
 		proposal = buildPlanFromInputs(opts, reports, manifest, domain.AdaptationPlanStatusProposal)
 	} else {
 		proposal, err = buildPlanFromPlanner(ctx, deps, opts, reports, manifest, sourceFoundation)
@@ -333,9 +335,11 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 			return nil, fmt.Errorf("build %s adaptation proposal from planner: %w", opts.Granularity, err)
 		}
 	}
+	emitAdaptProgress(opts.EmitProgress, StagePlan, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编提案已生成，正在保存：%d 章", len(proposal.Chapters)), nil)
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation proposal: %w", err)
 	}
+	emitAdaptProgress(opts.EmitProgress, StageDone, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编提案已保存：%d 章", len(proposal.Chapters)), nil)
 	return &proposal, nil
 }
 
@@ -379,6 +383,7 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 	if sourceFoundation == nil {
 		return nil, fmt.Errorf("source foundation missing; analyze source first")
 	}
+	emitAdaptProgress(opts.EmitProgress, StagePlan, from, to, fmt.Sprintf("准备修订改编提案：第 %d-%d 章", from, to), nil)
 
 	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
 	if systemPrompt == "" {
@@ -386,39 +391,48 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 	}
 	updated := cloneAdaptationPlan(*proposal)
 	updated.Volumes = normalizeAdaptationProposalVolumes(updated.Volumes, len(updated.Chapters))
+	totalBatches := revisionBatchCount(from, to, adaptationPlannerRevisionBatchMax)
+	batchOrdinal := 0
 	for chunkFrom := from; chunkFrom <= to; chunkFrom += adaptationPlannerRevisionBatchMax {
 		chunkTo := min(to, chunkFrom+adaptationPlannerRevisionBatchMax-1)
+		batchOrdinal++
 		batch := proposalRevisionBatch(updated, chunkFrom, chunkTo)
 		revisionPrompt, err := buildAdaptationProposalRevisionUserPrompt(opts, updated, batch, manifest, sourceFoundation, reportsForPlannerBatch(reports, batch))
 		if err != nil {
 			return nil, err
 		}
+		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal, totalBatches, fmt.Sprintf("请求修订第 %d/%d 批：第 %d-%d 章", batchOrdinal, totalBatches, chunkFrom, chunkTo), nil)
 		revisionText, err := generatePlannerText(ctx, deps.LLM, systemPrompt, revisionPrompt, adaptationPlannerMaxTokens)
 		if err != nil {
 			return nil, fmt.Errorf("planner revision %d-%d llm generate: %w", chunkFrom, chunkTo, err)
 		}
-		var revisedChapters []domain.AdaptationChapterPlan
-		for attempt := 0; ; attempt++ {
-			revisionPlan, parseErr := parsePlannerProposal(revisionText)
-			if parseErr == nil {
-				revisedChapters, parseErr = normalizePlannerBatchChapters(revisionPlan.Chapters, batch)
-			}
-			if parseErr == nil {
-				break
-			}
-			if attempt >= adaptationPlannerRepairMaxAttempts {
-				return nil, fmt.Errorf("planner revision %d-%d: %w", chunkFrom, chunkTo, parseErr)
-			}
-			revisionText, err = repairPlannerBatchText(ctx, deps.LLM, systemPrompt, revisionPrompt, revisionText, batch, parseErr)
-			if err != nil {
-				return nil, fmt.Errorf("planner revision %d-%d: %w", chunkFrom, chunkTo, err)
-			}
+		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal, totalBatches, fmt.Sprintf("修订模型已返回第 %d/%d 批，正在解析校验", batchOrdinal, totalBatches), nil)
+		revisedChapters, err := collectPlannerBatchChaptersWithRepair(
+			ctx,
+			deps.LLM,
+			systemPrompt,
+			revisionPrompt,
+			revisionText,
+			batch,
+			opts.EmitProgress,
+			batchOrdinal,
+			totalBatches,
+			fmt.Sprintf("修订第 %d/%d 批", batchOrdinal, totalBatches),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("planner revision %d-%d: %w", chunkFrom, chunkTo, err)
 		}
 		if err := replaceProposalChapterRange(&updated, chunkFrom, chunkTo, revisedChapters); err != nil {
 			return nil, err
 		}
+		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal, totalBatches, fmt.Sprintf("修订第 %d/%d 批完成：第 %d-%d 章", batchOrdinal, totalBatches, chunkFrom, chunkTo), nil)
 	}
 	validateOpts := proposalOptionsFromPlan(updated)
+	updated.SourceTotalRunes = 0
+	updated.TargetTotalRunes = 0
+	updated.TargetMinRunes = 0
+	updated.TargetMaxRunes = 0
+	emitAdaptProgress(opts.EmitProgress, StagePlan, totalBatches, totalBatches, "修订章节已合并，正在校验完整提案", nil)
 	if err := validatePlannerProposal(&updated, validateOpts, reports, manifest, deps.LLM); err != nil {
 		return nil, fmt.Errorf("revised adaptation proposal invalid: %w", err)
 	}
@@ -432,6 +446,7 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 	if err := deps.Store.Adaptation.SaveProposal(updated); err != nil {
 		return nil, fmt.Errorf("save revised adaptation proposal: %w", err)
 	}
+	emitAdaptProgress(opts.EmitProgress, StageDone, len(updated.Chapters), len(updated.Chapters), fmt.Sprintf("改编提案修订已保存：%d 章", len(updated.Chapters)), nil)
 	return &updated, nil
 }
 
@@ -1025,10 +1040,12 @@ func buildPlanFromPlannerChunked(
 	if err != nil {
 		return zero, err
 	}
+	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, fmt.Sprintf("请求长篇改编骨架规划：目标约 %d 章", targetChapterHint), nil)
 	skeletonText, err := generatePlannerText(ctx, deps.LLM, systemPrompt, skeletonPrompt, adaptationPlannerSkeletonMaxTokens)
 	if err != nil {
 		return zero, fmt.Errorf("planner skeleton llm generate: %w", err)
 	}
+	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "长篇骨架模型已返回，正在解析分卷/分批结构", nil)
 	var skeleton plannerSkeleton
 	for attempt := 0; ; attempt++ {
 		skeleton, err = parsePlannerSkeleton(skeletonText)
@@ -1041,40 +1058,41 @@ func buildPlanFromPlannerChunked(
 		if !plannerSkeletonErrorRepairable(err) || attempt >= adaptationPlannerRepairMaxAttempts {
 			return zero, fmt.Errorf("planner skeleton: %w", err)
 		}
+		emitAdaptProgress(opts.EmitProgress, StagePlan, attempt+1, adaptationPlannerRepairMaxAttempts, fmt.Sprintf("骨架规划返回不符合结构，正在修复第 %d 次：%v", attempt+1, err), err)
 		skeletonText, err = repairPlannerSkeletonText(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, err)
 		if err != nil {
 			return zero, fmt.Errorf("planner skeleton: %w", err)
 		}
 	}
+	detailBatches := plannerDetailBatches(skeleton.Batches, adaptationPlannerRecommendedBatchMax)
+	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, len(detailBatches), fmt.Sprintf("骨架规划完成：%d 章，%d 个模型规划段，拆为 %d 个详情子批次", skeleton.TargetChapterCount, len(skeleton.Batches), len(detailBatches)), nil)
 
 	chapters := make([]domain.AdaptationChapterPlan, 0, skeleton.TargetChapterCount)
-	for _, batch := range skeleton.Batches {
+	for batchOrdinal, batch := range detailBatches {
 		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, sourceFoundation, skeleton, batch, reportsForPlannerBatch(reports, batch))
 		if err != nil {
 			return zero, err
 		}
+		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("请求章节详情第 %d/%d 批：第 %d-%d 章", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
 		batchText, err := generatePlannerText(ctx, deps.LLM, systemPrompt, batchPrompt, adaptationPlannerMaxTokens)
 		if err != nil {
 			return zero, fmt.Errorf("planner batch %d llm generate: %w", batch.Index, err)
 		}
-		var batchPlan domain.AdaptationPlan
-		var batchChapters []domain.AdaptationChapterPlan
-		for attempt := 0; ; attempt++ {
-			batchPlan, err = parsePlannerProposal(batchText)
-			if err == nil {
-				batchChapters, err = normalizePlannerBatchChapters(batchPlan.Chapters, batch)
-			}
-			if err != nil {
-				if attempt >= adaptationPlannerRepairMaxAttempts {
-					return zero, fmt.Errorf("planner batch %d: %w", batch.Index, err)
-				}
-				batchText, err = repairPlannerBatchText(ctx, deps.LLM, systemPrompt, batchPrompt, batchText, batch, err)
-				if err != nil {
-					return zero, fmt.Errorf("planner batch %d: %w", batch.Index, err)
-				}
-				continue
-			}
-			break
+		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("章节详情第 %d/%d 批已返回，正在解析校验", batchOrdinal+1, len(detailBatches)), nil)
+		batchChapters, err := collectPlannerBatchChaptersWithRepair(
+			ctx,
+			deps.LLM,
+			systemPrompt,
+			batchPrompt,
+			batchText,
+			batch,
+			opts.EmitProgress,
+			batchOrdinal+1,
+			len(detailBatches),
+			fmt.Sprintf("章节详情第 %d/%d 批", batchOrdinal+1, len(detailBatches)),
+		)
+		if err != nil {
+			return zero, fmt.Errorf("planner batch %d: %w", batch.Index, err)
 		}
 		if len(batchChapters) == 0 {
 			if err != nil {
@@ -1083,6 +1101,7 @@ func buildPlanFromPlannerChunked(
 			return zero, fmt.Errorf("planner batch %d: no chapters", batch.Index)
 		}
 		chapters = append(chapters, batchChapters...)
+		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("章节详情第 %d/%d 批完成：第 %d-%d 章", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
 	}
 
 	proposal := domain.AdaptationPlan{
@@ -1119,6 +1138,49 @@ func plannerSkeletonErrorRepairable(err error) bool {
 	return !strings.Contains(message, "ignores requested long-form target")
 }
 
+func emitAdaptProgress(emit ProgressEmitter, stage Stage, current int, total int, msg string, err error) {
+	if emit == nil {
+		return
+	}
+	emit(stage, current, total, msg, err)
+}
+
+func revisionBatchCount(from, to, batchMax int) int {
+	if batchMax <= 0 {
+		batchMax = adaptationPlannerRevisionBatchMax
+	}
+	if from > to {
+		from, to = to, from
+	}
+	count := to - from + 1
+	if count <= 0 {
+		return 0
+	}
+	return (count + batchMax - 1) / batchMax
+}
+
+func plannerDetailBatches(batches []plannerSkeletonBatch, batchMax int) []plannerSkeletonBatch {
+	if batchMax <= 0 {
+		batchMax = adaptationPlannerRecommendedBatchMax
+	}
+	var out []plannerSkeletonBatch
+	for _, batch := range batches {
+		if batch.TargetFrom <= 0 || batch.TargetTo < batch.TargetFrom {
+			continue
+		}
+		for from := batch.TargetFrom; from <= batch.TargetTo; from += batchMax {
+			to := min(batch.TargetTo, from+batchMax-1)
+			sub := batch
+			sub.Index = len(out) + 1
+			sub.TargetFrom = from
+			sub.TargetTo = to
+			sub.TargetChapterCount = to - from + 1
+			out = append(out, sub)
+		}
+	}
+	return out
+}
+
 func generatePlannerText(ctx context.Context, llm imp.LLMChat, systemPrompt string, userPrompt string, maxTokens int) (string, error) {
 	resp, err := llm.Generate(ctx, []agentcore.Message{
 		agentcore.SystemMsg(systemPrompt),
@@ -1131,6 +1193,173 @@ func generatePlannerText(ctx context.Context, llm imp.LLMChat, systemPrompt stri
 		return "", fmt.Errorf("planner llm returned nil response")
 	}
 	return resp.Message.TextContent(), nil
+}
+
+func collectPlannerBatchChaptersWithRepair(
+	ctx context.Context,
+	llm imp.LLMChat,
+	systemPrompt string,
+	originalPrompt string,
+	initialText string,
+	batch plannerSkeletonBatch,
+	emit ProgressEmitter,
+	current int,
+	total int,
+	label string,
+) ([]domain.AdaptationChapterPlan, error) {
+	text := initialText
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		chapters, missing, partial, parseErr := parsePlannerBatchPartial(text, batch)
+		if partial && len(missing) == 0 {
+			return chapters, nil
+		}
+		if partial && len(missing) > 0 {
+			missingErr := parseErr
+			if missingErr == nil {
+				missingErr = fmt.Errorf("missing chapters %s for target range %d-%d", formatPlannerChapterList(missing), batch.TargetFrom, batch.TargetTo)
+			}
+			filled, fillErr := fillMissingPlannerBatchChapters(ctx, llm, systemPrompt, originalPrompt, text, batch, chapters, missing, missingErr, emit, current, total, label)
+			if fillErr == nil {
+				return filled, nil
+			}
+			lastErr = fillErr
+		} else {
+			lastErr = parseErr
+		}
+		if lastErr == nil {
+			lastErr = fmt.Errorf("planner batch returned no usable chapters")
+		}
+		if attempt >= adaptationPlannerRepairMaxAttempts {
+			return nil, lastErr
+		}
+		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s不能直接使用，正在整批修复第 %d/%d 次：%v", label, attempt+1, adaptationPlannerRepairMaxAttempts, lastErr), lastErr)
+		repairedText, err := repairPlannerBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, lastErr)
+		if err != nil {
+			return nil, err
+		}
+		text = repairedText
+	}
+}
+
+func parsePlannerBatchPartial(text string, batch plannerSkeletonBatch) ([]domain.AdaptationChapterPlan, []int, bool, error) {
+	plan, err := parsePlannerProposal(text)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	chapters, missing, err := normalizePlannerBatchChapterSubset(plan.Chapters, batch)
+	if err == nil {
+		return chapters, missing, true, nil
+	}
+	salvaged, salvageMissing := salvagePlannerBatchChapterSubset(plan.Chapters, batch)
+	if len(salvaged) == 0 {
+		return nil, nil, false, err
+	}
+	return salvaged, salvageMissing, true, err
+}
+
+func fillMissingPlannerBatchChapters(
+	ctx context.Context,
+	llm imp.LLMChat,
+	systemPrompt string,
+	originalPrompt string,
+	previousText string,
+	batch plannerSkeletonBatch,
+	existing []domain.AdaptationChapterPlan,
+	missing []int,
+	previousErr error,
+	emit ProgressEmitter,
+	current int,
+	total int,
+	label string,
+) ([]domain.AdaptationChapterPlan, error) {
+	currentChapters := append([]domain.AdaptationChapterPlan(nil), existing...)
+	currentMissing := append([]int(nil), missing...)
+	feedbackText := previousText
+	lastErr := previousErr
+	if lastErr == nil {
+		lastErr = fmt.Errorf("missing chapters %s", formatPlannerChapterList(currentMissing))
+	}
+	for attempt := 0; attempt < adaptationPlannerRepairMaxAttempts; attempt++ {
+		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s缺少章节 %s，正在补齐第 %d/%d 次", label, formatPlannerChapterList(currentMissing), attempt+1, adaptationPlannerRepairMaxAttempts), lastErr)
+		fillText, err := repairPlannerMissingChaptersText(ctx, llm, systemPrompt, originalPrompt, feedbackText, batch, currentChapters, currentMissing, lastErr)
+		if err != nil {
+			lastErr = err
+			feedbackText = ""
+			continue
+		}
+		incoming, stillMissing, parseErr := parsePlannerMissingChapterResponse(fillText, batch, currentMissing)
+		if len(incoming) > 0 {
+			merged, mergedMissing, mergeErr := mergePlannerBatchChapterSubsets(currentChapters, incoming, batch)
+			if mergeErr != nil {
+				lastErr = mergeErr
+			} else {
+				currentChapters = merged
+				if len(mergedMissing) < len(stillMissing) || len(stillMissing) == 0 {
+					currentMissing = mergedMissing
+				} else {
+					currentMissing = stillMissing
+				}
+				if len(currentMissing) == 0 {
+					return currentChapters, nil
+				}
+				lastErr = fmt.Errorf("missing chapters still %s after repair", formatPlannerChapterList(currentMissing))
+			}
+		} else if parseErr != nil {
+			lastErr = parseErr
+		} else {
+			lastErr = fmt.Errorf("missing repair returned no requested chapters")
+		}
+		if parseErr != nil {
+			lastErr = parseErr
+		}
+		feedbackText = fillText
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("missing chapters %s were not repaired", formatPlannerChapterList(currentMissing))
+	}
+	return nil, lastErr
+}
+
+func parsePlannerMissingChapterResponse(text string, batch plannerSkeletonBatch, missing []int) ([]domain.AdaptationChapterPlan, []int, error) {
+	plan, err := parsePlannerProposal(text)
+	if err != nil {
+		return nil, append([]int(nil), missing...), err
+	}
+	normalized := normalizePlannerBatchChapterNumbers(plan.Chapters, batch)
+	allowed := make(map[int]struct{}, len(missing))
+	for _, chapter := range missing {
+		allowed[chapter] = struct{}{}
+	}
+	found := make(map[int]domain.AdaptationChapterPlan, len(missing))
+	var wrong []int
+	for _, chapter := range normalized {
+		if _, ok := allowed[chapter.Chapter]; !ok {
+			wrong = append(wrong, chapter.Chapter)
+			continue
+		}
+		if _, exists := found[chapter.Chapter]; exists {
+			return nil, append([]int(nil), missing...), fmt.Errorf("duplicate missing chapter %d in repair response", chapter.Chapter)
+		}
+		found[chapter.Chapter] = chapter
+	}
+	accepted := sortedPlannerBatchChapters(found)
+	stillMissing := make([]int, 0, len(missing))
+	for _, chapter := range missing {
+		if _, ok := found[chapter]; !ok {
+			stillMissing = append(stillMissing, chapter)
+		}
+	}
+	if len(accepted) == 0 {
+		if len(wrong) > 0 {
+			return nil, stillMissing, fmt.Errorf("missing repair returned wrong chapters %s, want %s", formatPlannerChapterList(wrong), formatPlannerChapterList(missing))
+		}
+		return nil, stillMissing, fmt.Errorf("missing repair returned no requested chapters, want %s", formatPlannerChapterList(missing))
+	}
+	if len(stillMissing) > 0 {
+		return accepted, stillMissing, fmt.Errorf("missing repair returned partial chapters; still missing %s", formatPlannerChapterList(stillMissing))
+	}
+	return accepted, nil, nil
 }
 
 func repairPlannerSkeletonText(
@@ -1179,6 +1408,55 @@ func repairPlannerBatchText(
 	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens)
 	if err != nil {
 		return "", fmt.Errorf("planner batch repair llm generate: %w", err)
+	}
+	return text, nil
+}
+
+func repairPlannerMissingChaptersText(
+	ctx context.Context,
+	llm imp.LLMChat,
+	systemPrompt string,
+	originalPrompt string,
+	previousText string,
+	batch plannerSkeletonBatch,
+	existing []domain.AdaptationChapterPlan,
+	missing []int,
+	previousErr error,
+) (string, error) {
+	input := struct {
+		Step             string                         `json:"step"`
+		Error            string                         `json:"error"`
+		MissingChapters  []int                          `json:"missing_chapters"`
+		Batch            plannerSkeletonBatch           `json:"batch"`
+		ExistingChapters []domain.AdaptationChapterPlan `json:"existing_chapters"`
+		PreviousOutput   string                         `json:"previous_output"`
+		Requirements     []string                       `json:"requirements"`
+	}{
+		Step:             fmt.Sprintf("batch %d missing chapters", batch.Index),
+		Error:            fmt.Sprint(previousErr),
+		MissingChapters:  append([]int(nil), missing...),
+		Batch:            batch,
+		ExistingChapters: append([]domain.AdaptationChapterPlan(nil), existing...),
+		PreviousOutput:   truncatePlannerFeedback(previousText),
+		Requirements: []string{
+			"Return exactly one JSON object and no prose.",
+			"The top-level object must be shaped exactly like {\"chapters\":[...]}",
+			"Return only the chapters listed in missing_chapters; do not repeat existing_chapters.",
+			"Keep the missing chapters continuous with existing_chapters and the batch goal.",
+			"Every returned chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
+			"Use integer absolute target chapter numbers from missing_chapters.",
+		},
+	}
+	raw, err := json.MarshalIndent(input, "", "  ")
+	if err != nil {
+		raw = []byte(`{"error":"marshal missing chapter repair input failed"}`)
+	}
+	repairPrompt := "The previous planner response produced a usable partial batch but omitted required chapter plans. Fill only the missing chapters using the original planning request and the already accepted chapter plans below.\n\n" +
+		"Original planning request:\n```text\n" + originalPrompt + "\n```\n\n" +
+		"Missing chapter repair input:\n```json\n" + string(raw) + "\n```"
+	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens)
+	if err != nil {
+		return "", fmt.Errorf("planner missing chapter repair llm generate: %w", err)
 	}
 	return text, nil
 }
@@ -1514,27 +1792,125 @@ func normalizePlannerSkeleton(skeleton *plannerSkeleton, opts ProposalOptions, m
 }
 
 func normalizePlannerBatchChapters(chapters []domain.AdaptationChapterPlan, batch plannerSkeletonBatch) ([]domain.AdaptationChapterPlan, error) {
+	out, missing, err := normalizePlannerBatchChapterSubset(chapters, batch)
+	if err != nil {
+		return nil, err
+	}
+	if len(missing) > 0 {
+		wantCount := batch.TargetTo - batch.TargetFrom + 1
+		return nil, fmt.Errorf("chapter count=%d, want %d for target range %d-%d; missing chapters %s", len(out), wantCount, batch.TargetFrom, batch.TargetTo, formatPlannerChapterList(missing))
+	}
+	return out, nil
+}
+
+func normalizePlannerBatchChapterSubset(chapters []domain.AdaptationChapterPlan, batch plannerSkeletonBatch) ([]domain.AdaptationChapterPlan, []int, error) {
 	if len(chapters) == 0 {
-		return nil, fmt.Errorf("no chapters")
+		return nil, nil, fmt.Errorf("no chapters")
+	}
+	out := normalizePlannerBatchChapterNumbers(chapters, batch)
+	byChapter := make(map[int]domain.AdaptationChapterPlan, len(out))
+	for _, chapter := range out {
+		if chapter.Chapter < batch.TargetFrom || chapter.Chapter > batch.TargetTo {
+			return nil, nil, fmt.Errorf("chapter %d outside target range %d-%d", chapter.Chapter, batch.TargetFrom, batch.TargetTo)
+		}
+		if _, exists := byChapter[chapter.Chapter]; exists {
+			return nil, nil, fmt.Errorf("duplicate chapter %d in target range %d-%d", chapter.Chapter, batch.TargetFrom, batch.TargetTo)
+		}
+		byChapter[chapter.Chapter] = chapter
+	}
+	return sortedPlannerBatchChapters(byChapter), missingPlannerBatchChapters(byChapter, batch), nil
+}
+
+func normalizePlannerBatchChapterNumbers(chapters []domain.AdaptationChapterPlan, batch plannerSkeletonBatch) []domain.AdaptationChapterPlan {
+	out := append([]domain.AdaptationChapterPlan(nil), chapters...)
+	if batch.TargetFrom <= 1 || len(out) == 0 {
+		return out
 	}
 	wantCount := batch.TargetTo - batch.TargetFrom + 1
-	if len(chapters) != wantCount {
-		return nil, fmt.Errorf("chapter count=%d, want %d for target range %d-%d", len(chapters), wantCount, batch.TargetFrom, batch.TargetTo)
+	allRelative := true
+	for _, chapter := range out {
+		if chapter.Chapter < 1 || chapter.Chapter > wantCount {
+			allRelative = false
+			break
+		}
 	}
-	out := append([]domain.AdaptationChapterPlan(nil), chapters...)
-	if out[0].Chapter == 1 && batch.TargetFrom > 1 {
+	if allRelative {
 		offset := batch.TargetFrom - 1
 		for idx := range out {
 			out[idx].Chapter += offset
 		}
 	}
-	for idx := range out {
-		wantChapter := batch.TargetFrom + idx
-		if out[idx].Chapter != wantChapter {
-			return nil, fmt.Errorf("chapter %d at batch index %d, want %d", out[idx].Chapter, idx, wantChapter)
+	return out
+}
+
+func sortedPlannerBatchChapters(byChapter map[int]domain.AdaptationChapterPlan) []domain.AdaptationChapterPlan {
+	chapters := make([]domain.AdaptationChapterPlan, 0, len(byChapter))
+	for _, chapter := range byChapter {
+		chapters = append(chapters, chapter)
+	}
+	sort.Slice(chapters, func(i, j int) bool {
+		return chapters[i].Chapter < chapters[j].Chapter
+	})
+	return chapters
+}
+
+func missingPlannerBatchChapters(byChapter map[int]domain.AdaptationChapterPlan, batch plannerSkeletonBatch) []int {
+	var missing []int
+	for chapter := batch.TargetFrom; chapter <= batch.TargetTo; chapter++ {
+		if _, exists := byChapter[chapter]; !exists {
+			missing = append(missing, chapter)
 		}
 	}
-	return out, nil
+	return missing
+}
+
+func salvagePlannerBatchChapterSubset(chapters []domain.AdaptationChapterPlan, batch plannerSkeletonBatch) ([]domain.AdaptationChapterPlan, []int) {
+	out := normalizePlannerBatchChapterNumbers(chapters, batch)
+	byChapter := make(map[int]domain.AdaptationChapterPlan, len(out))
+	for _, chapter := range out {
+		if chapter.Chapter < batch.TargetFrom || chapter.Chapter > batch.TargetTo {
+			continue
+		}
+		if _, exists := byChapter[chapter.Chapter]; exists {
+			continue
+		}
+		byChapter[chapter.Chapter] = chapter
+	}
+	return sortedPlannerBatchChapters(byChapter), missingPlannerBatchChapters(byChapter, batch)
+}
+
+func mergePlannerBatchChapterSubsets(existing []domain.AdaptationChapterPlan, incoming []domain.AdaptationChapterPlan, batch plannerSkeletonBatch) ([]domain.AdaptationChapterPlan, []int, error) {
+	current, _, err := normalizePlannerBatchChapterSubset(existing, batch)
+	if err != nil {
+		return nil, nil, err
+	}
+	next, _, err := normalizePlannerBatchChapterSubset(incoming, batch)
+	if err != nil {
+		return current, nil, err
+	}
+	byChapter := make(map[int]domain.AdaptationChapterPlan, len(current)+len(next))
+	for _, chapter := range current {
+		byChapter[chapter.Chapter] = chapter
+	}
+	for _, chapter := range next {
+		if _, exists := byChapter[chapter.Chapter]; exists {
+			continue
+		}
+		byChapter[chapter.Chapter] = chapter
+	}
+	merged := sortedPlannerBatchChapters(byChapter)
+	return merged, missingPlannerBatchChapters(byChapter, batch), nil
+}
+
+func formatPlannerChapterList(chapters []int) string {
+	if len(chapters) == 0 {
+		return "[]"
+	}
+	parts := make([]string, len(chapters))
+	for idx, chapter := range chapters {
+		parts[idx] = strconv.Itoa(chapter)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
 }
 
 func adaptationVolumesFromSkeleton(skeleton plannerSkeleton) []domain.AdaptationVolumePlan {

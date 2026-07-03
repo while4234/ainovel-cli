@@ -612,6 +612,116 @@ func TestBuildAdaptationProposalRepairsChunkedSkeletonWithoutBatches(t *testing.
 	}
 }
 
+func TestBuildAdaptationProposalSplitsOversizedSkeletonBatchForDetails(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	brief := "free restructure into 20 chapters"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free restructure into 20 chapters",
+			"target_chapter_count": 20,
+			"batches": [
+				{"index": 1, "title": "One broad volume", "theme": "pressure", "target_from": 1, "target_to": 20, "source_from": 1, "source_to": 4, "summary": "model chose a broad long-form segment"}
+			]
+		}`},
+		{text: plannerBatchProposalJSON(1, 8, 1, 4)},
+		{text: plannerBatchProposalJSON(9, 16, 1, 4)},
+		{text: plannerBatchProposalJSON(17, 20, 1, 4)},
+	}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:              brief,
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 4 {
+		t.Fatalf("planner calls=%d, want skeleton + 3 detail calls", llm.calls)
+	}
+	if len(proposal.Chapters) != 20 {
+		t.Fatalf("chapters=%d, want 20", len(proposal.Chapters))
+	}
+	if len(proposal.Volumes) != 1 || proposal.Volumes[0].TargetFrom != 1 || proposal.Volumes[0].TargetTo != 20 {
+		t.Fatalf("model-planned volume should remain intact: %+v", proposal.Volumes)
+	}
+	firstDetailPrompt := llm.got[1][1].TextContent()
+	if !strings.Contains(firstDetailPrompt, "Return exactly 8 chapter objects") ||
+		!strings.Contains(firstDetailPrompt, `"target_from": 1`) ||
+		!strings.Contains(firstDetailPrompt, `"target_to": 8`) {
+		t.Fatalf("first detail prompt should request only the first 8 chapters: %s", firstDetailPrompt)
+	}
+	secondDetailPrompt := llm.got[2][1].TextContent()
+	if !strings.Contains(secondDetailPrompt, "Return exactly 8 chapter objects") ||
+		!strings.Contains(secondDetailPrompt, `"target_from": 9`) ||
+		!strings.Contains(secondDetailPrompt, `"target_to": 16`) {
+		t.Fatalf("second detail prompt should request the second 8 chapters: %s", secondDetailPrompt)
+	}
+	thirdDetailPrompt := llm.got[3][1].TextContent()
+	if !strings.Contains(thirdDetailPrompt, "Return exactly 4 chapter objects") ||
+		!strings.Contains(thirdDetailPrompt, `"target_from": 17`) ||
+		!strings.Contains(thirdDetailPrompt, `"target_to": 20`) {
+		t.Fatalf("third detail prompt should request remaining 4 chapters: %s", thirdDetailPrompt)
+	}
+}
+
+func TestBuildAdaptationProposalFillsMissingChunkedBatchChapter(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	brief := "free restructure into 20 chapters"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free restructure into 20 chapters",
+			"target_chapter_count": 20,
+			"batches": [
+				{"index": 1, "title": "Opening volume", "theme": "orientation", "target_from": 1, "target_to": 8, "source_from": 1, "source_to": 2, "summary": "establish the new premise"},
+				{"index": 2, "title": "Pressure volume", "theme": "choice", "target_from": 9, "target_to": 16, "source_from": 2, "source_to": 3, "summary": "expand the central conflict"},
+				{"index": 3, "title": "Resolution volume", "theme": "payoff", "target_from": 17, "target_to": 20, "source_from": 3, "source_to": 4, "summary": "resolve the adapted ending"}
+			]
+		}`},
+		{text: plannerBatchProposalJSON(1, 7, 1, 2)},
+		{text: plannerBatchProposalJSON(8, 8, 2, 2)},
+		{text: plannerBatchProposalJSON(9, 16, 2, 3)},
+		{text: plannerBatchProposalJSON(17, 20, 3, 4)},
+	}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:              brief,
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 5 {
+		t.Fatalf("planner calls=%d, want skeleton + partial batch + missing fill + 2 remaining batches", llm.calls)
+	}
+	if len(proposal.Chapters) != 20 || proposal.Chapters[7].Chapter != 8 {
+		t.Fatalf("missing chapter should be merged into proposal: %+v", proposal.Chapters)
+	}
+	missingPrompt := llm.got[2][1].TextContent()
+	if !strings.Contains(missingPrompt, `"missing_chapters"`) ||
+		!strings.Contains(missingPrompt, "8") ||
+		!strings.Contains(missingPrompt, "existing_chapters") ||
+		!strings.Contains(missingPrompt, "Target 7") ||
+		!strings.Contains(missingPrompt, "Return only the chapters listed in missing_chapters") {
+		t.Fatalf("missing repair prompt should carry accepted chapters and only request chapter 8: %s", missingPrompt)
+	}
+}
+
 func TestBuildAdaptationProposalRepairsChunkedBatchWithoutChapters(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -667,10 +777,11 @@ func TestBuildAdaptationProposalRepairsChunkedBatchWithoutChapters(t *testing.T)
 		!strings.Contains(repairPrompt, "chapters 1 through 8") {
 		t.Fatalf("batch repair prompt should explain chapter schema failure: %s", repairPrompt)
 	}
-	secondRepairPrompt := llm.got[3][1].TextContent()
-	if !strings.Contains(secondRepairPrompt, "chapter count=1, want 8") ||
-		!strings.Contains(secondRepairPrompt, "Only one chapter") {
-		t.Fatalf("second batch repair prompt should include single-object failure feedback: %s", secondRepairPrompt)
+	missingRepairPrompt := llm.got[3][1].TextContent()
+	if !strings.Contains(missingRepairPrompt, "missing_chapters") ||
+		!strings.Contains(missingRepairPrompt, "existing_chapters") ||
+		!strings.Contains(missingRepairPrompt, "Only one chapter") {
+		t.Fatalf("missing-chapter repair prompt should include existing partial context: %s", missingRepairPrompt)
 	}
 	if len(proposal.Chapters) != 20 {
 		t.Fatalf("chapters=%d, want 20", len(proposal.Chapters))
@@ -1049,6 +1160,110 @@ func TestBuildAdaptationProposalRejectsInvalidPlannerWordBudgets(t *testing.T) {
 	}
 }
 
+func TestReviseAdaptationProposalSupportsChapterRangeAndVolumeTargets(t *testing.T) {
+	cases := []struct {
+		name          string
+		options       ProposalRevisionOptions
+		responses     []adaptLLMResponse
+		wantCalls     int
+		wantRevised   []int
+		wantUnchanged []int
+	}{
+		{
+			name: "single chapter",
+			options: ProposalRevisionOptions{
+				FromChapter: 3,
+				Instruction: "raise the chapter three hook",
+			},
+			responses:     []adaptLLMResponse{{text: plannerRevisionProposalJSON(3, 3, 1, 1)}},
+			wantCalls:     1,
+			wantRevised:   []int{3},
+			wantUnchanged: []int{2, 4},
+		},
+		{
+			name: "reversed continuous range",
+			options: ProposalRevisionOptions{
+				FromChapter: 8,
+				ToChapter:   5,
+				Instruction: "smooth the middle four chapters",
+			},
+			responses:     []adaptLLMResponse{{text: plannerRevisionProposalJSON(5, 8, 2, 3)}},
+			wantCalls:     1,
+			wantRevised:   []int{5, 6, 7, 8},
+			wantUnchanged: []int{4, 9},
+		},
+		{
+			name: "specific volume",
+			options: ProposalRevisionOptions{
+				VolumeIndex: 2,
+				Instruction: "make the second volume flow better",
+			},
+			responses:     []adaptLLMResponse{{text: plannerRevisionProposalJSON(5, 8, 2, 3)}},
+			wantCalls:     1,
+			wantRevised:   []int{5, 6, 7, 8},
+			wantUnchanged: []int{4, 9},
+		},
+		{
+			name: "all volumes batches revision requests",
+			options: ProposalRevisionOptions{
+				VolumeIndex: -1,
+				Instruction: "rebalance every volume",
+			},
+			responses: []adaptLLMResponse{
+				{text: plannerRevisionProposalJSON(1, 8, 1, 3)},
+				{text: plannerRevisionProposalJSON(9, 12, 3, 4)},
+			},
+			wantCalls:   2,
+			wantRevised: []int{1, 8, 9, 12},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := store.NewStore(t.TempDir())
+			if err := st.Init(); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+			saveRevisionTestProposal(t, st)
+			llm := &scriptedAdaptLLM{responses: tc.responses}
+
+			updated, err := ReviseAdaptationProposal(context.Background(), Deps{Store: st, LLM: llm}, tc.options)
+			if err != nil {
+				t.Fatalf("ReviseAdaptationProposal: %v", err)
+			}
+			if llm.calls != tc.wantCalls {
+				t.Fatalf("revision planner calls=%d, want %d", llm.calls, tc.wantCalls)
+			}
+			if len(updated.Chapters) != 12 {
+				t.Fatalf("chapters=%d, want 12", len(updated.Chapters))
+			}
+			for _, chapter := range tc.wantRevised {
+				got := updated.Chapters[chapter-1]
+				if !strings.HasPrefix(got.Title, "Revised ") {
+					t.Fatalf("chapter %d was not revised: %+v", chapter, got)
+				}
+			}
+			for _, chapter := range tc.wantUnchanged {
+				got := updated.Chapters[chapter-1]
+				if !strings.HasPrefix(got.Title, "Original ") {
+					t.Fatalf("chapter %d should be unchanged: %+v", chapter, got)
+				}
+			}
+			if len(updated.Planner.Notes) == 0 || !strings.Contains(updated.Planner.Notes[len(updated.Planner.Notes)-1], tc.options.Instruction) {
+				t.Fatalf("revision note missing instruction: %+v", updated.Planner)
+			}
+			saved, err := st.Adaptation.LoadProposal()
+			if err != nil {
+				t.Fatalf("LoadProposal: %v", err)
+			}
+			if saved == nil || saved.Chapters[tc.wantRevised[0]-1].Title != updated.Chapters[tc.wantRevised[0]-1].Title {
+				t.Fatalf("revised proposal was not saved: saved=%+v updated=%+v", saved, updated)
+			}
+		})
+	}
+}
+
 func plannerBudgetProposalJSON(planFields string, chapterFields string, wordBudget string) string {
 	if strings.TrimSpace(planFields) != "" {
 		planFields = strings.TrimSpace(planFields) + ","
@@ -1110,6 +1325,105 @@ func plannerBatchProposalJSON(from, to, sourceFrom, sourceTo int) string {
 		"brief": "chunk",
 		"chapters": [%s]
 	}`, strings.Join(chapters, ","))
+}
+
+func plannerRevisionProposalJSON(from, to, sourceFrom, sourceTo int) string {
+	count := to - from + 1
+	sourceSpan := sourceTo - sourceFrom + 1
+	chapters := make([]string, 0, count)
+	for chapter := from; chapter <= to; chapter++ {
+		sourceChapter := sourceFrom
+		if count > 0 && sourceSpan > 0 {
+			sourceChapter = sourceFrom + (chapter-from)*sourceSpan/count
+		}
+		sourceRunes := sourceChapter * 10
+		targetRunes := sourceRunes + 2
+		chapters = append(chapters, fmt.Sprintf(`{
+			"chapter": %d,
+			"title": "Revised %d",
+			"core_event": "Revised event for target %d.",
+			"hook": "Revised hook for target %d.",
+			"scenes": ["archive", "station"],
+			"source_chapters": [%d],
+			"source_range": {"from": %d, "to": %d},
+			"word_budget": {"source_runes": %d, "target_runes": %d, "min_runes": %d, "max_runes": %d, "tolerance": 0.15},
+			"preserve_events": ["source event"],
+			"required_changes": ["apply the revision"],
+			"forbidden_moves": ["drop the source anchor"]
+		}`, chapter, chapter, chapter, chapter, sourceChapter, sourceChapter, sourceChapter, sourceRunes, targetRunes, targetRunes-1, targetRunes+1))
+	}
+	return fmt.Sprintf(`{
+		"granularity": "free",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "chunk",
+		"chapters": [%s]
+	}`, strings.Join(chapters, ","))
+}
+
+func saveRevisionTestProposal(t *testing.T, st *store.Store) {
+	t.Helper()
+	chapters := make([]domain.AdaptationChapterPlan, 0, 12)
+	sourceTotal := 0
+	targetTotal := 0
+	targetMinTotal := 0
+	targetMaxTotal := 0
+	for chapter := 1; chapter <= 12; chapter++ {
+		sourceChapter := 1 + (chapter-1)*4/12
+		sourceRunes := sourceChapter * 10
+		targetRunes := sourceRunes + 2
+		sourceTotal += sourceRunes
+		targetTotal += targetRunes
+		targetMinTotal += targetRunes - 1
+		targetMaxTotal += targetRunes + 1
+		chapters = append(chapters, domain.AdaptationChapterPlan{
+			Chapter:        chapter,
+			Title:          fmt.Sprintf("Original %d", chapter),
+			SourceChapters: []int{sourceChapter},
+			SourceRunes:    sourceRunes,
+			TargetRunes:    targetRunes,
+			TargetMinRunes: targetRunes - 1,
+			TargetMaxRunes: targetRunes + 1,
+			SourceRange:    domain.SourceRange{From: sourceChapter, To: sourceChapter},
+			WordBudget: &domain.AdaptationChapterWordBudget{
+				SourceRunes: sourceRunes,
+				TargetRunes: targetRunes,
+				MinRunes:    targetRunes - 1,
+				MaxRunes:    targetRunes + 1,
+				Tolerance:   0.15,
+			},
+			PreserveEvents:  []string{"source event"},
+			RequiredChanges: []string{"keep the original shape"},
+			ForbiddenMoves:  []string{"drop the source anchor"},
+			OutlineEntry: domain.OutlineEntry{
+				Chapter:   chapter,
+				Title:     fmt.Sprintf("Original %d", chapter),
+				CoreEvent: fmt.Sprintf("Original event for target %d.", chapter),
+				Hook:      fmt.Sprintf("Original hook for target %d.", chapter),
+				Scenes:    []string{"station"},
+			},
+		})
+	}
+	plan := domain.AdaptationPlan{
+		Granularity:      domain.AdaptationGranularityFree,
+		Status:           domain.AdaptationPlanStatusProposal,
+		RewritePolicy:    domain.AdaptationRewriteFullRewrite,
+		Brief:            "chunk",
+		SourceTotalRunes: sourceTotal,
+		TargetTotalRunes: targetTotal,
+		TargetMinRunes:   targetMinTotal,
+		TargetMaxRunes:   targetMaxTotal,
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, Title: "Opening volume", Theme: "orientation", TargetFrom: 1, TargetTo: 4, SourceFrom: 1, SourceTo: 2},
+			{Index: 2, Title: "Middle volume", Theme: "pressure", TargetFrom: 5, TargetTo: 8, SourceFrom: 2, SourceTo: 3},
+			{Index: 3, Title: "Final volume", Theme: "payoff", TargetFrom: 9, TargetTo: 12, SourceFrom: 3, SourceTo: 4},
+		},
+		Chapters: chapters,
+		Planner:  &domain.AdaptationPlannerMeta{Prompt: "adaptation-planner", Model: "fake"},
+	}
+	if err := st.Adaptation.SaveProposal(plan); err != nil {
+		t.Fatalf("SaveProposal: %v", err)
+	}
 }
 
 func seedPreparedAdaptationSource(t *testing.T, st *store.Store, runeCounts []int) []domain.AdaptationSourceReport {

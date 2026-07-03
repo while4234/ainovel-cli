@@ -24,6 +24,8 @@ type Event struct {
 	Err     error
 }
 
+type ProgressEmitter func(Stage, int, int, string, error)
+
 type Options struct {
 	SourcePath string
 }
@@ -35,14 +37,16 @@ type ProposalOptions struct {
 	RewritePolicy      string
 	WordTolerance      float64
 	TargetChapterCount int
+	EmitProgress       ProgressEmitter `json:"-"`
 }
 
 type ProposalRevisionOptions struct {
-	Target      string
-	FromChapter int
-	ToChapter   int
-	VolumeIndex int
-	Instruction string
+	Target       string
+	FromChapter  int
+	ToChapter    int
+	VolumeIndex  int
+	Instruction  string
+	EmitProgress ProgressEmitter `json:"-"`
 }
 
 type Prompts struct {
