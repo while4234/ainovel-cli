@@ -39,21 +39,24 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the latest pull/restart docs checkpoint,
+- Working tree: expected clean after the latest update/restart checkpoint,
   except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
   artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
-  commit `861b527`; the restarted process was PID `26304`.
-- Validation: `git pull --ff-only` first fast-forwarded `main` from `e838341`
-  to `21200be`; after `origin/main` advanced again, the maintenance commit was
-  rebased onto `861b527` and Web was rebuilt/restarted again. `.\restart-web.cmd
-  -Port 9898` succeeded after prepending the project-local Go 1.25.5 toolchain
-  to `PATH`; `GET /` returned HTTP 200; `GET /api/runtime` returned the
-  expected preview runtime root; `GET /api/models` returned one provider and
-  one default route.
+  source commit `861b527`; the restarted process was PID `15252`.
+- Validation: `git fetch origin --prune` found no new commits beyond current
+  `origin/main`; `.\restart-web.cmd -Port 9898` succeeded after prepending the
+  project-local Go 1.25.5 toolchain to `PATH`, stopped old PID `26304`, and
+  started PID `15252`; `GET /` returned HTTP 200; `GET /api/runtime` returned
+  the expected preview runtime root; `GET /api/models` returned one provider
+  and one default route.
 
 ## Change Log
 
+- 2026-07-03 `pending` `docs: record latest restart check`: fetched
+  `origin/main` with no new commits beyond the current branch, rebuilt the Web
+  UI and Go executable, restarted local Web on `http://127.0.0.1:9898` as PID
+  `15252`, and verified `/`, `/api/runtime`, and `/api/models`.
 - 2026-07-03 `pending` `docs: record latest pull and restart`: fast-forwarded
   `main` from `e838341` to `21200be`, rebased the maintenance checkpoint after
   `origin/main` advanced to `861b527`, rebuilt the Web UI and Go executable,
