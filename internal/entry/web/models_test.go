@@ -2,16 +2,21 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/grokauth"
+	hostpkg "github.com/voocel/ainovel-cli/internal/host"
 )
 
 func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
@@ -180,6 +185,11 @@ func TestProjectModelDeleteUsesProjectHost(t *testing.T) {
 }
 
 func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
+	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
+		return nil
+	})
+	t.Cleanup(restore)
+
 	home := testTempDir(t)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -215,6 +225,30 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	}
 	if saved.Provider != "grok-oauth" || saved.ModelName != "grok-4.3-latest" {
 		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
+	}
+}
+
+func TestGlobalModelTestDoesNotPersistOrLeakAPIKey(t *testing.T) {
+	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
+		return errors.New("probe failed for sk-secret")
+	})
+	t.Cleanup(restore)
+
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/models/test", bytes.NewBufferString(`{"role":"default","provider":"probe-openai","model":"probe-model","type":"openai","api_key":"sk-secret","base_url":"https://proxy.example/v1"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("model test status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-secret") {
+		t.Fatalf("model test response leaked api key: %s", rec.Body.String())
+	}
+	if _, ok := server.currentConfig().Providers["probe-openai"]; ok {
+		t.Fatal("model test should not persist provider config")
 	}
 }
 
@@ -338,7 +372,7 @@ func TestProjectModelAddPresetPassesProviderConfig(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/models/add", bytes.NewBufferString(`{"role":"default","provider":"anthropic","type":"anthropic","api_key":"sk-test","model":"claude-sonnet-4-5"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/models/add", bytes.NewBufferString(`{"role":"default","provider":"anthropic","label":"Anthropic","template_provider":"anthropic","type":"anthropic","api_key":"sk-test","model":"claude-sonnet-4-5","use_proxy":false,"request_timeout_seconds":120,"connectivity_timeout_seconds":12}`))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -347,6 +381,15 @@ func TestProjectModelAddPresetPassesProviderConfig(t *testing.T) {
 	}
 	if fake.addProviderName != "anthropic" || fake.addProviderConfig.Type != "anthropic" || fake.addProviderConfig.APIKey != "sk-test" {
 		t.Fatalf("preset provider config = %+v provider=%q", fake.addProviderConfig, fake.addProviderName)
+	}
+	if fake.addProviderConfig.Label != "Anthropic" || fake.addProviderConfig.TemplateProvider != "anthropic" {
+		t.Fatalf("preset provider metadata = %+v", fake.addProviderConfig)
+	}
+	if fake.addProviderConfig.UseProxy == nil || *fake.addProviderConfig.UseProxy {
+		t.Fatalf("preset use_proxy = %#v, want explicit false", fake.addProviderConfig.UseProxy)
+	}
+	if fake.addProviderConfig.RequestTimeoutSeconds != 120 || fake.addProviderConfig.ConnectivityTimeoutSeconds != 12 {
+		t.Fatalf("preset timeouts = %d/%d", fake.addProviderConfig.RequestTimeoutSeconds, fake.addProviderConfig.ConnectivityTimeoutSeconds)
 	}
 	if len(fake.addProviderConfig.Models) != 1 || fake.addProviderConfig.Models[0] != "claude-sonnet-4-5" {
 		t.Fatalf("preset model list = %+v", fake.addProviderConfig.Models)

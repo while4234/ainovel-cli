@@ -23,6 +23,11 @@ describe('model add helpers', () => {
       role: 'writer',
       provider: 'grok-oauth',
       model: 'grok-4.3-latest',
+      label: 'Grok',
+      template_provider: 'grok',
+      use_proxy: true,
+      request_timeout_seconds: 0,
+      connectivity_timeout_seconds: 0,
       type: 'grok',
       auth: 'grok_oauth',
       account_id: 'work'
@@ -55,6 +60,36 @@ describe('model add helpers', () => {
     expect(state.auth).toBe('grok_oauth');
     expect(state.account_id).toBe('default');
     expect(state.model).toBe('grok-4.3-latest');
+    expect(state.use_proxy).toBe(true);
+  });
+
+  it('defaults Codex to proxy and DeepSeek to direct access', () => {
+    const codex = modelAddModeDefaults({
+      mode: 'preset',
+      preset: 'codex',
+      request_timeout_seconds: '120',
+      connectivity_timeout_seconds: '12'
+    });
+    const deepseek = modelAddModeDefaults({
+      mode: 'preset',
+      preset: 'deepseek',
+      request_timeout_seconds: '120',
+      connectivity_timeout_seconds: '12'
+    });
+
+    expect(buildModelAddPayload(codex, null)).toMatchObject({
+      provider: 'codex',
+      template_provider: 'codex',
+      api: 'responses',
+      use_proxy: true,
+      request_timeout_seconds: 120,
+      connectivity_timeout_seconds: 12
+    });
+    expect(buildModelAddPayload(deepseek, null)).toMatchObject({
+      provider: 'deepseek',
+      template_provider: 'deepseek',
+      use_proxy: false
+    });
   });
 
   it('keeps the current default model visible even when it is not listed', () => {

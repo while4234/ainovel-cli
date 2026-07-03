@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -26,8 +27,19 @@ type apiModelConfig struct {
 }
 
 type apiModelProvider struct {
-	Name   string   `json:"name"`
-	Models []string `json:"models"`
+	Name                       string   `json:"name"`
+	Label                      string   `json:"label,omitempty"`
+	TemplateProvider           string   `json:"template_provider,omitempty"`
+	Type                       string   `json:"type,omitempty"`
+	Auth                       string   `json:"auth,omitempty"`
+	AccountID                  string   `json:"account_id,omitempty"`
+	API                        string   `json:"api,omitempty"`
+	BaseURL                    string   `json:"base_url,omitempty"`
+	UseProxy                   *bool    `json:"use_proxy,omitempty"`
+	RequestTimeoutSeconds      int      `json:"request_timeout_seconds,omitempty"`
+	ConnectivityTimeoutSeconds int      `json:"connectivity_timeout_seconds,omitempty"`
+	APIKeyConfigured           bool     `json:"key_configured,omitempty"`
+	Models                     []string `json:"models"`
 }
 
 type apiModelRoute struct {
@@ -60,6 +72,43 @@ type coCreateTimeoutRequest struct {
 type modelDeleteRequest struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+}
+
+type modelProviderRequest struct {
+	Role                       string `json:"role"`
+	Provider                   string `json:"provider"`
+	Model                      string `json:"model"`
+	Label                      string `json:"label"`
+	TemplateProvider           string `json:"template_provider"`
+	Type                       string `json:"type"`
+	Auth                       string `json:"auth"`
+	AccountID                  string `json:"account_id"`
+	APIKey                     string `json:"api_key"`
+	BaseURL                    string `json:"base_url"`
+	API                        string `json:"api"`
+	UseProxy                   *bool  `json:"use_proxy"`
+	RequestTimeoutSeconds      int    `json:"request_timeout_seconds"`
+	ConnectivityTimeoutSeconds int    `json:"connectivity_timeout_seconds"`
+}
+
+func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
+	pc := bootstrap.ProviderConfig{
+		Label:                      strings.TrimSpace(r.Label),
+		TemplateProvider:           strings.TrimSpace(r.TemplateProvider),
+		Type:                       strings.TrimSpace(r.Type),
+		Auth:                       strings.TrimSpace(r.Auth),
+		AccountID:                  strings.TrimSpace(r.AccountID),
+		APIKey:                     strings.TrimSpace(r.APIKey),
+		BaseURL:                    strings.TrimSpace(r.BaseURL),
+		API:                        strings.TrimSpace(r.API),
+		RequestTimeoutSeconds:      r.RequestTimeoutSeconds,
+		ConnectivityTimeoutSeconds: r.ConnectivityTimeoutSeconds,
+	}
+	if r.UseProxy != nil {
+		useProxy := *r.UseProxy
+		pc.UseProxy = &useProxy
+	}
+	return pc
 }
 
 func (r coCreateTimeoutRequest) value() int {
@@ -188,30 +237,12 @@ func (s *Server) handleModelAdd(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req struct {
-		Role      string `json:"role"`
-		Provider  string `json:"provider"`
-		Model     string `json:"model"`
-		Type      string `json:"type"`
-		Auth      string `json:"auth"`
-		AccountID string `json:"account_id"`
-		APIKey    string `json:"api_key"`
-		BaseURL   string `json:"base_url"`
-		API       string `json:"api"`
-	}
+	var req modelProviderRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	pc := bootstrap.ProviderConfig{
-		Type:      strings.TrimSpace(req.Type),
-		Auth:      strings.TrimSpace(req.Auth),
-		AccountID: strings.TrimSpace(req.AccountID),
-		APIKey:    strings.TrimSpace(req.APIKey),
-		BaseURL:   strings.TrimSpace(req.BaseURL),
-		API:       strings.TrimSpace(req.API),
-	}
-	models, runtime, err := s.addGlobalProviderModel(req.Role, req.Provider, req.Model, pc)
+	models, runtime, err := s.addGlobalProviderModelWithProbe(r.Context(), req.Role, req.Provider, req.Model, req.providerConfig())
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return
@@ -219,6 +250,44 @@ func (s *Server) handleModelAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"models":  models,
 		"runtime": runtime,
+	})
+}
+
+func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req modelProviderRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cfg := s.currentConfig()
+	pc := req.providerConfig()
+	result, _ := host.TestProviderModelInConfig(r.Context(), cfg, req.Role, req.Provider, pc, req.Model)
+	result.Message = redactModelProviderMessage(result.Message, cfg, pc)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"test": result,
+	})
+}
+
+func (s *Server) handleModelDiscover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req modelProviderRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cfg := s.currentConfig()
+	pc := req.providerConfig()
+	result, _ := host.DiscoverProviderModelsInConfig(r.Context(), cfg, req.Provider, pc, req.Model)
+	result.Message = redactModelProviderMessage(result.Message, cfg, pc)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"discovery": result,
 	})
 }
 
@@ -291,6 +360,27 @@ func (s *Server) addGlobalProviderModel(role, provider, model string, pc bootstr
 	return s.globalModelConfig(cfg), s.runtimePayload(cfg), nil
 }
 
+func (s *Server) addGlobalProviderModelWithProbe(ctx context.Context, role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, map[string]any, error) {
+	role = normalizeModelRole(role)
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return apiModelConfig{}, nil, fmt.Errorf("provider and model are required")
+	}
+	if !globalModelRoleAllowed(role) {
+		return apiModelConfig{}, nil, fmt.Errorf("unknown role %q", role)
+	}
+	next, err := host.AddProviderModelToConfig(ctx, s.currentConfig(), role, provider, pc, model)
+	if err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	if err := saveWebConfig(next); err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	s.setCurrentConfig(next)
+	return s.globalModelConfig(next), s.runtimePayload(next), nil
+}
+
 func globalModelRoleAllowed(role string) bool {
 	for _, known := range modelConfigRoles {
 		if role == known {
@@ -304,10 +394,7 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 	providers := configuredModelProviders(cfg)
 	outProviders := make([]apiModelProvider, 0, len(providers))
 	for _, provider := range providers {
-		outProviders = append(outProviders, apiModelProvider{
-			Name:   provider,
-			Models: cfg.CandidateModels(provider),
-		})
+		outProviders = append(outProviders, apiProviderFromConfig(provider, cfg.Providers[provider], cfg.CandidateModels(provider)))
 	}
 	roles := make([]apiModelRoute, 0, len(modelConfigRoles))
 	for _, role := range modelConfigRoles {
@@ -337,6 +424,33 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 		ThinkingRule:           "default applies to coordinator, architect, writer, and editor unless that role has its own reasoning_effort",
 		CoCreateTimeoutSeconds: cfg.EffectiveCoCreateTimeoutSeconds(),
 	}
+}
+
+func apiProviderFromConfig(name string, pc bootstrap.ProviderConfig, models []string) apiModelProvider {
+	useProxy := cloneBoolPtr(pc.UseProxy)
+	return apiModelProvider{
+		Name:                       name,
+		Label:                      pc.Label,
+		TemplateProvider:           pc.TemplateProvider,
+		Type:                       pc.Type,
+		Auth:                       pc.Auth,
+		AccountID:                  pc.AccountID,
+		API:                        pc.API,
+		BaseURL:                    pc.BaseURL,
+		UseProxy:                   useProxy,
+		RequestTimeoutSeconds:      pc.RequestTimeoutSeconds,
+		ConnectivityTimeoutSeconds: pc.ConnectivityTimeoutSeconds,
+		APIKeyConfigured:           strings.TrimSpace(pc.APIKey) != "",
+		Models:                     append([]string(nil), models...),
+	}
+}
+
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func configuredModelProviders(cfg bootstrap.Config) []string {
@@ -471,17 +585,7 @@ func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, i
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req struct {
-		Role      string `json:"role"`
-		Provider  string `json:"provider"`
-		Model     string `json:"model"`
-		Type      string `json:"type"`
-		Auth      string `json:"auth"`
-		AccountID string `json:"account_id"`
-		APIKey    string `json:"api_key"`
-		BaseURL   string `json:"base_url"`
-		API       string `json:"api"`
-	}
+	var req modelProviderRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -491,14 +595,7 @@ func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, i
 		writeProjectSessionError(w, err)
 		return
 	}
-	pc := bootstrap.ProviderConfig{
-		Type:      strings.TrimSpace(req.Type),
-		Auth:      strings.TrimSpace(req.Auth),
-		AccountID: strings.TrimSpace(req.AccountID),
-		APIKey:    strings.TrimSpace(req.APIKey),
-		BaseURL:   strings.TrimSpace(req.BaseURL),
-		API:       strings.TrimSpace(req.API),
-	}
+	pc := req.providerConfig()
 	if !providerConfigRequestIsEmpty(pc) {
 		pc.Models = []string{strings.TrimSpace(req.Model)}
 	}
@@ -511,6 +608,52 @@ func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, i
 		"project":  manifest,
 		"models":   models,
 		"snapshot": session.Snapshot(),
+	})
+}
+
+func (s *Server) handleProjectModelTest(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req modelProviderRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	result, _ := session.TestProviderModel(r.Context(), req.Role, req.Provider, req.Model, req.providerConfig())
+	result.Message = redactModelProviderMessage(result.Message, s.currentConfig(), req.providerConfig())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": manifest,
+		"test":    result,
+	})
+}
+
+func (s *Server) handleProjectModelDiscover(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req modelProviderRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	result, _ := session.DiscoverProviderModels(r.Context(), req.Provider, req.Model, req.providerConfig())
+	result.Message = redactModelProviderMessage(result.Message, s.currentConfig(), req.providerConfig())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":   manifest,
+		"discovery": result,
 	})
 }
 
@@ -539,11 +682,37 @@ func (s *Server) handleProjectModelDelete(w http.ResponseWriter, r *http.Request
 
 func providerConfigRequestIsEmpty(pc bootstrap.ProviderConfig) bool {
 	return pc.Type == "" &&
+		pc.Label == "" &&
+		pc.TemplateProvider == "" &&
+		pc.UseProxy == nil &&
+		pc.RequestTimeoutSeconds == 0 &&
+		pc.ConnectivityTimeoutSeconds == 0 &&
 		pc.Auth == "" &&
 		pc.AccountID == "" &&
 		pc.API == "" &&
 		pc.APIKey == "" &&
-		pc.BaseURL == ""
+		pc.BaseURL == "" &&
+		len(pc.Models) == 0 &&
+		len(pc.ExtraBody) == 0 &&
+		len(pc.Extra) == 0
+}
+
+func redactModelProviderMessage(message string, cfg bootstrap.Config, pc bootstrap.ProviderConfig) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return message
+	}
+	secrets := []string{
+		strings.TrimSpace(pc.APIKey),
+		strings.TrimSpace(cfg.Proxy),
+	}
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		message = strings.ReplaceAll(message, secret, "<redacted>")
+	}
+	return message
 }
 
 func (s *Server) handleProjectModelAddOpenAICompatible(w http.ResponseWriter, r *http.Request, id string) {

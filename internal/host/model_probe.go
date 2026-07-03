@@ -10,28 +10,35 @@ import (
 
 const addedModelProbeTimeout = 15 * time.Second
 
-var addedModelConnectivityProbe = probeAddedModelConnectivity
+type modelConnectivityProbe func(context.Context, agentcore.ChatModel, time.Duration) error
+
+var addedModelConnectivityProbe modelConnectivityProbe = probeAddedModelConnectivity
 
 func SetAddedModelConnectivityProbeForTest(probe func(context.Context, agentcore.ChatModel) error) func() {
 	previous := addedModelConnectivityProbe
-	addedModelConnectivityProbe = probe
+	addedModelConnectivityProbe = func(ctx context.Context, model agentcore.ChatModel, _ time.Duration) error {
+		return probe(ctx, model)
+	}
 	return func() {
 		addedModelConnectivityProbe = previous
 	}
 }
 
-func probeAddedModelConnectivity(ctx context.Context, model agentcore.ChatModel) error {
+func probeAddedModelConnectivity(ctx context.Context, model agentcore.ChatModel, timeout time.Duration) error {
 	if model == nil {
-		return fmt.Errorf("模型连接测试失败: model is nil")
+		return fmt.Errorf("model connection test failed: model is nil")
 	}
-	ctx, cancel := context.WithTimeout(ctx, addedModelProbeTimeout)
+	if timeout <= 0 {
+		timeout = addedModelProbeTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	_, err := model.Generate(ctx, []agentcore.Message{
 		agentcore.UserMsg("Reply with OK only. This is a connection test."),
 	}, nil, agentcore.WithMaxTokens(8))
 	if err != nil {
-		return fmt.Errorf("模型连接测试失败: %w", err)
+		return fmt.Errorf("model connection test failed: %w", err)
 	}
 	return nil
 }

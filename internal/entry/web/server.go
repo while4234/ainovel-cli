@@ -150,6 +150,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/models/switch", s.handleModelSwitch)
 	mux.HandleFunc("/api/models/cocreate-timeout", s.handleCoCreateTimeout)
 	mux.HandleFunc("/api/models/add", s.handleModelAdd)
+	mux.HandleFunc("/api/models/test", s.handleModelTest)
+	mux.HandleFunc("/api/models/discover", s.handleModelDiscover)
 	mux.HandleFunc("/api/models/grok-login/", s.handleGrokLogin)
 	mux.HandleFunc("/api/projects/trash", s.handleProjectTrash)
 	mux.HandleFunc("/api/projects", s.handleProjects)
@@ -242,6 +244,7 @@ func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
 			"provider":                 cfg.Provider,
 			"model":                    cfg.ModelName,
 			"style":                    cfg.Style,
+			"proxy":                    cfg.Proxy,
 			"reasoning_effort":         cfg.ReasoningEffort,
 			"cocreate_timeout_seconds": cfg.EffectiveCoCreateTimeoutSeconds(),
 			"roles":                    cfg.Roles,
@@ -377,6 +380,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectCoCreateTimeout(w, r, id)
 	case "models/add":
 		s.handleProjectModelAdd(w, r, id)
+	case "models/test":
+		s.handleProjectModelTest(w, r, id)
+	case "models/discover":
+		s.handleProjectModelDiscover(w, r, id)
 	case "models/add-openai-compatible":
 		s.handleProjectModelAddOpenAICompatible(w, r, id)
 	case "style":

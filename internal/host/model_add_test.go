@@ -140,11 +140,8 @@ func TestAddProviderModelRejectsFailedConnectivityProbe(t *testing.T) {
 
 func withModelConnectivityProbe(t *testing.T, err error) {
 	t.Helper()
-	previous := addedModelConnectivityProbe
-	addedModelConnectivityProbe = func(context.Context, agentcore.ChatModel) error {
+	restore := SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
 		return err
-	}
-	t.Cleanup(func() {
-		addedModelConnectivityProbe = previous
 	})
+	t.Cleanup(restore)
 }

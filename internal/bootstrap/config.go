@@ -81,13 +81,18 @@ func (c Config) CoCreateTimeout() time.Duration {
 
 // ProviderConfig 定义单个 LLM 提供商的凭证。
 type ProviderConfig struct {
-	Type      string   `json:"type,omitempty"`       // API 协议类型（openai/anthropic/gemini），自定义代理时指定
-	Auth      string   `json:"auth,omitempty"`       // 认证模式：空/api_key/grok_oauth
-	AccountID string   `json:"account_id,omitempty"` // Grok OAuth 账号 ID；token 存在 ~/.ainovel/auth/grok.json
-	API       string   `json:"api,omitempty"`        // OpenAI 协议 endpoint：chat（默认）/ responses
-	APIKey    string   `json:"api_key,omitempty"`    // API Key
-	BaseURL   string   `json:"base_url,omitempty"`   // API Base URL
-	Models    []string `json:"models,omitempty"`     // 可选模型列表，供 TUI 切换时展示
+	Label                      string   `json:"label,omitempty"`
+	TemplateProvider           string   `json:"template_provider,omitempty"`
+	UseProxy                   *bool    `json:"use_proxy,omitempty"`
+	RequestTimeoutSeconds      int      `json:"request_timeout_seconds,omitempty"`
+	ConnectivityTimeoutSeconds int      `json:"connectivity_timeout_seconds,omitempty"`
+	Type                       string   `json:"type,omitempty"`       // API 协议类型（openai/anthropic/gemini），自定义代理时指定
+	Auth                       string   `json:"auth,omitempty"`       // 认证模式：空/api_key/grok_oauth
+	AccountID                  string   `json:"account_id,omitempty"` // Grok OAuth 账号 ID；token 存在 ~/.ainovel/auth/grok.json
+	API                        string   `json:"api,omitempty"`        // OpenAI 协议 endpoint：chat（默认）/ responses
+	APIKey                     string   `json:"api_key,omitempty"`    // API Key
+	BaseURL                    string   `json:"base_url,omitempty"`   // API Base URL
+	Models                     []string `json:"models,omitempty"`     // 可选模型列表，供 TUI 切换时展示
 	// ExtraBody 透传给该 provider 每次请求的额外参数（如 temperature/top_p/min_p/
 	// presence_penalty，或厂商特有键如 nvidia 开 think 的 chat_template_kwargs）。
 	// OpenAI 兼容端逐字并入请求体（即 extra_body 约定）；值由用户自负其责。
@@ -180,7 +185,8 @@ type Config struct {
 	// 角色未单独配置 reasoning_effort 时回落到此值。
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// CoCreateTimeoutSeconds 是 Web 共创单次模型调用超时；0 表示使用默认 60 秒。
-	CoCreateTimeoutSeconds int `json:"cocreate_timeout_seconds,omitempty"`
+	CoCreateTimeoutSeconds int    `json:"cocreate_timeout_seconds,omitempty"`
+	Proxy                  string `json:"proxy,omitempty"`
 
 	// Provider 凭证库
 	Providers map[string]ProviderConfig `json:"providers,omitempty"`
@@ -235,6 +241,9 @@ func (c *Config) ValidateBase() error {
 		return err
 	}
 	if _, err := NormalizeCoCreateTimeoutSeconds(c.CoCreateTimeoutSeconds); err != nil {
+		return err
+	}
+	if err := validateConfigText("proxy", c.Proxy); err != nil {
 		return err
 	}
 
@@ -344,6 +353,8 @@ func validateProviderConfigText(name string, pc ProviderConfig) error {
 		label string
 		value string
 	}{
+		{label: fmt.Sprintf("provider %q label", name), value: pc.Label},
+		{label: fmt.Sprintf("provider %q template_provider", name), value: pc.TemplateProvider},
 		{label: fmt.Sprintf("provider %q type", name), value: pc.Type},
 		{label: fmt.Sprintf("provider %q auth", name), value: pc.Auth},
 		{label: fmt.Sprintf("provider %q account_id", name), value: pc.AccountID},
@@ -365,6 +376,12 @@ func validateProviderConfigText(name string, pc ProviderConfig) error {
 	case "", "chat", "responses":
 	default:
 		return fmt.Errorf("provider %q api must be chat or responses: %w", name, errs.ErrConfig)
+	}
+	if pc.RequestTimeoutSeconds < 0 {
+		return fmt.Errorf("provider %q request_timeout_seconds must be >= 0: %w", name, errs.ErrConfig)
+	}
+	if pc.ConnectivityTimeoutSeconds < 0 {
+		return fmt.Errorf("provider %q connectivity_timeout_seconds must be >= 0: %w", name, errs.ErrConfig)
 	}
 	switch auth := strings.ToLower(strings.TrimSpace(pc.Auth)); auth {
 	case "", "api_key":

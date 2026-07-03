@@ -193,7 +193,7 @@ func (ms *ModelSet) ApplyConfig(cfg Config) error {
 	}
 
 	cache := make(map[string]agentcore.ChatModel)
-	defaultModel, err := createModelFromConfig(cfg.Provider, cfg.ModelName, cfg.DefaultProviderConfig(), cache)
+	defaultModel, err := createModelFromConfig(cfg, cfg.Provider, cfg.ModelName, cfg.DefaultProviderConfig(), cache)
 	if err != nil {
 		return fmt.Errorf("default model: %w", err)
 	}
@@ -208,7 +208,7 @@ func (ms *ModelSet) ApplyConfig(cfg Config) error {
 		if !ok {
 			return fmt.Errorf("role %s references unknown provider %q: %w", role, rc.Provider, errs.ErrConfig)
 		}
-		model, err := createModelFromConfig(rc.Provider, rc.Model, pc, cache)
+		model, err := createModelFromConfig(cfg, rc.Provider, rc.Model, pc, cache)
 		if err != nil {
 			return fmt.Errorf("role %s model: %w", role, err)
 		}
@@ -247,7 +247,7 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 	if !ok {
 		return fmt.Errorf("provider %q is not configured: %w", provider, errs.ErrConfig)
 	}
-	next, err := createModelFromConfig(provider, model, pc, make(map[string]agentcore.ChatModel))
+	next, err := createModelFromConfig(ms.config, provider, model, pc, make(map[string]agentcore.ChatModel))
 	if err != nil {
 		return fmt.Errorf("切换模型失败: %w", err)
 	}
@@ -285,7 +285,7 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 
 	// 创建默认模型
 	defaultPC := cfg.DefaultProviderConfig()
-	defaultModel, err := createModelFromConfig(cfg.Provider, cfg.ModelName, defaultPC, cache)
+	defaultModel, err := createModelFromConfig(cfg, cfg.Provider, cfg.ModelName, defaultPC, cache)
 	if err != nil {
 		return nil, fmt.Errorf("default model: %w", err)
 	}
@@ -306,7 +306,7 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 		if !ok {
 			return nil, fmt.Errorf("role %s references unknown provider %q: %w", role, rc.Provider, errs.ErrConfig)
 		}
-		m, err := createModelFromConfig(rc.Provider, rc.Model, pc, cache)
+		m, err := createModelFromConfig(cfg, rc.Provider, rc.Model, pc, cache)
 		if err != nil {
 			return nil, fmt.Errorf("role %s model: %w", role, err)
 		}
@@ -332,7 +332,7 @@ func buildFallbackTargets(role string, fallbacks []ModelRef, cfg Config, cache m
 		if !ok {
 			return nil, fmt.Errorf("role %s fallback references unknown provider %q: %w", role, fallback.Provider, errs.ErrConfig)
 		}
-		fm, err := createModelFromConfig(fallback.Provider, fallback.Model, fpc, cache)
+		fm, err := createModelFromConfig(cfg, fallback.Provider, fallback.Model, fpc, cache)
 		if err != nil {
 			return nil, fmt.Errorf("role %s fallback %s/%s: %w", role, fallback.Provider, fallback.Model, err)
 		}
@@ -347,11 +347,16 @@ func buildFallbackTargets(role string, fallbacks []ModelRef, cfg Config, cache m
 
 // NewProviderModel creates one provider/model instance without mutating a ModelSet.
 func NewProviderModel(providerKey, model string, pc ProviderConfig) (agentcore.ChatModel, error) {
-	return createModelFromConfig(providerKey, model, pc, make(map[string]agentcore.ChatModel))
+	return NewProviderModelWithConfig(Config{}, providerKey, model, pc)
+}
+
+// NewProviderModelWithConfig creates one provider/model instance with runtime config.
+func NewProviderModelWithConfig(cfg Config, providerKey, model string, pc ProviderConfig) (agentcore.ChatModel, error) {
+	return createModelFromConfig(cfg, providerKey, model, pc, make(map[string]agentcore.ChatModel))
 }
 
 // createModelFromConfig 创建或复用 ChatModel 实例。
-func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache map[string]agentcore.ChatModel) (agentcore.ChatModel, error) {
+func createModelFromConfig(cfg Config, providerKey, model string, pc ProviderConfig, cache map[string]agentcore.ChatModel) (agentcore.ChatModel, error) {
 	cacheKey := providerKey + "|" + model
 	if m, ok := cache[cacheKey]; ok {
 		return m, nil
@@ -365,7 +370,14 @@ func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache m
 		if strings.ToLower(strings.TrimSpace(providerType)) != "grok" {
 			return nil, fmt.Errorf("provider %s auth %q requires grok type: %w", providerKey, pc.Auth, errs.ErrConfig)
 		}
-		m, err := createGrokOAuthModel(providerKey, model, pc)
+		m, err := createGrokOAuthModel(cfg, providerKey, model, pc)
+		if err != nil {
+			return nil, err
+		}
+		cache[cacheKey] = m
+		return m, nil
+	}
+	if m, handled, err := newProviderModelWithRuntimeOptions(cfg, providerKey, model, pc); handled {
 		if err != nil {
 			return nil, err
 		}
@@ -383,6 +395,7 @@ func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache m
 	m, err := llm.NewModel(providerType, model,
 		llm.WithAPIKey(pc.APIKey),
 		llm.WithBaseURL(pc.BaseURL),
+		llm.WithRequestTimeout(ProviderRequestTimeout(pc)),
 		llm.WithStreamIdleTimeout(streamIdleTimeout),
 		llm.WithProviderExtra(providerExtra),
 		llm.WithExtra(pc.ExtraBody),
@@ -395,10 +408,14 @@ func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache m
 	return wrapped, nil
 }
 
-func createGrokOAuthModel(providerKey, model string, pc ProviderConfig) (agentcore.ChatModel, error) {
+func createGrokOAuthModel(cfg Config, providerKey, model string, pc ProviderConfig) (agentcore.ChatModel, error) {
 	headers, err := headersFromProviderExtra(pc.Extra)
 	if err != nil {
 		return nil, fmt.Errorf("provider %s extra.headers: %w", providerKey, err)
+	}
+	transport, _, err := ProviderTransport(cfg, providerKey, model, pc)
+	if err != nil {
+		return nil, err
 	}
 	baseURL := strings.TrimSpace(pc.BaseURL)
 	if baseURL == "" {
@@ -414,6 +431,7 @@ func createGrokOAuthModel(providerKey, model string, pc ProviderConfig) (agentco
 		},
 		BaseURL:                     baseURL,
 		Headers:                     headers,
+		Transport:                   transport,
 		UserAgent:                   stringFromProviderExtra(pc.Extra, "user_agent"),
 		AllowUnknownProviderOptions: true,
 	})
@@ -424,7 +442,11 @@ func createGrokOAuthModel(providerKey, model string, pc ProviderConfig) (agentco
 	if err != nil {
 		return nil, fmt.Errorf("provider %s (grok oauth): %w: %w", providerKey, errs.ErrProvider, err)
 	}
-	return globalprompt.WrapModel(llm.NewLiteLLMAdapter(model, client)), nil
+	wrapped := globalprompt.WrapModel(llm.NewLiteLLMAdapter(model, client))
+	if timeout := ProviderRequestTimeout(pc); timeout > 0 {
+		return &requestTimeoutModel{model: wrapped, timeout: timeout}, nil
+	}
+	return wrapped, nil
 }
 
 func headersFromProviderExtra(extra map[string]any) (map[string]string, error) {

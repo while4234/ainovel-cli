@@ -9,12 +9,21 @@
   // 省略或空字符串 = 不覆盖，沿用模型/provider 默认。
   "reasoning_effort": "medium",
 
+  // Optional global proxy used only by providers with use_proxy:true.
+  // Values like "127.0.0.1:7897" are normalized to "http://127.0.0.1:7897".
+  "proxy": "http://127.0.0.1:7897",
+
   // Provider 凭证库。key 自定义，用作上面 provider 字段引用的目标。
   // 已知 provider（openai/anthropic/gemini/openrouter/deepseek/qwen/glm/grok/mimo/ollama/bedrock）
   // 可省略 type；自定义代理必须显式声明 type 指明 API 协议。
   // Grok 账号登录使用 auth:"grok_oauth"，token 存在 ~/.ainovel/auth/grok.json，不写入 config.json。
   "providers": {
     "openrouter": {
+      "label": "OpenRouter",
+      "template_provider": "openrouter",
+      "use_proxy": false,
+      "request_timeout_seconds": 120,
+      "connectivity_timeout_seconds": 12,
       "api_key": "sk-or-v1-xxx",
       "base_url": "https://openrouter.ai/api/v1",
       // 可选。声明 /model 面板候选；省略时回退到配置中已出现过的同 provider 模型。
@@ -41,6 +50,7 @@
       "type": "grok",
       "auth": "grok_oauth",
       "account_id": "default",
+      "use_proxy": true,
       "models": ["grok-4.3-latest"]
     },
     "ollama": {
@@ -72,6 +82,9 @@
       // 用 extra 覆盖 User-Agent，并透传 Codex 识别头。
       // base_url 按代理实际地址填写；OpenAI 协议通常需要 /v1。
       "type": "openai",
+      "label": "Codex",
+      "template_provider": "codex",
+      "use_proxy": true,
       "api_key": "sk-xxx",
       "base_url": "https://proxy.example.com/v1",
       "models": ["gpt-5.4", "gpt-5.4-mini", "MiniMax-M3"],

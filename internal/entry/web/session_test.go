@@ -1373,6 +1373,18 @@ func (f *fakeProjectHost) ConfiguredModels(provider string) []string {
 	return nil
 }
 
+func (f *fakeProjectHost) ProviderConfig(provider string) (bootstrap.ProviderConfig, bool) {
+	if provider != "openrouter" {
+		return bootstrap.ProviderConfig{}, false
+	}
+	return bootstrap.ProviderConfig{
+		Type:    "openai",
+		API:     "chat",
+		BaseURL: "https://openrouter.ai/api/v1",
+		Models:  []string{"model-a", "model-b"},
+	}, true
+}
+
 func (f *fakeProjectHost) CurrentModelSelection(role string) (string, string, bool) {
 	if role == "" || role == "default" {
 		return "openrouter", "model-a", true
@@ -1398,6 +1410,23 @@ func (f *fakeProjectHost) AddProviderModel(role, providerName string, providerCo
 	f.addProviderConfig = providerConfig
 	f.addProviderModel = model
 	return f.addProviderErr
+}
+
+func (f *fakeProjectHost) TestProviderModel(_ context.Context, _ string, providerName string, _ bootstrap.ProviderConfig, model string) (host.ProviderModelTestResult, error) {
+	return host.ProviderModelTestResult{
+		Provider: providerName,
+		Model:    model,
+		Status:   "ok",
+	}, nil
+}
+
+func (f *fakeProjectHost) DiscoverProviderModels(_ context.Context, providerName string, _ bootstrap.ProviderConfig, _ string) (host.ProviderModelDiscoveryResult, error) {
+	return host.ProviderModelDiscoveryResult{
+		Provider:  providerName,
+		Models:    []string{"model-a", "model-b"},
+		Supported: true,
+		Status:    "ok",
+	}, nil
 }
 
 func (f *fakeProjectHost) RemoveProviderModel(providerName, model string) error {

@@ -157,6 +157,9 @@ func mergeConfig(base, overlay Config) Config {
 	if overlay.CoCreateTimeoutSeconds > 0 {
 		base.CoCreateTimeoutSeconds = overlay.CoCreateTimeoutSeconds
 	}
+	if overlay.Proxy != "" {
+		base.Proxy = overlay.Proxy
+	}
 	if overlay.Style != "" {
 		base.Style = overlay.Style
 	}
@@ -174,6 +177,22 @@ func mergeConfig(base, overlay Config) Config {
 		}
 		for k, v := range overlay.Providers {
 			existing := base.Providers[k]
+			if v.Label != "" {
+				existing.Label = v.Label
+			}
+			if v.TemplateProvider != "" {
+				existing.TemplateProvider = v.TemplateProvider
+			}
+			if v.UseProxy != nil {
+				useProxy := *v.UseProxy
+				existing.UseProxy = &useProxy
+			}
+			if v.RequestTimeoutSeconds > 0 {
+				existing.RequestTimeoutSeconds = v.RequestTimeoutSeconds
+			}
+			if v.ConnectivityTimeoutSeconds > 0 {
+				existing.ConnectivityTimeoutSeconds = v.ConnectivityTimeoutSeconds
+			}
 			if v.Type != "" {
 				existing.Type = v.Type
 			}

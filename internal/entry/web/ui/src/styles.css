@@ -270,8 +270,11 @@ h2 {
 .cocreate-form textarea,
 .model-route select,
 .default-model-controls select,
+.backend-picker-row select,
 .field-label input,
 .field-label select,
+.model-field input,
+.model-field select,
 .custom-model-form input,
 .custom-model-form select,
 .custom-model-form textarea {
@@ -292,8 +295,11 @@ h2 {
 .composer input,
 .model-route select,
 .default-model-controls select,
+.backend-picker-row select,
 .field-label input,
 .field-label select,
+.model-field input,
+.model-field select,
 .custom-model-form input,
 .custom-model-form select {
   height: 36px;
@@ -310,6 +316,9 @@ h2 {
 .custom-model-form textarea:focus,
 .field-label input:focus,
 .field-label select:focus,
+.model-field input:focus,
+.model-field select:focus,
+.backend-picker-row select:focus,
 .default-model-controls select:focus,
 .model-route select:focus {
   border-color: var(--accent);
@@ -2156,8 +2165,111 @@ h2 {
 .model-delete-form,
 .custom-model-form {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding-top: 8px;
+}
+
+.provider-template-section {
+  display: grid;
+  gap: 10px;
+}
+
+.provider-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.provider-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  background: var(--surface-solid);
+  color: var(--text);
+  font-weight: 800;
+}
+
+.provider-chip small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.provider-chip.active {
+  border-color: rgba(37, 130, 80, 0.38);
+  background: var(--success-soft);
+  color: #236241;
+}
+
+.backend-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.model-field,
+.model-checkbox-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.model-field span,
+.model-checkbox-field span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.model-checkbox-field {
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  min-height: 36px;
+}
+
+.model-checkbox-field input {
+  width: 16px;
+  height: 16px;
+}
+
+.model-editor-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.model-editor-actions .tool-button,
+.model-delete-form .tool-button,
+.backend-picker-row .tool-button {
+  width: 100%;
+  justify-content: center;
+}
+
+.model-test-note {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 9px;
+  background: var(--surface-solid);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.model-test-note.ok {
+  border-color: rgba(37, 130, 80, 0.24);
+  background: var(--success-soft);
+  color: #236241;
+}
+
+.model-test-note.error {
+  border-color: rgba(177, 59, 54, 0.35);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .default-model-controls {

@@ -88,9 +88,12 @@ type projectHost interface {
 	ReplayQueue(int64) ([]domain.RuntimeQueueItem, error)
 	ConfiguredProviders() []string
 	ConfiguredModels(string) []string
+	ProviderConfig(string) (bootstrap.ProviderConfig, bool)
 	CurrentModelSelection(string) (string, string, bool)
 	SwitchModel(string, string, string) error
 	AddProviderModel(string, string, bootstrap.ProviderConfig, string) error
+	TestProviderModel(context.Context, string, string, bootstrap.ProviderConfig, string) (host.ProviderModelTestResult, error)
+	DiscoverProviderModels(context.Context, string, bootstrap.ProviderConfig, string) (host.ProviderModelDiscoveryResult, error)
 	RemoveProviderModel(string, string) error
 	StartGrokLogin(string, string) (grokauth.LoginStart, error)
 	PollGrokLogin() (grokauth.LoginPoll, error)
@@ -303,10 +306,8 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 	providers := s.host.ConfiguredProviders()
 	outProviders := make([]apiModelProvider, 0, len(providers))
 	for _, provider := range providers {
-		outProviders = append(outProviders, apiModelProvider{
-			Name:   provider,
-			Models: s.host.ConfiguredModels(provider),
-		})
+		pc, _ := s.host.ProviderConfig(provider)
+		outProviders = append(outProviders, apiProviderFromConfig(provider, pc, s.host.ConfiguredModels(provider)))
 	}
 	roles := make([]apiModelRoute, 0, len(modelConfigRoles))
 	for _, role := range modelConfigRoles {
@@ -379,6 +380,14 @@ func (s *ProjectSession) AddProviderModel(role, provider, model string, pc boots
 	}
 	s.AppendSnapshot()
 	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) TestProviderModel(ctx context.Context, role, provider, model string, pc bootstrap.ProviderConfig) (host.ProviderModelTestResult, error) {
+	return s.host.TestProviderModel(ctx, normalizeModelRole(role), provider, pc, model)
+}
+
+func (s *ProjectSession) DiscoverProviderModels(ctx context.Context, provider, model string, pc bootstrap.ProviderConfig) (host.ProviderModelDiscoveryResult, error) {
+	return s.host.DiscoverProviderModels(ctx, provider, pc, model)
 }
 
 func (s *ProjectSession) RemoveProviderModel(provider, model string) (apiModelConfig, error) {

@@ -143,13 +143,20 @@ func TestLoadConfig_ValidMergeWorks(t *testing.T) {
 }
 
 func TestMergeConfig_ProviderExtraFields(t *testing.T) {
+	baseUseProxy := true
+	overlayUseProxy := false
 	base := Config{
 		Provider:  "openrouter",
 		ModelName: "google/gemini-2.5-flash",
+		Proxy:     "http://127.0.0.1:7890",
 		Providers: map[string]ProviderConfig{
 			"openrouter": {
-				API:    "chat",
-				APIKey: "sk-test-123456",
+				Label:                 "OpenRouter",
+				TemplateProvider:      "openrouter",
+				UseProxy:              &baseUseProxy,
+				RequestTimeoutSeconds: 60,
+				API:                   "chat",
+				APIKey:                "sk-test-123456",
 				ExtraBody: map[string]any{
 					"temperature": 0.8,
 				},
@@ -160,10 +167,16 @@ func TestMergeConfig_ProviderExtraFields(t *testing.T) {
 		},
 	}
 	overlay := Config{
+		Proxy: "127.0.0.1:7897",
 		Providers: map[string]ProviderConfig{
 			"openrouter": {
-				API:     "responses",
-				BaseURL: "https://proxy.example.com/v1",
+				Label:                      "OpenRouter Proxy",
+				TemplateProvider:           "codex",
+				UseProxy:                   &overlayUseProxy,
+				RequestTimeoutSeconds:      120,
+				ConnectivityTimeoutSeconds: 12,
+				API:                        "responses",
+				BaseURL:                    "https://proxy.example.com/v1",
 				ExtraBody: map[string]any{
 					"min_p": 0.05,
 				},
@@ -178,7 +191,19 @@ func TestMergeConfig_ProviderExtraFields(t *testing.T) {
 	}
 
 	cfg := mergeConfig(base, overlay)
+	if cfg.Proxy != "127.0.0.1:7897" {
+		t.Fatalf("Proxy = %q, want overlay proxy", cfg.Proxy)
+	}
 	pc := cfg.Providers["openrouter"]
+	if pc.Label != "OpenRouter Proxy" || pc.TemplateProvider != "codex" {
+		t.Fatalf("provider metadata = label %q template %q", pc.Label, pc.TemplateProvider)
+	}
+	if pc.UseProxy == nil || *pc.UseProxy {
+		t.Fatalf("UseProxy = %#v, want explicit false", pc.UseProxy)
+	}
+	if pc.RequestTimeoutSeconds != 120 || pc.ConnectivityTimeoutSeconds != 12 {
+		t.Fatalf("timeouts = %d/%d, want 120/12", pc.RequestTimeoutSeconds, pc.ConnectivityTimeoutSeconds)
+	}
 	if pc.APIKey != "sk-test-123456" {
 		t.Fatalf("APIKey = %q, want inherited key", pc.APIKey)
 	}

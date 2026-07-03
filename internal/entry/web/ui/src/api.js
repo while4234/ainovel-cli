@@ -390,6 +390,34 @@ export function addGlobalProviderModel(payload) {
   });
 }
 
+export function testGlobalProviderModel(payload) {
+  return request('/api/models/test', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function testProjectProviderModel(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/test`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function discoverGlobalProviderModels(payload) {
+  return request('/api/models/discover', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function discoverProjectProviderModels(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/discover`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
 function grokLoginPath(projectId, action) {
   if (!projectId) {
     return `/api/models/grok-login/${action}`;

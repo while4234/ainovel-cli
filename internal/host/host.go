@@ -1061,6 +1061,16 @@ func (h *Host) ConfiguredModels(provider string) []string {
 	return h.cfg.CandidateModels(provider)
 }
 
+func (h *Host) ProviderConfig(provider string) (bootstrap.ProviderConfig, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pc, ok := h.cfg.Providers[strings.TrimSpace(provider)]
+	if !ok {
+		return bootstrap.ProviderConfig{}, false
+	}
+	return cloneProviderConfig(pc), true
+}
+
 func (h *Host) CurrentModelSelection(role string) (string, string, bool) {
 	return h.models.CurrentSelection(role)
 }
@@ -1082,16 +1092,16 @@ func (h *Host) AddProviderModel(role, providerName string, providerConfig bootst
 	}
 
 	h.mu.Lock()
-	_, providerConfig, _, err := prepareAddedProviderModelConfig(h.cfg, role, providerName, providerConfig, model)
+	candidate, providerConfig, _, err := prepareAddedProviderModelConfig(h.cfg, role, providerName, providerConfig, model)
 	h.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	probeModel, err := bootstrap.NewProviderModel(providerName, model, providerConfig)
+	probeModel, err := bootstrap.NewProviderModelWithConfig(candidate, providerName, model, providerConfig)
 	if err != nil {
 		return err
 	}
-	if err := addedModelConnectivityProbe(context.Background(), probeModel); err != nil {
+	if err := addedModelConnectivityProbe(context.Background(), probeModel, bootstrap.ProviderConnectivityTimeout(providerConfig)); err != nil {
 		return err
 	}
 
@@ -1167,14 +1177,135 @@ func AddProviderModelToConfig(ctx context.Context, cfg bootstrap.Config, role, p
 	if err != nil {
 		return bootstrap.Config{}, err
 	}
-	probeModel, err := bootstrap.NewProviderModel(providerName, model, providerConfig)
+	probeModel, err := bootstrap.NewProviderModelWithConfig(candidate, providerName, model, providerConfig)
 	if err != nil {
 		return bootstrap.Config{}, err
 	}
-	if err := addedModelConnectivityProbe(ctx, probeModel); err != nil {
+	if err := addedModelConnectivityProbe(ctx, probeModel, bootstrap.ProviderConnectivityTimeout(providerConfig)); err != nil {
 		return bootstrap.Config{}, err
 	}
 	return SelectProviderModelInConfig(candidate, role, providerName, model)
+}
+
+type ProviderModelTestResult struct {
+	Provider  string    `json:"provider"`
+	Model     string    `json:"model"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message,omitempty"`
+	UseProxy  bool      `json:"use_proxy"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+type ProviderModelDiscoveryResult struct {
+	Provider  string    `json:"provider"`
+	Models    []string  `json:"models"`
+	Supported bool      `json:"supported"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message,omitempty"`
+	UseProxy  bool      `json:"use_proxy"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+func (h *Host) TestProviderModel(ctx context.Context, role, providerName string, providerConfig bootstrap.ProviderConfig, model string) (ProviderModelTestResult, error) {
+	h.mu.Lock()
+	cfg := cloneProjectConfig(h.cfg)
+	h.mu.Unlock()
+	return TestProviderModelInConfig(ctx, cfg, role, providerName, providerConfig, model)
+}
+
+func TestProviderModelInConfig(ctx context.Context, cfg bootstrap.Config, role, providerName string, providerConfig bootstrap.ProviderConfig, model string) (ProviderModelTestResult, error) {
+	providerName = strings.TrimSpace(providerName)
+	model = strings.TrimSpace(model)
+	result := ProviderModelTestResult{
+		Provider:  providerName,
+		Model:     model,
+		Status:    "error",
+		CheckedAt: time.Now(),
+	}
+	if providerName == "" || model == "" {
+		err := fmt.Errorf("provider and model are required")
+		result.Message = err.Error()
+		return result, err
+	}
+	if !validModelRole(role) {
+		err := fmt.Errorf("unknown role %q", role)
+		result.Message = err.Error()
+		return result, err
+	}
+	candidate, providerConfig, _, err := prepareAddedProviderModelConfig(cfg, role, providerName, providerConfig, model)
+	result.UseProxy = bootstrap.ProviderUsesProxy(providerName, model, providerConfig)
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	probeModel, err := bootstrap.NewProviderModelWithConfig(candidate, providerName, model, providerConfig)
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	if err := addedModelConnectivityProbe(ctx, probeModel, bootstrap.ProviderConnectivityTimeout(providerConfig)); err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	result.Status = "ok"
+	result.Message = "model test passed"
+	return result, nil
+}
+
+func (h *Host) DiscoverProviderModels(ctx context.Context, providerName string, providerConfig bootstrap.ProviderConfig, model string) (ProviderModelDiscoveryResult, error) {
+	h.mu.Lock()
+	cfg := cloneProjectConfig(h.cfg)
+	h.mu.Unlock()
+	return DiscoverProviderModelsInConfig(ctx, cfg, providerName, providerConfig, model)
+}
+
+func DiscoverProviderModelsInConfig(ctx context.Context, cfg bootstrap.Config, providerName string, providerConfig bootstrap.ProviderConfig, model string) (ProviderModelDiscoveryResult, error) {
+	providerName = strings.TrimSpace(providerName)
+	model = strings.TrimSpace(model)
+	result := ProviderModelDiscoveryResult{
+		Provider:  providerName,
+		Supported: false,
+		Status:    "error",
+		CheckedAt: time.Now(),
+	}
+	if providerName == "" {
+		err := fmt.Errorf("provider is required")
+		result.Message = err.Error()
+		return result, err
+	}
+	if model == "" {
+		if candidates := cfg.CandidateModels(providerName); len(candidates) > 0 {
+			model = candidates[0]
+		} else {
+			model = cfg.ModelName
+		}
+	}
+	candidate, providerConfig, _, err := prepareAddedProviderModelConfig(cfg, "default", providerName, providerConfig, model)
+	result.UseProxy = bootstrap.ProviderUsesProxy(providerName, model, providerConfig)
+	if err != nil {
+		result.Models = fallbackDiscoveryModels(cfg, providerName, model)
+		result.Message = err.Error()
+		return result, err
+	}
+	models, supported, err := bootstrap.DiscoverProviderModels(ctx, candidate, providerName, model, providerConfig)
+	result.Models = mergeDiscoveryModels(models, fallbackDiscoveryModels(candidate, providerName, model))
+	result.Supported = supported
+	if err != nil {
+		result.Message = err.Error()
+		if !supported {
+			result.Status = "fallback"
+			return result, nil
+		}
+		return result, err
+	}
+	if !supported {
+		result.Status = "fallback"
+		result.Message = "provider does not support live model discovery"
+		return result, nil
+	}
+	result.Status = "ok"
+	result.Message = "model discovery completed"
+	return result, nil
 }
 
 func RemoveProviderModelFromConfig(cfg bootstrap.Config, providerName, model string) (bootstrap.Config, error) {
@@ -1387,6 +1518,11 @@ func providerConfigCanAddModel(existing, incoming bootstrap.ProviderConfig) bool
 
 func providerConfigIsEmpty(pc bootstrap.ProviderConfig) bool {
 	return pc.Type == "" &&
+		pc.Label == "" &&
+		pc.TemplateProvider == "" &&
+		pc.UseProxy == nil &&
+		pc.RequestTimeoutSeconds == 0 &&
+		pc.ConnectivityTimeoutSeconds == 0 &&
 		pc.Auth == "" &&
 		pc.AccountID == "" &&
 		pc.API == "" &&
@@ -1395,6 +1531,30 @@ func providerConfigIsEmpty(pc bootstrap.ProviderConfig) bool {
 		len(pc.Models) == 0 &&
 		len(pc.ExtraBody) == 0 &&
 		len(pc.Extra) == 0
+}
+
+func fallbackDiscoveryModels(cfg bootstrap.Config, provider, model string) []string {
+	return mergeDiscoveryModels(nil, append(cfg.CandidateModels(provider), strings.TrimSpace(model)))
+}
+
+func mergeDiscoveryModels(primary, fallback []string) []string {
+	seen := make(map[string]bool, len(primary)+len(fallback))
+	models := make([]string, 0, len(primary)+len(fallback))
+	add := func(model string) {
+		model = strings.TrimSpace(model)
+		if model == "" || seen[model] {
+			return
+		}
+		seen[model] = true
+		models = append(models, model)
+	}
+	for _, model := range primary {
+		add(model)
+	}
+	for _, model := range fallback {
+		add(model)
+	}
+	return models
 }
 
 func (h *Host) persistConfigLocked() error {

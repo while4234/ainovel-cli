@@ -7,6 +7,8 @@ import {
   createProject,
   deleteGlobalProviderModel,
   deleteProviderModel,
+  discoverGlobalProviderModels,
+  discoverProjectProviderModels,
   emptyTrashProjects,
   getGlobalModels,
   listNovelLibrary,
@@ -25,6 +27,8 @@ import {
   startGrokLogin,
   switchGlobalDefaultModel,
   switchGlobalModel,
+  testGlobalProviderModel,
+  testProjectProviderModel,
   trashProject
 } from './api.js';
 
@@ -258,6 +262,40 @@ describe('web API helpers', () => {
         auth: 'grok_oauth',
         account_id: 'default'
       })
+    }));
+  });
+
+  it('tests and discovers provider models through global and project routes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+    const payload = {
+      role: 'default',
+      provider: 'codex',
+      model: 'gpt-5.1-codex',
+      type: 'openai',
+      api: 'responses',
+      use_proxy: true
+    };
+
+    await testGlobalProviderModel(payload);
+    await testProjectProviderModel('project-1', payload);
+    await discoverGlobalProviderModels(payload);
+    await discoverProjectProviderModels('project-1', payload);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/models/test', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/models/test', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/models/discover', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/projects/project-1/models/discover', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify(payload)
     }));
   });
 

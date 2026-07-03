@@ -42,6 +42,8 @@ import {
   createProject,
   deleteGlobalProviderModel,
   deleteProviderModel,
+  discoverGlobalProviderModels,
+  discoverProjectProviderModels,
   emptyTrashProjects,
   exportProject,
   getBackendStatus,
@@ -78,6 +80,8 @@ import {
   switchGlobalDefaultModel,
   switchProjectModel,
   testBackend,
+  testGlobalProviderModel,
+  testProjectProviderModel,
   trashProject,
   uploadAdaptationSource,
   uploadSimulationLibrary,
@@ -325,11 +329,19 @@ function createCustomModelState() {
     role: 'default',
     provider: '',
     preset: 'deepseek',
+    label: '',
+    template_provider: 'deepseek',
     type: 'openai',
     model: '',
     base_url: '',
     api_key: '',
     api: 'chat',
+    use_proxy: false,
+    request_timeout_seconds: '120',
+    connectivity_timeout_seconds: '12',
+    discovered_models: [],
+    test_status: 'idle',
+    test_message: '',
     account_id: grokOAuthDefaults.account_id,
     account_name: grokOAuthDefaults.account_name,
     callback_input: '',
@@ -340,15 +352,16 @@ function createCustomModelState() {
 }
 
 const providerPresets = [
-  { label: 'DeepSeek', provider: 'deepseek', type: 'deepseek', model: 'deepseek-chat', requiresKey: true },
-  { label: 'OpenAI', provider: 'openai', type: 'openai', model: 'gpt-4.1', requiresKey: true },
-  { label: 'Anthropic', provider: 'anthropic', type: 'anthropic', model: 'claude-sonnet-4-5', requiresKey: true },
-  { label: 'Gemini', provider: 'gemini', type: 'gemini', model: 'gemini-2.5-pro', requiresKey: true },
-  { label: 'Qwen', provider: 'qwen', type: 'qwen', model: 'qwen-max', requiresKey: true },
-  { label: 'GLM', provider: 'glm', type: 'glm', model: 'glm-4.5', requiresKey: true },
-  { label: 'OpenRouter', provider: 'openrouter', type: 'openrouter', model: 'openai/gpt-4.1', requiresKey: true },
-  { label: 'Grok API Key', provider: 'grok', type: 'grok', model: 'grok-4.3-latest', requiresKey: true },
-  { label: 'Ollama', provider: 'ollama', type: 'ollama', base_url: 'http://localhost:11434', model: 'qwen3:8b', requiresKey: false }
+  { label: 'DeepSeek', provider: 'deepseek', type: 'deepseek', model: 'deepseek-chat', requiresKey: true, useProxy: false },
+  { label: 'Codex', provider: 'codex', type: 'openai', api: 'responses', model: 'gpt-5.1-codex', requiresKey: true, useProxy: true },
+  { label: 'Grok API Key', provider: 'grok', type: 'grok', model: 'grok-4.3-latest', requiresKey: true, useProxy: true },
+  { label: 'OpenAI', provider: 'openai', type: 'openai', model: 'gpt-4.1', requiresKey: true, useProxy: false },
+  { label: 'Anthropic', provider: 'anthropic', type: 'anthropic', model: 'claude-sonnet-4-5', requiresKey: true, useProxy: false },
+  { label: 'Gemini', provider: 'gemini', type: 'gemini', model: 'gemini-2.5-pro', requiresKey: true, useProxy: false },
+  { label: 'Qwen', provider: 'qwen', type: 'qwen', model: 'qwen-max', requiresKey: true, useProxy: false },
+  { label: 'GLM', provider: 'glm', type: 'glm', model: 'glm-4.5', requiresKey: true, useProxy: false },
+  { label: 'OpenRouter', provider: 'openrouter', type: 'openrouter', model: 'openai/gpt-4.1', requiresKey: true, useProxy: false },
+  { label: 'Ollama', provider: 'ollama', type: 'ollama', base_url: 'http://localhost:11434', model: 'qwen3:8b', requiresKey: false, useProxy: false }
 ];
 
 const customProviderTypes = ['openai', 'anthropic', 'gemini', 'grok'];
@@ -1753,6 +1766,61 @@ export default function App() {
     }
   };
 
+  const discoverCustomModelModels = async () => {
+    const payload = buildModelAddPayload(customModel, modelConfig);
+    if (!payload.provider) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setCustomModel((previous) => ({ ...previous, test_status: 'running', test_message: '正在测试连接...' }));
+    try {
+      const data = activeProject?.id
+        ? await discoverProjectProviderModels(activeProject.id, payload)
+        : await discoverGlobalProviderModels(payload);
+      const discovery = data.discovery || {};
+      const models = Array.isArray(discovery.models) ? discovery.models : [];
+      setCustomModel((previous) => ({
+        ...previous,
+        discovered_models: models,
+        model: previous.model || models[0] || '',
+        test_status: discovery.status || 'ok',
+        test_message: discovery.message || (discovery.supported === false ? '已使用本地模型列表' : '连接测试完成')
+      }));
+    } catch (err) {
+      setError(err.message);
+      setCustomModel((previous) => ({ ...previous, test_status: 'error', test_message: err.message }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const testCustomModelConnection = async () => {
+    const payload = buildModelAddPayload(customModel, modelConfig);
+    if (!payload.provider || !payload.model) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setCustomModel((previous) => ({ ...previous, test_status: 'running', test_message: '正在测试模型...' }));
+    try {
+      const data = activeProject?.id
+        ? await testProjectProviderModel(activeProject.id, payload)
+        : await testGlobalProviderModel(payload);
+      const result = data.test || {};
+      setCustomModel((previous) => ({
+        ...previous,
+        test_status: result.status || 'ok',
+        test_message: result.message || '模型测试完成'
+      }));
+    } catch (err) {
+      setError(err.message);
+      setCustomModel((previous) => ({ ...previous, test_status: 'error', test_message: err.message }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const startGrokOAuthLogin = async () => {
     const authWindow = openPendingGrokAuthWindow();
     setError('');
@@ -2266,6 +2334,8 @@ export default function App() {
               onCoCreateTimeout={changeCoCreateTimeout}
               onDeleteModel={deleteModelRoute}
               onAddCustom={submitCustomModel}
+              onTestConnection={discoverCustomModelModels}
+              onTestModel={testCustomModelConnection}
               onStartGrokLogin={startGrokOAuthLogin}
               onPollGrokLogin={pollGrokOAuthLogin}
               onCompleteGrokLogin={completeGrokOAuthLogin}
@@ -3917,6 +3987,8 @@ function ModelPanel({
   onCoCreateTimeout,
   onDeleteModel,
   onAddCustom,
+  onTestConnection,
+  onTestModel,
   onStartGrokLogin,
   onPollGrokLogin,
   onCompleteGrokLogin,
@@ -3968,6 +4040,13 @@ function ModelPanel({
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
   const canAdd = canSubmitModelAdd(customModel, modelConfig);
+  const selectedProviderModels = modelOptionsForProvider(providers, customModel.provider, customModel.model);
+  const discoveredModels = Array.isArray(customModel.discovered_models) ? customModel.discovered_models : [];
+  const modelSuggestions = mergeModelOptions(discoveredModels, selectedProviderModels, customModel.model);
+  const providerEditorID = String(customModel.mode === 'existing' ? customModel.provider || providers[0]?.name || '' : customModel.provider || selectedPreset.provider || '').trim();
+  const providerEditorLabel = String(customModel.label || selectedPreset.label || '').trim();
+  const canTestConnection = Boolean(providerEditorID);
+  const canTestModel = Boolean(providerEditorID && String(customModel.model || '').trim());
   return (
     <div className="side-content">
       <section>
@@ -4132,6 +4211,51 @@ function ModelPanel({
           </button>
         </form>
       </section>
+      <section className="provider-template-section">
+        <div className="section-title">
+          <Server size={17} />
+          <span>后端提供方</span>
+        </div>
+        <div className="provider-chip-list">
+          {providerPresets.map((preset) => (
+            <button
+              className={`provider-chip ${customModel.preset === preset.provider && customModel.mode === 'preset' ? 'active' : ''}`}
+              disabled={busy}
+              key={preset.provider}
+              onClick={() => setCustomModel((previous) => modelAddPresetDefaults({ ...previous, mode: 'preset', preset: preset.provider }))}
+              type="button"
+            >
+              <span>{preset.provider}</span>
+              {preset.useProxy ? <small>AUTO</small> : null}
+            </button>
+          ))}
+        </div>
+        <div className="backend-picker-row">
+          <label className="field-label">
+            <span>已有后端</span>
+            <select
+              disabled={busy || providers.length === 0}
+              value={customModel.mode === 'existing' ? customModel.provider || providers[0]?.name || '' : ''}
+              onChange={(event) => setCustomModel((previous) => modelAddModeDefaults({ ...previous, mode: 'existing', provider: event.target.value, model: '' }, providers))}
+            >
+              <option value="">选择已有后端</option>
+              {providers.length === 0 ? <option value="">无后端</option> : null}
+              {providers.map((provider) => (
+                <option key={provider.name} value={provider.name}>{provider.label || provider.name}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="tool-button"
+            disabled={busy}
+            onClick={() => setCustomModel((previous) => modelAddPresetDefaults({ ...previous, mode: 'preset', preset: previous.preset || providerPresets[0].provider }))}
+            type="button"
+          >
+            <Plus size={16} />
+            新建
+          </button>
+        </div>
+      </section>
       <form className="custom-model-form" onSubmit={onAddCustom}>
         <div className="section-title">
           <Settings size={17} />
@@ -4156,6 +4280,67 @@ function ModelPanel({
           <option value="custom">Custom Proxy</option>
           <option value="grok_oauth">Grok 登录</option>
         </select>
+        <label className="model-field">
+          <span>模板厂商</span>
+          <select
+            disabled={busy || customModel.mode === 'existing'}
+            value={customModel.mode === 'preset' ? customModel.preset : customModel.template_provider || customModel.mode}
+            onChange={(event) => {
+              const value = event.target.value;
+              const preset = providerPresets.find((item) => item.provider === value);
+              if (preset) {
+                setCustomModel((previous) => modelAddPresetDefaults({ ...previous, mode: 'preset', preset: value }));
+                return;
+              }
+              setCustomModel((previous) => ({ ...previous, template_provider: value }));
+            }}
+          >
+            {providerPresets.map((preset) => (
+              <option key={preset.provider} value={preset.provider}>{preset.label}</option>
+            ))}
+            <option value="custom">custom</option>
+          </select>
+        </label>
+        <label className="model-field">
+          <span>显示名称</span>
+          <input
+            disabled={busy || customModel.mode === 'existing'}
+            placeholder="例如 DeepSeek / Codex"
+            value={providerEditorLabel}
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, label: event.target.value }))}
+          />
+        </label>
+        <label className="model-checkbox-field">
+          <input
+            checked={Boolean(customModel.use_proxy)}
+            disabled={busy || customModel.mode === 'existing'}
+            type="checkbox"
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, use_proxy: event.target.checked }))}
+          />
+          <span>使用代理访问</span>
+        </label>
+        <label className="model-field">
+          <span>请求超时</span>
+          <input
+            disabled={busy || customModel.mode === 'existing'}
+            inputMode="numeric"
+            min="1"
+            type="number"
+            value={customModel.request_timeout_seconds}
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, request_timeout_seconds: event.target.value }))}
+          />
+        </label>
+        <label className="model-field">
+          <span>连通性超时</span>
+          <input
+            disabled={busy || customModel.mode === 'existing'}
+            inputMode="numeric"
+            min="1"
+            type="number"
+            value={customModel.connectivity_timeout_seconds}
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, connectivity_timeout_seconds: event.target.value }))}
+          />
+        </label>
         {customModel.mode === 'existing' ? (
           <select
             disabled={busy || providers.length === 0}
@@ -4302,16 +4487,49 @@ function ModelPanel({
             </div>
           </>
         ) : null}
-        <input
-          disabled={busy}
-          placeholder="model"
-          value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
-          onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
-        />
-        <button className="tool-button accent full-width" disabled={busy || !canAdd} type="submit">
-          <Plus size={16} />
-          Add and use
-        </button>
+        <label className="model-field">
+          <span>模型</span>
+          <input
+            disabled={busy}
+            list="model-editor-options"
+            placeholder="model"
+            value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
+          />
+          <datalist id="model-editor-options">
+            {modelSuggestions.map((model) => (
+              <option key={model} value={model} />
+            ))}
+          </datalist>
+        </label>
+        {customModel.test_message ? (
+          <div className={`model-test-note ${customModel.test_status || 'idle'}`}>
+            {customModel.test_message}
+          </div>
+        ) : null}
+        <div className="model-editor-actions">
+          <button className="tool-button" disabled={busy || !canTestConnection} onClick={onTestConnection} type="button">
+            <TestTube2 size={16} />
+            测试连接
+          </button>
+          <button className="tool-button" disabled={busy || !canTestModel} onClick={onTestModel} type="button">
+            <ListRestart size={16} />
+            模型测试
+          </button>
+          <button
+            className="tool-button danger"
+            disabled={busy || !canDeleteModel}
+            onClick={() => onDeleteModel(deleteProvider, deleteModel)}
+            type="button"
+          >
+            <Trash2 size={16} />
+            删除后端
+          </button>
+          <button className="tool-button accent" disabled={busy || !canAdd} type="submit">
+            <Plus size={16} />
+            {customModel.mode === 'existing' ? '添加模型' : '保存后端'}
+          </button>
+        </div>
       </form>
       {modelConfig?.thinking_rule ? <div className="success-note">{modelConfig.thinking_rule}</div> : null}
     </div>
@@ -4540,9 +4758,12 @@ export function modelAddModeDefaults(state, providers = []) {
     return {
       ...state,
       provider: String(state.provider || '').startsWith('custom-') ? state.provider : 'custom-openai',
+      label: state.label || 'Custom',
+      template_provider: state.template_provider || 'custom',
       type: state.type || 'openai',
       model: state.model || 'model-name',
       api: state.api || 'chat',
+      use_proxy: Boolean(state.use_proxy),
       auth: ''
     };
   }
@@ -4552,10 +4773,13 @@ export function modelAddModeDefaults(state, providers = []) {
     return {
       ...state,
       provider: provider.toLowerCase().includes('grok') ? provider : grokOAuthDefaults.provider,
+      label: state.label || 'Grok',
+      template_provider: 'grok',
       type: grokOAuthDefaults.type,
       auth: grokOAuthDefaults.auth,
       model,
       api: 'chat',
+      use_proxy: true,
       api_key: '',
       base_url: '',
       account_id: state.account_id || grokOAuthDefaults.account_id,
@@ -4565,6 +4789,8 @@ export function modelAddModeDefaults(state, providers = []) {
   return {
     ...state,
     provider: providers.some((provider) => provider.name === state.provider) ? state.provider : providers[0]?.name || '',
+    label: '',
+    template_provider: '',
     type: '',
     auth: '',
     api: 'chat',
@@ -4583,16 +4809,51 @@ export function modelOptionsForProvider(providers = [], providerName = '', curre
   return models;
 }
 
+function mergeModelOptions(...groups) {
+  const seen = new Set();
+  const out = [];
+  for (const group of groups) {
+    const values = Array.isArray(group) ? group : [group];
+    for (const value of values) {
+      const model = String(value || '').trim();
+      if (!model || seen.has(model)) {
+        continue;
+      }
+      seen.add(model);
+      out.push(model);
+    }
+  }
+  return out;
+}
+
 function modelAddPresetDefaults(state) {
   const preset = providerPresets.find((item) => item.provider === state.preset) || providerPresets[0];
   return {
     ...state,
     provider: preset.provider,
+    label: preset.label,
+    template_provider: preset.provider,
     type: preset.type,
     auth: '',
     base_url: preset.base_url || '',
     model: preset.model,
-    api: preset.api || 'chat'
+    api: preset.api || 'chat',
+    use_proxy: Boolean(preset.useProxy)
+  };
+}
+
+function optionalModelTimeout(value) {
+  const parsed = Number(String(value ?? '').trim());
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function providerPayloadFields(state, fallback = {}) {
+  return {
+    label: String(state.label || fallback.label || '').trim(),
+    template_provider: String(state.template_provider || fallback.template_provider || fallback.provider || '').trim(),
+    use_proxy: Boolean(state.use_proxy),
+    request_timeout_seconds: optionalModelTimeout(state.request_timeout_seconds),
+    connectivity_timeout_seconds: optionalModelTimeout(state.connectivity_timeout_seconds)
   };
 }
 
@@ -4611,6 +4872,7 @@ export function buildModelAddPayload(state, modelConfig) {
       role,
       provider: String(state.provider || grokOAuthDefaults.provider).trim(),
       model: String(state.model || grokOAuthDefaults.model).trim(),
+      ...providerPayloadFields({ ...state, use_proxy: state.use_proxy ?? true }, { label: 'Grok', provider: 'grok' }),
       type: grokOAuthDefaults.type,
       auth: grokOAuthDefaults.auth,
       account_id: String(state.account_id || grokOAuthDefaults.account_id).trim()
@@ -4622,6 +4884,7 @@ export function buildModelAddPayload(state, modelConfig) {
       role,
       provider: String(state.provider || preset.provider).trim(),
       model: String(state.model || preset.model).trim(),
+      ...providerPayloadFields(state, { label: preset.label, provider: preset.provider }),
       type: preset.type,
       api: preset.api || '',
       api_key: String(state.api_key || '').trim(),
@@ -4632,6 +4895,7 @@ export function buildModelAddPayload(state, modelConfig) {
     role,
     provider: String(state.provider || '').trim(),
     model: String(state.model || '').trim(),
+    ...providerPayloadFields(state, { label: 'Custom', provider: 'custom' }),
     type: String(state.type || 'openai').trim(),
     api: state.type === 'openai' ? String(state.api || 'chat').trim() : '',
     api_key: String(state.api_key || '').trim(),

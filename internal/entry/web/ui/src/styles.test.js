@@ -44,4 +44,11 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.model-route select,[\s\S]*?width:\s*100%;/);
     expect(css).not.toMatch(/\.model-route select:nth-of-type\(2\)/);
   });
+
+  it('keeps model add, delete, and action controls single-column full width', () => {
+    expect(css).toMatch(/\.model-route-list,\s*[\r\n]+\.model-delete-form,\s*[\r\n]+\.custom-model-form\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).toMatch(/\.model-editor-actions\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).toMatch(/\.backend-picker-row\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).toMatch(/\.model-editor-actions \.tool-button,\s*[\r\n]+\.model-delete-form \.tool-button,\s*[\r\n]+\.backend-picker-row \.tool-button\s*{[^}]*width:\s*100%;/s);
+  });
 });
