@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `67a1759`
+- Latest source change: branch `main`, `af1b10d`
   `fix: remove stage wording from adaptation guidance`: removes "舞台" phrasing
   from adaptation/longform guidance so the prompts avoid dance/stage
   associations while preserving the label-ban behavior.
@@ -64,7 +64,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-04 `67a1759` `fix: remove stage wording from adaptation guidance`:
+- 2026-07-04 `af1b10d` `fix: remove stage wording from adaptation guidance`:
   replace "舞台提示" with "提示性括注" and "舞台大小" with "故事规模"; confirmed no
   `舞蹈` / `跳舞` / `舞台` / word-boundary `dance` / `dancing` terms remain in
   tracked project text outside historical Git notes.
