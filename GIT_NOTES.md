@@ -29,10 +29,12 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `af1b10d`
-  `fix: remove stage wording from adaptation guidance`: removes "舞台" phrasing
-  from adaptation/longform guidance so the prompts avoid dance/stage
-  associations while preserving the label-ban behavior.
+- Latest source change: branch `main`, `2379137`
+  `fix: dedupe adaptation proposal volumes in web ui`: deduplicates mirrored
+  proposal volumes from summary and full proposal snapshots so revision
+  selectors and proposal workspace sections show each volume once.
+- Previous source change: `af1b10d`
+  `fix: remove stage wording from adaptation guidance`.
 - Previous source change: `2f68cc2`
   `fix: stabilize adaptation proposal coverage`.
 - Previous source change: `331162c`
@@ -41,10 +43,10 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the wording cleanup commit, plus ignored
+- Working tree: expected clean after the volume dedupe UI commit, plus ignored
   local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
-  current `HEAD`; the restarted process is PID `41644`.
+  current `HEAD`; the restarted process is PID `11268`.
 - Validation:
   `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -run "TestBuildAdaptationProposal(FreeDefaultsLongSourceToChunkedPlanner|CoversSparseSourceAnchorsByExplicitRange|ClearsChunkedRuntimeAfterFinalValidationFailure|FreeUsesChunkedPlannerForLongTargetChapters|ResumesChunkedPlannerRuntimeAfterBatchFailure)$" -count=1 -v`
   passed;
@@ -61,9 +63,21 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   (`RuntimeState=running`, `Phase=writing`, `InProgressChapter=1`).
   Focused wording validation passed:
   `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./assets ./internal/tools -run 'TestLoadKeepsAdaptationGuidanceOutOfBaseWriterPrompt|TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation'`.
+  Volume dedupe validation passed:
+  `npm test -- src/workspace-progress.test.js`;
+  `npm run build`;
+  `.\restart-web.cmd -Port 9898` rebuilt the Web UI/Go executable, stopped PID
+  `28960`, and restarted Web on `http://127.0.0.1:9898` as PID `11268`;
+  Playwright verified the live project proposal still has 60 chapters / 5 stored
+  volumes and the UI shows `全卷` plus exactly 5 volume options, with exactly 5
+  proposal workspace volume blocks.
 
 ## Change Log
 
+- 2026-07-04 `2379137` `fix: dedupe adaptation proposal volumes in web ui`:
+  front-end proposal review now deduplicates summary/proposal mirrored volumes
+  by chapter range before rendering revision options and workspace sections;
+  includes a Vitest regression and rebuilt embedded Web assets.
 - 2026-07-04 `af1b10d` `fix: remove stage wording from adaptation guidance`:
   replace "舞台提示" with "提示性括注" and "舞台大小" with "故事规模"; confirmed no
   `舞蹈` / `跳舞` / `舞台` / word-boundary `dance` / `dancing` terms remain in
