@@ -21,6 +21,7 @@ const (
 	adaptationSourceFoundationFile = adaptationRootDir + "/source_foundation.json"
 	adaptationCheckDir             = adaptationRootDir + "/checks"
 	adaptationProposalFile         = adaptationRootDir + "/proposal.json"
+	adaptationProposalRuntimeFile  = adaptationRootDir + "/proposal_runtime.json"
 	adaptationPlanFile             = adaptationRootDir + "/plan.json"
 )
 
@@ -43,6 +44,10 @@ func (s *AdaptationStore) ResetGenerated() error {
 		}
 		err = os.Remove(s.io.path(adaptationProposalFile))
 		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		err = s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile)
+		if err != nil {
 			return err
 		}
 		return os.RemoveAll(s.io.path(adaptationCheckDir))
@@ -259,7 +264,12 @@ func (s *AdaptationStore) LoadSourceFoundation() (*domain.AdaptationSourceFounda
 func (s *AdaptationStore) SavePlan(plan domain.AdaptationPlan) error {
 	s.normalizeAdaptationPlan(&plan)
 	plan.Status = domain.AdaptationPlanStatusConfirmed
-	return s.io.WriteJSON(adaptationPlanFile, plan)
+	return s.io.WithWriteLock(func() error {
+		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
+			return err
+		}
+		return s.io.WriteJSONUnlocked(adaptationPlanFile, plan)
+	})
 }
 
 func (s *AdaptationStore) LoadPlan() (*domain.AdaptationPlan, error) {
@@ -277,7 +287,12 @@ func (s *AdaptationStore) LoadPlan() (*domain.AdaptationPlan, error) {
 func (s *AdaptationStore) SaveProposal(plan domain.AdaptationPlan) error {
 	s.normalizeAdaptationPlan(&plan)
 	plan.Status = domain.AdaptationPlanStatusProposal
-	return s.io.WriteJSON(adaptationProposalFile, plan)
+	return s.io.WithWriteLock(func() error {
+		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
+			return err
+		}
+		return s.io.WriteJSONUnlocked(adaptationProposalFile, plan)
+	})
 }
 
 func (s *AdaptationStore) LoadProposal() (*domain.AdaptationPlan, error) {
@@ -293,12 +308,32 @@ func (s *AdaptationStore) LoadProposal() (*domain.AdaptationPlan, error) {
 	return &proposal, nil
 }
 
-func (s *AdaptationStore) ClearProposal() error {
-	err := os.Remove(s.io.path(adaptationProposalFile))
-	if err != nil && !os.IsNotExist(err) {
-		return err
+func (s *AdaptationStore) SaveProposalRuntime(runtime domain.AdaptationProposalRuntime) error {
+	return s.io.WriteJSON(adaptationProposalRuntimeFile, runtime)
+}
+
+func (s *AdaptationStore) LoadProposalRuntime() (*domain.AdaptationProposalRuntime, error) {
+	var runtime domain.AdaptationProposalRuntime
+	if err := s.io.ReadJSON(adaptationProposalRuntimeFile, &runtime); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return nil
+	return &runtime, nil
+}
+
+func (s *AdaptationStore) ClearProposalRuntime() error {
+	return s.io.RemoveFile(adaptationProposalRuntimeFile)
+}
+
+func (s *AdaptationStore) ClearProposal() error {
+	return s.io.WithWriteLock(func() error {
+		if err := s.io.RemoveFileUnlocked(adaptationProposalFile); err != nil {
+			return err
+		}
+		return s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile)
+	})
 }
 
 func (s *AdaptationStore) Active() bool {

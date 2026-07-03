@@ -26,6 +26,12 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.profile-status span\s*{[^}]*white-space:\s*nowrap;/s);
   });
 
+  it('shows the full co-create draft inside the side pane scroll', () => {
+    expect(css).toMatch(/\.draft-preview\s*{[^}]*overflow:\s*visible;/s);
+    expect(css).not.toMatch(/\.draft-preview\s*{[^}]*max-height:/s);
+    expect(css).not.toMatch(/\.cocreate-sticky-workspace \.draft-preview\s*{[^}]*max-height:/s);
+  });
+
   it('keeps co-create waiting controls compact', () => {
     expect(css).toMatch(/\.cocreate-dialog\s*{[^}]*min-height:\s*280px;/s);
     expect(css).toMatch(/\.cocreate-dialog-suggestions\s*{[^}]*max-height:\s*132px;/s);
@@ -45,10 +51,10 @@ describe('ui styles', () => {
     expect(css).not.toMatch(/\.model-route select:nth-of-type\(2\)/);
   });
 
-  it('keeps model add, delete, and action controls single-column full width', () => {
-    expect(css).toMatch(/\.model-route-list,\s*[\r\n]+\.model-delete-form,\s*[\r\n]+\.custom-model-form\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
-    expect(css).toMatch(/\.model-editor-actions\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+  it('keeps model management and add controls single-column full width', () => {
+    expect(css).toMatch(/\.model-route-list,\s*[\r\n]+\.custom-model-form\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).toMatch(/\.model-editor-actions,\s*[\r\n]+\.existing-model-actions\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
     expect(css).toMatch(/\.backend-picker-row\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
-    expect(css).toMatch(/\.model-editor-actions \.tool-button,\s*[\r\n]+\.model-delete-form \.tool-button,\s*[\r\n]+\.backend-picker-row \.tool-button\s*{[^}]*width:\s*100%;/s);
+    expect(css).toMatch(/\.model-editor-actions \.tool-button,\s*[\r\n]+\.existing-model-actions \.tool-button\s*{[^}]*width:\s*100%;/s);
   });
 });

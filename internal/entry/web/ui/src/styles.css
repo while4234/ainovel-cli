@@ -1429,8 +1429,7 @@ h2 {
 
 .draft-preview {
   min-height: 116px;
-  max-height: 220px;
-  overflow: auto;
+  overflow: visible;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 9px;
@@ -1439,7 +1438,6 @@ h2 {
 
 .cocreate-sticky-workspace .draft-preview {
   min-height: 96px;
-  max-height: min(24vh, 220px);
 }
 
 .draft-preview pre {
@@ -2162,7 +2160,6 @@ h2 {
 }
 
 .model-route-list,
-.model-delete-form,
 .custom-model-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2237,15 +2234,15 @@ h2 {
   height: 16px;
 }
 
-.model-editor-actions {
+.model-editor-actions,
+.existing-model-actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
 .model-editor-actions .tool-button,
-.model-delete-form .tool-button,
-.backend-picker-row .tool-button {
+.existing-model-actions .tool-button {
   width: 100%;
   justify-content: center;
 }

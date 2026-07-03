@@ -82,6 +82,7 @@ type webCoCreateCheckpoint struct {
 	AdaptWordTolerance float64                        `json:"adapt_word_tolerance,omitempty"`
 	TargetTotalWords   int                            `json:"target_total_words,omitempty"`
 	AdaptationProposal *domain.AdaptationPlan         `json:"adaptation_proposal,omitempty"`
+	DraftConsolidated  bool                           `json:"draft_consolidated_for_commit,omitempty"`
 }
 
 type webCoCreateLogEntry struct {
@@ -128,6 +129,7 @@ type webCoCreateSession struct {
 	adaptWordTolerance float64
 	targetTotalWords   int
 	adaptationProposal *domain.AdaptationPlan
+	draftConsolidated  bool
 }
 
 func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Request, id string) {
@@ -370,6 +372,7 @@ func (s *webCoCreateSession) checkpoint(now time.Time) webCoCreateCheckpoint {
 		AdaptWordTolerance: s.adaptWordTolerance,
 		TargetTotalWords:   s.targetTotalWords,
 		AdaptationProposal: s.adaptationProposal,
+		DraftConsolidated:  s.draftConsolidated,
 	}
 }
 
@@ -421,6 +424,7 @@ func webCoCreateSessionFromCheckpoint(checkpoint webCoCreateCheckpoint) (*webCoC
 		adaptWordTolerance: adaptWordTolerance,
 		targetTotalWords:   checkpoint.TargetTotalWords,
 		adaptationProposal: checkpoint.AdaptationProposal,
+		draftConsolidated:  checkpoint.DraftConsolidated,
 	}, nil
 }
 
@@ -652,6 +656,7 @@ func (s *webCoCreateSession) appendUser(text, source string) error {
 	}
 	historyIndex := len(s.session.History())
 	s.session.AppendUser(text)
+	s.draftConsolidated = false
 	if coCreateMessageSource(source) == "" {
 		source = "custom"
 	}
@@ -662,6 +667,7 @@ func (s *webCoCreateSession) appendUser(text, source string) error {
 func (s *webCoCreateSession) applyReply(reply host.CoCreateReply) {
 	historyIndex := len(s.session.History())
 	s.session.ApplyReply(reply)
+	s.draftConsolidated = false
 	if text := strings.TrimSpace(reply.Message); text != "" {
 		s.messages = append(s.messages, s.newMessage("assistant", text, "", historyIndex))
 	}
@@ -707,6 +713,9 @@ func (s *webCoCreateSession) currentDraftNeedsRepair() (bool, string) {
 
 func (s *webCoCreateSession) shouldConsolidateDraftBeforeCommit() bool {
 	if s == nil || s.session == nil || s.kind != webCoCreateKindAdapt || !s.session.DraftFresh() {
+		return false
+	}
+	if s.draftConsolidated {
 		return false
 	}
 	return coCreatePlanningUserMessageCount(s.kind, s.session.History()) > 1
@@ -931,6 +940,7 @@ func (s *webCoCreateSession) reviseUser(messageID, text string) error {
 		history = append([]host.CoCreateMessage(nil), history[:message.historyIndex+1]...)
 		history[message.historyIndex] = host.CoCreateMessage{Role: "user", Content: text}
 		s.session.ResetHistory(history)
+		s.draftConsolidated = false
 		s.messages = append([]webCoCreateMessage(nil), s.messages[:idx+1]...)
 		s.messages[idx].Content = text
 		if s.messages[idx].Source == "" {

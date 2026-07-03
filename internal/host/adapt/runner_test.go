@@ -555,6 +555,84 @@ func TestBuildAdaptationProposalFreeUsesChunkedPlannerForLongTargetChapters(t *t
 	}
 }
 
+func TestBuildAdaptationProposalResumesChunkedPlannerRuntimeAfterBatchFailure(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	brief := "free restructure into 20 chapters"
+	first := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free restructure into 20 chapters",
+			"target_chapter_count": 20,
+			"mainline_rules": ["keep every source turn anchored"],
+			"relationship_goals": ["slow emotional escalation"],
+			"batches": [
+				{"index": 1, "title": "Opening volume", "theme": "orientation", "target_from": 1, "target_to": 8, "source_from": 1, "source_to": 2, "summary": "establish the new premise"},
+				{"index": 2, "title": "Pressure volume", "theme": "choice", "target_from": 9, "target_to": 16, "source_from": 2, "source_to": 3, "summary": "expand the central conflict"},
+				{"index": 3, "title": "Resolution volume", "theme": "payoff", "target_from": 17, "target_to": 20, "source_from": 3, "source_to": 4, "summary": "resolve the adapted ending"}
+			]
+		}`},
+		{text: plannerBatchProposalJSON(1, 8, 1, 2)},
+		{err: context.Canceled},
+	}}
+
+	_, err := BuildAdaptationProposal(Deps{Store: st, LLM: first}, ProposalOptions{
+		Brief:              brief,
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
+	})
+	if err == nil {
+		t.Fatal("first interrupted proposal build should fail")
+	}
+	if first.calls != 3 {
+		t.Fatalf("first planner calls=%d, want skeleton + first batch + failed second batch", first.calls)
+	}
+	runtime, err := st.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		t.Fatalf("LoadProposalRuntime: %v", err)
+	}
+	if runtime == nil || runtime.Skeleton == nil || len(runtime.CompletedBatches) != 1 {
+		t.Fatalf("runtime should keep skeleton and first completed batch: %+v", runtime)
+	}
+	if runtime.CompletedBatches[0].TargetFrom != 1 || runtime.CompletedBatches[0].TargetTo != 8 {
+		t.Fatalf("completed runtime batch = %+v", runtime.CompletedBatches[0])
+	}
+	if saved, err := st.Adaptation.LoadProposal(); err != nil || saved != nil {
+		t.Fatalf("proposal should not be saved after interrupted run: proposal=%+v err=%v", saved, err)
+	}
+
+	second := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: plannerBatchProposalJSON(9, 16, 2, 3)},
+		{text: plannerBatchProposalJSON(17, 20, 3, 4)},
+	}}
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: second}, ProposalOptions{
+		Brief:              brief,
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal resume: %v", err)
+	}
+	if second.calls != 2 {
+		t.Fatalf("resume planner calls=%d, want only remaining two detail batches", second.calls)
+	}
+	if len(proposal.Chapters) != 20 || proposal.Chapters[0].Chapter != 1 || proposal.Chapters[19].Chapter != 20 {
+		t.Fatalf("resumed proposal chapters = %+v", proposal.Chapters)
+	}
+	firstResumePrompt := second.got[0][1].TextContent()
+	if !strings.Contains(firstResumePrompt, `"target_from": 9`) || strings.Contains(firstResumePrompt, "Do not return chapter details") {
+		t.Fatalf("resume should skip skeleton and first batch, prompt=%s", firstResumePrompt)
+	}
+	if runtime, err := st.Adaptation.LoadProposalRuntime(); err != nil || runtime != nil {
+		t.Fatalf("runtime should be cleared after successful proposal save: runtime=%+v err=%v", runtime, err)
+	}
+}
+
 func TestBuildAdaptationProposalRepairsChunkedSkeletonWithoutBatches(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

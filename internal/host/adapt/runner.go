@@ -33,6 +33,7 @@ const (
 	adaptationPlannerRevisionBatchMax    = 8
 	adaptationPlannerRepairMaxAttempts   = 2
 	adaptationPlannerGenerateMaxAttempts = retrypolicy.MaxAttempts
+	adaptationProposalRuntimeVersion     = 1
 )
 
 var plannerRetrySleep = retrypolicy.Wait
@@ -949,6 +950,7 @@ func buildPlanFromPlannerSingle(
 		return zero, plannerUnusableOutputError{err: err}
 	}
 	if err := validatePlannerProposal(&proposal, opts, reports, manifest, deps.LLM); err != nil {
+		_ = deps.Store.Adaptation.ClearProposalRuntime()
 		return zero, err
 	}
 	return proposal, nil
@@ -1053,38 +1055,52 @@ func buildPlanFromPlannerChunked(
 	if err != nil {
 		return zero, err
 	}
-	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, fmt.Sprintf("请求长篇改编骨架规划：目标约 %d 章", targetChapterHint), nil)
-	skeletonText, err := generatePlannerText(
-		ctx,
-		deps.LLM,
-		systemPrompt,
-		skeletonPrompt,
-		adaptationPlannerSkeletonMaxTokens,
-		opts.EmitProgress,
-		0,
-		0,
-		"长篇骨架规划",
-	)
+	runtime, runtimeSkeleton, err := loadPlannerProposalRuntime(deps, opts, manifest, targetChapterHint, opts.EmitProgress)
 	if err != nil {
-		return zero, fmt.Errorf("planner skeleton llm generate: %w", err)
+		return zero, err
 	}
-	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "长篇骨架模型已返回，正在解析分卷/分批结构", nil)
 	var skeleton plannerSkeleton
-	for attempt := 0; ; attempt++ {
-		skeleton, err = parsePlannerSkeleton(skeletonText)
-		if err == nil {
-			err = normalizePlannerSkeleton(&skeleton, opts, manifest, targetChapterHint)
-		}
-		if err == nil {
-			break
-		}
-		if !plannerSkeletonErrorRepairable(err) || attempt >= adaptationPlannerRepairMaxAttempts {
-			return zero, fmt.Errorf("planner skeleton: %w", err)
-		}
-		emitAdaptProgress(opts.EmitProgress, StagePlan, attempt+1, adaptationPlannerRepairMaxAttempts, fmt.Sprintf("骨架规划返回不符合结构，正在修复第 %d 次：%v", attempt+1, err), err)
-		skeletonText, err = repairPlannerSkeletonText(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, err, opts.EmitProgress, 0, 0)
+	if runtimeSkeleton != nil {
+		skeleton = *runtimeSkeleton
+		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, fmt.Sprintf("Resuming proposal skeleton runtime: %d target chapters", skeleton.TargetChapterCount), nil)
+	} else {
+		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, fmt.Sprintf("请求长篇改编骨架规划：目标约 %d 章", targetChapterHint), nil)
+		skeletonText, err := generatePlannerText(
+			ctx,
+			deps.LLM,
+			systemPrompt,
+			skeletonPrompt,
+			adaptationPlannerSkeletonMaxTokens,
+			opts.EmitProgress,
+			0,
+			0,
+			"长篇骨架规划",
+		)
 		if err != nil {
-			return zero, fmt.Errorf("planner skeleton: %w", err)
+			return zero, fmt.Errorf("planner skeleton llm generate: %w", err)
+		}
+		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "长篇骨架模型已返回，正在解析分卷/分批结构", nil)
+		for attempt := 0; ; attempt++ {
+			skeleton, err = parsePlannerSkeleton(skeletonText)
+			if err == nil {
+				err = normalizePlannerSkeleton(&skeleton, opts, manifest, targetChapterHint)
+			}
+			if err == nil {
+				break
+			}
+			if !plannerSkeletonErrorRepairable(err) || attempt >= adaptationPlannerRepairMaxAttempts {
+				return zero, fmt.Errorf("planner skeleton: %w", err)
+			}
+			emitAdaptProgress(opts.EmitProgress, StagePlan, attempt+1, adaptationPlannerRepairMaxAttempts, fmt.Sprintf("骨架规划返回不符合结构，正在修复第 %d 次：%v", attempt+1, err), err)
+			skeletonText, err = repairPlannerSkeletonText(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, err, opts.EmitProgress, 0, 0)
+			if err != nil {
+				return zero, fmt.Errorf("planner skeleton: %w", err)
+			}
+		}
+		runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+		runtime.CompletedBatches = nil
+		if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+			return zero, fmt.Errorf("save proposal runtime skeleton: %w", err)
 		}
 	}
 	detailBatches := plannerDetailBatches(skeleton.Batches, adaptationPlannerRecommendedBatchMax)
@@ -1092,6 +1108,11 @@ func buildPlanFromPlannerChunked(
 
 	chapters := make([]domain.AdaptationChapterPlan, 0, skeleton.TargetChapterCount)
 	for batchOrdinal, batch := range detailBatches {
+		if batchChapters, ok := plannerRuntimeBatchChapters(runtime, batch); ok {
+			chapters = append(chapters, batchChapters...)
+			emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("Reused proposal detail batch %d/%d: target %d-%d", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
+			continue
+		}
 		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, sourceFoundation, skeleton, batch, reportsForPlannerBatch(reports, batch))
 		if err != nil {
 			return zero, err
@@ -1134,6 +1155,10 @@ func buildPlanFromPlannerChunked(
 			return zero, fmt.Errorf("planner batch %d: no chapters", batch.Index)
 		}
 		chapters = append(chapters, batchChapters...)
+		upsertPlannerProposalRuntimeBatch(runtime, batch, batchChapters)
+		if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+			return zero, fmt.Errorf("save proposal runtime batch %d: %w", batch.Index, err)
+		}
 		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("章节详情第 %d/%d 批完成：第 %d-%d 章", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
 	}
 
@@ -1161,6 +1186,239 @@ func buildPlanFromPlannerChunked(
 		return zero, err
 	}
 	return proposal, nil
+}
+
+func loadPlannerProposalRuntime(
+	deps Deps,
+	opts ProposalOptions,
+	manifest *domain.AdaptationSourceManifest,
+	targetChapterHint int,
+	emit ProgressEmitter,
+) (*domain.AdaptationProposalRuntime, *plannerSkeleton, error) {
+	runtime := newPlannerProposalRuntime(opts, manifest, targetChapterHint)
+	existing, err := deps.Store.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load proposal runtime: %w", err)
+	}
+	if existing == nil {
+		return runtime, nil, nil
+	}
+	if !plannerProposalRuntimeMatches(existing, opts, manifest, targetChapterHint) {
+		emitAdaptProgress(emit, StagePlan, 0, 0, "Discarding stale proposal runtime checkpoint", nil)
+		if err := deps.Store.Adaptation.ClearProposalRuntime(); err != nil {
+			return nil, nil, fmt.Errorf("clear stale proposal runtime: %w", err)
+		}
+		return runtime, nil, nil
+	}
+	if existing.Skeleton == nil {
+		return existing, nil, nil
+	}
+	skeleton := plannerSkeletonFromRuntime(existing)
+	if err := normalizePlannerSkeleton(&skeleton, opts, manifest, targetChapterHint); err != nil {
+		emitAdaptProgress(emit, StagePlan, 0, 0, fmt.Sprintf("Discarding invalid proposal runtime skeleton: %v", err), err)
+		if clearErr := deps.Store.Adaptation.ClearProposalRuntime(); clearErr != nil {
+			return nil, nil, fmt.Errorf("clear invalid proposal runtime: %w", clearErr)
+		}
+		return runtime, nil, nil
+	}
+	existing.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+	return existing, &skeleton, nil
+}
+
+func newPlannerProposalRuntime(opts ProposalOptions, manifest *domain.AdaptationSourceManifest, targetChapterHint int) *domain.AdaptationProposalRuntime {
+	sourcePath := plannerProposalRuntimeSourcePath(opts, manifest)
+	return &domain.AdaptationProposalRuntime{
+		Version:            adaptationProposalRuntimeVersion,
+		Brief:              strings.TrimSpace(opts.Brief),
+		SourcePath:         sourcePath,
+		SourceChapterCount: plannerProposalRuntimeSourceChapterCount(manifest),
+		Granularity:        strings.TrimSpace(opts.Granularity),
+		RewritePolicy:      strings.TrimSpace(opts.RewritePolicy),
+		WordTolerance:      opts.WordTolerance,
+		TargetChapterCount: targetChapterHint,
+	}
+}
+
+func plannerProposalRuntimeMatches(runtime *domain.AdaptationProposalRuntime, opts ProposalOptions, manifest *domain.AdaptationSourceManifest, targetChapterHint int) bool {
+	if runtime == nil || runtime.Version != adaptationProposalRuntimeVersion {
+		return false
+	}
+	if strings.TrimSpace(runtime.Brief) != strings.TrimSpace(opts.Brief) {
+		return false
+	}
+	if strings.TrimSpace(runtime.Granularity) != strings.TrimSpace(opts.Granularity) {
+		return false
+	}
+	if strings.TrimSpace(runtime.RewritePolicy) != strings.TrimSpace(opts.RewritePolicy) {
+		return false
+	}
+	if math.Abs(runtime.WordTolerance-opts.WordTolerance) > 0.000001 {
+		return false
+	}
+	if runtime.TargetChapterCount != targetChapterHint {
+		return false
+	}
+	if runtime.SourceChapterCount != plannerProposalRuntimeSourceChapterCount(manifest) {
+		return false
+	}
+	return sameSourcePath(runtime.SourcePath, plannerProposalRuntimeSourcePath(opts, manifest))
+}
+
+func plannerProposalRuntimeSourcePath(opts ProposalOptions, manifest *domain.AdaptationSourceManifest) string {
+	if manifest != nil && strings.TrimSpace(manifest.SourcePath) != "" {
+		return strings.TrimSpace(manifest.SourcePath)
+	}
+	return strings.TrimSpace(opts.SourcePath)
+}
+
+func plannerProposalRuntimeSourceChapterCount(manifest *domain.AdaptationSourceManifest) int {
+	if manifest == nil {
+		return 0
+	}
+	return manifest.ChapterCount
+}
+
+func savePlannerProposalRuntime(deps Deps, runtime *domain.AdaptationProposalRuntime) error {
+	if deps.Store == nil {
+		return fmt.Errorf("store is required")
+	}
+	if runtime == nil {
+		return nil
+	}
+	runtime.Version = adaptationProposalRuntimeVersion
+	runtime.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	return deps.Store.Adaptation.SaveProposalRuntime(*runtime)
+}
+
+func plannerSkeletonFromRuntime(runtime *domain.AdaptationProposalRuntime) plannerSkeleton {
+	if runtime == nil || runtime.Skeleton == nil {
+		return plannerSkeleton{}
+	}
+	outline := runtime.Skeleton
+	batches := make([]plannerSkeletonBatch, 0, len(outline.Batches))
+	for _, batch := range outline.Batches {
+		batches = append(batches, plannerSkeletonBatch{
+			Index:              batch.Index,
+			Title:              batch.Title,
+			Theme:              batch.Theme,
+			Goal:               batch.Goal,
+			Summary:            batch.Summary,
+			TargetFrom:         batch.TargetFrom,
+			TargetTo:           batch.TargetTo,
+			TargetChapterCount: batch.TargetChapterCount,
+			SourceFrom:         batch.SourceFrom,
+			SourceTo:           batch.SourceTo,
+			SourceChapters:     append([]int(nil), batch.SourceChapters...),
+			Notes:              append([]string(nil), batch.Notes...),
+		})
+	}
+	return plannerSkeleton{
+		Granularity:        runtime.Granularity,
+		Status:             domain.AdaptationPlanStatusProposal,
+		RewritePolicy:      runtime.RewritePolicy,
+		Brief:              runtime.Brief,
+		TargetChapterCount: outline.TargetChapterCount,
+		MainlineRules:      append([]string(nil), outline.MainlineRules...),
+		RelationshipGoals:  append([]string(nil), outline.RelationshipGoals...),
+		Batches:            batches,
+		Planner:            clonePlannerRuntimeMeta(outline.Planner),
+	}
+}
+
+func plannerRuntimeOutlineFromSkeleton(skeleton plannerSkeleton) *domain.AdaptationProposalRuntimeOutline {
+	batches := make([]domain.AdaptationProposalRuntimeSkeletonBatch, 0, len(skeleton.Batches))
+	for _, batch := range skeleton.Batches {
+		batches = append(batches, domain.AdaptationProposalRuntimeSkeletonBatch{
+			Index:              batch.Index,
+			Title:              batch.Title,
+			Theme:              batch.Theme,
+			Goal:               batch.Goal,
+			Summary:            batch.Summary,
+			TargetFrom:         batch.TargetFrom,
+			TargetTo:           batch.TargetTo,
+			TargetChapterCount: batch.TargetChapterCount,
+			SourceFrom:         batch.SourceFrom,
+			SourceTo:           batch.SourceTo,
+			SourceChapters:     append([]int(nil), batch.SourceChapters...),
+			Notes:              append([]string(nil), batch.Notes...),
+		})
+	}
+	return &domain.AdaptationProposalRuntimeOutline{
+		TargetChapterCount: skeleton.TargetChapterCount,
+		MainlineRules:      append([]string(nil), skeleton.MainlineRules...),
+		RelationshipGoals:  append([]string(nil), skeleton.RelationshipGoals...),
+		Batches:            batches,
+		Planner:            clonePlannerRuntimeMeta(skeleton.Planner),
+	}
+}
+
+func plannerRuntimeBatchChapters(runtime *domain.AdaptationProposalRuntime, batch plannerSkeletonBatch) ([]domain.AdaptationChapterPlan, bool) {
+	if runtime == nil {
+		return nil, false
+	}
+	for _, completed := range runtime.CompletedBatches {
+		if !plannerRuntimeBatchMatches(completed, batch) {
+			continue
+		}
+		chapters := make([]domain.AdaptationChapterPlan, 0, len(completed.Chapters))
+		for _, chapter := range completed.Chapters {
+			chapters = append(chapters, cloneAdaptationChapterPlan(chapter))
+		}
+		normalized, err := normalizePlannerBatchChapters(chapters, batch)
+		if err == nil {
+			return normalized, true
+		}
+	}
+	return nil, false
+}
+
+func plannerRuntimeBatchMatches(completed domain.AdaptationProposalRuntimeBatch, batch plannerSkeletonBatch) bool {
+	return completed.TargetFrom == batch.TargetFrom &&
+		completed.TargetTo == batch.TargetTo &&
+		completed.SourceFrom == batch.SourceFrom &&
+		completed.SourceTo == batch.SourceTo
+}
+
+func upsertPlannerProposalRuntimeBatch(runtime *domain.AdaptationProposalRuntime, batch plannerSkeletonBatch, chapters []domain.AdaptationChapterPlan) {
+	if runtime == nil {
+		return
+	}
+	out := runtime.CompletedBatches[:0]
+	for _, completed := range runtime.CompletedBatches {
+		if plannerRuntimeBatchMatches(completed, batch) {
+			continue
+		}
+		out = append(out, completed)
+	}
+	storedChapters := make([]domain.AdaptationChapterPlan, 0, len(chapters))
+	for _, chapter := range chapters {
+		storedChapters = append(storedChapters, cloneAdaptationChapterPlan(chapter))
+	}
+	out = append(out, domain.AdaptationProposalRuntimeBatch{
+		Index:       batch.Index,
+		TargetFrom:  batch.TargetFrom,
+		TargetTo:    batch.TargetTo,
+		SourceFrom:  batch.SourceFrom,
+		SourceTo:    batch.SourceTo,
+		CompletedAt: time.Now().UTC().Format(time.RFC3339),
+		Chapters:    storedChapters,
+	})
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TargetFrom == out[j].TargetFrom {
+			return out[i].TargetTo < out[j].TargetTo
+		}
+		return out[i].TargetFrom < out[j].TargetFrom
+	})
+	runtime.CompletedBatches = out
+}
+
+func clonePlannerRuntimeMeta(planner *domain.AdaptationPlannerMeta) *domain.AdaptationPlannerMeta {
+	if planner == nil {
+		return nil
+	}
+	out := *planner
+	out.Notes = append(domain.TextList(nil), planner.Notes...)
+	return &out
 }
 
 func plannerSkeletonErrorRepairable(err error) bool {

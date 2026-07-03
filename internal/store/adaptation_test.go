@@ -245,6 +245,55 @@ func TestAdaptationPlanPersistsSourceDerivedSoftBudgets(t *testing.T) {
 	}
 }
 
+func TestAdaptationStoreSaveProposalClearsProposalRuntime(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
+		Version:            1,
+		Brief:              "runtime draft",
+		SourcePath:         "source.txt",
+		SourceChapterCount: 1,
+		Granularity:        domain.AdaptationGranularityFree,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		TargetChapterCount: 1,
+	}); err != nil {
+		t.Fatalf("SaveProposalRuntime: %v", err)
+	}
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityFree,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Brief:         "finished proposal",
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, Title: "Target One", SourceChapters: []int{1}},
+		},
+	}
+	if err := s.Adaptation.SaveProposal(plan); err != nil {
+		t.Fatalf("SaveProposal: %v", err)
+	}
+	if runtime, err := s.Adaptation.LoadProposalRuntime(); err != nil || runtime != nil {
+		t.Fatalf("LoadProposalRuntime after SaveProposal: runtime=%+v err=%v", runtime, err)
+	}
+	if err := s.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
+		Version:            1,
+		Brief:              "runtime draft",
+		SourcePath:         "source.txt",
+		SourceChapterCount: 1,
+		Granularity:        domain.AdaptationGranularityFree,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		TargetChapterCount: 1,
+	}); err != nil {
+		t.Fatalf("SaveProposalRuntime again: %v", err)
+	}
+	if err := s.Adaptation.SavePlan(plan); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	if runtime, err := s.Adaptation.LoadProposalRuntime(); err != nil || runtime != nil {
+		t.Fatalf("LoadProposalRuntime after SavePlan: runtime=%+v err=%v", runtime, err)
+	}
+}
+
 func TestAdaptationStoreResetGeneratedPreservesSourceSnapshot(t *testing.T) {
 	s := NewStore(t.TempDir())
 	if err := s.Init(); err != nil {
@@ -292,6 +341,17 @@ func TestAdaptationStoreResetGeneratedPreservesSourceSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveCheck: %v", err)
 	}
+	if err := s.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
+		Version:            1,
+		Brief:              "old generated proposal runtime",
+		SourcePath:         "source.txt",
+		SourceChapterCount: 1,
+		Granularity:        domain.AdaptationGranularityFree,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		TargetChapterCount: 1,
+	}); err != nil {
+		t.Fatalf("SaveProposalRuntime: %v", err)
+	}
 
 	if err := s.Adaptation.ResetGenerated(); err != nil {
 		t.Fatalf("ResetGenerated: %v", err)
@@ -302,6 +362,9 @@ func TestAdaptationStoreResetGeneratedPreservesSourceSnapshot(t *testing.T) {
 	}
 	if _, err := os.Stat(s.Adaptation.io.path(adaptationCheckDir)); !os.IsNotExist(err) {
 		t.Fatalf("checks directory should be removed, stat err=%v", err)
+	}
+	if runtime, err := s.Adaptation.LoadProposalRuntime(); err != nil || runtime != nil {
+		t.Fatalf("LoadProposalRuntime after reset: runtime=%+v err=%v", runtime, err)
 	}
 	if plan, err := s.Adaptation.LoadPlan(); err != nil || plan != nil {
 		t.Fatalf("LoadPlan after reset: plan=%+v err=%v", plan, err)

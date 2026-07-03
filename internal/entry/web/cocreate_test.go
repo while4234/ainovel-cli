@@ -872,6 +872,81 @@ func TestProjectAdaptCoCreateCommitConsolidatesMultiTurnDraftBeforeProposal(t *t
 	}
 }
 
+func TestProjectAdaptCoCreateCommitRetryKeepsFinalDraftAfterProposalFailure(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Final Consolidation Retry")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	fake.adaptProposalErr = errors.New("planner timeout")
+	fake.adaptCoCreateReplies = []host.CoCreateReply{
+		webCoCreateReply("initial draft ready", "## Adaptation Draft\n- preserve early relationship arc", true),
+		webCoCreateReply("updated draft ready", "## Adaptation Draft\n- expand the late chapter plan", true),
+		webCoCreateReply("final draft consolidated", "## Adaptation Draft\n- preserve early relationship arc\n- expand the late chapter plan", true),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"preserve early relationship arc"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/send", bytes.NewBufferString(`{"text":"expand the late chapter plan","source":"custom"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt send status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("first adapt commit status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+	if fake.adaptCoCreateCalls != 3 {
+		t.Fatalf("final consolidation calls after failed proposal = %d, want 3", fake.adaptCoCreateCalls)
+	}
+	if fake.adaptProposalCalls != 1 {
+		t.Fatalf("BuildAdaptationProposal calls after failed proposal = %d, want 1", fake.adaptProposalCalls)
+	}
+	var checkpoint webCoCreateCheckpoint
+	checkpointPath := filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))
+	data, err := os.ReadFile(checkpointPath)
+	if err != nil {
+		t.Fatalf("read checkpoint: %v", err)
+	}
+	if err := json.Unmarshal(data, &checkpoint); err != nil {
+		t.Fatalf("decode checkpoint: %v", err)
+	}
+	if !checkpoint.DraftConsolidated {
+		t.Fatalf("checkpoint should remember final draft consolidation: %+v", checkpoint)
+	}
+
+	server.sessions.CloseProject(manifest.ID)
+	restoredFake := installFakeSession(t, server, manifest)
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry adapt commit status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if restoredFake.adaptCoCreateCalls != 0 {
+		t.Fatalf("retry should not reconsolidate draft, co-create calls=%d", restoredFake.adaptCoCreateCalls)
+	}
+	if restoredFake.adaptProposalCalls != 1 {
+		t.Fatalf("retry BuildAdaptationProposal calls = %d, want 1", restoredFake.adaptProposalCalls)
+	}
+	if !strings.Contains(restoredFake.adaptProposalOptions.Brief, "early relationship arc") ||
+		!strings.Contains(restoredFake.adaptProposalOptions.Brief, "late chapter plan") {
+		t.Fatalf("retry proposal brief should use saved final draft: %q", restoredFake.adaptProposalOptions.Brief)
+	}
+}
+
 func TestProjectAdaptCoCreateRepairsStaleDraftBeforeProposal(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

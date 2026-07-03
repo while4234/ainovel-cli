@@ -827,6 +827,10 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 	if err := s.cocreate.requireReadyDraft(); err != nil {
 		return webCoCreateState{}, err
 	}
+	if needsFinalConsolidation {
+		state.draftConsolidated = true
+		s.saveCoCreateCheckpoint()
+	}
 	switch state.kind {
 	case webCoCreateKindStage:
 		if err := s.host.ResumeFromCoCreate(state.draftPrompt()); err != nil {

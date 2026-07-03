@@ -82,6 +82,57 @@ type AdaptationPlan struct {
 	Chapters          []AdaptationChapterPlan `json:"chapters"`
 }
 
+// AdaptationProposalRuntime keeps resumable planner state while a proposal is
+// being generated. It is cleared when a proposal or confirmed plan is saved.
+type AdaptationProposalRuntime struct {
+	Version            int                               `json:"version"`
+	UpdatedAt          string                            `json:"updated_at,omitempty"`
+	Brief              string                            `json:"brief"`
+	SourcePath         string                            `json:"source_path,omitempty"`
+	SourceChapterCount int                               `json:"source_chapter_count,omitempty"`
+	Granularity        string                            `json:"granularity"`
+	RewritePolicy      string                            `json:"rewrite_policy"`
+	WordTolerance      float64                           `json:"word_tolerance,omitempty"`
+	TargetChapterCount int                               `json:"target_chapter_count"`
+	Skeleton           *AdaptationProposalRuntimeOutline `json:"skeleton,omitempty"`
+	CompletedBatches   []AdaptationProposalRuntimeBatch  `json:"completed_batches,omitempty"`
+}
+
+// AdaptationProposalRuntimeOutline stores the model-planned long-form skeleton
+// that detail batches are generated from.
+type AdaptationProposalRuntimeOutline struct {
+	TargetChapterCount int                                      `json:"target_chapter_count"`
+	MainlineRules      []string                                 `json:"mainline_rules,omitempty"`
+	RelationshipGoals  []string                                 `json:"relationship_goals,omitempty"`
+	Batches            []AdaptationProposalRuntimeSkeletonBatch `json:"batches"`
+	Planner            *AdaptationPlannerMeta                   `json:"planner,omitempty"`
+}
+
+type AdaptationProposalRuntimeSkeletonBatch struct {
+	Index              int      `json:"index"`
+	Title              string   `json:"title,omitempty"`
+	Theme              string   `json:"theme,omitempty"`
+	Goal               string   `json:"goal,omitempty"`
+	Summary            string   `json:"summary,omitempty"`
+	TargetFrom         int      `json:"target_from"`
+	TargetTo           int      `json:"target_to"`
+	TargetChapterCount int      `json:"chapter_count,omitempty"`
+	SourceFrom         int      `json:"source_from"`
+	SourceTo           int      `json:"source_to"`
+	SourceChapters     []int    `json:"source_chapters,omitempty"`
+	Notes              []string `json:"notes,omitempty"`
+}
+
+type AdaptationProposalRuntimeBatch struct {
+	Index       int                     `json:"index"`
+	TargetFrom  int                     `json:"target_from"`
+	TargetTo    int                     `json:"target_to"`
+	SourceFrom  int                     `json:"source_from"`
+	SourceTo    int                     `json:"source_to"`
+	CompletedAt string                  `json:"completed_at,omitempty"`
+	Chapters    []AdaptationChapterPlan `json:"chapters"`
+}
+
 // AdaptationVolumePlan is the planner's durable high-level grouping for a
 // proposal. It is model-chosen for long-form plans and remains optional for
 // shorter works that do not naturally need volumes.

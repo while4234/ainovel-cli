@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildExistingModelActionPayload,
   buildModelAddPayload,
   canSubmitModelAdd,
   modelAddModeDefaults,
@@ -96,5 +97,13 @@ describe('model add helpers', () => {
     expect(modelOptionsForProvider([
       { name: 'openai', models: ['gpt-a', 'gpt-b'] }
     ], 'openai', 'gpt-custom')).toEqual(['gpt-custom', 'gpt-a', 'gpt-b']);
+  });
+
+  it('builds a minimal payload for testing configured models', () => {
+    expect(buildExistingModelActionPayload('writer', 'grok-oauth', 'grok-4.3-latest')).toEqual({
+      role: 'writer',
+      provider: 'grok-oauth',
+      model: 'grok-4.3-latest'
+    });
   });
 });
