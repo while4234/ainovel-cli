@@ -29,32 +29,42 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `5c0d9a4`
-  `fix: preserve multi-turn adapt cocreate drafts`, making Web adaptation
-  co-create consolidate multi-turn planning before proposal generation and
-  reject unusable planner output instead of silently saving a fallback plan.
-- Previous source commit: `fae38b4`
-  `docs: record adapt cocreate launch validation`.
+- Latest source change: branch `main`, `e07ffcb`
+  `fix: chunk long-form adaptation planner proposals`, making Web adaptation
+  proposal generation infer long target chapter counts, ask the model for a
+  high-level skeleton first, expand model-planned batches in separate calls,
+  and reject long-form skeletons that shrink back to short outlines.
+- Previous source commit: `bc22a44`
+  `docs: update git notes for cocreate consolidation`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the adapt co-create consolidation commit,
+- Working tree: expected clean after the long-form planner proposal commit,
   except for
   ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web executable `D:\ainovel\ainovel-cli.exe` was rebuilt by
   `restart-web.cmd` using the project-local Go 1.25.5 toolchain on PATH, then
   restarted on `http://127.0.0.1:9898` with runtime root
-  `C:\Users\RondleLiu\.ainovel\novels-preview`; listener PID after the final
-  restart was `31712`.
+  `C:\Users\RondleLiu\.ainovel\novels-preview`; listener PID after the latest
+  restart was `29888`.
 - Validation: project-local `gofmt` passed; targeted
-  `go test ./internal/entry/web ./internal/entry/startup ./internal/host/adapt`
-  passed; `go test ./...` passed; `git diff --check` passed with CRLF warnings
-  only; live HTTP smoke test returned 200 for `http://127.0.0.1:9898/`; current
-  adapt/free co-create snapshot metadata reported `READY`, `can_start=true`,
-  and 15 visible user planning messages, so Start will run final consolidation
-  before building a proposal.
+  `go test ./internal/host/adapt` passed; related
+  `go test ./internal/host ./internal/entry/web` passed; `go test ./...`
+  passed; live HTTP smoke tests returned 200 for `/api/projects` and
+  `/api/models`; browser validation confirmed current adapt/free co-create is
+  restored with `can_start=true`, draft metadata present, and no saved
+  adaptation proposal yet. Actual generation for the current draft was not
+  triggered by Codex because the draft content itself was outside what Codex can
+  generate on the user's behalf.
 
 ## Change Log
 
+- 2026-07-03 `e07ffcb` `fix: chunk long-form adaptation planner proposals`:
+  added target chapter-count inference for adaptation briefs, routed long
+  `arc/free` proposals through a model-driven skeleton plus batch-detail
+  planner flow, preserved strict proposal validation and no-activation proposal
+  semantics, rejected skeletons that ignore long-form scale, covered 20+ and
+  50-60 chapter regressions, restarted local Web, and verified the current
+  restored co-create state without triggering unsafe generation.
 - 2026-07-03 `5c0d9a4` `fix: preserve multi-turn adapt cocreate drafts`:
   tracks co-create draft freshness, repairs missing/stale/regressed drafts,
   keeps all user planning turns in repair context, runs a final consolidation

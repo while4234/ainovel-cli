@@ -436,6 +436,135 @@ func TestBuildAdaptationProposalFreeUsesPlannerForMoreTargetChapters(t *testing.
 	}
 }
 
+func TestBuildAdaptationProposalFreeUsesChunkedPlannerForLongTargetChapters(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	brief := "free restructure into 20章"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free restructure into 20章",
+			"target_chapter_count": 20,
+			"mainline_rules": ["keep every source turn anchored"],
+			"relationship_goals": ["slow emotional escalation"],
+			"batches": [
+				{"index": 1, "title": "Opening volume", "theme": "orientation", "target_from": 1, "target_to": 8, "source_from": 1, "source_to": 2, "summary": "establish the new premise"},
+				{"index": 2, "title": "Pressure volume", "theme": "choice", "target_from": 9, "target_to": 16, "source_from": 2, "source_to": 3, "summary": "expand the central conflict"},
+				{"index": 3, "title": "Resolution volume", "theme": "payoff", "target_from": 17, "target_to": 20, "source_from": 3, "source_to": 4, "summary": "resolve the adapted ending"}
+			]
+		}`},
+		{text: plannerBatchProposalJSON(1, 8, 1, 2)},
+		{text: plannerBatchProposalJSON(9, 16, 2, 3)},
+		{text: plannerBatchProposalJSON(17, 20, 3, 4)},
+	}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       brief,
+		Granularity: domain.AdaptationGranularityFree,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 4 {
+		t.Fatalf("planner calls=%d, want skeleton + 3 batch calls", llm.calls)
+	}
+	if len(proposal.Chapters) != 20 {
+		t.Fatalf("chapters=%d, want 20", len(proposal.Chapters))
+	}
+	if proposal.Chapters[8].Chapter != 9 || proposal.Chapters[19].Chapter != 20 {
+		t.Fatalf("batch chapters should keep absolute numbering: %+v", proposal.Chapters)
+	}
+	if proposal.Planner == nil || proposal.Planner.PromptVersion != "v1-chunked" {
+		t.Fatalf("planner metadata should mark chunked run: %+v", proposal.Planner)
+	}
+	firstPrompt := llm.got[0][1].TextContent()
+	if !strings.Contains(firstPrompt, `"target_chapter_hint": 20`) ||
+		!strings.Contains(firstPrompt, "do not mechanically split chapters") {
+		t.Fatalf("skeleton prompt should carry long-form target and model-planned split instruction: %s", firstPrompt)
+	}
+	secondBatchPrompt := llm.got[2][1].TextContent()
+	if !strings.Contains(secondBatchPrompt, `"target_from": 9`) ||
+		!strings.Contains(secondBatchPrompt, `"target_to": 16`) {
+		t.Fatalf("batch prompt should use skeleton-provided range: %s", secondBatchPrompt)
+	}
+	saved, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if saved == nil || len(saved.Chapters) != 20 {
+		t.Fatalf("chunked proposal should be saved as proposal only: %+v", saved)
+	}
+	if st.Adaptation.Active() {
+		t.Fatal("proposal should not activate adaptation project")
+	}
+}
+
+func TestBuildAdaptationProposalRejectsChunkedSkeletonThatShrinksLongTarget(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	brief := "free restructure into 50-60章"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"granularity": "free",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "free restructure into 50-60章",
+		"target_chapter_count": 17,
+		"batches": [
+			{"index": 1, "target_from": 1, "target_to": 17, "source_from": 1, "source_to": 4, "summary": "too short"}
+		]
+	}`}}}
+
+	_, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       brief,
+		Granularity: domain.AdaptationGranularityFree,
+	})
+	if err == nil {
+		t.Fatal("BuildAdaptationProposal should reject a skeleton that ignores the long target")
+	}
+	if !strings.Contains(err.Error(), "ignores requested long-form target") {
+		t.Fatalf("error=%v, want long-form shrink rejection", err)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("planner calls=%d, want stop after skeleton", llm.calls)
+	}
+	saved, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if saved != nil {
+		t.Fatalf("rejected skeleton should not save proposal: %+v", saved)
+	}
+}
+
+func TestInferTargetChapterCountFromBrief(t *testing.T) {
+	cases := []struct {
+		brief string
+		want  int
+	}{
+		{brief: "plan 50-60章", want: 60},
+		{brief: "plan 50 60章", want: 60},
+		{brief: "规划20多章节", want: 25},
+		{brief: "规划二十多章", want: 25},
+		{brief: "规划五六十章", want: 60},
+		{brief: "第15章补一个误会", want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.brief, func(t *testing.T) {
+			if got := inferTargetChapterCount(tc.brief); got != tc.want {
+				t.Fatalf("inferTargetChapterCount(%q)=%d, want %d", tc.brief, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuildAdaptationProposalFillsMissingPlannerConstants(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -735,6 +864,40 @@ func plannerBudgetProposalJSON(planFields string, chapterFields string, wordBudg
 			}
 		]
 	}`, planFields, chapterFields, wordBudget)
+}
+
+func plannerBatchProposalJSON(from, to, sourceFrom, sourceTo int) string {
+	count := to - from + 1
+	sourceSpan := sourceTo - sourceFrom + 1
+	chapters := make([]string, 0, count)
+	for chapter := from; chapter <= to; chapter++ {
+		sourceChapter := sourceFrom
+		if count > 0 && sourceSpan > 0 {
+			sourceChapter = sourceFrom + (chapter-from)*sourceSpan/count
+		}
+		sourceRunes := sourceChapter * 10
+		targetRunes := sourceRunes + 2
+		chapters = append(chapters, fmt.Sprintf(`{
+			"chapter": %d,
+			"title": "Target %d",
+			"core_event": "Ari adapts source turn %d.",
+			"hook": "A clear hook for target %d.",
+			"scenes": ["station"],
+			"source_chapters": [%d],
+			"source_range": {"from": %d, "to": %d},
+			"word_budget": {"source_runes": %d, "target_runes": %d, "min_runes": %d, "max_runes": %d, "tolerance": 0.15},
+			"preserve_events": ["source event"],
+			"required_changes": ["adapt the beat"],
+			"forbidden_moves": ["drop the source anchor"]
+		}`, chapter, chapter, sourceChapter, chapter, sourceChapter, sourceChapter, sourceChapter, sourceRunes, targetRunes, targetRunes-1, targetRunes+1))
+	}
+	return fmt.Sprintf(`{
+		"granularity": "free",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "chunk",
+		"chapters": [%s]
+	}`, strings.Join(chapters, ","))
 }
 
 func seedPreparedAdaptationSource(t *testing.T, st *store.Store, runeCounts []int) []domain.AdaptationSourceReport {

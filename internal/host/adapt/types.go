@@ -29,11 +29,12 @@ type Options struct {
 }
 
 type ProposalOptions struct {
-	Brief         string
-	SourcePath    string
-	Granularity   string
-	RewritePolicy string
-	WordTolerance float64
+	Brief              string
+	SourcePath         string
+	Granularity        string
+	RewritePolicy      string
+	WordTolerance      float64
+	TargetChapterCount int
 }
 
 type Prompts struct {
