@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, pending
+- Latest source change: branch `main`, `99e66b4`
   `fix: let adaptation volume planner choose expansion`:
   selected-volume proposal revisions now always give the volume skeleton model
   an explicit `expansion_decision` choice (`expand` or `keep`) instead of using
@@ -125,7 +125,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-04 `pending` `fix: let adaptation volume planner choose expansion`:
+- 2026-07-04 `99e66b4` `fix: let adaptation volume planner choose expansion`:
   selected-volume proposal revisions now ask the model to return
   `expansion_decision:"expand"` or `"keep"` during volume re-planning, and the
   backend validates that the decision matches the returned `target_to`.
