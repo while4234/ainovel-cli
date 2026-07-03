@@ -45,10 +45,11 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.cocreate-status-compact \.cocreate-actions\s*{[^}]*grid-template-columns:\s*1fr;/s);
   });
 
-  it('stacks project model controls at matching widths', () => {
-    expect(css).toMatch(/\.model-route\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
-    expect(css).toMatch(/\.model-route select,[\s\S]*?width:\s*100%;/);
-    expect(css).not.toMatch(/\.model-route select:nth-of-type\(2\)/);
+  it('uses agent chips with one project model editor', () => {
+    expect(css).toMatch(/\.agent-chip-list\s*{[^}]*flex-wrap:\s*wrap;/s);
+    expect(css).toMatch(/\.model-route-editor\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).toMatch(/\.model-route-editor select,[\s\S]*?width:\s*100%;/);
+    expect(css).not.toMatch(/\.model-route\s*{/);
   });
 
   it('keeps model management and add controls single-column full width', () => {

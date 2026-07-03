@@ -333,7 +333,7 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 			"xhigh",
 			"max",
 		},
-		ThinkingRule: "default applies to coordinator, architect, writer, and editor unless that role has its own reasoning_effort",
+		ThinkingRule: "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
 	}
 }
 

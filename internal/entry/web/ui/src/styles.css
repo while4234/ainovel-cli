@@ -268,7 +268,7 @@ h2 {
 .steer-form textarea,
 .adapt-brief,
 .cocreate-form textarea,
-.model-route select,
+.model-route-editor select,
 .default-model-controls select,
 .backend-picker-row select,
 .field-label input,
@@ -293,7 +293,7 @@ h2 {
 
 .create-project input,
 .composer input,
-.model-route select,
+.model-route-editor select,
 .default-model-controls select,
 .backend-picker-row select,
 .field-label input,
@@ -320,7 +320,7 @@ h2 {
 .model-field select:focus,
 .backend-picker-row select:focus,
 .default-model-controls select:focus,
-.model-route select:focus {
+.model-route-editor select:focus {
   border-color: var(--accent);
   box-shadow: var(--focus);
 }
@@ -2203,6 +2203,64 @@ h2 {
   color: #236241;
 }
 
+.agent-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  background: var(--surface-solid);
+  color: var(--text);
+  font-weight: 800;
+}
+
+.agent-chip small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.agent-chip.active {
+  border-color: rgba(37, 130, 80, 0.38);
+  background: var(--success-soft);
+  color: #236241;
+}
+
+.model-route-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.model-route-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.model-route-heading strong,
+.model-route-heading span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-route-heading span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .backend-picker-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2300,33 +2358,6 @@ h2 {
 .tool-button.danger:hover {
   border-color: rgba(177, 59, 54, 0.5);
   background: var(--danger-soft);
-}
-
-.model-route {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 7px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 8px;
-  background: var(--surface-solid);
-}
-
-.model-route strong,
-.model-route span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-route span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.model-route span {
-  grid-column: 1 / -1;
 }
 
 .custom-model-form .section-title {

@@ -4036,6 +4036,7 @@ function ModelPanel({
   const defaultModels = modelOptionsForProvider(providers, defaultProvider, config.model);
   const defaultModel = config.model || defaultModels[0] || '';
   const activeDefaultRoute = roles.find((route) => route.role === 'default') || { provider: defaultProvider, model: defaultModel };
+  const [selectedProjectRole, setSelectedProjectRole] = useState('default');
   const [existingTarget, setExistingTarget] = useState({ provider: '', model: '' });
   const existingProvider = existingTarget.provider || providers[0]?.name || '';
   const existingModels = modelOptionsForProvider(providers, existingProvider, existingTarget.model);
@@ -4049,6 +4050,17 @@ function ModelPanel({
   useEffect(() => {
     setCoCreateTimeoutDraft(String(coCreateTimeoutSeconds));
   }, [coCreateTimeoutSeconds]);
+  useEffect(() => {
+    if (!activeProject?.id || projectRoles.length === 0) {
+      if (selectedProjectRole !== 'default') {
+        setSelectedProjectRole('default');
+      }
+      return;
+    }
+    if (!projectRoles.some((route) => route.role === selectedProjectRole)) {
+      setSelectedProjectRole(projectRoles[0]?.role || 'default');
+    }
+  }, [activeProject?.id, projectRoles, selectedProjectRole]);
   useEffect(() => {
     if (providers.length === 0) {
       if (existingTarget.provider || existingTarget.model) {
@@ -4074,6 +4086,15 @@ function ModelPanel({
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
   const canAdd = canSubmitModelAdd(customModel, modelConfig);
+  const selectedProjectRoute = projectRoles.find((route) => route.role === selectedProjectRole) || projectRoles[0] || null;
+  const selectedProjectProvider = selectedProjectRoute?.provider || '';
+  const selectedProjectModels = modelOptionsForProvider(providers, selectedProjectProvider, selectedProjectRoute?.model || '');
+  const selectedProjectModel = selectedProjectRoute?.model || selectedProjectModels[0] || '';
+  const selectedProjectScope = selectedProjectRoute
+    ? selectedProjectRoute.role === 'default'
+      ? (selectedProjectRoute.explicit ? 'project default' : 'global default')
+      : (selectedProjectRoute.explicit ? 'project override' : 'inherits default')
+    : '';
   const selectedProviderModels = modelOptionsForProvider(providers, customModel.provider, customModel.model);
   const discoveredModels = Array.isArray(customModel.discovered_models) ? customModel.discovered_models : [];
   const modelSuggestions = mergeModelOptions(discoveredModels, selectedProviderModels, customModel.model);
@@ -4156,49 +4177,78 @@ function ModelPanel({
           <SlidersHorizontal size={17} />
           <span>项目模型</span>
         </div>
-        <div className="model-route-list">
-          {projectRoles.length === 0 ? (
-            <div className="empty-state">打开项目后可配置模型</div>
-          ) : (
-            projectRoles.map((route) => (
-              <div className="model-route" key={route.role}>
-                <strong>{route.role}</strong>
-                <select
+        {projectRoles.length === 0 ? (
+          <div className="empty-state">打开项目后可配置模型</div>
+        ) : (
+          <div className="model-route-list">
+            <div className="agent-chip-list" role="tablist" aria-label="Agent model routes">
+              {projectRoles.map((route) => (
+                <button
+                  aria-selected={selectedProjectRole === route.role}
+                  className={`agent-chip ${selectedProjectRole === route.role ? 'active' : ''}`}
                   disabled={busy}
-                  value={route.provider}
-                  onChange={(event) => {
-                    const provider = event.target.value;
-                    const models = providerMap.get(provider) || [];
-                    onSwitch(route.role, provider, models[0] || route.model);
-                  }}
+                  key={route.role}
+                  onClick={() => setSelectedProjectRole(route.role)}
+                  role="tab"
+                  type="button"
                 >
-                  {providers.map((provider) => (
-                    <option key={provider.name} value={provider.name}>{provider.name}</option>
-                  ))}
-                </select>
-                <select
-                  disabled={busy}
-                  value={route.model}
-                  onChange={(event) => onSwitch(route.role, route.provider, event.target.value)}
-                >
-                  {(providerMap.get(route.provider) || [route.model]).map((model) => (
-                    <option key={model} value={model}>{model}</option>
-                  ))}
-                </select>
-                <select
-                  disabled={busy}
-                  value={route.reasoning_effort || ''}
-                  onChange={(event) => onThinking(route.role, event.target.value)}
-                >
-                  {levels.map((level) => (
-                    <option key={level || 'inherit'} value={level}>{level || 'inherit'}</option>
-                  ))}
-                </select>
-                <span>{route.explicit ? 'project' : 'global fallback'}</span>
+                  <span>{route.role}</span>
+                  {route.explicit ? <small>project</small> : null}
+                </button>
+              ))}
+            </div>
+            {selectedProjectRoute ? (
+              <div className="model-route-editor">
+                <div className="model-route-heading">
+                  <strong>{selectedProjectRoute.role}</strong>
+                  <span>{selectedProjectScope}</span>
+                </div>
+                <label className="field-label">
+                  <span>后端</span>
+                  <select
+                    disabled={busy || providers.length === 0}
+                    value={selectedProjectProvider}
+                    onChange={(event) => {
+                      const provider = event.target.value;
+                      const models = providerMap.get(provider) || [];
+                      onSwitch(selectedProjectRoute.role, provider, models[0] || selectedProjectModel);
+                    }}
+                  >
+                    {providers.length === 0 ? <option value="">无后端</option> : null}
+                    {providers.map((provider) => (
+                      <option key={provider.name} value={provider.name}>{provider.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field-label">
+                  <span>模型</span>
+                  <select
+                    disabled={busy || !selectedProjectProvider || selectedProjectModels.length === 0}
+                    value={selectedProjectModel}
+                    onChange={(event) => onSwitch(selectedProjectRoute.role, selectedProjectProvider, event.target.value)}
+                  >
+                    {selectedProjectModels.length === 0 ? <option value="">无模型</option> : null}
+                    {selectedProjectModels.map((model) => (
+                      <option key={model} value={model}>{model}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field-label">
+                  <span>推理强度</span>
+                  <select
+                    disabled={busy}
+                    value={selectedProjectRoute.reasoning_effort || ''}
+                    onChange={(event) => onThinking(selectedProjectRoute.role, event.target.value)}
+                  >
+                    {levels.map((level) => (
+                      <option key={level || 'inherit'} value={level}>{level || 'inherit'}</option>
+                    ))}
+                  </select>
+                </label>
               </div>
-            ))
-          )}
-        </div>
+            ) : null}
+          </div>
+        )}
       </section>
       <section className="provider-template-section">
         <div className="section-title">
