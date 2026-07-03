@@ -26,10 +26,10 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.profile-status span\s*{[^}]*white-space:\s*nowrap;/s);
   });
 
-  it('shows the full co-create draft inside the side pane scroll', () => {
+  it('keeps long co-create drafts from pushing action buttons away', () => {
     expect(css).toMatch(/\.draft-preview\s*{[^}]*overflow:\s*visible;/s);
-    expect(css).not.toMatch(/\.draft-preview\s*{[^}]*max-height:/s);
-    expect(css).not.toMatch(/\.cocreate-sticky-workspace \.draft-preview\s*{[^}]*max-height:/s);
+    expect(css).not.toMatch(/(?:^|\n)\.draft-preview\s*{[^}]*max-height:/s);
+    expect(css).toMatch(/\.cocreate-sticky-workspace \.draft-preview\s*{[^}]*max-height:\s*min\(34vh,\s*360px\);[^}]*overflow:\s*auto;/s);
   });
 
   it('keeps co-create waiting controls compact', () => {

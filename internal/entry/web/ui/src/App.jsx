@@ -2600,7 +2600,7 @@ function CoCreatePanel({
   const canSend = Boolean(activeProject && !busy && hasBackendSession && coCreate.input.trim());
   const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
   const hasDraftPrompt = Boolean(coCreate.draftPrompt.trim());
-  const canCommit = Boolean(activeProject && !busy && hasDraftPrompt);
+  const canCommit = Boolean(activeProject && !busy && hasDraftPrompt && coCreate.canStart);
   const canCancel = Boolean(activeProject && !busy && (hasBackendSession || coCreate.intakeActive));
   const visibleSuggestions = coCreate.suggestions.slice(0, 3);
   const showDraftWorkspace = Boolean(coCreate.ready || hasDraftPrompt);
@@ -4702,11 +4702,11 @@ function coCreateStatusDetail(coCreate) {
   if (coCreate.startMessage) {
     return coCreate.startMessage;
   }
-  if (coCreate.ready) {
+  if (coCreate.canStart) {
     return 'draft prompt 已就绪';
   }
   if (coCreate.draftPrompt?.trim()) {
-    return '已有 draft，可点击启动，或继续补充';
+    return '已有 draft，但还需继续补充最新方向';
   }
   if (coCreate.status === 'running') {
     return 'AI 正在整理方向';

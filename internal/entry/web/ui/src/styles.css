@@ -1437,7 +1437,10 @@ h2 {
 }
 
 .cocreate-sticky-workspace .draft-preview {
+  max-height: min(34vh, 360px);
   min-height: 96px;
+  overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .draft-preview pre {

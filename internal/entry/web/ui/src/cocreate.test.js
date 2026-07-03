@@ -71,7 +71,26 @@ describe('co-create UI state', () => {
 
     expect(state.status).toBe('ready');
     expect(state.ready).toBe(false);
+    expect(state.canStart).toBe(true);
     expect(state.draftPrompt).toContain('已经可以执行');
+  });
+
+  it('keeps a backend-blocked draft visible but not startable', () => {
+    const state = coCreateStateFromResponse({
+      cocreate: {
+        kind: 'adapt',
+        active: true,
+        draft_prompt: '## 改编 brief\n- 需要继续合并最新意见',
+        ready: true,
+        can_start: false,
+        suggestions: []
+      }
+    });
+
+    expect(state.status).toBe('waiting');
+    expect(state.ready).toBe(true);
+    expect(state.canStart).toBe(false);
+    expect(state.draftPrompt).toContain('继续合并');
   });
 
   it('preserves editable message metadata from backend response', () => {
@@ -152,6 +171,27 @@ describe('co-create UI state', () => {
     });
 
     expect(suggestions).toEqual(['结局改动：保留', '结局改动：反转', '结局改动：拓展']);
+  });
+
+  it('extracts fallback suggestions from paragraph choice questions', () => {
+    const suggestions = visibleCoCreateSuggestions({
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            '当前剧本尚缺一个关键决策：**原著中“梦游”设定如何处理？**',
+            '如果保留梦游设定，如何与拟以前被很多人那样对待的 NTR 源头共存？',
+            '还是你想把梦游淡化为噩梦或幻觉？'
+          ].join('\n')
+        }
+      ],
+      suggestions: null
+    });
+
+    expect(suggestions).toEqual([
+      '保留梦游设定',
+      '把梦游淡化为噩梦或幻觉'
+    ]);
   });
 
   it('merges stream progress without duplicating assistant messages or clearing errors', () => {

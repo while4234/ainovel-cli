@@ -29,30 +29,39 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, commit `861b527`
-  `style: compact project model agent editor`, pulled from `origin/main` after
-  `21200be` `feat: resume proposal runtime and refine model ui`.
-- Previous source commit: `21200be`
-  `feat: resume proposal runtime and refine model ui`, following `d2790d7`
-  `feat: add model provider testing and proxy controls`.
+- Latest source change: branch `main`, commit `d88e553`
+  `fix: restore web cocreate action controls`: restores Web co-create option
+  visibility from paragraph-style AI questions, honors backend `can_start` for
+  the launch gate, caps the right-pane draft preview so action buttons remain
+  reachable, and rebuilds embedded Web assets.
+- Previous source commit: `1d60987`
+  `docs: record latest restart check`, following `ea18f61`
+  `docs: record latest pull and restart`.
 - Earlier planner stability checkpoint: `411c1df`
   `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the latest update/restart checkpoint,
+- Working tree: expected clean after the co-create UI fix is pushed,
   except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
   artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
-  source commit `861b527`; the restarted process was PID `15252`.
-- Validation: `git fetch origin --prune` found no new commits beyond current
-  `origin/main`; `.\restart-web.cmd -Port 9898` succeeded after prepending the
-  project-local Go 1.25.5 toolchain to `PATH`, stopped old PID `26304`, and
-  started PID `15252`; `GET /` returned HTTP 200; `GET /api/runtime` returned
-  the expected preview runtime root; `GET /api/models` returned one provider
-  and one default route.
+  source commit `d88e553`; the restarted process is PID `36560`.
+- Validation: `npm.cmd --prefix internal\entry\web\ui test -- --run` passed;
+  `npm.cmd --prefix internal\entry\web\ui run build` passed;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run TestProjectCoCreate -count=1`
+  passed; `git diff --check` passed with CRLF warnings only;
+  `.\restart-web.cmd -Port 9898` rebuilt and restarted Web, stopping PID
+  `15252` and starting PID `36560`; `GET /`, `/api/runtime`, and
+  `/api/projects` returned HTTP 200.
 
 ## Change Log
 
+- 2026-07-03 `d88e553` `fix: restore web cocreate action controls`: consumes
+  backend `can_start` in the React co-create state, disables launch until the
+  draft is fresh/startable, parses paragraph-style AI choice questions into
+  clickable suggestions, keeps long right-pane draft previews scrollable so
+  action buttons remain visible, rebuilds embedded Web assets, restarts local
+  Web on `http://127.0.0.1:9898` as PID `36560`, and verifies UI/backend paths.
 - 2026-07-03 `pending` `docs: record latest restart check`: fetched
   `origin/main` with no new commits beyond the current branch, rebuilt the Web
   UI and Go executable, restarted local Web on `http://127.0.0.1:9898` as PID

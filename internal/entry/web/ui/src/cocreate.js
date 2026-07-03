@@ -7,6 +7,7 @@ export function createCoCreateState() {
     messages: [],
     draftPrompt: '',
     ready: false,
+    canStart: false,
     suggestions: [],
     streamThinking: '',
     streamReply: '',
@@ -55,12 +56,13 @@ export function coCreateStateFromBackend(data, previous = createCoCreateState(),
   const messages = Array.isArray(data.messages) ? data.messages : [];
   const streamThinking = data.stream_thinking || '';
   const streamReply = data.stream_reply || '';
+  const canStart = coCreateCanStartFromBackend(data);
   const suggestions = visibleCoCreateSuggestions({
     messages,
     suggestions: data.suggestions,
     streamReply
   });
-  const status = options.status || coCreateStatusFromBackend(data, streamThinking, streamReply);
+  const status = options.status || coCreateStatusFromBackend(data, streamThinking, streamReply, canStart);
   return {
     ...previous,
     kind: data.kind || previous.kind || 'normal',
@@ -68,6 +70,7 @@ export function coCreateStateFromBackend(data, previous = createCoCreateState(),
     messages,
     draftPrompt: data.draft_prompt || '',
     ready: Boolean(data.ready),
+    canStart,
     suggestions,
     streamThinking,
     streamReply,
@@ -87,11 +90,18 @@ export function coCreateStateFromBackend(data, previous = createCoCreateState(),
   };
 }
 
-function coCreateStatusFromBackend(data, streamThinking, streamReply) {
+function coCreateCanStartFromBackend(data) {
+  if (Object.prototype.hasOwnProperty.call(data, 'can_start')) {
+    return Boolean(data.can_start);
+  }
+  return Boolean(data.ready || String(data.draft_prompt || '').trim());
+}
+
+function coCreateStatusFromBackend(data, streamThinking, streamReply, canStart) {
   if (data.committed_label) {
     return 'started';
   }
-  if (data.ready || String(data.draft_prompt || '').trim()) {
+  if (canStart) {
     return 'ready';
   }
   if (streamThinking || streamReply) {
@@ -130,14 +140,18 @@ function latestAssistantMessage(messages) {
 function extractCoCreateSuggestions(text) {
   const candidates = [];
   for (const rawLine of String(text || '').split(/\r?\n/)) {
-    const match = rawLine.match(/^\s*(?:[-*•]\s+|\d+[.、)]\s+)(.+)$/);
-    if (!match) {
+    const trimmedLine = rawLine.trim();
+    if (!trimmedLine) {
       continue;
     }
-    const rawCandidate = match[1].trim();
-    const line = cleanSuggestionText(rawCandidate);
+    const match = rawLine.match(/^\s*(?:[-*•]\s+|\d+[.、)]\s+)(.+)$/);
+    const rawCandidate = match ? match[1].trim() : trimmedLine;
     const choices = splitChoiceQuestion(rawCandidate);
-    candidates.push(...(choices.length ? choices : [line]));
+    if (choices.length) {
+      candidates.push(...choices);
+    } else if (match) {
+      candidates.push(cleanSuggestionText(rawCandidate));
+    }
   }
   return uniqueNonEmpty(candidates)
     .filter((item) => item.length >= 4 && item.length <= 120)
@@ -150,22 +164,48 @@ function splitChoiceQuestion(line) {
   const headingMatch = markdownHeadingMatch || plainHeadingMatch;
   const heading = headingMatch ? cleanSuggestionText(headingMatch[1]) : '';
   const body = headingMatch ? headingMatch[2] : line;
-  const promptMatch = body.match(/(?:你希望|你想|你打算)(.+)$/);
-  if (!promptMatch) {
+  if (!/(你希望|你想|你打算|还是|或者|或是|如果|若|要是)/.test(body)) {
     return [];
   }
-  const question = promptMatch[1].replace(/[？?。；;]+/g, '，');
-  return question
-    .split(/(?:，)?(?:还是|或者|或是)|[、,，/]/)
-    .map((item) => withChoiceContext(cleanSuggestionText(item.replace(/^打算/, '')), heading))
+  const candidates = [];
+  const conditionalChoice = extractConditionalChoice(body);
+  if (conditionalChoice) {
+    candidates.push(withChoiceContext(conditionalChoice, heading));
+  }
+  const promptMatch = body.match(/(?:你希望|你想|你打算)(.+)$/);
+  if (promptMatch) {
+    candidates.push(...splitChoiceText(promptMatch[1]).map((item) => withChoiceContext(item, heading)));
+  }
+  return uniqueNonEmpty(candidates)
     .filter((item) => item.length >= 4 && item.length <= 80);
+}
+
+function extractConditionalChoice(text) {
+  const match = text.match(/(?:如果|若|要是)([^，,？?。；;]{2,40})/);
+  return match ? cleanSuggestionText(match[1]) : '';
+}
+
+function splitChoiceText(text) {
+  return String(text || '')
+    .replace(/[？?。；;]+/g, '，')
+    .split(/(?:，)?(?:还是|或者|或是)|[、,，]/)
+    .map((item) => cleanChoiceText(item))
+    .filter(Boolean);
 }
 
 function withChoiceContext(choice, heading) {
   if (!choice) {
     return '';
   }
-  return heading && choice.length <= 6 ? `${heading}：${choice}` : choice;
+  return heading && Array.from(heading).length <= 10 && Array.from(choice).length <= 6
+    ? `${heading}：${choice}`
+    : choice;
+}
+
+function cleanChoiceText(text) {
+  return cleanSuggestionText(text)
+    .replace(/^(?:你希望|你想|你打算|希望|想|打算)/, '')
+    .trim();
 }
 
 function cleanSuggestionText(text) {
