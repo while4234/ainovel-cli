@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, commit `95a618c`
+- Latest source change: branch `main`, commit `389b0ab`
   `feat: add adaptation proposal review UI`, completing the PR1 proposal-review
   surface with a central chapter-outline workspace, right-side single/range/
   volume revision controls, refresh-safe saved-proposal recovery, and regenerated
@@ -53,7 +53,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-03 `95a618c` `feat: add adaptation proposal review UI`: moves saved
+- 2026-07-03 `389b0ab` `feat: add adaptation proposal review UI`: moves saved
   adaptation proposals into the central workbench, adds readable chapter cards,
   right-side single-chapter/range/whole-volume proposal revision controls,
   preserves saved proposals across refresh even when the upload source cannot be
