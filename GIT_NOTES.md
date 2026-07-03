@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, commit `f457c05`
+- Latest source change: branch `main`, commit `1ed3100`
   `fix: stabilize long-form adaptation proposal batches`, limiting long-form
   planner detail calls to eight chapters, filling missing chapters with
   context-aware local repair prompts, surfacing proposal/revision progress in
@@ -49,7 +49,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-03 `f457c05` `fix: stabilize long-form adaptation proposal batches`:
+- 2026-07-03 `1ed3100` `fix: stabilize long-form adaptation proposal batches`:
   keeps model-chosen long-form skeleton/volume planning but splits oversized
   detail ranges into at most eight chapters per model call, fills partial
   missing chapter returns by sending accepted chapters plus the previous model
