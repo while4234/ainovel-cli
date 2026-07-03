@@ -29,10 +29,15 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `2379137`
-  `fix: dedupe adaptation proposal volumes in web ui`: deduplicates mirrored
-  proposal volumes from summary and full proposal snapshots so revision
-  selectors and proposal workspace sections show each volume once.
+- Latest source change: branch `main`, `b708aca`
+  `fix: expand adaptation volume revisions`:
+  selected-volume proposal revisions now re-plan the volume skeleton first,
+  then regenerate detailed chapter outlines; volume expansion shifts later
+  chapters and later volume ranges by the added count.
+- Previous source change: `2379137`
+  `fix: dedupe adaptation proposal volumes in web ui`.
+- Previous docs checkpoint: `051f4c7`
+  `docs: record adaptation volume dedupe validation`.
 - Previous source change: `af1b10d`
   `fix: remove stage wording from adaptation guidance`.
 - Previous source change: `2f68cc2`
@@ -43,10 +48,10 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the volume dedupe UI commit, plus ignored
-  local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
+- Working tree: expected clean after `b708aca`, plus ignored local `.codex/`,
+  `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
-  current `HEAD`; the restarted process is PID `11268`.
+  the pending working tree; the restarted process is PID `31592`.
 - Validation:
   `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -run "TestBuildAdaptationProposal(FreeDefaultsLongSourceToChunkedPlanner|CoversSparseSourceAnchorsByExplicitRange|ClearsChunkedRuntimeAfterFinalValidationFailure|FreeUsesChunkedPlannerForLongTargetChapters|ResumesChunkedPlannerRuntimeAfterBatchFailure)$" -count=1 -v`
   passed;
@@ -72,7 +77,26 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   volumes and the UI shows `全卷` plus exactly 5 volume options, with exactly 5
   proposal workspace volume blocks.
 
+  Volume revision validation passed:
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -count=1`;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web ./internal/host ./internal/host/adapt -count=1`;
+  `git diff --check` passed with CRLF warnings only;
+  `.\restart-web.cmd -Port 9898` rebuilt the Web UI and Go executable, stopped
+  PID `16704`, and restarted Web as PID `31592`;
+  snapshot structure check for project `untitled-novel-20260703215407-d41d36`
+  confirmed the existing proposal is still status `proposal`, 60 chapters, 5
+  volumes, last volume `47-60`.
+
 ## Change Log
+
+- 2026-07-04 `b708aca` `fix: expand adaptation volume revisions`:
+  proposal revision for a selected volume now runs in two stages: first re-plan
+  the volume skeleton/plot range, then regenerate detailed chapter outlines for
+  the revised volume. If the volume-level instruction asks to add/expand
+  chapters, the selected volume can grow and all following chapter numbers and
+  volume ranges shift by the added count. Fixed single-chapter/range revisions
+  still reject count changes, and no-change revisions are rejected instead of
+  being saved as successful.
 
 - 2026-07-04 `2379137` `fix: dedupe adaptation proposal volumes in web ui`:
   front-end proposal review now deduplicates summary/proposal mirrored volumes

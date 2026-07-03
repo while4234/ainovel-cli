@@ -2,6 +2,7 @@ package adapt
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -1526,8 +1527,11 @@ func TestReviseAdaptationProposalSupportsChapterRangeAndVolumeTargets(t *testing
 				VolumeIndex: 2,
 				Instruction: "make the second volume flow better",
 			},
-			responses:     []adaptLLMResponse{{text: plannerRevisionProposalJSON(5, 8, 2, 3)}},
-			wantCalls:     1,
+			responses: []adaptLLMResponse{
+				{text: plannerVolumeRevisionSkeletonJSON(2, 5, 8, 2, 3)},
+				{text: plannerRevisionProposalJSON(5, 8, 2, 3)},
+			},
+			wantCalls:     2,
 			wantRevised:   []int{5, 6, 7, 8},
 			wantUnchanged: []int{4, 9},
 		},
@@ -1589,6 +1593,159 @@ func TestReviseAdaptationProposalSupportsChapterRangeAndVolumeTargets(t *testing
 				t.Fatalf("revised proposal was not saved: saved=%+v updated=%+v", saved, updated)
 			}
 		})
+	}
+}
+
+func TestReviseAdaptationProposalAllowsFinalVolumeEndingExpansion(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	saveRevisionTestProposal(t, st)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: plannerVolumeRevisionSkeletonJSON(3, 9, 14, 3, 4)},
+		{text: plannerRevisionProposalJSON(9, 14, 3, 4)},
+	}}
+
+	updated, err := ReviseAdaptationProposal(context.Background(), Deps{Store: st, LLM: llm}, ProposalRevisionOptions{
+		VolumeIndex: 3,
+		Instruction: "补充最后一卷结尾，新增两个章节",
+	})
+	if err != nil {
+		t.Fatalf("ReviseAdaptationProposal: %v", err)
+	}
+	if len(updated.Chapters) != 14 {
+		t.Fatalf("chapters=%d, want 14", len(updated.Chapters))
+	}
+	if updated.Chapters[7].Title != "Original 8" {
+		t.Fatalf("chapter 8 should stay unchanged: %+v", updated.Chapters[7])
+	}
+	for _, chapter := range []int{9, 12, 13, 14} {
+		got := updated.Chapters[chapter-1]
+		if !strings.HasPrefix(got.Title, "Revised ") {
+			t.Fatalf("chapter %d was not revised/appended: %+v", chapter, got)
+		}
+	}
+	if len(updated.Volumes) != 3 || updated.Volumes[2].TargetTo != 14 {
+		t.Fatalf("final volume should extend to chapter 14: %+v", updated.Volumes)
+	}
+	saved, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if saved == nil || len(saved.Chapters) != 14 || len(saved.Volumes) != 3 || saved.Volumes[2].TargetTo != 14 {
+		t.Fatalf("expanded proposal was not saved: %+v", saved)
+	}
+}
+
+func TestReviseAdaptationProposalAllowsMiddleVolumeExpansionAndShiftsLaterVolumes(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	saveRevisionTestProposal(t, st)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: plannerVolumeRevisionSkeletonJSON(2, 5, 10, 2, 3)},
+		{text: plannerRevisionProposalJSON(5, 10, 2, 3)},
+	}}
+
+	updated, err := ReviseAdaptationProposal(context.Background(), Deps{Store: st, LLM: llm}, ProposalRevisionOptions{
+		VolumeIndex: 2,
+		Instruction: "给第二卷新增两章剧情",
+	})
+	if err != nil {
+		t.Fatalf("ReviseAdaptationProposal: %v", err)
+	}
+	if len(updated.Chapters) != 14 {
+		t.Fatalf("chapters=%d, want 14", len(updated.Chapters))
+	}
+	for _, chapter := range []int{5, 8, 9, 10} {
+		got := updated.Chapters[chapter-1]
+		if !strings.HasPrefix(got.Title, "Revised ") {
+			t.Fatalf("chapter %d was not revised/appended: %+v", chapter, got)
+		}
+	}
+	if updated.Chapters[10].Chapter != 11 || updated.Chapters[10].Title != "Original 9" {
+		t.Fatalf("old chapter 9 should shift to target chapter 11: %+v", updated.Chapters[10])
+	}
+	if len(updated.Volumes) != 3 {
+		t.Fatalf("volumes=%d, want 3: %+v", len(updated.Volumes), updated.Volumes)
+	}
+	if updated.Volumes[1].TargetFrom != 5 || updated.Volumes[1].TargetTo != 10 {
+		t.Fatalf("volume 2 should extend to 5-10: %+v", updated.Volumes[1])
+	}
+	if updated.Volumes[2].TargetFrom != 11 || updated.Volumes[2].TargetTo != 14 {
+		t.Fatalf("volume 3 should shift to 11-14: %+v", updated.Volumes[2])
+	}
+	saved, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if saved == nil || len(saved.Chapters) != 14 || saved.Volumes[2].TargetFrom != 11 || saved.Volumes[2].TargetTo != 14 {
+		t.Fatalf("expanded middle-volume proposal was not saved: %+v", saved)
+	}
+}
+
+func TestReviseAdaptationProposalRejectsFixedRangeCountChange(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	saveRevisionTestProposal(t, st)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: plannerRevisionProposalJSON(5, 9, 2, 3)}}}
+
+	if _, err := ReviseAdaptationProposal(context.Background(), Deps{Store: st, LLM: llm}, ProposalRevisionOptions{
+		FromChapter: 5,
+		ToChapter:   8,
+		Instruction: "add an extra middle chapter",
+	}); err == nil {
+		t.Fatal("ReviseAdaptationProposal should reject fixed-range chapter expansion")
+	}
+	saved, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if saved == nil || len(saved.Chapters) != 12 || saved.Chapters[4].Title != "Original 5" {
+		t.Fatalf("failed fixed-range revision should not save changes: %+v", saved)
+	}
+}
+
+func TestReviseAdaptationProposalRejectsNoChangeRevision(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	saveRevisionTestProposal(t, st)
+	original, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: plannerVolumeRevisionSkeletonJSON(3, 9, 12, 3, 4)},
+		{text: plannerRevisionNoChangeProposalJSON(t, original.Chapters, 9, 12)},
+	}}
+
+	if _, err := ReviseAdaptationProposal(context.Background(), Deps{Store: st, LLM: llm}, ProposalRevisionOptions{
+		VolumeIndex: 3,
+		Instruction: "make the final volume more emotional",
+	}); err == nil {
+		t.Fatal("ReviseAdaptationProposal should reject a no-change revision")
+	} else if !strings.Contains(err.Error(), "no proposal changes") {
+		t.Fatalf("error=%q, want no-change message", err.Error())
+	}
+	saved, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if saved == nil || len(saved.Chapters) != len(original.Chapters) || saved.Chapters[8].Title != original.Chapters[8].Title {
+		t.Fatalf("saved proposal should remain unchanged: saved=%+v original=%+v", saved, original)
+	}
+	if len(saved.Planner.Notes) != len(original.Planner.Notes) {
+		t.Fatalf("failed no-change revision should not append planner notes: saved=%+v original=%+v", saved.Planner, original.Planner)
 	}
 }
 
@@ -1698,6 +1855,26 @@ func plannerBatchProposalJSONWithOmittedBudget(from, to, sourceFrom, sourceTo in
 	}`, strings.Join(chapters, ","))
 }
 
+func plannerVolumeRevisionSkeletonJSON(index, from, to, sourceFrom, sourceTo int) string {
+	return fmt.Sprintf(`{
+		"granularity": "free",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "chunk",
+		"target_chapter_count": %d,
+		"batches": [{
+			"index": %d,
+			"title": "Revised volume %d",
+			"theme": "rebalanced pressure",
+			"summary": "Replanned volume beats.",
+			"target_from": %d,
+			"target_to": %d,
+			"source_from": %d,
+			"source_to": %d
+		}]
+	}`, to-from+1, index, index, from, to, sourceFrom, sourceTo)
+}
+
 func plannerRevisionProposalJSON(from, to, sourceFrom, sourceTo int) string {
 	count := to - from + 1
 	sourceSpan := sourceTo - sourceFrom + 1
@@ -1730,6 +1907,18 @@ func plannerRevisionProposalJSON(from, to, sourceFrom, sourceTo int) string {
 		"brief": "chunk",
 		"chapters": [%s]
 	}`, strings.Join(chapters, ","))
+}
+
+func plannerRevisionNoChangeProposalJSON(t *testing.T, chapters []domain.AdaptationChapterPlan, from, to int) string {
+	t.Helper()
+	payload := map[string]any{
+		"chapters": proposalChaptersInRange(chapters, from, to),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal no-change revision: %v", err)
+	}
+	return string(raw)
 }
 
 func saveRevisionTestProposal(t *testing.T, st *store.Store) {
