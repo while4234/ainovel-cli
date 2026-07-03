@@ -3,8 +3,10 @@ package adapt
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
@@ -722,6 +724,101 @@ func TestBuildAdaptationProposalFillsMissingChunkedBatchChapter(t *testing.T) {
 	}
 }
 
+func TestBuildAdaptationProposalFillsMissingChapterWordBudget(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	brief := "free restructure into 20 chapters"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free restructure into 20 chapters",
+			"target_chapter_count": 20,
+			"batches": [
+				{"index": 1, "title": "Opening volume", "theme": "orientation", "target_from": 1, "target_to": 8, "source_from": 1, "source_to": 2, "summary": "establish the new premise"},
+				{"index": 2, "title": "Pressure volume", "theme": "choice", "target_from": 9, "target_to": 16, "source_from": 2, "source_to": 3, "summary": "expand the central conflict"},
+				{"index": 3, "title": "Resolution volume", "theme": "payoff", "target_from": 17, "target_to": 20, "source_from": 3, "source_to": 4, "summary": "resolve the adapted ending"}
+			]
+		}`},
+		{text: plannerBatchProposalJSON(1, 8, 1, 2)},
+		{text: plannerBatchProposalJSONWithoutWordBudget(9, 16, 2, 3, 15)},
+		{text: plannerBatchProposalJSON(17, 20, 3, 4)},
+	}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:              brief,
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 4 {
+		t.Fatalf("planner calls=%d, want skeleton + 3 detail calls without repair", llm.calls)
+	}
+	chapter := proposal.Chapters[14]
+	if chapter.Chapter != 15 || chapter.WordBudget == nil || chapter.WordBudget.TargetRunes <= 0 {
+		t.Fatalf("chapter 15 word budget should be filled locally: %+v", chapter)
+	}
+	if chapter.TargetRunes != chapter.WordBudget.TargetRunes ||
+		chapter.TargetMinRunes != chapter.WordBudget.MinRunes ||
+		chapter.TargetMaxRunes != chapter.WordBudget.MaxRunes {
+		t.Fatalf("legacy budget fields should mirror filled word_budget: %+v", chapter)
+	}
+}
+
+func TestBuildAdaptationProposalRetriesTransientPlannerGenerateError(t *testing.T) {
+	restore := stubPlannerRetrySleep(t)
+	defer restore()
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{err: io.ErrUnexpectedEOF},
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free restructure into 20 chapters",
+			"target_chapter_count": 20,
+			"batches": [
+				{"index": 1, "title": "Opening volume", "theme": "orientation", "target_from": 1, "target_to": 8, "source_from": 1, "source_to": 2, "summary": "establish the new premise"},
+				{"index": 2, "title": "Pressure volume", "theme": "choice", "target_from": 9, "target_to": 16, "source_from": 2, "source_to": 3, "summary": "expand the central conflict"},
+				{"index": 3, "title": "Resolution volume", "theme": "payoff", "target_from": 17, "target_to": 20, "source_from": 3, "source_to": 4, "summary": "resolve the adapted ending"}
+			]
+		}`},
+		{text: plannerBatchProposalJSON(1, 8, 1, 2)},
+		{text: plannerBatchProposalJSON(9, 16, 2, 3)},
+		{text: plannerBatchProposalJSON(17, 20, 3, 4)},
+	}}
+	var progress []Event
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:              "free restructure into 20 chapters",
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
+		EmitProgress:       captureAdaptProgress(&progress),
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 5 {
+		t.Fatalf("planner calls=%d, want failed skeleton attempt + retry + 3 detail calls", llm.calls)
+	}
+	if len(proposal.Chapters) != 20 {
+		t.Fatalf("chapters=%d, want 20", len(proposal.Chapters))
+	}
+	if !hasAdaptProgress(progress, "重试 2/7") || !hasAdaptProgress(progress, "unexpected EOF") {
+		t.Fatalf("progress should expose retry count and model error: %+v", progress)
+	}
+}
+
 func TestBuildAdaptationProposalRepairsChunkedBatchWithoutChapters(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -1293,7 +1390,46 @@ func plannerBudgetProposalJSON(planFields string, chapterFields string, wordBudg
 	}`, planFields, chapterFields, wordBudget)
 }
 
+func captureAdaptProgress(events *[]Event) ProgressEmitter {
+	return func(stage Stage, current, total int, msg string, err error) {
+		*events = append(*events, Event{
+			Stage:   stage,
+			Current: current,
+			Total:   total,
+			Message: msg,
+			Err:     err,
+		})
+	}
+}
+
+func hasAdaptProgress(events []Event, fragment string) bool {
+	for _, event := range events {
+		if strings.Contains(event.Message, fragment) {
+			return true
+		}
+		if event.Err != nil && strings.Contains(event.Err.Error(), fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func stubPlannerRetrySleep(t *testing.T) func() {
+	t.Helper()
+	original := plannerRetrySleep
+	plannerRetrySleep = func(context.Context, time.Duration) error { return nil }
+	return func() { plannerRetrySleep = original }
+}
+
 func plannerBatchProposalJSON(from, to, sourceFrom, sourceTo int) string {
+	return plannerBatchProposalJSONWithOmittedBudget(from, to, sourceFrom, sourceTo, 0)
+}
+
+func plannerBatchProposalJSONWithoutWordBudget(from, to, sourceFrom, sourceTo int, omittedChapter int) string {
+	return plannerBatchProposalJSONWithOmittedBudget(from, to, sourceFrom, sourceTo, omittedChapter)
+}
+
+func plannerBatchProposalJSONWithOmittedBudget(from, to, sourceFrom, sourceTo int, omittedChapter int) string {
 	count := to - from + 1
 	sourceSpan := sourceTo - sourceFrom + 1
 	chapters := make([]string, 0, count)
@@ -1304,6 +1440,11 @@ func plannerBatchProposalJSON(from, to, sourceFrom, sourceTo int) string {
 		}
 		sourceRunes := sourceChapter * 10
 		targetRunes := sourceRunes + 2
+		wordBudget := fmt.Sprintf(`,
+			"word_budget": {"source_runes": %d, "target_runes": %d, "min_runes": %d, "max_runes": %d, "tolerance": 0.15}`, sourceRunes, targetRunes, targetRunes-1, targetRunes+1)
+		if chapter == omittedChapter {
+			wordBudget = ""
+		}
 		chapters = append(chapters, fmt.Sprintf(`{
 			"chapter": %d,
 			"title": "Target %d",
@@ -1311,12 +1452,11 @@ func plannerBatchProposalJSON(from, to, sourceFrom, sourceTo int) string {
 			"hook": "A clear hook for target %d.",
 			"scenes": ["station"],
 			"source_chapters": [%d],
-			"source_range": {"from": %d, "to": %d},
-			"word_budget": {"source_runes": %d, "target_runes": %d, "min_runes": %d, "max_runes": %d, "tolerance": 0.15},
+			"source_range": {"from": %d, "to": %d}%s,
 			"preserve_events": ["source event"],
 			"required_changes": ["adapt the beat"],
 			"forbidden_moves": ["drop the source anchor"]
-		}`, chapter, chapter, sourceChapter, chapter, sourceChapter, sourceChapter, sourceChapter, sourceRunes, targetRunes, targetRunes-1, targetRunes+1))
+		}`, chapter, chapter, sourceChapter, chapter, sourceChapter, sourceChapter, sourceChapter, wordBudget))
 	}
 	return fmt.Sprintf(`{
 		"granularity": "free",
