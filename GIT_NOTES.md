@@ -29,35 +29,37 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, commit `411c1df`
-  `fix: retry adaptation planner calls`, adding shared 7-attempt retry handling
-  for adaptation planner model calls, keeping schema-repair attempts finite,
-  filling missing planner `word_budget` values from source anchors, and covering
-  both regressions with backend tests.
-- Previous source commit: `1ed3100`
-  `fix: stabilize long-form adaptation proposal batches`, limiting long-form
-  planner detail calls to eight chapters, filling missing chapters with
-  context-aware local repair prompts, surfacing proposal/revision progress in
-  Web events, and recomputing proposal totals after revision.
-- Earlier proposal foundation checkpoint: `4caea45`
-  `checkpoint: persist adaptation proposal review foundation`.
+- Latest source change: branch `main`, commit `861b527`
+  `style: compact project model agent editor`, pulled from `origin/main` after
+  `21200be` `feat: resume proposal runtime and refine model ui`.
+- Previous source commit: `21200be`
+  `feat: resume proposal runtime and refine model ui`, following `d2790d7`
+  `feat: add model provider testing and proxy controls`.
+- Earlier planner stability checkpoint: `411c1df`
+  `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after the planner retry and budget-fallback
-  checkpoint,
-  except for
-  ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
-- Runtime: local Web was restarted on `http://127.0.0.1:9898` after the
-  planner retry fix and responded with HTTP 200.
-- Validation: `go test ./...` passed; `go test ./internal/host/adapt
-  ./internal/entry/web` passed; `npm test` in `internal/entry/web/ui` passed;
-  `git diff --check` passed with Windows LF/CRLF warnings only; local Web
-  returned HTTP 200 after restart. A safe live E2E project generated and
-  persisted a 20-chapter / 4-volume proposal, then successfully revised one
-  chapter, a 3-chapter range, and the fourth volume.
+- Working tree: expected clean after the latest pull/restart docs checkpoint,
+  except for ignored local `.codex/`, `.playwright-mcp/`, and output/runtime
+  artifacts.
+- Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
+  commit `861b527`; the restarted process was PID `26304`.
+- Validation: `git pull --ff-only` first fast-forwarded `main` from `e838341`
+  to `21200be`; after `origin/main` advanced again, the maintenance commit was
+  rebased onto `861b527` and Web was rebuilt/restarted again. `.\restart-web.cmd
+  -Port 9898` succeeded after prepending the project-local Go 1.25.5 toolchain
+  to `PATH`; `GET /` returned HTTP 200; `GET /api/runtime` returned the
+  expected preview runtime root; `GET /api/models` returned one provider and
+  one default route.
 
 ## Change Log
 
+- 2026-07-03 `pending` `docs: record latest pull and restart`: fast-forwarded
+  `main` from `e838341` to `21200be`, rebased the maintenance checkpoint after
+  `origin/main` advanced to `861b527`, rebuilt the Web UI and Go executable,
+  restarted local Web on `http://127.0.0.1:9898` as PID `26304`, verified `/`,
+  `/api/runtime`, and `/api/models`, and recorded that restart commands in this
+  shell need the project-local Go 1.25.5 bin directory prepended to `PATH`.
 - 2026-07-03 `411c1df` `fix: retry adaptation planner calls`: wraps adaptation
   planner model calls in the shared 7-attempt retry policy with visible progress
   messages, keeps malformed-JSON/schema repairs bounded, fills missing
