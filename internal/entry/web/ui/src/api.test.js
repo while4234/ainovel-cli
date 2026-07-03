@@ -16,6 +16,7 @@ import {
   listTrashProjects,
   renameProject,
   restoreTrashProject,
+  reviseAdaptationProposal,
   reviseCoCreate,
   sendCoCreate,
   setGlobalCoCreateTimeout,
@@ -130,6 +131,7 @@ describe('web API helpers', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
 
     await buildAdaptationProposal('project-1', 'source.txt', 'free', 'Make it a mystery');
+    await reviseAdaptationProposal('project-1', { target: '第3章', from_chapter: 3, to_chapter: 3, instruction: 'raise tension' });
     await confirmAdaptationProposal('project-1');
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project-1/adapt/proposal', expect.objectContaining({
@@ -140,7 +142,16 @@ describe('web API helpers', () => {
         brief: 'Make it a mystery'
       })
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/adapt/confirm', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/adapt/proposal/revise', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        target: '第3章',
+        from_chapter: 3,
+        to_chapter: 3,
+        instruction: 'raise tension'
+      })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/projects/project-1/adapt/confirm', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({})
     }));

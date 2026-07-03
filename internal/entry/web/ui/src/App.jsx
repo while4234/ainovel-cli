@@ -269,7 +269,7 @@ export function applyAdaptationProposalSnapshot(previous, snapshot) {
     revisionVolume: clampVolumeSelection(previous.revisionVolume, review.volumes.length),
     error: ''
   };
-  if (sourceFile?.relative_path && mode && brief) {
+  if (mode && brief) {
     next.proposalKey = buildAdaptationProposalKey({ sourceFile, mode, brief });
   }
   return next;
@@ -1371,6 +1371,56 @@ export default function App() {
     }
   };
 
+  const reviseAdaptationProposalRun = async () => {
+    if (!activeProject?.id || !isAdaptationProposalCurrent(adaptation)) {
+      return;
+    }
+    const payload = buildAdaptationRevisionPayload(adaptation, adaptationProposalReview);
+    if (!payload.ok) {
+      setAdaptation((previous) => ({
+        ...previous,
+        revisionStatus: 'error',
+        revisionMessage: '',
+        error: payload.error
+      }));
+      return;
+    }
+    setBusy(true);
+    setAdaptation((previous) => ({
+      ...previous,
+      revisionStatus: 'running',
+      revisionMessage: '',
+      error: ''
+    }));
+    try {
+      const data = await reviseAdaptationProposal(activeProject.id, payload.body);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setAdaptation((previous) => ({
+        ...previous,
+        revisionStatus: 'done',
+        revisionMessage: '提案已修订',
+        startStatus: 'done',
+        startMessage: '提案已修订，可继续审稿或确认启动',
+        error: ''
+      }));
+    } catch (err) {
+      try {
+        const snapshotData = await getSnapshot(activeProject.id);
+        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
+      } catch {
+        // Keep the original revision error visible when snapshot refresh also fails.
+      }
+      setAdaptation((previous) => ({
+        ...previous,
+        revisionStatus: 'error',
+        revisionMessage: '',
+        error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const beginCoCreateFlow = async (kind, options = {}) => {
     if (!activeProject?.id) {
       return;
@@ -2004,9 +2054,14 @@ export default function App() {
         {error ? <div className="error-banner">{error}</div> : null}
 
         <div className="workbench-stack">
-          <section className={`stream-area ${showCoCreateWorkspace ? 'cocreate-workspace-output' : ''}`} aria-label="实时创作流">
+          <section
+            className={`stream-area ${showAdaptationProposalWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : ''}`}
+            aria-label={showAdaptationProposalWorkspace ? '改编提案审稿区' : '实时创作流'}
+          >
             {activeProject ? (
-              showCoCreateWorkspace ? (
+              showAdaptationProposalWorkspace ? (
+                <AdaptationProposalWorkspace proposal={adaptationProposalReview} />
+              ) : showCoCreateWorkspace ? (
                 <CoCreateWorkspace coCreate={coCreate} />
               ) : (
               workbench.streamRounds.map((round) => (
@@ -2158,6 +2213,7 @@ export default function App() {
               onUploadSource={uploadAdaptation}
               onAnalyze={runAdaptationAnalysis}
               onStart={startAdaptationRun}
+              onRevise={reviseAdaptationProposalRun}
               onConfirm={confirmAdaptationRun}
               onRefreshLibrary={refreshNovelLibrary}
               onLoadLibrary={loadNovelFromLibraryEntry}
@@ -2753,6 +2809,195 @@ function ChapterRow({ item }) {
   );
 }
 
+function AdaptationProposalWorkspace({ proposal }) {
+  const groups = proposalVolumeGroups(proposal);
+  return (
+    <div className="proposal-workspace">
+      <header className="proposal-workspace-header">
+        <div>
+          <div className="eyebrow">改编提案</div>
+          <h3>{proposal.chapterCount} 章细纲</h3>
+        </div>
+        <div className="proposal-workspace-metrics">
+          <span>{proposal.granularity || '-'}</span>
+          <span>{proposal.rewritePolicy || '-'}</span>
+          <span>{proposal.volumes.length ? `${proposal.volumes.length} 卷` : '未分卷'}</span>
+        </div>
+      </header>
+      {proposal.brief ? <p className="proposal-brief">{proposal.brief}</p> : null}
+      {proposal.rules.length ? (
+        <div className="proposal-rule-list">
+          {proposal.rules.slice(0, 6).map((rule, index) => <span key={`proposal-workspace-rule-${index}`}>{rule}</span>)}
+        </div>
+      ) : null}
+      <div className="proposal-volume-stack">
+        {groups.map((group) => (
+          <section className="proposal-volume-block" key={`proposal-volume-${group.key}`}>
+            <div className="proposal-volume-head">
+              <div>
+                <strong>{group.title}</strong>
+                <span>第 {group.from}-{group.to} 章</span>
+              </div>
+              {group.theme ? <p>{group.theme}</p> : null}
+              {group.summary ? <p>{group.summary}</p> : null}
+            </div>
+            <div className="proposal-chapter-grid">
+              {group.chapters.map((chapter) => (
+                <ProposalChapterCard chapter={chapter} key={`proposal-card-${chapter.chapter}-${chapter.title}`} />
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProposalChapterCard({ chapter }) {
+  const scenes = chapter.scenes || [];
+  const preserve = chapter.preserveEvents || [];
+  const required = chapter.requiredChanges || [];
+  const forbidden = chapter.forbiddenMoves || [];
+  const budget = chapter.wordBudget;
+  const coverage = chapter.sourceCoverage;
+  const budgetText = budget?.targetRunes
+    ? `${formatCompact(budget.targetRunes)} 字`
+    : budget?.targetWords ? `${formatCompact(budget.targetWords)} 字` : '';
+  const sourceText = coverage
+    ? coverage.isAdded ? '新增桥段' : coverage.from && coverage.to ? `原 ${coverage.from}-${coverage.to}` : coverage.chapters?.length ? `原 ${coverage.chapters.join(',')}` : ''
+    : '';
+  return (
+    <article className="proposal-chapter-card">
+      <div className="proposal-chapter-title">
+        <span>{chapter.chapter || '-'}</span>
+        <strong>{chapter.title || '未命名章节'}</strong>
+      </div>
+      <div className="chapter-meta-line">
+        {sourceText ? <em>{sourceText}</em> : null}
+        {budgetText ? <em>预算 {budgetText}</em> : null}
+        {scenes.length ? <em>{scenes.length} 场</em> : null}
+      </div>
+      {chapter.coreEvent ? <p><b>核心事件</b>{chapter.coreEvent}</p> : null}
+      {chapter.hook ? <p><b>钩子</b>{chapter.hook}</p> : null}
+      {scenes.length ? <p><b>场景</b>{scenes.join(' / ')}</p> : null}
+      {preserve.length ? <ProposalChipList label="保留" values={preserve} /> : null}
+      {required.length ? <ProposalChipList label="改动" values={required} /> : null}
+      {forbidden.length ? <ProposalChipList label="禁区" values={forbidden} /> : null}
+    </article>
+  );
+}
+
+function ProposalChipList({ label, values }) {
+  return (
+    <div className="proposal-chip-list">
+      <b>{label}</b>
+      {values.slice(0, 4).map((value, index) => <span key={`${label}-${index}`}>{value}</span>)}
+    </div>
+  );
+}
+
+function ProposalRevisionControls({ adaptation, busy, proposal, setAdaptation, onRevise }) {
+  const chapterOptions = Array.from({ length: Math.max(1, proposal.chapterCount) }, (_, index) => index + 1);
+  const volumeOptions = proposal.volumes.length ? proposal.volumes : [];
+  const mode = adaptation.revisionMode || 'chapter';
+  const disabled = busy || proposal.chapterCount <= 0;
+  const instruction = String(adaptation.revisionInstruction || '');
+  const canSubmit = !disabled && instruction.trim();
+  const update = (changes) => setAdaptation((previous) => ({ ...previous, ...changes, revisionStatus: 'idle', revisionMessage: '', error: '' }));
+  return (
+    <section className="simulation-section proposal-revision-section">
+      <div className="section-title">
+        <Pencil size={17} />
+        <span>修改提案</span>
+      </div>
+      <div className="proposal-revision-mode-grid" role="radiogroup" aria-label="提案修改模式">
+        {[
+          ['chapter', '单章'],
+          ['range', '多章'],
+          ['volume', '整卷']
+        ].map(([value, label]) => (
+          <button
+            className={mode === value ? 'revision-mode-button active' : 'revision-mode-button'}
+            disabled={busy}
+            key={value}
+            onClick={() => update({ revisionMode: value })}
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {mode === 'chapter' ? (
+        <label className="field-label proposal-select-line">
+          <span>章节</span>
+          <select
+            disabled={disabled}
+            value={clampChapterSelection(adaptation.revisionChapter, proposal.chapterCount)}
+            onChange={(event) => update({ revisionChapter: event.target.value })}
+          >
+            {chapterOptions.map((chapter) => <option key={`rev-ch-${chapter}`} value={chapter}>第 {chapter} 章</option>)}
+          </select>
+        </label>
+      ) : null}
+      {mode === 'range' ? (
+        <>
+          <label className="field-label proposal-select-line">
+            <span>首章</span>
+            <select
+              disabled={disabled}
+              value={clampChapterSelection(adaptation.revisionFromChapter, proposal.chapterCount)}
+              onChange={(event) => update({ revisionFromChapter: event.target.value })}
+            >
+              {chapterOptions.map((chapter) => <option key={`rev-from-${chapter}`} value={chapter}>第 {chapter} 章</option>)}
+            </select>
+          </label>
+          <label className="field-label proposal-select-line">
+            <span>尾章</span>
+            <select
+              disabled={disabled}
+              value={clampChapterSelection(adaptation.revisionToChapter, proposal.chapterCount)}
+              onChange={(event) => update({ revisionToChapter: event.target.value })}
+            >
+              {chapterOptions.map((chapter) => <option key={`rev-to-${chapter}`} value={chapter}>第 {chapter} 章</option>)}
+            </select>
+          </label>
+        </>
+      ) : null}
+      {mode === 'volume' ? (
+        <label className="field-label proposal-select-line">
+          <span>卷</span>
+          <select
+            disabled={disabled}
+            value={volumeOptions.length ? clampVolumeSelection(adaptation.revisionVolume, volumeOptions.length) : 'all'}
+            onChange={(event) => update({ revisionVolume: event.target.value })}
+          >
+            <option value="all">全卷</option>
+            {volumeOptions.map((volume) => (
+              <option key={`rev-vol-${volume.index}`} value={volume.index}>
+                第 {volume.index} 卷：{volume.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <label className="field-label proposal-select-line">
+        <span>修改意见</span>
+        <textarea
+          className="proposal-revision-textarea"
+          disabled={busy}
+          placeholder="写下这次要调整的剧情、节奏、伏笔或人物关系..."
+          value={instruction}
+          onChange={(event) => update({ revisionInstruction: event.target.value })}
+        />
+      </label>
+      <button className="tool-button accent full-width" disabled={!canSubmit} onClick={() => runWithWindowScrollPreserved(onRevise)} type="button">
+        <WandSparkles size={16} />
+        修订提案
+      </button>
+    </section>
+  );
+}
+
 function AdaptationPanel({
   activeProject,
   busy,
@@ -2762,6 +3007,7 @@ function AdaptationPanel({
   onUploadSource,
   onAnalyze,
   onStart,
+  onRevise,
   onConfirm,
   onRefreshLibrary,
   onLoadLibrary,
@@ -2788,6 +3034,41 @@ function AdaptationPanel({
     }));
     restoreWindowScrollPosition(scrollPosition);
   };
+  if (proposal.proposalReady) {
+    return (
+      <div className="side-content proposal-side-panel">
+        {adaptation.error ? <div className="error-banner compact">{adaptation.error}</div> : null}
+        <section className="simulation-section proposal-control-section">
+          <div className="section-title">
+            <FileText size={17} />
+            <span>提案审稿</span>
+          </div>
+          <div className="proposal-side-summary">
+            <strong>待确认</strong>
+            <span>{proposal.chapterCount} 章 / {proposal.granularity || '-'} / {proposal.rewritePolicy || '-'}</span>
+            {proposal.volumes.length ? <span>{proposal.volumes.length} 卷</span> : null}
+          </div>
+        </section>
+        <ProposalRevisionControls
+          adaptation={adaptation}
+          busy={busy}
+          proposal={proposal}
+          setAdaptation={setAdaptation}
+          onRevise={onRevise}
+        />
+        <section className="simulation-section proposal-confirm-section">
+          <button className="tool-button accent full-width" disabled={!canConfirm} onClick={() => runWithWindowScrollPreserved(onConfirm)} type="button">
+            <Check size={16} />
+            确认并启动
+          </button>
+          <div className={`workflow-status ${adaptation.revisionStatus || adaptation.startStatus}`}>
+            <strong>{workflowStatusText(adaptation.revisionStatus !== 'idle' ? adaptation.revisionStatus : adaptation.startStatus)}</strong>
+            <span>{adaptation.revisionMessage || adaptation.startMessage || '等待审稿'}</span>
+          </div>
+        </section>
+      </div>
+    );
+  }
   return (
     <div className="side-content">
       {adaptation.error ? <div className="error-banner compact">{adaptation.error}</div> : null}
@@ -4659,6 +4940,103 @@ export function isProjectRunning(snapshot) {
 
 function rowsFromAdaptationPlan(plan) {
   return arrayValue(plan, 'Chapters', 'chapters').map(normalizeOutlineRow);
+}
+
+function proposalVolumeGroups(proposal) {
+  const chapters = proposal?.chapters || [];
+  const volumes = proposal?.volumes || [];
+  if (!volumes.length) {
+    return [{
+      key: 'all',
+      title: '未分卷提案',
+      from: chapters[0]?.chapter || 1,
+      to: chapters[chapters.length - 1]?.chapter || chapters.length,
+      theme: '',
+      summary: '',
+      chapters
+    }];
+  }
+  return volumes.map((volume) => ({
+    key: volume.index || `${volume.targetFrom}-${volume.targetTo}`,
+    title: `第 ${volume.index} 卷：${volume.title}`,
+    from: volume.targetFrom,
+    to: volume.targetTo,
+    theme: volume.theme || volume.goal || '',
+    summary: volume.summary || '',
+    chapters: chapters.filter((chapter) => chapter.chapter >= volume.targetFrom && chapter.chapter <= volume.targetTo)
+  }));
+}
+
+export function buildAdaptationRevisionPayload(adaptation = {}, proposal = {}) {
+  const instruction = String(adaptation.revisionInstruction || '').trim();
+  if (!instruction) {
+    return { ok: false, error: '请输入修改意见' };
+  }
+  const mode = String(adaptation.revisionMode || 'chapter');
+  const chapterCount = Number(proposal.chapterCount || proposal.chapters?.length || 0);
+  if (chapterCount <= 0) {
+    return { ok: false, error: '当前提案没有可修改的章节' };
+  }
+  if (mode === 'range') {
+    let from = Number.parseInt(String(adaptation.revisionFromChapter || ''), 10);
+    let to = Number.parseInt(String(adaptation.revisionToChapter || ''), 10);
+    if (!Number.isInteger(from) || !Number.isInteger(to)) {
+      return { ok: false, error: '请选择首章和尾章' };
+    }
+    if (from > to) {
+      [from, to] = [to, from];
+    }
+    if (from < 1 || to > chapterCount) {
+      return { ok: false, error: '章节范围超出当前提案' };
+    }
+    return {
+      ok: true,
+      body: {
+        target: `第${from}-${to}章`,
+        from_chapter: from,
+        to_chapter: to,
+        instruction
+      }
+    };
+  }
+  if (mode === 'volume') {
+    const selected = String(adaptation.revisionVolume || 'all');
+    if (selected === 'all') {
+      return {
+        ok: true,
+        body: {
+          target: '全卷',
+          volume_index: -1,
+          instruction
+        }
+      };
+    }
+    const volumeIndex = Number.parseInt(selected, 10);
+    if (!Number.isInteger(volumeIndex) || volumeIndex <= 0) {
+      return { ok: false, error: '请选择要修改的卷' };
+    }
+    return {
+      ok: true,
+      body: {
+        target: `第${volumeIndex}卷`,
+        volume_index: volumeIndex,
+        instruction
+      }
+    };
+  }
+  const chapter = Number.parseInt(String(adaptation.revisionChapter || ''), 10);
+  if (!Number.isInteger(chapter) || chapter < 1 || chapter > chapterCount) {
+    return { ok: false, error: '请选择要修改的章节' };
+  }
+  return {
+    ok: true,
+    body: {
+      target: `第${chapter}章`,
+      from_chapter: chapter,
+      to_chapter: chapter,
+      instruction
+    }
+  };
 }
 
 function normalizeProposalVolumes(volumes, chapterCount = 0) {

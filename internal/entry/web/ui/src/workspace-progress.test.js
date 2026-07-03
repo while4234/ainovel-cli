@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyAdaptationProposalSnapshot,
   buildAdaptationProposalKey,
+  buildAdaptationRevisionPayload,
   buildBeginCoCreatePayload,
   buildCoCreateIntakeInitial,
   clearAdaptationProposalSnapshot,
@@ -233,6 +234,44 @@ describe('workspace progress derivation', () => {
     expect(getVisibleAdaptationProposalReview(snapshot, next).proposalReady).toBe(true);
   });
 
+  it('restores a saved proposal even when the uploaded source file cannot be reconstructed', () => {
+    const snapshot = {
+      ProposalSummary: {
+        Status: 'proposal',
+        Granularity: 'free',
+        RewritePolicy: 'full_rewrite',
+        Brief: 'Keep the mystery safe and long-form',
+        ChapterCount: 2
+      },
+      AdaptationProposal: {
+        status: 'proposal',
+        granularity: 'free',
+        rewrite_policy: 'full_rewrite',
+        brief: 'Keep the mystery safe and long-form',
+        chapters: [
+          { chapter: 1, title: 'Opening' },
+          { chapter: 2, title: 'Reveal' }
+        ]
+      }
+    };
+
+    const next = applyAdaptationProposalSnapshot({
+      sourceFile: null,
+      mode: 'chapter',
+      brief: '',
+      proposalKey: '',
+      startStatus: 'idle',
+      startMessage: '',
+      error: ''
+    }, snapshot);
+
+    expect(next.sourceFile).toBeNull();
+    expect(next.mode).toBe('free');
+    expect(next.proposalKey).toBe(buildAdaptationProposalKey(next));
+    expect(getVisibleAdaptationProposalReview(snapshot, next).proposalReady).toBe(true);
+    expect(getVisibleAdaptationProposalReview(snapshot, { ...next, brief: 'changed' }).stale).toBe(true);
+  });
+
   it('hides stale adaptation proposals after source upload or proposal input changes', () => {
     const snapshot = {
       ProposalSummary: {
@@ -280,6 +319,62 @@ describe('workspace progress derivation', () => {
     expect(changedBriefReview.loaded).toBe(false);
     expect(changedBriefReview.proposalReady).toBe(false);
     expect(changedBriefReview.stale).toBe(true);
+  });
+
+  it('builds revision payloads for chapter, range, and volume targets', () => {
+    const proposal = { chapterCount: 12, volumes: [{ index: 1 }, { index: 2 }] };
+
+    expect(buildAdaptationRevisionPayload({
+      revisionMode: 'chapter',
+      revisionChapter: '3',
+      revisionInstruction: 'strengthen the hook'
+    }, proposal)).toMatchObject({
+      ok: true,
+      body: {
+        target: '第3章',
+        from_chapter: 3,
+        to_chapter: 3,
+        instruction: 'strengthen the hook'
+      }
+    });
+
+    expect(buildAdaptationRevisionPayload({
+      revisionMode: 'range',
+      revisionFromChapter: '8',
+      revisionToChapter: '5',
+      revisionInstruction: 'smooth the arc'
+    }, proposal)).toMatchObject({
+      ok: true,
+      body: {
+        target: '第5-8章',
+        from_chapter: 5,
+        to_chapter: 8
+      }
+    });
+
+    expect(buildAdaptationRevisionPayload({
+      revisionMode: 'volume',
+      revisionVolume: 'all',
+      revisionInstruction: 'rebalance all volumes'
+    }, proposal)).toMatchObject({
+      ok: true,
+      body: {
+        target: '全卷',
+        volume_index: -1
+      }
+    });
+
+    expect(buildAdaptationRevisionPayload({
+      revisionMode: 'volume',
+      revisionVolume: '2',
+      revisionInstruction: 'raise the midpoint stakes'
+    }, proposal)).toMatchObject({
+      ok: true,
+      body: {
+        target: '第2卷',
+        volume_index: 2
+      }
+    });
   });
 
   it('reports imported simulation profiles as loaded after refresh', () => {
