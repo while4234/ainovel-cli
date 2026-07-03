@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `b708aca`
+- Latest source change: branch `main`, `44e0986`
   `fix: expand adaptation volume revisions`:
   selected-volume proposal revisions now re-plan the volume skeleton first,
   then regenerate detailed chapter outlines; volume expansion shifts later
@@ -48,7 +48,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after `b708aca`, plus ignored local `.codex/`,
+- Working tree: expected clean after `44e0986`, plus ignored local `.codex/`,
   `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
   the pending working tree; the restarted process is PID `31592`.
@@ -89,7 +89,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-04 `b708aca` `fix: expand adaptation volume revisions`:
+- 2026-07-04 `44e0986` `fix: expand adaptation volume revisions`:
   proposal revision for a selected volume now runs in two stages: first re-plan
   the volume skeleton/plot range, then regenerate detailed chapter outlines for
   the revised volume. If the volume-level instruction asks to add/expand
