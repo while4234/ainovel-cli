@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `97fa3d9`
+- Latest source change: branch `main`, `55c4162`
   `fix: enforce adaptation volume expansion revisions`:
   selected-volume proposal revisions now distinguish optional expansion from
   required expansion. If the user's volume revision asks to add/supplement plot
@@ -107,7 +107,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-04 `97fa3d9` `fix: enforce adaptation volume expansion revisions`:
+- 2026-07-04 `55c4162` `fix: enforce adaptation volume expansion revisions`:
   when a selected-volume proposal revision explicitly asks to add/supplement
   plot content, the volume skeleton must expand beyond the original `target_to`
   before detailed chapters are generated; unchanged counts trigger repair and
