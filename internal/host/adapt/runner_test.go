@@ -1630,12 +1630,48 @@ func TestReviseAdaptationProposalAllowsFinalVolumeEndingExpansion(t *testing.T) 
 	if len(updated.Volumes) != 3 || updated.Volumes[2].TargetTo != 14 {
 		t.Fatalf("final volume should extend to chapter 14: %+v", updated.Volumes)
 	}
+	if updated.Volumes[2].Title != "Revised volume 3" || updated.Volumes[2].Summary != "Replanned volume beats." {
+		t.Fatalf("final volume metadata was not updated: %+v", updated.Volumes[2])
+	}
 	saved, err := st.Adaptation.LoadProposal()
 	if err != nil {
 		t.Fatalf("LoadProposal: %v", err)
 	}
-	if saved == nil || len(saved.Chapters) != 14 || len(saved.Volumes) != 3 || saved.Volumes[2].TargetTo != 14 {
+	if saved == nil || len(saved.Chapters) != 14 || len(saved.Volumes) != 3 || saved.Volumes[2].TargetTo != 14 || saved.Volumes[2].Title != "Revised volume 3" {
 		t.Fatalf("expanded proposal was not saved: %+v", saved)
+	}
+}
+
+func TestReviseAdaptationProposalRejectsRequiredVolumeExpansionWithoutNewChapters(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	saveRevisionTestProposal(t, st)
+	unchangedSkeleton := plannerVolumeRevisionSkeletonJSON(3, 9, 12, 3, 4)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: unchangedSkeleton},
+		{text: unchangedSkeleton},
+		{text: unchangedSkeleton},
+	}}
+
+	updated, err := ReviseAdaptationProposal(context.Background(), Deps{Store: st, LLM: llm}, ProposalRevisionOptions{
+		VolumeIndex: 3,
+		Instruction: "add two new chapters to supplement the ending",
+	})
+	if err == nil {
+		t.Fatalf("ReviseAdaptationProposal succeeded without required expansion: %+v", updated)
+	}
+	if !strings.Contains(err.Error(), "did not exceed original target_to") {
+		t.Fatalf("error should explain missing expansion, got: %v", err)
+	}
+	saved, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		t.Fatalf("LoadProposal: %v", err)
+	}
+	if saved == nil || len(saved.Chapters) != 12 || saved.Volumes[2].TargetTo != 12 || saved.Volumes[2].Title != "Final volume" {
+		t.Fatalf("proposal should remain unchanged after failed expansion: %+v", saved)
 	}
 }
 
@@ -1675,6 +1711,9 @@ func TestReviseAdaptationProposalAllowsMiddleVolumeExpansionAndShiftsLaterVolume
 	}
 	if updated.Volumes[1].TargetFrom != 5 || updated.Volumes[1].TargetTo != 10 {
 		t.Fatalf("volume 2 should extend to 5-10: %+v", updated.Volumes[1])
+	}
+	if updated.Volumes[1].Title != "Revised volume 2" || updated.Volumes[1].Summary != "Replanned volume beats." {
+		t.Fatalf("volume 2 metadata was not updated: %+v", updated.Volumes[1])
 	}
 	if updated.Volumes[2].TargetFrom != 11 || updated.Volumes[2].TargetTo != 14 {
 		t.Fatalf("volume 3 should shift to 11-14: %+v", updated.Volumes[2])

@@ -472,12 +472,13 @@ func reviseAdaptationProposalVolumeContext(
 	updated.Volumes = normalizeAdaptationProposalVolumes(updated.Volumes, len(updated.Chapters))
 	originalBatch := proposalRevisionVolumeBatch(updated, opts.VolumeIndex, from, to)
 	allowExpansion := shouldAllowProposalRevisionExpansion(proposal, opts, from, to)
+	requireExpansion := allowExpansion && proposalRevisionInstructionRequiresExpansion(opts.Instruction)
 	expansionMaxTo := to
 	if allowExpansion {
 		expansionMaxTo = to + adaptationPlannerRevisionExpansionMax
 	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, fmt.Sprintf("请求第 %d 卷剧情重规划：第 %d-%d 章", opts.VolumeIndex, from, to), nil)
-	skeletonPrompt, err := buildAdaptationProposalVolumeRevisionSkeletonPrompt(opts, updated, originalBatch, expansionMaxTo, manifest, sourceFoundation, reportsForPlannerBatch(reports, originalBatch))
+	skeletonPrompt, err := buildAdaptationProposalVolumeRevisionSkeletonPrompt(opts, updated, originalBatch, expansionMaxTo, requireExpansion, manifest, sourceFoundation, reportsForPlannerBatch(reports, originalBatch))
 	if err != nil {
 		return nil, err
 	}
@@ -495,7 +496,7 @@ func reviseAdaptationProposalVolumeContext(
 	if err != nil {
 		return nil, fmt.Errorf("planner volume revision skeleton llm generate: %w", err)
 	}
-	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, originalBatch, expansionMaxTo, allowExpansion, manifest, opts.EmitProgress)
+	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, originalBatch, expansionMaxTo, allowExpansion, requireExpansion, manifest, opts.EmitProgress)
 	if err != nil {
 		return nil, fmt.Errorf("planner volume revision skeleton: %w", err)
 	}
@@ -556,6 +557,7 @@ func reviseAdaptationProposalVolumeContext(
 	if _, err := replaceProposalChapterRange(&updated, from, to, revisedBatch.TargetTo, revisedChapters); err != nil {
 		return nil, err
 	}
+	applyProposalVolumeRevisionMetadata(&updated, opts.VolumeIndex, revisedBatch)
 	return finalizeRevisedAdaptationProposal(deps, opts, proposal, updated, from, to, reports, manifest, len(detailBatches), len(detailBatches))
 }
 
@@ -910,6 +912,39 @@ func shiftProposalVolumesForReplacement(plan *domain.AdaptationPlan, from, to, r
 	}
 }
 
+func applyProposalVolumeRevisionMetadata(plan *domain.AdaptationPlan, volumeIndex int, batch plannerSkeletonBatch) {
+	if plan == nil || volumeIndex <= 0 {
+		return
+	}
+	for idx := range plan.Volumes {
+		if plan.Volumes[idx].Index != volumeIndex {
+			continue
+		}
+		volume := &plan.Volumes[idx]
+		if title := strings.TrimSpace(batch.Title); title != "" {
+			volume.Title = title
+		}
+		if theme := strings.TrimSpace(batch.Theme); theme != "" {
+			volume.Theme = theme
+		}
+		if goal := strings.TrimSpace(batch.Goal); goal != "" {
+			volume.Goal = goal
+		}
+		if summary := strings.TrimSpace(batch.Summary); summary != "" {
+			volume.Summary = summary
+		}
+		volume.TargetFrom = batch.TargetFrom
+		volume.TargetTo = batch.TargetTo
+		if batch.SourceFrom > 0 {
+			volume.SourceFrom = batch.SourceFrom
+		}
+		if batch.SourceTo > 0 {
+			volume.SourceTo = batch.SourceTo
+		}
+		return
+	}
+}
+
 func shouldAllowProposalRevisionExpansion(proposal domain.AdaptationPlan, opts ProposalRevisionOptions, from, to int) bool {
 	if len(proposal.Chapters) == 0 {
 		return false
@@ -954,6 +989,42 @@ func proposalRevisionInstructionRequestsExpansion(instruction string) bool {
 		"尾声",
 		"终章",
 		"收束",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(text, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func proposalRevisionInstructionRequiresExpansion(instruction string) bool {
+	text := strings.ToLower(strings.TrimSpace(instruction))
+	if text == "" {
+		return false
+	}
+	keywords := []string{
+		"add chapter",
+		"add chapters",
+		"append chapter",
+		"append chapters",
+		"extra chapter",
+		"extra chapters",
+		"new chapter",
+		"new chapters",
+		"add plot",
+		"new plot",
+		"append plot",
+		"supplement",
+		"补充",
+		"新增",
+		"添加",
+		"增加",
+		"扩展",
+		"扩写",
+		"加章",
+		"补章",
+		"尾声",
 	}
 	for _, keyword := range keywords {
 		if strings.Contains(text, keyword) {
@@ -1098,6 +1169,7 @@ func buildAdaptationProposalVolumeRevisionSkeletonPrompt(
 	proposal domain.AdaptationPlan,
 	volume plannerSkeletonBatch,
 	expansionMaxTo int,
+	expansionRequired bool,
 	manifest *domain.AdaptationSourceManifest,
 	sourceFoundation *domain.AdaptationSourceFoundation,
 	reports []domain.AdaptationSourceReport,
@@ -1119,7 +1191,14 @@ func buildAdaptationProposalVolumeRevisionSkeletonPrompt(
 		"source_from and source_to must stay within the analyzed source manifest.",
 		"Use the user's revision instruction to re-plan the volume's plot structure before detailed chapter planning.",
 	}
-	if expansionAllowed {
+	if expansionRequired {
+		requirements = append(requirements,
+			"The user's instruction asks to add or supplement plot content, so target_to must be greater than original_target_to.",
+			"target_to must not exceed target_to_max.",
+			"Add enough chapter slots for the new plot beats before detailed chapter planning.",
+			"Do not leave gaps; later volumes will be shifted by the application.",
+		)
+	} else if expansionAllowed {
 		requirements = append(requirements,
 			"If the instruction requires added plot beats or chapters, increase target_to for this volume.",
 			"target_to may be greater than original_target_to but must not exceed target_to_max.",
@@ -1133,6 +1212,7 @@ func buildAdaptationProposalVolumeRevisionSkeletonPrompt(
 	input := struct {
 		Instruction       string                             `json:"instruction"`
 		ExpansionAllowed  bool                               `json:"expansion_allowed"`
+		ExpansionRequired bool                               `json:"expansion_required"`
 		OriginalTargetTo  int                                `json:"original_target_to"`
 		TargetToMax       int                                `json:"target_to_max"`
 		Granularity       string                             `json:"granularity"`
@@ -1152,6 +1232,7 @@ func buildAdaptationProposalVolumeRevisionSkeletonPrompt(
 	}{
 		Instruction:       strings.TrimSpace(opts.Instruction),
 		ExpansionAllowed:  expansionAllowed,
+		ExpansionRequired: expansionRequired,
 		OriginalTargetTo:  volume.TargetTo,
 		TargetToMax:       expansionMaxTo,
 		Granularity:       proposal.Granularity,
@@ -2039,13 +2120,14 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 	originalBatch plannerSkeletonBatch,
 	expansionMaxTo int,
 	allowExpansion bool,
+	requireExpansion bool,
 	manifest *domain.AdaptationSourceManifest,
 	emit ProgressEmitter,
 ) (plannerSkeletonBatch, error) {
 	text := initialText
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		batch, err := parseProposalVolumeRevisionSkeleton(text, originalBatch, expansionMaxTo, allowExpansion, manifest)
+		batch, err := parseProposalVolumeRevisionSkeleton(text, originalBatch, expansionMaxTo, allowExpansion, requireExpansion, manifest)
 		if err == nil {
 			return batch, nil
 		}
@@ -2054,7 +2136,7 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 			return plannerSkeletonBatch{}, lastErr
 		}
 		emitAdaptProgress(emit, StagePlan, attempt+1, adaptationPlannerRepairMaxAttempts, fmt.Sprintf("卷剧情重规划返回不符合结构，正在修复第 %d/%d 次：%v", attempt+1, adaptationPlannerRepairMaxAttempts, lastErr), lastErr)
-		repairedText, repairErr := repairProposalVolumeRevisionSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, originalBatch, expansionMaxTo, allowExpansion, lastErr, emit)
+		repairedText, repairErr := repairProposalVolumeRevisionSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, originalBatch, expansionMaxTo, allowExpansion, requireExpansion, lastErr, emit)
 		if repairErr != nil {
 			return plannerSkeletonBatch{}, repairErr
 		}
@@ -2062,15 +2144,15 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 	}
 }
 
-func parseProposalVolumeRevisionSkeleton(text string, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, manifest *domain.AdaptationSourceManifest) (plannerSkeletonBatch, error) {
+func parseProposalVolumeRevisionSkeleton(text string, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, requireExpansion bool, manifest *domain.AdaptationSourceManifest) (plannerSkeletonBatch, error) {
 	skeleton, err := parsePlannerSkeleton(text)
 	if err != nil {
 		return plannerSkeletonBatch{}, err
 	}
-	return normalizeProposalVolumeRevisionSkeletonBatch(skeleton, originalBatch, expansionMaxTo, allowExpansion, manifest)
+	return normalizeProposalVolumeRevisionSkeletonBatch(skeleton, originalBatch, expansionMaxTo, allowExpansion, requireExpansion, manifest)
 }
 
-func normalizeProposalVolumeRevisionSkeletonBatch(skeleton plannerSkeleton, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, manifest *domain.AdaptationSourceManifest) (plannerSkeletonBatch, error) {
+func normalizeProposalVolumeRevisionSkeletonBatch(skeleton plannerSkeleton, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, requireExpansion bool, manifest *domain.AdaptationSourceManifest) (plannerSkeletonBatch, error) {
 	if manifest == nil || manifest.ChapterCount <= 0 {
 		return plannerSkeletonBatch{}, fmt.Errorf("source manifest missing")
 	}
@@ -2101,6 +2183,9 @@ func normalizeProposalVolumeRevisionSkeletonBatch(skeleton plannerSkeleton, orig
 	}
 	if !allowExpansion && batch.TargetTo != originalBatch.TargetTo {
 		return plannerSkeletonBatch{}, fmt.Errorf("volume revision changed chapter count without an expansion request")
+	}
+	if requireExpansion && batch.TargetTo <= originalBatch.TargetTo {
+		return plannerSkeletonBatch{}, fmt.Errorf("volume revision expansion requested but target_to=%d did not exceed original target_to %d", batch.TargetTo, originalBatch.TargetTo)
 	}
 	if batch.TargetTo > expansionMaxTo {
 		return plannerSkeletonBatch{}, fmt.Errorf("volume revision target_to=%d exceeds max %d", batch.TargetTo, expansionMaxTo)
@@ -2142,6 +2227,7 @@ func repairProposalVolumeRevisionSkeletonText(
 	originalBatch plannerSkeletonBatch,
 	expansionMaxTo int,
 	allowExpansion bool,
+	requireExpansion bool,
 	previousErr error,
 	emit ProgressEmitter,
 ) (string, error) {
@@ -2153,7 +2239,9 @@ func repairProposalVolumeRevisionSkeletonText(
 		"Do not return chapter details or a chapters array.",
 		"Do not return markdown or explanations.",
 	}
-	if allowExpansion {
+	if requireExpansion {
+		requirements = append(requirements, fmt.Sprintf("The batch target_to must be greater than %d and must not exceed %d.", originalBatch.TargetTo, expansionMaxTo))
+	} else if allowExpansion {
 		requirements = append(requirements, fmt.Sprintf("The batch target_to may increase but must not exceed %d.", expansionMaxTo))
 	} else {
 		requirements = append(requirements, fmt.Sprintf("The batch target_to must remain %d.", originalBatch.TargetTo))

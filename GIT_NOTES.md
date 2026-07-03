@@ -29,7 +29,14 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `44e0986`
+- Latest source change: branch `main`, `97fa3d9`
+  `fix: enforce adaptation volume expansion revisions`:
+  selected-volume proposal revisions now distinguish optional expansion from
+  required expansion. If the user's volume revision asks to add/supplement plot
+  content, a returned volume skeleton must increase `target_to`; unchanged
+  chapter counts are repaired or rejected. Revised volume title/theme/goal/
+  summary metadata is also written back to the saved proposal volume.
+- Previous source change: `44e0986`
   `fix: expand adaptation volume revisions`:
   selected-volume proposal revisions now re-plan the volume skeleton first,
   then regenerate detailed chapter outlines; volume expansion shifts later
@@ -87,7 +94,25 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   confirmed the existing proposal is still status `proposal`, 60 chapters, 5
   volumes, last volume `47-60`.
 
+  Required-expansion follow-up validation passed:
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -run "TestReviseAdaptationProposal" -count=1`;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -count=1`;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web ./internal/host ./internal/host/adapt -count=1`;
+  `git diff --check` passed with CRLF warnings only;
+  `.\restart-web.cmd -Port 9898` rebuilt the Web UI and Go executable, stopped
+  PID `31592`, and restarted Web as PID `10368`;
+  `GET /api/runtime` and `/api/projects` returned HTTP 200;
+  current user project `untitled-novel-20260703215407-d41d36` still has saved
+  proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
+
 ## Change Log
+
+- 2026-07-04 `97fa3d9` `fix: enforce adaptation volume expansion revisions`:
+  when a selected-volume proposal revision explicitly asks to add/supplement
+  plot content, the volume skeleton must expand beyond the original `target_to`
+  before detailed chapters are generated; unchanged counts trigger repair and
+  then rejection. The revised volume metadata is persisted so the proposal
+  workspace shows the new volume introduction after a successful re-plan.
 
 - 2026-07-04 `44e0986` `fix: expand adaptation volume revisions`:
   proposal revision for a selected volume now runs in two stages: first re-plan
