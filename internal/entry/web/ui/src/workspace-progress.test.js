@@ -4,6 +4,7 @@ import {
   buildAdaptationProposalKey,
   buildAdaptationRevisionPayload,
   buildBeginCoCreatePayload,
+  buildChapterRevisionPayload,
   buildCoCreateIntakeInitial,
   buildVolumeReviewRevisionPayload,
   clearAdaptationProposalSnapshot,
@@ -11,6 +12,7 @@ import {
   formatAdaptationSourceCoverageLabel,
   formatAdaptationVolumeSourceLabel,
   getAdaptationProposalReview,
+  getCompletedBookChapterRevisionView,
   getVisibleAdaptationProposalReview,
   getSimulationProfileStatus,
   getSnapshotOutlineRows,
@@ -217,6 +219,77 @@ describe('workspace progress derivation', () => {
     expect(rows[0].wordBudget.targetRunes).toBe(4500);
     expect(rows[0].sourceCoverage.from).toBe(4);
     expect(rows[1].wordBudget.targetWords).toBe(4000);
+  });
+
+  it('shows completed-book chapter revision only after complete phase with outline rows', () => {
+    expect(getCompletedBookChapterRevisionView({
+      phase: 'complete',
+      outline: [{ chapter: 1, title: 'Opening' }]
+    })).toMatchObject({
+      visible: true,
+      phase: 'complete'
+    });
+
+    expect(getCompletedBookChapterRevisionView({
+      phase: 'writing',
+      outline: [{ chapter: 1, title: 'Opening' }]
+    }).visible).toBe(false);
+
+    expect(getCompletedBookChapterRevisionView({
+      phase: 'complete',
+      outline: []
+    }).visible).toBe(false);
+  });
+
+  it('builds completed-book single chapter revision payloads', () => {
+    const snapshot = {
+      phase: 'complete',
+      outline: [
+        { chapter: 1, title: 'Opening' },
+        { chapter: 3, title: 'Reveal' }
+      ]
+    };
+
+    expect(buildChapterRevisionPayload({
+      chapter: '3',
+      mode: 'polish',
+      instruction: '  keep the plot but smooth the prose  '
+    }, snapshot)).toEqual({
+      ok: true,
+      body: {
+        chapter: 3,
+        mode: 'polish',
+        instruction: 'keep the plot but smooth the prose'
+      }
+    });
+
+    expect(buildChapterRevisionPayload({
+      chapter: '1',
+      mode: 'unknown',
+      instruction: 'rewrite the opening'
+    }, snapshot).body.mode).toBe('rewrite');
+  });
+
+  it('validates completed-book chapter revision payloads', () => {
+    const snapshot = {
+      phase: 'complete',
+      outline: [{ chapter: 1, title: 'Opening' }]
+    };
+
+    expect(buildChapterRevisionPayload({
+      chapter: '1',
+      instruction: ''
+    }, snapshot)).toMatchObject({ ok: false });
+
+    expect(buildChapterRevisionPayload({
+      chapter: '2',
+      instruction: 'rewrite'
+    }, snapshot)).toMatchObject({ ok: false });
+
+    expect(buildChapterRevisionPayload({
+      chapter: '1',
+      instruction: 'rewrite'
+    }, { ...snapshot, phase: 'writing' })).toMatchObject({ ok: false });
   });
 
   it('falls back to adaptation proposal chapters for old snapshots without Outline', () => {

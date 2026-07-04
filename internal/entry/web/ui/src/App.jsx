@@ -67,6 +67,7 @@ import {
   restoreTrashProject,
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
+  reviseChapter,
   reviseCoCreate,
   resumeProject,
   runProjectDiagnostic,
@@ -189,6 +190,17 @@ function createAdaptationState() {
     librarySaveName: '',
     librarySaveStatus: 'idle',
     librarySaveError: '',
+    error: ''
+  };
+}
+
+function createChapterRevisionState() {
+  return {
+    chapter: '1',
+    mode: 'rewrite',
+    instruction: '',
+    status: 'idle',
+    message: '',
     error: ''
   };
 }
@@ -385,6 +397,7 @@ export default function App() {
   const [sideView, setSideView] = useState('status');
   const [simulation, setSimulation] = useState(createSimulationState);
   const [adaptation, setAdaptation] = useState(createAdaptationState);
+  const [chapterRevision, setChapterRevision] = useState(createChapterRevisionState);
   const [externalImport, setExternalImport] = useState(createExternalImportState);
   const [exportJob, setExportJob] = useState(createExportState);
   const [diagnostic, setDiagnostic] = useState(createDiagnosticState);
@@ -415,6 +428,7 @@ export default function App() {
     setWorkbench(createWorkbenchState());
     setSimulation(resetSimulationProjectState);
     setAdaptation(resetAdaptationProjectState);
+    setChapterRevision(createChapterRevisionState());
     setExternalImport(createExternalImportState());
     setExportJob(createExportState());
     setDiagnostic(createDiagnosticState());
@@ -801,6 +815,55 @@ export default function App() {
     }
     await runAction((projectId) => steerProject(projectId, text));
     setSteerText('');
+  };
+
+  const reviseCompletedChapter = async () => {
+    if (!activeProject?.id) {
+      return;
+    }
+    const payload = buildChapterRevisionPayload(chapterRevision, snapshot);
+    if (!payload.ok) {
+      setChapterRevision((previous) => ({
+        ...previous,
+        status: 'error',
+        message: '',
+        error: payload.error
+      }));
+      return;
+    }
+    setBusy(true);
+    setChapterRevision((previous) => ({
+      ...previous,
+      status: 'running',
+      message: '',
+      error: ''
+    }));
+    try {
+      const data = await reviseChapter(activeProject.id, payload.body);
+      setWorkbench((previous) => ({ ...previous, snapshot: data?.snapshot || previous.snapshot }));
+      const revisionLabel = data?.revision?.label || `第 ${payload.body.chapter} 章已提交${chapterRevisionModeLabel(payload.body.mode)}`;
+      setChapterRevision((previous) => ({
+        ...previous,
+        status: 'done',
+        message: revisionLabel,
+        error: ''
+      }));
+    } catch (err) {
+      try {
+        const snapshotData = await getSnapshot(activeProject.id);
+        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
+      } catch {
+        // Keep the original revision error visible when snapshot refresh also fails.
+      }
+      setChapterRevision((previous) => ({
+        ...previous,
+        status: 'error',
+        message: '',
+        error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const importExternalSource = async (event) => {
@@ -2280,7 +2343,10 @@ export default function App() {
             <StatusPanel
               snapshot={snapshot}
               activeProject={activeProject}
+              chapterRevision={chapterRevision}
+              setChapterRevision={setChapterRevision}
               onPause={pauseWriting}
+              onReviseChapter={reviseCompletedChapter}
               onSteer={submitSteer}
               steerText={steerText}
               setSteerText={setSteerText}
@@ -2486,7 +2552,18 @@ function CoCreateWorkspace({ coCreate }) {
   );
 }
 
-function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, setSteerText, busy }) {
+function StatusPanel({
+  snapshot,
+  activeProject,
+  chapterRevision,
+  setChapterRevision,
+  onPause,
+  onReviseChapter,
+  onSteer,
+  steerText,
+  setSteerText,
+  busy
+}) {
   const outline = getSnapshotOutlineRows(snapshot);
   const agents = snapshot?.Agents || snapshot?.agents || [];
   const premise = textValue(snapshot, 'PremiseFull', 'premise_full', 'Premise', 'premise');
@@ -2544,6 +2621,15 @@ function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, set
         </section>
       ) : null}
 
+      <CompletedChapterRevisionControls
+        activeProject={activeProject}
+        busy={busy}
+        revision={chapterRevision}
+        setRevision={setChapterRevision}
+        snapshot={snapshot}
+        onRevise={onReviseChapter}
+      />
+
       <section>
         <div className="section-title">
           <BookOpen size={17} />
@@ -2579,6 +2665,95 @@ function StatusPanel({ snapshot, activeProject, onPause, onSteer, steerText, set
         </div>
       </section>
     </div>
+  );
+}
+
+const chapterRevisionModes = [
+  { value: 'rewrite', label: '重写' },
+  { value: 'polish', label: '打磨' }
+];
+
+function CompletedChapterRevisionControls({
+  activeProject,
+  busy,
+  revision,
+  setRevision,
+  snapshot,
+  onRevise
+}) {
+  const view = getCompletedBookChapterRevisionView(snapshot);
+  const selectedChapter = clampOutlineChapterSelection(revision.chapter, view.outline);
+  useEffect(() => {
+    if (!view.visible || selectedChapter === String(revision.chapter || '')) {
+      return;
+    }
+    setRevision((previous) => ({ ...previous, chapter: selectedChapter }));
+  }, [revision.chapter, selectedChapter, setRevision, view.visible]);
+  if (!view.visible) {
+    return null;
+  }
+  const instruction = String(revision.instruction || '');
+  const mode = normalizeChapterRevisionMode(revision.mode);
+  const canSubmit = Boolean(activeProject && !busy && instruction.trim());
+  const update = (changes) => setRevision((previous) => ({
+    ...previous,
+    ...changes,
+    status: 'idle',
+    message: '',
+    error: ''
+  }));
+  return (
+    <section className="simulation-section proposal-revision-section">
+      <div className="section-title">
+        <Pencil size={17} />
+        <span>完本单章返工</span>
+      </div>
+      <label className="field-label proposal-select-line">
+        <span>章节</span>
+        <select
+          disabled={busy}
+          value={selectedChapter}
+          onChange={(event) => update({ chapter: event.target.value })}
+        >
+          {view.outline.map((item) => (
+            <option key={`completed-revise-${item.chapter}`} value={item.chapter}>
+              第 {item.chapter} 章：{item.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="proposal-revision-mode-grid" role="radiogroup" aria-label="单章返工方式">
+        {chapterRevisionModes.map((item) => (
+          <button
+            className={mode === item.value ? 'revision-mode-button active' : 'revision-mode-button'}
+            disabled={busy}
+            key={item.value}
+            onClick={() => update({ mode: item.value })}
+            type="button"
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <label className="field-label proposal-select-line">
+        <span>修改意见</span>
+        <textarea
+          className="proposal-revision-textarea"
+          disabled={busy}
+          placeholder="写下这一章需要重写或打磨的具体方向..."
+          value={instruction}
+          onChange={(event) => update({ instruction: event.target.value })}
+        />
+      </label>
+      <button className="tool-button accent full-width" disabled={!canSubmit} onClick={() => runWithWindowScrollPreserved(onRevise)} type="button">
+        <WandSparkles size={16} />
+        提交单章返工
+      </button>
+      <div className={`workflow-status ${revision.status || 'idle'}`}>
+        <strong>{workflowStatusText(revision.status || 'idle')}</strong>
+        <span>{revision.error || revision.message || '等待提交'}</span>
+      </div>
+    </section>
   );
 }
 
@@ -5841,6 +6016,40 @@ export function buildAdaptationRevisionPayload(adaptation = {}, proposal = {}) {
   };
 }
 
+export function getCompletedBookChapterRevisionView(snapshot) {
+  const outline = getSnapshotOutlineRows(snapshot).filter((item) => item.chapter > 0);
+  const phase = textValue(snapshot, 'Phase', 'phase').toLowerCase();
+  return {
+    visible: phase === 'complete' && outline.length > 0,
+    phase,
+    outline
+  };
+}
+
+export function buildChapterRevisionPayload(revision = {}, snapshot = {}) {
+  const view = getCompletedBookChapterRevisionView(snapshot);
+  if (!view.visible) {
+    return { ok: false, error: '全书完成且有章节大纲后才能返工单章' };
+  }
+  const instruction = String(revision.instruction || '').trim();
+  if (!instruction) {
+    return { ok: false, error: '请输入修改意见' };
+  }
+  const chapter = Number.parseInt(String(revision.chapter || ''), 10);
+  const chapters = view.outline.map((item) => item.chapter);
+  if (!Number.isInteger(chapter) || !chapters.includes(chapter)) {
+    return { ok: false, error: '请选择要返工的章节' };
+  }
+  return {
+    ok: true,
+    body: {
+      chapter,
+      mode: normalizeChapterRevisionMode(revision.mode),
+      instruction
+    }
+  };
+}
+
 function normalizeProposalVolumes(volumes, chapterCount = 0) {
   const normalized = (volumes || [])
     .map((volume, index) => {
@@ -5904,6 +6113,24 @@ function clampChapterSelection(value, chapterCount = 0) {
     return '1';
   }
   return String(Math.min(parsed, chapterCount));
+}
+
+function clampOutlineChapterSelection(value, outline = []) {
+  const chapters = outline.map((item) => item.chapter).filter((chapter) => chapter > 0);
+  const parsed = Number.parseInt(String(value || ''), 10);
+  if (!chapters.length) {
+    return parsed > 0 ? String(parsed) : '1';
+  }
+  return String(chapters.includes(parsed) ? parsed : chapters[0]);
+}
+
+function normalizeChapterRevisionMode(mode) {
+  const value = String(mode || '').trim();
+  return chapterRevisionModes.some((item) => item.value === value) ? value : 'rewrite';
+}
+
+function chapterRevisionModeLabel(mode) {
+  return normalizeChapterRevisionMode(mode) === 'polish' ? '打磨' : '重写';
 }
 
 function clampVolumeSelection(value, volumeCount = 0) {

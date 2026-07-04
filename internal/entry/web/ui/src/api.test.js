@@ -21,6 +21,7 @@ import {
   restoreTrashProject,
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
+  reviseChapter,
   reviseCoCreate,
   sendCoCreate,
   setGlobalCoCreateTimeout,
@@ -131,6 +132,25 @@ describe('web API helpers', () => {
       text: 'Keep a slower burn'
     });
     expect(fetchMock.mock.calls[1][0]).toBe('/api/projects/project-1/cocreate/revise');
+  });
+
+  it('sends completed chapter revision payloads', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await reviseChapter('project-1', {
+      chapter: 3,
+      mode: 'polish',
+      instruction: 'tighten the ending'
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/chapters/revise', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        chapter: 3,
+        mode: 'polish',
+        instruction: 'tighten the ending'
+      })
+    }));
   });
 
   it('uses staged adaptation proposal, revise, details, and final confirm routes', async () => {
