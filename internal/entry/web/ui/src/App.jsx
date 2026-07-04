@@ -1459,28 +1459,39 @@ export default function App() {
       setCoCreate((previous) => ({ ...previous, error: '先输入一个核心想法' }));
       return;
     }
-    if (kind === 'normal' && !hasBackendSession && !coCreate.intakeActive && !options.confirmIntake) {
-      setCoCreate((previous) => ({
-        ...previous,
-        kind: 'normal',
-        intakeActive: true,
-        intakeInitial: initial,
-        targetTotalWordsChoice: previous.targetTotalWordsChoice || '5000',
-        structureChoice: previous.structureChoice || 'single',
-        input: '',
-        messages: buildCoCreateIntakeMessages(initial),
-        ready: false,
-        suggestions: [],
-        streamThinking: '',
-        streamReply: '',
-        status: 'idle',
-        startMessage: '',
-        error: ''
-      }));
-      return;
-    }
     let targetTotalWords = resolveCoCreateTargetTotalWords(coCreate);
     let structureChoice = resolveCoCreateStructureChoice(coCreate);
+    if (kind === 'normal' && !hasBackendSession && !coCreate.intakeActive && !options.confirmIntake) {
+      const inferred = inferCoCreateIntakeFromInitial(initial);
+      if (inferred.targetTotalWords > 0) {
+        targetTotalWords = inferred.targetTotalWords;
+        structureChoice = inferred.structureChoice;
+        initial = buildCoCreateIntakeInitial(initial, {
+          targetTotalWords,
+          structureChoice
+        });
+      } else {
+        setCoCreate((previous) => ({
+          ...previous,
+          kind: 'normal',
+          intakeActive: true,
+          intakeInitial: initial,
+          targetTotalWordsChoice: inferred.targetTotalWordsChoice,
+          customTargetTotalWords: previous.customTargetTotalWords || inferred.customTargetTotalWords || '',
+          structureChoice: inferred.structureChoice || 'single',
+          input: '',
+          messages: buildCoCreateIntakeMessages(initial),
+          ready: false,
+          suggestions: [],
+          streamThinking: '',
+          streamReply: '',
+          status: 'idle',
+          startMessage: '',
+          error: ''
+        }));
+        return;
+      }
+    }
     if (kind === 'normal' && coCreate.intakeActive) {
       if (targetTotalWords <= 0) {
         setCoCreate((previous) => ({ ...previous, error: '先确认目标字数' }));
@@ -5145,6 +5156,19 @@ export function resolveCoCreateStructureChoice(state = {}) {
   return coCreateStructureChoices.some((item) => item.value === choice) ? choice : 'single';
 }
 
+export function inferCoCreateIntakeFromInitial(initial = '') {
+  const text = String(initial || '').trim();
+  const targetTotalWords = explicitTotalWordsFromText(text);
+  const structureChoice = inferCoCreateStructureFromText(text, targetTotalWords);
+  const wordChoice = coCreateWordChoiceFromTarget(targetTotalWords);
+  return {
+    targetTotalWords,
+    targetTotalWordsChoice: wordChoice.choice,
+    customTargetTotalWords: wordChoice.custom,
+    structureChoice
+  };
+}
+
 export function buildCoCreateIntakeMessages(initial = '') {
   const content = String(initial || '').trim();
   return [
@@ -5173,6 +5197,126 @@ export function buildCoCreateIntakeInitial(initial = '', options = {}) {
     ? '\n- 该目标属于短篇篇幅；除非用户明确选择分章节，否则按一篇连续短篇规划，不要拆成多个章节。'
     : '';
   return `${String(initial || '').trim()}\n\n[共创前确认]\n- target_total_words=${targetTotalWords}，这是全书总字数，不是每章字数。\n- 结构偏好：${structureText}。\n- 常规小说单章正文约 3000-5000 字；规划章节数必须按总字数估算。${shortRule}`;
+}
+
+function explicitTotalWordsFromText(text) {
+  const normalized = normalizeCoCreateNumberText(text);
+  const patterns = [
+    /([0-9]+(?:\.[0-9]+)?)\s*(万|萬|w|W|k|K|千)?\s*(?:字|words?|runes?)/g,
+    /([0-9]+(?:\.[0-9]+)?)\s*(万|萬|w|W|k|K|千)/g
+  ];
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(normalized)) !== null) {
+      if (coCreateWordCountLooksPerChapter(normalized, match.index, pattern.lastIndex)) {
+        continue;
+      }
+      const words = coCreateNumberWithUnitToWords(match[1], match[2] || '');
+      if (words > 0) {
+        return words;
+      }
+    }
+  }
+  return 0;
+}
+
+function inferCoCreateStructureFromText(text, targetTotalWords) {
+  if (/不分章|不分章节|不要分章|不要分章节|单篇|一篇/.test(text)) {
+    return 'single';
+  }
+  if (/分章|分章节|章节|章回/.test(text)) {
+    return 'chapters';
+  }
+  if (/短篇/.test(text)) {
+    return 'single';
+  }
+  if (/中篇|长篇|長篇/.test(text)) {
+    return 'auto';
+  }
+  return targetTotalWords > 0 && targetTotalWords <= 8000 ? 'single' : 'auto';
+}
+
+function coCreateWordChoiceFromTarget(targetTotalWords) {
+  const value = String(Number(targetTotalWords || 0));
+  if (coCreateTargetWordChoices.some((choice) => choice.value === value)) {
+    return { choice: value, custom: '' };
+  }
+  return targetTotalWords > 0 ? { choice: 'custom', custom: value } : { choice: '', custom: '' };
+}
+
+function normalizeCoCreateNumberText(text) {
+  return String(text || '')
+    .replace(/[，,](?=\d{3}\b)/g, '')
+    .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+    .replace(/[零〇一二两兩三四五六七八九十百千万萬]+(?=\s*(?:字|words?|runes?|万|萬|w|W|k|K|千))/g, (match) => {
+      const value = chineseNumberToArabic(match);
+      return value > 0 ? String(value) : match;
+    });
+}
+
+function coCreateWordCountLooksPerChapter(text, start, end) {
+  const window = text.slice(Math.max(0, start - 8), Math.min(text.length, end + 8));
+  return /每章|单章|單章|章字数|章节字数|\/章|per\s+chapter|each\s+chapter/i.test(window);
+}
+
+function coCreateNumberWithUnitToWords(rawNumber, rawUnit) {
+  const value = Number(String(rawNumber || '').trim());
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  const unit = String(rawUnit || '').trim();
+  const multiplier = {
+    万: 10000,
+    萬: 10000,
+    w: 10000,
+    W: 10000,
+    k: 1000,
+    K: 1000,
+    千: 1000
+  }[unit] || 1;
+  return Math.round(value * multiplier);
+}
+
+function chineseNumberToArabic(text) {
+  const digits = {
+    零: 0,
+    〇: 0,
+    一: 1,
+    二: 2,
+    两: 2,
+    兩: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9
+  };
+  const units = { 十: 10, 百: 100, 千: 1000 };
+  let total = 0;
+  let section = 0;
+  let number = 0;
+  for (const char of String(text || '')) {
+    if (Object.prototype.hasOwnProperty.call(digits, char)) {
+      number = digits[char];
+      continue;
+    }
+    if (char === '万' || char === '萬') {
+      section += number;
+      total += (section || 1) * 10000;
+      section = 0;
+      number = 0;
+      continue;
+    }
+    const unit = units[char];
+    if (unit) {
+      section += (number || 1) * unit;
+      number = 0;
+    }
+  }
+  return total + section + number;
 }
 
 export function deriveWorkspaceProgress(snapshot, eventRows = []) {

@@ -28,17 +28,25 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-
 - Latest source change: branch `main`, current commit
+  `fix: infer explicit cocreate word count`:
+  Web normal co-create now inspects the initial idea for an explicit total word
+  count such as `5000字`, `三万字`, `十万字`, or `30w字`. When present, it sends the
+  inferred `target_total_words` directly with the first co-create request. When
+  the user gives only a vague length label such as `长篇`, the Web UI opens the
+  target-word confirmation step instead of mapping that label to a fixed number.
+  Per-chapter counts such as `每章5000字` are ignored for total-budget inference.
+  The local Web service was rebuilt and restarted on `http://127.0.0.1:9898`
+  with runtime root `C:\Users\RondleLiu\.ainovel\novels-preview` and PID
+  `43080`.
+- Previous source change: `a03cab2`
   `fix: normalize web export file extension`:
-  Web export now resolves the selected format before normalizing user-provided
+  Web export resolves the selected format before normalizing user-provided
   filenames. Relative names without an export suffix get `.txt` or `.epub`
   appended from the selected format, so title-only inputs such as
   `梦中的女孩改` no longer produce extensionless files. Explicit `.txt`/`.epub`
   suffixes that conflict with the selected format are rejected before the host
-  export is called. The local Web service was rebuilt and restarted on
-  `http://127.0.0.1:9898` with runtime root
-  `C:\Users\RondleLiu\.ainovel\novels-preview`.
+  export is called.
 - Previous docs checkpoint: `21eb5c6`
   `docs: record adaptation mode guidance fix`.
 - Previous source change: `ee471d2`
@@ -229,7 +237,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-04 current commit `fix: normalize web export file extension`:
+- 2026-07-04 current commit `fix: infer explicit cocreate word count`:
+  Normal Web co-create now skips the target-word confirmation only when the
+  initial idea contains an explicit total word count. Vague labels such as
+  `长篇` still require user confirmation because `30万字` and `50万字` can both be
+  long-form targets. Validation passed for all Web UI tests, Vite build, focused
+  co-create backend tests, full `internal/entry/web` tests, and `git diff
+  --check` with CRLF warnings only. The local Web service was rebuilt/restarted
+  on port `9898` after prepending repo-local Go to PATH, and `/api/runtime` plus
+  `/api/projects` returned HTTP 200.
+
+- 2026-07-04 `a03cab2` `fix: normalize web export file extension`:
   Web export appends the selected `.txt`/`.epub` suffix when users enter a
   title-only filename, rejects `.txt`/`.epub` suffixes that conflict with the
   selected format, and keeps all paths scoped under the project `exports`

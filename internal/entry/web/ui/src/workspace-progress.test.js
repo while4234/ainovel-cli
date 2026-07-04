@@ -14,6 +14,7 @@ import {
   getVisibleAdaptationProposalReview,
   getSimulationProfileStatus,
   getSnapshotOutlineRows,
+  inferCoCreateIntakeFromInitial,
   isProjectRunning,
   resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords,
@@ -70,6 +71,41 @@ describe('co-create begin payload helpers', () => {
       targetTotalWordsChoice: 'custom',
       customTargetTotalWords: '12.5'
     })).toBe(0);
+  });
+
+  it('infers explicit total words from the initial idea', () => {
+    expect(inferCoCreateIntakeFromInitial('创作一篇5000字的短篇小说')).toMatchObject({
+      targetTotalWords: 5000,
+      targetTotalWordsChoice: '5000',
+      structureChoice: 'single'
+    });
+    expect(inferCoCreateIntakeFromInitial('写十万字长篇悬疑')).toMatchObject({
+      targetTotalWords: 100000,
+      targetTotalWordsChoice: '100000',
+      structureChoice: 'auto'
+    });
+    expect(inferCoCreateIntakeFromInitial('写三万字都市奇幻')).toMatchObject({
+      targetTotalWords: 30000,
+      targetTotalWordsChoice: '30000',
+      structureChoice: 'auto'
+    });
+    expect(inferCoCreateIntakeFromInitial('写30w字赛博故事')).toMatchObject({
+      targetTotalWords: 300000,
+      targetTotalWordsChoice: 'custom',
+      customTargetTotalWords: '300000'
+    });
+  });
+
+  it('requires confirmation for vague length labels and per-chapter counts', () => {
+    expect(inferCoCreateIntakeFromInitial('写一部长篇悬疑小说')).toMatchObject({
+      targetTotalWords: 0,
+      targetTotalWordsChoice: '',
+      structureChoice: 'auto'
+    });
+    expect(inferCoCreateIntakeFromInitial('写一个故事，每章5000字')).toMatchObject({
+      targetTotalWords: 0,
+      targetTotalWordsChoice: ''
+    });
   });
 
   it('builds intake prompt with total-word and short-story structure rules', () => {
