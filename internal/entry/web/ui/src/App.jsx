@@ -2883,7 +2883,7 @@ function CoCreatePanel({
   );
 }
 
-function ChapterRow({ item }) {
+function ChapterRow({ item, granularity }) {
   const scenes = item.scenes || [];
   const budget = item.wordBudget;
   const coverage = item.sourceCoverage;
@@ -2893,9 +2893,7 @@ function ChapterRow({ item }) {
   const rangeLabel = budget?.minRunes && budget?.maxRunes
     ? `${formatCompact(budget.minRunes)}-${formatCompact(budget.maxRunes)}`
     : budget?.minWords && budget?.maxWords ? `${formatCompact(budget.minWords)}-${formatCompact(budget.maxWords)}` : '';
-  const sourceLabel = coverage
-    ? coverage.isAdded ? '新增' : coverage.from && coverage.to ? `原 ${coverage.from}-${coverage.to}` : coverage.chapters?.length ? `原 ${coverage.chapters.join(',')}` : ''
-    : '';
+  const sourceLabel = formatAdaptationSourceCoverageLabel(coverage, granularity);
   return (
     <div className="chapter-row">
       <span>{item.chapter || '-'}</span>
@@ -2952,7 +2950,7 @@ function AdaptationProposalWorkspace({ proposal }) {
             </div>
             <div className="proposal-chapter-grid">
               {group.chapters.map((chapter) => (
-                <ProposalChapterCard chapter={chapter} key={`proposal-card-${chapter.chapter}-${chapter.title}`} />
+                <ProposalChapterCard chapter={chapter} granularity={proposal.granularity} key={`proposal-card-${chapter.chapter}-${chapter.title}`} />
               ))}
             </div>
           </section>
@@ -2980,30 +2978,33 @@ function AdaptationVolumeReviewWorkspace({ proposal }) {
       </header>
       {proposal.brief ? <p className="proposal-brief">{proposal.brief}</p> : null}
       <div className="proposal-volume-stack">
-        {volumes.map((volume) => (
-          <section className="proposal-volume-block volume-review-block" key={`volume-review-${volume.index}`}>
-            <div className="proposal-volume-head">
-              <div>
-                <strong>{volume.title || `第 ${volume.index} 卷`}</strong>
-                <span>第 {volume.targetFrom || '?'}-{volume.targetTo || '?'} 章</span>
+        {volumes.map((volume) => {
+          const sourceLabel = formatAdaptationVolumeSourceLabel(volume, proposal.granularity);
+          return (
+            <section className="proposal-volume-block volume-review-block" key={`volume-review-${volume.index}`}>
+              <div className="proposal-volume-head">
+                <div>
+                  <strong>{volume.title || `第 ${volume.index} 卷`}</strong>
+                  <span>第 {volume.targetFrom || '?'}-{volume.targetTo || '?'} 章</span>
+                </div>
+                {volume.theme ? <p>{volume.theme}</p> : null}
+                {volume.summary ? <p>{volume.summary}</p> : null}
               </div>
-              {volume.theme ? <p>{volume.theme}</p> : null}
-              {volume.summary ? <p>{volume.summary}</p> : null}
-            </div>
-            <div className="volume-review-detail-grid">
-              {volume.sourceLabel ? <p><b>原作范围</b>{volume.sourceLabel}</p> : null}
-              {volume.plot ? <p><b>剧情走向</b>{volume.plot}</p> : null}
-              {volume.goal ? <p><b>改编目标</b>{volume.goal}</p> : null}
-              {volume.beats.length ? <ProposalChipList label="关键节点" values={volume.beats} /> : null}
-            </div>
-          </section>
-        ))}
+              <div className="volume-review-detail-grid">
+                {sourceLabel ? <p><b>原作范围</b>{sourceLabel}</p> : null}
+                {volume.plot ? <p><b>剧情走向</b>{volume.plot}</p> : null}
+                {volume.goal ? <p><b>改编目标</b>{volume.goal}</p> : null}
+                {volume.beats.length ? <ProposalChipList label="关键节点" values={volume.beats} /> : null}
+              </div>
+            </section>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function ProposalChapterCard({ chapter }) {
+function ProposalChapterCard({ chapter, granularity }) {
   const scenes = chapter.scenes || [];
   const preserve = chapter.preserveEvents || [];
   const required = chapter.requiredChanges || [];
@@ -3013,9 +3014,7 @@ function ProposalChapterCard({ chapter }) {
   const budgetText = budget?.targetRunes
     ? `${formatCompact(budget.targetRunes)} 字`
     : budget?.targetWords ? `${formatCompact(budget.targetWords)} 字` : '';
-  const sourceText = coverage
-    ? coverage.isAdded ? '新增桥段' : coverage.from && coverage.to ? `原 ${coverage.from}-${coverage.to}` : coverage.chapters?.length ? `原 ${coverage.chapters.join(',')}` : ''
-    : '';
+  const sourceText = formatAdaptationSourceCoverageLabel(coverage, granularity, { addedLabel: '新增桥段' });
   return (
     <article className="proposal-chapter-card">
       <div className="proposal-chapter-title">
@@ -3414,7 +3413,7 @@ function AdaptationPanel({
               ) : null}
               <div className="proposal-chapter-list">
                 {proposal.chapters.map((chapter) => (
-                  <ChapterRow item={chapter} key={`proposal-${chapter.chapter}-${chapter.title}`} />
+                  <ChapterRow item={chapter} granularity={proposal.granularity} key={`proposal-${chapter.chapter}-${chapter.title}`} />
                 ))}
               </div>
               <button className="tool-button accent full-width" disabled={!canConfirm} onClick={() => runWithWindowScrollPreserved(onConfirm)} type="button">
@@ -5356,6 +5355,44 @@ export function buildAdaptationProposalKey({ sourceFile = '', mode = '', brief =
     String(mode || '').trim(),
     String(brief || '').trim()
   ]);
+}
+
+export function shouldShowAdaptationSourceMapping(granularity = '') {
+  return String(granularity || '').trim().toLowerCase() !== 'free';
+}
+
+export function formatAdaptationSourceCoverageLabel(coverage, granularity, { addedLabel = '\u65b0\u589e' } = {}) {
+  if (!coverage) {
+    return '';
+  }
+  if (coverage.isAdded) {
+    return addedLabel;
+  }
+  if (!shouldShowAdaptationSourceMapping(granularity)) {
+    return '';
+  }
+  if (coverage.from && coverage.to) {
+    return `\u539f ${coverage.from}-${coverage.to}`;
+  }
+  if (coverage.chapters?.length) {
+    return `\u539f ${coverage.chapters.join(',')}`;
+  }
+  return '';
+}
+
+export function formatAdaptationVolumeSourceLabel(volume, granularity) {
+  if (!volume || !shouldShowAdaptationSourceMapping(granularity)) {
+    return '';
+  }
+  const sourceLabel = textValue(volume, 'SourceLabel', 'sourceLabel', 'source_label');
+  if (sourceLabel) {
+    return sourceLabel;
+  }
+  const sourceFrom = numberValue(volume, 'SourceFrom', 'sourceFrom', 'source_from');
+  const sourceTo = numberValue(volume, 'SourceTo', 'sourceTo', 'source_to');
+  return sourceFrom || sourceTo
+    ? `\u539f ${sourceFrom || '?'}-${sourceTo || sourceFrom || '?'}`
+    : '';
 }
 
 export function clearAdaptationProposalSnapshot(snapshot) {

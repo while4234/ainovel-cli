@@ -8,6 +8,8 @@ import {
   buildVolumeReviewRevisionPayload,
   clearAdaptationProposalSnapshot,
   deriveWorkspaceProgress,
+  formatAdaptationSourceCoverageLabel,
+  formatAdaptationVolumeSourceLabel,
   getAdaptationProposalReview,
   getVisibleAdaptationProposalReview,
   getSimulationProfileStatus,
@@ -308,6 +310,58 @@ describe('workspace progress derivation', () => {
     expect(review.granularity).toBe('free');
     expect(review.chapterCount).toBe(20);
     expect(review.volumeReview.volumes[0].title).toBe('Opening volume');
+  });
+
+  it('hides free-mode source anchors from adaptation proposal labels', () => {
+    const chapterReview = getAdaptationProposalReview({
+      AdaptationProposal: {
+        status: 'proposal',
+        granularity: 'free',
+        chapters: [
+          {
+            chapter: 1,
+            title: 'Opening',
+            source_chapters: [17],
+            source_range: { from: 17, to: 17 }
+          }
+        ]
+      }
+    });
+    const volumeReview = getAdaptationProposalReview({
+      VolumeReviewSummary: {
+        Status: 'volume_review',
+        Granularity: 'free',
+        TargetChapterCount: 8
+      },
+      AdaptationVolumeReview: {
+        status: 'volume_review',
+        granularity: 'free',
+        volumes: [
+          {
+            index: 1,
+            title: 'Opening volume',
+            target_from: 1,
+            target_to: 8,
+            source_from: 17,
+            source_to: 17
+          }
+        ]
+      }
+    });
+
+    expect(chapterReview.chapters[0].sourceCoverage).toMatchObject({ from: 17, to: 17, chapters: [17] });
+    expect(formatAdaptationSourceCoverageLabel(chapterReview.chapters[0].sourceCoverage, chapterReview.granularity)).toBe('');
+    expect(formatAdaptationSourceCoverageLabel({ isAdded: true }, chapterReview.granularity, { addedLabel: '\u65b0\u589e\u6865\u6bb5' })).toBe('\u65b0\u589e\u6865\u6bb5');
+    expect(volumeReview.volumeReviewReady).toBe(true);
+    expect(volumeReview.volumeReview.volumes[0]).toMatchObject({ sourceFrom: 17, sourceTo: 17 });
+    expect(formatAdaptationVolumeSourceLabel(volumeReview.volumeReview.volumes[0], volumeReview.granularity)).toBe('');
+  });
+
+  it('keeps source mapping labels for chapter and arc adaptation proposal modes', () => {
+    expect(formatAdaptationSourceCoverageLabel({ from: 2, to: 4 }, 'chapter')).toBe('\u539f 2-4');
+    expect(formatAdaptationSourceCoverageLabel({ chapters: [2, 4] }, 'arc')).toBe('\u539f 2,4');
+    expect(formatAdaptationVolumeSourceLabel({ sourceFrom: 1, sourceTo: 20 }, 'arc')).toBe('\u539f 1-20');
+    expect(formatAdaptationVolumeSourceLabel({ sourceLabel: '\u539f 3-9' }, 'chapter')).toBe('\u539f 3-9');
   });
 
   it('deduplicates staged volume review mirrored in summary and review payload', () => {
