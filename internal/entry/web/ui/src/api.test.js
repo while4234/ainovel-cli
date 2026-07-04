@@ -4,6 +4,7 @@ import {
   buildAdaptationProposal,
   clearProjectTrash,
   confirmAdaptationProposal,
+  confirmAdaptationProposalDetails,
   createProject,
   deleteGlobalProviderModel,
   deleteProviderModel,
@@ -19,6 +20,7 @@ import {
   renameProject,
   restoreTrashProject,
   reviseAdaptationProposal,
+  reviseAdaptationVolumeReview,
   reviseCoCreate,
   sendCoCreate,
   setGlobalCoCreateTimeout,
@@ -131,14 +133,16 @@ describe('web API helpers', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('/api/projects/project-1/cocreate/revise');
   });
 
-  it('uses explicit adaptation proposal and confirm routes', async () => {
+  it('uses staged adaptation proposal, revise, details, and final confirm routes', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
 
     await buildAdaptationProposal('project-1', 'source.txt', 'free', 'Make it a mystery');
-    await reviseAdaptationProposal('project-1', { target: '第3章', from_chapter: 3, to_chapter: 3, instruction: 'raise tension' });
+    await reviseAdaptationVolumeReview('project-1', { volume_index: 3, instruction: 'raise tension' });
+    await confirmAdaptationProposalDetails('project-1');
+    await reviseAdaptationProposal('project-1', { from_chapter: 4, to_chapter: 6, instruction: 'tighten the reveal' });
     await confirmAdaptationProposal('project-1');
 
-    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project-1/adapt/proposal', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project-1/adapt/proposal/volumes', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({
         source_file: 'source.txt',
@@ -146,16 +150,26 @@ describe('web API helpers', () => {
         brief: 'Make it a mystery'
       })
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/adapt/proposal/revise', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/adapt/proposal/volumes/revise', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({
-        target: '第3章',
-        from_chapter: 3,
-        to_chapter: 3,
+        volume_index: 3,
         instruction: 'raise tension'
       })
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/projects/project-1/adapt/confirm', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/projects/project-1/adapt/proposal/details', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({})
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/projects/project-1/adapt/proposal/revise', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        from_chapter: 4,
+        to_chapter: 6,
+        instruction: 'tighten the reveal'
+      })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/projects/project-1/adapt/confirm', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({})
     }));

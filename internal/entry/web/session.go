@@ -81,7 +81,10 @@ type projectHost interface {
 	ImportSimulationProfile(context.Context, string) (<-chan sim.Event, error)
 	PrepareAdaptationSource(context.Context, string) (<-chan adapt.Event, error)
 	BuildAdaptationProposalContext(context.Context, adapt.ProposalOptions) (*domain.AdaptationPlan, error)
+	BuildAdaptationProposalVolumesContext(context.Context, adapt.ProposalOptions) (*adapt.ProposalStageResult, error)
 	ReviseAdaptationProposalContext(context.Context, adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error)
+	ReviseAdaptationVolumeReviewContext(context.Context, adapt.ProposalRevisionOptions) (*domain.AdaptationVolumeReview, error)
+	BuildAdaptationProposalDetailsContext(context.Context, adapt.ProposalDetailsOptions) (*domain.AdaptationPlan, error)
 	ConfirmAdaptationProposal() (*domain.AdaptationPlan, error)
 	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
 	Export(context.Context, exp.Options) (*exp.Result, error)
@@ -632,6 +635,32 @@ func (s *ProjectSession) BuildAdaptationProposalContext(ctx context.Context, opt
 	return proposal, nil
 }
 
+func (s *ProjectSession) BuildAdaptationProposalVolumesContext(ctx context.Context, options adapt.ProposalOptions) (*adapt.ProposalStageResult, error) {
+	actionCtx, unlock, err := s.beginCancellableAction(ctx, projectActionKindAdaptationProposal)
+	if err != nil {
+		return nil, err
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			unlock()
+			s.AppendSnapshot()
+		}
+	}()
+
+	s.AppendSnapshot()
+	proposalCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
+	defer cancel()
+	result, err := s.buildAdaptationProposalVolumes(proposalCtx, options)
+	unlock()
+	finished = true
+	s.AppendSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (s *ProjectSession) buildAdaptationProposal(ctx context.Context, options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
 	eventID, startedAt := s.appendAdaptationProposalStarted(options)
 	if err := s.host.PrepareExternalSourceUserRules(options.Brief); err != nil {
@@ -648,6 +677,24 @@ func (s *ProjectSession) buildAdaptationProposal(ctx context.Context, options ad
 	}
 	s.appendAdaptationProposalFinished(eventID, startedAt, options, nil)
 	return proposal, nil
+}
+
+func (s *ProjectSession) buildAdaptationProposalVolumes(ctx context.Context, options adapt.ProposalOptions) (*adapt.ProposalStageResult, error) {
+	eventID, startedAt := s.appendAdaptationProposalStarted(options)
+	if err := s.host.PrepareExternalSourceUserRules(options.Brief); err != nil {
+		s.appendAdaptationProposalFinished(eventID, startedAt, options, err)
+		return nil, err
+	}
+	s.appendAdaptationProposalPlannerRequested(options)
+	options.EmitProgress = s.adaptationProposalProgressEmitter()
+	result, err := s.host.BuildAdaptationProposalVolumesContext(ctx, options)
+	if err != nil {
+		err = adaptationProposalRunError(err)
+		s.appendAdaptationProposalFinished(eventID, startedAt, options, err)
+		return nil, err
+	}
+	s.appendAdaptationProposalFinished(eventID, startedAt, options, nil)
+	return result, nil
 }
 
 func adaptationProposalRunError(err error) error {
@@ -689,6 +736,69 @@ func (s *ProjectSession) ReviseAdaptationProposalContext(ctx context.Context, op
 		return nil, err
 	}
 	s.appendAdaptationProposalRevisionFinished(eventID, startedAt, options, nil)
+	return proposal, nil
+}
+
+func (s *ProjectSession) ReviseAdaptationVolumeReviewContext(ctx context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationVolumeReview, error) {
+	actionCtx, unlock, err := s.beginCancellableAction(ctx, projectActionKindAdaptationRevision)
+	if err != nil {
+		return nil, err
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			unlock()
+			s.AppendSnapshot()
+		}
+	}()
+
+	s.AppendSnapshot()
+	revisionCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
+	defer cancel()
+	eventID, startedAt := s.appendAdaptationProposalRevisionStarted(options)
+	options.EmitProgress = s.adaptationProposalProgressEmitter()
+	review, err := s.host.ReviseAdaptationVolumeReviewContext(revisionCtx, options)
+	unlock()
+	finished = true
+	s.AppendSnapshot()
+	if err != nil {
+		err = adaptationProposalRevisionRunError(err)
+		s.appendAdaptationProposalRevisionFinished(eventID, startedAt, options, err)
+		return nil, err
+	}
+	s.appendAdaptationProposalRevisionFinished(eventID, startedAt, options, nil)
+	return review, nil
+}
+
+func (s *ProjectSession) BuildAdaptationProposalDetailsContext(ctx context.Context) (*domain.AdaptationPlan, error) {
+	actionCtx, unlock, err := s.beginCancellableAction(ctx, projectActionKindAdaptationProposal)
+	if err != nil {
+		return nil, err
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			unlock()
+			s.AppendSnapshot()
+		}
+	}()
+
+	s.AppendSnapshot()
+	proposalCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
+	defer cancel()
+	eventID, startedAt := s.appendAdaptationProposalStarted(adapt.ProposalOptions{})
+	proposal, err := s.host.BuildAdaptationProposalDetailsContext(proposalCtx, adapt.ProposalDetailsOptions{
+		EmitProgress: s.adaptationProposalProgressEmitter(),
+	})
+	unlock()
+	finished = true
+	s.AppendSnapshot()
+	if err != nil {
+		err = adaptationProposalRunError(err)
+		s.appendAdaptationProposalFinished(eventID, startedAt, adapt.ProposalOptions{}, err)
+		return nil, err
+	}
+	s.appendAdaptationProposalFinished(eventID, startedAt, adapt.ProposalOptions{}, nil)
 	return proposal, nil
 }
 
@@ -837,7 +947,7 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 			return state.apiState(), err
 		}
 	case webCoCreateKindAdapt:
-		proposal, err := s.buildAdaptationProposal(ctx, adapt.ProposalOptions{
+		result, err := s.buildAdaptationProposalVolumes(ctx, adapt.ProposalOptions{
 			Brief:         state.draftPrompt(),
 			SourcePath:    state.sourcePath,
 			Granularity:   state.adaptGranularity,
@@ -847,7 +957,13 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 		if err != nil {
 			return state.apiState(), err
 		}
-		state.adaptationProposal = proposal
+		if result != nil && result.VolumeReview != nil {
+			state.adaptationVolumeReview = result.VolumeReview
+			state.adaptationProposal = adaptationVolumeReviewAsPlan(*result.VolumeReview)
+		} else if result != nil {
+			state.adaptationProposal = result.Proposal
+			state.adaptationVolumeReview = nil
+		}
 	default:
 		plan, err := state.session.BuildPlanWithWordBudget(state.targetTotalWords)
 		if err != nil {
@@ -879,6 +995,20 @@ func (s *ProjectSession) persistWordBudget(budget *domain.WordBudget) error {
 		return fmt.Errorf("save word budget: %w", err)
 	}
 	return nil
+}
+
+func adaptationVolumeReviewAsPlan(review domain.AdaptationVolumeReview) *domain.AdaptationPlan {
+	return &domain.AdaptationPlan{
+		Granularity:       review.Granularity,
+		Status:            domain.AdaptationPlanStatusVolumeReview,
+		RewritePolicy:     review.RewritePolicy,
+		Brief:             review.Brief,
+		Planner:           review.Planner,
+		Volumes:           append([]domain.AdaptationVolumePlan(nil), review.Volumes...),
+		WordTolerance:     review.WordTolerance,
+		MainlineRules:     append([]string(nil), review.MainlineRules...),
+		RelationshipGoals: append([]string(nil), review.RelationshipGoals...),
+	}
 }
 
 func (s *ProjectSession) CoCreateState() *webCoCreateState {
@@ -936,6 +1066,9 @@ func (s *ProjectSession) coCreateRestoreBlockedByAdaptationState() bool {
 		return true
 	}
 	if proposal, err := st.Adaptation.LoadProposal(); err == nil && proposal != nil && len(proposal.Chapters) > 0 {
+		return true
+	}
+	if review, err := st.Adaptation.LoadVolumeReview(); err == nil && review != nil && len(review.Volumes) > 0 {
 		return true
 	}
 	return false

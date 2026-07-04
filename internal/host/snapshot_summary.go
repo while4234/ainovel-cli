@@ -66,6 +66,24 @@ func adaptationPlanSummary(plan *domain.AdaptationPlan) *AdaptationPlanSummary {
 	}
 }
 
+func adaptationVolumeReviewSummary(review *domain.AdaptationVolumeReview) *AdaptationVolumeReviewSummary {
+	if review == nil {
+		return nil
+	}
+	return &AdaptationVolumeReviewSummary{
+		Loaded:             true,
+		Status:             review.Status,
+		Granularity:        review.Granularity,
+		RewritePolicy:      review.RewritePolicy,
+		Brief:              review.Brief,
+		Volumes:            append([]domain.AdaptationVolumePlan(nil), review.Volumes...),
+		TargetChapterCount: review.TargetChapterCount,
+		WordTolerance:      review.WordTolerance,
+		MainlineRules:      append([]string(nil), review.MainlineRules...),
+		RelationshipGoals:  append([]string(nil), review.RelationshipGoals...),
+	}
+}
+
 func activeAdaptationChapters(plan, proposal *domain.AdaptationPlan) map[int]domain.AdaptationChapterPlan {
 	active := plan
 	if active == nil {

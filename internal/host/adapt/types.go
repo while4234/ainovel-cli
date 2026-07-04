@@ -1,7 +1,11 @@
 // Package adapt implements source-novel adaptation preparation.
 package adapt
 
-import "time"
+import (
+	"time"
+
+	"github.com/voocel/ainovel-cli/internal/domain"
+)
 
 type Stage string
 
@@ -46,6 +50,15 @@ type ProposalRevisionOptions struct {
 	ToChapter    int
 	VolumeIndex  int
 	Instruction  string
+	EmitProgress ProgressEmitter `json:"-"`
+}
+
+type ProposalStageResult struct {
+	VolumeReview *domain.AdaptationVolumeReview
+	Proposal     *domain.AdaptationPlan
+}
+
+type ProposalDetailsOptions struct {
 	EmitProgress ProgressEmitter `json:"-"`
 }
 

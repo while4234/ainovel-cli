@@ -21,6 +21,7 @@ const (
 	adaptationSourceFoundationFile = adaptationRootDir + "/source_foundation.json"
 	adaptationCheckDir             = adaptationRootDir + "/checks"
 	adaptationProposalFile         = adaptationRootDir + "/proposal.json"
+	adaptationVolumeReviewFile     = adaptationRootDir + "/proposal_volume_review.json"
 	adaptationProposalRuntimeFile  = adaptationRootDir + "/proposal_runtime.json"
 	adaptationPlanFile             = adaptationRootDir + "/plan.json"
 )
@@ -43,6 +44,10 @@ func (s *AdaptationStore) ResetGenerated() error {
 			return err
 		}
 		err = os.Remove(s.io.path(adaptationProposalFile))
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		err = os.Remove(s.io.path(adaptationVolumeReviewFile))
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -268,6 +273,9 @@ func (s *AdaptationStore) SavePlan(plan domain.AdaptationPlan) error {
 		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
 			return err
 		}
+		if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
+			return err
+		}
 		return s.io.WriteJSONUnlocked(adaptationPlanFile, plan)
 	})
 }
@@ -291,6 +299,9 @@ func (s *AdaptationStore) SaveProposal(plan domain.AdaptationPlan) error {
 		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
 			return err
 		}
+		if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
+			return err
+		}
 		return s.io.WriteJSONUnlocked(adaptationProposalFile, plan)
 	})
 }
@@ -306,6 +317,40 @@ func (s *AdaptationStore) LoadProposal() (*domain.AdaptationPlan, error) {
 	s.normalizeAdaptationPlan(&proposal)
 	proposal.Status = domain.AdaptationPlanStatusProposal
 	return &proposal, nil
+}
+
+func (s *AdaptationStore) SaveVolumeReview(review domain.AdaptationVolumeReview) error {
+	review.Status = domain.AdaptationPlanStatusVolumeReview
+	return s.io.WithWriteLock(func() error {
+		if err := s.io.RemoveFileUnlocked(adaptationProposalFile); err != nil {
+			return err
+		}
+		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
+			return err
+		}
+		return s.io.WriteJSONUnlocked(adaptationVolumeReviewFile, review)
+	})
+}
+
+func (s *AdaptationStore) LoadVolumeReview() (*domain.AdaptationVolumeReview, error) {
+	var review domain.AdaptationVolumeReview
+	if err := s.io.ReadJSON(adaptationVolumeReviewFile, &review); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	review.Status = domain.AdaptationPlanStatusVolumeReview
+	return &review, nil
+}
+
+func (s *AdaptationStore) ClearVolumeReview() error {
+	return s.io.WithWriteLock(func() error {
+		if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
+			return err
+		}
+		return s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile)
+	})
 }
 
 func (s *AdaptationStore) SaveProposalRuntime(runtime domain.AdaptationProposalRuntime) error {
@@ -330,6 +375,9 @@ func (s *AdaptationStore) ClearProposalRuntime() error {
 func (s *AdaptationStore) ClearProposal() error {
 	return s.io.WithWriteLock(func() error {
 		if err := s.io.RemoveFileUnlocked(adaptationProposalFile); err != nil {
+			return err
+		}
+		if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
 			return err
 		}
 		return s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile)

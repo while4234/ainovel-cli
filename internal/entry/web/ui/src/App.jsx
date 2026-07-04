@@ -37,6 +37,7 @@ import {
   cancelCoCreate,
   commitCoCreate,
   confirmAdaptationProposal,
+  confirmAdaptationProposalDetails,
   completeGrokLogin,
   continueProject,
   createProject,
@@ -65,6 +66,7 @@ import {
   renameProject,
   restoreTrashProject,
   reviseAdaptationProposal,
+  reviseAdaptationVolumeReview,
   reviseCoCreate,
   resumeProject,
   runProjectDiagnostic,
@@ -270,7 +272,7 @@ export function applyAdaptationProposalSnapshot(previous, snapshot) {
     revisionChapter: clampChapterSelection(previous.revisionChapter, review.chapterCount),
     revisionFromChapter: clampChapterSelection(previous.revisionFromChapter, review.chapterCount),
     revisionToChapter: clampChapterSelection(previous.revisionToChapter, review.chapterCount),
-    revisionVolume: clampVolumeSelection(previous.revisionVolume, review.volumes.length),
+    revisionVolume: clampVolumeSelection(previous.revisionVolume, review.volumeReview?.volumes?.length || review.volumes.length),
     error: ''
   };
   if (mode && brief) {
@@ -1321,7 +1323,7 @@ export default function App() {
     }));
     try {
       const data = await buildAdaptationProposal(activeProject.id, adaptation.sourceFile.relative_path, adaptation.mode, adaptation.brief);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setWorkbench((previous) => ({ ...previous, snapshot: snapshotFromAdaptationProposalResponse(data, previous.snapshot) }));
       setAdaptation((previous) => ({
         ...previous,
         proposalKey,
@@ -1351,6 +1353,7 @@ export default function App() {
     if (!activeProject?.id || !isAdaptationProposalCurrent(adaptation)) {
       return;
     }
+    const isVolumeReview = adaptationProposalReview.volumeReviewReady;
     setBusy(true);
     setAdaptation((previous) => ({
       ...previous,
@@ -1359,12 +1362,14 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await confirmAdaptationProposal(activeProject.id);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      const data = isVolumeReview
+        ? await confirmAdaptationProposalDetails(activeProject.id)
+        : await confirmAdaptationProposal(activeProject.id);
+      setWorkbench((previous) => ({ ...previous, snapshot: snapshotFromAdaptationProposalResponse(data, previous.snapshot) }));
       setAdaptation((previous) => ({
         ...previous,
         startStatus: 'done',
-        startMessage: '提案已确认，写作已启动',
+        startMessage: isVolumeReview ? '章节细纲已生成，可继续审阅完整提案' : '提案已确认，写作已启动',
         error: ''
       }));
     } catch (err) {
@@ -1389,7 +1394,9 @@ export default function App() {
     if (!activeProject?.id || !isAdaptationProposalCurrent(adaptation)) {
       return;
     }
-    const payload = buildAdaptationRevisionPayload(adaptation, adaptationProposalReview);
+    const payload = adaptationProposalReview.volumeReviewReady
+      ? buildVolumeReviewRevisionPayload(adaptation, adaptationProposalReview.volumeReview)
+      : buildAdaptationRevisionPayload(adaptation, adaptationProposalReview);
     if (!payload.ok) {
       setAdaptation((previous) => ({
         ...previous,
@@ -1407,8 +1414,10 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await reviseAdaptationProposal(activeProject.id, payload.body);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      const data = adaptationProposalReview.volumeReviewReady
+        ? await reviseAdaptationVolumeReview(activeProject.id, payload.body)
+        : await reviseAdaptationProposal(activeProject.id, payload.body);
+      setWorkbench((previous) => ({ ...previous, snapshot: snapshotFromAdaptationProposalResponse(data, previous.snapshot) }));
       setAdaptation((previous) => ({
         ...previous,
         revisionStatus: 'done',
@@ -2906,6 +2915,9 @@ function ChapterRow({ item }) {
 }
 
 function AdaptationProposalWorkspace({ proposal }) {
+  if (proposal.volumeReviewReady) {
+    return <AdaptationVolumeReviewWorkspace proposal={proposal} />;
+  }
   const groups = proposalVolumeGroups(proposal);
   return (
     <div className="proposal-workspace">
@@ -2941,6 +2953,47 @@ function AdaptationProposalWorkspace({ proposal }) {
               {group.chapters.map((chapter) => (
                 <ProposalChapterCard chapter={chapter} key={`proposal-card-${chapter.chapter}-${chapter.title}`} />
               ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AdaptationVolumeReviewWorkspace({ proposal }) {
+  const review = proposal.volumeReview || {};
+  const volumes = review.volumes || [];
+  return (
+    <div className="proposal-workspace">
+      <header className="proposal-workspace-header">
+        <div>
+          <div className="eyebrow">改编提案</div>
+          <h3>{volumes.length || proposal.volumes.length} 卷剧情审阅</h3>
+        </div>
+        <div className="proposal-workspace-metrics">
+          <span>{proposal.granularity || '-'}</span>
+          <span>{proposal.rewritePolicy || '-'}</span>
+          <span>{volumes.length ? `${volumes.length} 卷` : '未分卷'}</span>
+        </div>
+      </header>
+      {proposal.brief ? <p className="proposal-brief">{proposal.brief}</p> : null}
+      <div className="proposal-volume-stack">
+        {volumes.map((volume) => (
+          <section className="proposal-volume-block volume-review-block" key={`volume-review-${volume.index}`}>
+            <div className="proposal-volume-head">
+              <div>
+                <strong>{volume.title || `第 ${volume.index} 卷`}</strong>
+                <span>第 {volume.targetFrom || '?'}-{volume.targetTo || '?'} 章</span>
+              </div>
+              {volume.theme ? <p>{volume.theme}</p> : null}
+              {volume.summary ? <p>{volume.summary}</p> : null}
+            </div>
+            <div className="volume-review-detail-grid">
+              {volume.sourceLabel ? <p><b>原作范围</b>{volume.sourceLabel}</p> : null}
+              {volume.plot ? <p><b>剧情走向</b>{volume.plot}</p> : null}
+              {volume.goal ? <p><b>改编目标</b>{volume.goal}</p> : null}
+              {volume.beats.length ? <ProposalChipList label="关键节点" values={volume.beats} /> : null}
             </div>
           </section>
         ))}
@@ -2989,6 +3042,51 @@ function ProposalChipList({ label, values }) {
       <b>{label}</b>
       {values.slice(0, 4).map((value, index) => <span key={`${label}-${index}`}>{value}</span>)}
     </div>
+  );
+}
+
+function VolumeReviewControls({ adaptation, busy, proposal, setAdaptation, onRevise }) {
+  const volumes = proposal.volumeReview?.volumes || [];
+  const disabled = busy || !volumes.length;
+  const selected = clampVolumeSelection(adaptation.revisionVolume, volumes.length);
+  const instruction = String(adaptation.revisionInstruction || '');
+  const canSubmit = !disabled && instruction.trim();
+  const update = (changes) => setAdaptation((previous) => ({ ...previous, ...changes, revisionStatus: 'idle', revisionMessage: '', error: '' }));
+  return (
+    <section className="simulation-section proposal-revision-section">
+      <div className="section-title">
+        <Pencil size={17} />
+        <span>修改分卷剧情</span>
+      </div>
+      <label className="field-label proposal-select-line">
+        <span>卷</span>
+        <select
+          disabled={disabled}
+          value={selected}
+          onChange={(event) => update({ revisionVolume: event.target.value })}
+        >
+          {volumes.map((volume) => (
+            <option key={`volume-review-option-${volume.index}`} value={volume.index}>
+              第 {volume.index} 卷：{volume.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field-label proposal-select-line">
+        <span>修改意见</span>
+        <textarea
+          className="proposal-revision-textarea"
+          disabled={busy}
+          placeholder="写下这一卷需要调整的剧情、人物关系、节奏或新增桥段..."
+          value={instruction}
+          onChange={(event) => update({ revisionInstruction: event.target.value })}
+        />
+      </label>
+      <button className="tool-button accent full-width" disabled={!canSubmit} onClick={() => runWithWindowScrollPreserved(onRevise)} type="button">
+        <WandSparkles size={16} />
+        修订分卷
+      </button>
+    </section>
   );
 }
 
@@ -3119,6 +3217,7 @@ function AdaptationPanel({
   const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.brief.trim());
   const canConfirm = Boolean(activeProject && !busy && proposal.proposalReady && isAdaptationProposalCurrent(adaptation));
   const canSaveNovel = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.librarySaveName.trim());
+  const isVolumeReview = proposal.volumeReviewReady;
   const updateProposalInput = (changes, options = {}) => {
     const scrollPosition = options.preserveWindowScroll ? readWindowScrollPosition() : null;
     setAdaptation((previous) => ({
@@ -3145,17 +3244,27 @@ function AdaptationPanel({
             {proposal.volumes.length ? <span>{proposal.volumes.length} 卷</span> : null}
           </div>
         </section>
-        <ProposalRevisionControls
-          adaptation={adaptation}
-          busy={busy}
-          proposal={proposal}
-          setAdaptation={setAdaptation}
-          onRevise={onRevise}
-        />
+        {isVolumeReview ? (
+          <VolumeReviewControls
+            adaptation={adaptation}
+            busy={busy}
+            proposal={proposal}
+            setAdaptation={setAdaptation}
+            onRevise={onRevise}
+          />
+        ) : (
+          <ProposalRevisionControls
+            adaptation={adaptation}
+            busy={busy}
+            proposal={proposal}
+            setAdaptation={setAdaptation}
+            onRevise={onRevise}
+          />
+        )}
         <section className="simulation-section proposal-confirm-section">
           <button className="tool-button accent full-width" disabled={!canConfirm} onClick={() => runWithWindowScrollPreserved(onConfirm)} type="button">
             <Check size={16} />
-            确认并启动
+            {isVolumeReview ? '生成章节细纲' : '确认并启动'}
           </button>
           <div className={`workflow-status ${adaptation.revisionStatus || adaptation.startStatus}`}>
             <strong>{workflowStatusText(adaptation.revisionStatus !== 'idle' ? adaptation.revisionStatus : adaptation.startStatus)}</strong>
@@ -5169,16 +5278,23 @@ export function getCreativeBlueprint(snapshot) {
 export function getAdaptationProposalReview(snapshot) {
   const proposalSummary = objectValue(snapshot, 'ProposalSummary', 'proposalSummary', 'proposal_summary');
   const adaptationSummary = objectValue(snapshot, 'AdaptationSummary', 'adaptationSummary', 'adaptation_summary');
+  const volumeReviewSummary = objectValue(snapshot, 'VolumeReviewSummary', 'volumeReviewSummary', 'volume_review_summary');
   const rawProposal = objectValue(snapshot, 'AdaptationProposal', 'adaptationProposal', 'adaptation_proposal');
   const rawPlan = objectValue(snapshot, 'AdaptationPlan', 'adaptationPlan', 'adaptation_plan');
+  const rawVolumeReview = objectValue(snapshot, 'AdaptationVolumeReview', 'adaptationVolumeReview', 'adaptation_volume_review', 'VolumeReview', 'volumeReview', 'volume_review');
+  const hasVolumeReview = Boolean(rawVolumeReview || volumeReviewSummary);
   const summary = proposalSummary || adaptationSummary;
+  const reviewSummary = volumeReviewSummary || summary;
   const plan = rawProposal || rawPlan;
-  const status = textValue(summary, 'Status', 'status') || textValue(plan, 'Status', 'status');
+  const status = textValue(summary, 'Status', 'status') || textValue(volumeReviewSummary, 'Status', 'status') || textValue(plan, 'Status', 'status') || textValue(rawVolumeReview, 'Status', 'status');
   const chapters = getSnapshotOutlineRows(snapshot);
   const fallbackChapters = chapters.length ? chapters : rowsFromAdaptationPlan(plan);
+  const volumeReview = normalizeVolumeReview(rawVolumeReview, reviewSummary || plan);
   const rules = [
     ...arrayValue(summary, 'MainlineRules', 'mainlineRules', 'mainline_rules'),
     ...arrayValue(summary, 'RelationshipGoals', 'relationshipGoals', 'relationship_goals'),
+    ...arrayValue(volumeReviewSummary, 'MainlineRules', 'mainlineRules', 'mainline_rules'),
+    ...arrayValue(volumeReviewSummary, 'RelationshipGoals', 'relationshipGoals', 'relationship_goals'),
     ...arrayValue(plan, 'MainlineRules', 'mainlineRules', 'mainline_rules'),
     ...arrayValue(plan, 'RelationshipGoals', 'relationshipGoals', 'relationship_goals')
   ].filter(Boolean);
@@ -5186,23 +5302,26 @@ export function getAdaptationProposalReview(snapshot) {
     ...arrayValue(summary, 'Volumes', 'volumes'),
     ...arrayValue(plan, 'Volumes', 'volumes')
   ], fallbackChapters.length);
-  const loaded = Boolean(summary || plan);
+  const loaded = Boolean(summary || plan || hasVolumeReview);
   const confirmed = status === 'confirmed' || Boolean(rawPlan && !rawProposal);
+  const volumeReviewReady = hasVolumeReview && loaded && !confirmed && volumeReview.volumes.length > 0 && fallbackChapters.length === 0;
   return {
     loaded,
     confirmed,
-    proposalReady: loaded && !confirmed && (status === 'proposal' || Boolean(rawProposal)),
+    proposalReady: volumeReviewReady || (loaded && !confirmed && (status === 'proposal' || Boolean(rawProposal))),
+    volumeReviewReady,
     status,
-    granularity: textValue(summary, 'Granularity', 'granularity') || textValue(plan, 'Granularity', 'granularity'),
-    rewritePolicy: textValue(summary, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy') || textValue(plan, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy'),
-    brief: textValue(summary, 'Brief', 'brief') || textValue(plan, 'Brief', 'brief'),
-    chapterCount: numberValue(summary, 'ChapterCount', 'chapterCount', 'chapter_count') || fallbackChapters.length,
+    granularity: textValue(summary, 'Granularity', 'granularity') || textValue(volumeReviewSummary, 'Granularity', 'granularity') || textValue(plan, 'Granularity', 'granularity') || volumeReview.granularity,
+    rewritePolicy: textValue(summary, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy') || textValue(volumeReviewSummary, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy') || textValue(plan, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy') || volumeReview.rewritePolicy,
+    brief: textValue(summary, 'Brief', 'brief') || textValue(volumeReviewSummary, 'Brief', 'brief') || textValue(plan, 'Brief', 'brief') || volumeReview.brief,
+    chapterCount: numberValue(summary, 'ChapterCount', 'chapterCount', 'chapter_count') || numberValue(volumeReviewSummary, 'TargetChapterCount', 'targetChapterCount', 'target_chapter_count') || fallbackChapters.length || volumeReview.chapterCount,
     sourceTotalRunes: numberValue(summary, 'SourceTotalRunes', 'sourceTotalRunes', 'source_total_runes') ||
       numberValue(plan, 'SourceTotalRunes', 'sourceTotalRunes', 'source_total_runes'),
     targetTotalRunes: numberValue(summary, 'TargetTotalRunes', 'targetTotalRunes', 'target_total_runes') ||
       numberValue(plan, 'TargetTotalRunes', 'targetTotalRunes', 'target_total_runes'),
     rules,
     volumes,
+    volumeReview,
     chapters: fallbackChapters
   };
 }
@@ -5219,6 +5338,7 @@ export function getVisibleAdaptationProposalReview(snapshot, adaptation = {}) {
     stale: true,
     rules: [],
     volumes: [],
+    volumeReview: normalizeVolumeReview(null),
     chapters: []
   };
 }
@@ -5247,7 +5367,16 @@ export function clearAdaptationProposalSnapshot(snapshot) {
     'adaptation_proposal',
     'ProposalSummary',
     'proposalSummary',
-    'proposal_summary'
+    'proposal_summary',
+    'AdaptationVolumeReview',
+    'adaptationVolumeReview',
+    'adaptation_volume_review',
+    'VolumeReviewSummary',
+    'volumeReviewSummary',
+    'volume_review_summary',
+    'VolumeReview',
+    'volumeReview',
+    'volume_review'
   ];
   if (!proposalKeys.some((key) => Object.prototype.hasOwnProperty.call(snapshot, key))) {
     return snapshot;
@@ -5255,6 +5384,23 @@ export function clearAdaptationProposalSnapshot(snapshot) {
   const next = { ...snapshot };
   for (const key of proposalKeys) {
     delete next[key];
+  }
+  return next;
+}
+
+function snapshotFromAdaptationProposalResponse(data, previousSnapshot) {
+  const snapshot = data?.snapshot || previousSnapshot;
+  if (!snapshot || typeof snapshot !== 'object') {
+    return snapshot;
+  }
+  const next = { ...snapshot };
+  const proposal = objectValue(data, 'proposal', 'Proposal', 'adaptation_proposal', 'AdaptationProposal');
+  const volumeReview = objectValue(data, 'volume_review', 'volumeReview', 'VolumeReview', 'adaptation_volume_review', 'adaptationVolumeReview', 'AdaptationVolumeReview');
+  if (proposal && !objectValue(next, 'AdaptationProposal', 'adaptationProposal', 'adaptation_proposal')) {
+    next.adaptation_proposal = proposal;
+  }
+  if (volumeReview && !objectValue(next, 'AdaptationVolumeReview', 'adaptationVolumeReview', 'adaptation_volume_review', 'VolumeReview', 'volumeReview', 'volume_review')) {
+    next.volume_review = volumeReview;
   }
   return next;
 }
@@ -5314,6 +5460,80 @@ function proposalVolumeGroups(proposal) {
     summary: volume.summary || '',
     chapters: chapters.filter((chapter) => chapter.chapter >= volume.targetFrom && chapter.chapter <= volume.targetTo)
   }));
+}
+
+function normalizeVolumeReview(rawReview, fallback = {}) {
+  const volumes = normalizeVolumeReviewVolumes([
+    ...arrayValue(rawReview, 'Volumes', 'volumes'),
+    ...arrayValue(fallback, 'Volumes', 'volumes')
+  ]);
+  return {
+    loaded: Boolean(rawReview || volumes.length),
+    status: textValue(rawReview, 'Status', 'status') || textValue(fallback, 'Status', 'status'),
+    granularity: textValue(rawReview, 'Granularity', 'granularity') || textValue(fallback, 'Granularity', 'granularity'),
+    rewritePolicy: textValue(rawReview, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy') ||
+      textValue(fallback, 'RewritePolicy', 'rewritePolicy', 'rewrite_policy'),
+    brief: textValue(rawReview, 'Brief', 'brief') || textValue(fallback, 'Brief', 'brief'),
+    chapterCount: numberValue(rawReview, 'ChapterCount', 'chapterCount', 'chapter_count') ||
+      numberValue(fallback, 'ChapterCount', 'chapterCount', 'chapter_count') ||
+      volumes.reduce((max, volume) => Math.max(max, volume.targetTo || 0), 0),
+    volumes
+  };
+}
+
+function normalizeVolumeReviewVolumes(volumes) {
+  return (volumes || [])
+    .map((volume, index) => {
+      const targetFrom = numberValue(volume, 'TargetFrom', 'targetFrom', 'target_from');
+      const targetTo = numberValue(volume, 'TargetTo', 'targetTo', 'target_to');
+      const sourceFrom = numberValue(volume, 'SourceFrom', 'sourceFrom', 'source_from');
+      const sourceTo = numberValue(volume, 'SourceTo', 'sourceTo', 'source_to');
+      const sourceLabel = sourceFrom || sourceTo
+        ? `原 ${sourceFrom || '?'}-${sourceTo || sourceFrom || '?'}`
+        : textValue(volume, 'SourceLabel', 'sourceLabel', 'source_label');
+      return {
+        index: numberValue(volume, 'Index', 'index') || index + 1,
+        title: textValue(volume, 'Title', 'title') || `第 ${index + 1} 卷`,
+        theme: textValue(volume, 'Theme', 'theme'),
+        goal: textValue(volume, 'Goal', 'goal', 'AdaptationGoal', 'adaptationGoal', 'adaptation_goal'),
+        summary: textValue(volume, 'Summary', 'summary'),
+        plot: textValue(volume, 'Plot', 'plot', 'TargetPlot', 'targetPlot', 'target_plot', 'Synopsis', 'synopsis'),
+        targetFrom,
+        targetTo,
+        sourceFrom,
+        sourceTo,
+        sourceLabel,
+        beats: [
+          ...arrayValue(volume, 'Beats', 'beats'),
+          ...arrayValue(volume, 'KeyBeats', 'keyBeats', 'key_beats')
+        ].filter(Boolean)
+      };
+    })
+    .filter((volume) => volume.index > 0)
+    .sort((a, b) => (a.targetFrom || a.index) - (b.targetFrom || b.index) || a.index - b.index);
+}
+
+export function buildVolumeReviewRevisionPayload(adaptation = {}, volumeReview = {}) {
+  const instruction = String(adaptation.revisionInstruction || '').trim();
+  if (!instruction) {
+    return { ok: false, error: '请输入修改意见' };
+  }
+  const volumes = volumeReview.volumes || [];
+  if (!volumes.length) {
+    return { ok: false, error: '当前分卷审阅没有可修改的卷' };
+  }
+  const selected = Number.parseInt(String(adaptation.revisionVolume || ''), 10);
+  const volume = volumes.find((item) => item.index === selected) || volumes[0];
+  if (!volume?.index) {
+    return { ok: false, error: '请选择要修改的卷' };
+  }
+  return {
+    ok: true,
+    body: {
+      volume_index: volume.index,
+      instruction
+    }
+  };
 }
 
 export function buildAdaptationRevisionPayload(adaptation = {}, proposal = {}) {

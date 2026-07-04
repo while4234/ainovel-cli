@@ -250,7 +250,7 @@ export function loadNovelFromLibrary(projectId, name) {
 }
 
 export function buildAdaptationProposal(projectId, sourceFile, mode, brief) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/proposal`, {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/proposal/volumes`, {
     method: 'POST',
     body: JSON.stringify({ source_file: sourceFile, mode, brief })
   });
@@ -260,6 +260,20 @@ export function reviseAdaptationProposal(projectId, payload) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/proposal/revise`, {
     method: 'POST',
     body: JSON.stringify(payload || {})
+  });
+}
+
+export function reviseAdaptationVolumeReview(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/proposal/volumes/revise`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  });
+}
+
+export function confirmAdaptationProposalDetails(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/proposal/details`, {
+    method: 'POST',
+    body: JSON.stringify({})
   });
 }
 

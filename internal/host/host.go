@@ -353,6 +353,25 @@ func (h *Host) BuildAdaptationProposalContext(ctx context.Context, options adapt
 	return adapt.BuildAdaptationProposalContext(ctx, h.adaptationDeps(), options)
 }
 
+func (h *Host) BuildAdaptationProposalVolumesContext(ctx context.Context, options adapt.ProposalOptions) (*adapt.ProposalStageResult, error) {
+	h.mu.Lock()
+	if h.lifecycle == lifecycleRunning {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("co-create is active")
+	}
+	h.mu.Unlock()
+
+	options.Brief = strings.TrimSpace(options.Brief)
+	if options.Brief == "" {
+		return nil, fmt.Errorf("adaptation brief is required")
+	}
+	return adapt.BuildAdaptationProposalVolumesContext(ctx, h.adaptationDeps(), options)
+}
+
 func (h *Host) ReviseAdaptationProposalContext(ctx context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
 	h.mu.Lock()
 	if h.lifecycle == lifecycleRunning {
@@ -369,6 +388,42 @@ func (h *Host) ReviseAdaptationProposalContext(ctx context.Context, options adap
 		return nil, err
 	}
 	return adapt.ReviseAdaptationProposalContext(ctx, h.adaptationDeps(), options)
+}
+
+func (h *Host) ReviseAdaptationVolumeReviewContext(ctx context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationVolumeReview, error) {
+	h.mu.Lock()
+	if h.lifecycle == lifecycleRunning {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("co-create is active")
+	}
+	h.mu.Unlock()
+
+	if err := h.budget.Refuse(); err != nil {
+		return nil, err
+	}
+	return adapt.ReviseAdaptationVolumeReviewContext(ctx, h.adaptationDeps(), options)
+}
+
+func (h *Host) BuildAdaptationProposalDetailsContext(ctx context.Context, options adapt.ProposalDetailsOptions) (*domain.AdaptationPlan, error) {
+	h.mu.Lock()
+	if h.lifecycle == lifecycleRunning {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		h.mu.Unlock()
+		return nil, fmt.Errorf("co-create is active")
+	}
+	h.mu.Unlock()
+
+	if err := h.budget.Refuse(); err != nil {
+		return nil, err
+	}
+	return adapt.BuildAdaptationProposalDetailsContext(ctx, h.adaptationDeps(), options)
 }
 
 func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
@@ -924,6 +979,10 @@ func (h *Host) fillContextStatus(snap *UISnapshot) {
 
 // fillDetails 填充详情区:设定、角色、最近 commit/review/摘要。
 func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
+	if review, _ := h.store.Adaptation.LoadVolumeReview(); review != nil {
+		snap.AdaptationVolumeReview = review
+		snap.VolumeReviewSummary = adaptationVolumeReviewSummary(review)
+	}
 	var proposal *domain.AdaptationPlan
 	if loaded, _ := h.store.Adaptation.LoadProposal(); loaded != nil {
 		proposal = loaded

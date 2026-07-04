@@ -424,6 +424,12 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectAdaptAnalyze(w, r, id)
 	case "adapt/proposal":
 		s.handleProjectAdaptProposal(w, r, id)
+	case "adapt/proposal/volumes":
+		s.handleProjectAdaptProposalVolumes(w, r, id)
+	case "adapt/proposal/volumes/revise":
+		s.handleProjectAdaptProposalVolumesRevise(w, r, id)
+	case "adapt/proposal/details":
+		s.handleProjectAdaptProposalDetails(w, r, id)
 	case "adapt/proposal/revise":
 		s.handleProjectAdaptProposalRevise(w, r, id)
 	case "adapt/confirm":

@@ -98,26 +98,28 @@ type UISnapshot struct {
 	CachePerModel []AgentCacheStat
 
 	// 基础设定
-	Premise            string
-	PremiseFull        string
-	Outline            []OutlineSnapshot
-	Characters         []string
-	CharacterDetails   []domain.Character
-	WorldRules         []domain.WorldRule
-	SupportingCount    int      // 配角名册中的次要角色总数
-	RecentSupporting   []string // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
-	Layered            bool
-	CurrentVolumeArc   string
-	NextVolumeTitle    string
-	CompassDirection   string
-	CompassScale       string
-	SimulationProfile  *domain.SimulationCompactProfile
-	SimulationSummary  *SimulationProfileSummary
-	CreativeBlueprint  *CreativeBlueprintSummary
-	AdaptationProposal *domain.AdaptationPlan
-	AdaptationPlan     *domain.AdaptationPlan
-	ProposalSummary    *AdaptationPlanSummary
-	AdaptationSummary  *AdaptationPlanSummary
+	Premise                string
+	PremiseFull            string
+	Outline                []OutlineSnapshot
+	Characters             []string
+	CharacterDetails       []domain.Character
+	WorldRules             []domain.WorldRule
+	SupportingCount        int      // 配角名册中的次要角色总数
+	RecentSupporting       []string // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
+	Layered                bool
+	CurrentVolumeArc       string
+	NextVolumeTitle        string
+	CompassDirection       string
+	CompassScale           string
+	SimulationProfile      *domain.SimulationCompactProfile
+	SimulationSummary      *SimulationProfileSummary
+	CreativeBlueprint      *CreativeBlueprintSummary
+	AdaptationVolumeReview *domain.AdaptationVolumeReview
+	AdaptationProposal     *domain.AdaptationPlan
+	AdaptationPlan         *domain.AdaptationPlan
+	VolumeReviewSummary    *AdaptationVolumeReviewSummary
+	ProposalSummary        *AdaptationPlanSummary
+	AdaptationSummary      *AdaptationPlanSummary
 
 	// 详情
 	LastCommitSummary  string
@@ -180,6 +182,19 @@ type AdaptationPlanSummary struct {
 	WordTolerance     float64
 	MainlineRules     []string
 	RelationshipGoals []string
+}
+
+type AdaptationVolumeReviewSummary struct {
+	Loaded             bool
+	Status             string
+	Granularity        string
+	RewritePolicy      string
+	Brief              string
+	Volumes            []domain.AdaptationVolumePlan
+	TargetChapterCount int
+	WordTolerance      float64
+	MainlineRules      []string
+	RelationshipGoals  []string
 }
 
 type ChapterBudgetSnapshot struct {

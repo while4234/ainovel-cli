@@ -1982,6 +1982,24 @@ h2 {
   line-height: 1.5;
 }
 
+.volume-review-detail-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.volume-review-detail-grid p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.58;
+  overflow-wrap: anywhere;
+}
+
+.volume-review-detail-grid p b {
+  margin-right: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .proposal-chapter-card {
   border: 1px solid var(--line);
   border-radius: var(--radius);

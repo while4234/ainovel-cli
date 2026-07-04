@@ -1843,6 +1843,251 @@ func TestReviseAdaptationProposalRejectsNoChangeRevision(t *testing.T) {
 	}
 }
 
+func TestBuildAdaptationProposalLongFreeReturnsVolumeReviewOnly(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"granularity": "free",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "free long arc",
+		"target_chapter_count": 20,
+		"mainline_rules": ["keep every source turn anchored"],
+		"batches": [
+			{"index": 1, "title": "Opening volume", "theme": "orientation", "target_from": 1, "target_to": 8, "source_from": 1, "source_to": 2, "summary": "establish the new premise"},
+			{"index": 2, "title": "Pressure volume", "theme": "choice", "target_from": 9, "target_to": 16, "source_from": 2, "source_to": 3, "summary": "expand the central conflict"},
+			{"index": 3, "title": "Resolution volume", "theme": "payoff", "target_from": 17, "target_to": 20, "source_from": 3, "source_to": 4, "summary": "resolve the adapted ending"}
+		]
+	}`}}}
+
+	result, err := BuildAdaptationProposalVolumesContext(context.Background(), Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:              "free long arc",
+		Granularity:        domain.AdaptationGranularityFree,
+		TargetChapterCount: 20,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("planner calls=%d, want skeleton-only volume review", llm.calls)
+	}
+	if result == nil || result.VolumeReview == nil || result.Proposal != nil {
+		t.Fatalf("long free proposal should return volume review only: %+v", result)
+	}
+	review := result.VolumeReview
+	if review.Status != domain.AdaptationPlanStatusVolumeReview {
+		t.Fatalf("status=%q, want volume_review", review.Status)
+	}
+	if len(review.Volumes) != 3 || review.Volumes[2].TargetTo != 20 {
+		t.Fatalf("volume review should expose model-planned volumes only: %+v", review.Volumes)
+	}
+	saved, err := st.Adaptation.LoadVolumeReview()
+	if err != nil {
+		t.Fatalf("LoadVolumeReview: %v", err)
+	}
+	if saved == nil || saved.Status != domain.AdaptationPlanStatusVolumeReview || len(saved.Volumes) != 3 {
+		t.Fatalf("saved volume review mismatch: %+v", saved)
+	}
+	if savedProposal, err := st.Adaptation.LoadProposal(); err != nil || savedProposal != nil {
+		t.Fatalf("volume review should not save full proposal yet: proposal=%+v err=%v", savedProposal, err)
+	}
+}
+
+func TestBuildAdaptationProposalChapterAndShortArcStayFullProposal(t *testing.T) {
+	t.Run("chapter", func(t *testing.T) {
+		st := store.NewStore(t.TempDir())
+		if err := st.Init(); err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		seedPreparedAdaptationSource(t, st, []int{10, 20})
+
+		proposal, err := BuildAdaptationProposal(Deps{Store: st}, ProposalOptions{
+			Brief:       "chapter rewrite",
+			Granularity: domain.AdaptationGranularityChapter,
+		})
+		if err != nil {
+			t.Fatalf("BuildAdaptationProposal: %v", err)
+		}
+		if proposal.Status != domain.AdaptationPlanStatusProposal || len(proposal.Chapters) != 2 {
+			t.Fatalf("chapter proposal should stay full proposal: %+v", proposal)
+		}
+	})
+
+	t.Run("short arc", func(t *testing.T) {
+		st := store.NewStore(t.TempDir())
+		if err := st.Init(); err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		seedPreparedAdaptationSource(t, st, []int{10, 20, 30})
+		llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+			"granularity": "arc",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "short arc restructure",
+			"chapters": [
+				{
+					"chapter": 1,
+					"title": "Short arc 1",
+					"core_event": "Ari adapts the first source turn.",
+					"hook": "The first hook points onward.",
+					"scenes": ["station"],
+					"source_chapters": [1],
+					"source_range": {"from": 1, "to": 1},
+					"word_budget": {"source_runes": 10, "target_runes": 12, "min_runes": 11, "max_runes": 13, "tolerance": 0.15}
+				},
+				{
+					"chapter": 2,
+					"title": "Short arc 2",
+					"core_event": "Ari adapts the second source turn.",
+					"hook": "The second hook escalates.",
+					"scenes": ["archive"],
+					"source_chapters": [2],
+					"source_range": {"from": 2, "to": 2},
+					"word_budget": {"source_runes": 20, "target_runes": 22, "min_runes": 21, "max_runes": 23, "tolerance": 0.15}
+				},
+				{
+					"chapter": 3,
+					"title": "Short arc 3",
+					"core_event": "Ari adapts the third source turn.",
+					"hook": "The third hook resolves.",
+					"scenes": ["roof"],
+					"source_chapters": [3],
+					"source_range": {"from": 3, "to": 3},
+					"word_budget": {"source_runes": 30, "target_runes": 32, "min_runes": 31, "max_runes": 33, "tolerance": 0.15}
+				}
+			]
+		}`}}}
+
+		proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+			Brief:       "short arc restructure",
+			Granularity: domain.AdaptationGranularityArc,
+		})
+		if err != nil {
+			t.Fatalf("BuildAdaptationProposal: %v", err)
+		}
+		if proposal.Status != domain.AdaptationPlanStatusProposal || len(proposal.Chapters) != 3 {
+			t.Fatalf("short arc proposal should include full chapter proposal: %+v", proposal)
+		}
+	})
+}
+
+func TestReviseAdaptationVolumeReviewUpdatesOnlySelectedVolume(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	if err := st.Adaptation.SaveVolumeReview(domain.AdaptationVolumeReview{
+		Granularity:        domain.AdaptationGranularityFree,
+		Status:             domain.AdaptationPlanStatusVolumeReview,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		Brief:              "free long arc",
+		TargetChapterCount: 20,
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, Title: "Opening volume", TargetFrom: 1, TargetTo: 8, SourceFrom: 1, SourceTo: 2},
+			{Index: 2, Title: "Pressure volume", TargetFrom: 9, TargetTo: 16, SourceFrom: 2, SourceTo: 3},
+			{Index: 3, Title: "Resolution volume", TargetFrom: 17, TargetTo: 20, SourceFrom: 3, SourceTo: 4},
+		},
+	}); err != nil {
+		t.Fatalf("SaveProposal: %v", err)
+	}
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"granularity": "free",
+		"status": "volume_review",
+		"rewrite_policy": "full_rewrite",
+		"brief": "free long arc",
+		"target_chapter_count": 22,
+		"batches": [
+			{"index": 2, "title": "Rebalanced pressure", "theme": "choice under cost", "expansion_decision": "expand", "target_from": 9, "target_to": 18, "source_from": 2, "source_to": 3, "summary": "expand only the middle volume"}
+		]
+	}`}}}
+
+	updated, err := ReviseAdaptationVolumeReviewContext(context.Background(), Deps{Store: st, LLM: llm}, ProposalRevisionOptions{
+		VolumeIndex: 2,
+		Instruction: "give the middle volume more room",
+	})
+	if err != nil {
+		t.Fatalf("ReviseAdaptationVolumeReviewContext: %v", err)
+	}
+	if updated.Status != domain.AdaptationPlanStatusVolumeReview {
+		t.Fatalf("volume review revision should stay review-only: %+v", updated)
+	}
+	if len(updated.Volumes) != 3 {
+		t.Fatalf("volumes=%d, want 3: %+v", len(updated.Volumes), updated.Volumes)
+	}
+	if updated.Volumes[0].TargetFrom != 1 || updated.Volumes[0].TargetTo != 8 || updated.Volumes[0].Title != "Opening volume" {
+		t.Fatalf("volume 1 should not be regenerated: %+v", updated.Volumes[0])
+	}
+	if updated.Volumes[1].Title != "Rebalanced pressure" || updated.Volumes[1].TargetFrom != 9 || updated.Volumes[1].TargetTo != 18 {
+		t.Fatalf("volume 2 should be continuously updated: %+v", updated.Volumes[1])
+	}
+	if updated.Volumes[2].TargetFrom != 19 || updated.Volumes[2].TargetTo != 22 || updated.Volumes[2].Title != "Resolution volume" {
+		t.Fatalf("later volume range should shift without regenerating metadata: %+v", updated.Volumes[2])
+	}
+}
+
+func TestBuildAdaptationProposalDetailsFromVolumeReviewGeneratesFullProposalAndClearsReview(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	review := domain.AdaptationVolumeReview{
+		Granularity:        domain.AdaptationGranularityFree,
+		Status:             domain.AdaptationPlanStatusVolumeReview,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		Brief:              "free long arc",
+		TargetChapterCount: 20,
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, Title: "Opening volume", TargetFrom: 1, TargetTo: 8, SourceFrom: 1, SourceTo: 2},
+			{Index: 2, Title: "Pressure volume", TargetFrom: 9, TargetTo: 16, SourceFrom: 2, SourceTo: 3},
+			{Index: 3, Title: "Resolution volume", TargetFrom: 17, TargetTo: 20, SourceFrom: 3, SourceTo: 4},
+		},
+	}
+	if err := st.Adaptation.SaveVolumeReview(review); err != nil {
+		t.Fatalf("SaveVolumeReview: %v", err)
+	}
+	if err := st.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
+		Version:            1,
+		Brief:              "free long arc",
+		Granularity:        domain.AdaptationGranularityFree,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		TargetChapterCount: 20,
+		Skeleton: &domain.AdaptationProposalRuntimeOutline{
+			TargetChapterCount: 20,
+			Batches: []domain.AdaptationProposalRuntimeSkeletonBatch{
+				{Index: 1, Title: "Opening volume", TargetFrom: 1, TargetTo: 8, SourceFrom: 1, SourceTo: 2},
+				{Index: 2, Title: "Pressure volume", TargetFrom: 9, TargetTo: 16, SourceFrom: 2, SourceTo: 3},
+				{Index: 3, Title: "Resolution volume", TargetFrom: 17, TargetTo: 20, SourceFrom: 3, SourceTo: 4},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveProposalRuntime: %v", err)
+	}
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: plannerBatchProposalJSON(1, 8, 1, 2)},
+		{text: plannerBatchProposalJSON(9, 16, 2, 3)},
+		{text: plannerBatchProposalJSON(17, 20, 3, 4)},
+	}}
+
+	proposal, err := BuildAdaptationProposalDetailsContext(context.Background(), Deps{Store: st, LLM: llm}, ProposalDetailsOptions{})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalDetailsContext: %v", err)
+	}
+	if proposal.Status != domain.AdaptationPlanStatusProposal || len(proposal.Chapters) != 20 {
+		t.Fatalf("confirming volume review should generate full chapter proposal: %+v", proposal)
+	}
+	if runtime, err := st.Adaptation.LoadProposalRuntime(); err != nil || runtime != nil {
+		t.Fatalf("volume review runtime should be cleared after details generation: runtime=%+v err=%v", runtime, err)
+	}
+	if savedReview, err := st.Adaptation.LoadVolumeReview(); err != nil || savedReview != nil {
+		t.Fatalf("volume review should be cleared after details generation: review=%+v err=%v", savedReview, err)
+	}
+}
+
 func plannerBudgetProposalJSON(planFields string, chapterFields string, wordBudget string) string {
 	if strings.TrimSpace(planFields) != "" {
 		planFields = strings.TrimSpace(planFields) + ","

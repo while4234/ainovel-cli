@@ -1286,6 +1286,39 @@ func (f *fakeProjectHost) BuildAdaptationProposalContext(ctx context.Context, op
 	}, nil
 }
 
+func (f *fakeProjectHost) BuildAdaptationProposalVolumesContext(ctx context.Context, options adapt.ProposalOptions) (*adapt.ProposalStageResult, error) {
+	proposal, err := f.BuildAdaptationProposalContext(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	if proposal != nil && proposal.Status == domain.AdaptationPlanStatusVolumeReview {
+		return &adapt.ProposalStageResult{
+			VolumeReview: &domain.AdaptationVolumeReview{
+				Status:             domain.AdaptationPlanStatusVolumeReview,
+				Brief:              proposal.Brief,
+				Granularity:        proposal.Granularity,
+				RewritePolicy:      proposal.RewritePolicy,
+				WordTolerance:      proposal.WordTolerance,
+				TargetChapterCount: lastAdaptationVolumeChapter(proposal.Volumes),
+				MainlineRules:      append([]string(nil), proposal.MainlineRules...),
+				RelationshipGoals:  append([]string(nil), proposal.RelationshipGoals...),
+				Volumes:            append([]domain.AdaptationVolumePlan(nil), proposal.Volumes...),
+			},
+		}, nil
+	}
+	return &adapt.ProposalStageResult{Proposal: proposal}, nil
+}
+
+func lastAdaptationVolumeChapter(volumes []domain.AdaptationVolumePlan) int {
+	last := 0
+	for _, volume := range volumes {
+		if volume.TargetTo > last {
+			last = volume.TargetTo
+		}
+	}
+	return last
+}
+
 func (f *fakeProjectHost) ReviseAdaptationProposalContext(_ context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
 	f.mu.Lock()
 	f.adaptRevisionCalls++
@@ -1315,6 +1348,65 @@ func (f *fakeProjectHost) ReviseAdaptationProposalContext(_ context.Context, opt
 		Chapters: []domain.AdaptationChapterPlan{{
 			Chapter:        1,
 			Title:          "Revised Target One",
+			SourceChapters: []int{1},
+		}},
+	}, nil
+}
+
+func (f *fakeProjectHost) ReviseAdaptationVolumeReviewContext(_ context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationVolumeReview, error) {
+	f.mu.Lock()
+	f.adaptRevisionCalls++
+	f.adaptRevisionOptions = options
+	emit := options.EmitProgress
+	err := f.adaptProposalErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if emit != nil {
+		emit(adapt.StagePlan, 1, 1, "test volume review revision progress", nil)
+	}
+	return &domain.AdaptationVolumeReview{
+		Status:             domain.AdaptationPlanStatusVolumeReview,
+		Granularity:        domain.AdaptationGranularityFree,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		Brief:              "revised volume review",
+		TargetChapterCount: 1,
+		Volumes: []domain.AdaptationVolumePlan{{
+			Index:      1,
+			Title:      "Revised Volume",
+			TargetFrom: 1,
+			TargetTo:   1,
+			SourceFrom: 1,
+			SourceTo:   1,
+		}},
+	}, nil
+}
+
+func (f *fakeProjectHost) BuildAdaptationProposalDetailsContext(_ context.Context, options adapt.ProposalDetailsOptions) (*domain.AdaptationPlan, error) {
+	f.mu.Lock()
+	err := f.adaptProposalErr
+	proposal := f.adaptProposal
+	emit := options.EmitProgress
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if emit != nil {
+		emit(adapt.StagePlan, 1, 1, "test details progress", nil)
+	}
+	if proposal != nil && proposal.Status != domain.AdaptationPlanStatusVolumeReview {
+		copy := *proposal
+		return &copy, nil
+	}
+	return &domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityFree,
+		Status:        domain.AdaptationPlanStatusProposal,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Brief:         "details",
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Detailed Target One",
 			SourceChapters: []int{1},
 		}},
 	}, nil

@@ -12,8 +12,9 @@ const (
 )
 
 const (
-	AdaptationPlanStatusProposal  = "proposal"
-	AdaptationPlanStatusConfirmed = "confirmed"
+	AdaptationPlanStatusProposal     = "proposal"
+	AdaptationPlanStatusConfirmed    = "confirmed"
+	AdaptationPlanStatusVolumeReview = "volume_review"
 )
 
 const (
@@ -131,6 +132,24 @@ type AdaptationProposalRuntimeBatch struct {
 	SourceTo    int                     `json:"source_to"`
 	CompletedAt string                  `json:"completed_at,omitempty"`
 	Chapters    []AdaptationChapterPlan `json:"chapters"`
+}
+
+// AdaptationVolumeReview is the user-visible high-level planning checkpoint
+// before detailed chapter outlines are generated.
+type AdaptationVolumeReview struct {
+	Status             string                 `json:"status"`
+	UpdatedAt          string                 `json:"updated_at,omitempty"`
+	Brief              string                 `json:"brief"`
+	SourcePath         string                 `json:"source_path,omitempty"`
+	SourceChapterCount int                    `json:"source_chapter_count,omitempty"`
+	Granularity        string                 `json:"granularity"`
+	RewritePolicy      string                 `json:"rewrite_policy"`
+	WordTolerance      float64                `json:"word_tolerance,omitempty"`
+	TargetChapterCount int                    `json:"target_chapter_count"`
+	MainlineRules      []string               `json:"mainline_rules,omitempty"`
+	RelationshipGoals  []string               `json:"relationship_goals,omitempty"`
+	Volumes            []AdaptationVolumePlan `json:"volumes"`
+	Planner            *AdaptationPlannerMeta `json:"planner,omitempty"`
 }
 
 // AdaptationVolumePlan is the planner's durable high-level grouping for a

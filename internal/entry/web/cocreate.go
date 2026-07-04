@@ -68,21 +68,22 @@ type webCoCreateMessageCheckpoint struct {
 }
 
 type webCoCreateCheckpoint struct {
-	Version            int                            `json:"version"`
-	UpdatedAt          time.Time                      `json:"updated_at"`
-	Kind               string                         `json:"kind"`
-	Session            startup.CoCreateSnapshot       `json:"session"`
-	Messages           []webCoCreateMessageCheckpoint `json:"messages"`
-	NextMessageSeq     int                            `json:"next_message_seq"`
-	Failed             bool                           `json:"failed,omitempty"`
-	SourceFile         string                         `json:"source_file,omitempty"`
-	SourcePath         string                         `json:"source_path,omitempty"`
-	AdaptGranularity   string                         `json:"adapt_granularity,omitempty"`
-	AdaptRewritePolicy string                         `json:"adapt_rewrite_policy,omitempty"`
-	AdaptWordTolerance float64                        `json:"adapt_word_tolerance,omitempty"`
-	TargetTotalWords   int                            `json:"target_total_words,omitempty"`
-	AdaptationProposal *domain.AdaptationPlan         `json:"adaptation_proposal,omitempty"`
-	DraftConsolidated  bool                           `json:"draft_consolidated_for_commit,omitempty"`
+	Version                int                            `json:"version"`
+	UpdatedAt              time.Time                      `json:"updated_at"`
+	Kind                   string                         `json:"kind"`
+	Session                startup.CoCreateSnapshot       `json:"session"`
+	Messages               []webCoCreateMessageCheckpoint `json:"messages"`
+	NextMessageSeq         int                            `json:"next_message_seq"`
+	Failed                 bool                           `json:"failed,omitempty"`
+	SourceFile             string                         `json:"source_file,omitempty"`
+	SourcePath             string                         `json:"source_path,omitempty"`
+	AdaptGranularity       string                         `json:"adapt_granularity,omitempty"`
+	AdaptRewritePolicy     string                         `json:"adapt_rewrite_policy,omitempty"`
+	AdaptWordTolerance     float64                        `json:"adapt_word_tolerance,omitempty"`
+	TargetTotalWords       int                            `json:"target_total_words,omitempty"`
+	AdaptationProposal     *domain.AdaptationPlan         `json:"adaptation_proposal,omitempty"`
+	AdaptationVolumeReview *domain.AdaptationVolumeReview `json:"adaptation_volume_review,omitempty"`
+	DraftConsolidated      bool                           `json:"draft_consolidated_for_commit,omitempty"`
 }
 
 type webCoCreateLogEntry struct {
@@ -97,39 +98,41 @@ type webCoCreateLogEntry struct {
 }
 
 type webCoCreateState struct {
-	Kind             string                 `json:"kind"`
-	Active           bool                   `json:"active"`
-	Messages         []webCoCreateMessage   `json:"messages"`
-	DraftPrompt      string                 `json:"draft_prompt"`
-	Ready            bool                   `json:"ready"`
-	Suggestions      []string               `json:"suggestions"`
-	StreamThinking   string                 `json:"stream_thinking,omitempty"`
-	StreamReply      string                 `json:"stream_reply,omitempty"`
-	AdaptMode        string                 `json:"adapt_mode,omitempty"`
-	RewritePolicy    string                 `json:"rewrite_policy,omitempty"`
-	WordTolerance    float64                `json:"word_tolerance,omitempty"`
-	TargetTotalWords int                    `json:"target_total_words,omitempty"`
-	SourceFile       string                 `json:"source_file,omitempty"`
-	Proposal         *domain.AdaptationPlan `json:"proposal,omitempty"`
-	CanStart         bool                   `json:"can_start"`
-	ModeLocked       bool                   `json:"mode_locked,omitempty"`
-	CommittedLabel   string                 `json:"committed_label,omitempty"`
+	Kind             string                         `json:"kind"`
+	Active           bool                           `json:"active"`
+	Messages         []webCoCreateMessage           `json:"messages"`
+	DraftPrompt      string                         `json:"draft_prompt"`
+	Ready            bool                           `json:"ready"`
+	Suggestions      []string                       `json:"suggestions"`
+	StreamThinking   string                         `json:"stream_thinking,omitempty"`
+	StreamReply      string                         `json:"stream_reply,omitempty"`
+	AdaptMode        string                         `json:"adapt_mode,omitempty"`
+	RewritePolicy    string                         `json:"rewrite_policy,omitempty"`
+	WordTolerance    float64                        `json:"word_tolerance,omitempty"`
+	TargetTotalWords int                            `json:"target_total_words,omitempty"`
+	SourceFile       string                         `json:"source_file,omitempty"`
+	Proposal         *domain.AdaptationPlan         `json:"proposal,omitempty"`
+	VolumeReview     *domain.AdaptationVolumeReview `json:"volume_review,omitempty"`
+	CanStart         bool                           `json:"can_start"`
+	ModeLocked       bool                           `json:"mode_locked,omitempty"`
+	CommittedLabel   string                         `json:"committed_label,omitempty"`
 }
 
 type webCoCreateSession struct {
-	kind               string
-	session            *startup.CoCreateSession
-	messages           []webCoCreateMessage
-	nextMessageSeq     int
-	failed             bool
-	sourceFile         string
-	sourcePath         string
-	adaptGranularity   string
-	adaptRewritePolicy string
-	adaptWordTolerance float64
-	targetTotalWords   int
-	adaptationProposal *domain.AdaptationPlan
-	draftConsolidated  bool
+	kind                   string
+	session                *startup.CoCreateSession
+	messages               []webCoCreateMessage
+	nextMessageSeq         int
+	failed                 bool
+	sourceFile             string
+	sourcePath             string
+	adaptGranularity       string
+	adaptRewritePolicy     string
+	adaptWordTolerance     float64
+	targetTotalWords       int
+	adaptationProposal     *domain.AdaptationPlan
+	adaptationVolumeReview *domain.AdaptationVolumeReview
+	draftConsolidated      bool
 }
 
 func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Request, id string) {
@@ -358,21 +361,22 @@ func (s *webCoCreateSession) checkpoint(now time.Time) webCoCreateCheckpoint {
 		})
 	}
 	return webCoCreateCheckpoint{
-		Version:            webCoCreateCheckpointVersion,
-		UpdatedAt:          now.UTC(),
-		Kind:               s.kind,
-		Session:            s.session.Snapshot(),
-		Messages:           messages,
-		NextMessageSeq:     s.nextMessageSeq,
-		Failed:             s.failed,
-		SourceFile:         s.sourceFile,
-		SourcePath:         s.sourcePath,
-		AdaptGranularity:   s.adaptGranularity,
-		AdaptRewritePolicy: s.adaptRewritePolicy,
-		AdaptWordTolerance: s.adaptWordTolerance,
-		TargetTotalWords:   s.targetTotalWords,
-		AdaptationProposal: s.adaptationProposal,
-		DraftConsolidated:  s.draftConsolidated,
+		Version:                webCoCreateCheckpointVersion,
+		UpdatedAt:              now.UTC(),
+		Kind:                   s.kind,
+		Session:                s.session.Snapshot(),
+		Messages:               messages,
+		NextMessageSeq:         s.nextMessageSeq,
+		Failed:                 s.failed,
+		SourceFile:             s.sourceFile,
+		SourcePath:             s.sourcePath,
+		AdaptGranularity:       s.adaptGranularity,
+		AdaptRewritePolicy:     s.adaptRewritePolicy,
+		AdaptWordTolerance:     s.adaptWordTolerance,
+		TargetTotalWords:       s.targetTotalWords,
+		AdaptationProposal:     s.adaptationProposal,
+		AdaptationVolumeReview: s.adaptationVolumeReview,
+		DraftConsolidated:      s.draftConsolidated,
 	}
 }
 
@@ -412,19 +416,20 @@ func webCoCreateSessionFromCheckpoint(checkpoint webCoCreateCheckpoint) (*webCoC
 		adaptGranularity, adaptRewritePolicy, adaptWordTolerance = coCreateCheckpointAdaptOptions(checkpoint)
 	}
 	return &webCoCreateSession{
-		kind:               kind,
-		session:            startup.NewCoCreateSessionFromSnapshot(checkpoint.Session),
-		messages:           messages,
-		nextMessageSeq:     nextMessageSeq,
-		failed:             checkpoint.Failed,
-		sourceFile:         strings.TrimSpace(checkpoint.SourceFile),
-		sourcePath:         strings.TrimSpace(checkpoint.SourcePath),
-		adaptGranularity:   adaptGranularity,
-		adaptRewritePolicy: adaptRewritePolicy,
-		adaptWordTolerance: adaptWordTolerance,
-		targetTotalWords:   checkpoint.TargetTotalWords,
-		adaptationProposal: checkpoint.AdaptationProposal,
-		draftConsolidated:  checkpoint.DraftConsolidated,
+		kind:                   kind,
+		session:                startup.NewCoCreateSessionFromSnapshot(checkpoint.Session),
+		messages:               messages,
+		nextMessageSeq:         nextMessageSeq,
+		failed:                 checkpoint.Failed,
+		sourceFile:             strings.TrimSpace(checkpoint.SourceFile),
+		sourcePath:             strings.TrimSpace(checkpoint.SourcePath),
+		adaptGranularity:       adaptGranularity,
+		adaptRewritePolicy:     adaptRewritePolicy,
+		adaptWordTolerance:     adaptWordTolerance,
+		targetTotalWords:       checkpoint.TargetTotalWords,
+		adaptationProposal:     checkpoint.AdaptationProposal,
+		adaptationVolumeReview: checkpoint.AdaptationVolumeReview,
+		draftConsolidated:      checkpoint.DraftConsolidated,
 	}, nil
 }
 
@@ -994,6 +999,7 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		TargetTotalWords: s.targetTotalWords,
 		SourceFile:       s.sourceFile,
 		Proposal:         s.adaptationProposal,
+		VolumeReview:     s.adaptationVolumeReview,
 		CanStart:         canStart,
 		ModeLocked:       s.kind == webCoCreateKindAdapt,
 	}

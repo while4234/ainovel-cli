@@ -5,6 +5,7 @@ import {
   buildAdaptationRevisionPayload,
   buildBeginCoCreatePayload,
   buildCoCreateIntakeInitial,
+  buildVolumeReviewRevisionPayload,
   clearAdaptationProposalSnapshot,
   deriveWorkspaceProgress,
   getAdaptationProposalReview,
@@ -224,6 +225,117 @@ describe('workspace progress derivation', () => {
     expect(review.volumes.map((volume) => volume.index)).toEqual([1, 2]);
     expect(review.volumes.map((volume) => volume.title)).toEqual(['Opening plan', 'Ending plan']);
     expect(review.volumes.map((volume) => [volume.targetFrom, volume.targetTo])).toEqual([[1, 2], [3, 4]]);
+  });
+
+  it('surfaces staged volume review before detailed chapter proposal', () => {
+    const review = getAdaptationProposalReview({
+      proposal_summary: {
+        status: 'proposal',
+        granularity: 'chapter',
+        rewrite_policy: 'preserve_mainline',
+        brief: 'slow-burn mystery'
+      },
+      volume_review: {
+        volumes: [
+          {
+            index: 1,
+            title: 'Opening arc',
+            target_from: 1,
+            target_to: 6,
+            source_from: 1,
+            source_to: 20,
+            plot: 'Move the discovery earlier.',
+            key_beats: ['discovery', 'choice']
+          }
+        ]
+      }
+    });
+
+    expect(review.loaded).toBe(true);
+    expect(review.proposalReady).toBe(true);
+    expect(review.volumeReviewReady).toBe(true);
+    expect(review.chapterCount).toBe(6);
+    expect(review.volumeReview.volumes[0]).toMatchObject({
+      index: 1,
+      title: 'Opening arc',
+      targetFrom: 1,
+      targetTo: 6,
+      plot: 'Move the discovery earlier.',
+      beats: ['discovery', 'choice']
+    });
+  });
+
+  it('restores staged volume review from backend snapshot fields', () => {
+    const review = getAdaptationProposalReview({
+      VolumeReviewSummary: {
+        Status: 'volume_review',
+        Granularity: 'free',
+        RewritePolicy: 'full_rewrite',
+        Brief: 'restore staged plan',
+        TargetChapterCount: 20,
+        Volumes: [
+          { Index: 1, Title: 'Opening volume', TargetFrom: 1, TargetTo: 8 }
+        ]
+      },
+      AdaptationVolumeReview: {
+        status: 'volume_review',
+        granularity: 'free',
+        rewrite_policy: 'full_rewrite',
+        brief: 'restore staged plan',
+        target_chapter_count: 20,
+        volumes: [
+          { index: 1, title: 'Opening volume', target_from: 1, target_to: 8 }
+        ]
+      }
+    });
+
+    expect(review.loaded).toBe(true);
+    expect(review.proposalReady).toBe(true);
+    expect(review.volumeReviewReady).toBe(true);
+    expect(review.granularity).toBe('free');
+    expect(review.chapterCount).toBe(20);
+    expect(review.volumeReview.volumes[0].title).toBe('Opening volume');
+  });
+
+  it('uses detailed chapters instead of staged volume review once details exist', () => {
+    const review = getAdaptationProposalReview({
+      volume_review: {
+        volumes: [{ index: 1, title: 'Opening arc', target_from: 1, target_to: 2 }]
+      },
+      adaptation_proposal: {
+        status: 'proposal',
+        chapters: [
+          { chapter: 1, title: 'Opening' },
+          { chapter: 2, title: 'Reveal' }
+        ]
+      }
+    });
+
+    expect(review.proposalReady).toBe(true);
+    expect(review.volumeReviewReady).toBe(false);
+    expect(review.chapters).toHaveLength(2);
+  });
+
+  it('builds staged volume-review revision payloads', () => {
+    expect(buildVolumeReviewRevisionPayload({
+      revisionVolume: '2',
+      revisionInstruction: 'raise the midpoint stakes'
+    }, {
+      volumes: [{ index: 1 }, { index: 2 }]
+    })).toEqual({
+      ok: true,
+      body: {
+        volume_index: 2,
+        instruction: 'raise the midpoint stakes'
+      }
+    });
+
+    expect(buildVolumeReviewRevisionPayload({
+      revisionVolume: '99',
+      revisionInstruction: 'fallback to first visible volume'
+    }, {
+      volumes: [{ index: 4 }]
+    }).body.volume_index).toBe(4);
   });
 
   it('restores visible adaptation proposal state from a co-create commit snapshot', () => {

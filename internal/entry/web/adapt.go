@@ -218,6 +218,122 @@ func (s *Server) handleProjectAdaptProposal(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (s *Server) handleProjectAdaptProposalVolumes(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	options, mode, rewritePolicy, err := decodeAdaptationProposalRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	sourcePath, err := adaptationSourcePathFromName(options.SourcePath, manifest, false)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	options.SourcePath = sourcePath
+	result, err := session.BuildAdaptationProposalVolumesContext(r.Context(), options)
+	if err != nil {
+		writeAdaptationStartError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	response := map[string]any{
+		"project":        manifest,
+		"snapshot":       snapshot,
+		"mode":           mode,
+		"rewrite_policy": rewritePolicy,
+		"running":        snapshot.IsRunning,
+	}
+	if result != nil {
+		if result.Proposal != nil {
+			response["proposal"] = result.Proposal
+		}
+		if result.VolumeReview != nil {
+			response["volume_review"] = result.VolumeReview
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleProjectAdaptProposalVolumesRevise(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		VolumeIndex int    `json:"volume_index"`
+		Instruction string `json:"instruction"`
+	}
+	if r.Body != nil {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid adaptation volume review revision request: "+err.Error())
+			return
+		}
+	}
+	options := adapt.ProposalRevisionOptions{
+		VolumeIndex: req.VolumeIndex,
+		Instruction: strings.TrimSpace(req.Instruction),
+	}
+	if options.VolumeIndex <= 0 {
+		writeError(w, http.StatusBadRequest, "volume_index is required")
+		return
+	}
+	if options.Instruction == "" {
+		writeError(w, http.StatusBadRequest, "revision instruction is required")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	review, err := session.ReviseAdaptationVolumeReviewContext(r.Context(), options)
+	if err != nil {
+		writeAdaptationStartError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":       manifest,
+		"snapshot":      snapshot,
+		"volume_review": review,
+		"running":       snapshot.IsRunning,
+	})
+}
+
+func (s *Server) handleProjectAdaptProposalDetails(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	proposal, err := session.BuildAdaptationProposalDetailsContext(r.Context())
+	if err != nil {
+		writeAdaptationStartError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"snapshot": snapshot,
+		"proposal": proposal,
+		"running":  snapshot.IsRunning,
+	})
+}
+
 func (s *Server) handleProjectAdaptProposalRevise(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

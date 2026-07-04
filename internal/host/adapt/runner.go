@@ -300,34 +300,42 @@ func BuildAdaptationProposal(deps Deps, opts ProposalOptions) (*domain.Adaptatio
 	return BuildAdaptationProposalContext(context.Background(), deps, opts)
 }
 
-func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts ProposalOptions) (*domain.AdaptationPlan, error) {
+func prepareProposalPlannerInputs(ctx context.Context, deps Deps, opts ProposalOptions) (ProposalOptions, *domain.AdaptationSourceManifest, []domain.AdaptationSourceReport, *domain.AdaptationSourceFoundation, error) {
 	if deps.Store == nil {
-		return nil, fmt.Errorf("store is required")
+		return opts, nil, nil, nil, fmt.Errorf("store is required")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	opts.Brief = strings.TrimSpace(opts.Brief)
 	if opts.Brief == "" {
-		return nil, fmt.Errorf("adaptation brief is required")
+		return opts, nil, nil, nil, fmt.Errorf("adaptation brief is required")
 	}
 	granularity, ok := domain.StrictAdaptationGranularity(opts.Granularity)
 	if !ok {
-		return nil, fmt.Errorf("adaptation mode must be one of chapter, arc, free")
+		return opts, nil, nil, nil, fmt.Errorf("adaptation mode must be one of chapter, arc, free")
 	}
 	opts.Granularity = granularity
 	opts.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(opts.Granularity)
 	opts.WordTolerance = normalizeProposalWordTolerance(opts.Granularity, opts.WordTolerance)
 	manifest, reports, err := ValidatePreparedSource(deps.Store, opts.SourcePath)
 	if err != nil {
-		return nil, err
+		return opts, nil, nil, nil, err
 	}
 	sourceFoundation, err := deps.Store.Adaptation.LoadSourceFoundation()
 	if err != nil {
-		return nil, fmt.Errorf("load source foundation: %w", err)
+		return opts, nil, nil, nil, fmt.Errorf("load source foundation: %w", err)
 	}
 	if sourceFoundation == nil {
-		return nil, fmt.Errorf("source foundation missing; import source first")
+		return opts, nil, nil, nil, fmt.Errorf("source foundation missing; import source first")
+	}
+	return opts, manifest, reports, sourceFoundation, nil
+}
+
+func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts ProposalOptions) (*domain.AdaptationPlan, error) {
+	opts, manifest, reports, sourceFoundation, err := prepareProposalPlannerInputs(ctx, deps, opts)
+	if err != nil {
+		return nil, err
 	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "改编规划准备完成，正在选择提案生成方式", nil)
 
@@ -347,6 +355,40 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 	}
 	emitAdaptProgress(opts.EmitProgress, StageDone, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编提案已保存：%d 章", len(proposal.Chapters)), nil)
 	return &proposal, nil
+}
+
+func BuildAdaptationProposalVolumesContext(ctx context.Context, deps Deps, opts ProposalOptions) (*ProposalStageResult, error) {
+	opts, manifest, reports, sourceFoundation, err := prepareProposalPlannerInputs(ctx, deps, opts)
+	if err != nil {
+		return nil, err
+	}
+	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "改编规划准备完成，正在判断是否需要分卷审核", nil)
+	targetChapterCount := plannerTargetChapterCount(opts, manifest)
+	if opts.Granularity == domain.AdaptationGranularityChapter || targetChapterCount < adaptationPlannerChunkedMinChapters {
+		proposal, err := BuildAdaptationProposalContext(ctx, deps, opts)
+		if err != nil {
+			return nil, err
+		}
+		return &ProposalStageResult{Proposal: proposal}, nil
+	}
+	skeleton, runtime, err := buildPlannerVolumeSkeleton(ctx, deps, opts, reports, manifest, sourceFoundation, targetChapterCount)
+	if err != nil {
+		return nil, fmt.Errorf("build %s adaptation volume review: %w", opts.Granularity, err)
+	}
+	review := volumeReviewFromSkeleton(opts, manifest, skeleton)
+	emitAdaptProgress(opts.EmitProgress, StagePlan, len(review.Volumes), len(review.Volumes), fmt.Sprintf("分卷剧情已生成，正在保存：%d 卷", len(review.Volumes)), nil)
+	if err := deps.Store.Adaptation.SaveVolumeReview(review); err != nil {
+		return nil, fmt.Errorf("save adaptation volume review: %w", err)
+	}
+	if runtime != nil {
+		runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+		runtime.CompletedBatches = nil
+		if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+			return nil, fmt.Errorf("save proposal runtime skeleton: %w", err)
+		}
+	}
+	emitAdaptProgress(opts.EmitProgress, StageDone, len(review.Volumes), len(review.Volumes), fmt.Sprintf("分卷剧情已保存，等待审核：%d 卷", len(review.Volumes)), nil)
+	return &ProposalStageResult{VolumeReview: &review}, nil
 }
 
 func ReviseAdaptationProposal(ctx context.Context, deps Deps, opts ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
@@ -455,6 +497,142 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal, totalBatches, fmt.Sprintf("修订第 %d/%d 批完成：第 %d-%d 章", batchOrdinal, totalBatches, chunkFrom, revisedTo), nil)
 	}
 	return finalizeRevisedAdaptationProposal(deps, opts, *proposal, updated, from, to, reports, manifest, totalBatches, totalBatches)
+}
+
+func ReviseAdaptationVolumeReviewContext(ctx context.Context, deps Deps, opts ProposalRevisionOptions) (*domain.AdaptationVolumeReview, error) {
+	if deps.Store == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	if deps.LLM == nil {
+		return nil, fmt.Errorf("planner llm is required for adaptation volume review revision")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	opts.Instruction = strings.TrimSpace(opts.Instruction)
+	if opts.Instruction == "" {
+		return nil, fmt.Errorf("revision instruction is required")
+	}
+	if opts.VolumeIndex <= 0 {
+		return nil, fmt.Errorf("volume_index must name one volume")
+	}
+	review, err := deps.Store.Adaptation.LoadVolumeReview()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation volume review: %w", err)
+	}
+	if review == nil || len(review.Volumes) == 0 {
+		return nil, fmt.Errorf("adaptation volume review is required")
+	}
+	manifest, reports, err := ValidatePreparedSource(deps.Store, review.SourcePath)
+	if err != nil {
+		return nil, err
+	}
+	sourceFoundation, err := deps.Store.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return nil, fmt.Errorf("load source foundation: %w", err)
+	}
+	if sourceFoundation == nil {
+		return nil, fmt.Errorf("source foundation missing; analyze source first")
+	}
+	originalBatch, err := volumeReviewBatch(*review, opts.VolumeIndex)
+	if err != nil {
+		return nil, err
+	}
+	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+	if systemPrompt == "" {
+		systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested volume review revision."
+	}
+	expansionMaxTo := originalBatch.TargetTo + adaptationPlannerRevisionExpansionMax
+	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, fmt.Sprintf("请求第 %d 卷剧情修正：第 %d-%d 章", opts.VolumeIndex, originalBatch.TargetFrom, originalBatch.TargetTo), nil)
+	revisionPrompt, err := buildAdaptationVolumeReviewRevisionPrompt(opts, *review, originalBatch, expansionMaxTo, manifest, sourceFoundation, reportsForPlannerBatch(reports, originalBatch))
+	if err != nil {
+		return nil, err
+	}
+	revisionText, err := generatePlannerText(
+		ctx,
+		deps.LLM,
+		systemPrompt,
+		revisionPrompt,
+		adaptationPlannerSkeletonMaxTokens,
+		opts.EmitProgress,
+		0,
+		0,
+		fmt.Sprintf("第 %d 卷剧情修正", opts.VolumeIndex),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("planner volume review revision llm generate: %w", err)
+	}
+	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, revisionPrompt, revisionText, originalBatch, expansionMaxTo, true, manifest, opts.EmitProgress)
+	if err != nil {
+		return nil, fmt.Errorf("planner volume review revision skeleton: %w", err)
+	}
+	updated := cloneAdaptationVolumeReview(*review)
+	applyVolumeReviewBatchRevision(&updated, originalBatch, revisedBatch)
+	if err := validateAdaptationVolumeReview(updated, manifest); err != nil {
+		return nil, err
+	}
+	if updated.Planner == nil {
+		updated.Planner = &domain.AdaptationPlannerMeta{}
+	}
+	updated.Planner.Notes = append(updated.Planner.Notes,
+		fmt.Sprintf("volume review revised for volume %d: %s", opts.VolumeIndex, opts.Instruction),
+	)
+	if err := deps.Store.Adaptation.SaveVolumeReview(updated); err != nil {
+		return nil, fmt.Errorf("save revised adaptation volume review: %w", err)
+	}
+	emitAdaptProgress(opts.EmitProgress, StageDone, len(updated.Volumes), len(updated.Volumes), fmt.Sprintf("第 %d 卷剧情已修订，等待审核", opts.VolumeIndex), nil)
+	return &updated, nil
+}
+
+func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts ProposalDetailsOptions) (*domain.AdaptationPlan, error) {
+	if deps.Store == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	if deps.LLM == nil {
+		return nil, fmt.Errorf("planner llm is required for adaptation proposal details")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	review, err := deps.Store.Adaptation.LoadVolumeReview()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation volume review: %w", err)
+	}
+	if review == nil || len(review.Volumes) == 0 {
+		return nil, fmt.Errorf("adaptation volume review is required")
+	}
+	proposalOpts := proposalOptionsFromVolumeReview(*review)
+	proposalOpts.EmitProgress = opts.EmitProgress
+	manifest, reports, err := ValidatePreparedSource(deps.Store, review.SourcePath)
+	if err != nil {
+		return nil, err
+	}
+	sourceFoundation, err := deps.Store.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return nil, fmt.Errorf("load source foundation: %w", err)
+	}
+	if sourceFoundation == nil {
+		return nil, fmt.Errorf("source foundation missing; analyze source first")
+	}
+	skeleton := plannerSkeletonFromVolumeReview(*review)
+	if err := normalizePlannerSkeleton(&skeleton, proposalOpts, manifest, review.TargetChapterCount); err != nil {
+		return nil, fmt.Errorf("volume review skeleton invalid: %w", err)
+	}
+	runtime := newPlannerProposalRuntime(proposalOpts, manifest, review.TargetChapterCount)
+	runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+	if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+		return nil, fmt.Errorf("save proposal runtime skeleton: %w", err)
+	}
+	proposal, err := buildPlanFromPlannerSkeletonDetails(ctx, deps, proposalOpts, reports, manifest, sourceFoundation, skeleton, runtime)
+	if err != nil {
+		return nil, err
+	}
+	emitAdaptProgress(opts.EmitProgress, StagePlan, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编章节细纲已生成，正在保存：%d 章", len(proposal.Chapters)), nil)
+	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
+		return nil, fmt.Errorf("save adaptation proposal: %w", err)
+	}
+	emitAdaptProgress(opts.EmitProgress, StageDone, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编提案已保存：%d 章", len(proposal.Chapters)), nil)
+	return &proposal, nil
 }
 
 func reviseAdaptationProposalVolumeContext(
@@ -792,6 +970,105 @@ func proposalRevisionVolumeBatch(plan domain.AdaptationPlan, volumeIndex, from, 
 	return batch
 }
 
+func volumeReviewBatch(review domain.AdaptationVolumeReview, volumeIndex int) (plannerSkeletonBatch, error) {
+	volumes := normalizeAdaptationProposalVolumes(review.Volumes, review.TargetChapterCount)
+	for _, volume := range volumes {
+		if volume.Index != volumeIndex {
+			continue
+		}
+		return plannerSkeletonBatch{
+			Index:              volume.Index,
+			Title:              volume.Title,
+			Theme:              volume.Theme,
+			Goal:               volume.Goal,
+			Summary:            volume.Summary,
+			TargetFrom:         volume.TargetFrom,
+			TargetTo:           volume.TargetTo,
+			TargetChapterCount: volume.TargetTo - volume.TargetFrom + 1,
+			SourceFrom:         volume.SourceFrom,
+			SourceTo:           volume.SourceTo,
+		}, nil
+	}
+	return plannerSkeletonBatch{}, fmt.Errorf("volume %d not found in adaptation volume review", volumeIndex)
+}
+
+func cloneAdaptationVolumeReview(review domain.AdaptationVolumeReview) domain.AdaptationVolumeReview {
+	out := review
+	out.MainlineRules = append([]string(nil), review.MainlineRules...)
+	out.RelationshipGoals = append([]string(nil), review.RelationshipGoals...)
+	out.Volumes = append([]domain.AdaptationVolumePlan(nil), review.Volumes...)
+	out.Planner = clonePlannerRuntimeMeta(review.Planner)
+	return out
+}
+
+func applyVolumeReviewBatchRevision(review *domain.AdaptationVolumeReview, original, revised plannerSkeletonBatch) {
+	if review == nil {
+		return
+	}
+	delta := revised.TargetTo - original.TargetTo
+	for idx := range review.Volumes {
+		volume := &review.Volumes[idx]
+		switch {
+		case volume.Index == original.Index:
+			if title := strings.TrimSpace(revised.Title); title != "" {
+				volume.Title = title
+			}
+			if theme := strings.TrimSpace(revised.Theme); theme != "" {
+				volume.Theme = theme
+			}
+			if goal := strings.TrimSpace(revised.Goal); goal != "" {
+				volume.Goal = goal
+			}
+			if summary := strings.TrimSpace(revised.Summary); summary != "" {
+				volume.Summary = summary
+			}
+			volume.TargetFrom = revised.TargetFrom
+			volume.TargetTo = revised.TargetTo
+			if revised.SourceFrom > 0 {
+				volume.SourceFrom = revised.SourceFrom
+			}
+			if revised.SourceTo > 0 {
+				volume.SourceTo = revised.SourceTo
+			}
+		case volume.TargetFrom > original.TargetTo:
+			volume.TargetFrom += delta
+			volume.TargetTo += delta
+		}
+	}
+	review.TargetChapterCount += delta
+	if review.TargetChapterCount < 0 {
+		review.TargetChapterCount = revised.TargetTo
+	}
+	review.Volumes = normalizeAdaptationProposalVolumes(review.Volumes, review.TargetChapterCount)
+	review.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+}
+
+func validateAdaptationVolumeReview(review domain.AdaptationVolumeReview, manifest *domain.AdaptationSourceManifest) error {
+	if review.Status == "" {
+		review.Status = domain.AdaptationPlanStatusVolumeReview
+	}
+	if review.Status != domain.AdaptationPlanStatusVolumeReview {
+		return fmt.Errorf("volume review status=%q, want volume_review", review.Status)
+	}
+	if strings.TrimSpace(review.Brief) == "" {
+		return fmt.Errorf("volume review brief is empty")
+	}
+	if review.TargetChapterCount <= 0 {
+		return fmt.Errorf("volume review target_chapter_count must be > 0")
+	}
+	if !adaptationVolumesCoverChapters(review.Volumes, review.TargetChapterCount) {
+		return fmt.Errorf("volume review volumes must continuously cover chapters 1-%d", review.TargetChapterCount)
+	}
+	if manifest != nil && manifest.ChapterCount > 0 {
+		for _, volume := range review.Volumes {
+			if volume.SourceFrom <= 0 || volume.SourceTo < volume.SourceFrom || volume.SourceTo > manifest.ChapterCount {
+				return fmt.Errorf("volume %d has invalid source range %d-%d", volume.Index, volume.SourceFrom, volume.SourceTo)
+			}
+		}
+	}
+	return nil
+}
+
 func sourceRangeForProposalChapters(chapters []domain.AdaptationChapterPlan, from, to int) (int, int) {
 	sourceFrom, sourceTo := 0, 0
 	for _, chapter := range chapters {
@@ -823,6 +1100,47 @@ func proposalOptionsFromPlan(plan domain.AdaptationPlan) ProposalOptions {
 		Granularity:   granularity,
 		RewritePolicy: domain.AdaptationRewritePolicyForGranularity(granularity),
 		WordTolerance: plan.WordTolerance,
+	}
+}
+
+func proposalOptionsFromVolumeReview(review domain.AdaptationVolumeReview) ProposalOptions {
+	granularity := domain.NormalizeAdaptationGranularity(review.Granularity)
+	return ProposalOptions{
+		Brief:              strings.TrimSpace(review.Brief),
+		SourcePath:         strings.TrimSpace(review.SourcePath),
+		Granularity:        granularity,
+		RewritePolicy:      domain.AdaptationRewritePolicyForGranularity(granularity),
+		WordTolerance:      review.WordTolerance,
+		TargetChapterCount: review.TargetChapterCount,
+	}
+}
+
+func plannerSkeletonFromVolumeReview(review domain.AdaptationVolumeReview) plannerSkeleton {
+	batches := make([]plannerSkeletonBatch, 0, len(review.Volumes))
+	for _, volume := range normalizeAdaptationProposalVolumes(review.Volumes, review.TargetChapterCount) {
+		batches = append(batches, plannerSkeletonBatch{
+			Index:              volume.Index,
+			Title:              volume.Title,
+			Theme:              volume.Theme,
+			Goal:               volume.Goal,
+			Summary:            volume.Summary,
+			TargetFrom:         volume.TargetFrom,
+			TargetTo:           volume.TargetTo,
+			TargetChapterCount: volume.TargetTo - volume.TargetFrom + 1,
+			SourceFrom:         volume.SourceFrom,
+			SourceTo:           volume.SourceTo,
+		})
+	}
+	return plannerSkeleton{
+		Granularity:        review.Granularity,
+		Status:             domain.AdaptationPlanStatusProposal,
+		RewritePolicy:      review.RewritePolicy,
+		Brief:              review.Brief,
+		TargetChapterCount: review.TargetChapterCount,
+		MainlineRules:      append([]string(nil), review.MainlineRules...),
+		RelationshipGoals:  append([]string(nil), review.RelationshipGoals...),
+		Batches:            batches,
+		Planner:            clonePlannerRuntimeMeta(review.Planner),
 	}
 }
 
@@ -1258,6 +1576,88 @@ func buildAdaptationProposalVolumeRevisionSkeletonPrompt(
 	), nil
 }
 
+func buildAdaptationVolumeReviewRevisionPrompt(
+	opts ProposalRevisionOptions,
+	review domain.AdaptationVolumeReview,
+	volume plannerSkeletonBatch,
+	expansionMaxTo int,
+	manifest *domain.AdaptationSourceManifest,
+	sourceFoundation *domain.AdaptationSourceFoundation,
+	reports []domain.AdaptationSourceReport,
+) (string, error) {
+	if expansionMaxTo < volume.TargetTo {
+		expansionMaxTo = volume.TargetTo
+	}
+	requirements := []string{
+		"Return exactly one JSON object and no prose.",
+		"Do not wrap the JSON in markdown fences.",
+		"Return only a high-level revised volume/batch skeleton; do not include chapter details.",
+		"The top-level object must contain a batches array with exactly one batch.",
+		"That batch must keep target_from equal to the original volume target_from.",
+		"That batch must include target_from, target_to, source_from, source_to, title, theme or goal, summary, and expansion_decision.",
+		"source_from and source_to must stay within the analyzed source manifest.",
+		"Use the user's revision instruction to re-plan this volume's plot structure before detailed chapter planning.",
+		`You must decide whether the revision needs more chapter slots. Set expansion_decision to "expand" or "keep".`,
+		`Use "expand" when the requested story change needs added chapters, extra relationship beats, daily romance scenes, epilogue-like life stages, marriage, pregnancy, childbirth, or other new plot space.`,
+		`Use "keep" only when the requested change can be fully handled inside the current chapter count without compressing or losing the user's intent.`,
+		`If expansion_decision is "expand", increase target_to for this volume; target_to must not exceed target_to_max.`,
+		`If expansion_decision is "keep", target_to must remain original_target_to.`,
+		"Do not leave gaps; later volumes will be shifted by the application.",
+	}
+	input := struct {
+		Instruction       string                             `json:"instruction"`
+		ExpansionAllowed  bool                               `json:"expansion_allowed"`
+		OriginalTargetTo  int                                `json:"original_target_to"`
+		TargetToMax       int                                `json:"target_to_max"`
+		Granularity       string                             `json:"granularity"`
+		RewritePolicy     string                             `json:"rewrite_policy"`
+		Brief             string                             `json:"brief"`
+		MainlineRules     []string                           `json:"mainline_rules,omitempty"`
+		RelationshipGoals []string                           `json:"relationship_goals,omitempty"`
+		CurrentVolume     plannerSkeletonBatch               `json:"current_volume"`
+		AllVolumes        []domain.AdaptationVolumePlan      `json:"all_volumes"`
+		SourceManifest    *domain.AdaptationSourceManifest   `json:"source_manifest"`
+		SourceFoundation  *domain.AdaptationSourceFoundation `json:"source_foundation"`
+		SourceReports     []domain.AdaptationSourceReport    `json:"source_reports"`
+		Requirements      []string                           `json:"requirements"`
+	}{
+		Instruction:       strings.TrimSpace(opts.Instruction),
+		ExpansionAllowed:  true,
+		OriginalTargetTo:  volume.TargetTo,
+		TargetToMax:       expansionMaxTo,
+		Granularity:       review.Granularity,
+		RewritePolicy:     review.RewritePolicy,
+		Brief:             review.Brief,
+		MainlineRules:     append([]string(nil), review.MainlineRules...),
+		RelationshipGoals: append([]string(nil), review.RelationshipGoals...),
+		CurrentVolume:     volume,
+		AllVolumes:        normalizeAdaptationProposalVolumes(review.Volumes, review.TargetChapterCount),
+		SourceManifest:    manifest,
+		SourceFoundation:  sourceFoundation,
+		SourceReports:     reports,
+		Requirements:      requirements,
+	}
+	raw, err := json.MarshalIndent(input, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal volume review revision input: %w", err)
+	}
+	return fmt.Sprintf(
+		"Revise the selected adaptation volume review before detailed chapter planning.\n\n"+
+			"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must contain a batches array with exactly one revised volume batch. Do not return chapter details here.\n"+
+			"Required JSON shape: {\"granularity\":\"%s\",\"status\":\"volume_review\",\"rewrite_policy\":\"%s\",\"brief\":\"...\",\"target_chapter_count\":%d,\"batches\":[{\"index\":%d,\"title\":\"...\",\"theme\":\"...\",\"expansion_decision\":\"expand|keep\",\"expansion_reason\":\"...\",\"target_from\":%d,\"target_to\":%d,\"source_from\":%d,\"source_to\":%d,\"summary\":\"...\"}]}.\n\n"+
+			"Volume review revision input:\n```json\n%s\n```",
+		review.Granularity,
+		review.RewritePolicy,
+		volume.TargetTo-volume.TargetFrom+1,
+		volume.Index,
+		volume.TargetFrom,
+		volume.TargetTo,
+		volume.SourceFrom,
+		volume.SourceTo,
+		string(raw),
+	), nil
+}
+
 func proposalChaptersInRange(chapters []domain.AdaptationChapterPlan, from, to int) []domain.AdaptationChapterPlan {
 	out := make([]domain.AdaptationChapterPlan, 0, to-from+1)
 	for _, chapter := range chapters {
@@ -1553,8 +1953,25 @@ func buildPlanFromPlannerChunked(
 	targetChapterHint int,
 ) (domain.AdaptationPlan, error) {
 	var zero domain.AdaptationPlan
+	skeleton, runtime, err := buildPlannerVolumeSkeleton(ctx, deps, opts, reports, manifest, sourceFoundation, targetChapterHint)
+	if err != nil {
+		return zero, err
+	}
+	return buildPlanFromPlannerSkeletonDetails(ctx, deps, opts, reports, manifest, sourceFoundation, skeleton, runtime)
+}
+
+func buildPlannerVolumeSkeleton(
+	ctx context.Context,
+	deps Deps,
+	opts ProposalOptions,
+	reports []domain.AdaptationSourceReport,
+	manifest *domain.AdaptationSourceManifest,
+	sourceFoundation *domain.AdaptationSourceFoundation,
+	targetChapterHint int,
+) (plannerSkeleton, *domain.AdaptationProposalRuntime, error) {
+	var zero plannerSkeleton
 	if deps.LLM == nil {
-		return zero, fmt.Errorf("planner llm is required for %s adaptation proposals", opts.Granularity)
+		return zero, nil, fmt.Errorf("planner llm is required for %s adaptation proposals", opts.Granularity)
 	}
 	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
 	if systemPrompt == "" {
@@ -1562,11 +1979,11 @@ func buildPlanFromPlannerChunked(
 	}
 	skeletonPrompt, err := buildAdaptationPlannerSkeletonUserPrompt(opts, reports, manifest, sourceFoundation, targetChapterHint)
 	if err != nil {
-		return zero, err
+		return zero, nil, err
 	}
 	runtime, runtimeSkeleton, err := loadPlannerProposalRuntime(deps, opts, manifest, targetChapterHint, opts.EmitProgress)
 	if err != nil {
-		return zero, err
+		return zero, nil, err
 	}
 	var skeleton plannerSkeleton
 	if runtimeSkeleton != nil {
@@ -1586,7 +2003,7 @@ func buildPlanFromPlannerChunked(
 			"长篇骨架规划",
 		)
 		if err != nil {
-			return zero, fmt.Errorf("planner skeleton llm generate: %w", err)
+			return zero, nil, fmt.Errorf("planner skeleton llm generate: %w", err)
 		}
 		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "长篇骨架模型已返回，正在解析分卷/分批结构", nil)
 		for attempt := 0; ; attempt++ {
@@ -1598,19 +2015,41 @@ func buildPlanFromPlannerChunked(
 				break
 			}
 			if !plannerSkeletonErrorRepairable(err) || attempt >= adaptationPlannerRepairMaxAttempts {
-				return zero, fmt.Errorf("planner skeleton: %w", err)
+				return zero, nil, fmt.Errorf("planner skeleton: %w", err)
 			}
 			emitAdaptProgress(opts.EmitProgress, StagePlan, attempt+1, adaptationPlannerRepairMaxAttempts, fmt.Sprintf("骨架规划返回不符合结构，正在修复第 %d 次：%v", attempt+1, err), err)
 			skeletonText, err = repairPlannerSkeletonText(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, err, opts.EmitProgress, 0, 0)
 			if err != nil {
-				return zero, fmt.Errorf("planner skeleton: %w", err)
+				return zero, nil, fmt.Errorf("planner skeleton: %w", err)
 			}
 		}
 		runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
 		runtime.CompletedBatches = nil
 		if err := savePlannerProposalRuntime(deps, runtime); err != nil {
-			return zero, fmt.Errorf("save proposal runtime skeleton: %w", err)
+			return zero, nil, fmt.Errorf("save proposal runtime skeleton: %w", err)
 		}
+	}
+	return skeleton, runtime, nil
+}
+
+func buildPlanFromPlannerSkeletonDetails(
+	ctx context.Context,
+	deps Deps,
+	opts ProposalOptions,
+	reports []domain.AdaptationSourceReport,
+	manifest *domain.AdaptationSourceManifest,
+	sourceFoundation *domain.AdaptationSourceFoundation,
+	skeleton plannerSkeleton,
+	runtime *domain.AdaptationProposalRuntime,
+) (domain.AdaptationPlan, error) {
+	var zero domain.AdaptationPlan
+	if runtime == nil {
+		runtime = newPlannerProposalRuntime(opts, manifest, skeleton.TargetChapterCount)
+		runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+	}
+	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+	if systemPrompt == "" {
+		systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested adaptation planning step."
 	}
 	detailBatches := plannerDetailBatches(skeleton.Batches, adaptationPlannerRecommendedBatchMax)
 	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, len(detailBatches), fmt.Sprintf("骨架规划完成：%d 章，%d 个模型规划段，拆为 %d 个详情子批次", skeleton.TargetChapterCount, len(skeleton.Batches), len(detailBatches)), nil)
@@ -1697,6 +2136,33 @@ func buildPlanFromPlannerChunked(
 		return zero, err
 	}
 	return proposal, nil
+}
+
+func volumeReviewFromSkeleton(opts ProposalOptions, manifest *domain.AdaptationSourceManifest, skeleton plannerSkeleton) domain.AdaptationVolumeReview {
+	review := domain.AdaptationVolumeReview{
+		Status:             domain.AdaptationPlanStatusVolumeReview,
+		UpdatedAt:          time.Now().UTC().Format(time.RFC3339),
+		Brief:              strings.TrimSpace(opts.Brief),
+		SourcePath:         plannerProposalRuntimeSourcePath(opts, manifest),
+		SourceChapterCount: plannerProposalRuntimeSourceChapterCount(manifest),
+		Granularity:        strings.TrimSpace(opts.Granularity),
+		RewritePolicy:      strings.TrimSpace(opts.RewritePolicy),
+		WordTolerance:      opts.WordTolerance,
+		TargetChapterCount: skeleton.TargetChapterCount,
+		MainlineRules:      append([]string(nil), skeleton.MainlineRules...),
+		RelationshipGoals:  append([]string(nil), skeleton.RelationshipGoals...),
+		Volumes:            adaptationVolumesFromSkeleton(skeleton),
+		Planner:            clonePlannerRuntimeMeta(skeleton.Planner),
+	}
+	if review.Planner == nil {
+		review.Planner = &domain.AdaptationPlannerMeta{}
+	}
+	review.Planner.Prompt = adaptationPlannerPromptName
+	review.Planner.PromptVersion = adaptationPlannerPromptVersion + "-volume-review"
+	if strings.TrimSpace(review.Planner.GeneratedAt) == "" {
+		review.Planner.GeneratedAt = review.UpdatedAt
+	}
+	return review
 }
 
 func loadPlannerProposalRuntime(

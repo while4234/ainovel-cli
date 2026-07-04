@@ -294,6 +294,49 @@ func TestAdaptationStoreSaveProposalClearsProposalRuntime(t *testing.T) {
 	}
 }
 
+func TestAdaptationStorePersistsVolumeReviewWithoutChapterDetails(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	review := domain.AdaptationVolumeReview{
+		Granularity:        domain.AdaptationGranularityFree,
+		Status:             domain.AdaptationPlanStatusVolumeReview,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		Brief:              "review long-form volume skeleton before chapter details",
+		TargetChapterCount: 20,
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, Title: "Opening", TargetFrom: 1, TargetTo: 8, SourceFrom: 1, SourceTo: 2},
+			{Index: 2, Title: "Pressure", TargetFrom: 9, TargetTo: 16, SourceFrom: 2, SourceTo: 3},
+			{Index: 3, Title: "Payoff", TargetFrom: 17, TargetTo: 20, SourceFrom: 3, SourceTo: 4},
+		},
+	}
+	if err := s.Adaptation.SaveVolumeReview(review); err != nil {
+		t.Fatalf("SaveVolumeReview: %v", err)
+	}
+
+	loaded, err := s.Adaptation.LoadVolumeReview()
+	if err != nil {
+		t.Fatalf("LoadVolumeReview: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("volume review proposal was not saved")
+	}
+	if loaded.Status != domain.AdaptationPlanStatusVolumeReview {
+		t.Fatalf("status=%q, want volume_review", loaded.Status)
+	}
+	if len(loaded.Volumes) != 3 || loaded.Volumes[1].Title != "Pressure" || loaded.Volumes[2].TargetTo != 20 {
+		t.Fatalf("volume skeleton was not preserved: %+v", loaded.Volumes)
+	}
+	if proposal, err := s.Adaptation.LoadProposal(); err != nil || proposal != nil {
+		t.Fatalf("volume review should not save chapter proposal: proposal=%+v err=%v", proposal, err)
+	}
+	if s.Adaptation.Active() {
+		t.Fatal("volume review should not activate adaptation writing")
+	}
+}
+
 func TestAdaptationStoreResetGeneratedPreservesSourceSnapshot(t *testing.T) {
 	s := NewStore(t.TempDir())
 	if err := s.Init(); err != nil {

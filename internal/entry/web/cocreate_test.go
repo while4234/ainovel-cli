@@ -262,6 +262,59 @@ func TestProjectAdaptCoCreateCommitRepairsRestoredStaleDraft(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptCoCreateLongFormCommitReturnsVolumeReview(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Volume Review")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	fake.adaptCoCreateReply = webCoCreateReply("long-form direction ready", "## Adaptation Draft\n- expand into 20 target chapters", true)
+	fake.adaptProposal = &domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityFree,
+		Status:        "volume_review",
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Brief:         "## Adaptation Draft\n- expand into 20 target chapters",
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, Title: "Opening", TargetFrom: 1, TargetTo: 8, SourceFrom: 1, SourceTo: 1},
+			{Index: 2, Title: "Pressure", TargetFrom: 9, TargetTo: 16, SourceFrom: 1, SourceTo: 1},
+			{Index: 3, Title: "Payoff", TargetFrom: 17, TargetTo: 20, SourceFrom: 1, SourceTo: 1},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"expand into 20 target chapters"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt commit status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode commit response: %v", err)
+	}
+	if fake.adaptStartCalls != 0 || fake.adaptConfirmCalls != 0 {
+		t.Fatalf("volume review commit must not start/confirm writing: start=%d confirm=%d", fake.adaptStartCalls, fake.adaptConfirmCalls)
+	}
+	if response.CoCreate.Proposal == nil || response.CoCreate.Proposal.Status != "volume_review" {
+		t.Fatalf("adapt co-create long form should return volume review proposal: %+v", response.CoCreate.Proposal)
+	}
+	if len(response.CoCreate.Proposal.Chapters) != 0 || len(response.CoCreate.Proposal.Volumes) != 3 {
+		t.Fatalf("volume review response should expose volumes only: %+v", response.CoCreate.Proposal)
+	}
+}
+
 func TestProjectAdaptCoCreateCommitRepairsRestoredRegressedDraft(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
