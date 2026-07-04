@@ -46,7 +46,7 @@ import {
   discoverGlobalProviderModels,
   discoverProjectProviderModels,
   emptyTrashProjects,
-  exportProject,
+  exportProjectDownload,
   getBackendStatus,
   getGlobalModels,
   getChapter,
@@ -323,7 +323,6 @@ function createExportState() {
     format: 'txt',
     from: '',
     to: '',
-    overwrite: false,
     status: 'idle',
     result: null,
     message: '',
@@ -995,22 +994,38 @@ export default function App() {
       setExportJob((previous) => ({ ...previous, error: err.message }));
       return;
     }
+    const suggestedName = buildExportSuggestedName(exportJob, activeProject);
+    let target;
+    try {
+      target = await chooseExportSaveTarget(suggestedName, exportJob.format);
+    } catch (err) {
+      if (isFilePickerCancel(err)) {
+        return;
+      }
+      setExportJob((previous) => ({ ...previous, status: 'error', error: err.message || '选择保存位置失败' }));
+      return;
+    }
     setBusy(true);
     setExportJob((previous) => ({ ...previous, status: 'running', result: null, message: '', error: '' }));
     try {
-      const data = await exportProject(activeProject.id, {
-        path: exportJob.path,
+      const data = await exportProjectDownload(activeProject.id, {
+        path: suggestedName,
         format: exportJob.format,
         from,
         to,
-        overwrite: exportJob.overwrite
+        overwrite: true
       });
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      const savedName = await saveExportBlob(data.blob, target, data.export?.name || suggestedName);
+      const result = {
+        ...(data.export || {}),
+        name: data.export?.name || suggestedName,
+        path: target?.kind === 'picker' ? `已保存到所选位置：${savedName}` : `已下载：${savedName}`
+      };
       setExportJob((previous) => ({
         ...previous,
         status: 'done',
-        result: data.export || null,
-        message: data.export?.path ? `已导出 ${data.export.path}` : '导出完成',
+        result,
+        message: target?.kind === 'picker' ? `已导出到所选位置：${savedName}` : `浏览器不支持选择位置，已下载 ${savedName}`,
         error: ''
       }));
     } catch (err) {
@@ -4085,6 +4100,7 @@ function ImportPanel({ activeProject, busy, externalImport, setExternalImport, o
 
 function ExportPanel({ activeProject, busy, exportJob, setExportJob, onExport }) {
   const result = exportJob.result;
+  const suggestedName = buildExportSuggestedName(exportJob, activeProject);
   return (
     <div className="side-content">
       {exportJob.error ? <div className="error-banner compact">{exportJob.error}</div> : null}
@@ -4099,7 +4115,7 @@ function ExportPanel({ activeProject, busy, exportJob, setExportJob, onExport })
             <span>文件名</span>
             <input
               disabled={busy}
-              placeholder="留空使用默认文件名"
+              placeholder={suggestedName}
               value={exportJob.path}
               onChange={(event) => setExportJob((previous) => ({ ...previous, path: event.target.value }))}
             />
@@ -4141,18 +4157,9 @@ function ExportPanel({ activeProject, busy, exportJob, setExportJob, onExport })
               />
             </label>
           </div>
-          <label className="checkbox-row">
-            <input
-              checked={exportJob.overwrite}
-              disabled={busy}
-              type="checkbox"
-              onChange={(event) => setExportJob((previous) => ({ ...previous, overwrite: event.target.checked }))}
-            />
-            <span>覆盖已有文件</span>
-          </label>
           <button className="tool-button accent full-width" disabled={!activeProject || busy} onClick={onExport} type="button">
             <Download size={16} />
-            Export
+            选择位置并导出
           </button>
         </div>
         {exportJob.message ? <div className="success-note">{exportJob.message}</div> : null}
@@ -6559,6 +6566,82 @@ function optionalNonNegativeInt(value, label) {
     throw new Error(`${label} 必须是非负整数`);
   }
   return parsed;
+}
+
+export function buildExportSuggestedName(exportJob = {}, activeProject = {}) {
+  const ext = exportExtensionForFormat(exportJob.format);
+  const raw = String(exportJob.path || activeProject?.name || 'novel').trim() || 'novel';
+  let name = sanitizeExportSuggestedName(fileNameFromPath(raw)) || 'novel';
+  name = name.replace(/\.(txt|epub)$/i, '');
+  return `${name}${ext}`;
+}
+
+function exportExtensionForFormat(format) {
+  return String(format || '').toLowerCase() === 'epub' ? '.epub' : '.txt';
+}
+
+function exportMimeType(format) {
+  return String(format || '').toLowerCase() === 'epub' ? 'application/epub+zip' : 'text/plain';
+}
+
+function exportPickerDescription(format) {
+  return String(format || '').toLowerCase() === 'epub' ? 'EPUB book' : 'Text file';
+}
+
+function sanitizeExportSuggestedName(name) {
+  return String(name || '')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+    .replace(/^\.+|\.+$/g, '')
+    .trim();
+}
+
+async function chooseExportSaveTarget(suggestedName, format) {
+  if (typeof window === 'undefined' || typeof window.showSaveFilePicker !== 'function') {
+    return { kind: 'download', name: suggestedName };
+  }
+  const ext = exportExtensionForFormat(format);
+  const handle = await window.showSaveFilePicker({
+    suggestedName,
+    types: [{
+      description: exportPickerDescription(format),
+      accept: { [exportMimeType(format)]: [ext] }
+    }]
+  });
+  return { kind: 'picker', handle, name: handle?.name || suggestedName };
+}
+
+function isFilePickerCancel(err) {
+  return err?.name === 'AbortError';
+}
+
+async function saveExportBlob(blob, target, fallbackName) {
+  const fileName = target?.name || fallbackName || 'novel.txt';
+  if (target?.kind === 'picker' && target.handle) {
+    const writable = await target.handle.createWritable();
+    try {
+      await writable.write(blob);
+    } finally {
+      await writable.close();
+    }
+    return fileName;
+  }
+  triggerBrowserDownload(blob, fileName);
+  return fileName;
+}
+
+function triggerBrowserDownload(blob, fileName) {
+  if (typeof document === 'undefined' || typeof URL === 'undefined') {
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  globalThis.setTimeout?.(() => URL.revokeObjectURL(url), 1000);
 }
 
 function formatCompact(value) {

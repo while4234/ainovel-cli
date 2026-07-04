@@ -6,6 +6,7 @@ import {
   buildBeginCoCreatePayload,
   buildChapterRevisionPayload,
   buildCoCreateIntakeInitial,
+  buildExportSuggestedName,
   buildVolumeReviewRevisionPayload,
   clearAdaptationProposalSnapshot,
   deriveWorkspaceProgress,
@@ -25,6 +26,12 @@ import {
 } from './App.jsx';
 
 describe('co-create begin payload helpers', () => {
+  it('builds safe export suggested filenames', () => {
+    expect(buildExportSuggestedName({ path: '', format: 'txt' }, { name: '梦中的女孩改_v2' })).toBe('梦中的女孩改_v2.txt');
+    expect(buildExportSuggestedName({ path: 'draft.epub', format: 'txt' }, { name: 'Book' })).toBe('draft.txt');
+    expect(buildExportSuggestedName({ path: 'bad/name:*?', format: 'epub' }, { name: 'Book' })).toBe('name___.epub');
+  });
+
   it('sends target_total_words for normal co-create only', () => {
     expect(buildBeginCoCreatePayload({
       kind: 'normal',

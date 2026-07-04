@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1479,6 +1480,14 @@ func (f *fakeProjectHost) Export(_ context.Context, opts exp.Options) (*exp.Resu
 	f.exportOptions = opts
 	if f.exportErr != nil {
 		return nil, f.exportErr
+	}
+	if opts.OutPath != "" {
+		if err := os.MkdirAll(filepath.Dir(opts.OutPath), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(opts.OutPath, []byte("fake export"), 0o644); err != nil {
+			return nil, err
+		}
 	}
 	if f.exportResult != nil {
 		return f.exportResult, nil

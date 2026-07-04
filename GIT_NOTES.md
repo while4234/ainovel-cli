@@ -28,7 +28,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest prompt change in progress:
+- Latest source change: current local commit
+  `feat: save exports through browser picker`:
+  Web export changed from "server writes under project exports" as the primary
+  UI path to a browser-save flow. `POST
+  /api/projects/{id}/export/download` returns the exported TXT/EPUB bytes and
+  metadata headers; the frontend opens the native save-file picker when
+  available and writes the returned blob to the chosen location, with browser
+  download fallback. The workbench stream view now keeps more recent tool
+  output blocks and no longer clips long stream cards, so adaptation/rewrite
+  summaries can be read fully inside the central workspace.
+- Latest prompt change: current local commit
+  `style: add punctuation anti-ai review criteria`:
   `assets/references/anti-ai-tone.md` now includes an explicit
   "标点与句式 AI 味" section. Writer/editor shared AI-tone guidance now treats
   repeated explanatory em dashes as a reviewable aesthetic issue and recommends

@@ -68,7 +68,7 @@ export function startStreamRound(rounds) {
   return compactStreamRounds([...next, { id: `round-${next.length}`, text: '' }]);
 }
 
-export function compactStreamRounds(rounds, limit = 4) {
+export function compactStreamRounds(rounds, limit = 12) {
   const compacted = [];
   for (const round of rounds || []) {
     const text = String(round?.text || '');

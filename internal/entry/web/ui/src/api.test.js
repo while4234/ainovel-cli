@@ -11,6 +11,7 @@ import {
   discoverGlobalProviderModels,
   discoverProjectProviderModels,
   emptyTrashProjects,
+  exportProjectDownload,
   getChapter,
   getGlobalModels,
   listNovelLibrary,
@@ -40,6 +41,19 @@ function mockJSONResponse(body = {}) {
   return {
     ok: true,
     text: () => Promise.resolve(JSON.stringify(body))
+  };
+}
+
+function mockBlobResponse(body = 'book') {
+  return {
+    ok: true,
+    headers: new Headers({
+      'x-ainovel-export-name': 'book.txt',
+      'x-ainovel-export-chapters': '59',
+      'x-ainovel-export-bytes': '893100',
+      'x-ainovel-export-skipped': '2,4'
+    }),
+    blob: () => Promise.resolve(new Blob([body], { type: 'text/plain' }))
   };
 }
 
@@ -160,6 +174,34 @@ describe('web API helpers', () => {
     await getChapter('project-1', 3);
 
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/chapters/3', expect.objectContaining({}));
+  });
+
+  it('downloads exported novel blobs with metadata', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockBlobResponse('novel body'));
+
+    const result = await exportProjectDownload('project-1', {
+      path: 'book.txt',
+      format: 'txt',
+      from: 1,
+      to: 59
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/export/download', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        path: 'book.txt',
+        format: 'txt',
+        from: 1,
+        to: 59
+      })
+    }));
+    expect(result.export).toMatchObject({
+      name: 'book.txt',
+      chapters: 59,
+      bytes: 893100,
+      skipped: [2, 4]
+    });
+    expect(await result.blob.text()).toBe('novel body');
   });
 
   it('uses staged adaptation proposal, revise, details, and final confirm routes', async () => {

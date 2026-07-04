@@ -408,6 +408,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectImport(w, r, id)
 	case "export":
 		s.handleProjectExport(w, r, id)
+	case "export/download":
+		s.handleProjectExportDownload(w, r, id)
 	case "diag":
 		s.handleProjectDiag(w, r, id)
 	case "simulate/files":

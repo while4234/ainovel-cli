@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,9 +19,18 @@ import (
 
 type apiExportResult struct {
 	Path     string `json:"path"`
+	Name     string `json:"name,omitempty"`
 	Chapters int    `json:"chapters"`
 	Bytes    int    `json:"bytes"`
 	Skipped  []int  `json:"skipped"`
+}
+
+type projectExportRequest struct {
+	Path      string `json:"path"`
+	Format    string `json:"format"`
+	From      int    `json:"from"`
+	To        int    `json:"to"`
+	Overwrite bool   `json:"overwrite"`
 }
 
 func (s *Server) handleProjectStart(w http.ResponseWriter, r *http.Request, id string) {
@@ -98,14 +109,8 @@ func (s *Server) handleProjectExport(w http.ResponseWriter, r *http.Request, id 
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var req struct {
-		Path      string `json:"path"`
-		Format    string `json:"format"`
-		From      int    `json:"from"`
-		To        int    `json:"to"`
-		Overwrite bool   `json:"overwrite"`
-	}
-	if err := decodeJSONBody(r, &req); err != nil {
+	req, err := decodeProjectExportRequest(r)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid export request: "+err.Error())
 		return
 	}
@@ -144,6 +149,77 @@ func (s *Server) handleProjectExport(w http.ResponseWriter, r *http.Request, id 
 		"export":   apiExportResultFromExp(result),
 		"running":  snapshot.IsRunning,
 	})
+}
+
+func (s *Server) handleProjectExportDownload(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	req, err := decodeProjectExportRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid export request: "+err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	format, err := exportFormat(req.Format)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	fileName, err := projectExportFileName(manifest, req.Path, format)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	tmpDir, err := os.MkdirTemp("", "ainovel-export-*")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	outPath := filepath.Join(tmpDir, fileName)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	result, err := session.Export(ctx, exp.Options{
+		Format:    format,
+		OutPath:   outPath,
+		From:      req.From,
+		To:        req.To,
+		Overwrite: true,
+	})
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", exportContentType(format))
+	w.Header().Set("Content-Disposition", contentDispositionAttachment(fileName))
+	w.Header().Set("X-AINovel-Export-Name", fileName)
+	w.Header().Set("X-AINovel-Export-Chapters", strconv.Itoa(result.Chapters))
+	w.Header().Set("X-AINovel-Export-Bytes", strconv.Itoa(len(data)))
+	w.Header().Set("X-AINovel-Export-Skipped", intsHeader(result.Skipped))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func decodeProjectExportRequest(r *http.Request) (projectExportRequest, error) {
+	var req projectExportRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		return req, err
+	}
+	req.Path = strings.TrimSpace(req.Path)
+	req.Format = strings.TrimSpace(req.Format)
+	return req, nil
 }
 
 func (s *Server) handleProjectDiag(w http.ResponseWriter, r *http.Request, id string) {
@@ -218,6 +294,29 @@ func projectExportPath(manifest ProjectManifest, raw string, format exp.Format) 
 	return target, nil
 }
 
+func projectExportFileName(manifest ProjectManifest, raw string, format exp.Format) (string, error) {
+	if raw = strings.TrimSpace(raw); raw != "" {
+		path, err := projectExportPath(manifest, raw, format)
+		if err != nil {
+			return "", err
+		}
+		name := sanitizeExportFileName(filepath.Base(path))
+		if name == "" {
+			return "", fmt.Errorf("export filename is empty")
+		}
+		return name, nil
+	}
+	name := sanitizeExportFileName(manifest.Name)
+	if name == "" {
+		name = "novel"
+	}
+	ext := selectedExportExtension(format)
+	if ext == "" {
+		ext = ".txt"
+	}
+	return name + ext, nil
+}
+
 func ensureExportPathExtension(path string, format exp.Format) (string, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	wantExt := selectedExportExtension(format)
@@ -251,12 +350,56 @@ func selectedExportExtension(format exp.Format) string {
 	}
 }
 
+func exportContentType(format exp.Format) string {
+	switch format {
+	case exp.FormatEPUB:
+		return "application/epub+zip"
+	default:
+		return "text/plain; charset=utf-8"
+	}
+}
+
+func contentDispositionAttachment(fileName string) string {
+	escaped := strings.ReplaceAll(fileName, `"`, "")
+	return fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, escaped, url.PathEscape(fileName))
+}
+
+func sanitizeExportFileName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"/", "_", `\`, "_", ":", "_", "*", "_", "?", "_", `"`, "_", "<", "_", ">", "_", "|", "_",
+	)
+	name = replacer.Replace(name)
+	name = strings.Map(func(r rune) rune {
+		if r < 0x20 {
+			return '_'
+		}
+		return r
+	}, name)
+	return strings.Trim(name, ". ")
+}
+
+func intsHeader(values []int) string {
+	if len(values) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, strconv.Itoa(value))
+	}
+	return strings.Join(parts, ",")
+}
+
 func apiExportResultFromExp(result *exp.Result) apiExportResult {
 	if result == nil {
 		return apiExportResult{}
 	}
 	return apiExportResult{
 		Path:     result.Path,
+		Name:     filepath.Base(result.Path),
 		Chapters: result.Chapters,
 		Bytes:    result.Bytes,
 		Skipped:  append([]int(nil), result.Skipped...),

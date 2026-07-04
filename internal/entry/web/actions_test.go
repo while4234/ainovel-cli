@@ -270,6 +270,42 @@ func TestProjectExportUsesProjectExportsDir(t *testing.T) {
 	}
 }
 
+func TestProjectExportDownloadReturnsBytesForBrowserSave(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Browser Export")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/export/download", bytes.NewBufferString(`{"path":"browser-book","format":"txt","from":1,"to":2}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export download status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.exportCalls != 1 {
+		t.Fatalf("Export calls = %d, want 1", fake.exportCalls)
+	}
+	if fake.exportOptions.OutPath == "" || filepath.Dir(fake.exportOptions.OutPath) == filepath.Join(manifest.RootDir, "exports") {
+		t.Fatalf("download export should use a temp out path, got %q", fake.exportOptions.OutPath)
+	}
+	if fake.exportOptions.Format != exp.FormatTXT || !fake.exportOptions.Overwrite {
+		t.Fatalf("export options = %+v", fake.exportOptions)
+	}
+	if got := rec.Header().Get("X-AINovel-Export-Name"); got != "browser-book.txt" {
+		t.Fatalf("export name header = %q, want browser-book.txt", got)
+	}
+	if got := rec.Header().Get("X-AINovel-Export-Chapters"); got != "1" {
+		t.Fatalf("export chapters header = %q, want 1", got)
+	}
+	if body := rec.Body.String(); body != "fake export" {
+		t.Fatalf("export body = %q, want fake export", body)
+	}
+}
+
 func TestProjectExportAppendsSelectedFormatExtension(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

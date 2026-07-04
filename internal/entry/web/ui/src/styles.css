@@ -751,7 +751,7 @@ h2 {
 .stream-round {
   min-width: 0;
   min-height: 76px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid transparent;
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);

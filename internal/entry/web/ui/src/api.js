@@ -212,6 +212,39 @@ export function exportProject(projectId, payload) {
   });
 }
 
+export async function exportProjectDownload(projectId, payload) {
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/export/download`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload || {})
+  });
+  if (!response.ok) {
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+    const error = new Error(data?.error || `${response.status} ${response.statusText}`);
+    error.data = data;
+    throw error;
+  }
+  const blob = await response.blob();
+  const skipped = String(response.headers.get('x-ainovel-export-skipped') || '')
+    .split(',')
+    .map((item) => Number.parseInt(item, 10))
+    .filter((item) => Number.isInteger(item));
+  return {
+    blob,
+    export: {
+      name: response.headers.get('x-ainovel-export-name') || '',
+      chapters: Number.parseInt(response.headers.get('x-ainovel-export-chapters') || '0', 10) || 0,
+      bytes: Number.parseInt(response.headers.get('x-ainovel-export-bytes') || String(blob.size), 10) || blob.size,
+      skipped
+    }
+  };
+}
+
 export function runProjectDiagnostic(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/diag`, {
     method: 'POST',
