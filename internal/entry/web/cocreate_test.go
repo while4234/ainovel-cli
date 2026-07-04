@@ -399,6 +399,94 @@ func TestProjectAdaptCoCreateCommitRepairsRestoredRegressedDraft(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptCoCreateCommitRepairsPreviousRoundPlaceholderDraft(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Previous Round Placeholder")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	opener := strings.Join([]string{
+		"Please adapt this novel.",
+		"",
+		"granularity=free",
+		"rewrite_policy=" + domain.AdaptationRewritePolicyForGranularity(domain.AdaptationGranularityFree),
+		"word_tolerance=disabled",
+	}, "\n")
+	stableDraft := strings.Join([]string{
+		"## 改编模式",
+		"granularity=free",
+		"rewrite_policy=full_rewrite",
+		"word_tolerance=disabled",
+		"",
+		"## 用户目标",
+		"- 保留家族压力副线",
+		"- 增强女主主动调查线",
+	}, "\n")
+	badDraft := "## 用户目标\n同前轮（完整保留）"
+	checkpoint := webCoCreateCheckpoint{
+		Version: webCoCreateCheckpointVersion,
+		Kind:    webCoCreateKindAdapt,
+		Session: startup.CoCreateSnapshot{
+			History: []host.CoCreateMessage{
+				{Role: "user", Content: opener},
+				{Role: "assistant", Content: "<reply>stable</reply><draft>" + stableDraft + "</draft><ready>true</ready><suggestions></suggestions>"},
+				{Role: "user", Content: "把后半段节奏放慢，多留日常铺垫"},
+				{Role: "assistant", Content: "<reply>bad</reply><draft>" + badDraft + "</draft><ready>true</ready><suggestions></suggestions>"},
+			},
+			DraftPrompt:     badDraft,
+			DraftHistoryLen: 4,
+			Ready:           true,
+		},
+		SourceFile: "source.txt",
+	}
+	data, err := json.Marshal(checkpoint)
+	if err != nil {
+		t.Fatalf("marshal checkpoint: %v", err)
+	}
+	checkpointPath := filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))
+	if err := os.MkdirAll(filepath.Dir(checkpointPath), 0o755); err != nil {
+		t.Fatalf("mkdir checkpoint dir: %v", err)
+	}
+	if err := os.WriteFile(checkpointPath, data, 0o644); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.adaptCoCreateReply = webCoCreateReply("draft repaired", stableDraft+"\n- 把后半段节奏放慢，多留日常铺垫", true)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var restored struct {
+		CoCreate *webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if restored.CoCreate == nil || restored.CoCreate.CanStart {
+		t.Fatalf("previous-round placeholder draft should not be startable: %+v", restored.CoCreate)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("commit status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.adaptCoCreateCalls != 1 {
+		t.Fatalf("repair co-create calls = %d, want 1", fake.adaptCoCreateCalls)
+	}
+	if !strings.Contains(fake.adaptProposalOptions.Brief, "家族压力副线") ||
+		!strings.Contains(fake.adaptProposalOptions.Brief, "后半段节奏放慢") ||
+		strings.Contains(fake.adaptProposalOptions.Brief, "同前轮") {
+		t.Fatalf("adapt proposal brief = %q, want repaired self-contained draft", fake.adaptProposalOptions.Brief)
+	}
+}
+
 func TestProjectAdaptCoCreateCheckpointIgnoredWhenPlanExists(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
@@ -1109,6 +1197,61 @@ func TestProjectAdaptCoCreateRepairsRegressedDraftBeforeProposal(t *testing.T) {
 		!strings.Contains(fake.adaptProposalOptions.Brief, "daily scenes between reveals") ||
 		strings.Contains(fake.adaptProposalOptions.Brief, "同上") {
 		t.Fatalf("adapt proposal brief did not preserve repaired cumulative draft: %q", fake.adaptProposalOptions.Brief)
+	}
+}
+
+func TestProjectAdaptCoCreateRollsBackRejectedDraftWhenRepairFails(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Rollback Draft")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	previousDraft := strings.Join([]string{
+		"## 改编模式",
+		"granularity=free",
+		"rewrite_policy=full_rewrite",
+		"word_tolerance=disabled",
+		"",
+		"## 用户目标",
+		"- 保留家族压力副线",
+		"- 增强女主主动调查线",
+	}, "\n")
+	fake.adaptCoCreateReplies = []host.CoCreateReply{
+		webCoCreateReply("initial draft ready", previousDraft, true),
+		webCoCreateReply("bad draft", "## 用户目标\n同前轮（完整保留）", true),
+		{Message: "repair failed to produce draft", Ready: true, Raw: "<reply>repair failed to produce draft</reply><ready>true</ready><suggestions></suggestions>"},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"保留家族压力副线，并增强女主主动调查线"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/send", bytes.NewBufferString(`{"text":"后半段节奏放慢","source":"custom"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("adapt send status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode send response: %v", err)
+	}
+	if response.CoCreate.DraftPrompt != previousDraft {
+		t.Fatalf("draft should roll back to previous stable draft, got %q", response.CoCreate.DraftPrompt)
+	}
+	if response.CoCreate.CanStart {
+		t.Fatalf("rolled-back draft should remain blocked until latest user turn is consolidated: %+v", response.CoCreate)
+	}
+	if strings.Contains(response.CoCreate.DraftPrompt, "同前轮") {
+		t.Fatalf("rejected placeholder leaked into draft: %q", response.CoCreate.DraftPrompt)
 	}
 }
 

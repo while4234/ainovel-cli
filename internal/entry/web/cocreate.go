@@ -678,6 +678,18 @@ func (s *webCoCreateSession) applyReply(reply host.CoCreateReply) {
 	}
 }
 
+func (s *webCoCreateSession) rollbackDraftAfterRejectedReply(reply host.CoCreateReply) {
+	if s == nil || s.session == nil {
+		return
+	}
+	historyIndex := len(s.session.History())
+	s.session.ApplyReply(host.CoCreateReply{})
+	s.draftConsolidated = false
+	if text := strings.TrimSpace(reply.Message); text != "" {
+		s.messages = append(s.messages, s.newMessage("assistant", text, "", historyIndex))
+	}
+}
+
 func (s *webCoCreateSession) draftNeedsRepair(reply host.CoCreateReply, previousDraft string) bool {
 	if s == nil || s.session == nil {
 		return false
@@ -820,15 +832,40 @@ func containsDraftOmissionPlaceholder(draft string) bool {
 	}
 	placeholders := []string{
 		"同上",
+		"同前轮",
+		"同上一轮",
 		"如上",
 		"前述",
 		"前文",
 		"前面",
+		"前轮",
+		"上一轮",
+		"上轮",
+		"上一稿",
+		"上一版",
+		"前一稿",
+		"前一版",
 		"此前",
 		"已完整记录",
 		"不再重复",
 		"不赘述",
 		"见上",
+		"沿用上一轮",
+		"沿用上轮",
+		"沿用上一稿",
+		"沿用上一版",
+		"保持上一轮",
+		"保持上轮",
+		"保持上一稿",
+		"保持上一版",
+		"保留上一轮",
+		"保留上轮",
+		"保留上一稿",
+		"保留上一版",
+		"previous round",
+		"previous draft",
+		"last round",
+		"last draft",
 		"same as above",
 		"as above",
 	}
@@ -910,7 +947,7 @@ Update the previous stable draft with all confirmed planning decisions from the 
 Do not paste the chat transcript into <draft>. Distill confirmed decisions into one executable Markdown draft.
 The <draft> must be complete, current, and preserve the previous stable draft while adding the latest confirmed decisions.
 If required decisions are still missing, write the known decisions plus a "pending decisions" section in <draft> and set <ready>false</ready>.
-Never use placeholders such as "same as above", "同上", "已完整记录", "不再重复", or "见上"; the draft must be self-contained.`
+Never use placeholders such as "same as above", "同上", "同前轮", "上一轮", "已完整记录", "完整保留", "不再重复", or "见上"; the draft must be self-contained.`
 	if kind == webCoCreateKindAdapt {
 		instruction += `
 For adaptation co-create, preserve the selected granularity, rewrite_policy, and word_tolerance exactly as originally provided. Do not ask the user to choose chapter/arc/free again.`

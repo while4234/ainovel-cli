@@ -29,7 +29,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `99e66b4`
+- Latest source change: branch `main`, `827122f`
+  `fix: reject collapsed adaptation cocreate drafts`:
+  adaptation co-create now treats placeholder drafts such as
+  `同前轮（完整保留）`, `上一轮`, or previous-draft references as incomplete
+  instead of letting them become the canonical proposal brief. Bad drafts still
+  enter the existing model repair path; if repair fails, the session rolls back
+  to the previous stable draft and blocks proposal generation until the latest
+  user turn is consolidated. The Web adapt co-create entry also falls back to
+  the current adaptation brief when the side-panel input is empty, avoiding an
+  empty initial direction from the generic Adapt button.
+- Previous source change: `99e66b4`
   `fix: let adaptation volume planner choose expansion`:
   selected-volume proposal revisions now always give the volume skeleton model
   an explicit `expansion_decision` choice (`expand` or `keep`) instead of using
@@ -62,11 +72,31 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: expected clean after `44e0986`, plus ignored local `.codex/`,
-  `.playwright-mcp/`, and output/runtime artifacts.
+- Working tree: pending collapsed-draft fix, rebuilt Web static assets, plus
+  ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
-  the pending working tree; the restarted process is PID `31592`.
+  the pending working tree; the restarted process is PID `37084`.
 - Validation:
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run "TestProjectAdaptCoCreate(CommitRepairsPreviousRoundPlaceholderDraft|RollsBackRejectedDraftWhenRepairFails|CommitRepairsRestoredRegressedDraft|RepairsRegressedDraftBeforeProposal|RepairsStaleDraftBeforeProposal)$" -count=1 -v`
+  passed;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -count=1`
+  passed;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web ./internal/host ./internal/host/adapt -count=1`
+  passed;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./...` passed;
+  `npm.cmd --prefix internal/entry/web/ui test -- src/workspace-progress.test.js --run`
+  passed;
+  `npm.cmd --prefix internal/entry/web/ui test -- --run` passed, 6 files / 64
+  tests;
+  `npm.cmd --prefix internal/entry/web/ui run build` passed;
+  `git diff --check` passed with CRLF warnings only;
+  `.\restart-web.cmd -Port 9898` initially failed because `go` was not on PATH,
+  then passed after prepending the project-local Go 1.25.5 bin directory,
+  rebuilding Web UI and Go executable, stopping PID `5276`, and starting PID
+  `37084`;
+  `GET /`, `GET /api/runtime`, and `GET /api/projects` returned HTTP 200.
+
+  Earlier validation:
   `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -run "TestBuildAdaptationProposal(FreeDefaultsLongSourceToChunkedPlanner|CoversSparseSourceAnchorsByExplicitRange|ClearsChunkedRuntimeAfterFinalValidationFailure|FreeUsesChunkedPlannerForLongTargetChapters|ResumesChunkedPlannerRuntimeAfterBatchFailure)$" -count=1 -v`
   passed;
   `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host/adapt -count=1`
@@ -124,6 +154,14 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
 
 ## Change Log
+
+- 2026-07-04 `827122f` `fix: reject collapsed adaptation cocreate drafts`:
+  adaptation co-create now rejects placeholder drafts such as `同前轮（完整保留）`
+  or previous-round references before they can become the proposal brief. The
+  session asks the model to repair incomplete drafts, rolls back to the previous
+  stable draft if repair fails, keeps proposal generation blocked until the
+  latest user turn is consolidated, and sends the current adaptation brief when
+  the generic side-panel Adapt button starts co-create with an empty input.
 
 - 2026-07-04 `99e66b4` `fix: let adaptation volume planner choose expansion`:
   selected-volume proposal revisions now ask the model to return

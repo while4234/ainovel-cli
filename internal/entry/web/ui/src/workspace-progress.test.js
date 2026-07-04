@@ -42,6 +42,19 @@ describe('co-create begin payload helpers', () => {
       source_file: 'source.txt',
       mode: 'arc'
     });
+
+    expect(buildBeginCoCreatePayload({
+      kind: 'adapt',
+      initial: '',
+      fallbackInitial: '  保留主线但加强女主调查线  ',
+      sourceFile: 'source.txt',
+      mode: 'free'
+    })).toEqual({
+      kind: 'adapt',
+      initial: '保留主线但加强女主调查线',
+      source_file: 'source.txt',
+      mode: 'free'
+    });
   });
 
   it('resolves preset and custom total word choices', () => {

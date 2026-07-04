@@ -1501,6 +1501,7 @@ export default function App() {
       const payload = buildBeginCoCreatePayload({
         kind,
         initial,
+        fallbackInitial: kind === 'adapt' ? adaptation.brief : '',
         sourceFile: adaptation.sourceFile?.relative_path,
         mode: adaptation.mode,
         targetTotalWords
@@ -5117,10 +5118,10 @@ export function canSubmitModelAdd(state, modelConfig) {
   return true;
 }
 
-export function buildBeginCoCreatePayload({ kind, initial = '', sourceFile = '', mode = '', targetTotalWords = 0 } = {}) {
+export function buildBeginCoCreatePayload({ kind, initial = '', fallbackInitial = '', sourceFile = '', mode = '', targetTotalWords = 0 } = {}) {
   const payload = {
     kind,
-    initial: String(initial || '').trim()
+    initial: String(initial || fallbackInitial || '').trim()
   };
   if (kind === 'adapt') {
     payload.source_file = String(sourceFile || '').trim();

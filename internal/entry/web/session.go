@@ -1359,7 +1359,7 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 	if s.cocreate.draftNeedsRepair(reply, previousDraft) {
 		repairReply, repairErr := stream(ctx, s.cocreate.draftRepairHistory(reply, previousDraft), onProgress)
 		if repairErr != nil {
-			s.cocreate.applyReply(reply)
+			s.cocreate.rollbackDraftAfterRejectedReply(reply)
 			s.cocreate.failed = true
 			state := s.cocreate.apiState()
 			s.saveCoCreateCheckpoint()
@@ -1369,7 +1369,7 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 			return state, err
 		}
 		if strings.TrimSpace(repairReply.Prompt) == "" {
-			s.cocreate.applyReply(reply)
+			s.cocreate.rollbackDraftAfterRejectedReply(reply)
 			s.cocreate.failed = true
 			state := s.cocreate.apiState()
 			s.saveCoCreateCheckpoint()
@@ -1379,7 +1379,7 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 			return state, err
 		}
 		if s.cocreate.draftNeedsRepair(repairReply, previousDraft) {
-			s.cocreate.applyReply(reply)
+			s.cocreate.rollbackDraftAfterRejectedReply(reply)
 			s.cocreate.failed = true
 			state := s.cocreate.apiState()
 			s.saveCoCreateCheckpoint()
