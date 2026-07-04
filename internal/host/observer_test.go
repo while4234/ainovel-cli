@@ -39,16 +39,17 @@ func testObserver(events *[]Event) *observer {
 		emitEv: func(ev Event) {
 			*events = append(*events, ev)
 		},
-		emitD:               func(string) {},
-		emitC:               func() {},
-		agents:              make(map[string]*agentState),
-		lastThinkingByAgent: make(map[string]string),
-		dispatchStarts:      make(map[string]*activeCall),
-		toolStarts:          make(map[string]*activeCall),
-		streamExtractors:    make(map[string]*agentExtractor),
-		streamArgPrefixes:   make(map[string]string),
-		streamArgLabels:     make(map[string]string),
-		retryEvents:         make(map[string]string),
+		emitD:                 func(string) {},
+		emitC:                 func() {},
+		agents:                make(map[string]*agentState),
+		lastThinkingByAgent:   make(map[string]string),
+		dispatchStarts:        make(map[string]*activeCall),
+		toolStarts:            make(map[string]*activeCall),
+		streamExtractors:      make(map[string]*agentExtractor),
+		streamArgPrefixes:     make(map[string]string),
+		streamArgLabels:       make(map[string]string),
+		malformedToolArgFails: make(map[string]int),
+		retryEvents:           make(map[string]string),
 	}
 }
 
@@ -219,6 +220,111 @@ func TestObserverEventErrorClosesEarlyToolLoading(t *testing.T) {
 	if events[2].Category != "ERROR" {
 		t.Fatalf("error event = %+v", events[2])
 	}
+}
+
+func TestObserverMalformedToolArgsFirstFailureWarnsWithoutErrorRow(t *testing.T) {
+	var events []Event
+	o := testObserver(&events)
+
+	o.handleToolStart(agentcore.Event{
+		Type: agentcore.EventToolExecStart,
+		Tool: "novel_context",
+		Args: json.RawMessage(`{}`),
+	})
+	o.handleToolEnd(agentcore.Event{
+		Type:    agentcore.EventToolExecEnd,
+		Tool:    "novel_context",
+		Result:  mustJSONRaw(t, malformedToolArgMessage("novel_context")),
+		IsError: true,
+	})
+
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want start + warn finish: %+v", len(events), events)
+	}
+	if events[1].ID != events[0].ID || events[1].Failed || events[1].Level != "warn" {
+		t.Fatalf("finish event = %+v, start = %+v", events[1], events[0])
+	}
+	if events[1].Category != "TOOL" || strings.Contains(events[1].Category, "ERROR") {
+		t.Fatalf("warning should finish the tool row only: %+v", events[1])
+	}
+}
+
+func TestObserverMalformedToolArgsRepeatedFailureEscalatesToError(t *testing.T) {
+	var events []Event
+	o := testObserver(&events)
+	msg := malformedToolArgMessage("novel_context")
+
+	for i := 0; i < 2; i++ {
+		o.handleToolStart(agentcore.Event{
+			Type: agentcore.EventToolExecStart,
+			Tool: "novel_context",
+			Args: json.RawMessage(`{}`),
+		})
+		o.handleToolEnd(agentcore.Event{
+			Type:    agentcore.EventToolExecEnd,
+			Tool:    "novel_context",
+			Result:  mustJSONRaw(t, msg),
+			IsError: true,
+		})
+	}
+
+	if len(events) != 5 {
+		t.Fatalf("events = %d, want first start+warn then second start+error+ERROR: %+v", len(events), events)
+	}
+	if events[1].Level != "warn" || events[1].Failed {
+		t.Fatalf("first finish = %+v, want warn without failed", events[1])
+	}
+	if events[3].Level != "error" || !events[3].Failed {
+		t.Fatalf("second finish = %+v, want failed error", events[3])
+	}
+	if events[4].Category != "ERROR" || events[4].Level != "error" {
+		t.Fatalf("second failure should emit ERROR row: %+v", events[4])
+	}
+}
+
+func TestObserverProgressMalformedToolArgsFirstFailureWarns(t *testing.T) {
+	var events []Event
+	o := testObserver(&events)
+
+	o.handleToolUpdate(agentcore.Event{
+		Type: agentcore.EventToolExecUpdate,
+		Progress: &agentcore.ProgressPayload{
+			Kind:  agentcore.ProgressToolStart,
+			Agent: "editor",
+			Tool:  "save_review",
+			Args:  json.RawMessage(`{}`),
+		},
+	})
+	o.handleToolUpdate(agentcore.Event{
+		Type: agentcore.EventToolExecUpdate,
+		Progress: &agentcore.ProgressPayload{
+			Kind:    agentcore.ProgressToolError,
+			Agent:   "editor",
+			Tool:    "save_review",
+			Message: malformedToolArgMessage("save_review"),
+		},
+	})
+
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want start + warn finish: %+v", len(events), events)
+	}
+	if events[1].ID != events[0].ID || events[1].Failed || events[1].Level != "warn" || events[1].Depth != 1 {
+		t.Fatalf("progress finish = %+v, start = %+v", events[1], events[0])
+	}
+}
+
+func malformedToolArgMessage(tool string) string {
+	return "tool argument validation failed: " + tool + ` received malformed JSON arguments: invalid character '"' after top-level value
+raw args: {}""`
+}
+
+func mustJSONRaw(t *testing.T, value string) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func TestObserverCoordinatorSubagentDeltaMergesWithExecStart(t *testing.T) {

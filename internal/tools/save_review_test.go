@@ -63,6 +63,68 @@ func TestSaveReviewPersistsContractAssessment(t *testing.T) {
 	}
 }
 
+func TestSaveReviewSchemaIsStrictCompatible(t *testing.T) {
+	tool := NewSaveReviewTool(nil)
+	if !tool.StrictSchema() {
+		t.Fatal("save_review should opt into strict schema")
+	}
+
+	root := tool.Schema()
+	requireRequiredFields(t, root,
+		"chapter",
+		"scope",
+		"dimensions",
+		"issues",
+		"contract_status",
+		"contract_misses",
+		"contract_notes",
+		"verdict",
+		"summary",
+		"affected_chapters",
+	)
+
+	props, ok := root["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties has type %T", root["properties"])
+	}
+	dimensions, ok := props["dimensions"].(map[string]any)
+	if !ok {
+		t.Fatalf("dimensions schema has type %T", props["dimensions"])
+	}
+	dimensionItem, ok := dimensions["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("dimensions.items has type %T", dimensions["items"])
+	}
+	requireRequiredFields(t, dimensionItem, "dimension", "score", "verdict", "comment")
+
+	issues, ok := props["issues"].(map[string]any)
+	if !ok {
+		t.Fatalf("issues schema has type %T", props["issues"])
+	}
+	issueItem, ok := issues["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("issues.items has type %T", issues["items"])
+	}
+	requireRequiredFields(t, issueItem, "type", "severity", "description", "evidence", "suggestion")
+}
+
+func requireRequiredFields(t *testing.T, schema map[string]any, fields ...string) {
+	t.Helper()
+	required, ok := schema["required"].([]string)
+	if !ok {
+		t.Fatalf("required has type %T", schema["required"])
+	}
+	seen := make(map[string]struct{}, len(required))
+	for _, field := range required {
+		seen[field] = struct{}{}
+	}
+	for _, field := range fields {
+		if _, ok := seen[field]; !ok {
+			t.Fatalf("required missing %q; got %v", field, required)
+		}
+	}
+}
+
 func TestSaveReviewRejectsMissingDimensions(t *testing.T) {
 	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {

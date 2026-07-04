@@ -69,6 +69,7 @@ type observer struct {
 	streamExtractors      map[string]*agentExtractor // agent → 当前工具调用 JSON 参数的内容抽取器
 	streamArgPrefixes     map[string]string          // agent/tool → 参数流前缀，用于提前识别轻量标签
 	streamArgLabels       map[string]string          // agent/tool → 已从参数流提前识别出的展示名
+	malformedToolArgFails map[string]int             // agent/tool -> consecutive malformed JSON argument failures
 	retryEvents           map[string]string          // retry scope → event ID，用同一行原地更新 (2/7)
 	streamHasContent      bool                       // 当前 streamRound 是否已输出过内容（判断是否需要段落分隔）
 	streamLastByte        byte                       // 最近一次流式输出的末字节（用于精确补齐换行）
@@ -94,18 +95,19 @@ type agentState struct {
 
 func newObserver(coordinator *agentcore.Agent, s *storepkg.Store, emitEv func(Event), emitD func(string), emitC func()) *observer {
 	o := &observer{
-		emitEv:              emitEv,
-		emitD:               emitD,
-		emitC:               emitC,
-		store:               s,
-		agents:              make(map[string]*agentState),
-		lastThinkingByAgent: make(map[string]string),
-		dispatchStarts:      make(map[string]*activeCall),
-		toolStarts:          make(map[string]*activeCall),
-		streamExtractors:    make(map[string]*agentExtractor),
-		streamArgPrefixes:   make(map[string]string),
-		streamArgLabels:     make(map[string]string),
-		retryEvents:         make(map[string]string),
+		emitEv:                emitEv,
+		emitD:                 emitD,
+		emitC:                 emitC,
+		store:                 s,
+		agents:                make(map[string]*agentState),
+		lastThinkingByAgent:   make(map[string]string),
+		dispatchStarts:        make(map[string]*activeCall),
+		toolStarts:            make(map[string]*activeCall),
+		streamExtractors:      make(map[string]*agentExtractor),
+		streamArgPrefixes:     make(map[string]string),
+		streamArgLabels:       make(map[string]string),
+		malformedToolArgFails: make(map[string]int),
+		retryEvents:           make(map[string]string),
 	}
 	o.unsub = coordinator.Subscribe(o.handle)
 	return o

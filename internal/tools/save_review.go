@@ -40,12 +40,12 @@ func (t *SaveReviewTool) Schema() map[string]any {
 		schema.Property("severity", schema.Enum("严重程度", "critical", "error", "warning")).Required(),
 		schema.Property("description", schema.String("问题描述")).Required(),
 		schema.Property("evidence", schema.String("证据：原文片段、具体情节或状态数据")).Required(),
-		schema.Property("suggestion", schema.String("修改建议")),
+		schema.Property("suggestion", schema.String("修改建议；无则传空字符串")).Required(),
 	)
 	dimensionSchema := schema.Object(
 		schema.Property("dimension", schema.Enum("维度", "consistency", "character", "pacing", "continuity", "foreshadow", "hook", "aesthetic")).Required(),
 		schema.Property("score", schema.Int("评分（0-100）")).Required(),
-		schema.Property("verdict", schema.Enum("维度结论（可省略：系统按 score 自动推导，≥80 pass / ≥60 warning / <60 fail）", "pass", "warning", "fail")),
+		schema.Property("verdict", schema.Enum("维度结论；系统会按 score 自动覆盖，≥80 pass / ≥60 warning / <60 fail", "pass", "warning", "fail")).Required(),
 		schema.Property("comment", schema.String("该维度的简要结论；每个维度必填，aesthetic 必须引用原文或具体统计事实")).Required(),
 	)
 	return schema.Object(
@@ -53,14 +53,16 @@ func (t *SaveReviewTool) Schema() map[string]any {
 		schema.Property("scope", schema.Enum("审阅范围", "chapter", "global", "arc")).Required(),
 		schema.Property("dimensions", schema.Array("分维度评分（七个维度各一条）", dimensionSchema)).Required(),
 		schema.Property("issues", schema.Array("发现的问题", issueSchema)).Required(),
-		schema.Property("contract_status", schema.Enum("章节契约完成度", "met", "partial", "missed")),
-		schema.Property("contract_misses", schema.Array("未完成或违背的 contract 条目", schema.String(""))),
-		schema.Property("contract_notes", schema.String("对 contract 履行情况的简要说明")),
+		schema.Property("contract_status", schema.Enum("章节契约完成度；无明确缺漏时传 met", "met", "partial", "missed")).Required(),
+		schema.Property("contract_misses", schema.Array("未完成或违背的 contract 条目；无则传 []", schema.String(""))).Required(),
+		schema.Property("contract_notes", schema.String("对 contract 履行情况的简要说明；无则传空字符串")).Required(),
 		schema.Property("verdict", schema.Enum("审阅结论", "accept", "polish", "rewrite")).Required(),
 		schema.Property("summary", schema.String("审阅总结")).Required(),
-		schema.Property("affected_chapters", schema.Array("需要重写或打磨的章节号列表（verdict 为 polish/rewrite 时必填）", schema.Int(""))),
+		schema.Property("affected_chapters", schema.Array("需要重写或打磨的章节号列表；accept 传 []，polish/rewrite 必须填目标章节", schema.Int(""))).Required(),
 	)
 }
+
+func (t *SaveReviewTool) StrictSchema() bool { return true }
 
 func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var r domain.ReviewEntry

@@ -155,6 +155,10 @@ func BuildCoordinator(
 	writerModel := models.ForRoleWithFailover("writer", reportFailover)
 	editorModel := models.ForRoleWithFailover("editor", reportFailover)
 	coordinatorModel := models.ForRoleWithFailover("coordinator", reportFailover)
+	architectModel = NewToolCallRepairModel(architectModel)
+	writerModel = NewToolCallRepairModel(writerModel)
+	editorModel = NewToolCallRepairModel(editorModel)
+	coordinatorModel = NewToolCallRepairModel(coordinatorModel)
 
 	// Coordinator 的 ContextManager 在 Agent 构造时一次性生成，按启动模型解析。
 	// 运行中 /model 切换到更小窗口的模型时，建议用户显式配置 context_window 兜底。

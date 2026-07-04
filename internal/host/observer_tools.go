@@ -125,6 +125,7 @@ func (o *observer) handleToolUpdate(ev agentcore.Event) {
 		if ev.Progress.Agent == "" {
 			return
 		}
+		o.resetMalformedToolArgFailure(ev.Progress.Agent, ev.Progress.Tool)
 		call, ok := o.toolStarts[ev.Progress.Agent]
 		if !ok {
 			return
@@ -167,6 +168,29 @@ func (o *observer) handleToolUpdate(ev agentcore.Event) {
 		msg := ev.Progress.Message
 		if msg == "" {
 			msg = "unknown error"
+		}
+		if o.firstMalformedToolArgFailure(ev.Progress.Agent, ev.Progress.Tool, msg) {
+			detail := fmt.Sprintf("%s 错误: %s", ev.Progress.Tool, msg)
+			emitted := false
+			if call, ok := o.toolStarts[ev.Progress.Agent]; ok {
+				delete(o.toolStarts, ev.Progress.Agent)
+				emitted = o.emitCallWarning(call, "TOOL", ev.Progress.Agent, detail)
+			}
+			if !emitted {
+				warnEv := Event{
+					Time:     time.Now(),
+					Category: "SYSTEM",
+					Agent:    ev.Progress.Agent,
+					Summary:  fmt.Sprintf("%s 参数 JSON 格式异常，等待模型重发", ev.Progress.Tool),
+					Detail:   detail,
+					Kind:     "tool_args_json",
+					Level:    "warn",
+					Depth:    1,
+				}
+				o.emitEv(warnEv)
+				o.persistEvent(warnEv)
+			}
+			return
 		}
 		// 如果有进行中的 TOOL 行，原地标记为失败；否则独立追加 ERROR 行。
 		if call, ok := o.toolStarts[ev.Progress.Agent]; ok {
@@ -429,6 +453,78 @@ func (o *observer) emitCallFinish(call *activeCall, category, agentName string, 
 	o.persistEvent(finishEv)
 }
 
+func (o *observer) emitCallWarning(call *activeCall, category, agentName, detail string) bool {
+	if call == nil {
+		return false
+	}
+	summary := call.summary
+	if strings.TrimSpace(summary) == "" {
+		summary = category
+	}
+	summary += " 参数 JSON 格式异常，等待模型重发"
+	finishEv := Event{
+		ID:         call.id,
+		Time:       call.start,
+		FinishedAt: time.Now(),
+		Category:   category,
+		Agent:      agentName,
+		Summary:    summary,
+		Detail:     detail,
+		Level:      "warn",
+		Depth:      call.depth,
+		Duration:   time.Since(call.start),
+	}
+	o.emitEv(finishEv)
+	o.persistEvent(finishEv)
+	return true
+}
+
+func (o *observer) firstMalformedToolArgFailure(agent, tool, msg string) bool {
+	if !isMalformedToolArgValidationError(msg) {
+		o.resetMalformedToolArgFailure(agent, tool)
+		return false
+	}
+	if o.malformedToolArgFails == nil {
+		o.malformedToolArgFails = make(map[string]int)
+	}
+	key := malformedToolArgKey(agent, tool)
+	o.malformedToolArgFails[key]++
+	return o.malformedToolArgFails[key] == 1
+}
+
+func (o *observer) resetMalformedToolArgFailure(agent, tool string) {
+	if o.malformedToolArgFails == nil {
+		return
+	}
+	delete(o.malformedToolArgFails, malformedToolArgKey(agent, tool))
+}
+
+func malformedToolArgKey(agent, tool string) string {
+	return agent + "\x00" + tool
+}
+
+func isMalformedToolArgValidationError(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	if !strings.Contains(msg, "tool argument validation failed") {
+		return false
+	}
+	return strings.Contains(msg, "received malformed json arguments") ||
+		strings.Contains(msg, "received invalid json arguments")
+}
+
+func decodeToolErrorText(raw json.RawMessage, fallback string) string {
+	if len(raw) > 0 {
+		var decoded string
+		if err := json.Unmarshal(raw, &decoded); err == nil {
+			return decoded
+		}
+		if text := strings.TrimSpace(string(raw)); text != "" {
+			return text
+		}
+	}
+	return strings.TrimSpace(fallback)
+}
+
 func (o *observer) flushActiveCalls(failed bool) {
 	for target, call := range o.dispatchStarts {
 		o.emitCallFinish(call, "DISPATCH", target, failed)
@@ -441,6 +537,7 @@ func (o *observer) flushActiveCalls(failed bool) {
 	clear(o.streamExtractors)
 	clear(o.streamArgPrefixes)
 	clear(o.streamArgLabels)
+	clear(o.malformedToolArgFails)
 	o.currentDispatchTarget = ""
 }
 
@@ -515,16 +612,25 @@ func (o *observer) handleToolEnd(ev agentcore.Event) {
 		delete(o.streamExtractors, dispatchTarget)
 		emitFinish(call, "TOOL", dispatchTarget, failed)
 	}
+	flushOrphanSubagentToolWarning := func(detail string) bool {
+		if dispatchTarget == "" {
+			return false
+		}
+		call, ok := o.toolStarts[dispatchTarget]
+		if !ok {
+			return false
+		}
+		delete(o.toolStarts, dispatchTarget)
+		delete(o.streamExtractors, dispatchTarget)
+		return o.emitCallWarning(call, "TOOL", dispatchTarget, detail)
+	}
 
 	if ev.IsError {
 		depth := 0
 		if agent != "coordinator" {
 			depth = 1
 		}
-		errText := ""
-		if len(ev.Result) > 0 {
-			errText = string(ev.Result)
-		}
+		errText := decodeToolErrorText(ev.Result, "")
 		// 用户主动 abort 衍生的 ctx-cancel：状态清理仍要走（dispatch / tool 行必须落回完成态），
 		// 但跳过独立 ERROR 行 + 错误日志，与 EventError 路径保持一致。
 		if o.isCancellationNoise(nil, errText) {
@@ -532,6 +638,32 @@ func (o *observer) handleToolEnd(ev agentcore.Event) {
 			flushOrphanSubagentTool(true)
 			emitDispatchFinish(true)
 			emitToolFinish(true)
+			return
+		}
+		if o.firstMalformedToolArgFailure(agent, ev.Tool, errText) {
+			detail := fmt.Sprintf("%s -> %s: %s", agent, ev.Tool, errText)
+			emitted := flushOrphanSubagentToolWarning(detail)
+			if ev.Tool == "subagent" {
+				if o.emitCallWarning(dispatchCall, "DISPATCH", dispatchTarget, detail) {
+					emitted = true
+				}
+			} else if o.emitCallWarning(toolCall, "TOOL", agent, detail) {
+				emitted = true
+			}
+			if !emitted {
+				warnEv := Event{
+					Time:     time.Now(),
+					Category: "SYSTEM",
+					Agent:    agent,
+					Summary:  fmt.Sprintf("%s 参数 JSON 格式异常，等待模型重发", ev.Tool),
+					Detail:   detail,
+					Kind:     "tool_args_json",
+					Level:    "warn",
+					Depth:    depth,
+				}
+				o.emitEv(warnEv)
+				o.persistEvent(warnEv)
+			}
 			return
 		}
 		summary := fmt.Sprintf("%s 失败", ev.Tool)
@@ -561,6 +693,7 @@ func (o *observer) handleToolEnd(ev agentcore.Event) {
 	}
 
 	if errEv, fullErr := o.subagentResultErrorEvent(ev); errEv != nil {
+		o.resetMalformedToolArgFailure(agent, ev.Tool)
 		if o.isCancellationNoise(nil, fullErr) {
 			slog.Debug("suppressed cancel-derived subagent error", "module", "agent", "tool", ev.Tool, "msg", fullErr)
 			flushOrphanSubagentTool(true)
@@ -579,12 +712,14 @@ func (o *observer) handleToolEnd(ev agentcore.Event) {
 
 	// subagent 成功完成 → 更新原 DISPATCH 行为完成态（带耗时）
 	if ev.Tool == "subagent" {
+		o.resetMalformedToolArgFailure(agent, ev.Tool)
 		flushOrphanSubagentTool(false)
 		emitDispatchFinish(false)
 		return
 	}
 
 	// coordinator 直接工具成功完成
+	o.resetMalformedToolArgFailure(agent, ev.Tool)
 	emitToolFinish(false)
 }
 
