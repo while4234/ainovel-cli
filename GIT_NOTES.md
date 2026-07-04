@@ -29,7 +29,13 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `ffb3dc2`
+- Latest source change: branch `main`, `916f7fc`
+  `fix: label source chapter reads`:
+  `read_chapter` events now distinguish original-source reads from generated
+  chapter reads by displaying `·原文` for `source:"source"`, so adaptation
+  reference calls like `read_chapter(第17章·原文)` no longer look like the
+  writer is reading an old generated chapter while drafting chapter 52.
+- Previous source change: `ffb3dc2`
   `fix: repair malformed tool call args`:
   added a deterministic blind `ToolCallRepairModel` wrapper for
   architect/writer/editor/coordinator models. It repairs only lossless JSON
