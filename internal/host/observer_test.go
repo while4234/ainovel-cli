@@ -313,6 +313,13 @@ func TestObserverProgressMalformedToolArgsFirstFailureWarns(t *testing.T) {
 	}
 }
 
+func TestDisplayToolNameDistinguishesSourceChapter(t *testing.T) {
+	args := json.RawMessage(`{"chapter":17,"source":"source"}`)
+	if got := displayToolName("read_chapter", args); got != "read_chapter(第17章·原文)" {
+		t.Fatalf("displayToolName = %q", got)
+	}
+}
+
 func malformedToolArgMessage(tool string) string {
 	return "tool argument validation failed: " + tool + ` received malformed JSON arguments: invalid character '"' after top-level value
 raw args: {}""`

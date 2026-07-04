@@ -811,6 +811,8 @@ func displayToolName(tool string, args json.RawMessage) string {
 			suffix := ""
 			if p.Character != "" {
 				suffix = "·" + p.Character + "对话"
+			} else if p.Source == "source" {
+				suffix = "·原文"
 			} else if p.Source == "draft" {
 				suffix = "·草稿"
 			}
