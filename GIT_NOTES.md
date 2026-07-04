@@ -29,7 +29,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `1824d24`
+- Latest source change: branch `main`, `ffb3dc2`
+  `fix: repair malformed tool call args`:
+  added a deterministic blind `ToolCallRepairModel` wrapper for
+  architect/writer/editor/coordinator models. It repairs only lossless JSON
+  object tool-call framing mistakes such as `{}""` or `{"chapter":1}""` before
+  agentcore validation, while truncated JSON stays invalid so the originating
+  model must retry with real content. `save_review` now opts into strict schema
+  with required empty-default fields, and observer events downgrade the first
+  malformed tool-argument validation failure per agent/tool to a yellow warning
+  before escalating repeated consecutive failures to red errors.
+- Previous source change: `1824d24`
   `fix: validate cocreate suggestions and dedupe volume review`:
   Web co-create suggestion buttons now only render backend-provided suggestions.
   When the streamed co-create reply omits structured suggestions, the backend
