@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `827122f`
+- Latest source change: branch `main`, `a9c0485`
   `fix: reject collapsed adaptation cocreate drafts`:
   adaptation co-create now treats placeholder drafts such as
   `同前轮（完整保留）`, `上一轮`, or previous-draft references as incomplete
@@ -155,7 +155,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-04 `827122f` `fix: reject collapsed adaptation cocreate drafts`:
+- 2026-07-04 `a9c0485` `fix: reject collapsed adaptation cocreate drafts`:
   adaptation co-create now rejects placeholder drafts such as `同前轮（完整保留）`
   or previous-round references before they can become the proposal brief. The
   session asks the model to repair incomplete drafts, rolls back to the previous
