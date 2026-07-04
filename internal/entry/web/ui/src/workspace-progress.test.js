@@ -310,6 +310,31 @@ describe('workspace progress derivation', () => {
     expect(review.volumeReview.volumes[0].title).toBe('Opening volume');
   });
 
+  it('deduplicates staged volume review mirrored in summary and review payload', () => {
+    const review = getAdaptationProposalReview({
+      VolumeReviewSummary: {
+        Status: 'volume_review',
+        TargetChapterCount: 10,
+        Volumes: [
+          { Index: 1, Title: 'Dreamer', TargetFrom: 1, TargetTo: 2 },
+          { Index: 2, Title: 'Shards', TargetFrom: 3, TargetTo: 4 }
+        ]
+      },
+      AdaptationVolumeReview: {
+        status: 'volume_review',
+        volumes: [
+          { index: 1, title: 'Dreamer', target_from: 1, target_to: 2, plot: 'Keep the opening intact.' },
+          { index: 2, title: 'Shards', target_from: 3, target_to: 4, plot: 'Escalate the middle.' }
+        ]
+      }
+    });
+
+    expect(review.volumeReview.volumes).toHaveLength(2);
+    expect(review.volumeReview.volumes.map((volume) => volume.index)).toEqual([1, 2]);
+    expect(review.volumeReview.volumes.map((volume) => volume.title)).toEqual(['Dreamer', 'Shards']);
+    expect(review.volumeReview.volumes[0].plot).toBe('Keep the opening intact.');
+  });
+
   it('uses detailed chapters instead of staged volume review once details exist', () => {
     const review = getAdaptationProposalReview({
       volume_review: {

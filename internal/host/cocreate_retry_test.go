@@ -64,6 +64,70 @@ func TestCoCreateStreamRetriesTransientStreamEOF(t *testing.T) {
 	}
 }
 
+func TestCoCreateStreamUsesSuggestionJudgeWhenModelOmitsSuggestions(t *testing.T) {
+	model := &scriptedCoCreateModel{
+		streams: [][]agentcore.StreamEvent{{
+			{Type: agentcore.StreamEventTextDelta, Delta: validCoCreateXML("你希望保持黑暗基调，还是往纯爱方向调整？")},
+			{Type: agentcore.StreamEventDone},
+		}},
+		generateResponses: []string{`{"suggestions":["保持黑暗基调","改成纯爱方向"]}`},
+	}
+
+	reply, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		time.Second,
+		"system",
+		[]CoCreateMessage{{Role: "user", Content: "start"}},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("coCreateStream: %v", err)
+	}
+	if model.generateCalls != 1 {
+		t.Fatalf("suggestion judge calls = %d, want 1", model.generateCalls)
+	}
+	want := []string{"保持黑暗基调", "改成纯爱方向"}
+	if len(reply.Suggestions) != len(want) {
+		t.Fatalf("suggestions = %v, want %v", reply.Suggestions, want)
+	}
+	for i := range want {
+		if reply.Suggestions[i] != want[i] {
+			t.Fatalf("suggestion[%d] = %q, want %q", i, reply.Suggestions[i], want[i])
+		}
+	}
+}
+
+func TestCoCreateStreamSkipsSuggestionJudgeWhenSuggestionsAreExplicit(t *testing.T) {
+	model := &scriptedCoCreateModel{
+		streams: [][]agentcore.StreamEvent{{
+			{Type: agentcore.StreamEventTextDelta, Delta: coCreateXMLWithSuggestions("请选择下一步", "加强女主线")},
+			{Type: agentcore.StreamEventDone},
+		}},
+		generateResponses: []string{`{"suggestions":["不应使用"]}`},
+	}
+
+	reply, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		time.Second,
+		"system",
+		[]CoCreateMessage{{Role: "user", Content: "start"}},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("coCreateStream: %v", err)
+	}
+	if model.generateCalls != 0 {
+		t.Fatalf("suggestion judge calls = %d, want 0", model.generateCalls)
+	}
+	if len(reply.Suggestions) != 1 || reply.Suggestions[0] != "加强女主线" {
+		t.Fatalf("suggestions = %v", reply.Suggestions)
+	}
+}
+
 func TestCoCreateStreamDoesNotRetryCancellation(t *testing.T) {
 	restore := stubCoCreateRetrySleep(t)
 	defer restore()
@@ -119,12 +183,24 @@ func TestCoCreateStreamErrorIncludesSelectedModel(t *testing.T) {
 }
 
 type scriptedCoCreateModel struct {
-	streams     [][]agentcore.StreamEvent
-	streamCalls int
+	streams           [][]agentcore.StreamEvent
+	generateResponses []string
+	streamCalls       int
+	generateCalls     int
 }
 
 func (m *scriptedCoCreateModel) Generate(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
-	return nil, io.ErrUnexpectedEOF
+	if m.generateCalls >= len(m.generateResponses) {
+		m.generateCalls++
+		return nil, io.ErrUnexpectedEOF
+	}
+	text := m.generateResponses[m.generateCalls]
+	m.generateCalls++
+	return &agentcore.LLMResponse{Message: agentcore.Message{
+		Role:      agentcore.RoleAssistant,
+		Content:   []agentcore.ContentBlock{agentcore.TextBlock(text)},
+		Timestamp: time.Now(),
+	}}, nil
 }
 
 func (m *scriptedCoCreateModel) GenerateStream(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
@@ -165,10 +241,20 @@ func stubCoCreateRetrySleep(t *testing.T) func() {
 }
 
 func validCoCreateXML(message string) string {
+	return coCreateXMLWithSuggestions(message)
+}
+
+func coCreateXMLWithSuggestions(message string, suggestions ...string) string {
+	var suggestionBody strings.Builder
+	for _, suggestion := range suggestions {
+		suggestionBody.WriteString("- ")
+		suggestionBody.WriteString(suggestion)
+		suggestionBody.WriteByte('\n')
+	}
 	return "<reply>" + message + "</reply>" +
 		"<draft>## plan</draft>" +
 		"<ready>true</ready>" +
-		"<suggestions></suggestions>"
+		"<suggestions>" + suggestionBody.String() + "</suggestions>"
 }
 
 func hasCoCreateProgress(progress []coCreateProgress, kind, text string) bool {

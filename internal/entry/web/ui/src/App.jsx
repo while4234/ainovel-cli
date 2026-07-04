@@ -5483,7 +5483,7 @@ function normalizeVolumeReview(rawReview, fallback = {}) {
 }
 
 function normalizeVolumeReviewVolumes(volumes) {
-  return (volumes || [])
+  const normalized = (volumes || [])
     .map((volume, index) => {
       const targetFrom = numberValue(volume, 'TargetFrom', 'targetFrom', 'target_from');
       const targetTo = numberValue(volume, 'TargetTo', 'targetTo', 'target_to');
@@ -5512,6 +5512,57 @@ function normalizeVolumeReviewVolumes(volumes) {
     })
     .filter((volume) => volume.index > 0)
     .sort((a, b) => (a.targetFrom || a.index) - (b.targetFrom || b.index) || a.index - b.index);
+  return dedupeVolumeReviewVolumes(normalized);
+}
+
+function dedupeVolumeReviewVolumes(volumes) {
+  const out = [];
+  const seen = new Map();
+  for (const volume of volumes) {
+    const key = volumeReviewVolumeKey(volume);
+    if (!key) {
+      out.push(volume);
+      continue;
+    }
+    const existingIndex = seen.get(key);
+    if (existingIndex === undefined) {
+      seen.set(key, out.length);
+      out.push(volume);
+      continue;
+    }
+    out[existingIndex] = mergeVolumeReviewVolume(out[existingIndex], volume);
+  }
+  return out;
+}
+
+function volumeReviewVolumeKey(volume) {
+  if (volume.targetFrom > 0 && volume.targetTo >= volume.targetFrom) {
+    return `range:${volume.targetFrom}:${volume.targetTo}`;
+  }
+  if (volume.index > 0) {
+    return `index:${volume.index}`;
+  }
+  const title = String(volume.title || '').trim();
+  return title ? `title:${title}` : '';
+}
+
+function mergeVolumeReviewVolume(existing, next) {
+  return {
+    ...next,
+    ...existing,
+    index: existing.index || next.index,
+    title: existing.title || next.title,
+    theme: existing.theme || next.theme,
+    goal: existing.goal || next.goal,
+    summary: existing.summary || next.summary,
+    plot: existing.plot || next.plot,
+    targetFrom: existing.targetFrom || next.targetFrom,
+    targetTo: existing.targetTo || next.targetTo,
+    sourceFrom: existing.sourceFrom || next.sourceFrom,
+    sourceTo: existing.sourceTo || next.sourceTo,
+    sourceLabel: existing.sourceLabel || next.sourceLabel,
+    beats: existing.beats?.length ? existing.beats : (next.beats || [])
+  };
 }
 
 export function buildVolumeReviewRevisionPayload(adaptation = {}, volumeReview = {}) {

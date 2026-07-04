@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -98,9 +99,10 @@ const (
 )
 
 const (
-	coCreateMaxAttempts = retrypolicy.MaxAttempts
-	coCreateMaxTokens   = 2048
-	coCreateModelRole   = "architect"
+	coCreateMaxAttempts              = retrypolicy.MaxAttempts
+	coCreateMaxTokens                = 2048
+	coCreateSuggestionJudgeMaxTokens = 256
+	coCreateModelRole                = "architect"
 )
 
 var coCreateRetrySleep = sleepBeforeCoCreateRetry
@@ -291,7 +293,40 @@ retry:
 		}
 	}
 	reply, err = parseCoCreateResponse(rawText)
+	if err == nil && len(reply.Suggestions) == 0 {
+		reply.Suggestions = judgeCoCreateSuggestions(ctx, model, reply)
+	}
 	return reply, err
+}
+
+func judgeCoCreateSuggestions(ctx context.Context, model agentcore.ChatModel, reply CoCreateReply) []string {
+	if model == nil || strings.TrimSpace(reply.Message) == "" {
+		return nil
+	}
+	resp, err := model.Generate(ctx, []agentcore.Message{
+		agentcore.SystemMsg(coCreateSuggestionJudgePrompt),
+		agentcore.UserMsg(buildCoCreateSuggestionJudgeInput(reply.Message)),
+	}, nil, agentcore.WithMaxTokens(coCreateSuggestionJudgeMaxTokens), agentcore.WithJSONMode())
+	if err != nil || resp == nil {
+		return nil
+	}
+	return parseSuggestionJudgeResponse(resp.Message.TextContent())
+}
+
+const coCreateSuggestionJudgePrompt = `你是小说共创 UI 的建议按钮判定器。你的任务是判断助手回复里是否真的包含适合显示为“用户下一句可以点击发送”的建议。
+
+只输出 JSON，不要解释：
+{"suggestions":["..."]}
+
+严格规则：
+- 只在助手明确给出用户可选择的下一步、倾向或补充意图时返回建议。
+- 建议必须改写成用户口吻，像用户会对助手说的话；不要写成标题、名词短语或助手指令。
+- 每条不超过 25 个中文字符，最多 3 条。
+- 如果回复只是总结、规划说明、确认、泛泛询问“是否符合预期/是否需要调整”，返回空数组。
+- 不要从剧情规划正文、卷标题、章节标题、主题名里硬抽按钮。`
+
+func buildCoCreateSuggestionJudgeInput(reply string) string {
+	return "助手回复：\n" + strings.TrimSpace(reply)
 }
 
 func prepareCoCreateRetry(ctx context.Context, err error, attempt int, onProgress func(kind, text string), retryErrors *[]string) (bool, error) {
@@ -529,6 +564,85 @@ func parseSuggestions(text string) []string {
 		}
 	}
 	return out
+}
+
+type coCreateSuggestionJudgeResponse struct {
+	Suggestions []string `json:"suggestions"`
+}
+
+func parseSuggestionJudgeResponse(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	raw = extractJSONObject(raw)
+	if raw == "" {
+		return nil
+	}
+	var response coCreateSuggestionJudgeResponse
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		return nil
+	}
+	return normalizeCoCreateSuggestionTexts(response.Suggestions, 25)
+}
+
+func normalizeCoCreateSuggestionTexts(values []string, maxRunes int) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		text := cleanCoCreateSuggestionText(value)
+		runes := len([]rune(text))
+		if runes < 2 || (maxRunes > 0 && runes > maxRunes) || seen[text] {
+			continue
+		}
+		seen[text] = true
+		out = append(out, text)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
+}
+
+func cleanCoCreateSuggestionText(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.Trim(text, "`")
+	switch {
+	case strings.HasPrefix(text, "- "):
+		text = strings.TrimSpace(text[2:])
+	case strings.HasPrefix(text, "* "):
+		text = strings.TrimSpace(text[2:])
+	case isOrderedSuggestion(text):
+		text = stripOrderedPrefix(text)
+	}
+	text = strings.TrimSpace(text)
+	text = strings.Trim(text, " \t\r\n:：,，、。；;？?")
+	return text
+}
+
+func extractJSONObject(text string) string {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "```") {
+		lines := strings.Split(text, "\n")
+		if len(lines) >= 2 {
+			if strings.HasPrefix(strings.TrimSpace(lines[0]), "```") {
+				lines = lines[1:]
+			}
+			if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+				lines = lines[:len(lines)-1]
+			}
+			text = strings.TrimSpace(strings.Join(lines, "\n"))
+		}
+	}
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end < start {
+		return ""
+	}
+	return strings.TrimSpace(text[start : end+1])
 }
 
 // isOrderedSuggestion 判断行首是否形如 "1. " / "12. "（数字+点+空格）。

@@ -138,60 +138,22 @@ describe('co-create UI state', () => {
     ]);
   });
 
-  it('extracts fallback suggestions from numbered assistant questions', () => {
+  it('does not invent suggestions from assistant prose', () => {
     const suggestions = visibleCoCreateSuggestions({
       messages: [
         {
           role: 'assistant',
           content: [
-            '1. **感情基调定位**：你希望保持这种黑暗残酷的基调，还是往纯爱方向调整？或者某种中间态（比如虐恋+救赎）？',
-            '2. **女主袁可欣的结局**：你希望保留这个悲剧结局，还是打算改变她的命运？'
+            '好的，我来规划整体篇章结构。',
+            '整体节奏为黑暗揭露（前两卷）-> 真相挣扎（中卷）-> 治愈蜕变（后卷）-> 悬念收尾（终章）。',
+            '看看这个规划是否符合你的预期，或者需要调整卷与卷之间的篇幅。'
           ].join('\n')
         }
       ],
       suggestions: null
     });
 
-    expect(suggestions).toEqual([
-      '保持这种黑暗残酷的基调',
-      '往纯爱方向调整',
-      '某种中间态（比如虐恋+救赎）'
-    ]);
-  });
-
-  it('adds context to short fallback choices from assistant questions', () => {
-    const suggestions = visibleCoCreateSuggestions({
-      messages: [
-        {
-          role: 'assistant',
-          content: '- **结局改动**：原书结局是袁可欣自杀、安少廷陷入循环。你想保留、反转还是拓展？'
-        }
-      ],
-      suggestions: null
-    });
-
-    expect(suggestions).toEqual(['结局改动：保留', '结局改动：反转', '结局改动：拓展']);
-  });
-
-  it('extracts fallback suggestions from paragraph choice questions', () => {
-    const suggestions = visibleCoCreateSuggestions({
-      messages: [
-        {
-          role: 'assistant',
-          content: [
-            '当前剧本尚缺一个关键决策：**原著中“梦游”设定如何处理？**',
-            '如果保留梦游设定，如何与拟以前被很多人那样对待的 NTR 源头共存？',
-            '还是你想把梦游淡化为噩梦或幻觉？'
-          ].join('\n')
-        }
-      ],
-      suggestions: null
-    });
-
-    expect(suggestions).toEqual([
-      '保留梦游设定',
-      '把梦游淡化为噩梦或幻觉'
-    ]);
+    expect(suggestions).toEqual([]);
   });
 
   it('merges stream progress without duplicating assistant messages or clearing errors', () => {
