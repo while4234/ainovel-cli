@@ -28,7 +28,8 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest source change in progress:
+- Latest source change: current local commit
+  `feat: add completed chapter revision backend`:
   Completed-book single-chapter revision is implemented across Web UI and
   backend orchestration. The Web API `POST /api/projects/{id}/chapters/revise`
   accepts a completed chapter, instruction, and `rewrite`/`polish` mode, then
