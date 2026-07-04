@@ -68,6 +68,7 @@ type projectHost interface {
 	StartPrepared(string) error
 	Abort() bool
 	Resume() (string, error)
+	ReviseChapter(host.ChapterRevisionRequest) (host.ChapterRevisionResult, error)
 	Continue(string) error
 	Steer(string) error
 	CoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
@@ -474,6 +475,18 @@ func (s *ProjectSession) Resume() (string, error) {
 		s.AppendSnapshot()
 	}
 	return label, err
+}
+
+func (s *ProjectSession) ReviseChapter(req host.ChapterRevisionRequest) (host.ChapterRevisionResult, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return host.ChapterRevisionResult{}, err
+	}
+	defer unlock()
+
+	result, err := s.host.ReviseChapter(req)
+	s.AppendSnapshot()
+	return result, err
 }
 
 func (s *ProjectSession) ImportExternalNovel(ctx context.Context, sourcePath string, resumeFrom int) ([]apiImportEvent, string, error) {

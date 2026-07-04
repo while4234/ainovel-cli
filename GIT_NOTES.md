@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source change in progress:
+  Completed-book single-chapter revision is implemented across Web UI and
+  backend orchestration. The Web API `POST /api/projects/{id}/chapters/revise`
+  accepts a completed chapter, instruction, and `rewrite`/`polish` mode, then
+  reopens the completed book through `PendingRewrites` and resumes the existing
+  writer flow. The UI adds a completed-book chapter revision panel, with tests
+  covering visibility, payload validation, and API wrapper behavior. Backend
+  validation passed for `./internal/entry/web ./internal/host/flow
+  ./internal/tools ./internal/store`; frontend validation passed for
+  `npm --prefix internal/entry/web/ui test -- --run`.
 - Latest prompt change: current local commit
   `style: tighten style prompt anti-ai guidance`:
   All embedded style prompts now add non-NSFW guidance against numbered

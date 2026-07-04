@@ -115,6 +115,64 @@ func TestProjectPauseCallsAbort(t *testing.T) {
 	}
 }
 
+func TestProjectChapterReviseCallsDeterministicHostFlow(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Chapter Revise")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.snapshot = host.UISnapshot{RuntimeState: "running", IsRunning: true, Phase: "writing", PendingRewrites: []int{2}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/chapters/revise", bytes.NewBufferString(`{"chapter":2,"instruction":"加强悬念","mode":"polish"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chapter revise status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.reviseChapterCalls != 1 {
+		t.Fatalf("ReviseChapter calls = %d, want 1", fake.reviseChapterCalls)
+	}
+	if fake.reviseChapterRequest.Chapter != 2 ||
+		fake.reviseChapterRequest.Instruction != "加强悬念" ||
+		fake.reviseChapterRequest.Mode != host.ChapterRevisionModePolish {
+		t.Fatalf("ReviseChapter request = %+v", fake.reviseChapterRequest)
+	}
+	var body struct {
+		Running  bool               `json:"running"`
+		Revision apiChapterRevision `json:"revision"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode chapter revise response: %v", err)
+	}
+	if !body.Running || body.Revision.Chapter != 2 || body.Revision.Mode != host.ChapterRevisionModePolish {
+		t.Fatalf("unexpected chapter revise response: %+v", body)
+	}
+}
+
+func TestProjectChapterReviseRejectsInvalidRequest(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Bad Chapter Revise")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/chapters/revise", bytes.NewBufferString(`{"chapter":2,"instruction":" ","mode":"rewrite"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("chapter revise status = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	if fake.reviseChapterCalls != 0 {
+		t.Fatalf("invalid request should not call host, calls=%d", fake.reviseChapterCalls)
+	}
+}
+
 func TestProjectImportSavesSourceUnderProjectAndResumes(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

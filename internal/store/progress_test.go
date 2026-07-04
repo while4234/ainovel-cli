@@ -144,6 +144,32 @@ func TestSetPendingRewritesRejectsUnfinishedChapters(t *testing.T) {
 	}
 }
 
+func TestReopenWithFlowSupportsPolishing(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	_ = store.Progress.Init("test", 3)
+	for ch := 1; ch <= 3; ch++ {
+		_ = store.Progress.MarkChapterComplete(ch, 3000, "", "")
+	}
+	if err := store.Progress.MarkComplete(); err != nil {
+		t.Fatalf("MarkComplete: %v", err)
+	}
+
+	if err := store.Progress.ReopenWithFlow([]int{2}, "polish chapter", domain.FlowPolishing); err != nil {
+		t.Fatalf("ReopenWithFlow: %v", err)
+	}
+	p, _ := store.Progress.Load()
+	if p.Phase != domain.PhaseWriting || p.Flow != domain.FlowPolishing {
+		t.Fatalf("phase/flow = %s/%s, want writing/polishing", p.Phase, p.Flow)
+	}
+	if len(p.PendingRewrites) != 1 || p.PendingRewrites[0] != 2 {
+		t.Fatalf("PendingRewrites = %v, want [2]", p.PendingRewrites)
+	}
+	if p.RewriteReason != "polish chapter" {
+		t.Fatalf("RewriteReason = %q", p.RewriteReason)
+	}
+}
+
 func TestValidateChapterWorkRejectsCorruptPendingRewriteQueue(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)

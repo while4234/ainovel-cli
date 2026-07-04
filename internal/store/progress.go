@@ -244,6 +244,34 @@ func (s *ProgressStore) Reopen(chapters []int, reason string) error {
 	})
 }
 
+func (s *ProgressStore) ReopenWithFlow(chapters []int, reason string, flow domain.FlowState) error {
+	if flow != domain.FlowRewriting && flow != domain.FlowPolishing {
+		return fmt.Errorf("reopen flow must be rewriting or polishing, got %s: %w", flow, errs.ErrToolArgs)
+	}
+	return s.io.WithWriteLock(func() error {
+		p, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if p == nil {
+			return fmt.Errorf("progress not initialized: %w", errs.ErrToolPrecondition)
+		}
+		if p.Phase != domain.PhaseComplete {
+			return fmt.Errorf("reopen only applies to completed books (current phase=%s): %w", p.Phase, errs.ErrToolPrecondition)
+		}
+		normalized, err := normalizePendingRewrites(chapters, p.CompletedChapters)
+		if err != nil {
+			return err
+		}
+		p.Phase = domain.PhaseWriting
+		p.PendingRewrites = normalized
+		p.RewriteReason = reason
+		p.Flow = flow
+		p.ReopenedFromComplete = true
+		return s.saveUnlocked(p)
+	})
+}
+
 // ClearInProgress 清除进度中间状态。
 func (s *ProgressStore) ClearInProgress() error {
 	return s.io.WithWriteLock(func() error {

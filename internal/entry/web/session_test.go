@@ -95,6 +95,14 @@ func TestProjectSessionRejectsConcurrentResumeContinue(t *testing.T) {
 	if err := session.Continue("keep going"); !errors.Is(err, ErrSessionActionInProgress) {
 		t.Fatalf("concurrent continue error = %v, want %v", err, ErrSessionActionInProgress)
 	}
+	_, err = session.ReviseChapter(host.ChapterRevisionRequest{
+		Chapter:     1,
+		Instruction: "tighten the ending",
+		Mode:        host.ChapterRevisionModeRewrite,
+	})
+	if !errors.Is(err, ErrSessionActionInProgress) {
+		t.Fatalf("concurrent revise error = %v, want %v", err, ErrSessionActionInProgress)
+	}
 	close(fake.releaseResume)
 
 	select {
@@ -107,6 +115,9 @@ func TestProjectSessionRejectsConcurrentResumeContinue(t *testing.T) {
 	}
 	if fake.continueCalls != 0 {
 		t.Fatalf("concurrent continue reached host %d time(s)", fake.continueCalls)
+	}
+	if fake.reviseChapterCalls != 0 {
+		t.Fatalf("concurrent revise reached host %d time(s)", fake.reviseChapterCalls)
 	}
 	if fake.resumeCalls != 1 {
 		t.Fatalf("resume host calls = %d, want 1", fake.resumeCalls)
@@ -867,6 +878,7 @@ type fakeProjectHost struct {
 	resumeStartedOnce          sync.Once
 	releaseResume              chan struct{}
 	resumeErr                  error
+	reviseChapterErr           error
 	continueErr                error
 	steerErr                   error
 	simulateErr                error
@@ -890,6 +902,7 @@ type fakeProjectHost struct {
 	blockAdaptProposal         bool
 
 	resumeCalls                 int
+	reviseChapterCalls          int
 	continueCalls               int
 	steerCalls                  int
 	simulateCalls               int
@@ -943,6 +956,8 @@ type fakeProjectHost struct {
 	preparedExternalRulesPrompt string
 	wordBudget                  *domain.WordBudget
 	startPreparedPrompt         string
+	reviseChapterRequest        host.ChapterRevisionRequest
+	reviseChapterResult         host.ChapterRevisionResult
 	resumeCoCreateDraft         string
 	lastCoCreateHistory         []host.CoCreateMessage
 	cocreateReply               host.CoCreateReply
@@ -1066,6 +1081,27 @@ func (f *fakeProjectHost) Resume() (string, error) {
 		return "", f.resumeErr
 	}
 	return "resume test label", nil
+}
+
+func (f *fakeProjectHost) ReviseChapter(req host.ChapterRevisionRequest) (host.ChapterRevisionResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reviseChapterCalls++
+	f.reviseChapterRequest = req
+	if f.reviseChapterErr != nil {
+		return host.ChapterRevisionResult{}, f.reviseChapterErr
+	}
+	if f.reviseChapterResult.Chapter > 0 {
+		return f.reviseChapterResult, nil
+	}
+	return host.ChapterRevisionResult{
+		Chapter:         req.Chapter,
+		Instruction:     req.Instruction,
+		Mode:            req.Mode,
+		Label:           "resume test label",
+		PendingRewrites: []int{req.Chapter},
+		StaleNotice:     "stale test notice",
+	}, nil
 }
 
 func (f *fakeProjectHost) Continue(string) error {
