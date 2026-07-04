@@ -29,7 +29,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `a9c0485`
+- Latest source change: branch `main`, `1824d24`
+  `fix: validate cocreate suggestions and dedupe volume review`:
+  Web co-create suggestion buttons now only render backend-provided suggestions.
+  When the streamed co-create reply omits structured suggestions, the backend
+  runs a bounded JSON-mode model judge to decide whether real user-clickable
+  suggestions exist; generic planning prose and "is this expected" follow-ups
+  return no buttons. The staged adaptation volume-review UI also deduplicates
+  mirrored `VolumeReviewSummary` and `AdaptationVolumeReview` volumes before
+  rendering selectors, so each planned volume appears once while preserving the
+  detailed review payload.
+- Previous source change: `a9c0485`
   `fix: reject collapsed adaptation cocreate drafts`:
   adaptation co-create now treats placeholder drafts such as
   `同前轮（完整保留）`, `上一轮`, or previous-draft references as incomplete
@@ -72,11 +82,32 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: pending collapsed-draft fix, rebuilt Web static assets, plus
+- Working tree: clean after committed co-create suggestion and volume-review UI
+  fixes, plus
   ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
-  the pending working tree; the restarted process is PID `37084`.
+  commit `1824d24`; the restarted process is PID `39972`.
 - Validation:
+  `npm.cmd --prefix internal/entry/web/ui test -- src/cocreate.test.js src/workspace-progress.test.js --run`
+  passed;
+  `npm.cmd --prefix internal/entry/web/ui test -- --run` passed, 6 files / 63
+  tests;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host -run "Test(CoCreateStream|ParseSuggestion)" -count=1`
+  passed;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web ./internal/host -count=1`
+  passed;
+  `npm.cmd --prefix internal/entry/web/ui run build` passed;
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./... -count=1`
+  passed after rerunning it post-build, because the first parallel build/test
+  attempt raced Vite asset replacement with Go embed enumeration;
+  `git diff --check` passed with CRLF warnings only;
+  `.\restart-web.cmd -Port 9898` passed after prepending the project-local Go
+  1.25.5 bin directory to PATH, rebuilding Web UI and Go executable, stopping
+  PID `37084`, and starting PID `39972`;
+  `GET /`, `GET /api/runtime`, and `GET /api/projects` returned HTTP 200, and
+  `/` points at `/assets/index-1-e7YXNx.js`.
+
+  Previous validation:
   `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run "TestProjectAdaptCoCreate(CommitRepairsPreviousRoundPlaceholderDraft|RollsBackRejectedDraftWhenRepairFails|CommitRepairsRestoredRegressedDraft|RepairsRegressedDraftBeforeProposal|RepairsStaleDraftBeforeProposal)$" -count=1 -v`
   passed;
   `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -count=1`
@@ -154,6 +185,15 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
 
 ## Change Log
+
+- 2026-07-04 `1824d24` `fix: validate cocreate suggestions and dedupe volume review`:
+  co-create suggestion chips no longer come from frontend prose/keyword
+  guessing. Backend structured suggestions remain authoritative, and empty
+  suggestion sets get one bounded JSON-mode model judge pass that returns either
+  short user-voice suggestions or an empty list. Staged adaptation volume review
+  now deduplicates mirrored summary/review volumes before rendering the volume
+  selector, with frontend/backend regressions and regenerated embedded Web
+  assets.
 
 - 2026-07-04 `a9c0485` `fix: reject collapsed adaptation cocreate drafts`:
   adaptation co-create now rejects placeholder drafts such as `同前轮（完整保留）`
