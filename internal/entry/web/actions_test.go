@@ -181,6 +181,61 @@ func TestProjectExportUsesProjectExportsDir(t *testing.T) {
 	}
 }
 
+func TestProjectExportAppendsSelectedFormatExtension(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Export Extension")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/export", bytes.NewBufferString(`{"path":"plain-title","format":"txt","overwrite":true}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	wantPath := filepath.Join(manifest.RootDir, "exports", "plain-title.txt")
+	if fake.exportOptions.OutPath != wantPath {
+		t.Fatalf("export path = %q, want %q", fake.exportOptions.OutPath, wantPath)
+	}
+	if fake.exportOptions.Format != exp.FormatTXT {
+		t.Fatalf("export format = %q, want %q", fake.exportOptions.Format, exp.FormatTXT)
+	}
+	var body struct {
+		Export apiExportResult `json:"export"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode export: %v", err)
+	}
+	if body.Export.Path != wantPath {
+		t.Fatalf("response export path = %q, want %q", body.Export.Path, wantPath)
+	}
+}
+
+func TestProjectExportRejectsFormatExtensionMismatch(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Export Mismatch")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/export", bytes.NewBufferString(`{"path":"book.epub","format":"txt","overwrite":true}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("export status = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	if fake.exportCalls != 0 {
+		t.Fatalf("mismatched export path should not call host, calls=%d", fake.exportCalls)
+	}
+}
+
 func TestProjectExportRejectsAbsolutePath(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

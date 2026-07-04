@@ -435,6 +435,8 @@ ainovel-cli --headless --adapt ./source.txt --prompt-file adapt.md
 
 在 TUI 中输入 `/export` 可把已完成的章节合并导出，默认 TXT，写到 `{novelDir}/{NovelName}.txt`。导出是只读操作，写作中途也可以随时拿"现阶段成品"，不影响 Coordinator 运行。
 
+Web UI 的"小说导出"面板使用单独的格式选择：文件名不带 `.txt` / `.epub` 时会按所选格式自动补齐；如果手填的 `.txt` / `.epub` 后缀与所选格式冲突，导出会提示错误。
+
 格式由**输出路径后缀**决定（`.txt` / `.epub`）：
 
 ```text

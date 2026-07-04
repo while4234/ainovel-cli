@@ -29,7 +29,19 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `ee471d2`
+- Latest source change: branch `main`, current commit
+  `fix: normalize web export file extension`:
+  Web export now resolves the selected format before normalizing user-provided
+  filenames. Relative names without an export suffix get `.txt` or `.epub`
+  appended from the selected format, so title-only inputs such as
+  `梦中的女孩改` no longer produce extensionless files. Explicit `.txt`/`.epub`
+  suffixes that conflict with the selected format are rejected before the host
+  export is called. The local Web service was rebuilt and restarted on
+  `http://127.0.0.1:9898` with runtime root
+  `C:\Users\RondleLiu\.ainovel\novels-preview`.
+- Previous docs checkpoint: `21eb5c6`
+  `docs: record adaptation mode guidance fix`.
+- Previous source change: `ee471d2`
   `fix: split adaptation mode guidance`:
   adaptation mode prompts and runtime writer context now separate
   `chapter/preserve_details`, `arc/full_rewrite`, and `free/full_rewrite`
@@ -216,6 +228,14 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
 
 ## Change Log
+
+- 2026-07-04 current commit `fix: normalize web export file extension`:
+  Web export appends the selected `.txt`/`.epub` suffix when users enter a
+  title-only filename, rejects `.txt`/`.epub` suffixes that conflict with the
+  selected format, and keeps all paths scoped under the project `exports`
+  directory. Validation passed for focused Web export tests, export renderer
+  tests, full `internal/entry/web` tests, and the restarted local Web service
+  on `http://127.0.0.1:9898` (PID `45780`).
 
 - 2026-07-04 `ee471d2` `fix: split adaptation mode guidance`:
   splits adaptation prompting/runtime guidance by effective mode so

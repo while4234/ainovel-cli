@@ -114,12 +114,12 @@ func (s *Server) handleProjectExport(w http.ResponseWriter, r *http.Request, id 
 		writeProjectSessionError(w, err)
 		return
 	}
-	outPath, err := projectExportPath(manifest, req.Path)
+	format, err := exportFormat(req.Format)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	format, err := exportFormat(req.Format)
+	outPath, err := projectExportPath(manifest, req.Path, format)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -188,7 +188,7 @@ func exportFormat(value string) (exp.Format, error) {
 	}
 }
 
-func projectExportPath(manifest ProjectManifest, raw string) (string, error) {
+func projectExportPath(manifest ProjectManifest, raw string, format exp.Format) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", nil
@@ -206,12 +206,49 @@ func projectExportPath(manifest ProjectManifest, raw string) (string, error) {
 	if strings.Trim(filepath.Base(clean), ". ") == "" {
 		return "", fmt.Errorf("export path must include a valid file name")
 	}
+	clean, err := ensureExportPathExtension(clean, format)
+	if err != nil {
+		return "", err
+	}
 	base := filepath.Join(manifest.RootDir, "exports")
 	target := filepath.Join(base, clean)
 	if !isSameOrChild(base, target) || filepath.Clean(target) == filepath.Clean(base) {
 		return "", fmt.Errorf("export path must stay inside the project exports directory")
 	}
 	return target, nil
+}
+
+func ensureExportPathExtension(path string, format exp.Format) (string, error) {
+	ext := strings.ToLower(filepath.Ext(path))
+	wantExt := selectedExportExtension(format)
+	switch ext {
+	case ".txt", ".epub":
+		if wantExt != "" && ext != wantExt {
+			return "", fmt.Errorf("export file extension %s does not match selected format %s", ext, format)
+		}
+		return path, nil
+	case "":
+		if wantExt == "" {
+			wantExt = ".txt"
+		}
+		return path + wantExt, nil
+	default:
+		if wantExt != "" {
+			return path + wantExt, nil
+		}
+		return path, nil
+	}
+}
+
+func selectedExportExtension(format exp.Format) string {
+	switch format {
+	case exp.FormatEPUB:
+		return ".epub"
+	case exp.FormatTXT:
+		return ".txt"
+	default:
+		return ""
+	}
 }
 
 func apiExportResultFromExp(result *exp.Result) apiExportResult {
