@@ -29,7 +29,22 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 
-- Latest source change: branch `main`, `916f7fc`
+- Latest source change: branch `main`, `ee471d2`
+  `fix: split adaptation mode guidance`:
+  adaptation mode prompts and runtime writer context now separate
+  `chapter/preserve_details`, `arc/full_rewrite`, and `free/full_rewrite`
+  instead of mixing all mode rules into one prompt. `free` mode now carries an
+  explicit `adaptation_effective_mode` contract: source refs are background
+  anchors only, `preserve_details` is not applicable, and `read_chapter`
+  against original source is optional fact-checking rather than a required
+  per-chapter step. The Web static assets were rebuilt to include the
+  source-label UI update.
+- Previous source change: `976a1fb`
+  `fix: hide free adaptation source labels`:
+  proposal chapter cards/rows and staged volume review details no longer render
+  original-source mapping labels such as `原 17-17` or `原作范围` for
+  `granularity=free`; `chapter` and `arc` keep those labels.
+- Previous source change: `916f7fc`
   `fix: label source chapter reads`:
   `read_chapter` events now distinguish original-source reads from generated
   chapter reads by displaying `·原文` for `source:"source"`, so adaptation
@@ -98,30 +113,30 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `fix: retry adaptation planner calls`.
 - Branch: `main`
 - Remote: `origin` -> `https://github.com/while4234/ainovel-cli.git`
-- Working tree: clean after committed co-create suggestion and volume-review UI
-  fixes, plus
+- Working tree: clean after committed adaptation mode guidance and free-source
+  label UI fixes, plus
   ignored local `.codex/`, `.playwright-mcp/`, and output/runtime artifacts.
 - Runtime: local Web was rebuilt and restarted on `http://127.0.0.1:9898` from
-  commit `1824d24`; the restarted process is PID `39972`.
+  source commit `ee471d2`; the restarted process is PID `47552`.
 - Validation:
-  `npm.cmd --prefix internal/entry/web/ui test -- src/cocreate.test.js src/workspace-progress.test.js --run`
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/startup ./internal/entry/tui ./internal/entry/web ./internal/host ./internal/tools -run "Test(DefaultAdaptationBrief|AdaptationModeContract|AdaptCoCreateOpener|AdaptModeConfirmStartsCoCreateWithSelectedMode|ContextToolClarifiesFreeFullRewriteSourceRefsAreAnchors|ContextToolShowsDisabledWordToleranceForFullRewrite|AdaptationFreePlanDoesNotRequireSourceRead|PreserveDetailsPlanAndDraftSteerTowardFullSourceBackedChapter|LoadKeepsAdaptationGuidanceOutOfBaseWriterPrompt|ProjectAdaptCoCreateCheckpointRestoresModeAndCommits)" -count=1`
   passed;
-  `npm.cmd --prefix internal/entry/web/ui test -- --run` passed, 6 files / 63
+  `npm.cmd --prefix internal/entry/web/ui test -- src/workspace-progress.test.js --run`
+  passed in the UI worker, 1 file / 23 tests;
+  `npm.cmd --prefix internal/entry/web/ui test -- --run` passed, 6 files / 65
   tests;
-  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/host -run "Test(CoCreateStream|ParseSuggestion)" -count=1`
-  passed;
-  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web ./internal/host -count=1`
-  passed;
-  `npm.cmd --prefix internal/entry/web/ui run build` passed;
+  `npm.cmd --prefix internal/entry/web/ui run build` passed and produced
+  `/assets/index-Bs5-fN-Z.js`;
   `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./... -count=1`
-  passed after rerunning it post-build, because the first parallel build/test
-  attempt raced Vite asset replacement with Go embed enumeration;
+  passed;
   `git diff --check` passed with CRLF warnings only;
   `.\restart-web.cmd -Port 9898` passed after prepending the project-local Go
   1.25.5 bin directory to PATH, rebuilding Web UI and Go executable, stopping
-  PID `37084`, and starting PID `39972`;
-  `GET /`, `GET /api/runtime`, and `GET /api/projects` returned HTTP 200, and
-  `/` points at `/assets/index-1-e7YXNx.js`.
+  PID `44864`, and starting PID `47552`;
+  `GET /`, `GET /api/runtime`, `GET /api/projects`, and the active project
+  snapshot returned HTTP 200. Project `untitled-novel-20260704010240-cccef4`
+  restored as READY in writing phase with 53/59 chapters completed and recovery
+  at chapter 54.
 
   Previous validation:
   `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web -run "TestProjectAdaptCoCreate(CommitRepairsPreviousRoundPlaceholderDraft|RollsBackRejectedDraftWhenRepairFails|CommitRepairsRestoredRegressedDraft|RepairsRegressedDraftBeforeProposal|RepairsStaleDraftBeforeProposal)$" -count=1 -v`
@@ -201,6 +216,20 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
 
 ## Change Log
+
+- 2026-07-04 `ee471d2` `fix: split adaptation mode guidance`:
+  splits adaptation prompting/runtime guidance by effective mode so
+  `free/full_rewrite` no longer inherits chapter-only `preserve_details`
+  wording. `novel_context` now exposes `working_memory.adaptation_effective_mode`
+  with source-ref semantics, `plan_chapter` treats free source refs as optional
+  background anchors, co-create openers no longer inject the mixed
+  `rewrite_policy_rule=chapter=>...;arc/free=>...` line, and embedded Web assets
+  were rebuilt after the UI source-label fix.
+
+- 2026-07-04 `976a1fb` `fix: hide free adaptation source labels`:
+  hides original-source mapping labels such as `原 17-17` and `原作范围` from
+  free-mode proposal chapter cards/rows and volume review details while keeping
+  source coverage data and preserving labels for chapter/arc modes.
 
 - 2026-07-04 `1824d24` `fix: validate cocreate suggestions and dedupe volume review`:
   co-create suggestion chips no longer come from frontend prose/keyword
