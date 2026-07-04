@@ -1072,16 +1072,14 @@ func normalizeWebCoCreateText(kind string, text string) string {
 }
 
 func adaptCoCreateOpener(granularity, rewritePolicy string, wordTolerance float64) string {
-	wordToleranceLabel := startup.FormatAdaptationWordTolerance(granularity, wordTolerance)
+	_ = rewritePolicy
+	modeContract := startup.AdaptationModeContract(granularity, wordTolerance)
 	return strings.TrimSpace(fmt.Sprintf(`我想基于这本小说做改编，已确认改编模式如下：
 
-granularity=%s
-rewrite_policy=%s
-word_tolerance=%s
-rewrite_policy_rule=chapter=>preserve_details;arc/free=>full_rewrite
+%s
 
-请基于原书分析帮我确认具体改编目标。不要再询问或改动 chapter/arc/free 与 full_rewrite/preserve_details 这两个模式选择。`,
-		granularity, rewritePolicy, wordToleranceLabel))
+请基于原书分析帮我确认具体改编目标。只围绕上面的当前模式整理 brief，不要写入其它模式的规则，也不要再询问或改动 chapter/arc/free 与 full_rewrite/preserve_details 这两个模式选择。`,
+		modeContract))
 }
 
 func normalizeWebAdaptCoCreateOptions(granularity, rewritePolicy string, wordTolerance float64) (string, string, float64) {

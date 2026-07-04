@@ -893,6 +893,75 @@ func TestContextToolShowsDisabledWordToleranceForFullRewrite(t *testing.T) {
 	}
 }
 
+func TestContextToolClarifiesFreeFullRewriteSourceRefsAreAnchors(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityFree,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Status:        domain.AdaptationPlanStatusConfirmed,
+		Brief:         "rewrite_policy_rule=chapter=>preserve_details;arc/free=>full_rewrite\n自由重构结局。",
+		WordTolerance: 0.15,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        53,
+			Title:          "目标章",
+			SourceChapters: []int{17},
+			SourceRunes:    100,
+			TargetRunes:    2000,
+			TargetMinRunes: 1800,
+			TargetMaxRunes: 2200,
+			SourceRange:    domain.SourceRange{From: 17, To: 17},
+		}},
+	}
+	sourceTexts := make([]string, 17)
+	for i := range sourceTexts {
+		sourceTexts[i] = "原文主线事件。"
+	}
+	adaptStore := newAdaptationToolStoreWithPlan(t, plan, sourceTexts)
+	if err := adaptStore.Outline.SaveOutline([]domain.OutlineEntry{{Chapter: 53, Title: "目标章", CoreEvent: "新剧情推进"}}); err != nil {
+		t.Fatalf("SaveOutline adapt: %v", err)
+	}
+	if err := adaptStore.Progress.Init("adapt", 59); err != nil {
+		t.Fatalf("Init adapt progress: %v", err)
+	}
+
+	tool := NewContextTool(adaptStore, References{}, "default")
+	args, _ := json.Marshal(map[string]any{"chapter": 53})
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Working map[string]json.RawMessage `json:"working_memory"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal payload: %v", err)
+	}
+	var mode struct {
+		Granularity               string   `json:"granularity"`
+		RewritePolicy             string   `json:"rewrite_policy"`
+		SourceReferencePolicy     string   `json:"source_reference_policy"`
+		SourceMappingMeaning      string   `json:"source_mapping_meaning"`
+		SourceReadInstruction     string   `json:"source_read_instruction"`
+		LegacyRewritePolicyNotice string   `json:"legacy_rewrite_policy_notice"`
+		PreserveDetailsApplicable bool     `json:"preserve_details_applicable"`
+		MustNot                   []string `json:"must_not"`
+	}
+	if err := json.Unmarshal(payload.Working["adaptation_effective_mode"], &mode); err != nil {
+		t.Fatalf("Unmarshal adaptation_effective_mode: %v", err)
+	}
+	if mode.Granularity != domain.AdaptationGranularityFree ||
+		mode.RewritePolicy != domain.AdaptationRewriteFullRewrite ||
+		mode.SourceReferencePolicy != "optional_background_anchor" ||
+		mode.PreserveDetailsApplicable {
+		t.Fatalf("free effective mode mismatch: %+v", mode)
+	}
+	for _, want := range []string{"不表示目标章对应原著章节", "不要因为 source_chapters/source_range 存在就读取原文", "rewrite_policy_rule"} {
+		joined := strings.Join([]string{mode.SourceMappingMeaning, mode.SourceReadInstruction, mode.LegacyRewritePolicyNotice, strings.Join(mode.MustNot, "\n")}, "\n")
+		if !strings.Contains(joined, want) {
+			t.Fatalf("free effective mode missing %q:\n%+v", want, mode)
+		}
+	}
+}
+
 func TestContextToolKeepsFullForeshadowWhenRecallNotTriggered(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

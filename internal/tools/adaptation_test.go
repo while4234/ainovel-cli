@@ -655,6 +655,51 @@ func TestPreserveDetailsPlanAndDraftSteerTowardFullSourceBackedChapter(t *testin
 	}
 }
 
+func TestAdaptationFreePlanDoesNotRequireSourceRead(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityFree,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Status:        domain.AdaptationPlanStatusConfirmed,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        53,
+			Title:          "目标章",
+			SourceChapters: []int{17},
+			SourceRunes:    100,
+			TargetRunes:    2000,
+			TargetMinRunes: 1800,
+			TargetMaxRunes: 2200,
+			SourceRange:    domain.SourceRange{From: 17, To: 17},
+		}},
+	}
+	sourceTexts := make([]string, 17)
+	for i := range sourceTexts {
+		sourceTexts[i] = "原文主线事件。"
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, sourceTexts)
+	if err := s.Progress.Init("test", 59); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+
+	planRaw, err := NewPlanChapterTool(s).Execute(context.Background(), planArgs(53))
+	if err != nil {
+		t.Fatalf("plan_chapter Execute: %v", err)
+	}
+	var planPayload struct {
+		Next string `json:"next_step"`
+	}
+	if err := json.Unmarshal(planRaw, &planPayload); err != nil {
+		t.Fatalf("Unmarshal plan payload: %v", err)
+	}
+	for _, want := range []string{"free/full_rewrite", "optional background anchors", "not a target-to-source chapter mapping"} {
+		if !strings.Contains(planPayload.Next, want) {
+			t.Fatalf("free plan next_step missing %q: %q", want, planPayload.Next)
+		}
+	}
+	if strings.Contains(planPayload.Next, "first call read_chapter") || strings.Contains(planPayload.Next, "preserve_details next step") {
+		t.Fatalf("free plan should not require source read or preserve_details: %q", planPayload.Next)
+	}
+}
+
 func TestAdaptationSaveFoundationRejectsAppendVolume(t *testing.T) {
 	s := newAdaptationToolStore(t)
 	tool := NewSaveFoundationTool(s)

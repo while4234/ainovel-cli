@@ -110,10 +110,22 @@ func (t *PlanChapterTool) nextStepAfterPlan(chapter int) string {
 	if !ok {
 		return defaultStep
 	}
-	if plan.RewritePolicy == domain.AdaptationRewritePreserveDetails {
+	if domain.AdaptationRewritePolicyForGranularity(plan.Granularity) == domain.AdaptationRewritePreserveDetails {
 		return fmt.Sprintf(
 			"preserve_details next step: first call read_chapter(source=\"source\", chapter=source_ref) for source_chapters=%v; then call draft_chapter(mode=\"write\") with 完整章节正文. Unaffected source paragraphs may be preserved, but required_changes scene units must be rewritten as prose; 不能只写改动片段 or add inner-monologue/meta labels. Hard range: %d-%d runes.",
 			chapterPlan.SourceChapters, chapterPlan.TargetMinRunes, chapterPlan.TargetMaxRunes,
+		)
+	}
+	switch domain.NormalizeAdaptationGranularity(plan.Granularity) {
+	case domain.AdaptationGranularityFree:
+		return fmt.Sprintf(
+			"free/full_rewrite next step: source_chapters=%v are optional background anchors, not a target-to-source chapter mapping. Do not read source only because refs exist; if a concrete fact is missing, call read_chapter(source=\"source\", chapter=source_ref) once for the needed anchor, then call draft_chapter(mode=\"write\") with complete new prose based on the confirmed proposal and current outline.",
+			chapterPlan.SourceChapters,
+		)
+	case domain.AdaptationGranularityArc:
+		return fmt.Sprintf(
+			"arc/full_rewrite next step: source_chapters=%v are mainline/arc anchors. Read source refs only as needed to verify causal facts, then call draft_chapter(mode=\"write\") with complete new prose; do not preserve source paragraphs.",
+			chapterPlan.SourceChapters,
 		)
 	}
 	return fmt.Sprintf(
@@ -137,11 +149,20 @@ func (t *PlanChapterTool) enrichAdaptationContract(plan domain.ChapterPlan) doma
 	plan.Contract.RequiredBeats = appendUniqueStrings(plan.Contract.RequiredBeats, chapterPlan.PreserveEvents...)
 	plan.Contract.RequiredBeats = appendUniqueStrings(plan.Contract.RequiredBeats, chapterPlan.RequiredChanges...)
 	plan.Contract.ForbiddenMoves = appendUniqueStrings(plan.Contract.ForbiddenMoves, chapterPlan.ForbiddenMoves...)
-	if adaptPlan.RewritePolicy == domain.AdaptationRewritePreserveDetails {
+	if domain.AdaptationRewritePolicyForGranularity(adaptPlan.Granularity) == domain.AdaptationRewritePreserveDetails {
 		plan.Contract.EvaluationFocus = appendUniqueStrings(plan.Contract.EvaluationFocus,
 			"preserve_details: unaffected source paragraphs may remain; required_changes full scene units must be rewritten as original prose.",
 			"Do not express adaptation changes as parenthetical notes, inner-monologue labels, psychology labels, or 'only an example' text.",
 			"check_adaptation must include change_evidence describing which source scene was rewritten and how it appears naturally in prose.",
+		)
+	} else if domain.NormalizeAdaptationGranularity(adaptPlan.Granularity) == domain.AdaptationGranularityFree {
+		plan.Contract.EvaluationFocus = appendUniqueStrings(plan.Contract.EvaluationFocus,
+			"free/full_rewrite: source_chapters are optional background anchors and do not mean this target chapter corresponds to a source chapter.",
+			"Follow the confirmed adaptation proposal, target outline, and already written new continuity; do not relabel the chapter as preserve_details.",
+		)
+	} else if domain.NormalizeAdaptationGranularity(adaptPlan.Granularity) == domain.AdaptationGranularityArc {
+		plan.Contract.EvaluationFocus = appendUniqueStrings(plan.Contract.EvaluationFocus,
+			"arc/full_rewrite: source_chapters are mainline and arc anchors; write complete new prose without preserving source paragraphs.",
 		)
 	}
 	return plan

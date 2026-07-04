@@ -228,6 +228,7 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 		"target_min_runes":   plan.TargetMinRunes,
 		"target_max_runes":   plan.TargetMaxRunes,
 	}
+	working["adaptation_effective_mode"] = buildAdaptationEffectiveMode(plan, chapterPlan)
 	working["adaptation_contract"] = chapterPlan
 	working["adaptation_word_contract"] = buildAdaptationWordContract(t.store, plan, chapterPlan, chapter, actualRunes)
 	working["adaptation_source_coverage"] = map[string]any{
@@ -236,6 +237,7 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 		"source_range":    chapterPlan.SourceRange,
 		"is_added":        chapterPlan.IsAdded,
 		"coverage_note":   chapterPlan.CoverageNote,
+		"source_role":     adaptationSourceRoleForGranularity(plan.Granularity),
 	}
 	if guidance := strings.TrimSpace(t.refs.AdaptationWriter); guidance != "" {
 		working["adaptation_writing_guidance"] = guidance
@@ -295,8 +297,113 @@ func (t *ContextTool) buildAdaptationPlanningContext(result map[string]any, warn
 	section["adaptation_plan"] = summary
 }
 
+func buildAdaptationEffectiveMode(plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan) map[string]any {
+	if plan == nil {
+		return nil
+	}
+	granularity := domain.NormalizeAdaptationGranularity(plan.Granularity)
+	rewritePolicy := domain.AdaptationRewritePolicyForGranularity(granularity)
+	mode := map[string]any{
+		"granularity":                  granularity,
+		"rewrite_policy":               rewritePolicy,
+		"mode_contract":                granularity + "/" + rewritePolicy,
+		"current_mode_only":            true,
+		"preserve_details_applicable":  granularity == domain.AdaptationGranularityChapter && rewritePolicy == domain.AdaptationRewritePreserveDetails,
+		"source_chapters":              chapterPlan.SourceChapters,
+		"source_range":                 chapterPlan.SourceRange,
+		"source_reference_policy":      adaptationSourceReferencePolicy(granularity),
+		"source_mapping_meaning":       adaptationSourceMappingMeaning(granularity),
+		"source_read_instruction":      adaptationSourceReadInstruction(granularity),
+		"writer_instruction":           adaptationModeWriterInstruction(granularity),
+		"legacy_rewrite_policy_notice": adaptationLegacyRewritePolicyNotice(plan.Brief),
+	}
+	switch granularity {
+	case domain.AdaptationGranularityFree:
+		mode["must_not"] = []string{
+			"不要把 source_chapters/source_range 理解为本章对应原著第几章",
+			"不要把本章称为 preserve_details 策略",
+			"不要因为存在 source refs 就反复读取原文章节",
+			"不要让原著旧结局覆盖已经确认的新提案、新大纲和已写剧情",
+		}
+	case domain.AdaptationGranularityArc:
+		mode["must_not"] = []string{
+			"不要把 source_chapters/source_range 理解为逐字复用许可",
+			"不要把 full_rewrite 写成 preserve_details",
+			"不要搬运原文段落",
+		}
+	default:
+		mode["must_not"] = []string{
+			"不要只写改动片段",
+			"不要把改编内容写成提示性括注或补丁标签",
+		}
+	}
+	return mode
+}
+
+func adaptationSourceRoleForGranularity(granularity string) string {
+	switch domain.NormalizeAdaptationGranularity(granularity) {
+	case domain.AdaptationGranularityFree:
+		return "background_anchor_only"
+	case domain.AdaptationGranularityArc:
+		return "mainline_anchor"
+	default:
+		return "one_to_one_source_mapping"
+	}
+}
+
+func adaptationSourceReferencePolicy(granularity string) string {
+	switch domain.NormalizeAdaptationGranularity(granularity) {
+	case domain.AdaptationGranularityFree:
+		return "optional_background_anchor"
+	case domain.AdaptationGranularityArc:
+		return "mainline_anchor"
+	default:
+		return "required_one_to_one"
+	}
+}
+
+func adaptationSourceMappingMeaning(granularity string) string {
+	switch domain.NormalizeAdaptationGranularity(granularity) {
+	case domain.AdaptationGranularityFree:
+		return "后台覆盖率与必要事实锚点；不表示目标章对应原著章节"
+	case domain.AdaptationGranularityArc:
+		return "主线与卷弧覆盖锚点；不要求目标章与原文章节一一对应"
+	default:
+		return "目标章与原文章节一一对应"
+	}
+}
+
+func adaptationSourceReadInstruction(granularity string) string {
+	switch domain.NormalizeAdaptationGranularity(granularity) {
+	case domain.AdaptationGranularityFree:
+		return "不要因为 source_chapters/source_range 存在就读取原文；只有缺少必要事实时才按需读取一次 source anchor"
+	case domain.AdaptationGranularityArc:
+		return "必要时读取 source anchors 核对主线因果；读取后仍必须写 full_rewrite 原创正文"
+	default:
+		return "写作前按 source_chapters 读取原文并对照事实"
+	}
+}
+
+func adaptationModeWriterInstruction(granularity string) string {
+	switch domain.NormalizeAdaptationGranularity(granularity) {
+	case domain.AdaptationGranularityFree:
+		return "当前章按 free/full_rewrite 写作：以改编提案、章节细纲和已写新剧情为准，source refs 只是背景锚点"
+	case domain.AdaptationGranularityArc:
+		return "当前章按 arc/full_rewrite 写作：保留主线因果与弧线功能，用新章节组织写原创正文"
+	default:
+		return "当前章按 chapter/preserve_details 写作：逐章对照原文，未受影响内容可承接，受影响完整场景单元原创重写"
+	}
+}
+
+func adaptationLegacyRewritePolicyNotice(brief string) string {
+	if strings.Contains(brief, "rewrite_policy_rule=") {
+		return "brief 中的 rewrite_policy_rule 是历史模式映射说明；当前章只执行 adaptation_effective_mode.mode_contract"
+	}
+	return ""
+}
+
 func adaptationWordToleranceForContext(plan *domain.AdaptationPlan) any {
-	if plan == nil || plan.RewritePolicy != domain.AdaptationRewritePreserveDetails {
+	if plan == nil || domain.AdaptationRewritePolicyForGranularity(plan.Granularity) != domain.AdaptationRewritePreserveDetails {
 		return "disabled"
 	}
 	return plan.WordTolerance

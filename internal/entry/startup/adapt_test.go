@@ -84,10 +84,36 @@ func TestDefaultAdaptationBriefIncludesSelectedContract(t *testing.T) {
 		"granularity=arc",
 		"rewrite_policy=full_rewrite",
 		"word_tolerance=disabled",
+		"mode_contract=arc/full_rewrite",
+		"source_reference_policy=mainline_anchor",
 		"## 主线保留规则",
 	} {
 		if !strings.Contains(brief, want) {
 			t.Fatalf("brief missing %q:\n%s", want, brief)
+		}
+	}
+	if strings.Contains(brief, "rewrite_policy_rule=") {
+		t.Fatalf("brief should not mix all mode rules:\n%s", brief)
+	}
+}
+
+func TestAdaptationModeContractSeparatesFreeFromChapterMapping(t *testing.T) {
+	contract := AdaptationModeContract(domain.AdaptationGranularityFree, 0.2)
+	for _, want := range []string{
+		"granularity=free",
+		"rewrite_policy=full_rewrite",
+		"word_tolerance=disabled",
+		"mode_contract=free/full_rewrite",
+		"source_reference_policy=optional_background_anchor",
+		"不表示目标章对应原著某章",
+	} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("free contract missing %q:\n%s", want, contract)
+		}
+	}
+	for _, bad := range []string{"rewrite_policy_rule=", "required_one_to_one"} {
+		if strings.Contains(contract, bad) {
+			t.Fatalf("free contract should not contain %q:\n%s", bad, contract)
 		}
 	}
 }

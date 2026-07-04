@@ -85,8 +85,12 @@ func TestAdaptModeConfirmStartsCoCreateWithSelectedMode(t *testing.T) {
 	}
 	if !strings.Contains(got.cocreate.initialInput(), "granularity=arc") ||
 		!strings.Contains(got.cocreate.initialInput(), "rewrite_policy=full_rewrite") ||
-		!strings.Contains(got.cocreate.initialInput(), "word_tolerance=disabled") {
+		!strings.Contains(got.cocreate.initialInput(), "word_tolerance=disabled") ||
+		!strings.Contains(got.cocreate.initialInput(), "mode_contract=arc/full_rewrite") {
 		t.Fatalf("initial co-create input missing selected mode:\n%s", got.cocreate.initialInput())
+	}
+	if strings.Contains(got.cocreate.initialInput(), "rewrite_policy_rule=") {
+		t.Fatalf("initial co-create input should not mix all mode rules:\n%s", got.cocreate.initialInput())
 	}
 	if cmd == nil {
 		t.Fatal("mode selection should kick off co-create")

@@ -329,10 +329,35 @@ func formatWordBudgetStartBlock(budget *domain.WordBudget) string {
 func BuildAdaptationStartPrompt(plan domain.AdaptationPlan) string {
 	return "当前项目是小说改编模式。原书 source snapshot、改编计划、foundation 和分层大纲已经落盘，不要重新从零规划，也不要把原文章节提交为正文。\n\n" +
 		"[改编 brief]\n" + strings.TrimSpace(plan.Brief) + "\n\n" +
+		"[当前有效改编模式]\n" + formatAdaptationRuntimeMode(plan) + "\n\n" +
 		"[执行要求]\n" +
-		"- 立即按当前 progress/outline 派发 writer 从第 1 章开始逐章写改编正文。\n" +
-		"- writer 必须先读 novel_context，再按 adaptation_contract 读取 read_chapter(source=\"source\") 对照原文。\n" +
+		adaptationRuntimeExecutionRequirements(plan) +
 		"- 每章提交前必须完成 check_consistency 和 check_adaptation；check_adaptation 未通过不得 commit。\n" +
 		"- 若连续校验失败，请暂停并报告失败章节和原因，不要静默跳过主线校验。\n\n" +
 		"改编粒度：" + plan.Granularity
+}
+
+func formatAdaptationRuntimeMode(plan domain.AdaptationPlan) string {
+	granularity := domain.NormalizeAdaptationGranularity(plan.Granularity)
+	rewritePolicy := domain.AdaptationRewritePolicyForGranularity(granularity)
+	return fmt.Sprintf("granularity=%s\nrewrite_policy=%s\nmode_contract=%s/%s", granularity, rewritePolicy, granularity, rewritePolicy)
+}
+
+func adaptationRuntimeExecutionRequirements(plan domain.AdaptationPlan) string {
+	granularity := domain.NormalizeAdaptationGranularity(plan.Granularity)
+	switch granularity {
+	case domain.AdaptationGranularityFree:
+		return "- 立即按当前 progress/outline 派发 writer 从第 1 章开始逐章写改编正文。\n" +
+			"- writer 必须先读 novel_context，并以 working_memory.adaptation_effective_mode 与 adaptation_contract 为准。\n" +
+			"- 当前是 free/full_rewrite：source_chapters/source_range 只是后台覆盖率和背景锚点，不表示目标章对应原著章节，也不得把章节说成 preserve_details。\n" +
+			"- 不要因为存在 source refs 就反复读取原文章节；只有缺少必要事实时，才按需读取一次 read_chapter(source=\"source\")。\n"
+	case domain.AdaptationGranularityArc:
+		return "- 立即按当前 progress/outline 派发 writer 从第 1 章开始逐章写改编正文。\n" +
+			"- writer 必须先读 novel_context，并以 working_memory.adaptation_effective_mode 与 adaptation_contract 为准。\n" +
+			"- 当前是 arc/full_rewrite：source_chapters/source_range 是主线与弧线锚点，必要时读取原文核对因果，但正文必须原创重写。\n"
+	default:
+		return "- 立即按当前 progress/outline 派发 writer 从第 1 章开始逐章写改编正文。\n" +
+			"- writer 必须先读 novel_context，再按 adaptation_contract 读取 read_chapter(source=\"source\") 对照原文。\n" +
+			"- 当前是 chapter/preserve_details：目标章与原文章节一一对应，未受影响的承接细节可以保留，受影响的完整场景单元必须原创重写。\n"
+	}
 }

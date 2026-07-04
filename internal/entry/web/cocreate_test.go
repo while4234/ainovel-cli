@@ -18,6 +18,27 @@ import (
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
+func TestAdaptCoCreateOpenerUsesCurrentModeContractOnly(t *testing.T) {
+	opener := adaptCoCreateOpener(domain.AdaptationGranularityFree, domain.AdaptationRewritePreserveDetails, 0.2)
+	for _, want := range []string{
+		"granularity=free",
+		"rewrite_policy=full_rewrite",
+		"word_tolerance=disabled",
+		"mode_contract=free/full_rewrite",
+		"source_reference_policy=optional_background_anchor",
+		"不表示目标章对应原著某章",
+	} {
+		if !strings.Contains(opener, want) {
+			t.Fatalf("opener missing %q:\n%s", want, opener)
+		}
+	}
+	for _, bad := range []string{"rewrite_policy_rule=", "required_one_to_one"} {
+		if strings.Contains(opener, bad) {
+			t.Fatalf("opener should not contain %q:\n%s", bad, opener)
+		}
+	}
+}
+
 func TestProjectCoCreateSuggestionsAndCommitUseDraftPrompt(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
