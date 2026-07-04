@@ -28,6 +28,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest prompt change: current local commit
+  `style: tighten style prompt anti-ai guidance`:
+  All embedded style prompts now add non-NSFW guidance against numbered
+  report-like reasoning, frequent explanatory em dashes, and psychology written
+  as model-style inference lists. Validation passed for focused assets tests
+  with the repo-local Go toolchain and `git diff --check` with CRLF warnings
+  only.
 - Latest source change: branch `main`, current commit
   `fix: infer explicit cocreate word count`:
   Web normal co-create now inspects the initial idea for an explicit total word
@@ -236,6 +243,12 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
 
 ## Change Log
+
+- 2026-07-04 current local commit `style: tighten style prompt anti-ai guidance`:
+  Added three prose-quality bullets to each `assets/styles/*.md` prompt directly
+  under the style section and before the NSFW section. The bullets discourage
+  numbered possibility lists, overused explanatory `——`, and model-like
+  psychological inference checklists.
 
 - 2026-07-04 current commit `fix: infer explicit cocreate word count`:
   Normal Web co-create now skips the target-word confirmation only when the
