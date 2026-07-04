@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest prompt change in progress:
+  `assets/references/anti-ai-tone.md` now includes an explicit
+  "标点与句式 AI 味" section. Writer/editor shared AI-tone guidance now treats
+  repeated explanatory em dashes as a reviewable aesthetic issue and recommends
+  short sentences, action pauses, environmental detail, or natural paragraph
+  breaks instead.
 - Latest source change: current local commit
   `fix: preview completed chapter revisions`:
   Completed-book single-chapter revision now shows the selected chapter in the
