@@ -11,6 +11,7 @@ import {
   discoverGlobalProviderModels,
   discoverProjectProviderModels,
   emptyTrashProjects,
+  getChapter,
   getGlobalModels,
   listNovelLibrary,
   listProjectTrash,
@@ -151,6 +152,14 @@ describe('web API helpers', () => {
         instruction: 'tighten the ending'
       })
     }));
+  });
+
+  it('fetches completed chapter content', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ chapter: { chapter: 3 } }));
+
+    await getChapter('project-1', 3);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/chapters/3', expect.objectContaining({}));
   });
 
   it('uses staged adaptation proposal, revise, details, and final confirm routes', async () => {

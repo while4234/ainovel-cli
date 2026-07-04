@@ -13,6 +13,7 @@ import {
   formatAdaptationVolumeSourceLabel,
   getAdaptationProposalReview,
   getCompletedBookChapterRevisionView,
+  getCompletedBookSelectedChapterView,
   getVisibleAdaptationProposalReview,
   getSimulationProfileStatus,
   getSnapshotOutlineRows,
@@ -239,6 +240,40 @@ describe('workspace progress derivation', () => {
       phase: 'complete',
       outline: []
     }).visible).toBe(false);
+  });
+
+  it('selects completed-book revision workspace chapter content', () => {
+    const snapshot = {
+      phase: 'complete',
+      outline: [
+        { chapter: 1, title: 'Opening', content: 'Chapter one body' },
+        { Chapter: 3, Title: 'Reveal', Text: 'Chapter three body' }
+      ]
+    };
+
+    expect(getCompletedBookSelectedChapterView(snapshot, { chapter: '3' })).toMatchObject({
+      visible: true,
+      chapter: 3,
+      title: 'Reveal',
+      content: 'Chapter three body'
+    });
+
+    expect(getCompletedBookSelectedChapterView(snapshot, { chapter: '99' })).toMatchObject({
+      chapter: 1,
+      title: 'Opening',
+      content: 'Chapter one body'
+    });
+  });
+
+  it('hides selected chapter workspace view outside completed books', () => {
+    expect(getCompletedBookSelectedChapterView({
+      phase: 'writing',
+      outline: [{ chapter: 1, title: 'Opening', body: 'Draft body' }]
+    }, { chapter: '1' })).toMatchObject({
+      visible: false,
+      chapter: 0,
+      content: ''
+    });
   });
 
   it('builds completed-book single chapter revision payloads', () => {

@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/exp"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 func TestProjectStartQuickUsesPreparedStartupPrompt(t *testing.T) {
@@ -170,6 +171,36 @@ func TestProjectChapterReviseRejectsInvalidRequest(t *testing.T) {
 	}
 	if fake.reviseChapterCalls != 0 {
 		t.Fatalf("invalid request should not call host, calls=%d", fake.reviseChapterCalls)
+	}
+}
+
+func TestProjectChapterContentReadsFinalChapter(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Chapter Content")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	st := storepkg.NewStore(manifest.OutputDir)
+	if err := st.Drafts.SaveFinalChapter(3, "chapter body"); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/chapters/3", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chapter content status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Chapter apiChapterContent `json:"chapter"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode chapter content response: %v", err)
+	}
+	if body.Chapter.Chapter != 3 || body.Chapter.Content != "chapter body" || body.Chapter.WordCount != len("chapter body") || body.Chapter.Source != "final" {
+		t.Fatalf("unexpected chapter content: %+v", body.Chapter)
 	}
 }
 

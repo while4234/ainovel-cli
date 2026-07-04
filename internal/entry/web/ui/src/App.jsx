@@ -49,6 +49,7 @@ import {
   exportProject,
   getBackendStatus,
   getGlobalModels,
+  getChapter,
   getGrokLoginStatus,
   getProjectModels,
   getRuntime,
@@ -201,6 +202,18 @@ function createChapterRevisionState() {
     instruction: '',
     status: 'idle',
     message: '',
+    error: ''
+  };
+}
+
+function createChapterContentState() {
+  return {
+    projectId: '',
+    chapter: '',
+    status: 'idle',
+    content: '',
+    wordCount: 0,
+    source: '',
     error: ''
   };
 }
@@ -398,6 +411,7 @@ export default function App() {
   const [simulation, setSimulation] = useState(createSimulationState);
   const [adaptation, setAdaptation] = useState(createAdaptationState);
   const [chapterRevision, setChapterRevision] = useState(createChapterRevisionState);
+  const [chapterContent, setChapterContent] = useState(createChapterContentState);
   const [externalImport, setExternalImport] = useState(createExternalImportState);
   const [exportJob, setExportJob] = useState(createExportState);
   const [diagnostic, setDiagnostic] = useState(createDiagnosticState);
@@ -422,6 +436,11 @@ export default function App() {
     [snapshot, adaptation]
   );
   const showAdaptationProposalWorkspace = sideView === 'adapt' && adaptationProposalReview.proposalReady;
+  const selectedChapterRevisionView = useMemo(
+    () => getCompletedBookSelectedChapterView(snapshot, chapterRevision),
+    [snapshot, chapterRevision.chapter]
+  );
+  const showChapterRevisionWorkspace = sideView === 'status' && selectedChapterRevisionView.visible;
 
   const resetProjectScopedState = useCallback((clearProject = false) => {
     lastSeqRef.current = 0;
@@ -429,6 +448,7 @@ export default function App() {
     setSimulation(resetSimulationProjectState);
     setAdaptation(resetAdaptationProjectState);
     setChapterRevision(createChapterRevisionState());
+    setChapterContent(createChapterContentState());
     setExternalImport(createExternalImportState());
     setExportJob(createExportState());
     setDiagnostic(createDiagnosticState());
@@ -440,6 +460,64 @@ export default function App() {
       setActiveProject(null);
     }
   }, []);
+
+  useEffect(() => {
+    const projectId = activeProject?.id || '';
+    const chapter = selectedChapterRevisionView.chapter;
+    if (!showChapterRevisionWorkspace || !projectId || !chapter) {
+      setChapterContent(createChapterContentState());
+      return undefined;
+    }
+    let cancelled = false;
+    const chapterKey = String(chapter);
+    setChapterContent((previous) => {
+      if (previous.projectId === projectId && previous.chapter === chapterKey && previous.status === 'done') {
+        return previous;
+      }
+      return {
+        projectId,
+        chapter: chapterKey,
+        status: 'loading',
+        content: '',
+        wordCount: 0,
+        source: '',
+        error: ''
+      };
+    });
+    getChapter(projectId, chapter)
+      .then((data) => {
+        if (cancelled) {
+          return;
+        }
+        const body = data?.chapter || {};
+        setChapterContent({
+          projectId,
+          chapter: String(body.chapter || chapter),
+          status: 'done',
+          content: String(body.content || ''),
+          wordCount: Number(body.word_count || body.wordCount || 0),
+          source: String(body.source || ''),
+          error: ''
+        });
+      })
+      .catch((err) => {
+        if (cancelled) {
+          return;
+        }
+        setChapterContent({
+          projectId,
+          chapter: chapterKey,
+          status: 'error',
+          content: '',
+          wordCount: 0,
+          source: '',
+          error: err.message
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProject?.id, selectedChapterRevisionView.chapter, showChapterRevisionWorkspace]);
 
   const refreshProjects = useCallback(async () => {
     const data = await listProjects();
@@ -2233,14 +2311,16 @@ export default function App() {
 
         <div className="workbench-stack">
           <section
-            className={`stream-area ${showAdaptationProposalWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : ''}`}
-            aria-label={showAdaptationProposalWorkspace ? '改编提案审稿区' : '实时创作流'}
+            className={`stream-area ${showAdaptationProposalWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : showChapterRevisionWorkspace ? 'chapter-revision-workspace-output' : ''}`}
+            aria-label={showAdaptationProposalWorkspace ? '改编提案审稿区' : showChapterRevisionWorkspace ? '单章返工预览区' : '实时创作流'}
           >
             {activeProject ? (
               showAdaptationProposalWorkspace ? (
                 <AdaptationProposalWorkspace proposal={adaptationProposalReview} />
               ) : showCoCreateWorkspace ? (
                 <CoCreateWorkspace coCreate={coCreate} />
+              ) : showChapterRevisionWorkspace ? (
+                <CompletedChapterRevisionWorkspace selected={selectedChapterRevisionView} content={chapterContent} />
               ) : (
               workbench.streamRounds.map((round) => (
                 <article className="stream-round" key={round.id}>
@@ -2548,6 +2628,53 @@ function CoCreateWorkspace({ coCreate }) {
         </article>
       ) : null}
       <div className="cocreate-workspace-bottom" aria-hidden="true" ref={bottomRef} />
+    </div>
+  );
+}
+
+function CompletedChapterRevisionWorkspace({ selected, content }) {
+  const chapter = selected?.chapter || 0;
+  const title = selected?.title || `第 ${chapter || '?'} 章`;
+  const contentMatches = content?.chapter === String(chapter);
+  const status = contentMatches ? content.status : 'loading';
+  const body = status === 'done' ? String(content.content || selected?.content || '') : '';
+  const wordCount = contentMatches && content.wordCount > 0 ? content.wordCount : selected?.outlineRow?.writtenWordCount || 0;
+  const outlineNotes = [
+    selected?.outlineRow?.coreEvent,
+    selected?.outlineRow?.hook,
+    ...(selected?.outlineRow?.scenes || [])
+  ].filter(Boolean);
+  return (
+    <div className="chapter-revision-workspace">
+      <header className="proposal-workspace-header">
+        <div>
+          <div className="eyebrow">完本单章返工</div>
+          <h3>{`第 ${chapter} 章：${title}`}</h3>
+        </div>
+        <div className="proposal-workspace-metrics">
+          {wordCount > 0 ? <span>{formatCompact(wordCount)} 字</span> : null}
+          {content?.source ? <span>{content.source === 'draft' ? '草稿' : '终稿'}</span> : null}
+        </div>
+      </header>
+      {status === 'loading' ? (
+        <article className="stream-round chapter-revision-empty">
+          <span className="muted">正在加载章节正文...</span>
+        </article>
+      ) : status === 'error' ? (
+        <article className="stream-round chapter-revision-empty error">
+          <strong>章节正文读取失败</strong>
+          <span>{content.error}</span>
+        </article>
+      ) : body ? (
+        <article className="chapter-revision-body">
+          <pre>{body}</pre>
+        </article>
+      ) : (
+        <article className="stream-round chapter-revision-empty">
+          <strong>暂无章节正文</strong>
+          {outlineNotes.length ? <pre>{outlineNotes.join('\n')}</pre> : <span className="muted">当前章节只有大纲信息</span>}
+        </article>
+      )}
     </div>
   );
 }
@@ -6026,6 +6153,24 @@ export function getCompletedBookChapterRevisionView(snapshot) {
   };
 }
 
+export function getCompletedBookSelectedChapterView(snapshot, revision = {}) {
+  const view = getCompletedBookChapterRevisionView(snapshot);
+  if (!view.visible) {
+    return { ...view, chapter: 0, title: '', outlineRow: null, content: '' };
+  }
+  const selectedChapter = clampOutlineChapterSelection(revision.chapter, view.outline);
+  const chapter = Number.parseInt(selectedChapter, 10);
+  const outlineRow = view.outline.find((item) => item.chapter === chapter) || view.outline[0] || null;
+  return {
+    ...view,
+    selectedChapter,
+    chapter: outlineRow?.chapter || chapter,
+    title: outlineRow?.title || '',
+    outlineRow,
+    content: outlineRow?.content || ''
+  };
+}
+
 export function buildChapterRevisionPayload(revision = {}, snapshot = {}) {
   const view = getCompletedBookChapterRevisionView(snapshot);
   if (!view.visible) {
@@ -6157,6 +6302,7 @@ function normalizeOutlineRow(row) {
     coreEvent: textValue(row, 'CoreEvent', 'coreEvent', 'core_event'),
     hook: textValue(row, 'Hook', 'hook'),
     scenes: arrayValue(row, 'Scenes', 'scenes'),
+    content: textValue(row, 'Content', 'content', 'Text', 'text', 'Body', 'body'),
     writtenWordCount: numberValue(row, 'WrittenWordCount', 'writtenWordCount', 'written_word_count'),
     wordBudget,
     sourceCoverage,

@@ -92,6 +92,10 @@ export function getSnapshot(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/snapshot`);
 }
 
+export function getChapter(projectId, chapter) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/chapters/${encodeURIComponent(chapter)}`);
+}
+
 export function reviseChapter(projectId, payload) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/chapters/revise`, {
     method: 'POST',

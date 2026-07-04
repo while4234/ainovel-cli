@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/host"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 type apiChapterRevision struct {
@@ -18,6 +21,58 @@ type apiChapterRevision struct {
 	Label           string `json:"label,omitempty"`
 	PendingRewrites []int  `json:"pending_rewrites,omitempty"`
 	StaleNotice     string `json:"stale_notice,omitempty"`
+}
+
+type apiChapterContent struct {
+	Chapter   int    `json:"chapter"`
+	Content   string `json:"content"`
+	WordCount int    `json:"word_count"`
+	Source    string `json:"source,omitempty"`
+}
+
+func (s *Server) handleProjectChapter(w http.ResponseWriter, r *http.Request, id, rawChapter string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	chapter, err := strconv.Atoi(strings.TrimSpace(rawChapter))
+	if err != nil || chapter <= 0 {
+		writeError(w, http.StatusBadRequest, "chapter must be > 0")
+		return
+	}
+	manifest, err := s.store.OpenProject(id)
+	if err != nil {
+		writeProjectSessionError(w, fmt.Errorf("%w: %v", ErrProjectNotFound, err))
+		return
+	}
+	st := storepkg.NewStore(manifest.OutputDir)
+	content, err := st.Drafts.LoadChapterText(chapter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	source := "final"
+	if content == "" {
+		content, err = st.Drafts.LoadDraft(chapter)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if content != "" {
+			source = "draft"
+		} else {
+			source = ""
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": manifest,
+		"chapter": apiChapterContent{
+			Chapter:   chapter,
+			Content:   content,
+			WordCount: utf8.RuneCountInString(content),
+			Source:    source,
+		},
+	})
 }
 
 func (s *Server) handleProjectChapterRevise(w http.ResponseWriter, r *http.Request, id string) {

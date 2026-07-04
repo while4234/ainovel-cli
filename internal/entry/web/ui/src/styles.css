@@ -1902,6 +1902,51 @@ h2 {
   padding: 16px;
 }
 
+.chapter-revision-workspace-output {
+  padding: 0;
+  background: var(--surface-solid);
+}
+
+.chapter-revision-workspace {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+  min-height: 100%;
+  padding: 16px;
+}
+
+.chapter-revision-body {
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-subtle);
+}
+
+.chapter-revision-body pre {
+  margin: 0;
+  max-height: calc(100vh - 330px);
+  min-height: 360px;
+  overflow: auto;
+  padding: 18px 20px;
+  color: var(--text-strong);
+  font-size: 14px;
+  line-height: 1.78;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chapter-revision-empty {
+  display: grid;
+  gap: 8px;
+}
+
+.chapter-revision-empty.error {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+
 .proposal-workspace-header {
   display: flex;
   align-items: flex-start;

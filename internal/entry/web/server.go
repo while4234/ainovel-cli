@@ -453,6 +453,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 	case "cocreate/cancel":
 		s.handleProjectCoCreateCancel(w, r, id)
 	default:
+		if strings.HasPrefix(action, "chapters/") {
+			s.handleProjectChapter(w, r, id, strings.TrimPrefix(action, "chapters/"))
+			return
+		}
 		http.NotFound(w, r)
 	}
 }

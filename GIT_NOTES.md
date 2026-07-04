@@ -29,6 +29,21 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `fix: preview completed chapter revisions`:
+  Completed-book single-chapter revision now shows the selected chapter in the
+  central workspace. The Web API `GET /api/projects/{id}/chapters/{chapter}`
+  reads the current final chapter body from `chapters/NN.md`, falls back to
+  draft text when no final exists, and returns word count/source metadata. The
+  React UI lazy-loads only the selected chapter, shares the existing right-pane
+  selection state, and renders loading/error/empty/body states in the main
+  work area. Validation passed for focused Web API/UI tests, the broader
+  `./internal/entry/web ./internal/host/flow ./internal/tools ./internal/store`
+  Go package set, UI build, `git diff --check` with CRLF warnings only, and a
+  live smoke on `http://127.0.0.1:9898`; project `梦中的女孩3` returned 59 outline
+  rows and chapter 1 final content through the new endpoint. The local Web
+  service was rebuilt and restarted with runtime root
+  `C:\Users\RondleLiu\.ainovel\novels-preview` as PID `40604`.
+- Latest source change: current local commit
   `feat: add completed chapter revision backend`:
   Completed-book single-chapter revision is implemented across Web UI and
   backend orchestration. The Web API `POST /api/projects/{id}/chapters/revise`
