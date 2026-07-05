@@ -238,6 +238,39 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	}
 }
 
+func TestGlobalModelAddCanSaveWithoutSwitchingDefault(t *testing.T) {
+	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
+		return nil
+	})
+	t.Cleanup(restore)
+
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	var added struct {
+		Models  apiModelConfig `json:"models"`
+		Runtime struct {
+			Config struct {
+				Provider string `json:"provider"`
+				Model    string `json:"model"`
+			} `json:"config"`
+		} `json:"runtime"`
+	}
+	body := `{"select_after_save":false,"provider":"deepseek2","model":"deepseek-v4-pro","label":"DeepSeek Relay","type":"openai","api":"chat","api_key":"sk-test","base_url":"https://api.example/v1"}`
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", body, &added)
+	if !modelConfigHasProvider(added.Models, "deepseek2", "deepseek-v4-pro") {
+		t.Fatalf("models missing saved provider: %+v", added.Models.Providers)
+	}
+	if added.Runtime.Config.Provider != cfg.Provider || added.Runtime.Config.Model != cfg.ModelName {
+		t.Fatalf("runtime default changed to %+v, want %s/%s", added.Runtime.Config, cfg.Provider, cfg.ModelName)
+	}
+	if server.currentConfig().Provider != cfg.Provider || server.currentConfig().ModelName != cfg.ModelName {
+		t.Fatalf("server default changed to %s/%s", server.currentConfig().Provider, server.currentConfig().ModelName)
+	}
+}
+
 func TestGlobalModelEditRenamesProviderAndPreservesBlankAPIKey(t *testing.T) {
 	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
 		return nil
@@ -351,6 +384,48 @@ func TestGlobalModelTestDoesNotPersistOrLeakAPIKey(t *testing.T) {
 	}
 	if _, ok := server.currentConfig().Providers["probe-openai"]; ok {
 		t.Fatal("model test should not persist provider config")
+	}
+}
+
+func TestGlobalModelTestExistingProviderUsesEditFlow(t *testing.T) {
+	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
+		return nil
+	})
+	t.Cleanup(restore)
+
+	cfg := testWebConfig(t)
+	cfg.Providers["deepseek"] = bootstrap.ProviderConfig{
+		Label:   "DeepSeek",
+		Type:    "openai",
+		API:     "chat",
+		APIKey:  "sk-old",
+		BaseURL: "https://api.sfkey.cn/v1",
+		Models:  []string{"deepseek-v4-pro"},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	body := `{"role":"default","original_provider":"deepseek","provider":"deepseek","model":"deepseek-v4-pro","label":"DeepSeek","type":"openai","api":"chat","base_url":"https://api.sfkey.cn/v1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/models/test", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("model test status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "already exists") {
+		t.Fatalf("model test used add-provider flow: %s", rec.Body.String())
+	}
+	var response struct {
+		Test hostpkg.ProviderModelTestResult `json:"test"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Test.Status != "ok" || response.Test.Provider != "deepseek" {
+		t.Fatalf("model test response = %+v", response.Test)
+	}
+	if server.currentConfig().Providers["deepseek"].APIKey != "sk-old" {
+		t.Fatalf("existing provider changed: %+v", server.currentConfig().Providers["deepseek"])
 	}
 }
 

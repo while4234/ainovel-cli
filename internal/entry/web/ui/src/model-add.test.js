@@ -3,6 +3,8 @@ import {
   buildExistingModelActionPayload,
   buildModelAddPayload,
   canSubmitModelAdd,
+  createNewModelDraft,
+  modelAddValidationMessage,
   modelAddModeDefaults,
   modelOptionsForProvider
 } from './App.jsx';
@@ -21,7 +23,7 @@ describe('model add helpers', () => {
     };
 
     expect(buildModelAddPayload(state, null)).toEqual({
-      role: 'writer',
+      select_after_save: false,
       provider: 'grok-oauth',
       model: 'grok-4.3-latest',
       label: 'Grok',
@@ -36,6 +38,31 @@ describe('model add helpers', () => {
       account_id: 'work'
     });
     expect(canSubmitModelAdd(state, null)).toBe(true);
+  });
+
+  it('builds new custom provider payloads without assigning an agent route', () => {
+    const payload = buildModelAddPayload({
+      mode: 'custom',
+      role: 'writer',
+      provider: 'deepseek2',
+      label: 'DeepSeek Relay',
+      template_provider: 'custom',
+      type: 'openai',
+      api: 'chat',
+      model: 'deepseek-v4-pro',
+      api_key: 'sk-test',
+      base_url: 'https://api.example/v1'
+    }, null);
+
+    expect(payload).toMatchObject({
+      select_after_save: false,
+      provider: 'deepseek2',
+      model: 'deepseek-v4-pro',
+      type: 'openai',
+      api: 'chat',
+      base_url: 'https://api.example/v1'
+    });
+    expect(payload).not.toHaveProperty('role');
   });
 
   it('requires a confirmed Grok login before adding the provider', () => {
@@ -135,6 +162,52 @@ describe('model add helpers', () => {
     });
   });
 
+  it('starts a clean one-column new custom draft from an existing provider', () => {
+    const state = createNewModelDraft({
+      mode: 'existing',
+      role: 'writer',
+      original_provider: 'custom-openai',
+      provider: 'custom-openai',
+      label: 'DeepSeek',
+      model: 'deepseek-v4-pro',
+      api_key: 'sk-old',
+      base_url: 'https://api.sfkey.cn/v1',
+      request_timeout_seconds: '',
+      connectivity_timeout_seconds: ''
+    }, [
+      { name: 'custom-openai', models: ['deepseek-v4-pro'] }
+    ], 'custom');
+
+    expect(state).toMatchObject({
+      mode: 'custom',
+      role: 'writer',
+      original_provider: '',
+      provider: 'custom-openai-2',
+      label: 'Custom',
+      model: '',
+      api_key: '',
+      base_url: '',
+      request_timeout_seconds: '120',
+      connectivity_timeout_seconds: '12',
+      network_disconnect_max_attempts: '7'
+    });
+  });
+
+  it('creates a unique provider key when a preset provider already exists', () => {
+    const state = modelAddModeDefaults({
+      mode: 'preset',
+      preset: 'deepseek',
+      role: 'default'
+    }, [
+      { name: 'deepseek', models: ['deepseek-chat'] }
+    ], 'existing');
+
+    expect(state.provider).toBe('deepseek-2');
+    expect(state.request_timeout_seconds).toBe('120');
+    expect(state.connectivity_timeout_seconds).toBe('12');
+    expect(state.network_disconnect_max_attempts).toBe('7');
+  });
+
   it('builds editable existing provider payloads without empty API keys', () => {
     const payload = buildModelAddPayload({
       mode: 'existing',
@@ -158,6 +231,7 @@ describe('model add helpers', () => {
 
     expect(payload).toEqual({
       role: 'writer',
+      select_after_save: true,
       original_provider: 'openai',
       provider: 'openai-proxy',
       model: 'gpt-5.1',
@@ -175,6 +249,31 @@ describe('model add helpers', () => {
     });
     expect(payload).not.toHaveProperty('api_key');
     expect(canSubmitModelAdd({ ...payload, mode: 'existing' }, null)).toBe(true);
+  });
+
+  it('rejects duplicate provider keys only in new-provider mode', () => {
+    const modelConfig = {
+      providers: [{ name: 'deepseek', models: ['deepseek-v4-pro'] }]
+    };
+    const duplicate = {
+      mode: 'custom',
+      role: 'default',
+      provider: 'deepseek',
+      model: 'deepseek-v4-pro',
+      type: 'openai',
+      api: 'chat',
+      base_url: 'https://api.sfkey.cn/v1'
+    };
+    const existing = {
+      ...duplicate,
+      mode: 'existing',
+      original_provider: 'deepseek'
+    };
+
+    expect(modelAddValidationMessage(duplicate, modelConfig)).toContain('已存在');
+    expect(canSubmitModelAdd(duplicate, modelConfig)).toBe(false);
+    expect(modelAddValidationMessage(existing, modelConfig)).toBe('');
+    expect(canSubmitModelAdd(existing, modelConfig)).toBe(true);
   });
 
   it('sends an existing provider API key only when the user enters one', () => {

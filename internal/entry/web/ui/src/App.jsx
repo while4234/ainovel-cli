@@ -440,6 +440,10 @@ const grokOAuthDefaults = {
   model: 'grok-4.3-latest'
 };
 
+const defaultModelRequestTimeoutSeconds = '120';
+const defaultModelConnectivityTimeoutSeconds = '12';
+const defaultModelNetworkDisconnectMaxAttempts = '7';
+
 function createCustomModelState() {
   return {
     mode: 'existing',
@@ -455,9 +459,9 @@ function createCustomModelState() {
     api_key: '',
     api: 'chat',
     use_proxy: false,
-    request_timeout_seconds: '120',
-    connectivity_timeout_seconds: '12',
-    network_disconnect_max_attempts: '7',
+    request_timeout_seconds: defaultModelRequestTimeoutSeconds,
+    connectivity_timeout_seconds: defaultModelConnectivityTimeoutSeconds,
+    network_disconnect_max_attempts: defaultModelNetworkDisconnectMaxAttempts,
     auto_switch_candidate_pool: false,
     discovered_models: [],
     test_status: 'idle',
@@ -2108,28 +2112,56 @@ export default function App() {
   const submitCustomModel = async (event) => {
     event.preventDefault();
     const payload = buildModelAddPayload(customModel, modelConfig);
-    if (!canSubmitModelAdd(customModel, modelConfig)) {
+    const validationMessage = modelAddValidationMessage(customModel, modelConfig);
+    if (validationMessage) {
+      setError(validationMessage);
+      setCustomModel((previous) => ({
+        ...previous,
+        test_scope: 'editor',
+        test_status: 'error',
+        test_message: validationMessage
+      }));
       return;
     }
     setBusy(true);
     setError('');
+    setCustomModel((previous) => ({
+      ...previous,
+      test_scope: 'editor',
+      test_status: 'running',
+      test_message: customModel.mode === 'existing' ? '正在保存配置...' : '正在保存模型...'
+    }));
     try {
+      let nextModels = modelConfig;
       if (activeProject?.id) {
         const data = await addProviderModel(activeProject.id, payload);
-        setModelConfig(data.models || modelConfig);
+        nextModels = data.models || modelConfig;
+        setModelConfig(nextModels);
         setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
         const status = await getBackendStatus(activeProject.id);
         setBackendStatus(status.backend || null);
       } else {
         const data = await addGlobalProviderModel(payload);
-        setModelConfig(data.models || modelConfig);
+        nextModels = data.models || modelConfig;
+        setModelConfig(nextModels);
         if (data.runtime) {
           setRuntime(data.runtime);
         }
       }
-      setCustomModel(createCustomModelState());
+      setCustomModel(modelAddExistingProviderDefaults({
+        ...createCustomModelState(),
+        test_scope: 'editor',
+        test_status: 'ok',
+        test_message: customModel.mode === 'existing' ? '配置已保存' : '模型已保存'
+      }, nextModels?.providers || [], payload.provider, payload.model));
     } catch (err) {
       setError(err.message);
+      setCustomModel((previous) => ({
+        ...previous,
+        test_scope: 'editor',
+        test_status: 'error',
+        test_message: err.message
+      }));
     } finally {
       setBusy(false);
     }
@@ -4789,7 +4821,8 @@ function ModelPanel({
   const selectedPreset = providerPresets.find((preset) => preset.provider === customModel.preset) || providerPresets[0];
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
-  const canAdd = canSubmitModelAdd(customModel, modelConfig);
+  const addValidationMessage = modelAddValidationMessage(customModel, modelConfig);
+  const canAdd = !addValidationMessage;
   const selectedProjectRoute = projectRoles.find((route) => route.role === selectedProjectRole) || projectRoles[0] || null;
   const selectedProjectProvider = selectedProjectRoute?.provider || '';
   const selectedProjectModels = modelOptionsForProvider(providers, selectedProjectProvider, selectedProjectRoute?.model || '');
@@ -4807,6 +4840,10 @@ function ModelPanel({
   const modelSuggestions = mergeModelOptions(discoveredModels, selectedProviderModels, customModel.model);
   const providerEditorID = String(customModel.mode === 'existing' ? customModel.provider : customModel.provider || selectedPreset.provider || '').trim();
   const providerEditorLabel = String(customModel.label || (customModel.mode === 'existing' ? customModel.provider : selectedPreset.label) || '').trim();
+  const editingExistingModel = customModel.mode === 'existing';
+  const startNewModel = () => {
+    setCustomModel((previous) => createNewModelDraft(previous, providers, 'custom'));
+  };
   const canTestEditorConnection = Boolean(providerEditorID);
   const canTestEditorModel = Boolean(providerEditorID && String(customModel.model || '').trim());
   const editorTestMessage = customModel.test_message;
@@ -4967,7 +5004,7 @@ function ModelPanel({
           ) : (
             providerChips.map((provider) => (
               <button
-                className={`provider-chip ${existingProvider === provider.name ? 'active' : ''}`}
+                className={`provider-chip ${editingExistingModel && existingProvider === provider.name ? 'active' : ''}`}
                 disabled={busy}
                 key={provider.name}
                 onClick={() => selectExistingProvider(provider.name, provider.models[0] || '')}
@@ -4981,23 +5018,29 @@ function ModelPanel({
         </div>
         <div className="backend-picker-row">
           <label className="field-label">
-            <span>选择配置</span>
+            <span>已有配置</span>
             <select
               disabled={busy || providers.length === 0}
-              value={existingProvider}
+              value={editingExistingModel ? existingProvider : ''}
               onChange={(event) => {
                 const provider = event.target.value;
                 const models = modelOptionsForProvider(providers, provider, '');
                 selectExistingProvider(provider, models[0] || '');
               }}
             >
-              <option value="">选择配置</option>
+              <option value="">{editingExistingModel ? '选择配置' : '正在新建'}</option>
               {providers.length === 0 ? <option value="">无模型</option> : null}
               {providers.map((provider) => (
                 <option key={provider.name} value={provider.name}>{provider.label || provider.name}</option>
               ))}
             </select>
           </label>
+          <button className="tool-button" disabled={busy} onClick={startNewModel} type="button">
+            <Plus size={16} />
+            新建
+          </button>
+        </div>
+        {editingExistingModel ? (
           <label className="field-label">
             <span>当前模型</span>
             <select
@@ -5011,56 +5054,61 @@ function ModelPanel({
               ))}
             </select>
           </label>
-        </div>
-        {customModel.mode === 'existing' ? (
+        ) : null}
+        {editingExistingModel ? (
           <div className="model-test-note">
             编辑已有配置时，API key 留空会保留旧 key；额度用完会立即切换候选模型，只有网络中断会先按最大尝试次数重试。
           </div>
-        ) : null}
-        <select
-          disabled={busy}
-          value={customModel.role}
-          onChange={(event) => setCustomModel((previous) => ({ ...previous, role: event.target.value }))}
-        >
-          {(roles.length ? roles : [{ role: 'default' }]).map((route) => (
-            <option key={route.role} value={route.role}>{route.role}</option>
-          ))}
-        </select>
-        <select
-          disabled={busy}
-          value={customModel.mode}
-          onChange={(event) => setCustomModel((previous) => modelAddModeDefaults({ ...previous, mode: event.target.value }, providers))}
-        >
-          <option value="existing">编辑已有配置</option>
-          <option value="preset">内置模板</option>
-          <option value="custom">自定义模型</option>
-          <option value="grok_oauth">Grok 登录</option>
-        </select>
-        <label className="model-field">
-          <span>模板厂商</span>
+        ) : (
+          <div className="model-test-note">
+            新建只登记一个新的配置 ID，不会改变 default 或任何 agent 当前使用的模型；配置 ID 只是本地名称，不是 API key。
+          </div>
+        )}
+        {editingExistingModel ? (
           <select
             disabled={busy}
-            value={customModel.mode === 'preset' ? customModel.preset : customModel.template_provider || 'custom'}
-            onChange={(event) => {
-              const value = event.target.value;
-              if (customModel.mode !== 'preset') {
-                setCustomModel((previous) => ({ ...previous, template_provider: value }));
-                return;
-              }
-              const preset = providerPresets.find((item) => item.provider === value);
-              if (preset) {
-                setCustomModel((previous) => modelAddPresetDefaults({ ...previous, mode: 'preset', preset: value }));
-                return;
-              }
-              setCustomModel((previous) => ({ ...previous, template_provider: value }));
-            }}
+            value={customModel.role}
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, role: event.target.value }))}
           >
-            {providerPresets.map((preset) => (
-              <option key={preset.provider} value={preset.provider}>{preset.label}</option>
+            {(roles.length ? roles : [{ role: 'default' }]).map((route) => (
+              <option key={route.role} value={route.role}>{route.role}</option>
             ))}
-            <option value="custom">custom</option>
           </select>
-        </label>
+        ) : null}
+        {!editingExistingModel ? (
+          <>
+            <select
+              disabled={busy}
+              value={customModel.mode}
+              onChange={(event) => setCustomModel((previous) => modelAddModeDefaults({ ...previous, mode: event.target.value }, providers, previous.mode))}
+            >
+              <option value="custom">自定义模型</option>
+              <option value="preset">内置模板</option>
+              <option value="grok_oauth">Grok 登录</option>
+            </select>
+            <label className="model-field">
+              <span>模板厂商</span>
+              <select
+                disabled={busy}
+                value={customModel.mode === 'preset' ? customModel.preset : customModel.template_provider || 'custom'}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  const preset = providerPresets.find((item) => item.provider === value);
+                  if (preset) {
+                    setCustomModel((previous) => modelAddModeDefaults({ ...previous, mode: 'preset', preset: value }, providers, previous.mode));
+                    return;
+                  }
+                  setCustomModel((previous) => modelAddModeDefaults({ ...previous, mode: 'custom', template_provider: value }, providers, previous.mode));
+                }}
+              >
+                <option value="custom">custom</option>
+                {providerPresets.map((preset) => (
+                  <option key={preset.provider} value={preset.provider}>{preset.label}</option>
+                ))}
+              </select>
+            </label>
+          </>
+        ) : null}
         <label className="model-field">
           <span>显示名称</span>
           <input
@@ -5125,10 +5173,10 @@ function ModelPanel({
         {customModel.mode === 'existing' ? (
           <>
             <label className="model-field">
-              <span>Provider key</span>
+              <span>配置 ID (provider key)</span>
               <input
                 disabled={busy}
-                placeholder="provider key"
+                placeholder="例如 deepseek2；不是 API key"
                 value={customModel.provider}
                 onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
               />
@@ -5188,12 +5236,15 @@ function ModelPanel({
                 <option key={preset.provider} value={preset.provider}>{preset.label}</option>
               ))}
             </select>
-            <input
-              disabled={busy}
-              placeholder="provider key"
-              value={customModel.provider || selectedPreset.provider}
-              onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
-            />
+            <label className="model-field">
+              <span>配置 ID (provider key)</span>
+              <input
+                disabled={busy}
+                placeholder="例如 deepseek2；不是 API key"
+                value={customModel.provider || selectedPreset.provider}
+                onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+              />
+            </label>
             <input
               disabled={busy}
               placeholder={selectedPreset.requiresKey ? 'API key' : 'API key 可空'}
@@ -5211,12 +5262,15 @@ function ModelPanel({
         ) : null}
         {customModel.mode === 'custom' ? (
           <>
-            <input
-              disabled={busy}
-              placeholder="provider key"
-              value={customModel.provider}
-              onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
-            />
+            <label className="model-field">
+              <span>配置 ID (provider key)</span>
+              <input
+                disabled={busy}
+                placeholder="例如 deepseek2；不是 API key"
+                value={customModel.provider}
+                onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+              />
+            </label>
             <select
               disabled={busy}
               value={customModel.type}
@@ -5253,12 +5307,15 @@ function ModelPanel({
         ) : null}
         {customModel.mode === 'grok_oauth' ? (
           <>
-            <input
-              disabled={busy}
-              placeholder="provider key"
-              value={customModel.provider}
-              onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
-            />
+            <label className="model-field">
+              <span>配置 ID (provider key)</span>
+              <input
+                disabled={busy}
+                placeholder="例如 grok-oauth-work；不是 API key"
+                value={customModel.provider}
+                onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+              />
+            </label>
             <input
               disabled={busy}
               placeholder="account ID"
@@ -5352,7 +5409,7 @@ function ModelPanel({
               删除配置
             </button>
           ) : null}
-          <button className="tool-button accent" disabled={busy || !canAdd} type="submit">
+          <button className="tool-button accent" disabled={busy} title={canAdd ? '' : addValidationMessage} type="submit">
             <Plus size={16} />
             {customModel.mode === 'existing' ? '保存配置' : '保存模型'}
           </button>
@@ -5586,32 +5643,56 @@ function grokAuthSummary(status) {
   return '未登录';
 }
 
-export function modelAddModeDefaults(state, providers = []) {
+export function createNewModelDraft(previous = {}, providers = [], mode = 'custom') {
+  return modelAddModeDefaults({
+    ...createCustomModelState(),
+    role: previous.role || 'default',
+    mode,
+    preset: previous.preset || 'deepseek'
+  }, providers, 'existing');
+}
+
+export function modelAddModeDefaults(state, providers = [], previousMode = '') {
   if (state.mode === 'preset') {
-    return modelAddPresetDefaults(state);
+    return modelAddPresetDefaults(state, providers, previousMode);
   }
   if (state.mode === 'custom') {
+    const fromExisting = previousMode === 'existing' || Boolean(String(state.original_provider || '').trim());
+    const provider = uniqueProviderKey(fromExisting ? 'custom-openai' : (state.provider || 'custom-openai'), providers);
     return {
       ...state,
       original_provider: '',
-      provider: String(state.provider || '').startsWith('custom-') ? state.provider : 'custom-openai',
-      label: state.label || 'Custom',
+      provider,
+      label: fromExisting ? 'Custom' : (state.label || 'Custom'),
       template_provider: state.template_provider || 'custom',
       type: state.type || 'openai',
-      model: state.model || 'model-name',
+      model: fromExisting ? '' : (state.model || ''),
       api: state.api || 'chat',
       use_proxy: Boolean(state.use_proxy),
-      auth: ''
+      auth: '',
+      api_key: fromExisting ? '' : (state.api_key || ''),
+      base_url: fromExisting ? '' : (state.base_url || ''),
+      request_timeout_seconds: state.request_timeout_seconds || defaultModelRequestTimeoutSeconds,
+      connectivity_timeout_seconds: state.connectivity_timeout_seconds || defaultModelConnectivityTimeoutSeconds,
+      network_disconnect_max_attempts: state.network_disconnect_max_attempts || defaultModelNetworkDisconnectMaxAttempts,
+      auto_switch_candidate_pool: Boolean(state.auto_switch_candidate_pool),
+      test_status: 'idle',
+      test_message: ''
     };
   }
   if (state.mode === 'grok_oauth') {
-    const model = !state.model || state.model === 'model-name' ? grokOAuthDefaults.model : state.model;
-    const provider = String(state.provider || '').trim();
+    const fromExisting = previousMode === 'existing' || Boolean(String(state.original_provider || '').trim());
+    const model = fromExisting || !state.model || state.model === 'model-name' ? grokOAuthDefaults.model : state.model;
+    const rawProvider = String(state.provider || '').trim();
+    const baseProvider = fromExisting || !rawProvider.toLowerCase().includes('grok')
+      ? grokOAuthDefaults.provider
+      : rawProvider;
+    const provider = uniqueProviderKey(baseProvider, providers);
     return {
       ...state,
       original_provider: '',
-      provider: provider.toLowerCase().includes('grok') ? provider : grokOAuthDefaults.provider,
-      label: state.label || 'Grok',
+      provider,
+      label: fromExisting ? 'Grok' : (state.label || 'Grok'),
       template_provider: 'grok',
       type: grokOAuthDefaults.type,
       auth: grokOAuthDefaults.auth,
@@ -5620,8 +5701,13 @@ export function modelAddModeDefaults(state, providers = []) {
       use_proxy: true,
       api_key: '',
       base_url: '',
+      request_timeout_seconds: state.request_timeout_seconds || defaultModelRequestTimeoutSeconds,
+      connectivity_timeout_seconds: state.connectivity_timeout_seconds || defaultModelConnectivityTimeoutSeconds,
+      network_disconnect_max_attempts: state.network_disconnect_max_attempts || defaultModelNetworkDisconnectMaxAttempts,
       account_id: state.account_id || grokOAuthDefaults.account_id,
-      account_name: state.account_name || grokOAuthDefaults.account_name
+      account_name: state.account_name || grokOAuthDefaults.account_name,
+      test_status: 'idle',
+      test_message: ''
     };
   }
   return modelAddExistingProviderDefaults(state, providers);
@@ -5711,12 +5797,13 @@ function mergeModelOptions(...groups) {
   return out;
 }
 
-function modelAddPresetDefaults(state) {
+function modelAddPresetDefaults(state, providers = [], previousMode = '') {
   const preset = providerPresets.find((item) => item.provider === state.preset) || providerPresets[0];
+  const fromExisting = previousMode === 'existing' || Boolean(String(state.original_provider || '').trim());
   return {
     ...state,
     original_provider: '',
-    provider: preset.provider,
+    provider: uniqueProviderKey(fromExisting ? preset.provider : (state.provider || preset.provider), providers),
     label: preset.label,
     template_provider: preset.provider,
     type: preset.type,
@@ -5724,8 +5811,39 @@ function modelAddPresetDefaults(state) {
     base_url: preset.base_url || '',
     model: preset.model,
     api: preset.api || 'chat',
-    use_proxy: Boolean(preset.useProxy)
+    use_proxy: Boolean(preset.useProxy),
+    api_key: fromExisting ? '' : (state.api_key || ''),
+    request_timeout_seconds: state.request_timeout_seconds || defaultModelRequestTimeoutSeconds,
+    connectivity_timeout_seconds: state.connectivity_timeout_seconds || defaultModelConnectivityTimeoutSeconds,
+    network_disconnect_max_attempts: state.network_disconnect_max_attempts || defaultModelNetworkDisconnectMaxAttempts,
+    auto_switch_candidate_pool: Boolean(state.auto_switch_candidate_pool),
+    test_status: 'idle',
+    test_message: ''
   };
+}
+
+function uniqueProviderKey(base, providers = []) {
+  const configured = new Set(providers.map((provider) => String(provider.name || '').trim()).filter(Boolean));
+  const seed = slugProviderKey(base, 'custom-openai');
+  if (!configured.has(seed)) {
+    return seed;
+  }
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = `${seed}-${index}`;
+    if (!configured.has(candidate)) {
+      return candidate;
+    }
+  }
+  return `${seed}-${Date.now()}`;
+}
+
+function slugProviderKey(value, fallback) {
+  const slug = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || fallback;
 }
 
 function optionalModelTimeout(value) {
@@ -5754,12 +5872,13 @@ export function buildExistingModelActionPayload(role, provider, model) {
 }
 
 export function buildModelAddPayload(state, modelConfig) {
-  const role = state.role || 'default';
   if (state.mode === 'existing') {
+    const role = state.role || 'default';
     const providers = modelConfig?.providers || [];
     const provider = String(state.provider || providers[0]?.name || '').trim();
     const payload = {
       role,
+      select_after_save: true,
       original_provider: String(state.original_provider || provider).trim(),
       provider,
       model: String(state.model || '').trim(),
@@ -5777,7 +5896,7 @@ export function buildModelAddPayload(state, modelConfig) {
   }
   if (state.mode === 'grok_oauth') {
     return {
-      role,
+      select_after_save: false,
       provider: String(state.provider || grokOAuthDefaults.provider).trim(),
       model: String(state.model || grokOAuthDefaults.model).trim(),
       ...providerPayloadFields({ ...state, use_proxy: state.use_proxy ?? true }, { label: 'Grok', provider: 'grok' }),
@@ -5789,7 +5908,7 @@ export function buildModelAddPayload(state, modelConfig) {
   if (state.mode === 'preset') {
     const preset = providerPresets.find((item) => item.provider === state.preset) || providerPresets[0];
     return {
-      role,
+      select_after_save: false,
       provider: String(state.provider || preset.provider).trim(),
       model: String(state.model || preset.model).trim(),
       ...providerPayloadFields(state, { label: preset.label, provider: preset.provider }),
@@ -5800,7 +5919,7 @@ export function buildModelAddPayload(state, modelConfig) {
     };
   }
   return {
-    role,
+    select_after_save: false,
     provider: String(state.provider || '').trim(),
     model: String(state.model || '').trim(),
     ...providerPayloadFields(state, { label: 'Custom', provider: 'custom' }),
@@ -5812,23 +5931,57 @@ export function buildModelAddPayload(state, modelConfig) {
 }
 
 export function canSubmitModelAdd(state, modelConfig) {
+  return modelAddValidationMessage(state, modelConfig) === '';
+}
+
+export function modelAddValidationMessage(state, modelConfig) {
   const payload = buildModelAddPayload(state, modelConfig);
+  const provider = String(payload.provider || '').trim();
+  const model = String(payload.model || '').trim();
+  const hasProviderList = Array.isArray(modelConfig?.providers);
+  const providers = hasProviderList ? modelConfig.providers : [];
+  const providerExists = (name) => providers.some((item) => String(item.name || '').trim() === name);
+  if (!provider) {
+    return '请填写配置 ID (provider key)。';
+  }
+  if (!model) {
+    return '请填写模型名称。';
+  }
+  if (state.mode === 'existing') {
+    const originalProvider = String(payload.original_provider || '').trim();
+    if (!originalProvider || (hasProviderList && !providerExists(originalProvider))) {
+      return '请选择要编辑的已有配置。';
+    }
+    if (provider !== originalProvider && providerExists(provider)) {
+      return `配置 ID "${provider}" 已存在，请换一个 ID。`;
+    }
+  } else if (providerExists(provider)) {
+    return `配置 ID "${provider}" 已存在，请换一个 ID，或从“已有配置”里编辑它。`;
+  }
   if (!payload.provider || !payload.model) {
-    return false;
+    return '请填写配置 ID 和模型名称。';
   }
   if (state.mode === 'grok_oauth') {
-    return Boolean(payload.account_id) && grokLoggedIn(state.grok_status);
+    if (!payload.account_id) {
+      return '请填写 Grok 账号 ID。';
+    }
+    if (!grokLoggedIn(state.grok_status)) {
+      return '请先完成 Grok 登录，再保存配置。';
+    }
   }
   if (state.mode === 'preset') {
     const preset = providerPresets.find((item) => item.provider === state.preset) || providerPresets[0];
     if (preset.requiresKey && !payload.api_key) {
-      return false;
+      return '请填写 API key。';
     }
   }
   if (state.mode === 'custom' && !payload.base_url) {
-    return false;
+    return '请填写 base URL。';
   }
-  return true;
+  if (state.mode === 'custom' && !payload.type) {
+    return '请选择协议类型。';
+  }
+  return '';
 }
 
 export function buildBeginCoCreatePayload({ kind, initial = '', fallbackInitial = '', sourceFile = '', mode = '', targetTotalWords = 0 } = {}) {

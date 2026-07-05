@@ -103,7 +103,9 @@ type projectHost interface {
 	AddProviderModel(string, string, bootstrap.ProviderConfig, string) error
 	ConfigureProviderModel(context.Context, host.ProviderModelUpdate) error
 	TestProviderModel(context.Context, string, string, bootstrap.ProviderConfig, string) (host.ProviderModelTestResult, error)
+	TestConfiguredProviderModel(context.Context, host.ProviderModelUpdate) (host.ProviderModelTestResult, error)
 	DiscoverProviderModels(context.Context, string, bootstrap.ProviderConfig, string) (host.ProviderModelDiscoveryResult, error)
+	DiscoverConfiguredProviderModels(context.Context, host.ProviderModelUpdate) (host.ProviderModelDiscoveryResult, error)
 	RemoveProviderModel(string, string) error
 	StartGrokLogin(string, string) (grokauth.LoginStart, error)
 	PollGrokLogin() (grokauth.LoginPoll, error)
@@ -397,27 +399,25 @@ func (s *ProjectSession) AddProviderModel(role, provider, model string, pc boots
 }
 
 func (s *ProjectSession) ConfigureProviderModel(ctx context.Context, req modelProviderRequest) (apiModelConfig, error) {
-	if err := s.host.ConfigureProviderModel(ctx, host.ProviderModelUpdate{
-		Role:                    normalizeModelRole(req.Role),
-		OriginalProvider:        req.OriginalProvider,
-		Provider:                req.Provider,
-		Model:                   req.Model,
-		ProviderConfig:          req.providerConfig(),
-		NetworkMaxAttempts:      req.NetworkDisconnectMaxAttempts,
-		AutoSwitchCandidatePool: req.AutoSwitchCandidatePool,
-	}); err != nil {
+	if err := s.host.ConfigureProviderModel(ctx, req.providerModelUpdate()); err != nil {
 		return apiModelConfig{}, err
 	}
 	s.AppendSnapshot()
 	return s.ModelConfig(), nil
 }
 
-func (s *ProjectSession) TestProviderModel(ctx context.Context, role, provider, model string, pc bootstrap.ProviderConfig) (host.ProviderModelTestResult, error) {
-	return s.host.TestProviderModel(ctx, normalizeModelRole(role), provider, pc, model)
+func (s *ProjectSession) TestProviderModel(ctx context.Context, req modelProviderRequest) (host.ProviderModelTestResult, error) {
+	if strings.TrimSpace(req.OriginalProvider) != "" {
+		return s.host.TestConfiguredProviderModel(ctx, req.providerModelUpdate())
+	}
+	return s.host.TestProviderModel(ctx, normalizeModelRole(req.Role), req.Provider, req.providerConfig(), req.Model)
 }
 
-func (s *ProjectSession) DiscoverProviderModels(ctx context.Context, provider, model string, pc bootstrap.ProviderConfig) (host.ProviderModelDiscoveryResult, error) {
-	return s.host.DiscoverProviderModels(ctx, provider, pc, model)
+func (s *ProjectSession) DiscoverProviderModels(ctx context.Context, req modelProviderRequest) (host.ProviderModelDiscoveryResult, error) {
+	if strings.TrimSpace(req.OriginalProvider) != "" {
+		return s.host.DiscoverConfiguredProviderModels(ctx, req.providerModelUpdate())
+	}
+	return s.host.DiscoverProviderModels(ctx, req.Provider, req.providerConfig(), req.Model)
 }
 
 func (s *ProjectSession) RemoveProviderModel(provider, model string) (apiModelConfig, error) {

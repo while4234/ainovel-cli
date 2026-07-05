@@ -103,6 +103,7 @@ type modelProviderRequest struct {
 	ConnectivityTimeoutSeconds   int    `json:"connectivity_timeout_seconds"`
 	NetworkDisconnectMaxAttempts int    `json:"network_disconnect_max_attempts"`
 	AutoSwitchCandidatePool      bool   `json:"auto_switch_candidate_pool"`
+	SelectAfterSave              *bool  `json:"select_after_save"`
 }
 
 func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
@@ -124,6 +125,19 @@ func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
 		pc.UseProxy = &useProxy
 	}
 	return pc
+}
+
+func (r modelProviderRequest) providerModelUpdate() host.ProviderModelUpdate {
+	return host.ProviderModelUpdate{
+		Role:                    normalizeModelRole(r.Role),
+		OriginalProvider:        strings.TrimSpace(r.OriginalProvider),
+		Provider:                strings.TrimSpace(r.Provider),
+		Model:                   strings.TrimSpace(r.Model),
+		ProviderConfig:          r.providerConfig(),
+		NetworkMaxAttempts:      r.NetworkDisconnectMaxAttempts,
+		AutoSwitchCandidatePool: r.AutoSwitchCandidatePool,
+		SelectAfterSave:         r.SelectAfterSave,
+	}
 }
 
 func (r coCreateTimeoutRequest) value() int {
@@ -282,7 +296,12 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := s.currentConfig()
 	pc := req.providerConfig()
-	result, _ := host.TestProviderModelInConfig(r.Context(), cfg, req.Role, req.Provider, pc, req.Model)
+	var result host.ProviderModelTestResult
+	if strings.TrimSpace(req.OriginalProvider) != "" {
+		result, _ = host.TestConfiguredProviderModelInConfig(r.Context(), cfg, req.providerModelUpdate())
+	} else {
+		result, _ = host.TestProviderModelInConfig(r.Context(), cfg, req.Role, req.Provider, pc, req.Model)
+	}
 	result.Message = redactModelProviderMessage(result.Message, cfg, pc)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"test": result,
@@ -301,7 +320,12 @@ func (s *Server) handleModelDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := s.currentConfig()
 	pc := req.providerConfig()
-	result, _ := host.DiscoverProviderModelsInConfig(r.Context(), cfg, req.Provider, pc, req.Model)
+	var result host.ProviderModelDiscoveryResult
+	if strings.TrimSpace(req.OriginalProvider) != "" {
+		result, _ = host.DiscoverConfiguredProviderModelsInConfig(r.Context(), cfg, req.providerModelUpdate())
+	} else {
+		result, _ = host.DiscoverProviderModelsInConfig(r.Context(), cfg, req.Provider, pc, req.Model)
+	}
 	result.Message = redactModelProviderMessage(result.Message, cfg, pc)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"discovery": result,
@@ -390,15 +414,7 @@ func (s *Server) addGlobalProviderModelWithProbe(ctx context.Context, role, prov
 }
 
 func (s *Server) configureGlobalProviderModel(ctx context.Context, req modelProviderRequest) (apiModelConfig, map[string]any, error) {
-	next, err := host.ConfigureProviderModelInConfig(ctx, s.currentConfig(), host.ProviderModelUpdate{
-		Role:                    normalizeModelRole(req.Role),
-		OriginalProvider:        req.OriginalProvider,
-		Provider:                req.Provider,
-		Model:                   req.Model,
-		ProviderConfig:          req.providerConfig(),
-		NetworkMaxAttempts:      req.NetworkDisconnectMaxAttempts,
-		AutoSwitchCandidatePool: req.AutoSwitchCandidatePool,
-	})
+	next, err := host.ConfigureProviderModelInConfig(ctx, s.currentConfig(), req.providerModelUpdate())
 	if err != nil {
 		return apiModelConfig{}, nil, err
 	}
@@ -672,7 +688,7 @@ func (s *Server) handleProjectModelTest(w http.ResponseWriter, r *http.Request, 
 		writeProjectSessionError(w, err)
 		return
 	}
-	result, _ := session.TestProviderModel(r.Context(), req.Role, req.Provider, req.Model, req.providerConfig())
+	result, _ := session.TestProviderModel(r.Context(), req)
 	result.Message = redactModelProviderMessage(result.Message, s.currentConfig(), req.providerConfig())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project": manifest,
@@ -695,7 +711,7 @@ func (s *Server) handleProjectModelDiscover(w http.ResponseWriter, r *http.Reque
 		writeProjectSessionError(w, err)
 		return
 	}
-	result, _ := session.DiscoverProviderModels(r.Context(), req.Provider, req.Model, req.providerConfig())
+	result, _ := session.DiscoverProviderModels(r.Context(), req)
 	result.Message = redactModelProviderMessage(result.Message, s.currentConfig(), req.providerConfig())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":   manifest,

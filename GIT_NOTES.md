@@ -29,6 +29,27 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `fix: clarify web model config flow`:
+  Web model configuration now separates existing-provider editing from a clean
+  `+ 新建` model flow in the right sidebar's one-column layout. New drafts no
+  longer inherit the selected provider's Base URL/API key/model and no longer
+  show or send an agent/role selection; they register provider/model config via
+  `select_after_save:false`, leaving default/coordinator/architect/writer/editor
+  assignment to the existing model selectors. `provider key` is labeled as a
+  local configuration ID rather than an API key, new model drafts default request
+  timeout to 120 seconds, connectivity timeout to 12 seconds, and network retry
+  count to 7, and save validation surfaces inline errors instead of appearing
+  inert. Existing-provider test/discovery requests now pass `original_provider`
+  through the configured-provider path so testing `deepseek` no longer fails
+  with a duplicate-provider add-flow error. Existing-provider saves skip upstream
+  probes for local-only edits such as ID/display-name/timeouts/candidate-pool
+  changes, so an exhausted or invalid upstream token does not block local
+  renames; model/Base URL/protocol/auth/API-key changes still probe. Validation
+  passed for focused/full Web UI tests, focused Go host/web tests before and
+  after Web build, Vite build, and `git diff --check` with CRLF warnings only.
+  Local Web was rebuilt/restarted on `http://127.0.0.1:9898`; old PID `18908`
+  was stopped, new PID is `54724`, and `/` plus `/api/models` returned HTTP 200.
+- Latest source change: current local commit
   `feat: add adaptation cocreate briefing`:
   Adapt co-create now builds an intent-driven pre-draft briefing for oversized
   source novels, using persisted all-book dossier batches as input instead of

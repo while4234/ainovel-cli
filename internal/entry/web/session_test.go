@@ -1773,9 +1773,26 @@ func (f *fakeProjectHost) TestProviderModel(_ context.Context, _ string, provide
 	}, nil
 }
 
+func (f *fakeProjectHost) TestConfiguredProviderModel(_ context.Context, update host.ProviderModelUpdate) (host.ProviderModelTestResult, error) {
+	return host.ProviderModelTestResult{
+		Provider: update.Provider,
+		Model:    update.Model,
+		Status:   "ok",
+	}, nil
+}
+
 func (f *fakeProjectHost) DiscoverProviderModels(_ context.Context, providerName string, _ bootstrap.ProviderConfig, _ string) (host.ProviderModelDiscoveryResult, error) {
 	return host.ProviderModelDiscoveryResult{
 		Provider:  providerName,
+		Models:    []string{"model-a", "model-b"},
+		Supported: true,
+		Status:    "ok",
+	}, nil
+}
+
+func (f *fakeProjectHost) DiscoverConfiguredProviderModels(_ context.Context, update host.ProviderModelUpdate) (host.ProviderModelDiscoveryResult, error) {
+	return host.ProviderModelDiscoveryResult{
+		Provider:  update.Provider,
 		Models:    []string{"model-a", "model-b"},
 		Supported: true,
 		Status:    "ok",

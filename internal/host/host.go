@@ -1366,6 +1366,11 @@ type ProviderModelUpdate struct {
 	ProviderConfig          bootstrap.ProviderConfig
 	NetworkMaxAttempts      int
 	AutoSwitchCandidatePool bool
+	SelectAfterSave         *bool
+}
+
+func (u ProviderModelUpdate) shouldSelectAfterSave() bool {
+	return u.SelectAfterSave == nil || *u.SelectAfterSave
 }
 
 func (h *Host) ConfigureProviderModel(ctx context.Context, update ProviderModelUpdate) error {
@@ -1376,6 +1381,7 @@ func (h *Host) ConfigureProviderModel(ctx context.Context, update ProviderModelU
 	if update.Role == "" {
 		update.Role = "default"
 	}
+	selectAfterSave := update.shouldSelectAfterSave()
 
 	h.mu.Lock()
 	base := h.cfg
@@ -1385,12 +1391,14 @@ func (h *Host) ConfigureProviderModel(ctx context.Context, update ProviderModelU
 	if err != nil {
 		return err
 	}
-	probeModel, err := bootstrap.NewProviderModelWithConfig(candidate, provider, model, providerConfig)
-	if err != nil {
-		return err
-	}
-	if err := addedModelConnectivityProbe(ctx, probeModel, bootstrap.ProviderConnectivityTimeout(providerConfig)); err != nil {
-		return err
+	if configuredProviderModelRequiresProbe(base, update, providerConfig, originalProvider, model) {
+		probeModel, err := bootstrap.NewProviderModelWithConfig(candidate, provider, model, providerConfig)
+		if err != nil {
+			return err
+		}
+		if err := addedModelConnectivityProbe(ctx, probeModel, bootstrap.ProviderConnectivityTimeout(providerConfig)); err != nil {
+			return err
+		}
 	}
 
 	h.mu.Lock()
@@ -1415,13 +1423,19 @@ func (h *Host) ConfigureProviderModel(ctx context.Context, update ProviderModelU
 	}
 	h.cfg = candidate
 	h.models.RegisterProvider(provider, providerConfig)
-	h.syncProjectModelOverlayLocked(update.Role, originalProvider, provider, model)
+	if selectAfterSave {
+		h.syncProjectModelOverlayLocked(update.Role, originalProvider, provider, model)
+	} else {
+		h.syncProjectProviderOverlayLocked(originalProvider, provider, model)
+	}
 	if err := h.persistConfigLocked(); err != nil {
 		slog.Warn("save provider model config failed", "module", "host", "err", err)
 	}
-	h.normalizeThinkingLocked(update.Role)
-	h.applyThinkingLocked(update.Role)
-	h.refreshCoordinatorContextWindowLocked(update.Role, model)
+	if selectAfterSave {
+		h.normalizeThinkingLocked(update.Role)
+		h.applyThinkingLocked(update.Role)
+		h.refreshCoordinatorContextWindowLocked(update.Role, model)
+	}
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
@@ -1436,16 +1450,21 @@ func ConfigureProviderModelInConfig(ctx context.Context, cfg bootstrap.Config, u
 	if update.Role == "" {
 		update.Role = "default"
 	}
-	candidate, providerConfig, _, provider, model, err := prepareConfiguredProviderModelConfig(cfg, update)
+	candidate, providerConfig, originalProvider, provider, model, err := prepareConfiguredProviderModelConfig(cfg, update)
 	if err != nil {
 		return bootstrap.Config{}, err
 	}
-	probeModel, err := bootstrap.NewProviderModelWithConfig(candidate, provider, model, providerConfig)
-	if err != nil {
-		return bootstrap.Config{}, err
+	if configuredProviderModelRequiresProbe(cfg, update, providerConfig, originalProvider, model) {
+		probeModel, err := bootstrap.NewProviderModelWithConfig(candidate, provider, model, providerConfig)
+		if err != nil {
+			return bootstrap.Config{}, err
+		}
+		if err := addedModelConnectivityProbe(ctx, probeModel, bootstrap.ProviderConnectivityTimeout(providerConfig)); err != nil {
+			return bootstrap.Config{}, err
+		}
 	}
-	if err := addedModelConnectivityProbe(ctx, probeModel, bootstrap.ProviderConnectivityTimeout(providerConfig)); err != nil {
-		return bootstrap.Config{}, err
+	if !update.shouldSelectAfterSave() {
+		return candidate, nil
 	}
 	return SelectProviderModelInConfig(candidate, update.Role, provider, model)
 }
@@ -1474,6 +1493,13 @@ func (h *Host) TestProviderModel(ctx context.Context, role, providerName string,
 	cfg := cloneProjectConfig(h.cfg)
 	h.mu.Unlock()
 	return TestProviderModelInConfig(ctx, cfg, role, providerName, providerConfig, model)
+}
+
+func (h *Host) TestConfiguredProviderModel(ctx context.Context, update ProviderModelUpdate) (ProviderModelTestResult, error) {
+	h.mu.Lock()
+	cfg := cloneProjectConfig(h.cfg)
+	h.mu.Unlock()
+	return TestConfiguredProviderModelInConfig(ctx, cfg, update)
 }
 
 func TestProviderModelInConfig(ctx context.Context, cfg bootstrap.Config, role, providerName string, providerConfig bootstrap.ProviderConfig, model string) (ProviderModelTestResult, error) {
@@ -1515,11 +1541,54 @@ func TestProviderModelInConfig(ctx context.Context, cfg bootstrap.Config, role, 
 	return result, nil
 }
 
+func TestConfiguredProviderModelInConfig(ctx context.Context, cfg bootstrap.Config, update ProviderModelUpdate) (ProviderModelTestResult, error) {
+	providerName := strings.TrimSpace(update.Provider)
+	if providerName == "" {
+		providerName = strings.TrimSpace(update.OriginalProvider)
+	}
+	model := strings.TrimSpace(update.Model)
+	update.Provider = providerName
+	update.Model = model
+	result := ProviderModelTestResult{
+		Provider:  providerName,
+		Model:     model,
+		Status:    "error",
+		CheckedAt: time.Now(),
+	}
+	candidate, providerConfig, _, providerName, model, err := prepareConfiguredProviderModelConfig(cfg, update)
+	result.Provider = providerName
+	result.Model = model
+	result.UseProxy = bootstrap.ProviderUsesProxy(providerName, model, providerConfig)
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	probeModel, err := bootstrap.NewProviderModelWithConfig(candidate, providerName, model, providerConfig)
+	if err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	if err := addedModelConnectivityProbe(ctx, probeModel, bootstrap.ProviderConnectivityTimeout(providerConfig)); err != nil {
+		result.Message = err.Error()
+		return result, err
+	}
+	result.Status = "ok"
+	result.Message = "model test passed"
+	return result, nil
+}
+
 func (h *Host) DiscoverProviderModels(ctx context.Context, providerName string, providerConfig bootstrap.ProviderConfig, model string) (ProviderModelDiscoveryResult, error) {
 	h.mu.Lock()
 	cfg := cloneProjectConfig(h.cfg)
 	h.mu.Unlock()
 	return DiscoverProviderModelsInConfig(ctx, cfg, providerName, providerConfig, model)
+}
+
+func (h *Host) DiscoverConfiguredProviderModels(ctx context.Context, update ProviderModelUpdate) (ProviderModelDiscoveryResult, error) {
+	h.mu.Lock()
+	cfg := cloneProjectConfig(h.cfg)
+	h.mu.Unlock()
+	return DiscoverConfiguredProviderModelsInConfig(ctx, cfg, update)
 }
 
 func DiscoverProviderModelsInConfig(ctx context.Context, cfg bootstrap.Config, providerName string, providerConfig bootstrap.ProviderConfig, model string) (ProviderModelDiscoveryResult, error) {
@@ -1544,6 +1613,61 @@ func DiscoverProviderModelsInConfig(ctx context.Context, cfg bootstrap.Config, p
 		}
 	}
 	candidate, providerConfig, _, err := prepareAddedProviderModelConfig(cfg, "default", providerName, providerConfig, model)
+	result.UseProxy = bootstrap.ProviderUsesProxy(providerName, model, providerConfig)
+	if err != nil {
+		result.Models = fallbackDiscoveryModels(cfg, providerName, model)
+		result.Message = err.Error()
+		return result, err
+	}
+	models, supported, err := bootstrap.DiscoverProviderModels(ctx, candidate, providerName, model, providerConfig)
+	result.Models = mergeDiscoveryModels(models, fallbackDiscoveryModels(candidate, providerName, model))
+	result.Supported = supported
+	if err != nil {
+		result.Message = err.Error()
+		if !supported {
+			result.Status = "fallback"
+			return result, nil
+		}
+		return result, err
+	}
+	if !supported {
+		result.Status = "fallback"
+		result.Message = "provider does not support live model discovery"
+		return result, nil
+	}
+	result.Status = "ok"
+	result.Message = "model discovery completed"
+	return result, nil
+}
+
+func DiscoverConfiguredProviderModelsInConfig(ctx context.Context, cfg bootstrap.Config, update ProviderModelUpdate) (ProviderModelDiscoveryResult, error) {
+	providerName := strings.TrimSpace(update.Provider)
+	model := strings.TrimSpace(update.Model)
+	result := ProviderModelDiscoveryResult{
+		Provider:  providerName,
+		Supported: false,
+		Status:    "error",
+		CheckedAt: time.Now(),
+	}
+	if providerName == "" {
+		providerName = strings.TrimSpace(update.OriginalProvider)
+	}
+	update.Provider = providerName
+	if model == "" {
+		fallbackProvider := strings.TrimSpace(update.OriginalProvider)
+		if fallbackProvider == "" {
+			fallbackProvider = providerName
+		}
+		if candidates := cfg.CandidateModels(fallbackProvider); len(candidates) > 0 {
+			model = candidates[0]
+		} else {
+			model = cfg.ModelName
+		}
+		update.Model = model
+	}
+	update.Model = model
+	candidate, providerConfig, _, providerName, model, err := prepareConfiguredProviderModelConfig(cfg, update)
+	result.Provider = providerName
 	result.UseProxy = bootstrap.ProviderUsesProxy(providerName, model, providerConfig)
 	if err != nil {
 		result.Models = fallbackDiscoveryModels(cfg, providerName, model)
@@ -1742,6 +1866,13 @@ func prepareConfiguredProviderModelConfig(cfg bootstrap.Config, update ProviderM
 		return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", err
 	}
 
+	if !update.shouldSelectAfterSave() {
+		if err := candidate.ValidateBase(); err != nil {
+			return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", err
+		}
+		return candidate, candidate.Providers[provider], originalProvider, provider, model, nil
+	}
+
 	selected, err := SelectProviderModelInConfig(candidate, role, provider, model)
 	if err != nil {
 		return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", err
@@ -1775,6 +1906,31 @@ func mergeEditedProviderConfig(existing, incoming bootstrap.ProviderConfig, mode
 	}
 	merged.Models = appendUniqueString(models, model)
 	return merged
+}
+
+func configuredProviderModelRequiresProbe(cfg bootstrap.Config, update ProviderModelUpdate, providerConfig bootstrap.ProviderConfig, originalProvider, model string) bool {
+	originalProvider = strings.TrimSpace(originalProvider)
+	if originalProvider == "" {
+		originalProvider = strings.TrimSpace(update.OriginalProvider)
+	}
+	if originalProvider == "" {
+		return true
+	}
+	existing, ok := cfg.Providers[originalProvider]
+	if !ok {
+		return true
+	}
+	if !configHasProviderModel(cfg, originalProvider, strings.TrimSpace(model)) {
+		return true
+	}
+	if strings.TrimSpace(update.ProviderConfig.APIKey) != "" {
+		return true
+	}
+	return strings.TrimSpace(existing.Type) != strings.TrimSpace(providerConfig.Type) ||
+		strings.TrimSpace(existing.Auth) != strings.TrimSpace(providerConfig.Auth) ||
+		strings.TrimSpace(existing.AccountID) != strings.TrimSpace(providerConfig.AccountID) ||
+		strings.TrimSpace(existing.API) != strings.TrimSpace(providerConfig.API) ||
+		strings.TrimSpace(existing.BaseURL) != strings.TrimSpace(providerConfig.BaseURL)
 }
 
 func applyModelAutoSwitchUpdate(cfg *bootstrap.Config, provider string, attempts int, include bool) error {
@@ -2043,6 +2199,19 @@ func (h *Host) syncProjectModelOverlayLocked(role, originalProvider, provider, m
 		return
 	}
 	h.recordProjectRouteLocked(role, provider, model)
+}
+
+func (h *Host) syncProjectProviderOverlayLocked(originalProvider, provider, model string) {
+	overlay := h.ensureProjectOverlayLocked()
+	if overlay == nil {
+		return
+	}
+	if originalProvider != "" && originalProvider != provider {
+		delete(overlay.Providers, originalProvider)
+		renameProviderReferencesInConfig(overlay, originalProvider, provider)
+	}
+	overlay.ModelAutoSwitch = cloneModelAutoSwitchConfig(h.cfg.ModelAutoSwitch)
+	recordProjectProviderModel(overlay, provider, model)
 }
 
 func (h *Host) recordProjectRouteLocked(role, provider, model string) {

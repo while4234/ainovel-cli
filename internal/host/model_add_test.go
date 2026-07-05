@@ -295,6 +295,134 @@ func TestConfigureProviderModelRejectsFailedProbeWithoutMutating(t *testing.T) {
 	}
 }
 
+func TestConfigureProviderModelLocalEditSkipsConnectivityProbe(t *testing.T) {
+	withModelConnectivityProbe(t, errors.New("probe should not run for local edit"))
+	cfg := bootstrap.Config{
+		Provider:  "custom-openai",
+		ModelName: "deepseek-v4-pro",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"custom-openai": {
+				Label:   "DeepSeek",
+				Type:    "openai",
+				API:     "chat",
+				APIKey:  "sk-old",
+				BaseURL: "https://yuanyuicloud.cn/v1",
+				Models:  []string{"deepseek-v4-pro"},
+			},
+		},
+	}
+	cfg.FillDefaults()
+
+	next, err := ConfigureProviderModelInConfig(context.Background(), cfg, ProviderModelUpdate{
+		Role:             "default",
+		OriginalProvider: "custom-openai",
+		Provider:         "deepseek_yuanyu_0",
+		Model:            "deepseek-v4-pro",
+		ProviderConfig: bootstrap.ProviderConfig{
+			Label:   "deepseek_yuanyu_0",
+			Type:    "openai",
+			API:     "chat",
+			BaseURL: "https://yuanyuicloud.cn/v1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ConfigureProviderModelInConfig local edit: %v", err)
+	}
+	if _, ok := next.Providers["custom-openai"]; ok {
+		t.Fatal("old provider key still exists")
+	}
+	pc := next.Providers["deepseek_yuanyu_0"]
+	if pc.APIKey != "sk-old" || pc.Label != "deepseek_yuanyu_0" {
+		t.Fatalf("edited provider config = %+v", pc)
+	}
+	if next.Provider != "deepseek_yuanyu_0" || next.ModelName != "deepseek-v4-pro" {
+		t.Fatalf("default route after rename = %s/%s", next.Provider, next.ModelName)
+	}
+}
+
+func TestConfigureProviderModelCanSaveWithoutSelectingRoute(t *testing.T) {
+	withModelConnectivityProbe(t, nil)
+	selectAfterSave := false
+	cfg := bootstrap.Config{
+		Provider:  "openai",
+		ModelName: "gpt-base",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"openai": {Type: "openai", APIKey: "sk-openai", Models: []string{"gpt-base"}},
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"writer": {Provider: "openai", Model: "gpt-base"},
+		},
+	}
+	cfg.FillDefaults()
+
+	next, err := ConfigureProviderModelInConfig(context.Background(), cfg, ProviderModelUpdate{
+		Role:     "writer",
+		Provider: "deepseek2",
+		Model:    "deepseek-v4-pro",
+		ProviderConfig: bootstrap.ProviderConfig{
+			Label:   "DeepSeek Relay",
+			Type:    "openai",
+			API:     "chat",
+			APIKey:  "sk-deepseek",
+			BaseURL: "https://api.example/v1",
+		},
+		SelectAfterSave: &selectAfterSave,
+	})
+	if err != nil {
+		t.Fatalf("ConfigureProviderModelInConfig without select: %v", err)
+	}
+	if _, ok := next.Providers["deepseek2"]; !ok {
+		t.Fatal("new provider was not saved")
+	}
+	if next.Provider != "openai" || next.ModelName != "gpt-base" {
+		t.Fatalf("default route changed to %s/%s", next.Provider, next.ModelName)
+	}
+	if rc := next.Roles["writer"]; rc.Provider != "openai" || rc.Model != "gpt-base" {
+		t.Fatalf("writer route changed: %+v", rc)
+	}
+}
+
+func TestConfiguredProviderModelProbeAllowsExistingProviderEdit(t *testing.T) {
+	withModelConnectivityProbe(t, nil)
+	cfg := bootstrap.Config{
+		Provider:  "deepseek",
+		ModelName: "deepseek-v4-pro",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"deepseek": {
+				Label:   "DeepSeek",
+				Type:    "openai",
+				API:     "chat",
+				APIKey:  "sk-old",
+				BaseURL: "https://api.sfkey.cn/v1",
+				Models:  []string{"deepseek-v4-pro"},
+			},
+		},
+	}
+	cfg.FillDefaults()
+
+	result, err := TestConfiguredProviderModelInConfig(context.Background(), cfg, ProviderModelUpdate{
+		Role:             "default",
+		OriginalProvider: "deepseek",
+		Provider:         "deepseek",
+		Model:            "deepseek-v4-pro",
+		ProviderConfig: bootstrap.ProviderConfig{
+			Label:   "DeepSeek",
+			Type:    "openai",
+			API:     "chat",
+			BaseURL: "https://api.sfkey.cn/v1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("TestConfiguredProviderModelInConfig: %v", err)
+	}
+	if result.Status != "ok" || result.Provider != "deepseek" || result.Model != "deepseek-v4-pro" {
+		t.Fatalf("configured model test = %+v", result)
+	}
+	if cfg.Providers["deepseek"].APIKey != "sk-old" {
+		t.Fatalf("input provider changed: %+v", cfg.Providers["deepseek"])
+	}
+}
+
 func withModelConnectivityProbe(t *testing.T, err error) {
 	t.Helper()
 	restore := SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
