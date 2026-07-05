@@ -51,4 +51,5 @@ type ImportResult struct {
 	ImportedSources int
 	SkippedSources  int
 	ProfilePath     string
+	ModelMerged     bool
 }

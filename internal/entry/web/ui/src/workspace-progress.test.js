@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyAdaptationProposalSnapshot,
+  applyHostEventToSimulationState,
   buildAdaptationProposalKey,
   buildAdaptationRevisionPayload,
   buildBeginCoCreatePayload,
@@ -870,6 +871,74 @@ describe('workspace progress derivation', () => {
     expect(profile.sourceCount).toBe(2);
     expect(profile.sourceFiles).toEqual(['a.txt', 'b.txt']);
     expect(profile.signals).toContain('章尾反转');
+  });
+
+  it('does not start the simulation library save flow automatically when analysis completes', () => {
+    const next = applyHostEventToSimulationState({
+      files: [],
+      uploadMessage: '',
+      analysisStatus: 'running',
+      analysisEvents: [],
+      importStatus: 'idle',
+      importEvents: [],
+      importMessage: '',
+      libraryQuery: '',
+      libraryStatus: 'idle',
+      libraryItems: [],
+      libraryMessage: '',
+      libraryError: '',
+      saveName: '',
+      saveStatus: 'running',
+      saveError: 'old error',
+      error: ''
+    }, {
+      type: 'host_event',
+      event: {
+        category: 'SIMULATE',
+        kind: 'done',
+        level: 'success',
+        summary: '仿写画像已完成'
+      }
+    });
+
+    expect(next.analysisStatus).toBe('done');
+    expect(next.saveStatus).toBe('idle');
+    expect(next.saveError).toBe('');
+  });
+
+  it('keeps import merge progress in the load-profile workflow', () => {
+    const next = applyHostEventToSimulationState({
+      files: [],
+      uploadMessage: '',
+      analysisStatus: 'idle',
+      analysisEvents: [],
+      importStatus: 'running',
+      importEvents: [],
+      importMessage: '',
+      libraryQuery: '',
+      libraryStatus: 'idle',
+      libraryItems: [],
+      libraryMessage: '',
+      libraryError: '',
+      saveName: '',
+      saveStatus: 'idle',
+      saveError: '',
+      error: ''
+    }, {
+      type: 'host_event',
+      event: {
+        category: 'SIMULATE',
+        kind: 'merge',
+        level: 'info',
+        summary: '分批重合成仿写画像 24/49'
+      }
+    });
+
+    expect(next.importStatus).toBe('running');
+    expect(next.importEvents).toHaveLength(1);
+    expect(next.importEvents[0].message).toContain('分批重合成');
+    expect(next.analysisStatus).toBe('idle');
+    expect(next.analysisEvents).toHaveLength(0);
   });
 
   it('restores uploaded simulation source files from refresh responses', () => {

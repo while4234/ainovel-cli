@@ -26,7 +26,7 @@ func TestImportProfileValidatesSchemaAndMergesByFingerprint(t *testing.T) {
 	if err := os.WriteFile(badPath, []byte(`{"version":"wrong"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ImportProfile(context.Background(), st, badPath); err == nil || !strings.Contains(err.Error(), "unsupported simulation profile") {
+	if _, err := ImportProfile(context.Background(), Deps{Store: st}, badPath); err == nil || !strings.Contains(err.Error(), "unsupported simulation profile") {
 		t.Fatalf("expected schema validation error, got %v", err)
 	}
 
@@ -46,12 +46,23 @@ func TestImportProfileValidatesSchemaAndMergesByFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := ImportProfile(context.Background(), st, importPath)
+	llm := &scriptedLLM{responses: []string{validSynthesisJSON("model merged import")}}
+	result, err := ImportProfile(context.Background(), Deps{
+		Store:   st,
+		LLM:     llm,
+		Prompts: Prompts{Merge: "merge prompt"},
+	}, importPath)
 	if err != nil {
 		t.Fatalf("ImportProfile: %v", err)
 	}
 	if result.ImportedSources != 1 || result.SkippedSources != 1 {
 		t.Fatalf("unexpected import result: %+v", result)
+	}
+	if !result.ModelMerged {
+		t.Fatal("expected import to re-synthesize with model")
+	}
+	if got := llm.calls.Load(); got != 1 {
+		t.Fatalf("LLM calls = %d, want 1", got)
 	}
 	merged, err := st.Simulation.Load()
 	if err != nil {
@@ -60,12 +71,75 @@ func TestImportProfileValidatesSchemaAndMergesByFingerprint(t *testing.T) {
 	if len(merged.Corpus.Sources) != 2 || len(merged.SourceReports) != 2 {
 		t.Fatalf("expected duplicate fingerprint to be skipped, got %+v", merged)
 	}
+	if got := merged.Synthesis.Style.ProseTexture; len(got) != 1 || got[0] != "model merged import" {
+		t.Fatalf("synthesis was not replaced by model merge: %+v", merged.Synthesis)
+	}
 	checkpoint, err := st.Simulation.LoadMergeCheckpoint()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if checkpoint != nil {
 		t.Fatalf("import should clear merge checkpoint: %+v", checkpoint)
+	}
+}
+
+func TestImportProfileBatchesLargeImportedProfiles(t *testing.T) {
+	dir := t.TempDir()
+	st := store.NewStore(filepath.Join(dir, "output", "novel"))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	existing := testProfile("existing.txt", "sha-existing", "old")
+	if err := st.Simulation.Save(existing); err != nil {
+		t.Fatal(err)
+	}
+
+	reports := make([]domain.SimulationSourceReport, maxMergeReportsPerBatch+1)
+	for i := range reports {
+		reports[i] = verboseSourceReport(i + 1)
+	}
+	imported := profileFromReports(reports)
+	importPath := filepath.Join(dir, "large-profile.json")
+	data, err := domain.MarshalSimulationProfile(imported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(importPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	responses := make([]string, len(reports)+1)
+	for i := range responses {
+		responses[i] = validSynthesisJSON("batched import")
+	}
+	llm := &scriptedLLM{responses: responses}
+
+	result, err := ImportProfile(context.Background(), Deps{
+		Store:   st,
+		LLM:     llm,
+		Prompts: Prompts{Merge: "merge prompt"},
+	}, importPath)
+	if err != nil {
+		t.Fatalf("ImportProfile: %v", err)
+	}
+	if !result.ModelMerged {
+		t.Fatal("expected model merge for imported sources")
+	}
+	if got := llm.calls.Load(); got <= 1 {
+		t.Fatalf("LLM calls = %d, want batched calls", got)
+	}
+	merged, err := st.Simulation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merged.Corpus.Sources) != len(reports)+1 {
+		t.Fatalf("source count = %d, want %d", len(merged.Corpus.Sources), len(reports)+1)
+	}
+	checkpoint, err := st.Simulation.LoadMergeCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint != nil {
+		t.Fatalf("final import should clear merge checkpoint: %+v", checkpoint)
 	}
 }
 
@@ -95,6 +169,22 @@ func testProfile(path, sha, summary string) domain.SimulationProfile {
 			},
 		},
 	}
+}
+
+func profileFromReports(reports []domain.SimulationSourceReport) domain.SimulationProfile {
+	profile := domain.SimulationProfile{
+		Version:   domain.SimulationProfileVersion,
+		Synthesis: synthesisFixture("imported profile"),
+	}
+	for _, report := range reports {
+		profile.Corpus.Sources = append(profile.Corpus.Sources, domain.SimulationSource{
+			RelativePath: report.RelativePath,
+			SHA256:       report.SHA256,
+			Fingerprint:  report.Fingerprint,
+		})
+		profile.SourceReports = append(profile.SourceReports, report)
+	}
+	return profile
 }
 
 func testMergeCheckpoint(path, sha string) domain.SimulationMergeCheckpoint {

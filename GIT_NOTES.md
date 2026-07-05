@@ -39,6 +39,22 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   Validation passed for full `go test ./...`, full Web UI Vitest, Vite build,
   current runtime project-config scan with zero unknown provider refs, and one
   connectivity test per configured provider/model combo.
+- Latest source change: pending local changes
+  `feat: resynthesize imported simulation profiles`:
+  Web simulation UI now keeps the profile library controls at the top, with an
+  inline profile-name input directly above the full-width "保存当前画像到库"
+  action, next to the existing "上传 JSON 到库" flow. It no longer auto-opens or
+  auto-starts any save flow when analysis completes, and the "加载画像" import
+  section moved above the TXT/MD corpus list so it remains reachable after large
+  uploads. Importing a `simulation_profile.v1` JSON into a project that already
+  has a profile now first merges sources and source reports by fingerprint, then
+  uses the existing batched simulation merge pipeline to re-synthesize
+  `synthesis` with the architect model; large imports are compacted and split by
+  report count/prompt size, with merge checkpoints saved after successful
+  batches and cleared after final save. Validation passed for full Web UI tests,
+  full `go test ./...`, Vite build, `git diff --check` with CRLF warnings only,
+  and local Web restart on `http://127.0.0.1:9898` as PID `59192`. The final
+  static bundle no longer contains the removed save-dialog markers.
 - Latest source change: current local commit
   `fix: hydrate project event history on open`:
   Web project switching now hydrates the workbench from a JSON event-history

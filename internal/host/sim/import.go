@@ -10,11 +10,20 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
-	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-func ImportProfile(ctx context.Context, st *store.Store, path string) (ImportResult, error) {
-	if st == nil {
+type importProfileOptions struct {
+	Call         structuredJSONCallOptions
+	OnBatch      func(mergeSynthesisProgress)
+	OnCheckpoint func(mergeSynthesisCheckpoint) error
+}
+
+func ImportProfile(ctx context.Context, deps Deps, path string) (ImportResult, error) {
+	return importProfileWithOptions(ctx, deps, path, importProfileOptions{})
+}
+
+func importProfileWithOptions(ctx context.Context, deps Deps, path string, opts importProfileOptions) (ImportResult, error) {
+	if deps.Store == nil {
 		return ImportResult{}, fmt.Errorf("store is nil")
 	}
 	path = strings.TrimSpace(path)
@@ -35,48 +44,106 @@ func ImportProfile(ctx context.Context, st *store.Store, path string) (ImportRes
 	if err := domain.ValidateSimulationProfile(&imported); err != nil {
 		return ImportResult{}, err
 	}
-	existing, err := st.Simulation.Load()
+	existing, err := deps.Store.Simulation.Load()
 	if err != nil {
 		return ImportResult{}, err
 	}
 
 	merged, result := mergeImportedProfile(existing, imported, time.Now())
 	result.ProfilePath = path
-	if err := st.Simulation.Save(merged); err != nil {
-		return ImportResult{}, err
+	if shouldResynthesizeImportedProfile(existing, result, merged) {
+		if deps.LLM == nil {
+			return ImportResult{}, fmt.Errorf("llm is nil")
+		}
+		checkpoint, err := deps.Store.Simulation.LoadMergeCheckpoint()
+		if err != nil {
+			return ImportResult{}, fmt.Errorf("read merge checkpoint: %w", err)
+		}
+		if checkpoint != nil {
+			if _, ok := validMergeCheckpoint(checkpoint, merged.SourceReports); !ok {
+				if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
+					return ImportResult{}, fmt.Errorf("clear stale merge checkpoint: %w", err)
+				}
+				checkpoint = nil
+			}
+		}
+		onCheckpoint := opts.OnCheckpoint
+		if onCheckpoint == nil {
+			onCheckpoint = func(checkpoint mergeSynthesisCheckpoint) error {
+				domainCheckpoint := buildSimulationMergeCheckpoint(merged.SourceReports, maxMergePromptBytes, checkpoint, time.Now())
+				if domainCheckpoint == nil {
+					return nil
+				}
+				return deps.Store.Simulation.SaveMergeCheckpoint(*domainCheckpoint)
+			}
+		}
+		synthesis, err := mergeSynthesisBatchedWithOptions(ctx, deps.LLM, deps.Prompts.Merge, &merged, merged.SourceReports, mergeSynthesisOptions{
+			Call:         opts.Call,
+			Checkpoint:   checkpoint,
+			OnBatch:      opts.OnBatch,
+			OnCheckpoint: onCheckpoint,
+		})
+		if err != nil {
+			return ImportResult{}, err
+		}
+		merged.Synthesis = *synthesis
+		result.ModelMerged = true
 	}
-	if err := st.Simulation.ClearMergeCheckpoint(); err != nil {
+	if err := saveFinalSimulationProfile(deps.Store.Simulation, merged); err != nil {
 		return ImportResult{}, err
 	}
 	return result, nil
 }
 
-func RunImport(ctx context.Context, st *store.Store, path string) (<-chan Event, error) {
-	if st == nil {
+func RunImport(ctx context.Context, deps Deps, path string) (<-chan Event, error) {
+	if deps.Store == nil {
 		return nil, fmt.Errorf("store is nil")
 	}
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("profile path is required")
 	}
-	events := make(chan Event, 8)
+	events := make(chan Event, 32)
 	go func() {
 		defer close(events)
-		emit := func(stage Stage, msg string, err error) {
-			ev := Event{Time: time.Now(), Stage: stage, Message: msg, Err: err}
+		emit := func(stage Stage, current, total int, msg string, err error) {
+			ev := Event{Time: time.Now(), Stage: stage, Current: current, Total: total, Message: msg, Err: err}
 			select {
 			case events <- ev:
 			case <-ctx.Done():
 			}
 		}
-		emit(StageImport, "导入仿写画像...", nil)
-		result, err := ImportProfile(ctx, st, path)
+		emit(StageImport, 0, 1, "导入仿写画像...", nil)
+		mergeCurrent, mergeTotal := 0, 0
+		result, err := importProfileWithOptions(ctx, deps, path, importProfileOptions{
+			Call: structuredJSONCallOptions{
+				OnRetry: func(ev structuredJSONRetryEvent) {
+					emit(StageMerge, mergeCurrent, mergeTotal, fmt.Sprintf("重试 %d/%d：%v", ev.Attempt, ev.MaxAttempts, ev.Err), ev.Err)
+				},
+			},
+			OnBatch: func(progress mergeSynthesisProgress) {
+				mergeCurrent, mergeTotal = progress.Current, progress.Total
+				msg := "重合成仿写画像..."
+				if progress.BatchTotal > 1 {
+					msg = fmt.Sprintf("分批重合成仿写画像 %d/%d（批次 %d/%d，%d 篇）...", progress.Current, progress.Total, progress.BatchIndex, progress.BatchTotal, progress.BatchSize)
+				}
+				emit(StageMerge, progress.Current, progress.Total, msg, nil)
+			},
+		})
 		if err != nil {
-			emit(StageError, "导入仿写画像失败", err)
+			emit(StageError, mergeCurrent, mergeTotal, "导入仿写画像失败", err)
 			return
 		}
-		emit(StageDone, fmt.Sprintf("仿写画像已导入：新增 %d 篇，跳过重复 %d 篇", result.ImportedSources, result.SkippedSources), nil)
+		message := fmt.Sprintf("仿写画像已导入：新增 %d 篇，跳过重复 %d 篇", result.ImportedSources, result.SkippedSources)
+		if result.ModelMerged {
+			message += "，已分批重合成画像"
+		}
+		emit(StageDone, result.ImportedSources, result.ImportedSources+result.SkippedSources, message, nil)
 	}()
 	return events, nil
+}
+
+func shouldResynthesizeImportedProfile(existing *domain.SimulationProfile, result ImportResult, merged domain.SimulationProfile) bool {
+	return existing != nil && result.ImportedSources > 0 && len(merged.SourceReports) > 0
 }
 
 func mergeImportedProfile(existing *domain.SimulationProfile, imported domain.SimulationProfile, now time.Time) (domain.SimulationProfile, ImportResult) {

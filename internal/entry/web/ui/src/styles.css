@@ -265,6 +265,7 @@ h2 {
 
 .create-project input,
 .composer input,
+.library-save-stack input,
 .steer-form textarea,
 .adapt-brief,
 .cocreate-form textarea,
@@ -293,6 +294,7 @@ h2 {
 
 .create-project input,
 .composer input,
+.library-save-stack input,
 .model-route-editor select,
 .default-model-controls select,
 .backend-picker-row select,
@@ -308,6 +310,7 @@ h2 {
 
 .create-project input:focus,
 .composer input:focus,
+.library-save-stack input:focus,
 .steer-form textarea:focus,
 .adapt-brief:focus,
 .cocreate-form textarea:focus,
@@ -1661,6 +1664,18 @@ h2 {
 .simulation-event strong {
   color: var(--muted);
   font-size: 12px;
+}
+
+.library-save-stack {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.library-save-stack input:disabled {
+  background: #f7fafc;
+  color: var(--muted);
+  cursor: not-allowed;
 }
 
 .library-row {

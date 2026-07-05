@@ -158,7 +158,6 @@ function createSimulationState() {
     libraryItems: [],
     libraryMessage: '',
     libraryError: '',
-    saveDialogOpen: false,
     saveName: '',
     saveStatus: 'idle',
     saveError: '',
@@ -321,7 +320,7 @@ function workflowStatusFromHostEvent(webEvent) {
   return 'running';
 }
 
-function applyHostEventToSimulationState(previous, webEvent) {
+export function applyHostEventToSimulationState(previous, webEvent) {
   const event = webEvent?.event || {};
   if (String(event.category || '').toUpperCase() !== 'SIMULATE') {
     return previous;
@@ -330,7 +329,7 @@ function applyHostEventToSimulationState(previous, webEvent) {
   const workflowEvent = workflowEventFromHostEvent(webEvent);
   const status = workflowStatusFromHostEvent(webEvent);
   const importEvent = stage === 'import' ||
-    (stage === 'done' && previous.importStatus === 'running' && previous.analysisStatus !== 'running');
+    (previous.importStatus === 'running' && previous.analysisStatus !== 'running' && ['merge', 'done', 'error'].includes(stage));
   if (importEvent) {
     return {
       ...previous,
@@ -344,7 +343,6 @@ function applyHostEventToSimulationState(previous, webEvent) {
     ...previous,
     analysisStatus: status,
     analysisEvents: appendWorkflowEvent(previous.analysisEvents, workflowEvent),
-    saveDialogOpen: status === 'done' && previous.analysisStatus === 'running' ? true : previous.saveDialogOpen,
     saveStatus: status === 'done' ? 'idle' : previous.saveStatus,
     saveError: status === 'done' ? '' : previous.saveError,
     error: status === 'error' ? (workflowEvent.error || workflowEvent.message) : previous.error
@@ -1252,8 +1250,6 @@ export default function App() {
         ...previous,
         analysisStatus: 'done',
         analysisEvents: data.events || [],
-        saveDialogOpen: true,
-        saveName: '',
         saveStatus: 'idle',
         saveError: '',
         error: ''
@@ -1345,7 +1341,6 @@ export default function App() {
         libraryItems: libraryItemsFromResponse(listData),
         libraryMessage: libraryMessageFromResponse(saveData) || `已添加画像：${name}`,
         libraryError: '',
-        saveDialogOpen: false,
         saveName: '',
         saveStatus: 'done',
         saveError: ''
@@ -1353,16 +1348,6 @@ export default function App() {
     } catch (err) {
       setSimulation((previous) => ({ ...previous, saveStatus: 'error', saveError: err.message }));
     }
-  };
-
-  const closeSimulationSaveDialog = () => {
-    setSimulation((previous) => ({
-      ...previous,
-      saveDialogOpen: false,
-      saveName: '',
-      saveStatus: 'idle',
-      saveError: ''
-    }));
   };
 
   const loadSimulationProfileFromLibrary = async (entry) => {
@@ -2715,7 +2700,6 @@ export default function App() {
               onUploadLibrary={uploadSimulationProfilesToLibrary}
               onLoadLibrary={loadSimulationProfileFromLibrary}
               onSaveToLibrary={saveSimulationProfileToLibrary}
-              onCloseSaveDialog={closeSimulationSaveDialog}
             />
           ) : sideView === 'adapt' ? (
             <AdaptationPanel
@@ -3982,7 +3966,7 @@ function AdaptationPanel({
         </div>
         {analyzed ? (
           <LibrarySaveRow
-            disabled={!canSaveNovel}
+            canSave={canSaveNovel}
             error={adaptation.librarySaveError}
             name={adaptation.librarySaveName}
             placeholder="小说仓库名称"
@@ -4084,8 +4068,7 @@ function SimulationPanel({
   onRefreshLibrary,
   onUploadLibrary,
   onLoadLibrary,
-  onSaveToLibrary,
-  onCloseSaveDialog
+  onSaveToLibrary
 }) {
   const latestAnalysis = latestSimulationEvent(simulation.analysisEvents);
   const latestImport = latestSimulationEvent(simulation.importEvents);
@@ -4094,6 +4077,7 @@ function SimulationPanel({
   const libraryBusy = simulation.libraryStatus === 'running';
   const simulationProfileBusy = isSimulationProfileActionBusy(simulation);
   const simulationActionDisabled = simulationProfileBusy;
+  const canSaveCurrentProfile = Boolean(activeProject && profile.loaded && !busy && !libraryBusy && !simulationProfileBusy);
   const canAnalyze = canRunSimulationAnalysis({ activeProject, busy, simulation });
   return (
     <>
@@ -4130,6 +4114,20 @@ function SimulationPanel({
           上传 JSON 到库
           <input accept=".json,application/json" disabled={busy || libraryBusy} multiple onChange={onUploadLibrary} type="file" />
         </label>
+        <LibrarySaveRow
+          canSave={canSaveCurrentProfile}
+          error={simulation.saveError}
+          name={simulation.saveName}
+          placeholder={profile.loaded ? '输入画像名称' : '当前项目暂无画像'}
+          saving={simulation.saveStatus === 'running'}
+          onNameChange={(value) => setSimulation((previous) => ({
+            ...previous,
+            saveName: value,
+            saveError: '',
+            saveStatus: previous.saveStatus === 'error' ? 'idle' : previous.saveStatus
+          }))}
+          onSave={onSaveToLibrary}
+        />
         <LibraryList
           canLoad={Boolean(activeProject && !busy && !libraryBusy && !simulationProfileBusy)}
           emptyText="暂无画像条目"
@@ -4138,6 +4136,23 @@ function SimulationPanel({
           onLoad={onLoadLibrary}
         />
         <LibraryFeedback error={simulation.libraryError} message={simulation.libraryMessage} />
+      </section>
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <FileJson size={17} />
+          <span>加载画像</span>
+        </div>
+        <label className={`tool-button file-picker full ${!activeProject || simulationActionDisabled ? 'disabled' : ''}`}>
+          <FileJson size={16} />
+          上传 JSON
+          <input accept=".json,application/json" disabled={!activeProject || simulationActionDisabled} onChange={onImportProfile} type="file" />
+        </label>
+        <div className={`workflow-status ${simulation.importStatus}`}>
+          <strong>{workflowStatusText(simulation.importStatus)}</strong>
+          <span>{simulation.importMessage || latestImport?.message || '等待导入'}</span>
+        </div>
+        <SimulationEventList events={simulation.importEvents} />
       </section>
 
       <section className="simulation-section">
@@ -4188,33 +4203,7 @@ function SimulationPanel({
         </div>
         <SimulationEventList events={simulation.analysisEvents} />
       </section>
-
-      <section className="simulation-section">
-        <div className="section-title">
-          <FileJson size={17} />
-          <span>加载画像</span>
-        </div>
-        <label className={`tool-button file-picker full ${!activeProject || simulationActionDisabled ? 'disabled' : ''}`}>
-          <FileJson size={16} />
-          上传 JSON
-          <input accept=".json,application/json" disabled={!activeProject || simulationActionDisabled} onChange={onImportProfile} type="file" />
-        </label>
-        <div className={`workflow-status ${simulation.importStatus}`}>
-          <strong>{workflowStatusText(simulation.importStatus)}</strong>
-          <span>{simulation.importMessage || latestImport?.message || '等待导入'}</span>
-        </div>
-        <SimulationEventList events={simulation.importEvents} />
-      </section>
       </div>
-      {simulation.saveDialogOpen ? (
-        <SimulationSaveDialog
-          busy={busy || simulationProfileBusy}
-          simulation={simulation}
-          setSimulation={setSimulation}
-          onClose={onCloseSaveDialog}
-          onSave={onSaveToLibrary}
-        />
-      ) : null}
     </>
   );
 }
@@ -4282,58 +4271,22 @@ function LibraryFeedback({ error, message }) {
   return null;
 }
 
-function LibrarySaveRow({ disabled, error, name, placeholder, saving, onNameChange, onSave }) {
+function LibrarySaveRow({ canSave, error, name, placeholder, saving, onNameChange, onSave }) {
+  const canSubmit = Boolean(canSave && name.trim() && !saving);
   return (
     <div className="library-save-stack">
-      <div className="library-save-row">
-        <input
-          disabled={saving}
-          placeholder={placeholder}
-          value={name}
-          onChange={(event) => onNameChange(event.target.value)}
-        />
-        <button className="tool-button" disabled={disabled || saving} onClick={onSave} type="button">
-          <Plus size={16} />
-          保存
-        </button>
-      </div>
+      <input
+        aria-label="画像名称"
+        disabled={!canSave || saving}
+        placeholder={placeholder}
+        value={name}
+        onChange={(event) => onNameChange(event.target.value)}
+      />
+      <button className="tool-button full-width" disabled={!canSubmit} onClick={onSave} type="button">
+        <Plus size={16} />
+        保存当前画像到库
+      </button>
       {error ? <div className="error-banner compact">{error}</div> : null}
-    </div>
-  );
-}
-
-function SimulationSaveDialog({ busy, simulation, setSimulation, onClose, onSave }) {
-  const saving = simulation.saveStatus === 'running';
-  const canSave = Boolean(simulation.saveName.trim()) && !busy && !saving;
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <div aria-modal="true" className="confirm-dialog" role="dialog" aria-labelledby="simulation-save-title">
-        <div className="section-title">
-          <Database size={17} />
-          <span id="simulation-save-title">添加到仿写画像库</span>
-        </div>
-        <div className="confirm-dialog-body">
-          <input
-            aria-label="画像名称"
-            autoFocus
-            disabled={saving}
-            placeholder="输入画像名称"
-            value={simulation.saveName}
-            onChange={(event) => setSimulation((previous) => ({ ...previous, saveName: event.target.value, saveError: '' }))}
-          />
-          {simulation.saveError ? <div className="error-banner compact">{simulation.saveError}</div> : null}
-        </div>
-        <div className="dialog-actions">
-          <button className="tool-button" disabled={saving} onClick={onClose} type="button">
-            <ListRestart size={16} />
-            暂不添加
-          </button>
-          <button className="tool-button accent" disabled={!canSave} onClick={onSave} type="button">
-            <Plus size={16} />
-            添加
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

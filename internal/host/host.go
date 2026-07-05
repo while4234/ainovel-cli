@@ -2638,6 +2638,24 @@ func cloneProjectConfig(cfg bootstrap.Config) bootstrap.Config {
 	return out
 }
 
+func cloneHostRuntimeConfig(cfg bootstrap.Config) bootstrap.Config {
+	out := cloneProjectConfig(cfg)
+	out.OutputDir = cfg.OutputDir
+	out.PersistPath = cfg.PersistPath
+	out.PersistProjectOverlay = cfg.PersistProjectOverlay
+	if cfg.PersistProviders != nil {
+		out.PersistProviders = make(map[string]bool, len(cfg.PersistProviders))
+		for provider, owned := range cfg.PersistProviders {
+			out.PersistProviders[provider] = owned
+		}
+	}
+	if cfg.PersistProjectConfig != nil {
+		project := cloneProjectConfig(*cfg.PersistProjectConfig)
+		out.PersistProjectConfig = &project
+	}
+	return out
+}
+
 func cloneModelAutoSwitchConfig(cfg bootstrap.ModelAutoSwitchConfig) bootstrap.ModelAutoSwitchConfig {
 	out := cfg
 	out.FallbackBackends = append([]string(nil), cfg.FallbackBackends...)
@@ -3096,7 +3114,14 @@ func (h *Host) ImportSimulationProfile(ctx context.Context, path string) (<-chan
 	if err := h.guardExclusive("导入仿写画像"); err != nil {
 		return nil, err
 	}
-	return sim.RunImport(ctx, h.store, path)
+	deps := sim.Deps{
+		Store: h.store,
+		LLM:   h.models.ForRole("architect"),
+		Prompts: sim.Prompts{
+			Merge: h.bundle.Prompts.SimulationMerge,
+		},
+	}
+	return sim.RunImport(ctx, deps, path)
 }
 
 // guardExclusive 检查独占占用：coordinator 运行中或阶段共创窗口内时拒绝会改写状态的入口
