@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest source change: pending local changes
+- Latest source change: current local commit
   `fix: stabilize adaptation analysis and co-create review`:
   Adaptation source foundation merge now batches by source-report rune budget
   and recursively merges partial foundations, so large novels no longer send a
@@ -505,7 +505,12 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-05 pending `fix: stabilize adaptation analysis and co-create review`:
+- 2026-07-05 current local commit `test: stabilize legacy library backfill test`:
+  captured the fake adaptation-analysis start channel in the legacy
+  novel-library load regression before issuing the request, avoiding a mutable
+  field read in the select path.
+
+- 2026-07-05 current local commit `fix: stabilize adaptation analysis and co-create review`:
   added recursive batched foundation aggregation, configurable model/structure
   retries, normal co-create planning approval UI, stream/workbench isolation
   fixes, safe writer chapter inference, and refreshed Web static assets.

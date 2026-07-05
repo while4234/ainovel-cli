@@ -290,7 +290,8 @@ func TestNovelLibraryLoadLegacyEntryStartsDossierBackfill(t *testing.T) {
 		t.Fatalf("CreateProject target: %v", err)
 	}
 	fake := installFakeSession(t, server, targetProject)
-	fake.adaptAnalyzeStarted = make(chan struct{})
+	started := make(chan struct{})
+	fake.adaptAnalyzeStarted = started
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+targetProject.ID+"/adapt/library/load", bytes.NewBufferString(`{"name":"Legacy Novel"}`))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -298,7 +299,7 @@ func TestNovelLibraryLoadLegacyEntryStartsDossierBackfill(t *testing.T) {
 		t.Fatalf("load status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	select {
-	case <-fake.adaptAnalyzeStarted:
+	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("legacy library load did not start adaptation backfill")
 	}
