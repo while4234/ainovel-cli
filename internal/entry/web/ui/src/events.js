@@ -33,6 +33,13 @@ export function reduceWebEvent(state, event) {
   return next;
 }
 
+export function reduceWebEvents(state, events = []) {
+  if (!Array.isArray(events) || events.length === 0) {
+    return state;
+  }
+  return events.reduce((next, event) => reduceWebEvent(next, event), state);
+}
+
 export function mergeEventRows(rows, event) {
   if (!event?.host_event_id) {
     return [...rows, event];

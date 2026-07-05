@@ -573,6 +573,37 @@ func TestProjectSessionServeEventsHonorsAfter(t *testing.T) {
 	}
 }
 
+func TestProjectSessionEventHistoryHonorsAfterWithoutAppendingSnapshot(t *testing.T) {
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, newFakeProjectHost())
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	old := session.appendStreamDelta("old delta")
+	newer := session.appendStreamDelta("new delta")
+	beforeLatest := session.EventHistory(0).LatestSeq
+
+	history := session.EventHistory(old.Seq)
+	if history.ProjectID != "project-1" {
+		t.Fatalf("history project id = %q", history.ProjectID)
+	}
+	if history.LatestSeq != beforeLatest || history.LatestSeq != newer.Seq {
+		t.Fatalf("history should not append events while reading: before=%d after=%d newer=%d", beforeLatest, history.LatestSeq, newer.Seq)
+	}
+	if history.HistoryLimit != webEventHistoryLimit {
+		t.Fatalf("history limit = %d, want %d", history.HistoryLimit, webEventHistoryLimit)
+	}
+	if len(history.Events) != 1 || history.Events[0].Seq != newer.Seq {
+		t.Fatalf("history after %d = %+v, want only seq %d", old.Seq, history.Events, newer.Seq)
+	}
+	for _, ev := range history.Events {
+		if ev.Type == webEventTypeSnapshot {
+			t.Fatalf("event history should not append snapshot events: %+v", history.Events)
+		}
+	}
+}
+
 func TestProjectSessionPublishesCoCreateProgressWithoutWritingStream(t *testing.T) {
 	fake := newFakeProjectHost()
 	fake.cocreateProgress = []coCreateProgressStep{
@@ -896,6 +927,13 @@ func TestProjectAPIErrorPaths(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid after status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/projects/project-1/events/history?after=abc", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid history after status = %d body=%s", rec.Code, rec.Body.String())
 	}
 
 	projectID := createProjectViaAPI(t, handler, "Needs Text")

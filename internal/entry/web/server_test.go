@@ -175,6 +175,32 @@ func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
 	if !sawID || !sawSnapshotEvent || !sawSnapshotData {
 		t.Fatalf("SSE stream missing snapshot event: id=%v event=%v data=%v", sawID, sawSnapshotEvent, sawSnapshotData)
 	}
+	eventsResp.Body.Close()
+
+	historyResp, err := client.Get(httpServer.URL + "/api/projects/" + manifest.ID + "/events/history?after=0")
+	if err != nil {
+		t.Fatalf("event history request: %v", err)
+	}
+	defer historyResp.Body.Close()
+	if historyResp.StatusCode != http.StatusOK {
+		t.Fatalf("event history status = %d", historyResp.StatusCode)
+	}
+	if ctype := historyResp.Header.Get("content-type"); !strings.HasPrefix(ctype, "application/json") {
+		t.Fatalf("event history content-type = %q", ctype)
+	}
+	var historyBody WebEventHistory
+	if err := json.NewDecoder(historyResp.Body).Decode(&historyBody); err != nil {
+		t.Fatalf("decode event history response: %v", err)
+	}
+	if historyBody.ProjectID != manifest.ID {
+		t.Fatalf("event history project id = %q, want %q", historyBody.ProjectID, manifest.ID)
+	}
+	if historyBody.LatestSeq == 0 || historyBody.HistoryLimit == 0 || len(historyBody.Events) == 0 {
+		t.Fatalf("event history missing replay metadata/events: %+v", historyBody)
+	}
+	if historyBody.Events[len(historyBody.Events)-1].Type != webEventTypeSnapshot {
+		t.Fatalf("event history should include the replayed snapshot from SSE setup: %+v", historyBody.Events)
+	}
 }
 
 func TestHandlerCreatesProjectsUnderRuntimeRoot(t *testing.T) {

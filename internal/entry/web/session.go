@@ -1839,6 +1839,23 @@ func (s *ProjectSession) HistoryAfter(after int64) []WebEvent {
 	return s.historyAfterLocked(after)
 }
 
+func (s *ProjectSession) EventHistory(after int64) WebEventHistory {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var oldestSeq, latestSeq int64
+	if len(s.history) > 0 {
+		oldestSeq = s.history[0].Seq
+		latestSeq = s.history[len(s.history)-1].Seq
+	}
+	return WebEventHistory{
+		ProjectID:    s.manifest.ID,
+		Events:       s.historyAfterLocked(after),
+		OldestSeq:    oldestSeq,
+		LatestSeq:    latestSeq,
+		HistoryLimit: webEventHistoryLimit,
+	}
+}
+
 func (s *ProjectSession) Close() {
 	if s.host != nil {
 		s.host.Close()
@@ -2458,6 +2475,14 @@ type WebEvent struct {
 	Stream      *APIStreamEvent   `json:"stream,omitempty"`
 	Snapshot    any               `json:"snapshot,omitempty"`
 	CoCreate    *webCoCreateState `json:"cocreate,omitempty"`
+}
+
+type WebEventHistory struct {
+	ProjectID    string     `json:"project_id"`
+	Events       []WebEvent `json:"events"`
+	OldestSeq    int64      `json:"oldest_seq"`
+	LatestSeq    int64      `json:"latest_seq"`
+	HistoryLimit int        `json:"history_limit"`
 }
 
 type APIHostEvent struct {

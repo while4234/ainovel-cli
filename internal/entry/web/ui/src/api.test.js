@@ -14,6 +14,7 @@ import {
   exportProjectDownload,
   getChapter,
   getGlobalModels,
+  getProjectEvents,
   listNovelLibrary,
   listProjectTrash,
   listSimulationLibrary,
@@ -182,6 +183,16 @@ describe('web API helpers', () => {
     await getChapter('project-1', 3);
 
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/chapters/3', expect.objectContaining({}));
+  });
+
+  it('fetches project event history with an after cursor', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ events: [] }));
+
+    await getProjectEvents('project 1', 7);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project%201/events/history?after=7', expect.objectContaining({
+      headers: {}
+    }));
   });
 
   it('downloads exported novel blobs with metadata', async () => {

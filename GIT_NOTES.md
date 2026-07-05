@@ -28,6 +28,19 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source change: current local commit
+  `fix: hydrate project event history on open`:
+  Web project switching now hydrates the workbench from a JSON event-history
+  endpoint before relying on the live SSE stream. The new
+  `/api/projects/{id}/events/history?after=N` route is read-only, does not
+  append snapshots, and returns replay metadata (`oldest_seq`, `latest_seq`,
+  `history_limit`) alongside `WebEvent` rows. Opening a running project applies
+  those events through the existing reducer and updates the SSE cursor, so the
+  event panel shows historical ADAPT/SIMULATE rows immediately after switching
+  projects instead of waiting for the next live event. Validation passed for
+  focused and full Web UI tests, focused Go web tests, Vite build, local Web
+  restart on `http://127.0.0.1:9898`, and Playwright switching across seven
+  running projects with no `暂无事件` state.
 - Latest source change: `20efdd9`
   `fix: preserve project events on open`:
   Web project switching now merges the loaded snapshot into the existing

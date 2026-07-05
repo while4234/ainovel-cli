@@ -370,6 +370,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectChapterRevise(w, r, id)
 	case "steer":
 		s.handleProjectSteer(w, r, id)
+	case "events/history":
+		s.handleProjectEventsHistory(w, r, id)
 	case "events":
 		s.handleProjectEvents(w, r, id)
 	case "models":
@@ -671,6 +673,24 @@ func (s *Server) handleProjectEvents(w http.ResponseWriter, r *http.Request, id 
 	if err := session.ServeEvents(r.Context(), w, after); err != nil {
 		slog.Warn("serve web events failed", "module", "web", "project", id, "err", err)
 	}
+}
+
+func (s *Server) handleProjectEventsHistory(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	after, err := parseAfter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, _, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, session.EventHistory(after))
 }
 
 type projectSnapshotResponse struct {

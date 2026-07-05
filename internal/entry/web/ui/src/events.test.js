@@ -5,6 +5,7 @@ import {
   createWorkbenchState,
   mergeEventRows,
   reduceWebEvent,
+  reduceWebEvents,
   startStreamRound
 } from './events.js';
 
@@ -44,6 +45,40 @@ describe('web event reducer', () => {
     });
 
     expect(duplicate.streamRounds[0].text).toBe('alpha');
+  });
+
+  it('replays event history without duplicating stale events', () => {
+    const initial = reduceWebEvent(createWorkbenchState(), {
+      seq: 4,
+      type: 'host_event',
+      host_event_id: 'tool-1',
+      event: { id: 'tool-1', summary: 'drafting', running: true }
+    });
+    const restored = reduceWebEvents(initial, [
+      {
+        seq: 4,
+        type: 'host_event',
+        host_event_id: 'tool-1',
+        event: { id: 'tool-1', summary: 'stale duplicate', running: true }
+      },
+      {
+        seq: 5,
+        type: 'host_event',
+        host_event_id: 'tool-1',
+        event: { id: 'tool-1', summary: 'drafted', running: false }
+      },
+      {
+        seq: 6,
+        type: 'host_event',
+        host_event_id: 'tool-2',
+        event: { id: 'tool-2', summary: 'reviewing', running: true }
+      }
+    ]);
+
+    expect(restored.lastSeq).toBe(6);
+    expect(restored.eventRows).toHaveLength(2);
+    expect(restored.eventRows[0].event.summary).toBe('drafted');
+    expect(restored.eventRows[1].event.summary).toBe('reviewing');
   });
 
   it('keeps stream clear and delta rows stable', () => {

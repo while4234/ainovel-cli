@@ -378,6 +378,10 @@ export function getProjectModels(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models`);
 }
 
+export function getProjectEvents(projectId, after = 0) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/events/history?after=${encodeURIComponent(after)}`);
+}
+
 export function getGlobalModels() {
   return request('/api/models');
 }

@@ -51,6 +51,7 @@ import {
   getGlobalModels,
   getChapter,
   getGrokLoginStatus,
+  getProjectEvents,
   getProjectModels,
   getRuntime,
   getSnapshot,
@@ -100,7 +101,7 @@ import {
   coCreateStateFromResponse,
   createCoCreateState
 } from './cocreate.js';
-import { createWorkbenchState, eventStatus, reduceWebEvent } from './events.js';
+import { createWorkbenchState, eventStatus, reduceWebEvent, reduceWebEvents } from './events.js';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 
@@ -491,10 +492,11 @@ const providerPresets = [
 
 const customProviderTypes = ['openai', 'anthropic', 'gemini', 'grok'];
 
-export function restoreProjectWorkbenchSnapshot(previous = createWorkbenchState(), snapshot = null) {
+export function restoreProjectWorkbenchSnapshot(previous = createWorkbenchState(), snapshot = null, events = []) {
+  const restored = reduceWebEvents(previous, events);
   return {
-    ...previous,
-    snapshot: snapshot || previous.snapshot
+    ...restored,
+    snapshot: snapshot || restored.snapshot
   };
 }
 
@@ -751,16 +753,21 @@ export default function App() {
     resetProjectScopedState();
     setActiveProject(project);
     try {
-      const [snapshotData, modelData, backendData] = await Promise.all([
+      const [snapshotData, modelData, backendData, eventsData] = await Promise.all([
         getSnapshot(projectId),
         getProjectModels(projectId),
-        getBackendStatus(projectId)
+        getBackendStatus(projectId),
+        getProjectEvents(projectId, 0)
       ]);
       if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
         return;
       }
       setActiveProject(snapshotData.project);
-      setWorkbench((previous) => restoreProjectWorkbenchSnapshot(previous, snapshotData.snapshot));
+      setWorkbench((previous) => {
+        const next = restoreProjectWorkbenchSnapshot(previous, snapshotData.snapshot, eventsData?.events);
+        lastSeqRef.current = next.lastSeq;
+        return next;
+      });
       setCoCreate((previous) => coCreateStateFromResponse(snapshotData, previous));
       setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
       setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation, snapshotData.snapshot));

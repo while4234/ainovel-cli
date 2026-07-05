@@ -201,6 +201,30 @@ describe('workspace progress derivation', () => {
     });
   });
 
+  it('restores event rows from project history when opening a running project', () => {
+    const next = restoreProjectWorkbenchSnapshot({
+      lastSeq: 0,
+      eventRows: [],
+      streamRounds: [{ id: 'round-0', text: '' }],
+      snapshot: null
+    }, {
+      RuntimeState: 'running',
+      CompletedCount: 1
+    }, [
+      {
+        seq: 11,
+        type: 'host_event',
+        host_event_id: 'analysis-1',
+        event: { id: 'analysis-1', running: true, agent: 'web', summary: 'analyzing source' }
+      }
+    ]);
+
+    expect(next.lastSeq).toBe(11);
+    expect(next.eventRows).toHaveLength(1);
+    expect(next.eventRows[0].event.summary).toBe('analyzing source');
+    expect(next.snapshot).toMatchObject({ RuntimeState: 'running' });
+  });
+
   it('ignores stale running event rows when the latest snapshot is idle', () => {
     const progress = deriveWorkspaceProgress({
       RuntimeState: 'idle',
