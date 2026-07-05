@@ -52,6 +52,33 @@ func TestProjectAdaptSourceUploadSavesSourceUnderProjectUploads(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptSourceUploadAllowsSourceLargerThanFormerTenMiBLimit(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Large Adaptation Source")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	body := textBodyLargerThanFormerLimit()
+	req := newMultipartUploadRequest(t, http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/source", []testMultipartFile{
+		{field: "source", filename: "long-source.txt", body: body},
+	})
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	info, err := os.Stat(filepath.Join(manifest.RootDir, "uploads", "adaptation", "long-source.txt"))
+	if err != nil {
+		t.Fatalf("stat uploaded source: %v", err)
+	}
+	if info.Size() <= formerTextUploadLimit {
+		t.Fatalf("uploaded source size = %d, want greater than old limit %d", info.Size(), formerTextUploadLimit)
+	}
+}
+
 func TestProjectAdaptSourceRejectsUnsafeAndMultipleFiles(t *testing.T) {
 	cases := []struct {
 		name   string

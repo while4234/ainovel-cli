@@ -19,10 +19,11 @@ import (
 )
 
 const (
-	maxMultipartUploadBytes = 64 << 20
-	maxTextUploadBytes      = 10 << 20
-	maxProfileUploadBytes   = 5 << 20
-	maxMultipartMemory      = 8 << 20
+	unlimitedUploadBytes    int64 = 0
+	maxMultipartUploadBytes       = 64 << 20
+	maxTextUploadBytes            = unlimitedUploadBytes
+	maxProfileUploadBytes         = 5 << 20
+	maxMultipartMemory            = 8 << 20
 )
 
 var (
@@ -76,7 +77,7 @@ func (s *Server) handleProjectSimulateFiles(w http.ResponseWriter, r *http.Reque
 		writeProjectSessionError(w, fmt.Errorf("%w: %v", ErrProjectNotFound, err))
 		return
 	}
-	headers, cleanup, err := parseMultipartFiles(w, r)
+	headers, cleanup, err := parseMultipartFiles(w, r, unlimitedUploadBytes)
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -139,7 +140,7 @@ func (s *Server) handleProjectSimulateImport(w http.ResponseWriter, r *http.Requ
 		writeProjectSessionError(w, err)
 		return
 	}
-	headers, cleanup, err := parseMultipartFiles(w, r)
+	headers, cleanup, err := parseMultipartFiles(w, r, maxMultipartUploadBytes)
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -186,8 +187,10 @@ func (s *Server) handleProjectSimulateImport(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-func parseMultipartFiles(w http.ResponseWriter, r *http.Request) ([]*multipart.FileHeader, func(), error) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxMultipartUploadBytes)
+func parseMultipartFiles(w http.ResponseWriter, r *http.Request, maxBodyBytes int64) ([]*multipart.FileHeader, func(), error) {
+	if maxBodyBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	}
 	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
 		return nil, nil, fmt.Errorf("parse multipart upload: %w", err)
 	}
@@ -290,14 +293,25 @@ func readMultipartFile(header *multipart.FileHeader, maxBytes int64) ([]byte, er
 		return nil, err
 	}
 	defer file.Close()
+	if maxBytes <= 0 {
+		return io.ReadAll(file)
+	}
 	var buf bytes.Buffer
 	if _, err := io.CopyN(&buf, file, maxBytes+1); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	if int64(buf.Len()) > maxBytes {
-		return nil, fmt.Errorf("file exceeds %d bytes", maxBytes)
+		return nil, fmt.Errorf("file exceeds %s (%d bytes)", formatByteLimit(maxBytes), maxBytes)
 	}
 	return buf.Bytes(), nil
+}
+
+func formatByteLimit(bytes int64) string {
+	const mib = 1 << 20
+	if bytes > 0 && bytes%mib == 0 {
+		return fmt.Sprintf("%d MiB", bytes/mib)
+	}
+	return fmt.Sprintf("%d bytes", bytes)
 }
 
 func rawMultipartFilename(header *multipart.FileHeader) string {

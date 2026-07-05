@@ -59,7 +59,7 @@ func (s *Server) handleProjectAdaptSource(w http.ResponseWriter, r *http.Request
 		writeProjectSessionError(w, fmt.Errorf("%w: %v", ErrProjectNotFound, err))
 		return
 	}
-	headers, cleanup, err := parseMultipartFiles(w, r)
+	headers, cleanup, err := parseMultipartFiles(w, r, unlimitedUploadBytes)
 	if cleanup != nil {
 		defer cleanup()
 	}

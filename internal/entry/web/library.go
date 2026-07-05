@@ -65,7 +65,7 @@ func (s *Server) handleSimulationLibraryUpload(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	headers, cleanup, err := parseMultipartFiles(w, r)
+	headers, cleanup, err := parseMultipartFiles(w, r, maxMultipartUploadBytes)
 	if cleanup != nil {
 		defer cleanup()
 	}

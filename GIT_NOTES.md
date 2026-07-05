@@ -29,6 +29,16 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `fix: remove text source upload size limit`:
+  Web TXT/MD source uploads no longer use the old 10 MiB per-file limit or the
+  64 MiB multipart request cap. This applies to simulation/仿写语料 uploads,
+  adaptation/小说改编 source uploads, and external novel imports. JSON simulation
+  profile uploads still keep the 5 MiB per-file limit and 64 MiB multipart cap.
+  Validation passed for focused Web upload regressions, full
+  `./internal/entry/web`, full `go test ./...`, `git diff --check` with CRLF
+  warnings only, Vite build via `restart-web.cmd`, and HTTP smoke checks on
+  `http://127.0.0.1:9898`; local Web restarted as PID `53056`.
+- Latest source change: current local commit
   `feat: allow parallel analysis and partial export`:
   Web export remains a read-only current-progress operation and can run without
   pausing or aborting writing/analysis. `ProjectSession` now tracks action kinds
@@ -301,6 +311,14 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
 
 ## Change Log
+
+- 2026-07-05 current local commit `fix: remove text source upload size limit`:
+  removed application-layer size caps from Web TXT/MD source uploads for
+  仿写语料, 小说改编 source analysis, and external novel import while keeping JSON
+  simulation profile uploads bounded. Added regressions proving both simulation
+  and adaptation source uploads accept files larger than the former 10 MiB
+  limit, rebuilt/restarted the local Web service on `http://127.0.0.1:9898`, and
+  verified HTTP `/`, `/api/runtime`, and `/api/projects`.
 
 - 2026-07-04 current local commit `style: tighten style prompt anti-ai guidance`:
   Added three prose-quality bullets to each `assets/styles/*.md` prompt directly

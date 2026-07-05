@@ -38,7 +38,7 @@ func (s *Server) handleProjectImport(w http.ResponseWriter, r *http.Request, id 
 		writeProjectSessionError(w, err)
 		return
 	}
-	headers, cleanup, err := parseMultipartFiles(w, r)
+	headers, cleanup, err := parseMultipartFiles(w, r, unlimitedUploadBytes)
 	if cleanup != nil {
 		defer cleanup()
 	}

@@ -21,6 +21,8 @@ type testMultipartFile struct {
 	body     string
 }
 
+const formerTextUploadLimit = 10 << 20
+
 func TestProjectSimulateFilesUploadSavesSourcesUnderProject(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
@@ -58,6 +60,33 @@ func TestProjectSimulateFilesUploadSavesSourcesUnderProject(t *testing.T) {
 	}
 	if len(response.Files) != 2 {
 		t.Fatalf("files = %+v, want 2 uploaded files", response.Files)
+	}
+}
+
+func TestProjectSimulateFilesUploadAllowsSourceLargerThanFormerTenMiBLimit(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Large Simulation Source")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	body := textBodyLargerThanFormerLimit()
+	req := newMultipartUploadRequest(t, http.MethodPost, "/api/projects/"+manifest.ID+"/simulate/files", []testMultipartFile{
+		{field: "files", filename: "long-source.txt", body: body},
+	})
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	info, err := os.Stat(filepath.Join(manifest.RootDir, "simulate", "long-source.txt"))
+	if err != nil {
+		t.Fatalf("stat uploaded source: %v", err)
+	}
+	if info.Size() <= formerTextUploadLimit {
+		t.Fatalf("uploaded source size = %d, want greater than old limit %d", info.Size(), formerTextUploadLimit)
 	}
 }
 
@@ -285,6 +314,10 @@ func newMultipartUploadRequest(t *testing.T, method, path string, files []testMu
 	req := httptest.NewRequest(method, path, &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req
+}
+
+func textBodyLargerThanFormerLimit() string {
+	return strings.Repeat("x", formerTextUploadLimit+1)
 }
 
 func testWebSimulationProfile(path, sha string) domain.SimulationProfile {
