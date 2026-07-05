@@ -107,6 +107,7 @@ type UISnapshot struct {
 	SupportingCount        int      // 配角名册中的次要角色总数
 	RecentSupporting       []string // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
 	Layered                bool
+	LayeredOutline         []LayeredVolumeSnapshot
 	CurrentVolumeArc       string
 	NextVolumeTitle        string
 	CompassDirection       string
@@ -114,6 +115,7 @@ type UISnapshot struct {
 	SimulationProfile      *domain.SimulationCompactProfile
 	SimulationSummary      *SimulationProfileSummary
 	CreativeBlueprint      *CreativeBlueprintSummary
+	PlanningReview         *PlanningReviewSummary
 	AdaptationVolumeReview *domain.AdaptationVolumeReview
 	AdaptationProposal     *domain.AdaptationPlan
 	AdaptationPlan         *domain.AdaptationPlan
@@ -167,6 +169,16 @@ type CreativeBlueprintSummary struct {
 	CompassScale     string
 }
 
+type PlanningReviewSummary struct {
+	Loaded           bool
+	Status           string
+	Kind             string
+	Brief            string
+	TargetTotalWords int
+	CreatedAt        string
+	UpdatedAt        string
+}
+
 type AdaptationPlanSummary struct {
 	Loaded            bool
 	Status            string
@@ -215,6 +227,15 @@ type SourceCoverageSnapshot struct {
 	Runes    int
 	IsAdded  bool
 	Note     string
+}
+
+type LayeredVolumeSnapshot struct {
+	Index        int
+	Title        string
+	Theme        string
+	TargetFrom   int
+	TargetTo     int
+	ChapterCount int
 }
 
 // AgentSnapshot 是 Agent 状态的展示投影。

@@ -223,7 +223,7 @@ ainovel-cli
 ainovel-cli web
 ainovel-cli web --open
 ainovel-cli web --host 0.0.0.0 --port 9898
-ainovel-cli web --runtime-root D:\Ainovel\novels
+ainovel-cli web --runtime-root D:\Ainovel\novels-preview
 ```
 
 仓库开发环境下，重启 Web 只使用根目录的一键脚本：
@@ -241,15 +241,15 @@ Windows 用户不需要先在某本小说目录里打开终端。可以从 Power
 
 Web UI 把每本小说保存为运行时项目，默认运行时根目录是：
 
-- Windows：`%USERPROFILE%\.ainovel\novels`
-- macOS / Linux：`~/.ainovel/novels`
+- Windows：`%USERPROFILE%\.ainovel\novels-preview`
+- macOS / Linux：`~/.ainovel/novels-preview`
 
 运行时根目录覆盖优先级从高到低是：
 
 1. `ainovel-cli web --runtime-root <path>`
 2. 环境变量 `AINOVEL_RUNTIME_ROOT`
 3. 配置文件字段 `runtime_root`（配置文件自身仍按 `~/.ainovel/config.json` → `./.ainovel/config.json` → `--config` 合并）
-4. 默认 `~/.ainovel/novels`
+4. 默认 `~/.ainovel/novels-preview`
 
 Web 运行时根目录必须在仓库外；如果指到仓库目录或其子目录，启动会拒绝并提示换一个路径。每本小说位于 `<runtime-root>/projects/<project-id>/`，其输出仍在该项目自己的 `output/` 下。
 

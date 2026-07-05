@@ -36,6 +36,7 @@ import {
   buildAdaptationProposal,
   cancelCoCreate,
   commitCoCreate,
+  confirmCoCreatePlanning,
   confirmAdaptationProposal,
   confirmAdaptationProposalDetails,
   completeGrokLogin,
@@ -78,7 +79,9 @@ import {
   saveSimulationToLibrary,
   sendCoCreate,
   setGlobalCoCreateTimeout,
+  setGlobalRetrySettings,
   setProjectCoCreateTimeout,
+  setProjectRetrySettings,
   setProjectThinking,
   startProject,
   startGrokLogin,
@@ -101,7 +104,7 @@ import {
   coCreateStateFromResponse,
   createCoCreateState
 } from './cocreate.js';
-import { createWorkbenchState, eventStatus, reduceWebEvent, reduceWebEvents } from './events.js';
+import { createWorkbenchState, eventStatus, reduceWebEvent, reduceWebEvents, visibleStreamRounds } from './events.js';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 
@@ -541,6 +544,10 @@ export default function App() {
     () => getVisibleAdaptationProposalReview(snapshot, adaptation),
     [snapshot, adaptation]
   );
+  const coCreatePlanningReview = useMemo(
+    () => getCoCreatePlanningReview(snapshot),
+    [snapshot]
+  );
   const showAdaptationProposalWorkspace = sideView === 'adapt' && adaptationProposalReview.proposalReady;
   const selectedChapterRevisionView = useMemo(
     () => getCompletedBookSelectedChapterView(snapshot, chapterRevision),
@@ -761,8 +768,8 @@ export default function App() {
         return;
       }
       setActiveProject(snapshotData.project);
-      setWorkbench((previous) => {
-        const next = restoreProjectWorkbenchSnapshot(previous, snapshotData.snapshot, eventsData?.events);
+      setWorkbench(() => {
+        const next = restoreProjectWorkbenchSnapshot(createWorkbenchState(), snapshotData.snapshot, eventsData?.events);
         lastSeqRef.current = next.lastSeq;
         return next;
       });
@@ -1605,6 +1612,8 @@ export default function App() {
     try {
       const data = await loadNovelFromLibrary(activeProject.id, name);
       const sourceFile = sourceFileFromNovelLoad(data, entry, name);
+      const analysisStatus = adaptationStatusFromNovelLoad(data);
+      const analysisEvents = adaptationEventsFromNovelLoad(data);
       setWorkbench((previous) => ({
         ...previous,
         snapshot: clearAdaptationProposalSnapshot(data.snapshot || previous.snapshot)
@@ -1613,8 +1622,8 @@ export default function App() {
         ...previous,
         sourceFile,
         uploadMessage: libraryMessageFromResponse(data) || `已从小说仓库加载：${name}`,
-        analysisStatus: 'done',
-        analysisEvents: data.events || [],
+        analysisStatus,
+        analysisEvents,
         proposalKey: '',
         startStatus: 'idle',
         startMessage: '',
@@ -1944,6 +1953,36 @@ export default function App() {
     }
   };
 
+  const confirmCoCreatePlanningRun = async () => {
+    if (!activeProject?.id || !coCreatePlanningReview.pending || busy) {
+      return;
+    }
+    setBusy(true);
+    setCoCreate((previous) => ({ ...previous, status: 'running', error: '', startMessage: '' }));
+    try {
+      const data = await confirmCoCreatePlanning(activeProject.id);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate((previous) => ({
+        ...previous,
+        active: false,
+        status: 'started',
+        canStart: false,
+        startMessage: data.label || '规划已通过，创作已启动',
+        error: ''
+      }));
+    } catch (err) {
+      try {
+        const snapshotData = await getSnapshot(activeProject.id);
+        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
+      } catch {
+        // Keep the confirmation error visible if snapshot refresh also fails.
+      }
+      setCoCreate((previous) => ({ ...previous, status: 'error', error: err.message }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const cancelCoCreateFlow = async () => {
     if (!activeProject?.id || !coCreate.active) {
       setCoCreate(createCoCreateState());
@@ -2066,6 +2105,37 @@ export default function App() {
       const data = activeProject?.id
         ? await setProjectCoCreateTimeout(activeProject.id, value)
         : await setGlobalCoCreateTimeout(value);
+      setModelConfig(data.models || modelConfig);
+      if (data.runtime) {
+        setRuntime(data.runtime);
+      }
+      if (data.snapshot) {
+        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeRetrySettings = async (modelCallMaxAttempts, structureRepairMaxAttempts) => {
+    const modelAttempts = Number(modelCallMaxAttempts);
+    const repairAttempts = Number(structureRepairMaxAttempts);
+    if (!Number.isInteger(modelAttempts) || modelAttempts < 1 || modelAttempts > 11) {
+      setError('模型调用总尝试次数必须是 1-11 之间的整数');
+      return;
+    }
+    if (!Number.isInteger(repairAttempts) || repairAttempts < 1 || repairAttempts > 7) {
+      setError('结构修复次数必须是 1-7 之间的整数');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = activeProject?.id
+        ? await setProjectRetrySettings(activeProject.id, modelAttempts, repairAttempts)
+        : await setGlobalRetrySettings(modelAttempts, repairAttempts);
       setModelConfig(data.models || modelConfig);
       if (data.runtime) {
         setRuntime(data.runtime);
@@ -2332,7 +2402,8 @@ export default function App() {
     () => workbench.eventRows.slice().sort((a, b) => b.seq - a.seq),
     [workbench.eventRows]
   );
-  const showCoCreateWorkspace = sideView === 'cocreate' && hasCoCreateWorkspaceContent(coCreate);
+  const showCoCreatePlanningWorkspace = sideView === 'cocreate' && coCreatePlanningReview.pending;
+  const showCoCreateWorkspace = sideView === 'cocreate' && !showCoCreatePlanningWorkspace && hasCoCreateWorkspaceContent(coCreate);
 
   return (
     <div className="app-shell">
@@ -2548,18 +2619,24 @@ export default function App() {
 
         <div className="workbench-stack">
           <section
-            className={`stream-area ${showAdaptationProposalWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : showChapterRevisionWorkspace ? 'chapter-revision-workspace-output' : ''}`}
+            className={`stream-area ${showAdaptationProposalWorkspace || showCoCreatePlanningWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : showChapterRevisionWorkspace ? 'chapter-revision-workspace-output' : ''}`}
             aria-label={showAdaptationProposalWorkspace ? '改编提案审稿区' : showChapterRevisionWorkspace ? '单章返工预览区' : '实时创作流'}
           >
             {activeProject ? (
               showAdaptationProposalWorkspace ? (
                 <AdaptationProposalWorkspace proposal={adaptationProposalReview} />
+              ) : showCoCreatePlanningWorkspace ? (
+                <CoCreatePlanningWorkspace
+                  busy={busy}
+                  review={coCreatePlanningReview}
+                  onConfirm={confirmCoCreatePlanningRun}
+                />
               ) : showCoCreateWorkspace ? (
                 <CoCreateWorkspace coCreate={coCreate} />
               ) : showChapterRevisionWorkspace ? (
                 <CompletedChapterRevisionWorkspace selected={selectedChapterRevisionView} content={chapterContent} />
               ) : (
-              workbench.streamRounds.map((round) => (
+              visibleStreamRounds(workbench.streamRounds).map((round) => (
                 <article className="stream-round" key={round.id}>
                   {round.text ? <pre>{round.text}</pre> : <span className="muted">等待流式输出</span>}
                 </article>
@@ -2674,6 +2751,7 @@ export default function App() {
               activeProject={activeProject}
               busy={busy}
               coCreate={coCreate}
+              planningReview={coCreatePlanningReview}
               setCoCreate={setCoCreate}
               adaptation={adaptation}
               onBegin={beginCoCreateFlow}
@@ -2683,6 +2761,7 @@ export default function App() {
                   onRevise={reviseCoCreateMessage}
                   onResolveDecision={resolveCoCreateDecisionFlow}
                   onCommit={commitCoCreateFlow}
+                  onConfirmPlanning={confirmCoCreatePlanningRun}
               onCancel={cancelCoCreateFlow}
               workspaceTranscript={showCoCreateWorkspace}
             />
@@ -2763,6 +2842,7 @@ export default function App() {
               onSwitch={switchModelRoute}
               onThinking={changeThinking}
               onCoCreateTimeout={changeCoCreateTimeout}
+              onRetrySettings={changeRetrySettings}
               onDeleteModel={deleteModelRoute}
               onAddCustom={submitCustomModel}
               onTestConnection={discoverCustomModelModels}
@@ -2813,6 +2893,54 @@ function hasCoCreateWorkspaceContent(coCreate) {
     coCreate?.streamThinking ||
       coCreate?.streamReply ||
       (Array.isArray(coCreate?.messages) && coCreate.messages.some((message) => message?.role !== 'system' && message?.content))
+  );
+}
+
+function CoCreatePlanningWorkspace({ review, busy, onConfirm }) {
+  const groups = proposalVolumeGroups({
+    chapters: review.chapters || [],
+    volumes: review.volumes || []
+  });
+  return (
+    <div className="proposal-workspace cocreate-planning-workspace">
+      <header className="proposal-workspace-header">
+        <div>
+          <div className="eyebrow">普通共创审核</div>
+          <h3>{coCreatePlanningKindLabel(review.kind)}</h3>
+        </div>
+        <div className="proposal-workspace-metrics">
+          <span>{review.status || 'pending'}</span>
+          {review.chapterCount ? <span>{review.chapterCount} 章</span> : null}
+          {review.targetTotalWords ? <span>{formatCompact(review.targetTotalWords)} 字</span> : null}
+          {review.volumes?.length ? <span>{review.volumes.length} 卷</span> : null}
+        </div>
+      </header>
+      {review.brief ? <p className="proposal-brief">{review.brief}</p> : null}
+      <div className="proposal-review-actions">
+        <button className="tool-button accent" disabled={busy || !review.pending} onClick={onConfirm} type="button">
+          <Play size={16} />
+          审核通过并启动创作
+        </button>
+      </div>
+      <div className="proposal-volume-stack">
+        {groups.map((group) => (
+          <section className="proposal-volume-block" key={`cocreate-planning-${group.key}`}>
+            <div className="proposal-volume-head">
+              <div>
+                <strong>{group.title}</strong>
+                <span>第 {group.from || '?'}-{group.to || '?'} 章</span>
+              </div>
+              {group.theme ? <p>{group.theme}</p> : null}
+            </div>
+            <div className="proposal-chapter-grid">
+              {group.chapters.map((chapter) => (
+                <ProposalChapterCard chapter={chapter} key={`cocreate-planning-card-${chapter.chapter}-${chapter.title}`} />
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -3132,6 +3260,7 @@ function CoCreatePanel({
   activeProject,
   busy,
   coCreate,
+  planningReview = {},
   setCoCreate,
   adaptation,
   onBegin,
@@ -3141,6 +3270,7 @@ function CoCreatePanel({
   onRevise,
   onResolveDecision = () => {},
   onCommit,
+  onConfirmPlanning = () => {},
   onCancel,
   workspaceTranscript = false
 }) {
@@ -3164,6 +3294,7 @@ function CoCreatePanel({
   const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
   const hasDraftPrompt = Boolean(coCreate.draftPrompt.trim());
   const canCommit = Boolean(activeProject && !busy && hasDraftPrompt && coCreate.canStart);
+  const canConfirmPlanning = Boolean(activeProject && !busy && planningReview.pending);
   const canCancel = Boolean(activeProject && !busy && (hasBackendSession || coCreate.intakeActive));
   const visibleSuggestions = coCreate.suggestions.slice(0, 3);
   const showDraftWorkspace = Boolean(coCreate.ready || hasDraftPrompt);
@@ -3227,6 +3358,24 @@ function CoCreatePanel({
           <CoCreateDecisionQueue decisions={coCreate.pendingDecisions} busy={busy} onResolve={onResolveDecision} />
         ) : null}
       </section>
+
+      {planningReview.pending ? (
+        <section className="cocreate-section planning-review-card">
+          <div className="section-title">
+            <Check size={17} />
+            <span>规划审核</span>
+          </div>
+          <p>
+            {coCreatePlanningKindLabel(planningReview.kind)}
+            {planningReview.chapterCount ? ` · ${planningReview.chapterCount} 章` : ''}
+            {planningReview.targetTotalWords ? ` · ${formatCompact(planningReview.targetTotalWords)} 字` : ''}
+          </p>
+          <button className="tool-button accent full-width" disabled={!canConfirmPlanning} onClick={onConfirmPlanning} type="button">
+            <Play size={16} />
+            审核通过并启动创作
+          </button>
+        </section>
+      ) : null}
 
       {workspaceTranscript ? (
         suggestionList ? <section className="cocreate-section cocreate-side-suggestion-section">{suggestionList}</section> : null
@@ -4704,6 +4853,7 @@ function ModelPanel({
   onSwitch,
   onThinking,
   onCoCreateTimeout,
+  onRetrySettings,
   onDeleteModel,
   onAddCustom,
   onTestConnection,
@@ -4739,10 +4889,27 @@ function ModelPanel({
   const existingModelPayload = buildExistingModelActionPayload(customModel.role, existingProvider, existingModel);
   const canDeleteExistingModel = Boolean(existingProvider && existingModel && !existingIsDefault);
   const coCreateTimeoutSeconds = modelConfig?.cocreate_timeout_seconds || config.cocreate_timeout_seconds || 60;
+  const modelAutoSwitch = modelConfig?.model_auto_switch || {};
+  const existingUsesOpenAIEndpoint = providerUsesOpenAIEndpoint(customModel);
+  const modelCallMaxAttempts =
+    modelAutoSwitch.model_call_max_attempts ||
+    modelAutoSwitch.network_max_attempts ||
+    config.model_call_max_attempts ||
+    7;
+  const structureRepairMaxAttempts =
+    modelConfig?.structure_repair_max_attempts ||
+    config.structure_repair_max_attempts ||
+    2;
   const [coCreateTimeoutDraft, setCoCreateTimeoutDraft] = useState(String(coCreateTimeoutSeconds));
+  const [modelCallAttemptsDraft, setModelCallAttemptsDraft] = useState(String(modelCallMaxAttempts));
+  const [structureRepairAttemptsDraft, setStructureRepairAttemptsDraft] = useState(String(structureRepairMaxAttempts));
   useEffect(() => {
     setCoCreateTimeoutDraft(String(coCreateTimeoutSeconds));
   }, [coCreateTimeoutSeconds]);
+  useEffect(() => {
+    setModelCallAttemptsDraft(String(modelCallMaxAttempts));
+    setStructureRepairAttemptsDraft(String(structureRepairMaxAttempts));
+  }, [modelCallMaxAttempts, structureRepairMaxAttempts]);
   useEffect(() => {
     if (!activeProject?.id || projectRoles.length === 0) {
       if (selectedProjectRole !== 'default') {
@@ -4785,6 +4952,17 @@ function ModelPanel({
     coCreateTimeoutValue >= 1 &&
     coCreateTimeoutValue <= 3600 &&
     coCreateTimeoutValue !== coCreateTimeoutSeconds;
+  const modelCallAttemptsValue = Number(modelCallAttemptsDraft);
+  const structureRepairAttemptsValue = Number(structureRepairAttemptsDraft);
+  const canSaveRetrySettings =
+    Number.isInteger(modelCallAttemptsValue) &&
+    Number.isInteger(structureRepairAttemptsValue) &&
+    modelCallAttemptsValue >= 1 &&
+    modelCallAttemptsValue <= 11 &&
+    structureRepairAttemptsValue >= 1 &&
+    structureRepairAttemptsValue <= 7 &&
+    (modelCallAttemptsValue !== modelCallMaxAttempts ||
+      structureRepairAttemptsValue !== structureRepairMaxAttempts);
   const selectedPreset = providerPresets.find((preset) => preset.provider === customModel.preset) || providerPresets[0];
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
@@ -4877,6 +5055,48 @@ function ModelPanel({
             />
           </label>
           <button className="tool-button" disabled={busy || !canSaveCoCreateTimeout} type="submit">
+            <Check size={16} />
+            保存
+          </button>
+        </form>
+      </section>
+      <section>
+        <div className="section-title">
+          <ListRestart size={17} />
+          <span>重试设置</span>
+        </div>
+        <form
+          className="model-timeout-form retry-settings-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onRetrySettings(modelCallAttemptsValue, structureRepairAttemptsValue);
+          }}
+        >
+          <label className="field-label">
+            <span>模型调用</span>
+            <input
+              disabled={busy}
+              inputMode="numeric"
+              max="11"
+              min="1"
+              type="number"
+              value={modelCallAttemptsDraft}
+              onChange={(event) => setModelCallAttemptsDraft(event.target.value)}
+            />
+          </label>
+          <label className="field-label">
+            <span>结构修复</span>
+            <input
+              disabled={busy}
+              inputMode="numeric"
+              max="7"
+              min="1"
+              type="number"
+              value={structureRepairAttemptsDraft}
+              onChange={(event) => setStructureRepairAttemptsDraft(event.target.value)}
+            />
+          </label>
+          <button className="tool-button" disabled={busy || !canSaveRetrySettings} type="submit">
             <Check size={16} />
             保存
           </button>
@@ -5154,20 +5374,29 @@ function ModelPanel({
                 disabled={busy}
                 placeholder="openai / anthropic / gemini / grok"
                 value={customModel.type}
-                onChange={(event) => setCustomModel((previous) => ({ ...previous, type: event.target.value }))}
+                onChange={(event) => {
+                  const type = event.target.value;
+                  setCustomModel((previous) => ({
+                    ...previous,
+                    type,
+                    api: type.trim().toLowerCase() === 'openai' ? (previous.api || 'chat') : ''
+                  }));
+                }}
               />
             </label>
-            <label className="model-field">
-              <span>OpenAI endpoint</span>
-              <select
-                disabled={busy}
-                value={customModel.api || 'chat'}
-                onChange={(event) => setCustomModel((previous) => ({ ...previous, api: event.target.value }))}
-              >
-                <option value="chat">chat</option>
-                <option value="responses">responses</option>
-              </select>
-            </label>
+            {existingUsesOpenAIEndpoint ? (
+              <label className="model-field">
+                <span>OpenAI endpoint</span>
+                <select
+                  disabled={busy}
+                  value={customModel.api || 'chat'}
+                  onChange={(event) => setCustomModel((previous) => ({ ...previous, api: event.target.value }))}
+                >
+                  <option value="chat">chat</option>
+                  <option value="responses">responses</option>
+                </select>
+              </label>
+            ) : null}
             <label className="model-field">
               <span>认证模式</span>
               <input
@@ -5664,7 +5893,7 @@ export function modelAddModeDefaults(state, providers = [], previousMode = '') {
       type: grokOAuthDefaults.type,
       auth: grokOAuthDefaults.auth,
       model,
-      api: 'chat',
+      api: '',
       use_proxy: true,
       api_key: '',
       base_url: '',
@@ -5686,6 +5915,7 @@ function modelAddExistingProviderDefaults(state, providers = [], providerName = 
   const providerKey = String(provider?.name || selectedName).trim();
   const models = Array.isArray(provider?.models) ? provider.models : [];
   const selectedModel = String(modelName || state.model || models[0] || '').trim();
+  const api = providerUsesOpenAIEndpoint({ ...provider, provider: providerKey }) ? (provider?.api || 'chat') : '';
   return {
     ...state,
     mode: 'existing',
@@ -5695,7 +5925,7 @@ function modelAddExistingProviderDefaults(state, providers = [], providerName = 
     template_provider: provider?.template_provider || '',
     type: provider?.type || '',
     auth: provider?.auth || '',
-    api: provider?.api || 'chat',
+    api,
     api_key: '',
     base_url: provider?.base_url || '',
     model: selectedModel,
@@ -5813,6 +6043,13 @@ function slugProviderKey(value, fallback) {
   return slug || fallback;
 }
 
+function providerUsesOpenAIEndpoint(provider = {}) {
+  const providerType = String(provider.type || '').trim().toLowerCase();
+  const providerName = String(provider.provider || provider.name || '').trim().toLowerCase();
+  const templateProvider = String(provider.template_provider || '').trim().toLowerCase();
+  return providerType === 'openai' || (providerType === '' && (providerName === 'openai' || templateProvider === 'openai'));
+}
+
 function optionalModelTimeout(value) {
   const parsed = Number(String(value ?? '').trim());
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
@@ -5852,7 +6089,7 @@ export function buildModelAddPayload(state, modelConfig) {
       ...providerPayloadFields(state),
       type: String(state.type || '').trim(),
       auth: String(state.auth || '').trim(),
-      api: String(state.api || '').trim(),
+      api: providerUsesOpenAIEndpoint({ ...state, provider }) ? String(state.api || 'chat').trim() : '',
       base_url: String(state.base_url || '').trim()
     };
     const apiKey = String(state.api_key || '').trim();
@@ -5891,7 +6128,7 @@ export function buildModelAddPayload(state, modelConfig) {
     model: String(state.model || '').trim(),
     ...providerPayloadFields(state, { label: 'Custom', provider: 'custom' }),
     type: String(state.type || 'openai').trim(),
-    api: state.type === 'openai' ? String(state.api || 'chat').trim() : '',
+    api: providerUsesOpenAIEndpoint(state) ? String(state.api || 'chat').trim() : '',
     api_key: String(state.api_key || '').trim(),
     base_url: String(state.base_url || '').trim()
   };
@@ -6253,6 +6490,72 @@ export function getCreativeBlueprint(snapshot) {
     compassScale: textValue(summary, 'CompassScale', 'compassScale', 'compass_scale') ||
       textValue(snapshot, 'CompassScale', 'compassScale', 'compass_scale')
   };
+}
+
+export function getCoCreatePlanningReview(snapshot) {
+  const review = objectValue(snapshot, 'PlanningReview', 'planningReview', 'planning_review');
+  const status = textValue(review, 'Status', 'status');
+  const chapters = getSnapshotOutlineRows(snapshot);
+  const volumes = normalizeCoCreatePlanningVolumes(
+    arrayValue(snapshot, 'LayeredOutline', 'layeredOutline', 'layered_outline'),
+    chapters
+  );
+  const kind = textValue(review, 'Kind', 'kind');
+  return {
+    loaded: Boolean(review),
+    pending: status === 'pending',
+    status,
+    kind,
+    kindLabel: coCreatePlanningKindLabel(kind),
+    brief: textValue(review, 'Brief', 'brief'),
+    targetTotalWords: numberValue(review, 'TargetTotalWords', 'targetTotalWords', 'target_total_words'),
+    createdAt: textValue(review, 'CreatedAt', 'createdAt', 'created_at'),
+    updatedAt: textValue(review, 'UpdatedAt', 'updatedAt', 'updated_at'),
+    chapterCount: chapters.length,
+    chapters,
+    volumes
+  };
+}
+
+function normalizeCoCreatePlanningVolumes(volumes, chapters = []) {
+  const firstChapter = chapters[0]?.chapter || 1;
+  let nextChapter = firstChapter;
+  return (volumes || [])
+    .map((volume, index) => {
+      const count = numberValue(volume, 'ChapterCount', 'chapterCount', 'chapter_count');
+      let targetFrom = numberValue(volume, 'TargetFrom', 'targetFrom', 'target_from', 'From', 'from');
+      let targetTo = numberValue(volume, 'TargetTo', 'targetTo', 'target_to', 'To', 'to');
+      if (!targetFrom && count > 0) {
+        targetFrom = nextChapter;
+      }
+      if (!targetTo && targetFrom && count > 0) {
+        targetTo = targetFrom + count - 1;
+      }
+      if (targetTo >= targetFrom && targetFrom > 0) {
+        nextChapter = targetTo + 1;
+      }
+      return {
+        index: numberValue(volume, 'Index', 'index') || index + 1,
+        title: textValue(volume, 'Title', 'title') || `第 ${index + 1} 卷`,
+        theme: textValue(volume, 'Theme', 'theme'),
+        targetFrom,
+        targetTo,
+        summary: textValue(volume, 'Summary', 'summary')
+      };
+    })
+    .filter((volume) => volume.index > 0 && volume.targetFrom > 0 && volume.targetTo >= volume.targetFrom)
+    .sort((a, b) => (a.targetFrom || a.index) - (b.targetFrom || b.index) || a.index - b.index);
+}
+
+function coCreatePlanningKindLabel(kind = '') {
+  switch (String(kind || '').trim()) {
+    case 'volume_split':
+      return '分卷规划待审核';
+    case 'chapter_outline':
+      return '章节细纲待审核';
+    default:
+      return '创作规划待审核';
+  }
 }
 
 export function getAdaptationProposalReview(snapshot) {
@@ -7067,6 +7370,19 @@ function libraryEntryMeta(entry) {
     formatOptionalDate(entry.updated_at || entry.UpdatedAt || entry.created_at || entry.CreatedAt)
   ].filter(Boolean);
   return parts.slice(0, 2).join(' · ');
+}
+
+export function adaptationStatusFromNovelLoad(data) {
+  const status = data?.adaptation || {};
+  const value = status.analysis_status || status.analysisStatus ||
+    (data?.running ? 'running' : data?.analyzed ? 'done' : 'paused');
+  return String(value || 'paused').trim() || 'paused';
+}
+
+export function adaptationEventsFromNovelLoad(data) {
+  const status = data?.adaptation || {};
+  const events = status.analysis_events || status.analysisEvents || data?.events || [];
+  return Array.isArray(events) ? events : [];
 }
 
 function sourceFileFromNovelLoad(data, entry, name) {

@@ -157,6 +157,9 @@ func mergeConfig(base, overlay Config) Config {
 	if overlay.CoCreateTimeoutSeconds > 0 {
 		base.CoCreateTimeoutSeconds = overlay.CoCreateTimeoutSeconds
 	}
+	if overlay.StructureRepairMaxAttempts > 0 {
+		base.StructureRepairMaxAttempts = overlay.StructureRepairMaxAttempts
+	}
 	if overlay.Proxy != "" {
 		base.Proxy = overlay.Proxy
 	}

@@ -367,6 +367,13 @@ export function commitCoCreate(projectId) {
   });
 }
 
+export function confirmCoCreatePlanning(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
 export function cancelCoCreate(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/cancel`, {
     method: 'POST',
@@ -407,6 +414,16 @@ export function setGlobalCoCreateTimeout(seconds) {
   });
 }
 
+export function setGlobalRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts) {
+  return request('/api/models/retry-settings', {
+    method: 'POST',
+    body: JSON.stringify({
+      model_call_max_attempts: modelCallMaxAttempts,
+      structure_repair_max_attempts: structureRepairMaxAttempts
+    })
+  });
+}
+
 export function deleteGlobalProviderModel(provider, model) {
   return request('/api/models', {
     method: 'DELETE',
@@ -432,6 +449,16 @@ export function setProjectCoCreateTimeout(projectId, seconds) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/cocreate-timeout`, {
     method: 'POST',
     body: JSON.stringify({ seconds })
+  });
+}
+
+export function setProjectRetrySettings(projectId, modelCallMaxAttempts, structureRepairMaxAttempts) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/retry-settings`, {
+    method: 'POST',
+    body: JSON.stringify({
+      model_call_max_attempts: modelCallMaxAttempts,
+      structure_repair_max_attempts: structureRepairMaxAttempts
+    })
   });
 }
 

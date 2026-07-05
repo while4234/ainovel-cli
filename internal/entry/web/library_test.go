@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -243,6 +244,89 @@ func TestNovelLibrarySaveLoadRewritesManifestAndSkipsAnalyze(t *testing.T) {
 	}
 	if fake.adaptStartCalls != 1 {
 		t.Fatalf("adapt start calls = %d, want 1", fake.adaptStartCalls)
+	}
+}
+
+func TestNovelLibraryLoadLegacyEntryStartsDossierBackfill(t *testing.T) {
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
+	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	defer server.Close()
+
+	sourceProject, err := server.store.CreateProject("Legacy Novel Source")
+	if err != nil {
+		t.Fatalf("CreateProject source: %v", err)
+	}
+	sourcePath := writePreparedAdaptationFixture(t, sourceProject, "source.txt")
+	entryRoot := filepath.Join(runtimeRoot, novelLibraryDirName, "Legacy Novel")
+	if err := os.MkdirAll(filepath.Join(entryRoot, "source"), 0o755); err != nil {
+		t.Fatalf("create legacy source dir: %v", err)
+	}
+	if err := copyFileOverwrite(sourcePath, filepath.Join(entryRoot, "source", novelLibrarySourceName)); err != nil {
+		t.Fatalf("copy legacy source: %v", err)
+	}
+	if err := copyDir(filepath.Join(sourceProject.OutputDir, "meta", "adaptation"), filepath.Join(entryRoot, "meta", "adaptation")); err != nil {
+		t.Fatalf("copy legacy adaptation data: %v", err)
+	}
+	if err := os.Remove(filepath.Join(entryRoot, "meta", "adaptation", "cocreate_dossier.json")); err != nil {
+		t.Fatalf("remove legacy dossier: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(entryRoot, "meta", "adaptation", "cocreate_dossier_batches")); err != nil {
+		t.Fatalf("remove legacy dossier batches: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := writeJSONFile(filepath.Join(entryRoot, novelLibraryManifestName), novelLibraryManifest{
+		Version:      1,
+		Name:         "Legacy Novel",
+		SourceFile:   "source.txt",
+		ChapterCount: 2,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("write legacy library manifest: %v", err)
+	}
+
+	targetProject, err := server.store.CreateProject("Legacy Novel Target")
+	if err != nil {
+		t.Fatalf("CreateProject target: %v", err)
+	}
+	fake := installFakeSession(t, server, targetProject)
+	fake.adaptAnalyzeStarted = make(chan struct{})
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+targetProject.ID+"/adapt/library/load", bytes.NewBufferString(`{"name":"Legacy Novel"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("load status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-fake.adaptAnalyzeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("legacy library load did not start adaptation backfill")
+	}
+	if fake.adaptAnalyzeCalls != 1 {
+		t.Fatalf("adapt analyze calls = %d, want 1", fake.adaptAnalyzeCalls)
+	}
+
+	var loadResponse struct {
+		Analyzed   bool                 `json:"analyzed"`
+		Running    bool                 `json:"running"`
+		Accepted   bool                 `json:"accepted"`
+		Adaptation apiAdaptationStatus  `json:"adaptation"`
+		Events     []apiAdaptationEvent `json:"events"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&loadResponse); err != nil {
+		t.Fatalf("decode load response: %v", err)
+	}
+	if loadResponse.Analyzed {
+		t.Fatal("legacy library load should not be marked analyzed until dossier backfill finishes")
+	}
+	if !loadResponse.Running || !loadResponse.Accepted {
+		t.Fatalf("legacy library load running=%v accepted=%v, want true/true", loadResponse.Running, loadResponse.Accepted)
+	}
+	if loadResponse.Adaptation.AnalysisStatus != "running" {
+		t.Fatalf("analysis status = %q, want running", loadResponse.Adaptation.AnalysisStatus)
+	}
+	if len(loadResponse.Events) == 0 {
+		t.Fatal("legacy library load should return running analysis event")
 	}
 }
 

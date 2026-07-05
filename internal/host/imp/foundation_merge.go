@@ -4,12 +4,26 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
-const sourceOutlineArcSize = 10
+const (
+	sourceOutlineArcSize          = 10
+	DefaultFoundationMergeRunes   = 70000
+	foundationPartialPremiseRunes = 2200
+	foundationPartialFactRunes    = 320
+)
+
+type FoundationMergeBatchEvent struct {
+	Index int
+	Total int
+	From  int
+	To    int
+	Final bool
+}
 
 func MergeFoundationFromReports(
 	ctx context.Context,
@@ -44,30 +58,343 @@ func MergeFoundationFromReports(
 	return result, nil
 }
 
+func MergeFoundationFromReportsBatched(
+	ctx context.Context,
+	llm LLMChat,
+	systemPrompt string,
+	reports []domain.AdaptationSourceReport,
+	opts StructuredCallOptions,
+	batchRuneLimit int,
+	onBatch func(FoundationMergeBatchEvent),
+) (*FoundationResult, error) {
+	if llm == nil {
+		return nil, fmt.Errorf("llm is nil")
+	}
+	if len(reports) == 0 {
+		return nil, fmt.Errorf("no source reports to merge")
+	}
+	if batchRuneLimit <= 0 {
+		batchRuneLimit = DefaultFoundationMergeRunes
+	}
+
+	batches := foundationMergeReportBatches(reports, batchRuneLimit)
+	if len(batches) <= 1 {
+		if onBatch != nil {
+			onBatch(FoundationMergeBatchEvent{
+				Index: 1,
+				Total: 1,
+				From:  reports[0].Chapter,
+				To:    reports[len(reports)-1].Chapter,
+			})
+		}
+		return MergeFoundationFromReports(ctx, llm, systemPrompt, reports, opts)
+	}
+
+	partials := make([]foundationMergePartial, 0, len(batches))
+	for i, batch := range batches {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if onBatch != nil {
+			onBatch(FoundationMergeBatchEvent{
+				Index: i + 1,
+				Total: len(batches),
+				From:  batch[0].Chapter,
+				To:    batch[len(batch)-1].Chapter,
+			})
+		}
+		result, err := MergeFoundationFromReports(ctx, llm, systemPrompt, batch, opts)
+		if err != nil {
+			return nil, fmt.Errorf("merge source foundation batch %d/%d (chapters %d-%d): %w",
+				i+1, len(batches), batch[0].Chapter, batch[len(batch)-1].Chapter, err)
+		}
+		partials = append(partials, foundationMergePartial{
+			Index:  i + 1,
+			From:   batch[0].Chapter,
+			To:     batch[len(batch)-1].Chapter,
+			Result: result,
+		})
+	}
+
+	if onBatch != nil {
+		onBatch(FoundationMergeBatchEvent{
+			Index: len(batches) + 1,
+			Total: len(batches) + 1,
+			From:  reports[0].Chapter,
+			To:    reports[len(reports)-1].Chapter,
+			Final: true,
+		})
+	}
+	result, err := mergeFoundationPartialsBatched(ctx, llm, systemPrompt, partials, len(reports), opts, batchRuneLimit, onBatch)
+	if err != nil {
+		return nil, err
+	}
+	result.Volumes = buildSourceOutlineFromReports(reports)
+	if got := len(domain.FlattenOutline(result.Volumes)); got != len(reports) {
+		return nil, fmt.Errorf("generated source outline chapter count mismatch: got %d, want %d", got, len(reports))
+	}
+	if result.Compass != nil && result.Compass.LastUpdated == 0 {
+		result.Compass.LastUpdated = len(reports)
+	}
+	return result, nil
+}
+
+type foundationMergePartial struct {
+	Index  int
+	From   int
+	To     int
+	Result *FoundationResult
+}
+
+func foundationMergeReportBatches(reports []domain.AdaptationSourceReport, runeLimit int) [][]domain.AdaptationSourceReport {
+	if runeLimit <= 0 {
+		runeLimit = DefaultFoundationMergeRunes
+	}
+	var batches [][]domain.AdaptationSourceReport
+	var current []domain.AdaptationSourceReport
+	currentRunes := 0
+	for _, report := range reports {
+		reportRunes := foundationMergeReportRunes(report)
+		if len(current) > 0 && currentRunes+reportRunes > runeLimit {
+			batches = append(batches, current)
+			current = nil
+			currentRunes = 0
+		}
+		current = append(current, report)
+		currentRunes += reportRunes
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
+}
+
+func foundationMergeReportRunes(report domain.AdaptationSourceReport) int {
+	var sb strings.Builder
+	writeFoundationMergeReport(&sb, report)
+	return utf8.RuneCountInString(sb.String())
+}
+
+func mergeFoundationPartialsBatched(
+	ctx context.Context,
+	llm LLMChat,
+	systemPrompt string,
+	partials []foundationMergePartial,
+	totalReports int,
+	opts StructuredCallOptions,
+	batchRuneLimit int,
+	onBatch func(FoundationMergeBatchEvent),
+) (*FoundationResult, error) {
+	if len(partials) == 0 {
+		return nil, fmt.Errorf("no source foundation batches to merge")
+	}
+	if len(partials) == 1 {
+		return partials[0].Result, nil
+	}
+	if batchRuneLimit <= 0 {
+		batchRuneLimit = DefaultFoundationMergeRunes
+	}
+
+	level := 1
+	current := partials
+	for len(current) > 1 {
+		groups := foundationMergePartialBatches(current, batchRuneLimit)
+		if len(groups) == 1 {
+			result, err := mergeFoundationPartials(ctx, llm, systemPrompt, groups[0], totalReports, opts)
+			if err != nil {
+				return nil, err
+			}
+			return result, nil
+		}
+		next := make([]foundationMergePartial, 0, len(groups))
+		for i, group := range groups {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if onBatch != nil {
+				onBatch(FoundationMergeBatchEvent{
+					Index: i + 1,
+					Total: len(groups),
+					From:  group[0].From,
+					To:    group[len(group)-1].To,
+					Final: true,
+				})
+			}
+			result, err := mergeFoundationPartials(ctx, llm, systemPrompt, group, totalReports, opts)
+			if err != nil {
+				return nil, fmt.Errorf("merge source foundation summary level %d batch %d/%d (chapters %d-%d): %w",
+					level, i+1, len(groups), group[0].From, group[len(group)-1].To, err)
+			}
+			next = append(next, foundationMergePartial{
+				Index:  i + 1,
+				From:   group[0].From,
+				To:     group[len(group)-1].To,
+				Result: result,
+			})
+		}
+		current = next
+		level++
+	}
+	return current[0].Result, nil
+}
+
+func foundationMergePartialBatches(partials []foundationMergePartial, runeLimit int) [][]foundationMergePartial {
+	if runeLimit <= 0 {
+		runeLimit = DefaultFoundationMergeRunes
+	}
+	var batches [][]foundationMergePartial
+	var current []foundationMergePartial
+	currentRunes := 0
+	for _, partial := range partials {
+		partialRunes := foundationMergePartialRunes(partial)
+		if len(current) > 0 && currentRunes+partialRunes > runeLimit {
+			batches = append(batches, current)
+			current = nil
+			currentRunes = 0
+		}
+		current = append(current, partial)
+		currentRunes += partialRunes
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
+}
+
+func foundationMergePartialRunes(partial foundationMergePartial) int {
+	if partial.Result == nil {
+		return 0
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "## Partial %d: source chapters %d-%d\n", partial.Index, partial.From, partial.To)
+	writeMergeFact(&sb, "Premise", compactFact(partial.Result.Premise, foundationPartialPremiseRunes))
+	writePartialCharacters(&sb, partial.Result.Characters)
+	writePartialWorldRules(&sb, partial.Result.WorldRules)
+	writePartialCompass(&sb, partial.Result.Compass)
+	return utf8.RuneCountInString(sb.String())
+}
+
+func mergeFoundationPartials(
+	ctx context.Context,
+	llm LLMChat,
+	systemPrompt string,
+	partials []foundationMergePartial,
+	totalReports int,
+	opts StructuredCallOptions,
+) (*FoundationResult, error) {
+	if len(partials) == 0 {
+		return nil, fmt.Errorf("no source foundation batches to merge")
+	}
+	system := cleanLLMText(strings.ReplaceAll(systemPrompt, "${chapter_count}", fmt.Sprintf("%d", totalReports)))
+	user := cleanLLMText(buildFoundationPartialMergeUserPrompt(partials, totalReports))
+	result, err := runStructuredCall(ctx, llm, []agentcore.Message{
+		agentcore.SystemMsg(system),
+		agentcore.UserMsg(user),
+	}, parseFoundationMergeOutput, opts)
+	if err != nil {
+		return nil, fmt.Errorf("merge source foundation batch summaries: %w", err)
+	}
+	return result, nil
+}
+
 func buildFoundationMergeUserPrompt(reports []domain.AdaptationSourceReport) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "The following %d items are compact source-chapter fact reports. They are not original prose.\n", len(reports))
 	sb.WriteString("Merge only these facts into a foundation. Preserve causal order and uncertainty.\n\n")
 	for _, report := range reports {
-		title := strings.TrimSpace(report.Title)
-		if title == "" {
-			title = fmt.Sprintf("Chapter %d", report.Chapter)
+		writeFoundationMergeReport(&sb, report)
+	}
+	return sb.String()
+}
+
+func writeFoundationMergeReport(sb *strings.Builder, report domain.AdaptationSourceReport) {
+	title := strings.TrimSpace(report.Title)
+	if title == "" {
+		title = fmt.Sprintf("Chapter %d", report.Chapter)
+	}
+	fmt.Fprintf(sb, "## Chapter %d: %s\n", report.Chapter, cleanLLMText(title))
+	writeMergeFact(sb, "Summary", report.Summary)
+	writeMergeList(sb, "Appearing characters", report.Characters)
+	writeMergeList(sb, "Character facts", report.CharacterFacts)
+	writeMergeList(sb, "Key events", report.KeyEvents)
+	writeMergeList(sb, "World rules", report.WorldRules)
+	writeMergeFact(sb, "Hook type", report.HookType)
+	writeMergeFact(sb, "Dominant strand", report.DominantStrand)
+	writeTimelineFacts(sb, report.Timeline)
+	writeForeshadowFacts(sb, report.Foreshadow)
+	writeRelationshipFacts(sb, report.Relationships)
+	writeStateChangeFacts(sb, report.StateChanges)
+	sb.WriteString("\n")
+}
+
+func buildFoundationPartialMergeUserPrompt(partials []foundationMergePartial, totalReports int) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "The source novel has %d chapter reports. They were merged into %d consecutive partial foundations to keep each request small.\n", totalReports, len(partials))
+	sb.WriteString("Merge these partial foundations into one all-book foundation. Preserve source causal order and keep only facts supported by the partial foundations.\n")
+	sb.WriteString("Return the same required === PREMISE ===, === CHARACTERS ===, === WORLD_RULES ===, and === COMPASS === sections.\n\n")
+	for _, partial := range partials {
+		result := partial.Result
+		if result == nil {
+			continue
 		}
-		fmt.Fprintf(&sb, "## Chapter %d: %s\n", report.Chapter, cleanLLMText(title))
-		writeMergeFact(&sb, "Summary", report.Summary)
-		writeMergeList(&sb, "Appearing characters", report.Characters)
-		writeMergeList(&sb, "Character facts", report.CharacterFacts)
-		writeMergeList(&sb, "Key events", report.KeyEvents)
-		writeMergeList(&sb, "World rules", report.WorldRules)
-		writeMergeFact(&sb, "Hook type", report.HookType)
-		writeMergeFact(&sb, "Dominant strand", report.DominantStrand)
-		writeTimelineFacts(&sb, report.Timeline)
-		writeForeshadowFacts(&sb, report.Foreshadow)
-		writeRelationshipFacts(&sb, report.Relationships)
-		writeStateChangeFacts(&sb, report.StateChanges)
+		fmt.Fprintf(&sb, "## Partial %d: source chapters %d-%d\n", partial.Index, partial.From, partial.To)
+		writeMergeFact(&sb, "Premise", compactFact(result.Premise, foundationPartialPremiseRunes))
+		writePartialCharacters(&sb, result.Characters)
+		writePartialWorldRules(&sb, result.WorldRules)
+		writePartialCompass(&sb, result.Compass)
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+func writePartialCharacters(sb *strings.Builder, characters []domain.Character) {
+	if len(characters) == 0 {
+		return
+	}
+	fmt.Fprintln(sb, "- Characters:")
+	for _, character := range characters {
+		name := compactFact(character.Name, 80)
+		if name == "" {
+			continue
+		}
+		role := compactFact(character.Role, 80)
+		desc := compactFact(firstNonEmpty([]string{character.Description, character.Arc}, ""), foundationPartialFactRunes)
+		if role != "" || desc != "" {
+			fmt.Fprintf(sb, "  - %s (%s): %s\n", name, role, desc)
+			continue
+		}
+		fmt.Fprintf(sb, "  - %s\n", name)
+	}
+}
+
+func writePartialWorldRules(sb *strings.Builder, rules []domain.WorldRule) {
+	if len(rules) == 0 {
+		return
+	}
+	fmt.Fprintln(sb, "- World rules:")
+	for _, rule := range rules {
+		line := compactFact(rule.Rule, foundationPartialFactRunes)
+		if line == "" {
+			continue
+		}
+		if strings.TrimSpace(rule.Category) != "" {
+			line = compactFact(rule.Category, 80) + ": " + line
+		}
+		if strings.TrimSpace(rule.Boundary) != "" {
+			line += " / boundary: " + compactFact(rule.Boundary, 180)
+		}
+		fmt.Fprintf(sb, "  - %s\n", line)
+	}
+}
+
+func writePartialCompass(sb *strings.Builder, compass *domain.StoryCompass) {
+	if compass == nil {
+		return
+	}
+	fmt.Fprintln(sb, "- Compass:")
+	writeMergeFact(sb, "Ending direction", compass.EndingDirection)
+	writeMergeList(sb, "Open threads", compass.OpenThreads)
+	writeMergeFact(sb, "Estimated scale", compass.EstimatedScale)
 }
 
 func writeMergeFact(sb *strings.Builder, label, value string) {

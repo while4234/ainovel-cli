@@ -149,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/models/default", s.handleDefaultModel)
 	mux.HandleFunc("/api/models/switch", s.handleModelSwitch)
 	mux.HandleFunc("/api/models/cocreate-timeout", s.handleCoCreateTimeout)
+	mux.HandleFunc("/api/models/retry-settings", s.handleRetrySettings)
 	mux.HandleFunc("/api/models/add", s.handleModelAdd)
 	mux.HandleFunc("/api/models/test", s.handleModelTest)
 	mux.HandleFunc("/api/models/discover", s.handleModelDiscover)
@@ -241,13 +242,15 @@ func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
 		"runtime_root": s.runtimeRoot,
 		"projects_dir": s.store.ProjectsDir(),
 		"config": map[string]any{
-			"provider":                 cfg.Provider,
-			"model":                    cfg.ModelName,
-			"style":                    cfg.Style,
-			"proxy":                    cfg.Proxy,
-			"reasoning_effort":         cfg.ReasoningEffort,
-			"cocreate_timeout_seconds": cfg.EffectiveCoCreateTimeoutSeconds(),
-			"roles":                    cfg.Roles,
+			"provider":                      cfg.Provider,
+			"model":                         cfg.ModelName,
+			"style":                         cfg.Style,
+			"proxy":                         cfg.Proxy,
+			"reasoning_effort":              cfg.ReasoningEffort,
+			"cocreate_timeout_seconds":      cfg.EffectiveCoCreateTimeoutSeconds(),
+			"model_call_max_attempts":       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
+			"structure_repair_max_attempts": cfg.EffectiveStructureRepairMaxAttempts(),
+			"roles":                         cfg.Roles,
 		},
 		"active_projects": s.sessions.ActiveProjectIDs(),
 	}
@@ -382,6 +385,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectModelThinking(w, r, id)
 	case "models/cocreate-timeout":
 		s.handleProjectCoCreateTimeout(w, r, id)
+	case "models/retry-settings":
+		s.handleProjectRetrySettings(w, r, id)
 	case "models/add":
 		s.handleProjectModelAdd(w, r, id)
 	case "models/test":
@@ -456,6 +461,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectCoCreateDecision(w, r, id)
 	case "cocreate/commit":
 		s.handleProjectCoCreateCommit(w, r, id)
+	case "cocreate/confirm":
+		s.handleProjectCoCreateConfirm(w, r, id)
 	case "cocreate/cancel":
 		s.handleProjectCoCreateCancel(w, r, id)
 	default:

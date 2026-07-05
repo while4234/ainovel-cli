@@ -313,6 +313,29 @@ func (s *Server) handleProjectCoCreateCommit(w http.ResponseWriter, r *http.Requ
 	writeCoCreateResponse(w, manifest, session, state)
 }
 
+func (s *Server) handleProjectCoCreateConfirm(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	label, err := session.ConfirmCoCreatePlanning()
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"snapshot": session.Snapshot(),
+		"running":  session.Snapshot().IsRunning,
+		"label":    label,
+	})
+}
+
 func (s *Server) handleProjectCoCreateCancel(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

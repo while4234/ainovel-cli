@@ -28,6 +28,22 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source change: pending local changes
+  `fix: stabilize adaptation analysis and co-create review`:
+  Adaptation source foundation merge now batches by source-report rune budget
+  and recursively merges partial foundations, so large novels no longer send a
+  single oversize request that can trigger HTTP 413. Source dossier, briefing,
+  and structural repair attempts now honor Web-configurable retry settings, and
+  loading older novel-library entries missing current dossiers starts analysis
+  backfill instead of reporting them fully analyzed.
+  Ordinary co-create stores a planning review gate, exposes pending
+  volume/chapter-outline review in the Web UI, and requires the user to approve
+  before writer resume. Web project switching resets stream/event workbench
+  state to prevent cross-project display leakage, stream rounds are clipped to
+  avoid text overlap, and writer `draft_chapter` can infer a missing chapter
+  only when the runtime context is uniquely safe. Validation passed for
+  `go test ./...`, Web UI Vitest (96 tests), and Vite build. Local Web was
+  rebuilt and restarted first on `http://127.0.0.1:9898` as PID `59568`.
 - Latest source change: current local commit
   `fix: neutralize adaptation dossier generation`:
   Adaptation co-create dossiers now use prompt version `v2` and store neutral
@@ -488,6 +504,16 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
 
 ## Change Log
+
+- 2026-07-05 pending `fix: stabilize adaptation analysis and co-create review`:
+  added recursive batched foundation aggregation, configurable model/structure
+  retries, normal co-create planning approval UI, stream/workbench isolation
+  fixes, safe writer chapter inference, and refreshed Web static assets.
+
+- 2026-07-05 pending `fix: allow Grok OAuth save without OpenAI endpoint`:
+  added Grok OAuth provider-config normalization in bootstrap/Web/host save
+  paths and focused regression tests; rebuilt/restarted local Web PID `28572`;
+  left uncommitted to avoid staging mixed pre-existing worktree changes.
 
 - 2026-07-05 current local commit `feat: add adaptation cocreate dossier`:
   source analysis now builds an all-book adaptation co-create dossier in

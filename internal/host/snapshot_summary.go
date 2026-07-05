@@ -44,6 +44,21 @@ func creativeBlueprintSummary(snap *UISnapshot) *CreativeBlueprintSummary {
 	}
 }
 
+func planningReviewSummary(review *domain.PlanningReview) *PlanningReviewSummary {
+	if review == nil || review.Status == "" {
+		return nil
+	}
+	return &PlanningReviewSummary{
+		Loaded:           true,
+		Status:           review.Status,
+		Kind:             review.Kind,
+		Brief:            review.Brief,
+		TargetTotalWords: review.TargetTotalWords,
+		CreatedAt:        review.CreatedAt,
+		UpdatedAt:        review.UpdatedAt,
+	}
+}
+
 func adaptationPlanSummary(plan *domain.AdaptationPlan) *AdaptationPlanSummary {
 	if plan == nil {
 		return nil
@@ -216,6 +231,48 @@ func sourceCoverageSnapshot(chapter domain.AdaptationChapterPlan) *SourceCoverag
 		return nil
 	}
 	return coverage
+}
+
+func layeredVolumeSnapshots(volumes []domain.VolumeOutline) []LayeredVolumeSnapshot {
+	if len(volumes) == 0 {
+		return nil
+	}
+	out := make([]LayeredVolumeSnapshot, 0, len(volumes))
+	for _, volume := range volumes {
+		from, to, count := layeredVolumeChapterStats(volume)
+		out = append(out, LayeredVolumeSnapshot{
+			Index:        volume.Index,
+			Title:        volume.Title,
+			Theme:        volume.Theme,
+			TargetFrom:   from,
+			TargetTo:     to,
+			ChapterCount: count,
+		})
+	}
+	return out
+}
+
+func layeredVolumeChapterStats(volume domain.VolumeOutline) (int, int, int) {
+	from, to, count := 0, 0, 0
+	for _, arc := range volume.Arcs {
+		if len(arc.Chapters) == 0 {
+			count += arc.EstimatedChapters
+			continue
+		}
+		for _, chapter := range arc.Chapters {
+			if chapter.Chapter <= 0 {
+				continue
+			}
+			count++
+			if from == 0 || chapter.Chapter < from {
+				from = chapter.Chapter
+			}
+			if chapter.Chapter > to {
+				to = chapter.Chapter
+			}
+		}
+	}
+	return from, to, count
 }
 
 func writtenWordCount(progress *domain.Progress, chapter int) int {

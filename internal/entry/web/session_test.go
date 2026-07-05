@@ -1152,10 +1152,14 @@ type fakeProjectHost struct {
 	addProviderErr              error
 	removeProviderErr           error
 	setCoCreateTimeoutErr       error
+	setRetrySettingsErr         error
 	switchCalls                 int
 	removeProviderCalls         int
 	setCoCreateTimeoutCalls     int
+	setRetrySettingsCalls       int
 	coCreateTimeoutSeconds      int
+	modelCallMaxAttempts        int
+	structureRepairMaxAttempts  int
 	grokLoginStart              grokauth.LoginStart
 	grokLoginPoll               grokauth.LoginPoll
 	grokCompleteStatus          grokauth.AuthStatus
@@ -1901,6 +1905,24 @@ func (f *fakeProjectHost) SetCoCreateTimeoutSeconds(seconds int) error {
 	f.setCoCreateTimeoutCalls++
 	f.coCreateTimeoutSeconds = seconds
 	return f.setCoCreateTimeoutErr
+}
+
+func (f *fakeProjectHost) CurrentStructureRepairMaxAttempts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.structureRepairMaxAttempts > 0 {
+		return f.structureRepairMaxAttempts
+	}
+	return bootstrap.DefaultStructureRepairMaxAttempts
+}
+
+func (f *fakeProjectHost) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setRetrySettingsCalls++
+	f.modelCallMaxAttempts = modelCallMaxAttempts
+	f.structureRepairMaxAttempts = structureRepairMaxAttempts
+	return f.setRetrySettingsErr
 }
 
 func (f *fakeProjectHost) Events() <-chan host.Event {

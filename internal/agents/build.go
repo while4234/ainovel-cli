@@ -125,7 +125,7 @@ func BuildCoordinator(
 		contextTool,
 		readChapter,
 		tools.NewPlanChapterTool(store),
-		tools.NewDraftChapterTool(store),
+		newWriterDraftChapterTool(store),
 		tools.NewEditChapterTool(store),
 		tools.NewCheckConsistencyTool(store),
 		tools.NewCheckAdaptationTool(store),
@@ -493,4 +493,121 @@ func architectLongShouldStopAfterToolResult(toolName string, result json.RawMess
 	default:
 		return false
 	}
+}
+
+type writerDraftChapterTool struct {
+	inner *tools.DraftChapterTool
+	store *store.Store
+}
+
+func newWriterDraftChapterTool(st *store.Store) agentcore.Tool {
+	return &writerDraftChapterTool{
+		inner: tools.NewDraftChapterTool(st),
+		store: st,
+	}
+}
+
+func (t *writerDraftChapterTool) Name() string        { return t.inner.Name() }
+func (t *writerDraftChapterTool) Description() string { return t.inner.Description() }
+func (t *writerDraftChapterTool) Label() string       { return t.inner.Label() }
+
+func (t *writerDraftChapterTool) ReadOnly(args json.RawMessage) bool {
+	return t.inner.ReadOnly(args)
+}
+
+func (t *writerDraftChapterTool) ConcurrencySafe(args json.RawMessage) bool {
+	return t.inner.ConcurrencySafe(args)
+}
+
+func (t *writerDraftChapterTool) StrictSchema() bool { return false }
+
+func (t *writerDraftChapterTool) Schema() map[string]any {
+	return toolSchemaWithoutRequired(t.inner.Schema(), "chapter")
+}
+
+func (t *writerDraftChapterTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(args, &raw); err != nil {
+		return t.inner.Execute(ctx, args)
+	}
+	if hasPositiveChapter(raw["chapter"]) {
+		return t.inner.Execute(ctx, args)
+	}
+	chapter := inferWriterDraftChapter(t.store)
+	if chapter <= 0 {
+		return nil, fmt.Errorf("chapter is required and cannot be inferred from current writing state")
+	}
+	encodedChapter, err := json.Marshal(chapter)
+	if err != nil {
+		return nil, err
+	}
+	raw["chapter"] = encodedChapter
+	nextArgs, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("augment draft_chapter args: %w", err)
+	}
+	return t.inner.Execute(ctx, nextArgs)
+}
+
+func hasPositiveChapter(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var chapter int
+	return json.Unmarshal(raw, &chapter) == nil && chapter > 0
+}
+
+func inferWriterDraftChapter(st *store.Store) int {
+	if st == nil {
+		return 0
+	}
+	progress, err := st.Progress.Load()
+	if err != nil || progress == nil {
+		return 0
+	}
+	if progress.InProgressChapter > 0 {
+		return progress.InProgressChapter
+	}
+	if len(progress.PendingRewrites) == 1 {
+		return progress.PendingRewrites[0]
+	}
+	if progress.Flow == domain.FlowRewriting || progress.Flow == domain.FlowPolishing {
+		return 0
+	}
+	next := progress.NextChapter()
+	if next <= 0 || (progress.TotalChapters > 0 && next > progress.TotalChapters) {
+		return 0
+	}
+	return next
+}
+
+func toolSchemaWithoutRequired(schema map[string]any, field string) map[string]any {
+	out := make(map[string]any, len(schema))
+	for key, value := range schema {
+		out[key] = value
+	}
+	switch required := out["required"].(type) {
+	case []string:
+		out["required"] = removeRequiredString(required, field)
+	case []any:
+		next := make([]any, 0, len(required))
+		for _, item := range required {
+			if text, ok := item.(string); ok && text == field {
+				continue
+			}
+			next = append(next, item)
+		}
+		out["required"] = next
+	}
+	return out
+}
+
+func removeRequiredString(required []string, field string) []string {
+	next := make([]string, 0, len(required))
+	for _, item := range required {
+		if item != field {
+			next = append(next, item)
+		}
+	}
+	return next
 }

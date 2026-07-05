@@ -242,9 +242,9 @@ func (s *Server) handleProjectNovelLibraryLoad(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid novel library load request: "+err.Error())
 		return
 	}
-	manifest, err := s.store.OpenProject(id)
+	session, manifest, err := s.sessions.Open(id)
 	if err != nil {
-		writeProjectSessionError(w, fmt.Errorf("%w: %v", ErrProjectNotFound, err))
+		writeProjectSessionError(w, err)
 		return
 	}
 	item, sourceFile, err := s.libraries.LoadNovelIntoProject(manifest, req.Name)
@@ -252,21 +252,50 @@ func (s *Server) handleProjectNovelLibraryLoad(w http.ResponseWriter, r *http.Re
 		writeLibraryActionError(w, err)
 		return
 	}
-	if session := s.sessions.Project(id); session != nil {
-		session.appendLibraryEvent(
-			"novel_load",
-			fmt.Sprintf("已加载小说库：%s（%d 章）", item.Name, item.ChapterCount),
-			fmt.Sprintf("source_file=%s loaded_as=%s", item.SourceFile, sourceFile.RelativePath),
-			"success",
-		)
-		session.AppendSnapshot()
+	status, analysisRunning, err := s.startLoadedNovelAnalysisIfNeeded(session, manifest, sourceFile)
+	if err != nil {
+		writeAdaptationActionError(w, err, status.AnalysisEvents)
+		return
 	}
+	session.appendLibraryEvent(
+		"novel_load",
+		fmt.Sprintf("已加载小说库：%s（%d 章）", item.Name, item.ChapterCount),
+		fmt.Sprintf("source_file=%s loaded_as=%s", item.SourceFile, sourceFile.RelativePath),
+		"success",
+	)
+	session.AppendSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":     manifest,
 		"item":        item,
 		"source_file": sourceFile,
-		"analyzed":    true,
+		"adaptation":  status,
+		"events":      status.AnalysisEvents,
+		"running":     analysisRunning,
+		"accepted":    analysisRunning,
+		"analyzed":    status.AnalysisStatus == "done",
 	})
+}
+
+func (s *Server) startLoadedNovelAnalysisIfNeeded(session *ProjectSession, manifest ProjectManifest, sourceFile apiUploadedFile) (apiAdaptationStatus, bool, error) {
+	status, err := projectAdaptationStatus(manifest, false)
+	if err != nil {
+		return status, false, err
+	}
+	if status.AnalysisStatus == "done" {
+		return status, false, nil
+	}
+	sourcePath, err := adaptationSourcePathFromName(sourceFile.RelativePath, manifest, false)
+	if err != nil {
+		return status, false, err
+	}
+	if err := session.StartPrepareAdaptationSource(sourcePath); err != nil {
+		return status, false, err
+	}
+	status, err = projectAdaptationStatus(manifest, true)
+	if err != nil {
+		return status, false, err
+	}
+	return status, true, nil
 }
 
 func (s *Server) trySaveImportedSimulationProfile(profile pendingUpload) (apiLibraryItem, bool, string) {

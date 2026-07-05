@@ -216,7 +216,7 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 			} `json:"config"`
 		} `json:"runtime"`
 	}
-	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", `{"role":"default","provider":"grok-oauth","model":"grok-4.3-latest","type":"grok","auth":"grok_oauth","account_id":"default"}`, &added)
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", `{"role":"default","provider":"grok-oauth","model":"grok-4.3-latest","type":"grok","auth":"grok_oauth","account_id":"default","api":"chat","api_key":"should-not-save"}`, &added)
 	if added.Runtime.Config.Provider != "grok-oauth" || added.Runtime.Config.Model != "grok-4.3-latest" {
 		t.Fatalf("runtime default = %+v", added.Runtime.Config)
 	}
@@ -227,6 +227,9 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	pc := cfg.Providers["grok-oauth"]
 	if pc.Type != "grok" || pc.Auth != bootstrap.ProviderAuthGrokOAuth || pc.AccountID != "default" {
 		t.Fatalf("grok provider config = %+v", pc)
+	}
+	if pc.API != "" || pc.APIKey != "" {
+		t.Fatalf("grok_oauth should not persist OpenAI api or api_key fields: %+v", pc)
 	}
 
 	saved, err := bootstrap.LoadConfigFile(filepath.Join(home, ".ainovel", "config.json"))
@@ -738,7 +741,7 @@ func TestProjectModelAddGrokOAuthPassesProviderConfig(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/models/add", bytes.NewBufferString(`{"role":"writer","provider":"grok-oauth","type":"grok","auth":"grok_oauth","account_id":"work","model":"grok-4.3-latest"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/models/add", bytes.NewBufferString(`{"role":"writer","provider":"grok-oauth","type":"grok","auth":"grok_oauth","account_id":"work","model":"grok-4.3-latest","api":"chat","api_key":"should-not-forward"}`))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -754,8 +757,8 @@ func TestProjectModelAddGrokOAuthPassesProviderConfig(t *testing.T) {
 	if len(fake.configureProviderConfig.Models) != 0 {
 		t.Fatalf("grok model list = %+v", fake.configureProviderConfig.Models)
 	}
-	if fake.configureProviderConfig.APIKey != "" {
-		t.Fatalf("grok_oauth config should not receive api key: %+v", fake.configureProviderConfig)
+	if fake.configureProviderConfig.API != "" || fake.configureProviderConfig.APIKey != "" {
+		t.Fatalf("grok_oauth config should not receive OpenAI api or api key: %+v", fake.configureProviderConfig)
 	}
 }
 

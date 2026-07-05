@@ -59,6 +59,7 @@ func (s *RunMetaStore) Init(style, provider, model string) error {
 			meta.PendingSteer = existing.PendingSteer
 			meta.PlanningTier = existing.PlanningTier
 			meta.WordBudget = existing.WordBudget
+			meta.PlanningReview = existing.PlanningReview
 		}
 		return s.saveUnlocked(meta)
 	})
@@ -146,4 +147,44 @@ func (s *RunMetaStore) SetWordBudget(budget *domain.WordBudget) error {
 		meta.WordBudget = &normalized
 		return s.saveUnlocked(*meta)
 	})
+}
+
+// SetPlanningReview records or clears the normal co-create blueprint review
+// gate. The review is intentionally kept in run meta because it controls the
+// current run, not the story canon itself.
+func (s *RunMetaStore) SetPlanningReview(review *domain.PlanningReview) error {
+	return s.io.WithWriteLock(func() error {
+		meta, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if meta == nil {
+			meta = &domain.RunMeta{}
+		}
+		if review == nil {
+			meta.PlanningReview = nil
+			return s.saveUnlocked(*meta)
+		}
+		cp := *review
+		meta.PlanningReview = &cp
+		return s.saveUnlocked(*meta)
+	})
+}
+
+func (s *RunMetaStore) PlanningReview() (*domain.PlanningReview, error) {
+	meta, err := s.Load()
+	if err != nil || meta == nil || meta.PlanningReview == nil {
+		return nil, err
+	}
+	cp := *meta.PlanningReview
+	return &cp, nil
+}
+
+func (s *RunMetaStore) PlanningReviewPending() bool {
+	review, err := s.PlanningReview()
+	return err == nil && review != nil && review.Status == domain.PlanningReviewStatusPending
+}
+
+func (s *RunMetaStore) ClearPlanningReview() error {
+	return s.SetPlanningReview(nil)
 }

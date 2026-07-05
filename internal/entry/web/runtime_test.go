@@ -53,7 +53,7 @@ func TestResolveRuntimeRootPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default runtime root: %v", err)
 	}
-	want := filepath.Join(home, ".ainovel", "novels")
+	want := filepath.Join(home, ".ainovel", "novels-preview")
 	if source != RuntimeRootSourceDefault || got != mustCanonicalPath(t, want) {
 		t.Fatalf("default root = %q (%s), want %q", got, source, want)
 	}

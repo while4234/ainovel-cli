@@ -20,18 +20,20 @@ var openAuthBrowser = openBrowser
 var startGrokAuthLogin = grokauth.StartLogin
 
 type apiModelConfig struct {
-	Providers              []apiModelProvider `json:"providers"`
-	Roles                  []apiModelRoute    `json:"roles"`
-	ThinkingLevels         []string           `json:"thinking_levels"`
-	ThinkingRule           string             `json:"thinking_rule"`
-	CoCreateTimeoutSeconds int                `json:"cocreate_timeout_seconds"`
-	ModelAutoSwitch        apiModelAutoSwitch `json:"model_auto_switch"`
+	Providers                  []apiModelProvider `json:"providers"`
+	Roles                      []apiModelRoute    `json:"roles"`
+	ThinkingLevels             []string           `json:"thinking_levels"`
+	ThinkingRule               string             `json:"thinking_rule"`
+	CoCreateTimeoutSeconds     int                `json:"cocreate_timeout_seconds"`
+	StructureRepairMaxAttempts int                `json:"structure_repair_max_attempts"`
+	ModelAutoSwitch            apiModelAutoSwitch `json:"model_auto_switch"`
 }
 
 type apiModelAutoSwitch struct {
-	Enabled            bool     `json:"enabled"`
-	FallbackBackends   []string `json:"fallback_backends"`
-	NetworkMaxAttempts int      `json:"network_max_attempts"`
+	Enabled              bool     `json:"enabled"`
+	FallbackBackends     []string `json:"fallback_backends"`
+	NetworkMaxAttempts   int      `json:"network_max_attempts"`
+	ModelCallMaxAttempts int      `json:"model_call_max_attempts"`
 }
 
 type apiModelProvider struct {
@@ -80,6 +82,19 @@ type coCreateTimeoutRequest struct {
 	TimeoutSeconds int `json:"timeout_seconds"`
 }
 
+type retrySettingsRequest struct {
+	ModelCallMaxAttempts         int `json:"model_call_max_attempts"`
+	NetworkDisconnectMaxAttempts int `json:"network_disconnect_max_attempts"`
+	StructureRepairMaxAttempts   int `json:"structure_repair_max_attempts"`
+}
+
+func (r retrySettingsRequest) modelCallAttempts() int {
+	if r.ModelCallMaxAttempts != 0 {
+		return r.ModelCallMaxAttempts
+	}
+	return r.NetworkDisconnectMaxAttempts
+}
+
 type modelDeleteRequest struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
@@ -120,6 +135,10 @@ func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
 		API:                        strings.TrimSpace(r.API),
 		RequestTimeoutSeconds:      r.RequestTimeoutSeconds,
 		ConnectivityTimeoutSeconds: r.ConnectivityTimeoutSeconds,
+	}
+	if pc.UsesGrokOAuth() {
+		pc.API = ""
+		pc.APIKey = ""
 	}
 	if r.UseProxy != nil {
 		useProxy := *r.UseProxy
@@ -249,6 +268,44 @@ func (s *Server) handleCoCreateTimeout(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := s.currentConfig()
 	cfg.CoCreateTimeoutSeconds = seconds
+	if err := cfg.ValidateBase(); err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	if err := saveWebConfig(cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.setCurrentConfig(cfg)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  s.globalModelConfig(cfg),
+		"runtime": s.runtimePayload(cfg),
+	})
+}
+
+func (s *Server) handleRetrySettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req retrySettingsRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	modelCallAttempts, err := bootstrap.NormalizeRuntimeNetworkMaxAttempts(req.modelCallAttempts())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	repairAttempts, err := bootstrap.NormalizeStructureRepairMaxAttempts(req.StructureRepairMaxAttempts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cfg := s.currentConfig()
+	cfg.ModelAutoSwitch.NetworkMaxAttempts = modelCallAttempts
+	cfg.StructureRepairMaxAttempts = repairAttempts
 	if err := cfg.ValidateBase(); err != nil {
 		writeProjectLifecycleError(w, err)
 		return
@@ -489,12 +546,13 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 		})
 	}
 	return apiModelConfig{
-		Providers:              outProviders,
-		Roles:                  roles,
-		ThinkingLevels:         []string{"", "off", "low", "medium", "high", "xhigh", "max"},
-		ThinkingRule:           "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
-		CoCreateTimeoutSeconds: cfg.EffectiveCoCreateTimeoutSeconds(),
-		ModelAutoSwitch:        apiModelAutoSwitchFromConfig(cfg.ModelAutoSwitch),
+		Providers:                  outProviders,
+		Roles:                      roles,
+		ThinkingLevels:             []string{"", "off", "low", "medium", "high", "xhigh", "max"},
+		ThinkingRule:               "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
+		CoCreateTimeoutSeconds:     cfg.EffectiveCoCreateTimeoutSeconds(),
+		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
+		ModelAutoSwitch:            apiModelAutoSwitchFromConfig(cfg.ModelAutoSwitch),
 	}
 }
 
@@ -522,9 +580,10 @@ func apiProviderFromConfig(name string, pc bootstrap.ProviderConfig, models []st
 
 func apiModelAutoSwitchFromConfig(cfg bootstrap.ModelAutoSwitchConfig) apiModelAutoSwitch {
 	return apiModelAutoSwitch{
-		Enabled:            cfg.IsEnabled(),
-		FallbackBackends:   append([]string(nil), cfg.FallbackBackends...),
-		NetworkMaxAttempts: cfg.EffectiveNetworkMaxAttempts(),
+		Enabled:              cfg.IsEnabled(),
+		FallbackBackends:     append([]string(nil), cfg.FallbackBackends...),
+		NetworkMaxAttempts:   cfg.EffectiveNetworkMaxAttempts(),
+		ModelCallMaxAttempts: cfg.EffectiveNetworkMaxAttempts(),
 	}
 }
 
@@ -662,6 +721,33 @@ func (s *Server) handleProjectCoCreateTimeout(w http.ResponseWriter, r *http.Req
 		return
 	}
 	models, err := session.SetCoCreateTimeoutSeconds(req.value())
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"models":   models,
+		"snapshot": session.Snapshot(),
+	})
+}
+
+func (s *Server) handleProjectRetrySettings(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req retrySettingsRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	models, err := session.SetRetrySettings(req.modelCallAttempts(), req.StructureRepairMaxAttempts)
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return

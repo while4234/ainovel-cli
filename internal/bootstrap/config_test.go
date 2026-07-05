@@ -98,6 +98,7 @@ func TestGrokOAuthProviderAllowsMissingAPIKey(t *testing.T) {
 				Type:      "grok",
 				Auth:      ProviderAuthGrokOAuth,
 				AccountID: "default",
+				API:       "chat",
 				Models:    []string{"grok-4.3-latest"},
 			},
 		},

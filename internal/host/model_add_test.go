@@ -382,6 +382,47 @@ func TestConfigureProviderModelCanSaveWithoutSelectingRoute(t *testing.T) {
 	}
 }
 
+func TestConfigureProviderModelNormalizesGrokOAuthOpenAIFields(t *testing.T) {
+	withModelConnectivityProbe(t, nil)
+	selectAfterSave := false
+	cfg := bootstrap.Config{
+		Provider:  "openai",
+		ModelName: "gpt-base",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"openai": {Type: "openai", APIKey: "sk-openai", Models: []string{"gpt-base"}},
+		},
+	}
+	cfg.FillDefaults()
+
+	next, err := ConfigureProviderModelInConfig(context.Background(), cfg, ProviderModelUpdate{
+		Role:            "default",
+		Provider:        "grok-oauth",
+		Model:           "grok-4.3-latest",
+		SelectAfterSave: &selectAfterSave,
+		ProviderConfig: bootstrap.ProviderConfig{
+			Label:     "Grok",
+			Type:      "grok",
+			Auth:      bootstrap.ProviderAuthGrokOAuth,
+			AccountID: "default",
+			API:       "chat",
+			APIKey:    "should-clear",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ConfigureProviderModelInConfig grok oauth: %v", err)
+	}
+	pc := next.Providers["grok-oauth"]
+	if pc.Type != "grok" || pc.Auth != bootstrap.ProviderAuthGrokOAuth || pc.AccountID != "default" {
+		t.Fatalf("grok provider config = %+v", pc)
+	}
+	if pc.API != "" || pc.APIKey != "" {
+		t.Fatalf("grok_oauth should clear OpenAI api fields: %+v", pc)
+	}
+	if next.Provider != "openai" || next.ModelName != "gpt-base" {
+		t.Fatalf("default route changed to %s/%s", next.Provider, next.ModelName)
+	}
+}
+
 func TestConfiguredProviderModelProbeAllowsExistingProviderEdit(t *testing.T) {
 	withModelConnectivityProbe(t, nil)
 	cfg := bootstrap.Config{

@@ -116,6 +116,8 @@ type projectHost interface {
 	SetRoleThinking(string, string) error
 	CurrentCoCreateTimeoutSeconds() int
 	SetCoCreateTimeoutSeconds(int) error
+	CurrentStructureRepairMaxAttempts() int
+	SetRetrySettings(int, int) error
 	Events() <-chan host.Event
 	Stream() <-chan string
 	Done() <-chan struct{}
@@ -355,9 +357,10 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 		})
 	}
 	return apiModelConfig{
-		Providers:              outProviders,
-		Roles:                  roles,
-		CoCreateTimeoutSeconds: s.host.CurrentCoCreateTimeoutSeconds(),
+		Providers:                  outProviders,
+		Roles:                      roles,
+		CoCreateTimeoutSeconds:     s.host.CurrentCoCreateTimeoutSeconds(),
+		StructureRepairMaxAttempts: s.host.CurrentStructureRepairMaxAttempts(),
 		ThinkingLevels: []string{
 			"",
 			"off",
@@ -390,6 +393,14 @@ func (s *ProjectSession) SetRoleThinking(role, level string) (apiModelConfig, er
 
 func (s *ProjectSession) SetCoCreateTimeoutSeconds(seconds int) (apiModelConfig, error) {
 	if err := s.host.SetCoCreateTimeoutSeconds(seconds); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts int) (apiModelConfig, error) {
+	if err := s.host.SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts); err != nil {
 		return apiModelConfig{}, err
 	}
 	s.AppendSnapshot()
@@ -1177,7 +1188,11 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 		if err := s.persistWordBudget(plan.WordBudget); err != nil {
 			return state.apiState(), err
 		}
+		if err := s.saveNormalCoCreatePlanningReview(plan); err != nil {
+			return state.apiState(), err
+		}
 		if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
+			_ = s.clearNormalCoCreatePlanningReview()
 			return state.apiState(), err
 		}
 	}
@@ -1187,6 +1202,74 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 	api.Active = false
 	s.AppendSnapshot()
 	return api, nil
+}
+
+func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan) error {
+	if s == nil {
+		return fmt.Errorf("project session is nil")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	targetWords := 0
+	if plan.WordBudget != nil {
+		targetWords = plan.WordBudget.TargetTotalWords
+	}
+	review := &domain.PlanningReview{
+		Status:           domain.PlanningReviewStatusCollecting,
+		Kind:             domain.PlanningReviewKindBlueprint,
+		Brief:            strings.TrimSpace(plan.RawPrompt),
+		StartPrompt:      strings.TrimSpace(plan.StartPrompt),
+		TargetTotalWords: targetWords,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	return st.RunMeta.SetPlanningReview(review)
+}
+
+func (s *ProjectSession) clearNormalCoCreatePlanningReview() error {
+	if s == nil {
+		return nil
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	return st.RunMeta.ClearPlanningReview()
+}
+
+func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil {
+		return "", fmt.Errorf("read planning review: %w", err)
+	}
+	if review == nil || review.Status != domain.PlanningReviewStatusPending {
+		return "", fmt.Errorf("no pending co-create planning review")
+	}
+	if missing := st.FoundationMissing(); len(missing) > 0 {
+		return "", fmt.Errorf("planning foundation is incomplete: %s", strings.Join(missing, ", "))
+	}
+	if err := st.RunMeta.ClearPlanningReview(); err != nil {
+		return "", fmt.Errorf("clear planning review: %w", err)
+	}
+	progress, err := st.Progress.Load()
+	if err != nil {
+		return "", fmt.Errorf("load progress: %w", err)
+	}
+	if progress == nil {
+		return "", fmt.Errorf("progress is missing")
+	}
+	if progress.Phase != domain.PhaseWriting {
+		if err := st.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
+			return "", fmt.Errorf("approve planning review: %w", err)
+		}
+	}
+	label, err := s.host.Resume()
+	s.AppendSnapshot()
+	return label, err
 }
 
 func (s *ProjectSession) persistWordBudget(budget *domain.WordBudget) error {

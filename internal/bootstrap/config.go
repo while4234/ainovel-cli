@@ -38,6 +38,10 @@ const (
 	DefaultRuntimeNetworkMaxAttempts = 7
 	MinRuntimeNetworkMaxAttempts     = 1
 	MaxRuntimeNetworkMaxAttempts     = 11
+
+	DefaultStructureRepairMaxAttempts = 2
+	MinStructureRepairMaxAttempts     = 1
+	MaxStructureRepairMaxAttempts     = 7
 )
 
 // CompactReserveTokens 按 CompactRatio 反算 ReserveTokens 并应用 MinCompactReserve floor：
@@ -83,6 +87,14 @@ func (c Config) CoCreateTimeout() time.Duration {
 	return time.Duration(c.EffectiveCoCreateTimeoutSeconds()) * time.Second
 }
 
+func (c Config) EffectiveStructureRepairMaxAttempts() int {
+	attempts, err := NormalizeStructureRepairMaxAttempts(c.StructureRepairMaxAttempts)
+	if err != nil {
+		return DefaultStructureRepairMaxAttempts
+	}
+	return attempts
+}
+
 func NormalizeRuntimeNetworkMaxAttempts(attempts int) (int, error) {
 	if attempts == 0 {
 		return DefaultRuntimeNetworkMaxAttempts, nil
@@ -92,6 +104,20 @@ func NormalizeRuntimeNetworkMaxAttempts(attempts int) (int, error) {
 			"model_auto_switch.network_max_attempts must be between %d and %d",
 			MinRuntimeNetworkMaxAttempts,
 			MaxRuntimeNetworkMaxAttempts,
+		)
+	}
+	return attempts, nil
+}
+
+func NormalizeStructureRepairMaxAttempts(attempts int) (int, error) {
+	if attempts == 0 {
+		return DefaultStructureRepairMaxAttempts, nil
+	}
+	if attempts < MinStructureRepairMaxAttempts || attempts > MaxStructureRepairMaxAttempts {
+		return 0, fmt.Errorf(
+			"structure_repair_max_attempts must be between %d and %d",
+			MinStructureRepairMaxAttempts,
+			MaxStructureRepairMaxAttempts,
 		)
 	}
 	return attempts, nil
@@ -123,13 +149,17 @@ type ProviderConfig struct {
 
 const ProviderAuthGrokOAuth = "grok_oauth"
 
+func (pc ProviderConfig) UsesGrokOAuth() bool {
+	return strings.EqualFold(strings.TrimSpace(pc.Auth), ProviderAuthGrokOAuth)
+}
+
 // RequiresAPIKey 返回该 provider 是否必须显式配置 api_key。
 // 约定：
 // 1. ollama / bedrock 允许无 key；
 // 2. 显式指定 Type 的配置视为自定义代理，允许无 key；
 // 3. 其他 provider 默认要求 key，保持对官方托管接口的保守校验。
 func (pc ProviderConfig) RequiresAPIKey(name string) bool {
-	if strings.EqualFold(strings.TrimSpace(pc.Auth), ProviderAuthGrokOAuth) {
+	if pc.UsesGrokOAuth() {
 		return false
 	}
 	switch name {
@@ -225,9 +255,10 @@ type Config struct {
 	// 角色未单独配置 reasoning_effort 时回落到此值。
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// CoCreateTimeoutSeconds 是 Web 共创单次模型调用超时；0 表示使用默认 60 秒。
-	CoCreateTimeoutSeconds int                   `json:"cocreate_timeout_seconds,omitempty"`
-	Proxy                  string                `json:"proxy,omitempty"`
-	ModelAutoSwitch        ModelAutoSwitchConfig `json:"model_auto_switch,omitzero"`
+	CoCreateTimeoutSeconds     int                   `json:"cocreate_timeout_seconds,omitempty"`
+	StructureRepairMaxAttempts int                   `json:"structure_repair_max_attempts,omitempty"`
+	Proxy                      string                `json:"proxy,omitempty"`
+	ModelAutoSwitch            ModelAutoSwitchConfig `json:"model_auto_switch,omitzero"`
 
 	// Provider 凭证库
 	Providers map[string]ProviderConfig `json:"providers,omitempty"`
@@ -285,6 +316,9 @@ func (c *Config) ValidateBase() error {
 		return err
 	}
 	if _, err := NormalizeRuntimeNetworkMaxAttempts(c.ModelAutoSwitch.NetworkMaxAttempts); err != nil {
+		return err
+	}
+	if _, err := NormalizeStructureRepairMaxAttempts(c.StructureRepairMaxAttempts); err != nil {
 		return err
 	}
 	if err := validateConfigText("proxy", c.Proxy); err != nil {
@@ -626,6 +660,9 @@ func (c Config) validateModelRef(owner string, ref ModelRef) error {
 
 func (c Config) validateProviderAPI(owner, providerName string, pc ProviderConfig) error {
 	if pc.API == "" {
+		return nil
+	}
+	if pc.UsesGrokOAuth() {
 		return nil
 	}
 	providerType, err := pc.ProviderType(providerName)

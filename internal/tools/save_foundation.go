@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -274,13 +275,37 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	result["remaining"] = remaining
 	result["foundation_ready"] = ready
 	if ready {
-		if p, _ := t.store.Progress.Load(); p != nil &&
+		if review, _ := t.store.RunMeta.PlanningReview(); review != nil &&
+			(review.Status == domain.PlanningReviewStatusCollecting || review.Status == domain.PlanningReviewStatusPending) {
+			now := time.Now().UTC().Format(time.RFC3339)
+			review.Status = domain.PlanningReviewStatusPending
+			review.Kind = planningReviewKindForFoundation(t.store)
+			if review.CreatedAt == "" {
+				review.CreatedAt = now
+			}
+			review.UpdatedAt = now
+			if err := t.store.RunMeta.SetPlanningReview(review); err != nil {
+				return nil, fmt.Errorf("set planning review: %w: %w", errs.ErrStoreWrite, err)
+			}
+			result["planning_review"] = review.Status
+			result["planning_review_kind"] = review.Kind
+		} else if p, _ := t.store.Progress.Load(); p != nil &&
 			p.Phase != domain.PhaseWriting && p.Phase != domain.PhaseComplete {
 			_ = t.store.Progress.UpdatePhase(domain.PhaseWriting)
 			result["phase"] = string(domain.PhaseWriting)
 		}
 	}
 	return json.Marshal(result)
+}
+
+func planningReviewKindForFoundation(st *store.Store) string {
+	if st == nil {
+		return domain.PlanningReviewKindBlueprint
+	}
+	if layered, _ := st.Outline.LoadLayeredOutline(); len(layered) > 0 {
+		return domain.PlanningReviewKindVolumeSplit
+	}
+	return domain.PlanningReviewKindChapterOutline
 }
 
 func foundationArtifact(t string) string {

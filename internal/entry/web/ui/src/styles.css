@@ -754,7 +754,8 @@ h2 {
 .stream-round {
   min-width: 0;
   min-height: 76px;
-  overflow: visible;
+  max-height: 100%;
+  overflow: hidden;
   border: 1px solid transparent;
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
@@ -764,6 +765,8 @@ h2 {
 
 .stream-round pre {
   margin: 0;
+  max-height: 100%;
+  overflow: auto;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   word-break: break-word;
@@ -2078,6 +2081,18 @@ h2 {
   white-space: pre-wrap;
 }
 
+.proposal-review-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.planning-review-card p {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .proposal-volume-stack,
 .proposal-chapter-grid,
 .proposal-chapter-card {
@@ -2503,6 +2518,10 @@ h2 {
 
 .model-timeout-form .tool-button {
   min-width: 82px;
+}
+
+.retry-settings-form {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
 }
 
 .tool-button.danger {

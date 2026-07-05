@@ -48,9 +48,11 @@ var (
 )
 
 type Deps struct {
-	Store   *store.Store
-	LLM     imp.LLMChat
-	Prompts Prompts
+	Store                      *store.Store
+	LLM                        imp.LLMChat
+	Prompts                    Prompts
+	ModelCallMaxAttempts       int
+	StructureRepairMaxAttempts int
 }
 
 func RunSource(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
@@ -137,7 +139,7 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 		emit(StageChapter, chapterNum, total, fmt.Sprintf("分析原文第 %d/%d 章：%s", chapterNum, total, ch.Title), nil)
 		analysis, err := imp.AnalyzeChapterWithOptions(ctx, deps.LLM, deps.Prompts.Analyzer,
 			chapterNum, ch.Title, ch.Content, "", "", nil,
-			structuredCallOptions(StageChapter, chapterNum, total, emit))
+			structuredCallOptionsWithDeps(deps, StageChapter, chapterNum, total, emit))
 		if err != nil {
 			return fmt.Errorf("analyze source chapter %d: %w", chapterNum, err)
 		}
@@ -178,8 +180,16 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 		emit(StageFoundation, total, total, "源书 foundation 已存在，跳过聚合", nil)
 	} else {
 		emit(StageFoundation, total, total, "聚合逐章事实，生成源书 foundation...", nil)
-		fr, err := imp.MergeFoundationFromReports(ctx, deps.LLM, deps.Prompts.FoundationMerge, reports,
-			structuredCallOptions(StageFoundation, total, total, emit))
+		fr, err := imp.MergeFoundationFromReportsBatched(ctx, deps.LLM, deps.Prompts.FoundationMerge, reports,
+			structuredCallOptionsWithDeps(deps, StageFoundation, total, total, emit),
+			imp.DefaultFoundationMergeRunes,
+			func(ev imp.FoundationMergeBatchEvent) {
+				if ev.Final {
+					emit(StageFoundation, total, total, fmt.Sprintf("分批聚合 foundation 摘要，生成全书 foundation：%d 批", ev.Total-1), nil)
+					return
+				}
+				emit(StageFoundation, ev.To, total, fmt.Sprintf("分批聚合 foundation 第 %d/%d 批：原书第 %d-%d 章", ev.Index, ev.Total, ev.From, ev.To), nil)
+			})
 		if err != nil {
 			return fmt.Errorf("merge source foundation: %w", err)
 		}
@@ -301,6 +311,26 @@ func structuredCallOptions(stage Stage, current, total int, emit func(Stage, int
 			emit(stage, current, total, fmt.Sprintf("重试 %d/%d：%v", ev.Attempt, ev.MaxAttempts, ev.Err), ev.Err)
 		},
 	}
+}
+
+func structuredCallOptionsWithDeps(deps Deps, stage Stage, current, total int, emit func(Stage, int, int, string, error)) imp.StructuredCallOptions {
+	opts := structuredCallOptions(stage, current, total, emit)
+	opts.MaxAttempts = deps.modelCallMaxAttempts()
+	return opts
+}
+
+func (d Deps) modelCallMaxAttempts() int {
+	if d.ModelCallMaxAttempts > 0 {
+		return d.ModelCallMaxAttempts
+	}
+	return adaptationPlannerGenerateMaxAttempts
+}
+
+func (d Deps) structureRepairMaxAttempts() int {
+	if d.StructureRepairMaxAttempts > 0 {
+		return d.StructureRepairMaxAttempts
+	}
+	return adaptationPlannerRepairMaxAttempts
 }
 
 func PrepareRun(ctx context.Context, deps Deps, brief string) (*domain.AdaptationPlan, error) {
@@ -2488,6 +2518,7 @@ func generatePlannerText(
 	current int,
 	total int,
 	label string,
+	maxAttemptsOverride ...int,
 ) (string, error) {
 	if llm == nil {
 		return "", fmt.Errorf("planner llm is nil")
@@ -2502,7 +2533,11 @@ func generatePlannerText(
 	}
 	callOpts := []agentcore.CallOption{agentcore.WithMaxTokens(maxTokens), agentcore.WithJSONMode()}
 	var lastErr error
-	for attempt := 1; attempt <= adaptationPlannerGenerateMaxAttempts; attempt++ {
+	maxAttempts := adaptationPlannerGenerateMaxAttempts
+	if len(maxAttemptsOverride) > 0 && maxAttemptsOverride[0] > 0 {
+		maxAttempts = maxAttemptsOverride[0]
+	}
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
@@ -2518,7 +2553,7 @@ func generatePlannerText(
 			err = fmt.Errorf("planner llm returned empty response")
 		}
 		lastErr = err
-		if !shouldRetryPlannerGenerate(ctx, err, attempt) {
+		if !shouldRetryPlannerGenerate(ctx, err, attempt, maxAttempts) {
 			return "", err
 		}
 		nextAttempt := attempt + 1
@@ -2527,7 +2562,7 @@ func generatePlannerText(
 			StagePlan,
 			current,
 			total,
-			fmt.Sprintf("%s模型调用失败，准备重试 %d/%d：%v", label, nextAttempt, adaptationPlannerGenerateMaxAttempts, err),
+			fmt.Sprintf("%s模型调用失败，准备重试 %d/%d：%v", label, nextAttempt, maxAttempts, err),
 			err,
 		)
 		if err := plannerRetrySleep(ctx, retrypolicy.Delay(attempt)); err != nil {
@@ -2537,18 +2572,27 @@ func generatePlannerText(
 	if lastErr == nil {
 		lastErr = fmt.Errorf("planner llm generate exhausted")
 	}
-	return "", fmt.Errorf("planner llm generate exhausted %d attempts: %w", adaptationPlannerGenerateMaxAttempts, lastErr)
+	return "", fmt.Errorf("planner llm generate exhausted %d attempts: %w", maxAttempts, lastErr)
 }
 
-func shouldRetryPlannerGenerate(ctx context.Context, err error, attempt int) bool {
-	if err == nil || ctx.Err() != nil || attempt >= adaptationPlannerGenerateMaxAttempts {
+func shouldRetryPlannerGenerate(ctx context.Context, err error, attempt, maxAttempts int) bool {
+	if err == nil || ctx.Err() != nil || attempt >= maxAttempts {
 		return false
 	}
 	if agentcore.IsFailoverEligible(err) {
 		return true
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "nil response") || strings.Contains(msg, "empty response")
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "nil response") ||
+		strings.Contains(msg, "empty response") ||
+		strings.Contains(msg, "system is busy") ||
+		strings.Contains(msg, "try again later") ||
+		strings.Contains(msg, "overloaded") ||
+		strings.Contains(msg, "temporarily unavailable") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "429") ||
+		strings.Contains(msg, "503")
 }
 
 type plannerBatchChapterValidatorFunc func([]domain.AdaptationChapterPlan) error

@@ -14,7 +14,7 @@ import (
 
 const (
 	CoCreateDossierBatchSize      = 40
-	CoCreateDossierBatchRuneLimit = 120000
+	CoCreateDossierBatchRuneLimit = 70000
 	CoCreateDossierPromptVersion  = "v2"
 
 	coCreateDossierVersion   = 1
@@ -168,13 +168,27 @@ func coCreateDossierBatchCurrent(batch *domain.AdaptationCoCreateDossierBatch, s
 
 func buildCoCreateDossierBatch(ctx context.Context, deps Deps, spec coCreateDossierBatchSpec, reports []domain.AdaptationSourceReport, totalBatches int, emit ProgressEmitter) (domain.AdaptationCoCreateDossierBatch, error) {
 	userPrompt := buildCoCreateDossierBatchPrompt(spec, reports)
-	text, err := generatePlannerText(ctx, deps.LLM, coCreateDossierSystemPrompt, userPrompt, coCreateDossierMaxTokens, emit, spec.Index, totalBatches, "资料包")
-	if err != nil {
-		return domain.AdaptationCoCreateDossierBatch{}, err
+	var batch domain.AdaptationCoCreateDossierBatch
+	var lastErr error
+	regenerateAttempts := max(1, deps.structureRepairMaxAttempts())
+	for attempt := 1; attempt <= regenerateAttempts; attempt++ {
+		text, err := generatePlannerText(ctx, deps.LLM, coCreateDossierSystemPrompt, userPrompt, coCreateDossierMaxTokens, emit, spec.Index, totalBatches, "资料包", deps.modelCallMaxAttempts())
+		if err != nil {
+			return domain.AdaptationCoCreateDossierBatch{}, err
+		}
+		batch, err = collectCoCreateDossierBatchWithRepair(ctx, deps, userPrompt, text, spec, totalBatches, emit)
+		if err == nil {
+			lastErr = nil
+			break
+		}
+		lastErr = err
+		if attempt >= regenerateAttempts {
+			return domain.AdaptationCoCreateDossierBatch{}, err
+		}
+		emitAdaptProgress(emit, StageDossier, spec.Index, totalBatches, fmt.Sprintf("资料包第 %d/%d 批结构修复后仍无效，重新生成第 %d/%d 次：%v", spec.Index, totalBatches, attempt+1, regenerateAttempts, err), err)
 	}
-	batch, err := collectCoCreateDossierBatchWithRepair(ctx, deps, userPrompt, text, spec, totalBatches, emit)
-	if err != nil {
-		return domain.AdaptationCoCreateDossierBatch{}, err
+	if lastErr != nil {
+		return domain.AdaptationCoCreateDossierBatch{}, lastErr
 	}
 	batch.Index = spec.Index
 	batch.SourceFrom = spec.SourceFrom
@@ -189,16 +203,17 @@ func buildCoCreateDossierBatch(ctx context.Context, deps Deps, spec coCreateDoss
 func collectCoCreateDossierBatchWithRepair(ctx context.Context, deps Deps, originalPrompt string, initialText string, spec coCreateDossierBatchSpec, totalBatches int, emit ProgressEmitter) (domain.AdaptationCoCreateDossierBatch, error) {
 	text := initialText
 	var lastErr error
+	maxRepairAttempts := deps.structureRepairMaxAttempts()
 	for attempt := 0; ; attempt++ {
 		batch, err := parseCoCreateDossierBatch(text)
 		if err == nil {
 			return batch, nil
 		}
 		lastErr = err
-		if attempt >= adaptationPlannerRepairMaxAttempts {
+		if attempt >= maxRepairAttempts {
 			return domain.AdaptationCoCreateDossierBatch{}, lastErr
 		}
-		emitAdaptProgress(emit, StageDossier, spec.Index, totalBatches, fmt.Sprintf("资料包第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", spec.Index, totalBatches, attempt+1, adaptationPlannerRepairMaxAttempts, lastErr), lastErr)
+		emitAdaptProgress(emit, StageDossier, spec.Index, totalBatches, fmt.Sprintf("资料包第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", spec.Index, totalBatches, attempt+1, maxRepairAttempts, lastErr), lastErr)
 		repairedText, err := repairCoCreateDossierBatchText(ctx, deps, originalPrompt, text, spec, lastErr, totalBatches, emit)
 		if err != nil {
 			return domain.AdaptationCoCreateDossierBatch{}, err
@@ -222,7 +237,7 @@ func repairCoCreateDossierBatchText(ctx context.Context, deps Deps, originalProm
 			"Keep arrays compact but non-empty when the source reports support facts.",
 		},
 	)
-	text, err := generatePlannerText(ctx, deps.LLM, coCreateDossierSystemPrompt, repairPrompt, coCreateDossierMaxTokens, emit, spec.Index, totalBatches, "资料包修复")
+	text, err := generatePlannerText(ctx, deps.LLM, coCreateDossierSystemPrompt, repairPrompt, coCreateDossierMaxTokens, emit, spec.Index, totalBatches, "资料包修复", deps.modelCallMaxAttempts())
 	if err != nil {
 		return "", fmt.Errorf("co-create dossier batch repair llm generate: %w", err)
 	}

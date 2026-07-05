@@ -499,9 +499,14 @@ func (h *Host) adaptationDeps() adapt.Deps {
 	if h.models != nil {
 		llm = h.models.ForRole("architect")
 	}
+	h.mu.Lock()
+	cfg := h.cfg
+	h.mu.Unlock()
 	return adapt.Deps{
-		Store: h.store,
-		LLM:   llm,
+		Store:                      h.store,
+		LLM:                        llm,
+		ModelCallMaxAttempts:       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
+		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
 		Prompts: adapt.Prompts{
 			Foundation:      h.bundle.Prompts.ImportFoundation,
 			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
@@ -938,6 +943,7 @@ func (h *Host) Snapshot() UISnapshot {
 	if meta, _ := h.store.RunMeta.Load(); meta != nil {
 		snap.PendingSteer = meta.PendingSteer
 		snap.WordBudget = meta.WordBudget
+		snap.PlanningReview = planningReviewSummary(meta.PlanningReview)
 	}
 
 	snap.Agents = h.observer.agentSnapshots()
@@ -1028,6 +1034,7 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 			snap.CompassScale = compass.EstimatedScale
 		}
 		if volumes, _ := h.store.Outline.LoadLayeredOutline(); len(volumes) > 0 {
+			snap.LayeredOutline = layeredVolumeSnapshots(volumes)
 			for _, v := range volumes {
 				if v.Index > progress.CurrentVolume {
 					snap.NextVolumeTitle = v.Title
@@ -1874,8 +1881,10 @@ func SelectProviderModelInConfig(cfg bootstrap.Config, role, provider, model str
 func prepareAddedProviderModelConfig(cfg bootstrap.Config, role, providerName string, providerConfig bootstrap.ProviderConfig, model string) (bootstrap.Config, bootstrap.ProviderConfig, bool, error) {
 	candidate := cfg
 	candidate.Providers = cloneProviderConfigs(cfg.Providers)
+	providerConfig = normalizeProviderConfigForSave(providerConfig)
 	_, providerWasConfigured := cfg.Providers[providerName]
 	if existing, ok := cfg.Providers[providerName]; ok {
+		existing = normalizeProviderConfigForSave(existing)
 		if !providerConfigCanAddModel(existing, providerConfig) {
 			return bootstrap.Config{}, bootstrap.ProviderConfig{}, false, fmt.Errorf("provider %q already exists; use the existing provider flow to add models", providerName)
 		}
@@ -1884,8 +1893,8 @@ func prepareAddedProviderModelConfig(cfg bootstrap.Config, role, providerName st
 		if _, err := providerConfig.ProviderType(providerName); err != nil {
 			return bootstrap.Config{}, bootstrap.ProviderConfig{}, false, err
 		}
-		candidate.Providers[providerName] = providerConfig
 	}
+	candidate.Providers[providerName] = providerConfig
 	candidate.RememberModelCandidate(providerName, model)
 	providerConfig = candidate.Providers[providerName]
 	if err := validateAddedProviderModel(candidate, role, providerName, providerConfig, model); err != nil {
@@ -1921,8 +1930,10 @@ func prepareConfiguredProviderModelConfig(cfg bootstrap.Config, update ProviderM
 	}
 
 	existing, providerWasConfigured := candidate.Providers[originalProvider]
+	update.ProviderConfig = normalizeProviderConfigForSave(update.ProviderConfig)
 	editingExisting := strings.TrimSpace(update.OriginalProvider) != ""
 	if providerWasConfigured {
+		existing = normalizeProviderConfigForSave(existing)
 		if editingExisting {
 			existing = mergeEditedProviderConfig(existing, update.ProviderConfig, model)
 		} else {
@@ -1932,7 +1943,7 @@ func prepareConfiguredProviderModelConfig(cfg bootstrap.Config, update ProviderM
 			existing.Models = appendUniqueString(existing.Models, model)
 		}
 	} else {
-		existing = update.ProviderConfig
+		existing = normalizeProviderConfigForSave(update.ProviderConfig)
 		existing.Models = appendUniqueString(existing.Models, model)
 		if _, err := existing.ProviderType(provider); err != nil {
 			return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", err
@@ -1987,15 +1998,28 @@ func mergeEditedProviderConfig(existing, incoming bootstrap.ProviderConfig, mode
 	merged.AccountID = strings.TrimSpace(incoming.AccountID)
 	merged.API = strings.TrimSpace(incoming.API)
 	merged.BaseURL = strings.TrimSpace(incoming.BaseURL)
-	if apiKey != "" {
+	if merged.UsesGrokOAuth() {
+		merged.API = ""
+		merged.APIKey = ""
+	} else if apiKey != "" {
 		merged.APIKey = apiKey
 	}
 	merged.Models = appendUniqueString(models, model)
 	return merged
 }
 
+func normalizeProviderConfigForSave(pc bootstrap.ProviderConfig) bootstrap.ProviderConfig {
+	if pc.UsesGrokOAuth() {
+		pc.API = ""
+		pc.APIKey = ""
+	}
+	return pc
+}
+
 func configuredProviderModelRequiresProbe(cfg bootstrap.Config, update ProviderModelUpdate, providerConfig bootstrap.ProviderConfig, originalProvider, model string) bool {
 	originalProvider = strings.TrimSpace(originalProvider)
+	providerConfig = normalizeProviderConfigForSave(providerConfig)
+	incomingConfig := normalizeProviderConfigForSave(update.ProviderConfig)
 	if originalProvider == "" {
 		originalProvider = strings.TrimSpace(update.OriginalProvider)
 	}
@@ -2006,10 +2030,11 @@ func configuredProviderModelRequiresProbe(cfg bootstrap.Config, update ProviderM
 	if !ok {
 		return true
 	}
+	existing = normalizeProviderConfigForSave(existing)
 	if !configHasProviderModel(cfg, originalProvider, strings.TrimSpace(model)) {
 		return true
 	}
-	if strings.TrimSpace(update.ProviderConfig.APIKey) != "" {
+	if strings.TrimSpace(incomingConfig.APIKey) != "" {
 		return true
 	}
 	return strings.TrimSpace(existing.Type) != strings.TrimSpace(providerConfig.Type) ||
@@ -2883,6 +2908,43 @@ func (h *Host) SetCoCreateTimeoutSeconds(seconds int) error {
 	return nil
 }
 
+func (h *Host) CurrentStructureRepairMaxAttempts() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg.EffectiveStructureRepairMaxAttempts()
+}
+
+func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts int) error {
+	modelAttempts, err := bootstrap.NormalizeRuntimeNetworkMaxAttempts(modelCallMaxAttempts)
+	if err != nil {
+		return err
+	}
+	repairAttempts, err := bootstrap.NormalizeStructureRepairMaxAttempts(structureRepairMaxAttempts)
+	if err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.cfg.ModelAutoSwitch.NetworkMaxAttempts = modelAttempts
+	h.cfg.StructureRepairMaxAttempts = repairAttempts
+	if overlay := h.ensureProjectOverlayLocked(); overlay != nil {
+		overlay.ModelAutoSwitch.NetworkMaxAttempts = modelAttempts
+		overlay.StructureRepairMaxAttempts = repairAttempts
+	}
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("保存配置失败", "module", "host", "err", err)
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("重试设置已更新：模型调用最多 %d 次，结构修复最多 %d 次", modelAttempts, repairAttempts),
+		Level:    "info",
+	})
+	return nil
+}
+
 func (h *Host) coCreateTimeout() time.Duration {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2920,11 +2982,7 @@ func (h *Host) EnsureAdaptationCoCreateBriefing(ctx context.Context, sourcePath 
 	if _, _, err := adapt.ValidatePreparedSource(h.store, sourcePath); err != nil {
 		return nil, err
 	}
-	deps := adapt.Deps{
-		Store: h.store,
-		LLM:   h.models.ForRole("architect"),
-	}
-	return adapt.EnsureCoCreateBriefing(ctx, deps, intent, h.adaptationProgressEmitter())
+	return adapt.EnsureCoCreateBriefing(ctx, h.adaptationDeps(), intent, h.adaptationProgressEmitter())
 }
 
 func (h *Host) adaptationProgressEmitter() adapt.ProgressEmitter {

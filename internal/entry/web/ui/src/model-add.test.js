@@ -17,6 +17,7 @@ describe('model add helpers', () => {
       provider: 'grok-oauth',
       model: 'grok-4.3-latest',
       account_id: 'work',
+      api: 'chat',
       api_key: 'should-not-be-sent',
       base_url: 'https://example.invalid',
       grok_status: { logged_in: true }
@@ -90,7 +91,39 @@ describe('model add helpers', () => {
     expect(state.auth).toBe('grok_oauth');
     expect(state.account_id).toBe('default');
     expect(state.model).toBe('grok-4.3-latest');
+    expect(state.api).toBe('');
     expect(state.use_proxy).toBe(true);
+  });
+
+  it('omits OpenAI endpoint when editing a Grok OAuth provider', () => {
+    const modelConfig = {
+      providers: [{
+        name: 'grok-oauth',
+        label: 'Grok',
+        template_provider: 'grok',
+        type: 'grok',
+        auth: 'grok_oauth',
+        api: 'chat',
+        models: ['grok-4.3-latest']
+      }]
+    };
+    const state = modelAddModeDefaults({
+      mode: 'existing',
+      original_provider: 'grok-oauth',
+      provider: 'grok-oauth',
+      model: 'grok-4.3-latest',
+      api: 'chat'
+    }, modelConfig.providers);
+
+    expect(state.api).toBe('');
+    expect(buildModelAddPayload(state, modelConfig)).toMatchObject({
+      original_provider: 'grok-oauth',
+      provider: 'grok-oauth',
+      model: 'grok-4.3-latest',
+      type: 'grok',
+      auth: 'grok_oauth',
+      api: ''
+    });
   });
 
   it('defaults Codex to proxy and DeepSeek to direct access', () => {

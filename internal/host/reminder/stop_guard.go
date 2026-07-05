@@ -35,6 +35,11 @@ func NewStopGuard(st *store.Store, onBlock func(reason string, consecutive int32
 			lastBlockTurn.Store(-1)
 			return agentcore.StopDecision{Allow: true}
 		}
+		if st.RunMeta.PlanningReviewPending() {
+			consecutive.Store(0)
+			lastBlockTurn.Store(-1)
+			return agentcore.StopDecision{Allow: true}
+		}
 		// 只有"相邻 turn 连续被拦"才累计计数；否则视为新一轮（LLM 已做过 tool call 取得过进展，
 		// 或用户注入 / resume 导致 TurnIndex 倒流），重置计数。
 		last := lastBlockTurn.Load()

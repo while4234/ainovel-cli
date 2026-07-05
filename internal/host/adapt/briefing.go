@@ -234,7 +234,7 @@ func coCreateBriefingBatchCurrent(batch *domain.AdaptationCoCreateBriefingBatch,
 
 func buildCoCreateBriefingBatch(ctx context.Context, deps Deps, intent domain.AdaptationCoCreateIntent, spec coCreateBriefingBatchSpec, dossier domain.AdaptationCoCreateDossier, totalBatches int, emit ProgressEmitter) (domain.AdaptationCoCreateBriefingBatch, error) {
 	userPrompt := buildCoCreateBriefingBatchPrompt(intent, spec, dossier)
-	text, err := generatePlannerText(ctx, deps.LLM, coCreateBriefingSystemPrompt, userPrompt, coCreateBriefingMaxTokens, emit, spec.Index, totalBatches, "co-create briefing")
+	text, err := generatePlannerText(ctx, deps.LLM, coCreateBriefingSystemPrompt, userPrompt, coCreateBriefingMaxTokens, emit, spec.Index, totalBatches, "co-create briefing", deps.modelCallMaxAttempts())
 	if err != nil {
 		return domain.AdaptationCoCreateBriefingBatch{}, err
 	}

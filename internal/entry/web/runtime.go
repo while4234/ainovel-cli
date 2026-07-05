@@ -30,7 +30,7 @@ func DefaultRuntimeRoot() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve home dir for default runtime root: %w", err)
 	}
-	return filepath.Join(home, ".ainovel", "novels"), nil
+	return filepath.Join(home, ".ainovel", "novels-preview"), nil
 }
 
 func ResolveRuntimeRoot(flagValue string, cfg bootstrap.Config, repoRoot string) (string, RuntimeRootSource, error) {

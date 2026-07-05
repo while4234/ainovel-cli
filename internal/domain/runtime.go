@@ -33,6 +33,18 @@ const (
 	PlanningTierLong  PlanningTier = "long"
 )
 
+const (
+	PlanningReviewStatusCollecting = "collecting"
+	PlanningReviewStatusPending    = "pending"
+	PlanningReviewStatusApproved   = "approved"
+)
+
+const (
+	PlanningReviewKindBlueprint      = "blueprint"
+	PlanningReviewKindVolumeSplit    = "volume_split"
+	PlanningReviewKindChapterOutline = "chapter_outline"
+)
+
 // Progress 进度追踪，持久化到 meta/progress.json。
 type Progress struct {
 	NovelName         string      `json:"novel_name"`
@@ -203,14 +215,27 @@ func NewArchitectMemoryPolicy() MemoryPolicy {
 
 // RunMeta 运行元信息，持久化到 meta/run.json。
 type RunMeta struct {
-	StartedAt    string       `json:"started_at"`
-	Provider     string       `json:"provider,omitempty"`
-	Style        string       `json:"style"`
-	Model        string       `json:"model"`
-	PlanningTier PlanningTier `json:"planning_tier,omitempty"`
-	WordBudget   *WordBudget  `json:"word_budget,omitempty"`
-	SteerHistory []SteerEntry `json:"steer_history,omitempty"`
-	PendingSteer string       `json:"pending_steer,omitempty"` // 未完成的 Steer 指令，中断恢复时重新注入
+	StartedAt      string          `json:"started_at"`
+	Provider       string          `json:"provider,omitempty"`
+	Style          string          `json:"style"`
+	Model          string          `json:"model"`
+	PlanningTier   PlanningTier    `json:"planning_tier,omitempty"`
+	WordBudget     *WordBudget     `json:"word_budget,omitempty"`
+	PlanningReview *PlanningReview `json:"planning_review,omitempty"`
+	SteerHistory   []SteerEntry    `json:"steer_history,omitempty"`
+	PendingSteer   string          `json:"pending_steer,omitempty"` // 未完成的 Steer 指令，中断恢复时重新注入
+}
+
+// PlanningReview is the normal co-create planning gate. It lets Web show the
+// saved blueprint for user review before the writer starts drafting.
+type PlanningReview struct {
+	Status           string `json:"status"`
+	Kind             string `json:"kind,omitempty"`
+	Brief            string `json:"brief,omitempty"`
+	StartPrompt      string `json:"start_prompt,omitempty"`
+	TargetTotalWords int    `json:"target_total_words,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty"`
+	UpdatedAt        string `json:"updated_at,omitempty"`
 }
 
 // SteerEntry 用户干预记录。
