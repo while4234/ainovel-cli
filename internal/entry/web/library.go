@@ -786,6 +786,7 @@ func requirePreparedAdaptationFiles(storeRoot string, chapterCount int) error {
 		filepath.Join(storeRoot, "meta", "adaptation", "source_manifest.json"),
 		filepath.Join(storeRoot, "meta", "adaptation", "source_reports.json"),
 		filepath.Join(storeRoot, "meta", "adaptation", "source_foundation.json"),
+		filepath.Join(storeRoot, "meta", "adaptation", "cocreate_dossier.json"),
 	}
 	for _, path := range requiredFiles {
 		if info, err := os.Stat(path); err != nil {
@@ -794,7 +795,7 @@ func requirePreparedAdaptationFiles(storeRoot string, chapterCount int) error {
 			return fmt.Errorf("required adaptation file is a directory: %s", path)
 		}
 	}
-	for _, dir := range []string{"source_chapters", "source_reports"} {
+	for _, dir := range []string{"source_chapters", "source_reports", "cocreate_dossier_batches"} {
 		path := filepath.Join(storeRoot, "meta", "adaptation", dir)
 		entries, err := os.ReadDir(path)
 		if err != nil {
@@ -806,8 +807,11 @@ func requirePreparedAdaptationFiles(storeRoot string, chapterCount int) error {
 				count++
 			}
 		}
-		if count < chapterCount {
+		if dir != "cocreate_dossier_batches" && count < chapterCount {
 			return fmt.Errorf("adaptation %s incomplete: got %d files, want at least %d", dir, count, chapterCount)
+		}
+		if dir == "cocreate_dossier_batches" && count == 0 {
+			return fmt.Errorf("adaptation %s incomplete: got 0 files", dir)
 		}
 	}
 	return nil
@@ -821,12 +825,12 @@ func copyPreparedAdaptationFiles(sourceRoot, targetAdaptationRoot string) error 
 		return fmt.Errorf("create adaptation library entry: %w", err)
 	}
 	sourceAdaptationRoot := filepath.Join(sourceRoot, "meta", "adaptation")
-	for _, file := range []string{"source_manifest.json", "source_reports.json", "source_foundation.json"} {
+	for _, file := range []string{"source_manifest.json", "source_reports.json", "source_foundation.json", "cocreate_dossier.json"} {
 		if err := copyFileOverwrite(filepath.Join(sourceAdaptationRoot, file), filepath.Join(targetAdaptationRoot, file)); err != nil {
 			return err
 		}
 	}
-	for _, dir := range []string{"source_chapters", "source_reports"} {
+	for _, dir := range []string{"source_chapters", "source_reports", "cocreate_dossier_batches"} {
 		if err := copyDir(filepath.Join(sourceAdaptationRoot, dir), filepath.Join(targetAdaptationRoot, dir)); err != nil {
 			return err
 		}

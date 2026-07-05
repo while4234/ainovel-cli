@@ -128,6 +128,54 @@ func TestCoCreateStreamSkipsSuggestionJudgeWhenSuggestionsAreExplicit(t *testing
 	}
 }
 
+func TestCoCreateStreamRejectsDoneWithLengthStop(t *testing.T) {
+	model := &scriptedCoCreateModel{
+		streams: [][]agentcore.StreamEvent{{
+			{Type: agentcore.StreamEventTextDelta, Delta: "<reply>ok</reply><draft>partial"},
+			{Type: agentcore.StreamEventDone, StopReason: agentcore.StopReasonLength},
+		}},
+		generateResponses: []string{`{"suggestions":["不应使用"]}`},
+	}
+
+	_, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		time.Second,
+		"system",
+		[]CoCreateMessage{{Role: "user", Content: "start"}},
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "truncated") {
+		t.Fatalf("err = %v, want truncated error", err)
+	}
+	if model.generateCalls != 0 {
+		t.Fatalf("suggestion judge calls = %d, want 0", model.generateCalls)
+	}
+}
+
+func TestCoCreateStreamRejectsIncompleteXML(t *testing.T) {
+	model := &scriptedCoCreateModel{
+		streams: [][]agentcore.StreamEvent{{
+			{Type: agentcore.StreamEventTextDelta, Delta: "<reply>ok</reply><draft>partial"},
+			{Type: agentcore.StreamEventDone},
+		}},
+	}
+
+	_, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		time.Second,
+		"system",
+		[]CoCreateMessage{{Role: "user", Content: "start"}},
+		nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("err = %v, want incomplete XML error", err)
+	}
+}
+
 func TestCoCreateStreamDoesNotRetryCancellation(t *testing.T) {
 	restore := stubCoCreateRetrySleep(t)
 	defer restore()

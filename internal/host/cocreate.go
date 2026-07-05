@@ -9,7 +9,9 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
@@ -49,7 +51,7 @@ const stageCoCreateSystemPrompt = `你是一个小说"阶段共创"助手。这�
 
 const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用户已经提供了一本原小说，系统已完成原书切分和事实分析。你的任务不是续写原文，也不是从零原创一本新书，而是帮助用户明确"在主线尽量不走偏的情况下如何改编"。
 
-你必须基于下方"原书分析快照"提问和整理，不要凭空推翻原书主线；同时要把用户的关系线、女主戏份、虐心/纯爱等改编偏好落实成可执行 brief。
+你必须基于下方"全书改编资料包"提问和整理，不要凭空推翻原书主线；同时要把用户的关系线、女主戏份、虐心/纯爱等改编偏好落实成可执行 brief。
 
 改编模式已在进入共创前由用户通过固定选项确认。第一条用户消息会给出当前生效的 mode_contract、granularity、由结构粒度固定的 rewrite_policy，以及 word_tolerance=0.xx 或 word_tolerance=disabled。你必须只把当前模式原样写入 draft，不要把模式选择作为问题再次询问，也不要自行改动：
 - chapter：目标章节与原章节一一对应，固定 rewrite_policy=preserve_details。未受影响内容可复用原文，受改编目标影响的完整场景单元必须原创重写。
@@ -102,6 +104,7 @@ const (
 const (
 	coCreateMaxAttempts              = retrypolicy.MaxAttempts
 	coCreateMaxTokens                = 2048
+	adaptCoCreateMaxTokens           = 8192
 	coCreateSuggestionJudgeMaxTokens = 256
 	coCreateModelRole                = "architect"
 )
@@ -159,11 +162,18 @@ const (
 )
 
 func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, timeout time.Duration, sysPrompt string, history []CoCreateMessage, onProgress func(kind, text string)) (reply CoCreateReply, err error) {
+	return coCreateStreamWithMaxTokens(ctx, models, sessions, timeout, sysPrompt, history, coCreateMaxTokens, onProgress)
+}
+
+func coCreateStreamWithMaxTokens(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, timeout time.Duration, sysPrompt string, history []CoCreateMessage, maxTokens int, onProgress func(kind, text string)) (reply CoCreateReply, err error) {
 	if len(history) == 0 {
 		return CoCreateReply{}, fmt.Errorf("cocreate history is empty")
 	}
 	if timeout <= 0 {
 		timeout = time.Duration(bootstrap.DefaultCoCreateTimeoutSeconds) * time.Second
+	}
+	if maxTokens <= 0 {
+		maxTokens = coCreateMaxTokens
 	}
 
 	model := models.ForRole(coCreateModelRole)
@@ -188,6 +198,7 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 	var raw, thinking strings.Builder
 	var attempts int
 	var retryErrors []string
+	var stopReason agentcore.StopReason
 
 	// 排查 "cocreate empty response" 等偶发问题需要看到模型实际返回什么。
 	// 每轮全程落盘到 <output>/meta/sessions/cocreate.jsonl，与正式创作的 session 日志同位。
@@ -213,6 +224,7 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 			ParsedDraft:      reply.Prompt,
 			ParsedReady:      reply.Ready,
 			ParsedSugs:       reply.Suggestions,
+			StopReason:       string(stopReason),
 			Error:            errString(err),
 		})
 	}()
@@ -224,10 +236,11 @@ retry:
 	attempts++
 	raw.Reset()
 	thinking.Reset()
+	stopReason = ""
 	streamed = false
 	done = false
 
-	streamCh, err = model.GenerateStream(ctx, msgs, nil, agentcore.WithMaxTokens(coCreateMaxTokens))
+	streamCh, err = model.GenerateStream(ctx, msgs, nil, agentcore.WithMaxTokens(maxTokens))
 	if err != nil {
 		if ok, sleepErr := prepareCoCreateRetry(ctx, err, attempts, onProgress, &retryErrors); sleepErr != nil {
 			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
@@ -252,6 +265,10 @@ retry:
 			}
 		case agentcore.StreamEventDone:
 			done = true
+			stopReason = ev.StopReason
+			if stopReason == "" {
+				stopReason = ev.Message.StopReason
+			}
 			if !streamed {
 				raw.WriteString(ev.Message.TextContent())
 			}
@@ -282,6 +299,9 @@ retry:
 		}
 		return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(streamErr))
 	}
+	if stopReason == agentcore.StopReasonLength {
+		return CoCreateReply{}, fmt.Errorf("cocreate response truncated: stop_reason=%s", stopReason)
+	}
 
 	// Channel fallback：思考型模型（R1/GLM-Z1/QwQ 等）偶发把完整答案写进
 	// reasoning_content 后没切回 final answer 通道，导致 raw 为空但 thinking 含
@@ -292,6 +312,9 @@ retry:
 		if t := strings.TrimSpace(thinking.String()); t != "" {
 			rawText = t
 		}
+	}
+	if err := rejectIncompleteCoCreateXML(rawText); err != nil {
+		return CoCreateReply{}, err
 	}
 	reply, err = parseCoCreateResponse(rawText)
 	if err == nil && len(reply.Suggestions) == 0 {
@@ -375,42 +398,131 @@ func sleepBeforeCoCreateRetry(ctx context.Context, delay time.Duration) error {
 }
 
 func adaptSystemPrompt(st *store.Store) string {
-	return adaptCoCreateSystemPrompt + "\n\n## 原书分析快照\n\n" + adaptationSnapshot(st)
+	return adaptCoCreateSystemPrompt + "\n\n## 全书改编资料包\n\n" + adaptationDossierSnapshot(st)
 }
 
-func adaptationSnapshot(st *store.Store) string {
+func adaptationDossierSnapshot(st *store.Store) string {
 	if st == nil || st.Adaptation == nil {
-		return "尚未加载原书快照。"
+		return "尚未加载全书改编资料包。"
 	}
 	manifest, manifestErr := st.Adaptation.LoadSourceManifest()
-	reports, reportsErr := st.Adaptation.LoadSourceReports()
-	if manifestErr != nil || reportsErr != nil {
-		return "原书快照读取失败，请提醒用户重新导入原小说路径。"
+	dossier, dossierErr := st.Adaptation.LoadCoCreateDossier()
+	if manifestErr != nil || dossierErr != nil {
+		return "全书改编资料包读取失败，请提醒用户重新点击原文分析。"
 	}
 	if manifest == nil {
 		return "尚未加载原书快照。"
+	}
+	if dossier == nil || !store.CoCreateDossierMatchesManifest(*dossier, *manifest, adapt.CoCreateDossierPromptVersion, adapt.CoCreateDossierBatchSize) {
+		return "全书改编资料包缺失或已过期，请提醒用户重新点击原文分析后再共创。"
 	}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "- 来源：%s\n", manifest.SourcePath)
 	fmt.Fprintf(&sb, "- 原文章节数：%d\n", manifest.ChapterCount)
-	if len(reports) == 0 {
-		return sb.String()
+	fmt.Fprintf(&sb, "- 资料包批次：%d 批，每批约 %d 章\n", len(dossier.Batches), dossier.BatchSize)
+	if strings.TrimSpace(dossier.Overview) != "" {
+		fmt.Fprintf(&sb, "- 覆盖说明：%s\n", dossier.Overview)
 	}
+	writeDossierStrings(&sb, "### 全书主线与因果锚点", dossier.Mainline, 80)
+	writeDossierSignals(&sb, "### 关系线信号", dossier.RelationshipMap, 80)
+	writeDossierSignals(&sb, "### 女主相关信号", dossier.HeroineSignals, 80)
+	writeDossierRisks(&sb, "### 女配暧昧/后宫风险", dossier.AmbiguityRisks, 80)
+	writeDossierSignals(&sb, "### 情侣/暧昧进展节点", dossier.CoupleMilestones, 80)
+	writeDossierStrings(&sb, "### 改编注意事项", dossier.AdaptationNotes, 80)
+	return sb.String()
+}
 
-	sb.WriteString("\n### 章节事实摘要\n")
-	const maxReports = 30
-	for i, report := range reports {
-		if i >= maxReports {
-			fmt.Fprintf(&sb, "\n- 其余 %d 章已保存，可在写作阶段按 source refs 读取。\n", len(reports)-maxReports)
+func writeDossierStrings(sb *strings.Builder, title string, values []string, max int) {
+	values = trimDossierStrings(values, max)
+	if len(values) == 0 {
+		return
+	}
+	sb.WriteString("\n")
+	sb.WriteString(title)
+	sb.WriteString("\n")
+	for _, value := range values {
+		fmt.Fprintf(sb, "- %s\n", value)
+	}
+}
+
+func writeDossierSignals(sb *strings.Builder, title string, values []domain.AdaptationRelationshipSignal, max int) {
+	if len(values) == 0 {
+		return
+	}
+	sb.WriteString("\n")
+	sb.WriteString(title)
+	sb.WriteString("\n")
+	for i, value := range values {
+		if max > 0 && i >= max {
+			fmt.Fprintf(sb, "- 另有 %d 条同类信号已存入资料包，后续规划阶段可继续读取。\n", len(values)-max)
 			break
 		}
-		fmt.Fprintf(&sb, "- 第 %d 章《%s》：%s\n", report.Chapter, report.Title, truncate(report.Summary, 90))
-		if len(report.KeyEvents) > 0 {
-			fmt.Fprintf(&sb, "  关键事件：%s\n", strings.Join(report.KeyEvents, "；"))
+		fmt.Fprintf(sb, "- %s%s：%s", dossierChapterLabel(value.Chapters), dossierCharactersLabel(value.Characters), value.Summary)
+		if strings.TrimSpace(value.Evidence) != "" {
+			fmt.Fprintf(sb, "（证据：%s）", value.Evidence)
+		}
+		sb.WriteString("\n")
+	}
+}
+
+func writeDossierRisks(sb *strings.Builder, title string, values []domain.AdaptationRelationshipRisk, max int) {
+	if len(values) == 0 {
+		return
+	}
+	sb.WriteString("\n")
+	sb.WriteString(title)
+	sb.WriteString("\n")
+	for i, value := range values {
+		if max > 0 && i >= max {
+			fmt.Fprintf(sb, "- 另有 %d 条风险已存入资料包，后续规划阶段可继续读取。\n", len(values)-max)
+			break
+		}
+		fmt.Fprintf(sb, "- %s%s：%s", dossierChapterLabel(value.Chapters), dossierCharactersLabel(value.Characters), value.Risk)
+		if strings.TrimSpace(value.Evidence) != "" {
+			fmt.Fprintf(sb, "（证据：%s）", value.Evidence)
+		}
+		if strings.TrimSpace(value.Suggestion) != "" {
+			fmt.Fprintf(sb, "；处理建议：%s", value.Suggestion)
+		}
+		sb.WriteString("\n")
+	}
+}
+
+func trimDossierStrings(values []string, max int) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+		if max > 0 && len(out) >= max {
+			break
 		}
 	}
-	return sb.String()
+	return out
+}
+
+func dossierChapterLabel(chapters []int) string {
+	if len(chapters) == 0 {
+		return ""
+	}
+	if len(chapters) == 1 {
+		return fmt.Sprintf("第 %d 章", chapters[0])
+	}
+	return fmt.Sprintf("第 %d-%d 章", chapters[0], chapters[len(chapters)-1])
+}
+
+func dossierCharactersLabel(characters []string) string {
+	characters = trimDossierStrings(characters, 6)
+	if len(characters) == 0 {
+		return ""
+	}
+	if label := strings.Join(characters, "/"); label != "" {
+		return " " + label
+	}
+	return ""
 }
 
 // coCreateLogEntry 是写入 meta/sessions/cocreate.jsonl 的一行结构。
@@ -432,6 +544,7 @@ type coCreateLogEntry struct {
 	ParsedDraft      string            `json:"parsed_draft"`
 	ParsedReady      bool              `json:"parsed_ready"`
 	ParsedSugs       []string          `json:"parsed_sugs,omitempty"`
+	StopReason       string            `json:"stop_reason,omitempty"`
 	Error            string            `json:"error,omitempty"`
 }
 
@@ -470,6 +583,26 @@ func parseCoCreateResponse(raw string) (CoCreateReply, error) {
 		Suggestions: suggestions,
 		Raw:         raw,
 	}, nil
+}
+
+func rejectIncompleteCoCreateXML(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	for _, tag := range []string{tagReply, tagDraft, tagReady, tagSuggestions} {
+		open := "<" + tag + ">"
+		closeTag := "</" + tag + ">"
+		hasOpen := strings.Contains(raw, open)
+		hasClose := strings.Contains(raw, closeTag)
+		if hasOpen && !hasClose {
+			return fmt.Errorf("cocreate response incomplete: missing %s", closeTag)
+		}
+		if hasClose && !hasOpen {
+			return fmt.Errorf("cocreate response incomplete: missing %s", open)
+		}
+	}
+	return nil
 }
 
 // splitCoCreateMarkers 按四个 XML 标签切分文本。

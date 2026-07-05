@@ -15,6 +15,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
+	adaptpkg "github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -145,6 +146,7 @@ func TestProjectAdaptCoCreateCheckpointRestoresModeAndCommits(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	opener := strings.Join([]string{
 		"Please adapt this novel.",
 		"",
@@ -229,6 +231,7 @@ func TestProjectAdaptCoCreateCommitRepairsRestoredStaleDraft(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	opener := strings.Join([]string{
 		"Please adapt this novel.",
 		"",
@@ -292,6 +295,7 @@ func TestProjectAdaptCoCreateLongFormCommitReturnsVolumeReview(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	fake.adaptCoCreateReply = webCoCreateReply("long-form direction ready", "## Adaptation Draft\n- expand into 20 target chapters", true)
 	fake.adaptProposal = &domain.AdaptationPlan{
 		Granularity:   domain.AdaptationGranularityFree,
@@ -336,6 +340,27 @@ func TestProjectAdaptCoCreateLongFormCommitReturnsVolumeReview(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptCoCreateBeginRequiresCurrentDossier(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Missing Dossier")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"expand into 20 target chapters"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("adapt begin status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+	if fake.adaptCoCreateCalls != 0 {
+		t.Fatalf("adapt co-create should not start, calls=%d", fake.adaptCoCreateCalls)
+	}
+}
+
 func TestProjectAdaptCoCreateCommitRepairsRestoredRegressedDraft(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
@@ -344,6 +369,7 @@ func TestProjectAdaptCoCreateCommitRepairsRestoredRegressedDraft(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	opener := strings.Join([]string{
 		"Please adapt this novel.",
 		"",
@@ -428,6 +454,7 @@ func TestProjectAdaptCoCreateCommitRepairsPreviousRoundPlaceholderDraft(t *testi
 		t.Fatalf("CreateProject: %v", err)
 	}
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	opener := strings.Join([]string{
 		"Please adapt this novel.",
 		"",
@@ -578,6 +605,7 @@ func TestProjectCoCreateRestoresFromLegacyLog(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	opener := strings.Join([]string{
 		"Please adapt this novel.",
 		"",
@@ -924,6 +952,7 @@ func TestProjectAdaptCoCreateLocksSelectedModeOnCommit(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	fake.adaptCoCreateReply = webCoCreateReply(
 		"目标明确，可以开始。",
 		"## 改编模式\n\ngranularity=chapter\nrewrite_policy=preserve_details\n\n## 用户目标\n- 加强女主线",
@@ -996,6 +1025,7 @@ func TestProjectAdaptCoCreateCommitConsolidatesMultiTurnDraftBeforeProposal(t *t
 	}
 	fake := installFakeSession(t, server, manifest)
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	fake.adaptCoCreateReplies = []host.CoCreateReply{
 		webCoCreateReply("initial draft ready", "## Adaptation Draft\n- preserve early relationship arc", true),
 		webCoCreateReply("updated draft ready", "## Adaptation Draft\n- expand the late chapter plan", true),
@@ -1043,6 +1073,7 @@ func TestProjectAdaptCoCreateCommitRetryKeepsFinalDraftAfterProposalFailure(t *t
 	}
 	fake := installFakeSession(t, server, manifest)
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	fake.adaptProposalErr = errors.New("planner timeout")
 	fake.adaptCoCreateReplies = []host.CoCreateReply{
 		webCoCreateReply("initial draft ready", "## Adaptation Draft\n- preserve early relationship arc", true),
@@ -1118,6 +1149,7 @@ func TestProjectAdaptCoCreateRepairsStaleDraftBeforeProposal(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	fake.adaptCoCreateReplies = []host.CoCreateReply{
 		webCoCreateReply("initial draft ready", "## Adaptation Draft\n- early goal", true),
 		{Message: "noted the later chapter plan", Ready: true, Raw: "<reply>noted the later chapter plan</reply><ready>true</ready><suggestions></suggestions>"},
@@ -1177,6 +1209,7 @@ func TestProjectAdaptCoCreateRepairsRegressedDraftBeforeProposal(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	previousDraft := strings.Join([]string{
 		"## Adaptation Draft",
 		"- preserve the early relationship arc",
@@ -1230,6 +1263,7 @@ func TestProjectAdaptCoCreateRollsBackRejectedDraftWhenRepairFails(t *testing.T)
 	}
 	fake := installFakeSession(t, server, manifest)
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	previousDraft := strings.Join([]string{
 		"## 改编模式",
 		"granularity=free",
@@ -1285,6 +1319,7 @@ func TestProjectAdaptCoCreateRepairUsesCompactDraftContext(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	previousDraft := "## Stable Draft\n- preserve early setup\n- keep relationship arc"
 	fake.adaptCoCreateReplies = []host.CoCreateReply{
 		webCoCreateReply("initial draft ready", previousDraft, true),
@@ -1360,6 +1395,7 @@ func TestProjectAdaptCoCreateRejectsTargetTotalWords(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"arc","target_total_words":5000}`))
 	rec := httptest.NewRecorder()
@@ -1369,6 +1405,57 @@ func TestProjectAdaptCoCreateRejectsTargetTotalWords(t *testing.T) {
 	}
 	if fake.adaptCoCreateCalls != 0 {
 		t.Fatalf("adapt co-create should not start, calls=%d", fake.adaptCoCreateCalls)
+	}
+}
+
+func seedAnalyzedAdaptationForCoCreateTest(t *testing.T, manifest ProjectManifest, filename string) {
+	t.Helper()
+	st := storepkg.NewStore(manifest.OutputDir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init store: %v", err)
+	}
+	sourcePath := filepath.Join(manifest.RootDir, "uploads", "adaptation", filename)
+	source, err := st.Adaptation.SaveSourceChapter(1, "One", "source body")
+	if err != nil {
+		t.Fatalf("SaveSourceChapter: %v", err)
+	}
+	sourceManifest := domain.AdaptationSourceManifest{
+		SourcePath:   sourcePath,
+		ChapterCount: 1,
+		Chapters:     []domain.AdaptationSource{source},
+	}
+	if err := st.Adaptation.SaveSourceManifest(sourceManifest); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+	report := domain.AdaptationSourceReport{
+		Chapter:      1,
+		Title:        "One",
+		SourceSHA256: source.SHA256,
+		Summary:      "source summary",
+		KeyEvents:    []string{"source event"},
+	}
+	if err := st.Adaptation.SaveSourceReport(report); err != nil {
+		t.Fatalf("SaveSourceReport: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceReports([]domain.AdaptationSourceReport{report}); err != nil {
+		t.Fatalf("SaveSourceReports: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{Premise: "source", Characters: []domain.Character{}, WorldRules: []domain.WorldRule{}}); err != nil {
+		t.Fatalf("SaveSourceFoundation: %v", err)
+	}
+	dossier := domain.AdaptationCoCreateDossier{
+		Version:            1,
+		PromptVersion:      adaptpkg.CoCreateDossierPromptVersion,
+		SourcePath:         sourcePath,
+		SourceChapterCount: 1,
+		SourceSignature:    storepkg.AdaptationSourceSignature(sourceManifest),
+		BatchSize:          adaptpkg.CoCreateDossierBatchSize,
+		Batches: []domain.AdaptationCoCreateDossierBatch{
+			{Index: 1, SourceFrom: 1, SourceTo: 1, SourceSignature: "batch"},
+		},
+	}
+	if err := st.Adaptation.SaveCoCreateDossier(dossier); err != nil {
+		t.Fatalf("SaveCoCreateDossier: %v", err)
 	}
 }
 

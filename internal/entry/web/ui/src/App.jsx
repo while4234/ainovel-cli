@@ -355,7 +355,7 @@ function applyHostEventToAdaptationState(previous, webEvent) {
     return previous;
   }
   const stage = String(event.kind || '').toLowerCase();
-  const sourceAnalysisStage = ['splitting', 'foundation', 'chapter', 'paused'].includes(stage) ||
+  const sourceAnalysisStage = ['splitting', 'foundation', 'chapter', 'dossier', 'paused'].includes(stage) ||
     ((stage === 'done' || stage === 'error') && previous.analysisStatus === 'running');
   if (!sourceAnalysisStage) {
     return previous;

@@ -13,6 +13,7 @@ const (
 	StageSplitting  Stage = "splitting"
 	StageFoundation Stage = "foundation"
 	StageChapter    Stage = "chapter"
+	StageDossier    Stage = "dossier"
 	StagePlan       Stage = "plan"
 	StagePaused     Stage = "paused"
 	StageDone       Stage = "done"

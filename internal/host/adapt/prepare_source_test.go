@@ -87,6 +87,7 @@ func TestPrepareSourceResumesMissingChapterAndMergesWithoutRawBody(t *testing.T)
 	second := &scriptedAdaptLLM{responses: []adaptLLMResponse{
 		{text: adaptAnalyzerEnvelope(3)},
 		{text: adaptFoundationMergeEnvelope()},
+		{text: adaptDossierBatchEnvelope()},
 	}}
 	if err := PrepareSource(context.Background(), Deps{
 		Store: st,
@@ -98,8 +99,8 @@ func TestPrepareSourceResumesMissingChapterAndMergesWithoutRawBody(t *testing.T)
 	}, sourcePath, nil); err != nil {
 		t.Fatalf("PrepareSource resume: %v", err)
 	}
-	if second.calls != 2 {
-		t.Fatalf("resume calls=%d, want missing chapter plus merge", second.calls)
+	if second.calls != 3 {
+		t.Fatalf("resume calls=%d, want missing chapter plus merge plus dossier", second.calls)
 	}
 	reports, err := st.Adaptation.LoadCompleteSourceReports()
 	if err != nil {
@@ -135,6 +136,7 @@ func TestPrepareSourceSourceChangeResetsOldReports(t *testing.T) {
 		{text: adaptAnalyzerEnvelope(1)},
 		{text: adaptAnalyzerEnvelope(2)},
 		{text: adaptFoundationMergeEnvelope()},
+		{text: adaptDossierBatchEnvelope()},
 	}}
 	if err := PrepareSource(context.Background(), Deps{
 		Store: st,
@@ -152,6 +154,7 @@ func TestPrepareSourceSourceChangeResetsOldReports(t *testing.T) {
 		{text: adaptAnalyzerEnvelope(1)},
 		{text: adaptAnalyzerEnvelope(2)},
 		{text: adaptFoundationMergeEnvelope()},
+		{text: adaptDossierBatchEnvelope()},
 	}}
 	if err := PrepareSource(context.Background(), Deps{
 		Store: st,
@@ -163,8 +166,58 @@ func TestPrepareSourceSourceChangeResetsOldReports(t *testing.T) {
 	}, sourcePath, nil); err != nil {
 		t.Fatalf("PrepareSource changed source: %v", err)
 	}
-	if second.calls != 3 {
+	if second.calls != 4 {
 		t.Fatalf("changed source should reanalyze all chapters and merge, calls=%d", second.calls)
+	}
+}
+
+func TestPrepareSourceBuildsMissingCoCreateDossierWithoutReanalyzingPreparedSource(t *testing.T) {
+	root := t.TempDir()
+	st := store.NewStore(root)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sourcePath := writeAdaptSource(t, t.TempDir(), []string{"BODY_ONE", "BODY_TWO"})
+	first := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: adaptAnalyzerEnvelope(1)},
+		{text: adaptAnalyzerEnvelope(2)},
+		{text: adaptFoundationMergeEnvelope()},
+		{text: adaptDossierBatchEnvelope()},
+	}}
+	if err := PrepareSource(context.Background(), Deps{
+		Store: st,
+		LLM:   first,
+		Prompts: Prompts{
+			Analyzer:        "analyzer",
+			FoundationMerge: "merge",
+		},
+	}, sourcePath, nil); err != nil {
+		t.Fatalf("PrepareSource first: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "meta", "adaptation", "cocreate_dossier.json")); err != nil {
+		t.Fatalf("remove dossier: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "meta", "adaptation", "cocreate_dossier_batches")); err != nil {
+		t.Fatalf("remove dossier batches: %v", err)
+	}
+
+	second := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: adaptDossierBatchEnvelope()}}}
+	if err := PrepareSource(context.Background(), Deps{
+		Store: st,
+		LLM:   second,
+		Prompts: Prompts{
+			Analyzer:        "analyzer",
+			FoundationMerge: "merge",
+		},
+	}, sourcePath, nil); err != nil {
+		t.Fatalf("PrepareSource rebuild dossier: %v", err)
+	}
+	if second.calls != 1 {
+		t.Fatalf("rebuild should only call dossier model, calls=%d", second.calls)
+	}
+	current, err := st.Adaptation.CoCreateDossierCurrent(CoCreateDossierPromptVersion, CoCreateDossierBatchSize)
+	if err != nil || !current {
+		t.Fatalf("dossier should be current: current=%v err=%v", current, err)
 	}
 }
 
@@ -239,4 +292,17 @@ Ari follows the source causal chain.
 === COMPASS ===
 {"ending_direction":"Ari resolves the source case.","open_threads":["who controls the records"],"estimated_scale":"short"}
 `
+}
+
+func adaptDossierBatchEnvelope() string {
+	return `{
+		"plot_phase": "Ari follows the source case.",
+		"key_causality": ["Ari's choice drives the next scene."],
+		"major_characters": ["Ari"],
+		"relationship_signals": [],
+		"heroine_signals": [],
+		"ambiguity_risks": [],
+		"couple_milestones": [],
+		"adaptation_notes": ["Preserve the source case causality."]
+	}`
 }

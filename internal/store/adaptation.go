@@ -19,6 +19,8 @@ const (
 	adaptationSourceReportDir      = adaptationRootDir + "/source_reports"
 	adaptationSourceReportsFile    = adaptationRootDir + "/source_reports.json"
 	adaptationSourceFoundationFile = adaptationRootDir + "/source_foundation.json"
+	adaptationCoCreateDossierFile  = adaptationRootDir + "/cocreate_dossier.json"
+	adaptationCoCreateBatchDir     = adaptationRootDir + "/cocreate_dossier_batches"
 	adaptationCheckDir             = adaptationRootDir + "/checks"
 	adaptationProposalFile         = adaptationRootDir + "/proposal.json"
 	adaptationVolumeReviewFile     = adaptationRootDir + "/proposal_volume_review.json"
@@ -266,6 +268,119 @@ func (s *AdaptationStore) LoadSourceFoundation() (*domain.AdaptationSourceFounda
 	return &foundation, nil
 }
 
+func (s *AdaptationStore) SaveCoCreateDossier(dossier domain.AdaptationCoCreateDossier) error {
+	return s.io.WriteJSON(adaptationCoCreateDossierFile, dossier)
+}
+
+func (s *AdaptationStore) LoadCoCreateDossier() (*domain.AdaptationCoCreateDossier, error) {
+	var dossier domain.AdaptationCoCreateDossier
+	if err := s.io.ReadJSON(adaptationCoCreateDossierFile, &dossier); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &dossier, nil
+}
+
+func (s *AdaptationStore) SaveCoCreateDossierBatch(batch domain.AdaptationCoCreateDossierBatch) error {
+	if batch.Index <= 0 {
+		return fmt.Errorf("batch index must be > 0")
+	}
+	return s.io.WriteJSON(CoCreateDossierBatchRelPath(batch.Index), batch)
+}
+
+func (s *AdaptationStore) LoadCoCreateDossierBatch(index int) (*domain.AdaptationCoCreateDossierBatch, error) {
+	if index <= 0 {
+		return nil, fmt.Errorf("batch index must be > 0")
+	}
+	var batch domain.AdaptationCoCreateDossierBatch
+	if err := s.io.ReadJSON(CoCreateDossierBatchRelPath(index), &batch); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if batch.Index == 0 {
+		batch.Index = index
+	}
+	return &batch, nil
+}
+
+func (s *AdaptationStore) LoadCoCreateDossierBatches() ([]domain.AdaptationCoCreateDossierBatch, error) {
+	entries, err := os.ReadDir(s.io.path(adaptationCoCreateBatchDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	batches := make([]domain.AdaptationCoCreateDossierBatch, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		var batch domain.AdaptationCoCreateDossierBatch
+		rel := adaptationCoCreateBatchDir + "/" + entry.Name()
+		if err := s.io.ReadJSON(rel, &batch); err != nil {
+			return nil, err
+		}
+		batches = append(batches, batch)
+	}
+	sort.SliceStable(batches, func(i, j int) bool {
+		return batches[i].Index < batches[j].Index
+	})
+	return batches, nil
+}
+
+func (s *AdaptationStore) CoCreateDossierCurrent(promptVersion string, batchSize int) (bool, error) {
+	manifest, err := s.LoadSourceManifest()
+	if err != nil || manifest == nil {
+		return false, err
+	}
+	dossier, err := s.LoadCoCreateDossier()
+	if err != nil || dossier == nil {
+		return false, err
+	}
+	return CoCreateDossierMatchesManifest(*dossier, *manifest, promptVersion, batchSize), nil
+}
+
+func CoCreateDossierMatchesManifest(dossier domain.AdaptationCoCreateDossier, manifest domain.AdaptationSourceManifest, promptVersion string, batchSize int) bool {
+	if batchSize <= 0 {
+		return false
+	}
+	if strings.TrimSpace(dossier.PromptVersion) != strings.TrimSpace(promptVersion) {
+		return false
+	}
+	if dossier.BatchSize != batchSize || dossier.SourceChapterCount != manifest.ChapterCount {
+		return false
+	}
+	if dossier.SourceSignature != AdaptationSourceSignature(manifest) {
+		return false
+	}
+	if len(dossier.Batches) != adaptationDossierBatchCount(manifest.ChapterCount, batchSize) {
+		return false
+	}
+	return true
+}
+
+func AdaptationSourceSignature(manifest domain.AdaptationSourceManifest) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "chapters=%d\n", manifest.ChapterCount)
+	for _, ch := range manifest.Chapters {
+		fmt.Fprintf(&sb, "%d:%s\n", ch.Chapter, ch.SHA256)
+	}
+	sum := sha256.Sum256([]byte(sb.String()))
+	return hex.EncodeToString(sum[:])
+}
+
+func adaptationDossierBatchCount(chapterCount, batchSize int) int {
+	if chapterCount <= 0 || batchSize <= 0 {
+		return 0
+	}
+	return (chapterCount + batchSize - 1) / batchSize
+}
+
 func (s *AdaptationStore) SavePlan(plan domain.AdaptationPlan) error {
 	s.normalizeAdaptationPlan(&plan)
 	plan.Status = domain.AdaptationPlanStatusConfirmed
@@ -424,6 +539,10 @@ func SourceChapterRelPath(chapter int) string {
 
 func SourceReportRelPath(chapter int) string {
 	return fmt.Sprintf("%s/%04d.json", adaptationSourceReportDir, chapter)
+}
+
+func CoCreateDossierBatchRelPath(index int) string {
+	return fmt.Sprintf("%s/%04d.json", adaptationCoCreateBatchDir, index)
 }
 
 func TextSHA256(text string) string {

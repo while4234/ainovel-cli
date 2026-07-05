@@ -310,6 +310,28 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 	}); err != nil {
 		t.Fatalf("SaveSourceFoundation: %v", err)
 	}
+	batch := domain.AdaptationCoCreateDossierBatch{
+		Index:           1,
+		SourceFrom:      1,
+		SourceTo:        2,
+		SourceSignature: "batch",
+		PromptVersion:   adaptengine.CoCreateDossierPromptVersion,
+		PlotPhase:       "fixture source plot",
+	}
+	if err := st.Adaptation.SaveCoCreateDossierBatch(batch); err != nil {
+		t.Fatalf("SaveCoCreateDossierBatch: %v", err)
+	}
+	if err := st.Adaptation.SaveCoCreateDossier(domain.AdaptationCoCreateDossier{
+		Version:            1,
+		PromptVersion:      adaptengine.CoCreateDossierPromptVersion,
+		SourcePath:         sourcePath,
+		SourceChapterCount: sourceManifest.ChapterCount,
+		SourceSignature:    store.AdaptationSourceSignature(sourceManifest),
+		BatchSize:          adaptengine.CoCreateDossierBatchSize,
+		Batches:            []domain.AdaptationCoCreateDossierBatch{batch},
+	}); err != nil {
+		t.Fatalf("SaveCoCreateDossier: %v", err)
+	}
 	return sourcePath
 }
 

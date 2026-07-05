@@ -1,4 +1,4 @@
-# Git Notes
+﻿# Git Notes
 
 ## Repository Purpose
 
@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source change: current local commit
+  `feat: add adaptation cocreate dossier`:
+  Adaptation source analysis now generates a resumable all-book co-create
+  dossier from per-chapter source reports after source foundation, replacing
+  the previous adapt co-create prompt that only exposed the first 30 chapter
+  summaries. Web/TUI analysis progress includes the dossier stage; Web
+  `analysis_status=done`, adapt co-create begin, and novel library save/load now
+  require a current dossier. Adapt co-create uses an 8192-token output cap and
+  rejects provider length truncation or incomplete XML before accepting drafts.
+  Validation passed for Web UI tests/build, focused Go tests, full
+  `go test ./internal/...`, and `git diff --check` with CRLF warnings only.
 - Latest source change: branch `codex/project-runtime-model-fallback`, pending commit
   `feat: add project runtime model fallback`:
   Runtime model fallback is project-scoped and switches all project agents
@@ -366,6 +377,14 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
+- 2026-07-05 current local commit `feat: add adaptation cocreate dossier`:
+  source analysis now builds an all-book adaptation co-create dossier in
+  resumable batches from source reports, Web/TUI readiness waits for it, adapt
+  co-create consumes it instead of first-30 summaries, adapt co-create output
+  cap is 8192, and truncated/incomplete XML drafts are rejected. Validation
+  passed for Web UI tests/build, full `go test ./internal/...`, and
+  `git diff --check`.
+
 - 2026-07-05 current local commit `fix: remove text source upload size limit`:
   removed application-layer size caps from Web TXT/MD source uploads for
   仿写语料, 小说改编 source analysis, and external novel import while keeping JSON
@@ -683,3 +702,4 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 - To undo only the local notes commit after review, use `git revert <commit>`.
 - Do not delete or stage `novel/` unless the user explicitly asks to track that
   local runtime/workspace directory.
+

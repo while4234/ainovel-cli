@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 const (
@@ -172,6 +173,20 @@ func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Reque
 		req.Tolerance = startup.AdaptationWordToleranceForGranularity(mode, req.Tolerance)
 		if rewritePolicy == "" {
 			writeError(w, http.StatusBadRequest, "adaptation rewrite policy is required")
+			return
+		}
+		st := storepkg.NewStore(manifest.OutputDir)
+		if _, _, err := adapt.ValidatePreparedSource(st, sourcePath); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		current, err := st.Adaptation.CoCreateDossierCurrent(adapt.CoCreateDossierPromptVersion, adapt.CoCreateDossierBatchSize)
+		if err != nil {
+			writeError(w, http.StatusConflict, "read adaptation co-create dossier: "+err.Error())
+			return
+		}
+		if !current {
+			writeError(w, http.StatusConflict, "adaptation co-create dossier missing or stale; run source analysis first")
 			return
 		}
 	}

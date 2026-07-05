@@ -14,6 +14,8 @@ import (
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	adaptpkg "github.com/voocel/ainovel-cli/internal/host/adapt"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 func TestProjectAdaptSourceUploadSavesSourceUnderProjectUploads(t *testing.T) {
@@ -199,6 +201,90 @@ func TestProjectSnapshotRestoresUploadedAdaptationSource(t *testing.T) {
 	}
 	if response.Adaptation.AnalysisStatus != "idle" {
 		t.Fatalf("analysis status = %q, want idle", response.Adaptation.AnalysisStatus)
+	}
+}
+
+func TestProjectSnapshotRequiresCurrentCoCreateDossierForDoneAnalysis(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt Dossier Status")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	st := storepkg.NewStore(manifest.OutputDir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init store: %v", err)
+	}
+	source, err := st.Adaptation.SaveSourceChapter(1, "One", "source body")
+	if err != nil {
+		t.Fatalf("SaveSourceChapter: %v", err)
+	}
+	sourcePath := filepath.Join(manifest.RootDir, "uploads", "adaptation", "source.txt")
+	sourceManifest := domain.AdaptationSourceManifest{
+		SourcePath:   sourcePath,
+		ChapterCount: 1,
+		Chapters:     []domain.AdaptationSource{source},
+	}
+	if err := st.Adaptation.SaveSourceManifest(sourceManifest); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+	report := domain.AdaptationSourceReport{
+		Chapter:      1,
+		Title:        "One",
+		SourceSHA256: source.SHA256,
+		Summary:      "source summary",
+		KeyEvents:    []string{"source event"},
+	}
+	if err := st.Adaptation.SaveSourceReport(report); err != nil {
+		t.Fatalf("SaveSourceReport: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceReports([]domain.AdaptationSourceReport{report}); err != nil {
+		t.Fatalf("SaveSourceReports: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{Premise: "source", Characters: []domain.Character{}, WorldRules: []domain.WorldRule{}}); err != nil {
+		t.Fatalf("SaveSourceFoundation: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response projectSnapshotResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if response.Adaptation.AnalysisStatus != "paused" {
+		t.Fatalf("analysis status without dossier = %q, want paused", response.Adaptation.AnalysisStatus)
+	}
+
+	dossier := domain.AdaptationCoCreateDossier{
+		Version:            1,
+		PromptVersion:      adaptpkg.CoCreateDossierPromptVersion,
+		SourcePath:         sourcePath,
+		SourceChapterCount: 1,
+		SourceSignature:    storepkg.AdaptationSourceSignature(sourceManifest),
+		BatchSize:          adaptpkg.CoCreateDossierBatchSize,
+		Batches: []domain.AdaptationCoCreateDossierBatch{
+			{Index: 1, SourceFrom: 1, SourceTo: 1, SourceSignature: "batch"},
+		},
+	}
+	if err := st.Adaptation.SaveCoCreateDossier(dossier); err != nil {
+		t.Fatalf("SaveCoCreateDossier: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot status after dossier = %d body=%s", rec.Code, rec.Body.String())
+	}
+	response = projectSnapshotResponse{}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode second snapshot response: %v", err)
+	}
+	if response.Adaptation.AnalysisStatus != "done" {
+		t.Fatalf("analysis status with dossier = %q, want done", response.Adaptation.AnalysisStatus)
 	}
 }
 

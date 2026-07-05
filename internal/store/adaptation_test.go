@@ -541,3 +541,57 @@ func TestAdaptationStoreLoadCompleteSourceReportsRequiresMatchingSHA(t *testing.
 		t.Fatalf("complete reports mismatch: %+v", reports)
 	}
 }
+
+func TestAdaptationStoreCoCreateDossierCurrentRequiresSourceSignatureAndPromptVersion(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	source1, err := s.Adaptation.SaveSourceChapter(1, "One", "chapter one")
+	if err != nil {
+		t.Fatalf("SaveSourceChapter 1: %v", err)
+	}
+	source2, err := s.Adaptation.SaveSourceChapter(2, "Two", "chapter two")
+	if err != nil {
+		t.Fatalf("SaveSourceChapter 2: %v", err)
+	}
+	manifest := domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: 2,
+		Chapters:     []domain.AdaptationSource{source1, source2},
+	}
+	if err := s.Adaptation.SaveSourceManifest(manifest); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+	dossier := domain.AdaptationCoCreateDossier{
+		Version:            1,
+		PromptVersion:      "v-test",
+		SourceChapterCount: 2,
+		SourceSignature:    AdaptationSourceSignature(manifest),
+		BatchSize:          40,
+		Batches: []domain.AdaptationCoCreateDossierBatch{
+			{Index: 1, SourceFrom: 1, SourceTo: 2, SourceSignature: "batch"},
+		},
+	}
+	if err := s.Adaptation.SaveCoCreateDossier(dossier); err != nil {
+		t.Fatalf("SaveCoCreateDossier: %v", err)
+	}
+	if current, err := s.Adaptation.CoCreateDossierCurrent("v-test", 40); err != nil || !current {
+		t.Fatalf("dossier should be current: current=%v err=%v", current, err)
+	}
+	if current, err := s.Adaptation.CoCreateDossierCurrent("v-next", 40); err != nil || current {
+		t.Fatalf("prompt version mismatch should be stale: current=%v err=%v", current, err)
+	}
+	if current, err := s.Adaptation.CoCreateDossierCurrent("v-test", 20); err != nil || current {
+		t.Fatalf("batch size mismatch should be stale: current=%v err=%v", current, err)
+	}
+
+	changed := manifest
+	changed.Chapters[1].SHA256 = "changed"
+	if err := s.Adaptation.SaveSourceManifest(changed); err != nil {
+		t.Fatalf("SaveSourceManifest changed: %v", err)
+	}
+	if current, err := s.Adaptation.CoCreateDossierCurrent("v-test", 40); err != nil || current {
+		t.Fatalf("source signature mismatch should be stale: current=%v err=%v", current, err)
+	}
+}

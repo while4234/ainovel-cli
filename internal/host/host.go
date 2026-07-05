@@ -2558,7 +2558,7 @@ func (h *Host) StageCoCreateStream(ctx context.Context, history []CoCreateMessag
 
 // AdaptCoCreateStream 改编共创：基于原书分析快照澄清改编目标。
 func (h *Host) AdaptCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
-	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), adaptSystemPrompt(h.store), history, onProgress)
+	return coCreateStreamWithMaxTokens(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), adaptSystemPrompt(h.store), history, adaptCoCreateMaxTokens, onProgress)
 }
 
 // stagePlanPrefix 把共创产出的"后续方向 brief"包装成一条阶段规划干预，交 Coordinator 裁定。

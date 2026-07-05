@@ -65,6 +65,67 @@ type AdaptationSourceFoundation struct {
 	Compass    *StoryCompass   `json:"compass,omitempty"`
 }
 
+// AdaptationCoCreateDossier is the compact all-book packet used by adaptation
+// co-create. It is derived from source reports, not raw source prose.
+type AdaptationCoCreateDossier struct {
+	Version            int                                `json:"version"`
+	PromptVersion      string                             `json:"prompt_version"`
+	SourcePath         string                             `json:"source_path,omitempty"`
+	SourceChapterCount int                                `json:"source_chapter_count"`
+	SourceSignature    string                             `json:"source_signature"`
+	BatchSize          int                                `json:"batch_size"`
+	GeneratedAt        string                             `json:"generated_at,omitempty"`
+	Overview           string                             `json:"overview,omitempty"`
+	Mainline           []string                           `json:"mainline,omitempty"`
+	RelationshipMap    []AdaptationRelationshipSignal     `json:"relationship_map,omitempty"`
+	HeroineSignals     []AdaptationRelationshipSignal     `json:"heroine_signals,omitempty"`
+	AmbiguityRisks     []AdaptationRelationshipRisk       `json:"ambiguity_risks,omitempty"`
+	CoupleMilestones   []AdaptationRelationshipSignal     `json:"couple_milestones,omitempty"`
+	AdaptationNotes    []string                           `json:"adaptation_notes,omitempty"`
+	Batches            []AdaptationCoCreateDossierBatch   `json:"batches"`
+	SourceChapters     []AdaptationDossierSourceSignature `json:"source_chapters,omitempty"`
+}
+
+// AdaptationCoCreateDossierBatch is one resumable source-report analysis batch.
+type AdaptationCoCreateDossierBatch struct {
+	Index               int                            `json:"index"`
+	SourceFrom          int                            `json:"source_from"`
+	SourceTo            int                            `json:"source_to"`
+	SourceSignature     string                         `json:"source_signature"`
+	PromptVersion       string                         `json:"prompt_version"`
+	GeneratedAt         string                         `json:"generated_at,omitempty"`
+	PlotPhase           string                         `json:"plot_phase,omitempty"`
+	KeyCausality        []string                       `json:"key_causality,omitempty"`
+	MajorCharacters     []string                       `json:"major_characters,omitempty"`
+	RelationshipSignals []AdaptationRelationshipSignal `json:"relationship_signals,omitempty"`
+	HeroineSignals      []AdaptationRelationshipSignal `json:"heroine_signals,omitempty"`
+	AmbiguityRisks      []AdaptationRelationshipRisk   `json:"ambiguity_risks,omitempty"`
+	CoupleMilestones    []AdaptationRelationshipSignal `json:"couple_milestones,omitempty"`
+	AdaptationNotes     []string                       `json:"adaptation_notes,omitempty"`
+}
+
+type AdaptationDossierSourceSignature struct {
+	Chapter int    `json:"chapter"`
+	SHA256  string `json:"sha256"`
+}
+
+type AdaptationRelationshipSignal struct {
+	Chapters   []int    `json:"chapters,omitempty"`
+	Characters []string `json:"characters,omitempty"`
+	Type       string   `json:"type,omitempty"`
+	Summary    string   `json:"summary"`
+	Evidence   string   `json:"evidence,omitempty"`
+}
+
+type AdaptationRelationshipRisk struct {
+	Chapters   []int    `json:"chapters,omitempty"`
+	Characters []string `json:"characters,omitempty"`
+	Risk       string   `json:"risk"`
+	Evidence   string   `json:"evidence,omitempty"`
+	Severity   string   `json:"severity,omitempty"`
+	Suggestion string   `json:"suggestion,omitempty"`
+}
+
 // AdaptationPlan is the durable contract for rewriting the source as a new book.
 type AdaptationPlan struct {
 	Granularity       string                  `json:"granularity"`

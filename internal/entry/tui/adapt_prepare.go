@@ -130,7 +130,7 @@ func (s *adaptPreparationState) refresh(contentW int) {
 		b.WriteString(dimStyle.Render(ln.at.Format("15:04:05")))
 		b.WriteString(" ")
 		b.WriteString(stageStyle.Render(string(ln.stage)))
-		if ln.total > 0 && ln.current > 0 {
+		if ln.total > 0 {
 			b.WriteString(mutedStyle.Render(fmt.Sprintf(" %d/%d", ln.current, ln.total)))
 		}
 		b.WriteString(" ")

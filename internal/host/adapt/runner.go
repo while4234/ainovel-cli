@@ -173,6 +173,9 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 			return fmt.Errorf("save source foundation: %w", err)
 		}
 	}
+	if _, err := EnsureCoCreateDossier(ctx, deps, manifest, reports, emit); err != nil {
+		return fmt.Errorf("ensure co-create dossier: %w", err)
+	}
 	emit(StageDone, total, total, fmt.Sprintf("原书分析完成：%d 章快照已保存", total), nil)
 	return nil
 }
