@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -21,6 +22,9 @@ const (
 	adaptationSourceFoundationFile = adaptationRootDir + "/source_foundation.json"
 	adaptationCoCreateDossierFile  = adaptationRootDir + "/cocreate_dossier.json"
 	adaptationCoCreateBatchDir     = adaptationRootDir + "/cocreate_dossier_batches"
+	adaptationCoCreateIntentFile   = adaptationRootDir + "/cocreate_intent.json"
+	adaptationCoCreateBriefingFile = adaptationRootDir + "/cocreate_briefing.json"
+	adaptationCoCreateBriefingDir  = adaptationRootDir + "/cocreate_briefing_batches"
 	adaptationCheckDir             = adaptationRootDir + "/checks"
 	adaptationProposalFile         = adaptationRootDir + "/proposal.json"
 	adaptationVolumeReviewFile     = adaptationRootDir + "/proposal_volume_review.json"
@@ -333,6 +337,169 @@ func (s *AdaptationStore) LoadCoCreateDossierBatches() ([]domain.AdaptationCoCre
 	return batches, nil
 }
 
+func (s *AdaptationStore) SaveCoCreateIntent(intent domain.AdaptationCoCreateIntent) error {
+	return s.io.WriteJSON(adaptationCoCreateIntentFile, intent)
+}
+
+func (s *AdaptationStore) LoadCoCreateIntent() (*domain.AdaptationCoCreateIntent, error) {
+	var intent domain.AdaptationCoCreateIntent
+	if err := s.io.ReadJSON(adaptationCoCreateIntentFile, &intent); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &intent, nil
+}
+
+func (s *AdaptationStore) SaveCoCreateBriefing(briefing domain.AdaptationCoCreateBriefing) error {
+	return s.io.WriteJSON(adaptationCoCreateBriefingFile, briefing)
+}
+
+func (s *AdaptationStore) LoadCoCreateBriefing() (*domain.AdaptationCoCreateBriefing, error) {
+	var briefing domain.AdaptationCoCreateBriefing
+	if err := s.io.ReadJSON(adaptationCoCreateBriefingFile, &briefing); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &briefing, nil
+}
+
+func (s *AdaptationStore) SaveCoCreateBriefingBatch(batch domain.AdaptationCoCreateBriefingBatch) error {
+	if batch.Index <= 0 {
+		return fmt.Errorf("batch index must be > 0")
+	}
+	return s.io.WriteJSON(CoCreateBriefingBatchRelPath(batch.Index), batch)
+}
+
+func (s *AdaptationStore) LoadCoCreateBriefingBatch(index int) (*domain.AdaptationCoCreateBriefingBatch, error) {
+	if index <= 0 {
+		return nil, fmt.Errorf("batch index must be > 0")
+	}
+	var batch domain.AdaptationCoCreateBriefingBatch
+	if err := s.io.ReadJSON(CoCreateBriefingBatchRelPath(index), &batch); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if batch.Index == 0 {
+		batch.Index = index
+	}
+	return &batch, nil
+}
+
+func (s *AdaptationStore) LoadCoCreateBriefingBatches() ([]domain.AdaptationCoCreateBriefingBatch, error) {
+	entries, err := os.ReadDir(s.io.path(adaptationCoCreateBriefingDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	batches := make([]domain.AdaptationCoCreateBriefingBatch, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		var batch domain.AdaptationCoCreateBriefingBatch
+		rel := adaptationCoCreateBriefingDir + "/" + entry.Name()
+		if err := s.io.ReadJSON(rel, &batch); err != nil {
+			return nil, err
+		}
+		batches = append(batches, batch)
+	}
+	sort.SliceStable(batches, func(i, j int) bool {
+		return batches[i].Index < batches[j].Index
+	})
+	return batches, nil
+}
+
+func (s *AdaptationStore) CoCreateBriefingCurrent(promptVersion string, dossierPromptVersion string, intentHash string) (bool, error) {
+	manifest, err := s.LoadSourceManifest()
+	if err != nil || manifest == nil {
+		return false, err
+	}
+	dossier, err := s.LoadCoCreateDossier()
+	if err != nil || dossier == nil {
+		return false, err
+	}
+	briefing, err := s.LoadCoCreateBriefing()
+	if err != nil || briefing == nil {
+		return false, err
+	}
+	return CoCreateBriefingMatches(*briefing, *manifest, *dossier, promptVersion, dossierPromptVersion, intentHash), nil
+}
+
+func CoCreateBriefingMatches(
+	briefing domain.AdaptationCoCreateBriefing,
+	manifest domain.AdaptationSourceManifest,
+	dossier domain.AdaptationCoCreateDossier,
+	promptVersion string,
+	dossierPromptVersion string,
+	intentHash string,
+) bool {
+	if strings.TrimSpace(briefing.PromptVersion) != strings.TrimSpace(promptVersion) {
+		return false
+	}
+	if strings.TrimSpace(briefing.DossierPromptVersion) != strings.TrimSpace(dossierPromptVersion) {
+		return false
+	}
+	if strings.TrimSpace(briefing.IntentHash) != strings.TrimSpace(intentHash) {
+		return false
+	}
+	if briefing.SourceChapterCount != manifest.ChapterCount {
+		return false
+	}
+	if briefing.SourceSignature != AdaptationSourceSignature(manifest) {
+		return false
+	}
+	if briefing.DossierBatchCount != len(dossier.Batches) {
+		return false
+	}
+	return true
+}
+
+func (s *AdaptationStore) ResolveCoCreateBriefingDecision(decisionID, optionID, customAnswer string) (*domain.AdaptationCoCreateBriefing, error) {
+	decisionID = strings.TrimSpace(decisionID)
+	optionID = strings.TrimSpace(optionID)
+	customAnswer = strings.TrimSpace(customAnswer)
+	if decisionID == "" {
+		return nil, fmt.Errorf("decision_id is required")
+	}
+	if optionID == "" && customAnswer == "" {
+		return nil, fmt.Errorf("option_id or custom_answer is required")
+	}
+	briefing, err := s.LoadCoCreateBriefing()
+	if err != nil {
+		return nil, err
+	}
+	if briefing == nil {
+		return nil, fmt.Errorf("co-create briefing is required")
+	}
+	decision := findBriefingDecision(*briefing, decisionID)
+	if decision == nil {
+		return nil, fmt.Errorf("decision not found")
+	}
+	if optionID != "" && !briefingDecisionHasOption(*decision, optionID) {
+		return nil, fmt.Errorf("decision option not found")
+	}
+	resolved := domain.AdaptationResolvedDecision{
+		DecisionID:   decisionID,
+		OptionID:     optionID,
+		CustomAnswer: customAnswer,
+		ResolvedAt:   timeNowUTCString(),
+	}
+	briefing.ResolvedDecisions = upsertResolvedDecision(briefing.ResolvedDecisions, resolved)
+	markBriefingDecisionResolved(briefing, decisionID)
+	if err := s.SaveCoCreateBriefing(*briefing); err != nil {
+		return nil, err
+	}
+	return briefing, nil
+}
+
 func (s *AdaptationStore) CoCreateDossierCurrent(promptVersion string, batchSize int) (bool, error) {
 	manifest, err := s.LoadSourceManifest()
 	if err != nil || manifest == nil {
@@ -543,6 +710,61 @@ func SourceReportRelPath(chapter int) string {
 
 func CoCreateDossierBatchRelPath(index int) string {
 	return fmt.Sprintf("%s/%04d.json", adaptationCoCreateBatchDir, index)
+}
+
+func CoCreateBriefingBatchRelPath(index int) string {
+	return fmt.Sprintf("%s/%04d.json", adaptationCoCreateBriefingDir, index)
+}
+
+func findBriefingDecision(briefing domain.AdaptationCoCreateBriefing, decisionID string) *domain.AdaptationBriefingDecision {
+	for i := range briefing.Decisions {
+		if strings.TrimSpace(briefing.Decisions[i].ID) == decisionID {
+			return &briefing.Decisions[i]
+		}
+	}
+	return nil
+}
+
+func briefingDecisionHasOption(decision domain.AdaptationBriefingDecision, optionID string) bool {
+	for _, option := range decision.Options {
+		if strings.TrimSpace(option.ID) == optionID {
+			return true
+		}
+	}
+	return false
+}
+
+func upsertResolvedDecision(values []domain.AdaptationResolvedDecision, resolved domain.AdaptationResolvedDecision) []domain.AdaptationResolvedDecision {
+	out := append([]domain.AdaptationResolvedDecision(nil), values...)
+	for i := range out {
+		if strings.TrimSpace(out[i].DecisionID) == strings.TrimSpace(resolved.DecisionID) {
+			out[i] = resolved
+			return out
+		}
+	}
+	return append(out, resolved)
+}
+
+func markBriefingDecisionResolved(briefing *domain.AdaptationCoCreateBriefing, decisionID string) {
+	if briefing == nil {
+		return
+	}
+	for i := range briefing.Decisions {
+		if strings.TrimSpace(briefing.Decisions[i].ID) == decisionID {
+			briefing.Decisions[i].Status = "resolved"
+		}
+	}
+	for i := range briefing.Batches {
+		for j := range briefing.Batches[i].DecisionQuestions {
+			if strings.TrimSpace(briefing.Batches[i].DecisionQuestions[j].ID) == decisionID {
+				briefing.Batches[i].DecisionQuestions[j].Status = "resolved"
+			}
+		}
+	}
+}
+
+func timeNowUTCString() string {
+	return time.Now().UTC().Format(time.RFC3339)
 }
 
 func TextSHA256(text string) string {

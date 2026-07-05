@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -116,6 +117,14 @@ func startRuntime(rt *host.Host, plan startup.Plan) tea.Cmd {
 		if plan.Mode == startup.ModeAdaptNovel {
 			if err := rt.PrepareExternalSourceUserRules(plan.RawPrompt); err != nil {
 				return startResultMsg{err: err}
+			}
+			intent := adapt.BuildCoCreateIntent(plan.RawPrompt, plan.AdaptGranularity, plan.AdaptRewritePolicy, plan.AdaptWordTolerance)
+			briefing, err := rt.EnsureAdaptationCoCreateBriefing(context.Background(), plan.AdaptSourcePath, intent)
+			if err != nil {
+				return startResultMsg{err: err}
+			}
+			if pending := adapt.PendingCoCreateBriefingDecisions(briefing); len(pending) > 0 {
+				return startResultMsg{err: fmt.Errorf("adaptation co-create briefing has %d pending decisions; resolve them in adaptation co-create first", len(pending))}
 			}
 			err = rt.StartAdaptationPreparedWithOptions(adapt.ProposalOptions{
 				Brief:         plan.RawPrompt,

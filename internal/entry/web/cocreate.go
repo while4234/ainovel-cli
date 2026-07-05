@@ -38,6 +38,7 @@ type webCoCreateBeginRequest struct {
 	TargetTotalWords int     `json:"target_total_words"`
 
 	sourcePath string
+	briefing   *domain.AdaptationCoCreateBriefing
 }
 
 type webCoCreateSendRequest struct {
@@ -48,6 +49,12 @@ type webCoCreateSendRequest struct {
 type webCoCreateReviseRequest struct {
 	MessageID string `json:"message_id"`
 	Text      string `json:"text"`
+}
+
+type webCoCreateDecisionRequest struct {
+	DecisionID   string `json:"decision_id"`
+	OptionID     string `json:"option_id"`
+	CustomAnswer string `json:"custom_answer"`
 }
 
 type webCoCreateMessage struct {
@@ -69,22 +76,23 @@ type webCoCreateMessageCheckpoint struct {
 }
 
 type webCoCreateCheckpoint struct {
-	Version                int                            `json:"version"`
-	UpdatedAt              time.Time                      `json:"updated_at"`
-	Kind                   string                         `json:"kind"`
-	Session                startup.CoCreateSnapshot       `json:"session"`
-	Messages               []webCoCreateMessageCheckpoint `json:"messages"`
-	NextMessageSeq         int                            `json:"next_message_seq"`
-	Failed                 bool                           `json:"failed,omitempty"`
-	SourceFile             string                         `json:"source_file,omitempty"`
-	SourcePath             string                         `json:"source_path,omitempty"`
-	AdaptGranularity       string                         `json:"adapt_granularity,omitempty"`
-	AdaptRewritePolicy     string                         `json:"adapt_rewrite_policy,omitempty"`
-	AdaptWordTolerance     float64                        `json:"adapt_word_tolerance,omitempty"`
-	TargetTotalWords       int                            `json:"target_total_words,omitempty"`
-	AdaptationProposal     *domain.AdaptationPlan         `json:"adaptation_proposal,omitempty"`
-	AdaptationVolumeReview *domain.AdaptationVolumeReview `json:"adaptation_volume_review,omitempty"`
-	DraftConsolidated      bool                           `json:"draft_consolidated_for_commit,omitempty"`
+	Version                int                                `json:"version"`
+	UpdatedAt              time.Time                          `json:"updated_at"`
+	Kind                   string                             `json:"kind"`
+	Session                startup.CoCreateSnapshot           `json:"session"`
+	Messages               []webCoCreateMessageCheckpoint     `json:"messages"`
+	NextMessageSeq         int                                `json:"next_message_seq"`
+	Failed                 bool                               `json:"failed,omitempty"`
+	SourceFile             string                             `json:"source_file,omitempty"`
+	SourcePath             string                             `json:"source_path,omitempty"`
+	AdaptGranularity       string                             `json:"adapt_granularity,omitempty"`
+	AdaptRewritePolicy     string                             `json:"adapt_rewrite_policy,omitempty"`
+	AdaptWordTolerance     float64                            `json:"adapt_word_tolerance,omitempty"`
+	TargetTotalWords       int                                `json:"target_total_words,omitempty"`
+	AdaptationProposal     *domain.AdaptationPlan             `json:"adaptation_proposal,omitempty"`
+	AdaptationVolumeReview *domain.AdaptationVolumeReview     `json:"adaptation_volume_review,omitempty"`
+	DraftConsolidated      bool                               `json:"draft_consolidated_for_commit,omitempty"`
+	AdaptationBriefing     *domain.AdaptationCoCreateBriefing `json:"adaptation_briefing,omitempty"`
 }
 
 type webCoCreateLogEntry struct {
@@ -99,24 +107,27 @@ type webCoCreateLogEntry struct {
 }
 
 type webCoCreateState struct {
-	Kind             string                         `json:"kind"`
-	Active           bool                           `json:"active"`
-	Messages         []webCoCreateMessage           `json:"messages"`
-	DraftPrompt      string                         `json:"draft_prompt"`
-	Ready            bool                           `json:"ready"`
-	Suggestions      []string                       `json:"suggestions"`
-	StreamThinking   string                         `json:"stream_thinking,omitempty"`
-	StreamReply      string                         `json:"stream_reply,omitempty"`
-	AdaptMode        string                         `json:"adapt_mode,omitempty"`
-	RewritePolicy    string                         `json:"rewrite_policy,omitempty"`
-	WordTolerance    float64                        `json:"word_tolerance,omitempty"`
-	TargetTotalWords int                            `json:"target_total_words,omitempty"`
-	SourceFile       string                         `json:"source_file,omitempty"`
-	Proposal         *domain.AdaptationPlan         `json:"proposal,omitempty"`
-	VolumeReview     *domain.AdaptationVolumeReview `json:"volume_review,omitempty"`
-	CanStart         bool                           `json:"can_start"`
-	ModeLocked       bool                           `json:"mode_locked,omitempty"`
-	CommittedLabel   string                         `json:"committed_label,omitempty"`
+	Kind             string                              `json:"kind"`
+	Active           bool                                `json:"active"`
+	Messages         []webCoCreateMessage                `json:"messages"`
+	DraftPrompt      string                              `json:"draft_prompt"`
+	Ready            bool                                `json:"ready"`
+	Suggestions      []string                            `json:"suggestions"`
+	StreamThinking   string                              `json:"stream_thinking,omitempty"`
+	StreamReply      string                              `json:"stream_reply,omitempty"`
+	AdaptMode        string                              `json:"adapt_mode,omitempty"`
+	RewritePolicy    string                              `json:"rewrite_policy,omitempty"`
+	WordTolerance    float64                             `json:"word_tolerance,omitempty"`
+	TargetTotalWords int                                 `json:"target_total_words,omitempty"`
+	SourceFile       string                              `json:"source_file,omitempty"`
+	Proposal         *domain.AdaptationPlan              `json:"proposal,omitempty"`
+	VolumeReview     *domain.AdaptationVolumeReview      `json:"volume_review,omitempty"`
+	CanStart         bool                                `json:"can_start"`
+	ModeLocked       bool                                `json:"mode_locked,omitempty"`
+	CommittedLabel   string                              `json:"committed_label,omitempty"`
+	Briefing         *webCoCreateBriefingState           `json:"briefing,omitempty"`
+	PendingDecisions []domain.AdaptationBriefingDecision `json:"pending_decisions,omitempty"`
+	BlockedReason    string                              `json:"blocked_reason,omitempty"`
 }
 
 type webCoCreateSession struct {
@@ -134,6 +145,15 @@ type webCoCreateSession struct {
 	adaptationProposal     *domain.AdaptationPlan
 	adaptationVolumeReview *domain.AdaptationVolumeReview
 	draftConsolidated      bool
+	adaptationBriefing     *domain.AdaptationCoCreateBriefing
+}
+
+type webCoCreateBriefingState struct {
+	Active                bool   `json:"active"`
+	TriggerReason         string `json:"trigger_reason,omitempty"`
+	PendingDecisionCount  int    `json:"pending_decision_count"`
+	ResolvedDecisionCount int    `json:"resolved_decision_count"`
+	TotalDecisionCount    int    `json:"total_decision_count"`
 }
 
 func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Request, id string) {
@@ -189,6 +209,13 @@ func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusConflict, "adaptation co-create dossier missing or stale; run source analysis first")
 			return
 		}
+		intent := adapt.BuildCoCreateIntent(coCreateAdaptIntentRaw(req.Initial), mode, rewritePolicy, req.Tolerance)
+		briefing, err := session.host.EnsureAdaptationCoCreateBriefing(r.Context(), sourcePath, intent)
+		if err != nil {
+			writeError(w, http.StatusConflict, "prepare adaptation co-create briefing: "+err.Error())
+			return
+		}
+		req.briefing = briefing
 	}
 	state, err := session.BeginCoCreate(r.Context(), req)
 	if err != nil {
@@ -237,6 +264,29 @@ func (s *Server) handleProjectCoCreateRevise(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	state, err := session.ReviseCoCreate(r.Context(), req)
+	if err != nil {
+		writeCoCreateActionError(w, err, state)
+		return
+	}
+	writeCoCreateResponse(w, manifest, session, state)
+}
+
+func (s *Server) handleProjectCoCreateDecision(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req webCoCreateDecisionRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid co-create decision request: "+err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	state, err := session.ResolveCoCreateDecision(r.Context(), req)
 	if err != nil {
 		writeCoCreateActionError(w, err, state)
 		return
@@ -334,6 +384,7 @@ func newWebCoCreateSession(req webCoCreateBeginRequest) (*webCoCreateSession, er
 			adaptGranularity:   granularity,
 			adaptRewritePolicy: rewritePolicy,
 			adaptWordTolerance: tolerance,
+			adaptationBriefing: req.briefing,
 		}
 		state.messages = []webCoCreateMessage{state.newMessage("system", adaptCoCreateSystemLine, "", -1)}
 		if initial := strings.TrimSpace(req.Initial); initial != "" {
@@ -392,6 +443,7 @@ func (s *webCoCreateSession) checkpoint(now time.Time) webCoCreateCheckpoint {
 		AdaptationProposal:     s.adaptationProposal,
 		AdaptationVolumeReview: s.adaptationVolumeReview,
 		DraftConsolidated:      s.draftConsolidated,
+		AdaptationBriefing:     s.adaptationBriefing,
 	}
 }
 
@@ -445,6 +497,7 @@ func webCoCreateSessionFromCheckpoint(checkpoint webCoCreateCheckpoint) (*webCoC
 		adaptationProposal:     checkpoint.AdaptationProposal,
 		adaptationVolumeReview: checkpoint.AdaptationVolumeReview,
 		draftConsolidated:      checkpoint.DraftConsolidated,
+		adaptationBriefing:     checkpoint.AdaptationBriefing,
 	}, nil
 }
 
@@ -1028,6 +1081,17 @@ func (s *webCoCreateSession) draftPrompt() string {
 	return strings.TrimSpace(s.session.DraftPrompt())
 }
 
+func (s *webCoCreateSession) pendingBriefingDecisions() []domain.AdaptationBriefingDecision {
+	if s == nil || s.kind != webCoCreateKindAdapt {
+		return nil
+	}
+	return adapt.PendingCoCreateBriefingDecisions(s.adaptationBriefing)
+}
+
+func (s *webCoCreateSession) hasPendingBriefingDecisions() bool {
+	return len(s.pendingBriefingDecisions()) > 0
+}
+
 func (s *webCoCreateSession) apiState() webCoCreateState {
 	if s == nil {
 		return webCoCreateState{}
@@ -1035,6 +1099,16 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 	canStart := s.session.CanStart()
 	if needsRepair, _ := s.currentDraftNeedsRepair(); needsRepair {
 		canStart = false
+	}
+	pendingDecisions := s.pendingBriefingDecisions()
+	briefingState := coCreateBriefingState(s.adaptationBriefing)
+	blockedReason := ""
+	if len(pendingDecisions) > 0 {
+		canStart = false
+		blockedReason = "resolve adaptation briefing decisions before draft generation"
+		if len(pendingDecisions) > 4 {
+			pendingDecisions = append([]domain.AdaptationBriefingDecision(nil), pendingDecisions[:4]...)
+		}
 	}
 	return webCoCreateState{
 		Kind:             s.kind,
@@ -1054,6 +1128,22 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		VolumeReview:     s.adaptationVolumeReview,
 		CanStart:         canStart,
 		ModeLocked:       s.kind == webCoCreateKindAdapt,
+		Briefing:         briefingState,
+		PendingDecisions: pendingDecisions,
+		BlockedReason:    blockedReason,
+	}
+}
+
+func coCreateBriefingState(briefing *domain.AdaptationCoCreateBriefing) *webCoCreateBriefingState {
+	if briefing == nil {
+		return nil
+	}
+	return &webCoCreateBriefingState{
+		Active:                true,
+		TriggerReason:         briefing.TriggerReason,
+		PendingDecisionCount:  len(adapt.PendingCoCreateBriefingDecisions(briefing)),
+		ResolvedDecisionCount: len(briefing.ResolvedDecisions),
+		TotalDecisionCount:    len(briefing.Decisions),
 	}
 }
 
@@ -1095,6 +1185,14 @@ func adaptCoCreateOpener(granularity, rewritePolicy string, wordTolerance float6
 
 请基于原书分析帮我确认具体改编目标。只围绕上面的当前模式整理 brief，不要写入其它模式的规则，也不要再询问或改动 chapter/arc/free 与 full_rewrite/preserve_details 这两个模式选择。`,
 		modeContract))
+}
+
+func coCreateAdaptIntentRaw(initial string) string {
+	initial = strings.TrimSpace(initial)
+	if initial != "" {
+		return initial
+	}
+	return "基于原书分析确认具体改编目标。"
 }
 
 func normalizeWebAdaptCoCreateOptions(granularity, rewritePolicy string, wordTolerance float64) (string, string, float64) {

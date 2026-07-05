@@ -126,6 +126,97 @@ type AdaptationRelationshipRisk struct {
 	Suggestion string   `json:"suggestion,omitempty"`
 }
 
+// AdaptationCoCreateIntent captures the user's adaptation goal for the
+// pre-draft co-create briefing. The raw request stays available so the model
+// can adapt its attention instead of following a fixed risk checklist.
+type AdaptationCoCreateIntent struct {
+	Version           int      `json:"version"`
+	RawRequest        string   `json:"raw_request"`
+	Granularity       string   `json:"granularity,omitempty"`
+	RewritePolicy     string   `json:"rewrite_policy,omitempty"`
+	WordTolerance     float64  `json:"word_tolerance,omitempty"`
+	Goals             []string `json:"goals,omitempty"`
+	HeroineNames      []string `json:"heroine_names,omitempty"`
+	RestrictedNames   []string `json:"restricted_names,omitempty"`
+	RelationshipRules []string `json:"relationship_rules,omitempty"`
+	PreserveRules     []string `json:"preserve_rules,omitempty"`
+	IntentHash        string   `json:"intent_hash,omitempty"`
+	GeneratedAt       string   `json:"generated_at,omitempty"`
+}
+
+// AdaptationCoCreateBriefing is the intent-driven, second-level compression
+// used before adaptation co-create draft generation for very long novels.
+type AdaptationCoCreateBriefing struct {
+	Version               int                               `json:"version"`
+	PromptVersion         string                            `json:"prompt_version"`
+	SourceSignature       string                            `json:"source_signature"`
+	SourceChapterCount    int                               `json:"source_chapter_count"`
+	DossierPromptVersion  string                            `json:"dossier_prompt_version"`
+	DossierBatchCount     int                               `json:"dossier_batch_count"`
+	IntentHash            string                            `json:"intent_hash"`
+	GeneratedAt           string                            `json:"generated_at,omitempty"`
+	TriggerReason         string                            `json:"trigger_reason,omitempty"`
+	Overview              string                            `json:"overview,omitempty"`
+	ConfirmedFacts        []string                          `json:"confirmed_facts,omitempty"`
+	IntentRelevantRisks   []AdaptationBriefingRisk          `json:"intent_relevant_risks,omitempty"`
+	AdaptationSuggestions []string                          `json:"adaptation_suggestions,omitempty"`
+	Decisions             []AdaptationBriefingDecision      `json:"decision_questions,omitempty"`
+	ResolvedDecisions     []AdaptationResolvedDecision      `json:"resolved_decisions,omitempty"`
+	Batches               []AdaptationCoCreateBriefingBatch `json:"batches"`
+}
+
+type AdaptationCoCreateBriefingBatch struct {
+	Index                 int                          `json:"index"`
+	DossierBatchFrom      int                          `json:"dossier_batch_from"`
+	DossierBatchTo        int                          `json:"dossier_batch_to"`
+	SourceFrom            int                          `json:"source_from"`
+	SourceTo              int                          `json:"source_to"`
+	DossierSignature      string                       `json:"dossier_signature"`
+	PromptVersion         string                       `json:"prompt_version"`
+	IntentHash            string                       `json:"intent_hash"`
+	GeneratedAt           string                       `json:"generated_at,omitempty"`
+	ConfirmedFacts        []string                     `json:"confirmed_facts,omitempty"`
+	IntentRelevantRisks   []AdaptationBriefingRisk     `json:"intent_relevant_risks,omitempty"`
+	AdaptationSuggestions []string                     `json:"adaptation_suggestions,omitempty"`
+	DecisionQuestions     []AdaptationBriefingDecision `json:"decision_questions,omitempty"`
+}
+
+type AdaptationBriefingRisk struct {
+	ID         string   `json:"id,omitempty"`
+	Chapters   []int    `json:"chapters,omitempty"`
+	Characters []string `json:"characters,omitempty"`
+	Risk       string   `json:"risk"`
+	Evidence   string   `json:"evidence,omitempty"`
+	Severity   string   `json:"severity,omitempty"`
+	Suggestion string   `json:"suggestion,omitempty"`
+}
+
+type AdaptationBriefingDecision struct {
+	ID                  string                     `json:"id"`
+	Question            string                     `json:"question"`
+	Reason              string                     `json:"reason,omitempty"`
+	Chapters            []int                      `json:"chapters,omitempty"`
+	Evidence            string                     `json:"evidence,omitempty"`
+	Impact              string                     `json:"impact,omitempty"`
+	Required            bool                       `json:"required"`
+	Options             []AdaptationDecisionOption `json:"options"`
+	RecommendedOptionID string                     `json:"recommended_option_id,omitempty"`
+	Status              string                     `json:"status,omitempty"`
+}
+
+type AdaptationDecisionOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+type AdaptationResolvedDecision struct {
+	DecisionID   string `json:"decision_id"`
+	OptionID     string `json:"option_id,omitempty"`
+	CustomAnswer string `json:"custom_answer,omitempty"`
+	ResolvedAt   string `json:"resolved_at,omitempty"`
+}
+
 // AdaptationPlan is the durable contract for rewriting the source as a new book.
 type AdaptationPlan struct {
 	Granularity       string                  `json:"granularity"`

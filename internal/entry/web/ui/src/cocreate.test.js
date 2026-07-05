@@ -93,6 +93,36 @@ describe('co-create UI state', () => {
     expect(state.draftPrompt).toContain('继续合并');
   });
 
+  it('surfaces pending adaptation briefing decisions before draft generation', () => {
+    const state = coCreateStateFromResponse({
+      cocreate: {
+        kind: 'adapt',
+        active: true,
+        can_start: false,
+        briefing: {
+          active: true,
+          pending_decision_count: 1,
+          total_decision_count: 1
+        },
+        pending_decisions: [
+          {
+            id: 'q1',
+            question: 'How should the side romance be handled?',
+            evidence: 'chapter 90 confession risk',
+            impact: 'changes relationship cleanup',
+            options: [{ id: 'a', label: 'Remove ambiguity' }]
+          }
+        ],
+        suggestions: []
+      }
+    });
+
+    expect(state.status).toBe('deciding');
+    expect(state.canStart).toBe(false);
+    expect(state.pendingDecisions).toHaveLength(1);
+    expect(state.briefing.pending_decision_count).toBe(1);
+  });
+
   it('preserves editable message metadata from backend response', () => {
     const state = coCreateStateFromResponse({
       cocreate: {

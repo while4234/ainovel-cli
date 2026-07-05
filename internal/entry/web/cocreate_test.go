@@ -1016,6 +1016,66 @@ func TestProjectAdaptCoCreateLocksSelectedModeOnCommit(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptCoCreateBeginWaitsForBriefingDecision(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Briefing")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
+	fake.adaptBriefing = testPendingAdaptBriefing()
+	fake.adaptCoCreateReply = webCoCreateReply("ready", "## Adapt brief\n- resolved", true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"strict single heroine, remove side romance"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var beginResponse struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&beginResponse); err != nil {
+		t.Fatalf("decode begin response: %v", err)
+	}
+	if fake.adaptBriefingCalls != 1 {
+		t.Fatalf("EnsureAdaptationCoCreateBriefing calls = %d, want 1", fake.adaptBriefingCalls)
+	}
+	if fake.adaptCoCreateCalls != 0 {
+		t.Fatalf("AdaptCoCreateStream calls before decision = %d, want 0", fake.adaptCoCreateCalls)
+	}
+	if beginResponse.CoCreate.CanStart || len(beginResponse.CoCreate.PendingDecisions) != 1 {
+		t.Fatalf("begin co-create state = %+v, want one pending decision and can_start=false", beginResponse.CoCreate)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/decision", bytes.NewBufferString(`{"decision_id":"q1","option_id":"a"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("decision status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.resolveAdaptDecisionCalls != 1 {
+		t.Fatalf("ResolveAdaptationCoCreateDecision calls = %d, want 1", fake.resolveAdaptDecisionCalls)
+	}
+	if fake.adaptCoCreateCalls != 1 {
+		t.Fatalf("AdaptCoCreateStream calls after decision = %d, want 1", fake.adaptCoCreateCalls)
+	}
+	var decisionResponse struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&decisionResponse); err != nil {
+		t.Fatalf("decode decision response: %v", err)
+	}
+	if len(decisionResponse.CoCreate.PendingDecisions) != 0 || !decisionResponse.CoCreate.CanStart {
+		t.Fatalf("decision co-create state = %+v, want no pending decisions and can_start=true", decisionResponse.CoCreate)
+	}
+}
+
 func TestProjectAdaptCoCreateCommitConsolidatesMultiTurnDraftBeforeProposal(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
@@ -1456,6 +1516,32 @@ func seedAnalyzedAdaptationForCoCreateTest(t *testing.T, manifest ProjectManifes
 	}
 	if err := st.Adaptation.SaveCoCreateDossier(dossier); err != nil {
 		t.Fatalf("SaveCoCreateDossier: %v", err)
+	}
+}
+
+func testPendingAdaptBriefing() *domain.AdaptationCoCreateBriefing {
+	return &domain.AdaptationCoCreateBriefing{
+		Version:           1,
+		PromptVersion:     adaptpkg.CoCreateBriefingPromptVersion,
+		TriggerReason:     "source_chapter_count>320",
+		IntentHash:        "intent",
+		ConfirmedFacts:    []string{"source couple milestone is unclear"},
+		ResolvedDecisions: nil,
+		Decisions: []domain.AdaptationBriefingDecision{
+			{
+				ID:       "q1",
+				Question: "How should the side romance be handled?",
+				Evidence: "chapter 90 shows a confession risk",
+				Impact:   "changes relationship cleanup rules for later arcs",
+				Required: true,
+				Status:   "pending",
+				Options: []domain.AdaptationDecisionOption{
+					{ID: "a", Label: "Remove ambiguity", Description: "Keep the side character as an ally only"},
+					{ID: "b", Label: "Keep as friendship", Description: "Rewrite intimacy into ordinary trust"},
+				},
+				RecommendedOptionID: "a",
+			},
+		},
 	}
 }
 

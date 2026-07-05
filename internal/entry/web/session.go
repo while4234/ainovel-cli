@@ -76,6 +76,8 @@ type projectHost interface {
 	CoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
 	StageCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
 	AdaptCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	EnsureAdaptationCoCreateBriefing(context.Context, string, domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error)
+	ResolveAdaptationCoCreateDecision(string, string, string) (*domain.AdaptationCoCreateBriefing, error)
 	PauseForCoCreate() bool
 	ResumeFromCoCreate(string) error
 	CancelCoCreate()
@@ -999,6 +1001,11 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 	}
 	s.cocreate = state
 	s.saveCoCreateCheckpoint()
+	if s.cocreate.hasPendingBriefingDecisions() {
+		api := s.cocreate.apiState()
+		s.appendCoCreateState(api)
+		return api, nil
+	}
 	return s.runCoCreateLocked(ctx)
 }
 
@@ -1011,6 +1018,9 @@ func (s *ProjectSession) SendCoCreate(ctx context.Context, text, source string) 
 
 	if s.cocreate == nil {
 		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	if s.cocreate.hasPendingBriefingDecisions() {
+		return s.cocreate.apiState(), fmt.Errorf("resolve adaptation briefing decisions before continuing co-create")
 	}
 	if err := s.cocreate.appendUser(text, source); err != nil {
 		return webCoCreateState{}, err
@@ -1029,10 +1039,40 @@ func (s *ProjectSession) ReviseCoCreate(ctx context.Context, req webCoCreateRevi
 	if s.cocreate == nil {
 		return webCoCreateState{}, fmt.Errorf("co-create has not started")
 	}
+	if s.cocreate.hasPendingBriefingDecisions() {
+		return s.cocreate.apiState(), fmt.Errorf("resolve adaptation briefing decisions before revising co-create")
+	}
 	if err := s.cocreate.reviseUser(req.MessageID, req.Text); err != nil {
 		return webCoCreateState{}, err
 	}
 	s.saveCoCreateCheckpoint()
+	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) ResolveCoCreateDecision(ctx context.Context, req webCoCreateDecisionRequest) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	if s.cocreate.kind != webCoCreateKindAdapt {
+		return s.cocreate.apiState(), fmt.Errorf("co-create decisions are only supported for adaptation co-create")
+	}
+	briefing, err := s.host.ResolveAdaptationCoCreateDecision(req.DecisionID, req.OptionID, req.CustomAnswer)
+	if err != nil {
+		return s.cocreate.apiState(), err
+	}
+	s.cocreate.adaptationBriefing = briefing
+	s.saveCoCreateCheckpoint()
+	if s.cocreate.hasPendingBriefingDecisions() {
+		api := s.cocreate.apiState()
+		s.appendCoCreateState(api)
+		return api, nil
+	}
 	return s.runCoCreateLocked(ctx)
 }
 
@@ -1047,6 +1087,9 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 		return webCoCreateState{}, fmt.Errorf("co-create has not started")
 	}
 	state := s.cocreate
+	if state.hasPendingBriefingDecisions() {
+		return state.apiState(), fmt.Errorf("resolve adaptation briefing decisions before starting adaptation")
+	}
 	needsRepair, repairBaseDraft := state.currentDraftNeedsRepair()
 	needsFinalConsolidation := false
 	if state.session == nil || !state.session.DraftFresh() {

@@ -70,6 +70,7 @@ import {
   reviseAdaptationVolumeReview,
   reviseChapter,
   reviseCoCreate,
+  resolveCoCreateDecision,
   resumeProject,
   runProjectDiagnostic,
   saveNovelToLibrary,
@@ -1902,6 +1903,23 @@ export default function App() {
     }
   };
 
+  const resolveCoCreateDecisionFlow = async (decisionId, optionId = '', customAnswer = '') => {
+    if (!activeProject?.id || !decisionId || busy) {
+      return;
+    }
+    setBusy(true);
+    setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
+    try {
+      const data = await resolveCoCreateDecision(activeProject.id, decisionId, optionId, customAnswer);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      setCoCreate((previous) => coCreateStateFromError(err, previous));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const commitCoCreateFlow = async () => {
     if (!activeProject?.id || !coCreate.draftPrompt.trim()) {
       return;
@@ -2630,9 +2648,10 @@ export default function App() {
               onBegin={beginCoCreateFlow}
               onConfirmIntake={() => beginCoCreateFlow('normal', { confirmIntake: true })}
               onSubmit={submitCoCreate}
-              onSuggestion={submitCoCreateSuggestion}
-              onRevise={reviseCoCreateMessage}
-              onCommit={commitCoCreateFlow}
+                  onSuggestion={submitCoCreateSuggestion}
+                  onRevise={reviseCoCreateMessage}
+                  onResolveDecision={resolveCoCreateDecisionFlow}
+                  onCommit={commitCoCreateFlow}
               onCancel={cancelCoCreateFlow}
               workspaceTranscript={showCoCreateWorkspace}
             />
@@ -3090,6 +3109,7 @@ function CoCreatePanel({
   onSubmit,
   onSuggestion,
   onRevise,
+  onResolveDecision = () => {},
   onCommit,
   onCancel,
   workspaceTranscript = false
@@ -3109,7 +3129,8 @@ function CoCreatePanel({
       adaptation.sourceFile?.relative_path &&
       adaptation.analysisStatus === 'done'
   );
-  const canSend = Boolean(activeProject && !busy && hasBackendSession && coCreate.input.trim());
+  const hasPendingDecisions = Array.isArray(coCreate.pendingDecisions) && coCreate.pendingDecisions.length > 0;
+  const canSend = Boolean(activeProject && !busy && hasBackendSession && coCreate.input.trim() && !hasPendingDecisions);
   const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
   const hasDraftPrompt = Boolean(coCreate.draftPrompt.trim());
   const canCommit = Boolean(activeProject && !busy && hasDraftPrompt && coCreate.canStart);
@@ -3171,6 +3192,9 @@ function CoCreatePanel({
         </div>
         {coCreate.modeLocked ? (
           <div className="success-note">已锁定 {coCreate.adaptMode} / {coCreate.rewritePolicy}</div>
+        ) : null}
+        {hasPendingDecisions ? (
+          <CoCreateDecisionQueue decisions={coCreate.pendingDecisions} busy={busy} onResolve={onResolveDecision} />
         ) : null}
       </section>
 
@@ -3264,11 +3288,11 @@ function CoCreatePanel({
         <form className="cocreate-form" onSubmit={handleCoCreateFormSubmit}>
         <textarea
           aria-label="共创输入"
-          disabled={!activeProject || busy || showIntakeControls}
+          disabled={!activeProject || busy || showIntakeControls || hasPendingDecisions}
           placeholder={
             showIntakeControls
               ? '先确认篇幅和结构...'
-              : hasBackendSession ? '继续补充你的想法...' : '输入你的核心想法，或先进入 Stage/Adapt 共创'
+              : hasPendingDecisions ? '先处理上方的共创前置问题...' : hasBackendSession ? '继续补充你的想法...' : '输入你的核心想法，或先进入 Stage/Adapt 共创'
           }
           value={coCreate.input}
           onChange={(event) => setCoCreate((previous) => appendCoCreateInput(previous, event.target.value))}
@@ -3381,6 +3405,66 @@ function CoCreatePanel({
         </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+function CoCreateDecisionQueue({ decisions = [], busy, onResolve }) {
+  const [customAnswers, setCustomAnswers] = useState({});
+  if (!Array.isArray(decisions) || decisions.length === 0) {
+    return null;
+  }
+  return (
+    <div className="cocreate-decisions">
+      <div className="decision-queue-head">
+        <strong>共创前置决策</strong>
+        <span>{decisions.length} 项待确认</span>
+      </div>
+      {decisions.map((decision) => {
+        const id = String(decision.id || '').trim();
+        const customValue = customAnswers[id] || '';
+        return (
+          <article className="decision-card" key={id || decision.question}>
+            <div className="decision-card-head">
+              <strong>{decision.question}</strong>
+              {decision.recommended_option_id ? <span>推荐 {decision.recommended_option_id}</span> : null}
+            </div>
+            {decision.evidence ? <p className="decision-evidence">{decision.evidence}</p> : null}
+            {decision.impact ? <p className="decision-impact">{decision.impact}</p> : null}
+            <div className="decision-options">
+              {(decision.options || []).map((option) => (
+                <button
+                  className={`tool-button ${option.id === decision.recommended_option_id ? 'accent' : ''}`}
+                  disabled={busy || !id}
+                  key={option.id}
+                  onClick={() => onResolve(id, option.id, '')}
+                  type="button"
+                >
+                  <Check size={15} />
+                  <span>{option.label}</span>
+                </button>
+              ))}
+            </div>
+            <div className="decision-custom">
+              <textarea
+                disabled={busy || !id}
+                placeholder="输入自定义处理方式..."
+                value={customValue}
+                onChange={(event) => setCustomAnswers((previous) => ({ ...previous, [id]: event.target.value }))}
+              />
+              <button
+                className="tool-button"
+                disabled={busy || !id || !customValue.trim()}
+                onClick={() => onResolve(id, '', customValue.trim())}
+                type="button"
+              >
+                <Send size={15} />
+                提交
+              </button>
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -5354,6 +5438,9 @@ function coCreateStatusText(status, ready, hasDraftPrompt = false) {
   if (status === 'waiting') {
     return '待补充';
   }
+  if (status === 'deciding') {
+    return '待决策';
+  }
   if (status === 'error') {
     return '出错';
   }
@@ -5372,6 +5459,10 @@ function coCreateStatusDetail(coCreate) {
   }
   if (coCreate.canStart) {
     return 'draft prompt 已就绪';
+  }
+  if (coCreate.status === 'deciding') {
+    const count = coCreate.briefing?.pending_decision_count || coCreate.pendingDecisions.length || 0;
+    return count > 0 ? `还有 ${count} 个共创前置问题待确认` : '等待确认共创前置问题';
   }
   if (coCreate.draftPrompt?.trim()) {
     return '已有 draft，但还需继续补充最新方向';

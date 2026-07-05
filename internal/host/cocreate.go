@@ -398,7 +398,42 @@ func sleepBeforeCoCreateRetry(ctx context.Context, delay time.Duration) error {
 }
 
 func adaptSystemPrompt(st *store.Store) string {
-	return adaptCoCreateSystemPrompt + "\n\n## 全书改编资料包\n\n" + adaptationDossierSnapshot(st)
+	if snapshot := adaptationBriefingSnapshot(st); strings.TrimSpace(snapshot) != "" {
+		return adaptCoCreateSystemPrompt + "\n\n## Co-create briefing\n\n" + snapshot
+	}
+	return adaptCoCreateSystemPrompt + "\n\n## All-book adaptation dossier\n\n" + adaptationDossierSnapshot(st)
+}
+
+func adaptationBriefingSnapshot(st *store.Store) string {
+	if st == nil || st.Adaptation == nil {
+		return ""
+	}
+	manifest, manifestErr := st.Adaptation.LoadSourceManifest()
+	dossier, dossierErr := st.Adaptation.LoadCoCreateDossier()
+	intent, intentErr := st.Adaptation.LoadCoCreateIntent()
+	briefing, briefingErr := st.Adaptation.LoadCoCreateBriefing()
+	if manifestErr != nil || dossierErr != nil || intentErr != nil || briefingErr != nil || manifest == nil || dossier == nil || intent == nil || briefing == nil {
+		return ""
+	}
+	if !store.CoCreateBriefingMatches(*briefing, *manifest, *dossier, adapt.CoCreateBriefingPromptVersion, adapt.CoCreateDossierPromptVersion, intent.IntentHash) {
+		return ""
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "- source_chapters: %d\n", manifest.ChapterCount)
+	fmt.Fprintf(&sb, "- dossier_batches: %d\n", len(dossier.Batches))
+	fmt.Fprintf(&sb, "- trigger: %s\n", briefing.TriggerReason)
+	if strings.TrimSpace(intent.RawRequest) != "" {
+		fmt.Fprintf(&sb, "- user_intent: %s\n", clipCoCreatePromptText(intent.RawRequest, 1200))
+	}
+	writeDossierStrings(&sb, "### Inferred Intent Goals", intent.Goals, 24)
+	writeDossierStrings(&sb, "### Relationship Rules", intent.RelationshipRules, 24)
+	writeDossierStrings(&sb, "### Preserve Rules", intent.PreserveRules, 24)
+	writeDossierStrings(&sb, "### Confirmed Source Facts", briefing.ConfirmedFacts, 80)
+	writeBriefingPromptRisks(&sb, "### Intent-Relevant Risks", briefing.IntentRelevantRisks, 80)
+	writeDossierStrings(&sb, "### Adaptation Suggestions", briefing.AdaptationSuggestions, 80)
+	writeBriefingPromptResolvedDecisions(&sb, briefing.Decisions, briefing.ResolvedDecisions)
+	return sb.String()
 }
 
 func adaptationDossierSnapshot(st *store.Store) string {
@@ -431,6 +466,75 @@ func adaptationDossierSnapshot(st *store.Store) string {
 	writeDossierSignals(&sb, "### 情侣/暧昧进展节点", dossier.CoupleMilestones, 80)
 	writeDossierStrings(&sb, "### 改编注意事项", dossier.AdaptationNotes, 80)
 	return sb.String()
+}
+
+func writeBriefingPromptRisks(sb *strings.Builder, title string, values []domain.AdaptationBriefingRisk, max int) {
+	if len(values) == 0 {
+		return
+	}
+	sb.WriteString("\n")
+	sb.WriteString(title)
+	sb.WriteString("\n")
+	for i, value := range values {
+		if max > 0 && i >= max {
+			fmt.Fprintf(sb, "- %d additional risks are stored in the briefing for later planning.\n", len(values)-max)
+			break
+		}
+		fmt.Fprintf(sb, "- %s%s: %s", dossierChapterLabel(value.Chapters), dossierCharactersLabel(value.Characters), value.Risk)
+		if strings.TrimSpace(value.Evidence) != "" {
+			fmt.Fprintf(sb, " (evidence: %s)", value.Evidence)
+		}
+		if strings.TrimSpace(value.Suggestion) != "" {
+			fmt.Fprintf(sb, " (suggestion: %s)", value.Suggestion)
+		}
+		sb.WriteString("\n")
+	}
+}
+
+func writeBriefingPromptResolvedDecisions(sb *strings.Builder, decisions []domain.AdaptationBriefingDecision, resolved []domain.AdaptationResolvedDecision) {
+	if len(resolved) == 0 {
+		return
+	}
+	byID := make(map[string]domain.AdaptationBriefingDecision, len(decisions))
+	for _, decision := range decisions {
+		if id := strings.TrimSpace(decision.ID); id != "" {
+			byID[id] = decision
+		}
+	}
+	sb.WriteString("\n### Resolved User Decisions\n")
+	for _, item := range resolved {
+		decision := byID[strings.TrimSpace(item.DecisionID)]
+		label := strings.TrimSpace(item.CustomAnswer)
+		if label == "" {
+			label = decisionOptionLabel(decision.Options, item.OptionID)
+		}
+		fmt.Fprintf(sb, "- %s => %s\n", strings.TrimSpace(decision.Question), label)
+	}
+}
+
+func decisionOptionLabel(options []domain.AdaptationDecisionOption, optionID string) string {
+	optionID = strings.TrimSpace(optionID)
+	for _, option := range options {
+		if strings.TrimSpace(option.ID) == optionID {
+			if strings.TrimSpace(option.Description) != "" {
+				return strings.TrimSpace(option.Label) + ": " + strings.TrimSpace(option.Description)
+			}
+			return strings.TrimSpace(option.Label)
+		}
+	}
+	return optionID
+}
+
+func clipCoCreatePromptText(text string, maxRunes int) string {
+	text = strings.TrimSpace(text)
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func writeDossierStrings(sb *strings.Builder, title string, values []string, max int) {

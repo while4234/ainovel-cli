@@ -349,6 +349,17 @@ export function reviseCoCreate(projectId, messageId, text) {
   });
 }
 
+export function resolveCoCreateDecision(projectId, decisionId, optionId = '', customAnswer = '') {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/decision`, {
+    method: 'POST',
+    body: JSON.stringify({
+      decision_id: decisionId,
+      option_id: optionId,
+      custom_answer: customAnswer
+    })
+  });
+}
+
 export function commitCoCreate(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/commit`, {
     method: 'POST',

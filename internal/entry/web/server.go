@@ -450,6 +450,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectCoCreateSend(w, r, id)
 	case "cocreate/revise":
 		s.handleProjectCoCreateRevise(w, r, id)
+	case "cocreate/decision":
+		s.handleProjectCoCreateDecision(w, r, id)
 	case "cocreate/commit":
 		s.handleProjectCoCreateCommit(w, r, id)
 	case "cocreate/cancel":

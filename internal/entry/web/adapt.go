@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -205,6 +206,10 @@ func (s *Server) handleProjectAdaptProposal(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	options.SourcePath = sourcePath
+	if err := ensureAdaptationCoCreateBriefingReady(r.Context(), session, sourcePath, options); err != nil {
+		writeAdaptationStartError(w, err)
+		return
+	}
 	proposal, err := session.BuildAdaptationProposalContext(r.Context(), options)
 	if err != nil {
 		writeAdaptationStartError(w, err)
@@ -242,6 +247,10 @@ func (s *Server) handleProjectAdaptProposalVolumes(w http.ResponseWriter, r *htt
 		return
 	}
 	options.SourcePath = sourcePath
+	if err := ensureAdaptationCoCreateBriefingReady(r.Context(), session, sourcePath, options); err != nil {
+		writeAdaptationStartError(w, err)
+		return
+	}
 	result, err := session.BuildAdaptationProposalVolumesContext(r.Context(), options)
 	if err != nil {
 		writeAdaptationStartError(w, err)
@@ -438,6 +447,21 @@ func decodeAdaptationProposalRequest(r *http.Request) (adapt.ProposalOptions, st
 		RewritePolicy: rewritePolicy,
 		WordTolerance: adapt.DefaultWordTolerance,
 	}, mode, rewritePolicy, nil
+}
+
+func ensureAdaptationCoCreateBriefingReady(ctx context.Context, session *ProjectSession, sourcePath string, options adapt.ProposalOptions) error {
+	if session == nil {
+		return fmt.Errorf("project session is required")
+	}
+	intent := adapt.BuildCoCreateIntent(options.Brief, options.Granularity, options.RewritePolicy, options.WordTolerance)
+	briefing, err := session.host.EnsureAdaptationCoCreateBriefing(ctx, sourcePath, intent)
+	if err != nil {
+		return fmt.Errorf("prepare adaptation co-create briefing: %w", err)
+	}
+	if pending := adapt.PendingCoCreateBriefingDecisions(briefing); len(pending) > 0 {
+		return fmt.Errorf("adaptation co-create briefing has %d pending decisions; resolve them in Adapt co-create first", len(pending))
+	}
+	return nil
 }
 
 func adaptationSourcePathFromRequest(r *http.Request, manifest ProjectManifest) (string, error) {

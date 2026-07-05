@@ -29,6 +29,21 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `feat: add adaptation cocreate briefing`:
+  Adapt co-create now builds an intent-driven pre-draft briefing for oversized
+  source novels, using persisted all-book dossier batches as input instead of
+  sending the whole dossier into one draft call. The briefing is keyed by source
+  signature, dossier prompt version, briefing prompt version, and user intent
+  hash; pending required decisions block draft generation until the user answers
+  them one at a time. Web and TUI start/proposal paths share the readiness guard,
+  Web exposes a compact decision queue, and adapt prompts prefer the resolved
+  briefing snapshot before falling back to the all-book dossier. Validation
+  passed for Web UI tests/build, focused Go tests, full `go test ./internal/...`,
+  and `git diff --check` with CRLF warnings only. Local Web was rebuilt and
+  restarted on `http://127.0.0.1:9898` with runtime root
+  `C:\Users\RondleLiu\.ainovel\novels-preview` as PID `59188`; `/`,
+  `/api/runtime`, and `/api/models` returned HTTP 200.
+- Latest source change: current local commit
   `feat: add adaptation cocreate dossier`:
   Adaptation source analysis now generates a resumable all-book co-create
   dossier from per-chapter source reports after source foundation, replacing

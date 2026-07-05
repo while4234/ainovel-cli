@@ -21,7 +21,10 @@ export function createCoCreateState() {
     error: '',
     adaptMode: '',
     rewritePolicy: '',
-    modeLocked: false
+    modeLocked: false,
+    briefing: null,
+    pendingDecisions: [],
+    blockedReason: ''
   };
 }
 
@@ -62,6 +65,7 @@ export function coCreateStateFromBackend(data, previous = createCoCreateState(),
     suggestions: data.suggestions,
     streamReply
   });
+  const pendingDecisions = Array.isArray(data.pending_decisions) ? data.pending_decisions : [];
   const status = options.status || coCreateStatusFromBackend(data, streamThinking, streamReply, canStart);
   return {
     ...previous,
@@ -85,6 +89,9 @@ export function coCreateStateFromBackend(data, previous = createCoCreateState(),
     adaptMode: data.adapt_mode || '',
     rewritePolicy: data.rewrite_policy || '',
     modeLocked: Boolean(data.mode_locked),
+    briefing: data.briefing || null,
+    pendingDecisions,
+    blockedReason: data.blocked_reason || '',
     input: options.preserveInput ? previous.input : '',
     inputSource: options.preserveInput ? previous.inputSource || '' : ''
   };
@@ -103,6 +110,9 @@ function coCreateStatusFromBackend(data, streamThinking, streamReply, canStart) 
   }
   if (canStart) {
     return 'ready';
+  }
+  if (Array.isArray(data.pending_decisions) && data.pending_decisions.length > 0) {
+    return 'deciding';
   }
   if (streamThinking || streamReply) {
     return 'running';

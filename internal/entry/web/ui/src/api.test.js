@@ -25,6 +25,7 @@ import {
   reviseAdaptationVolumeReview,
   reviseChapter,
   reviseCoCreate,
+  resolveCoCreateDecision,
   sendCoCreate,
   setGlobalCoCreateTimeout,
   setProjectCoCreateTimeout,
@@ -136,6 +137,7 @@ describe('web API helpers', () => {
 
     await sendCoCreate('project-1', 'Use the heroine arc', 'suggestion');
     await reviseCoCreate('project-1', 'm3', 'Keep a slower burn');
+    await resolveCoCreateDecision('project-1', 'q1', 'a', '');
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       text: 'Use the heroine arc',
@@ -147,6 +149,12 @@ describe('web API helpers', () => {
       text: 'Keep a slower burn'
     });
     expect(fetchMock.mock.calls[1][0]).toBe('/api/projects/project-1/cocreate/revise');
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      decision_id: 'q1',
+      option_id: 'a',
+      custom_answer: ''
+    });
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/projects/project-1/cocreate/decision');
   });
 
   it('sends completed chapter revision payloads', async () => {

@@ -2561,6 +2561,21 @@ func (h *Host) AdaptCoCreateStream(ctx context.Context, history []CoCreateMessag
 	return coCreateStreamWithMaxTokens(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), adaptSystemPrompt(h.store), history, adaptCoCreateMaxTokens, onProgress)
 }
 
+func (h *Host) EnsureAdaptationCoCreateBriefing(ctx context.Context, sourcePath string, intent domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {
+	if _, _, err := adapt.ValidatePreparedSource(h.store, sourcePath); err != nil {
+		return nil, err
+	}
+	deps := adapt.Deps{
+		Store: h.store,
+		LLM:   h.models.ForRole("architect"),
+	}
+	return adapt.EnsureCoCreateBriefing(ctx, deps, intent, nil)
+}
+
+func (h *Host) ResolveAdaptationCoCreateDecision(decisionID, optionID, customAnswer string) (*domain.AdaptationCoCreateBriefing, error) {
+	return h.store.Adaptation.ResolveCoCreateBriefingDecision(decisionID, optionID, customAnswer)
+}
+
 // stagePlanPrefix 把共创产出的"后续方向 brief"包装成一条阶段规划干预，交 Coordinator 裁定。
 // 只贴 [阶段规划] 事实标记 + 中性陈述，不写死"怎么落地"——具体路由（compass / architect /
 // save_user_rules）交给 coordinator.md 的「阶段规划」判据，避免与 prompt 形成第二真相源、

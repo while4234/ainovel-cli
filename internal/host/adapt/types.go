@@ -14,6 +14,7 @@ const (
 	StageFoundation Stage = "foundation"
 	StageChapter    Stage = "chapter"
 	StageDossier    Stage = "dossier"
+	StageBriefing   Stage = "briefing"
 	StagePlan       Stage = "plan"
 	StagePaused     Stage = "paused"
 	StageDone       Stage = "done"

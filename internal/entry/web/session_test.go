@@ -1013,6 +1013,7 @@ type fakeProjectHost struct {
 	importNovelErr             error
 	adaptAnalyzeErr            error
 	adaptProposalErr           error
+	adaptBriefingErr           error
 	adaptConfirmErr            error
 	adaptStartErr              error
 	exportErr                  error
@@ -1038,6 +1039,8 @@ type fakeProjectHost struct {
 	importNovelCalls            int
 	adaptAnalyzeCalls           int
 	adaptProposalCalls          int
+	adaptBriefingCalls          int
+	resolveAdaptDecisionCalls   int
 	adaptConfirmCalls           int
 	adaptStartCalls             int
 	exportCalls                 int
@@ -1065,6 +1068,7 @@ type fakeProjectHost struct {
 	adaptProposalOptions        adapt.ProposalOptions
 	adaptRevisionOptions        adapt.ProposalRevisionOptions
 	adaptProposal               *domain.AdaptationPlan
+	adaptBriefing               *domain.AdaptationCoCreateBriefing
 	adaptRevisionProposal       *domain.AdaptationPlan
 	adaptConfirmedPlan          *domain.AdaptationPlan
 	adaptOptions                adapt.ProposalOptions
@@ -1289,6 +1293,44 @@ func (f *fakeProjectHost) AdaptCoCreateStream(_ context.Context, history []host.
 	f.mu.Unlock()
 	emitCoCreateProgress(progress, onProgress)
 	return reply, err
+}
+
+func (f *fakeProjectHost) EnsureAdaptationCoCreateBriefing(_ context.Context, _ string, _ domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adaptBriefingCalls++
+	return f.adaptBriefing, f.adaptBriefingErr
+}
+
+func (f *fakeProjectHost) ResolveAdaptationCoCreateDecision(decisionID, optionID, customAnswer string) (*domain.AdaptationCoCreateBriefing, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resolveAdaptDecisionCalls++
+	if f.adaptBriefing == nil {
+		return nil, fmt.Errorf("co-create briefing is required")
+	}
+	resolved := domain.AdaptationResolvedDecision{
+		DecisionID:   strings.TrimSpace(decisionID),
+		OptionID:     strings.TrimSpace(optionID),
+		CustomAnswer: strings.TrimSpace(customAnswer),
+	}
+	replaced := false
+	for i := range f.adaptBriefing.ResolvedDecisions {
+		if f.adaptBriefing.ResolvedDecisions[i].DecisionID == resolved.DecisionID {
+			f.adaptBriefing.ResolvedDecisions[i] = resolved
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		f.adaptBriefing.ResolvedDecisions = append(f.adaptBriefing.ResolvedDecisions, resolved)
+	}
+	for i := range f.adaptBriefing.Decisions {
+		if f.adaptBriefing.Decisions[i].ID == resolved.DecisionID {
+			f.adaptBriefing.Decisions[i].Status = "resolved"
+		}
+	}
+	return f.adaptBriefing, nil
 }
 
 func emitCoCreateProgress(progress []coCreateProgressStep, onProgress func(kind, text string)) {

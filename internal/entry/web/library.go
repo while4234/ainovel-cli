@@ -830,8 +830,32 @@ func copyPreparedAdaptationFiles(sourceRoot, targetAdaptationRoot string) error 
 			return err
 		}
 	}
+	for _, file := range []string{"cocreate_intent.json", "cocreate_briefing.json"} {
+		source := filepath.Join(sourceAdaptationRoot, file)
+		if _, err := os.Stat(source); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if err := copyFileOverwrite(source, filepath.Join(targetAdaptationRoot, file)); err != nil {
+			return err
+		}
+	}
 	for _, dir := range []string{"source_chapters", "source_reports", "cocreate_dossier_batches"} {
 		if err := copyDir(filepath.Join(sourceAdaptationRoot, dir), filepath.Join(targetAdaptationRoot, dir)); err != nil {
+			return err
+		}
+	}
+	for _, dir := range []string{"cocreate_briefing_batches"} {
+		source := filepath.Join(sourceAdaptationRoot, dir)
+		if _, err := os.Stat(source); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if err := copyDir(source, filepath.Join(targetAdaptationRoot, dir)); err != nil {
 			return err
 		}
 	}

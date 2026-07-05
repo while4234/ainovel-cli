@@ -1175,6 +1175,80 @@ h2 {
   padding: 0 8px;
 }
 
+.cocreate-decisions {
+  display: grid;
+  gap: 10px;
+}
+
+.decision-queue-head,
+.decision-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.decision-queue-head span,
+.decision-card-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.decision-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+}
+
+.decision-card strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.decision-evidence,
+.decision-impact {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.decision-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.decision-options .tool-button {
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.decision-options .tool-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.decision-custom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.decision-custom textarea {
+  min-height: 38px;
+  max-height: 120px;
+  resize: vertical;
+}
+
 .cocreate-dialog {
   display: flex;
   min-height: 280px;
