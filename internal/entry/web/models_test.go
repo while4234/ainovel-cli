@@ -333,6 +333,118 @@ func TestGlobalModelEditRenamesProviderAndPreservesBlankAPIKey(t *testing.T) {
 	}
 }
 
+func TestGlobalModelEditRefreshesProjectProviderReferences(t *testing.T) {
+	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
+		return nil
+	})
+	t.Cleanup(restore)
+
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
+	cfg.Providers["custom-openai"] = bootstrap.ProviderConfig{
+		Label:  "Old Label",
+		Type:   "openai",
+		API:    "chat",
+		APIKey: "sk-secret",
+		Models: []string{"old-model", "new-model"},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	closedProject, err := server.store.CreateProject("Closed Project")
+	if err != nil {
+		t.Fatalf("CreateProject closed: %v", err)
+	}
+	writeProjectModelOverlay(t, closedProject, bootstrap.Config{
+		Provider:  "custom-openai",
+		ModelName: "old-model",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"custom-openai": {Label: "Stale Label", Models: []string{"old-model"}},
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"writer": {Provider: "custom-openai", Model: "old-model"},
+		},
+		ModelAutoSwitch: bootstrap.ModelAutoSwitchConfig{
+			FallbackBackends: []string{"custom-openai"},
+		},
+	})
+
+	activeProject, err := server.store.CreateProject("Active Project")
+	if err != nil {
+		t.Fatalf("CreateProject active: %v", err)
+	}
+	writeProjectModelOverlay(t, activeProject, bootstrap.Config{
+		Provider:  "custom-openai",
+		ModelName: "old-model",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"custom-openai": {Label: "Stale Label", Models: []string{"old-model"}},
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"editor": {Provider: "custom-openai", Model: "old-model"},
+		},
+	})
+	activeSession, _, err := server.sessions.Open(activeProject.ID)
+	if err != nil {
+		t.Fatalf("Open active session: %v", err)
+	}
+	if route := findModelRoute(activeSession.ModelConfig().Roles, "default"); route.Provider != "custom-openai" {
+		t.Fatalf("precondition active default route = %+v", route)
+	}
+
+	var edited struct {
+		Models apiModelConfig `json:"models"`
+	}
+	body := `{"role":"default","original_provider":"custom-openai","provider":"fixed-openai","model":"new-model","label":"Fixed Label","type":"openai","api":"chat"}`
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", body, &edited)
+	if route := findModelRoute(edited.Models.Roles, "default"); route.Provider != "fixed-openai" || route.Model != "new-model" {
+		t.Fatalf("global default route = %+v", route)
+	}
+
+	closedOverlay := readProjectOverlay(t, closedProject)
+	if _, ok := closedOverlay.Providers["custom-openai"]; ok {
+		t.Fatalf("closed overlay still has old provider: %+v", closedOverlay.Providers)
+	}
+	if closedOverlay.Provider != "fixed-openai" || closedOverlay.ModelName != "old-model" {
+		t.Fatalf("closed overlay default = %s/%s", closedOverlay.Provider, closedOverlay.ModelName)
+	}
+	if rc := closedOverlay.Roles["writer"]; rc.Provider != "fixed-openai" || rc.Model != "old-model" {
+		t.Fatalf("closed writer route = %+v", rc)
+	}
+	if provider := closedOverlay.ModelAutoSwitch.FallbackBackends[0]; provider != "fixed-openai" {
+		t.Fatalf("closed fallback provider = %q", provider)
+	}
+	if pc := closedOverlay.Providers["fixed-openai"]; pc.Label != "Fixed Label" || pc.Type != "" || pc.APIKey != "" || !containsString(pc.Models, "old-model") {
+		t.Fatalf("closed inherited provider metadata = %+v", pc)
+	}
+
+	activeModels := activeSession.ModelConfig()
+	if route := findModelRoute(activeModels.Roles, "default"); route.Provider != "fixed-openai" || route.Model != "old-model" {
+		t.Fatalf("active default route = %+v", route)
+	}
+	if route := findModelRoute(activeModels.Roles, "editor"); route.Provider != "fixed-openai" || route.Model != "old-model" {
+		t.Fatalf("active editor route = %+v", route)
+	}
+	activeProvider := findModelProvider(activeModels.Providers, "fixed-openai")
+	if activeProvider.Name == "" || activeProvider.Label != "Fixed Label" {
+		t.Fatalf("active provider = %+v", activeProvider)
+	}
+
+	var reopened struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodGet, "/api/projects/"+closedProject.ID+"/models", "", &reopened)
+	if modelConfigHasProvider(reopened.Models, "custom-openai", "old-model") {
+		t.Fatalf("reopened project still exposes old provider: %+v", reopened.Models.Providers)
+	}
+	reopenedProvider := findModelProvider(reopened.Models.Providers, "fixed-openai")
+	if reopenedProvider.Name == "" || reopenedProvider.Label != "Fixed Label" {
+		t.Fatalf("reopened provider = %+v", reopenedProvider)
+	}
+	if route := findModelRoute(reopened.Models.Roles, "default"); route.Provider != "fixed-openai" {
+		t.Fatalf("reopened default route = %+v", route)
+	}
+}
+
 func TestGlobalModelEditProbeFailureDoesNotPersist(t *testing.T) {
 	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
 		return errors.New("probe rejected")
@@ -360,6 +472,13 @@ func TestGlobalModelEditProbeFailureDoesNotPersist(t *testing.T) {
 	}
 	if server.currentConfig().Providers["custom-openai"].APIKey != "sk-secret" {
 		t.Fatalf("original provider changed: %+v", server.currentConfig().Providers["custom-openai"])
+	}
+}
+
+func writeProjectModelOverlay(t *testing.T, manifest ProjectManifest, cfg bootstrap.Config) {
+	t.Helper()
+	if err := bootstrap.SaveConfig(ProjectConfigPath(manifest), cfg); err != nil {
+		t.Fatalf("write project overlay: %v", err)
 	}
 }
 

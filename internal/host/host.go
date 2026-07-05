@@ -1445,6 +1445,92 @@ func (h *Host) ConfigureProviderModel(ctx context.Context, update ProviderModelU
 	return nil
 }
 
+// SyncInheritedProviderFromGlobal refreshes an already-open project host after
+// the web global model registry edits or renames a provider. Project-owned
+// providers keep their local credentials/config; inherited provider references
+// and safe overlay metadata follow the global provider key.
+func (h *Host) SyncInheritedProviderFromGlobal(globalCfg bootstrap.Config, originalProvider, provider string) error {
+	originalProvider = strings.TrimSpace(originalProvider)
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return fmt.Errorf("provider is required")
+	}
+	if originalProvider == "" {
+		originalProvider = provider
+	}
+	pc, ok := globalCfg.Providers[provider]
+	if !ok {
+		return fmt.Errorf("provider %q is not configured", provider)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	candidate := cloneHostRuntimeConfig(h.cfg)
+	changed := false
+	if originalProvider != provider {
+		changed = renameProviderKeyAndReferencesInConfig(&candidate, originalProvider, provider)
+		if candidate.PersistProviders != nil {
+			if owned, ok := candidate.PersistProviders[originalProvider]; ok {
+				delete(candidate.PersistProviders, originalProvider)
+				candidate.PersistProviders[provider] = owned
+				changed = true
+			}
+		}
+	}
+	if candidate.PersistProviders[provider] {
+		projectProvider := candidate.Providers[provider]
+		if projectProvider.Label != pc.Label {
+			projectProvider.Label = pc.Label
+			candidate.Providers[provider] = projectProvider
+			changed = true
+		}
+	} else {
+		if candidate.Providers == nil {
+			candidate.Providers = make(map[string]bootstrap.ProviderConfig)
+		}
+		if !reflect.DeepEqual(candidate.Providers[provider], pc) {
+			candidate.Providers[provider] = cloneProviderConfig(pc)
+			changed = true
+		}
+	}
+	if candidate.PersistProjectConfig != nil {
+		overlay := cloneProjectConfig(*candidate.PersistProjectConfig)
+		overlayChanged := false
+		if originalProvider != provider {
+			overlayChanged = renameProviderKeyAndReferencesInConfig(&overlay, originalProvider, provider)
+		}
+		if clearProjectProviderLabel(&overlay, provider) {
+			overlayChanged = true
+		}
+		if overlayChanged {
+			candidate.PersistProjectConfig = &overlay
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := candidate.ValidateBase(); err != nil {
+		return err
+	}
+	if err := h.models.ApplyConfig(candidate); err != nil {
+		return err
+	}
+	h.cfg = candidate
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("save refreshed provider references failed", "module", "host", "err", err)
+	}
+	h.applyThinkingLocked("default")
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("model config refreshed: %s", provider),
+		Level:    "info",
+	})
+	return nil
+}
+
 func ConfigureProviderModelInConfig(ctx context.Context, cfg bootstrap.Config, update ProviderModelUpdate) (bootstrap.Config, error) {
 	update.Role = strings.ToLower(strings.TrimSpace(update.Role))
 	if update.Role == "" {
@@ -1975,6 +2061,88 @@ func renameProviderReferencesInConfig(cfg *bootstrap.Config, from, to string) {
 			cfg.ModelAutoSwitch.FallbackBackends[i] = to
 		}
 	}
+}
+
+// RenameProviderInConfig returns a copy of cfg with provider map keys and all
+// provider references renamed. It is intentionally route-only: model choices
+// remain project-specific unless the caller separately changes them.
+func RenameProviderInConfig(cfg bootstrap.Config, from, to string) (bootstrap.Config, bool) {
+	candidate := cloneProjectConfig(cfg)
+	return candidate, renameProviderKeyAndReferencesInConfig(&candidate, from, to)
+}
+
+func renameProviderKeyAndReferencesInConfig(cfg *bootstrap.Config, from, to string) bool {
+	from = strings.TrimSpace(from)
+	to = strings.TrimSpace(to)
+	if from == "" || to == "" || from == to {
+		return false
+	}
+	changed := false
+	if cfg.Provider == from {
+		cfg.Provider = to
+		changed = true
+	}
+	if cfg.Roles != nil {
+		for role, rc := range cfg.Roles {
+			roleChanged := false
+			if rc.Provider == from {
+				rc.Provider = to
+				roleChanged = true
+			}
+			for i := range rc.Fallbacks {
+				if rc.Fallbacks[i].Provider == from {
+					rc.Fallbacks[i].Provider = to
+					roleChanged = true
+				}
+			}
+			if roleChanged {
+				cfg.Roles[role] = rc
+				changed = true
+			}
+		}
+	}
+	for i, value := range cfg.ModelAutoSwitch.FallbackBackends {
+		if strings.TrimSpace(value) == from {
+			cfg.ModelAutoSwitch.FallbackBackends[i] = to
+			changed = true
+		}
+	}
+	if cfg.Providers != nil {
+		if pc, ok := cfg.Providers[from]; ok {
+			delete(cfg.Providers, from)
+			if existing, exists := cfg.Providers[to]; exists {
+				pc = mergeProviderConfigForRename(existing, pc)
+			}
+			cfg.Providers[to] = pc
+			changed = true
+		}
+	}
+	return changed
+}
+
+func mergeProviderConfigForRename(existing, incoming bootstrap.ProviderConfig) bootstrap.ProviderConfig {
+	out := existing
+	if !providerConfigHasPrivateConfig(existing) && providerConfigHasPrivateConfig(incoming) {
+		out = incoming
+	}
+	for _, model := range incoming.Models {
+		out.Models = appendUniqueString(out.Models, model)
+	}
+	return out
+}
+
+func clearProjectProviderLabel(cfg *bootstrap.Config, provider string) bool {
+	provider = strings.TrimSpace(provider)
+	if provider == "" || cfg.Providers == nil {
+		return false
+	}
+	pc, ok := cfg.Providers[provider]
+	if !ok || pc.Label == "" {
+		return false
+	}
+	pc.Label = ""
+	cfg.Providers[provider] = pc
+	return true
 }
 
 func setAllAgentModelRoutesInConfig(cfg *bootstrap.Config, provider, model string) {

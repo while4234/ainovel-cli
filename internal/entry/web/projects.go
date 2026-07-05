@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -430,6 +431,92 @@ func (s *ProjectStore) loadProjectConfig(manifest ProjectManifest) (bootstrap.Co
 		return bootstrap.Config{}, false, fmt.Errorf("load project config %s: %w", path, err)
 	}
 	return cfg, true, nil
+}
+
+func (s *ProjectStore) RefreshProjectProviderReferences(globalCfg bootstrap.Config, originalProvider, provider string) (int, error) {
+	originalProvider = strings.TrimSpace(originalProvider)
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return 0, fmt.Errorf("provider is required")
+	}
+	if originalProvider == "" {
+		originalProvider = provider
+	}
+	projects, err := s.ListProjects()
+	if err != nil {
+		return 0, err
+	}
+	updated := 0
+	for _, manifest := range projects {
+		cfg, found, err := s.loadProjectConfig(manifest)
+		if err != nil {
+			return updated, err
+		}
+		if !found {
+			continue
+		}
+		next, changed := refreshProjectProviderConfig(cfg, globalCfg, originalProvider, provider)
+		if !changed {
+			continue
+		}
+		if err := bootstrap.SaveConfig(ProjectConfigPath(manifest), next); err != nil {
+			return updated, err
+		}
+		updated++
+	}
+	return updated, nil
+}
+
+func refreshProjectProviderConfig(cfg bootstrap.Config, globalCfg bootstrap.Config, originalProvider, provider string) (bootstrap.Config, bool) {
+	originalProvider = strings.TrimSpace(originalProvider)
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return cfg, false
+	}
+	if originalProvider == "" {
+		originalProvider = provider
+	}
+	next := cloneWebConfig(cfg)
+	changed := false
+	if originalProvider != provider {
+		var renamed bool
+		next, renamed = host.RenameProviderInConfig(next, originalProvider, provider)
+		changed = changed || renamed
+	}
+	if refreshProjectProviderDisplayMetadata(&next, globalCfg, provider) {
+		changed = true
+	}
+	return next, changed
+}
+
+func refreshProjectProviderDisplayMetadata(cfg *bootstrap.Config, globalCfg bootstrap.Config, provider string) bool {
+	provider = strings.TrimSpace(provider)
+	if provider == "" || cfg.Providers == nil {
+		return false
+	}
+	pc, ok := cfg.Providers[provider]
+	if !ok {
+		return false
+	}
+	globalPC, hasGlobal := globalCfg.Providers[provider]
+	globalLabel := ""
+	if hasGlobal {
+		globalLabel = strings.TrimSpace(globalPC.Label)
+	}
+	if providerHasPrivateConfig(pc) {
+		if pc.Label == globalLabel {
+			return false
+		}
+		pc.Label = globalLabel
+		cfg.Providers[provider] = pc
+		return true
+	}
+	safe := bootstrap.ProviderConfig{Label: globalLabel, Models: append([]string(nil), pc.Models...)}
+	if reflect.DeepEqual(pc, safe) {
+		return false
+	}
+	cfg.Providers[provider] = safe
+	return true
 }
 
 func (s *ProjectStore) SaveProjectStyle(manifest ProjectManifest, style string) error {

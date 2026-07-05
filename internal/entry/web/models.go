@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -414,7 +415,8 @@ func (s *Server) addGlobalProviderModelWithProbe(ctx context.Context, role, prov
 }
 
 func (s *Server) configureGlobalProviderModel(ctx context.Context, req modelProviderRequest) (apiModelConfig, map[string]any, error) {
-	next, err := host.ConfigureProviderModelInConfig(ctx, s.currentConfig(), req.providerModelUpdate())
+	update := req.providerModelUpdate()
+	next, err := host.ConfigureProviderModelInConfig(ctx, s.currentConfig(), update)
 	if err != nil {
 		return apiModelConfig{}, nil, err
 	}
@@ -422,7 +424,32 @@ func (s *Server) configureGlobalProviderModel(ctx context.Context, req modelProv
 		return apiModelConfig{}, nil, err
 	}
 	s.setCurrentConfig(next)
+	s.refreshProjectsAfterGlobalProviderEdit(next, update.OriginalProvider, update.Provider)
 	return s.globalModelConfig(next), s.runtimePayload(next), nil
+}
+
+func (s *Server) refreshProjectsAfterGlobalProviderEdit(cfg bootstrap.Config, originalProvider, provider string) {
+	originalProvider = strings.TrimSpace(originalProvider)
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return
+	}
+	if originalProvider == "" {
+		originalProvider = provider
+	}
+	if s.store != nil {
+		updated, err := s.store.RefreshProjectProviderReferences(cfg, originalProvider, provider)
+		if err != nil {
+			slog.Warn("refresh project provider references failed", "module", "web", "provider", provider, "err", err)
+		} else if updated > 0 {
+			slog.Info("refreshed project provider references", "module", "web", "provider", provider, "projects", updated)
+		}
+	}
+	if s.sessions != nil {
+		if err := s.sessions.SyncInheritedProviderFromGlobal(cfg, originalProvider, provider); err != nil {
+			slog.Warn("refresh active project providers failed", "module", "web", "provider", provider, "err", err)
+		}
+	}
 }
 
 func globalModelRoleAllowed(role string) bool {

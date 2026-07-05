@@ -102,6 +102,7 @@ type projectHost interface {
 	SwitchModel(string, string, string) error
 	AddProviderModel(string, string, bootstrap.ProviderConfig, string) error
 	ConfigureProviderModel(context.Context, host.ProviderModelUpdate) error
+	SyncInheritedProviderFromGlobal(bootstrap.Config, string, string) error
 	TestProviderModel(context.Context, string, string, bootstrap.ProviderConfig, string) (host.ProviderModelTestResult, error)
 	TestConfiguredProviderModel(context.Context, host.ProviderModelUpdate) (host.ProviderModelTestResult, error)
 	DiscoverProviderModels(context.Context, string, bootstrap.ProviderConfig, string) (host.ProviderModelDiscoveryResult, error)
@@ -134,6 +135,24 @@ func (m *SessionManager) SetConfig(cfg bootstrap.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cfg = cloneWebConfig(cfg)
+}
+
+func (m *SessionManager) SyncInheritedProviderFromGlobal(cfg bootstrap.Config, originalProvider, provider string) error {
+	m.mu.Lock()
+	m.cfg = cloneWebConfig(cfg)
+	sessions := make([]*ProjectSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	m.mu.Unlock()
+
+	var errs []error
+	for _, session := range sessions {
+		if err := session.SyncInheritedProviderFromGlobal(cfg, originalProvider, provider); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (m *SessionManager) Open(id string) (*ProjectSession, ProjectManifest, error) {
@@ -404,6 +423,14 @@ func (s *ProjectSession) ConfigureProviderModel(ctx context.Context, req modelPr
 	}
 	s.AppendSnapshot()
 	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) SyncInheritedProviderFromGlobal(cfg bootstrap.Config, originalProvider, provider string) error {
+	if err := s.host.SyncInheritedProviderFromGlobal(cfg, originalProvider, provider); err != nil {
+		return err
+	}
+	s.AppendSnapshot()
+	return nil
 }
 
 func (s *ProjectSession) TestProviderModel(ctx context.Context, req modelProviderRequest) (host.ProviderModelTestResult, error) {

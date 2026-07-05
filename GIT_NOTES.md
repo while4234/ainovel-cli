@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source change: pending local changes
+  `fix: refresh project model provider renames`:
+  Web global model/provider edits now propagate the edited
+  `original_provider -> provider` ID change to closed project overlays and
+  active project sessions. Project configs rewrite default, role, fallback, and
+  provider-map references away from the old provider ID, refresh provider
+  display labels from the saved global config, and active hosts reapply the
+  updated model registry without requiring each project to be opened manually.
+  Validation passed for full `go test ./...`, full Web UI Vitest, Vite build,
+  current runtime project-config scan with zero unknown provider refs, and one
+  connectivity test per configured provider/model combo.
 - Latest source change: current local commit
   `fix: hydrate project event history on open`:
   Web project switching now hydrates the workbench from a JSON event-history

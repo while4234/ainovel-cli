@@ -1803,6 +1803,10 @@ func (f *fakeProjectHost) ConfigureProviderModel(_ context.Context, update host.
 	return f.addProviderErr
 }
 
+func (f *fakeProjectHost) SyncInheritedProviderFromGlobal(bootstrap.Config, string, string) error {
+	return nil
+}
+
 func (f *fakeProjectHost) TestProviderModel(_ context.Context, _ string, providerName string, _ bootstrap.ProviderConfig, model string) (host.ProviderModelTestResult, error) {
 	return host.ProviderModelTestResult{
 		Provider: providerName,
