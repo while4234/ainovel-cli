@@ -160,6 +160,16 @@ func mergeConfig(base, overlay Config) Config {
 	if overlay.Proxy != "" {
 		base.Proxy = overlay.Proxy
 	}
+	if overlay.ModelAutoSwitch.Enabled != nil {
+		enabled := *overlay.ModelAutoSwitch.Enabled
+		base.ModelAutoSwitch.Enabled = &enabled
+	}
+	if len(overlay.ModelAutoSwitch.FallbackBackends) > 0 {
+		base.ModelAutoSwitch.FallbackBackends = append([]string(nil), overlay.ModelAutoSwitch.FallbackBackends...)
+	}
+	if overlay.ModelAutoSwitch.NetworkMaxAttempts > 0 {
+		base.ModelAutoSwitch.NetworkMaxAttempts = overlay.ModelAutoSwitch.NetworkMaxAttempts
+	}
 	if overlay.Style != "" {
 		base.Style = overlay.Style
 	}
@@ -182,6 +192,9 @@ func mergeConfig(base, overlay Config) Config {
 			}
 			if v.TemplateProvider != "" {
 				existing.TemplateProvider = v.TemplateProvider
+			}
+			if v.Disabled {
+				existing.Disabled = true
 			}
 			if v.UseProxy != nil {
 				useProxy := *v.UseProxy

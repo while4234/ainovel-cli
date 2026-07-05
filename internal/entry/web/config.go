@@ -4,6 +4,11 @@ import "github.com/voocel/ainovel-cli/internal/bootstrap"
 
 func cloneWebConfig(cfg bootstrap.Config) bootstrap.Config {
 	out := cfg
+	out.ModelAutoSwitch.FallbackBackends = append([]string(nil), cfg.ModelAutoSwitch.FallbackBackends...)
+	if cfg.ModelAutoSwitch.Enabled != nil {
+		enabled := *cfg.ModelAutoSwitch.Enabled
+		out.ModelAutoSwitch.Enabled = &enabled
+	}
 	out.Providers = cloneWebProviderConfigs(cfg.Providers)
 	out.Roles = cloneWebRoleConfigs(cfg.Roles)
 	if cfg.PersistProviders != nil {

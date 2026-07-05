@@ -98,6 +98,14 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	}
 	slog.Info("模型就绪", "module", "boot", "summary", models.Summary())
 
+	var h *Host
+	models.SetRuntimeFallbackController(bootstrap.RuntimeFallbackControllerFunc(func(ctx context.Context, current bootstrap.ModelRef, attempted map[string]bool, err error) (bootstrap.RuntimeFallbackTarget, bool) {
+		if h == nil {
+			return bootstrap.RuntimeFallbackTarget{}, false
+		}
+		return h.selectRuntimeFallback(ctx, current, attempted, err)
+	}))
+
 	usage := NewUsageTracker(models, store)
 	// 优先读 meta/usage.json；以下情况都走 sessions/*.jsonl 一次性回填：
 	//   - 文件不存在（首次升级到带持久化的版本）
@@ -133,7 +141,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	})
 	store.Signals.ClearStaleSignals()
 
-	h := &Host{
+	h = &Host{
 		cfg:               cfg,
 		bundle:            bundle,
 		store:             store,
@@ -1103,6 +1111,104 @@ func deriveStatusLabel(s UISnapshot) string {
 
 // ── 模型管理 ──
 
+var projectAgentModelRoles = []string{"coordinator", "architect", "writer", "editor"}
+
+func (h *Host) selectRuntimeFallback(ctx context.Context, current bootstrap.ModelRef, attempted map[string]bool, cause error) (bootstrap.RuntimeFallbackTarget, bool) {
+	h.mu.Lock()
+	cfg := cloneProjectConfig(h.cfg)
+	h.mu.Unlock()
+	if !cfg.PersistProjectOverlay || !cfg.ModelAutoSwitch.IsEnabled() {
+		return bootstrap.RuntimeFallbackTarget{}, false
+	}
+
+	for _, provider := range bootstrap.RuntimeAutoSwitchCandidateProviders(cfg, current.Provider, attempted) {
+		models := cfg.CandidateModels(provider)
+		if len(models) == 0 {
+			continue
+		}
+		model := models[0]
+		pc := cfg.Providers[provider]
+		candidate, err := bootstrap.NewProviderModelWithConfig(cfg, provider, model, pc)
+		if err != nil || candidate == nil || !candidate.SupportsTools() {
+			continue
+		}
+		if err := addedModelConnectivityProbe(ctx, candidate, bootstrap.ProviderConnectivityTimeout(pc)); err != nil {
+			continue
+		}
+		reason := fmt.Sprintf("%s:%s->%s", bootstrap.RuntimeFallbackPoolReasonPrefix, current.Provider, provider)
+		h.activateRuntimeFallbackTarget(provider, model, pc, reason, cause)
+		return bootstrap.RuntimeFallbackTarget{
+			Provider: provider,
+			Model:    model,
+			LLM:      candidate,
+			Reason:   reason,
+		}, true
+	}
+	return bootstrap.RuntimeFallbackTarget{}, false
+}
+
+func (h *Host) activateRuntimeFallbackTarget(provider, model string, pc bootstrap.ProviderConfig, reason string, cause error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.cfg.PersistProjectOverlay {
+		return
+	}
+	if current, ok := h.cfg.Providers[provider]; ok {
+		pc = current
+	}
+	if err := h.switchAllAgentModelsLocked(provider, model); err != nil {
+		slog.Warn("activate runtime fallback model failed", "module", "host", "provider", provider, "model", model, "err", err)
+		return
+	}
+	h.models.RegisterProvider(provider, pc)
+	h.recordAllProjectModelRoutesLocked(provider, model)
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("save runtime fallback route failed", "module", "host", "err", err)
+	}
+	if h.coordinator != nil && h.coordinatorCtxMgr != nil {
+		window, _ := h.cfg.ResolveContextWindow(model)
+		h.coordinator.SetContextWindow(window)
+		h.coordinatorCtxMgr.SetContextWindow(window)
+		h.coordinatorCtxMgr.SetReserveTokens(bootstrap.CompactReserveTokens(window))
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("project runtime model auto-switched: %s/%s (%s)", provider, model, reason),
+		Detail:   fmt.Sprint(cause),
+		Level:    "warn",
+	})
+}
+
+func (h *Host) switchAllAgentModelsLocked(provider, model string) error {
+	if err := h.models.Swap("default", provider, model); err != nil {
+		return err
+	}
+	if h.cfg.Roles == nil {
+		h.cfg.Roles = make(map[string]bootstrap.RoleConfig)
+	}
+	h.cfg.Provider = provider
+	h.cfg.ModelName = model
+	h.cfg.RememberModelCandidate(provider, model)
+	for _, role := range projectAgentModelRoles {
+		if err := h.models.Swap(role, provider, model); err != nil {
+			return err
+		}
+		rc := h.cfg.Roles[role]
+		rc.Provider = provider
+		rc.Model = model
+		h.cfg.Roles[role] = rc
+	}
+	return nil
+}
+
+func (h *Host) recordAllProjectModelRoutesLocked(provider, model string) {
+	h.recordProjectRouteLocked("default", provider, model)
+	for _, role := range projectAgentModelRoles {
+		h.recordProjectRouteLocked(role, provider, model)
+	}
+}
+
 func (h *Host) ConfiguredProviders() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1128,6 +1234,12 @@ func (h *Host) ProviderConfig(provider string) (bootstrap.ProviderConfig, bool) 
 		return bootstrap.ProviderConfig{}, false
 	}
 	return cloneProviderConfig(pc), true
+}
+
+func (h *Host) ModelAutoSwitchConfig() bootstrap.ModelAutoSwitchConfig {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return cloneModelAutoSwitchConfig(h.cfg.ModelAutoSwitch)
 }
 
 func (h *Host) CurrentModelSelection(role string) (string, string, bool) {
@@ -1244,6 +1356,98 @@ func AddProviderModelToConfig(ctx context.Context, cfg bootstrap.Config, role, p
 		return bootstrap.Config{}, err
 	}
 	return SelectProviderModelInConfig(candidate, role, providerName, model)
+}
+
+type ProviderModelUpdate struct {
+	Role                    string
+	OriginalProvider        string
+	Provider                string
+	Model                   string
+	ProviderConfig          bootstrap.ProviderConfig
+	NetworkMaxAttempts      int
+	AutoSwitchCandidatePool bool
+}
+
+func (h *Host) ConfigureProviderModel(ctx context.Context, update ProviderModelUpdate) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	update.Role = strings.ToLower(strings.TrimSpace(update.Role))
+	if update.Role == "" {
+		update.Role = "default"
+	}
+
+	h.mu.Lock()
+	base := h.cfg
+	h.mu.Unlock()
+
+	candidate, providerConfig, originalProvider, provider, model, err := prepareConfiguredProviderModelConfig(base, update)
+	if err != nil {
+		return err
+	}
+	probeModel, err := bootstrap.NewProviderModelWithConfig(candidate, provider, model, providerConfig)
+	if err != nil {
+		return err
+	}
+	if err := addedModelConnectivityProbe(ctx, probeModel, bootstrap.ProviderConnectivityTimeout(providerConfig)); err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	candidate, providerConfig, originalProvider, provider, model, err = prepareConfiguredProviderModelConfig(h.cfg, update)
+	if err != nil {
+		return err
+	}
+	if h.cfg.PersistProjectOverlay {
+		if h.cfg.PersistProviders == nil {
+			h.cfg.PersistProviders = make(map[string]bool)
+		}
+		h.cfg.PersistProviders[provider] = true
+		if originalProvider != "" && originalProvider != provider {
+			delete(h.cfg.PersistProviders, originalProvider)
+		}
+		candidate.PersistProviders = h.cfg.PersistProviders
+	}
+	if err := h.models.ApplyConfig(candidate); err != nil {
+		return err
+	}
+	h.cfg = candidate
+	h.models.RegisterProvider(provider, providerConfig)
+	h.syncProjectModelOverlayLocked(update.Role, originalProvider, provider, model)
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("save provider model config failed", "module", "host", "err", err)
+	}
+	h.normalizeThinkingLocked(update.Role)
+	h.applyThinkingLocked(update.Role)
+	h.refreshCoordinatorContextWindowLocked(update.Role, model)
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("模型配置已更新：%s/%s", provider, model),
+		Level:    "info",
+	})
+	return nil
+}
+
+func ConfigureProviderModelInConfig(ctx context.Context, cfg bootstrap.Config, update ProviderModelUpdate) (bootstrap.Config, error) {
+	update.Role = strings.ToLower(strings.TrimSpace(update.Role))
+	if update.Role == "" {
+		update.Role = "default"
+	}
+	candidate, providerConfig, _, provider, model, err := prepareConfiguredProviderModelConfig(cfg, update)
+	if err != nil {
+		return bootstrap.Config{}, err
+	}
+	probeModel, err := bootstrap.NewProviderModelWithConfig(candidate, provider, model, providerConfig)
+	if err != nil {
+		return bootstrap.Config{}, err
+	}
+	if err := addedModelConnectivityProbe(ctx, probeModel, bootstrap.ProviderConnectivityTimeout(providerConfig)); err != nil {
+		return bootstrap.Config{}, err
+	}
+	return SelectProviderModelInConfig(candidate, update.Role, provider, model)
 }
 
 type ProviderModelTestResult struct {
@@ -1441,8 +1645,7 @@ func SelectProviderModelInConfig(cfg bootstrap.Config, role, provider, model str
 	}
 	candidate.RememberModelCandidate(provider, model)
 	if role == "" || role == "default" {
-		candidate.Provider = provider
-		candidate.ModelName = model
+		setAllAgentModelRoutesInConfig(&candidate, provider, model)
 	} else {
 		if candidate.Roles == nil {
 			candidate.Roles = make(map[string]bootstrap.RoleConfig)
@@ -1481,6 +1684,157 @@ func prepareAddedProviderModelConfig(cfg bootstrap.Config, role, providerName st
 	return candidate, providerConfig, providerWasConfigured, nil
 }
 
+func prepareConfiguredProviderModelConfig(cfg bootstrap.Config, update ProviderModelUpdate) (bootstrap.Config, bootstrap.ProviderConfig, string, string, string, error) {
+	role := strings.ToLower(strings.TrimSpace(update.Role))
+	if role == "" {
+		role = "default"
+	}
+	provider := strings.TrimSpace(update.Provider)
+	originalProvider := strings.TrimSpace(update.OriginalProvider)
+	model := strings.TrimSpace(update.Model)
+	if originalProvider == "" {
+		originalProvider = provider
+	}
+	if provider == "" || model == "" {
+		return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", fmt.Errorf("provider and model are required")
+	}
+	if !validModelRole(role) {
+		return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", fmt.Errorf("unknown role %q", role)
+	}
+
+	candidate := cfg
+	candidate.Providers = cloneProviderConfigs(cfg.Providers)
+	candidate.Roles = cloneRoleConfigs(cfg.Roles)
+	candidate.ModelAutoSwitch = cloneModelAutoSwitchConfig(cfg.ModelAutoSwitch)
+	if candidate.Providers == nil {
+		candidate.Providers = make(map[string]bootstrap.ProviderConfig)
+	}
+
+	existing, providerWasConfigured := candidate.Providers[originalProvider]
+	editingExisting := strings.TrimSpace(update.OriginalProvider) != ""
+	if providerWasConfigured {
+		if editingExisting {
+			existing = mergeEditedProviderConfig(existing, update.ProviderConfig, model)
+		} else {
+			if !providerConfigCanAddModel(existing, update.ProviderConfig) {
+				return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", fmt.Errorf("provider %q already exists; use the existing provider flow to edit it", provider)
+			}
+			existing.Models = appendUniqueString(existing.Models, model)
+		}
+	} else {
+		existing = update.ProviderConfig
+		existing.Models = appendUniqueString(existing.Models, model)
+		if _, err := existing.ProviderType(provider); err != nil {
+			return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", err
+		}
+	}
+
+	if provider != originalProvider {
+		if _, ok := candidate.Providers[provider]; ok {
+			return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", fmt.Errorf("provider %q already exists", provider)
+		}
+		delete(candidate.Providers, originalProvider)
+		renameProviderReferencesInConfig(&candidate, originalProvider, provider)
+	}
+	candidate.Providers[provider] = existing
+	candidate.RememberModelCandidate(provider, model)
+	if err := applyModelAutoSwitchUpdate(&candidate, provider, update.NetworkMaxAttempts, update.AutoSwitchCandidatePool); err != nil {
+		return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", err
+	}
+
+	selected, err := SelectProviderModelInConfig(candidate, role, provider, model)
+	if err != nil {
+		return bootstrap.Config{}, bootstrap.ProviderConfig{}, "", "", "", err
+	}
+	return selected, selected.Providers[provider], originalProvider, provider, model, nil
+}
+
+func mergeEditedProviderConfig(existing, incoming bootstrap.ProviderConfig, model string) bootstrap.ProviderConfig {
+	apiKey := strings.TrimSpace(incoming.APIKey)
+	models := append([]string(nil), existing.Models...)
+	if len(incoming.Models) > 0 {
+		models = append([]string(nil), incoming.Models...)
+	}
+	merged := existing
+	merged.Label = strings.TrimSpace(incoming.Label)
+	merged.TemplateProvider = strings.TrimSpace(incoming.TemplateProvider)
+	merged.Disabled = incoming.Disabled
+	if incoming.UseProxy != nil {
+		useProxy := *incoming.UseProxy
+		merged.UseProxy = &useProxy
+	}
+	merged.RequestTimeoutSeconds = incoming.RequestTimeoutSeconds
+	merged.ConnectivityTimeoutSeconds = incoming.ConnectivityTimeoutSeconds
+	merged.Type = strings.TrimSpace(incoming.Type)
+	merged.Auth = strings.TrimSpace(incoming.Auth)
+	merged.AccountID = strings.TrimSpace(incoming.AccountID)
+	merged.API = strings.TrimSpace(incoming.API)
+	merged.BaseURL = strings.TrimSpace(incoming.BaseURL)
+	if apiKey != "" {
+		merged.APIKey = apiKey
+	}
+	merged.Models = appendUniqueString(models, model)
+	return merged
+}
+
+func applyModelAutoSwitchUpdate(cfg *bootstrap.Config, provider string, attempts int, include bool) error {
+	if attempts > 0 {
+		normalized, err := bootstrap.NormalizeRuntimeNetworkMaxAttempts(attempts)
+		if err != nil {
+			return err
+		}
+		cfg.ModelAutoSwitch.NetworkMaxAttempts = normalized
+	}
+	cfg.ModelAutoSwitch.FallbackBackends = removeProviderCandidate(cfg.ModelAutoSwitch.FallbackBackends, provider)
+	if include {
+		cfg.ModelAutoSwitch.FallbackBackends = appendUniqueString(cfg.ModelAutoSwitch.FallbackBackends, provider)
+		enabled := true
+		cfg.ModelAutoSwitch.Enabled = &enabled
+	} else if len(cfg.ModelAutoSwitch.FallbackBackends) == 0 {
+		enabled := false
+		cfg.ModelAutoSwitch.Enabled = &enabled
+	}
+	return nil
+}
+
+func renameProviderReferencesInConfig(cfg *bootstrap.Config, from, to string) {
+	if cfg.Provider == from {
+		cfg.Provider = to
+	}
+	if cfg.Roles != nil {
+		for role, rc := range cfg.Roles {
+			if rc.Provider == from {
+				rc.Provider = to
+			}
+			for i := range rc.Fallbacks {
+				if rc.Fallbacks[i].Provider == from {
+					rc.Fallbacks[i].Provider = to
+				}
+			}
+			cfg.Roles[role] = rc
+		}
+	}
+	for i, provider := range cfg.ModelAutoSwitch.FallbackBackends {
+		if strings.TrimSpace(provider) == from {
+			cfg.ModelAutoSwitch.FallbackBackends[i] = to
+		}
+	}
+}
+
+func setAllAgentModelRoutesInConfig(cfg *bootstrap.Config, provider, model string) {
+	cfg.Provider = provider
+	cfg.ModelName = model
+	if cfg.Roles == nil {
+		cfg.Roles = make(map[string]bootstrap.RoleConfig)
+	}
+	for _, role := range projectAgentModelRoles {
+		rc := cfg.Roles[role]
+		rc.Provider = provider
+		rc.Model = model
+		cfg.Roles[role] = rc
+	}
+}
+
 func (h *Host) StartGrokLogin(accountID, accountName string) (grokauth.LoginStart, error) {
 	return grokauth.StartLogin(accountID, accountName)
 }
@@ -1502,15 +1856,16 @@ func (h *Host) switchModelLocked(role, provider, model string) error {
 		return fmt.Errorf("provider and model are required")
 	}
 	previousProvider, previousModel, _ := h.models.CurrentSelection(role)
-	if err := h.models.Swap(role, provider, model); err != nil {
-		return err
-	}
 	h.cfg.RememberModelCandidate(previousProvider, previousModel)
 	h.cfg.RememberModelCandidate(provider, model)
 	if role == "" || role == "default" {
-		h.cfg.Provider = provider
-		h.cfg.ModelName = model
+		if err := h.switchAllAgentModelsLocked(provider, model); err != nil {
+			return err
+		}
 	} else {
+		if err := h.models.Swap(role, provider, model); err != nil {
+			return err
+		}
 		if h.cfg.Roles == nil {
 			h.cfg.Roles = make(map[string]bootstrap.RoleConfig)
 		}
@@ -1520,7 +1875,11 @@ func (h *Host) switchModelLocked(role, provider, model string) error {
 		h.cfg.Roles[role] = rc
 	}
 	h.normalizeThinkingLocked(role)
-	h.recordProjectRouteLocked(role, provider, model)
+	if role == "" || role == "default" {
+		h.recordAllProjectModelRoutesLocked(provider, model)
+	} else {
+		h.recordProjectRouteLocked(role, provider, model)
+	}
 	h.syncProjectThinkingOverrideLocked(role)
 	if err := h.persistConfigLocked(); err != nil {
 		slog.Warn("保存配置失败", "module", "host", "err", err)
@@ -1544,7 +1903,7 @@ func (h *Host) switchModelLocked(role, provider, model string) error {
 	// 切 default 不影响 coordinator 实际模型；用切换目标的窗口去 SetContextWindow 会错
 	// 把 coordinator 阈值调到不相干的值（例：default 切 1M 模型时把 200k 的 coordinator
 	// engine 阈值拉到 891k，写超 200k 直接爆 API）。
-	if h.coordinatorCtxMgr != nil && (role == "" || role == "default" || role == "coordinator") {
+	if h.coordinator != nil && h.coordinatorCtxMgr != nil && (role == "" || role == "default" || role == "coordinator") {
 		_, coordinatorModel, _ := h.models.CurrentSelection("coordinator")
 		coordinatorWindow, coordSource := h.cfg.ResolveContextWindow(coordinatorModel)
 		h.coordinator.SetContextWindow(coordinatorWindow)
@@ -1566,6 +1925,24 @@ func (h *Host) switchModelLocked(role, provider, model string) error {
 	return nil
 }
 
+func (h *Host) refreshCoordinatorContextWindowLocked(role, model string) {
+	if h.coordinator == nil || h.coordinatorCtxMgr == nil {
+		return
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role != "" && role != "default" && role != "coordinator" {
+		return
+	}
+	_, coordinatorModel, _ := h.models.CurrentSelection("coordinator")
+	if coordinatorModel == "" {
+		coordinatorModel = model
+	}
+	window, _ := h.cfg.ResolveContextWindow(coordinatorModel)
+	h.coordinator.SetContextWindow(window)
+	h.coordinatorCtxMgr.SetContextWindow(window)
+	h.coordinatorCtxMgr.SetReserveTokens(bootstrap.CompactReserveTokens(window))
+}
+
 func providerConfigCanAddModel(existing, incoming bootstrap.ProviderConfig) bool {
 	if providerConfigIsEmpty(incoming) {
 		return true
@@ -1579,6 +1956,7 @@ func providerConfigIsEmpty(pc bootstrap.ProviderConfig) bool {
 	return pc.Type == "" &&
 		pc.Label == "" &&
 		pc.TemplateProvider == "" &&
+		!pc.Disabled &&
 		pc.UseProxy == nil &&
 		pc.RequestTimeoutSeconds == 0 &&
 		pc.ConnectivityTimeoutSeconds == 0 &&
@@ -1647,6 +2025,24 @@ func (h *Host) ensureProjectOverlayLocked() *bootstrap.Config {
 		h.cfg.PersistProjectConfig = &bootstrap.Config{}
 	}
 	return h.cfg.PersistProjectConfig
+}
+
+func (h *Host) syncProjectModelOverlayLocked(role, originalProvider, provider, model string) {
+	overlay := h.ensureProjectOverlayLocked()
+	if overlay == nil {
+		return
+	}
+	if originalProvider != "" && originalProvider != provider {
+		delete(overlay.Providers, originalProvider)
+		renameProviderReferencesInConfig(overlay, originalProvider, provider)
+	}
+	overlay.ModelAutoSwitch = cloneModelAutoSwitchConfig(h.cfg.ModelAutoSwitch)
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" || role == "default" {
+		h.recordAllProjectModelRoutesLocked(provider, model)
+		return
+	}
+	h.recordProjectRouteLocked(role, provider, model)
 }
 
 func (h *Host) recordProjectRouteLocked(role, provider, model string) {
@@ -1793,6 +2189,11 @@ func (h *Host) projectOverlayProvidersLocked(overlay bootstrap.Config) map[strin
 			addRouteModel(fallback.Provider, fallback.Model)
 		}
 	}
+	for _, provider := range overlay.ModelAutoSwitch.FallbackBackends {
+		for _, model := range h.cfg.CandidateModels(provider) {
+			addRouteModel(provider, model)
+		}
+	}
 	if len(providers) == 0 {
 		return nil
 	}
@@ -1812,6 +2213,18 @@ func removeModelCandidate(values []string, model string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		if strings.TrimSpace(value) == model {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func removeProviderCandidate(values []string, provider string) []string {
+	provider = strings.TrimSpace(provider)
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == provider {
 			continue
 		}
 		out = append(out, value)
@@ -1855,6 +2268,7 @@ func providerConfigHasPrivateConfig(pc bootstrap.ProviderConfig) bool {
 	return pc.Type != "" ||
 		pc.Auth != "" ||
 		pc.AccountID != "" ||
+		pc.Disabled ||
 		pc.API != "" ||
 		pc.APIKey != "" ||
 		pc.BaseURL != "" ||
@@ -1881,13 +2295,30 @@ func cloneProjectConfig(cfg bootstrap.Config) bootstrap.Config {
 	out.PersistProjectOverlay = false
 	out.PersistProviders = nil
 	out.PersistProjectConfig = nil
+	out.ModelAutoSwitch = cloneModelAutoSwitchConfig(cfg.ModelAutoSwitch)
 	out.Providers = cloneProviderConfigs(cfg.Providers)
-	if cfg.Roles != nil {
-		out.Roles = make(map[string]bootstrap.RoleConfig, len(cfg.Roles))
-		for role, rc := range cfg.Roles {
-			rc.Fallbacks = append([]bootstrap.ModelRef(nil), rc.Fallbacks...)
-			out.Roles[role] = rc
-		}
+	out.Roles = cloneRoleConfigs(cfg.Roles)
+	return out
+}
+
+func cloneModelAutoSwitchConfig(cfg bootstrap.ModelAutoSwitchConfig) bootstrap.ModelAutoSwitchConfig {
+	out := cfg
+	out.FallbackBackends = append([]string(nil), cfg.FallbackBackends...)
+	if cfg.Enabled != nil {
+		enabled := *cfg.Enabled
+		out.Enabled = &enabled
+	}
+	return out
+}
+
+func cloneRoleConfigs(roles map[string]bootstrap.RoleConfig) map[string]bootstrap.RoleConfig {
+	if len(roles) == 0 {
+		return nil
+	}
+	out := make(map[string]bootstrap.RoleConfig, len(roles))
+	for role, rc := range roles {
+		rc.Fallbacks = append([]bootstrap.ModelRef(nil), rc.Fallbacks...)
+		out[role] = rc
 	}
 	return out
 }

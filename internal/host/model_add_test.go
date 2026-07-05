@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -135,6 +136,162 @@ func TestAddProviderModelRejectsFailedConnectivityProbe(t *testing.T) {
 	}
 	if _, err := bootstrap.LoadConfigFile(filepath.Join(home, ".ainovel", "config.json")); err == nil {
 		t.Fatal("failed probe should not persist config")
+	}
+}
+
+func TestSwitchDefaultModelUpdatesAllAgentRoutes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := bootstrap.Config{
+		Provider:  "openai",
+		ModelName: "gpt-base",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"openai": {Type: "openai", APIKey: "sk-test", Models: []string{"gpt-base", "gpt-next"}},
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"writer": {Provider: "openai", Model: "writer-model"},
+		},
+	}
+	cfg.FillDefaults()
+	models, err := bootstrap.NewModelSet(cfg)
+	if err != nil {
+		t.Fatalf("NewModelSet: %v", err)
+	}
+	host := &Host{cfg: cfg, models: models, events: make(chan Event, 10)}
+
+	if err := host.SwitchModel("default", "openai", "gpt-next"); err != nil {
+		t.Fatalf("SwitchModel: %v", err)
+	}
+	for _, role := range append([]string{"default"}, projectAgentModelRoles...) {
+		provider, model, explicit := host.models.CurrentSelection(role)
+		if provider != "openai" || model != "gpt-next" || !explicit {
+			t.Fatalf("%s selection = %s/%s explicit=%v", role, provider, model, explicit)
+		}
+	}
+	for _, role := range projectAgentModelRoles {
+		if rc := host.cfg.Roles[role]; rc.Provider != "openai" || rc.Model != "gpt-next" {
+			t.Fatalf("cfg role %s = %+v", role, rc)
+		}
+	}
+}
+
+func TestSelectProviderModelInConfigDefaultUpdatesAllAgentRoutes(t *testing.T) {
+	cfg := bootstrap.Config{
+		Provider:  "openai",
+		ModelName: "gpt-base",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"openai": {Type: "openai", APIKey: "sk-test", Models: []string{"gpt-base", "gpt-next"}},
+		},
+	}
+	cfg.FillDefaults()
+
+	next, err := SelectProviderModelInConfig(cfg, "default", "openai", "gpt-next")
+	if err != nil {
+		t.Fatalf("SelectProviderModelInConfig: %v", err)
+	}
+	if next.Provider != "openai" || next.ModelName != "gpt-next" {
+		t.Fatalf("default route = %s/%s", next.Provider, next.ModelName)
+	}
+	for _, role := range projectAgentModelRoles {
+		if rc := next.Roles[role]; rc.Provider != "openai" || rc.Model != "gpt-next" {
+			t.Fatalf("role %s = %+v", role, rc)
+		}
+	}
+}
+
+func TestConfigureProviderModelRenamesAndPreservesBlankAPIKey(t *testing.T) {
+	withModelConnectivityProbe(t, nil)
+	enabled := true
+	cfg := bootstrap.Config{
+		Provider:  "custom-openai",
+		ModelName: "old-model",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"custom-openai": {
+				Label:   "Wrong",
+				Type:    "openai",
+				API:     "chat",
+				APIKey:  "sk-old",
+				BaseURL: "https://old.example/v1",
+				Models:  []string{"old-model"},
+			},
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"writer": {Provider: "custom-openai", Model: "old-model"},
+			"editor": {Fallbacks: []bootstrap.ModelRef{{Provider: "custom-openai", Model: "old-model"}}},
+		},
+		ModelAutoSwitch: bootstrap.ModelAutoSwitchConfig{
+			Enabled:            &enabled,
+			FallbackBackends:   []string{"custom-openai"},
+			NetworkMaxAttempts: 3,
+		},
+	}
+	cfg.FillDefaults()
+
+	next, err := ConfigureProviderModelInConfig(context.Background(), cfg, ProviderModelUpdate{
+		Role:             "default",
+		OriginalProvider: "custom-openai",
+		Provider:         "fixed-openai",
+		Model:            "new-model",
+		ProviderConfig: bootstrap.ProviderConfig{
+			Label:   "Fixed",
+			Type:    "openai",
+			API:     "responses",
+			BaseURL: "https://new.example/v1",
+		},
+		NetworkMaxAttempts:      4,
+		AutoSwitchCandidatePool: true,
+	})
+	if err != nil {
+		t.Fatalf("ConfigureProviderModelInConfig: %v", err)
+	}
+	if _, ok := next.Providers["custom-openai"]; ok {
+		t.Fatal("old provider key still exists")
+	}
+	pc := next.Providers["fixed-openai"]
+	if pc.APIKey != "sk-old" || pc.Label != "Fixed" || pc.API != "responses" || pc.BaseURL != "https://new.example/v1" {
+		t.Fatalf("renamed provider config = %+v", pc)
+	}
+	if !reflect.DeepEqual(next.ModelAutoSwitch.FallbackBackends, []string{"fixed-openai"}) || next.ModelAutoSwitch.EffectiveNetworkMaxAttempts() != 4 {
+		t.Fatalf("auto switch = %+v", next.ModelAutoSwitch)
+	}
+	if fallback := next.Roles["editor"].Fallbacks[0]; fallback.Provider != "fixed-openai" || fallback.Model != "old-model" {
+		t.Fatalf("editor fallback = %+v", fallback)
+	}
+	for _, role := range projectAgentModelRoles {
+		if rc := next.Roles[role]; rc.Provider != "fixed-openai" || rc.Model != "new-model" {
+			t.Fatalf("role %s = %+v", role, rc)
+		}
+	}
+}
+
+func TestConfigureProviderModelRejectsFailedProbeWithoutMutating(t *testing.T) {
+	withModelConnectivityProbe(t, errors.New("probe rejected"))
+	cfg := bootstrap.Config{
+		Provider:  "custom-openai",
+		ModelName: "old-model",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"custom-openai": {Type: "openai", APIKey: "sk-old", Models: []string{"old-model"}},
+		},
+	}
+	cfg.FillDefaults()
+
+	_, err := ConfigureProviderModelInConfig(context.Background(), cfg, ProviderModelUpdate{
+		Role:             "default",
+		OriginalProvider: "custom-openai",
+		Provider:         "fixed-openai",
+		Model:            "new-model",
+		ProviderConfig:   bootstrap.ProviderConfig{Type: "openai"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "probe rejected") {
+		t.Fatalf("ConfigureProviderModelInConfig error = %v, want probe rejection", err)
+	}
+	if _, ok := cfg.Providers["fixed-openai"]; ok {
+		t.Fatal("input config mutated after failed probe")
+	}
+	if cfg.Providers["custom-openai"].APIKey != "sk-old" {
+		t.Fatalf("input provider changed: %+v", cfg.Providers["custom-openai"])
 	}
 }
 

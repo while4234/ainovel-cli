@@ -1070,9 +1070,16 @@ type fakeProjectHost struct {
 	adaptOptions                adapt.ProposalOptions
 	exportOptions               exp.Options
 	addProviderRole             string
+	configureProviderRole       string
+	configureOriginalProvider   string
 	addProviderName             string
+	configureProviderName       string
 	addProviderConfig           bootstrap.ProviderConfig
+	configureProviderConfig     bootstrap.ProviderConfig
 	addProviderModel            string
+	configureProviderModel      string
+	configureNetworkAttempts    int
+	configureAutoSwitchPool     bool
 	removeProviderName          string
 	removeProviderModel         string
 	switchRole                  string
@@ -1667,6 +1674,15 @@ func (f *fakeProjectHost) ProviderConfig(provider string) (bootstrap.ProviderCon
 	}, true
 }
 
+func (f *fakeProjectHost) ModelAutoSwitchConfig() bootstrap.ModelAutoSwitchConfig {
+	enabled := true
+	return bootstrap.ModelAutoSwitchConfig{
+		Enabled:            &enabled,
+		FallbackBackends:   []string{"openrouter"},
+		NetworkMaxAttempts: 4,
+	}
+}
+
 func (f *fakeProjectHost) CurrentModelSelection(role string) (string, string, bool) {
 	if role == "" || role == "default" {
 		return "openrouter", "model-a", true
@@ -1691,6 +1707,19 @@ func (f *fakeProjectHost) AddProviderModel(role, providerName string, providerCo
 	f.addProviderName = providerName
 	f.addProviderConfig = providerConfig
 	f.addProviderModel = model
+	return f.addProviderErr
+}
+
+func (f *fakeProjectHost) ConfigureProviderModel(_ context.Context, update host.ProviderModelUpdate) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.configureProviderRole = update.Role
+	f.configureOriginalProvider = update.OriginalProvider
+	f.configureProviderName = update.Provider
+	f.configureProviderConfig = update.ProviderConfig
+	f.configureProviderModel = update.Model
+	f.configureNetworkAttempts = update.NetworkMaxAttempts
+	f.configureAutoSwitchPool = update.AutoSwitchCandidatePool
 	return f.addProviderErr
 }
 

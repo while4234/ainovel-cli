@@ -444,6 +444,7 @@ function createCustomModelState() {
     mode: 'existing',
     role: 'default',
     provider: '',
+    original_provider: '',
     preset: 'deepseek',
     label: '',
     template_provider: 'deepseek',
@@ -455,6 +456,8 @@ function createCustomModelState() {
     use_proxy: false,
     request_timeout_seconds: '120',
     connectivity_timeout_seconds: '12',
+    network_disconnect_max_attempts: '7',
+    auto_switch_candidate_pool: false,
     discovered_models: [],
     test_status: 'idle',
     test_scope: '',
@@ -4651,7 +4654,6 @@ function ModelPanel({
   const existingModel = existingTarget.model || existingModels[0] || '';
   const existingIsDefault = activeDefaultRoute.provider === existingProvider && activeDefaultRoute.model === existingModel;
   const existingModelPayload = buildExistingModelActionPayload(customModel.role, existingProvider, existingModel);
-  const canTestExistingModel = Boolean(existingProvider && existingModel);
   const canDeleteExistingModel = Boolean(existingProvider && existingModel && !existingIsDefault);
   const coCreateTimeoutSeconds = modelConfig?.cocreate_timeout_seconds || config.cocreate_timeout_seconds || 60;
   const [coCreateTimeoutDraft, setCoCreateTimeoutDraft] = useState(String(coCreateTimeoutSeconds));
@@ -4684,7 +4686,17 @@ function ModelPanel({
     if (provider !== existingTarget.provider || model !== existingTarget.model) {
       setExistingTarget({ provider, model });
     }
-  }, [providers, existingTarget.provider, existingTarget.model]);
+    const editorProviderAvailable = providers.some((item) => item.name === customModel.original_provider);
+    if (customModel.mode === 'existing' && (!customModel.original_provider || !editorProviderAvailable)) {
+      setCustomModel((previous) => modelAddExistingProviderDefaults(previous, providers, provider, model));
+    }
+  }, [providers, existingTarget.provider, existingTarget.model, customModel.mode, customModel.original_provider, setCustomModel]);
+  const selectExistingProvider = (provider, model = '') => {
+    const models = modelOptionsForProvider(providers, provider, model);
+    const selectedModel = model || models[0] || '';
+    setExistingTarget({ provider, model: selectedModel });
+    setCustomModel((previous) => modelAddExistingProviderDefaults(previous, providers, provider, selectedModel));
+  };
   const coCreateTimeoutValue = Number(coCreateTimeoutDraft);
   const canSaveCoCreateTimeout = Number.isInteger(coCreateTimeoutValue) &&
     coCreateTimeoutValue >= 1 &&
@@ -4703,15 +4715,17 @@ function ModelPanel({
       ? (selectedProjectRoute.explicit ? 'project default' : 'global default')
       : (selectedProjectRoute.explicit ? 'project override' : 'inherits default')
     : '';
-  const selectedProviderModels = modelOptionsForProvider(providers, customModel.provider, customModel.model);
+  const editorModelProvider = customModel.mode === 'existing'
+    ? customModel.original_provider || customModel.provider
+    : customModel.provider;
+  const selectedProviderModels = modelOptionsForProvider(providers, editorModelProvider, customModel.model);
   const discoveredModels = Array.isArray(customModel.discovered_models) ? customModel.discovered_models : [];
   const modelSuggestions = mergeModelOptions(discoveredModels, selectedProviderModels, customModel.model);
-  const providerEditorID = String(customModel.mode === 'existing' ? customModel.provider || providers[0]?.name || '' : customModel.provider || selectedPreset.provider || '').trim();
-  const providerEditorLabel = String(customModel.label || selectedPreset.label || '').trim();
+  const providerEditorID = String(customModel.mode === 'existing' ? customModel.provider : customModel.provider || selectedPreset.provider || '').trim();
+  const providerEditorLabel = String(customModel.label || (customModel.mode === 'existing' ? customModel.provider : selectedPreset.label) || '').trim();
   const canTestEditorConnection = Boolean(providerEditorID);
   const canTestEditorModel = Boolean(providerEditorID && String(customModel.model || '').trim());
-  const existingTestMessage = customModel.test_scope === 'existing' ? customModel.test_message : '';
-  const editorTestMessage = customModel.test_scope === 'existing' ? '' : customModel.test_message;
+  const editorTestMessage = customModel.test_message;
   return (
     <div className="side-content">
       <section>
@@ -4858,10 +4872,10 @@ function ModelPanel({
           </div>
         )}
       </section>
-      <section className="provider-template-section">
+      <form className="custom-model-form" onSubmit={onAddCustom}>
         <div className="section-title">
-          <Server size={17} />
-          <span>已有模型</span>
+          <Settings size={17} />
+          <span>配置模型</span>
         </div>
         <div className="provider-chip-list">
           {providerChips.length === 0 ? (
@@ -4872,7 +4886,7 @@ function ModelPanel({
                 className={`provider-chip ${existingProvider === provider.name ? 'active' : ''}`}
                 disabled={busy}
                 key={provider.name}
-                onClick={() => setExistingTarget({ provider: provider.name, model: provider.models[0] || '' })}
+                onClick={() => selectExistingProvider(provider.name, provider.models[0] || '')}
                 type="button"
               >
                 <span>{provider.label}</span>
@@ -4883,17 +4897,17 @@ function ModelPanel({
         </div>
         <div className="backend-picker-row">
           <label className="field-label">
-            <span>已有模型</span>
+            <span>选择配置</span>
             <select
               disabled={busy || providers.length === 0}
               value={existingProvider}
               onChange={(event) => {
                 const provider = event.target.value;
                 const models = modelOptionsForProvider(providers, provider, '');
-                setExistingTarget({ provider, model: models[0] || '' });
+                selectExistingProvider(provider, models[0] || '');
               }}
             >
-              <option value="">选择已有模型</option>
+              <option value="">选择配置</option>
               {providers.length === 0 ? <option value="">无模型</option> : null}
               {providers.map((provider) => (
                 <option key={provider.name} value={provider.name}>{provider.label || provider.name}</option>
@@ -4901,11 +4915,11 @@ function ModelPanel({
             </select>
           </label>
           <label className="field-label">
-            <span>模型</span>
+            <span>当前模型</span>
             <select
               disabled={busy || !existingProvider || existingModels.length === 0}
               value={existingModel}
-              onChange={(event) => setExistingTarget((previous) => ({ ...previous, model: event.target.value }))}
+              onChange={(event) => selectExistingProvider(existingProvider, event.target.value)}
             >
               {existingModels.length === 0 ? <option value="">无模型</option> : null}
               {existingModels.map((model) => (
@@ -4914,47 +4928,11 @@ function ModelPanel({
             </select>
           </label>
         </div>
-        {existingTestMessage ? (
-          <div className={`model-test-note ${customModel.test_status || 'idle'}`}>
-            {existingTestMessage}
+        {customModel.mode === 'existing' ? (
+          <div className="model-test-note">
+            编辑已有配置时，API key 留空会保留旧 key；额度用完会立即切换候选模型，只有网络中断会先按最大尝试次数重试。
           </div>
         ) : null}
-        <div className="existing-model-actions">
-          <button
-            className="tool-button"
-            disabled={busy || !canTestExistingModel}
-            onClick={() => onTestConnection(existingModelPayload, 'existing')}
-            type="button"
-          >
-            <TestTube2 size={16} />
-            测试连接
-          </button>
-          <button
-            className="tool-button"
-            disabled={busy || !canTestExistingModel}
-            onClick={() => onTestModel(existingModelPayload, 'existing')}
-            type="button"
-          >
-            <ListRestart size={16} />
-            模型测试
-          </button>
-          <button
-            className="tool-button danger"
-            disabled={busy || !canDeleteExistingModel}
-            title={existingIsDefault ? '请先切换默认模型' : '删除模型'}
-            onClick={() => onDeleteModel(existingProvider, existingModel)}
-            type="button"
-          >
-            <Trash2 size={16} />
-            删除模型
-          </button>
-        </div>
-      </section>
-      <form className="custom-model-form" onSubmit={onAddCustom}>
-        <div className="section-title">
-          <Settings size={17} />
-          <span>添加模型</span>
-        </div>
         <select
           disabled={busy}
           value={customModel.role}
@@ -4969,7 +4947,7 @@ function ModelPanel({
           value={customModel.mode}
           onChange={(event) => setCustomModel((previous) => modelAddModeDefaults({ ...previous, mode: event.target.value }, providers))}
         >
-          <option value="existing">已有配置</option>
+          <option value="existing">编辑已有配置</option>
           <option value="preset">内置模板</option>
           <option value="custom">自定义模型</option>
           <option value="grok_oauth">Grok 登录</option>
@@ -4977,10 +4955,14 @@ function ModelPanel({
         <label className="model-field">
           <span>模板厂商</span>
           <select
-            disabled={busy || customModel.mode === 'existing'}
-            value={customModel.mode === 'preset' ? customModel.preset : customModel.template_provider || customModel.mode}
+            disabled={busy}
+            value={customModel.mode === 'preset' ? customModel.preset : customModel.template_provider || 'custom'}
             onChange={(event) => {
               const value = event.target.value;
+              if (customModel.mode !== 'preset') {
+                setCustomModel((previous) => ({ ...previous, template_provider: value }));
+                return;
+              }
               const preset = providerPresets.find((item) => item.provider === value);
               if (preset) {
                 setCustomModel((previous) => modelAddPresetDefaults({ ...previous, mode: 'preset', preset: value }));
@@ -4998,7 +4980,7 @@ function ModelPanel({
         <label className="model-field">
           <span>显示名称</span>
           <input
-            disabled={busy || customModel.mode === 'existing'}
+            disabled={busy}
             placeholder="例如 DeepSeek / Codex"
             value={providerEditorLabel}
             onChange={(event) => setCustomModel((previous) => ({ ...previous, label: event.target.value }))}
@@ -5007,7 +4989,7 @@ function ModelPanel({
         <label className="model-checkbox-field">
           <input
             checked={Boolean(customModel.use_proxy)}
-            disabled={busy || customModel.mode === 'existing'}
+            disabled={busy}
             type="checkbox"
             onChange={(event) => setCustomModel((previous) => ({ ...previous, use_proxy: event.target.checked }))}
           />
@@ -5016,7 +4998,7 @@ function ModelPanel({
         <label className="model-field">
           <span>请求超时</span>
           <input
-            disabled={busy || customModel.mode === 'existing'}
+            disabled={busy}
             inputMode="numeric"
             min="1"
             type="number"
@@ -5027,7 +5009,7 @@ function ModelPanel({
         <label className="model-field">
           <span>连通性超时</span>
           <input
-            disabled={busy || customModel.mode === 'existing'}
+            disabled={busy}
             inputMode="numeric"
             min="1"
             type="number"
@@ -5035,17 +5017,81 @@ function ModelPanel({
             onChange={(event) => setCustomModel((previous) => ({ ...previous, connectivity_timeout_seconds: event.target.value }))}
           />
         </label>
+        <label className="model-field">
+          <span>网络中断最大尝试次数</span>
+          <input
+            disabled={busy}
+            inputMode="numeric"
+            max="11"
+            min="1"
+            type="number"
+            value={customModel.network_disconnect_max_attempts}
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, network_disconnect_max_attempts: event.target.value }))}
+          />
+        </label>
+        <label className="model-checkbox-field">
+          <input
+            checked={Boolean(customModel.auto_switch_candidate_pool)}
+            disabled={busy}
+            type="checkbox"
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, auto_switch_candidate_pool: event.target.checked }))}
+          />
+          <span>加入项目运行时自动切换</span>
+        </label>
         {customModel.mode === 'existing' ? (
-          <select
-            disabled={busy || providers.length === 0}
-            value={customModel.provider || providers[0]?.name || ''}
-            onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
-          >
-            {providers.length === 0 ? <option value="">无配置</option> : null}
-            {providers.map((provider) => (
-              <option key={provider.name} value={provider.name}>{provider.name}</option>
-            ))}
-          </select>
+          <>
+            <label className="model-field">
+              <span>Provider key</span>
+              <input
+                disabled={busy}
+                placeholder="provider key"
+                value={customModel.provider}
+                onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+              />
+            </label>
+            <label className="model-field">
+              <span>协议类型</span>
+              <input
+                disabled={busy}
+                placeholder="openai / anthropic / gemini / grok"
+                value={customModel.type}
+                onChange={(event) => setCustomModel((previous) => ({ ...previous, type: event.target.value }))}
+              />
+            </label>
+            <label className="model-field">
+              <span>OpenAI endpoint</span>
+              <select
+                disabled={busy}
+                value={customModel.api || 'chat'}
+                onChange={(event) => setCustomModel((previous) => ({ ...previous, api: event.target.value }))}
+              >
+                <option value="chat">chat</option>
+                <option value="responses">responses</option>
+              </select>
+            </label>
+            <label className="model-field">
+              <span>认证模式</span>
+              <input
+                disabled={busy}
+                placeholder="api_key / grok_oauth"
+                value={customModel.auth}
+                onChange={(event) => setCustomModel((previous) => ({ ...previous, auth: event.target.value }))}
+              />
+            </label>
+            <input
+              disabled={busy}
+              placeholder="API key 留空则保留旧 key"
+              type="password"
+              value={customModel.api_key}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, api_key: event.target.value }))}
+            />
+            <input
+              disabled={busy}
+              placeholder="base URL"
+              value={customModel.base_url}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, base_url: event.target.value }))}
+            />
+          </>
         ) : null}
         {customModel.mode === 'preset' ? (
           <>
@@ -5210,9 +5256,21 @@ function ModelPanel({
             <ListRestart size={16} />
             模型测试
           </button>
+          {customModel.mode === 'existing' ? (
+            <button
+              className="tool-button danger"
+              disabled={busy || !canDeleteExistingModel}
+              title={existingIsDefault ? '请先切换默认模型' : '删除配置'}
+              onClick={() => onDeleteModel(existingModelPayload.provider, existingModelPayload.model)}
+              type="button"
+            >
+              <Trash2 size={16} />
+              删除配置
+            </button>
+          ) : null}
           <button className="tool-button accent" disabled={busy || !canAdd} type="submit">
             <Plus size={16} />
-            {customModel.mode === 'existing' ? '添加模型' : '保存模型'}
+            {customModel.mode === 'existing' ? '保存配置' : '保存模型'}
           </button>
         </div>
       </form>
@@ -5444,6 +5502,7 @@ export function modelAddModeDefaults(state, providers = []) {
   if (state.mode === 'custom') {
     return {
       ...state,
+      original_provider: '',
       provider: String(state.provider || '').startsWith('custom-') ? state.provider : 'custom-openai',
       label: state.label || 'Custom',
       template_provider: state.template_provider || 'custom',
@@ -5459,6 +5518,7 @@ export function modelAddModeDefaults(state, providers = []) {
     const provider = String(state.provider || '').trim();
     return {
       ...state,
+      original_provider: '',
       provider: provider.toLowerCase().includes('grok') ? provider : grokOAuthDefaults.provider,
       label: state.label || 'Grok',
       template_provider: 'grok',
@@ -5473,17 +5533,40 @@ export function modelAddModeDefaults(state, providers = []) {
       account_name: state.account_name || grokOAuthDefaults.account_name
     };
   }
+  return modelAddExistingProviderDefaults(state, providers);
+}
+
+function modelAddExistingProviderDefaults(state, providers = [], providerName = '', modelName = '') {
+  const selectedName = String(providerName || state.original_provider || state.provider || '').trim();
+  const provider = providers.find((item) => item.name === selectedName) || providers[0] || null;
+  const providerKey = String(provider?.name || selectedName).trim();
+  const models = Array.isArray(provider?.models) ? provider.models : [];
+  const selectedModel = String(modelName || state.model || models[0] || '').trim();
   return {
     ...state,
-    provider: providers.some((provider) => provider.name === state.provider) ? state.provider : providers[0]?.name || '',
-    label: '',
-    template_provider: '',
-    type: '',
-    auth: '',
-    api: 'chat',
+    mode: 'existing',
+    original_provider: providerKey,
+    provider: providerKey,
+    label: provider?.label || '',
+    template_provider: provider?.template_provider || '',
+    type: provider?.type || '',
+    auth: provider?.auth || '',
+    api: provider?.api || 'chat',
     api_key: '',
-    base_url: ''
+    base_url: provider?.base_url || '',
+    model: selectedModel,
+    use_proxy: provider?.use_proxy === true,
+    request_timeout_seconds: providerNumberDraft(provider, 'request_timeout_seconds', 'requestTimeoutSeconds'),
+    connectivity_timeout_seconds: providerNumberDraft(provider, 'connectivity_timeout_seconds', 'connectivityTimeoutSeconds'),
+    network_disconnect_max_attempts: providerNumberDraft(provider, 'network_disconnect_max_attempts', 'networkDisconnectMaxAttempts'),
+    auto_switch_candidate_pool: Boolean(provider?.auto_switch_candidate_pool || provider?.autoSwitchCandidatePool),
+    discovered_models: []
   };
+}
+
+function providerNumberDraft(provider, ...keys) {
+  const value = numberValue(provider, ...keys);
+  return value > 0 ? String(value) : '';
 }
 
 export function modelOptionsForProvider(providers = [], providerName = '', currentModel = '') {
@@ -5541,6 +5624,7 @@ function modelAddPresetDefaults(state) {
   const preset = providerPresets.find((item) => item.provider === state.preset) || providerPresets[0];
   return {
     ...state,
+    original_provider: '',
     provider: preset.provider,
     label: preset.label,
     template_provider: preset.provider,
@@ -5564,7 +5648,9 @@ function providerPayloadFields(state, fallback = {}) {
     template_provider: String(state.template_provider || fallback.template_provider || fallback.provider || '').trim(),
     use_proxy: Boolean(state.use_proxy),
     request_timeout_seconds: optionalModelTimeout(state.request_timeout_seconds),
-    connectivity_timeout_seconds: optionalModelTimeout(state.connectivity_timeout_seconds)
+    connectivity_timeout_seconds: optionalModelTimeout(state.connectivity_timeout_seconds),
+    network_disconnect_max_attempts: optionalModelTimeout(state.network_disconnect_max_attempts),
+    auto_switch_candidate_pool: Boolean(state.auto_switch_candidate_pool)
   };
 }
 
@@ -5580,11 +5666,23 @@ export function buildModelAddPayload(state, modelConfig) {
   const role = state.role || 'default';
   if (state.mode === 'existing') {
     const providers = modelConfig?.providers || [];
-    return {
+    const provider = String(state.provider || providers[0]?.name || '').trim();
+    const payload = {
       role,
-      provider: String(state.provider || providers[0]?.name || '').trim(),
-      model: String(state.model || '').trim()
+      original_provider: String(state.original_provider || provider).trim(),
+      provider,
+      model: String(state.model || '').trim(),
+      ...providerPayloadFields(state),
+      type: String(state.type || '').trim(),
+      auth: String(state.auth || '').trim(),
+      api: String(state.api || '').trim(),
+      base_url: String(state.base_url || '').trim()
     };
+    const apiKey = String(state.api_key || '').trim();
+    if (apiKey) {
+      payload.api_key = apiKey;
+    }
+    return payload;
   }
   if (state.mode === 'grok_oauth') {
     return {

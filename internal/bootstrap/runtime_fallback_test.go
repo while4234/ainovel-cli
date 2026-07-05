@@ -1,0 +1,301 @@
+package bootstrap
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/llm"
+)
+
+func TestRuntimeAutoSwitchQuotaSwitchesImmediately(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{provider: "p1", model: "m1", errs: []error{errors.New("402 insufficient_quota")}}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m2"}
+	primary := NewSwappableModel("p1", "m1", first)
+	controller := &runtimeFallbackControllerStub{order: []string{"p2"}, models: map[string]agentcore.ChatModel{"p2": second}}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(3), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "p2/m2" {
+		t.Fatalf("response = %q, want p2/m2", got)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
+	}
+	if len(controller.calls) != 1 {
+		t.Fatalf("controller calls = %d, want 1", len(controller.calls))
+	}
+}
+
+func TestRuntimeAutoSwitchNetworkRetriesBeforeSwitching(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{
+		provider: "p1",
+		model:    "m1",
+		errs:     []error{fmt.Errorf("temporary network: %w", agentcore.ErrProviderNetwork)},
+	}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m2"}
+	primary := NewSwappableModel("p1", "m1", first)
+	controller := &runtimeFallbackControllerStub{order: []string{"p2"}, models: map[string]agentcore.ChatModel{"p2": second}}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(3), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "p1/m1" {
+		t.Fatalf("response = %q, want p1/m1", got)
+	}
+	if first.Calls() != 2 || second.Calls() != 0 || len(controller.calls) != 0 {
+		t.Fatalf("calls first=%d second=%d controller=%d", first.Calls(), second.Calls(), len(controller.calls))
+	}
+}
+
+func TestRuntimeAutoSwitchNetworkExhaustionSwitchesCandidate(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{
+		provider: "p1",
+		model:    "m1",
+		errs: []error{
+			fmt.Errorf("temporary network: %w", agentcore.ErrProviderNetwork),
+			fmt.Errorf("temporary network: %w", agentcore.ErrProviderNetwork),
+		},
+	}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m2"}
+	primary := NewSwappableModel("p1", "m1", first)
+	controller := &runtimeFallbackControllerStub{order: []string{"p2"}, models: map[string]agentcore.ChatModel{"p2": second}}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(2), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "p2/m2" {
+		t.Fatalf("response = %q, want p2/m2", got)
+	}
+	if first.Calls() != 2 || second.Calls() != 1 || len(controller.calls) != 1 {
+		t.Fatalf("calls first=%d second=%d controller=%d", first.Calls(), second.Calls(), len(controller.calls))
+	}
+}
+
+func TestRuntimeAutoSwitchTriesEachCandidateOnce(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	networkErr := fmt.Errorf("temporary network: %w", agentcore.ErrProviderNetwork)
+	first := &scriptedRuntimeModel{provider: "p1", model: "m1", errs: []error{networkErr, networkErr}}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m2", errs: []error{networkErr, networkErr}}
+	third := &scriptedRuntimeModel{provider: "p3", model: "m3"}
+	primary := NewSwappableModel("p1", "m1", first)
+	controller := &runtimeFallbackControllerStub{
+		order:  []string{"p2", "p3", "p1"},
+		models: map[string]agentcore.ChatModel{"p2": second, "p3": third, "p1": first},
+	}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(2), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "p3/m3" {
+		t.Fatalf("response = %q, want p3/m3", got)
+	}
+	if first.Calls() != 2 || second.Calls() != 2 || third.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d third=%d", first.Calls(), second.Calls(), third.Calls())
+	}
+	if len(controller.calls) != 2 {
+		t.Fatalf("controller calls = %d, want 2", len(controller.calls))
+	}
+	if attempted := controller.calls[1].attempted; !attempted["p1"] || !attempted["p2"] {
+		t.Fatalf("second controller attempted = %#v, want p1 and p2", attempted)
+	}
+}
+
+func TestRuntimeAutoSwitchExhaustedErrorIsNotRetryable(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{provider: "p1", model: "m1", errs: []error{errors.New("402 insufficient_quota")}}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m2", errs: []error{errors.New("402 insufficient_quota")}}
+	third := &scriptedRuntimeModel{provider: "p3", model: "m3", errs: []error{errors.New("402 insufficient_quota")}}
+	primary := NewSwappableModel("p1", "m1", first)
+	controller := &runtimeFallbackControllerStub{
+		order:  []string{"p2", "p3", "p1"},
+		models: map[string]agentcore.ChatModel{"p2": second, "p3": third, "p1": first},
+	}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(1), controller, nil)
+	_, err := model.Generate(context.Background(), nil, nil)
+	if err == nil {
+		t.Fatal("Generate error = nil, want exhausted error")
+	}
+	retryable, ok := err.(interface{ Retryable() bool })
+	if !ok || retryable.Retryable() {
+		t.Fatalf("error retryable = %T %v, want Retryable false", err, err)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 || third.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d third=%d", first.Calls(), second.Calls(), third.Calls())
+	}
+}
+
+func TestRuntimeAutoSwitchDoesNotSwitchProtectedError(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{provider: "p1", model: "m1", errs: []error{errors.New("invalid request format")}}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m2"}
+	primary := NewSwappableModel("p1", "m1", first)
+	controller := &runtimeFallbackControllerStub{order: []string{"p2"}, models: map[string]agentcore.ChatModel{"p2": second}}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(1), controller, nil)
+	_, err := model.Generate(context.Background(), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid request format") {
+		t.Fatalf("Generate error = %v, want original protected error", err)
+	}
+	if second.Calls() != 0 || len(controller.calls) != 0 {
+		t.Fatalf("protected error switched: second=%d controller=%d", second.Calls(), len(controller.calls))
+	}
+}
+
+func TestRuntimeAutoSwitchCandidateProvidersTreatFallbackBackendsAsPool(t *testing.T) {
+	enabled := true
+	cfg := Config{
+		ModelAutoSwitch: ModelAutoSwitchConfig{
+			Enabled:          &enabled,
+			FallbackBackends: []string{"p3", "p1", "p2", "disabled", "no-key", "no-model", "p2"},
+		},
+		Providers: map[string]ProviderConfig{
+			"p1":       {Type: "openai", APIKey: "sk-1", Models: []string{"m1"}},
+			"p2":       {Type: "openai", APIKey: "sk-2", Models: []string{"m2"}},
+			"p3":       {Type: "openai", APIKey: "sk-3", Models: []string{"m3"}},
+			"disabled": {Type: "openai", APIKey: "sk-disabled", Models: []string{"m4"}, Disabled: true},
+			"no-key":   {Models: []string{"m5"}},
+			"no-model": {Type: "openai", APIKey: "sk-empty"},
+		},
+	}
+
+	got := RuntimeAutoSwitchCandidateProviders(cfg, "p2", map[string]bool{"p3": true})
+	want := []string{"p1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("candidates = %#v, want %#v", got, want)
+	}
+	got = RuntimeAutoSwitchCandidateProviders(cfg, "missing", map[string]bool{})
+	want = []string{"p3", "p1", "p2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("candidates without current position = %#v, want %#v", got, want)
+	}
+	cfg.ModelAutoSwitch.FallbackBackends = nil
+	if got := RuntimeAutoSwitchCandidateProviders(cfg, "p1", nil); len(got) != 0 {
+		t.Fatalf("empty pool candidates = %#v, want empty", got)
+	}
+}
+
+func runtimeFallbackTestConfig(maxAttempts int) ModelAutoSwitchConfig {
+	enabled := true
+	return ModelAutoSwitchConfig{
+		Enabled:            &enabled,
+		FallbackBackends:   []string{"p1", "p2", "p3"},
+		NetworkMaxAttempts: maxAttempts,
+	}
+}
+
+func restoreRuntimeFallbackWait(t *testing.T) {
+	t.Helper()
+	oldDelay := runtimeFallbackDelay
+	oldWait := runtimeFallbackWait
+	runtimeFallbackDelay = func(int) time.Duration { return 0 }
+	runtimeFallbackWait = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() {
+		runtimeFallbackDelay = oldDelay
+		runtimeFallbackWait = oldWait
+	})
+}
+
+type scriptedRuntimeModel struct {
+	mu       sync.Mutex
+	provider string
+	model    string
+	errs     []error
+	calls    int
+}
+
+func (m *scriptedRuntimeModel) Generate(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	call := m.calls
+	m.calls++
+	if call < len(m.errs) && m.errs[call] != nil {
+		return nil, m.errs[call]
+	}
+	return &agentcore.LLMResponse{Message: agentcore.Message{
+		Role:    agentcore.RoleAssistant,
+		Content: []agentcore.ContentBlock{agentcore.TextBlock(m.provider + "/" + m.model)},
+	}}, nil
+}
+
+func (m *scriptedRuntimeModel) GenerateStream(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	resp, err := m.Generate(context.Background(), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan agentcore.StreamEvent, 1)
+	ch <- agentcore.StreamEvent{Type: agentcore.StreamEventDone, Message: resp.Message}
+	close(ch)
+	return ch, nil
+}
+
+func (m *scriptedRuntimeModel) SupportsTools() bool { return true }
+
+func (m *scriptedRuntimeModel) ProviderName() string { return m.provider }
+
+func (m *scriptedRuntimeModel) Info() llm.ModelInfo {
+	return llm.ModelInfo{Provider: m.provider, Name: m.model}
+}
+
+func (m *scriptedRuntimeModel) Calls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
+type runtimeFallbackControllerStub struct {
+	order  []string
+	models map[string]agentcore.ChatModel
+	calls  []runtimeFallbackControllerCall
+}
+
+type runtimeFallbackControllerCall struct {
+	current   ModelRef
+	attempted map[string]bool
+}
+
+func (c *runtimeFallbackControllerStub) SelectRuntimeFallback(_ context.Context, current ModelRef, attempted map[string]bool, _ error) (RuntimeFallbackTarget, bool) {
+	c.calls = append(c.calls, runtimeFallbackControllerCall{current: current, attempted: cloneAttemptedProviders(attempted)})
+	for _, provider := range c.order {
+		if attempted[provider] {
+			continue
+		}
+		model, ok := c.models[provider]
+		if !ok {
+			continue
+		}
+		return RuntimeFallbackTarget{
+			Provider: provider,
+			Model:    "m" + strings.TrimPrefix(provider, "p"),
+			LLM:      model,
+			Reason:   fmt.Sprintf("%s:%s->%s", RuntimeFallbackPoolReasonPrefix, current.Provider, provider),
+		}, true
+	}
+	return RuntimeFallbackTarget{}, false
+}
+
+func responseText(resp *agentcore.LLMResponse) string {
+	if resp == nil {
+		return ""
+	}
+	return resp.Message.TextContent()
+}

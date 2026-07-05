@@ -34,6 +34,10 @@ const (
 	DefaultCoCreateTimeoutSeconds = 60
 	MinCoCreateTimeoutSeconds     = 1
 	MaxCoCreateTimeoutSeconds     = 3600
+
+	DefaultRuntimeNetworkMaxAttempts = 7
+	MinRuntimeNetworkMaxAttempts     = 1
+	MaxRuntimeNetworkMaxAttempts     = 11
 )
 
 // CompactReserveTokens 按 CompactRatio 反算 ReserveTokens 并应用 MinCompactReserve floor：
@@ -79,10 +83,25 @@ func (c Config) CoCreateTimeout() time.Duration {
 	return time.Duration(c.EffectiveCoCreateTimeoutSeconds()) * time.Second
 }
 
+func NormalizeRuntimeNetworkMaxAttempts(attempts int) (int, error) {
+	if attempts == 0 {
+		return DefaultRuntimeNetworkMaxAttempts, nil
+	}
+	if attempts < MinRuntimeNetworkMaxAttempts || attempts > MaxRuntimeNetworkMaxAttempts {
+		return 0, fmt.Errorf(
+			"model_auto_switch.network_max_attempts must be between %d and %d",
+			MinRuntimeNetworkMaxAttempts,
+			MaxRuntimeNetworkMaxAttempts,
+		)
+	}
+	return attempts, nil
+}
+
 // ProviderConfig 定义单个 LLM 提供商的凭证。
 type ProviderConfig struct {
 	Label                      string   `json:"label,omitempty"`
 	TemplateProvider           string   `json:"template_provider,omitempty"`
+	Disabled                   bool     `json:"disabled,omitempty"`
 	UseProxy                   *bool    `json:"use_proxy,omitempty"`
 	RequestTimeoutSeconds      int      `json:"request_timeout_seconds,omitempty"`
 	ConnectivityTimeoutSeconds int      `json:"connectivity_timeout_seconds,omitempty"`
@@ -139,6 +158,27 @@ type ModelRef struct {
 }
 
 // RoleConfig 定义单个角色的模型覆盖。
+type ModelAutoSwitchConfig struct {
+	Enabled            *bool    `json:"enabled,omitempty"`
+	FallbackBackends   []string `json:"fallback_backends,omitempty"`
+	NetworkMaxAttempts int      `json:"network_max_attempts,omitempty"`
+}
+
+func (c ModelAutoSwitchConfig) IsEnabled() bool {
+	if c.Enabled != nil {
+		return *c.Enabled
+	}
+	return len(c.FallbackBackends) > 0
+}
+
+func (c ModelAutoSwitchConfig) EffectiveNetworkMaxAttempts() int {
+	attempts, err := NormalizeRuntimeNetworkMaxAttempts(c.NetworkMaxAttempts)
+	if err != nil {
+		return DefaultRuntimeNetworkMaxAttempts
+	}
+	return attempts
+}
+
 type RoleConfig struct {
 	Provider  string     `json:"provider"`            // 主 provider 名称（Providers map 中的 key）
 	Model     string     `json:"model"`               // 主模型名（原样透传，不做任何解析）
@@ -185,8 +225,9 @@ type Config struct {
 	// 角色未单独配置 reasoning_effort 时回落到此值。
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// CoCreateTimeoutSeconds 是 Web 共创单次模型调用超时；0 表示使用默认 60 秒。
-	CoCreateTimeoutSeconds int    `json:"cocreate_timeout_seconds,omitempty"`
-	Proxy                  string `json:"proxy,omitempty"`
+	CoCreateTimeoutSeconds int                   `json:"cocreate_timeout_seconds,omitempty"`
+	Proxy                  string                `json:"proxy,omitempty"`
+	ModelAutoSwitch        ModelAutoSwitchConfig `json:"model_auto_switch,omitzero"`
 
 	// Provider 凭证库
 	Providers map[string]ProviderConfig `json:"providers,omitempty"`
@@ -243,6 +284,9 @@ func (c *Config) ValidateBase() error {
 	if _, err := NormalizeCoCreateTimeoutSeconds(c.CoCreateTimeoutSeconds); err != nil {
 		return err
 	}
+	if _, err := NormalizeRuntimeNetworkMaxAttempts(c.ModelAutoSwitch.NetworkMaxAttempts); err != nil {
+		return err
+	}
 	if err := validateConfigText("proxy", c.Proxy); err != nil {
 		return err
 	}
@@ -281,6 +325,12 @@ func (c *Config) ValidateBase() error {
 	}
 
 	// 校验角色覆盖
+	for i, provider := range c.ModelAutoSwitch.FallbackBackends {
+		if err := validateConfigText(fmt.Sprintf("model_auto_switch.fallback_backends[%d]", i), provider); err != nil {
+			return err
+		}
+	}
+
 	for role, rc := range c.Roles {
 		if err := validateConfigText("role name", role); err != nil {
 			return err

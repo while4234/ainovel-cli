@@ -28,6 +28,22 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source change: branch `codex/project-runtime-model-fallback`, pending commit
+  `feat: add project runtime model fallback`:
+  Runtime model fallback is project-scoped and switches all project agents
+  together without mutating the global default provider/model. Quota/auth/rate
+  limit/overloaded runtime fallback errors switch candidates immediately, while
+  network or stream interruptions use the configured per-model network attempt
+  budget first. Web model configuration now uses one configure flow for adding
+  and editing providers, including provider key/name changes, key replacement
+  with blank-key preservation, Base URL/API/auth/proxy/timeouts, and candidate
+  pool membership. Manual default model switches now cascade to coordinator,
+  architect, writer, and editor routes. Validation passed for focused and full
+  changed-package Go tests, full Web UI tests, Vite build, and
+  `git diff --check` with CRLF warnings only. Local Web was rebuilt/restarted
+  on `http://127.0.0.1:9898` with runtime root
+  `C:\Users\RondleLiu\.ainovel\novels-preview` as PID `56176`; HTTP smoke
+  checks for `/`, `/api/runtime`, and `/api/models` returned healthy responses.
 - Latest source change: current local commit
   `fix: accept legacy timeline strings`:
   `domain.TimelineEvent` now accepts legacy JSON string entries by preserving

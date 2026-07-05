@@ -95,9 +95,11 @@ type projectHost interface {
 	ConfiguredProviders() []string
 	ConfiguredModels(string) []string
 	ProviderConfig(string) (bootstrap.ProviderConfig, bool)
+	ModelAutoSwitchConfig() bootstrap.ModelAutoSwitchConfig
 	CurrentModelSelection(string) (string, string, bool)
 	SwitchModel(string, string, string) error
 	AddProviderModel(string, string, bootstrap.ProviderConfig, string) error
+	ConfigureProviderModel(context.Context, host.ProviderModelUpdate) error
 	TestProviderModel(context.Context, string, string, bootstrap.ProviderConfig, string) (host.ProviderModelTestResult, error)
 	DiscoverProviderModels(context.Context, string, bootstrap.ProviderConfig, string) (host.ProviderModelDiscoveryResult, error)
 	RemoveProviderModel(string, string) error
@@ -312,10 +314,11 @@ func (s *ProjectSession) Snapshot() host.UISnapshot {
 
 func (s *ProjectSession) ModelConfig() apiModelConfig {
 	providers := s.host.ConfiguredProviders()
+	autoSwitch := s.host.ModelAutoSwitchConfig()
 	outProviders := make([]apiModelProvider, 0, len(providers))
 	for _, provider := range providers {
 		pc, _ := s.host.ProviderConfig(provider)
-		outProviders = append(outProviders, apiProviderFromConfig(provider, pc, s.host.ConfiguredModels(provider)))
+		outProviders = append(outProviders, apiProviderFromConfig(provider, pc, s.host.ConfiguredModels(provider), autoSwitch))
 	}
 	roles := make([]apiModelRoute, 0, len(modelConfigRoles))
 	for _, role := range modelConfigRoles {
@@ -341,7 +344,8 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 			"xhigh",
 			"max",
 		},
-		ThinkingRule: "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
+		ThinkingRule:    "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
+		ModelAutoSwitch: apiModelAutoSwitchFromConfig(autoSwitch),
 	}
 }
 
@@ -384,6 +388,22 @@ func (s *ProjectSession) AddOpenAICompatibleModel(role, provider, model, baseURL
 
 func (s *ProjectSession) AddProviderModel(role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, error) {
 	if err := s.host.AddProviderModel(normalizeModelRole(role), provider, pc, model); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) ConfigureProviderModel(ctx context.Context, req modelProviderRequest) (apiModelConfig, error) {
+	if err := s.host.ConfigureProviderModel(ctx, host.ProviderModelUpdate{
+		Role:                    normalizeModelRole(req.Role),
+		OriginalProvider:        req.OriginalProvider,
+		Provider:                req.Provider,
+		Model:                   req.Model,
+		ProviderConfig:          req.providerConfig(),
+		NetworkMaxAttempts:      req.NetworkDisconnectMaxAttempts,
+		AutoSwitchCandidatePool: req.AutoSwitchCandidatePool,
+	}); err != nil {
 		return apiModelConfig{}, err
 	}
 	s.AppendSnapshot()

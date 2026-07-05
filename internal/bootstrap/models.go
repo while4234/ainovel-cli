@@ -111,18 +111,19 @@ func (m *SwappableModel) Current() (provider, name string) {
 
 // ModelSet 持有按角色分配的模型实例，未配置的角色回退到默认模型。
 type ModelSet struct {
-	Default   *SwappableModel
-	models    map[string]*SwappableModel
-	fallbacks map[string][]modelTarget
-	config    Config
+	Default           *SwappableModel
+	models            map[string]*SwappableModel
+	fallbacks         map[string][]modelTarget
+	config            Config
+	runtimeController RuntimeFallbackController
 }
 
 // ForRole 返回指定角色的模型，未配置时返回默认模型。
 func (ms *ModelSet) ForRole(role string) agentcore.ChatModel {
 	if m, ok := ms.models[role]; ok {
-		return m
+		return newRuntimeFallbackModel(role, m, m, ms.config.ModelAutoSwitch, ms.runtimeController, nil)
 	}
-	return ms.Default
+	return newRuntimeFallbackModel(role, ms.Default, ms.Default, ms.config.ModelAutoSwitch, ms.runtimeController, nil)
 }
 
 // ForRoleWithFailover 返回带有单次请求级 fallback 的角色模型。
@@ -130,18 +131,23 @@ func (ms *ModelSet) ForRole(role string) agentcore.ChatModel {
 func (ms *ModelSet) ForRoleWithFailover(role string, report FailoverReporter) agentcore.ChatModel {
 	primary, ok := ms.models[role]
 	if !ok {
-		return ms.Default
+		return newRuntimeFallbackModel(role, ms.Default, ms.Default, ms.config.ModelAutoSwitch, ms.runtimeController, report)
 	}
 	targets := ms.fallbacks[role]
 	if len(targets) == 0 {
-		return primary
+		return newRuntimeFallbackModel(role, primary, primary, ms.config.ModelAutoSwitch, ms.runtimeController, report)
 	}
-	return &failoverModel{
+	base := &failoverModel{
 		role:      role,
 		primary:   primary,
 		fallbacks: append([]modelTarget(nil), targets...),
 		report:    report,
 	}
+	return newRuntimeFallbackModel(role, primary, base, ms.config.ModelAutoSwitch, ms.runtimeController, report)
+}
+
+func (ms *ModelSet) SetRuntimeFallbackController(controller RuntimeFallbackController) {
+	ms.runtimeController = controller
 }
 
 // Summary 返回模型分配摘要（供日志使用）。
@@ -254,6 +260,9 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 
 	if role == "" || role == "default" {
 		ms.Default.Swap(provider, model, next)
+		ms.config.Provider = provider
+		ms.config.ModelName = model
+		ms.config.RememberModelCandidate(provider, model)
 		return nil
 	}
 
@@ -263,9 +272,25 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 
 	if existing, ok := ms.models[role]; ok {
 		existing.Swap(provider, model, next)
+		if ms.config.Roles == nil {
+			ms.config.Roles = make(map[string]RoleConfig)
+		}
+		rc := ms.config.Roles[role]
+		rc.Provider = provider
+		rc.Model = model
+		ms.config.Roles[role] = rc
+		ms.config.RememberModelCandidate(provider, model)
 		return nil
 	}
 	ms.models[role] = NewSwappableModel(provider, model, next)
+	if ms.config.Roles == nil {
+		ms.config.Roles = make(map[string]RoleConfig)
+	}
+	rc := ms.config.Roles[role]
+	rc.Provider = provider
+	rc.Model = model
+	ms.config.Roles[role] = rc
+	ms.config.RememberModelCandidate(provider, model)
 	return nil
 }
 

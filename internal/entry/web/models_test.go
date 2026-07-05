@@ -60,6 +60,11 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 	if got := server.currentConfig().ModelName; got != "gpt-next" {
 		t.Fatalf("server default model = %q, want gpt-next", got)
 	}
+	for _, role := range []string{"coordinator", "architect", "writer", "editor"} {
+		if route := findModelRoute(switched.Models.Roles, role); route.Provider != "openai" || route.Model != "gpt-next" {
+			t.Fatalf("%s route after default switch = %+v", role, route)
+		}
+	}
 
 	saved, err := bootstrap.LoadConfigFile(filepath.Join(home, ".ainovel", "config.json"))
 	if err != nil {
@@ -67,6 +72,11 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 	}
 	if saved.Provider != "openai" || saved.ModelName != "gpt-next" {
 		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
+	}
+	for _, role := range []string{"coordinator", "architect", "writer", "editor"} {
+		if rc := saved.Roles[role]; rc.Provider != "openai" || rc.Model != "gpt-next" {
+			t.Fatalf("saved %s route = %+v", role, rc)
+		}
 	}
 
 	manifest, err := server.store.CreateProject("Global Default")
@@ -228,6 +238,98 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	}
 }
 
+func TestGlobalModelEditRenamesProviderAndPreservesBlankAPIKey(t *testing.T) {
+	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
+		return nil
+	})
+	t.Cleanup(restore)
+
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
+	cfg.Providers["custom-openai"] = bootstrap.ProviderConfig{
+		Label:   "Wrong",
+		Type:    "openai",
+		API:     "chat",
+		APIKey:  "sk-secret",
+		BaseURL: "https://old.example/v1",
+		Models:  []string{"old-model"},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	var edited struct {
+		Models apiModelConfig `json:"models"`
+	}
+	body := `{"role":"default","original_provider":"custom-openai","provider":"fixed-openai","model":"new-model","label":"Fixed","type":"openai","api":"responses","base_url":"https://new.example/v1","network_disconnect_max_attempts":4,"auto_switch_candidate_pool":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/models/add", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("model edit status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-secret") {
+		t.Fatalf("model edit response leaked api key: %s", rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &edited); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	provider := findModelProvider(edited.Models.Providers, "fixed-openai")
+	if provider.Name == "" || !provider.APIKeyConfigured || provider.NetworkDisconnectMaxAttempts != 4 || !provider.AutoSwitchCandidatePool {
+		t.Fatalf("edited provider response = %+v", provider)
+	}
+	if route := findModelRoute(edited.Models.Roles, "writer"); route.Provider != "fixed-openai" || route.Model != "new-model" {
+		t.Fatalf("writer route after default edit = %+v", route)
+	}
+	next := server.currentConfig()
+	if _, ok := next.Providers["custom-openai"]; ok {
+		t.Fatal("old provider key still configured")
+	}
+	pc := next.Providers["fixed-openai"]
+	if pc.APIKey != "sk-secret" || pc.Label != "Fixed" || pc.API != "responses" || pc.BaseURL != "https://new.example/v1" {
+		t.Fatalf("edited provider config = %+v", pc)
+	}
+	if next.ModelAutoSwitch.EffectiveNetworkMaxAttempts() != 4 || !modelAutoSwitchHasProvider(next.ModelAutoSwitch, "fixed-openai") {
+		t.Fatalf("auto switch config = %+v", next.ModelAutoSwitch)
+	}
+	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	if saved.Providers["fixed-openai"].APIKey != "sk-secret" {
+		t.Fatalf("saved provider = %+v", saved.Providers["fixed-openai"])
+	}
+}
+
+func TestGlobalModelEditProbeFailureDoesNotPersist(t *testing.T) {
+	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
+		return errors.New("probe rejected")
+	})
+	t.Cleanup(restore)
+
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
+	cfg.Providers["custom-openai"] = bootstrap.ProviderConfig{
+		Type:   "openai",
+		APIKey: "sk-secret",
+		Models: []string{"old-model"},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/models/add", bytes.NewBufferString(`{"role":"default","original_provider":"custom-openai","provider":"fixed-openai","model":"new-model","type":"openai"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("model edit status = %d body=%s, want failure", rec.Code, rec.Body.String())
+	}
+	if _, ok := server.currentConfig().Providers["fixed-openai"]; ok {
+		t.Fatal("failed probe persisted renamed provider")
+	}
+	if server.currentConfig().Providers["custom-openai"].APIKey != "sk-secret" {
+		t.Fatalf("original provider changed: %+v", server.currentConfig().Providers["custom-openai"])
+	}
+}
+
 func TestGlobalModelTestDoesNotPersistOrLeakAPIKey(t *testing.T) {
 	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
 		return errors.New("probe failed for sk-secret")
@@ -330,6 +432,15 @@ func modelConfigHasProvider(models apiModelConfig, providerName, modelName strin
 	return false
 }
 
+func findModelProvider(providers []apiModelProvider, name string) apiModelProvider {
+	for _, provider := range providers {
+		if provider.Name == name {
+			return provider
+		}
+	}
+	return apiModelProvider{}
+}
+
 func findModelRoute(routes []apiModelRoute, role string) apiModelRoute {
 	for _, route := range routes {
 		if route.Role == role {
@@ -337,6 +448,34 @@ func findModelRoute(routes []apiModelRoute, role string) apiModelRoute {
 		}
 	}
 	return apiModelRoute{}
+}
+
+func TestProjectModelConfigureExistingPassesRetryAndPoolSettings(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Existing Model Configure")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	body := `{"role":"default","original_provider":"openrouter","provider":"fixed-router","model":"model-b","label":"Fixed Router","type":"openai","base_url":"https://router.example/v1","network_disconnect_max_attempts":5,"auto_switch_candidate_pool":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/models/add", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("model configure status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.configureOriginalProvider != "openrouter" || fake.configureProviderName != "fixed-router" || fake.configureProviderModel != "model-b" {
+		t.Fatalf("configure args original=%q provider=%q model=%q", fake.configureOriginalProvider, fake.configureProviderName, fake.configureProviderModel)
+	}
+	if fake.configureProviderConfig.Label != "Fixed Router" || fake.configureProviderConfig.BaseURL != "https://router.example/v1" || fake.configureProviderConfig.Type != "openai" {
+		t.Fatalf("configure provider config = %+v", fake.configureProviderConfig)
+	}
+	if fake.configureNetworkAttempts != 5 || !fake.configureAutoSwitchPool {
+		t.Fatalf("configure retry/pool attempts=%d pool=%v", fake.configureNetworkAttempts, fake.configureAutoSwitchPool)
+	}
 }
 
 func TestProjectModelAddExistingProviderUsesEmptyConfig(t *testing.T) {
@@ -355,11 +494,11 @@ func TestProjectModelAddExistingProviderUsesEmptyConfig(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("model add status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.addProviderRole != "writer" || fake.addProviderName != "openrouter" || fake.addProviderModel != "new-model" {
-		t.Fatalf("add model args role=%q provider=%q model=%q", fake.addProviderRole, fake.addProviderName, fake.addProviderModel)
+	if fake.configureProviderRole != "writer" || fake.configureProviderName != "openrouter" || fake.configureProviderModel != "new-model" {
+		t.Fatalf("configure model args role=%q provider=%q model=%q", fake.configureProviderRole, fake.configureProviderName, fake.configureProviderModel)
 	}
-	if fake.addProviderConfig.Type != "" || fake.addProviderConfig.APIKey != "" || len(fake.addProviderConfig.Models) != 0 {
-		t.Fatalf("existing provider should use empty config: %+v", fake.addProviderConfig)
+	if fake.configureProviderConfig.Type != "" || fake.configureProviderConfig.APIKey != "" || len(fake.configureProviderConfig.Models) != 0 {
+		t.Fatalf("existing provider should use empty config: %+v", fake.configureProviderConfig)
 	}
 }
 
@@ -379,20 +518,20 @@ func TestProjectModelAddPresetPassesProviderConfig(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("model add status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.addProviderName != "anthropic" || fake.addProviderConfig.Type != "anthropic" || fake.addProviderConfig.APIKey != "sk-test" {
-		t.Fatalf("preset provider config = %+v provider=%q", fake.addProviderConfig, fake.addProviderName)
+	if fake.configureProviderName != "anthropic" || fake.configureProviderConfig.Type != "anthropic" || fake.configureProviderConfig.APIKey != "sk-test" {
+		t.Fatalf("preset provider config = %+v provider=%q", fake.configureProviderConfig, fake.configureProviderName)
 	}
-	if fake.addProviderConfig.Label != "Anthropic" || fake.addProviderConfig.TemplateProvider != "anthropic" {
-		t.Fatalf("preset provider metadata = %+v", fake.addProviderConfig)
+	if fake.configureProviderConfig.Label != "Anthropic" || fake.configureProviderConfig.TemplateProvider != "anthropic" {
+		t.Fatalf("preset provider metadata = %+v", fake.configureProviderConfig)
 	}
-	if fake.addProviderConfig.UseProxy == nil || *fake.addProviderConfig.UseProxy {
-		t.Fatalf("preset use_proxy = %#v, want explicit false", fake.addProviderConfig.UseProxy)
+	if fake.configureProviderConfig.UseProxy == nil || *fake.configureProviderConfig.UseProxy {
+		t.Fatalf("preset use_proxy = %#v, want explicit false", fake.configureProviderConfig.UseProxy)
 	}
-	if fake.addProviderConfig.RequestTimeoutSeconds != 120 || fake.addProviderConfig.ConnectivityTimeoutSeconds != 12 {
-		t.Fatalf("preset timeouts = %d/%d", fake.addProviderConfig.RequestTimeoutSeconds, fake.addProviderConfig.ConnectivityTimeoutSeconds)
+	if fake.configureProviderConfig.RequestTimeoutSeconds != 120 || fake.configureProviderConfig.ConnectivityTimeoutSeconds != 12 {
+		t.Fatalf("preset timeouts = %d/%d", fake.configureProviderConfig.RequestTimeoutSeconds, fake.configureProviderConfig.ConnectivityTimeoutSeconds)
 	}
-	if len(fake.addProviderConfig.Models) != 1 || fake.addProviderConfig.Models[0] != "claude-sonnet-4-5" {
-		t.Fatalf("preset model list = %+v", fake.addProviderConfig.Models)
+	if len(fake.configureProviderConfig.Models) != 0 || fake.configureProviderModel != "claude-sonnet-4-5" {
+		t.Fatalf("preset model list = %+v model=%q", fake.configureProviderConfig.Models, fake.configureProviderModel)
 	}
 }
 
@@ -412,17 +551,17 @@ func TestProjectModelAddGrokOAuthPassesProviderConfig(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("model add status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.addProviderName != "grok-oauth" || fake.addProviderModel != "grok-4.3-latest" {
-		t.Fatalf("grok add args provider=%q model=%q", fake.addProviderName, fake.addProviderModel)
+	if fake.configureProviderName != "grok-oauth" || fake.configureProviderModel != "grok-4.3-latest" {
+		t.Fatalf("grok add args provider=%q model=%q", fake.configureProviderName, fake.configureProviderModel)
 	}
-	if fake.addProviderConfig.Type != "grok" || fake.addProviderConfig.Auth != bootstrap.ProviderAuthGrokOAuth || fake.addProviderConfig.AccountID != "work" {
-		t.Fatalf("grok provider config = %+v", fake.addProviderConfig)
+	if fake.configureProviderConfig.Type != "grok" || fake.configureProviderConfig.Auth != bootstrap.ProviderAuthGrokOAuth || fake.configureProviderConfig.AccountID != "work" {
+		t.Fatalf("grok provider config = %+v", fake.configureProviderConfig)
 	}
-	if len(fake.addProviderConfig.Models) != 1 || fake.addProviderConfig.Models[0] != "grok-4.3-latest" {
-		t.Fatalf("grok model list = %+v", fake.addProviderConfig.Models)
+	if len(fake.configureProviderConfig.Models) != 0 {
+		t.Fatalf("grok model list = %+v", fake.configureProviderConfig.Models)
 	}
-	if fake.addProviderConfig.APIKey != "" {
-		t.Fatalf("grok_oauth config should not receive api key: %+v", fake.addProviderConfig)
+	if fake.configureProviderConfig.APIKey != "" {
+		t.Fatalf("grok_oauth config should not receive api key: %+v", fake.configureProviderConfig)
 	}
 }
 

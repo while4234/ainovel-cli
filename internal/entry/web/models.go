@@ -24,22 +24,32 @@ type apiModelConfig struct {
 	ThinkingLevels         []string           `json:"thinking_levels"`
 	ThinkingRule           string             `json:"thinking_rule"`
 	CoCreateTimeoutSeconds int                `json:"cocreate_timeout_seconds"`
+	ModelAutoSwitch        apiModelAutoSwitch `json:"model_auto_switch"`
+}
+
+type apiModelAutoSwitch struct {
+	Enabled            bool     `json:"enabled"`
+	FallbackBackends   []string `json:"fallback_backends"`
+	NetworkMaxAttempts int      `json:"network_max_attempts"`
 }
 
 type apiModelProvider struct {
-	Name                       string   `json:"name"`
-	Label                      string   `json:"label,omitempty"`
-	TemplateProvider           string   `json:"template_provider,omitempty"`
-	Type                       string   `json:"type,omitempty"`
-	Auth                       string   `json:"auth,omitempty"`
-	AccountID                  string   `json:"account_id,omitempty"`
-	API                        string   `json:"api,omitempty"`
-	BaseURL                    string   `json:"base_url,omitempty"`
-	UseProxy                   *bool    `json:"use_proxy,omitempty"`
-	RequestTimeoutSeconds      int      `json:"request_timeout_seconds,omitempty"`
-	ConnectivityTimeoutSeconds int      `json:"connectivity_timeout_seconds,omitempty"`
-	APIKeyConfigured           bool     `json:"key_configured,omitempty"`
-	Models                     []string `json:"models"`
+	Name                         string   `json:"name"`
+	Label                        string   `json:"label,omitempty"`
+	TemplateProvider             string   `json:"template_provider,omitempty"`
+	Disabled                     bool     `json:"disabled,omitempty"`
+	Type                         string   `json:"type,omitempty"`
+	Auth                         string   `json:"auth,omitempty"`
+	AccountID                    string   `json:"account_id,omitempty"`
+	API                          string   `json:"api,omitempty"`
+	BaseURL                      string   `json:"base_url,omitempty"`
+	UseProxy                     *bool    `json:"use_proxy,omitempty"`
+	RequestTimeoutSeconds        int      `json:"request_timeout_seconds,omitempty"`
+	ConnectivityTimeoutSeconds   int      `json:"connectivity_timeout_seconds,omitempty"`
+	APIKeyConfigured             bool     `json:"key_configured,omitempty"`
+	Models                       []string `json:"models"`
+	NetworkDisconnectMaxAttempts int      `json:"network_disconnect_max_attempts,omitempty"`
+	AutoSwitchCandidatePool      bool     `json:"auto_switch_candidate_pool,omitempty"`
 }
 
 type apiModelRoute struct {
@@ -75,26 +85,31 @@ type modelDeleteRequest struct {
 }
 
 type modelProviderRequest struct {
-	Role                       string `json:"role"`
-	Provider                   string `json:"provider"`
-	Model                      string `json:"model"`
-	Label                      string `json:"label"`
-	TemplateProvider           string `json:"template_provider"`
-	Type                       string `json:"type"`
-	Auth                       string `json:"auth"`
-	AccountID                  string `json:"account_id"`
-	APIKey                     string `json:"api_key"`
-	BaseURL                    string `json:"base_url"`
-	API                        string `json:"api"`
-	UseProxy                   *bool  `json:"use_proxy"`
-	RequestTimeoutSeconds      int    `json:"request_timeout_seconds"`
-	ConnectivityTimeoutSeconds int    `json:"connectivity_timeout_seconds"`
+	Role                         string `json:"role"`
+	OriginalProvider             string `json:"original_provider"`
+	Provider                     string `json:"provider"`
+	Model                        string `json:"model"`
+	Label                        string `json:"label"`
+	TemplateProvider             string `json:"template_provider"`
+	Disabled                     bool   `json:"disabled"`
+	Type                         string `json:"type"`
+	Auth                         string `json:"auth"`
+	AccountID                    string `json:"account_id"`
+	APIKey                       string `json:"api_key"`
+	BaseURL                      string `json:"base_url"`
+	API                          string `json:"api"`
+	UseProxy                     *bool  `json:"use_proxy"`
+	RequestTimeoutSeconds        int    `json:"request_timeout_seconds"`
+	ConnectivityTimeoutSeconds   int    `json:"connectivity_timeout_seconds"`
+	NetworkDisconnectMaxAttempts int    `json:"network_disconnect_max_attempts"`
+	AutoSwitchCandidatePool      bool   `json:"auto_switch_candidate_pool"`
 }
 
 func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
 	pc := bootstrap.ProviderConfig{
 		Label:                      strings.TrimSpace(r.Label),
 		TemplateProvider:           strings.TrimSpace(r.TemplateProvider),
+		Disabled:                   r.Disabled,
 		Type:                       strings.TrimSpace(r.Type),
 		Auth:                       strings.TrimSpace(r.Auth),
 		AccountID:                  strings.TrimSpace(r.AccountID),
@@ -157,9 +172,11 @@ func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "provider is not configured")
 		return
 	}
-	cfg.Provider = provider
-	cfg.ModelName = model
-	cfg.RememberModelCandidate(provider, model)
+	cfg, err := host.SelectProviderModelInConfig(cfg, "default", provider, model)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
 	if err := cfg.ValidateBase(); err != nil {
 		writeProjectLifecycleError(w, err)
 		return
@@ -242,7 +259,7 @@ func (s *Server) handleModelAdd(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	models, runtime, err := s.addGlobalProviderModelWithProbe(r.Context(), req.Role, req.Provider, req.Model, req.providerConfig())
+	models, runtime, err := s.configureGlobalProviderModel(r.Context(), req)
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return
@@ -337,18 +354,9 @@ func (s *Server) addGlobalProviderModel(role, provider, model string, pc bootstr
 		pc.Models = []string{model}
 		cfg.Providers[provider] = pc
 	}
-	cfg.RememberModelCandidate(provider, model)
-	if role == "" || role == "default" {
-		cfg.Provider = provider
-		cfg.ModelName = model
-	} else {
-		if cfg.Roles == nil {
-			cfg.Roles = make(map[string]bootstrap.RoleConfig)
-		}
-		rc := cfg.Roles[role]
-		rc.Provider = provider
-		rc.Model = model
-		cfg.Roles[role] = rc
+	cfg, err := host.SelectProviderModelInConfig(cfg, role, provider, model)
+	if err != nil {
+		return apiModelConfig{}, nil, err
 	}
 	if err := cfg.ValidateBase(); err != nil {
 		return apiModelConfig{}, nil, err
@@ -381,6 +389,26 @@ func (s *Server) addGlobalProviderModelWithProbe(ctx context.Context, role, prov
 	return s.globalModelConfig(next), s.runtimePayload(next), nil
 }
 
+func (s *Server) configureGlobalProviderModel(ctx context.Context, req modelProviderRequest) (apiModelConfig, map[string]any, error) {
+	next, err := host.ConfigureProviderModelInConfig(ctx, s.currentConfig(), host.ProviderModelUpdate{
+		Role:                    normalizeModelRole(req.Role),
+		OriginalProvider:        req.OriginalProvider,
+		Provider:                req.Provider,
+		Model:                   req.Model,
+		ProviderConfig:          req.providerConfig(),
+		NetworkMaxAttempts:      req.NetworkDisconnectMaxAttempts,
+		AutoSwitchCandidatePool: req.AutoSwitchCandidatePool,
+	})
+	if err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	if err := saveWebConfig(next); err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	s.setCurrentConfig(next)
+	return s.globalModelConfig(next), s.runtimePayload(next), nil
+}
+
 func globalModelRoleAllowed(role string) bool {
 	for _, known := range modelConfigRoles {
 		if role == known {
@@ -394,7 +422,7 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 	providers := configuredModelProviders(cfg)
 	outProviders := make([]apiModelProvider, 0, len(providers))
 	for _, provider := range providers {
-		outProviders = append(outProviders, apiProviderFromConfig(provider, cfg.Providers[provider], cfg.CandidateModels(provider)))
+		outProviders = append(outProviders, apiProviderFromConfig(provider, cfg.Providers[provider], cfg.CandidateModels(provider), cfg.ModelAutoSwitch))
 	}
 	roles := make([]apiModelRoute, 0, len(modelConfigRoles))
 	for _, role := range modelConfigRoles {
@@ -423,26 +451,48 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 		ThinkingLevels:         []string{"", "off", "low", "medium", "high", "xhigh", "max"},
 		ThinkingRule:           "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
 		CoCreateTimeoutSeconds: cfg.EffectiveCoCreateTimeoutSeconds(),
+		ModelAutoSwitch:        apiModelAutoSwitchFromConfig(cfg.ModelAutoSwitch),
 	}
 }
 
-func apiProviderFromConfig(name string, pc bootstrap.ProviderConfig, models []string) apiModelProvider {
+func apiProviderFromConfig(name string, pc bootstrap.ProviderConfig, models []string, autoSwitch bootstrap.ModelAutoSwitchConfig) apiModelProvider {
 	useProxy := cloneBoolPtr(pc.UseProxy)
 	return apiModelProvider{
-		Name:                       name,
-		Label:                      pc.Label,
-		TemplateProvider:           pc.TemplateProvider,
-		Type:                       pc.Type,
-		Auth:                       pc.Auth,
-		AccountID:                  pc.AccountID,
-		API:                        pc.API,
-		BaseURL:                    pc.BaseURL,
-		UseProxy:                   useProxy,
-		RequestTimeoutSeconds:      pc.RequestTimeoutSeconds,
-		ConnectivityTimeoutSeconds: pc.ConnectivityTimeoutSeconds,
-		APIKeyConfigured:           strings.TrimSpace(pc.APIKey) != "",
-		Models:                     append([]string(nil), models...),
+		Name:                         name,
+		Label:                        pc.Label,
+		TemplateProvider:             pc.TemplateProvider,
+		Disabled:                     pc.Disabled,
+		Type:                         pc.Type,
+		Auth:                         pc.Auth,
+		AccountID:                    pc.AccountID,
+		API:                          pc.API,
+		BaseURL:                      pc.BaseURL,
+		UseProxy:                     useProxy,
+		RequestTimeoutSeconds:        pc.RequestTimeoutSeconds,
+		ConnectivityTimeoutSeconds:   pc.ConnectivityTimeoutSeconds,
+		APIKeyConfigured:             strings.TrimSpace(pc.APIKey) != "",
+		Models:                       append([]string(nil), models...),
+		NetworkDisconnectMaxAttempts: autoSwitch.EffectiveNetworkMaxAttempts(),
+		AutoSwitchCandidatePool:      modelAutoSwitchHasProvider(autoSwitch, name),
 	}
+}
+
+func apiModelAutoSwitchFromConfig(cfg bootstrap.ModelAutoSwitchConfig) apiModelAutoSwitch {
+	return apiModelAutoSwitch{
+		Enabled:            cfg.IsEnabled(),
+		FallbackBackends:   append([]string(nil), cfg.FallbackBackends...),
+		NetworkMaxAttempts: cfg.EffectiveNetworkMaxAttempts(),
+	}
+}
+
+func modelAutoSwitchHasProvider(cfg bootstrap.ModelAutoSwitchConfig, provider string) bool {
+	provider = strings.TrimSpace(provider)
+	for _, candidate := range cfg.FallbackBackends {
+		if strings.TrimSpace(candidate) == provider {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneBoolPtr(value *bool) *bool {
@@ -595,11 +645,7 @@ func (s *Server) handleProjectModelAdd(w http.ResponseWriter, r *http.Request, i
 		writeProjectSessionError(w, err)
 		return
 	}
-	pc := req.providerConfig()
-	if !providerConfigRequestIsEmpty(pc) {
-		pc.Models = []string{strings.TrimSpace(req.Model)}
-	}
-	models, err := session.AddProviderModel(req.Role, req.Provider, req.Model, pc)
+	models, err := session.ConfigureProviderModel(r.Context(), req)
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return
@@ -684,6 +730,7 @@ func providerConfigRequestIsEmpty(pc bootstrap.ProviderConfig) bool {
 	return pc.Type == "" &&
 		pc.Label == "" &&
 		pc.TemplateProvider == "" &&
+		!pc.Disabled &&
 		pc.UseProxy == nil &&
 		pc.RequestTimeoutSeconds == 0 &&
 		pc.ConnectivityTimeoutSeconds == 0 &&
