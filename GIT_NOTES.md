@@ -28,6 +28,22 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source change: current local commit
+  `fix: unblock adaptation library save and cocreate shell`:
+  Web adaptation novel-library save now separates row editability from submit
+  readiness, so a freshly analyzed source with an empty library name can still
+  accept a name before enabling the save action. The adaptation save row now
+  labels itself as `保存当前小说到库` while the simulation-profile row keeps
+  `保存当前画像到库`.
+  Web co-create begin/send/revise/decision/commit/cancel no longer owns the
+  global shell `busy` flag; long adaptation co-create briefing requests set a
+  current-project busy state instead, so the left-side new-project flow stays
+  available. Awaited co-create responses capture the project ID and are ignored
+  after switching or creating another project to avoid stale state pollution.
+  Validation passed for focused and full Web UI Vitest, Vite build, focused Go
+  Web tests, `git diff --check`, local Web restart on
+  `http://127.0.0.1:9898` as PID `63112`, and HTTP smoke checks for `/`,
+  `/api/runtime`, and `/api/projects`.
 - Latest integrated change: current local commit
   `fix: stabilize web cocreate and source foundation resume`:
   The final integration includes the concurrent Web/co-create review UI,

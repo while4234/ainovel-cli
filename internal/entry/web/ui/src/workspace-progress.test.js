@@ -11,6 +11,7 @@ import {
   buildExportSuggestedName,
   buildVolumeReviewRevisionPayload,
   canRunAdaptationAnalysis,
+  canSaveAnalyzedNovelToLibrary,
   canRunSimulationAnalysis,
   clearAdaptationProposalSnapshot,
   deriveWorkspaceProgress,
@@ -24,6 +25,7 @@ import {
   getSimulationProfileStatus,
   getSnapshotOutlineRows,
   inferCoCreateIntakeFromInitial,
+  isCoCreateRequestBusy,
   isSimulationProfileActionBusy,
   isProjectRunning,
   resolveCoCreateStructureChoice,
@@ -285,6 +287,30 @@ describe('workspace progress derivation', () => {
       busy: false,
       adaptation: { ...adaptation, analysisStatus: 'running' }
     })).toBe(false);
+  });
+
+  it('lets analyzed adaptation sources accept a new novel library name before saving', () => {
+    const activeProject = { id: 'project-1' };
+    const adaptation = {
+      sourceFile: { relative_path: 'sources/source.txt' },
+      analysisStatus: 'done',
+      librarySaveName: '',
+      libraryLoadedName: ''
+    };
+
+    expect(canSaveAnalyzedNovelToLibrary({ activeProject, busy: false, adaptation })).toBe(true);
+    expect(canSaveAnalyzedNovelToLibrary({
+      activeProject,
+      busy: false,
+      adaptation: { ...adaptation, analysisStatus: 'running' }
+    })).toBe(false);
+    expect(canSaveAnalyzedNovelToLibrary({ activeProject, busy: true, adaptation })).toBe(false);
+  });
+
+  it('treats running co-create as current-project busy without requiring global busy', () => {
+    expect(isCoCreateRequestBusy({ status: 'running' })).toBe(true);
+    expect(isCoCreateRequestBusy({ status: 'waiting' })).toBe(false);
+    expect(isCoCreateRequestBusy({ status: 'started' })).toBe(false);
   });
 
   it('normalizes full outline rows with camel, Pascal, and snake fallback fields', () => {

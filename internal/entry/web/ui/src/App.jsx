@@ -559,6 +559,8 @@ export default function App() {
     () => getCoCreatePlanningReview(snapshot),
     [snapshot]
   );
+  const coCreateRequestBusy = isCoCreateRequestBusy(coCreate);
+  const projectBusy = busy || coCreateRequestBusy;
   const showAdaptationProposalWorkspace = sideView === 'adapt' && adaptationProposalReview.proposalReady;
   const selectedChapterRevisionView = useMemo(
     () => getCompletedBookSelectedChapterView(snapshot, chapterRevision),
@@ -1809,6 +1811,7 @@ export default function App() {
     if (!activeProject?.id) {
       return;
     }
+    const projectId = activeProject.id;
     const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
     let initial = String(options.initial ?? coCreate.input).trim();
     if (kind === 'normal' && !initial) {
@@ -1867,7 +1870,6 @@ export default function App() {
       setCoCreate((previous) => ({ ...previous, error: '先完成原文分析并选择模式' }));
       return;
     }
-    setBusy(true);
     setCoCreate((previous) => ({ ...previous, kind, status: 'running', error: '', startMessage: '', suggestions: [] }));
     try {
       const payload = buildBeginCoCreatePayload({
@@ -1878,13 +1880,17 @@ export default function App() {
         mode: adaptation.mode,
         targetTotalWords
       });
-      const data = await beginCoCreate(activeProject.id, payload);
+      const data = await beginCoCreate(projectId, payload);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setCoCreate((previous) => coCreateStateFromError(err, previous));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -1892,73 +1898,88 @@ export default function App() {
     event.preventDefault();
     const text = coCreate.input.trim();
     const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
-    if (!activeProject?.id || !text || !hasBackendSession) {
+    if (!activeProject?.id || !text || !hasBackendSession || busy || coCreateRequestBusy) {
       return;
     }
-    setBusy(true);
+    const projectId = activeProject.id;
     setCoCreate((previous) => ({ ...previous, status: 'running', error: '', suggestions: [] }));
     try {
-      const data = await sendCoCreate(activeProject.id, text, coCreate.inputSource || 'custom');
+      const data = await sendCoCreate(projectId, text, coCreate.inputSource || 'custom');
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setCoCreate((previous) => coCreateStateFromError(err, previous));
-    } finally {
-      setBusy(false);
     }
   };
 
   const submitCoCreateSuggestion = (suggestion) => {
     const text = String(suggestion || '').trim();
     const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
-    if (!activeProject?.id || !text || !hasBackendSession || busy) {
+    if (!activeProject?.id || !text || !hasBackendSession || busy || coCreateRequestBusy) {
       return;
     }
     setCoCreate((previous) => applyCoCreateSuggestion({ ...previous, error: '' }, text));
   };
 
   const reviseCoCreateMessage = async (messageId, text) => {
-    if (!activeProject?.id || !messageId || !String(text || '').trim() || busy) {
+    if (!activeProject?.id || !messageId || !String(text || '').trim() || busy || coCreateRequestBusy) {
       return;
     }
-    setBusy(true);
+    const projectId = activeProject.id;
     setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
     try {
-      const data = await reviseCoCreate(activeProject.id, messageId, text);
+      const data = await reviseCoCreate(projectId, messageId, text);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setCoCreate((previous) => coCreateStateFromError(err, previous));
-    } finally {
-      setBusy(false);
     }
   };
 
   const resolveCoCreateDecisionFlow = async (decisionId, optionId = '', customAnswer = '') => {
-    if (!activeProject?.id || !decisionId || busy) {
+    if (!activeProject?.id || !decisionId || busy || coCreateRequestBusy) {
       return;
     }
-    setBusy(true);
+    const projectId = activeProject.id;
     setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
     try {
-      const data = await resolveCoCreateDecision(activeProject.id, decisionId, optionId, customAnswer);
+      const data = await resolveCoCreateDecision(projectId, decisionId, optionId, customAnswer);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setCoCreate((previous) => coCreateStateFromError(err, previous));
-    } finally {
-      setBusy(false);
     }
   };
 
   const commitCoCreateFlow = async () => {
-    if (!activeProject?.id || !coCreate.draftPrompt.trim()) {
+    if (!activeProject?.id || !coCreate.draftPrompt.trim() || busy || coCreateRequestBusy) {
       return;
     }
-    setBusy(true);
+    const projectId = activeProject.id;
     setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
     try {
-      const data = await commitCoCreate(activeProject.id);
+      const data = await commitCoCreate(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => coCreateStateFromResponse(data, previous));
       if ((data.cocreate?.kind || coCreate.kind) === 'adapt') {
@@ -1966,9 +1987,10 @@ export default function App() {
         setSideView('adapt');
       }
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setCoCreate((previous) => coCreateStateFromError(err, previous));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -2061,15 +2083,22 @@ export default function App() {
       setCoCreate(createCoCreateState());
       return;
     }
-    setBusy(true);
+    if (busy || coCreateRequestBusy) {
+      return;
+    }
+    const projectId = activeProject.id;
     try {
-      const data = await cancelCoCreate(activeProject.id);
+      const data = await cancelCoCreate(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate(createCoCreateState());
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setCoCreate((previous) => coCreateStateFromError(err, previous));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -2668,7 +2697,7 @@ export default function App() {
             <StatusPill status={connection} />
             <button
               className="tool-button"
-              disabled={!activeProject || busy}
+              disabled={!activeProject || projectBusy}
               onClick={() => openProject(activeProject)}
               type="button"
             >
@@ -2686,7 +2715,7 @@ export default function App() {
             </button>
             <button
               className="tool-button accent"
-              disabled={!activeProject || busy}
+              disabled={!activeProject || projectBusy}
               onClick={() => runAction(resumeProject)}
               type="button"
             >
@@ -2710,7 +2739,7 @@ export default function App() {
                 <AdaptationProposalWorkspace proposal={adaptationProposalReview} />
               ) : showCoCreatePlanningWorkspace ? (
                 <CoCreatePlanningWorkspace
-                  busy={busy}
+                  busy={projectBusy}
                   planningRevision={planningRevision}
                   review={coCreatePlanningReview}
                   onConfirm={confirmCoCreatePlanningRun}
@@ -2762,7 +2791,7 @@ export default function App() {
         <form className="composer" onSubmit={submitContinue}>
           <input
             aria-label={quickStartAvailable ? '快速启动输入' : '继续创作输入'}
-            disabled={!activeProject || busy || projectRunning}
+            disabled={!activeProject || projectBusy || projectRunning}
             placeholder={quickStartAvailable ? '写下新书核心想法，直接启动...' : '继续、补充或要求下一步...'}
             value={composerText}
             onChange={(event) => setComposerText(event.target.value)}
@@ -2830,12 +2859,12 @@ export default function App() {
               onSteer={submitSteer}
               steerText={steerText}
               setSteerText={setSteerText}
-              busy={busy}
+              busy={projectBusy}
             />
           ) : sideView === 'cocreate' ? (
             <CoCreatePanel
               activeProject={activeProject}
-              busy={busy}
+              busy={projectBusy}
               coCreate={coCreate}
               planningRevision={planningRevision}
               planningReview={coCreatePlanningReview}
@@ -2857,7 +2886,7 @@ export default function App() {
           ) : sideView === 'simulate' ? (
             <SimulationPanel
               activeProject={activeProject}
-              busy={busy}
+              busy={projectBusy}
               snapshot={snapshot}
               simulation={simulation}
               setSimulation={setSimulation}
@@ -2872,7 +2901,7 @@ export default function App() {
           ) : sideView === 'adapt' ? (
             <AdaptationPanel
               activeProject={activeProject}
-              busy={busy}
+              busy={projectBusy}
               snapshot={snapshot}
               adaptation={adaptation}
               simulation={simulation}
@@ -2895,7 +2924,7 @@ export default function App() {
           ) : sideView === 'import' ? (
             <ImportPanel
               activeProject={activeProject}
-              busy={busy}
+              busy={projectBusy}
               externalImport={externalImport}
               setExternalImport={setExternalImport}
               onImport={importExternalSource}
@@ -2903,7 +2932,7 @@ export default function App() {
           ) : sideView === 'export' ? (
             <ExportPanel
               activeProject={activeProject}
-              busy={busy}
+              busy={projectBusy}
               exportJob={exportJob}
               setExportJob={setExportJob}
               onExport={runExport}
@@ -2911,14 +2940,14 @@ export default function App() {
           ) : sideView === 'diag' ? (
             <DiagnosticPanel
               activeProject={activeProject}
-              busy={busy}
+              busy={projectBusy}
               diagnostic={diagnostic}
               onRun={runDiagnostic}
             />
           ) : sideView === 'cache' ? (
             <CachePanel snapshot={snapshot} />
           ) : sideView === 'backend' ? (
-            <BackendPanel backend={backendStatus} snapshot={snapshot} busy={busy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
+            <BackendPanel backend={backendStatus} snapshot={snapshot} busy={projectBusy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
           ) : (
             <ModelPanel
               activeProject={activeProject}
@@ -4144,7 +4173,7 @@ function AdaptationPanel({
   const canCoCreate = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !workflowBusy);
   const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !workflowBusy && adaptation.brief.trim());
   const canConfirm = Boolean(activeProject && !workflowBusy && proposal.proposalReady && isAdaptationProposalCurrent(adaptation));
-  const canSaveNovel = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && (adaptation.librarySaveName.trim() || adaptation.libraryLoadedName.trim()));
+  const canSaveNovel = canSaveAnalyzedNovelToLibrary({ activeProject, busy, adaptation });
   const isVolumeReview = proposal.volumeReviewReady;
   const updateProposalInput = (changes, options = {}) => {
     const scrollPosition = options.preserveWindowScroll ? readWindowScrollPosition() : null;
@@ -4277,8 +4306,10 @@ function AdaptationPanel({
             allowEmptyName={Boolean(adaptation.libraryLoadedName.trim())}
             canSave={canSaveNovel}
             error={adaptation.librarySaveError}
+            nameLabel="小说仓库名称"
             name={adaptation.librarySaveName}
             placeholder="小说仓库名称"
+            saveLabel="保存当前小说到库"
             saving={adaptation.librarySaveStatus === 'running'}
             onNameChange={(value) => setAdaptation((previous) => ({ ...previous, librarySaveName: value, librarySaveError: '' }))}
             onSave={onSaveNovel}
@@ -4580,12 +4611,23 @@ function LibraryFeedback({ error, message }) {
   return null;
 }
 
-function LibrarySaveRow({ allowEmptyName = false, canSave, error, name, placeholder, saving, onNameChange, onSave }) {
+function LibrarySaveRow({
+  allowEmptyName = false,
+  canSave,
+  error,
+  name,
+  nameLabel = '画像名称',
+  placeholder,
+  saveLabel = '保存当前画像到库',
+  saving,
+  onNameChange,
+  onSave
+}) {
   const canSubmit = Boolean(canSave && (allowEmptyName || name.trim()) && !saving);
   return (
     <div className="library-save-stack">
       <input
-        aria-label="画像名称"
+        aria-label={nameLabel}
         disabled={!canSave || saving}
         placeholder={placeholder}
         value={name}
@@ -4593,7 +4635,7 @@ function LibrarySaveRow({ allowEmptyName = false, canSave, error, name, placehol
       />
       <button className="tool-button full-width" disabled={!canSubmit} onClick={onSave} type="button">
         <Plus size={16} />
-        保存当前画像到库
+        {saveLabel}
       </button>
       {error ? <div className="error-banner compact">{error}</div> : null}
     </div>
@@ -6631,12 +6673,20 @@ export function isSimulationProfileActionBusy(simulation = {}) {
     String(simulation.importStatus || '').toLowerCase() === 'running';
 }
 
+export function isCoCreateRequestBusy(coCreate = {}) {
+  return String(coCreate.status || '').toLowerCase() === 'running';
+}
+
 export function canRunSimulationAnalysis({ activeProject, busy, simulation } = {}) {
   return Boolean(activeProject && !isSimulationProfileActionBusy(simulation));
 }
 
 export function canRunAdaptationAnalysis({ activeProject, busy, adaptation } = {}) {
   return Boolean(activeProject && adaptation?.sourceFile && adaptation.analysisStatus !== 'running' && adaptation.uploadStatus !== 'running');
+}
+
+export function canSaveAnalyzedNovelToLibrary({ activeProject, busy, adaptation } = {}) {
+  return Boolean(activeProject && adaptation?.sourceFile?.relative_path && adaptation.analysisStatus === 'done' && !busy);
 }
 
 export function getCreativeBlueprint(snapshot) {
