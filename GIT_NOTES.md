@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest source change: pending local changes
+- Latest source change: current local commit
   `fix: backfill adaptation dossier batches`:
   Adaptation source-analysis resume now backfills fixed 40-chapter co-create
   dossier batches before continuing with newly analyzed chapters, and refreshes
