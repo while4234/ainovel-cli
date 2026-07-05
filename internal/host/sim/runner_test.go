@@ -274,6 +274,72 @@ func TestRunnerResumesMergeWithoutReanalyzingCompletedSources(t *testing.T) {
 	}
 }
 
+func TestMergeSynthesisBatchesOversizedReportSet(t *testing.T) {
+	reports := make([]domain.SimulationSourceReport, 9)
+	for i := range reports {
+		reports[i] = verboseSourceReport(i + 1)
+	}
+	limit := len(buildMergeUserPrompt(nil, reports[:2]))
+	responses := make([]string, len(reports))
+	for i := range responses {
+		responses[i] = validSynthesisJSON(fmt.Sprintf("batched synthesis %d", i+1))
+	}
+	llm := &scriptedLLM{responses: responses}
+	var progress []mergeSynthesisProgress
+
+	synthesis, err := mergeSynthesisBatchedWithLimit(context.Background(), llm, "merge prompt", nil, reports, limit, mergeSynthesisOptions{
+		OnBatch: func(ev mergeSynthesisProgress) {
+			progress = append(progress, ev)
+		},
+	})
+	if err != nil {
+		t.Fatalf("mergeSynthesisBatchedWithLimit: %v", err)
+	}
+	if synthesisIsEmpty(*synthesis) {
+		t.Fatal("expected non-empty synthesis")
+	}
+	if got := llm.calls.Load(); got <= 1 {
+		t.Fatalf("LLM calls = %d, want batched merge calls", got)
+	}
+	if len(progress) != int(llm.calls.Load()) {
+		t.Fatalf("progress events = %d, want %d", len(progress), llm.calls.Load())
+	}
+	for i, messages := range llm.got {
+		if len(messages) < 2 {
+			t.Fatalf("call %d messages = %+v, want system and user messages", i+1, messages)
+		}
+		if strings.Count(messages[1].TextContent(), `"relative_path"`) >= len(reports) {
+			t.Fatalf("call %d received all reports instead of a batch", i+1)
+		}
+	}
+}
+
+func TestBuildMergeUserPromptCompactsReportsWithoutMutating(t *testing.T) {
+	longSummary := strings.Repeat("x", maxMergeReportSummaryRunes+100)
+	longItems := longReportItems("style-item", maxMergeReportItemsPerList+5, maxMergeReportItemRunes+80)
+	report := domain.SimulationSourceReport{
+		RelativePath:      "oversized.txt",
+		SHA256:            "sha-oversized",
+		Fingerprint:       domain.SimulationSourceFingerprint("oversized.txt", "sha-oversized"),
+		Summary:           longSummary,
+		StyleObservations: longItems,
+	}
+
+	prompt := buildMergeUserPrompt(nil, []domain.SimulationSourceReport{report})
+	if strings.Contains(prompt, longSummary) {
+		t.Fatal("merge prompt should not include an oversized report summary verbatim")
+	}
+	if got := strings.Count(prompt, "style-item"); got != maxMergeReportItemsPerList {
+		t.Fatalf("style item count in prompt = %d, want %d", got, maxMergeReportItemsPerList)
+	}
+	if report.Summary != longSummary {
+		t.Fatal("buildMergeUserPrompt mutated the source report summary")
+	}
+	if len(report.StyleObservations) != len(longItems) || report.StyleObservations[0] != longItems[0] {
+		t.Fatal("buildMergeUserPrompt mutated source report list items")
+	}
+}
+
 func TestAnalyzeSourceRetriesMalformedJSON(t *testing.T) {
 	defer stubStructuredJSONRetrySleep(t)()
 	source := scannedSource{
@@ -365,6 +431,34 @@ func sourceHashForPath(t *testing.T, profile *domain.SimulationProfile, rel stri
 	}
 	t.Fatalf("source %q not found", rel)
 	return ""
+}
+
+func verboseSourceReport(index int) domain.SimulationSourceReport {
+	path := fmt.Sprintf("part_%03d.txt", index)
+	sha := fmt.Sprintf("sha-%03d", index)
+	return domain.SimulationSourceReport{
+		RelativePath:       path,
+		SHA256:             sha,
+		Fingerprint:        domain.SimulationSourceFingerprint(path, sha),
+		Title:              fmt.Sprintf("Source %03d", index),
+		Summary:            strings.Repeat(fmt.Sprintf("summary-%03d ", index), 30),
+		StyleObservations:  longReportItems(fmt.Sprintf("style-%03d", index), 4, 80),
+		CommonWords:        longReportItems(fmt.Sprintf("word-%03d", index), 4, 40),
+		PlotPatterns:       longReportItems(fmt.Sprintf("plot-%03d", index), 4, 80),
+		HookPatterns:       longReportItems(fmt.Sprintf("hook-%03d", index), 4, 80),
+		PacingNotes:        longReportItems(fmt.Sprintf("pace-%03d", index), 4, 80),
+		ReaderAppeal:       longReportItems(fmt.Sprintf("appeal-%03d", index), 4, 80),
+		ReusableTechniques: longReportItems(fmt.Sprintf("tech-%03d", index), 4, 80),
+		Warnings:           longReportItems(fmt.Sprintf("warn-%03d", index), 2, 80),
+	}
+}
+
+func longReportItems(prefix string, count int, repeatedRunes int) []string {
+	items := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		items = append(items, fmt.Sprintf("%s-%02d-%s", prefix, i+1, strings.Repeat("x", repeatedRunes)))
+	}
+	return items
 }
 
 func validSourceReportJSON(summary string) string {

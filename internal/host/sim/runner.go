@@ -13,7 +13,31 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
-const maxSourceRunes = 60000
+const (
+	maxSourceRunes = 60000
+
+	maxMergePromptBytes           = 180 << 10
+	maxMergeReportsPerBatch       = 24
+	maxMergeReportTitleRunes      = 120
+	maxMergeReportSummaryRunes    = 600
+	maxMergeReportItemRunes       = 240
+	maxMergeReportItemsPerList    = 8
+	maxMergeSynthesisItemsPerList = 10
+	maxMergeSynthesisItemRunes    = 240
+)
+
+type mergeSynthesisOptions struct {
+	Call    structuredJSONCallOptions
+	OnBatch func(mergeSynthesisProgress)
+}
+
+type mergeSynthesisProgress struct {
+	Current    int
+	Total      int
+	BatchIndex int
+	BatchTotal int
+	BatchSize  int
+}
 
 func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 	if deps.Store == nil || deps.LLM == nil {
@@ -85,14 +109,21 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 		}
 
 		allReports := mergeSourceReports(existing, reports)
-		mergeCurrent, mergeTotal := len(pending), len(pending)
-		if len(pending) == 0 {
-			mergeCurrent, mergeTotal = len(allReports), len(allReports)
-		}
+		mergeCurrent, mergeTotal := 0, len(allReports)
 		emit(StageMerge, mergeCurrent, mergeTotal, "合并仿写画像...", nil)
-		synthesis, err := mergeSynthesisWithOptions(ctx, deps.LLM, deps.Prompts.Merge, existing, allReports, structuredJSONCallOptions{
-			OnRetry: func(ev structuredJSONRetryEvent) {
-				emit(StageMerge, mergeCurrent, mergeTotal, fmt.Sprintf("重试 %d/%d：%v", ev.Attempt, ev.MaxAttempts, ev.Err), ev.Err)
+		synthesis, err := mergeSynthesisBatchedWithOptions(ctx, deps.LLM, deps.Prompts.Merge, existing, allReports, mergeSynthesisOptions{
+			Call: structuredJSONCallOptions{
+				OnRetry: func(ev structuredJSONRetryEvent) {
+					emit(StageMerge, mergeCurrent, mergeTotal, fmt.Sprintf("重试 %d/%d：%v", ev.Attempt, ev.MaxAttempts, ev.Err), ev.Err)
+				},
+			},
+			OnBatch: func(progress mergeSynthesisProgress) {
+				mergeCurrent, mergeTotal = progress.Current, progress.Total
+				msg := "合并仿写画像..."
+				if progress.BatchTotal > 1 {
+					msg = fmt.Sprintf("分批合并仿写画像 %d/%d（批次 %d/%d，%d 篇）...", progress.Current, progress.Total, progress.BatchIndex, progress.BatchTotal, progress.BatchSize)
+				}
+				emit(StageMerge, progress.Current, progress.Total, msg, nil)
 			},
 		})
 		if err != nil {
@@ -143,7 +174,59 @@ func analyzeSourceWithOptions(ctx context.Context, llm LLMChat, systemPrompt str
 }
 
 func MergeSynthesis(ctx context.Context, llm LLMChat, systemPrompt string, existing *domain.SimulationProfile, reports []domain.SimulationSourceReport) (*domain.SimulationSynthesis, error) {
-	return mergeSynthesisWithOptions(ctx, llm, systemPrompt, existing, reports, structuredJSONCallOptions{})
+	return mergeSynthesisBatchedWithOptions(ctx, llm, systemPrompt, existing, reports, mergeSynthesisOptions{})
+}
+
+func mergeSynthesisBatchedWithOptions(ctx context.Context, llm LLMChat, systemPrompt string, existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, opts mergeSynthesisOptions) (*domain.SimulationSynthesis, error) {
+	return mergeSynthesisBatchedWithLimit(ctx, llm, systemPrompt, existing, reports, maxMergePromptBytes, opts)
+}
+
+func mergeSynthesisBatchedWithLimit(ctx context.Context, llm LLMChat, systemPrompt string, existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, promptLimitBytes int, opts mergeSynthesisOptions) (*domain.SimulationSynthesis, error) {
+	compactReports := compactSourceReportsForMerge(reports)
+	if len(compactReports) == 0 {
+		return mergeSynthesisWithOptions(ctx, llm, systemPrompt, existing, nil, opts.Call)
+	}
+	estimatedBatchTotal := len(splitMergeReportBatches(existing, compactReports, promptLimitBytes))
+	if estimatedBatchTotal == 0 {
+		estimatedBatchTotal = 1
+	}
+
+	synthesis := existingSynthesis(existing)
+	processed := 0
+	batchIndex := 0
+	total := len(compactReports)
+	for processed < total {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		mergeBase := profileWithSynthesisForMerge(existing, reports, synthesis)
+		batch := nextMergeReportBatch(mergeBase, compactReports[processed:], promptLimitBytes)
+		if len(batch) == 0 {
+			return nil, fmt.Errorf("merge profile: empty merge batch")
+		}
+		batchIndex++
+		if batchIndex > estimatedBatchTotal {
+			estimatedBatchTotal = batchIndex
+		}
+		if opts.OnBatch != nil {
+			opts.OnBatch(mergeSynthesisProgress{
+				Current:    processed + len(batch),
+				Total:      total,
+				BatchIndex: batchIndex,
+				BatchTotal: estimatedBatchTotal,
+				BatchSize:  len(batch),
+			})
+		}
+		next, err := mergeSynthesisWithOptions(ctx, llm, systemPrompt, mergeBase, batch, opts.Call)
+		if err != nil {
+			start := processed + 1
+			end := processed + len(batch)
+			return nil, fmt.Errorf("merge profile batch %d/%d (%d-%d/%d reports): %w", batchIndex, estimatedBatchTotal, start, end, total, err)
+		}
+		synthesis = *next
+		processed += len(batch)
+	}
+	return &synthesis, nil
 }
 
 func mergeSynthesisWithOptions(ctx context.Context, llm LLMChat, systemPrompt string, existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, opts structuredJSONCallOptions) (*domain.SimulationSynthesis, error) {
@@ -346,11 +429,218 @@ func buildSourceUserPrompt(source scannedSource) string {
 
 func buildMergeUserPrompt(existing *domain.SimulationProfile, reports []domain.SimulationSourceReport) string {
 	payload := map[string]any{
-		"existing_profile": domain.CompactSimulationProfile(existing),
-		"source_reports":   reports,
+		"existing_profile": compactProfileForMerge(existing),
+		"source_reports":   compactSourceReportsForMerge(reports),
 	}
 	data, _ := json.MarshalIndent(payload, "", "  ")
 	return "Merge these reports into a reusable writing simulation profile. Return only the requested JSON object.\n\n" + string(data)
+}
+
+func splitMergeReportBatches(existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, promptLimitBytes int) [][]domain.SimulationSourceReport {
+	compactReports := compactSourceReportsForMerge(reports)
+	if len(compactReports) == 0 {
+		return nil
+	}
+	var batches [][]domain.SimulationSourceReport
+	for len(compactReports) > 0 {
+		batch := nextMergeReportBatch(existing, compactReports, promptLimitBytes)
+		if len(batch) == 0 {
+			break
+		}
+		batches = append(batches, batch)
+		compactReports = compactReports[len(batch):]
+	}
+	return batches
+}
+
+func nextMergeReportBatch(existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, promptLimitBytes int) []domain.SimulationSourceReport {
+	if len(reports) == 0 {
+		return nil
+	}
+	if promptLimitBytes <= 0 {
+		return append([]domain.SimulationSourceReport(nil), reports...)
+	}
+	var current []domain.SimulationSourceReport
+	for _, report := range reports {
+		candidate := append(append([]domain.SimulationSourceReport(nil), current...), report)
+		tooManyReports := len(candidate) > maxMergeReportsPerBatch
+		tooManyBytes := len(buildMergeUserPrompt(existing, candidate)) > promptLimitBytes
+		if len(current) > 0 && (tooManyReports || tooManyBytes) {
+			break
+		}
+		current = candidate
+	}
+	if len(current) == 0 {
+		return []domain.SimulationSourceReport{reports[0]}
+	}
+	return current
+}
+
+func profileWithSynthesisForMerge(existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, synthesis domain.SimulationSynthesis) *domain.SimulationProfile {
+	if existing != nil {
+		profile := *existing
+		profile.Synthesis = synthesis
+		return &profile
+	}
+	if synthesisIsEmpty(synthesis) {
+		return nil
+	}
+	profile := domain.SimulationProfile{
+		Version:   domain.SimulationProfileVersion,
+		Synthesis: synthesis,
+	}
+	for _, report := range reports {
+		if strings.TrimSpace(report.RelativePath) == "" {
+			continue
+		}
+		source := domain.SimulationSource{
+			RelativePath: report.RelativePath,
+			SHA256:       report.SHA256,
+			Fingerprint:  report.Fingerprint,
+		}
+		if source.Fingerprint == "" && source.RelativePath != "" && source.SHA256 != "" {
+			source.Fingerprint = domain.SimulationSourceFingerprint(source.RelativePath, source.SHA256)
+		}
+		profile.Corpus.Sources = replaceSourceByPath(profile.Corpus.Sources, source)
+	}
+	sortProfile(&profile)
+	return &profile
+}
+
+func compactProfileForMerge(existing *domain.SimulationProfile) *domain.SimulationCompactProfile {
+	compact := domain.CompactSimulationProfile(existing)
+	if compact == nil {
+		return nil
+	}
+	synthesis := compactSynthesisForMerge(domain.SimulationSynthesis{
+		Style:            compact.Style,
+		Lexicon:          compact.Lexicon,
+		PlotDesign:       compact.PlotDesign,
+		HookDesign:       compact.HookDesign,
+		PacingDensity:    compact.PacingDensity,
+		ReaderEngagement: compact.ReaderEngagement,
+		RoleGuidance:     compact.RoleGuidance,
+	})
+	compact.Style = synthesis.Style
+	compact.Lexicon = synthesis.Lexicon
+	compact.PlotDesign = synthesis.PlotDesign
+	compact.HookDesign = synthesis.HookDesign
+	compact.PacingDensity = synthesis.PacingDensity
+	compact.ReaderEngagement = synthesis.ReaderEngagement
+	compact.RoleGuidance = synthesis.RoleGuidance
+	return compact
+}
+
+func compactSourceReportsForMerge(reports []domain.SimulationSourceReport) []domain.SimulationSourceReport {
+	if len(reports) == 0 {
+		return nil
+	}
+	out := make([]domain.SimulationSourceReport, 0, len(reports))
+	for _, report := range reports {
+		out = append(out, domain.SimulationSourceReport{
+			RelativePath:       report.RelativePath,
+			SHA256:             report.SHA256,
+			Fingerprint:        report.Fingerprint,
+			AnalyzedAt:         report.AnalyzedAt,
+			Title:              compactMergeText(report.Title, maxMergeReportTitleRunes),
+			Summary:            compactMergeText(report.Summary, maxMergeReportSummaryRunes),
+			StyleObservations:  compactMergeTextList(report.StyleObservations, maxMergeReportItemsPerList, maxMergeReportItemRunes),
+			CommonWords:        compactMergeTextList(report.CommonWords, maxMergeReportItemsPerList, maxMergeReportItemRunes),
+			PlotPatterns:       compactMergeTextList(report.PlotPatterns, maxMergeReportItemsPerList, maxMergeReportItemRunes),
+			HookPatterns:       compactMergeTextList(report.HookPatterns, maxMergeReportItemsPerList, maxMergeReportItemRunes),
+			PacingNotes:        compactMergeTextList(report.PacingNotes, maxMergeReportItemsPerList, maxMergeReportItemRunes),
+			ReaderAppeal:       compactMergeTextList(report.ReaderAppeal, maxMergeReportItemsPerList, maxMergeReportItemRunes),
+			ReusableTechniques: compactMergeTextList(report.ReusableTechniques, maxMergeReportItemsPerList, maxMergeReportItemRunes),
+			Warnings:           compactMergeTextList(report.Warnings, maxMergeReportItemsPerList, maxMergeReportItemRunes),
+		})
+	}
+	return out
+}
+
+func compactSynthesisForMerge(s domain.SimulationSynthesis) domain.SimulationSynthesis {
+	return domain.SimulationSynthesis{
+		Style: domain.SimulationStyle{
+			NarrativeVoice: compactMergeTextList(s.Style.NarrativeVoice, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			SentenceRhythm: compactMergeTextList(s.Style.SentenceRhythm, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			ProseTexture:   compactMergeTextList(s.Style.ProseTexture, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			Perspective:    compactMergeTextList(s.Style.Perspective, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			Mood:           compactMergeTextList(s.Style.Mood, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			DoNotCopy:      compactMergeTextList(s.Style.DoNotCopy, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+		},
+		Lexicon: domain.SimulationLexicon{
+			CommonWords:      compactMergeTextList(s.Lexicon.CommonWords, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			EmotionWords:     compactMergeTextList(s.Lexicon.EmotionWords, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			SceneWords:       compactMergeTextList(s.Lexicon.SceneWords, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			TransitionWords:  compactMergeTextList(s.Lexicon.TransitionWords, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			SignaturePhrases: compactMergeTextList(s.Lexicon.SignaturePhrases, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+		},
+		PlotDesign: domain.SimulationPlotDesign{
+			OpeningPatterns:      compactMergeTextList(s.PlotDesign.OpeningPatterns, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			EscalationPatterns:   compactMergeTextList(s.PlotDesign.EscalationPatterns, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			TurningPointPatterns: compactMergeTextList(s.PlotDesign.TurningPointPatterns, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			PayoffPatterns:       compactMergeTextList(s.PlotDesign.PayoffPatterns, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+		},
+		HookDesign: domain.SimulationHookDesign{
+			HookTypes:           compactMergeTextList(s.HookDesign.HookTypes, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			Placement:           compactMergeTextList(s.HookDesign.Placement, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			CliffhangerPatterns: compactMergeTextList(s.HookDesign.CliffhangerPatterns, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			PayoffRules:         compactMergeTextList(s.HookDesign.PayoffRules, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+		},
+		PacingDensity: domain.SimulationPacingDensity{
+			SceneDensity:        compactMergeTextList(s.PacingDensity.SceneDensity, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			InformationRelease:  compactMergeTextList(s.PacingDensity.InformationRelease, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			DialogueActionRatio: compactMergeTextList(s.PacingDensity.DialogueActionRatio, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			CompressionRules:    compactMergeTextList(s.PacingDensity.CompressionRules, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+		},
+		ReaderEngagement: domain.SimulationReaderEngagement{
+			Methods:            compactMergeTextList(s.ReaderEngagement.Methods, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			EmotionalDrivers:   compactMergeTextList(s.ReaderEngagement.EmotionalDrivers, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			ProgressionRewards: compactMergeTextList(s.ReaderEngagement.ProgressionRewards, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			AntiPatterns:       compactMergeTextList(s.ReaderEngagement.AntiPatterns, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+		},
+		RoleGuidance: domain.SimulationRoleGuidance{
+			Coordinator: compactMergeTextList(s.RoleGuidance.Coordinator, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			Architect:   compactMergeTextList(s.RoleGuidance.Architect, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			Writer:      compactMergeTextList(s.RoleGuidance.Writer, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+			Editor:      compactMergeTextList(s.RoleGuidance.Editor, maxMergeSynthesisItemsPerList, maxMergeSynthesisItemRunes),
+		},
+	}
+}
+
+func compactMergeTextList(items []string, maxItems int, maxRunes int) []string {
+	if len(items) == 0 || maxItems <= 0 {
+		return nil
+	}
+	out := make([]string, 0, maxItems)
+	seen := make(map[string]struct{}, maxItems)
+	for _, item := range items {
+		item = compactMergeText(item, maxRunes)
+		if item == "" {
+			continue
+		}
+		key := strings.ToLower(item)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+		if len(out) >= maxItems {
+			break
+		}
+	}
+	return out
+}
+
+func compactMergeText(text string, maxRunes int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "...[truncated]"
 }
 
 func compactSourceContent(s string) string {
