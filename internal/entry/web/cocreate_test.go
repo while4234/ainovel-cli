@@ -1510,8 +1510,9 @@ func seedAnalyzedAdaptationForCoCreateTest(t *testing.T, manifest ProjectManifes
 		SourceChapterCount: 1,
 		SourceSignature:    storepkg.AdaptationSourceSignature(sourceManifest),
 		BatchSize:          adaptpkg.CoCreateDossierBatchSize,
+		BatchRuneLimit:     adaptpkg.CoCreateDossierBatchRuneLimit,
 		Batches: []domain.AdaptationCoCreateDossierBatch{
-			{Index: 1, SourceFrom: 1, SourceTo: 1, SourceSignature: "batch"},
+			{Index: 1, SourceFrom: 1, SourceTo: 1, SourceSignature: storepkg.AdaptationDossierBatchSpecs(sourceManifest, adaptpkg.CoCreateDossierBatchSize, adaptpkg.CoCreateDossierBatchRuneLimit)[0].SourceSignature},
 		},
 	}
 	if err := st.Adaptation.SaveCoCreateDossier(dossier); err != nil {

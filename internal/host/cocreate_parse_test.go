@@ -79,8 +79,9 @@ func TestAdaptSystemPromptIncludesLateDossierRelationshipRisks(t *testing.T) {
 		SourceChapterCount: manifest.ChapterCount,
 		SourceSignature:    store.AdaptationSourceSignature(manifest),
 		BatchSize:          adapt.CoCreateDossierBatchSize,
+		BatchRuneLimit:     adapt.CoCreateDossierBatchRuneLimit,
 		Batches: []domain.AdaptationCoCreateDossierBatch{
-			{Index: 1, SourceFrom: 1, SourceTo: 40, SourceSignature: "batch"},
+			{Index: 1, SourceFrom: 1, SourceTo: 40, SourceSignature: store.AdaptationDossierBatchSpecs(manifest, adapt.CoCreateDossierBatchSize, adapt.CoCreateDossierBatchRuneLimit)[0].SourceSignature},
 		},
 		AmbiguityRisks: []domain.AdaptationRelationshipRisk{
 			{
@@ -97,10 +98,13 @@ func TestAdaptSystemPromptIncludesLateDossierRelationshipRisks(t *testing.T) {
 	}
 
 	prompt := adaptSystemPrompt(st)
-	for _, want := range []string{"第 35 章", "小狐狸向男主表达喜欢", "普通感激或阵营依赖"} {
+	for _, want := range []string{"第 35 章", "小狐狸向男主表达喜欢"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("adapt prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, "普通感激或阵营依赖") {
+		t.Fatalf("adapt prompt should not include dossier-stage adaptation suggestions:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "其余 10 章") {
 		t.Fatalf("adapt prompt should not use first-30 snapshot fallback:\n%s", prompt)

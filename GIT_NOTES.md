@@ -29,6 +29,21 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `fix: neutralize adaptation dossier generation`:
+  Adaptation co-create dossiers now use prompt version `v2` and store neutral
+  source facts only: main causality, plot threads, character arcs,
+  world/continuity constraints, relationship signals, and evidence-backed
+  heroine/ambiguity/couple signals. Dossier-stage adaptation advice is no
+  longer requested, displayed, or saved; malformed/empty dossier JSON now gets
+  in-call repair retries before failing. Dossier batches remain capped at 40
+  chapters but also split early at roughly 120k source runes for long-chapter
+  novels, and current checks validate every dynamic batch range/signature.
+  Validation passed for focused adapt/store/host/web tests and full
+  `go test ./internal/...`; local Web was rebuilt/restarted on
+  `http://127.0.0.1:9898` as PID `60036`. Current project generated
+  dossier/briefing artifacts for `project-20260705003734-24bbf4` were deleted
+  so Analyze can regenerate v2 dossiers from preserved source reports.
+- Latest source change: current local commit
   `fix: backfill adaptation dossier batches`:
   Adaptation source-analysis resume now backfills fixed 40-chapter co-create
   dossier batches before continuing with newly analyzed chapters, and refreshes

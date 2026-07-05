@@ -500,7 +500,7 @@ func (s *AdaptationStore) ResolveCoCreateBriefingDecision(decisionID, optionID, 
 	return briefing, nil
 }
 
-func (s *AdaptationStore) CoCreateDossierCurrent(promptVersion string, batchSize int) (bool, error) {
+func (s *AdaptationStore) CoCreateDossierCurrent(promptVersion string, batchSize int, batchRuneLimit ...int) (bool, error) {
 	manifest, err := s.LoadSourceManifest()
 	if err != nil || manifest == nil {
 		return false, err
@@ -509,14 +509,18 @@ func (s *AdaptationStore) CoCreateDossierCurrent(promptVersion string, batchSize
 	if err != nil || dossier == nil {
 		return false, err
 	}
-	return CoCreateDossierMatchesManifest(*dossier, *manifest, promptVersion, batchSize), nil
+	return CoCreateDossierMatchesManifest(*dossier, *manifest, promptVersion, batchSize, batchRuneLimit...), nil
 }
 
-func CoCreateDossierMatchesManifest(dossier domain.AdaptationCoCreateDossier, manifest domain.AdaptationSourceManifest, promptVersion string, batchSize int) bool {
+func CoCreateDossierMatchesManifest(dossier domain.AdaptationCoCreateDossier, manifest domain.AdaptationSourceManifest, promptVersion string, batchSize int, batchRuneLimit ...int) bool {
 	if batchSize <= 0 {
 		return false
 	}
 	if strings.TrimSpace(dossier.PromptVersion) != strings.TrimSpace(promptVersion) {
+		return false
+	}
+	runeLimit := optionalDossierBatchRuneLimit(batchRuneLimit)
+	if runeLimit > 0 && dossier.BatchRuneLimit != runeLimit {
 		return false
 	}
 	if dossier.BatchSize != batchSize || dossier.SourceChapterCount != manifest.ChapterCount {
@@ -525,10 +529,94 @@ func CoCreateDossierMatchesManifest(dossier domain.AdaptationCoCreateDossier, ma
 	if dossier.SourceSignature != AdaptationSourceSignature(manifest) {
 		return false
 	}
-	if len(dossier.Batches) != adaptationDossierBatchCount(manifest.ChapterCount, batchSize) {
+	specs := AdaptationDossierBatchSpecs(manifest, batchSize, runeLimit)
+	if len(dossier.Batches) != len(specs) {
 		return false
 	}
+	batches := append([]domain.AdaptationCoCreateDossierBatch(nil), dossier.Batches...)
+	sort.SliceStable(batches, func(i, j int) bool {
+		return batches[i].Index < batches[j].Index
+	})
+	for i, spec := range specs {
+		batch := batches[i]
+		if batch.Index != spec.Index || batch.SourceFrom != spec.SourceFrom || batch.SourceTo != spec.SourceTo {
+			return false
+		}
+		if strings.TrimSpace(batch.SourceSignature) != spec.SourceSignature {
+			return false
+		}
+	}
 	return true
+}
+
+type AdaptationDossierBatchSpec struct {
+	Index           int
+	SourceFrom      int
+	SourceTo        int
+	SourceSignature string
+}
+
+func AdaptationDossierBatchSpecs(manifest domain.AdaptationSourceManifest, batchSize int, batchRuneLimit int) []AdaptationDossierBatchSpec {
+	if manifest.ChapterCount <= 0 || batchSize <= 0 {
+		return nil
+	}
+	runesByChapter := make(map[int]int, len(manifest.Chapters))
+	for _, source := range manifest.Chapters {
+		runesByChapter[source.Chapter] = source.Runes
+	}
+	specs := make([]AdaptationDossierBatchSpec, 0, adaptationDossierBatchCount(manifest.ChapterCount, batchSize))
+	from := 1
+	index := 1
+	batchRunes := 0
+	batchChapters := 0
+	for chapter := 1; chapter <= manifest.ChapterCount; chapter++ {
+		runes := runesByChapter[chapter]
+		if runes < 0 {
+			runes = 0
+		}
+		if batchChapters > 0 && (batchChapters >= batchSize || (batchRuneLimit > 0 && batchRunes+runes > batchRuneLimit)) {
+			specs = append(specs, adaptationDossierBatchSpec(manifest, index, from, chapter-1))
+			index++
+			from = chapter
+			batchRunes = 0
+			batchChapters = 0
+		}
+		batchRunes += runes
+		batchChapters++
+	}
+	if batchChapters > 0 {
+		specs = append(specs, adaptationDossierBatchSpec(manifest, index, from, manifest.ChapterCount))
+	}
+	return specs
+}
+
+func adaptationDossierBatchSpec(manifest domain.AdaptationSourceManifest, index, from, to int) AdaptationDossierBatchSpec {
+	return AdaptationDossierBatchSpec{
+		Index:           index,
+		SourceFrom:      from,
+		SourceTo:        to,
+		SourceSignature: adaptationDossierSourceRangeSignature(manifest, from, to),
+	}
+}
+
+func adaptationDossierSourceRangeSignature(manifest domain.AdaptationSourceManifest, from, to int) string {
+	var sources []domain.AdaptationSource
+	for _, ch := range manifest.Chapters {
+		if ch.Chapter >= from && ch.Chapter <= to {
+			sources = append(sources, ch)
+		}
+	}
+	return AdaptationSourceSignature(domain.AdaptationSourceManifest{
+		ChapterCount: len(sources),
+		Chapters:     sources,
+	})
+}
+
+func optionalDossierBatchRuneLimit(values []int) int {
+	if len(values) == 0 || values[0] <= 0 {
+		return 0
+	}
+	return values[0]
 }
 
 func AdaptationSourceSignature(manifest domain.AdaptationSourceManifest) string {

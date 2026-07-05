@@ -448,23 +448,29 @@ func adaptationDossierSnapshot(st *store.Store) string {
 	if manifest == nil {
 		return "尚未加载原书快照。"
 	}
-	if dossier == nil || !store.CoCreateDossierMatchesManifest(*dossier, *manifest, adapt.CoCreateDossierPromptVersion, adapt.CoCreateDossierBatchSize) {
+	if dossier == nil || !store.CoCreateDossierMatchesManifest(*dossier, *manifest, adapt.CoCreateDossierPromptVersion, adapt.CoCreateDossierBatchSize, adapt.CoCreateDossierBatchRuneLimit) {
 		return "全书改编资料包缺失或已过期，请提醒用户重新点击原文分析后再共创。"
 	}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "- 来源：%s\n", manifest.SourcePath)
 	fmt.Fprintf(&sb, "- 原文章节数：%d\n", manifest.ChapterCount)
-	fmt.Fprintf(&sb, "- 资料包批次：%d 批，每批约 %d 章\n", len(dossier.Batches), dossier.BatchSize)
+	if dossier.BatchRuneLimit > 0 {
+		fmt.Fprintf(&sb, "- 资料包批次：%d 批，每批最多 %d 章，过长时约 %d 字符拆批\n", len(dossier.Batches), dossier.BatchSize, dossier.BatchRuneLimit)
+	} else {
+		fmt.Fprintf(&sb, "- 资料包批次：%d 批，每批约 %d 章\n", len(dossier.Batches), dossier.BatchSize)
+	}
 	if strings.TrimSpace(dossier.Overview) != "" {
 		fmt.Fprintf(&sb, "- 覆盖说明：%s\n", dossier.Overview)
 	}
 	writeDossierStrings(&sb, "### 全书主线与因果锚点", dossier.Mainline, 80)
+	writeDossierStrings(&sb, "### 剧情线程", dossier.PlotThreads, 80)
+	writeDossierStrings(&sb, "### 人物弧光", dossier.CharacterArcs, 80)
+	writeDossierStrings(&sb, "### 世界与连续性约束", dossier.WorldConstraints, 80)
 	writeDossierSignals(&sb, "### 关系线信号", dossier.RelationshipMap, 80)
 	writeDossierSignals(&sb, "### 女主相关信号", dossier.HeroineSignals, 80)
 	writeDossierRisks(&sb, "### 女配暧昧/后宫风险", dossier.AmbiguityRisks, 80)
 	writeDossierSignals(&sb, "### 情侣/暧昧进展节点", dossier.CoupleMilestones, 80)
-	writeDossierStrings(&sb, "### 改编注意事项", dossier.AdaptationNotes, 80)
 	return sb.String()
 }
 
@@ -585,9 +591,6 @@ func writeDossierRisks(sb *strings.Builder, title string, values []domain.Adapta
 		fmt.Fprintf(sb, "- %s%s：%s", dossierChapterLabel(value.Chapters), dossierCharactersLabel(value.Characters), value.Risk)
 		if strings.TrimSpace(value.Evidence) != "" {
 			fmt.Fprintf(sb, "（证据：%s）", value.Evidence)
-		}
-		if strings.TrimSpace(value.Suggestion) != "" {
-			fmt.Fprintf(sb, "；处理建议：%s", value.Suggestion)
 		}
 		sb.WriteString("\n")
 	}

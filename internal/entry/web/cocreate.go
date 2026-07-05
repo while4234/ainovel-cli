@@ -200,7 +200,7 @@ func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-		current, err := st.Adaptation.CoCreateDossierCurrent(adapt.CoCreateDossierPromptVersion, adapt.CoCreateDossierBatchSize)
+		current, err := st.Adaptation.CoCreateDossierCurrent(adapt.CoCreateDossierPromptVersion, adapt.CoCreateDossierBatchSize, adapt.CoCreateDossierBatchRuneLimit)
 		if err != nil {
 			writeError(w, http.StatusConflict, "read adaptation co-create dossier: "+err.Error())
 			return

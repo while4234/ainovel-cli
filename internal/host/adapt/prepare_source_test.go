@@ -223,6 +223,93 @@ func TestPrepareSourceBuildsMissingCoCreateDossierWithoutReanalyzingPreparedSour
 	}
 }
 
+func TestPrepareSourceRepairsMalformedCoCreateDossierBatch(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sourcePath := writeAdaptSource(t, t.TempDir(), []string{"BODY_ONE", "BODY_TWO"})
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: adaptAnalyzerEnvelope(1)},
+		{text: adaptAnalyzerEnvelope(2)},
+		{text: adaptFoundationMergeEnvelope()},
+		{text: `{"result":{"metadata":"empty"}}`},
+		{text: adaptDossierBatchEnvelope()},
+	}}
+	var events []Event
+	if err := PrepareSource(context.Background(), Deps{
+		Store: st,
+		LLM:   llm,
+		Prompts: Prompts{
+			Analyzer:        "analyzer",
+			FoundationMerge: "merge",
+		},
+	}, sourcePath, captureAdaptProgress(&events)); err != nil {
+		t.Fatalf("PrepareSource repair dossier: %v", err)
+	}
+	if llm.calls != 5 {
+		t.Fatalf("calls=%d, want analyzers, merge, malformed dossier, and repair", llm.calls)
+	}
+	if idx := indexAdaptEvent(events, "资料包第 1/1 批结构无效"); idx < 0 {
+		t.Fatalf("missing dossier repair event: %+v", events)
+	}
+	repairPrompt := llm.got[4][1].TextContent()
+	for _, fragment := range []string{"co-create dossier batch 1", "plot_phase", "previous_output", "metadata"} {
+		if !strings.Contains(repairPrompt, fragment) {
+			t.Fatalf("repair prompt missing %q: %s", fragment, repairPrompt)
+		}
+	}
+	current, err := st.Adaptation.CoCreateDossierCurrent(CoCreateDossierPromptVersion, CoCreateDossierBatchSize, CoCreateDossierBatchRuneLimit)
+	if err != nil || !current {
+		t.Fatalf("dossier should be current after repair: current=%v err=%v", current, err)
+	}
+}
+
+func TestPrepareSourceStripsDossierAdaptationAdvice(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sourcePath := writeAdaptSource(t, t.TempDir(), []string{"BODY_ONE"})
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: adaptAnalyzerEnvelope(1)},
+		{text: adaptFoundationMergeEnvelope()},
+		{text: `{
+			"plot_phase":"Ari follows the source case.",
+			"key_causality":["Ari's choice drives the next scene."],
+			"ambiguity_risks":[{"chapters":[1],"characters":["Ari","Bryn"],"risk":"possible confusion","evidence":"chapter evidence","severity":"low","suggestion":"rewrite it this way"}],
+			"adaptation_notes":["rewrite suggestion that should not be stored"]
+		}`},
+	}}
+	if err := PrepareSource(context.Background(), Deps{
+		Store: st,
+		LLM:   llm,
+		Prompts: Prompts{
+			Analyzer:        "analyzer",
+			FoundationMerge: "merge",
+		},
+	}, sourcePath, nil); err != nil {
+		t.Fatalf("PrepareSource strip advice: %v", err)
+	}
+	batch, err := st.Adaptation.LoadCoCreateDossierBatch(1)
+	if err != nil || batch == nil {
+		t.Fatalf("LoadCoCreateDossierBatch: batch=%+v err=%v", batch, err)
+	}
+	if len(batch.AdaptationNotes) != 0 {
+		t.Fatalf("dossier batch should not store adaptation notes: %+v", batch.AdaptationNotes)
+	}
+	if len(batch.AmbiguityRisks) != 1 || batch.AmbiguityRisks[0].Suggestion != "" {
+		t.Fatalf("dossier risk suggestions should be stripped: %+v", batch.AmbiguityRisks)
+	}
+	dossier, err := st.Adaptation.LoadCoCreateDossier()
+	if err != nil || dossier == nil {
+		t.Fatalf("LoadCoCreateDossier: dossier=%+v err=%v", dossier, err)
+	}
+	if len(dossier.AdaptationNotes) != 0 {
+		t.Fatalf("dossier should not store adaptation notes: %+v", dossier.AdaptationNotes)
+	}
+}
+
 func TestPrepareSourceBackfillsCompletedDossierBatchesBeforeNewChapter(t *testing.T) {
 	root := t.TempDir()
 	st := store.NewStore(root)
@@ -403,11 +490,13 @@ func adaptDossierBatchEnvelope() string {
 	return `{
 		"plot_phase": "Ari follows the source case.",
 		"key_causality": ["Ari's choice drives the next scene."],
+		"plot_threads": ["The records case remains active."],
+		"character_arcs": ["Ari chooses courage under pressure."],
+		"world_constraints": ["The city keeps strict records."],
 		"major_characters": ["Ari"],
 		"relationship_signals": [],
 		"heroine_signals": [],
 		"ambiguity_risks": [],
-		"couple_milestones": [],
-		"adaptation_notes": ["Preserve the source case causality."]
+		"couple_milestones": []
 	}`
 }

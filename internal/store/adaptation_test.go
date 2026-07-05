@@ -570,7 +570,7 @@ func TestAdaptationStoreCoCreateDossierCurrentRequiresSourceSignatureAndPromptVe
 		SourceSignature:    AdaptationSourceSignature(manifest),
 		BatchSize:          40,
 		Batches: []domain.AdaptationCoCreateDossierBatch{
-			{Index: 1, SourceFrom: 1, SourceTo: 2, SourceSignature: "batch"},
+			{Index: 1, SourceFrom: 1, SourceTo: 2, SourceSignature: AdaptationDossierBatchSpecs(manifest, 40, 0)[0].SourceSignature},
 		},
 	}
 	if err := s.Adaptation.SaveCoCreateDossier(dossier); err != nil {
@@ -593,5 +593,74 @@ func TestAdaptationStoreCoCreateDossierCurrentRequiresSourceSignatureAndPromptVe
 	}
 	if current, err := s.Adaptation.CoCreateDossierCurrent("v-test", 40); err != nil || current {
 		t.Fatalf("source signature mismatch should be stale: current=%v err=%v", current, err)
+	}
+}
+
+func TestAdaptationDossierBatchSpecsSplitByRuneLimit(t *testing.T) {
+	manifest := domain.AdaptationSourceManifest{
+		ChapterCount: 5,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, SHA256: "sha-1", Runes: 60},
+			{Chapter: 2, SHA256: "sha-2", Runes: 30},
+			{Chapter: 3, SHA256: "sha-3", Runes: 80},
+			{Chapter: 4, SHA256: "sha-4", Runes: 20},
+			{Chapter: 5, SHA256: "sha-5", Runes: 10},
+		},
+	}
+	specs := AdaptationDossierBatchSpecs(manifest, 40, 100)
+	if len(specs) != 3 {
+		t.Fatalf("specs=%+v, want 3 dynamic batches", specs)
+	}
+	wantRanges := [][2]int{{1, 2}, {3, 4}, {5, 5}}
+	for i, want := range wantRanges {
+		if specs[i].Index != i+1 || specs[i].SourceFrom != want[0] || specs[i].SourceTo != want[1] {
+			t.Fatalf("spec %d=%+v, want range %d-%d", i, specs[i], want[0], want[1])
+		}
+	}
+}
+
+func TestCoCreateDossierMatchesManifestRequiresDynamicBatchRanges(t *testing.T) {
+	manifest := domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: 5,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, SHA256: "sha-1", Runes: 60},
+			{Chapter: 2, SHA256: "sha-2", Runes: 30},
+			{Chapter: 3, SHA256: "sha-3", Runes: 80},
+			{Chapter: 4, SHA256: "sha-4", Runes: 20},
+			{Chapter: 5, SHA256: "sha-5", Runes: 10},
+		},
+	}
+	specs := AdaptationDossierBatchSpecs(manifest, 40, 100)
+	batches := make([]domain.AdaptationCoCreateDossierBatch, 0, len(specs))
+	for _, spec := range specs {
+		batches = append(batches, domain.AdaptationCoCreateDossierBatch{
+			Index:           spec.Index,
+			SourceFrom:      spec.SourceFrom,
+			SourceTo:        spec.SourceTo,
+			SourceSignature: spec.SourceSignature,
+		})
+	}
+	dossier := domain.AdaptationCoCreateDossier{
+		Version:            1,
+		PromptVersion:      "v-test",
+		SourceChapterCount: manifest.ChapterCount,
+		SourceSignature:    AdaptationSourceSignature(manifest),
+		BatchSize:          40,
+		BatchRuneLimit:     100,
+		Batches:            batches,
+	}
+	if !CoCreateDossierMatchesManifest(dossier, manifest, "v-test", 40, 100) {
+		t.Fatalf("dossier should match dynamic batch ranges")
+	}
+	missingLimit := dossier
+	missingLimit.BatchRuneLimit = 0
+	if CoCreateDossierMatchesManifest(missingLimit, manifest, "v-test", 40, 100) {
+		t.Fatalf("dossier without matching rune limit should be stale")
+	}
+	wrongRange := dossier
+	wrongRange.Batches[0].SourceTo = 3
+	if CoCreateDossierMatchesManifest(wrongRange, manifest, "v-test", 40, 100) {
+		t.Fatalf("dossier with wrong dynamic range should be stale")
 	}
 }

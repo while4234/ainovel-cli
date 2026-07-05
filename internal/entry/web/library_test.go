@@ -334,7 +334,7 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 		Index:           1,
 		SourceFrom:      1,
 		SourceTo:        2,
-		SourceSignature: "batch",
+		SourceSignature: store.AdaptationDossierBatchSpecs(sourceManifest, adaptengine.CoCreateDossierBatchSize, adaptengine.CoCreateDossierBatchRuneLimit)[0].SourceSignature,
 		PromptVersion:   adaptengine.CoCreateDossierPromptVersion,
 		PlotPhase:       "fixture source plot",
 	}
@@ -348,6 +348,7 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 		SourceChapterCount: sourceManifest.ChapterCount,
 		SourceSignature:    store.AdaptationSourceSignature(sourceManifest),
 		BatchSize:          adaptengine.CoCreateDossierBatchSize,
+		BatchRuneLimit:     adaptengine.CoCreateDossierBatchRuneLimit,
 		Batches:            []domain.AdaptationCoCreateDossierBatch{batch},
 	}); err != nil {
 		t.Fatalf("SaveCoCreateDossier: %v", err)

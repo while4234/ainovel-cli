@@ -13,33 +13,38 @@ import (
 )
 
 const (
-	CoCreateDossierBatchSize     = 40
-	CoCreateDossierPromptVersion = "v1"
+	CoCreateDossierBatchSize      = 40
+	CoCreateDossierBatchRuneLimit = 120000
+	CoCreateDossierPromptVersion  = "v2"
 
 	coCreateDossierVersion   = 1
-	coCreateDossierMaxTokens = 4096
+	coCreateDossierMaxTokens = 6144
 )
 
 const coCreateDossierSystemPrompt = `You are an adaptation continuity analyst for long Chinese web novels.
+You create a neutral, broad-purpose source dossier for later co-creation requests.
 You read compact per-chapter source reports, not raw prose. Extract only facts supported by the reports.
 
 Return one JSON object with this shape:
 {
   "plot_phase": "brief phase summary for this source range",
   "key_causality": ["major causal chain or irreversible source fact"],
+  "plot_threads": ["active or resolved plot thread, antagonist move, mystery, war/political arc, cultivation/business/legal arc, etc."],
+  "character_arcs": ["important character change, motivation, role shift, betrayal, alliance, growth, downfall, or supporting-character hook"],
+  "world_constraints": ["setting, faction, power-system, timeline, geography, legal, political, family, or continuity constraint"],
   "major_characters": ["names that matter in this range"],
-  "relationship_signals": [{"chapters":[1],"characters":["A","B"],"type":"trust/conflict/romance/etc","summary":"what changed","evidence":"chapter evidence"}],
-  "heroine_signals": [{"chapters":[1],"characters":["male lead","heroine"],"type":"interaction/status/milestone","summary":"heroine-relevant beat","evidence":"chapter evidence"}],
-  "ambiguity_risks": [{"chapters":[1],"characters":["male lead","side character"],"risk":"possible ambiguity/harem/body-contact risk","evidence":"chapter evidence","severity":"low|medium|high","suggestion":"single-heroine adaptation handling"}],
-  "couple_milestones": [{"chapters":[1],"characters":["male lead","heroine"],"type":"meet/ambiguous/confession/couple/etc","summary":"relationship milestone","evidence":"chapter evidence"}],
-  "adaptation_notes": ["how to add heroine scenes or remove harem ambiguity without breaking source causality"]
+  "relationship_signals": [{"chapters":[1],"characters":["A","B"],"type":"trust/conflict/family/political/mentor/rival/romance/etc","summary":"what changed","evidence":"chapter evidence"}],
+  "heroine_signals": [{"chapters":[1],"characters":["lead","heroine"],"type":"interaction/status/milestone","summary":"heroine-relevant beat when supported by source evidence","evidence":"chapter evidence"}],
+  "ambiguity_risks": [{"chapters":[1],"characters":["lead","side character"],"risk":"relationship ambiguity, audience-confusion, harem/body-contact risk, or other source-supported ambiguity/continuity risk","evidence":"chapter evidence","severity":"low|medium|high"}],
+  "couple_milestones": [{"chapters":[1],"characters":["lead","heroine"],"type":"meet/ambiguous/confession/couple/etc","summary":"relationship milestone when supported by source evidence","evidence":"chapter evidence"}]
 }
 
 Rules:
 - Preserve source causality and chapter references.
-- Do not invent romance. Mark uncertainty as risk only when supported by reports.
-- Focus on heroine presence, side-female ambiguity, confession/like signals, body-contact boundaries, and relationship progress.
-- Keep each array compact: usually 3-8 items.`
+- Be neutral and reusable for many adaptation goals: main plot, supporting characters, factions, relationships, pacing, mysteries, world rules, and romance are all valid.
+- Do not let heroine/romance concerns crowd out important non-romance plot or supporting-character material.
+- Do not invent romance. Record heroine/couple/ambiguity items only when supported by reports.
+- Keep each array compact: usually 3-8 items, prioritizing facts useful across future user requests.`
 
 func EnsureCoCreateDossier(ctx context.Context, deps Deps, manifest *domain.AdaptationSourceManifest, reports []domain.AdaptationSourceReport, emit ProgressEmitter) (*domain.AdaptationCoCreateDossier, error) {
 	if deps.Store == nil || deps.LLM == nil {
@@ -56,7 +61,7 @@ func EnsureCoCreateDossier(ctx context.Context, deps Deps, manifest *domain.Adap
 	if err != nil {
 		return nil, fmt.Errorf("load co-create dossier: %w", err)
 	}
-	if current != nil && store.CoCreateDossierMatchesManifest(*current, *manifest, CoCreateDossierPromptVersion, CoCreateDossierBatchSize) {
+	if current != nil && store.CoCreateDossierMatchesManifest(*current, *manifest, CoCreateDossierPromptVersion, CoCreateDossierBatchSize, CoCreateDossierBatchRuneLimit) {
 		emitAdaptProgress(emit, StageDossier, manifest.ChapterCount, manifest.ChapterCount, "全书改编资料包已存在，跳过生成", nil)
 		return current, nil
 	}
@@ -141,31 +146,13 @@ func sourceReportsForDossierBatch(spec coCreateDossierBatchSpec, reportByChapter
 	return reports, true
 }
 
-type coCreateDossierBatchSpec struct {
-	Index           int
-	SourceFrom      int
-	SourceTo        int
-	SourceSignature string
-}
+type coCreateDossierBatchSpec = store.AdaptationDossierBatchSpec
 
 func dossierBatchSpecs(manifest domain.AdaptationSourceManifest, batchSize int) []coCreateDossierBatchSpec {
 	if batchSize <= 0 {
 		batchSize = CoCreateDossierBatchSize
 	}
-	specs := make([]coCreateDossierBatchSpec, 0, (manifest.ChapterCount+batchSize-1)/batchSize)
-	for from, index := 1, 1; from <= manifest.ChapterCount; from, index = from+batchSize, index+1 {
-		to := from + batchSize - 1
-		if to > manifest.ChapterCount {
-			to = manifest.ChapterCount
-		}
-		specs = append(specs, coCreateDossierBatchSpec{
-			Index:           index,
-			SourceFrom:      from,
-			SourceTo:        to,
-			SourceSignature: sourceRangeSignature(manifest, from, to),
-		})
-	}
-	return specs
+	return store.AdaptationDossierBatchSpecs(manifest, batchSize, CoCreateDossierBatchRuneLimit)
 }
 
 func coCreateDossierBatchCurrent(batch *domain.AdaptationCoCreateDossierBatch, spec coCreateDossierBatchSpec) bool {
@@ -185,7 +172,7 @@ func buildCoCreateDossierBatch(ctx context.Context, deps Deps, spec coCreateDoss
 	if err != nil {
 		return domain.AdaptationCoCreateDossierBatch{}, err
 	}
-	batch, err := parseCoCreateDossierBatch(text)
+	batch, err := collectCoCreateDossierBatchWithRepair(ctx, deps, userPrompt, text, spec, totalBatches, emit)
 	if err != nil {
 		return domain.AdaptationCoCreateDossierBatch{}, err
 	}
@@ -197,6 +184,49 @@ func buildCoCreateDossierBatch(ctx context.Context, deps Deps, spec coCreateDoss
 	batch.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 	normalizeCoCreateDossierBatch(&batch)
 	return batch, nil
+}
+
+func collectCoCreateDossierBatchWithRepair(ctx context.Context, deps Deps, originalPrompt string, initialText string, spec coCreateDossierBatchSpec, totalBatches int, emit ProgressEmitter) (domain.AdaptationCoCreateDossierBatch, error) {
+	text := initialText
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		batch, err := parseCoCreateDossierBatch(text)
+		if err == nil {
+			return batch, nil
+		}
+		lastErr = err
+		if attempt >= adaptationPlannerRepairMaxAttempts {
+			return domain.AdaptationCoCreateDossierBatch{}, lastErr
+		}
+		emitAdaptProgress(emit, StageDossier, spec.Index, totalBatches, fmt.Sprintf("资料包第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", spec.Index, totalBatches, attempt+1, adaptationPlannerRepairMaxAttempts, lastErr), lastErr)
+		repairedText, err := repairCoCreateDossierBatchText(ctx, deps, originalPrompt, text, spec, lastErr, totalBatches, emit)
+		if err != nil {
+			return domain.AdaptationCoCreateDossierBatch{}, err
+		}
+		text = repairedText
+	}
+}
+
+func repairCoCreateDossierBatchText(ctx context.Context, deps Deps, originalPrompt string, previousText string, spec coCreateDossierBatchSpec, previousErr error, totalBatches int, emit ProgressEmitter) (string, error) {
+	repairPrompt := buildPlannerRepairPrompt(
+		fmt.Sprintf("co-create dossier batch %d", spec.Index),
+		originalPrompt,
+		previousText,
+		previousErr,
+		[]string{
+			"Return exactly one JSON object and no prose.",
+			"The top-level object must include useful source-dossier content in plot_phase, key_causality, plot_threads, character_arcs, world_constraints, major_characters, relationship_signals, heroine_signals, ambiguity_risks, and couple_milestones.",
+			"Do not include adaptation advice, adaptation_notes, adaptation_handles, suggestions, rewrite plans, or handling instructions.",
+			fmt.Sprintf("Use only source report evidence from chapters %d through %d.", spec.SourceFrom, spec.SourceTo),
+			"Do not return only metadata, an empty envelope, markdown, or explanations.",
+			"Keep arrays compact but non-empty when the source reports support facts.",
+		},
+	)
+	text, err := generatePlannerText(ctx, deps.LLM, coCreateDossierSystemPrompt, repairPrompt, coCreateDossierMaxTokens, emit, spec.Index, totalBatches, "资料包修复")
+	if err != nil {
+		return "", fmt.Errorf("co-create dossier batch repair llm generate: %w", err)
+	}
+	return text, nil
 }
 
 func buildCoCreateDossierBatchPrompt(spec coCreateDossierBatchSpec, reports []domain.AdaptationSourceReport) string {
@@ -262,11 +292,13 @@ func decodeCoCreateDossierBatchJSON(data []byte) (domain.AdaptationCoCreateDossi
 func coCreateDossierBatchHasContent(batch domain.AdaptationCoCreateDossierBatch) bool {
 	return strings.TrimSpace(batch.PlotPhase) != "" ||
 		len(batch.KeyCausality) > 0 ||
+		len(batch.PlotThreads) > 0 ||
+		len(batch.CharacterArcs) > 0 ||
+		len(batch.WorldConstraints) > 0 ||
 		len(batch.RelationshipSignals) > 0 ||
 		len(batch.HeroineSignals) > 0 ||
 		len(batch.AmbiguityRisks) > 0 ||
-		len(batch.CoupleMilestones) > 0 ||
-		len(batch.AdaptationNotes) > 0
+		len(batch.CoupleMilestones) > 0
 }
 
 func normalizeCoCreateDossierBatch(batch *domain.AdaptationCoCreateDossierBatch) {
@@ -275,12 +307,18 @@ func normalizeCoCreateDossierBatch(batch *domain.AdaptationCoCreateDossierBatch)
 	}
 	batch.PlotPhase = strings.TrimSpace(batch.PlotPhase)
 	batch.KeyCausality = limitStrings(trimmedNonEmpty(batch.KeyCausality), 12)
+	batch.PlotThreads = limitStrings(trimmedNonEmpty(batch.PlotThreads), 14)
+	batch.CharacterArcs = limitStrings(trimmedNonEmpty(batch.CharacterArcs), 14)
+	batch.WorldConstraints = limitStrings(trimmedNonEmpty(batch.WorldConstraints), 12)
 	batch.MajorCharacters = limitStrings(trimmedNonEmpty(batch.MajorCharacters), 30)
 	batch.RelationshipSignals = limitSignals(batch.RelationshipSignals, 16)
 	batch.HeroineSignals = limitSignals(batch.HeroineSignals, 12)
 	batch.AmbiguityRisks = limitRisks(batch.AmbiguityRisks, 12)
+	for i := range batch.AmbiguityRisks {
+		batch.AmbiguityRisks[i].Suggestion = ""
+	}
 	batch.CoupleMilestones = limitSignals(batch.CoupleMilestones, 10)
-	batch.AdaptationNotes = limitStrings(trimmedNonEmpty(batch.AdaptationNotes), 12)
+	batch.AdaptationNotes = nil
 }
 
 func assembleCoCreateDossier(manifest domain.AdaptationSourceManifest, batches []domain.AdaptationCoCreateDossierBatch) domain.AdaptationCoCreateDossier {
@@ -288,7 +326,9 @@ func assembleCoCreateDossier(manifest domain.AdaptationSourceManifest, batches [
 		return batches[i].Index < batches[j].Index
 	})
 	mainline := make([]string, 0, len(batches)*3)
-	notes := make([]string, 0, len(batches)*3)
+	plotThreads := make([]string, 0, len(batches)*4)
+	characterArcs := make([]string, 0, len(batches)*4)
+	worldConstraints := make([]string, 0, len(batches)*3)
 	var relationshipSignals, heroineSignals, milestones []domain.AdaptationRelationshipSignal
 	var risks []domain.AdaptationRelationshipRisk
 	for _, batch := range batches {
@@ -296,7 +336,9 @@ func assembleCoCreateDossier(manifest domain.AdaptationSourceManifest, batches [
 			mainline = append(mainline, fmt.Sprintf("原书第 %d-%d 章：%s", batch.SourceFrom, batch.SourceTo, batch.PlotPhase))
 		}
 		mainline = append(mainline, batch.KeyCausality...)
-		notes = append(notes, batch.AdaptationNotes...)
+		plotThreads = append(plotThreads, batch.PlotThreads...)
+		characterArcs = append(characterArcs, batch.CharacterArcs...)
+		worldConstraints = append(worldConstraints, batch.WorldConstraints...)
 		relationshipSignals = append(relationshipSignals, batch.RelationshipSignals...)
 		heroineSignals = append(heroineSignals, batch.HeroineSignals...)
 		milestones = append(milestones, batch.CoupleMilestones...)
@@ -314,14 +356,17 @@ func assembleCoCreateDossier(manifest domain.AdaptationSourceManifest, batches [
 		SourceChapterCount: manifest.ChapterCount,
 		SourceSignature:    store.AdaptationSourceSignature(manifest),
 		BatchSize:          CoCreateDossierBatchSize,
+		BatchRuneLimit:     CoCreateDossierBatchRuneLimit,
 		GeneratedAt:        time.Now().UTC().Format(time.RFC3339),
-		Overview:           fmt.Sprintf("原书共 %d 章，资料包按每 %d 章生成，覆盖全书主线、人物关系、女主戏份、女配暧昧/后宫风险和情侣节点。", manifest.ChapterCount, CoCreateDossierBatchSize),
+		Overview:           fmt.Sprintf("原书共 %d 章，资料包按每批最多 %d 章生成；若原文字数过长，则按约 %d 字符提前拆分，覆盖全书主线、人物弧光、阵营/世界约束、关系线，以及有源书证据的女主/暧昧风险。", manifest.ChapterCount, CoCreateDossierBatchSize, CoCreateDossierBatchRuneLimit),
 		Mainline:           limitStrings(dedupeStrings(mainline), 160),
+		PlotThreads:        limitStrings(dedupeStrings(plotThreads), 160),
+		CharacterArcs:      limitStrings(dedupeStrings(characterArcs), 160),
+		WorldConstraints:   limitStrings(dedupeStrings(worldConstraints), 120),
 		RelationshipMap:    limitSignals(relationshipSignals, 160),
 		HeroineSignals:     limitSignals(heroineSignals, 120),
 		AmbiguityRisks:     limitRisks(risks, 120),
 		CoupleMilestones:   limitSignals(milestones, 120),
-		AdaptationNotes:    limitStrings(dedupeStrings(notes), 120),
 		Batches:            batches,
 		SourceChapters:     sourceChapters,
 	}

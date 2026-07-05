@@ -130,7 +130,7 @@ func EnsureCoCreateBriefing(ctx context.Context, deps Deps, intent domain.Adapta
 	if err != nil || dossier == nil {
 		return nil, err
 	}
-	if !store.CoCreateDossierMatchesManifest(*dossier, *manifest, CoCreateDossierPromptVersion, CoCreateDossierBatchSize) {
+	if !store.CoCreateDossierMatchesManifest(*dossier, *manifest, CoCreateDossierPromptVersion, CoCreateDossierBatchSize, CoCreateDossierBatchRuneLimit) {
 		return nil, fmt.Errorf("co-create dossier missing or stale")
 	}
 	intent.IntentHash = CoCreateIntentHash(intent)
@@ -271,11 +271,13 @@ func buildCoCreateBriefingBatchPrompt(intent domain.AdaptationCoCreateIntent, sp
 			fmt.Fprintf(&sb, "Plot phase: %s\n", clipText(batch.PlotPhase, 260))
 		}
 		writeStringList(&sb, "Key causality", batch.KeyCausality, 8, 140)
+		writeStringList(&sb, "Plot threads", batch.PlotThreads, 8, 140)
+		writeStringList(&sb, "Character arcs", batch.CharacterArcs, 8, 140)
+		writeStringList(&sb, "World constraints", batch.WorldConstraints, 8, 140)
 		writeBriefingSignals(&sb, "Relationship signals", batch.RelationshipSignals, 10)
 		writeBriefingSignals(&sb, "Heroine signals", batch.HeroineSignals, 10)
 		writeBriefingRisks(&sb, "Ambiguity risks", batch.AmbiguityRisks, 10)
 		writeBriefingSignals(&sb, "Couple milestones", batch.CoupleMilestones, 8)
-		writeStringList(&sb, "Adaptation notes", batch.AdaptationNotes, 8, 160)
 	}
 	return sb.String()
 }

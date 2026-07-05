@@ -74,9 +74,13 @@ type AdaptationCoCreateDossier struct {
 	SourceChapterCount int                                `json:"source_chapter_count"`
 	SourceSignature    string                             `json:"source_signature"`
 	BatchSize          int                                `json:"batch_size"`
+	BatchRuneLimit     int                                `json:"batch_rune_limit,omitempty"`
 	GeneratedAt        string                             `json:"generated_at,omitempty"`
 	Overview           string                             `json:"overview,omitempty"`
 	Mainline           []string                           `json:"mainline,omitempty"`
+	PlotThreads        []string                           `json:"plot_threads,omitempty"`
+	CharacterArcs      []string                           `json:"character_arcs,omitempty"`
+	WorldConstraints   []string                           `json:"world_constraints,omitempty"`
 	RelationshipMap    []AdaptationRelationshipSignal     `json:"relationship_map,omitempty"`
 	HeroineSignals     []AdaptationRelationshipSignal     `json:"heroine_signals,omitempty"`
 	AmbiguityRisks     []AdaptationRelationshipRisk       `json:"ambiguity_risks,omitempty"`
@@ -96,6 +100,9 @@ type AdaptationCoCreateDossierBatch struct {
 	GeneratedAt         string                         `json:"generated_at,omitempty"`
 	PlotPhase           string                         `json:"plot_phase,omitempty"`
 	KeyCausality        []string                       `json:"key_causality,omitempty"`
+	PlotThreads         []string                       `json:"plot_threads,omitempty"`
+	CharacterArcs       []string                       `json:"character_arcs,omitempty"`
+	WorldConstraints    []string                       `json:"world_constraints,omitempty"`
 	MajorCharacters     []string                       `json:"major_characters,omitempty"`
 	RelationshipSignals []AdaptationRelationshipSignal `json:"relationship_signals,omitempty"`
 	HeroineSignals      []AdaptationRelationshipSignal `json:"heroine_signals,omitempty"`

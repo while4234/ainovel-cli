@@ -615,7 +615,7 @@ func adaptationAnalysisStatus(st *storepkg.Store, manifest *domain.AdaptationSou
 	if err != nil || foundation == nil {
 		return "paused"
 	}
-	current, err := st.Adaptation.CoCreateDossierCurrent(adapt.CoCreateDossierPromptVersion, adapt.CoCreateDossierBatchSize)
+	current, err := st.Adaptation.CoCreateDossierCurrent(adapt.CoCreateDossierPromptVersion, adapt.CoCreateDossierBatchSize, adapt.CoCreateDossierBatchRuneLimit)
 	if err != nil || !current {
 		return "paused"
 	}

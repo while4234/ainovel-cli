@@ -150,7 +150,7 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 		if reports, err := deps.Store.Adaptation.LoadSourceReports(); err == nil {
 			_ = deps.Store.Adaptation.SaveSourceReports(reports)
 		}
-		if shouldRefreshCoCreateDossierBatches(chapterNum, total) {
+		if shouldRefreshCoCreateDossierBatches(chapterNum, manifest) {
 			reports, err := deps.Store.Adaptation.LoadSourceReports()
 			if err != nil {
 				return fmt.Errorf("load source reports for co-create dossier batches: %w", err)
@@ -194,8 +194,16 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 	return nil
 }
 
-func shouldRefreshCoCreateDossierBatches(chapter, total int) bool {
-	return chapter > 0 && chapter < total && chapter%CoCreateDossierBatchSize == 0
+func shouldRefreshCoCreateDossierBatches(chapter int, manifest *domain.AdaptationSourceManifest) bool {
+	if chapter <= 0 || manifest == nil || chapter >= manifest.ChapterCount {
+		return false
+	}
+	for _, spec := range dossierBatchSpecs(*manifest, CoCreateDossierBatchSize) {
+		if spec.SourceTo == chapter {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureSourceSnapshot(adaptation *store.AdaptationStore, sourcePath string, chapters []imp.Chapter) (*domain.AdaptationSourceManifest, bool, error) {
