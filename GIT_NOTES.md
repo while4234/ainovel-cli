@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest source change: current local commit
+- Latest source change: `20efdd9`
   `fix: preserve project events on open`:
   Web project switching now merges the loaded snapshot into the existing
   workbench instead of replacing the whole workbench. This preserves SSE
