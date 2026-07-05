@@ -158,6 +158,11 @@ func TestProjectAdaptAnalyzeUsesProjectAdaptationUploadPath(t *testing.T) {
 		t.Fatalf("analyze status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	want := filepath.Join(manifest.RootDir, "uploads", "adaptation", "source.txt")
+	waitForTestCondition(t, "adaptation host call", func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.adaptSourcePath == want
+	})
 	if fake.adaptSourcePath != want {
 		t.Fatalf("adapt source path = %q, want %q", fake.adaptSourcePath, want)
 	}
@@ -406,6 +411,12 @@ func TestProjectAdaptStartFailsAfterNewUploadUntilAnalyzeCompletes(t *testing.T)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("old analyze status = %d body=%s", rec.Code, rec.Body.String())
 	}
+	oldPath := filepath.Join(manifest.RootDir, "uploads", "adaptation", "old.txt")
+	waitForTestCondition(t, "old adaptation analysis", func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.adaptSourcePath == oldPath
+	})
 
 	uploadAdaptationSourceForTest(t, server, manifest, "new.txt", "Chapter 1\nnew source")
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/start", bytes.NewBufferString(`{"source_file":"new.txt","mode":"chapter","brief":"adapt the new source"}`))
@@ -424,6 +435,12 @@ func TestProjectAdaptStartFailsAfterNewUploadUntilAnalyzeCompletes(t *testing.T)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("new analyze status = %d body=%s", rec.Code, rec.Body.String())
 	}
+	newPath := filepath.Join(manifest.RootDir, "uploads", "adaptation", "new.txt")
+	waitForTestCondition(t, "new adaptation analysis", func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.adaptSourcePath == newPath
+	})
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/start", bytes.NewBufferString(`{"source_file":"new.txt","mode":"chapter","brief":"adapt the new source"}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)

@@ -25,6 +25,8 @@ import {
   isProjectRunning,
   resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords,
+  resolveVisibleDefaultModel,
+  restoreSimulationProjectState,
   simulationFilesFromResponse,
   simulationProfileSummaryText
 } from './App.jsx';
@@ -213,7 +215,7 @@ describe('workspace progress derivation', () => {
       activeProject,
       busy: true,
       simulation: { analysisStatus: 'idle', importStatus: 'idle' }
-    })).toBe(false);
+    })).toBe(true);
   });
 
   it('keeps adaptation analysis available while simulation preparation is running', () => {
@@ -225,6 +227,7 @@ describe('workspace progress derivation', () => {
 
     expect(isSimulationProfileActionBusy({ analysisStatus: 'running' })).toBe(true);
     expect(canRunAdaptationAnalysis({ activeProject, busy: false, adaptation })).toBe(true);
+    expect(canRunAdaptationAnalysis({ activeProject, busy: true, adaptation })).toBe(true);
     expect(canRunAdaptationAnalysis({
       activeProject,
       busy: false,
@@ -849,6 +852,44 @@ describe('workspace progress derivation', () => {
         relative_path: 'nested/c-source.txt'
       }
     ]);
+  });
+
+  it('restores running simulation analysis state from project snapshots', () => {
+    const next = restoreSimulationProjectState({
+      libraryQuery: '',
+      libraryStatus: 'idle',
+      libraryItems: [],
+      libraryMessage: '',
+      libraryError: ''
+    }, {
+      analysis_status: 'running',
+      analysis_events: [{ stage: 'analyze', message: '分析仿写语料 1/10' }],
+      import_status: 'idle',
+      files: [{ name: 'part_001.txt', size: 42, relative_path: 'part_001.txt' }]
+    });
+
+    expect(next.analysisStatus).toBe('running');
+    expect(next.analysisEvents).toHaveLength(1);
+    expect(next.files[0].name).toBe('part_001.txt');
+  });
+
+  it('shows project default model instead of the global runtime default when a project is active', () => {
+    const visible = resolveVisibleDefaultModel(
+      { id: 'project-1' },
+      { config: { provider: 'custom-openai', model: 'deepseek-v4-pro' } },
+      {
+        providers: [
+          { name: 'custom-openai', models: ['deepseek-v4-pro'] },
+          { name: 'deepseek', models: ['deepseek-v4-pro'] }
+        ],
+        roles: [
+          { role: 'default', provider: 'deepseek', model: 'deepseek-v4-pro', explicit: true }
+        ]
+      }
+    );
+
+    expect(visible.provider).toBe('deepseek');
+    expect(visible.model).toBe('deepseek-v4-pro');
   });
 
   it('summarizes simulation profiles without timestamps or source filenames', () => {

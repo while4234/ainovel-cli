@@ -1,7 +1,6 @@
 package web
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,18 +106,22 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Source analysis is a long-running job. Keep its lifetime tied to the
-	// project session so a browser reconnect does not cancel the analysis.
-	events, err := session.PrepareAdaptationSource(context.Background(), sourcePath)
+	if err := session.StartPrepareAdaptationSource(sourcePath); err != nil {
+		writeAdaptationActionError(w, err, nil)
+		return
+	}
+	status, err := projectAdaptationStatus(manifest, session.isActionRunning(projectActionKindAdaptationAnalysis))
 	if err != nil {
-		writeAdaptationActionError(w, err, events)
+		writeAdaptationActionError(w, err, nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"project":  manifest,
-		"snapshot": session.Snapshot(),
-		"events":   events,
-		"running":  session.Snapshot().IsRunning,
+		"project":    manifest,
+		"snapshot":   session.Snapshot(),
+		"adaptation": status,
+		"events":     status.AnalysisEvents,
+		"running":    true,
+		"accepted":   true,
 	})
 }
 

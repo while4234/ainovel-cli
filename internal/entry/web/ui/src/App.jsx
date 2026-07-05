@@ -167,6 +167,7 @@ function createSimulationState() {
 function createAdaptationState() {
   return {
     sourceFile: null,
+    uploadStatus: 'idle',
     uploadMessage: '',
     analysisStatus: 'idle',
     analysisEvents: [],
@@ -229,20 +230,24 @@ function resetSimulationProjectState(previous) {
   };
 }
 
-function restoreSimulationProjectState(previous, status) {
+export function restoreSimulationProjectState(previous, status) {
   const next = resetSimulationProjectState(previous);
   if (!status) {
     return next;
   }
   const importedFile = status.imported_file || status.importedFile || null;
+  const analysisEvents = status.analysis_events || status.analysisEvents;
+  const analysisStatus = String(status.analysis_status || status.analysisStatus || next.analysisStatus || 'idle').trim() || 'idle';
   const importEvents = status.import_events || status.importEvents;
   const importStatus = String(status.import_status || status.importStatus || (importedFile ? 'done' : next.importStatus) || 'idle').trim() || 'idle';
   return {
     ...next,
     files: simulationFilesFromResponse(status),
+    analysisStatus,
+    analysisEvents: Array.isArray(analysisEvents) ? analysisEvents : [],
     importStatus,
     importEvents: Array.isArray(importEvents) ? importEvents : [],
-    importMessage: status.message || (importedFile ? `已恢复画像：${simulationProfileLabel(importedFile)}` : '')
+    importMessage: importedFile ? `已恢复画像：${simulationProfileLabel(importedFile)}` : ''
   };
 }
 
@@ -277,8 +282,92 @@ function restoreAdaptationProjectState(previous, status, snapshot) {
     analysisStatus,
     analysisEvents: Array.isArray(status.analysis_events || status.analysisEvents)
       ? (status.analysis_events || status.analysisEvents)
-      : []
+    : []
   }, snapshot);
+}
+
+function appendWorkflowEvent(events, event, limit = 200) {
+  const next = [...(Array.isArray(events) ? events : []), event];
+  return next.slice(-limit);
+}
+
+function workflowEventFromHostEvent(webEvent) {
+  const event = webEvent?.event || {};
+  const failed = event.failed || event.level === 'error';
+  return {
+    time: event.time || webEvent?.time || new Date().toISOString(),
+    stage: event.kind || '',
+    current: 0,
+    total: 0,
+    message: event.summary || event.detail || '',
+    error: failed ? (event.detail || event.summary || '') : ''
+  };
+}
+
+function workflowStatusFromHostEvent(webEvent) {
+  const event = webEvent?.event || {};
+  const stage = String(event.kind || '').toLowerCase();
+  if (event.failed || event.level === 'error' || stage === 'error') {
+    return 'error';
+  }
+  if (stage === 'paused') {
+    return 'paused';
+  }
+  if (event.level === 'success' || stage === 'done') {
+    return 'done';
+  }
+  return 'running';
+}
+
+function applyHostEventToSimulationState(previous, webEvent) {
+  const event = webEvent?.event || {};
+  if (String(event.category || '').toUpperCase() !== 'SIMULATE') {
+    return previous;
+  }
+  const stage = String(event.kind || '').toLowerCase();
+  const workflowEvent = workflowEventFromHostEvent(webEvent);
+  const status = workflowStatusFromHostEvent(webEvent);
+  const importEvent = stage === 'import' ||
+    (stage === 'done' && previous.importStatus === 'running' && previous.analysisStatus !== 'running');
+  if (importEvent) {
+    return {
+      ...previous,
+      importStatus: status,
+      importEvents: appendWorkflowEvent(previous.importEvents, workflowEvent),
+      importMessage: status === 'done' ? (workflowEvent.message || previous.importMessage) : previous.importMessage,
+      error: status === 'error' ? (workflowEvent.error || workflowEvent.message) : previous.error
+    };
+  }
+  return {
+    ...previous,
+    analysisStatus: status,
+    analysisEvents: appendWorkflowEvent(previous.analysisEvents, workflowEvent),
+    saveDialogOpen: status === 'done' && previous.analysisStatus === 'running' ? true : previous.saveDialogOpen,
+    saveStatus: status === 'done' ? 'idle' : previous.saveStatus,
+    saveError: status === 'done' ? '' : previous.saveError,
+    error: status === 'error' ? (workflowEvent.error || workflowEvent.message) : previous.error
+  };
+}
+
+function applyHostEventToAdaptationState(previous, webEvent) {
+  const event = webEvent?.event || {};
+  if (String(event.category || '').toUpperCase() !== 'ADAPT') {
+    return previous;
+  }
+  const stage = String(event.kind || '').toLowerCase();
+  const sourceAnalysisStage = ['splitting', 'foundation', 'chapter', 'paused'].includes(stage) ||
+    ((stage === 'done' || stage === 'error') && previous.analysisStatus === 'running');
+  if (!sourceAnalysisStage) {
+    return previous;
+  }
+  const workflowEvent = workflowEventFromHostEvent(webEvent);
+  const status = workflowStatusFromHostEvent(webEvent);
+  return {
+    ...previous,
+    analysisStatus: status,
+    analysisEvents: appendWorkflowEvent(previous.analysisEvents, workflowEvent),
+    error: status === 'error' ? (workflowEvent.error || workflowEvent.message) : previous.error
+  };
 }
 
 export function applyAdaptationProposalSnapshot(previous, snapshot) {
@@ -695,6 +784,10 @@ export default function App() {
       });
       if (event.type === 'cocreate_state') {
         setCoCreate((previous) => coCreateStateFromEvent(event, previous));
+      }
+      if (event.type === 'host_event') {
+        setSimulation((previous) => applyHostEventToSimulationState(previous, event));
+        setAdaptation((previous) => applyHostEventToAdaptationState(previous, event));
       }
       setConnection('live');
     };
@@ -1123,6 +1216,16 @@ export default function App() {
         return;
       }
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      if (data.accepted || data.running) {
+        const responseEvents = data.simulation?.analysis_events || data.simulation?.analysisEvents || data.events || [];
+        setSimulation((previous) => ({
+          ...previous,
+          analysisStatus: 'running',
+          analysisEvents: Array.isArray(responseEvents) ? responseEvents : previous.analysisEvents,
+          error: ''
+        }));
+        return;
+      }
       setSimulation((previous) => ({
         ...previous,
         analysisStatus: 'done',
@@ -1257,6 +1360,20 @@ export default function App() {
     try {
       const data = await loadSimulationFromLibrary(activeProject.id, name);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      if (data.accepted || data.running) {
+        const responseEvents = data.simulation?.import_events || data.simulation?.importEvents || data.events || [];
+        setSimulation((previous) => ({
+          ...previous,
+          libraryStatus: 'done',
+          libraryMessage: libraryMessageFromResponse(data) || `已开始从仿写画像库加载：${name}`,
+          importStatus: 'running',
+          importEvents: Array.isArray(responseEvents) ? responseEvents : previous.importEvents,
+          importMessage: `正在加载画像：${name}`,
+          error: '',
+          libraryError: ''
+        }));
+        return;
+      }
       setSimulation((previous) => ({
         ...previous,
         libraryStatus: 'done',
@@ -1298,6 +1415,17 @@ export default function App() {
         : data.warning
           ? `，画像库未同步：${data.warning}`
           : '';
+      if (data.accepted || data.running) {
+        const responseEvents = data.simulation?.import_events || data.simulation?.importEvents || data.events || [];
+        setSimulation((previous) => ({
+          ...previous,
+          importStatus: 'running',
+          importEvents: Array.isArray(responseEvents) ? responseEvents : previous.importEvents,
+          importMessage: data.imported_file?.name ? `正在导入 ${data.imported_file.name}${libraryNote}` : `画像正在导入${libraryNote}`,
+          error: ''
+        }));
+        return;
+      }
       setSimulation((previous) => ({
         ...previous,
         importStatus: 'done',
@@ -1321,7 +1449,6 @@ export default function App() {
     if (!activeProject?.id || !file) {
       return;
     }
-    setBusy(true);
     setWorkbench((previous) => ({
       ...previous,
       snapshot: clearAdaptationProposalSnapshot(previous.snapshot)
@@ -1329,6 +1456,7 @@ export default function App() {
     setAdaptation((previous) => ({
       ...previous,
       sourceFile: null,
+      uploadStatus: 'running',
       uploadMessage: '',
       analysisStatus: 'idle',
       analysisEvents: [],
@@ -1342,13 +1470,12 @@ export default function App() {
       setAdaptation((previous) => ({
         ...previous,
         sourceFile: data.source_file || null,
+        uploadStatus: 'done',
         uploadMessage: data.message || `已上传 ${file.name}`,
         error: ''
       }));
     } catch (err) {
-      setAdaptation((previous) => ({ ...previous, error: err.message }));
-    } finally {
-      setBusy(false);
+      setAdaptation((previous) => ({ ...previous, uploadStatus: 'error', error: err.message }));
     }
   };
 
@@ -1375,6 +1502,16 @@ export default function App() {
         ...previous,
         snapshot: clearAdaptationProposalSnapshot(data.snapshot || previous.snapshot)
       }));
+      if (data.accepted || data.running) {
+        const responseEvents = data.adaptation?.analysis_events || data.adaptation?.analysisEvents || data.events || [];
+        setAdaptation((previous) => ({
+          ...previous,
+          analysisStatus: 'running',
+          analysisEvents: Array.isArray(responseEvents) ? responseEvents : previous.analysisEvents,
+          error: ''
+        }));
+        return;
+      }
       setAdaptation((previous) => ({
         ...previous,
         analysisStatus: 'done',
@@ -3577,6 +3714,7 @@ function AdaptationPanel({
   const libraryBusy = adaptation.libraryStatus === 'running';
   const simulationProfileBusy = isSimulationProfileActionBusy(simulation);
   const workflowBusy = busy || simulationProfileBusy;
+  const uploadBusy = adaptation.uploadStatus === 'running';
   const canAnalyze = canRunAdaptationAnalysis({ activeProject, busy, adaptation });
   const canCoCreate = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !workflowBusy);
   const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !workflowBusy && adaptation.brief.trim());
@@ -3672,12 +3810,12 @@ function AdaptationPanel({
           <span>小说改编</span>
         </div>
         <div className="simulation-actions">
-          <label className={`tool-button file-picker full ${!activeProject || busy ? 'disabled' : ''}`}>
+          <label className={`tool-button file-picker full ${!activeProject || uploadBusy ? 'disabled' : ''}`}>
             <Upload size={16} />
             上传原文
             <input
               accept=".txt,.md,.markdown,text/plain,text/markdown"
-              disabled={!activeProject || busy}
+              disabled={!activeProject || uploadBusy}
               onChange={onUploadSource}
               type="file"
             />
@@ -3822,7 +3960,7 @@ function SimulationPanel({
   const profileStatusText = simulationProfileSummaryText(profile);
   const libraryBusy = simulation.libraryStatus === 'running';
   const simulationProfileBusy = isSimulationProfileActionBusy(simulation);
-  const simulationActionDisabled = busy || simulationProfileBusy;
+  const simulationActionDisabled = simulationProfileBusy;
   const canAnalyze = canRunSimulationAnalysis({ activeProject, busy, simulation });
   return (
     <>
@@ -4501,10 +4639,11 @@ function ModelPanel({
     models: provider.models || [],
     useProxy: provider.use_proxy === true
   }));
-  const defaultProvider = config.provider || providers[0]?.name || '';
-  const defaultModels = modelOptionsForProvider(providers, defaultProvider, config.model);
-  const defaultModel = config.model || defaultModels[0] || '';
-  const activeDefaultRoute = roles.find((route) => route.role === 'default') || { provider: defaultProvider, model: defaultModel };
+  const visibleDefault = resolveVisibleDefaultModel(activeProject, runtime, modelConfig);
+  const activeDefaultRoute = visibleDefault.route;
+  const defaultProvider = visibleDefault.provider;
+  const defaultModels = visibleDefault.models;
+  const defaultModel = visibleDefault.model;
   const [selectedProjectRole, setSelectedProjectRole] = useState('default');
   const [existingTarget, setExistingTarget] = useState({ provider: '', model: '' });
   const existingProvider = existingTarget.provider || providers[0]?.name || '';
@@ -5121,6 +5260,8 @@ function workflowStatusText(status) {
       return '已完成';
     case 'error':
       return '出错';
+    case 'paused':
+      return '未完成';
     default:
       return '待处理';
   }
@@ -5353,6 +5494,30 @@ export function modelOptionsForProvider(providers = [], providerName = '', curre
     return [selected, ...models];
   }
   return models;
+}
+
+export function resolveVisibleDefaultModel(activeProject, runtime, modelConfig) {
+  const providers = modelConfig?.providers || [];
+  const roles = modelConfig?.roles || [];
+  const config = runtime?.config || {};
+  const runtimeProvider = config.provider || providers[0]?.name || '';
+  const runtimeModels = modelOptionsForProvider(providers, runtimeProvider, config.model);
+  const runtimeModel = config.model || runtimeModels[0] || '';
+  const route = roles.find((item) => item.role === 'default') || {
+    role: 'default',
+    provider: runtimeProvider,
+    model: runtimeModel,
+    explicit: false
+  };
+  const provider = activeProject?.id ? route.provider : runtimeProvider;
+  const models = modelOptionsForProvider(providers, provider, activeProject?.id ? route.model : runtimeModel);
+  const model = (activeProject?.id ? route.model : runtimeModel) || models[0] || '';
+  return {
+    route,
+    provider,
+    model,
+    models
+  };
 }
 
 function mergeModelOptions(...groups) {
@@ -5751,11 +5916,11 @@ export function isSimulationProfileActionBusy(simulation = {}) {
 }
 
 export function canRunSimulationAnalysis({ activeProject, busy, simulation } = {}) {
-  return Boolean(activeProject && !busy && !isSimulationProfileActionBusy(simulation));
+  return Boolean(activeProject && !isSimulationProfileActionBusy(simulation));
 }
 
 export function canRunAdaptationAnalysis({ activeProject, busy, adaptation } = {}) {
-  return Boolean(activeProject && adaptation?.sourceFile && !busy && adaptation.analysisStatus !== 'running');
+  return Boolean(activeProject && adaptation?.sourceFile && adaptation.analysisStatus !== 'running' && adaptation.uploadStatus !== 'running');
 }
 
 export function getCreativeBlueprint(snapshot) {

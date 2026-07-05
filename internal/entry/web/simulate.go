@@ -48,11 +48,13 @@ type apiSimulationEvent struct {
 }
 
 type apiSimulationStatus struct {
-	ImportedFile *apiUploadedFile     `json:"imported_file,omitempty"`
-	Files        []apiUploadedFile    `json:"files,omitempty"`
-	ImportStatus string               `json:"import_status"`
-	ImportEvents []apiSimulationEvent `json:"import_events,omitempty"`
-	Message      string               `json:"message,omitempty"`
+	ImportedFile   *apiUploadedFile     `json:"imported_file,omitempty"`
+	Files          []apiUploadedFile    `json:"files,omitempty"`
+	AnalysisStatus string               `json:"analysis_status"`
+	AnalysisEvents []apiSimulationEvent `json:"analysis_events,omitempty"`
+	ImportStatus   string               `json:"import_status"`
+	ImportEvents   []apiSimulationEvent `json:"import_events,omitempty"`
+	Message        string               `json:"message,omitempty"`
 }
 
 type pendingUpload struct {
@@ -123,16 +125,26 @@ func (s *Server) handleProjectSimulateAnalyze(w http.ResponseWriter, r *http.Req
 		writeProjectSessionError(w, err)
 		return
 	}
-	events, err := session.SimulateFromDir(r.Context(), projectSimulateDir(manifest))
+	if err := session.StartSimulateFromDir(projectSimulateDir(manifest)); err != nil {
+		writeSimulationActionError(w, err, nil)
+		return
+	}
+	status, err := projectSimulationStatus(
+		manifest,
+		session.isActionRunning(projectActionKindSimulationAnalysis),
+		session.isActionRunning(projectActionKindSimulationImport),
+	)
 	if err != nil {
-		writeSimulationActionError(w, err, events)
+		writeSimulationActionError(w, err, nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"project":  manifest,
-		"snapshot": session.Snapshot(),
-		"events":   events,
-		"running":  session.Snapshot().IsRunning,
+		"project":    manifest,
+		"snapshot":   session.Snapshot(),
+		"simulation": status,
+		"events":     status.AnalysisEvents,
+		"running":    true,
+		"accepted":   true,
 	})
 }
 
@@ -175,18 +187,28 @@ func (s *Server) handleProjectSimulateImport(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	events, err := session.ImportSimulationProfile(r.Context(), filepath.Join(importedDir, profile.Name))
-	if err != nil {
-		writeSimulationActionError(w, err, events)
+	if err := session.StartImportSimulationProfile(filepath.Join(importedDir, profile.Name)); err != nil {
+		writeSimulationActionError(w, err, nil)
 		return
 	}
 	libraryItem, librarySaved, libraryWarning := s.trySaveImportedSimulationProfile(profile)
+	status, err := projectSimulationStatus(
+		manifest,
+		session.isActionRunning(projectActionKindSimulationAnalysis),
+		session.isActionRunning(projectActionKindSimulationImport),
+	)
+	if err != nil {
+		writeSimulationActionError(w, err, nil)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":       manifest,
 		"snapshot":      session.Snapshot(),
 		"imported_file": profile.apiUploadedFile,
-		"events":        events,
-		"running":       session.Snapshot().IsRunning,
+		"simulation":    status,
+		"events":        status.ImportEvents,
+		"running":       true,
+		"accepted":      true,
 		"library_saved": librarySaved,
 		"library_item":  libraryItem,
 		"warning":       libraryWarning,
@@ -449,33 +471,87 @@ func projectImportedProfilesDir(manifest ProjectManifest) string {
 	return filepath.Join(manifest.RootDir, "profiles", "imported")
 }
 
-func projectSimulationStatus(manifest ProjectManifest) (apiSimulationStatus, error) {
-	status := apiSimulationStatus{ImportStatus: "idle"}
+func projectSimulationStatus(manifest ProjectManifest, analysisRunning bool, importRunning bool) (apiSimulationStatus, error) {
+	status := apiSimulationStatus{AnalysisStatus: "idle", ImportStatus: "idle"}
 	files, err := projectSimulationSourceFiles(projectSimulateDir(manifest))
 	if err != nil {
 		return status, err
 	}
 	status.Files = files
-	if _, err := findProjectSimulationProfile(manifest); err != nil {
-		return status, nil
+	profilePath, profileErr := findProjectSimulationProfile(manifest)
+	if profileErr == nil {
+		profile, err := readSimulationProfileFile(profilePath)
+		if err != nil {
+			return status, err
+		}
+		sourceCount := len(profile.Corpus.Sources)
+		total := sourceCount
+		if len(files) > total {
+			total = len(files)
+		}
+		if sourceCount > 0 && len(files) > sourceCount {
+			status.AnalysisStatus = "paused"
+			status.Message = "已恢复部分仿写画像，可继续分析"
+			status.AnalysisEvents = []apiSimulationEvent{{
+				Time:    time.Now().UTC(),
+				Stage:   string(sim.StageAnalyze),
+				Current: sourceCount,
+				Total:   total,
+				Message: status.Message,
+			}}
+		} else {
+			status.AnalysisStatus = "done"
+			status.Message = "已恢复仿写画像"
+			status.AnalysisEvents = []apiSimulationEvent{{
+				Time:    time.Now().UTC(),
+				Stage:   string(sim.StageDone),
+				Current: sourceCount,
+				Total:   total,
+				Message: status.Message,
+			}}
+		}
+	} else if analysisRunning {
+		status.Message = "仿写画像分析进行中"
+	}
+	if analysisRunning {
+		status.AnalysisStatus = "running"
+		status.Message = "仿写画像分析进行中"
+		status.AnalysisEvents = []apiSimulationEvent{{
+			Time:    time.Now().UTC(),
+			Stage:   string(sim.StageAnalyze),
+			Current: 0,
+			Total:   len(files),
+			Message: status.Message,
+		}}
 	}
 	importedFile, err := latestImportedSimulationProfile(projectImportedProfilesDir(manifest))
 	if err != nil {
 		return status, err
 	}
-	if importedFile == nil {
+	if importRunning {
+		status.ImportStatus = "running"
+		status.ImportEvents = []apiSimulationEvent{{
+			Time:    time.Now().UTC(),
+			Stage:   string(sim.StageImport),
+			Current: 0,
+			Total:   1,
+			Message: "仿写画像导入进行中",
+		}}
 		return status, nil
 	}
-	status.ImportedFile = importedFile
-	status.ImportStatus = "done"
-	status.Message = fmt.Sprintf("已恢复画像：%s", simulationProfileDisplayName(importedFile.Name))
-	status.ImportEvents = []apiSimulationEvent{{
-		Time:    time.Now().UTC(),
-		Stage:   string(sim.StageDone),
-		Current: 1,
-		Total:   1,
-		Message: status.Message,
-	}}
+	if importedFile != nil {
+		status.ImportedFile = importedFile
+		status.ImportStatus = "done"
+		message := fmt.Sprintf("已恢复画像：%s", simulationProfileDisplayName(importedFile.Name))
+		status.ImportEvents = []apiSimulationEvent{{
+			Time:    time.Now().UTC(),
+			Stage:   string(sim.StageDone),
+			Current: 1,
+			Total:   1,
+			Message: message,
+		}}
+		status.Message = message
+	}
 	return status, nil
 }
 

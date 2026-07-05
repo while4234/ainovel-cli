@@ -684,7 +684,11 @@ func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManif
 	if err != nil {
 		return projectSnapshotResponse{}, err
 	}
-	simulation, err := projectSimulationStatus(manifest)
+	simulation, err := projectSimulationStatus(
+		manifest,
+		session.isActionRunning(projectActionKindSimulationAnalysis),
+		session.isActionRunning(projectActionKindSimulationImport),
+	)
 	if err != nil {
 		return projectSnapshotResponse{}, err
 	}

@@ -169,17 +169,27 @@ func (s *Server) handleProjectSimulationLibraryLoad(w http.ResponseWriter, r *ht
 		writeLibraryActionError(w, err)
 		return
 	}
-	events, err := session.ImportSimulationProfile(r.Context(), importPath)
+	if err := session.StartImportSimulationProfile(importPath); err != nil {
+		writeSimulationActionError(w, err, nil)
+		return
+	}
+	status, err := projectSimulationStatus(
+		manifest,
+		session.isActionRunning(projectActionKindSimulationAnalysis),
+		session.isActionRunning(projectActionKindSimulationImport),
+	)
 	if err != nil {
-		writeSimulationActionError(w, err, events)
+		writeSimulationActionError(w, err, nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"project":  manifest,
-		"snapshot": session.Snapshot(),
-		"item":     item,
-		"events":   events,
-		"running":  session.Snapshot().IsRunning,
+		"project":    manifest,
+		"snapshot":   session.Snapshot(),
+		"simulation": status,
+		"item":       item,
+		"events":     status.ImportEvents,
+		"running":    true,
+		"accepted":   true,
 	})
 }
 

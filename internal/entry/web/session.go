@@ -567,6 +567,36 @@ func (s *ProjectSession) SimulateFromDir(ctx context.Context, dir string) ([]api
 	return apiEvents, err
 }
 
+func (s *ProjectSession) StartSimulateFromDir(dir string) error {
+	unlock, err := s.beginActionKind(projectActionKindSimulationAnalysis)
+	if err != nil {
+		return err
+	}
+	s.AppendSnapshot()
+	go func() {
+		defer func() {
+			unlock()
+			s.AppendSnapshot()
+		}()
+		events, err := s.host.SimulateFromDir(context.Background(), dir)
+		if err != nil {
+			s.appendSimulationActionError(sim.StageError, "仿写画像分析启动失败", err)
+			return
+		}
+		if events == nil {
+			s.appendSimulationActionError(sim.StageError, "仿写画像分析失败", fmt.Errorf("simulation event stream is nil"))
+			return
+		}
+		if _, err := s.consumeSimulationEvents(context.Background(), events); err != nil {
+			var runErr simulationRunError
+			if !errors.As(err, &runErr) {
+				s.appendSimulationActionError(sim.StageError, "仿写画像分析失败", err)
+			}
+		}
+	}()
+	return nil
+}
+
 func (s *ProjectSession) ImportSimulationProfile(ctx context.Context, path string) ([]apiSimulationEvent, error) {
 	unlock, err := s.beginActionKind(projectActionKindSimulationImport)
 	if err != nil {
@@ -586,6 +616,36 @@ func (s *ProjectSession) ImportSimulationProfile(ctx context.Context, path strin
 	return apiEvents, err
 }
 
+func (s *ProjectSession) StartImportSimulationProfile(path string) error {
+	unlock, err := s.beginActionKind(projectActionKindSimulationImport)
+	if err != nil {
+		return err
+	}
+	s.AppendSnapshot()
+	go func() {
+		defer func() {
+			unlock()
+			s.AppendSnapshot()
+		}()
+		events, err := s.host.ImportSimulationProfile(context.Background(), path)
+		if err != nil {
+			s.appendSimulationActionError(sim.StageError, "仿写画像导入启动失败", err)
+			return
+		}
+		if events == nil {
+			s.appendSimulationActionError(sim.StageError, "仿写画像导入失败", fmt.Errorf("simulation import event stream is nil"))
+			return
+		}
+		if _, err := s.consumeSimulationEvents(context.Background(), events); err != nil {
+			var runErr simulationRunError
+			if !errors.As(err, &runErr) {
+				s.appendSimulationActionError(sim.StageError, "仿写画像导入失败", err)
+			}
+		}
+	}()
+	return nil
+}
+
 func (s *ProjectSession) PrepareAdaptationSource(ctx context.Context, sourcePath string) ([]apiAdaptationEvent, error) {
 	ctx, unlock, err := s.beginCancellableAction(ctx, projectActionKindAdaptationAnalysis)
 	if err != nil {
@@ -603,6 +663,41 @@ func (s *ProjectSession) PrepareAdaptationSource(ctx context.Context, sourcePath
 	apiEvents, err := s.consumeAdaptationEvents(ctx, events)
 	s.AppendSnapshot()
 	return apiEvents, err
+}
+
+func (s *ProjectSession) StartPrepareAdaptationSource(sourcePath string) error {
+	ctx, unlock, err := s.beginCancellableAction(context.Background(), projectActionKindAdaptationAnalysis)
+	if err != nil {
+		return err
+	}
+	s.AppendSnapshot()
+	go func() {
+		defer func() {
+			unlock()
+			s.AppendSnapshot()
+		}()
+		events, err := s.host.PrepareAdaptationSource(ctx, sourcePath)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				s.appendAdaptationPausedEvent()
+				return
+			}
+			s.appendAdaptationActionError(adapt.StageError, "原文分析启动失败", err)
+			return
+		}
+		if events == nil {
+			s.appendAdaptationActionError(adapt.StageError, "原文分析失败", fmt.Errorf("adaptation event stream is nil"))
+			return
+		}
+		if _, err := s.consumeAdaptationEvents(ctx, events); err != nil {
+			var runErr adaptationRunError
+			var pausedErr adaptationPausedError
+			if !errors.As(err, &runErr) && !errors.As(err, &pausedErr) && !errors.Is(err, context.Canceled) {
+				s.appendAdaptationActionError(adapt.StageError, "原文分析失败", err)
+			}
+		}
+	}()
+	return nil
 }
 
 func (s *ProjectSession) StartAdaptationPrepared(options adapt.ProposalOptions) error {
@@ -1464,9 +1559,10 @@ func (s *ProjectSession) beginCancellableAction(parent context.Context, kind str
 }
 
 func (s *ProjectSession) isActionRunning(kind string) bool {
-	s.actionCancelMu.Lock()
-	defer s.actionCancelMu.Unlock()
-	return s.actionCancel != nil && s.actionKind == strings.TrimSpace(kind)
+	kind = strings.TrimSpace(kind)
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
+	return s.actionKinds[kind] > 0
 }
 
 func (s *ProjectSession) currentActionKind() string {
@@ -1867,6 +1963,22 @@ func (s *ProjectSession) appendSimulationEvent(ev apiSimulationEvent) WebEvent {
 	})
 }
 
+func (s *ProjectSession) appendSimulationActionError(stage sim.Stage, message string, err error) WebEvent {
+	if err == nil {
+		return s.appendSimulationEvent(apiSimulationEvent{
+			Time:    time.Now().UTC(),
+			Stage:   string(stage),
+			Message: message,
+		})
+	}
+	return s.appendSimulationEvent(apiSimulationEvent{
+		Time:    time.Now().UTC(),
+		Stage:   string(stage),
+		Message: message,
+		Error:   err.Error(),
+	})
+}
+
 func (s *ProjectSession) appendImportEvent(ev apiImportEvent) WebEvent {
 	level := "info"
 	if ev.Error != "" {
@@ -1902,6 +2014,30 @@ func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
 		Detail:   ev.Error,
 		Kind:     ev.Stage,
 		Level:    level,
+	})
+}
+
+func (s *ProjectSession) appendAdaptationPausedEvent() WebEvent {
+	return s.appendAdaptationEvent(apiAdaptationEvent{
+		Time:    time.Now().UTC(),
+		Stage:   string(adapt.StagePaused),
+		Message: "原文分析已暂停，可再次点击分析继续",
+	})
+}
+
+func (s *ProjectSession) appendAdaptationActionError(stage adapt.Stage, message string, err error) WebEvent {
+	if err == nil {
+		return s.appendAdaptationEvent(apiAdaptationEvent{
+			Time:    time.Now().UTC(),
+			Stage:   string(stage),
+			Message: message,
+		})
+	}
+	return s.appendAdaptationEvent(apiAdaptationEvent{
+		Time:    time.Now().UTC(),
+		Stage:   string(stage),
+		Message: message,
+		Error:   err.Error(),
 	})
 }
 

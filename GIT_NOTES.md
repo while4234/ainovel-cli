@@ -29,6 +29,23 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `fix: unblock concurrent web analysis controls`:
+  Web simulation/adaptation analysis and simulation-profile library import now
+  start as background project actions and return immediately, so long-running
+  analysis does not keep browser requests open or exhaust the browser's
+  per-origin connection pool while other projects are active. The React side
+  panels restore per-project simulation/adaptation running state from snapshots
+  and SSE host events, scope upload/analyze button disabling to the current
+  project action instead of one global busy flag, and show the active project's
+  default model route in the model panel. Runtime project configs for the
+  user's current source/corpus projects were switched to
+  `deepseek/deepseek-v4-pro`; missing uploaded source/corpus files were restored
+  from `D:\ainovel\novel` and `D:\ainovel\novel\split_packages`.
+  Validation passed for focused Web UI tests, full Web UI tests, Vite build,
+  full `go test ./...`, `git diff --check` with CRLF warnings only, Web restart
+  on `http://127.0.0.1:9898` as PID `55992`, and HTTP smoke checks for runtime,
+  project listing, and the affected source/corpus project snapshots.
+- Latest source change: current local commit
   `fix: restore simulation uploads after refresh`:
   Web snapshots now include uploaded simulation TXT/MD source files from each
   project's `simulate/` directory, and the React simulation panel restores that

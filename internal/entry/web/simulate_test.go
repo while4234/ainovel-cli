@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -227,6 +228,11 @@ func TestProjectSimulateAnalyzeUsesProjectSimulateDir(t *testing.T) {
 		t.Fatalf("analyze status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	want := filepath.Join(manifest.RootDir, "simulate")
+	waitForTestCondition(t, "simulation host call", func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.simulateDir == want
+	})
 	if fake.simulateDir != want {
 		t.Fatalf("simulate dir = %q, want project simulate dir %q", fake.simulateDir, want)
 	}
@@ -254,6 +260,11 @@ func TestProjectSimulateImportSavesJSONUnderImportedProfilesAndCallsHost(t *test
 		t.Fatalf("import status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	wantPath := filepath.Join(manifest.RootDir, "profiles", "imported", "profile.json")
+	waitForTestCondition(t, "simulation import host call", func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.importPath == wantPath
+	})
 	if fake.importPath != wantPath {
 		t.Fatalf("import path = %q, want %q", fake.importPath, wantPath)
 	}
@@ -283,7 +294,12 @@ func TestProjectSimulateImportUsesExistingHostImportBehavior(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("import status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	saved, err := os.ReadFile(filepath.Join(manifest.OutputDir, "meta", "simulation_profile.json"))
+	profilePath := filepath.Join(manifest.OutputDir, "meta", "simulation_profile.json")
+	waitForTestCondition(t, "saved simulation profile", func() bool {
+		saved, err := os.ReadFile(profilePath)
+		return err == nil && strings.Contains(string(saved), "imported.txt")
+	})
+	saved, err := os.ReadFile(profilePath)
 	if err != nil {
 		t.Fatalf("read saved simulation profile: %v", err)
 	}
@@ -386,4 +402,16 @@ func testWebSimulationProfile(path, sha string) domain.SimulationProfile {
 			},
 		},
 	}
+}
+
+func waitForTestCondition(t *testing.T, description string, ready func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if ready() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", description)
 }
