@@ -1097,7 +1097,7 @@ func (s *ProjectSession) resetRestartableCoCreateLocked() (webCoCreateState, err
 }
 
 func (s *ProjectSession) ensureAdaptCoCreateBriefingLocked(ctx context.Context) error {
-	if s.cocreate == nil || !s.cocreate.needsAdaptBriefingBeforeDraft() {
+	if s.cocreate == nil || !s.cocreate.needsAdaptBriefingRefresh() {
 		return nil
 	}
 	sourcePath := strings.TrimSpace(s.cocreate.sourcePath)
@@ -1138,6 +1138,14 @@ func (s *ProjectSession) SendCoCreate(ctx context.Context, text, source string) 
 		return webCoCreateState{}, err
 	}
 	s.saveCoCreateCheckpoint()
+	if err := s.ensureAdaptCoCreateBriefingLocked(ctx); err != nil {
+		return s.cocreate.apiState(), err
+	}
+	if s.cocreate.hasPendingBriefingDecisions() {
+		api := s.cocreate.apiState()
+		s.appendCoCreateState(api)
+		return api, nil
+	}
 	return s.runCoCreateLocked(ctx)
 }
 
@@ -1158,6 +1166,14 @@ func (s *ProjectSession) ReviseCoCreate(ctx context.Context, req webCoCreateRevi
 		return webCoCreateState{}, err
 	}
 	s.saveCoCreateCheckpoint()
+	if err := s.ensureAdaptCoCreateBriefingLocked(ctx); err != nil {
+		return s.cocreate.apiState(), err
+	}
+	if s.cocreate.hasPendingBriefingDecisions() {
+		api := s.cocreate.apiState()
+		s.appendCoCreateState(api)
+		return api, nil
+	}
 	return s.runCoCreateLocked(ctx)
 }
 

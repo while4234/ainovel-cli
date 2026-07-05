@@ -1285,7 +1285,7 @@ func (s *webCoCreateSession) adaptBriefingIntent() domain.AdaptationCoCreateInte
 		return adapt.BuildCoCreateIntent(coCreateAdaptIntentRaw(""), "", "", 0)
 	}
 	return adapt.BuildCoCreateIntent(
-		coCreateAdaptIntentRaw(s.initialAdaptCoCreateRequest()),
+		coCreateAdaptIntentRaw(s.currentAdaptCoCreateRequest()),
 		s.adaptGranularity,
 		s.adaptRewritePolicy,
 		s.adaptWordTolerance,
@@ -1293,22 +1293,105 @@ func (s *webCoCreateSession) adaptBriefingIntent() domain.AdaptationCoCreateInte
 }
 
 func (s *webCoCreateSession) initialAdaptCoCreateRequest() string {
-	if s == nil || s.session == nil {
+	requests := s.adaptCoCreateUserRequests()
+	if len(requests) == 0 {
 		return ""
 	}
+	return requests[0]
+}
+
+func (s *webCoCreateSession) currentAdaptCoCreateRequest() string {
+	requests := s.adaptCoCreateUserRequests()
+	if len(requests) == 0 {
+		return ""
+	}
+	resolved := resolvedAdaptBriefingDecisionLines(s.adaptationBriefing)
+	if len(requests) == 1 && len(resolved) == 0 {
+		return requests[0]
+	}
+	var sb strings.Builder
+	for idx, request := range requests {
+		if idx > 0 {
+			sb.WriteString("\n\n")
+		}
+		fmt.Fprintf(&sb, "用户补充 %d:\n%s", idx+1, request)
+	}
+	if len(resolved) > 0 {
+		sb.WriteString("\n\n已确认选项:\n")
+		for _, line := range resolved {
+			fmt.Fprintf(&sb, "- %s\n", line)
+		}
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+func (s *webCoCreateSession) adaptCoCreateUserRequests() []string {
+	if s == nil || s.session == nil {
+		return nil
+	}
+	var requests []string
 	history := s.session.History()
 	for idx, message := range history {
-		if idx == 0 {
+		if coCreateLogMessageHidden(webCoCreateKindAdapt, idx, message) {
 			continue
 		}
 		if strings.TrimSpace(message.Role) != "user" {
 			continue
 		}
 		if content := strings.TrimSpace(message.Content); content != "" {
-			return content
+			requests = append(requests, content)
 		}
 	}
-	return ""
+	return requests
+}
+
+func resolvedAdaptBriefingDecisionLines(briefing *domain.AdaptationCoCreateBriefing) []string {
+	if briefing == nil || len(briefing.ResolvedDecisions) == 0 {
+		return nil
+	}
+	decisions := make(map[string]domain.AdaptationBriefingDecision, len(briefing.Decisions))
+	for _, decision := range briefing.Decisions {
+		if id := strings.TrimSpace(decision.ID); id != "" {
+			decisions[id] = decision
+		}
+	}
+	lines := make([]string, 0, len(briefing.ResolvedDecisions))
+	for _, resolved := range briefing.ResolvedDecisions {
+		decisionID := strings.TrimSpace(resolved.DecisionID)
+		decision := decisions[decisionID]
+		answer := strings.TrimSpace(resolved.CustomAnswer)
+		if answer == "" {
+			answer = adaptBriefingDecisionOptionLabel(decision.Options, resolved.OptionID)
+		}
+		question := strings.TrimSpace(decision.Question)
+		switch {
+		case question != "" && answer != "":
+			lines = append(lines, question+" => "+answer)
+		case question != "":
+			lines = append(lines, question)
+		case answer != "":
+			lines = append(lines, answer)
+		}
+	}
+	return lines
+}
+
+func adaptBriefingDecisionOptionLabel(options []domain.AdaptationDecisionOption, optionID string) string {
+	optionID = strings.TrimSpace(optionID)
+	for _, option := range options {
+		if strings.TrimSpace(option.ID) != optionID {
+			continue
+		}
+		label := strings.TrimSpace(option.Label)
+		if description := strings.TrimSpace(option.Description); description != "" {
+			if label == "" {
+				return description
+			}
+			return label + ": " + description
+		}
+		return label
+	}
+	return optionID
 }
 
 func (s *webCoCreateSession) needsAdaptBriefingBeforeDraft() bool {
@@ -1316,6 +1399,21 @@ func (s *webCoCreateSession) needsAdaptBriefingBeforeDraft() bool {
 		s.kind == webCoCreateKindAdapt &&
 		s.adaptationBriefing == nil &&
 		strings.TrimSpace(s.draftPrompt()) == ""
+}
+
+func (s *webCoCreateSession) needsAdaptBriefingRefresh() bool {
+	if s == nil || s.kind != webCoCreateKindAdapt {
+		return false
+	}
+	if s.needsAdaptBriefingBeforeDraft() {
+		return true
+	}
+	if s.adaptationBriefing == nil {
+		return false
+	}
+	intent := s.adaptBriefingIntent()
+	return strings.TrimSpace(intent.IntentHash) != "" &&
+		strings.TrimSpace(s.adaptationBriefing.IntentHash) != strings.TrimSpace(intent.IntentHash)
 }
 
 func normalizeWebAdaptCoCreateOptions(granularity, rewritePolicy string, wordTolerance float64) (string, string, float64) {

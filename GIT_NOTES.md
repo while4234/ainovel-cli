@@ -29,6 +29,18 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `fix: refresh adaptation cocreate briefing intent`:
+  Adaptation co-create now derives the long-novel briefing intent from all
+  current user planning turns plus resolved briefing decisions, not only the
+  first user request. Web send/revise refreshes stale intent-driven briefing
+  before the next adapt co-create response and blocks on any newly generated
+  required decisions. The detailed staged adaptation proposal planner still
+  runs only after the user starts generation from the final draft.
+  Validation passed for
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./internal/entry/web ./internal/host/adapt`
+  and `git diff --check` on the changed co-create/session files, with CRLF
+  conversion warnings only.
+- Latest source change: current local commit
   `fix: make adaptation co-create resumable`:
   Web adaptation co-create decisions now render as a one-question pager with
   vertical wrapping option buttons, and the backend no longer limits pending

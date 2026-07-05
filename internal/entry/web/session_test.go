@@ -1346,6 +1346,11 @@ func (f *fakeProjectHost) EnsureAdaptationCoCreateBriefing(_ context.Context, so
 	f.adaptBriefingCalls++
 	f.lastAdaptBriefingSource = sourcePath
 	f.lastAdaptBriefingIntent = intent
+	if f.adaptBriefing != nil {
+		briefing := *f.adaptBriefing
+		briefing.IntentHash = intent.IntentHash
+		f.adaptBriefing = &briefing
+	}
 	return f.adaptBriefing, f.adaptBriefingErr
 }
 

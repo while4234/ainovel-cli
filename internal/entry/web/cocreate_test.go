@@ -1165,6 +1165,69 @@ func TestProjectAdaptCoCreateBeginWaitsForBriefingDecision(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptCoCreateSendRefreshesBriefingForNewIntent(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Briefing Refresh")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
+	fake.adaptBriefing = testPendingAdaptBriefing()
+	fake.adaptCoCreateReplies = []host.CoCreateReply{
+		webCoCreateReply("ready", "## Adapt brief\n- remove side romance", true),
+		webCoCreateReply("updated", "## Adapt brief\n- remove side romance\n- raise Moonlight's emotional weight", true),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"strict single heroine, remove side romance"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.adaptBriefingCalls != 1 {
+		t.Fatalf("EnsureAdaptationCoCreateBriefing calls after begin = %d, want 1", fake.adaptBriefingCalls)
+	}
+	if fake.adaptCoCreateCalls != 0 {
+		t.Fatalf("AdaptCoCreateStream calls before decision = %d, want 0", fake.adaptCoCreateCalls)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/decision", bytes.NewBufferString(`{"decision_id":"q1","option_id":"a"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("decision status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.adaptBriefingCalls != 1 {
+		t.Fatalf("decision should not rebuild briefing calls = %d, want 1", fake.adaptBriefingCalls)
+	}
+	if fake.adaptCoCreateCalls != 1 {
+		t.Fatalf("AdaptCoCreateStream calls after decision = %d, want 1", fake.adaptCoCreateCalls)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/send", bytes.NewBufferString(`{"text":"also raise Moonlight's emotional weight","source":"custom"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt send status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.adaptBriefingCalls != 2 {
+		t.Fatalf("EnsureAdaptationCoCreateBriefing calls after new intent = %d, want 2", fake.adaptBriefingCalls)
+	}
+	if fake.adaptCoCreateCalls != 2 {
+		t.Fatalf("AdaptCoCreateStream calls after refreshed briefing = %d, want 2", fake.adaptCoCreateCalls)
+	}
+	rawIntent := fake.lastAdaptBriefingIntent.RawRequest
+	if !strings.Contains(rawIntent, "strict single heroine") ||
+		!strings.Contains(rawIntent, "Moonlight's emotional weight") ||
+		!strings.Contains(rawIntent, "How should the side romance be handled?") ||
+		!strings.Contains(rawIntent, "Remove ambiguity") {
+		t.Fatalf("refreshed briefing intent should include prior request, new request, and resolved decision, got:\n%s", rawIntent)
+	}
+}
+
 func TestProjectAdaptCoCreateBeginReturnsAllPendingBriefingDecisions(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
