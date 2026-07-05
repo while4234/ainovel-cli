@@ -29,6 +29,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `fix: accept legacy timeline strings`:
+  `domain.TimelineEvent` now accepts legacy JSON string entries by preserving
+  the text as the event field, while normal object entries keep chapter, time,
+  event, and character fields. This covers import/source-analysis `TIMELINE`
+  sections, existing `timeline.json` files, and `commit_chapter` append rereads,
+  preventing `json: cannot unmarshal string into Go value of type
+  domain.TimelineEvent` from escaping as a global Web error banner. Validation
+  passed for focused domain/import/store tests, full `go test ./...`, Web
+  rebuild/restart on `http://127.0.0.1:9898` as PID `57820`, HTTP smoke checks,
+  and `git diff --check` with CRLF warnings only.
+- Latest source change: current local commit
   `fix: unblock concurrent web analysis controls`:
   Web simulation/adaptation analysis and simulation-profile library import now
   start as background project actions and return immediately, so long-running

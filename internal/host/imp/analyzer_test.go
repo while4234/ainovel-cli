@@ -71,6 +71,46 @@ func TestParseAnalyzer_Valid(t *testing.T) {
 	}
 }
 
+func TestParseAnalyzer_AcceptsLegacyTimelineStringItems(t *testing.T) {
+	input := `=== SUMMARY ===
+summary
+
+=== CHARACTERS ===
+["A"]
+
+=== KEY_EVENTS ===
+["A enters"]
+
+=== TIMELINE ===
+["A enters the room","B leaves"]
+
+=== FORESHADOW ===
+[]
+
+=== RELATIONSHIPS ===
+[]
+
+=== STATE_CHANGES ===
+[]
+
+=== HOOK_TYPE ===
+mystery
+
+=== DOMINANT_STRAND ===
+quest
+`
+	got, err := parseAnalyzerOutput(input)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got.TimelineEvents) != 2 {
+		t.Fatalf("timeline count: %+v", got.TimelineEvents)
+	}
+	if got.TimelineEvents[0].Event != "A enters the room" {
+		t.Fatalf("legacy timeline event not preserved: %+v", got.TimelineEvents[0])
+	}
+}
+
 func TestParseAnalyzer_RejectsInvalidHookType(t *testing.T) {
 	bad := strings.Replace(validAnalyzerEnvelope, "mystery", "weird", 1)
 	if _, err := parseAnalyzerOutput(bad); err == nil ||

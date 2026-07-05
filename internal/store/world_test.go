@@ -77,6 +77,31 @@ func TestTimeline_Append(t *testing.T) {
 	}
 }
 
+func TestTimeline_LoadsLegacyStringEntries(t *testing.T) {
+	s := newTestStore(t)
+	raw := `[
+  "legacy event",
+  {"chapter":2,"time":"night","event":"object event","characters":["A"]}
+]`
+	if err := os.WriteFile(filepath.Join(s.Dir(), "timeline.json"), []byte(raw), 0o644); err != nil {
+		t.Fatalf("write legacy timeline: %v", err)
+	}
+
+	loaded, err := s.World.LoadTimeline()
+	if err != nil {
+		t.Fatalf("LoadTimeline: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("want 2, got %d", len(loaded))
+	}
+	if loaded[0].Event != "legacy event" {
+		t.Fatalf("legacy event not preserved: %+v", loaded[0])
+	}
+	if loaded[1].Time != "night" || len(loaded[1].Characters) != 1 {
+		t.Fatalf("object event changed: %+v", loaded[1])
+	}
+}
+
 func TestTimeline_LoadRecent(t *testing.T) {
 	s := newTestStore(t)
 	_ = s.World.SaveTimeline([]domain.TimelineEvent{

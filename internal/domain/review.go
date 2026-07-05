@@ -1,11 +1,32 @@
 package domain
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // TimelineEvent 时间线事件。
 type TimelineEvent struct {
 	Chapter    int      `json:"chapter"`
 	Time       string   `json:"time"`
 	Event      string   `json:"event"`
 	Characters []string `json:"characters,omitempty"`
+}
+
+func (e *TimelineEvent) UnmarshalJSON(data []byte) error {
+	var legacy string
+	if err := json.Unmarshal(data, &legacy); err == nil {
+		*e = TimelineEvent{Event: strings.TrimSpace(legacy)}
+		return nil
+	}
+
+	type timelineEvent TimelineEvent
+	var event timelineEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		return err
+	}
+	*e = TimelineEvent(event)
+	return nil
 }
 
 // ForeshadowEntry 伏笔条目。
