@@ -45,6 +45,18 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.cocreate-status-compact \.cocreate-actions\s*{[^}]*grid-template-columns:\s*1fr;/s);
   });
 
+  it('shows co-create decision options vertically without truncating labels', () => {
+    expect(css).toMatch(/\.decision-options\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).toMatch(/\.decision-options \.tool-button\s*{[^}]*width:\s*100%;[^}]*white-space:\s*normal;/s);
+    expect(css).toMatch(/\.decision-options \.tool-button span\s*{[^}]*overflow-wrap:\s*anywhere;[^}]*white-space:\s*normal;/s);
+    expect(css).not.toMatch(/\.decision-options \.tool-button span\s*{[^}]*text-overflow:\s*ellipsis;/s);
+  });
+
+  it('shows a bounded co-create resume card after generation failures', () => {
+    expect(css).toMatch(/\.cocreate-resume-card\s*{[^}]*display:\s*grid;[^}]*background:\s*var\(--warn-soft\);/s);
+    expect(css).toMatch(/\.cocreate-resume-card span\s*{[^}]*overflow-wrap:\s*anywhere;/s);
+  });
+
   it('keeps planning review revision controls visible and bounded', () => {
     expect(css).toMatch(/\.proposal-review-actions\s*{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(220px,\s*1fr\)\);/s);
     expect(css).toMatch(/\.planning-revision-controls\s*{[^}]*display:\s*grid;[^}]*min-width:\s*0;/s);

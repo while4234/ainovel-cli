@@ -146,9 +146,25 @@ func (i coCreateModelIdentity) wrapError(err error) error {
 		return nil
 	}
 	if label := i.label(); label != "" {
-		return fmt.Errorf("selected model %s: %w", label, err)
+		return coCreateSelectedModelError{label: label, err: err}
 	}
 	return err
+}
+
+type coCreateSelectedModelError struct {
+	label string
+	err   error
+}
+
+func (e coCreateSelectedModelError) Error() string {
+	if e.err == nil {
+		return "selected model " + e.label + ": unknown error"
+	}
+	return "selected model " + e.label + ": " + retrypolicy.SanitizeProviderError(e.err)
+}
+
+func (e coCreateSelectedModelError) Unwrap() error {
+	return e.err
 }
 
 // 四段式 XML 标签输出。XML 风格比方括号 marker 更鲁棒——Claude/GPT 训练数据里
@@ -374,7 +390,7 @@ func shouldRetryCoCreate(ctx context.Context, err error, attempt int) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	return agentcore.IsFailoverEligible(err)
+	return agentcore.IsFailoverEligible(err) || retrypolicy.IsProviderGatewayError(err)
 }
 
 func clearCoCreateProgress(onProgress func(kind, text string)) {

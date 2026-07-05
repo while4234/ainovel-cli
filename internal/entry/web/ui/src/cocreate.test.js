@@ -123,6 +123,25 @@ describe('co-create UI state', () => {
     expect(state.briefing.pending_decision_count).toBe(1);
   });
 
+  it('keeps failed co-create sessions resumable', () => {
+    const state = coCreateStateFromResponse({
+      cocreate: {
+        kind: 'adapt',
+        active: true,
+        failed: true,
+        can_start: false,
+        messages: [{ id: 'm1', role: 'user', content: 'keep the saved intent' }],
+        pending_decisions: [],
+        suggestions: []
+      }
+    });
+
+    expect(state.status).toBe('error');
+    expect(state.failed).toBe(true);
+    expect(state.active).toBe(true);
+    expect(state.messages).toHaveLength(1);
+  });
+
   it('preserves editable message metadata from backend response', () => {
     const state = coCreateStateFromResponse({
       cocreate: {

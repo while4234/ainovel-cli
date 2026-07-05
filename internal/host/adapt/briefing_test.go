@@ -1,10 +1,14 @@
 package adapt
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/store"
+	"github.com/voocel/litellm"
 )
 
 func TestBuildCoCreateIntentInfersGoalFromUserRequest(t *testing.T) {
@@ -59,6 +63,45 @@ func TestNormalizeBriefingDecisionsRejectsVagueQuestions(t *testing.T) {
 	}
 }
 
+func TestEnsureCoCreateBriefingRetriesProviderGatewayError(t *testing.T) {
+	defer stubPlannerRetrySleep(t)()
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	manifest := longBriefingTestManifest(321)
+	if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+	dossier := longBriefingTestDossier(manifest)
+	if err := st.Adaptation.SaveCoCreateDossier(dossier); err != nil {
+		t.Fatalf("SaveCoCreateDossier: %v", err)
+	}
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{err: litellm.NewHTTPError("deepseek", 502, "<html><body>502 Bad Gateway</body></html>")},
+		{text: coCreateBriefingBatchJSON("retry recovered batch 1")},
+		{text: coCreateBriefingBatchJSON("batch 2")},
+	}}
+	var progress []Event
+	briefing, err := EnsureCoCreateBriefing(context.Background(), Deps{
+		Store:                st,
+		LLM:                  llm,
+		ModelCallMaxAttempts: 2,
+	}, BuildCoCreateIntent("strict single heroine", domain.AdaptationGranularityFree, domain.AdaptationRewriteFullRewrite, 0), captureAdaptProgress(&progress))
+	if err != nil {
+		t.Fatalf("EnsureCoCreateBriefing: %v", err)
+	}
+	if llm.calls != 3 {
+		t.Fatalf("llm calls = %d, want failed attempt + retry + second batch", llm.calls)
+	}
+	if briefing == nil || len(briefing.Batches) != 2 {
+		t.Fatalf("briefing batches = %+v, want two batches", briefing)
+	}
+	if !hasAdaptProgress(progress, "重试 2/2") || !hasAdaptProgress(progress, "provider gateway error: 502 Bad Gateway") {
+		t.Fatalf("progress should expose sanitized retry event: %+v", progress)
+	}
+}
+
 func containsText(values []string, needle string) bool {
 	for _, value := range values {
 		if strings.Contains(value, needle) {
@@ -66,4 +109,55 @@ func containsText(values []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func longBriefingTestManifest(chapterCount int) domain.AdaptationSourceManifest {
+	chapters := make([]domain.AdaptationSource, 0, chapterCount)
+	for chapter := 1; chapter <= chapterCount; chapter++ {
+		chapters = append(chapters, domain.AdaptationSource{
+			Chapter: chapter,
+			Title:   fmt.Sprintf("Chapter %d", chapter),
+			SHA256:  fmt.Sprintf("sha-%d", chapter),
+			Runes:   1000,
+		})
+	}
+	return domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: chapterCount,
+		Chapters:     chapters,
+	}
+}
+
+func longBriefingTestDossier(manifest domain.AdaptationSourceManifest) domain.AdaptationCoCreateDossier {
+	specs := store.AdaptationDossierBatchSpecs(manifest, CoCreateDossierBatchSize, CoCreateDossierBatchRuneLimit)
+	batches := make([]domain.AdaptationCoCreateDossierBatch, 0, len(specs))
+	for _, spec := range specs {
+		batches = append(batches, domain.AdaptationCoCreateDossierBatch{
+			Index:            spec.Index,
+			SourceFrom:       spec.SourceFrom,
+			SourceTo:         spec.SourceTo,
+			SourceSignature:  spec.SourceSignature,
+			PlotPhase:        "source arc",
+			KeyCausality:     []string{"cause and effect"},
+			PlotThreads:      []string{"main thread"},
+			CharacterArcs:    []string{"heroine arc"},
+			WorldConstraints: []string{"world rule"},
+		})
+	}
+	return domain.AdaptationCoCreateDossier{
+		Version:            1,
+		PromptVersion:      CoCreateDossierPromptVersion,
+		SourceSignature:    store.AdaptationSourceSignature(manifest),
+		SourceChapterCount: manifest.ChapterCount,
+		BatchSize:          CoCreateDossierBatchSize,
+		BatchRuneLimit:     CoCreateDossierBatchRuneLimit,
+		Batches:            batches,
+	}
+}
+
+func coCreateBriefingBatchJSON(fact string) string {
+	return fmt.Sprintf(`{
+		"confirmed_facts": [%q],
+		"adaptation_suggestions": ["keep the target relationship clear"]
+	}`, fact)
 }

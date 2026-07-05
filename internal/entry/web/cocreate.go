@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -129,6 +130,7 @@ type webCoCreateState struct {
 	VolumeReview     *domain.AdaptationVolumeReview      `json:"volume_review,omitempty"`
 	CanStart         bool                                `json:"can_start"`
 	ModeLocked       bool                                `json:"mode_locked,omitempty"`
+	Failed           bool                                `json:"failed,omitempty"`
 	CommittedLabel   string                              `json:"committed_label,omitempty"`
 	Briefing         *webCoCreateBriefingState           `json:"briefing,omitempty"`
 	PendingDecisions []domain.AdaptationBriefingDecision `json:"pending_decisions,omitempty"`
@@ -214,13 +216,13 @@ func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusConflict, "adaptation co-create dossier missing or stale; run source analysis first")
 			return
 		}
-		intent := adapt.BuildCoCreateIntent(coCreateAdaptIntentRaw(req.Initial), mode, rewritePolicy, req.Tolerance)
-		briefing, err := session.host.EnsureAdaptationCoCreateBriefing(r.Context(), sourcePath, intent)
+		state, err := session.BeginAdaptCoCreate(r.Context(), req)
 		if err != nil {
-			writeError(w, http.StatusConflict, "prepare adaptation co-create briefing: "+err.Error())
+			writeCoCreateActionError(w, err, state)
 			return
 		}
-		req.briefing = briefing
+		writeCoCreateResponse(w, manifest, session, state)
+		return
 	}
 	state, err := session.BeginCoCreate(r.Context(), req)
 	if err != nil {
@@ -292,6 +294,24 @@ func (s *Server) handleProjectCoCreateDecision(w http.ResponseWriter, r *http.Re
 		return
 	}
 	state, err := session.ResolveCoCreateDecision(r.Context(), req)
+	if err != nil {
+		writeCoCreateActionError(w, err, state)
+		return
+	}
+	writeCoCreateResponse(w, manifest, session, state)
+}
+
+func (s *Server) handleProjectCoCreateResume(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	state, err := session.ResumeCoCreate(r.Context())
 	if err != nil {
 		writeCoCreateActionError(w, err, state)
 		return
@@ -1167,12 +1187,12 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 	pendingDecisions := s.pendingBriefingDecisions()
 	briefingState := coCreateBriefingState(s.adaptationBriefing)
 	blockedReason := ""
-	if len(pendingDecisions) > 0 {
+	if s.needsAdaptBriefingBeforeDraft() {
+		canStart = false
+		blockedReason = "prepare adaptation co-create briefing before draft generation"
+	} else if len(pendingDecisions) > 0 {
 		canStart = false
 		blockedReason = "resolve adaptation briefing decisions before draft generation"
-		if len(pendingDecisions) > 4 {
-			pendingDecisions = append([]domain.AdaptationBriefingDecision(nil), pendingDecisions[:4]...)
-		}
 	}
 	return webCoCreateState{
 		Kind:             s.kind,
@@ -1192,6 +1212,7 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		VolumeReview:     s.adaptationVolumeReview,
 		CanStart:         canStart,
 		ModeLocked:       s.kind == webCoCreateKindAdapt,
+		Failed:           s.failed,
 		Briefing:         briefingState,
 		PendingDecisions: pendingDecisions,
 		BlockedReason:    blockedReason,
@@ -1259,6 +1280,44 @@ func coCreateAdaptIntentRaw(initial string) string {
 	return "基于原书分析确认具体改编目标。"
 }
 
+func (s *webCoCreateSession) adaptBriefingIntent() domain.AdaptationCoCreateIntent {
+	if s == nil {
+		return adapt.BuildCoCreateIntent(coCreateAdaptIntentRaw(""), "", "", 0)
+	}
+	return adapt.BuildCoCreateIntent(
+		coCreateAdaptIntentRaw(s.initialAdaptCoCreateRequest()),
+		s.adaptGranularity,
+		s.adaptRewritePolicy,
+		s.adaptWordTolerance,
+	)
+}
+
+func (s *webCoCreateSession) initialAdaptCoCreateRequest() string {
+	if s == nil || s.session == nil {
+		return ""
+	}
+	history := s.session.History()
+	for idx, message := range history {
+		if idx == 0 {
+			continue
+		}
+		if strings.TrimSpace(message.Role) != "user" {
+			continue
+		}
+		if content := strings.TrimSpace(message.Content); content != "" {
+			return content
+		}
+	}
+	return ""
+}
+
+func (s *webCoCreateSession) needsAdaptBriefingBeforeDraft() bool {
+	return s != nil &&
+		s.kind == webCoCreateKindAdapt &&
+		s.adaptationBriefing == nil &&
+		strings.TrimSpace(s.draftPrompt()) == ""
+}
+
 func normalizeWebAdaptCoCreateOptions(granularity, rewritePolicy string, wordTolerance float64) (string, string, float64) {
 	normalizedGranularity, ok := domain.StrictAdaptationGranularity(strings.TrimSpace(granularity))
 	if !ok {
@@ -1316,7 +1375,11 @@ func writeCoCreateActionError(w http.ResponseWriter, err error, state webCoCreat
 	} else if isBadCoCreateRequest(err) {
 		status = http.StatusBadRequest
 	}
-	body := map[string]any{"error": err.Error()}
+	message := err.Error()
+	if cleaned := retrypolicy.SanitizeProviderError(err); cleaned != "" {
+		message = cleaned
+	}
+	body := map[string]any{"error": message}
 	if state.Kind != "" {
 		body["cocreate"] = state
 	}

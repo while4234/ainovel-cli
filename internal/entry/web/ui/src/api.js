@@ -360,6 +360,13 @@ export function resolveCoCreateDecision(projectId, decisionId, optionId = '', cu
   });
 }
 
+export function resumeCoCreate(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/resume`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
 export function commitCoCreate(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/commit`, {
     method: 'POST',

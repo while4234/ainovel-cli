@@ -2875,13 +2875,14 @@ func generatePlannerText(
 			return "", err
 		}
 		nextAttempt := attempt + 1
+		displayErr := retrypolicy.SanitizeProviderError(err)
 		emitAdaptProgress(
 			emit,
 			StagePlan,
 			current,
 			total,
-			fmt.Sprintf("%s模型调用失败，准备重试 %d/%d：%v", label, nextAttempt, maxAttempts, err),
-			err,
+			fmt.Sprintf("%s模型调用失败，准备重试 %d/%d：%s", label, nextAttempt, maxAttempts, displayErr),
+			fmt.Errorf("%s", displayErr),
 		)
 		if err := plannerRetrySleep(ctx, retrypolicy.Delay(attempt)); err != nil {
 			return "", err
@@ -2898,6 +2899,9 @@ func shouldRetryPlannerGenerate(ctx context.Context, err error, attempt, maxAtte
 		return false
 	}
 	if agentcore.IsFailoverEligible(err) {
+		return true
+	}
+	if retrypolicy.IsProviderGatewayError(err) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())

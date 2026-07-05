@@ -1108,6 +1108,8 @@ type fakeProjectHost struct {
 	adaptRevisionOptions        adapt.ProposalRevisionOptions
 	adaptProposal               *domain.AdaptationPlan
 	adaptBriefing               *domain.AdaptationCoCreateBriefing
+	lastAdaptBriefingSource     string
+	lastAdaptBriefingIntent     domain.AdaptationCoCreateIntent
 	adaptRevisionProposal       *domain.AdaptationPlan
 	adaptConfirmedPlan          *domain.AdaptationPlan
 	adaptOptions                adapt.ProposalOptions
@@ -1338,10 +1340,12 @@ func (f *fakeProjectHost) AdaptCoCreateStream(_ context.Context, history []host.
 	return reply, err
 }
 
-func (f *fakeProjectHost) EnsureAdaptationCoCreateBriefing(_ context.Context, _ string, _ domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {
+func (f *fakeProjectHost) EnsureAdaptationCoCreateBriefing(_ context.Context, sourcePath string, intent domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.adaptBriefingCalls++
+	f.lastAdaptBriefingSource = sourcePath
+	f.lastAdaptBriefingIntent = intent
 	return f.adaptBriefing, f.adaptBriefingErr
 }
 

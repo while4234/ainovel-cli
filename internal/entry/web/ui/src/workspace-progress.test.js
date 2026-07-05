@@ -13,6 +13,7 @@ import {
   canRunAdaptationAnalysis,
   canSaveAnalyzedNovelToLibrary,
   canRunSimulationAnalysis,
+  clampCoCreateDecisionPageIndex,
   clearAdaptationProposalSnapshot,
   deriveWorkspaceProgress,
   formatAdaptationSourceCoverageLabel,
@@ -38,6 +39,14 @@ import {
 } from './App.jsx';
 
 describe('co-create begin payload helpers', () => {
+  it('clamps co-create decision pagination to visible pending decisions', () => {
+    expect(clampCoCreateDecisionPageIndex(2, 4)).toBe(2);
+    expect(clampCoCreateDecisionPageIndex(-1, 4)).toBe(0);
+    expect(clampCoCreateDecisionPageIndex(9, 4)).toBe(3);
+    expect(clampCoCreateDecisionPageIndex('bad', 4)).toBe(0);
+    expect(clampCoCreateDecisionPageIndex(2, 0)).toBe(0);
+  });
+
   it('builds safe export suggested filenames', () => {
     expect(buildExportSuggestedName({ path: '', format: 'txt' }, { name: '梦中的女孩改_v2' })).toBe('梦中的女孩改_v2.txt');
     expect(buildExportSuggestedName({ path: 'draft.epub', format: 'txt' }, { name: 'Book' })).toBe('draft.txt');

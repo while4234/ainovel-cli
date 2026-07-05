@@ -22,6 +22,7 @@ import {
   listTrashProjects,
   renameProject,
   restoreTrashProject,
+  resumeCoCreate,
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
   reviseChapter,
@@ -141,6 +142,7 @@ describe('web API helpers', () => {
     await sendCoCreate('project-1', 'Use the heroine arc', 'suggestion');
     await reviseCoCreate('project-1', 'm3', 'Keep a slower burn');
     await resolveCoCreateDecision('project-1', 'q1', 'a', '');
+    await resumeCoCreate('project-1');
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       text: 'Use the heroine arc',
@@ -158,6 +160,8 @@ describe('web API helpers', () => {
       custom_answer: ''
     });
     expect(fetchMock.mock.calls[2][0]).toBe('/api/projects/project-1/cocreate/decision');
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({});
+    expect(fetchMock.mock.calls[3][0]).toBe('/api/projects/project-1/cocreate/resume');
   });
 
   it('sends completed chapter revision payloads', async () => {

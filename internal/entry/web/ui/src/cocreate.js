@@ -19,6 +19,7 @@ export function createCoCreateState() {
     status: 'idle',
     startMessage: '',
     error: '',
+    failed: false,
     adaptMode: '',
     rewritePolicy: '',
     modeLocked: false,
@@ -53,6 +54,7 @@ export function coCreateStateFromBackend(data, previous = createCoCreateState(),
     return {
       ...previous,
       status: options.status || previous.status,
+      failed: options.status === 'error' ? true : previous.failed,
       error: options.error ?? previous.error
     };
   }
@@ -85,6 +87,7 @@ export function coCreateStateFromBackend(data, previous = createCoCreateState(),
     structureChoice: previous.structureChoice || 'single',
     status,
     startMessage: data.committed_label || previous.startMessage || '',
+    failed: Boolean(data.failed),
     error: options.error ?? (options.preserveError ? previous.error : ''),
     adaptMode: data.adapt_mode || '',
     rewritePolicy: data.rewrite_policy || '',
@@ -110,6 +113,9 @@ function coCreateStatusFromBackend(data, streamThinking, streamReply, canStart) 
   }
   if (canStart) {
     return 'ready';
+  }
+  if (data.failed) {
+    return 'error';
   }
   if (Array.isArray(data.pending_decisions) && data.pending_decisions.length > 0) {
     return 'deciding';

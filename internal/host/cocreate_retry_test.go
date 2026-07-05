@@ -10,6 +10,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
+	"github.com/voocel/litellm"
 )
 
 func TestCoCreateRetryUsesSharedPolicy(t *testing.T) {
@@ -61,6 +62,42 @@ func TestCoCreateStreamRetriesTransientStreamEOF(t *testing.T) {
 	}
 	if !hasCoCreateProgress(progress, CoCreateProgressReply, "") {
 		t.Fatalf("retry should clear the partial reply preview, progress=%+v", progress)
+	}
+}
+
+func TestCoCreateStreamRetriesProviderGatewayError(t *testing.T) {
+	restore := stubCoCreateRetrySleep(t)
+	defer restore()
+
+	model := &scriptedCoCreateModel{
+		streams: [][]agentcore.StreamEvent{
+			{
+				{Type: agentcore.StreamEventError, Err: litellm.NewHTTPError("deepseek", 502, "<html><body>502 Bad Gateway</body></html>")},
+			},
+			{
+				{Type: agentcore.StreamEventTextDelta, Delta: validCoCreateXML("ok")},
+				{Type: agentcore.StreamEventDone},
+			},
+		},
+	}
+
+	reply, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		time.Second,
+		"system",
+		[]CoCreateMessage{{Role: "user", Content: "start"}},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("coCreateStream: %v", err)
+	}
+	if model.streamCalls != 2 {
+		t.Fatalf("stream calls = %d, want 2", model.streamCalls)
+	}
+	if reply.Message != "ok" {
+		t.Fatalf("reply = %+v", reply)
 	}
 }
 
@@ -227,6 +264,41 @@ func TestCoCreateStreamErrorIncludesSelectedModel(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "selected model test/scripted-cocreate") {
 		t.Fatalf("err = %v, want selected model label", err)
+	}
+}
+
+func TestCoCreateStreamGatewayErrorDoesNotLeakHTML(t *testing.T) {
+	restore := stubCoCreateRetrySleep(t)
+	defer restore()
+
+	streams := make([][]agentcore.StreamEvent, coCreateMaxAttempts)
+	for index := range streams {
+		streams[index] = []agentcore.StreamEvent{{
+			Type: agentcore.StreamEventError,
+			Err:  litellm.NewHTTPError("deepseek", 502, "<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>"),
+		}}
+	}
+	model := &scriptedCoCreateModel{streams: streams}
+
+	_, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		time.Second,
+		"system",
+		[]CoCreateMessage{{Role: "user", Content: "start"}},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("coCreateStream should fail")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "selected model test/scripted-cocreate") ||
+		!strings.Contains(message, "provider gateway error: 502 Bad Gateway") {
+		t.Fatalf("err = %v, want selected model and sanitized gateway error", err)
+	}
+	if strings.Contains(strings.ToLower(message), "<html") || strings.Contains(message, "nginx") {
+		t.Fatalf("err leaked raw html: %v", err)
 	}
 }
 

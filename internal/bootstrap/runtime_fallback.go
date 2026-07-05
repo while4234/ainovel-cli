@@ -306,10 +306,12 @@ func (e runtimeFallbackTerminalError) Error() string {
 	if e.err == nil {
 		return "runtime fallback exhausted"
 	}
-	return e.err.Error()
+	return retrypolicy.SanitizeProviderError(e.err)
 }
 
 func (e runtimeFallbackTerminalError) Retryable() bool { return false }
+
+func (e runtimeFallbackTerminalError) Unwrap() error { return e.err }
 
 func classifyRuntimeFallbackError(err error) runtimeFallbackDecision {
 	if err == nil || errors.Is(err, context.Canceled) {
@@ -329,6 +331,8 @@ func classifyRuntimeFallbackError(err error) runtimeFallbackDecision {
 		return runtimeFallbackDecision{eligible: true, reason: "auth_failed"}
 	case errors.Is(classified, agentcore.ErrProviderRateLimit):
 		return runtimeFallbackDecision{eligible: true, reason: "rate_limit"}
+	case retrypolicy.IsProviderGatewayError(err):
+		return runtimeFallbackDecision{eligible: true, reason: "overloaded"}
 	case errors.Is(classified, agentcore.ErrProviderOverloaded):
 		return runtimeFallbackDecision{eligible: true, reason: "overloaded"}
 	case errors.Is(classified, agentcore.ErrProviderTimeout):

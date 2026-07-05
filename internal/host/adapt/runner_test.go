@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
+	"github.com/voocel/litellm"
 )
 
 func TestBuildPlanFromBriefSupportsGranularities(t *testing.T) {
@@ -1012,7 +1012,7 @@ func TestBuildAdaptationProposalRetriesTransientPlannerGenerateError(t *testing.
 	}
 	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
 	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
-		{err: io.ErrUnexpectedEOF},
+		{err: litellm.NewHTTPError("deepseek", 502, "<html><body>502 Bad Gateway</body></html>")},
 		{text: `{
 			"granularity": "free",
 			"status": "proposal",
@@ -1046,7 +1046,7 @@ func TestBuildAdaptationProposalRetriesTransientPlannerGenerateError(t *testing.
 	if len(proposal.Chapters) != 20 {
 		t.Fatalf("chapters=%d, want 20", len(proposal.Chapters))
 	}
-	if !hasAdaptProgress(progress, "重试 2/7") || !hasAdaptProgress(progress, "unexpected EOF") {
+	if !hasAdaptProgress(progress, "重试 2/7") || !hasAdaptProgress(progress, "provider gateway error: 502 Bad Gateway") {
 		t.Fatalf("progress should expose retry count and model error: %+v", progress)
 	}
 }

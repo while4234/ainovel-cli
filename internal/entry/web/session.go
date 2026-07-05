@@ -25,6 +25,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/host/exp"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
+	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -1028,15 +1029,8 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 	}
 	defer unlock()
 
-	if s.cocreate != nil {
-		if !s.cocreate.failed {
-			return s.cocreate.apiState(), fmt.Errorf("co-create already started")
-		}
-		if s.cocreate.kind == webCoCreateKindStage {
-			s.host.CancelCoCreate()
-			s.AppendSnapshot()
-		}
-		s.cocreate = nil
+	if state, err := s.resetRestartableCoCreateLocked(); err != nil {
+		return state, err
 	}
 	state, err := newWebCoCreateSession(req)
 	if err != nil {
@@ -1056,6 +1050,75 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 		return api, nil
 	}
 	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) BeginAdaptCoCreate(ctx context.Context, req webCoCreateBeginRequest) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	req.Kind = webCoCreateKindAdapt
+	if state, err := s.resetRestartableCoCreateLocked(); err != nil {
+		return state, err
+	}
+	state, err := newWebCoCreateSession(req)
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	state.failed = true
+	s.cocreate = state
+	s.saveCoCreateCheckpoint()
+	if err := s.ensureAdaptCoCreateBriefingLocked(ctx); err != nil {
+		return s.cocreate.apiState(), err
+	}
+	if s.cocreate.hasPendingBriefingDecisions() {
+		api := s.cocreate.apiState()
+		s.appendCoCreateState(api)
+		return api, nil
+	}
+	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) resetRestartableCoCreateLocked() (webCoCreateState, error) {
+	if s.cocreate == nil {
+		return webCoCreateState{}, nil
+	}
+	if !s.cocreate.failed {
+		return s.cocreate.apiState(), fmt.Errorf("co-create already started")
+	}
+	if s.cocreate.kind == webCoCreateKindStage {
+		s.host.CancelCoCreate()
+		s.AppendSnapshot()
+	}
+	s.cocreate = nil
+	return webCoCreateState{}, nil
+}
+
+func (s *ProjectSession) ensureAdaptCoCreateBriefingLocked(ctx context.Context) error {
+	if s.cocreate == nil || !s.cocreate.needsAdaptBriefingBeforeDraft() {
+		return nil
+	}
+	sourcePath := strings.TrimSpace(s.cocreate.sourcePath)
+	if sourcePath == "" {
+		return fmt.Errorf("adaptation source path is required")
+	}
+	eventID, startedAt := s.appendCoCreateBriefingStarted()
+	briefing, err := s.host.EnsureAdaptationCoCreateBriefing(ctx, sourcePath, s.cocreate.adaptBriefingIntent())
+	if err != nil {
+		s.cocreate.failed = true
+		s.saveCoCreateCheckpoint()
+		s.appendCoCreateState(s.cocreate.apiState())
+		runErr := fmt.Errorf("prepare adaptation co-create briefing: %w", err)
+		s.appendCoCreateBriefingFinished(eventID, startedAt, runErr)
+		return runErr
+	}
+	s.cocreate.adaptationBriefing = briefing
+	s.cocreate.failed = false
+	s.saveCoCreateCheckpoint()
+	s.appendCoCreateBriefingFinished(eventID, startedAt, nil)
+	return nil
 }
 
 func (s *ProjectSession) SendCoCreate(ctx context.Context, text, source string) (webCoCreateState, error) {
@@ -1122,6 +1185,26 @@ func (s *ProjectSession) ResolveCoCreateDecision(ctx context.Context, req webCoC
 		s.appendCoCreateState(api)
 		return api, nil
 	}
+	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) ResumeCoCreate(ctx context.Context) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	if err := s.ensureAdaptCoCreateBriefingLocked(ctx); err != nil {
+		return s.cocreate.apiState(), err
+	}
+	if s.cocreate.hasPendingBriefingDecisions() {
+		return s.cocreate.apiState(), fmt.Errorf("resolve adaptation briefing decisions before resuming co-create")
+	}
+	s.saveCoCreateCheckpoint()
 	return s.runCoCreateLocked(ctx)
 }
 
@@ -2405,7 +2488,7 @@ func (s *ProjectSession) appendAdaptationActionError(stage adapt.Stage, message 
 		Time:    time.Now().UTC(),
 		Stage:   string(stage),
 		Message: message,
-		Error:   err.Error(),
+		Error:   retrypolicy.SanitizeProviderError(err),
 	})
 }
 
@@ -2414,7 +2497,7 @@ func (s *ProjectSession) adaptationProposalProgressEmitter() adapt.ProgressEmitt
 		level := "info"
 		detail := ""
 		if err != nil {
-			detail = err.Error()
+			detail = retrypolicy.SanitizeProviderError(err)
 			if stage == adapt.StageError {
 				level = "error"
 			} else {
@@ -2477,7 +2560,7 @@ func (s *ProjectSession) appendAdaptationProposalFinished(eventID string, starte
 	if err != nil {
 		summary = adaptationProposalEventSummary("改编提案生成失败", options)
 		level = "error"
-		detail = err.Error()
+		detail = retrypolicy.SanitizeProviderError(err)
 		failed = true
 	}
 	s.appendHostEvent(host.Event{
@@ -2522,7 +2605,7 @@ func (s *ProjectSession) appendAdaptationProposalRevisionFinished(eventID string
 	if err != nil {
 		summary = adaptationProposalRevisionEventSummary("改编提案修订失败", options)
 		level = "error"
-		detail = err.Error()
+		detail = retrypolicy.SanitizeProviderError(err)
 		failed = true
 	}
 	s.appendHostEvent(host.Event{
@@ -2601,6 +2684,50 @@ func (s *ProjectSession) appendCoCreateRunStarted(kind string) (string, time.Tim
 	return eventID, startedAt
 }
 
+func (s *ProjectSession) appendCoCreateBriefingStarted() (string, time.Time) {
+	startedAt := time.Now().UTC()
+	eventID := fmt.Sprintf("cocreate-briefing-%d", startedAt.UnixNano())
+	s.appendHostEvent(host.Event{
+		ID:       eventID,
+		Time:     startedAt,
+		Category: "COCREATE",
+		Agent:    "web",
+		Summary:  "改编共创：正在生成前置摘要",
+		Kind:     "adapt_briefing",
+		Level:    "info",
+	})
+	return eventID, startedAt
+}
+
+func (s *ProjectSession) appendCoCreateBriefingFinished(eventID string, startedAt time.Time, runErr error) {
+	if eventID == "" {
+		return
+	}
+	finishedAt := time.Now().UTC()
+	failed := runErr != nil
+	level := "success"
+	summary := "改编共创：前置摘要已生成"
+	detail := ""
+	if failed {
+		level = "error"
+		summary = "改编共创：前置摘要生成失败"
+		detail = retrypolicy.SanitizeProviderError(runErr)
+	}
+	s.appendHostEvent(host.Event{
+		ID:         eventID,
+		Time:       startedAt,
+		FinishedAt: finishedAt,
+		Failed:     failed,
+		Category:   "COCREATE",
+		Agent:      "web",
+		Summary:    summary,
+		Detail:     detail,
+		Kind:       "adapt_briefing",
+		Level:      level,
+		Duration:   finishedAt.Sub(startedAt),
+	})
+}
+
 func (s *ProjectSession) appendCoCreateRunFinished(eventID string, startedAt time.Time, state webCoCreateState, runErr error) {
 	if eventID == "" {
 		return
@@ -2613,7 +2740,7 @@ func (s *ProjectSession) appendCoCreateRunFinished(eventID string, startedAt tim
 	if failed {
 		level = "error"
 		summary = coCreateKindLabel(state.Kind) + "失败"
-		detail = runErr.Error()
+		detail = retrypolicy.SanitizeProviderError(runErr)
 	}
 	s.appendHostEvent(host.Event{
 		ID:         eventID,

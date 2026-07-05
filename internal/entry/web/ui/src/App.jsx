@@ -2,6 +2,8 @@ import {
   Activity,
   BookOpen,
   Check,
+  ChevronLeft,
+  ChevronRight,
   CircleDot,
   Database,
   Download,
@@ -67,6 +69,7 @@ import {
   pollGrokLogin,
   renameProject,
   restoreTrashProject,
+  resumeCoCreate,
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
   reviseChapter,
@@ -1918,6 +1921,28 @@ export default function App() {
     }
   };
 
+  const resumeCoCreateFlow = async () => {
+    const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
+    if (!activeProject?.id || !hasBackendSession || busy || coCreateRequestBusy) {
+      return;
+    }
+    const projectId = activeProject.id;
+    setCoCreate((previous) => ({ ...previous, status: 'running', error: '', suggestions: [] }));
+    try {
+      const data = await resumeCoCreate(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setCoCreate((previous) => coCreateStateFromError(err, previous));
+    }
+  };
+
   const submitCoCreateSuggestion = (suggestion) => {
     const text = String(suggestion || '').trim();
     const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
@@ -2874,12 +2899,13 @@ export default function App() {
               onBegin={beginCoCreateFlow}
               onConfirmIntake={() => beginCoCreateFlow('normal', { confirmIntake: true })}
               onSubmit={submitCoCreate}
-                  onSuggestion={submitCoCreateSuggestion}
-                  onRevise={reviseCoCreateMessage}
-                  onResolveDecision={resolveCoCreateDecisionFlow}
-                  onCommit={commitCoCreateFlow}
-                  onConfirmPlanning={confirmCoCreatePlanningRun}
-                  onRevisePlanning={reviseCoCreatePlanningRun}
+              onResume={resumeCoCreateFlow}
+              onSuggestion={submitCoCreateSuggestion}
+              onRevise={reviseCoCreateMessage}
+              onResolveDecision={resolveCoCreateDecisionFlow}
+              onCommit={commitCoCreateFlow}
+              onConfirmPlanning={confirmCoCreatePlanningRun}
+              onRevisePlanning={reviseCoCreatePlanningRun}
               onCancel={cancelCoCreateFlow}
               workspaceTranscript={showCoCreateWorkspace}
             />
@@ -3438,6 +3464,7 @@ function CoCreatePanel({
   onBegin,
   onConfirmIntake,
   onSubmit,
+  onResume = () => {},
   onSuggestion,
   onRevise,
   onResolveDecision = () => {},
@@ -3463,7 +3490,12 @@ function CoCreatePanel({
       adaptation.analysisStatus === 'done'
   );
   const hasPendingDecisions = Array.isArray(coCreate.pendingDecisions) && coCreate.pendingDecisions.length > 0;
+  const pendingDecisionTotalCount = Math.max(
+    Number(coCreate.briefing?.pending_decision_count || 0),
+    coCreate.pendingDecisions.length
+  );
   const canSend = Boolean(activeProject && !busy && hasBackendSession && coCreate.input.trim() && !hasPendingDecisions);
+  const canResume = Boolean(activeProject && !busy && hasBackendSession && coCreate.failed && !hasPendingDecisions);
   const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
   const hasDraftPrompt = Boolean(coCreate.draftPrompt.trim());
   const canCommit = Boolean(activeProject && !busy && hasDraftPrompt && coCreate.canStart);
@@ -3528,7 +3560,24 @@ function CoCreatePanel({
           <div className="success-note">已锁定 {coCreate.adaptMode} / {coCreate.rewritePolicy}</div>
         ) : null}
         {hasPendingDecisions ? (
-          <CoCreateDecisionQueue decisions={coCreate.pendingDecisions} busy={busy} onResolve={onResolveDecision} />
+          <CoCreateDecisionQueue
+            decisions={coCreate.pendingDecisions}
+            busy={busy}
+            totalCount={pendingDecisionTotalCount}
+            onResolve={onResolveDecision}
+          />
+        ) : null}
+        {canResume ? (
+          <div className="cocreate-resume-card">
+            <div>
+              <strong>上次生成失败，进度已保存</strong>
+              <span>会沿用当前共创上下文和已确认决策继续生成，不会重新开始。</span>
+            </div>
+            <button className="tool-button accent full-width" onClick={onResume} type="button">
+              <RefreshCw size={16} />
+              恢复共创
+            </button>
+          </div>
         ) : null}
       </section>
 
@@ -3776,62 +3825,101 @@ function CoCreatePanel({
   );
 }
 
-function CoCreateDecisionQueue({ decisions = [], busy, onResolve }) {
+function CoCreateDecisionQueue({ decisions = [], busy, totalCount = 0, onResolve }) {
+  const normalizedDecisions = Array.isArray(decisions) ? decisions : [];
+  const decisionCount = normalizedDecisions.length;
+  const parsedTotalCount = Number.parseInt(String(totalCount || ''), 10);
+  const remainingCount = Math.max(Number.isFinite(parsedTotalCount) ? parsedTotalCount : 0, decisionCount);
   const [customAnswers, setCustomAnswers] = useState({});
-  if (!Array.isArray(decisions) || decisions.length === 0) {
+  const [pageIndex, setPageIndex] = useState(0);
+  useEffect(() => {
+    setPageIndex((previous) => clampCoCreateDecisionPageIndex(previous, decisionCount));
+  }, [decisionCount]);
+  if (!decisionCount) {
     return null;
   }
+  const currentIndex = clampCoCreateDecisionPageIndex(pageIndex, decisionCount);
+  const decision = normalizedDecisions[currentIndex] || {};
+  const id = String(decision.id || '').trim();
+  const answerKey = id || `decision-${currentIndex}`;
+  const customValue = customAnswers[answerKey] || '';
+  const goToPrevious = () => setPageIndex((previous) => clampCoCreateDecisionPageIndex(previous - 1, decisionCount));
+  const goToNext = () => setPageIndex((previous) => clampCoCreateDecisionPageIndex(previous + 1, decisionCount));
+  const progressText = remainingCount > decisionCount
+    ? `剩余 ${remainingCount} 项，当前批第 ${currentIndex + 1} / ${decisionCount} 项`
+    : `第 ${currentIndex + 1} / ${remainingCount} 项待确认`;
   return (
     <div className="cocreate-decisions">
       <div className="decision-queue-head">
-        <strong>共创前置决策</strong>
-        <span>{decisions.length} 项待确认</span>
+        <div className="decision-queue-title">
+          <strong>共创前置决策</strong>
+          <span>{progressText}</span>
+        </div>
+        {decisionCount > 1 ? (
+          <div className="decision-pager" aria-label="共创决策分页">
+            <button
+              aria-label="上一项"
+              className="icon-button"
+              disabled={currentIndex === 0}
+              onClick={goToPrevious}
+              title="上一项"
+              type="button"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <button
+              aria-label="下一项"
+              className="icon-button"
+              disabled={currentIndex >= decisionCount - 1}
+              onClick={goToNext}
+              title="下一项"
+              type="button"
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+        ) : null}
       </div>
-      {decisions.map((decision) => {
-        const id = String(decision.id || '').trim();
-        const customValue = customAnswers[id] || '';
-        return (
-          <article className="decision-card" key={id || decision.question}>
-            <div className="decision-card-head">
-              <strong>{decision.question}</strong>
-              {decision.recommended_option_id ? <span>推荐 {decision.recommended_option_id}</span> : null}
-            </div>
-            {decision.evidence ? <p className="decision-evidence">{decision.evidence}</p> : null}
-            {decision.impact ? <p className="decision-impact">{decision.impact}</p> : null}
-            <div className="decision-options">
-              {(decision.options || []).map((option) => (
-                <button
-                  className={`tool-button ${option.id === decision.recommended_option_id ? 'accent' : ''}`}
-                  disabled={busy || !id}
-                  key={option.id}
-                  onClick={() => onResolve(id, option.id, '')}
-                  type="button"
-                >
-                  <Check size={15} />
-                  <span>{option.label}</span>
-                </button>
-              ))}
-            </div>
-            <div className="decision-custom">
-              <textarea
-                disabled={busy || !id}
-                placeholder="输入自定义处理方式..."
-                value={customValue}
-                onChange={(event) => setCustomAnswers((previous) => ({ ...previous, [id]: event.target.value }))}
-              />
-              <button
-                className="tool-button"
-                disabled={busy || !id || !customValue.trim()}
-                onClick={() => onResolve(id, '', customValue.trim())}
-                type="button"
-              >
-                <Send size={15} />
-                提交
-              </button>
-            </div>
-          </article>
-        );
-      })}
+      <article className="decision-card" key={id || decision.question} aria-live="polite">
+        <div className="decision-card-head">
+          <strong>{decision.question}</strong>
+          {decision.recommended_option_id ? <span>推荐 {decision.recommended_option_id}</span> : null}
+        </div>
+        {decision.evidence ? <p className="decision-evidence">{decision.evidence}</p> : null}
+        {decision.impact ? <p className="decision-impact">{decision.impact}</p> : null}
+        <div className="decision-options">
+          {(decision.options || []).map((option) => (
+            <button
+              className={`tool-button ${option.id === decision.recommended_option_id ? 'accent' : ''}`}
+              disabled={busy || !id}
+              key={option.id}
+              onClick={() => onResolve(id, option.id, '')}
+              title={option.label}
+              type="button"
+            >
+              <Check size={15} />
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="decision-custom">
+          <textarea
+            disabled={busy || !id}
+            placeholder="输入自定义处理方式..."
+            value={customValue}
+            onChange={(event) => setCustomAnswers((previous) => ({ ...previous, [answerKey]: event.target.value }))}
+          />
+          <button
+            className="tool-button"
+            disabled={busy || !id || !customValue.trim()}
+            onClick={() => onResolve(id, '', customValue.trim())}
+            type="button"
+          >
+            <Send size={15} />
+            提交
+          </button>
+        </div>
+      </article>
     </div>
   );
 }
@@ -5919,6 +6007,9 @@ function coCreateStatusDetail(coCreate) {
     const count = coCreate.briefing?.pending_decision_count || coCreate.pendingDecisions.length || 0;
     return count > 0 ? `还有 ${count} 个共创前置问题待确认` : '等待确认共创前置问题';
   }
+  if (coCreate.failed || coCreate.status === 'error') {
+    return '共创进度已保存，可恢复生成';
+  }
   if (coCreate.draftPrompt?.trim()) {
     return '已有 draft，但还需继续补充最新方向';
   }
@@ -7333,6 +7424,18 @@ function clampChapterSelection(value, chapterCount = 0) {
     return '1';
   }
   return String(Math.min(parsed, chapterCount));
+}
+
+export function clampCoCreateDecisionPageIndex(value, decisionCount = 0) {
+  const count = Number.parseInt(String(decisionCount || ''), 10);
+  if (!Number.isInteger(count) || count < 1) {
+    return 0;
+  }
+  const parsed = Number.parseInt(String(value || ''), 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return 0;
+  }
+  return Math.min(parsed, count - 1);
 }
 
 function clampOutlineChapterSelection(value, outline = []) {

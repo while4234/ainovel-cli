@@ -12,11 +12,39 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
+	"github.com/voocel/litellm"
 )
 
 func TestRuntimeAutoSwitchQuotaSwitchesImmediately(t *testing.T) {
 	restoreRuntimeFallbackWait(t)
 	first := &scriptedRuntimeModel{provider: "p1", model: "m1", errs: []error{errors.New("402 insufficient_quota")}}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m2"}
+	primary := NewSwappableModel("p1", "m1", first)
+	controller := &runtimeFallbackControllerStub{order: []string{"p2"}, models: map[string]agentcore.ChatModel{"p2": second}}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(3), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "p2/m2" {
+		t.Fatalf("response = %q, want p2/m2", got)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
+	}
+	if len(controller.calls) != 1 {
+		t.Fatalf("controller calls = %d, want 1", len(controller.calls))
+	}
+}
+
+func TestRuntimeAutoSwitchGatewayErrorSwitchesImmediately(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{
+		provider: "p1",
+		model:    "m1",
+		errs:     []error{litellm.NewHTTPError("p1", 502, "<html><body>502 Bad Gateway</body></html>")},
+	}
 	second := &scriptedRuntimeModel{provider: "p2", model: "m2"}
 	primary := NewSwappableModel("p1", "m1", first)
 	controller := &runtimeFallbackControllerStub{order: []string{"p2"}, models: map[string]agentcore.ChatModel{"p2": second}}

@@ -29,6 +29,27 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `fix: make adaptation co-create resumable`:
+  Web adaptation co-create decisions now render as a one-question pager with
+  vertical wrapping option buttons, and the backend no longer limits pending
+  decisions to the first four. Failed co-create sessions stay active with a
+  `恢复共创` action, and `/cocreate/resume` continues from the saved prompt,
+  mode, source, resolved briefing decisions, and draft state instead of losing
+  progress.
+  Provider gateway failures (typed or HTML 500/502/503/504 responses) are
+  detected, sanitized, and treated as failover/retry-eligible in runtime
+  fallback, co-create stream generation, planner generation, and briefing
+  generation. Adaptation co-create briefing now checkpoints before generation
+  starts and writes an explicit `COCREATE/adapt_briefing` lifecycle event, so
+  briefing failures appear in the event log rather than silently ending.
+  Validation passed for focused provider/co-create/briefing tests, full
+  `go test ./internal/retrypolicy ./internal/bootstrap ./internal/host ./internal/host/adapt ./internal/entry/web -count=1`,
+  full Web UI Vitest, Vite build, `git diff --check` on changed source files,
+  and local Web restart on `http://127.0.0.1:9898` as PID `62520`. Runtime
+  snapshot confirmed `这不是我印象中的女魔头`
+  (`untitled-novel-20260705003748-de4f76`) is resumable with 19/19 briefing
+  decisions resolved and no pending decisions.
+- Latest source change: current local commit
   `fix: unblock adaptation library save and cocreate shell`:
   Web adaptation novel-library save now separates row editability from submit
   readiness, so a freshly analyzed source with an empty library name can still

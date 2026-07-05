@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1164,6 +1165,201 @@ func TestProjectAdaptCoCreateBeginWaitsForBriefingDecision(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptCoCreateBeginReturnsAllPendingBriefingDecisions(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Briefing Queue")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
+	fake.adaptBriefing = testPendingAdaptBriefingWithDecisionCount(6)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"strict single heroine, remove side romance"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var beginResponse struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&beginResponse); err != nil {
+		t.Fatalf("decode begin response: %v", err)
+	}
+	if got := len(beginResponse.CoCreate.PendingDecisions); got != 6 {
+		t.Fatalf("pending decisions = %d, want all 6", got)
+	}
+	if beginResponse.CoCreate.Briefing == nil {
+		t.Fatal("briefing state is nil")
+	}
+	if beginResponse.CoCreate.Briefing.PendingDecisionCount != 6 || beginResponse.CoCreate.Briefing.TotalDecisionCount != 6 {
+		t.Fatalf("briefing counts = %+v, want pending=6 total=6", beginResponse.CoCreate.Briefing)
+	}
+	if beginResponse.CoCreate.CanStart {
+		t.Fatalf("can_start = true with pending decisions: %+v", beginResponse.CoCreate)
+	}
+}
+
+func TestProjectAdaptCoCreateResumePreservesFailedDecisionProgress(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Resume")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
+	fake.adaptBriefing = testPendingAdaptBriefing()
+	fake.adaptCoCreateErr = errors.New("<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"strict single heroine, remove side romance"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/decision", bytes.NewBufferString(`{"decision_id":"q1","option_id":"a"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("decision status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var failedResponse struct {
+		Error    string           `json:"error"`
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&failedResponse); err != nil {
+		t.Fatalf("decode failed decision response: %v", err)
+	}
+	if !failedResponse.CoCreate.Active || !failedResponse.CoCreate.Failed {
+		t.Fatalf("failed co-create state = %+v, want active failed session", failedResponse.CoCreate)
+	}
+	if failedResponse.CoCreate.Briefing == nil || failedResponse.CoCreate.Briefing.PendingDecisionCount != 0 || failedResponse.CoCreate.Briefing.ResolvedDecisionCount != 1 {
+		t.Fatalf("failed briefing state = %+v, want resolved decision preserved", failedResponse.CoCreate.Briefing)
+	}
+	if strings.Contains(strings.ToLower(failedResponse.Error), "<html") || strings.Contains(failedResponse.Error, "nginx") {
+		t.Fatalf("error leaked raw html: %s", failedResponse.Error)
+	}
+	failedHistoryLen := len(fake.lastCoCreateHistory)
+	if failedHistoryLen == 0 {
+		t.Fatal("failed run did not call adapt co-create")
+	}
+
+	fake.adaptCoCreateErr = nil
+	fake.adaptCoCreateReply = webCoCreateReply("ready after resume", "## Adapt brief\n- resolved and saved", true)
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/resume", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resume status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resumeResponse struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resumeResponse); err != nil {
+		t.Fatalf("decode resume response: %v", err)
+	}
+	if resumeResponse.CoCreate.Failed || !resumeResponse.CoCreate.CanStart || !strings.Contains(resumeResponse.CoCreate.DraftPrompt, "resolved and saved") {
+		t.Fatalf("resume co-create state = %+v, want recovered startable draft", resumeResponse.CoCreate)
+	}
+	if got := len(fake.lastCoCreateHistory); got != failedHistoryLen {
+		t.Fatalf("resume history len = %d, want preserved len %d without new user message", got, failedHistoryLen)
+	}
+}
+
+func TestProjectAdaptCoCreateResumeRestoresFailedBriefingGeneration(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Briefing Resume")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
+	fake.adaptBriefingErr = errors.New("<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"strict single heroine, remove side romance"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("adapt begin status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+	var failedResponse struct {
+		Error    string           `json:"error"`
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&failedResponse); err != nil {
+		t.Fatalf("decode failed begin response: %v", err)
+	}
+	if !failedResponse.CoCreate.Active || !failedResponse.CoCreate.Failed || failedResponse.CoCreate.Briefing != nil {
+		t.Fatalf("failed briefing state = %+v, want active failed session without briefing", failedResponse.CoCreate)
+	}
+	if !webCoCreateMessagesContain(failedResponse.CoCreate.Messages, "strict single heroine") {
+		t.Fatalf("failed response should retain initial prompt messages: %+v", failedResponse.CoCreate.Messages)
+	}
+	if strings.Contains(strings.ToLower(failedResponse.Error), "<html") || strings.Contains(failedResponse.Error, "nginx") {
+		t.Fatalf("error leaked raw html: %s", failedResponse.Error)
+	}
+	if _, err := os.Stat(filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))); err != nil {
+		t.Fatalf("failed briefing should persist checkpoint: %v", err)
+	}
+	session, _, err := server.sessions.Open(manifest.ID)
+	if err != nil {
+		t.Fatalf("Open session: %v", err)
+	}
+	failedEvent := latestHostEventByKind(session.HistoryAfter(0), "adapt_briefing")
+	if failedEvent == nil || !failedEvent.Failed || failedEvent.Level != "error" {
+		t.Fatalf("failed briefing event = %+v, want error lifecycle event", failedEvent)
+	}
+	if strings.Contains(strings.ToLower(failedEvent.Detail), "<html") || strings.Contains(failedEvent.Detail, "nginx") {
+		t.Fatalf("failed briefing event leaked raw html: %s", failedEvent.Detail)
+	}
+
+	server.sessions.CloseProject(manifest.ID)
+	restoredFake := installFakeSession(t, server, manifest)
+	restoredFake.adaptBriefing = testReadyAdaptBriefing()
+	restoredFake.adaptCoCreateReply = webCoCreateReply("ready after briefing resume", "## Adapt brief\n- resumed from saved prompt", true)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/resume", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resume status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resumeResponse struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resumeResponse); err != nil {
+		t.Fatalf("decode resume response: %v", err)
+	}
+	if restoredFake.adaptBriefingCalls != 1 {
+		t.Fatalf("EnsureAdaptationCoCreateBriefing calls = %d, want 1", restoredFake.adaptBriefingCalls)
+	}
+	if restoredFake.lastAdaptBriefingIntent.RawRequest != "strict single heroine, remove side romance" {
+		t.Fatalf("restored briefing intent raw request = %q", restoredFake.lastAdaptBriefingIntent.RawRequest)
+	}
+	wantSourcePath := filepath.Join(manifest.RootDir, "uploads", "adaptation", "source.txt")
+	if restoredFake.lastAdaptBriefingSource != wantSourcePath {
+		t.Fatalf("restored briefing source = %q, want %q", restoredFake.lastAdaptBriefingSource, wantSourcePath)
+	}
+	if restoredFake.adaptCoCreateCalls != 1 {
+		t.Fatalf("AdaptCoCreateStream calls after resume = %d, want 1", restoredFake.adaptCoCreateCalls)
+	}
+	if !coCreateHistoryContains(restoredFake.lastCoCreateHistory, "strict single heroine") {
+		t.Fatalf("restored co-create history lost initial prompt: %+v", restoredFake.lastCoCreateHistory)
+	}
+	if resumeResponse.CoCreate.Failed || !resumeResponse.CoCreate.CanStart || !strings.Contains(resumeResponse.CoCreate.DraftPrompt, "resumed from saved prompt") {
+		t.Fatalf("resume co-create state = %+v, want recovered startable draft", resumeResponse.CoCreate)
+	}
+}
+
 func TestProjectAdaptCoCreateCommitConsolidatesMultiTurnDraftBeforeProposal(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
@@ -1609,6 +1805,39 @@ func seedAnalyzedAdaptationForCoCreateTest(t *testing.T, manifest ProjectManifes
 }
 
 func testPendingAdaptBriefing() *domain.AdaptationCoCreateBriefing {
+	return testPendingAdaptBriefingWithDecisionCount(1)
+}
+
+func testReadyAdaptBriefing() *domain.AdaptationCoCreateBriefing {
+	briefing := testPendingAdaptBriefing()
+	briefing.Decisions = nil
+	briefing.ResolvedDecisions = nil
+	return briefing
+}
+
+func testPendingAdaptBriefingWithDecisionCount(count int) *domain.AdaptationCoCreateBriefing {
+	if count < 1 {
+		count = 1
+	}
+	decisions := make([]domain.AdaptationBriefingDecision, 0, count)
+	for index := 1; index <= count; index++ {
+		id := fmt.Sprintf("q%d", index)
+		decisions = append(decisions, domain.AdaptationBriefingDecision{
+			ID:       id,
+			Question: fmt.Sprintf("How should decision %d be handled?", index),
+			Evidence: fmt.Sprintf("chapter %d shows a decision risk", index),
+			Impact:   "changes relationship cleanup rules for later arcs",
+			Required: true,
+			Status:   "pending",
+			Options: []domain.AdaptationDecisionOption{
+				{ID: "a", Label: "Remove ambiguity", Description: "Keep the side character as an ally only"},
+				{ID: "b", Label: "Keep as friendship", Description: "Rewrite intimacy into ordinary trust"},
+			},
+			RecommendedOptionID: "a",
+		})
+	}
+	decisions[0].Question = "How should the side romance be handled?"
+	decisions[0].Evidence = "chapter 90 shows a confession risk"
 	return &domain.AdaptationCoCreateBriefing{
 		Version:           1,
 		PromptVersion:     adaptpkg.CoCreateBriefingPromptVersion,
@@ -1616,21 +1845,7 @@ func testPendingAdaptBriefing() *domain.AdaptationCoCreateBriefing {
 		IntentHash:        "intent",
 		ConfirmedFacts:    []string{"source couple milestone is unclear"},
 		ResolvedDecisions: nil,
-		Decisions: []domain.AdaptationBriefingDecision{
-			{
-				ID:       "q1",
-				Question: "How should the side romance be handled?",
-				Evidence: "chapter 90 shows a confession risk",
-				Impact:   "changes relationship cleanup rules for later arcs",
-				Required: true,
-				Status:   "pending",
-				Options: []domain.AdaptationDecisionOption{
-					{ID: "a", Label: "Remove ambiguity", Description: "Keep the side character as an ally only"},
-					{ID: "b", Label: "Keep as friendship", Description: "Rewrite intimacy into ordinary trust"},
-				},
-				RecommendedOptionID: "a",
-			},
-		},
+		Decisions:         decisions,
 	}
 }
 
@@ -1651,4 +1866,23 @@ func coCreateHistoryContains(history []host.CoCreateMessage, text string) bool {
 		}
 	}
 	return false
+}
+
+func webCoCreateMessagesContain(messages []webCoCreateMessage, text string) bool {
+	for _, message := range messages {
+		if strings.Contains(message.Content, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func latestHostEventByKind(events []WebEvent, kind string) *APIHostEvent {
+	for idx := len(events) - 1; idx >= 0; idx-- {
+		event := events[idx].Event
+		if event != nil && event.Kind == kind {
+			return event
+		}
+	}
+	return nil
 }
