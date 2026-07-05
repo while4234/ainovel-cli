@@ -2,6 +2,7 @@ package adapt
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -221,6 +223,84 @@ func TestPrepareSourceBuildsMissingCoCreateDossierWithoutReanalyzingPreparedSour
 	}
 }
 
+func TestPrepareSourceBackfillsCompletedDossierBatchesBeforeNewChapter(t *testing.T) {
+	root := t.TempDir()
+	st := store.NewStore(root)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sourcePath := writeNumberedAdaptSource(t, t.TempDir(), 81)
+	chapters, err := imp.SplitFile(sourcePath)
+	if err != nil {
+		t.Fatalf("SplitFile: %v", err)
+	}
+	manifest, _, err := ensureSourceSnapshot(st.Adaptation, sourcePath, chapters)
+	if err != nil {
+		t.Fatalf("ensureSourceSnapshot: %v", err)
+	}
+	var reports []domain.AdaptationSourceReport
+	for chapter := 1; chapter <= 80; chapter++ {
+		report := domain.AdaptationSourceReport{
+			Chapter:      chapter,
+			Title:        fmt.Sprintf("Title %d", chapter),
+			SourceSHA256: manifest.Chapters[chapter-1].SHA256,
+			Summary:      fmt.Sprintf("source chapter %d summary", chapter),
+			KeyEvents:    []string{fmt.Sprintf("event %d", chapter)},
+		}
+		if err := st.Adaptation.SaveSourceReport(report); err != nil {
+			t.Fatalf("SaveSourceReport %d: %v", chapter, err)
+		}
+		reports = append(reports, report)
+	}
+	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
+		t.Fatalf("SaveSourceReports: %v", err)
+	}
+
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: adaptDossierBatchEnvelope()},
+		{text: adaptDossierBatchEnvelope()},
+		{text: adaptAnalyzerEnvelope(81)},
+		{text: adaptFoundationMergeEnvelope()},
+		{text: adaptDossierBatchEnvelope()},
+	}}
+	var events []Event
+	if err := PrepareSource(context.Background(), Deps{
+		Store: st,
+		LLM:   llm,
+		Prompts: Prompts{
+			Analyzer:        "analyzer",
+			FoundationMerge: "merge",
+		},
+	}, sourcePath, captureAdaptProgress(&events)); err != nil {
+		t.Fatalf("PrepareSource resume: %v", err)
+	}
+	if llm.calls != 5 {
+		t.Fatalf("calls=%d, want two backfilled batches, chapter 81, merge, and final batch", llm.calls)
+	}
+	firstNewChapterEvent := indexAdaptEvent(events, "分析原文第 81/81 章")
+	if firstNewChapterEvent < 0 {
+		t.Fatalf("missing chapter 81 analysis event: %+v", events)
+	}
+	for _, fragment := range []string{"资料包第 1/3 批完成", "资料包第 2/3 批完成"} {
+		idx := indexAdaptEvent(events, fragment)
+		if idx < 0 {
+			t.Fatalf("missing backfill event %q: %+v", fragment, events)
+		}
+		if idx > firstNewChapterEvent {
+			t.Fatalf("backfill event %q occurred after new chapter analysis", fragment)
+		}
+	}
+	for batch := 1; batch <= 3; batch++ {
+		if got, err := st.Adaptation.LoadCoCreateDossierBatch(batch); err != nil || got == nil {
+			t.Fatalf("batch %d missing after resume: batch=%+v err=%v", batch, got, err)
+		}
+	}
+	current, err := st.Adaptation.CoCreateDossierCurrent(CoCreateDossierPromptVersion, CoCreateDossierBatchSize)
+	if err != nil || !current {
+		t.Fatalf("dossier should be current: current=%v err=%v", current, err)
+	}
+}
+
 func writeAdaptSource(t *testing.T, dir string, bodies []string) string {
 	t.Helper()
 	var sb strings.Builder
@@ -239,6 +319,31 @@ func writeAdaptSource(t *testing.T, dir string, bodies []string) string {
 		t.Fatalf("write source: %v", err)
 	}
 	return path
+}
+
+func writeNumberedAdaptSource(t *testing.T, dir string, count int) string {
+	t.Helper()
+	var sb strings.Builder
+	for chapter := 1; chapter <= count; chapter++ {
+		if chapter > 1 {
+			sb.WriteString("\n\n")
+		}
+		fmt.Fprintf(&sb, "Chapter %d: Title %d\nBODY_%03d\n", chapter, chapter, chapter)
+	}
+	path := filepath.Join(dir, "source.txt")
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	return path
+}
+
+func indexAdaptEvent(events []Event, fragment string) int {
+	for i, event := range events {
+		if strings.Contains(event.Message, fragment) {
+			return i
+		}
+	}
+	return -1
 }
 
 func adaptAnalyzerEnvelope(chapter int) string {

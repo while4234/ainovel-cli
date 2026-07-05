@@ -62,42 +62,12 @@ func EnsureCoCreateDossier(ctx context.Context, deps Deps, manifest *domain.Adap
 	}
 
 	emitAdaptProgress(emit, StageDossier, 0, manifest.ChapterCount, "生成全书改编资料包...", nil)
-	reportByChapter := make(map[int]domain.AdaptationSourceReport, len(reports))
-	for _, report := range reports {
-		reportByChapter[report.Chapter] = report
+	batches, err := ensureCoCreateDossierBatches(ctx, deps, manifest, reports, emit)
+	if err != nil {
+		return nil, err
 	}
-
-	specs := dossierBatchSpecs(*manifest, CoCreateDossierBatchSize)
-	batches := make([]domain.AdaptationCoCreateDossierBatch, 0, len(specs))
-	for _, spec := range specs {
-		existing, err := deps.Store.Adaptation.LoadCoCreateDossierBatch(spec.Index)
-		if err != nil {
-			return nil, fmt.Errorf("load co-create dossier batch %d: %w", spec.Index, err)
-		}
-		if coCreateDossierBatchCurrent(existing, spec) {
-			batches = append(batches, *existing)
-			emitAdaptProgress(emit, StageDossier, spec.SourceTo, manifest.ChapterCount, fmt.Sprintf("跳过资料包第 %d/%d 批：原书第 %d-%d 章", spec.Index, len(specs), spec.SourceFrom, spec.SourceTo), nil)
-			continue
-		}
-
-		batchReports := make([]domain.AdaptationSourceReport, 0, spec.SourceTo-spec.SourceFrom+1)
-		for chapter := spec.SourceFrom; chapter <= spec.SourceTo; chapter++ {
-			report, ok := reportByChapter[chapter]
-			if !ok {
-				return nil, fmt.Errorf("source report %d missing for co-create dossier", chapter)
-			}
-			batchReports = append(batchReports, report)
-		}
-		emitAdaptProgress(emit, StageDossier, spec.SourceFrom, manifest.ChapterCount, fmt.Sprintf("分析资料包第 %d/%d 批：原书第 %d-%d 章", spec.Index, len(specs), spec.SourceFrom, spec.SourceTo), nil)
-		batch, err := buildCoCreateDossierBatch(ctx, deps, spec, batchReports, len(specs), emit)
-		if err != nil {
-			return nil, fmt.Errorf("build co-create dossier batch %d: %w", spec.Index, err)
-		}
-		if err := deps.Store.Adaptation.SaveCoCreateDossierBatch(batch); err != nil {
-			return nil, fmt.Errorf("save co-create dossier batch %d: %w", spec.Index, err)
-		}
-		batches = append(batches, batch)
-		emitAdaptProgress(emit, StageDossier, spec.SourceTo, manifest.ChapterCount, fmt.Sprintf("资料包第 %d/%d 批完成", spec.Index, len(specs)), nil)
+	if len(batches) != len(dossierBatchSpecs(*manifest, CoCreateDossierBatchSize)) {
+		return nil, fmt.Errorf("co-create dossier batches incomplete: got %d", len(batches))
 	}
 
 	dossier := assembleCoCreateDossier(*manifest, batches)
@@ -106,6 +76,69 @@ func EnsureCoCreateDossier(ctx context.Context, deps Deps, manifest *domain.Adap
 	}
 	emitAdaptProgress(emit, StageDossier, manifest.ChapterCount, manifest.ChapterCount, fmt.Sprintf("全书改编资料包已生成：%d 批 / %d 章", len(batches), manifest.ChapterCount), nil)
 	return &dossier, nil
+}
+
+func ensureCoCreateDossierBatches(ctx context.Context, deps Deps, manifest *domain.AdaptationSourceManifest, reports []domain.AdaptationSourceReport, emit ProgressEmitter) ([]domain.AdaptationCoCreateDossierBatch, error) {
+	if deps.Store == nil || deps.LLM == nil {
+		return nil, fmt.Errorf("deps incomplete")
+	}
+	if manifest == nil || manifest.ChapterCount <= 0 {
+		return nil, fmt.Errorf("source manifest is required")
+	}
+	sourceSHAByChapter := make(map[int]string, len(manifest.Chapters))
+	for _, source := range manifest.Chapters {
+		sourceSHAByChapter[source.Chapter] = source.SHA256
+	}
+	reportByChapter := make(map[int]domain.AdaptationSourceReport, len(reports))
+	for _, report := range reports {
+		if sha := sourceSHAByChapter[report.Chapter]; sha != "" && reusableSourceReport(&report, sha) {
+			reportByChapter[report.Chapter] = report
+		}
+	}
+
+	specs := dossierBatchSpecs(*manifest, CoCreateDossierBatchSize)
+	batches := make([]domain.AdaptationCoCreateDossierBatch, 0, len(specs))
+	for _, spec := range specs {
+		if err := ctx.Err(); err != nil {
+			return batches, err
+		}
+		batchReports, ok := sourceReportsForDossierBatch(spec, reportByChapter)
+		if !ok {
+			continue
+		}
+		existing, err := deps.Store.Adaptation.LoadCoCreateDossierBatch(spec.Index)
+		if err != nil {
+			return batches, fmt.Errorf("load co-create dossier batch %d: %w", spec.Index, err)
+		}
+		if coCreateDossierBatchCurrent(existing, spec) {
+			batches = append(batches, *existing)
+			continue
+		}
+
+		emitAdaptProgress(emit, StageDossier, spec.SourceFrom, manifest.ChapterCount, fmt.Sprintf("分析资料包第 %d/%d 批：原书第 %d-%d 章", spec.Index, len(specs), spec.SourceFrom, spec.SourceTo), nil)
+		batch, err := buildCoCreateDossierBatch(ctx, deps, spec, batchReports, len(specs), emit)
+		if err != nil {
+			return batches, fmt.Errorf("build co-create dossier batch %d: %w", spec.Index, err)
+		}
+		if err := deps.Store.Adaptation.SaveCoCreateDossierBatch(batch); err != nil {
+			return batches, fmt.Errorf("save co-create dossier batch %d: %w", spec.Index, err)
+		}
+		batches = append(batches, batch)
+		emitAdaptProgress(emit, StageDossier, spec.SourceTo, manifest.ChapterCount, fmt.Sprintf("资料包第 %d/%d 批完成", spec.Index, len(specs)), nil)
+	}
+	return batches, nil
+}
+
+func sourceReportsForDossierBatch(spec coCreateDossierBatchSpec, reportByChapter map[int]domain.AdaptationSourceReport) ([]domain.AdaptationSourceReport, bool) {
+	reports := make([]domain.AdaptationSourceReport, 0, spec.SourceTo-spec.SourceFrom+1)
+	for chapter := spec.SourceFrom; chapter <= spec.SourceTo; chapter++ {
+		report, ok := reportByChapter[chapter]
+		if !ok {
+			return nil, false
+		}
+		reports = append(reports, report)
+	}
+	return reports, true
 }
 
 type coCreateDossierBatchSpec struct {

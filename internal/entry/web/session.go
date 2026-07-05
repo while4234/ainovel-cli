@@ -2124,6 +2124,22 @@ func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
 	})
 }
 
+func (s *ProjectSession) appendLibraryEvent(kind, summary, detail, level string) WebEvent {
+	level = strings.TrimSpace(level)
+	if level == "" {
+		level = "info"
+	}
+	return s.appendHostEvent(host.Event{
+		Time:     time.Now().UTC(),
+		Category: "LIBRARY",
+		Agent:    "web",
+		Summary:  strings.TrimSpace(summary),
+		Detail:   strings.TrimSpace(detail),
+		Kind:     strings.TrimSpace(kind),
+		Level:    level,
+	})
+}
+
 func (s *ProjectSession) appendAdaptationPausedEvent() WebEvent {
 	return s.appendAdaptationEvent(apiAdaptationEvent{
 		Time:    time.Now().UTC(),

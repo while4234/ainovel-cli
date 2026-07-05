@@ -164,6 +164,7 @@ func TestNovelLibrarySaveLoadRewritesManifestAndSkipsAnalyze(t *testing.T) {
 		t.Fatalf("CreateProject source: %v", err)
 	}
 	sourcePath := writePreparedAdaptationFixture(t, sourceProject, "source.txt")
+	installFakeSession(t, server, sourceProject)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+sourceProject.ID+"/adapt/library/save", bytes.NewBufferString(`{"name":"Fixture Novel","source_file":"source.txt"}`))
 	rec := httptest.NewRecorder()
@@ -171,6 +172,7 @@ func TestNovelLibrarySaveLoadRewritesManifestAndSkipsAnalyze(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d body=%s", rec.Code, rec.Body.String())
 	}
+	requireLibraryEvent(t, server.sessions.Project(sourceProject.ID), "novel_save", "Fixture Novel")
 
 	entryRoot := filepath.Join(runtimeRoot, novelLibraryDirName, "Fixture Novel")
 	if _, err := os.Stat(filepath.Join(entryRoot, "source", novelLibrarySourceName)); err != nil {
@@ -203,6 +205,7 @@ func TestNovelLibrarySaveLoadRewritesManifestAndSkipsAnalyze(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("load status = %d body=%s", rec.Code, rec.Body.String())
 	}
+	requireLibraryEvent(t, server.sessions.Project(targetProject.ID), "novel_load", "Fixture Novel")
 	var loadResponse struct {
 		Analyzed   bool            `json:"analyzed"`
 		SourceFile apiUploadedFile `json:"source_file"`
@@ -241,6 +244,23 @@ func TestNovelLibrarySaveLoadRewritesManifestAndSkipsAnalyze(t *testing.T) {
 	if fake.adaptStartCalls != 1 {
 		t.Fatalf("adapt start calls = %d, want 1", fake.adaptStartCalls)
 	}
+}
+
+func requireLibraryEvent(t *testing.T, session *ProjectSession, kind, name string) WebEvent {
+	t.Helper()
+	if session == nil {
+		t.Fatalf("project session is nil")
+	}
+	for _, ev := range session.HistoryAfter(0) {
+		if ev.Type != webEventTypeHostEvent || ev.Event == nil {
+			continue
+		}
+		if ev.Event.Category == "LIBRARY" && ev.Event.Kind == kind && strings.Contains(ev.Event.Summary, name) {
+			return ev
+		}
+	}
+	t.Fatalf("library event kind=%q name=%q not found: %+v", kind, name, session.HistoryAfter(0))
+	return WebEvent{}
 }
 
 func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sourceName string) string {

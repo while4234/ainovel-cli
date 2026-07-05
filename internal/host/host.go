@@ -2924,7 +2924,36 @@ func (h *Host) EnsureAdaptationCoCreateBriefing(ctx context.Context, sourcePath 
 		Store: h.store,
 		LLM:   h.models.ForRole("architect"),
 	}
-	return adapt.EnsureCoCreateBriefing(ctx, deps, intent, nil)
+	return adapt.EnsureCoCreateBriefing(ctx, deps, intent, h.adaptationProgressEmitter())
+}
+
+func (h *Host) adaptationProgressEmitter() adapt.ProgressEmitter {
+	return func(stage adapt.Stage, current, total int, message string, err error) {
+		level := "info"
+		detail := ""
+		if err != nil {
+			detail = err.Error()
+			if stage == adapt.StageError {
+				level = "error"
+			} else {
+				level = "warn"
+			}
+		} else if stage == adapt.StageDone {
+			level = "success"
+		}
+		if strings.TrimSpace(message) == "" {
+			message = detail
+		}
+		h.emitEvent(Event{
+			Time:     time.Now().UTC(),
+			Category: "ADAPT",
+			Agent:    "web",
+			Summary:  message,
+			Detail:   detail,
+			Kind:     string(stage),
+			Level:    level,
+		})
+	}
 }
 
 func (h *Host) ResolveAdaptationCoCreateDecision(decisionID, optionID, customAnswer string) (*domain.AdaptationCoCreateBriefing, error) {

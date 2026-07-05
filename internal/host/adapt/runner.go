@@ -113,6 +113,11 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 	if !sourceChanged {
 		emit(StageSplitting, total, total, "源书快照匹配，继续使用已有分析产物", nil)
 	}
+	if reports, err := deps.Store.Adaptation.LoadSourceReports(); err != nil {
+		return fmt.Errorf("load source reports for co-create dossier batches: %w", err)
+	} else if _, err := ensureCoCreateDossierBatches(ctx, deps, manifest, reports, emit); err != nil {
+		return fmt.Errorf("ensure co-create dossier batches: %w", err)
+	}
 
 	reportsChanged := false
 	for i, ch := range chapters {
@@ -144,6 +149,15 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 		reportsChanged = true
 		if reports, err := deps.Store.Adaptation.LoadSourceReports(); err == nil {
 			_ = deps.Store.Adaptation.SaveSourceReports(reports)
+		}
+		if shouldRefreshCoCreateDossierBatches(chapterNum, total) {
+			reports, err := deps.Store.Adaptation.LoadSourceReports()
+			if err != nil {
+				return fmt.Errorf("load source reports for co-create dossier batches: %w", err)
+			}
+			if _, err := ensureCoCreateDossierBatches(ctx, deps, manifest, reports, emit); err != nil {
+				return fmt.Errorf("ensure co-create dossier batches: %w", err)
+			}
 		}
 	}
 	reports, err := deps.Store.Adaptation.LoadCompleteSourceReports()
@@ -178,6 +192,10 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 	}
 	emit(StageDone, total, total, fmt.Sprintf("原书分析完成：%d 章快照已保存", total), nil)
 	return nil
+}
+
+func shouldRefreshCoCreateDossierBatches(chapter, total int) bool {
+	return chapter > 0 && chapter < total && chapter%CoCreateDossierBatchSize == 0
 }
 
 func ensureSourceSnapshot(adaptation *store.AdaptationStore, sourcePath string, chapters []imp.Chapter) (*domain.AdaptationSourceManifest, bool, error) {

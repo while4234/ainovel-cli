@@ -216,6 +216,14 @@ func (s *Server) handleProjectNovelLibrarySave(w http.ResponseWriter, r *http.Re
 		writeLibraryActionError(w, err)
 		return
 	}
+	if session := s.sessions.Project(id); session != nil {
+		session.appendLibraryEvent(
+			"novel_save",
+			fmt.Sprintf("已保存小说库：%s（%d 章）", item.Name, item.ChapterCount),
+			fmt.Sprintf("source_file=%s", item.SourceFile),
+			"success",
+		)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project": manifest,
 		"item":    item,
@@ -243,6 +251,15 @@ func (s *Server) handleProjectNovelLibraryLoad(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		writeLibraryActionError(w, err)
 		return
+	}
+	if session := s.sessions.Project(id); session != nil {
+		session.appendLibraryEvent(
+			"novel_load",
+			fmt.Sprintf("已加载小说库：%s（%d 章）", item.Name, item.ChapterCount),
+			fmt.Sprintf("source_file=%s loaded_as=%s", item.SourceFile, sourceFile.RelativePath),
+			"success",
+		)
+		session.AppendSnapshot()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":     manifest,

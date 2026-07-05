@@ -29,6 +29,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: pending local changes
+  `fix: backfill adaptation dossier batches`:
+  Adaptation source-analysis resume now backfills fixed 40-chapter co-create
+  dossier batches before continuing with newly analyzed chapters, and refreshes
+  those batches again whenever a non-final 40-chapter boundary is reached. The
+  final all-book co-create dossier still assembles only after all source reports
+  are complete. Web novel-library save/load actions now append `LIBRARY`
+  host events, and long-form adaptation co-create briefing progress is emitted
+  as `ADAPT` events. Validation passed for focused adapt/web Go tests and full
+  `go test ./internal/...`; local Web was rebuilt/restarted on
+  `http://127.0.0.1:9898` as PID `42772`, and `/api/runtime` returned healthy.
+- Latest source change: pending local changes
   `fix: refresh project model provider renames`:
   Web global model/provider edits now propagate the edited
   `original_provider -> provider` ID change to closed project overlays and
