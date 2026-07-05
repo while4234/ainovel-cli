@@ -45,6 +45,9 @@ func ImportProfile(ctx context.Context, st *store.Store, path string) (ImportRes
 	if err := st.Simulation.Save(merged); err != nil {
 		return ImportResult{}, err
 	}
+	if err := st.Simulation.ClearMergeCheckpoint(); err != nil {
+		return ImportResult{}, err
+	}
 	return result, nil
 }
 

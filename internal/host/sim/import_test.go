@@ -30,6 +30,10 @@ func TestImportProfileValidatesSchemaAndMergesByFingerprint(t *testing.T) {
 		t.Fatalf("expected schema validation error, got %v", err)
 	}
 
+	if err := st.Simulation.SaveMergeCheckpoint(testMergeCheckpoint("a.txt", "sha-a")); err != nil {
+		t.Fatal(err)
+	}
+
 	imported := testProfile("b.txt", "sha-b", "new")
 	imported.Corpus.Sources = append(imported.Corpus.Sources, existing.Corpus.Sources[0])
 	imported.SourceReports = append(imported.SourceReports, existing.SourceReports[0])
@@ -56,6 +60,13 @@ func TestImportProfileValidatesSchemaAndMergesByFingerprint(t *testing.T) {
 	if len(merged.Corpus.Sources) != 2 || len(merged.SourceReports) != 2 {
 		t.Fatalf("expected duplicate fingerprint to be skipped, got %+v", merged)
 	}
+	checkpoint, err := st.Simulation.LoadMergeCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint != nil {
+		t.Fatalf("import should clear merge checkpoint: %+v", checkpoint)
+	}
 }
 
 func testProfile(path, sha, summary string) domain.SimulationProfile {
@@ -81,6 +92,25 @@ func testProfile(path, sha, summary string) domain.SimulationProfile {
 			},
 			RoleGuidance: domain.SimulationRoleGuidance{
 				Writer: []string{"borrow structure only"},
+			},
+		},
+	}
+}
+
+func testMergeCheckpoint(path, sha string) domain.SimulationMergeCheckpoint {
+	return domain.SimulationMergeCheckpoint{
+		Version:              domain.SimulationMergeCheckpointVersion,
+		TotalReportCount:     1,
+		ProcessedReportCount: 1,
+		ProcessedBatchCount:  1,
+		Reports: []domain.SimulationReportIdentity{{
+			RelativePath: path,
+			SHA256:       sha,
+			Fingerprint:  domain.SimulationSourceFingerprint(path, sha),
+		}},
+		RollingSynthesis: domain.SimulationSynthesis{
+			Style: domain.SimulationStyle{
+				NarrativeVoice: []string{"close narration"},
 			},
 		},
 	}

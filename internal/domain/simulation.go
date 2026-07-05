@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	SimulationProfileVersion        = "simulation_profile.v1"
-	maxCompactSimulationSourceFiles = 20
-	maxCompactSimulationItems       = 12
+	SimulationProfileVersion         = "simulation_profile.v1"
+	SimulationMergeCheckpointVersion = "simulation_merge_checkpoint.v1"
+	maxCompactSimulationSourceFiles  = 20
+	maxCompactSimulationItems        = 12
 )
 
 type SimulationProfile struct {
@@ -50,6 +51,23 @@ type SimulationSourceReport struct {
 	ReaderAppeal       []string `json:"reader_appeal,omitempty"`
 	ReusableTechniques []string `json:"reusable_techniques,omitempty"`
 	Warnings           []string `json:"warnings,omitempty"`
+}
+
+type SimulationMergeCheckpoint struct {
+	Version              string                     `json:"version"`
+	UpdatedAt            string                     `json:"updated_at,omitempty"`
+	PromptLimitBytes     int                        `json:"prompt_limit_bytes,omitempty"`
+	TotalReportCount     int                        `json:"total_report_count,omitempty"`
+	ProcessedReportCount int                        `json:"processed_report_count,omitempty"`
+	ProcessedBatchCount  int                        `json:"processed_batch_count,omitempty"`
+	Reports              []SimulationReportIdentity `json:"reports,omitempty"`
+	RollingSynthesis     SimulationSynthesis        `json:"rolling_synthesis,omitempty"`
+}
+
+type SimulationReportIdentity struct {
+	RelativePath string `json:"relative_path,omitempty"`
+	SHA256       string `json:"sha256,omitempty"`
+	Fingerprint  string `json:"fingerprint,omitempty"`
 }
 
 type SimulationSynthesis struct {
@@ -152,6 +170,37 @@ func ValidateSimulationProfile(p *SimulationProfile) error {
 		report := &p.SourceReports[i]
 		if report.Fingerprint == "" && report.RelativePath != "" && report.SHA256 != "" {
 			report.Fingerprint = SimulationSourceFingerprint(report.RelativePath, report.SHA256)
+		}
+	}
+	return nil
+}
+
+func ValidateSimulationMergeCheckpoint(p *SimulationMergeCheckpoint) error {
+	if p == nil {
+		return fmt.Errorf("simulation merge checkpoint is nil")
+	}
+	if p.Version != SimulationMergeCheckpointVersion {
+		return fmt.Errorf("unsupported simulation merge checkpoint version %q", p.Version)
+	}
+	if p.TotalReportCount <= 0 {
+		return fmt.Errorf("merge checkpoint requires total_report_count")
+	}
+	if p.ProcessedReportCount <= 0 {
+		return fmt.Errorf("merge checkpoint requires processed_report_count")
+	}
+	if p.ProcessedReportCount > p.TotalReportCount {
+		return fmt.Errorf("merge checkpoint processed_report_count %d exceeds total_report_count %d", p.ProcessedReportCount, p.TotalReportCount)
+	}
+	if len(p.Reports) != p.TotalReportCount {
+		return fmt.Errorf("merge checkpoint reports len = %d, want %d", len(p.Reports), p.TotalReportCount)
+	}
+	for i := range p.Reports {
+		identity := &p.Reports[i]
+		if identity.RelativePath == "" || identity.SHA256 == "" {
+			return fmt.Errorf("merge checkpoint report[%d] requires relative_path and sha256", i)
+		}
+		if identity.Fingerprint == "" {
+			identity.Fingerprint = SimulationSourceFingerprint(identity.RelativePath, identity.SHA256)
 		}
 	}
 	return nil

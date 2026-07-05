@@ -274,6 +274,179 @@ func TestRunnerResumesMergeWithoutReanalyzingCompletedSources(t *testing.T) {
 	}
 }
 
+func TestMergeSynthesisResumesFromSavedBatchCheckpoint(t *testing.T) {
+	reports := make([]domain.SimulationSourceReport, 9)
+	for i := range reports {
+		reports[i] = verboseSourceReport(i + 1)
+	}
+	limit := len(buildMergeUserPrompt(nil, reports[:2]))
+	firstLLM := &scriptedLLM{
+		responses: []string{validSynthesisJSON("first checkpoint")},
+		errors:    []error{nil, fmt.Errorf("interrupted after checkpoint")},
+	}
+	var saved *domain.SimulationMergeCheckpoint
+
+	_, err := mergeSynthesisBatchedWithLimit(context.Background(), firstLLM, "merge prompt", nil, reports, limit, mergeSynthesisOptions{
+		OnCheckpoint: func(checkpoint mergeSynthesisCheckpoint) error {
+			saved = buildSimulationMergeCheckpoint(reports, limit, checkpoint, time.Now())
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "interrupted after checkpoint") {
+		t.Fatalf("first merge error = %v, want interrupted after checkpoint", err)
+	}
+	if saved == nil || saved.ProcessedReportCount == 0 || synthesisIsEmpty(saved.RollingSynthesis) {
+		t.Fatalf("expected checkpoint after first successful batch, got %+v", saved)
+	}
+
+	existing := &domain.SimulationProfile{
+		Version:       domain.SimulationProfileVersion,
+		SourceReports: reports,
+	}
+	resumeLLM := &scriptedLLM{responses: []string{
+		validSynthesisJSON("resume checkpoint 1"),
+		validSynthesisJSON("resume checkpoint 2"),
+		validSynthesisJSON("resume checkpoint 3"),
+		validSynthesisJSON("resume checkpoint 4"),
+		validSynthesisJSON("resume checkpoint 5"),
+		validSynthesisJSON("resume checkpoint 6"),
+		validSynthesisJSON("resume checkpoint 7"),
+		validSynthesisJSON("resume checkpoint 8"),
+	}}
+	var progress []mergeSynthesisProgress
+	synthesis, err := mergeSynthesisBatchedWithLimit(context.Background(), resumeLLM, "merge prompt", existing, reports, limit, mergeSynthesisOptions{
+		Checkpoint: saved,
+		OnBatch: func(ev mergeSynthesisProgress) {
+			progress = append(progress, ev)
+		},
+	})
+	if err != nil {
+		t.Fatalf("resume merge: %v", err)
+	}
+	if synthesisIsEmpty(*synthesis) {
+		t.Fatal("expected resumed merge to produce synthesis")
+	}
+	if len(progress) == 0 {
+		t.Fatal("expected resume progress events")
+	}
+	if progress[0].Current <= saved.ProcessedReportCount {
+		t.Fatalf("resume progress current = %d, want > saved processed %d", progress[0].Current, saved.ProcessedReportCount)
+	}
+	firstResumePrompt := resumeLLM.got[0][1].TextContent()
+	if strings.Contains(firstResumePrompt, reports[0].RelativePath) {
+		t.Fatalf("resume prompt included already checkpointed report %q", reports[0].RelativePath)
+	}
+}
+
+func TestRunnerFinalizesCompletedMergeCheckpointWithoutLLM(t *testing.T) {
+	dir := t.TempDir()
+	sourceDir := filepath.Join(dir, "simulate")
+	writeSimulationSource(t, sourceDir, "a.txt", "first")
+	writeSimulationSource(t, sourceDir, "b.txt", "second")
+	scanned, err := scanSources(sourceDir)
+	if err != nil {
+		t.Fatalf("scanSources: %v", err)
+	}
+
+	st := store.NewStore(filepath.Join(dir, "output", "novel"))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	reports := reportsForScannedSources(scanned)
+	synthesis := synthesisFixture("complete checkpoint")
+	profile := domain.SimulationProfile{
+		Version:       domain.SimulationProfileVersion,
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		UpdatedAt:     time.Now().Format(time.RFC3339),
+		Corpus:        domain.SimulationCorpusManifest{SourceDir: filepath.ToSlash(sourceDir), Sources: sourcesForScannedSources(scanned)},
+		SourceReports: reports,
+	}
+	if err := st.Simulation.Save(profile); err != nil {
+		t.Fatalf("save profile: %v", err)
+	}
+	checkpoint := buildSimulationMergeCheckpoint(reports, maxMergePromptBytes, mergeSynthesisCheckpoint{
+		ProcessedReportCount: len(reports),
+		TotalReportCount:     len(reports),
+		ProcessedBatchCount:  1,
+		Synthesis:            synthesis,
+	}, time.Now())
+	if checkpoint == nil {
+		t.Fatal("expected checkpoint")
+	}
+	if err := st.Simulation.SaveMergeCheckpoint(*checkpoint); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	llm := &scriptedLLM{}
+	drainRun(t, st, llm, sourceDir)
+	if got := llm.calls.Load(); got != 0 {
+		t.Fatalf("LLM calls = %d, want 0 because checkpoint already completed", got)
+	}
+	finalProfile, err := st.Simulation.Load()
+	if err != nil {
+		t.Fatalf("load final profile: %v", err)
+	}
+	finalCheckpoint, err := st.Simulation.LoadMergeCheckpoint()
+	if err != nil {
+		t.Fatalf("load final checkpoint: %v", err)
+	}
+	if finalCheckpoint != nil {
+		t.Fatalf("final store should clear merge checkpoint: %+v", finalCheckpoint)
+	}
+	if synthesisIsEmpty(finalProfile.Synthesis) {
+		t.Fatal("final profile should use checkpoint synthesis")
+	}
+}
+
+func TestRunnerPersistsMergeCheckpointBeforeBatchFailure(t *testing.T) {
+	dir := t.TempDir()
+	sourceDir := filepath.Join(dir, "simulate")
+	for i := 0; i < maxMergeReportsPerBatch+1; i++ {
+		writeSimulationSource(t, sourceDir, fmt.Sprintf("part_%03d.txt", i+1), strings.Repeat("text ", 20))
+	}
+	scanned, err := scanSources(sourceDir)
+	if err != nil {
+		t.Fatalf("scanSources: %v", err)
+	}
+
+	st := store.NewStore(filepath.Join(dir, "output", "novel"))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	profile := domain.SimulationProfile{
+		Version:       domain.SimulationProfileVersion,
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		UpdatedAt:     time.Now().Format(time.RFC3339),
+		Corpus:        domain.SimulationCorpusManifest{SourceDir: filepath.ToSlash(sourceDir), Sources: sourcesForScannedSources(scanned)},
+		SourceReports: reportsForScannedSources(scanned),
+	}
+	if err := st.Simulation.Save(profile); err != nil {
+		t.Fatalf("save profile: %v", err)
+	}
+
+	llm := &scriptedLLM{
+		responses: []string{validSynthesisJSON("first persisted batch")},
+		errors:    []error{nil, fmt.Errorf("merge interrupted")},
+	}
+	events := collectRun(t, st, llm, sourceDir)
+	if err := lastRunError(events); err == nil || !strings.Contains(err.Error(), "merge interrupted") {
+		t.Fatalf("run error = %v, want merge interrupted", err)
+	}
+	checkpoint, err := st.Simulation.LoadMergeCheckpoint()
+	if err != nil {
+		t.Fatalf("LoadMergeCheckpoint: %v", err)
+	}
+	if checkpoint == nil {
+		t.Fatal("expected persisted merge checkpoint")
+	}
+	if checkpoint.ProcessedReportCount != maxMergeReportsPerBatch {
+		t.Fatalf("processed reports = %d, want %d", checkpoint.ProcessedReportCount, maxMergeReportsPerBatch)
+	}
+	if synthesisIsEmpty(checkpoint.RollingSynthesis) {
+		t.Fatal("checkpoint should keep rolling synthesis")
+	}
+}
+
 func TestMergeSynthesisBatchesOversizedReportSet(t *testing.T) {
 	reports := make([]domain.SimulationSourceReport, 9)
 	for i := range reports {
@@ -431,6 +604,39 @@ func sourceHashForPath(t *testing.T, profile *domain.SimulationProfile, rel stri
 	}
 	t.Fatalf("source %q not found", rel)
 	return ""
+}
+
+func reportsForScannedSources(scanned []scannedSource) []domain.SimulationSourceReport {
+	reports := make([]domain.SimulationSourceReport, 0, len(scanned))
+	for _, source := range scanned {
+		reports = append(reports, domain.SimulationSourceReport{
+			RelativePath: source.RelativePath,
+			SHA256:       source.SHA256,
+			Fingerprint:  source.Fingerprint,
+			Summary:      "already analyzed " + source.RelativePath,
+		})
+	}
+	return reports
+}
+
+func sourcesForScannedSources(scanned []scannedSource) []domain.SimulationSource {
+	sources := make([]domain.SimulationSource, 0, len(scanned))
+	for _, source := range scanned {
+		sources = append(sources, source.SimulationSource)
+	}
+	return sources
+}
+
+func synthesisFixture(note string) domain.SimulationSynthesis {
+	return domain.SimulationSynthesis{
+		Style: domain.SimulationStyle{
+			NarrativeVoice: []string{"limited close narration"},
+			ProseTexture:   []string{note},
+		},
+		RoleGuidance: domain.SimulationRoleGuidance{
+			Writer: []string{"borrow techniques, never copy text"},
+		},
+	}
 }
 
 func verboseSourceReport(index int) domain.SimulationSourceReport {

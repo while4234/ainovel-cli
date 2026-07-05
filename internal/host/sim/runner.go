@@ -27,8 +27,10 @@ const (
 )
 
 type mergeSynthesisOptions struct {
-	Call    structuredJSONCallOptions
-	OnBatch func(mergeSynthesisProgress)
+	Call         structuredJSONCallOptions
+	Checkpoint   *domain.SimulationMergeCheckpoint
+	OnBatch      func(mergeSynthesisProgress)
+	OnCheckpoint func(mergeSynthesisCheckpoint) error
 }
 
 type mergeSynthesisProgress struct {
@@ -37,6 +39,13 @@ type mergeSynthesisProgress struct {
 	BatchIndex int
 	BatchTotal int
 	BatchSize  int
+}
+
+type mergeSynthesisCheckpoint struct {
+	ProcessedReportCount int
+	TotalReportCount     int
+	ProcessedBatchCount  int
+	Synthesis            domain.SimulationSynthesis
 }
 
 func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
@@ -75,8 +84,18 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 			return
 		}
 		pending := pendingSources(existing, sources)
+		if len(pending) > 0 {
+			if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
+				emit(StageError, 0, len(sources), "清理过期画像合并断点失败", err)
+				return
+			}
+		}
 		if len(pending) == 0 {
 			if !profileNeedsSynthesis(existing) {
+				if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
+					emit(StageError, 0, len(sources), "清理过期画像合并断点失败", err)
+					return
+				}
 				emit(StageDone, 0, len(sources), "画像已是最新，未发现新增或变更文章", nil)
 				return
 			}
@@ -110,6 +129,20 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 
 		allReports := mergeSourceReports(existing, reports)
 		mergeCurrent, mergeTotal := 0, len(allReports)
+		checkpoint, err := deps.Store.Simulation.LoadMergeCheckpoint()
+		if err != nil {
+			emit(StageError, mergeCurrent, mergeTotal, "读取画像合并断点失败", err)
+			return
+		}
+		if checkpoint != nil {
+			if _, ok := validMergeCheckpoint(checkpoint, allReports); !ok {
+				if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
+					emit(StageError, mergeCurrent, mergeTotal, "清理过期画像合并断点失败", err)
+					return
+				}
+				checkpoint = nil
+			}
+		}
 		emit(StageMerge, mergeCurrent, mergeTotal, "合并仿写画像...", nil)
 		synthesis, err := mergeSynthesisBatchedWithOptions(ctx, deps.LLM, deps.Prompts.Merge, existing, allReports, mergeSynthesisOptions{
 			Call: structuredJSONCallOptions{
@@ -125,13 +158,21 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 				}
 				emit(StageMerge, progress.Current, progress.Total, msg, nil)
 			},
+			Checkpoint: checkpoint,
+			OnCheckpoint: func(checkpoint mergeSynthesisCheckpoint) error {
+				domainCheckpoint := buildSimulationMergeCheckpoint(allReports, maxMergePromptBytes, checkpoint, time.Now())
+				if domainCheckpoint == nil {
+					return nil
+				}
+				return deps.Store.Simulation.SaveMergeCheckpoint(*domainCheckpoint)
+			},
 		})
 		if err != nil {
 			emit(StageError, mergeCurrent, mergeTotal, "画像合并失败", err)
 			return
 		}
 		profile := buildProfile(existing, opts.SourceDir, nil, nil, *synthesis, time.Now())
-		if err := deps.Store.Simulation.Save(profile); err != nil {
+		if err := saveFinalSimulationProfile(deps.Store.Simulation, profile); err != nil {
 			emit(StageError, mergeCurrent, mergeTotal, "保存仿写画像失败", err)
 			return
 		}
@@ -195,6 +236,14 @@ func mergeSynthesisBatchedWithLimit(ctx context.Context, llm LLMChat, systemProm
 	processed := 0
 	batchIndex := 0
 	total := len(compactReports)
+	if checkpoint, ok := validMergeCheckpoint(opts.Checkpoint, reports); ok {
+		synthesis = checkpoint.RollingSynthesis
+		processed = checkpoint.ProcessedReportCount
+		batchIndex = checkpoint.ProcessedBatchCount
+		if batchIndex > estimatedBatchTotal {
+			estimatedBatchTotal = batchIndex
+		}
+	}
 	for processed < total {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -225,6 +274,16 @@ func mergeSynthesisBatchedWithLimit(ctx context.Context, llm LLMChat, systemProm
 		}
 		synthesis = *next
 		processed += len(batch)
+		if opts.OnCheckpoint != nil {
+			if err := opts.OnCheckpoint(mergeSynthesisCheckpoint{
+				ProcessedReportCount: processed,
+				TotalReportCount:     total,
+				ProcessedBatchCount:  batchIndex,
+				Synthesis:            synthesis,
+			}); err != nil {
+				return nil, fmt.Errorf("save merge checkpoint: %w", err)
+			}
+		}
 	}
 	return &synthesis, nil
 }
@@ -286,6 +345,98 @@ func existingSynthesis(existing *domain.SimulationProfile) domain.SimulationSynt
 
 func profileNeedsSynthesis(existing *domain.SimulationProfile) bool {
 	return existing != nil && len(existing.SourceReports) > 0 && synthesisIsEmpty(existing.Synthesis)
+}
+
+func saveFinalSimulationProfile(st interface {
+	Save(domain.SimulationProfile) error
+	ClearMergeCheckpoint() error
+}, profile domain.SimulationProfile) error {
+	if st == nil {
+		return fmt.Errorf("simulation store is nil")
+	}
+	if err := st.Save(profile); err != nil {
+		return err
+	}
+	return st.ClearMergeCheckpoint()
+}
+
+func buildSimulationMergeCheckpoint(reports []domain.SimulationSourceReport, promptLimitBytes int, checkpoint mergeSynthesisCheckpoint, now time.Time) *domain.SimulationMergeCheckpoint {
+	if checkpoint.ProcessedReportCount <= 0 || synthesisIsEmpty(checkpoint.Synthesis) {
+		return nil
+	}
+	total := len(reports)
+	if checkpoint.TotalReportCount > 0 {
+		total = checkpoint.TotalReportCount
+	}
+	if total != len(reports) {
+		return nil
+	}
+	processed := checkpoint.ProcessedReportCount
+	if processed > total {
+		return nil
+	}
+	return &domain.SimulationMergeCheckpoint{
+		Version:              domain.SimulationMergeCheckpointVersion,
+		UpdatedAt:            now.Format(time.RFC3339),
+		PromptLimitBytes:     promptLimitBytes,
+		TotalReportCount:     total,
+		ProcessedReportCount: processed,
+		ProcessedBatchCount:  checkpoint.ProcessedBatchCount,
+		Reports:              reportIdentitiesForMerge(reports),
+		RollingSynthesis:     checkpoint.Synthesis,
+	}
+}
+
+func validMergeCheckpoint(checkpoint *domain.SimulationMergeCheckpoint, reports []domain.SimulationSourceReport) (*domain.SimulationMergeCheckpoint, bool) {
+	if checkpoint == nil {
+		return nil, false
+	}
+	if err := domain.ValidateSimulationMergeCheckpoint(checkpoint); err != nil {
+		return nil, false
+	}
+	if checkpoint.TotalReportCount != len(reports) || synthesisIsEmpty(checkpoint.RollingSynthesis) {
+		return nil, false
+	}
+	if checkpoint.ProcessedReportCount > len(reports) {
+		return nil, false
+	}
+	if !sameReportIdentities(checkpoint.Reports, reportIdentitiesForMerge(reports)) {
+		return nil, false
+	}
+	return checkpoint, true
+}
+
+func reportIdentitiesForMerge(reports []domain.SimulationSourceReport) []domain.SimulationReportIdentity {
+	if len(reports) == 0 {
+		return nil
+	}
+	out := make([]domain.SimulationReportIdentity, 0, len(reports))
+	for _, report := range reports {
+		relativePath := strings.TrimSpace(report.RelativePath)
+		sha := strings.TrimSpace(report.SHA256)
+		fingerprint := strings.TrimSpace(report.Fingerprint)
+		if fingerprint == "" && relativePath != "" && sha != "" {
+			fingerprint = domain.SimulationSourceFingerprint(relativePath, sha)
+		}
+		out = append(out, domain.SimulationReportIdentity{
+			RelativePath: relativePath,
+			SHA256:       sha,
+			Fingerprint:  fingerprint,
+		})
+	}
+	return out
+}
+
+func sameReportIdentities(a, b []domain.SimulationReportIdentity) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].RelativePath != b[i].RelativePath || a[i].SHA256 != b[i].SHA256 || a[i].Fingerprint != b[i].Fingerprint {
+			return false
+		}
+	}
+	return true
 }
 
 func synthesisIsEmpty(s domain.SimulationSynthesis) bool {
