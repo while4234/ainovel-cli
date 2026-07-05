@@ -29,6 +29,16 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `fix: preserve project events on open`:
+  Web project switching now merges the loaded snapshot into the existing
+  workbench instead of replacing the whole workbench. This preserves SSE
+  history replay and current running event rows when `/events?after=0` returns
+  before `/snapshot`, so switching to an already-running project immediately
+  shows its events. Validation passed for the focused Web event/progress tests,
+  full Web UI Vitest suite, and Vite build. Local Web restart was attempted but
+  blocked by unrelated dirty simulation source files that currently break Go
+  build; those files were left uncommitted.
+- Latest source change: current local commit
   `fix: clarify web model config flow`:
   Web model configuration now separates existing-provider editing from a clean
   `+ 新建` model flow in the right sidebar's one-column layout. New drafts no

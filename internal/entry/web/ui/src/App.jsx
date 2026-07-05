@@ -491,6 +491,13 @@ const providerPresets = [
 
 const customProviderTypes = ['openai', 'anthropic', 'gemini', 'grok'];
 
+export function restoreProjectWorkbenchSnapshot(previous = createWorkbenchState(), snapshot = null) {
+  return {
+    ...previous,
+    snapshot: snapshot || previous.snapshot
+  };
+}
+
 export default function App() {
   const [runtime, setRuntime] = useState(null);
   const [projects, setProjects] = useState([]);
@@ -753,7 +760,7 @@ export default function App() {
         return;
       }
       setActiveProject(snapshotData.project);
-      setWorkbench({ ...createWorkbenchState(), snapshot: snapshotData.snapshot });
+      setWorkbench((previous) => restoreProjectWorkbenchSnapshot(previous, snapshotData.snapshot));
       setCoCreate((previous) => coCreateStateFromResponse(snapshotData, previous));
       setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
       setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation, snapshotData.snapshot));

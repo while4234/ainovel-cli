@@ -27,6 +27,7 @@ import {
   resolveCoCreateTargetTotalWords,
   resolveVisibleDefaultModel,
   restoreSimulationProjectState,
+  restoreProjectWorkbenchSnapshot,
   simulationFilesFromResponse,
   simulationProfileSummaryText
 } from './App.jsx';
@@ -174,6 +175,30 @@ describe('workspace progress derivation', () => {
     ]);
 
     expect(progress.runningLabel).toBe('architect / planning volume');
+  });
+
+  it('preserves replayed event rows when project snapshot resolves after event replay', () => {
+    const previous = {
+      lastSeq: 2,
+      eventRows: [
+        { seq: 1, event: { running: false, agent: 'editor', summary: 'reviewed' } },
+        { seq: 2, event: { running: true, agent: 'architect', summary: 'planning volume' } }
+      ],
+      streamRounds: [{ id: 'round-0', text: 'draft preview' }],
+      snapshot: null
+    };
+
+    const next = restoreProjectWorkbenchSnapshot(previous, {
+      RuntimeState: 'running',
+      CompletedCount: 1
+    });
+
+    expect(next).toMatchObject({
+      lastSeq: 2,
+      eventRows: previous.eventRows,
+      streamRounds: previous.streamRounds,
+      snapshot: { RuntimeState: 'running', CompletedCount: 1 }
+    });
   });
 
   it('ignores stale running event rows when the latest snapshot is idle', () => {
