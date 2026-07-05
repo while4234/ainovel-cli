@@ -239,6 +239,7 @@ function restoreSimulationProjectState(previous, status) {
   const importStatus = String(status.import_status || status.importStatus || (importedFile ? 'done' : next.importStatus) || 'idle').trim() || 'idle';
   return {
     ...next,
+    files: simulationFilesFromResponse(status),
     importStatus,
     importEvents: Array.isArray(importEvents) ? importEvents : [],
     importMessage: status.message || (importedFile ? `已恢复画像：${simulationProfileLabel(importedFile)}` : '')
@@ -422,6 +423,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const lastSeqRef = useRef(0);
+  const projectOpenSeqRef = useRef(0);
+  const activeProjectIdRef = useRef('');
 
   const snapshot = workbench.snapshot;
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
@@ -456,9 +459,18 @@ export default function App() {
     setCustomModel(createCustomModelState());
     setBackendStatus(null);
     if (clearProject) {
+      activeProjectIdRef.current = '';
       setActiveProject(null);
     }
   }, []);
+
+  useEffect(() => {
+    activeProjectIdRef.current = activeProject?.id || '';
+  }, [activeProject?.id]);
+
+  const isCurrentProject = useCallback((projectId) => (
+    Boolean(projectId) && activeProjectIdRef.current === projectId
+  ), []);
 
   useEffect(() => {
     const projectId = activeProject?.id || '';
@@ -624,15 +636,25 @@ export default function App() {
   }, [projectMenu]);
 
   const openProject = useCallback(async (project) => {
-    setBusy(true);
+    const projectId = project?.id;
+    if (!projectId) {
+      return;
+    }
+    const requestSeq = projectOpenSeqRef.current + 1;
+    projectOpenSeqRef.current = requestSeq;
+    activeProjectIdRef.current = projectId;
     setError('');
     resetProjectScopedState();
+    setActiveProject(project);
     try {
       const [snapshotData, modelData, backendData] = await Promise.all([
-        getSnapshot(project.id),
-        getProjectModels(project.id),
-        getBackendStatus(project.id)
+        getSnapshot(projectId),
+        getProjectModels(projectId),
+        getBackendStatus(projectId)
       ]);
+      if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
+        return;
+      }
       setActiveProject(snapshotData.project);
       setWorkbench({ ...createWorkbenchState(), snapshot: snapshotData.snapshot });
       setCoCreate((previous) => coCreateStateFromResponse(snapshotData, previous));
@@ -641,11 +663,11 @@ export default function App() {
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);
     } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
+      if (projectOpenSeqRef.current === requestSeq && isCurrentProject(projectId)) {
+        setError(err.message);
+      }
     }
-  }, [resetProjectScopedState]);
+  }, [isCurrentProject, resetProjectScopedState]);
 
   useEffect(() => {
     if (!activeProject?.id) {
@@ -653,12 +675,16 @@ export default function App() {
       return undefined;
     }
 
+    const projectId = activeProject.id;
     let disposed = false;
     let source = null;
     let retryTimer = null;
 
     const apply = (message) => {
       const event = JSON.parse(message.data);
+      if (activeProjectIdRef.current !== projectId || (event.project_id && event.project_id !== projectId)) {
+        return;
+      }
       if (event.seq <= lastSeqRef.current) {
         return;
       }
@@ -675,7 +701,7 @@ export default function App() {
 
     const connect = () => {
       const after = lastSeqRef.current;
-      const url = `/api/projects/${encodeURIComponent(activeProject.id)}/events?after=${after}`;
+      const url = `/api/projects/${encodeURIComponent(projectId)}/events?after=${after}`;
       source = new EventSource(url);
       setConnection(after > 0 ? 'reconnecting' : 'connecting');
       for (const type of eventTypes) {
@@ -1069,7 +1095,7 @@ export default function App() {
       const data = await uploadSimulationFiles(activeProject.id, files);
       setSimulation((previous) => ({
         ...previous,
-        files: data.files || [],
+        files: simulationFilesFromResponse(data),
         uploadMessage: data.message || `已上传 ${files.length} 个文件`,
         error: ''
       }));
@@ -1081,7 +1107,8 @@ export default function App() {
   };
 
   const runSimulationAnalysis = async () => {
-    if (!activeProject?.id) {
+    const projectId = activeProject?.id;
+    if (!projectId) {
       return;
     }
     setSimulation((previous) => ({
@@ -1091,7 +1118,10 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await analyzeSimulation(activeProject.id);
+      const data = await analyzeSimulation(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setSimulation((previous) => ({
         ...previous,
@@ -1104,6 +1134,9 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setSimulation((previous) => ({
         ...previous,
         analysisStatus: 'error',
@@ -1320,7 +1353,9 @@ export default function App() {
   };
 
   const runAdaptationAnalysis = async () => {
-    if (!activeProject?.id || !adaptation.sourceFile?.relative_path) {
+    const projectId = activeProject?.id;
+    const sourcePath = adaptation.sourceFile?.relative_path;
+    if (!projectId || !sourcePath) {
       return;
     }
     setAdaptation((previous) => ({
@@ -1332,7 +1367,10 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await analyzeAdaptationSource(activeProject.id, adaptation.sourceFile.relative_path);
+      const data = await analyzeAdaptationSource(projectId, sourcePath);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({
         ...previous,
         snapshot: clearAdaptationProposalSnapshot(data.snapshot || previous.snapshot)
@@ -1344,6 +1382,9 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setAdaptation((previous) => ({
         ...previous,
         analysisStatus: 'error',
@@ -6490,6 +6531,45 @@ function libraryItemsFromResponse(data) {
 
 function libraryMessageFromResponse(data) {
   return String(data?.message || data?.Message || '').trim();
+}
+
+export function simulationFilesFromResponse(data) {
+  const candidates = [
+    data?.files,
+    data?.Files,
+    data?.uploaded_files,
+    data?.uploadedFiles,
+    data?.source_files,
+    data?.sourceFiles
+  ];
+  const rawFiles = candidates.find((candidate) => Array.isArray(candidate)) || [];
+  return rawFiles
+    .map((file) => {
+      if (typeof file === 'string') {
+        const relativePath = file.trim();
+        const name = fileNameFromPath(relativePath) || relativePath;
+        return name ? {
+          name,
+          original_name: name,
+          size: 0,
+          relative_path: relativePath
+        } : null;
+      }
+      if (!file || typeof file !== 'object') {
+        return null;
+      }
+      const relativePath = textValue(file, 'relative_path', 'relativePath', 'RelativePath', 'path', 'Path', 'name', 'Name');
+      const name = textValue(file, 'name', 'Name') || fileNameFromPath(relativePath);
+      const originalName = textValue(file, 'original_name', 'originalName', 'OriginalName') || name;
+      const size = Number(file.size || file.Size || 0);
+      return name ? {
+        name,
+        original_name: originalName,
+        size: Number.isFinite(size) && size > 0 ? size : 0,
+        relative_path: relativePath || name
+      } : null;
+    })
+    .filter(Boolean);
 }
 
 function libraryEntryName(entry) {

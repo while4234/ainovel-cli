@@ -63,6 +63,46 @@ func TestProjectSimulateFilesUploadSavesSourcesUnderProject(t *testing.T) {
 	}
 }
 
+func TestProjectSnapshotRestoresUploadedSimulationSources(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	manifest, err := server.store.CreateProject("Simulation Snapshot")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	req := newMultipartUploadRequest(t, http.MethodPost, "/api/projects/"+manifest.ID+"/simulate/files", []testMultipartFile{
+		{field: "files", filename: "b-source.md", body: "# second source"},
+		{field: "files", filename: "a-source.txt", body: "first source"},
+	})
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var response projectSnapshotResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode snapshot response: %v", err)
+	}
+	if got := len(response.Simulation.Files); got != 2 {
+		t.Fatalf("simulation files = %+v, want 2 files", response.Simulation.Files)
+	}
+	if response.Simulation.Files[0].Name != "a-source.txt" || response.Simulation.Files[1].Name != "b-source.md" {
+		t.Fatalf("simulation files not restored in stable order: %+v", response.Simulation.Files)
+	}
+	if response.Simulation.Files[0].Size <= 0 || response.Simulation.Files[1].Size <= 0 {
+		t.Fatalf("simulation file sizes not restored: %+v", response.Simulation.Files)
+	}
+}
+
 func TestProjectSimulateFilesUploadAllowsSourceLargerThanFormerTenMiBLimit(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

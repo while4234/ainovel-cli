@@ -29,6 +29,16 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `fix: restore simulation uploads after refresh`:
+  Web snapshots now include uploaded simulation TXT/MD source files from each
+  project's `simulate/` directory, and the React simulation panel restores that
+  list after refresh/open instead of showing `暂无上传语料`. Project switching no
+  longer waits on the global busy state before visually selecting the clicked
+  project; stale project-open, SSE, simulation-analysis, and adaptation-analysis
+  responses are ignored after the user switches elsewhere. Validation passed for
+  full Web UI tests, Vite build, full `go test ./...`, and local Web restart on
+  `http://127.0.0.1:9898` as PID `23060`.
+- Latest source change: current local commit
   `fix: remove text source upload size limit`:
   Web TXT/MD source uploads no longer use the old 10 MiB per-file limit or the
   64 MiB multipart request cap. This applies to simulation/仿写语料 uploads,

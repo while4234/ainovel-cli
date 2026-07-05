@@ -25,6 +25,7 @@ import {
   isProjectRunning,
   resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords,
+  simulationFilesFromResponse,
   simulationProfileSummaryText
 } from './App.jsx';
 
@@ -817,6 +818,37 @@ describe('workspace progress derivation', () => {
     expect(profile.sourceCount).toBe(2);
     expect(profile.sourceFiles).toEqual(['a.txt', 'b.txt']);
     expect(profile.signals).toContain('章尾反转');
+  });
+
+  it('restores uploaded simulation source files from refresh responses', () => {
+    expect(simulationFilesFromResponse({
+      files: [
+        { name: 'a-source.txt', size: 12, relative_path: 'a-source.txt' },
+        { Name: 'b-source.md', Size: 34, RelativePath: 'b-source.md' }
+      ]
+    })).toEqual([
+      {
+        name: 'a-source.txt',
+        original_name: 'a-source.txt',
+        size: 12,
+        relative_path: 'a-source.txt'
+      },
+      {
+        name: 'b-source.md',
+        original_name: 'b-source.md',
+        size: 34,
+        relative_path: 'b-source.md'
+      }
+    ]);
+
+    expect(simulationFilesFromResponse({ source_files: ['nested/c-source.txt'] })).toEqual([
+      {
+        name: 'c-source.txt',
+        original_name: 'c-source.txt',
+        size: 0,
+        relative_path: 'nested/c-source.txt'
+      }
+    ]);
   });
 
   it('summarizes simulation profiles without timestamps or source filenames', () => {

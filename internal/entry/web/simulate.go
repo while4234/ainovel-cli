@@ -49,6 +49,7 @@ type apiSimulationEvent struct {
 
 type apiSimulationStatus struct {
 	ImportedFile *apiUploadedFile     `json:"imported_file,omitempty"`
+	Files        []apiUploadedFile    `json:"files,omitempty"`
 	ImportStatus string               `json:"import_status"`
 	ImportEvents []apiSimulationEvent `json:"import_events,omitempty"`
 	Message      string               `json:"message,omitempty"`
@@ -100,9 +101,14 @@ func (s *Server) handleProjectSimulateFiles(w http.ResponseWriter, r *http.Reque
 		writeUploadValidationError(w, err)
 		return
 	}
+	files, err := projectSimulationSourceFiles(simulateDir)
+	if err != nil {
+		writeUploadValidationError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project": manifest,
-		"files":   apiFilesFromPending(uploads),
+		"files":   files,
 		"message": fmt.Sprintf("uploaded %d simulation source file(s)", len(uploads)),
 	})
 }
@@ -415,14 +421,6 @@ func existingFilename(dir, name string) (string, bool, error) {
 	return "", false, nil
 }
 
-func apiFilesFromPending(uploads []pendingUpload) []apiUploadedFile {
-	files := make([]apiUploadedFile, 0, len(uploads))
-	for _, upload := range uploads {
-		files = append(files, upload.apiUploadedFile)
-	}
-	return files
-}
-
 func apiSimulationEventFromSim(ev sim.Event) apiSimulationEvent {
 	api := apiSimulationEvent{
 		Time:    ev.Time,
@@ -453,6 +451,11 @@ func projectImportedProfilesDir(manifest ProjectManifest) string {
 
 func projectSimulationStatus(manifest ProjectManifest) (apiSimulationStatus, error) {
 	status := apiSimulationStatus{ImportStatus: "idle"}
+	files, err := projectSimulationSourceFiles(projectSimulateDir(manifest))
+	if err != nil {
+		return status, err
+	}
+	status.Files = files
 	if _, err := findProjectSimulationProfile(manifest); err != nil {
 		return status, nil
 	}
@@ -474,6 +477,39 @@ func projectSimulationStatus(manifest ProjectManifest) (apiSimulationStatus, err
 		Message: status.Message,
 	}}
 	return status, nil
+}
+
+func projectSimulationSourceFiles(sourceDir string) ([]apiUploadedFile, error) {
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	files := make([]apiUploadedFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if _, ok := textUploadExtensions[strings.ToLower(filepath.Ext(entry.Name()))]; !ok {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, apiUploadedFile{
+			Name:         entry.Name(),
+			OriginalName: entry.Name(),
+			Size:         info.Size(),
+			RelativePath: filepath.ToSlash(entry.Name()),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
+	})
+	return files, nil
 }
 
 func latestImportedSimulationProfile(sourceDir string) (*apiUploadedFile, error) {
