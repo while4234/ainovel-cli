@@ -29,6 +29,21 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source change: current local commit
+  `feat: allow parallel analysis and partial export`:
+  Web export remains a read-only current-progress operation and can run without
+  pausing or aborting writing/analysis. `ProjectSession` now tracks action kinds
+  instead of one global action mutex, allowing adaptation source analysis to run
+  concurrently with simulation profile analysis/import while still rejecting
+  writing, continue, revision, proposal, and duplicate profile actions that
+  would conflict. The React side panels no longer hold global `busy` for
+  adaptation/profile analysis, so users can upload original text to the
+  simulation-profile flow and start profile analysis while adaptation source
+  analysis is still running. Validation passed for Web UI tests, Vite build,
+  focused and full Go tests, and `git diff --check` with CRLF warnings only.
+  The local Web service was rebuilt/restarted on `http://127.0.0.1:9898` with
+  runtime root `C:\Users\RondleLiu\.ainovel\novels-preview` as PID `35376`;
+  HTTP `/`, `/api/runtime`, and `/api/projects` returned 200.
+- Previous source change: current local commit
   `feat: save exports through browser picker`:
   Web export changed from "server writes under project exports" as the primary
   UI path to a browser-save flow. `POST

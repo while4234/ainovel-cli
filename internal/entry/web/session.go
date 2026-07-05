@@ -46,6 +46,8 @@ const (
 	projectActionKindAdaptationAnalysis = "adaptation_analysis"
 	projectActionKindAdaptationProposal = "adaptation_proposal"
 	projectActionKindAdaptationRevision = "adaptation_proposal_revision"
+	projectActionKindSimulationAnalysis = "simulation_analysis"
+	projectActionKindSimulationImport   = "simulation_import"
 	webAdaptationProposalTimeout        = 15 * time.Minute
 	webCoCreateCheckpointRelPath        = "meta/sessions/web-cocreate-checkpoint.json"
 	webCoCreateLogRelPath               = "meta/sessions/cocreate.jsonl"
@@ -267,6 +269,7 @@ type ProjectSession struct {
 
 	mu             sync.Mutex
 	actionMu       sync.Mutex
+	actionKinds    map[string]int
 	actionCancelMu sync.Mutex
 	actionCancel   context.CancelFunc
 	actionKind     string
@@ -282,6 +285,7 @@ func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession
 	session := &ProjectSession{
 		manifest:    manifest,
 		host:        h,
+		actionKinds: make(map[string]int),
 		hostEventAt: make(map[string]int),
 		subscribers: make(map[chan WebEvent]struct{}),
 	}
@@ -545,7 +549,7 @@ func (s *ProjectSession) Steer(text string) error {
 }
 
 func (s *ProjectSession) SimulateFromDir(ctx context.Context, dir string) ([]apiSimulationEvent, error) {
-	unlock, err := s.beginAction()
+	unlock, err := s.beginActionKind(projectActionKindSimulationAnalysis)
 	if err != nil {
 		return nil, err
 	}
@@ -564,7 +568,7 @@ func (s *ProjectSession) SimulateFromDir(ctx context.Context, dir string) ([]api
 }
 
 func (s *ProjectSession) ImportSimulationProfile(ctx context.Context, path string) ([]apiSimulationEvent, error) {
-	unlock, err := s.beginAction()
+	unlock, err := s.beginActionKind(projectActionKindSimulationImport)
 	if err != nil {
 		return nil, err
 	}
@@ -1412,14 +1416,38 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 }
 
 func (s *ProjectSession) beginAction() (func(), error) {
-	if !s.actionMu.TryLock() {
-		return nil, ErrSessionActionInProgress
+	return s.beginActionKind("")
+}
+
+func (s *ProjectSession) beginActionKind(kind string) (func(), error) {
+	kind = strings.TrimSpace(kind)
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
+	if s.actionKinds == nil {
+		s.actionKinds = make(map[string]int)
 	}
-	return s.actionMu.Unlock, nil
+	for active := range s.actionKinds {
+		if !projectSessionActionsCompatible(kind, active) {
+			return nil, ErrSessionActionInProgress
+		}
+	}
+	s.actionKinds[kind]++
+	return func() { s.finishActionKind(kind) }, nil
+}
+
+func (s *ProjectSession) finishActionKind(kind string) {
+	kind = strings.TrimSpace(kind)
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
+	if s.actionKinds[kind] <= 1 {
+		delete(s.actionKinds, kind)
+		return
+	}
+	s.actionKinds[kind]--
 }
 
 func (s *ProjectSession) beginCancellableAction(parent context.Context, kind string) (context.Context, func(), error) {
-	unlock, err := s.beginAction()
+	unlock, err := s.beginActionKind(kind)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1448,15 +1476,34 @@ func (s *ProjectSession) currentActionKind() string {
 }
 
 func (s *ProjectSession) overlayActionSnapshot(snap host.UISnapshot) host.UISnapshot {
-	agent, ok := sessionActionAgentSnapshot(s.currentActionKind())
-	if !ok {
+	kinds := s.currentActionKinds()
+	if len(kinds) == 0 {
 		return snap
 	}
 	snap.IsRunning = true
 	snap.RuntimeState = "running"
 	snap.StatusLabel = "RUNNING"
-	snap.Agents = append(snap.Agents, agent)
+	for _, kind := range kinds {
+		agent, ok := sessionActionAgentSnapshot(kind)
+		if ok {
+			snap.Agents = append(snap.Agents, agent)
+		}
+	}
 	return snap
+}
+
+func (s *ProjectSession) currentActionKinds() []string {
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
+	kinds := make([]string, 0, len(s.actionKinds))
+	for kind := range s.actionKinds {
+		if strings.TrimSpace(kind) == "" {
+			continue
+		}
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	return kinds
 }
 
 func sessionActionAgentSnapshot(kind string) (host.AgentSnapshot, bool) {
@@ -1489,8 +1536,45 @@ func sessionActionAgentSnapshot(kind string) (host.AgentSnapshot, bool) {
 			Tool:      "修订改编提案",
 			UpdatedAt: now,
 		}, true
+	case projectActionKindSimulationAnalysis:
+		return host.AgentSnapshot{
+			Name:      "web",
+			State:     "running",
+			TaskKind:  kind,
+			Summary:   "正在分析仿写画像",
+			Tool:      "仿写画像分析",
+			UpdatedAt: now,
+		}, true
+	case projectActionKindSimulationImport:
+		return host.AgentSnapshot{
+			Name:      "web",
+			State:     "running",
+			TaskKind:  kind,
+			Summary:   "正在导入仿写画像",
+			Tool:      "导入仿写画像",
+			UpdatedAt: now,
+		}, true
 	default:
 		return host.AgentSnapshot{}, false
+	}
+}
+
+func projectSessionActionsCompatible(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" || a == b {
+		return false
+	}
+	return (a == projectActionKindAdaptationAnalysis && projectSessionSimulationPreparationAction(b)) ||
+		(b == projectActionKindAdaptationAnalysis && projectSessionSimulationPreparationAction(a))
+}
+
+func projectSessionSimulationPreparationAction(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case projectActionKindSimulationAnalysis, projectActionKindSimulationImport:
+		return true
+	default:
+		return false
 	}
 }
 

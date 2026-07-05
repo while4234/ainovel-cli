@@ -1084,7 +1084,6 @@ export default function App() {
     if (!activeProject?.id) {
       return;
     }
-    setBusy(true);
     setSimulation((previous) => ({
       ...previous,
       analysisStatus: 'running',
@@ -1111,8 +1110,6 @@ export default function App() {
         analysisEvents: err.data?.events || previous.analysisEvents,
         error: err.message
       }));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -1215,10 +1212,12 @@ export default function App() {
     if (!activeProject?.id || !name) {
       return;
     }
-    setBusy(true);
     setSimulation((previous) => ({
       ...previous,
       libraryStatus: 'running',
+      importStatus: 'running',
+      importEvents: [],
+      importMessage: '',
       libraryError: '',
       libraryMessage: ''
     }));
@@ -1239,10 +1238,9 @@ export default function App() {
       setSimulation((previous) => ({
         ...previous,
         libraryStatus: 'error',
+        importStatus: 'error',
         libraryError: err.message
       }));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -1252,7 +1250,6 @@ export default function App() {
     if (!activeProject?.id || !file) {
       return;
     }
-    setBusy(true);
     setSimulation((previous) => ({
       ...previous,
       importStatus: 'running',
@@ -1282,8 +1279,6 @@ export default function App() {
         importEvents: err.data?.events || previous.importEvents,
         error: err.message
       }));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -1328,7 +1323,6 @@ export default function App() {
     if (!activeProject?.id || !adaptation.sourceFile?.relative_path) {
       return;
     }
-    setBusy(true);
     setAdaptation((previous) => ({
       ...previous,
       analysisStatus: 'running',
@@ -1356,8 +1350,6 @@ export default function App() {
         analysisEvents: err.data?.events || previous.analysisEvents,
         error: err.message
       }));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -2485,6 +2477,7 @@ export default function App() {
               busy={busy}
               snapshot={snapshot}
               adaptation={adaptation}
+              simulation={simulation}
               setAdaptation={setAdaptation}
               onUploadSource={uploadAdaptation}
               onAnalyze={runAdaptationAnalysis}
@@ -3525,6 +3518,7 @@ function AdaptationPanel({
   busy,
   snapshot,
   adaptation,
+  simulation,
   setAdaptation,
   onUploadSource,
   onAnalyze,
@@ -3540,10 +3534,12 @@ function AdaptationPanel({
   const analyzed = adaptation.analysisStatus === 'done';
   const proposal = getVisibleAdaptationProposalReview(snapshot, adaptation);
   const libraryBusy = adaptation.libraryStatus === 'running';
-  const canAnalyze = Boolean(activeProject && adaptation.sourceFile && !busy && adaptation.analysisStatus !== 'running');
-  const canCoCreate = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy);
-  const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.brief.trim());
-  const canConfirm = Boolean(activeProject && !busy && proposal.proposalReady && isAdaptationProposalCurrent(adaptation));
+  const simulationProfileBusy = isSimulationProfileActionBusy(simulation);
+  const workflowBusy = busy || simulationProfileBusy;
+  const canAnalyze = canRunAdaptationAnalysis({ activeProject, busy, adaptation });
+  const canCoCreate = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !workflowBusy);
+  const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !workflowBusy && adaptation.brief.trim());
+  const canConfirm = Boolean(activeProject && !workflowBusy && proposal.proposalReady && isAdaptationProposalCurrent(adaptation));
   const canSaveNovel = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.librarySaveName.trim());
   const isVolumeReview = proposal.volumeReviewReady;
   const updateProposalInput = (changes, options = {}) => {
@@ -3575,7 +3571,7 @@ function AdaptationPanel({
         {isVolumeReview ? (
           <VolumeReviewControls
             adaptation={adaptation}
-            busy={busy}
+            busy={workflowBusy}
             proposal={proposal}
             setAdaptation={setAdaptation}
             onRevise={onRevise}
@@ -3583,7 +3579,7 @@ function AdaptationPanel({
         ) : (
           <ProposalRevisionControls
             adaptation={adaptation}
-            busy={busy}
+            busy={workflowBusy}
             proposal={proposal}
             setAdaptation={setAdaptation}
             onRevise={onRevise}
@@ -3620,7 +3616,7 @@ function AdaptationPanel({
           onRefresh={onRefreshLibrary}
         />
         <LibraryList
-          canLoad={Boolean(activeProject && !busy)}
+          canLoad={Boolean(activeProject && !busy && !libraryBusy && !simulationProfileBusy)}
           emptyText="暂无小说条目"
           items={adaptation.libraryItems}
           loading={libraryBusy}
@@ -3784,6 +3780,9 @@ function SimulationPanel({
   const profile = getSimulationProfileStatus(snapshot);
   const profileStatusText = simulationProfileSummaryText(profile);
   const libraryBusy = simulation.libraryStatus === 'running';
+  const simulationProfileBusy = isSimulationProfileActionBusy(simulation);
+  const simulationActionDisabled = busy || simulationProfileBusy;
+  const canAnalyze = canRunSimulationAnalysis({ activeProject, busy, simulation });
   return (
     <>
       <div className="side-content">
@@ -3820,7 +3819,7 @@ function SimulationPanel({
           <input accept=".json,application/json" disabled={busy || libraryBusy} multiple onChange={onUploadLibrary} type="file" />
         </label>
         <LibraryList
-          canLoad={Boolean(activeProject && !busy)}
+          canLoad={Boolean(activeProject && !busy && !libraryBusy && !simulationProfileBusy)}
           emptyText="暂无画像条目"
           items={simulation.libraryItems}
           loading={libraryBusy}
@@ -3835,18 +3834,18 @@ function SimulationPanel({
           <span>仿写画像</span>
         </div>
         <div className="simulation-actions">
-          <label className={`tool-button file-picker ${!activeProject || busy ? 'disabled' : ''}`}>
+          <label className={`tool-button file-picker ${!activeProject || simulationActionDisabled ? 'disabled' : ''}`}>
             <Upload size={16} />
             上传语料
             <input
               accept=".txt,.md,.markdown,text/plain,text/markdown"
-              disabled={!activeProject || busy}
+              disabled={!activeProject || simulationActionDisabled}
               multiple
               onChange={onUploadSources}
               type="file"
             />
           </label>
-          <button className="tool-button accent" disabled={!activeProject || busy} onClick={onAnalyze} type="button">
+          <button className="tool-button accent" disabled={!canAnalyze} onClick={onAnalyze} type="button">
             <WandSparkles size={16} />
             分析
           </button>
@@ -3883,10 +3882,10 @@ function SimulationPanel({
           <FileJson size={17} />
           <span>加载画像</span>
         </div>
-        <label className={`tool-button file-picker full ${!activeProject || busy ? 'disabled' : ''}`}>
+        <label className={`tool-button file-picker full ${!activeProject || simulationActionDisabled ? 'disabled' : ''}`}>
           <FileJson size={16} />
           上传 JSON
-          <input accept=".json,application/json" disabled={!activeProject || busy} onChange={onImportProfile} type="file" />
+          <input accept=".json,application/json" disabled={!activeProject || simulationActionDisabled} onChange={onImportProfile} type="file" />
         </label>
         <div className={`workflow-status ${simulation.importStatus}`}>
           <strong>{workflowStatusText(simulation.importStatus)}</strong>
@@ -3897,7 +3896,7 @@ function SimulationPanel({
       </div>
       {simulation.saveDialogOpen ? (
         <SimulationSaveDialog
-          busy={busy}
+          busy={busy || simulationProfileBusy}
           simulation={simulation}
           setSimulation={setSimulation}
           onClose={onCloseSaveDialog}
@@ -5703,6 +5702,19 @@ export function simulationProfileSummaryText(profile) {
     return '上传或导入画像后会出现在这里';
   }
   return profile.sourceCount ? `${profile.sourceCount} 篇语料` : '画像已加载';
+}
+
+export function isSimulationProfileActionBusy(simulation = {}) {
+  return String(simulation.analysisStatus || '').toLowerCase() === 'running' ||
+    String(simulation.importStatus || '').toLowerCase() === 'running';
+}
+
+export function canRunSimulationAnalysis({ activeProject, busy, simulation } = {}) {
+  return Boolean(activeProject && !busy && !isSimulationProfileActionBusy(simulation));
+}
+
+export function canRunAdaptationAnalysis({ activeProject, busy, adaptation } = {}) {
+  return Boolean(activeProject && adaptation?.sourceFile && !busy && adaptation.analysisStatus !== 'running');
 }
 
 export function getCreativeBlueprint(snapshot) {

@@ -204,6 +204,131 @@ func TestProjectSessionPauseCancelsAdaptationAnalysis(t *testing.T) {
 	}
 }
 
+func TestProjectSessionAllowsSimulationDuringAdaptationAnalysis(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.adaptAnalyzeStarted = make(chan struct{})
+	fake.blockAdaptAnalyze = true
+	fake.simulateStarted = make(chan struct{})
+	fake.blockSimulate = true
+	fake.releaseSimulate = make(chan struct{})
+
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	analysisErr := make(chan error, 1)
+	go func() {
+		_, err := session.PrepareAdaptationSource(context.Background(), "source.txt")
+		analysisErr <- err
+	}()
+	select {
+	case <-fake.adaptAnalyzeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("adaptation analysis did not start")
+	}
+
+	simulationErr := make(chan error, 1)
+	go func() {
+		_, err := session.SimulateFromDir(context.Background(), "simulate")
+		simulationErr <- err
+	}()
+	select {
+	case <-fake.simulateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("simulation analysis did not start during adaptation analysis")
+	}
+
+	snap := session.Snapshot()
+	if !snap.IsRunning || snap.RuntimeState != "running" || snap.StatusLabel != "RUNNING" {
+		t.Fatalf("parallel analysis snapshot should be running, got %+v", snap)
+	}
+	if !hasRunningActionAgent(snap.Agents, projectActionKindAdaptationAnalysis) {
+		t.Fatalf("snapshot should include running adaptation analysis agent: %+v", snap.Agents)
+	}
+	if !hasRunningActionAgent(snap.Agents, projectActionKindSimulationAnalysis) {
+		t.Fatalf("snapshot should include running simulation analysis agent: %+v", snap.Agents)
+	}
+
+	if err := session.Continue("keep going"); !errors.Is(err, ErrSessionActionInProgress) {
+		t.Fatalf("continue during parallel analyses error = %v, want %v", err, ErrSessionActionInProgress)
+	}
+	if fake.continueCalls != 0 {
+		t.Fatalf("blocked continue reached host %d time(s)", fake.continueCalls)
+	}
+
+	close(fake.releaseSimulate)
+	select {
+	case err := <-simulationErr:
+		if err != nil {
+			t.Fatalf("simulation returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("simulation analysis did not finish")
+	}
+
+	if !session.Pause() {
+		t.Fatal("Pause should report a canceled adaptation action")
+	}
+	select {
+	case err := <-analysisErr:
+		var paused adaptationPausedError
+		if !errors.As(err, &paused) {
+			t.Fatalf("analysis error = %v, want adaptationPausedError", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("adaptation analysis did not stop after pause")
+	}
+}
+
+func TestProjectSessionAllowsExportDuringAdaptationAnalysis(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.adaptAnalyzeStarted = make(chan struct{})
+	fake.blockAdaptAnalyze = true
+
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	analysisErr := make(chan error, 1)
+	go func() {
+		_, err := session.PrepareAdaptationSource(context.Background(), "source.txt")
+		analysisErr <- err
+	}()
+	select {
+	case <-fake.adaptAnalyzeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("adaptation analysis did not start")
+	}
+
+	exportPath := filepath.Join(t.TempDir(), "partial.txt")
+	if _, err := session.Export(context.Background(), exp.Options{OutPath: exportPath, Format: exp.FormatTXT, Overwrite: true}); err != nil {
+		t.Fatalf("export during adaptation analysis returned error: %v", err)
+	}
+	if fake.exportCalls != 1 {
+		t.Fatalf("export host calls = %d, want 1", fake.exportCalls)
+	}
+	if fake.abortCalls != 0 {
+		t.Fatalf("export should not abort writing/analysis, abort calls = %d", fake.abortCalls)
+	}
+
+	if !session.Pause() {
+		t.Fatal("Pause should report a canceled adaptation action")
+	}
+	select {
+	case err := <-analysisErr:
+		var paused adaptationPausedError
+		if !errors.As(err, &paused) {
+			t.Fatalf("analysis error = %v, want adaptationPausedError", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("adaptation analysis did not stop after pause")
+	}
+}
+
 func TestProjectSessionUpsertsHostEventsByID(t *testing.T) {
 	session := newTestSessionWithoutHost("project-1")
 	start := time.Now().UTC()
@@ -800,6 +925,7 @@ func createProjectViaAPI(t *testing.T, handler http.Handler, name string) string
 func newTestSessionWithoutHost(projectID string) *ProjectSession {
 	return &ProjectSession{
 		manifest:    ProjectManifest{ID: projectID},
+		actionKinds: make(map[string]int),
 		hostEventAt: make(map[string]int),
 		subscribers: make(map[chan WebEvent]struct{}),
 	}
@@ -901,6 +1027,7 @@ type fakeProjectHost struct {
 	requireAnalyzedAdaptSource bool
 	blockAdaptAnalyze          bool
 	blockAdaptProposal         bool
+	blockSimulate              bool
 
 	resumeCalls                 int
 	reviseChapterCalls          int
@@ -932,6 +1059,8 @@ type fakeProjectHost struct {
 	importNovelResumeFrom       int
 	adaptAnalyzeStarted         chan struct{}
 	adaptProposalStarted        chan struct{}
+	simulateStarted             chan struct{}
+	releaseSimulate             chan struct{}
 	adaptSourcePath             string
 	adaptProposalOptions        adapt.ProposalOptions
 	adaptRevisionOptions        adapt.ProposalRevisionOptions
@@ -1206,9 +1335,25 @@ func (f *fakeProjectHost) SimulateFromDir(_ context.Context, dir string) (<-chan
 	f.simulateCalls++
 	f.simulateDir = dir
 	err := f.simulateErr
+	started := f.simulateStarted
+	block := f.blockSimulate
+	release := f.releaseSimulate
+	if started != nil {
+		f.simulateStarted = nil
+	}
 	f.mu.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	if started != nil {
+		close(started)
+	}
+	if block {
+		if release != nil {
+			<-release
+		} else {
+			return make(chan sim.Event), nil
+		}
 	}
 	events := make(chan sim.Event, 2)
 	events <- sim.Event{Stage: sim.StageDone, Message: "simulation complete"}

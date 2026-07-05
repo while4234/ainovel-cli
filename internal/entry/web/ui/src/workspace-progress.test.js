@@ -8,6 +8,8 @@ import {
   buildCoCreateIntakeInitial,
   buildExportSuggestedName,
   buildVolumeReviewRevisionPayload,
+  canRunAdaptationAnalysis,
+  canRunSimulationAnalysis,
   clearAdaptationProposalSnapshot,
   deriveWorkspaceProgress,
   formatAdaptationSourceCoverageLabel,
@@ -19,6 +21,7 @@ import {
   getSimulationProfileStatus,
   getSnapshotOutlineRows,
   inferCoCreateIntakeFromInitial,
+  isSimulationProfileActionBusy,
   isProjectRunning,
   resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords,
@@ -190,6 +193,42 @@ describe('workspace progress derivation', () => {
     expect(isProjectRunning({ RuntimeState: 'running', Agents: [] })).toBe(true);
     expect(isProjectRunning({ RuntimeState: 'paused', Agents: [{ Name: 'writer', State: 'idle' }] })).toBe(false);
     expect(isProjectRunning({ RuntimeState: '', Agents: [{ Name: 'writer', State: 'working' }] })).toBe(true);
+  });
+
+  it('keeps simulation analysis available during unrelated adaptation work', () => {
+    const activeProject = { id: 'project-1' };
+
+    expect(canRunSimulationAnalysis({
+      activeProject,
+      busy: false,
+      simulation: { analysisStatus: 'idle', importStatus: 'idle' }
+    })).toBe(true);
+    expect(canRunSimulationAnalysis({
+      activeProject,
+      busy: false,
+      simulation: { analysisStatus: 'running', importStatus: 'idle' }
+    })).toBe(false);
+    expect(canRunSimulationAnalysis({
+      activeProject,
+      busy: true,
+      simulation: { analysisStatus: 'idle', importStatus: 'idle' }
+    })).toBe(false);
+  });
+
+  it('keeps adaptation analysis available while simulation preparation is running', () => {
+    const activeProject = { id: 'project-1' };
+    const adaptation = {
+      sourceFile: { relative_path: 'source.txt' },
+      analysisStatus: 'idle'
+    };
+
+    expect(isSimulationProfileActionBusy({ analysisStatus: 'running' })).toBe(true);
+    expect(canRunAdaptationAnalysis({ activeProject, busy: false, adaptation })).toBe(true);
+    expect(canRunAdaptationAnalysis({
+      activeProject,
+      busy: false,
+      adaptation: { ...adaptation, analysisStatus: 'running' }
+    })).toBe(false);
   });
 
   it('normalizes full outline rows with camel, Pascal, and snake fallback fields', () => {
