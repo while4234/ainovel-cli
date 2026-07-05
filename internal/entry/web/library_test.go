@@ -331,6 +331,141 @@ func TestNovelLibraryLoadLegacyEntryStartsDossierBackfill(t *testing.T) {
 	}
 }
 
+func TestNovelLibraryLoadLegacyEntrySyncsBackfillToLibrary(t *testing.T) {
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
+	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	defer server.Close()
+
+	sourceProject, err := server.store.CreateProject("Legacy Sync Source")
+	if err != nil {
+		t.Fatalf("CreateProject source: %v", err)
+	}
+	sourcePath := writePreparedAdaptationFixture(t, sourceProject, "source.txt")
+	entryRoot := filepath.Join(runtimeRoot, novelLibraryDirName, "Legacy Sync")
+	if err := os.MkdirAll(filepath.Join(entryRoot, "source"), 0o755); err != nil {
+		t.Fatalf("create legacy source dir: %v", err)
+	}
+	if err := copyFileOverwrite(sourcePath, filepath.Join(entryRoot, "source", novelLibrarySourceName)); err != nil {
+		t.Fatalf("copy legacy source: %v", err)
+	}
+	if err := copyDir(filepath.Join(sourceProject.OutputDir, "meta", "adaptation"), filepath.Join(entryRoot, "meta", "adaptation")); err != nil {
+		t.Fatalf("copy legacy adaptation data: %v", err)
+	}
+	if err := os.Remove(filepath.Join(entryRoot, "meta", "adaptation", "cocreate_dossier.json")); err != nil {
+		t.Fatalf("remove legacy dossier: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(entryRoot, "meta", "adaptation", "cocreate_dossier_batches")); err != nil {
+		t.Fatalf("remove legacy dossier batches: %v", err)
+	}
+	now := time.Now().UTC().Add(-time.Hour)
+	if err := writeJSONFile(filepath.Join(entryRoot, novelLibraryManifestName), novelLibraryManifest{
+		Version:      1,
+		Name:         "Legacy Sync",
+		SourceFile:   "source.txt",
+		ChapterCount: 2,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("write legacy library manifest: %v", err)
+	}
+
+	targetProject, err := server.store.CreateProject("Legacy Sync Target")
+	if err != nil {
+		t.Fatalf("CreateProject target: %v", err)
+	}
+	fake := installFakeSession(t, server, targetProject)
+	fake.adaptAnalyzeBeforeDone = func(string) {
+		targetAdaptationRoot := filepath.Join(targetProject.OutputDir, "meta", "adaptation")
+		if err := copyPreparedAdaptationFiles(sourceProject.OutputDir, targetAdaptationRoot); err != nil {
+			t.Errorf("copy completed adaptation data: %v", err)
+			return
+		}
+		projectSourcePath := filepath.Join(targetProject.RootDir, "uploads", "adaptation", "Legacy Sync.txt")
+		if err := rewriteAdaptationManifestSource(targetProject.OutputDir, projectSourcePath); err != nil {
+			t.Errorf("rewrite project adaptation source: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+targetProject.ID+"/adapt/library/load", bytes.NewBufferString(`{"name":"Legacy Sync"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("load status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	waitForTestCondition(t, "legacy library backfill sync", func() bool {
+		if _, err := os.Stat(filepath.Join(entryRoot, "meta", "adaptation", "cocreate_dossier.json")); err != nil {
+			return false
+		}
+		if _, err := os.Stat(filepath.Join(entryRoot, "meta", "adaptation", "cocreate_dossier_batches")); err != nil {
+			return false
+		}
+		for _, ev := range server.sessions.Project(targetProject.ID).HistoryAfter(0) {
+			if ev.Event != nil && ev.Event.Category == "LIBRARY" && ev.Event.Kind == "novel_sync" {
+				return true
+			}
+		}
+		return false
+	})
+
+	libraryManifest := readAdaptationManifestForTest(t, filepath.Join(entryRoot, "meta", "adaptation", "source_manifest.json"))
+	wantLibrarySource := filepath.Join(entryRoot, "source", novelLibrarySourceName)
+	if filepath.Clean(libraryManifest.SourcePath) != filepath.Clean(wantLibrarySource) {
+		t.Fatalf("synced library source_path = %q, want %q", libraryManifest.SourcePath, wantLibrarySource)
+	}
+	updatedManifest, err := readNovelLibraryManifest(entryRoot)
+	if err != nil {
+		t.Fatalf("read synced library manifest: %v", err)
+	}
+	if !updatedManifest.UpdatedAt.After(now) {
+		t.Fatalf("library updated_at was not refreshed: got %s, old %s", updatedManifest.UpdatedAt, now)
+	}
+}
+
+func TestNovelLibrarySaveReplaceUpdatesExistingEntry(t *testing.T) {
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
+	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	defer server.Close()
+
+	manifest, err := server.store.CreateProject("Replace Novel Source")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	writePreparedAdaptationFixture(t, manifest, "source.txt")
+	installFakeSession(t, server, manifest)
+
+	saveBody := `{"name":"Replace Novel","source_file":"source.txt"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/library/save", bytes.NewBufferString(saveBody))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initial save status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/library/save", bytes.NewBufferString(saveBody))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate save status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/library/save", bytes.NewBufferString(`{"name":"Replace Novel","source_file":"source.txt","replace":true}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("replace save status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Replaced bool `json:"replaced"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode replace response: %v", err)
+	}
+	if !response.Replaced {
+		t.Fatal("replace response did not mark replaced=true")
+	}
+}
+
 func requireLibraryEvent(t *testing.T, session *ProjectSession, kind, name string) WebEvent {
 	t.Helper()
 	if session == nil {

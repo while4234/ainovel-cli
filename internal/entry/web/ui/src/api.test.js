@@ -25,8 +25,10 @@ import {
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
   reviseChapter,
+  reviseCoCreatePlanning,
   reviseCoCreate,
   resolveCoCreateDecision,
+  saveNovelToLibrary,
   sendCoCreate,
   setGlobalCoCreateTimeout,
   setProjectCoCreateTimeout,
@@ -185,6 +187,17 @@ describe('web API helpers', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/chapters/3', expect.objectContaining({}));
   });
 
+  it('sends novel library replace requests explicitly', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await saveNovelToLibrary('project-1', 'Source Book', 'source.txt', { replace: true });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/adapt/library/save', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ name: 'Source Book', source_file: 'source.txt', replace: true })
+    }));
+  });
+
   it('fetches project event history with an after cursor', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ events: [] }));
 
@@ -262,6 +275,19 @@ describe('web API helpers', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/projects/project-1/adapt/confirm', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({})
+    }));
+  });
+
+  it('uses the normal co-create planning revision route', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await reviseCoCreatePlanning('project-1', { feedback: 'tighten the opening' });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/cocreate/planning/revise', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        feedback: 'tighten the opening'
+      })
     }));
   });
 

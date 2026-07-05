@@ -6,6 +6,7 @@ import {
   buildAdaptationRevisionPayload,
   buildBeginCoCreatePayload,
   buildChapterRevisionPayload,
+  buildCoCreatePlanningRevisionPayload,
   buildCoCreateIntakeInitial,
   buildExportSuggestedName,
   buildVolumeReviewRevisionPayload,
@@ -18,6 +19,7 @@ import {
   getAdaptationProposalReview,
   getCompletedBookChapterRevisionView,
   getCompletedBookSelectedChapterView,
+  getCoCreatePlanningReview,
   getVisibleAdaptationProposalReview,
   getSimulationProfileStatus,
   getSnapshotOutlineRows,
@@ -672,6 +674,54 @@ describe('workspace progress derivation', () => {
     }, {
       volumes: [{ index: 4 }]
     }).body.volume_index).toBe(4);
+  });
+
+  it('builds normal co-create planning revision payloads', () => {
+    expect(buildCoCreatePlanningRevisionPayload({
+      feedback: '  make the heroine proactive  '
+    })).toEqual({
+      ok: true,
+      body: {
+        feedback: 'make the heroine proactive'
+      }
+    });
+
+    expect(buildCoCreatePlanningRevisionPayload({
+      instruction: 'tighten the opening'
+    }).body.feedback).toBe('tighten the opening');
+    expect(buildCoCreatePlanningRevisionPayload({ feedback: '   ' })).toEqual({
+      ok: false,
+      error: '请输入审核意见'
+    });
+  });
+
+  it('keeps normal co-create planning review visible while pending or regenerating', () => {
+    const pending = getCoCreatePlanningReview({
+      planning_review: {
+        status: 'pending',
+        kind: 'chapter_outline',
+        brief: 'review me',
+        target_total_words: 5000
+      },
+      outline: [{ chapter: 1, title: 'Opening' }]
+    });
+    expect(pending.active).toBe(true);
+    expect(pending.pending).toBe(true);
+    expect(pending.collecting).toBe(false);
+
+    const collecting = getCoCreatePlanningReview({
+      PlanningReview: {
+        Status: 'collecting',
+        Kind: 'volume_split',
+        Brief: 'regenerating',
+        TargetTotalWords: 8000
+      },
+      Outline: [{ Chapter: 1, Title: 'Opening' }]
+    });
+    expect(collecting.active).toBe(true);
+    expect(collecting.pending).toBe(false);
+    expect(collecting.collecting).toBe(true);
+    expect(collecting.revising).toBe(true);
   });
 
   it('restores visible adaptation proposal state from a co-create commit snapshot', () => {

@@ -24,18 +24,22 @@ import (
 const DefaultWordTolerance = 0.15
 
 const (
-	adaptationPlannerPromptName           = "adaptation-planner"
-	adaptationPlannerPromptVersion        = "v1"
-	adaptationPlannerMaxTokens            = 8192
-	adaptationPlannerSkeletonMaxTokens    = 4096
-	adaptationPlannerChunkedMinChapters   = 18
-	adaptationPlannerRecommendedBatchMax  = 8
-	adaptationPlannerSourceChunkedMin     = adaptationPlannerRecommendedBatchMax * 2
-	adaptationPlannerRevisionBatchMax     = 8
-	adaptationPlannerRevisionExpansionMax = 12
-	adaptationPlannerRepairMaxAttempts    = 2
-	adaptationPlannerGenerateMaxAttempts  = retrypolicy.MaxAttempts
-	adaptationProposalRuntimeVersion      = 1
+	adaptationPlannerPromptName             = "adaptation-planner"
+	adaptationPlannerPromptVersion          = "v1"
+	adaptationPlannerMaxTokens              = 8192
+	adaptationPlannerSkeletonMaxTokens      = 4096
+	adaptationPlannerChunkedMinChapters     = 18
+	adaptationPlannerRecommendedBatchMax    = 8
+	adaptationPlannerSourceChunkedMin       = adaptationPlannerRecommendedBatchMax * 2
+	adaptationPlannerRevisionBatchMax       = 8
+	adaptationPlannerRevisionExpansionMax   = 12
+	adaptationPlannerRepairMaxAttempts      = 2
+	adaptationPlannerGenerateMaxAttempts    = retrypolicy.MaxAttempts
+	adaptationProposalRuntimeVersion        = 1
+	adaptationSourceFoundationVersion       = 1
+	adaptationSourceFoundationPromptVersion = "source-foundation-merge-v1"
+	sourceFoundationBatchKindReports        = "reports"
+	sourceFoundationBatchKindSummary        = "summary"
 )
 
 var plannerRetrySleep = retrypolicy.Wait
@@ -176,24 +180,22 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 	if err != nil {
 		return fmt.Errorf("load source foundation: %w", err)
 	}
+	shouldMergeFoundation := true
 	if foundation != nil && !sourceChanged && !reportsChanged {
+		reportSignature := sourceReportsSignature(reports)
+		promptSignature := sourceFoundationPromptSignature(deps.Prompts.FoundationMerge)
+		shouldMergeFoundation = !sourceFoundationCurrent(foundation, manifest, reportSignature, promptSignature, imp.DefaultFoundationMergeRunes)
+	}
+	if !shouldMergeFoundation {
 		emit(StageFoundation, total, total, "源书 foundation 已存在，跳过聚合", nil)
 	} else {
 		emit(StageFoundation, total, total, "聚合逐章事实，生成源书 foundation...", nil)
-		fr, err := imp.MergeFoundationFromReportsBatched(ctx, deps.LLM, deps.Prompts.FoundationMerge, reports,
-			structuredCallOptionsWithDeps(deps, StageFoundation, total, total, emit),
-			imp.DefaultFoundationMergeRunes,
-			func(ev imp.FoundationMergeBatchEvent) {
-				if ev.Final {
-					emit(StageFoundation, total, total, fmt.Sprintf("分批聚合 foundation 摘要，生成全书 foundation：%d 批", ev.Total-1), nil)
-					return
-				}
-				emit(StageFoundation, ev.To, total, fmt.Sprintf("分批聚合 foundation 第 %d/%d 批：原书第 %d-%d 章", ev.Index, ev.Total, ev.From, ev.To), nil)
-			})
+		fr, err := mergeSourceFoundationResumable(ctx, deps, manifest, reports, imp.DefaultFoundationMergeRunes, emit)
 		if err != nil {
 			return fmt.Errorf("merge source foundation: %w", err)
 		}
-		if err := deps.Store.Adaptation.SaveSourceFoundation(toSourceFoundation(fr)); err != nil {
+		foundation := sourceFoundationWithMetadata(toSourceFoundation(fr), manifest, reports, deps.Prompts.FoundationMerge, imp.DefaultFoundationMergeRunes)
+		if err := deps.Store.Adaptation.SaveSourceFoundation(foundation); err != nil {
 			return fmt.Errorf("save source foundation: %w", err)
 		}
 	}
@@ -202,6 +204,322 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 	}
 	emit(StageDone, total, total, fmt.Sprintf("原书分析完成：%d 章快照已保存", total), nil)
 	return nil
+}
+
+func mergeSourceFoundationResumable(
+	ctx context.Context,
+	deps Deps,
+	manifest *domain.AdaptationSourceManifest,
+	reports []domain.AdaptationSourceReport,
+	batchRuneLimit int,
+	emit func(Stage, int, int, string, error),
+) (*imp.FoundationResult, error) {
+	if deps.Store == nil || deps.LLM == nil {
+		return nil, fmt.Errorf("deps incomplete")
+	}
+	if manifest == nil || manifest.ChapterCount <= 0 {
+		return nil, fmt.Errorf("source manifest is required")
+	}
+	if len(reports) == 0 {
+		return nil, fmt.Errorf("source reports are required")
+	}
+	if emit == nil {
+		emit = func(Stage, int, int, string, error) {}
+	}
+	if batchRuneLimit <= 0 {
+		batchRuneLimit = imp.DefaultFoundationMergeRunes
+	}
+	total := len(reports)
+	promptSignature := sourceFoundationPromptSignature(deps.Prompts.FoundationMerge)
+	sourceSignature := store.AdaptationSourceSignature(*manifest)
+	opts := structuredCallOptionsWithDeps(deps, StageFoundation, total, total, emit)
+	reportBatches := imp.FoundationMergeReportBatches(reports, batchRuneLimit)
+	partials := make([]imp.FoundationMergePartial, 0, len(reportBatches))
+	for i, batchReports := range reportBatches {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		index := i + 1
+		from := batchReports[0].Chapter
+		to := batchReports[len(batchReports)-1].Chapter
+		inputSignature := sourceReportsSignature(batchReports)
+		existing, err := deps.Store.Adaptation.LoadSourceFoundationBatch(0, index)
+		if err != nil {
+			return nil, fmt.Errorf("load source foundation batch %d: %w", index, err)
+		}
+		if sourceFoundationBatchCurrent(existing, sourceFoundationBatchKindReports, 0, index, from, to, sourceSignature, inputSignature, promptSignature, batchRuneLimit) {
+			partials = append(partials, imp.FoundationMergePartial{
+				Index:          index,
+				From:           existing.SourceFrom,
+				To:             existing.SourceTo,
+				InputSignature: existing.InputSignature,
+				Result:         toFoundationResult(&existing.Foundation),
+			})
+			emit(StageFoundation, to, total, fmt.Sprintf("reuse source foundation checkpoint %d/%d: chapters %d-%d", index, len(reportBatches), from, to), nil)
+			continue
+		}
+
+		emit(StageFoundation, to, total, fmt.Sprintf("merge source foundation batch %d/%d: chapters %d-%d", index, len(reportBatches), from, to), nil)
+		result, err := imp.MergeFoundationFromReports(ctx, deps.LLM, deps.Prompts.FoundationMerge, batchReports, opts)
+		if err != nil {
+			return nil, fmt.Errorf("merge source foundation batch %d/%d (chapters %d-%d): %w", index, len(reportBatches), from, to, err)
+		}
+		batch := sourceFoundationBatchFromResult(sourceFoundationBatchKindReports, 0, index, from, to, sourceSignature, inputSignature, promptSignature, batchRuneLimit, manifest, result)
+		if err := deps.Store.Adaptation.SaveSourceFoundationBatch(batch); err != nil {
+			return nil, fmt.Errorf("save source foundation batch %d: %w", index, err)
+		}
+		partials = append(partials, imp.FoundationMergePartial{
+			Index:          index,
+			From:           from,
+			To:             to,
+			InputSignature: inputSignature,
+			Result:         result,
+		})
+	}
+
+	result, err := mergeSourceFoundationPartialsResumable(ctx, deps, manifest, partials, total, batchRuneLimit, sourceSignature, promptSignature, emit)
+	if err != nil {
+		return nil, err
+	}
+	result.Volumes = imp.BuildSourceOutlineFromReports(reports)
+	if got := len(domain.FlattenOutline(result.Volumes)); got != len(reports) {
+		return nil, fmt.Errorf("generated source outline chapter count mismatch: got %d, want %d", got, len(reports))
+	}
+	if result.Compass != nil && result.Compass.LastUpdated == 0 {
+		result.Compass.LastUpdated = len(reports)
+	}
+	return result, nil
+}
+
+func mergeSourceFoundationPartialsResumable(
+	ctx context.Context,
+	deps Deps,
+	manifest *domain.AdaptationSourceManifest,
+	partials []imp.FoundationMergePartial,
+	totalReports int,
+	batchRuneLimit int,
+	sourceSignature string,
+	promptSignature string,
+	emit func(Stage, int, int, string, error),
+) (*imp.FoundationResult, error) {
+	if len(partials) == 0 {
+		return nil, fmt.Errorf("no source foundation batches to merge")
+	}
+	if len(partials) == 1 {
+		return partials[0].Result, nil
+	}
+	opts := structuredCallOptionsWithDeps(deps, StageFoundation, totalReports, totalReports, emit)
+	current := partials
+	level := 1
+	for len(current) > 1 {
+		groups := imp.FoundationMergePartialBatches(current, batchRuneLimit)
+		next := make([]imp.FoundationMergePartial, 0, len(groups))
+		for i, group := range groups {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			index := i + 1
+			from := group[0].From
+			to := group[len(group)-1].To
+			inputSignature := sourceFoundationPartialGroupSignature(level, group)
+			existing, err := deps.Store.Adaptation.LoadSourceFoundationBatch(level, index)
+			if err != nil {
+				return nil, fmt.Errorf("load source foundation summary level %d batch %d: %w", level, index, err)
+			}
+			if sourceFoundationBatchCurrent(existing, sourceFoundationBatchKindSummary, level, index, from, to, sourceSignature, inputSignature, promptSignature, batchRuneLimit) {
+				next = append(next, imp.FoundationMergePartial{
+					Index:          index,
+					From:           existing.SourceFrom,
+					To:             existing.SourceTo,
+					InputSignature: existing.InputSignature,
+					Result:         toFoundationResult(&existing.Foundation),
+				})
+				emit(StageFoundation, to, totalReports, fmt.Sprintf("reuse source foundation summary checkpoint L%d %d/%d: chapters %d-%d", level, index, len(groups), from, to), nil)
+				continue
+			}
+
+			emit(StageFoundation, to, totalReports, fmt.Sprintf("merge source foundation summary L%d %d/%d: chapters %d-%d", level, index, len(groups), from, to), nil)
+			result, err := imp.MergeFoundationPartials(ctx, deps.LLM, deps.Prompts.FoundationMerge, group, totalReports, opts)
+			if err != nil {
+				return nil, fmt.Errorf("merge source foundation summary level %d batch %d/%d (chapters %d-%d): %w", level, index, len(groups), from, to, err)
+			}
+			batch := sourceFoundationBatchFromResult(sourceFoundationBatchKindSummary, level, index, from, to, sourceSignature, inputSignature, promptSignature, batchRuneLimit, manifest, result)
+			if err := deps.Store.Adaptation.SaveSourceFoundationBatch(batch); err != nil {
+				return nil, fmt.Errorf("save source foundation summary level %d batch %d: %w", level, index, err)
+			}
+			next = append(next, imp.FoundationMergePartial{
+				Index:          index,
+				From:           from,
+				To:             to,
+				InputSignature: inputSignature,
+				Result:         result,
+			})
+		}
+		current = next
+		level++
+	}
+	return current[0].Result, nil
+}
+
+func sourceFoundationBatchFromResult(
+	kind string,
+	level int,
+	index int,
+	from int,
+	to int,
+	sourceSignature string,
+	inputSignature string,
+	promptSignature string,
+	batchRuneLimit int,
+	manifest *domain.AdaptationSourceManifest,
+	result *imp.FoundationResult,
+) domain.AdaptationSourceFoundationBatch {
+	foundation := sourceFoundationWithMetadata(toSourceFoundation(result), manifest, nil, "", batchRuneLimit)
+	foundation.ReportSignature = inputSignature
+	foundation.PromptVersion = promptSignature
+	return domain.AdaptationSourceFoundationBatch{
+		Version:            adaptationSourceFoundationVersion,
+		Kind:               kind,
+		Level:              level,
+		Index:              index,
+		SourceFrom:         from,
+		SourceTo:           to,
+		SourcePath:         foundation.SourcePath,
+		SourceChapterCount: foundation.SourceChapterCount,
+		SourceSignature:    sourceSignature,
+		InputSignature:     inputSignature,
+		PromptVersion:      promptSignature,
+		BatchRuneLimit:     batchRuneLimit,
+		GeneratedAt:        foundation.GeneratedAt,
+		Foundation:         foundation,
+	}
+}
+
+func sourceFoundationCurrent(
+	foundation *domain.AdaptationSourceFoundation,
+	manifest *domain.AdaptationSourceManifest,
+	reportSignature string,
+	promptSignature string,
+	batchRuneLimit int,
+) bool {
+	if !sourceFoundationUsable(foundation) || manifest == nil {
+		return false
+	}
+	hasMetadata := foundation.Version > 0 ||
+		strings.TrimSpace(foundation.SourceSignature) != "" ||
+		strings.TrimSpace(foundation.ReportSignature) != "" ||
+		strings.TrimSpace(foundation.PromptVersion) != "" ||
+		foundation.BatchRuneLimit > 0
+	if !hasMetadata {
+		return len(domain.FlattenOutline(foundation.Volumes)) == manifest.ChapterCount
+	}
+	return foundation.Version == adaptationSourceFoundationVersion &&
+		foundation.SourceChapterCount == manifest.ChapterCount &&
+		strings.TrimSpace(foundation.SourceSignature) == store.AdaptationSourceSignature(*manifest) &&
+		strings.TrimSpace(foundation.ReportSignature) == strings.TrimSpace(reportSignature) &&
+		strings.TrimSpace(foundation.PromptVersion) == strings.TrimSpace(promptSignature) &&
+		foundation.BatchRuneLimit == batchRuneLimit
+}
+
+func sourceFoundationBatchCurrent(
+	batch *domain.AdaptationSourceFoundationBatch,
+	kind string,
+	level int,
+	index int,
+	from int,
+	to int,
+	sourceSignature string,
+	inputSignature string,
+	promptSignature string,
+	batchRuneLimit int,
+) bool {
+	if batch == nil || !sourceFoundationUsable(&batch.Foundation) {
+		return false
+	}
+	return batch.Version == adaptationSourceFoundationVersion &&
+		strings.TrimSpace(batch.Kind) == kind &&
+		batch.Level == level &&
+		batch.Index == index &&
+		batch.SourceFrom == from &&
+		batch.SourceTo == to &&
+		strings.TrimSpace(batch.SourceSignature) == strings.TrimSpace(sourceSignature) &&
+		strings.TrimSpace(batch.InputSignature) == strings.TrimSpace(inputSignature) &&
+		strings.TrimSpace(batch.PromptVersion) == strings.TrimSpace(promptSignature) &&
+		batch.BatchRuneLimit == batchRuneLimit
+}
+
+func sourceFoundationWithMetadata(
+	foundation domain.AdaptationSourceFoundation,
+	manifest *domain.AdaptationSourceManifest,
+	reports []domain.AdaptationSourceReport,
+	systemPrompt string,
+	batchRuneLimit int,
+) domain.AdaptationSourceFoundation {
+	foundation.Version = adaptationSourceFoundationVersion
+	if strings.TrimSpace(foundation.GeneratedAt) == "" {
+		foundation.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if manifest != nil {
+		foundation.SourcePath = manifest.SourcePath
+		foundation.SourceChapterCount = manifest.ChapterCount
+		foundation.SourceSignature = store.AdaptationSourceSignature(*manifest)
+	}
+	if reports != nil {
+		foundation.ReportSignature = sourceReportsSignature(reports)
+	}
+	if strings.TrimSpace(systemPrompt) != "" {
+		foundation.PromptVersion = sourceFoundationPromptSignature(systemPrompt)
+	}
+	foundation.BatchRuneLimit = batchRuneLimit
+	return foundation
+}
+
+func sourceFoundationUsable(foundation *domain.AdaptationSourceFoundation) bool {
+	return foundation != nil &&
+		strings.TrimSpace(foundation.Premise) != "" &&
+		len(foundation.Characters) > 0
+}
+
+func sourceFoundationPromptSignature(systemPrompt string) string {
+	return adaptationSourceFoundationPromptVersion + ":" + store.TextSHA256(strings.TrimSpace(systemPrompt))
+}
+
+func sourceReportsSignature(reports []domain.AdaptationSourceReport) string {
+	ordered := append([]domain.AdaptationSourceReport(nil), reports...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].Chapter < ordered[j].Chapter
+	})
+	data, err := json.Marshal(struct {
+		Version int                             `json:"version"`
+		Reports []domain.AdaptationSourceReport `json:"reports"`
+	}{Version: 1, Reports: ordered})
+	if err != nil {
+		return store.TextSHA256(fmt.Sprintf("%+v", ordered))
+	}
+	return store.TextSHA256(string(data))
+}
+
+func sourceFoundationPartialGroupSignature(level int, partials []imp.FoundationMergePartial) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "level=%d\n", level)
+	for _, partial := range partials {
+		fmt.Fprintf(&sb, "%d:%d-%d:%s:%s\n",
+			partial.Index,
+			partial.From,
+			partial.To,
+			partial.InputSignature,
+			sourceFoundationContentSignature(partial.Result),
+		)
+	}
+	return store.TextSHA256(sb.String())
+}
+
+func sourceFoundationContentSignature(result *imp.FoundationResult) string {
+	data, err := json.Marshal(toSourceFoundation(result))
+	if err != nil {
+		return store.TextSHA256(fmt.Sprintf("%+v", result))
+	}
+	return store.TextSHA256(string(data))
 }
 
 func shouldRefreshCoCreateDossierBatches(chapter int, manifest *domain.AdaptationSourceManifest) bool {

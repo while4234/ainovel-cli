@@ -45,6 +45,12 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.cocreate-status-compact \.cocreate-actions\s*{[^}]*grid-template-columns:\s*1fr;/s);
   });
 
+  it('keeps planning review revision controls visible and bounded', () => {
+    expect(css).toMatch(/\.proposal-review-actions\s*{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(220px,\s*1fr\)\);/s);
+    expect(css).toMatch(/\.planning-revision-controls\s*{[^}]*display:\s*grid;[^}]*min-width:\s*0;/s);
+    expect(css).toMatch(/\.planning-revision-controls\.compact \.proposal-revision-textarea\s*{[^}]*min-height:\s*88px;/s);
+  });
+
   it('uses agent chips with one project model editor', () => {
     expect(css).toMatch(/\.agent-chip-list\s*{[^}]*flex-wrap:\s*wrap;/s);
     expect(css).toMatch(/\.model-route-editor\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);

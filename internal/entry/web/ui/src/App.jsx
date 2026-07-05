@@ -31,7 +31,6 @@ import {
   analyzeAdaptationSource,
   analyzeSimulation,
   addGlobalProviderModel,
-  addProviderModel,
   beginCoCreate,
   buildAdaptationProposal,
   cancelCoCreate,
@@ -71,6 +70,7 @@ import {
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
   reviseChapter,
+  reviseCoCreatePlanning,
   reviseCoCreate,
   resolveCoCreateDecision,
   resumeProject,
@@ -194,6 +194,7 @@ function createAdaptationState() {
     libraryMessage: '',
     libraryError: '',
     librarySaveName: '',
+    libraryLoadedName: '',
     librarySaveStatus: 'idle',
     librarySaveError: '',
     error: ''
@@ -205,6 +206,15 @@ function createChapterRevisionState() {
     chapter: '1',
     mode: 'rewrite',
     instruction: '',
+    status: 'idle',
+    message: '',
+    error: ''
+  };
+}
+
+function createCoCreatePlanningRevisionState() {
+  return {
+    feedback: '',
     status: 'idle',
     message: '',
     error: ''
@@ -523,6 +533,7 @@ export default function App() {
   const [exportJob, setExportJob] = useState(createExportState);
   const [diagnostic, setDiagnostic] = useState(createDiagnosticState);
   const [coCreate, setCoCreate] = useState(createCoCreateState);
+  const [planningRevision, setPlanningRevision] = useState(createCoCreatePlanningRevisionState);
   const [modelConfig, setModelConfig] = useState(null);
   const [customModel, setCustomModel] = useState(createCustomModelState);
   const [backendStatus, setBackendStatus] = useState(null);
@@ -566,6 +577,7 @@ export default function App() {
     setExportJob(createExportState());
     setDiagnostic(createDiagnosticState());
     setCoCreate(createCoCreateState());
+    setPlanningRevision(createCoCreatePlanningRevisionState());
     setModelConfig(null);
     setCustomModel(createCustomModelState());
     setBackendStatus(null);
@@ -714,7 +726,9 @@ export default function App() {
       const [runtimeData, projectsData, modelData] = await Promise.all([getRuntime(), listProjects(), getGlobalModels()]);
       setRuntime(runtimeData);
       setProjects(projectsData.projects || []);
-      setModelConfig(modelData.models || null);
+      if (!activeProjectIdRef.current) {
+        setModelConfig(modelData.models || null);
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -1474,6 +1488,7 @@ export default function App() {
       uploadMessage: '',
       analysisStatus: 'idle',
       analysisEvents: [],
+      libraryLoadedName: '',
       proposalKey: '',
       startStatus: 'idle',
       startMessage: '',
@@ -1572,15 +1587,17 @@ export default function App() {
   };
 
   const saveAnalyzedNovelToLibrary = async () => {
-    const name = adaptation.librarySaveName.trim();
+    const loadedName = adaptation.libraryLoadedName.trim();
+    const name = adaptation.librarySaveName.trim() || loadedName;
     const sourceFile = adaptation.sourceFile?.relative_path;
     if (!activeProject?.id || !name || !sourceFile || adaptation.analysisStatus !== 'done') {
       return;
     }
+    const replace = Boolean(loadedName && name === loadedName);
     const query = adaptation.libraryQuery;
     setAdaptation((previous) => ({ ...previous, librarySaveStatus: 'running', librarySaveError: '' }));
     try {
-      const saveData = await saveNovelToLibrary(activeProject.id, name, sourceFile);
+      const saveData = await saveNovelToLibrary(activeProject.id, name, sourceFile, { replace });
       const listData = await listNovelLibrary(query);
       setAdaptation((previous) => ({
         ...previous,
@@ -1588,7 +1605,8 @@ export default function App() {
         libraryItems: libraryItemsFromResponse(listData),
         libraryMessage: libraryMessageFromResponse(saveData) || `已保存小说：${name}`,
         libraryError: '',
-        librarySaveName: '',
+        librarySaveName: name,
+        libraryLoadedName: name,
         librarySaveStatus: 'done',
         librarySaveError: ''
       }));
@@ -1630,7 +1648,8 @@ export default function App() {
         libraryStatus: 'done',
         libraryMessage: libraryMessageFromResponse(data) || `已加载已分析小说：${name}`,
         libraryError: '',
-        librarySaveName: '',
+        librarySaveName: name,
+        libraryLoadedName: name,
         librarySaveStatus: 'idle',
         librarySaveError: '',
         error: ''
@@ -1954,7 +1973,7 @@ export default function App() {
   };
 
   const confirmCoCreatePlanningRun = async () => {
-    if (!activeProject?.id || !coCreatePlanningReview.pending || busy) {
+    if (!activeProject?.id || !coCreatePlanningReview.pending || busy || projectRunning) {
       return;
     }
     setBusy(true);
@@ -1978,6 +1997,60 @@ export default function App() {
         // Keep the confirmation error visible if snapshot refresh also fails.
       }
       setCoCreate((previous) => ({ ...previous, status: 'error', error: err.message }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reviseCoCreatePlanningRun = async () => {
+    if (!activeProject?.id || !coCreatePlanningReview.pending || busy || projectRunning) {
+      return;
+    }
+    const payload = buildCoCreatePlanningRevisionPayload(planningRevision);
+    if (!payload.ok) {
+      setPlanningRevision((previous) => ({
+        ...previous,
+        status: 'error',
+        message: '',
+        error: payload.error
+      }));
+      return;
+    }
+    setBusy(true);
+    setPlanningRevision((previous) => ({
+      ...previous,
+      status: 'running',
+      message: '',
+      error: ''
+    }));
+    try {
+      const data = await reviseCoCreatePlanning(activeProject.id, payload.body);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setPlanningRevision({
+        feedback: '',
+        status: 'done',
+        message: '审核意见已提交，AI 正在重新生成规划',
+        error: ''
+      });
+      setCoCreate((previous) => ({
+        ...previous,
+        status: 'started',
+        startMessage: '审核意见已提交，AI 正在重新生成规划',
+        error: ''
+      }));
+    } catch (err) {
+      try {
+        const snapshotData = await getSnapshot(activeProject.id);
+        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
+      } catch {
+        // Keep the revision error visible if snapshot refresh also fails.
+      }
+      setPlanningRevision((previous) => ({
+        ...previous,
+        status: 'error',
+        message: '',
+        error: err.message
+      }));
     } finally {
       setBusy(false);
     }
@@ -2202,20 +2275,30 @@ export default function App() {
     }));
     try {
       let nextModels = modelConfig;
-      if (activeProject?.id) {
-        const data = await addProviderModel(activeProject.id, payload);
-        nextModels = data.models || modelConfig;
-        setModelConfig(nextModels);
-        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-        const status = await getBackendStatus(activeProject.id);
-        setBackendStatus(status.backend || null);
-      } else {
-        const data = await addGlobalProviderModel(payload);
-        nextModels = data.models || modelConfig;
-        setModelConfig(nextModels);
-        if (data.runtime) {
-          setRuntime(data.runtime);
+      const saveTarget = modelAddSaveTarget(activeProject, payload);
+      const data = await addGlobalProviderModel(payload);
+      nextModels = data.models || modelConfig;
+      if (data.runtime) {
+        setRuntime(data.runtime);
+      }
+      if (saveTarget.projectId) {
+        if (saveTarget.selectProjectAfterSave) {
+          const switched = await switchProjectModel(saveTarget.projectId, payload.role || 'default', payload.provider, payload.model);
+          nextModels = switched.models || nextModels;
+          if (isCurrentProject(saveTarget.projectId)) {
+            setWorkbench((previous) => ({ ...previous, snapshot: switched.snapshot || previous.snapshot }));
+          }
+        } else {
+          const modelData = await getProjectModels(saveTarget.projectId);
+          nextModels = modelData.models || nextModels;
         }
+        if (isCurrentProject(saveTarget.projectId)) {
+          setModelConfig(nextModels);
+          const status = await getBackendStatus(saveTarget.projectId);
+          setBackendStatus(status.backend || null);
+        }
+      } else {
+        setModelConfig(nextModels);
       }
       setCustomModel(modelAddExistingProviderDefaults({
         ...createCustomModelState(),
@@ -2402,7 +2485,7 @@ export default function App() {
     () => workbench.eventRows.slice().sort((a, b) => b.seq - a.seq),
     [workbench.eventRows]
   );
-  const showCoCreatePlanningWorkspace = sideView === 'cocreate' && coCreatePlanningReview.pending;
+  const showCoCreatePlanningWorkspace = sideView === 'cocreate' && coCreatePlanningReview.active;
   const showCoCreateWorkspace = sideView === 'cocreate' && !showCoCreatePlanningWorkspace && hasCoCreateWorkspaceContent(coCreate);
 
   return (
@@ -2628,8 +2711,11 @@ export default function App() {
               ) : showCoCreatePlanningWorkspace ? (
                 <CoCreatePlanningWorkspace
                   busy={busy}
+                  planningRevision={planningRevision}
                   review={coCreatePlanningReview}
                   onConfirm={confirmCoCreatePlanningRun}
+                  onRevise={reviseCoCreatePlanningRun}
+                  setPlanningRevision={setPlanningRevision}
                 />
               ) : showCoCreateWorkspace ? (
                 <CoCreateWorkspace coCreate={coCreate} />
@@ -2751,8 +2837,10 @@ export default function App() {
               activeProject={activeProject}
               busy={busy}
               coCreate={coCreate}
+              planningRevision={planningRevision}
               planningReview={coCreatePlanningReview}
               setCoCreate={setCoCreate}
+              setPlanningRevision={setPlanningRevision}
               adaptation={adaptation}
               onBegin={beginCoCreateFlow}
               onConfirmIntake={() => beginCoCreateFlow('normal', { confirmIntake: true })}
@@ -2762,6 +2850,7 @@ export default function App() {
                   onResolveDecision={resolveCoCreateDecisionFlow}
                   onCommit={commitCoCreateFlow}
                   onConfirmPlanning={confirmCoCreatePlanningRun}
+                  onRevisePlanning={reviseCoCreatePlanningRun}
               onCancel={cancelCoCreateFlow}
               workspaceTranscript={showCoCreateWorkspace}
             />
@@ -2896,7 +2985,7 @@ function hasCoCreateWorkspaceContent(coCreate) {
   );
 }
 
-function CoCreatePlanningWorkspace({ review, busy, onConfirm }) {
+function CoCreatePlanningWorkspace({ review, busy, planningRevision, setPlanningRevision, onConfirm, onRevise }) {
   const groups = proposalVolumeGroups({
     chapters: review.chapters || [],
     volumes: review.volumes || []
@@ -2921,6 +3010,20 @@ function CoCreatePlanningWorkspace({ review, busy, onConfirm }) {
           <Play size={16} />
           审核通过并启动创作
         </button>
+        {review.collecting ? (
+          <div className="workflow-status running">
+            <strong>重新生成中</strong>
+            <span>AI 正在根据审核意见重写规划，完成后会回到待审核。</span>
+          </div>
+        ) : (
+          <PlanningRevisionControls
+            busy={busy}
+            disabled={!review.pending}
+            onRevise={onRevise}
+            revision={planningRevision}
+            setRevision={setPlanningRevision}
+          />
+        )}
       </div>
       <div className="proposal-volume-stack">
         {groups.map((group) => (
@@ -2939,6 +3042,44 @@ function CoCreatePlanningWorkspace({ review, busy, onConfirm }) {
             </div>
           </section>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function PlanningRevisionControls({ busy, compact = false, disabled = false, onRevise, revision, setRevision }) {
+  const feedback = String(revision?.feedback || '');
+  const status = revision?.status || 'idle';
+  const canSubmit = !busy && !disabled && Boolean(feedback.trim());
+  const updateFeedback = (event) => {
+    const nextFeedback = event.target.value;
+    setRevision((previous) => ({
+      ...previous,
+      feedback: nextFeedback,
+      status: 'idle',
+      message: '',
+      error: ''
+    }));
+  };
+  return (
+    <div className={`planning-revision-controls ${compact ? 'compact' : ''}`}>
+      <label className="field-label proposal-select-line">
+        <span>审核意见</span>
+        <textarea
+          className="proposal-revision-textarea"
+          disabled={busy || disabled}
+          placeholder="写下希望 AI 修改的设定、结构、节奏、分卷或章节意见..."
+          value={feedback}
+          onChange={updateFeedback}
+        />
+      </label>
+      <button className="tool-button full-width" disabled={!canSubmit} onClick={() => runWithWindowScrollPreserved(onRevise)} type="button">
+        <WandSparkles size={16} />
+        提交意见并让 AI 修改
+      </button>
+      <div className={`workflow-status ${status}`}>
+        <strong>{workflowStatusText(status)}</strong>
+        <span>{revision?.error || revision?.message || '等待审核意见'}</span>
       </div>
     </div>
   );
@@ -3260,8 +3401,10 @@ function CoCreatePanel({
   activeProject,
   busy,
   coCreate,
+  planningRevision,
   planningReview = {},
   setCoCreate,
+  setPlanningRevision,
   adaptation,
   onBegin,
   onConfirmIntake,
@@ -3271,6 +3414,7 @@ function CoCreatePanel({
   onResolveDecision = () => {},
   onCommit,
   onConfirmPlanning = () => {},
+  onRevisePlanning = () => {},
   onCancel,
   workspaceTranscript = false
 }) {
@@ -3359,7 +3503,7 @@ function CoCreatePanel({
         ) : null}
       </section>
 
-      {planningReview.pending ? (
+      {planningReview.active ? (
         <section className="cocreate-section planning-review-card">
           <div className="section-title">
             <Check size={17} />
@@ -3374,6 +3518,21 @@ function CoCreatePanel({
             <Play size={16} />
             审核通过并启动创作
           </button>
+          {planningReview.collecting ? (
+            <div className="workflow-status running">
+              <strong>重新生成中</strong>
+              <span>AI 正在根据审核意见重写规划。</span>
+            </div>
+          ) : (
+            <PlanningRevisionControls
+              busy={busy}
+              compact
+              disabled={!planningReview.pending}
+              onRevise={onRevisePlanning}
+              revision={planningRevision}
+              setRevision={setPlanningRevision}
+            />
+          )}
         </section>
       ) : null}
 
@@ -3985,7 +4144,7 @@ function AdaptationPanel({
   const canCoCreate = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !workflowBusy);
   const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !workflowBusy && adaptation.brief.trim());
   const canConfirm = Boolean(activeProject && !workflowBusy && proposal.proposalReady && isAdaptationProposalCurrent(adaptation));
-  const canSaveNovel = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && adaptation.librarySaveName.trim());
+  const canSaveNovel = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !busy && (adaptation.librarySaveName.trim() || adaptation.libraryLoadedName.trim()));
   const isVolumeReview = proposal.volumeReviewReady;
   const updateProposalInput = (changes, options = {}) => {
     const scrollPosition = options.preserveWindowScroll ? readWindowScrollPosition() : null;
@@ -4115,6 +4274,7 @@ function AdaptationPanel({
         </div>
         {analyzed ? (
           <LibrarySaveRow
+            allowEmptyName={Boolean(adaptation.libraryLoadedName.trim())}
             canSave={canSaveNovel}
             error={adaptation.librarySaveError}
             name={adaptation.librarySaveName}
@@ -4420,8 +4580,8 @@ function LibraryFeedback({ error, message }) {
   return null;
 }
 
-function LibrarySaveRow({ canSave, error, name, placeholder, saving, onNameChange, onSave }) {
-  const canSubmit = Boolean(canSave && name.trim() && !saving);
+function LibrarySaveRow({ allowEmptyName = false, canSave, error, name, placeholder, saving, onNameChange, onSave }) {
+  const canSubmit = Boolean(canSave && (allowEmptyName || name.trim()) && !saving);
   return (
     <div className="library-save-stack">
       <input
@@ -6075,6 +6235,16 @@ export function buildExistingModelActionPayload(role, provider, model) {
   };
 }
 
+export function modelAddSaveTarget(activeProject = null, payload = {}) {
+  const projectId = String(activeProject?.id || '').trim();
+  return {
+    persistScope: 'global',
+    projectId,
+    refreshProjectModels: Boolean(projectId),
+    selectProjectAfterSave: Boolean(projectId && payload?.select_after_save)
+  };
+}
+
 export function buildModelAddPayload(state, modelConfig) {
   if (state.mode === 'existing') {
     const role = state.role || 'default';
@@ -6501,9 +6671,14 @@ export function getCoCreatePlanningReview(snapshot) {
     chapters
   );
   const kind = textValue(review, 'Kind', 'kind');
+  const pending = status === 'pending';
+  const collecting = status === 'collecting';
   return {
     loaded: Boolean(review),
-    pending: status === 'pending',
+    active: pending || collecting,
+    pending,
+    collecting,
+    revising: collecting,
     status,
     kind,
     kindLabel: coCreatePlanningKindLabel(kind),
@@ -6904,6 +7079,19 @@ export function buildVolumeReviewRevisionPayload(adaptation = {}, volumeReview =
     body: {
       volume_index: volume.index,
       instruction
+    }
+  };
+}
+
+export function buildCoCreatePlanningRevisionPayload(revision = {}) {
+  const feedback = String(revision.feedback || revision.instruction || '').trim();
+  if (!feedback) {
+    return { ok: false, error: '请输入审核意见' };
+  }
+  return {
+    ok: true,
+    body: {
+      feedback
     }
   };
 }

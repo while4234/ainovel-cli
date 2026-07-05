@@ -20,6 +20,7 @@ const (
 	adaptationSourceReportDir      = adaptationRootDir + "/source_reports"
 	adaptationSourceReportsFile    = adaptationRootDir + "/source_reports.json"
 	adaptationSourceFoundationFile = adaptationRootDir + "/source_foundation.json"
+	adaptationSourceFoundationDir  = adaptationRootDir + "/source_foundation_batches"
 	adaptationCoCreateDossierFile  = adaptationRootDir + "/cocreate_dossier.json"
 	adaptationCoCreateBatchDir     = adaptationRootDir + "/cocreate_dossier_batches"
 	adaptationCoCreateIntentFile   = adaptationRootDir + "/cocreate_intent.json"
@@ -258,7 +259,12 @@ func sourceReportMatches(report domain.AdaptationSourceReport, sha256 string) bo
 }
 
 func (s *AdaptationStore) SaveSourceFoundation(foundation domain.AdaptationSourceFoundation) error {
-	return s.io.WriteJSON(adaptationSourceFoundationFile, foundation)
+	return s.io.WithWriteLock(func() error {
+		if err := s.io.WriteJSONUnlocked(adaptationSourceFoundationFile, foundation); err != nil {
+			return err
+		}
+		return os.RemoveAll(s.io.path(adaptationSourceFoundationDir))
+	})
 }
 
 func (s *AdaptationStore) LoadSourceFoundation() (*domain.AdaptationSourceFoundation, error) {
@@ -270,6 +276,45 @@ func (s *AdaptationStore) LoadSourceFoundation() (*domain.AdaptationSourceFounda
 		return nil, err
 	}
 	return &foundation, nil
+}
+
+func (s *AdaptationStore) SaveSourceFoundationBatch(batch domain.AdaptationSourceFoundationBatch) error {
+	if batch.Level < 0 {
+		return fmt.Errorf("batch level must be >= 0")
+	}
+	if batch.Index <= 0 {
+		return fmt.Errorf("batch index must be > 0")
+	}
+	return s.io.WriteJSON(SourceFoundationBatchRelPath(batch.Level, batch.Index), batch)
+}
+
+func (s *AdaptationStore) LoadSourceFoundationBatch(level, index int) (*domain.AdaptationSourceFoundationBatch, error) {
+	if level < 0 {
+		return nil, fmt.Errorf("batch level must be >= 0")
+	}
+	if index <= 0 {
+		return nil, fmt.Errorf("batch index must be > 0")
+	}
+	var batch domain.AdaptationSourceFoundationBatch
+	if err := s.io.ReadJSON(SourceFoundationBatchRelPath(level, index), &batch); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if batch.Level == 0 && level > 0 {
+		batch.Level = level
+	}
+	if batch.Index == 0 {
+		batch.Index = index
+	}
+	return &batch, nil
+}
+
+func (s *AdaptationStore) ClearSourceFoundationBatches() error {
+	return s.io.WithWriteLock(func() error {
+		return os.RemoveAll(s.io.path(adaptationSourceFoundationDir))
+	})
 }
 
 func (s *AdaptationStore) SaveCoCreateDossier(dossier domain.AdaptationCoCreateDossier) error {
@@ -798,6 +843,10 @@ func SourceReportRelPath(chapter int) string {
 
 func CoCreateDossierBatchRelPath(index int) string {
 	return fmt.Sprintf("%s/%04d.json", adaptationCoCreateBatchDir, index)
+}
+
+func SourceFoundationBatchRelPath(level, index int) string {
+	return fmt.Sprintf("%s/level_%02d_batch_%04d.json", adaptationSourceFoundationDir, level, index)
 }
 
 func CoCreateBriefingBatchRelPath(index int) string {

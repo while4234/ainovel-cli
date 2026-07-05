@@ -201,6 +201,7 @@ func (s *Server) handleProjectNovelLibrarySave(w http.ResponseWriter, r *http.Re
 	var req struct {
 		Name       string `json:"name"`
 		SourceFile string `json:"source_file"`
+		Replace    bool   `json:"replace"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid novel library save request: "+err.Error())
@@ -211,7 +212,12 @@ func (s *Server) handleProjectNovelLibrarySave(w http.ResponseWriter, r *http.Re
 		writeProjectSessionError(w, fmt.Errorf("%w: %v", ErrProjectNotFound, err))
 		return
 	}
-	item, err := s.libraries.SaveNovelFromProject(manifest, req.Name, req.SourceFile)
+	var item apiLibraryItem
+	if req.Replace {
+		item, err = s.libraries.ReplaceNovelFromProject(manifest, req.Name, req.SourceFile)
+	} else {
+		item, err = s.libraries.SaveNovelFromProject(manifest, req.Name, req.SourceFile)
+	}
 	if err != nil {
 		writeLibraryActionError(w, err)
 		return
@@ -224,9 +230,15 @@ func (s *Server) handleProjectNovelLibrarySave(w http.ResponseWriter, r *http.Re
 			"success",
 		)
 	}
+	message := fmt.Sprintf("已保存小说：%s", item.Name)
+	if req.Replace {
+		message = fmt.Sprintf("已替换小说库：%s", item.Name)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"project": manifest,
-		"item":    item,
+		"project":  manifest,
+		"item":     item,
+		"message":  message,
+		"replaced": req.Replace,
 	})
 }
 
@@ -252,7 +264,7 @@ func (s *Server) handleProjectNovelLibraryLoad(w http.ResponseWriter, r *http.Re
 		writeLibraryActionError(w, err)
 		return
 	}
-	status, analysisRunning, err := s.startLoadedNovelAnalysisIfNeeded(session, manifest, sourceFile)
+	status, analysisRunning, err := s.startLoadedNovelAnalysisIfNeeded(session, manifest, item, sourceFile)
 	if err != nil {
 		writeAdaptationActionError(w, err, status.AnalysisEvents)
 		return
@@ -276,7 +288,7 @@ func (s *Server) handleProjectNovelLibraryLoad(w http.ResponseWriter, r *http.Re
 	})
 }
 
-func (s *Server) startLoadedNovelAnalysisIfNeeded(session *ProjectSession, manifest ProjectManifest, sourceFile apiUploadedFile) (apiAdaptationStatus, bool, error) {
+func (s *Server) startLoadedNovelAnalysisIfNeeded(session *ProjectSession, manifest ProjectManifest, item apiLibraryItem, sourceFile apiUploadedFile) (apiAdaptationStatus, bool, error) {
 	status, err := projectAdaptationStatus(manifest, false)
 	if err != nil {
 		return status, false, err
@@ -288,7 +300,26 @@ func (s *Server) startLoadedNovelAnalysisIfNeeded(session *ProjectSession, manif
 	if err != nil {
 		return status, false, err
 	}
-	if err := session.StartPrepareAdaptationSource(sourcePath); err != nil {
+	if err := session.StartPrepareAdaptationSourceWithCompletion(sourcePath, func() error {
+		status, err := projectAdaptationStatus(manifest, false)
+		if err != nil {
+			return err
+		}
+		if status.AnalysisStatus != "done" {
+			return fmt.Errorf("loaded novel analysis finished but source package is %s", status.AnalysisStatus)
+		}
+		synced, err := s.libraries.ReplaceNovelFromProject(manifest, item.Name, sourceFile.RelativePath)
+		if err != nil {
+			return err
+		}
+		session.appendLibraryEvent(
+			"novel_sync",
+			fmt.Sprintf("已同步小说库：%s", synced.Name),
+			fmt.Sprintf("source_file=%s", synced.SourceFile),
+			"success",
+		)
+		return nil
+	}); err != nil {
 		return status, false, err
 	}
 	status, err = projectAdaptationStatus(manifest, true)
@@ -483,7 +514,23 @@ func (s *LibraryService) SaveNovelFromProject(manifest ProjectManifest, name, so
 	if err != nil {
 		return apiLibraryItem{}, err
 	}
-	return s.saveNovelEntry(displayName, entryName, adaptationRoot, sourcePath)
+	return s.saveNovelEntry(displayName, entryName, adaptationRoot, sourcePath, false)
+}
+
+func (s *LibraryService) ReplaceNovelFromProject(manifest ProjectManifest, name, sourceFile string) (apiLibraryItem, error) {
+	displayName, entryName, err := libraryEntryName(name)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	sourcePath, err := adaptationSourcePathFromName(sourceFile, manifest, false)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	adaptationRoot, err := findProjectAdaptationRoot(manifest)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	return s.saveNovelEntry(displayName, entryName, adaptationRoot, sourcePath, true)
 }
 
 func (s *LibraryService) SaveNovelFromPreparedRoot(name, adaptationRoot, sourcePath string) (apiLibraryItem, error) {
@@ -491,7 +538,7 @@ func (s *LibraryService) SaveNovelFromPreparedRoot(name, adaptationRoot, sourceP
 	if err != nil {
 		return apiLibraryItem{}, err
 	}
-	return s.saveNovelEntry(displayName, entryName, adaptationRoot, sourcePath)
+	return s.saveNovelEntry(displayName, entryName, adaptationRoot, sourcePath, false)
 }
 
 func (s *LibraryService) LoadNovelIntoProject(manifest ProjectManifest, name string) (apiLibraryItem, apiUploadedFile, error) {
@@ -572,7 +619,7 @@ func (s *LibraryService) LoadNovelIntoProject(manifest ProjectManifest, name str
 	return item, sourceFile, nil
 }
 
-func (s *LibraryService) saveNovelEntry(displayName, entryName, adaptationRoot, sourcePath string) (apiLibraryItem, error) {
+func (s *LibraryService) saveNovelEntry(displayName, entryName, adaptationRoot, sourcePath string, replace bool) (apiLibraryItem, error) {
 	if strings.TrimSpace(adaptationRoot) == "" {
 		return apiLibraryItem{}, fmt.Errorf("adaptation analysis path is required")
 	}
@@ -604,9 +651,22 @@ func (s *LibraryService) saveNovelEntry(displayName, entryName, adaptationRoot, 
 	if err != nil {
 		return apiLibraryItem{}, err
 	}
+	existingManifest := novelLibraryManifest{}
+	entryExists := false
 	if _, err := os.Stat(entryRoot); err == nil {
-		return apiLibraryItem{}, fmt.Errorf("library item %q already exists", displayName)
-	} else if !os.IsNotExist(err) {
+		entryExists = true
+		if !replace {
+			return apiLibraryItem{}, fmt.Errorf("library item %q already exists", displayName)
+		}
+		existingManifest, err = readNovelLibraryManifest(entryRoot)
+		if err != nil {
+			return apiLibraryItem{}, err
+		}
+	} else if os.IsNotExist(err) {
+		if replace {
+			return apiLibraryItem{}, fmt.Errorf("library item %q does not exist", displayName)
+		}
+	} else {
 		return apiLibraryItem{}, fmt.Errorf("stat library item %q: %w", displayName, err)
 	}
 
@@ -632,18 +692,32 @@ func (s *LibraryService) saveNovelEntry(displayName, entryName, adaptationRoot, 
 	}
 
 	now := time.Now().UTC()
+	createdAt := now
+	sourceFileName := filepath.Base(sourcePath)
+	if entryExists {
+		if !existingManifest.CreatedAt.IsZero() {
+			createdAt = existingManifest.CreatedAt
+		}
+		if strings.TrimSpace(existingManifest.SourceFile) != "" {
+			sourceFileName = existingManifest.SourceFile
+		}
+	}
 	libraryManifest := novelLibraryManifest{
 		Version:      1,
 		Name:         displayName,
-		SourceFile:   filepath.Base(sourcePath),
+		SourceFile:   sourceFileName,
 		ChapterCount: manifest.ChapterCount,
-		CreatedAt:    now,
+		CreatedAt:    createdAt,
 		UpdatedAt:    now,
 	}
 	if err := writeJSONFile(filepath.Join(tmpRoot, novelLibraryManifestName), libraryManifest); err != nil {
 		return apiLibraryItem{}, err
 	}
-	if err := os.Rename(tmpRoot, entryRoot); err != nil {
+	if replace {
+		if err := replaceDir(entryRoot, tmpRoot); err != nil {
+			return apiLibraryItem{}, err
+		}
+	} else if err := os.Rename(tmpRoot, entryRoot); err != nil {
 		return apiLibraryItem{}, err
 	}
 	return apiLibraryItem{
@@ -670,6 +744,8 @@ func writeLibraryActionError(w http.ResponseWriter, err error) {
 	switch {
 	case strings.Contains(msg, "already exists"):
 		status = http.StatusConflict
+	case strings.Contains(msg, "does not exist"):
+		status = http.StatusNotFound
 	case strings.Contains(msg, "required") ||
 		strings.Contains(msg, "not safe") ||
 		strings.Contains(msg, "reserved") ||
@@ -966,6 +1042,28 @@ func copyDir(sourceDir, targetDir string) error {
 		}
 		return copyFileOverwrite(path, target)
 	})
+}
+
+func replaceDir(targetDir, replacementDir string) error {
+	backupDir := fmt.Sprintf("%s.bak-%d", targetDir, time.Now().UnixNano())
+	if err := os.Rename(targetDir, backupDir); err != nil {
+		return fmt.Errorf("backup existing directory %s: %w", targetDir, err)
+	}
+	installed := false
+	defer func() {
+		if installed {
+			_ = os.RemoveAll(backupDir)
+			return
+		}
+		if _, err := os.Stat(targetDir); os.IsNotExist(err) {
+			_ = os.Rename(backupDir, targetDir)
+		}
+	}()
+	if err := os.Rename(replacementDir, targetDir); err != nil {
+		return fmt.Errorf("install replacement directory %s: %w", targetDir, err)
+	}
+	installed = true
+	return nil
 }
 
 func copyFileOverwrite(source, target string) error {

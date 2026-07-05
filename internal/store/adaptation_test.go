@@ -476,6 +476,58 @@ func TestAdaptationStoreLoadsSingleChapterReportsBeforeLegacyAggregate(t *testin
 	}
 }
 
+func TestAdaptationStoreSourceFoundationBatchRoundTripAndClear(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	batch := domain.AdaptationSourceFoundationBatch{
+		Version:         1,
+		Kind:            "reports",
+		Level:           0,
+		Index:           1,
+		SourceFrom:      1,
+		SourceTo:        3,
+		SourceSignature: "source-sig",
+		InputSignature:  "input-sig",
+		PromptVersion:   "prompt-v1",
+		BatchRuneLimit:  70000,
+		Foundation: domain.AdaptationSourceFoundation{
+			Premise: "# Partial\n",
+			Characters: []domain.Character{
+				{Name: "Ari", Role: "lead"},
+			},
+		},
+	}
+	if err := s.Adaptation.SaveSourceFoundationBatch(batch); err != nil {
+		t.Fatalf("SaveSourceFoundationBatch: %v", err)
+	}
+	loaded, err := s.Adaptation.LoadSourceFoundationBatch(0, 1)
+	if err != nil {
+		t.Fatalf("LoadSourceFoundationBatch: %v", err)
+	}
+	if loaded == nil || loaded.InputSignature != "input-sig" || loaded.Foundation.Premise != "# Partial\n" {
+		t.Fatalf("loaded batch mismatch: %+v", loaded)
+	}
+
+	if err := s.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{
+		Premise: "# Final\n",
+		Characters: []domain.Character{
+			{Name: "Ari", Role: "lead"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveSourceFoundation: %v", err)
+	}
+	loaded, err = s.Adaptation.LoadSourceFoundationBatch(0, 1)
+	if err != nil {
+		t.Fatalf("LoadSourceFoundationBatch after final save: %v", err)
+	}
+	if loaded != nil {
+		t.Fatalf("source foundation batches should be cleared after final save: %+v", loaded)
+	}
+}
+
 func TestAdaptationStoreLoadCompleteSourceReportsRequiresMatchingSHA(t *testing.T) {
 	s := NewStore(t.TempDir())
 	if err := s.Init(); err != nil {

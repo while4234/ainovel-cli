@@ -279,10 +279,10 @@ export function listNovelLibrary(q) {
   return request(queryPath('/api/libraries/novels', q));
 }
 
-export function saveNovelToLibrary(projectId, name, sourceFile) {
+export function saveNovelToLibrary(projectId, name, sourceFile, options = {}) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/library/save`, {
     method: 'POST',
-    body: JSON.stringify({ name, source_file: sourceFile })
+    body: JSON.stringify({ name, source_file: sourceFile, replace: options.replace === true })
   });
 }
 
@@ -371,6 +371,13 @@ export function confirmCoCreatePlanning(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/confirm`, {
     method: 'POST',
     body: JSON.stringify({})
+  });
+}
+
+export function reviseCoCreatePlanning(projectId, payload = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/planning/revise`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
   });
 }
 

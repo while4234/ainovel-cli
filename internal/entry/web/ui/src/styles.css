@@ -2082,8 +2082,20 @@ h2 {
 }
 
 .proposal-review-actions {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: start;
+  gap: 10px;
+}
+
+.planning-revision-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.planning-revision-controls.compact .proposal-revision-textarea {
+  min-height: 88px;
 }
 
 .planning-review-card p {

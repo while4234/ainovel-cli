@@ -91,6 +91,94 @@ func TestProjectCoCreateSuggestionsAndCommitUseDraftPrompt(t *testing.T) {
 	}
 }
 
+func TestProjectCoCreatePlanningRevisionRegeneratesPendingPlan(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Planning Revision")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply("updated plan", "## Revised\n- Make the heroine proactive\n- Shorten the opening", true)
+	st := storepkg.NewStore(manifest.OutputDir)
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status:           domain.PlanningReviewStatusPending,
+		Kind:             domain.PlanningReviewKindChapterOutline,
+		Brief:            "## Old\n- Slow opening\n- Passive heroine",
+		StartPrompt:      "old start prompt",
+		TargetTotalWords: 5000,
+		CreatedAt:        "2026-07-05T00:00:00Z",
+		UpdatedAt:        "2026-07-05T00:01:00Z",
+	}); err != nil {
+		t.Fatalf("seed planning review: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/planning/revise", bytes.NewBufferString(`{"feedback":"make the heroine proactive and shorten the opening"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("planning revise status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.cocreateCalls != 1 || fake.adaptCoCreateCalls != 0 || fake.adaptProposalCalls != 0 {
+		t.Fatalf("co-create routing calls normal=%d adapt=%d proposal=%d", fake.cocreateCalls, fake.adaptCoCreateCalls, fake.adaptProposalCalls)
+	}
+	if !coCreateHistoryContains(fake.lastCoCreateHistory, "make the heroine proactive") ||
+		!coCreateHistoryContains(fake.lastCoCreateHistory, "Passive heroine") {
+		t.Fatalf("revision history missing baseline or feedback: %+v", fake.lastCoCreateHistory)
+	}
+	if fake.prepareRulesCalls != 1 || fake.setWordBudgetCalls != 1 || fake.startPreparedCalls != 1 {
+		t.Fatalf("planning restart calls prepare=%d budget=%d start=%d", fake.prepareRulesCalls, fake.setWordBudgetCalls, fake.startPreparedCalls)
+	}
+	if fake.wordBudget == nil || fake.wordBudget.TargetTotalWords != 5000 {
+		t.Fatalf("word budget = %+v, want target 5000", fake.wordBudget)
+	}
+	if !strings.Contains(fake.preparedRulesPrompt, "Make the heroine proactive") ||
+		!strings.Contains(fake.startPreparedPrompt, "target_total_words=5000") {
+		t.Fatalf("prepared prompts did not use revised plan: rules=%q start=%q", fake.preparedRulesPrompt, fake.startPreparedPrompt)
+	}
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil {
+		t.Fatalf("load planning review: %v", err)
+	}
+	if review == nil || review.Status != domain.PlanningReviewStatusCollecting {
+		t.Fatalf("planning review status = %+v, want collecting", review)
+	}
+	if review.CreatedAt != "2026-07-05T00:00:00Z" || review.TargetTotalWords != 5000 {
+		t.Fatalf("planning review metadata = %+v", review)
+	}
+	if !strings.Contains(review.Brief, "Make the heroine proactive") || strings.Contains(review.Brief, "Passive heroine") {
+		t.Fatalf("planning review brief = %q", review.Brief)
+	}
+}
+
+func TestProjectCoCreatePlanningRevisionRejectsInvalidState(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Planning Revision Invalid")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/planning/revise", bytes.NewBufferString(`{"instruction":"   "}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("blank feedback status = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/planning/revise", bytes.NewBufferString(`{"instruction":"revise the plan"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("missing review status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+	if fake.cocreateCalls != 0 || fake.startPreparedCalls != 0 {
+		t.Fatalf("invalid request should not touch model or planning start: co-create=%d start=%d", fake.cocreateCalls, fake.startPreparedCalls)
+	}
+}
+
 func TestProjectCoCreateCheckpointRestoresAfterSessionRestart(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
@@ -1554,4 +1642,13 @@ func webCoCreateReply(message, draft string, ready bool, suggestions ...string) 
 		Suggestions: suggestions,
 		Raw:         "<reply>" + message + "</reply><draft>" + draft + "</draft><ready>true</ready><suggestions></suggestions>",
 	}
+}
+
+func coCreateHistoryContains(history []host.CoCreateMessage, text string) bool {
+	for _, message := range history {
+		if strings.Contains(message.Content, text) {
+			return true
+		}
+	}
+	return false
 }

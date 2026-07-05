@@ -6,6 +6,7 @@ import {
   createNewModelDraft,
   modelAddValidationMessage,
   modelAddModeDefaults,
+  modelAddSaveTarget,
   modelOptionsForProvider
 } from './App.jsx';
 
@@ -64,6 +65,27 @@ describe('model add helpers', () => {
       base_url: 'https://api.example/v1'
     });
     expect(payload).not.toHaveProperty('role');
+  });
+
+  it('persists model add/edit through the global registry even inside a project', () => {
+    expect(modelAddSaveTarget({ id: 'project-1' }, { select_after_save: false })).toEqual({
+      persistScope: 'global',
+      projectId: 'project-1',
+      refreshProjectModels: true,
+      selectProjectAfterSave: false
+    });
+    expect(modelAddSaveTarget({ id: 'project-1' }, { select_after_save: true })).toEqual({
+      persistScope: 'global',
+      projectId: 'project-1',
+      refreshProjectModels: true,
+      selectProjectAfterSave: true
+    });
+    expect(modelAddSaveTarget(null, { select_after_save: true })).toEqual({
+      persistScope: 'global',
+      projectId: '',
+      refreshProjectModels: false,
+      selectProjectAfterSave: false
+    });
   });
 
   it('requires a confirmed Grok login before adding the provider', () => {

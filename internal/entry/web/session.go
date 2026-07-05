@@ -726,6 +726,10 @@ func (s *ProjectSession) PrepareAdaptationSource(ctx context.Context, sourcePath
 }
 
 func (s *ProjectSession) StartPrepareAdaptationSource(sourcePath string) error {
+	return s.StartPrepareAdaptationSourceWithCompletion(sourcePath, nil)
+}
+
+func (s *ProjectSession) StartPrepareAdaptationSourceWithCompletion(sourcePath string, onSuccess func() error) error {
 	ctx, unlock, err := s.beginCancellableAction(context.Background(), projectActionKindAdaptationAnalysis)
 	if err != nil {
 		return err
@@ -749,11 +753,18 @@ func (s *ProjectSession) StartPrepareAdaptationSource(sourcePath string) error {
 			s.appendAdaptationActionError(adapt.StageError, "原文分析失败", fmt.Errorf("adaptation event stream is nil"))
 			return
 		}
+		analysisOK := true
 		if _, err := s.consumeAdaptationEvents(ctx, events); err != nil {
+			analysisOK = false
 			var runErr adaptationRunError
 			var pausedErr adaptationPausedError
 			if !errors.As(err, &runErr) && !errors.As(err, &pausedErr) && !errors.Is(err, context.Canceled) {
 				s.appendAdaptationActionError(adapt.StageError, "原文分析失败", err)
+			}
+		}
+		if analysisOK && onSuccess != nil {
+			if err := onSuccess(); err != nil {
+				s.appendLibraryEvent("novel_sync_error", "小说库同步失败", err.Error(), "error")
 			}
 		}
 	}()
@@ -1182,17 +1193,7 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 		if err != nil {
 			return state.apiState(), err
 		}
-		if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
-			return state.apiState(), err
-		}
-		if err := s.persistWordBudget(plan.WordBudget); err != nil {
-			return state.apiState(), err
-		}
-		if err := s.saveNormalCoCreatePlanningReview(plan); err != nil {
-			return state.apiState(), err
-		}
-		if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
-			_ = s.clearNormalCoCreatePlanningReview()
+		if err := s.prepareNormalCoCreatePlanning(plan, "", nil); err != nil {
 			return state.apiState(), err
 		}
 	}
@@ -1204,11 +1205,37 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 	return api, nil
 }
 
-func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan) error {
+func (s *ProjectSession) prepareNormalCoCreatePlanning(plan startup.Plan, createdAt string, rollback *domain.PlanningReview) error {
+	if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+		return err
+	}
+	if err := s.persistWordBudget(plan.WordBudget); err != nil {
+		return err
+	}
+	if err := s.saveNormalCoCreatePlanningReview(plan, createdAt); err != nil {
+		return err
+	}
+	if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
+		st := storepkg.NewStore(s.manifest.OutputDir)
+		if rollback != nil {
+			_ = st.RunMeta.SetPlanningReview(rollback)
+		} else {
+			_ = st.RunMeta.ClearPlanningReview()
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan, createdAt string) error {
 	if s == nil {
 		return fmt.Errorf("project session is nil")
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	createdAt = strings.TrimSpace(createdAt)
+	if createdAt == "" {
+		createdAt = now
+	}
 	targetWords := 0
 	if plan.WordBudget != nil {
 		targetWords = plan.WordBudget.TargetTotalWords
@@ -1219,7 +1246,7 @@ func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan) err
 		Brief:            strings.TrimSpace(plan.RawPrompt),
 		StartPrompt:      strings.TrimSpace(plan.StartPrompt),
 		TargetTotalWords: targetWords,
-		CreatedAt:        now,
+		CreatedAt:        createdAt,
 		UpdatedAt:        now,
 	}
 	st := storepkg.NewStore(s.manifest.OutputDir)
@@ -1232,6 +1259,53 @@ func (s *ProjectSession) clearNormalCoCreatePlanningReview() error {
 	}
 	st := storepkg.NewStore(s.manifest.OutputDir)
 	return st.RunMeta.ClearPlanningReview()
+}
+
+func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, feedback string) error {
+	feedback = strings.TrimSpace(feedback)
+	if feedback == "" {
+		return fmt.Errorf("feedback is required")
+	}
+	unlock, err := s.beginAction()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	if s.cocreate != nil {
+		return fmt.Errorf("finish the active co-create session before revising the planning review")
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil {
+		return fmt.Errorf("read planning review: %w", err)
+	}
+	if review == nil || review.Status != domain.PlanningReviewStatusPending {
+		return fmt.Errorf("no pending co-create planning review")
+	}
+	if strings.TrimSpace(review.Brief) == "" {
+		return fmt.Errorf("pending co-create planning review has no brief")
+	}
+
+	revision := newWebCoCreatePlanningRevisionSession(review, feedback)
+	reply, err := s.runCoCreatePlanningRevision(ctx, revision)
+	if err != nil {
+		return err
+	}
+	revision.applyReply(reply)
+	if err := revision.requireReadyDraft(); err != nil {
+		return fmt.Errorf("revised co-create planning draft is not ready: %w", err)
+	}
+	plan, err := revision.session.BuildPlanWithWordBudget(review.TargetTotalWords)
+	if err != nil {
+		return fmt.Errorf("build revised co-create plan: %w", err)
+	}
+	rollback := *review
+	if err := s.prepareNormalCoCreatePlanning(plan, review.CreatedAt, &rollback); err != nil {
+		return fmt.Errorf("start revised co-create planning: %w", err)
+	}
+	s.AppendSnapshot()
+	return nil
 }
 
 func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
@@ -1619,6 +1693,94 @@ func (s *ProjectSession) repairCoCreateDraftForCommitLocked(ctx context.Context,
 	s.appendCoCreateState(api)
 	s.appendCoCreateRunFinished(eventID, startedAt, api, nil)
 	return nil
+}
+
+func newWebCoCreatePlanningRevisionSession(review *domain.PlanningReview, feedback string) *webCoCreateSession {
+	brief := strings.TrimSpace(review.Brief)
+	history := []host.CoCreateMessage{
+		{
+			Role:    "user",
+			Content: "请根据我的需求整理一份可直接交给小说创作引擎的完整创作指令。",
+		},
+		{
+			Role: "assistant",
+			Content: strings.Join([]string{
+				"<reply>当前创作规划已进入人工审核。</reply>",
+				"<draft>",
+				brief,
+				"</draft>",
+				"<ready>true</ready>",
+				"<suggestions></suggestions>",
+			}, "\n"),
+		},
+		{
+			Role:    "user",
+			Content: coCreatePlanningRevisionInstruction(feedback),
+		},
+	}
+	return &webCoCreateSession{
+		kind: webCoCreateKindNormal,
+		session: startup.NewCoCreateSessionFromSnapshot(startup.CoCreateSnapshot{
+			History:         history,
+			DraftPrompt:     brief,
+			DraftHistoryLen: 2,
+			Ready:           true,
+		}),
+	}
+}
+
+func coCreatePlanningRevisionInstruction(feedback string) string {
+	return strings.TrimSpace(`审核未通过，请根据下面的审核意见修订上一版 <draft>。
+要求：
+- 只修订创作规划，不要开始写正文。
+- 必须输出完整、自洽、可直接执行的新 <draft>，不要使用“同上”“保留上一版”等占位说法。
+- 尽量保留未被审核意见否定的设定、人物、结构、篇幅约束和风格要求。
+- 如果审核意见要求调整章节、分卷、节奏或篇幅，请同步更新相关规划细节。
+
+审核意见：
+` + strings.TrimSpace(feedback))
+}
+
+func (s *ProjectSession) runCoCreatePlanningRevision(ctx context.Context, state *webCoCreateSession) (host.CoCreateReply, error) {
+	if state == nil || state.session == nil {
+		return host.CoCreateReply{}, fmt.Errorf("co-create planning revision session is missing")
+	}
+	eventID, startedAt := s.appendCoCreateRunStarted(webCoCreateKindNormal)
+	previousDraft := state.draftPrompt()
+	reply, err := s.host.CoCreateStream(ctx, state.session.History(), nil)
+	if err != nil {
+		s.appendCoCreateRunFinished(eventID, startedAt, state.apiState(), err)
+		return host.CoCreateReply{}, err
+	}
+	if state.draftNeedsRepair(reply, previousDraft) {
+		repairReply, repairErr := s.host.CoCreateStream(ctx, state.draftRepairHistory(reply, previousDraft), nil)
+		if repairErr != nil {
+			err := fmt.Errorf("repair co-create planning revision draft: %w", repairErr)
+			s.appendCoCreateRunFinished(eventID, startedAt, state.apiState(), err)
+			return host.CoCreateReply{}, err
+		}
+		if strings.TrimSpace(repairReply.Prompt) == "" {
+			err := fmt.Errorf("repair co-create planning revision draft: model did not return a draft")
+			s.appendCoCreateRunFinished(eventID, startedAt, state.apiState(), err)
+			return host.CoCreateReply{}, err
+		}
+		if state.draftNeedsRepair(repairReply, previousDraft) {
+			err := fmt.Errorf("repair co-create planning revision draft: model returned an incomplete draft")
+			s.appendCoCreateRunFinished(eventID, startedAt, state.apiState(), err)
+			return host.CoCreateReply{}, err
+		}
+		reply = repairReply
+	}
+	if strings.TrimSpace(reply.Prompt) == "" {
+		err := fmt.Errorf("co-create planning revision did not return a draft")
+		s.appendCoCreateRunFinished(eventID, startedAt, state.apiState(), err)
+		return host.CoCreateReply{}, err
+	}
+	finished := state.apiState()
+	finished.Ready = reply.Ready
+	finished.DraftPrompt = strings.TrimSpace(reply.Prompt)
+	s.appendCoCreateRunFinished(eventID, startedAt, finished, nil)
+	return reply, nil
 }
 
 func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateState, error) {

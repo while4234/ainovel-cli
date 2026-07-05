@@ -58,11 +58,39 @@ type AdaptationSourceReport struct {
 
 // AdaptationSourceFoundation is the reusable foundation inferred from the source.
 type AdaptationSourceFoundation struct {
-	Premise    string          `json:"premise"`
-	Characters []Character     `json:"characters"`
-	WorldRules []WorldRule     `json:"world_rules"`
-	Volumes    []VolumeOutline `json:"volumes"`
-	Compass    *StoryCompass   `json:"compass,omitempty"`
+	Version            int             `json:"version,omitempty"`
+	GeneratedAt        string          `json:"generated_at,omitempty"`
+	SourcePath         string          `json:"source_path,omitempty"`
+	SourceChapterCount int             `json:"source_chapter_count,omitempty"`
+	SourceSignature    string          `json:"source_signature,omitempty"`
+	ReportSignature    string          `json:"report_signature,omitempty"`
+	PromptVersion      string          `json:"prompt_version,omitempty"`
+	BatchRuneLimit     int             `json:"batch_rune_limit,omitempty"`
+	Premise            string          `json:"premise"`
+	Characters         []Character     `json:"characters"`
+	WorldRules         []WorldRule     `json:"world_rules"`
+	Volumes            []VolumeOutline `json:"volumes"`
+	Compass            *StoryCompass   `json:"compass,omitempty"`
+}
+
+// AdaptationSourceFoundationBatch is a resumable checkpoint for source
+// foundation aggregation. Level 0 batches are direct source-report merges;
+// higher levels are summary merges over previous batches.
+type AdaptationSourceFoundationBatch struct {
+	Version            int                        `json:"version"`
+	Kind               string                     `json:"kind"`
+	Level              int                        `json:"level"`
+	Index              int                        `json:"index"`
+	SourceFrom         int                        `json:"source_from"`
+	SourceTo           int                        `json:"source_to"`
+	SourcePath         string                     `json:"source_path,omitempty"`
+	SourceChapterCount int                        `json:"source_chapter_count,omitempty"`
+	SourceSignature    string                     `json:"source_signature"`
+	InputSignature     string                     `json:"input_signature"`
+	PromptVersion      string                     `json:"prompt_version"`
+	BatchRuneLimit     int                        `json:"batch_rune_limit,omitempty"`
+	GeneratedAt        string                     `json:"generated_at,omitempty"`
+	Foundation         AdaptationSourceFoundation `json:"foundation"`
 }
 
 // AdaptationCoCreateDossier is the compact all-book packet used by adaptation

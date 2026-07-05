@@ -48,7 +48,7 @@ func MergeFoundationFromReports(
 	if err != nil {
 		return nil, err
 	}
-	result.Volumes = buildSourceOutlineFromReports(reports)
+	result.Volumes = BuildSourceOutlineFromReports(reports)
 	if got := len(domain.FlattenOutline(result.Volumes)); got != len(reports) {
 		return nil, fmt.Errorf("generated source outline chapter count mismatch: got %d, want %d", got, len(reports))
 	}
@@ -77,7 +77,7 @@ func MergeFoundationFromReportsBatched(
 		batchRuneLimit = DefaultFoundationMergeRunes
 	}
 
-	batches := foundationMergeReportBatches(reports, batchRuneLimit)
+	batches := FoundationMergeReportBatches(reports, batchRuneLimit)
 	if len(batches) <= 1 {
 		if onBatch != nil {
 			onBatch(FoundationMergeBatchEvent{
@@ -90,7 +90,7 @@ func MergeFoundationFromReportsBatched(
 		return MergeFoundationFromReports(ctx, llm, systemPrompt, reports, opts)
 	}
 
-	partials := make([]foundationMergePartial, 0, len(batches))
+	partials := make([]FoundationMergePartial, 0, len(batches))
 	for i, batch := range batches {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -108,7 +108,7 @@ func MergeFoundationFromReportsBatched(
 			return nil, fmt.Errorf("merge source foundation batch %d/%d (chapters %d-%d): %w",
 				i+1, len(batches), batch[0].Chapter, batch[len(batch)-1].Chapter, err)
 		}
-		partials = append(partials, foundationMergePartial{
+		partials = append(partials, FoundationMergePartial{
 			Index:  i + 1,
 			From:   batch[0].Chapter,
 			To:     batch[len(batch)-1].Chapter,
@@ -125,11 +125,11 @@ func MergeFoundationFromReportsBatched(
 			Final: true,
 		})
 	}
-	result, err := mergeFoundationPartialsBatched(ctx, llm, systemPrompt, partials, len(reports), opts, batchRuneLimit, onBatch)
+	result, err := MergeFoundationPartialsBatched(ctx, llm, systemPrompt, partials, len(reports), opts, batchRuneLimit, onBatch)
 	if err != nil {
 		return nil, err
 	}
-	result.Volumes = buildSourceOutlineFromReports(reports)
+	result.Volumes = BuildSourceOutlineFromReports(reports)
 	if got := len(domain.FlattenOutline(result.Volumes)); got != len(reports) {
 		return nil, fmt.Errorf("generated source outline chapter count mismatch: got %d, want %d", got, len(reports))
 	}
@@ -139,14 +139,15 @@ func MergeFoundationFromReportsBatched(
 	return result, nil
 }
 
-type foundationMergePartial struct {
-	Index  int
-	From   int
-	To     int
-	Result *FoundationResult
+type FoundationMergePartial struct {
+	Index          int
+	From           int
+	To             int
+	InputSignature string
+	Result         *FoundationResult
 }
 
-func foundationMergeReportBatches(reports []domain.AdaptationSourceReport, runeLimit int) [][]domain.AdaptationSourceReport {
+func FoundationMergeReportBatches(reports []domain.AdaptationSourceReport, runeLimit int) [][]domain.AdaptationSourceReport {
 	if runeLimit <= 0 {
 		runeLimit = DefaultFoundationMergeRunes
 	}
@@ -175,11 +176,11 @@ func foundationMergeReportRunes(report domain.AdaptationSourceReport) int {
 	return utf8.RuneCountInString(sb.String())
 }
 
-func mergeFoundationPartialsBatched(
+func MergeFoundationPartialsBatched(
 	ctx context.Context,
 	llm LLMChat,
 	systemPrompt string,
-	partials []foundationMergePartial,
+	partials []FoundationMergePartial,
 	totalReports int,
 	opts StructuredCallOptions,
 	batchRuneLimit int,
@@ -198,15 +199,15 @@ func mergeFoundationPartialsBatched(
 	level := 1
 	current := partials
 	for len(current) > 1 {
-		groups := foundationMergePartialBatches(current, batchRuneLimit)
+		groups := FoundationMergePartialBatches(current, batchRuneLimit)
 		if len(groups) == 1 {
-			result, err := mergeFoundationPartials(ctx, llm, systemPrompt, groups[0], totalReports, opts)
+			result, err := MergeFoundationPartials(ctx, llm, systemPrompt, groups[0], totalReports, opts)
 			if err != nil {
 				return nil, err
 			}
 			return result, nil
 		}
-		next := make([]foundationMergePartial, 0, len(groups))
+		next := make([]FoundationMergePartial, 0, len(groups))
 		for i, group := range groups {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -220,12 +221,12 @@ func mergeFoundationPartialsBatched(
 					Final: true,
 				})
 			}
-			result, err := mergeFoundationPartials(ctx, llm, systemPrompt, group, totalReports, opts)
+			result, err := MergeFoundationPartials(ctx, llm, systemPrompt, group, totalReports, opts)
 			if err != nil {
 				return nil, fmt.Errorf("merge source foundation summary level %d batch %d/%d (chapters %d-%d): %w",
 					level, i+1, len(groups), group[0].From, group[len(group)-1].To, err)
 			}
-			next = append(next, foundationMergePartial{
+			next = append(next, FoundationMergePartial{
 				Index:  i + 1,
 				From:   group[0].From,
 				To:     group[len(group)-1].To,
@@ -238,12 +239,12 @@ func mergeFoundationPartialsBatched(
 	return current[0].Result, nil
 }
 
-func foundationMergePartialBatches(partials []foundationMergePartial, runeLimit int) [][]foundationMergePartial {
+func FoundationMergePartialBatches(partials []FoundationMergePartial, runeLimit int) [][]FoundationMergePartial {
 	if runeLimit <= 0 {
 		runeLimit = DefaultFoundationMergeRunes
 	}
-	var batches [][]foundationMergePartial
-	var current []foundationMergePartial
+	var batches [][]FoundationMergePartial
+	var current []FoundationMergePartial
 	currentRunes := 0
 	for _, partial := range partials {
 		partialRunes := foundationMergePartialRunes(partial)
@@ -261,7 +262,7 @@ func foundationMergePartialBatches(partials []foundationMergePartial, runeLimit 
 	return batches
 }
 
-func foundationMergePartialRunes(partial foundationMergePartial) int {
+func foundationMergePartialRunes(partial FoundationMergePartial) int {
 	if partial.Result == nil {
 		return 0
 	}
@@ -274,11 +275,11 @@ func foundationMergePartialRunes(partial foundationMergePartial) int {
 	return utf8.RuneCountInString(sb.String())
 }
 
-func mergeFoundationPartials(
+func MergeFoundationPartials(
 	ctx context.Context,
 	llm LLMChat,
 	systemPrompt string,
-	partials []foundationMergePartial,
+	partials []FoundationMergePartial,
 	totalReports int,
 	opts StructuredCallOptions,
 ) (*FoundationResult, error) {
@@ -327,7 +328,7 @@ func writeFoundationMergeReport(sb *strings.Builder, report domain.AdaptationSou
 	sb.WriteString("\n")
 }
 
-func buildFoundationPartialMergeUserPrompt(partials []foundationMergePartial, totalReports int) string {
+func buildFoundationPartialMergeUserPrompt(partials []FoundationMergePartial, totalReports int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "The source novel has %d chapter reports. They were merged into %d consecutive partial foundations to keep each request small.\n", totalReports, len(partials))
 	sb.WriteString("Merge these partial foundations into one all-book foundation. Preserve source causal order and keep only facts supported by the partial foundations.\n")
@@ -531,7 +532,7 @@ func parseFoundationMergeOutput(text string) (*FoundationResult, error) {
 	}, nil
 }
 
-func buildSourceOutlineFromReports(reports []domain.AdaptationSourceReport) []domain.VolumeOutline {
+func BuildSourceOutlineFromReports(reports []domain.AdaptationSourceReport) []domain.VolumeOutline {
 	arcs := make([]domain.ArcOutline, 0, (len(reports)+sourceOutlineArcSize-1)/sourceOutlineArcSize)
 	for start := 0; start < len(reports); start += sourceOutlineArcSize {
 		end := start + sourceOutlineArcSize

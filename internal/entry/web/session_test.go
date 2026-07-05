@@ -1099,6 +1099,7 @@ type fakeProjectHost struct {
 	importNovelPath             string
 	importNovelResumeFrom       int
 	adaptAnalyzeStarted         chan struct{}
+	adaptAnalyzeBeforeDone      func(string)
 	adaptProposalStarted        chan struct{}
 	simulateStarted             chan struct{}
 	releaseSimulate             chan struct{}
@@ -1473,6 +1474,7 @@ func (f *fakeProjectHost) PrepareAdaptationSource(_ context.Context, sourcePath 
 	f.adaptSourcePath = sourcePath
 	err := f.adaptAnalyzeErr
 	started := f.adaptAnalyzeStarted
+	beforeDone := f.adaptAnalyzeBeforeDone
 	block := f.blockAdaptAnalyze
 	if started != nil {
 		f.adaptAnalyzeStarted = nil
@@ -1486,6 +1488,9 @@ func (f *fakeProjectHost) PrepareAdaptationSource(_ context.Context, sourcePath 
 	}
 	if block {
 		return make(chan adapt.Event), nil
+	}
+	if beforeDone != nil {
+		beforeDone(sourcePath)
 	}
 	events := make(chan adapt.Event, 2)
 	events <- adapt.Event{Stage: adapt.StageDone, Message: "adaptation source analyzed"}

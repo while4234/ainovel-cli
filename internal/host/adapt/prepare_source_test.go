@@ -127,6 +127,82 @@ func TestPrepareSourceResumesMissingChapterAndMergesWithoutRawBody(t *testing.T)
 	}
 }
 
+func TestMergeSourceFoundationResumesReportBatchesAfterRestart(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: 3,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, SHA256: "sha-1", Runes: 1000},
+			{Chapter: 2, SHA256: "sha-2", Runes: 1000},
+			{Chapter: 3, SHA256: "sha-3", Runes: 1000},
+		},
+	}
+	reports := []domain.AdaptationSourceReport{
+		adaptFoundationSourceReport(1, "Alpha", "sha-1"),
+		adaptFoundationSourceReport(2, "Beta", "sha-2"),
+		adaptFoundationSourceReport(3, "Gamma", "sha-3"),
+	}
+	const runeLimit = 1800
+	if batches := imp.FoundationMergeReportBatches(reports, runeLimit); len(batches) != 3 {
+		t.Fatalf("test setup should split into 3 batches, got %d", len(batches))
+	}
+
+	first := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: adaptFoundationMergeEnvelope()},
+		{text: adaptFoundationMergeEnvelope()},
+		{text: adaptFoundationMergeEnvelope()},
+		{err: context.Canceled},
+	}}
+	_, err := mergeSourceFoundationResumable(context.Background(), Deps{
+		Store:                st,
+		LLM:                  first,
+		ModelCallMaxAttempts: 1,
+		Prompts: Prompts{
+			FoundationMerge: "merge",
+		},
+	}, manifest, reports, runeLimit, nil)
+	if err == nil {
+		t.Fatal("want first run to fail while merging summaries")
+	}
+	if first.calls != 4 {
+		t.Fatalf("first calls=%d, want 3 report batches plus failed summary", first.calls)
+	}
+	if batch, err := st.Adaptation.LoadSourceFoundationBatch(0, 3); err != nil || batch == nil {
+		t.Fatalf("report checkpoint should be saved: batch=%+v err=%v", batch, err)
+	}
+	if batch, err := st.Adaptation.LoadSourceFoundationBatch(1, 1); err != nil || batch != nil {
+		t.Fatalf("summary checkpoint should not be saved after failed summary: batch=%+v err=%v", batch, err)
+	}
+
+	second := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: adaptFoundationMergeEnvelope()},
+	}}
+	got, err := mergeSourceFoundationResumable(context.Background(), Deps{
+		Store:                st,
+		LLM:                  second,
+		ModelCallMaxAttempts: 1,
+		Prompts: Prompts{
+			FoundationMerge: "merge",
+		},
+	}, manifest, reports, runeLimit, nil)
+	if err != nil {
+		t.Fatalf("resume merge: %v", err)
+	}
+	if second.calls != 1 {
+		t.Fatalf("resume should only call summary merge, calls=%d", second.calls)
+	}
+	if got == nil || len(domain.FlattenOutline(got.Volumes)) != 3 {
+		t.Fatalf("resumed foundation outline mismatch: %+v", got)
+	}
+	if batch, err := st.Adaptation.LoadSourceFoundationBatch(1, 1); err != nil || batch == nil {
+		t.Fatalf("summary checkpoint should be saved on resume: batch=%+v err=%v", batch, err)
+	}
+}
+
 func TestPrepareSourceSourceChangeResetsOldReports(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -422,6 +498,21 @@ func writeNumberedAdaptSource(t *testing.T, dir string, count int) string {
 		t.Fatalf("write source: %v", err)
 	}
 	return path
+}
+
+func adaptFoundationSourceReport(chapter int, marker string, sourceSHA string) domain.AdaptationSourceReport {
+	return domain.AdaptationSourceReport{
+		Chapter:        chapter,
+		Title:          fmt.Sprintf("Title %d", chapter),
+		SourceSHA256:   sourceSHA,
+		Summary:        strings.Repeat(marker+" summary fact. ", 170),
+		Characters:     []string{"Ari", marker},
+		CharacterFacts: []string{marker + " changes Ari's source arc."},
+		KeyEvents:      []string{marker + " irreversible event"},
+		WorldRules:     []string{marker + " continuity rule"},
+		HookType:       "mystery",
+		DominantStrand: "quest",
+	}
 }
 
 func indexAdaptEvent(events []Event, fragment string) int {

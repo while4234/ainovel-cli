@@ -28,6 +28,32 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest integrated change: current local commit
+  `fix: stabilize web cocreate and source foundation resume`:
+  The final integration includes the concurrent Web/co-create review UI,
+  workspace display, retry-configuration, prompt-style, and static Web asset
+  changes plus resumable source-foundation aggregation for adaptation analysis.
+  Source foundation merge now persists report-level and summary-level
+  checkpoints under `meta/adaptation/source_foundation_batches`, validates them
+  with source/report/prompt/batch signatures, resumes after restart from the
+  last completed merge batch, and clears checkpoints after the final
+  `source_foundation.json` save. Validation passed for focused source
+  foundation packages, full Web UI Vitest, Vite build, and full `go test ./...`.
+- Latest prompt change: pending local changes
+  `style: harden anti-ai revision guidance`:
+  Writer style prompts and the shared `anti-ai-tone` reference now explicitly
+  target over-smooth prose, over-complete explanatory detail, too-regular
+  subject rhythm, polished metaphor/gold-line habits, over-clear psychological
+  self-defense, broken-memory realism, and functionalized side characters. The
+  writer rewrite/polish prompt now adds a specific anti-AI revision path:
+  identify paragraph-level problem clusters first, allow local structural
+  deletion/reordering, avoid replacing old lists with new lists, and avoid
+  swapping old gold-line endings for new ones.
+  Validation passed for focused Go style/loading/Web style tests with the
+  project-local Go 1.25.5 binary and `git diff --check` on the changed prompt
+  files, with CRLF conversion warnings only. The broader workspace already has
+  unrelated concurrent changes; this prompt-only batch was not committed or
+  pushed here.
 - Latest source change: current local commit
   `fix: stabilize adaptation analysis and co-create review`:
   Adaptation source foundation merge now batches by source-report rune budget

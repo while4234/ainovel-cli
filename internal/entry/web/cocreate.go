@@ -51,6 +51,11 @@ type webCoCreateReviseRequest struct {
 	Text      string `json:"text"`
 }
 
+type webCoCreatePlanningRevisionRequest struct {
+	Feedback    string `json:"feedback"`
+	Instruction string `json:"instruction"`
+}
+
 type webCoCreateDecisionRequest struct {
 	DecisionID   string `json:"decision_id"`
 	OptionID     string `json:"option_id"`
@@ -333,6 +338,42 @@ func (s *Server) handleProjectCoCreateConfirm(w http.ResponseWriter, r *http.Req
 		"snapshot": session.Snapshot(),
 		"running":  session.Snapshot().IsRunning,
 		"label":    label,
+	})
+}
+
+func (s *Server) handleProjectCoCreatePlanningRevise(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req webCoCreatePlanningRevisionRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid co-create planning revision request: "+err.Error())
+		return
+	}
+	req.Feedback = strings.TrimSpace(req.Feedback)
+	if req.Feedback == "" {
+		req.Feedback = strings.TrimSpace(req.Instruction)
+	}
+	if req.Feedback == "" {
+		writeError(w, http.StatusBadRequest, "feedback is required")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	if err := session.ReviseCoCreatePlanning(r.Context(), req.Feedback); err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"snapshot": snapshot,
+		"running":  snapshot.IsRunning,
+		"label":    "planning revision started",
 	})
 }
 
