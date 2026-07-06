@@ -945,7 +945,7 @@ func BuildAdaptationProposalVolumesContext(ctx context.Context, deps Deps, opts 
 	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "改编规划准备完成，正在判断是否需要分卷审核", nil)
 	targetChapterCount := plannerTargetChapterCount(opts, manifest)
-	if opts.Granularity == domain.AdaptationGranularityChapter || targetChapterCount < adaptationPlannerChunkedMinChapters {
+	if !shouldUseChunkedPlanner(opts, manifest, targetChapterCount) {
 		proposal, err := BuildAdaptationProposalContext(ctx, deps, opts)
 		if err != nil {
 			return nil, err
@@ -1376,10 +1376,47 @@ func buildPlanFromPlanner(
 	sourceFoundation *domain.AdaptationSourceFoundation,
 ) (domain.AdaptationPlan, error) {
 	targetChapterCount := plannerTargetChapterCount(opts, manifest)
-	if targetChapterCount >= adaptationPlannerChunkedMinChapters {
+	if shouldUseChunkedPlanner(opts, manifest, targetChapterCount) {
 		return buildPlanFromPlannerChunked(ctx, deps, opts, reports, manifest, sourceFoundation, targetChapterCount)
 	}
 	return buildPlanFromPlannerSingle(ctx, deps, opts, reports, manifest, sourceFoundation)
+}
+
+func shouldUseChunkedPlanner(opts ProposalOptions, manifest *domain.AdaptationSourceManifest, targetChapterCount int) bool {
+	switch domain.NormalizeAdaptationGranularity(opts.Granularity) {
+	case domain.AdaptationGranularityChapter:
+		return false
+	case domain.AdaptationGranularityArc, domain.AdaptationGranularityFree:
+		if targetChapterCount >= adaptationPlannerChunkedMinChapters {
+			return true
+		}
+		return plannerInputRequiresChunking(manifest)
+	default:
+		return false
+	}
+}
+
+func plannerInputRequiresChunking(manifest *domain.AdaptationSourceManifest) bool {
+	if manifest == nil {
+		return false
+	}
+	if manifest.ChapterCount >= adaptationPlannerSourceChunkedMin {
+		return true
+	}
+	return plannerManifestTotalRunes(manifest) >= CoCreateDossierBatchRuneLimit
+}
+
+func plannerManifestTotalRunes(manifest *domain.AdaptationSourceManifest) int {
+	if manifest == nil {
+		return 0
+	}
+	total := 0
+	for _, chapter := range manifest.Chapters {
+		if chapter.Runes > 0 {
+			total += chapter.Runes
+		}
+	}
+	return total
 }
 
 func plannerTargetChapterCount(opts ProposalOptions, manifest *domain.AdaptationSourceManifest) int {

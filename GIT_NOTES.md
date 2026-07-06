@@ -29,6 +29,18 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: chunk long adaptation proposals by input size`:
+  Long `arc`/`free` adaptation proposal routing now considers source input
+  size as well as target chapter count. If the analyzed source is long by
+  chapter count or dossier rune budget, the planner uses the compact source-map
+  skeleton and batch-detail flow even when the brief or explicit target count
+  is below the old 18-chapter threshold, preventing large novels from sending
+  full `source_reports` in one model request and hitting `content_too_long` or
+  HTML gateway error pages. Validation passed for full `internal/host/adapt`,
+  focused Web adaptation/co-create backend tests, `git diff --check` with CRLF
+  warnings only, and local Web rebuild/restart on `http://127.0.0.1:9898` as
+  PID `30196`.
+- Latest source/runtime change: current local commit
   `fix: split simulation retry budgets`:
   仿写语料分析、画像合成、画像导入后的重合成 now split transient
   model-call retries from structured-output repairs. Model/network failures use

@@ -614,6 +614,99 @@ func TestBuildAdaptationProposalFreeDefaultsLongSourceToChunkedPlanner(t *testin
 	}
 }
 
+func TestBuildAdaptationProposalLongSourceUsesChunkedPlannerDespiteSmallTarget(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	runeCounts := make([]int, 20)
+	for i := range runeCounts {
+		runeCounts[i] = 10 + i
+	}
+	seedPreparedAdaptationSource(t, st, runeCounts)
+	brief := "free restructure into 12\u7ae0"
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"granularity": "free",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "free restructure into 12 chapters",
+			"target_chapter_count": 12,
+			"batches": [
+				{"index": 1, "title": "Compact full-book arc", "theme": "focused rewrite", "target_from": 1, "target_to": 12, "source_from": 1, "source_to": 20, "summary": "compress the whole source through one coherent arc"}
+			]
+		}`},
+		{text: plannerBatchProposalJSON(1, 4, 1, 20)},
+		{text: plannerBatchProposalJSON(5, 8, 1, 20)},
+		{text: plannerBatchProposalJSON(9, 12, 1, 20)},
+	}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       brief,
+		Granularity: domain.AdaptationGranularityFree,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if llm.calls != 4 {
+		t.Fatalf("planner calls=%d, want skeleton + 3 detail calls", llm.calls)
+	}
+	if len(proposal.Chapters) != 12 {
+		t.Fatalf("chapters=%d, want 12", len(proposal.Chapters))
+	}
+	firstPrompt := llm.got[0][1].TextContent()
+	if !strings.Contains(firstPrompt, `"target_chapter_hint": 12`) {
+		t.Fatalf("skeleton prompt should preserve small target hint: %s", firstPrompt)
+	}
+	if !strings.Contains(firstPrompt, `"source_map"`) || strings.Contains(firstPrompt, `"source_reports"`) {
+		t.Fatalf("long source should use compact source_map instead of full reports: %s", firstPrompt)
+	}
+}
+
+func TestBuildAdaptationProposalVolumesLongSourceUsesReviewDespiteSmallTarget(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	runeCounts := make([]int, 20)
+	for i := range runeCounts {
+		runeCounts[i] = 10 + i
+	}
+	seedPreparedAdaptationSource(t, st, runeCounts)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc rewrite into 12 chapters",
+		"target_chapter_count": 12,
+		"batches": [
+			{"index": 1, "title": "Focused arc", "theme": "compression", "target_from": 1, "target_to": 12, "source_from": 1, "source_to": 20, "summary": "review the compact long-source arc before details"}
+		]
+	}`}}}
+
+	result, err := BuildAdaptationProposalVolumesContext(context.Background(), Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:              "arc rewrite into 12\u7ae0",
+		Granularity:        domain.AdaptationGranularityArc,
+		TargetChapterCount: 12,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalVolumesContext: %v", err)
+	}
+	if result == nil || result.VolumeReview == nil || result.Proposal != nil {
+		t.Fatalf("long source should return volume review only, got %+v", result)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("planner calls=%d, want one skeleton call", llm.calls)
+	}
+	if result.VolumeReview.TargetChapterCount != 12 {
+		t.Fatalf("target chapters=%d, want 12", result.VolumeReview.TargetChapterCount)
+	}
+	firstPrompt := llm.got[0][1].TextContent()
+	if !strings.Contains(firstPrompt, `"source_map"`) || strings.Contains(firstPrompt, `"source_reports"`) {
+		t.Fatalf("volume review prompt should use compact source_map instead of full reports: %s", firstPrompt)
+	}
+}
+
 func TestBuildAdaptationProposalCoversSparseSourceAnchorsByExplicitRange(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
