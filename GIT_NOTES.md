@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest source/runtime change: pending local changes
+- Latest source/runtime change: current local commit
   `fix: preserve loaded novel analysis`:
   Completed loaded novels now no-op when Analyze is clicked, returning
   `analyzed=true` without starting source analysis. Prepared source snapshots
