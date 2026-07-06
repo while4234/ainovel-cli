@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest source/runtime change: `236d98b`
+- Latest source/runtime change: `0bff8c7`
   `fix: switch models on text rate limits`:
   Runtime fallback now treats bare provider rate-limit messages such as
   `rate_limit_exceeded`, `rate limit`, `too many requests`, `request limit`,
