@@ -2314,6 +2314,9 @@ func inferTargetChapterCount(brief string) int {
 	}
 	best := 0
 	for _, match := range targetChapterRangePattern.FindAllStringSubmatchIndex(brief, -1) {
+		if precededByChapterAnchorPrefix(brief, match[0]) {
+			continue
+		}
 		from := parseRegexInt(brief, match, 1)
 		to := parseRegexInt(brief, match, 2)
 		if from <= 0 || to <= 0 {
@@ -2325,7 +2328,7 @@ func inferTargetChapterCount(brief string) int {
 		best = max(best, to)
 	}
 	for _, match := range targetChapterSinglePattern.FindAllStringSubmatchIndex(brief, -1) {
-		if precededByOrdinalPrefix(brief, match[0]) {
+		if precededByChapterAnchorPrefix(brief, match[0]) {
 			continue
 		}
 		value := parseRegexInt(brief, match, 1)
@@ -2338,14 +2341,14 @@ func inferTargetChapterCount(brief string) int {
 		best = max(best, value)
 	}
 	for _, match := range targetChapterChineseLoosePattern.FindAllStringSubmatchIndex(brief, -1) {
-		if precededByOrdinalPrefix(brief, match[0]) {
+		if precededByChapterAnchorPrefix(brief, match[0]) {
 			continue
 		}
 		high := parseChineseChapterNumber(parseRegexText(brief, match, 2) + "十")
 		best = max(best, high)
 	}
 	for _, match := range targetChapterChinesePattern.FindAllStringSubmatchIndex(brief, -1) {
-		if precededByOrdinalPrefix(brief, match[0]) {
+		if precededByChapterAnchorPrefix(brief, match[0]) {
 			continue
 		}
 		value := parseChineseChapterNumber(parseRegexText(brief, match, 1))
@@ -2380,6 +2383,52 @@ func precededByOrdinalPrefix(text string, start int) bool {
 	prefix := strings.TrimRightFunc(text[:start], unicode.IsSpace)
 	r, _ := utf8.DecodeLastRuneInString(prefix)
 	return r == '第'
+}
+
+func precededByChapterAnchorPrefix(text string, start int) bool {
+	if precededByOrdinalPrefix(text, start) {
+		return true
+	}
+	if start <= 0 || start > len(text) {
+		return false
+	}
+	prefix := strings.ToLower(strings.TrimRightFunc(text[:start], unicode.IsSpace))
+	return hasChapterAnchorPrefix(prefix) || precededByChapterAnchorRangeContinuation(prefix)
+}
+
+func hasChapterAnchorPrefix(prefix string) bool {
+	return strings.HasSuffix(prefix, "第") || strings.HasSuffix(prefix, "ch") || strings.HasSuffix(prefix, "chapter")
+}
+
+func precededByChapterAnchorRangeContinuation(prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	trimmed := strings.TrimRightFunc(prefix, unicode.IsSpace)
+	if trimmed == "" {
+		return false
+	}
+	last, size := utf8.DecodeLastRuneInString(trimmed)
+	if !isChapterRangeSeparator(last) {
+		return false
+	}
+	beforeSeparator := strings.TrimRightFunc(trimmed[:len(trimmed)-size], unicode.IsSpace)
+	beforeNumber := strings.TrimRightFunc(beforeSeparator, func(r rune) bool {
+		return r >= '0' && r <= '9'
+	})
+	if beforeNumber == beforeSeparator {
+		return false
+	}
+	return hasChapterAnchorPrefix(strings.TrimRightFunc(beforeNumber, unicode.IsSpace))
+}
+
+func isChapterRangeSeparator(r rune) bool {
+	switch r {
+	case '-', '~', '～', '—', '–', '－', '至', '到':
+		return true
+	default:
+		return false
+	}
 }
 
 func parseChineseChapterNumber(text string) int {

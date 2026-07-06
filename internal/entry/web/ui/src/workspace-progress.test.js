@@ -11,6 +11,7 @@ import {
   buildCoCreateIntakeInitial,
   buildExportSuggestedName,
   buildVolumeReviewRevisionPayload,
+  canCancelCoCreateFlow,
   canRunAdaptationAnalysis,
   canSaveAnalyzedNovelToLibrary,
   canRunSimulationAnalysis,
@@ -73,6 +74,27 @@ describe('co-create begin payload helpers', () => {
       { decision_id: 'q3', option_id: '', custom_answer: '只保留伏笔，不改人物关系' }
     ]);
     expect(payload.every(isCoCreateDecisionPayloadComplete)).toBe(true);
+  });
+
+  it('keeps co-create cancellation available while project work is busy', () => {
+    expect(canCancelCoCreateFlow({
+      activeProject: { id: 'project-1' },
+      busy: true,
+      coCreate: { active: true, status: 'running' }
+    })).toBe(true);
+    expect(canCancelCoCreateFlow({
+      activeProject: { id: 'project-1' },
+      coCreate: { messages: [{ role: 'user', content: 'draft' }] }
+    })).toBe(true);
+    expect(canCancelCoCreateFlow({
+      activeProject: { id: 'project-1' },
+      busy: true,
+      coCreate: { active: true, status: 'idle' }
+    })).toBe(false);
+    expect(canCancelCoCreateFlow({
+      activeProject: null,
+      coCreate: { active: true }
+    })).toBe(false);
   });
 
   it('does not treat a recommended co-create decision option as selected before user action', () => {

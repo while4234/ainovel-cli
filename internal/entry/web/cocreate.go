@@ -1130,7 +1130,8 @@ If required decisions are still missing, write the known decisions plus a "pendi
 Never use placeholders such as "same as above", "同上", "同前轮", "上一轮", "已完整记录", "完整保留", "不再重复", or "见上"; the draft must be self-contained.`
 	if kind == webCoCreateKindAdapt {
 		instruction += `
-For adaptation co-create, preserve the selected granularity, rewrite_policy, and word_tolerance exactly as originally provided. Do not ask the user to choose chapter/arc/free again.`
+For adaptation co-create, preserve the selected granularity, rewrite_policy, and word_tolerance exactly as originally provided. Do not ask the user to choose chapter/arc/free again.
+Keep the repaired draft at brief level: merge overlapping rules, preserve hard relationship/mainline constraints, and keep only key source chapter anchors. Do not create chapter-by-chapter strategy, volume outline, per-chapter plot beats, or a "## 逐章策略" section. Source chapter numbers are anchors, not target chapter-count requests.`
 	}
 	if previousDraft = strings.TrimSpace(previousDraft); previousDraft != "" {
 		instruction += "\n\nPrevious stable draft to preserve and merge:\n<previous_draft>\n" + previousDraft + "\n</previous_draft>"
@@ -1433,12 +1434,13 @@ func adaptDecisionDraftBatchInstruction(index, total int, decisions []string, ha
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s %d/%d\n", adaptDecisionDraftMarker, index, total)
 	if hasDraft {
-		sb.WriteString("Update the existing <draft> by integrating only the confirmed decisions in this batch. Preserve all prior draft content unless this batch explicitly changes it.\n")
+		sb.WriteString("Update the existing <draft> by integrating only the confirmed decisions in this batch. Preserve prior hard constraints, but merge overlapping rules instead of expanding them.\n")
 	} else {
 		sb.WriteString("Create the initial adaptation <draft> from the mode contract, source briefing, and only the confirmed decisions in this batch.\n")
 	}
 	sb.WriteString("Return the normal four XML tags: <reply>, <draft>, <ready>, <suggestions>.\n")
 	sb.WriteString("The <draft> must be complete and self-contained after this batch; never use placeholders such as same as above, 同上, 同前轮, 上一轮, or 见上.\n")
+	sb.WriteString("Keep the <draft> concise and brief-level: do not write chapter-by-chapter strategy, volume outline, single-chapter details, or a ## 逐章策略 section. Source chapter numbers are anchors only, not target chapter-count requests.\n")
 	if index < total {
 		sb.WriteString("This is not the final decision batch. Mention that more confirmed decisions will be integrated next and set <ready>false</ready>.\n")
 	} else {

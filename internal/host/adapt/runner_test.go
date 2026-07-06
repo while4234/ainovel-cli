@@ -1297,6 +1297,8 @@ func TestInferTargetChapterCountFromBrief(t *testing.T) {
 		{brief: "规划五六十章", want: 60},
 		{brief: "规划713章", want: 713},
 		{brief: "第15章补一个误会", want: 0},
+		{brief: "第290-291章联手施展南斗剑光", want: 0},
+		{brief: "ch290-291章联手施展南斗剑光", want: 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.brief, func(t *testing.T) {

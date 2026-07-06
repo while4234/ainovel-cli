@@ -2132,9 +2132,6 @@ export default function App() {
       setCoCreate(createCoCreateState());
       return;
     }
-    if (busy || coCreateRequestBusy) {
-      return;
-    }
     const projectId = activeProject.id;
     try {
       const data = await cancelCoCreate(projectId);
@@ -3570,7 +3567,7 @@ function CoCreatePanel({
   const hasDraftPrompt = Boolean(coCreate.draftPrompt.trim());
   const canCommit = Boolean(activeProject && !busy && hasDraftPrompt && coCreate.canStart);
   const canConfirmPlanning = Boolean(activeProject && !busy && planningReview.pending);
-  const canCancel = Boolean(activeProject && !busy && (hasBackendSession || coCreate.intakeActive));
+  const canCancel = canCancelCoCreateFlow({ activeProject, busy, coCreate });
   const visibleSuggestions = coCreate.suggestions.slice(0, 3);
   const showDraftWorkspace = Boolean(coCreate.ready || hasDraftPrompt);
   const suggestionList = visibleSuggestions.length ? (
@@ -5307,7 +5304,7 @@ function ModelPanel({
   const existingModelPayload = buildExistingModelActionPayload(customModel.role, existingProvider, existingModel);
   const canDeleteExistingModel = Boolean(existingProvider && existingModel && !existingIsDefault);
   const coCreateTimeoutSeconds = modelConfig?.cocreate_timeout_seconds || config.cocreate_timeout_seconds || 60;
-  const coCreateMaxTokens = modelConfig?.cocreate_max_tokens || config.cocreate_max_tokens || 8192;
+  const coCreateMaxTokens = modelConfig?.cocreate_max_tokens || config.cocreate_max_tokens || 4096;
   const modelAutoSwitch = modelConfig?.model_auto_switch || {};
   const existingUsesOpenAIEndpoint = providerUsesOpenAIEndpoint(customModel);
   const modelCallMaxAttempts =
@@ -7039,6 +7036,12 @@ export function isSimulationProfileActionBusy(simulation = {}) {
 
 export function isCoCreateRequestBusy(coCreate = {}) {
   return String(coCreate.status || '').toLowerCase() === 'running';
+}
+
+export function canCancelCoCreateFlow({ activeProject, busy = false, coCreate = {} } = {}) {
+  const messages = Array.isArray(coCreate.messages) ? coCreate.messages : [];
+  const hasSession = coCreate.active || coCreate.intakeActive || messages.length > 0;
+  return Boolean(activeProject && hasSession && (!busy || isCoCreateRequestBusy(coCreate)));
 }
 
 export function canRunSimulationAnalysis({ activeProject, busy, simulation } = {}) {

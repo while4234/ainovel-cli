@@ -18,6 +18,7 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
@@ -534,6 +535,72 @@ func TestProjectSessionBuildAdaptationProposalShowsRunningAndCancels(t *testing.
 	}
 	if finalSnap.IsRunning {
 		t.Fatalf("proposal cancel final snapshot should be idle: %+v", finalSnap)
+	}
+}
+
+func TestProjectSessionAdaptCoCreateCommitCanBeCanceledFromCoCreateCancel(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.snapshot = hostpkgSnapshotIdle()
+	fake.adaptProposalStarted = make(chan struct{})
+	fake.blockAdaptProposal = true
+	session := newTestSessionWithHost("project-1", fake)
+	draft := strings.Join([]string{
+		"## Adapt Mode",
+		"granularity=arc",
+		"rewrite_policy=full_rewrite",
+		"word_tolerance=disabled",
+		"",
+		"## Core Goal",
+		"- Preserve the mainline and strengthen the heroine arc.",
+	}, "\n")
+	session.cocreate = &webCoCreateSession{
+		kind: webCoCreateKindAdapt,
+		session: startup.NewCoCreateSessionFromSnapshot(startup.CoCreateSnapshot{
+			History: []host.CoCreateMessage{
+				{Role: "user", Content: "prepare adaptation brief"},
+				{Role: "assistant", Content: "<reply>ready</reply><draft>" + draft + "</draft><ready>true</ready><suggestions></suggestions>"},
+			},
+			DraftPrompt:     draft,
+			DraftHistoryLen: 2,
+			Ready:           true,
+		}),
+		sourcePath:         "source.txt",
+		sourceFile:         "source.txt",
+		adaptGranularity:   domain.AdaptationGranularityArc,
+		adaptRewritePolicy: domain.AdaptationRewriteFullRewrite,
+		adaptWordTolerance: 0,
+		draftConsolidated:  true,
+	}
+
+	commitErr := make(chan error, 1)
+	go func() {
+		_, err := session.CommitCoCreate(context.Background())
+		commitErr <- err
+	}()
+
+	select {
+	case <-fake.adaptProposalStarted:
+	case <-time.After(time.Second):
+		t.Fatal("adapt co-create proposal generation did not start")
+	}
+
+	state, err := session.CancelCoCreate()
+	if err != nil {
+		t.Fatalf("CancelCoCreate should cancel running proposal, got %v", err)
+	}
+	if state.Active {
+		t.Fatalf("CancelCoCreate should close the co-create session after canceling proposal")
+	}
+	if session.cocreate != nil {
+		t.Fatalf("session co-create state should be cleared after cancellation")
+	}
+	select {
+	case err := <-commitErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("commit error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("adapt co-create commit did not stop after cancel")
 	}
 }
 

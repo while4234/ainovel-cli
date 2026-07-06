@@ -1236,6 +1236,10 @@ func (s *ProjectSession) ResumeCoCreate(ctx context.Context) (webCoCreateState, 
 }
 
 func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, error) {
+	if s.coCreateKind() == webCoCreateKindAdapt {
+		return s.commitAdaptCoCreate(ctx)
+	}
+
 	unlock, err := s.beginAction()
 	if err != nil {
 		return webCoCreateState{}, err
@@ -1280,24 +1284,6 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 		if err := s.host.ResumeFromCoCreate(state.draftPrompt()); err != nil {
 			return state.apiState(), err
 		}
-	case webCoCreateKindAdapt:
-		result, err := s.buildAdaptationProposalVolumes(ctx, adapt.ProposalOptions{
-			Brief:         state.draftPrompt(),
-			SourcePath:    state.sourcePath,
-			Granularity:   state.adaptGranularity,
-			RewritePolicy: state.adaptRewritePolicy,
-			WordTolerance: state.adaptWordTolerance,
-		})
-		if err != nil {
-			return state.apiState(), err
-		}
-		if result != nil && result.VolumeReview != nil {
-			state.adaptationVolumeReview = result.VolumeReview
-			state.adaptationProposal = adaptationVolumeReviewAsPlan(*result.VolumeReview)
-		} else if result != nil {
-			state.adaptationProposal = result.Proposal
-			state.adaptationVolumeReview = nil
-		}
 	default:
 		plan, err := state.session.BuildPlanWithWordBudget(state.targetTotalWords)
 		if err != nil {
@@ -1311,6 +1297,83 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 	s.cocreate = nil
 	s.clearCoCreateCheckpoint()
 	api.Active = false
+	s.AppendSnapshot()
+	return api, nil
+}
+
+func (s *ProjectSession) commitAdaptCoCreate(ctx context.Context) (webCoCreateState, error) {
+	actionCtx, unlock, err := s.beginCancellableAction(ctx, projectActionKindAdaptationProposal)
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			unlock()
+			s.AppendSnapshot()
+		}
+	}()
+
+	s.AppendSnapshot()
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	state := s.cocreate
+	if state.hasPendingBriefingDecisions() {
+		return state.apiState(), fmt.Errorf("resolve adaptation briefing decisions before starting adaptation")
+	}
+	needsRepair, repairBaseDraft := state.currentDraftNeedsRepair()
+	needsFinalConsolidation := false
+	if state.session == nil || !state.session.DraftFresh() {
+		needsRepair = true
+		if repairBaseDraft == "" {
+			repairBaseDraft = state.draftPrompt()
+		}
+	}
+	if !needsRepair && state.shouldConsolidateDraftBeforeCommit() {
+		needsFinalConsolidation = true
+		if repairBaseDraft == "" {
+			repairBaseDraft = state.draftPrompt()
+		}
+	}
+	if needsRepair || needsFinalConsolidation {
+		if err := s.repairCoCreateDraftForCommitLocked(actionCtx, state, repairBaseDraft); err != nil {
+			return state.apiState(), err
+		}
+	}
+	if err := state.requireReadyDraft(); err != nil {
+		return webCoCreateState{}, err
+	}
+	if needsFinalConsolidation {
+		state.draftConsolidated = true
+		s.saveCoCreateCheckpoint()
+	}
+
+	proposalCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
+	defer cancel()
+	result, err := s.buildAdaptationProposalVolumes(proposalCtx, adapt.ProposalOptions{
+		Brief:         state.draftPrompt(),
+		SourcePath:    state.sourcePath,
+		Granularity:   state.adaptGranularity,
+		RewritePolicy: state.adaptRewritePolicy,
+		WordTolerance: state.adaptWordTolerance,
+	})
+	if err != nil {
+		return state.apiState(), err
+	}
+	if result != nil && result.VolumeReview != nil {
+		state.adaptationVolumeReview = result.VolumeReview
+		state.adaptationProposal = adaptationVolumeReviewAsPlan(*result.VolumeReview)
+	} else if result != nil {
+		state.adaptationProposal = result.Proposal
+		state.adaptationVolumeReview = nil
+	}
+	api := state.apiState()
+	s.cocreate = nil
+	s.clearCoCreateCheckpoint()
+	api.Active = false
+	unlock()
+	finished = true
 	s.AppendSnapshot()
 	return api, nil
 }
@@ -1745,7 +1808,29 @@ func (s *ProjectSession) projectID() string {
 	return s.manifest.ID
 }
 
+func (s *ProjectSession) coCreateKind() string {
+	if s == nil || s.cocreate == nil {
+		return ""
+	}
+	return s.cocreate.kind
+}
+
 func (s *ProjectSession) CancelCoCreate() (webCoCreateState, error) {
+	if s.coCreateKind() == webCoCreateKindAdapt && s.currentActionKind() == projectActionKindAdaptationProposal {
+		if canceledKind, canceledAction := s.cancelCurrentAction(); canceledAction {
+			state := webCoCreateState{}
+			if s.cocreate != nil {
+				state = s.cocreate.apiState()
+				state.Active = false
+				s.cocreate = nil
+				s.clearCoCreateCheckpoint()
+			}
+			s.appendActionCanceledEvent(canceledKind)
+			s.AppendSnapshot()
+			return state, nil
+		}
+	}
+
 	unlock, err := s.beginAction()
 	if err != nil {
 		return webCoCreateState{}, err

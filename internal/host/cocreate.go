@@ -68,7 +68,11 @@ const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用�
 </reply>
 
 <draft>
-当前完整的"改编 brief"，使用 Markdown：直接从二级标题开始，例如 "## 改编模式"、"## 用户目标"、"## 主线保留规则"、"## 角色/关系改动"、"## 禁止偏离"、"## 逐章策略"。"## 改编模式" 中必须逐行写出 granularity=...、rewrite_policy=...、word_tolerance=...；arc/free 必须写 word_tolerance=disabled。每一轮都要在已有结论上累积更新，吸收用户最新意图；即使本轮没有新增也要把完整 brief 原样再写一次。
+当前完整的"改编 brief"，使用 Markdown：直接从二级标题开始，例如 "## 改编模式"、"## 核心目标"、"## 必须保留"、"## 关系边界"、"## 禁止偏离"、"## 规划提示"。"## 改编模式" 中必须逐行写出 granularity=...、rewrite_policy=...、word_tolerance=...；arc/free 必须写 word_tolerance=disabled。
+
+这个 draft 只是交给后续"生成改编提案/分卷大纲/单章详细大纲"的压缩执行契约，不是改编提案本身。必须保持概括性：合并同类规则，只保留关键原著锚点和硬禁令；不要写逐章策略、分卷大纲、单章剧情安排、每段扩写方案，尤其不要创建 "## 逐章策略" 章节。除非用户明确要求目标总章数，不要在 draft 中声明目标总章数；原著章节号只作为锚点，不代表目标章节数量。建议 <draft> 控制在 1200-2200 个中文字符内。
+
+每一轮都要在已有结论上累积更新，吸收用户最新意图；即使本轮没有新增也要把完整 brief 原样再写一次。
 </draft>
 ` + coCreateProtocolTail
 

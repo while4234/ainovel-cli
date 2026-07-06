@@ -22,6 +22,27 @@ func TestCoCreateRetryUsesSharedPolicy(t *testing.T) {
 	}
 }
 
+func TestAdaptCoCreatePromptKeepsDraftBriefLevel(t *testing.T) {
+	for _, want := range []string{
+		"压缩执行契约",
+		"不要写逐章策略",
+		"原著章节号只作为锚点",
+	} {
+		if !strings.Contains(adaptCoCreateSystemPrompt, want) {
+			t.Fatalf("adapt co-create prompt should contain %q", want)
+		}
+	}
+	for _, oldHeading := range []string{
+		"\"## 用户目标\"",
+		"\"## 主线保留规则\"",
+		"\"## 角色/关系改动\"",
+	} {
+		if strings.Contains(adaptCoCreateSystemPrompt, oldHeading) {
+			t.Fatalf("adapt co-create prompt should not recommend old verbose heading %q", oldHeading)
+		}
+	}
+}
+
 func TestCoCreateStreamRetriesTransientStreamEOF(t *testing.T) {
 	restore := stubCoCreateRetrySleep(t)
 	defer restore()

@@ -35,7 +35,7 @@ const (
 	DefaultCoCreateTimeoutSeconds = 180
 	MinCoCreateTimeoutSeconds     = 1
 	MaxCoCreateTimeoutSeconds     = 3600
-	DefaultCoCreateMaxTokens      = 8192
+	DefaultCoCreateMaxTokens      = 4096
 	MinCoCreateMaxTokens          = 512
 	MaxCoCreateMaxTokens          = 32768
 
