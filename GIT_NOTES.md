@@ -28,6 +28,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest rebuild/restart change: current local commit
+  `0aeec43` `chore: rebuild web static after splitter fix`:
+  After the splitter fix was pushed, local Web was rebuilt and restarted via
+  `restart-web.cmd -Port 9898 -RuntimeRoot C:\Users\RondleLiu\.ainovel\novels-preview`.
+  The restart rebuilt the tracked static Web index, started
+  `http://127.0.0.1:9898` as PID `8896`, and `/api/runtime` returned healthy
+  with 19 visible projects.
 - Latest source change: current local commit
   `59875ba` `fix: support compact source headings`:
   The import splitter now recognizes compact Arabic-number headings such as
