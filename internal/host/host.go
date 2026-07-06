@@ -2924,6 +2924,37 @@ func (h *Host) SetCoCreateTimeoutSeconds(seconds int) error {
 	return nil
 }
 
+func (h *Host) CurrentCoCreateMaxTokens() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg.EffectiveCoCreateMaxTokens()
+}
+
+func (h *Host) SetCoCreateMaxTokens(tokens int) error {
+	normalized, err := bootstrap.NormalizeCoCreateMaxTokens(tokens)
+	if err != nil {
+		return err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.cfg.CoCreateMaxTokens = normalized
+	if overlay := h.ensureProjectOverlayLocked(); overlay != nil {
+		overlay.CoCreateMaxTokens = normalized
+	}
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("保存配置失败", "module", "host", "err", err)
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("共创输出上限已设置为 %d tokens", normalized),
+		Level:    "info",
+	})
+	return nil
+}
+
 func (h *Host) CurrentStructureRepairMaxAttempts() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2967,6 +2998,12 @@ func (h *Host) coCreateTimeout() time.Duration {
 	return h.cfg.CoCreateTimeout()
 }
 
+func (h *Host) coCreateMaxTokens() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg.EffectiveCoCreateMaxTokens()
+}
+
 // ── 事件回放 ──
 
 func (h *Host) ReplayQueue(afterSeq int64) ([]domain.RuntimeQueueItem, error) {
@@ -2980,18 +3017,18 @@ func (h *Host) ReplayQueue(afterSeq int64) ([]domain.RuntimeQueueItem, error) {
 
 // CoCreateStream 冷启动共创：从零澄清需求，产出整本书的创作指令。
 func (h *Host) CoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
-	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), coCreateSystemPrompt, history, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), coCreateSystemPrompt, history, onProgress)
 }
 
 // StageCoCreateStream 阶段共创：在已写内容的基础上规划后续方向。
 // 系统提示 = 阶段 prompt + 当前故事状态摘要，让助手知道"已经写了什么"。
 func (h *Host) StageCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
-	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), stageSystemPrompt(h.store), history, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), stageSystemPrompt(h.store), history, onProgress)
 }
 
 // AdaptCoCreateStream 改编共创：基于原书分析快照澄清改编目标。
 func (h *Host) AdaptCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
-	return coCreateStreamWithMaxTokens(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), adaptSystemPrompt(h.store), history, adaptCoCreateMaxTokens, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), adaptSystemPrompt(h.store), history, onProgress)
 }
 
 func (h *Host) EnsureAdaptationCoCreateBriefing(ctx context.Context, sourcePath string, intent domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {

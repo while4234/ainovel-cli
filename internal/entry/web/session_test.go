@@ -1156,12 +1156,15 @@ type fakeProjectHost struct {
 	addProviderErr              error
 	removeProviderErr           error
 	setCoCreateTimeoutErr       error
+	setCoCreateMaxTokensErr     error
 	setRetrySettingsErr         error
 	switchCalls                 int
 	removeProviderCalls         int
 	setCoCreateTimeoutCalls     int
+	setCoCreateMaxTokensCalls   int
 	setRetrySettingsCalls       int
 	coCreateTimeoutSeconds      int
+	coCreateMaxTokens           int
 	modelCallMaxAttempts        int
 	structureRepairMaxAttempts  int
 	grokLoginStart              grokauth.LoginStart
@@ -1934,6 +1937,23 @@ func (f *fakeProjectHost) SetCoCreateTimeoutSeconds(seconds int) error {
 	f.setCoCreateTimeoutCalls++
 	f.coCreateTimeoutSeconds = seconds
 	return f.setCoCreateTimeoutErr
+}
+
+func (f *fakeProjectHost) CurrentCoCreateMaxTokens() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.coCreateMaxTokens > 0 {
+		return f.coCreateMaxTokens
+	}
+	return bootstrap.DefaultCoCreateMaxTokens
+}
+
+func (f *fakeProjectHost) SetCoCreateMaxTokens(tokens int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.setCoCreateMaxTokensCalls++
+	f.coCreateMaxTokens = tokens
+	return f.setCoCreateMaxTokensErr
 }
 
 func (f *fakeProjectHost) CurrentStructureRepairMaxAttempts() int {

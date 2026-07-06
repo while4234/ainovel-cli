@@ -16,6 +16,20 @@ func TestCoCreateTimeoutDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestCoCreateMaxTokensDefaultsAndValidation(t *testing.T) {
+	cfg := Config{}
+	if got := cfg.EffectiveCoCreateMaxTokens(); got != DefaultCoCreateMaxTokens {
+		t.Fatalf("default max tokens = %d, want %d", got, DefaultCoCreateMaxTokens)
+	}
+	cfg.CoCreateMaxTokens = 12288
+	if got := cfg.EffectiveCoCreateMaxTokens(); got != 12288 {
+		t.Fatalf("configured max tokens = %d, want 12288", got)
+	}
+	if _, err := NormalizeCoCreateMaxTokens(MaxCoCreateMaxTokens + 1); err == nil {
+		t.Fatal("max tokens above max should be rejected")
+	}
+}
+
 func TestRememberModelCandidateKeepsSwitchedAwayProviderSelectable(t *testing.T) {
 	cfg := Config{
 		Provider:  "deepseek",

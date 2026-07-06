@@ -26,6 +26,7 @@ type apiModelConfig struct {
 	ThinkingLevels             []string           `json:"thinking_levels"`
 	ThinkingRule               string             `json:"thinking_rule"`
 	CoCreateTimeoutSeconds     int                `json:"cocreate_timeout_seconds"`
+	CoCreateMaxTokens          int                `json:"cocreate_max_tokens"`
 	StructureRepairMaxAttempts int                `json:"structure_repair_max_attempts"`
 	ModelAutoSwitch            apiModelAutoSwitch `json:"model_auto_switch"`
 }
@@ -86,6 +87,11 @@ type codexAuthStatusRequest struct {
 type coCreateTimeoutRequest struct {
 	Seconds        int `json:"seconds"`
 	TimeoutSeconds int `json:"timeout_seconds"`
+}
+
+type coCreateMaxTokensRequest struct {
+	Tokens    int `json:"tokens"`
+	MaxTokens int `json:"max_tokens"`
 }
 
 type retrySettingsRequest struct {
@@ -181,6 +187,13 @@ func (r coCreateTimeoutRequest) value() int {
 		return r.TimeoutSeconds
 	}
 	return r.Seconds
+}
+
+func (r coCreateMaxTokensRequest) value() int {
+	if r.MaxTokens != 0 {
+		return r.MaxTokens
+	}
+	return r.Tokens
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +297,38 @@ func (s *Server) handleCoCreateTimeout(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := s.currentConfig()
 	cfg.CoCreateTimeoutSeconds = seconds
+	if err := cfg.ValidateBase(); err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	if err := saveWebConfig(cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.setCurrentConfig(cfg)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":  s.globalModelConfig(cfg),
+		"runtime": s.runtimePayload(cfg),
+	})
+}
+
+func (s *Server) handleCoCreateMaxTokens(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req coCreateMaxTokensRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	tokens, err := bootstrap.NormalizeCoCreateMaxTokens(req.value())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cfg := s.currentConfig()
+	cfg.CoCreateMaxTokens = tokens
 	if err := cfg.ValidateBase(); err != nil {
 		writeProjectLifecycleError(w, err)
 		return
@@ -567,6 +612,7 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 		ThinkingLevels:             []string{"", "off", "low", "medium", "high", "xhigh", "max"},
 		ThinkingRule:               "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
 		CoCreateTimeoutSeconds:     cfg.EffectiveCoCreateTimeoutSeconds(),
+		CoCreateMaxTokens:          cfg.EffectiveCoCreateMaxTokens(),
 		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
 		ModelAutoSwitch:            apiModelAutoSwitchFromConfig(cfg.ModelAutoSwitch),
 	}
@@ -738,6 +784,33 @@ func (s *Server) handleProjectCoCreateTimeout(w http.ResponseWriter, r *http.Req
 		return
 	}
 	models, err := session.SetCoCreateTimeoutSeconds(req.value())
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"models":   models,
+		"snapshot": session.Snapshot(),
+	})
+}
+
+func (s *Server) handleProjectCoCreateMaxTokens(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req coCreateMaxTokensRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	models, err := session.SetCoCreateMaxTokens(req.value())
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return

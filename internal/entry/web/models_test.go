@@ -154,6 +154,36 @@ func TestGlobalCoCreateTimeoutPersists(t *testing.T) {
 	}
 }
 
+func TestGlobalCoCreateMaxTokensPersists(t *testing.T) {
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	var response struct {
+		Models  apiModelConfig `json:"models"`
+		Runtime struct {
+			Config struct {
+				CoCreateMaxTokens int `json:"cocreate_max_tokens"`
+			} `json:"config"`
+		} `json:"runtime"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/cocreate-max-tokens", `{"tokens":8192}`, &response)
+	if response.Models.CoCreateMaxTokens != 8192 || response.Runtime.Config.CoCreateMaxTokens != 8192 {
+		t.Fatalf("max tokens response models=%d runtime=%d", response.Models.CoCreateMaxTokens, response.Runtime.Config.CoCreateMaxTokens)
+	}
+	if got := server.currentConfig().CoCreateMaxTokens; got != 8192 {
+		t.Fatalf("server max tokens = %d, want 8192", got)
+	}
+	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	if saved.CoCreateMaxTokens != 8192 {
+		t.Fatalf("saved max tokens = %d, want 8192", saved.CoCreateMaxTokens)
+	}
+}
+
 func TestProjectCoCreateTimeoutUsesProjectHost(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
@@ -172,6 +202,27 @@ func TestProjectCoCreateTimeoutUsesProjectHost(t *testing.T) {
 	}
 	if response.Models.CoCreateTimeoutSeconds != 30 {
 		t.Fatalf("response timeout = %d, want 30", response.Models.CoCreateTimeoutSeconds)
+	}
+}
+
+func TestProjectCoCreateMaxTokensUsesProjectHost(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Project Max Tokens")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	var response struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/projects/"+manifest.ID+"/models/cocreate-max-tokens", `{"tokens":12288}`, &response)
+	if fake.setCoCreateMaxTokensCalls != 1 || fake.coCreateMaxTokens != 12288 {
+		t.Fatalf("host max token calls=%d tokens=%d", fake.setCoCreateMaxTokensCalls, fake.coCreateMaxTokens)
+	}
+	if response.Models.CoCreateMaxTokens != 12288 {
+		t.Fatalf("response max tokens = %d, want 12288", response.Models.CoCreateMaxTokens)
 	}
 }
 

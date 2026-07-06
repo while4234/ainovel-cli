@@ -118,6 +118,8 @@ type projectHost interface {
 	SetRoleThinking(string, string) error
 	CurrentCoCreateTimeoutSeconds() int
 	SetCoCreateTimeoutSeconds(int) error
+	CurrentCoCreateMaxTokens() int
+	SetCoCreateMaxTokens(int) error
 	CurrentStructureRepairMaxAttempts() int
 	SetRetrySettings(int, int) error
 	Events() <-chan host.Event
@@ -362,6 +364,7 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 		Providers:                  outProviders,
 		Roles:                      roles,
 		CoCreateTimeoutSeconds:     s.host.CurrentCoCreateTimeoutSeconds(),
+		CoCreateMaxTokens:          s.host.CurrentCoCreateMaxTokens(),
 		StructureRepairMaxAttempts: s.host.CurrentStructureRepairMaxAttempts(),
 		ThinkingLevels: []string{
 			"",
@@ -395,6 +398,14 @@ func (s *ProjectSession) SetRoleThinking(role, level string) (apiModelConfig, er
 
 func (s *ProjectSession) SetCoCreateTimeoutSeconds(seconds int) (apiModelConfig, error) {
 	if err := s.host.SetCoCreateTimeoutSeconds(seconds); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) SetCoCreateMaxTokens(tokens int) (apiModelConfig, error) {
+	if err := s.host.SetCoCreateMaxTokens(tokens); err != nil {
 		return apiModelConfig{}, err
 	}
 	s.AppendSnapshot()

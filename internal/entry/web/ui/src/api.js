@@ -439,6 +439,13 @@ export function setGlobalCoCreateTimeout(seconds) {
   });
 }
 
+export function setGlobalCoCreateMaxTokens(tokens) {
+  return request('/api/models/cocreate-max-tokens', {
+    method: 'POST',
+    body: JSON.stringify({ tokens })
+  });
+}
+
 export function setGlobalRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts) {
   return request('/api/models/retry-settings', {
     method: 'POST',
@@ -474,6 +481,13 @@ export function setProjectCoCreateTimeout(projectId, seconds) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/cocreate-timeout`, {
     method: 'POST',
     body: JSON.stringify({ seconds })
+  });
+}
+
+export function setProjectCoCreateMaxTokens(projectId, tokens) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/cocreate-max-tokens`, {
+    method: 'POST',
+    body: JSON.stringify({ tokens })
   });
 }
 

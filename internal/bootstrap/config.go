@@ -35,6 +35,9 @@ const (
 	DefaultCoCreateTimeoutSeconds = 180
 	MinCoCreateTimeoutSeconds     = 1
 	MaxCoCreateTimeoutSeconds     = 3600
+	DefaultCoCreateMaxTokens      = 8192
+	MinCoCreateMaxTokens          = 512
+	MaxCoCreateMaxTokens          = 32768
 
 	DefaultRuntimeNetworkMaxAttempts = 7
 	MinRuntimeNetworkMaxAttempts     = 1
@@ -86,6 +89,28 @@ func (c Config) EffectiveCoCreateTimeoutSeconds() int {
 
 func (c Config) CoCreateTimeout() time.Duration {
 	return time.Duration(c.EffectiveCoCreateTimeoutSeconds()) * time.Second
+}
+
+func NormalizeCoCreateMaxTokens(tokens int) (int, error) {
+	if tokens == 0 {
+		return DefaultCoCreateMaxTokens, nil
+	}
+	if tokens < MinCoCreateMaxTokens || tokens > MaxCoCreateMaxTokens {
+		return 0, fmt.Errorf(
+			"cocreate_max_tokens must be between %d and %d",
+			MinCoCreateMaxTokens,
+			MaxCoCreateMaxTokens,
+		)
+	}
+	return tokens, nil
+}
+
+func (c Config) EffectiveCoCreateMaxTokens() int {
+	tokens, err := NormalizeCoCreateMaxTokens(c.CoCreateMaxTokens)
+	if err != nil {
+		return DefaultCoCreateMaxTokens
+	}
+	return tokens
 }
 
 func (c Config) EffectiveStructureRepairMaxAttempts() int {
@@ -265,6 +290,7 @@ type Config struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// CoCreateTimeoutSeconds 是 Web 共创单次模型调用超时；0 表示使用默认 180 秒。
 	CoCreateTimeoutSeconds     int                   `json:"cocreate_timeout_seconds,omitempty"`
+	CoCreateMaxTokens          int                   `json:"cocreate_max_tokens,omitempty"`
 	StructureRepairMaxAttempts int                   `json:"structure_repair_max_attempts,omitempty"`
 	Proxy                      string                `json:"proxy,omitempty"`
 	ModelAutoSwitch            ModelAutoSwitchConfig `json:"model_auto_switch,omitzero"`
@@ -322,6 +348,9 @@ func (c *Config) ValidateBase() error {
 		return err
 	}
 	if _, err := NormalizeCoCreateTimeoutSeconds(c.CoCreateTimeoutSeconds); err != nil {
+		return err
+	}
+	if _, err := NormalizeCoCreateMaxTokens(c.CoCreateMaxTokens); err != nil {
 		return err
 	}
 	if _, err := NormalizeRuntimeNetworkMaxAttempts(c.ModelAutoSwitch.NetworkMaxAttempts); err != nil {

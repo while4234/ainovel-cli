@@ -149,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/models/default", s.handleDefaultModel)
 	mux.HandleFunc("/api/models/switch", s.handleModelSwitch)
 	mux.HandleFunc("/api/models/cocreate-timeout", s.handleCoCreateTimeout)
+	mux.HandleFunc("/api/models/cocreate-max-tokens", s.handleCoCreateMaxTokens)
 	mux.HandleFunc("/api/models/retry-settings", s.handleRetrySettings)
 	mux.HandleFunc("/api/models/add", s.handleModelAdd)
 	mux.HandleFunc("/api/models/test", s.handleModelTest)
@@ -249,6 +250,7 @@ func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
 			"proxy":                         cfg.Proxy,
 			"reasoning_effort":              cfg.ReasoningEffort,
 			"cocreate_timeout_seconds":      cfg.EffectiveCoCreateTimeoutSeconds(),
+			"cocreate_max_tokens":           cfg.EffectiveCoCreateMaxTokens(),
 			"model_call_max_attempts":       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
 			"structure_repair_max_attempts": cfg.EffectiveStructureRepairMaxAttempts(),
 			"roles":                         cfg.Roles,
@@ -386,6 +388,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectModelThinking(w, r, id)
 	case "models/cocreate-timeout":
 		s.handleProjectCoCreateTimeout(w, r, id)
+	case "models/cocreate-max-tokens":
+		s.handleProjectCoCreateMaxTokens(w, r, id)
 	case "models/retry-settings":
 		s.handleProjectRetrySettings(w, r, id)
 	case "models/add":

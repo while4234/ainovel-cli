@@ -2,6 +2,8 @@ import {
   Activity,
   BookOpen,
   Check,
+  ChevronLeft,
+  ChevronRight,
   CircleDot,
   Database,
   Download,
@@ -81,8 +83,10 @@ import {
   saveNovelToLibrary,
   saveSimulationToLibrary,
   sendCoCreate,
+  setGlobalCoCreateMaxTokens,
   setGlobalCoCreateTimeout,
   setGlobalRetrySettings,
+  setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
   setProjectRetrySettings,
   setProjectThinking,
@@ -2266,6 +2270,32 @@ export default function App() {
     }
   };
 
+  const changeCoCreateMaxTokens = async (tokens) => {
+    const value = Number(tokens);
+    if (!Number.isInteger(value) || value < 512 || value > 32768) {
+      setError('共创输出 tokens 必须是 512-32768 之间的整数');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = activeProject?.id
+        ? await setProjectCoCreateMaxTokens(activeProject.id, value)
+        : await setGlobalCoCreateMaxTokens(value);
+      setModelConfig(data.models || modelConfig);
+      if (data.runtime) {
+        setRuntime(data.runtime);
+      }
+      if (data.snapshot) {
+        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const changeRetrySettings = async (modelCallMaxAttempts, structureRepairMaxAttempts) => {
     const modelAttempts = Number(modelCallMaxAttempts);
     const repairAttempts = Number(structureRepairMaxAttempts);
@@ -3022,6 +3052,7 @@ export default function App() {
               onSwitch={switchModelRoute}
               onThinking={changeThinking}
               onCoCreateTimeout={changeCoCreateTimeout}
+              onCoCreateMaxTokens={changeCoCreateMaxTokens}
               onRetrySettings={changeRetrySettings}
               onDeleteModel={deleteModelRoute}
               onAddCustom={submitCustomModel}
@@ -3877,103 +3908,140 @@ function CoCreateDecisionQueue({ decisions = [], busy, totalCount = 0, onResolve
   const decisionCount = normalizedDecisions.length;
   const parsedTotalCount = Number.parseInt(String(totalCount || ''), 10);
   const remainingCount = Math.max(Number.isFinite(parsedTotalCount) ? parsedTotalCount : 0, decisionCount);
-  const [bulkAnswers, setBulkAnswers] = useState({});
-  const bulkDecisionKey = normalizedDecisions.map((decision, index) => `${decision.id || index}:${decision.recommended_option_id || ''}`).join('|');
+  const [answers, setAnswers] = useState({});
+  const [pageIndex, setPageIndex] = useState(0);
+  const decisionListKey = normalizedDecisions
+    .map((decision, index) => {
+      const optionsKey = (decision.options || []).map((option) => option.id || '').join(',');
+      return `${decision.id || index}:${decision.recommended_option_id || ''}:${optionsKey}`;
+    })
+    .join('|');
+
   useEffect(() => {
-    setBulkAnswers((previous) => {
-      const next = {};
-      normalizedDecisions.forEach((decision, index) => {
-        const id = String(decision.id || '').trim();
-        const key = id || `decision-${index}`;
-        const previousAnswer = previous[key] || {};
-        const recommended = String(decision.recommended_option_id || '').trim();
-        const fallback = String(decision.options?.[0]?.id || '').trim();
-        next[key] = {
-          optionId: previousAnswer.optionId || recommended || fallback,
-          customAnswer: previousAnswer.customAnswer || ''
-        };
-      });
-      return next;
-    });
-  }, [bulkDecisionKey]);
+    setAnswers((previous) => normalizeCoCreateDecisionAnswers(normalizedDecisions, previous));
+  }, [decisionListKey]);
+
+  useEffect(() => {
+    setPageIndex((previous) => clampCoCreateDecisionPageIndex(previous, decisionCount));
+  }, [decisionCount]);
+
   if (!decisionCount) {
     return null;
   }
-  const bulkPayload = normalizedDecisions.map((decision, index) => {
-    const id = String(decision.id || '').trim();
-    const key = id || `decision-${index}`;
-    const answer = bulkAnswers[key] || {};
-    const customAnswer = String(answer.customAnswer || '').trim();
-    return {
-      decision_id: id,
-      option_id: customAnswer ? '' : String(answer.optionId || '').trim(),
-      custom_answer: customAnswer
-    };
-  });
-  const canSubmitBulk = bulkPayload.every((item) => item.decision_id && (item.option_id || item.custom_answer));
+
+  const activeIndex = clampCoCreateDecisionPageIndex(pageIndex, decisionCount);
+  const activeDecision = normalizedDecisions[activeIndex] || {};
+  const activeKey = coCreateDecisionKey(activeDecision, activeIndex);
+  const activeAnswer = answers[activeKey] || {};
+  const activeAnswerComplete = isCoCreateDecisionAnswerComplete(activeAnswer);
+  const answeredCount = normalizedDecisions.filter((decision, index) => {
+    const key = coCreateDecisionKey(decision, index);
+    return isCoCreateDecisionAnswerComplete(answers[key]);
+  }).length;
+  const payload = buildCoCreateDecisionPayload(normalizedDecisions, answers);
+  const canSubmit = payload.length === decisionCount && payload.every(isCoCreateDecisionPayloadComplete);
+  const canGoPrevious = activeIndex > 0;
+  const canGoNext = activeIndex < decisionCount - 1 && activeAnswerComplete;
+  const selectedSkip = activeAnswer.optionId === CO_CREATE_DECISION_SKIP_OPTION_ID;
+  const customValue = selectedSkip ? '' : activeAnswer.customAnswer || '';
+
+  const setActiveAnswer = (answer) => {
+    setAnswers((previous) => ({
+      ...previous,
+      [activeKey]: answer
+    }));
+    if (activeIndex < decisionCount - 1) {
+      setPageIndex(activeIndex + 1);
+    }
+  };
+
   return (
     <div className="cocreate-decisions">
       <div className="decision-queue-head">
         <div className="decision-queue-title">
           <strong>共创前置决策</strong>
-          <span>{remainingCount} 项待确认，可一次提交全部</span>
+          <span>第 {activeIndex + 1} / {decisionCount} 个，已处理 {answeredCount} 个，共 {remainingCount} 项待确认</span>
+        </div>
+        <div className="decision-pager" aria-label="共创决策分页">
+          <button
+            aria-label="上一个决策"
+            className="icon-button"
+            disabled={busy || !canGoPrevious}
+            onClick={() => setPageIndex(activeIndex - 1)}
+            type="button"
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <button
+            aria-label="下一个决策"
+            className="icon-button"
+            disabled={busy || !canGoNext}
+            onClick={() => setPageIndex(activeIndex + 1)}
+            type="button"
+          >
+            <ChevronRight size={16} />
+          </button>
         </div>
       </div>
       <div className="decision-list">
-        {normalizedDecisions.map((decision, index) => {
-          const id = String(decision.id || '').trim();
-          const key = id || `decision-${index}`;
-          const answer = bulkAnswers[key] || {};
-          return (
-            <article className="decision-card" key={id || decision.question || index}>
-              <div className="decision-card-head">
-                <strong>{decision.question}</strong>
-                {decision.recommended_option_id ? <span>推荐 {decision.recommended_option_id}</span> : null}
-              </div>
-              {decision.evidence ? <p className="decision-evidence">{decision.evidence}</p> : null}
-              {decision.impact ? <p className="decision-impact">{decision.impact}</p> : null}
-              <div className="decision-options">
-                {(decision.options || []).map((option) => (
-                  <button
-                    className={`tool-button ${option.id === answer.optionId && !answer.customAnswer ? 'accent' : ''}`}
-                    disabled={busy || !id}
-                    key={option.id}
-                    onClick={() => setBulkAnswers((previous) => ({
-                      ...previous,
-                      [key]: { optionId: option.id, customAnswer: '' }
-                    }))}
-                    title={option.label}
-                    type="button"
-                  >
-                    <Check size={15} />
-                    <span>{option.label}</span>
-                  </button>
-                ))}
-              </div>
-              <div className="decision-custom">
-                <textarea
-                  disabled={busy || !id}
-                  placeholder="输入自定义处理方式..."
-                  value={answer.customAnswer || ''}
-                  onChange={(event) => setBulkAnswers((previous) => ({
-                    ...previous,
-                    [key]: { optionId: previous[key]?.optionId || '', customAnswer: event.target.value }
-                  }))}
-                />
-              </div>
-            </article>
-          );
-        })}
+        <article className="decision-card" key={activeDecision.id || activeDecision.question || activeIndex}>
+          <div className="decision-card-head">
+            <strong>{activeDecision.question}</strong>
+            {activeDecision.recommended_option_id ? <span>推荐 {activeDecision.recommended_option_id}</span> : null}
+          </div>
+          {activeDecision.evidence ? <p className="decision-evidence">{activeDecision.evidence}</p> : null}
+          {activeDecision.impact ? <p className="decision-impact">{activeDecision.impact}</p> : null}
+          <div className="decision-options">
+            {(activeDecision.options || []).map((option) => {
+              const selected = option.id === activeAnswer.optionId && !activeAnswer.customAnswer;
+              return (
+                <button
+                  className={`tool-button ${selected ? 'accent' : ''}`}
+                  disabled={busy || !String(activeDecision.id || '').trim()}
+                  key={option.id}
+                  onClick={() => setActiveAnswer({ optionId: option.id, customAnswer: '' })}
+                  title={option.label}
+                  type="button"
+                >
+                  {selected ? <Check size={15} /> : <CircleDot size={15} />}
+                  <span>{option.label}</span>
+                </button>
+              );
+            })}
+            <button
+              className={`tool-button ${selectedSkip ? 'accent' : ''}`}
+              disabled={busy || !String(activeDecision.id || '').trim()}
+              onClick={() => setActiveAnswer({ optionId: CO_CREATE_DECISION_SKIP_OPTION_ID, customAnswer: '' })}
+              type="button"
+            >
+              <X size={15} />
+              <span>跳过，不修改</span>
+            </button>
+          </div>
+          <div className="decision-custom">
+            <textarea
+              disabled={busy || !String(activeDecision.id || '').trim()}
+              placeholder="输入自定义处理方式..."
+              value={customValue}
+              onChange={(event) => setAnswers((previous) => ({
+                ...previous,
+                [activeKey]: { optionId: '', customAnswer: event.target.value }
+              }))}
+            />
+          </div>
+        </article>
       </div>
-      <button
-        className="tool-button accent full-width"
-        disabled={busy || !canSubmitBulk}
-        onClick={() => onResolve(bulkPayload)}
-        type="button"
-      >
-        <Send size={15} />
-        提交全部选择
-      </button>
+      {activeIndex === decisionCount - 1 ? (
+        <button
+          className="tool-button accent full-width"
+          disabled={busy || !canSubmit}
+          onClick={() => onResolve(payload)}
+          type="button"
+        >
+          <Send size={15} />
+          提交决策
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -5197,6 +5265,7 @@ function ModelPanel({
   onSwitch,
   onThinking,
   onCoCreateTimeout,
+  onCoCreateMaxTokens,
   onRetrySettings,
   onDeleteModel,
   onAddCustom,
@@ -5234,6 +5303,7 @@ function ModelPanel({
   const existingModelPayload = buildExistingModelActionPayload(customModel.role, existingProvider, existingModel);
   const canDeleteExistingModel = Boolean(existingProvider && existingModel && !existingIsDefault);
   const coCreateTimeoutSeconds = modelConfig?.cocreate_timeout_seconds || config.cocreate_timeout_seconds || 60;
+  const coCreateMaxTokens = modelConfig?.cocreate_max_tokens || config.cocreate_max_tokens || 8192;
   const modelAutoSwitch = modelConfig?.model_auto_switch || {};
   const existingUsesOpenAIEndpoint = providerUsesOpenAIEndpoint(customModel);
   const modelCallMaxAttempts =
@@ -5246,11 +5316,15 @@ function ModelPanel({
     config.structure_repair_max_attempts ||
     2;
   const [coCreateTimeoutDraft, setCoCreateTimeoutDraft] = useState(String(coCreateTimeoutSeconds));
+  const [coCreateMaxTokensDraft, setCoCreateMaxTokensDraft] = useState(String(coCreateMaxTokens));
   const [modelCallAttemptsDraft, setModelCallAttemptsDraft] = useState(String(modelCallMaxAttempts));
   const [structureRepairAttemptsDraft, setStructureRepairAttemptsDraft] = useState(String(structureRepairMaxAttempts));
   useEffect(() => {
     setCoCreateTimeoutDraft(String(coCreateTimeoutSeconds));
   }, [coCreateTimeoutSeconds]);
+  useEffect(() => {
+    setCoCreateMaxTokensDraft(String(coCreateMaxTokens));
+  }, [coCreateMaxTokens]);
   useEffect(() => {
     setModelCallAttemptsDraft(String(modelCallMaxAttempts));
     setStructureRepairAttemptsDraft(String(structureRepairMaxAttempts));
@@ -5297,6 +5371,11 @@ function ModelPanel({
     coCreateTimeoutValue >= 1 &&
     coCreateTimeoutValue <= 3600 &&
     coCreateTimeoutValue !== coCreateTimeoutSeconds;
+  const coCreateMaxTokensValue = Number(coCreateMaxTokensDraft);
+  const canSaveCoCreateMaxTokens = Number.isInteger(coCreateMaxTokensValue) &&
+    coCreateMaxTokensValue >= 512 &&
+    coCreateMaxTokensValue <= 32768 &&
+    coCreateMaxTokensValue !== coCreateMaxTokens;
   const modelCallAttemptsValue = Number(modelCallAttemptsDraft);
   const structureRepairAttemptsValue = Number(structureRepairAttemptsDraft);
   const canSaveRetrySettings =
@@ -5401,6 +5480,36 @@ function ModelPanel({
             />
           </label>
           <button className="tool-button" disabled={busy || !canSaveCoCreateTimeout} type="submit">
+            <Check size={16} />
+            保存
+          </button>
+        </form>
+      </section>
+      <section>
+        <div className="section-title">
+          <Activity size={17} />
+          <span>共创输出 tokens</span>
+        </div>
+        <form
+          className="model-timeout-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onCoCreateMaxTokens(coCreateMaxTokensValue);
+          }}
+        >
+          <label className="field-label">
+            <span>tokens</span>
+            <input
+              disabled={busy}
+              inputMode="numeric"
+              max="32768"
+              min="512"
+              type="number"
+              value={coCreateMaxTokensDraft}
+              onChange={(event) => setCoCreateMaxTokensDraft(event.target.value)}
+            />
+          </label>
+          <button className="tool-button" disabled={busy || !canSaveCoCreateMaxTokens} type="submit">
             <Check size={16} />
             保存
           </button>
@@ -7584,6 +7693,57 @@ function clampChapterSelection(value, chapterCount = 0) {
     return '1';
   }
   return String(Math.min(parsed, chapterCount));
+}
+
+const CO_CREATE_DECISION_SKIP_OPTION_ID = '__skip__';
+export const CO_CREATE_DECISION_SKIP_ANSWER = '跳过：保留原作处理，不针对该问题做修改。';
+
+function coCreateDecisionKey(decision = {}, index = 0) {
+  const id = String(decision.id || '').trim();
+  return id || `decision-${index}`;
+}
+
+function normalizeCoCreateDecisionAnswer(answer = {}) {
+  return {
+    optionId: String(answer.optionId || '').trim(),
+    customAnswer: String(answer.customAnswer || '')
+  };
+}
+
+export function normalizeCoCreateDecisionAnswers(decisions = [], previous = {}) {
+  const normalizedDecisions = Array.isArray(decisions) ? decisions : [];
+  return normalizedDecisions.reduce((next, decision, index) => {
+    const key = coCreateDecisionKey(decision, index);
+    next[key] = normalizeCoCreateDecisionAnswer(previous[key]);
+    return next;
+  }, {});
+}
+
+export function isCoCreateDecisionAnswerComplete(answer = {}) {
+  const normalized = normalizeCoCreateDecisionAnswer(answer);
+  return Boolean(normalized.optionId || normalized.customAnswer.trim());
+}
+
+export function buildCoCreateDecisionPayload(decisions = [], answers = {}) {
+  const normalizedDecisions = Array.isArray(decisions) ? decisions : [];
+  return normalizedDecisions.map((decision, index) => {
+    const key = coCreateDecisionKey(decision, index);
+    const answer = normalizeCoCreateDecisionAnswer(answers[key]);
+    const skipped = answer.optionId === CO_CREATE_DECISION_SKIP_OPTION_ID;
+    const customAnswer = skipped ? CO_CREATE_DECISION_SKIP_ANSWER : answer.customAnswer.trim();
+    return {
+      decision_id: String(decision.id || '').trim(),
+      option_id: customAnswer ? '' : answer.optionId,
+      custom_answer: customAnswer
+    };
+  });
+}
+
+export function isCoCreateDecisionPayloadComplete(item = {}) {
+  return Boolean(
+    String(item.decision_id || '').trim()
+      && (String(item.option_id || '').trim() || String(item.custom_answer || '').trim())
+  );
 }
 
 export function clampCoCreateDecisionPageIndex(value, decisionCount = 0) {

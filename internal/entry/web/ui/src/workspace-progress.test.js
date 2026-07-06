@@ -7,6 +7,7 @@ import {
   buildBeginCoCreatePayload,
   buildChapterRevisionPayload,
   buildCoCreatePlanningRevisionPayload,
+  buildCoCreateDecisionPayload,
   buildCoCreateIntakeInitial,
   buildExportSuggestedName,
   buildVolumeReviewRevisionPayload,
@@ -14,6 +15,7 @@ import {
   canSaveAnalyzedNovelToLibrary,
   canRunSimulationAnalysis,
   clampCoCreateDecisionPageIndex,
+  CO_CREATE_DECISION_SKIP_ANSWER,
   clearAdaptationProposalSnapshot,
   deriveWorkspaceProgress,
   formatAdaptationSourceCoverageLabel,
@@ -26,9 +28,12 @@ import {
   getSimulationProfileStatus,
   getSnapshotOutlineRows,
   inferCoCreateIntakeFromInitial,
+  isCoCreateDecisionAnswerComplete,
+  isCoCreateDecisionPayloadComplete,
   isCoCreateRequestBusy,
   isSimulationProfileActionBusy,
   isProjectRunning,
+  normalizeCoCreateDecisionAnswers,
   resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords,
   resolveVisibleDefaultModel,
@@ -45,6 +50,41 @@ describe('co-create begin payload helpers', () => {
     expect(clampCoCreateDecisionPageIndex(9, 4)).toBe(3);
     expect(clampCoCreateDecisionPageIndex('bad', 4)).toBe(0);
     expect(clampCoCreateDecisionPageIndex(2, 0)).toBe(0);
+  });
+
+  it('builds explicit co-create decision payloads including skip answers', () => {
+    const decisions = [
+      { id: 'q1', recommended_option_id: 'a', options: [{ id: 'a', label: 'accept' }] },
+      { id: 'q2', recommended_option_id: 'b', options: [{ id: 'b', label: 'rewrite' }] },
+      { id: 'q3', recommended_option_id: 'c', options: [{ id: 'c', label: 'merge' }] }
+    ];
+
+    const payload = buildCoCreateDecisionPayload(decisions, {
+      q1: { optionId: 'a', customAnswer: '' },
+      q2: { optionId: '__skip__', customAnswer: '' },
+      q3: { optionId: '', customAnswer: '只保留伏笔，不改人物关系' }
+    });
+
+    expect(payload).toEqual([
+      { decision_id: 'q1', option_id: 'a', custom_answer: '' },
+      { decision_id: 'q2', option_id: '', custom_answer: CO_CREATE_DECISION_SKIP_ANSWER },
+      { decision_id: 'q3', option_id: '', custom_answer: '只保留伏笔，不改人物关系' }
+    ]);
+    expect(payload.every(isCoCreateDecisionPayloadComplete)).toBe(true);
+  });
+
+  it('does not treat a recommended co-create decision option as selected before user action', () => {
+    const answers = normalizeCoCreateDecisionAnswers([
+      { id: 'q1', recommended_option_id: 'a', options: [{ id: 'a', label: 'accept' }] }
+    ]);
+
+    expect(answers.q1).toEqual({ optionId: '', customAnswer: '' });
+    expect(isCoCreateDecisionAnswerComplete(answers.q1)).toBe(false);
+    expect(isCoCreateDecisionPayloadComplete({
+      decision_id: 'q1',
+      option_id: '',
+      custom_answer: ''
+    })).toBe(false);
   });
 
   it('builds safe export suggested filenames', () => {

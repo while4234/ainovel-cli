@@ -33,7 +33,9 @@ import {
   resolveCoCreateDecisions,
   saveNovelToLibrary,
   sendCoCreate,
+  setGlobalCoCreateMaxTokens,
   setGlobalCoCreateTimeout,
+  setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
   setProjectStyle,
   startGrokLogin,
@@ -388,11 +390,13 @@ describe('web API helpers', () => {
     }));
   });
 
-  it('sends co-create timeout updates to global and project model routes', async () => {
+  it('sends co-create generation setting updates to global and project model routes', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
 
     await setGlobalCoCreateTimeout(60);
     await setProjectCoCreateTimeout('project-1', 30);
+    await setGlobalCoCreateMaxTokens(8192);
+    await setProjectCoCreateMaxTokens('project-1', 12288);
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/models/cocreate-timeout', expect.objectContaining({
       method: 'POST',
@@ -401,6 +405,14 @@ describe('web API helpers', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/models/cocreate-timeout', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ seconds: 30 })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/models/cocreate-max-tokens', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ tokens: 8192 })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/projects/project-1/models/cocreate-max-tokens', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ tokens: 12288 })
     }));
   });
 

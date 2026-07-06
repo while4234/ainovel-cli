@@ -104,7 +104,6 @@ const (
 const (
 	coCreateMaxAttempts              = retrypolicy.MaxAttempts
 	coCreateMaxTokens                = 2048
-	adaptCoCreateMaxTokens           = 8192
 	coCreateSuggestionJudgeMaxTokens = 256
 	coCreateModelRole                = "architect"
 )
@@ -177,11 +176,7 @@ const (
 	tagSuggestions = "suggestions"
 )
 
-func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, timeout time.Duration, sysPrompt string, history []CoCreateMessage, onProgress func(kind, text string)) (reply CoCreateReply, err error) {
-	return coCreateStreamWithMaxTokens(ctx, models, sessions, timeout, sysPrompt, history, coCreateMaxTokens, onProgress)
-}
-
-func coCreateStreamWithMaxTokens(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, timeout time.Duration, sysPrompt string, history []CoCreateMessage, maxTokens int, onProgress func(kind, text string)) (reply CoCreateReply, err error) {
+func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, timeout time.Duration, maxTokens int, sysPrompt string, history []CoCreateMessage, onProgress func(kind, text string)) (reply CoCreateReply, err error) {
 	if len(history) == 0 {
 		return CoCreateReply{}, fmt.Errorf("cocreate history is empty")
 	}
@@ -227,6 +222,7 @@ func coCreateStreamWithMaxTokens(ctx context.Context, models *bootstrap.ModelSet
 			Time:             time.Now(),
 			DurationMS:       time.Since(start).Milliseconds(),
 			TimeoutSeconds:   int(timeout.Seconds()),
+			MaxTokens:        maxTokens,
 			ModelRole:        coCreateModelRole,
 			SelectedProvider: modelIdentity.Provider,
 			SelectedModel:    modelIdentity.Model,
@@ -654,6 +650,7 @@ type coCreateLogEntry struct {
 	Time             time.Time         `json:"time"`
 	DurationMS       int64             `json:"duration_ms"`
 	TimeoutSeconds   int               `json:"timeout_seconds,omitempty"`
+	MaxTokens        int               `json:"max_tokens,omitempty"`
 	ModelRole        string            `json:"model_role,omitempty"`
 	SelectedProvider string            `json:"selected_provider,omitempty"`
 	SelectedModel    string            `json:"selected_model,omitempty"`
