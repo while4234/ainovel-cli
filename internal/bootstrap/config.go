@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore/llm"
+	"github.com/voocel/ainovel-cli/internal/codexauth"
 	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/models"
 	"github.com/voocel/ainovel-cli/internal/utils"
@@ -31,7 +32,7 @@ const CompactRatio = 0.85
 const MinCompactReserve = 8000
 
 const (
-	DefaultCoCreateTimeoutSeconds = 60
+	DefaultCoCreateTimeoutSeconds = 180
 	MinCoCreateTimeoutSeconds     = 1
 	MaxCoCreateTimeoutSeconds     = 3600
 
@@ -131,6 +132,7 @@ type ProviderConfig struct {
 	UseProxy                   *bool    `json:"use_proxy,omitempty"`
 	RequestTimeoutSeconds      int      `json:"request_timeout_seconds,omitempty"`
 	ConnectivityTimeoutSeconds int      `json:"connectivity_timeout_seconds,omitempty"`
+	AuthFile                   string   `json:"auth_file,omitempty"`
 	Type                       string   `json:"type,omitempty"`       // API 协议类型（openai/anthropic/gemini），自定义代理时指定
 	Auth                       string   `json:"auth,omitempty"`       // 认证模式：空/api_key/grok_oauth
 	AccountID                  string   `json:"account_id,omitempty"` // Grok OAuth 账号 ID；token 存在 ~/.ainovel/auth/grok.json
@@ -147,10 +149,17 @@ type ProviderConfig struct {
 	Extra map[string]any `json:"extra,omitempty"`
 }
 
-const ProviderAuthGrokOAuth = "grok_oauth"
+const (
+	ProviderAuthGrokOAuth = "grok_oauth"
+	ProviderAuthCodex     = "codex"
+)
 
 func (pc ProviderConfig) UsesGrokOAuth() bool {
 	return strings.EqualFold(strings.TrimSpace(pc.Auth), ProviderAuthGrokOAuth)
+}
+
+func (pc ProviderConfig) UsesCodexAuth() bool {
+	return strings.EqualFold(strings.TrimSpace(pc.Auth), ProviderAuthCodex)
 }
 
 // RequiresAPIKey 返回该 provider 是否必须显式配置 api_key。
@@ -159,7 +168,7 @@ func (pc ProviderConfig) UsesGrokOAuth() bool {
 // 2. 显式指定 Type 的配置视为自定义代理，允许无 key；
 // 3. 其他 provider 默认要求 key，保持对官方托管接口的保守校验。
 func (pc ProviderConfig) RequiresAPIKey(name string) bool {
-	if pc.UsesGrokOAuth() {
+	if pc.UsesGrokOAuth() || pc.UsesCodexAuth() {
 		return false
 	}
 	switch name {
@@ -254,7 +263,7 @@ type Config struct {
 	// ReasoningEffort 顶层默认推理强度（off/low/medium/high/xhigh/max），空=不覆盖（沿用模型/provider 默认）。
 	// 角色未单独配置 reasoning_effort 时回落到此值。
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	// CoCreateTimeoutSeconds 是 Web 共创单次模型调用超时；0 表示使用默认 60 秒。
+	// CoCreateTimeoutSeconds 是 Web 共创单次模型调用超时；0 表示使用默认 180 秒。
 	CoCreateTimeoutSeconds     int                   `json:"cocreate_timeout_seconds,omitempty"`
 	StructureRepairMaxAttempts int                   `json:"structure_repair_max_attempts,omitempty"`
 	Proxy                      string                `json:"proxy,omitempty"`
@@ -442,6 +451,7 @@ func validateProviderConfigText(name string, pc ProviderConfig) error {
 		{label: fmt.Sprintf("provider %q type", name), value: pc.Type},
 		{label: fmt.Sprintf("provider %q auth", name), value: pc.Auth},
 		{label: fmt.Sprintf("provider %q account_id", name), value: pc.AccountID},
+		{label: fmt.Sprintf("provider %q auth_file", name), value: pc.AuthFile},
 		{label: fmt.Sprintf("provider %q api", name), value: pc.API},
 		{label: fmt.Sprintf("provider %q api_key", name), value: pc.APIKey},
 		{label: fmt.Sprintf("provider %q base_url", name), value: pc.BaseURL},
@@ -480,8 +490,22 @@ func validateProviderConfigText(name string, pc ProviderConfig) error {
 		if pc.BaseURL != "" && !isGrokOAuthBaseURL(pc.BaseURL) {
 			return fmt.Errorf("provider %q grok_oauth base_url must be https://api.x.ai/v1 or empty: %w", name, errs.ErrConfig)
 		}
+	case ProviderAuthCodex:
+		providerType, err := pc.ProviderType(name)
+		if err != nil {
+			return fmt.Errorf("provider %q auth %q 鏃犳硶瑙ｆ瀽 provider type: %w", name, auth, err)
+		}
+		if strings.ToLower(strings.TrimSpace(providerType)) != "openai" {
+			return fmt.Errorf("provider %q auth %q only supports openai type: %w", name, auth, errs.ErrConfig)
+		}
+		if pc.API != "" && pc.API != "responses" {
+			return fmt.Errorf("provider %q codex auth api must be responses or empty: %w", name, errs.ErrConfig)
+		}
+		if pc.BaseURL != "" && !isCodexAuthBaseURL(pc.BaseURL) {
+			return fmt.Errorf("provider %q codex auth base_url must be %s or empty: %w", name, codexauth.DefaultBaseURL, errs.ErrConfig)
+		}
 	default:
-		return fmt.Errorf("provider %q auth must be api_key or grok_oauth: %w", name, errs.ErrConfig)
+		return fmt.Errorf("provider %q auth must be api_key, grok_oauth, or codex: %w", name, errs.ErrConfig)
 	}
 	return nil
 }
@@ -492,6 +516,16 @@ func isGrokOAuthBaseURL(raw string) bool {
 		return false
 	}
 	return parsed.Scheme == "https" && strings.EqualFold(parsed.Hostname(), "api.x.ai")
+}
+
+func isCodexAuthBaseURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimRight(strings.TrimSpace(raw), "/"))
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme == "https" &&
+		strings.EqualFold(parsed.Hostname(), "chatgpt.com") &&
+		strings.TrimRight(parsed.Path, "/") == "/backend-api/codex"
 }
 
 func validateConfigText(name, value string) error {
@@ -662,7 +696,7 @@ func (c Config) validateProviderAPI(owner, providerName string, pc ProviderConfi
 	if pc.API == "" {
 		return nil
 	}
-	if pc.UsesGrokOAuth() {
+	if pc.UsesGrokOAuth() || pc.UsesCodexAuth() {
 		return nil
 	}
 	providerType, err := pc.ProviderType(providerName)

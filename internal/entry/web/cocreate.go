@@ -43,8 +43,9 @@ type webCoCreateBeginRequest struct {
 }
 
 type webCoCreateSendRequest struct {
-	Text   string `json:"text"`
-	Source string `json:"source"`
+	Text         string `json:"text"`
+	Source       string `json:"source"`
+	ForceRebrief bool   `json:"force_rebrief,omitempty"`
 }
 
 type webCoCreateReviseRequest struct {
@@ -57,10 +58,15 @@ type webCoCreatePlanningRevisionRequest struct {
 	Instruction string `json:"instruction"`
 }
 
-type webCoCreateDecisionRequest struct {
+type webCoCreateDecisionItem struct {
 	DecisionID   string `json:"decision_id"`
 	OptionID     string `json:"option_id"`
 	CustomAnswer string `json:"custom_answer"`
+}
+
+type webCoCreateDecisionRequest struct {
+	webCoCreateDecisionItem
+	Decisions []webCoCreateDecisionItem `json:"decisions,omitempty"`
 }
 
 type webCoCreateMessage struct {
@@ -247,7 +253,7 @@ func (s *Server) handleProjectCoCreateSend(w http.ResponseWriter, r *http.Reques
 		writeProjectSessionError(w, err)
 		return
 	}
-	state, err := session.SendCoCreate(r.Context(), req.Text, req.Source)
+	state, err := session.SendCoCreate(r.Context(), req)
 	if err != nil {
 		writeCoCreateActionError(w, err, state)
 		return
@@ -830,6 +836,29 @@ func (s *webCoCreateSession) applyReply(reply host.CoCreateReply) {
 	}
 }
 
+func (s *webCoCreateSession) applyDeterministicAdaptDraft(message string, draft string) {
+	if s == nil || s.session == nil {
+		return
+	}
+	message = strings.TrimSpace(message)
+	draft = strings.TrimSpace(draft)
+	raw := strings.Join([]string{
+		"<reply>" + message + "</reply>",
+		"<draft>",
+		draft,
+		"</draft>",
+		"<ready>true</ready>",
+		"<suggestions></suggestions>",
+	}, "\n")
+	s.applyReply(host.CoCreateReply{
+		Message: message,
+		Prompt:  draft,
+		Ready:   true,
+		Raw:     raw,
+	})
+	s.draftConsolidated = true
+}
+
 func (s *webCoCreateSession) rollbackDraftAfterRejectedReply(reply host.CoCreateReply) {
 	if s == nil || s.session == nil {
 		return
@@ -888,6 +917,15 @@ func (s *webCoCreateSession) shouldConsolidateDraftBeforeCommit() bool {
 		return false
 	}
 	return coCreatePlanningUserMessageCount(s.kind, s.session.History()) > 1
+}
+
+func (s *webCoCreateSession) canMergeAdaptDraftIncrement(forceRebrief bool) bool {
+	return s != nil &&
+		s.kind == webCoCreateKindAdapt &&
+		!forceRebrief &&
+		s.session != nil &&
+		!s.hasPendingBriefingDecisions() &&
+		strings.TrimSpace(s.draftPrompt()) != ""
 }
 
 func coCreatePlanningUserMessageCount(kind string, history []host.CoCreateMessage) int {
@@ -1376,6 +1414,100 @@ func resolvedAdaptBriefingDecisionLines(briefing *domain.AdaptationCoCreateBrief
 	return lines
 }
 
+func (req webCoCreateDecisionRequest) resolvedDecisionItems() []domain.AdaptationResolvedDecision {
+	items := req.Decisions
+	if len(items) == 0 {
+		items = []webCoCreateDecisionItem{req.webCoCreateDecisionItem}
+	}
+	out := make([]domain.AdaptationResolvedDecision, 0, len(items))
+	for _, item := range items {
+		out = append(out, domain.AdaptationResolvedDecision{
+			DecisionID:   strings.TrimSpace(item.DecisionID),
+			OptionID:     strings.TrimSpace(item.OptionID),
+			CustomAnswer: strings.TrimSpace(item.CustomAnswer),
+		})
+	}
+	return out
+}
+
+func mergeAdaptDraftUserIncrement(draft string, text string) string {
+	return mergeAdaptDraftSection(draft, "## Incremental User Directions", []string{text})
+}
+
+func mergeAdaptDraftResolvedDecisions(draft string, briefing *domain.AdaptationCoCreateBriefing) string {
+	return mergeAdaptDraftSection(draft, "## Confirmed Co-create Decisions", resolvedAdaptBriefingDecisionLines(briefing))
+}
+
+func mergeAdaptDraftSection(draft string, heading string, items []string) string {
+	draft = strings.TrimSpace(draft)
+	heading = strings.TrimSpace(heading)
+	cleaned := normalizeAdaptDraftSectionItems(items)
+	if len(cleaned) == 0 {
+		return draft
+	}
+	if draft == "" {
+		draft = "# Adaptation Co-create Draft"
+	}
+	bullets := make([]string, 0, len(cleaned))
+	for _, item := range cleaned {
+		bullets = append(bullets, "- "+item)
+	}
+	idx := strings.Index(draft, heading)
+	if idx < 0 {
+		return strings.TrimSpace(draft) + "\n\n" + heading + "\n" + strings.Join(bullets, "\n")
+	}
+	sectionStart := idx + len(heading)
+	sectionTail := draft[sectionStart:]
+	nextHeading := strings.Index(sectionTail, "\n## ")
+	if nextHeading < 0 {
+		nextHeading = len(sectionTail)
+	}
+	existing := sectionTail[:nextHeading]
+	var additions []string
+	for _, bullet := range bullets {
+		if !strings.Contains(existing, bullet) {
+			additions = append(additions, bullet)
+		}
+	}
+	if len(additions) == 0 {
+		return draft
+	}
+	before := strings.TrimRight(draft[:sectionStart]+sectionTail[:nextHeading], "\n")
+	after := sectionTail[nextHeading:]
+	return before + "\n" + strings.Join(additions, "\n") + after
+}
+
+func normalizeAdaptDraftSectionItems(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.Join(strings.Fields(strings.TrimSpace(item)), " ")
+		if item == "" {
+			continue
+		}
+		item = clipWebRunes(item, 500)
+		key := strings.ToLower(item)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func clipWebRunes(text string, maxRunes int) string {
+	text = strings.TrimSpace(text)
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
 func adaptBriefingDecisionOptionLabel(options []domain.AdaptationDecisionOption, optionID string) string {
 	optionID = strings.TrimSpace(optionID)
 	for _, option := range options {
@@ -1401,15 +1533,18 @@ func (s *webCoCreateSession) needsAdaptBriefingBeforeDraft() bool {
 		strings.TrimSpace(s.draftPrompt()) == ""
 }
 
-func (s *webCoCreateSession) needsAdaptBriefingRefresh() bool {
+func (s *webCoCreateSession) needsAdaptBriefingRefresh(force bool) bool {
 	if s == nil || s.kind != webCoCreateKindAdapt {
 		return false
 	}
 	if s.needsAdaptBriefingBeforeDraft() {
 		return true
 	}
-	if s.adaptationBriefing == nil {
+	if !force {
 		return false
+	}
+	if s.adaptationBriefing == nil {
+		return true
 	}
 	intent := s.adaptBriefingIntent()
 	return strings.TrimSpace(intent.IntentHash) != "" &&

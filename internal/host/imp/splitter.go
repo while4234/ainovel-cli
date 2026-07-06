@@ -114,6 +114,17 @@ var inlineTrailingParenthesizedChapterRegex = regexp.MustCompile(
 	`(?P<prefix>.+?)(?P<title>[（(][` + ws + `]*[` + parenthesizedCnNum + `]+[` + ws + `]*[）)])[` + ws + `]*$`,
 )
 
+var separatorLineRegex = regexp.MustCompile(`^[` + ws + `]*[-－—–_＊*]{3,}[` + ws + `]*$`)
+
+var sourceSiteChapterHeadingNoiseRegex = regexp.MustCompile(
+	`(?i)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` + workTitlePrefix + `[【〖]?[` + ws + `]*(?:` +
+		`第\s*(?:[` + cnNum + `]+)\s*(?:章|回|话|卷|节|幕)` +
+		`|卷\s*(?:[` + cnNum + `]+)` +
+		`|(?:` + specialUnit + `)(?:[` + cnNum + `]+)?` +
+		`|Chapter\s+(?:\d+|[IVXLCDM]+)` +
+		`).{0,120}免费阅读`,
+)
+
 // SplitFile 把单个文本文件切分成章节列表。
 func SplitFile(path string) ([]Chapter, error) {
 	data, err := os.ReadFile(path)
@@ -176,6 +187,7 @@ func splitText(text string, pattern *regexp.Regexp) []Chapter {
 			end = marks[i+1].line
 		}
 		body := strings.Join(lines[m.line+1:end], "\n")
+		body = stripSourceNoise(body)
 		body = stripTrailingNoise(body)
 		body = strings.TrimSpace(body)
 		if body == "" {
@@ -295,7 +307,7 @@ func repeatedTitleBeforeContent(lines []string, marks []splitMarker, idx int) bo
 var metadataOnlyLineRegex = regexp.MustCompile(`^(?:作者|字数)[:：]|^\d{4}(?:[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?)?$|^[*＊]{3,}$`)
 
 var sourceSiteNoiseLineRegex = regexp.MustCompile(
-	`^(?:\d{4}-\d{1,2}-\d{1,2}\d{1,2}:\d{2}#\d+|.*该用户已被删除|精华积分N/A帖子阅读权限注册N/A)$`,
+	`^(?:\d{4}-\d{1,2}-\d{1,2}\d{1,2}:\d{2}#\d+|.*该用户已被删除|精华积分N/A帖子阅读权限注册N/A|7017k)$`,
 )
 
 func isMetadataOnlyLine(line string) bool {
@@ -319,6 +331,7 @@ func nextMarkerFollowsOnlyBlankLines(lines []string, marks []splitMarker, idx in
 }
 
 func normalizeChapterLines(lines []string) []string {
+	lines = cleanSourceLines(lines)
 	normalized := make([]string, 0, len(lines))
 	for _, line := range lines {
 		if prefix, title, ok := splitInlineTrailingParenthesizedChapter(line); ok {
@@ -340,6 +353,66 @@ func normalizeChapterLines(lines []string) []string {
 		normalized = append(normalized, title)
 	}
 	return normalized
+}
+
+func cleanSourceLines(lines []string) []string {
+	cleaned := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); {
+		if isSeparatorLine(lines[i]) {
+			if end := nextSeparatorLine(lines, i+1); end >= 0 && isAuthorNoteBlock(lines[i+1:end]) {
+				i = end + 1
+				continue
+			}
+			i++
+			continue
+		}
+		if !isSourceSiteNoiseLine(lines[i]) {
+			cleaned = append(cleaned, lines[i])
+		}
+		i++
+	}
+	return cleaned
+}
+
+func nextSeparatorLine(lines []string, start int) int {
+	for i := start; i < len(lines); i++ {
+		if isSeparatorLine(lines[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func isSeparatorLine(line string) bool {
+	return separatorLineRegex.MatchString(strings.TrimSpace(line))
+}
+
+func isAuthorNoteBlock(lines []string) bool {
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || isSourceSiteNoiseLine(line) {
+			continue
+		}
+		if _, ok := parseMarker(line, defaultChapterRegex, 1); ok {
+			return false
+		}
+		return isAuthorNoteHeading(line)
+	}
+	return false
+}
+
+func isAuthorNoteHeading(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	return strings.Contains(line, "请假") ||
+		strings.Contains(line, "假条") ||
+		strings.Contains(line, "调整作息") ||
+		strings.Contains(line, "上架感言") ||
+		strings.Contains(line, "完本感言") ||
+		strings.Contains(line, "完本报告") ||
+		strings.Contains(line, "总结兼请假")
 }
 
 func splitInlineTrailingParenthesizedChapter(line string) (string, string, bool) {
@@ -456,6 +529,10 @@ func stripTrailingNoise(content string) string {
 	return stripTrailingSourceSiteNoise(content)
 }
 
+func stripSourceNoise(content string) string {
+	return strings.Join(cleanSourceLines(strings.Split(content, "\n")), "\n")
+}
+
 func stripTrailingSourceSiteNoise(content string) string {
 	lines := strings.Split(content, "\n")
 	end := len(lines)
@@ -471,5 +548,29 @@ func stripTrailingSourceSiteNoise(content string) string {
 }
 
 func isSourceSiteNoiseLine(line string) bool {
-	return sourceSiteNoiseLineRegex.MatchString(strings.TrimSpace(line))
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	if sourceSiteNoiseLineRegex.MatchString(line) {
+		return true
+	}
+	if line == "『』" || strings.HasPrefix(line, "『』 ，最快更新最新章节") {
+		return true
+	}
+	if strings.Contains(line, "最快更新最新章节") {
+		return true
+	}
+	if strings.HasPrefix(line, "为您提供大神") && strings.Contains(line, "最快更新") {
+		return true
+	}
+	if strings.Contains(line, "换源app") && strings.Contains(line, "最新章节") {
+		return true
+	}
+	if strings.Contains(line, "免费阅读") {
+		return sourceSiteChapterHeadingNoiseRegex.MatchString(line) ||
+			strings.HasPrefix(line, "免费阅读") ||
+			strings.Contains(line, "免费阅读..com")
+	}
+	return false
 }

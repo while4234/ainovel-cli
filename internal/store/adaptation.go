@@ -508,14 +508,16 @@ func CoCreateBriefingMatches(
 }
 
 func (s *AdaptationStore) ResolveCoCreateBriefingDecision(decisionID, optionID, customAnswer string) (*domain.AdaptationCoCreateBriefing, error) {
-	decisionID = strings.TrimSpace(decisionID)
-	optionID = strings.TrimSpace(optionID)
-	customAnswer = strings.TrimSpace(customAnswer)
-	if decisionID == "" {
-		return nil, fmt.Errorf("decision_id is required")
-	}
-	if optionID == "" && customAnswer == "" {
-		return nil, fmt.Errorf("option_id or custom_answer is required")
+	return s.ResolveCoCreateBriefingDecisions([]domain.AdaptationResolvedDecision{{
+		DecisionID:   decisionID,
+		OptionID:     optionID,
+		CustomAnswer: customAnswer,
+	}})
+}
+
+func (s *AdaptationStore) ResolveCoCreateBriefingDecisions(decisions []domain.AdaptationResolvedDecision) (*domain.AdaptationCoCreateBriefing, error) {
+	if len(decisions) == 0 {
+		return nil, fmt.Errorf("decisions are required")
 	}
 	briefing, err := s.LoadCoCreateBriefing()
 	if err != nil {
@@ -524,25 +526,39 @@ func (s *AdaptationStore) ResolveCoCreateBriefingDecision(decisionID, optionID, 
 	if briefing == nil {
 		return nil, fmt.Errorf("co-create briefing is required")
 	}
-	decision := findBriefingDecision(*briefing, decisionID)
-	if decision == nil {
-		return nil, fmt.Errorf("decision not found")
+	next := *briefing
+	next.Decisions = append([]domain.AdaptationBriefingDecision(nil), briefing.Decisions...)
+	next.ResolvedDecisions = append([]domain.AdaptationResolvedDecision(nil), briefing.ResolvedDecisions...)
+	for _, item := range decisions {
+		decisionID := strings.TrimSpace(item.DecisionID)
+		optionID := strings.TrimSpace(item.OptionID)
+		customAnswer := strings.TrimSpace(item.CustomAnswer)
+		if decisionID == "" {
+			return nil, fmt.Errorf("decision_id is required")
+		}
+		if optionID == "" && customAnswer == "" {
+			return nil, fmt.Errorf("option_id or custom_answer is required")
+		}
+		decision := findBriefingDecision(next, decisionID)
+		if decision == nil {
+			return nil, fmt.Errorf("decision not found")
+		}
+		if optionID != "" && !briefingDecisionHasOption(*decision, optionID) {
+			return nil, fmt.Errorf("decision option not found")
+		}
+		resolved := domain.AdaptationResolvedDecision{
+			DecisionID:   decisionID,
+			OptionID:     optionID,
+			CustomAnswer: customAnswer,
+			ResolvedAt:   timeNowUTCString(),
+		}
+		next.ResolvedDecisions = upsertResolvedDecision(next.ResolvedDecisions, resolved)
+		markBriefingDecisionResolved(&next, decisionID)
 	}
-	if optionID != "" && !briefingDecisionHasOption(*decision, optionID) {
-		return nil, fmt.Errorf("decision option not found")
-	}
-	resolved := domain.AdaptationResolvedDecision{
-		DecisionID:   decisionID,
-		OptionID:     optionID,
-		CustomAnswer: customAnswer,
-		ResolvedAt:   timeNowUTCString(),
-	}
-	briefing.ResolvedDecisions = upsertResolvedDecision(briefing.ResolvedDecisions, resolved)
-	markBriefingDecisionResolved(briefing, decisionID)
-	if err := s.SaveCoCreateBriefing(*briefing); err != nil {
+	if err := s.SaveCoCreateBriefing(next); err != nil {
 		return nil, err
 	}
-	return briefing, nil
+	return &next, nil
 }
 
 func (s *AdaptationStore) CoCreateDossierCurrent(promptVersion string, batchSize int, batchRuneLimit ...int) (bool, error) {

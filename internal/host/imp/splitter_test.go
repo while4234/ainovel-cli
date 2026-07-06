@@ -280,6 +280,38 @@ func TestSplitText_RepeatedSourceTitleWithMetadataIsCollapsed(t *testing.T) {
 	}
 }
 
+func TestSplitText_SourceSiteFreeReadingFragmentsAreMerged(t *testing.T) {
+	src := `第953章 迦乐世太小了
+正文一。
+为您提供大神听日的《术师手册》最快更新，！
+    第953章 迦乐世太小了免费阅读：，！
+    『』 ，最快更新最新章节！
+正文二。
+为您提供大神听日的《术师手册》最快更新，！
+    第953章 迦乐世太小了免费阅读：，！
+    『』
+------------
+夜之城请假条
+昨晚卡文，今天请假。
+------------
+第954章 等我
+正文三。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 2 {
+		t.Fatalf("want 2 chapters, got %d: %+v", len(got), got)
+	}
+	assertChapterTitlesAt(t, got, 1, []string{"迦乐世太小了", "等我"})
+	if !strings.Contains(got[0].Content, "正文一。") || !strings.Contains(got[0].Content, "正文二。") {
+		t.Fatalf("free-reading fragments should merge into the real chapter: %q", got[0].Content)
+	}
+	for _, forbidden := range []string{"免费阅读", "最快更新", "『』", "夜之城请假条", "------------"} {
+		if strings.Contains(got[0].Content, forbidden) {
+			t.Fatalf("source-site noise %q leaked into chapter: %q", forbidden, got[0].Content)
+		}
+	}
+}
+
 func TestSplitText_InlineTrailingChapterHeading(t *testing.T) {
 	src := `第十二章 老谋深算
 上一章正文。

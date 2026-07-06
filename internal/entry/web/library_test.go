@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -165,6 +166,7 @@ func TestNovelLibrarySaveLoadRewritesManifestAndSkipsAnalyze(t *testing.T) {
 		t.Fatalf("CreateProject source: %v", err)
 	}
 	sourcePath := writePreparedAdaptationFixture(t, sourceProject, "source.txt")
+	writeContaminatedCoCreateProgress(t, sourceProject.OutputDir)
 	installFakeSession(t, server, sourceProject)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+sourceProject.ID+"/adapt/library/save", bytes.NewBufferString(`{"name":"Fixture Novel","source_file":"source.txt"}`))
@@ -187,6 +189,10 @@ func TestNovelLibrarySaveLoadRewritesManifestAndSkipsAnalyze(t *testing.T) {
 	if filepath.Clean(libraryManifest.SourcePath) == filepath.Clean(sourcePath) {
 		t.Fatalf("library source_path still points at original project source: %q", sourcePath)
 	}
+	assertPathMissing(t, filepath.Join(entryRoot, "meta", "adaptation", "cocreate_intent.json"))
+	assertPathMissing(t, filepath.Join(entryRoot, "meta", "adaptation", "cocreate_briefing.json"))
+	assertPathMissing(t, filepath.Join(entryRoot, "meta", "adaptation", "cocreate_briefing_batches"))
+	assertPathMissing(t, filepath.Join(entryRoot, "meta", "adaptation", "proposal.json"))
 
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+sourceProject.ID+"/adapt/library/save", bytes.NewBufferString(`{"name":"Fixture Novel","source_file":"source.txt"}`))
 	rec = httptest.NewRecorder()
@@ -195,11 +201,13 @@ func TestNovelLibrarySaveLoadRewritesManifestAndSkipsAnalyze(t *testing.T) {
 		t.Fatalf("duplicate save status = %d body=%s, want 409", rec.Code, rec.Body.String())
 	}
 
+	writeContaminatedCoCreateProgress(t, entryRoot)
 	targetProject, err := server.store.CreateProject("Loaded Novel Target")
 	if err != nil {
 		t.Fatalf("CreateProject target: %v", err)
 	}
 	fake := installFakeSession(t, server, targetProject)
+	writeContaminatedWebCoCreateProgress(t, targetProject.OutputDir)
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+targetProject.ID+"/adapt/library/load", bytes.NewBufferString(`{"name":"Fixture Novel"}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -232,6 +240,13 @@ func TestNovelLibrarySaveLoadRewritesManifestAndSkipsAnalyze(t *testing.T) {
 	if _, _, err := adaptengine.ValidatePreparedSource(store.NewStore(targetProject.OutputDir), projectSourcePath); err != nil {
 		t.Fatalf("loaded prepared source does not validate: %v", err)
 	}
+	targetAdaptationRoot := filepath.Join(targetProject.OutputDir, "meta", "adaptation")
+	assertPathMissing(t, filepath.Join(targetAdaptationRoot, "cocreate_intent.json"))
+	assertPathMissing(t, filepath.Join(targetAdaptationRoot, "cocreate_briefing.json"))
+	assertPathMissing(t, filepath.Join(targetAdaptationRoot, "cocreate_briefing_batches"))
+	assertPathMissing(t, filepath.Join(targetAdaptationRoot, "proposal.json"))
+	assertPathMissing(t, filepath.Join(targetProject.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath)))
+	assertPathMissing(t, filepath.Join(targetProject.OutputDir, filepath.FromSlash(webCoCreateLogRelPath)))
 
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+targetProject.ID+"/adapt/start", bytes.NewBufferString(`{"source_file":"Fixture Novel.txt","mode":"chapter","brief":"adapt this source"}`))
 	rec = httptest.NewRecorder()
@@ -374,6 +389,11 @@ func TestNovelLibraryLoadLegacyEntrySyncsBackfillToLibrary(t *testing.T) {
 		t.Fatalf("CreateProject target: %v", err)
 	}
 	fake := installFakeSession(t, server, targetProject)
+	fake.adaptAnalyzePrefixEvents = []adaptengine.Event{{
+		Stage:   adaptengine.StageDossier,
+		Message: "recovered dossier batch",
+		Err:     errors.New("temporary dossier parse repair"),
+	}}
 	fake.adaptAnalyzeBeforeDone = func(string) {
 		targetAdaptationRoot := filepath.Join(targetProject.OutputDir, "meta", "adaptation")
 		if err := copyPreparedAdaptationFiles(sourceProject.OutputDir, targetAdaptationRoot); err != nil {
@@ -574,6 +594,55 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 		t.Fatalf("SaveCoCreateDossier: %v", err)
 	}
 	return sourcePath
+}
+
+func writeContaminatedCoCreateProgress(t *testing.T, root string) {
+	t.Helper()
+	adaptationRoot := filepath.Join(root, "meta", "adaptation")
+	if err := writeJSONFile(filepath.Join(adaptationRoot, "cocreate_intent.json"), map[string]any{
+		"raw_request": "old co-create request",
+	}); err != nil {
+		t.Fatalf("write contaminated intent: %v", err)
+	}
+	if err := writeJSONFile(filepath.Join(adaptationRoot, "cocreate_briefing.json"), map[string]any{
+		"resolved_decisions": []string{"old answer"},
+	}); err != nil {
+		t.Fatalf("write contaminated briefing: %v", err)
+	}
+	if err := writeJSONFile(filepath.Join(adaptationRoot, "cocreate_briefing_batches", "0001.json"), map[string]any{
+		"decision_questions": []string{"old question"},
+	}); err != nil {
+		t.Fatalf("write contaminated briefing batch: %v", err)
+	}
+	if err := writeJSONFile(filepath.Join(adaptationRoot, "proposal.json"), map[string]any{
+		"brief": "old generated proposal",
+	}); err != nil {
+		t.Fatalf("write contaminated proposal: %v", err)
+	}
+}
+
+func writeContaminatedWebCoCreateProgress(t *testing.T, outputDir string) {
+	t.Helper()
+	sessionRoot := filepath.Join(outputDir, "meta", "sessions")
+	if err := os.MkdirAll(sessionRoot, 0o755); err != nil {
+		t.Fatalf("create contaminated session dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, filepath.FromSlash(webCoCreateCheckpointRelPath)), []byte(`{"version":1}`), 0o644); err != nil {
+		t.Fatalf("write contaminated co-create checkpoint: %v", err)
+	}
+	logLine := `{"input_history":[{"role":"user","content":"old co-create"}],"parsed_reply":"old","parsed_draft":"old"}` + "\n"
+	if err := os.WriteFile(filepath.Join(outputDir, filepath.FromSlash(webCoCreateLogRelPath)), []byte(logLine), 0o644); err != nil {
+		t.Fatalf("write contaminated co-create log: %v", err)
+	}
+}
+
+func assertPathMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("path %s should not exist", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v", path, err)
+	}
 }
 
 func readAdaptationManifestForTest(t *testing.T, path string) domain.AdaptationSourceManifest {

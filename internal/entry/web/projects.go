@@ -552,6 +552,7 @@ func providerHasPrivateConfig(pc bootstrap.ProviderConfig) bool {
 	return pc.Type != "" ||
 		pc.Auth != "" ||
 		pc.AccountID != "" ||
+		pc.AuthFile != "" ||
 		pc.API != "" ||
 		pc.APIKey != "" ||
 		pc.BaseURL != "" ||

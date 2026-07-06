@@ -391,6 +391,17 @@ func createModelFromConfig(cfg Config, providerKey, model string, pc ProviderCon
 	if err != nil {
 		return nil, fmt.Errorf("解析 provider 类型失败: %w", err)
 	}
+	if pc.UsesCodexAuth() {
+		if strings.ToLower(strings.TrimSpace(providerType)) != "openai" {
+			return nil, fmt.Errorf("provider %s auth %q requires openai type: %w", providerKey, pc.Auth, errs.ErrConfig)
+		}
+		m, err := createCodexAuthModel(cfg, providerKey, model, pc)
+		if err != nil {
+			return nil, err
+		}
+		cache[cacheKey] = m
+		return m, nil
+	}
 	if strings.EqualFold(strings.TrimSpace(pc.Auth), ProviderAuthGrokOAuth) {
 		if strings.ToLower(strings.TrimSpace(providerType)) != "grok" {
 			return nil, fmt.Errorf("provider %s auth %q requires grok type: %w", providerKey, pc.Auth, errs.ErrConfig)

@@ -153,6 +153,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/models/add", s.handleModelAdd)
 	mux.HandleFunc("/api/models/test", s.handleModelTest)
 	mux.HandleFunc("/api/models/discover", s.handleModelDiscover)
+	mux.HandleFunc("/api/models/codex-auth/status", s.handleCodexAuthStatus)
 	mux.HandleFunc("/api/models/grok-login/", s.handleGrokLogin)
 	mux.HandleFunc("/api/projects/trash", s.handleProjectTrash)
 	mux.HandleFunc("/api/projects", s.handleProjects)
@@ -405,6 +406,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectGrokLoginComplete(w, r, id)
 	case "models/grok-login/status":
 		s.handleProjectGrokLoginStatus(w, r, id)
+	case "models/codex-auth/status":
+		s.handleProjectCodexAuthStatus(w, r, id)
 	case "usage":
 		s.handleProjectUsage(w, r, id)
 	case "backend/status":

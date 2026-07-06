@@ -352,6 +352,8 @@ Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可
 
 `providers.<name>.auth: "grok_oauth"` 表示使用 Grok 账号登录 token；该 provider 必须是 `type: "grok"`，可省略 `api_key`，`base_url` 留空时默认使用 `https://api.x.ai/v1`。
 
+`providers.<name>.auth: "codex"` 表示复用本机 Codex 登录凭证，不使用 OpenAI API key；该 provider 必须是 `type: "openai"` 且 `api: "responses"`，默认读取 `CODEX_AUTH_FILE`、`CODEX_HOME/auth.json`、项目 `.codex/auth.json` 或 `~/.codex/auth.json`。
+
 `providers.<name>.extra` 为 provider 级配置，会传给底层 HTTP 客户端，适合配置 `user_agent`、`headers`、`anthropic_beta` 等代理识别字段；`providers.<name>.extra_body` 才是请求体扩展参数，两者不要混用。
 
 ## 诊断报告
@@ -517,6 +519,25 @@ Web UI 的"小说导出"面板使用单独的格式选择：文件名不带 `.tx
           "X-Stainless-Runtime": "node"
         }
       }
+    }
+  }
+}
+```
+
+如果要直接复用 Codex 登录凭证，先确保本机已完成 `codex login`，然后使用 `auth: "codex"`：
+
+```jsonc
+{
+  "provider": "codex-login",
+  "model": "gpt-5.5",
+  "providers": {
+    "codex-login": {
+      "type": "openai",
+      "auth": "codex",
+      "api": "responses",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "auth_file": "",
+      "models": ["gpt-5.5"]
     }
   }
 }

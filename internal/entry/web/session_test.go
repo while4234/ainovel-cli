@@ -1100,6 +1100,7 @@ type fakeProjectHost struct {
 	importNovelResumeFrom       int
 	adaptAnalyzeStarted         chan struct{}
 	adaptAnalyzeBeforeDone      func(string)
+	adaptAnalyzePrefixEvents    []adapt.Event
 	adaptProposalStarted        chan struct{}
 	simulateStarted             chan struct{}
 	releaseSimulate             chan struct{}
@@ -1355,31 +1356,41 @@ func (f *fakeProjectHost) EnsureAdaptationCoCreateBriefing(_ context.Context, so
 }
 
 func (f *fakeProjectHost) ResolveAdaptationCoCreateDecision(decisionID, optionID, customAnswer string) (*domain.AdaptationCoCreateBriefing, error) {
+	return f.ResolveAdaptationCoCreateDecisions([]domain.AdaptationResolvedDecision{{
+		DecisionID:   decisionID,
+		OptionID:     optionID,
+		CustomAnswer: customAnswer,
+	}})
+}
+
+func (f *fakeProjectHost) ResolveAdaptationCoCreateDecisions(decisions []domain.AdaptationResolvedDecision) (*domain.AdaptationCoCreateBriefing, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.resolveAdaptDecisionCalls++
+	f.resolveAdaptDecisionCalls += len(decisions)
 	if f.adaptBriefing == nil {
 		return nil, fmt.Errorf("co-create briefing is required")
 	}
-	resolved := domain.AdaptationResolvedDecision{
-		DecisionID:   strings.TrimSpace(decisionID),
-		OptionID:     strings.TrimSpace(optionID),
-		CustomAnswer: strings.TrimSpace(customAnswer),
-	}
-	replaced := false
-	for i := range f.adaptBriefing.ResolvedDecisions {
-		if f.adaptBriefing.ResolvedDecisions[i].DecisionID == resolved.DecisionID {
-			f.adaptBriefing.ResolvedDecisions[i] = resolved
-			replaced = true
-			break
+	for _, item := range decisions {
+		resolved := domain.AdaptationResolvedDecision{
+			DecisionID:   strings.TrimSpace(item.DecisionID),
+			OptionID:     strings.TrimSpace(item.OptionID),
+			CustomAnswer: strings.TrimSpace(item.CustomAnswer),
 		}
-	}
-	if !replaced {
-		f.adaptBriefing.ResolvedDecisions = append(f.adaptBriefing.ResolvedDecisions, resolved)
-	}
-	for i := range f.adaptBriefing.Decisions {
-		if f.adaptBriefing.Decisions[i].ID == resolved.DecisionID {
-			f.adaptBriefing.Decisions[i].Status = "resolved"
+		replaced := false
+		for i := range f.adaptBriefing.ResolvedDecisions {
+			if f.adaptBriefing.ResolvedDecisions[i].DecisionID == resolved.DecisionID {
+				f.adaptBriefing.ResolvedDecisions[i] = resolved
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			f.adaptBriefing.ResolvedDecisions = append(f.adaptBriefing.ResolvedDecisions, resolved)
+		}
+		for i := range f.adaptBriefing.Decisions {
+			if f.adaptBriefing.Decisions[i].ID == resolved.DecisionID {
+				f.adaptBriefing.Decisions[i].Status = "resolved"
+			}
 		}
 	}
 	return f.adaptBriefing, nil
@@ -1484,6 +1495,7 @@ func (f *fakeProjectHost) PrepareAdaptationSource(_ context.Context, sourcePath 
 	err := f.adaptAnalyzeErr
 	started := f.adaptAnalyzeStarted
 	beforeDone := f.adaptAnalyzeBeforeDone
+	prefixEvents := append([]adapt.Event(nil), f.adaptAnalyzePrefixEvents...)
 	block := f.blockAdaptAnalyze
 	if started != nil {
 		f.adaptAnalyzeStarted = nil
@@ -1501,7 +1513,10 @@ func (f *fakeProjectHost) PrepareAdaptationSource(_ context.Context, sourcePath 
 	if beforeDone != nil {
 		beforeDone(sourcePath)
 	}
-	events := make(chan adapt.Event, 2)
+	events := make(chan adapt.Event, len(prefixEvents)+2)
+	for _, ev := range prefixEvents {
+		events <- ev
+	}
 	events <- adapt.Event{Stage: adapt.StageDone, Message: "adaptation source analyzed"}
 	close(events)
 	return events, nil

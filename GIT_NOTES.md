@@ -28,6 +28,52 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: current local commit
+  `feat: stabilize long-form adaptation co-create and planner batches`:
+  Adaptation co-create now uses an explicit `force_rebrief` path for the
+  "重新分析资料包" action; ordinary follow-up comments merge as lightweight draft
+  increments and do not rerun full-book briefing. Co-create decisions can be
+  submitted in one bulk UI/API request, while resolved decisions are persisted
+  together and merged into the draft without repeated full-draft rewrites.
+  Long-form planner skeleton prompts now use a compact source-foundation digest
+  that omits arc chapter details, tolerate a single returned batch object by
+  wrapping it into `batches`, split oversized skeleton batches into 4-chapter
+  detail sub-batches, and pass previous detail context forward for continuity.
+  The Web UI assets were rebuilt and the default co-create timeout is now 180s.
+  Validation passed for focused backend packages, Web UI Vitest, and Vite build;
+  final restart is handled by the local Web restart step after commit.
+- Latest source/runtime change: pending local changes
+  `fix: repair source splitting and library backfill sync`:
+  Adaptation source splitting now filters source-site duplicate `免费阅读`
+  chapter headings and separator-delimited author-note blocks before chapter
+  detection/body persistence, fixing the `术师手册` split that produced 1444
+  noisy units and failed on empty `characters`. Web adaptation-analysis
+  completion now treats only terminal `adapt.StageError` events as failed, so
+  recoverable dossier warning/retry events no longer skip the existing
+  novel-library refresh callback after final `StageDone`. The local
+  `术师手册` project snapshot was rebuilt to 1382 chapters and stale artifacts
+  from chapter 947 onward plus derived dossier/foundation caches were removed.
+  Validation passed for focused and full `internal/host/imp` and
+  `internal/entry/web` Go tests, splitter packaging check on `术师手册.txt`,
+  runtime cleanup verification, and local Web rebuild/restart on
+  `http://127.0.0.1:9898` as PID `59984`.
+- Latest source change: pending local changes
+  `fix: strip novel-library cocreate progress`:
+  Web novel-library save/load now allow-lists adaptation source analysis and
+  co-create dossier artifacts instead of copying runtime co-create progress.
+  Library save omits `cocreate_intent.json`, `cocreate_briefing.json`,
+  `cocreate_briefing_batches/`, proposals, plans, checks, and session files;
+  library load also clears the target project's Web co-create checkpoint/log
+  and resets the frontend co-create state before displaying the loaded
+  snapshot. The existing `这不是我印象中的女魔头` library entry and the two
+  affected local projects were cleaned so their snapshots show no active
+  co-create state while adaptation analysis remains `done`.
+  Validation passed for focused and full Web Go tests, full Web UI Vitest,
+  Vite build, `git diff --check` with CRLF warnings only, local Web restart on
+  `http://127.0.0.1:9898` as PID `57712`, and HTTP/file smoke checks confirming
+  no forbidden co-create progress paths remain. This batch is not committed yet
+  because the worktree already contains broad unrelated changes, including
+  pre-existing edits in the same frontend/static bundle files.
 - Latest source change: current local commit
   `fix: refresh adaptation cocreate briefing intent`:
   Adaptation co-create now derives the long-novel briefing intent from all

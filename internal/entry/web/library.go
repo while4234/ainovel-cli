@@ -264,6 +264,10 @@ func (s *Server) handleProjectNovelLibraryLoad(w http.ResponseWriter, r *http.Re
 		writeLibraryActionError(w, err)
 		return
 	}
+	if err := session.ResetCoCreateProgress(); err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
 	status, analysisRunning, err := s.startLoadedNovelAnalysisIfNeeded(session, manifest, item, sourceFile)
 	if err != nil {
 		writeAdaptationActionError(w, err, status.AnalysisEvents)
@@ -278,6 +282,7 @@ func (s *Server) handleProjectNovelLibraryLoad(w http.ResponseWriter, r *http.Re
 	session.AppendSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":     manifest,
+		"snapshot":    session.Snapshot(),
 		"item":        item,
 		"source_file": sourceFile,
 		"adaptation":  status,
@@ -590,7 +595,7 @@ func (s *LibraryService) LoadNovelIntoProject(manifest ProjectManifest, name str
 		return apiLibraryItem{}, apiUploadedFile{}, fmt.Errorf("create temporary project adaptation dir: %w", err)
 	}
 	defer os.RemoveAll(tmpAdaptationRoot)
-	if err := copyDir(filepath.Join(entryRoot, "meta", "adaptation"), tmpAdaptationRoot); err != nil {
+	if err := copyNovelLibraryAdaptationFiles(entryRoot, tmpAdaptationRoot); err != nil {
 		return apiLibraryItem{}, apiUploadedFile{}, err
 	}
 	if err := rewriteAdaptationManifestFile(filepath.Join(tmpAdaptationRoot, "source_manifest.json"), projectSourcePath); err != nil {
@@ -947,12 +952,35 @@ func copyPreparedAdaptationFiles(sourceRoot, targetAdaptationRoot string) error 
 		return fmt.Errorf("create adaptation library entry: %w", err)
 	}
 	sourceAdaptationRoot := filepath.Join(sourceRoot, "meta", "adaptation")
+	// Library entries keep source analysis and dossier artifacts only. Intent,
+	// briefing, proposal, plan, and runtime files are per-project progress.
 	for _, file := range []string{"source_manifest.json", "source_reports.json", "source_foundation.json", "cocreate_dossier.json"} {
 		if err := copyFileOverwrite(filepath.Join(sourceAdaptationRoot, file), filepath.Join(targetAdaptationRoot, file)); err != nil {
 			return err
 		}
 	}
-	for _, file := range []string{"cocreate_intent.json", "cocreate_briefing.json"} {
+	for _, dir := range []string{"source_chapters", "source_reports", "cocreate_dossier_batches"} {
+		if err := copyDir(filepath.Join(sourceAdaptationRoot, dir), filepath.Join(targetAdaptationRoot, dir)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyNovelLibraryAdaptationFiles(sourceRoot, targetAdaptationRoot string) error {
+	if err := os.RemoveAll(targetAdaptationRoot); err != nil {
+		return fmt.Errorf("replace project adaptation analysis: %w", err)
+	}
+	if err := os.MkdirAll(targetAdaptationRoot, 0o755); err != nil {
+		return fmt.Errorf("create project adaptation analysis: %w", err)
+	}
+	sourceAdaptationRoot := filepath.Join(sourceRoot, "meta", "adaptation")
+	for _, file := range []string{"source_manifest.json", "source_reports.json", "source_foundation.json"} {
+		if err := copyFileOverwrite(filepath.Join(sourceAdaptationRoot, file), filepath.Join(targetAdaptationRoot, file)); err != nil {
+			return err
+		}
+	}
+	for _, file := range []string{"cocreate_dossier.json"} {
 		source := filepath.Join(sourceAdaptationRoot, file)
 		if _, err := os.Stat(source); err != nil {
 			if os.IsNotExist(err) {
@@ -964,12 +992,12 @@ func copyPreparedAdaptationFiles(sourceRoot, targetAdaptationRoot string) error 
 			return err
 		}
 	}
-	for _, dir := range []string{"source_chapters", "source_reports", "cocreate_dossier_batches"} {
+	for _, dir := range []string{"source_chapters", "source_reports"} {
 		if err := copyDir(filepath.Join(sourceAdaptationRoot, dir), filepath.Join(targetAdaptationRoot, dir)); err != nil {
 			return err
 		}
 	}
-	for _, dir := range []string{"cocreate_briefing_batches"} {
+	for _, dir := range []string{"cocreate_dossier_batches"} {
 		source := filepath.Join(sourceAdaptationRoot, dir)
 		if _, err := os.Stat(source); err != nil {
 			if os.IsNotExist(err) {

@@ -13,6 +13,7 @@ import {
   emptyTrashProjects,
   exportProjectDownload,
   getChapter,
+  getCodexAuthStatus,
   getGlobalModels,
   getProjectEvents,
   listNovelLibrary,
@@ -29,6 +30,7 @@ import {
   reviseCoCreatePlanning,
   reviseCoCreate,
   resolveCoCreateDecision,
+  resolveCoCreateDecisions,
   saveNovelToLibrary,
   sendCoCreate,
   setGlobalCoCreateTimeout,
@@ -140,8 +142,10 @@ describe('web API helpers', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
 
     await sendCoCreate('project-1', 'Use the heroine arc', 'suggestion');
+    await sendCoCreate('project-1', 'Re-scan this direction', 'custom', { forceRebrief: true });
     await reviseCoCreate('project-1', 'm3', 'Keep a slower burn');
     await resolveCoCreateDecision('project-1', 'q1', 'a', '');
+    await resolveCoCreateDecisions('project-1', [{ decision_id: 'q2', option_id: 'b', custom_answer: '' }]);
     await resumeCoCreate('project-1');
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
@@ -150,18 +154,28 @@ describe('web API helpers', () => {
     });
     expect(fetchMock.mock.calls[0][0]).toBe('/api/projects/project-1/cocreate/send');
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      text: 'Re-scan this direction',
+      source: 'custom',
+      force_rebrief: true
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/projects/project-1/cocreate/send');
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
       message_id: 'm3',
       text: 'Keep a slower burn'
     });
-    expect(fetchMock.mock.calls[1][0]).toBe('/api/projects/project-1/cocreate/revise');
-    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/projects/project-1/cocreate/revise');
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({
       decision_id: 'q1',
       option_id: 'a',
       custom_answer: ''
     });
-    expect(fetchMock.mock.calls[2][0]).toBe('/api/projects/project-1/cocreate/decision');
-    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({});
-    expect(fetchMock.mock.calls[3][0]).toBe('/api/projects/project-1/cocreate/resume');
+    expect(fetchMock.mock.calls[3][0]).toBe('/api/projects/project-1/cocreate/decision');
+    expect(JSON.parse(fetchMock.mock.calls[4][1].body)).toEqual({
+      decisions: [{ decision_id: 'q2', option_id: 'b', custom_answer: '' }]
+    });
+    expect(fetchMock.mock.calls[4][0]).toBe('/api/projects/project-1/cocreate/decision');
+    expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({});
+    expect(fetchMock.mock.calls[5][0]).toBe('/api/projects/project-1/cocreate/resume');
   });
 
   it('sends completed chapter revision payloads', async () => {
@@ -322,6 +336,22 @@ describe('web API helpers', () => {
         account_name: 'Default',
         open_browser: true
       })
+    }));
+  });
+
+  it('checks Codex auth status through global and project routes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await getCodexAuthStatus('', '');
+    await getCodexAuthStatus('project-1', 'D:/codex/auth.json');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/models/codex-auth/status', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ auth_file: '' })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/models/codex-auth/status', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ auth_file: 'D:/codex/auth.json' })
     }));
   });
 

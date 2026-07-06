@@ -42,6 +42,38 @@ describe('model add helpers', () => {
     expect(canSubmitModelAdd(state, null)).toBe(true);
   });
 
+  it('builds a Codex login provider config without API key fields', () => {
+    const state = {
+      mode: 'codex_auth',
+      role: 'writer',
+      provider: 'codex-login',
+      model: 'gpt-5.5',
+      auth_file: 'D:/codex/auth.json',
+      api_key: 'should-not-be-sent',
+      codex_status: { logged_in: true }
+    };
+
+    expect(buildModelAddPayload(state, null)).toEqual({
+      select_after_save: false,
+      provider: 'codex-login',
+      model: 'gpt-5.5',
+      label: 'Codex',
+      template_provider: 'codex',
+      use_proxy: true,
+      request_timeout_seconds: 0,
+      connectivity_timeout_seconds: 0,
+      network_disconnect_max_attempts: 0,
+      auto_switch_candidate_pool: false,
+      type: 'openai',
+      auth: 'codex',
+      api: 'responses',
+      base_url: 'https://chatgpt.com/backend-api/codex',
+      auth_file: 'D:/codex/auth.json'
+    });
+    expect(buildModelAddPayload(state, null)).not.toHaveProperty('api_key');
+    expect(canSubmitModelAdd(state, null)).toBe(true);
+  });
+
   it('builds new custom provider payloads without assigning an agent route', () => {
     const payload = buildModelAddPayload({
       mode: 'custom',
@@ -100,6 +132,17 @@ describe('model add helpers', () => {
     expect(canSubmitModelAdd(state, null)).toBe(false);
   });
 
+  it('requires a confirmed Codex login before adding the provider', () => {
+    const state = {
+      mode: 'codex_auth',
+      provider: 'codex-login',
+      model: 'gpt-5.5',
+      codex_status: { needs_reauth: true }
+    };
+
+    expect(canSubmitModelAdd(state, null)).toBe(false);
+  });
+
   it('uses stable defaults when switching into Grok OAuth mode', () => {
     const state = modelAddModeDefaults({
       mode: 'grok_oauth',
@@ -114,6 +157,23 @@ describe('model add helpers', () => {
     expect(state.account_id).toBe('default');
     expect(state.model).toBe('grok-4.3-latest');
     expect(state.api).toBe('');
+    expect(state.use_proxy).toBe(true);
+  });
+
+  it('uses stable defaults when switching into Codex login mode', () => {
+    const state = modelAddModeDefaults({
+      mode: 'codex_auth',
+      role: 'default',
+      provider: 'openrouter',
+      model: ''
+    });
+
+    expect(state.provider).toBe('codex-login');
+    expect(state.type).toBe('openai');
+    expect(state.auth).toBe('codex');
+    expect(state.model).toBe('gpt-5.5');
+    expect(state.api).toBe('responses');
+    expect(state.api_key).toBe('');
     expect(state.use_proxy).toBe(true);
   });
 

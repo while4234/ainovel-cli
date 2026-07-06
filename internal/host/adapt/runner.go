@@ -29,8 +29,9 @@ const (
 	adaptationPlannerMaxTokens              = 8192
 	adaptationPlannerSkeletonMaxTokens      = 4096
 	adaptationPlannerChunkedMinChapters     = 18
-	adaptationPlannerRecommendedBatchMax    = 8
+	adaptationPlannerRecommendedBatchMax    = 4
 	adaptationPlannerSourceChunkedMin       = adaptationPlannerRecommendedBatchMax * 2
+	adaptationPlannerTargetChapterMax       = 5000
 	adaptationPlannerRevisionBatchMax       = 8
 	adaptationPlannerRevisionExpansionMax   = 12
 	adaptationPlannerRepairMaxAttempts      = 2
@@ -1072,7 +1073,7 @@ func reviseAdaptationProposalVolumeContext(
 	revisedChapters := make([]domain.AdaptationChapterPlan, 0, revisedBatch.TargetTo-revisedBatch.TargetFrom+1)
 	detailOpts := proposalOptionsFromPlan(updated)
 	for idx, detailBatch := range detailBatches {
-		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(detailOpts, manifest, sourceFoundation, revisedSkeleton, detailBatch, reportsForPlannerBatch(reports, detailBatch))
+		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(detailOpts, manifest, sourceFoundation, revisedSkeleton, detailBatch, reportsForPlannerBatch(reports, detailBatch), revisedChapters)
 		if err != nil {
 			return nil, err
 		}
@@ -1182,6 +1183,30 @@ func plannerTargetChapterCount(opts ProposalOptions, manifest *domain.Adaptation
 		return max(manifest.ChapterCount, adaptationPlannerChunkedMinChapters)
 	default:
 		return 0
+	}
+}
+
+func plannerTargetChapterHintRole(opts ProposalOptions, manifest *domain.AdaptationSourceManifest, targetChapterHint int) string {
+	if targetChapterHint <= 0 {
+		return ""
+	}
+	if explicit := normalizeTargetChapterCount(opts.TargetChapterCount, inferTargetChapterCount(opts.Brief)); explicit > 0 {
+		return "explicit_target_scale"
+	}
+	if manifest != nil && manifest.ChapterCount > 0 && targetChapterHint == manifest.ChapterCount {
+		return "source_scale_minimum"
+	}
+	return "long_form_scale_hint"
+}
+
+func plannerSkeletonRequestMessage(opts ProposalOptions, manifest *domain.AdaptationSourceManifest, targetChapterHint int) string {
+	switch plannerTargetChapterHintRole(opts, manifest, targetChapterHint) {
+	case "source_scale_minimum":
+		return fmt.Sprintf("请求长篇改编骨架规划：源书 %d 章，模型将决定目标章数", targetChapterHint)
+	case "explicit_target_scale":
+		return fmt.Sprintf("请求长篇改编骨架规划：目标规模参考 %d 章", targetChapterHint)
+	default:
+		return fmt.Sprintf("请求长篇改编骨架规划：长篇规模参考 %d 章", targetChapterHint)
 	}
 }
 
@@ -2063,8 +2088,8 @@ func normalizeTargetChapterCount(values ...int) int {
 		if value <= 0 {
 			continue
 		}
-		if value > 120 {
-			return 120
+		if value > adaptationPlannerTargetChapterMax {
+			return adaptationPlannerTargetChapterMax
 		}
 		return value
 	}
@@ -2354,10 +2379,6 @@ func buildPlannerVolumeSkeleton(
 	if systemPrompt == "" {
 		systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested adaptation planning step."
 	}
-	skeletonPrompt, err := buildAdaptationPlannerSkeletonUserPrompt(opts, reports, manifest, sourceFoundation, targetChapterHint)
-	if err != nil {
-		return zero, nil, err
-	}
 	runtime, runtimeSkeleton, err := loadPlannerProposalRuntime(deps, opts, manifest, targetChapterHint, opts.EmitProgress)
 	if err != nil {
 		return zero, nil, err
@@ -2367,46 +2388,211 @@ func buildPlannerVolumeSkeleton(
 		skeleton = *runtimeSkeleton
 		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, fmt.Sprintf("Resuming proposal skeleton runtime: %d target chapters", skeleton.TargetChapterCount), nil)
 	} else {
-		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, fmt.Sprintf("请求长篇改编骨架规划：目标约 %d 章", targetChapterHint), nil)
-		skeletonText, err := generatePlannerText(
-			ctx,
-			deps.LLM,
-			systemPrompt,
-			skeletonPrompt,
-			adaptationPlannerSkeletonMaxTokens,
-			opts.EmitProgress,
-			0,
-			0,
-			"长篇骨架规划",
-		)
+		dossier, err := EnsureCoCreateDossier(ctx, deps, manifest, reports, opts.EmitProgress)
 		if err != nil {
-			return zero, nil, fmt.Errorf("planner skeleton llm generate: %w", err)
+			return zero, nil, fmt.Errorf("prepare planner source map: %w", err)
 		}
-		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "长篇骨架模型已返回，正在解析分卷/分批结构", nil)
-		for attempt := 0; ; attempt++ {
-			skeleton, err = parsePlannerSkeleton(skeletonText)
-			if err == nil {
-				err = normalizePlannerSkeleton(&skeleton, opts, manifest, targetChapterHint)
-			}
-			if err == nil {
-				break
-			}
-			if !plannerSkeletonErrorRepairable(err) || attempt >= adaptationPlannerRepairMaxAttempts {
-				return zero, nil, fmt.Errorf("planner skeleton: %w", err)
-			}
-			emitAdaptProgress(opts.EmitProgress, StagePlan, attempt+1, adaptationPlannerRepairMaxAttempts, fmt.Sprintf("骨架规划返回不符合结构，正在修复第 %d 次：%v", attempt+1, err), err)
-			skeletonText, err = repairPlannerSkeletonText(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, err, opts.EmitProgress, 0, 0)
-			if err != nil {
-				return zero, nil, fmt.Errorf("planner skeleton: %w", err)
-			}
+		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, plannerSkeletonRequestMessage(opts, manifest, targetChapterHint), nil)
+		skeleton, err = buildPlannerVolumeSkeletonFromSourceMap(ctx, deps, opts, manifest, sourceFoundation, dossier, runtime, targetChapterHint, systemPrompt)
+		if err != nil {
+			return zero, nil, err
 		}
 		runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
 		runtime.CompletedBatches = nil
+		runtime.SkeletonBatches = nil
 		if err := savePlannerProposalRuntime(deps, runtime); err != nil {
 			return zero, nil, fmt.Errorf("save proposal runtime skeleton: %w", err)
 		}
 	}
 	return skeleton, runtime, nil
+}
+
+func buildPlannerVolumeSkeletonFromSourceMap(
+	ctx context.Context,
+	deps Deps,
+	opts ProposalOptions,
+	manifest *domain.AdaptationSourceManifest,
+	sourceFoundation *domain.AdaptationSourceFoundation,
+	dossier *domain.AdaptationCoCreateDossier,
+	runtime *domain.AdaptationProposalRuntime,
+	targetChapterHint int,
+	systemPrompt string,
+) (plannerSkeleton, error) {
+	sourceMap := plannerSourceMapFromDossier(dossier)
+	if len(sourceMap) == 0 {
+		return plannerSkeleton{}, fmt.Errorf("planner source map is empty")
+	}
+	batches := make([]plannerSkeletonBatch, 0, len(sourceMap))
+	for sourceIndex, entry := range sourceMap {
+		if err := ctx.Err(); err != nil {
+			return plannerSkeleton{}, err
+		}
+		if reused, ok := plannerRuntimeSkeletonBatchesForSource(runtime, entry); ok {
+			batches = append(batches, reused...)
+			emitAdaptProgress(opts.EmitProgress, StagePlan, sourceIndex+1, len(sourceMap), fmt.Sprintf("复用骨架规划第 %d/%d 批：原书第 %d-%d 章", sourceIndex+1, len(sourceMap), entry.SourceFrom, entry.SourceTo), nil)
+			continue
+		}
+		prompt, err := buildAdaptationPlannerSkeletonUserPrompt(opts, manifest, sourceFoundation, []plannerSourceMapEntry{entry}, targetChapterHint)
+		if err != nil {
+			return plannerSkeleton{}, err
+		}
+		emitAdaptProgress(opts.EmitProgress, StagePlan, sourceIndex+1, len(sourceMap), fmt.Sprintf("请求骨架规划第 %d/%d 批：原书第 %d-%d 章", sourceIndex+1, len(sourceMap), entry.SourceFrom, entry.SourceTo), nil)
+		text, err := generatePlannerText(
+			ctx,
+			deps.LLM,
+			systemPrompt,
+			prompt,
+			adaptationPlannerSkeletonMaxTokens,
+			opts.EmitProgress,
+			sourceIndex+1,
+			len(sourceMap),
+			fmt.Sprintf("骨架规划第 %d/%d 批", sourceIndex+1, len(sourceMap)),
+		)
+		if err != nil {
+			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d llm generate: %w", entry.Index, err)
+		}
+		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.LLM, systemPrompt, prompt, text, entry, opts.EmitProgress, sourceIndex+1, len(sourceMap))
+		if err != nil {
+			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d: %w", entry.Index, err)
+		}
+		nextTarget := nextPlannerSkeletonTarget(batches)
+		offsetPlannerSkeletonBatches(local, nextTarget, len(batches)+1)
+		batches = append(batches, local...)
+		upsertPlannerProposalRuntimeSkeletonBatches(runtime, entry, local)
+		if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+			return plannerSkeleton{}, fmt.Errorf("save proposal runtime skeleton batch %d: %w", entry.Index, err)
+		}
+		emitAdaptProgress(opts.EmitProgress, StagePlan, sourceIndex+1, len(sourceMap), fmt.Sprintf("骨架规划第 %d/%d 批完成：新增目标第 %d-%d 章", sourceIndex+1, len(sourceMap), local[0].TargetFrom, local[len(local)-1].TargetTo), nil)
+	}
+	skeleton := plannerSkeleton{
+		Granularity:        opts.Granularity,
+		Status:             domain.AdaptationPlanStatusProposal,
+		RewritePolicy:      opts.RewritePolicy,
+		Brief:              opts.Brief,
+		TargetChapterCount: nextPlannerSkeletonTarget(batches) - 1,
+		Batches:            batches,
+		Planner: &domain.AdaptationPlannerMeta{
+			Prompt:        adaptationPlannerPromptName,
+			PromptVersion: adaptationPlannerPromptVersion + "-source-map",
+			GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+			Notes: domain.TextList{
+				fmt.Sprintf("source-map skeleton: %d source batches; model chose %d target chapters", len(sourceMap), nextPlannerSkeletonTarget(batches)-1),
+			},
+		},
+	}
+	if err := normalizePlannerSkeleton(&skeleton, opts, manifest, targetChapterHint); err != nil {
+		return plannerSkeleton{}, fmt.Errorf("planner skeleton: %w", err)
+	}
+	return skeleton, nil
+}
+
+func collectPlannerSourceMapSkeletonBatches(
+	ctx context.Context,
+	llm imp.LLMChat,
+	systemPrompt string,
+	originalPrompt string,
+	initialText string,
+	entry plannerSourceMapEntry,
+	emit ProgressEmitter,
+	current int,
+	total int,
+) ([]plannerSkeletonBatch, error) {
+	text := initialText
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		skeleton, err := parsePlannerSkeleton(text)
+		if err == nil {
+			batches, berr := normalizePlannerSourceMapSkeletonBatches(skeleton.Batches, entry)
+			if berr == nil {
+				return batches, nil
+			}
+			err = berr
+		}
+		lastErr = err
+		if !plannerSkeletonErrorRepairable(err) || attempt >= adaptationPlannerRepairMaxAttempts {
+			return nil, lastErr
+		}
+		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", current, total, attempt+1, adaptationPlannerRepairMaxAttempts, lastErr), lastErr)
+		repaired, err := repairPlannerSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, lastErr, emit, current, total)
+		if err != nil {
+			return nil, err
+		}
+		text = repaired
+	}
+}
+
+func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
+	if len(batches) == 0 {
+		return nil, fmt.Errorf("no batches")
+	}
+	out := make([]plannerSkeletonBatch, 0, len(batches))
+	for idx, batch := range batches {
+		if batch.SourceFrom <= 0 {
+			batch.SourceFrom = entry.SourceFrom
+		}
+		if batch.SourceTo <= 0 {
+			batch.SourceTo = entry.SourceTo
+		}
+		if batch.SourceFrom < entry.SourceFrom || batch.SourceTo > entry.SourceTo || batch.SourceTo < batch.SourceFrom {
+			return nil, fmt.Errorf("batch %d source range %d-%d outside source-map range %d-%d", idx+1, batch.SourceFrom, batch.SourceTo, entry.SourceFrom, entry.SourceTo)
+		}
+		count := batch.TargetChapterCount
+		if count <= 0 && batch.TargetFrom > 0 && batch.TargetTo >= batch.TargetFrom {
+			count = batch.TargetTo - batch.TargetFrom + 1
+		}
+		if count <= 0 {
+			return nil, fmt.Errorf("batch %d chapter_count must be > 0", idx+1)
+		}
+		batch.TargetChapterCount = count
+		out = append(out, batch)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SourceFrom == out[j].SourceFrom {
+			if out[i].SourceTo == out[j].SourceTo {
+				return out[i].Index < out[j].Index
+			}
+			return out[i].SourceTo < out[j].SourceTo
+		}
+		return out[i].SourceFrom < out[j].SourceFrom
+	})
+	coveredTo := entry.SourceFrom - 1
+	for _, batch := range out {
+		if batch.SourceFrom > coveredTo+1 {
+			return nil, fmt.Errorf("source-map range %d-%d has gap before source chapter %d", entry.SourceFrom, entry.SourceTo, batch.SourceFrom)
+		}
+		if batch.SourceTo > coveredTo {
+			coveredTo = batch.SourceTo
+		}
+	}
+	if coveredTo < entry.SourceTo {
+		return nil, fmt.Errorf("source-map range %d-%d ends coverage at %d", entry.SourceFrom, entry.SourceTo, coveredTo)
+	}
+	return out, nil
+}
+
+func nextPlannerSkeletonTarget(batches []plannerSkeletonBatch) int {
+	next := 1
+	for _, batch := range batches {
+		if batch.TargetTo >= next {
+			next = batch.TargetTo + 1
+		}
+	}
+	return next
+}
+
+func offsetPlannerSkeletonBatches(batches []plannerSkeletonBatch, targetFrom int, batchIndexFrom int) {
+	nextTarget := targetFrom
+	for idx := range batches {
+		count := batches[idx].TargetChapterCount
+		if count <= 0 && batches[idx].TargetTo >= batches[idx].TargetFrom {
+			count = batches[idx].TargetTo - batches[idx].TargetFrom + 1
+		}
+		batches[idx].Index = batchIndexFrom + idx
+		batches[idx].TargetFrom = nextTarget
+		batches[idx].TargetTo = nextTarget + count - 1
+		batches[idx].TargetChapterCount = count
+		nextTarget = batches[idx].TargetTo + 1
+	}
 }
 
 func buildPlanFromPlannerSkeletonDetails(
@@ -2438,7 +2624,7 @@ func buildPlanFromPlannerSkeletonDetails(
 			emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("Reused proposal detail batch %d/%d: target %d-%d", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
 			continue
 		}
-		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, sourceFoundation, skeleton, batch, reportsForPlannerBatch(reports, batch))
+		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, sourceFoundation, skeleton, batch, reportsForPlannerBatch(reports, batch), chapters)
 		if err != nil {
 			return zero, err
 		}
@@ -2733,6 +2919,84 @@ func plannerRuntimeBatchMatches(completed domain.AdaptationProposalRuntimeBatch,
 		completed.SourceTo == batch.SourceTo
 }
 
+func plannerRuntimeSkeletonBatchesForSource(runtime *domain.AdaptationProposalRuntime, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, bool) {
+	if runtime == nil || len(runtime.SkeletonBatches) == 0 {
+		return nil, false
+	}
+	batches := make([]plannerSkeletonBatch, 0)
+	for _, completed := range runtime.SkeletonBatches {
+		if completed.SourceFrom < entry.SourceFrom || completed.SourceTo > entry.SourceTo {
+			continue
+		}
+		batches = append(batches, plannerSkeletonBatch{
+			Index:              completed.Index,
+			Title:              completed.Title,
+			Theme:              completed.Theme,
+			Goal:               completed.Goal,
+			Summary:            completed.Summary,
+			TargetFrom:         completed.TargetFrom,
+			TargetTo:           completed.TargetTo,
+			TargetChapterCount: completed.TargetChapterCount,
+			SourceFrom:         completed.SourceFrom,
+			SourceTo:           completed.SourceTo,
+			SourceChapters:     append([]int(nil), completed.SourceChapters...),
+			Notes:              append([]string(nil), completed.Notes...),
+		})
+	}
+	if len(batches) == 0 {
+		return nil, false
+	}
+	sort.SliceStable(batches, func(i, j int) bool {
+		if batches[i].SourceFrom == batches[j].SourceFrom {
+			if batches[i].SourceTo == batches[j].SourceTo {
+				return batches[i].TargetFrom < batches[j].TargetFrom
+			}
+			return batches[i].SourceTo < batches[j].SourceTo
+		}
+		return batches[i].SourceFrom < batches[j].SourceFrom
+	})
+	if _, err := normalizePlannerSourceMapSkeletonBatches(batches, entry); err != nil {
+		return nil, false
+	}
+	return batches, true
+}
+
+func upsertPlannerProposalRuntimeSkeletonBatches(runtime *domain.AdaptationProposalRuntime, entry plannerSourceMapEntry, batches []plannerSkeletonBatch) {
+	if runtime == nil {
+		return
+	}
+	out := runtime.SkeletonBatches[:0]
+	for _, completed := range runtime.SkeletonBatches {
+		if completed.SourceFrom >= entry.SourceFrom && completed.SourceTo <= entry.SourceTo {
+			continue
+		}
+		out = append(out, completed)
+	}
+	for _, batch := range batches {
+		out = append(out, domain.AdaptationProposalRuntimeSkeletonBatch{
+			Index:              batch.Index,
+			Title:              batch.Title,
+			Theme:              batch.Theme,
+			Goal:               batch.Goal,
+			Summary:            batch.Summary,
+			TargetFrom:         batch.TargetFrom,
+			TargetTo:           batch.TargetTo,
+			TargetChapterCount: batch.TargetChapterCount,
+			SourceFrom:         batch.SourceFrom,
+			SourceTo:           batch.SourceTo,
+			SourceChapters:     append([]int(nil), batch.SourceChapters...),
+			Notes:              append([]string(nil), batch.Notes...),
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TargetFrom == out[j].TargetFrom {
+			return out[i].SourceFrom < out[j].SourceFrom
+		}
+		return out[i].TargetFrom < out[j].TargetFrom
+	})
+	runtime.SkeletonBatches = out
+}
+
 func upsertPlannerProposalRuntimeBatch(runtime *domain.AdaptationProposalRuntime, batch plannerSkeletonBatch, chapters []domain.AdaptationChapterPlan) {
 	if runtime == nil {
 		return
@@ -2780,7 +3044,7 @@ func plannerSkeletonErrorRepairable(err error) bool {
 		return false
 	}
 	message := err.Error()
-	return !strings.Contains(message, "ignores requested long-form target")
+	return !strings.Contains(message, "ignores long-form scale hint")
 }
 
 func emitAdaptProgress(emit ProgressEmitter, stage Stage, current int, total int, msg string, err error) {
@@ -3600,57 +3864,385 @@ func truncatePlannerFeedback(text string) string {
 	return string(runes[:maxRunes]) + "\n...[truncated]"
 }
 
+type plannerSourceManifestSummary struct {
+	SourcePath   string                      `json:"source_path,omitempty"`
+	ChapterCount int                         `json:"chapter_count"`
+	TotalRunes   int                         `json:"total_runes,omitempty"`
+	AverageRunes int                         `json:"average_runes,omitempty"`
+	FirstChapter plannerSourceChapterSummary `json:"first_chapter,omitempty"`
+	LastChapter  plannerSourceChapterSummary `json:"last_chapter,omitempty"`
+}
+
+type plannerSourceChapterSummary struct {
+	Chapter int    `json:"chapter,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Runes   int    `json:"runes,omitempty"`
+}
+
+type plannerSourceMapEntry struct {
+	Index               int                   `json:"index"`
+	SourceFrom          int                   `json:"source_from"`
+	SourceTo            int                   `json:"source_to"`
+	PlotPhase           string                `json:"plot_phase,omitempty"`
+	KeyCausality        []string              `json:"key_causality,omitempty"`
+	PlotThreads         []string              `json:"plot_threads,omitempty"`
+	CharacterArcs       []string              `json:"character_arcs,omitempty"`
+	WorldConstraints    []string              `json:"world_constraints,omitempty"`
+	MajorCharacters     []string              `json:"major_characters,omitempty"`
+	RelationshipSignals []plannerSourceSignal `json:"relationship_signals,omitempty"`
+	HeroineSignals      []plannerSourceSignal `json:"heroine_signals,omitempty"`
+	AmbiguityRisks      []plannerSourceRisk   `json:"ambiguity_risks,omitempty"`
+	CoupleMilestones    []plannerSourceSignal `json:"couple_milestones,omitempty"`
+}
+
+type plannerSourceSignal struct {
+	Chapters   []int    `json:"chapters,omitempty"`
+	Characters []string `json:"characters,omitempty"`
+	Type       string   `json:"type,omitempty"`
+	Summary    string   `json:"summary"`
+	Evidence   string   `json:"evidence,omitempty"`
+}
+
+type plannerSourceRisk struct {
+	Chapters   []int    `json:"chapters,omitempty"`
+	Characters []string `json:"characters,omitempty"`
+	Severity   string   `json:"severity,omitempty"`
+	Risk       string   `json:"risk"`
+	Evidence   string   `json:"evidence,omitempty"`
+	Suggestion string   `json:"suggestion,omitempty"`
+}
+
+type plannerSourceFoundationSummary struct {
+	Premise    string                           `json:"premise,omitempty"`
+	Characters []domain.Character               `json:"characters,omitempty"`
+	WorldRules []domain.WorldRule               `json:"world_rules,omitempty"`
+	Volumes    []plannerFoundationVolumeSummary `json:"volumes,omitempty"`
+	Compass    *domain.StoryCompass             `json:"compass,omitempty"`
+}
+
+type plannerFoundationVolumeSummary struct {
+	Index int                           `json:"index"`
+	Title string                        `json:"title,omitempty"`
+	Theme string                        `json:"theme,omitempty"`
+	Arcs  []plannerFoundationArcSummary `json:"arcs,omitempty"`
+}
+
+type plannerFoundationArcSummary struct {
+	Index             int    `json:"index"`
+	Title             string `json:"title,omitempty"`
+	Goal              string `json:"goal,omitempty"`
+	EstimatedChapters int    `json:"estimated_chapters,omitempty"`
+}
+
+type plannerSourceReportExcerpt struct {
+	Chapter        int                   `json:"chapter"`
+	Title          string                `json:"title,omitempty"`
+	Summary        string                `json:"summary,omitempty"`
+	Characters     []string              `json:"characters,omitempty"`
+	CharacterFacts []string              `json:"character_facts,omitempty"`
+	KeyEvents      []string              `json:"key_events,omitempty"`
+	WorldRules     []string              `json:"world_rules,omitempty"`
+	HookType       string                `json:"hook_type,omitempty"`
+	DominantStrand string                `json:"dominant_strand,omitempty"`
+	Relationships  []plannerRelationNote `json:"relationships,omitempty"`
+	StateChanges   []plannerStateNote    `json:"state_changes,omitempty"`
+}
+
+type plannerRelationNote struct {
+	CharacterA string `json:"character_a,omitempty"`
+	CharacterB string `json:"character_b,omitempty"`
+	Relation   string `json:"relation,omitempty"`
+}
+
+type plannerStateNote struct {
+	Entity   string `json:"entity,omitempty"`
+	Field    string `json:"field,omitempty"`
+	OldValue string `json:"old_value,omitempty"`
+	NewValue string `json:"new_value,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+func plannerManifestSummary(manifest *domain.AdaptationSourceManifest) plannerSourceManifestSummary {
+	if manifest == nil {
+		return plannerSourceManifestSummary{}
+	}
+	summary := plannerSourceManifestSummary{
+		SourcePath:   strings.TrimSpace(manifest.SourcePath),
+		ChapterCount: manifest.ChapterCount,
+	}
+	for _, chapter := range manifest.Chapters {
+		summary.TotalRunes += chapter.Runes
+		if summary.FirstChapter.Chapter == 0 {
+			summary.FirstChapter = plannerSourceChapterSummary{Chapter: chapter.Chapter, Title: clipText(chapter.Title, 80), Runes: chapter.Runes}
+		}
+		summary.LastChapter = plannerSourceChapterSummary{Chapter: chapter.Chapter, Title: clipText(chapter.Title, 80), Runes: chapter.Runes}
+	}
+	if summary.ChapterCount <= 0 {
+		summary.ChapterCount = len(manifest.Chapters)
+	}
+	if summary.ChapterCount > 0 {
+		summary.AverageRunes = summary.TotalRunes / summary.ChapterCount
+	}
+	return summary
+}
+
+func plannerSourceMapFromDossier(dossier *domain.AdaptationCoCreateDossier) []plannerSourceMapEntry {
+	if dossier == nil {
+		return nil
+	}
+	entries := make([]plannerSourceMapEntry, 0, len(dossier.Batches))
+	for _, batch := range dossier.Batches {
+		entry := plannerSourceMapEntry{
+			Index:               batch.Index,
+			SourceFrom:          batch.SourceFrom,
+			SourceTo:            batch.SourceTo,
+			PlotPhase:           clipText(batch.PlotPhase, 220),
+			KeyCausality:        clippedStringList(batch.KeyCausality, 6, 160),
+			PlotThreads:         clippedStringList(batch.PlotThreads, 6, 150),
+			CharacterArcs:       clippedStringList(batch.CharacterArcs, 6, 150),
+			WorldConstraints:    clippedStringList(batch.WorldConstraints, 5, 150),
+			MajorCharacters:     clippedStringList(batch.MajorCharacters, 16, 60),
+			RelationshipSignals: plannerSignals(batch.RelationshipSignals, 5),
+			HeroineSignals:      plannerSignals(batch.HeroineSignals, 5),
+			AmbiguityRisks:      plannerRisks(batch.AmbiguityRisks, 4),
+			CoupleMilestones:    plannerSignals(batch.CoupleMilestones, 5),
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func plannerSourceReportExcerpts(reports []domain.AdaptationSourceReport) []plannerSourceReportExcerpt {
+	excerpts := make([]plannerSourceReportExcerpt, 0, len(reports))
+	for _, report := range reports {
+		excerpts = append(excerpts, plannerSourceReportExcerpt{
+			Chapter:        report.Chapter,
+			Title:          clipText(report.Title, 80),
+			Summary:        clipText(report.Summary, 220),
+			Characters:     clippedStringList(report.Characters, 12, 60),
+			CharacterFacts: clippedStringList(report.CharacterFacts, 4, 120),
+			KeyEvents:      clippedStringList(report.KeyEvents, 5, 120),
+			WorldRules:     clippedStringList(report.WorldRules, 4, 120),
+			HookType:       clipText(report.HookType, 60),
+			DominantStrand: clipText(report.DominantStrand, 80),
+			Relationships:  plannerRelationNotes(report.Relationships, 6),
+			StateChanges:   plannerStateNotes(report.StateChanges, 6),
+		})
+	}
+	return excerpts
+}
+
+func clippedStringList(values []string, maxItems, maxRunes int) []string {
+	values = limitStrings(trimmedNonEmpty(values), maxItems)
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, clipText(value, maxRunes))
+	}
+	return out
+}
+
+func plannerSignals(values []domain.AdaptationRelationshipSignal, maxItems int) []plannerSourceSignal {
+	values = limitSignals(values, maxItems)
+	out := make([]plannerSourceSignal, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value.Summary) == "" {
+			continue
+		}
+		out = append(out, plannerSourceSignal{
+			Chapters:   normalizeChapterRefs(value.Chapters),
+			Characters: clippedStringList(value.Characters, 6, 60),
+			Type:       clipText(value.Type, 60),
+			Summary:    clipText(value.Summary, 140),
+			Evidence:   clipText(value.Evidence, 120),
+		})
+	}
+	return out
+}
+
+func plannerRisks(values []domain.AdaptationRelationshipRisk, maxItems int) []plannerSourceRisk {
+	values = limitRisks(values, maxItems)
+	out := make([]plannerSourceRisk, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value.Risk) == "" {
+			continue
+		}
+		out = append(out, plannerSourceRisk{
+			Chapters:   normalizeChapterRefs(value.Chapters),
+			Characters: clippedStringList(value.Characters, 6, 60),
+			Severity:   clipText(value.Severity, 40),
+			Risk:       clipText(value.Risk, 140),
+			Evidence:   clipText(value.Evidence, 120),
+			Suggestion: clipText(value.Suggestion, 120),
+		})
+	}
+	return out
+}
+
+func plannerRelationNotes(values []domain.RelationshipEntry, maxItems int) []plannerRelationNote {
+	out := make([]plannerRelationNote, 0, min(len(values), maxItems))
+	for _, value := range values {
+		if maxItems > 0 && len(out) >= maxItems {
+			break
+		}
+		if strings.TrimSpace(value.Relation) == "" {
+			continue
+		}
+		out = append(out, plannerRelationNote{
+			CharacterA: clipText(value.CharacterA, 60),
+			CharacterB: clipText(value.CharacterB, 60),
+			Relation:   clipText(value.Relation, 120),
+		})
+	}
+	return out
+}
+
+func plannerStateNotes(values []domain.StateChange, maxItems int) []plannerStateNote {
+	out := make([]plannerStateNote, 0, min(len(values), maxItems))
+	for _, value := range values {
+		if maxItems > 0 && len(out) >= maxItems {
+			break
+		}
+		if strings.TrimSpace(value.Entity) == "" && strings.TrimSpace(value.Field) == "" {
+			continue
+		}
+		out = append(out, plannerStateNote{
+			Entity:   clipText(value.Entity, 60),
+			Field:    clipText(value.Field, 60),
+			OldValue: clipText(value.OldValue, 80),
+			NewValue: clipText(value.NewValue, 80),
+			Reason:   clipText(value.Reason, 120),
+		})
+	}
+	return out
+}
+
+func plannerSourceFoundationDigest(sourceFoundation *domain.AdaptationSourceFoundation) *plannerSourceFoundationSummary {
+	if sourceFoundation == nil {
+		return nil
+	}
+	digest := &plannerSourceFoundationSummary{
+		Premise:    strings.TrimSpace(sourceFoundation.Premise),
+		Characters: append([]domain.Character(nil), sourceFoundation.Characters...),
+		WorldRules: append([]domain.WorldRule(nil), sourceFoundation.WorldRules...),
+		Volumes:    make([]plannerFoundationVolumeSummary, 0, len(sourceFoundation.Volumes)),
+	}
+	for _, volume := range sourceFoundation.Volumes {
+		nextVolume := plannerFoundationVolumeSummary{
+			Index: volume.Index,
+			Title: strings.TrimSpace(volume.Title),
+			Theme: strings.TrimSpace(volume.Theme),
+			Arcs:  make([]plannerFoundationArcSummary, 0, len(volume.Arcs)),
+		}
+		for _, arc := range volume.Arcs {
+			nextVolume.Arcs = append(nextVolume.Arcs, plannerFoundationArcSummary{
+				Index:             arc.Index,
+				Title:             strings.TrimSpace(arc.Title),
+				Goal:              strings.TrimSpace(arc.Goal),
+				EstimatedChapters: arc.EstimatedChapters,
+			})
+		}
+		digest.Volumes = append(digest.Volumes, nextVolume)
+	}
+	if sourceFoundation.Compass != nil {
+		compass := *sourceFoundation.Compass
+		compass.OpenThreads = append([]string(nil), sourceFoundation.Compass.OpenThreads...)
+		digest.Compass = &compass
+	}
+	return digest
+}
+
 func buildAdaptationPlannerSkeletonUserPrompt(
 	opts ProposalOptions,
-	reports []domain.AdaptationSourceReport,
 	manifest *domain.AdaptationSourceManifest,
 	sourceFoundation *domain.AdaptationSourceFoundation,
+	sourceMap []plannerSourceMapEntry,
 	targetChapterHint int,
 ) (string, error) {
 	input := struct {
-		Brief               string                             `json:"brief"`
-		Granularity         string                             `json:"granularity"`
-		RewritePolicy       string                             `json:"rewrite_policy"`
-		WordTolerance       float64                            `json:"word_tolerance"`
-		TargetChapterHint   int                                `json:"target_chapter_hint,omitempty"`
-		RecommendedBatchMax int                                `json:"recommended_batch_max"`
-		SourceManifest      *domain.AdaptationSourceManifest   `json:"source_manifest"`
-		SourceFoundation    *domain.AdaptationSourceFoundation `json:"source_foundation"`
-		SourceReports       []domain.AdaptationSourceReport    `json:"source_reports"`
-		Requirements        []string                           `json:"requirements"`
+		Brief               string                          `json:"brief"`
+		Granularity         string                          `json:"granularity"`
+		RewritePolicy       string                          `json:"rewrite_policy"`
+		WordTolerance       float64                         `json:"word_tolerance"`
+		TargetChapterHint   int                             `json:"target_chapter_hint,omitempty"`
+		TargetChapterRole   string                          `json:"target_chapter_hint_role,omitempty"`
+		RecommendedBatchMax int                             `json:"recommended_batch_max"`
+		SourceManifest      plannerSourceManifestSummary    `json:"source_manifest"`
+		SourceFoundation    *plannerSourceFoundationSummary `json:"source_foundation"`
+		SourceMap           []plannerSourceMapEntry         `json:"source_map"`
+		SourceMapNotes      []string                        `json:"source_map_notes"`
+		Requirements        []string                        `json:"requirements"`
 	}{
 		Brief:               opts.Brief,
 		Granularity:         opts.Granularity,
 		RewritePolicy:       opts.RewritePolicy,
 		WordTolerance:       opts.WordTolerance,
 		TargetChapterHint:   targetChapterHint,
+		TargetChapterRole:   plannerTargetChapterHintRole(opts, manifest, targetChapterHint),
 		RecommendedBatchMax: adaptationPlannerRecommendedBatchMax,
-		SourceManifest:      manifest,
-		SourceFoundation:    sourceFoundation,
-		SourceReports:       reports,
+		SourceManifest:      plannerManifestSummary(manifest),
+		SourceFoundation:    plannerSourceFoundationDigest(sourceFoundation),
+		SourceMap:           sourceMap,
+		SourceMapNotes: []string{
+			"source_map is a compact, resumable dossier built from source-report batches; use it instead of raw per-chapter reports for this skeleton step.",
+			"Each source_map entry covers an inclusive source range and preserves high-level causality, plot threads, character arcs, world constraints, and relationship signals.",
+		},
 		Requirements: []string{
 			"Return exactly one JSON skeleton object and no prose.",
 			"Do not wrap the JSON in markdown fences.",
 			"Do not return the final AdaptationPlan here.",
 			"Do not include a chapters array in the skeleton step; chapter details are generated in later batch calls.",
-			"Choose the target chapter count and divide it into model-planned batches/volumes.",
-			"If target_chapter_hint is present, honor that long-form scale instead of shrinking the proposal to a short outline.",
+			"Choose how many target chapters this source-map range needs, then divide it into one or more model-planned batches/volumes.",
+			"If target_chapter_hint_role is source_scale_minimum, treat target_chapter_hint as anti-shrink long-form scale guidance, not an exact final chapter count.",
+			"Choose final target_chapter_count after analyzing source_map and the user's additions; increase above target_chapter_hint when added plot, relationship, or transition arcs require more chapters.",
+			"If target_chapter_hint_role is explicit_target_scale, honor that requested scale unless the source map and user changes make a different count necessary; explain the choice in batch summaries.",
+			"Use source_map ranges to preserve the full-book structure without requesting raw source_reports.",
 			"Each batch must include target_from, target_to, source_from, source_to, title, theme/goal, and summary.",
-			"target_from and target_to must be integers, not labels like \"第1章\".",
-			"Keep each batch small enough for a later detail call, preferably no more than recommended_batch_max target chapters.",
-			"All target chapter ranges must be continuous from 1 through target_chapter_count.",
-			"The source ranges across batches must collectively cover every source chapter.",
+			"target_from and target_to may be local integers for this source-map range; the host will renumber batches into full-book absolute target chapters.",
+			"Choose skeleton batches by coherent story arc, volume beat, or major plot movement; they do not need to match recommended_batch_max exactly.",
+			"The host will split oversized skeleton batches into detail calls of about recommended_batch_max target chapters.",
+			"The source ranges across returned batches must collectively cover every source chapter in the provided source_map entries.",
 		},
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal planner skeleton input: %w", err)
 	}
-	return "Plan the high-level long-form adaptation skeleton first. Use the current model to choose the volume/batch structure; do not mechanically split chapters.\n\n" +
-		"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must contain a batches array. Do not return chapter details in this step.\n\n" +
+	return "Plan one source-map portion of the high-level long-form adaptation skeleton. Use the current model to decide how many target chapters this source range needs; do not mechanically mirror or compress source chapters.\n\n" +
+		"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must contain a batches array. Do not return chapter details in this step. The host will concatenate all source-map portions and renumber target chapters globally.\n\n" +
 		"Required JSON shape:\n" +
 		"{\"granularity\":\"...\",\"status\":\"proposal\",\"rewrite_policy\":\"...\",\"brief\":\"...\",\"target_chapter_count\":60,\"mainline_rules\":[],\"relationship_goals\":[],\"batches\":[{\"index\":1,\"title\":\"...\",\"theme\":\"...\",\"target_from\":1,\"target_to\":8,\"source_from\":1,\"source_to\":3,\"summary\":\"...\"}]}.\n\n" +
 		"Planning input:\n```json\n" + string(raw) + "\n```", nil
+}
+
+type plannerPreviousChapterContext struct {
+	Chapter        int      `json:"chapter"`
+	Title          string   `json:"title,omitempty"`
+	CoreEvent      string   `json:"core_event,omitempty"`
+	Hook           string   `json:"hook,omitempty"`
+	Scenes         []string `json:"scenes,omitempty"`
+	SourceChapters []int    `json:"source_chapters,omitempty"`
+}
+
+func plannerPreviousChapterContexts(chapters []domain.AdaptationChapterPlan, maxItems int) []plannerPreviousChapterContext {
+	if maxItems <= 0 || len(chapters) == 0 {
+		return nil
+	}
+	start := len(chapters) - maxItems
+	if start < 0 {
+		start = 0
+	}
+	out := make([]plannerPreviousChapterContext, 0, len(chapters)-start)
+	for _, chapter := range chapters[start:] {
+		out = append(out, plannerPreviousChapterContext{
+			Chapter:        chapter.Chapter,
+			Title:          clipText(chapter.Title, 80),
+			CoreEvent:      clipText(chapter.CoreEvent, 160),
+			Hook:           clipText(chapter.Hook, 120),
+			Scenes:         clippedStringList(chapter.Scenes, 4, 80),
+			SourceChapters: append([]int(nil), chapter.SourceChapters...),
+		})
+	}
+	return out
 }
 
 func buildAdaptationPlannerBatchUserPrompt(
@@ -3660,30 +4252,38 @@ func buildAdaptationPlannerBatchUserPrompt(
 	skeleton plannerSkeleton,
 	batch plannerSkeletonBatch,
 	reports []domain.AdaptationSourceReport,
+	previousChapters []domain.AdaptationChapterPlan,
 ) (string, error) {
 	input := struct {
-		Brief            string                             `json:"brief"`
-		Granularity      string                             `json:"granularity"`
-		RewritePolicy    string                             `json:"rewrite_policy"`
-		WordTolerance    float64                            `json:"word_tolerance"`
-		ExpectedChapters int                                `json:"expected_chapters"`
-		SourceManifest   *domain.AdaptationSourceManifest   `json:"source_manifest"`
-		SourceFoundation *domain.AdaptationSourceFoundation `json:"source_foundation"`
-		Skeleton         plannerSkeleton                    `json:"skeleton"`
-		Batch            plannerSkeletonBatch               `json:"batch"`
-		SourceReports    []domain.AdaptationSourceReport    `json:"source_reports"`
-		Requirements     []string                           `json:"requirements"`
+		Brief                  string                          `json:"brief"`
+		Granularity            string                          `json:"granularity"`
+		RewritePolicy          string                          `json:"rewrite_policy"`
+		WordTolerance          float64                         `json:"word_tolerance"`
+		ExpectedChapters       int                             `json:"expected_chapters"`
+		SourceManifest         plannerSourceManifestSummary    `json:"source_manifest"`
+		SourceFoundation       *plannerSourceFoundationSummary `json:"source_foundation"`
+		Skeleton               plannerSkeleton                 `json:"skeleton"`
+		Batch                  plannerSkeletonBatch            `json:"batch"`
+		PreviousDetailChapters []plannerPreviousChapterContext `json:"previous_detail_chapters,omitempty"`
+		SourceReports          []plannerSourceReportExcerpt    `json:"source_reports"`
+		SourceReportNotes      []string                        `json:"source_report_notes"`
+		Requirements           []string                        `json:"requirements"`
 	}{
-		Brief:            opts.Brief,
-		Granularity:      opts.Granularity,
-		RewritePolicy:    opts.RewritePolicy,
-		WordTolerance:    opts.WordTolerance,
-		ExpectedChapters: batch.TargetTo - batch.TargetFrom + 1,
-		SourceManifest:   manifest,
-		SourceFoundation: sourceFoundation,
-		Skeleton:         skeleton,
-		Batch:            batch,
-		SourceReports:    reports,
+		Brief:                  opts.Brief,
+		Granularity:            opts.Granularity,
+		RewritePolicy:          opts.RewritePolicy,
+		WordTolerance:          opts.WordTolerance,
+		ExpectedChapters:       batch.TargetTo - batch.TargetFrom + 1,
+		SourceManifest:         plannerManifestSummary(manifest),
+		SourceFoundation:       plannerSourceFoundationDigest(sourceFoundation),
+		Skeleton:               skeleton,
+		Batch:                  batch,
+		PreviousDetailChapters: plannerPreviousChapterContexts(previousChapters, adaptationPlannerRecommendedBatchMax),
+		SourceReports:          plannerSourceReportExcerpts(reports),
+		SourceReportNotes: []string{
+			"source_reports are clipped excerpts for the requested source range, not full raw reports.",
+			"Use source_range and source_chapters as factual anchors; do not copy source prose.",
+		},
 		Requirements: []string{
 			"Return exactly one JSON object and no prose.",
 			"The top-level JSON object must be shaped exactly like {\"chapters\":[...]} and must not be a single chapter object.",
@@ -3695,6 +4295,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 			"Every source_chapters value must be within the batch source range and valid for the analyzed source.",
 			"Added/bridging chapters must still include source_chapters anchors.",
 			"Use the user's adaptation brief and the skeleton batch goal; do not ignore earlier user planning.",
+			"Use previous_detail_chapters only for continuity, callbacks, and handoff hooks; do not duplicate already generated chapters.",
 		},
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")
@@ -3765,6 +4366,16 @@ func decodePlannerSkeletonJSON(data []byte) (plannerSkeleton, error) {
 	if len(skeleton.Batches) > 0 {
 		return skeleton, nil
 	}
+	if batch, ok := decodePlannerSkeletonBatchJSON(data); ok {
+		skeleton.Batches = []plannerSkeletonBatch{batch}
+		if skeleton.TargetChapterCount <= 0 {
+			skeleton.TargetChapterCount = batch.TargetChapterCount
+		}
+		if skeleton.TargetChapterCount <= 0 && batch.TargetTo >= batch.TargetFrom {
+			skeleton.TargetChapterCount = batch.TargetTo - batch.TargetFrom + 1
+		}
+		return skeleton, nil
+	}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return skeleton, nil
@@ -3782,6 +4393,28 @@ func decodePlannerSkeletonJSON(data []byte) (plannerSkeleton, error) {
 		}
 	}
 	return skeleton, nil
+}
+
+func decodePlannerSkeletonBatchJSON(data []byte) (plannerSkeletonBatch, bool) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil || !plannerSkeletonBatchObjectShape(object) {
+		return plannerSkeletonBatch{}, false
+	}
+	var batch plannerSkeletonBatch
+	if err := json.Unmarshal(data, &batch); err != nil {
+		return plannerSkeletonBatch{}, false
+	}
+	return batch, true
+}
+
+func plannerSkeletonBatchObjectShape(object map[string]json.RawMessage) bool {
+	if len(object) == 0 || len(object["batches"]) > 0 {
+		return false
+	}
+	hasTarget := len(object["target_from"]) > 0 || len(object["target_to"]) > 0 || len(object["target_range"]) > 0
+	hasSource := len(object["source_from"]) > 0 || len(object["source_to"]) > 0 || len(object["source_range"]) > 0 || len(object["source_chapters"]) > 0
+	hasStory := len(object["title"]) > 0 || len(object["theme"]) > 0 || len(object["goal"]) > 0 || len(object["summary"]) > 0
+	return hasTarget && hasSource && hasStory
 }
 
 func fillPlannerSkeletonAliases(data []byte, skeleton *plannerSkeleton) {
@@ -3848,7 +4481,7 @@ func normalizePlannerSkeleton(skeleton *plannerSkeleton, opts ProposalOptions, m
 			minAccepted = adaptationPlannerChunkedMinChapters
 		}
 		if skeleton.TargetChapterCount < minAccepted {
-			return fmt.Errorf("target_chapter_count=%d ignores requested long-form target %d", skeleton.TargetChapterCount, targetChapterHint)
+			return fmt.Errorf("target_chapter_count=%d ignores long-form scale hint %d", skeleton.TargetChapterCount, targetChapterHint)
 		}
 	}
 	nextTarget := 1

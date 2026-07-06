@@ -440,14 +440,14 @@ func adaptationBriefingSnapshot(st *store.Store) string {
 	fmt.Fprintf(&sb, "- dossier_batches: %d\n", len(dossier.Batches))
 	fmt.Fprintf(&sb, "- trigger: %s\n", briefing.TriggerReason)
 	if strings.TrimSpace(intent.RawRequest) != "" {
-		fmt.Fprintf(&sb, "- user_intent: %s\n", clipCoCreatePromptText(intent.RawRequest, 1200))
+		fmt.Fprintf(&sb, "- user_intent: %s\n", clipCoCreatePromptText(intent.RawRequest, 800))
 	}
 	writeDossierStrings(&sb, "### Inferred Intent Goals", intent.Goals, 24)
 	writeDossierStrings(&sb, "### Relationship Rules", intent.RelationshipRules, 24)
 	writeDossierStrings(&sb, "### Preserve Rules", intent.PreserveRules, 24)
-	writeDossierStrings(&sb, "### Confirmed Source Facts", briefing.ConfirmedFacts, 80)
-	writeBriefingPromptRisks(&sb, "### Intent-Relevant Risks", briefing.IntentRelevantRisks, 80)
-	writeDossierStrings(&sb, "### Adaptation Suggestions", briefing.AdaptationSuggestions, 80)
+	writeDossierStrings(&sb, "### Confirmed Source Facts", briefing.ConfirmedFacts, 24)
+	writeBriefingPromptRisks(&sb, "### Intent-Relevant Risks", briefing.IntentRelevantRisks, 16)
+	writeDossierStrings(&sb, "### Adaptation Suggestions", briefing.AdaptationSuggestions, 16)
 	writeBriefingPromptResolvedDecisions(&sb, briefing.Decisions, briefing.ResolvedDecisions)
 	return sb.String()
 }

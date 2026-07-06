@@ -77,6 +77,19 @@
         }
       }
     },
+    "codex-login": {
+      // Reuse the existing Codex login from CODEX_AUTH_FILE, CODEX_HOME/auth.json,
+      // ./.codex/auth.json, or ~/.codex/auth.json. No OpenAI API key is used.
+      "type": "openai",
+      "label": "Codex Login",
+      "template_provider": "codex",
+      "auth": "codex",
+      "api": "responses",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "auth_file": "",
+      "use_proxy": true,
+      "models": ["gpt-5.5"]
+    },
     "codex-proxy": {
       // 自定义 OpenAI/NewAPI 代理。如果上游限制只能由 Codex 客户端访问，
       // 用 extra 覆盖 User-Agent，并透传 Codex 识别头。

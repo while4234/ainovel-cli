@@ -273,17 +273,18 @@ type AdaptationPlan struct {
 // AdaptationProposalRuntime keeps resumable planner state while a proposal is
 // being generated. It is cleared when a proposal or confirmed plan is saved.
 type AdaptationProposalRuntime struct {
-	Version            int                               `json:"version"`
-	UpdatedAt          string                            `json:"updated_at,omitempty"`
-	Brief              string                            `json:"brief"`
-	SourcePath         string                            `json:"source_path,omitempty"`
-	SourceChapterCount int                               `json:"source_chapter_count,omitempty"`
-	Granularity        string                            `json:"granularity"`
-	RewritePolicy      string                            `json:"rewrite_policy"`
-	WordTolerance      float64                           `json:"word_tolerance,omitempty"`
-	TargetChapterCount int                               `json:"target_chapter_count"`
-	Skeleton           *AdaptationProposalRuntimeOutline `json:"skeleton,omitempty"`
-	CompletedBatches   []AdaptationProposalRuntimeBatch  `json:"completed_batches,omitempty"`
+	Version            int                                      `json:"version"`
+	UpdatedAt          string                                   `json:"updated_at,omitempty"`
+	Brief              string                                   `json:"brief"`
+	SourcePath         string                                   `json:"source_path,omitempty"`
+	SourceChapterCount int                                      `json:"source_chapter_count,omitempty"`
+	Granularity        string                                   `json:"granularity"`
+	RewritePolicy      string                                   `json:"rewrite_policy"`
+	WordTolerance      float64                                  `json:"word_tolerance,omitempty"`
+	TargetChapterCount int                                      `json:"target_chapter_count"`
+	Skeleton           *AdaptationProposalRuntimeOutline        `json:"skeleton,omitempty"`
+	SkeletonBatches    []AdaptationProposalRuntimeSkeletonBatch `json:"skeleton_batches,omitempty"`
+	CompletedBatches   []AdaptationProposalRuntimeBatch         `json:"completed_batches,omitempty"`
 }
 
 // AdaptationProposalRuntimeOutline stores the model-planned long-form skeleton

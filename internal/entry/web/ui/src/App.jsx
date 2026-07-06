@@ -2,8 +2,6 @@ import {
   Activity,
   BookOpen,
   Check,
-  ChevronLeft,
-  ChevronRight,
   CircleDot,
   Database,
   Download,
@@ -50,6 +48,7 @@ import {
   emptyTrashProjects,
   exportProjectDownload,
   getBackendStatus,
+  getCodexAuthStatus,
   getGlobalModels,
   getChapter,
   getGrokLoginStatus,
@@ -75,6 +74,7 @@ import {
   reviseChapter,
   reviseCoCreatePlanning,
   reviseCoCreate,
+  resolveCoCreateDecisions,
   resolveCoCreateDecision,
   resumeProject,
   runProjectDiagnostic,
@@ -455,6 +455,15 @@ const grokOAuthDefaults = {
   model: 'grok-4.3-latest'
 };
 
+const codexAuthDefaults = {
+  provider: 'codex-login',
+  type: 'openai',
+  auth: 'codex',
+  template_provider: 'codex',
+  model: 'gpt-5.5',
+  base_url: 'https://chatgpt.com/backend-api/codex'
+};
+
 const defaultModelRequestTimeoutSeconds = '120';
 const defaultModelConnectivityTimeoutSeconds = '12';
 const defaultModelNetworkDisconnectMaxAttempts = '7';
@@ -487,7 +496,10 @@ function createCustomModelState() {
     callback_input: '',
     grok_login: null,
     grok_status: null,
-    grok_message: ''
+    grok_message: '',
+    auth_file: '',
+    codex_status: null,
+    codex_message: ''
   };
 }
 
@@ -1637,6 +1649,8 @@ export default function App() {
       const sourceFile = sourceFileFromNovelLoad(data, entry, name);
       const analysisStatus = adaptationStatusFromNovelLoad(data);
       const analysisEvents = adaptationEventsFromNovelLoad(data);
+      setCoCreate(createCoCreateState());
+      setPlanningRevision(createCoCreatePlanningRevisionState());
       setWorkbench((previous) => ({
         ...previous,
         snapshot: clearAdaptationProposalSnapshot(data.snapshot || previous.snapshot)
@@ -1897,8 +1911,8 @@ export default function App() {
     }
   };
 
-  const submitCoCreate = async (event) => {
-    event.preventDefault();
+  const submitCoCreate = async (event, options = {}) => {
+    event?.preventDefault?.();
     const text = coCreate.input.trim();
     const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
     if (!activeProject?.id || !text || !hasBackendSession || busy || coCreateRequestBusy) {
@@ -1907,7 +1921,9 @@ export default function App() {
     const projectId = activeProject.id;
     setCoCreate((previous) => ({ ...previous, status: 'running', error: '', suggestions: [] }));
     try {
-      const data = await sendCoCreate(projectId, text, coCreate.inputSource || 'custom');
+      const data = await sendCoCreate(projectId, text, coCreate.inputSource || 'custom', {
+        forceRebrief: Boolean(options.forceRebrief)
+      });
       if (!isCurrentProject(projectId)) {
         return;
       }
@@ -1974,13 +1990,17 @@ export default function App() {
   };
 
   const resolveCoCreateDecisionFlow = async (decisionId, optionId = '', customAnswer = '') => {
-    if (!activeProject?.id || !decisionId || busy || coCreateRequestBusy) {
+    const decisions = Array.isArray(decisionId) ? decisionId : null;
+    const hasDecision = decisions ? decisions.length > 0 : Boolean(decisionId);
+    if (!activeProject?.id || !hasDecision || busy || coCreateRequestBusy) {
       return;
     }
     const projectId = activeProject.id;
     setCoCreate((previous) => ({ ...previous, status: 'running', error: '' }));
     try {
-      const data = await resolveCoCreateDecision(projectId, decisionId, optionId, customAnswer);
+      const data = decisions
+        ? await resolveCoCreateDecisions(projectId, decisions)
+        : await resolveCoCreateDecision(projectId, decisionId, optionId, customAnswer);
       if (!isCurrentProject(projectId)) {
         return;
       }
@@ -2535,6 +2555,21 @@ export default function App() {
     }
   };
 
+  const refreshCodexAuthStatus = async () => {
+    setError('');
+    try {
+      const data = await getCodexAuthStatus(activeProject?.id, customModel.auth_file);
+      setCustomModel((previous) => ({
+        ...previous,
+        codex_status: data.status || null,
+        codex_message: codexAuthSummary(data.status)
+      }));
+    } catch (err) {
+      setError(err.message);
+      setCustomModel((previous) => ({ ...previous, codex_message: err.message }));
+    }
+  };
+
   const sortedEvents = useMemo(
     () => workbench.eventRows.slice().sort((a, b) => b.seq - a.seq),
     [workbench.eventRows]
@@ -2899,6 +2934,7 @@ export default function App() {
               onBegin={beginCoCreateFlow}
               onConfirmIntake={() => beginCoCreateFlow('normal', { confirmIntake: true })}
               onSubmit={submitCoCreate}
+              onRebrief={(event) => submitCoCreate(event, { forceRebrief: true })}
               onResume={resumeCoCreateFlow}
               onSuggestion={submitCoCreateSuggestion}
               onRevise={reviseCoCreateMessage}
@@ -2995,6 +3031,7 @@ export default function App() {
               onPollGrokLogin={pollGrokOAuthLogin}
               onCompleteGrokLogin={completeGrokOAuthLogin}
               onRefreshGrokStatus={refreshGrokOAuthStatus}
+              onRefreshCodexStatus={refreshCodexAuthStatus}
             />
           )}
         </div>
@@ -3464,6 +3501,7 @@ function CoCreatePanel({
   onBegin,
   onConfirmIntake,
   onSubmit,
+  onRebrief = () => {},
   onResume = () => {},
   onSuggestion,
   onRevise,
@@ -3495,6 +3533,7 @@ function CoCreatePanel({
     coCreate.pendingDecisions.length
   );
   const canSend = Boolean(activeProject && !busy && hasBackendSession && coCreate.input.trim() && !hasPendingDecisions);
+  const canRebrief = Boolean(canSend && coCreate.kind === 'adapt');
   const canResume = Boolean(activeProject && !busy && hasBackendSession && coCreate.failed && !hasPendingDecisions);
   const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
   const hasDraftPrompt = Boolean(coCreate.draftPrompt.trim());
@@ -3791,10 +3830,18 @@ function CoCreatePanel({
             </div>
           </div>
         ) : null}
+        <div className="cocreate-submit-row">
         <button className="tool-button accent full-width" disabled={hasBackendSession ? !canSend : showIntakeControls ? !canConfirmIntake : !canBeginNormal} type="submit">
           <Send size={16} />
           {hasBackendSession ? '发送' : showIntakeControls ? '确认并开始共创' : '开始普通共创'}
         </button>
+        {hasBackendSession && coCreate.kind === 'adapt' ? (
+          <button className="tool-button" disabled={!canRebrief} onClick={onRebrief} type="button">
+            <RefreshCw size={16} />
+            重新分析资料包
+          </button>
+        ) : null}
+        </div>
         </form>
 
         <section className={`cocreate-section ${showDraftWorkspace ? '' : 'cocreate-status-compact'}`}>
@@ -3830,96 +3877,103 @@ function CoCreateDecisionQueue({ decisions = [], busy, totalCount = 0, onResolve
   const decisionCount = normalizedDecisions.length;
   const parsedTotalCount = Number.parseInt(String(totalCount || ''), 10);
   const remainingCount = Math.max(Number.isFinite(parsedTotalCount) ? parsedTotalCount : 0, decisionCount);
-  const [customAnswers, setCustomAnswers] = useState({});
-  const [pageIndex, setPageIndex] = useState(0);
+  const [bulkAnswers, setBulkAnswers] = useState({});
+  const bulkDecisionKey = normalizedDecisions.map((decision, index) => `${decision.id || index}:${decision.recommended_option_id || ''}`).join('|');
   useEffect(() => {
-    setPageIndex((previous) => clampCoCreateDecisionPageIndex(previous, decisionCount));
-  }, [decisionCount]);
+    setBulkAnswers((previous) => {
+      const next = {};
+      normalizedDecisions.forEach((decision, index) => {
+        const id = String(decision.id || '').trim();
+        const key = id || `decision-${index}`;
+        const previousAnswer = previous[key] || {};
+        const recommended = String(decision.recommended_option_id || '').trim();
+        const fallback = String(decision.options?.[0]?.id || '').trim();
+        next[key] = {
+          optionId: previousAnswer.optionId || recommended || fallback,
+          customAnswer: previousAnswer.customAnswer || ''
+        };
+      });
+      return next;
+    });
+  }, [bulkDecisionKey]);
   if (!decisionCount) {
     return null;
   }
-  const currentIndex = clampCoCreateDecisionPageIndex(pageIndex, decisionCount);
-  const decision = normalizedDecisions[currentIndex] || {};
-  const id = String(decision.id || '').trim();
-  const answerKey = id || `decision-${currentIndex}`;
-  const customValue = customAnswers[answerKey] || '';
-  const goToPrevious = () => setPageIndex((previous) => clampCoCreateDecisionPageIndex(previous - 1, decisionCount));
-  const goToNext = () => setPageIndex((previous) => clampCoCreateDecisionPageIndex(previous + 1, decisionCount));
-  const progressText = remainingCount > decisionCount
-    ? `剩余 ${remainingCount} 项，当前批第 ${currentIndex + 1} / ${decisionCount} 项`
-    : `第 ${currentIndex + 1} / ${remainingCount} 项待确认`;
+  const bulkPayload = normalizedDecisions.map((decision, index) => {
+    const id = String(decision.id || '').trim();
+    const key = id || `decision-${index}`;
+    const answer = bulkAnswers[key] || {};
+    const customAnswer = String(answer.customAnswer || '').trim();
+    return {
+      decision_id: id,
+      option_id: customAnswer ? '' : String(answer.optionId || '').trim(),
+      custom_answer: customAnswer
+    };
+  });
+  const canSubmitBulk = bulkPayload.every((item) => item.decision_id && (item.option_id || item.custom_answer));
   return (
     <div className="cocreate-decisions">
       <div className="decision-queue-head">
         <div className="decision-queue-title">
           <strong>共创前置决策</strong>
-          <span>{progressText}</span>
+          <span>{remainingCount} 项待确认，可一次提交全部</span>
         </div>
-        {decisionCount > 1 ? (
-          <div className="decision-pager" aria-label="共创决策分页">
-            <button
-              aria-label="上一项"
-              className="icon-button"
-              disabled={currentIndex === 0}
-              onClick={goToPrevious}
-              title="上一项"
-              type="button"
-            >
-              <ChevronLeft size={16} />
-            </button>
-            <button
-              aria-label="下一项"
-              className="icon-button"
-              disabled={currentIndex >= decisionCount - 1}
-              onClick={goToNext}
-              title="下一项"
-              type="button"
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        ) : null}
       </div>
-      <article className="decision-card" key={id || decision.question} aria-live="polite">
-        <div className="decision-card-head">
-          <strong>{decision.question}</strong>
-          {decision.recommended_option_id ? <span>推荐 {decision.recommended_option_id}</span> : null}
-        </div>
-        {decision.evidence ? <p className="decision-evidence">{decision.evidence}</p> : null}
-        {decision.impact ? <p className="decision-impact">{decision.impact}</p> : null}
-        <div className="decision-options">
-          {(decision.options || []).map((option) => (
-            <button
-              className={`tool-button ${option.id === decision.recommended_option_id ? 'accent' : ''}`}
-              disabled={busy || !id}
-              key={option.id}
-              onClick={() => onResolve(id, option.id, '')}
-              title={option.label}
-              type="button"
-            >
-              <Check size={15} />
-              <span>{option.label}</span>
-            </button>
-          ))}
-        </div>
-        <div className="decision-custom">
-          <textarea
-            disabled={busy || !id}
-            placeholder="输入自定义处理方式..."
-            value={customValue}
-            onChange={(event) => setCustomAnswers((previous) => ({ ...previous, [answerKey]: event.target.value }))}
-          />
-          <button
-            className="tool-button"
-            disabled={busy || !id || !customValue.trim()}
-            onClick={() => onResolve(id, '', customValue.trim())}
-            type="button"
-          >
-            <Send size={15} />
-            提交
-          </button>
-        </div>
-      </article>
+      <div className="decision-list">
+        {normalizedDecisions.map((decision, index) => {
+          const id = String(decision.id || '').trim();
+          const key = id || `decision-${index}`;
+          const answer = bulkAnswers[key] || {};
+          return (
+            <article className="decision-card" key={id || decision.question || index}>
+              <div className="decision-card-head">
+                <strong>{decision.question}</strong>
+                {decision.recommended_option_id ? <span>推荐 {decision.recommended_option_id}</span> : null}
+              </div>
+              {decision.evidence ? <p className="decision-evidence">{decision.evidence}</p> : null}
+              {decision.impact ? <p className="decision-impact">{decision.impact}</p> : null}
+              <div className="decision-options">
+                {(decision.options || []).map((option) => (
+                  <button
+                    className={`tool-button ${option.id === answer.optionId && !answer.customAnswer ? 'accent' : ''}`}
+                    disabled={busy || !id}
+                    key={option.id}
+                    onClick={() => setBulkAnswers((previous) => ({
+                      ...previous,
+                      [key]: { optionId: option.id, customAnswer: '' }
+                    }))}
+                    title={option.label}
+                    type="button"
+                  >
+                    <Check size={15} />
+                    <span>{option.label}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="decision-custom">
+                <textarea
+                  disabled={busy || !id}
+                  placeholder="输入自定义处理方式..."
+                  value={answer.customAnswer || ''}
+                  onChange={(event) => setBulkAnswers((previous) => ({
+                    ...previous,
+                    [key]: { optionId: previous[key]?.optionId || '', customAnswer: event.target.value }
+                  }))}
+                />
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      <button
+        className="tool-button accent full-width"
+        disabled={busy || !canSubmitBulk}
+        onClick={() => onResolve(bulkPayload)}
+        type="button"
+      >
+        <Send size={15} />
+        提交全部选择
+      </button>
     </div>
   );
 }
@@ -5151,7 +5205,8 @@ function ModelPanel({
   onStartGrokLogin,
   onPollGrokLogin,
   onCompleteGrokLogin,
-  onRefreshGrokStatus
+  onRefreshGrokStatus,
+  onRefreshCodexStatus
 }) {
   const config = runtime?.config || {};
   const roles = modelConfig?.roles || [];
@@ -5256,6 +5311,7 @@ function ModelPanel({
   const selectedPreset = providerPresets.find((preset) => preset.provider === customModel.preset) || providerPresets[0];
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
+  const codexReady = codexLoggedIn(customModel.codex_status);
   const addValidationMessage = modelAddValidationMessage(customModel, modelConfig);
   const canAdd = !addValidationMessage;
   const selectedProjectRoute = projectRoles.find((route) => route.role === selectedProjectRole) || projectRoles[0] || null;
@@ -5561,6 +5617,7 @@ function ModelPanel({
             >
               <option value="custom">自定义模型</option>
               <option value="preset">内置模板</option>
+              <option value="codex_auth">Codex 登录</option>
               <option value="grok_oauth">Grok 登录</option>
             </select>
             <label className="model-field">
@@ -5791,6 +5848,42 @@ function ModelPanel({
             />
           </>
         ) : null}
+        {customModel.mode === 'codex_auth' ? (
+          <>
+            <label className="model-field">
+              <span>配置 ID (provider key)</span>
+              <input
+                disabled={busy}
+                placeholder="例如 codex-login；不是 API key"
+                value={customModel.provider}
+                onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+              />
+            </label>
+            <label className="model-field">
+              <span>Codex auth.json</span>
+              <input
+                disabled={busy}
+                placeholder="auth.json path (optional)"
+                value={customModel.auth_file}
+                onChange={(event) => setCustomModel((previous) => ({
+                  ...previous,
+                  auth_file: event.target.value,
+                  codex_status: null
+                }))}
+              />
+            </label>
+            <div className="grok-action-grid">
+              <button className="tool-button" onClick={onRefreshCodexStatus} type="button">
+                <RefreshCw size={16} />
+                Status
+              </button>
+            </div>
+            <div className={`grok-status ${codexReady ? 'ready' : ''}`}>
+              <strong>{codexReady ? 'Codex 已登录' : 'Codex 未登录'}</strong>
+              <span>{customModel.codex_message || codexAuthSummary(customModel.codex_status)}</span>
+            </div>
+          </>
+        ) : null}
         {customModel.mode === 'grok_oauth' ? (
           <>
             <label className="model-field">
@@ -5860,7 +5953,7 @@ function ModelPanel({
             disabled={busy}
             list="model-editor-options"
             placeholder="model"
-            value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
+            value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'codex_auth' ? codexAuthDefaults.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
             onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
           />
           <datalist id="model-editor-options">
@@ -6132,6 +6225,22 @@ function grokAuthSummary(status) {
   return '未登录';
 }
 
+function codexLoggedIn(status) {
+  return Boolean(status?.logged_in || status?.LoggedIn);
+}
+
+function codexAuthSummary(status) {
+  if (!status) {
+    return '点击 Status 检查当前 Codex 登录';
+  }
+  const message = String(status.message || status.Message || '').trim();
+  if (codexLoggedIn(status)) {
+    const account = status.account_id || status.AccountID || '';
+    return account ? `已登录账号 ${account}` : (message || '已登录');
+  }
+  return message || '未登录';
+}
+
 export function createNewModelDraft(previous = {}, providers = [], mode = 'custom') {
   return modelAddModeDefaults({
     ...createCustomModelState(),
@@ -6161,6 +6270,36 @@ export function modelAddModeDefaults(state, providers = [], previousMode = '') {
       auth: '',
       api_key: fromExisting ? '' : (state.api_key || ''),
       base_url: fromExisting ? '' : (state.base_url || ''),
+      request_timeout_seconds: state.request_timeout_seconds || defaultModelRequestTimeoutSeconds,
+      connectivity_timeout_seconds: state.connectivity_timeout_seconds || defaultModelConnectivityTimeoutSeconds,
+      network_disconnect_max_attempts: state.network_disconnect_max_attempts || defaultModelNetworkDisconnectMaxAttempts,
+      auto_switch_candidate_pool: Boolean(state.auto_switch_candidate_pool),
+      test_status: 'idle',
+      test_message: ''
+    };
+  }
+  if (state.mode === 'codex_auth') {
+    const fromExisting = previousMode === 'existing' || Boolean(String(state.original_provider || '').trim());
+    const model = fromExisting || !state.model || state.model === 'model-name' ? codexAuthDefaults.model : state.model;
+    const rawProvider = String(state.provider || '').trim();
+    const baseProvider = fromExisting || !rawProvider.toLowerCase().includes('codex')
+      ? codexAuthDefaults.provider
+      : rawProvider;
+    const provider = uniqueProviderKey(baseProvider, providers);
+    return {
+      ...state,
+      original_provider: '',
+      provider,
+      label: fromExisting ? 'Codex' : (state.label || 'Codex'),
+      template_provider: codexAuthDefaults.template_provider,
+      type: codexAuthDefaults.type,
+      auth: codexAuthDefaults.auth,
+      model,
+      api: 'responses',
+      use_proxy: true,
+      api_key: '',
+      base_url: codexAuthDefaults.base_url,
+      auth_file: state.auth_file || '',
       request_timeout_seconds: state.request_timeout_seconds || defaultModelRequestTimeoutSeconds,
       connectivity_timeout_seconds: state.connectivity_timeout_seconds || defaultModelConnectivityTimeoutSeconds,
       network_disconnect_max_attempts: state.network_disconnect_max_attempts || defaultModelNetworkDisconnectMaxAttempts,
@@ -6218,6 +6357,7 @@ function modelAddExistingProviderDefaults(state, providers = [], providerName = 
     template_provider: provider?.template_provider || '',
     type: provider?.type || '',
     auth: provider?.auth || '',
+    auth_file: '',
     api,
     api_key: '',
     base_url: provider?.base_url || '',
@@ -6412,6 +6552,23 @@ export function buildModelAddPayload(state, modelConfig) {
       account_id: String(state.account_id || grokOAuthDefaults.account_id).trim()
     };
   }
+  if (state.mode === 'codex_auth') {
+    const payload = {
+      select_after_save: false,
+      provider: String(state.provider || codexAuthDefaults.provider).trim(),
+      model: String(state.model || codexAuthDefaults.model).trim(),
+      ...providerPayloadFields({ ...state, use_proxy: state.use_proxy ?? true }, { label: 'Codex', provider: 'codex' }),
+      type: codexAuthDefaults.type,
+      auth: codexAuthDefaults.auth,
+      api: 'responses',
+      base_url: String(state.base_url || codexAuthDefaults.base_url).trim()
+    };
+    const authFile = String(state.auth_file || '').trim();
+    if (authFile) {
+      payload.auth_file = authFile;
+    }
+    return payload;
+  }
   if (state.mode === 'preset') {
     const preset = providerPresets.find((item) => item.provider === state.preset) || providerPresets[0];
     return {
@@ -6475,6 +6632,9 @@ export function modelAddValidationMessage(state, modelConfig) {
     if (!grokLoggedIn(state.grok_status)) {
       return '请先完成 Grok 登录，再保存配置。';
     }
+  }
+  if (state.mode === 'codex_auth' && !codexLoggedIn(state.codex_status)) {
+    return '请先确认 Codex 登录状态，再保存配置。';
   }
   if (state.mode === 'preset') {
     const preset = providerPresets.find((item) => item.provider === state.preset) || providerPresets[0];

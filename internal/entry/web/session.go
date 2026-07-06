@@ -79,6 +79,7 @@ type projectHost interface {
 	AdaptCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
 	EnsureAdaptationCoCreateBriefing(context.Context, string, domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error)
 	ResolveAdaptationCoCreateDecision(string, string, string) (*domain.AdaptationCoCreateBriefing, error)
+	ResolveAdaptationCoCreateDecisions([]domain.AdaptationResolvedDecision) (*domain.AdaptationCoCreateBriefing, error)
 	PauseForCoCreate() bool
 	ResumeFromCoCreate(string) error
 	CancelCoCreate()
@@ -1070,7 +1071,7 @@ func (s *ProjectSession) BeginAdaptCoCreate(ctx context.Context, req webCoCreate
 	state.failed = true
 	s.cocreate = state
 	s.saveCoCreateCheckpoint()
-	if err := s.ensureAdaptCoCreateBriefingLocked(ctx); err != nil {
+	if err := s.ensureAdaptCoCreateBriefingLocked(ctx, false); err != nil {
 		return s.cocreate.apiState(), err
 	}
 	if s.cocreate.hasPendingBriefingDecisions() {
@@ -1096,8 +1097,8 @@ func (s *ProjectSession) resetRestartableCoCreateLocked() (webCoCreateState, err
 	return webCoCreateState{}, nil
 }
 
-func (s *ProjectSession) ensureAdaptCoCreateBriefingLocked(ctx context.Context) error {
-	if s.cocreate == nil || !s.cocreate.needsAdaptBriefingRefresh() {
+func (s *ProjectSession) ensureAdaptCoCreateBriefingLocked(ctx context.Context, force bool) error {
+	if s.cocreate == nil || !s.cocreate.needsAdaptBriefingRefresh(force) {
 		return nil
 	}
 	sourcePath := strings.TrimSpace(s.cocreate.sourcePath)
@@ -1121,7 +1122,7 @@ func (s *ProjectSession) ensureAdaptCoCreateBriefingLocked(ctx context.Context) 
 	return nil
 }
 
-func (s *ProjectSession) SendCoCreate(ctx context.Context, text, source string) (webCoCreateState, error) {
+func (s *ProjectSession) SendCoCreate(ctx context.Context, req webCoCreateSendRequest) (webCoCreateState, error) {
 	unlock, err := s.beginAction()
 	if err != nil {
 		return webCoCreateState{}, err
@@ -1134,17 +1135,20 @@ func (s *ProjectSession) SendCoCreate(ctx context.Context, text, source string) 
 	if s.cocreate.hasPendingBriefingDecisions() {
 		return s.cocreate.apiState(), fmt.Errorf("resolve adaptation briefing decisions before continuing co-create")
 	}
-	if err := s.cocreate.appendUser(text, source); err != nil {
+	if err := s.cocreate.appendUser(req.Text, req.Source); err != nil {
 		return webCoCreateState{}, err
 	}
 	s.saveCoCreateCheckpoint()
-	if err := s.ensureAdaptCoCreateBriefingLocked(ctx); err != nil {
+	if err := s.ensureAdaptCoCreateBriefingLocked(ctx, req.ForceRebrief); err != nil {
 		return s.cocreate.apiState(), err
 	}
 	if s.cocreate.hasPendingBriefingDecisions() {
 		api := s.cocreate.apiState()
 		s.appendCoCreateState(api)
 		return api, nil
+	}
+	if s.cocreate.canMergeAdaptDraftIncrement(req.ForceRebrief) {
+		return s.mergeAdaptCoCreateDraftIncrementLocked(req.Text)
 	}
 	return s.runCoCreateLocked(ctx)
 }
@@ -1166,7 +1170,7 @@ func (s *ProjectSession) ReviseCoCreate(ctx context.Context, req webCoCreateRevi
 		return webCoCreateState{}, err
 	}
 	s.saveCoCreateCheckpoint()
-	if err := s.ensureAdaptCoCreateBriefingLocked(ctx); err != nil {
+	if err := s.ensureAdaptCoCreateBriefingLocked(ctx, false); err != nil {
 		return s.cocreate.apiState(), err
 	}
 	if s.cocreate.hasPendingBriefingDecisions() {
@@ -1190,7 +1194,7 @@ func (s *ProjectSession) ResolveCoCreateDecision(ctx context.Context, req webCoC
 	if s.cocreate.kind != webCoCreateKindAdapt {
 		return s.cocreate.apiState(), fmt.Errorf("co-create decisions are only supported for adaptation co-create")
 	}
-	briefing, err := s.host.ResolveAdaptationCoCreateDecision(req.DecisionID, req.OptionID, req.CustomAnswer)
+	briefing, err := s.host.ResolveAdaptationCoCreateDecisions(req.resolvedDecisionItems())
 	if err != nil {
 		return s.cocreate.apiState(), err
 	}
@@ -1201,7 +1205,36 @@ func (s *ProjectSession) ResolveCoCreateDecision(ctx context.Context, req webCoC
 		s.appendCoCreateState(api)
 		return api, nil
 	}
+	if s.cocreate.canMergeAdaptDraftIncrement(false) {
+		return s.mergeAdaptCoCreateDecisionsLocked()
+	}
 	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) mergeAdaptCoCreateDraftIncrementLocked(text string) (webCoCreateState, error) {
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	draft := mergeAdaptDraftUserIncrement(s.cocreate.draftPrompt(), text)
+	s.cocreate.failed = false
+	s.cocreate.applyDeterministicAdaptDraft("已将补充方向增量合入 draft。", draft)
+	state := s.cocreate.apiState()
+	s.saveCoCreateCheckpoint()
+	s.appendCoCreateState(state)
+	return state, nil
+}
+
+func (s *ProjectSession) mergeAdaptCoCreateDecisionsLocked() (webCoCreateState, error) {
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	draft := mergeAdaptDraftResolvedDecisions(s.cocreate.draftPrompt(), s.cocreate.adaptationBriefing)
+	s.cocreate.failed = false
+	s.cocreate.applyDeterministicAdaptDraft("已将已确认选项合入 draft。", draft)
+	state := s.cocreate.apiState()
+	s.saveCoCreateCheckpoint()
+	s.appendCoCreateState(state)
+	return state, nil
 }
 
 func (s *ProjectSession) ResumeCoCreate(ctx context.Context) (webCoCreateState, error) {
@@ -1214,7 +1247,7 @@ func (s *ProjectSession) ResumeCoCreate(ctx context.Context) (webCoCreateState, 
 	if s.cocreate == nil {
 		return webCoCreateState{}, fmt.Errorf("co-create has not started")
 	}
-	if err := s.ensureAdaptCoCreateBriefingLocked(ctx); err != nil {
+	if err := s.ensureAdaptCoCreateBriefingLocked(ctx, false); err != nil {
 		return s.cocreate.apiState(), err
 	}
 	if s.cocreate.hasPendingBriefingDecisions() {
@@ -1667,6 +1700,32 @@ func (s *ProjectSession) clearCoCreateCheckpoint() {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		slog.Warn("clear co-create checkpoint failed", "module", "web", "project", s.projectID(), "err", err)
 	}
+}
+
+func (s *ProjectSession) ResetCoCreateProgress() error {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	if s.cocreate != nil && s.cocreate.kind == webCoCreateKindStage {
+		s.host.CancelCoCreate()
+	}
+	s.cocreate = nil
+	s.clearCoCreateCheckpoint()
+	return s.clearCoCreateLog()
+}
+
+func (s *ProjectSession) clearCoCreateLog() error {
+	path := s.coCreateLogPath()
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func (s *ProjectSession) coCreateCheckpointPath() string {
@@ -2383,7 +2442,7 @@ func (s *ProjectSession) consumeAdaptationEvents(ctx context.Context, events <-c
 			apiEvent := apiAdaptationEventFromAdapt(ev)
 			out = append(out, apiEvent)
 			s.appendAdaptationEvent(apiEvent)
-			if ev.Err != nil {
+			if ev.Err != nil && ev.Stage == adapt.StageError {
 				message := strings.TrimSpace(ev.Message)
 				if message == "" {
 					message = ev.Err.Error()

@@ -1186,6 +1186,12 @@ h2 {
   gap: 10px;
 }
 
+.cocreate-submit-row,
+.decision-list {
+  display: grid;
+  gap: 8px;
+}
+
 .decision-queue-head,
 .decision-card-head {
   display: flex;

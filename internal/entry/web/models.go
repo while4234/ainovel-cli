@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/codexauth"
 	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
@@ -44,6 +45,7 @@ type apiModelProvider struct {
 	Type                         string   `json:"type,omitempty"`
 	Auth                         string   `json:"auth,omitempty"`
 	AccountID                    string   `json:"account_id,omitempty"`
+	AuthFileConfigured           bool     `json:"auth_file_configured,omitempty"`
 	API                          string   `json:"api,omitempty"`
 	BaseURL                      string   `json:"base_url,omitempty"`
 	UseProxy                     *bool    `json:"use_proxy,omitempty"`
@@ -75,6 +77,10 @@ type grokLoginCompleteRequest struct {
 
 type grokLoginStatusRequest struct {
 	AccountID string `json:"account_id"`
+}
+
+type codexAuthStatusRequest struct {
+	AuthFile string `json:"auth_file"`
 }
 
 type coCreateTimeoutRequest struct {
@@ -111,6 +117,7 @@ type modelProviderRequest struct {
 	Type                         string `json:"type"`
 	Auth                         string `json:"auth"`
 	AccountID                    string `json:"account_id"`
+	AuthFile                     string `json:"auth_file"`
 	APIKey                       string `json:"api_key"`
 	BaseURL                      string `json:"base_url"`
 	API                          string `json:"api"`
@@ -130,6 +137,7 @@ func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
 		Type:                       strings.TrimSpace(r.Type),
 		Auth:                       strings.TrimSpace(r.Auth),
 		AccountID:                  strings.TrimSpace(r.AccountID),
+		AuthFile:                   strings.TrimSpace(r.AuthFile),
 		APIKey:                     strings.TrimSpace(r.APIKey),
 		BaseURL:                    strings.TrimSpace(r.BaseURL),
 		API:                        strings.TrimSpace(r.API),
@@ -139,6 +147,14 @@ func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
 	if pc.UsesGrokOAuth() {
 		pc.API = ""
 		pc.APIKey = ""
+	}
+	if pc.UsesCodexAuth() {
+		pc.AccountID = ""
+		pc.API = "responses"
+		pc.APIKey = ""
+		if pc.BaseURL == "" {
+			pc.BaseURL = codexauth.DefaultBaseURL
+		}
 	}
 	if r.UseProxy != nil {
 		useProxy := *r.UseProxy
@@ -566,6 +582,7 @@ func apiProviderFromConfig(name string, pc bootstrap.ProviderConfig, models []st
 		Type:                         pc.Type,
 		Auth:                         pc.Auth,
 		AccountID:                    pc.AccountID,
+		AuthFileConfigured:           strings.TrimSpace(pc.AuthFile) != "",
 		API:                          pc.API,
 		BaseURL:                      pc.BaseURL,
 		UseProxy:                     useProxy,
@@ -865,6 +882,7 @@ func providerConfigRequestIsEmpty(pc bootstrap.ProviderConfig) bool {
 		pc.ConnectivityTimeoutSeconds == 0 &&
 		pc.Auth == "" &&
 		pc.AccountID == "" &&
+		pc.AuthFile == "" &&
 		pc.API == "" &&
 		pc.APIKey == "" &&
 		pc.BaseURL == "" &&
@@ -880,6 +898,7 @@ func redactModelProviderMessage(message string, cfg bootstrap.Config, pc bootstr
 	}
 	secrets := []string{
 		strings.TrimSpace(pc.APIKey),
+		strings.TrimSpace(pc.AuthFile),
 		strings.TrimSpace(cfg.Proxy),
 	}
 	for _, secret := range secrets {
@@ -1029,6 +1048,27 @@ func (s *Server) handleProjectGrokLoginStatus(w http.ResponseWriter, r *http.Req
 	})
 }
 
+func (s *Server) handleProjectCodexAuthStatus(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authFile, err := codexAuthFileFromStatusRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	_, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": manifest,
+		"status":  codexauth.GetStatus(authFile),
+	})
+}
+
 func (s *Server) handleGrokLogin(w http.ResponseWriter, r *http.Request) {
 	action := strings.TrimPrefix(r.URL.Path, "/api/models/grok-login/")
 	switch action {
@@ -1117,6 +1157,33 @@ func (s *Server) handleGrokLoginStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": grokauth.GetStatus(defaultGrokAccountID(accountID)),
 	})
+}
+
+func (s *Server) handleCodexAuthStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	authFile, err := codexAuthFileFromStatusRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": codexauth.GetStatus(authFile),
+	})
+}
+
+func codexAuthFileFromStatusRequest(r *http.Request) (string, error) {
+	authFile := ""
+	if r.Method == http.MethodPost {
+		var req codexAuthStatusRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			return "", err
+		}
+		authFile = req.AuthFile
+	}
+	return strings.TrimSpace(authFile), nil
 }
 
 func addGrokBrowserOpenResult(response map[string]any, authorizeURL string, openBrowser bool) {

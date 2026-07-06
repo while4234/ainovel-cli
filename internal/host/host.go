@@ -1996,10 +1996,19 @@ func mergeEditedProviderConfig(existing, incoming bootstrap.ProviderConfig, mode
 	merged.Type = strings.TrimSpace(incoming.Type)
 	merged.Auth = strings.TrimSpace(incoming.Auth)
 	merged.AccountID = strings.TrimSpace(incoming.AccountID)
+	authFile := strings.TrimSpace(incoming.AuthFile)
+	if merged.UsesCodexAuth() && authFile == "" && existing.UsesCodexAuth() {
+		merged.AuthFile = strings.TrimSpace(existing.AuthFile)
+	} else {
+		merged.AuthFile = authFile
+	}
 	merged.API = strings.TrimSpace(incoming.API)
 	merged.BaseURL = strings.TrimSpace(incoming.BaseURL)
-	if merged.UsesGrokOAuth() {
+	if merged.UsesGrokOAuth() || merged.UsesCodexAuth() {
 		merged.API = ""
+		if merged.UsesCodexAuth() {
+			merged.API = "responses"
+		}
 		merged.APIKey = ""
 	} else if apiKey != "" {
 		merged.APIKey = apiKey
@@ -2009,8 +2018,12 @@ func mergeEditedProviderConfig(existing, incoming bootstrap.ProviderConfig, mode
 }
 
 func normalizeProviderConfigForSave(pc bootstrap.ProviderConfig) bootstrap.ProviderConfig {
-	if pc.UsesGrokOAuth() {
+	pc.AuthFile = strings.TrimSpace(pc.AuthFile)
+	if pc.UsesGrokOAuth() || pc.UsesCodexAuth() {
 		pc.API = ""
+		if pc.UsesCodexAuth() {
+			pc.API = "responses"
+		}
 		pc.APIKey = ""
 	}
 	return pc
@@ -2040,6 +2053,7 @@ func configuredProviderModelRequiresProbe(cfg bootstrap.Config, update ProviderM
 	return strings.TrimSpace(existing.Type) != strings.TrimSpace(providerConfig.Type) ||
 		strings.TrimSpace(existing.Auth) != strings.TrimSpace(providerConfig.Auth) ||
 		strings.TrimSpace(existing.AccountID) != strings.TrimSpace(providerConfig.AccountID) ||
+		strings.TrimSpace(existing.AuthFile) != strings.TrimSpace(providerConfig.AuthFile) ||
 		strings.TrimSpace(existing.API) != strings.TrimSpace(providerConfig.API) ||
 		strings.TrimSpace(existing.BaseURL) != strings.TrimSpace(providerConfig.BaseURL)
 }
@@ -2311,6 +2325,7 @@ func providerConfigIsEmpty(pc bootstrap.ProviderConfig) bool {
 		pc.ConnectivityTimeoutSeconds == 0 &&
 		pc.Auth == "" &&
 		pc.AccountID == "" &&
+		pc.AuthFile == "" &&
 		pc.API == "" &&
 		pc.APIKey == "" &&
 		pc.BaseURL == "" &&
@@ -2630,6 +2645,7 @@ func providerConfigHasPrivateConfig(pc bootstrap.ProviderConfig) bool {
 	return pc.Type != "" ||
 		pc.Auth != "" ||
 		pc.AccountID != "" ||
+		pc.AuthFile != "" ||
 		pc.Disabled ||
 		pc.API != "" ||
 		pc.APIKey != "" ||
@@ -3016,6 +3032,10 @@ func (h *Host) adaptationProgressEmitter() adapt.ProgressEmitter {
 
 func (h *Host) ResolveAdaptationCoCreateDecision(decisionID, optionID, customAnswer string) (*domain.AdaptationCoCreateBriefing, error) {
 	return h.store.Adaptation.ResolveCoCreateBriefingDecision(decisionID, optionID, customAnswer)
+}
+
+func (h *Host) ResolveAdaptationCoCreateDecisions(decisions []domain.AdaptationResolvedDecision) (*domain.AdaptationCoCreateBriefing, error) {
+	return h.store.Adaptation.ResolveCoCreateBriefingDecisions(decisions)
 }
 
 // stagePlanPrefix 把共创产出的"后续方向 brief"包装成一条阶段规划干预，交 Coordinator 裁定。

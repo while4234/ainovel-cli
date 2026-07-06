@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/codexauth"
 	"github.com/voocel/ainovel-cli/internal/grokauth"
 	hostpkg "github.com/voocel/ainovel-cli/internal/host"
 )
@@ -238,6 +240,40 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	}
 	if saved.Provider != "grok-oauth" || saved.ModelName != "grok-4.3-latest" {
 		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
+	}
+}
+
+func TestGlobalModelAddCodexAuthProvider(t *testing.T) {
+	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
+		return nil
+	})
+	t.Cleanup(restore)
+
+	home := testTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	var added struct {
+		Models apiModelConfig `json:"models"`
+	}
+	body := `{"select_after_save":false,"provider":"codex-login","model":"gpt-5.5","label":"Codex","template_provider":"codex","type":"openai","auth":"codex","api":"responses","api_key":"should-not-save","base_url":"https://chatgpt.com/backend-api/codex","auth_file":"D:/codex/auth.json"}`
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", body, &added)
+	if !modelConfigHasProvider(added.Models, "codex-login", "gpt-5.5") {
+		t.Fatalf("models missing codex provider: %+v", added.Models.Providers)
+	}
+	provider := findModelProvider(added.Models.Providers, "codex-login")
+	if provider.APIKeyConfigured || !provider.AuthFileConfigured {
+		t.Fatalf("codex provider response = %+v", provider)
+	}
+	pc := server.currentConfig().Providers["codex-login"]
+	if pc.Type != "openai" || pc.Auth != bootstrap.ProviderAuthCodex || pc.API != "responses" {
+		t.Fatalf("codex provider config = %+v", pc)
+	}
+	if pc.APIKey != "" || pc.AuthFile != "D:/codex/auth.json" {
+		t.Fatalf("codex auth should persist auth_file but not api_key: %+v", pc)
 	}
 }
 
@@ -762,6 +798,36 @@ func TestProjectModelAddGrokOAuthPassesProviderConfig(t *testing.T) {
 	}
 }
 
+func TestProjectModelAddCodexAuthPassesProviderConfig(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Codex Auth Model Add")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/models/add", bytes.NewBufferString(`{"role":"writer","provider":"codex-login","type":"openai","auth":"codex","model":"gpt-5.5","api":"chat","api_key":"should-not-forward","base_url":"","auth_file":"D:/codex/auth.json"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("model add status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.configureProviderName != "codex-login" || fake.configureProviderModel != "gpt-5.5" {
+		t.Fatalf("codex add args provider=%q model=%q", fake.configureProviderName, fake.configureProviderModel)
+	}
+	if fake.configureProviderConfig.Type != "openai" || fake.configureProviderConfig.Auth != bootstrap.ProviderAuthCodex {
+		t.Fatalf("codex provider config = %+v", fake.configureProviderConfig)
+	}
+	if fake.configureProviderConfig.API != "responses" || fake.configureProviderConfig.APIKey != "" {
+		t.Fatalf("codex auth config should force responses and clear api key: %+v", fake.configureProviderConfig)
+	}
+	if fake.configureProviderConfig.BaseURL != codexauth.DefaultBaseURL || fake.configureProviderConfig.AuthFile != "D:/codex/auth.json" {
+		t.Fatalf("codex auth base/auth file = %+v", fake.configureProviderConfig)
+	}
+}
+
 func TestProjectGrokLoginEndpointsUseHostFlow(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
@@ -895,6 +961,36 @@ func TestGrokLoginStartCanRunWithoutProject(t *testing.T) {
 	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/grok-login/start", `{"account_id":"work","account_name":"Work","open_browser":true}`, &start)
 	if openedURL != "https://auth.x.ai/authorize" || !start.BrowserOpened {
 		t.Fatalf("openedURL=%q browser_opened=%v", openedURL, start.BrowserOpened)
+	}
+}
+
+func TestCodexAuthStatusEndpointReadsExistingLogin(t *testing.T) {
+	authPath := filepath.Join(testTempDir(t), "auth.json")
+	data, err := json.Marshal(map[string]any{
+		"tokens": map[string]any{
+			"access_token": "codex-access-token",
+			"account_id":   "acct-test",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(authPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	var status struct {
+		Status codexauth.AuthStatus `json:"status"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/codex-auth/status", fmt.Sprintf(`{"auth_file":%q}`, authPath), &status)
+	if !status.Status.LoggedIn || status.Status.AccountID != "acct-test" || status.Status.AuthFileName != "auth.json" {
+		t.Fatalf("codex status = %+v", status.Status)
+	}
+	if strings.Contains(status.Status.Message, authPath) {
+		t.Fatalf("status message leaked auth path: %q", status.Status.Message)
 	}
 }
 

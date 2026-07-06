@@ -335,10 +335,14 @@ export function beginCoCreate(projectId, payload) {
   });
 }
 
-export function sendCoCreate(projectId, text, source = 'custom') {
+export function sendCoCreate(projectId, text, source = 'custom', options = {}) {
+  const payload = { text, source };
+  if (options.forceRebrief) {
+    payload.force_rebrief = true;
+  }
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/send`, {
     method: 'POST',
-    body: JSON.stringify({ text, source })
+    body: JSON.stringify(payload)
   });
 }
 
@@ -357,6 +361,13 @@ export function resolveCoCreateDecision(projectId, decisionId, optionId = '', cu
       option_id: optionId,
       custom_answer: customAnswer
     })
+  });
+}
+
+export function resolveCoCreateDecisions(projectId, decisions = []) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decisions })
   });
 }
 
@@ -564,6 +575,20 @@ export function getGrokLoginStatus(projectId, accountId) {
   return request(grokLoginPath(projectId, 'status'), {
     method: 'POST',
     body: JSON.stringify({ account_id: accountId })
+  });
+}
+
+function codexAuthStatusPath(projectId) {
+  if (!projectId) {
+    return '/api/models/codex-auth/status';
+  }
+  return `/api/projects/${encodeURIComponent(projectId)}/models/codex-auth/status`;
+}
+
+export function getCodexAuthStatus(projectId, authFile = '') {
+  return request(codexAuthStatusPath(projectId), {
+    method: 'POST',
+    body: JSON.stringify({ auth_file: authFile })
   });
 }
 
