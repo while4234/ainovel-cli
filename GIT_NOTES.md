@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source change: current local commit
+  `59875ba` `fix: support compact source headings`:
+  The import splitter now recognizes compact Arabic-number headings such as
+  `第03章标题` / `正文 第03章标题` and bare Chinese section headings such as
+  `十一节 标题`, while keeping malformed source headings as source-data fixes
+  instead of parser behavior. Validation passed for
+  `go test ./internal/host/imp`. Local ignored novel outputs were regenerated:
+  `novel/split_packages` for `女主播的秘密.txt` reports 490 chapters, 86 packages,
+  max 14961 runes, oversize 0; `novel/split_packages_wulin` for
+  `武林高手在校园-墨武.txt` reports 451 chapters, 124 packages, max 14941 runes,
+  oversize 0.
 - Latest source/runtime change: current local commit
   `9209524` `fix: fail over missing-token providers`:
   Runtime auto-switch and explicit role fallbacks now classify provider
