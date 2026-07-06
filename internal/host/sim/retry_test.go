@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,41 @@ func TestStructuredJSONCallHonorsStructureRepairBudget(t *testing.T) {
 		if ev.Kind != structuredJSONRetryKindStructureRepair || ev.Attempt != i+1 || ev.MaxAttempts != 2 {
 			t.Fatalf("structure retry %d = %+v, want structure_repair %d/2", i+1, ev, i+1)
 		}
+	}
+}
+
+func TestStructuredJSONCallRetriesProviderGatewayErrors(t *testing.T) {
+	llm := &scriptedLLM{
+		responses: []string{"", `{"ok":true}`},
+		errors:    []error{fmt.Errorf("provider gateway error: 503 Service Unavailable"), nil},
+	}
+	var retries []structuredJSONRetryEvent
+
+	got, err := runStructuredJSONCall(context.Background(), llm, []agentcore.Message{agentcore.UserMsg("start")}, parseOKFlag, structuredJSONCallOptions{
+		ModelCallMaxAttempts:       3,
+		StructureRepairMaxAttempts: 1,
+		OnRetry: func(ev structuredJSONRetryEvent) {
+			retries = append(retries, ev)
+		},
+		Sleep: noStructuredJSONTestSleep,
+	})
+	if err != nil {
+		t.Fatalf("runStructuredJSONCall: %v", err)
+	}
+	if !got {
+		t.Fatal("parsed value = false, want true")
+	}
+	if calls := llm.calls.Load(); calls != 2 {
+		t.Fatalf("calls = %d, want retry after gateway error", calls)
+	}
+	if len(retries) != 1 {
+		t.Fatalf("retry events = %+v, want one model-call retry", retries)
+	}
+	if retries[0].Kind != structuredJSONRetryKindModelCall || retries[0].Attempt != 2 || retries[0].MaxAttempts != 3 {
+		t.Fatalf("retry event = %+v, want model_call 2/3", retries[0])
+	}
+	if !strings.Contains(formatStructuredJSONRetryMessage(retries[0]), "provider gateway error: 503 Service Unavailable") {
+		t.Fatalf("retry message did not include sanitized 503 detail: %q", formatStructuredJSONRetryMessage(retries[0]))
 	}
 }
 

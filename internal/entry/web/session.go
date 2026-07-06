@@ -49,7 +49,6 @@ const (
 	projectActionKindAdaptationRevision = "adaptation_proposal_revision"
 	projectActionKindSimulationAnalysis = "simulation_analysis"
 	projectActionKindSimulationImport   = "simulation_import"
-	webAdaptationProposalTimeout        = 15 * time.Minute
 	webCoCreateCheckpointRelPath        = "meta/sessions/web-cocreate-checkpoint.json"
 	webCoCreateLogRelPath               = "meta/sessions/cocreate.jsonl"
 )
@@ -819,9 +818,7 @@ func (s *ProjectSession) BuildAdaptationProposalContext(ctx context.Context, opt
 	}()
 
 	s.AppendSnapshot()
-	proposalCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
-	defer cancel()
-	proposal, err := s.buildAdaptationProposal(proposalCtx, options)
+	proposal, err := s.buildAdaptationProposal(actionCtx, options)
 	unlock()
 	finished = true
 	s.AppendSnapshot()
@@ -845,9 +842,7 @@ func (s *ProjectSession) BuildAdaptationProposalVolumesContext(ctx context.Conte
 	}()
 
 	s.AppendSnapshot()
-	proposalCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
-	defer cancel()
-	result, err := s.buildAdaptationProposalVolumes(proposalCtx, options)
+	result, err := s.buildAdaptationProposalVolumes(actionCtx, options)
 	unlock()
 	finished = true
 	s.AppendSnapshot()
@@ -896,7 +891,7 @@ func (s *ProjectSession) buildAdaptationProposalVolumes(ctx context.Context, opt
 func adaptationProposalRunError(err error) error {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("改编提案生成超过 %s 仍未完成，已自动停止；请缩小单次目标或重试分批提案: %w", webAdaptationProposalTimeout, err)
+		return fmt.Errorf("改编提案生成遇到上游或单次请求超时，已保留已完成的规划断点，可直接重试继续: %w", err)
 	case errors.Is(err, context.Canceled):
 		return fmt.Errorf("改编提案生成已取消: %w", err)
 	default:
@@ -918,11 +913,9 @@ func (s *ProjectSession) ReviseAdaptationProposalContext(ctx context.Context, op
 	}()
 
 	s.AppendSnapshot()
-	revisionCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
-	defer cancel()
 	eventID, startedAt := s.appendAdaptationProposalRevisionStarted(options)
 	options.EmitProgress = s.adaptationProposalProgressEmitter()
-	proposal, err := s.host.ReviseAdaptationProposalContext(revisionCtx, options)
+	proposal, err := s.host.ReviseAdaptationProposalContext(actionCtx, options)
 	unlock()
 	finished = true
 	s.AppendSnapshot()
@@ -949,11 +942,9 @@ func (s *ProjectSession) ReviseAdaptationVolumeReviewContext(ctx context.Context
 	}()
 
 	s.AppendSnapshot()
-	revisionCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
-	defer cancel()
 	eventID, startedAt := s.appendAdaptationProposalRevisionStarted(options)
 	options.EmitProgress = s.adaptationProposalProgressEmitter()
-	review, err := s.host.ReviseAdaptationVolumeReviewContext(revisionCtx, options)
+	review, err := s.host.ReviseAdaptationVolumeReviewContext(actionCtx, options)
 	unlock()
 	finished = true
 	s.AppendSnapshot()
@@ -980,10 +971,8 @@ func (s *ProjectSession) BuildAdaptationProposalDetailsContext(ctx context.Conte
 	}()
 
 	s.AppendSnapshot()
-	proposalCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
-	defer cancel()
 	eventID, startedAt := s.appendAdaptationProposalStarted(adapt.ProposalOptions{})
-	proposal, err := s.host.BuildAdaptationProposalDetailsContext(proposalCtx, adapt.ProposalDetailsOptions{
+	proposal, err := s.host.BuildAdaptationProposalDetailsContext(actionCtx, adapt.ProposalDetailsOptions{
 		EmitProgress: s.adaptationProposalProgressEmitter(),
 	})
 	unlock()
@@ -1001,7 +990,7 @@ func (s *ProjectSession) BuildAdaptationProposalDetailsContext(ctx context.Conte
 func adaptationProposalRevisionRunError(err error) error {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("改编提案修订超过 %s 仍未完成，已自动停止；请缩小章节范围后重试: %w", webAdaptationProposalTimeout, err)
+		return fmt.Errorf("改编提案修订遇到上游或单次请求超时，已保留已完成的修改进度，可直接重试继续: %w", err)
 	case errors.Is(err, context.Canceled):
 		return fmt.Errorf("改编提案修订已取消: %w", err)
 	default:
@@ -1349,9 +1338,7 @@ func (s *ProjectSession) commitAdaptCoCreate(ctx context.Context) (webCoCreateSt
 		s.saveCoCreateCheckpoint()
 	}
 
-	proposalCtx, cancel := context.WithTimeout(actionCtx, webAdaptationProposalTimeout)
-	defer cancel()
-	result, err := s.buildAdaptationProposalVolumes(proposalCtx, adapt.ProposalOptions{
+	result, err := s.buildAdaptationProposalVolumes(actionCtx, adapt.ProposalOptions{
 		Brief:         state.draftPrompt(),
 		SourcePath:    state.sourcePath,
 		Granularity:   state.adaptGranularity,
@@ -2482,7 +2469,7 @@ func (s *ProjectSession) consumeSimulationEvents(ctx context.Context, events <-c
 			apiEvent := apiSimulationEventFromSim(ev)
 			out = append(out, apiEvent)
 			s.appendSimulationEvent(apiEvent)
-			if ev.Err != nil {
+			if ev.Err != nil && ev.Stage == sim.StageError {
 				message := strings.TrimSpace(ev.Message)
 				if message == "" {
 					message = ev.Err.Error()
@@ -2561,8 +2548,10 @@ func (s *ProjectSession) consumeAdaptationEvents(ctx context.Context, events <-c
 
 func (s *ProjectSession) appendSimulationEvent(ev apiSimulationEvent) WebEvent {
 	level := "info"
-	if ev.Error != "" {
+	if ev.Error != "" && ev.Stage == string(sim.StageError) {
 		level = "error"
+	} else if ev.Error != "" {
+		level = "warn"
 	} else if ev.Stage == string(sim.StageDone) {
 		level = "success"
 	}

@@ -212,7 +212,11 @@ func formatStructuredJSONRetryMessage(ev structuredJSONRetryEvent) string {
 	case structuredJSONRetryKindStructureRepair:
 		label = "结构修复"
 	}
-	return fmt.Sprintf("%s %d/%d：%v", label, ev.Attempt, ev.MaxAttempts, ev.Err)
+	detail := retrypolicy.SanitizeProviderError(ev.Err)
+	if strings.TrimSpace(detail) == "" && ev.Err != nil {
+		detail = ev.Err.Error()
+	}
+	return fmt.Sprintf("%s %d/%d：%s", label, ev.Attempt, ev.MaxAttempts, detail)
 }
 
 func analyzeSourceWithOptions(ctx context.Context, llm LLMChat, systemPrompt string, source scannedSource, opts structuredJSONCallOptions) (*domain.SimulationSourceReport, error) {

@@ -96,7 +96,7 @@ func generateStructuredJSONResponse(ctx context.Context, llm LLMChat, messages [
 		if err == nil {
 			return resp, nil
 		}
-		if !agentcore.IsFailoverEligible(err) || attempt == maxAttempts {
+		if !shouldRetryStructuredJSONModelCall(ctx, err, attempt, maxAttempts) {
 			return nil, err
 		}
 		if opts.OnRetry != nil {
@@ -112,6 +112,29 @@ func generateStructuredJSONResponse(ctx context.Context, llm LLMChat, messages [
 		}
 	}
 	return nil, fmt.Errorf("structured JSON model call exhausted %d attempts", maxAttempts)
+}
+
+func shouldRetryStructuredJSONModelCall(ctx context.Context, err error, attempt, maxAttempts int) bool {
+	if err == nil || ctx.Err() != nil || attempt >= maxAttempts {
+		return false
+	}
+	if agentcore.IsFailoverEligible(err) {
+		return true
+	}
+	if retrypolicy.IsProviderGatewayError(err) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "nil response") ||
+		strings.Contains(msg, "empty response") ||
+		strings.Contains(msg, "system is busy") ||
+		strings.Contains(msg, "try again later") ||
+		strings.Contains(msg, "overloaded") ||
+		strings.Contains(msg, "temporarily unavailable") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "429") ||
+		strings.Contains(msg, "503")
 }
 
 func structuredJSONModelCallMaxAttempts(opts structuredJSONCallOptions) int {

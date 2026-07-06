@@ -28,6 +28,24 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: current local commit
+  `fix: stabilize planner and retry handling`:
+  Simulation profile source and merge structured calls now retry provider
+  gateway/transient failures such as 503 and show sanitized retry warning rows
+  in the Web event feed instead of treating non-terminal retry events as final
+  failures. Web adaptation proposal/revision flows no longer add a fixed
+  15-minute total deadline. Source-map adaptation skeleton normalization now
+  rejects conflicting `chapter_count`, non-advancing or broad overlapping
+  source ranges, and runaway local source-map expansion while preserving the
+  existing one-chapter boundary handoff behavior. Runtime skeleton checkpoints
+  now refresh `target_chapter_count` as skeleton batches are upserted, avoiding
+  misleading resume state. Validation passed for full `internal/host/adapt`,
+  full `internal/host/sim`, focused `internal/entry/web`, and `git diff
+  --check` with CRLF warnings only. Local Web was rebuilt/restarted on
+  `http://127.0.0.1:9898` as PID `59752`; the `术士手册` project's stale
+  proposal runtime/review artifacts were removed, briefing decisions were
+  restored as resolved using recommended options after restart, and a fresh
+  adaptation volume-planning request was started.
 - Latest source/runtime change: `0bff8c7`
   `fix: switch models on text rate limits`:
   Runtime fallback now treats bare provider rate-limit messages such as

@@ -2157,6 +2157,82 @@ func TestBuildAdaptationProposalVolumeSkeletonSumsSourceMapBatchCounts(t *testin
 	}
 }
 
+func TestNormalizePlannerSourceMapSkeletonBatchesRejectsOverlappingSourceRanges(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 6}
+	batches := []plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 1, 4, 1, 4),
+		testSourceMapSkeletonBatch(2, 3, 6, 5, 8),
+	}
+
+	_, err := normalizePlannerSourceMapSkeletonBatches(batches, entry)
+	if err == nil {
+		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject overlapping source ranges")
+	}
+	if !strings.Contains(err.Error(), "overlaps") {
+		t.Fatalf("error=%v, want overlap rejection", err)
+	}
+}
+
+func TestNormalizePlannerSourceMapSkeletonBatchesAllowsBoundarySourceHandoff(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 6}
+	batches := []plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 1, 3, 1, 3),
+		testSourceMapSkeletonBatch(2, 3, 6, 4, 7),
+	}
+
+	normalized, err := normalizePlannerSourceMapSkeletonBatches(batches, entry)
+	if err != nil {
+		t.Fatalf("normalizePlannerSourceMapSkeletonBatches should allow one-chapter boundary handoff: %v", err)
+	}
+	if len(normalized) != 2 {
+		t.Fatalf("normalized batches=%d, want 2", len(normalized))
+	}
+}
+
+func TestNormalizePlannerSourceMapSkeletonBatchesRejectsChapterCountConflict(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 3}
+	batch := testSourceMapSkeletonBatch(1, 1, 3, 1, 4)
+	batch.TargetChapterCount = 99
+
+	_, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{batch}, entry)
+	if err == nil {
+		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject chapter_count conflicts")
+	}
+	if !strings.Contains(err.Error(), "chapter_count conflicts") {
+		t.Fatalf("error=%v, want chapter_count conflict", err)
+	}
+}
+
+func TestNormalizePlannerSourceMapSkeletonBatchesRejectsRunawayExpansion(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 10, SourceTo: 16}
+	batch := testSourceMapSkeletonBatch(1, 10, 16, 1, 50)
+
+	_, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{batch}, entry)
+	if err == nil {
+		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject runaway target expansion")
+	}
+	if !strings.Contains(err.Error(), "expansion limit") {
+		t.Fatalf("error=%v, want expansion limit", err)
+	}
+}
+
+func TestUpsertPlannerProposalRuntimeSkeletonBatchesRefreshesTargetChapterCount(t *testing.T) {
+	runtime := &domain.AdaptationProposalRuntime{
+		TargetChapterCount: 1,
+		SkeletonBatches: []domain.AdaptationProposalRuntimeSkeletonBatch{
+			{Index: 1, TargetFrom: 1, TargetTo: 4, TargetChapterCount: 4, SourceFrom: 1, SourceTo: 2},
+		},
+	}
+	entry := plannerSourceMapEntry{Index: 2, SourceFrom: 3, SourceTo: 4}
+	batches := []plannerSkeletonBatch{testSourceMapSkeletonBatch(2, 3, 4, 5, 8)}
+
+	upsertPlannerProposalRuntimeSkeletonBatches(runtime, entry, batches)
+
+	if runtime.TargetChapterCount != 8 {
+		t.Fatalf("TargetChapterCount=%d, want 8", runtime.TargetChapterCount)
+	}
+}
+
 func TestBuildAdaptationProposalVolumeSkeletonUsesConfiguredRepairBudget(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -2589,6 +2665,20 @@ func plannerBatchProposalJSONWithOmittedBudget(from, to, sourceFrom, sourceTo in
 		"brief": "chunk",
 		"chapters": [%s]
 	}`, strings.Join(chapters, ","))
+}
+
+func testSourceMapSkeletonBatch(index, sourceFrom, sourceTo, targetFrom, targetTo int) plannerSkeletonBatch {
+	return plannerSkeletonBatch{
+		Index:              index,
+		Title:              fmt.Sprintf("Batch %d", index),
+		Theme:              "focused arc",
+		Summary:            "valid source-map skeleton batch",
+		TargetFrom:         targetFrom,
+		TargetTo:           targetTo,
+		TargetChapterCount: targetTo - targetFrom + 1,
+		SourceFrom:         sourceFrom,
+		SourceTo:           sourceTo,
+	}
 }
 
 func plannerVolumeRevisionSkeletonJSON(index, from, to, sourceFrom, sourceTo int) string {

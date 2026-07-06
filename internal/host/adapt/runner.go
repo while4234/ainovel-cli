@@ -30,6 +30,7 @@ const (
 	adaptationPlannerSkeletonMaxTokens      = 4096
 	adaptationPlannerChunkedMinChapters     = 18
 	adaptationPlannerRecommendedBatchMax    = 4
+	adaptationPlannerSourceMapExpansionMax  = 6
 	adaptationPlannerSourceChunkedMin       = adaptationPlannerRecommendedBatchMax * 2
 	adaptationPlannerTargetChapterMax       = 5000
 	adaptationPlannerRevisionBatchMax       = 8
@@ -2875,11 +2876,23 @@ func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, en
 			return nil, fmt.Errorf("batch %d source range %d-%d outside source-map range %d-%d", idx+1, batch.SourceFrom, batch.SourceTo, entry.SourceFrom, entry.SourceTo)
 		}
 		count := batch.TargetChapterCount
-		if count <= 0 && batch.TargetFrom > 0 && batch.TargetTo >= batch.TargetFrom {
-			count = batch.TargetTo - batch.TargetFrom + 1
+		rangeCount := 0
+		if batch.TargetFrom > 0 && batch.TargetTo >= batch.TargetFrom {
+			rangeCount = batch.TargetTo - batch.TargetFrom + 1
+			if count > 0 && count != rangeCount {
+				return nil, fmt.Errorf("batch %d chapter_count conflicts with target range", idx+1)
+			}
+			if count <= 0 {
+				count = rangeCount
+			}
 		}
 		if count <= 0 {
 			return nil, fmt.Errorf("batch %d chapter_count must be > 0", idx+1)
+		}
+		sourceSpan := batch.SourceTo - batch.SourceFrom + 1
+		maxCount := max(adaptationPlannerRecommendedBatchMax, sourceSpan*adaptationPlannerSourceMapExpansionMax)
+		if count > maxCount {
+			return nil, fmt.Errorf("batch %d target chapter count %d exceeds source-map expansion limit %d for source range %d-%d", idx+1, count, maxCount, batch.SourceFrom, batch.SourceTo)
 		}
 		batch.TargetChapterCount = count
 		out = append(out, batch)
@@ -2895,12 +2908,16 @@ func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, en
 	})
 	coveredTo := entry.SourceFrom - 1
 	for _, batch := range out {
+		if batch.SourceFrom < coveredTo {
+			return nil, fmt.Errorf("source-map range %d-%d overlaps at source chapter %d", entry.SourceFrom, entry.SourceTo, batch.SourceFrom)
+		}
 		if batch.SourceFrom > coveredTo+1 {
 			return nil, fmt.Errorf("source-map range %d-%d has gap before source chapter %d", entry.SourceFrom, entry.SourceTo, batch.SourceFrom)
 		}
-		if batch.SourceTo > coveredTo {
-			coveredTo = batch.SourceTo
+		if batch.SourceTo <= coveredTo {
+			return nil, fmt.Errorf("source-map range %d-%d does not advance past source chapter %d", entry.SourceFrom, entry.SourceTo, coveredTo)
 		}
+		coveredTo = batch.SourceTo
 	}
 	if coveredTo < entry.SourceTo {
 		return nil, fmt.Errorf("source-map range %d-%d ends coverage at %d", entry.SourceFrom, entry.SourceTo, coveredTo)
@@ -3336,6 +3353,17 @@ func upsertPlannerProposalRuntimeSkeletonBatches(runtime *domain.AdaptationPropo
 		return out[i].TargetFrom < out[j].TargetFrom
 	})
 	runtime.SkeletonBatches = out
+	runtime.TargetChapterCount = plannerRuntimeSkeletonTargetChapterCount(out)
+}
+
+func plannerRuntimeSkeletonTargetChapterCount(batches []domain.AdaptationProposalRuntimeSkeletonBatch) int {
+	total := 0
+	for _, batch := range batches {
+		if batch.TargetTo > total {
+			total = batch.TargetTo
+		}
+	}
+	return total
 }
 
 func upsertPlannerProposalRuntimeBatch(runtime *domain.AdaptationProposalRuntime, batch plannerSkeletonBatch, chapters []domain.AdaptationChapterPlan) {
@@ -4582,10 +4610,11 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 			"If target_chapter_hint_role is explicit_target_scale, honor that requested scale unless the source map and user changes make a different count necessary; explain the choice in batch summaries.",
 			"Use source_map ranges to preserve the full-book structure without requesting raw source_reports.",
 			"Each batch must include target_from, target_to, source_from, source_to, title, theme/goal, and summary.",
+			"If chapter_count is present, it must exactly equal target_to - target_from + 1.",
 			"target_from and target_to may be local integers for this source-map range; the host will renumber batches into full-book absolute target chapters.",
 			"Choose skeleton batches by coherent story arc, volume beat, or major plot movement; they do not need to match recommended_batch_max exactly.",
 			"The host will split oversized skeleton batches into detail calls of about recommended_batch_max target chapters.",
-			"The source ranges across returned batches must collectively cover every source chapter in the provided source_map entries.",
+			"The source ranges across returned batches must strictly partition the provided source_map range: cover every source chapter once, with no gaps and no overlaps.",
 		},
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")

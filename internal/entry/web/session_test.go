@@ -400,6 +400,35 @@ func TestProjectSessionBuildAdaptationProposalEmitsLifecycleEvent(t *testing.T) 
 	}
 }
 
+func TestProjectSessionSimulationRetryEventDoesNotFailRun(t *testing.T) {
+	session := newTestSessionWithHost("project-1", newFakeProjectHost())
+	events := make(chan sim.Event, 2)
+	events <- sim.Event{
+		Stage:   sim.StageAnalyze,
+		Current: 25,
+		Total:   47,
+		Message: "模型调用重试 2/7：provider gateway error: 503 Service Unavailable",
+		Err:     errors.New("provider gateway error: 503 Service Unavailable"),
+	}
+	events <- sim.Event{Stage: sim.StageDone, Current: 47, Total: 47, Message: "simulation complete"}
+	close(events)
+
+	out, err := session.consumeSimulationEvents(context.Background(), events)
+	if err != nil {
+		t.Fatalf("consumeSimulationEvents: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("events = %+v, want retry plus done", out)
+	}
+	retry := requireHostEventSummary(t, session.HistoryAfter(0), "模型调用重试 2/7：provider gateway error: 503 Service Unavailable")
+	if retry.Event.Level != "warn" || retry.Event.Kind != string(sim.StageAnalyze) {
+		t.Fatalf("retry event should be non-terminal warn: %+v", retry.Event)
+	}
+	if !strings.Contains(retry.Event.Detail, "503 Service Unavailable") {
+		t.Fatalf("retry detail = %q, want 503 detail", retry.Event.Detail)
+	}
+}
+
 func TestProjectSessionBuildAdaptationProposalAppendsProgressEvents(t *testing.T) {
 	host := newFakeProjectHost()
 	session := newTestSessionWithHost("project-1", host)
@@ -470,6 +499,23 @@ func TestProjectSessionBuildAdaptationProposalEmitsFailedLifecycleEvent(t *testi
 	history := session.HistoryAfter(0)
 	if len(history) == 0 || history[len(history)-1].Type != webEventTypeSnapshot {
 		t.Fatalf("failed proposal should publish a final snapshot event: %+v", history)
+	}
+}
+
+func TestProjectSessionBuildAdaptationProposalDoesNotAddTotalDeadline(t *testing.T) {
+	fake := newFakeProjectHost()
+	session := newTestSessionWithHost("project-1", fake)
+
+	_, err := session.BuildAdaptationProposalContext(context.Background(), adapt.ProposalOptions{
+		SourcePath:  "source.txt",
+		Granularity: "arc",
+		Brief:       "generate a long staged proposal",
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalContext: %v", err)
+	}
+	if fake.adaptProposalContextHadDeadline {
+		t.Fatal("proposal generation should not add a fixed total deadline")
 	}
 }
 
@@ -1135,113 +1181,114 @@ type fakeProjectHost struct {
 	blockAdaptProposal         bool
 	blockSimulate              bool
 
-	resumeCalls                 int
-	reviseChapterCalls          int
-	continueCalls               int
-	steerCalls                  int
-	simulateCalls               int
-	importCalls                 int
-	importNovelCalls            int
-	adaptAnalyzeCalls           int
-	adaptProposalCalls          int
-	adaptBriefingCalls          int
-	resolveAdaptDecisionCalls   int
-	adaptConfirmCalls           int
-	adaptStartCalls             int
-	exportCalls                 int
-	abortCalls                  int
-	prepareRulesCalls           int
-	prepareExternalRulesCalls   int
-	setWordBudgetCalls          int
-	startPreparedCalls          int
-	cocreateCalls               int
-	stageCoCreateCalls          int
-	adaptCoCreateCalls          int
-	pauseCoCreateCalls          int
-	resumeCoCreateCalls         int
-	cancelCoCreateCalls         int
-	closeCalls                  int
-	simulateDir                 string
-	importPath                  string
-	importNovelPath             string
-	importNovelResumeFrom       int
-	adaptAnalyzeStarted         chan struct{}
-	adaptAnalyzeBeforeDone      func(string)
-	adaptAnalyzePrefixEvents    []adapt.Event
-	adaptProposalStarted        chan struct{}
-	adaptBriefingStarted        chan struct{}
-	releaseAdaptBriefing        chan struct{}
-	simulateStarted             chan struct{}
-	releaseSimulate             chan struct{}
-	adaptSourcePath             string
-	adaptProposalOptions        adapt.ProposalOptions
-	adaptRevisionOptions        adapt.ProposalRevisionOptions
-	adaptProposal               *domain.AdaptationPlan
-	adaptBriefing               *domain.AdaptationCoCreateBriefing
-	lastAdaptBriefingSource     string
-	lastAdaptBriefingIntent     domain.AdaptationCoCreateIntent
-	adaptRevisionProposal       *domain.AdaptationPlan
-	adaptConfirmedPlan          *domain.AdaptationPlan
-	adaptOptions                adapt.ProposalOptions
-	exportOptions               exp.Options
-	addProviderRole             string
-	configureProviderRole       string
-	configureOriginalProvider   string
-	addProviderName             string
-	configureProviderName       string
-	addProviderConfig           bootstrap.ProviderConfig
-	configureProviderConfig     bootstrap.ProviderConfig
-	addProviderModel            string
-	configureProviderModel      string
-	configureNetworkAttempts    int
-	configureAutoSwitchPool     bool
-	removeProviderName          string
-	removeProviderModel         string
-	switchRole                  string
-	switchProvider              string
-	switchModel                 string
-	grokStartAccountID          string
-	grokStartAccountName        string
-	grokCompleteCallback        string
-	grokStatusAccountID         string
-	preparedRulesPrompt         string
-	preparedExternalRulesPrompt string
-	wordBudget                  *domain.WordBudget
-	startPreparedPrompt         string
-	reviseChapterRequest        host.ChapterRevisionRequest
-	reviseChapterResult         host.ChapterRevisionResult
-	resumeCoCreateDraft         string
-	lastCoCreateHistory         []host.CoCreateMessage
-	adaptCoCreateHistories      [][]host.CoCreateMessage
-	cocreateReply               host.CoCreateReply
-	stageCoCreateReply          host.CoCreateReply
-	adaptCoCreateReply          host.CoCreateReply
-	cocreateReplies             []host.CoCreateReply
-	stageCoCreateReplies        []host.CoCreateReply
-	adaptCoCreateReplies        []host.CoCreateReply
-	cocreateProgress            []coCreateProgressStep
-	pauseCoCreateOK             bool
-	abortOK                     bool
-	exportResult                *exp.Result
-	addProviderErr              error
-	removeProviderErr           error
-	setCoCreateTimeoutErr       error
-	setCoCreateMaxTokensErr     error
-	setRetrySettingsErr         error
-	switchCalls                 int
-	removeProviderCalls         int
-	setCoCreateTimeoutCalls     int
-	setCoCreateMaxTokensCalls   int
-	setRetrySettingsCalls       int
-	coCreateTimeoutSeconds      int
-	coCreateMaxTokens           int
-	modelCallMaxAttempts        int
-	structureRepairMaxAttempts  int
-	grokLoginStart              grokauth.LoginStart
-	grokLoginPoll               grokauth.LoginPoll
-	grokCompleteStatus          grokauth.AuthStatus
-	grokStatus                  grokauth.AuthStatus
-	adaptRevisionCalls          int
+	resumeCalls                     int
+	reviseChapterCalls              int
+	continueCalls                   int
+	steerCalls                      int
+	simulateCalls                   int
+	importCalls                     int
+	importNovelCalls                int
+	adaptAnalyzeCalls               int
+	adaptProposalCalls              int
+	adaptBriefingCalls              int
+	resolveAdaptDecisionCalls       int
+	adaptConfirmCalls               int
+	adaptStartCalls                 int
+	exportCalls                     int
+	abortCalls                      int
+	prepareRulesCalls               int
+	prepareExternalRulesCalls       int
+	setWordBudgetCalls              int
+	startPreparedCalls              int
+	cocreateCalls                   int
+	stageCoCreateCalls              int
+	adaptCoCreateCalls              int
+	pauseCoCreateCalls              int
+	resumeCoCreateCalls             int
+	cancelCoCreateCalls             int
+	closeCalls                      int
+	simulateDir                     string
+	importPath                      string
+	importNovelPath                 string
+	importNovelResumeFrom           int
+	adaptAnalyzeStarted             chan struct{}
+	adaptAnalyzeBeforeDone          func(string)
+	adaptAnalyzePrefixEvents        []adapt.Event
+	adaptProposalStarted            chan struct{}
+	adaptProposalContextHadDeadline bool
+	adaptBriefingStarted            chan struct{}
+	releaseAdaptBriefing            chan struct{}
+	simulateStarted                 chan struct{}
+	releaseSimulate                 chan struct{}
+	adaptSourcePath                 string
+	adaptProposalOptions            adapt.ProposalOptions
+	adaptRevisionOptions            adapt.ProposalRevisionOptions
+	adaptProposal                   *domain.AdaptationPlan
+	adaptBriefing                   *domain.AdaptationCoCreateBriefing
+	lastAdaptBriefingSource         string
+	lastAdaptBriefingIntent         domain.AdaptationCoCreateIntent
+	adaptRevisionProposal           *domain.AdaptationPlan
+	adaptConfirmedPlan              *domain.AdaptationPlan
+	adaptOptions                    adapt.ProposalOptions
+	exportOptions                   exp.Options
+	addProviderRole                 string
+	configureProviderRole           string
+	configureOriginalProvider       string
+	addProviderName                 string
+	configureProviderName           string
+	addProviderConfig               bootstrap.ProviderConfig
+	configureProviderConfig         bootstrap.ProviderConfig
+	addProviderModel                string
+	configureProviderModel          string
+	configureNetworkAttempts        int
+	configureAutoSwitchPool         bool
+	removeProviderName              string
+	removeProviderModel             string
+	switchRole                      string
+	switchProvider                  string
+	switchModel                     string
+	grokStartAccountID              string
+	grokStartAccountName            string
+	grokCompleteCallback            string
+	grokStatusAccountID             string
+	preparedRulesPrompt             string
+	preparedExternalRulesPrompt     string
+	wordBudget                      *domain.WordBudget
+	startPreparedPrompt             string
+	reviseChapterRequest            host.ChapterRevisionRequest
+	reviseChapterResult             host.ChapterRevisionResult
+	resumeCoCreateDraft             string
+	lastCoCreateHistory             []host.CoCreateMessage
+	adaptCoCreateHistories          [][]host.CoCreateMessage
+	cocreateReply                   host.CoCreateReply
+	stageCoCreateReply              host.CoCreateReply
+	adaptCoCreateReply              host.CoCreateReply
+	cocreateReplies                 []host.CoCreateReply
+	stageCoCreateReplies            []host.CoCreateReply
+	adaptCoCreateReplies            []host.CoCreateReply
+	cocreateProgress                []coCreateProgressStep
+	pauseCoCreateOK                 bool
+	abortOK                         bool
+	exportResult                    *exp.Result
+	addProviderErr                  error
+	removeProviderErr               error
+	setCoCreateTimeoutErr           error
+	setCoCreateMaxTokensErr         error
+	setRetrySettingsErr             error
+	switchCalls                     int
+	removeProviderCalls             int
+	setCoCreateTimeoutCalls         int
+	setCoCreateMaxTokensCalls       int
+	setRetrySettingsCalls           int
+	coCreateTimeoutSeconds          int
+	coCreateMaxTokens               int
+	modelCallMaxAttempts            int
+	structureRepairMaxAttempts      int
+	grokLoginStart                  grokauth.LoginStart
+	grokLoginPoll                   grokauth.LoginPoll
+	grokCompleteStatus              grokauth.AuthStatus
+	grokStatus                      grokauth.AuthStatus
+	adaptRevisionCalls              int
 
 	events    chan host.Event
 	stream    chan string
@@ -1626,6 +1673,7 @@ func (f *fakeProjectHost) BuildAdaptationProposalContext(ctx context.Context, op
 	f.mu.Lock()
 	f.adaptProposalCalls++
 	f.adaptProposalOptions = options
+	_, f.adaptProposalContextHadDeadline = ctx.Deadline()
 	err := f.adaptProposalErr
 	proposal := f.adaptProposal
 	emit := options.EmitProgress
