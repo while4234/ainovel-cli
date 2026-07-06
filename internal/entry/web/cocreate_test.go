@@ -1192,6 +1192,61 @@ func TestProjectAdaptCoCreateBeginWaitsForBriefingDecision(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptCoCreateBeginDoesNotExposeRecoverableCheckpointAsFailure(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Briefing In Progress")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
+	fake.adaptBriefing = testPendingAdaptBriefing()
+	fake.adaptBriefingStarted = make(chan struct{})
+	fake.releaseAdaptBriefing = make(chan struct{})
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"strict single heroine, remove side romance"}`))
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		done <- rec
+	}()
+
+	<-fake.adaptBriefingStarted
+	session, _, err := server.sessions.Open(manifest.ID)
+	if err != nil {
+		t.Fatalf("Open session: %v", err)
+	}
+	state := session.CoCreateState()
+	if state == nil || !state.Active || state.Failed {
+		t.Fatalf("in-progress co-create state = %+v, want active without failed", state)
+	}
+	if state.Briefing != nil {
+		t.Fatalf("in-progress co-create briefing = %+v, want nil until briefing completes", state.Briefing)
+	}
+
+	var checkpoint webCoCreateCheckpoint
+	checkpointPath := filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))
+	data, err := os.ReadFile(checkpointPath)
+	if err != nil {
+		t.Fatalf("read checkpoint: %v", err)
+	}
+	if err := json.Unmarshal(data, &checkpoint); err != nil {
+		t.Fatalf("decode checkpoint: %v", err)
+	}
+	if !checkpoint.Failed {
+		t.Fatalf("checkpoint should stay crash-resumable while briefing is in progress: %+v", checkpoint)
+	}
+
+	close(fake.releaseAdaptBriefing)
+	rec := <-done
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestProjectAdaptCoCreateSendUsesAIWithoutRefreshingBriefing(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

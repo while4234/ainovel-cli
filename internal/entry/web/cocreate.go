@@ -507,6 +507,13 @@ func (s *webCoCreateSession) checkpoint(now time.Time) webCoCreateCheckpoint {
 	if s == nil {
 		return webCoCreateCheckpoint{}
 	}
+	return s.checkpointWithFailed(now, s.failed)
+}
+
+func (s *webCoCreateSession) checkpointWithFailed(now time.Time, failed bool) webCoCreateCheckpoint {
+	if s == nil {
+		return webCoCreateCheckpoint{}
+	}
 	messages := make([]webCoCreateMessageCheckpoint, 0, len(s.messages))
 	for _, message := range s.messages {
 		messages = append(messages, webCoCreateMessageCheckpoint{
@@ -525,7 +532,7 @@ func (s *webCoCreateSession) checkpoint(now time.Time) webCoCreateCheckpoint {
 		Session:                s.session.Snapshot(),
 		Messages:               messages,
 		NextMessageSeq:         s.nextMessageSeq,
-		Failed:                 s.failed,
+		Failed:                 failed,
 		SourceFile:             s.sourceFile,
 		SourcePath:             s.sourcePath,
 		AdaptGranularity:       s.adaptGranularity,

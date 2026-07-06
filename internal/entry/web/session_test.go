@@ -1102,6 +1102,8 @@ type fakeProjectHost struct {
 	adaptAnalyzeBeforeDone      func(string)
 	adaptAnalyzePrefixEvents    []adapt.Event
 	adaptProposalStarted        chan struct{}
+	adaptBriefingStarted        chan struct{}
+	releaseAdaptBriefing        chan struct{}
 	simulateStarted             chan struct{}
 	releaseSimulate             chan struct{}
 	adaptSourcePath             string
@@ -1348,10 +1350,25 @@ func (f *fakeProjectHost) AdaptCoCreateStream(_ context.Context, history []host.
 
 func (f *fakeProjectHost) EnsureAdaptationCoCreateBriefing(_ context.Context, sourcePath string, intent domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.adaptBriefingCalls++
 	f.lastAdaptBriefingSource = sourcePath
 	f.lastAdaptBriefingIntent = intent
+	started := f.adaptBriefingStarted
+	release := f.releaseAdaptBriefing
+	if started != nil {
+		f.adaptBriefingStarted = nil
+	}
+	f.mu.Unlock()
+
+	if started != nil {
+		close(started)
+	}
+	if release != nil {
+		<-release
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.adaptBriefing != nil {
 		briefing := *f.adaptBriefing
 		briefing.IntentHash = intent.IntentHash

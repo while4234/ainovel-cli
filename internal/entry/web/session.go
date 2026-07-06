@@ -1079,9 +1079,8 @@ func (s *ProjectSession) BeginAdaptCoCreate(ctx context.Context, req webCoCreate
 	if err != nil {
 		return webCoCreateState{}, err
 	}
-	state.failed = true
 	s.cocreate = state
-	s.saveCoCreateCheckpoint()
+	s.saveRecoverableCoCreateCheckpoint()
 	if err := s.ensureAdaptCoCreateBriefingLocked(ctx, false); err != nil {
 		return s.cocreate.apiState(), err
 	}
@@ -1632,7 +1631,20 @@ func (s *ProjectSession) saveCoCreateCheckpoint() {
 	}
 }
 
+func (s *ProjectSession) saveRecoverableCoCreateCheckpoint() {
+	if err := s.writeCoCreateCheckpointWithFailed(true); err != nil {
+		slog.Warn("save recoverable co-create checkpoint failed", "module", "web", "project", s.projectID(), "err", err)
+	}
+}
+
 func (s *ProjectSession) writeCoCreateCheckpoint() error {
+	if s.cocreate == nil {
+		return nil
+	}
+	return s.writeCoCreateCheckpointWithFailed(s.cocreate.failed)
+}
+
+func (s *ProjectSession) writeCoCreateCheckpointWithFailed(failed bool) error {
 	if s.cocreate == nil {
 		return nil
 	}
@@ -1640,7 +1652,7 @@ func (s *ProjectSession) writeCoCreateCheckpoint() error {
 	if path == "" {
 		return nil
 	}
-	data, err := json.MarshalIndent(s.cocreate.checkpoint(time.Now()), "", "  ")
+	data, err := json.MarshalIndent(s.cocreate.checkpointWithFailed(time.Now(), failed), "", "  ")
 	if err != nil {
 		return err
 	}
