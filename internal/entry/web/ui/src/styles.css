@@ -1060,7 +1060,9 @@ h2 {
   gap: 14px;
   overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 14px;
+  scrollbar-gutter: stable;
 }
 
 .metric-grid,
@@ -1572,6 +1574,7 @@ h2 {
 
 .target-option {
   display: grid;
+  position: relative;
   min-width: 0;
   min-height: 46px;
   align-content: center;
@@ -1584,10 +1587,13 @@ h2 {
   color: #40505c;
   font-size: 12px;
   font-weight: 800;
+  overflow: hidden;
 }
 
 .target-option input {
   position: absolute;
+  inset: 0;
+  margin: 0;
   opacity: 0;
   pointer-events: none;
 }
@@ -1699,6 +1705,7 @@ h2 {
 
 .adapt-mode {
   display: inline-flex;
+  position: relative;
   align-items: center;
   justify-content: center;
   min-height: 34px;
@@ -1708,10 +1715,13 @@ h2 {
   color: #40505c;
   font-size: 13px;
   font-weight: 800;
+  overflow: hidden;
 }
 
 .adapt-mode input {
   position: absolute;
+  inset: 0;
+  margin: 0;
   opacity: 0;
   pointer-events: none;
 }
@@ -2752,6 +2762,60 @@ h2 {
   min-height: 38px;
   padding: 10px;
   line-height: 1.4;
+}
+
+@media (max-height: 900px) and (min-width: 981px) {
+  .writing-pane {
+    gap: 10px;
+    padding: 14px;
+  }
+
+  .workspace-toolbar {
+    min-height: 44px;
+  }
+
+  .workspace-progress {
+    gap: 6px;
+    padding: 7px 9px;
+  }
+
+  .workbench-stack {
+    grid-template-rows: minmax(0, 1fr) minmax(112px, 24%);
+    gap: 10px;
+  }
+
+  .event-row {
+    min-height: 30px;
+  }
+
+  .composer {
+    min-height: 50px;
+    padding: 6px;
+  }
+
+  .side-tabs {
+    gap: 3px;
+    padding: 8px 6px;
+  }
+
+  .side-tabs button {
+    min-height: 42px;
+  }
+
+  .side-content {
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .steer-form textarea,
+  .adapt-brief,
+  .cocreate-form textarea {
+    min-height: 72px;
+  }
+
+  .proposal-chapter-list {
+    max-height: min(300px, 34vh);
+  }
 }
 
 @media (max-width: 1180px) {

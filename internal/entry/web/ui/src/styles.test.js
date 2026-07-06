@@ -26,6 +26,21 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.profile-status span\s*{[^}]*white-space:\s*nowrap;/s);
   });
 
+  it('anchors hidden choice inputs so focusing them cannot scroll the page', () => {
+    expect(css).toMatch(/\.target-option\s*{[^}]*position:\s*relative;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.target-option input\s*{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*margin:\s*0;/s);
+    expect(css).toMatch(/\.adapt-mode\s*{[^}]*position:\s*relative;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.adapt-mode input\s*{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*margin:\s*0;/s);
+    expect(css).toMatch(/\.side-content\s*{[^}]*overscroll-behavior:\s*contain;[^}]*scrollbar-gutter:\s*stable;/s);
+  });
+
+  it('uses a more compact desktop layout on short viewports', () => {
+    expect(css).toMatch(/@media \(max-height:\s*900px\) and \(min-width:\s*981px\)\s*{/);
+    expect(css).toMatch(/@media \(max-height:\s*900px\) and \(min-width:\s*981px\)\s*{[\s\S]*?\.workbench-stack\s*{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s*minmax\(112px,\s*24%\);/);
+    expect(css).toMatch(/@media \(max-height:\s*900px\) and \(min-width:\s*981px\)\s*{[\s\S]*?\.side-tabs button\s*{[^}]*min-height:\s*42px;/);
+    expect(css).toMatch(/@media \(max-height:\s*900px\) and \(min-width:\s*981px\)\s*{[\s\S]*?\.adapt-brief,[\s\S]*?min-height:\s*72px;/);
+  });
+
   it('keeps long co-create drafts from pushing action buttons away', () => {
     expect(css).toMatch(/\.draft-preview\s*{[^}]*overflow:\s*visible;/s);
     expect(css).not.toMatch(/(?:^|\n)\.draft-preview\s*{[^}]*max-height:/s);
