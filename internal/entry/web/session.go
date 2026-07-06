@@ -1158,9 +1158,6 @@ func (s *ProjectSession) SendCoCreate(ctx context.Context, req webCoCreateSendRe
 		s.appendCoCreateState(api)
 		return api, nil
 	}
-	if s.cocreate.canMergeAdaptDraftIncrement(req.ForceRebrief) {
-		return s.mergeAdaptCoCreateDraftIncrementLocked(req.Text)
-	}
 	return s.runCoCreateLocked(ctx)
 }
 
@@ -1216,36 +1213,7 @@ func (s *ProjectSession) ResolveCoCreateDecision(ctx context.Context, req webCoC
 		s.appendCoCreateState(api)
 		return api, nil
 	}
-	if s.cocreate.canMergeAdaptDraftIncrement(false) {
-		return s.mergeAdaptCoCreateDecisionsLocked()
-	}
-	return s.runCoCreateLocked(ctx)
-}
-
-func (s *ProjectSession) mergeAdaptCoCreateDraftIncrementLocked(text string) (webCoCreateState, error) {
-	if s.cocreate == nil {
-		return webCoCreateState{}, fmt.Errorf("co-create has not started")
-	}
-	draft := mergeAdaptDraftUserIncrement(s.cocreate.draftPrompt(), text)
-	s.cocreate.failed = false
-	s.cocreate.applyDeterministicAdaptDraft("已将补充方向增量合入 draft。", draft)
-	state := s.cocreate.apiState()
-	s.saveCoCreateCheckpoint()
-	s.appendCoCreateState(state)
-	return state, nil
-}
-
-func (s *ProjectSession) mergeAdaptCoCreateDecisionsLocked() (webCoCreateState, error) {
-	if s.cocreate == nil {
-		return webCoCreateState{}, fmt.Errorf("co-create has not started")
-	}
-	draft := mergeAdaptDraftResolvedDecisions(s.cocreate.draftPrompt(), s.cocreate.adaptationBriefing)
-	s.cocreate.failed = false
-	s.cocreate.applyDeterministicAdaptDraft("已将已确认选项合入 draft。", draft)
-	state := s.cocreate.apiState()
-	s.saveCoCreateCheckpoint()
-	s.appendCoCreateState(state)
-	return state, nil
+	return s.runAdaptDecisionDraftBatchesLocked(ctx)
 }
 
 func (s *ProjectSession) ResumeCoCreate(ctx context.Context) (webCoCreateState, error) {
@@ -2007,10 +1975,38 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 		reply = repairReply
 	}
 	s.cocreate.applyReply(reply)
+	if s.cocreate.kind == webCoCreateKindAdapt && s.cocreate.session != nil && s.cocreate.session.DraftFresh() {
+		s.cocreate.draftConsolidated = true
+	}
 	state := s.cocreate.apiState()
 	s.saveCoCreateCheckpoint()
 	s.appendCoCreateState(state)
 	s.appendCoCreateRunFinished(eventID, startedAt, state, nil)
+	return state, nil
+}
+
+func (s *ProjectSession) runAdaptDecisionDraftBatchesLocked(ctx context.Context) (webCoCreateState, error) {
+	if s.cocreate == nil {
+		return webCoCreateState{}, fmt.Errorf("co-create has not started")
+	}
+	batches := adaptDecisionDraftBatches(s.cocreate.adaptationBriefing, adaptDecisionDraftBatchSize)
+	if len(batches) == 0 {
+		return s.runCoCreateLocked(ctx)
+	}
+	var state webCoCreateState
+	for idx, batch := range batches {
+		s.appendCoCreateDecisionDraftBatchStarted(idx+1, len(batches))
+		instruction := adaptDecisionDraftBatchInstruction(idx+1, len(batches), batch, strings.TrimSpace(s.cocreate.draftPrompt()) != "")
+		if err := s.cocreate.appendInternalUser(instruction); err != nil {
+			return s.cocreate.apiState(), err
+		}
+		s.saveCoCreateCheckpoint()
+		next, err := s.runCoCreateLocked(ctx)
+		state = next
+		if err != nil {
+			return state, err
+		}
+	}
 	return state, nil
 }
 
@@ -2768,6 +2764,20 @@ func (s *ProjectSession) appendCoCreateRunStarted(kind string) (string, time.Tim
 		Level:    "info",
 	})
 	return eventID, startedAt
+}
+
+func (s *ProjectSession) appendCoCreateDecisionDraftBatchStarted(index, total int) WebEvent {
+	startedAt := time.Now().UTC()
+	return s.appendHostEvent(host.Event{
+		ID:       fmt.Sprintf("cocreate-adapt-draft-batch-%d-%d", index, startedAt.UnixNano()),
+		Time:     startedAt,
+		Category: "COCREATE",
+		Agent:    "web",
+		Summary:  fmt.Sprintf("改编共创：正在分批生成首次 draft（第 %d/%d 批）", index, total),
+		Detail:   fmt.Sprintf("confirmed_decision_batch=%d/%d", index, total),
+		Kind:     webCoCreateKindAdapt,
+		Level:    "info",
+	})
 }
 
 func (s *ProjectSession) appendCoCreateBriefingStarted() (string, time.Time) {

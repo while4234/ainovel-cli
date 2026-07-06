@@ -24,6 +24,8 @@ const (
 	webCoCreateKindAdapt  = "adapt"
 
 	webCoCreateCheckpointVersion = 1
+	adaptDecisionDraftBatchSize  = 4
+	adaptDecisionDraftMarker     = "Internal adaptation decision draft batch"
 
 	stageCoCreateOpener     = "我先暂停一下，想和你一起规划接下来的走向。"
 	stageCoCreateSystemLine = "已暂停创作，进入阶段共创。AI 会结合当前故事进度，和你一起规划接下来的走向。"
@@ -788,6 +790,9 @@ func webCoCreateMessagesFromLog(kind string, history []host.CoCreateMessage, ass
 }
 
 func coCreateLogMessageHidden(kind string, index int, message host.CoCreateMessage) bool {
+	if message.Role == "user" && kind == webCoCreateKindAdapt && strings.Contains(message.Content, adaptDecisionDraftMarker) {
+		return true
+	}
 	if index != 0 || message.Role != "user" {
 		return false
 	}
@@ -827,6 +832,16 @@ func (s *webCoCreateSession) appendUser(text, source string) error {
 	return nil
 }
 
+func (s *webCoCreateSession) appendInternalUser(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("text is required")
+	}
+	s.session.AppendUser(text)
+	s.draftConsolidated = false
+	return nil
+}
+
 func (s *webCoCreateSession) applyReply(reply host.CoCreateReply) {
 	historyIndex := len(s.session.History())
 	s.session.ApplyReply(reply)
@@ -834,29 +849,6 @@ func (s *webCoCreateSession) applyReply(reply host.CoCreateReply) {
 	if text := strings.TrimSpace(reply.Message); text != "" {
 		s.messages = append(s.messages, s.newMessage("assistant", text, "", historyIndex))
 	}
-}
-
-func (s *webCoCreateSession) applyDeterministicAdaptDraft(message string, draft string) {
-	if s == nil || s.session == nil {
-		return
-	}
-	message = strings.TrimSpace(message)
-	draft = strings.TrimSpace(draft)
-	raw := strings.Join([]string{
-		"<reply>" + message + "</reply>",
-		"<draft>",
-		draft,
-		"</draft>",
-		"<ready>true</ready>",
-		"<suggestions></suggestions>",
-	}, "\n")
-	s.applyReply(host.CoCreateReply{
-		Message: message,
-		Prompt:  draft,
-		Ready:   true,
-		Raw:     raw,
-	})
-	s.draftConsolidated = true
 }
 
 func (s *webCoCreateSession) rollbackDraftAfterRejectedReply(reply host.CoCreateReply) {
@@ -917,15 +909,6 @@ func (s *webCoCreateSession) shouldConsolidateDraftBeforeCommit() bool {
 		return false
 	}
 	return coCreatePlanningUserMessageCount(s.kind, s.session.History()) > 1
-}
-
-func (s *webCoCreateSession) canMergeAdaptDraftIncrement(forceRebrief bool) bool {
-	return s != nil &&
-		s.kind == webCoCreateKindAdapt &&
-		!forceRebrief &&
-		s.session != nil &&
-		!s.hasPendingBriefingDecisions() &&
-		strings.TrimSpace(s.draftPrompt()) != ""
 }
 
 func coCreatePlanningUserMessageCount(kind string, history []host.CoCreateMessage) int {
@@ -1414,6 +1397,55 @@ func resolvedAdaptBriefingDecisionLines(briefing *domain.AdaptationCoCreateBrief
 	return lines
 }
 
+func adaptDecisionDraftBatches(briefing *domain.AdaptationCoCreateBriefing, batchSize int) [][]string {
+	lines := resolvedAdaptBriefingDecisionLines(briefing)
+	if len(lines) == 0 {
+		return nil
+	}
+	if batchSize <= 0 {
+		batchSize = adaptDecisionDraftBatchSize
+	}
+	batches := make([][]string, 0, (len(lines)+batchSize-1)/batchSize)
+	for start := 0; start < len(lines); start += batchSize {
+		end := start + batchSize
+		if end > len(lines) {
+			end = len(lines)
+		}
+		batches = append(batches, append([]string(nil), lines[start:end]...))
+	}
+	return batches
+}
+
+func adaptDecisionDraftBatchInstruction(index, total int, decisions []string, hasDraft bool) string {
+	if index <= 0 {
+		index = 1
+	}
+	if total <= 0 {
+		total = 1
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s %d/%d\n", adaptDecisionDraftMarker, index, total)
+	if hasDraft {
+		sb.WriteString("Update the existing <draft> by integrating only the confirmed decisions in this batch. Preserve all prior draft content unless this batch explicitly changes it.\n")
+	} else {
+		sb.WriteString("Create the initial adaptation <draft> from the mode contract, source briefing, and only the confirmed decisions in this batch.\n")
+	}
+	sb.WriteString("Return the normal four XML tags: <reply>, <draft>, <ready>, <suggestions>.\n")
+	sb.WriteString("The <draft> must be complete and self-contained after this batch; never use placeholders such as same as above, 同上, 同前轮, 上一轮, or 见上.\n")
+	if index < total {
+		sb.WriteString("This is not the final decision batch. Mention that more confirmed decisions will be integrated next and set <ready>false</ready>.\n")
+	} else {
+		sb.WriteString("This is the final decision batch. After integrating it, set <ready>true</ready> if the draft can drive adaptation planning.\n")
+	}
+	sb.WriteString("\nConfirmed decisions in this batch:\n")
+	for _, decision := range decisions {
+		if decision = strings.TrimSpace(decision); decision != "" {
+			fmt.Fprintf(&sb, "- %s\n", decision)
+		}
+	}
+	return strings.TrimSpace(sb.String())
+}
+
 func (req webCoCreateDecisionRequest) resolvedDecisionItems() []domain.AdaptationResolvedDecision {
 	items := req.Decisions
 	if len(items) == 0 {
@@ -1426,72 +1458,6 @@ func (req webCoCreateDecisionRequest) resolvedDecisionItems() []domain.Adaptatio
 			OptionID:     strings.TrimSpace(item.OptionID),
 			CustomAnswer: strings.TrimSpace(item.CustomAnswer),
 		})
-	}
-	return out
-}
-
-func mergeAdaptDraftUserIncrement(draft string, text string) string {
-	return mergeAdaptDraftSection(draft, "## Incremental User Directions", []string{text})
-}
-
-func mergeAdaptDraftResolvedDecisions(draft string, briefing *domain.AdaptationCoCreateBriefing) string {
-	return mergeAdaptDraftSection(draft, "## Confirmed Co-create Decisions", resolvedAdaptBriefingDecisionLines(briefing))
-}
-
-func mergeAdaptDraftSection(draft string, heading string, items []string) string {
-	draft = strings.TrimSpace(draft)
-	heading = strings.TrimSpace(heading)
-	cleaned := normalizeAdaptDraftSectionItems(items)
-	if len(cleaned) == 0 {
-		return draft
-	}
-	if draft == "" {
-		draft = "# Adaptation Co-create Draft"
-	}
-	bullets := make([]string, 0, len(cleaned))
-	for _, item := range cleaned {
-		bullets = append(bullets, "- "+item)
-	}
-	idx := strings.Index(draft, heading)
-	if idx < 0 {
-		return strings.TrimSpace(draft) + "\n\n" + heading + "\n" + strings.Join(bullets, "\n")
-	}
-	sectionStart := idx + len(heading)
-	sectionTail := draft[sectionStart:]
-	nextHeading := strings.Index(sectionTail, "\n## ")
-	if nextHeading < 0 {
-		nextHeading = len(sectionTail)
-	}
-	existing := sectionTail[:nextHeading]
-	var additions []string
-	for _, bullet := range bullets {
-		if !strings.Contains(existing, bullet) {
-			additions = append(additions, bullet)
-		}
-	}
-	if len(additions) == 0 {
-		return draft
-	}
-	before := strings.TrimRight(draft[:sectionStart]+sectionTail[:nextHeading], "\n")
-	after := sectionTail[nextHeading:]
-	return before + "\n" + strings.Join(additions, "\n") + after
-}
-
-func normalizeAdaptDraftSectionItems(items []string) []string {
-	seen := make(map[string]struct{}, len(items))
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		item = strings.Join(strings.Fields(strings.TrimSpace(item)), " ")
-		if item == "" {
-			continue
-		}
-		item = clipWebRunes(item, 500)
-		key := strings.ToLower(item)
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, item)
 	}
 	return out
 }

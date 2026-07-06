@@ -1143,6 +1143,7 @@ type fakeProjectHost struct {
 	reviseChapterResult         host.ChapterRevisionResult
 	resumeCoCreateDraft         string
 	lastCoCreateHistory         []host.CoCreateMessage
+	adaptCoCreateHistories      [][]host.CoCreateMessage
 	cocreateReply               host.CoCreateReply
 	stageCoCreateReply          host.CoCreateReply
 	adaptCoCreateReply          host.CoCreateReply
@@ -1336,6 +1337,7 @@ func (f *fakeProjectHost) AdaptCoCreateStream(_ context.Context, history []host.
 	f.mu.Lock()
 	f.adaptCoCreateCalls++
 	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
+	f.adaptCoCreateHistories = append(f.adaptCoCreateHistories, append([]host.CoCreateMessage(nil), history...))
 	reply := popCoCreateReply(&f.adaptCoCreateReplies, f.adaptCoCreateReply)
 	err := f.adaptCoCreateErr
 	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)

@@ -444,7 +444,6 @@ func adaptationBriefingSnapshot(st *store.Store) string {
 	writeDossierStrings(&sb, "### Confirmed Source Facts", briefing.ConfirmedFacts, 24)
 	writeBriefingPromptRisks(&sb, "### Intent-Relevant Risks", briefing.IntentRelevantRisks, 16)
 	writeDossierStrings(&sb, "### Adaptation Suggestions", briefing.AdaptationSuggestions, 16)
-	writeBriefingPromptResolvedDecisions(&sb, briefing.Decisions, briefing.ResolvedDecisions)
 	return sb.String()
 }
 
@@ -507,40 +506,6 @@ func writeBriefingPromptRisks(sb *strings.Builder, title string, values []domain
 		}
 		sb.WriteString("\n")
 	}
-}
-
-func writeBriefingPromptResolvedDecisions(sb *strings.Builder, decisions []domain.AdaptationBriefingDecision, resolved []domain.AdaptationResolvedDecision) {
-	if len(resolved) == 0 {
-		return
-	}
-	byID := make(map[string]domain.AdaptationBriefingDecision, len(decisions))
-	for _, decision := range decisions {
-		if id := strings.TrimSpace(decision.ID); id != "" {
-			byID[id] = decision
-		}
-	}
-	sb.WriteString("\n### Resolved User Decisions\n")
-	for _, item := range resolved {
-		decision := byID[strings.TrimSpace(item.DecisionID)]
-		label := strings.TrimSpace(item.CustomAnswer)
-		if label == "" {
-			label = decisionOptionLabel(decision.Options, item.OptionID)
-		}
-		fmt.Fprintf(sb, "- %s => %s\n", strings.TrimSpace(decision.Question), label)
-	}
-}
-
-func decisionOptionLabel(options []domain.AdaptationDecisionOption, optionID string) string {
-	optionID = strings.TrimSpace(optionID)
-	for _, option := range options {
-		if strings.TrimSpace(option.ID) == optionID {
-			if strings.TrimSpace(option.Description) != "" {
-				return strings.TrimSpace(option.Label) + ": " + strings.TrimSpace(option.Description)
-			}
-			return strings.TrimSpace(option.Label)
-		}
-	}
-	return optionID
 }
 
 func clipCoCreatePromptText(text string, maxRunes int) string {

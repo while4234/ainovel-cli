@@ -1192,7 +1192,7 @@ func TestProjectAdaptCoCreateBeginWaitsForBriefingDecision(t *testing.T) {
 	}
 }
 
-func TestProjectAdaptCoCreateSendMergesSupplementWithoutRefreshingBriefing(t *testing.T) {
+func TestProjectAdaptCoCreateSendUsesAIWithoutRefreshingBriefing(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Adapt CoCreate Briefing Refresh")
@@ -1243,8 +1243,8 @@ func TestProjectAdaptCoCreateSendMergesSupplementWithoutRefreshingBriefing(t *te
 	if fake.adaptBriefingCalls != 1 {
 		t.Fatalf("EnsureAdaptationCoCreateBriefing calls after supplement = %d, want 1", fake.adaptBriefingCalls)
 	}
-	if fake.adaptCoCreateCalls != 1 {
-		t.Fatalf("AdaptCoCreateStream calls after supplement = %d, want 1", fake.adaptCoCreateCalls)
+	if fake.adaptCoCreateCalls != 2 {
+		t.Fatalf("AdaptCoCreateStream calls after supplement = %d, want 2", fake.adaptCoCreateCalls)
 	}
 	var sendResponse struct {
 		CoCreate webCoCreateState `json:"cocreate"`
@@ -1253,7 +1253,11 @@ func TestProjectAdaptCoCreateSendMergesSupplementWithoutRefreshingBriefing(t *te
 		t.Fatalf("decode send response: %v", err)
 	}
 	if !sendResponse.CoCreate.CanStart || !strings.Contains(sendResponse.CoCreate.DraftPrompt, "Moonlight's emotional weight") {
-		t.Fatalf("send co-create state = %+v, want increment merged into startable draft", sendResponse.CoCreate)
+		t.Fatalf("send co-create state = %+v, want AI-updated startable draft", sendResponse.CoCreate)
+	}
+	if !coCreateHistoryContains(fake.lastCoCreateHistory, "remove side romance") ||
+		!coCreateHistoryContains(fake.lastCoCreateHistory, "also raise Moonlight's emotional weight") {
+		t.Fatalf("AI history should include prior draft and latest supplement, got %+v", fake.lastCoCreateHistory)
 	}
 }
 
@@ -1293,6 +1297,107 @@ func TestProjectAdaptCoCreateBeginReturnsAllPendingBriefingDecisions(t *testing.
 	}
 	if beginResponse.CoCreate.CanStart {
 		t.Fatalf("can_start = true with pending decisions: %+v", beginResponse.CoCreate)
+	}
+}
+
+func TestProjectAdaptCoCreateDecisionDraftRunsInBatches(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Decision Batches")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
+	fake.adaptBriefing = testPendingAdaptBriefingWithDecisionCount(18)
+	for index := 1; index <= 5; index++ {
+		fake.adaptCoCreateReplies = append(fake.adaptCoCreateReplies, webCoCreateReply(
+			fmt.Sprintf("batch %d integrated", index),
+			fmt.Sprintf("## Adapt brief\n- decision batch %d integrated", index),
+			index == 5,
+		))
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"strict single heroine, remove side romance"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.adaptBriefingCalls != 1 {
+		t.Fatalf("EnsureAdaptationCoCreateBriefing calls after begin = %d, want 1", fake.adaptBriefingCalls)
+	}
+
+	decisions := make([]webCoCreateDecisionItem, 0, 18)
+	for index := 1; index <= 18; index++ {
+		decisions = append(decisions, webCoCreateDecisionItem{DecisionID: fmt.Sprintf("q%d", index), OptionID: "a"})
+	}
+	body, err := json.Marshal(webCoCreateDecisionRequest{Decisions: decisions})
+	if err != nil {
+		t.Fatalf("marshal decisions: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/decision", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("decision status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.adaptBriefingCalls != 1 {
+		t.Fatalf("decisions should not rebuild briefing calls = %d, want 1", fake.adaptBriefingCalls)
+	}
+	if fake.adaptCoCreateCalls != 5 {
+		t.Fatalf("AdaptCoCreateStream decision draft calls = %d, want 5", fake.adaptCoCreateCalls)
+	}
+	if len(fake.adaptCoCreateHistories) != 5 {
+		t.Fatalf("recorded adapt histories = %d, want 5", len(fake.adaptCoCreateHistories))
+	}
+	for index, history := range fake.adaptCoCreateHistories {
+		latestUser := latestUserMessageContent(history)
+		wantMarker := fmt.Sprintf("%s %d/5", adaptDecisionDraftMarker, index+1)
+		if !strings.Contains(latestUser, wantMarker) {
+			t.Fatalf("history %d latest user missing marker %q: %q", index+1, wantMarker, latestUser)
+		}
+		if got := strings.Count(latestUser, "=>"); got > adaptDecisionDraftBatchSize {
+			t.Fatalf("history %d decision count = %d, want <= %d: %q", index+1, got, adaptDecisionDraftBatchSize, latestUser)
+		}
+	}
+
+	var decisionResponse struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&decisionResponse); err != nil {
+		t.Fatalf("decode decision response: %v", err)
+	}
+	if !decisionResponse.CoCreate.CanStart || !strings.Contains(decisionResponse.CoCreate.DraftPrompt, "decision batch 5 integrated") {
+		t.Fatalf("decision co-create state = %+v, want final batched draft", decisionResponse.CoCreate)
+	}
+	for _, message := range decisionResponse.CoCreate.Messages {
+		if strings.Contains(message.Content, adaptDecisionDraftMarker) {
+			t.Fatalf("internal decision batch prompt leaked to UI messages: %+v", decisionResponse.CoCreate.Messages)
+		}
+	}
+	session := server.sessions.Project(manifest.ID)
+	if session == nil {
+		t.Fatal("project session is nil")
+	}
+	var batchEventDetails []string
+	for _, ev := range session.HistoryAfter(0) {
+		if ev.Type != webEventTypeHostEvent || ev.Event == nil {
+			continue
+		}
+		if ev.Event.Kind == webCoCreateKindAdapt && strings.Contains(ev.Event.Summary, "分批生成首次 draft") {
+			batchEventDetails = append(batchEventDetails, ev.Event.Detail)
+		}
+	}
+	if len(batchEventDetails) != 5 {
+		t.Fatalf("decision draft batch event count = %d, want 5: %+v", len(batchEventDetails), session.HistoryAfter(0))
+	}
+	for index, detail := range batchEventDetails {
+		want := fmt.Sprintf("confirmed_decision_batch=%d/5", index+1)
+		if detail != want {
+			t.Fatalf("batch event %d detail = %q, want %q", index+1, detail, want)
+		}
 	}
 }
 
@@ -1452,7 +1557,7 @@ func TestProjectAdaptCoCreateResumeRestoresFailedBriefingGeneration(t *testing.T
 	}
 }
 
-func TestProjectAdaptCoCreateCommitUsesIncrementallyMergedDraftBeforeProposal(t *testing.T) {
+func TestProjectAdaptCoCreateCommitUsesAIUpdatedDraftBeforeProposal(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Adapt CoCreate Final Consolidation")
@@ -1464,6 +1569,7 @@ func TestProjectAdaptCoCreateCommitUsesIncrementallyMergedDraftBeforeProposal(t 
 	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	fake.adaptCoCreateReplies = []host.CoCreateReply{
 		webCoCreateReply("initial draft ready", "## Adaptation Draft\n- preserve early relationship arc", true),
+		webCoCreateReply("updated draft ready", "## Adaptation Draft\n- preserve early relationship arc\n- expand the late chapter plan", true),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"preserve early relationship arc"}`))
@@ -1479,8 +1585,8 @@ func TestProjectAdaptCoCreateCommitUsesIncrementallyMergedDraftBeforeProposal(t 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("adapt send status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.adaptCoCreateCalls != 1 {
-		t.Fatalf("AdaptCoCreateStream calls before commit = %d, want 1", fake.adaptCoCreateCalls)
+	if fake.adaptCoCreateCalls != 2 {
+		t.Fatalf("AdaptCoCreateStream calls before commit = %d, want 2", fake.adaptCoCreateCalls)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
@@ -1489,8 +1595,8 @@ func TestProjectAdaptCoCreateCommitUsesIncrementallyMergedDraftBeforeProposal(t 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("adapt commit status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.adaptCoCreateCalls != 1 {
-		t.Fatalf("co-create calls after commit = %d, want 1", fake.adaptCoCreateCalls)
+	if fake.adaptCoCreateCalls != 2 {
+		t.Fatalf("co-create calls after commit = %d, want 2", fake.adaptCoCreateCalls)
 	}
 	if !strings.Contains(fake.adaptProposalOptions.Brief, "early relationship arc") ||
 		!strings.Contains(fake.adaptProposalOptions.Brief, "late chapter plan") {
@@ -1511,6 +1617,7 @@ func TestProjectAdaptCoCreateCommitRetryKeepsFinalDraftAfterProposalFailure(t *t
 	fake.adaptProposalErr = errors.New("planner timeout")
 	fake.adaptCoCreateReplies = []host.CoCreateReply{
 		webCoCreateReply("initial draft ready", "## Adaptation Draft\n- preserve early relationship arc", true),
+		webCoCreateReply("updated draft ready", "## Adaptation Draft\n- preserve early relationship arc\n- expand the late chapter plan", true),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"preserve early relationship arc"}`))
@@ -1533,8 +1640,8 @@ func TestProjectAdaptCoCreateCommitRetryKeepsFinalDraftAfterProposalFailure(t *t
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("first adapt commit status = %d body=%s, want 409", rec.Code, rec.Body.String())
 	}
-	if fake.adaptCoCreateCalls != 1 {
-		t.Fatalf("co-create calls after failed proposal = %d, want 1", fake.adaptCoCreateCalls)
+	if fake.adaptCoCreateCalls != 2 {
+		t.Fatalf("co-create calls after failed proposal = %d, want 2", fake.adaptCoCreateCalls)
 	}
 	if fake.adaptProposalCalls != 1 {
 		t.Fatalf("BuildAdaptationProposal calls after failed proposal = %d, want 1", fake.adaptProposalCalls)
@@ -1572,7 +1679,7 @@ func TestProjectAdaptCoCreateCommitRetryKeepsFinalDraftAfterProposalFailure(t *t
 	}
 }
 
-func TestProjectAdaptCoCreateMergesSupplementBeforeProposal(t *testing.T) {
+func TestProjectAdaptCoCreateUsesAISupplementBeforeProposal(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Adapt CoCreate Repair")
@@ -1584,6 +1691,7 @@ func TestProjectAdaptCoCreateMergesSupplementBeforeProposal(t *testing.T) {
 	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
 	fake.adaptCoCreateReplies = []host.CoCreateReply{
 		webCoCreateReply("initial draft ready", "## Adaptation Draft\n- early goal", true),
+		webCoCreateReply("expanded draft ready", "## Adaptation Draft\n- early goal\n- expand the plan to 24 target chapters and add the new subplot", true),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"start from this adaptation direction"}`))
@@ -1602,8 +1710,8 @@ func TestProjectAdaptCoCreateMergesSupplementBeforeProposal(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("adapt send status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.adaptCoCreateCalls != 1 {
-		t.Fatalf("AdaptCoCreateStream calls after supplement = %d, want 1", fake.adaptCoCreateCalls)
+	if fake.adaptCoCreateCalls != 2 {
+		t.Fatalf("AdaptCoCreateStream calls after supplement = %d, want 2", fake.adaptCoCreateCalls)
 	}
 	var sendResponse struct {
 		CoCreate webCoCreateState `json:"cocreate"`
@@ -1629,7 +1737,7 @@ func TestProjectAdaptCoCreateMergesSupplementBeforeProposal(t *testing.T) {
 	}
 }
 
-func TestProjectAdaptCoCreateIncrementPreservesLongDraftBeforeProposal(t *testing.T) {
+func TestProjectAdaptCoCreateAIUpdatePreservesLongDraftBeforeProposal(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Adapt CoCreate Regressed Draft")
@@ -1666,8 +1774,8 @@ func TestProjectAdaptCoCreateIncrementPreservesLongDraftBeforeProposal(t *testin
 	if rec.Code != http.StatusOK {
 		t.Fatalf("adapt send status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.adaptCoCreateCalls != 1 {
-		t.Fatalf("AdaptCoCreateStream calls after increment = %d, want 1", fake.adaptCoCreateCalls)
+	if fake.adaptCoCreateCalls != 3 {
+		t.Fatalf("AdaptCoCreateStream calls after supplement repair = %d, want 3", fake.adaptCoCreateCalls)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
@@ -1683,7 +1791,7 @@ func TestProjectAdaptCoCreateIncrementPreservesLongDraftBeforeProposal(t *testin
 	}
 }
 
-func TestProjectAdaptCoCreateIncrementKeepsStableDraftWhenModelWouldHaveFailedRepair(t *testing.T) {
+func TestProjectAdaptCoCreateAIUpdateKeepsStableDraftWhenRepairFails(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Adapt CoCreate Rollback Draft")
@@ -1719,8 +1827,11 @@ func TestProjectAdaptCoCreateIncrementKeepsStableDraftWhenModelWouldHaveFailedRe
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/send", bytes.NewBufferString(`{"text":"后半段节奏放慢","source":"custom"}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("adapt send status = %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("adapt send status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+	if fake.adaptCoCreateCalls != 3 {
+		t.Fatalf("AdaptCoCreateStream calls after failed repair = %d, want 3", fake.adaptCoCreateCalls)
 	}
 	var response struct {
 		CoCreate webCoCreateState `json:"cocreate"`
@@ -1728,11 +1839,11 @@ func TestProjectAdaptCoCreateIncrementKeepsStableDraftWhenModelWouldHaveFailedRe
 	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
 		t.Fatalf("decode send response: %v", err)
 	}
-	if !strings.Contains(response.CoCreate.DraftPrompt, previousDraft) || !strings.Contains(response.CoCreate.DraftPrompt, "后半段节奏放慢") {
-		t.Fatalf("draft should keep previous stable draft and merge increment, got %q", response.CoCreate.DraftPrompt)
+	if !strings.Contains(response.CoCreate.DraftPrompt, previousDraft) {
+		t.Fatalf("draft should keep previous stable draft, got %q", response.CoCreate.DraftPrompt)
 	}
-	if !response.CoCreate.CanStart {
-		t.Fatalf("merged draft should be startable: %+v", response.CoCreate)
+	if response.CoCreate.CanStart {
+		t.Fatalf("failed AI update should not be startable: %+v", response.CoCreate)
 	}
 	if strings.Contains(response.CoCreate.DraftPrompt, "同前轮") {
 		t.Fatalf("rejected placeholder leaked into draft: %q", response.CoCreate.DraftPrompt)
@@ -1752,6 +1863,7 @@ func TestProjectAdaptCoCreateIncrementUsesStableDraftContext(t *testing.T) {
 	previousDraft := "## Stable Draft\n- preserve early setup\n- keep relationship arc"
 	fake.adaptCoCreateReplies = []host.CoCreateReply{
 		webCoCreateReply("initial draft ready", previousDraft, true),
+		webCoCreateReply("updated draft ready", previousDraft+"\n- add final daily-scene pacing", true),
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"start from this adaptation direction"}`))
@@ -1767,8 +1879,8 @@ func TestProjectAdaptCoCreateIncrementUsesStableDraftContext(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("adapt send status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.adaptCoCreateCalls != 1 {
-		t.Fatalf("AdaptCoCreateStream calls = %d, want 1", fake.adaptCoCreateCalls)
+	if fake.adaptCoCreateCalls != 2 {
+		t.Fatalf("AdaptCoCreateStream calls = %d, want 2", fake.adaptCoCreateCalls)
 	}
 	var response struct {
 		CoCreate webCoCreateState `json:"cocreate"`
@@ -1779,6 +1891,10 @@ func TestProjectAdaptCoCreateIncrementUsesStableDraftContext(t *testing.T) {
 	if !strings.Contains(response.CoCreate.DraftPrompt, "preserve early setup") ||
 		!strings.Contains(response.CoCreate.DraftPrompt, "add final daily-scene pacing") {
 		t.Fatalf("merged draft should include stable draft and latest user turn: %q", response.CoCreate.DraftPrompt)
+	}
+	if !coCreateHistoryContains(fake.lastCoCreateHistory, "preserve early setup") ||
+		!coCreateHistoryContains(fake.lastCoCreateHistory, "add final daily-scene pacing") {
+		t.Fatalf("AI history should include stable draft and latest user turn: %+v", fake.lastCoCreateHistory)
 	}
 }
 
@@ -1945,6 +2061,15 @@ func coCreateHistoryContains(history []host.CoCreateMessage, text string) bool {
 		}
 	}
 	return false
+}
+
+func latestUserMessageContent(history []host.CoCreateMessage) string {
+	for idx := len(history) - 1; idx >= 0; idx-- {
+		if strings.TrimSpace(history[idx].Role) == "user" {
+			return history[idx].Content
+		}
+	}
+	return ""
 }
 
 func webCoCreateMessagesContain(messages []webCoCreateMessage, text string) bool {
