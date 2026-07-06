@@ -29,7 +29,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
-  `b4486d2` `fix: fail over missing-token providers`:
+  `9209524` `fix: fail over missing-token providers`:
   Runtime auto-switch and explicit role fallbacks now classify provider
   auth/token configuration failures such as `no token`, `missing token`, and
   `invalid token` as fallback-worthy `auth_failed` errors. Adaptation
