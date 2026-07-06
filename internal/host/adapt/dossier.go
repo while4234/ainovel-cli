@@ -172,7 +172,7 @@ func buildCoCreateDossierBatch(ctx context.Context, deps Deps, spec coCreateDoss
 	var lastErr error
 	regenerateAttempts := max(1, deps.structureRepairMaxAttempts())
 	for attempt := 1; attempt <= regenerateAttempts; attempt++ {
-		text, err := generatePlannerText(ctx, deps.LLM, coCreateDossierSystemPrompt, userPrompt, coCreateDossierMaxTokens, emit, spec.Index, totalBatches, "资料包", deps.modelCallMaxAttempts())
+		text, err := generatePlannerTextForStage(ctx, StageDossier, deps.LLM, coCreateDossierSystemPrompt, userPrompt, coCreateDossierMaxTokens, emit, spec.Index, totalBatches, "资料包", deps.modelCallMaxAttempts())
 		if err != nil {
 			return domain.AdaptationCoCreateDossierBatch{}, err
 		}
@@ -237,7 +237,7 @@ func repairCoCreateDossierBatchText(ctx context.Context, deps Deps, originalProm
 			"Keep arrays compact but non-empty when the source reports support facts.",
 		},
 	)
-	text, err := generatePlannerText(ctx, deps.LLM, coCreateDossierSystemPrompt, repairPrompt, coCreateDossierMaxTokens, emit, spec.Index, totalBatches, "资料包修复", deps.modelCallMaxAttempts())
+	text, err := generatePlannerTextForStage(ctx, StageDossier, deps.LLM, coCreateDossierSystemPrompt, repairPrompt, coCreateDossierMaxTokens, emit, spec.Index, totalBatches, "资料包修复", deps.modelCallMaxAttempts())
 	if err != nil {
 		return "", fmt.Errorf("co-create dossier batch repair llm generate: %w", err)
 	}

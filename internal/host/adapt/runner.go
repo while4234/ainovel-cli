@@ -3305,8 +3305,27 @@ func generatePlannerText(
 	label string,
 	maxAttemptsOverride ...int,
 ) (string, error) {
+	return generatePlannerTextForStage(ctx, StagePlan, llm, systemPrompt, userPrompt, maxTokens, emit, current, total, label, maxAttemptsOverride...)
+}
+
+func generatePlannerTextForStage(
+	ctx context.Context,
+	stage Stage,
+	llm imp.LLMChat,
+	systemPrompt string,
+	userPrompt string,
+	maxTokens int,
+	emit ProgressEmitter,
+	current int,
+	total int,
+	label string,
+	maxAttemptsOverride ...int,
+) (string, error) {
 	if llm == nil {
 		return "", fmt.Errorf("planner llm is nil")
+	}
+	if stage == "" {
+		stage = StagePlan
 	}
 	label = strings.TrimSpace(label)
 	if label == "" {
@@ -3345,7 +3364,7 @@ func generatePlannerText(
 		displayErr := retrypolicy.SanitizeProviderError(err)
 		emitAdaptProgress(
 			emit,
-			StagePlan,
+			stage,
 			current,
 			total,
 			fmt.Sprintf("%s模型调用失败，准备重试 %d/%d：%s", label, nextAttempt, maxAttempts, displayErr),

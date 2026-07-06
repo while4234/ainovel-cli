@@ -65,18 +65,7 @@ func TestNormalizeBriefingDecisionsRejectsVagueQuestions(t *testing.T) {
 
 func TestEnsureCoCreateBriefingRetriesProviderGatewayError(t *testing.T) {
 	defer stubPlannerRetrySleep(t)()
-	st := store.NewStore(t.TempDir())
-	if err := st.Init(); err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-	manifest := longBriefingTestManifest(321)
-	if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
-		t.Fatalf("SaveSourceManifest: %v", err)
-	}
-	dossier := longBriefingTestDossier(manifest)
-	if err := st.Adaptation.SaveCoCreateDossier(dossier); err != nil {
-		t.Fatalf("SaveCoCreateDossier: %v", err)
-	}
+	st := newLongBriefingTestStore(t, 321)
 	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
 		{err: litellm.NewHTTPError("deepseek", 502, "<html><body>502 Bad Gateway</body></html>")},
 		{text: coCreateBriefingBatchJSON("retry recovered batch 1")},
@@ -97,9 +86,104 @@ func TestEnsureCoCreateBriefingRetriesProviderGatewayError(t *testing.T) {
 	if briefing == nil || len(briefing.Batches) != 2 {
 		t.Fatalf("briefing batches = %+v, want two batches", briefing)
 	}
-	if !hasAdaptProgress(progress, "重试 2/2") || !hasAdaptProgress(progress, "provider gateway error: 502 Bad Gateway") {
+	if !hasAdaptProgressWithStage(progress, StageBriefing, "重试 2/2") || !hasAdaptProgress(progress, "provider gateway error: 502 Bad Gateway") {
 		t.Fatalf("progress should expose sanitized retry event: %+v", progress)
 	}
+}
+
+func TestEnsureCoCreateBriefingRepairsInvalidBatchStructure(t *testing.T) {
+	st := newLongBriefingTestStore(t, 321)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{}`},
+		{text: coCreateBriefingBatchJSON("repaired batch 1")},
+		{text: coCreateBriefingBatchJSON("batch 2")},
+	}}
+	var progress []Event
+	briefing, err := EnsureCoCreateBriefing(context.Background(), Deps{
+		Store:                      st,
+		LLM:                        llm,
+		ModelCallMaxAttempts:       1,
+		StructureRepairMaxAttempts: 3,
+	}, BuildCoCreateIntent("strict single heroine", domain.AdaptationGranularityFree, domain.AdaptationRewriteFullRewrite, 0), captureAdaptProgress(&progress))
+	if err != nil {
+		t.Fatalf("EnsureCoCreateBriefing: %v", err)
+	}
+	if llm.calls != 3 {
+		t.Fatalf("llm calls = %d, want bad batch + repair + second batch", llm.calls)
+	}
+	if briefing == nil || len(briefing.Batches) != 2 {
+		t.Fatalf("briefing batches = %+v, want two batches", briefing)
+	}
+	if !hasAdaptProgressWithStage(progress, StageBriefing, "结构无效，正在修复第 1/3 次") {
+		t.Fatalf("progress should expose briefing repair attempt budget: %+v", progress)
+	}
+}
+
+func TestEnsureCoCreateBriefingDoesNotSaveInvalidBatchAfterRepairExhaustion(t *testing.T) {
+	st := newLongBriefingTestStore(t, 321)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{}`},
+		{text: `{}`},
+		{text: `{}`},
+		{text: `{}`},
+		{text: `{}`},
+		{text: `{}`},
+	}}
+	var progress []Event
+	briefing, err := EnsureCoCreateBriefing(context.Background(), Deps{
+		Store:                      st,
+		LLM:                        llm,
+		ModelCallMaxAttempts:       1,
+		StructureRepairMaxAttempts: 2,
+	}, BuildCoCreateIntent("strict single heroine", domain.AdaptationGranularityFree, domain.AdaptationRewriteFullRewrite, 0), captureAdaptProgress(&progress))
+	if err == nil {
+		t.Fatal("EnsureCoCreateBriefing succeeded, want invalid structure failure")
+	}
+	if briefing != nil {
+		t.Fatalf("briefing = %+v, want nil on failure", briefing)
+	}
+	if llm.calls != 6 {
+		t.Fatalf("llm calls = %d, want two generations plus two repairs each", llm.calls)
+	}
+	if !strings.Contains(err.Error(), "missing content") {
+		t.Fatalf("error = %v, want missing content", err)
+	}
+	if !hasAdaptProgressWithStage(progress, StageBriefing, "结构修复后仍无效，重新生成第 2/2 次") {
+		t.Fatalf("progress should expose briefing regeneration attempt: %+v", progress)
+	}
+	batch, loadErr := st.Adaptation.LoadCoCreateBriefingBatch(1)
+	if loadErr != nil {
+		t.Fatalf("LoadCoCreateBriefingBatch: %v", loadErr)
+	}
+	if batch != nil {
+		t.Fatalf("saved invalid briefing batch = %+v, want nil", batch)
+	}
+}
+
+func newLongBriefingTestStore(t *testing.T, chapterCount int) *store.Store {
+	t.Helper()
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	manifest := longBriefingTestManifest(chapterCount)
+	if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+	dossier := longBriefingTestDossier(manifest)
+	if err := st.Adaptation.SaveCoCreateDossier(dossier); err != nil {
+		t.Fatalf("SaveCoCreateDossier: %v", err)
+	}
+	return st
+}
+
+func hasAdaptProgressWithStage(events []Event, stage Stage, fragment string) bool {
+	for _, event := range events {
+		if event.Stage == stage && strings.Contains(event.Message, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsText(values []string, needle string) bool {

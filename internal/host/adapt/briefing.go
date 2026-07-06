@@ -234,13 +234,27 @@ func coCreateBriefingBatchCurrent(batch *domain.AdaptationCoCreateBriefingBatch,
 
 func buildCoCreateBriefingBatch(ctx context.Context, deps Deps, intent domain.AdaptationCoCreateIntent, spec coCreateBriefingBatchSpec, dossier domain.AdaptationCoCreateDossier, totalBatches int, emit ProgressEmitter) (domain.AdaptationCoCreateBriefingBatch, error) {
 	userPrompt := buildCoCreateBriefingBatchPrompt(intent, spec, dossier)
-	text, err := generatePlannerText(ctx, deps.LLM, coCreateBriefingSystemPrompt, userPrompt, coCreateBriefingMaxTokens, emit, spec.Index, totalBatches, "co-create briefing", deps.modelCallMaxAttempts())
-	if err != nil {
-		return domain.AdaptationCoCreateBriefingBatch{}, err
+	var batch domain.AdaptationCoCreateBriefingBatch
+	var lastErr error
+	regenerateAttempts := max(1, deps.structureRepairMaxAttempts())
+	for attempt := 1; attempt <= regenerateAttempts; attempt++ {
+		text, err := generatePlannerTextForStage(ctx, StageBriefing, deps.LLM, coCreateBriefingSystemPrompt, userPrompt, coCreateBriefingMaxTokens, emit, spec.Index, totalBatches, "前置摘要", deps.modelCallMaxAttempts())
+		if err != nil {
+			return domain.AdaptationCoCreateBriefingBatch{}, err
+		}
+		batch, err = collectCoCreateBriefingBatchWithRepair(ctx, deps, userPrompt, text, spec, totalBatches, emit)
+		if err == nil {
+			lastErr = nil
+			break
+		}
+		lastErr = err
+		if attempt >= regenerateAttempts {
+			return domain.AdaptationCoCreateBriefingBatch{}, err
+		}
+		emitAdaptProgress(emit, StageBriefing, spec.Index, totalBatches, fmt.Sprintf("前置摘要第 %d/%d 批结构修复后仍无效，重新生成第 %d/%d 次：%v", spec.Index, totalBatches, attempt+1, regenerateAttempts, err), err)
 	}
-	batch, err := parseCoCreateBriefingBatch(text)
-	if err != nil {
-		return domain.AdaptationCoCreateBriefingBatch{}, err
+	if lastErr != nil {
+		return domain.AdaptationCoCreateBriefingBatch{}, lastErr
 	}
 	batch.Index = spec.Index
 	batch.DossierBatchFrom = spec.DossierBatchFrom
@@ -253,6 +267,52 @@ func buildCoCreateBriefingBatch(ctx context.Context, deps Deps, intent domain.Ad
 	batch.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 	normalizeCoCreateBriefingBatch(&batch)
 	return batch, nil
+}
+
+func collectCoCreateBriefingBatchWithRepair(ctx context.Context, deps Deps, originalPrompt string, initialText string, spec coCreateBriefingBatchSpec, totalBatches int, emit ProgressEmitter) (domain.AdaptationCoCreateBriefingBatch, error) {
+	text := initialText
+	var lastErr error
+	maxRepairAttempts := deps.structureRepairMaxAttempts()
+	for attempt := 0; ; attempt++ {
+		batch, err := parseCoCreateBriefingBatch(text)
+		if err == nil {
+			return batch, nil
+		}
+		lastErr = err
+		if attempt >= maxRepairAttempts {
+			return domain.AdaptationCoCreateBriefingBatch{}, lastErr
+		}
+		emitAdaptProgress(emit, StageBriefing, spec.Index, totalBatches, fmt.Sprintf("前置摘要第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", spec.Index, totalBatches, attempt+1, maxRepairAttempts, lastErr), lastErr)
+		repairedText, err := repairCoCreateBriefingBatchText(ctx, deps, originalPrompt, text, spec, lastErr, totalBatches, emit)
+		if err != nil {
+			return domain.AdaptationCoCreateBriefingBatch{}, err
+		}
+		text = repairedText
+	}
+}
+
+func repairCoCreateBriefingBatchText(ctx context.Context, deps Deps, originalPrompt string, previousText string, spec coCreateBriefingBatchSpec, previousErr error, totalBatches int, emit ProgressEmitter) (string, error) {
+	repairPrompt := buildPlannerRepairPrompt(
+		fmt.Sprintf("co-create briefing batch %d", spec.Index),
+		originalPrompt,
+		previousText,
+		previousErr,
+		[]string{
+			"Return exactly one JSON object and no markdown, prose, or explanation.",
+			"The object must include useful briefing content in at least one of confirmed_facts, intent_relevant_risks, adaptation_suggestions, or decision_questions.",
+			"Do not return only metadata, an empty envelope, markdown, or explanatory text.",
+			fmt.Sprintf("Use only dossier evidence from dossier batches %d through %d and source chapters %d through %d.", spec.DossierBatchFrom, spec.DossierBatchTo, spec.SourceFrom, spec.SourceTo),
+			"Preserve the user's adaptation intent, granularity, rewrite policy, and source causality.",
+			"When decision_questions are present, each question must keep clickable decision fields: id, question, reason, chapters, evidence, impact, required, options, and recommended_option_id.",
+			"Every decision question must include at least two concrete options with stable ids and short labels.",
+			"Keep arrays compact, source-grounded, and directly relevant to the user's intent.",
+		},
+	)
+	text, err := generatePlannerTextForStage(ctx, StageBriefing, deps.LLM, coCreateBriefingSystemPrompt, repairPrompt, coCreateBriefingMaxTokens, emit, spec.Index, totalBatches, "前置摘要修复", deps.modelCallMaxAttempts())
+	if err != nil {
+		return "", fmt.Errorf("co-create briefing batch repair llm generate: %w", err)
+	}
+	return text, nil
 }
 
 func buildCoCreateBriefingBatchPrompt(intent domain.AdaptationCoCreateIntent, spec coCreateBriefingBatchSpec, dossier domain.AdaptationCoCreateDossier) string {
