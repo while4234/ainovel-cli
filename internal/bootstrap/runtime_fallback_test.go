@@ -38,6 +38,66 @@ func TestRuntimeAutoSwitchQuotaSwitchesImmediately(t *testing.T) {
 	}
 }
 
+func TestRuntimeAutoSwitchMissingTokenSwitchesImmediately(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{provider: "deepseek-yuanyu-0", model: "deepseek-v4-pro", errs: []error{errors.New("yuanyu backend has no token")}}
+	second := &scriptedRuntimeModel{provider: "deepseek-suifeng-1", model: "deepseek-v4-pro"}
+	primary := NewSwappableModel("deepseek-yuanyu-0", "deepseek-v4-pro", first)
+	controller := &runtimeFallbackControllerStub{
+		order:  []string{"deepseek-suifeng-1"},
+		models: map[string]agentcore.ChatModel{"deepseek-suifeng-1": second},
+		modelNames: map[string]string{
+			"deepseek-suifeng-1": "deepseek-v4-pro",
+		},
+	}
+
+	model := newRuntimeFallbackModel("architect", primary, primary, runtimeFallbackTestConfig(3), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "deepseek-suifeng-1/deepseek-v4-pro" {
+		t.Fatalf("response = %q, want deepseek-suifeng-1/deepseek-v4-pro", got)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
+	}
+	if len(controller.calls) != 1 {
+		t.Fatalf("controller calls = %d, want 1", len(controller.calls))
+	}
+}
+
+func TestExplicitRoleFailoverMissingTokenSwitchesImmediately(t *testing.T) {
+	first := &scriptedRuntimeModel{provider: "deepseek-yuanyu-0", model: "deepseek-v4-pro", errs: []error{errors.New("yuanyu backend has no token")}}
+	second := &scriptedRuntimeModel{provider: "deepseek-suifeng-1", model: "deepseek-v4-pro"}
+	primary := NewSwappableModel("deepseek-yuanyu-0", "deepseek-v4-pro", first)
+	var reports []FailoverEvent
+	model := &failoverModel{
+		role:    "architect",
+		primary: primary,
+		fallbacks: []modelTarget{{
+			provider: "deepseek-suifeng-1",
+			name:     "deepseek-v4-pro",
+			model:    second,
+		}},
+		report: func(ev FailoverEvent) { reports = append(reports, ev) },
+	}
+
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "deepseek-suifeng-1/deepseek-v4-pro" {
+		t.Fatalf("response = %q, want deepseek-suifeng-1/deepseek-v4-pro", got)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
+	}
+	if len(reports) != 1 || reports[0].Reason != "auth_failed" {
+		t.Fatalf("failover reports = %+v, want one auth_failed report", reports)
+	}
+}
+
 func TestRuntimeAutoSwitchGatewayErrorSwitchesImmediately(t *testing.T) {
 	restoreRuntimeFallbackWait(t)
 	first := &scriptedRuntimeModel{
@@ -291,9 +351,10 @@ func (m *scriptedRuntimeModel) Calls() int {
 }
 
 type runtimeFallbackControllerStub struct {
-	order  []string
-	models map[string]agentcore.ChatModel
-	calls  []runtimeFallbackControllerCall
+	order      []string
+	models     map[string]agentcore.ChatModel
+	modelNames map[string]string
+	calls      []runtimeFallbackControllerCall
 }
 
 type runtimeFallbackControllerCall struct {
@@ -311,9 +372,13 @@ func (c *runtimeFallbackControllerStub) SelectRuntimeFallback(_ context.Context,
 		if !ok {
 			continue
 		}
+		modelName := c.modelNames[provider]
+		if modelName == "" {
+			modelName = "m" + strings.TrimPrefix(provider, "p")
+		}
 		return RuntimeFallbackTarget{
 			Provider: provider,
-			Model:    "m" + strings.TrimPrefix(provider, "p"),
+			Model:    modelName,
 			LLM:      model,
 			Reason:   fmt.Sprintf("%s:%s->%s", RuntimeFallbackPoolReasonPrefix, current.Provider, provider),
 		}, true

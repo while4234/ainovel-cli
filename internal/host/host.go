@@ -497,7 +497,7 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 func (h *Host) adaptationDeps() adapt.Deps {
 	var llm imp.LLMChat
 	if h.models != nil {
-		llm = h.models.ForRole("architect")
+		llm = h.models.ForRoleWithFailover("architect", h.reportAdaptationFailover)
 	}
 	h.mu.Lock()
 	cfg := h.cfg

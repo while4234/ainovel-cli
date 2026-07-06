@@ -327,7 +327,7 @@ func classifyRuntimeFallbackError(err error) runtimeFallbackDecision {
 		return runtimeFallbackDecision{eligible: true, networkRetry: true, reason: "network_interrupted"}
 	case errors.Is(classified, agentcore.ErrProviderQuota) || isRuntimeQuotaErrorMessage(err):
 		return runtimeFallbackDecision{eligible: true, reason: "quota_exhausted"}
-	case errors.Is(classified, agentcore.ErrProviderAuth):
+	case errors.Is(classified, agentcore.ErrProviderAuth) || isRuntimeAuthErrorMessage(err):
 		return runtimeFallbackDecision{eligible: true, reason: "auth_failed"}
 	case errors.Is(classified, agentcore.ErrProviderRateLimit):
 		return runtimeFallbackDecision{eligible: true, reason: "rate_limit"}
@@ -340,6 +340,31 @@ func classifyRuntimeFallbackError(err error) runtimeFallbackDecision {
 	default:
 		return runtimeFallbackDecision{}
 	}
+}
+
+func isRuntimeAuthErrorMessage(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no token") ||
+		strings.Contains(msg, "missing token") ||
+		strings.Contains(msg, "token missing") ||
+		strings.Contains(msg, "invalid token") ||
+		strings.Contains(msg, "empty token") ||
+		strings.Contains(msg, "token required") ||
+		strings.Contains(msg, "requires token") ||
+		strings.Contains(msg, "without token") ||
+		strings.Contains(msg, "no api key") ||
+		strings.Contains(msg, "missing api key") ||
+		strings.Contains(msg, "api key missing") ||
+		strings.Contains(msg, "api key required") ||
+		strings.Contains(msg, "api key is required") ||
+		strings.Contains(msg, "未配置token") ||
+		strings.Contains(msg, "没有token") ||
+		strings.Contains(msg, "无token") ||
+		strings.Contains(msg, "缺少token") ||
+		strings.Contains(msg, "token为空")
 }
 
 func isRuntimeQuotaErrorMessage(err error) bool {

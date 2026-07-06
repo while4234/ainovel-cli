@@ -29,6 +29,19 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `b4486d2` `fix: fail over missing-token providers`:
+  Runtime auto-switch and explicit role fallbacks now classify provider
+  auth/token configuration failures such as `no token`, `missing token`, and
+  `invalid token` as fallback-worthy `auth_failed` errors. Adaptation
+  dependency creation and co-create streams now use the architect fallback
+  wrapper consistently, so a broken `deepseek-yuanyu-0` backend can switch to
+  another configured candidate/fallback provider instead of failing the whole
+  source-analysis or co-create step. Validation passed for focused backend
+  tests, full `go test ./...`, and local Web rebuild/restart on
+  `http://127.0.0.1:9898` as PID `17368`. Known unrelated uncommitted local
+  edits remain in `internal/host/imp/splitter.go` and
+  `internal/host/imp/splitter_test.go`.
+- Latest source/runtime change: current local commit
   `fix: preserve loaded novel analysis`:
   Completed loaded novels now no-op when Analyze is clicked, returning
   `analyzed=true` without starting source analysis. Prepared source snapshots

@@ -191,7 +191,7 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 		maxTokens = coCreateMaxTokens
 	}
 
-	model := models.ForRole(coCreateModelRole)
+	model := models.ForRoleWithFailover(coCreateModelRole, nil)
 	modelIdentity := newCoCreateModelIdentity(model)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

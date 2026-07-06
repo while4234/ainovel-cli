@@ -640,10 +640,11 @@ func (m *failoverModel) pickFallback(current modelTarget, err error) (modelTarge
 		return modelTarget{}, "", false
 	}
 
-	if !agentcore.IsFailoverEligible(err) {
-		return modelTarget{}, agentcore.FailoverReason(err), false
+	decision := classifyRuntimeFallbackError(err)
+	if !decision.eligible {
+		return modelTarget{}, decision.reason, false
 	}
-	reason := agentcore.FailoverReason(err)
+	reason := decision.reason
 	for _, target := range m.fallbacks {
 		if target.provider == current.provider && target.name == current.name {
 			continue
