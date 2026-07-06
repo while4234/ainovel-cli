@@ -28,6 +28,10 @@ const ws = `\s\x{3000}`
 // cnNum 是章节编号可用的数字字符：阿拉伯 / 全角 / 中文小写 / 中文大写繁体（壹贰叁…萬）。
 const cnNum = `零〇○Ｏ０一二三四五六七八九十百千万两廿卅壹贰貳叁參肆伍陆陸柒捌玖拾佰仟萬兩\d`
 
+// arabicNum 只覆盖阿拉伯数字，用于支持「第03章标题」这类紧凑标题，
+// 同时避免把「第一章正文紧跟」一类正文句子误判成章节标题。
+const arabicNum = `\d０１２３４５６７８９`
+
 // parenthesizedCnNum 只包含中文数字，避免把正文列表里的 (1) 误判为章节。
 const parenthesizedCnNum = `零〇○一二三四五六七八九十百千万两廿卅壹贰貳叁參肆伍陆陸柒捌玖拾佰仟萬兩`
 
@@ -92,7 +96,12 @@ var volumeNumberedChapterRegex = regexp.MustCompile(
 var bareChineseChapterRegex = regexp.MustCompile(
 	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` + workTitlePrefix + `[【〖]?[` + ws + `]*` +
 		`(?:[十廿卅][一二三四五六七八九]?|[零〇○一二三四五六七八九十百千万两廿卅壹贰貳叁參肆伍陆陸柒捌玖拾佰仟萬兩]{2,})` +
-		`\s*章(?:` + titleSep + `(?P<title>` + sub + `))?[】〗]?[` + ws + `]*$`,
+		`\s*(?:章|回|话|节|幕)(?:` + titleSep + `(?P<title>` + sub + `))?[】〗]?[` + ws + `]*$`,
+)
+
+var compactArabicChapterRegex = regexp.MustCompile(
+	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` + workTitlePrefix + `[【〖]?[` + ws + `]*` +
+		`第\s*(?:[` + arabicNum + `]+)\s*(?:章|回|话|节|幕)(?P<title>[^】〗\n]*)[】〗]?[` + ws + `]*$`,
 )
 
 var parenthesizedChineseChapterRegex = regexp.MustCompile(
@@ -261,6 +270,12 @@ func parseMarker(line string, pattern *regexp.Regexp, fallbackNum int) (parsedMa
 			fallbackTitle = true
 		}
 		return parsedMarker{title: title, chapter: true, fallbackTitle: fallbackTitle}, true
+	}
+	if loc := compactArabicChapterRegex.FindStringSubmatchIndex(line); loc != nil {
+		title := extractNamedGroup(line, compactArabicChapterRegex, loc, "title")
+		if title != "" {
+			return parsedMarker{title: title, chapter: true}, true
+		}
 	}
 	if loc := parenthesizedChineseChapterRegex.FindStringSubmatchIndex(line); loc != nil {
 		title := extractNamedGroup(line, parenthesizedChineseChapterRegex, loc, "title")

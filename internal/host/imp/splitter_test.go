@@ -190,6 +190,53 @@ func TestSplitText_BareChineseChapterNumber(t *testing.T) {
 	}
 }
 
+func TestSplitText_BareChineseSectionNumber(t *testing.T) {
+	src := `第十节 拜师
+正文十。
+
+十一节 下药的猫腻
+正文十一。
+
+二十节 执子之手
+正文二十。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 3 {
+		t.Fatalf("want 3, got %d", len(got))
+	}
+	wantTitles := []string{"拜师", "下药的猫腻", "执子之手"}
+	for i, want := range wantTitles {
+		if got[i].Title != want {
+			t.Fatalf("chapter %d title: got %q want %q", i+1, got[i].Title, want)
+		}
+	}
+}
+
+func TestSplitText_ArabicChapterNumberWithCompactTitle(t *testing.T) {
+	src := `正文 第01章 意外发现
+正文一。
+
+正文 第02章 有问题？
+正文二。
+
+正文 第03章满足的回味
+正文三。
+
+第04章女上司的另一面
+正文四。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 4 {
+		t.Fatalf("want 4, got %d", len(got))
+	}
+	wantTitles := []string{"意外发现", "有问题？", "满足的回味", "女上司的另一面"}
+	for i, want := range wantTitles {
+		if got[i].Title != want {
+			t.Fatalf("chapter %d title: got %q want %q", i+1, got[i].Title, want)
+		}
+	}
+}
+
 func TestSplitText_ParenthesizedChineseChapterNumbers(t *testing.T) {
 	src := `（一）
 正文一。
