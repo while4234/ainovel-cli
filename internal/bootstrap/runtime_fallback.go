@@ -351,15 +351,24 @@ func isRuntimeAuthErrorMessage(err error) bool {
 		strings.Contains(msg, "missing token") ||
 		strings.Contains(msg, "token missing") ||
 		strings.Contains(msg, "invalid token") ||
+		strings.Contains(msg, "token invalid") ||
+		strings.Contains(msg, "invalid bearer token") ||
+		strings.Contains(msg, "authorization failed") ||
+		strings.Contains(msg, "authentication failed") ||
 		strings.Contains(msg, "empty token") ||
 		strings.Contains(msg, "token required") ||
 		strings.Contains(msg, "requires token") ||
 		strings.Contains(msg, "without token") ||
 		strings.Contains(msg, "no api key") ||
 		strings.Contains(msg, "missing api key") ||
+		strings.Contains(msg, "invalid api key") ||
+		strings.Contains(msg, "incorrect api key") ||
 		strings.Contains(msg, "api key missing") ||
 		strings.Contains(msg, "api key required") ||
 		strings.Contains(msg, "api key is required") ||
+		strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "401") ||
+		strings.Contains(msg, "403") ||
 		strings.Contains(msg, "未配置token") ||
 		strings.Contains(msg, "没有token") ||
 		strings.Contains(msg, "无token") ||

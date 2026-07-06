@@ -132,6 +132,29 @@ func TestRuntimeAutoSwitchMissingTokenSwitchesImmediately(t *testing.T) {
 	}
 }
 
+func TestRuntimeAutoSwitchInvalidTokenSwitchesImmediately(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{provider: "p1", model: "m1", errs: []error{errors.New("Invalid token (request id: 202607061029371978826938268d9d6KJEnuhoc)")}}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m2"}
+	primary := NewSwappableModel("p1", "m1", first)
+	controller := &runtimeFallbackControllerStub{order: []string{"p2"}, models: map[string]agentcore.ChatModel{"p2": second}}
+
+	model := newRuntimeFallbackModel("architect", primary, primary, runtimeFallbackTestConfig(3), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "p2/m2" {
+		t.Fatalf("response = %q, want p2/m2", got)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
+	}
+	if len(controller.calls) != 1 {
+		t.Fatalf("controller calls = %d, want 1", len(controller.calls))
+	}
+}
+
 func TestExplicitRoleFailoverMissingTokenSwitchesImmediately(t *testing.T) {
 	first := &scriptedRuntimeModel{provider: "deepseek-yuanyu-0", model: "deepseek-v4-pro", errs: []error{errors.New("yuanyu backend has no token")}}
 	second := &scriptedRuntimeModel{provider: "deepseek-suifeng-1", model: "deepseek-v4-pro"}
