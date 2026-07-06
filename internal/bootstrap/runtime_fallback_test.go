@@ -38,6 +38,71 @@ func TestRuntimeAutoSwitchQuotaSwitchesImmediately(t *testing.T) {
 	}
 }
 
+func TestRuntimeAutoSwitchRateLimitExceededSwitchesImmediately(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{provider: "deepseek-suifeng-0", model: "deepseek-v4-pro", errs: []error{errors.New("rate_limit_exceeded")}}
+	second := &scriptedRuntimeModel{provider: "deepseek-suifeng-1", model: "deepseek-v4-pro"}
+	primary := NewSwappableModel("deepseek-suifeng-0", "deepseek-v4-pro", first)
+	controller := &runtimeFallbackControllerStub{
+		order:  []string{"deepseek-suifeng-1"},
+		models: map[string]agentcore.ChatModel{"deepseek-suifeng-1": second},
+		modelNames: map[string]string{
+			"deepseek-suifeng-1": "deepseek-v4-pro",
+		},
+	}
+
+	model := newRuntimeFallbackModel("architect", primary, primary, runtimeFallbackTestConfig(7), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "deepseek-suifeng-1/deepseek-v4-pro" {
+		t.Fatalf("response = %q, want deepseek-suifeng-1/deepseek-v4-pro", got)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
+	}
+	if len(controller.calls) != 1 {
+		t.Fatalf("controller calls = %d, want 1", len(controller.calls))
+	}
+}
+
+func TestRuntimeAutoSwitchRateLimitExceededWalksDeepseekCandidatePool(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	yuanyu := &scriptedRuntimeModel{provider: "deepseek-yuanyu-0", model: "deepseek-v4-pro", errs: []error{errors.New("rate_limit_exceeded")}}
+	suifeng0 := &scriptedRuntimeModel{provider: "deepseek-suifeng-0", model: "deepseek-v4-pro", errs: []error{errors.New("rate_limit_exceeded")}}
+	suifeng1 := &scriptedRuntimeModel{provider: "deepseek-suifeng-1", model: "deepseek-v4-pro"}
+	primary := NewSwappableModel("deepseek-yuanyu-0", "deepseek-v4-pro", yuanyu)
+	controller := &runtimeFallbackControllerStub{
+		order: []string{"deepseek-yuanyu-0", "deepseek-suifeng-0", "deepseek-suifeng-1"},
+		models: map[string]agentcore.ChatModel{
+			"deepseek-yuanyu-0":  yuanyu,
+			"deepseek-suifeng-0": suifeng0,
+			"deepseek-suifeng-1": suifeng1,
+		},
+		modelNames: map[string]string{
+			"deepseek-yuanyu-0":  "deepseek-v4-pro",
+			"deepseek-suifeng-0": "deepseek-v4-pro",
+			"deepseek-suifeng-1": "deepseek-v4-pro",
+		},
+	}
+
+	model := newRuntimeFallbackModel("architect", primary, primary, runtimeFallbackTestConfig(7), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "deepseek-suifeng-1/deepseek-v4-pro" {
+		t.Fatalf("response = %q, want deepseek-suifeng-1/deepseek-v4-pro", got)
+	}
+	if yuanyu.Calls() != 1 || suifeng0.Calls() != 1 || suifeng1.Calls() != 1 {
+		t.Fatalf("calls yuanyu=%d suifeng0=%d suifeng1=%d", yuanyu.Calls(), suifeng0.Calls(), suifeng1.Calls())
+	}
+	if len(controller.calls) != 2 {
+		t.Fatalf("controller calls = %d, want 2", len(controller.calls))
+	}
+}
+
 func TestRuntimeAutoSwitchMissingTokenSwitchesImmediately(t *testing.T) {
 	restoreRuntimeFallbackWait(t)
 	first := &scriptedRuntimeModel{provider: "deepseek-yuanyu-0", model: "deepseek-v4-pro", errs: []error{errors.New("yuanyu backend has no token")}}

@@ -329,7 +329,7 @@ func classifyRuntimeFallbackError(err error) runtimeFallbackDecision {
 		return runtimeFallbackDecision{eligible: true, reason: "quota_exhausted"}
 	case errors.Is(classified, agentcore.ErrProviderAuth) || isRuntimeAuthErrorMessage(err):
 		return runtimeFallbackDecision{eligible: true, reason: "auth_failed"}
-	case errors.Is(classified, agentcore.ErrProviderRateLimit):
+	case errors.Is(classified, agentcore.ErrProviderRateLimit) || isRuntimeRateLimitErrorMessage(err):
 		return runtimeFallbackDecision{eligible: true, reason: "rate_limit"}
 	case retrypolicy.IsProviderGatewayError(err):
 		return runtimeFallbackDecision{eligible: true, reason: "overloaded"}
@@ -383,6 +383,22 @@ func isRuntimeQuotaErrorMessage(err error) bool {
 		strings.Contains(msg, "insufficient balance") ||
 		strings.Contains(msg, "payment required") ||
 		strings.Contains(msg, "billing hard limit")
+}
+
+func isRuntimeRateLimitErrorMessage(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "429") ||
+		strings.Contains(msg, "rate_limit") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "rate-limit") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "request limit") ||
+		strings.Contains(msg, "requests limit") ||
+		strings.Contains(msg, "rpm limit") ||
+		strings.Contains(msg, "tpm limit")
 }
 
 func cloneAttemptedProviders(attempted map[string]bool) map[string]bool {

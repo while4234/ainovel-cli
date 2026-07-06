@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: `236d98b`
+  `fix: switch models on text rate limits`:
+  Runtime fallback now treats bare provider rate-limit messages such as
+  `rate_limit_exceeded`, `rate limit`, `too many requests`, `request limit`,
+  `rpm limit`, `tpm limit`, and `429` as immediately fallback-eligible
+  `rate_limit` errors. Regression tests cover both a single first-error switch
+  and the configured `deepseek-yuanyu-0` -> `deepseek-suifeng-0` ->
+  `deepseek-suifeng-1` candidate pool, requiring each exhausted backend to be
+  called only once before moving on. Validation passed for focused
+  `internal/bootstrap` runtime fallback tests, and local Web was rebuilt and
+  restarted on `http://127.0.0.1:9898` as PID `26484`.
 - Latest source/runtime change: current local commit
   `fix: chunk long adaptation proposals by input size`:
   Long `arc`/`free` adaptation proposal routing now considers source input
