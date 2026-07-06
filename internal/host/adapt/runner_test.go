@@ -1258,7 +1258,7 @@ func TestBuildAdaptationProposalRejectsChunkedSkeletonThatShrinksLongTarget(t *t
 		"brief": "free restructure into 50-60章",
 		"target_chapter_count": 17,
 		"batches": [
-			{"index": 1, "target_from": 1, "target_to": 17, "source_from": 1, "source_to": 4, "summary": "too short"}
+			{"index": 1, "title": "Compressed arc", "theme": "rushed", "target_from": 1, "target_to": 17, "source_from": 1, "source_to": 4, "summary": "too short"}
 		]
 	}`}}}
 
@@ -2059,6 +2059,130 @@ func TestBuildAdaptationProposalVolumeSkeletonSumsSourceMapBatchCounts(t *testin
 	}
 	if len(result.VolumeReview.Volumes) != 2 || result.VolumeReview.Volumes[1].TargetFrom != 51 || result.VolumeReview.Volumes[1].TargetTo != 57 {
 		t.Fatalf("volume ranges should be globally renumbered after summing source-map batches: %+v", result.VolumeReview.Volumes)
+	}
+}
+
+func TestBuildAdaptationProposalVolumeSkeletonUsesConfiguredRepairBudget(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	runeCounts := make([]int, 45)
+	for i := range runeCounts {
+		runeCounts[i] = 10
+	}
+	seedPreparedAdaptationSource(t, st, runeCounts)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{"overall_arc":"not a usable source-map skeleton"}`},
+		{text: `{"batches":"still not an array"}`},
+		{text: `{"batches":[{"index":1,"title":"","theme":"","target_from":1,"target_to":50,"source_from":1,"source_to":40,"summary":""}]}`},
+		{text: `{
+			"granularity": "arc",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "arc long rewrite",
+			"target_chapter_count": 50,
+			"batches": [
+				{"index": 1, "title": "Opening expansion", "theme": "growth", "chapter_count": 50, "target_from": 1, "target_to": 50, "source_from": 1, "source_to": 40, "summary": "expand the first source-map batch"}
+			]
+		}`},
+		{text: `{
+			"granularity": "arc",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "arc long rewrite",
+			"target_chapter_count": 7,
+			"batches": [
+				{"index": 1, "title": "Final bridge", "theme": "payoff", "chapter_count": 7, "target_from": 1, "target_to": 7, "source_from": 41, "source_to": 45, "summary": "add room for the ending transition"}
+			]
+		}`},
+	}}
+	progress := make([]string, 0)
+
+	result, err := BuildAdaptationProposalVolumesContext(context.Background(), Deps{
+		Store:                      st,
+		LLM:                        llm,
+		ModelCallMaxAttempts:       1,
+		StructureRepairMaxAttempts: 3,
+	}, ProposalOptions{
+		Brief:       "arc long rewrite",
+		Granularity: domain.AdaptationGranularityArc,
+		EmitProgress: func(_ Stage, _ int, _ int, msg string, _ error) {
+			progress = append(progress, msg)
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalVolumesContext: %v", err)
+	}
+	if llm.calls != 5 {
+		t.Fatalf("planner calls=%d, want initial + 3 repairs + second source-map batch", llm.calls)
+	}
+	if result == nil || result.VolumeReview == nil || result.VolumeReview.TargetChapterCount != 57 {
+		t.Fatalf("volume review mismatch: %+v", result)
+	}
+	foundThirdRepair := false
+	for _, msg := range progress {
+		if strings.Contains(msg, "3/3") {
+			foundThirdRepair = true
+			break
+		}
+	}
+	if !foundThirdRepair {
+		t.Fatalf("progress should show configured repair budget, got %q", progress)
+	}
+}
+
+func TestBuildAdaptationProposalVolumeSkeletonDoesNotWrapSourceMapBatchObject(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{
+			"index": 1,
+			"title": "Single object",
+			"theme": "would have been wrapped before",
+			"target_from": 1,
+			"target_to": 8,
+			"source_from": 1,
+			"source_to": 4,
+			"summary": "this is not a top-level batches array"
+		}`},
+		{text: `{
+			"granularity": "arc",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "arc rewrite",
+			"target_chapter_count": 20,
+			"batches": [
+				{"index": 1, "title": "Valid arc", "theme": "focused", "chapter_count": 20, "target_from": 1, "target_to": 20, "source_from": 1, "source_to": 4, "summary": "model repaired into the requested skeleton envelope"}
+			]
+		}`},
+	}}
+
+	result, err := BuildAdaptationProposalVolumesContext(context.Background(), Deps{
+		Store:                      st,
+		LLM:                        llm,
+		ModelCallMaxAttempts:       1,
+		StructureRepairMaxAttempts: 2,
+	}, ProposalOptions{
+		Brief:              "arc rewrite",
+		Granularity:        domain.AdaptationGranularityArc,
+		TargetChapterCount: 20,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalVolumesContext: %v", err)
+	}
+	if llm.calls != 2 {
+		t.Fatalf("planner calls=%d, want initial source-map skeleton + repair", llm.calls)
+	}
+	repairPrompt := llm.got[1][1].TextContent()
+	if !strings.Contains(repairPrompt, "missing top-level batches array") {
+		t.Fatalf("repair prompt should reject locally wrapped batch objects: %s", repairPrompt)
+	}
+	if result == nil || result.VolumeReview == nil || len(result.VolumeReview.Volumes) != 1 {
+		t.Fatalf("volume review mismatch: %+v", result)
 	}
 }
 

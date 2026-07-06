@@ -1049,6 +1049,7 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 			batchOrdinal,
 			totalBatches,
 			fmt.Sprintf("修订第 %d/%d 批", batchOrdinal, totalBatches),
+			deps.modelCallMaxAttempts(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("planner revision %d-%d llm generate: %w", chunkFrom, chunkTo, err)
@@ -1067,6 +1068,8 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 			batchOrdinal,
 			totalBatches,
 			fmt.Sprintf("修订第 %d/%d 批", batchOrdinal, totalBatches),
+			deps.structureRepairMaxAttempts(),
+			deps.modelCallMaxAttempts(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("planner revision %d-%d: %w", chunkFrom, chunkTo, err)
@@ -1139,11 +1142,12 @@ func ReviseAdaptationVolumeReviewContext(ctx context.Context, deps Deps, opts Pr
 		0,
 		0,
 		fmt.Sprintf("第 %d 卷剧情修正", opts.VolumeIndex),
+		deps.modelCallMaxAttempts(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("planner volume review revision llm generate: %w", err)
 	}
-	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, revisionPrompt, revisionText, originalBatch, expansionMaxTo, true, manifest, opts.EmitProgress)
+	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, revisionPrompt, revisionText, originalBatch, expansionMaxTo, true, manifest, opts.EmitProgress, deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 	if err != nil {
 		return nil, fmt.Errorf("planner volume review revision skeleton: %w", err)
 	}
@@ -1251,11 +1255,12 @@ func reviseAdaptationProposalVolumeContext(
 		0,
 		0,
 		fmt.Sprintf("第 %d 卷剧情重规划", opts.VolumeIndex),
+		deps.modelCallMaxAttempts(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("planner volume revision skeleton llm generate: %w", err)
 	}
-	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, originalBatch, expansionMaxTo, allowExpansion, manifest, opts.EmitProgress)
+	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, originalBatch, expansionMaxTo, allowExpansion, manifest, opts.EmitProgress, deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 	if err != nil {
 		return nil, fmt.Errorf("planner volume revision skeleton: %w", err)
 	}
@@ -1291,6 +1296,7 @@ func reviseAdaptationProposalVolumeContext(
 			idx+1,
 			len(detailBatches),
 			fmt.Sprintf("第 %d 卷章节详情第 %d/%d 批", opts.VolumeIndex, idx+1, len(detailBatches)),
+			deps.modelCallMaxAttempts(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("planner volume revision detail %d-%d llm generate: %w", detailBatch.TargetFrom, detailBatch.TargetTo, err)
@@ -1307,6 +1313,8 @@ func reviseAdaptationProposalVolumeContext(
 			idx+1,
 			len(detailBatches),
 			fmt.Sprintf("第 %d 卷章节详情第 %d/%d 批", opts.VolumeIndex, idx+1, len(detailBatches)),
+			deps.structureRepairMaxAttempts(),
+			deps.modelCallMaxAttempts(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("planner volume revision detail %d-%d: %w", detailBatch.TargetFrom, detailBatch.TargetTo, err)
@@ -2650,11 +2658,12 @@ func buildPlannerVolumeSkeletonFromSourceMap(
 			sourceIndex+1,
 			len(sourceMap),
 			fmt.Sprintf("骨架规划第 %d/%d 批", sourceIndex+1, len(sourceMap)),
+			deps.modelCallMaxAttempts(),
 		)
 		if err != nil {
 			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d llm generate: %w", entry.Index, err)
 		}
-		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.LLM, systemPrompt, prompt, text, entry, opts.EmitProgress, sourceIndex+1, len(sourceMap))
+		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.LLM, systemPrompt, prompt, text, entry, opts.EmitProgress, sourceIndex+1, len(sourceMap), deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 		if err != nil {
 			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d: %w", entry.Index, err)
 		}
@@ -2699,11 +2708,16 @@ func collectPlannerSourceMapSkeletonBatches(
 	emit ProgressEmitter,
 	current int,
 	total int,
+	maxRepairAttempts int,
+	maxModelCallAttempts int,
 ) ([]plannerSkeletonBatch, error) {
+	if maxRepairAttempts <= 0 {
+		maxRepairAttempts = adaptationPlannerRepairMaxAttempts
+	}
 	text := initialText
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		skeleton, err := parsePlannerSkeleton(text)
+		skeleton, err := parsePlannerSourceMapSkeleton(text)
 		if err == nil {
 			batches, berr := normalizePlannerSourceMapSkeletonBatches(skeleton.Batches, entry)
 			if berr == nil {
@@ -2712,16 +2726,42 @@ func collectPlannerSourceMapSkeletonBatches(
 			err = berr
 		}
 		lastErr = err
-		if !plannerSkeletonErrorRepairable(err) || attempt >= adaptationPlannerRepairMaxAttempts {
+		if !plannerSkeletonErrorRepairable(err) || attempt >= maxRepairAttempts {
 			return nil, lastErr
 		}
-		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", current, total, attempt+1, adaptationPlannerRepairMaxAttempts, lastErr), lastErr)
-		repaired, err := repairPlannerSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, lastErr, emit, current, total)
+		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", current, total, attempt+1, maxRepairAttempts, lastErr), lastErr)
+		repaired, err := repairPlannerSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, lastErr, emit, current, total, maxModelCallAttempts)
 		if err != nil {
 			return nil, err
 		}
 		text = repaired
 	}
+}
+
+func parsePlannerSourceMapSkeleton(text string) (plannerSkeleton, error) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton must be one JSON object with no prose or markdown")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &object); err != nil {
+		return plannerSkeleton{}, fmt.Errorf("parse planner source-map skeleton JSON: %w", err)
+	}
+	rawBatches := object["batches"]
+	if len(rawBatches) == 0 {
+		return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton missing top-level batches array")
+	}
+	if rawBatches[0] != '[' {
+		return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton batches must be an array")
+	}
+	var skeleton plannerSkeleton
+	if err := json.Unmarshal([]byte(trimmed), &skeleton); err != nil {
+		return plannerSkeleton{}, fmt.Errorf("decode planner source-map skeleton JSON: %w", err)
+	}
+	if len(skeleton.Batches) == 0 {
+		return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton has empty batches array")
+	}
+	return skeleton, nil
 }
 
 func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
@@ -2730,11 +2770,20 @@ func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, en
 	}
 	out := make([]plannerSkeletonBatch, 0, len(batches))
 	for idx, batch := range batches {
-		if batch.SourceFrom <= 0 {
-			batch.SourceFrom = entry.SourceFrom
+		if batch.TargetFrom <= 0 || batch.TargetTo <= 0 {
+			return nil, fmt.Errorf("batch %d must include target_from and target_to", idx+1)
 		}
-		if batch.SourceTo <= 0 {
-			batch.SourceTo = entry.SourceTo
+		if batch.SourceFrom <= 0 || batch.SourceTo <= 0 {
+			return nil, fmt.Errorf("batch %d must include source_from and source_to", idx+1)
+		}
+		if strings.TrimSpace(batch.Title) == "" {
+			return nil, fmt.Errorf("batch %d title is empty", idx+1)
+		}
+		if strings.TrimSpace(batch.Theme) == "" && strings.TrimSpace(batch.Goal) == "" {
+			return nil, fmt.Errorf("batch %d theme or goal is required", idx+1)
+		}
+		if strings.TrimSpace(batch.Summary) == "" {
+			return nil, fmt.Errorf("batch %d summary is empty", idx+1)
 		}
 		if batch.SourceFrom < entry.SourceFrom || batch.SourceTo > entry.SourceTo || batch.SourceTo < batch.SourceFrom {
 			return nil, fmt.Errorf("batch %d source range %d-%d outside source-map range %d-%d", idx+1, batch.SourceFrom, batch.SourceTo, entry.SourceFrom, entry.SourceTo)
@@ -2842,6 +2891,7 @@ func buildPlanFromPlannerSkeletonDetails(
 			batchOrdinal+1,
 			len(detailBatches),
 			fmt.Sprintf("章节详情第 %d/%d 批", batchOrdinal+1, len(detailBatches)),
+			deps.modelCallMaxAttempts(),
 		)
 		if err != nil {
 			return zero, fmt.Errorf("planner batch %d llm generate: %w", batch.Index, err)
@@ -2859,6 +2909,8 @@ func buildPlanFromPlannerSkeletonDetails(
 			batchOrdinal+1,
 			len(detailBatches),
 			fmt.Sprintf("章节详情第 %d/%d 批", batchOrdinal+1, len(detailBatches)),
+			deps.structureRepairMaxAttempts(),
+			deps.modelCallMaxAttempts(),
 		)
 		if err != nil {
 			return zero, fmt.Errorf("planner batch %d: %w", batch.Index, err)
@@ -3483,7 +3535,12 @@ func collectPlannerBatchChaptersWithRepair(
 	current int,
 	total int,
 	label string,
+	maxRepairAttempts int,
+	maxModelCallAttempts int,
 ) ([]domain.AdaptationChapterPlan, error) {
+	if maxRepairAttempts <= 0 {
+		maxRepairAttempts = adaptationPlannerRepairMaxAttempts
+	}
 	text := initialText
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -3503,7 +3560,7 @@ func collectPlannerBatchChaptersWithRepair(
 			if missingErr == nil {
 				missingErr = fmt.Errorf("missing chapters %s for target range %d-%d", formatPlannerChapterList(missing), batch.TargetFrom, batch.TargetTo)
 			}
-			filled, fillErr := fillMissingPlannerBatchChapters(ctx, llm, systemPrompt, originalPrompt, text, batch, chapters, missing, missingErr, emit, current, total, label)
+			filled, fillErr := fillMissingPlannerBatchChapters(ctx, llm, systemPrompt, originalPrompt, text, batch, chapters, missing, missingErr, emit, current, total, label, maxRepairAttempts, maxModelCallAttempts)
 			if fillErr == nil {
 				if validate == nil {
 					return filled, nil
@@ -3525,11 +3582,11 @@ func collectPlannerBatchChaptersWithRepair(
 		if lastErr == nil {
 			lastErr = fmt.Errorf("planner batch returned no usable chapters")
 		}
-		if attempt >= adaptationPlannerRepairMaxAttempts {
+		if attempt >= maxRepairAttempts {
 			return nil, lastErr
 		}
-		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s不能直接使用，正在整批修复第 %d/%d 次：%v", label, attempt+1, adaptationPlannerRepairMaxAttempts, lastErr), lastErr)
-		repairedText, err := repairPlannerBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, lastErr, emit, current, total, label)
+		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s不能直接使用，正在整批修复第 %d/%d 次：%v", label, attempt+1, maxRepairAttempts, lastErr), lastErr)
+		repairedText, err := repairPlannerBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, lastErr, emit, current, total, label, maxModelCallAttempts)
 		if err != nil {
 			return nil, err
 		}
@@ -3548,7 +3605,12 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 	allowExpansion bool,
 	manifest *domain.AdaptationSourceManifest,
 	emit ProgressEmitter,
+	maxRepairAttempts int,
+	maxModelCallAttempts int,
 ) (plannerSkeletonBatch, error) {
+	if maxRepairAttempts <= 0 {
+		maxRepairAttempts = adaptationPlannerRepairMaxAttempts
+	}
 	text := initialText
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -3557,11 +3619,11 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 			return batch, nil
 		}
 		lastErr = err
-		if attempt >= adaptationPlannerRepairMaxAttempts {
+		if attempt >= maxRepairAttempts {
 			return plannerSkeletonBatch{}, lastErr
 		}
-		emitAdaptProgress(emit, StagePlan, attempt+1, adaptationPlannerRepairMaxAttempts, fmt.Sprintf("卷剧情重规划返回不符合结构，正在修复第 %d/%d 次：%v", attempt+1, adaptationPlannerRepairMaxAttempts, lastErr), lastErr)
-		repairedText, repairErr := repairProposalVolumeRevisionSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, originalBatch, expansionMaxTo, allowExpansion, lastErr, emit)
+		emitAdaptProgress(emit, StagePlan, attempt+1, maxRepairAttempts, fmt.Sprintf("卷剧情重规划返回不符合结构，正在修复第 %d/%d 次：%v", attempt+1, maxRepairAttempts, lastErr), lastErr)
+		repairedText, repairErr := repairProposalVolumeRevisionSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, originalBatch, expansionMaxTo, allowExpansion, lastErr, emit, maxModelCallAttempts)
 		if repairErr != nil {
 			return plannerSkeletonBatch{}, repairErr
 		}
@@ -3670,6 +3732,7 @@ func repairProposalVolumeRevisionSkeletonText(
 	allowExpansion bool,
 	previousErr error,
 	emit ProgressEmitter,
+	maxModelCallAttempts int,
 ) (string, error) {
 	requirements := []string{
 		"Return exactly one JSON skeleton object and no prose.",
@@ -3695,7 +3758,7 @@ func repairProposalVolumeRevisionSkeletonText(
 		previousErr,
 		requirements,
 	)
-	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens, emit, 0, 0, "卷剧情重规划修复")
+	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens, emit, 0, 0, "卷剧情重规划修复", maxModelCallAttempts)
 	if err != nil {
 		return "", fmt.Errorf("planner volume revision skeleton repair llm generate: %w", err)
 	}
@@ -3715,7 +3778,12 @@ func collectProposalRevisionBatchChaptersWithRepair(
 	current int,
 	total int,
 	label string,
+	maxRepairAttempts int,
+	maxModelCallAttempts int,
 ) ([]domain.AdaptationChapterPlan, error) {
+	if maxRepairAttempts <= 0 {
+		maxRepairAttempts = adaptationPlannerRepairMaxAttempts
+	}
 	if expansionMaxTo <= batch.TargetTo {
 		expansionMaxTo = batch.TargetTo
 	}
@@ -3740,7 +3808,7 @@ func collectProposalRevisionBatchChaptersWithRepair(
 			}
 			fillBatch := batch
 			fillBatch.TargetTo = max(batch.TargetTo, maxChapterInPlans(chapters))
-			filled, fillErr := fillMissingPlannerBatchChapters(ctx, llm, systemPrompt, originalPrompt, text, fillBatch, chapters, missing, missingErr, emit, current, total, label)
+			filled, fillErr := fillMissingPlannerBatchChapters(ctx, llm, systemPrompt, originalPrompt, text, fillBatch, chapters, missing, missingErr, emit, current, total, label, maxRepairAttempts, maxModelCallAttempts)
 			if fillErr == nil {
 				if validate == nil {
 					return filled, nil
@@ -3762,11 +3830,11 @@ func collectProposalRevisionBatchChaptersWithRepair(
 		if lastErr == nil {
 			lastErr = fmt.Errorf("planner revision returned no usable chapters")
 		}
-		if attempt >= adaptationPlannerRepairMaxAttempts {
+		if attempt >= maxRepairAttempts {
 			return nil, lastErr
 		}
-		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s不能直接使用，正在整批修复第 %d/%d 次：%v", label, attempt+1, adaptationPlannerRepairMaxAttempts, lastErr), lastErr)
-		repairedText, err := repairProposalRevisionBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, expansionMaxTo, lastErr, emit, current, total, label)
+		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s不能直接使用，正在整批修复第 %d/%d 次：%v", label, attempt+1, maxRepairAttempts, lastErr), lastErr)
+		repairedText, err := repairProposalRevisionBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, expansionMaxTo, lastErr, emit, current, total, label, maxModelCallAttempts)
 		if err != nil {
 			return nil, err
 		}
@@ -3816,7 +3884,12 @@ func fillMissingPlannerBatchChapters(
 	current int,
 	total int,
 	label string,
+	maxRepairAttempts int,
+	maxModelCallAttempts int,
 ) ([]domain.AdaptationChapterPlan, error) {
+	if maxRepairAttempts <= 0 {
+		maxRepairAttempts = adaptationPlannerRepairMaxAttempts
+	}
 	currentChapters := append([]domain.AdaptationChapterPlan(nil), existing...)
 	currentMissing := append([]int(nil), missing...)
 	feedbackText := previousText
@@ -3824,9 +3897,9 @@ func fillMissingPlannerBatchChapters(
 	if lastErr == nil {
 		lastErr = fmt.Errorf("missing chapters %s", formatPlannerChapterList(currentMissing))
 	}
-	for attempt := 0; attempt < adaptationPlannerRepairMaxAttempts; attempt++ {
-		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s缺少章节 %s，正在补齐第 %d/%d 次", label, formatPlannerChapterList(currentMissing), attempt+1, adaptationPlannerRepairMaxAttempts), lastErr)
-		fillText, err := repairPlannerMissingChaptersText(ctx, llm, systemPrompt, originalPrompt, feedbackText, batch, currentChapters, currentMissing, lastErr, emit, current, total, label)
+	for attempt := 0; attempt < maxRepairAttempts; attempt++ {
+		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s缺少章节 %s，正在补齐第 %d/%d 次", label, formatPlannerChapterList(currentMissing), attempt+1, maxRepairAttempts), lastErr)
+		fillText, err := repairPlannerMissingChaptersText(ctx, llm, systemPrompt, originalPrompt, feedbackText, batch, currentChapters, currentMissing, lastErr, emit, current, total, label, maxModelCallAttempts)
 		if err != nil {
 			lastErr = err
 			feedbackText = ""
@@ -3916,6 +3989,7 @@ func repairPlannerSkeletonText(
 	emit ProgressEmitter,
 	current int,
 	total int,
+	maxModelCallAttempts int,
 ) (string, error) {
 	repairPrompt := buildPlannerRepairPrompt("skeleton", originalPrompt, previousText, previousErr, []string{
 		"Return exactly one JSON skeleton object and no prose.",
@@ -3923,7 +3997,7 @@ func repairPlannerSkeletonText(
 		"Each batch must have target_from, target_to, source_from, source_to, title, theme or goal, and summary.",
 		"Do not return only overall_arc, key_turns, pair, notes, markdown, or explanation.",
 	})
-	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens, emit, current, total, "骨架规划修复")
+	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens, emit, current, total, "骨架规划修复", maxModelCallAttempts)
 	if err != nil {
 		return "", fmt.Errorf("planner skeleton repair llm generate: %w", err)
 	}
@@ -3942,6 +4016,7 @@ func repairPlannerBatchText(
 	current int,
 	total int,
 	label string,
+	maxModelCallAttempts int,
 ) (string, error) {
 	repairPrompt := buildPlannerRepairPrompt(
 		fmt.Sprintf("batch %d", batch.Index),
@@ -3956,7 +4031,7 @@ func repairPlannerBatchText(
 			"Do not return only summaries, key_turns, overall_arc, markdown, or explanation.",
 		},
 	)
-	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens, emit, current, total, label+"整批修复")
+	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens, emit, current, total, label+"整批修复", maxModelCallAttempts)
 	if err != nil {
 		return "", fmt.Errorf("planner batch repair llm generate: %w", err)
 	}
@@ -3976,6 +4051,7 @@ func repairProposalRevisionBatchText(
 	current int,
 	total int,
 	label string,
+	maxModelCallAttempts int,
 ) (string, error) {
 	if expansionMaxTo < batch.TargetTo {
 		expansionMaxTo = batch.TargetTo
@@ -3995,7 +4071,7 @@ func repairProposalRevisionBatchText(
 			"Do not return only summaries, key_turns, overall_arc, markdown, or explanation.",
 		},
 	)
-	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens, emit, current, total, label+"整批修复")
+	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens, emit, current, total, label+"整批修复", maxModelCallAttempts)
 	if err != nil {
 		return "", fmt.Errorf("planner revision repair llm generate: %w", err)
 	}
@@ -4016,6 +4092,7 @@ func repairPlannerMissingChaptersText(
 	current int,
 	total int,
 	label string,
+	maxModelCallAttempts int,
 ) (string, error) {
 	input := struct {
 		Step             string                         `json:"step"`
@@ -4048,7 +4125,7 @@ func repairPlannerMissingChaptersText(
 	repairPrompt := "The previous planner response produced a usable partial batch but omitted required chapter plans. Fill only the missing chapters using the original planning request and the already accepted chapter plans below.\n\n" +
 		"Original planning request:\n```text\n" + originalPrompt + "\n```\n\n" +
 		"Missing chapter repair input:\n```json\n" + string(raw) + "\n```"
-	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens, emit, current, total, label+"缺章补齐")
+	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens, emit, current, total, label+"缺章补齐", maxModelCallAttempts)
 	if err != nil {
 		return "", fmt.Errorf("planner missing chapter repair llm generate: %w", err)
 	}
