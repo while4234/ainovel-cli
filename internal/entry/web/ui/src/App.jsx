@@ -2867,7 +2867,7 @@ export default function App() {
                     <span className="event-dot" />
                     <span className="event-time">{formatTime(event.time)}</span>
                     <strong>{event.event?.category || 'EVENT'}</strong>
-                    <span>{event.event?.summary || '无摘要'}</span>
+                    <span>{eventFeedSummary(event)}</span>
                   </div>
                 ))
               )}
@@ -6134,6 +6134,14 @@ function formatTime(value) {
     return '--:--:--';
   }
   return new Date(value).toLocaleTimeString();
+}
+
+function eventFeedSummary(event) {
+  const status = eventStatus(event);
+  if (status === 'error' || status === 'warn') {
+    return event.event?.detail || event.event?.summary || '无摘要';
+  }
+  return event.event?.summary || '无摘要';
 }
 
 function latestSimulationEvent(events) {

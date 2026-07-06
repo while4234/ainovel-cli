@@ -116,8 +116,10 @@ func RunImport(ctx context.Context, deps Deps, path string) (<-chan Event, error
 		mergeCurrent, mergeTotal := 0, 0
 		result, err := importProfileWithOptions(ctx, deps, path, importProfileOptions{
 			Call: structuredJSONCallOptions{
+				ModelCallMaxAttempts:       deps.modelCallMaxAttempts(),
+				StructureRepairMaxAttempts: deps.structureRepairMaxAttempts(),
 				OnRetry: func(ev structuredJSONRetryEvent) {
-					emit(StageMerge, mergeCurrent, mergeTotal, fmt.Sprintf("重试 %d/%d：%v", ev.Attempt, ev.MaxAttempts, ev.Err), ev.Err)
+					emit(StageMerge, mergeCurrent, mergeTotal, formatStructuredJSONRetryMessage(ev), ev.Err)
 				},
 			},
 			OnBatch: func(progress mergeSynthesisProgress) {

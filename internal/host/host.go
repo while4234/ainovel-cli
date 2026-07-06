@@ -3242,9 +3242,14 @@ func (h *Host) SimulateFromDir(ctx context.Context, dir string) (<-chan sim.Even
 	if dir == "" {
 		return nil, fmt.Errorf("simulate source dir is required")
 	}
+	h.mu.Lock()
+	cfg := h.cfg
+	h.mu.Unlock()
 	deps := sim.Deps{
-		Store: h.store,
-		LLM:   h.models.ForRole("architect"),
+		Store:                      h.store,
+		LLM:                        h.models.ForRole("architect"),
+		ModelCallMaxAttempts:       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
+		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
 		Prompts: sim.Prompts{
 			Source: h.bundle.Prompts.SimulationSource,
 			Merge:  h.bundle.Prompts.SimulationMerge,
@@ -3258,9 +3263,14 @@ func (h *Host) ImportSimulationProfile(ctx context.Context, path string) (<-chan
 	if err := h.guardExclusive("导入仿写画像"); err != nil {
 		return nil, err
 	}
+	h.mu.Lock()
+	cfg := h.cfg
+	h.mu.Unlock()
 	deps := sim.Deps{
-		Store: h.store,
-		LLM:   h.models.ForRole("architect"),
+		Store:                      h.store,
+		LLM:                        h.models.ForRole("architect"),
+		ModelCallMaxAttempts:       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
+		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
 		Prompts: sim.Prompts{
 			Merge: h.bundle.Prompts.SimulationMerge,
 		},

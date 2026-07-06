@@ -11,6 +11,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
 
 const (
@@ -110,8 +111,10 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 			}
 			emit(StageAnalyze, i+1, len(pending), fmt.Sprintf("分析仿写语料 %d/%d：%s", i+1, len(pending), source.RelativePath), nil)
 			report, err := analyzeSourceWithOptions(ctx, deps.LLM, deps.Prompts.Source, source, structuredJSONCallOptions{
+				ModelCallMaxAttempts:       deps.modelCallMaxAttempts(),
+				StructureRepairMaxAttempts: deps.structureRepairMaxAttempts(),
 				OnRetry: func(ev structuredJSONRetryEvent) {
-					emit(StageAnalyze, i+1, len(pending), fmt.Sprintf("重试 %d/%d：%v", ev.Attempt, ev.MaxAttempts, ev.Err), ev.Err)
+					emit(StageAnalyze, i+1, len(pending), formatStructuredJSONRetryMessage(ev), ev.Err)
 				},
 			})
 			if err != nil {
@@ -146,8 +149,10 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 		emit(StageMerge, mergeCurrent, mergeTotal, "合并仿写画像...", nil)
 		synthesis, err := mergeSynthesisBatchedWithOptions(ctx, deps.LLM, deps.Prompts.Merge, existing, allReports, mergeSynthesisOptions{
 			Call: structuredJSONCallOptions{
+				ModelCallMaxAttempts:       deps.modelCallMaxAttempts(),
+				StructureRepairMaxAttempts: deps.structureRepairMaxAttempts(),
 				OnRetry: func(ev structuredJSONRetryEvent) {
-					emit(StageMerge, mergeCurrent, mergeTotal, fmt.Sprintf("重试 %d/%d：%v", ev.Attempt, ev.MaxAttempts, ev.Err), ev.Err)
+					emit(StageMerge, mergeCurrent, mergeTotal, formatStructuredJSONRetryMessage(ev), ev.Err)
 				},
 			},
 			OnBatch: func(progress mergeSynthesisProgress) {
@@ -183,6 +188,31 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 
 func AnalyzeSource(ctx context.Context, llm LLMChat, systemPrompt string, source scannedSource) (*domain.SimulationSourceReport, error) {
 	return analyzeSourceWithOptions(ctx, llm, systemPrompt, source, structuredJSONCallOptions{})
+}
+
+func (d Deps) modelCallMaxAttempts() int {
+	if d.ModelCallMaxAttempts > 0 {
+		return d.ModelCallMaxAttempts
+	}
+	return retrypolicy.MaxAttempts
+}
+
+func (d Deps) structureRepairMaxAttempts() int {
+	if d.StructureRepairMaxAttempts > 0 {
+		return d.StructureRepairMaxAttempts
+	}
+	return defaultStructureRepairMaxAttempts
+}
+
+func formatStructuredJSONRetryMessage(ev structuredJSONRetryEvent) string {
+	label := "重试"
+	switch ev.Kind {
+	case structuredJSONRetryKindModelCall:
+		label = "模型调用重试"
+	case structuredJSONRetryKindStructureRepair:
+		label = "结构修复"
+	}
+	return fmt.Sprintf("%s %d/%d：%v", label, ev.Attempt, ev.MaxAttempts, ev.Err)
 }
 
 func analyzeSourceWithOptions(ctx context.Context, llm LLMChat, systemPrompt string, source scannedSource, opts structuredJSONCallOptions) (*domain.SimulationSourceReport, error) {

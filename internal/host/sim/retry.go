@@ -13,16 +13,25 @@ import (
 type structuredJSONRetryEvent struct {
 	Attempt     int
 	MaxAttempts int
+	Kind        string
 	Err         error
 }
 
 type structuredJSONCallOptions struct {
-	MaxAttempts int
-	OnRetry     func(structuredJSONRetryEvent)
-	Sleep       func(context.Context, time.Duration) error
+	MaxAttempts                int
+	ModelCallMaxAttempts       int
+	StructureRepairMaxAttempts int
+	OnRetry                    func(structuredJSONRetryEvent)
+	Sleep                      func(context.Context, time.Duration) error
 }
 
 var structuredJSONRetrySleep = retrypolicy.Wait
+
+const (
+	structuredJSONRetryKindModelCall       = "model_call"
+	structuredJSONRetryKindStructureRepair = "structure_repair"
+	defaultStructureRepairMaxAttempts      = 2
+)
 
 func runStructuredJSONCall[T any](
 	ctx context.Context,
@@ -39,53 +48,90 @@ func runStructuredJSONCall[T any](
 		return zero, fmt.Errorf("parse is nil")
 	}
 
-	maxAttempts := opts.MaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = retrypolicy.MaxAttempts
-	}
-
-	formatRetried := false
 	currentMessages := append([]agentcore.Message(nil), messages...)
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	maxStructureRepairAttempts := structuredJSONStructureRepairMaxAttempts(opts)
+	for repairAttempt := 0; ; repairAttempt++ {
 		if err := ctx.Err(); err != nil {
 			return zero, err
 		}
 
-		resp, err := llm.Generate(ctx, currentMessages, nil)
+		resp, err := generateStructuredJSONResponse(ctx, llm, currentMessages, opts)
 		if err != nil {
-			if !agentcore.IsFailoverEligible(err) || attempt == maxAttempts {
-				return zero, err
-			}
-			if err := waitBeforeStructuredJSONRetry(ctx, opts, attempt, maxAttempts, err); err != nil {
-				return zero, err
-			}
-			continue
-		}
-		if resp == nil {
-			return zero, fmt.Errorf("llm returned nil response")
+			return zero, err
 		}
 
 		parsed, err := parse(resp.Message.TextContent())
 		if err == nil {
 			return parsed, nil
 		}
-		if formatRetried || attempt == maxAttempts {
+		if repairAttempt >= maxStructureRepairAttempts {
 			return zero, err
 		}
 
-		formatRetried = true
 		currentMessages = append(currentMessages, agentcore.UserMsg(formatJSONRetryPrompt(err)))
-		if err := waitBeforeStructuredJSONRetry(ctx, opts, attempt, maxAttempts, err); err != nil {
+		if opts.OnRetry != nil {
+			opts.OnRetry(structuredJSONRetryEvent{
+				Attempt:     repairAttempt + 1,
+				MaxAttempts: maxStructureRepairAttempts,
+				Kind:        structuredJSONRetryKindStructureRepair,
+				Err:         err,
+			})
+		}
+		if err := waitStructuredJSONRetryDelay(ctx, opts, repairAttempt+1); err != nil {
 			return zero, err
 		}
 	}
-	return zero, fmt.Errorf("structured JSON call exhausted %d attempts", maxAttempts)
 }
 
-func waitBeforeStructuredJSONRetry(ctx context.Context, opts structuredJSONCallOptions, attempt, maxAttempts int, err error) error {
-	if opts.OnRetry != nil {
-		opts.OnRetry(structuredJSONRetryEvent{Attempt: attempt + 1, MaxAttempts: maxAttempts, Err: err})
+func generateStructuredJSONResponse(ctx context.Context, llm LLMChat, messages []agentcore.Message, opts structuredJSONCallOptions) (*agentcore.LLMResponse, error) {
+	maxAttempts := structuredJSONModelCallMaxAttempts(opts)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		resp, err := llm.Generate(ctx, messages, nil)
+		if err == nil && resp == nil {
+			err = fmt.Errorf("llm returned nil response")
+		}
+		if err == nil {
+			return resp, nil
+		}
+		if !agentcore.IsFailoverEligible(err) || attempt == maxAttempts {
+			return nil, err
+		}
+		if opts.OnRetry != nil {
+			opts.OnRetry(structuredJSONRetryEvent{
+				Attempt:     attempt + 1,
+				MaxAttempts: maxAttempts,
+				Kind:        structuredJSONRetryKindModelCall,
+				Err:         err,
+			})
+		}
+		if err := waitStructuredJSONRetryDelay(ctx, opts, attempt); err != nil {
+			return nil, err
+		}
 	}
+	return nil, fmt.Errorf("structured JSON model call exhausted %d attempts", maxAttempts)
+}
+
+func structuredJSONModelCallMaxAttempts(opts structuredJSONCallOptions) int {
+	if opts.ModelCallMaxAttempts > 0 {
+		return opts.ModelCallMaxAttempts
+	}
+	if opts.MaxAttempts > 0 {
+		return opts.MaxAttempts
+	}
+	return retrypolicy.MaxAttempts
+}
+
+func structuredJSONStructureRepairMaxAttempts(opts structuredJSONCallOptions) int {
+	if opts.StructureRepairMaxAttempts > 0 {
+		return opts.StructureRepairMaxAttempts
+	}
+	return defaultStructureRepairMaxAttempts
+}
+
+func waitStructuredJSONRetryDelay(ctx context.Context, opts structuredJSONCallOptions, attempt int) error {
 	delay := retrypolicy.Delay(attempt)
 	if opts.Sleep != nil {
 		return opts.Sleep(ctx, delay)

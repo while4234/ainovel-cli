@@ -28,6 +28,20 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: current local commit
+  `fix: split simulation retry budgets`:
+  仿写语料分析、画像合成、画像导入后的重合成 now split transient
+  model-call retries from structured-output repairs. Model/network failures use
+  the configured `model_call_max_attempts`; invalid structured JSON uses
+  `structure_repair_max_attempts`; each source, merge batch, and repair request
+  counts attempts independently. SIMULATE retry events now label model-call
+  retries versus structure repairs, and the Web event feed shows error/warn
+  `detail` text so failures expose the concrete cause instead of only a summary
+  such as `语料分析失败`. Validation passed for focused sim tests,
+  `go test ./internal/host/sim ./internal/host -count=1`,
+  `go test ./internal/entry/web -count=1`, Web UI tests/build,
+  `git diff --check`, and local Web restart on `http://127.0.0.1:9898` as PID
+  `55452`.
 - Latest rebuild/restart change: current local commit
   `0b43458` `chore: rebuild web static after splitter fix`:
   After the splitter fix was pushed, local Web was rebuilt and restarted via

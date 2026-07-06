@@ -13,9 +13,11 @@ type LLMChat interface {
 }
 
 type Deps struct {
-	Store   *store.Store
-	LLM     LLMChat
-	Prompts Prompts
+	Store                      *store.Store
+	LLM                        LLMChat
+	ModelCallMaxAttempts       int
+	StructureRepairMaxAttempts int
+	Prompts                    Prompts
 }
 
 type Prompts struct {
