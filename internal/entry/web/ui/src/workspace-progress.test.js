@@ -15,6 +15,8 @@ import {
   canSaveAnalyzedNovelToLibrary,
   canRunSimulationAnalysis,
   clampCoCreateDecisionPageIndex,
+  coCreateDecisionOptionLetter,
+  coCreateDecisionRecommendedLetter,
   CO_CREATE_DECISION_SKIP_ANSWER,
   clearAdaptationProposalSnapshot,
   deriveWorkspaceProgress,
@@ -85,6 +87,20 @@ describe('co-create begin payload helpers', () => {
       option_id: '',
       custom_answer: ''
     })).toBe(false);
+  });
+
+  it('labels co-create decisions with visible option letters and recommended letters', () => {
+    expect(coCreateDecisionOptionLetter(0)).toBe('A');
+    expect(coCreateDecisionOptionLetter(3)).toBe('D');
+    expect(coCreateDecisionOptionLetter(26)).toBe('AA');
+    expect(coCreateDecisionRecommendedLetter({
+      recommended_option_id: 'b',
+      options: [
+        { id: 'a', label: 'first' },
+        { id: 'b', label: 'second' },
+        { id: 'c', label: 'third' }
+      ]
+    })).toBe('B');
   });
 
   it('builds safe export suggested filenames', () => {

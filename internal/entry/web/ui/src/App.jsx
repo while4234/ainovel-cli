@@ -3944,6 +3944,8 @@ function CoCreateDecisionQueue({ decisions = [], busy, totalCount = 0, onResolve
   const canGoNext = activeIndex < decisionCount - 1 && activeAnswerComplete;
   const selectedSkip = activeAnswer.optionId === CO_CREATE_DECISION_SKIP_OPTION_ID;
   const customValue = selectedSkip ? '' : activeAnswer.customAnswer || '';
+  const recommendedOptionId = String(activeDecision.recommended_option_id || '').trim();
+  const recommendedOptionLetter = coCreateDecisionRecommendedLetter(activeDecision);
 
   const setActiveAnswer = (answer) => {
     setAnswers((previous) => ({
@@ -3987,24 +3989,26 @@ function CoCreateDecisionQueue({ decisions = [], busy, totalCount = 0, onResolve
         <article className="decision-card" key={activeDecision.id || activeDecision.question || activeIndex}>
           <div className="decision-card-head">
             <strong>{activeDecision.question}</strong>
-            {activeDecision.recommended_option_id ? <span>推荐 {activeDecision.recommended_option_id}</span> : null}
+            {recommendedOptionId ? <span>推荐 {recommendedOptionLetter || recommendedOptionId}</span> : null}
           </div>
           {activeDecision.evidence ? <p className="decision-evidence">{activeDecision.evidence}</p> : null}
           {activeDecision.impact ? <p className="decision-impact">{activeDecision.impact}</p> : null}
           <div className="decision-options">
-            {(activeDecision.options || []).map((option) => {
+            {(activeDecision.options || []).map((option, optionIndex) => {
               const selected = option.id === activeAnswer.optionId && !activeAnswer.customAnswer;
+              const recommended = String(option.id || '').trim() === recommendedOptionId;
               return (
                 <button
-                  className={`tool-button ${selected ? 'accent' : ''}`}
+                  className={['tool-button', selected ? 'accent' : '', recommended && !selected ? 'recommended' : ''].filter(Boolean).join(' ')}
                   disabled={busy || !String(activeDecision.id || '').trim()}
                   key={option.id}
                   onClick={() => setActiveAnswer({ optionId: option.id, customAnswer: '' })}
                   title={option.label}
                   type="button"
                 >
-                  {selected ? <Check size={15} /> : <CircleDot size={15} />}
-                  <span>{option.label}</span>
+                  <span className="decision-option-letter">{coCreateDecisionOptionLetter(optionIndex)}</span>
+                  <span className="decision-option-label">{option.label}</span>
+                  {recommended ? <span className="decision-option-recommended">推荐</span> : null}
                 </button>
               );
             })}
@@ -4014,8 +4018,8 @@ function CoCreateDecisionQueue({ decisions = [], busy, totalCount = 0, onResolve
               onClick={() => setActiveAnswer({ optionId: CO_CREATE_DECISION_SKIP_OPTION_ID, customAnswer: '' })}
               type="button"
             >
-              <X size={15} />
-              <span>跳过，不修改</span>
+              <span className="decision-option-letter">{coCreateDecisionOptionLetter((activeDecision.options || []).length)}</span>
+              <span className="decision-option-label">跳过，不修改</span>
             </button>
           </div>
           <div className="decision-custom">
@@ -7717,6 +7721,28 @@ export function normalizeCoCreateDecisionAnswers(decisions = [], previous = {}) 
     next[key] = normalizeCoCreateDecisionAnswer(previous[key]);
     return next;
   }, {});
+}
+
+export function coCreateDecisionOptionLetter(index = 0) {
+  let value = Number.parseInt(String(index || 0), 10);
+  if (!Number.isInteger(value) || value < 0) {
+    value = 0;
+  }
+  let label = '';
+  do {
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26) - 1;
+  } while (value >= 0);
+  return label;
+}
+
+export function coCreateDecisionRecommendedLetter(decision = {}) {
+  const recommendedOptionId = String(decision.recommended_option_id || '').trim();
+  if (!recommendedOptionId || !Array.isArray(decision.options)) {
+    return '';
+  }
+  const index = decision.options.findIndex((option) => String(option.id || '').trim() === recommendedOptionId);
+  return index >= 0 ? coCreateDecisionOptionLetter(index) : '';
 }
 
 export function isCoCreateDecisionAnswerComplete(answer = {}) {

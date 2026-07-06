@@ -47,7 +47,9 @@ describe('ui styles', () => {
 
   it('shows co-create decision options vertically without truncating labels', () => {
     expect(css).toMatch(/\.decision-options\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
-    expect(css).toMatch(/\.decision-options \.tool-button\s*{[^}]*width:\s*100%;[^}]*white-space:\s*normal;/s);
+    expect(css).toMatch(/\.decision-options \.tool-button\s*{[^}]*display:\s*grid;[^}]*width:\s*100%;[^}]*white-space:\s*normal;/s);
+    expect(css).toMatch(/\.decision-options \.tool-button\.recommended\s*{[^}]*border-color:\s*rgba\(15,\s*111,\s*109,\s*\.72\);[^}]*background:\s*var\(--accent-softer\);/s);
+    expect(css).toMatch(/\.decision-options \.tool-button \.decision-option-letter\s*{[^}]*width:\s*26px;[^}]*min-width:\s*26px;/s);
     expect(css).toMatch(/\.decision-options \.tool-button span\s*{[^}]*overflow-wrap:\s*anywhere;[^}]*white-space:\s*normal;/s);
     expect(css).not.toMatch(/\.decision-options \.tool-button span\s*{[^}]*text-overflow:\s*ellipsis;/s);
   });
