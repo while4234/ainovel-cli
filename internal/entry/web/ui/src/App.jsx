@@ -6933,7 +6933,7 @@ export function canRunSimulationAnalysis({ activeProject, busy, simulation } = {
 }
 
 export function canRunAdaptationAnalysis({ activeProject, busy, adaptation } = {}) {
-  return Boolean(activeProject && adaptation?.sourceFile && adaptation.analysisStatus !== 'running' && adaptation.uploadStatus !== 'running');
+  return Boolean(activeProject && adaptation?.sourceFile && !['running', 'done'].includes(adaptation.analysisStatus) && adaptation.uploadStatus !== 'running');
 }
 
 export function canSaveAnalyzedNovelToLibrary({ activeProject, busy, adaptation } = {}) {

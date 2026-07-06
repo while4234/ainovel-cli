@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 const (
@@ -600,6 +601,9 @@ func (s *LibraryService) LoadNovelIntoProject(manifest ProjectManifest, name str
 	}
 	if err := rewriteAdaptationManifestFile(filepath.Join(tmpAdaptationRoot, "source_manifest.json"), projectSourcePath); err != nil {
 		return apiLibraryItem{}, apiUploadedFile{}, err
+	}
+	if _, err := storepkg.NewStore(manifest.OutputDir).Adaptation.Backup("library-load-" + entryName); err != nil {
+		return apiLibraryItem{}, apiUploadedFile{}, fmt.Errorf("backup project adaptation analysis: %w", err)
 	}
 	if err := os.RemoveAll(projectAdaptationRoot); err != nil {
 		return apiLibraryItem{}, apiUploadedFile{}, fmt.Errorf("replace project adaptation analysis: %w", err)

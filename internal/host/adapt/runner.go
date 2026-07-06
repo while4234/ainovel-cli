@@ -102,6 +102,12 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 		sourcePath = absPath
 	}
 
+	if handled, err := ensurePreparedSourceDossierIfReady(ctx, deps, sourcePath, emit); err != nil {
+		return err
+	} else if handled {
+		return nil
+	}
+
 	emit(StageSplitting, 0, 0, "切分原文章节...", nil)
 	chapters, err := imp.SplitFile(sourcePath)
 	if err != nil {
@@ -120,13 +126,16 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 	if !sourceChanged {
 		emit(StageSplitting, total, total, "源书快照匹配，继续使用已有分析产物", nil)
 	}
+	reportsChanged, err := repairReusableSourceReports(deps.Store.Adaptation, manifest, emit)
+	if err != nil {
+		return err
+	}
 	if reports, err := deps.Store.Adaptation.LoadSourceReports(); err != nil {
 		return fmt.Errorf("load source reports for co-create dossier batches: %w", err)
 	} else if _, err := ensureCoCreateDossierBatches(ctx, deps, manifest, reports, emit); err != nil {
 		return fmt.Errorf("ensure co-create dossier batches: %w", err)
 	}
 
-	reportsChanged := false
 	for i, ch := range chapters {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -205,6 +214,41 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 	}
 	emit(StageDone, total, total, fmt.Sprintf("原书分析完成：%d 章快照已保存", total), nil)
 	return nil
+}
+
+func ensurePreparedSourceDossierIfReady(ctx context.Context, deps Deps, sourcePath string, emit func(Stage, int, int, string, error)) (bool, error) {
+	manifest, err := deps.Store.Adaptation.LoadSourceManifest()
+	if err != nil {
+		return false, fmt.Errorf("load source manifest: %w", err)
+	}
+	if manifest == nil || manifest.ChapterCount <= 0 || !sameSourcePath(manifest.SourcePath, sourcePath) {
+		return false, nil
+	}
+	reports, err := deps.Store.Adaptation.LoadCompleteSourceReports()
+	if err != nil {
+		return false, fmt.Errorf("load complete source reports: %w", err)
+	}
+	if len(reports) != manifest.ChapterCount {
+		return false, nil
+	}
+	foundation, err := deps.Store.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return false, fmt.Errorf("load source foundation: %w", err)
+	}
+	if foundation == nil {
+		return false, nil
+	}
+	current, err := deps.Store.Adaptation.CoCreateDossierCurrent(CoCreateDossierPromptVersion, CoCreateDossierBatchSize, CoCreateDossierBatchRuneLimit)
+	if err != nil {
+		return false, fmt.Errorf("check co-create dossier: %w", err)
+	}
+	if current {
+		return false, nil
+	}
+	if _, err := EnsureCoCreateDossier(ctx, deps, manifest, reports, emit); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func mergeSourceFoundationResumable(
@@ -545,6 +589,26 @@ func ensureSourceSnapshot(adaptation *store.AdaptationStore, sourcePath string, 
 		return existing, false, nil
 	}
 
+	var legacyReports []domain.AdaptationSourceReport
+	legacySourceText := make(map[int]string)
+	if existing != nil {
+		legacyReports, err = adaptation.LoadSourceReports()
+		if err != nil {
+			return nil, false, fmt.Errorf("load legacy source reports: %w", err)
+		}
+		for _, source := range existing.Chapters {
+			text, _, err := adaptation.LoadSourceChapter(source.Chapter)
+			if err != nil {
+				return nil, false, fmt.Errorf("load legacy source chapter %d: %w", source.Chapter, err)
+			}
+			if strings.TrimSpace(text) != "" {
+				legacySourceText[source.Chapter] = text
+			}
+		}
+		if _, err := adaptation.Backup("source-snapshot-change"); err != nil {
+			return nil, false, fmt.Errorf("backup adaptation store before source reset: %w", err)
+		}
+	}
 	if err := adaptation.Reset(); err != nil {
 		return nil, false, fmt.Errorf("reset adaptation store: %w", err)
 	}
@@ -559,6 +623,9 @@ func ensureSourceSnapshot(adaptation *store.AdaptationStore, sourcePath string, 
 	next.Chapters = sources
 	if err := adaptation.SaveSourceManifest(next); err != nil {
 		return nil, false, fmt.Errorf("save source manifest: %w", err)
+	}
+	if _, err := migrateLegacySourceReportsAfterSnapshotChange(adaptation, legacyReports, legacySourceText, next, chapters); err != nil {
+		return nil, false, err
 	}
 	return &next, true, nil
 }
@@ -611,8 +678,144 @@ func reusableSourceReport(report *domain.AdaptationSourceReport, sourceSHA256 st
 	return report != nil &&
 		strings.TrimSpace(report.SourceSHA256) != "" &&
 		report.SourceSHA256 == sourceSHA256 &&
+		reportHasReusableAnalysis(report)
+}
+
+func repairReusableSourceReports(adaptation *store.AdaptationStore, manifest *domain.AdaptationSourceManifest, emit func(Stage, int, int, string, error)) (bool, error) {
+	if adaptation == nil || manifest == nil {
+		return false, nil
+	}
+	changed := false
+	for _, source := range manifest.Chapters {
+		report, err := adaptation.LoadSourceReport(source.Chapter)
+		if err != nil {
+			return false, fmt.Errorf("load source report %d for migration: %w", source.Chapter, err)
+		}
+		if reusableSourceReport(report, source.SHA256) {
+			continue
+		}
+		if !legacyReusableSourceReport(report, source) {
+			continue
+		}
+		next := migratedSourceReport(*report, source)
+		if err := adaptation.SaveSourceReport(next); err != nil {
+			return false, fmt.Errorf("save migrated source report %d: %w", source.Chapter, err)
+		}
+		changed = true
+		if emit != nil {
+			emit(StageChapter, source.Chapter, manifest.ChapterCount, fmt.Sprintf("沿用第 %d/%d 章旧分析报告：%s", source.Chapter, manifest.ChapterCount, source.Title), nil)
+		}
+	}
+	if changed {
+		if reports, err := adaptation.LoadSourceReports(); err == nil {
+			_ = adaptation.SaveSourceReports(reports)
+		}
+	}
+	return changed, nil
+}
+
+func migrateLegacySourceReportsAfterSnapshotChange(adaptation *store.AdaptationStore, reports []domain.AdaptationSourceReport, oldSourceText map[int]string, manifest domain.AdaptationSourceManifest, chapters []imp.Chapter) (int, error) {
+	if adaptation == nil || len(reports) == 0 || len(chapters) == 0 {
+		return 0, nil
+	}
+	reportByChapter := make(map[int]domain.AdaptationSourceReport, len(reports))
+	for _, report := range reports {
+		if report.Chapter <= 0 || !reportHasReusableAnalysis(&report) {
+			continue
+		}
+		reportByChapter[report.Chapter] = report
+	}
+	migrated := 0
+	for i, source := range manifest.Chapters {
+		if i >= len(chapters) {
+			break
+		}
+		report, ok := reportByChapter[source.Chapter]
+		if !ok || !legacyReusableSourceReport(&report, source) {
+			continue
+		}
+		if !sourceTextsSimilar(oldSourceText[source.Chapter], chapters[i].Content) {
+			continue
+		}
+		if err := adaptation.SaveSourceReport(migratedSourceReport(report, source)); err != nil {
+			return migrated, fmt.Errorf("save migrated source report %d after source reset: %w", source.Chapter, err)
+		}
+		migrated++
+	}
+	if migrated > 0 {
+		if nextReports, err := adaptation.LoadSourceReports(); err == nil {
+			_ = adaptation.SaveSourceReports(nextReports)
+		}
+	}
+	return migrated, nil
+}
+
+func legacyReusableSourceReport(report *domain.AdaptationSourceReport, source domain.AdaptationSource) bool {
+	return report != nil &&
+		report.Chapter == source.Chapter &&
+		reportHasReusableAnalysis(report) &&
+		reportTitleMatchesSource(report.Title, source.Title)
+}
+
+func migratedSourceReport(report domain.AdaptationSourceReport, source domain.AdaptationSource) domain.AdaptationSourceReport {
+	report.Chapter = source.Chapter
+	report.Title = source.Title
+	report.SourceSHA256 = source.SHA256
+	return report
+}
+
+func reportHasReusableAnalysis(report *domain.AdaptationSourceReport) bool {
+	return report != nil &&
 		strings.TrimSpace(report.Summary) != "" &&
 		len(report.KeyEvents) > 0
+}
+
+func reportTitleMatchesSource(reportTitle, sourceTitle string) bool {
+	return normalizeSourceReportTitle(reportTitle) == normalizeSourceReportTitle(sourceTitle)
+}
+
+func normalizeSourceReportTitle(title string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(title)), "")
+}
+
+func sourceTextsSimilar(oldText, newText string) bool {
+	oldText = normalizeSourceTextForReuse(oldText)
+	newText = normalizeSourceTextForReuse(newText)
+	if oldText == "" || newText == "" {
+		return false
+	}
+	if oldText == newText {
+		return true
+	}
+	shorter, longer := oldText, newText
+	if len(shorter) > len(longer) {
+		shorter, longer = longer, shorter
+	}
+	if len(shorter) < 200 {
+		return false
+	}
+	ratio := float64(len(shorter)) / float64(len(longer))
+	if ratio >= 0.90 && strings.Contains(longer, shorter) {
+		return true
+	}
+	return ratio >= 0.90 && commonPrefixBytes(shorter, longer) >= int(float64(len(shorter))*0.90)
+}
+
+func normalizeSourceTextForReuse(text string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(text)), "")
+}
+
+func commonPrefixBytes(a, b string) int {
+	max := len(a)
+	if len(b) < max {
+		max = len(b)
+	}
+	for i := 0; i < max; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return max
 }
 
 func structuredCallOptions(stage Stage, current, total int, emit func(Stage, int, int, string, error)) imp.StructuredCallOptions {
@@ -5756,26 +5959,28 @@ func ValidatePreparedSource(st *store.Store, sourcePath string) (*domain.Adaptat
 	if manifest == nil || manifest.ChapterCount <= 0 || len(manifest.Chapters) != manifest.ChapterCount {
 		return nil, nil, fmt.Errorf("source manifest missing or incomplete; analyze source first")
 	}
-	if sourcePath = strings.TrimSpace(sourcePath); sourcePath != "" {
-		absPath, err := filepath.Abs(sourcePath)
-		if err == nil {
-			sourcePath = absPath
-		}
-		chapters, err := imp.SplitFile(sourcePath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("split selected adaptation source: %w", err)
-		}
-		next := buildSourceManifest(sourcePath, chapters)
-		if !sourceManifestMatches(manifest, next) {
-			return nil, nil, fmt.Errorf("selected adaptation source has not been analyzed; run adaptation source analysis first")
-		}
-	}
 	reports, err := st.Adaptation.LoadCompleteSourceReports()
 	if err != nil {
 		return nil, nil, fmt.Errorf("load source reports: %w", err)
 	}
 	if len(reports) != manifest.ChapterCount {
 		return nil, nil, fmt.Errorf("source reports incomplete or stale; analyze source first")
+	}
+	if sourcePath = strings.TrimSpace(sourcePath); sourcePath != "" {
+		absPath, err := filepath.Abs(sourcePath)
+		if err == nil {
+			sourcePath = absPath
+		}
+		if !sameSourcePath(manifest.SourcePath, sourcePath) {
+			chapters, err := imp.SplitFile(sourcePath)
+			if err != nil {
+				return nil, nil, fmt.Errorf("split selected adaptation source: %w", err)
+			}
+			next := buildSourceManifest(sourcePath, chapters)
+			if !sourceManifestMatches(manifest, next) {
+				return nil, nil, fmt.Errorf("selected adaptation source has not been analyzed; run adaptation source analysis first")
+			}
+		}
 	}
 	foundation, err := st.Adaptation.LoadSourceFoundation()
 	if err != nil {

@@ -363,6 +363,43 @@ func TestProjectAdaptAnalyzeRejectsUnsafeSourceFile(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptAnalyzeSkipsCompletedPreparedSource(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Completed Analyze")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	writePreparedAdaptationFixture(t, manifest, "source.txt")
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/analyze", bytes.NewBufferString(`{"source_file":"source.txt"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("analyze status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Analyzed   bool                `json:"analyzed"`
+		Running    bool                `json:"running"`
+		Accepted   bool                `json:"accepted"`
+		Adaptation apiAdaptationStatus `json:"adaptation"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode analyze response: %v", err)
+	}
+	if !response.Analyzed || response.Running || response.Accepted {
+		t.Fatalf("completed source analyze response = analyzed:%v running:%v accepted:%v", response.Analyzed, response.Running, response.Accepted)
+	}
+	if response.Adaptation.AnalysisStatus != "done" {
+		t.Fatalf("analysis status = %q, want done", response.Adaptation.AnalysisStatus)
+	}
+	if fake.adaptAnalyzeCalls != 0 {
+		t.Fatalf("completed source should not call host analyze, calls=%d", fake.adaptAnalyzeCalls)
+	}
+}
+
 func TestProjectAdaptStartStrictModesMapRewritePolicy(t *testing.T) {
 	cases := []struct {
 		mode       string

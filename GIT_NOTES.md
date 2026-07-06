@@ -28,6 +28,30 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: pending local changes
+  `fix: preserve loaded novel analysis`:
+  Completed loaded novels now no-op when Analyze is clicked, returning
+  `analyzed=true` without starting source analysis. Prepared source snapshots
+  with complete reports and foundation can backfill missing co-create dossier
+  batches without re-splitting the TXT, so legacy novel-library entries that
+  only lack `cocreate_dossier.json` / `cocreate_dossier_batches/` keep their
+  single-chapter reports and sync back to the library after backfill. Source
+  snapshot reset and novel-library load replacement now back up existing
+  `meta/adaptation` first. Adapt co-create validation now accepts a complete
+  prepared snapshot for the selected source path, preventing
+  `selected adaptation source has not been analyzed` after loading a library
+  novel. Runtime data repair was performed under
+  `C:\Users\RondleLiu\.ainovel\novels-preview`: `术士手册` reports 1-946 were
+  backed up and SHA-aligned to the current manifest so analysis resumes at
+  chapter 947; `女神攻略`, `回档无限`, and `诡案组` project adaptation snapshots
+  were restored from the novel library with backups. Current known library
+  statuses: complete entries include `大学刑法课`, `国中理化课`, `回档无限：为她纯洁一身`,
+  `娇妻美妾任君尝`, `梦中的女孩`, `我以我血挽山河`, `我有一座冒险屋`, `择天记`,
+  and `这不是我印象中的女魔头`; `女神攻略` and `诡案组` are complete through
+  reports/foundation and need dossier-only backfill. Validation passed for
+  full `go test ./...`, focused Web UI Vitest, Vite build, `git diff --check`
+  with CRLF warnings only, and local Web restart on `http://127.0.0.1:9898`
+  as PID `30172`.
 - Latest source/runtime change: current local commit
   `feat: stabilize long-form adaptation co-create and planner batches`:
   Adaptation co-create now uses an explicit `force_rebrief` path for the

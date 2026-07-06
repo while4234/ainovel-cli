@@ -299,6 +299,75 @@ func TestPrepareSourceBuildsMissingCoCreateDossierWithoutReanalyzingPreparedSour
 	}
 }
 
+func TestPrepareSourceBackfillsDossierFromPreparedSnapshotWithoutResplitting(t *testing.T) {
+	root := t.TempDir()
+	st := store.NewStore(root)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	sourcePath := writeAdaptSource(t, t.TempDir(), []string{"BODY_ONE", "BODY_TWO"})
+	chapters, err := imp.SplitFile(sourcePath)
+	if err != nil {
+		t.Fatalf("SplitFile: %v", err)
+	}
+	manifest, _, err := ensureSourceSnapshot(st.Adaptation, sourcePath, chapters)
+	if err != nil {
+		t.Fatalf("ensureSourceSnapshot: %v", err)
+	}
+	var reports []domain.AdaptationSourceReport
+	for _, source := range manifest.Chapters {
+		report := domain.AdaptationSourceReport{
+			Chapter:      source.Chapter,
+			Title:        source.Title,
+			SourceSHA256: source.SHA256,
+			Summary:      fmt.Sprintf("chapter %d summary", source.Chapter),
+			KeyEvents:    []string{fmt.Sprintf("chapter %d event", source.Chapter)},
+		}
+		if err := st.Adaptation.SaveSourceReport(report); err != nil {
+			t.Fatalf("SaveSourceReport %d: %v", source.Chapter, err)
+		}
+		reports = append(reports, report)
+	}
+	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
+		t.Fatalf("SaveSourceReports: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{Premise: "prepared source"}); err != nil {
+		t.Fatalf("SaveSourceFoundation: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("Chapter 1: Changed\nTHIS WOULD NOT MATCH THE PREPARED SNAPSHOT\n"), 0o644); err != nil {
+		t.Fatalf("rewrite source: %v", err)
+	}
+	if _, _, err := ValidatePreparedSource(st, sourcePath); err != nil {
+		t.Fatalf("prepared source validation should trust the stored snapshot for the selected source path: %v", err)
+	}
+
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: adaptDossierBatchEnvelope()}}}
+	var events []Event
+	if err := PrepareSource(context.Background(), Deps{
+		Store: st,
+		LLM:   llm,
+		Prompts: Prompts{
+			Analyzer:        "analyzer",
+			FoundationMerge: "merge",
+		},
+	}, sourcePath, captureAdaptProgress(&events)); err != nil {
+		t.Fatalf("PrepareSource backfill dossier: %v", err)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("calls=%d, want dossier-only backfill", llm.calls)
+	}
+	if indexAdaptEvent(events, "切分原文章节") >= 0 {
+		t.Fatalf("prepared dossier backfill should not split source: %+v", events)
+	}
+	if indexAdaptEvent(events, "分析原文第") >= 0 {
+		t.Fatalf("prepared dossier backfill should not reanalyze chapters: %+v", events)
+	}
+	current, err := st.Adaptation.CoCreateDossierCurrent(CoCreateDossierPromptVersion, CoCreateDossierBatchSize, CoCreateDossierBatchRuneLimit)
+	if err != nil || !current {
+		t.Fatalf("dossier should be current: current=%v err=%v", current, err)
+	}
+}
+
 func TestPrepareSourceRepairsMalformedCoCreateDossierBatch(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

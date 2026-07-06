@@ -296,6 +296,11 @@ describe('workspace progress derivation', () => {
       busy: false,
       adaptation: { ...adaptation, analysisStatus: 'running' }
     })).toBe(false);
+    expect(canRunAdaptationAnalysis({
+      activeProject,
+      busy: false,
+      adaptation: { ...adaptation, analysisStatus: 'done' }
+    })).toBe(false);
   });
 
   it('lets analyzed adaptation sources accept a new novel library name before saving', () => {

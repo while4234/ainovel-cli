@@ -107,11 +107,35 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	status, err := projectAdaptationStatus(manifest, false)
+	if err != nil {
+		writeAdaptationActionError(w, err, nil)
+		return
+	}
+	if status.AnalysisStatus == "done" {
+		matches, err := preparedAdaptationSourceMatches(manifest, sourcePath)
+		if err != nil {
+			writeAdaptationActionError(w, err, status.AnalysisEvents)
+			return
+		}
+		if matches {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"project":    manifest,
+				"snapshot":   session.Snapshot(),
+				"adaptation": status,
+				"events":     status.AnalysisEvents,
+				"running":    false,
+				"accepted":   false,
+				"analyzed":   true,
+			})
+			return
+		}
+	}
 	if err := session.StartPrepareAdaptationSource(sourcePath); err != nil {
 		writeAdaptationActionError(w, err, nil)
 		return
 	}
-	status, err := projectAdaptationStatus(manifest, session.isActionRunning(projectActionKindAdaptationAnalysis))
+	status, err = projectAdaptationStatus(manifest, session.isActionRunning(projectActionKindAdaptationAnalysis))
 	if err != nil {
 		writeAdaptationActionError(w, err, nil)
 		return
@@ -620,6 +644,32 @@ func adaptationAnalysisStatus(st *storepkg.Store, manifest *domain.AdaptationSou
 		return "paused"
 	}
 	return "done"
+}
+
+func preparedAdaptationSourceMatches(manifest ProjectManifest, sourcePath string) (bool, error) {
+	st := storepkg.NewStore(manifest.OutputDir)
+	adaptationManifest, err := st.Adaptation.LoadSourceManifest()
+	if err != nil || adaptationManifest == nil {
+		return false, err
+	}
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return false, nil
+	}
+	absPath, err := filepath.Abs(sourcePath)
+	if err == nil {
+		sourcePath = absPath
+	}
+	return sameAdaptationSourcePath(adaptationManifest.SourcePath, sourcePath), nil
+}
+
+func sameAdaptationSourcePath(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return a == b
+	}
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
 func adaptationStatusMessage(status string) string {

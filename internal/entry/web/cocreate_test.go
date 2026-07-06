@@ -450,6 +450,33 @@ func TestProjectAdaptCoCreateBeginRequiresCurrentDossier(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptCoCreateBeginUsesLoadedPreparedSnapshot(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Adapt CoCreate Loaded Snapshot")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
+	sourcePath := filepath.Join(manifest.RootDir, "uploads", "adaptation", "source.txt")
+	if err := os.WriteFile(sourcePath, []byte("Chapter 1: Changed\nTHIS WOULD NOT MATCH THE STORED SNAPSHOT\n"), 0o644); err != nil {
+		t.Fatalf("rewrite source: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.adaptCoCreateReply = webCoCreateReply("ready", "## Adapt brief\n- use the loaded source analysis", true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"adapt","source_file":"source.txt","mode":"free","initial":"keep the loaded novel analysis"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.adaptCoCreateCalls != 1 {
+		t.Fatalf("adapt co-create calls = %d, want 1", fake.adaptCoCreateCalls)
+	}
+}
+
 func TestProjectAdaptCoCreateCommitRepairsRestoredRegressedDraft(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

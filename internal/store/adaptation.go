@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 
 const (
 	adaptationRootDir              = "meta/adaptation"
+	adaptationBackupDir            = "meta/adaptation_backups"
 	adaptationSourceChapterDir     = adaptationRootDir + "/source_chapters"
 	adaptationSourceReportDir      = adaptationRootDir + "/source_reports"
 	adaptationSourceReportsFile    = adaptationRootDir + "/source_reports.json"
@@ -40,6 +43,29 @@ func NewAdaptationStore(io *IO) *AdaptationStore { return &AdaptationStore{io: i
 
 func (s *AdaptationStore) Reset() error {
 	return os.RemoveAll(s.io.path(adaptationRootDir))
+}
+
+// Backup copies the current adaptation snapshot before destructive maintenance.
+func (s *AdaptationStore) Backup(label string) (string, error) {
+	sourceRoot := s.io.path(adaptationRootDir)
+	if _, err := os.Stat(sourceRoot); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	label = safeAdaptationBackupLabel(label)
+	if label == "" {
+		label = "snapshot"
+	}
+	targetRoot := s.io.path(filepath.ToSlash(filepath.Join(
+		adaptationBackupDir,
+		time.Now().UTC().Format("20060102T150405.000000000Z")+"-"+label,
+	)))
+	if err := copyAdaptationDir(sourceRoot, targetRoot); err != nil {
+		return "", err
+	}
+	return targetRoot, nil
 }
 
 // ResetGenerated removes adaptation artifacts derived from a confirmed brief
@@ -918,6 +944,87 @@ func markBriefingDecisionResolved(briefing *domain.AdaptationCoCreateBriefing, d
 
 func timeNowUTCString() string {
 	return time.Now().UTC().Format(time.RFC3339)
+}
+
+func safeAdaptationBackupLabel(label string) string {
+	label = strings.TrimSpace(label)
+	replacer := strings.NewReplacer(
+		"\\", "-",
+		"/", "-",
+		":", "-",
+		"*", "-",
+		"?", "-",
+		"\"", "-",
+		"<", "-",
+		">", "-",
+		"|", "-",
+		" ", "-",
+	)
+	label = replacer.Replace(label)
+	label = strings.Trim(label, ".-")
+	if len(label) > 80 {
+		label = label[:80]
+	}
+	return label
+}
+
+func copyAdaptationDir(sourceRoot, targetRoot string) error {
+	sourceRoot = filepath.Clean(sourceRoot)
+	targetRoot = filepath.Clean(targetRoot)
+	if sourceRoot == targetRoot {
+		return fmt.Errorf("adaptation backup target must differ from source")
+	}
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		return err
+	}
+	return filepath.WalkDir(sourceRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(sourceRoot, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(targetRoot, rel)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		return copyAdaptationFile(path, target, info.Mode().Perm())
+	})
+}
+
+func copyAdaptationFile(source, target string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err = out.Sync(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func TextSHA256(text string) string {
