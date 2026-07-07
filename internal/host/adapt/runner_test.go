@@ -765,7 +765,7 @@ func TestBuildAdaptationProposalCoversSparseSourceAnchorsByExplicitRange(t *test
 	}
 }
 
-func TestBuildAdaptationProposalClearsChunkedRuntimeAfterFinalValidationFailure(t *testing.T) {
+func TestBuildAdaptationProposalKeepsChunkedRuntimeAfterFinalValidationFailure(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -803,11 +803,73 @@ func TestBuildAdaptationProposalClearsChunkedRuntimeAfterFinalValidationFailure(
 	if !strings.Contains(err.Error(), "planner proposal does not cover source chapter 4") {
 		t.Fatalf("error=%v, want missing source chapter 4", err)
 	}
-	if runtime, runtimeErr := st.Adaptation.LoadProposalRuntime(); runtimeErr != nil || runtime != nil {
-		t.Fatalf("runtime should be cleared after final validation failure: runtime=%+v err=%v", runtime, runtimeErr)
+	runtime, runtimeErr := st.Adaptation.LoadProposalRuntime()
+	if runtimeErr != nil {
+		t.Fatalf("LoadProposalRuntime: %v", runtimeErr)
+	}
+	if runtime == nil || runtime.Skeleton == nil || len(runtime.CompletedBatches) != 5 {
+		t.Fatalf("runtime should be retained after final validation failure: %+v", runtime)
 	}
 	if saved, savedErr := st.Adaptation.LoadProposal(); savedErr != nil || saved != nil {
 		t.Fatalf("invalid proposal should not be saved: proposal=%+v err=%v", saved, savedErr)
+	}
+}
+
+func TestBuildAdaptationProposalDropsBudgetInvalidRuntimeSourceRange(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	reports := seedPreparedAdaptationSource(t, st, []int{30000, 10})
+	manifest, err := st.Adaptation.LoadSourceManifest()
+	if err != nil {
+		t.Fatalf("LoadSourceManifest: %v", err)
+	}
+	sourceFoundation, err := st.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		t.Fatalf("LoadSourceFoundation: %v", err)
+	}
+	opts := ProposalOptions{
+		Brief:         "free budget split",
+		Granularity:   domain.AdaptationGranularityFree,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	skeleton := plannerSkeleton{
+		Granularity:        opts.Granularity,
+		Status:             domain.AdaptationPlanStatusProposal,
+		RewritePolicy:      opts.RewritePolicy,
+		Brief:              opts.Brief,
+		TargetChapterCount: 8,
+		Batches: []plannerSkeletonBatch{
+			testSourceMapSkeletonBatch(1, 1, 1, 1, 4),
+			testSourceMapSkeletonBatch(2, 2, 2, 5, 8),
+		},
+	}
+	runtime := newPlannerProposalRuntime(opts, manifest, skeleton.TargetChapterCount)
+	runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+	upsertPlannerProposalRuntimeBatch(runtime, skeleton.Batches[0], repeatedSourceRangePlans(1, 4, 1, 30000))
+	upsertPlannerProposalRuntimeBatch(runtime, skeleton.Batches[1], plannerBatchPlans(5, 8, 2, 2))
+
+	_, err = buildPlanFromPlannerSkeletonDetails(context.Background(), Deps{Store: st}, opts, reports, manifest, sourceFoundation, skeleton, runtime)
+	if err == nil {
+		t.Fatal("buildPlanFromPlannerSkeletonDetails should fail on under-split source budget")
+	}
+	if !strings.Contains(err.Error(), "source_range 1-1 has 30000 source_runes") {
+		t.Fatalf("error=%v, want source budget split failure", err)
+	}
+	savedRuntime, err := st.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		t.Fatalf("LoadProposalRuntime: %v", err)
+	}
+	if savedRuntime == nil || savedRuntime.Skeleton == nil {
+		t.Fatalf("runtime should be retained: %+v", savedRuntime)
+	}
+	if len(savedRuntime.CompletedBatches) != 1 {
+		t.Fatalf("completed batches=%d, want only unrelated batch retained: %+v", len(savedRuntime.CompletedBatches), savedRuntime.CompletedBatches)
+	}
+	if savedRuntime.CompletedBatches[0].SourceFrom != 2 || savedRuntime.CompletedBatches[0].TargetFrom != 5 {
+		t.Fatalf("retained batch = %+v, want source 2 target 5-8", savedRuntime.CompletedBatches[0])
 	}
 }
 
@@ -3019,6 +3081,44 @@ func stubPlannerRetrySleep(t *testing.T) func() {
 
 func plannerBatchProposalJSON(from, to, sourceFrom, sourceTo int) string {
 	return plannerBatchProposalJSONWithOmittedBudget(from, to, sourceFrom, sourceTo, 0)
+}
+
+func plannerBatchPlans(from, to, sourceFrom, sourceTo int) []domain.AdaptationChapterPlan {
+	plan, err := parsePlannerProposal(plannerBatchProposalJSON(from, to, sourceFrom, sourceTo))
+	if err != nil {
+		panic(err)
+	}
+	return plan.Chapters
+}
+
+func repeatedSourceRangePlans(from, to, sourceChapter, sourceRunes int) []domain.AdaptationChapterPlan {
+	plans := make([]domain.AdaptationChapterPlan, 0, to-from+1)
+	for chapter := from; chapter <= to; chapter++ {
+		plans = append(plans, domain.AdaptationChapterPlan{
+			Chapter: chapter,
+			Title:   fmt.Sprintf("Target %d", chapter),
+			OutlineEntry: domain.OutlineEntry{
+				Chapter:   chapter,
+				Title:     fmt.Sprintf("Target %d", chapter),
+				CoreEvent: fmt.Sprintf("Ari adapts source chapter %d beat %d.", sourceChapter, chapter-from+1),
+				Hook:      fmt.Sprintf("A clear hook for target %d.", chapter),
+				Scenes:    []string{"station"},
+			},
+			SourceChapters: []int{sourceChapter},
+			SourceRange:    domain.SourceRange{From: sourceChapter, To: sourceChapter},
+			WordBudget: &domain.AdaptationChapterWordBudget{
+				SourceRunes: sourceRunes,
+				TargetRunes: sourceRunes,
+				MinRunes:    sourceRunes - 1,
+				MaxRunes:    sourceRunes + 1,
+				Tolerance:   0.15,
+			},
+			PreserveEvents:  []string{"source event"},
+			RequiredChanges: []string{"adapt the beat"},
+			ForbiddenMoves:  []string{"drop the source anchor"},
+		})
+	}
+	return plans
 }
 
 func plannerBatchProposalJSONWithoutWordBudget(from, to, sourceFrom, sourceTo int, omittedChapter int) string {

@@ -1068,7 +1068,7 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 			revisionText,
 			batch,
 			expansionMaxTo,
-			plannerBatchChapterValidator(proposalOptionsFromPlan(updated), manifest),
+			plannerBatchChapterValidator(proposalOptionsFromPlan(updated), manifest, batch),
 			opts.EmitProgress,
 			batchOrdinal,
 			totalBatches,
@@ -1323,7 +1323,7 @@ func reviseAdaptationProposalVolumeContext(
 			batchPrompt,
 			batchText,
 			detailBatch,
-			plannerBatchChapterValidator(detailOpts, manifest),
+			plannerBatchChapterValidator(detailOpts, manifest, detailBatch),
 			opts.EmitProgress,
 			idx+1,
 			len(detailBatches),
@@ -3209,10 +3209,19 @@ func buildPlanFromPlannerSkeletonDetails(
 
 	chapters := make([]domain.AdaptationChapterPlan, 0, skeleton.TargetChapterCount)
 	for batchOrdinal, batch := range detailBatches {
+		validateBatch := plannerBatchChapterValidator(opts, manifest, batch)
 		if batchChapters, ok := plannerRuntimeBatchChapters(runtime, batch); ok {
-			chapters = append(chapters, batchChapters...)
-			emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("Reused proposal detail batch %d/%d: target %d-%d", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
-			continue
+			if err := validateBatch(batchChapters); err == nil {
+				chapters = append(chapters, batchChapters...)
+				emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("Reused proposal detail batch %d/%d: target %d-%d", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
+				continue
+			} else {
+				removePlannerProposalRuntimeBatch(runtime, batch)
+				if saveErr := savePlannerProposalRuntime(deps, runtime); saveErr != nil {
+					return zero, fmt.Errorf("save proposal runtime after invalid reused batch %d: %w", batch.Index, saveErr)
+				}
+				emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("Discarded invalid proposal detail batch %d/%d: target %d-%d", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), err)
+			}
 		}
 		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, sourceFoundation, skeleton, batch, reportsForPlannerBatch(reports, batch), chapters)
 		if err != nil {
@@ -3242,7 +3251,7 @@ func buildPlanFromPlannerSkeletonDetails(
 			batchPrompt,
 			batchText,
 			batch,
-			plannerBatchChapterValidator(opts, manifest),
+			validateBatch,
 			opts.EmitProgress,
 			batchOrdinal+1,
 			len(detailBatches),
@@ -3288,7 +3297,9 @@ func buildPlanFromPlannerSkeletonDetails(
 		fmt.Sprintf("chunked planner: %d target chapters across %d model-planned batches", skeleton.TargetChapterCount, len(skeleton.Batches)),
 	)
 	if err := validatePlannerProposal(&proposal, opts, reports, manifest, deps.LLM); err != nil {
-		_ = deps.Store.Adaptation.ClearProposalRuntime()
+		if updateErr := preparePlannerRuntimeAfterValidationError(deps, runtime, err, opts.EmitProgress); updateErr != nil {
+			return zero, fmt.Errorf("%w (also failed to update proposal runtime: %v)", err, updateErr)
+		}
 		return zero, err
 	}
 	return proposal, nil
@@ -3551,6 +3562,53 @@ func plannerRuntimeBatchMatches(completed domain.AdaptationProposalRuntimeBatch,
 		completed.TargetTo == batch.TargetTo &&
 		completed.SourceFrom == batch.SourceFrom &&
 		completed.SourceTo == batch.SourceTo
+}
+
+func removePlannerProposalRuntimeBatch(runtime *domain.AdaptationProposalRuntime, batch plannerSkeletonBatch) {
+	if runtime == nil || len(runtime.CompletedBatches) == 0 {
+		return
+	}
+	out := runtime.CompletedBatches[:0]
+	for _, completed := range runtime.CompletedBatches {
+		if plannerRuntimeBatchMatches(completed, batch) {
+			continue
+		}
+		out = append(out, completed)
+	}
+	runtime.CompletedBatches = out
+}
+
+func preparePlannerRuntimeAfterValidationError(deps Deps, runtime *domain.AdaptationProposalRuntime, validationErr error, emit ProgressEmitter) error {
+	if runtime == nil {
+		return nil
+	}
+	var budgetErr *plannerProposalBudgetSplitError
+	if errors.As(validationErr, &budgetErr) && budgetErr != nil {
+		removed := removePlannerProposalRuntimeBatchesForSourceRange(runtime, budgetErr.SourceFrom, budgetErr.SourceTo)
+		if removed > 0 {
+			emitAdaptProgress(emit, StagePlan, 0, 0, fmt.Sprintf("Retained proposal runtime and discarded %d completed detail batch(es) covering source range %d-%d", removed, budgetErr.SourceFrom, budgetErr.SourceTo), validationErr)
+			return savePlannerProposalRuntime(deps, runtime)
+		}
+	}
+	emitAdaptProgress(emit, StagePlan, 0, 0, "Retained proposal runtime after final validation failure for retry", validationErr)
+	return savePlannerProposalRuntime(deps, runtime)
+}
+
+func removePlannerProposalRuntimeBatchesForSourceRange(runtime *domain.AdaptationProposalRuntime, sourceFrom, sourceTo int) int {
+	if runtime == nil || len(runtime.CompletedBatches) == 0 || sourceFrom <= 0 || sourceTo < sourceFrom {
+		return 0
+	}
+	out := runtime.CompletedBatches[:0]
+	removed := 0
+	for _, completed := range runtime.CompletedBatches {
+		if completed.SourceFrom <= sourceTo && completed.SourceTo >= sourceFrom {
+			removed++
+			continue
+		}
+		out = append(out, completed)
+	}
+	runtime.CompletedBatches = out
+	return removed
 }
 
 func plannerRuntimeSkeletonBatchesForSource(runtime *domain.AdaptationProposalRuntime, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, bool) {
@@ -3847,7 +3905,7 @@ func shouldRetryPlannerGenerate(ctx context.Context, err error, attempt, maxAtte
 
 type plannerBatchChapterValidatorFunc func([]domain.AdaptationChapterPlan) error
 
-func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.AdaptationSourceManifest) plannerBatchChapterValidatorFunc {
+func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.AdaptationSourceManifest, batch plannerSkeletonBatch) plannerBatchChapterValidatorFunc {
 	opts.WordTolerance = normalizeProposalWordTolerance(opts.Granularity, opts.WordTolerance)
 	sourceRunesByChapter := sourceRunesByChapter(manifest)
 	chapterCount := 0
@@ -3909,7 +3967,7 @@ func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.Adaptat
 				}
 			}
 		}
-		return nil
+		return validatePlannerBatchChapterBudgetGroups(chapters, opts, sourceRunesByChapter, batch)
 	}
 }
 
@@ -6308,6 +6366,22 @@ type plannerChapterBudgetGroup struct {
 	SourceRunes int
 }
 
+type plannerProposalBudgetSplitError struct {
+	FirstChapter int
+	SourceFrom   int
+	SourceTo     int
+	SourceRunes  int
+	MinChapters  int
+}
+
+func (e *plannerProposalBudgetSplitError) Error() string {
+	if e == nil {
+		return "planner source range needs more target chapters before assigning word_budget"
+	}
+	return fmt.Sprintf("planner chapter %d source_range %d-%d has %d source_runes; split this source range into at least %d target chapters before assigning word_budget",
+		e.FirstChapter, e.SourceFrom, e.SourceTo, e.SourceRunes, e.MinChapters)
+}
+
 func normalizePlannerProposalChapterBudgets(chapters []domain.AdaptationChapterPlan, opts ProposalOptions, sourceRunesByChapter map[int]int) (bool, error) {
 	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
 	if policy == nil {
@@ -6325,13 +6399,65 @@ func normalizePlannerProposalChapterBudgets(chapters []domain.AdaptationChapterP
 		}
 		if minChapters > len(group.Indexes) {
 			first := chapters[group.Indexes[0]].Chapter
-			return false, fmt.Errorf("planner chapter %d source_range %d-%d has %d source_runes; split this source range into at least %d target chapters before assigning word_budget",
-				first, group.SourceFrom, group.SourceTo, group.SourceRunes, minChapters)
+			return false, &plannerProposalBudgetSplitError{
+				FirstChapter: first,
+				SourceFrom:   group.SourceFrom,
+				SourceTo:     group.SourceTo,
+				SourceRunes:  group.SourceRunes,
+				MinChapters:  minChapters,
+			}
 		}
 		applyPlannerBudgetGroup(chapters, group, *policy)
 		normalized = true
 	}
 	return normalized, nil
+}
+
+func validatePlannerBatchChapterBudgetGroups(chapters []domain.AdaptationChapterPlan, opts ProposalOptions, sourceRunesByChapter map[int]int, batch plannerSkeletonBatch) error {
+	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
+	if policy == nil {
+		return nil
+	}
+	groups := plannerChapterBudgetGroups(chapters, sourceRunesByChapter)
+	for _, group := range groups {
+		if len(group.Indexes) == 0 || !plannerBudgetGroupNeedsNormalization(chapters, group, *policy) {
+			continue
+		}
+		if group.SourceRunes <= policy.MaxRunes {
+			continue
+		}
+		minChapters := ceilPositiveDiv(group.SourceRunes, policy.MaxRunes)
+		if minChapters <= len(group.Indexes) {
+			continue
+		}
+		if plannerBatchBudgetGroupMayContinue(chapters, group, batch) {
+			continue
+		}
+		first := chapters[group.Indexes[0]].Chapter
+		return &plannerProposalBudgetSplitError{
+			FirstChapter: first,
+			SourceFrom:   group.SourceFrom,
+			SourceTo:     group.SourceTo,
+			SourceRunes:  group.SourceRunes,
+			MinChapters:  minChapters,
+		}
+	}
+	return nil
+}
+
+func plannerBatchBudgetGroupMayContinue(chapters []domain.AdaptationChapterPlan, group plannerChapterBudgetGroup, batch plannerSkeletonBatch) bool {
+	if len(chapters) == 0 || len(group.Indexes) != len(chapters) {
+		return false
+	}
+	if batch.TargetTo <= 0 || batch.TargetFrom <= 0 {
+		return true
+	}
+	for _, index := range group.Indexes {
+		if chapters[index].Chapter < batch.TargetFrom || chapters[index].Chapter > batch.TargetTo {
+			return false
+		}
+	}
+	return true
 }
 
 func plannerChapterBudgetGroups(chapters []domain.AdaptationChapterPlan, sourceRunesByChapter map[int]int) map[string]plannerChapterBudgetGroup {
