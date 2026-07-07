@@ -530,6 +530,11 @@ export function restoreProjectWorkbenchSnapshot(previous = createWorkbenchState(
   };
 }
 
+export function isProjectScopedResponseCurrent(projectId, activeProjectId) {
+  const expectedProjectId = String(projectId || '').trim();
+  return Boolean(expectedProjectId) && expectedProjectId === String(activeProjectId || '').trim();
+}
+
 export default function App() {
   const [runtime, setRuntime] = useState(null);
   const [projects, setProjects] = useState([]);
@@ -589,6 +594,7 @@ export default function App() {
 
   const resetProjectScopedState = useCallback((clearProject = false) => {
     lastSeqRef.current = 0;
+    setBusy(false);
     setWorkbench(createWorkbenchState());
     setSimulation(resetSimulationProjectState);
     setAdaptation(resetAdaptationProjectState);
@@ -613,8 +619,23 @@ export default function App() {
   }, [activeProject?.id]);
 
   const isCurrentProject = useCallback((projectId) => (
-    Boolean(projectId) && activeProjectIdRef.current === projectId
+    isProjectScopedResponseCurrent(projectId, activeProjectIdRef.current)
   ), []);
+
+  const refreshCurrentProjectSnapshot = useCallback(async (projectId) => {
+    if (!isCurrentProject(projectId)) {
+      return;
+    }
+    try {
+      const snapshotData = await getSnapshot(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
+    } catch {
+      // Keep the original workflow error visible when snapshot refresh also fails.
+    }
+  }, [isCurrentProject]);
 
   useEffect(() => {
     const projectId = activeProject?.id || '';
@@ -1495,7 +1516,8 @@ export default function App() {
   const uploadAdaptation = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = '';
-    if (!activeProject?.id || !file) {
+    const projectId = activeProject?.id;
+    if (!projectId || !file) {
       return;
     }
     setWorkbench((previous) => ({
@@ -1516,7 +1538,10 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await uploadAdaptationSource(activeProject.id, file);
+      const data = await uploadAdaptationSource(projectId, file);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setAdaptation((previous) => ({
         ...previous,
         sourceFile: data.source_file || null,
@@ -1525,6 +1550,9 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setAdaptation((previous) => ({ ...previous, uploadStatus: 'error', error: err.message }));
     }
   };
@@ -1608,18 +1636,22 @@ export default function App() {
   };
 
   const saveAnalyzedNovelToLibrary = async () => {
+    const projectId = activeProject?.id;
     const loadedName = adaptation.libraryLoadedName.trim();
     const name = adaptation.librarySaveName.trim() || loadedName;
     const sourceFile = adaptation.sourceFile?.relative_path;
-    if (!activeProject?.id || !name || !sourceFile || adaptation.analysisStatus !== 'done') {
+    if (!projectId || !name || !sourceFile || adaptation.analysisStatus !== 'done') {
       return;
     }
     const replace = Boolean(loadedName && name === loadedName);
     const query = adaptation.libraryQuery;
     setAdaptation((previous) => ({ ...previous, librarySaveStatus: 'running', librarySaveError: '' }));
     try {
-      const saveData = await saveNovelToLibrary(activeProject.id, name, sourceFile, { replace });
+      const saveData = await saveNovelToLibrary(projectId, name, sourceFile, { replace });
       const listData = await listNovelLibrary(query);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setAdaptation((previous) => ({
         ...previous,
         libraryStatus: 'done',
@@ -1632,13 +1664,17 @@ export default function App() {
         librarySaveError: ''
       }));
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setAdaptation((previous) => ({ ...previous, librarySaveStatus: 'error', librarySaveError: err.message }));
     }
   };
 
   const loadNovelFromLibraryEntry = async (entry) => {
+    const projectId = activeProject?.id;
     const name = libraryEntryName(entry);
-    if (!activeProject?.id || !name) {
+    if (!projectId || !name) {
       return;
     }
     setBusy(true);
@@ -1649,7 +1685,10 @@ export default function App() {
       libraryMessage: ''
     }));
     try {
-      const data = await loadNovelFromLibrary(activeProject.id, name);
+      const data = await loadNovelFromLibrary(projectId, name);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       const sourceFile = sourceFileFromNovelLoad(data, entry, name);
       const analysisStatus = adaptationStatusFromNovelLoad(data);
       const analysisEvents = adaptationEventsFromNovelLoad(data);
@@ -1678,18 +1717,27 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setAdaptation((previous) => ({
         ...previous,
         libraryStatus: 'error',
         libraryError: err.message
       }));
     } finally {
-      setBusy(false);
+      if (isCurrentProject(projectId)) {
+        setBusy(false);
+      }
     }
   };
 
   const startAdaptationRun = async () => {
-    if (!activeProject?.id || adaptation.analysisStatus !== 'done') {
+    const projectId = activeProject?.id;
+    const sourcePath = adaptation.sourceFile?.relative_path;
+    const proposalMode = adaptation.mode;
+    const proposalBrief = adaptation.brief;
+    if (!projectId || !sourcePath || adaptation.analysisStatus !== 'done') {
       return;
     }
     const proposalKey = buildAdaptationProposalKey(adaptation);
@@ -1706,7 +1754,10 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await buildAdaptationProposal(activeProject.id, adaptation.sourceFile.relative_path, adaptation.mode, adaptation.brief);
+      const data = await buildAdaptationProposal(projectId, sourcePath, proposalMode, proposalBrief);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({ ...previous, snapshot: snapshotFromAdaptationProposalResponse(data, previous.snapshot) }));
       setAdaptation((previous) => ({
         ...previous,
@@ -1716,11 +1767,12 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
-      try {
-        const snapshotData = await getSnapshot(activeProject.id);
-        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
-      } catch {
-        // Keep the original planner error visible when snapshot refresh also fails.
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      await refreshCurrentProjectSnapshot(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
       }
       setAdaptation((previous) => ({
         ...previous,
@@ -1729,12 +1781,15 @@ export default function App() {
         error: err.message
       }));
     } finally {
-      setBusy(false);
+      if (isCurrentProject(projectId)) {
+        setBusy(false);
+      }
     }
   };
 
   const confirmAdaptationRun = async () => {
-    if (!activeProject?.id || !isAdaptationProposalCurrent(adaptation)) {
+    const projectId = activeProject?.id;
+    if (!projectId || !isAdaptationProposalCurrent(adaptation)) {
       return;
     }
     const isVolumeReview = adaptationProposalReview.volumeReviewReady;
@@ -1747,8 +1802,11 @@ export default function App() {
     }));
     try {
       const data = isVolumeReview
-        ? await confirmAdaptationProposalDetails(activeProject.id)
-        : await confirmAdaptationProposal(activeProject.id);
+        ? await confirmAdaptationProposalDetails(projectId)
+        : await confirmAdaptationProposal(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({ ...previous, snapshot: snapshotFromAdaptationProposalResponse(data, previous.snapshot) }));
       setAdaptation((previous) => ({
         ...previous,
@@ -1757,11 +1815,12 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
-      try {
-        const snapshotData = await getSnapshot(activeProject.id);
-        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
-      } catch {
-        // Keep the original confirmation error visible when snapshot refresh also fails.
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      await refreshCurrentProjectSnapshot(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
       }
       setAdaptation((previous) => ({
         ...previous,
@@ -1770,12 +1829,15 @@ export default function App() {
         error: err.message
       }));
     } finally {
-      setBusy(false);
+      if (isCurrentProject(projectId)) {
+        setBusy(false);
+      }
     }
   };
 
   const reviseAdaptationProposalRun = async () => {
-    if (!activeProject?.id || !isAdaptationProposalCurrent(adaptation)) {
+    const projectId = activeProject?.id;
+    if (!projectId || !isAdaptationProposalCurrent(adaptation)) {
       return;
     }
     const payload = adaptationProposalReview.volumeReviewReady
@@ -1799,8 +1861,11 @@ export default function App() {
     }));
     try {
       const data = adaptationProposalReview.volumeReviewReady
-        ? await reviseAdaptationVolumeReview(activeProject.id, payload.body)
-        : await reviseAdaptationProposal(activeProject.id, payload.body);
+        ? await reviseAdaptationVolumeReview(projectId, payload.body)
+        : await reviseAdaptationProposal(projectId, payload.body);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
       setWorkbench((previous) => ({ ...previous, snapshot: snapshotFromAdaptationProposalResponse(data, previous.snapshot) }));
       setAdaptation((previous) => ({
         ...previous,
@@ -1811,11 +1876,12 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
-      try {
-        const snapshotData = await getSnapshot(activeProject.id);
-        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
-      } catch {
-        // Keep the original revision error visible when snapshot refresh also fails.
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      await refreshCurrentProjectSnapshot(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
       }
       setAdaptation((previous) => ({
         ...previous,
@@ -1824,7 +1890,9 @@ export default function App() {
         error: err.message
       }));
     } finally {
-      setBusy(false);
+      if (isCurrentProject(projectId)) {
+        setBusy(false);
+      }
     }
   };
 

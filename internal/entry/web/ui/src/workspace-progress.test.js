@@ -34,6 +34,7 @@ import {
   isCoCreateDecisionAnswerComplete,
   isCoCreateDecisionPayloadComplete,
   isCoCreateRequestBusy,
+  isProjectScopedResponseCurrent,
   isSimulationProfileActionBusy,
   isProjectRunning,
   normalizeCoCreateDecisionAnswers,
@@ -95,6 +96,12 @@ describe('co-create begin payload helpers', () => {
       activeProject: null,
       coCreate: { active: true }
     })).toBe(false);
+  });
+
+  it('matches async project responses only to the active project scope', () => {
+    expect(isProjectScopedResponseCurrent('project-1', 'project-1')).toBe(true);
+    expect(isProjectScopedResponseCurrent('project-1', 'project-2')).toBe(false);
+    expect(isProjectScopedResponseCurrent('', 'project-1')).toBe(false);
   });
 
   it('does not treat a recommended co-create decision option as selected before user action', () => {
