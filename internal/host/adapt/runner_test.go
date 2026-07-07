@@ -1181,6 +1181,90 @@ func TestBuildAdaptationProposalFillsMissingChapterWordBudget(t *testing.T) {
 	}
 }
 
+func TestBuildAdaptationProposalDetailsSplitsLongSourceChapterBudget(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{16000})
+	review := domain.AdaptationVolumeReview{
+		Granularity:        domain.AdaptationGranularityArc,
+		Status:             domain.AdaptationPlanStatusVolumeReview,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		Brief:              "split the long source chapter by plot beats",
+		TargetChapterCount: 4,
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, Title: "Long source split", TargetFrom: 1, TargetTo: 4, SourceFrom: 1, SourceTo: 1},
+		},
+	}
+	if err := st.Adaptation.SaveVolumeReview(review); err != nil {
+		t.Fatalf("SaveVolumeReview: %v", err)
+	}
+	if err := st.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
+		Version:            1,
+		Brief:              review.Brief,
+		Granularity:        domain.AdaptationGranularityArc,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		TargetChapterCount: 4,
+		Skeleton: &domain.AdaptationProposalRuntimeOutline{
+			TargetChapterCount: 4,
+			Batches: []domain.AdaptationProposalRuntimeSkeletonBatch{
+				{Index: 1, Title: "Long source split", TargetFrom: 1, TargetTo: 4, SourceFrom: 1, SourceTo: 1},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveProposalRuntime: %v", err)
+	}
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{
+		text: plannerRepeatedSourceBudgetProposalJSON(1, 4, 1, 16000, 16000, 14000, 18000),
+	}}}
+
+	proposal, err := BuildAdaptationProposalDetailsContext(context.Background(), Deps{Store: st, LLM: llm}, ProposalDetailsOptions{})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalDetailsContext: %v", err)
+	}
+	if len(proposal.Chapters) != 4 {
+		t.Fatalf("chapters=%d, want 4", len(proposal.Chapters))
+	}
+	for _, chapter := range proposal.Chapters {
+		if chapter.WordBudget == nil {
+			t.Fatalf("chapter %d missing word budget", chapter.Chapter)
+		}
+		if chapter.TargetRunes != 4000 || chapter.WordBudget.TargetRunes != 4000 {
+			t.Fatalf("chapter %d target budget=%+v, want split 4000", chapter.Chapter, chapter.WordBudget)
+		}
+		if chapter.TargetMaxRunes > adaptationPlannerModelChapterMaxRunes || chapter.WordBudget.MaxRunes > adaptationPlannerModelChapterMaxRunes {
+			t.Fatalf("chapter %d max budget=%+v exceeds model chapter max", chapter.Chapter, chapter.WordBudget)
+		}
+	}
+	if proposal.TargetTotalRunes != 16000 {
+		t.Fatalf("target total=%d, want redistributed source total 16000", proposal.TargetTotalRunes)
+	}
+}
+
+func TestNormalizePlannerSourceMapSkeletonBatchesRequiresBudgetSplitForLongSourceChapter(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 1, SourceRunes: 16000}
+	_, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 1, 1, 1, 1),
+	}, entry)
+	if err == nil {
+		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject under-split long source chapter")
+	}
+	if !strings.Contains(err.Error(), "expected at least 4 target chapters") {
+		t.Fatalf("error=%v, want budget split guidance", err)
+	}
+
+	batches, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 1, 1, 1, 4),
+	}, entry)
+	if err != nil {
+		t.Fatalf("normalizePlannerSourceMapSkeletonBatches accepted split skeleton: %v", err)
+	}
+	if len(batches) != 1 || batches[0].TargetChapterCount != 4 {
+		t.Fatalf("batches=%+v, want four target chapters", batches)
+	}
+}
+
 func TestBuildAdaptationProposalRetriesTransientPlannerGenerateError(t *testing.T) {
 	restore := stubPlannerRetrySleep(t)
 	defer restore()
@@ -2840,6 +2924,36 @@ func plannerBatchProposalJSON(from, to, sourceFrom, sourceTo int) string {
 
 func plannerBatchProposalJSONWithoutWordBudget(from, to, sourceFrom, sourceTo int, omittedChapter int) string {
 	return plannerBatchProposalJSONWithOmittedBudget(from, to, sourceFrom, sourceTo, omittedChapter)
+}
+
+func plannerRepeatedSourceBudgetProposalJSON(from, to, sourceChapter, sourceRunes, targetRunes, minRunes, maxRunes int) string {
+	count := to - from + 1
+	chapters := make([]string, 0, to-from+1)
+	for chapter := from; chapter <= to; chapter++ {
+		chapters = append(chapters, fmt.Sprintf(`{
+			"chapter": %d,
+			"title": "Target %d",
+			"core_event": "Ari adapts source chapter %d beat %d.",
+			"hook": "A clear hook for target %d.",
+			"scenes": ["station"],
+			"source_chapters": [%d],
+			"source_range": {"from": %d, "to": %d},
+			"word_budget": {"source_runes": %d, "target_runes": %d, "min_runes": %d, "max_runes": %d, "tolerance": 0.15},
+			"preserve_events": ["source event"],
+			"required_changes": ["adapt the beat"],
+			"forbidden_moves": ["drop the source anchor"]
+		}`, chapter, chapter, sourceChapter, chapter-from+1, chapter, sourceChapter, sourceChapter, sourceChapter, sourceRunes, targetRunes, minRunes, maxRunes))
+	}
+	return fmt.Sprintf(`{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "split the long source chapter by plot beats",
+		"target_total_runes": %d,
+		"target_min_runes": %d,
+		"target_max_runes": %d,
+		"chapters": [%s]
+	}`, targetRunes*count, minRunes*count, maxRunes*count, strings.Join(chapters, ","))
 }
 
 func plannerBatchProposalJSONWithOmittedBudget(from, to, sourceFrom, sourceTo int, omittedChapter int) string {

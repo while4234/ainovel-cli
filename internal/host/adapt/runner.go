@@ -25,25 +25,28 @@ import (
 const DefaultWordTolerance = 0.15
 
 const (
-	adaptationPlannerPromptName             = "adaptation-planner"
-	adaptationPlannerPromptVersion          = "v1"
-	adaptationPlannerMaxTokens              = 8192
-	adaptationPlannerSkeletonMaxTokens      = 4096
-	adaptationPlannerChunkedMinChapters     = 18
-	adaptationPlannerRecommendedBatchMax    = 4
-	adaptationPlannerSourceMapExpansionMax  = 6
-	adaptationPlannerChapterBudgetRetries   = 2
-	adaptationPlannerSourceChunkedMin       = adaptationPlannerRecommendedBatchMax * 2
-	adaptationPlannerTargetChapterMax       = 5000
-	adaptationPlannerRevisionBatchMax       = 8
-	adaptationPlannerRevisionExpansionMax   = 12
-	adaptationPlannerRepairMaxAttempts      = 2
-	adaptationPlannerGenerateMaxAttempts    = retrypolicy.MaxAttempts
-	adaptationProposalRuntimeVersion        = 1
-	adaptationSourceFoundationVersion       = 1
-	adaptationSourceFoundationPromptVersion = "source-foundation-merge-v1"
-	sourceFoundationBatchKindReports        = "reports"
-	sourceFoundationBatchKindSummary        = "summary"
+	adaptationPlannerPromptName              = "adaptation-planner"
+	adaptationPlannerPromptVersion           = "v1"
+	adaptationPlannerMaxTokens               = 8192
+	adaptationPlannerSkeletonMaxTokens       = 4096
+	adaptationPlannerChunkedMinChapters      = 18
+	adaptationPlannerRecommendedBatchMax     = 4
+	adaptationPlannerSourceMapExpansionMax   = 6
+	adaptationPlannerChapterBudgetRetries    = 2
+	adaptationPlannerSourceChunkedMin        = adaptationPlannerRecommendedBatchMax * 2
+	adaptationPlannerTargetChapterMax        = 5000
+	adaptationPlannerModelChapterTargetRunes = domain.AdaptationModelChapterTargetRunes
+	adaptationPlannerModelChapterMaxRunes    = domain.AdaptationModelChapterMaxRunes
+	adaptationPlannerModelChapterTolerance   = domain.AdaptationModelChapterTolerance
+	adaptationPlannerRevisionBatchMax        = 8
+	adaptationPlannerRevisionExpansionMax    = 12
+	adaptationPlannerRepairMaxAttempts       = 2
+	adaptationPlannerGenerateMaxAttempts     = retrypolicy.MaxAttempts
+	adaptationProposalRuntimeVersion         = 1
+	adaptationSourceFoundationVersion        = 1
+	adaptationSourceFoundationPromptVersion  = "source-foundation-merge-v1"
+	sourceFoundationBatchKindReports         = "reports"
+	sourceFoundationBatchKindSummary         = "summary"
 )
 
 var plannerRetrySleep = retrypolicy.Wait
@@ -2728,7 +2731,7 @@ func buildPlannerVolumeSkeletonFromSourceMap(
 	targetChapterHint int,
 	systemPrompt string,
 ) (plannerSkeleton, error) {
-	sourceMap := plannerSourceMapFromDossier(dossier)
+	sourceMap := plannerSourceMapFromDossier(dossier, manifest)
 	if len(sourceMap) == 0 {
 		return plannerSkeleton{}, fmt.Errorf("planner source map is empty")
 	}
@@ -2888,13 +2891,14 @@ func parsePlannerSourceMapSkeleton(text string) (plannerSkeleton, error) {
 }
 
 type plannerChapterBudgetQualityError struct {
-	BatchIndex int
-	Count      int
-	MinCount   int
-	MaxCount   int
-	SourceFrom int
-	SourceTo   int
-	Direction  string
+	BatchIndex  int
+	Count       int
+	MinCount    int
+	MaxCount    int
+	SourceFrom  int
+	SourceTo    int
+	SourceRunes int
+	Direction   string
 }
 
 func (e *plannerChapterBudgetQualityError) Error() string {
@@ -2903,6 +2907,10 @@ func (e *plannerChapterBudgetQualityError) Error() string {
 	}
 	switch e.Direction {
 	case "low":
+		if e.SourceRunes > 0 {
+			return fmt.Sprintf("source-map range %d-%d has %d source_runes but skeleton produced %d target chapters; expected at least %d target chapters to keep each chapter within %d runes",
+				e.SourceFrom, e.SourceTo, e.SourceRunes, e.Count, e.MinCount, adaptationPlannerModelChapterMaxRunes)
+		}
 		return fmt.Sprintf("batch %d chapter_count=%d is below expected review floor %d for source range %d-%d", e.BatchIndex, e.Count, e.MinCount, e.SourceFrom, e.SourceTo)
 	case "high":
 		return fmt.Sprintf("batch %d chapter_count=%d is above expected review ceiling %d for source range %d-%d", e.BatchIndex, e.Count, e.MaxCount, e.SourceFrom, e.SourceTo)
@@ -2951,6 +2959,25 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 		}
 		sourceSpan := batch.SourceTo - batch.SourceFrom + 1
 		minCount, maxCount := plannerSourceMapChapterBudgetReviewRange(sourceSpan)
+		hardMinCount := plannerSourceMapBudgetMinTargetChaptersForRange(entry, batch.SourceFrom, batch.SourceTo)
+		minCount = max(minCount, hardMinCount)
+		maxCount = max(maxCount, minCount)
+		if count < hardMinCount {
+			return nil, &plannerChapterBudgetQualityError{
+				BatchIndex: idx + 1,
+				Count:      count,
+				MinCount:   hardMinCount,
+				MaxCount:   maxCount,
+				SourceFrom: batch.SourceFrom,
+				SourceTo:   batch.SourceTo,
+				SourceRunes: plannerSourceMapEstimatedRunesForRange(
+					entry,
+					batch.SourceFrom,
+					batch.SourceTo,
+				),
+				Direction: "low",
+			}
+		}
 		if !allowBudgetDeviation && count < minCount {
 			return nil, &plannerChapterBudgetQualityError{
 				BatchIndex: idx + 1,
@@ -3003,6 +3030,12 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 	if coveredTo < entry.SourceTo {
 		return nil, fmt.Errorf("source-map range %d-%d ends coverage at %d", entry.SourceFrom, entry.SourceTo, coveredTo)
 	}
+	targetCount := plannerSkeletonBatchTargetCount(out)
+	minTargetCount := plannerSourceMapBudgetMinTargetChapters(entry)
+	if minTargetCount > 0 && targetCount < minTargetCount {
+		return nil, fmt.Errorf("source-map range %d-%d has %d source_runes but skeleton produced %d target chapters; expected at least %d target chapters to keep each chapter within %d runes",
+			entry.SourceFrom, entry.SourceTo, entry.SourceRunes, targetCount, minTargetCount, adaptationPlannerModelChapterMaxRunes)
+	}
 	return out, nil
 }
 
@@ -3016,6 +3049,57 @@ func plannerSourceMapChapterBudgetReviewRange(sourceSpan int) (int, int) {
 	}
 	maxCount := max(adaptationPlannerRecommendedBatchMax, sourceSpan*adaptationPlannerSourceMapExpansionMax)
 	return minCount, maxCount
+}
+
+func plannerSkeletonBatchTargetCount(batches []plannerSkeletonBatch) int {
+	total := 0
+	for _, batch := range batches {
+		if batch.TargetChapterCount > 0 {
+			total += batch.TargetChapterCount
+			continue
+		}
+		if batch.TargetTo >= batch.TargetFrom {
+			total += batch.TargetTo - batch.TargetFrom + 1
+		}
+	}
+	return total
+}
+
+func plannerSourceMapBudgetMinTargetChapters(entry plannerSourceMapEntry) int {
+	if entry.SourceRunes <= adaptationPlannerModelChapterMaxRunes {
+		return 0
+	}
+	return ceilPositiveDiv(entry.SourceRunes, adaptationPlannerModelChapterMaxRunes)
+}
+
+func plannerSourceMapBudgetMinTargetChaptersForRange(entry plannerSourceMapEntry, from, to int) int {
+	estimatedRunes := plannerSourceMapEstimatedRunesForRange(entry, from, to)
+	if estimatedRunes <= adaptationPlannerModelChapterMaxRunes {
+		return 0
+	}
+	return ceilPositiveDiv(estimatedRunes, adaptationPlannerModelChapterMaxRunes)
+}
+
+func plannerSourceMapEstimatedRunesForRange(entry plannerSourceMapEntry, from, to int) int {
+	if entry.SourceRunes <= 0 || from <= 0 || to < from {
+		return 0
+	}
+	if from == entry.SourceFrom && to == entry.SourceTo {
+		return entry.SourceRunes
+	}
+	sourceCount := entry.SourceTo - entry.SourceFrom + 1
+	if sourceCount <= 0 {
+		return 0
+	}
+	rangeCount := to - from + 1
+	return ceilPositiveDiv(entry.SourceRunes*rangeCount, sourceCount)
+}
+
+func ceilPositiveDiv(value, divisor int) int {
+	if value <= 0 || divisor <= 0 {
+		return 0
+	}
+	return (value + divisor - 1) / divisor
 }
 
 func nextPlannerSkeletonTarget(batches []plannerSkeletonBatch) int {
@@ -4244,6 +4328,7 @@ func repairPlannerSkeletonText(
 		"The JSON must have a top-level batches array.",
 		"Each batch must have chapter_count, source_from, source_to, title, theme or goal, and summary.",
 		"Do not calculate target_from or target_to in this source-map skeleton step; the host will assign continuous target chapter ranges from chapter_count.",
+		"If the previous error says source_runes needs more target chapters or chapter_count is below the review floor, increase chapter_count so each target chapter stays within the model chapter budget.",
 		"Do not return only overall_arc, key_turns, pair, notes, markdown, or explanation.",
 	})
 	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens, emit, current, total, "骨架规划修复", maxModelCallAttempts)
@@ -4455,10 +4540,34 @@ type plannerSourceChapterSummary struct {
 	Runes   int    `json:"runes,omitempty"`
 }
 
+type plannerChapterBudgetPolicy struct {
+	TargetRunes int      `json:"target_runes"`
+	MaxRunes    int      `json:"max_runes"`
+	Tolerance   float64  `json:"tolerance"`
+	Notes       []string `json:"notes"`
+}
+
+func plannerChapterBudgetPolicyForGranularity(granularity string) *plannerChapterBudgetPolicy {
+	if domain.AdaptationRewritePolicyForGranularity(granularity) != domain.AdaptationRewriteFullRewrite {
+		return nil
+	}
+	return &plannerChapterBudgetPolicy{
+		TargetRunes: adaptationPlannerModelChapterTargetRunes,
+		MaxRunes:    adaptationPlannerModelChapterMaxRunes,
+		Tolerance:   adaptationPlannerModelChapterTolerance,
+		Notes: []string{
+			"For arc/free full-rewrite plans, choose enough target chapters so each chapter can stay within max_runes.",
+			"When one long source chapter or source range is split into multiple target chapters, divide its source runes and story beats across those targets instead of assigning the full source length to every target chapter.",
+			"Set each word_budget.target_runes near target_runes when possible, and never set word_budget.max_runes above max_runes.",
+		},
+	}
+}
+
 type plannerSourceMapEntry struct {
 	Index               int                   `json:"index"`
 	SourceFrom          int                   `json:"source_from"`
 	SourceTo            int                   `json:"source_to"`
+	SourceRunes         int                   `json:"source_runes,omitempty"`
 	PlotPhase           string                `json:"plot_phase,omitempty"`
 	KeyCausality        []string              `json:"key_causality,omitempty"`
 	PlotThreads         []string              `json:"plot_threads,omitempty"`
@@ -4562,16 +4671,18 @@ func plannerManifestSummary(manifest *domain.AdaptationSourceManifest) plannerSo
 	return summary
 }
 
-func plannerSourceMapFromDossier(dossier *domain.AdaptationCoCreateDossier) []plannerSourceMapEntry {
+func plannerSourceMapFromDossier(dossier *domain.AdaptationCoCreateDossier, manifest *domain.AdaptationSourceManifest) []plannerSourceMapEntry {
 	if dossier == nil {
 		return nil
 	}
+	sourceRunesByChapter := sourceRunesByChapter(manifest)
 	entries := make([]plannerSourceMapEntry, 0, len(dossier.Batches))
 	for _, batch := range dossier.Batches {
 		entry := plannerSourceMapEntry{
 			Index:               batch.Index,
 			SourceFrom:          batch.SourceFrom,
 			SourceTo:            batch.SourceTo,
+			SourceRunes:         sourceRunesForRange(sourceRunesByChapter, batch.SourceFrom, batch.SourceTo),
 			PlotPhase:           clipText(batch.PlotPhase, 220),
 			KeyCausality:        clippedStringList(batch.KeyCausality, 6, 160),
 			PlotThreads:         clippedStringList(batch.PlotThreads, 6, 150),
@@ -4742,6 +4853,7 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 		TargetChapterHint   int                             `json:"target_chapter_hint,omitempty"`
 		TargetChapterRole   string                          `json:"target_chapter_hint_role,omitempty"`
 		RecommendedBatchMax int                             `json:"recommended_batch_max"`
+		ChapterBudgetPolicy *plannerChapterBudgetPolicy     `json:"chapter_budget_policy,omitempty"`
 		SourceManifest      plannerSourceManifestSummary    `json:"source_manifest"`
 		SourceFoundation    *plannerSourceFoundationSummary `json:"source_foundation"`
 		SourceMap           []plannerSourceMapEntry         `json:"source_map"`
@@ -4755,6 +4867,7 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 		TargetChapterHint:   targetChapterHint,
 		TargetChapterRole:   plannerTargetChapterHintRole(opts, manifest, targetChapterHint),
 		RecommendedBatchMax: adaptationPlannerRecommendedBatchMax,
+		ChapterBudgetPolicy: plannerChapterBudgetPolicyForGranularity(opts.Granularity),
 		SourceManifest:      plannerManifestSummary(manifest),
 		SourceFoundation:    plannerSourceFoundationDigest(sourceFoundation),
 		SourceMap:           sourceMap,
@@ -4768,6 +4881,7 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 			"Do not return the final AdaptationPlan here.",
 			"Do not include a chapters array in the skeleton step; chapter details are generated in later batch calls.",
 			"Choose how many target chapters this source-map range needs, then divide it into one or more model-planned batches/volumes.",
+			"If chapter_budget_policy is present, source_map.source_runes must drive splitting: a long single source chapter still needs multiple target chapters when one target would exceed chapter_budget_policy.max_runes.",
 			"If target_chapter_hint_role is source_scale_minimum, treat target_chapter_hint as anti-shrink long-form scale guidance, not an exact final chapter count.",
 			"Choose final target_chapter_count after analyzing source_map and the user's additions; increase above target_chapter_hint when added plot, relationship, or transition arcs require more chapters.",
 			"If target_chapter_hint_role is explicit_target_scale, honor that requested scale unless the source map and user changes make a different count necessary; explain the choice in batch summaries.",
@@ -4836,6 +4950,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 		RewritePolicy          string                          `json:"rewrite_policy"`
 		WordTolerance          float64                         `json:"word_tolerance"`
 		ExpectedChapters       int                             `json:"expected_chapters"`
+		ChapterBudgetPolicy    *plannerChapterBudgetPolicy     `json:"chapter_budget_policy,omitempty"`
 		SourceManifest         plannerSourceManifestSummary    `json:"source_manifest"`
 		SourceFoundation       *plannerSourceFoundationSummary `json:"source_foundation"`
 		Skeleton               plannerSkeleton                 `json:"skeleton"`
@@ -4850,6 +4965,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 		RewritePolicy:          opts.RewritePolicy,
 		WordTolerance:          opts.WordTolerance,
 		ExpectedChapters:       batch.TargetTo - batch.TargetFrom + 1,
+		ChapterBudgetPolicy:    plannerChapterBudgetPolicyForGranularity(opts.Granularity),
 		SourceManifest:         plannerManifestSummary(manifest),
 		SourceFoundation:       plannerSourceFoundationDigest(sourceFoundation),
 		Skeleton:               skeleton,
@@ -4870,6 +4986,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 			"Every returned chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
 			"Every source_chapters value must be within the batch source range and valid for the analyzed source.",
 			"Added/bridging chapters must still include source_chapters anchors.",
+			"If chapter_budget_policy is present, keep every word_budget.max_runes within chapter_budget_policy.max_runes; split the batch's source beats across the requested target chapters instead of giving each chapter the full source-range budget.",
 			"Use the user's adaptation brief and the skeleton batch goal; do not ignore earlier user planning.",
 			"Use previous_detail_chapters only for continuity, callbacks, and handoff hooks; do not duplicate already generated chapters.",
 		},
@@ -5612,22 +5729,24 @@ func buildAdaptationPlannerUserPrompt(
 	sourceFoundation *domain.AdaptationSourceFoundation,
 ) (string, error) {
 	input := struct {
-		Brief            string                             `json:"brief"`
-		Granularity      string                             `json:"granularity"`
-		RewritePolicy    string                             `json:"rewrite_policy"`
-		WordTolerance    float64                            `json:"word_tolerance"`
-		SourceManifest   *domain.AdaptationSourceManifest   `json:"source_manifest"`
-		SourceFoundation *domain.AdaptationSourceFoundation `json:"source_foundation"`
-		SourceReports    []domain.AdaptationSourceReport    `json:"source_reports"`
-		Requirements     []string                           `json:"requirements"`
+		Brief               string                             `json:"brief"`
+		Granularity         string                             `json:"granularity"`
+		RewritePolicy       string                             `json:"rewrite_policy"`
+		WordTolerance       float64                            `json:"word_tolerance"`
+		ChapterBudgetPolicy *plannerChapterBudgetPolicy        `json:"chapter_budget_policy,omitempty"`
+		SourceManifest      *domain.AdaptationSourceManifest   `json:"source_manifest"`
+		SourceFoundation    *domain.AdaptationSourceFoundation `json:"source_foundation"`
+		SourceReports       []domain.AdaptationSourceReport    `json:"source_reports"`
+		Requirements        []string                           `json:"requirements"`
 	}{
-		Brief:            opts.Brief,
-		Granularity:      opts.Granularity,
-		RewritePolicy:    opts.RewritePolicy,
-		WordTolerance:    opts.WordTolerance,
-		SourceManifest:   manifest,
-		SourceFoundation: sourceFoundation,
-		SourceReports:    reports,
+		Brief:               opts.Brief,
+		Granularity:         opts.Granularity,
+		RewritePolicy:       opts.RewritePolicy,
+		WordTolerance:       opts.WordTolerance,
+		ChapterBudgetPolicy: plannerChapterBudgetPolicyForGranularity(opts.Granularity),
+		SourceManifest:      manifest,
+		SourceFoundation:    sourceFoundation,
+		SourceReports:       reports,
 		Requirements: []string{
 			"Return exactly one JSON AdaptationPlan object and no prose.",
 			"Do not wrap the JSON in markdown fences.",
@@ -5639,6 +5758,7 @@ func buildAdaptationPlannerUserPrompt(
 			"Every source chapter must be covered by at least one target chapter.",
 			"Added chapters must still include source_chapters anchors.",
 			"Every chapter must include chapter, title, non-empty core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
+			"If chapter_budget_policy is present, long source chapters must be split into enough target chapters so no target chapter budget exceeds chapter_budget_policy.max_runes.",
 		},
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")
@@ -5995,9 +6115,6 @@ func validatePlannerProposal(
 		sourceTotalRunes += sourceRunesForReport(report, sourceRunesByChapter)
 	}
 
-	targetTotalRunes := 0
-	targetMinRunes := 0
-	targetMaxRunes := 0
 	for i := range proposal.Chapters {
 		chapter := &proposal.Chapters[i]
 		sourceRangeExplicit := chapter.SourceRange.From > 0 || chapter.SourceRange.To > 0
@@ -6062,14 +6179,32 @@ func validatePlannerProposal(
 				covered[sourceChapter] = true
 			}
 		}
-		targetTotalRunes += chapter.WordBudget.TargetRunes
-		targetMinRunes += chapter.WordBudget.MinRunes
-		targetMaxRunes += chapter.WordBudget.MaxRunes
 	}
 	for sourceChapter := 1; sourceChapter <= manifest.ChapterCount; sourceChapter++ {
 		if !covered[sourceChapter] {
 			return fmt.Errorf("planner proposal does not cover source chapter %d", sourceChapter)
 		}
+	}
+	budgetNormalized, err := normalizePlannerProposalChapterBudgets(proposal.Chapters, opts, sourceRunesByChapter)
+	if err != nil {
+		return err
+	}
+	if budgetNormalized {
+		proposal.TargetTotalRunes = 0
+		proposal.TargetMinRunes = 0
+		proposal.TargetMaxRunes = 0
+	}
+	targetTotalRunes := 0
+	targetMinRunes := 0
+	targetMaxRunes := 0
+	for i := range proposal.Chapters {
+		chapter := &proposal.Chapters[i]
+		if err := validatePlannerWordBudget(chapter, opts.WordTolerance); err != nil {
+			return err
+		}
+		targetTotalRunes += chapter.WordBudget.TargetRunes
+		targetMinRunes += chapter.WordBudget.MinRunes
+		targetMaxRunes += chapter.WordBudget.MaxRunes
 	}
 	if err := validatePlannerProposalTotal("target_total_runes", proposal.TargetTotalRunes, targetTotalRunes); err != nil {
 		return err
@@ -6109,6 +6244,176 @@ func validatePlannerProposal(
 		}
 	}
 	return nil
+}
+
+type plannerChapterBudgetGroup struct {
+	Indexes     []int
+	SourceFrom  int
+	SourceTo    int
+	SourceRunes int
+}
+
+func normalizePlannerProposalChapterBudgets(chapters []domain.AdaptationChapterPlan, opts ProposalOptions, sourceRunesByChapter map[int]int) (bool, error) {
+	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
+	if policy == nil {
+		return false, nil
+	}
+	normalized := false
+	groups := plannerChapterBudgetGroups(chapters, sourceRunesByChapter)
+	for _, group := range groups {
+		if len(group.Indexes) == 0 || !plannerBudgetGroupNeedsNormalization(chapters, group, *policy) {
+			continue
+		}
+		minChapters := 0
+		if group.SourceRunes > policy.MaxRunes {
+			minChapters = ceilPositiveDiv(group.SourceRunes, policy.MaxRunes)
+		}
+		if minChapters > len(group.Indexes) {
+			first := chapters[group.Indexes[0]].Chapter
+			return false, fmt.Errorf("planner chapter %d source_range %d-%d has %d source_runes; split this source range into at least %d target chapters before assigning word_budget",
+				first, group.SourceFrom, group.SourceTo, group.SourceRunes, minChapters)
+		}
+		applyPlannerBudgetGroup(chapters, group, *policy)
+		normalized = true
+	}
+	return normalized, nil
+}
+
+func plannerChapterBudgetGroups(chapters []domain.AdaptationChapterPlan, sourceRunesByChapter map[int]int) map[string]plannerChapterBudgetGroup {
+	groups := make(map[string]plannerChapterBudgetGroup)
+	for index := range chapters {
+		chapter := &chapters[index]
+		key, from, to := plannerChapterBudgetGroupKey(*chapter)
+		group := groups[key]
+		group.Indexes = append(group.Indexes, index)
+		if group.SourceFrom == 0 || from < group.SourceFrom {
+			group.SourceFrom = from
+		}
+		if to > group.SourceTo {
+			group.SourceTo = to
+		}
+		if group.SourceRunes <= 0 {
+			group.SourceRunes = sourceRunesForRange(sourceRunesByChapter, from, to)
+		}
+		groups[key] = group
+	}
+	return groups
+}
+
+func plannerChapterBudgetGroupKey(chapter domain.AdaptationChapterPlan) (string, int, int) {
+	if chapter.SourceRange.From > 0 && chapter.SourceRange.To >= chapter.SourceRange.From {
+		return fmt.Sprintf("range:%d:%d", chapter.SourceRange.From, chapter.SourceRange.To), chapter.SourceRange.From, chapter.SourceRange.To
+	}
+	from, to := minMaxPositive(chapter.SourceChapters)
+	if from > 0 && to >= from {
+		return fmt.Sprintf("anchors:%d:%d:%s", from, to, intListKey(chapter.SourceChapters)), from, to
+	}
+	return fmt.Sprintf("chapter:%d", chapter.Chapter), 0, 0
+}
+
+func intListKey(values []int) string {
+	clean := appendSortedUniqueInts(nil, values...)
+	parts := make([]string, 0, len(clean))
+	for _, value := range clean {
+		parts = append(parts, strconv.Itoa(value))
+	}
+	return strings.Join(parts, ",")
+}
+
+func appendSortedUniqueInts(base []int, values ...int) []int {
+	seen := make(map[int]bool, len(base)+len(values))
+	out := make([]int, 0, len(base)+len(values))
+	for _, value := range append(base, values...) {
+		if value <= 0 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func plannerBudgetGroupNeedsNormalization(chapters []domain.AdaptationChapterPlan, group plannerChapterBudgetGroup, policy plannerChapterBudgetPolicy) bool {
+	for _, index := range group.Indexes {
+		chapter := chapters[index]
+		if chapter.TargetRunes > policy.MaxRunes || chapter.TargetMaxRunes > policy.MaxRunes {
+			return true
+		}
+		if chapter.WordBudget != nil &&
+			(chapter.WordBudget.TargetRunes > policy.MaxRunes ||
+				chapter.WordBudget.MaxRunes > policy.MaxRunes ||
+				(len(group.Indexes) > 1 && chapter.WordBudget.SourceRunes > policy.MaxRunes)) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyPlannerBudgetGroup(chapters []domain.AdaptationChapterPlan, group plannerChapterBudgetGroup, policy plannerChapterBudgetPolicy) {
+	count := len(group.Indexes)
+	if count == 0 {
+		return
+	}
+	totalRunes := group.SourceRunes
+	if totalRunes <= 0 {
+		totalRunes = policy.TargetRunes * count
+	}
+	for offset, index := range group.Indexes {
+		sourceRunes := splitRunesForIndex(totalRunes, count, offset)
+		targetRunes := sourceRunes
+		if targetRunes <= 0 {
+			targetRunes = policy.TargetRunes
+		}
+		if targetRunes > policy.MaxRunes {
+			targetRunes = policy.MaxRunes
+		}
+		minRunes, maxRunes := modelChapterBudgetRange(targetRunes, policy)
+		chapter := &chapters[index]
+		chapter.SourceRunes = sourceRunes
+		chapter.TargetRunes = targetRunes
+		chapter.TargetMinRunes = minRunes
+		chapter.TargetMaxRunes = maxRunes
+		chapter.WordBudget = &domain.AdaptationChapterWordBudget{
+			SourceRunes: sourceRunes,
+			TargetRunes: targetRunes,
+			MinRunes:    minRunes,
+			MaxRunes:    maxRunes,
+			Tolerance:   policy.Tolerance,
+		}
+	}
+}
+
+func splitRunesForIndex(totalRunes, count, index int) int {
+	if totalRunes <= 0 || count <= 0 || index < 0 {
+		return 0
+	}
+	base := totalRunes / count
+	remainder := totalRunes % count
+	if index < remainder {
+		return base + 1
+	}
+	return base
+}
+
+func modelChapterBudgetRange(targetRunes int, policy plannerChapterBudgetPolicy) (int, int) {
+	minRunes, maxRunes := runeRange(targetRunes, policy.Tolerance)
+	if maxRunes > policy.MaxRunes {
+		maxRunes = policy.MaxRunes
+	}
+	if minRunes > targetRunes {
+		minRunes = targetRunes
+	}
+	if maxRunes < targetRunes {
+		maxRunes = targetRunes
+	}
+	if minRunes <= 0 {
+		minRunes = targetRunes
+	}
+	if maxRunes <= 0 {
+		maxRunes = targetRunes
+	}
+	return minRunes, maxRunes
 }
 
 func validatePlannerWordBudget(chapter *domain.AdaptationChapterPlan, tolerance float64) error {
@@ -6242,9 +6547,7 @@ func sourceRunesForChapterAnchors(chapter *domain.AdaptationChapterPlan, sourceR
 	}
 	total := 0
 	if chapter.SourceRange.From > 0 && chapter.SourceRange.To >= chapter.SourceRange.From {
-		for sourceChapter := chapter.SourceRange.From; sourceChapter <= chapter.SourceRange.To; sourceChapter++ {
-			total += sourceRunesByChapter[sourceChapter]
-		}
+		total = sourceRunesForRange(sourceRunesByChapter, chapter.SourceRange.From, chapter.SourceRange.To)
 		if total > 0 {
 			return total
 		}
@@ -6261,6 +6564,17 @@ func sourceRunesForChapterAnchors(chapter *domain.AdaptationChapterPlan, sourceR
 		return total
 	}
 	return 0
+}
+
+func sourceRunesForRange(sourceRunesByChapter map[int]int, from, to int) int {
+	if len(sourceRunesByChapter) == 0 || from <= 0 || to < from {
+		return 0
+	}
+	total := 0
+	for sourceChapter := from; sourceChapter <= to; sourceChapter++ {
+		total += sourceRunesByChapter[sourceChapter]
+	}
+	return total
 }
 
 func validatePlannerChapterBudgetField(chapter int, field string, legacy *int, nestedField string, nestedValue int) error {

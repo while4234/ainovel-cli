@@ -22,6 +22,12 @@ const (
 	AdaptationRewritePreserveDetails = "preserve_details"
 )
 
+const (
+	AdaptationModelChapterTargetRunes = 4000
+	AdaptationModelChapterMaxRunes    = 5000
+	AdaptationModelChapterTolerance   = 0.15
+)
+
 // AdaptationSourceManifest records the imported source novel identity.
 type AdaptationSourceManifest struct {
 	SourcePath   string             `json:"source_path"`

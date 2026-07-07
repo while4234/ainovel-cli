@@ -245,6 +245,82 @@ func TestAdaptationPlanPersistsSourceDerivedSoftBudgets(t *testing.T) {
 	}
 }
 
+func TestAdaptationPlanLoadNormalizesSplitFullRewriteBudgets(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	source, err := s.Adaptation.SaveSourceChapter(1, "Long", strings.Repeat("a", 16000))
+	if err != nil {
+		t.Fatalf("SaveSourceChapter: %v", err)
+	}
+	if err := s.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: 1,
+		Chapters:     []domain.AdaptationSource{source},
+	}); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+
+	chapters := make([]domain.AdaptationChapterPlan, 0, 4)
+	for chapter := 1; chapter <= 4; chapter++ {
+		chapters = append(chapters, domain.AdaptationChapterPlan{
+			Chapter:        chapter,
+			Title:          "Split",
+			SourceChapters: []int{1},
+			SourceRange:    domain.SourceRange{From: 1, To: 1},
+			SourceRunes:    16000,
+			TargetRunes:    16000,
+			TargetMinRunes: 14000,
+			TargetMaxRunes: 18000,
+			WordBudget: &domain.AdaptationChapterWordBudget{
+				SourceRunes: 16000,
+				TargetRunes: 16000,
+				MinRunes:    14000,
+				MaxRunes:    18000,
+				Tolerance:   0.15,
+			},
+		})
+	}
+	legacy := domain.AdaptationPlan{
+		Granularity:      domain.AdaptationGranularityArc,
+		Status:           domain.AdaptationPlanStatusConfirmed,
+		Brief:            "split old budget",
+		WordTolerance:    0.15,
+		SourceTotalRunes: 64000,
+		TargetTotalRunes: 64000,
+		TargetMinRunes:   56000,
+		TargetMaxRunes:   72000,
+		Chapters:         chapters,
+	}
+	if err := s.Adaptation.io.WriteJSON(adaptationPlanFile, legacy); err != nil {
+		t.Fatalf("WriteJSON legacy: %v", err)
+	}
+
+	loaded, err := s.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan: %v", err)
+	}
+	if loaded.SourceTotalRunes != 16000 || loaded.TargetTotalRunes != 16000 ||
+		loaded.TargetMinRunes != 13600 || loaded.TargetMaxRunes != 18400 {
+		t.Fatalf("totals = %+v", loaded)
+	}
+	for _, chapter := range loaded.Chapters {
+		if chapter.SourceRunes != 4000 || chapter.TargetRunes != 4000 ||
+			chapter.TargetMinRunes != 3400 || chapter.TargetMaxRunes != 4600 {
+			t.Fatalf("chapter budget not split: %+v", chapter)
+		}
+		if chapter.WordBudget == nil ||
+			chapter.WordBudget.SourceRunes != 4000 ||
+			chapter.WordBudget.TargetRunes != 4000 ||
+			chapter.WordBudget.MinRunes != 3400 ||
+			chapter.WordBudget.MaxRunes != 4600 {
+			t.Fatalf("nested budget not split: %+v", chapter.WordBudget)
+		}
+	}
+}
+
 func TestAdaptationStoreSaveProposalClearsProposalRuntime(t *testing.T) {
 	s := NewStore(t.TempDir())
 	if err := s.Init(); err != nil {

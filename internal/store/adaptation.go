@@ -1069,9 +1069,13 @@ func normalizeAdaptationPlan(plan *domain.AdaptationPlan, manifest *domain.Adapt
 	for i := range plan.Chapters {
 		normalizeAdaptationChapterPlan(&plan.Chapters[i], tolerance, sourceRunes, deriveBudgets)
 	}
+	budgetsChanged := false
+	if deriveBudgets {
+		budgetsChanged = normalizeAdaptationSplitChapterBudgets(plan, sourceRunes)
+	}
 	plan.Volumes = normalizeAdaptationVolumes(plan.Volumes, len(plan.Chapters))
 	if deriveBudgets {
-		normalizeAdaptationPlanTotals(plan)
+		normalizeAdaptationPlanTotals(plan, budgetsChanged)
 	}
 }
 
@@ -1171,6 +1175,174 @@ func normalizeAdaptationChapterPlan(chapter *domain.AdaptationChapterPlan, toler
 	}
 }
 
+type adaptationSplitBudgetGroup struct {
+	Indexes     []int
+	SourceRunes int
+}
+
+func normalizeAdaptationSplitChapterBudgets(plan *domain.AdaptationPlan, sourceRunes map[int]int) bool {
+	if plan == nil || domain.AdaptationRewritePolicyForGranularity(plan.Granularity) != domain.AdaptationRewriteFullRewrite {
+		return false
+	}
+	changed := false
+	groups := adaptationSplitBudgetGroups(plan.Chapters, sourceRunes)
+	for _, group := range groups {
+		if len(group.Indexes) <= 1 || group.SourceRunes <= 0 {
+			continue
+		}
+		minChapters := ceilAdaptationPositiveDiv(group.SourceRunes, domain.AdaptationModelChapterMaxRunes)
+		if minChapters > len(group.Indexes) {
+			continue
+		}
+		if !adaptationSplitBudgetGroupNeedsNormalization(plan.Chapters, group) {
+			continue
+		}
+		applyAdaptationSplitBudgetGroup(plan.Chapters, group)
+		changed = true
+	}
+	return changed
+}
+
+func adaptationSplitBudgetGroups(chapters []domain.AdaptationChapterPlan, sourceRunes map[int]int) map[string]adaptationSplitBudgetGroup {
+	groups := make(map[string]adaptationSplitBudgetGroup)
+	for index := range chapters {
+		chapter := chapters[index]
+		key := adaptationSplitBudgetGroupKey(chapter)
+		group := groups[key]
+		group.Indexes = append(group.Indexes, index)
+		if group.SourceRunes <= 0 {
+			group.SourceRunes = adaptationCoverageSourceRunes(chapter, sourceRunes)
+		}
+		groups[key] = group
+	}
+	return groups
+}
+
+func adaptationSplitBudgetGroupKey(chapter domain.AdaptationChapterPlan) string {
+	if chapter.SourceRange.From > 0 && chapter.SourceRange.To >= chapter.SourceRange.From {
+		return fmt.Sprintf("range:%d:%d", chapter.SourceRange.From, chapter.SourceRange.To)
+	}
+	chapters := appendSortedPositiveInts(nil, chapter.SourceChapters...)
+	if len(chapters) == 0 {
+		return fmt.Sprintf("chapter:%d", chapter.Chapter)
+	}
+	parts := make([]string, 0, len(chapters))
+	for _, sourceChapter := range chapters {
+		parts = append(parts, fmt.Sprintf("%d", sourceChapter))
+	}
+	return "anchors:" + strings.Join(parts, ",")
+}
+
+func adaptationCoverageSourceRunes(chapter domain.AdaptationChapterPlan, sourceRunes map[int]int) int {
+	if chapter.SourceRange.From > 0 && chapter.SourceRange.To >= chapter.SourceRange.From {
+		total := 0
+		for sourceChapter := chapter.SourceRange.From; sourceChapter <= chapter.SourceRange.To; sourceChapter++ {
+			total += sourceRunes[sourceChapter]
+		}
+		if total > 0 {
+			return total
+		}
+	}
+	if total := sumAdaptationSourceRunes(chapter.SourceChapters, sourceRunes); total > 0 {
+		return total
+	}
+	if chapter.WordBudget != nil && chapter.WordBudget.SourceRunes > 0 {
+		return chapter.WordBudget.SourceRunes
+	}
+	return chapter.SourceRunes
+}
+
+func adaptationSplitBudgetGroupNeedsNormalization(chapters []domain.AdaptationChapterPlan, group adaptationSplitBudgetGroup) bool {
+	for _, index := range group.Indexes {
+		chapter := chapters[index]
+		if chapter.SourceRunes > domain.AdaptationModelChapterMaxRunes ||
+			chapter.TargetRunes > domain.AdaptationModelChapterMaxRunes ||
+			chapter.TargetMaxRunes > domain.AdaptationModelChapterMaxRunes {
+			return true
+		}
+		if chapter.WordBudget != nil &&
+			(chapter.WordBudget.SourceRunes > domain.AdaptationModelChapterMaxRunes ||
+				chapter.WordBudget.TargetRunes > domain.AdaptationModelChapterMaxRunes ||
+				chapter.WordBudget.MaxRunes > domain.AdaptationModelChapterMaxRunes) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyAdaptationSplitBudgetGroup(chapters []domain.AdaptationChapterPlan, group adaptationSplitBudgetGroup) {
+	for offset, index := range group.Indexes {
+		sourceRunes := splitAdaptationRunesForIndex(group.SourceRunes, len(group.Indexes), offset)
+		targetRunes := sourceRunes
+		if targetRunes <= 0 {
+			targetRunes = domain.AdaptationModelChapterTargetRunes
+		}
+		if targetRunes > domain.AdaptationModelChapterMaxRunes {
+			targetRunes = domain.AdaptationModelChapterMaxRunes
+		}
+		minRunes, maxRunes := adaptationModelChapterRuneRange(targetRunes)
+		chapter := &chapters[index]
+		chapter.SourceRunes = sourceRunes
+		chapter.TargetRunes = targetRunes
+		chapter.TargetMinRunes = minRunes
+		chapter.TargetMaxRunes = maxRunes
+		chapter.WordBudget = &domain.AdaptationChapterWordBudget{
+			SourceRunes: sourceRunes,
+			TargetRunes: targetRunes,
+			MinRunes:    minRunes,
+			MaxRunes:    maxRunes,
+			Tolerance:   domain.AdaptationModelChapterTolerance,
+		}
+	}
+}
+
+func splitAdaptationRunesForIndex(totalRunes, count, index int) int {
+	if totalRunes <= 0 || count <= 0 || index < 0 {
+		return 0
+	}
+	base := totalRunes / count
+	remainder := totalRunes % count
+	if index < remainder {
+		return base + 1
+	}
+	return base
+}
+
+func adaptationModelChapterRuneRange(targetRunes int) (int, int) {
+	minRunes, maxRunes := adaptationRuneRange(targetRunes, domain.AdaptationModelChapterTolerance)
+	if maxRunes > domain.AdaptationModelChapterMaxRunes {
+		maxRunes = domain.AdaptationModelChapterMaxRunes
+	}
+	if minRunes > targetRunes {
+		minRunes = targetRunes
+	}
+	if maxRunes < targetRunes {
+		maxRunes = targetRunes
+	}
+	return minRunes, maxRunes
+}
+
+func ceilAdaptationPositiveDiv(value, divisor int) int {
+	if value <= 0 || divisor <= 0 {
+		return 0
+	}
+	return (value + divisor - 1) / divisor
+}
+
+func appendSortedPositiveInts(base []int, values ...int) []int {
+	seen := make(map[int]bool, len(base)+len(values))
+	out := make([]int, 0, len(base)+len(values))
+	for _, value := range append(base, values...) {
+		if value <= 0 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Ints(out)
+	return out
+}
+
 const defaultAdaptationWordTolerance = 0.15
 
 func shouldDeriveAdaptationBudgets(plan *domain.AdaptationPlan) bool {
@@ -1199,7 +1371,7 @@ func shouldDeriveAdaptationBudgets(plan *domain.AdaptationPlan) bool {
 	return false
 }
 
-func normalizeAdaptationPlanTotals(plan *domain.AdaptationPlan) {
+func normalizeAdaptationPlanTotals(plan *domain.AdaptationPlan, force bool) {
 	if plan == nil {
 		return
 	}
@@ -1213,16 +1385,16 @@ func normalizeAdaptationPlanTotals(plan *domain.AdaptationPlan) {
 		targetMin += chapter.TargetMinRunes
 		targetMax += chapter.TargetMaxRunes
 	}
-	if plan.SourceTotalRunes <= 0 {
+	if force || plan.SourceTotalRunes <= 0 {
 		plan.SourceTotalRunes = sourceTotal
 	}
-	if plan.TargetTotalRunes <= 0 {
+	if force || plan.TargetTotalRunes <= 0 {
 		plan.TargetTotalRunes = targetTotal
 	}
-	if plan.TargetMinRunes <= 0 {
+	if force || plan.TargetMinRunes <= 0 {
 		plan.TargetMinRunes = targetMin
 	}
-	if plan.TargetMaxRunes <= 0 {
+	if force || plan.TargetMaxRunes <= 0 {
 		plan.TargetMaxRunes = targetMax
 	}
 	if plan.TargetMinRunes <= 0 && plan.TargetMaxRunes <= 0 && plan.TargetTotalRunes > 0 {
