@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest rebuild/restart change: current local commit
+  `chore: rebuild web static after latest pull`:
+  Pulled `origin/main` fast-forward from `7e5b24d4` to `aaeeb2a7`
+  (`fix: budget long-source adaptation splits`), rebuilt tracked Web static
+  assets, and restarted local Web with repo-local Go on `PATH` via
+  `restart-web.cmd -Port 9898 -RuntimeRoot C:\Users\RondleLiu\.ainovel\novels-preview`.
+  The restart stopped PID `58844`, started `http://127.0.0.1:9898` as PID
+  `55100`, and `/api/runtime` returned healthy with 18 visible projects and
+  active project `project-20260705003848-bbd0eb`.
 - Latest source/runtime change: `2f874c9`
   `fix: resume adaptation planning retries`:
   Long-form adaptation proposal planning now resumes partial source-map
