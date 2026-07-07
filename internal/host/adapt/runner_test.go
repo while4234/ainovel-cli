@@ -1279,6 +1279,26 @@ func TestNormalizePlannerSourceMapSkeletonBatchesAllowsCompressionAfterBudgetRev
 	}
 }
 
+func TestBuildAdaptationPlannerSkeletonUserPromptIncludesInitialSourceRuneBudgetNotes(t *testing.T) {
+	prompt, err := buildAdaptationPlannerSkeletonUserPrompt(ProposalOptions{
+		Brief:         "arc rewrite",
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+	}, &domain.AdaptationSourceManifest{ChapterCount: 1}, nil, []plannerSourceMapEntry{
+		{Index: 1, SourceFrom: 1, SourceTo: 1, SourceRunes: 16000},
+	}, 0)
+	if err != nil {
+		t.Fatalf("buildAdaptationPlannerSkeletonUserPrompt: %v", err)
+	}
+	if !strings.Contains(prompt, `"source_map_budget_notes"`) ||
+		!strings.Contains(prompt, "source_runes=16000") ||
+		!strings.Contains(prompt, "should total at least 4") ||
+		!strings.Contains(prompt, "compression/deletion rationale") ||
+		!strings.Contains(prompt, "first-pass budget guidance") {
+		t.Fatalf("prompt should include initial long-source budget guidance: %s", prompt)
+	}
+}
+
 func TestNormalizePlannerSourceMapSkeletonBatchesIgnoresFutureRangeSpillover(t *testing.T) {
 	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 40}
 	batches, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{

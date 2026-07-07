@@ -2945,6 +2945,26 @@ func plannerChapterBudgetRepairInstructions(err error) []string {
 	}
 }
 
+func plannerSourceMapBudgetNotes(entries []plannerSourceMapEntry) []string {
+	notes := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		minTargetCount := plannerSourceMapBudgetMinTargetChapters(entry)
+		if minTargetCount <= 1 || entry.SourceRunes <= adaptationPlannerModelChapterMaxRunes {
+			continue
+		}
+		notes = append(notes, fmt.Sprintf(
+			"source_map entry %d range %d-%d has source_runes=%d; if this range keeps, expands, or closely rewrites source detail, returned batches covering this range should total at least %d chapter_count so target chapters can stay within %d runes. If the adaptation intentionally deletes, merges, or compresses this material, a lower chapter_count is allowed, but batch summaries must state the compression/deletion rationale.",
+			entry.Index,
+			entry.SourceFrom,
+			entry.SourceTo,
+			entry.SourceRunes,
+			minTargetCount,
+			adaptationPlannerModelChapterMaxRunes,
+		))
+	}
+	return notes
+}
+
 func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
 	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false)
 }
@@ -4886,19 +4906,20 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 	targetChapterHint int,
 ) (string, error) {
 	input := struct {
-		Brief               string                          `json:"brief"`
-		Granularity         string                          `json:"granularity"`
-		RewritePolicy       string                          `json:"rewrite_policy"`
-		WordTolerance       float64                         `json:"word_tolerance"`
-		TargetChapterHint   int                             `json:"target_chapter_hint,omitempty"`
-		TargetChapterRole   string                          `json:"target_chapter_hint_role,omitempty"`
-		RecommendedBatchMax int                             `json:"recommended_batch_max"`
-		ChapterBudgetPolicy *plannerChapterBudgetPolicy     `json:"chapter_budget_policy,omitempty"`
-		SourceManifest      plannerSourceManifestSummary    `json:"source_manifest"`
-		SourceFoundation    *plannerSourceFoundationSummary `json:"source_foundation"`
-		SourceMap           []plannerSourceMapEntry         `json:"source_map"`
-		SourceMapNotes      []string                        `json:"source_map_notes"`
-		Requirements        []string                        `json:"requirements"`
+		Brief                string                          `json:"brief"`
+		Granularity          string                          `json:"granularity"`
+		RewritePolicy        string                          `json:"rewrite_policy"`
+		WordTolerance        float64                         `json:"word_tolerance"`
+		TargetChapterHint    int                             `json:"target_chapter_hint,omitempty"`
+		TargetChapterRole    string                          `json:"target_chapter_hint_role,omitempty"`
+		RecommendedBatchMax  int                             `json:"recommended_batch_max"`
+		ChapterBudgetPolicy  *plannerChapterBudgetPolicy     `json:"chapter_budget_policy,omitempty"`
+		SourceManifest       plannerSourceManifestSummary    `json:"source_manifest"`
+		SourceFoundation     *plannerSourceFoundationSummary `json:"source_foundation"`
+		SourceMap            []plannerSourceMapEntry         `json:"source_map"`
+		SourceMapNotes       []string                        `json:"source_map_notes"`
+		SourceMapBudgetNotes []string                        `json:"source_map_budget_notes,omitempty"`
+		Requirements         []string                        `json:"requirements"`
 	}{
 		Brief:               opts.Brief,
 		Granularity:         opts.Granularity,
@@ -4915,6 +4936,7 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 			"source_map is a compact, resumable dossier built from source-report batches; use it instead of raw per-chapter reports for this skeleton step.",
 			"Each source_map entry covers an inclusive source range and preserves high-level causality, plot threads, character arcs, world constraints, and relationship signals.",
 		},
+		SourceMapBudgetNotes: plannerSourceMapBudgetNotes(sourceMap),
 		Requirements: []string{
 			"Return exactly one JSON skeleton object and no prose.",
 			"Do not wrap the JSON in markdown fences.",
@@ -4922,6 +4944,7 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 			"Do not include a chapters array in the skeleton step; chapter details are generated in later batch calls.",
 			"Choose how many target chapters this source-map range needs, then divide it into one or more model-planned batches/volumes.",
 			"If chapter_budget_policy is present, source_map.source_runes must drive splitting: a long single source chapter still needs multiple target chapters when one target would exceed chapter_budget_policy.max_runes.",
+			"Read source_map_budget_notes before choosing chapter_count. Treat those notes as first-pass budget guidance, not repair-only feedback.",
 			"If target_chapter_hint_role is source_scale_minimum, treat target_chapter_hint as anti-shrink long-form scale guidance, not an exact final chapter count.",
 			"Choose final target_chapter_count after analyzing source_map and the user's additions; increase above target_chapter_hint when added plot, relationship, or transition arcs require more chapters.",
 			"If target_chapter_hint_role is explicit_target_scale, honor that requested scale unless the source map and user changes make a different count necessary; explain the choice in batch summaries.",

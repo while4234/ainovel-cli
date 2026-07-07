@@ -29,6 +29,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: include source-map budget notes in initial prompt`:
+  Source-map skeleton prompts now include concrete per-entry
+  `source_map_budget_notes` before the first model call. For long source
+  ranges whose `source_runes` exceed the model chapter maximum, the prompt
+  states the source rune count, the preservation-detail review target
+  `chapter_count`, and the explicit compression/deletion exception up front
+  instead of waiting for the first response to fail quality review. Validation
+  passed for focused initial-budget-note prompt coverage, full
+  `go test ./internal/host/adapt -count=1`, and `git diff --check` with CRLF
+  warnings only.
+- Latest source/runtime change: current local commit
   `fix: stabilize adaptation skeleton retry budgets`:
   Adaptation source-map skeleton chapter-budget quality retries now use the
   Web-configured structure-repair attempt count instead of a hardcoded 2,
