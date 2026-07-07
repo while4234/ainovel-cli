@@ -38,6 +38,39 @@ func TestRuntimeAutoSwitchQuotaSwitchesImmediately(t *testing.T) {
 	}
 }
 
+func TestRuntimeAutoSwitchMonthlyUsageLimitSwitchesImmediately(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{
+		provider: "codex-primary",
+		model:    "gpt-5.5",
+		errs:     []error{errors.New("Monthly usage limit reached. Resets in 18 days. To continue using this model, upgrade your plan.")},
+	}
+	second := &scriptedRuntimeModel{provider: "deepseek-backup", model: "deepseek-v4-pro"}
+	primary := NewSwappableModel("codex-primary", "gpt-5.5", first)
+	controller := &runtimeFallbackControllerStub{
+		order:  []string{"deepseek-backup"},
+		models: map[string]agentcore.ChatModel{"deepseek-backup": second},
+		modelNames: map[string]string{
+			"deepseek-backup": "deepseek-v4-pro",
+		},
+	}
+
+	model := newRuntimeFallbackModel("architect", primary, primary, runtimeFallbackTestConfig(3), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "deepseek-backup/deepseek-v4-pro" {
+		t.Fatalf("response = %q, want deepseek-backup/deepseek-v4-pro", got)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
+	}
+	if len(controller.calls) != 1 {
+		t.Fatalf("controller calls = %d, want 1", len(controller.calls))
+	}
+}
+
 func TestRuntimeAutoSwitchRateLimitExceededSwitchesImmediately(t *testing.T) {
 	restoreRuntimeFallbackWait(t)
 	first := &scriptedRuntimeModel{provider: "deepseek-suifeng-0", model: "deepseek-v4-pro", errs: []error{errors.New("rate_limit_exceeded")}}

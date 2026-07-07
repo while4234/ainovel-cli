@@ -391,7 +391,15 @@ func isRuntimeQuotaErrorMessage(err error) bool {
 		strings.Contains(msg, "balance not enough") ||
 		strings.Contains(msg, "insufficient balance") ||
 		strings.Contains(msg, "payment required") ||
-		strings.Contains(msg, "billing hard limit")
+		strings.Contains(msg, "billing hard limit") ||
+		strings.Contains(msg, "usage limit reached") ||
+		strings.Contains(msg, "usage limit exceeded") ||
+		strings.Contains(msg, "usage limits exceeded") ||
+		strings.Contains(msg, "reached your usage limit") ||
+		strings.Contains(msg, "reached the usage limit") ||
+		strings.Contains(msg, "monthly usage limit") ||
+		strings.Contains(msg, "weekly usage limit") ||
+		strings.Contains(msg, "daily usage limit")
 }
 
 func isRuntimeRateLimitErrorMessage(err error) bool {
