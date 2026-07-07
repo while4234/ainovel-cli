@@ -576,6 +576,87 @@ func TestProjectRoleThinkingPersistsOnlyRoleScopeAndFallsBack(t *testing.T) {
 	}
 }
 
+func TestProjectRetrySettingsPersistAcrossReopen(t *testing.T) {
+	home := testTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
+	manifest, err := store.CreateProject("Retry Overlay")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	base := testWebConfig(t)
+	base.ModelAutoSwitch.NetworkMaxAttempts = 7
+	base.StructureRepairMaxAttempts = 7
+
+	h, err := store.OpenProjectHost(base, assets.Load("default"), manifest)
+	if err != nil {
+		t.Fatalf("OpenProjectHost: %v", err)
+	}
+	if err := h.SetRetrySettings(14, 14); err != nil {
+		t.Fatalf("SetRetrySettings: %v", err)
+	}
+	h.Close()
+
+	overlay := readProjectOverlay(t, manifest)
+	if got := overlay.ModelAutoSwitch.NetworkMaxAttempts; got != 14 {
+		t.Fatalf("overlay model retry attempts = %d, want 14", got)
+	}
+	if got := overlay.StructureRepairMaxAttempts; got != 14 {
+		t.Fatalf("overlay structure repair attempts = %d, want 14", got)
+	}
+
+	changedGlobal := base
+	changedGlobal.ModelAutoSwitch.NetworkMaxAttempts = 7
+	changedGlobal.StructureRepairMaxAttempts = 7
+	reopened, err := store.OpenProjectHost(changedGlobal, assets.Load("default"), manifest)
+	if err != nil {
+		t.Fatalf("reopen with changed global retry settings: %v", err)
+	}
+	defer reopened.Close()
+	if got := reopened.ModelAutoSwitchConfig().EffectiveNetworkMaxAttempts(); got != 14 {
+		t.Fatalf("reopened model retry attempts = %d, want 14", got)
+	}
+	if got := reopened.CurrentStructureRepairMaxAttempts(); got != 14 {
+		t.Fatalf("reopened structure repair attempts = %d, want 14", got)
+	}
+}
+
+func TestProjectRetrySettingsReturnsPersistError(t *testing.T) {
+	home := testTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
+	manifest, err := store.CreateProject("Retry Persist Error")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	base := testWebConfig(t)
+	base.ModelAutoSwitch.NetworkMaxAttempts = 7
+	base.StructureRepairMaxAttempts = 7
+
+	h, err := store.OpenProjectHost(base, assets.Load("default"), manifest)
+	if err != nil {
+		t.Fatalf("OpenProjectHost: %v", err)
+	}
+	defer h.Close()
+	if err := os.MkdirAll(ProjectConfigPath(manifest), 0o755); err != nil {
+		t.Fatalf("block project config path: %v", err)
+	}
+
+	if err := h.SetRetrySettings(14, 14); err == nil {
+		t.Fatal("SetRetrySettings succeeded with unwritable project config path")
+	}
+	if got := h.ModelAutoSwitchConfig().EffectiveNetworkMaxAttempts(); got != 7 {
+		t.Fatalf("model retry attempts after failed persist = %d, want rollback to 7", got)
+	}
+	if got := h.CurrentStructureRepairMaxAttempts(); got != 7 {
+		t.Fatalf("structure repair attempts after failed persist = %d, want rollback to 7", got)
+	}
+}
+
 func TestProjectOwnedProviderSecretPreservedWhileInheritedProviderRedacted(t *testing.T) {
 	home := testTempDir(t)
 	t.Setenv("HOME", home)

@@ -2974,6 +2974,7 @@ func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	previous := cloneHostRuntimeConfig(h.cfg)
 	h.cfg.ModelAutoSwitch.NetworkMaxAttempts = modelAttempts
 	h.cfg.StructureRepairMaxAttempts = repairAttempts
 	if overlay := h.ensureProjectOverlayLocked(); overlay != nil {
@@ -2981,7 +2982,8 @@ func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts
 		overlay.StructureRepairMaxAttempts = repairAttempts
 	}
 	if err := h.persistConfigLocked(); err != nil {
-		slog.Warn("保存配置失败", "module", "host", "err", err)
+		h.cfg = previous
+		return fmt.Errorf("save retry settings: %w", err)
 	}
 	h.emitEvent(Event{
 		Time:     time.Now(),
