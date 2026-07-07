@@ -28,6 +28,26 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: current local commit
+  `fix: stabilize adaptation skeleton retry budgets`:
+  Adaptation source-map skeleton chapter-budget quality retries now use the
+  Web-configured structure-repair attempt count instead of a hardcoded 2,
+  so event logs expose the configured retry denominator. Source-rune based
+  chapter-count checks now act as review guidance with an explicit
+  compression/deletion exception, allowing intentional condensed adaptations
+  after quality retries instead of hard-failing on original-text size alone.
+  General proposal skeleton normalization now ignores model-drifted
+  `target_from` / `target_to` when `chapter_count` is present and reassigns
+  continuous target ranges host-side, preventing failures like "batch target
+  range starts at 156, want 165". Source-map skeleton normalization now drops
+  pure future-range spillover batches returned by the model, such as a 41-70
+  batch in a 1-40 request, while still requiring the current range to be fully
+  covered. Runtime proposal checkpoints were backed up and cleared for
+  `女主播的秘密` and `术士手册` so both keep co-create/source analysis state but
+  can regenerate adaptation proposals with the new logic. Validation passed
+  for focused skeleton retry/range/spillover tests, full
+  `go test ./internal/host/adapt -count=1`, and `git diff --check` with CRLF
+  warnings only.
 - Latest rebuild/restart change: current local commit
   `chore: rebuild web static after latest pull`:
   Pulled `origin/main` fast-forward from `7e5b24d4` to `aaeeb2a7`

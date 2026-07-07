@@ -32,7 +32,6 @@ const (
 	adaptationPlannerChunkedMinChapters      = 18
 	adaptationPlannerRecommendedBatchMax     = 4
 	adaptationPlannerSourceMapExpansionMax   = 6
-	adaptationPlannerChapterBudgetRetries    = 2
 	adaptationPlannerSourceChunkedMin        = adaptationPlannerRecommendedBatchMax * 2
 	adaptationPlannerTargetChapterMax        = 5000
 	adaptationPlannerModelChapterTargetRunes = domain.AdaptationModelChapterTargetRunes
@@ -2830,7 +2829,7 @@ func collectPlannerSourceMapSkeletonBatches(
 			var budgetErr *plannerChapterBudgetQualityError
 			if errors.As(berr, &budgetErr) {
 				lastErr = budgetErr
-				if qualityAttempts >= adaptationPlannerChapterBudgetRetries {
+				if qualityAttempts >= maxRepairAttempts {
 					accepted, acceptErr := normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviation(skeleton.Batches, entry)
 					if acceptErr == nil {
 						emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批章节预算连续偏离预期，已按模型改编判断继续：%v", current, total, lastErr), lastErr)
@@ -2839,7 +2838,7 @@ func collectPlannerSourceMapSkeletonBatches(
 					return nil, acceptErr
 				}
 				qualityAttempts++
-				emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批章节预算偏离预期，质量重试第 %d/%d 次：%v", current, total, qualityAttempts, adaptationPlannerChapterBudgetRetries, lastErr), lastErr)
+				emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批章节预算偏离预期，质量重试第 %d/%d 次：%v", current, total, qualityAttempts, maxRepairAttempts, lastErr), lastErr)
 				reconsidered, err := retryPlannerSkeletonChapterBudget(ctx, llm, systemPrompt, originalPrompt, text, lastErr, emit, current, total, maxModelCallAttempts)
 				if err != nil {
 					return nil, err
@@ -2919,6 +2918,33 @@ func (e *plannerChapterBudgetQualityError) Error() string {
 	}
 }
 
+func plannerChapterBudgetRepairInstructions(err error) []string {
+	var budgetErr *plannerChapterBudgetQualityError
+	if !errors.As(err, &budgetErr) || budgetErr == nil {
+		return nil
+	}
+	switch budgetErr.Direction {
+	case "low":
+		instructions := []string{
+			fmt.Sprintf("The previous budget review says source range %d-%d may be under-planned: if this range keeps, expands, or closely rewrites the source material, the sum of chapter_count across returned batches covering that range should be at least %d.", budgetErr.SourceFrom, budgetErr.SourceTo, budgetErr.MinCount),
+			"If this adaptation intentionally deletes, merges, or compresses the source material, a lower chapter_count is allowed, but the batch summary must explicitly state that compression/deletion rationale.",
+		}
+		if budgetErr.SourceRunes > 0 {
+			instructions = append(instructions, fmt.Sprintf("That range has source_runes=%d, so the source-size estimate points to about %d target chapters when preserving detail; treat this as a review target, not a hard lower bound when the plan clearly compresses or deletes content.", budgetErr.SourceRunes, budgetErr.MinCount))
+		}
+		return instructions
+	case "high":
+		return []string{
+			fmt.Sprintf("The previous budget review says source range %d-%d is over-planned: reduce chapter_count toward at most %d unless the batch summary gives a concrete added-plot or long-chapter split reason.", budgetErr.SourceFrom, budgetErr.SourceTo, budgetErr.MaxCount),
+			"Do not repeat the full source budget into every target chapter; each target chapter should own a distinct slice of the adapted material.",
+		}
+	default:
+		return []string{
+			fmt.Sprintf("Rebalance chapter_count for source range %d-%d according to the previous budget review error.", budgetErr.SourceFrom, budgetErr.SourceTo),
+		}
+	}
+}
+
 func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
 	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false)
 }
@@ -2935,6 +2961,9 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 	for idx, batch := range batches {
 		if batch.SourceFrom <= 0 || batch.SourceTo <= 0 {
 			return nil, fmt.Errorf("batch %d must include source_from and source_to", idx+1)
+		}
+		if batch.SourceTo < entry.SourceFrom || batch.SourceFrom > entry.SourceTo {
+			continue
 		}
 		if strings.TrimSpace(batch.Title) == "" {
 			return nil, fmt.Errorf("batch %d title is empty", idx+1)
@@ -2962,7 +2991,7 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 		hardMinCount := plannerSourceMapBudgetMinTargetChaptersForRange(entry, batch.SourceFrom, batch.SourceTo)
 		minCount = max(minCount, hardMinCount)
 		maxCount = max(maxCount, minCount)
-		if count < hardMinCount {
+		if !allowBudgetDeviation && count < hardMinCount {
 			return nil, &plannerChapterBudgetQualityError{
 				BatchIndex: idx + 1,
 				Count:      count,
@@ -3005,6 +3034,9 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 		batch.TargetTo = 0
 		out = append(out, batch)
 	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("source-map range %d-%d returned no in-range batches", entry.SourceFrom, entry.SourceTo)
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].SourceFrom == out[j].SourceFrom {
 			if out[i].SourceTo == out[j].SourceTo {
@@ -3032,9 +3064,15 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 	}
 	targetCount := plannerSkeletonBatchTargetCount(out)
 	minTargetCount := plannerSourceMapBudgetMinTargetChapters(entry)
-	if minTargetCount > 0 && targetCount < minTargetCount {
-		return nil, fmt.Errorf("source-map range %d-%d has %d source_runes but skeleton produced %d target chapters; expected at least %d target chapters to keep each chapter within %d runes",
-			entry.SourceFrom, entry.SourceTo, entry.SourceRunes, targetCount, minTargetCount, adaptationPlannerModelChapterMaxRunes)
+	if !allowBudgetDeviation && minTargetCount > 0 && targetCount < minTargetCount {
+		return nil, &plannerChapterBudgetQualityError{
+			Count:       targetCount,
+			MinCount:    minTargetCount,
+			SourceFrom:  entry.SourceFrom,
+			SourceTo:    entry.SourceTo,
+			SourceRunes: entry.SourceRunes,
+			Direction:   "low",
+		}
 	}
 	return out, nil
 }
@@ -4350,7 +4388,7 @@ func retryPlannerSkeletonChapterBudget(
 	total int,
 	maxModelCallAttempts int,
 ) (string, error) {
-	repairPrompt := buildPlannerRepairPrompt("skeleton chapter budget quality review", originalPrompt, previousText, previousErr, []string{
+	instructions := []string{
 		"Return exactly one JSON skeleton object and no prose.",
 		"The JSON must have a top-level batches array.",
 		"Keep the returned source ranges as a strict partition of the requested source-map range with no gaps and no overlaps.",
@@ -4358,7 +4396,9 @@ func retryPlannerSkeletonChapterBudget(
 		"Do not calculate target_from or target_to; the host will assign continuous target chapter ranges from chapter_count.",
 		"Reconsider chapter_count for every batch. A very high count is allowed when added plot, relationship arcs, transition scenes, or long source chapters need splitting. A very low count is allowed when the adaptation intentionally deletes, merges, or compresses source material.",
 		"Keep a short reason for any unusually high or low chapter budget in the batch summary.",
-	})
+	}
+	instructions = append(instructions, plannerChapterBudgetRepairInstructions(previousErr)...)
+	repairPrompt := buildPlannerRepairPrompt("skeleton chapter budget quality review", originalPrompt, previousText, previousErr, instructions)
 	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens, emit, current, total, "骨架章节预算质量复核", maxModelCallAttempts)
 	if err != nil {
 		return "", fmt.Errorf("planner skeleton chapter budget review llm generate: %w", err)
@@ -5183,24 +5223,16 @@ func normalizePlannerSkeleton(skeleton *plannerSkeleton, opts ProposalOptions, m
 		if batch.Index <= 0 {
 			batch.Index = idx + 1
 		}
-		if batch.TargetFrom <= 0 {
-			batch.TargetFrom = nextTarget
+		count := batch.TargetChapterCount
+		if count <= 0 {
+			if batch.TargetFrom <= 0 || batch.TargetTo < batch.TargetFrom {
+				return fmt.Errorf("batch %d must include chapter_count or a valid target range", batch.Index)
+			}
+			count = batch.TargetTo - batch.TargetFrom + 1
 		}
-		if batch.TargetTo <= 0 && batch.TargetChapterCount > 0 {
-			batch.TargetTo = batch.TargetFrom + batch.TargetChapterCount - 1
-		}
-		if batch.TargetTo < batch.TargetFrom {
-			return fmt.Errorf("batch %d has invalid target range %d-%d", batch.Index, batch.TargetFrom, batch.TargetTo)
-		}
-		if batch.TargetFrom != nextTarget {
-			return fmt.Errorf("batch %d target range starts at %d, want %d", batch.Index, batch.TargetFrom, nextTarget)
-		}
-		if batch.TargetChapterCount <= 0 {
-			batch.TargetChapterCount = batch.TargetTo - batch.TargetFrom + 1
-		}
-		if batch.TargetChapterCount != batch.TargetTo-batch.TargetFrom+1 {
-			return fmt.Errorf("batch %d chapter_count conflicts with target range", batch.Index)
-		}
+		batch.TargetChapterCount = count
+		batch.TargetFrom = nextTarget
+		batch.TargetTo = nextTarget + count - 1
 		if batch.SourceFrom <= 0 || batch.SourceTo <= 0 {
 			minSource, maxSource := minMaxPositive(batch.SourceChapters)
 			if batch.SourceFrom <= 0 {
@@ -5220,7 +5252,7 @@ func normalizePlannerSkeleton(skeleton *plannerSkeleton, opts ProposalOptions, m
 		skeleton.TargetChapterCount = lastTarget
 	}
 	if lastTarget != skeleton.TargetChapterCount {
-		return fmt.Errorf("batch target ranges end at %d, want target_chapter_count %d", lastTarget, skeleton.TargetChapterCount)
+		skeleton.TargetChapterCount = lastTarget
 	}
 	return nil
 }

@@ -1265,6 +1265,67 @@ func TestNormalizePlannerSourceMapSkeletonBatchesRequiresBudgetSplitForLongSourc
 	}
 }
 
+func TestNormalizePlannerSourceMapSkeletonBatchesAllowsCompressionAfterBudgetReview(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 1, SourceRunes: 16000}
+
+	batches, err := normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviation([]plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 1, 1, 1, 1),
+	}, entry)
+	if err != nil {
+		t.Fatalf("allow budget deviation should accept intentional compression after review: %v", err)
+	}
+	if len(batches) != 1 || batches[0].TargetChapterCount != 1 {
+		t.Fatalf("batches=%+v, want compressed single target chapter", batches)
+	}
+}
+
+func TestNormalizePlannerSourceMapSkeletonBatchesIgnoresFutureRangeSpillover(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 40}
+	batches, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 1, 10, 1, 3),
+		testSourceMapSkeletonBatch(2, 11, 25, 1, 4),
+		testSourceMapSkeletonBatch(3, 26, 40, 1, 5),
+		testSourceMapSkeletonBatch(4, 41, 70, 1, 6),
+	}, entry)
+	if err != nil {
+		t.Fatalf("normalizePlannerSourceMapSkeletonBatches should ignore future spillover batches: %v", err)
+	}
+	if len(batches) != 3 {
+		t.Fatalf("batches=%d, want only the three in-range batches", len(batches))
+	}
+	if batches[len(batches)-1].SourceTo != 40 {
+		t.Fatalf("last in-range source_to=%d, want 40", batches[len(batches)-1].SourceTo)
+	}
+}
+
+func TestNormalizePlannerSkeletonReassignsDriftedTargetRanges(t *testing.T) {
+	skeleton := plannerSkeleton{
+		Granularity:        domain.AdaptationGranularityArc,
+		Status:             domain.AdaptationPlanStatusProposal,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		TargetChapterCount: 156,
+		Batches: []plannerSkeletonBatch{
+			{Index: 1, Title: "Opening", Theme: "setup", TargetChapterCount: 164, TargetFrom: 1, TargetTo: 155, SourceFrom: 1, SourceTo: 10, Summary: "opening span"},
+			{Index: 23, Title: "Drifted", Theme: "payoff", TargetChapterCount: 4, TargetFrom: 156, TargetTo: 159, SourceFrom: 11, SourceTo: 12, Summary: "model drifted the chapter range"},
+		},
+	}
+
+	err := normalizePlannerSkeleton(&skeleton, ProposalOptions{
+		Brief:         "arc rewrite",
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+	}, &domain.AdaptationSourceManifest{ChapterCount: 12}, 0)
+	if err != nil {
+		t.Fatalf("normalizePlannerSkeleton should reassign drifted target ranges: %v", err)
+	}
+	if skeleton.Batches[1].TargetFrom != 165 || skeleton.Batches[1].TargetTo != 168 {
+		t.Fatalf("drifted batch target range=%d-%d, want 165-168", skeleton.Batches[1].TargetFrom, skeleton.Batches[1].TargetTo)
+	}
+	if skeleton.TargetChapterCount != 168 {
+		t.Fatalf("TargetChapterCount=%d, want normalized batch total 168", skeleton.TargetChapterCount)
+	}
+}
+
 func TestBuildAdaptationProposalRetriesTransientPlannerGenerateError(t *testing.T) {
 	restore := stubPlannerRetrySleep(t)
 	defer restore()
@@ -2306,6 +2367,20 @@ func TestNormalizePlannerSourceMapSkeletonBatchesRejectsRunawayExpansion(t *test
 	}
 }
 
+func TestPlannerChapterBudgetRepairInstructionsMentionSourceRuneMinimum(t *testing.T) {
+	instructions := strings.Join(plannerChapterBudgetRepairInstructions(&plannerChapterBudgetQualityError{
+		SourceFrom:  129,
+		SourceTo:    133,
+		MinCount:    4,
+		SourceRunes: 15812,
+		Direction:   "low",
+	}), "\n")
+
+	if !strings.Contains(instructions, "should be at least 4") || !strings.Contains(instructions, "compression/deletion rationale") || !strings.Contains(instructions, "source_runes=15812") {
+		t.Fatalf("repair instructions should expose source-rune minimum, got %q", instructions)
+	}
+}
+
 func TestBuildAdaptationProposalVolumeSkeletonBudgetQualityRetryDoesNotConsumeStructureRepair(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -2330,6 +2405,7 @@ func TestBuildAdaptationProposalVolumeSkeletonBudgetQualityRetryDoesNotConsumeSt
 		{text: lowBudget},
 		{text: lowBudget},
 		{text: lowBudget},
+		{text: lowBudget},
 		{text: `{
 			"granularity": "arc",
 			"status": "proposal",
@@ -2347,7 +2423,7 @@ func TestBuildAdaptationProposalVolumeSkeletonBudgetQualityRetryDoesNotConsumeSt
 		Store:                      st,
 		LLM:                        llm,
 		ModelCallMaxAttempts:       1,
-		StructureRepairMaxAttempts: 1,
+		StructureRepairMaxAttempts: 3,
 	}, ProposalOptions{
 		Brief:        "arc long rewrite",
 		Granularity:  domain.AdaptationGranularityArc,
@@ -2356,14 +2432,17 @@ func TestBuildAdaptationProposalVolumeSkeletonBudgetQualityRetryDoesNotConsumeSt
 	if err != nil {
 		t.Fatalf("BuildAdaptationProposalVolumesContext: %v", err)
 	}
-	if llm.calls != 4 {
-		t.Fatalf("planner calls=%d, want initial + 2 quality retries + next source-map batch", llm.calls)
+	if llm.calls != 5 {
+		t.Fatalf("planner calls=%d, want initial + 3 configured quality retries + next source-map batch", llm.calls)
 	}
 	if result == nil || result.VolumeReview == nil || result.VolumeReview.TargetChapterCount != 8 {
 		t.Fatalf("volume review mismatch: %+v", result)
 	}
-	if !hasAdaptProgress(progress, "质量重试第 1/2") || !hasAdaptProgress(progress, "质量重试第 2/2") {
+	if !hasAdaptProgress(progress, "质量重试第 1/3") || !hasAdaptProgress(progress, "质量重试第 3/3") {
 		t.Fatalf("progress should expose quality retry attempts, got %+v", progress)
+	}
+	if len(llm.got) < 2 || !strings.Contains(llm.got[1][1].TextContent(), "should be at least 4") || !strings.Contains(llm.got[1][1].TextContent(), "compression/deletion rationale") {
+		t.Fatalf("quality retry prompt should expose the computed review target and compression exception, got %+v", llm.got)
 	}
 	if hasAdaptProgress(progress, "结构无效") {
 		t.Fatalf("budget quality retry should not consume structure repair attempts, got %+v", progress)
@@ -2414,7 +2493,7 @@ func TestBuildAdaptationProposalVolumeSkeletonAllowsHighBudgetAfterQualityRetrie
 		Store:                      st,
 		LLM:                        llm,
 		ModelCallMaxAttempts:       1,
-		StructureRepairMaxAttempts: 1,
+		StructureRepairMaxAttempts: 2,
 	}, ProposalOptions{
 		Brief:        "expand and split long chapters",
 		Granularity:  domain.AdaptationGranularityArc,
