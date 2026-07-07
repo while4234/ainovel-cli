@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest source/runtime change: `38d401ef`
+- Latest source/runtime change: `2f874c9`
   `fix: resume adaptation planning retries`:
   Long-form adaptation proposal planning now resumes partial source-map
   skeleton and detail runtime checkpoints instead of restarting from batch 1
