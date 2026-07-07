@@ -41,11 +41,11 @@ const (
 
 	DefaultRuntimeNetworkMaxAttempts = 7
 	MinRuntimeNetworkMaxAttempts     = 1
-	MaxRuntimeNetworkMaxAttempts     = 11
+	MaxRuntimeNetworkMaxAttempts     = 30
 
 	DefaultStructureRepairMaxAttempts = 2
 	MinStructureRepairMaxAttempts     = 1
-	MaxStructureRepairMaxAttempts     = 7
+	MaxStructureRepairMaxAttempts     = 15
 )
 
 // CompactReserveTokens 按 CompactRatio 反算 ReserveTokens 并应用 MinCompactReserve floor：

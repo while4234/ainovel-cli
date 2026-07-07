@@ -2189,17 +2189,23 @@ func TestNormalizePlannerSourceMapSkeletonBatchesAllowsBoundarySourceHandoff(t *
 	}
 }
 
-func TestNormalizePlannerSourceMapSkeletonBatchesRejectsChapterCountConflict(t *testing.T) {
+func TestNormalizePlannerSourceMapSkeletonBatchesUsesChapterCountNotModelRange(t *testing.T) {
 	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 3}
 	batch := testSourceMapSkeletonBatch(1, 1, 3, 1, 4)
-	batch.TargetChapterCount = 99
+	batch.TargetChapterCount = 5
 
-	_, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{batch}, entry)
-	if err == nil {
-		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject chapter_count conflicts")
+	normalized, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{batch}, entry)
+	if err != nil {
+		t.Fatalf("normalizePlannerSourceMapSkeletonBatches should accept chapter_count without trusting model target range: %v", err)
 	}
-	if !strings.Contains(err.Error(), "chapter_count conflicts") {
-		t.Fatalf("error=%v, want chapter_count conflict", err)
+	if len(normalized) != 1 {
+		t.Fatalf("normalized batches=%d, want 1", len(normalized))
+	}
+	if normalized[0].TargetChapterCount != 5 {
+		t.Fatalf("TargetChapterCount=%d, want model budget 5", normalized[0].TargetChapterCount)
+	}
+	if normalized[0].TargetFrom != 0 || normalized[0].TargetTo != 0 {
+		t.Fatalf("model target range should be ignored before host numbering: %+v", normalized[0])
 	}
 }
 
@@ -2209,10 +2215,135 @@ func TestNormalizePlannerSourceMapSkeletonBatchesRejectsRunawayExpansion(t *test
 
 	_, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{batch}, entry)
 	if err == nil {
-		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject runaway target expansion")
+		t.Fatal("normalizePlannerSourceMapSkeletonBatches should request review for runaway target expansion")
 	}
-	if !strings.Contains(err.Error(), "expansion limit") {
-		t.Fatalf("error=%v, want expansion limit", err)
+	if !strings.Contains(err.Error(), "above expected review ceiling") {
+		t.Fatalf("error=%v, want review ceiling", err)
+	}
+}
+
+func TestBuildAdaptationProposalVolumeSkeletonBudgetQualityRetryDoesNotConsumeStructureRepair(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	runeCounts := make([]int, 45)
+	for i := range runeCounts {
+		runeCounts[i] = 10
+	}
+	seedPreparedAdaptationSource(t, st, runeCounts)
+	lowBudget := `{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc long rewrite",
+		"target_chapter_count": 1,
+		"batches": [
+			{"index": 1, "title": "Compressed opening", "theme": "compression", "chapter_count": 1, "source_from": 1, "source_to": 40, "summary": "intentionally compress the opening source-map range"}
+		]
+	}`
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: lowBudget},
+		{text: lowBudget},
+		{text: lowBudget},
+		{text: `{
+			"granularity": "arc",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "arc long rewrite",
+			"target_chapter_count": 7,
+			"batches": [
+				{"index": 1, "title": "Final bridge", "theme": "payoff", "chapter_count": 7, "source_from": 41, "source_to": 45, "summary": "add room for the ending transition"}
+			]
+		}`},
+	}}
+	progress := make([]Event, 0)
+
+	result, err := BuildAdaptationProposalVolumesContext(context.Background(), Deps{
+		Store:                      st,
+		LLM:                        llm,
+		ModelCallMaxAttempts:       1,
+		StructureRepairMaxAttempts: 1,
+	}, ProposalOptions{
+		Brief:        "arc long rewrite",
+		Granularity:  domain.AdaptationGranularityArc,
+		EmitProgress: captureAdaptProgress(&progress),
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalVolumesContext: %v", err)
+	}
+	if llm.calls != 4 {
+		t.Fatalf("planner calls=%d, want initial + 2 quality retries + next source-map batch", llm.calls)
+	}
+	if result == nil || result.VolumeReview == nil || result.VolumeReview.TargetChapterCount != 8 {
+		t.Fatalf("volume review mismatch: %+v", result)
+	}
+	if !hasAdaptProgress(progress, "质量重试第 1/2") || !hasAdaptProgress(progress, "质量重试第 2/2") {
+		t.Fatalf("progress should expose quality retry attempts, got %+v", progress)
+	}
+	if hasAdaptProgress(progress, "结构无效") {
+		t.Fatalf("budget quality retry should not consume structure repair attempts, got %+v", progress)
+	}
+	if !hasAdaptProgress(progress, "连续偏离预期") {
+		t.Fatalf("progress should show accepted budget deviation after quality retries, got %+v", progress)
+	}
+}
+
+func TestBuildAdaptationProposalVolumeSkeletonAllowsHighBudgetAfterQualityRetries(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	runeCounts := make([]int, 45)
+	for i := range runeCounts {
+		runeCounts[i] = 10
+	}
+	seedPreparedAdaptationSource(t, st, runeCounts)
+	highBudget := `{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "expand and split long chapters",
+		"target_chapter_count": 300,
+		"batches": [
+			{"index": 1, "title": "Expanded opening", "theme": "expansion", "chapter_count": 300, "source_from": 1, "source_to": 40, "summary": "split long source chapters and add relationship transitions"}
+		]
+	}`
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: highBudget},
+		{text: highBudget},
+		{text: highBudget},
+		{text: `{
+			"granularity": "arc",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "expand and split long chapters",
+			"target_chapter_count": 7,
+			"batches": [
+				{"index": 1, "title": "Final bridge", "theme": "payoff", "chapter_count": 7, "source_from": 41, "source_to": 45, "summary": "add room for the ending transition"}
+			]
+		}`},
+	}}
+	progress := make([]Event, 0)
+
+	result, err := BuildAdaptationProposalVolumesContext(context.Background(), Deps{
+		Store:                      st,
+		LLM:                        llm,
+		ModelCallMaxAttempts:       1,
+		StructureRepairMaxAttempts: 1,
+	}, ProposalOptions{
+		Brief:        "expand and split long chapters",
+		Granularity:  domain.AdaptationGranularityArc,
+		EmitProgress: captureAdaptProgress(&progress),
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalVolumesContext: %v", err)
+	}
+	if result == nil || result.VolumeReview == nil || result.VolumeReview.TargetChapterCount != 307 {
+		t.Fatalf("volume review mismatch: %+v", result)
+	}
+	if !hasAdaptProgress(progress, "质量重试第 1/2") || !hasAdaptProgress(progress, "连续偏离预期") {
+		t.Fatalf("progress should show high-budget review and acceptance, got %+v", progress)
 	}
 }
 
@@ -2230,6 +2361,37 @@ func TestUpsertPlannerProposalRuntimeSkeletonBatchesRefreshesTargetChapterCount(
 
 	if runtime.TargetChapterCount != 8 {
 		t.Fatalf("TargetChapterCount=%d, want 8", runtime.TargetChapterCount)
+	}
+}
+
+func TestPlannerProposalRuntimeKeepsPartialSourceMapSkeletonForImplicitScale(t *testing.T) {
+	runtime := &domain.AdaptationProposalRuntime{
+		Version:            adaptationProposalRuntimeVersion,
+		Brief:              "arc long rewrite",
+		Granularity:        domain.AdaptationGranularityArc,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		TargetChapterCount: 79,
+		SourceChapterCount: 490,
+		SourcePath:         "source.txt",
+		SkeletonBatches: []domain.AdaptationProposalRuntimeSkeletonBatch{
+			{Index: 1, TargetFrom: 1, TargetTo: 7, TargetChapterCount: 7, SourceFrom: 1, SourceTo: 10},
+		},
+	}
+	manifest := &domain.AdaptationSourceManifest{SourcePath: "source.txt", ChapterCount: 490}
+	if !plannerProposalRuntimeMatches(runtime, ProposalOptions{
+		Brief:         "arc long rewrite",
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+	}, manifest, 490) {
+		t.Fatal("implicit long-form scale hint should not discard a partial source-map skeleton checkpoint")
+	}
+	runtime.Brief = "changed brief"
+	if plannerProposalRuntimeMatches(runtime, ProposalOptions{
+		Brief:         "arc long rewrite",
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+	}, manifest, 490) {
+		t.Fatal("changed proposal brief should still discard the partial checkpoint")
 	}
 }
 
@@ -2548,6 +2710,67 @@ func TestBuildAdaptationProposalDetailsFromVolumeReviewGeneratesFullProposalAndC
 	}
 	if savedReview, err := st.Adaptation.LoadVolumeReview(); err != nil || savedReview != nil {
 		t.Fatalf("volume review should be cleared after details generation: review=%+v err=%v", savedReview, err)
+	}
+}
+
+func TestBuildAdaptationProposalDetailsResumesCompletedRuntimeBatch(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	review := domain.AdaptationVolumeReview{
+		Granularity:        domain.AdaptationGranularityFree,
+		Status:             domain.AdaptationPlanStatusVolumeReview,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		Brief:              "free long arc",
+		TargetChapterCount: 8,
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, Title: "Opening volume", TargetFrom: 1, TargetTo: 8, SourceFrom: 1, SourceTo: 4},
+		},
+	}
+	if err := st.Adaptation.SaveVolumeReview(review); err != nil {
+		t.Fatalf("SaveVolumeReview: %v", err)
+	}
+	first := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: plannerBatchProposalJSON(1, 4, 1, 2)},
+		{err: context.Canceled},
+	}}
+	_, err := BuildAdaptationProposalDetailsContext(context.Background(), Deps{Store: st, LLM: first}, ProposalDetailsOptions{})
+	if err == nil {
+		t.Fatal("first details run should fail after saving the first batch")
+	}
+	if first.calls != 2 {
+		t.Fatalf("first calls=%d, want first detail success plus second detail failure", first.calls)
+	}
+	runtime, err := st.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		t.Fatalf("LoadProposalRuntime: %v", err)
+	}
+	if runtime == nil || len(runtime.CompletedBatches) != 1 {
+		t.Fatalf("runtime should keep completed detail batch: %+v", runtime)
+	}
+	progress := make([]Event, 0)
+	second := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: plannerBatchProposalJSON(5, 8, 3, 4)},
+	}}
+	proposal, err := BuildAdaptationProposalDetailsContext(context.Background(), Deps{Store: st, LLM: second}, ProposalDetailsOptions{
+		EmitProgress: captureAdaptProgress(&progress),
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalDetailsContext resume: %v", err)
+	}
+	if second.calls != 1 {
+		t.Fatalf("resume calls=%d, want only remaining detail batch", second.calls)
+	}
+	if !hasAdaptProgress(progress, "Reused proposal detail batch 1/2") {
+		t.Fatalf("resume progress should report reused detail batch, got %+v", progress)
+	}
+	if len(proposal.Chapters) != 8 || proposal.Chapters[0].Chapter != 1 || proposal.Chapters[7].Chapter != 8 {
+		t.Fatalf("resumed proposal chapters = %+v", proposal.Chapters)
+	}
+	if runtime, err := st.Adaptation.LoadProposalRuntime(); err != nil || runtime != nil {
+		t.Fatalf("runtime should be cleared after successful details save: runtime=%+v err=%v", runtime, err)
 	}
 }
 

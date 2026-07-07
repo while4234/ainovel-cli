@@ -2296,12 +2296,12 @@ export default function App() {
   const changeRetrySettings = async (modelCallMaxAttempts, structureRepairMaxAttempts) => {
     const modelAttempts = Number(modelCallMaxAttempts);
     const repairAttempts = Number(structureRepairMaxAttempts);
-    if (!Number.isInteger(modelAttempts) || modelAttempts < 1 || modelAttempts > 11) {
-      setError('模型调用总尝试次数必须是 1-11 之间的整数');
+    if (!Number.isInteger(modelAttempts) || modelAttempts < 1 || modelAttempts > 30) {
+      setError('模型调用总尝试次数必须是 1-30 之间的整数');
       return;
     }
-    if (!Number.isInteger(repairAttempts) || repairAttempts < 1 || repairAttempts > 7) {
-      setError('结构修复次数必须是 1-7 之间的整数');
+    if (!Number.isInteger(repairAttempts) || repairAttempts < 1 || repairAttempts > 15) {
+      setError('结构修复次数必须是 1-15 之间的整数');
       return;
     }
     setBusy(true);
@@ -5383,9 +5383,9 @@ function ModelPanel({
     Number.isInteger(modelCallAttemptsValue) &&
     Number.isInteger(structureRepairAttemptsValue) &&
     modelCallAttemptsValue >= 1 &&
-    modelCallAttemptsValue <= 11 &&
+    modelCallAttemptsValue <= 30 &&
     structureRepairAttemptsValue >= 1 &&
-    structureRepairAttemptsValue <= 7 &&
+    structureRepairAttemptsValue <= 15 &&
     (modelCallAttemptsValue !== modelCallMaxAttempts ||
       structureRepairAttemptsValue !== structureRepairMaxAttempts);
   const selectedPreset = providerPresets.find((preset) => preset.provider === customModel.preset) || providerPresets[0];
@@ -5533,7 +5533,7 @@ function ModelPanel({
             <input
               disabled={busy}
               inputMode="numeric"
-              max="11"
+              max="30"
               min="1"
               type="number"
               value={modelCallAttemptsDraft}
@@ -5545,7 +5545,7 @@ function ModelPanel({
             <input
               disabled={busy}
               inputMode="numeric"
-              max="7"
+              max="15"
               min="1"
               type="number"
               value={structureRepairAttemptsDraft}
@@ -6139,7 +6139,12 @@ function formatTime(value) {
 function eventFeedSummary(event) {
   const status = eventStatus(event);
   if (status === 'error' || status === 'warn') {
-    return event.event?.detail || event.event?.summary || '无摘要';
+    const summary = event.event?.summary || '';
+    const detail = event.event?.detail || '';
+    if (summary && detail && summary !== detail) {
+      return `${summary}：${detail}`;
+    }
+    return summary || detail || '无摘要';
   }
   return event.event?.summary || '无摘要';
 }

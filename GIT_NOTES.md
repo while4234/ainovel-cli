@@ -28,24 +28,23 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest source/runtime change: current local commit
-  `fix: stabilize planner and retry handling`:
-  Simulation profile source and merge structured calls now retry provider
-  gateway/transient failures such as 503 and show sanitized retry warning rows
-  in the Web event feed instead of treating non-terminal retry events as final
-  failures. Web adaptation proposal/revision flows no longer add a fixed
-  15-minute total deadline. Source-map adaptation skeleton normalization now
-  rejects conflicting `chapter_count`, non-advancing or broad overlapping
-  source ranges, and runaway local source-map expansion while preserving the
-  existing one-chapter boundary handoff behavior. Runtime skeleton checkpoints
-  now refresh `target_chapter_count` as skeleton batches are upserted, avoiding
-  misleading resume state. Validation passed for full `internal/host/adapt`,
-  full `internal/host/sim`, focused `internal/entry/web`, and `git diff
-  --check` with CRLF warnings only. Local Web was rebuilt/restarted on
-  `http://127.0.0.1:9898` as PID `59752`; the `术士手册` project's stale
-  proposal runtime/review artifacts were removed, briefing decisions were
-  restored as resolved using recommended options after restart, and a fresh
-  adaptation volume-planning request was started.
+- Latest source/runtime change: `38d401ef`
+  `fix: resume adaptation planning retries`:
+  Long-form adaptation proposal planning now resumes partial source-map
+  skeleton and detail runtime checkpoints instead of restarting from batch 1
+  after a failure. Source-map skeleton calls ask the model for `chapter_count`
+  only, while the backend assigns continuous `target_from` / `target_to`
+  ranges. Chapter-budget deviations now use a separate soft quality retry loop
+  that does not consume structure repair attempts; model-call connection
+  retries remain scoped to each model request. High chapter budgets are no
+  longer hard-failed after review, because added plot and long source chapter
+  splitting can legitimately expand target chapters. Configurable caps were
+  raised to 30 model-call attempts and 15 structure repair attempts, and Web
+  event rows now show warning/error summary plus detail so retry counts are
+  visible. Validation passed for full `internal/host/adapt`, focused
+  bootstrap/web/sim packages, Web UI tests/build, `git diff --check` with CRLF
+  warnings only, and local Web restart on `http://127.0.0.1:9898` as PID
+  `58844`.
 - Latest source/runtime change: `0bff8c7`
   `fix: switch models on text rate limits`:
   Runtime fallback now treats bare provider rate-limit messages such as

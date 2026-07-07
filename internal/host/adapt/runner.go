@@ -3,6 +3,7 @@ package adapt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -31,6 +32,7 @@ const (
 	adaptationPlannerChunkedMinChapters     = 18
 	adaptationPlannerRecommendedBatchMax    = 4
 	adaptationPlannerSourceMapExpansionMax  = 6
+	adaptationPlannerChapterBudgetRetries   = 2
 	adaptationPlannerSourceChunkedMin       = adaptationPlannerRecommendedBatchMax * 2
 	adaptationPlannerTargetChapterMax       = 5000
 	adaptationPlannerRevisionBatchMax       = 8
@@ -1204,7 +1206,17 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	if err := normalizePlannerSkeleton(&skeleton, proposalOpts, manifest, review.TargetChapterCount); err != nil {
 		return nil, fmt.Errorf("volume review skeleton invalid: %w", err)
 	}
-	runtime := newPlannerProposalRuntime(proposalOpts, manifest, review.TargetChapterCount)
+	runtime, _, err := loadPlannerProposalRuntime(deps, proposalOpts, manifest, review.TargetChapterCount, opts.EmitProgress)
+	if err != nil {
+		return nil, err
+	}
+	if runtime == nil {
+		runtime = newPlannerProposalRuntime(proposalOpts, manifest, review.TargetChapterCount)
+	}
+	if runtime.Skeleton != nil && !plannerRuntimeOutlineMatchesSkeleton(runtime.Skeleton, skeleton) {
+		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "分卷剧情已变化，清除旧章节细纲断点后重新生成", nil)
+		runtime.CompletedBatches = nil
+	}
 	runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
 	if err := savePlannerProposalRuntime(deps, runtime); err != nil {
 		return nil, fmt.Errorf("save proposal runtime skeleton: %w", err)
@@ -2803,24 +2815,48 @@ func collectPlannerSourceMapSkeletonBatches(
 	}
 	text := initialText
 	var lastErr error
-	for attempt := 0; ; attempt++ {
+	qualityAttempts := 0
+	structureAttempts := 0
+	for {
 		skeleton, err := parsePlannerSourceMapSkeleton(text)
 		if err == nil {
 			batches, berr := normalizePlannerSourceMapSkeletonBatches(skeleton.Batches, entry)
 			if berr == nil {
 				return batches, nil
 			}
+			var budgetErr *plannerChapterBudgetQualityError
+			if errors.As(berr, &budgetErr) {
+				lastErr = budgetErr
+				if qualityAttempts >= adaptationPlannerChapterBudgetRetries {
+					accepted, acceptErr := normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviation(skeleton.Batches, entry)
+					if acceptErr == nil {
+						emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批章节预算连续偏离预期，已按模型改编判断继续：%v", current, total, lastErr), lastErr)
+						return accepted, nil
+					}
+					return nil, acceptErr
+				}
+				qualityAttempts++
+				emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批章节预算偏离预期，质量重试第 %d/%d 次：%v", current, total, qualityAttempts, adaptationPlannerChapterBudgetRetries, lastErr), lastErr)
+				reconsidered, err := retryPlannerSkeletonChapterBudget(ctx, llm, systemPrompt, originalPrompt, text, lastErr, emit, current, total, maxModelCallAttempts)
+				if err != nil {
+					return nil, err
+				}
+				text = reconsidered
+				continue
+			}
 			err = berr
 		}
 		lastErr = err
-		if !plannerSkeletonErrorRepairable(err) || attempt >= maxRepairAttempts {
+		if !plannerSkeletonErrorRepairable(err) || structureAttempts >= maxRepairAttempts {
 			return nil, lastErr
 		}
-		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", current, total, attempt+1, maxRepairAttempts, lastErr), lastErr)
+		structureAttempts++
+		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", current, total, structureAttempts, maxRepairAttempts, lastErr), lastErr)
 		repaired, err := repairPlannerSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, lastErr, emit, current, total, maxModelCallAttempts)
 		if err != nil {
 			return nil, err
 		}
+		qualityAttempts = 0
 		text = repaired
 	}
 }
@@ -2851,15 +2887,44 @@ func parsePlannerSourceMapSkeleton(text string) (plannerSkeleton, error) {
 	return skeleton, nil
 }
 
+type plannerChapterBudgetQualityError struct {
+	BatchIndex int
+	Count      int
+	MinCount   int
+	MaxCount   int
+	SourceFrom int
+	SourceTo   int
+	Direction  string
+}
+
+func (e *plannerChapterBudgetQualityError) Error() string {
+	if e == nil {
+		return "chapter budget quality review required"
+	}
+	switch e.Direction {
+	case "low":
+		return fmt.Sprintf("batch %d chapter_count=%d is below expected review floor %d for source range %d-%d", e.BatchIndex, e.Count, e.MinCount, e.SourceFrom, e.SourceTo)
+	case "high":
+		return fmt.Sprintf("batch %d chapter_count=%d is above expected review ceiling %d for source range %d-%d", e.BatchIndex, e.Count, e.MaxCount, e.SourceFrom, e.SourceTo)
+	default:
+		return fmt.Sprintf("batch %d chapter_count=%d needs budget quality review for source range %d-%d", e.BatchIndex, e.Count, e.SourceFrom, e.SourceTo)
+	}
+}
+
 func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
+	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false)
+}
+
+func normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviation(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
+	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, true)
+}
+
+func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, allowBudgetDeviation bool) ([]plannerSkeletonBatch, error) {
 	if len(batches) == 0 {
 		return nil, fmt.Errorf("no batches")
 	}
 	out := make([]plannerSkeletonBatch, 0, len(batches))
 	for idx, batch := range batches {
-		if batch.TargetFrom <= 0 || batch.TargetTo <= 0 {
-			return nil, fmt.Errorf("batch %d must include target_from and target_to", idx+1)
-		}
 		if batch.SourceFrom <= 0 || batch.SourceTo <= 0 {
 			return nil, fmt.Errorf("batch %d must include source_from and source_to", idx+1)
 		}
@@ -2876,25 +2941,41 @@ func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, en
 			return nil, fmt.Errorf("batch %d source range %d-%d outside source-map range %d-%d", idx+1, batch.SourceFrom, batch.SourceTo, entry.SourceFrom, entry.SourceTo)
 		}
 		count := batch.TargetChapterCount
-		rangeCount := 0
 		if batch.TargetFrom > 0 && batch.TargetTo >= batch.TargetFrom {
-			rangeCount = batch.TargetTo - batch.TargetFrom + 1
-			if count > 0 && count != rangeCount {
-				return nil, fmt.Errorf("batch %d chapter_count conflicts with target range", idx+1)
-			}
 			if count <= 0 {
-				count = rangeCount
+				count = batch.TargetTo - batch.TargetFrom + 1
 			}
 		}
 		if count <= 0 {
 			return nil, fmt.Errorf("batch %d chapter_count must be > 0", idx+1)
 		}
 		sourceSpan := batch.SourceTo - batch.SourceFrom + 1
-		maxCount := max(adaptationPlannerRecommendedBatchMax, sourceSpan*adaptationPlannerSourceMapExpansionMax)
-		if count > maxCount {
-			return nil, fmt.Errorf("batch %d target chapter count %d exceeds source-map expansion limit %d for source range %d-%d", idx+1, count, maxCount, batch.SourceFrom, batch.SourceTo)
+		minCount, maxCount := plannerSourceMapChapterBudgetReviewRange(sourceSpan)
+		if !allowBudgetDeviation && count < minCount {
+			return nil, &plannerChapterBudgetQualityError{
+				BatchIndex: idx + 1,
+				Count:      count,
+				MinCount:   minCount,
+				MaxCount:   maxCount,
+				SourceFrom: batch.SourceFrom,
+				SourceTo:   batch.SourceTo,
+				Direction:  "low",
+			}
+		}
+		if !allowBudgetDeviation && count > maxCount {
+			return nil, &plannerChapterBudgetQualityError{
+				BatchIndex: idx + 1,
+				Count:      count,
+				MinCount:   minCount,
+				MaxCount:   maxCount,
+				SourceFrom: batch.SourceFrom,
+				SourceTo:   batch.SourceTo,
+				Direction:  "high",
+			}
 		}
 		batch.TargetChapterCount = count
+		batch.TargetFrom = 0
+		batch.TargetTo = 0
 		out = append(out, batch)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -2923,6 +3004,18 @@ func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, en
 		return nil, fmt.Errorf("source-map range %d-%d ends coverage at %d", entry.SourceFrom, entry.SourceTo, coveredTo)
 	}
 	return out, nil
+}
+
+func plannerSourceMapChapterBudgetReviewRange(sourceSpan int) (int, int) {
+	if sourceSpan < 1 {
+		sourceSpan = 1
+	}
+	minCount := 1
+	if sourceSpan >= adaptationPlannerSourceChunkedMin {
+		minCount = max(1, sourceSpan/10)
+	}
+	maxCount := max(adaptationPlannerRecommendedBatchMax, sourceSpan*adaptationPlannerSourceMapExpansionMax)
+	return minCount, maxCount
 }
 
 func nextPlannerSkeletonTarget(batches []plannerSkeletonBatch) int {
@@ -3153,13 +3246,26 @@ func plannerProposalRuntimeMatches(runtime *domain.AdaptationProposalRuntime, op
 	if math.Abs(runtime.WordTolerance-opts.WordTolerance) > 0.000001 {
 		return false
 	}
-	if runtime.TargetChapterCount != targetChapterHint {
+	if !plannerProposalRuntimeTargetMatches(runtime, opts, targetChapterHint) {
 		return false
 	}
 	if runtime.SourceChapterCount != plannerProposalRuntimeSourceChapterCount(manifest) {
 		return false
 	}
 	return sameSourcePath(runtime.SourcePath, plannerProposalRuntimeSourcePath(opts, manifest))
+}
+
+func plannerProposalRuntimeTargetMatches(runtime *domain.AdaptationProposalRuntime, opts ProposalOptions, targetChapterHint int) bool {
+	if runtime == nil {
+		return false
+	}
+	if explicit := normalizeTargetChapterCount(opts.TargetChapterCount, inferTargetChapterCount(opts.Brief)); explicit > 0 {
+		return runtime.TargetChapterCount == explicit
+	}
+	if runtime.Skeleton != nil || len(runtime.SkeletonBatches) > 0 || len(runtime.CompletedBatches) > 0 {
+		return runtime.TargetChapterCount > 0
+	}
+	return runtime.TargetChapterCount == targetChapterHint
 }
 
 func plannerProposalRuntimeSourcePath(opts ProposalOptions, manifest *domain.AdaptationSourceManifest) string {
@@ -3248,6 +3354,34 @@ func plannerRuntimeOutlineFromSkeleton(skeleton plannerSkeleton) *domain.Adaptat
 		Batches:            batches,
 		Planner:            clonePlannerRuntimeMeta(skeleton.Planner),
 	}
+}
+
+func plannerRuntimeOutlineMatchesSkeleton(outline *domain.AdaptationProposalRuntimeOutline, skeleton plannerSkeleton) bool {
+	if outline == nil {
+		return false
+	}
+	expected := plannerRuntimeOutlineFromSkeleton(skeleton)
+	if expected == nil || outline.TargetChapterCount != expected.TargetChapterCount {
+		return false
+	}
+	if len(outline.Batches) != len(expected.Batches) {
+		return false
+	}
+	for idx := range outline.Batches {
+		if !plannerRuntimeSkeletonBatchMatches(outline.Batches[idx], expected.Batches[idx]) {
+			return false
+		}
+	}
+	return true
+}
+
+func plannerRuntimeSkeletonBatchMatches(a, b domain.AdaptationProposalRuntimeSkeletonBatch) bool {
+	return a.Index == b.Index &&
+		a.TargetFrom == b.TargetFrom &&
+		a.TargetTo == b.TargetTo &&
+		a.TargetChapterCount == b.TargetChapterCount &&
+		a.SourceFrom == b.SourceFrom &&
+		a.SourceTo == b.SourceTo
 }
 
 func plannerRuntimeBatchChapters(runtime *domain.AdaptationProposalRuntime, batch plannerSkeletonBatch) ([]domain.AdaptationChapterPlan, bool) {
@@ -4108,12 +4242,41 @@ func repairPlannerSkeletonText(
 	repairPrompt := buildPlannerRepairPrompt("skeleton", originalPrompt, previousText, previousErr, []string{
 		"Return exactly one JSON skeleton object and no prose.",
 		"The JSON must have a top-level batches array.",
-		"Each batch must have target_from, target_to, source_from, source_to, title, theme or goal, and summary.",
+		"Each batch must have chapter_count, source_from, source_to, title, theme or goal, and summary.",
+		"Do not calculate target_from or target_to in this source-map skeleton step; the host will assign continuous target chapter ranges from chapter_count.",
 		"Do not return only overall_arc, key_turns, pair, notes, markdown, or explanation.",
 	})
 	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens, emit, current, total, "骨架规划修复", maxModelCallAttempts)
 	if err != nil {
 		return "", fmt.Errorf("planner skeleton repair llm generate: %w", err)
+	}
+	return text, nil
+}
+
+func retryPlannerSkeletonChapterBudget(
+	ctx context.Context,
+	llm imp.LLMChat,
+	systemPrompt string,
+	originalPrompt string,
+	previousText string,
+	previousErr error,
+	emit ProgressEmitter,
+	current int,
+	total int,
+	maxModelCallAttempts int,
+) (string, error) {
+	repairPrompt := buildPlannerRepairPrompt("skeleton chapter budget quality review", originalPrompt, previousText, previousErr, []string{
+		"Return exactly one JSON skeleton object and no prose.",
+		"The JSON must have a top-level batches array.",
+		"Keep the returned source ranges as a strict partition of the requested source-map range with no gaps and no overlaps.",
+		"Each batch must have chapter_count, source_from, source_to, title, theme or goal, and summary.",
+		"Do not calculate target_from or target_to; the host will assign continuous target chapter ranges from chapter_count.",
+		"Reconsider chapter_count for every batch. A very high count is allowed when added plot, relationship arcs, transition scenes, or long source chapters need splitting. A very low count is allowed when the adaptation intentionally deletes, merges, or compresses source material.",
+		"Keep a short reason for any unusually high or low chapter budget in the batch summary.",
+	})
+	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens, emit, current, total, "骨架章节预算质量复核", maxModelCallAttempts)
+	if err != nil {
+		return "", fmt.Errorf("planner skeleton chapter budget review llm generate: %w", err)
 	}
 	return text, nil
 }
@@ -4609,9 +4772,8 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 			"Choose final target_chapter_count after analyzing source_map and the user's additions; increase above target_chapter_hint when added plot, relationship, or transition arcs require more chapters.",
 			"If target_chapter_hint_role is explicit_target_scale, honor that requested scale unless the source map and user changes make a different count necessary; explain the choice in batch summaries.",
 			"Use source_map ranges to preserve the full-book structure without requesting raw source_reports.",
-			"Each batch must include target_from, target_to, source_from, source_to, title, theme/goal, and summary.",
-			"If chapter_count is present, it must exactly equal target_to - target_from + 1.",
-			"target_from and target_to may be local integers for this source-map range; the host will renumber batches into full-book absolute target chapters.",
+			"Each batch must include chapter_count, source_from, source_to, title, theme/goal, and summary.",
+			"Do not calculate target_from or target_to in this source-map skeleton step; the host will assign continuous target chapter ranges from chapter_count.",
 			"Choose skeleton batches by coherent story arc, volume beat, or major plot movement; they do not need to match recommended_batch_max exactly.",
 			"The host will split oversized skeleton batches into detail calls of about recommended_batch_max target chapters.",
 			"The source ranges across returned batches must strictly partition the provided source_map range: cover every source chapter once, with no gaps and no overlaps.",
@@ -4624,7 +4786,7 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 	return "Plan one source-map portion of the high-level long-form adaptation skeleton. Use the current model to decide how many target chapters this source range needs; do not mechanically mirror or compress source chapters.\n\n" +
 		"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must contain a batches array. Do not return chapter details in this step. The host will concatenate all source-map portions and renumber target chapters globally.\n\n" +
 		"Required JSON shape:\n" +
-		"{\"granularity\":\"...\",\"status\":\"proposal\",\"rewrite_policy\":\"...\",\"brief\":\"...\",\"target_chapter_count\":60,\"mainline_rules\":[],\"relationship_goals\":[],\"batches\":[{\"index\":1,\"title\":\"...\",\"theme\":\"...\",\"target_from\":1,\"target_to\":8,\"source_from\":1,\"source_to\":3,\"summary\":\"...\"}]}.\n\n" +
+		"{\"granularity\":\"...\",\"status\":\"proposal\",\"rewrite_policy\":\"...\",\"brief\":\"...\",\"target_chapter_count\":60,\"mainline_rules\":[],\"relationship_goals\":[],\"batches\":[{\"index\":1,\"title\":\"...\",\"theme\":\"...\",\"chapter_count\":8,\"source_from\":1,\"source_to\":3,\"summary\":\"...\"}]}.\n\n" +
 		"Planning input:\n```json\n" + string(raw) + "\n```", nil
 }
 
@@ -4889,7 +5051,7 @@ func normalizePlannerSkeleton(skeleton *plannerSkeleton, opts ProposalOptions, m
 	if skeleton.TargetChapterCount <= 0 {
 		skeleton.TargetChapterCount = targetChapterHint
 	}
-	if targetChapterHint >= adaptationPlannerChunkedMinChapters && skeleton.TargetChapterCount > 0 {
+	if plannerTargetChapterHintRole(opts, manifest, targetChapterHint) == "explicit_target_scale" && targetChapterHint >= adaptationPlannerChunkedMinChapters && skeleton.TargetChapterCount > 0 {
 		minAccepted := targetChapterHint * 4 / 5
 		if minAccepted < adaptationPlannerChunkedMinChapters {
 			minAccepted = adaptationPlannerChunkedMinChapters
