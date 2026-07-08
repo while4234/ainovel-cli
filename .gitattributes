@@ -6,3 +6,4 @@
 internal/entry/web/static/index.html text eol=lf
 internal/entry/web/static/assets/*.css text eol=lf
 internal/entry/web/static/assets/*.js text eol=lf
+internal/entry/web/ui/vite.config.js text eol=lf
