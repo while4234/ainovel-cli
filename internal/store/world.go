@@ -70,6 +70,112 @@ func (s *WorldStore) LoadRecentTimeline(current, window int) ([]domain.TimelineE
 	return filtered, nil
 }
 
+func (s *WorldStore) DeleteChapterFacts(chapters []int) error {
+	chapterSet := positiveIntSet(chapters)
+	if len(chapterSet) == 0 {
+		return nil
+	}
+	return s.io.WithWriteLock(func() error {
+		if err := s.deleteTimelineFactsUnlocked(chapterSet); err != nil {
+			return err
+		}
+		if err := s.deleteForeshadowFactsUnlocked(chapterSet); err != nil {
+			return err
+		}
+		if err := s.deleteRelationshipFactsUnlocked(chapterSet); err != nil {
+			return err
+		}
+		return s.deleteStateChangeFactsUnlocked(chapterSet)
+	})
+}
+
+func (s *WorldStore) deleteTimelineFactsUnlocked(chapters map[int]struct{}) error {
+	var events []domain.TimelineEvent
+	if err := s.io.ReadJSONUnlocked("timeline.json", &events); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	filtered := events[:0]
+	for _, event := range events {
+		if _, remove := chapters[event.Chapter]; remove {
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+	if err := s.io.WriteJSONUnlocked("timeline.json", filtered); err != nil {
+		return err
+	}
+	return s.io.WriteMarkdownUnlocked("timeline.md", renderTimeline(filtered))
+}
+
+func (s *WorldStore) deleteForeshadowFactsUnlocked(chapters map[int]struct{}) error {
+	var entries []domain.ForeshadowEntry
+	if err := s.io.ReadJSONUnlocked("foreshadow_ledger.json", &entries); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if _, remove := chapters[entry.PlantedAt]; remove {
+			continue
+		}
+		if _, remove := chapters[entry.ResolvedAt]; remove {
+			entry.ResolvedAt = 0
+			if entry.Status == "resolved" {
+				entry.Status = "planted"
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+	if err := s.io.WriteJSONUnlocked("foreshadow_ledger.json", filtered); err != nil {
+		return err
+	}
+	return s.io.WriteMarkdownUnlocked("foreshadow_ledger.md", renderForeshadow(filtered))
+}
+
+func (s *WorldStore) deleteRelationshipFactsUnlocked(chapters map[int]struct{}) error {
+	var entries []domain.RelationshipEntry
+	if err := s.io.ReadJSONUnlocked("relationship_state.json", &entries); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if _, remove := chapters[entry.Chapter]; remove {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if err := s.io.WriteJSONUnlocked("relationship_state.json", filtered); err != nil {
+		return err
+	}
+	return s.io.WriteMarkdownUnlocked("relationship_state.md", renderRelationships(filtered))
+}
+
+func (s *WorldStore) deleteStateChangeFactsUnlocked(chapters map[int]struct{}) error {
+	var changes []domain.StateChange
+	if err := s.io.ReadJSONUnlocked("meta/state_changes.json", &changes); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	filtered := changes[:0]
+	for _, change := range changes {
+		if _, remove := chapters[change.Chapter]; remove {
+			continue
+		}
+		filtered = append(filtered, change)
+	}
+	return s.io.WriteJSONUnlocked("meta/state_changes.json", filtered)
+}
+
 // ── 伏笔 ──
 
 // SaveForeshadowLedger 全量写入 foreshadow_ledger.json + foreshadow_ledger.md（原子写入）。
@@ -338,6 +444,16 @@ func pairKey(a, b string) string {
 		a, b = b, a
 	}
 	return a + "|" + b
+}
+
+func positiveIntSet(values []int) map[int]struct{} {
+	out := make(map[int]struct{}, len(values))
+	for _, value := range values {
+		if value > 0 {
+			out[value] = struct{}{}
+		}
+	}
+	return out
 }
 
 func renderTimeline(events []domain.TimelineEvent) string {

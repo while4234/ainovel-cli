@@ -26,6 +26,19 @@ func LoadState(store *storepkg.Store) State {
 		s.LastCompleted = progress.CompletedChapters[n-1]
 	}
 
+	if progress.Layered && len(progress.PendingRewrites) == 0 {
+		if boundary, berr := store.FindPendingArcPostprocess(progress); berr == nil && boundary != nil {
+			s.ArcBoundary = boundary
+			s.HasArcReview = store.World.HasArcReview(boundary.LastChapter) ||
+				store.Checkpoints.LatestByStep(domain.ArcScope(boundary.Volume, boundary.Arc), "review") != nil
+			s.HasArcSummary = store.Summaries.HasArcSummary(boundary.Volume, boundary.Arc)
+			if boundary.IsVolumeEnd {
+				s.HasVolumeSummary = store.Summaries.HasVolumeSummary(boundary.Volume)
+			}
+			return s
+		}
+	}
+
 	// 弧边界仅在分层模式且有已完成章节时才计算
 	if progress.Layered && s.LastCompleted > 0 {
 		if boundary, berr := store.Outline.CheckArcBoundary(s.LastCompleted); berr == nil && boundary != nil {

@@ -38,6 +38,42 @@ func (s *CastStore) Save(entries []domain.CastEntry) error {
 	return s.io.WriteJSON(castLedgerPath, entries)
 }
 
+func (s *CastStore) DeleteChapterAppearances(chapters []int) error {
+	chapterSet := positiveIntSet(chapters)
+	if len(chapterSet) == 0 {
+		return nil
+	}
+	return s.io.WithWriteLock(func() error {
+		var entries []domain.CastEntry
+		if err := s.io.ReadJSONUnlocked(castLedgerPath, &entries); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		filtered := entries[:0]
+		for _, entry := range entries {
+			appearances := entry.AppearanceChapters[:0]
+			for _, chapter := range entry.AppearanceChapters {
+				if _, remove := chapterSet[chapter]; remove {
+					continue
+				}
+				appearances = append(appearances, chapter)
+			}
+			if len(appearances) == 0 {
+				continue
+			}
+			slices.Sort(appearances)
+			entry.AppearanceChapters = append([]int(nil), appearances...)
+			entry.AppearanceCount = len(entry.AppearanceChapters)
+			entry.FirstSeenChapter = entry.AppearanceChapters[0]
+			entry.LastSeenChapter = entry.AppearanceChapters[len(entry.AppearanceChapters)-1]
+			filtered = append(filtered, entry)
+		}
+		return s.io.WriteJSONUnlocked(castLedgerPath, filtered)
+	})
+}
+
 // MergeAppearances 把本章出场记录合并进名册。
 //
 // 参数:

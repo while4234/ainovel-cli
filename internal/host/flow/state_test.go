@@ -99,3 +99,59 @@ func TestLoadStateIncludesOutlineRepairBatch(t *testing.T) {
 		t.Fatalf("expected V1 A1, got %+v", state.OutlineRepair)
 	}
 }
+
+func TestLoadStatePrefersPendingRepairedArcPostprocessOverLastCompleted(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Arcs: []domain.ArcOutline{
+			{
+				Index: 1,
+				Chapters: []domain.OutlineEntry{
+					{Title: "一", CoreEvent: "不同事件一", Hook: "不同钩子一"},
+					{Title: "二", CoreEvent: "不同事件二", Hook: "不同钩子二"},
+				},
+			},
+			{
+				Index: 2,
+				Chapters: []domain.OutlineEntry{
+					{Title: "三", CoreEvent: "不同事件三", Hook: "不同钩子三"},
+					{Title: "四", CoreEvent: "不同事件四", Hook: "不同钩子四"},
+				},
+			},
+		},
+	}}
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatalf("save layered outline: %v", err)
+	}
+	if err := st.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatalf("save outline: %v", err)
+	}
+	if err := st.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		Layered:           true,
+		CompletedChapters: []int{1, 2, 3, 4},
+		PendingArcPost: []domain.ArcPostprocessTarget{
+			{Volume: 1, Arc: 1, LastChapter: 2},
+		},
+	}); err != nil {
+		t.Fatalf("save progress: %v", err)
+	}
+
+	state := LoadState(st)
+
+	if state.ArcBoundary == nil || state.ArcBoundary.Volume != 1 || state.ArcBoundary.Arc != 1 {
+		t.Fatalf("expected pending V1 A1 boundary, got %+v", state.ArcBoundary)
+	}
+	if state.ArcBoundary.LastChapter != 2 {
+		t.Fatalf("last chapter = %d, want 2", state.ArcBoundary.LastChapter)
+	}
+	got := Route(state)
+	if got == nil || got.Agent != "editor" || got.Reason != "弧末评审未完成" {
+		t.Fatalf("expected editor arc review for repaired arc, got %+v", got)
+	}
+}

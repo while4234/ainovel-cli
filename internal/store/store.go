@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -73,7 +74,7 @@ func (s *Store) CheckConsistency() []string {
 	}
 	if n := len(progress.CompletedChapters); n > 0 {
 		lastCh := progress.CompletedChapters[n-1]
-		if text, err := s.Drafts.LoadChapterText(lastCh); err == nil && text == "" {
+		if text, err := s.Drafts.LoadChapterText(lastCh); err == nil && text == "" && !slices.Contains(progress.PendingRewrites, lastCh) {
 			warnings = append(warnings, fmt.Sprintf("progress 标记第 %d 章已完成，但 chapters/%02d.md 不存在或为空", lastCh, lastCh))
 		}
 	}

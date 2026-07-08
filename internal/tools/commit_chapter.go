@@ -119,8 +119,20 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		// 打磨/重写路径：章节虽已完成，但仍在 pending_rewrites 中，允许覆盖并 drain 队列
 		progress, _ := t.store.Progress.Load()
 		if progress != nil && slices.Contains(progress.PendingRewrites, a.Chapter) {
-			return t.executeRewriteCommit(a.Chapter, a.Summary, a.Characters, a.KeyEvents,
-				a.HookType, a.DominantStrand, progress)
+			return t.executeRewriteCommit(
+				a.Chapter,
+				a.Summary,
+				a.Characters,
+				a.KeyEvents,
+				a.TimelineEvents,
+				a.ForeshadowUpdates,
+				a.RelationshipChanges,
+				a.StateChanges,
+				a.CastIntros,
+				a.HookType,
+				a.DominantStrand,
+				progress,
+			)
 		}
 		return t.buildSkipResult(a.Chapter, progress)
 	}
@@ -206,44 +218,16 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		return nil, fmt.Errorf("save summary: %w: %w", errs.ErrStoreWrite, err)
 	}
 
-	// 4. 更新状态增量
-	if len(a.TimelineEvents) > 0 {
-		for i := range a.TimelineEvents {
-			a.TimelineEvents[i].Chapter = a.Chapter
-		}
-		if err := t.store.World.AppendTimelineEvents(a.TimelineEvents); err != nil {
-			return nil, fmt.Errorf("append timeline: %w: %w", errs.ErrStoreWrite, err)
-		}
-	}
-	if len(a.ForeshadowUpdates) > 0 {
-		if err := t.store.World.UpdateForeshadow(a.Chapter, a.ForeshadowUpdates); err != nil {
-			return nil, fmt.Errorf("update foreshadow: %w: %w", errs.ErrStoreWrite, err)
-		}
-	}
-	if len(a.RelationshipChanges) > 0 {
-		for i := range a.RelationshipChanges {
-			a.RelationshipChanges[i].Chapter = a.Chapter
-		}
-		if err := t.store.World.UpdateRelationships(a.RelationshipChanges); err != nil {
-			return nil, fmt.Errorf("update relationships: %w: %w", errs.ErrStoreWrite, err)
-		}
-	}
-	if len(a.StateChanges) > 0 {
-		for i := range a.StateChanges {
-			a.StateChanges[i].Chapter = a.Chapter
-		}
-		if err := t.store.World.AppendStateChanges(a.StateChanges); err != nil {
-			return nil, fmt.Errorf("append state changes: %w: %w", errs.ErrStoreWrite, err)
-		}
-	}
-
-	// 4b. 累加配角名册：本章出场的非核心角色进 cast_ledger，供 novel_context 召回。
-	// 失败时只 warn 不阻断 commit——名册是次要数据，可通过下一章 commit 自愈。
-	if len(a.Characters) > 0 {
-		coreNames := loadCoreCharacterNameSet(t.store)
-		if err := t.store.Cast.MergeAppearances(a.Chapter, a.Characters, a.CastIntros, coreNames); err != nil {
-			slog.Warn("配角名册累加失败，跳过", "module", "commit", "chapter", a.Chapter, "err", err)
-		}
+	if err := t.applyChapterFacts(
+		a.Chapter,
+		a.TimelineEvents,
+		a.ForeshadowUpdates,
+		a.RelationshipChanges,
+		a.StateChanges,
+		a.Characters,
+		a.CastIntros,
+	); err != nil {
+		return nil, err
 	}
 
 	pending.Stage = domain.CommitStageStateApplied
@@ -345,6 +329,56 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	// 11. 机械规则检查（仅返事实，不阻断）
 	violations := t.checkRules(content, wordCount)
 	return json.Marshal(commitOutput{CommitResult: result, RuleViolations: violations})
+}
+
+func (t *CommitChapterTool) applyChapterFacts(
+	chapter int,
+	timelineEvents []domain.TimelineEvent,
+	foreshadowUpdates []domain.ForeshadowUpdate,
+	relationshipChanges []domain.RelationshipEntry,
+	stateChanges []domain.StateChange,
+	characters []string,
+	castIntros []domain.CastIntro,
+) error {
+	if len(timelineEvents) > 0 {
+		for i := range timelineEvents {
+			timelineEvents[i].Chapter = chapter
+		}
+		if err := t.store.World.AppendTimelineEvents(timelineEvents); err != nil {
+			return fmt.Errorf("append timeline: %w: %w", errs.ErrStoreWrite, err)
+		}
+	}
+	if len(foreshadowUpdates) > 0 {
+		if err := t.store.World.UpdateForeshadow(chapter, foreshadowUpdates); err != nil {
+			return fmt.Errorf("update foreshadow: %w: %w", errs.ErrStoreWrite, err)
+		}
+	}
+	if len(relationshipChanges) > 0 {
+		for i := range relationshipChanges {
+			relationshipChanges[i].Chapter = chapter
+		}
+		if err := t.store.World.UpdateRelationships(relationshipChanges); err != nil {
+			return fmt.Errorf("update relationships: %w: %w", errs.ErrStoreWrite, err)
+		}
+	}
+	if len(stateChanges) > 0 {
+		for i := range stateChanges {
+			stateChanges[i].Chapter = chapter
+		}
+		if err := t.store.World.AppendStateChanges(stateChanges); err != nil {
+			return fmt.Errorf("append state changes: %w: %w", errs.ErrStoreWrite, err)
+		}
+	}
+
+	// Cast ledger is secondary recall data. A write failure should not block a
+	// chapter commit because later commits can refresh recent appearances.
+	if len(characters) > 0 {
+		coreNames := loadCoreCharacterNameSet(t.store)
+		if err := t.store.Cast.MergeAppearances(chapter, characters, castIntros, coreNames); err != nil {
+			slog.Warn("配角名册累加失败，跳过", "module", "commit", "chapter", chapter, "err", err)
+		}
+	}
+	return nil
 }
 
 func (t *CommitChapterTool) ensureAdaptationGate(chapter int, content string) error {
@@ -505,6 +539,11 @@ func (t *CommitChapterTool) executeRewriteCommit(
 	chapter int,
 	summary string,
 	characters, keyEvents []string,
+	timelineEvents []domain.TimelineEvent,
+	foreshadowUpdates []domain.ForeshadowUpdate,
+	relationshipChanges []domain.RelationshipEntry,
+	stateChanges []domain.StateChange,
+	castIntros []domain.CastIntro,
 	hookType, dominantStrand string,
 	progress *domain.Progress,
 ) (json.RawMessage, error) {
@@ -520,6 +559,7 @@ func (t *CommitChapterTool) executeRewriteCommit(
 	// 2. 硬校验：drafts 与现终稿完全相同 → 判定为未真正打磨/重写（writer 跳过了 draft_chapter）
 	// 拒绝 commit，强制 writer 先调 draft_chapter(mode=write) 写入新版本。
 	existingFinal, _ := t.store.Drafts.LoadChapterText(chapter)
+	recreateChapterFacts := existingFinal == ""
 	if existingFinal != "" && existingFinal == content {
 		mode := "重写"
 		if progress != nil && progress.Flow == domain.FlowPolishing {
@@ -550,6 +590,12 @@ func (t *CommitChapterTool) executeRewriteCommit(
 		KeyEvents:  keyEvents,
 	}); err != nil {
 		return nil, fmt.Errorf("rewrite: save summary: %w: %w", errs.ErrStoreWrite, err)
+	}
+
+	if recreateChapterFacts {
+		if err := t.applyChapterFacts(chapter, timelineEvents, foreshadowUpdates, relationshipChanges, stateChanges, characters, castIntros); err != nil {
+			return nil, err
+		}
 	}
 
 	// 4. 更新字数（MarkChapterComplete 对已完成章节是幂等的：replaces word count, slice.Contains 防止重复入队）

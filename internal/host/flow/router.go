@@ -123,17 +123,21 @@ func Route(s State) *Instruction {
 	// 6-10. 分层模式的弧末后处理
 	if p.Layered && s.ArcBoundary != nil && s.ArcBoundary.IsArcEnd {
 		b := s.ArcBoundary
+		chapterNote := ""
+		if b.LastChapter > 0 {
+			chapterNote = fmt.Sprintf("（弧末第 %d 章）", b.LastChapter)
+		}
 		switch {
 		case !s.HasArcReview:
 			return &Instruction{
 				Agent:  "editor",
-				Task:   fmt.Sprintf("对第 %d 卷第 %d 弧做弧级评审（scope=arc）", b.Volume, b.Arc),
+				Task:   fmt.Sprintf("对第 %d 卷第 %d 弧%s做弧级评审（scope=arc）", b.Volume, b.Arc, chapterNote),
 				Reason: "弧末评审未完成",
 			}
 		case !s.HasArcSummary:
 			return &Instruction{
 				Agent:  "editor",
-				Task:   fmt.Sprintf("生成第 %d 卷第 %d 弧摘要（save_arc_summary）", b.Volume, b.Arc),
+				Task:   fmt.Sprintf("生成第 %d 卷第 %d 弧%s摘要（save_arc_summary）", b.Volume, b.Arc, chapterNote),
 				Reason: "弧摘要未完成",
 			}
 		case b.IsVolumeEnd && !s.HasVolumeSummary:

@@ -405,6 +405,100 @@ func TestCommitChapterNonLayeredRecompletesAfterRework(t *testing.T) {
 	}
 }
 
+func TestCommitChapterRecreatesFactsWhenRepairDeletedFinal(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 2); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.Progress.MarkChapterComplete(1, 100, "", ""); err != nil {
+		t.Fatalf("MarkChapterComplete: %v", err)
+	}
+	if err := s.Progress.SetPendingRewrites([]int{1}, "repair rewrite"); err != nil {
+		t.Fatalf("SetPendingRewrites: %v", err)
+	}
+	if err := s.Progress.SetFlow(domain.FlowRewriting); err != nil {
+		t.Fatalf("SetFlow: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, "重写后的正文。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	tool := NewCommitChapterTool(s)
+	args, _ := json.Marshal(map[string]any{
+		"chapter":    1,
+		"summary":    "重写后摘要",
+		"characters": []string{"主角", "新配角"},
+		"key_events": []string{"新事件"},
+		"timeline_events": []map[string]any{{
+			"time":       "深夜",
+			"event":      "新时间线事件",
+			"characters": []string{"主角"},
+		}},
+		"foreshadow_updates": []map[string]any{{
+			"id":          "new-clue",
+			"action":      "plant",
+			"description": "新伏笔",
+		}},
+		"relationship_changes": []map[string]any{{
+			"character_a": "主角",
+			"character_b": "新配角",
+			"relation":    "同盟",
+		}},
+		"state_changes": []map[string]any{{
+			"entity":    "主角",
+			"field":     "goal",
+			"new_value": "追查新线索",
+		}},
+		"cast_intros": []map[string]any{{
+			"name":       "新配角",
+			"brief_role": "新线索提供者",
+		}},
+	})
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	timeline, err := s.World.LoadTimeline()
+	if err != nil {
+		t.Fatalf("LoadTimeline: %v", err)
+	}
+	if len(timeline) != 1 || timeline[0].Chapter != 1 || timeline[0].Event != "新时间线事件" {
+		t.Fatalf("timeline = %+v, want recreated chapter fact", timeline)
+	}
+	foreshadow, err := s.World.LoadForeshadowLedger()
+	if err != nil {
+		t.Fatalf("LoadForeshadowLedger: %v", err)
+	}
+	if len(foreshadow) != 1 || foreshadow[0].ID != "new-clue" || foreshadow[0].PlantedAt != 1 {
+		t.Fatalf("foreshadow = %+v, want recreated clue", foreshadow)
+	}
+	relationships, err := s.World.LoadRelationships()
+	if err != nil {
+		t.Fatalf("LoadRelationships: %v", err)
+	}
+	if len(relationships) != 1 || relationships[0].Chapter != 1 || relationships[0].Relation != "同盟" {
+		t.Fatalf("relationships = %+v, want recreated relationship", relationships)
+	}
+	stateChanges, err := s.World.LoadStateChanges()
+	if err != nil {
+		t.Fatalf("LoadStateChanges: %v", err)
+	}
+	if len(stateChanges) != 1 || stateChanges[0].Chapter != 1 || stateChanges[0].NewValue != "追查新线索" {
+		t.Fatalf("state changes = %+v, want recreated state change", stateChanges)
+	}
+	castEntries, err := s.Cast.Load()
+	if err != nil {
+		t.Fatalf("Load cast: %v", err)
+	}
+	if len(castEntries) != 2 {
+		t.Fatalf("cast entries = %+v, want main and side character appearances in non-core test store", castEntries)
+	}
+}
+
 // TestCommitChapterLayeredReopenRecompletesDespiteOpenThread 验证收口：分层书经 reopen
 // 返工后，即便 compass 仍有未收束长线（返工可能扰动），排空后也按"结构完整"重新完结——
 // 不卡在 writing，杜绝终卷末越界续写死循环（§6.5 / known_outline_exhaustion 家族）。

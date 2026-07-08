@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
@@ -27,6 +28,10 @@ func (b *OutlineRepairBatch) Repairable() bool {
 // within a generated batch and maps the later duplicate chapter to its expanded
 // layered arc.
 func (s *Store) FindDuplicateOutlineRepairBatch(progress *domain.Progress) (*OutlineRepairBatch, error) {
+	progress, err := s.completePendingOutlineRepairFinalization(progress)
+	if err != nil {
+		return nil, err
+	}
 	if s.outlineDuplicateScanCurrent(progress) {
 		return nil, nil
 	}
@@ -145,67 +150,30 @@ func (s *Store) RepairArcOutline(volumeIdx, arcIdx int, chapters []domain.Outlin
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
 
-	var planToSave *domain.AdaptationPlan
-	if s.Adaptation.Active() {
-		plan, err := s.Adaptation.LoadPlan()
-		if err != nil {
-			return fmt.Errorf("load adaptation plan: %w", err)
-		}
-		if plan != nil {
-			planCopy := *plan
-			planCopy.Chapters = cloneAdaptationPlans(plan.Chapters)
-			planToSave = &planCopy
-		}
+	prepared, err := s.previewRepairedArcEntries(volumeIdx, arcIdx, chapters)
+	if err != nil {
+		return err
+	}
+	if err := s.saveOutlineRepairFinalization(volumeIdx, arcIdx, prepared, outlineRepairFinalizationStagePrepared); err != nil {
+		return err
 	}
 
 	s.Outline.io.mu.Lock()
-	volumes, repaired, err := s.Outline.replaceArcChaptersUnlocked(volumeIdx, arcIdx, chapters)
+	_, repaired, err := s.Outline.replaceArcChaptersUnlocked(volumeIdx, arcIdx, chapters)
 	s.Outline.io.mu.Unlock()
 	if err != nil {
+		_ = s.clearOutlineRepairFinalization()
+		return err
+	}
+	if err := s.saveOutlineRepairFinalization(volumeIdx, arcIdx, repaired, outlineRepairFinalizationStageOutlineReplaced); err != nil {
 		return err
 	}
 
-	if planToSave != nil {
-		if err := updateAdaptationPlanOutlineEntries(planToSave, repaired); err != nil {
-			return err
-		}
-		if err := s.Adaptation.SavePlan(*planToSave); err != nil {
-			return fmt.Errorf("save repaired adaptation plan: %w", err)
-		}
-	}
-
-	repairedChapters := outlineEntryChapters(repaired)
-	if err := s.deleteRepairedArcArtifacts(volumeIdx, arcIdx, repairedChapters); err != nil {
-		return err
-	}
-
-	s.Progress.io.mu.Lock()
-	defer s.Progress.io.mu.Unlock()
-
-	progress, err := s.Progress.loadUnlocked()
+	progress, err := s.finalizeOutlineRepair(volumeIdx, arcIdx, repaired)
 	if err != nil {
 		return err
 	}
-	if progress == nil {
-		progress = &domain.Progress{}
-	}
-	progress.TotalChapters = domain.TotalChapters(volumes)
-	if slices.Contains(repairedChapters, progress.InProgressChapter) {
-		progress.InProgressChapter = 0
-		progress.CompletedScenes = nil
-	}
-	rewriteChapters := completedChaptersInSet(progress.CompletedChapters, repairedChapters)
-	if len(rewriteChapters) > 0 {
-		if err := domain.ValidateFlowTransition(progress.Flow, domain.FlowRewriting); err != nil {
-			return err
-		}
-		progress.PendingRewrites = rewriteChapters
-		progress.RewriteReason = outlineRepairRewriteReason(volumeIdx, arcIdx, repaired, rewriteChapters)
-		progress.Flow = domain.FlowRewriting
-	}
-	if err := s.Progress.saveUnlocked(progress); err != nil {
-		return err
-	}
+
 	nextBatch, err := s.scanDuplicateOutlineRepairBatch(progress)
 	if err != nil {
 		return err
@@ -220,8 +188,104 @@ func (s *Store) RepairArcOutline(volumeIdx, arcIdx int, chapters []domain.Outlin
 	return nil
 }
 
+func (s *Store) previewRepairedArcEntries(volumeIdx, arcIdx int, chapters []domain.OutlineEntry) ([]domain.OutlineEntry, error) {
+	volumes, err := s.Outline.LoadLayeredOutline()
+	if err != nil {
+		return nil, err
+	}
+	location := locateOutlineArc(volumes, volumeIdx, arcIdx)
+	if !location.found {
+		return nil, fmt.Errorf("arc not found: volume=%d arc=%d", volumeIdx, arcIdx)
+	}
+	if location.chapterCount == 0 {
+		return nil, fmt.Errorf("arc V%d A%d is not expanded", volumeIdx, arcIdx)
+	}
+	if len(chapters) != location.chapterCount {
+		return nil, fmt.Errorf("repair_arc V%d A%d must keep %d chapters, got %d", volumeIdx, arcIdx, location.chapterCount, len(chapters))
+	}
+	return numberedOutlineEntries(chapters, location.startChapter), nil
+}
+
+func (s *Store) finalizeOutlineRepair(volumeIdx, arcIdx int, repaired []domain.OutlineEntry) (*domain.Progress, error) {
+	if s.Adaptation.Active() {
+		plan, err := s.Adaptation.LoadPlan()
+		if err != nil {
+			return nil, fmt.Errorf("load adaptation plan: %w", err)
+		}
+		if plan != nil {
+			planToSave := *plan
+			planToSave.Chapters = cloneAdaptationPlans(plan.Chapters)
+			if err := updateAdaptationPlanOutlineEntries(&planToSave, repaired); err != nil {
+				return nil, err
+			}
+			if err := s.Adaptation.SavePlan(planToSave); err != nil {
+				return nil, fmt.Errorf("save repaired adaptation plan: %w", err)
+			}
+		}
+	}
+
+	repairedChapters := outlineEntryChapters(repaired)
+	if err := s.deleteRepairedArcArtifacts(volumeIdx, arcIdx, repairedChapters); err != nil {
+		return nil, err
+	}
+	volumes, err := s.Outline.LoadLayeredOutline()
+	if err != nil {
+		return nil, err
+	}
+
+	var progress *domain.Progress
+	err = s.Progress.io.WithWriteLock(func() error {
+		var loadErr error
+		progress, loadErr = s.Progress.loadUnlocked()
+		if loadErr != nil {
+			return loadErr
+		}
+		if progress == nil {
+			progress = &domain.Progress{}
+		}
+		progress.TotalChapters = domain.TotalChapters(volumes)
+		if slices.Contains(repairedChapters, progress.InProgressChapter) {
+			progress.InProgressChapter = 0
+			progress.CompletedScenes = nil
+		}
+		rewriteChapters := completedChaptersInSet(progress.CompletedChapters, repairedChapters)
+		clearChapterWordCounts(progress, rewriteChapters)
+		if len(rewriteChapters) > 0 {
+			if err := domain.ValidateFlowTransition(progress.Flow, domain.FlowRewriting); err != nil {
+				return err
+			}
+			progress.PendingRewrites = mergePendingRewriteChapters(progress.PendingRewrites, rewriteChapters)
+			reason := outlineRepairRewriteReason(volumeIdx, arcIdx, repaired, rewriteChapters)
+			if progress.RewriteReason == "" {
+				progress.RewriteReason = reason
+			} else if !strings.Contains(progress.RewriteReason, reason) {
+				progress.RewriteReason += "; " + reason
+			}
+			progress.Flow = domain.FlowRewriting
+		}
+		for _, target := range repairedArcPostprocessTargets(volumes, volumeIdx, arcIdx, progress.CompletedChapters) {
+			enqueueArcPostprocessTarget(progress, target)
+		}
+		return s.Progress.saveUnlocked(progress)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.clearOutlineRepairFinalization(); err != nil {
+		return nil, err
+	}
+	return progress, nil
+}
+
 func (s *Store) deleteRepairedArcArtifacts(volumeIdx, arcIdx int, chapters []int) error {
-	for _, chapter := range uniquePositiveChapters(chapters) {
+	repairedChapters := uniquePositiveChapters(chapters)
+	if err := s.World.DeleteChapterFacts(repairedChapters); err != nil {
+		return fmt.Errorf("delete repaired chapter world facts: %w", err)
+	}
+	if err := s.Cast.DeleteChapterAppearances(repairedChapters); err != nil {
+		return fmt.Errorf("delete repaired chapter cast appearances: %w", err)
+	}
+	for _, chapter := range repairedChapters {
 		if err := s.Drafts.DeleteChapterArtifacts(chapter); err != nil {
 			return fmt.Errorf("delete chapter %d draft artifacts: %w", chapter, err)
 		}

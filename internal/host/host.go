@@ -530,6 +530,10 @@ func (h *Host) Resume() (string, error) {
 	}
 	h.mu.Unlock()
 
+	if _, err := h.store.ReconcilePendingRewriteProgress(); err != nil {
+		return "", err
+	}
+
 	outlineRepair, err := prepareResumeOutlineRepair(h.store)
 	if err != nil {
 		return "", err
