@@ -1246,6 +1246,50 @@ func TestPlannerBatchChapterValidatorCanonicalizesSharedRangeToParentBatch(t *te
 	}
 }
 
+func TestPlannerBatchChapterValidatorFreeKeepsSharedRangeWithoutArcBudgetSplit(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityFree,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 12,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 8, Runes: 12000},
+			{Chapter: 9, Runes: 12000},
+			{Chapter: 10, Runes: 12000},
+			{Chapter: 11, Runes: 12000},
+			{Chapter: 12, Runes: 13104},
+		},
+	}
+	batch := plannerSkeletonBatch{
+		Index:            1,
+		TargetFrom:       1,
+		TargetTo:         1,
+		DetailParentFrom: 1,
+		DetailParentTo:   1,
+		SourceFrom:       8,
+		SourceTo:         12,
+	}
+	chapter := plannerSharedSourceRangePlans(1, 1, 8, 12, 61104)
+	chapter[0].WordBudget.TargetRunes = 12000
+	chapter[0].WordBudget.MinRunes = 9000
+	chapter[0].WordBudget.MaxRunes = 15000
+	chapter[0].TargetRunes = 0
+	chapter[0].TargetMinRunes = 0
+	chapter[0].TargetMaxRunes = 0
+
+	if err := plannerBatchChapterValidator(opts, manifest, batch)(chapter); err != nil {
+		t.Fatalf("free detail batch should not require arc-style source-range budget split: %v", err)
+	}
+	if chapter[0].SourceRange.From != 8 || chapter[0].SourceRange.To != 12 {
+		t.Fatalf("free detail source_range=%+v, want parent range 8-12", chapter[0].SourceRange)
+	}
+	if chapter[0].WordBudget.MaxRunes != 15000 {
+		t.Fatalf("detail validator should defer final free target budget cap to proposal normalization, got %+v", chapter[0].WordBudget)
+	}
+}
+
 func TestRemovePlannerProposalRuntimeBatchesForBudgetSplitErrorsDropsAllRanges(t *testing.T) {
 	runtime := &domain.AdaptationProposalRuntime{
 		CompletedBatches: []domain.AdaptationProposalRuntimeBatch{
@@ -1886,6 +1930,55 @@ func TestNormalizePlannerSourceMapSkeletonBatchesFreeKeepsSourceRunesSoft(t *tes
 	}
 }
 
+func TestNormalizePlannerSourceMapSkeletonBatchesFreeAllowsSharedSourceMapRanges(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 8, SourceTo: 12, SourceRunes: 61104}
+	batches := []plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 8, 10, 1, 3),
+		testSourceMapSkeletonBatch(2, 9, 12, 4, 6),
+	}
+
+	normalized, err := normalizePlannerSourceMapSkeletonBatchesForGranularity(batches, entry, domain.AdaptationGranularityFree)
+	if err != nil {
+		t.Fatalf("free source-map skeleton should accept overlapping internal ranges: %v", err)
+	}
+	if len(normalized) != 2 {
+		t.Fatalf("normalized batches=%d, want 2 story batches", len(normalized))
+	}
+	if normalized[0].SourceFrom != 8 || normalized[0].SourceTo != 10 ||
+		normalized[1].SourceFrom != 9 || normalized[1].SourceTo != 12 {
+		t.Fatalf("free batch source ranges should stay inside the entry without strict partitioning: %+v", normalized)
+	}
+	if normalized[0].TargetChapterCount != 3 || normalized[1].TargetChapterCount != 3 {
+		t.Fatalf("target chapter counts should be preserved: %+v", normalized)
+	}
+
+	_, err = normalizePlannerSourceMapSkeletonBatches(batches, entry)
+	if err == nil {
+		t.Fatal("strict arc/default normalizer should still reject this free-style shared source range")
+	}
+}
+
+func TestNormalizePlannerSourceMapSkeletonBatchesFreeAllowsRepeatedSingleSourceRange(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 29, SourceFrom: 140, SourceTo: 140, SourceRunes: 1000}
+	batches := []plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 140, 140, 1, 1),
+		testSourceMapSkeletonBatch(2, 140, 140, 2, 2),
+	}
+
+	normalized, err := normalizePlannerSourceMapSkeletonBatchesForGranularity(batches, entry, domain.AdaptationGranularityFree)
+	if err != nil {
+		t.Fatalf("free source-map skeleton should accept repeated single-source story batches: %v", err)
+	}
+	if len(normalized) != 2 {
+		t.Fatalf("normalized batches=%d, want 2 repeated story batches", len(normalized))
+	}
+
+	_, err = normalizePlannerSourceMapSkeletonBatches(batches, entry)
+	if err == nil || !strings.Contains(err.Error(), "does not advance") {
+		t.Fatalf("strict arc/default normalizer should still reject non-advancing repeated range, got %v", err)
+	}
+}
+
 func TestBuildAdaptationPlannerSkeletonUserPromptIncludesInitialSourceRuneBudgetNotes(t *testing.T) {
 	prompt, err := buildAdaptationPlannerSkeletonUserPrompt(ProposalOptions{
 		Brief:         "arc rewrite",
@@ -1920,11 +2013,15 @@ func TestBuildAdaptationPlannerSkeletonUserPromptTreatsFreeSourceRunesAsSoft(t *
 	if !strings.Contains(prompt, `"source_map_budget_notes"`) ||
 		!strings.Contains(prompt, "source_runes=16000") ||
 		!strings.Contains(prompt, "density and context") ||
-		!strings.Contains(prompt, "word_budget.max_runes") {
+		!strings.Contains(prompt, "word_budget.max_runes") ||
+		!strings.Contains(prompt, "fixed source_map range") ||
+		!strings.Contains(prompt, "may share or overlap the same source range") {
 		t.Fatalf("free prompt should keep source runes as soft density while retaining chapter max budget: %s", prompt)
 	}
 	if strings.Contains(prompt, "should total at least 4") ||
-		strings.Contains(prompt, "source_map.source_runes must drive splitting") {
+		strings.Contains(prompt, "source_map.source_runes must drive splitting") ||
+		strings.Contains(prompt, "must strictly partition") ||
+		strings.Contains(prompt, "strictly partition the provided source_map range") {
 		t.Fatalf("free prompt should not require source-rune-driven chapter splitting: %s", prompt)
 	}
 }
@@ -3040,6 +3137,7 @@ func TestRepairPlannerSkeletonTextClarifiesSourceMapPartition(t *testing.T) {
 		"original source-map request",
 		`{"batches":[]}`,
 		fmt.Errorf("source-map range 162-188 overlaps at source chapter 179"),
+		domain.AdaptationGranularityArc,
 		nil,
 		7,
 		24,
@@ -3056,6 +3154,37 @@ func TestRepairPlannerSkeletonTextClarifiesSourceMapPartition(t *testing.T) {
 		!strings.Contains(prompt, "strict sorted partition") ||
 		!strings.Contains(prompt, "no duplicated boundary chapter") {
 		t.Fatalf("repair prompt should clarify source-map partition ownership, got %s", prompt)
+	}
+}
+
+func TestRepairPlannerSkeletonTextKeepsFreeSourceMapRangeFixed(t *testing.T) {
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{"batches":[]}`}}}
+	_, err := repairPlannerSkeletonText(
+		context.Background(),
+		llm,
+		"system",
+		"original free source-map request",
+		`{"batches":[]}`,
+		fmt.Errorf("source-map range 140-140 does not advance past source chapter 140"),
+		domain.AdaptationGranularityFree,
+		nil,
+		29,
+		29,
+		1,
+	)
+	if err != nil {
+		t.Fatalf("repairPlannerSkeletonText: %v", err)
+	}
+	if len(llm.got) != 1 {
+		t.Fatalf("planner calls=%d, want 1", len(llm.got))
+	}
+	prompt := llm.got[0][1].TextContent()
+	if !strings.Contains(prompt, "sharing or overlapping source ranges across returned batches is valid") ||
+		!strings.Contains(prompt, "Do not repair free/full_rewrite by forcing the source range into a strict partition") {
+		t.Fatalf("free repair prompt should allow shared source-map ranges, got %s", prompt)
+	}
+	if strings.Contains(prompt, "strict sorted partition") {
+		t.Fatalf("free repair prompt should not request arc-style strict partition, got %s", prompt)
 	}
 }
 

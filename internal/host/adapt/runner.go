@@ -3189,7 +3189,7 @@ func collectPlannerSourceMapSkeletonBatches(
 		}
 		structureAttempts++
 		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", current, total, structureAttempts, maxRepairAttempts, lastErr), lastErr)
-		repaired, err := repairPlannerSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, lastErr, emit, current, total, maxModelCallAttempts)
+		repaired, err := repairPlannerSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, lastErr, granularity, emit, current, total, maxModelCallAttempts)
 		if err != nil {
 			return nil, err
 		}
@@ -3321,11 +3321,70 @@ func normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviation(batches []plan
 }
 
 func normalizePlannerSourceMapSkeletonBatchesForGranularity(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, granularity string) ([]plannerSkeletonBatch, error) {
+	if plannerAllowsSharedSourceMapEntryRanges(granularity) {
+		return normalizePlannerSourceMapSkeletonBatchesAllowSharedRanges(batches, entry)
+	}
 	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false, plannerEnforcesSourceRuneSplitting(granularity))
 }
 
 func normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviationForGranularity(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, granularity string) ([]plannerSkeletonBatch, error) {
+	if plannerAllowsSharedSourceMapEntryRanges(granularity) {
+		return normalizePlannerSourceMapSkeletonBatchesAllowSharedRanges(batches, entry)
+	}
 	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, true, plannerEnforcesSourceRuneSplitting(granularity))
+}
+
+func normalizePlannerSourceMapSkeletonBatchesAllowSharedRanges(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
+	if len(batches) == 0 {
+		return nil, fmt.Errorf("no batches")
+	}
+	out := make([]plannerSkeletonBatch, 0, len(batches))
+	for idx, batch := range batches {
+		if batch.SourceFrom <= 0 {
+			batch.SourceFrom = entry.SourceFrom
+		}
+		if batch.SourceTo <= 0 {
+			batch.SourceTo = entry.SourceTo
+		}
+		if batch.SourceTo < entry.SourceFrom || batch.SourceFrom > entry.SourceTo {
+			continue
+		}
+		if batch.SourceFrom < entry.SourceFrom {
+			batch.SourceFrom = entry.SourceFrom
+		}
+		if batch.SourceTo > entry.SourceTo {
+			batch.SourceTo = entry.SourceTo
+		}
+		if batch.SourceTo < batch.SourceFrom {
+			continue
+		}
+		if strings.TrimSpace(batch.Title) == "" {
+			return nil, fmt.Errorf("batch %d title is empty", idx+1)
+		}
+		if strings.TrimSpace(batch.Theme) == "" && strings.TrimSpace(batch.Goal) == "" {
+			return nil, fmt.Errorf("batch %d theme or goal is required", idx+1)
+		}
+		if strings.TrimSpace(batch.Summary) == "" {
+			return nil, fmt.Errorf("batch %d summary is empty", idx+1)
+		}
+		count := batch.TargetChapterCount
+		if batch.TargetFrom > 0 && batch.TargetTo >= batch.TargetFrom {
+			if count <= 0 {
+				count = batch.TargetTo - batch.TargetFrom + 1
+			}
+		}
+		if count <= 0 {
+			return nil, fmt.Errorf("batch %d chapter_count must be > 0", idx+1)
+		}
+		batch.TargetChapterCount = count
+		batch.TargetFrom = 0
+		batch.TargetTo = 0
+		out = append(out, batch)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("source-map range %d-%d returned no in-range batches", entry.SourceFrom, entry.SourceTo)
+	}
+	return out, nil
 }
 
 func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, allowBudgetDeviation bool, enforceSourceRuneSplitting bool) ([]plannerSkeletonBatch, error) {
@@ -5126,27 +5185,43 @@ func repairPlannerSkeletonText(
 	originalPrompt string,
 	previousText string,
 	previousErr error,
+	granularity string,
 	emit ProgressEmitter,
 	current int,
 	total int,
 	maxModelCallAttempts int,
 ) (string, error) {
-	repairPrompt := buildPlannerRepairPrompt("skeleton", originalPrompt, previousText, previousErr, []string{
+	instructions := []string{
 		"Return exactly one JSON skeleton object and no prose.",
 		"The JSON must have a top-level batches array.",
 		"Each batch must have chapter_count, source_from, source_to, title, theme or goal, and summary.",
 		"Do not calculate target_from or target_to in this source-map skeleton step; the host will assign continuous target chapter ranges from chapter_count.",
 		"source_from and source_to are model-owned source coverage, not target numbering; the host only assigns target chapter numbers after this step.",
-		"Keep returned source ranges as a strict sorted partition of the requested source-map range: cover every source chapter exactly once, with no gaps, no overlaps, and no duplicated boundary chapter.",
-		"If the previous error says overlaps, does not advance, or has a gap, rewrite source_from/source_to for all returned batches so the sorted ranges are contiguous before changing chapter_count.",
+	}
+	instructions = append(instructions, plannerSkeletonRepairSourceRangeInstructions(granularity)...)
+	instructions = append(instructions,
 		"If the previous error says source_runes needs more target chapters or chapter_count is below the review floor, increase chapter_count so each target chapter stays within the model chapter budget.",
 		"Do not return only overall_arc, key_turns, pair, notes, markdown, or explanation.",
-	})
+	)
+	repairPrompt := buildPlannerRepairPrompt("skeleton", originalPrompt, previousText, previousErr, instructions)
 	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens, emit, current, total, "骨架规划修复", maxModelCallAttempts)
 	if err != nil {
 		return "", fmt.Errorf("planner skeleton repair llm generate: %w", err)
 	}
 	return text, nil
+}
+
+func plannerSkeletonRepairSourceRangeInstructions(granularity string) []string {
+	if plannerAllowsSharedSourceMapEntryRanges(granularity) {
+		return []string{
+			"For free/full_rewrite, keep source_from/source_to inside the requested source-map range; sharing or overlapping source ranges across returned batches is valid.",
+			"Do not repair free/full_rewrite by forcing the source range into a strict partition; express the rewrite structure with chapter_count, title, theme/goal, and summary.",
+		}
+	}
+	return []string{
+		"Keep returned source ranges as a strict sorted partition of the requested source-map range: cover every source chapter exactly once, with no gaps, no overlaps, and no duplicated boundary chapter.",
+		"If the previous error says overlaps, does not advance, or has a gap, rewrite source_from/source_to for all returned batches so the sorted ranges are contiguous before changing chapter_count.",
+	}
 }
 
 func retryPlannerSkeletonChapterBudget(
@@ -5392,6 +5467,10 @@ func plannerChapterBudgetPolicyForGranularity(granularity string) *plannerChapte
 
 func plannerEnforcesSourceRuneSplitting(granularity string) bool {
 	return domain.NormalizeAdaptationGranularity(granularity) == domain.AdaptationGranularityArc
+}
+
+func plannerAllowsSharedSourceMapEntryRanges(granularity string) bool {
+	return domain.NormalizeAdaptationGranularity(granularity) == domain.AdaptationGranularityFree
 }
 
 type plannerSourceMapEntry struct {
@@ -5786,8 +5865,8 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 		"Do not calculate target_from or target_to in this source-map skeleton step; the host will assign continuous target chapter ranges from chapter_count.",
 		"Choose skeleton batches by coherent story arc, volume beat, or major plot movement; they do not need to match recommended_batch_max exactly.",
 		"The host will split oversized skeleton batches into detail calls of about recommended_batch_max target chapters.",
-		"The source ranges across returned batches must strictly partition the provided source_map range: cover every source chapter once, with no gaps and no overlaps.",
 	)
+	requirements = append(requirements, plannerSkeletonSourceRangeRequirements(opts.Granularity)...)
 	input := struct {
 		Brief                string                          `json:"brief"`
 		Granularity          string                          `json:"granularity"`
@@ -5843,6 +5922,18 @@ func plannerSkeletonBudgetRequirements(granularity string) []string {
 	return []string{
 		"If chapter_budget_policy is present, it limits target chapter budgets only: keep each target word_budget.max_runes within chapter_budget_policy.max_runes, but do not turn source_map.source_runes into a minimum target chapter count for free/full_rewrite.",
 		"Read source_map_budget_notes before choosing chapter_count. For free/full_rewrite, treat those notes as source density and context guidance; choose chapter_count from the new story structure.",
+	}
+}
+
+func plannerSkeletonSourceRangeRequirements(granularity string) []string {
+	if plannerAllowsSharedSourceMapEntryRanges(granularity) {
+		return []string{
+			"For free/full_rewrite, this request already has a fixed source_map range. Keep every returned batch source_from/source_to inside that provided range; multiple returned batches may share or overlap the same source range when they represent different new-story beats.",
+			"Do not spend structure-repair effort on making free/full_rewrite source ranges a strict partition; use chapter_count, title, theme/goal, and summary to express the new story structure.",
+		}
+	}
+	return []string{
+		"The source ranges across returned batches must strictly partition the provided source_map range: cover every source chapter once, with no gaps and no overlaps.",
 	}
 }
 
