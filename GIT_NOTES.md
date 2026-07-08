@@ -29,6 +29,20 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: soften arc source-map budget review`:
+  Arc/full_rewrite source-map skeleton budget review now uses source-map
+  review capacity (`ceil(5000 * 1.15) = 5750`) as the skeleton-stage signal,
+  while final per-target `word_budget.max_runes` remains capped at 5000.
+  Skeleton batches may carry optional `budget_decision` and `budget_reason`
+  through runtime and volume-review state. Severe low/high budget deviations
+  require matching compression/expansion rationale; retry exhaustion no longer
+  accepts no-rationale severe deviations. Free/full_rewrite soft source-rune
+  and shared-range behavior remains preserved. Validation passed for focused
+  PR-02 source-map budget tests, free/full_rewrite regressions, and
+  `go test ./internal/domain ./internal/bootstrap -count=1`; PR-02 received
+  independent re-review `pass` before commit. Local Web was not restarted yet
+  per user request to wait until all PRs are complete.
+- Latest source/runtime change: current local commit
   `fix: tolerate source-map skeleton wrappers`:
   Source-map skeleton parsing now extracts a single deterministic JSON object
   from fenced/prose-wrapped planner responses, rejects multiple top-level

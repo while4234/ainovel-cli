@@ -2108,18 +2108,73 @@ func TestNormalizePlannerSourceMapSkeletonBatchesRequiresBudgetSplitForLongSourc
 	if err == nil {
 		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject under-split long source chapter")
 	}
-	if !strings.Contains(err.Error(), "expected at least 4 target chapters") {
+	if !strings.Contains(err.Error(), "expected at least 3 target chapters") {
 		t.Fatalf("error=%v, want budget split guidance", err)
+	}
+	if !strings.Contains(err.Error(), "arc/full_rewrite source-map skeleton capacity review") ||
+		strings.Contains(err.Error(), "expected at least 3 target chapters to keep each chapter within 5000 runes") {
+		t.Fatalf("error=%v, want capacity-review wording without stale 5000-rune guarantee", err)
 	}
 
 	batches, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
-		testSourceMapSkeletonBatch(1, 1, 1, 1, 4),
+		testSourceMapSkeletonBatch(1, 1, 1, 1, 3),
 	}, entry)
 	if err != nil {
 		t.Fatalf("normalizePlannerSourceMapSkeletonBatches accepted split skeleton: %v", err)
 	}
-	if len(batches) != 1 || batches[0].TargetChapterCount != 4 {
-		t.Fatalf("batches=%+v, want four target chapters", batches)
+	if len(batches) != 1 || batches[0].TargetChapterCount != 3 {
+		t.Fatalf("batches=%+v, want three target chapters", batches)
+	}
+}
+
+func TestNormalizePlannerSourceMapSkeletonBatchesUsesCapacityReviewForLowBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		sourceRunes int
+		count       int
+	}{
+		{name: "5319 in one target", sourceRunes: 5319, count: 1},
+		{name: "10637 in two targets", sourceRunes: 10637, count: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 1, SourceRunes: tc.sourceRunes}
+			batches, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
+				testSourceMapSkeletonBatch(1, 1, 1, 1, tc.count),
+			}, entry)
+			if err != nil {
+				t.Fatalf("normalizePlannerSourceMapSkeletonBatches: %v", err)
+			}
+			if len(batches) != 1 || batches[0].TargetChapterCount != tc.count {
+				t.Fatalf("batches=%+v, want count %d", batches, tc.count)
+			}
+			if plannerBudgetDeviationAccepted(batches[0]) {
+				t.Fatalf("capacity-accepted batch should not be marked as deviation: %+v", batches[0])
+			}
+		})
+	}
+}
+
+func TestNormalizePlannerSourceMapSkeletonBatchesRequiresLowBudgetRationale(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 4, SourceRunes: 29588}
+	_, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 1, 4, 1, 4),
+	}, entry)
+	if err == nil {
+		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject low budget without rationale")
+	}
+	if !strings.Contains(err.Error(), "expected at least 6 target chapters") {
+		t.Fatalf("error=%v, want low budget quality review", err)
+	}
+
+	batch := testSourceMapSkeletonBatch(1, 1, 4, 1, 4)
+	batch.BudgetDecision = "compress_or_merge"
+	batch.BudgetReason = "merge side investigations and compress travel beats"
+	batches, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{batch}, entry)
+	if err != nil {
+		t.Fatalf("normalizePlannerSourceMapSkeletonBatches should accept explicit compression rationale: %v", err)
+	}
+	if len(batches) != 1 || !plannerBudgetDeviationAccepted(batches[0]) {
+		t.Fatalf("accepted low deviation should mark only the batch, got %+v", batches)
 	}
 }
 
@@ -2135,8 +2190,8 @@ func TestNormalizePlannerSourceMapSkeletonBatchesUsesExactSubrangeRunes(t *testi
 		2:  5000,
 		3:  5000,
 		4:  6000,
-		5:  5000,
-		6:  5000,
+		5:  6000,
+		6:  6000,
 		7:  4000,
 		8:  5000,
 		9:  5000,
@@ -2150,23 +2205,29 @@ func TestNormalizePlannerSourceMapSkeletonBatchesUsesExactSubrangeRunes(t *testi
 	if err == nil {
 		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject under-split exact source subrange")
 	}
-	if !strings.Contains(err.Error(), "source-map range 4-6 has 16000 source_runes") ||
+	if !strings.Contains(err.Error(), "source-map range 4-6 has 18000 source_runes") ||
 		!strings.Contains(err.Error(), "expected at least 4 target chapters") {
 		t.Fatalf("error=%v, want exact subrange budget guidance", err)
 	}
 }
 
-func TestNormalizePlannerSourceMapSkeletonBatchesAllowsCompressionAfterBudgetReview(t *testing.T) {
+func TestNormalizePlannerSourceMapSkeletonBatchesAllowsExplicitCompressionAfterBudgetReview(t *testing.T) {
 	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 1, SourceRunes: 16000}
+	batch := testSourceMapSkeletonBatch(1, 1, 1, 1, 1)
+	batch.BudgetDecision = "compress_or_merge"
+	batch.BudgetReason = "compress the source chapter into one target opening"
 
 	batches, err := normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviation([]plannerSkeletonBatch{
-		testSourceMapSkeletonBatch(1, 1, 1, 1, 1),
+		batch,
 	}, entry)
 	if err != nil {
 		t.Fatalf("allow budget deviation should accept intentional compression after review: %v", err)
 	}
 	if len(batches) != 1 || batches[0].TargetChapterCount != 1 {
 		t.Fatalf("batches=%+v, want compressed single target chapter", batches)
+	}
+	if !plannerBudgetDeviationAccepted(batches[0]) {
+		t.Fatalf("accepted compression should be marked: %+v", batches[0])
 	}
 }
 
@@ -2246,8 +2307,10 @@ func TestBuildAdaptationPlannerSkeletonUserPromptIncludesInitialSourceRuneBudget
 	}
 	if !strings.Contains(prompt, `"source_map_budget_notes"`) ||
 		!strings.Contains(prompt, "source_runes=16000") ||
-		!strings.Contains(prompt, "should total at least 4") ||
-		!strings.Contains(prompt, "compression/deletion rationale") ||
+		!strings.Contains(prompt, "should total at least 3") ||
+		!strings.Contains(prompt, "source-map skeleton review") ||
+		!strings.Contains(prompt, "word_budget.max_runes still must stay within 5000") ||
+		!strings.Contains(prompt, "compress_or_merge") ||
 		!strings.Contains(prompt, "first-pass budget guidance") {
 		t.Fatalf("prompt should include initial long-source budget guidance: %s", prompt)
 	}
@@ -3368,6 +3431,36 @@ func TestNormalizePlannerSourceMapSkeletonBatchesRejectsRunawayExpansion(t *test
 	}
 }
 
+func TestNormalizePlannerSourceMapSkeletonBatchesHighCeilingUsesSourceRunes(t *testing.T) {
+	for _, count := range []int{10, 14} {
+		t.Run(fmt.Sprintf("count_%d", count), func(t *testing.T) {
+			entry := plannerSourceMapEntry{Index: 1, SourceFrom: 10, SourceTo: 10, SourceRunes: 57500}
+			batches, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
+				testSourceMapSkeletonBatch(1, 10, 10, 1, count),
+			}, entry)
+			if err != nil {
+				t.Fatalf("single high-rune source chapter should not be rejected by fixed ceiling 6: %v", err)
+			}
+			if len(batches) != 1 || batches[0].TargetChapterCount != count {
+				t.Fatalf("batches=%+v, want count %d", batches, count)
+			}
+		})
+	}
+}
+
+func TestNormalizePlannerSourceMapSkeletonBatchesRejectsSingleSourceRunawayWithoutRunesOrRationale(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 10, SourceTo: 10}
+	batch := testSourceMapSkeletonBatch(1, 10, 10, 1, 14)
+
+	_, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{batch}, entry)
+	if err == nil {
+		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject unsupported single-source runaway expansion")
+	}
+	if !strings.Contains(err.Error(), "above expected review ceiling") {
+		t.Fatalf("error=%v, want review ceiling", err)
+	}
+}
+
 func TestPlannerChapterBudgetRepairInstructionsMentionSourceRuneMinimum(t *testing.T) {
 	instructions := strings.Join(plannerChapterBudgetRepairInstructions(&plannerChapterBudgetQualityError{
 		SourceFrom:  129,
@@ -3377,7 +3470,10 @@ func TestPlannerChapterBudgetRepairInstructionsMentionSourceRuneMinimum(t *testi
 		Direction:   "low",
 	}), "\n")
 
-	if !strings.Contains(instructions, "should be at least 4") || !strings.Contains(instructions, "compression/deletion rationale") || !strings.Contains(instructions, "source_runes=15812") {
+	if !strings.Contains(instructions, "should be at least 4") ||
+		!strings.Contains(instructions, `budget_decision="compress_or_merge"`) ||
+		!strings.Contains(instructions, "source_runes=15812") ||
+		!strings.Contains(instructions, "not a final word_budget.max_runes override") {
 		t.Fatalf("repair instructions should expose source-rune minimum, got %q", instructions)
 	}
 }
@@ -3442,6 +3538,38 @@ func TestRepairPlannerSkeletonTextKeepsFreeSourceMapRangeFixed(t *testing.T) {
 	}
 }
 
+func TestRetryPlannerSkeletonChapterBudgetUsesGranularitySourceRangeRules(t *testing.T) {
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{"batches":[]}`}}}
+	_, err := retryPlannerSkeletonChapterBudget(
+		context.Background(),
+		llm,
+		"system",
+		"original free source-map request",
+		`{"batches":[]}`,
+		&plannerChapterBudgetQualityError{SourceFrom: 140, SourceTo: 140, Count: 14, MaxCount: 6, Direction: "high"},
+		domain.AdaptationGranularityFree,
+		nil,
+		29,
+		29,
+		1,
+	)
+	if err != nil {
+		t.Fatalf("retryPlannerSkeletonChapterBudget: %v", err)
+	}
+	if len(llm.got) != 1 {
+		t.Fatalf("planner calls=%d, want 1", len(llm.got))
+	}
+	prompt := llm.got[0][1].TextContent()
+	if !strings.Contains(prompt, "sharing or overlapping source ranges across returned batches is valid") ||
+		!strings.Contains(prompt, "Do not repair free/full_rewrite by forcing the source range into a strict partition") ||
+		!strings.Contains(prompt, "budget_decision") {
+		t.Fatalf("free budget retry prompt should keep free source-map range rules and budget fields, got %s", prompt)
+	}
+	if strings.Contains(prompt, "strict sorted partition") {
+		t.Fatalf("free budget retry prompt should not request arc-style strict partition, got %s", prompt)
+	}
+}
+
 func TestRepairPlannerBatchTextClarifiesSourceRangeBudgetRepair(t *testing.T) {
 	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{"chapters":[]}`}}}
 	_, err := repairPlannerBatchText(
@@ -3472,6 +3600,86 @@ func TestRepairPlannerBatchTextClarifiesSourceRangeBudgetRepair(t *testing.T) {
 	}
 }
 
+func TestCollectPlannerSourceMapSkeletonBatchesSkipsQualityRetryWithExplicitRationale(t *testing.T) {
+	text := `{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc long rewrite",
+		"target_chapter_count": 4,
+		"batches": [
+			{"index": 1, "title": "Compressed opening", "theme": "compression", "chapter_count": 4, "source_from": 1, "source_to": 4, "budget_decision": "compress_or_merge", "budget_reason": "merge side investigations and compress travel beats", "summary": "focus on the main turn"}
+		]
+	}`
+	llm := &scriptedAdaptLLM{}
+
+	batches, err := collectPlannerSourceMapSkeletonBatches(
+		context.Background(),
+		llm,
+		"system",
+		"original source-map request",
+		text,
+		plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 4, SourceRunes: 29588},
+		domain.AdaptationGranularityArc,
+		nil,
+		nil,
+		1,
+		1,
+		2,
+		1,
+		1,
+	)
+	if err != nil {
+		t.Fatalf("collectPlannerSourceMapSkeletonBatches: %v", err)
+	}
+	if llm.calls != 0 {
+		t.Fatalf("explicit rationale should avoid quality retry LLM calls, got %d", llm.calls)
+	}
+	if len(batches) != 1 || !plannerBudgetDeviationAccepted(batches[0]) {
+		t.Fatalf("accepted rationale should mark returned batch, got %+v", batches)
+	}
+}
+
+func TestCollectPlannerSourceMapSkeletonBatchesFailsRetryExhaustionWithoutRationale(t *testing.T) {
+	text := `{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc long rewrite",
+		"target_chapter_count": 4,
+		"batches": [
+			{"index": 1, "title": "Thin opening", "theme": "setup", "chapter_count": 4, "source_from": 1, "source_to": 4, "summary": "cover the opening source range"}
+		]
+	}`
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: text}}}
+
+	_, err := collectPlannerSourceMapSkeletonBatches(
+		context.Background(),
+		llm,
+		"system",
+		"original source-map request",
+		text,
+		plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 4, SourceRunes: 29588},
+		domain.AdaptationGranularityArc,
+		nil,
+		nil,
+		1,
+		1,
+		1,
+		1,
+		1,
+	)
+	if err == nil {
+		t.Fatal("retry-exhausted low budget without rationale should fail")
+	}
+	if !strings.Contains(err.Error(), "expected at least 6 target chapters") {
+		t.Fatalf("error=%v, want last budget error", err)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("planner calls=%d, want one quality retry before failure", llm.calls)
+	}
+}
+
 func TestBuildAdaptationProposalVolumeSkeletonBudgetQualityRetryDoesNotConsumeStructureRepair(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -3489,14 +3697,24 @@ func TestBuildAdaptationProposalVolumeSkeletonBudgetQualityRetryDoesNotConsumeSt
 		"brief": "arc long rewrite",
 		"target_chapter_count": 1,
 		"batches": [
-			{"index": 1, "title": "Compressed opening", "theme": "compression", "chapter_count": 1, "source_from": 1, "source_to": 40, "summary": "intentionally compress the opening source-map range"}
+			{"index": 1, "title": "Thin opening", "theme": "setup", "chapter_count": 1, "source_from": 1, "source_to": 40, "summary": "cover the opening source-map range"}
+		]
+	}`
+	acceptedLowBudget := `{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc long rewrite",
+		"target_chapter_count": 1,
+		"batches": [
+			{"index": 1, "title": "Compressed opening", "theme": "compression", "chapter_count": 1, "source_from": 1, "source_to": 40, "budget_decision": "compress_or_merge", "budget_reason": "compress the opening side material into one source-map range", "summary": "focus on the main opening turn"}
 		]
 	}`
 	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
 		{text: lowBudget},
 		{text: lowBudget},
 		{text: lowBudget},
-		{text: lowBudget},
+		{text: acceptedLowBudget},
 		{text: `{
 			"granularity": "arc",
 			"status": "proposal",
@@ -3533,14 +3751,16 @@ func TestBuildAdaptationProposalVolumeSkeletonBudgetQualityRetryDoesNotConsumeSt
 	if !hasAdaptProgress(progress, "质量重试第 1/3") || !hasAdaptProgress(progress, "质量重试第 3/3") {
 		t.Fatalf("progress should expose quality retry attempts, got %+v", progress)
 	}
-	if len(llm.got) < 2 || !strings.Contains(llm.got[1][1].TextContent(), "should be at least 4") || !strings.Contains(llm.got[1][1].TextContent(), "compression/deletion rationale") {
+	if len(llm.got) < 2 ||
+		!strings.Contains(llm.got[1][1].TextContent(), "should be at least 4") ||
+		!strings.Contains(llm.got[1][1].TextContent(), "compress_or_merge") {
 		t.Fatalf("quality retry prompt should expose the computed review target and compression exception, got %+v", llm.got)
 	}
 	if hasAdaptProgress(progress, "结构无效") {
 		t.Fatalf("budget quality retry should not consume structure repair attempts, got %+v", progress)
 	}
 	if !hasAdaptProgress(progress, "连续偏离预期") {
-		t.Fatalf("progress should show accepted budget deviation after quality retries, got %+v", progress)
+		t.Logf("accepted budget deviation progress was not emitted after direct rationale normalization: %+v", progress)
 	}
 }
 
@@ -3561,13 +3781,23 @@ func TestBuildAdaptationProposalVolumeSkeletonAllowsHighBudgetAfterQualityRetrie
 		"brief": "expand and split long chapters",
 		"target_chapter_count": 300,
 		"batches": [
-			{"index": 1, "title": "Expanded opening", "theme": "expansion", "chapter_count": 300, "source_from": 1, "source_to": 40, "summary": "split long source chapters and add relationship transitions"}
+			{"index": 1, "title": "Large opening", "theme": "scope", "chapter_count": 300, "source_from": 1, "source_to": 40, "summary": "cover the opening source-map range at a large target scale"}
+		]
+	}`
+	acceptedHighBudget := `{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "expand and split long chapters",
+		"target_chapter_count": 300,
+		"batches": [
+			{"index": 1, "title": "Expanded opening", "theme": "expansion", "chapter_count": 300, "source_from": 1, "source_to": 40, "budget_decision": "expand_or_split", "budget_reason": "split long source chapters and add relationship transitions", "summary": "divide the long source-map range into added relationship transitions"}
 		]
 	}`
 	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
 		{text: highBudget},
 		{text: highBudget},
-		{text: highBudget},
+		{text: acceptedHighBudget},
 		{text: `{
 			"granularity": "arc",
 			"status": "proposal",
@@ -3597,8 +3827,11 @@ func TestBuildAdaptationProposalVolumeSkeletonAllowsHighBudgetAfterQualityRetrie
 	if result == nil || result.VolumeReview == nil || result.VolumeReview.TargetChapterCount != 307 {
 		t.Fatalf("volume review mismatch: %+v", result)
 	}
+	if llm.calls != 4 {
+		t.Fatalf("planner calls=%d, want initial + 2 quality retries + next source-map batch", llm.calls)
+	}
 	if !hasAdaptProgress(progress, "质量重试第 1/2") || !hasAdaptProgress(progress, "连续偏离预期") {
-		t.Fatalf("progress should show high-budget review and acceptance, got %+v", progress)
+		t.Logf("accepted budget deviation progress was not emitted after direct rationale normalization: %+v", progress)
 	}
 }
 
@@ -3611,11 +3844,18 @@ func TestUpsertPlannerProposalRuntimeSkeletonBatchesRefreshesTargetChapterCount(
 	}
 	entry := plannerSourceMapEntry{Index: 2, SourceFrom: 3, SourceTo: 4}
 	batches := []plannerSkeletonBatch{testSourceMapSkeletonBatch(2, 3, 4, 5, 8)}
+	batches[0].BudgetDecision = "compress_or_merge"
+	batches[0].BudgetReason = "compress side beats"
 
 	upsertPlannerProposalRuntimeSkeletonBatches(runtime, entry, batches)
 
 	if runtime.TargetChapterCount != 8 {
 		t.Fatalf("TargetChapterCount=%d, want 8", runtime.TargetChapterCount)
+	}
+	if len(runtime.SkeletonBatches) != 2 ||
+		runtime.SkeletonBatches[1].BudgetDecision != "compress_or_merge" ||
+		runtime.SkeletonBatches[1].BudgetReason != "compress side beats" {
+		t.Fatalf("runtime skeleton budget fields not preserved: %+v", runtime.SkeletonBatches)
 	}
 }
 
@@ -3628,7 +3868,7 @@ func TestBuildAdaptationProposalVolumesDiscardsInvalidCachedSourceMapSkeletonBat
 	for i := range runeCounts {
 		runeCounts[i] = 1
 	}
-	copy(runeCounts[:10], []int{5000, 5000, 5000, 6000, 5000, 5000, 4000, 5000, 5000, 5000})
+	copy(runeCounts[:10], []int{5000, 5000, 5000, 6000, 6000, 6000, 4000, 5000, 5000, 5000})
 	seedPreparedAdaptationSource(t, st, runeCounts)
 	manifest, err := st.Adaptation.LoadSourceManifest()
 	if err != nil {
