@@ -907,10 +907,6 @@ export default function App() {
 
   const createAndOpen = async (event) => {
     event.preventDefault();
-    if (!Number.isInteger(budgetAttempts) || budgetAttempts < 1 || budgetAttempts > 15) {
-      setError('预算复核次数必须是 1-15 之间的整数');
-      return;
-    }
     setBusy(true);
     setError('');
     try {
