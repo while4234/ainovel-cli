@@ -456,6 +456,9 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 	if proposal == nil {
 		return nil, fmt.Errorf("adaptation proposal is required")
 	}
+	if err := adapt.ValidateProposalOutlineUniqueness(*proposal); err != nil {
+		return nil, err
+	}
 	if err := h.store.Checkpoints.Reset(); err != nil {
 		return nil, fmt.Errorf("reset checkpoints: %w", err)
 	}

@@ -29,6 +29,20 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: block cross-batch adaptation outline duplicates`:
+  The duplicate-outline regression occurred on latest `origin/main`
+  (`d464c91b`, `fix: align arc source-range budget review`), not stale local
+  code. Adaptation planner detail batches now validate deterministic duplicate
+  outline promises against prior accepted detail batches and include prior
+  chapters in borderline similarity review prompts. Full proposal validation
+  and host confirmation also reject duplicate target outlines before confirmed
+  plans reset checkpoints/generated output/progress. This guard checks repeated
+  title/core_event/hook/scenes promises and does not use reduced target word
+  count as a failure condition, so arc/full_rewrite compression behavior
+  remains unchanged. Validation passed for focused duplicate/revision
+  regressions and
+  `go test ./internal/domain ./internal/host/adapt ./internal/host -count=1`.
+- Latest source/runtime change: current local commit
   `fix: align arc source-range budget review`:
   Arc/full_rewrite final proposal and detail budget split validation now uses
   the same source-map review capacity exposed as

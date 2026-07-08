@@ -206,6 +206,49 @@ func TestConfirmAdaptationProposalPersistsTargetOutlinesAndProgress(t *testing.T
 	}
 }
 
+func TestConfirmAdaptationProposalRejectsDuplicateTargetOutlines(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	proposal := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityArc,
+		Status:        domain.AdaptationPlanStatusProposal,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Brief:         "duplicate proposal should not become a confirmed plan",
+		Chapters: []domain.AdaptationChapterPlan{
+			{
+				Chapter:        1,
+				Title:          "Mirror Door Signal",
+				SourceChapters: []int{1},
+				OutlineEntry: domain.OutlineEntry{
+					CoreEvent: "The team enters the tower archive and finds the sealed ledger before dawn.",
+					Hook:      "The ledger names the missing witness.",
+					Scenes:    []string{"archive entry", "sealed ledger"},
+				},
+			},
+			{
+				Chapter:        2,
+				Title:          "Mirror Door Signal",
+				SourceChapters: []int{2},
+				OutlineEntry: domain.OutlineEntry{
+					CoreEvent: "The team enters the tower archive and finds the sealed ledger before dawn.",
+					Hook:      "The ledger names the missing witness.",
+					Scenes:    []string{"archive entry", "sealed ledger"},
+				},
+			},
+		},
+	}
+
+	_, err := ConfirmAdaptationProposal(context.Background(), Deps{Store: st}, proposal)
+	if err == nil {
+		t.Fatal("duplicate proposal should be rejected before confirmation")
+	}
+	if !strings.Contains(err.Error(), "chapter 2 duplicates outline beats from chapter 1") {
+		t.Fatalf("error=%v, want duplicate outline rejection", err)
+	}
+}
+
 func TestBuildAdaptationProposalChapterPreserveDetailsUsesSourceRuneRanges(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -983,6 +1026,44 @@ func TestPlannerBatchChapterValidatorRejectsDuplicateOutlinePromise(t *testing.T
 	}
 }
 
+func TestPlannerBatchChapterValidatorRejectsDuplicateFromPreviousDetailBatch(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 2,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, Runes: 1000},
+			{Chapter: 2, Runes: 1000},
+		},
+	}
+	batch := plannerSkeletonBatch{
+		Index:            2,
+		TargetFrom:       2,
+		TargetTo:         2,
+		DetailParentFrom: 1,
+		DetailParentTo:   2,
+		SourceFrom:       2,
+		SourceTo:         2,
+	}
+	previous := plannerSharedSourceRangePlans(1, 1, 1, 1, 1000)
+	current := plannerSharedSourceRangePlans(2, 2, 2, 2, 1000)
+	current[0].Title = previous[0].Title
+	current[0].OutlineEntry.Title = previous[0].OutlineEntry.Title
+	current[0].CoreEvent = previous[0].CoreEvent
+	current[0].Hook = previous[0].Hook
+
+	err := plannerBatchChapterValidator(opts, manifest, batch, previous)(current)
+	if err == nil {
+		t.Fatal("detail batch should reject outline promises duplicated from previous accepted batch")
+	}
+	if !strings.Contains(err.Error(), "chapter 2 duplicates outline beats from chapter 1") {
+		t.Fatalf("error=%v, want previous-batch duplicate outline guidance", err)
+	}
+}
+
 func TestPlannerBatchChapterValidatorRequiresEnoughTargetsForSharedSourceRange(t *testing.T) {
 	opts := ProposalOptions{
 		Granularity:   domain.AdaptationGranularityArc,
@@ -1157,6 +1238,42 @@ func TestValidatePlannerProposalAllowsAcceptedBudgetDeviationRange(t *testing.T)
 	}
 	if proposal.Chapters[0].WordBudget == nil || proposal.Chapters[0].WordBudget.MaxRunes > domain.AdaptationModelChapterMaxRunes {
 		t.Fatalf("accepted budget deviation should still normalize per-chapter word budget: %+v", proposal.Chapters[0].WordBudget)
+	}
+}
+
+func TestValidatePlannerProposalRejectsDuplicateOutlinePromise(t *testing.T) {
+	opts := ProposalOptions{
+		Brief:         "reject duplicated detail plans",
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 2,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, Runes: 1000},
+			{Chapter: 2, Runes: 1000},
+		},
+	}
+	chapters := plannerSharedSourceRangePlans(1, 2, 1, 2, 1000)
+	chapters[1].Title = chapters[0].Title
+	chapters[1].OutlineEntry.Title = chapters[0].OutlineEntry.Title
+	chapters[1].CoreEvent = chapters[0].CoreEvent
+	chapters[1].Hook = chapters[0].Hook
+	proposal := domain.AdaptationPlan{
+		Granularity:   opts.Granularity,
+		Status:        domain.AdaptationPlanStatusProposal,
+		RewritePolicy: opts.RewritePolicy,
+		Brief:         opts.Brief,
+		Chapters:      chapters,
+	}
+
+	err := validatePlannerProposal(&proposal, opts, nil, manifest, nil)
+	if err == nil {
+		t.Fatal("complete planner proposal should reject duplicate outline promises")
+	}
+	if !strings.Contains(err.Error(), "chapter 2 duplicates outline beats from chapter 1") {
+		t.Fatalf("error=%v, want duplicate outline rejection", err)
 	}
 }
 
@@ -4935,7 +5052,13 @@ func plannerRevisionProposalJSON(from, to, sourceFrom, sourceTo int) string {
 		}
 		sourceRunes := sourceChapter * 10
 		targetRunes := sourceRunes + 2
-		title, core, hook, scenes := plannerTestOutlineParts(chapter, sourceChapter, "Revised")
+		outlineChapter := ((chapter - 1) % 12) + 13
+		title, core, hook, scenes := plannerTestOutlineParts(outlineChapter, sourceChapter, "Revised")
+		title = strings.Replace(title, fmt.Sprintf("Revised %d ", outlineChapter), fmt.Sprintf("Revised %d ", chapter), 1)
+		uniqueCore, uniqueHook, uniqueScene := plannerRevisionUniqueOutlineNote(chapter)
+		core = fmt.Sprintf("%s %s", core, uniqueCore)
+		hook = fmt.Sprintf("%s %s", hook, uniqueHook)
+		scenes = append(scenes, uniqueScene)
 		chapters = append(chapters, fmt.Sprintf(`{
 			"chapter": %d,
 			"title": %q,
@@ -4957,6 +5080,29 @@ func plannerRevisionProposalJSON(from, to, sourceFrom, sourceTo int) string {
 		"brief": "chunk",
 		"chapters": [%s]
 	}`, strings.Join(chapters, ","))
+}
+
+func plannerRevisionUniqueOutlineNote(chapter int) (string, string, string) {
+	notes := []struct {
+		core  string
+		hook  string
+		scene string
+	}{
+		{"Amber jurors compare wax seals under a lantern map.", "A cedar token appears in the judge's ink bowl.", "amber seal arbitration"},
+		{"Cobalt divers recover a copper tube from the flooded sluice.", "A blue rope knot points upstream.", "cobalt sluice recovery"},
+		{"Ivory couriers trade coded gloves beside a silent kennel.", "The hound refuses the clean glove.", "ivory courier kennel"},
+		{"Saffron clerks audit temple bells during a dust storm.", "The missing bell note names a hidden donor.", "saffron bell audit"},
+		{"Violet miners weigh glass ore against a forged charter.", "The ore glows only under stolen paper.", "violet quarry charter"},
+		{"Silver pilots mark cloud routes over a broken aqueduct.", "The flight slate lists an impossible landing.", "silver aqueduct route"},
+		{"Crimson tailors stitch testimony into a festival banner.", "The final thread spells the wrong oath.", "crimson banner testimony"},
+		{"Indigo cooks hide a ledger inside salted plum jars.", "The sour jar rings like porcelain.", "indigo kitchen ledger"},
+		{"Bronze cartographers erase a river from the winter atlas.", "The blank river stains the surveyor's hand.", "bronze atlas erasure"},
+		{"Pearl locksmiths test seven keys in a rain-dark shrine.", "The sixth key opens a door without hinges.", "pearl shrine keys"},
+		{"Verdant apothecaries label dream vials with false harvest dates.", "A green vial remembers tomorrow.", "verdant vial ledger"},
+		{"Obsidian watchmen count ferry lamps from an empty pier.", "The dark lamp answers from below water.", "obsidian ferry watch"},
+	}
+	note := notes[(chapter-1)%len(notes)]
+	return note.core, note.hook, note.scene
 }
 
 func plannerRevisionProposalJSONMissingWordBudget(from, to int) string {

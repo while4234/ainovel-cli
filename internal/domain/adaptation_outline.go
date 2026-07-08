@@ -46,22 +46,42 @@ func FindDuplicateAdaptationChapterOutline(
 	}, true
 }
 
-func FindAdaptationChapterOutlineReviewCandidates(chapters []AdaptationChapterPlan) []OutlineSimilarityCandidate {
-	return FindOutlineSimilarityReviewCandidates(adaptationOutlineEntries(chapters))
+func FindAdaptationChapterOutlineReviewCandidates(
+	chapters []AdaptationChapterPlan,
+	previousGroups ...[]AdaptationChapterPlan,
+) []OutlineSimilarityCandidate {
+	previousEntries := make([][]OutlineEntry, 0, len(previousGroups))
+	for _, group := range previousGroups {
+		previousEntries = append(previousEntries, adaptationOutlineEntries(group))
+	}
+	return FindOutlineSimilarityReviewCandidates(adaptationOutlineEntries(chapters), previousEntries...)
 }
 
 func adaptationOutlineEntries(chapters []AdaptationChapterPlan) []OutlineEntry {
 	entries := make([]OutlineEntry, 0, len(chapters))
 	for _, chapter := range chapters {
+		scenes := append([]string(nil), chapter.OutlineEntry.Scenes...)
+		if len(scenes) == 0 {
+			scenes = append([]string(nil), chapter.Scenes...)
+		}
 		entries = append(entries, OutlineEntry{
 			Chapter:   chapter.Chapter,
 			Title:     adaptationChapterTitle(chapter),
-			CoreEvent: chapter.OutlineEntry.CoreEvent,
-			Hook:      chapter.OutlineEntry.Hook,
-			Scenes:    append([]string(nil), chapter.OutlineEntry.Scenes...),
+			CoreEvent: firstNonEmptyAdaptationOutlineText(chapter.OutlineEntry.CoreEvent, chapter.CoreEvent),
+			Hook:      firstNonEmptyAdaptationOutlineText(chapter.OutlineEntry.Hook, chapter.Hook),
+			Scenes:    scenes,
 		})
 	}
 	return entries
+}
+
+func firstNonEmptyAdaptationOutlineText(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func adaptationChapterTitle(chapter AdaptationChapterPlan) string {

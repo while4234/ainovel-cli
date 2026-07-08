@@ -1359,6 +1359,7 @@ func reviseAdaptationProposalVolumeContext(
 			batchText,
 			detailBatch,
 			plannerBatchChapterValidator(detailOpts, manifest, detailBatch, revisedChapters),
+			revisedChapters,
 			opts.EmitProgress,
 			idx+1,
 			len(detailBatches),
@@ -4135,6 +4136,7 @@ func buildPlanFromPlannerSkeletonDetails(
 			batchText,
 			batch,
 			validateBatch,
+			chapters,
 			opts.EmitProgress,
 			batchOrdinal+1,
 			len(detailBatches),
@@ -5018,7 +5020,7 @@ func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.Adaptat
 				return err
 			}
 		}
-		if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(chapters); ok {
+		if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(chapters, priorChapters); ok {
 			return duplicate
 		}
 		return validatePlannerBatchChapterBudgetGroups(chapters, priorChapters, opts, sourceRunesByChapter, batch)
@@ -5114,6 +5116,7 @@ func collectPlannerBatchChaptersWithRepair(
 	initialText string,
 	batch plannerSkeletonBatch,
 	validate plannerBatchChapterValidatorFunc,
+	previousChapters []domain.AdaptationChapterPlan,
 	emit ProgressEmitter,
 	current int,
 	total int,
@@ -5129,7 +5132,7 @@ func collectPlannerBatchChaptersWithRepair(
 	for attempt := 0; ; attempt++ {
 		chapters, missing, partial, parseErr := parsePlannerBatchPartial(text, batch)
 		if partial && len(missing) == 0 {
-			if err := validateAndReviewPlannerBatchChapters(ctx, llm, systemPrompt, chapters, validate, emit, current, total, label, maxModelCallAttempts); err == nil {
+			if err := validateAndReviewPlannerBatchChapters(ctx, llm, systemPrompt, chapters, validate, previousChapters, emit, current, total, label, maxModelCallAttempts); err == nil {
 				return chapters, nil
 			} else {
 				lastErr = err
@@ -5142,7 +5145,7 @@ func collectPlannerBatchChaptersWithRepair(
 			}
 			filled, fillErr := fillMissingPlannerBatchChapters(ctx, llm, systemPrompt, originalPrompt, text, batch, chapters, missing, missingErr, emit, current, total, label, maxRepairAttempts, maxModelCallAttempts)
 			if fillErr == nil {
-				if err := validateAndReviewPlannerBatchChapters(ctx, llm, systemPrompt, filled, validate, emit, current, total, label, maxModelCallAttempts); err == nil {
+				if err := validateAndReviewPlannerBatchChapters(ctx, llm, systemPrompt, filled, validate, previousChapters, emit, current, total, label, maxModelCallAttempts); err == nil {
 					return filled, nil
 				} else {
 					lastErr = err
@@ -5177,6 +5180,7 @@ func validateAndReviewPlannerBatchChapters(
 	systemPrompt string,
 	chapters []domain.AdaptationChapterPlan,
 	validate plannerBatchChapterValidatorFunc,
+	previousChapters []domain.AdaptationChapterPlan,
 	emit ProgressEmitter,
 	current int,
 	total int,
@@ -5188,7 +5192,7 @@ func validateAndReviewPlannerBatchChapters(
 			return err
 		}
 	}
-	return reviewPlannerBatchOutlineSimilarity(ctx, llm, systemPrompt, chapters, emit, current, total, label, maxModelCallAttempts)
+	return reviewPlannerBatchOutlineSimilarity(ctx, llm, systemPrompt, chapters, emit, current, total, label, maxModelCallAttempts, previousChapters)
 }
 
 type plannerOutlineReviewChapter struct {
@@ -5254,13 +5258,14 @@ func reviewPlannerBatchOutlineSimilarity(
 	total int,
 	label string,
 	maxModelCallAttempts int,
+	previousChapters []domain.AdaptationChapterPlan,
 ) error {
-	candidates := domain.FindAdaptationChapterOutlineReviewCandidates(chapters)
+	candidates := domain.FindAdaptationChapterOutlineReviewCandidates(chapters, previousChapters)
 	if len(candidates) == 0 {
 		return nil
 	}
 	emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s has %d borderline similar outline pair(s); requesting model review", label, len(candidates)), nil)
-	reviewPrompt, err := buildPlannerOutlineSimilarityReviewPrompt(chapters, candidates)
+	reviewPrompt, err := buildPlannerOutlineSimilarityReviewPrompt(chapters, candidates, previousChapters)
 	if err != nil {
 		return err
 	}
@@ -5292,8 +5297,11 @@ func reviewPlannerBatchOutlineSimilarity(
 	return nil
 }
 
-func buildPlannerOutlineSimilarityReviewPrompt(chapters []domain.AdaptationChapterPlan, candidates []domain.OutlineSimilarityCandidate) (string, error) {
-	chapterByNumber := make(map[int]domain.AdaptationChapterPlan, len(chapters))
+func buildPlannerOutlineSimilarityReviewPrompt(chapters []domain.AdaptationChapterPlan, candidates []domain.OutlineSimilarityCandidate, previousChapters []domain.AdaptationChapterPlan) (string, error) {
+	chapterByNumber := make(map[int]domain.AdaptationChapterPlan, len(chapters)+len(previousChapters))
+	for _, chapter := range previousChapters {
+		chapterByNumber[chapter.Chapter] = chapter
+	}
 	for _, chapter := range chapters {
 		chapterByNumber[chapter.Chapter] = chapter
 	}
@@ -7839,6 +7847,9 @@ func validatePlannerProposal(
 	if len(proposal.Chapters) == 0 {
 		return fmt.Errorf("planner proposal has no chapters")
 	}
+	if err := ValidateProposalOutlineUniqueness(*proposal); err != nil {
+		return err
+	}
 	opts.WordTolerance = normalizeProposalWordTolerance(opts.Granularity, opts.WordTolerance)
 
 	sourceRunesByChapter := sourceRunesByChapter(manifest)
@@ -8597,6 +8608,9 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 	if len(proposal.Chapters) == 0 {
 		return nil, fmt.Errorf("adaptation proposal has no chapters")
 	}
+	if err := ValidateProposalOutlineUniqueness(proposal); err != nil {
+		return nil, err
+	}
 	sourceFoundation, err := deps.Store.Adaptation.LoadSourceFoundation()
 	if err != nil {
 		return nil, fmt.Errorf("load source foundation: %w", err)
@@ -8625,6 +8639,16 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 		return nil, fmt.Errorf("persist adaptation foundation: %w", err)
 	}
 	return &proposal, nil
+}
+
+func ValidateProposalOutlineUniqueness(proposal domain.AdaptationPlan) error {
+	if len(proposal.Chapters) == 0 {
+		return nil
+	}
+	if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(proposal.Chapters); ok {
+		return fmt.Errorf("adaptation proposal contains duplicate chapter outline: %w", duplicate)
+	}
+	return nil
 }
 
 func adaptationTargetVolumes(plan domain.AdaptationPlan) []domain.VolumeOutline {
