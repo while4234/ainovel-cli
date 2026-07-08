@@ -1652,6 +1652,190 @@ func TestParsePlannerSkeletonWrapsSingleBatchObject(t *testing.T) {
 	}
 }
 
+func TestParsePlannerSourceMapSkeletonExtractsUniqueJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{name: "fenced", text: "```json\n" + testPlannerSourceMapSkeletonJSON("") + "\n```"},
+		{name: "prose", text: "Planner output:\n" + testPlannerSourceMapSkeletonJSON("") + "\nUse this skeleton."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			skeleton, err := parsePlannerSourceMapSkeleton(tc.text)
+			if err != nil {
+				t.Fatalf("parsePlannerSourceMapSkeleton: %v", err)
+			}
+			if len(skeleton.Batches) != 1 || skeleton.Batches[0].SourceFrom != 1 || skeleton.Batches[0].SourceTo != 2 {
+				t.Fatalf("batches not decoded: %+v", skeleton.Batches)
+			}
+		})
+	}
+}
+
+func TestParsePlannerSourceMapSkeletonAcceptsAliasesAndNestedEnvelope(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{name: "chunks alias", text: `{"target_chapter_count":4,"chunks":[` + testPlannerSourceMapSkeletonBatchJSON() + `]}`},
+		{name: "nested structure alias", text: `{"structure":{"target_chapter_count":4,"parts":[` + testPlannerSourceMapSkeletonBatchJSON() + `]}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			skeleton, err := parsePlannerSourceMapSkeleton(tc.text)
+			if err != nil {
+				t.Fatalf("parsePlannerSourceMapSkeleton: %v", err)
+			}
+			if len(skeleton.Batches) != 1 {
+				t.Fatalf("batches=%d, want 1: %+v", len(skeleton.Batches), skeleton)
+			}
+			if skeleton.TargetChapterCount != 4 {
+				t.Fatalf("target chapter count=%d, want 4", skeleton.TargetChapterCount)
+			}
+		})
+	}
+}
+
+func TestParsePlannerSourceMapSkeletonIgnoresTopLevelTargetCountAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{name: "chapter count", key: "chapter_count"},
+		{name: "total chapters", key: "total_chapters"},
+		{name: "target count", key: "target_count"},
+		{name: "camel target count", key: "targetChapterCount"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := `{"` + tc.key + `":9,"batches":[` + testPlannerSourceMapSkeletonBatchJSON() + `]}`
+			skeleton, err := parsePlannerSourceMapSkeleton(text)
+			if err != nil {
+				t.Fatalf("parsePlannerSourceMapSkeleton: %v", err)
+			}
+			if skeleton.TargetChapterCount != 0 {
+				t.Fatalf("target chapter count=%d, want 0 for top-level %s alias", skeleton.TargetChapterCount, tc.key)
+			}
+		})
+	}
+}
+
+func TestParsePlannerSourceMapSkeletonRejectsAmbiguousMultipleObjects(t *testing.T) {
+	_, err := parsePlannerSourceMapSkeleton(testPlannerSourceMapSkeletonJSON("") + "\n" + testPlannerSourceMapSkeletonJSON(""))
+	if err == nil {
+		t.Fatal("parsePlannerSourceMapSkeleton should reject multiple complete JSON objects")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "multiple complete JSON objects") {
+		t.Fatalf("error=%v, want ambiguous multiple-object rejection", err)
+	}
+}
+
+func TestParsePlannerSourceMapSkeletonRejectsContainmentLikeAmbiguousMultipleObjects(t *testing.T) {
+	first := testPlannerSourceMapSkeletonJSON("")
+	second := `{"shadow":` + first + `,"batches":[` + testPlannerSourceMapSkeletonBatchJSON() + `]}`
+	_, err := parsePlannerSourceMapSkeleton(first + "\n" + second)
+	if err == nil {
+		t.Fatal("parsePlannerSourceMapSkeleton should reject separate top-level JSON objects")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "multiple complete JSON objects") {
+		t.Fatalf("error=%v, want ambiguous multiple-object rejection", err)
+	}
+}
+
+func TestParsePlannerSourceMapSkeletonRejectsNoJSONObject(t *testing.T) {
+	_, err := parsePlannerSourceMapSkeleton("planner returned no structured data")
+	if err == nil {
+		t.Fatal("parsePlannerSourceMapSkeleton should reject responses with no JSON object")
+	}
+	if !strings.Contains(err.Error(), "no JSON object") {
+		t.Fatalf("error=%v, want no JSON object rejection", err)
+	}
+}
+
+func TestParsePlannerSourceMapSkeletonToleratesTopLevelRuleShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		extra             string
+		wantMainline      []string
+		wantRelationships []string
+	}{
+		{
+			name:         "mainline array",
+			extra:        `"mainline_rules":["keep source","preserve causality"]`,
+			wantMainline: []string{"keep source", "preserve causality"},
+		},
+		{
+			name:         "mainline string",
+			extra:        `"mainline_rules":"keep source"`,
+			wantMainline: []string{"keep source"},
+		},
+		{
+			name:              "relationship string",
+			extra:             `"relationship_goals":"slow escalation"`,
+			wantRelationships: []string{"slow escalation"},
+		},
+		{
+			name:         "mainline object",
+			extra:        `"mainline_rules":{"z":["late"],"a":"early"}`,
+			wantMainline: []string{`{"a":"early","z":["late"]}`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			skeleton, err := parsePlannerSourceMapSkeleton(testPlannerSourceMapSkeletonJSON(tc.extra))
+			if err != nil {
+				t.Fatalf("parsePlannerSourceMapSkeleton: %v", err)
+			}
+			if strings.Join(skeleton.MainlineRules, "\n") != strings.Join(tc.wantMainline, "\n") {
+				t.Fatalf("mainline_rules=%q, want %q", skeleton.MainlineRules, tc.wantMainline)
+			}
+			if strings.Join(skeleton.RelationshipGoals, "\n") != strings.Join(tc.wantRelationships, "\n") {
+				t.Fatalf("relationship_goals=%q, want %q", skeleton.RelationshipGoals, tc.wantRelationships)
+			}
+		})
+	}
+}
+
+func TestParsePlannerSourceMapSkeletonRejectsInvalidEnvelopeShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "missing batches", text: `{"overall_arc":"missing batch envelope"}`, want: "missing top-level batches array"},
+		{name: "non-array batches", text: `{"batches":{"index":1}}`, want: "batches must be an array"},
+		{name: "empty batches", text: `{"batches":[]}`, want: "empty batches array"},
+		{name: "invalid json decode", text: `{"batches":[,]}`, want: "invalid JSON decode"},
+		{name: "standalone batch object", text: testPlannerSourceMapSkeletonBatchJSON(), want: "standalone batch object"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parsePlannerSourceMapSkeleton(tc.text)
+			if err == nil {
+				t.Fatalf("parsePlannerSourceMapSkeleton should reject %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func testPlannerSourceMapSkeletonJSON(extra string) string {
+	fields := []string{
+		`"granularity":"arc"`,
+		`"status":"proposal"`,
+		`"rewrite_policy":"full_rewrite"`,
+		`"brief":"arc rewrite"`,
+		`"target_chapter_count":4`,
+		`"batches":[` + testPlannerSourceMapSkeletonBatchJSON() + `]`,
+	}
+	if strings.TrimSpace(extra) != "" {
+		fields = append(fields, extra)
+	}
+	return "{" + strings.Join(fields, ",") + "}"
+}
+
+func testPlannerSourceMapSkeletonBatchJSON() string {
+	return `{"index":1,"title":"Opening volume","theme":"orientation","target_from":1,"target_to":4,"source_from":1,"source_to":2,"summary":"valid source-map skeleton batch"}`
+}
+
 func TestBuildAdaptationPlannerSkeletonPromptUsesFoundationDigest(t *testing.T) {
 	manifest := &domain.AdaptationSourceManifest{
 		SourcePath:   "source.txt",
@@ -3709,7 +3893,7 @@ func TestBuildAdaptationProposalVolumeSkeletonDoesNotWrapSourceMapBatchObject(t 
 		t.Fatalf("planner calls=%d, want initial source-map skeleton + repair", llm.calls)
 	}
 	repairPrompt := llm.got[1][1].TextContent()
-	if !strings.Contains(repairPrompt, "missing top-level batches array") {
+	if !strings.Contains(repairPrompt, "standalone batch object") {
 		t.Fatalf("repair prompt should reject locally wrapped batch objects: %s", repairPrompt)
 	}
 	if result == nil || result.VolumeReview == nil || len(result.VolumeReview.Volumes) != 1 {

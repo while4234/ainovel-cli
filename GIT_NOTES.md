@@ -29,6 +29,19 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: tolerate source-map skeleton wrappers`:
+  Source-map skeleton parsing now extracts a single deterministic JSON object
+  from fenced/prose-wrapped planner responses, rejects multiple top-level
+  objects as ambiguous, accepts explicit batches-array aliases and nested
+  skeleton envelopes, and tolerates only top-level `mainline_rules` /
+  `relationship_goals` string/object drift. Standalone batch objects, missing
+  or non-array `batches`, empty batches, and core batch validation remain
+  rejected. Validation passed for focused source-map parse and normalizer
+  tests plus `go test ./internal/domain ./internal/bootstrap -count=1`; PR-01
+  received independent re-review `pass` before commit. Local Web was not
+  restarted because the current pipeline will restart only after all PRs are
+  complete.
+- Latest source/runtime change: current local commit
   `fix: replan invalid adaptation skeleton cache`:
   Source-map skeleton checkpoints now revalidate cached batches with exact
   per-source-chapter rune counts when a manifest is available. If a cached

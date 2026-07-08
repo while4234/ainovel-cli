@@ -3214,29 +3214,207 @@ func collectPlannerSourceMapSkeletonBatches(
 }
 
 func parsePlannerSourceMapSkeleton(text string) (plannerSkeleton, error) {
-	trimmed := strings.TrimSpace(text)
-	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
-		return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton must be one JSON object with no prose or markdown")
+	data, err := extractPlannerSourceMapSkeletonJSON(text)
+	if err != nil {
+		return plannerSkeleton{}, fmt.Errorf("extract planner source-map skeleton JSON: %w", err)
 	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(trimmed), &object); err != nil {
-		return plannerSkeleton{}, fmt.Errorf("parse planner source-map skeleton JSON: %w", err)
-	}
-	rawBatches := object["batches"]
-	if len(rawBatches) == 0 {
-		return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton missing top-level batches array")
-	}
-	if rawBatches[0] != '[' {
-		return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton batches must be an array")
-	}
-	var skeleton plannerSkeleton
-	if err := json.Unmarshal([]byte(trimmed), &skeleton); err != nil {
+	skeleton, err := decodePlannerSourceMapSkeletonJSON(data)
+	if err != nil {
 		return plannerSkeleton{}, fmt.Errorf("decode planner source-map skeleton JSON: %w", err)
 	}
-	if len(skeleton.Batches) == 0 {
+	return skeleton, nil
+}
+
+func extractPlannerSourceMapSkeletonJSON(text string) ([]byte, error) {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.ToValidUTF8(text, "\uFFFD"), "\uFEFF"))
+	if trimmed == "" {
+		return nil, fmt.Errorf("no JSON object found")
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		if end, ok := scanPlannerJSONEnd(trimmed); ok && end == len(trimmed) {
+			return []byte(trimmed), nil
+		}
+	}
+	segments, err := extractPlannerJSONSegmentRanges(text)
+	if err != nil {
+		return nil, fmt.Errorf("no JSON object found: %w", err)
+	}
+	segments = outermostPlannerJSONSegments(segments)
+	switch len(segments) {
+	case 0:
+		return nil, fmt.Errorf("no JSON object found")
+	case 1:
+		return []byte(segments[0].text), nil
+	default:
+		return nil, fmt.Errorf("ambiguous planner source-map skeleton: multiple complete JSON objects found")
+	}
+}
+
+func outermostPlannerJSONSegments(segments []plannerJSONSegment) []plannerJSONSegment {
+	out := make([]plannerJSONSegment, 0, len(segments))
+	for i, segment := range segments {
+		nested := false
+		for j, other := range segments {
+			if i == j {
+				continue
+			}
+			if other.start < segment.start && segment.end < other.end {
+				nested = true
+				break
+			}
+		}
+		if !nested {
+			out = append(out, segment)
+		}
+	}
+	return out
+}
+
+func decodePlannerSourceMapSkeletonJSON(data []byte) (plannerSkeleton, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return plannerSkeleton{}, fmt.Errorf("invalid JSON decode: %w", err)
+	}
+	if key, raw, ok := firstPlannerSkeletonBatchAliasRaw(object); ok {
+		return decodePlannerSourceMapSkeletonEnvelope(data, key, raw)
+	}
+
+	var firstNestedErr error
+	for _, key := range plannerSourceMapSkeletonEnvelopeKeys() {
+		raw := object[key]
+		if rawJSONFirstByte(raw) != '{' {
+			continue
+		}
+		nested, err := decodePlannerSourceMapSkeletonJSON(raw)
+		if err == nil {
+			return nested, nil
+		}
+		if firstNestedErr == nil {
+			firstNestedErr = err
+		}
+	}
+	if firstNestedErr != nil {
+		return plannerSkeleton{}, firstNestedErr
+	}
+	if plannerSkeletonBatchObjectShape(object) {
+		return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton is a standalone batch object; expected top-level batches array")
+	}
+	return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton missing top-level batches array (%s)", plannerProposalShapeSummary(data))
+}
+
+func decodePlannerSourceMapSkeletonEnvelope(data []byte, batchKey string, rawBatches json.RawMessage) (plannerSkeleton, error) {
+	if rawJSONFirstByte(rawBatches) != '[' {
+		if batchKey == "batches" {
+			return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton batches must be an array")
+		}
+		return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton %s alias must be an array", batchKey)
+	}
+	var header struct {
+		Granularity        string                        `json:"granularity"`
+		Status             string                        `json:"status"`
+		RewritePolicy      string                        `json:"rewrite_policy"`
+		Brief              string                        `json:"brief"`
+		TargetChapterCount int                           `json:"target_chapter_count"`
+		MainlineRules      json.RawMessage               `json:"mainline_rules"`
+		RelationshipGoals  json.RawMessage               `json:"relationship_goals"`
+		Planner            *domain.AdaptationPlannerMeta `json:"planner,omitempty"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return plannerSkeleton{}, fmt.Errorf("invalid JSON decode: %w", err)
+	}
+	var batches []plannerSkeletonBatch
+	if err := json.Unmarshal(rawBatches, &batches); err != nil {
+		return plannerSkeleton{}, fmt.Errorf("decode planner source-map skeleton %s array: %w", batchKey, err)
+	}
+	if len(batches) == 0 {
 		return plannerSkeleton{}, fmt.Errorf("planner source-map skeleton has empty batches array")
 	}
-	return skeleton, nil
+	mainlineRules, err := decodePlannerSourceMapStringList(header.MainlineRules, "mainline_rules")
+	if err != nil {
+		return plannerSkeleton{}, err
+	}
+	relationshipGoals, err := decodePlannerSourceMapStringList(header.RelationshipGoals, "relationship_goals")
+	if err != nil {
+		return plannerSkeleton{}, err
+	}
+	return plannerSkeleton{
+		Granularity:        header.Granularity,
+		Status:             header.Status,
+		RewritePolicy:      header.RewritePolicy,
+		Brief:              header.Brief,
+		TargetChapterCount: header.TargetChapterCount,
+		MainlineRules:      mainlineRules,
+		RelationshipGoals:  relationshipGoals,
+		Batches:            batches,
+		Planner:            header.Planner,
+	}, nil
+}
+
+func firstPlannerSkeletonBatchAliasRaw(object map[string]json.RawMessage) (string, json.RawMessage, bool) {
+	for _, key := range plannerSkeletonBatchAliasKeys {
+		raw, ok := object[key]
+		if ok {
+			return key, raw, true
+		}
+	}
+	return "", nil, false
+}
+
+func plannerSourceMapSkeletonEnvelopeKeys() []string {
+	keys := append([]string{}, plannerEnvelopeKeys...)
+	keys = append(keys, "skeleton", "structure")
+	return keys
+}
+
+func decodePlannerSourceMapStringList(raw json.RawMessage, field string) ([]string, error) {
+	switch rawJSONFirstByte(raw) {
+	case 0, 'n':
+		return nil, nil
+	case '[':
+		var values []string
+		if err := json.Unmarshal(raw, &values); err != nil {
+			return nil, fmt.Errorf("planner source-map skeleton %s array must contain strings: %w", field, err)
+		}
+		return values, nil
+	case '"':
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, fmt.Errorf("planner source-map skeleton %s string is invalid: %w", field, err)
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, nil
+		}
+		return []string{value}, nil
+	case '{':
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			return nil, fmt.Errorf("planner source-map skeleton %s object is invalid: %w", field, err)
+		}
+		if len(object) == 0 {
+			return nil, nil
+		}
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, fmt.Errorf("planner source-map skeleton %s object is invalid: %w", field, err)
+		}
+		compact, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("planner source-map skeleton %s object is invalid: %w", field, err)
+		}
+		return []string{string(compact)}, nil
+	default:
+		return nil, fmt.Errorf("planner source-map skeleton %s must be an array, string, object, or null", field)
+	}
+}
+
+func rawJSONFirstByte(raw json.RawMessage) byte {
+	for _, b := range raw {
+		if !unicode.IsSpace(rune(b)) {
+			return b
+		}
+	}
+	return 0
 }
 
 type plannerChapterBudgetQualityError struct {
@@ -6244,6 +6422,8 @@ func plannerSkeletonBatchObjectShape(object map[string]json.RawMessage) bool {
 	return hasTarget && hasSource && hasStory
 }
 
+var plannerSkeletonBatchAliasKeys = []string{"batches", "chunks", "parts", "volumes", "arcs", "segments"}
+
 func fillPlannerSkeletonAliases(data []byte, skeleton *plannerSkeleton) {
 	if skeleton == nil {
 		return
@@ -6254,7 +6434,7 @@ func fillPlannerSkeletonAliases(data []byte, skeleton *plannerSkeleton) {
 	}
 	skeleton.TargetChapterCount = firstJSONInt(object, skeleton.TargetChapterCount,
 		"target_chapter_count", "targetChapterCount", "total_chapters", "chapter_count", "chapters_count", "target_count")
-	for _, key := range []string{"batches", "chunks", "parts", "volumes", "arcs", "segments"} {
+	for _, key := range plannerSkeletonBatchAliasKeys {
 		raw := object[key]
 		if len(raw) == 0 || raw[0] != '[' {
 			continue
@@ -7137,10 +7317,30 @@ func sortedRawMessageKeys(object map[string]json.RawMessage) []string {
 	return keys
 }
 
+type plannerJSONSegment struct {
+	text  string
+	start int
+	end   int
+}
+
 func extractPlannerJSONSegments(text string) ([]string, error) {
+	segments, err := extractPlannerJSONSegmentRanges(text)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		out = append(out, segment.text)
+	}
+	return out, nil
+}
+
+func extractPlannerJSONSegmentRanges(text string) ([]plannerJSONSegment, error) {
 	text = strings.TrimSpace(strings.TrimPrefix(strings.ToValidUTF8(text, "\uFFFD"), "\uFEFF"))
 	var firstInvalid string
-	var segments []string
+	var firstInvalidStart int
+	var firstInvalidEnd int
+	var segments []plannerJSONSegment
 	for start := 0; start < len(text); start++ {
 		if text[start] != '{' {
 			continue
@@ -7151,18 +7351,20 @@ func extractPlannerJSONSegments(text string) ([]string, error) {
 		}
 		candidate := strings.TrimSpace(text[start : start+end])
 		if json.Valid([]byte(candidate)) {
-			segments = append(segments, candidate)
+			segments = append(segments, plannerJSONSegment{text: candidate, start: start, end: start + end})
 			continue
 		}
 		if firstInvalid == "" {
 			firstInvalid = candidate
+			firstInvalidStart = start
+			firstInvalidEnd = start + end
 		}
 	}
 	if len(segments) > 0 {
 		return segments, nil
 	}
 	if firstInvalid != "" {
-		return []string{firstInvalid}, nil
+		return []plannerJSONSegment{{text: firstInvalid, start: firstInvalidStart, end: firstInvalidEnd}}, nil
 	}
 	return nil, fmt.Errorf("no complete JSON object found")
 }
