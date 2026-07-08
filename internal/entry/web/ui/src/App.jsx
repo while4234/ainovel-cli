@@ -907,6 +907,10 @@ export default function App() {
 
   const createAndOpen = async (event) => {
     event.preventDefault();
+    if (!Number.isInteger(budgetAttempts) || budgetAttempts < 1 || budgetAttempts > 15) {
+      setError('预算复核次数必须是 1-15 之间的整数');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -2361,9 +2365,10 @@ export default function App() {
     }
   };
 
-  const changeRetrySettings = async (modelCallMaxAttempts, structureRepairMaxAttempts) => {
+  const changeRetrySettings = async (modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts) => {
     const modelAttempts = Number(modelCallMaxAttempts);
     const repairAttempts = Number(structureRepairMaxAttempts);
+    const budgetAttempts = Number(budgetQualityMaxAttempts);
     if (!Number.isInteger(modelAttempts) || modelAttempts < 1 || modelAttempts > 30) {
       setError('模型调用总尝试次数必须是 1-30 之间的整数');
       return;
@@ -2376,8 +2381,8 @@ export default function App() {
     setError('');
     try {
       const data = activeProject?.id
-        ? await setProjectRetrySettings(activeProject.id, modelAttempts, repairAttempts)
-        : await setGlobalRetrySettings(modelAttempts, repairAttempts);
+        ? await setProjectRetrySettings(activeProject.id, modelAttempts, repairAttempts, budgetAttempts)
+        : await setGlobalRetrySettings(modelAttempts, repairAttempts, budgetAttempts);
       setModelConfig(data.models || modelConfig);
       if (data.runtime) {
         setRuntime(data.runtime);
@@ -5384,10 +5389,15 @@ function ModelPanel({
     modelConfig?.structure_repair_max_attempts ||
     config.structure_repair_max_attempts ||
     2;
+  const budgetQualityMaxAttempts =
+    modelConfig?.budget_quality_max_attempts ||
+    config.budget_quality_max_attempts ||
+    2;
   const [coCreateTimeoutDraft, setCoCreateTimeoutDraft] = useState(String(coCreateTimeoutSeconds));
   const [coCreateMaxTokensDraft, setCoCreateMaxTokensDraft] = useState(String(coCreateMaxTokens));
   const [modelCallAttemptsDraft, setModelCallAttemptsDraft] = useState(String(modelCallMaxAttempts));
   const [structureRepairAttemptsDraft, setStructureRepairAttemptsDraft] = useState(String(structureRepairMaxAttempts));
+  const [budgetQualityAttemptsDraft, setBudgetQualityAttemptsDraft] = useState(String(budgetQualityMaxAttempts));
   useEffect(() => {
     setCoCreateTimeoutDraft(String(coCreateTimeoutSeconds));
   }, [coCreateTimeoutSeconds]);
@@ -5397,7 +5407,8 @@ function ModelPanel({
   useEffect(() => {
     setModelCallAttemptsDraft(String(modelCallMaxAttempts));
     setStructureRepairAttemptsDraft(String(structureRepairMaxAttempts));
-  }, [modelCallMaxAttempts, structureRepairMaxAttempts]);
+    setBudgetQualityAttemptsDraft(String(budgetQualityMaxAttempts));
+  }, [modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts]);
   useEffect(() => {
     if (!activeProject?.id || projectRoles.length === 0) {
       if (selectedProjectRole !== 'default') {
@@ -5447,15 +5458,20 @@ function ModelPanel({
     coCreateMaxTokensValue !== coCreateMaxTokens;
   const modelCallAttemptsValue = Number(modelCallAttemptsDraft);
   const structureRepairAttemptsValue = Number(structureRepairAttemptsDraft);
+  const budgetQualityAttemptsValue = Number(budgetQualityAttemptsDraft);
   const canSaveRetrySettings =
     Number.isInteger(modelCallAttemptsValue) &&
     Number.isInteger(structureRepairAttemptsValue) &&
+    Number.isInteger(budgetQualityAttemptsValue) &&
     modelCallAttemptsValue >= 1 &&
     modelCallAttemptsValue <= 30 &&
     structureRepairAttemptsValue >= 1 &&
     structureRepairAttemptsValue <= 15 &&
+    budgetQualityAttemptsValue >= 1 &&
+    budgetQualityAttemptsValue <= 15 &&
     (modelCallAttemptsValue !== modelCallMaxAttempts ||
-      structureRepairAttemptsValue !== structureRepairMaxAttempts);
+      structureRepairAttemptsValue !== structureRepairMaxAttempts ||
+      budgetQualityAttemptsValue !== budgetQualityMaxAttempts);
   const selectedPreset = providerPresets.find((preset) => preset.provider === customModel.preset) || providerPresets[0];
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
@@ -5593,7 +5609,7 @@ function ModelPanel({
           className="model-timeout-form retry-settings-form"
           onSubmit={(event) => {
             event.preventDefault();
-            onRetrySettings(modelCallAttemptsValue, structureRepairAttemptsValue);
+            onRetrySettings(modelCallAttemptsValue, structureRepairAttemptsValue, budgetQualityAttemptsValue);
           }}
         >
           <label className="field-label">
@@ -5618,6 +5634,18 @@ function ModelPanel({
               type="number"
               value={structureRepairAttemptsDraft}
               onChange={(event) => setStructureRepairAttemptsDraft(event.target.value)}
+            />
+          </label>
+          <label className="field-label">
+            <span>预算复核</span>
+            <input
+              disabled={busy}
+              inputMode="numeric"
+              max="15"
+              min="1"
+              type="number"
+              value={budgetQualityAttemptsDraft}
+              onChange={(event) => setBudgetQualityAttemptsDraft(event.target.value)}
             />
           </label>
           <button className="tool-button" disabled={busy || !canSaveRetrySettings} type="submit">

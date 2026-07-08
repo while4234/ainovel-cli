@@ -120,7 +120,8 @@ type projectHost interface {
 	CurrentCoCreateMaxTokens() int
 	SetCoCreateMaxTokens(int) error
 	CurrentStructureRepairMaxAttempts() int
-	SetRetrySettings(int, int) error
+	CurrentBudgetQualityMaxAttempts() int
+	SetRetrySettings(int, int, int) error
 	Events() <-chan host.Event
 	Stream() <-chan string
 	Done() <-chan struct{}
@@ -365,6 +366,7 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 		CoCreateTimeoutSeconds:     s.host.CurrentCoCreateTimeoutSeconds(),
 		CoCreateMaxTokens:          s.host.CurrentCoCreateMaxTokens(),
 		StructureRepairMaxAttempts: s.host.CurrentStructureRepairMaxAttempts(),
+		BudgetQualityMaxAttempts:   s.host.CurrentBudgetQualityMaxAttempts(),
 		ThinkingLevels: []string{
 			"",
 			"off",
@@ -411,8 +413,8 @@ func (s *ProjectSession) SetCoCreateMaxTokens(tokens int) (apiModelConfig, error
 	return s.ModelConfig(), nil
 }
 
-func (s *ProjectSession) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts int) (apiModelConfig, error) {
-	if err := s.host.SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts); err != nil {
+func (s *ProjectSession) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts int) (apiModelConfig, error) {
+	if err := s.host.SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts); err != nil {
 		return apiModelConfig{}, err
 	}
 	s.AppendSnapshot()

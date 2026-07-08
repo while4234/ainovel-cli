@@ -446,12 +446,13 @@ export function setGlobalCoCreateMaxTokens(tokens) {
   });
 }
 
-export function setGlobalRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts) {
+export function setGlobalRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts) {
   return request('/api/models/retry-settings', {
     method: 'POST',
     body: JSON.stringify({
       model_call_max_attempts: modelCallMaxAttempts,
-      structure_repair_max_attempts: structureRepairMaxAttempts
+      structure_repair_max_attempts: structureRepairMaxAttempts,
+      budget_quality_max_attempts: budgetQualityMaxAttempts
     })
   });
 }
@@ -491,12 +492,13 @@ export function setProjectCoCreateMaxTokens(projectId, tokens) {
   });
 }
 
-export function setProjectRetrySettings(projectId, modelCallMaxAttempts, structureRepairMaxAttempts) {
+export function setProjectRetrySettings(projectId, modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/retry-settings`, {
     method: 'POST',
     body: JSON.stringify({
       model_call_max_attempts: modelCallMaxAttempts,
-      structure_repair_max_attempts: structureRepairMaxAttempts
+      structure_repair_max_attempts: structureRepairMaxAttempts,
+      budget_quality_max_attempts: budgetQualityMaxAttempts
     })
   });
 }

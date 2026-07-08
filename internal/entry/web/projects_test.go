@@ -589,12 +589,13 @@ func TestProjectRetrySettingsPersistAcrossReopen(t *testing.T) {
 	base := testWebConfig(t)
 	base.ModelAutoSwitch.NetworkMaxAttempts = 7
 	base.StructureRepairMaxAttempts = 7
+	base.BudgetQualityMaxAttempts = 7
 
 	h, err := store.OpenProjectHost(base, assets.Load("default"), manifest)
 	if err != nil {
 		t.Fatalf("OpenProjectHost: %v", err)
 	}
-	if err := h.SetRetrySettings(14, 14); err != nil {
+	if err := h.SetRetrySettings(14, 14, 3); err != nil {
 		t.Fatalf("SetRetrySettings: %v", err)
 	}
 	h.Close()
@@ -606,10 +607,14 @@ func TestProjectRetrySettingsPersistAcrossReopen(t *testing.T) {
 	if got := overlay.StructureRepairMaxAttempts; got != 14 {
 		t.Fatalf("overlay structure repair attempts = %d, want 14", got)
 	}
+	if got := overlay.BudgetQualityMaxAttempts; got != 3 {
+		t.Fatalf("overlay budget quality attempts = %d, want 3", got)
+	}
 
 	changedGlobal := base
 	changedGlobal.ModelAutoSwitch.NetworkMaxAttempts = 7
 	changedGlobal.StructureRepairMaxAttempts = 7
+	changedGlobal.BudgetQualityMaxAttempts = 7
 	reopened, err := store.OpenProjectHost(changedGlobal, assets.Load("default"), manifest)
 	if err != nil {
 		t.Fatalf("reopen with changed global retry settings: %v", err)
@@ -620,6 +625,9 @@ func TestProjectRetrySettingsPersistAcrossReopen(t *testing.T) {
 	}
 	if got := reopened.CurrentStructureRepairMaxAttempts(); got != 14 {
 		t.Fatalf("reopened structure repair attempts = %d, want 14", got)
+	}
+	if got := reopened.CurrentBudgetQualityMaxAttempts(); got != 3 {
+		t.Fatalf("reopened budget quality attempts = %d, want 3", got)
 	}
 }
 
@@ -636,6 +644,7 @@ func TestProjectRetrySettingsReturnsPersistError(t *testing.T) {
 	base := testWebConfig(t)
 	base.ModelAutoSwitch.NetworkMaxAttempts = 7
 	base.StructureRepairMaxAttempts = 7
+	base.BudgetQualityMaxAttempts = 7
 
 	h, err := store.OpenProjectHost(base, assets.Load("default"), manifest)
 	if err != nil {
@@ -646,7 +655,7 @@ func TestProjectRetrySettingsReturnsPersistError(t *testing.T) {
 		t.Fatalf("block project config path: %v", err)
 	}
 
-	if err := h.SetRetrySettings(14, 14); err == nil {
+	if err := h.SetRetrySettings(14, 14, 3); err == nil {
 		t.Fatal("SetRetrySettings succeeded with unwritable project config path")
 	}
 	if got := h.ModelAutoSwitchConfig().EffectiveNetworkMaxAttempts(); got != 7 {
@@ -654,6 +663,9 @@ func TestProjectRetrySettingsReturnsPersistError(t *testing.T) {
 	}
 	if got := h.CurrentStructureRepairMaxAttempts(); got != 7 {
 		t.Fatalf("structure repair attempts after failed persist = %d, want rollback to 7", got)
+	}
+	if got := h.CurrentBudgetQualityMaxAttempts(); got != 7 {
+		t.Fatalf("budget quality attempts after failed persist = %d, want rollback to 7", got)
 	}
 }
 

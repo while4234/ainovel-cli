@@ -28,6 +28,7 @@ type apiModelConfig struct {
 	CoCreateTimeoutSeconds     int                `json:"cocreate_timeout_seconds"`
 	CoCreateMaxTokens          int                `json:"cocreate_max_tokens"`
 	StructureRepairMaxAttempts int                `json:"structure_repair_max_attempts"`
+	BudgetQualityMaxAttempts   int                `json:"budget_quality_max_attempts"`
 	ModelAutoSwitch            apiModelAutoSwitch `json:"model_auto_switch"`
 }
 
@@ -98,6 +99,7 @@ type retrySettingsRequest struct {
 	ModelCallMaxAttempts         int `json:"model_call_max_attempts"`
 	NetworkDisconnectMaxAttempts int `json:"network_disconnect_max_attempts"`
 	StructureRepairMaxAttempts   int `json:"structure_repair_max_attempts"`
+	BudgetQualityMaxAttempts     int `json:"budget_quality_max_attempts"`
 }
 
 func (r retrySettingsRequest) modelCallAttempts() int {
@@ -364,9 +366,15 @@ func (s *Server) handleRetrySettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	budgetAttempts, err := bootstrap.NormalizeBudgetQualityMaxAttempts(req.BudgetQualityMaxAttempts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	cfg := s.currentConfig()
 	cfg.ModelAutoSwitch.NetworkMaxAttempts = modelCallAttempts
 	cfg.StructureRepairMaxAttempts = repairAttempts
+	cfg.BudgetQualityMaxAttempts = budgetAttempts
 	if err := cfg.ValidateBase(); err != nil {
 		writeProjectLifecycleError(w, err)
 		return
@@ -614,6 +622,7 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 		CoCreateTimeoutSeconds:     cfg.EffectiveCoCreateTimeoutSeconds(),
 		CoCreateMaxTokens:          cfg.EffectiveCoCreateMaxTokens(),
 		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
+		BudgetQualityMaxAttempts:   cfg.EffectiveBudgetQualityMaxAttempts(),
 		ModelAutoSwitch:            apiModelAutoSwitchFromConfig(cfg.ModelAutoSwitch),
 	}
 }
@@ -837,7 +846,7 @@ func (s *Server) handleProjectRetrySettings(w http.ResponseWriter, r *http.Reque
 		writeProjectSessionError(w, err)
 		return
 	}
-	models, err := session.SetRetrySettings(req.modelCallAttempts(), req.StructureRepairMaxAttempts)
+	models, err := session.SetRetrySettings(req.modelCallAttempts(), req.StructureRepairMaxAttempts, req.BudgetQualityMaxAttempts)
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return

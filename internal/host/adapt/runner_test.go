@@ -765,7 +765,7 @@ func TestBuildAdaptationProposalCoversSparseSourceAnchorsByExplicitRange(t *test
 	}
 }
 
-func TestBuildAdaptationProposalKeepsChunkedRuntimeAfterFinalValidationFailure(t *testing.T) {
+func TestBuildAdaptationProposalUsesParentSourceRangeForChunkedFinalCoverage(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -792,26 +792,22 @@ func TestBuildAdaptationProposalKeepsChunkedRuntimeAfterFinalValidationFailure(t
 		{text: plannerBatchProposalJSON(17, 20, 3, 3)},
 	}}
 
-	_, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
 		Brief:              brief,
 		Granularity:        domain.AdaptationGranularityFree,
 		TargetChapterCount: 20,
 	})
-	if err == nil {
-		t.Fatal("BuildAdaptationProposal should fail when final coverage omits a source chapter")
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
 	}
-	if !strings.Contains(err.Error(), "planner proposal does not cover source chapter 4") {
-		t.Fatalf("error=%v, want missing source chapter 4", err)
+	if proposal == nil || len(proposal.Chapters) != 20 {
+		t.Fatalf("proposal=%+v, want 20 chapters", proposal)
 	}
-	runtime, runtimeErr := st.Adaptation.LoadProposalRuntime()
-	if runtimeErr != nil {
-		t.Fatalf("LoadProposalRuntime: %v", runtimeErr)
+	if got := proposal.Chapters[16].SourceRange; got.From != 3 || got.To != 4 {
+		t.Fatalf("final parent source_range=%+v, want 3-4", got)
 	}
-	if runtime == nil || runtime.Skeleton == nil || len(runtime.CompletedBatches) != 5 {
-		t.Fatalf("runtime should be retained after final validation failure: %+v", runtime)
-	}
-	if saved, savedErr := st.Adaptation.LoadProposal(); savedErr != nil || saved != nil {
-		t.Fatalf("invalid proposal should not be saved: proposal=%+v err=%v", saved, savedErr)
+	if got := proposal.Chapters[16].SourceChapters; len(got) != 2 || got[0] != 3 || got[1] != 4 {
+		t.Fatalf("final parent source_chapters=%+v, want expanded 3,4", got)
 	}
 }
 
@@ -917,6 +913,276 @@ func TestValidatePlannerBatchChapterBudgetGroupsClosesParentBatch(t *testing.T) 
 	enoughPrevious := plannerBudgetRangePlans(66, 69, 19, 20)
 	if err := validatePlannerBatchChapterBudgetGroups(current, enoughPrevious, opts, sourceRunesByChapter, finalDetail); err != nil {
 		t.Fatalf("closing detail batch should accept enough parent target chapters: %v", err)
+	}
+}
+
+func TestPlannerBatchChapterValidatorAllowsSharedBatchSourceRange(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 2,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, Runes: 3000},
+			{Chapter: 2, Runes: 2724},
+		},
+	}
+	batch := plannerSkeletonBatch{
+		Index:            1,
+		TargetFrom:       1,
+		TargetTo:         4,
+		DetailParentFrom: 1,
+		DetailParentTo:   4,
+		SourceFrom:       1,
+		SourceTo:         2,
+	}
+	chapters := plannerSharedSourceRangePlans(1, 4, 1, 2, 5724)
+
+	if err := plannerBatchChapterValidator(opts, manifest, batch)(chapters); err != nil {
+		t.Fatalf("shared broad source_range should validate as one covered source arc: %v", err)
+	}
+}
+
+func TestPlannerBatchChapterValidatorRequiresEnoughTargetsForSharedSourceRange(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 10,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 6, Runes: 1800},
+			{Chapter: 7, Runes: 1800},
+			{Chapter: 8, Runes: 1874},
+		},
+	}
+	oneTargetBatch := plannerSkeletonBatch{
+		Index:            2,
+		TargetFrom:       3,
+		TargetTo:         3,
+		DetailParentFrom: 3,
+		DetailParentTo:   3,
+		SourceFrom:       6,
+		SourceTo:         8,
+	}
+	err := plannerBatchChapterValidator(opts, manifest, oneTargetBatch)(plannerSharedSourceRangePlans(3, 3, 6, 8, 5474))
+	if err == nil {
+		t.Fatal("one target chapter should not carry source_range 6-8 with 5474 source runes")
+	}
+	if !strings.Contains(err.Error(), "source_range 6-8 has 5474 source_runes") ||
+		!strings.Contains(err.Error(), "at least 2 target chapters") {
+		t.Fatalf("error=%v, want source_range split guidance", err)
+	}
+
+	twoTargetBatch := oneTargetBatch
+	twoTargetBatch.TargetTo = 4
+	twoTargetBatch.DetailParentTo = 4
+	if err := plannerBatchChapterValidator(opts, manifest, twoTargetBatch)(plannerSharedSourceRangePlans(3, 4, 6, 8, 5474)); err != nil {
+		t.Fatalf("two target chapters sharing source_range 6-8 should pass after budget split: %v", err)
+	}
+}
+
+func TestPlannerBatchChapterValidatorUsesParentRangeForSharedDetailSubBatches(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{ChapterCount: 25}
+	for chapter := 14; chapter <= 25; chapter++ {
+		manifest.Chapters = append(manifest.Chapters, domain.AdaptationSource{Chapter: chapter, Runes: 2647})
+	}
+	firstBatch := plannerSkeletonBatch{
+		Index:            12,
+		TargetFrom:       45,
+		TargetTo:         48,
+		DetailParentFrom: 45,
+		DetailParentTo:   52,
+		SourceFrom:       14,
+		SourceTo:         25,
+	}
+	firstChapters := plannerSharedSourceRangePlans(45, 48, 14, 15, 30329)
+	if err := plannerBatchChapterValidator(opts, manifest, firstBatch)(firstChapters); err != nil {
+		t.Fatalf("non-closing detail batch should accept narrow model source_range and canonicalize to parent range: %v", err)
+	}
+	if firstChapters[0].SourceRange.From != 14 || firstChapters[0].SourceRange.To != 25 {
+		t.Fatalf("first source_range=%+v, want parent range 14-25", firstChapters[0].SourceRange)
+	}
+
+	finalBatch := firstBatch
+	finalBatch.Index = 13
+	finalBatch.TargetFrom = 49
+	finalBatch.TargetTo = 52
+	finalChapters := plannerSharedSourceRangePlans(49, 52, 14, 15, 30329)
+	if err := plannerBatchChapterValidator(opts, manifest, finalBatch, firstChapters)(finalChapters); err != nil {
+		t.Fatalf("closing detail batch should validate parent source capacity instead of model's narrow source_range: %v", err)
+	}
+	if finalChapters[0].SourceRange.From != 14 || finalChapters[0].SourceRange.To != 25 {
+		t.Fatalf("final source_range=%+v, want parent range 14-25", finalChapters[0].SourceRange)
+	}
+}
+
+func TestPlannerBatchChapterValidatorStillRejectsInsufficientParentRangeCapacity(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{ChapterCount: 25}
+	for chapter := 14; chapter <= 25; chapter++ {
+		manifest.Chapters = append(manifest.Chapters, domain.AdaptationSource{Chapter: chapter, Runes: 2647})
+	}
+	batch := plannerSkeletonBatch{
+		Index:            12,
+		TargetFrom:       45,
+		TargetTo:         48,
+		DetailParentFrom: 45,
+		DetailParentTo:   48,
+		SourceFrom:       14,
+		SourceTo:         25,
+	}
+	err := plannerBatchChapterValidator(opts, manifest, batch)(plannerSharedSourceRangePlans(45, 48, 14, 15, 30329))
+	if err == nil {
+		t.Fatal("parent range with too few target chapters should still fail")
+	}
+	if !strings.Contains(err.Error(), "source_range 14-25 has 31764 source_runes") ||
+		!strings.Contains(err.Error(), "at least 7 target chapters") {
+		t.Fatalf("error=%v, want parent source capacity guidance", err)
+	}
+}
+
+func TestPlannerBatchChapterValidatorAllowsAcceptedBudgetDeviation(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 1,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, Runes: 16000},
+		},
+	}
+	batch := plannerSkeletonBatch{
+		Index:            1,
+		TargetFrom:       1,
+		TargetTo:         1,
+		DetailParentFrom: 1,
+		DetailParentTo:   1,
+		SourceFrom:       1,
+		SourceTo:         1,
+		Notes:            []string{plannerBudgetDeviationAcceptedNote},
+	}
+
+	if err := plannerBatchChapterValidator(opts, manifest, batch)(plannerSharedSourceRangePlans(1, 1, 1, 1, 16000)); err != nil {
+		t.Fatalf("accepted compressed source range should skip parent budget split validation: %v", err)
+	}
+}
+
+func TestValidatePlannerProposalAllowsAcceptedBudgetDeviationRange(t *testing.T) {
+	opts := ProposalOptions{
+		Brief:         "compress side material",
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 1,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, Runes: 16000},
+		},
+	}
+	proposal := domain.AdaptationPlan{
+		Granularity:   opts.Granularity,
+		Status:        domain.AdaptationPlanStatusProposal,
+		RewritePolicy: opts.RewritePolicy,
+		Brief:         opts.Brief,
+		Chapters:      plannerSharedSourceRangePlans(1, 1, 1, 1, 16000),
+		Volumes: []domain.AdaptationVolumePlan{
+			{
+				Index:      1,
+				Title:      "Compressed volume",
+				TargetFrom: 1,
+				TargetTo:   1,
+				SourceFrom: 1,
+				SourceTo:   1,
+				Notes:      domain.TextList{plannerBudgetDeviationAcceptedNote},
+			},
+		},
+	}
+
+	if err := validatePlannerProposal(&proposal, opts, nil, manifest, nil); err != nil {
+		t.Fatalf("accepted compressed volume should validate without repeated budget split failure: %v", err)
+	}
+	if proposal.Chapters[0].WordBudget == nil || proposal.Chapters[0].WordBudget.MaxRunes > domain.AdaptationModelChapterMaxRunes {
+		t.Fatalf("accepted budget deviation should still normalize per-chapter word budget: %+v", proposal.Chapters[0].WordBudget)
+	}
+}
+
+func TestPlannerBatchChapterValidatorRejectsAnchorOutsideBatchSourceRange(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{ChapterCount: 10}
+	batch := plannerSkeletonBatch{
+		Index:            1,
+		TargetFrom:       1,
+		TargetTo:         1,
+		DetailParentFrom: 1,
+		DetailParentTo:   1,
+		SourceFrom:       1,
+		SourceTo:         2,
+	}
+	chapters := plannerSharedSourceRangePlans(1, 1, 1, 2, 1000)
+	chapters[0].SourceChapters = []int{9}
+	chapters[0].SourceRange = domain.SourceRange{From: 1, To: 9}
+
+	err := plannerBatchChapterValidator(opts, manifest, batch)(chapters)
+	if err == nil {
+		t.Fatal("source anchor outside the parent batch source range should fail")
+	}
+	if !strings.Contains(err.Error(), "outside batch source range 1-2") {
+		t.Fatalf("error=%v, want batch source range rejection", err)
+	}
+}
+
+func TestPlannerBatchChapterValidatorCanonicalizesSharedRangeToParentBatch(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 4,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, Runes: 1000},
+			{Chapter: 2, Runes: 1000},
+			{Chapter: 3, Runes: 1000},
+			{Chapter: 4, Runes: 1000},
+		},
+	}
+	batch := plannerSkeletonBatch{
+		Index:            1,
+		TargetFrom:       1,
+		TargetTo:         1,
+		DetailParentFrom: 1,
+		DetailParentTo:   1,
+		SourceFrom:       1,
+		SourceTo:         4,
+	}
+	chapters := plannerSharedSourceRangePlans(1, 1, 1, 2, 1000)
+	chapters[0].SourceChapters = []int{3}
+
+	if err := plannerBatchChapterValidator(opts, manifest, batch)(chapters); err != nil {
+		t.Fatalf("in-batch anchor should validate inside the parent coverage envelope: %v", err)
+	}
+	if chapters[0].SourceRange.From != 1 || chapters[0].SourceRange.To != 4 {
+		t.Fatalf("source_range=%+v, want canonical parent range 1-4", chapters[0].SourceRange)
 	}
 }
 
@@ -1037,6 +1303,44 @@ func TestPlannerRuntimeCompletedBudgetSplitErrorsSkipsIncompleteParents(t *testi
 
 	if errs := plannerRuntimeCompletedBudgetSplitErrors(runtime, opts, manifest); len(errs) != 0 {
 		t.Fatalf("budget split errors=%v, want none for incomplete parent", errs)
+	}
+}
+
+func TestPlannerRuntimeCompletedBudgetSplitErrorsUsesParentRangeForSharedFullRewrite(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 25,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 14, Runes: 15164},
+			{Chapter: 15, Runes: 15165},
+		},
+	}
+	for chapter := 16; chapter <= 25; chapter++ {
+		manifest.Chapters = append(manifest.Chapters, domain.AdaptationSource{Chapter: chapter, Runes: 500})
+	}
+	skeleton := plannerSkeleton{
+		Granularity:        opts.Granularity,
+		Status:             domain.AdaptationPlanStatusProposal,
+		RewritePolicy:      opts.RewritePolicy,
+		Brief:              "resume old narrow detail ranges",
+		TargetChapterCount: 52,
+		Batches: []plannerSkeletonBatch{
+			testSourceMapSkeletonBatch(12, 14, 25, 45, 52),
+		},
+	}
+	runtime := newPlannerProposalRuntime(opts, manifest, skeleton.TargetChapterCount)
+	runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+	runtime.CompletedBatches = []domain.AdaptationProposalRuntimeBatch{
+		{Index: 12, TargetFrom: 45, TargetTo: 48, SourceFrom: 14, SourceTo: 25, Chapters: plannerSharedSourceRangePlans(45, 48, 14, 15, 30329)},
+		{Index: 13, TargetFrom: 49, TargetTo: 52, SourceFrom: 14, SourceTo: 25, Chapters: plannerSharedSourceRangePlans(49, 52, 16, 25, 5000)},
+	}
+
+	if errs := plannerRuntimeCompletedBudgetSplitErrors(runtime, opts, manifest); len(errs) != 0 {
+		t.Fatalf("budget split errors=%v, want none when parent range has enough target chapters", errs)
 	}
 }
 
@@ -2681,10 +2985,10 @@ func TestRepairPlannerBatchTextClarifiesSourceRangeBudgetRepair(t *testing.T) {
 		t.Fatalf("planner calls=%d, want 1", len(llm.got))
 	}
 	prompt := llm.got[0][1].TextContent()
-	if !strings.Contains(prompt, "source_range distribution failure") ||
+	if !strings.Contains(prompt, "shared source_range budget coverage failure") ||
 		!strings.Contains(prompt, "Do not fix a source_range budget error by lowering source_runes") ||
-		!strings.Contains(prompt, "chapter-sized source_range slice") {
-		t.Fatalf("repair prompt should force source_range redistribution, got %s", prompt)
+		!strings.Contains(prompt, "may share one broad source_range") {
+		t.Fatalf("repair prompt should describe shared source_range budget repair, got %s", prompt)
 	}
 }
 
@@ -2731,6 +3035,7 @@ func TestBuildAdaptationProposalVolumeSkeletonBudgetQualityRetryDoesNotConsumeSt
 		LLM:                        llm,
 		ModelCallMaxAttempts:       1,
 		StructureRepairMaxAttempts: 3,
+		BudgetQualityMaxAttempts:   3,
 	}, ProposalOptions{
 		Brief:        "arc long rewrite",
 		Granularity:  domain.AdaptationGranularityArc,
@@ -3183,6 +3488,74 @@ func TestBuildAdaptationProposalDetailsFromVolumeReviewGeneratesFullProposalAndC
 	}
 }
 
+func TestBuildAdaptationProposalDetailsUsesCompactBudgetRepairPrompt(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{6000})
+	foundation := testSourceFoundation()
+	foundation.Premise = strings.Repeat("FOUNDATION_BLOAT", 2000)
+	if err := st.Adaptation.SaveSourceFoundation(foundation); err != nil {
+		t.Fatalf("SaveSourceFoundation: %v", err)
+	}
+	review := domain.AdaptationVolumeReview{
+		Granularity:        domain.AdaptationGranularityFree,
+		Status:             domain.AdaptationPlanStatusVolumeReview,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		Brief:              "repair one oversized volume before details",
+		TargetChapterCount: 1,
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, Title: "Oversized volume", TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1, Summary: "source chapter is too large for one target chapter"},
+		},
+	}
+	if err := st.Adaptation.SaveVolumeReview(review); err != nil {
+		t.Fatalf("SaveVolumeReview: %v", err)
+	}
+	if err := st.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
+		Version:            1,
+		Brief:              review.Brief,
+		Granularity:        review.Granularity,
+		RewritePolicy:      review.RewritePolicy,
+		TargetChapterCount: review.TargetChapterCount,
+		Skeleton: &domain.AdaptationProposalRuntimeOutline{
+			TargetChapterCount: review.TargetChapterCount,
+			Batches: []domain.AdaptationProposalRuntimeSkeletonBatch{
+				{Index: 1, Title: "Oversized volume", TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveProposalRuntime: %v", err)
+	}
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: plannerVolumeRevisionSkeletonJSONWithDecision(1, 1, 2, 1, 1, "expand")},
+		{text: plannerProposalJSONFromChapters(t, plannerSharedSourceRangePlans(1, 2, 1, 1, 6000))},
+	}}
+
+	proposal, err := BuildAdaptationProposalDetailsContext(context.Background(), Deps{Store: st, LLM: llm}, ProposalDetailsOptions{})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalDetailsContext: %v", err)
+	}
+	if len(proposal.Chapters) != 2 {
+		t.Fatalf("proposal chapters=%d, want repaired 2 chapters", len(proposal.Chapters))
+	}
+	if len(llm.got) < 2 {
+		t.Fatalf("llm calls=%d, want budget repair plus detail generation", len(llm.got))
+	}
+	budgetPrompt := llm.got[0][1].TextContent()
+	if !strings.Contains(budgetPrompt, "Compact budget repair input") || !strings.Contains(budgetPrompt, `"budget_issue"`) {
+		t.Fatalf("budget repair prompt should expose compact budget issue, got %s", budgetPrompt)
+	}
+	for _, forbidden := range []string{`"source_foundation"`, `"source_reports"`, `"all_volumes"`, "FOUNDATION_BLOAT"} {
+		if strings.Contains(budgetPrompt, forbidden) {
+			t.Fatalf("budget repair prompt should not include full-context field %s", forbidden)
+		}
+	}
+	if len(budgetPrompt) > 12000 {
+		t.Fatalf("budget repair prompt should stay compact, len=%d", len(budgetPrompt))
+	}
+}
+
 func TestBuildAdaptationProposalDetailsResumesCompletedRuntimeBatch(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -3324,6 +3697,46 @@ func plannerBudgetRangePlans(from, to, sourceFrom, sourceTo int) []domain.Adapta
 			Title:          fmt.Sprintf("Target %d", chapter),
 			SourceChapters: []int{sourceFrom, sourceTo},
 			SourceRange:    domain.SourceRange{From: sourceFrom, To: sourceTo},
+		})
+	}
+	return plans
+}
+
+func plannerSharedSourceRangePlans(from, to, sourceFrom, sourceTo, sourceRunes int) []domain.AdaptationChapterPlan {
+	count := to - from + 1
+	plans := make([]domain.AdaptationChapterPlan, 0, count)
+	for chapter := from; chapter <= to; chapter++ {
+		offset := chapter - from
+		anchor := sourceFrom
+		if sourceTo > sourceFrom && offset >= count/2 {
+			anchor = sourceTo
+		}
+		chapterRunes := splitRunesForIndex(sourceRunes, count, offset)
+		if chapterRunes <= 0 {
+			chapterRunes = 1000
+		}
+		plans = append(plans, domain.AdaptationChapterPlan{
+			Chapter: chapter,
+			Title:   fmt.Sprintf("Target %d", chapter),
+			OutlineEntry: domain.OutlineEntry{
+				Chapter:   chapter,
+				Title:     fmt.Sprintf("Target %d", chapter),
+				CoreEvent: fmt.Sprintf("Adapt shared source arc %d-%d beat %d.", sourceFrom, sourceTo, offset+1),
+				Hook:      fmt.Sprintf("A clear hook for target %d.", chapter),
+				Scenes:    []string{"station"},
+			},
+			SourceChapters: []int{anchor},
+			SourceRange:    domain.SourceRange{From: sourceFrom, To: sourceTo},
+			WordBudget: &domain.AdaptationChapterWordBudget{
+				SourceRunes: chapterRunes,
+				TargetRunes: chapterRunes,
+				MinRunes:    max(1, chapterRunes-1),
+				MaxRunes:    chapterRunes + 1,
+				Tolerance:   0.15,
+			},
+			PreserveEvents:  []string{"source event"},
+			RequiredChanges: []string{"adapt the shared source arc"},
+			ForbiddenMoves:  []string{"drop the source anchor"},
 		})
 	}
 	return plans
@@ -3558,6 +3971,22 @@ func plannerRevisionNoChangeProposalJSON(t *testing.T, chapters []domain.Adaptat
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal no-change revision: %v", err)
+	}
+	return string(raw)
+}
+
+func plannerProposalJSONFromChapters(t *testing.T, chapters []domain.AdaptationChapterPlan) string {
+	t.Helper()
+	payload := map[string]any{
+		"granularity":    domain.AdaptationGranularityFree,
+		"status":         domain.AdaptationPlanStatusProposal,
+		"rewrite_policy": domain.AdaptationRewriteFullRewrite,
+		"brief":          "chunk",
+		"chapters":       chapters,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal planner proposal: %v", err)
 	}
 	return string(raw)
 }

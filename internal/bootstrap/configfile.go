@@ -163,6 +163,9 @@ func mergeConfig(base, overlay Config) Config {
 	if overlay.StructureRepairMaxAttempts > 0 {
 		base.StructureRepairMaxAttempts = overlay.StructureRepairMaxAttempts
 	}
+	if overlay.BudgetQualityMaxAttempts > 0 {
+		base.BudgetQualityMaxAttempts = overlay.BudgetQualityMaxAttempts
+	}
 	if overlay.Proxy != "" {
 		base.Proxy = overlay.Proxy
 	}

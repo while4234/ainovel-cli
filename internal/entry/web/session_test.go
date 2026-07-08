@@ -1284,6 +1284,7 @@ type fakeProjectHost struct {
 	coCreateMaxTokens               int
 	modelCallMaxAttempts            int
 	structureRepairMaxAttempts      int
+	budgetQualityMaxAttempts        int
 	grokLoginStart                  grokauth.LoginStart
 	grokLoginPoll                   grokauth.LoginPoll
 	grokCompleteStatus              grokauth.AuthStatus
@@ -2099,12 +2100,22 @@ func (f *fakeProjectHost) CurrentStructureRepairMaxAttempts() int {
 	return bootstrap.DefaultStructureRepairMaxAttempts
 }
 
-func (f *fakeProjectHost) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts int) error {
+func (f *fakeProjectHost) CurrentBudgetQualityMaxAttempts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.budgetQualityMaxAttempts > 0 {
+		return f.budgetQualityMaxAttempts
+	}
+	return bootstrap.DefaultBudgetQualityMaxAttempts
+}
+
+func (f *fakeProjectHost) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setRetrySettingsCalls++
 	f.modelCallMaxAttempts = modelCallMaxAttempts
 	f.structureRepairMaxAttempts = structureRepairMaxAttempts
+	f.budgetQualityMaxAttempts = budgetQualityMaxAttempts
 	return f.setRetrySettingsErr
 }
 

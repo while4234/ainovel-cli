@@ -507,6 +507,7 @@ func (h *Host) adaptationDeps() adapt.Deps {
 		LLM:                        llm,
 		ModelCallMaxAttempts:       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
 		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
+		BudgetQualityMaxAttempts:   cfg.EffectiveBudgetQualityMaxAttempts(),
 		Prompts: adapt.Prompts{
 			Foundation:      h.bundle.Prompts.ImportFoundation,
 			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
@@ -2961,12 +2962,22 @@ func (h *Host) CurrentStructureRepairMaxAttempts() int {
 	return h.cfg.EffectiveStructureRepairMaxAttempts()
 }
 
-func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts int) error {
+func (h *Host) CurrentBudgetQualityMaxAttempts() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg.EffectiveBudgetQualityMaxAttempts()
+}
+
+func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts int) error {
 	modelAttempts, err := bootstrap.NormalizeRuntimeNetworkMaxAttempts(modelCallMaxAttempts)
 	if err != nil {
 		return err
 	}
 	repairAttempts, err := bootstrap.NormalizeStructureRepairMaxAttempts(structureRepairMaxAttempts)
+	if err != nil {
+		return err
+	}
+	budgetAttempts, err := bootstrap.NormalizeBudgetQualityMaxAttempts(budgetQualityMaxAttempts)
 	if err != nil {
 		return err
 	}
@@ -2977,9 +2988,11 @@ func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts
 	previous := cloneHostRuntimeConfig(h.cfg)
 	h.cfg.ModelAutoSwitch.NetworkMaxAttempts = modelAttempts
 	h.cfg.StructureRepairMaxAttempts = repairAttempts
+	h.cfg.BudgetQualityMaxAttempts = budgetAttempts
 	if overlay := h.ensureProjectOverlayLocked(); overlay != nil {
 		overlay.ModelAutoSwitch.NetworkMaxAttempts = modelAttempts
 		overlay.StructureRepairMaxAttempts = repairAttempts
+		overlay.BudgetQualityMaxAttempts = budgetAttempts
 	}
 	if err := h.persistConfigLocked(); err != nil {
 		h.cfg = previous
@@ -2988,7 +3001,7 @@ func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
-		Summary:  fmt.Sprintf("重试设置已更新：模型调用最多 %d 次，结构修复最多 %d 次", modelAttempts, repairAttempts),
+		Summary:  fmt.Sprintf("重试设置已更新：模型调用最多 %d 次，结构修复最多 %d 次，预算复核最多 %d 次", modelAttempts, repairAttempts, budgetAttempts),
 		Level:    "info",
 	})
 	return nil
@@ -3194,9 +3207,15 @@ func (h *Host) PrepareAdaptationSource(ctx context.Context, sourcePath string) (
 	if err := h.guardExclusive("改编源书分析"); err != nil {
 		return nil, err
 	}
+	h.mu.Lock()
+	cfg := h.cfg
+	h.mu.Unlock()
 	deps := adapt.Deps{
-		Store: h.store,
-		LLM:   h.models.ForRoleWithFailover("architect", h.reportAdaptationFailover),
+		Store:                      h.store,
+		LLM:                        h.models.ForRoleWithFailover("architect", h.reportAdaptationFailover),
+		ModelCallMaxAttempts:       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
+		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
+		BudgetQualityMaxAttempts:   cfg.EffectiveBudgetQualityMaxAttempts(),
 		Prompts: adapt.Prompts{
 			Foundation:      h.bundle.Prompts.ImportFoundation,
 			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,

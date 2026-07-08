@@ -46,6 +46,10 @@ const (
 	DefaultStructureRepairMaxAttempts = 2
 	MinStructureRepairMaxAttempts     = 1
 	MaxStructureRepairMaxAttempts     = 15
+
+	DefaultBudgetQualityMaxAttempts = 2
+	MinBudgetQualityMaxAttempts     = 1
+	MaxBudgetQualityMaxAttempts     = 15
 )
 
 // CompactReserveTokens 按 CompactRatio 反算 ReserveTokens 并应用 MinCompactReserve floor：
@@ -121,6 +125,14 @@ func (c Config) EffectiveStructureRepairMaxAttempts() int {
 	return attempts
 }
 
+func (c Config) EffectiveBudgetQualityMaxAttempts() int {
+	attempts, err := NormalizeBudgetQualityMaxAttempts(c.BudgetQualityMaxAttempts)
+	if err != nil {
+		return DefaultBudgetQualityMaxAttempts
+	}
+	return attempts
+}
+
 func NormalizeRuntimeNetworkMaxAttempts(attempts int) (int, error) {
 	if attempts == 0 {
 		return DefaultRuntimeNetworkMaxAttempts, nil
@@ -144,6 +156,20 @@ func NormalizeStructureRepairMaxAttempts(attempts int) (int, error) {
 			"structure_repair_max_attempts must be between %d and %d",
 			MinStructureRepairMaxAttempts,
 			MaxStructureRepairMaxAttempts,
+		)
+	}
+	return attempts, nil
+}
+
+func NormalizeBudgetQualityMaxAttempts(attempts int) (int, error) {
+	if attempts == 0 {
+		return DefaultBudgetQualityMaxAttempts, nil
+	}
+	if attempts < MinBudgetQualityMaxAttempts || attempts > MaxBudgetQualityMaxAttempts {
+		return 0, fmt.Errorf(
+			"budget_quality_max_attempts must be between %d and %d",
+			MinBudgetQualityMaxAttempts,
+			MaxBudgetQualityMaxAttempts,
 		)
 	}
 	return attempts, nil
@@ -292,6 +318,7 @@ type Config struct {
 	CoCreateTimeoutSeconds     int                   `json:"cocreate_timeout_seconds,omitempty"`
 	CoCreateMaxTokens          int                   `json:"cocreate_max_tokens,omitempty"`
 	StructureRepairMaxAttempts int                   `json:"structure_repair_max_attempts,omitempty"`
+	BudgetQualityMaxAttempts   int                   `json:"budget_quality_max_attempts,omitempty"`
 	Proxy                      string                `json:"proxy,omitempty"`
 	ModelAutoSwitch            ModelAutoSwitchConfig `json:"model_auto_switch,omitzero"`
 
@@ -357,6 +384,9 @@ func (c *Config) ValidateBase() error {
 		return err
 	}
 	if _, err := NormalizeStructureRepairMaxAttempts(c.StructureRepairMaxAttempts); err != nil {
+		return err
+	}
+	if _, err := NormalizeBudgetQualityMaxAttempts(c.BudgetQualityMaxAttempts); err != nil {
 		return err
 	}
 	if err := validateConfigText("proxy", c.Proxy); err != nil {

@@ -40,6 +40,10 @@ const (
 	adaptationPlannerRevisionBatchMax        = 8
 	adaptationPlannerRevisionExpansionMax    = 12
 	adaptationPlannerRepairMaxAttempts       = 2
+	adaptationPlannerBudgetQualityAttempts   = 2
+	adaptationVolumeBudgetRepairNeighborMax  = 2
+	adaptationVolumeBudgetRepairReportMax    = 12
+	adaptationVolumeBudgetRepairChapterMax   = 24
 	adaptationPlannerGenerateMaxAttempts     = retrypolicy.MaxAttempts
 	adaptationProposalRuntimeVersion         = 1
 	adaptationSourceFoundationVersion        = 1
@@ -47,6 +51,8 @@ const (
 	sourceFoundationBatchKindReports         = "reports"
 	sourceFoundationBatchKindSummary         = "summary"
 )
+
+const plannerBudgetDeviationAcceptedNote = "budget_deviation_accepted:source_range_capacity_reviewed"
 
 var plannerRetrySleep = retrypolicy.Wait
 
@@ -63,6 +69,7 @@ type Deps struct {
 	Prompts                    Prompts
 	ModelCallMaxAttempts       int
 	StructureRepairMaxAttempts int
+	BudgetQualityMaxAttempts   int
 }
 
 func RunSource(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
@@ -860,6 +867,13 @@ func (d Deps) structureRepairMaxAttempts() int {
 	return adaptationPlannerRepairMaxAttempts
 }
 
+func (d Deps) budgetQualityMaxAttempts() int {
+	if d.BudgetQualityMaxAttempts > 0 {
+		return d.BudgetQualityMaxAttempts
+	}
+	return adaptationPlannerBudgetQualityAttempts
+}
+
 func PrepareRun(ctx context.Context, deps Deps, brief string) (*domain.AdaptationPlan, error) {
 	proposal, err := BuildAdaptationProposal(deps, ProposalOptions{
 		Brief:         brief,
@@ -962,6 +976,9 @@ func BuildAdaptationProposalVolumesContext(ctx context.Context, deps Deps, opts 
 		return nil, fmt.Errorf("build %s adaptation volume review: %w", opts.Granularity, err)
 	}
 	review := volumeReviewFromSkeleton(opts, manifest, skeleton)
+	if err := validateAdaptationVolumeReview(review, manifest); err != nil {
+		return nil, fmt.Errorf("validate adaptation volume review: %w", err)
+	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, len(review.Volumes), len(review.Volumes), fmt.Sprintf("分卷剧情已生成，正在保存：%d 卷", len(review.Volumes)), nil)
 	if err := deps.Store.Adaptation.SaveVolumeReview(review); err != nil {
 		return nil, fmt.Errorf("save adaptation volume review: %w", err)
@@ -1152,7 +1169,8 @@ func ReviseAdaptationVolumeReviewContext(ctx context.Context, deps Deps, opts Pr
 	if err != nil {
 		return nil, fmt.Errorf("planner volume review revision llm generate: %w", err)
 	}
-	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, revisionPrompt, revisionText, originalBatch, expansionMaxTo, true, manifest, opts.EmitProgress, deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
+	minTargetTo := plannerSkeletonBatchMinTargetTo(originalBatch, proposalOptionsFromVolumeReview(*review), manifest)
+	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, revisionPrompt, revisionText, originalBatch, expansionMaxTo, true, manifest, minTargetTo, false, opts.EmitProgress, deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 	if err != nil {
 		return nil, fmt.Errorf("planner volume review revision skeleton: %w", err)
 	}
@@ -1204,7 +1222,17 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	if sourceFoundation == nil {
 		return nil, fmt.Errorf("source foundation missing; analyze source first")
 	}
-	skeleton := plannerSkeletonFromVolumeReview(*review)
+	repairedReview, repairedSkeleton, repaired, err := repairVolumeReviewBudgetSplitsBeforeDetails(ctx, deps, *review, proposalOpts, manifest, reports, opts.EmitProgress)
+	if err != nil {
+		return nil, err
+	}
+	if repaired {
+		review = &repairedReview
+	}
+	skeleton := repairedSkeleton
+	if len(skeleton.Batches) == 0 {
+		skeleton = plannerSkeletonFromVolumeReview(*review)
+	}
 	if err := normalizePlannerSkeleton(&skeleton, proposalOpts, manifest, review.TargetChapterCount); err != nil {
 		return nil, fmt.Errorf("volume review skeleton invalid: %w", err)
 	}
@@ -1275,7 +1303,8 @@ func reviseAdaptationProposalVolumeContext(
 	if err != nil {
 		return nil, fmt.Errorf("planner volume revision skeleton llm generate: %w", err)
 	}
-	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, originalBatch, expansionMaxTo, allowExpansion, manifest, opts.EmitProgress, deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
+	minTargetTo := plannerSkeletonBatchMinTargetTo(originalBatch, proposalOptionsFromPlan(updated), manifest)
+	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, originalBatch, expansionMaxTo, allowExpansion, manifest, minTargetTo, false, opts.EmitProgress, deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 	if err != nil {
 		return nil, fmt.Errorf("planner volume revision skeleton: %w", err)
 	}
@@ -1366,7 +1395,9 @@ func finalizeRevisedAdaptationProposal(
 		return nil, fmt.Errorf("revised adaptation proposal invalid: %w", err)
 	}
 	updated.Volumes = normalizeAdaptationProposalVolumes(updated.Volumes, len(updated.Chapters))
-	if !proposalRevisionChanged(original, updated) {
+	originalForCompare := normalizedProposalForRevisionCompare(original, reports, manifest, deps.LLM)
+	updatedForCompare := normalizedProposalForRevisionCompare(updated, reports, manifest, deps.LLM)
+	if !proposalRevisionChanged(originalForCompare, updatedForCompare) {
 		return nil, fmt.Errorf("revision produced no proposal changes; please make the instruction more specific or request added ending chapters")
 	}
 	if updated.Planner == nil {
@@ -1380,6 +1411,39 @@ func finalizeRevisedAdaptationProposal(
 	}
 	emitAdaptProgress(opts.EmitProgress, StageDone, len(updated.Chapters), len(updated.Chapters), fmt.Sprintf("改编提案修订已保存：%d 章", len(updated.Chapters)), nil)
 	return &updated, nil
+}
+
+func normalizedProposalForRevisionCompare(proposal domain.AdaptationPlan, reports []domain.AdaptationSourceReport, manifest *domain.AdaptationSourceManifest, llm imp.LLMChat) domain.AdaptationPlan {
+	proposal.SourceTotalRunes = 0
+	proposal.TargetTotalRunes = 0
+	proposal.TargetMinRunes = 0
+	proposal.TargetMaxRunes = 0
+	if err := validatePlannerProposal(&proposal, proposalOptionsFromPlan(proposal), reports, manifest, llm); err != nil {
+		return proposal
+	}
+	proposal.Volumes = normalizeAdaptationProposalVolumes(proposal.Volumes, len(proposal.Chapters))
+	normalizeProposalChapterCoverageForRevisionCompare(&proposal)
+	return proposal
+}
+
+func normalizeProposalChapterCoverageForRevisionCompare(proposal *domain.AdaptationPlan) {
+	if proposal == nil || len(proposal.Chapters) == 0 || len(proposal.Volumes) == 0 {
+		return
+	}
+	volumes := normalizeAdaptationProposalVolumes(proposal.Volumes, len(proposal.Chapters))
+	for _, volume := range volumes {
+		if volume.SourceFrom <= 0 || volume.SourceTo < volume.SourceFrom {
+			continue
+		}
+		for idx := range proposal.Chapters {
+			chapter := &proposal.Chapters[idx]
+			if chapter.Chapter < volume.TargetFrom || chapter.Chapter > volume.TargetTo {
+				continue
+			}
+			chapter.SourceRange = domain.SourceRange{From: volume.SourceFrom, To: volume.SourceTo}
+			chapter.SourceChapters = expandSourceChaptersForRange(chapter.SourceChapters, volume.SourceFrom, volume.SourceTo)
+		}
+	}
 }
 
 func buildPlanFromPlanner(
@@ -1624,6 +1688,7 @@ func proposalRevisionVolumeBatch(plan domain.AdaptationPlan, volumeIndex, from, 
 		batch.Theme = volume.Theme
 		batch.Goal = volume.Goal
 		batch.Summary = volume.Summary
+		batch.Notes = append([]string(nil), volume.Notes...)
 		if volume.SourceFrom > 0 {
 			batch.SourceFrom = volume.SourceFrom
 		}
@@ -1652,6 +1717,7 @@ func volumeReviewBatch(review domain.AdaptationVolumeReview, volumeIndex int) (p
 			TargetChapterCount: volume.TargetTo - volume.TargetFrom + 1,
 			SourceFrom:         volume.SourceFrom,
 			SourceTo:           volume.SourceTo,
+			Notes:              append([]string(nil), volume.Notes...),
 		}, nil
 	}
 	return plannerSkeletonBatch{}, fmt.Errorf("volume %d not found in adaptation volume review", volumeIndex)
@@ -1687,6 +1753,7 @@ func applyVolumeReviewBatchRevision(review *domain.AdaptationVolumeReview, origi
 			if summary := strings.TrimSpace(revised.Summary); summary != "" {
 				volume.Summary = summary
 			}
+			volume.Notes = append(domain.TextList(nil), revised.Notes...)
 			volume.TargetFrom = revised.TargetFrom
 			volume.TargetTo = revised.TargetTo
 			if revised.SourceFrom > 0 {
@@ -1706,6 +1773,130 @@ func applyVolumeReviewBatchRevision(review *domain.AdaptationVolumeReview, origi
 	}
 	review.Volumes = normalizeAdaptationProposalVolumes(review.Volumes, review.TargetChapterCount)
 	review.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+}
+
+func repairVolumeReviewBudgetSplitsBeforeDetails(
+	ctx context.Context,
+	deps Deps,
+	review domain.AdaptationVolumeReview,
+	opts ProposalOptions,
+	manifest *domain.AdaptationSourceManifest,
+	reports []domain.AdaptationSourceReport,
+	emit ProgressEmitter,
+) (domain.AdaptationVolumeReview, plannerSkeleton, bool, error) {
+	skeleton := plannerSkeletonFromVolumeReview(review)
+	repaired := false
+	budgetQualityAttempts := deps.budgetQualityMaxAttempts()
+	maxRepairs := max(1, len(review.Volumes)) * budgetQualityAttempts
+	if maxRepairs <= 0 {
+		maxRepairs = adaptationPlannerBudgetQualityAttempts
+	}
+	rangeRepairAttempts := map[string]int{}
+	for attempt := 0; attempt <= maxRepairs; attempt++ {
+		splitErrs := plannerSkeletonBudgetSplitErrors(skeleton.Batches, opts, manifest)
+		if len(splitErrs) == 0 {
+			if repaired {
+				if review.Planner == nil {
+					review.Planner = &domain.AdaptationPlannerMeta{}
+				}
+				review.Planner.Notes = append(review.Planner.Notes, "auto repaired source-range chapter budget before detail planning")
+				if err := validateAdaptationVolumeReview(review, manifest); err != nil {
+					return review, skeleton, repaired, err
+				}
+				if err := deps.Store.Adaptation.SaveVolumeReview(review); err != nil {
+					return review, skeleton, repaired, fmt.Errorf("save auto-repaired adaptation volume review: %w", err)
+				}
+			}
+			return review, skeleton, repaired, nil
+		}
+		if attempt >= maxRepairs {
+			sortPlannerProposalBudgetSplitErrors(splitErrs)
+			return review, skeleton, repaired, splitErrs
+		}
+		sortPlannerProposalBudgetSplitErrors(splitErrs)
+		budgetErr := splitErrs[0]
+		originalBatch, ok := plannerSkeletonBatchForBudgetSplitError(skeleton.Batches, budgetErr)
+		if !ok {
+			return review, skeleton, repaired, fmt.Errorf("no volume found for budget-invalid source range %d-%d", budgetErr.SourceFrom, budgetErr.SourceTo)
+		}
+		rangeKey := plannerBudgetRangeKey(budgetErr.SourceFrom, budgetErr.SourceTo)
+		rangeRepairAttempts[rangeKey]++
+		minTargetTo := originalBatch.TargetFrom + budgetErr.MinChapters - 1
+		expansionMaxTo := max(originalBatch.TargetTo+adaptationPlannerRevisionExpansionMax, minTargetTo)
+		systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+		if systemPrompt == "" {
+			systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested volume review budget repair."
+		}
+		repairOpts := ProposalRevisionOptions{
+			VolumeIndex: originalBatch.Index,
+			Instruction: fmt.Sprintf(
+				"Repair this volume before chapter-detail generation: source range %d-%d has %d source_runes and needs at least %d target chapters under the chapter budget. Keep the same source range and expand or rebalance this volume; later volumes will shift automatically.",
+				budgetErr.SourceFrom,
+				budgetErr.SourceTo,
+				budgetErr.SourceRunes,
+				budgetErr.MinChapters,
+			),
+			EmitProgress: emit,
+		}
+		emitAdaptProgress(emit, StagePlan, attempt+1, maxRepairs, fmt.Sprintf("Volume %d source range %d-%d needs at least %d target chapters before detail planning; repairing volume skeleton", originalBatch.Index, budgetErr.SourceFrom, budgetErr.SourceTo, budgetErr.MinChapters), &budgetErr)
+		prompt, err := buildAdaptationVolumeBudgetRepairPrompt(repairOpts, review, originalBatch, budgetErr, expansionMaxTo, manifest, reportsForPlannerBatch(reports, originalBatch))
+		if err != nil {
+			return review, skeleton, repaired, err
+		}
+		text, err := generatePlannerText(
+			ctx,
+			deps.LLM,
+			systemPrompt,
+			prompt,
+			adaptationPlannerSkeletonMaxTokens,
+			emit,
+			attempt+1,
+			maxRepairs,
+			fmt.Sprintf("volume %d budget repair", originalBatch.Index),
+			deps.modelCallMaxAttempts(),
+		)
+		if err != nil {
+			return review, skeleton, repaired, fmt.Errorf("planner volume %d budget repair llm generate: %w", originalBatch.Index, err)
+		}
+		revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(
+			ctx,
+			deps.LLM,
+			systemPrompt,
+			prompt,
+			text,
+			originalBatch,
+			expansionMaxTo,
+			true,
+			manifest,
+			minTargetTo,
+			true,
+			emit,
+			deps.structureRepairMaxAttempts(),
+			deps.modelCallMaxAttempts(),
+		)
+		if err != nil {
+			return review, skeleton, repaired, fmt.Errorf("planner volume %d budget repair skeleton: %w", originalBatch.Index, err)
+		}
+		if revisedBatch.TargetTo < minTargetTo && rangeRepairAttempts[rangeKey] >= budgetQualityAttempts {
+			markPlannerBatchBudgetDeviationAccepted(&revisedBatch)
+		}
+		applyVolumeReviewBatchRevision(&review, originalBatch, revisedBatch)
+		skeleton = plannerSkeletonFromVolumeReview(review)
+		repaired = true
+	}
+	return review, skeleton, repaired, fmt.Errorf("volume budget repair exhausted")
+}
+
+func plannerSkeletonBatchForBudgetSplitError(batches []plannerSkeletonBatch, budgetErr plannerProposalBudgetSplitError) (plannerSkeletonBatch, bool) {
+	for _, batch := range batches {
+		if budgetErr.FirstChapter > 0 && budgetErr.FirstChapter >= batch.TargetFrom && budgetErr.FirstChapter <= batch.TargetTo {
+			return batch, true
+		}
+		if budgetErr.SourceFrom >= batch.SourceFrom && budgetErr.SourceTo <= batch.SourceTo {
+			return batch, true
+		}
+	}
+	return plannerSkeletonBatch{}, false
 }
 
 func validateAdaptationVolumeReview(review domain.AdaptationVolumeReview, manifest *domain.AdaptationSourceManifest) error {
@@ -1730,6 +1921,10 @@ func validateAdaptationVolumeReview(review domain.AdaptationVolumeReview, manife
 				return fmt.Errorf("volume %d has invalid source range %d-%d", volume.Index, volume.SourceFrom, volume.SourceTo)
 			}
 		}
+	}
+	if budgetErrs := plannerSkeletonBudgetSplitErrors(plannerSkeletonFromVolumeReview(review).Batches, proposalOptionsFromVolumeReview(review), manifest); len(budgetErrs) > 0 {
+		sortPlannerProposalBudgetSplitErrors(budgetErrs)
+		return budgetErrs
 	}
 	return nil
 }
@@ -1794,6 +1989,7 @@ func plannerSkeletonFromVolumeReview(review domain.AdaptationVolumeReview) plann
 			TargetChapterCount: volume.TargetTo - volume.TargetFrom + 1,
 			SourceFrom:         volume.SourceFrom,
 			SourceTo:           volume.SourceTo,
+			Notes:              append([]string(nil), volume.Notes...),
 		})
 	}
 	return plannerSkeleton{
@@ -2323,6 +2519,137 @@ func buildAdaptationVolumeReviewRevisionPrompt(
 	), nil
 }
 
+type plannerVolumeBudgetRepairIssue struct {
+	SourceFrom            int `json:"source_from"`
+	SourceTo              int `json:"source_to"`
+	SourceRunes           int `json:"source_runes"`
+	CurrentTargetChapters int `json:"current_target_chapters"`
+	MinTargetChapters     int `json:"min_target_chapters"`
+	OriginalTargetTo      int `json:"original_target_to"`
+	MinTargetTo           int `json:"min_target_to"`
+	TargetToMax           int `json:"target_to_max"`
+}
+
+type plannerVolumeBudgetRepairSourceContext struct {
+	SourceFrom              int                           `json:"source_from"`
+	SourceTo                int                           `json:"source_to"`
+	SourceRunes             int                           `json:"source_runes"`
+	ChapterSummaries        []plannerSourceChapterSummary `json:"chapter_summaries,omitempty"`
+	OmittedChapterSummaries int                           `json:"omitted_chapter_summaries,omitempty"`
+	ReportExcerpts          []plannerSourceReportExcerpt  `json:"report_excerpts,omitempty"`
+	OmittedReportExcerpts   int                           `json:"omitted_report_excerpts,omitempty"`
+}
+
+type plannerVolumeBudgetRepairVolumeSummary struct {
+	Index      int    `json:"index"`
+	Title      string `json:"title,omitempty"`
+	Theme      string `json:"theme,omitempty"`
+	Goal       string `json:"goal,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+	TargetFrom int    `json:"target_from"`
+	TargetTo   int    `json:"target_to"`
+	SourceFrom int    `json:"source_from,omitempty"`
+	SourceTo   int    `json:"source_to,omitempty"`
+}
+
+func buildAdaptationVolumeBudgetRepairPrompt(
+	opts ProposalRevisionOptions,
+	review domain.AdaptationVolumeReview,
+	volume plannerSkeletonBatch,
+	budgetErr plannerProposalBudgetSplitError,
+	expansionMaxTo int,
+	manifest *domain.AdaptationSourceManifest,
+	reports []domain.AdaptationSourceReport,
+) (string, error) {
+	if expansionMaxTo < volume.TargetTo {
+		expansionMaxTo = volume.TargetTo
+	}
+	currentChapters := plannerSkeletonBatchChapterCount(volume)
+	minTargetTo := volume.TargetFrom + budgetErr.MinChapters - 1
+	sourceRunes := budgetErr.SourceRunes
+	if sourceRunes <= 0 {
+		sourceRunes = sourceRunesForRange(sourceRunesByChapter(manifest), budgetErr.SourceFrom, budgetErr.SourceTo)
+	}
+	requirements := []string{
+		"Return exactly one JSON object and no prose.",
+		"Do not wrap the JSON in markdown fences.",
+		"Return only a high-level revised volume/batch skeleton; do not include chapter details.",
+		"The top-level object must contain a batches array with exactly one batch.",
+		"That batch must keep target_from equal to the original volume target_from.",
+		"That batch must keep source_from and source_to equal to the budget issue source range.",
+		`Set expansion_decision to "expand" only when increasing target_to; otherwise use "keep".`,
+		"If the source range is still closely rewritten or preserved, expand target_to enough to satisfy min_target_chapters.",
+		"If the same lower chapter count is intentional because the rewrite deletes, merges, or compresses source material, keep target_to unchanged and state that rationale in summary or expansion_reason.",
+		"Do not solve the budget issue by shrinking source_from/source_to; the host will reject that.",
+		"Use only this compact volume context; do not ask for raw source text or all-book context.",
+	}
+	chapterSummaries, omittedChapters := plannerSourceChapterSummariesInRange(manifest, budgetErr.SourceFrom, budgetErr.SourceTo, adaptationVolumeBudgetRepairChapterMax)
+	reportExcerpts, omittedReports := plannerBudgetRepairReportExcerpts(reports, adaptationVolumeBudgetRepairReportMax)
+	input := struct {
+		Instruction       string                                   `json:"instruction"`
+		Granularity       string                                   `json:"granularity"`
+		RewritePolicy     string                                   `json:"rewrite_policy"`
+		Brief             string                                   `json:"brief"`
+		MainlineRules     []string                                 `json:"mainline_rules,omitempty"`
+		RelationshipGoals []string                                 `json:"relationship_goals,omitempty"`
+		BudgetIssue       plannerVolumeBudgetRepairIssue           `json:"budget_issue"`
+		CurrentVolume     plannerVolumeBudgetRepairVolumeSummary   `json:"current_volume"`
+		NeighborVolumes   []plannerVolumeBudgetRepairVolumeSummary `json:"neighbor_volumes,omitempty"`
+		SourceManifest    plannerSourceManifestSummary             `json:"source_manifest"`
+		SourceRange       plannerVolumeBudgetRepairSourceContext   `json:"source_range"`
+		Requirements      []string                                 `json:"requirements"`
+	}{
+		Instruction:       strings.TrimSpace(opts.Instruction),
+		Granularity:       review.Granularity,
+		RewritePolicy:     review.RewritePolicy,
+		Brief:             clipText(review.Brief, 3000),
+		MainlineRules:     clippedStringList(review.MainlineRules, 16, 240),
+		RelationshipGoals: clippedStringList(review.RelationshipGoals, 16, 240),
+		BudgetIssue: plannerVolumeBudgetRepairIssue{
+			SourceFrom:            budgetErr.SourceFrom,
+			SourceTo:              budgetErr.SourceTo,
+			SourceRunes:           sourceRunes,
+			CurrentTargetChapters: currentChapters,
+			MinTargetChapters:     budgetErr.MinChapters,
+			OriginalTargetTo:      volume.TargetTo,
+			MinTargetTo:           minTargetTo,
+			TargetToMax:           expansionMaxTo,
+		},
+		CurrentVolume:   plannerSkeletonBudgetRepairVolumeSummary(volume),
+		NeighborVolumes: plannerVolumeBudgetRepairNeighborSummaries(review.Volumes, volume.Index, adaptationVolumeBudgetRepairNeighborMax),
+		SourceManifest:  plannerManifestSummary(manifest),
+		SourceRange: plannerVolumeBudgetRepairSourceContext{
+			SourceFrom:              budgetErr.SourceFrom,
+			SourceTo:                budgetErr.SourceTo,
+			SourceRunes:             sourceRunes,
+			ChapterSummaries:        chapterSummaries,
+			OmittedChapterSummaries: omittedChapters,
+			ReportExcerpts:          reportExcerpts,
+			OmittedReportExcerpts:   omittedReports,
+		},
+		Requirements: requirements,
+	}
+	raw, err := json.MarshalIndent(input, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal volume budget repair input: %w", err)
+	}
+	return fmt.Sprintf(
+		"Repair one adaptation volume budget before detailed chapter planning.\n\n"+
+			"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must contain a batches array with exactly one revised volume batch. Do not return chapter details here.\n"+
+			"Required JSON shape: {\"granularity\":\"%s\",\"status\":\"volume_review\",\"rewrite_policy\":\"%s\",\"brief\":\"...\",\"target_chapter_count\":%d,\"batches\":[{\"index\":%d,\"title\":\"...\",\"theme\":\"...\",\"expansion_decision\":\"expand|keep\",\"expansion_reason\":\"...\",\"target_from\":%d,\"target_to\":%d,\"source_from\":%d,\"source_to\":%d,\"summary\":\"...\"}]}.\n\n"+
+			"Compact budget repair input:\n```json\n%s\n```",
+		review.Granularity,
+		review.RewritePolicy,
+		currentChapters,
+		volume.Index,
+		volume.TargetFrom,
+		volume.TargetTo,
+		budgetErr.SourceFrom,
+		budgetErr.SourceTo,
+		string(raw),
+	), nil
+}
+
 func proposalChaptersInRange(chapters []domain.AdaptationChapterPlan, from, to int) []domain.AdaptationChapterPlan {
 	out := make([]domain.AdaptationChapterPlan, 0, to-from+1)
 	for _, chapter := range chapters {
@@ -2766,7 +3093,7 @@ func buildPlannerVolumeSkeletonFromSourceMap(
 		if err != nil {
 			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d llm generate: %w", entry.Index, err)
 		}
-		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.LLM, systemPrompt, prompt, text, entry, opts.EmitProgress, sourceIndex+1, len(sourceMap), deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
+		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.LLM, systemPrompt, prompt, text, entry, opts.EmitProgress, sourceIndex+1, len(sourceMap), deps.budgetQualityMaxAttempts(), deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 		if err != nil {
 			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d: %w", entry.Index, err)
 		}
@@ -2811,9 +3138,13 @@ func collectPlannerSourceMapSkeletonBatches(
 	emit ProgressEmitter,
 	current int,
 	total int,
+	maxQualityAttempts int,
 	maxRepairAttempts int,
 	maxModelCallAttempts int,
 ) ([]plannerSkeletonBatch, error) {
+	if maxQualityAttempts <= 0 {
+		maxQualityAttempts = adaptationPlannerBudgetQualityAttempts
+	}
 	if maxRepairAttempts <= 0 {
 		maxRepairAttempts = adaptationPlannerRepairMaxAttempts
 	}
@@ -2831,16 +3162,17 @@ func collectPlannerSourceMapSkeletonBatches(
 			var budgetErr *plannerChapterBudgetQualityError
 			if errors.As(berr, &budgetErr) {
 				lastErr = budgetErr
-				if qualityAttempts >= maxRepairAttempts {
+				if qualityAttempts >= maxQualityAttempts {
 					accepted, acceptErr := normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviation(skeleton.Batches, entry)
 					if acceptErr == nil {
+						markPlannerBudgetDeviationAccepted(accepted)
 						emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批章节预算连续偏离预期，已按模型改编判断继续：%v", current, total, lastErr), lastErr)
 						return accepted, nil
 					}
 					return nil, acceptErr
 				}
 				qualityAttempts++
-				emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批章节预算偏离预期，质量重试第 %d/%d 次：%v", current, total, qualityAttempts, maxRepairAttempts, lastErr), lastErr)
+				emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批章节预算偏离预期，质量重试第 %d/%d 次：%v", current, total, qualityAttempts, maxQualityAttempts, lastErr), lastErr)
 				reconsidered, err := retryPlannerSkeletonChapterBudget(ctx, llm, systemPrompt, originalPrompt, text, lastErr, emit, current, total, maxModelCallAttempts)
 				if err != nil {
 					return nil, err
@@ -3123,6 +3455,110 @@ func plannerSkeletonBatchTargetCount(batches []plannerSkeletonBatch) int {
 		}
 	}
 	return total
+}
+
+func markPlannerBudgetDeviationAccepted(batches []plannerSkeletonBatch) {
+	for idx := range batches {
+		markPlannerBatchBudgetDeviationAccepted(&batches[idx])
+	}
+}
+
+func markPlannerBatchBudgetDeviationAccepted(batch *plannerSkeletonBatch) {
+	if batch == nil || plannerBudgetDeviationAccepted(*batch) {
+		return
+	}
+	batch.Notes = append(batch.Notes, plannerBudgetDeviationAcceptedNote)
+}
+
+func plannerBudgetDeviationAccepted(batch plannerSkeletonBatch) bool {
+	return plannerNotesAcceptBudgetDeviation(batch.Notes)
+}
+
+func plannerVolumeBudgetDeviationAccepted(volume domain.AdaptationVolumePlan) bool {
+	return plannerNotesAcceptBudgetDeviation(volume.Notes)
+}
+
+func plannerNotesAcceptBudgetDeviation(notes []string) bool {
+	for _, note := range notes {
+		note = strings.TrimSpace(note)
+		if note == plannerBudgetDeviationAcceptedNote || strings.HasPrefix(note, plannerBudgetDeviationAcceptedNote+":") {
+			return true
+		}
+	}
+	return false
+}
+
+func plannerBudgetRangeKey(sourceFrom, sourceTo int) string {
+	return fmt.Sprintf("%d-%d", sourceFrom, sourceTo)
+}
+
+func plannerSkeletonBudgetSplitErrors(batches []plannerSkeletonBatch, opts ProposalOptions, manifest *domain.AdaptationSourceManifest) plannerProposalBudgetSplitErrors {
+	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
+	sourceRunesByChapter := sourceRunesByChapter(manifest)
+	if policy == nil || len(sourceRunesByChapter) == 0 {
+		return nil
+	}
+	var splitErrs plannerProposalBudgetSplitErrors
+	for _, batch := range batches {
+		if plannerBudgetDeviationAccepted(batch) {
+			continue
+		}
+		count := plannerSkeletonBatchChapterCount(batch)
+		if count <= 0 || batch.SourceFrom <= 0 || batch.SourceTo < batch.SourceFrom {
+			continue
+		}
+		chapters := make([]domain.AdaptationChapterPlan, count)
+		indexes := make([]int, count)
+		for idx := 0; idx < count; idx++ {
+			chapters[idx].Chapter = batch.TargetFrom + idx
+			indexes[idx] = idx
+		}
+		group := plannerChapterBudgetGroup{
+			Indexes:     indexes,
+			SourceFrom:  batch.SourceFrom,
+			SourceTo:    batch.SourceTo,
+			SourceRunes: sourceRunesForRange(sourceRunesByChapter, batch.SourceFrom, batch.SourceTo),
+		}
+		if err := plannerBudgetGroupSplitError(chapters, group, *policy); err != nil {
+			var splitErr *plannerProposalBudgetSplitError
+			if errors.As(err, &splitErr) && splitErr != nil {
+				splitErrs = appendPlannerBudgetSplitErrorsUnique(splitErrs, *splitErr)
+			}
+		}
+	}
+	sortPlannerProposalBudgetSplitErrors(splitErrs)
+	return splitErrs
+}
+
+func plannerSkeletonBatchMinTargetTo(batch plannerSkeletonBatch, opts ProposalOptions, manifest *domain.AdaptationSourceManifest) int {
+	minCount := plannerSkeletonBatchMinTargetCount(batch, opts, manifest)
+	currentCount := plannerSkeletonBatchChapterCount(batch)
+	if minCount <= currentCount {
+		return batch.TargetTo
+	}
+	return batch.TargetFrom + minCount - 1
+}
+
+func plannerSkeletonBatchMinTargetCount(batch plannerSkeletonBatch, opts ProposalOptions, manifest *domain.AdaptationSourceManifest) int {
+	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
+	if policy == nil || manifest == nil {
+		return 0
+	}
+	sourceRunes := sourceRunesForRange(sourceRunesByChapter(manifest), batch.SourceFrom, batch.SourceTo)
+	if sourceRunes <= policy.MaxRunes {
+		return 0
+	}
+	return ceilPositiveDiv(sourceRunes, policy.MaxRunes)
+}
+
+func plannerSkeletonBatchChapterCount(batch plannerSkeletonBatch) int {
+	if batch.TargetChapterCount > 0 {
+		return batch.TargetChapterCount
+	}
+	if batch.TargetFrom > 0 && batch.TargetTo >= batch.TargetFrom {
+		return batch.TargetTo - batch.TargetFrom + 1
+	}
+	return 0
 }
 
 func plannerSourceMapBudgetMinTargetChapters(entry plannerSourceMapEntry) int {
@@ -3652,6 +4088,19 @@ func plannerRuntimeCompletedBudgetSplitErrors(runtime *domain.AdaptationProposal
 		if !complete {
 			continue
 		}
+		if plannerUsesSharedBatchSourceRange(opts, parent) {
+			if plannerBudgetDeviationAccepted(parent) {
+				continue
+			}
+			group := plannerParentBatchBudgetGroup(chapters, parent, sourceRunesByChapter)
+			if err := plannerBudgetGroupSplitError(chapters, group, *policy); err != nil {
+				var splitErr *plannerProposalBudgetSplitError
+				if errors.As(err, &splitErr) && splitErr != nil {
+					splitErrs = appendPlannerBudgetSplitErrorsUnique(splitErrs, *splitErr)
+				}
+			}
+			continue
+		}
 		groups := plannerChapterBudgetGroups(chapters, sourceRunesByChapter)
 		for _, group := range groups {
 			if err := plannerBudgetGroupSplitError(chapters, group, *policy); err != nil {
@@ -4079,47 +4528,87 @@ func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.Adaptat
 				return fmt.Errorf("planner chapter %d scenes are empty", chapter.Chapter)
 			}
 			chapter.Scenes = trimmedNonEmpty(chapter.Scenes)
+			if err := normalizePlannerChapterSourceCoverage(chapter, chapterCount, &batch, plannerUsesSharedBatchSourceRange(opts, batch)); err != nil {
+				return err
+			}
 			fillPlannerChapterWordBudgetDefaults(chapter, sourceRunesByChapter, opts.WordTolerance)
 			if err := validatePlannerWordBudget(chapter, opts.WordTolerance); err != nil {
 				return err
 			}
-			if len(chapter.SourceChapters) == 0 {
-				if chapter.IsAdded {
-					return fmt.Errorf("planner added chapter %d has no source anchors", chapter.Chapter)
-				}
-				return fmt.Errorf("planner chapter %d has no source coverage", chapter.Chapter)
-			}
-			minSource, maxSource := 0, 0
-			seenInChapter := map[int]bool{}
-			for _, sourceChapter := range chapter.SourceChapters {
-				if sourceChapter <= 0 || sourceChapter > chapterCount {
-					return fmt.Errorf("planner chapter %d references invalid source chapter %d", chapter.Chapter, sourceChapter)
-				}
-				if seenInChapter[sourceChapter] {
-					return fmt.Errorf("planner chapter %d repeats source chapter %d", chapter.Chapter, sourceChapter)
-				}
-				seenInChapter[sourceChapter] = true
-				if minSource == 0 || sourceChapter < minSource {
-					minSource = sourceChapter
-				}
-				if sourceChapter > maxSource {
-					maxSource = sourceChapter
-				}
-			}
-			if chapter.SourceRange.From == 0 && chapter.SourceRange.To == 0 {
-				chapter.SourceRange = domain.SourceRange{From: minSource, To: maxSource}
-			}
-			if chapter.SourceRange.From <= 0 || chapter.SourceRange.To < chapter.SourceRange.From || chapter.SourceRange.To > chapterCount {
-				return fmt.Errorf("planner chapter %d has invalid source_range %d-%d", chapter.Chapter, chapter.SourceRange.From, chapter.SourceRange.To)
-			}
-			for _, sourceChapter := range chapter.SourceChapters {
-				if sourceChapter < chapter.SourceRange.From || sourceChapter > chapter.SourceRange.To {
-					return fmt.Errorf("planner chapter %d source chapter %d falls outside source_range %d-%d", chapter.Chapter, sourceChapter, chapter.SourceRange.From, chapter.SourceRange.To)
-				}
-			}
 		}
 		return validatePlannerBatchChapterBudgetGroups(chapters, priorChapters, opts, sourceRunesByChapter, batch)
 	}
+}
+
+func plannerUsesSharedBatchSourceRange(opts ProposalOptions, batch plannerSkeletonBatch) bool {
+	return plannerChapterBudgetPolicyForGranularity(opts.Granularity) != nil &&
+		batch.SourceFrom > 0 &&
+		batch.SourceTo >= batch.SourceFrom
+}
+
+func normalizePlannerChapterSourceCoverage(chapter *domain.AdaptationChapterPlan, chapterCount int, batch *plannerSkeletonBatch, useBatchSourceRange bool) error {
+	if chapter == nil {
+		return fmt.Errorf("planner chapter is nil")
+	}
+	if len(chapter.SourceChapters) == 0 {
+		if chapter.IsAdded {
+			return fmt.Errorf("planner added chapter %d has no source anchors", chapter.Chapter)
+		}
+		return fmt.Errorf("planner chapter %d has no source coverage", chapter.Chapter)
+	}
+	minSource, maxSource := 0, 0
+	seenInChapter := map[int]bool{}
+	for _, sourceChapter := range chapter.SourceChapters {
+		if sourceChapter <= 0 || (chapterCount > 0 && sourceChapter > chapterCount) {
+			return fmt.Errorf("planner chapter %d references invalid source chapter %d", chapter.Chapter, sourceChapter)
+		}
+		if batch != nil && batch.SourceFrom > 0 && batch.SourceTo >= batch.SourceFrom &&
+			(sourceChapter < batch.SourceFrom || sourceChapter > batch.SourceTo) {
+			return fmt.Errorf("planner chapter %d source chapter %d falls outside batch source range %d-%d", chapter.Chapter, sourceChapter, batch.SourceFrom, batch.SourceTo)
+		}
+		if seenInChapter[sourceChapter] {
+			return fmt.Errorf("planner chapter %d repeats source chapter %d", chapter.Chapter, sourceChapter)
+		}
+		seenInChapter[sourceChapter] = true
+		if minSource == 0 || sourceChapter < minSource {
+			minSource = sourceChapter
+		}
+		if sourceChapter > maxSource {
+			maxSource = sourceChapter
+		}
+	}
+
+	sourceRange := domain.SourceRange{}
+	if useBatchSourceRange && batch != nil && batch.SourceFrom > 0 && batch.SourceTo >= batch.SourceFrom {
+		sourceRange = domain.SourceRange{From: batch.SourceFrom, To: batch.SourceTo}
+	} else {
+		sourceRange = chapter.SourceRange
+		if sourceRange.From == 0 && sourceRange.To == 0 {
+			sourceRange = domain.SourceRange{From: minSource, To: maxSource}
+		}
+	}
+	if sourceRange.From <= 0 || sourceRange.To < sourceRange.From || (chapterCount > 0 && sourceRange.To > chapterCount) {
+		return fmt.Errorf("planner chapter %d has invalid source_range %d-%d", chapter.Chapter, sourceRange.From, sourceRange.To)
+	}
+	if batch != nil && batch.SourceFrom > 0 && batch.SourceTo >= batch.SourceFrom &&
+		(sourceRange.From < batch.SourceFrom || sourceRange.To > batch.SourceTo) {
+		return fmt.Errorf("planner chapter %d source_range %d-%d falls outside batch source range %d-%d", chapter.Chapter, sourceRange.From, sourceRange.To, batch.SourceFrom, batch.SourceTo)
+	}
+	if minSource < sourceRange.From {
+		sourceRange.From = minSource
+	}
+	if maxSource > sourceRange.To {
+		sourceRange.To = maxSource
+	}
+	if batch != nil && batch.SourceFrom > 0 && batch.SourceTo >= batch.SourceFrom &&
+		(sourceRange.From < batch.SourceFrom || sourceRange.To > batch.SourceTo) {
+		return fmt.Errorf("planner chapter %d source anchors expand source_range outside batch source range %d-%d", chapter.Chapter, batch.SourceFrom, batch.SourceTo)
+	}
+	if chapterCount > 0 && sourceRange.To > chapterCount {
+		return fmt.Errorf("planner chapter %d source anchors expand source_range outside analyzed source chapter count %d", chapter.Chapter, chapterCount)
+	}
+	chapter.SourceRange = sourceRange
+	return nil
 }
 
 func plannerPreviousBatchChapters(groups ...[]domain.AdaptationChapterPlan) []domain.AdaptationChapterPlan {
@@ -4213,6 +4702,8 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 	expansionMaxTo int,
 	allowExpansion bool,
 	manifest *domain.AdaptationSourceManifest,
+	minTargetTo int,
+	requireSameSourceRange bool,
 	emit ProgressEmitter,
 	maxRepairAttempts int,
 	maxModelCallAttempts int,
@@ -4223,7 +4714,7 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 	text := initialText
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		batch, err := parseProposalVolumeRevisionSkeleton(text, originalBatch, expansionMaxTo, allowExpansion, manifest)
+		batch, err := parseProposalVolumeRevisionSkeleton(text, originalBatch, expansionMaxTo, allowExpansion, manifest, minTargetTo, requireSameSourceRange)
 		if err == nil {
 			return batch, nil
 		}
@@ -4232,7 +4723,7 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 			return plannerSkeletonBatch{}, lastErr
 		}
 		emitAdaptProgress(emit, StagePlan, attempt+1, maxRepairAttempts, fmt.Sprintf("卷剧情重规划返回不符合结构，正在修复第 %d/%d 次：%v", attempt+1, maxRepairAttempts, lastErr), lastErr)
-		repairedText, repairErr := repairProposalVolumeRevisionSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, originalBatch, expansionMaxTo, allowExpansion, lastErr, emit, maxModelCallAttempts)
+		repairedText, repairErr := repairProposalVolumeRevisionSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, originalBatch, expansionMaxTo, allowExpansion, minTargetTo, requireSameSourceRange, lastErr, emit, maxModelCallAttempts)
 		if repairErr != nil {
 			return plannerSkeletonBatch{}, repairErr
 		}
@@ -4240,15 +4731,15 @@ func collectProposalVolumeRevisionSkeletonWithRepair(
 	}
 }
 
-func parseProposalVolumeRevisionSkeleton(text string, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, manifest *domain.AdaptationSourceManifest) (plannerSkeletonBatch, error) {
+func parseProposalVolumeRevisionSkeleton(text string, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, manifest *domain.AdaptationSourceManifest, minTargetTo int, requireSameSourceRange bool) (plannerSkeletonBatch, error) {
 	skeleton, err := parsePlannerSkeleton(text)
 	if err != nil {
 		return plannerSkeletonBatch{}, err
 	}
-	return normalizeProposalVolumeRevisionSkeletonBatch(skeleton, originalBatch, expansionMaxTo, allowExpansion, manifest)
+	return normalizeProposalVolumeRevisionSkeletonBatch(skeleton, originalBatch, expansionMaxTo, allowExpansion, manifest, minTargetTo, requireSameSourceRange)
 }
 
-func normalizeProposalVolumeRevisionSkeletonBatch(skeleton plannerSkeleton, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, manifest *domain.AdaptationSourceManifest) (plannerSkeletonBatch, error) {
+func normalizeProposalVolumeRevisionSkeletonBatch(skeleton plannerSkeleton, originalBatch plannerSkeletonBatch, expansionMaxTo int, allowExpansion bool, manifest *domain.AdaptationSourceManifest, minTargetTo int, requireSameSourceRange bool) (plannerSkeletonBatch, error) {
 	if manifest == nil || manifest.ChapterCount <= 0 {
 		return plannerSkeletonBatch{}, fmt.Errorf("source manifest missing")
 	}
@@ -4321,6 +4812,9 @@ func normalizeProposalVolumeRevisionSkeletonBatch(skeleton plannerSkeleton, orig
 	if batch.SourceFrom <= 0 || batch.SourceTo < batch.SourceFrom || batch.SourceTo > manifest.ChapterCount {
 		return plannerSkeletonBatch{}, fmt.Errorf("volume revision has invalid source range %d-%d", batch.SourceFrom, batch.SourceTo)
 	}
+	if requireSameSourceRange && (batch.SourceFrom != originalBatch.SourceFrom || batch.SourceTo != originalBatch.SourceTo) {
+		return plannerSkeletonBatch{}, fmt.Errorf("volume revision source range must remain %d-%d, got %d-%d", originalBatch.SourceFrom, originalBatch.SourceTo, batch.SourceFrom, batch.SourceTo)
+	}
 	if strings.TrimSpace(batch.Title) == "" {
 		batch.Title = originalBatch.Title
 	}
@@ -4339,6 +4833,8 @@ func repairProposalVolumeRevisionSkeletonText(
 	originalBatch plannerSkeletonBatch,
 	expansionMaxTo int,
 	allowExpansion bool,
+	minTargetTo int,
+	requireSameSourceRange bool,
 	previousErr error,
 	emit ProgressEmitter,
 	maxModelCallAttempts int,
@@ -4350,6 +4846,18 @@ func repairProposalVolumeRevisionSkeletonText(
 		fmt.Sprintf("The batch target_to must be at least %d.", originalBatch.TargetTo),
 		"Do not return chapter details or a chapters array.",
 		"Do not return markdown or explanations.",
+	}
+	if minTargetTo > originalBatch.TargetTo {
+		requirements = append(requirements,
+			fmt.Sprintf("If preserving or closely rewriting source range %d-%d, prefer increasing target_to to at least %d so target chapters stay within the model chapter budget.", originalBatch.SourceFrom, originalBatch.SourceTo, minTargetTo),
+			`If the same lower chapter count is intentional because this rewrite deletes, merges, or compresses source material, keep target_to unchanged and state that rationale in summary or expansion_reason.`,
+			`Set expansion_decision to "expand" only when increasing target_to; otherwise use "keep".`,
+		)
+	}
+	if requireSameSourceRange {
+		requirements = append(requirements,
+			fmt.Sprintf("The batch source_from must remain %d and source_to must remain %d; do not shrink the source range to pass budget validation.", originalBatch.SourceFrom, originalBatch.SourceTo),
+		)
 	}
 	if allowExpansion {
 		requirements = append(requirements,
@@ -4672,9 +5180,9 @@ func repairPlannerBatchText(
 			fmt.Sprintf("The top-level object must be shaped exactly like {\"chapters\":[...]} with exactly chapters %d through %d.", batch.TargetFrom, batch.TargetTo),
 			"Do not return a single chapter object. Do not return only the missing chapter. Return the full requested batch.",
 			"Every chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
-			"If the previous error says a source_range needs more target chapters, this is a source_range distribution failure, not a numeric word_budget failure.",
-			"Do not fix a source_range budget error by lowering source_runes, lowering word_budget.max_runes, or keeping the same oversized source_range on the same few chapters.",
-			"Redistribute the offending source_range across the full requested batch: give each target chapter a chapter-sized source_range slice and anchors, and avoid repeating one large source_range unless enough target chapters share it to satisfy the error's minimum target chapter count.",
+			"If the previous error says a source_range needs more target chapters, this is a shared source_range budget coverage failure, not a numeric word_budget failure.",
+			"Do not fix a source_range budget error by lowering source_runes, lowering word_budget.max_runes, or moving source anchors outside the batch source range.",
+			"Repair the offending source_range across the full requested batch: chapters adapting the same coherent source arc may share one broad source_range, but each chapter's word_budget.source_runes must be only that chapter's share and source_chapters must stay inside the shared range.",
 			"Do not return only summaries, key_turns, overall_arc, markdown, or explanation.",
 		},
 	)
@@ -4842,7 +5350,9 @@ func plannerChapterBudgetPolicyForGranularity(granularity string) *plannerChapte
 		Tolerance:   adaptationPlannerModelChapterTolerance,
 		Notes: []string{
 			"For arc/free full-rewrite plans, choose enough target chapters so each chapter can stay within max_runes.",
-			"When one long source chapter or source range is split into multiple target chapters, divide its source runes and story beats across those targets instead of assigning the full source length to every target chapter.",
+			"source_range is a coverage envelope for planning, not a strict one-target-chapter-to-one-source-chapter mapping.",
+			"Several target chapters in the same batch may share the same broad source_range when they adapt one coherent source arc.",
+			"When one long source chapter or source range is covered by multiple target chapters, divide its source runes and story beats across those targets instead of assigning the full source length to every target chapter.",
 			"Set each word_budget.target_runes near target_runes when possible, and never set word_budget.max_runes above max_runes.",
 		},
 	}
@@ -5002,6 +5512,99 @@ func plannerSourceReportExcerpts(reports []domain.AdaptationSourceReport) []plan
 		})
 	}
 	return excerpts
+}
+
+func plannerSourceChapterSummariesInRange(manifest *domain.AdaptationSourceManifest, from, to, maxItems int) ([]plannerSourceChapterSummary, int) {
+	if manifest == nil || from <= 0 || to < from {
+		return nil, 0
+	}
+	chapters := make([]plannerSourceChapterSummary, 0, min(to-from+1, len(manifest.Chapters)))
+	for _, chapter := range manifest.Chapters {
+		if chapter.Chapter < from || chapter.Chapter > to {
+			continue
+		}
+		chapters = append(chapters, plannerSourceChapterSummary{
+			Chapter: chapter.Chapter,
+			Title:   clipText(chapter.Title, 80),
+			Runes:   chapter.Runes,
+		})
+	}
+	if len(chapters) <= maxItems || maxItems <= 0 {
+		return chapters, 0
+	}
+	head := maxItems / 2
+	tail := maxItems - head
+	out := make([]plannerSourceChapterSummary, 0, maxItems)
+	out = append(out, chapters[:head]...)
+	out = append(out, chapters[len(chapters)-tail:]...)
+	return out, len(chapters) - len(out)
+}
+
+func plannerBudgetRepairReportExcerpts(reports []domain.AdaptationSourceReport, maxItems int) ([]plannerSourceReportExcerpt, int) {
+	excerpts := plannerSourceReportExcerpts(reports)
+	if len(excerpts) <= maxItems || maxItems <= 0 {
+		return excerpts, 0
+	}
+	head := maxItems / 2
+	tail := maxItems - head
+	out := make([]plannerSourceReportExcerpt, 0, maxItems)
+	out = append(out, excerpts[:head]...)
+	out = append(out, excerpts[len(excerpts)-tail:]...)
+	return out, len(excerpts) - len(out)
+}
+
+func plannerSkeletonBudgetRepairVolumeSummary(batch plannerSkeletonBatch) plannerVolumeBudgetRepairVolumeSummary {
+	return plannerVolumeBudgetRepairVolumeSummary{
+		Index:      batch.Index,
+		Title:      clipText(batch.Title, 100),
+		Theme:      clipText(batch.Theme, 100),
+		Goal:       clipText(batch.Goal, 140),
+		Summary:    clipText(batch.Summary, 600),
+		TargetFrom: batch.TargetFrom,
+		TargetTo:   batch.TargetTo,
+		SourceFrom: batch.SourceFrom,
+		SourceTo:   batch.SourceTo,
+	}
+}
+
+func summarizePlannerVolumeForBudgetRepair(volume domain.AdaptationVolumePlan) plannerVolumeBudgetRepairVolumeSummary {
+	return plannerVolumeBudgetRepairVolumeSummary{
+		Index:      volume.Index,
+		Title:      clipText(volume.Title, 100),
+		Theme:      clipText(volume.Theme, 100),
+		Goal:       clipText(volume.Goal, 140),
+		Summary:    clipText(volume.Summary, 600),
+		TargetFrom: volume.TargetFrom,
+		TargetTo:   volume.TargetTo,
+		SourceFrom: volume.SourceFrom,
+		SourceTo:   volume.SourceTo,
+	}
+}
+
+func plannerVolumeBudgetRepairNeighborSummaries(volumes []domain.AdaptationVolumePlan, selectedIndex, neighborMax int) []plannerVolumeBudgetRepairVolumeSummary {
+	if len(volumes) == 0 || neighborMax <= 0 {
+		return nil
+	}
+	selectedPos := -1
+	for idx, volume := range volumes {
+		if volume.Index == selectedIndex {
+			selectedPos = idx
+			break
+		}
+	}
+	if selectedPos < 0 {
+		return nil
+	}
+	from := max(0, selectedPos-neighborMax)
+	to := min(len(volumes)-1, selectedPos+neighborMax)
+	out := make([]plannerVolumeBudgetRepairVolumeSummary, 0, to-from)
+	for idx := from; idx <= to; idx++ {
+		if idx == selectedPos {
+			continue
+		}
+		out = append(out, summarizePlannerVolumeForBudgetRepair(volumes[idx]))
+	}
+	return out
 }
 
 func clippedStringList(values []string, maxItems, maxRunes int) []string {
@@ -5263,6 +5866,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 		SourceReportNotes: []string{
 			"source_reports are clipped excerpts for the requested source range, not full raw reports.",
 			"Use source_range and source_chapters as factual anchors; do not copy source prose.",
+			"For arc/free full_rewrite, source_range is a broad coverage envelope, not a claim that the target chapter corresponds exactly to one original chapter.",
 		},
 		Requirements: []string{
 			"Return exactly one JSON object and no prose.",
@@ -5274,11 +5878,11 @@ func buildAdaptationPlannerBatchUserPrompt(
 			"Every returned chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
 			"Every source_chapters value must be within the batch source range and valid for the analyzed source.",
 			"Added/bridging chapters must still include source_chapters anchors.",
-			"Treat batch.source_from/source_to as the available parent source coverage for this detail call; each returned chapter's source_range must be that chapter's own adapted source slice, not a default copy of the whole parent range.",
-			"Do not assign the full parent source range to every chapter. Split long source chapters and long source ranges into distinct chapter-sized source_range slices across the parent skeleton target range.",
-			"If chapter_budget_policy is present, keep every word_budget.max_runes within chapter_budget_policy.max_runes; split the batch's source beats across the requested target chapters instead of giving each chapter the full source-range budget.",
-			"If a source_range has more source_runes than chapter_budget_policy.max_runes, assign that source_range across enough target chapters before the parent skeleton batch ends; do not leave an under-split source_range for final validation.",
-			"The host reviews source_range budget splitting as soon as the parent skeleton batch closes; a parent range that leaves a long source_range on too few target chapters will fail immediately and be retried.",
+			"Treat batch.source_from/source_to as the parent source coverage for this detail call. For full_rewrite, prefer setting every returned chapter's source_range to the full batch.source_from/source_to range unless the chapter is explicitly outside that source arc.",
+			"source_chapters should be sparse representative anchors inside source_range, not an exhaustive per-target mapping. Reusing the same anchors across chapters is allowed when the chapters share one source arc.",
+			"Do not use the target chapter number as a source chapter number unless that source chapter is actually inside batch.source_from/source_to.",
+			"If chapter_budget_policy is present, keep every word_budget.max_runes within chapter_budget_policy.max_runes; set word_budget.source_runes to this target chapter's share of the covered source material, not the full broad source_range total.",
+			"If the full batch source range has more source_runes than chapter_budget_policy.max_runes, cover it with enough target chapters in the parent skeleton batch; the host validates this at the parent batch level.",
 			"Use the user's adaptation brief and the skeleton batch goal; do not ignore earlier user planning.",
 			"Use previous_detail_chapters only for continuity, callbacks, and handoff hooks; do not duplicate already generated chapters.",
 		},
@@ -5505,6 +6109,9 @@ func normalizePlannerSkeleton(skeleton *plannerSkeleton, opts ProposalOptions, m
 	}
 	if lastTarget != skeleton.TargetChapterCount {
 		skeleton.TargetChapterCount = lastTarget
+	}
+	if budgetErrs := plannerSkeletonBudgetSplitErrors(skeleton.Batches, opts, manifest); len(budgetErrs) > 0 {
+		return budgetErrs
 	}
 	return nil
 }
@@ -5747,6 +6354,7 @@ func adaptationVolumesFromSkeleton(skeleton plannerSkeleton) []domain.Adaptation
 			TargetTo:   batch.TargetTo,
 			SourceFrom: batch.SourceFrom,
 			SourceTo:   batch.SourceTo,
+			Notes:      append(domain.TextList(nil), batch.Notes...),
 		})
 	}
 	return normalizeAdaptationProposalVolumes(volumes, skeleton.TargetChapterCount)
@@ -6418,44 +7026,11 @@ func validatePlannerProposal(
 			return fmt.Errorf("planner chapter %d scenes are empty", chapter.Chapter)
 		}
 		chapter.Scenes = trimmedNonEmpty(chapter.Scenes)
-		fillPlannerChapterWordBudgetDefaults(chapter, sourceRunesByChapter, opts.WordTolerance)
-		if err := validatePlannerWordBudget(chapter, opts.WordTolerance); err != nil {
+		if err := normalizePlannerChapterSourceCoverage(chapter, manifest.ChapterCount, nil, false); err != nil {
 			return err
 		}
-		if len(chapter.SourceChapters) == 0 {
-			if chapter.IsAdded {
-				return fmt.Errorf("planner added chapter %d has no source anchors", chapter.Chapter)
-			}
-			return fmt.Errorf("planner chapter %d has no source coverage", chapter.Chapter)
-		}
-		minSource, maxSource := 0, 0
-		seenInChapter := map[int]bool{}
 		for _, sourceChapter := range chapter.SourceChapters {
-			if sourceChapter <= 0 || sourceChapter > manifest.ChapterCount {
-				return fmt.Errorf("planner chapter %d references invalid source chapter %d", chapter.Chapter, sourceChapter)
-			}
-			if seenInChapter[sourceChapter] {
-				return fmt.Errorf("planner chapter %d repeats source chapter %d", chapter.Chapter, sourceChapter)
-			}
-			seenInChapter[sourceChapter] = true
 			covered[sourceChapter] = true
-			if minSource == 0 || sourceChapter < minSource {
-				minSource = sourceChapter
-			}
-			if sourceChapter > maxSource {
-				maxSource = sourceChapter
-			}
-		}
-		if chapter.SourceRange.From == 0 && chapter.SourceRange.To == 0 {
-			chapter.SourceRange = domain.SourceRange{From: minSource, To: maxSource}
-		}
-		if chapter.SourceRange.From <= 0 || chapter.SourceRange.To < chapter.SourceRange.From || chapter.SourceRange.To > manifest.ChapterCount {
-			return fmt.Errorf("planner chapter %d has invalid source_range %d-%d", chapter.Chapter, chapter.SourceRange.From, chapter.SourceRange.To)
-		}
-		for _, sourceChapter := range chapter.SourceChapters {
-			if sourceChapter < chapter.SourceRange.From || sourceChapter > chapter.SourceRange.To {
-				return fmt.Errorf("planner chapter %d source chapter %d falls outside source_range %d-%d", chapter.Chapter, sourceChapter, chapter.SourceRange.From, chapter.SourceRange.To)
-			}
 		}
 		if sourceRangeExplicit {
 			chapter.SourceChapters = expandSourceChaptersForRange(chapter.SourceChapters, chapter.SourceRange.From, chapter.SourceRange.To)
@@ -6463,13 +7038,18 @@ func validatePlannerProposal(
 				covered[sourceChapter] = true
 			}
 		}
+		fillPlannerChapterWordBudgetDefaults(chapter, sourceRunesByChapter, opts.WordTolerance)
+		if err := validatePlannerWordBudget(chapter, opts.WordTolerance); err != nil {
+			return err
+		}
 	}
 	for sourceChapter := 1; sourceChapter <= manifest.ChapterCount; sourceChapter++ {
 		if !covered[sourceChapter] {
 			return fmt.Errorf("planner proposal does not cover source chapter %d", sourceChapter)
 		}
 	}
-	budgetNormalized, err := normalizePlannerProposalChapterBudgets(proposal.Chapters, opts, sourceRunesByChapter)
+	acceptedBudgetRanges := plannerAcceptedBudgetDeviationRanges(normalizeAdaptationProposalVolumes(proposal.Volumes, len(proposal.Chapters)))
+	budgetNormalized, err := normalizePlannerProposalChapterBudgets(proposal.Chapters, opts, sourceRunesByChapter, acceptedBudgetRanges)
 	if err != nil {
 		return err
 	}
@@ -6585,7 +7165,7 @@ func formatPlannerBudgetSplitRanges(errs plannerProposalBudgetSplitErrors) strin
 	return strings.Join(parts, ", ")
 }
 
-func normalizePlannerProposalChapterBudgets(chapters []domain.AdaptationChapterPlan, opts ProposalOptions, sourceRunesByChapter map[int]int) (bool, error) {
+func normalizePlannerProposalChapterBudgets(chapters []domain.AdaptationChapterPlan, opts ProposalOptions, sourceRunesByChapter map[int]int, acceptedBudgetRanges []domain.SourceRange) (bool, error) {
 	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
 	if policy == nil {
 		return false, nil
@@ -6594,6 +7174,9 @@ func normalizePlannerProposalChapterBudgets(chapters []domain.AdaptationChapterP
 	groups := plannerChapterBudgetGroups(chapters, sourceRunesByChapter)
 	var splitErrs plannerProposalBudgetSplitErrors
 	for _, group := range groups {
+		if plannerBudgetGroupAcceptedByRange(group, acceptedBudgetRanges) {
+			continue
+		}
 		if err := plannerBudgetGroupSplitError(chapters, group, *policy); err != nil {
 			var splitErr *plannerProposalBudgetSplitError
 			if errors.As(err, &splitErr) && splitErr != nil {
@@ -6617,6 +7200,35 @@ func normalizePlannerProposalChapterBudgets(chapters []domain.AdaptationChapterP
 	return normalized, nil
 }
 
+func plannerAcceptedBudgetDeviationRanges(volumes []domain.AdaptationVolumePlan) []domain.SourceRange {
+	ranges := make([]domain.SourceRange, 0, len(volumes))
+	for _, volume := range volumes {
+		if !plannerVolumeBudgetDeviationAccepted(volume) {
+			continue
+		}
+		if volume.SourceFrom <= 0 || volume.SourceTo < volume.SourceFrom {
+			continue
+		}
+		ranges = append(ranges, domain.SourceRange{From: volume.SourceFrom, To: volume.SourceTo})
+	}
+	return ranges
+}
+
+func plannerBudgetGroupAcceptedByRange(group plannerChapterBudgetGroup, acceptedRanges []domain.SourceRange) bool {
+	if group.SourceFrom <= 0 || group.SourceTo < group.SourceFrom {
+		return false
+	}
+	for _, acceptedRange := range acceptedRanges {
+		if acceptedRange.From <= 0 || acceptedRange.To < acceptedRange.From {
+			continue
+		}
+		if group.SourceFrom >= acceptedRange.From && group.SourceTo <= acceptedRange.To {
+			return true
+		}
+	}
+	return false
+}
+
 func validatePlannerBatchChapterBudgetGroups(chapters []domain.AdaptationChapterPlan, previousChapters []domain.AdaptationChapterPlan, opts ProposalOptions, sourceRunesByChapter map[int]int, batch plannerSkeletonBatch) error {
 	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
 	if policy == nil {
@@ -6626,6 +7238,17 @@ func validatePlannerBatchChapterBudgetGroups(chapters []domain.AdaptationChapter
 		return nil
 	}
 	parentChapters := plannerDetailParentChapters(previousChapters, chapters, batch)
+	if plannerUsesSharedBatchSourceRange(opts, batch) {
+		if plannerBudgetDeviationAccepted(batch) {
+			return nil
+		}
+		if group := plannerParentBatchBudgetGroup(parentChapters, batch, sourceRunesByChapter); len(group.Indexes) > 0 {
+			if err := plannerBudgetGroupSplitError(parentChapters, group, *policy); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	groups := plannerChapterBudgetGroups(parentChapters, sourceRunesByChapter)
 	var splitErrs plannerProposalBudgetSplitErrors
 	for _, group := range groups {
@@ -6643,6 +7266,23 @@ func validatePlannerBatchChapterBudgetGroups(chapters []domain.AdaptationChapter
 		return splitErrs
 	}
 	return nil
+}
+
+func plannerParentBatchBudgetGroup(chapters []domain.AdaptationChapterPlan, batch plannerSkeletonBatch, sourceRunesByChapter map[int]int) plannerChapterBudgetGroup {
+	group := plannerChapterBudgetGroup{
+		SourceFrom:  batch.SourceFrom,
+		SourceTo:    batch.SourceTo,
+		SourceRunes: sourceRunesForRange(sourceRunesByChapter, batch.SourceFrom, batch.SourceTo),
+	}
+	parentFrom, parentTo := plannerDetailParentTargetRange(batch)
+	for index := range chapters {
+		chapter := chapters[index]
+		if parentFrom > 0 && parentTo >= parentFrom && (chapter.Chapter < parentFrom || chapter.Chapter > parentTo) {
+			continue
+		}
+		group.Indexes = append(group.Indexes, index)
+	}
+	return group
 }
 
 func plannerBudgetGroupSplitError(chapters []domain.AdaptationChapterPlan, group plannerChapterBudgetGroup, policy plannerChapterBudgetPolicy) error {

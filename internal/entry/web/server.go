@@ -253,6 +253,7 @@ func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
 			"cocreate_max_tokens":           cfg.EffectiveCoCreateMaxTokens(),
 			"model_call_max_attempts":       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
 			"structure_repair_max_attempts": cfg.EffectiveStructureRepairMaxAttempts(),
+			"budget_quality_max_attempts":   cfg.EffectiveBudgetQualityMaxAttempts(),
 			"roles":                         cfg.Roles,
 		},
 		"active_projects": s.sessions.ActiveProjectIDs(),

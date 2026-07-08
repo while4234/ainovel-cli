@@ -27,6 +27,22 @@ go.work.sum
 
 # env file
 .env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+auth.json
+credentials.json
+secrets.json
+secrets.*
 
 # 项目级配置 dotdir（镜像 ~/.ainovel/）：config.json 含密钥，rules/ 为本地写作偏好
 .ainovel/
