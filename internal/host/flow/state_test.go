@@ -50,3 +50,50 @@ func TestLoadStateUsesArcReviewCheckpointWhenReviewChapterDiffers(t *testing.T) 
 		t.Fatal("expected arc review to be recognized from arc-scope checkpoint")
 	}
 }
+
+func TestLoadStateIncludesOutlineRepairBatch(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Arcs: []domain.ArcOutline{
+			{
+				Index: 1,
+				Chapters: []domain.OutlineEntry{
+					{Title: "同题", CoreEvent: "同事件", Hook: "同钩子"},
+				},
+			},
+			{
+				Index: 2,
+				Chapters: []domain.OutlineEntry{
+					{Title: "同题", CoreEvent: "同事件", Hook: "同钩子"},
+				},
+			},
+		},
+	}}
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatalf("save layered outline: %v", err)
+	}
+	if err := st.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatalf("save outline: %v", err)
+	}
+	if err := st.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		Layered:           true,
+		CompletedChapters: []int{1, 2},
+	}); err != nil {
+		t.Fatalf("save progress: %v", err)
+	}
+
+	state := LoadState(st)
+
+	if state.OutlineRepair == nil || !state.OutlineRepair.Repairable() {
+		t.Fatalf("expected outline repair batch, got %+v", state.OutlineRepair)
+	}
+	if state.OutlineRepair.Volume != 1 || state.OutlineRepair.Arc != 2 {
+		t.Fatalf("expected V1 A2, got %+v", state.OutlineRepair)
+	}
+}

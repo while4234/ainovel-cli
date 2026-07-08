@@ -471,6 +471,69 @@ func TestSaveFoundationAppendVolume(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationRepairArc(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{Phase: domain.PhaseWriting, Flow: domain.FlowWriting, Layered: true}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Title: "第一卷",
+		Theme: "起步",
+		Arcs: []domain.ArcOutline{{
+			Index: 1,
+			Title: "首弧",
+			Goal:  "目标",
+			Chapters: []domain.OutlineEntry{
+				{Title: "旧一", CoreEvent: "旧事件一", Hook: "旧钩子一"},
+				{Title: "旧二", CoreEvent: "旧事件二", Hook: "旧钩子二"},
+			},
+		}},
+	}}
+	if err := s.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatalf("SaveLayeredOutline: %v", err)
+	}
+	if err := s.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(s)
+	args, err := json.Marshal(map[string]any{
+		"type":   "repair_arc",
+		"volume": 1,
+		"arc":    1,
+		"content": []map[string]any{
+			{"title": "新一", "core_event": "良逸改走侧门", "hook": "侧门留下青色符痕"},
+			{"title": "新二", "core_event": "苏幼仪设局反制", "hook": "她把钥匙交给敌人"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	res, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute repair_arc: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["type"] != "repair_arc" || result["chapters"] != float64(2) {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	outline, err := s.Outline.LoadOutline()
+	if err != nil {
+		t.Fatalf("LoadOutline: %v", err)
+	}
+	if len(outline) != 2 || outline[0].Chapter != 1 || outline[0].Title != "新一" || outline[1].Title != "新二" {
+		t.Fatalf("outline not repaired: %+v", outline)
+	}
+}
+
 func TestSaveFoundationAppendVolumeValidation(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

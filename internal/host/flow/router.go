@@ -43,6 +43,8 @@ type State struct {
 	// 基础设定缺项（规划阶段的补齐信号）。
 	FoundationMissing []string
 
+	OutlineRepair *storepkg.OutlineRepairBatch
+
 	AdaptationActive          bool
 	AdaptationPlannedChapters map[int]struct{}
 	AdaptationMaxChapter      int
@@ -54,16 +56,18 @@ type State struct {
 // 决策优先级（互斥，自上而下匹配第一个）：
 //  1. Phase=Complete        → nil（LLM 输出总结）
 //  2. Phase!=Writing        → nil（LLM 裁定规划师选型 / 规划补齐）
-//  3. PendingRewrites 非空  → writer 按队列重写/打磨
-//  4. Flow=Reviewing        → nil（editor 刚保存 review，verdict 分叉由工具层处理）
-//  5. Flow=Steering         → nil（用户干预处理中）
-//  6. 弧末评审缺失           → editor(arc review)
-//  7. 弧末评审有但弧摘要缺失  → editor(arc summary)
-//  8. 卷末弧摘要有但卷摘要缺失 → editor(volume summary)
-//  9. 下一弧是骨架           → architect_long(expand_arc)
+//  3. 大纲重复批次待修复       → architect_long(repair_arc)
+//  4. PendingRewrites 非空  → writer 按队列重写/打磨
+//  5. Flow=Reviewing        → nil（editor 刚保存 review，verdict 分叉由工具层处理）
+//  6. Flow=Steering         → nil（用户干预处理中）
+//  7. 弧末评审缺失           → editor(arc review)
+//  8. 弧末评审有但弧摘要缺失  → editor(arc summary)
+//  9. 卷末弧摘要有但卷摘要缺失 → editor(volume summary)
 //
-// 10. 卷末需决策下一卷       → architect_long(append_volume / complete_book)
-// 11. 其它                  → writer(写 next_chapter)
+// 10. 下一弧是骨架           → architect_long(expand_arc)
+//
+// 11. 卷末需决策下一卷       → architect_long(append_volume / complete_book)
+// 12. 其它                  → writer(写 next_chapter)
 func Route(s State) *Instruction {
 	p := s.Progress
 	if p == nil {
@@ -80,7 +84,15 @@ func Route(s State) *Instruction {
 		return nil
 	}
 
-	// 3. 重写/打磨队列优先（事实已在工具层落盘，Router 只照单派发）
+	if s.OutlineRepair != nil && s.OutlineRepair.Repairable() {
+		return &Instruction{
+			Agent:  "architect_long",
+			Task:   formatOutlineRepairTask(s.OutlineRepair),
+			Reason: fmt.Sprintf("outline duplicate: chapter %d repeats chapter %d", s.OutlineRepair.Duplicate.Chapter, s.OutlineRepair.Duplicate.ExistingChapter),
+		}
+	}
+
+	// 4. 重写/打磨队列优先（事实已在工具层落盘，Router 只照单派发）
 	if len(p.PendingRewrites) > 0 {
 		ch := p.PendingRewrites[0]
 		if !s.adaptationAllowsChapter(ch) {

@@ -24,6 +24,153 @@ func setupLayered(t *testing.T, volumes []domain.VolumeOutline) *Store {
 	return s
 }
 
+func TestFindDuplicateOutlineRepairBatchMapsDuplicateToLaterArc(t *testing.T) {
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Title: "第一卷",
+		Theme: "试炼",
+		Arcs: []domain.ArcOutline{
+			{
+				Index: 1,
+				Title: "入局",
+				Goal:  "立住目标",
+				Chapters: []domain.OutlineEntry{
+					{Title: "鹰符潜入", CoreEvent: "良逸发现妖风为幻象，找到祭台入口。", Hook: "苏幼仪被困。"},
+					{Title: "地宫追击", CoreEvent: "三人追入地宫，夺回半枚阵旗。", Hook: "阵旗反噬。"},
+				},
+			},
+			{
+				Index: 2,
+				Title: "破局",
+				Goal:  "识破骗局",
+				Chapters: []domain.OutlineEntry{
+					{Title: "鹰符潜入", CoreEvent: "良逸发现妖风为幻象，找到祭台入口。", Hook: "苏幼仪被困。"},
+					{Title: "黑风审讯", CoreEvent: "良逸逼问出密道钥匙。", Hook: "钥匙裂出血纹。"},
+				},
+			},
+		},
+	}}
+	s := setupLayered(t, volumes)
+	if err := s.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		Layered:           true,
+		CompletedChapters: []int{1, 2, 3},
+	}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+	progress, err := s.Progress.Load()
+	if err != nil {
+		t.Fatalf("Load progress: %v", err)
+	}
+
+	batch, err := s.FindDuplicateOutlineRepairBatch(progress)
+	if err != nil {
+		t.Fatalf("FindDuplicateOutlineRepairBatch: %v", err)
+	}
+	if batch == nil || !batch.Repairable() {
+		t.Fatalf("expected repairable batch, got %+v", batch)
+	}
+	if batch.Volume != 1 || batch.Arc != 2 {
+		t.Fatalf("expected V1 A2, got V%d A%d", batch.Volume, batch.Arc)
+	}
+	if batch.FromChapter != 3 || batch.ToChapter != 4 || batch.ChapterCount != 2 {
+		t.Fatalf("unexpected chapter range: %+v", batch)
+	}
+	if len(batch.CompletedChapters) != 1 || batch.CompletedChapters[0] != 3 {
+		t.Fatalf("completed chapters = %v, want [3]", batch.CompletedChapters)
+	}
+	if batch.Duplicate.Chapter != 3 || batch.Duplicate.ExistingChapter != 1 {
+		t.Fatalf("duplicate = %+v, want chapter 3 repeating chapter 1", batch.Duplicate)
+	}
+}
+
+func TestRepairArcOutlineUpdatesFlatLayeredAndAdaptationPlan(t *testing.T) {
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Title: "第一卷",
+		Theme: "试炼",
+		Arcs: []domain.ArcOutline{{
+			Index: 1,
+			Title: "首弧",
+			Goal:  "立住目标",
+			Chapters: []domain.OutlineEntry{
+				{Title: "旧一", CoreEvent: "旧事件一", Hook: "旧钩子一"},
+				{Title: "旧二", CoreEvent: "旧事件二", Hook: "旧钩子二"},
+			},
+		}},
+	}}
+	s := setupLayered(t, volumes)
+	if err := s.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Adaptation.SavePlan(domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityChapter,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Chapters: []domain.AdaptationChapterPlan{
+			{
+				Chapter:        1,
+				Title:          "旧一",
+				OutlineEntry:   domain.OutlineEntry{CoreEvent: "旧事件一", Hook: "旧钩子一"},
+				SourceChapters: []int{10},
+				WordBudget:     &domain.AdaptationChapterWordBudget{SourceRunes: 1000, TargetRunes: 2000, MinRunes: 1700, MaxRunes: 2300, Tolerance: 0.15},
+			},
+			{
+				Chapter:         2,
+				Title:           "旧二",
+				OutlineEntry:    domain.OutlineEntry{CoreEvent: "旧事件二", Hook: "旧钩子二"},
+				SourceChapters:  []int{11, 12},
+				RequiredChanges: []string{"保留旧线索"},
+				WordBudget:      &domain.AdaptationChapterWordBudget{SourceRunes: 1200, TargetRunes: 2200, MinRunes: 1900, MaxRunes: 2500, Tolerance: 0.15},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+
+	repaired := []domain.OutlineEntry{
+		{Title: "新一", CoreEvent: "良逸改从侧门潜入。", Hook: "侧门留下青色符痕。", Scenes: []string{"侧门", "符痕"}},
+		{Title: "新二", CoreEvent: "苏幼仪主动设局反制。", Hook: "她把钥匙交给敌人。", Scenes: []string{"赌局", "钥匙"}},
+	}
+	if err := s.RepairArcOutline(1, 1, repaired); err != nil {
+		t.Fatalf("RepairArcOutline: %v", err)
+	}
+
+	flat, err := s.Outline.LoadOutline()
+	if err != nil {
+		t.Fatalf("LoadOutline: %v", err)
+	}
+	if len(flat) != 2 || flat[1].Chapter != 2 || flat[1].Title != "新二" {
+		t.Fatalf("flat outline not repaired: %+v", flat)
+	}
+	layered, err := s.Outline.LoadLayeredOutline()
+	if err != nil {
+		t.Fatalf("LoadLayeredOutline: %v", err)
+	}
+	if got := layered[0].Arcs[0].Chapters[1]; got.Chapter != 2 || got.CoreEvent != "苏幼仪主动设局反制。" {
+		t.Fatalf("layered outline not repaired: %+v", got)
+	}
+	plan, err := s.Adaptation.LoadPlan()
+	if err != nil {
+		t.Fatalf("LoadPlan: %v", err)
+	}
+	if plan.Chapters[1].Title != "新二" || plan.Chapters[1].OutlineEntry.Hook != "她把钥匙交给敌人。" {
+		t.Fatalf("adaptation plan outline not repaired: %+v", plan.Chapters[1])
+	}
+	if len(plan.Chapters[1].SourceChapters) != 2 || plan.Chapters[1].SourceChapters[0] != 11 || plan.Chapters[1].SourceChapters[1] != 12 {
+		t.Fatalf("source anchors should be preserved: %+v", plan.Chapters[1].SourceChapters)
+	}
+	if len(plan.Chapters[1].RequiredChanges) != 1 || plan.Chapters[1].RequiredChanges[0] != "保留旧线索" {
+		t.Fatalf("required changes should be preserved: %+v", plan.Chapters[1].RequiredChanges)
+	}
+	if plan.Chapters[1].WordBudget == nil || plan.Chapters[1].WordBudget.TargetRunes != 2200 {
+		t.Fatalf("word budget should be preserved: %+v", plan.Chapters[1].WordBudget)
+	}
+}
+
 func TestCheckArcBoundaryNeedsNewVolume(t *testing.T) {
 	// 只有 1 卷 1 弧 1 章，且非 Final → 应触发 NeedsNewVolume
 	s := setupLayered(t, []domain.VolumeOutline{{

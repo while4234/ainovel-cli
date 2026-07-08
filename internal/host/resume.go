@@ -65,6 +65,12 @@ func describeResume(store *storepkg.Store, progress *domain.Progress) string {
 		if pending, _ := store.Signals.LoadPendingCommit(); pending != nil {
 			return fmt.Sprintf("恢复：第 %d 章提交中断", pending.Chapter)
 		}
+		if repair, _ := store.FindDuplicateOutlineRepairBatch(progress); repair != nil {
+			if repair.Repairable() {
+				return fmt.Sprintf("恢复：重复大纲待修复（V%d A%d）", repair.Volume, repair.Arc)
+			}
+			return "恢复：重复大纲待人工处理"
+		}
 		if len(progress.PendingRewrites) > 0 {
 			verb := "重写"
 			if progress.Flow == domain.FlowPolishing {

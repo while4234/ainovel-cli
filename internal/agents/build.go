@@ -488,7 +488,7 @@ func decodeSaveFoundationResult(toolName string, result json.RawMessage) saveFou
 func architectLongShouldStopAfterToolResult(toolName string, result json.RawMessage) bool {
 	r := decodeSaveFoundationResult(toolName, result)
 	switch r.Type {
-	case "expand_arc", "complete_book":
+	case "expand_arc", "repair_arc", "complete_book":
 		return true
 	default:
 		return false

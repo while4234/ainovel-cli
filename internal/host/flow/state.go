@@ -18,6 +18,10 @@ func LoadState(store *storepkg.Store) State {
 	}
 	s.Progress = progress
 
+	if repair, rerr := store.FindDuplicateOutlineRepairBatch(progress); rerr == nil && repair != nil {
+		s.OutlineRepair = repair
+	}
+
 	if n := len(progress.CompletedChapters); n > 0 {
 		s.LastCompleted = progress.CompletedChapters[n-1]
 	}

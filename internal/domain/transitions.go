@@ -19,7 +19,7 @@ import (
 //	writing   -> reviewing / rewriting / polishing / steering / writing
 //	reviewing -> writing / rewriting / polishing / steering / reviewing
 //	rewriting -> writing / steering / rewriting
-//	polishing -> writing / steering / polishing
+//	polishing -> writing / rewriting / steering / polishing
 //	steering  -> writing / reviewing / rewriting / polishing / steering
 //
 // 空状态（零值）视为“未初始化”，允许迁移到任意合法非空状态。
@@ -74,7 +74,7 @@ func CanTransitionFlow(from, to FlowState) bool {
 	case FlowRewriting:
 		return to == FlowWriting || to == FlowSteering
 	case FlowPolishing:
-		return to == FlowWriting || to == FlowSteering
+		return to == FlowWriting || to == FlowRewriting || to == FlowSteering
 	case FlowSteering:
 		return to == FlowWriting || to == FlowReviewing || to == FlowRewriting || to == FlowPolishing
 	default:

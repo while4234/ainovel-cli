@@ -60,6 +60,37 @@ func TestRoute_PendingRewritesFirst(t *testing.T) {
 	}
 }
 
+func TestRoute_OutlineRepairPrecedesPendingRewrites(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3}, domain.FlowRewriting)
+	p.PendingRewrites = []int{3}
+	got := Route(State{
+		Progress: p,
+		OutlineRepair: &storepkg.OutlineRepairBatch{
+			Volume:       1,
+			Arc:          2,
+			FromChapter:  3,
+			ToChapter:    4,
+			ChapterCount: 2,
+			Duplicate: domain.OutlineDuplicate{
+				Chapter:         3,
+				ExistingChapter: 1,
+				Title:           "鹰符潜入",
+			},
+		},
+	})
+	if got == nil || got.Agent != "architect_long" {
+		t.Fatalf("expected architect_long repair before writer, got %+v", got)
+	}
+	if got.Chapter != 0 {
+		t.Fatalf("repair dispatch should not target a writer chapter, got %d", got.Chapter)
+	}
+	for _, want := range []string{"repair_arc", "volume=1", "arc=2", "exactly 2"} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("repair task missing %q: %s", want, got.Task)
+		}
+	}
+}
+
 func TestRoute_PendingPolishingVerb(t *testing.T) {
 	p := writingProgress([]int{1}, domain.FlowPolishing)
 	p.PendingRewrites = []int{2}

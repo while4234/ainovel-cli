@@ -24,7 +24,7 @@ func NewSaveFoundationTool(store *store.Store) *SaveFoundationTool {
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
 func (t *SaveFoundationTool) Description() string {
-	return "保存小说基础设定（premise/outline/characters/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?}。type 可选 premise / outline / layered_outline / characters / world_rules / expand_arc / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。expand_arc 展开骨架弧的详细章节（需 volume + arc）；append_volume 追加新卷（content 为完整 VolumeOutline JSON，含弧结构）；update_compass 更新终局方向（content 为 StoryCompass JSON）；complete_book 宣告全书完结（content 传空对象 {}，直接推 Phase=Complete；调用前必须先通过终卷判定清单，且无返工队列）。scale 可选，仅允许 short / mid / long。"
+	return "保存小说基础设定（premise/outline/characters/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?}。type 可选 premise / outline / layered_outline / characters / world_rules / expand_arc / repair_arc / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。expand_arc 展开骨架弧的详细章节（需 volume + arc）；repair_arc 修复已展开弧的大纲且必须保持章节数不变；append_volume 追加新卷（content 为完整 VolumeOutline JSON，含弧结构）；update_compass 更新终局方向（content 为 StoryCompass JSON）；complete_book 宣告全书完结（content 传空对象 {}，直接推 Phase=Complete；调用前必须先通过终卷判定清单，且无返工队列）。scale 可选，仅允许 short / mid / long。"
 }
 func (t *SaveFoundationTool) Label() string { return "保存设定" }
 
@@ -34,13 +34,13 @@ func (t *SaveFoundationTool) ConcurrencySafe(_ json.RawMessage) bool { return fa
 
 func (t *SaveFoundationTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("type", schema.Enum("设定类型。建议显式传；若缺失，工具会在内容和当前缺失项唯一明确时自动推断。", "premise", "outline", "layered_outline", "characters", "world_rules", "expand_arc", "append_volume", "update_compass", "complete_book")),
+		schema.Property("type", schema.Enum("设定类型。建议显式传；若缺失，工具会在内容和当前缺失项唯一明确时自动推断。", "premise", "outline", "layered_outline", "characters", "world_rules", "expand_arc", "repair_arc", "append_volume", "update_compass", "complete_book")),
 		schema.Property("content", map[string]any{
-			"description": "内容。premise 传 Markdown 字符串；其他类型直接传 JSON 数组或对象即可，也兼容传 JSON 字符串。expand_arc 时传章节数组。",
+			"description": "内容。premise 传 Markdown 字符串；其他类型直接传 JSON 数组或对象即可，也兼容传 JSON 字符串。expand_arc / repair_arc 时传章节数组。",
 		}).Required(),
 		schema.Property("scale", schema.Enum("规划级别", "short", "mid", "long")),
-		schema.Property("volume", schema.Int("目标卷序号（仅 expand_arc 时必传）")),
-		schema.Property("arc", schema.Int("目标弧序号（仅 expand_arc 时必传）")),
+		schema.Property("volume", schema.Int("目标卷序号（expand_arc / repair_arc 时必传）")),
+		schema.Property("arc", schema.Int("目标弧序号（expand_arc / repair_arc 时必传）")),
 	)
 }
 
@@ -84,10 +84,10 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		return nil, fmt.Errorf("改编模式已由 confirmed plan 锁定章节规模，不允许 %s；如需增删或重排章节，请重新生成规模提案并确认: %w", a.Type, errs.ErrToolPrecondition)
 	}
 
-	// 写作阶段禁止全量覆盖大纲，只允许增量操作（expand_arc / append_volume）
+	// 写作阶段禁止全量覆盖大纲，只允许增量操作（expand_arc / repair_arc / append_volume）
 	if (a.Type == "outline" || a.Type == "layered_outline") && t.isWriting() {
 		return nil, fmt.Errorf(
-			"写作阶段禁止使用 %s 全量覆盖大纲。请使用 expand_arc 展开骨架弧，或 append_volume 追加新卷: %w", a.Type, errs.ErrToolPrecondition)
+			"写作阶段禁止使用 %s 全量覆盖大纲。请使用 expand_arc 展开骨架弧、repair_arc 修复已展开弧，或 append_volume 追加新卷: %w", a.Type, errs.ErrToolPrecondition)
 	}
 
 	decode := func(typeName string, out any) error {
@@ -190,6 +190,24 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, err
 		}
 
+	case "repair_arc":
+		if a.Volume <= 0 || a.Arc <= 0 {
+			return nil, fmt.Errorf("repair_arc requires volume and arc parameters: %w", errs.ErrToolArgs)
+		}
+		var chapters []domain.OutlineEntry
+		if err := decode("repair_arc chapters", &chapters); err != nil {
+			return nil, err
+		}
+		if err := t.store.RepairArcOutline(a.Volume, a.Arc, chapters); err != nil {
+			return nil, fmt.Errorf("repair arc: %w: %w", errs.ErrStoreWrite, err)
+		}
+		result["volume"] = a.Volume
+		result["arc"] = a.Arc
+		result["chapters"] = len(chapters)
+		if err := t.refreshWordBudgetPlan(result); err != nil {
+			return nil, err
+		}
+
 	case "append_volume":
 		if p, _ := t.store.Progress.Load(); p != nil && p.Phase == domain.PhaseComplete {
 			return nil, fmt.Errorf("全书已完结（phase=complete），不允许追加新卷: %w", errs.ErrToolPrecondition)
@@ -254,12 +272,12 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		result["last_updated"] = compass.LastUpdated
 
 	default:
-		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/world_rules/expand_arc/append_volume/update_compass/complete_book: %w", a.Type, errs.ErrToolArgs)
+		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/world_rules/expand_arc/repair_arc/append_volume/update_compass/complete_book: %w", a.Type, errs.ErrToolArgs)
 	}
 
 	// checkpoint
 	scope := domain.GlobalScope()
-	if a.Type == "expand_arc" {
+	if a.Type == "expand_arc" || a.Type == "repair_arc" {
 		scope = domain.ArcScope(a.Volume, a.Arc)
 	} else if a.Type == "append_volume" {
 		scope = domain.GlobalScope()
@@ -314,7 +332,7 @@ func foundationArtifact(t string) string {
 		return "premise.md"
 	case "outline":
 		return "outline.json"
-	case "layered_outline", "expand_arc", "append_volume":
+	case "layered_outline", "expand_arc", "repair_arc", "append_volume":
 		return "layered_outline.json"
 	case "complete_book":
 		return "meta/progress.json"

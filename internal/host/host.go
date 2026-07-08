@@ -530,6 +530,11 @@ func (h *Host) Resume() (string, error) {
 	}
 	h.mu.Unlock()
 
+	outlineRepair, err := prepareResumeOutlineRepair(h.store)
+	if err != nil {
+		return "", err
+	}
+
 	prompt, label, err := buildResumePrompt(h.store)
 	if err != nil {
 		return "", err
@@ -543,6 +548,10 @@ func (h *Host) Resume() (string, error) {
 
 	slog.Info("恢复创作", "module", "host", "label", label)
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "恢复创作: " + label, Level: "info"})
+	if notice := formatResumeOutlineRepairNotice(outlineRepair); notice != "" {
+		slog.Warn("恢复前重复大纲处理", "module", "host", "detail", notice)
+		h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: notice, Level: "warn"})
+	}
 	for _, w := range h.store.CheckConsistency() {
 		slog.Warn("一致性告警", "module", "host", "detail", w)
 		h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "一致性告警: " + w, Level: "warn"})

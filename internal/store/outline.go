@@ -277,7 +277,63 @@ func (s *OutlineStore) expandArcUnlocked(volumeIdx, arcIdx int, chapters []domai
 	return volumes, nil
 }
 
-// appendVolumeUnlocked 内部方法，在 Store.AppendVolume 跨域协调中调用。
+// replaceArcChaptersUnlocked 内部方法，在 Store.RepairArcOutline 跨域协调中调用。
+func (s *OutlineStore) replaceArcChaptersUnlocked(volumeIdx, arcIdx int, chapters []domain.OutlineEntry) ([]domain.VolumeOutline, []domain.OutlineEntry, error) {
+	var volumes []domain.VolumeOutline
+	if err := s.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
+		return nil, nil, fmt.Errorf("load layered_outline: %w", err)
+	}
+
+	globalChapter := 1
+	var repaired []domain.OutlineEntry
+	found := false
+	for vi := range volumes {
+		for ai := range volumes[vi].Arcs {
+			arc := &volumes[vi].Arcs[ai]
+			arcLen := len(arc.Chapters)
+			if volumes[vi].Index != volumeIdx || arc.Index != arcIdx {
+				globalChapter += arcLen
+				continue
+			}
+			if arcLen == 0 {
+				return nil, nil, fmt.Errorf("arc V%d A%d is not expanded", volumeIdx, arcIdx)
+			}
+			if len(chapters) != arcLen {
+				return nil, nil, fmt.Errorf("repair_arc V%d A%d must keep %d chapters, got %d", volumeIdx, arcIdx, arcLen, len(chapters))
+			}
+			repaired = make([]domain.OutlineEntry, len(chapters))
+			for i := range chapters {
+				entry := chapters[i]
+				entry.Chapter = globalChapter + i
+				repaired[i] = entry
+			}
+			arc.Chapters = repaired
+			found = true
+			break
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		return nil, nil, fmt.Errorf("arc not found: volume=%d arc=%d", volumeIdx, arcIdx)
+	}
+	if err := s.io.WriteJSONUnlocked("layered_outline.json", volumes); err != nil {
+		return nil, nil, err
+	}
+	if err := s.io.WriteMarkdownUnlocked("layered_outline.md", renderLayeredOutline(volumes)); err != nil {
+		return nil, nil, err
+	}
+	flat := domain.FlattenOutline(volumes)
+	if err := s.io.WriteJSONUnlocked("outline.json", flat); err != nil {
+		return nil, nil, err
+	}
+	if err := s.io.WriteMarkdownUnlocked("outline.md", renderOutline(flat)); err != nil {
+		return nil, nil, err
+	}
+	return volumes, repaired, nil
+}
+
 func (s *OutlineStore) appendVolumeUnlocked(vol domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 	var volumes []domain.VolumeOutline
 	if err := s.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
