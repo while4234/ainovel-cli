@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest tooling change: current local commit
+  `chore: keep web static line endings stable`:
+  Added `.gitattributes` rules that keep tracked embedded Web static output
+  (`internal/entry/web/static/index.html`, CSS, and JS assets) as LF on
+  Windows. This matches Vite build output under `core.autocrlf=true`, so
+  running the Web build or restart script should no longer leave these tracked
+  static files dirty with line-ending-only changes. Validation passed for two
+  `npm.cmd run build` runs from `internal/entry/web/ui`; after the second
+  build, Git status showed only the intentional `.gitattributes` addition and
+  no static asset modifications. The running Web service was not restarted for
+  this tooling-only fix per user request.
 - Latest source/runtime change: current local commit
   `fix: include source-map budget notes in initial prompt`:
   Source-map skeleton prompts now include concrete per-entry
