@@ -3244,12 +3244,33 @@ func (h *Host) reportAdaptationFailover(ev bootstrap.FailoverEvent) {
 		"to", to,
 		"reason", ev.Reason,
 		"err", ev.Err)
+	if !strings.HasPrefix(ev.Reason, bootstrap.RuntimeFallbackPoolReasonPrefix) {
+		h.promoteAdaptationFailoverTarget(ev)
+	}
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
 		Summary:  fmt.Sprintf("改编准备模型切换：%s -> %s（%s）", from, to, ev.Reason),
 		Level:    "warn",
 	})
+}
+
+func (h *Host) promoteAdaptationFailoverTarget(ev bootstrap.FailoverEvent) {
+	provider := strings.TrimSpace(ev.ToProvider)
+	model := strings.TrimSpace(ev.ToModel)
+	if provider == "" || model == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err := h.switchModelLocked("default", provider, model); err != nil {
+		slog.Warn("promote adaptation failover model failed",
+			"module", "host",
+			"provider", provider,
+			"model", model,
+			"err", err,
+		)
+	}
 }
 
 // Simulate 读取 simulate 目录并生成或增量更新仿写画像。

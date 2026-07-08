@@ -3886,6 +3886,42 @@ func TestBuildAdaptationProposalDetailsResumesCompletedRuntimeBatch(t *testing.T
 	}
 }
 
+func TestShouldRetryPlannerGenerateStopsOnNonRetryableProviderError(t *testing.T) {
+	err := nonRetryablePlannerError{msg: "rate_limit_exceeded"}
+
+	if shouldRetryPlannerGenerate(context.Background(), err, 1, 14) {
+		t.Fatal("non-retryable provider error should stop planner generate retries")
+	}
+}
+
+func TestShouldRetryPlannerGenerateStopsOnHardLimitMessage(t *testing.T) {
+	err := fmt.Errorf("rate_limit_exceeded")
+
+	if shouldRetryPlannerGenerate(context.Background(), err, 1, 14) {
+		t.Fatal("hard provider limit message should stop planner generate retries")
+	}
+}
+
+func TestShouldRetryPlannerGenerateRetriesTemporaryRateLimitMessage(t *testing.T) {
+	err := fmt.Errorf("too many requests")
+
+	if !shouldRetryPlannerGenerate(context.Background(), err, 1, 14) {
+		t.Fatal("temporary rate limit message should remain retryable")
+	}
+}
+
+type nonRetryablePlannerError struct {
+	msg string
+}
+
+func (e nonRetryablePlannerError) Error() string {
+	return e.msg
+}
+
+func (e nonRetryablePlannerError) Retryable() bool {
+	return false
+}
+
 func plannerBudgetProposalJSON(planFields string, chapterFields string, wordBudget string) string {
 	if strings.TrimSpace(planFields) != "" {
 		planFields = strings.TrimSpace(planFields) + ","

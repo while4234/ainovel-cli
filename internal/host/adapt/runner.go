@@ -4565,6 +4565,13 @@ func shouldRetryPlannerGenerate(ctx context.Context, err error, attempt, maxAtte
 	if err == nil || ctx.Err() != nil || attempt >= maxAttempts {
 		return false
 	}
+	var retryable interface{ Retryable() bool }
+	if errors.As(err, &retryable) && !retryable.Retryable() {
+		return false
+	}
+	if isPlannerHardLimitError(err) {
+		return false
+	}
 	if agentcore.IsFailoverEligible(err) {
 		return true
 	}
@@ -4582,6 +4589,22 @@ func shouldRetryPlannerGenerate(ctx context.Context, err error, attempt, maxAtte
 		strings.Contains(msg, "rate limit") ||
 		strings.Contains(msg, "429") ||
 		strings.Contains(msg, "503")
+}
+
+func isPlannerHardLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "rate_limit_exceeded") ||
+		strings.Contains(msg, "insufficient_quota") ||
+		strings.Contains(msg, "quota_exceeded") ||
+		strings.Contains(msg, "quota exhausted") ||
+		strings.Contains(msg, "usage limit reached") ||
+		strings.Contains(msg, "usage limit exceeded") ||
+		strings.Contains(msg, "monthly usage limit") ||
+		strings.Contains(msg, "balance not enough") ||
+		strings.Contains(msg, "insufficient balance")
 }
 
 type plannerBatchChapterValidatorFunc func([]domain.AdaptationChapterPlan) error
