@@ -3093,7 +3093,7 @@ func buildPlannerVolumeSkeletonFromSourceMap(
 		if err != nil {
 			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d llm generate: %w", entry.Index, err)
 		}
-		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.LLM, systemPrompt, prompt, text, entry, opts.EmitProgress, sourceIndex+1, len(sourceMap), deps.budgetQualityMaxAttempts(), deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
+		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.LLM, systemPrompt, prompt, text, entry, opts.Granularity, opts.EmitProgress, sourceIndex+1, len(sourceMap), deps.budgetQualityMaxAttempts(), deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 		if err != nil {
 			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d: %w", entry.Index, err)
 		}
@@ -3135,6 +3135,7 @@ func collectPlannerSourceMapSkeletonBatches(
 	originalPrompt string,
 	initialText string,
 	entry plannerSourceMapEntry,
+	granularity string,
 	emit ProgressEmitter,
 	current int,
 	total int,
@@ -3155,7 +3156,7 @@ func collectPlannerSourceMapSkeletonBatches(
 	for {
 		skeleton, err := parsePlannerSourceMapSkeleton(text)
 		if err == nil {
-			batches, berr := normalizePlannerSourceMapSkeletonBatches(skeleton.Batches, entry)
+			batches, berr := normalizePlannerSourceMapSkeletonBatchesForGranularity(skeleton.Batches, entry, granularity)
 			if berr == nil {
 				return batches, nil
 			}
@@ -3163,7 +3164,7 @@ func collectPlannerSourceMapSkeletonBatches(
 			if errors.As(berr, &budgetErr) {
 				lastErr = budgetErr
 				if qualityAttempts >= maxQualityAttempts {
-					accepted, acceptErr := normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviation(skeleton.Batches, entry)
+					accepted, acceptErr := normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviationForGranularity(skeleton.Batches, entry, granularity)
 					if acceptErr == nil {
 						markPlannerBudgetDeviationAccepted(accepted)
 						emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批章节预算连续偏离预期，已按模型改编判断继续：%v", current, total, lastErr), lastErr)
@@ -3279,11 +3280,23 @@ func plannerChapterBudgetRepairInstructions(err error) []string {
 	}
 }
 
-func plannerSourceMapBudgetNotes(entries []plannerSourceMapEntry) []string {
+func plannerSourceMapBudgetNotes(entries []plannerSourceMapEntry, granularity string) []string {
 	notes := make([]string, 0, len(entries))
+	enforceSourceRuneSplitting := plannerEnforcesSourceRuneSplitting(granularity)
 	for _, entry := range entries {
 		minTargetCount := plannerSourceMapBudgetMinTargetChapters(entry)
 		if minTargetCount <= 1 || entry.SourceRunes <= adaptationPlannerModelChapterMaxRunes {
+			continue
+		}
+		if !enforceSourceRuneSplitting {
+			notes = append(notes, fmt.Sprintf(
+				"source_map entry %d range %d-%d has source_runes=%d; for free/full_rewrite, treat source_runes as density and context scale only, not as a minimum target chapter count. Choose chapter_count from the new story structure while keeping each target chapter word_budget.max_runes within %d runes.",
+				entry.Index,
+				entry.SourceFrom,
+				entry.SourceTo,
+				entry.SourceRunes,
+				adaptationPlannerModelChapterMaxRunes,
+			))
 			continue
 		}
 		notes = append(notes, fmt.Sprintf(
@@ -3300,14 +3313,22 @@ func plannerSourceMapBudgetNotes(entries []plannerSourceMapEntry) []string {
 }
 
 func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
-	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false)
+	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false, true)
 }
 
 func normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviation(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
-	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, true)
+	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, true, true)
 }
 
-func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, allowBudgetDeviation bool) ([]plannerSkeletonBatch, error) {
+func normalizePlannerSourceMapSkeletonBatchesForGranularity(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, granularity string) ([]plannerSkeletonBatch, error) {
+	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false, plannerEnforcesSourceRuneSplitting(granularity))
+}
+
+func normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviationForGranularity(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, granularity string) ([]plannerSkeletonBatch, error) {
+	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, true, plannerEnforcesSourceRuneSplitting(granularity))
+}
+
+func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, allowBudgetDeviation bool, enforceSourceRuneSplitting bool) ([]plannerSkeletonBatch, error) {
 	if len(batches) == 0 {
 		return nil, fmt.Errorf("no batches")
 	}
@@ -3343,9 +3364,11 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 		sourceSpan := batch.SourceTo - batch.SourceFrom + 1
 		minCount, maxCount := plannerSourceMapChapterBudgetReviewRange(sourceSpan)
 		hardMinCount := plannerSourceMapBudgetMinTargetChaptersForRange(entry, batch.SourceFrom, batch.SourceTo)
-		minCount = max(minCount, hardMinCount)
+		if enforceSourceRuneSplitting {
+			minCount = max(minCount, hardMinCount)
+		}
 		maxCount = max(maxCount, minCount)
-		if !allowBudgetDeviation && count < hardMinCount {
+		if enforceSourceRuneSplitting && !allowBudgetDeviation && count < hardMinCount {
 			return nil, &plannerChapterBudgetQualityError{
 				BatchIndex: idx + 1,
 				Count:      count,
@@ -3361,7 +3384,7 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 				Direction: "low",
 			}
 		}
-		if !allowBudgetDeviation && count < minCount {
+		if enforceSourceRuneSplitting && !allowBudgetDeviation && count < minCount {
 			return nil, &plannerChapterBudgetQualityError{
 				BatchIndex: idx + 1,
 				Count:      count,
@@ -3372,7 +3395,7 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 				Direction:  "low",
 			}
 		}
-		if !allowBudgetDeviation && count > maxCount {
+		if enforceSourceRuneSplitting && !allowBudgetDeviation && count > maxCount {
 			return nil, &plannerChapterBudgetQualityError{
 				BatchIndex: idx + 1,
 				Count:      count,
@@ -3418,7 +3441,7 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 	}
 	targetCount := plannerSkeletonBatchTargetCount(out)
 	minTargetCount := plannerSourceMapBudgetMinTargetChapters(entry)
-	if !allowBudgetDeviation && minTargetCount > 0 && targetCount < minTargetCount {
+	if enforceSourceRuneSplitting && !allowBudgetDeviation && minTargetCount > 0 && targetCount < minTargetCount {
 		return nil, &plannerChapterBudgetQualityError{
 			Count:       targetCount,
 			MinCount:    minTargetCount,
@@ -3495,7 +3518,7 @@ func plannerBudgetRangeKey(sourceFrom, sourceTo int) string {
 func plannerSkeletonBudgetSplitErrors(batches []plannerSkeletonBatch, opts ProposalOptions, manifest *domain.AdaptationSourceManifest) plannerProposalBudgetSplitErrors {
 	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
 	sourceRunesByChapter := sourceRunesByChapter(manifest)
-	if policy == nil || len(sourceRunesByChapter) == 0 {
+	if policy == nil || !plannerEnforcesSourceRuneSplitting(opts.Granularity) || len(sourceRunesByChapter) == 0 {
 		return nil
 	}
 	var splitErrs plannerProposalBudgetSplitErrors
@@ -3541,7 +3564,7 @@ func plannerSkeletonBatchMinTargetTo(batch plannerSkeletonBatch, opts ProposalOp
 
 func plannerSkeletonBatchMinTargetCount(batch plannerSkeletonBatch, opts ProposalOptions, manifest *domain.AdaptationSourceManifest) int {
 	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
-	if policy == nil || manifest == nil {
+	if policy == nil || !plannerEnforcesSourceRuneSplitting(opts.Granularity) || manifest == nil {
 		return 0
 	}
 	sourceRunes := sourceRunesForRange(sourceRunesByChapter(manifest), batch.SourceFrom, batch.SourceTo)
@@ -4074,7 +4097,7 @@ func plannerBudgetSplitErrorsFromError(err error) plannerProposalBudgetSplitErro
 
 func plannerRuntimeCompletedBudgetSplitErrors(runtime *domain.AdaptationProposalRuntime, opts ProposalOptions, manifest *domain.AdaptationSourceManifest) plannerProposalBudgetSplitErrors {
 	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
-	if runtime == nil || runtime.Skeleton == nil || policy == nil {
+	if runtime == nil || runtime.Skeleton == nil || policy == nil || !plannerEnforcesSourceRuneSplitting(opts.Granularity) {
 		return nil
 	}
 	sourceRunesByChapter := sourceRunesByChapter(manifest)
@@ -5344,18 +5367,31 @@ func plannerChapterBudgetPolicyForGranularity(granularity string) *plannerChapte
 	if domain.AdaptationRewritePolicyForGranularity(granularity) != domain.AdaptationRewriteFullRewrite {
 		return nil
 	}
+	notes := []string{
+		"source_range is a coverage envelope for planning, not a strict one-target-chapter-to-one-source-chapter mapping.",
+		"Several target chapters in the same batch may share the same broad source_range when they adapt one coherent source arc.",
+		"When one long source chapter or source range is covered by multiple target chapters, divide its source runes and story beats across those targets instead of assigning the full source length to every target chapter.",
+		"Set each word_budget.target_runes near target_runes when possible, and never set word_budget.max_runes above max_runes.",
+	}
+	if plannerEnforcesSourceRuneSplitting(granularity) {
+		notes = append([]string{
+			"For arc full-rewrite plans, choose enough target chapters so each chapter can stay within max_runes.",
+		}, notes...)
+	} else {
+		notes = append([]string{
+			"For free full-rewrite plans, this policy limits each generated target chapter; source_runes is not a minimum target chapter count.",
+		}, notes...)
+	}
 	return &plannerChapterBudgetPolicy{
 		TargetRunes: adaptationPlannerModelChapterTargetRunes,
 		MaxRunes:    adaptationPlannerModelChapterMaxRunes,
 		Tolerance:   adaptationPlannerModelChapterTolerance,
-		Notes: []string{
-			"For arc/free full-rewrite plans, choose enough target chapters so each chapter can stay within max_runes.",
-			"source_range is a coverage envelope for planning, not a strict one-target-chapter-to-one-source-chapter mapping.",
-			"Several target chapters in the same batch may share the same broad source_range when they adapt one coherent source arc.",
-			"When one long source chapter or source range is covered by multiple target chapters, divide its source runes and story beats across those targets instead of assigning the full source length to every target chapter.",
-			"Set each word_budget.target_runes near target_runes when possible, and never set word_budget.max_runes above max_runes.",
-		},
+		Notes:       notes,
 	}
+}
+
+func plannerEnforcesSourceRuneSplitting(granularity string) bool {
+	return domain.NormalizeAdaptationGranularity(granularity) == domain.AdaptationGranularityArc
 }
 
 type plannerSourceMapEntry struct {
@@ -5733,6 +5769,25 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 	sourceMap []plannerSourceMapEntry,
 	targetChapterHint int,
 ) (string, error) {
+	requirements := []string{
+		"Return exactly one JSON skeleton object and no prose.",
+		"Do not wrap the JSON in markdown fences.",
+		"Do not return the final AdaptationPlan here.",
+		"Do not include a chapters array in the skeleton step; chapter details are generated in later batch calls.",
+		"Choose how many target chapters this source-map range needs, then divide it into one or more model-planned batches/volumes.",
+	}
+	requirements = append(requirements, plannerSkeletonBudgetRequirements(opts.Granularity)...)
+	requirements = append(requirements,
+		"If target_chapter_hint_role is source_scale_minimum, treat target_chapter_hint as anti-shrink long-form scale guidance, not an exact final chapter count.",
+		"Choose final target_chapter_count after analyzing source_map and the user's additions; increase above target_chapter_hint when added plot, relationship, or transition arcs require more chapters.",
+		"If target_chapter_hint_role is explicit_target_scale, honor that requested scale unless the source map and user changes make a different count necessary; explain the choice in batch summaries.",
+		"Use source_map ranges to preserve the full-book structure without requesting raw source_reports.",
+		"Each batch must include chapter_count, source_from, source_to, title, theme/goal, and summary.",
+		"Do not calculate target_from or target_to in this source-map skeleton step; the host will assign continuous target chapter ranges from chapter_count.",
+		"Choose skeleton batches by coherent story arc, volume beat, or major plot movement; they do not need to match recommended_batch_max exactly.",
+		"The host will split oversized skeleton batches into detail calls of about recommended_batch_max target chapters.",
+		"The source ranges across returned batches must strictly partition the provided source_map range: cover every source chapter once, with no gaps and no overlaps.",
+	)
 	input := struct {
 		Brief                string                          `json:"brief"`
 		Granularity          string                          `json:"granularity"`
@@ -5764,25 +5819,8 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 			"source_map is a compact, resumable dossier built from source-report batches; use it instead of raw per-chapter reports for this skeleton step.",
 			"Each source_map entry covers an inclusive source range and preserves high-level causality, plot threads, character arcs, world constraints, and relationship signals.",
 		},
-		SourceMapBudgetNotes: plannerSourceMapBudgetNotes(sourceMap),
-		Requirements: []string{
-			"Return exactly one JSON skeleton object and no prose.",
-			"Do not wrap the JSON in markdown fences.",
-			"Do not return the final AdaptationPlan here.",
-			"Do not include a chapters array in the skeleton step; chapter details are generated in later batch calls.",
-			"Choose how many target chapters this source-map range needs, then divide it into one or more model-planned batches/volumes.",
-			"If chapter_budget_policy is present, source_map.source_runes must drive splitting: a long single source chapter still needs multiple target chapters when one target would exceed chapter_budget_policy.max_runes.",
-			"Read source_map_budget_notes before choosing chapter_count. Treat those notes as first-pass budget guidance, not repair-only feedback.",
-			"If target_chapter_hint_role is source_scale_minimum, treat target_chapter_hint as anti-shrink long-form scale guidance, not an exact final chapter count.",
-			"Choose final target_chapter_count after analyzing source_map and the user's additions; increase above target_chapter_hint when added plot, relationship, or transition arcs require more chapters.",
-			"If target_chapter_hint_role is explicit_target_scale, honor that requested scale unless the source map and user changes make a different count necessary; explain the choice in batch summaries.",
-			"Use source_map ranges to preserve the full-book structure without requesting raw source_reports.",
-			"Each batch must include chapter_count, source_from, source_to, title, theme/goal, and summary.",
-			"Do not calculate target_from or target_to in this source-map skeleton step; the host will assign continuous target chapter ranges from chapter_count.",
-			"Choose skeleton batches by coherent story arc, volume beat, or major plot movement; they do not need to match recommended_batch_max exactly.",
-			"The host will split oversized skeleton batches into detail calls of about recommended_batch_max target chapters.",
-			"The source ranges across returned batches must strictly partition the provided source_map range: cover every source chapter once, with no gaps and no overlaps.",
-		},
+		SourceMapBudgetNotes: plannerSourceMapBudgetNotes(sourceMap, opts.Granularity),
+		Requirements:         requirements,
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
@@ -5793,6 +5831,19 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 		"Required JSON shape:\n" +
 		"{\"granularity\":\"...\",\"status\":\"proposal\",\"rewrite_policy\":\"...\",\"brief\":\"...\",\"target_chapter_count\":60,\"mainline_rules\":[],\"relationship_goals\":[],\"batches\":[{\"index\":1,\"title\":\"...\",\"theme\":\"...\",\"chapter_count\":8,\"source_from\":1,\"source_to\":3,\"summary\":\"...\"}]}.\n\n" +
 		"Planning input:\n```json\n" + string(raw) + "\n```", nil
+}
+
+func plannerSkeletonBudgetRequirements(granularity string) []string {
+	if plannerEnforcesSourceRuneSplitting(granularity) {
+		return []string{
+			"If chapter_budget_policy is present, source_map.source_runes must drive splitting: a long single source chapter still needs multiple target chapters when one target would exceed chapter_budget_policy.max_runes.",
+			"Read source_map_budget_notes before choosing chapter_count. Treat those notes as first-pass budget guidance, not repair-only feedback.",
+		}
+	}
+	return []string{
+		"If chapter_budget_policy is present, it limits target chapter budgets only: keep each target word_budget.max_runes within chapter_budget_policy.max_runes, but do not turn source_map.source_runes into a minimum target chapter count for free/full_rewrite.",
+		"Read source_map_budget_notes before choosing chapter_count. For free/full_rewrite, treat those notes as source density and context guidance; choose chapter_count from the new story structure.",
+	}
 }
 
 type plannerPreviousChapterContext struct {
@@ -5835,6 +5886,25 @@ func buildAdaptationPlannerBatchUserPrompt(
 	reports []domain.AdaptationSourceReport,
 	previousChapters []domain.AdaptationChapterPlan,
 ) (string, error) {
+	requirements := []string{
+		"Return exactly one JSON object and no prose.",
+		"The top-level JSON object must be shaped exactly like {\"chapters\":[...]} and must not be a single chapter object.",
+		"Return only the chapters for the requested batch, but return the complete requested batch.",
+		"chapters length must equal expected_chapters.",
+		"Use absolute target chapter numbers from batch.target_from through batch.target_to.",
+		"Every chapter field must be an integer absolute target chapter number, not a string label like \"第1章\".",
+		"Every returned chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
+		"Every source_chapters value must be within the batch source range and valid for the analyzed source.",
+		"Added/bridging chapters must still include source_chapters anchors.",
+		"Treat batch.source_from/source_to as the parent source coverage for this detail call. For full_rewrite, prefer setting every returned chapter's source_range to the full batch.source_from/source_to range unless the chapter is explicitly outside that source arc.",
+		"source_chapters should be sparse representative anchors inside source_range, not an exhaustive per-target mapping. Reusing the same anchors across chapters is allowed when the chapters share one source arc.",
+		"Do not use the target chapter number as a source chapter number unless that source chapter is actually inside batch.source_from/source_to.",
+	}
+	requirements = append(requirements, plannerBatchBudgetRequirements(opts.Granularity)...)
+	requirements = append(requirements,
+		"Use the user's adaptation brief and the skeleton batch goal; do not ignore earlier user planning.",
+		"Use previous_detail_chapters only for continuity, callbacks, and handoff hooks; do not duplicate already generated chapters.",
+	)
 	input := struct {
 		Brief                  string                          `json:"brief"`
 		Granularity            string                          `json:"granularity"`
@@ -5868,24 +5938,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 			"Use source_range and source_chapters as factual anchors; do not copy source prose.",
 			"For arc/free full_rewrite, source_range is a broad coverage envelope, not a claim that the target chapter corresponds exactly to one original chapter.",
 		},
-		Requirements: []string{
-			"Return exactly one JSON object and no prose.",
-			"The top-level JSON object must be shaped exactly like {\"chapters\":[...]} and must not be a single chapter object.",
-			"Return only the chapters for the requested batch, but return the complete requested batch.",
-			"chapters length must equal expected_chapters.",
-			"Use absolute target chapter numbers from batch.target_from through batch.target_to.",
-			"Every chapter field must be an integer absolute target chapter number, not a string label like \"第1章\".",
-			"Every returned chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
-			"Every source_chapters value must be within the batch source range and valid for the analyzed source.",
-			"Added/bridging chapters must still include source_chapters anchors.",
-			"Treat batch.source_from/source_to as the parent source coverage for this detail call. For full_rewrite, prefer setting every returned chapter's source_range to the full batch.source_from/source_to range unless the chapter is explicitly outside that source arc.",
-			"source_chapters should be sparse representative anchors inside source_range, not an exhaustive per-target mapping. Reusing the same anchors across chapters is allowed when the chapters share one source arc.",
-			"Do not use the target chapter number as a source chapter number unless that source chapter is actually inside batch.source_from/source_to.",
-			"If chapter_budget_policy is present, keep every word_budget.max_runes within chapter_budget_policy.max_runes; set word_budget.source_runes to this target chapter's share of the covered source material, not the full broad source_range total.",
-			"If the full batch source range has more source_runes than chapter_budget_policy.max_runes, cover it with enough target chapters in the parent skeleton batch; the host validates this at the parent batch level.",
-			"Use the user's adaptation brief and the skeleton batch goal; do not ignore earlier user planning.",
-			"Use previous_detail_chapters only for continuity, callbacks, and handoff hooks; do not duplicate already generated chapters.",
-		},
+		Requirements: requirements,
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
@@ -5911,6 +5964,16 @@ func buildAdaptationPlannerBatchUserPrompt(
 		batch.TargetFrom,
 		string(raw),
 	), nil
+}
+
+func plannerBatchBudgetRequirements(granularity string) []string {
+	requirements := []string{
+		"If chapter_budget_policy is present, keep every word_budget.max_runes within chapter_budget_policy.max_runes; set word_budget.source_runes to this target chapter's share of the covered source material, not the full broad source_range total.",
+	}
+	if plannerEnforcesSourceRuneSplitting(granularity) {
+		return append(requirements, "If the full batch source range has more source_runes than chapter_budget_policy.max_runes, cover it with enough target chapters in the parent skeleton batch; the host validates this at the parent batch level.")
+	}
+	return append(requirements, "For free/full_rewrite, do not add target chapters solely because the broad batch source range has more source_runes than chapter_budget_policy.max_runes; source_runes is background density, while word_budget.max_runes remains the per-target chapter output limit.")
 }
 
 func parsePlannerSkeleton(text string) (plannerSkeleton, error) {
@@ -7172,23 +7235,25 @@ func normalizePlannerProposalChapterBudgets(chapters []domain.AdaptationChapterP
 	}
 	normalized := false
 	groups := plannerChapterBudgetGroups(chapters, sourceRunesByChapter)
-	var splitErrs plannerProposalBudgetSplitErrors
-	for _, group := range groups {
-		if plannerBudgetGroupAcceptedByRange(group, acceptedBudgetRanges) {
-			continue
-		}
-		if err := plannerBudgetGroupSplitError(chapters, group, *policy); err != nil {
-			var splitErr *plannerProposalBudgetSplitError
-			if errors.As(err, &splitErr) && splitErr != nil {
-				splitErrs = append(splitErrs, *splitErr)
+	if plannerEnforcesSourceRuneSplitting(opts.Granularity) {
+		var splitErrs plannerProposalBudgetSplitErrors
+		for _, group := range groups {
+			if plannerBudgetGroupAcceptedByRange(group, acceptedBudgetRanges) {
 				continue
 			}
-			return false, err
+			if err := plannerBudgetGroupSplitError(chapters, group, *policy); err != nil {
+				var splitErr *plannerProposalBudgetSplitError
+				if errors.As(err, &splitErr) && splitErr != nil {
+					splitErrs = append(splitErrs, *splitErr)
+					continue
+				}
+				return false, err
+			}
 		}
-	}
-	if len(splitErrs) > 0 {
-		sortPlannerProposalBudgetSplitErrors(splitErrs)
-		return false, splitErrs
+		if len(splitErrs) > 0 {
+			sortPlannerProposalBudgetSplitErrors(splitErrs)
+			return false, splitErrs
+		}
 	}
 	for _, group := range groups {
 		if len(group.Indexes) == 0 || !plannerBudgetGroupNeedsNormalization(chapters, group, *policy) {
@@ -7231,7 +7296,7 @@ func plannerBudgetGroupAcceptedByRange(group plannerChapterBudgetGroup, accepted
 
 func validatePlannerBatchChapterBudgetGroups(chapters []domain.AdaptationChapterPlan, previousChapters []domain.AdaptationChapterPlan, opts ProposalOptions, sourceRunesByChapter map[int]int, batch plannerSkeletonBatch) error {
 	policy := plannerChapterBudgetPolicyForGranularity(opts.Granularity)
-	if policy == nil {
+	if policy == nil || !plannerEnforcesSourceRuneSplitting(opts.Granularity) {
 		return nil
 	}
 	if !plannerDetailBatchClosesParent(batch) {

@@ -25,7 +25,7 @@
 
 - 先阅读 `working_memory.adaptation_contract`，确认 `source_chapters`、`preserve_events`、`required_changes`、`forbidden_moves`。
 - 同时阅读 `working_memory.adaptation.rewrite_policy`、`working_memory.adaptation_word_contract` 和 `working_memory.adaptation_source_coverage`；`preserve_details` 的字数区间是硬约束，超出时必须整章修到区间内再检查。
-- 写作前必须按 `source_chapters` 调用 `read_chapter(source="source")` 读取原文章节；`arc/free` 粒度涉及多个来源章时可用范围读取。
+- `rewrite_policy=preserve_details` 写作前必须按 `source_chapters` 调用 `read_chapter(source="source")` 读取原文章节；`arc/full_rewrite` 只在需要核对具体事实、因果或锚点时读取相关来源章；`free/full_rewrite` 的 `source_chapters` / `source_range` 是背景锚点，不要因为它们存在就默认读取原文，缺少必要事实时再按需读取。
 - `rewrite_policy=full_rewrite` 时必须生成新正文，禁止直接搬运原文段落；主线事件、因果顺序和必须保留事件不得走偏。
 - `rewrite_policy=preserve_details` 时允许复用未受改编目标影响的原文段落、细节和场景承接；受 brief、人物关系、视角或因果影响的部分必须重写，且在 `check_adaptation.summary` 里说明本章哪些范围为保留、哪些范围为改写。
 - `preserve_details` 不是“只写修改片段”或“差异补丁”：`draft_chapter` 必须落盘完整章节正文，未受影响的原文内容也要作为正文的一部分保留进草稿。若目标章来源约一万字，你就必须写出约一万字的完整目标章，而不是几百字梗概。

@@ -826,8 +826,8 @@ func TestBuildAdaptationProposalDropsBudgetInvalidRuntimeSourceRange(t *testing.
 		t.Fatalf("LoadSourceFoundation: %v", err)
 	}
 	opts := ProposalOptions{
-		Brief:         "free budget split",
-		Granularity:   domain.AdaptationGranularityFree,
+		Brief:         "arc budget split",
+		Granularity:   domain.AdaptationGranularityArc,
 		RewritePolicy: domain.AdaptationRewriteFullRewrite,
 		WordTolerance: DefaultWordTolerance,
 	}
@@ -1119,6 +1119,66 @@ func TestValidatePlannerProposalAllowsAcceptedBudgetDeviationRange(t *testing.T)
 	}
 	if proposal.Chapters[0].WordBudget == nil || proposal.Chapters[0].WordBudget.MaxRunes > domain.AdaptationModelChapterMaxRunes {
 		t.Fatalf("accepted budget deviation should still normalize per-chapter word budget: %+v", proposal.Chapters[0].WordBudget)
+	}
+}
+
+func TestValidatePlannerProposalFreeAllowsCompressedSourceRangeButCapsTargetChapterBudget(t *testing.T) {
+	opts := ProposalOptions{
+		Brief:         "free compress long source into a new opening",
+		Granularity:   domain.AdaptationGranularityFree,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 1,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, Runes: 20067},
+		},
+	}
+	proposal := domain.AdaptationPlan{
+		Granularity:   opts.Granularity,
+		Status:        domain.AdaptationPlanStatusProposal,
+		RewritePolicy: opts.RewritePolicy,
+		Brief:         opts.Brief,
+		Chapters: []domain.AdaptationChapterPlan{
+			{
+				Chapter: 1,
+				Title:   "New Opening",
+				OutlineEntry: domain.OutlineEntry{
+					Chapter:   1,
+					Title:     "New Opening",
+					CoreEvent: "Ari enters the adapted conflict through a compressed new premise.",
+					Hook:      "Ari realizes the old route no longer exists.",
+					Scenes:    []string{"station"},
+				},
+				SourceChapters: []int{1},
+				SourceRange:    domain.SourceRange{From: 1, To: 1},
+				WordBudget: &domain.AdaptationChapterWordBudget{
+					SourceRunes: 20067,
+					TargetRunes: 12000,
+					MinRunes:    9000,
+					MaxRunes:    15000,
+					Tolerance:   0.15,
+				},
+				PreserveEvents:  []string{"source event"},
+				RequiredChanges: []string{"compress the source material into a new structure"},
+				ForbiddenMoves:  []string{"copy source prose"},
+			},
+		},
+	}
+
+	if err := validatePlannerProposal(&proposal, opts, nil, manifest, nil); err != nil {
+		t.Fatalf("free proposal should allow compressed long source range: %v", err)
+	}
+	budget := proposal.Chapters[0].WordBudget
+	if budget == nil {
+		t.Fatal("free proposal should retain normalized word budget")
+	}
+	if budget.TargetRunes != adaptationPlannerModelChapterMaxRunes || budget.MaxRunes != adaptationPlannerModelChapterMaxRunes {
+		t.Fatalf("free target chapter budget=%+v, want capped at %d", budget, adaptationPlannerModelChapterMaxRunes)
+	}
+	if proposal.TargetTotalRunes != budget.TargetRunes || proposal.TargetMaxRunes != budget.MaxRunes {
+		t.Fatalf("proposal totals should match normalized free budget: total=%d max=%d budget=%+v", proposal.TargetTotalRunes, proposal.TargetMaxRunes, budget)
 	}
 }
 
@@ -1812,6 +1872,20 @@ func TestNormalizePlannerSourceMapSkeletonBatchesAllowsCompressionAfterBudgetRev
 	}
 }
 
+func TestNormalizePlannerSourceMapSkeletonBatchesFreeKeepsSourceRunesSoft(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 79, SourceTo: 79, SourceRunes: 20067}
+
+	batches, err := normalizePlannerSourceMapSkeletonBatchesForGranularity([]plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 79, 79, 1, 1),
+	}, entry, domain.AdaptationGranularityFree)
+	if err != nil {
+		t.Fatalf("free source-map skeleton should accept compressed long source chapter: %v", err)
+	}
+	if len(batches) != 1 || batches[0].TargetChapterCount != 1 {
+		t.Fatalf("batches=%+v, want one free target chapter", batches)
+	}
+}
+
 func TestBuildAdaptationPlannerSkeletonUserPromptIncludesInitialSourceRuneBudgetNotes(t *testing.T) {
 	prompt, err := buildAdaptationPlannerSkeletonUserPrompt(ProposalOptions{
 		Brief:         "arc rewrite",
@@ -1829,6 +1903,29 @@ func TestBuildAdaptationPlannerSkeletonUserPromptIncludesInitialSourceRuneBudget
 		!strings.Contains(prompt, "compression/deletion rationale") ||
 		!strings.Contains(prompt, "first-pass budget guidance") {
 		t.Fatalf("prompt should include initial long-source budget guidance: %s", prompt)
+	}
+}
+
+func TestBuildAdaptationPlannerSkeletonUserPromptTreatsFreeSourceRunesAsSoft(t *testing.T) {
+	prompt, err := buildAdaptationPlannerSkeletonUserPrompt(ProposalOptions{
+		Brief:         "free rewrite",
+		Granularity:   domain.AdaptationGranularityFree,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+	}, &domain.AdaptationSourceManifest{ChapterCount: 1}, nil, []plannerSourceMapEntry{
+		{Index: 1, SourceFrom: 1, SourceTo: 1, SourceRunes: 16000},
+	}, 0)
+	if err != nil {
+		t.Fatalf("buildAdaptationPlannerSkeletonUserPrompt: %v", err)
+	}
+	if !strings.Contains(prompt, `"source_map_budget_notes"`) ||
+		!strings.Contains(prompt, "source_runes=16000") ||
+		!strings.Contains(prompt, "density and context") ||
+		!strings.Contains(prompt, "word_budget.max_runes") {
+		t.Fatalf("free prompt should keep source runes as soft density while retaining chapter max budget: %s", prompt)
+	}
+	if strings.Contains(prompt, "should total at least 4") ||
+		strings.Contains(prompt, "source_map.source_runes must drive splitting") {
+		t.Fatalf("free prompt should not require source-rune-driven chapter splitting: %s", prompt)
 	}
 }
 
@@ -3500,7 +3597,7 @@ func TestBuildAdaptationProposalDetailsUsesCompactBudgetRepairPrompt(t *testing.
 		t.Fatalf("SaveSourceFoundation: %v", err)
 	}
 	review := domain.AdaptationVolumeReview{
-		Granularity:        domain.AdaptationGranularityFree,
+		Granularity:        domain.AdaptationGranularityArc,
 		Status:             domain.AdaptationPlanStatusVolumeReview,
 		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
 		Brief:              "repair one oversized volume before details",
@@ -3527,9 +3624,15 @@ func TestBuildAdaptationProposalDetailsUsesCompactBudgetRepairPrompt(t *testing.
 	}); err != nil {
 		t.Fatalf("SaveProposalRuntime: %v", err)
 	}
+	arcRepairSkeleton := strings.Replace(
+		plannerVolumeRevisionSkeletonJSONWithDecision(1, 1, 2, 1, 1, "expand"),
+		`"granularity": "free"`,
+		`"granularity": "arc"`,
+		1,
+	)
 	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
-		{text: plannerVolumeRevisionSkeletonJSONWithDecision(1, 1, 2, 1, 1, "expand")},
-		{text: plannerProposalJSONFromChapters(t, plannerSharedSourceRangePlans(1, 2, 1, 1, 6000))},
+		{text: arcRepairSkeleton},
+		{text: plannerProposalJSONFromChaptersForGranularity(t, domain.AdaptationGranularityArc, plannerSharedSourceRangePlans(1, 2, 1, 1, 6000))},
 	}}
 
 	proposal, err := BuildAdaptationProposalDetailsContext(context.Background(), Deps{Store: st, LLM: llm}, ProposalDetailsOptions{})
@@ -3977,8 +4080,13 @@ func plannerRevisionNoChangeProposalJSON(t *testing.T, chapters []domain.Adaptat
 
 func plannerProposalJSONFromChapters(t *testing.T, chapters []domain.AdaptationChapterPlan) string {
 	t.Helper()
+	return plannerProposalJSONFromChaptersForGranularity(t, domain.AdaptationGranularityFree, chapters)
+}
+
+func plannerProposalJSONFromChaptersForGranularity(t *testing.T, granularity string, chapters []domain.AdaptationChapterPlan) string {
+	t.Helper()
 	payload := map[string]any{
-		"granularity":    domain.AdaptationGranularityFree,
+		"granularity":    granularity,
 		"status":         domain.AdaptationPlanStatusProposal,
 		"rewrite_policy": domain.AdaptationRewriteFullRewrite,
 		"brief":          "chunk",
