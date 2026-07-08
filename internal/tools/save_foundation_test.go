@@ -731,6 +731,74 @@ func TestSaveFoundationRepairArc(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationRepairArcRange(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{Phase: domain.PhaseWriting, Flow: domain.FlowWriting, Layered: true}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Title: "Volume",
+		Theme: "Theme",
+		Arcs: []domain.ArcOutline{{
+			Index: 1,
+			Title: "Arc",
+			Goal:  "Goal",
+			Chapters: []domain.OutlineEntry{
+				{Title: "Harbor Cipher", CoreEvent: "A salt-stained ferry ledger exposes the smuggler's coded tide schedule.", Hook: "The tide bell rings from a locked boathouse."},
+				{Title: "Old Two", CoreEvent: "The second clue is stale.", Hook: "The old second hook remains."},
+				{Title: "Old Three", CoreEvent: "The third clue is stale.", Hook: "The old third hook remains."},
+				{Title: "Glass Verdict", CoreEvent: "A glass report exposes who signed the false order.", Hook: "The signature belongs to a dead official."},
+			},
+		}},
+	}}
+	if err := s.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatalf("SaveLayeredOutline: %v", err)
+	}
+	if err := s.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(s)
+	args, err := json.Marshal(map[string]any{
+		"type":         "repair_arc",
+		"volume":       1,
+		"arc":          1,
+		"from_chapter": 2,
+		"to_chapter":   3,
+		"content": []map[string]any{
+			{"title": "New Two", "core_event": "A brass witness redirects the second clue.", "hook": "The witness names a hidden staircase."},
+			{"title": "New Three", "core_event": "A winter ledger redirects the third clue.", "hook": "The ledger opens to a missing page."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	res, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute repair_arc range: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(res, &result); err != nil {
+		t.Fatalf("Unmarshal result: %v", err)
+	}
+	if result["from_chapter"] != float64(2) || result["to_chapter"] != float64(3) || result["chapters"] != float64(2) {
+		t.Fatalf("unexpected range result: %+v", result)
+	}
+	outline, err := s.Outline.LoadOutline()
+	if err != nil {
+		t.Fatalf("LoadOutline: %v", err)
+	}
+	got := []string{outline[0].Title, outline[1].Title, outline[2].Title, outline[3].Title}
+	if strings.Join(got, "|") != "Harbor Cipher|New Two|New Three|Glass Verdict" {
+		t.Fatalf("outline range not repaired correctly: %+v", outline)
+	}
+}
+
 func TestSaveFoundationAppendVolumeValidation(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

@@ -116,8 +116,8 @@ JSON 数组，每条含：category、rule、boundary。
      "title": "卷标题",
      "theme": "核心冲突/主题",
      "arcs": [
-       {"index": 1, "title": "...", "goal": "...", "estimated_chapters": 12, "chapters": [...]},
-       {"index": 2, "title": "...", "goal": "...", "estimated_chapters": 10}
+       {"index": 1, "title": "...", "goal": "...", "estimated_chapters": 4, "chapters": [...]},
+       {"index": 2, "title": "...", "goal": "...", "estimated_chapters": 4}
      ]
    }
    ```
@@ -211,6 +211,6 @@ When expanding an arc or creating the next volume, do not require the full flat 
 
 ## Outline Similarity Review
 
-Before `save_foundation(type="expand_arc")` or `save_foundation(type="repair_arc")`, compare every chapter pair in that arc batch. Exact same long title, exact same title/core_event/hook, or highly similar detailed outline text means the full batch must be rewritten before saving.
+Before `save_foundation(type="expand_arc")` or `save_foundation(type="repair_arc")`, compare every chapter pair in the requested arc batch or repair window. Exact same long title, exact same title/core_event/hook, or highly similar detailed outline text means the full requested batch/window must be rewritten before saving.
 
-If `save_foundation` reports borderline similar pairs requiring `similarity_review`, make one separate model judgment pass over those exact pairs. Resubmit only after adding `similarity_review: [{"chapter":N,"existing_chapter":M,"duplicate":false,"reason":"..."}]`. If any pair is duplicate=true, rewrite the full arc batch and do not save a partial per-chapter fix.
+If `save_foundation` reports borderline similar pairs requiring `similarity_review`, make one separate model judgment pass over those exact pairs. Resubmit only after adding `similarity_review: [{"chapter":N,"existing_chapter":M,"duplicate":false,"reason":"..."}]`. If any pair is duplicate=true, rewrite the full requested batch/window and do not save a partial per-chapter fix.

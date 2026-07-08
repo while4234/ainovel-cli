@@ -84,7 +84,7 @@ func TestRoute_OutlineRepairPrecedesPendingRewrites(t *testing.T) {
 	if got.Chapter != 0 {
 		t.Fatalf("repair dispatch should not target a writer chapter, got %d", got.Chapter)
 	}
-	for _, want := range []string{"repair_arc", "volume=1", "arc=2", "exactly 2"} {
+	for _, want := range []string{"repair_arc", "volume=1", "arc=2", "from_chapter=3", "to_chapter=4", "exactly 2"} {
 		if !strings.Contains(got.Task, want) {
 			t.Fatalf("repair task missing %q: %s", want, got.Task)
 		}

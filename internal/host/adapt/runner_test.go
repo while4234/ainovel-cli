@@ -249,6 +249,88 @@ func TestConfirmAdaptationProposalRejectsDuplicateTargetOutlines(t *testing.T) {
 	}
 }
 
+func TestAdaptationTargetVolumesSplitsLargeParentVolumeIntoSmallArcs(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Brief: "case parent batch",
+		Volumes: []domain.AdaptationVolumePlan{{
+			Index:      1,
+			Title:      "Case Parent",
+			Theme:      "one coherent case",
+			Goal:       "preserve the parent story movement",
+			TargetFrom: 1,
+			TargetTo:   10,
+		}},
+		Chapters: plannerSharedSourceRangePlans(1, 10, 1, 2, 10000),
+	}
+
+	volumes := adaptationTargetVolumes(plan)
+	if len(volumes) != 1 {
+		t.Fatalf("volumes=%d, want one parent volume", len(volumes))
+	}
+	arcs := volumes[0].Arcs
+	if len(arcs) != 3 {
+		t.Fatalf("arcs=%d, want 3 small generated arcs", len(arcs))
+	}
+	ranges := []struct {
+		from int
+		to   int
+	}{
+		{1, 4},
+		{5, 8},
+		{9, 10},
+	}
+	for idx, want := range ranges {
+		arc := arcs[idx]
+		if len(arc.Chapters) != want.to-want.from+1 {
+			t.Fatalf("arc %d chapters=%d, want %d", idx+1, len(arc.Chapters), want.to-want.from+1)
+		}
+		if arc.Chapters[0].Chapter != want.from || arc.Chapters[len(arc.Chapters)-1].Chapter != want.to {
+			t.Fatalf("arc %d range=%d-%d, want %d-%d", idx+1, arc.Chapters[0].Chapter, arc.Chapters[len(arc.Chapters)-1].Chapter, want.from, want.to)
+		}
+	}
+	if volumes[0].Title != "Case Parent" {
+		t.Fatalf("parent volume title = %q, want preserved parent title", volumes[0].Title)
+	}
+}
+
+func TestConfirmAdaptationProposalRejectsDuplicateParentBatch(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceFoundation(testSourceFoundation()); err != nil {
+		t.Fatalf("SaveSourceFoundation: %v", err)
+	}
+	chapters := plannerSharedSourceRangePlans(1, 5, 1, 2, 5000)
+	chapters[4].Title = chapters[0].Title
+	chapters[4].OutlineEntry.Title = chapters[0].OutlineEntry.Title
+	chapters[4].CoreEvent = chapters[0].CoreEvent
+	chapters[4].OutlineEntry.CoreEvent = chapters[0].OutlineEntry.CoreEvent
+	chapters[4].Hook = chapters[0].Hook
+	chapters[4].OutlineEntry.Hook = chapters[0].OutlineEntry.Hook
+	proposal := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityArc,
+		Status:        domain.AdaptationPlanStatusProposal,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Brief:         "parent duplicate should fail",
+		Volumes: []domain.AdaptationVolumePlan{{
+			Index:      1,
+			Title:      "Case Parent",
+			TargetFrom: 1,
+			TargetTo:   5,
+		}},
+		Chapters: chapters,
+	}
+
+	_, err := ConfirmAdaptationProposal(context.Background(), Deps{Store: st}, proposal)
+	if err == nil {
+		t.Fatal("expected duplicate parent batch to be rejected")
+	}
+	if !strings.Contains(err.Error(), "parent batch contains duplicate chapter outline") {
+		t.Fatalf("error=%v, want parent batch duplicate guidance", err)
+	}
+}
+
 func TestBuildAdaptationProposalChapterPreserveDetailsUsesSourceRuneRanges(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -1026,7 +1108,7 @@ func TestPlannerBatchChapterValidatorRejectsDuplicateOutlinePromise(t *testing.T
 	}
 }
 
-func TestPlannerBatchChapterValidatorRejectsDuplicateFromPreviousDetailBatch(t *testing.T) {
+func TestPlannerBatchChapterValidatorRejectsDuplicateFromSameParentBatch(t *testing.T) {
 	opts := ProposalOptions{
 		Granularity:   domain.AdaptationGranularityArc,
 		RewritePolicy: domain.AdaptationRewriteFullRewrite,
@@ -1039,28 +1121,66 @@ func TestPlannerBatchChapterValidatorRejectsDuplicateFromPreviousDetailBatch(t *
 			{Chapter: 2, Runes: 1000},
 		},
 	}
+	previous := plannerSharedSourceRangePlans(1, 4, 1, 2, 4000)
+	current := plannerSharedSourceRangePlans(5, 8, 1, 2, 4000)
+	current[0].Title = previous[1].Title
+	current[0].OutlineEntry.Title = previous[1].OutlineEntry.Title
+	current[0].CoreEvent = previous[1].CoreEvent
+	current[0].OutlineEntry.CoreEvent = previous[1].OutlineEntry.CoreEvent
+	current[0].Hook = previous[1].Hook
+	current[0].OutlineEntry.Hook = previous[1].OutlineEntry.Hook
 	batch := plannerSkeletonBatch{
 		Index:            2,
-		TargetFrom:       2,
-		TargetTo:         2,
+		TargetFrom:       5,
+		TargetTo:         8,
 		DetailParentFrom: 1,
-		DetailParentTo:   2,
-		SourceFrom:       2,
+		DetailParentTo:   8,
+		SourceFrom:       1,
 		SourceTo:         2,
 	}
-	previous := plannerSharedSourceRangePlans(1, 1, 1, 1, 1000)
-	current := plannerSharedSourceRangePlans(2, 2, 2, 2, 1000)
-	current[0].Title = previous[0].Title
-	current[0].OutlineEntry.Title = previous[0].OutlineEntry.Title
-	current[0].CoreEvent = previous[0].CoreEvent
-	current[0].Hook = previous[0].Hook
 
 	err := plannerBatchChapterValidator(opts, manifest, batch, previous)(current)
 	if err == nil {
-		t.Fatal("detail batch should reject outline promises duplicated from previous accepted batch")
+		t.Fatal("duplicate from same parent batch should be rejected")
 	}
-	if !strings.Contains(err.Error(), "chapter 2 duplicates outline beats from chapter 1") {
-		t.Fatalf("error=%v, want previous-batch duplicate outline guidance", err)
+	if !strings.Contains(err.Error(), "chapter 5 duplicates outline beats from chapter 2") {
+		t.Fatalf("error=%v, want same-parent duplicate guidance", err)
+	}
+}
+
+func TestPlannerBatchChapterValidatorIgnoresDuplicateOutsideParentBatch(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 2,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, Runes: 1000},
+			{Chapter: 2, Runes: 1000},
+		},
+	}
+	previous := plannerSharedSourceRangePlans(1, 4, 1, 2, 4000)
+	current := plannerSharedSourceRangePlans(5, 8, 1, 2, 4000)
+	current[0].Title = previous[1].Title
+	current[0].OutlineEntry.Title = previous[1].OutlineEntry.Title
+	current[0].CoreEvent = previous[1].CoreEvent
+	current[0].OutlineEntry.CoreEvent = previous[1].OutlineEntry.CoreEvent
+	current[0].Hook = previous[1].Hook
+	current[0].OutlineEntry.Hook = previous[1].OutlineEntry.Hook
+	batch := plannerSkeletonBatch{
+		Index:            2,
+		TargetFrom:       5,
+		TargetTo:         8,
+		DetailParentFrom: 5,
+		DetailParentTo:   8,
+		SourceFrom:       1,
+		SourceTo:         2,
+	}
+
+	if err := plannerBatchChapterValidator(opts, manifest, batch, previous)(current); err != nil {
+		t.Fatalf("duplicate outside parent batch should not be rejected: %v", err)
 	}
 }
 

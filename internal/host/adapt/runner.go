@@ -31,6 +31,7 @@ const (
 	adaptationPlannerSkeletonMaxTokens       = 4096
 	adaptationPlannerChunkedMinChapters      = 18
 	adaptationPlannerRecommendedBatchMax     = 4
+	adaptationGeneratedOutlineBatchMax       = adaptationPlannerRecommendedBatchMax
 	adaptationPlannerSourceMapExpansionMax   = 6
 	adaptationPlannerSourceChunkedMin        = adaptationPlannerRecommendedBatchMax * 2
 	adaptationPlannerTargetChapterMax        = 5000
@@ -4992,6 +4993,7 @@ func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.Adaptat
 	opts.WordTolerance = normalizeProposalWordTolerance(opts.Granularity, opts.WordTolerance)
 	sourceRunesByChapter := sourceRunesByChapter(manifest)
 	priorChapters := plannerPreviousBatchChapters(previousChapters...)
+	parentPriorChapters := plannerPreviousChaptersInParentBatch(priorChapters, batch)
 	chapterCount := 0
 	if manifest != nil {
 		chapterCount = manifest.ChapterCount
@@ -5020,11 +5022,35 @@ func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.Adaptat
 				return err
 			}
 		}
-		if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(chapters, priorChapters); ok {
+		if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(chapters, parentPriorChapters); ok {
 			return duplicate
 		}
 		return validatePlannerBatchChapterBudgetGroups(chapters, priorChapters, opts, sourceRunesByChapter, batch)
 	}
+}
+
+func plannerPreviousChaptersInParentBatch(chapters []domain.AdaptationChapterPlan, batch plannerSkeletonBatch) []domain.AdaptationChapterPlan {
+	if len(chapters) == 0 {
+		return nil
+	}
+	from, to := plannerBatchParentRange(batch)
+	if from <= 0 || to < from {
+		return nil
+	}
+	out := make([]domain.AdaptationChapterPlan, 0, len(chapters))
+	for _, chapter := range chapters {
+		if chapter.Chapter >= from && chapter.Chapter <= to {
+			out = append(out, chapter)
+		}
+	}
+	return out
+}
+
+func plannerBatchParentRange(batch plannerSkeletonBatch) (int, int) {
+	if batch.DetailParentFrom > 0 && batch.DetailParentTo >= batch.DetailParentFrom {
+		return batch.DetailParentFrom, batch.DetailParentTo
+	}
+	return batch.TargetFrom, batch.TargetTo
 }
 
 func plannerUsesSharedBatchSourceRange(opts ProposalOptions, batch plannerSkeletonBatch) bool {
@@ -6528,8 +6554,8 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 		"Each batch must include chapter_count, source_from, source_to, title, theme/goal, and summary.",
 		"Each batch may include budget_decision as balanced, compress_or_merge, or expand_or_split; include budget_reason when the chapter_count intentionally compresses/merges/deletes source material or expands/splits/adds pacing beyond the review range.",
 		"Do not calculate target_from or target_to in this source-map skeleton step; the host will assign continuous target chapter ranges from chapter_count.",
-		"Choose skeleton batches by coherent story arc, volume beat, or major plot movement; they do not need to match recommended_batch_max exactly.",
-		"The host will split oversized skeleton batches into detail calls of about recommended_batch_max target chapters.",
+		"Choose skeleton batches by coherent story arc, volume beat, or major plot movement; recommended_batch_max is a detail/persistence limit, not a reason to fragment a coherent movement.",
+		"The host will split oversized skeleton batches into detail calls and final generated outline batches of about recommended_batch_max target chapters.",
 	)
 	requirements = append(requirements, plannerSkeletonSourceRangeRequirements(opts.Granularity)...)
 	input := struct {
@@ -8622,13 +8648,16 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 	proposal.Status = domain.AdaptationPlanStatusConfirmed
 	proposal.Granularity = domain.NormalizeAdaptationGranularity(proposal.Granularity)
 	proposal.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(proposal.Granularity)
+	fr := toFoundationResult(sourceFoundation)
+	fr.Premise = adaptationPremise(fr.Premise, proposal.Brief, proposal)
+	fr.Volumes = adaptationTargetVolumes(proposal)
+	if err := validateAdaptationGeneratedParentBatches(fr.Volumes); err != nil {
+		return nil, err
+	}
 	if err := deps.Store.Adaptation.SavePlan(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation plan: %w", err)
 	}
 	_ = deps.Store.Adaptation.ClearProposal()
-	fr := toFoundationResult(sourceFoundation)
-	fr.Premise = adaptationPremise(fr.Premise, proposal.Brief, proposal)
-	fr.Volumes = adaptationTargetVolumes(proposal)
 	if fr.Compass == nil {
 		fr.Compass = &domain.StoryCompass{
 			EndingDirection: strings.TrimSpace(proposal.Brief),
@@ -8645,8 +8674,46 @@ func ValidateProposalOutlineUniqueness(proposal domain.AdaptationPlan) error {
 	if len(proposal.Chapters) == 0 {
 		return nil
 	}
+	volumes := normalizeAdaptationProposalVolumes(proposal.Volumes, len(proposal.Chapters))
+	if adaptationVolumesCoverChapters(volumes, len(proposal.Chapters)) {
+		for _, volume := range volumes {
+			chapters := adaptationChapterPlansInTargetRange(proposal.Chapters, volume.TargetFrom, volume.TargetTo)
+			if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(chapters); ok {
+				return fmt.Errorf("adaptation proposal volume %d parent batch contains duplicate chapter outline: %w", volume.Index, duplicate)
+			}
+		}
+		return nil
+	}
 	if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(proposal.Chapters); ok {
-		return fmt.Errorf("adaptation proposal contains duplicate chapter outline: %w", duplicate)
+		return fmt.Errorf("adaptation proposal parent batch contains duplicate chapter outline: %w", duplicate)
+	}
+	return nil
+}
+
+func adaptationChapterPlansInTargetRange(chapters []domain.AdaptationChapterPlan, from, to int) []domain.AdaptationChapterPlan {
+	out := make([]domain.AdaptationChapterPlan, 0, to-from+1)
+	for idx, chapter := range chapters {
+		number := chapter.Chapter
+		if number <= 0 {
+			number = idx + 1
+			chapter.Chapter = number
+		}
+		if number >= from && number <= to {
+			out = append(out, chapter)
+		}
+	}
+	return out
+}
+
+func validateAdaptationGeneratedParentBatches(volumes []domain.VolumeOutline) error {
+	for _, volume := range volumes {
+		var entries []domain.OutlineEntry
+		for _, arc := range volume.Arcs {
+			entries = append(entries, arc.Chapters...)
+		}
+		if duplicate, ok := domain.FindDuplicateOutlineEntries(entries); ok {
+			return fmt.Errorf("adaptation target volume %d parent batch contains duplicate chapter outline: %w", volume.Index, duplicate)
+		}
 	}
 	return nil
 }
@@ -8658,36 +8725,77 @@ func adaptationTargetVolumes(plan domain.AdaptationPlan) []domain.VolumeOutline 
 	}
 	volumes := normalizeAdaptationProposalVolumes(plan.Volumes, len(entries))
 	if adaptationVolumesCoverChapters(volumes, len(entries)) {
-		out := make([]domain.VolumeOutline, 0, len(volumes))
-		for _, volume := range volumes {
-			volumeEntries := append([]domain.OutlineEntry(nil), entries[volume.TargetFrom-1:volume.TargetTo]...)
-			title := firstNonEmptyString(volume.Title, fmt.Sprintf("Volume %d", volume.Index))
-			goal := firstNonEmptyString(volume.Goal, volume.Summary, volume.Theme, strings.TrimSpace(plan.Brief))
-			out = append(out, domain.VolumeOutline{
-				Index: volume.Index,
-				Title: title,
-				Theme: firstNonEmptyString(volume.Theme, volume.Summary, strings.TrimSpace(plan.Brief)),
-				Arcs: []domain.ArcOutline{{
-					Index:    1,
-					Title:    title,
-					Goal:     goal,
-					Chapters: volumeEntries,
-				}},
-			})
-		}
-		return out
+		return adaptationVolumeOutlinesFromPlans(plan, entries, volumes)
 	}
-	return []domain.VolumeOutline{{
-		Index: 1,
-		Title: "Adaptation",
-		Theme: firstNonEmptyString(strings.TrimSpace(plan.Brief), "Confirmed adaptation plan"),
-		Arcs: []domain.ArcOutline{{
-			Index:    1,
-			Title:    firstNonEmptyString(plan.Granularity, "adaptation"),
-			Goal:     strings.TrimSpace(plan.Brief),
-			Chapters: entries,
-		}},
-	}}
+	fallbackVolumes := normalizeAdaptationProposalVolumes([]domain.AdaptationVolumePlan{{
+		Title:      "Adaptation",
+		Theme:      firstNonEmptyString(strings.TrimSpace(plan.Brief), "Confirmed adaptation plan"),
+		Goal:       strings.TrimSpace(plan.Brief),
+		TargetFrom: 1,
+		TargetTo:   len(entries),
+	}}, len(entries))
+	return adaptationVolumeOutlinesFromPlans(plan, entries, fallbackVolumes)
+}
+
+func adaptationVolumeOutlinesFromPlans(plan domain.AdaptationPlan, entries []domain.OutlineEntry, volumes []domain.AdaptationVolumePlan) []domain.VolumeOutline {
+	out := make([]domain.VolumeOutline, 0, len(volumes))
+	for _, volume := range volumes {
+		volumeEntries := append([]domain.OutlineEntry(nil), entries[volume.TargetFrom-1:volume.TargetTo]...)
+		title := firstNonEmptyString(volume.Title, fmt.Sprintf("Volume %d", volume.Index))
+		goal := firstNonEmptyString(volume.Goal, volume.Summary, volume.Theme, strings.TrimSpace(plan.Brief))
+		out = append(out, domain.VolumeOutline{
+			Index: volume.Index,
+			Title: title,
+			Theme: firstNonEmptyString(volume.Theme, volume.Summary, strings.TrimSpace(plan.Brief)),
+			Arcs:  adaptationGeneratedOutlineArcs(volume, volumeEntries, title, goal),
+		})
+	}
+	return out
+}
+
+func adaptationGeneratedOutlineArcs(volume domain.AdaptationVolumePlan, entries []domain.OutlineEntry, title, goal string) []domain.ArcOutline {
+	if len(entries) == 0 {
+		return nil
+	}
+	batchMax := adaptationGeneratedOutlineBatchMax
+	if batchMax <= 0 {
+		batchMax = adaptationPlannerRecommendedBatchMax
+	}
+	arcs := make([]domain.ArcOutline, 0, (len(entries)+batchMax-1)/batchMax)
+	for offset := 0; offset < len(entries); offset += batchMax {
+		end := min(len(entries), offset+batchMax)
+		fromChapter := volume.TargetFrom + offset
+		toChapter := volume.TargetFrom + end - 1
+		arcTitle := title
+		arcGoal := goal
+		if len(entries) > batchMax {
+			arcTitle = adaptationGeneratedOutlineArcTitle(title, fromChapter, toChapter)
+			arcGoal = adaptationGeneratedOutlineArcGoal(goal, fromChapter, toChapter)
+		}
+		arcs = append(arcs, domain.ArcOutline{
+			Index:    len(arcs) + 1,
+			Title:    arcTitle,
+			Goal:     arcGoal,
+			Chapters: append([]domain.OutlineEntry(nil), entries[offset:end]...),
+		})
+	}
+	return arcs
+}
+
+func adaptationGeneratedOutlineArcTitle(title string, fromChapter, toChapter int) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fmt.Sprintf("Chapters %d-%d", fromChapter, toChapter)
+	}
+	return fmt.Sprintf("%s (%d-%d)", title, fromChapter, toChapter)
+}
+
+func adaptationGeneratedOutlineArcGoal(goal string, fromChapter, toChapter int) string {
+	goal = strings.TrimSpace(goal)
+	if goal == "" {
+		return fmt.Sprintf("Cover target chapters %d-%d.", fromChapter, toChapter)
+	}
+	return fmt.Sprintf("%s Cover target chapters %d-%d.", goal, fromChapter, toChapter)
 }
 
 func adaptationTargetOutline(plan domain.AdaptationPlan) []domain.OutlineEntry {

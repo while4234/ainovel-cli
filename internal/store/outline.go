@@ -290,6 +290,13 @@ func (s *OutlineStore) expandArcUnlocked(volumeIdx, arcIdx int, chapters []domai
 
 // replaceArcChaptersUnlocked 内部方法，在 Store.RepairArcOutline 跨域协调中调用。
 func (s *OutlineStore) replaceArcChaptersUnlocked(volumeIdx, arcIdx int, chapters []domain.OutlineEntry) ([]domain.VolumeOutline, []domain.OutlineEntry, error) {
+	return s.replaceArcChapterRangeUnlocked(volumeIdx, arcIdx, 0, 0, chapters)
+}
+
+// replaceArcChapterRangeUnlocked replaces either the whole arc or a
+// global-chapter window inside it. The merged arc is validated as a whole so a
+// shortened repair cannot hide a duplicate against untouched chapters.
+func (s *OutlineStore) replaceArcChapterRangeUnlocked(volumeIdx, arcIdx, fromChapter, toChapter int, chapters []domain.OutlineEntry) ([]domain.VolumeOutline, []domain.OutlineEntry, error) {
 	var volumes []domain.VolumeOutline
 	if err := s.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
 		return nil, nil, fmt.Errorf("load layered_outline: %w", err)
@@ -302,13 +309,17 @@ func (s *OutlineStore) replaceArcChaptersUnlocked(volumeIdx, arcIdx int, chapter
 	if location.chapterCount == 0 {
 		return nil, nil, fmt.Errorf("arc V%d A%d is not expanded", volumeIdx, arcIdx)
 	}
-	if len(chapters) != location.chapterCount {
-		return nil, nil, fmt.Errorf("repair_arc V%d A%d must keep %d chapters, got %d", volumeIdx, arcIdx, location.chapterCount, len(chapters))
-	}
-	repaired := numberedOutlineEntries(chapters, location.startChapter)
-	if err := validateOutlineBatchEntries(fmt.Sprintf("repair_arc V%d A%d", volumeIdx, arcIdx), repaired); err != nil {
+	startChapter, expectedChapters, err := repairArcRangeBounds(volumeIdx, arcIdx, location, fromChapter, toChapter)
+	if err != nil {
 		return nil, nil, err
 	}
+	if len(chapters) != expectedChapters {
+		if fromChapter > 0 || toChapter > 0 {
+			return nil, nil, fmt.Errorf("repair_arc V%d A%d chapters %d-%d must keep %d chapters, got %d", volumeIdx, arcIdx, fromChapter, toChapter, expectedChapters, len(chapters))
+		}
+		return nil, nil, fmt.Errorf("repair_arc V%d A%d must keep %d chapters, got %d", volumeIdx, arcIdx, expectedChapters, len(chapters))
+	}
+	repaired := numberedOutlineEntries(chapters, startChapter)
 
 	found := false
 	for vi := range volumes {
@@ -317,7 +328,17 @@ func (s *OutlineStore) replaceArcChaptersUnlocked(volumeIdx, arcIdx int, chapter
 			if volumes[vi].Index != volumeIdx || arc.Index != arcIdx {
 				continue
 			}
-			arc.Chapters = repaired
+			merged := numberedOutlineEntries(arc.Chapters, location.startChapter)
+			if fromChapter > 0 || toChapter > 0 {
+				offset := fromChapter - location.startChapter
+				copy(merged[offset:offset+len(repaired)], repaired)
+			} else {
+				merged = repaired
+			}
+			if err := validateOutlineBatchEntries(fmt.Sprintf("repair_arc V%d A%d", volumeIdx, arcIdx), merged); err != nil {
+				return nil, nil, err
+			}
+			arc.Chapters = merged
 			found = true
 			break
 		}
@@ -342,6 +363,20 @@ func (s *OutlineStore) replaceArcChaptersUnlocked(volumeIdx, arcIdx int, chapter
 		return nil, nil, err
 	}
 	return volumes, repaired, nil
+}
+
+func repairArcRangeBounds(volumeIdx, arcIdx int, location outlineArcLocation, fromChapter, toChapter int) (int, int, error) {
+	if fromChapter <= 0 && toChapter <= 0 {
+		return location.startChapter, location.chapterCount, nil
+	}
+	if fromChapter <= 0 || toChapter <= 0 {
+		return 0, 0, fmt.Errorf("repair_arc V%d A%d requires both from_chapter and to_chapter for partial repair", volumeIdx, arcIdx)
+	}
+	arcEnd := location.startChapter + location.chapterCount - 1
+	if fromChapter < location.startChapter || toChapter > arcEnd || toChapter < fromChapter {
+		return 0, 0, fmt.Errorf("repair_arc V%d A%d chapter range %d-%d outside arc range %d-%d", volumeIdx, arcIdx, fromChapter, toChapter, location.startChapter, arcEnd)
+	}
+	return fromChapter, toChapter - fromChapter + 1, nil
 }
 
 func (s *OutlineStore) appendVolumeUnlocked(vol domain.VolumeOutline) ([]domain.VolumeOutline, error) {

@@ -89,6 +89,158 @@ func TestFindDuplicateOutlineRepairBatchMapsDuplicateToLaterArc(t *testing.T) {
 	}
 }
 
+func TestFindDuplicateOutlineRepairBatchUsesSmallWindowForLargeArc(t *testing.T) {
+	motifs := []struct {
+		title string
+		core  string
+		hook  string
+	}{
+		{"Harbor Cipher", "A salt-stained ferry ledger exposes the smuggler's coded tide schedule.", "The tide bell rings from a locked boathouse."},
+		{"Glass Observatory", "A cracked telescope lens reveals that the comet signal was forged before sunrise.", "The repaired lens shows two moons."},
+		{"Market Intercept", "A forged pass changes hands in the spice market and redirects the pursuit.", "The ribbon carries the wrong family crest."},
+		{"Cistern Descent", "A dry cistern opens into flooded service tunnels beneath the courthouse.", "Water rises inside a room marked dry."},
+		{"Theater Switch", "A poisoned stage prop is swapped before the masked patron can signal the actor.", "The applause hides a second command."},
+		{"Rooftop Accord", "A rival scout bargains across tiled roofs and trades protection for a lantern code.", "The rival asks for shelter instead of coin."},
+		{"Archive Lock", "Burned archive slips reconstruct the missing index and expose a living witness.", "The wax tube contains a fresh fingerprint."},
+		{"Garden Trial", "Courtyard footprints disprove the gardener's alibi and uncover a seed-jar message.", "The seed jar rattles with metal."},
+		{"Train Cipher", "A night-train baggage tag leads the cast into the silent mail car.", "The mailbag is stitched with a royal warning."},
+		{"Quarry Signal", "The marble quarry's blasting horn reveals a chalk route behind the powder shed.", "The next blast is scheduled too early."},
+		{"Clockmaker Visit", "A stopped pendulum and a coded gear expose the clockmaker's hidden buyer.", "The gear turns without a spring."},
+		{"Monastery Ledger", "A bell keeper's ledger traces the missing donation into a sealed crypt.", "The bell rings thirteen times at noon."},
+		{"Canal Ambush", "A courier boat is tricked in canal fog and loses a tin cylinder from its tow rope.", "The tow rope is cut from the wrong bank."},
+		{"Library Trial", "Three marginal notes in the atlas room overturn a planted confession.", "The atlas page shows an impossible border."},
+		{"Foundry Bargain", "A stolen bronze mold is cooled before the foreman names the midnight buyer.", "The mold carries a fresh thumbprint."},
+		{"Clinic Ledger", "A charity clinic ledger exposes medicine hidden inside a prayer box.", "The medicine label has tomorrow's date."},
+		{"Lighthouse Code", "A lighthouse shutter rhythm reveals a waiting ship beyond the reef.", "The answering light comes from an empty sea."},
+		{"Museum Swap", "A replica idol switch catches the curator signaling through a cracked mirror.", "The mirror shows the vault from outside."},
+	}
+	largeArc := make([]domain.OutlineEntry, 18)
+	for i := range largeArc {
+		largeArc[i] = domain.OutlineEntry{
+			Title:     motifs[i].title,
+			CoreEvent: motifs[i].core,
+			Hook:      motifs[i].hook,
+		}
+	}
+	largeArc[0] = domain.OutlineEntry{
+		Title:     "Million Ant Army",
+		CoreEvent: "The heroine discovers the sealed chamber and faces a wall of engineered ants.",
+		Hook:      "The ants begin moving as one intelligence.",
+	}
+	largeArc[12] = largeArc[0]
+
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Title: "Volume",
+		Theme: "Theme",
+		Arcs: []domain.ArcOutline{
+			{Index: 1, Title: "Earlier Arc", Goal: "Earlier work", EstimatedChapters: 49},
+			{Index: 2, Title: "Large Arc", Goal: "Repair only a window", Chapters: largeArc},
+		},
+	}}
+	s := setupLayered(t, volumes)
+	if err := s.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		Layered:           true,
+		CompletedChapters: []int{50, 51, 62, 64},
+	}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+	progress, err := s.Progress.Load()
+	if err != nil {
+		t.Fatalf("Load progress: %v", err)
+	}
+
+	batch, err := s.FindDuplicateOutlineRepairBatch(progress)
+	if err != nil {
+		t.Fatalf("FindDuplicateOutlineRepairBatch: %v", err)
+	}
+	if batch == nil || !batch.Repairable() {
+		t.Fatalf("expected repairable batch, got %+v", batch)
+	}
+	if batch.Volume != 1 || batch.Arc != 2 {
+		t.Fatalf("expected V1 A2, got V%d A%d", batch.Volume, batch.Arc)
+	}
+	if batch.FromChapter != 62 || batch.ToChapter != 64 || batch.ChapterCount != 3 {
+		t.Fatalf("repair window = %+v, want chapters 62-64", batch)
+	}
+	if got := batch.CompletedChapters; len(got) != 2 || got[0] != 62 || got[1] != 64 {
+		t.Fatalf("completed chapters in window = %v, want [62 64]", got)
+	}
+	if batch.Duplicate.Chapter != 62 || batch.Duplicate.ExistingChapter != 50 {
+		t.Fatalf("duplicate = %+v, want chapter 62 repeating chapter 50", batch.Duplicate)
+	}
+}
+
+func TestFindDuplicateOutlineRepairBatchChecksAdaptationParentVolume(t *testing.T) {
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Title: "Parent Batch",
+		Theme: "One generated parent range",
+		Arcs: []domain.ArcOutline{
+			{
+				Index: 1,
+				Title: "Parent Batch (1-3)",
+				Goal:  "First small detail batch",
+				Chapters: []domain.OutlineEntry{
+					{Title: "Million Ant Army", CoreEvent: "The heroine enters the sealed chamber and faces engineered ants.", Hook: "The ants begin moving as one intelligence."},
+					{Title: "Copper Witness", CoreEvent: "A witness trades a copper badge for protection.", Hook: "The badge carries a hidden serial number."},
+					{Title: "Rooftop Ledger", CoreEvent: "The team finds a ledger on the rooftop laundry line.", Hook: "The ink changes under rainwater."},
+				},
+			},
+			{
+				Index: 2,
+				Title: "Parent Batch (4-6)",
+				Goal:  "Second small detail batch",
+				Chapters: []domain.OutlineEntry{
+					{Title: "Clinic Tunnel", CoreEvent: "A tunnel under the clinic redirects the escape route.", Hook: "The tunnel lights switch on by themselves."},
+					{Title: "Million Ant Army", CoreEvent: "The heroine enters the sealed chamber and faces engineered ants.", Hook: "The ants begin moving as one intelligence."},
+					{Title: "Glass Verdict", CoreEvent: "A glass report exposes who signed the false order.", Hook: "The signature belongs to a dead official."},
+				},
+			},
+		},
+	}}
+	s := setupLayered(t, volumes)
+	if err := s.Adaptation.SavePlan(domain.AdaptationPlan{
+		Status: domain.AdaptationPlanStatusConfirmed,
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, Title: "Million Ant Army"},
+		},
+	}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		Layered:           true,
+		CompletedChapters: []int{4, 5},
+	}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+	progress, err := s.Progress.Load()
+	if err != nil {
+		t.Fatalf("Load progress: %v", err)
+	}
+
+	batch, err := s.FindDuplicateOutlineRepairBatch(progress)
+	if err != nil {
+		t.Fatalf("FindDuplicateOutlineRepairBatch: %v", err)
+	}
+	if batch == nil || !batch.Repairable() {
+		t.Fatalf("expected repairable batch, got %+v", batch)
+	}
+	if batch.Volume != 1 || batch.Arc != 2 {
+		t.Fatalf("expected V1 A2, got V%d A%d", batch.Volume, batch.Arc)
+	}
+	if batch.FromChapter != 4 || batch.ToChapter != 6 || batch.ChapterCount != 3 {
+		t.Fatalf("repair window = %+v, want chapters 4-6", batch)
+	}
+	if batch.Duplicate.Chapter != 5 || batch.Duplicate.ExistingChapter != 1 {
+		t.Fatalf("duplicate = %+v, want chapter 5 repeating chapter 1 inside parent batch", batch.Duplicate)
+	}
+}
+
 func TestRepairArcOutlineUpdatesFlatLayeredAndAdaptationPlan(t *testing.T) {
 	volumes := []domain.VolumeOutline{{
 		Index: 1,
@@ -211,6 +363,59 @@ func TestRepairArcOutlineRejectsDuplicateReplacement(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "duplicate chapter outline") {
 		t.Fatalf("expected duplicate error, got %v", err)
+	}
+}
+
+func TestRepairArcOutlineRangeRejectsDuplicateAgainstAdaptationParentVolume(t *testing.T) {
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Title: "Parent Batch",
+		Theme: "One generated parent range",
+		Arcs: []domain.ArcOutline{
+			{
+				Index: 1,
+				Title: "Parent Batch (1-3)",
+				Goal:  "First small detail batch",
+				Chapters: []domain.OutlineEntry{
+					{Title: "Million Ant Army", CoreEvent: "The heroine enters the sealed chamber and faces engineered ants.", Hook: "The ants begin moving as one intelligence."},
+					{Title: "Copper Witness", CoreEvent: "A witness trades a copper badge for protection.", Hook: "The badge carries a hidden serial number."},
+					{Title: "Rooftop Ledger", CoreEvent: "The team finds a ledger on the rooftop laundry line.", Hook: "The ink changes under rainwater."},
+				},
+			},
+			{
+				Index: 2,
+				Title: "Parent Batch (4-6)",
+				Goal:  "Second small detail batch",
+				Chapters: []domain.OutlineEntry{
+					{Title: "Clinic Tunnel", CoreEvent: "A tunnel under the clinic redirects the escape route.", Hook: "The tunnel lights switch on by themselves."},
+					{Title: "Paper Swarm", CoreEvent: "A paper swarm blocks the rear archive.", Hook: "Every page carries the same address."},
+					{Title: "Glass Verdict", CoreEvent: "A glass report exposes who signed the false order.", Hook: "The signature belongs to a dead official."},
+				},
+			},
+		},
+	}}
+	s := setupLayered(t, volumes)
+	if err := s.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Adaptation.SavePlan(domain.AdaptationPlan{
+		Status: domain.AdaptationPlanStatusConfirmed,
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, Title: "Million Ant Army"},
+		},
+	}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+
+	err := s.RepairArcOutlineRange(1, 2, 5, 6, []domain.OutlineEntry{
+		{Title: "Million Ant Army", CoreEvent: "The heroine enters the sealed chamber and faces engineered ants.", Hook: "The ants begin moving as one intelligence."},
+		{Title: "Glass Verdict Renewed", CoreEvent: "The repaired report moves the accusation to a living conspirator.", Hook: "The witness refuses the obvious name."},
+	})
+	if err == nil {
+		t.Fatal("expected parent-batch duplicate replacement to be rejected")
+	}
+	if !strings.Contains(err.Error(), "repair_arc V1 parent batch contains duplicate chapter outline") {
+		t.Fatalf("expected parent batch duplicate error, got %v", err)
 	}
 }
 

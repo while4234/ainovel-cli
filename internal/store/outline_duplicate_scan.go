@@ -12,7 +12,7 @@ import (
 
 const (
 	outlineDuplicateScanFile    = "meta/outline_duplicate_scan.json"
-	outlineDuplicateScanVersion = 1
+	outlineDuplicateScanVersion = 2
 	outlineDuplicateScanStatus  = "clean"
 )
 

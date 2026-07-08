@@ -8,7 +8,9 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
-// OutlineRepairBatch describes the smallest durable outline batch that can be
+const outlineRepairWindowChapterCount = 3
+
+// OutlineRepairBatch describes the smallest durable outline window that can be
 // repaired before writing resumes.
 type OutlineRepairBatch struct {
 	Volume            int
@@ -25,8 +27,8 @@ func (b *OutlineRepairBatch) Repairable() bool {
 }
 
 // FindDuplicateOutlineRepairBatch locates the first duplicated outline promise
-// within a generated batch and maps the later duplicate chapter to its expanded
-// layered arc.
+// within a generated batch and maps the later duplicate chapter to a small
+// repair window inside the expanded layered arc.
 func (s *Store) FindDuplicateOutlineRepairBatch(progress *domain.Progress) (*OutlineRepairBatch, error) {
 	progress, err := s.completePendingOutlineRepairFinalization(progress)
 	if err != nil {
@@ -52,7 +54,7 @@ func (s *Store) scanDuplicateOutlineRepairBatch(progress *domain.Progress) (*Out
 			return nil, err
 		}
 		if len(volumes) > 0 {
-			return duplicateOutlineRepairBatchInLayered(progress, volumes), nil
+			return s.duplicateOutlineRepairBatchInLayered(progress, volumes), nil
 		}
 	}
 
@@ -67,7 +69,14 @@ func (s *Store) scanDuplicateOutlineRepairBatch(progress *domain.Progress) (*Out
 	return &OutlineRepairBatch{Duplicate: duplicate}, nil
 }
 
-func duplicateOutlineRepairBatchInLayered(progress *domain.Progress, volumes []domain.VolumeOutline) *OutlineRepairBatch {
+func (s *Store) duplicateOutlineRepairBatchInLayered(progress *domain.Progress, volumes []domain.VolumeOutline) *OutlineRepairBatch {
+	if s.Adaptation.Active() {
+		return s.duplicateOutlineRepairBatchInAdaptationVolumes(progress, volumes)
+	}
+	return duplicateOutlineRepairBatchInLayeredArcs(progress, volumes)
+}
+
+func duplicateOutlineRepairBatchInLayeredArcs(progress *domain.Progress, volumes []domain.VolumeOutline) *OutlineRepairBatch {
 	globalChapter := 1
 	for _, volume := range volumes {
 		for _, arc := range volume.Arcs {
@@ -78,16 +87,17 @@ func duplicateOutlineRepairBatchInLayered(progress *domain.Progress, volumes []d
 				entries := numberedOutlineEntries(arc.Chapters, from)
 				duplicate, ok := domain.FindDuplicateOutlineEntries(entries)
 				if ok {
+					windowFrom, windowTo := outlineRepairWindow(from, to, duplicate.Chapter)
 					var completed []int
 					if progress != nil {
-						completed = completedChaptersInRange(progress.CompletedChapters, from, to)
+						completed = completedChaptersInRange(progress.CompletedChapters, windowFrom, windowTo)
 					}
 					return &OutlineRepairBatch{
 						Volume:            volume.Index,
 						Arc:               arc.Index,
-						FromChapter:       from,
-						ToChapter:         to,
-						ChapterCount:      len(arc.Chapters),
+						FromChapter:       windowFrom,
+						ToChapter:         windowTo,
+						ChapterCount:      windowTo - windowFrom + 1,
 						Duplicate:         duplicate,
 						CompletedChapters: completed,
 					}
@@ -95,6 +105,33 @@ func duplicateOutlineRepairBatchInLayered(progress *domain.Progress, volumes []d
 			}
 			globalChapter += arcLen
 		}
+	}
+	return nil
+}
+
+func (s *Store) duplicateOutlineRepairBatchInAdaptationVolumes(progress *domain.Progress, volumes []domain.VolumeOutline) *OutlineRepairBatch {
+	globalChapter := 1
+	for _, volume := range volumes {
+		var entries []domain.OutlineEntry
+		for _, arc := range volume.Arcs {
+			arcLen := arcOutlineChapterCount(arc)
+			if len(arc.Chapters) > 0 {
+				entries = append(entries, numberedOutlineEntries(arc.Chapters, globalChapter)...)
+			}
+			globalChapter += arcLen
+		}
+		if len(entries) == 0 {
+			continue
+		}
+		duplicate, ok := domain.FindDuplicateOutlineEntries(entries)
+		if !ok {
+			continue
+		}
+		batch, err := s.layeredRepairBatchForDuplicate(progress, duplicate)
+		if err == nil && batch != nil {
+			return batch
+		}
+		return &OutlineRepairBatch{Duplicate: duplicate}
 	}
 	return nil
 }
@@ -108,21 +145,23 @@ func (s *Store) layeredRepairBatchForDuplicate(progress *domain.Progress, duplic
 	globalChapter := 1
 	for _, volume := range volumes {
 		for _, arc := range volume.Arcs {
-			arcLen := len(arc.Chapters)
-			if arcLen == 0 {
+			arcLen := arcOutlineChapterCount(arc)
+			if len(arc.Chapters) == 0 {
+				globalChapter += arcLen
 				continue
 			}
 			from := globalChapter
 			to := globalChapter + arcLen - 1
 			if duplicate.Chapter >= from && duplicate.Chapter <= to {
+				windowFrom, windowTo := outlineRepairWindow(from, to, duplicate.Chapter)
 				return &OutlineRepairBatch{
 					Volume:            volume.Index,
 					Arc:               arc.Index,
-					FromChapter:       from,
-					ToChapter:         to,
-					ChapterCount:      arcLen,
+					FromChapter:       windowFrom,
+					ToChapter:         windowTo,
+					ChapterCount:      windowTo - windowFrom + 1,
 					Duplicate:         duplicate,
-					CompletedChapters: completedChaptersInRange(progress.CompletedChapters, from, to),
+					CompletedChapters: completedChaptersInRange(progress.CompletedChapters, windowFrom, windowTo),
 				}, nil
 			}
 			globalChapter += arcLen
@@ -130,6 +169,24 @@ func (s *Store) layeredRepairBatchForDuplicate(progress *domain.Progress, duplic
 	}
 
 	return &OutlineRepairBatch{Duplicate: duplicate}, nil
+}
+
+func outlineRepairWindow(arcFrom, arcTo, duplicateChapter int) (int, int) {
+	if arcFrom <= 0 || arcTo < arcFrom {
+		return arcFrom, arcTo
+	}
+	if duplicateChapter < arcFrom {
+		duplicateChapter = arcFrom
+	}
+	if duplicateChapter > arcTo {
+		duplicateChapter = arcTo
+	}
+	windowTo := min(arcTo, duplicateChapter+outlineRepairWindowChapterCount-1)
+	windowFrom := duplicateChapter
+	if windowTo-windowFrom+1 < outlineRepairWindowChapterCount {
+		windowFrom = max(arcFrom, windowTo-outlineRepairWindowChapterCount+1)
+	}
+	return windowFrom, windowTo
 }
 
 func completedChaptersInRange(completed []int, from, to int) []int {
@@ -147,25 +204,35 @@ func completedChaptersInRange(completed []int, from, to int) []int {
 // chapter count. In adaptation projects it also updates the confirmed plan's
 // target outline fields while preserving source anchors and word budgets.
 func (s *Store) RepairArcOutline(volumeIdx, arcIdx int, chapters []domain.OutlineEntry) error {
+	return s.RepairArcOutlineRange(volumeIdx, arcIdx, 0, 0, chapters)
+}
+
+// RepairArcOutlineRange replaces a small global-chapter window inside an
+// already-expanded arc. Passing fromChapter/toChapter as zero preserves the
+// historical full-arc repair behavior.
+func (s *Store) RepairArcOutlineRange(volumeIdx, arcIdx, fromChapter, toChapter int, chapters []domain.OutlineEntry) error {
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
 
-	prepared, err := s.previewRepairedArcEntries(volumeIdx, arcIdx, chapters)
+	prepared, err := s.previewRepairedArcEntries(volumeIdx, arcIdx, fromChapter, toChapter, chapters)
 	if err != nil {
 		return err
 	}
-	if err := s.saveOutlineRepairFinalization(volumeIdx, arcIdx, prepared, outlineRepairFinalizationStagePrepared); err != nil {
+	if err := s.validateRepairParentBatch(volumeIdx, arcIdx, fromChapter, toChapter, chapters); err != nil {
+		return err
+	}
+	if err := s.saveOutlineRepairFinalizationRange(volumeIdx, arcIdx, fromChapter, toChapter, prepared, outlineRepairFinalizationStagePrepared); err != nil {
 		return err
 	}
 
 	s.Outline.io.mu.Lock()
-	_, repaired, err := s.Outline.replaceArcChaptersUnlocked(volumeIdx, arcIdx, chapters)
+	_, repaired, err := s.Outline.replaceArcChapterRangeUnlocked(volumeIdx, arcIdx, fromChapter, toChapter, chapters)
 	s.Outline.io.mu.Unlock()
 	if err != nil {
 		_ = s.clearOutlineRepairFinalization()
 		return err
 	}
-	if err := s.saveOutlineRepairFinalization(volumeIdx, arcIdx, repaired, outlineRepairFinalizationStageOutlineReplaced); err != nil {
+	if err := s.saveOutlineRepairFinalizationRange(volumeIdx, arcIdx, fromChapter, toChapter, repaired, outlineRepairFinalizationStageOutlineReplaced); err != nil {
 		return err
 	}
 
@@ -188,7 +255,7 @@ func (s *Store) RepairArcOutline(volumeIdx, arcIdx int, chapters []domain.Outlin
 	return nil
 }
 
-func (s *Store) previewRepairedArcEntries(volumeIdx, arcIdx int, chapters []domain.OutlineEntry) ([]domain.OutlineEntry, error) {
+func (s *Store) previewRepairedArcEntries(volumeIdx, arcIdx, fromChapter, toChapter int, chapters []domain.OutlineEntry) ([]domain.OutlineEntry, error) {
 	volumes, err := s.Outline.LoadLayeredOutline()
 	if err != nil {
 		return nil, err
@@ -200,10 +267,72 @@ func (s *Store) previewRepairedArcEntries(volumeIdx, arcIdx int, chapters []doma
 	if location.chapterCount == 0 {
 		return nil, fmt.Errorf("arc V%d A%d is not expanded", volumeIdx, arcIdx)
 	}
-	if len(chapters) != location.chapterCount {
-		return nil, fmt.Errorf("repair_arc V%d A%d must keep %d chapters, got %d", volumeIdx, arcIdx, location.chapterCount, len(chapters))
+	startChapter, expectedChapters, err := repairArcRangeBounds(volumeIdx, arcIdx, location, fromChapter, toChapter)
+	if err != nil {
+		return nil, err
 	}
-	return numberedOutlineEntries(chapters, location.startChapter), nil
+	if len(chapters) != expectedChapters {
+		if fromChapter > 0 || toChapter > 0 {
+			return nil, fmt.Errorf("repair_arc V%d A%d chapters %d-%d must keep %d chapters, got %d", volumeIdx, arcIdx, fromChapter, toChapter, expectedChapters, len(chapters))
+		}
+		return nil, fmt.Errorf("repair_arc V%d A%d must keep %d chapters, got %d", volumeIdx, arcIdx, expectedChapters, len(chapters))
+	}
+	return numberedOutlineEntries(chapters, startChapter), nil
+}
+
+func (s *Store) validateRepairParentBatch(volumeIdx, arcIdx, fromChapter, toChapter int, chapters []domain.OutlineEntry) error {
+	if !s.Adaptation.Active() {
+		return nil
+	}
+	entries, err := s.previewRepairedVolumeEntries(volumeIdx, arcIdx, fromChapter, toChapter, chapters)
+	if err != nil {
+		return err
+	}
+	return validateOutlineBatchEntries(fmt.Sprintf("repair_arc V%d parent batch", volumeIdx), entries)
+}
+
+func (s *Store) previewRepairedVolumeEntries(volumeIdx, arcIdx, fromChapter, toChapter int, chapters []domain.OutlineEntry) ([]domain.OutlineEntry, error) {
+	volumes, err := s.Outline.LoadLayeredOutline()
+	if err != nil {
+		return nil, err
+	}
+	globalChapter := 1
+	for _, volume := range volumes {
+		var volumeEntries []domain.OutlineEntry
+		for _, arc := range volume.Arcs {
+			arcLen := arcOutlineChapterCount(arc)
+			if len(arc.Chapters) == 0 {
+				globalChapter += arcLen
+				continue
+			}
+			arcEntries := numberedOutlineEntries(arc.Chapters, globalChapter)
+			if volume.Index == volumeIdx && arc.Index == arcIdx {
+				location := outlineArcLocation{found: true, startChapter: globalChapter, chapterCount: len(arc.Chapters)}
+				startChapter, expectedChapters, err := repairArcRangeBounds(volumeIdx, arcIdx, location, fromChapter, toChapter)
+				if err != nil {
+					return nil, err
+				}
+				if len(chapters) != expectedChapters {
+					return nil, fmt.Errorf("repair_arc V%d A%d chapters %d-%d must keep %d chapters, got %d", volumeIdx, arcIdx, fromChapter, toChapter, expectedChapters, len(chapters))
+				}
+				repaired := numberedOutlineEntries(chapters, startChapter)
+				if fromChapter > 0 || toChapter > 0 {
+					offset := fromChapter - globalChapter
+					copy(arcEntries[offset:offset+len(repaired)], repaired)
+				} else {
+					arcEntries = repaired
+				}
+			}
+			if volume.Index == volumeIdx {
+				volumeEntries = append(volumeEntries, arcEntries...)
+			}
+			globalChapter += arcLen
+		}
+		if volume.Index == volumeIdx {
+			return volumeEntries, nil
+		}
+	}
+	return nil, fmt.Errorf("volume not found: volume=%d", volumeIdx)
 }
 
 func (s *Store) finalizeOutlineRepair(volumeIdx, arcIdx int, repaired []domain.OutlineEntry) (*domain.Progress, error) {

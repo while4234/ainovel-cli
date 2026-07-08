@@ -31,7 +31,7 @@ func NewSaveFoundationTool(store *store.Store) *SaveFoundationTool {
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
 func (t *SaveFoundationTool) Description() string {
-	return "保存小说基础设定（premise/outline/characters/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?}。type 可选 premise / outline / layered_outline / characters / world_rules / expand_arc / repair_arc / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。expand_arc 展开骨架弧的详细章节（需 volume + arc）；repair_arc 修复已展开弧的大纲且必须保持章节数不变；append_volume 追加新卷（content 为完整 VolumeOutline JSON，含弧结构）；update_compass 更新终局方向（content 为 StoryCompass JSON）；complete_book 宣告全书完结（content 传空对象 {}，直接推 Phase=Complete；调用前必须先通过终卷判定清单，且无返工队列）。scale 可选，仅允许 short / mid / long。"
+	return "保存小说基础设定（premise/outline/characters/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?, from_chapter?, to_chapter?}。type 可选 premise / outline / layered_outline / characters / world_rules / expand_arc / repair_arc / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。expand_arc 展开骨架弧的详细章节（需 volume + arc，正常批次建议 3-5 章）；repair_arc 修复已展开弧的大纲，带 from_chapter/to_chapter 时只替换该全局章节窗口且必须保持窗口章节数不变，不带范围时保持旧的整弧修复行为；append_volume 追加新卷（content 为完整 VolumeOutline JSON，含弧结构；较大故事运动应拆成多个 3-5 章左右的小弧）；update_compass 更新终局方向（content 为 StoryCompass JSON）；complete_book 宣告全书完结（content 传空对象 {}，直接推 Phase=Complete；调用前必须先通过终卷判定清单，且无返工队列）。scale 可选，仅允许 short / mid / long。"
 }
 func (t *SaveFoundationTool) Label() string { return "保存设定" }
 
@@ -48,6 +48,8 @@ func (t *SaveFoundationTool) Schema() map[string]any {
 		schema.Property("scale", schema.Enum("规划级别", "short", "mid", "long")),
 		schema.Property("volume", schema.Int("目标卷序号（expand_arc / repair_arc 时必传）")),
 		schema.Property("arc", schema.Int("目标弧序号（expand_arc / repair_arc 时必传）")),
+		schema.Property("from_chapter", schema.Int("repair_arc 局部修复窗口起始全局章节号；由 Host 指令提供时必须原样传入")),
+		schema.Property("to_chapter", schema.Int("repair_arc 局部修复窗口结束全局章节号；由 Host 指令提供时必须原样传入")),
 		schema.Property("similarity_review", map[string]any{
 			"description": "Optional verdicts for borderline similar outline pairs: [{chapter, existing_chapter, duplicate, reason}]. Use only after model review.",
 		}),
@@ -61,6 +63,8 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		Scale   string                           `json:"scale"`
 		Volume  int                              `json:"volume"`
 		Arc     int                              `json:"arc"`
+		From    int                              `json:"from_chapter"`
+		To      int                              `json:"to_chapter"`
 		Review  []outlineSimilarityReviewVerdict `json:"similarity_review"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
@@ -221,12 +225,16 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := validateGeneratedOutline(fmt.Sprintf("repair_arc V%d A%d", a.Volume, a.Arc), chapters, a.Review); err != nil {
 			return nil, err
 		}
-		if err := t.store.RepairArcOutline(a.Volume, a.Arc, chapters); err != nil {
+		if err := t.store.RepairArcOutlineRange(a.Volume, a.Arc, a.From, a.To, chapters); err != nil {
 			return nil, fmt.Errorf("repair arc: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["volume"] = a.Volume
 		result["arc"] = a.Arc
 		result["chapters"] = len(chapters)
+		if a.From > 0 || a.To > 0 {
+			result["from_chapter"] = a.From
+			result["to_chapter"] = a.To
+		}
 		if err := t.refreshWordBudgetPlan(result); err != nil {
 			return nil, err
 		}
