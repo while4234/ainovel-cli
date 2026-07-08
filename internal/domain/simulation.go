@@ -9,8 +9,9 @@ import (
 const (
 	SimulationProfileVersion         = "simulation_profile.v1"
 	SimulationMergeCheckpointVersion = "simulation_merge_checkpoint.v1"
-	maxCompactSimulationSourceFiles  = 20
-	maxCompactSimulationItems        = 12
+	maxCompactSimulationSourceFiles  = 3
+	maxCompactSimulationItems        = 2
+	maxCompactSimulationItemRunes    = 60
 )
 
 type SimulationProfile struct {
@@ -300,8 +301,18 @@ func compactSimulationItems(items []string) []string {
 		limit = maxCompactSimulationItems
 	}
 	out := make([]string, limit)
-	copy(out, items[:limit])
+	for i := 0; i < limit; i++ {
+		out[i] = truncateSimulationRunes(items[i], maxCompactSimulationItemRunes)
+	}
 	return out
+}
+
+func truncateSimulationRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func MergeSimulationSynthesis(a, b SimulationSynthesis) SimulationSynthesis {

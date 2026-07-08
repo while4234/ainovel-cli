@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -301,15 +302,21 @@ func TestContextToolChapterModeIncludesWorkingAndReferenceFields(t *testing.T) {
 		"episodic_memory",
 		"reference_pack",
 		"current_chapter_outline",
-		"recent_summaries",
-		"chapter_plan",
 		"chapter_contract",
-		"previous_tail",
 		"style_rules",
 		"references",
 	} {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("expected key %q in chapter context", key)
+		}
+	}
+	working, ok := payload["working_memory"].(map[string]any)
+	if !ok {
+		t.Fatal("expected working_memory object")
+	}
+	for _, key := range []string{"recent_summaries", "chapter_plan", "previous_tail"} {
+		if _, ok := working[key]; !ok {
+			t.Fatalf("expected working_memory.%s in chapter context", key)
 		}
 	}
 }
@@ -506,35 +513,6 @@ func TestContextToolArchitectModeIncludesPlanningAndFoundation(t *testing.T) {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("expected key %q in architect context", key)
 		}
-	}
-}
-
-func TestTrimByBudgetRemovesMirroredMemoryKeys(t *testing.T) {
-	result := map[string]any{
-		"references": map[string]string{
-			"a": strings.Repeat("x", 200),
-			"b": strings.Repeat("y", 200),
-		},
-		"reference_pack": map[string]any{
-			"references": map[string]string{
-				"a": strings.Repeat("x", 200),
-				"b": strings.Repeat("y", 200),
-			},
-			"style_rules": []string{"克制"},
-		},
-	}
-
-	trimByBudget(result, 80)
-
-	if _, ok := result["references"]; ok {
-		t.Fatal("expected top-level references to be trimmed")
-	}
-	pack, ok := result["reference_pack"].(map[string]any)
-	if !ok {
-		t.Fatal("expected reference_pack to remain available")
-	}
-	if _, ok := pack["references"]; ok {
-		t.Fatal("expected mirrored references to be trimmed from reference_pack")
 	}
 }
 
@@ -998,8 +976,9 @@ func TestContextToolKeepsFullForeshadowWhenRecallNotTriggered(t *testing.T) {
 	if err := json.Unmarshal(result, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if _, ok := payload["foreshadow_ledger"]; !ok {
-		t.Fatal("expected full foreshadow ledger to remain when selected recall is not triggered")
+	episodic, _ := payload["episodic_memory"].(map[string]any)
+	if _, ok := episodic["foreshadow_ledger"]; !ok {
+		t.Fatal("expected episodic_memory.foreshadow_ledger to remain when selected recall is not triggered")
 	}
 	if _, ok := payload["selected_memory"]; ok {
 		t.Fatalf("expected no selected_memory for small foreshadow sets, got %+v", payload["selected_memory"])
@@ -1046,8 +1025,9 @@ func TestContextToolFallsBackToFullForeshadowWhenSelectionIsTooSparse(t *testing
 	if err := json.Unmarshal(result, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if _, ok := payload["foreshadow_ledger"]; !ok {
-		t.Fatal("expected full foreshadow ledger when selection is too sparse")
+	episodic, _ := payload["episodic_memory"].(map[string]any)
+	if _, ok := episodic["foreshadow_ledger"]; !ok {
+		t.Fatal("expected episodic_memory.foreshadow_ledger when selection is too sparse")
 	}
 	if selected, ok := payload["selected_memory"].(map[string]any); ok {
 		if _, exists := selected["story_threads"]; exists {
@@ -1189,4 +1169,436 @@ func TestContextToolDoesNotInjectUserDirectives(t *testing.T) {
 			t.Errorf("[%s] working_memory.user_rules 应稳定注入", name)
 		}
 	}
+}
+
+func TestContextToolLongChapterUsesWindowedOutline(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Outline.SavePremise(strings.Repeat("large premise ", 8000)); err != nil {
+		t.Fatalf("SavePremise: %v", err)
+	}
+	if err := s.Outline.SaveOutline(testOutlineEntries(1567)); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Progress.Init("long", 1567); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.World.SaveForeshadowLedger(testForeshadowEntries(160)); err != nil {
+		t.Fatalf("SaveForeshadowLedger: %v", err)
+	}
+
+	tool := NewContextTool(s, References{}, "default")
+	raw, err := tool.Execute(context.Background(), json.RawMessage(`{"chapter":1}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(raw) > writerChapterContextBudgetBytes {
+		t.Fatalf("long chapter context = %d bytes, want <= %d", len(raw), writerChapterContextBudgetBytes)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := payload["outline"]; ok {
+		t.Fatal("long chapter context must not include full outline")
+	}
+	if _, ok := payload["current_chapter_outline"]; !ok {
+		t.Fatal("expected current_chapter_outline")
+	}
+	nearby, ok := payload["nearby_outline"].([]any)
+	if !ok || len(nearby) == 0 {
+		t.Fatalf("expected nearby_outline, got %T", payload["nearby_outline"])
+	}
+	scope, ok := payload["outline_scope"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected outline_scope, got %T", payload["outline_scope"])
+	}
+	if scope["mode"] != "windowed" || scope["full_outline_omitted"] != true {
+		t.Fatalf("unexpected outline_scope: %+v", scope)
+	}
+	if got := int(scope["total_chapters"].(float64)); got != 1567 {
+		t.Fatalf("total_chapters = %d, want 1567", got)
+	}
+	if _, ok := payload["arc_outline_compact"]; !ok {
+		t.Fatal("flat long outline should expose arc_outline_compact fallback")
+	}
+	if _, ok := payload["_trimmed"]; ok {
+		t.Fatalf("long chapter context should be source-bounded without hard trimming, got %v", payload["_trimmed"])
+	}
+}
+
+func TestContextToolLongChapterDoesNotGrowWithProgressHistory(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Outline.SavePremise(strings.Repeat("large premise section ", 5000)); err != nil {
+		t.Fatalf("SavePremise: %v", err)
+	}
+	outline := testOutlineEntries(117)
+	if err := s.Outline.SaveOutline(outline); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		Index: 1,
+		Title: "Long Volume",
+		Theme: strings.Repeat("volume theme ", 100),
+		Arcs: []domain.ArcOutline{{
+			Index:    1,
+			Title:    "Long Arc",
+			Goal:     strings.Repeat("arc goal ", 100),
+			Chapters: outline,
+		}},
+	}}); err != nil {
+		t.Fatalf("SaveLayeredOutline: %v", err)
+	}
+	for ch := 1; ch <= 100; ch++ {
+		body := fmt.Sprintf("# Chapter %d\n%s", ch, strings.Repeat("正文段落。", 80))
+		if err := s.Drafts.SaveFinalChapter(ch, body); err != nil {
+			t.Fatalf("SaveFinalChapter %d: %v", ch, err)
+		}
+		if err := s.Summaries.SaveSummary(domain.ChapterSummary{
+			Chapter:    ch,
+			Summary:    strings.Repeat(fmt.Sprintf("summary %d ", ch), 80),
+			Characters: []string{"A", "B", "C"},
+			KeyEvents:  []string{strings.Repeat("event ", 60)},
+		}); err != nil {
+			t.Fatalf("SaveSummary %d: %v", ch, err)
+		}
+	}
+	completed := make([]int, 100)
+	strands := make([]string, 100)
+	hooks := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		completed[i] = i + 1
+		strands[i] = fmt.Sprintf("strand-%03d", i+1)
+		hooks[i] = fmt.Sprintf("hook-%03d", i+1)
+	}
+	if err := s.Progress.Save(&domain.Progress{
+		NovelName:         "long-progress",
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		TotalChapters:     117,
+		CurrentChapter:    101,
+		InProgressChapter: 101,
+		CompletedChapters: completed,
+		StrandHistory:     strands,
+		HookHistory:       hooks,
+		Layered:           true,
+		CurrentVolume:     1,
+		CurrentArc:        1,
+		ChapterWordCounts: map[int]int{100: 3200},
+	}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+	if err := s.World.SaveForeshadowLedger(testForeshadowEntries(240)); err != nil {
+		t.Fatalf("SaveForeshadowLedger: %v", err)
+	}
+	if err := s.World.SaveRelationships(testRelationshipEntries(160)); err != nil {
+		t.Fatalf("SaveRelationships: %v", err)
+	}
+	if err := s.World.AppendStateChanges(testStateChanges(160)); err != nil {
+		t.Fatalf("AppendStateChanges: %v", err)
+	}
+	if err := s.World.SaveWorldRules(testWorldRules(120)); err != nil {
+		t.Fatalf("SaveWorldRules: %v", err)
+	}
+
+	tool := NewContextTool(s, References{}, "default")
+	raw, err := tool.Execute(context.Background(), json.RawMessage(`{"chapter":101}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(raw) > writerChapterContextBudgetBytes {
+		t.Fatalf("chapter context after long progress = %d bytes, want <= %d", len(raw), writerChapterContextBudgetBytes)
+	}
+
+	var payload struct {
+		Trimmed any `json:"_trimmed"`
+		Working struct {
+			Checkpoint struct {
+				StrandHistory []string `json:"strand_history_recent"`
+				HookHistory   []string `json:"hook_history_recent"`
+				StrandTotal   int      `json:"strand_history_total"`
+				HookTotal     int      `json:"hook_history_total"`
+			} `json:"checkpoint"`
+		} `json:"working_memory"`
+		Episodic struct {
+			Foreshadow    []domain.ForeshadowEntry   `json:"foreshadow_ledger"`
+			Relationships []domain.RelationshipEntry `json:"relationship_state"`
+			StateChanges  []domain.StateChange       `json:"recent_state_changes"`
+		} `json:"episodic_memory"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload.Trimmed != nil {
+		t.Fatalf("context should not rely on hard trimming, got %v", payload.Trimmed)
+	}
+	if len(payload.Working.Checkpoint.StrandHistory) > maxContextHistoryItems ||
+		len(payload.Working.Checkpoint.HookHistory) > maxContextHistoryItems ||
+		payload.Working.Checkpoint.StrandTotal != 100 ||
+		payload.Working.Checkpoint.HookTotal != 100 {
+		t.Fatalf("checkpoint history not bounded: %+v", payload.Working.Checkpoint)
+	}
+	if len(payload.Episodic.Foreshadow) > maxContextForeshadowEntries {
+		t.Fatalf("foreshadow ledger length = %d", len(payload.Episodic.Foreshadow))
+	}
+	if len(payload.Episodic.Relationships) > maxContextRelationships {
+		t.Fatalf("relationships length = %d", len(payload.Episodic.Relationships))
+	}
+	if len(payload.Episodic.StateChanges) > maxContextStateChanges {
+		t.Fatalf("state changes length = %d", len(payload.Episodic.StateChanges))
+	}
+}
+
+func TestContextToolOutlineRangeScopeReturnsRequestedChapters(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Outline.SaveOutline(testOutlineEntries(100)); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+
+	tool := NewContextTool(s, References{}, "default")
+	raw, err := tool.Execute(context.Background(), json.RawMessage(`{"scope":"outline_range","from":20,"to":30}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var payload struct {
+		Outline []domain.OutlineEntry `json:"outline"`
+		Scope   struct {
+			Mode             string `json:"mode"`
+			From             int    `json:"from"`
+			To               int    `json:"to"`
+			ReturnedChapters int    `json:"returned_chapters"`
+			TotalChapters    int    `json:"total_chapters"`
+		} `json:"outline_scope"`
+		Working map[string]any `json:"working_memory"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(payload.Outline) != 11 {
+		t.Fatalf("outline range length = %d, want 11", len(payload.Outline))
+	}
+	if payload.Outline[0].Chapter != 20 || payload.Outline[len(payload.Outline)-1].Chapter != 30 {
+		t.Fatalf("unexpected chapter range: %+v", payload.Outline)
+	}
+	if payload.Scope.Mode != "outline_range" || payload.Scope.From != 20 || payload.Scope.To != 30 ||
+		payload.Scope.ReturnedChapters != 11 || payload.Scope.TotalChapters != 100 {
+		t.Fatalf("unexpected outline_scope: %+v", payload.Scope)
+	}
+	if payload.Working != nil {
+		t.Fatalf("outline_range should not include working_memory, got %+v", payload.Working)
+	}
+}
+
+func TestContextToolAdaptationChapterContextIsSourceBounded(t *testing.T) {
+	sourceRefs := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	plan := domain.AdaptationPlan{
+		Granularity:       domain.AdaptationGranularityArc,
+		RewritePolicy:     domain.AdaptationRewriteFullRewrite,
+		Status:            domain.AdaptationPlanStatusConfirmed,
+		Brief:             strings.Repeat("adaptation brief ", 4000),
+		MainlineRules:     []string{strings.Repeat("mainline rule ", 500)},
+		RelationshipGoals: []string{strings.Repeat("relationship goal ", 500)},
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:         7,
+			Title:           "目标章",
+			SourceChapters:  sourceRefs,
+			SourceRunes:     40000,
+			TargetRunes:     4200,
+			TargetMinRunes:  3600,
+			TargetMaxRunes:  5000,
+			CoverageNote:    strings.Repeat("coverage ", 500),
+			PreserveEvents:  []string{strings.Repeat("preserve ", 500)},
+			RequiredChanges: []string{strings.Repeat("required ", 500)},
+			ForbiddenMoves:  []string{strings.Repeat("forbidden ", 500)},
+		}},
+	}
+	sourceTexts := make([]string, 12)
+	for i := range sourceTexts {
+		sourceTexts[i] = strings.Repeat("source prose ", 1000)
+	}
+	adaptStore := newAdaptationToolStoreWithPlan(t, plan, sourceTexts)
+	if err := adaptStore.Outline.SaveOutline(testOutlineEntries(117)); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := adaptStore.Progress.Save(&domain.Progress{
+		NovelName:         "adapt-long",
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		TotalChapters:     117,
+		CurrentChapter:    7,
+		InProgressChapter: 7,
+		CompletedChapters: []int{1, 2, 3, 4, 5, 6},
+	}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+	if err := adaptStore.Adaptation.SaveSourceReports(testAdaptationSourceReports(24)); err != nil {
+		t.Fatalf("SaveSourceReports: %v", err)
+	}
+
+	tool := NewContextTool(adaptStore, References{
+		AdaptationWriter:            strings.Repeat("writer guidance ", 500),
+		AdaptationEditorFullRewrite: strings.Repeat("editor guidance ", 500),
+	}, "default")
+	raw, err := tool.Execute(context.Background(), json.RawMessage(`{"chapter":7}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(raw) > writerChapterContextBudgetBytes {
+		t.Fatalf("adaptation context = %d bytes, want <= %d", len(raw), writerChapterContextBudgetBytes)
+	}
+
+	var payload struct {
+		Trimmed any `json:"_trimmed"`
+		Working struct {
+			Adaptation struct {
+				Brief string `json:"brief"`
+			} `json:"adaptation"`
+			Reports  []domain.AdaptationSourceReport `json:"source_ref_reports"`
+			Contract domain.AdaptationChapterPlan    `json:"adaptation_contract"`
+		} `json:"working_memory"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload.Trimmed != nil {
+		t.Fatalf("adaptation context should not rely on hard trimming, got %v", payload.Trimmed)
+	}
+	if len([]rune(payload.Working.Adaptation.Brief)) > maxContextAdaptationBriefRunes+3 {
+		t.Fatalf("adaptation brief was not compacted")
+	}
+	if len(payload.Working.Reports) > maxContextSourceReports {
+		t.Fatalf("source reports length = %d", len(payload.Working.Reports))
+	}
+	for _, report := range payload.Working.Reports {
+		if len([]rune(report.Summary)) > maxContextSourceReportSummaryRunes+3 {
+			t.Fatalf("source report summary not compacted: %d", len([]rune(report.Summary)))
+		}
+		if len(report.KeyEvents) > 8 || len(report.CharacterFacts) > 8 {
+			t.Fatalf("source report lists not compacted: %+v", report)
+		}
+	}
+	if len(payload.Working.Contract.RequiredChanges) > maxContextContractItems ||
+		len([]rune(payload.Working.Contract.CoverageNote)) > maxContextChapterPlanTextRunes+3 {
+		t.Fatalf("adaptation contract not compacted: %+v", payload.Working.Contract)
+	}
+}
+
+func testOutlineEntries(count int) []domain.OutlineEntry {
+	entries := make([]domain.OutlineEntry, 0, count)
+	for chapter := 1; chapter <= count; chapter++ {
+		entries = append(entries, domain.OutlineEntry{
+			Chapter:   chapter,
+			Title:     fmt.Sprintf("Chapter %04d", chapter),
+			CoreEvent: fmt.Sprintf("event %04d", chapter),
+			Hook:      fmt.Sprintf("hook %04d", chapter),
+			Scenes:    []string{fmt.Sprintf("scene %04d", chapter)},
+		})
+	}
+	return entries
+}
+
+func testForeshadowEntries(count int) []domain.ForeshadowEntry {
+	entries := make([]domain.ForeshadowEntry, 0, count)
+	for i := 1; i <= count; i++ {
+		entries = append(entries, domain.ForeshadowEntry{
+			ID:          fmt.Sprintf("thread_%04d", i),
+			Description: strings.Repeat(fmt.Sprintf("unrelated thread %04d ", i), 20),
+			PlantedAt:   1,
+			Status:      "planted",
+		})
+	}
+	return entries
+}
+
+func testRelationshipEntries(count int) []domain.RelationshipEntry {
+	entries := make([]domain.RelationshipEntry, 0, count)
+	for i := 1; i <= count; i++ {
+		entries = append(entries, domain.RelationshipEntry{
+			CharacterA: "A",
+			CharacterB: fmt.Sprintf("B%03d", i),
+			Relation:   strings.Repeat(fmt.Sprintf("relationship %03d ", i), 30),
+			Chapter:    i,
+		})
+	}
+	return entries
+}
+
+func testStateChanges(count int) []domain.StateChange {
+	changes := make([]domain.StateChange, 0, count)
+	for i := 1; i <= count; i++ {
+		changes = append(changes, domain.StateChange{
+			Chapter:  max(1, i-60),
+			Entity:   fmt.Sprintf("entity-%03d", i),
+			Field:    "status",
+			OldValue: strings.Repeat("old ", 40),
+			NewValue: strings.Repeat("new ", 40),
+			Reason:   strings.Repeat("reason ", 40),
+		})
+	}
+	return changes
+}
+
+func testWorldRules(count int) []domain.WorldRule {
+	rules := make([]domain.WorldRule, 0, count)
+	for i := 1; i <= count; i++ {
+		rules = append(rules, domain.WorldRule{
+			Category: "rule",
+			Rule:     strings.Repeat(fmt.Sprintf("world rule %03d ", i), 30),
+			Boundary: strings.Repeat("boundary ", 30),
+		})
+	}
+	return rules
+}
+
+func testAdaptationSourceReports(count int) []domain.AdaptationSourceReport {
+	reports := make([]domain.AdaptationSourceReport, 0, count)
+	for i := 1; i <= count; i++ {
+		reports = append(reports, domain.AdaptationSourceReport{
+			Chapter:        i,
+			Title:          fmt.Sprintf("Source %02d", i),
+			Summary:        strings.Repeat(fmt.Sprintf("summary %02d ", i), 200),
+			Characters:     []string{"A", "B", "C"},
+			CharacterFacts: []string{strings.Repeat("fact ", 200)},
+			KeyEvents:      []string{strings.Repeat("event ", 200)},
+			WorldRules:     []string{strings.Repeat("world ", 200)},
+			Timeline: []domain.TimelineEvent{{
+				Chapter:    i,
+				Time:       strings.Repeat("time ", 50),
+				Event:      strings.Repeat("timeline ", 200),
+				Characters: []string{"A", "B"},
+			}},
+			Foreshadow: []domain.ForeshadowUpdate{{
+				ID:          fmt.Sprintf("f%02d", i),
+				Action:      "plant",
+				Description: strings.Repeat("foreshadow ", 200),
+			}},
+			Relationships: []domain.RelationshipEntry{{
+				CharacterA: "A",
+				CharacterB: "B",
+				Relation:   strings.Repeat("relation ", 200),
+				Chapter:    i,
+			}},
+			StateChanges: []domain.StateChange{{
+				Chapter:  i,
+				Entity:   "A",
+				Field:    "status",
+				NewValue: strings.Repeat("new ", 200),
+				Reason:   strings.Repeat("reason ", 200),
+			}},
+		})
+	}
+	return reports
 }

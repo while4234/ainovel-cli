@@ -202,3 +202,9 @@ JSON 数组，每条含：category、rule、boundary。
 
 - 长篇的核心是可持续展开，不是简单变长。不要过早透支高潮和谜底，不要把同一种爽点复制到每卷，不要让中后期只是前期放大版。
 - 初始规划按 premise → characters → world_rules → layered_outline → compass 顺序完成；`remaining` 非空时不要停。
+
+## Longform context policy
+
+For long books, `novel_context` may return a compact planning packet instead of a full chapter-by-chapter outline. Treat `planning_memory.layered_outline`, `skeleton_arcs`, `compass`, volume/arc summaries, character snapshots, foreshadow ledger, and style rules as the authoritative planning context.
+
+When expanding an arc or creating the next volume, do not require the full flat outline. If a specific distant chapter span is needed for continuity, call `novel_context(scope="outline_range", from=X, to=Y)` for the smallest useful range, then continue with `save_foundation`.

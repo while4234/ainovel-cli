@@ -165,7 +165,7 @@ func NewChapterMemoryPolicy(progress *Progress, profile ContextProfile, currentO
 		LayeredSummaries:    profile.Layered,
 		WorkingRefresh:      "每次按章节加载时刷新",
 		EpisodicRefresh:     "随章节提交、评审和长篇状态变更刷新",
-		PreviousTailChars:   800,
+		PreviousTailChars:   600,
 		ChapterPlanEnabled:  true,
 		CurrentOutlineBound: currentOutlineBound,
 		ReadOnlyThreshold:   5,

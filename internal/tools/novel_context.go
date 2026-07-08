@@ -44,6 +44,15 @@ type ContextTool struct {
 	style string
 }
 
+const (
+	writerChapterContextBudgetBytes = 60 * 1024
+	planningContextBudgetBytes      = 60 * 1024
+	nearbyOutlineBeforeChapters     = 2
+	nearbyOutlineAfterChapters      = 3
+	maxOutlineRangeChapters         = 80
+	maxDetailedArcOutlineChapters   = 40
+)
+
 // NewContextTool 创建上下文工具。
 // user_rules 由 buildUserRules 直接读本书快照（meta/user_rules.json）注入，不再依赖加载选项。
 func NewContextTool(store *store.Store, refs References, style string) *ContextTool {
@@ -64,17 +73,24 @@ func (t *ContextTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 
 func (t *ContextTool) Schema() map[string]any {
 	return schema.Object(
+		schema.Property("scope", schema.Enum("Context scope. Empty defaults to chapter when chapter is set, otherwise planning.", "chapter", "outline_range", "planning")),
+		schema.Property("from", schema.Int("First chapter for scope=outline_range.")),
+		schema.Property("to", schema.Int("Last chapter for scope=outline_range.")),
 		schema.Property("chapter", schema.Int("章节号。不传则返回进度状态和基础设定（Coordinator 用于判断下一步）；传入则额外返回该章的写作上下文（Writer 用）")),
 	)
 }
 
 func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
-		Chapter int `json:"chapter"`
+		Chapter int    `json:"chapter"`
+		Scope   string `json:"scope"`
+		From    int    `json:"from"`
+		To      int    `json:"to"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
 	}
+	scope := normalizeContextScope(a.Scope, a.Chapter)
 
 	result := make(map[string]any)
 	var warnings []string
@@ -91,11 +107,16 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		warnings = append(warnings, msg)
 	}
 
-	if a.Chapter > 0 {
-		// Writer 路径：加载全量基础数据 + 章节上下文
-		t.buildBaseContext(result, warn)
+	switch scope {
+	case "outline_range":
+		if err := t.buildOutlineRangeContext(result, a.From, a.To, warn); err != nil {
+			return nil, err
+		}
+	case "chapter":
+		// Writer 路径：加载当前章工作包，长篇/大资料项目使用窗口化与源头压缩。
 		seed := newChapterContextEnvelope()
 		state := t.prepareChapterContext(a.Chapter, &seed, warn)
+		t.buildBaseContext(result, state, warn)
 		seed.apply(result)
 		t.buildChapterContext(result, state, warn)
 		t.buildAdaptationChapterContext(result, a.Chapter, warn)
@@ -104,7 +125,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		if epi, ok := result["episodic_memory"].(map[string]any); ok && len(epi) > 0 {
 			epi["_usage"] = "本容器为已写入正文的事实备忘（供一致性与衔接对照）；在新章正文中原样复述这些内容属于重复缺陷"
 		}
-	} else {
+	default:
 		// Coordinator/Architect 路径：只返回状态 + 结构化数据，不加载全量原文
 		t.buildProgressStatus(result)
 		t.buildArchitectContext(result, warn)
@@ -114,28 +135,42 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	// 注入 working_memory.user_rules（canonical 路径）。架构师路径原本没有 working_memory，
 	// 由 buildUserRules 按需新建只装 user_rules 的容器。快照缺失时退到内置默认，
 	// 始终输出稳定结构，避免 LLM 看到 user_rules=null 走异常分支。
-	if a.Chapter > 0 {
+	if scope == "chapter" {
 		t.buildSimulationProfile(result, "working_memory", warn)
-	} else {
+	} else if scope == "planning" {
 		t.buildSimulationProfile(result, "planning_memory", warn)
 	}
 
-	t.buildUserRules(result)
-	t.buildWordBudget(result, a.Chapter)
+	if scope != "outline_range" {
+		t.buildUserRules(result)
+		t.buildWordBudget(result, a.Chapter)
+	}
 
 	if len(warnings) > 0 {
 		result["_warnings"] = warnings
 	}
 
-	// 优先级预算：总大小超过阈值时自动裁剪低优先级数据
-	if a.Chapter > 0 {
-		trimByBudget(result, 100*1024) // Writer: 100KB
-	} else {
-		trimByBudget(result, 60*1024) // Coordinator/Architect: 60KB
-	}
-
 	result["_loading_summary"] = buildLoadingSummary(result, a.Chapter)
 	return json.Marshal(result)
+}
+
+func normalizeContextScope(scope string, chapter int) string {
+	switch strings.TrimSpace(scope) {
+	case "outline_range":
+		return "outline_range"
+	case "chapter":
+		if chapter > 0 {
+			return "chapter"
+		}
+		return "planning"
+	case "planning":
+		return "planning"
+	default:
+		if chapter > 0 {
+			return "chapter"
+		}
+		return "planning"
+	}
 }
 
 // buildLoadingSummary 从已组装的 result 中统计各项数据量，生成一行可读摘要。
@@ -309,7 +344,7 @@ func (t *ContextTool) loadFilteredCharacters(result map[string]any, chapter int,
 	entry, err := t.store.Outline.GetChapterOutline(chapter)
 	if err != nil {
 		warn("current_chapter_outline", err)
-		result["characters"] = chars
+		result["characters"] = compactCharacters(chars, maxContextCharacters)
 		return
 	}
 	sceneText := strings.Join(entry.Scenes, " ") + " " + entry.CoreEvent + " " + entry.Title
@@ -325,7 +360,7 @@ func (t *ContextTool) loadFilteredCharacters(result map[string]any, chapter int,
 			filtered = append(filtered, c)
 		}
 	}
-	result["characters"] = filtered
+	result["characters"] = compactCharacters(filtered, maxContextCharacters)
 }
 
 // matchCharacter 检查场景文本中是否包含角色的正式名或任一别名。
@@ -348,7 +383,7 @@ func (t *ContextTool) loadLayeredSummaries(result map[string]any, chapter, summa
 		warn("layered_outline_position", err)
 		// 回退到扁平模式
 		if summaries, err := t.store.Summaries.LoadRecentSummaries(chapter, summaryWindow); err == nil && len(summaries) > 0 {
-			result["recent_summaries"] = summaries
+			result["recent_summaries"] = compactChapterSummaries(summaries)
 		} else {
 			warn("recent_summaries", err)
 		}
@@ -357,7 +392,7 @@ func (t *ContextTool) loadLayeredSummaries(result map[string]any, chapter, summa
 
 	// 1. 已完成卷的卷摘要
 	if volSummaries, err := t.store.Summaries.LoadAllVolumeSummaries(); err == nil && len(volSummaries) > 0 {
-		result["volume_summaries"] = volSummaries
+		result["volume_summaries"] = compactVolumeSummaries(volSummaries, 2)
 	} else {
 		warn("volume_summaries", err)
 	}
@@ -371,7 +406,7 @@ func (t *ContextTool) loadLayeredSummaries(result map[string]any, chapter, summa
 			}
 		}
 		if len(prior) > 0 {
-			result["arc_summaries"] = prior
+			result["arc_summaries"] = compactArcSummaries(prior, 3)
 		}
 	} else {
 		warn("arc_summaries", err)
@@ -379,7 +414,7 @@ func (t *ContextTool) loadLayeredSummaries(result map[string]any, chapter, summa
 
 	// 3. 当前弧内最近 N 章的章摘要
 	if summaries, err := t.store.Summaries.LoadRecentSummaries(chapter, summaryWindow); err == nil && len(summaries) > 0 {
-		result["recent_summaries"] = summaries
+		result["recent_summaries"] = compactChapterSummaries(summaries)
 	} else {
 		warn("recent_summaries", err)
 	}
@@ -389,7 +424,7 @@ func (t *ContextTool) loadLayeredSummaries(result map[string]any, chapter, summa
 func (t *ContextTool) loadLayeredCharacters(result map[string]any, chapter int, warn func(string, error)) {
 	snapshots, err := t.store.Characters.LoadLatestSnapshots()
 	if err == nil && len(snapshots) > 0 {
-		result["character_snapshots"] = snapshots
+		result["character_snapshots"] = compactCharacterSnapshots(snapshots, maxContextCharacterSnapshots)
 		// 同时保留原始设定中的 core/important 角色（快照可能不含新登场角色）
 		t.loadFilteredCharacters(result, chapter, warn)
 		return
@@ -404,7 +439,7 @@ func (t *ContextTool) writerReferences(chapter int) map[string]string {
 	refs := map[string]string{}
 	add := func(k, v string) {
 		if v != "" {
-			refs[k] = v
+			refs[k] = truncateRunes(v, 2600)
 		}
 	}
 	// 渐进式加载：始终保留核心参考，前 3 章额外加载完整写作指南
@@ -430,7 +465,7 @@ func (t *ContextTool) architectReferences() map[string]string {
 	refs := map[string]string{}
 	add := func(k, v string) {
 		if v != "" {
-			refs[k] = v
+			refs[k] = truncateRunes(v, 2600)
 		}
 	}
 	add("outline_template", t.refs.OutlineTemplate)
@@ -472,67 +507,6 @@ func (t *ContextTool) ContextSummary() string {
 		return "empty"
 	}
 	return strings.Join(parts, ", ")
-}
-
-// trimByBudget 按优先级裁剪 result，使 JSON 总大小不超过 budget 字节。
-// 优先级（从低到高）：references < voice_samples < style_anchors < previous_tail < timeline
-//
-//	< recent_state_changes < foreshadow_ledger < relationship_state < 其余（不裁剪）
-//
-// 裁剪的 key 会记录到 result["_trimmed"] 供日志排查。
-func trimByBudget(result map[string]any, budget int) {
-	// 先测量当前大小
-	data, err := json.Marshal(result)
-	if err != nil || len(data) <= budget {
-		return
-	}
-
-	// 按优先级从低到高列出可裁剪的 key
-	trimOrder := []string{
-		"references",
-		"voice_samples",
-		"style_anchors",
-		"style_rules",
-		"style_stats",
-		"previous_tail",
-		"timeline",
-		"recent_state_changes",
-		"foreshadow_ledger",
-		"relationship_state",
-	}
-
-	var trimmed []string
-	for _, key := range trimOrder {
-		if _, ok := result[key]; !ok {
-			continue
-		}
-		deleteContextKey(result, key)
-		trimmed = append(trimmed, key)
-		data, err = json.Marshal(result)
-		if err != nil || len(data) <= budget {
-			break
-		}
-	}
-	if len(trimmed) > 0 {
-		result["_trimmed"] = trimmed
-	}
-}
-
-func deleteContextKey(result map[string]any, key string) {
-	delete(result, key)
-	for _, containerKey := range []string{
-		"working_memory",
-		"episodic_memory",
-		"planning_memory",
-		"foundation_memory",
-		"reference_pack",
-	} {
-		section, ok := result[containerKey].(map[string]any)
-		if !ok {
-			continue
-		}
-		delete(section, key)
-	}
 }
 
 // buildRelatedChapters 根据结构化数据反查与当前章相关的历史章节。

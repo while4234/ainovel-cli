@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
@@ -63,9 +64,9 @@ func (e chapterContextEnvelope) apply(result map[string]any) {
 	if len(e.Selected) > 0 {
 		mergeEnvelopeSection(result, "selected_memory", e.Selected)
 	}
-	mergeContextSection(result, e.Working)
-	mergeContextSection(result, e.Episodic)
-	mergeContextSection(result, e.References)
+	mergeSelectedContextSection(result, e.Working, chapterTopLevelMirrorKeys)
+	mergeSelectedContextSection(result, e.Episodic, chapterTopLevelMirrorKeys)
+	mergeSelectedContextSection(result, e.References, chapterTopLevelMirrorKeys)
 }
 
 // mergeEnvelopeSection 把 section 合并进 result[key] 的既有容器；容器不存在时直接挂载。
@@ -83,15 +84,41 @@ func (e architectContextEnvelope) apply(result map[string]any) {
 	result["planning_memory"] = e.Planning
 	result["foundation_memory"] = e.Foundation
 	result["reference_pack"] = e.References
-	mergeContextSection(result, e.Planning)
-	mergeContextSection(result, e.Foundation)
-	mergeContextSection(result, e.References)
+	mergeSelectedContextSection(result, e.Planning, architectTopLevelMirrorKeys)
+	mergeSelectedContextSection(result, e.Foundation, architectTopLevelMirrorKeys)
+	mergeSelectedContextSection(result, e.References, architectTopLevelMirrorKeys)
 }
 
-func mergeContextSection(result map[string]any, section map[string]any) {
+func mergeSelectedContextSection(result map[string]any, section map[string]any, keys map[string]struct{}) {
 	for key, value := range section {
+		if _, ok := keys[key]; !ok {
+			continue
+		}
 		result[key] = value
 	}
+}
+
+var chapterTopLevelMirrorKeys = map[string]struct{}{
+	"chapter_contract":        {},
+	"current_chapter_outline": {},
+	"planning_tier":           {},
+	"references":              {},
+	"rewrite_brief":           {},
+	"style_rules":             {},
+}
+
+var architectTopLevelMirrorKeys = map[string]struct{}{
+	"characters":        {},
+	"compass":           {},
+	"foundation_status": {},
+	"layered_outline":   {},
+	"planning_tier":     {},
+	"premise_sections":  {},
+	"premise_structure": {},
+	"references":        {},
+	"skeleton_arcs":     {},
+	"style_rules":       {},
+	"world_rules":       {},
 }
 
 // buildProgressStatus 仅在 Coordinator 调用（不传 chapter）时返回进度摘要,
@@ -149,7 +176,7 @@ func (t *ContextTool) buildUserRules(result map[string]any) {
 		working = map[string]any{}
 		result["working_memory"] = working
 	}
-	working["user_rules"] = snap.Payload()
+	working["user_rules"] = compactUserRulesPayload(snap.Payload())
 }
 
 func (t *ContextTool) buildWordBudget(result map[string]any, chapter int) {
@@ -215,21 +242,9 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 	} else {
 		warn("adaptation_draft_words", draftErr)
 	}
-	working["adaptation"] = map[string]any{
-		"granularity":        plan.Granularity,
-		"status":             plan.Status,
-		"rewrite_policy":     plan.RewritePolicy,
-		"word_tolerance":     adaptationWordToleranceForContext(plan),
-		"brief":              plan.Brief,
-		"mainline_rules":     plan.MainlineRules,
-		"relationship_goals": plan.RelationshipGoals,
-		"source_total_runes": plan.SourceTotalRunes,
-		"target_total_runes": plan.TargetTotalRunes,
-		"target_min_runes":   plan.TargetMinRunes,
-		"target_max_runes":   plan.TargetMaxRunes,
-	}
+	working["adaptation"] = compactAdaptationPlanSummary(plan)
 	working["adaptation_effective_mode"] = buildAdaptationEffectiveMode(plan, chapterPlan)
-	working["adaptation_contract"] = chapterPlan
+	working["adaptation_contract"] = compactAdaptationChapterPlan(chapterPlan)
 	working["adaptation_word_contract"] = buildAdaptationWordContract(t.store, plan, chapterPlan, chapter, actualRunes)
 	working["adaptation_source_coverage"] = map[string]any{
 		"chapter":         chapterPlan.Chapter,
@@ -240,16 +255,16 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 		"source_role":     adaptationSourceRoleForGranularity(plan.Granularity),
 	}
 	if guidance := strings.TrimSpace(t.refs.AdaptationWriter); guidance != "" {
-		working["adaptation_writing_guidance"] = guidance
+		working["adaptation_writing_guidance"] = truncateRunes(guidance, maxContextAdaptationBriefRunes)
 	}
 	if guidance := strings.TrimSpace(t.adaptationEditorGuidance(plan.RewritePolicy)); guidance != "" {
-		working["adaptation_editor_guidance"] = guidance
+		working["adaptation_editor_guidance"] = truncateRunes(guidance, maxContextAdaptationBriefRunes)
 	}
 
 	reports, reportErr := t.store.Adaptation.LoadSourceReports()
 	warn("adaptation_source_reports", reportErr)
 	if reportErr == nil && len(reports) > 0 {
-		working["source_ref_reports"] = selectSourceReports(reports, chapterPlan.SourceChapters)
+		working["source_ref_reports"] = compactSourceReportsForContext(reports, chapterPlan.SourceChapters)
 	}
 }
 
@@ -274,20 +289,8 @@ func (t *ContextTool) buildAdaptationPlanningContext(result map[string]any, warn
 		result["planning_memory"] = section
 	}
 	result["adaptation_mode"] = true
-	summary := map[string]any{
-		"granularity":        plan.Granularity,
-		"status":             plan.Status,
-		"rewrite_policy":     plan.RewritePolicy,
-		"word_tolerance":     adaptationWordToleranceForContext(plan),
-		"brief":              plan.Brief,
-		"mainline_rules":     plan.MainlineRules,
-		"relationship_goals": plan.RelationshipGoals,
-		"target_chapters":    len(plan.Chapters),
-		"source_total_runes": plan.SourceTotalRunes,
-		"target_total_runes": plan.TargetTotalRunes,
-		"target_min_runes":   plan.TargetMinRunes,
-		"target_max_runes":   plan.TargetMaxRunes,
-	}
+	summary := compactAdaptationPlanSummary(plan)
+	summary["target_chapters"] = len(plan.Chapters)
 	if manifest, manifestErr := t.store.Adaptation.LoadSourceManifest(); manifestErr == nil && manifest != nil {
 		summary["source_path"] = manifest.SourcePath
 		summary["source_chapters"] = manifest.ChapterCount
@@ -426,29 +429,248 @@ func selectSourceReports(reports []domain.AdaptationSourceReport, refs []int) []
 	return selected
 }
 
-func (t *ContextTool) buildBaseContext(result map[string]any, warn func(string, error)) {
-	if premise, err := t.store.Outline.LoadPremise(); err == nil && premise != "" {
-		result["premise"] = premise
-		if sections := parsePremiseSections(premise); len(sections) > 0 {
-			result["premise_sections"] = sections
-		}
-		tier := domain.PlanningTier("")
-		if meta, err := t.store.RunMeta.Load(); err == nil && meta != nil {
-			tier = meta.PlanningTier
-		}
-		result["premise_structure"] = premiseStructure(premise, tier)
-	} else {
+func (t *ContextTool) buildBaseContext(result map[string]any, state contextBuildState, warn func(string, error)) {
+	longform := state.usesWindowedOutline()
+	t.buildPremiseContext(result, longform, warn)
+	t.buildOutlineContext(result, state, longform, warn)
+	t.buildWorldRuleContext(result, longform, warn)
+}
+
+func (t *ContextTool) buildPremiseContext(result map[string]any, compact bool, warn func(string, error)) {
+	premise, err := t.store.Outline.LoadPremise()
+	if err != nil || premise == "" {
 		warn("premise", err)
+		return
 	}
-	if outline, err := t.store.Outline.LoadOutline(); err == nil && outline != nil {
-		result["outline"] = outline
-	} else {
+	if !compact {
+		result["premise"] = truncateRunes(premise, 5000)
+	}
+	if sections := parsePremiseSections(premise); len(sections) > 0 {
+		if compact {
+			result["premise_sections"] = compactPremiseSections(sections, 600)
+		} else {
+			result["premise_sections"] = compactPremiseSections(sections, 1200)
+		}
+	}
+	tier := domain.PlanningTier("")
+	if meta, err := t.store.RunMeta.Load(); err == nil && meta != nil {
+		tier = meta.PlanningTier
+	}
+	result["premise_structure"] = premiseStructure(premise, tier)
+}
+
+func (t *ContextTool) buildOutlineContext(result map[string]any, state contextBuildState, windowed bool, warn func(string, error)) {
+	if !windowed {
+		if outline, err := t.store.Outline.LoadOutline(); err == nil && outline != nil {
+			result["outline"] = outline
+		} else {
+			warn("outline", err)
+		}
+		return
+	}
+	outline, err := t.loadCanonicalOutline()
+	if err != nil {
 		warn("outline", err)
+		return
 	}
-	if rules, err := t.store.World.LoadWorldRules(); err == nil && len(rules) > 0 {
-		result["world_rules"] = rules
-	} else {
+	if len(outline) == 0 {
+		return
+	}
+	from := max(state.chapter-nearbyOutlineBeforeChapters, 1)
+	to := min(state.chapter+nearbyOutlineAfterChapters, len(outline))
+	nearby := compactOutlineEntries(outlineEntriesInRange(outline, from, to))
+	if len(nearby) > 0 {
+		result["nearby_outline"] = nearby
+	}
+	result["outline_scope"] = map[string]any{
+		"mode":                 "windowed",
+		"chapter":              state.chapter,
+		"from":                 from,
+		"to":                   to,
+		"total_chapters":       len(outline),
+		"full_outline_omitted": true,
+	}
+	t.attachCurrentArcOutline(result, state, outline)
+}
+
+func (t *ContextTool) buildWorldRuleContext(result map[string]any, compact bool, warn func(string, error)) {
+	rules, err := t.store.World.LoadWorldRules()
+	if err != nil || len(rules) == 0 {
 		warn("world_rules", err)
+		return
+	}
+	result["world_rules"] = compactWorldRules(rules, 40)
+}
+
+func (state contextBuildState) usesWindowedOutline() bool {
+	if state.progress != nil && state.progress.TotalChapters > 50 {
+		return true
+	}
+	return state.profile.Layered
+}
+
+func compactPremiseSections(sections map[string]string, maxRunes int) map[string]string {
+	if len(sections) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(sections))
+	for key, value := range sections {
+		out[key] = truncateRunes(value, maxRunes)
+	}
+	return out
+}
+
+func compactWorldRules(rules []domain.WorldRule, maxRules int) []domain.WorldRule {
+	if len(rules) == 0 || maxRules <= 0 {
+		return nil
+	}
+	limit := min(len(rules), maxRules)
+	out := make([]domain.WorldRule, 0, limit)
+	for _, rule := range rules[:limit] {
+		rule.Rule = truncateRunes(rule.Rule, 220)
+		rule.Boundary = truncateRunes(rule.Boundary, 160)
+		out = append(out, rule)
+	}
+	return out
+}
+
+func (t *ContextTool) loadCanonicalOutline() ([]domain.OutlineEntry, error) {
+	flat, flatErr := t.store.Outline.LoadOutline()
+	if flatErr != nil {
+		return nil, flatErr
+	}
+	if len(flat) > 0 {
+		return normalizeOutlineEntries(flat), nil
+	}
+	layered, layeredErr := t.store.Outline.LoadLayeredOutline()
+	if layeredErr != nil {
+		return nil, layeredErr
+	}
+	return domain.FlattenOutline(layered), nil
+}
+
+func normalizeOutlineEntries(entries []domain.OutlineEntry) []domain.OutlineEntry {
+	out := make([]domain.OutlineEntry, len(entries))
+	for i, entry := range entries {
+		if entry.Chapter <= 0 {
+			entry.Chapter = i + 1
+		}
+		out[i] = entry
+	}
+	return out
+}
+
+func outlineEntriesInRange(entries []domain.OutlineEntry, from, to int) []domain.OutlineEntry {
+	if from > to || len(entries) == 0 {
+		return nil
+	}
+	out := make([]domain.OutlineEntry, 0, to-from+1)
+	for _, entry := range entries {
+		if entry.Chapter >= from && entry.Chapter <= to {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func (t *ContextTool) buildOutlineRangeContext(result map[string]any, from, to int, warn func(string, error)) error {
+	if from <= 0 || to <= 0 {
+		return fmt.Errorf("outline_range requires positive from and to")
+	}
+	if from > to {
+		from, to = to, from
+	}
+	if to-from+1 > maxOutlineRangeChapters {
+		to = from + maxOutlineRangeChapters - 1
+	}
+	outline, err := t.loadCanonicalOutline()
+	if err != nil {
+		warn("outline", err)
+		return nil
+	}
+	if len(outline) == 0 {
+		result["outline"] = []domain.OutlineEntry{}
+		result["outline_scope"] = map[string]any{
+			"mode":           "outline_range",
+			"from":           from,
+			"to":             to,
+			"total_chapters": 0,
+		}
+		return nil
+	}
+	if from > len(outline) {
+		from = len(outline)
+	}
+	if to > len(outline) {
+		to = len(outline)
+	}
+	entries := compactOutlineEntries(outlineEntriesInRange(outline, from, to))
+	result["outline"] = entries
+	result["outline_scope"] = map[string]any{
+		"mode":                 "outline_range",
+		"from":                 from,
+		"to":                   to,
+		"returned_chapters":    len(entries),
+		"total_chapters":       len(outline),
+		"full_outline_omitted": len(entries) < len(outline),
+	}
+	return nil
+}
+
+func (t *ContextTool) attachCurrentArcOutline(result map[string]any, state contextBuildState, fallback []domain.OutlineEntry) {
+	volumes, err := t.store.Outline.LoadLayeredOutline()
+	if err != nil || len(volumes) == 0 {
+		attachFlatArcCompact(result, state, fallback)
+		return
+	}
+
+	chapter := 1
+	for _, volume := range volumes {
+		for _, arc := range volume.Arcs {
+			arcStart := chapter
+			chapters := make([]domain.OutlineEntry, 0, len(arc.Chapters))
+			for _, entry := range arc.Chapters {
+				entry.Chapter = chapter
+				chapters = append(chapters, entry)
+				chapter++
+			}
+			arcEnd := chapter - 1
+			if state.chapter < arcStart || state.chapter > arcEnd {
+				continue
+			}
+			payload := map[string]any{
+				"volume":       volume.Index,
+				"volume_title": volume.Title,
+				"arc":          arc.Index,
+				"arc_title":    arc.Title,
+				"arc_goal":     arc.Goal,
+				"from":         arcStart,
+				"to":           arcEnd,
+			}
+			from := max(state.chapter-nearbyOutlineBeforeChapters, arcStart)
+			to := min(state.chapter+nearbyOutlineAfterChapters, arcEnd)
+			payload["chapters"] = compactOutlineEntries(outlineEntriesInRange(chapters, from, to))
+			payload["total_arc_chapters"] = len(chapters)
+			payload["compacted"] = true
+			result["arc_outline_compact"] = payload
+			return
+		}
+	}
+	attachFlatArcCompact(result, state, fallback)
+}
+
+func attachFlatArcCompact(result map[string]any, state contextBuildState, outline []domain.OutlineEntry) {
+	if len(outline) == 0 {
+		return
+	}
+	from := max(state.chapter-nearbyOutlineBeforeChapters, 1)
+	to := min(state.chapter+nearbyOutlineAfterChapters, len(outline))
+	result["arc_outline_compact"] = map[string]any{
+		"mode":           "flat",
+		"from":           from,
+		"to":             to,
+		"total_chapters": len(outline),
+		"chapters":       compactOutlineEntries(outlineEntriesInRange(outline, from, to)),
 	}
 }
 
@@ -477,7 +699,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 
 	currentEntry, currentEntryErr := t.store.Outline.GetChapterOutline(chapter)
 	if currentEntryErr == nil {
-		envelope.Working["current_chapter_outline"] = currentEntry
+		envelope.Working["current_chapter_outline"] = compactOutlineEntry(*currentEntry)
 	} else {
 		warn("current_chapter_outline", currentEntryErr)
 	}
@@ -485,7 +707,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 
 	chapterPlan, chapterPlanErr := t.store.Drafts.LoadChapterPlan(chapter)
 	if chapterPlanErr == nil && chapterPlan != nil {
-		envelope.Working["chapter_plan"] = chapterPlan
+		envelope.Working["chapter_plan"] = compactChapterPlan(*chapterPlan)
 		if len(chapterPlan.Contract.RequiredBeats) > 0 ||
 			len(chapterPlan.Contract.ForbiddenMoves) > 0 ||
 			len(chapterPlan.Contract.ContinuityChecks) > 0 ||
@@ -493,7 +715,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 			chapterPlan.Contract.EmotionTarget != "" ||
 			len(chapterPlan.Contract.PayoffPoints) > 0 ||
 			chapterPlan.Contract.HookGoal != "" {
-			envelope.Working["chapter_contract"] = chapterPlan.Contract
+			envelope.Working["chapter_contract"] = compactChapterContract(chapterPlan.Contract)
 		}
 	} else {
 		warn("chapter_plan", chapterPlanErr)
@@ -521,13 +743,13 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 		brief := map[string]any{"reason": progress.RewriteReason}
 		if review, reviewErr := t.store.World.LoadReview(chapter); reviewErr == nil && review != nil {
 			if review.Summary != "" {
-				brief["review_summary"] = review.Summary
+				brief["review_summary"] = truncateRunes(review.Summary, maxContextSummaryRunes)
 			}
 			if len(review.Issues) > 0 {
-				brief["issues"] = review.Issues
+				brief["issues"] = compactReviewIssues(review.Issues, 5)
 			}
 			if len(review.ContractMisses) > 0 {
-				brief["contract_misses"] = review.ContractMisses
+				brief["contract_misses"] = compactStringList(review.ContractMisses, maxContextContractItems, maxContextContractItemRunes)
 			}
 		} else if reviewErr != nil {
 			warn("rewrite_review", reviewErr)
@@ -542,7 +764,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 	relationships, relErr := t.store.World.LoadRelationships()
 	warn("relationship_state", relErr)
 	if len(relationships) > 0 {
-		envelope.Episodic["relationship_state"] = relationships
+		envelope.Episodic["relationship_state"] = compactRelationshipEntries(relationships, chapter, maxContextRelationships)
 	}
 	state.relationships = relationships
 
@@ -558,7 +780,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 			}
 		}
 		if len(recent) > 0 {
-			envelope.Episodic["recent_state_changes"] = recent
+			envelope.Episodic["recent_state_changes"] = compactStateChanges(recent, maxContextStateChanges)
 		}
 	}
 
@@ -647,21 +869,21 @@ func (t *ContextTool) styleStopwords() []string {
 
 func (t *ContextTool) buildChapterWorkingMemory(envelope *chapterContextEnvelope, state contextBuildState, warn func(string, error)) {
 	if next, err := t.store.Outline.GetChapterOutline(state.chapter + 1); err == nil && next != nil {
-		envelope.Working["next_chapter_outline"] = next
+		envelope.Working["next_chapter_outline"] = compactOutlineEntry(*next)
 	}
 
 	if state.profile.Layered {
 		t.loadLayeredSummaries(envelope.Working, state.chapter, state.profile.SummaryWindow, warn)
 	} else {
 		if summaries, err := t.store.Summaries.LoadRecentSummaries(state.chapter, state.profile.SummaryWindow); err == nil && len(summaries) > 0 {
-			envelope.Working["recent_summaries"] = summaries
+			envelope.Working["recent_summaries"] = compactChapterSummaries(summaries)
 		} else {
 			warn("recent_summaries", err)
 		}
 	}
 
 	if timeline, err := t.store.World.LoadRecentTimeline(state.chapter, state.profile.TimelineWindow); err == nil && len(timeline) > 0 {
-		envelope.Working["timeline"] = timeline
+		envelope.Working["timeline"] = compactTimelineEvents(timeline, maxContextTimelineEvents)
 	} else {
 		warn("timeline", err)
 	}
@@ -671,10 +893,12 @@ func (t *ContextTool) buildChapterWorkingMemory(envelope *chapterContextEnvelope
 			"in_progress_chapter": state.progress.InProgressChapter,
 		}
 		if len(state.progress.StrandHistory) > 0 {
-			checkpoint["strand_history"] = state.progress.StrandHistory
+			checkpoint["strand_history_recent"] = compactRecentStrings(state.progress.StrandHistory, maxContextHistoryItems)
+			checkpoint["strand_history_total"] = len(state.progress.StrandHistory)
 		}
 		if len(state.progress.HookHistory) > 0 {
-			checkpoint["hook_history"] = state.progress.HookHistory
+			checkpoint["hook_history_recent"] = compactRecentStrings(state.progress.HookHistory, maxContextHistoryItems)
+			checkpoint["hook_history_total"] = len(state.progress.HookHistory)
 		}
 		envelope.Working["checkpoint"] = checkpoint
 	}
@@ -682,8 +906,8 @@ func (t *ContextTool) buildChapterWorkingMemory(envelope *chapterContextEnvelope
 	if state.chapter > 1 {
 		if prevText, err := t.store.Drafts.LoadChapterText(state.chapter - 1); err == nil && prevText != "" {
 			runes := []rune(prevText)
-			if len(runes) > 800 {
-				runes = runes[len(runes)-800:]
+			if len(runes) > 600 {
+				runes = runes[len(runes)-600:]
 			}
 			envelope.Working["previous_tail"] = string(runes)
 		}
@@ -701,7 +925,7 @@ func (t *ContextTool) buildChapterSelectedMemory(envelope *chapterContextEnvelop
 
 func (t *ContextTool) buildChapterEpisodicMemory(envelope *chapterContextEnvelope, state contextBuildState, warn func(string, error)) {
 	if len(state.foreshadow) > 0 && len(state.storyThreads) == 0 {
-		envelope.Episodic["foreshadow_ledger"] = state.foreshadow
+		envelope.Episodic["foreshadow_ledger"] = compactForeshadowEntries(state.foreshadow, maxContextForeshadowEntries)
 	}
 
 	// 配角名册：召回最近活跃的次要角色，让 Writer 在引入旧角色时能保持口吻/定位一致
@@ -719,7 +943,7 @@ func (t *ContextTool) buildChapterEpisodicMemory(envelope *chapterContextEnvelop
 				item["brief_role"] = e.BriefRole
 			}
 			if len(e.Aliases) > 0 {
-				item["aliases"] = e.Aliases
+				item["aliases"] = compactStringList(e.Aliases, 6, 40)
 			}
 			simplified = append(simplified, item)
 		}
@@ -773,14 +997,14 @@ func (t *ContextTool) buildChapterEpisodicMemory(envelope *chapterContextEnvelop
 
 func (t *ContextTool) buildChapterReferencePack(envelope *chapterContextEnvelope, state contextBuildState) {
 	if state.styleRules != nil {
-		envelope.References["style_rules"] = state.styleRules
+		envelope.References["style_rules"] = compactWritingStyleRules(state.styleRules)
 	} else {
 		var maxCompleted int
 		if state.progress != nil {
 			maxCompleted = maxCompletedChapter(state.progress.CompletedChapters)
 		}
 		if anchors := t.store.Drafts.ExtractStyleAnchors(3, maxCompleted); len(anchors) > 0 {
-			envelope.References["style_anchors"] = anchors
+			envelope.References["style_anchors"] = compactStringList(anchors, 3, 300)
 		}
 
 		if state.currentEntry != nil {
@@ -794,7 +1018,7 @@ func (t *ContextTool) buildChapterReferencePack(envelope *chapterContextEnvelope
 				if len(samples) > 0 {
 					voiceSamples = append(voiceSamples, map[string]any{
 						"character": c.Name,
-						"samples":   samples,
+						"samples":   compactStringList(samples, 3, 180),
 					})
 				}
 				if len(voiceSamples) >= 5 {
@@ -827,9 +1051,10 @@ func (t *ContextTool) buildArchitectPlanning(envelope *architectContextEnvelope,
 	}
 
 	var layered []domain.VolumeOutline
+	progress, _ := t.store.Progress.Load()
 	if l, err := t.store.Outline.LoadLayeredOutline(); err == nil && len(l) > 0 {
 		layered = l
-		envelope.Planning["layered_outline"] = layered
+		envelope.Planning["layered_outline"] = compactLayeredOutlineForPlanning(layered, progress)
 		var skeletonArcs []map[string]any
 		for _, v := range layered {
 			for _, a := range v.Arcs {
@@ -837,8 +1062,8 @@ func (t *ContextTool) buildArchitectPlanning(envelope *architectContextEnvelope,
 					skeletonArcs = append(skeletonArcs, map[string]any{
 						"volume":             v.Index,
 						"arc":                a.Index,
-						"title":              a.Title,
-						"goal":               a.Goal,
+						"title":              truncateRunes(a.Title, 80),
+						"goal":               truncateRunes(a.Goal, maxContextSummaryRunes),
 						"estimated_chapters": a.EstimatedChapters,
 					})
 				}
@@ -859,7 +1084,7 @@ func (t *ContextTool) buildArchitectPlanning(envelope *architectContextEnvelope,
 		warn("compass", err)
 	}
 	if volSummaries, err := t.store.Summaries.LoadAllVolumeSummaries(); err == nil && len(volSummaries) > 0 {
-		envelope.Planning["volume_summaries"] = volSummaries
+		envelope.Planning["volume_summaries"] = compactVolumeSummaries(volSummaries, maxContextPlanningVolumeSummaries)
 	} else {
 		warn("volume_summaries", err)
 	}
@@ -896,7 +1121,7 @@ func (t *ContextTool) completionSignals(layered []domain.VolumeOutline, compass 
 func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelope, warn func(string, error)) {
 	if premise, err := t.store.Outline.LoadPremise(); err == nil && premise != "" {
 		if sections := parsePremiseSections(premise); len(sections) > 0 {
-			envelope.Foundation["premise_sections"] = sections
+			envelope.Foundation["premise_sections"] = compactPremiseSections(sections, 900)
 		}
 		tier := domain.PlanningTier("")
 		if meta, err := t.store.RunMeta.Load(); err == nil && meta != nil {
@@ -908,23 +1133,23 @@ func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelop
 	}
 
 	if chars, err := t.store.Characters.Load(); err == nil && chars != nil {
-		envelope.Foundation["characters"] = chars
+		envelope.Foundation["characters"] = compactCharacters(chars, maxContextCharacters)
 	} else {
 		warn("characters", err)
 	}
 
 	if snapshots, err := t.store.Characters.LoadLatestSnapshots(); err == nil && len(snapshots) > 0 {
-		envelope.Foundation["character_snapshots"] = snapshots
+		envelope.Foundation["character_snapshots"] = compactCharacterSnapshots(snapshots, maxContextCharacterSnapshots)
 	} else {
 		warn("character_snapshots", err)
 	}
 	if rules, err := t.store.World.LoadWorldRules(); err == nil && len(rules) > 0 {
-		envelope.Foundation["world_rules"] = rules
+		envelope.Foundation["world_rules"] = compactWorldRules(rules, 40)
 	} else {
 		warn("world_rules", err)
 	}
 	if foreshadow, err := t.store.World.LoadActiveForeshadow(); err == nil && len(foreshadow) > 0 {
-		envelope.Foundation["foreshadow_ledger"] = foreshadow
+		envelope.Foundation["foreshadow_ledger"] = compactForeshadowEntries(foreshadow, maxContextForeshadowEntries)
 	} else {
 		warn("foreshadow_ledger", err)
 	}
@@ -933,7 +1158,7 @@ func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelop
 
 func (t *ContextTool) buildArchitectReferences(envelope *architectContextEnvelope, warn func(string, error)) {
 	if styleRules, err := t.store.World.LoadStyleRules(); err == nil && styleRules != nil {
-		envelope.References["style_rules"] = styleRules
+		envelope.References["style_rules"] = compactWritingStyleRules(styleRules)
 	} else {
 		warn("style_rules", err)
 	}

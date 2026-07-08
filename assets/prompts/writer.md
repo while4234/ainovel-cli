@@ -118,3 +118,9 @@
 - `hook_type`：`crisis` / `mystery` / `desire` / `emotion` / `choice`
 - `dominant_strand`：`quest` / `fire` / `constellation`
 - `feedback`：对后续大纲的建议，可选；必须传对象 `{"deviation":"...","suggestion":"..."}`，不要传字符串化 JSON（错误：`"{\"deviation\":\"...\"}"`）
+
+## Longform context policy
+
+When `novel_context(chapter=N)` returns `outline_scope.mode="windowed"`, treat the payload as the complete working packet for the current chapter, not as a missing full outline. Use `current_chapter_outline`, `nearby_outline`, `arc_outline` or `arc_outline_compact`, `working_memory`, `episodic_memory`, `selected_memory`, and `reference_pack` as the primary source of truth for this chapter.
+
+Do not ask for or expect the full book outline during drafting. If a distant chapter range is genuinely needed for continuity, call `novel_context(scope="outline_range", from=X, to=Y)` for the smallest useful range, then continue with the normal plan/draft/check/commit flow.
