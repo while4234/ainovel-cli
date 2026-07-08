@@ -183,7 +183,7 @@ func TestAdaptationWriterToolsRejectChapterOutsideConfirmedPlan(t *testing.T) {
 	}
 }
 
-func TestAdaptationWriterToolsRejectDuplicateConfirmedOutline(t *testing.T) {
+func TestAdaptationWriterToolsDoNotRescanDuplicateConfirmedOutline(t *testing.T) {
 	plan := domain.AdaptationPlan{
 		Granularity:   domain.AdaptationGranularityArc,
 		RewritePolicy: domain.AdaptationRewriteFullRewrite,
@@ -216,12 +216,8 @@ func TestAdaptationWriterToolsRejectDuplicateConfirmedOutline(t *testing.T) {
 		t.Fatalf("Progress.Init: %v", err)
 	}
 
-	_, err := NewPlanChapterTool(s).Execute(context.Background(), planArgs(2))
-	if err == nil {
-		t.Fatal("plan_chapter should reject a duplicate confirmed outline")
-	}
-	if !strings.Contains(err.Error(), "chapter 2 duplicates outline beats from chapter 1") {
-		t.Fatalf("error=%v, want duplicate outline guidance", err)
+	if _, err := NewPlanChapterTool(s).Execute(context.Background(), planArgs(2)); err != nil {
+		t.Fatalf("plan_chapter should trust the confirmed plan after planning-time duplicate scans, got %v", err)
 	}
 }
 

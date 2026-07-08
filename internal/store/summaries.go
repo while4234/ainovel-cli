@@ -34,6 +34,13 @@ func (s *SummaryStore) LoadSummary(chapter int) (*domain.ChapterSummary, error) 
 	return &sum, nil
 }
 
+func (s *SummaryStore) DeleteChapterSummary(chapter int) error {
+	if chapter <= 0 {
+		return nil
+	}
+	return s.io.RemoveFile(fmt.Sprintf("summaries/%02d.json", chapter))
+}
+
 // LoadRecentSummaries 加载 current 章之前最近 count 章的摘要。
 func (s *SummaryStore) LoadRecentSummaries(current, count int) ([]domain.ChapterSummary, error) {
 	var result []domain.ChapterSummary
@@ -79,6 +86,13 @@ func (s *SummaryStore) LoadArcSummary(volume, arc int) (*domain.ArcSummary, erro
 	return &sum, nil
 }
 
+func (s *SummaryStore) DeleteArcSummary(volume, arc int) error {
+	if volume <= 0 || arc <= 0 {
+		return nil
+	}
+	return s.io.RemoveFile(fmt.Sprintf("summaries/arc-v%02da%02d.json", volume, arc))
+}
+
 // LoadArcSummaries 加载一卷内所有已有弧摘要。
 func (s *SummaryStore) LoadArcSummaries(volume int) ([]domain.ArcSummary, error) {
 	maxArc := s.arcCountForVolume(volume)
@@ -110,6 +124,13 @@ func (s *SummaryStore) LoadVolumeSummary(volume int) (*domain.VolumeSummary, err
 		return nil, err
 	}
 	return &sum, nil
+}
+
+func (s *SummaryStore) DeleteVolumeSummary(volume int) error {
+	if volume <= 0 {
+		return nil
+	}
+	return s.io.RemoveFile(fmt.Sprintf("summaries/vol-v%02d.json", volume))
 }
 
 // LoadAllVolumeSummaries 加载所有已有卷摘要。

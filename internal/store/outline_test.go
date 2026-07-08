@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -45,7 +46,7 @@ func TestFindDuplicateOutlineRepairBatchMapsDuplicateToLaterArc(t *testing.T) {
 				Goal:  "识破骗局",
 				Chapters: []domain.OutlineEntry{
 					{Title: "鹰符潜入", CoreEvent: "良逸发现妖风为幻象，找到祭台入口。", Hook: "苏幼仪被困。"},
-					{Title: "黑风审讯", CoreEvent: "良逸逼问出密道钥匙。", Hook: "钥匙裂出血纹。"},
+					{Title: "鹰符潜入", CoreEvent: "良逸发现妖风为幻象，找到祭台入口。", Hook: "苏幼仪被困。"},
 				},
 			},
 		},
@@ -83,8 +84,8 @@ func TestFindDuplicateOutlineRepairBatchMapsDuplicateToLaterArc(t *testing.T) {
 	if len(batch.CompletedChapters) != 1 || batch.CompletedChapters[0] != 3 {
 		t.Fatalf("completed chapters = %v, want [3]", batch.CompletedChapters)
 	}
-	if batch.Duplicate.Chapter != 3 || batch.Duplicate.ExistingChapter != 1 {
-		t.Fatalf("duplicate = %+v, want chapter 3 repeating chapter 1", batch.Duplicate)
+	if batch.Duplicate.Chapter != 4 || batch.Duplicate.ExistingChapter != 3 {
+		t.Fatalf("duplicate = %+v, want chapter 4 repeating chapter 3", batch.Duplicate)
 	}
 }
 
@@ -168,6 +169,171 @@ func TestRepairArcOutlineUpdatesFlatLayeredAndAdaptationPlan(t *testing.T) {
 	}
 	if plan.Chapters[1].WordBudget == nil || plan.Chapters[1].WordBudget.TargetRunes != 2200 {
 		t.Fatalf("word budget should be preserved: %+v", plan.Chapters[1].WordBudget)
+	}
+}
+
+func TestRepairArcOutlineRejectsDuplicateReplacement(t *testing.T) {
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Title: "Volume",
+		Theme: "Theme",
+		Arcs: []domain.ArcOutline{
+			{
+				Index: 1,
+				Title: "Arc One",
+				Goal:  "Goal",
+				Chapters: []domain.OutlineEntry{
+					{Title: "Mirror Door Signal", CoreEvent: "The first chapter opens a distinct clue trail.", Hook: "The signal points to a sealed door."},
+				},
+			},
+			{
+				Index: 2,
+				Title: "Arc Two",
+				Goal:  "Goal",
+				Chapters: []domain.OutlineEntry{
+					{Title: "Old Chapter", CoreEvent: "The second arc starts elsewhere.", Hook: "A different clue appears."},
+					{Title: "Older Chapter", CoreEvent: "The second arc keeps moving.", Hook: "Another clue appears."},
+				},
+			},
+		},
+	}}
+	s := setupLayered(t, volumes)
+	if err := s.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+
+	err := s.RepairArcOutline(1, 2, []domain.OutlineEntry{
+		{Title: "Mirror Door Signal", CoreEvent: "The repaired chapter follows another suspect path.", Hook: "A new witness withholds evidence."},
+		{Title: "Mirror Door Signal", CoreEvent: "The repaired chapter follows a later suspect path.", Hook: "Another witness withholds evidence."},
+	})
+	if err == nil {
+		t.Fatal("expected duplicate replacement to be rejected")
+	}
+	if !strings.Contains(err.Error(), "duplicate chapter outline") {
+		t.Fatalf("expected duplicate error, got %v", err)
+	}
+}
+
+func TestRepairArcOutlineDeletesBatchArtifactsAndQueuesCompletedChapters(t *testing.T) {
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Title: "Volume",
+		Theme: "Theme",
+		Arcs: []domain.ArcOutline{{
+			Index: 1,
+			Title: "Arc",
+			Goal:  "Goal",
+			Chapters: []domain.OutlineEntry{
+				{Title: "Old One", CoreEvent: "Old event one", Hook: "Old hook one"},
+				{Title: "Old Two", CoreEvent: "Old event two", Hook: "Old hook two"},
+				{Title: "Old Three", CoreEvent: "Old event three", Hook: "Old hook three"},
+			},
+		}},
+	}}
+	s := setupLayered(t, volumes)
+	if err := s.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowPolishing,
+		Layered:           true,
+		CompletedChapters: []int{1, 2},
+		PendingRewrites:   []int{99},
+		RewriteReason:     "old queue",
+		InProgressChapter: 3,
+		CompletedScenes:   []int{1, 2},
+	}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+
+	for chapter := 1; chapter <= 3; chapter++ {
+		if err := s.Drafts.SaveChapterPlan(domain.ChapterPlan{Chapter: chapter, Title: "old plan"}); err != nil {
+			t.Fatalf("SaveChapterPlan %d: %v", chapter, err)
+		}
+		if err := s.Drafts.SaveDraft(chapter, "old draft"); err != nil {
+			t.Fatalf("SaveDraft %d: %v", chapter, err)
+		}
+		if err := s.Drafts.SaveFinalChapter(chapter, "old final"); err != nil {
+			t.Fatalf("SaveFinalChapter %d: %v", chapter, err)
+		}
+		if err := s.Summaries.SaveSummary(domain.ChapterSummary{Chapter: chapter, Summary: "old summary"}); err != nil {
+			t.Fatalf("SaveSummary %d: %v", chapter, err)
+		}
+		if err := s.World.SaveReview(domain.ReviewEntry{Chapter: chapter, Scope: "chapter", Verdict: "accept"}); err != nil {
+			t.Fatalf("SaveReview %d: %v", chapter, err)
+		}
+		if err := s.Adaptation.SaveCheck(domain.AdaptationCheck{Chapter: chapter, DraftSHA256: "old", CheckedAt: "now"}); err != nil {
+			t.Fatalf("SaveCheck %d: %v", chapter, err)
+		}
+	}
+	if err := s.World.SaveReview(domain.ReviewEntry{Chapter: 3, Scope: "global", Verdict: "accept"}); err != nil {
+		t.Fatalf("Save global review: %v", err)
+	}
+	if err := s.Summaries.SaveArcSummary(domain.ArcSummary{Volume: 1, Arc: 1, Summary: "old arc"}); err != nil {
+		t.Fatalf("SaveArcSummary: %v", err)
+	}
+	if err := s.Summaries.SaveVolumeSummary(domain.VolumeSummary{Volume: 1, Summary: "old volume"}); err != nil {
+		t.Fatalf("SaveVolumeSummary: %v", err)
+	}
+
+	repaired := []domain.OutlineEntry{
+		{Title: "New One", CoreEvent: "A copper compass exposes the first route through the abandoned station.", Hook: "The compass needle points underground."},
+		{Title: "New Two", CoreEvent: "A winter courier forces the cast to bargain inside the flooded market.", Hook: "The courier names a price no one expected."},
+		{Title: "New Three", CoreEvent: "A glass timetable reveals the final delay before the eastern bridge opens.", Hook: "The timetable changes while everyone watches."},
+	}
+	if err := s.RepairArcOutline(1, 1, repaired); err != nil {
+		t.Fatalf("RepairArcOutline: %v", err)
+	}
+
+	for chapter := 1; chapter <= 3; chapter++ {
+		if plan, err := s.Drafts.LoadChapterPlan(chapter); err != nil || plan != nil {
+			t.Fatalf("chapter %d plan = %+v, err=%v; want nil", chapter, plan, err)
+		}
+		if draft, err := s.Drafts.LoadDraft(chapter); err != nil || draft != "" {
+			t.Fatalf("chapter %d draft = %q, err=%v; want empty", chapter, draft, err)
+		}
+		if final, err := s.Drafts.LoadChapterText(chapter); err != nil || final != "" {
+			t.Fatalf("chapter %d final = %q, err=%v; want empty", chapter, final, err)
+		}
+		if summary, err := s.Summaries.LoadSummary(chapter); err != nil || summary != nil {
+			t.Fatalf("chapter %d summary = %+v, err=%v; want nil", chapter, summary, err)
+		}
+		if review, err := s.World.LoadReview(chapter); err != nil || review != nil {
+			t.Fatalf("chapter %d review = %+v, err=%v; want nil", chapter, review, err)
+		}
+		if check, err := s.Adaptation.LoadCheck(chapter); err != nil || check != nil {
+			t.Fatalf("chapter %d check = %+v, err=%v; want nil", chapter, check, err)
+		}
+	}
+	if review, err := s.World.LoadLastReview(3); err != nil || review != nil {
+		t.Fatalf("global review = %+v, err=%v; want nil", review, err)
+	}
+	if summary, err := s.Summaries.LoadArcSummary(1, 1); err != nil || summary != nil {
+		t.Fatalf("arc summary = %+v, err=%v; want nil", summary, err)
+	}
+	if summary, err := s.Summaries.LoadVolumeSummary(1); err != nil || summary != nil {
+		t.Fatalf("volume summary = %+v, err=%v; want nil", summary, err)
+	}
+
+	progress, err := s.Progress.Load()
+	if err != nil {
+		t.Fatalf("Load progress: %v", err)
+	}
+	if progress.Flow != domain.FlowRewriting {
+		t.Fatalf("flow = %s, want rewriting", progress.Flow)
+	}
+	if len(progress.PendingRewrites) != 2 || progress.PendingRewrites[0] != 1 || progress.PendingRewrites[1] != 2 {
+		t.Fatalf("pending rewrites = %v, want [1 2]", progress.PendingRewrites)
+	}
+	if progress.RewriteReason == "" || progress.RewriteReason == "old queue" {
+		t.Fatalf("rewrite reason was not replaced: %q", progress.RewriteReason)
+	}
+	if progress.InProgressChapter != 0 || len(progress.CompletedScenes) != 0 {
+		t.Fatalf("in-progress state not cleared: chapter=%d scenes=%v", progress.InProgressChapter, progress.CompletedScenes)
+	}
+	if len(progress.CompletedChapters) != 2 || progress.CompletedChapters[0] != 1 || progress.CompletedChapters[1] != 2 {
+		t.Fatalf("completed chapters should be preserved, got %v", progress.CompletedChapters)
 	}
 }
 

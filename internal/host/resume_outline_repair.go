@@ -2,15 +2,13 @@ package host
 
 import (
 	"fmt"
-	"slices"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 type resumeOutlineRepairResult struct {
-	Batch          *storepkg.OutlineRepairBatch
-	QueuedChapters []int
+	Batch *storepkg.OutlineRepairBatch
 }
 
 func prepareResumeOutlineRepair(st *storepkg.Store) (*resumeOutlineRepairResult, error) {
@@ -29,69 +27,7 @@ func prepareResumeOutlineRepair(st *storepkg.Store) (*resumeOutlineRepairResult,
 	if err != nil || batch == nil {
 		return nil, err
 	}
-	result := &resumeOutlineRepairResult{Batch: batch}
-	if !batch.Repairable() || len(batch.CompletedChapters) == 0 {
-		return result, nil
-	}
-
-	merged, added := mergeResumeRepairRewrites(progress.PendingRewrites, batch.CompletedChapters)
-	reason := fmt.Sprintf(
-		"outline duplicate repair V%d A%d: chapter %d duplicates chapter %d",
-		batch.Volume,
-		batch.Arc,
-		batch.Duplicate.Chapter,
-		batch.Duplicate.ExistingChapter,
-	)
-	if !slices.Equal(merged, progress.PendingRewrites) || progress.RewriteReason != reason {
-		if err := st.Progress.SetPendingRewrites(merged, reason); err != nil {
-			return nil, err
-		}
-	}
-	if progress.Flow != domain.FlowRewriting {
-		if err := st.Progress.SetFlow(domain.FlowRewriting); err != nil {
-			return nil, err
-		}
-	}
-	result.QueuedChapters = added
-	return result, nil
-}
-
-func mergeResumeRepairRewrites(current []int, repairChapters []int) ([]int, []int) {
-	seen := make(map[int]struct{}, len(current)+len(repairChapters))
-	currentSet := make(map[int]struct{}, len(current))
-	for _, chapter := range current {
-		if chapter > 0 {
-			currentSet[chapter] = struct{}{}
-		}
-	}
-
-	merged := make([]int, 0, len(current)+len(repairChapters))
-	added := make([]int, 0, len(repairChapters))
-	for _, chapter := range repairChapters {
-		if chapter <= 0 {
-			continue
-		}
-		if _, ok := seen[chapter]; ok {
-			continue
-		}
-		seen[chapter] = struct{}{}
-		merged = append(merged, chapter)
-		if _, ok := currentSet[chapter]; !ok {
-			added = append(added, chapter)
-		}
-	}
-	for _, chapter := range current {
-		if chapter <= 0 {
-			continue
-		}
-		if _, ok := seen[chapter]; ok {
-			continue
-		}
-		seen[chapter] = struct{}{}
-		merged = append(merged, chapter)
-	}
-	slices.Sort(added)
-	return merged, added
+	return &resumeOutlineRepairResult{Batch: batch}, nil
 }
 
 func formatResumeOutlineRepairNotice(result *resumeOutlineRepairResult) string {
@@ -109,16 +45,7 @@ func formatResumeOutlineRepairNotice(result *resumeOutlineRepairResult) string {
 	}
 	if len(batch.CompletedChapters) == 0 {
 		return fmt.Sprintf(
-			"恢复前发现重复大纲：第 %d 章重复第 %d 章；将先修复 V%d A%d 批次大纲，该批次暂无已完成章节，无需重写正文。",
-			duplicate.Chapter,
-			duplicate.ExistingChapter,
-			batch.Volume,
-			batch.Arc,
-		)
-	}
-	if len(result.QueuedChapters) == 0 {
-		return fmt.Sprintf(
-			"恢复前发现重复大纲：第 %d 章重复第 %d 章；V%d A%d 的已完成章节已在重写队列，将先修复大纲再重写。",
+			"恢复前发现重复大纲：第 %d 章重复第 %d 章；将先单独修复 V%d A%d 批次大纲，该批次暂无已完成章节，修复后继续写作。",
 			duplicate.Chapter,
 			duplicate.ExistingChapter,
 			batch.Volume,
@@ -126,11 +53,11 @@ func formatResumeOutlineRepairNotice(result *resumeOutlineRepairResult) string {
 		)
 	}
 	return fmt.Sprintf(
-		"恢复前发现重复大纲：第 %d 章重复第 %d 章；已将 V%d A%d 的已完成章节 %v 加入重写队列，将先修复大纲再重写。",
+		"恢复前发现重复大纲：第 %d 章重复第 %d 章；将先单独修复 V%d A%d 批次大纲，repair_arc 成功后删除该批次旧稿并重写已完成章节 %v。",
 		duplicate.Chapter,
 		duplicate.ExistingChapter,
 		batch.Volume,
 		batch.Arc,
-		result.QueuedChapters,
+		batch.CompletedChapters,
 	)
 }

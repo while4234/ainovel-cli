@@ -62,6 +62,8 @@ func TestLoadStateIncludesOutlineRepairBatch(t *testing.T) {
 			{
 				Index: 1,
 				Chapters: []domain.OutlineEntry{
+					{Title: "Shared Promise", CoreEvent: "The team enters the archive and finds the sealed ledger before dawn.", Hook: "The ledger names the missing witness."},
+					{Title: "Shared Promise", CoreEvent: "The team enters the archive and finds the sealed ledger before dawn.", Hook: "The ledger names the missing witness."},
 					{Title: "同题", CoreEvent: "同事件", Hook: "同钩子"},
 				},
 			},
@@ -93,7 +95,7 @@ func TestLoadStateIncludesOutlineRepairBatch(t *testing.T) {
 	if state.OutlineRepair == nil || !state.OutlineRepair.Repairable() {
 		t.Fatalf("expected outline repair batch, got %+v", state.OutlineRepair)
 	}
-	if state.OutlineRepair.Volume != 1 || state.OutlineRepair.Arc != 2 {
-		t.Fatalf("expected V1 A2, got %+v", state.OutlineRepair)
+	if state.OutlineRepair.Volume != 1 || state.OutlineRepair.Arc != 1 {
+		t.Fatalf("expected V1 A1, got %+v", state.OutlineRepair)
 	}
 }

@@ -3031,7 +3031,7 @@ func TestReviseAdaptationProposalAllowsFinalVolumeEndingExpansion(t *testing.T) 
 	if len(updated.Chapters) != 14 {
 		t.Fatalf("chapters=%d, want 14", len(updated.Chapters))
 	}
-	if updated.Chapters[7].Title != "Original 8" {
+	if !strings.HasPrefix(updated.Chapters[7].Title, "Original 8") {
 		t.Fatalf("chapter 8 should stay unchanged: %+v", updated.Chapters[7])
 	}
 	for _, chapter := range []int{9, 12, 13, 14} {
@@ -3174,7 +3174,7 @@ func TestReviseAdaptationProposalAllowsMiddleVolumeExpansionAndShiftsLaterVolume
 			t.Fatalf("chapter %d was not revised/appended: %+v", chapter, got)
 		}
 	}
-	if updated.Chapters[10].Chapter != 11 || updated.Chapters[10].Title != "Original 9" {
+	if updated.Chapters[10].Chapter != 11 || !strings.HasPrefix(updated.Chapters[10].Title, "Original 9") {
 		t.Fatalf("old chapter 9 should shift to target chapter 11: %+v", updated.Chapters[10])
 	}
 	if len(updated.Volumes) != 3 {
@@ -3218,7 +3218,7 @@ func TestReviseAdaptationProposalRejectsFixedRangeCountChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadProposal: %v", err)
 	}
-	if saved == nil || len(saved.Chapters) != 12 || saved.Chapters[4].Title != "Original 5" {
+	if saved == nil || len(saved.Chapters) != 12 || !strings.HasPrefix(saved.Chapters[4].Title, "Original 5") {
 		t.Fatalf("failed fixed-range revision should not save changes: %+v", saved)
 	}
 }
@@ -4602,12 +4602,68 @@ func plannerBatchPlans(from, to, sourceFrom, sourceTo int) []domain.AdaptationCh
 	return plan.Chapters
 }
 
+func plannerTestOutlineParts(chapter, sourceChapter int, prefix string) (string, string, string, []string) {
+	motifs := []struct {
+		title string
+		core  string
+		hook  string
+		scene string
+	}{
+		{"Harbor Cipher", "deciphers a salt-stained harbor ledger, bargains with a ferryman, and hides a brass key under the rain barrel", "a tide bell rings from a locked boathouse", "ferry ledger exchange"},
+		{"Glass Observatory", "climbs the observatory stairs, repairs a cracked lens, and exposes the false comet signal before sunrise", "the telescope shows two moons", "observatory lens test"},
+		{"Market Intercept", "trades a forged pass in the market, follows a spice vendor, and recovers a coded ribbon from the awning", "the ribbon carries the wrong family crest", "market tail"},
+		{"Cistern Descent", "opens the dry cistern, maps the echoing tunnels, and rescues a courier trapped behind the iron grate", "water starts rising in a room marked dry", "cistern rescue"},
+		{"Theater Switch", "joins the backstage crew, swaps the poisoned prop, and forces the actor to reveal the patron's signal", "the applause hides a second command", "backstage prop switch"},
+		{"Rooftop Accord", "crosses the tiled roofs, bargains with a rival scout, and plants a lantern code above the magistrate's gate", "the rival asks for protection instead of coin", "rooftop bargain"},
+		{"Archive Lock", "sorts the burned archive slips, reconstructs the missing index, and seals the witness name in a wax tube", "the index points to a living witness", "archive reconstruction"},
+		{"Garden Trial", "tests the courtyard footprints, catches the gardener's false alibi, and uncovers the message inside a seed jar", "the seed jar rattles with metal", "courtyard footprint test"},
+		{"Train Cipher", "boards the night train, swaps a baggage tag, and follows a conductor to the silent mail car", "the mailbag is stitched with a royal warning", "night train exchange"},
+		{"Quarry Signal", "descends into the marble quarry, times the blasting horn, and uncovers a chalk route behind the powder shed", "the next blast is scheduled too early", "quarry horn timing"},
+		{"Clockmaker Visit", "visits the clockmaker's attic, resets a stopped pendulum, and finds a coded gear in the workbench", "the gear turns without a spring", "attic pendulum reset"},
+		{"Monastery Ledger", "copies the monastery ledger, questions the bell keeper, and traces a missing donation to a sealed crypt", "the bell rings thirteen times at noon", "monastery bell audit"},
+		{"Canal Ambush", "rows through the canal fog, tricks a courier boat, and retrieves a tin cylinder from the tow rope", "the tow rope is cut from the wrong bank", "canal boat feint"},
+		{"Library Trial", "debates the head librarian, compares three marginal notes, and exposes a planted confession in the atlas room", "the atlas page shows an impossible border", "library atlas debate"},
+		{"Foundry Bargain", "enters the bronze foundry, cools a stolen mold, and forces the foreman to identify the midnight buyer", "the mold carries a fresh thumbprint", "foundry mold cooling"},
+		{"Clinic Ledger", "checks the charity clinic ledger, follows a nurse's false errand, and finds medicine hidden in a prayer box", "the medicine label has tomorrow's date", "clinic errand shadow"},
+		{"Lighthouse Code", "climbs the lighthouse stairs, changes the shutter rhythm, and reveals a ship waiting beyond the reef", "the light answers from an empty sea", "lighthouse shutter code"},
+		{"Museum Swap", "guards the museum vault, switches a replica idol, and catches the curator signaling through a cracked mirror", "the mirror shows the vault from outside", "museum idol switch"},
+		{"Desert Relay", "rides to the desert relay post, decodes a camel bell pattern, and rescues a messenger buried under canvas", "the bell pattern repeats a dead man's name", "relay post decoding"},
+		{"Snowfield Trace", "crosses the snowfield markers, tests the frozen ink, and reveals the smuggler's route under the chapel wall", "the ink warms before the fire is lit", "snowfield ink test"},
+		{"Opera Ledger", "audits the opera troupe accounts, follows a masked singer, and recovers a receipt hidden in a drum skin", "the drumbeat skips the murder hour", "opera account audit"},
+		{"Bridge Oath", "holds the bridge checkpoint, bargains with a deserter, and plants a false oath token in the toll chest", "the deserter knows the new password", "bridge toll bargain"},
+		{"Vineyard Map", "searches the vineyard press, stains a hidden map with grape ash, and corners the buyer in the tasting room", "the map blooms under sour wine", "vineyard map stain"},
+		{"Island Beacon", "repairs the island beacon, tests a gull-feather cipher, and exposes a rescue boat that never launched", "the beacon smoke bends against the wind", "island beacon repair"},
+	}
+	motif := motifs[(chapter-1)%len(motifs)]
+	title := fmt.Sprintf("Target %d %s", chapter, motif.title)
+	if prefix != "" {
+		title = fmt.Sprintf("%s %d %s", prefix, chapter, motif.title)
+	}
+	core := fmt.Sprintf("Ari %s.", motif.core)
+	hook := fmt.Sprintf("%s.", motif.hook)
+	scenes := []string{
+		fmt.Sprintf("%s setup", motif.scene),
+		fmt.Sprintf("%s consequence", motif.title),
+	}
+	return title, core, hook, scenes
+}
+
+func plannerTestScenesJSON(scenes []string) string {
+	raw, err := json.Marshal(scenes)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
 func plannerBudgetRangePlans(from, to, sourceFrom, sourceTo int) []domain.AdaptationChapterPlan {
 	plans := make([]domain.AdaptationChapterPlan, 0, to-from+1)
 	for chapter := from; chapter <= to; chapter++ {
+		title, core, hook, scenes := plannerTestOutlineParts(chapter, sourceFrom, "")
 		plans = append(plans, domain.AdaptationChapterPlan{
 			Chapter:        chapter,
-			Title:          fmt.Sprintf("Target %d", chapter),
+			Title:          title,
+			OutlineEntry:   domain.OutlineEntry{Chapter: chapter, Title: title, CoreEvent: core, Hook: hook, Scenes: scenes},
 			SourceChapters: []int{sourceFrom, sourceTo},
 			SourceRange:    domain.SourceRange{From: sourceFrom, To: sourceTo},
 		})
@@ -4628,15 +4684,16 @@ func plannerSharedSourceRangePlans(from, to, sourceFrom, sourceTo, sourceRunes i
 		if chapterRunes <= 0 {
 			chapterRunes = 1000
 		}
+		title, core, hook, scenes := plannerTestOutlineParts(chapter, anchor, "")
 		plans = append(plans, domain.AdaptationChapterPlan{
 			Chapter: chapter,
-			Title:   fmt.Sprintf("Target %d", chapter),
+			Title:   title,
 			OutlineEntry: domain.OutlineEntry{
 				Chapter:   chapter,
-				Title:     fmt.Sprintf("Target %d", chapter),
-				CoreEvent: fmt.Sprintf("Adapt shared source arc %d-%d beat %d.", sourceFrom, sourceTo, offset+1),
-				Hook:      fmt.Sprintf("A clear hook for target %d.", chapter),
-				Scenes:    []string{"station"},
+				Title:     title,
+				CoreEvent: core,
+				Hook:      hook,
+				Scenes:    scenes,
 			},
 			SourceChapters: []int{anchor},
 			SourceRange:    domain.SourceRange{From: sourceFrom, To: sourceTo},
@@ -4658,15 +4715,16 @@ func plannerSharedSourceRangePlans(from, to, sourceFrom, sourceTo, sourceRunes i
 func repeatedSourceRangePlans(from, to, sourceChapter, sourceRunes int) []domain.AdaptationChapterPlan {
 	plans := make([]domain.AdaptationChapterPlan, 0, to-from+1)
 	for chapter := from; chapter <= to; chapter++ {
+		title, core, hook, scenes := plannerTestOutlineParts(chapter, sourceChapter, "")
 		plans = append(plans, domain.AdaptationChapterPlan{
 			Chapter: chapter,
-			Title:   fmt.Sprintf("Target %d", chapter),
+			Title:   title,
 			OutlineEntry: domain.OutlineEntry{
 				Chapter:   chapter,
-				Title:     fmt.Sprintf("Target %d", chapter),
-				CoreEvent: fmt.Sprintf("Ari adapts source chapter %d beat %d.", sourceChapter, chapter-from+1),
-				Hook:      fmt.Sprintf("A clear hook for target %d.", chapter),
-				Scenes:    []string{"station"},
+				Title:     title,
+				CoreEvent: core,
+				Hook:      hook,
+				Scenes:    scenes,
 			},
 			SourceChapters: []int{sourceChapter},
 			SourceRange:    domain.SourceRange{From: sourceChapter, To: sourceChapter},
@@ -4693,19 +4751,20 @@ func plannerRepeatedSourceBudgetProposalJSON(from, to, sourceChapter, sourceRune
 	count := to - from + 1
 	chapters := make([]string, 0, to-from+1)
 	for chapter := from; chapter <= to; chapter++ {
+		title, core, hook, scenes := plannerTestOutlineParts(chapter, sourceChapter, "")
 		chapters = append(chapters, fmt.Sprintf(`{
 			"chapter": %d,
-			"title": "Target %d",
-			"core_event": "Ari adapts source chapter %d beat %d.",
-			"hook": "A clear hook for target %d.",
-			"scenes": ["station"],
+			"title": %q,
+			"core_event": %q,
+			"hook": %q,
+			"scenes": %s,
 			"source_chapters": [%d],
 			"source_range": {"from": %d, "to": %d},
 			"word_budget": {"source_runes": %d, "target_runes": %d, "min_runes": %d, "max_runes": %d, "tolerance": 0.15},
 			"preserve_events": ["source event"],
 			"required_changes": ["adapt the beat"],
 			"forbidden_moves": ["drop the source anchor"]
-		}`, chapter, chapter, sourceChapter, chapter-from+1, chapter, sourceChapter, sourceChapter, sourceChapter, sourceRunes, targetRunes, minRunes, maxRunes))
+		}`, chapter, title, core, hook, plannerTestScenesJSON(scenes), sourceChapter, sourceChapter, sourceChapter, sourceRunes, targetRunes, minRunes, maxRunes))
 	}
 	return fmt.Sprintf(`{
 		"granularity": "arc",
@@ -4745,18 +4804,19 @@ func plannerBatchProposalJSONWithOmittedBudget(from, to, sourceFrom, sourceTo in
 		if chapter == omittedChapter {
 			wordBudget = ""
 		}
+		title, core, hook, scenes := plannerTestOutlineParts(chapter, sourceChapter, "")
 		chapters = append(chapters, fmt.Sprintf(`{
 			"chapter": %d,
-			"title": "Target %d",
-			"core_event": "Ari adapts source turn %d.",
-			"hook": "A clear hook for target %d.",
-			"scenes": ["station"],
+			"title": %q,
+			"core_event": %q,
+			"hook": %q,
+			"scenes": %s,
 			"source_chapters": [%d],
 			"source_range": {"from": %d, "to": %d}%s,
 			"preserve_events": ["source event"],
 			"required_changes": ["adapt the beat"],
 			"forbidden_moves": ["drop the source anchor"]
-		}`, chapter, chapter, sourceChapter, chapter, sourceChapter, sourceRangeFrom, sourceRangeTo, wordBudget))
+		}`, chapter, title, core, hook, plannerTestScenesJSON(scenes), sourceChapter, sourceRangeFrom, sourceRangeTo, wordBudget))
 	}
 	return fmt.Sprintf(`{
 		"granularity": "free",
@@ -4833,19 +4893,20 @@ func plannerRevisionProposalJSON(from, to, sourceFrom, sourceTo int) string {
 		}
 		sourceRunes := sourceChapter * 10
 		targetRunes := sourceRunes + 2
+		title, core, hook, scenes := plannerTestOutlineParts(chapter, sourceChapter, "Revised")
 		chapters = append(chapters, fmt.Sprintf(`{
 			"chapter": %d,
-			"title": "Revised %d",
-			"core_event": "Revised event for target %d.",
-			"hook": "Revised hook for target %d.",
-			"scenes": ["archive", "station"],
+			"title": %q,
+			"core_event": %q,
+			"hook": %q,
+			"scenes": %s,
 			"source_chapters": [%d],
 			"source_range": {"from": %d, "to": %d},
 			"word_budget": {"source_runes": %d, "target_runes": %d, "min_runes": %d, "max_runes": %d, "tolerance": 0.15},
 			"preserve_events": ["source event"],
 			"required_changes": ["apply the revision"],
 			"forbidden_moves": ["drop the source anchor"]
-		}`, chapter, chapter, chapter, chapter, sourceChapter, sourceRangeFrom, sourceRangeTo, sourceRunes, targetRunes, targetRunes-1, targetRunes+1))
+		}`, chapter, title, core, hook, plannerTestScenesJSON(scenes), sourceChapter, sourceRangeFrom, sourceRangeTo, sourceRunes, targetRunes, targetRunes-1, targetRunes+1))
 	}
 	return fmt.Sprintf(`{
 		"granularity": "free",
@@ -4859,13 +4920,14 @@ func plannerRevisionProposalJSON(from, to, sourceFrom, sourceTo int) string {
 func plannerRevisionProposalJSONMissingWordBudget(from, to int) string {
 	var chapters []string
 	for chapter := from; chapter <= to; chapter++ {
+		title, core, hook, scenes := plannerTestOutlineParts(chapter, chapter, "Incomplete revised")
 		chapters = append(chapters, fmt.Sprintf(`{
 			"chapter": %d,
-			"title": "Incomplete revised %d",
-			"core_event": "Incomplete revised event %d.",
-			"hook": "Incomplete revised hook %d.",
-			"scenes": ["repair-needed"]
-		}`, chapter, chapter, chapter, chapter))
+			"title": %q,
+			"core_event": %q,
+			"hook": %q,
+			"scenes": %s
+		}`, chapter, title, core, hook, plannerTestScenesJSON(scenes)))
 	}
 	return fmt.Sprintf(`{
 		"granularity": "free",
@@ -4920,13 +4982,14 @@ func saveRevisionTestProposal(t *testing.T, st *store.Store) {
 		sourceChapter := 1 + (chapter-1)*4/12
 		sourceRunes := sourceChapter * 10
 		targetRunes := sourceRunes + 2
+		title, core, hook, scenes := plannerTestOutlineParts(chapter, sourceChapter, "Original")
 		sourceTotal += sourceRunes
 		targetTotal += targetRunes
 		targetMinTotal += targetRunes - 1
 		targetMaxTotal += targetRunes + 1
 		chapters = append(chapters, domain.AdaptationChapterPlan{
 			Chapter:        chapter,
-			Title:          fmt.Sprintf("Original %d", chapter),
+			Title:          title,
 			SourceChapters: []int{sourceChapter},
 			SourceRunes:    sourceRunes,
 			TargetRunes:    targetRunes,
@@ -4945,10 +5008,10 @@ func saveRevisionTestProposal(t *testing.T, st *store.Store) {
 			ForbiddenMoves:  []string{"drop the source anchor"},
 			OutlineEntry: domain.OutlineEntry{
 				Chapter:   chapter,
-				Title:     fmt.Sprintf("Original %d", chapter),
-				CoreEvent: fmt.Sprintf("Original event for target %d.", chapter),
-				Hook:      fmt.Sprintf("Original hook for target %d.", chapter),
-				Scenes:    []string{"station"},
+				Title:     title,
+				CoreEvent: core,
+				Hook:      hook,
+				Scenes:    scenes,
 			},
 		})
 	}

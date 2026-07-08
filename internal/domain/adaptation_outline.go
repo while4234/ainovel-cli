@@ -46,6 +46,10 @@ func FindDuplicateAdaptationChapterOutline(
 	}, true
 }
 
+func FindAdaptationChapterOutlineReviewCandidates(chapters []AdaptationChapterPlan) []OutlineSimilarityCandidate {
+	return FindOutlineSimilarityReviewCandidates(adaptationOutlineEntries(chapters))
+}
+
 func adaptationOutlineEntries(chapters []AdaptationChapterPlan) []OutlineEntry {
 	entries := make([]OutlineEntry, 0, len(chapters))
 	for _, chapter := range chapters {

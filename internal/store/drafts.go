@@ -96,6 +96,25 @@ func (s *DraftStore) LoadChapterText(chapter int) (string, error) {
 	return string(data), nil
 }
 
+func (s *DraftStore) DeleteChapterArtifacts(chapter int) error {
+	if chapter <= 0 {
+		return nil
+	}
+	return s.io.WithWriteLock(func() error {
+		paths := []string{
+			fmt.Sprintf("drafts/%02d.plan.json", chapter),
+			fmt.Sprintf("drafts/%02d.draft.md", chapter),
+			fmt.Sprintf("chapters/%02d.md", chapter),
+		}
+		for _, path := range paths {
+			if err := s.io.RemoveFileUnlocked(path); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // LoadChapterRange 读取指定范围的终稿原文片段。
 func (s *DraftStore) LoadChapterRange(from, to, maxRunes int) (map[int]string, error) {
 	result := make(map[int]string)

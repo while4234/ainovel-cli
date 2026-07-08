@@ -867,6 +867,13 @@ func (s *AdaptationStore) LoadCheck(chapter int) (*domain.AdaptationCheck, error
 	return &check, nil
 }
 
+func (s *AdaptationStore) DeleteCheck(chapter int) error {
+	if chapter <= 0 {
+		return nil
+	}
+	return s.io.RemoveFile(checkRelPath(chapter))
+}
+
 func (s *AdaptationStore) HasPassingCheck(chapter int, draftSHA256 string) (bool, *domain.AdaptationCheck, error) {
 	check, err := s.LoadCheck(chapter)
 	if err != nil || check == nil {

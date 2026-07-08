@@ -304,6 +304,18 @@ func (s *WorldStore) LoadReview(chapter int) (*domain.ReviewEntry, error) {
 	return &r, nil
 }
 
+func (s *WorldStore) DeleteReview(chapter int) error {
+	if chapter <= 0 {
+		return nil
+	}
+	return s.io.WithWriteLock(func() error {
+		if err := s.io.RemoveFileUnlocked(fmt.Sprintf("reviews/%02d.json", chapter)); err != nil {
+			return err
+		}
+		return s.io.RemoveFileUnlocked(fmt.Sprintf("reviews/%02d-global.json", chapter))
+	})
+}
+
 // LoadLastReview 读取最近一次全局审阅。
 func (s *WorldStore) LoadLastReview(fromChapter int) (*domain.ReviewEntry, error) {
 	for ch := fromChapter; ch >= 1; ch-- {

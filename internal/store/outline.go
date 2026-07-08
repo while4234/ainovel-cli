@@ -240,6 +240,15 @@ func (s *OutlineStore) expandArcUnlocked(volumeIdx, arcIdx int, chapters []domai
 	if err := s.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
 		return nil, fmt.Errorf("load layered_outline: %w", err)
 	}
+	location := locateOutlineArc(volumes, volumeIdx, arcIdx)
+	if !location.found {
+		return nil, fmt.Errorf("arc not found: volume=%d, arc=%d", volumeIdx, arcIdx)
+	}
+	expanded := numberedOutlineEntries(chapters, location.startChapter)
+	if err := validateOutlineBatchEntries(fmt.Sprintf("expand_arc V%d A%d", volumeIdx, arcIdx), expanded); err != nil {
+		return nil, err
+	}
+
 	found := false
 	for vi := range volumes {
 		if volumes[vi].Index != volumeIdx {
@@ -249,7 +258,7 @@ func (s *OutlineStore) expandArcUnlocked(volumeIdx, arcIdx int, chapters []domai
 			if volumes[vi].Arcs[ai].Index != arcIdx {
 				continue
 			}
-			volumes[vi].Arcs[ai].Chapters = chapters
+			volumes[vi].Arcs[ai].Chapters = expanded
 			volumes[vi].Arcs[ai].EstimatedChapters = 0
 			found = true
 			break
@@ -284,28 +293,27 @@ func (s *OutlineStore) replaceArcChaptersUnlocked(volumeIdx, arcIdx int, chapter
 		return nil, nil, fmt.Errorf("load layered_outline: %w", err)
 	}
 
-	globalChapter := 1
-	var repaired []domain.OutlineEntry
+	location := locateOutlineArc(volumes, volumeIdx, arcIdx)
+	if !location.found {
+		return nil, nil, fmt.Errorf("arc not found: volume=%d arc=%d", volumeIdx, arcIdx)
+	}
+	if location.chapterCount == 0 {
+		return nil, nil, fmt.Errorf("arc V%d A%d is not expanded", volumeIdx, arcIdx)
+	}
+	if len(chapters) != location.chapterCount {
+		return nil, nil, fmt.Errorf("repair_arc V%d A%d must keep %d chapters, got %d", volumeIdx, arcIdx, location.chapterCount, len(chapters))
+	}
+	repaired := numberedOutlineEntries(chapters, location.startChapter)
+	if err := validateOutlineBatchEntries(fmt.Sprintf("repair_arc V%d A%d", volumeIdx, arcIdx), repaired); err != nil {
+		return nil, nil, err
+	}
+
 	found := false
 	for vi := range volumes {
 		for ai := range volumes[vi].Arcs {
 			arc := &volumes[vi].Arcs[ai]
-			arcLen := len(arc.Chapters)
 			if volumes[vi].Index != volumeIdx || arc.Index != arcIdx {
-				globalChapter += arcLen
 				continue
-			}
-			if arcLen == 0 {
-				return nil, nil, fmt.Errorf("arc V%d A%d is not expanded", volumeIdx, arcIdx)
-			}
-			if len(chapters) != arcLen {
-				return nil, nil, fmt.Errorf("repair_arc V%d A%d must keep %d chapters, got %d", volumeIdx, arcIdx, arcLen, len(chapters))
-			}
-			repaired = make([]domain.OutlineEntry, len(chapters))
-			for i := range chapters {
-				entry := chapters[i]
-				entry.Chapter = globalChapter + i
-				repaired[i] = entry
 			}
 			arc.Chapters = repaired
 			found = true
@@ -342,7 +350,11 @@ func (s *OutlineStore) appendVolumeUnlocked(vol domain.VolumeOutline) ([]domain.
 	if err := validateAppendVolume(volumes, vol); err != nil {
 		return nil, err
 	}
-	volumes = append(volumes, vol)
+	numberedVolume, _ := numberedAppendedVolume(volumes, vol)
+	if err := validateOutlineVolumeBatches(fmt.Sprintf("append_volume V%d", vol.Index), numberedVolume); err != nil {
+		return nil, err
+	}
+	volumes = append(volumes, numberedVolume)
 	if err := s.io.WriteJSONUnlocked("layered_outline.json", volumes); err != nil {
 		return nil, err
 	}
@@ -357,6 +369,104 @@ func (s *OutlineStore) appendVolumeUnlocked(vol domain.VolumeOutline) ([]domain.
 		return nil, err
 	}
 	return volumes, nil
+}
+
+type outlineArcLocation struct {
+	found        bool
+	startChapter int
+	chapterCount int
+}
+
+func locateOutlineArc(volumes []domain.VolumeOutline, volumeIdx, arcIdx int) outlineArcLocation {
+	nextChapter := 1
+	for _, volume := range volumes {
+		for _, arc := range volume.Arcs {
+			chapterCount := arcOutlineChapterCount(arc)
+			if volume.Index == volumeIdx && arc.Index == arcIdx {
+				return outlineArcLocation{
+					found:        true,
+					startChapter: nextChapter,
+					chapterCount: len(arc.Chapters),
+				}
+			}
+			nextChapter += chapterCount
+		}
+	}
+	return outlineArcLocation{}
+}
+
+func arcOutlineChapterCount(arc domain.ArcOutline) int {
+	if len(arc.Chapters) > 0 {
+		return len(arc.Chapters)
+	}
+	return arc.EstimatedChapters
+}
+
+func numberedOutlineEntries(entries []domain.OutlineEntry, startChapter int) []domain.OutlineEntry {
+	out := make([]domain.OutlineEntry, len(entries))
+	for i := range entries {
+		out[i] = cloneOutlineEntry(entries[i])
+		out[i].Chapter = startChapter + i
+	}
+	return out
+}
+
+func numberedAppendedVolume(existing []domain.VolumeOutline, volume domain.VolumeOutline) (domain.VolumeOutline, []domain.OutlineEntry) {
+	nextChapter := domain.TotalChapters(existing) + 1
+	numbered := cloneVolumeOutline(volume)
+	var entries []domain.OutlineEntry
+	for arcIdx := range numbered.Arcs {
+		if len(numbered.Arcs[arcIdx].Chapters) == 0 {
+			continue
+		}
+		chapterEntries := numberedOutlineEntries(numbered.Arcs[arcIdx].Chapters, nextChapter)
+		numbered.Arcs[arcIdx].Chapters = chapterEntries
+		entries = append(entries, chapterEntries...)
+		nextChapter += len(chapterEntries)
+	}
+	return numbered, entries
+}
+
+func validateOutlineBatchEntries(context string, entries []domain.OutlineEntry) error {
+	if duplicate, ok := domain.FindDuplicateOutlineEntries(entries); ok {
+		return fmt.Errorf("%s contains duplicate chapter outline: %w", context, duplicate)
+	}
+	return nil
+}
+
+func validateOutlineVolumeBatches(context string, volume domain.VolumeOutline) error {
+	for _, arc := range volume.Arcs {
+		if len(arc.Chapters) == 0 {
+			continue
+		}
+		if err := validateOutlineBatchEntries(fmt.Sprintf("%s A%d", context, arc.Index), arc.Chapters); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cloneVolumeOutline(volume domain.VolumeOutline) domain.VolumeOutline {
+	cloned := volume
+	cloned.Arcs = make([]domain.ArcOutline, len(volume.Arcs))
+	for i := range volume.Arcs {
+		cloned.Arcs[i] = volume.Arcs[i]
+		cloned.Arcs[i].Chapters = cloneOutlineEntries(volume.Arcs[i].Chapters)
+	}
+	return cloned
+}
+
+func cloneOutlineEntries(entries []domain.OutlineEntry) []domain.OutlineEntry {
+	out := make([]domain.OutlineEntry, len(entries))
+	for i := range entries {
+		out[i] = cloneOutlineEntry(entries[i])
+	}
+	return out
+}
+
+func cloneOutlineEntry(entry domain.OutlineEntry) domain.OutlineEntry {
+	entry.Scenes = append([]string(nil), entry.Scenes...)
+	return entry
 }
 
 func validateAppendVolume(existing []domain.VolumeOutline, vol domain.VolumeOutline) error {

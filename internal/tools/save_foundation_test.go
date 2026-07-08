@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -267,13 +268,20 @@ func TestSaveFoundationOutlineComputesWordBudget(t *testing.T) {
 		t.Fatalf("SetWordBudget: %v", err)
 	}
 
-	entries := make([]map[string]any, 0, 20)
+	markers := []string{
+		"alpha", "bravo", "cipher", "delta", "ember",
+		"fjord", "galaxy", "harbor", "ivory", "jigsaw",
+		"kernel", "lantern", "matrix", "nebula", "onyx",
+		"prairie", "quartz", "raven", "saffron", "tundra",
+	}
+	entries := make([]map[string]any, 0, len(markers))
 	for chapter := 1; chapter <= 20; chapter++ {
+		marker := markers[chapter-1]
 		entries = append(entries, map[string]any{
 			"chapter":    chapter,
-			"title":      "chapter",
-			"core_event": "event",
-			"hook":       "hook",
+			"title":      fmt.Sprintf("chapter %02d %s", chapter, marker),
+			"core_event": strings.Repeat(marker, 10),
+			"hook":       strings.Repeat(marker+"q", 8),
 		})
 	}
 	args, err := json.Marshal(map[string]any{
@@ -300,6 +308,195 @@ func TestSaveFoundationOutlineComputesWordBudget(t *testing.T) {
 		meta.WordBudget.ChapterMinWords != 4500 ||
 		meta.WordBudget.ChapterMaxWords != 5500 {
 		t.Fatalf("word budget = %+v", meta.WordBudget)
+	}
+}
+
+func TestSaveFoundationOutlineRejectsRepeatedLongTitle(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	args, err := json.Marshal(map[string]any{
+		"type": "outline",
+		"content": []map[string]any{
+			{
+				"chapter":    1,
+				"title":      "Mirror Door Signal",
+				"core_event": "The first chapter opens a distinct clue trail.",
+				"hook":       "The signal points to a sealed door.",
+			},
+			{
+				"chapter":    2,
+				"title":      "Mirror Door Signal",
+				"core_event": "The second chapter follows a different suspect path.",
+				"hook":       "A witness withholds evidence.",
+			},
+		},
+		"scale": "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), args); err == nil {
+		t.Fatal("expected duplicate outline to be rejected")
+	} else if !strings.Contains(err.Error(), "duplicate chapter outline") {
+		t.Fatalf("expected duplicate error, got %v", err)
+	}
+}
+
+func TestSaveFoundationOutlineRequiresReviewForBorderlineSimilarity(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	entries := []map[string]any{
+		{
+			"chapter":    1,
+			"title":      "North Archive",
+			"core_event": "Mira enters the archive after curfew, trades evidence with the librarian, and learns that the sealed ledger names the deputy.",
+			"hook":       "The deputy's name is written in fresh ink.",
+			"scenes":     []string{"Archive search", "Librarian exchange"},
+		},
+		{
+			"chapter":    2,
+			"title":      "South Archive",
+			"core_event": "Mira enters the archive before dawn, trades evidence with the librarian, and learns that a sealed ledger names the warden.",
+			"hook":       "A fresh name waits on the sealed page.",
+			"scenes":     []string{"Archive search", "Librarian bargain"},
+		},
+	}
+	tool := NewSaveFoundationTool(store)
+	args, err := json.Marshal(map[string]any{
+		"type":    "outline",
+		"content": entries,
+		"scale":   "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), args); err == nil {
+		t.Fatal("expected borderline outline to require model review")
+	} else if !strings.Contains(err.Error(), "similarity_review") {
+		t.Fatalf("expected similarity_review guidance, got %v", err)
+	}
+
+	reviewedArgs, err := json.Marshal(map[string]any{
+		"type":    "outline",
+		"content": entries,
+		"scale":   "short",
+		"similarity_review": []map[string]any{{
+			"chapter":          2,
+			"existing_chapter": 1,
+			"duplicate":        false,
+			"reason":           "same setting but different outcome",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal reviewed args: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), reviewedArgs); err != nil {
+		t.Fatalf("reviewed borderline outline should save: %v", err)
+	}
+}
+
+func TestSaveFoundationLayeredOutlineRejectsRepeatedLongTitle(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	args, err := json.Marshal(map[string]any{
+		"type": "layered_outline",
+		"content": []map[string]any{{
+			"index": 1,
+			"title": "Volume",
+			"theme": "Theme",
+			"arcs": []map[string]any{{
+				"index": 1,
+				"title": "Arc",
+				"goal":  "Goal",
+				"chapters": []map[string]any{
+					{
+						"chapter":    1,
+						"title":      "Mirror Door Signal",
+						"core_event": "The first chapter opens a distinct clue trail.",
+						"hook":       "The signal points to a sealed door.",
+					},
+					{
+						"chapter":    2,
+						"title":      "Mirror Door Signal",
+						"core_event": "The second chapter follows a different suspect path.",
+						"hook":       "A witness withholds evidence.",
+					},
+				},
+			}},
+		}},
+		"scale": "long",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), args); err == nil {
+		t.Fatal("expected duplicate layered outline to be rejected")
+	} else if !strings.Contains(err.Error(), "duplicate chapter outline") {
+		t.Fatalf("expected duplicate error, got %v", err)
+	}
+}
+
+func TestSaveFoundationExpandArcRejectsRepeatedLongTitle(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Progress.Init("test", 0); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := store.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		Index: 1,
+		Title: "Volume",
+		Theme: "Theme",
+		Arcs: []domain.ArcOutline{{
+			Index:             1,
+			Title:             "Arc",
+			Goal:              "Goal",
+			EstimatedChapters: 2,
+		}},
+	}}); err != nil {
+		t.Fatalf("SaveLayeredOutline: %v", err)
+	}
+
+	tool := NewSaveFoundationTool(store)
+	args, err := json.Marshal(map[string]any{
+		"type":   "expand_arc",
+		"volume": 1,
+		"arc":    1,
+		"content": []map[string]any{
+			{
+				"title":      "Mirror Door Signal",
+				"core_event": "The first chapter opens a distinct clue trail.",
+				"hook":       "The signal points to a sealed door.",
+			},
+			{
+				"title":      "Mirror Door Signal",
+				"core_event": "The second chapter follows a different suspect path.",
+				"hook":       "A witness withholds evidence.",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := tool.Execute(context.Background(), args); err == nil {
+		t.Fatal("expected duplicate expand_arc outline to be rejected")
+	} else if !strings.Contains(err.Error(), "duplicate chapter outline") {
+		t.Fatalf("expected duplicate error, got %v", err)
 	}
 }
 

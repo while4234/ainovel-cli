@@ -18,6 +18,13 @@ type SaveFoundationTool struct {
 	store *store.Store
 }
 
+type outlineSimilarityReviewVerdict struct {
+	Chapter         int    `json:"chapter"`
+	ExistingChapter int    `json:"existing_chapter"`
+	Duplicate       bool   `json:"duplicate"`
+	Reason          string `json:"reason"`
+}
+
 func NewSaveFoundationTool(store *store.Store) *SaveFoundationTool {
 	return &SaveFoundationTool{store: store}
 }
@@ -41,16 +48,20 @@ func (t *SaveFoundationTool) Schema() map[string]any {
 		schema.Property("scale", schema.Enum("规划级别", "short", "mid", "long")),
 		schema.Property("volume", schema.Int("目标卷序号（expand_arc / repair_arc 时必传）")),
 		schema.Property("arc", schema.Int("目标弧序号（expand_arc / repair_arc 时必传）")),
+		schema.Property("similarity_review", map[string]any{
+			"description": "Optional verdicts for borderline similar outline pairs: [{chapter, existing_chapter, duplicate, reason}]. Use only after model review.",
+		}),
 	)
 }
 
 func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
-		Type    string          `json:"type"`
-		Content json.RawMessage `json:"content"`
-		Scale   string          `json:"scale"`
-		Volume  int             `json:"volume"`
-		Arc     int             `json:"arc"`
+		Type    string                           `json:"type"`
+		Content json.RawMessage                  `json:"content"`
+		Scale   string                           `json:"scale"`
+		Volume  int                              `json:"volume"`
+		Arc     int                              `json:"arc"`
+		Review  []outlineSimilarityReviewVerdict `json:"similarity_review"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
@@ -112,6 +123,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, err
 		}
 		normalizeOutlineEntryChapters(entries)
+		if err := validateGeneratedOutline("outline", entries, a.Review); err != nil {
+			return nil, err
+		}
 		if err := t.store.Outline.SaveOutline(entries); err != nil {
 			return nil, fmt.Errorf("save outline: %w: %w", errs.ErrStoreWrite, err)
 		}
@@ -132,10 +146,13 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := decode("layered_outline", &volumes); err != nil {
 			return nil, err
 		}
+		if err := validateGeneratedLayeredOutline(volumes, a.Review); err != nil {
+			return nil, err
+		}
+		flat := domain.FlattenOutline(volumes)
 		if err := t.store.Outline.SaveLayeredOutline(volumes); err != nil {
 			return nil, fmt.Errorf("save layered_outline: %w: %w", errs.ErrStoreWrite, err)
 		}
-		flat := domain.FlattenOutline(volumes)
 		if err := t.store.Outline.SaveOutline(flat); err != nil {
 			return nil, fmt.Errorf("save flattened outline: %w: %w", errs.ErrStoreWrite, err)
 		}
@@ -180,6 +197,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := decode("expand_arc chapters", &chapters); err != nil {
 			return nil, err
 		}
+		if err := validateGeneratedOutline(fmt.Sprintf("expand_arc V%d A%d", a.Volume, a.Arc), chapters, a.Review); err != nil {
+			return nil, err
+		}
 		if err := t.store.ExpandArc(a.Volume, a.Arc, chapters); err != nil {
 			return nil, fmt.Errorf("expand arc: %w: %w", errs.ErrStoreWrite, err)
 		}
@@ -196,6 +216,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		var chapters []domain.OutlineEntry
 		if err := decode("repair_arc chapters", &chapters); err != nil {
+			return nil, err
+		}
+		if err := validateGeneratedOutline(fmt.Sprintf("repair_arc V%d A%d", a.Volume, a.Arc), chapters, a.Review); err != nil {
 			return nil, err
 		}
 		if err := t.store.RepairArcOutline(a.Volume, a.Arc, chapters); err != nil {
@@ -521,6 +544,98 @@ func normalizeOutlineEntryChapters(entries []domain.OutlineEntry) {
 			entries[i].Chapter = i + 1
 		}
 	}
+}
+
+func validateGeneratedOutline(typeName string, entries []domain.OutlineEntry, reviews []outlineSimilarityReviewVerdict) error {
+	if duplicate, ok := domain.FindDuplicateOutlineEntries(entries); ok {
+		return fmt.Errorf("%s contains duplicate chapter outline: %w", typeName, duplicate)
+	}
+	return validateOutlineSimilarityReview(typeName, domain.FindOutlineSimilarityReviewCandidates(entries), reviews)
+}
+
+func validateGeneratedLayeredOutline(volumes []domain.VolumeOutline, reviews []outlineSimilarityReviewVerdict) error {
+	chapter := 1
+	for _, volume := range volumes {
+		for _, arc := range volume.Arcs {
+			chapterCount := len(arc.Chapters)
+			if chapterCount == 0 {
+				if arc.EstimatedChapters > 0 {
+					chapter += arc.EstimatedChapters
+				}
+				continue
+			}
+			entries := make([]domain.OutlineEntry, len(arc.Chapters))
+			for i := range arc.Chapters {
+				entries[i] = arc.Chapters[i]
+				entries[i].Chapter = chapter + i
+			}
+			if err := validateGeneratedOutline(
+				fmt.Sprintf("layered_outline V%d A%d", volume.Index, arc.Index),
+				entries,
+				reviews,
+			); err != nil {
+				return err
+			}
+			chapter += chapterCount
+		}
+	}
+	return nil
+}
+
+func validateOutlineSimilarityReview(typeName string, candidates []domain.OutlineSimilarityCandidate, reviews []outlineSimilarityReviewVerdict) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+	reviewByPair := outlineSimilarityReviewByPair(reviews)
+	missing := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		review, ok := reviewByPair[outlineSimilarityPairKey(candidate.ExistingChapter, candidate.Chapter)]
+		if !ok {
+			missing = append(missing, fmt.Sprintf(
+				"chapter %d vs %d (detail=%.3f full=%.3f)",
+				candidate.Chapter,
+				candidate.ExistingChapter,
+				candidate.DetailSimilarity,
+				candidate.FullSimilarity,
+			))
+			continue
+		}
+		if review.Duplicate {
+			reason := strings.TrimSpace(review.Reason)
+			if reason == "" {
+				reason = "model review judged the outlines as duplicate"
+			}
+			return fmt.Errorf(
+				"%s model review confirmed duplicate outline: chapter %d vs %d: %s: %w",
+				typeName,
+				candidate.Chapter,
+				candidate.ExistingChapter,
+				reason,
+				errs.ErrToolPrecondition,
+			)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf(
+			"%s has borderline similar outline pairs requiring model review before save: %s. Resubmit with similarity_review verdicts after judging whether each pair is duplicate: %w",
+			typeName,
+			strings.Join(missing, "; "),
+			errs.ErrToolPrecondition,
+		)
+	}
+	return nil
+}
+
+func outlineSimilarityReviewByPair(reviews []outlineSimilarityReviewVerdict) map[string]outlineSimilarityReviewVerdict {
+	out := make(map[string]outlineSimilarityReviewVerdict, len(reviews))
+	for _, review := range reviews {
+		out[outlineSimilarityPairKey(review.ExistingChapter, review.Chapter)] = review
+	}
+	return out
+}
+
+func outlineSimilarityPairKey(existingChapter, chapter int) string {
+	return fmt.Sprintf("%d:%d", existingChapter, chapter)
 }
 
 func (t *SaveFoundationTool) refreshWordBudgetPlan(result map[string]any) error {

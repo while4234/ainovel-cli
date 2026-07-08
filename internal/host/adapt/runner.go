@@ -5017,7 +5017,7 @@ func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.Adaptat
 				return err
 			}
 		}
-		if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(chapters, priorChapters); ok {
+		if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(chapters); ok {
 			return duplicate
 		}
 		return validatePlannerBatchChapterBudgetGroups(chapters, priorChapters, opts, sourceRunesByChapter, batch)
@@ -5128,10 +5128,7 @@ func collectPlannerBatchChaptersWithRepair(
 	for attempt := 0; ; attempt++ {
 		chapters, missing, partial, parseErr := parsePlannerBatchPartial(text, batch)
 		if partial && len(missing) == 0 {
-			if validate == nil {
-				return chapters, nil
-			}
-			if err := validate(chapters); err == nil {
+			if err := validateAndReviewPlannerBatchChapters(ctx, llm, systemPrompt, chapters, validate, emit, current, total, label, maxModelCallAttempts); err == nil {
 				return chapters, nil
 			} else {
 				lastErr = err
@@ -5144,10 +5141,7 @@ func collectPlannerBatchChaptersWithRepair(
 			}
 			filled, fillErr := fillMissingPlannerBatchChapters(ctx, llm, systemPrompt, originalPrompt, text, batch, chapters, missing, missingErr, emit, current, total, label, maxRepairAttempts, maxModelCallAttempts)
 			if fillErr == nil {
-				if validate == nil {
-					return filled, nil
-				}
-				if err := validate(filled); err == nil {
+				if err := validateAndReviewPlannerBatchChapters(ctx, llm, systemPrompt, filled, validate, emit, current, total, label, maxModelCallAttempts); err == nil {
 					return filled, nil
 				} else {
 					lastErr = err
@@ -5174,6 +5168,248 @@ func collectPlannerBatchChaptersWithRepair(
 		}
 		text = repairedText
 	}
+}
+
+func validateAndReviewPlannerBatchChapters(
+	ctx context.Context,
+	llm imp.LLMChat,
+	systemPrompt string,
+	chapters []domain.AdaptationChapterPlan,
+	validate plannerBatchChapterValidatorFunc,
+	emit ProgressEmitter,
+	current int,
+	total int,
+	label string,
+	maxModelCallAttempts int,
+) error {
+	if validate != nil {
+		if err := validate(chapters); err != nil {
+			return err
+		}
+	}
+	return reviewPlannerBatchOutlineSimilarity(ctx, llm, systemPrompt, chapters, emit, current, total, label, maxModelCallAttempts)
+}
+
+type plannerOutlineReviewChapter struct {
+	Chapter   int      `json:"chapter"`
+	Title     string   `json:"title"`
+	CoreEvent string   `json:"core_event"`
+	Hook      string   `json:"hook"`
+	Scenes    []string `json:"scenes"`
+}
+
+type plannerOutlineReviewCandidate struct {
+	Chapter          int                         `json:"chapter"`
+	ExistingChapter  int                         `json:"existing_chapter"`
+	Reason           string                      `json:"reason"`
+	DetailSimilarity float64                     `json:"detail_similarity"`
+	FullSimilarity   float64                     `json:"full_similarity"`
+	Existing         plannerOutlineReviewChapter `json:"existing"`
+	Current          plannerOutlineReviewChapter `json:"current"`
+}
+
+type plannerOutlineReviewResponse struct {
+	Pairs      []plannerOutlineReviewVerdict `json:"pairs"`
+	Duplicates []plannerOutlineReviewVerdict `json:"duplicates"`
+}
+
+type plannerOutlineReviewVerdict struct {
+	Chapter         int    `json:"chapter"`
+	ExistingChapter int    `json:"existing_chapter"`
+	Duplicate       bool   `json:"duplicate"`
+	Reason          string `json:"reason"`
+}
+
+type plannerOutlineSimilarityDuplicateError struct {
+	Chapter          int
+	ExistingChapter  int
+	Reason           string
+	DetailSimilarity float64
+	FullSimilarity   float64
+}
+
+func (e plannerOutlineSimilarityDuplicateError) Error() string {
+	reason := strings.TrimSpace(e.Reason)
+	if reason == "" {
+		reason = "model judged the detailed outlines as the same story promise"
+	}
+	return fmt.Sprintf(
+		"chapter %d duplicates outline beats from chapter %d after model review: %s (detail_similarity=%.3f full_similarity=%.3f)",
+		e.Chapter,
+		e.ExistingChapter,
+		reason,
+		e.DetailSimilarity,
+		e.FullSimilarity,
+	)
+}
+
+func reviewPlannerBatchOutlineSimilarity(
+	ctx context.Context,
+	llm imp.LLMChat,
+	systemPrompt string,
+	chapters []domain.AdaptationChapterPlan,
+	emit ProgressEmitter,
+	current int,
+	total int,
+	label string,
+	maxModelCallAttempts int,
+) error {
+	candidates := domain.FindAdaptationChapterOutlineReviewCandidates(chapters)
+	if len(candidates) == 0 {
+		return nil
+	}
+	emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s has %d borderline similar outline pair(s); requesting model review", label, len(candidates)), nil)
+	reviewPrompt, err := buildPlannerOutlineSimilarityReviewPrompt(chapters, candidates)
+	if err != nil {
+		return err
+	}
+	text, err := generatePlannerText(ctx, llm, systemPrompt, reviewPrompt, 2048, emit, current, total, label+" outline duplicate review", maxModelCallAttempts)
+	if err != nil {
+		return fmt.Errorf("planner outline duplicate review llm generate: %w", err)
+	}
+	verdicts, err := parsePlannerOutlineSimilarityReview(text)
+	if err != nil {
+		return fmt.Errorf("planner outline duplicate review parse: %w", err)
+	}
+	candidateByPair := plannerOutlineCandidateByPair(candidates)
+	for _, verdict := range verdicts {
+		if !verdict.Duplicate {
+			continue
+		}
+		candidate, ok := candidateByPair[plannerOutlinePairKey(verdict.ExistingChapter, verdict.Chapter)]
+		if !ok {
+			return fmt.Errorf("planner outline duplicate review returned unknown pair chapter %d vs %d", verdict.Chapter, verdict.ExistingChapter)
+		}
+		return plannerOutlineSimilarityDuplicateError{
+			Chapter:          verdict.Chapter,
+			ExistingChapter:  verdict.ExistingChapter,
+			Reason:           verdict.Reason,
+			DetailSimilarity: candidate.DetailSimilarity,
+			FullSimilarity:   candidate.FullSimilarity,
+		}
+	}
+	return nil
+}
+
+func buildPlannerOutlineSimilarityReviewPrompt(chapters []domain.AdaptationChapterPlan, candidates []domain.OutlineSimilarityCandidate) (string, error) {
+	chapterByNumber := make(map[int]domain.AdaptationChapterPlan, len(chapters))
+	for _, chapter := range chapters {
+		chapterByNumber[chapter.Chapter] = chapter
+	}
+	reviewCandidates := make([]plannerOutlineReviewCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		existing, ok := chapterByNumber[candidate.ExistingChapter]
+		if !ok {
+			return "", fmt.Errorf("outline review candidate references missing existing chapter %d", candidate.ExistingChapter)
+		}
+		current, ok := chapterByNumber[candidate.Chapter]
+		if !ok {
+			return "", fmt.Errorf("outline review candidate references missing chapter %d", candidate.Chapter)
+		}
+		reviewCandidates = append(reviewCandidates, plannerOutlineReviewCandidate{
+			Chapter:          candidate.Chapter,
+			ExistingChapter:  candidate.ExistingChapter,
+			Reason:           candidate.Reason,
+			DetailSimilarity: candidate.DetailSimilarity,
+			FullSimilarity:   candidate.FullSimilarity,
+			Existing:         plannerOutlineReviewChapterFromPlan(existing),
+			Current:          plannerOutlineReviewChapterFromPlan(current),
+		})
+	}
+	payload, err := json.MarshalIndent(struct {
+		Candidates []plannerOutlineReviewCandidate `json:"candidates"`
+	}{Candidates: reviewCandidates}, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal outline review candidates: %w", err)
+	}
+	return strings.TrimSpace(fmt.Sprintf(`
+Review the generated detailed chapter outlines for duplicate story promises.
+
+You are checking only the candidate pairs below. They came from one generated batch and have borderline text similarity: high enough to be suspicious, but not high enough for deterministic rejection.
+
+Judge duplicate=true only when the two chapters are essentially the same chapter outline: same central event, same dramatic hook, and same scene progression, even if wording or names changed.
+Judge duplicate=false when they merely share setting, cast, theme, investigation method, or adjacent continuity while advancing distinct events.
+
+Return exactly one JSON object and no prose:
+{"pairs":[{"chapter":8,"existing_chapter":3,"duplicate":true,"reason":"short reason"}]}
+
+Candidate pairs:
+%s`, string(payload))), nil
+}
+
+func plannerOutlineReviewChapterFromPlan(chapter domain.AdaptationChapterPlan) plannerOutlineReviewChapter {
+	return plannerOutlineReviewChapter{
+		Chapter:   chapter.Chapter,
+		Title:     truncatePlannerOutlineReviewText(firstNonEmptyString(chapter.Title, chapter.OutlineEntry.Title)),
+		CoreEvent: truncatePlannerOutlineReviewText(firstNonEmptyString(chapter.CoreEvent, chapter.OutlineEntry.CoreEvent)),
+		Hook:      truncatePlannerOutlineReviewText(firstNonEmptyString(chapter.Hook, chapter.OutlineEntry.Hook)),
+		Scenes:    truncatePlannerOutlineReviewScenes(chapter.Scenes),
+	}
+}
+
+func truncatePlannerOutlineReviewScenes(scenes []string) []string {
+	scenes = trimmedNonEmpty(scenes)
+	if len(scenes) > 8 {
+		scenes = scenes[:8]
+	}
+	out := make([]string, 0, len(scenes))
+	for _, scene := range scenes {
+		out = append(out, truncatePlannerOutlineReviewText(scene))
+	}
+	return out
+}
+
+func truncatePlannerOutlineReviewText(text string) string {
+	text = strings.TrimSpace(text)
+	runes := []rune(text)
+	if len(runes) <= 360 {
+		return text
+	}
+	return string(runes[:360])
+}
+
+func parsePlannerOutlineSimilarityReview(text string) ([]plannerOutlineReviewVerdict, error) {
+	segments, err := extractPlannerJSONSegments(text)
+	if err != nil {
+		return nil, err
+	}
+	var firstErr error
+	for _, segment := range segments {
+		var response plannerOutlineReviewResponse
+		if err := json.Unmarshal([]byte(segment), &response); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		verdicts := append([]plannerOutlineReviewVerdict(nil), response.Pairs...)
+		for _, duplicate := range response.Duplicates {
+			duplicate.Duplicate = true
+			verdicts = append(verdicts, duplicate)
+		}
+		if len(verdicts) > 0 {
+			return verdicts, nil
+		}
+		if firstErr == nil {
+			firstErr = fmt.Errorf("review JSON has no pairs")
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, fmt.Errorf("review JSON has no decodable object")
+}
+
+func plannerOutlineCandidateByPair(candidates []domain.OutlineSimilarityCandidate) map[string]domain.OutlineSimilarityCandidate {
+	out := make(map[string]domain.OutlineSimilarityCandidate, len(candidates))
+	for _, candidate := range candidates {
+		out[plannerOutlinePairKey(candidate.ExistingChapter, candidate.Chapter)] = candidate
+	}
+	return out
+}
+
+func plannerOutlinePairKey(existingChapter, chapter int) string {
+	return fmt.Sprintf("%d:%d", existingChapter, chapter)
 }
 
 func collectProposalVolumeRevisionSkeletonWithRepair(
@@ -5686,6 +5922,7 @@ func repairPlannerBatchText(
 			"If the previous error says a source_range needs more target chapters, this is a shared source_range budget coverage failure, not a numeric word_budget failure.",
 			"Do not fix a source_range budget error by lowering source_runes, lowering word_budget.max_runes, or moving source anchors outside the batch source range.",
 			"Repair the offending source_range across the full requested batch: chapters adapting the same coherent source arc may share one broad source_range, but each chapter's word_budget.source_runes must be only that chapter's share and source_chapters must stay inside the shared range.",
+			"If the previous error says outline beats are duplicated after model review, regenerate the full requested batch so each repeated chapter has a distinct core_event, hook, and scene progression. Do not only rename the chapter.",
 			"Do not return only summaries, key_turns, overall_arc, markdown, or explanation.",
 		},
 	)
@@ -7636,9 +7873,6 @@ func validatePlannerProposal(
 		if err := validatePlannerWordBudget(chapter, opts.WordTolerance); err != nil {
 			return err
 		}
-	}
-	if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(proposal.Chapters); ok {
-		return duplicate
 	}
 	for sourceChapter := 1; sourceChapter <= manifest.ChapterCount; sourceChapter++ {
 		if !covered[sourceChapter] {
