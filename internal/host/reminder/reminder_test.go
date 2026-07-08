@@ -168,6 +168,23 @@ func TestSubAgentGuard_NormalStopStillBlocks(t *testing.T) {
 	}
 }
 
+func TestArchitectStopGuardAllowsRepairArcCheckpoint(t *testing.T) {
+	s := newTestStore(t)
+	guard := NewArchitectStopGuard(s)
+
+	if _, err := s.Checkpoints.Append(domain.ArcScope(1, 1), "repair_arc", "layered_outline.json", "d1"); err != nil {
+		t.Fatalf("append repair_arc checkpoint: %v", err)
+	}
+
+	d := guard(context.Background(), agentcore.StopInfo{
+		TurnIndex: 1,
+		Message:   agentcore.Message{StopReason: agentcore.StopReasonStop},
+	})
+	if !d.Allow {
+		t.Fatalf("architect repair_arc checkpoint should allow stop, got %#v", d)
+	}
+}
+
 func TestSubAgentGuard_PreserveDetailsShortDraftRepairsBeforeCommit(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.Progress.Init("test", 1); err != nil {
