@@ -3,6 +3,7 @@ package adapt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -876,8 +877,8 @@ func TestValidatePlannerBatchChapterBudgetGroupsClosesParentBatch(t *testing.T) 
 		WordTolerance: DefaultWordTolerance,
 	}
 	sourceRunesByChapter := map[int]int{
-		19: 11374,
-		20: 15965,
+		19: 15000,
+		20: 15000,
 	}
 	firstDetail := plannerSkeletonBatch{
 		TargetFrom:       66,
@@ -905,7 +906,7 @@ func TestValidatePlannerBatchChapterBudgetGroupsClosesParentBatch(t *testing.T) 
 	if err == nil {
 		t.Fatal("closing detail batch should reject under-split parent source range")
 	}
-	if !strings.Contains(err.Error(), "source_range 19-20 has 27339 source_runes") ||
+	if !strings.Contains(err.Error(), "source_range 19-20 has 30000 source_runes") ||
 		!strings.Contains(err.Error(), "at least 6 target chapters") {
 		t.Fatalf("error=%v, want parent source budget split guidance", err)
 	}
@@ -993,7 +994,7 @@ func TestPlannerBatchChapterValidatorRequiresEnoughTargetsForSharedSourceRange(t
 		Chapters: []domain.AdaptationSource{
 			{Chapter: 6, Runes: 1800},
 			{Chapter: 7, Runes: 1800},
-			{Chapter: 8, Runes: 1874},
+			{Chapter: 8, Runes: 2400},
 		},
 	}
 	oneTargetBatch := plannerSkeletonBatch{
@@ -1005,11 +1006,11 @@ func TestPlannerBatchChapterValidatorRequiresEnoughTargetsForSharedSourceRange(t
 		SourceFrom:       6,
 		SourceTo:         8,
 	}
-	err := plannerBatchChapterValidator(opts, manifest, oneTargetBatch)(plannerSharedSourceRangePlans(3, 3, 6, 8, 5474))
+	err := plannerBatchChapterValidator(opts, manifest, oneTargetBatch)(plannerSharedSourceRangePlans(3, 3, 6, 8, 6000))
 	if err == nil {
-		t.Fatal("one target chapter should not carry source_range 6-8 with 5474 source runes")
+		t.Fatal("one target chapter should not carry source_range 6-8 with 6000 source runes")
 	}
-	if !strings.Contains(err.Error(), "source_range 6-8 has 5474 source_runes") ||
+	if !strings.Contains(err.Error(), "source_range 6-8 has 6000 source_runes") ||
 		!strings.Contains(err.Error(), "at least 2 target chapters") {
 		t.Fatalf("error=%v, want source_range split guidance", err)
 	}
@@ -1017,7 +1018,7 @@ func TestPlannerBatchChapterValidatorRequiresEnoughTargetsForSharedSourceRange(t
 	twoTargetBatch := oneTargetBatch
 	twoTargetBatch.TargetTo = 4
 	twoTargetBatch.DetailParentTo = 4
-	if err := plannerBatchChapterValidator(opts, manifest, twoTargetBatch)(plannerSharedSourceRangePlans(3, 4, 6, 8, 5474)); err != nil {
+	if err := plannerBatchChapterValidator(opts, manifest, twoTargetBatch)(plannerSharedSourceRangePlans(3, 4, 6, 8, 6000)); err != nil {
 		t.Fatalf("two target chapters sharing source_range 6-8 should pass after budget split: %v", err)
 	}
 }
@@ -1086,7 +1087,7 @@ func TestPlannerBatchChapterValidatorStillRejectsInsufficientParentRangeCapacity
 		t.Fatal("parent range with too few target chapters should still fail")
 	}
 	if !strings.Contains(err.Error(), "source_range 14-25 has 31764 source_runes") ||
-		!strings.Contains(err.Error(), "at least 7 target chapters") {
+		!strings.Contains(err.Error(), "at least 6 target chapters") {
 		t.Fatalf("error=%v, want parent source capacity guidance", err)
 	}
 }
@@ -2151,6 +2152,39 @@ func TestNormalizePlannerSourceMapSkeletonBatchesUsesCapacityReviewForLowBudget(
 				t.Fatalf("capacity-accepted batch should not be marked as deviation: %+v", batches[0])
 			}
 		})
+	}
+}
+
+func TestPlannerBudgetGroupSplitUsesArcReviewCapacity(t *testing.T) {
+	policy := plannerChapterBudgetPolicyForGranularity(domain.AdaptationGranularityArc)
+	if policy == nil {
+		t.Fatal("arc policy is nil")
+	}
+	if policy.SourceReviewCapacityRunes <= policy.MaxRunes {
+		t.Fatalf("SourceReviewCapacityRunes=%d, want softer than MaxRunes=%d", policy.SourceReviewCapacityRunes, policy.MaxRunes)
+	}
+
+	chapters := plannerBudgetRangePlans(25, 36, 14, 20)
+	group := plannerChapterBudgetGroup{
+		Indexes:     plannerIndexRange(len(chapters)),
+		SourceFrom:  14,
+		SourceTo:    20,
+		SourceRunes: 60049,
+	}
+	if err := plannerBudgetGroupSplitError(chapters, group, *policy); err != nil {
+		t.Fatalf("arc final budget split should use review capacity, not hard max_runes: %v", err)
+	}
+
+	thinChapters := plannerBudgetRangePlans(25, 34, 14, 20)
+	group.Indexes = plannerIndexRange(len(thinChapters))
+	err := plannerBudgetGroupSplitError(thinChapters, group, *policy)
+	var splitErr *plannerProposalBudgetSplitError
+	if !errors.As(err, &splitErr) {
+		t.Fatalf("under-split arc range should still fail, got %v", err)
+	}
+	wantMin := ceilPositiveDiv(group.SourceRunes, policy.SourceReviewCapacityRunes)
+	if splitErr.MinChapters != wantMin {
+		t.Fatalf("MinChapters=%d, want %d", splitErr.MinChapters, wantMin)
 	}
 }
 
@@ -4669,6 +4703,14 @@ func plannerBudgetRangePlans(from, to, sourceFrom, sourceTo int) []domain.Adapta
 		})
 	}
 	return plans
+}
+
+func plannerIndexRange(count int) []int {
+	indexes := make([]int, count)
+	for idx := range indexes {
+		indexes[idx] = idx
+	}
+	return indexes
 }
 
 func plannerSharedSourceRangePlans(from, to, sourceFrom, sourceTo, sourceRunes int) []domain.AdaptationChapterPlan {

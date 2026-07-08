@@ -3950,10 +3950,11 @@ func plannerSkeletonBatchMinTargetCount(batch plannerSkeletonBatch, opts Proposa
 		return 0
 	}
 	sourceRunes := sourceRunesForRange(sourceRunesByChapter(manifest), batch.SourceFrom, batch.SourceTo)
-	if sourceRunes <= policy.MaxRunes {
+	reviewCapacityRunes := plannerBudgetPolicySourceReviewCapacityRunes(*policy)
+	if sourceRunes <= reviewCapacityRunes {
 		return 0
 	}
-	return ceilPositiveDiv(sourceRunes, policy.MaxRunes)
+	return ceilPositiveDiv(sourceRunes, reviewCapacityRunes)
 }
 
 func plannerSkeletonBatchChapterCount(batch plannerSkeletonBatch) int {
@@ -6074,10 +6075,11 @@ type plannerSourceChapterSummary struct {
 }
 
 type plannerChapterBudgetPolicy struct {
-	TargetRunes int      `json:"target_runes"`
-	MaxRunes    int      `json:"max_runes"`
-	Tolerance   float64  `json:"tolerance"`
-	Notes       []string `json:"notes"`
+	TargetRunes               int      `json:"target_runes"`
+	MaxRunes                  int      `json:"max_runes"`
+	SourceReviewCapacityRunes int      `json:"source_review_capacity_runes,omitempty"`
+	Tolerance                 float64  `json:"tolerance"`
+	Notes                     []string `json:"notes"`
 }
 
 func plannerChapterBudgetPolicyForGranularity(granularity string) *plannerChapterBudgetPolicy {
@@ -6092,7 +6094,7 @@ func plannerChapterBudgetPolicyForGranularity(granularity string) *plannerChapte
 	}
 	if plannerEnforcesSourceRuneSplitting(granularity) {
 		notes = append([]string{
-			"For arc full-rewrite plans, source_runes is a source-map skeleton capacity review signal; choose enough target chapters for coverage, while final word_budget.max_runes remains capped at max_runes.",
+			"For arc full-rewrite plans, source_runes is a source-map skeleton capacity review signal; choose enough target chapters for coverage using source_review_capacity_runes, while final word_budget.max_runes remains capped at max_runes.",
 		}, notes...)
 	} else {
 		notes = append([]string{
@@ -6100,11 +6102,19 @@ func plannerChapterBudgetPolicyForGranularity(granularity string) *plannerChapte
 		}, notes...)
 	}
 	return &plannerChapterBudgetPolicy{
-		TargetRunes: adaptationPlannerModelChapterTargetRunes,
-		MaxRunes:    adaptationPlannerModelChapterMaxRunes,
-		Tolerance:   adaptationPlannerModelChapterTolerance,
-		Notes:       notes,
+		TargetRunes:               adaptationPlannerModelChapterTargetRunes,
+		MaxRunes:                  adaptationPlannerModelChapterMaxRunes,
+		SourceReviewCapacityRunes: plannerSourceMapSkeletonReviewCapacityRunes(granularity),
+		Tolerance:                 adaptationPlannerModelChapterTolerance,
+		Notes:                     notes,
 	}
+}
+
+func plannerBudgetPolicySourceReviewCapacityRunes(policy plannerChapterBudgetPolicy) int {
+	if policy.SourceReviewCapacityRunes > 0 {
+		return policy.SourceReviewCapacityRunes
+	}
+	return policy.MaxRunes
 }
 
 func plannerEnforcesSourceRuneSplitting(granularity string) bool {
@@ -8119,10 +8129,11 @@ func plannerParentBatchBudgetGroup(chapters []domain.AdaptationChapterPlan, batc
 }
 
 func plannerBudgetGroupSplitError(chapters []domain.AdaptationChapterPlan, group plannerChapterBudgetGroup, policy plannerChapterBudgetPolicy) error {
-	if len(group.Indexes) == 0 || group.SourceRunes <= policy.MaxRunes {
+	reviewCapacityRunes := plannerBudgetPolicySourceReviewCapacityRunes(policy)
+	if len(group.Indexes) == 0 || group.SourceRunes <= reviewCapacityRunes {
 		return nil
 	}
-	minChapters := ceilPositiveDiv(group.SourceRunes, policy.MaxRunes)
+	minChapters := ceilPositiveDiv(group.SourceRunes, reviewCapacityRunes)
 	if minChapters <= len(group.Indexes) {
 		return nil
 	}

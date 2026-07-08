@@ -29,6 +29,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: align arc source-range budget review`:
+  Arc/full_rewrite final proposal and detail budget split validation now uses
+  the same source-map review capacity exposed as
+  `source_review_capacity_runes` (`ceil(5000 * 1.15) = 5750`) instead of the
+  hard target chapter maximum. Per-target `word_budget.max_runes` remains
+  capped at 5000. This keeps intentionally compressed arc ranges from failing
+  only at final volume review after their skeleton batches were already reused,
+  while still rejecting source ranges that do not allocate enough target
+  chapters under the review capacity. Validation passed for focused arc budget
+  split tests and full `go test ./internal/host/adapt -count=1`.
+- Latest source/runtime change: current local commit
   `fix: globalize model config saves`:
   Web model provider saves now persist global provider configuration only and
   no longer switch the current model route. Project model routing keeps a
