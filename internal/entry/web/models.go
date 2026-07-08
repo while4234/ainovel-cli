@@ -184,6 +184,13 @@ func (r modelProviderRequest) providerModelUpdate() host.ProviderModelUpdate {
 	}
 }
 
+func (r modelProviderRequest) providerModelSaveUpdate() host.ProviderModelUpdate {
+	update := r.providerModelUpdate()
+	selectAfterSave := false
+	update.SelectAfterSave = &selectAfterSave
+	return update
+}
+
 func (r coCreateTimeoutRequest) value() int {
 	if r.TimeoutSeconds != 0 {
 		return r.TimeoutSeconds
@@ -251,6 +258,7 @@ func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setCurrentConfig(cfg)
+	s.refreshProjectsAfterGlobalModelSettings(cfg)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"models":  s.globalModelConfig(cfg),
 		"runtime": s.runtimePayload(cfg),
@@ -541,7 +549,7 @@ func (s *Server) addGlobalProviderModelWithProbe(ctx context.Context, role, prov
 }
 
 func (s *Server) configureGlobalProviderModel(ctx context.Context, req modelProviderRequest) (apiModelConfig, map[string]any, error) {
-	update := req.providerModelUpdate()
+	update := req.providerModelSaveUpdate()
 	next, err := host.ConfigureProviderModelInConfig(ctx, s.currentConfig(), update)
 	if err != nil {
 		return apiModelConfig{}, nil, err
@@ -552,6 +560,22 @@ func (s *Server) configureGlobalProviderModel(ctx context.Context, req modelProv
 	s.setCurrentConfig(next)
 	s.refreshProjectsAfterGlobalProviderEdit(next, update.OriginalProvider, update.Provider)
 	return s.globalModelConfig(next), s.runtimePayload(next), nil
+}
+
+func (s *Server) refreshProjectsAfterGlobalModelSettings(cfg bootstrap.Config) {
+	if s.store != nil {
+		updated, err := s.store.RefreshProjectModelSettings(cfg)
+		if err != nil {
+			slog.Warn("refresh project model settings failed", "module", "web", "err", err)
+		} else if updated > 0 {
+			slog.Info("refreshed project model settings", "module", "web", "projects", updated)
+		}
+	}
+	if s.sessions != nil {
+		if err := s.sessions.SyncModelSettingsFromGlobal(cfg); err != nil {
+			slog.Warn("refresh active project model settings failed", "module", "web", "err", err)
+		}
+	}
 }
 
 func (s *Server) refreshProjectsAfterGlobalProviderEdit(cfg bootstrap.Config, originalProvider, provider string) {
@@ -725,6 +749,7 @@ func (s *Server) handleProjectModelSwitch(w http.ResponseWriter, r *http.Request
 		Role     string `json:"role"`
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
+		Inherit  bool   `json:"inherit"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -735,7 +760,12 @@ func (s *Server) handleProjectModelSwitch(w http.ResponseWriter, r *http.Request
 		writeProjectSessionError(w, err)
 		return
 	}
-	models, err := session.SwitchModel(req.Role, req.Provider, req.Model)
+	var models apiModelConfig
+	if req.Inherit {
+		models, err = session.ClearModelRoute(req.Role)
+	} else {
+		models, err = session.SwitchModel(req.Role, req.Provider, req.Model)
+	}
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return

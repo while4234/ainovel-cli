@@ -58,6 +58,7 @@ import {
   getProjectModels,
   getRuntime,
   getSnapshot,
+  inheritProjectModel,
   importExternalNovel,
   importSimulationProfile,
   listNovelLibrary,
@@ -88,7 +89,6 @@ import {
   setGlobalRetrySettings,
   setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
-  setProjectRetrySettings,
   setProjectThinking,
   startProject,
   startGrokLogin,
@@ -2267,6 +2267,25 @@ export default function App() {
     }
   };
 
+  const inheritModelRoute = async (role) => {
+    if (!activeProject?.id || !role || role === 'default') {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const data = await inheritProjectModel(activeProject.id, role);
+      setModelConfig(data.models || modelConfig);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      const status = await getBackendStatus(activeProject.id);
+      setBackendStatus(status.backend || null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const switchDefaultModel = async (provider, model) => {
     if (!provider || !model) {
       return;
@@ -2376,10 +2395,15 @@ export default function App() {
     setBusy(true);
     setError('');
     try {
-      const data = activeProject?.id
-        ? await setProjectRetrySettings(activeProject.id, modelAttempts, repairAttempts, budgetAttempts)
-        : await setGlobalRetrySettings(modelAttempts, repairAttempts, budgetAttempts);
-      setModelConfig(data.models || modelConfig);
+      const data = await setGlobalRetrySettings(modelAttempts, repairAttempts, budgetAttempts);
+      if (activeProject?.id) {
+        const modelData = await getProjectModels(activeProject.id);
+        setModelConfig(modelData.models || data.models || modelConfig);
+        const status = await getBackendStatus(activeProject.id);
+        setBackendStatus(status.backend || null);
+      } else {
+        setModelConfig(data.models || modelConfig);
+      }
       if (data.runtime) {
         setRuntime(data.runtime);
       }
@@ -2452,16 +2476,8 @@ export default function App() {
         setRuntime(data.runtime);
       }
       if (saveTarget.projectId) {
-        if (saveTarget.selectProjectAfterSave) {
-          const switched = await switchProjectModel(saveTarget.projectId, payload.role || 'default', payload.provider, payload.model);
-          nextModels = switched.models || nextModels;
-          if (isCurrentProject(saveTarget.projectId)) {
-            setWorkbench((previous) => ({ ...previous, snapshot: switched.snapshot || previous.snapshot }));
-          }
-        } else {
-          const modelData = await getProjectModels(saveTarget.projectId);
-          nextModels = modelData.models || nextModels;
-        }
+        const modelData = await getProjectModels(saveTarget.projectId);
+        nextModels = modelData.models || nextModels;
         if (isCurrentProject(saveTarget.projectId)) {
           setModelConfig(nextModels);
           const status = await getBackendStatus(saveTarget.projectId);
@@ -3116,6 +3132,7 @@ export default function App() {
               busy={busy}
               onSwitchDefault={switchDefaultModel}
               onSwitch={switchModelRoute}
+              onInherit={inheritModelRoute}
               onThinking={changeThinking}
               onCoCreateTimeout={changeCoCreateTimeout}
               onCoCreateMaxTokens={changeCoCreateMaxTokens}
@@ -5333,6 +5350,7 @@ function ModelPanel({
   busy,
   onSwitchDefault,
   onSwitch,
+  onInherit,
   onThinking,
   onCoCreateTimeout,
   onCoCreateMaxTokens,
@@ -5349,7 +5367,7 @@ function ModelPanel({
 }) {
   const config = runtime?.config || {};
   const roles = modelConfig?.roles || [];
-  const projectRoles = activeProject?.id ? roles : [];
+  const projectRoles = activeProject?.id ? roles.filter((route) => route.role !== 'default') : [];
   const providers = modelConfig?.providers || [];
   const levels = modelConfig?.thinking_levels || ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'];
   const providerMap = new Map(providers.map((provider) => [provider.name, provider.models || []]));
@@ -5483,6 +5501,14 @@ function ModelPanel({
       ? (selectedProjectRoute.explicit ? 'project default' : 'global default')
       : (selectedProjectRoute.explicit ? 'project override' : 'inherits default')
     : '';
+  const projectDefaultModelOption = '__project_default_model__';
+  const selectedProjectInheritsDefault = Boolean(
+    selectedProjectRoute &&
+    selectedProjectRoute.role !== 'default' &&
+    !selectedProjectRoute.explicit
+  );
+  const selectedProjectProviderValue = selectedProjectInheritsDefault ? projectDefaultModelOption : selectedProjectProvider;
+  const selectedProjectModelValue = selectedProjectInheritsDefault ? projectDefaultModelOption : selectedProjectModel;
   const editorModelProvider = customModel.mode === 'existing'
     ? customModel.original_provider || customModel.provider
     : customModel.provider;
@@ -5685,14 +5711,21 @@ function ModelPanel({
                   <span>后端</span>
                   <select
                     disabled={busy || providers.length === 0}
-                    value={selectedProjectProvider}
+                    value={selectedProjectProviderValue}
                     onChange={(event) => {
                       const provider = event.target.value;
+                      if (provider === projectDefaultModelOption) {
+                        onInherit?.(selectedProjectRoute.role);
+                        return;
+                      }
                       const models = providerMap.get(provider) || [];
                       onSwitch(selectedProjectRoute.role, provider, models[0] || selectedProjectModel);
                     }}
                   >
                     {providers.length === 0 ? <option value="">无后端</option> : null}
+                    {selectedProjectRoute.role !== 'default' ? (
+                      <option value={projectDefaultModelOption}>默认模型</option>
+                    ) : null}
                     {providers.map((provider) => (
                       <option key={provider.name} value={provider.name}>{provider.name}</option>
                     ))}
@@ -5701,12 +5734,20 @@ function ModelPanel({
                 <label className="field-label">
                   <span>模型</span>
                   <select
-                    disabled={busy || !selectedProjectProvider || selectedProjectModels.length === 0}
-                    value={selectedProjectModel}
-                    onChange={(event) => onSwitch(selectedProjectRoute.role, selectedProjectProvider, event.target.value)}
+                    disabled={busy || selectedProjectInheritsDefault || !selectedProjectProvider || selectedProjectModels.length === 0}
+                    value={selectedProjectModelValue}
+                    onChange={(event) => {
+                      if (event.target.value === projectDefaultModelOption) {
+                        onInherit?.(selectedProjectRoute.role);
+                        return;
+                      }
+                      onSwitch(selectedProjectRoute.role, selectedProjectProvider, event.target.value);
+                    }}
                   >
                     {selectedProjectModels.length === 0 ? <option value="">无模型</option> : null}
-                    {selectedProjectModels.map((model) => (
+                    {selectedProjectInheritsDefault ? (
+                      <option value={projectDefaultModelOption}>默认模型</option>
+                    ) : selectedProjectModels.map((model) => (
                       <option key={model} value={model}>{model}</option>
                     ))}
                   </select>
@@ -6729,7 +6770,7 @@ export function modelAddSaveTarget(activeProject = null, payload = {}) {
     persistScope: 'global',
     projectId,
     refreshProjectModels: Boolean(projectId),
-    selectProjectAfterSave: Boolean(projectId && payload?.select_after_save)
+    selectProjectAfterSave: false
   };
 }
 
@@ -6740,7 +6781,7 @@ export function buildModelAddPayload(state, modelConfig) {
     const provider = String(state.provider || providers[0]?.name || '').trim();
     const payload = {
       role,
-      select_after_save: true,
+      select_after_save: false,
       original_provider: String(state.original_provider || provider).trim(),
       provider,
       model: String(state.model || '').trim(),

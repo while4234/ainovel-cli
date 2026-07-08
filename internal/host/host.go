@@ -1260,13 +1260,68 @@ func (h *Host) ModelAutoSwitchConfig() bootstrap.ModelAutoSwitchConfig {
 }
 
 func (h *Host) CurrentModelSelection(role string) (string, string, bool) {
-	return h.models.CurrentSelection(role)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	provider, model, explicit := h.models.CurrentSelection(role)
+	role = strings.ToLower(strings.TrimSpace(role))
+	if h.cfg.PersistProjectOverlay && (role == "" || role == "default") {
+		explicit = h.cfg.PersistProjectConfig != nil &&
+			strings.TrimSpace(h.cfg.PersistProjectConfig.Provider) != "" &&
+			strings.TrimSpace(h.cfg.PersistProjectConfig.ModelName) != ""
+	}
+	return provider, model, explicit
 }
 
 func (h *Host) SwitchModel(role, provider, model string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.switchModelLocked(role, provider, model)
+}
+
+func (h *Host) ClearModelRoute(role string) error {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" || role == "default" {
+		return fmt.Errorf("default model route cannot inherit")
+	}
+	if !validModelRole(role) {
+		return fmt.Errorf("unknown role %q", role)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	candidate := cloneHostRuntimeConfig(h.cfg)
+	if candidate.Roles != nil {
+		rc := candidate.Roles[role]
+		rc.Provider = ""
+		rc.Model = ""
+		if roleConfigIsEmpty(rc) {
+			delete(candidate.Roles, role)
+		} else {
+			candidate.Roles[role] = rc
+		}
+	}
+	if err := candidate.ValidateBase(); err != nil {
+		return err
+	}
+	if err := h.models.ApplyConfig(candidate); err != nil {
+		return err
+	}
+	h.cfg = candidate
+	h.clearProjectModelRouteOverlayLocked(role)
+	h.syncProjectThinkingOverrideLocked(role)
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("save model route inheritance failed", "module", "host", "err", err)
+	}
+	h.applyThinkingLocked(role)
+	h.refreshCoordinatorContextWindowLocked(role, h.cfg.ModelName)
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("model route now inherits project default: %s", role),
+		Level:    "info",
+	})
+	return nil
 }
 
 func (h *Host) AddProviderModel(role, providerName string, providerConfig bootstrap.ProviderConfig, model string) error {
@@ -1387,7 +1442,7 @@ type ProviderModelUpdate struct {
 }
 
 func (u ProviderModelUpdate) shouldSelectAfterSave() bool {
-	return u.SelectAfterSave == nil || *u.SelectAfterSave
+	return u.SelectAfterSave != nil && *u.SelectAfterSave
 }
 
 func (h *Host) ConfigureProviderModel(ctx context.Context, update ProviderModelUpdate) error {
@@ -1479,6 +1534,7 @@ func (h *Host) SyncInheritedProviderFromGlobal(globalCfg bootstrap.Config, origi
 	if !ok {
 		return fmt.Errorf("provider %q is not configured", provider)
 	}
+	globalAutoSwitch := cloneModelAutoSwitchConfig(globalCfg.ModelAutoSwitch)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1511,6 +1567,18 @@ func (h *Host) SyncInheritedProviderFromGlobal(globalCfg bootstrap.Config, origi
 			changed = true
 		}
 	}
+	if !reflect.DeepEqual(candidate.ModelAutoSwitch, globalAutoSwitch) {
+		candidate.ModelAutoSwitch = globalAutoSwitch
+		changed = true
+	}
+	if candidate.StructureRepairMaxAttempts != globalCfg.StructureRepairMaxAttempts {
+		candidate.StructureRepairMaxAttempts = globalCfg.StructureRepairMaxAttempts
+		changed = true
+	}
+	if candidate.BudgetQualityMaxAttempts != globalCfg.BudgetQualityMaxAttempts {
+		candidate.BudgetQualityMaxAttempts = globalCfg.BudgetQualityMaxAttempts
+		changed = true
+	}
 	if candidate.PersistProjectConfig != nil {
 		overlay := cloneProjectConfig(*candidate.PersistProjectConfig)
 		overlayChanged := false
@@ -1518,6 +1586,18 @@ func (h *Host) SyncInheritedProviderFromGlobal(globalCfg bootstrap.Config, origi
 			overlayChanged = renameProviderKeyAndReferencesInConfig(&overlay, originalProvider, provider)
 		}
 		if clearProjectProviderLabel(&overlay, provider) {
+			overlayChanged = true
+		}
+		if !reflect.DeepEqual(overlay.ModelAutoSwitch, globalAutoSwitch) {
+			overlay.ModelAutoSwitch = globalAutoSwitch
+			overlayChanged = true
+		}
+		if overlay.StructureRepairMaxAttempts != globalCfg.StructureRepairMaxAttempts {
+			overlay.StructureRepairMaxAttempts = globalCfg.StructureRepairMaxAttempts
+			overlayChanged = true
+		}
+		if overlay.BudgetQualityMaxAttempts != globalCfg.BudgetQualityMaxAttempts {
+			overlay.BudgetQualityMaxAttempts = globalCfg.BudgetQualityMaxAttempts
 			overlayChanged = true
 		}
 		if overlayChanged {
@@ -1543,6 +1623,67 @@ func (h *Host) SyncInheritedProviderFromGlobal(globalCfg bootstrap.Config, origi
 		Time:     time.Now(),
 		Category: "SYSTEM",
 		Summary:  fmt.Sprintf("model config refreshed: %s", provider),
+		Level:    "info",
+	})
+	return nil
+}
+
+func (h *Host) SyncModelSettingsFromGlobal(globalCfg bootstrap.Config) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	globalAutoSwitch := cloneModelAutoSwitchConfig(globalCfg.ModelAutoSwitch)
+	candidate := cloneHostRuntimeConfig(h.cfg)
+	changed := false
+	if !reflect.DeepEqual(candidate.ModelAutoSwitch, globalAutoSwitch) {
+		candidate.ModelAutoSwitch = globalAutoSwitch
+		changed = true
+	}
+	if candidate.StructureRepairMaxAttempts != globalCfg.StructureRepairMaxAttempts {
+		candidate.StructureRepairMaxAttempts = globalCfg.StructureRepairMaxAttempts
+		changed = true
+	}
+	if candidate.BudgetQualityMaxAttempts != globalCfg.BudgetQualityMaxAttempts {
+		candidate.BudgetQualityMaxAttempts = globalCfg.BudgetQualityMaxAttempts
+		changed = true
+	}
+	if overlay := candidate.PersistProjectConfig; overlay != nil {
+		nextOverlay := cloneProjectConfig(*overlay)
+		overlayChanged := false
+		if !reflect.DeepEqual(nextOverlay.ModelAutoSwitch, globalAutoSwitch) {
+			nextOverlay.ModelAutoSwitch = globalAutoSwitch
+			overlayChanged = true
+		}
+		if nextOverlay.StructureRepairMaxAttempts != globalCfg.StructureRepairMaxAttempts {
+			nextOverlay.StructureRepairMaxAttempts = globalCfg.StructureRepairMaxAttempts
+			overlayChanged = true
+		}
+		if nextOverlay.BudgetQualityMaxAttempts != globalCfg.BudgetQualityMaxAttempts {
+			nextOverlay.BudgetQualityMaxAttempts = globalCfg.BudgetQualityMaxAttempts
+			overlayChanged = true
+		}
+		if overlayChanged {
+			candidate.PersistProjectConfig = &nextOverlay
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := candidate.ValidateBase(); err != nil {
+		return err
+	}
+	if err := h.models.ApplyConfig(candidate); err != nil {
+		return err
+	}
+	h.cfg = candidate
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("save refreshed model settings failed", "module", "host", "err", err)
+	}
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  "global model retry settings refreshed",
 		Level:    "info",
 	})
 	return nil
@@ -1872,7 +2013,8 @@ func SelectProviderModelInConfig(cfg bootstrap.Config, role, provider, model str
 	}
 	candidate.RememberModelCandidate(provider, model)
 	if role == "" || role == "default" {
-		setAllAgentModelRoutesInConfig(&candidate, provider, model)
+		candidate.Provider = provider
+		candidate.ModelName = model
 	} else {
 		if candidate.Roles == nil {
 			candidate.Roles = make(map[string]bootstrap.RoleConfig)
@@ -2232,9 +2374,11 @@ func (h *Host) switchModelLocked(role, provider, model string) error {
 	h.cfg.RememberModelCandidate(previousProvider, previousModel)
 	h.cfg.RememberModelCandidate(provider, model)
 	if role == "" || role == "default" {
-		if err := h.switchAllAgentModelsLocked(provider, model); err != nil {
+		if err := h.models.Swap("default", provider, model); err != nil {
 			return err
 		}
+		h.cfg.Provider = provider
+		h.cfg.ModelName = model
 	} else {
 		if err := h.models.Swap(role, provider, model); err != nil {
 			return err
@@ -2249,7 +2393,7 @@ func (h *Host) switchModelLocked(role, provider, model string) error {
 	}
 	h.normalizeThinkingLocked(role)
 	if role == "" || role == "default" {
-		h.recordAllProjectModelRoutesLocked(provider, model)
+		h.recordProjectRouteLocked("default", provider, model)
 	} else {
 		h.recordProjectRouteLocked(role, provider, model)
 	}
@@ -2413,7 +2557,7 @@ func (h *Host) syncProjectModelOverlayLocked(role, originalProvider, provider, m
 	overlay.ModelAutoSwitch = cloneModelAutoSwitchConfig(h.cfg.ModelAutoSwitch)
 	role = strings.ToLower(strings.TrimSpace(role))
 	if role == "" || role == "default" {
-		h.recordAllProjectModelRoutesLocked(provider, model)
+		h.recordProjectRouteLocked("default", provider, model)
 		return
 	}
 	h.recordProjectRouteLocked(role, provider, model)
@@ -2451,6 +2595,28 @@ func (h *Host) recordProjectRouteLocked(role, provider, model string) {
 		overlay.Roles[role] = rc
 	}
 	recordProjectProviderModel(overlay, provider, model)
+}
+
+func (h *Host) clearProjectModelRouteOverlayLocked(role string) {
+	overlay := h.ensureProjectOverlayLocked()
+	if overlay == nil {
+		return
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" || role == "default" || overlay.Roles == nil {
+		return
+	}
+	rc := overlay.Roles[role]
+	rc.Provider = ""
+	rc.Model = ""
+	if roleConfigIsEmpty(rc) {
+		delete(overlay.Roles, role)
+		if len(overlay.Roles) == 0 {
+			overlay.Roles = nil
+		}
+		return
+	}
+	overlay.Roles[role] = rc
 }
 
 func (h *Host) recordProjectThinkingLocked(role, level string) {
@@ -3263,13 +3429,18 @@ func (h *Host) promoteAdaptationFailoverTarget(ev bootstrap.FailoverEvent) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if err := h.switchModelLocked("default", provider, model); err != nil {
+	if err := h.switchAllAgentModelsLocked(provider, model); err != nil {
 		slog.Warn("promote adaptation failover model failed",
 			"module", "host",
 			"provider", provider,
 			"model", model,
 			"err", err,
 		)
+		return
+	}
+	h.recordAllProjectModelRoutesLocked(provider, model)
+	if err := h.persistConfigLocked(); err != nil {
+		slog.Warn("save adaptation failover route failed", "module", "host", "err", err)
 	}
 }
 

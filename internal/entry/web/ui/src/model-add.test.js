@@ -110,7 +110,7 @@ describe('model add helpers', () => {
       persistScope: 'global',
       projectId: 'project-1',
       refreshProjectModels: true,
-      selectProjectAfterSave: true
+      selectProjectAfterSave: false
     });
     expect(modelAddSaveTarget(null, { select_after_save: true })).toEqual({
       persistScope: 'global',
@@ -199,6 +199,7 @@ describe('model add helpers', () => {
 
     expect(state.api).toBe('');
     expect(buildModelAddPayload(state, modelConfig)).toMatchObject({
+      select_after_save: false,
       original_provider: 'grok-oauth',
       provider: 'grok-oauth',
       model: 'grok-4.3-latest',
@@ -346,7 +347,7 @@ describe('model add helpers', () => {
 
     expect(payload).toEqual({
       role: 'writer',
-      select_after_save: true,
+      select_after_save: false,
       original_provider: 'openai',
       provider: 'openai-proxy',
       model: 'gpt-5.1',

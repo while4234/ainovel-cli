@@ -263,7 +263,7 @@ func TestAddProviderModelRejectsFailedConnectivityProbe(t *testing.T) {
 	}
 }
 
-func TestSwitchDefaultModelUpdatesAllAgentRoutes(t *testing.T) {
+func TestSwitchDefaultModelPreservesAgentOverrides(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -275,7 +275,7 @@ func TestSwitchDefaultModelUpdatesAllAgentRoutes(t *testing.T) {
 			"openai": {Type: "openai", APIKey: "sk-test", Models: []string{"gpt-base", "gpt-next"}},
 		},
 		Roles: map[string]bootstrap.RoleConfig{
-			"writer": {Provider: "openai", Model: "writer-model"},
+			"writer": {Provider: "openai", Model: "gpt-base"},
 		},
 	}
 	cfg.FillDefaults()
@@ -288,25 +288,32 @@ func TestSwitchDefaultModelUpdatesAllAgentRoutes(t *testing.T) {
 	if err := host.SwitchModel("default", "openai", "gpt-next"); err != nil {
 		t.Fatalf("SwitchModel: %v", err)
 	}
-	for _, role := range append([]string{"default"}, projectAgentModelRoles...) {
-		provider, model, explicit := host.models.CurrentSelection(role)
-		if provider != "openai" || model != "gpt-next" || !explicit {
-			t.Fatalf("%s selection = %s/%s explicit=%v", role, provider, model, explicit)
-		}
+	provider, model, explicit := host.models.CurrentSelection("default")
+	if provider != "openai" || model != "gpt-next" || !explicit {
+		t.Fatalf("default selection = %s/%s explicit=%v", provider, model, explicit)
 	}
-	for _, role := range projectAgentModelRoles {
-		if rc := host.cfg.Roles[role]; rc.Provider != "openai" || rc.Model != "gpt-next" {
-			t.Fatalf("cfg role %s = %+v", role, rc)
-		}
+	provider, model, explicit = host.models.CurrentSelection("writer")
+	if provider != "openai" || model != "gpt-base" || !explicit {
+		t.Fatalf("writer selection = %s/%s explicit=%v", provider, model, explicit)
+	}
+	if rc := host.cfg.Roles["writer"]; rc.Provider != "openai" || rc.Model != "gpt-base" {
+		t.Fatalf("cfg writer role = %+v", rc)
+	}
+	provider, model, explicit = host.models.CurrentSelection("editor")
+	if provider != "openai" || model != "gpt-next" || explicit {
+		t.Fatalf("editor selection = %s/%s explicit=%v", provider, model, explicit)
 	}
 }
 
-func TestSelectProviderModelInConfigDefaultUpdatesAllAgentRoutes(t *testing.T) {
+func TestSelectProviderModelInConfigDefaultPreservesAgentRoutes(t *testing.T) {
 	cfg := bootstrap.Config{
 		Provider:  "openai",
 		ModelName: "gpt-base",
 		Providers: map[string]bootstrap.ProviderConfig{
 			"openai": {Type: "openai", APIKey: "sk-test", Models: []string{"gpt-base", "gpt-next"}},
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"writer": {Provider: "openai", Model: "gpt-base"},
 		},
 	}
 	cfg.FillDefaults()
@@ -318,14 +325,63 @@ func TestSelectProviderModelInConfigDefaultUpdatesAllAgentRoutes(t *testing.T) {
 	if next.Provider != "openai" || next.ModelName != "gpt-next" {
 		t.Fatalf("default route = %s/%s", next.Provider, next.ModelName)
 	}
-	for _, role := range projectAgentModelRoles {
-		if rc := next.Roles[role]; rc.Provider != "openai" || rc.Model != "gpt-next" {
-			t.Fatalf("role %s = %+v", role, rc)
-		}
+	if rc := next.Roles["writer"]; rc.Provider != "openai" || rc.Model != "gpt-base" {
+		t.Fatalf("writer role = %+v", rc)
+	}
+	if _, ok := next.Roles["editor"]; ok {
+		t.Fatalf("editor should still inherit default: %+v", next.Roles["editor"])
 	}
 }
 
-func TestConfigureProviderModelRenamesAndPreservesBlankAPIKey(t *testing.T) {
+func TestClearModelRouteFallsBackToProjectDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := bootstrap.Config{
+		Provider:              "openai",
+		ModelName:             "gpt-base",
+		PersistProjectOverlay: true,
+		Providers: map[string]bootstrap.ProviderConfig{
+			"openai": {Type: "openai", APIKey: "sk-openai", Models: []string{"gpt-base"}},
+			"proxy":  {Type: "openai", APIKey: "sk-proxy", Models: []string{"proxy-model"}},
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"writer": {Provider: "proxy", Model: "proxy-model", ReasoningEffort: "high"},
+		},
+	}
+	cfg.FillDefaults()
+	cfg.PersistProjectConfig = &bootstrap.Config{
+		Roles: map[string]bootstrap.RoleConfig{
+			"writer": {Provider: "proxy", Model: "proxy-model", ReasoningEffort: "high"},
+		},
+	}
+	models, err := bootstrap.NewModelSet(cfg)
+	if err != nil {
+		t.Fatalf("NewModelSet: %v", err)
+	}
+	host := &Host{
+		cfg:    cfg,
+		models: models,
+		events: make(chan Event, 10),
+	}
+
+	if err := host.ClearModelRoute("writer"); err != nil {
+		t.Fatalf("ClearModelRoute: %v", err)
+	}
+	provider, model, explicit := host.models.CurrentSelection("writer")
+	if explicit || provider != "openai" || model != "gpt-base" {
+		t.Fatalf("writer selection = %s/%s explicit=%v", provider, model, explicit)
+	}
+	if rc := host.cfg.Roles["writer"]; rc.Provider != "" || rc.Model != "" || rc.ReasoningEffort != "high" {
+		t.Fatalf("writer role = %+v", rc)
+	}
+	if rc := host.cfg.PersistProjectConfig.Roles["writer"]; rc.Provider != "" || rc.Model != "" || rc.ReasoningEffort != "high" {
+		t.Fatalf("overlay writer role = %+v", rc)
+	}
+}
+
+func TestConfigureProviderModelRenamesAndPreservesBlankAPIKeyWithoutSelecting(t *testing.T) {
 	withModelConnectivityProbe(t, nil)
 	enabled := true
 	cfg := bootstrap.Config{
@@ -343,7 +399,11 @@ func TestConfigureProviderModelRenamesAndPreservesBlankAPIKey(t *testing.T) {
 		},
 		Roles: map[string]bootstrap.RoleConfig{
 			"writer": {Provider: "custom-openai", Model: "old-model"},
-			"editor": {Fallbacks: []bootstrap.ModelRef{{Provider: "custom-openai", Model: "old-model"}}},
+			"editor": {
+				Provider:  "custom-openai",
+				Model:     "old-model",
+				Fallbacks: []bootstrap.ModelRef{{Provider: "custom-openai", Model: "old-model"}},
+			},
 		},
 		ModelAutoSwitch: bootstrap.ModelAutoSwitchConfig{
 			Enabled:            &enabled,
@@ -383,10 +443,55 @@ func TestConfigureProviderModelRenamesAndPreservesBlankAPIKey(t *testing.T) {
 	if fallback := next.Roles["editor"].Fallbacks[0]; fallback.Provider != "fixed-openai" || fallback.Model != "old-model" {
 		t.Fatalf("editor fallback = %+v", fallback)
 	}
-	for _, role := range projectAgentModelRoles {
-		if rc := next.Roles[role]; rc.Provider != "fixed-openai" || rc.Model != "new-model" {
-			t.Fatalf("role %s = %+v", role, rc)
-		}
+	if next.Provider != "fixed-openai" || next.ModelName != "old-model" {
+		t.Fatalf("default route = %s/%s, want fixed-openai/old-model", next.Provider, next.ModelName)
+	}
+	if rc := next.Roles["writer"]; rc.Provider != "fixed-openai" || rc.Model != "old-model" {
+		t.Fatalf("writer route changed: %+v", rc)
+	}
+}
+
+func TestConfigureProviderModelExplicitSelectUpdatesDefaultRoute(t *testing.T) {
+	withModelConnectivityProbe(t, nil)
+	selectAfterSave := true
+	cfg := bootstrap.Config{
+		Provider:  "custom-openai",
+		ModelName: "old-model",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"custom-openai": {
+				Type:    "openai",
+				API:     "chat",
+				APIKey:  "sk-old",
+				BaseURL: "https://old.example/v1",
+				Models:  []string{"old-model"},
+			},
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"writer": {Provider: "custom-openai", Model: "old-model"},
+		},
+	}
+	cfg.FillDefaults()
+
+	next, err := ConfigureProviderModelInConfig(context.Background(), cfg, ProviderModelUpdate{
+		Role:             "default",
+		OriginalProvider: "custom-openai",
+		Provider:         "fixed-openai",
+		Model:            "new-model",
+		ProviderConfig: bootstrap.ProviderConfig{
+			Type:    "openai",
+			API:     "responses",
+			BaseURL: "https://new.example/v1",
+		},
+		SelectAfterSave: &selectAfterSave,
+	})
+	if err != nil {
+		t.Fatalf("ConfigureProviderModelInConfig with select: %v", err)
+	}
+	if next.Provider != "fixed-openai" || next.ModelName != "new-model" {
+		t.Fatalf("default route = %s/%s", next.Provider, next.ModelName)
+	}
+	if rc := next.Roles["writer"]; rc.Provider != "fixed-openai" || rc.Model != "old-model" {
+		t.Fatalf("writer route changed: %+v", rc)
 	}
 }
 

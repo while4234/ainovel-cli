@@ -101,8 +101,10 @@ type projectHost interface {
 	ModelAutoSwitchConfig() bootstrap.ModelAutoSwitchConfig
 	CurrentModelSelection(string) (string, string, bool)
 	SwitchModel(string, string, string) error
+	ClearModelRoute(string) error
 	AddProviderModel(string, string, bootstrap.ProviderConfig, string) error
 	ConfigureProviderModel(context.Context, host.ProviderModelUpdate) error
+	SyncModelSettingsFromGlobal(bootstrap.Config) error
 	SyncInheritedProviderFromGlobal(bootstrap.Config, string, string) error
 	TestProviderModel(context.Context, string, string, bootstrap.ProviderConfig, string) (host.ProviderModelTestResult, error)
 	TestConfiguredProviderModel(context.Context, host.ProviderModelUpdate) (host.ProviderModelTestResult, error)
@@ -155,6 +157,24 @@ func (m *SessionManager) SyncInheritedProviderFromGlobal(cfg bootstrap.Config, o
 	var errs []error
 	for _, session := range sessions {
 		if err := session.SyncInheritedProviderFromGlobal(cfg, originalProvider, provider); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (m *SessionManager) SyncModelSettingsFromGlobal(cfg bootstrap.Config) error {
+	m.mu.Lock()
+	m.cfg = cloneWebConfig(cfg)
+	sessions := make([]*ProjectSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	m.mu.Unlock()
+
+	var errs []error
+	for _, session := range sessions {
+		if err := session.SyncModelSettingsFromGlobal(cfg); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -389,6 +409,14 @@ func (s *ProjectSession) SwitchModel(role, provider, model string) (apiModelConf
 	return s.ModelConfig(), nil
 }
 
+func (s *ProjectSession) ClearModelRoute(role string) (apiModelConfig, error) {
+	if err := s.host.ClearModelRoute(normalizeModelRole(role)); err != nil {
+		return apiModelConfig{}, err
+	}
+	s.AppendSnapshot()
+	return s.ModelConfig(), nil
+}
+
 func (s *ProjectSession) SetRoleThinking(role, level string) (apiModelConfig, error) {
 	if err := s.host.SetRoleThinking(normalizeModelRole(role), level); err != nil {
 		return apiModelConfig{}, err
@@ -443,11 +471,19 @@ func (s *ProjectSession) AddProviderModel(role, provider, model string, pc boots
 }
 
 func (s *ProjectSession) ConfigureProviderModel(ctx context.Context, req modelProviderRequest) (apiModelConfig, error) {
-	if err := s.host.ConfigureProviderModel(ctx, req.providerModelUpdate()); err != nil {
+	if err := s.host.ConfigureProviderModel(ctx, req.providerModelSaveUpdate()); err != nil {
 		return apiModelConfig{}, err
 	}
 	s.AppendSnapshot()
 	return s.ModelConfig(), nil
+}
+
+func (s *ProjectSession) SyncModelSettingsFromGlobal(cfg bootstrap.Config) error {
+	if err := s.host.SyncModelSettingsFromGlobal(cfg); err != nil {
+		return err
+	}
+	s.AppendSnapshot()
+	return nil
 }
 
 func (s *ProjectSession) SyncInheritedProviderFromGlobal(cfg bootstrap.Config, originalProvider, provider string) error {

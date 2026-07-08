@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -63,7 +64,7 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 		t.Fatalf("server default model = %q, want gpt-next", got)
 	}
 	for _, role := range []string{"coordinator", "architect", "writer", "editor"} {
-		if route := findModelRoute(switched.Models.Roles, role); route.Provider != "openai" || route.Model != "gpt-next" {
+		if route := findModelRoute(switched.Models.Roles, role); route.Provider != "openai" || route.Model != "gpt-next" || route.Explicit {
 			t.Fatalf("%s route after default switch = %+v", role, route)
 		}
 	}
@@ -75,10 +76,8 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 	if saved.Provider != "openai" || saved.ModelName != "gpt-next" {
 		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
 	}
-	for _, role := range []string{"coordinator", "architect", "writer", "editor"} {
-		if rc := saved.Roles[role]; rc.Provider != "openai" || rc.Model != "gpt-next" {
-			t.Fatalf("saved %s route = %+v", role, rc)
-		}
+	if len(saved.Roles) != 0 {
+		t.Fatalf("saved agent routes should inherit default: %+v", saved.Roles)
 	}
 
 	manifest, err := server.store.CreateProject("Global Default")
@@ -185,7 +184,8 @@ func TestGlobalCoCreateMaxTokensPersists(t *testing.T) {
 }
 
 func TestProjectCoCreateTimeoutUsesProjectHost(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	base := testWebConfig(t)
+	server := NewServer(base, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Project Timeout")
 	if err != nil {
@@ -206,7 +206,8 @@ func TestProjectCoCreateTimeoutUsesProjectHost(t *testing.T) {
 }
 
 func TestProjectCoCreateMaxTokensUsesProjectHost(t *testing.T) {
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	base := testWebConfig(t)
+	server := NewServer(base, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Project Max Tokens")
 	if err != nil {
@@ -257,7 +258,8 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	base := testWebConfig(t)
+	server := NewServer(base, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 
 	var added struct {
@@ -270,7 +272,7 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 		} `json:"runtime"`
 	}
 	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", `{"role":"default","provider":"grok-oauth","model":"grok-4.3-latest","type":"grok","auth":"grok_oauth","account_id":"default","api":"chat","api_key":"should-not-save"}`, &added)
-	if added.Runtime.Config.Provider != "grok-oauth" || added.Runtime.Config.Model != "grok-4.3-latest" {
+	if added.Runtime.Config.Provider != base.Provider || added.Runtime.Config.Model != base.ModelName {
 		t.Fatalf("runtime default = %+v", added.Runtime.Config)
 	}
 	if !modelConfigHasProvider(added.Models, "grok-oauth", "grok-4.3-latest") {
@@ -289,7 +291,7 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load saved config: %v", err)
 	}
-	if saved.Provider != "grok-oauth" || saved.ModelName != "grok-4.3-latest" {
+	if saved.Provider != base.Provider || saved.ModelName != base.ModelName {
 		t.Fatalf("saved default = %s/%s", saved.Provider, saved.ModelName)
 	}
 }
@@ -400,8 +402,11 @@ func TestGlobalModelEditRenamesProviderAndPreservesBlankAPIKey(t *testing.T) {
 	if provider.Name == "" || !provider.APIKeyConfigured || provider.NetworkDisconnectMaxAttempts != 4 || !provider.AutoSwitchCandidatePool {
 		t.Fatalf("edited provider response = %+v", provider)
 	}
-	if route := findModelRoute(edited.Models.Roles, "writer"); route.Provider != "fixed-openai" || route.Model != "new-model" {
-		t.Fatalf("writer route after default edit = %+v", route)
+	if route := findModelRoute(edited.Models.Roles, "default"); route.Provider != cfg.Provider || route.Model != cfg.ModelName {
+		t.Fatalf("default route changed after provider edit = %+v", route)
+	}
+	if route := findModelRoute(edited.Models.Roles, "writer"); route.Provider != cfg.Provider || route.Model != cfg.ModelName || route.Explicit {
+		t.Fatalf("writer route after provider edit = %+v", route)
 	}
 	next := server.currentConfig()
 	if _, ok := next.Providers["custom-openai"]; ok {
@@ -414,12 +419,18 @@ func TestGlobalModelEditRenamesProviderAndPreservesBlankAPIKey(t *testing.T) {
 	if next.ModelAutoSwitch.EffectiveNetworkMaxAttempts() != 4 || !modelAutoSwitchHasProvider(next.ModelAutoSwitch, "fixed-openai") {
 		t.Fatalf("auto switch config = %+v", next.ModelAutoSwitch)
 	}
+	if next.Provider != cfg.Provider || next.ModelName != cfg.ModelName {
+		t.Fatalf("server default changed to %s/%s", next.Provider, next.ModelName)
+	}
 	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
 	if err != nil {
 		t.Fatalf("LoadConfigFile: %v", err)
 	}
 	if saved.Providers["fixed-openai"].APIKey != "sk-secret" {
 		t.Fatalf("saved provider = %+v", saved.Providers["fixed-openai"])
+	}
+	if saved.Provider != cfg.Provider || saved.ModelName != cfg.ModelName {
+		t.Fatalf("saved default changed to %s/%s", saved.Provider, saved.ModelName)
 	}
 }
 
@@ -484,9 +495,9 @@ func TestGlobalModelEditRefreshesProjectProviderReferences(t *testing.T) {
 	var edited struct {
 		Models apiModelConfig `json:"models"`
 	}
-	body := `{"role":"default","original_provider":"custom-openai","provider":"fixed-openai","model":"new-model","label":"Fixed Label","type":"openai","api":"chat"}`
+	body := `{"role":"default","original_provider":"custom-openai","provider":"fixed-openai","model":"new-model","label":"Fixed Label","type":"openai","api":"chat","network_disconnect_max_attempts":9,"auto_switch_candidate_pool":true}`
 	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/add", body, &edited)
-	if route := findModelRoute(edited.Models.Roles, "default"); route.Provider != "fixed-openai" || route.Model != "new-model" {
+	if route := findModelRoute(edited.Models.Roles, "default"); route.Provider != cfg.Provider || route.Model != cfg.ModelName {
 		t.Fatalf("global default route = %+v", route)
 	}
 
@@ -500,10 +511,10 @@ func TestGlobalModelEditRefreshesProjectProviderReferences(t *testing.T) {
 	if rc := closedOverlay.Roles["writer"]; rc.Provider != "fixed-openai" || rc.Model != "old-model" {
 		t.Fatalf("closed writer route = %+v", rc)
 	}
-	if provider := closedOverlay.ModelAutoSwitch.FallbackBackends[0]; provider != "fixed-openai" {
-		t.Fatalf("closed fallback provider = %q", provider)
+	if !reflect.DeepEqual(closedOverlay.ModelAutoSwitch.FallbackBackends, []string{"fixed-openai"}) || closedOverlay.ModelAutoSwitch.EffectiveNetworkMaxAttempts() != 9 {
+		t.Fatalf("closed auto switch = %+v", closedOverlay.ModelAutoSwitch)
 	}
-	if pc := closedOverlay.Providers["fixed-openai"]; pc.Label != "Fixed Label" || pc.Type != "" || pc.APIKey != "" || !containsString(pc.Models, "old-model") {
+	if pc := closedOverlay.Providers["fixed-openai"]; pc.Label != "Fixed Label" || pc.Type != "" || pc.APIKey != "" || !containsString(pc.Models, "old-model") || !containsString(pc.Models, "new-model") {
 		t.Fatalf("closed inherited provider metadata = %+v", pc)
 	}
 
@@ -515,8 +526,11 @@ func TestGlobalModelEditRefreshesProjectProviderReferences(t *testing.T) {
 		t.Fatalf("active editor route = %+v", route)
 	}
 	activeProvider := findModelProvider(activeModels.Providers, "fixed-openai")
-	if activeProvider.Name == "" || activeProvider.Label != "Fixed Label" {
+	if activeProvider.Name == "" || activeProvider.Label != "Fixed Label" || !activeProvider.AutoSwitchCandidatePool || activeProvider.NetworkDisconnectMaxAttempts != 9 {
 		t.Fatalf("active provider = %+v", activeProvider)
+	}
+	if !reflect.DeepEqual(activeModels.ModelAutoSwitch.FallbackBackends, []string{"fixed-openai"}) || activeModels.ModelAutoSwitch.NetworkMaxAttempts != 9 {
+		t.Fatalf("active auto switch = %+v", activeModels.ModelAutoSwitch)
 	}
 
 	var reopened struct {
@@ -532,6 +546,9 @@ func TestGlobalModelEditRefreshesProjectProviderReferences(t *testing.T) {
 	}
 	if route := findModelRoute(reopened.Models.Roles, "default"); route.Provider != "fixed-openai" {
 		t.Fatalf("reopened default route = %+v", route)
+	}
+	if !reflect.DeepEqual(reopened.Models.ModelAutoSwitch.FallbackBackends, []string{"fixed-openai"}) || reopened.Models.ModelAutoSwitch.NetworkMaxAttempts != 9 {
+		t.Fatalf("reopened auto switch = %+v", reopened.Models.ModelAutoSwitch)
 	}
 }
 
@@ -783,6 +800,30 @@ func TestProjectModelAddExistingProviderUsesEmptyConfig(t *testing.T) {
 	}
 	if fake.configureProviderConfig.Type != "" || fake.configureProviderConfig.APIKey != "" || len(fake.configureProviderConfig.Models) != 0 {
 		t.Fatalf("existing provider should use empty config: %+v", fake.configureProviderConfig)
+	}
+}
+
+func TestProjectModelSwitchCanInheritDefault(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Inherit Agent Model")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/models/switch", bytes.NewBufferString(`{"role":"writer","inherit":true}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inherit status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.clearModelRouteCalls != 1 || fake.clearModelRouteRole != "writer" {
+		t.Fatalf("clear route calls=%d role=%q", fake.clearModelRouteCalls, fake.clearModelRouteRole)
+	}
+	if fake.switchCalls != 0 {
+		t.Fatalf("inherit should not switch explicit model, switch calls=%d", fake.switchCalls)
 	}
 }
 

@@ -1276,6 +1276,7 @@ type fakeProjectHost struct {
 	setCoCreateMaxTokensErr         error
 	setRetrySettingsErr             error
 	switchCalls                     int
+	clearModelRouteCalls            int
 	removeProviderCalls             int
 	setCoCreateTimeoutCalls         int
 	setCoCreateMaxTokensCalls       int
@@ -1285,6 +1286,7 @@ type fakeProjectHost struct {
 	modelCallMaxAttempts            int
 	structureRepairMaxAttempts      int
 	budgetQualityMaxAttempts        int
+	clearModelRouteRole             string
 	grokLoginStart                  grokauth.LoginStart
 	grokLoginPoll                   grokauth.LoginPoll
 	grokCompleteStatus              grokauth.AuthStatus
@@ -1951,6 +1953,14 @@ func (f *fakeProjectHost) SwitchModel(role, provider, model string) error {
 	return nil
 }
 
+func (f *fakeProjectHost) ClearModelRoute(role string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clearModelRouteCalls++
+	f.clearModelRouteRole = role
+	return nil
+}
+
 func (f *fakeProjectHost) AddProviderModel(role, providerName string, providerConfig bootstrap.ProviderConfig, model string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1975,6 +1985,10 @@ func (f *fakeProjectHost) ConfigureProviderModel(_ context.Context, update host.
 }
 
 func (f *fakeProjectHost) SyncInheritedProviderFromGlobal(bootstrap.Config, string, string) error {
+	return nil
+}
+
+func (f *fakeProjectHost) SyncModelSettingsFromGlobal(bootstrap.Config) error {
 	return nil
 }
 

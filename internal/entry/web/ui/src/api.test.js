@@ -16,6 +16,7 @@ import {
   getCodexAuthStatus,
   getGlobalModels,
   getProjectEvents,
+  inheritProjectModel,
   listNovelLibrary,
   listProjectTrash,
   listSimulationLibrary,
@@ -35,12 +36,14 @@ import {
   sendCoCreate,
   setGlobalCoCreateMaxTokens,
   setGlobalCoCreateTimeout,
+  setGlobalRetrySettings,
   setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
   setProjectStyle,
   startGrokLogin,
   switchGlobalDefaultModel,
   switchGlobalModel,
+  switchProjectModel,
   testGlobalProviderModel,
   testProjectProviderModel,
   trashProject
@@ -390,6 +393,29 @@ describe('web API helpers', () => {
     }));
   });
 
+  it('switches project model routes and clears project role overrides', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await switchProjectModel('project-1', 'writer', 'deepseek', 'deepseek-chat');
+    await inheritProjectModel('project-1', 'writer');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project-1/models/switch', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        role: 'writer',
+        provider: 'deepseek',
+        model: 'deepseek-chat'
+      })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/models/switch', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        role: 'writer',
+        inherit: true
+      })
+    }));
+  });
+
   it('sends co-create generation setting updates to global and project model routes', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
 
@@ -420,6 +446,7 @@ describe('web API helpers', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
 
     await addGlobalProviderModel({
+      select_after_save: false,
       role: 'default',
       provider: 'grok-oauth',
       model: 'grok-4.3-latest',
@@ -431,12 +458,28 @@ describe('web API helpers', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/models/add', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({
+        select_after_save: false,
         role: 'default',
         provider: 'grok-oauth',
         model: 'grok-4.3-latest',
         type: 'grok',
         auth: 'grok_oauth',
         account_id: 'default'
+      })
+    }));
+  });
+
+  it('sends retry settings to the global route', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await setGlobalRetrySettings(14, 8, 3);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/models/retry-settings', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        model_call_max_attempts: 14,
+        structure_repair_max_attempts: 8,
+        budget_quality_max_attempts: 3
       })
     }));
   });

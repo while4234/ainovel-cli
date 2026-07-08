@@ -471,6 +471,13 @@ export function switchProjectModel(projectId, role, provider, model) {
   });
 }
 
+export function inheritProjectModel(projectId, role) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/models/switch`, {
+    method: 'POST',
+    body: JSON.stringify({ role, inherit: true })
+  });
+}
+
 export function setProjectThinking(projectId, role, level) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/thinking`, {
     method: 'POST',

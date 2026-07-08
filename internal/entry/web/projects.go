@@ -404,6 +404,7 @@ func (s *ProjectStore) OpenProjectHost(cfg bootstrap.Config, bundle assets.Bundl
 	if err != nil {
 		return nil, err
 	}
+	cfg = projectBaseModelConfig(cfg)
 	if found {
 		cfg = bootstrap.MergeConfig(cfg, projectCfg)
 	}
@@ -415,6 +416,28 @@ func (s *ProjectStore) OpenProjectHost(cfg bootstrap.Config, bundle assets.Bundl
 	cfg.PersistProviders = projectOwnedProviders(projectCfg)
 	cfg.PersistProjectConfig = &projectCfg
 	return host.New(cfg, bundle)
+}
+
+func projectBaseModelConfig(cfg bootstrap.Config) bootstrap.Config {
+	cfg = cloneWebConfig(cfg)
+	if len(cfg.Roles) == 0 {
+		return cfg
+	}
+	nextRoles := make(map[string]bootstrap.RoleConfig, len(cfg.Roles))
+	for role, rc := range cfg.Roles {
+		rc.Provider = ""
+		rc.Model = ""
+		rc.Fallbacks = nil
+		if rc.ReasoningEffort != "" {
+			nextRoles[role] = rc
+		}
+	}
+	if len(nextRoles) == 0 {
+		cfg.Roles = nil
+	} else {
+		cfg.Roles = nextRoles
+	}
+	return cfg
 }
 
 func ProjectConfigPath(manifest ProjectManifest) string {
@@ -467,6 +490,32 @@ func (s *ProjectStore) RefreshProjectProviderReferences(globalCfg bootstrap.Conf
 	return updated, nil
 }
 
+func (s *ProjectStore) RefreshProjectModelSettings(globalCfg bootstrap.Config) (int, error) {
+	projects, err := s.ListProjects()
+	if err != nil {
+		return 0, err
+	}
+	updated := 0
+	for _, manifest := range projects {
+		cfg, found, err := s.loadProjectConfig(manifest)
+		if err != nil {
+			return updated, err
+		}
+		if !found {
+			continue
+		}
+		next := cloneWebConfig(cfg)
+		if !syncProjectGlobalModelSettings(&next, globalCfg) {
+			continue
+		}
+		if err := bootstrap.SaveConfig(ProjectConfigPath(manifest), next); err != nil {
+			return updated, err
+		}
+		updated++
+	}
+	return updated, nil
+}
+
 func refreshProjectProviderConfig(cfg bootstrap.Config, globalCfg bootstrap.Config, originalProvider, provider string) (bootstrap.Config, bool) {
 	originalProvider = strings.TrimSpace(originalProvider)
 	provider = strings.TrimSpace(provider)
@@ -478,6 +527,9 @@ func refreshProjectProviderConfig(cfg bootstrap.Config, globalCfg bootstrap.Conf
 	}
 	next := cloneWebConfig(cfg)
 	changed := false
+	if syncProjectGlobalModelSettings(&next, globalCfg) {
+		changed = true
+	}
 	if originalProvider != provider {
 		var renamed bool
 		next, renamed = host.RenameProviderInConfig(next, originalProvider, provider)
@@ -487,6 +539,24 @@ func refreshProjectProviderConfig(cfg bootstrap.Config, globalCfg bootstrap.Conf
 		changed = true
 	}
 	return next, changed
+}
+
+func syncProjectGlobalModelSettings(cfg *bootstrap.Config, globalCfg bootstrap.Config) bool {
+	changed := false
+	globalAutoSwitch := cloneWebModelAutoSwitchConfig(globalCfg.ModelAutoSwitch)
+	if !reflect.DeepEqual(cfg.ModelAutoSwitch, globalAutoSwitch) {
+		cfg.ModelAutoSwitch = globalAutoSwitch
+		changed = true
+	}
+	if cfg.StructureRepairMaxAttempts != globalCfg.StructureRepairMaxAttempts {
+		cfg.StructureRepairMaxAttempts = globalCfg.StructureRepairMaxAttempts
+		changed = true
+	}
+	if cfg.BudgetQualityMaxAttempts != globalCfg.BudgetQualityMaxAttempts {
+		cfg.BudgetQualityMaxAttempts = globalCfg.BudgetQualityMaxAttempts
+		changed = true
+	}
+	return changed
 }
 
 func refreshProjectProviderDisplayMetadata(cfg *bootstrap.Config, globalCfg bootstrap.Config, provider string) bool {
@@ -511,12 +581,36 @@ func refreshProjectProviderDisplayMetadata(cfg *bootstrap.Config, globalCfg boot
 		cfg.Providers[provider] = pc
 		return true
 	}
-	safe := bootstrap.ProviderConfig{Label: globalLabel, Models: append([]string(nil), pc.Models...)}
+	models := append([]string(nil), pc.Models...)
+	if hasGlobal {
+		models = mergeProviderModelMetadata(globalPC.Models, models)
+	}
+	safe := bootstrap.ProviderConfig{Label: globalLabel, Models: models}
 	if reflect.DeepEqual(pc, safe) {
 		return false
 	}
 	cfg.Providers[provider] = safe
 	return true
+}
+
+func mergeProviderModelMetadata(primary, fallback []string) []string {
+	seen := make(map[string]bool, len(primary)+len(fallback))
+	out := make([]string, 0, len(primary)+len(fallback))
+	add := func(model string) {
+		model = strings.TrimSpace(model)
+		if model == "" || seen[model] {
+			return
+		}
+		seen[model] = true
+		out = append(out, model)
+	}
+	for _, model := range primary {
+		add(model)
+	}
+	for _, model := range fallback {
+		add(model)
+	}
+	return out
 }
 
 func (s *ProjectStore) SaveProjectStyle(manifest ProjectManifest, style string) error {

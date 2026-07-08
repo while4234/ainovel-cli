@@ -29,6 +29,19 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: globalize model config saves`:
+  Web model provider saves now persist global provider configuration only and
+  no longer switch the current model route. Project model routing keeps a
+  single project default model at the top of the panel; coordinator,
+  architect, writer, and editor can either choose a concrete provider/model or
+  choose "默认模型" to follow that project default. Global provider edits
+  synchronize safe provider metadata, auto-switch fallback candidates, and
+  retry settings into active and closed project overlays without writing
+  inherited API keys. Validation passed for `npm.cmd test`,
+  `npm.cmd run build`, and
+  `go test ./internal/host ./internal/entry/web -count=1`; embedded Web static
+  assets were regenerated.
+- Latest source/runtime change: current local commit
   `fix: soften arc source-map budget review`:
   Arc/full_rewrite source-map skeleton budget review now uses source-map
   review capacity (`ceil(5000 * 1.15) = 5750`) as the skeleton-stage signal,
