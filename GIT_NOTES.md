@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest rebuild/static alignment change: current local commit
+  `chore: align tracked web static index`:
+  Pulled `origin/main` fast-forward from `bc770905` to `8f2b7c7d`
+  (`fix: stabilize web static build output`), rebuilt and restarted local Web
+  with the project-local Go 1.25.5 toolchain, stopped PID `47680`, and started
+  `http://127.0.0.1:9898` as PID `63252`. The restart succeeded and
+  `Invoke-WebRequest http://127.0.0.1:9898/` returned HTTP 200. The build
+  revealed that the newly tracked static `index.html` contained one extra blank
+  line not emitted by Vite; the tracked file was aligned to the actual build
+  output so subsequent Web builds/restarts should stay clean.
 - Latest tooling change: current local commit
   `chore: keep web static line endings stable`:
   Added `.gitattributes` rules that keep tracked embedded Web static output
