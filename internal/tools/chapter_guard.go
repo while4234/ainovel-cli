@@ -49,7 +49,15 @@ func EnsureAdaptationChapterPlanned(st *store.Store, chapter int) error {
 	if plan == nil || plan.Status != domain.AdaptationPlanStatusConfirmed {
 		return fmt.Errorf("改编计划尚未确认，不能进入写作: %w", errs.ErrToolPrecondition)
 	}
-	if _, ok := findAdaptationChapterPlan(plan, chapter); ok {
+	if chapterPlan, ok := findAdaptationChapterPlan(plan, chapter); ok {
+		if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline([]domain.AdaptationChapterPlan{chapterPlan}, plan.Chapters); ok {
+			return fmt.Errorf(
+				"adaptation plan duplicate outline: %v; regenerate or revise the adaptation proposal before writing chapter %d: %w",
+				duplicate,
+				chapter,
+				errs.ErrToolPrecondition,
+			)
+		}
 		return nil
 	}
 	return fmt.Errorf("改编计划中没有第 %d 章。当前 confirmed plan 只有 %d 章；如需增删/重排章节，请重新生成规模提案并确认: %w",

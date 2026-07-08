@@ -4618,6 +4618,9 @@ func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.Adaptat
 				return err
 			}
 		}
+		if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(chapters, priorChapters); ok {
+			return duplicate
+		}
 		return validatePlannerBatchChapterBudgetGroups(chapters, priorChapters, opts, sourceRunesByChapter, batch)
 	}
 }
@@ -7196,6 +7199,9 @@ func validatePlannerProposal(
 		if err := validatePlannerWordBudget(chapter, opts.WordTolerance); err != nil {
 			return err
 		}
+	}
+	if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(proposal.Chapters); ok {
+		return duplicate
 	}
 	for sourceChapter := 1; sourceChapter <= manifest.ChapterCount; sourceChapter++ {
 		if !covered[sourceChapter] {

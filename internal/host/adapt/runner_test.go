@@ -945,6 +945,43 @@ func TestPlannerBatchChapterValidatorAllowsSharedBatchSourceRange(t *testing.T) 
 	}
 }
 
+func TestPlannerBatchChapterValidatorRejectsDuplicateOutlinePromise(t *testing.T) {
+	opts := ProposalOptions{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 2,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, Runes: 1000},
+			{Chapter: 2, Runes: 1000},
+		},
+	}
+	batch := plannerSkeletonBatch{
+		Index:            1,
+		TargetFrom:       1,
+		TargetTo:         2,
+		DetailParentFrom: 1,
+		DetailParentTo:   2,
+		SourceFrom:       1,
+		SourceTo:         2,
+	}
+	chapters := plannerSharedSourceRangePlans(1, 2, 1, 2, 2000)
+	chapters[1].Title = chapters[0].Title
+	chapters[1].OutlineEntry.Title = chapters[0].OutlineEntry.Title
+	chapters[1].CoreEvent = chapters[0].CoreEvent
+	chapters[1].Hook = chapters[0].Hook
+
+	err := plannerBatchChapterValidator(opts, manifest, batch)(chapters)
+	if err == nil {
+		t.Fatal("duplicate title/core_event/hook should be rejected")
+	}
+	if !strings.Contains(err.Error(), "chapter 2 duplicates outline beats from chapter 1") {
+		t.Fatalf("error=%v, want duplicate outline guidance", err)
+	}
+}
+
 func TestPlannerBatchChapterValidatorRequiresEnoughTargetsForSharedSourceRange(t *testing.T) {
 	opts := ProposalOptions{
 		Granularity:   domain.AdaptationGranularityArc,
