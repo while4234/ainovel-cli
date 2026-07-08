@@ -127,6 +127,46 @@ func TestSplitText_VolumePrefixedChapterTitles(t *testing.T) {
 	}
 }
 
+func TestSplitText_EpisodeSectionChapterTitles(t *testing.T) {
+	src := `第一集   奔向黎明 第一节  来自麻省理工的初中代课老师
+正文一。
+
+第一集   奔向黎明 第二节  哥尼斯堡七桥问题
+正文二。
+
+第九集 八部天龙 第一节
+正文三。
+
+第十四集 天下风云出我辈 第1节 PK赛
+正文四。
+
+第二十一集疯狂时代 第一节最后的晚餐
+正文五。
+
+第一节课是数学课，不能误切。
+仍然是第五节正文。`
+
+	got := splitText(src, defaultChapterRegex)
+	if len(got) != 5 {
+		t.Fatalf("want 5, got %d: %+v", len(got), got)
+	}
+	wantTitles := []string{
+		"来自麻省理工的初中代课老师",
+		"哥尼斯堡七桥问题",
+		"八部天龙",
+		"PK赛",
+		"最后的晚餐",
+	}
+	for i, want := range wantTitles {
+		if got[i].Title != want {
+			t.Fatalf("chapter %d title: got %q want %q", i+1, got[i].Title, want)
+		}
+	}
+	if strings.Contains(got[4].Content, "正文四") || !strings.Contains(got[4].Content, "第一节课是数学课") {
+		t.Fatalf("episode section chapter content split incorrectly: %+v", got[4])
+	}
+}
+
 func TestSplitText_NonStoryHeadingsAreBoundariesOnly(t *testing.T) {
 	src := `卷一 白蛇妖仙 尾声
 尾声正文。

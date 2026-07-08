@@ -83,6 +83,14 @@ var volumePrefixRegex = regexp.MustCompile(
 		titleSep + `(?P<tail>` + sub + `)[】〗]?[` + ws + `]*$`,
 )
 
+var episodeSectionRegex = regexp.MustCompile(
+	`(?im)^#{0,2}[` + ws + `]*(?:正文[` + ws + `]*)?` + workTitlePrefix + `[【〖]?[` + ws + `]*` +
+		`(?:第\s*)?(?:[` + cnNum + `]+)\s*集` +
+		`(?P<episode>.*?)` +
+		`(?:第\s*)?(?:[` + cnNum + `]+)\s*节` +
+		`(?P<section>` + sub + `)[】〗]?[` + ws + `]*$`,
+)
+
 var chapterCueRegex = regexp.MustCompile(
 	`(?i)(?:第\s*(?:[` + cnNum + `]+)\s*(?:章|回|话|节|幕)|` +
 		`(?:(?:` + specialUnit + `)(?:[` + cnNum + `]+)?))`,
@@ -248,6 +256,14 @@ func filterInactiveParenthesizedNumberMarkers(marks []splitMarker) []splitMarker
 }
 
 func parseMarker(line string, pattern *regexp.Regexp, fallbackNum int) (parsedMarker, bool) {
+	if loc := episodeSectionRegex.FindStringSubmatchIndex(line); loc != nil {
+		title := extractEpisodeSectionTitle(line, loc, fallbackNum)
+		return parsedMarker{
+			title:         title,
+			chapter:       true,
+			fallbackTitle: title == fmt.Sprintf("第%d章", fallbackNum),
+		}, true
+	}
 	if loc := volumePrefixRegex.FindStringSubmatchIndex(line); loc != nil {
 		tail := extractNamedGroup(line, volumePrefixRegex, loc, "tail")
 		if tail == "" {
@@ -302,6 +318,16 @@ func parseMarker(line string, pattern *regexp.Regexp, fallbackNum int) (parsedMa
 		return parsedMarker{title: strings.TrimSpace(line), chapter: false}, true
 	}
 	return parsedMarker{}, false
+}
+
+func extractEpisodeSectionTitle(line string, loc []int, fallbackNum int) string {
+	if title := extractNamedGroup(line, episodeSectionRegex, loc, "section"); title != "" {
+		return title
+	}
+	if episode := extractNamedGroup(line, episodeSectionRegex, loc, "episode"); episode != "" {
+		return episode
+	}
+	return fmt.Sprintf("第%d章", fallbackNum)
 }
 
 func repeatedTitleBeforeContent(lines []string, marks []splitMarker, idx int) bool {

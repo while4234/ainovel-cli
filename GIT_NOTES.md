@@ -29,6 +29,16 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: split episode-section novel headings`:
+  TXT import/adaptation splitting now recognizes combined episode/section
+  headings such as `第一集 奔向黎明 第一节 来自麻省理工的初中代课老师`
+  and no-space variants such as `第二十一集疯狂时代 第一节最后的晚餐`.
+  The rule is scoped to lines containing both `集` and `节`, so prose such as
+  `第一节课是数学课` remains body content. Validation passed for
+  `go test ./internal/host/imp -count=1`, and the real
+  `D:\tool\068.天擎.txt` file now splits into 368 chapters and 108 upload
+  packages with max package size 14911 runes and no oversize packages.
+- Latest source/runtime change: current local commit
   `fix: block cross-batch adaptation outline duplicates`:
   The duplicate-outline regression occurred on latest `origin/main`
   (`d464c91b`, `fix: align arc source-range budget review`), not stale local
