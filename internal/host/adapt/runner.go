@@ -3063,13 +3063,27 @@ func buildPlannerVolumeSkeletonFromSourceMap(
 	if len(sourceMap) == 0 {
 		return plannerSkeleton{}, fmt.Errorf("planner source map is empty")
 	}
+	sourceRunesByChapter := sourceRunesByChapter(manifest)
 	batches := make([]plannerSkeletonBatch, 0, len(sourceMap))
 	for sourceIndex, entry := range sourceMap {
 		if err := ctx.Err(); err != nil {
 			return plannerSkeleton{}, err
 		}
-		if reused, ok := plannerRuntimeSkeletonBatchesForSource(runtime, entry); ok {
+		if reused, ok, reuseErr := plannerRuntimeSkeletonBatchesForSource(runtime, entry, opts.Granularity, sourceRunesByChapter); reuseErr != nil {
+			removed := removePlannerProposalRuntimeSkeletonBatchesForSource(runtime, entry)
+			if removed > 0 {
+				if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+					return plannerSkeleton{}, fmt.Errorf("save proposal runtime after invalid skeleton batch %d: %w", entry.Index, err)
+				}
+			}
+			emitAdaptProgress(opts.EmitProgress, StagePlan, sourceIndex+1, len(sourceMap), fmt.Sprintf("Discarded invalid cached skeleton planning batch %d/%d for source chapters %d-%d; replanning this source-map range", sourceIndex+1, len(sourceMap), entry.SourceFrom, entry.SourceTo), reuseErr)
+		} else if ok {
+			offsetPlannerSkeletonBatches(reused, nextPlannerSkeletonTarget(batches), len(batches)+1)
 			batches = append(batches, reused...)
+			upsertPlannerProposalRuntimeSkeletonBatches(runtime, entry, reused)
+			if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+				return plannerSkeleton{}, fmt.Errorf("save reused proposal runtime skeleton batch %d: %w", entry.Index, err)
+			}
 			emitAdaptProgress(opts.EmitProgress, StagePlan, sourceIndex+1, len(sourceMap), fmt.Sprintf("复用骨架规划第 %d/%d 批：原书第 %d-%d 章", sourceIndex+1, len(sourceMap), entry.SourceFrom, entry.SourceTo), nil)
 			continue
 		}
@@ -3093,7 +3107,7 @@ func buildPlannerVolumeSkeletonFromSourceMap(
 		if err != nil {
 			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d llm generate: %w", entry.Index, err)
 		}
-		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.LLM, systemPrompt, prompt, text, entry, opts.Granularity, opts.EmitProgress, sourceIndex+1, len(sourceMap), deps.budgetQualityMaxAttempts(), deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
+		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.LLM, systemPrompt, prompt, text, entry, opts.Granularity, sourceRunesByChapter, opts.EmitProgress, sourceIndex+1, len(sourceMap), deps.budgetQualityMaxAttempts(), deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 		if err != nil {
 			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d: %w", entry.Index, err)
 		}
@@ -3136,6 +3150,7 @@ func collectPlannerSourceMapSkeletonBatches(
 	initialText string,
 	entry plannerSourceMapEntry,
 	granularity string,
+	sourceRunesByChapter map[int]int,
 	emit ProgressEmitter,
 	current int,
 	total int,
@@ -3156,7 +3171,7 @@ func collectPlannerSourceMapSkeletonBatches(
 	for {
 		skeleton, err := parsePlannerSourceMapSkeleton(text)
 		if err == nil {
-			batches, berr := normalizePlannerSourceMapSkeletonBatchesForGranularity(skeleton.Batches, entry, granularity)
+			batches, berr := normalizePlannerSourceMapSkeletonBatchesForGranularityWithSourceRunes(skeleton.Batches, entry, granularity, sourceRunesByChapter)
 			if berr == nil {
 				return batches, nil
 			}
@@ -3164,7 +3179,7 @@ func collectPlannerSourceMapSkeletonBatches(
 			if errors.As(berr, &budgetErr) {
 				lastErr = budgetErr
 				if qualityAttempts >= maxQualityAttempts {
-					accepted, acceptErr := normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviationForGranularity(skeleton.Batches, entry, granularity)
+					accepted, acceptErr := normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviationForGranularityWithSourceRunes(skeleton.Batches, entry, granularity, sourceRunesByChapter)
 					if acceptErr == nil {
 						markPlannerBudgetDeviationAccepted(accepted)
 						emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批章节预算连续偏离预期，已按模型改编判断继续：%v", current, total, lastErr), lastErr)
@@ -3313,25 +3328,33 @@ func plannerSourceMapBudgetNotes(entries []plannerSourceMapEntry, granularity st
 }
 
 func normalizePlannerSourceMapSkeletonBatches(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
-	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false, true)
+	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false, true, nil)
 }
 
 func normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviation(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
-	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, true, true)
+	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, true, true, nil)
 }
 
 func normalizePlannerSourceMapSkeletonBatchesForGranularity(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, granularity string) ([]plannerSkeletonBatch, error) {
+	return normalizePlannerSourceMapSkeletonBatchesForGranularityWithSourceRunes(batches, entry, granularity, nil)
+}
+
+func normalizePlannerSourceMapSkeletonBatchesForGranularityWithSourceRunes(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, granularity string, sourceRunesByChapter map[int]int) ([]plannerSkeletonBatch, error) {
 	if plannerAllowsSharedSourceMapEntryRanges(granularity) {
 		return normalizePlannerSourceMapSkeletonBatchesAllowSharedRanges(batches, entry)
 	}
-	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false, plannerEnforcesSourceRuneSplitting(granularity))
+	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, false, plannerEnforcesSourceRuneSplitting(granularity), sourceRunesByChapter)
 }
 
 func normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviationForGranularity(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, granularity string) ([]plannerSkeletonBatch, error) {
+	return normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviationForGranularityWithSourceRunes(batches, entry, granularity, nil)
+}
+
+func normalizePlannerSourceMapSkeletonBatchesAllowBudgetDeviationForGranularityWithSourceRunes(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, granularity string, sourceRunesByChapter map[int]int) ([]plannerSkeletonBatch, error) {
 	if plannerAllowsSharedSourceMapEntryRanges(granularity) {
 		return normalizePlannerSourceMapSkeletonBatchesAllowSharedRanges(batches, entry)
 	}
-	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, true, plannerEnforcesSourceRuneSplitting(granularity))
+	return normalizePlannerSourceMapSkeletonBatchesWithOptions(batches, entry, true, plannerEnforcesSourceRuneSplitting(granularity), sourceRunesByChapter)
 }
 
 func normalizePlannerSourceMapSkeletonBatchesAllowSharedRanges(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, error) {
@@ -3387,7 +3410,7 @@ func normalizePlannerSourceMapSkeletonBatchesAllowSharedRanges(batches []planner
 	return out, nil
 }
 
-func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, allowBudgetDeviation bool, enforceSourceRuneSplitting bool) ([]plannerSkeletonBatch, error) {
+func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkeletonBatch, entry plannerSourceMapEntry, allowBudgetDeviation bool, enforceSourceRuneSplitting bool, sourceRunesByChapter map[int]int) ([]plannerSkeletonBatch, error) {
 	if len(batches) == 0 {
 		return nil, fmt.Errorf("no batches")
 	}
@@ -3422,25 +3445,22 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 		}
 		sourceSpan := batch.SourceTo - batch.SourceFrom + 1
 		minCount, maxCount := plannerSourceMapChapterBudgetReviewRange(sourceSpan)
-		hardMinCount := plannerSourceMapBudgetMinTargetChaptersForRange(entry, batch.SourceFrom, batch.SourceTo)
+		sourceRunes := plannerSourceMapRunesForRange(entry, sourceRunesByChapter, batch.SourceFrom, batch.SourceTo)
+		hardMinCount := plannerSourceMapBudgetMinTargetChaptersForRunes(sourceRunes)
 		if enforceSourceRuneSplitting {
 			minCount = max(minCount, hardMinCount)
 		}
 		maxCount = max(maxCount, minCount)
 		if enforceSourceRuneSplitting && !allowBudgetDeviation && count < hardMinCount {
 			return nil, &plannerChapterBudgetQualityError{
-				BatchIndex: idx + 1,
-				Count:      count,
-				MinCount:   hardMinCount,
-				MaxCount:   maxCount,
-				SourceFrom: batch.SourceFrom,
-				SourceTo:   batch.SourceTo,
-				SourceRunes: plannerSourceMapEstimatedRunesForRange(
-					entry,
-					batch.SourceFrom,
-					batch.SourceTo,
-				),
-				Direction: "low",
+				BatchIndex:  idx + 1,
+				Count:       count,
+				MinCount:    hardMinCount,
+				MaxCount:    maxCount,
+				SourceFrom:  batch.SourceFrom,
+				SourceTo:    batch.SourceTo,
+				SourceRunes: sourceRunes,
+				Direction:   "low",
 			}
 		}
 		if enforceSourceRuneSplitting && !allowBudgetDeviation && count < minCount {
@@ -3499,14 +3519,15 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 		return nil, fmt.Errorf("source-map range %d-%d ends coverage at %d", entry.SourceFrom, entry.SourceTo, coveredTo)
 	}
 	targetCount := plannerSkeletonBatchTargetCount(out)
-	minTargetCount := plannerSourceMapBudgetMinTargetChapters(entry)
+	sourceRunes := plannerSourceMapRunesForRange(entry, sourceRunesByChapter, entry.SourceFrom, entry.SourceTo)
+	minTargetCount := plannerSourceMapBudgetMinTargetChaptersForRunes(sourceRunes)
 	if enforceSourceRuneSplitting && !allowBudgetDeviation && minTargetCount > 0 && targetCount < minTargetCount {
 		return nil, &plannerChapterBudgetQualityError{
 			Count:       targetCount,
 			MinCount:    minTargetCount,
 			SourceFrom:  entry.SourceFrom,
 			SourceTo:    entry.SourceTo,
-			SourceRunes: entry.SourceRunes,
+			SourceRunes: sourceRunes,
 			Direction:   "low",
 		}
 	}
@@ -3644,18 +3665,36 @@ func plannerSkeletonBatchChapterCount(batch plannerSkeletonBatch) int {
 }
 
 func plannerSourceMapBudgetMinTargetChapters(entry plannerSourceMapEntry) int {
-	if entry.SourceRunes <= adaptationPlannerModelChapterMaxRunes {
-		return 0
-	}
-	return ceilPositiveDiv(entry.SourceRunes, adaptationPlannerModelChapterMaxRunes)
+	return plannerSourceMapBudgetMinTargetChaptersForRunes(entry.SourceRunes)
 }
 
-func plannerSourceMapBudgetMinTargetChaptersForRange(entry plannerSourceMapEntry, from, to int) int {
-	estimatedRunes := plannerSourceMapEstimatedRunesForRange(entry, from, to)
-	if estimatedRunes <= adaptationPlannerModelChapterMaxRunes {
+func plannerSourceMapBudgetMinTargetChaptersForRunes(sourceRunes int) int {
+	if sourceRunes <= adaptationPlannerModelChapterMaxRunes {
 		return 0
 	}
-	return ceilPositiveDiv(estimatedRunes, adaptationPlannerModelChapterMaxRunes)
+	return ceilPositiveDiv(sourceRunes, adaptationPlannerModelChapterMaxRunes)
+}
+
+func plannerSourceMapRunesForRange(entry plannerSourceMapEntry, sourceRunesByChapter map[int]int, from, to int) int {
+	if exactRunes, ok := exactSourceRunesForRange(sourceRunesByChapter, from, to); ok {
+		return exactRunes
+	}
+	return plannerSourceMapEstimatedRunesForRange(entry, from, to)
+}
+
+func exactSourceRunesForRange(sourceRunesByChapter map[int]int, from, to int) (int, bool) {
+	if len(sourceRunesByChapter) == 0 || from <= 0 || to < from {
+		return 0, false
+	}
+	total := 0
+	for sourceChapter := from; sourceChapter <= to; sourceChapter++ {
+		runes := sourceRunesByChapter[sourceChapter]
+		if runes <= 0 {
+			return 0, false
+		}
+		total += runes
+	}
+	return total, true
 }
 
 func plannerSourceMapEstimatedRunesForRange(entry plannerSourceMapEntry, from, to int) int {
@@ -4290,9 +4329,9 @@ func removePlannerProposalRuntimeBatchesForBudgetSplitErrors(runtime *domain.Ada
 	return removed
 }
 
-func plannerRuntimeSkeletonBatchesForSource(runtime *domain.AdaptationProposalRuntime, entry plannerSourceMapEntry) ([]plannerSkeletonBatch, bool) {
+func plannerRuntimeSkeletonBatchesForSource(runtime *domain.AdaptationProposalRuntime, entry plannerSourceMapEntry, granularity string, sourceRunesByChapter map[int]int) ([]plannerSkeletonBatch, bool, error) {
 	if runtime == nil || len(runtime.SkeletonBatches) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	batches := make([]plannerSkeletonBatch, 0)
 	for _, completed := range runtime.SkeletonBatches {
@@ -4315,7 +4354,7 @@ func plannerRuntimeSkeletonBatchesForSource(runtime *domain.AdaptationProposalRu
 		})
 	}
 	if len(batches) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	sort.SliceStable(batches, func(i, j int) bool {
 		if batches[i].SourceFrom == batches[j].SourceFrom {
@@ -4326,10 +4365,29 @@ func plannerRuntimeSkeletonBatchesForSource(runtime *domain.AdaptationProposalRu
 		}
 		return batches[i].SourceFrom < batches[j].SourceFrom
 	})
-	if _, err := normalizePlannerSourceMapSkeletonBatches(batches, entry); err != nil {
-		return nil, false
+	normalized, err := normalizePlannerSourceMapSkeletonBatchesForGranularityWithSourceRunes(batches, entry, granularity, sourceRunesByChapter)
+	if err != nil {
+		return nil, false, err
 	}
-	return batches, true
+	return normalized, true, nil
+}
+
+func removePlannerProposalRuntimeSkeletonBatchesForSource(runtime *domain.AdaptationProposalRuntime, entry plannerSourceMapEntry) int {
+	if runtime == nil || len(runtime.SkeletonBatches) == 0 {
+		return 0
+	}
+	out := runtime.SkeletonBatches[:0]
+	removed := 0
+	for _, completed := range runtime.SkeletonBatches {
+		if completed.SourceFrom >= entry.SourceFrom && completed.SourceTo <= entry.SourceTo {
+			removed++
+			continue
+		}
+		out = append(out, completed)
+	}
+	runtime.SkeletonBatches = out
+	runtime.TargetChapterCount = plannerRuntimeSkeletonTargetChapterCount(out)
+	return removed
 }
 
 func upsertPlannerProposalRuntimeSkeletonBatches(runtime *domain.AdaptationProposalRuntime, entry plannerSourceMapEntry, batches []plannerSkeletonBatch) {

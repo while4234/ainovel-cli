@@ -28,6 +28,20 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: current local commit
+  `fix: replan invalid adaptation skeleton cache`:
+  Source-map skeleton checkpoints now revalidate cached batches with exact
+  per-source-chapter rune counts when a manifest is available. If a cached
+  source-map range under-splits an oversized source span, only that invalid
+  cached range is discarded and replanned; valid later cached ranges are
+  re-offset, saved back to runtime, and reused. This addresses the
+  `女主播的秘密` failure where all source-map skeleton batches appeared complete
+  but final volume-review validation failed on chapter range `104-112`, then
+  subsequent Start clicks reused the stale skeleton and failed immediately.
+  Validation passed for focused skeleton-cache/rune-split regressions, full
+  `go test ./internal/host/adapt -count=1`, and `git diff --check` with CRLF
+  warnings only. Local Web was rebuilt and restarted via `restart-web.cmd` on
+  `http://127.0.0.1:9898` as PID `44120`; the root page returned HTTP 200.
 - Latest rebuild/static alignment change: current local commit
   `chore: align tracked web static index`:
   Pulled `origin/main` fast-forward from `bc770905` to `8f2b7c7d`

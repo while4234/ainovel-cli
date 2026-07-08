@@ -1939,6 +1939,39 @@ func TestNormalizePlannerSourceMapSkeletonBatchesRequiresBudgetSplitForLongSourc
 	}
 }
 
+func TestNormalizePlannerSourceMapSkeletonBatchesUsesExactSubrangeRunes(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 10, SourceRunes: 50000}
+	batches := []plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 1, 3, 1, 3),
+		testSourceMapSkeletonBatch(2, 4, 6, 4, 6),
+		testSourceMapSkeletonBatch(3, 7, 10, 7, 10),
+	}
+	sourceRunesByChapter := map[int]int{
+		1:  5000,
+		2:  5000,
+		3:  5000,
+		4:  6000,
+		5:  5000,
+		6:  5000,
+		7:  4000,
+		8:  5000,
+		9:  5000,
+		10: 5000,
+	}
+
+	if _, err := normalizePlannerSourceMapSkeletonBatchesForGranularity(batches, entry, domain.AdaptationGranularityArc); err != nil {
+		t.Fatalf("proportional fallback should accept this split before exact runes are available: %v", err)
+	}
+	_, err := normalizePlannerSourceMapSkeletonBatchesForGranularityWithSourceRunes(batches, entry, domain.AdaptationGranularityArc, sourceRunesByChapter)
+	if err == nil {
+		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject under-split exact source subrange")
+	}
+	if !strings.Contains(err.Error(), "source-map range 4-6 has 16000 source_runes") ||
+		!strings.Contains(err.Error(), "expected at least 4 target chapters") {
+		t.Fatalf("error=%v, want exact subrange budget guidance", err)
+	}
+}
+
 func TestNormalizePlannerSourceMapSkeletonBatchesAllowsCompressionAfterBudgetReview(t *testing.T) {
 	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 1, SourceRunes: 16000}
 
@@ -3399,6 +3432,133 @@ func TestUpsertPlannerProposalRuntimeSkeletonBatchesRefreshesTargetChapterCount(
 
 	if runtime.TargetChapterCount != 8 {
 		t.Fatalf("TargetChapterCount=%d, want 8", runtime.TargetChapterCount)
+	}
+}
+
+func TestBuildAdaptationProposalVolumesDiscardsInvalidCachedSourceMapSkeletonBatch(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	runeCounts := make([]int, 50)
+	for i := range runeCounts {
+		runeCounts[i] = 1
+	}
+	copy(runeCounts[:10], []int{5000, 5000, 5000, 6000, 5000, 5000, 4000, 5000, 5000, 5000})
+	seedPreparedAdaptationSource(t, st, runeCounts)
+	manifest, err := st.Adaptation.LoadSourceManifest()
+	if err != nil {
+		t.Fatalf("LoadSourceManifest: %v", err)
+	}
+	if manifest == nil {
+		t.Fatal("source manifest missing")
+	}
+	specs := store.AdaptationDossierBatchSpecs(*manifest, CoCreateDossierBatchSize, CoCreateDossierBatchRuneLimit)
+	if len(specs) < 2 {
+		t.Fatalf("source should split into at least two source-map ranges, got %+v", specs)
+	}
+	firstSpec := specs[0]
+	secondSpec := specs[1]
+	if firstSpec.SourceFrom != 1 || firstSpec.SourceTo < 10 {
+		t.Fatalf("first source-map range should cover the skewed opening chapters, got %+v", firstSpec)
+	}
+	firstTailCount := firstSpec.SourceTo - 6
+	secondCount := secondSpec.SourceTo - secondSpec.SourceFrom + 1
+	oldFirstTargetCount := 3 + 3 + firstTailCount
+	newFirstTargetCount := 3 + 4 + firstTailCount
+	oldTargetCount := oldFirstTargetCount + secondCount
+	newTargetCount := newFirstTargetCount + secondCount
+	cachedFirstTailTargetTo := 6 + firstTailCount
+	cachedTailTargetFrom := cachedFirstTailTargetTo + 1
+	cachedTailTargetTo := cachedTailTargetFrom + secondCount - 1
+	shiftedTailTargetFrom := newFirstTargetCount + 1
+	shiftedTailTargetTo := shiftedTailTargetFrom + secondCount - 1
+	runtimeWordTolerance := normalizeProposalWordTolerance(domain.AdaptationGranularityArc, DefaultWordTolerance)
+	if err := st.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
+		Version:            adaptationProposalRuntimeVersion,
+		Brief:              "arc cached skeleton resume",
+		SourcePath:         "source.txt",
+		SourceChapterCount: 50,
+		Granularity:        domain.AdaptationGranularityArc,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		WordTolerance:      runtimeWordTolerance,
+		TargetChapterCount: oldTargetCount,
+		SkeletonBatches: []domain.AdaptationProposalRuntimeSkeletonBatch{
+			{Index: 1, Title: "Cached opening", Theme: "setup", Summary: "short opening", TargetFrom: 1, TargetTo: 3, TargetChapterCount: 3, SourceFrom: 1, SourceTo: 3},
+			{Index: 2, Title: "Bad cached turn", Theme: "pressure", Summary: "undersplits the exact source subrange", TargetFrom: 4, TargetTo: 6, TargetChapterCount: 3, SourceFrom: 4, SourceTo: 6},
+			{Index: 3, Title: "Cached bridge", Theme: "bridge", Summary: "rest of first source-map range", TargetFrom: 7, TargetTo: cachedFirstTailTargetTo, TargetChapterCount: firstTailCount, SourceFrom: 7, SourceTo: firstSpec.SourceTo},
+			{Index: 4, Title: "Cached tail", Theme: "tail", Summary: "second source-map range should be reusable", TargetFrom: cachedTailTargetFrom, TargetTo: cachedTailTargetTo, TargetChapterCount: secondCount, SourceFrom: secondSpec.SourceFrom, SourceTo: secondSpec.SourceTo},
+		},
+	}); err != nil {
+		t.Fatalf("SaveProposalRuntime: %v", err)
+	}
+	runtimeBefore, err := st.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		t.Fatalf("LoadProposalRuntime before run: %v", err)
+	}
+	sourceRunesByChapter := sourceRunesByChapter(manifest)
+	secondEntry := plannerSourceMapEntry{
+		Index:       secondSpec.Index,
+		SourceFrom:  secondSpec.SourceFrom,
+		SourceTo:    secondSpec.SourceTo,
+		SourceRunes: sourceRunesForRange(sourceRunesByChapter, secondSpec.SourceFrom, secondSpec.SourceTo),
+	}
+	reusedBefore, ok, reuseErr := plannerRuntimeSkeletonBatchesForSource(runtimeBefore, secondEntry, domain.AdaptationGranularityArc, sourceRunesByChapter)
+	if reuseErr != nil || !ok || len(reusedBefore) != 1 {
+		t.Fatalf("seeded tail cache should be reusable before replanning: reused=%+v ok=%t err=%v", reusedBefore, ok, reuseErr)
+	}
+	progress := make([]Event, 0)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: fmt.Sprintf(`{
+		"granularity": "arc",
+		"status": "proposal",
+		"rewrite_policy": "full_rewrite",
+		"brief": "arc cached skeleton resume",
+		"target_chapter_count": %d,
+		"batches": [
+			{"index": 1, "title": "Replanned opening", "theme": "setup", "chapter_count": 3, "source_from": 1, "source_to": 3, "summary": "keep the short opening"},
+			{"index": 2, "title": "Replanned exact turn", "theme": "pressure", "chapter_count": 4, "source_from": 4, "source_to": 6, "summary": "split the exact long source subrange"},
+			{"index": 3, "title": "Replanned bridge", "theme": "bridge", "chapter_count": %d, "source_from": 7, "source_to": %d, "summary": "reuse the remaining first range structure"}
+		]
+	}`, newFirstTargetCount, firstTailCount, firstSpec.SourceTo)}}}
+
+	result, err := BuildAdaptationProposalVolumesContext(context.Background(), Deps{
+		Store:                    st,
+		LLM:                      llm,
+		ModelCallMaxAttempts:     1,
+		BudgetQualityMaxAttempts: 1,
+	}, ProposalOptions{
+		Brief:         "arc cached skeleton resume",
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+		EmitProgress:  captureAdaptProgress(&progress),
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalVolumesContext: %v; progress=%+v", err, progress)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("planner calls=%d, want only invalid cached source-map range replanned", llm.calls)
+	}
+	if result == nil || result.VolumeReview == nil || result.VolumeReview.TargetChapterCount != newTargetCount {
+		t.Fatalf("volume review mismatch: %+v", result)
+	}
+	replanned := result.VolumeReview.Volumes[1]
+	if replanned.SourceFrom != 4 || replanned.SourceTo != 6 || replanned.TargetFrom != 4 || replanned.TargetTo != 7 {
+		t.Fatalf("replanned volume=%+v, want source 4-6 shifted to target 4-7", replanned)
+	}
+	tail := result.VolumeReview.Volumes[len(result.VolumeReview.Volumes)-1]
+	if tail.SourceFrom != secondSpec.SourceFrom || tail.SourceTo != secondSpec.SourceTo || tail.TargetFrom != shiftedTailTargetFrom || tail.TargetTo != shiftedTailTargetTo {
+		t.Fatalf("reused tail volume=%+v, want source %d-%d shifted to target %d-%d", tail, secondSpec.SourceFrom, secondSpec.SourceTo, shiftedTailTargetFrom, shiftedTailTargetTo)
+	}
+	if !hasAdaptProgress(progress, "Discarded invalid cached skeleton planning batch") {
+		t.Fatalf("progress should report invalid cached skeleton discard, got %+v", progress)
+	}
+	runtime, err := st.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		t.Fatalf("LoadProposalRuntime: %v", err)
+	}
+	if runtime == nil || runtime.Skeleton == nil || len(runtime.SkeletonBatches) != 0 || runtime.Skeleton.TargetChapterCount != newTargetCount {
+		t.Fatalf("saved runtime should hold normalized final skeleton and clear partial batches: %+v", runtime)
 	}
 }
 
