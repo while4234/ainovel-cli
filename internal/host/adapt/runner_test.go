@@ -3910,6 +3910,14 @@ func TestShouldRetryPlannerGenerateRetriesTemporaryRateLimitMessage(t *testing.T
 	}
 }
 
+func TestShouldRetryPlannerGenerateRetriesRuntimeGatewayTerminalError(t *testing.T) {
+	err := retryablePlannerError{err: litellm.NewHTTPError("p1", 503, "<html><body>503 Service Unavailable</body></html>")}
+
+	if !shouldRetryPlannerGenerate(context.Background(), err, 1, 14) {
+		t.Fatal("retryable runtime gateway terminal error should remain retryable")
+	}
+}
+
 type nonRetryablePlannerError struct {
 	msg string
 }
@@ -3920,6 +3928,22 @@ func (e nonRetryablePlannerError) Error() string {
 
 func (e nonRetryablePlannerError) Retryable() bool {
 	return false
+}
+
+type retryablePlannerError struct {
+	err error
+}
+
+func (e retryablePlannerError) Error() string {
+	return e.err.Error()
+}
+
+func (e retryablePlannerError) Unwrap() error {
+	return e.err
+}
+
+func (e retryablePlannerError) Retryable() bool {
+	return true
 }
 
 func plannerBudgetProposalJSON(planFields string, chapterFields string, wordBudget string) string {

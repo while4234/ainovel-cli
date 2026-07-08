@@ -1132,7 +1132,7 @@ var projectAgentModelRoles = []string{"coordinator", "architect", "writer", "edi
 
 func (h *Host) selectRuntimeFallback(ctx context.Context, current bootstrap.ModelRef, attempted map[string]bool, cause error) (bootstrap.RuntimeFallbackTarget, bool) {
 	h.mu.Lock()
-	cfg := cloneProjectConfig(h.cfg)
+	cfg := cloneHostRuntimeConfig(h.cfg)
 	h.mu.Unlock()
 	if !cfg.PersistProjectOverlay || !cfg.ModelAutoSwitch.IsEnabled() {
 		return bootstrap.RuntimeFallbackTarget{}, false

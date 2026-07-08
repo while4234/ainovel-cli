@@ -295,11 +295,28 @@ func (d runtimeFallbackDecision) wrap(err error) error {
 	if !d.eligible {
 		return err
 	}
-	return runtimeFallbackTerminalError{err: err}
+	return runtimeFallbackTerminalError{
+		err:       err,
+		reason:    d.reason,
+		retryable: d.retryableAfterFallbackExhaustion(err),
+	}
+}
+
+func (d runtimeFallbackDecision) retryableAfterFallbackExhaustion(err error) bool {
+	switch d.reason {
+	case "network_interrupted", "overloaded", "timeout":
+		return true
+	case "rate_limit":
+		return isRuntimeTemporaryRateLimitErrorMessage(err)
+	default:
+		return false
+	}
 }
 
 type runtimeFallbackTerminalError struct {
-	err error
+	err       error
+	reason    string
+	retryable bool
 }
 
 func (e runtimeFallbackTerminalError) Error() string {
@@ -309,7 +326,7 @@ func (e runtimeFallbackTerminalError) Error() string {
 	return retrypolicy.SanitizeProviderError(e.err)
 }
 
-func (e runtimeFallbackTerminalError) Retryable() bool { return false }
+func (e runtimeFallbackTerminalError) Retryable() bool { return e.retryable }
 
 func (e runtimeFallbackTerminalError) Unwrap() error { return e.err }
 
@@ -416,6 +433,28 @@ func isRuntimeRateLimitErrorMessage(err error) bool {
 		strings.Contains(msg, "requests limit") ||
 		strings.Contains(msg, "rpm limit") ||
 		strings.Contains(msg, "tpm limit")
+}
+
+func isRuntimeTemporaryRateLimitErrorMessage(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "rate_limit_exceeded") ||
+		strings.Contains(msg, "insufficient_quota") ||
+		strings.Contains(msg, "quota_exceeded") ||
+		strings.Contains(msg, "quota exhausted") ||
+		strings.Contains(msg, "usage limit reached") ||
+		strings.Contains(msg, "usage limit exceeded") ||
+		strings.Contains(msg, "monthly usage limit") ||
+		strings.Contains(msg, "balance not enough") ||
+		strings.Contains(msg, "insufficient balance") {
+		return false
+	}
+	return strings.Contains(msg, "429") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "rate-limit")
 }
 
 func cloneAttemptedProviders(attempted map[string]bool) map[string]bool {

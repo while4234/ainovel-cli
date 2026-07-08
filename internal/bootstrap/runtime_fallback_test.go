@@ -246,6 +246,31 @@ func TestRuntimeAutoSwitchGatewayErrorSwitchesImmediately(t *testing.T) {
 	}
 }
 
+func TestRuntimeAutoSwitchExhaustedGatewayErrorIsRetryable(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	gatewayErr := litellm.NewHTTPError("p1", 503, "<html><body>503 Service Unavailable</body></html>")
+	first := &scriptedRuntimeModel{provider: "p1", model: "m1", errs: []error{gatewayErr}}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m2", errs: []error{gatewayErr}}
+	primary := NewSwappableModel("p1", "m1", first)
+	controller := &runtimeFallbackControllerStub{
+		order:  []string{"p2"},
+		models: map[string]agentcore.ChatModel{"p2": second},
+	}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(1), controller, nil)
+	_, err := model.Generate(context.Background(), nil, nil)
+	if err == nil {
+		t.Fatal("Generate error = nil, want exhausted gateway error")
+	}
+	retryable, ok := err.(interface{ Retryable() bool })
+	if !ok || !retryable.Retryable() {
+		t.Fatalf("error retryable = %T %v, want Retryable true", err, err)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
+	}
+}
+
 func TestRuntimeAutoSwitchNetworkRetriesBeforeSwitching(t *testing.T) {
 	restoreRuntimeFallbackWait(t)
 	first := &scriptedRuntimeModel{
@@ -350,6 +375,30 @@ func TestRuntimeAutoSwitchExhaustedErrorIsNotRetryable(t *testing.T) {
 	}
 	if first.Calls() != 1 || second.Calls() != 1 || third.Calls() != 1 {
 		t.Fatalf("calls first=%d second=%d third=%d", first.Calls(), second.Calls(), third.Calls())
+	}
+}
+
+func TestRuntimeAutoSwitchExhaustedRateLimitExceededIsNotRetryable(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{provider: "p1", model: "m1", errs: []error{errors.New("rate_limit_exceeded")}}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m2", errs: []error{errors.New("rate_limit_exceeded")}}
+	primary := NewSwappableModel("p1", "m1", first)
+	controller := &runtimeFallbackControllerStub{
+		order:  []string{"p2"},
+		models: map[string]agentcore.ChatModel{"p2": second},
+	}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(1), controller, nil)
+	_, err := model.Generate(context.Background(), nil, nil)
+	if err == nil {
+		t.Fatal("Generate error = nil, want exhausted rate-limit error")
+	}
+	retryable, ok := err.(interface{ Retryable() bool })
+	if !ok || retryable.Retryable() {
+		t.Fatalf("error retryable = %T %v, want Retryable false", err, err)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
 	}
 }
 

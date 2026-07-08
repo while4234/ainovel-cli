@@ -123,6 +123,73 @@ func TestReportAdaptationFailoverPromotesTargetToAllAgents(t *testing.T) {
 	}
 }
 
+func TestSelectRuntimeFallbackPromotesQuotaTargetToAllAgents(t *testing.T) {
+	withModelConnectivityProbe(t, nil)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	enabled := true
+	cfg := bootstrap.Config{
+		Provider:              "primary",
+		ModelName:             "model-a",
+		PersistPath:           filepath.Join(home, "project-config.json"),
+		PersistProjectOverlay: true,
+		Providers: map[string]bootstrap.ProviderConfig{
+			"primary":  {Type: "openai", APIKey: "primary-key", Models: []string{"model-a"}},
+			"fallback": {Type: "openai", APIKey: "fallback-key", Models: []string{"model-b"}},
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"architect":   {Provider: "primary", Model: "model-a"},
+			"coordinator": {Provider: "primary", Model: "model-a"},
+			"editor":      {Provider: "primary", Model: "model-a"},
+			"writer":      {Provider: "primary", Model: "model-a"},
+		},
+		ModelAutoSwitch: bootstrap.ModelAutoSwitchConfig{
+			Enabled:          &enabled,
+			FallbackBackends: []string{"fallback"},
+		},
+	}
+	cfg.FillDefaults()
+	models, err := bootstrap.NewModelSet(cfg)
+	if err != nil {
+		t.Fatalf("NewModelSet: %v", err)
+	}
+	host := &Host{cfg: cfg, models: models, events: make(chan Event, 10)}
+
+	target, ok := host.selectRuntimeFallback(
+		context.Background(),
+		bootstrap.ModelRef{Provider: "primary", Model: "model-a"},
+		map[string]bool{"primary": true},
+		errors.New("rate_limit_exceeded"),
+	)
+	if !ok {
+		t.Fatal("selectRuntimeFallback did not find fallback target")
+	}
+	if target.Provider != "fallback" || target.Model != "model-b" {
+		t.Fatalf("target = %s/%s, want fallback/model-b", target.Provider, target.Model)
+	}
+	for _, role := range append([]string{"default"}, projectAgentModelRoles...) {
+		provider, model, _ := host.models.CurrentSelection(role)
+		if provider != "fallback" || model != "model-b" {
+			t.Fatalf("%s selection = %s/%s, want fallback/model-b", role, provider, model)
+		}
+	}
+	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	if saved.Provider != "fallback" || saved.ModelName != "model-b" {
+		t.Fatalf("saved default route = %s/%s, want fallback/model-b", saved.Provider, saved.ModelName)
+	}
+	for _, role := range projectAgentModelRoles {
+		route := saved.Roles[role]
+		if route.Provider != "fallback" || route.Model != "model-b" {
+			t.Fatalf("saved %s route = %s/%s, want fallback/model-b", role, route.Provider, route.Model)
+		}
+	}
+}
+
 func TestAddProviderModelDoesNotOverwriteExistingProvider(t *testing.T) {
 	cfg := bootstrap.Config{
 		Provider:  "openai",
