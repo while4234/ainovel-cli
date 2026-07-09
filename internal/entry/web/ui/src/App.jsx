@@ -17,6 +17,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   Send,
   Server,
   Settings,
@@ -70,6 +71,7 @@ import {
   loadSimulationFromLibrary,
   pauseProject,
   pollGrokLogin,
+  previewProjectRollback,
   renameProject,
   restoreTrashProject,
   resumeCoCreate,
@@ -81,6 +83,7 @@ import {
   resolveCoCreateDecisions,
   resolveCoCreateDecision,
   resumeProject,
+  rollbackProject,
   runProjectDiagnostic,
   saveNovelToLibrary,
   saveSimulationToLibrary,
@@ -570,6 +573,7 @@ export default function App() {
   const [projectMenu, setProjectMenu] = useState(null);
   const [renameDialog, setRenameDialog] = useState(null);
   const [deleteDialog, setDeleteDialog] = useState(null);
+  const [rollbackDialog, setRollbackDialog] = useState(null);
   const [composerText, setComposerText] = useState('');
   const [steerText, setSteerText] = useState('');
   const [sideView, setSideView] = useState('status');
@@ -634,6 +638,7 @@ export default function App() {
     setDiagnostic(createDiagnosticState());
     setCoCreate(createCoCreateState());
     setPlanningRevision(createCoCreatePlanningRevisionState());
+    setRollbackDialog(null);
     setProjectSettings(resetProjectSettingsForProject);
     setModelConfig(null);
     setCustomModel(createCustomModelState());
@@ -1203,6 +1208,57 @@ export default function App() {
 
   const pauseWriting = async () => {
     await runAction((projectId) => pauseProject(projectId));
+  };
+
+  const openRollbackDialog = async () => {
+    if (!activeProject?.id) {
+      return;
+    }
+    const projectId = activeProject.id;
+    setBusy(true);
+    setError('');
+    try {
+      const data = await previewProjectRollback(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      const preview = data?.rollback || {};
+      if (!(preview.can_rollback === true || preview.canRollback === true)) {
+        setError(textValue(preview, 'reason', 'Reason') || '当前项目没有可回退的阶段');
+        return;
+      }
+      setRollbackDialog({ preview, error: '' });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmRollback = async () => {
+    if (!activeProject?.id || !rollbackDialog?.preview) {
+      return;
+    }
+    const projectId = activeProject.id;
+    const preview = rollbackDialog.preview;
+    setBusy(true);
+    setRollbackDialog((previous) => previous ? { ...previous, error: '' } : previous);
+    try {
+      const data = await rollbackProject(projectId, {
+        confirm: true,
+        preview_hash: textValue(preview, 'preview_hash', 'previewHash', 'PreviewHash')
+      });
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setActiveProject(data.project || activeProject);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setRollbackDialog(null);
+    } catch (err) {
+      setRollbackDialog((previous) => previous ? { ...previous, error: err.message } : previous);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const submitSteer = async (event) => {
@@ -2978,6 +3034,44 @@ export default function App() {
         </div>
       ) : null}
 
+      {rollbackDialog ? (
+        <div className="dialog-backdrop" onMouseDown={() => setRollbackDialog(null)}>
+          <div className="compact-dialog rollback-dialog" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="dialog-title danger">
+              <RotateCcw size={17} />
+              <strong>确认回退？</strong>
+            </div>
+            <p className="dialog-copy">
+              将回退到：{textValue(rollbackDialog.preview, 'target_label', 'targetLabel', 'TargetLabel') || '上一阶段'}
+            </p>
+            <p className="dialog-copy danger-copy">
+              {textValue(rollbackDialog.preview, 'warning', 'Warning') || '此操作不可撤销。'}
+            </p>
+            {arrayValue(rollbackDialog.preview, 'delete_paths', 'deletePaths', 'DeletePaths').length ? (
+              <div className="rollback-paths">
+                <strong>将删除</strong>
+                <ul>
+                  {arrayValue(rollbackDialog.preview, 'delete_paths', 'deletePaths', 'DeletePaths').map((path) => (
+                    <li key={path}>{path}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {rollbackDialog.error ? <div className="error-banner compact">{rollbackDialog.error}</div> : null}
+            <div className="dialog-actions">
+              <button className="tool-button" disabled={busy} onClick={() => setRollbackDialog(null)} type="button">
+                <X size={16} />
+                取消
+              </button>
+              <button className="tool-button danger-action" disabled={busy} onClick={confirmRollback} type="button">
+                <RotateCcw size={16} />
+                确认回退
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <main className="writing-pane">
         <header className="workspace-toolbar">
           <div className="workspace-heading">
@@ -3012,6 +3106,15 @@ export default function App() {
             >
               <Play size={16} />
               恢复
+            </button>
+            <button
+              className="tool-button danger-ghost"
+              disabled={!activeProject || projectBusy}
+              onClick={openRollbackDialog}
+              type="button"
+            >
+              <RotateCcw size={16} />
+              回退
             </button>
           </div>
         </header>

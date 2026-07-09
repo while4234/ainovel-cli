@@ -124,6 +124,17 @@ export function pauseProject(projectId) {
   });
 }
 
+export function previewProjectRollback(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/rollback/preview`);
+}
+
+export function rollbackProject(projectId, payload = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/rollback`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
 export function continueProject(projectId, text) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/continue`, {
     method: 'POST',

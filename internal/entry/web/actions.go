@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/diag"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/exp"
 	"github.com/voocel/ainovel-cli/internal/store"
@@ -101,6 +102,57 @@ func (s *Server) handleProjectPause(w http.ResponseWriter, r *http.Request, id s
 		"snapshot": snapshot,
 		"stopped":  stopped,
 		"running":  snapshot.IsRunning,
+	})
+}
+
+func (s *Server) handleProjectRollbackPreview(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	preview, err := session.RollbackPreview()
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":  manifest,
+		"rollback": preview,
+	})
+}
+
+func (s *Server) handleProjectRollback(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req domain.RollbackRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid rollback request: "+err.Error())
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	result, err := session.Rollback(req)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	snapshot := session.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":       manifest,
+		"snapshot":      snapshot,
+		"running":       snapshot.IsRunning,
+		"rollback":      result.Preview,
+		"deleted_paths": result.DeletedPaths,
 	})
 }
 

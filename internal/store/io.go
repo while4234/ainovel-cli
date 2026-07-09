@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -135,6 +136,72 @@ func (io *IO) RemoveFileUnlocked(rel string) error {
 		return nil
 	}
 	return err
+}
+
+func (io *IO) RemoveAllRel(rel string) (bool, error) {
+	io.mu.Lock()
+	defer io.mu.Unlock()
+	return io.RemoveAllRelUnlocked(rel)
+}
+
+func (io *IO) RemoveAllRelUnlocked(rel string) (bool, error) {
+	target, err := io.safeRelPath(rel)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Lstat(target); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, os.RemoveAll(target)
+}
+
+func (io *IO) safeRelPath(rel string) (string, error) {
+	trimmed := strings.TrimSpace(rel)
+	if trimmed == "" {
+		return "", fmt.Errorf("relative path is required")
+	}
+	cleanRel := filepath.Clean(filepath.FromSlash(trimmed))
+	if cleanRel == "." || cleanRel == string(filepath.Separator) {
+		return "", fmt.Errorf("refuse to remove project root")
+	}
+	if filepath.IsAbs(cleanRel) {
+		return "", fmt.Errorf("absolute path is not allowed: %s", rel)
+	}
+	if cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("parent traversal is not allowed: %s", rel)
+	}
+	root, err := filepath.Abs(io.dir)
+	if err != nil {
+		return "", err
+	}
+	target, err := filepath.Abs(filepath.Join(root, cleanRel))
+	if err != nil {
+		return "", err
+	}
+	inside, err := pathWithin(root, target)
+	if err != nil {
+		return "", err
+	}
+	if !inside {
+		return "", fmt.Errorf("path escapes project output: %s", rel)
+	}
+	return target, nil
+}
+
+func pathWithin(root, target string) (bool, error) {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	if root == target {
+		return false, nil
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false, err
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
 }
 
 func (io *IO) WithWriteLock(fn func() error) error {

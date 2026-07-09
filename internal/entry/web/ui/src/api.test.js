@@ -22,6 +22,7 @@ import {
   listSimulationLibrary,
   listStyles,
   listTrashProjects,
+  previewProjectRollback,
   renameProject,
   restoreTrashProject,
   resumeCoCreate,
@@ -32,6 +33,7 @@ import {
   reviseCoCreate,
   resolveCoCreateDecision,
   resolveCoCreateDecisions,
+  rollbackProject,
   saveNovelToLibrary,
   sendCoCreate,
   setGlobalCoCreateMaxTokens,
@@ -126,6 +128,21 @@ describe('web API helpers', () => {
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/projects/trash', expect.objectContaining({
       method: 'DELETE'
+    }));
+  });
+
+  it('uses rollback preview and irreversible confirm routes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await previewProjectRollback('project-1');
+    await rollbackProject('project-1', { confirm: true, preview_hash: 'hash-1' });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project-1/rollback/preview', expect.objectContaining({
+      headers: {}
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/rollback', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ confirm: true, preview_hash: 'hash-1' })
     }));
   });
 

@@ -371,6 +371,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectStart(w, r, id)
 	case "pause":
 		s.handleProjectPause(w, r, id)
+	case "rollback/preview":
+		s.handleProjectRollbackPreview(w, r, id)
+	case "rollback":
+		s.handleProjectRollback(w, r, id)
 	case "continue":
 		s.handleProjectContinue(w, r, id)
 	case "chapters/revise":

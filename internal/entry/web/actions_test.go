@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/voocel/ainovel-cli/assets"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/exp"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
@@ -113,6 +114,61 @@ func TestProjectPauseCallsAbort(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"stopped":true`) {
 		t.Fatalf("pause response should report stopped=true: %s", rec.Body.String())
+	}
+}
+
+func TestProjectRollbackPreviewAndConfirmRoutes(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Rollback")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	preview := domain.RollbackPreviewWithHash(domain.RollbackPreview{
+		CanRollback:   true,
+		Mode:          "normal",
+		CurrentStage:  "writing",
+		TargetStage:   domain.RollbackStageChapterOutline,
+		TargetLabel:   "详细章节提纲完成待审核",
+		DeletePaths:   []string{"chapters/"},
+		PreservePaths: []string{"outline.json"},
+	})
+	fake.rollbackPreview = preview
+	fake.rollbackResult = domain.RollbackResult{
+		Preview:      preview,
+		DeletedPaths: []string{"chapters"},
+	}
+	fake.snapshot = host.UISnapshot{Phase: string(domain.PhaseOutline)}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/rollback/preview", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var previewResponse struct {
+		Rollback domain.RollbackPreview `json:"rollback"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&previewResponse); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if previewResponse.Rollback.PreviewHash == "" || previewResponse.Rollback.TargetStage != domain.RollbackStageChapterOutline {
+		t.Fatalf("preview response = %+v", previewResponse.Rollback)
+	}
+
+	body := `{"confirm":true,"preview_hash":"` + previewResponse.Rollback.PreviewHash + `"}`
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/rollback", bytes.NewBufferString(body))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rollback status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.rollbackPreviewCalls != 1 || fake.rollbackCalls != 1 {
+		t.Fatalf("rollback calls preview=%d execute=%d", fake.rollbackPreviewCalls, fake.rollbackCalls)
+	}
+	if !strings.Contains(rec.Body.String(), `"deleted_paths":["chapters"]`) {
+		t.Fatalf("rollback response missing deleted paths: %s", rec.Body.String())
 	}
 }
 

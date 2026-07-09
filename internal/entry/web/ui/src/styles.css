@@ -614,6 +614,50 @@ h2 {
   background: #96302c;
 }
 
+.danger-ghost {
+  border-color: rgba(177, 59, 54, 0.32);
+  color: var(--danger);
+}
+
+.danger-ghost:hover {
+  border-color: rgba(177, 59, 54, 0.5);
+  background: var(--danger-soft);
+}
+
+.danger-copy {
+  color: var(--danger);
+}
+
+.rollback-dialog {
+  width: min(430px, calc(100vw - 36px));
+}
+
+.rollback-paths {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: var(--surface-subtle);
+  color: var(--text);
+}
+
+.rollback-paths strong {
+  font-size: 12px;
+}
+
+.rollback-paths ul {
+  display: grid;
+  gap: 4px;
+  max-height: 150px;
+  overflow: auto;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .toolbar-actions {
   display: flex;
   flex-wrap: wrap;

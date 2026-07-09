@@ -51,6 +51,7 @@ const (
 	projectActionKindSimulationImport   = "simulation_import"
 	webCoCreateCheckpointRelPath        = "meta/sessions/web-cocreate-checkpoint.json"
 	webCoCreateLogRelPath               = "meta/sessions/cocreate.jsonl"
+	rollbackActionWaitTimeout           = 30 * time.Second
 )
 
 type SessionManager struct {
@@ -69,6 +70,8 @@ type projectHost interface {
 	SetWordBudget(*domain.WordBudget) error
 	StartPrepared(string) error
 	Abort() bool
+	RollbackPreview() (domain.RollbackPreview, error)
+	Rollback(domain.RollbackRequest) (domain.RollbackResult, error)
 	Resume() (string, error)
 	ReviseChapter(host.ChapterRevisionRequest) (host.ChapterRevisionResult, error)
 	Continue(string) error
@@ -575,6 +578,101 @@ func (s *ProjectSession) Pause() bool {
 		s.AppendSnapshot()
 	}
 	return stopped || canceledAction
+}
+
+func (s *ProjectSession) RollbackPreview() (domain.RollbackPreview, error) {
+	if preview, ok := s.coCreateRollbackPreview(); ok {
+		return preview, nil
+	}
+	return s.host.RollbackPreview()
+}
+
+func (s *ProjectSession) Rollback(req domain.RollbackRequest) (domain.RollbackResult, error) {
+	canceledKind, canceledAction := s.cancelCurrentAction()
+	if canceledAction {
+		s.appendActionCanceledEvent(canceledKind)
+	}
+	if !s.waitForActionsIdle(rollbackActionWaitTimeout) {
+		return domain.RollbackResult{}, fmt.Errorf("project action did not stop before rollback")
+	}
+
+	unlock, err := s.beginAction()
+	if err != nil {
+		return domain.RollbackResult{}, err
+	}
+	defer unlock()
+
+	if preview, ok := s.coCreateRollbackPreview(); ok {
+		if !req.Confirm {
+			return domain.RollbackResult{Preview: preview}, fmt.Errorf("rollback confirmation is required")
+		}
+		if strings.TrimSpace(req.PreviewHash) != "" && req.PreviewHash != preview.PreviewHash {
+			return domain.RollbackResult{Preview: preview}, fmt.Errorf("rollback preview expired; refresh and confirm again")
+		}
+		s.cocreate = nil
+		s.clearCoCreateCheckpoint()
+
+		storePreview, err := s.host.RollbackPreview()
+		if err == nil && storePreview.CanRollback {
+			result, err := s.host.Rollback(domain.RollbackRequest{Confirm: true})
+			s.AppendSnapshot()
+			return result, err
+		}
+		result := domain.RollbackResult{Preview: preview}
+		s.AppendSnapshot()
+		return result, nil
+	}
+
+	result, err := s.host.Rollback(req)
+	s.AppendSnapshot()
+	return result, err
+}
+
+func (s *ProjectSession) coCreateRollbackPreview() (domain.RollbackPreview, bool) {
+	if s == nil || s.cocreate == nil {
+		return domain.RollbackPreview{}, false
+	}
+	kind := strings.TrimSpace(s.cocreate.kind)
+	draft := s.cocreate.draftPrompt()
+	preview := domain.RollbackPreview{
+		CanRollback:   true,
+		Mode:          kind,
+		CurrentStage:  "draft",
+		TargetStage:   domain.RollbackStageBlank,
+		TargetLabel:   "空白项目",
+		Warning:       "回退会清除当前共创 draft，此操作不可撤销。",
+		DeletePaths:   []string{webCoCreateCheckpointRelPath, "当前共创 draft"},
+		PreservePaths: []string{"project manifest", "style/config", "uploads/"},
+		StateSignature: fmt.Sprintf("web-cocreate:%s:%d:%t",
+			kind,
+			len(draft),
+			s.cocreate.failed,
+		),
+	}
+	return domain.RollbackPreviewWithHash(preview), true
+}
+
+func (s *ProjectSession) waitForActionsIdle(timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if !s.hasActiveAction() {
+			return true
+		}
+		select {
+		case <-deadline.C:
+			return !s.hasActiveAction()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *ProjectSession) hasActiveAction() bool {
+	s.actionMu.Lock()
+	defer s.actionMu.Unlock()
+	return len(s.actionKinds) > 0
 }
 
 func (s *ProjectSession) Resume() (string, error) {

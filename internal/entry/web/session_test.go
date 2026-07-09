@@ -1168,6 +1168,8 @@ type fakeProjectHost struct {
 	adaptConfirmErr            error
 	adaptStartErr              error
 	exportErr                  error
+	rollbackPreviewErr         error
+	rollbackErr                error
 	cocreateErr                error
 	stageCoCreateErr           error
 	adaptCoCreateErr           error
@@ -1195,6 +1197,8 @@ type fakeProjectHost struct {
 	adaptConfirmCalls               int
 	adaptStartCalls                 int
 	exportCalls                     int
+	rollbackPreviewCalls            int
+	rollbackCalls                   int
 	abortCalls                      int
 	prepareRulesCalls               int
 	prepareExternalRulesCalls       int
@@ -1231,6 +1235,8 @@ type fakeProjectHost struct {
 	adaptConfirmedPlan              *domain.AdaptationPlan
 	adaptOptions                    adapt.ProposalOptions
 	exportOptions                   exp.Options
+	rollbackPreview                 domain.RollbackPreview
+	rollbackResult                  domain.RollbackResult
 	addProviderRole                 string
 	configureProviderRole           string
 	configureOriginalProvider       string
@@ -1371,6 +1377,36 @@ func (f *fakeProjectHost) Abort() bool {
 	defer f.mu.Unlock()
 	f.abortCalls++
 	return f.abortOK
+}
+
+func (f *fakeProjectHost) RollbackPreview() (domain.RollbackPreview, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rollbackPreviewCalls++
+	if f.rollbackPreviewErr != nil {
+		return domain.RollbackPreview{}, f.rollbackPreviewErr
+	}
+	if f.rollbackPreview.PreviewHash == "" {
+		f.rollbackPreview = domain.RollbackPreviewWithHash(f.rollbackPreview)
+	}
+	return f.rollbackPreview, nil
+}
+
+func (f *fakeProjectHost) Rollback(req domain.RollbackRequest) (domain.RollbackResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rollbackCalls++
+	if f.rollbackErr != nil {
+		return domain.RollbackResult{}, f.rollbackErr
+	}
+	if f.rollbackResult.Preview.PreviewHash == "" {
+		preview := f.rollbackPreview
+		if preview.PreviewHash == "" {
+			preview = domain.RollbackPreviewWithHash(preview)
+		}
+		f.rollbackResult.Preview = preview
+	}
+	return f.rollbackResult, nil
 }
 
 func (f *fakeProjectHost) Resume() (string, error) {
