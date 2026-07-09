@@ -42,6 +42,7 @@ import {
   setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
   setProjectRetrySettings,
+  setProjectSimulationMode,
   setProjectStyle,
   startGrokLogin,
   switchGlobalDefaultModel,
@@ -110,6 +111,7 @@ describe('web API helpers', () => {
     await listStyles();
     await createProject('New Book', 'fantasy');
     await setProjectStyle('project-1', 'romance');
+    await setProjectSimulationMode('project-1', 'reinforced');
     await listProjectTrash();
     await clearProjectTrash();
 
@@ -124,10 +126,14 @@ describe('web API helpers', () => {
       method: 'PUT',
       body: JSON.stringify({ style: 'romance' })
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/projects/trash', expect.objectContaining({
-      headers: {}
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/projects/project-1/simulation-mode', expect.objectContaining({
+      method: 'PUT',
+      body: JSON.stringify({ simulation_mode: 'reinforced' })
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/projects/trash', expect.objectContaining({
+      headers: {}
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(6, '/api/projects/trash', expect.objectContaining({
       method: 'DELETE'
     }));
   });

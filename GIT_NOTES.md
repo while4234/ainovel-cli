@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: current local commit
+  `feat: add simulation mode web setting`:
+  PR-02 of the reinforced simulation-mode pipeline adds the Web project
+  setting for `normal` / `reinforced` simulation mode, calls
+  `/api/projects/{id}/simulation-mode`, warns when reinforced mode is selected
+  without a loaded simulation profile, and keeps completed-but-idle projects
+  editable while disabling saves during running/co-create states. Independent
+  review passed. Validation passed for `npm --prefix internal/entry/web/ui
+  test`, `npm --prefix internal/entry/web/ui run build`,
+  `go test ./internal/entry/web`, and `git diff --check` with Windows
+  line-ending warnings only.
 - Latest source/runtime change: `98f4b15`
   `feat: add simulation mode backend config`:
   PR-01 of the reinforced simulation-mode pipeline adds project/global

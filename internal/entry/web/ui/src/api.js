@@ -88,6 +88,13 @@ export function setProjectStyle(projectId, style) {
   });
 }
 
+export function setProjectSimulationMode(projectId, mode) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/simulation-mode`, {
+    method: 'PUT',
+    body: JSON.stringify({ simulation_mode: mode })
+  });
+}
+
 export function getSnapshot(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/snapshot`);
 }

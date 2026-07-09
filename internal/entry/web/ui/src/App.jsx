@@ -94,6 +94,7 @@ import {
   setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
   setProjectRetrySettings,
+  setProjectSimulationMode,
   setProjectStyle,
   setProjectThinking,
   startProject,
@@ -465,10 +466,14 @@ export function createProjectSettingsState() {
     styles: [],
     defaultStyle: '',
     selectedStyle: '',
+    selectedSimulationMode: 'normal',
     loadStatus: 'idle',
     saveStatus: 'idle',
+    simulationModeSaveStatus: 'idle',
     message: '',
-    error: ''
+    error: '',
+    simulationModeMessage: '',
+    simulationModeError: ''
   };
 }
 
@@ -476,9 +481,13 @@ function resetProjectSettingsForProject(previous) {
   return {
     ...previous,
     selectedStyle: '',
+    selectedSimulationMode: 'normal',
     saveStatus: 'idle',
+    simulationModeSaveStatus: 'idle',
     message: '',
-    error: ''
+    error: '',
+    simulationModeMessage: '',
+    simulationModeError: ''
   };
 }
 
@@ -623,6 +632,10 @@ export default function App() {
     () => resolveProjectStyleID(snapshot, runtime, projectSettings),
     [snapshot, runtime, projectSettings.defaultStyle, projectSettings.styles]
   );
+  const currentProjectSimulationMode = useMemo(
+    () => resolveProjectSimulationMode(snapshot, runtime),
+    [snapshot, runtime]
+  );
   const showAdaptationProposalWorkspace = sideView === 'adapt' && adaptationProposalReview.proposalReady;
   const selectedChapterRevisionView = useMemo(
     () => getCompletedBookSelectedChapterView(snapshot, chapterRevision),
@@ -672,6 +685,21 @@ export default function App() {
       };
     });
   }, [activeProject?.id, currentProjectStyle]);
+
+  useEffect(() => {
+    setProjectSettings((previous) => {
+      if (!activeProject?.id || previous.selectedSimulationMode === currentProjectSimulationMode) {
+        return previous;
+      }
+      return {
+        ...previous,
+        selectedSimulationMode: currentProjectSimulationMode,
+        simulationModeSaveStatus: 'idle',
+        simulationModeMessage: '',
+        simulationModeError: ''
+      };
+    });
+  }, [activeProject?.id, currentProjectSimulationMode]);
 
   const isCurrentProject = useCallback((projectId) => (
     isProjectScopedResponseCurrent(projectId, activeProjectIdRef.current)
@@ -1191,6 +1219,52 @@ export default function App() {
         saveStatus: 'error',
         message: '',
         error: err.message
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveProjectSimulationMode = async (event) => {
+    event.preventDefault();
+    const request = buildProjectSimulationModeSaveRequest(activeProject, projectSettings);
+    if (!request.ok) {
+      setProjectSettings((previous) => ({
+        ...previous,
+        simulationModeSaveStatus: 'error',
+        simulationModeMessage: '',
+        simulationModeError: request.error
+      }));
+      return;
+    }
+    setBusy(true);
+    setProjectSettings((previous) => ({
+      ...previous,
+      simulationModeSaveStatus: 'running',
+      simulationModeMessage: '',
+      simulationModeError: ''
+    }));
+    try {
+      const data = await setProjectSimulationMode(request.projectId, request.mode);
+      if (!isCurrentProject(request.projectId)) {
+        return;
+      }
+      const nextMode = normalizeSimulationMode(data.simulation_mode || data.simulationMode || request.mode);
+      setActiveProject(data.project || activeProject);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setProjectSettings((previous) => ({
+        ...previous,
+        selectedSimulationMode: nextMode,
+        simulationModeSaveStatus: 'done',
+        simulationModeMessage: '仿写模式已保存',
+        simulationModeError: ''
+      }));
+    } catch (err) {
+      setProjectSettings((previous) => ({
+        ...previous,
+        simulationModeSaveStatus: 'error',
+        simulationModeMessage: '',
+        simulationModeError: err.message
       }));
     } finally {
       setBusy(false);
@@ -3315,10 +3389,14 @@ export default function App() {
             <ProjectSettingsPanel
               activeProject={activeProject}
               busy={projectBusy}
+              coCreateActive={coCreate.active === true}
+              currentSimulationMode={currentProjectSimulationMode}
               currentStyle={currentProjectStyle}
+              globalBusy={busy}
               projectSettings={projectSettings}
               setProjectSettings={setProjectSettings}
               snapshot={snapshot}
+              onSaveSimulationMode={saveProjectSimulationMode}
               onSaveStyle={saveProjectStyle}
               onRefreshStyles={loadProjectStyles}
             />
@@ -3805,10 +3883,14 @@ function CompletedChapterRevisionWorkspace({ selected, content }) {
 function ProjectSettingsPanel({
   activeProject,
   busy,
+  coCreateActive = false,
+  currentSimulationMode,
   currentStyle,
+  globalBusy = false,
   projectSettings,
   setProjectSettings,
   snapshot,
+  onSaveSimulationMode,
   onSaveStyle,
   onRefreshStyles
 }) {
@@ -3819,6 +3901,18 @@ function ProjectSettingsPanel({
   const styleLocked = isProjectStyleLocked(snapshot);
   const styleEditable = canEditProjectStyle({ activeProject, busy, projectSettings, snapshot });
   const canSaveStyle = canSubmitProjectStyle({ activeProject, busy, currentStyle, projectSettings, snapshot });
+  const selectedSimulationMode = normalizeSimulationMode(projectSettings.selectedSimulationMode);
+  const currentSimulationModeLabel = simulationModeLabel(currentSimulationMode);
+  const simulationProfileLoaded = getSimulationProfileStatus(snapshot).loaded;
+  const showReinforcedProfileWarning = selectedSimulationMode === 'reinforced' && !simulationProfileLoaded;
+  const canSaveSimulationMode = canSubmitProjectSimulationMode({
+    activeProject,
+    busy: globalBusy,
+    coCreateActive,
+    currentSimulationMode,
+    projectSettings,
+    snapshot
+  });
   return (
     <div className="side-content">
       <section>
@@ -3831,11 +3925,13 @@ function ProjectSettingsPanel({
         ) : (
           <div className="settings-summary">
             <Metric label="当前文风" value={currentStyleLabel} />
+            <Metric label="当前仿写模式" value={currentSimulationModeLabel} />
           </div>
         )}
       </section>
 
       {activeProject ? (
+        <>
         <section>
           <div className="section-title">
             <FileText size={17} />
@@ -3898,6 +3994,62 @@ function ProjectSettingsPanel({
             </div>
           </form>
         </section>
+
+        <section>
+          <div className="section-title">
+            <WandSparkles size={17} />
+            <span>仿写画像</span>
+          </div>
+          <form className="project-settings-form" onSubmit={onSaveSimulationMode}>
+            <div className="settings-summary">
+              <Metric label="仿写模式" value={currentSimulationModeLabel} />
+            </div>
+            <fieldset className="settings-radio-group" disabled={!activeProject || globalBusy || projectSettings.simulationModeSaveStatus === 'running'}>
+              <legend>仿写模式</legend>
+              {['normal', 'reinforced'].map((mode) => (
+                <label key={mode} className={`settings-radio-option ${selectedSimulationMode === mode ? 'active' : ''}`}>
+                  <input
+                    checked={selectedSimulationMode === mode}
+                    name="simulation-mode"
+                    onChange={() => {
+                      setProjectSettings((previous) => ({
+                        ...previous,
+                        selectedSimulationMode: mode,
+                        simulationModeSaveStatus: 'idle',
+                        simulationModeMessage: '',
+                        simulationModeError: ''
+                      }));
+                    }}
+                    type="radio"
+                    value={mode}
+                  />
+                  <span>
+                    <strong>{simulationModeLabel(mode)}</strong>
+                    <small>{mode === 'reinforced' ? '优先强化仿写画像约束，适合画像已加载后的高一致性创作。' : '保持普通仿写强度，适合未加载画像或常规创作。'}</small>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+
+            {showReinforcedProfileWarning ? (
+              <div className="settings-note warning">强化仿写已选择，但当前项目尚未加载仿写画像；上传、导入或分析画像后才会生效。</div>
+            ) : null}
+            {projectSettings.simulationModeSaveStatus === 'error' && projectSettings.simulationModeError ? (
+              <div className="error-banner compact">{projectSettings.simulationModeError}</div>
+            ) : null}
+            {projectSettings.simulationModeSaveStatus === 'done' && projectSettings.simulationModeMessage ? (
+              <div className="success-note">{projectSettings.simulationModeMessage}</div>
+            ) : null}
+
+            <div className="project-settings-actions">
+              <button className="tool-button accent" disabled={!canSaveSimulationMode} type="submit">
+                <Check size={16} />
+                保存
+              </button>
+            </div>
+          </form>
+        </section>
+        </>
       ) : null}
     </div>
   );
@@ -8902,6 +9054,22 @@ export function projectStyleLabel(styles = [], styleID = '') {
   return String(match?.label || '').trim() || id;
 }
 
+export function normalizeSimulationMode(mode) {
+  const normalized = String(mode || '').trim().toLowerCase();
+  return normalized === 'reinforced' ? 'reinforced' : 'normal';
+}
+
+export function simulationModeLabel(mode) {
+  return normalizeSimulationMode(mode) === 'reinforced' ? '强化仿写' : '普通仿写';
+}
+
+export function resolveProjectSimulationMode(snapshot, runtime) {
+  return normalizeSimulationMode(
+    textValue(snapshot, 'SimulationMode', 'simulation_mode') ||
+      textValue(runtime?.config, 'simulation_mode', 'SimulationMode')
+  );
+}
+
 export function snapshotHasStartedWritingContent(snapshot) {
   return Boolean(
     numberValue(snapshot, 'CompletedCount', 'completed_count') ||
@@ -8947,6 +9115,32 @@ export function buildProjectStyleSaveRequest(activeProject, projectSettings = {}
     return { ok: false, error: '请选择文风' };
   }
   return { ok: true, projectId, style };
+}
+
+export function canSubmitProjectSimulationMode({
+  activeProject,
+  busy = false,
+  coCreateActive = false,
+  currentSimulationMode = '',
+  projectSettings = {},
+  snapshot = null
+} = {}) {
+  const selectedMode = normalizeSimulationMode(projectSettings.selectedSimulationMode);
+  return Boolean(activeProject?.id) &&
+    !busy &&
+    !isProjectRunning(snapshot) &&
+    coCreateActive !== true &&
+    projectSettings.simulationModeSaveStatus !== 'running' &&
+    selectedMode !== normalizeSimulationMode(currentSimulationMode);
+}
+
+export function buildProjectSimulationModeSaveRequest(activeProject, projectSettings = {}) {
+  const projectId = String(activeProject?.id || '').trim();
+  if (!projectId) {
+    return { ok: false, error: '请选择一个项目' };
+  }
+  const mode = normalizeSimulationMode(projectSettings.selectedSimulationMode);
+  return { ok: true, projectId, mode };
 }
 
 function arrayValue(source, ...keys) {

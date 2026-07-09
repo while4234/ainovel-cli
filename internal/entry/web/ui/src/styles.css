@@ -1132,6 +1132,54 @@ h2 {
   gap: 8px;
 }
 
+.settings-radio-group {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.settings-radio-group legend {
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settings-radio-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 9px;
+  background: var(--surface-solid);
+  cursor: pointer;
+}
+
+.settings-radio-option.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.settings-radio-option input {
+  margin-top: 3px;
+}
+
+.settings-radio-option strong,
+.settings-radio-option small {
+  display: block;
+}
+
+.settings-radio-option small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .settings-note {
   min-height: 32px;
   border: 1px solid var(--line);

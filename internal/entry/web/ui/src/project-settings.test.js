@@ -1,10 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  buildProjectSimulationModeSaveRequest,
   buildProjectStyleSaveRequest,
+  canSubmitProjectSimulationMode,
   canSubmitProjectStyle,
   normalizeProjectStyleCatalog,
+  normalizeSimulationMode,
   projectStyleLabel,
+  resolveProjectSimulationMode,
+  simulationModeLabel,
   resolveProjectStyleID,
   snapshotHasStartedWritingContent
 } from './App.jsx';
@@ -58,6 +63,16 @@ describe('project settings panel', () => {
     expect(projectStyleLabel(catalog.styles, 'missing')).toBe('missing');
   });
 
+  it('uses simulation mode labels and defaults to normal', () => {
+    expect(normalizeSimulationMode('reinforced')).toBe('reinforced');
+    expect(normalizeSimulationMode('unexpected')).toBe('normal');
+    expect(simulationModeLabel('normal')).toBe('普通仿写');
+    expect(simulationModeLabel('reinforced')).toBe('强化仿写');
+    expect(appSource).toContain('仿写画像');
+    expect(appSource).toContain('仿写模式');
+    expect(appSource).toContain('强化仿写已选择，但当前项目尚未加载仿写画像；上传、导入或分析画像后才会生效。');
+  });
+
   it('resolves current style from snapshot before runtime defaults', () => {
     const catalog = normalizeProjectStyleCatalog({
       default_style: 'default',
@@ -71,6 +86,22 @@ describe('project settings panel', () => {
     )).toBe('romance');
   });
 
+  it('resolves current simulation mode from snapshot, runtime, then normal', () => {
+    expect(resolveProjectSimulationMode(
+      { SimulationMode: 'reinforced' },
+      { config: { simulation_mode: 'normal' } }
+    )).toBe('reinforced');
+    expect(resolveProjectSimulationMode(
+      { simulation_mode: 'reinforced' },
+      { config: { simulation_mode: 'normal' } }
+    )).toBe('reinforced');
+    expect(resolveProjectSimulationMode(
+      {},
+      { config: { simulation_mode: 'reinforced' } }
+    )).toBe('reinforced');
+    expect(resolveProjectSimulationMode({}, { config: {} })).toBe('normal');
+  });
+
   it('builds save requests with the selected style id', () => {
     expect(buildProjectStyleSaveRequest(
       { id: 'project-1' },
@@ -79,6 +110,17 @@ describe('project settings panel', () => {
       ok: true,
       projectId: 'project-1',
       style: 'fantasy'
+    });
+  });
+
+  it('builds simulation mode save requests with the selected mode', () => {
+    expect(buildProjectSimulationModeSaveRequest(
+      { id: 'project-1' },
+      { selectedSimulationMode: 'reinforced' }
+    )).toEqual({
+      ok: true,
+      projectId: 'project-1',
+      mode: 'reinforced'
     });
   });
 
@@ -132,11 +174,62 @@ describe('project settings panel', () => {
     })).toBe(false);
   });
 
+  it('does not disable simulation mode saves because chapters are completed', () => {
+    expect(canSubmitProjectSimulationMode({
+      activeProject: { id: 'project-1' },
+      busy: false,
+      coCreateActive: false,
+      currentSimulationMode: 'normal',
+      projectSettings: {
+        selectedSimulationMode: 'reinforced',
+        simulationModeSaveStatus: 'idle'
+      },
+      snapshot: {
+        CompletedCount: 3,
+        TotalWordCount: 12000,
+        RuntimeState: 'idle',
+        IsRunning: false
+      }
+    })).toBe(true);
+  });
+
+  it('disables simulation mode saves when running or co-create is active', () => {
+    const base = {
+      activeProject: { id: 'project-1' },
+      busy: false,
+      coCreateActive: false,
+      currentSimulationMode: 'normal',
+      projectSettings: {
+        selectedSimulationMode: 'reinforced',
+        simulationModeSaveStatus: 'idle'
+      }
+    };
+
+    expect(canSubmitProjectSimulationMode({
+      ...base,
+      snapshot: { IsRunning: true }
+    })).toBe(false);
+    expect(canSubmitProjectSimulationMode({
+      ...base,
+      coCreateActive: true,
+      snapshot: { IsRunning: false }
+    })).toBe(false);
+  });
+
   it('saves through the project style endpoint and updates the active snapshot', () => {
     const body = extractFunctionBody(appSource, 'saveProjectStyle');
 
     expect(body).toContain('setProjectStyle(request.projectId, request.style)');
     expect(body).toContain('setActiveProject(data.project || activeProject)');
     expect(body).toContain('snapshot: data.snapshot || previous.snapshot');
+  });
+
+  it('saves simulation mode through the API helper and updates the active snapshot', () => {
+    const body = extractFunctionBody(appSource, 'saveProjectSimulationMode');
+
+    expect(body).toContain('setProjectSimulationMode(request.projectId, request.mode)');
+    expect(body).toContain('setActiveProject(data.project || activeProject)');
+    expect(body).toContain('snapshot: data.snapshot || previous.snapshot');
+    expect(body).toContain("simulationModeMessage: '仿写模式已保存'");
   });
 });
