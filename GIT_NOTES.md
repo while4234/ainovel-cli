@@ -28,6 +28,20 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: `6fcc5a8`
+  `feat: apply reinforced simulation to novel context`:
+  PR-04 of the reinforced simulation-mode pipeline adds
+  `ContextToolOptions` and keeps the legacy `NewContextTool` constructor as
+  normal-mode default. `agents.BuildCoordinator` now passes the effective
+  simulation mode into `novel_context`; reinforced mode emits top-level
+  `simulation_mode:"reinforced"`, uses the richer bounded compact profile, and
+  marks loading summaries as `仿写模式:reinforced`. Role prompt loading now
+  gives Architect, Writer, and Editor reinforced-mode guidance while preserving
+  explicit-user-request priority and the ban on raw sources, `source_reports`,
+  copying, characters, places, proprietary settings, and fixed plot bridges.
+  Independent review passed. Validation passed for
+  `go test ./internal/tools ./internal/agents ./assets`, full `go test ./...`,
+  `git diff --check`, and `git diff --cached --check`.
 - Latest source/runtime change: `3002468`
   `feat: inject reinforced simulation into cocreate`:
   PR-03 of the reinforced simulation-mode pipeline injects the compact
