@@ -31,6 +31,9 @@ func LoadState(store *storepkg.Store) State {
 			s.ArcBoundary = boundary
 			s.HasArcReview = store.World.HasArcReview(boundary.LastChapter) ||
 				store.Checkpoints.LatestByStep(domain.ArcScope(boundary.Volume, boundary.Arc), "review") != nil
+			if !s.HasArcReview {
+				s.ArcReviewBatch, _ = store.NextArcReviewBatch(boundary, domain.ArcReviewBatchRuneBudget)
+			}
 			s.HasArcSummary = store.Summaries.HasArcSummary(boundary.Volume, boundary.Arc)
 			if boundary.IsVolumeEnd {
 				s.HasVolumeSummary = store.Summaries.HasVolumeSummary(boundary.Volume)
@@ -46,6 +49,9 @@ func LoadState(store *storepkg.Store) State {
 			if boundary.IsArcEnd {
 				s.HasArcReview = store.World.HasArcReview(s.LastCompleted) ||
 					store.Checkpoints.LatestByStep(domain.ArcScope(boundary.Volume, boundary.Arc), "review") != nil
+				if !s.HasArcReview {
+					s.ArcReviewBatch, _ = store.NextArcReviewBatch(boundary, domain.ArcReviewBatchRuneBudget)
+				}
 				s.HasArcSummary = store.Summaries.HasArcSummary(boundary.Volume, boundary.Arc)
 				if boundary.IsVolumeEnd {
 					s.HasVolumeSummary = store.Summaries.HasVolumeSummary(boundary.Volume)

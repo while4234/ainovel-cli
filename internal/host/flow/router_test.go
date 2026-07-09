@@ -120,9 +120,11 @@ func TestRoute_ArcEndNeedsReview(t *testing.T) {
 		Progress:      p,
 		LastCompleted: 10,
 		ArcBoundary: &storepkg.ArcBoundary{
-			IsArcEnd: true,
-			Volume:   1,
-			Arc:      2,
+			IsArcEnd:     true,
+			Volume:       1,
+			Arc:          2,
+			FirstChapter: 7,
+			LastChapter:  10,
 		},
 	}
 	got := Route(s)
@@ -131,6 +133,42 @@ func TestRoute_ArcEndNeedsReview(t *testing.T) {
 	}
 	if got.Reason != "弧末评审未完成" {
 		t.Errorf("reason mismatch: %q", got.Reason)
+	}
+	for _, want := range []string{"第 7-10 章", "按完整章节分批审阅", "max_total_runes=12000", "next_from", "不要把一个章节从中间切开", "单章批次", `save_review(chapter=10, scope="arc")`} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("arc review task missing %q: %s", want, got.Task)
+		}
+	}
+}
+
+func TestRoute_ArcEndNeedsReviewDispatchesNextBatch(t *testing.T) {
+	p := writingProgress([]int{10}, domain.FlowWriting)
+	got := Route(State{
+		Progress:      p,
+		LastCompleted: 10,
+		ArcBoundary: &storepkg.ArcBoundary{
+			IsArcEnd:     true,
+			Volume:       1,
+			Arc:          2,
+			FirstChapter: 7,
+			LastChapter:  10,
+		},
+		ArcReviewBatch: &storepkg.ArcReviewBatch{
+			Volume: 1,
+			Arc:    2,
+			From:   7,
+			To:     8,
+			Index:  1,
+			Total:  2,
+		},
+	})
+	if got == nil || got.Agent != "editor" {
+		t.Fatalf("expected editor for arc review batch, got %+v", got)
+	}
+	for _, want := range []string{"第 1/2 批", "完整章节第 7-8 章", `scope="arc_batch"`, "batch_from=7", "batch_to=8", "不要在本轮调用 scope=\"arc\""} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("arc review batch task missing %q: %s", want, got.Task)
+		}
 	}
 }
 

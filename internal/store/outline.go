@@ -143,7 +143,9 @@ type ArcBoundary struct {
 	IsVolumeEnd    bool
 	Volume         int
 	Arc            int
+	FirstChapter   int
 	LastChapter    int
+	ChapterCount   int
 	NextVolume     int
 	NextArc        int
 	NeedsExpansion bool
@@ -193,8 +195,10 @@ func (s *OutlineStore) CheckArcBoundary(chapter int) (*ArcBoundary, error) {
 	}
 
 	b := &ArcBoundary{
-		Volume: cur.volume,
-		Arc:    cur.arc,
+		Volume:       cur.volume,
+		Arc:          cur.arc,
+		FirstChapter: chapter - cur.chInArc,
+		ChapterCount: cur.arcLen,
 	}
 
 	isLastChInArc := cur.chInArc == cur.arcLen-1

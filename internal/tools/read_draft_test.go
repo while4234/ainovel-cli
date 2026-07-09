@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -131,6 +132,101 @@ func TestReadChapterRange(t *testing.T) {
 	}
 	if len(payload.Chapters) != 3 {
 		t.Fatalf("expected 3 chapters, got %d", len(payload.Chapters))
+	}
+}
+
+func TestReadChapterRangeBudgetStopsAtChapterBoundary(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		if err := store.Drafts.SaveFinalChapter(i, strings.Repeat("章", 8)); err != nil {
+			t.Fatalf("SaveFinalChapter(%d): %v", i, err)
+		}
+	}
+
+	tool := NewReadChapterTool(store)
+	args, _ := json.Marshal(map[string]any{
+		"from":            1,
+		"to":              3,
+		"source":          "final",
+		"max_total_runes": 12,
+	})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var payload struct {
+		Chapters         map[string]string `json:"chapters"`
+		ReturnedChapters []int             `json:"returned_chapters"`
+		OmittedChapters  []int             `json:"omitted_chapters"`
+		NextFrom         int               `json:"next_from"`
+		Complete         bool              `json:"complete"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(payload.Chapters) != 1 || payload.Chapters["1"] != strings.Repeat("章", 8) {
+		t.Fatalf("expected only full chapter 1, got %+v", payload.Chapters)
+	}
+	if payload.NextFrom != 2 || payload.Complete {
+		t.Fatalf("expected next_from=2 and incomplete payload, got next_from=%d complete=%v", payload.NextFrom, payload.Complete)
+	}
+	if len(payload.OmittedChapters) != 2 || payload.OmittedChapters[0] != 2 || payload.OmittedChapters[1] != 3 {
+		t.Fatalf("omitted chapters should start at the next whole chapter, got %+v", payload.OmittedChapters)
+	}
+}
+
+func TestReadChapterRangeBudgetReturnsOversizedChapterWhole(t *testing.T) {
+	dir := testStoreDir(t)
+	store := store.NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := store.Drafts.SaveFinalChapter(1, strings.Repeat("长", 20)); err != nil {
+		t.Fatalf("SaveFinalChapter(1): %v", err)
+	}
+	if err := store.Drafts.SaveFinalChapter(2, "第二章"); err != nil {
+		t.Fatalf("SaveFinalChapter(2): %v", err)
+	}
+
+	tool := NewReadChapterTool(store)
+	args, _ := json.Marshal(map[string]any{
+		"from":            1,
+		"to":              2,
+		"source":          "final",
+		"max_runes":       5,
+		"max_total_runes": 10,
+	})
+	result, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var payload struct {
+		Chapters          map[string]string `json:"chapters"`
+		OversizedChapters []int             `json:"oversized_chapters"`
+		OmittedChapters   []int             `json:"omitted_chapters"`
+		NextFrom          int               `json:"next_from"`
+		TotalRunes        int               `json:"total_runes"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload.Chapters["1"] != strings.Repeat("长", 20) {
+		t.Fatalf("oversized chapter should not be split or truncated, got %q", payload.Chapters["1"])
+	}
+	if len(payload.OversizedChapters) != 1 || payload.OversizedChapters[0] != 1 {
+		t.Fatalf("expected chapter 1 marked oversized, got %+v", payload.OversizedChapters)
+	}
+	if payload.NextFrom != 2 || len(payload.OmittedChapters) != 1 || payload.OmittedChapters[0] != 2 {
+		t.Fatalf("expected next whole chapter queued, next_from=%d omitted=%+v", payload.NextFrom, payload.OmittedChapters)
+	}
+	if payload.TotalRunes < 20 {
+		t.Fatalf("expected full oversized rune count, got %d", payload.TotalRunes)
 	}
 }
 

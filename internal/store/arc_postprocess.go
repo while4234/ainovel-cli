@@ -2,9 +2,19 @@ package store
 
 import (
 	"slices"
+	"unicode/utf8"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
+
+type ArcReviewBatch struct {
+	Volume int
+	Arc    int
+	From   int
+	To     int
+	Index  int
+	Total  int
+}
 
 func (s *Store) FindPendingArcPostprocess(progress *domain.Progress) (*ArcBoundary, error) {
 	if progress == nil || !progress.Layered || len(progress.PendingArcPost) == 0 {
@@ -49,6 +59,80 @@ func (s *Store) FindPendingArcPostprocess(progress *domain.Progress) (*ArcBounda
 		}
 	}
 	return selected, nil
+}
+
+func (s *Store) NextArcReviewBatch(boundary *ArcBoundary, runeBudget int) (*ArcReviewBatch, error) {
+	if boundary == nil || !boundary.IsArcEnd || boundary.FirstChapter <= 0 || boundary.LastChapter < boundary.FirstChapter {
+		return nil, nil
+	}
+	ranges, err := s.ArcReviewBatchRanges(boundary.FirstChapter, boundary.LastChapter, runeBudget)
+	if err != nil {
+		return nil, err
+	}
+	if len(ranges) == 0 {
+		return nil, nil
+	}
+	reviews, err := s.World.LoadArcBatchReviews(boundary.Volume, boundary.Arc)
+	if err != nil {
+		return nil, err
+	}
+	done := make(map[[2]int]struct{}, len(reviews))
+	for _, review := range reviews {
+		done[[2]int{review.BatchFrom, review.BatchTo}] = struct{}{}
+	}
+	for index, r := range ranges {
+		if _, ok := done[[2]int{r.From, r.To}]; ok {
+			continue
+		}
+		return &ArcReviewBatch{
+			Volume: boundary.Volume,
+			Arc:    boundary.Arc,
+			From:   r.From,
+			To:     r.To,
+			Index:  index + 1,
+			Total:  len(ranges),
+		}, nil
+	}
+	return nil, nil
+}
+
+func (s *Store) ArcReviewBatchRanges(from, to, runeBudget int) ([]ChapterRange, error) {
+	if from <= 0 || to < from {
+		return nil, nil
+	}
+	var ranges []ChapterRange
+	currentFrom := 0
+	currentRunes := 0
+	for chapter := from; chapter <= to; chapter++ {
+		text, err := s.Drafts.LoadChapterText(chapter)
+		if err != nil {
+			return nil, err
+		}
+		chapterRunes := utf8.RuneCountInString(text)
+		if currentFrom == 0 {
+			currentFrom = chapter
+		}
+		if runeBudget > 0 && currentRunes > 0 && currentRunes+chapterRunes > runeBudget {
+			ranges = append(ranges, ChapterRange{From: currentFrom, To: chapter - 1})
+			currentFrom = chapter
+			currentRunes = 0
+		}
+		currentRunes += chapterRunes
+		if runeBudget > 0 && chapterRunes > runeBudget {
+			ranges = append(ranges, ChapterRange{From: chapter, To: chapter})
+			currentFrom = 0
+			currentRunes = 0
+		}
+	}
+	if currentFrom > 0 {
+		ranges = append(ranges, ChapterRange{From: currentFrom, To: to})
+	}
+	return ranges, nil
+}
+
+type ChapterRange struct {
+	From int
+	To   int
 }
 
 func (s *Store) arcPostprocessComplete(boundary *ArcBoundary) bool {

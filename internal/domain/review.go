@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+const ArcReviewBatchRuneBudget = 12000
+
 // TimelineEvent 时间线事件。
 type TimelineEvent struct {
 	Chapter    int      `json:"chapter"`
@@ -73,7 +75,11 @@ type DimensionScore struct {
 // ReviewEntry Editor 的审阅条目。
 type ReviewEntry struct {
 	Chapter          int                `json:"chapter"`
-	Scope            string             `json:"scope"` // chapter / global / arc
+	Scope            string             `json:"scope"` // chapter / global / arc / arc_batch
+	Volume           int                `json:"volume,omitempty"`
+	Arc              int                `json:"arc,omitempty"`
+	BatchFrom        int                `json:"batch_from,omitempty"`
+	BatchTo          int                `json:"batch_to,omitempty"`
 	Issues           []ConsistencyIssue `json:"issues"`
 	Dimensions       []DimensionScore   `json:"dimensions,omitempty"`      // 分维度评分
 	ContractStatus   string             `json:"contract_status,omitempty"` // met / partial / missed

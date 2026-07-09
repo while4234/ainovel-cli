@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -385,8 +386,11 @@ func (s *WorldStore) LoadStyleRules() (*domain.WritingStyleRules, error) {
 // SaveReview 保存审阅结果。
 func (s *WorldStore) SaveReview(r domain.ReviewEntry) error {
 	rel := fmt.Sprintf("reviews/%02d.json", r.Chapter)
-	if r.Scope == "global" {
+	switch r.Scope {
+	case "global":
 		rel = fmt.Sprintf("reviews/%02d-global.json", r.Chapter)
+	case "arc_batch":
+		rel = ArcBatchReviewRelPath(r.Volume, r.Arc, r.BatchFrom, r.BatchTo)
 	}
 	return s.io.WriteJSON(rel, r)
 }
@@ -408,6 +412,50 @@ func (s *WorldStore) LoadReview(chapter int) (*domain.ReviewEntry, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+func (s *WorldStore) LoadArcBatchReviews(volume, arc int) ([]domain.ReviewEntry, error) {
+	dir := arcBatchReviewDir(volume, arc)
+	entries, err := os.ReadDir(s.io.path(dir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	reviews := make([]domain.ReviewEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		var review domain.ReviewEntry
+		if err := s.io.ReadJSON(dir+"/"+entry.Name(), &review); err != nil {
+			return nil, err
+		}
+		if review.Scope != "arc_batch" {
+			continue
+		}
+		reviews = append(reviews, review)
+	}
+	sortReviewsByBatch(reviews)
+	return reviews, nil
+}
+
+func ArcBatchReviewRelPath(volume, arc, from, to int) string {
+	return fmt.Sprintf("%s/%02d-%02d.json", arcBatchReviewDir(volume, arc), from, to)
+}
+
+func arcBatchReviewDir(volume, arc int) string {
+	return fmt.Sprintf("reviews/arc_batches/v%02d/a%02d", volume, arc)
+}
+
+func sortReviewsByBatch(reviews []domain.ReviewEntry) {
+	sort.SliceStable(reviews, func(i, j int) bool {
+		if reviews[i].BatchFrom != reviews[j].BatchFrom {
+			return reviews[i].BatchFrom < reviews[j].BatchFrom
+		}
+		return reviews[i].BatchTo < reviews[j].BatchTo
+	})
 }
 
 func (s *WorldStore) DeleteReview(chapter int) error {

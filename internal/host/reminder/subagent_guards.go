@@ -240,7 +240,7 @@ func NewEditorStopGuard(st *store.Store, task string) agentcore.StopGuard {
 	default:
 		// 评审或临时任务：任一审阅/摘要落盘即可（保持既有宽松行为）。
 		return newCheckpointDeltaGuard(st, "editor",
-			[]string{"review", "arc_summary", "volume_summary"},
+			[]string{"review", "arc_review_batch", "arc_summary", "volume_summary"},
 			"你必须调用 save_review / save_arc_summary / save_volume_summary 之一落盘结果后才能结束。")
 	}
 }

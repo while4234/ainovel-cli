@@ -11,6 +11,7 @@ package flow
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
@@ -37,6 +38,7 @@ type State struct {
 
 	// 弧末后处理的三个事实：评审 / 弧摘要 / 卷摘要是否已完成。
 	HasArcReview     bool
+	ArcReviewBatch   *storepkg.ArcReviewBatch
 	HasArcSummary    bool
 	HasVolumeSummary bool
 
@@ -131,7 +133,7 @@ func Route(s State) *Instruction {
 		case !s.HasArcReview:
 			return &Instruction{
 				Agent:  "editor",
-				Task:   fmt.Sprintf("对第 %d 卷第 %d 弧%s做弧级评审（scope=arc）", b.Volume, b.Arc, chapterNote),
+				Task:   formatArcReviewTask(b, s.ArcReviewBatch, chapterNote),
 				Reason: "弧末评审未完成",
 			}
 		case !s.HasArcSummary:
@@ -201,5 +203,39 @@ func FormatMessage(i *Instruction) string {
 	return fmt.Sprintf(
 		"[Host 下达指令]\n下一步：调用 subagent(%s, %q)\nagent: %s\ntask: %q\n理由：%s\n这是流程层的明确指令，请立即执行；subagent 的 agent/task 参数必须原样使用上面的 agent/task，不要改写 task，不要先调 novel_context，不要先输出推理。",
 		i.Agent, i.Task, i.Agent, i.Task, i.Reason,
+	)
+}
+
+func formatArcReviewTask(b *storepkg.ArcBoundary, batch *storepkg.ArcReviewBatch, chapterNote string) string {
+	if b == nil {
+		return "做弧级评审（scope=arc）：按完整章节分批读取原文，全部批次审完后合并调用 save_review"
+	}
+	from, to := b.FirstChapter, b.LastChapter
+	if from <= 0 {
+		from = to
+	}
+	if to <= 0 {
+		to = from
+	}
+	rangeNote := ""
+	if from > 0 && to >= from {
+		chapterNote = strings.Trim(chapterNote, "（）")
+		if chapterNote != "" {
+			rangeNote = fmt.Sprintf("（第 %d-%d 章，%s）", from, to, chapterNote)
+		} else {
+			rangeNote = fmt.Sprintf("（第 %d-%d 章）", from, to)
+		}
+	}
+	if batch != nil {
+		return fmt.Sprintf(
+			"对第 %d 卷第 %d 弧%s做弧级评审的第 %d/%d 批（完整章节第 %d-%d 章）。本轮只审核这一批：调用 read_chapter(source=\"final\", from=%d, to=%d, max_total_runes=%d) 读取本批完整章节；不要使用 max_runes，不要把章节从中间截断。若本批发现问题，affected_chapters 只写本批内确有问题的章节。审完本批后调用 save_review(chapter=%d, scope=\"arc_batch\", volume=%d, arc=%d, batch_from=%d, batch_to=%d) 保存批次结果；不要在本轮调用 scope=\"arc\"，最后一批保存后系统会合并为弧级 review。",
+			b.Volume, b.Arc, rangeNote, batch.Index, batch.Total, batch.From, batch.To,
+			batch.From, batch.To, domain.ArcReviewBatchRuneBudget,
+			to, b.Volume, b.Arc, batch.From, batch.To,
+		)
+	}
+	return fmt.Sprintf(
+		"对第 %d 卷第 %d 弧%s做弧级评审（scope=arc）。必须按完整章节分批审阅：从第 %d 章开始调用 read_chapter(source=\"final\", from=批次起点, to=%d, max_total_runes=%d)，工具返回 next_from 时继续下一批；不要把一个章节从中间切开，若某一章单独超过预算，就把该章作为单章批次完整审阅。全部批次都审完后，合并各批问题与结论，只调用一次 save_review(chapter=%d, scope=\"arc\")。",
+		b.Volume, b.Arc, rangeNote, from, to, domain.ArcReviewBatchRuneBudget, to,
 	)
 }

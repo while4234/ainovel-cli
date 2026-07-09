@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -37,18 +38,20 @@ func (t *ReadChapterTool) Schema() map[string]any {
 		schema.Property("to", schema.Int("结束章节号（读范围时使用）")),
 		schema.Property("source", schema.Enum("来源", "final", "draft", "source")).Required(),
 		schema.Property("character", schema.String("角色名（提取对话片段时使用）")),
-		schema.Property("max_runes", schema.Int("每章最大字符数（范围读取时截取，默认 2000）")),
+		schema.Property("max_runes", schema.Int("最大字符数；范围读取时表示每章上限，单章读取时表示该章上限；不传则不截断章节")),
+		schema.Property("max_total_runes", schema.Int("范围读取总字符预算；只在章节边界处分批，单章超预算时返回该整章作为独立批次")),
 	)
 }
 
 func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
-		Chapter   int    `json:"chapter"`
-		From      int    `json:"from"`
-		To        int    `json:"to"`
-		Source    string `json:"source"`
-		Character string `json:"character"`
-		MaxRunes  int    `json:"max_runes"`
+		Chapter       int    `json:"chapter"`
+		From          int    `json:"from"`
+		To            int    `json:"to"`
+		Source        string `json:"source"`
+		Character     string `json:"character"`
+		MaxRunes      int    `json:"max_runes"`
+		MaxTotalRunes int    `json:"max_total_runes"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -81,28 +84,27 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 
 	// 模式 2：范围读取
 	if a.From > 0 && a.To > 0 {
-		maxRunes := a.MaxRunes
-		if maxRunes <= 0 {
-			maxRunes = 2000
-		}
-		var texts map[int]string
-		var err error
+		var load func(int) (string, error)
 		if a.Source == "source" {
 			if !t.store.Adaptation.Active() {
 				return nil, fmt.Errorf("当前项目不是改编模式，无法读取 source 章节")
 			}
-			texts, err = t.store.Adaptation.LoadSourceChapterRange(a.From, a.To, maxRunes)
+			load = func(chapter int) (string, error) {
+				text, _, err := t.store.Adaptation.LoadSourceChapter(chapter)
+				return text, err
+			}
 		} else {
-			texts, err = t.store.Drafts.LoadChapterRange(a.From, a.To, maxRunes)
+			load = t.store.Drafts.LoadChapterText
 		}
+		maxRunes := a.MaxRunes
+		if a.MaxTotalRunes > 0 {
+			maxRunes = 0
+		}
+		payload, err := buildChapterRangePayload(a.From, a.To, maxRunes, a.MaxTotalRunes, load)
 		if err != nil {
 			return nil, fmt.Errorf("load chapter range: %w", err)
 		}
-		return json.Marshal(map[string]any{
-			"chapters": texts,
-			"from":     a.From,
-			"to":       a.To,
-		})
+		return json.Marshal(payload)
 	}
 
 	// 模式 3：单章读取
@@ -142,14 +144,130 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 			"hint":    "该章节尚未写入，如需写作请先调用 draft_chapter",
 		})
 	}
+	originalRunes := len([]rune(content))
+	var truncated bool
+	if a.MaxRunes > 0 {
+		content, truncated = truncateReadText(content, a.MaxRunes)
+	}
 
-	return json.Marshal(map[string]any{
+	result := map[string]any{
 		"chapter":    a.Chapter,
 		"title":      title,
 		"source":     a.Source,
 		"content":    content,
-		"word_count": len([]rune(content)),
-	})
+		"word_count": originalRunes,
+	}
+	if truncated {
+		result["truncated"] = true
+		result["returned_runes"] = len([]rune(content))
+		result["hint"] = "内容已按 max_runes 截断；如需完整章节请重新读取并提高上限"
+	}
+	return json.Marshal(result)
+}
+
+type chapterRangePayload struct {
+	Chapters          map[int]string `json:"chapters"`
+	From              int            `json:"from"`
+	To                int            `json:"to"`
+	ReturnedFrom      int            `json:"returned_from,omitempty"`
+	ReturnedTo        int            `json:"returned_to,omitempty"`
+	ReturnedChapters  []int          `json:"returned_chapters,omitempty"`
+	TotalRunes        int            `json:"total_runes"`
+	MaxRunes          int            `json:"max_runes,omitempty"`
+	MaxTotalRunes     int            `json:"max_total_runes,omitempty"`
+	TruncatedChapters []int          `json:"truncated_chapters,omitempty"`
+	OversizedChapters []int          `json:"oversized_chapters,omitempty"`
+	OmittedChapters   []int          `json:"omitted_chapters,omitempty"`
+	NextFrom          int            `json:"next_from,omitempty"`
+	Complete          bool           `json:"complete"`
+	Hint              string         `json:"hint,omitempty"`
+}
+
+func buildChapterRangePayload(from, to, maxRunes, maxTotalRunes int, load func(int) (string, error)) (chapterRangePayload, error) {
+	if from <= 0 || to < from {
+		return chapterRangePayload{}, fmt.Errorf("invalid chapter range %d-%d", from, to)
+	}
+	payload := chapterRangePayload{
+		Chapters:      make(map[int]string),
+		From:          from,
+		To:            to,
+		MaxRunes:      maxRunes,
+		MaxTotalRunes: maxTotalRunes,
+		Complete:      true,
+	}
+	for ch := from; ch <= to; ch++ {
+		text, err := load(ch)
+		if err != nil {
+			return chapterRangePayload{}, err
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+
+		clipped, truncated := truncateReadText(text, maxRunes)
+		clippedRunes := len([]rune(clipped))
+		if maxTotalRunes > 0 && payload.TotalRunes > 0 && payload.TotalRunes+clippedRunes > maxTotalRunes {
+			payload.OmittedChapters = intRange(ch, to)
+			payload.NextFrom = ch
+			payload.Complete = false
+			break
+		}
+
+		payload.Chapters[ch] = clipped
+		payload.ReturnedChapters = append(payload.ReturnedChapters, ch)
+		if payload.ReturnedFrom == 0 {
+			payload.ReturnedFrom = ch
+		}
+		payload.ReturnedTo = ch
+		payload.TotalRunes += clippedRunes
+		if truncated {
+			payload.TruncatedChapters = appendUniqueInt(payload.TruncatedChapters, ch)
+		}
+		if maxTotalRunes > 0 && clippedRunes > maxTotalRunes {
+			payload.OversizedChapters = appendUniqueInt(payload.OversizedChapters, ch)
+			if ch < to {
+				payload.OmittedChapters = intRange(ch+1, to)
+				payload.NextFrom = ch + 1
+				payload.Complete = false
+				break
+			}
+		}
+	}
+	if payload.NextFrom > 0 {
+		payload.Hint = fmt.Sprintf("范围读取已按 max_total_runes 在章节边界处分批停止；继续调用 read_chapter(source=同上, from=%d, to=%d, max_total_runes=%d) 读取下一批。单章超预算时该章会作为独立批次返回，不会从章节中间切开。", payload.NextFrom, to, maxTotalRunes)
+	}
+	return payload, nil
+}
+
+func truncateReadText(text string, maxRunes int) (string, bool) {
+	if maxRunes <= 0 {
+		return text, false
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text, false
+	}
+	return string(runes[:maxRunes]) + "...", true
+}
+
+func intRange(from, to int) []int {
+	if from <= 0 || to < from {
+		return nil
+	}
+	out := make([]int, 0, to-from+1)
+	for value := from; value <= to; value++ {
+		out = append(out, value)
+	}
+	return out
+}
+
+func appendUniqueInt(values []int, next int) []int {
+	for _, value := range values {
+		if value == next {
+			return values
+		}
+	}
+	return append(values, next)
 }
 
 // maxCompletedChapter 返回已完成章节列表中的最大章节号。

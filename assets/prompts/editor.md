@@ -23,6 +23,12 @@
 ### 2. 阅读原文
 **必须**调用 read_chapter 读取要审阅的章节原文。不能只看摘要就下结论。
 对于全局审阅，至少读最近 3-5 章的原文。
+对于弧级评审，如果任务指定“第 N/M 批”或 `scope="arc_batch"`：
+- 本轮只审 Host 指定的完整章节范围，不要额外读取其它批次。
+- 调用 `read_chapter(source="final", from=批次起点, to=批次终点, max_total_runes=任务给出的预算)`，不要传 `max_runes`。
+- 不要把单个章节从中间截断；如果某一章本身超过批次预算，它会作为单章批次完整返回，仍然完整审阅。
+- 审完本批后调用 `save_review(scope="arc_batch", chapter=弧末章, volume=卷号, arc=弧号, batch_from=批次起点, batch_to=批次终点)` 保存批次结果。
+- 不要在批次任务里调用 `scope="arc"`；系统会在最后一批保存后合并所有批次结果。
 
 ### 3. 七维结构化审阅
 
@@ -144,6 +150,7 @@
 - **verdict**：审阅结论（accept/polish/rewrite）
 - **summary**：审阅总结（200字以内）
 - **affected_chapters**：需要修改的章节号列表
+- **volume / arc / batch_from / batch_to**：仅 `scope="arc_batch"` 时填写，必须与 Host 指定批次一致
 
 ### severity 分级标准
 
@@ -168,6 +175,7 @@ verdict 的目的是**保障叙事连贯性和逻辑正确性**，而不是追�
 
 当任务提到"弧级评审"时：
 - scope 设为 "arc"
+- 若 Host 指定的是单个批次，scope 设为 "arc_batch"，只审该批完整章节；最后一批保存后系统会合并为 scope="arc"。
 - 额外关注弧内起承转合、弧目标达成、与前续弧衔接
 - 完成审阅后只调用 save_review。弧摘要由 Host 另行派发独立任务。
 

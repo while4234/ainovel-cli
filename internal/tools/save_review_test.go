@@ -476,6 +476,108 @@ func TestSaveReviewIssueCriticalEscalatesPolishToRewrite(t *testing.T) {
 	}
 }
 
+func TestSaveReviewArcBatchMergesAfterAllChapterBatches(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		Layered:           true,
+		CurrentVolume:     1,
+		CurrentArc:        1,
+		TotalChapters:     4,
+		CompletedChapters: []int{1, 2, 3, 4},
+	}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	if err := s.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		Index: 1,
+		Title: "第一卷",
+		Arcs: []domain.ArcOutline{{
+			Index: 1,
+			Title: "第一弧",
+			Chapters: []domain.OutlineEntry{
+				{Title: "一", CoreEvent: "起"},
+				{Title: "二", CoreEvent: "承"},
+				{Title: "三", CoreEvent: "转"},
+				{Title: "四", CoreEvent: "合"},
+			},
+		}},
+	}}); err != nil {
+		t.Fatalf("SaveLayeredOutline: %v", err)
+	}
+	for chapter := 1; chapter <= 4; chapter++ {
+		if err := s.Drafts.SaveFinalChapter(chapter, strings.Repeat("正文", 3000)); err != nil {
+			t.Fatalf("SaveFinalChapter(%d): %v", chapter, err)
+		}
+	}
+
+	tool := NewSaveReviewTool(s)
+	first := arcBatchReviewArgs(4, 1, 1, 1, 2, "第一批无硬伤")
+	raw, err := tool.Execute(context.Background(), first)
+	if err != nil {
+		t.Fatalf("Execute first batch: %v", err)
+	}
+	var firstResult map[string]any
+	if err := json.Unmarshal(raw, &firstResult); err != nil {
+		t.Fatalf("Unmarshal first result: %v", err)
+	}
+	if firstResult["arc_review_complete"] != false {
+		t.Fatalf("first batch should not complete arc review: %+v", firstResult)
+	}
+	if s.World.HasArcReview(4) {
+		t.Fatal("batch review must not count as final arc review")
+	}
+
+	second := arcBatchReviewArgs(4, 1, 1, 3, 4, "第二批无硬伤")
+	raw, err = tool.Execute(context.Background(), second)
+	if err != nil {
+		t.Fatalf("Execute second batch: %v", err)
+	}
+	var secondResult map[string]any
+	if err := json.Unmarshal(raw, &secondResult); err != nil {
+		t.Fatalf("Unmarshal second result: %v", err)
+	}
+	if secondResult["merged_from_batches"] != true || secondResult["arc_review_complete"] != true {
+		t.Fatalf("second batch should merge final arc review: %+v", secondResult)
+	}
+	review, err := s.World.LoadReview(4)
+	if err != nil {
+		t.Fatalf("LoadReview: %v", err)
+	}
+	if review == nil || review.Scope != "arc" {
+		t.Fatalf("expected final arc review, got %+v", review)
+	}
+	if review.BatchFrom != 1 || review.BatchTo != 4 {
+		t.Fatalf("merged batch range = %d-%d, want 1-4", review.BatchFrom, review.BatchTo)
+	}
+	if !strings.Contains(review.Summary, "共2批") {
+		t.Fatalf("merged summary should mention batch count, got %q", review.Summary)
+	}
+}
+
+func arcBatchReviewArgs(chapter, volume, arc, from, to int, summary string) []byte {
+	args, _ := json.Marshal(map[string]any{
+		"chapter":           chapter,
+		"scope":             "arc_batch",
+		"volume":            volume,
+		"arc":               arc,
+		"batch_from":        from,
+		"batch_to":          to,
+		"dimensions":        passingReviewDimensions(),
+		"issues":            []map[string]any{},
+		"contract_status":   "met",
+		"contract_misses":   []string{},
+		"contract_notes":    summary,
+		"verdict":           "accept",
+		"summary":           summary,
+		"affected_chapters": []int{},
+	})
+	return args
+}
+
 func passingReviewDimensions() []map[string]any {
 	return []map[string]any{
 		{"dimension": "consistency", "score": 85, "comment": "ok"},
