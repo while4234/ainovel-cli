@@ -135,6 +135,9 @@
   // Windows 示例：
   // "runtime_root": "D:/Ainovel/novels-preview",
 
+  // Optional simulation behavior. Empty or omitted keeps the default "normal".
+  // "simulation_mode": "normal",
+
   // 写作风格：default / suspense / fantasy / romance。
   "style": "default"
 

@@ -33,6 +33,7 @@ var (
 	ErrProjectNotFound         = errors.New("project not found")
 	ErrSessionActionInProgress = errors.New("project action already in progress")
 	ErrProjectStyleLocked      = errors.New("project style is locked")
+	ErrProjectSimulationLocked = errors.New("project simulation mode is locked")
 )
 
 const (
@@ -260,6 +261,68 @@ func (m *SessionManager) SetProjectStyle(id, style string) (*ProjectSession, Pro
 		return nil, ProjectManifest{}, err
 	}
 	h, err := m.store.OpenProjectHost(m.cfg, m.bundle, manifest)
+	if err != nil {
+		return nil, ProjectManifest{}, err
+	}
+	next, err := NewProjectSession(manifest, h)
+	if err != nil {
+		h.Close()
+		return nil, ProjectManifest{}, err
+	}
+	m.sessions[id] = next
+	return next, manifest, nil
+}
+
+func (m *SessionManager) SetProjectSimulationMode(id, mode string) (*ProjectSession, ProjectManifest, error) {
+	id = strings.TrimSpace(id)
+	if err := validateProjectID(id); err != nil {
+		return nil, ProjectManifest{}, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+	}
+	normalized, err := bootstrap.NormalizeSimulationMode(mode)
+	if err != nil {
+		return nil, ProjectManifest{}, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	manifest, err := m.store.OpenProject(id)
+	if err != nil {
+		return nil, ProjectManifest{}, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+	}
+	session, ok := m.sessions[id]
+	if !ok {
+		h, err := m.store.OpenProjectHost(cloneWebConfig(m.cfg), m.bundle, manifest)
+		if err != nil {
+			return nil, ProjectManifest{}, err
+		}
+		session, err = NewProjectSession(manifest, h)
+		if err != nil {
+			h.Close()
+			return nil, ProjectManifest{}, err
+		}
+		m.sessions[id] = session
+	}
+
+	unlock, err := session.beginAction()
+	if err != nil {
+		return nil, ProjectManifest{}, err
+	}
+	defer unlock()
+
+	if session.Snapshot().IsRunning {
+		return nil, ProjectManifest{}, fmt.Errorf("%w: cannot change simulation mode while project is running", ErrProjectSimulationLocked)
+	}
+	if session.cocreate != nil {
+		return nil, ProjectManifest{}, fmt.Errorf("%w: cannot change simulation mode during active co-create", ErrProjectSimulationLocked)
+	}
+
+	session.Close()
+	delete(m.sessions, id)
+	if err := m.store.SaveProjectSimulationMode(manifest, normalized); err != nil {
+		return nil, ProjectManifest{}, err
+	}
+	h, err := m.store.OpenProjectHost(cloneWebConfig(m.cfg), m.bundle, manifest)
 	if err != nil {
 		return nil, ProjectManifest{}, err
 	}

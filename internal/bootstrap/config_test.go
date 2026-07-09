@@ -30,6 +30,56 @@ func TestCoCreateMaxTokensDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestSimulationModeDefaultsAndValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		mode string
+		want string
+	}{
+		{name: "empty", mode: "", want: SimulationModeNormal},
+		{name: "normal", mode: SimulationModeNormal, want: SimulationModeNormal},
+		{name: "reinforced", mode: SimulationModeReinforced, want: SimulationModeReinforced},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := NormalizeSimulationMode(tc.mode)
+			if err != nil {
+				t.Fatalf("NormalizeSimulationMode(%q): %v", tc.mode, err)
+			}
+			if got != tc.want {
+				t.Fatalf("NormalizeSimulationMode(%q) = %q, want %q", tc.mode, got, tc.want)
+			}
+			if effective := (Config{SimulationMode: tc.mode}).EffectiveSimulationMode(); effective != tc.want {
+				t.Fatalf("EffectiveSimulationMode(%q) = %q, want %q", tc.mode, effective, tc.want)
+			}
+		})
+	}
+	if _, err := NormalizeSimulationMode("experimental"); err == nil {
+		t.Fatal("invalid simulation mode should be rejected")
+	}
+	if got := (Config{SimulationMode: "experimental"}).EffectiveSimulationMode(); got != SimulationModeNormal {
+		t.Fatalf("invalid EffectiveSimulationMode = %q, want %q", got, SimulationModeNormal)
+	}
+}
+
+func TestValidateBaseRejectsInvalidSimulationMode(t *testing.T) {
+	cfg := Config{
+		Provider:       "openai",
+		ModelName:      "gpt-test",
+		SimulationMode: "experimental",
+		Providers: map[string]ProviderConfig{
+			"openai": {Type: "openai", APIKey: "sk-test"},
+		},
+	}
+	if err := cfg.ValidateBase(); err == nil {
+		t.Fatal("ValidateBase accepted invalid simulation_mode")
+	}
+	cfg.SimulationMode = ""
+	if err := cfg.ValidateBase(); err != nil {
+		t.Fatalf("ValidateBase should allow empty simulation_mode: %v", err)
+	}
+}
+
 func TestRememberModelCandidateKeepsSwitchedAwayProviderSelectable(t *testing.T) {
 	cfg := Config{
 		Provider:  "deepseek",

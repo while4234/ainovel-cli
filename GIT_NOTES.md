@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: `5b0d4f1`
+  `feat: add simulation mode backend config`:
+  PR-01 of the reinforced simulation-mode pipeline adds project/global
+  `simulation_mode` config support with `normal` as the default and
+  `reinforced` as opt-in. The backend now validates, merges, persists project
+  overlays, exposes `SimulationMode` in snapshots, and serves
+  `PUT /api/projects/{id}/simulation-mode` without changing co-create prompts
+  or `novel_context`. Independent review passed. Validation passed for
+  `go test ./internal/bootstrap ./internal/host ./internal/entry/web` and
+  `git diff --check` with Windows line-ending warnings only.
 - Latest source/runtime change: current local commit
   `fix: save retry settings per project`:
   The Web retry-settings form now saves through

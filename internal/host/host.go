@@ -917,6 +917,7 @@ func (h *Host) Snapshot() UISnapshot {
 		ModelName:              model,
 		ModelContextWindow:     modelWindow,
 		Style:                  h.cfg.Style,
+		SimulationMode:         h.cfg.EffectiveSimulationMode(),
 		RuntimeState:           string(state),
 		IsRunning:              state == lifecycleRunning,
 		TotalInputTokens:       tokIn,

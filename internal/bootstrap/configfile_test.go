@@ -142,6 +142,21 @@ func TestLoadConfig_ValidMergeWorks(t *testing.T) {
 	}
 }
 
+func TestMergeConfigSimulationModeOverride(t *testing.T) {
+	base := Config{SimulationMode: SimulationModeNormal}
+	overlay := Config{SimulationMode: SimulationModeReinforced}
+
+	merged := MergeConfig(base, overlay)
+	if merged.SimulationMode != SimulationModeReinforced {
+		t.Fatalf("merged simulation_mode = %q, want %q", merged.SimulationMode, SimulationModeReinforced)
+	}
+
+	merged = MergeConfig(Config{SimulationMode: SimulationModeReinforced}, Config{})
+	if merged.SimulationMode != SimulationModeReinforced {
+		t.Fatalf("empty overlay should not clear simulation_mode, got %q", merged.SimulationMode)
+	}
+}
+
 func TestMergeConfig_ProviderExtraFields(t *testing.T) {
 	baseUseProxy := true
 	overlayUseProxy := false

@@ -50,6 +50,9 @@ const (
 	DefaultBudgetQualityMaxAttempts = 2
 	MinBudgetQualityMaxAttempts     = 1
 	MaxBudgetQualityMaxAttempts     = 15
+
+	SimulationModeNormal     = "normal"
+	SimulationModeReinforced = "reinforced"
 )
 
 // CompactReserveTokens 按 CompactRatio 反算 ReserveTokens 并应用 MinCompactReserve floor：
@@ -131,6 +134,27 @@ func (c Config) EffectiveBudgetQualityMaxAttempts() int {
 		return DefaultBudgetQualityMaxAttempts
 	}
 	return attempts
+}
+
+func NormalizeSimulationMode(mode string) (string, error) {
+	switch strings.TrimSpace(mode) {
+	case "":
+		return SimulationModeNormal, nil
+	case SimulationModeNormal:
+		return SimulationModeNormal, nil
+	case SimulationModeReinforced:
+		return SimulationModeReinforced, nil
+	default:
+		return "", fmt.Errorf("simulation_mode must be normal or reinforced")
+	}
+}
+
+func (c Config) EffectiveSimulationMode() string {
+	mode, err := NormalizeSimulationMode(c.SimulationMode)
+	if err != nil {
+		return SimulationModeNormal
+	}
+	return mode
 }
 
 func NormalizeRuntimeNetworkMaxAttempts(attempts int) (int, error) {
@@ -319,6 +343,7 @@ type Config struct {
 	CoCreateMaxTokens          int                   `json:"cocreate_max_tokens,omitempty"`
 	StructureRepairMaxAttempts int                   `json:"structure_repair_max_attempts,omitempty"`
 	BudgetQualityMaxAttempts   int                   `json:"budget_quality_max_attempts,omitempty"`
+	SimulationMode             string                `json:"simulation_mode,omitempty"`
 	Proxy                      string                `json:"proxy,omitempty"`
 	ModelAutoSwitch            ModelAutoSwitchConfig `json:"model_auto_switch,omitzero"`
 
@@ -387,6 +412,9 @@ func (c *Config) ValidateBase() error {
 		return err
 	}
 	if _, err := NormalizeBudgetQualityMaxAttempts(c.BudgetQualityMaxAttempts); err != nil {
+		return err
+	}
+	if _, err := NormalizeSimulationMode(c.SimulationMode); err != nil {
 		return err
 	}
 	if err := validateConfigText("proxy", c.Proxy); err != nil {

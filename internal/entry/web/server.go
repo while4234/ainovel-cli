@@ -254,6 +254,7 @@ func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
 			"model_call_max_attempts":       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
 			"structure_repair_max_attempts": cfg.EffectiveStructureRepairMaxAttempts(),
 			"budget_quality_max_attempts":   cfg.EffectiveBudgetQualityMaxAttempts(),
+			"simulation_mode":               cfg.EffectiveSimulationMode(),
 			"roles":                         cfg.Roles,
 		},
 		"active_projects": s.sessions.ActiveProjectIDs(),
@@ -407,6 +408,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectModelAddOpenAICompatible(w, r, id)
 	case "style":
 		s.handleProjectStyle(w, r, id)
+	case "simulation-mode":
+		s.handleProjectSimulationMode(w, r, id)
 	case "models/grok-login/start":
 		s.handleProjectGrokLoginStart(w, r, id)
 	case "models/grok-login/poll":

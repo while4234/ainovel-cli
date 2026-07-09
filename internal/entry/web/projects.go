@@ -629,6 +629,22 @@ func (s *ProjectStore) SaveProjectStyle(manifest ProjectManifest, style string) 
 	return bootstrap.SaveConfig(ProjectConfigPath(manifest), cfg)
 }
 
+func (s *ProjectStore) SaveProjectSimulationMode(manifest ProjectManifest, mode string) error {
+	normalized, err := bootstrap.NormalizeSimulationMode(mode)
+	if err != nil {
+		return err
+	}
+	cfg, found, err := s.loadProjectConfig(manifest)
+	if err != nil {
+		return err
+	}
+	if !found {
+		cfg = bootstrap.Config{}
+	}
+	cfg.SimulationMode = normalized
+	return bootstrap.SaveConfig(ProjectConfigPath(manifest), cfg)
+}
+
 func projectOwnedProviders(cfg bootstrap.Config) map[string]bool {
 	if len(cfg.Providers) == 0 {
 		return nil
