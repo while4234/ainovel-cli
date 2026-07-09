@@ -40,8 +40,9 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   confirmed adaptation state. Validation passed for focused
   `go test ./internal/tools ./internal/host/flow -count=1`, full
   `go test ./... -count=1`, and `git diff --check` with Windows line-ending
-  warnings only. Local Web was rebuilt/restarted on
-  `http://127.0.0.1:9898` as PID `69136`; `武林高手`, `女主播的秘密`,
+  warnings only before and after rebasing onto `9a3955af`
+  (`fix: resume web adaptation stages`). Local Web was rebuilt/restarted on
+  `http://127.0.0.1:9898` as PID `68984`; `武林高手`, `女主播的秘密`,
   `大学刑法课`, and `术士手册` were recovered to running states.
 - Latest docs/test/static change: pending PR-05 (uncommitted per user request):
   Documented `simulation_mode` normal/reinforced behavior, default-normal
