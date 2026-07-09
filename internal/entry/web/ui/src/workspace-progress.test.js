@@ -814,6 +814,51 @@ describe('workspace progress derivation', () => {
     expect(buildCoCreatePlanningRevisionPayload({
       instruction: 'tighten the opening'
     }).body.feedback).toBe('tighten the opening');
+    expect(buildCoCreatePlanningRevisionPayload({
+      instruction: 'keep volume two quieter',
+      volumeIndex: '2'
+    }, {
+      kind: 'volume_split',
+      volumes: [{ index: 1, title: 'Setup' }, { index: 2, title: 'Pressure' }]
+    })).toEqual({
+      ok: true,
+      body: {
+        feedback: 'keep volume two quieter',
+        instruction: 'keep volume two quieter',
+        scope: 'volume',
+        target: '第 2 卷：Pressure',
+        volume_index: 2
+      }
+    });
+    expect(buildCoCreatePlanningRevisionPayload({
+      instruction: 'tighten the whole outline',
+      scope: 'all'
+    }, {
+      kind: 'chapter_outline',
+      chapters: [{ chapter: 1, title: 'Opening' }, { chapter: 2, title: 'Turn' }]
+    })).toEqual({
+      ok: true,
+      body: {
+        feedback: 'tighten the whole outline',
+        instruction: 'tighten the whole outline',
+        scope: 'all',
+        target: '全卷'
+      }
+    });
+    expect(buildCoCreatePlanningRevisionPayload({
+      instruction: 'make chapter two more active',
+      scope: 'chapter',
+      chapter: '2'
+    }, {
+      kind: 'chapter_outline',
+      chapters: [{ chapter: 1, title: 'Opening' }, { chapter: 2, title: 'Turn' }]
+    }).body).toMatchObject({
+      scope: 'chapter',
+      target: '第 2 章：Turn',
+      chapter: 2,
+      from_chapter: 2,
+      to_chapter: 2
+    });
     expect(buildCoCreatePlanningRevisionPayload({ feedback: '   ' })).toEqual({
       ok: false,
       error: '请输入审核意见'

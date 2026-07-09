@@ -153,6 +153,83 @@ func TestProjectCoCreatePlanningRevisionRegeneratesPendingPlan(t *testing.T) {
 	}
 }
 
+func TestProjectCoCreatePlanningRevisionTargetsSingleChapter(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Planning Revision Target")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply("updated chapter plan", "## Revised\n- Give chapter two a sharper reversal", true)
+	st := storepkg.NewStore(manifest.OutputDir)
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{
+		{Chapter: 1, Title: "Opening", CoreEvent: "A slow start"},
+		{Chapter: 2, Title: "Reversal", CoreEvent: "The heroine takes charge"},
+	}); err != nil {
+		t.Fatalf("seed outline: %v", err)
+	}
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status:           domain.PlanningReviewStatusPending,
+		Kind:             domain.PlanningReviewKindChapterOutline,
+		Brief:            "## Old\n- Chapter 2 lacks agency",
+		StartPrompt:      "old start prompt",
+		TargetTotalWords: 8000,
+		CreatedAt:        "2026-07-05T00:00:00Z",
+		UpdatedAt:        "2026-07-05T00:01:00Z",
+	}); err != nil {
+		t.Fatalf("seed planning review: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/planning/revise", bytes.NewBufferString(`{"instruction":"tighten chapter two around the reversal","scope":"chapter","chapter":2}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("planning revise status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.cocreateCalls != 1 {
+		t.Fatalf("co-create calls = %d, want 1", fake.cocreateCalls)
+	}
+	if !coCreateHistoryContains(fake.lastCoCreateHistory, "Revision target: chapter 2: Reversal") ||
+		!coCreateHistoryContains(fake.lastCoCreateHistory, "tighten chapter two") {
+		t.Fatalf("revision history missing target or instruction: %+v", fake.lastCoCreateHistory)
+	}
+}
+
+func TestProjectCoCreatePlanningConfirmRejectsBlueprintReview(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Blueprint Review")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	st := storepkg.NewStore(manifest.OutputDir)
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status:           domain.PlanningReviewStatusPending,
+		Kind:             domain.PlanningReviewKindBlueprint,
+		Brief:            "## Draft plan before structured planning",
+		StartPrompt:      "start prompt",
+		TargetTotalWords: 5000,
+		CreatedAt:        "2026-07-05T00:00:00Z",
+		UpdatedAt:        "2026-07-05T00:01:00Z",
+	}); err != nil {
+		t.Fatalf("seed planning review: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/confirm", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("planning confirm status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+	if fake.resumeCalls != 0 {
+		t.Fatalf("blueprint review must not resume writing, calls=%d", fake.resumeCalls)
+	}
+}
+
 func TestProjectCoCreatePlanningRevisionRejectsInvalidState(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

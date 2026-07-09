@@ -58,6 +58,12 @@ type webCoCreateReviseRequest struct {
 type webCoCreatePlanningRevisionRequest struct {
 	Feedback    string `json:"feedback"`
 	Instruction string `json:"instruction"`
+	Target      string `json:"target,omitempty"`
+	Scope       string `json:"scope,omitempty"`
+	VolumeIndex int    `json:"volume_index,omitempty"`
+	Chapter     int    `json:"chapter,omitempty"`
+	FromChapter int    `json:"from_chapter,omitempty"`
+	ToChapter   int    `json:"to_chapter,omitempty"`
 }
 
 type webCoCreateDecisionItem struct {
@@ -358,7 +364,7 @@ func (s *Server) handleProjectCoCreateConfirm(w http.ResponseWriter, r *http.Req
 	}
 	label, err := session.ConfirmCoCreatePlanning()
 	if err != nil {
-		writeProjectSessionError(w, err)
+		writeProjectLifecycleError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -392,7 +398,11 @@ func (s *Server) handleProjectCoCreatePlanningRevise(w http.ResponseWriter, r *h
 		writeProjectSessionError(w, err)
 		return
 	}
-	if err := session.ReviseCoCreatePlanning(r.Context(), req.Feedback); err != nil {
+	req.Instruction = strings.TrimSpace(req.Instruction)
+	if req.Instruction == "" {
+		req.Instruction = req.Feedback
+	}
+	if err := session.ReviseCoCreatePlanning(r.Context(), req); err != nil {
 		writeProjectLifecycleError(w, err)
 		return
 	}

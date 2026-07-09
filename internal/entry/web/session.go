@@ -1557,9 +1557,21 @@ func (s *ProjectSession) clearNormalCoCreatePlanningReview() error {
 	return st.RunMeta.ClearPlanningReview()
 }
 
-func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, feedback string) error {
-	feedback = strings.TrimSpace(feedback)
-	if feedback == "" {
+type coCreatePlanningRevisionTarget struct {
+	Instruction string
+	Scope       string
+	Label       string
+	VolumeIndex int
+	FromChapter int
+	ToChapter   int
+}
+
+func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, req webCoCreatePlanningRevisionRequest) error {
+	instruction := strings.TrimSpace(req.Feedback)
+	if instruction == "" {
+		instruction = strings.TrimSpace(req.Instruction)
+	}
+	if instruction == "" {
 		return fmt.Errorf("feedback is required")
 	}
 	unlock, err := s.beginAction()
@@ -1582,8 +1594,12 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, feedback st
 	if strings.TrimSpace(review.Brief) == "" {
 		return fmt.Errorf("pending co-create planning review has no brief")
 	}
+	target, err := normalizeCoCreatePlanningRevisionTarget(st, review, req, instruction)
+	if err != nil {
+		return err
+	}
 
-	revision := newWebCoCreatePlanningRevisionSession(review, feedback)
+	revision := newWebCoCreatePlanningRevisionSession(review, target)
 	reply, err := s.runCoCreatePlanningRevision(ctx, revision)
 	if err != nil {
 		return err
@@ -1604,6 +1620,133 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, feedback st
 	return nil
 }
 
+func normalizeCoCreatePlanningRevisionTarget(st *storepkg.Store, review *domain.PlanningReview, req webCoCreatePlanningRevisionRequest, instruction string) (coCreatePlanningRevisionTarget, error) {
+	scope := strings.ToLower(strings.TrimSpace(req.Scope))
+	if scope == "" {
+		switch {
+		case req.VolumeIndex > 0:
+			scope = "volume"
+		case req.Chapter > 0 || req.FromChapter > 0 || req.ToChapter > 0:
+			scope = "chapter"
+		default:
+			scope = "all"
+		}
+	}
+	if scope == "range" {
+		scope = "chapter"
+	}
+	target := coCreatePlanningRevisionTarget{
+		Instruction: instruction,
+		Scope:       scope,
+		Label:       strings.TrimSpace(req.Target),
+		VolumeIndex: req.VolumeIndex,
+		FromChapter: req.FromChapter,
+		ToChapter:   req.ToChapter,
+	}
+	if target.FromChapter == 0 && req.Chapter > 0 {
+		target.FromChapter = req.Chapter
+	}
+	if target.ToChapter == 0 && target.FromChapter > 0 {
+		target.ToChapter = target.FromChapter
+	}
+	switch scope {
+	case "all":
+		if target.Label == "" {
+			target.Label = "entire planning review"
+		}
+		return target, nil
+	case "volume":
+		if review.Kind == domain.PlanningReviewKindBlueprint {
+			return target, fmt.Errorf("blueprint review does not support volume-targeted revision")
+		}
+		if target.VolumeIndex <= 0 {
+			return target, fmt.Errorf("volume_index is required for volume-targeted planning revision")
+		}
+		label, err := coCreatePlanningRevisionVolumeLabel(st, target.VolumeIndex)
+		if err != nil {
+			return target, err
+		}
+		if target.Label == "" {
+			target.Label = label
+		}
+		return target, nil
+	case "chapter":
+		if review.Kind != domain.PlanningReviewKindChapterOutline {
+			return target, fmt.Errorf("chapter-targeted revision requires a chapter outline review")
+		}
+		if target.FromChapter <= 0 || target.ToChapter <= 0 {
+			return target, fmt.Errorf("chapter is required for chapter-targeted planning revision")
+		}
+		if target.FromChapter > target.ToChapter {
+			target.FromChapter, target.ToChapter = target.ToChapter, target.FromChapter
+		}
+		label, err := coCreatePlanningRevisionChapterLabel(st, target.FromChapter, target.ToChapter)
+		if err != nil {
+			return target, err
+		}
+		if target.Label == "" {
+			target.Label = label
+		}
+		return target, nil
+	default:
+		return target, fmt.Errorf("unsupported planning revision scope %q", scope)
+	}
+}
+
+func coCreatePlanningRevisionVolumeLabel(st *storepkg.Store, volumeIndex int) (string, error) {
+	volumes, err := st.Outline.LoadLayeredOutline()
+	if err != nil {
+		return "", fmt.Errorf("load layered outline: %w", err)
+	}
+	for _, volume := range volumes {
+		if volume.Index != volumeIndex {
+			continue
+		}
+		title := strings.TrimSpace(volume.Title)
+		if title == "" {
+			return fmt.Sprintf("volume %d", volumeIndex), nil
+		}
+		return fmt.Sprintf("volume %d: %s", volumeIndex, title), nil
+	}
+	return "", fmt.Errorf("volume %d is not in the current planning review", volumeIndex)
+}
+
+func coCreatePlanningRevisionChapterLabel(st *storepkg.Store, from, to int) (string, error) {
+	chapters, err := st.Outline.LoadOutline()
+	if err != nil {
+		return "", fmt.Errorf("load outline: %w", err)
+	}
+	if len(chapters) == 0 {
+		volumes, lerr := st.Outline.LoadLayeredOutline()
+		if lerr != nil {
+			return "", fmt.Errorf("load layered outline: %w", lerr)
+		}
+		chapters = domain.FlattenOutline(volumes)
+	}
+	available := make(map[int]domain.OutlineEntry, len(chapters))
+	for index, chapter := range chapters {
+		number := chapter.Chapter
+		if number <= 0 {
+			number = index + 1
+			chapter.Chapter = number
+		}
+		available[number] = chapter
+	}
+	for chapter := from; chapter <= to; chapter++ {
+		if _, ok := available[chapter]; !ok {
+			return "", fmt.Errorf("chapter %d is not in the current planning review", chapter)
+		}
+	}
+	if from == to {
+		title := strings.TrimSpace(available[from].Title)
+		if title == "" {
+			return fmt.Sprintf("chapter %d", from), nil
+		}
+		return fmt.Sprintf("chapter %d: %s", from, title), nil
+	}
+	return fmt.Sprintf("chapters %d-%d", from, to), nil
+}
+
 func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
 	unlock, err := s.beginAction()
 	if err != nil {
@@ -1619,27 +1762,52 @@ func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
 	if review == nil || review.Status != domain.PlanningReviewStatusPending {
 		return "", fmt.Errorf("no pending co-create planning review")
 	}
-	if missing := st.FoundationMissing(); len(missing) > 0 {
-		return "", fmt.Errorf("planning foundation is incomplete: %s", strings.Join(missing, ", "))
+	switch review.Kind {
+	case domain.PlanningReviewKindBlueprint:
+		return "", fmt.Errorf("co-create blueprint must be regenerated before it can be approved")
+	case domain.PlanningReviewKindVolumeSplit:
+		if missing := coCreatePlanningMissingForVolumeSplit(st.FoundationMissing()); len(missing) > 0 {
+			return "", fmt.Errorf("planning foundation is incomplete: %s", strings.Join(missing, ", "))
+		}
+	default:
+		if missing := st.FoundationMissing(); len(missing) > 0 {
+			return "", fmt.Errorf("planning foundation is incomplete: %s", strings.Join(missing, ", "))
+		}
 	}
 	if err := st.RunMeta.ClearPlanningReview(); err != nil {
 		return "", fmt.Errorf("clear planning review: %w", err)
 	}
-	progress, err := st.Progress.Load()
-	if err != nil {
-		return "", fmt.Errorf("load progress: %w", err)
-	}
-	if progress == nil {
-		return "", fmt.Errorf("progress is missing")
-	}
-	if progress.Phase != domain.PhaseWriting {
-		if err := st.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
-			return "", fmt.Errorf("approve planning review: %w", err)
+	if review.Kind != domain.PlanningReviewKindVolumeSplit {
+		progress, err := st.Progress.Load()
+		if err != nil {
+			return "", fmt.Errorf("load progress: %w", err)
+		}
+		if progress == nil {
+			return "", fmt.Errorf("progress is missing")
+		}
+		if progress.Phase != domain.PhaseWriting {
+			if err := st.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
+				return "", fmt.Errorf("approve planning review: %w", err)
+			}
 		}
 	}
 	label, err := s.host.Resume()
+	if label == "" && review.Kind == domain.PlanningReviewKindVolumeSplit {
+		label = "volume outline approved; generating detailed chapter outline"
+	}
 	s.AppendSnapshot()
 	return label, err
+}
+
+func coCreatePlanningMissingForVolumeSplit(missing []string) []string {
+	filtered := make([]string, 0, len(missing))
+	for _, item := range missing {
+		if item == "outline" {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
 }
 
 func (s *ProjectSession) persistWordBudget(budget *domain.WordBudget) error {
@@ -2052,7 +2220,7 @@ func (s *ProjectSession) repairCoCreateDraftForCommitLocked(ctx context.Context,
 	return nil
 }
 
-func newWebCoCreatePlanningRevisionSession(review *domain.PlanningReview, feedback string) *webCoCreateSession {
+func newWebCoCreatePlanningRevisionSession(review *domain.PlanningReview, target coCreatePlanningRevisionTarget) *webCoCreateSession {
 	brief := strings.TrimSpace(review.Brief)
 	history := []host.CoCreateMessage{
 		{
@@ -2072,7 +2240,7 @@ func newWebCoCreatePlanningRevisionSession(review *domain.PlanningReview, feedba
 		},
 		{
 			Role:    "user",
-			Content: coCreatePlanningRevisionInstruction(feedback),
+			Content: coCreatePlanningRevisionInstruction(target),
 		},
 	}
 	return &webCoCreateSession{
@@ -2086,7 +2254,11 @@ func newWebCoCreatePlanningRevisionSession(review *domain.PlanningReview, feedba
 	}
 }
 
-func coCreatePlanningRevisionInstruction(feedback string) string {
+func coCreatePlanningRevisionInstruction(target coCreatePlanningRevisionTarget) string {
+	feedback := strings.TrimSpace(target.Instruction)
+	if label := strings.TrimSpace(target.Label); label != "" {
+		feedback = "Revision target: " + label + "\n\n" + feedback
+	}
 	return strings.TrimSpace(`审核未通过，请根据下面的审核意见修订上一版 <draft>。
 要求：
 - 只修订创作规划，不要开始写正文。

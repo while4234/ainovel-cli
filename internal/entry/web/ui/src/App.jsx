@@ -227,6 +227,10 @@ function createChapterRevisionState() {
 function createCoCreatePlanningRevisionState() {
   return {
     feedback: '',
+    instruction: '',
+    scope: 'all',
+    chapter: '1',
+    volumeIndex: '1',
     status: 'idle',
     message: '',
     error: ''
@@ -1251,8 +1255,14 @@ export default function App() {
       if (!isCurrentProject(projectId)) {
         return;
       }
+      const nextSnapshot = data.snapshot || snapshot;
       setActiveProject(data.project || activeProject);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setWorkbench((previous) => ({ ...previous, snapshot: nextSnapshot || previous.snapshot }));
+      setCoCreate(createCoCreateState());
+      setPlanningRevision(createCoCreatePlanningRevisionState());
+      if (getCoCreatePlanningReview(nextSnapshot).active) {
+        setSideView('cocreate');
+      }
       setRollbackDialog(null);
     } catch (err) {
       setRollbackDialog((previous) => previous ? { ...previous, error: err.message } : previous);
@@ -2320,7 +2330,7 @@ export default function App() {
     if (!activeProject?.id || !coCreatePlanningReview.pending || busy || projectRunning) {
       return;
     }
-    const payload = buildCoCreatePlanningRevisionPayload(planningRevision);
+    const payload = buildCoCreatePlanningRevisionPayload(planningRevision, coCreatePlanningReview);
     if (!payload.ok) {
       setPlanningRevision((previous) => ({
         ...previous,
@@ -2342,6 +2352,10 @@ export default function App() {
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setPlanningRevision({
         feedback: '',
+        instruction: '',
+        scope: 'all',
+        chapter: '1',
+        volumeIndex: '1',
         status: 'done',
         message: '审核意见已提交，AI 正在重新生成规划',
         error: ''
@@ -3433,6 +3447,7 @@ function CoCreatePlanningWorkspace({ review, busy, planningRevision, setPlanning
     chapters: review.chapters || [],
     volumes: review.volumes || []
   });
+  const confirmAction = coCreatePlanningConfirmAction(review);
   return (
     <div className="proposal-workspace cocreate-planning-workspace">
       <header className="proposal-workspace-header">
@@ -3449,10 +3464,12 @@ function CoCreatePlanningWorkspace({ review, busy, planningRevision, setPlanning
       </header>
       {review.brief ? <p className="proposal-brief">{review.brief}</p> : null}
       <div className="proposal-review-actions">
-        <button className="tool-button accent" disabled={busy || !review.pending} onClick={onConfirm} type="button">
-          <Play size={16} />
-          审核通过并启动创作
-        </button>
+        {confirmAction.visible ? (
+          <button className="tool-button accent" disabled={busy || !review.pending} onClick={onConfirm} type="button">
+            <Play size={16} />
+            {confirmAction.label}
+          </button>
+        ) : null}
         {review.collecting ? (
           <div className="workflow-status running">
             <strong>重新生成中</strong>
@@ -3463,6 +3480,7 @@ function CoCreatePlanningWorkspace({ review, busy, planningRevision, setPlanning
             busy={busy}
             disabled={!review.pending}
             onRevise={onRevise}
+            review={review}
             revision={planningRevision}
             setRevision={setPlanningRevision}
           />
@@ -3490,30 +3508,168 @@ function CoCreatePlanningWorkspace({ review, busy, planningRevision, setPlanning
   );
 }
 
-function PlanningRevisionControls({ busy, compact = false, disabled = false, onRevise, revision, setRevision }) {
-  const feedback = String(revision?.feedback || '');
+function coCreatePlanningConfirmAction(review = {}) {
+  switch (String(review?.kind || '').trim()) {
+    case 'blueprint':
+      return { visible: false, label: '' };
+    case 'volume_split':
+      return { visible: true, label: '审核通过并生成章节细纲' };
+    default:
+      return { visible: true, label: '审核通过并启动创作' };
+  }
+}
+
+function coCreatePlanningRevisionScope(scope, kind, hasVolumes) {
+  if (kind === 'volume_split') {
+    return 'volume';
+  }
+  if (kind === 'chapter_outline' && hasVolumes) {
+    return 'chapter';
+  }
+  const normalized = String(scope || '').trim();
+  return normalized === 'chapter' ? 'chapter' : 'all';
+}
+
+function coCreatePlanningRevisionVolumeSelection(value, volumes = []) {
+  if (!volumes.length) {
+    return '';
+  }
+  const selected = Number.parseInt(String(value || ''), 10);
+  const volume = volumes.find((item) => item.index === selected) || volumes[0];
+  return String(volume.index);
+}
+
+function coCreatePlanningRevisionChapterSelection(value, chapters = []) {
+  if (!chapters.length) {
+    return '';
+  }
+  const selected = Number.parseInt(String(value || ''), 10);
+  const chapter = chapters.find((item) => item.chapter === selected) || chapters[0];
+  return String(chapter.chapter);
+}
+
+function coCreatePlanningRevisionChapterOptions(review = {}) {
+  const chapters = Array.isArray(review?.chapters) ? review.chapters : [];
+  if (chapters.length) {
+    return chapters.map((chapter, index) => ({
+      chapter: numberValue(chapter, 'Chapter', 'chapter') || index + 1,
+      title: textValue(chapter, 'Title', 'title')
+    }));
+  }
+  const chapterCount = numberValue(review, 'chapterCount', 'ChapterCount', 'chapter_count');
+  return Array.from({ length: Math.max(0, chapterCount) }, (_, index) => ({
+    chapter: index + 1,
+    title: ''
+  }));
+}
+
+function coCreatePlanningRevisionVolumeLabel(volume = {}) {
+  const index = numberValue(volume, 'Index', 'index');
+  const title = textValue(volume, 'Title', 'title');
+  return title ? `第 ${index} 卷：${title}` : `第 ${index} 卷`;
+}
+
+function coCreatePlanningRevisionChapterLabel(chapter = {}) {
+  const number = numberValue(chapter, 'Chapter', 'chapter');
+  const title = textValue(chapter, 'Title', 'title');
+  return title ? `第 ${number} 章：${title}` : `第 ${number} 章`;
+}
+
+function PlanningRevisionControls({ busy, compact = false, disabled = false, onRevise, review = {}, revision, setRevision }) {
+  const instruction = String(revision?.instruction || revision?.feedback || '');
   const status = revision?.status || 'idle';
-  const canSubmit = !busy && !disabled && Boolean(feedback.trim());
-  const updateFeedback = (event) => {
-    const nextFeedback = event.target.value;
+  const volumes = Array.isArray(review?.volumes) ? review.volumes : [];
+  const chapterOptions = coCreatePlanningRevisionChapterOptions(review);
+  const kind = String(review?.kind || '').trim();
+  const hasVolumes = volumes.length > 0;
+  const scope = coCreatePlanningRevisionScope(revision?.scope, kind, hasVolumes);
+  const selectedVolume = coCreatePlanningRevisionVolumeSelection(revision?.volumeIndex, volumes);
+  const selectedChapter = coCreatePlanningRevisionChapterSelection(revision?.chapter, chapterOptions);
+  const canSubmit = !busy && !disabled && Boolean(instruction.trim());
+  const updateRevision = (changes) => {
     setRevision((previous) => ({
       ...previous,
-      feedback: nextFeedback,
+      ...changes,
       status: 'idle',
       message: '',
       error: ''
     }));
   };
+  const updateInstruction = (event) => {
+    const nextInstruction = event.target.value;
+    updateRevision({
+      feedback: nextInstruction,
+      instruction: nextInstruction
+    });
+  };
+  const showVolumeTarget = kind === 'volume_split' && volumes.length > 0;
+  const showScopeTarget = kind === 'chapter_outline' && !hasVolumes && chapterOptions.length > 0;
+  const showChapterTarget = kind === 'chapter_outline' && chapterOptions.length > 0 && (hasVolumes || scope === 'chapter');
   return (
     <div className={`planning-revision-controls ${compact ? 'compact' : ''}`}>
+      {showVolumeTarget ? (
+        <label className="field-label proposal-select-line">
+          <span>修改范围</span>
+          <select
+            disabled={busy || disabled}
+            value={selectedVolume}
+            onChange={(event) => updateRevision({ scope: 'volume', volumeIndex: event.target.value })}
+          >
+            {volumes.map((volume) => (
+              <option key={`planning-revision-volume-${volume.index}`} value={volume.index}>
+                {coCreatePlanningRevisionVolumeLabel(volume)}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {showScopeTarget ? (
+        <div className="proposal-revision-mode-grid planning-revision-target-grid" role="radiogroup" aria-label="规划修改范围">
+          {[
+            { value: 'all', label: '全卷' },
+            { value: 'chapter', label: '单章' }
+          ].map((item) => (
+            <button
+              className={scope === item.value ? 'revision-mode-button active' : 'revision-mode-button'}
+              disabled={busy || disabled}
+              key={item.value}
+              onClick={() => updateRevision({ scope: item.value })}
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {showChapterTarget ? (
+        <label className="field-label proposal-select-line">
+          <span>章节</span>
+          <select
+            disabled={busy || disabled}
+            value={selectedChapter}
+            onChange={(event) => updateRevision({
+              chapter: event.target.value,
+              fromChapter: event.target.value,
+              scope: 'chapter',
+              toChapter: event.target.value
+            })}
+          >
+            {chapterOptions.map((chapter) => (
+              <option key={`planning-revision-chapter-${chapter.chapter}`} value={chapter.chapter}>
+                {coCreatePlanningRevisionChapterLabel(chapter)}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <label className="field-label proposal-select-line">
         <span>审核意见</span>
         <textarea
           className="proposal-revision-textarea"
           disabled={busy || disabled}
           placeholder="写下希望 AI 修改的设定、结构、节奏、分卷或章节意见..."
-          value={feedback}
-          onChange={updateFeedback}
+          value={instruction}
+          onChange={updateInstruction}
         />
       </label>
       <button className="tool-button full-width" disabled={!canSubmit} onClick={() => runWithWindowScrollPreserved(onRevise)} type="button">
@@ -3945,10 +4101,8 @@ function CoCreatePanel({
   activeProject,
   busy,
   coCreate,
-  planningRevision,
   planningReview = {},
   setCoCreate,
-  setPlanningRevision,
   adaptation,
   onBegin,
   onConfirmIntake,
@@ -3959,8 +4113,6 @@ function CoCreatePanel({
   onRevise,
   onResolveDecision = () => {},
   onCommit,
-  onConfirmPlanning = () => {},
-  onRevisePlanning = () => {},
   onCancel,
   workspaceTranscript = false
 }) {
@@ -3990,7 +4142,6 @@ function CoCreatePanel({
   const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
   const hasDraftPrompt = Boolean(coCreate.draftPrompt.trim());
   const canCommit = Boolean(activeProject && !busy && hasDraftPrompt && coCreate.canStart);
-  const canConfirmPlanning = Boolean(activeProject && !busy && planningReview.pending);
   const canCancel = canCancelCoCreateFlow({ activeProject, busy, coCreate });
   const visibleSuggestions = coCreate.suggestions.slice(0, 3);
   const showDraftWorkspace = Boolean(coCreate.ready || hasDraftPrompt);
@@ -4024,6 +4175,35 @@ function CoCreatePanel({
       onBegin('normal');
     }
   };
+  if (planningReview.active) {
+    return (
+      <div className="side-content cocreate-panel">
+        {coCreate.error ? <div className="error-banner compact">{coCreate.error}</div> : null}
+        <section className="cocreate-section planning-review-card">
+          <div className="section-title">
+            <Check size={17} />
+            <span>规划审核</span>
+          </div>
+          <p>
+            {coCreatePlanningKindLabel(planningReview.kind)}
+            {planningReview.chapterCount ? ` · ${planningReview.chapterCount} 章` : ''}
+            {planningReview.targetTotalWords ? ` · ${formatCompact(planningReview.targetTotalWords)} 字` : ''}
+          </p>
+          {planningReview.collecting ? (
+            <div className="workflow-status running">
+              <strong>重新生成中</strong>
+              <span>AI 正在根据审核意见重新生成规划。</span>
+            </div>
+          ) : (
+            <div className="workflow-status ready">
+              <strong>待审核</strong>
+              <span>规划内容、审核通过和修改意见已移到中间工作区。</span>
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
   return (
     <div className="side-content cocreate-panel">
       {coCreate.error ? <div className="error-banner compact">{coCreate.error}</div> : null}
@@ -4071,39 +4251,6 @@ function CoCreatePanel({
           </div>
         ) : null}
       </section>
-
-      {planningReview.active ? (
-        <section className="cocreate-section planning-review-card">
-          <div className="section-title">
-            <Check size={17} />
-            <span>规划审核</span>
-          </div>
-          <p>
-            {coCreatePlanningKindLabel(planningReview.kind)}
-            {planningReview.chapterCount ? ` · ${planningReview.chapterCount} 章` : ''}
-            {planningReview.targetTotalWords ? ` · ${formatCompact(planningReview.targetTotalWords)} 字` : ''}
-          </p>
-          <button className="tool-button accent full-width" disabled={!canConfirmPlanning} onClick={onConfirmPlanning} type="button">
-            <Play size={16} />
-            审核通过并启动创作
-          </button>
-          {planningReview.collecting ? (
-            <div className="workflow-status running">
-              <strong>重新生成中</strong>
-              <span>AI 正在根据审核意见重写规划。</span>
-            </div>
-          ) : (
-            <PlanningRevisionControls
-              busy={busy}
-              compact
-              disabled={!planningReview.pending}
-              onRevise={onRevisePlanning}
-              revision={planningRevision}
-              setRevision={setPlanningRevision}
-            />
-          )}
-        </section>
-      ) : null}
 
       {workspaceTranscript ? (
         suggestionList ? <section className="cocreate-section cocreate-side-suggestion-section">{suggestionList}</section> : null
@@ -7984,15 +8131,84 @@ export function buildVolumeReviewRevisionPayload(adaptation = {}, volumeReview =
   };
 }
 
-export function buildCoCreatePlanningRevisionPayload(revision = {}) {
-  const feedback = String(revision.feedback || revision.instruction || '').trim();
-  if (!feedback) {
+export function buildCoCreatePlanningRevisionPayload(revision = {}, review = {}) {
+  const instruction = String(revision.instruction || revision.feedback || '').trim();
+  if (!instruction) {
     return { ok: false, error: '请输入审核意见' };
+  }
+  if (!review?.kind) {
+    return {
+      ok: true,
+      body: {
+        feedback: instruction
+      }
+    };
+  }
+  const body = {
+    feedback: instruction,
+    instruction
+  };
+  const kind = String(review.kind || '').trim();
+  if (kind === 'volume_split') {
+    const volumes = Array.isArray(review.volumes) ? review.volumes : [];
+    if (!volumes.length) {
+      return { ok: false, error: '当前分卷规划没有可修改的卷' };
+    }
+    const selected = Number.parseInt(String(revision.volumeIndex || ''), 10);
+    const volume = volumes.find((item) => item.index === selected) || volumes[0];
+    if (!volume?.index) {
+      return { ok: false, error: '请选择要修改的卷' };
+    }
+    return {
+      ok: true,
+      body: {
+        ...body,
+        scope: 'volume',
+        target: coCreatePlanningRevisionVolumeLabel(volume),
+        volume_index: volume.index
+      }
+    };
+  }
+  if (kind === 'chapter_outline') {
+    const chapters = coCreatePlanningRevisionChapterOptions(review);
+    if (!chapters.length) {
+      return { ok: false, error: '当前章节细纲没有可修改的章节' };
+    }
+    const hasVolumes = Array.isArray(review.volumes) && review.volumes.length > 0;
+    const scope = coCreatePlanningRevisionScope(revision.scope, kind, hasVolumes);
+    if (scope === 'all') {
+      return {
+        ok: true,
+        body: {
+          ...body,
+          scope: 'all',
+          target: '全卷'
+        }
+      };
+    }
+    const selected = Number.parseInt(String(revision.chapter || revision.fromChapter || ''), 10);
+    const chapter = chapters.find((item) => item.chapter === selected) || chapters[0];
+    if (!chapter?.chapter) {
+      return { ok: false, error: '请选择要修改的章节' };
+    }
+    return {
+      ok: true,
+      body: {
+        ...body,
+        scope: 'chapter',
+        target: coCreatePlanningRevisionChapterLabel(chapter),
+        chapter: chapter.chapter,
+        from_chapter: chapter.chapter,
+        to_chapter: chapter.chapter
+      }
+    };
   }
   return {
     ok: true,
     body: {
-      feedback
+      ...body,
+      scope: 'all',
+      target: '全局 draft'
     }
   };
 }

@@ -2419,6 +2419,10 @@ h2 {
   gap: 6px;
 }
 
+.planning-revision-target-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .revision-mode-button {
   min-height: 34px;
   border: 1px solid var(--line);
