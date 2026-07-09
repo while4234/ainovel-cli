@@ -3915,7 +3915,8 @@ function StatusPanel({
   setSteerText,
   busy
 }) {
-  const outline = getSnapshotOutlineRows(snapshot);
+  const outlineStructure = getSnapshotOutlineStructure(snapshot);
+  const outline = outlineStructure.chapters;
   const agents = snapshot?.Agents || snapshot?.agents || [];
   const premise = textValue(snapshot, 'PremiseFull', 'premise_full', 'Premise', 'premise');
   const characterDetails = arrayValue(snapshot, 'CharacterDetails', 'character_details');
@@ -3986,15 +3987,11 @@ function StatusPanel({
           <BookOpen size={17} />
           <span>章节</span>
         </div>
-        <div className="chapter-list">
-          {outline.length === 0 ? (
-            <div className="empty-state">暂无大纲</div>
-          ) : (
-            outline.map((item) => (
-              <ChapterRow item={item} key={`${item.chapter}-${item.title}`} />
-            ))
-          )}
-        </div>
+        <OutlineStructureTree
+          emptyText="暂无大纲"
+          granularity={getSnapshotOutlineGranularity(snapshot)}
+          structure={outlineStructure}
+        />
       </section>
 
       <section>
@@ -4701,6 +4698,101 @@ function ChapterRow({ item, granularity }) {
   );
 }
 
+function OutlineStructureTree({ structure, granularity, emptyText = '暂无章节' }) {
+  const groups = structure?.groups || [];
+  const chapters = structure?.chapters || [];
+  const hasVolumes = Boolean(structure?.hasVolumes);
+  const [expandedByKey, setExpandedByKey] = useState({});
+  const volumeKeys = hasVolumes ? groups.map((group) => String(group.key)).join('|') : '';
+
+  useEffect(() => {
+    if (!hasVolumes) {
+      setExpandedByKey({});
+      return;
+    }
+    const currentKeys = new Set(volumeKeys ? volumeKeys.split('|') : []);
+    setExpandedByKey((previous) => {
+      const next = {};
+      for (const [key, expanded] of Object.entries(previous)) {
+        if (expanded && currentKeys.has(key)) {
+          next[key] = true;
+        }
+      }
+      return Object.keys(next).length === Object.keys(previous).length ? previous : next;
+    });
+  }, [hasVolumes, volumeKeys]);
+
+  if (!chapters.length && !groups.length) {
+    return <div className="empty-state">{emptyText}</div>;
+  }
+
+  if (!hasVolumes) {
+    return (
+      <div className="chapter-list outline-flat-list">
+        {chapters.map((item) => (
+          <ChapterRow item={item} granularity={granularity} key={`${item.chapter}-${item.title}`} />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="outline-volume-tree">
+      {groups.map((group) => {
+        const key = String(group.key);
+        const expanded = Boolean(expandedByKey[key]);
+        const rangeLabel = outlineGroupRangeLabel(group);
+        const chapterCount = outlineGroupChapterCount(group);
+        return (
+          <article className="outline-volume-block" key={`outline-volume-${key}`}>
+            <button
+              aria-expanded={expanded}
+              className="outline-volume-toggle"
+              onClick={() => setExpandedByKey((previous) => ({ ...previous, [key]: !previous[key] }))}
+              title={expanded ? '收起章节' : '展开章节'}
+              type="button"
+            >
+              <ChevronRight className={expanded ? 'outline-chevron expanded' : 'outline-chevron'} size={16} />
+              <span className="outline-volume-title">
+                <strong>{group.title}</strong>
+                <small>{[rangeLabel, group.theme].filter(Boolean).join(' / ')}</small>
+              </span>
+              <span className="outline-volume-count">{chapterCount ? `${chapterCount} 章` : '待展开'}</span>
+            </button>
+            {group.summary ? <p className="outline-volume-summary">{group.summary}</p> : null}
+            {expanded ? (
+              <div className="outline-volume-chapters">
+                {group.chapters.length ? (
+                  group.chapters.map((chapter) => (
+                    <ChapterRow
+                      granularity={granularity}
+                      item={chapter}
+                      key={`outline-volume-${key}-chapter-${chapter.chapter}-${chapter.title}`}
+                    />
+                  ))
+                ) : (
+                  <div className="empty-state compact">暂无章节细纲</div>
+                )}
+              </div>
+            ) : null}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProposalOutlineTree({ proposal }) {
+  const structure = outlineStructureFromParts(proposal?.chapters || [], proposal?.volumes || []);
+  return (
+    <OutlineStructureTree
+      emptyText="暂无章节细纲"
+      granularity={proposal?.granularity}
+      structure={structure}
+    />
+  );
+}
+
 function AdaptationProposalWorkspace({ proposal }) {
   if (proposal.volumeReviewReady) {
     return <AdaptationVolumeReviewWorkspace proposal={proposal} />;
@@ -5036,6 +5128,15 @@ function AdaptationPanel({
             {proposal.volumes.length ? <span>{proposal.volumes.length} 卷</span> : null}
           </div>
         </section>
+        {proposal.chapters.length ? (
+          <section className="simulation-section proposal-outline-section">
+            <div className="section-title">
+              <BookOpen size={17} />
+              <span>章节结构</span>
+            </div>
+            <ProposalOutlineTree proposal={proposal} />
+          </section>
+        ) : null}
         {isVolumeReview ? (
           <VolumeReviewControls
             adaptation={adaptation}
@@ -5206,11 +5307,7 @@ function AdaptationPanel({
                   {proposal.rules.slice(0, 4).map((rule, index) => <li key={`proposal-rule-${index}`}>{rule}</li>)}
                 </ul>
               ) : null}
-              <div className="proposal-chapter-list">
-                {proposal.chapters.map((chapter) => (
-                  <ChapterRow item={chapter} granularity={proposal.granularity} key={`proposal-${chapter.chapter}-${chapter.title}`} />
-                ))}
-              </div>
+              <ProposalOutlineTree proposal={proposal} />
               <button className="tool-button accent full-width" disabled={!canConfirm} onClick={() => runWithWindowScrollPreserved(onConfirm)} type="button">
                 <Check size={16} />
                 确认并启动
@@ -8011,6 +8108,101 @@ export function getSnapshotOutlineRows(snapshot) {
     objectValue(snapshot, 'AdaptationProposal', 'adaptationProposal', 'adaptation_proposal') ||
     objectValue(snapshot, 'AdaptationPlan', 'adaptationPlan', 'adaptation_plan')
   );
+}
+
+export function getSnapshotOutlineStructure(snapshot) {
+  const chapters = getSnapshotOutlineRows(snapshot);
+  const volumes = getSnapshotOutlineVolumes(snapshot, chapters.length);
+  return outlineStructureFromParts(chapters, volumes);
+}
+
+function getSnapshotOutlineVolumes(snapshot, chapterCount = 0) {
+  const layeredVolumes = normalizeLayeredOutlineVolumes(
+    arrayValue(snapshot, 'LayeredOutline', 'layeredOutline', 'layered_outline'),
+    chapterCount
+  );
+  if (layeredVolumes.length) {
+    return layeredVolumes;
+  }
+  const proposalSummary = objectValue(snapshot, 'ProposalSummary', 'proposalSummary', 'proposal_summary');
+  const adaptationSummary = objectValue(snapshot, 'AdaptationSummary', 'adaptationSummary', 'adaptation_summary');
+  const plan = objectValue(snapshot, 'AdaptationPlan', 'adaptationPlan', 'adaptation_plan') ||
+    objectValue(snapshot, 'AdaptationProposal', 'adaptationProposal', 'adaptation_proposal');
+  return normalizeProposalVolumes([
+    ...arrayValue(proposalSummary, 'Volumes', 'volumes'),
+    ...arrayValue(adaptationSummary, 'Volumes', 'volumes'),
+    ...arrayValue(plan, 'Volumes', 'volumes')
+  ], chapterCount);
+}
+
+function getSnapshotOutlineGranularity(snapshot) {
+  const proposalSummary = objectValue(snapshot, 'ProposalSummary', 'proposalSummary', 'proposal_summary');
+  const adaptationSummary = objectValue(snapshot, 'AdaptationSummary', 'adaptationSummary', 'adaptation_summary');
+  const plan = objectValue(snapshot, 'AdaptationPlan', 'adaptationPlan', 'adaptation_plan') ||
+    objectValue(snapshot, 'AdaptationProposal', 'adaptationProposal', 'adaptation_proposal');
+  return textValue(proposalSummary, 'Granularity', 'granularity') ||
+    textValue(adaptationSummary, 'Granularity', 'granularity') ||
+    textValue(plan, 'Granularity', 'granularity');
+}
+
+function normalizeLayeredOutlineVolumes(volumes, chapterCount = 0) {
+  const normalized = (volumes || [])
+    .map((volume, index) => {
+      const targetFrom = numberValue(volume, 'TargetFrom', 'targetFrom', 'target_from', 'From', 'from');
+      let targetTo = numberValue(volume, 'TargetTo', 'targetTo', 'target_to', 'To', 'to');
+      const plannedCount = numberValue(volume, 'ChapterCount', 'chapterCount', 'chapter_count');
+      if (!targetTo && targetFrom > 0 && plannedCount > 0) {
+        targetTo = targetFrom + plannedCount - 1;
+      }
+      return {
+        index: numberValue(volume, 'Index', 'index') || index + 1,
+        title: textValue(volume, 'Title', 'title') || `第 ${index + 1} 卷`,
+        theme: textValue(volume, 'Theme', 'theme'),
+        goal: textValue(volume, 'Goal', 'goal'),
+        summary: textValue(volume, 'Summary', 'summary'),
+        targetFrom,
+        targetTo,
+        sourceFrom: numberValue(volume, 'SourceFrom', 'sourceFrom', 'source_from'),
+        sourceTo: numberValue(volume, 'SourceTo', 'sourceTo', 'source_to')
+      };
+    })
+    .filter((volume) => volume.targetFrom > 0 && volume.targetTo >= volume.targetFrom && (!chapterCount || volume.targetFrom <= chapterCount))
+    .sort((a, b) => a.targetFrom - b.targetFrom || a.index - b.index);
+  return dedupeProposalVolumes(normalized);
+}
+
+function outlineStructureFromParts(chapters = [], volumes = []) {
+  const normalizedChapters = Array.isArray(chapters) ? chapters : [];
+  const normalizedVolumes = Array.isArray(volumes) ? volumes : [];
+  const groups = normalizedChapters.length || normalizedVolumes.length
+    ? proposalVolumeGroups({ chapters: normalizedChapters, volumes: normalizedVolumes })
+    : [];
+  return {
+    chapters: normalizedChapters,
+    volumes: normalizedVolumes,
+    hasVolumes: normalizedVolumes.length > 0,
+    groups
+  };
+}
+
+function outlineGroupRangeLabel(group) {
+  if (!group?.from || !group?.to) {
+    return '';
+  }
+  return group.from === group.to ? `第 ${group.from} 章` : `第 ${group.from}-${group.to} 章`;
+}
+
+function outlineGroupChapterCount(group) {
+  if (!group) {
+    return 0;
+  }
+  if (group.chapters?.length) {
+    return group.chapters.length;
+  }
+  if (group.from > 0 && group.to >= group.from) {
+    return group.to - group.from + 1;
+  }
+  return 0;
 }
 
 export function isProjectRunning(snapshot) {

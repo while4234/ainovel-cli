@@ -30,6 +30,7 @@ import {
   getVisibleAdaptationProposalReview,
   getSimulationProfileStatus,
   getSnapshotOutlineRows,
+  getSnapshotOutlineStructure,
   inferCoCreateIntakeFromInitial,
   isCoCreateDecisionAnswerComplete,
   isCoCreateDecisionPayloadComplete,
@@ -580,6 +581,67 @@ describe('workspace progress derivation', () => {
     expect(review.chapterCount).toBe(1);
     expect(review.chapters[0].sourceCoverage.chapters).toEqual([1, 2]);
     expect(review.chapters[0].wordBudget.targetRunes).toBe(3000);
+  });
+
+  it('groups detailed adaptation proposal chapters by volume for the status tree', () => {
+    const structure = getSnapshotOutlineStructure({
+      AdaptationProposal: {
+        status: 'proposal',
+        volumes: [
+          { index: 1, title: 'Opening arc', target_from: 1, target_to: 2 },
+          { index: 2, title: 'Reveal arc', target_from: 3, target_to: 4 }
+        ],
+        chapters: [
+          { chapter: 1, title: 'One' },
+          { chapter: 2, title: 'Two' },
+          { chapter: 3, title: 'Three' },
+          { chapter: 4, title: 'Four' }
+        ]
+      }
+    });
+
+    expect(structure.hasVolumes).toBe(true);
+    expect(structure.groups).toHaveLength(2);
+    expect(structure.groups[0].title).toBe('第 1 卷：Opening arc');
+    expect(structure.groups[0].chapters.map((chapter) => chapter.chapter)).toEqual([1, 2]);
+    expect(structure.groups[1].chapters.map((chapter) => chapter.chapter)).toEqual([3, 4]);
+  });
+
+  it('uses layered outline volumes before falling back to a flat status outline', () => {
+    const structure = getSnapshotOutlineStructure({
+      LayeredOutline: [
+        { Index: 1, Title: 'First volume', Theme: 'Pressure', TargetFrom: 1, ChapterCount: 2 }
+      ],
+      Outline: [
+        { Chapter: 1, Title: 'Opening' },
+        { Chapter: 2, Title: 'Choice' }
+      ]
+    });
+
+    expect(structure.hasVolumes).toBe(true);
+    expect(structure.volumes[0]).toMatchObject({
+      index: 1,
+      title: 'First volume',
+      targetFrom: 1,
+      targetTo: 2
+    });
+    expect(structure.groups[0].chapters.map((chapter) => chapter.title)).toEqual(['Opening', 'Choice']);
+  });
+
+  it('keeps unvolumed proposals as one directly visible chapter group', () => {
+    const structure = getSnapshotOutlineStructure({
+      AdaptationProposal: {
+        status: 'proposal',
+        chapters: [
+          { chapter: 1, title: 'Opening' },
+          { chapter: 2, title: 'Turn' }
+        ]
+      }
+    });
+
+    expect(structure.hasVolumes).toBe(false);
+    expect(structure.groups).toHaveLength(1);
+    expect(structure.groups[0].chapters.map((chapter) => chapter.chapter)).toEqual([1, 2]);
   });
 
   it('deduplicates proposal volumes mirrored in summary and plan', () => {
