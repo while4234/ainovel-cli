@@ -3150,12 +3150,8 @@ export default function App() {
                 <AdaptationProposalWorkspace proposal={adaptationProposalReview} />
               ) : showCoCreatePlanningWorkspace ? (
                 <CoCreatePlanningWorkspace
-                  busy={projectBusy}
                   planningRevision={planningRevision}
                   review={coCreatePlanningReview}
-                  onConfirm={confirmCoCreatePlanningRun}
-                  onRevise={reviseCoCreatePlanningRun}
-                  setPlanningRevision={setPlanningRevision}
                 />
               ) : showCoCreateWorkspace ? (
                 <CoCreateWorkspace coCreate={coCreate} />
@@ -3445,12 +3441,9 @@ function hasCoCreateWorkspaceContent(coCreate) {
   );
 }
 
-function CoCreatePlanningWorkspace({ review, busy, planningRevision, setPlanningRevision, onConfirm, onRevise }) {
-  const groups = proposalVolumeGroups({
-    chapters: review.chapters || [],
-    volumes: review.volumes || []
-  });
-  const confirmAction = coCreatePlanningConfirmAction(review);
+function CoCreatePlanningWorkspace({ review, planningRevision }) {
+  const groups = coCreatePlanningWorkspaceGroups(review, planningRevision);
+  const showBriefOnly = review.kind === 'blueprint' || groups.length === 0;
   return (
     <div className="proposal-workspace cocreate-planning-workspace">
       <header className="proposal-workspace-header">
@@ -3465,30 +3458,7 @@ function CoCreatePlanningWorkspace({ review, busy, planningRevision, setPlanning
           {review.volumes?.length ? <span>{review.volumes.length} 卷</span> : null}
         </div>
       </header>
-      {review.brief ? <p className="proposal-brief">{review.brief}</p> : null}
-      <div className="proposal-review-actions">
-        {confirmAction.visible ? (
-          <button className="tool-button accent" disabled={busy || !review.pending} onClick={onConfirm} type="button">
-            <Play size={16} />
-            {confirmAction.label}
-          </button>
-        ) : null}
-        {review.collecting ? (
-          <div className="workflow-status running">
-            <strong>重新生成中</strong>
-            <span>AI 正在根据审核意见重写规划，完成后会回到待审核。</span>
-          </div>
-        ) : (
-          <PlanningRevisionControls
-            busy={busy}
-            disabled={!review.pending}
-            onRevise={onRevise}
-            review={review}
-            revision={planningRevision}
-            setRevision={setPlanningRevision}
-          />
-        )}
-      </div>
+      {showBriefOnly && review.brief ? <p className="proposal-brief">{review.brief}</p> : null}
       <div className="proposal-volume-stack">
         {groups.map((group) => (
           <section className="proposal-volume-block" key={`cocreate-planning-${group.key}`}>
@@ -3498,6 +3468,7 @@ function CoCreatePlanningWorkspace({ review, busy, planningRevision, setPlanning
                 <span>第 {group.from || '?'}-{group.to || '?'} 章</span>
               </div>
               {group.theme ? <p>{group.theme}</p> : null}
+              {group.summary ? <p>{group.summary}</p> : null}
             </div>
             <div className="proposal-chapter-grid">
               {group.chapters.map((chapter) => (
@@ -3509,6 +3480,54 @@ function CoCreatePlanningWorkspace({ review, busy, planningRevision, setPlanning
       </div>
     </div>
   );
+}
+
+function coCreatePlanningWorkspaceGroups(review = {}, revision = {}) {
+  const groups = proposalVolumeGroups({
+    chapters: review.chapters || [],
+    volumes: review.volumes || []
+  });
+  const kind = String(review?.kind || '').trim();
+  if (kind === 'volume_split') {
+    const selected = coCreatePlanningRevisionVolumeSelection(revision?.volumeIndex, review.volumes || []);
+    const group = groups.find((item) => String(item.key) === selected);
+    return group ? [group] : groups.slice(0, 1);
+  }
+  if (kind !== 'chapter_outline') {
+    return groups;
+  }
+  const hasVolumes = Array.isArray(review.volumes) && review.volumes.length > 0;
+  const scope = coCreatePlanningRevisionScope(revision?.scope, kind, hasVolumes);
+  if (scope !== 'chapter') {
+    return groups;
+  }
+  const selected = Number.parseInt(coCreatePlanningRevisionChapterSelection(
+    revision?.chapter || revision?.fromChapter,
+    coCreatePlanningRevisionChapterOptions(review)
+  ), 10);
+  if (!Number.isInteger(selected) || selected <= 0) {
+    return groups;
+  }
+  const group = groups.find((item) => item.chapters.some((chapter) => chapter.chapter === selected));
+  if (!group) {
+    const chapter = coCreatePlanningRevisionChapterOptions(review).find((item) => item.chapter === selected);
+    return chapter ? [{
+      key: `chapter-${selected}`,
+      title: '选中章节',
+      from: selected,
+      to: selected,
+      theme: '',
+      summary: '',
+      chapters: [chapter]
+    }] : groups;
+  }
+  return [{
+    ...group,
+    key: `${group.key}-chapter-${selected}`,
+    from: selected,
+    to: selected,
+    chapters: group.chapters.filter((chapter) => chapter.chapter === selected)
+  }];
 }
 
 function coCreatePlanningConfirmAction(review = {}) {
@@ -3580,7 +3599,6 @@ function coCreatePlanningRevisionChapterLabel(chapter = {}) {
 
 function PlanningRevisionControls({ busy, compact = false, disabled = false, onRevise, review = {}, revision, setRevision }) {
   const instruction = String(revision?.instruction || revision?.feedback || '');
-  const status = revision?.status || 'idle';
   const volumes = Array.isArray(review?.volumes) ? review.volumes : [];
   const chapterOptions = coCreatePlanningRevisionChapterOptions(review);
   const kind = String(review?.kind || '').trim();
@@ -3679,10 +3697,6 @@ function PlanningRevisionControls({ busy, compact = false, disabled = false, onR
         <WandSparkles size={16} />
         提交意见并让 AI 修改
       </button>
-      <div className={`workflow-status ${status}`}>
-        <strong>{workflowStatusText(status)}</strong>
-        <span>{revision?.error || revision?.message || '等待审核意见'}</span>
-      </div>
     </div>
   );
 }
@@ -4104,8 +4118,10 @@ function CoCreatePanel({
   activeProject,
   busy,
   coCreate,
+  planningRevision,
   planningReview = {},
   setCoCreate,
+  setPlanningRevision,
   adaptation,
   onBegin,
   onConfirmIntake,
@@ -4116,6 +4132,8 @@ function CoCreatePanel({
   onRevise,
   onResolveDecision = () => {},
   onCommit,
+  onConfirmPlanning = () => {},
+  onRevisePlanning = () => {},
   onCancel,
   workspaceTranscript = false
 }) {
@@ -4146,6 +4164,7 @@ function CoCreatePanel({
   const hasDraftPrompt = Boolean(coCreate.draftPrompt.trim());
   const canCommit = Boolean(activeProject && !busy && hasDraftPrompt && coCreate.canStart);
   const canCancel = canCancelCoCreateFlow({ activeProject, busy, coCreate });
+  const canConfirmPlanning = Boolean(activeProject && !busy && planningReview.pending);
   const visibleSuggestions = coCreate.suggestions.slice(0, 3);
   const showDraftWorkspace = Boolean(coCreate.ready || hasDraftPrompt);
   const suggestionList = visibleSuggestions.length ? (
@@ -4179,30 +4198,61 @@ function CoCreatePanel({
     }
   };
   if (planningReview.active) {
+    const confirmAction = coCreatePlanningConfirmAction(planningReview);
+    const revisionStatus = planningRevision?.status || 'idle';
+    const reviewStatus = planningReview.collecting ? 'running' : planningReview.pending ? 'ready' : 'idle';
     return (
-      <div className="side-content cocreate-panel">
+      <div className="side-content proposal-side-panel">
         {coCreate.error ? <div className="error-banner compact">{coCreate.error}</div> : null}
-        <section className="cocreate-section planning-review-card">
+        {planningRevision?.error ? <div className="error-banner compact">{planningRevision.error}</div> : null}
+        <section className="simulation-section proposal-control-section planning-review-card">
           <div className="section-title">
             <Check size={17} />
             <span>规划审核</span>
           </div>
-          <p>
-            {coCreatePlanningKindLabel(planningReview.kind)}
-            {planningReview.chapterCount ? ` · ${planningReview.chapterCount} 章` : ''}
-            {planningReview.targetTotalWords ? ` · ${formatCompact(planningReview.targetTotalWords)} 字` : ''}
-          </p>
+          <div className="proposal-side-summary">
+            <strong>{planningReview.collecting ? '重新生成中' : '待审核'}</strong>
+            <span>
+              {coCreatePlanningKindLabel(planningReview.kind)}
+              {planningReview.chapterCount ? ` / ${planningReview.chapterCount} 章` : ''}
+              {planningReview.targetTotalWords ? ` / ${formatCompact(planningReview.targetTotalWords)} 字` : ''}
+            </span>
+            {planningReview.volumes?.length ? <span>{planningReview.volumes.length} 卷</span> : null}
+          </div>
           {planningReview.collecting ? (
             <div className="workflow-status running">
               <strong>重新生成中</strong>
               <span>AI 正在根据审核意见重新生成规划。</span>
             </div>
-          ) : (
-            <div className="workflow-status ready">
-              <strong>待审核</strong>
-              <span>规划内容、审核通过和修改意见已移到中间工作区。</span>
+          ) : null}
+        </section>
+        {!planningReview.collecting ? (
+          <section className="simulation-section proposal-revision-section">
+            <div className="section-title">
+              <Pencil size={17} />
+              <span>修改规划</span>
             </div>
-          )}
+            <PlanningRevisionControls
+              busy={busy}
+              disabled={!planningReview.pending}
+              onRevise={onRevisePlanning}
+              review={planningReview}
+              revision={planningRevision}
+              setRevision={setPlanningRevision}
+            />
+          </section>
+        ) : null}
+        <section className="simulation-section proposal-confirm-section">
+          {confirmAction.visible ? (
+            <button className="tool-button accent full-width" disabled={!canConfirmPlanning} onClick={() => runWithWindowScrollPreserved(onConfirmPlanning)} type="button">
+              <Check size={16} />
+              {confirmAction.label}
+            </button>
+          ) : null}
+          <div className={`workflow-status ${revisionStatus !== 'idle' ? revisionStatus : reviewStatus}`}>
+            <strong>{workflowStatusText(revisionStatus !== 'idle' ? revisionStatus : reviewStatus)}</strong>
+            <span>{planningRevision?.message || (confirmAction.visible ? '等待审稿' : '请先提交修改意见重新生成规划')}</span>
+          </div>
         </section>
       </div>
     );
