@@ -90,6 +90,7 @@ type projectHost interface {
 	Rollback(domain.RollbackRequest) (domain.RollbackResult, error)
 	Resume() (string, error)
 	ReviseChapter(host.ChapterRevisionRequest) (host.ChapterRevisionResult, error)
+	ReviseChapterOutline(context.Context, host.ChapterOutlineRevisionRequest) (host.ChapterOutlineRevisionResult, error)
 	Continue(string) error
 	Steer(string) error
 	CoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
@@ -902,6 +903,18 @@ func (s *ProjectSession) ReviseChapter(req host.ChapterRevisionRequest) (host.Ch
 	defer unlock()
 
 	result, err := s.host.ReviseChapter(req)
+	s.AppendSnapshot()
+	return result, err
+}
+
+func (s *ProjectSession) ReviseChapterOutline(ctx context.Context, req host.ChapterOutlineRevisionRequest) (host.ChapterOutlineRevisionResult, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return host.ChapterOutlineRevisionResult{}, err
+	}
+	defer unlock()
+
+	result, err := s.host.ReviseChapterOutline(ctx, req)
 	s.AppendSnapshot()
 	return result, err
 }

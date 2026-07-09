@@ -78,6 +78,7 @@ import {
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
   reviseChapter,
+  reviseChapterOutline,
   reviseCoCreatePlanning,
   reviseCoCreate,
   resolveCoCreateDecisions,
@@ -220,6 +221,17 @@ function createChapterRevisionState() {
     chapter: '1',
     mode: 'rewrite',
     instruction: '',
+    status: 'idle',
+    message: '',
+    error: ''
+  };
+}
+
+function createOutlineRevisionState() {
+  return {
+    chapter: '1',
+    instruction: '',
+    active: false,
     status: 'idle',
     message: '',
     error: ''
@@ -594,6 +606,7 @@ export default function App() {
   const [simulation, setSimulation] = useState(createSimulationState);
   const [adaptation, setAdaptation] = useState(createAdaptationState);
   const [chapterRevision, setChapterRevision] = useState(createChapterRevisionState);
+  const [outlineRevision, setOutlineRevision] = useState(createOutlineRevisionState);
   const [chapterContent, setChapterContent] = useState(createChapterContentState);
   const [externalImport, setExternalImport] = useState(createExternalImportState);
   const [exportJob, setExportJob] = useState(createExportState);
@@ -641,7 +654,12 @@ export default function App() {
     () => getCompletedBookSelectedChapterView(snapshot, chapterRevision),
     [snapshot, chapterRevision.chapter]
   );
-  const showChapterRevisionWorkspace = sideView === 'status' && selectedChapterRevisionView.visible;
+  const selectedOutlineRevisionView = useMemo(
+    () => getOutlineRevisionView(snapshot, outlineRevision),
+    [snapshot, outlineRevision.active, outlineRevision.chapter]
+  );
+  const showOutlineRevisionWorkspace = sideView === 'status' && selectedOutlineRevisionView.active;
+  const showChapterRevisionWorkspace = sideView === 'status' && !showOutlineRevisionWorkspace && selectedChapterRevisionView.visible;
 
   const resetProjectScopedState = useCallback((clearProject = false) => {
     lastSeqRef.current = 0;
@@ -650,6 +668,7 @@ export default function App() {
     setSimulation(resetSimulationProjectState);
     setAdaptation(resetAdaptationProjectState);
     setChapterRevision(createChapterRevisionState());
+    setOutlineRevision(createOutlineRevisionState());
     setChapterContent(createChapterContentState());
     setExternalImport(createExternalImportState());
     setExportJob(createExportState());
@@ -1354,6 +1373,110 @@ export default function App() {
     }
     await runAction((projectId) => steerProject(projectId, text));
     setSteerText('');
+  };
+
+  const submitOutlineRevision = async () => {
+    const projectId = activeProject?.id;
+    if (!projectId) {
+      return;
+    }
+    const payload = buildOutlineRevisionPayload(outlineRevision, snapshot);
+    if (!payload.ok) {
+      setOutlineRevision((previous) => ({
+        ...previous,
+        active: true,
+        status: 'error',
+        message: '',
+        error: payload.error
+      }));
+      return;
+    }
+    setBusy(true);
+    setOutlineRevision((previous) => ({
+      ...previous,
+      active: true,
+      status: 'running',
+      message: '',
+      error: ''
+    }));
+    try {
+      const data = await reviseChapterOutline(projectId, payload.body);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setWorkbench((previous) => ({ ...previous, snapshot: data?.snapshot || previous.snapshot }));
+      setOutlineRevision((previous) => ({
+        ...previous,
+        chapter: String(payload.body.chapter),
+        active: true,
+        status: 'done',
+        message: outlineRevisionSuccessMessage(data?.revision, payload.body.chapter),
+        error: ''
+      }));
+    } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      await refreshCurrentProjectSnapshot(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setOutlineRevision((previous) => ({
+        ...previous,
+        active: true,
+        status: 'error',
+        message: '',
+        error: err.message
+      }));
+    } finally {
+      if (isCurrentProject(projectId)) {
+        setBusy(false);
+      }
+    }
+  };
+
+  const refreshOutlineRevision = async () => {
+    const projectId = activeProject?.id;
+    if (!projectId) {
+      return;
+    }
+    setBusy(true);
+    setOutlineRevision((previous) => ({
+      ...previous,
+      active: true,
+      status: 'running',
+      message: '',
+      error: ''
+    }));
+    try {
+      const data = await getSnapshot(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setWorkbench((previous) => ({ ...previous, snapshot: data?.snapshot || previous.snapshot }));
+      setOutlineRevision((previous) => ({
+        ...previous,
+        active: true,
+        status: 'done',
+        message: '章节细纲已刷新',
+        error: ''
+      }));
+    } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setOutlineRevision((previous) => ({
+        ...previous,
+        active: true,
+        status: 'error',
+        message: '',
+        error: err.message
+      }));
+    } finally {
+      if (isCurrentProject(projectId)) {
+        setBusy(false);
+      }
+    }
   };
 
   const reviseCompletedChapter = async () => {
@@ -3216,8 +3339,8 @@ export default function App() {
 
         <div className="workbench-stack">
           <section
-            className={`stream-area ${showAdaptationProposalWorkspace || showCoCreatePlanningWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : showChapterRevisionWorkspace ? 'chapter-revision-workspace-output' : ''}`}
-            aria-label={showAdaptationProposalWorkspace ? '改编提案审稿区' : showChapterRevisionWorkspace ? '单章返工预览区' : '实时创作流'}
+            className={`stream-area ${showAdaptationProposalWorkspace || showCoCreatePlanningWorkspace || showOutlineRevisionWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : showChapterRevisionWorkspace ? 'chapter-revision-workspace-output' : ''}`}
+            aria-label={showAdaptationProposalWorkspace ? '改编提案审稿区' : showOutlineRevisionWorkspace ? '章节细纲预览区' : showChapterRevisionWorkspace ? '单章返工预览区' : '实时创作流'}
           >
             {activeProject ? (
               showAdaptationProposalWorkspace ? (
@@ -3229,6 +3352,8 @@ export default function App() {
                 />
               ) : showCoCreateWorkspace ? (
                 <CoCreateWorkspace coCreate={coCreate} />
+              ) : showOutlineRevisionWorkspace ? (
+                <OutlineChapterRevisionWorkspace selected={selectedOutlineRevisionView} />
               ) : showChapterRevisionWorkspace ? (
                 <CompletedChapterRevisionWorkspace selected={selectedChapterRevisionView} content={chapterContent} />
               ) : (
@@ -3338,8 +3463,12 @@ export default function App() {
               snapshot={snapshot}
               activeProject={activeProject}
               chapterRevision={chapterRevision}
+              outlineRevision={outlineRevision}
               setChapterRevision={setChapterRevision}
+              setOutlineRevision={setOutlineRevision}
               onPause={pauseWriting}
+              onRefreshOutline={refreshOutlineRevision}
+              onReviseOutline={submitOutlineRevision}
               onReviseChapter={reviseCompletedChapter}
               onSteer={submitSteer}
               steerText={steerText}
@@ -3833,6 +3962,38 @@ function CoCreateWorkspace({ coCreate }) {
   );
 }
 
+function OutlineChapterRevisionWorkspace({ selected }) {
+  const chapter = selected?.chapter || 0;
+  const outlineRow = selected?.outlineRow || null;
+  if (!outlineRow) {
+    return (
+      <div className="proposal-workspace">
+        <article className="stream-round chapter-revision-empty">
+          <strong>暂无章节细纲</strong>
+          <span className="muted">请刷新项目快照后重试。</span>
+        </article>
+      </div>
+    );
+  }
+  return (
+    <div className="proposal-workspace outline-revision-workspace">
+      <header className="proposal-workspace-header">
+        <div>
+          <div className="eyebrow">章节细纲修改</div>
+          <h3>{`第 ${chapter} 章：${outlineRow.title}`}</h3>
+        </div>
+        <div className="proposal-workspace-metrics">
+          {outlineRow.writtenWordCount > 0 ? <span>已写 {formatCompact(outlineRow.writtenWordCount)} 字</span> : <span>未写正文</span>}
+          {outlineRow.scenes?.length ? <span>{outlineRow.scenes.length} 场</span> : null}
+        </div>
+      </header>
+      <div className="proposal-chapter-grid">
+        <ProposalChapterCard chapter={outlineRow} granularity={selected.granularity} />
+      </div>
+    </div>
+  );
+}
+
 function CompletedChapterRevisionWorkspace({ selected, content }) {
   const chapter = selected?.chapter || 0;
   const title = selected?.title || `第 ${chapter || '?'} 章`;
@@ -4059,8 +4220,12 @@ function StatusPanel({
   snapshot,
   activeProject,
   chapterRevision,
+  outlineRevision,
   setChapterRevision,
+  setOutlineRevision,
   onPause,
+  onRefreshOutline,
+  onReviseOutline,
   onReviseChapter,
   onSteer,
   steerText,
@@ -4125,6 +4290,17 @@ function StatusPanel({
         </section>
       ) : null}
 
+      <OutlineChapterRevisionControls
+        activeProject={activeProject}
+        busy={busy}
+        outline={outline}
+        revision={outlineRevision}
+        running={running}
+        setRevision={setOutlineRevision}
+        onRefresh={onRefreshOutline}
+        onRevise={onReviseOutline}
+      />
+
       <CompletedChapterRevisionControls
         activeProject={activeProject}
         busy={busy}
@@ -4172,6 +4348,96 @@ const chapterRevisionModes = [
   { value: 'rewrite', label: '重写' },
   { value: 'polish', label: '打磨' }
 ];
+
+function OutlineChapterRevisionControls({
+  activeProject,
+  busy,
+  outline,
+  revision,
+  running,
+  setRevision,
+  onRefresh,
+  onRevise
+}) {
+  const selectedChapter = clampOutlineChapterSelection(revision.chapter, outline);
+  useEffect(() => {
+    if (!outline.length) {
+      if (revision.active) {
+        setRevision((previous) => ({ ...previous, active: false }));
+      }
+      return;
+    }
+    if (selectedChapter !== String(revision.chapter || '')) {
+      setRevision((previous) => ({ ...previous, chapter: selectedChapter }));
+    }
+  }, [outline.length, revision.active, revision.chapter, selectedChapter, setRevision]);
+  if (!outline.length) {
+    return null;
+  }
+  const instruction = String(revision.instruction || '');
+  const canSubmit = Boolean(activeProject && !busy && !running && instruction.trim());
+  const canRefresh = Boolean(activeProject && !busy);
+  const update = (changes) => setRevision((previous) => ({
+    ...previous,
+    ...changes,
+    active: true,
+    status: 'idle',
+    message: '',
+    error: ''
+  }));
+  const activatePreview = () => setRevision((previous) => (
+    previous.active ? previous : { ...previous, active: true }
+  ));
+  return (
+    <section className="simulation-section proposal-revision-section">
+      <div className="section-title">
+        <Pencil size={17} />
+        <span>章节细纲修改</span>
+      </div>
+      <label className="field-label proposal-select-line">
+        <span>章节</span>
+        <select
+          disabled={busy}
+          value={selectedChapter}
+          onFocus={activatePreview}
+          onChange={(event) => update({ chapter: event.target.value })}
+        >
+          {outline.map((item) => (
+            <option key={`outline-revision-${item.chapter}`} value={item.chapter}>
+              第 {item.chapter} 章：{item.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field-label proposal-select-line">
+        <span>修改要求</span>
+        <textarea
+          className="proposal-revision-textarea"
+          disabled={busy}
+          placeholder="写下这一章的剧情、节奏、伏笔、人物关系或场景调整要求..."
+          value={instruction}
+          onFocus={activatePreview}
+          onChange={(event) => update({ instruction: event.target.value })}
+        />
+      </label>
+      {running ? <div className="settings-note warning">创作运行中，请先暂停后再提交章节细纲修改。</div> : null}
+      <div className="simulation-actions">
+        <button className="tool-button" disabled={!canRefresh} onClick={onRefresh} type="button">
+          <RefreshCw size={16} />
+          刷新细纲
+        </button>
+        <button className="tool-button accent" disabled={!canSubmit} onClick={() => runWithWindowScrollPreserved(onRevise)} type="button">
+          <WandSparkles size={16} />
+          提交修改
+        </button>
+      </div>
+      <div className={`workflow-status ${revision.status || 'idle'}`}>
+        <strong>{workflowStatusText(revision.status || 'idle')}</strong>
+        <span>{revision.error || revision.message || '选择章节后可在中间查看当前细纲'}</span>
+      </div>
+    </section>
+  );
+}
 
 function CompletedChapterRevisionControls({
   activeProject,
@@ -8680,6 +8946,59 @@ export function buildAdaptationRevisionPayload(adaptation = {}, proposal = {}) {
       instruction
     }
   };
+}
+
+export function getOutlineRevisionView(snapshot, revision = {}) {
+  const outline = getSnapshotOutlineRows(snapshot).filter((item) => item.chapter > 0);
+  const selectedChapter = clampOutlineChapterSelection(revision.chapter, outline);
+  const chapter = Number.parseInt(selectedChapter, 10);
+  const outlineRow = outline.find((item) => item.chapter === chapter) || outline[0] || null;
+  return {
+    active: Boolean(revision.active && outlineRow),
+    selectedChapter,
+    chapter: outlineRow?.chapter || chapter,
+    outlineRow,
+    outline,
+    granularity: getSnapshotOutlineGranularity(snapshot)
+  };
+}
+
+export function buildOutlineRevisionPayload(revision = {}, snapshot = {}) {
+  const outline = getSnapshotOutlineRows(snapshot).filter((item) => item.chapter > 0);
+  if (!outline.length) {
+    return { ok: false, error: '当前项目没有可修改的章节细纲' };
+  }
+  const instruction = String(revision.instruction || '').trim();
+  if (!instruction) {
+    return { ok: false, error: '请输入修改要求' };
+  }
+  const chapter = Number.parseInt(String(revision.chapter || ''), 10);
+  if (!Number.isInteger(chapter) || !outline.some((item) => item.chapter === chapter)) {
+    return { ok: false, error: '请选择要修改的章节' };
+  }
+  return {
+    ok: true,
+    body: {
+      chapter,
+      instruction
+    }
+  };
+}
+
+export function outlineRevisionSuccessMessage(revision = {}, chapter = 0) {
+  const prefix = `第 ${chapter} 章细纲已修改`;
+  const rewriteQueued = Boolean(revision?.rewrite_queued || revision?.rewriteQueued || revision?.RewriteQueued);
+  const draftReset = Boolean(revision?.draft_reset || revision?.draftReset || revision?.DraftReset);
+  if (rewriteQueued && draftReset) {
+    return `${prefix}，草稿已重置并加入重写队列`;
+  }
+  if (rewriteQueued) {
+    return `${prefix}，已加入重写队列`;
+  }
+  if (draftReset) {
+    return `${prefix}，草稿已重置`;
+  }
+  return prefix;
 }
 
 export function getCompletedBookChapterRevisionView(snapshot) {

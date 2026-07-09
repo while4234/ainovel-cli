@@ -600,7 +600,7 @@ func TestRepairArcOutlineDeletesBatchArtifactsAndQueuesCompletedChapters(t *test
 	if len(progress.PendingRewrites) != 3 || progress.PendingRewrites[0] != 1 || progress.PendingRewrites[1] != 2 || progress.PendingRewrites[2] != 99 {
 		t.Fatalf("pending rewrites = %v, want [1 2 99]", progress.PendingRewrites)
 	}
-	if !strings.Contains(progress.RewriteReason, "old queue") || !strings.Contains(progress.RewriteReason, "outline duplicate repair V1 A1") {
+	if !strings.Contains(progress.RewriteReason, "old queue") || !strings.Contains(progress.RewriteReason, "outline repair V1 A1") {
 		t.Fatalf("rewrite reason did not preserve old reason and append repair reason: %q", progress.RewriteReason)
 	}
 	if progress.InProgressChapter != 0 || len(progress.CompletedScenes) != 0 {

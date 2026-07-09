@@ -28,6 +28,21 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: formal single-chapter outline
+  revision after writing has started. The Web status panel can now select any
+  completed, in-progress, or future chapter and send a natural-language edit
+  instruction to the architect model. The Host preserves chapter numbering and
+  adaptation anchors/budgets/constraints, rejects unchanged output, and uses
+  configured model/structure retries. Store invalidation clears stale drafts,
+  finals, summaries, reviews, adaptation checks, world/cast facts, and affected
+  arc/volume summaries. Completed chapters enter `PendingRewrites`; completed
+  books reopen; the existing router then performs chapter rewrite/review before
+  affected arc/volume postprocessing and only then continues new writing.
+  Flat and layered outlines are both supported. Validation passed for focused
+  Go packages, full `go test ./... -count=1`, 150 Web UI tests, production UI
+  build, `git diff --check`, runtime smoke check, and read-only Playwright UI
+  inspection. Web was rebuilt/restarted on `http://127.0.0.1:9898` as PID
+  `59596`.
 - Latest source/runtime change: current local commit
   `fix: keep adaptation on planned chapters at boundaries`:
   Flow routing now treats confirmed adaptation projects as fixed-plan stories

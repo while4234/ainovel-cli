@@ -29,6 +29,7 @@ import {
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
   reviseChapter,
+  reviseChapterOutline,
   reviseCoCreatePlanning,
   reviseCoCreate,
   resolveCoCreateDecision,
@@ -222,6 +223,23 @@ describe('web API helpers', () => {
         chapter: 3,
         mode: 'polish',
         instruction: 'tighten the ending'
+      })
+    }));
+  });
+
+  it('sends chapter outline revision payloads', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await reviseChapterOutline('project-1', {
+      chapter: 7,
+      instruction: 'move the reveal into the courtroom scene'
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/outline/chapters/revise', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        chapter: 7,
+        instruction: 'move the reveal into the courtroom scene'
       })
     }));
   });

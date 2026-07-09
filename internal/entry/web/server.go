@@ -380,6 +380,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectContinue(w, r, id)
 	case "chapters/revise":
 		s.handleProjectChapterRevise(w, r, id)
+	case "outline/chapters/revise":
+		s.handleProjectChapterOutlineRevise(w, r, id)
 	case "steer":
 		s.handleProjectSteer(w, r, id)
 	case "events/history":
@@ -756,6 +758,13 @@ type projectActionResponse struct {
 	Running  bool                `json:"running"`
 	Revision *apiChapterRevision `json:"revision,omitempty"`
 	Export   *apiExportResult    `json:"export,omitempty"`
+}
+
+type projectChapterOutlineRevisionResponse struct {
+	Project  ProjectManifest           `json:"project"`
+	Snapshot any                       `json:"snapshot"`
+	Running  bool                      `json:"running"`
+	Revision apiChapterOutlineRevision `json:"revision"`
 }
 
 func decodeTextRequest(r *http.Request) (string, error) {

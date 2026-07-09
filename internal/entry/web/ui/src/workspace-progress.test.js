@@ -10,6 +10,7 @@ import {
   buildCoCreateDecisionPayload,
   buildCoCreateIntakeInitial,
   buildExportSuggestedName,
+  buildOutlineRevisionPayload,
   buildVolumeReviewRevisionPayload,
   canCancelCoCreateFlow,
   canRunAdaptationAnalysis,
@@ -27,6 +28,7 @@ import {
   getCompletedBookChapterRevisionView,
   getCompletedBookSelectedChapterView,
   getCoCreatePlanningReview,
+  getOutlineRevisionView,
   getVisibleAdaptationProposalReview,
   getSimulationProfileStatus,
   getSnapshotOutlineRows,
@@ -39,6 +41,7 @@ import {
   isSimulationProfileActionBusy,
   isProjectRunning,
   normalizeCoCreateDecisionAnswers,
+  outlineRevisionSuccessMessage,
   resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords,
   resolveVisibleDefaultModel,
@@ -448,6 +451,71 @@ describe('workspace progress derivation', () => {
     expect(rows[0].wordBudget.targetRunes).toBe(4500);
     expect(rows[0].sourceCoverage.from).toBe(4);
     expect(rows[1].wordBudget.targetWords).toBe(4000);
+  });
+
+  it('selects written, current, and unwritten chapters for outline revision previews', () => {
+    const snapshot = {
+      phase: 'writing',
+      CurrentChapter: 3,
+      outline: [
+        { chapter: 1, title: 'Written', writtenWordCount: 3200 },
+        { chapter: 3, title: 'Current', writtenWordCount: 0 },
+        { chapter: 7, title: 'Future', writtenWordCount: 0 }
+      ]
+    };
+
+    expect(getOutlineRevisionView(snapshot, { active: true, chapter: '1' })).toMatchObject({
+      active: true,
+      chapter: 1,
+      outlineRow: { title: 'Written', writtenWordCount: 3200 }
+    });
+    expect(getOutlineRevisionView(snapshot, { active: true, chapter: '3' })).toMatchObject({
+      active: true,
+      chapter: 3,
+      outlineRow: { title: 'Current' }
+    });
+    expect(getOutlineRevisionView(snapshot, { active: true, chapter: '7' })).toMatchObject({
+      active: true,
+      chapter: 7,
+      outlineRow: { title: 'Future' }
+    });
+    expect(getOutlineRevisionView(snapshot, { active: true, chapter: '2' })).toMatchObject({
+      active: true,
+      chapter: 1
+    });
+  });
+
+  it('builds and validates single chapter outline revision payloads', () => {
+    const snapshot = {
+      outline: [
+        { chapter: 1, title: 'Opening' },
+        { chapter: 3, title: 'Reveal' }
+      ]
+    };
+
+    expect(buildOutlineRevisionPayload({
+      chapter: '3',
+      instruction: '  move the clue into the hearing  '
+    }, snapshot)).toEqual({
+      ok: true,
+      body: {
+        chapter: 3,
+        instruction: 'move the clue into the hearing'
+      }
+    });
+    expect(buildOutlineRevisionPayload({ chapter: '2', instruction: 'rewrite' }, snapshot)).toMatchObject({ ok: false });
+    expect(buildOutlineRevisionPayload({ chapter: '1', instruction: '   ' }, snapshot)).toMatchObject({ ok: false });
+    expect(buildOutlineRevisionPayload({ chapter: '1', instruction: 'rewrite' }, { outline: [] })).toMatchObject({ ok: false });
+  });
+
+  it('describes queued rewrites and draft resets after outline revision', () => {
+    expect(outlineRevisionSuccessMessage({ rewrite_queued: true, draft_reset: true }, 8))
+      .toBe('第 8 章细纲已修改，草稿已重置并加入重写队列');
+    expect(outlineRevisionSuccessMessage({ rewrite_queued: true }, 8))
+      .toBe('第 8 章细纲已修改，已加入重写队列');
+    expect(outlineRevisionSuccessMessage({ draft_reset: true }, 8))
+      .toBe('第 8 章细纲已修改，草稿已重置');
+    expect(outlineRevisionSuccessMessage({}, 8)).toBe('第 8 章细纲已修改');
   });
 
   it('shows completed-book chapter revision only after complete phase with outline rows', () => {

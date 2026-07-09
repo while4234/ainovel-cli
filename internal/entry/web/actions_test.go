@@ -3,6 +3,8 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/exp"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
@@ -227,6 +230,119 @@ func TestProjectChapterReviseRejectsInvalidRequest(t *testing.T) {
 	}
 	if fake.reviseChapterCalls != 0 {
 		t.Fatalf("invalid request should not call host, calls=%d", fake.reviseChapterCalls)
+	}
+}
+
+func TestProjectChapterOutlineReviseCallsHostFlow(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Chapter Outline Revise")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.snapshot = host.UISnapshot{RuntimeState: "idle", Phase: "writing"}
+	fake.reviseChapterOutlineResult = host.ChapterOutlineRevisionResult{
+		Chapter:       100,
+		Instruction:   "加强本章反转，并保持卷弧目标不变",
+		Label:         "第100章详细提纲已更新",
+		Outline:       domain.OutlineEntry{Chapter: 100, Title: "新的反转"},
+		RewriteQueued: false,
+		DraftReset:    false,
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+manifest.ID+"/outline/chapters/revise",
+		bytes.NewBufferString(`{"chapter":100,"instruction":"加强本章反转，并保持卷弧目标不变"}`),
+	)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chapter outline revise status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.reviseChapterOutlineCalls != 1 {
+		t.Fatalf("ReviseChapterOutline calls = %d, want 1", fake.reviseChapterOutlineCalls)
+	}
+	if fake.reviseChapterOutlineRequest.Chapter != 100 ||
+		fake.reviseChapterOutlineRequest.Instruction != "加强本章反转，并保持卷弧目标不变" {
+		t.Fatalf("ReviseChapterOutline request = %+v", fake.reviseChapterOutlineRequest)
+	}
+	var body struct {
+		Project  ProjectManifest           `json:"project"`
+		Snapshot host.UISnapshot          `json:"snapshot"`
+		Running  bool                     `json:"running"`
+		Revision apiChapterOutlineRevision `json:"revision"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode chapter outline revise response: %v", err)
+	}
+	if body.Project.ID != manifest.ID || body.Running || body.Revision.Chapter != 100 || body.Revision.Outline.Title != "新的反转" {
+		t.Fatalf("unexpected chapter outline revise response: %+v", body)
+	}
+}
+
+func TestProjectChapterOutlineReviseRejectsInvalidRequest(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Bad Chapter Outline Revise")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+manifest.ID+"/outline/chapters/revise",
+		bytes.NewBufferString(`{"chapter":100,"instruction":" "}`),
+	)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("chapter outline revise status = %d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	if fake.reviseChapterOutlineCalls != 0 {
+		t.Fatalf("invalid request should not call host, calls=%d", fake.reviseChapterOutlineCalls)
+	}
+}
+
+func TestProjectChapterOutlineReviseMapsHostErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "precondition", err: fmt.Errorf("chapter already in progress: %w", errs.ErrToolPrecondition), status: http.StatusConflict},
+		{name: "model failure", err: errors.New("model unavailable"), status: http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+			defer server.Close()
+			manifest, err := server.store.CreateProject("Outline Error " + tt.name)
+			if err != nil {
+				t.Fatalf("CreateProject: %v", err)
+			}
+			fake := installFakeSession(t, server, manifest)
+			fake.reviseChapterOutlineErr = tt.err
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/projects/"+manifest.ID+"/outline/chapters/revise",
+				bytes.NewBufferString(`{"chapter":12,"instruction":"increase tension"}`),
+			)
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d body=%s, want %d", rec.Code, rec.Body.String(), tt.status)
+			}
+			if fake.reviseChapterOutlineCalls != 1 {
+				t.Fatalf("ReviseChapterOutline calls = %d, want 1", fake.reviseChapterOutlineCalls)
+			}
+		})
 	}
 }
 

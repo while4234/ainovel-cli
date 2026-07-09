@@ -175,6 +175,48 @@ func containsWarning(warnings []string, key string) bool {
 	return false
 }
 
+func TestContextToolReadsRevisedFormalChapterOutline(t *testing.T) {
+	dir := testStoreDir(t)
+	st := store.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{
+		{Chapter: 1, Title: "Harbor Ledger", CoreEvent: "A ferry ledger exposes a tide schedule.", Hook: "A locked bell rings.", Scenes: []string{"Inspect the ferry", "Decode the ledger"}},
+		{Chapter: 2, Title: "Old Observatory", CoreEvent: "The cast follows an obsolete signal.", Hook: "The lens goes dark.", Scenes: []string{"Climb the dome", "Test the old lens"}},
+	}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := st.Progress.Save(&domain.Progress{Phase: domain.PhaseWriting, CurrentChapter: 2, TotalChapters: 2}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+	revised := domain.OutlineEntry{
+		Chapter:   2,
+		Title:     "Revised Observatory",
+		CoreEvent: "A repaired telescope proves the signal was forged before sunrise.",
+		Hook:      "The lens reveals a second moon.",
+		Scenes:    []string{"Repair the telescope", "Expose the forged signal"},
+	}
+	if err := st.ReviseChapterOutline(2, revised); err != nil {
+		t.Fatalf("ReviseChapterOutline: %v", err)
+	}
+
+	tool := NewContextTool(st, References{}, "default")
+	raw, err := tool.Execute(context.Background(), json.RawMessage(`{"chapter":2}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	text := string(raw)
+	for _, expected := range []string{"Revised Observatory", "forged before sunrise", "Expose the forged signal"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("revised writer context missing %q: %s", expected, text)
+		}
+	}
+	if strings.Contains(text, "Old Observatory") || strings.Contains(text, "obsolete signal") {
+		t.Fatalf("writer context still contains stale formal outline: %s", text)
+	}
+}
+
 func TestContextToolChapterModeIncludesWorkingAndReferenceFields(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

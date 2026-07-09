@@ -106,6 +106,13 @@ func TestProjectSessionRejectsConcurrentResumeContinue(t *testing.T) {
 	if !errors.Is(err, ErrSessionActionInProgress) {
 		t.Fatalf("concurrent revise error = %v, want %v", err, ErrSessionActionInProgress)
 	}
+	_, err = session.ReviseChapterOutline(context.Background(), host.ChapterOutlineRevisionRequest{
+		Chapter:     2,
+		Instruction: "tighten the chapter outline",
+	})
+	if !errors.Is(err, ErrSessionActionInProgress) {
+		t.Fatalf("concurrent outline revise error = %v, want %v", err, ErrSessionActionInProgress)
+	}
 	close(fake.releaseResume)
 
 	select {
@@ -121,6 +128,9 @@ func TestProjectSessionRejectsConcurrentResumeContinue(t *testing.T) {
 	}
 	if fake.reviseChapterCalls != 0 {
 		t.Fatalf("concurrent revise reached host %d time(s)", fake.reviseChapterCalls)
+	}
+	if fake.reviseChapterOutlineCalls != 0 {
+		t.Fatalf("concurrent outline revise reached host %d time(s)", fake.reviseChapterOutlineCalls)
 	}
 	if fake.resumeCalls != 1 {
 		t.Fatalf("resume host calls = %d, want 1", fake.resumeCalls)
@@ -1253,6 +1263,7 @@ type fakeProjectHost struct {
 	releaseResume              chan struct{}
 	resumeErr                  error
 	reviseChapterErr           error
+	reviseChapterOutlineErr    error
 	continueErr                error
 	steerErr                   error
 	simulateErr                error
@@ -1281,6 +1292,7 @@ type fakeProjectHost struct {
 
 	resumeCalls                     int
 	reviseChapterCalls              int
+	reviseChapterOutlineCalls       int
 	continueCalls                   int
 	steerCalls                      int
 	simulateCalls                   int
@@ -1360,6 +1372,8 @@ type fakeProjectHost struct {
 	startPreparedPrompt             string
 	reviseChapterRequest            host.ChapterRevisionRequest
 	reviseChapterResult             host.ChapterRevisionResult
+	reviseChapterOutlineRequest     host.ChapterOutlineRevisionRequest
+	reviseChapterOutlineResult      host.ChapterOutlineRevisionResult
 	resumeCoCreateDraft             string
 	lastCoCreateHistory             []host.CoCreateMessage
 	adaptCoCreateHistories          [][]host.CoCreateMessage
@@ -1545,6 +1559,39 @@ func (f *fakeProjectHost) ReviseChapter(req host.ChapterRevisionRequest) (host.C
 		PendingRewrites: []int{req.Chapter},
 		StaleNotice:     "stale test notice",
 	}, nil
+}
+
+func TestProjectSessionReviseChapterOutlineAppendsSnapshot(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.snapshot = host.UISnapshot{Phase: string(domain.PhaseWriting)}
+	session, err := NewProjectSession(ProjectManifest{ID: "project-outline-revise"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+	before := len(session.HistoryAfter(0))
+
+	_, err = session.ReviseChapterOutline(context.Background(), host.ChapterOutlineRevisionRequest{
+		Chapter:     9,
+		Instruction: "strengthen the midpoint reversal",
+	})
+	if err != nil {
+		t.Fatalf("ReviseChapterOutline: %v", err)
+	}
+	if fake.reviseChapterOutlineCalls != 1 || fake.reviseChapterOutlineRequest.Chapter != 9 {
+		t.Fatalf("outline revision host call = %d request=%+v", fake.reviseChapterOutlineCalls, fake.reviseChapterOutlineRequest)
+	}
+	if got := len(session.HistoryAfter(0)); got <= before {
+		t.Fatalf("history event count = %d, want > %d after snapshot", got, before)
+	}
+}
+
+func (f *fakeProjectHost) ReviseChapterOutline(_ context.Context, req host.ChapterOutlineRevisionRequest) (host.ChapterOutlineRevisionResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reviseChapterOutlineCalls++
+	f.reviseChapterOutlineRequest = req
+	return f.reviseChapterOutlineResult, f.reviseChapterOutlineErr
 }
 
 func (f *fakeProjectHost) Continue(string) error {

@@ -110,6 +110,13 @@ export function reviseChapter(projectId, payload) {
   });
 }
 
+export function reviseChapterOutline(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/outline/chapters/revise`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {})
+  });
+}
+
 export function resumeProject(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/resume`, {
     method: 'POST',

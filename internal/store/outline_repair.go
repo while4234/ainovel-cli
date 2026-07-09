@@ -391,6 +391,10 @@ func (s *Store) finalizeOutlineRepair(volumeIdx, arcIdx int, repaired []domain.O
 				progress.RewriteReason += "; " + reason
 			}
 			progress.Flow = domain.FlowRewriting
+			if progress.Phase == domain.PhaseComplete {
+				progress.Phase = domain.PhaseWriting
+				progress.ReopenedFromComplete = true
+			}
 		}
 		for _, target := range repairedArcPostprocessTargets(volumes, volumeIdx, arcIdx, progress.CompletedChapters) {
 			enqueueArcPostprocessTarget(progress, target)
@@ -407,26 +411,8 @@ func (s *Store) finalizeOutlineRepair(volumeIdx, arcIdx int, repaired []domain.O
 }
 
 func (s *Store) deleteRepairedArcArtifacts(volumeIdx, arcIdx int, chapters []int) error {
-	repairedChapters := uniquePositiveChapters(chapters)
-	if err := s.World.DeleteChapterFacts(repairedChapters); err != nil {
-		return fmt.Errorf("delete repaired chapter world facts: %w", err)
-	}
-	if err := s.Cast.DeleteChapterAppearances(repairedChapters); err != nil {
-		return fmt.Errorf("delete repaired chapter cast appearances: %w", err)
-	}
-	for _, chapter := range repairedChapters {
-		if err := s.Drafts.DeleteChapterArtifacts(chapter); err != nil {
-			return fmt.Errorf("delete chapter %d draft artifacts: %w", chapter, err)
-		}
-		if err := s.Summaries.DeleteChapterSummary(chapter); err != nil {
-			return fmt.Errorf("delete chapter %d summary: %w", chapter, err)
-		}
-		if err := s.World.DeleteReview(chapter); err != nil {
-			return fmt.Errorf("delete chapter %d review: %w", chapter, err)
-		}
-		if err := s.Adaptation.DeleteCheck(chapter); err != nil {
-			return fmt.Errorf("delete chapter %d adaptation check: %w", chapter, err)
-		}
+	if err := s.deleteRevisedChapterArtifacts(chapters); err != nil {
+		return err
 	}
 	if err := s.Summaries.DeleteArcSummary(volumeIdx, arcIdx); err != nil {
 		return fmt.Errorf("delete arc summary V%d A%d: %w", volumeIdx, arcIdx, err)
@@ -485,7 +471,7 @@ func outlineRepairRewriteReason(volumeIdx, arcIdx int, repaired []domain.Outline
 		to = repaired[len(repaired)-1].Chapter
 	}
 	return fmt.Sprintf(
-		"outline duplicate repair V%d A%d regenerated chapters %d-%d; rewrite completed chapters %v",
+		"outline repair V%d A%d regenerated chapters %d-%d; rewrite completed chapters %v",
 		volumeIdx,
 		arcIdx,
 		from,
