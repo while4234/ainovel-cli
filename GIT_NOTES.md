@@ -29,6 +29,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: save retry settings per project`:
+  The Web retry-settings form now saves through
+  `/api/projects/{id}/models/retry-settings` when a project is open instead
+  of always writing `/api/models/retry-settings`. This fixes project overlays
+  snapping back to old retry values after the UI refreshed project-scoped
+  model settings. Validation passed for UI tests, UI build, and
+  `go test ./internal/entry/web ./assets -count=1`. Web was rebuilt and
+  restarted on `http://127.0.0.1:9898` as PID `15552`; a live project retry
+  save for `project-20260705003848-bbd0eb` was confirmed on disk and through
+  the API as 14/14/2 after rebasing onto `origin/main`.
+- Latest source/runtime change: current local commit
   `fix: harden analysis structure parsing`:
   Adaptation source analysis now uses a prompt that shows bare `=== TAG ===`
   separators and the envelope parser accepts common Markdown-heading variants

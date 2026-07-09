@@ -93,6 +93,7 @@ import {
   setGlobalRetrySettings,
   setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
+  setProjectRetrySettings,
   setProjectStyle,
   setProjectThinking,
   startProject,
@@ -2584,7 +2585,9 @@ export default function App() {
     setBusy(true);
     setError('');
     try {
-      const data = await setGlobalRetrySettings(modelAttempts, repairAttempts, budgetAttempts);
+      const data = activeProject?.id
+        ? await setProjectRetrySettings(activeProject.id, modelAttempts, repairAttempts, budgetAttempts)
+        : await setGlobalRetrySettings(modelAttempts, repairAttempts, budgetAttempts);
       if (activeProject?.id) {
         const modelData = await getProjectModels(activeProject.id);
         setModelConfig(modelData.models || data.models || modelConfig);

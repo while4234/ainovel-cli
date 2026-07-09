@@ -41,6 +41,7 @@ import {
   setGlobalRetrySettings,
   setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
+  setProjectRetrySettings,
   setProjectStyle,
   startGrokLogin,
   switchGlobalDefaultModel,
@@ -492,6 +493,21 @@ describe('web API helpers', () => {
     await setGlobalRetrySettings(14, 8, 3);
 
     expect(fetchMock).toHaveBeenCalledWith('/api/models/retry-settings', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        model_call_max_attempts: 14,
+        structure_repair_max_attempts: 8,
+        budget_quality_max_attempts: 3
+      })
+    }));
+  });
+
+  it('sends retry settings to the project route', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await setProjectRetrySettings('project-1', 14, 8, 3);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/models/retry-settings', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({
         model_call_max_attempts: 14,
