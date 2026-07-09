@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: `3002468`
+  `feat: inject reinforced simulation into cocreate`:
+  PR-03 of the reinforced simulation-mode pipeline injects the compact
+  simulation profile into cold-start and staged co-create only when
+  `simulation_mode` is `reinforced` and a profile exists. Normal mode and
+  missing-profile behavior keep the original prompts, `AdaptCoCreateStream`
+  remains out of scope, and the co-create prompt payload is sanitized so
+  `source_files`, `source_reports`, `simulate/` paths, and raw source report
+  details are not sent to the model. Independent re-review passed. Validation
+  passed for `go test ./internal/domain ./internal/host`, `git diff --check`,
+  and `git diff --cached --check`.
 - Latest source/runtime change: `2447c73`
   `feat: add simulation mode web setting`:
   PR-02 of the reinforced simulation-mode pipeline adds the Web project
