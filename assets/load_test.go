@@ -47,6 +47,44 @@ func TestLoadKeepsAdaptationGuidanceOutOfBaseWriterPrompt(t *testing.T) {
 	}
 }
 
+func TestLoadPromptsIncludeReinforcedSimulationGuidance(t *testing.T) {
+	bundle := Load("")
+	cases := map[string]string{
+		"ArchitectShort": bundle.Prompts.ArchitectShort,
+		"ArchitectLong":  bundle.Prompts.ArchitectLong,
+		"Writer":         bundle.Prompts.Writer,
+		"Editor":         bundle.Prompts.Editor,
+	}
+	for name, prompt := range cases {
+		for _, want := range []string{
+			`simulation_profile.mode == "reinforced"`,
+			`novel_context.simulation_mode == "reinforced"`,
+			"用户选择了强化仿写",
+			"用户显式要求",
+			"source_reports",
+			"raw simulate source text",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("%s prompt missing reinforced guidance %q", name, want)
+			}
+		}
+	}
+
+	roleGuidance := map[string][]string{
+		"ArchitectShort": {"结构、悬念、章节钩子、信息释放、反转和回收"},
+		"ArchitectLong":  {"结构、悬念、章节钩子、信息释放、反转和回收"},
+		"Writer":         {"叙事声音、句式节奏、意象/词汇倾向、场景密度和段落推进"},
+		"Editor":         {"画像漂移", "复制、人物/地名/专有设定和固定桥段风险"},
+	}
+	for name, wants := range roleGuidance {
+		for _, want := range wants {
+			if !strings.Contains(cases[name], want) {
+				t.Fatalf("%s prompt missing role reinforced guidance %q", name, want)
+			}
+		}
+	}
+}
+
 func TestStyleCatalogUsesMarkdownHeadingLabels(t *testing.T) {
 	catalog := StyleCatalog()
 	labelsByID := make(map[string]string, len(catalog))

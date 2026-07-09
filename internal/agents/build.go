@@ -110,7 +110,9 @@ func BuildCoordinator(
 	onFlowBoundary FlowBoundaryHook,
 ) (*agentcore.Agent, *tools.AskUserTool, *ctxpack.WriterRestorePack, *corecontext.ContextEngine, ApplyThinking) {
 	// 共享工具
-	contextTool := tools.NewContextTool(store, bundle.References, cfg.Style)
+	contextTool := tools.NewContextToolWithOptions(store, bundle.References, cfg.Style, tools.ContextToolOptions{
+		SimulationMode: cfg.EffectiveSimulationMode(),
+	})
 	// 用户规则服务：归一化各来源 → 确定性合并 → 落盘本书快照。Coordinator 的
 	// save_user_rules 工具复用它做运行中更新；归一化用 Default 模型（与 Host 开书侧一致）。
 	userRulesSvc := userrules.NewService(store, models.Default, rules.DefaultOptions())

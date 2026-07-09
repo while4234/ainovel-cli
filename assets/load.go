@@ -146,7 +146,14 @@ const simulationGuidance = `## 仿写画像
 
 当 novel_context 返回 simulation_profile 时，必须把它视为当前作品的仿写方向约束。{{role}} 应读取其中的 style、lexicon、plot_design、hook_design、pacing_density、reader_engagement 和 role_guidance。
 
-使用原则：借鉴结构、节奏、钩子、信息释放和吸引读者的手法；不要复制原文句子、人物、地名、专有设定或固定桥段。若 simulation_profile 与用户显式要求冲突，优先服从用户要求。`
+当 simulation_profile.mode == "reinforced" 或 novel_context.simulation_mode == "reinforced" 时，说明用户选择了强化仿写。强化仿写是 opt-in 的风格/结构信号；在不违背用户显式要求时，{{role}} 要更主动地把画像转化为规划、写作或审阅标准。
+
+强化仿写 guidance：
+- Architect：更主动应用 plot_design、hook_design、pacing_density、reader_engagement，落实到结构、悬念、章节钩子、信息释放、反转和回收。
+- Writer：更主动应用 style、lexicon、pacing_density，落实到叙事声音、句式节奏、意象/词汇倾向、场景密度和段落推进。
+- Editor：检查画像漂移，并额外审查复制、人物/地名/专有设定和固定桥段风险。
+
+使用原则：只使用 compact/synthesis simulation profile 作为风格和结构信号；不要索取或依赖 source_reports、raw simulate source text；不要复制原文句子、人物、地名、专有设定或固定桥段。若 simulation_profile 与用户显式要求冲突，优先服从用户要求。`
 
 func loadStyles() map[string]string {
 	styles := make(map[string]string)

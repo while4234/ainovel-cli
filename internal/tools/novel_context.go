@@ -39,12 +39,15 @@ type References struct {
 
 // ContextTool 组装当前章节所需上下文。
 type ContextTool struct {
-	store *store.Store
-	refs  References
-	style string
+	store          *store.Store
+	refs           References
+	style          string
+	simulationMode string
 }
 
 const (
+	contextSimulationModeNormal     = "normal"
+	contextSimulationModeReinforced = "reinforced"
 	writerChapterContextBudgetBytes = 60 * 1024
 	planningContextBudgetBytes      = 60 * 1024
 	nearbyOutlineBeforeChapters     = 2
@@ -53,10 +56,23 @@ const (
 	maxDetailedArcOutlineChapters   = 40
 )
 
+type ContextToolOptions struct {
+	SimulationMode string
+}
+
 // NewContextTool 创建上下文工具。
 // user_rules 由 buildUserRules 直接读本书快照（meta/user_rules.json）注入，不再依赖加载选项。
 func NewContextTool(store *store.Store, refs References, style string) *ContextTool {
-	return &ContextTool{store: store, refs: refs, style: style}
+	return NewContextToolWithOptions(store, refs, style, ContextToolOptions{})
+}
+
+func NewContextToolWithOptions(store *store.Store, refs References, style string, opts ContextToolOptions) *ContextTool {
+	return &ContextTool{
+		store:          store,
+		refs:           refs,
+		style:          style,
+		simulationMode: normalizeContextToolSimulationMode(opts.SimulationMode),
+	}
 }
 
 func (t *ContextTool) Name() string { return "novel_context" }
@@ -173,6 +189,15 @@ func normalizeContextScope(scope string, chapter int) string {
 	}
 }
 
+func normalizeContextToolSimulationMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case contextSimulationModeReinforced:
+		return contextSimulationModeReinforced
+	default:
+		return contextSimulationModeNormal
+	}
+}
+
 // buildLoadingSummary 从已组装的 result 中统计各项数据量，生成一行可读摘要。
 func buildLoadingSummary(result map[string]any, chapter int) string {
 	var parts []string
@@ -281,7 +306,11 @@ func buildLoadingSummary(result map[string]any, chapter int) string {
 		items = append(items, "记忆策略:ok")
 	}
 	if _, ok := result["simulation_profile"]; ok {
-		items = append(items, "仿写画像:ok")
+		mode := "ok"
+		if result["simulation_mode"] == contextSimulationModeReinforced {
+			mode = contextSimulationModeReinforced
+		}
+		items = append(items, fmt.Sprintf("仿写模式:%s", mode))
 	}
 	if warnings, ok := result["_warnings"].([]string); ok && len(warnings) > 0 {
 		items = append(items, fmt.Sprintf("告警:%d", len(warnings)))

@@ -207,7 +207,7 @@ func (t *ContextTool) buildSimulationProfile(result map[string]any, sectionKey s
 		warn("simulation_profile", err)
 		return
 	}
-	compact := domain.CompactSimulationProfile(profile)
+	compact := t.compactSimulationProfile(profile)
 	if compact == nil {
 		return
 	}
@@ -218,6 +218,16 @@ func (t *ContextTool) buildSimulationProfile(result map[string]any, sectionKey s
 	}
 	section["simulation_profile"] = compact
 	result["simulation_profile"] = true
+	if t.simulationMode == contextSimulationModeReinforced {
+		result["simulation_mode"] = contextSimulationModeReinforced
+	}
+}
+
+func (t *ContextTool) compactSimulationProfile(profile *domain.SimulationProfile) *domain.SimulationCompactProfile {
+	if t.simulationMode == contextSimulationModeReinforced {
+		return domain.CompactSimulationProfileForMode(profile, contextSimulationModeReinforced)
+	}
+	return domain.CompactSimulationProfile(profile)
 }
 
 func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapter int, warn func(string, error)) {
