@@ -84,6 +84,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 			emit(StageError, 0, len(sources), "读取既有画像失败", err)
 			return
 		}
+		existing, prunedExisting := pruneProfileToScannedSources(existing, sources)
 		pending := pendingSources(existing, sources)
 		if len(pending) > 0 {
 			if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
@@ -93,6 +94,12 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 		}
 		if len(pending) == 0 {
 			if !profileNeedsSynthesis(existing) {
+				if prunedExisting && existing != nil {
+					if err := saveFinalSimulationProfile(deps.Store.Simulation, *existing); err != nil {
+						emit(StageError, 0, len(sources), "保存语料清理后的画像失败", err)
+						return
+					}
+				}
 				if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
 					emit(StageError, 0, len(sources), "清理过期画像合并断点失败", err)
 					return
@@ -368,6 +375,52 @@ func pendingSources(existing *domain.SimulationProfile, sources []scannedSource)
 		pending = append(pending, source)
 	}
 	return pending
+}
+
+func pruneProfileToScannedSources(existing *domain.SimulationProfile, sources []scannedSource) (*domain.SimulationProfile, bool) {
+	if existing == nil {
+		return nil, false
+	}
+	current := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		if strings.TrimSpace(source.Fingerprint) != "" {
+			current[source.Fingerprint] = struct{}{}
+		}
+	}
+	next := *existing
+	next.Corpus.Sources = pruneSimulationSources(existing.Corpus.Sources, current)
+	next.SourceReports = pruneSimulationSourceReports(existing.SourceReports, current)
+	changed := len(next.Corpus.Sources) != len(existing.Corpus.Sources) ||
+		len(next.SourceReports) != len(existing.SourceReports)
+	return &next, changed
+}
+
+func pruneSimulationSources(sources []domain.SimulationSource, current map[string]struct{}) []domain.SimulationSource {
+	out := make([]domain.SimulationSource, 0, len(sources))
+	for _, source := range sources {
+		fingerprint := strings.TrimSpace(source.Fingerprint)
+		if fingerprint == "" && source.RelativePath != "" && source.SHA256 != "" {
+			fingerprint = domain.SimulationSourceFingerprint(source.RelativePath, source.SHA256)
+		}
+		if _, ok := current[fingerprint]; ok {
+			out = append(out, source)
+		}
+	}
+	return out
+}
+
+func pruneSimulationSourceReports(reports []domain.SimulationSourceReport, current map[string]struct{}) []domain.SimulationSourceReport {
+	out := make([]domain.SimulationSourceReport, 0, len(reports))
+	for _, report := range reports {
+		fingerprint := strings.TrimSpace(report.Fingerprint)
+		if fingerprint == "" && report.RelativePath != "" && report.SHA256 != "" {
+			fingerprint = domain.SimulationSourceFingerprint(report.RelativePath, report.SHA256)
+		}
+		if _, ok := current[fingerprint]; ok {
+			out = append(out, report)
+		}
+	}
+	return out
 }
 
 func existingSynthesis(existing *domain.SimulationProfile) domain.SimulationSynthesis {

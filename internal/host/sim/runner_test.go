@@ -619,6 +619,40 @@ func reportsForScannedSources(scanned []scannedSource) []domain.SimulationSource
 	return reports
 }
 
+func TestPruneProfileToScannedSourcesDropsDeletedSplitParts(t *testing.T) {
+	current := scannedSource{
+		SimulationSource: domain.SimulationSource{
+			RelativePath: "novel.part_001_ch0001-0002.txt",
+			SHA256:       "new-sha",
+			Fingerprint:  domain.SimulationSourceFingerprint("novel.part_001_ch0001-0002.txt", "new-sha"),
+		},
+	}
+	stale := domain.SimulationSource{
+		RelativePath: "novel.part_001_ch0001-0005.txt",
+		SHA256:       "old-sha",
+		Fingerprint:  domain.SimulationSourceFingerprint("novel.part_001_ch0001-0005.txt", "old-sha"),
+	}
+	profile := &domain.SimulationProfile{
+		Corpus: domain.SimulationCorpusManifest{Sources: []domain.SimulationSource{stale, current.SimulationSource}},
+		SourceReports: []domain.SimulationSourceReport{
+			{RelativePath: stale.RelativePath, SHA256: stale.SHA256, Fingerprint: stale.Fingerprint, Summary: "stale"},
+			{RelativePath: current.RelativePath, SHA256: current.SHA256, Fingerprint: current.Fingerprint, Summary: "current"},
+		},
+	}
+
+	got, changed := pruneProfileToScannedSources(profile, []scannedSource{current})
+
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+	if len(got.Corpus.Sources) != 1 || got.Corpus.Sources[0].RelativePath != current.RelativePath {
+		t.Fatalf("sources = %+v, want only current", got.Corpus.Sources)
+	}
+	if len(got.SourceReports) != 1 || got.SourceReports[0].Summary != "current" {
+		t.Fatalf("reports = %+v, want only current", got.SourceReports)
+	}
+}
+
 func sourcesForScannedSources(scanned []scannedSource) []domain.SimulationSource {
 	sources := make([]domain.SimulationSource, 0, len(scanned))
 	for _, source := range scanned {

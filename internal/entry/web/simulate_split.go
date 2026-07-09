@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -13,13 +14,13 @@ import (
 	"github.com/voocel/ainovel-cli/internal/utils"
 )
 
-const simulationAutoSplitTargetRunes = 15000
+const simulationAutoSplitTargetRunes = 8000
 const simulationSuspiciousLongNovelRunes = 500000
 const simulationSuspiciousFewChapterCount = 20
 const simulationSuspiciousOutlierRatio = 6
 const simulationSuspiciousOutlierMinRunes = simulationAutoSplitTargetRunes * 3
 
-var simulationGeneratedPartNameRegex = regexp.MustCompile(`(?i)\.part_\d{3}_ch\d{4}-\d{4}\.txt$`)
+var simulationGeneratedPartNameRegex = regexp.MustCompile(`(?i)^(.*)\.part_\d{3}_ch(\d{4})-(\d{4})\.txt$`)
 
 type simulationSplitReport struct {
 	SplitFiles int
@@ -44,6 +45,18 @@ func prepareSimulationSourcesForAnalysis(sourceDir string) (simulationSplitRepor
 		return simulationSplitReport{}, err
 	}
 	var report simulationSplitReport
+	generatedReport, err := normalizeGeneratedSimulationParts(sourceDir, files)
+	if err != nil {
+		return report, err
+	}
+	report.SplitFiles += generatedReport.SplitFiles
+	report.Parts += generatedReport.Parts
+	if generatedReport.Parts > 0 {
+		files, err = projectSimulationSourceFiles(sourceDir)
+		if err != nil {
+			return report, err
+		}
+	}
 	for _, file := range files {
 		if isGeneratedSimulationPart(file.Name) {
 			continue
@@ -73,6 +86,10 @@ func prepareSimulationSourcesForAnalysis(sourceDir string) (simulationSplitRepor
 }
 
 func splitSimulationSourceFile(path string) ([]simulationChapterPart, error) {
+	return splitSimulationSourceFileFrom(path, 1)
+}
+
+func splitSimulationSourceFileFrom(path string, firstChapterNumber int) ([]simulationChapterPart, error) {
 	chapters, err := imp.SplitFile(path)
 	if err != nil {
 		return nil, err
@@ -83,7 +100,7 @@ func splitSimulationSourceFile(path string) ([]simulationChapterPart, error) {
 	refs := make([]simulationChapterRef, 0, len(chapters))
 	for i, chapter := range chapters {
 		ref := simulationChapterRef{
-			Number: i + 1,
+			Number: firstChapterNumber + i,
 			Title:  strings.TrimSpace(chapter.Title),
 			Body:   strings.TrimSpace(chapter.Content),
 		}
@@ -94,6 +111,98 @@ func splitSimulationSourceFile(path string) ([]simulationChapterPart, error) {
 		return nil, err
 	}
 	return makeSimulationChapterParts(refs, simulationAutoSplitTargetRunes), nil
+}
+
+type generatedSimulationPartInfo struct {
+	File apiUploadedFile
+	Stem string
+	From int
+	To   int
+}
+
+func normalizeGeneratedSimulationParts(sourceDir string, files []apiUploadedFile) (simulationSplitReport, error) {
+	groups := make(map[string][]generatedSimulationPartInfo)
+	for _, file := range files {
+		info, ok := parseGeneratedSimulationPartInfo(file)
+		if !ok {
+			continue
+		}
+		groups[info.Stem] = append(groups[info.Stem], info)
+	}
+	var report simulationSplitReport
+	for stem, group := range groups {
+		sort.Slice(group, func(i, j int) bool {
+			if group[i].From == group[j].From {
+				return group[i].File.Name < group[j].File.Name
+			}
+			return group[i].From < group[j].From
+		})
+		oversize := false
+		for _, info := range group {
+			data, err := os.ReadFile(filepath.Join(sourceDir, info.File.Name))
+			if err != nil {
+				return report, fmt.Errorf("read generated simulation part %s: %w", info.File.Name, err)
+			}
+			if utf8.RuneCountInString(strings.TrimSpace(utils.DecodeText(data))) > simulationAutoSplitTargetRunes {
+				oversize = true
+				break
+			}
+		}
+		if !oversize {
+			continue
+		}
+
+		refs := make([]simulationChapterRef, 0)
+		for _, info := range group {
+			parts, err := splitSimulationSourceFileFrom(filepath.Join(sourceDir, info.File.Name), info.From)
+			if err != nil {
+				return report, fmt.Errorf("split generated simulation part %s: %w", info.File.Name, err)
+			}
+			for _, part := range parts {
+				refs = append(refs, part.Chapters...)
+			}
+		}
+		if len(refs) == 0 {
+			continue
+		}
+		parts := makeSimulationChapterParts(refs, simulationAutoSplitTargetRunes)
+		if len(parts) == 0 {
+			continue
+		}
+		oldNames := make([]string, 0, len(group))
+		for _, info := range group {
+			oldNames = append(oldNames, info.File.Name)
+		}
+		newNames := make([]string, 0, len(parts))
+		for i, part := range parts {
+			newNames = append(newNames, simulationPartFilenameFromStem(stem, i+1, part))
+		}
+		if sameStringSet(oldNames, newNames) {
+			continue
+		}
+		if err := replaceGeneratedSimulationParts(sourceDir, oldNames, stem, parts); err != nil {
+			return report, err
+		}
+		report.SplitFiles += len(oldNames)
+		report.Parts += len(parts)
+	}
+	return report, nil
+}
+
+func parseGeneratedSimulationPartInfo(file apiUploadedFile) (generatedSimulationPartInfo, bool) {
+	m := simulationGeneratedPartNameRegex.FindStringSubmatch(file.Name)
+	if len(m) != 4 {
+		return generatedSimulationPartInfo{}, false
+	}
+	from, err := strconv.Atoi(m[2])
+	if err != nil {
+		return generatedSimulationPartInfo{}, false
+	}
+	to, err := strconv.Atoi(m[3])
+	if err != nil || to < from {
+		return generatedSimulationPartInfo{}, false
+	}
+	return generatedSimulationPartInfo{File: file, Stem: m[1], From: from, To: to}, true
 }
 
 func validateSimulationSplitQuality(chapters []simulationChapterRef) error {
@@ -224,6 +333,66 @@ func replaceSimulationSourceWithParts(sourceDir, sourceName string, parts []simu
 	return nil
 }
 
+func replaceGeneratedSimulationParts(sourceDir string, oldNames []string, stem string, parts []simulationChapterPart) error {
+	oldSet := make(map[string]struct{}, len(oldNames))
+	for _, name := range oldNames {
+		oldSet[name] = struct{}{}
+	}
+	targets := make([]string, 0, len(parts))
+	for i, part := range parts {
+		name := simulationPartFilenameFromStem(stem, i+1, part)
+		target, err := safeUploadTarget(sourceDir, name)
+		if err != nil {
+			return err
+		}
+		if _, ok := oldSet[name]; !ok {
+			if _, err := os.Stat(target); err == nil {
+				return fmt.Errorf("split target %q already exists", name)
+			} else if err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("check split target %s: %w", name, err)
+			}
+		}
+		targets = append(targets, target)
+	}
+
+	tempPaths := make([]string, 0, len(parts))
+	for i, part := range parts {
+		temp, err := os.CreateTemp(sourceDir, ".simulation-resplit-*.tmp")
+		if err != nil {
+			cleanupSimulationPartFiles(tempPaths)
+			return fmt.Errorf("create temporary split part: %w", err)
+		}
+		tempPath := temp.Name()
+		if _, err := temp.WriteString(renderSimulationPart(part)); err != nil {
+			_ = temp.Close()
+			cleanupSimulationPartFiles(append(tempPaths, tempPath))
+			return fmt.Errorf("write temporary split part %d: %w", i+1, err)
+		}
+		if err := temp.Close(); err != nil {
+			cleanupSimulationPartFiles(append(tempPaths, tempPath))
+			return fmt.Errorf("close temporary split part %d: %w", i+1, err)
+		}
+		tempPaths = append(tempPaths, tempPath)
+	}
+
+	for _, name := range oldNames {
+		if err := os.Remove(filepath.Join(sourceDir, name)); err != nil && !os.IsNotExist(err) {
+			cleanupSimulationPartFiles(tempPaths)
+			return fmt.Errorf("remove old split part %s: %w", name, err)
+		}
+	}
+	written := make([]string, 0, len(targets))
+	for i, target := range targets {
+		if err := os.Rename(tempPaths[i], target); err != nil {
+			cleanupSimulationPartFiles(tempPaths[i:])
+			cleanupSimulationPartFiles(written)
+			return fmt.Errorf("rename split part %s: %w", filepath.Base(target), err)
+		}
+		written = append(written, target)
+	}
+	return nil
+}
+
 func cleanupSimulationPartFiles(paths []string) {
 	for _, path := range paths {
 		_ = os.Remove(path)
@@ -232,6 +401,11 @@ func cleanupSimulationPartFiles(paths []string) {
 
 func simulationPartFilename(sourceName string, index int, part simulationChapterPart) string {
 	stem := sanitizeSimulationSplitStem(strings.TrimSuffix(sourceName, filepath.Ext(sourceName)))
+	return simulationPartFilenameFromStem(stem, index, part)
+}
+
+func simulationPartFilenameFromStem(stem string, index int, part simulationChapterPart) string {
+	stem = sanitizeSimulationSplitStem(stem)
 	from := part.Chapters[0].Number
 	to := part.Chapters[len(part.Chapters)-1].Number
 	return fmt.Sprintf("%s.part_%03d_ch%04d-%04d.txt", stem, index, from, to)
@@ -273,4 +447,21 @@ func renderSimulationChapter(chapter simulationChapterRef) string {
 
 func isGeneratedSimulationPart(name string) bool {
 	return simulationGeneratedPartNameRegex.MatchString(name)
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, item := range a {
+		seen[item]++
+	}
+	for _, item := range b {
+		if seen[item] == 0 {
+			return false
+		}
+		seen[item]--
+	}
+	return true
 }

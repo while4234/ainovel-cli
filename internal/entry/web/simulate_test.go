@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -155,10 +156,12 @@ func TestProjectSimulateFilesUploadSplitsLongChapteredSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("projectSimulationSourceFiles: %v", err)
 	}
-	if len(files) != 2 {
-		t.Fatalf("files = %+v, want 2 split parts", files)
+	if len(files) != 3 {
+		t.Fatalf("files = %+v, want 3 split parts", files)
 	}
-	if files[0].Name != "novel.part_001_ch0001-0002.txt" || files[1].Name != "novel.part_002_ch0003-0003.txt" {
+	if files[0].Name != "novel.part_001_ch0001-0001.txt" ||
+		files[1].Name != "novel.part_002_ch0002-0002.txt" ||
+		files[2].Name != "novel.part_003_ch0003-0003.txt" {
 		t.Fatalf("split files not in expected order: %+v", files)
 	}
 }
@@ -194,11 +197,14 @@ func TestProjectSimulateAnalyzeSplitsExistingLongSourceBeforeHostRun(t *testing.
 	if _, err := os.Stat(filepath.Join(simulateDir, "novel.txt")); !os.IsNotExist(err) {
 		t.Fatalf("original long source should be replaced before analyze, stat err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(simulateDir, "novel.part_001_ch0001-0002.txt")); err != nil {
+	if _, err := os.Stat(filepath.Join(simulateDir, "novel.part_001_ch0001-0001.txt")); err != nil {
 		t.Fatalf("first split part missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(simulateDir, "novel.part_002_ch0003-0003.txt")); err != nil {
+	if _, err := os.Stat(filepath.Join(simulateDir, "novel.part_002_ch0002-0002.txt")); err != nil {
 		t.Fatalf("second split part missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(simulateDir, "novel.part_003_ch0003-0003.txt")); err != nil {
+		t.Fatalf("third split part missing: %v", err)
 	}
 }
 
@@ -217,6 +223,44 @@ func TestMakeSimulationChapterPartsKeepsOversizeChapterAlone(t *testing.T) {
 	if len(parts[1].Chapters) != 1 || parts[1].Chapters[0].Number != 2 {
 		t.Fatalf("oversize chapter should be isolated in one part: %+v", parts[1])
 	}
+}
+
+func TestPrepareSimulationSourcesRebalancesGeneratedParts(t *testing.T) {
+	dir := t.TempDir()
+	simulateDir := filepath.Join(dir, "simulate")
+	if err := os.MkdirAll(simulateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldName := "novel.part_001_ch0001-0004.txt"
+	content := strings.Join([]string{
+		simulationTestChapter(1, "one", strings.Repeat("一", 3000)),
+		simulationTestChapter(2, "two", strings.Repeat("二", 3000)),
+		simulationTestChapter(3, "three", strings.Repeat("三", 3000)),
+		simulationTestChapter(4, "four", strings.Repeat("四", 3000)),
+	}, "\n\n")
+	if err := os.WriteFile(filepath.Join(simulateDir, oldName), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := prepareSimulationSourcesForAnalysis(simulateDir)
+	if err != nil {
+		t.Fatalf("prepareSimulationSourcesForAnalysis: %v", err)
+	}
+	if report.Parts != 2 {
+		t.Fatalf("parts = %d, want 2", report.Parts)
+	}
+	if _, err := os.Stat(filepath.Join(simulateDir, oldName)); !os.IsNotExist(err) {
+		t.Fatalf("old generated part should be replaced, stat err=%v", err)
+	}
+	for _, name := range []string{"novel.part_001_ch0001-0002.txt", "novel.part_002_ch0003-0004.txt"} {
+		if _, err := os.Stat(filepath.Join(simulateDir, name)); err != nil {
+			t.Fatalf("expected rebalanced part %s: %v", name, err)
+		}
+	}
+}
+
+func simulationTestChapter(number int, title, body string) string {
+	return fmt.Sprintf("第%d章 %s\n\n%s\n", number, title, body)
 }
 
 func TestValidateSimulationSplitQualityRejectsVeryLongNovelWithFewChapters(t *testing.T) {

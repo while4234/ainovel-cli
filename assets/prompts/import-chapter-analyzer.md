@@ -20,33 +20,33 @@
 
 使用 `=== TAG ===` 分隔。**不要**输出标签外的任何说明。空数组用 `[]`，不要省略对应标签。
 
-### === SUMMARY ===
+=== SUMMARY ===
 
 ≤200 字的本章摘要纯文本，一段。
 
-### === CHARACTERS ===
+=== CHARACTERS ===
 
 JSON 字符串数组：本章实际**出场**的角色名（不含仅被提及的）。
 例：`["林晚","陈沉"]`
 
-### === CHARACTER_FACTS ===
+=== CHARACTER_FACTS ===
 
 JSON string array. Extract compact facts useful for later foundation merging:
 identity, motivation, capability, conflict pressure, relationship state, and
 important changes. Use only facts supported by this chapter. Output `[]` if none.
 
-### === WORLD_RULES ===
+=== WORLD_RULES ===
 
 JSON string array. Extract compact setting, faction, system, geography, social,
 magic/technology, or constraint facts supported by this chapter. Output `[]` if
 none.
 
-### === KEY_EVENTS ===
+=== KEY_EVENTS ===
 
 JSON 字符串数组：3-6 条本章关键事件，每条一句话。
 例：`["林晚收到匿名信","在档案馆发现旧报道"]`
 
-### === TIMELINE ===
+=== TIMELINE ===
 
 JSON 数组，每条 `{time, event, characters}`：
 - `time`: 故事内时间（如 "傍晚"、"次日清晨"），无明确时间可用 "本章"
@@ -55,7 +55,7 @@ JSON 数组，每条 `{time, event, characters}`：
 
 无新增事件时输出 `[]`。
 
-### === FORESHADOW ===
+=== FORESHADOW ===
 
 JSON 数组，每条 `{id, action, description}`：
 - `action`: `plant`（首次埋设，必须给 description）/ `advance`（推进）/ `resolve`（回收）
@@ -63,13 +63,13 @@ JSON 数组，每条 `{id, action, description}`：
 
 无伏笔操作时输出 `[]`。
 
-### === RELATIONSHIPS ===
+=== RELATIONSHIPS ===
 
 JSON 数组，每条 `{character_a, character_b, relation}`：本章发生**变化**的关系，用一句话描述当前关系状态（如"由怀疑转为信任"、"敌对升级为生死仇敌"）。
 
 无变化时输出 `[]`。
 
-### === STATE_CHANGES ===
+=== STATE_CHANGES ===
 
 JSON 数组，每条 `{entity, field, old_value, new_value, reason}`：
 - `field`: 如 `location` / `status` / `power` / `realm` / `relation`
@@ -79,11 +79,11 @@ JSON 数组，每条 `{entity, field, old_value, new_value, reason}`：
 
 无变化时输出 `[]`。
 
-### === HOOK_TYPE ===
+=== HOOK_TYPE ===
 
 本章末尾的钩子类型，**单选**之一：`crisis` / `mystery` / `desire` / `emotion` / `choice`
 
-### === DOMINANT_STRAND ===
+=== DOMINANT_STRAND ===
 
 本章主导叙事线，**单选**之一：
 - `quest`：主线推进（追案、闯关、解谜本身的进展）

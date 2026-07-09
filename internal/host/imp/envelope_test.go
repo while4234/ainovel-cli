@@ -24,6 +24,17 @@ func TestParseTaggedEnvelope_Basic(t *testing.T) {
 	}
 }
 
+func TestParseTaggedEnvelope_AllowsMarkdownHeadingTags(t *testing.T) {
+	src := "### === summary ===\nbrief\n\n### === CHARACTERS ===:\n[]\n"
+	env := parseTaggedEnvelope(src)
+	if env["SUMMARY"] != "brief" {
+		t.Fatalf("SUMMARY = %q, want brief", env["SUMMARY"])
+	}
+	if env["CHARACTERS"] != "[]" {
+		t.Fatalf("CHARACTERS = %q, want []", env["CHARACTERS"])
+	}
+}
+
 func TestParseTaggedEnvelope_Empty(t *testing.T) {
 	if got := parseTaggedEnvelope("no tags here"); got != nil {
 		t.Errorf("want nil, got %+v", got)

@@ -29,6 +29,22 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: harden analysis structure parsing`:
+  Adaptation source analysis now uses a prompt that shows bare `=== TAG ===`
+  separators and the envelope parser accepts common Markdown-heading variants
+  such as `### === SUMMARY ===`. Simulation-profile JSON parsing now repairs
+  literal newline/carriage-return/tab control characters inside JSON strings
+  before model-level structure repair retries. Web simulation source
+  auto-splitting now targets roughly 8000 runes, rebalances existing generated
+  `*.part_###_ch####-####.txt` files, preserves chapter numbering, and prunes
+  stale profile sources/reports after re-splitting. Validation passed for
+  `go test ./internal/host/imp ./internal/host/sim ./internal/entry/web ./internal/host/adapt`.
+  Web was rebuilt and restarted on `http://127.0.0.1:9898` as PID `62212`.
+  Project `天擎` (`project-20260708231542-466290`) was started for both
+  adaptation source analysis and simulation-profile analysis; simulation
+  sources were rebalanced from 108 to 215 files and early events advanced to
+  `2/215` without the previous JSON newline parse error.
+- Latest source/runtime change: current local commit
   `feat: auto-split long simulation sources`:
   Web simulation-profile uploads and analysis now preprocess long source files
   under each project's `simulate` directory. Files over 15000 runes are split
