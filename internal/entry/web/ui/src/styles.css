@@ -1076,6 +1076,34 @@ h2 {
   grid-template-columns: 1fr;
 }
 
+.settings-summary,
+.project-settings-form {
+  display: grid;
+  gap: 8px;
+}
+
+.project-settings-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.settings-note {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 7px 9px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-note.warning {
+  border-color: rgba(157, 104, 18, 0.28);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
 .metric {
   min-height: 58px;
   border: 1px solid var(--line);

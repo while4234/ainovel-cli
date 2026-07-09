@@ -64,6 +64,7 @@ import {
   listNovelLibrary,
   listProjects,
   listSimulationLibrary,
+  listStyles,
   listTrashProjects,
   loadNovelFromLibrary,
   loadSimulationFromLibrary,
@@ -89,6 +90,7 @@ import {
   setGlobalRetrySettings,
   setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
+  setProjectStyle,
   setProjectThinking,
   startProject,
   startGrokLogin,
@@ -450,6 +452,28 @@ function createDiagnosticState() {
   };
 }
 
+export function createProjectSettingsState() {
+  return {
+    styles: [],
+    defaultStyle: '',
+    selectedStyle: '',
+    loadStatus: 'idle',
+    saveStatus: 'idle',
+    message: '',
+    error: ''
+  };
+}
+
+function resetProjectSettingsForProject(previous) {
+  return {
+    ...previous,
+    selectedStyle: '',
+    saveStatus: 'idle',
+    message: '',
+    error: ''
+  };
+}
+
 const grokOAuthDefaults = {
   provider: 'grok-oauth',
   type: 'grok',
@@ -558,6 +582,7 @@ export default function App() {
   const [diagnostic, setDiagnostic] = useState(createDiagnosticState);
   const [coCreate, setCoCreate] = useState(createCoCreateState);
   const [planningRevision, setPlanningRevision] = useState(createCoCreatePlanningRevisionState);
+  const [projectSettings, setProjectSettings] = useState(createProjectSettingsState);
   const [modelConfig, setModelConfig] = useState(null);
   const [customModel, setCustomModel] = useState(createCustomModelState);
   const [backendStatus, setBackendStatus] = useState(null);
@@ -585,6 +610,10 @@ export default function App() {
   );
   const coCreateRequestBusy = isCoCreateRequestBusy(coCreate);
   const projectBusy = busy || coCreateRequestBusy;
+  const currentProjectStyle = useMemo(
+    () => resolveProjectStyleID(snapshot, runtime, projectSettings),
+    [snapshot, runtime, projectSettings.defaultStyle, projectSettings.styles]
+  );
   const showAdaptationProposalWorkspace = sideView === 'adapt' && adaptationProposalReview.proposalReady;
   const selectedChapterRevisionView = useMemo(
     () => getCompletedBookSelectedChapterView(snapshot, chapterRevision),
@@ -605,6 +634,7 @@ export default function App() {
     setDiagnostic(createDiagnosticState());
     setCoCreate(createCoCreateState());
     setPlanningRevision(createCoCreatePlanningRevisionState());
+    setProjectSettings(resetProjectSettingsForProject);
     setModelConfig(null);
     setCustomModel(createCustomModelState());
     setBackendStatus(null);
@@ -617,6 +647,21 @@ export default function App() {
   useEffect(() => {
     activeProjectIdRef.current = activeProject?.id || '';
   }, [activeProject?.id]);
+
+  useEffect(() => {
+    setProjectSettings((previous) => {
+      if (!activeProject?.id || previous.selectedStyle === currentProjectStyle) {
+        return previous;
+      }
+      return {
+        ...previous,
+        selectedStyle: currentProjectStyle,
+        saveStatus: 'idle',
+        message: '',
+        error: ''
+      };
+    });
+  }, [activeProject?.id, currentProjectStyle]);
 
   const isCurrentProject = useCallback((projectId) => (
     isProjectScopedResponseCurrent(projectId, activeProjectIdRef.current)
@@ -756,6 +801,31 @@ export default function App() {
     ));
   }, []);
 
+  const loadProjectStyles = useCallback(async () => {
+    setProjectSettings((previous) => ({
+      ...previous,
+      loadStatus: 'running',
+      error: ''
+    }));
+    try {
+      const data = await listStyles();
+      const catalog = normalizeProjectStyleCatalog(data);
+      setProjectSettings((previous) => ({
+        ...previous,
+        styles: catalog.styles,
+        defaultStyle: catalog.defaultStyle,
+        loadStatus: 'done',
+        error: ''
+      }));
+    } catch (err) {
+      setProjectSettings((previous) => ({
+        ...previous,
+        loadStatus: 'error',
+        error: err.message
+      }));
+    }
+  }, []);
+
   const refreshGlobalModels = useCallback(async () => {
     const data = await getGlobalModels();
     setModelConfig(data.models || null);
@@ -783,6 +853,10 @@ export default function App() {
   useEffect(() => {
     loadInitialLibraries();
   }, [loadInitialLibraries]);
+
+  useEffect(() => {
+    loadProjectStyles();
+  }, [loadProjectStyles]);
 
   useEffect(() => {
     if (!projectMenu) {
@@ -1063,6 +1137,51 @@ export default function App() {
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
     } catch (err) {
       setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveProjectStyle = async (event) => {
+    event.preventDefault();
+    const request = buildProjectStyleSaveRequest(activeProject, projectSettings);
+    if (!request.ok) {
+      setProjectSettings((previous) => ({
+        ...previous,
+        saveStatus: 'error',
+        message: '',
+        error: request.error
+      }));
+      return;
+    }
+    setBusy(true);
+    setProjectSettings((previous) => ({
+      ...previous,
+      saveStatus: 'running',
+      message: '',
+      error: ''
+    }));
+    try {
+      const data = await setProjectStyle(request.projectId, request.style);
+      if (!isCurrentProject(request.projectId)) {
+        return;
+      }
+      setActiveProject(data.project || activeProject);
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setProjectSettings((previous) => ({
+        ...previous,
+        selectedStyle: String(data.style || request.style || '').trim(),
+        saveStatus: 'done',
+        message: '文风已保存',
+        error: ''
+      }));
+    } catch (err) {
+      setProjectSettings((previous) => ({
+        ...previous,
+        saveStatus: 'error',
+        message: '',
+        error: err.message
+      }));
     } finally {
       setBusy(false);
     }
@@ -2989,6 +3108,10 @@ export default function App() {
             <WandSparkles size={16} />
             画像
           </button>
+          <button className={sideView === 'settings' ? 'active' : ''} onClick={() => setSideView('settings')} title="设定" type="button">
+            <SlidersHorizontal size={16} />
+            设定
+          </button>
           <button className={sideView === 'adapt' ? 'active' : ''} onClick={() => setSideView('adapt')} title="改编" type="button">
             <FileText size={16} />
             改编
@@ -3071,6 +3194,17 @@ export default function App() {
               onUploadLibrary={uploadSimulationProfilesToLibrary}
               onLoadLibrary={loadSimulationProfileFromLibrary}
               onSaveToLibrary={saveSimulationProfileToLibrary}
+            />
+          ) : sideView === 'settings' ? (
+            <ProjectSettingsPanel
+              activeProject={activeProject}
+              busy={projectBusy}
+              currentStyle={currentProjectStyle}
+              projectSettings={projectSettings}
+              setProjectSettings={setProjectSettings}
+              snapshot={snapshot}
+              onSaveStyle={saveProjectStyle}
+              onRefreshStyles={loadProjectStyles}
             />
           ) : sideView === 'adapt' ? (
             <AdaptationPanel
@@ -3388,6 +3522,107 @@ function CompletedChapterRevisionWorkspace({ selected, content }) {
           {outlineNotes.length ? <pre>{outlineNotes.join('\n')}</pre> : <span className="muted">当前章节只有大纲信息</span>}
         </article>
       )}
+    </div>
+  );
+}
+
+function ProjectSettingsPanel({
+  activeProject,
+  busy,
+  currentStyle,
+  projectSettings,
+  setProjectSettings,
+  snapshot,
+  onSaveStyle,
+  onRefreshStyles
+}) {
+  const styles = projectSettings.styles;
+  const selectedStyle = projectSettings.selectedStyle || currentStyle;
+  const selectedStyleInCatalog = styles.some((style) => style.id === selectedStyle);
+  const currentStyleLabel = projectStyleLabel(styles, currentStyle);
+  const styleLocked = isProjectStyleLocked(snapshot);
+  const styleEditable = canEditProjectStyle({ activeProject, busy, projectSettings, snapshot });
+  const canSaveStyle = canSubmitProjectStyle({ activeProject, busy, currentStyle, projectSettings, snapshot });
+  return (
+    <div className="side-content">
+      <section>
+        <div className="section-title">
+          <SlidersHorizontal size={17} />
+          <span>项目设定</span>
+        </div>
+        {!activeProject ? (
+          <div className="empty-state">请选择一个项目</div>
+        ) : (
+          <div className="settings-summary">
+            <Metric label="当前文风" value={currentStyleLabel} />
+          </div>
+        )}
+      </section>
+
+      {activeProject ? (
+        <section>
+          <div className="section-title">
+            <FileText size={17} />
+            <span>文风</span>
+          </div>
+          <form className="project-settings-form" onSubmit={onSaveStyle}>
+            <label className="field-label">
+              <span>协作风格</span>
+              <select
+                disabled={!styleEditable}
+                value={selectedStyle}
+                onChange={(event) => {
+                  const nextStyle = event.target.value;
+                  setProjectSettings((previous) => ({
+                    ...previous,
+                    selectedStyle: nextStyle,
+                    saveStatus: 'idle',
+                    message: '',
+                    error: ''
+                  }));
+                }}
+              >
+                {styles.length === 0 ? (
+                  <option value={selectedStyle}>{projectStyleLabel(styles, selectedStyle)}</option>
+                ) : (
+                  <>
+                    {!selectedStyleInCatalog && selectedStyle ? (
+                      <option value={selectedStyle}>{projectStyleLabel(styles, selectedStyle)}</option>
+                    ) : null}
+                    {styles.map((style) => (
+                      <option key={style.id} value={style.id}>{projectStyleLabel(styles, style.id)}</option>
+                    ))}
+                  </>
+                )}
+              </select>
+            </label>
+
+            {styleLocked ? (
+              <div className="settings-note warning">写作开始后文风不可变更</div>
+            ) : null}
+            {projectSettings.loadStatus === 'error' ? (
+              <div className="error-banner compact">{projectSettings.error}</div>
+            ) : null}
+            {projectSettings.saveStatus === 'error' && projectSettings.error ? (
+              <div className="error-banner compact">{projectSettings.error}</div>
+            ) : null}
+            {projectSettings.saveStatus === 'done' && projectSettings.message ? (
+              <div className="success-note">{projectSettings.message}</div>
+            ) : null}
+
+            <div className="project-settings-actions">
+              <button className="tool-button" disabled={projectSettings.loadStatus === 'running'} onClick={onRefreshStyles} type="button">
+                <RefreshCw size={16} />
+                刷新
+              </button>
+              <button className="tool-button accent" disabled={!canSaveStyle} type="submit">
+                <Check size={16} />
+                保存
+              </button>
+            </div>
+          </form>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -8075,6 +8310,82 @@ function isRunningAgent(agent) {
 
 function eventPayload(row) {
   return row?.event || row?.Event || null;
+}
+
+export function normalizeProjectStyleCatalog(data = {}) {
+  const styles = (Array.isArray(data?.styles) ? data.styles : [])
+    .map((style) => ({
+      id: String(style?.id || '').trim(),
+      label: String(style?.label || '').trim()
+    }))
+    .filter((style) => style.id);
+  const defaultStyle = String(data?.default_style || data?.defaultStyle || '').trim() ||
+    (styles.some((style) => style.id === 'default') ? 'default' : styles[0]?.id || 'default');
+  return { styles, defaultStyle };
+}
+
+export function resolveProjectStyleID(snapshot, runtime, projectSettings = {}) {
+  return textValue(snapshot, 'Style', 'style') ||
+    textValue(runtime?.config, 'style', 'Style') ||
+    String(projectSettings.defaultStyle || '').trim() ||
+    projectSettings.styles?.[0]?.id ||
+    'default';
+}
+
+export function projectStyleLabel(styles = [], styleID = '') {
+  const id = String(styleID || '').trim() || 'default';
+  const match = styles.find((style) => style.id === id);
+  return String(match?.label || '').trim() || id;
+}
+
+export function snapshotHasExistingBookContent(snapshot) {
+  return Boolean(
+    textValue(snapshot, 'NovelName', 'novel_name') ||
+      textValue(snapshot, 'Phase', 'phase') ||
+      numberValue(snapshot, 'TotalChapters', 'total_chapters') ||
+      numberValue(snapshot, 'CompletedCount', 'completed_count') ||
+      numberValue(snapshot, 'TotalWordCount', 'total_word_count')
+  );
+}
+
+export function isProjectStyleLocked(snapshot) {
+  return isProjectRunning(snapshot) || snapshotHasExistingBookContent(snapshot);
+}
+
+export function canEditProjectStyle({ activeProject, busy = false, projectSettings = {}, snapshot = null } = {}) {
+  return Boolean(activeProject?.id) &&
+    Boolean(snapshot) &&
+    !busy &&
+    !isProjectStyleLocked(snapshot) &&
+    projectSettings.loadStatus !== 'running' &&
+    projectSettings.saveStatus !== 'running' &&
+    Array.isArray(projectSettings.styles) &&
+    projectSettings.styles.length > 0;
+}
+
+export function canSubmitProjectStyle({
+  activeProject,
+  busy = false,
+  currentStyle = '',
+  projectSettings = {},
+  snapshot = null
+} = {}) {
+  const selectedStyle = String(projectSettings.selectedStyle || '').trim();
+  return canEditProjectStyle({ activeProject, busy, projectSettings, snapshot }) &&
+    Boolean(selectedStyle) &&
+    selectedStyle !== String(currentStyle || '').trim();
+}
+
+export function buildProjectStyleSaveRequest(activeProject, projectSettings = {}) {
+  const projectId = String(activeProject?.id || '').trim();
+  if (!projectId) {
+    return { ok: false, error: '请选择一个项目' };
+  }
+  const style = String(projectSettings.selectedStyle || '').trim();
+  if (!style) {
+    return { ok: false, error: '请选择文风' };
+  }
+  return { ok: true, projectId, style };
 }
 
 function arrayValue(source, ...keys) {
