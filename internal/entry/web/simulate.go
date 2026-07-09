@@ -103,15 +103,24 @@ func (s *Server) handleProjectSimulateFiles(w http.ResponseWriter, r *http.Reque
 		writeUploadValidationError(w, err)
 		return
 	}
+	splitReport, err := prepareSimulationSourcesForAnalysis(simulateDir)
+	if err != nil {
+		writeUploadValidationError(w, err)
+		return
+	}
 	files, err := projectSimulationSourceFiles(simulateDir)
 	if err != nil {
 		writeUploadValidationError(w, err)
 		return
 	}
+	message := fmt.Sprintf("uploaded %d simulation source file(s)", len(uploads))
+	if splitReport.SplitFiles > 0 {
+		message = fmt.Sprintf("%s; split %d long file(s) into %d ordered part(s)", message, splitReport.SplitFiles, splitReport.Parts)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project": manifest,
 		"files":   files,
-		"message": fmt.Sprintf("uploaded %d simulation source file(s)", len(uploads)),
+		"message": message,
 	})
 }
 
@@ -123,6 +132,10 @@ func (s *Server) handleProjectSimulateAnalyze(w http.ResponseWriter, r *http.Req
 	session, manifest, err := s.sessions.Open(id)
 	if err != nil {
 		writeProjectSessionError(w, err)
+		return
+	}
+	if _, err := prepareSimulationSourcesForAnalysis(projectSimulateDir(manifest)); err != nil {
+		writeSimulationActionError(w, err, nil)
 		return
 	}
 	if err := session.StartSimulateFromDir(projectSimulateDir(manifest)); err != nil {

@@ -131,6 +131,124 @@ func TestProjectSimulateFilesUploadAllowsSourceLargerThanFormerTenMiBLimit(t *te
 	}
 }
 
+func TestProjectSimulateFilesUploadSplitsLongChapteredSource(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Split Long Simulation Source")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	req := newMultipartUploadRequest(t, http.MethodPost, "/api/projects/"+manifest.ID+"/simulate/files", []testMultipartFile{
+		{field: "files", filename: "novel.txt", body: longChapteredSimulationSource()},
+	})
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(manifest.RootDir, "simulate", "novel.txt")); !os.IsNotExist(err) {
+		t.Fatalf("original long source should be replaced by split parts, stat err=%v", err)
+	}
+	files, err := projectSimulationSourceFiles(filepath.Join(manifest.RootDir, "simulate"))
+	if err != nil {
+		t.Fatalf("projectSimulationSourceFiles: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("files = %+v, want 2 split parts", files)
+	}
+	if files[0].Name != "novel.part_001_ch0001-0002.txt" || files[1].Name != "novel.part_002_ch0003-0003.txt" {
+		t.Fatalf("split files not in expected order: %+v", files)
+	}
+}
+
+func TestProjectSimulateAnalyzeSplitsExistingLongSourceBeforeHostRun(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Analyze Split Long Simulation Source")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	simulateDir := filepath.Join(manifest.RootDir, "simulate")
+	if err := os.MkdirAll(simulateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(simulateDir, "novel.txt"), []byte(longChapteredSimulationSource()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/simulate/analyze", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("analyze status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	waitForTestCondition(t, "simulation host call", func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.simulateDir == simulateDir
+	})
+	if _, err := os.Stat(filepath.Join(simulateDir, "novel.txt")); !os.IsNotExist(err) {
+		t.Fatalf("original long source should be replaced before analyze, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(simulateDir, "novel.part_001_ch0001-0002.txt")); err != nil {
+		t.Fatalf("first split part missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(simulateDir, "novel.part_002_ch0003-0003.txt")); err != nil {
+		t.Fatalf("second split part missing: %v", err)
+	}
+}
+
+func TestMakeSimulationChapterPartsKeepsOversizeChapterAlone(t *testing.T) {
+	chapters := []simulationChapterRef{
+		{Number: 1, Title: "short", Body: "a", Runes: 10},
+		{Number: 2, Title: "oversize", Body: strings.Repeat("b", simulationAutoSplitTargetRunes+1), Runes: simulationAutoSplitTargetRunes + 1},
+		{Number: 3, Title: "tail", Body: "c", Runes: 10},
+	}
+
+	parts := makeSimulationChapterParts(chapters, simulationAutoSplitTargetRunes)
+
+	if len(parts) != 3 {
+		t.Fatalf("parts = %+v, want 3", parts)
+	}
+	if len(parts[1].Chapters) != 1 || parts[1].Chapters[0].Number != 2 {
+		t.Fatalf("oversize chapter should be isolated in one part: %+v", parts[1])
+	}
+}
+
+func TestValidateSimulationSplitQualityRejectsVeryLongNovelWithFewChapters(t *testing.T) {
+	chapters := []simulationChapterRef{
+		{Number: 1, Title: "one", Runes: 180000},
+		{Number: 2, Title: "two", Runes: 180000},
+		{Number: 3, Title: "three", Runes: 180000},
+	}
+
+	err := validateSimulationSplitQuality(chapters)
+
+	if err == nil || !strings.Contains(err.Error(), "recognized only 3 chapters") {
+		t.Fatalf("error = %v, want suspicious few-chapter error", err)
+	}
+}
+
+func TestValidateSimulationSplitQualityRejectsHugeChapterOutlier(t *testing.T) {
+	chapters := []simulationChapterRef{
+		{Number: 1, Title: "one", Runes: 8000},
+		{Number: 2, Title: "two", Runes: 7600},
+		{Number: 3, Title: "three", Runes: 8200},
+		{Number: 4, Title: "missed boundaries", Runes: 90000},
+		{Number: 5, Title: "five", Runes: 7900},
+	}
+
+	err := validateSimulationSplitQuality(chapters)
+
+	if err == nil || !strings.Contains(err.Error(), "chapter 4") {
+		t.Fatalf("error = %v, want suspicious outlier error", err)
+	}
+}
+
 func TestProjectSimulateFilesRejectsUnsafeEmptyAndDuplicateNames(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -374,6 +492,17 @@ func newMultipartUploadRequest(t *testing.T, method, path string, files []testMu
 
 func textBodyLargerThanFormerLimit() string {
 	return strings.Repeat("x", formerTextUploadLimit+1)
+}
+
+func longChapteredSimulationSource() string {
+	return strings.Join([]string{
+		"Chapter 1 First",
+		strings.Repeat("a", 7000),
+		"Chapter 2 Second",
+		strings.Repeat("b", 7000),
+		"Chapter 3 Third",
+		strings.Repeat("c", 3000),
+	}, "\n\n")
 }
 
 func testWebSimulationProfile(path, sha string) domain.SimulationProfile {

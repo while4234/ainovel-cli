@@ -29,6 +29,20 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `feat: auto-split long simulation sources`:
+  Web simulation-profile uploads and analysis now preprocess long source files
+  under each project's `simulate` directory. Files over 15000 runes are split
+  with the existing `internal/host/imp.SplitFile` chapter splitter, then
+  packaged into ordered `*.part_###_ch####-####.txt` files of roughly 15000
+  runes. A single chapter over the target remains a single part rather than
+  being cut mid-chapter. Suspicious splitter results now stop analysis with a
+  clear error: very long novels (`>=500000` runes) with only a few recognized
+  chapters (`<=20`) and giant chapter outliers relative to the median are
+  treated as likely unsupported chapter-title formats. Validation passed for
+  `go test ./internal/entry/web ./internal/host/imp ./internal/host/sim` and
+  full `go test ./...`; Web was rebuilt and restarted on
+  `http://127.0.0.1:9898` as PID `22424`.
+- Latest source/runtime change: current local commit
   `fix: split episode-section novel headings`:
   TXT import/adaptation splitting now recognizes combined episode/section
   headings such as `第一集 奔向黎明 第一节 来自麻省理工的初中代课老师`
