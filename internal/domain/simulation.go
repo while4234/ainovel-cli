@@ -12,6 +12,9 @@ const (
 	maxCompactSimulationSourceFiles  = 3
 	maxCompactSimulationItems        = 2
 	maxCompactSimulationItemRunes    = 60
+	reinforcedSimulationSourceFiles  = 5
+	reinforcedSimulationItems        = 4
+	reinforcedSimulationItemRunes    = 120
 )
 
 type SimulationProfile struct {
@@ -135,6 +138,7 @@ type SimulationRoleGuidance struct {
 
 type SimulationCompactProfile struct {
 	Version          string                     `json:"version"`
+	Mode             string                     `json:"mode,omitempty"`
 	UpdatedAt        string                     `json:"updated_at,omitempty"`
 	SourceCount      int                        `json:"source_count"`
 	SourceFiles      []string                   `json:"source_files,omitempty"`
@@ -145,6 +149,13 @@ type SimulationCompactProfile struct {
 	PacingDensity    SimulationPacingDensity    `json:"pacing_density,omitempty"`
 	ReaderEngagement SimulationReaderEngagement `json:"reader_engagement,omitempty"`
 	RoleGuidance     SimulationRoleGuidance     `json:"role_guidance,omitempty"`
+}
+
+type SimulationCompactOptions struct {
+	Mode           string
+	MaxSourceFiles int
+	MaxItems       int
+	MaxItemRunes   int
 }
 
 func SimulationSourceFingerprint(relativePath, sha256 string) string {
@@ -215,20 +226,42 @@ func MarshalSimulationProfile(p SimulationProfile) ([]byte, error) {
 }
 
 func CompactSimulationProfile(p *SimulationProfile) *SimulationCompactProfile {
+	return CompactSimulationProfileWithOptions(p, SimulationCompactOptions{
+		MaxSourceFiles: maxCompactSimulationSourceFiles,
+		MaxItems:       maxCompactSimulationItems,
+		MaxItemRunes:   maxCompactSimulationItemRunes,
+	})
+}
+
+func CompactSimulationProfileForMode(p *SimulationProfile, mode string) *SimulationCompactProfile {
+	if strings.EqualFold(strings.TrimSpace(mode), "reinforced") {
+		return CompactSimulationProfileWithOptions(p, SimulationCompactOptions{
+			Mode:           "reinforced",
+			MaxSourceFiles: reinforcedSimulationSourceFiles,
+			MaxItems:       reinforcedSimulationItems,
+			MaxItemRunes:   reinforcedSimulationItemRunes,
+		})
+	}
+	return CompactSimulationProfile(p)
+}
+
+func CompactSimulationProfileWithOptions(p *SimulationProfile, opts SimulationCompactOptions) *SimulationCompactProfile {
 	if p == nil {
 		return nil
 	}
+	opts = normalizeSimulationCompactOptions(opts)
 	limit := len(p.Corpus.Sources)
-	if limit > maxCompactSimulationSourceFiles {
-		limit = maxCompactSimulationSourceFiles
+	if limit > opts.MaxSourceFiles {
+		limit = opts.MaxSourceFiles
 	}
 	files := make([]string, 0, limit)
 	for i := 0; i < limit; i++ {
 		files = append(files, p.Corpus.Sources[i].RelativePath)
 	}
-	synthesis := compactSimulationSynthesis(p.Synthesis)
+	synthesis := compactSimulationSynthesisWithOptions(p.Synthesis, opts)
 	return &SimulationCompactProfile{
 		Version:          p.Version,
+		Mode:             normalizedSimulationCompactMode(opts.Mode),
 		UpdatedAt:        p.UpdatedAt,
 		SourceCount:      len(p.Corpus.Sources),
 		SourceFiles:      files,
@@ -242,67 +275,104 @@ func CompactSimulationProfile(p *SimulationProfile) *SimulationCompactProfile {
 	}
 }
 
+func normalizeSimulationCompactOptions(opts SimulationCompactOptions) SimulationCompactOptions {
+	if opts.MaxSourceFiles <= 0 {
+		opts.MaxSourceFiles = maxCompactSimulationSourceFiles
+	}
+	if opts.MaxItems <= 0 {
+		opts.MaxItems = maxCompactSimulationItems
+	}
+	if opts.MaxItemRunes <= 0 {
+		opts.MaxItemRunes = maxCompactSimulationItemRunes
+	}
+	return opts
+}
+
+func normalizedSimulationCompactMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" || mode == "normal" {
+		return ""
+	}
+	return mode
+}
+
 func compactSimulationSynthesis(s SimulationSynthesis) SimulationSynthesis {
+	return compactSimulationSynthesisWithOptions(s, SimulationCompactOptions{
+		MaxItems:     maxCompactSimulationItems,
+		MaxItemRunes: maxCompactSimulationItemRunes,
+	})
+}
+
+func compactSimulationSynthesisWithOptions(s SimulationSynthesis, opts SimulationCompactOptions) SimulationSynthesis {
+	opts = normalizeSimulationCompactOptions(opts)
 	return SimulationSynthesis{
 		Style: SimulationStyle{
-			NarrativeVoice: compactSimulationItems(s.Style.NarrativeVoice),
-			SentenceRhythm: compactSimulationItems(s.Style.SentenceRhythm),
-			ProseTexture:   compactSimulationItems(s.Style.ProseTexture),
-			Perspective:    compactSimulationItems(s.Style.Perspective),
-			Mood:           compactSimulationItems(s.Style.Mood),
-			DoNotCopy:      compactSimulationItems(s.Style.DoNotCopy),
+			NarrativeVoice: compactSimulationItemsWithOptions(s.Style.NarrativeVoice, opts),
+			SentenceRhythm: compactSimulationItemsWithOptions(s.Style.SentenceRhythm, opts),
+			ProseTexture:   compactSimulationItemsWithOptions(s.Style.ProseTexture, opts),
+			Perspective:    compactSimulationItemsWithOptions(s.Style.Perspective, opts),
+			Mood:           compactSimulationItemsWithOptions(s.Style.Mood, opts),
+			DoNotCopy:      compactSimulationItemsWithOptions(s.Style.DoNotCopy, opts),
 		},
 		Lexicon: SimulationLexicon{
-			CommonWords:      compactSimulationItems(s.Lexicon.CommonWords),
-			EmotionWords:     compactSimulationItems(s.Lexicon.EmotionWords),
-			SceneWords:       compactSimulationItems(s.Lexicon.SceneWords),
-			TransitionWords:  compactSimulationItems(s.Lexicon.TransitionWords),
-			SignaturePhrases: compactSimulationItems(s.Lexicon.SignaturePhrases),
+			CommonWords:      compactSimulationItemsWithOptions(s.Lexicon.CommonWords, opts),
+			EmotionWords:     compactSimulationItemsWithOptions(s.Lexicon.EmotionWords, opts),
+			SceneWords:       compactSimulationItemsWithOptions(s.Lexicon.SceneWords, opts),
+			TransitionWords:  compactSimulationItemsWithOptions(s.Lexicon.TransitionWords, opts),
+			SignaturePhrases: compactSimulationItemsWithOptions(s.Lexicon.SignaturePhrases, opts),
 		},
 		PlotDesign: SimulationPlotDesign{
-			OpeningPatterns:      compactSimulationItems(s.PlotDesign.OpeningPatterns),
-			EscalationPatterns:   compactSimulationItems(s.PlotDesign.EscalationPatterns),
-			TurningPointPatterns: compactSimulationItems(s.PlotDesign.TurningPointPatterns),
-			PayoffPatterns:       compactSimulationItems(s.PlotDesign.PayoffPatterns),
+			OpeningPatterns:      compactSimulationItemsWithOptions(s.PlotDesign.OpeningPatterns, opts),
+			EscalationPatterns:   compactSimulationItemsWithOptions(s.PlotDesign.EscalationPatterns, opts),
+			TurningPointPatterns: compactSimulationItemsWithOptions(s.PlotDesign.TurningPointPatterns, opts),
+			PayoffPatterns:       compactSimulationItemsWithOptions(s.PlotDesign.PayoffPatterns, opts),
 		},
 		HookDesign: SimulationHookDesign{
-			HookTypes:           compactSimulationItems(s.HookDesign.HookTypes),
-			Placement:           compactSimulationItems(s.HookDesign.Placement),
-			CliffhangerPatterns: compactSimulationItems(s.HookDesign.CliffhangerPatterns),
-			PayoffRules:         compactSimulationItems(s.HookDesign.PayoffRules),
+			HookTypes:           compactSimulationItemsWithOptions(s.HookDesign.HookTypes, opts),
+			Placement:           compactSimulationItemsWithOptions(s.HookDesign.Placement, opts),
+			CliffhangerPatterns: compactSimulationItemsWithOptions(s.HookDesign.CliffhangerPatterns, opts),
+			PayoffRules:         compactSimulationItemsWithOptions(s.HookDesign.PayoffRules, opts),
 		},
 		PacingDensity: SimulationPacingDensity{
-			SceneDensity:        compactSimulationItems(s.PacingDensity.SceneDensity),
-			InformationRelease:  compactSimulationItems(s.PacingDensity.InformationRelease),
-			DialogueActionRatio: compactSimulationItems(s.PacingDensity.DialogueActionRatio),
-			CompressionRules:    compactSimulationItems(s.PacingDensity.CompressionRules),
+			SceneDensity:        compactSimulationItemsWithOptions(s.PacingDensity.SceneDensity, opts),
+			InformationRelease:  compactSimulationItemsWithOptions(s.PacingDensity.InformationRelease, opts),
+			DialogueActionRatio: compactSimulationItemsWithOptions(s.PacingDensity.DialogueActionRatio, opts),
+			CompressionRules:    compactSimulationItemsWithOptions(s.PacingDensity.CompressionRules, opts),
 		},
 		ReaderEngagement: SimulationReaderEngagement{
-			Methods:            compactSimulationItems(s.ReaderEngagement.Methods),
-			EmotionalDrivers:   compactSimulationItems(s.ReaderEngagement.EmotionalDrivers),
-			ProgressionRewards: compactSimulationItems(s.ReaderEngagement.ProgressionRewards),
-			AntiPatterns:       compactSimulationItems(s.ReaderEngagement.AntiPatterns),
+			Methods:            compactSimulationItemsWithOptions(s.ReaderEngagement.Methods, opts),
+			EmotionalDrivers:   compactSimulationItemsWithOptions(s.ReaderEngagement.EmotionalDrivers, opts),
+			ProgressionRewards: compactSimulationItemsWithOptions(s.ReaderEngagement.ProgressionRewards, opts),
+			AntiPatterns:       compactSimulationItemsWithOptions(s.ReaderEngagement.AntiPatterns, opts),
 		},
 		RoleGuidance: SimulationRoleGuidance{
-			Coordinator: compactSimulationItems(s.RoleGuidance.Coordinator),
-			Architect:   compactSimulationItems(s.RoleGuidance.Architect),
-			Writer:      compactSimulationItems(s.RoleGuidance.Writer),
-			Editor:      compactSimulationItems(s.RoleGuidance.Editor),
+			Coordinator: compactSimulationItemsWithOptions(s.RoleGuidance.Coordinator, opts),
+			Architect:   compactSimulationItemsWithOptions(s.RoleGuidance.Architect, opts),
+			Writer:      compactSimulationItemsWithOptions(s.RoleGuidance.Writer, opts),
+			Editor:      compactSimulationItemsWithOptions(s.RoleGuidance.Editor, opts),
 		},
 	}
 }
 
 func compactSimulationItems(items []string) []string {
+	return compactSimulationItemsWithOptions(items, SimulationCompactOptions{
+		MaxItems:     maxCompactSimulationItems,
+		MaxItemRunes: maxCompactSimulationItemRunes,
+	})
+}
+
+func compactSimulationItemsWithOptions(items []string, opts SimulationCompactOptions) []string {
 	if len(items) == 0 {
 		return nil
 	}
+	opts = normalizeSimulationCompactOptions(opts)
 	limit := len(items)
-	if limit > maxCompactSimulationItems {
-		limit = maxCompactSimulationItems
+	if limit > opts.MaxItems {
+		limit = opts.MaxItems
 	}
 	out := make([]string, limit)
 	for i := 0; i < limit; i++ {
-		out[i] = truncateSimulationRunes(items[i], maxCompactSimulationItemRunes)
+		out[i] = truncateSimulationRunes(items[i], opts.MaxItemRunes)
 	}
 	return out
 }

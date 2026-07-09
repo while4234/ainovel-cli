@@ -99,6 +99,64 @@ const coCreateProtocolTail = `
 - <ready> 只写 true 或 false，不要写 true|false。只要当前 <draft> 已经可以直接交给创作引擎执行，或你没有必须继续追问的关键问题，就必须填 true；只有还缺少会阻塞执行的核心信息时才填 false。
 - <ready>true</ready> 时 <suggestions> 可以为空（保留空标签 <suggestions></suggestions> 即可）。`
 
+func coCreateSystemPromptWithSimulation(st *store.Store, mode string) string {
+	return appendSimulationCoCreatePrompt(coCreateSystemPrompt, st, mode)
+}
+
+func appendSimulationCoCreatePrompt(base string, st *store.Store, mode string) string {
+	if mode != bootstrap.SimulationModeReinforced || st == nil || st.Simulation == nil {
+		return base
+	}
+	profile, err := st.Simulation.Load()
+	if err != nil || profile == nil {
+		return base
+	}
+	compact := domain.CompactSimulationProfileForMode(profile, mode)
+	if compact == nil {
+		return base
+	}
+	payload, err := json.MarshalIndent(simulationCoCreatePromptPayloadFromCompact(compact), "", "  ")
+	if err != nil {
+		return base
+	}
+	return base + "\n\n---\n## 仿写画像（强化仿写模式，内部约束）\n" +
+		"下面是系统根据已导入仿写画像提炼的紧凑画像 JSON；用户不需要显式说“请参考仿写画像”，你也必须在共创中主动吸收这些约束。\n\n" +
+		"```json\n" + string(payload) + "\n```\n\n" +
+		"规则：\n" +
+		"- <draft> 必须维护一个 `## 仿写方向` 章节，用紧凑条目记录本轮确认的仿写侧重点。\n" +
+		"- 捕捉并转化风格、叙事声音、句式节奏、意象与词汇倾向。\n" +
+		"- 捕捉并转化情节拆解方式、信息释放、钩子、反转与回收节奏。\n" +
+		"- 禁止复制或搬运源文本句子、人物、地名、专有设定、固定桥段；只学习可复用技法。\n" +
+		"- 当用户的明确要求与仿写画像冲突时，以用户的明确要求为准。"
+}
+
+type simulationCoCreatePromptPayload struct {
+	Mode             string                            `json:"mode,omitempty"`
+	Style            domain.SimulationStyle            `json:"style,omitempty"`
+	Lexicon          domain.SimulationLexicon          `json:"lexicon,omitempty"`
+	PlotDesign       domain.SimulationPlotDesign       `json:"plot_design,omitempty"`
+	HookDesign       domain.SimulationHookDesign       `json:"hook_design,omitempty"`
+	PacingDensity    domain.SimulationPacingDensity    `json:"pacing_density,omitempty"`
+	ReaderEngagement domain.SimulationReaderEngagement `json:"reader_engagement,omitempty"`
+	RoleGuidance     domain.SimulationRoleGuidance     `json:"role_guidance,omitempty"`
+}
+
+func simulationCoCreatePromptPayloadFromCompact(compact *domain.SimulationCompactProfile) simulationCoCreatePromptPayload {
+	if compact == nil {
+		return simulationCoCreatePromptPayload{}
+	}
+	return simulationCoCreatePromptPayload{
+		Mode:             compact.Mode,
+		Style:            compact.Style,
+		Lexicon:          compact.Lexicon,
+		PlotDesign:       compact.PlotDesign,
+		HookDesign:       compact.HookDesign,
+		PacingDensity:    compact.PacingDensity,
+		ReaderEngagement: compact.ReaderEngagement,
+		RoleGuidance:     compact.RoleGuidance,
+	}
+}
+
 // CoCreateProgressKind 标识流式回调的内容类型。
 const (
 	CoCreateProgressThinking = "thinking"

@@ -94,3 +94,7 @@ func stageSystemPrompt(s *store.Store) string {
 	}
 	return prompt
 }
+
+func stageSystemPromptWithSimulation(s *store.Store, mode string) string {
+	return appendSimulationCoCreatePrompt(stageSystemPrompt(s), s, mode)
+}
