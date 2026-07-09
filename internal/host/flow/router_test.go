@@ -287,6 +287,66 @@ func TestRoute_AdaptationCompleteNeedsCompleteBook(t *testing.T) {
 	}
 }
 
+func TestRoute_AdaptationNeedsNewVolumeContinuesPlannedChapter(t *testing.T) {
+	p := writingProgress([]int{99}, domain.FlowWriting)
+	p.TotalChapters = 120
+	s := State{
+		Progress:      p,
+		LastCompleted: 99,
+		ArcBoundary: &storepkg.ArcBoundary{
+			IsArcEnd:       true,
+			IsVolumeEnd:    true,
+			Volume:         15,
+			Arc:            1,
+			NeedsNewVolume: true,
+		},
+		HasArcReview:     true,
+		HasArcSummary:    true,
+		HasVolumeSummary: true,
+		AdaptationActive: true,
+		AdaptationPlannedChapters: map[int]struct{}{
+			100: {},
+		},
+	}
+	got := Route(s)
+	if got == nil || got.Agent != "writer" || got.Chapter != 100 {
+		t.Fatalf("expected writer for next confirmed adaptation chapter, got %+v", got)
+	}
+	if strings.Contains(got.Task, "append_volume") || strings.Contains(got.Task, "expand_arc") {
+		t.Fatalf("adaptation continuation must not request structural expansion, got %q", got.Task)
+	}
+}
+
+func TestRoute_AdaptationNeedsExpansionContinuesPlannedChapter(t *testing.T) {
+	p := writingProgress([]int{9}, domain.FlowWriting)
+	p.TotalChapters = 20
+	s := State{
+		Progress:      p,
+		LastCompleted: 9,
+		ArcBoundary: &storepkg.ArcBoundary{
+			IsArcEnd:       true,
+			Volume:         1,
+			Arc:            2,
+			NextVolume:     1,
+			NextArc:        3,
+			NeedsExpansion: true,
+		},
+		HasArcReview:     true,
+		HasArcSummary:    true,
+		AdaptationActive: true,
+		AdaptationPlannedChapters: map[int]struct{}{
+			10: {},
+		},
+	}
+	got := Route(s)
+	if got == nil || got.Agent != "writer" || got.Chapter != 10 {
+		t.Fatalf("expected writer for next confirmed adaptation chapter, got %+v", got)
+	}
+	if strings.Contains(got.Task, "append_volume") || strings.Contains(got.Task, "expand_arc") {
+		t.Fatalf("adaptation continuation must not request structural expansion, got %q", got.Task)
+	}
+}
+
 func TestRoute_NormalContinue(t *testing.T) {
 	p := writingProgress([]int{1, 2, 3}, domain.FlowWriting)
 	p.TotalChapters = 20

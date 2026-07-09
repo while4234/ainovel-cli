@@ -149,18 +149,24 @@ func Route(s State) *Instruction {
 				Reason: "卷摘要未完成",
 			}
 		case b.NeedsExpansion && b.NextArc > 0:
+			if s.AdaptationActive {
+				return s.nextChapterInstruction(p, "改编计划仍有后续章节，跳过普通扩弧")
+			}
 			return &Instruction{
 				Agent:  "architect_long",
 				Task:   fmt.Sprintf("展开第 %d 卷第 %d 弧（save_foundation type=expand_arc）", b.NextVolume, b.NextArc),
 				Reason: "下一弧骨架待展开",
 			}
 		case b.NeedsNewVolume:
-			if s.AdaptationComplete {
+			if s.AdaptationActive && s.AdaptationComplete {
 				return &Instruction{
 					Agent:  "architect_long",
 					Task:   "改编计划章节、弧级评审、弧摘要和卷摘要均已完成；调用 save_foundation type=complete_book 完结全书，不要 append_volume",
 					Reason: "改编计划已完成，进入完结收尾",
 				}
+			}
+			if s.AdaptationActive {
+				return s.nextChapterInstruction(p, "改编计划仍有后续章节，跳过普通扩卷")
 			}
 			return &Instruction{
 				Agent:  "architect_long",
@@ -171,17 +177,21 @@ func Route(s State) *Instruction {
 	}
 
 	// 12. 正常续写
-	next := p.NextChapter()
-	if next <= 0 {
+	return s.nextChapterInstruction(p, "续写下一章")
+}
+
+func (s State) nextChapterInstruction(p *domain.Progress, reason string) *Instruction {
+	if p == nil {
 		return nil
 	}
-	if !s.adaptationAllowsChapter(next) {
+	next := p.NextChapter()
+	if next <= 0 || !s.adaptationAllowsChapter(next) {
 		return nil
 	}
 	return &Instruction{
 		Agent:   "writer",
 		Task:    fmt.Sprintf("写第 %d 章", next),
-		Reason:  "续写下一章",
+		Reason:  reason,
 		Chapter: next,
 	}
 }

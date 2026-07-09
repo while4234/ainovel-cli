@@ -29,6 +29,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
 - Latest source/runtime change: current local commit
+  `fix: keep adaptation on planned chapters at boundaries`:
+  Flow routing now treats confirmed adaptation projects as fixed-plan stories
+  even at structural boundaries. If a resumed adaptation run reaches
+  `NeedsExpansion` or `NeedsNewVolume` but the confirmed plan still contains
+  the next chapter, Router dispatches `writer` for that planned chapter instead
+  of asking `architect_long` to call forbidden `expand_arc` / `append_volume`.
+  Regression coverage includes incomplete confirmed adaptations at next-arc and
+  next-volume boundaries. Validation passed for
+  `go test ./internal/host/flow -count=1`, full `go test ./... -count=1`,
+  and `git diff --check` with Windows line-ending warnings only.
+- Latest source/runtime change: current local commit
   `fix: recover adaptation routing and review schema`:
   `save_review` now remains OpenAI-strict compatible by requiring
   `volume`, `arc`, `batch_from`, and `batch_to` on every call, with non
