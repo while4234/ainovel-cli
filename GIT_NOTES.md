@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest source/runtime change: current local commit
+- Latest source/runtime change: `2447c73`
   `feat: add simulation mode web setting`:
   PR-02 of the reinforced simulation-mode pipeline adds the Web project
   setting for `normal` / `reinforced` simulation mode, calls
