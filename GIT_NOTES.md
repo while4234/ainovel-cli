@@ -28,6 +28,21 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: current local commit
+  `fix: recover adaptation routing and review schema`:
+  `save_review` now remains OpenAI-strict compatible by requiring
+  `volume`, `arc`, `batch_from`, and `batch_to` on every call, with non
+  `arc_batch` scopes instructed to pass `0`. `LoadState` now loads confirmed
+  adaptation-plan facts before any pending arc-postprocess early return, so
+  resumed adaptation projects keep their fixed chapter plan and do not route
+  into forbidden `append_volume` / `expand_arc` recovery. Regression coverage
+  was added for the strict tool schema and for pending arc postprocess plus
+  confirmed adaptation state. Validation passed for focused
+  `go test ./internal/tools ./internal/host/flow -count=1`, full
+  `go test ./... -count=1`, and `git diff --check` with Windows line-ending
+  warnings only. Local Web was rebuilt/restarted on
+  `http://127.0.0.1:9898` as PID `69136`; `武林高手`, `女主播的秘密`,
+  `大学刑法课`, and `术士手册` were recovered to running states.
 - Latest docs/test/static change: pending PR-05 (uncommitted per user request):
   Documented `simulation_mode` normal/reinforced behavior, default-normal
   semantics, Web enable path (`设定 -> 仿写画像 -> 仿写模式`), and compact-profile

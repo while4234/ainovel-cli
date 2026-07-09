@@ -73,6 +73,10 @@ func TestSaveReviewSchemaIsStrictCompatible(t *testing.T) {
 	requireRequiredFields(t, root,
 		"chapter",
 		"scope",
+		"volume",
+		"arc",
+		"batch_from",
+		"batch_to",
 		"dimensions",
 		"issues",
 		"contract_status",
@@ -82,6 +86,7 @@ func TestSaveReviewSchemaIsStrictCompatible(t *testing.T) {
 		"summary",
 		"affected_chapters",
 	)
+	requireAllPropertiesRequired(t, root)
 
 	props, ok := root["properties"].(map[string]any)
 	if !ok {
@@ -96,6 +101,7 @@ func TestSaveReviewSchemaIsStrictCompatible(t *testing.T) {
 		t.Fatalf("dimensions.items has type %T", dimensions["items"])
 	}
 	requireRequiredFields(t, dimensionItem, "dimension", "score", "verdict", "comment")
+	requireAllPropertiesRequired(t, dimensionItem)
 
 	issues, ok := props["issues"].(map[string]any)
 	if !ok {
@@ -106,6 +112,28 @@ func TestSaveReviewSchemaIsStrictCompatible(t *testing.T) {
 		t.Fatalf("issues.items has type %T", issues["items"])
 	}
 	requireRequiredFields(t, issueItem, "type", "severity", "description", "evidence", "suggestion")
+	requireAllPropertiesRequired(t, issueItem)
+}
+
+func requireAllPropertiesRequired(t *testing.T, schema map[string]any) {
+	t.Helper()
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties has type %T", schema["properties"])
+	}
+	required, ok := schema["required"].([]string)
+	if !ok {
+		t.Fatalf("required has type %T", schema["required"])
+	}
+	seen := make(map[string]struct{}, len(required))
+	for _, field := range required {
+		seen[field] = struct{}{}
+	}
+	for field := range props {
+		if _, ok := seen[field]; !ok {
+			t.Fatalf("strict schema property %q is not required; required=%v", field, required)
+		}
+	}
 }
 
 func requireRequiredFields(t *testing.T, schema map[string]any, fields ...string) {

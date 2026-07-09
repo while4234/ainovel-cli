@@ -155,3 +155,60 @@ func TestLoadStatePrefersPendingRepairedArcPostprocessOverLastCompleted(t *testi
 		t.Fatalf("expected editor arc review for repaired arc, got %+v", got)
 	}
 }
+
+func TestLoadStateIncludesAdaptationStateWithPendingArcPostprocess(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Arcs: []domain.ArcOutline{{
+			Index: 1,
+			Chapters: []domain.OutlineEntry{
+				{Title: "一", CoreEvent: "不同事件一", Hook: "不同钩子一"},
+				{Title: "二", CoreEvent: "不同事件二", Hook: "不同钩子二"},
+			},
+		}},
+	}}
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatalf("save layered outline: %v", err)
+	}
+	if err := st.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatalf("save outline: %v", err)
+	}
+	if err := st.Adaptation.SavePlan(domain.AdaptationPlan{
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, Title: "一"},
+			{Chapter: 2, Title: "二"},
+		},
+	}); err != nil {
+		t.Fatalf("save adaptation plan: %v", err)
+	}
+	if err := st.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		Layered:           true,
+		CompletedChapters: []int{1, 2},
+		PendingArcPost: []domain.ArcPostprocessTarget{
+			{Volume: 1, Arc: 1, LastChapter: 2},
+		},
+	}); err != nil {
+		t.Fatalf("save progress: %v", err)
+	}
+
+	state := LoadState(st)
+
+	if state.ArcBoundary == nil || state.ArcBoundary.LastChapter != 2 {
+		t.Fatalf("expected pending arc boundary, got %+v", state.ArcBoundary)
+	}
+	if !state.AdaptationActive {
+		t.Fatal("expected adaptation state to survive pending arc early return")
+	}
+	if !state.AdaptationComplete {
+		t.Fatal("expected completed confirmed adaptation plan")
+	}
+	if state.AdaptationMaxChapter != 2 {
+		t.Fatalf("adaptation max chapter = %d, want 2", state.AdaptationMaxChapter)
+	}
+}

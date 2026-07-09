@@ -150,7 +150,7 @@
 - **verdict**：审阅结论（accept/polish/rewrite）
 - **summary**：审阅总结（200字以内）
 - **affected_chapters**：需要修改的章节号列表
-- **volume / arc / batch_from / batch_to**：仅 `scope="arc_batch"` 时填写，必须与 Host 指定批次一致
+- **volume / arc / batch_from / batch_to**：工具 strict schema 要求四项始终存在；仅 `scope="arc_batch"` 时填写真实值并必须与 Host 指定批次一致，其他 scope 传 0
 
 ### severity 分级标准
 

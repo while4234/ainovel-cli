@@ -17,6 +17,7 @@ func LoadState(store *storepkg.Store) State {
 		return s
 	}
 	s.Progress = progress
+	loadAdaptationState(&s, store, progress)
 
 	if repair, rerr := store.FindDuplicateOutlineRepairBatch(progress); rerr == nil && repair != nil {
 		s.OutlineRepair = repair
@@ -60,26 +61,32 @@ func LoadState(store *storepkg.Store) State {
 		}
 	}
 
-	if store.Adaptation.Active() {
-		if plan, perr := store.Adaptation.LoadPlan(); perr == nil && plan != nil {
-			s.AdaptationActive = true
-			s.AdaptationPlannedChapters = make(map[int]struct{}, len(plan.Chapters))
-			completed := make(map[int]struct{}, len(progress.CompletedChapters))
-			for _, chapter := range progress.CompletedChapters {
-				completed[chapter] = struct{}{}
-			}
-			s.AdaptationComplete = len(plan.Chapters) > 0
-			for _, chapterPlan := range plan.Chapters {
-				s.AdaptationPlannedChapters[chapterPlan.Chapter] = struct{}{}
-				if chapterPlan.Chapter > s.AdaptationMaxChapter {
-					s.AdaptationMaxChapter = chapterPlan.Chapter
-				}
-				if _, ok := completed[chapterPlan.Chapter]; !ok {
-					s.AdaptationComplete = false
-				}
-			}
-		}
+	return s
+}
+
+func loadAdaptationState(s *State, store *storepkg.Store, progress *domain.Progress) {
+	if s == nil || store == nil || progress == nil {
+		return
+	}
+	plan, err := store.Adaptation.LoadPlan()
+	if err != nil || plan == nil || plan.Status != domain.AdaptationPlanStatusConfirmed {
+		return
 	}
 
-	return s
+	s.AdaptationActive = true
+	s.AdaptationPlannedChapters = make(map[int]struct{}, len(plan.Chapters))
+	completed := make(map[int]struct{}, len(progress.CompletedChapters))
+	for _, chapter := range progress.CompletedChapters {
+		completed[chapter] = struct{}{}
+	}
+	s.AdaptationComplete = len(plan.Chapters) > 0
+	for _, chapterPlan := range plan.Chapters {
+		s.AdaptationPlannedChapters[chapterPlan.Chapter] = struct{}{}
+		if chapterPlan.Chapter > s.AdaptationMaxChapter {
+			s.AdaptationMaxChapter = chapterPlan.Chapter
+		}
+		if _, ok := completed[chapterPlan.Chapter]; !ok {
+			s.AdaptationComplete = false
+		}
+	}
 }
