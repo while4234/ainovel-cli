@@ -55,6 +55,21 @@ const (
 	rollbackActionWaitTimeout           = 30 * time.Second
 )
 
+type webResumeActionKind string
+
+const (
+	webResumeActionAdaptationAnalysis        webResumeActionKind = "adaptation_analysis"
+	webResumeActionAdaptationProposal        webResumeActionKind = "adaptation_proposal"
+	webResumeActionAdaptationProposalDetails webResumeActionKind = "adaptation_proposal_details"
+)
+
+type webResumeAction struct {
+	Kind            webResumeActionKind
+	Label           string
+	SourcePath      string
+	ProposalOptions adapt.ProposalOptions
+}
+
 type SessionManager struct {
 	cfg    bootstrap.Config
 	bundle assets.Bundle
@@ -739,6 +754,10 @@ func (s *ProjectSession) hasActiveAction() bool {
 }
 
 func (s *ProjectSession) Resume() (string, error) {
+	if label, resumed, err := s.resumePendingWebAction(context.Background()); resumed || err != nil {
+		return label, err
+	}
+
 	unlock, err := s.beginAction()
 	if err != nil {
 		return "", err
@@ -750,6 +769,129 @@ func (s *ProjectSession) Resume() (string, error) {
 		s.AppendSnapshot()
 	}
 	return label, err
+}
+
+func (s *ProjectSession) resumePendingWebAction(ctx context.Context) (string, bool, error) {
+	action, err := s.pendingWebResumeAction()
+	if err != nil || action == nil {
+		return "", false, err
+	}
+
+	switch action.Kind {
+	case webResumeActionAdaptationAnalysis:
+		return action.Label, true, s.StartPrepareAdaptationSource(action.SourcePath)
+	case webResumeActionAdaptationProposal:
+		_, err := s.BuildAdaptationProposalVolumesContext(ctx, action.ProposalOptions)
+		return action.Label, true, err
+	case webResumeActionAdaptationProposalDetails:
+		_, err := s.BuildAdaptationProposalDetailsContext(ctx)
+		return action.Label, true, err
+	default:
+		return "", false, nil
+	}
+}
+
+func (s *ProjectSession) pendingWebResumeAction() (*webResumeAction, error) {
+	s.mu.Lock()
+	manifest := s.manifest
+	s.mu.Unlock()
+
+	if strings.TrimSpace(manifest.OutputDir) == "" {
+		return nil, nil
+	}
+	st := storepkg.NewStore(manifest.OutputDir)
+	if action, err := pendingAdaptationProposalResumeAction(st); err != nil || action != nil {
+		return action, err
+	}
+	return pendingAdaptationAnalysisResumeAction(manifest)
+}
+
+func pendingAdaptationProposalResumeAction(st *storepkg.Store) (*webResumeAction, error) {
+	plan, err := st.Adaptation.LoadPlan()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation plan: %w", err)
+	}
+	if plan != nil && len(plan.Chapters) > 0 {
+		return nil, nil
+	}
+	proposal, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation proposal: %w", err)
+	}
+	if proposal != nil && len(proposal.Chapters) > 0 {
+		return nil, nil
+	}
+	review, err := st.Adaptation.LoadVolumeReview()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation volume review: %w", err)
+	}
+	if review != nil && len(review.Volumes) > 0 {
+		return &webResumeAction{
+			Kind:  webResumeActionAdaptationProposalDetails,
+			Label: "恢复：生成章节细纲",
+		}, nil
+	}
+	runtime, err := st.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation proposal runtime: %w", err)
+	}
+	if runtime == nil {
+		return nil, nil
+	}
+	options, err := proposalOptionsFromRuntime(runtime)
+	if err != nil {
+		return nil, err
+	}
+	return &webResumeAction{
+		Kind:            webResumeActionAdaptationProposal,
+		Label:           "恢复：生成改编提案",
+		ProposalOptions: options,
+	}, nil
+}
+
+func pendingAdaptationAnalysisResumeAction(manifest ProjectManifest) (*webResumeAction, error) {
+	status, err := projectAdaptationStatus(manifest, false)
+	if err != nil {
+		return nil, err
+	}
+	if status.AnalysisStatus != "paused" || status.SourceFile == nil {
+		return nil, nil
+	}
+	sourcePath, err := adaptationSourcePathFromName(status.SourceFile.RelativePath, manifest, false)
+	if err != nil {
+		return nil, err
+	}
+	return &webResumeAction{
+		Kind:       webResumeActionAdaptationAnalysis,
+		Label:      "恢复：原文分析",
+		SourcePath: sourcePath,
+	}, nil
+}
+
+func proposalOptionsFromRuntime(runtime *domain.AdaptationProposalRuntime) (adapt.ProposalOptions, error) {
+	if runtime == nil {
+		return adapt.ProposalOptions{}, fmt.Errorf("adaptation proposal runtime is missing")
+	}
+	granularity, ok := domain.StrictAdaptationGranularity(runtime.Granularity)
+	if !ok {
+		return adapt.ProposalOptions{}, fmt.Errorf("adaptation proposal runtime has invalid granularity %q", runtime.Granularity)
+	}
+	brief := strings.TrimSpace(runtime.Brief)
+	if brief == "" {
+		return adapt.ProposalOptions{}, fmt.Errorf("adaptation proposal runtime brief is empty")
+	}
+	rewritePolicy := strings.TrimSpace(runtime.RewritePolicy)
+	if rewritePolicy == "" {
+		rewritePolicy = domain.AdaptationRewritePolicyForGranularity(granularity)
+	}
+	return adapt.ProposalOptions{
+		Brief:              brief,
+		SourcePath:         strings.TrimSpace(runtime.SourcePath),
+		Granularity:        granularity,
+		RewritePolicy:      rewritePolicy,
+		WordTolerance:      runtime.WordTolerance,
+		TargetChapterCount: runtime.TargetChapterCount,
+	}, nil
 }
 
 func (s *ProjectSession) ReviseChapter(req host.ChapterRevisionRequest) (host.ChapterRevisionResult, error) {

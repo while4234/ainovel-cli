@@ -25,6 +25,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/host/exp"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 func TestSessionManagerReusesActiveProjectHostConcurrently(t *testing.T) {
@@ -1147,6 +1148,101 @@ func hasRunningActionAgent(agents []host.AgentSnapshot, kind string) bool {
 	return false
 }
 
+func TestProjectSessionResumeContinuesAdaptationProposalRuntime(t *testing.T) {
+	outputDir := t.TempDir()
+	st := storepkg.NewStore(outputDir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init store: %v", err)
+	}
+	if err := st.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
+		Version:            1,
+		Brief:              "adapt the source with a new ending",
+		SourcePath:         filepath.Join(outputDir, "uploads", "adaptation", "source.txt"),
+		Granularity:        domain.AdaptationGranularityFree,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		WordTolerance:      0.12,
+		TargetChapterCount: 24,
+	}); err != nil {
+		t.Fatalf("SaveProposalRuntime: %v", err)
+	}
+
+	fake := newFakeProjectHost()
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: outputDir}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	label, err := session.Resume()
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if label != "恢复：生成改编提案" {
+		t.Fatalf("label = %q, want adaptation proposal resume", label)
+	}
+	if fake.resumeCalls != 0 {
+		t.Fatalf("host resume calls = %d, want 0", fake.resumeCalls)
+	}
+	if fake.adaptProposalCalls != 1 {
+		t.Fatalf("adapt proposal calls = %d, want 1", fake.adaptProposalCalls)
+	}
+	if got := fake.adaptProposalOptions.Brief; got != "adapt the source with a new ending" {
+		t.Fatalf("proposal brief = %q", got)
+	}
+	if got := fake.adaptProposalOptions.Granularity; got != domain.AdaptationGranularityFree {
+		t.Fatalf("proposal granularity = %q", got)
+	}
+}
+
+func TestProjectSessionResumeContinuesAdaptationProposalDetails(t *testing.T) {
+	outputDir := t.TempDir()
+	st := storepkg.NewStore(outputDir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init store: %v", err)
+	}
+	if err := st.Adaptation.SaveVolumeReview(domain.AdaptationVolumeReview{
+		Status:             domain.AdaptationPlanStatusVolumeReview,
+		Brief:              "reviewed volume plan",
+		Granularity:        domain.AdaptationGranularityArc,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		TargetChapterCount: 12,
+		Volumes: []domain.AdaptationVolumePlan{{
+			Index:      1,
+			Title:      "Opening Volume",
+			TargetFrom: 1,
+			TargetTo:   12,
+			SourceFrom: 1,
+			SourceTo:   8,
+		}},
+	}); err != nil {
+		t.Fatalf("SaveVolumeReview: %v", err)
+	}
+
+	fake := newFakeProjectHost()
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: outputDir}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	label, err := session.Resume()
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if label != "恢复：生成章节细纲" {
+		t.Fatalf("label = %q, want details resume", label)
+	}
+	if fake.resumeCalls != 0 {
+		t.Fatalf("host resume calls = %d, want 0", fake.resumeCalls)
+	}
+	if fake.adaptProposalDetailsCalls != 1 {
+		t.Fatalf("adapt proposal details calls = %d, want 1", fake.adaptProposalDetailsCalls)
+	}
+	if fake.adaptProposalCalls != 0 {
+		t.Fatalf("adapt proposal calls = %d, want 0", fake.adaptProposalCalls)
+	}
+}
+
 type fakeProjectHost struct {
 	mu sync.Mutex
 
@@ -1192,6 +1288,7 @@ type fakeProjectHost struct {
 	importNovelCalls                int
 	adaptAnalyzeCalls               int
 	adaptProposalCalls              int
+	adaptProposalDetailsCalls       int
 	adaptBriefingCalls              int
 	resolveAdaptDecisionCalls       int
 	adaptConfirmCalls               int
@@ -1863,6 +1960,7 @@ func (f *fakeProjectHost) ReviseAdaptationVolumeReviewContext(_ context.Context,
 
 func (f *fakeProjectHost) BuildAdaptationProposalDetailsContext(_ context.Context, options adapt.ProposalDetailsOptions) (*domain.AdaptationPlan, error) {
 	f.mu.Lock()
+	f.adaptProposalDetailsCalls++
 	err := f.adaptProposalErr
 	proposal := f.adaptProposal
 	emit := options.EmitProgress
