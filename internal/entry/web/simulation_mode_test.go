@@ -120,6 +120,42 @@ func TestProjectSimulationModePutPersistsOverlayWithoutLosingFields(t *testing.T
 	}
 }
 
+func TestProjectSimulationModePersistsAcrossProjectReopen(t *testing.T) {
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
+	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	manifest, err := server.store.CreateProject("Simulation Reopen")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+manifest.ID+"/simulation-mode", bytes.NewBufferString(`{"simulation_mode":"reinforced"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		server.Close()
+		t.Fatalf("simulation mode status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	server.Close()
+
+	reopened := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	defer reopened.Close()
+	req = httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	rec = httptest.NewRecorder()
+	reopened.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reopened snapshot status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Snapshot host.UISnapshot `json:"snapshot"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if response.Snapshot.SimulationMode != bootstrap.SimulationModeReinforced {
+		t.Fatalf("reopened snapshot simulation mode = %q, want %q", response.Snapshot.SimulationMode, bootstrap.SimulationModeReinforced)
+	}
+}
+
 func TestProjectSimulationModePutAcceptsModeAliasAndCompletedIdleProject(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

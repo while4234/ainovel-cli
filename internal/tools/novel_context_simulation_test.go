@@ -74,6 +74,12 @@ func TestContextToolInjectsCompactSimulationProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chapter Execute: %v", err)
 	}
+	if bytes.Contains(chapterRaw, []byte("source_reports")) {
+		t.Fatal("normal chapter context JSON must not include source_reports")
+	}
+	if bytes.Contains(chapterRaw, []byte("full report should not be injected")) {
+		t.Fatal("normal chapter context JSON leaked source report text")
+	}
 	var chapter map[string]any
 	if err := json.Unmarshal(chapterRaw, &chapter); err != nil {
 		t.Fatal(err)
@@ -190,6 +196,28 @@ func TestContextToolReinforcedSimulationProfileUsesExpandedCompactProfile(t *tes
 	reinforcedStyle := nestedMap(t, reinforcedCompact, "style")
 	if reinforcedItems, normalItems := sliceLenAny(reinforcedStyle["narrative_voice"]), sliceLenAny(normalStyle["narrative_voice"]); reinforcedItems <= normalItems {
 		t.Fatalf("reinforced category cap should be larger than normal: reinforced=%d normal=%d", reinforcedItems, normalItems)
+	}
+
+	reinforcedChapterRaw, err := reinforcedTool.Execute(context.Background(), json.RawMessage(`{"chapter":1}`))
+	if err != nil {
+		t.Fatalf("reinforced chapter Execute: %v", err)
+	}
+	if bytes.Contains(reinforcedChapterRaw, []byte("source_reports")) {
+		t.Fatal("reinforced chapter context JSON must not include source_reports")
+	}
+	if bytes.Contains(reinforcedChapterRaw, []byte("source_reports must not be injected")) {
+		t.Fatal("reinforced chapter context JSON leaked source report text")
+	}
+	var reinforcedChapter map[string]any
+	if err := json.Unmarshal(reinforcedChapterRaw, &reinforcedChapter); err != nil {
+		t.Fatal(err)
+	}
+	if got := reinforcedChapter["simulation_mode"]; got != "reinforced" {
+		t.Fatalf("chapter simulation_mode = %#v, want reinforced", got)
+	}
+	reinforcedChapterCompact := compactSimulationProfileFromSection(t, reinforcedChapter, "working_memory")
+	if got := reinforcedChapterCompact["mode"]; got != "reinforced" {
+		t.Fatalf("chapter compact profile mode = %#v, want reinforced", got)
 	}
 }
 

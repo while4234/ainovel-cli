@@ -321,6 +321,7 @@ Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可
       }
     }
   },
+  "simulation_mode": "normal",
   "style": "default"
 }
 ```
@@ -349,6 +350,8 @@ Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可
 `reasoning_effort` 为默认推理强度，可选值为 `off` / `low` / `medium` / `high` / `xhigh` / `max`；省略或空字符串表示沿用模型/provider 默认。`roles.<role>.reasoning_effort` 可按角色覆盖，未配置时继承顶层 `reasoning_effort`。TUI `/model` 面板切换 provider、model、推理强度，或 `/model add` 添加并切换模型后，都会写回全局配置 `~/.ainovel/config.json`。
 
 `providers.<name>.api` 仅对 `type: "openai"` 或内置 `openai` 生效，用于选择 OpenAI 协议 endpoint：`chat`（默认，`/v1/chat/completions`）或 `responses`（`/v1/responses`）。Codex 类代理通常需要配置为 `responses`。
+
+`simulation_mode` 控制仿写画像的使用强度，可选值为 `normal` / `reinforced`；省略或留空时默认是 `normal`，新项目也默认使用 `normal`。
 
 `providers.<name>.auth: "grok_oauth"` 表示使用 Grok 账号登录 token；该 provider 必须是 `type: "grok"`，可省略 `api_key`，`base_url` 留空时默认使用 `https://api.x.ai/v1`。
 
@@ -389,6 +392,16 @@ output/novel/meta/simulation_profile.json
 ```
 
 `/importsim` 只接受本功能生成的 `simulation_profile.v1` JSON，并按语料指纹合并，重复来源会跳过。只导入可信来源的画像文件；导入内容会成为后续 Agent 的上下文参考。画像会以 compact 形式注入 `novel_context`，Coordinator、Architect、Writer、Editor 都能读取；各 Agent 只借鉴结构、节奏、钩子和吸引读者手法，不复制原文表达或专有设定。
+
+### 普通仿写与强化仿写
+
+仿写模式有两档：`normal`（普通仿写）和 `reinforced`（强化仿写）。默认始终是 `normal`；即使项目已经加载仿写画像，也不会自动切到强化仿写。
+
+`normal` 会在正式写作的 `novel_context` 中提供紧凑画像，供 Agent 参考风格、结构和读者吸引手法；普通共创和阶段共创不会主动把画像注入对话提示。
+
+`reinforced` 需要在 Web 右侧栏开启：`设定 -> 仿写画像 -> 仿写模式`。开启后，只要项目已有画像，冷启动共创、阶段共创和正式写作都会主动吸收画像约束；用户不需要显式说“参考画像”。
+
+无论 `normal` 还是 `reinforced`，系统只使用 profile summaries / compact profile 一类摘要化画像信息，不注入 `source_reports` 或 raw source text；也不会复制源文句子、人物、地名、专有设定或固定桥段。仿写画像用于学习可复用技法，而不是搬运内容。
 
 Web UI 的上传入口会把仿写语料保存到当前项目的 `simulate/` 目录，把导入的画像 JSON 保存到当前项目的 `profiles/imported/` 目录；小说改编上传的原文保存在当前项目的 `uploads/adaptation/` 目录。这些文件不会被写入仓库，也不会混到其他 Web 项目里。点击“分析”后，语料内容会按所选模型/provider 的正常调用路径发送给模型生成画像；不要上传没有授权处理的私人文本。
 

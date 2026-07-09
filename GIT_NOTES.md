@@ -28,6 +28,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest docs/test/static change: pending PR-05 (uncommitted per user request):
+  Documented `simulation_mode` normal/reinforced behavior, default-normal
+  semantics, Web enable path (`设定 -> 仿写画像 -> 仿写模式`), and compact-profile
+  safety boundaries. Updated both example config files with safe
+  `simulation_mode` comments. Added regressions for stage co-create normal vs
+  reinforced/no-profile behavior, reinforced formal writing context mode,
+  normal raw-report exclusion, Web project reopen persistence, and no
+  `source_reports`/raw source leakage. Validation passed for full
+  `D:\ainovel\.codex\tools\go1.25.5\go\bin\go.exe test ./...`,
+  `npm --prefix internal/entry/web/ui test`,
+  `npm --prefix internal/entry/web/ui run build`, README wording checks, and
+  `git diff --check`; no commit/push/merge was performed.
 - Latest source/runtime change: `6fcc5a8`
   `feat: apply reinforced simulation to novel context`:
   PR-04 of the reinforced simulation-mode pipeline adds

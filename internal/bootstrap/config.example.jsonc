@@ -135,7 +135,10 @@
   // Windows 示例：
   // "runtime_root": "D:/Ainovel/novels-preview",
 
-  // Optional simulation behavior. Empty or omitted keeps the default "normal".
+  // 仿写模式。省略或空字符串默认 "normal"；新项目不会因为已有画像自动切到强化仿写。
+  // 可选值："normal" / "reinforced"。reinforced 需在 Web 右侧栏
+  // `设定 -> 仿写画像 -> 仿写模式` 主动开启。
+  // reinforced 只使用画像摘要/compact profile，不复制源文句子、人物、地名、专有设定或固定桥段。
   // "simulation_mode": "normal",
 
   // 写作风格：default / suspense / fantasy / romance。

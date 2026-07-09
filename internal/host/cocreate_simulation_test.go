@@ -17,6 +17,23 @@ func TestCoCreateSystemPromptWithSimulationNormalEqualsBasePrompt(t *testing.T) 
 	}
 }
 
+func TestStageSystemPromptWithSimulationNormalDoesNotInjectProfile(t *testing.T) {
+	st := newSimulationPromptTestStore(t, true)
+	if err := st.Progress.Init("星河试炼", 12); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+
+	got := stageSystemPromptWithSimulation(st, bootstrap.SimulationModeNormal)
+	if want := stageSystemPrompt(st); got != want {
+		t.Fatalf("normal stage co-create prompt changed")
+	}
+	for _, blocked := range []string{"强化仿写", "仿写画像", "## 仿写方向", "冷峻旁观叙述"} {
+		if strings.Contains(got, blocked) {
+			t.Fatalf("normal stage prompt contains %q:\n%s", blocked, got)
+		}
+	}
+}
+
 func TestCoCreateSystemPromptWithSimulationReinforcedWithoutProfileUsesBasePrompt(t *testing.T) {
 	st := newSimulationPromptTestStore(t, false)
 
@@ -27,6 +44,23 @@ func TestCoCreateSystemPromptWithSimulationReinforcedWithoutProfileUsesBasePromp
 	for _, blocked := range []string{"强化仿写", "仿写画像", "## 仿写方向"} {
 		if strings.Contains(got, blocked) {
 			t.Fatalf("prompt without profile contains %q:\n%s", blocked, got)
+		}
+	}
+}
+
+func TestStageSystemPromptWithSimulationReinforcedWithoutProfileUsesBasePrompt(t *testing.T) {
+	st := newSimulationPromptTestStore(t, false)
+	if err := st.Progress.Init("星河试炼", 12); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+
+	got := stageSystemPromptWithSimulation(st, bootstrap.SimulationModeReinforced)
+	if want := stageSystemPrompt(st); got != want {
+		t.Fatalf("reinforced stage co-create prompt without profile changed")
+	}
+	for _, blocked := range []string{"强化仿写", "仿写画像", "## 仿写方向"} {
+		if strings.Contains(got, blocked) {
+			t.Fatalf("stage prompt without profile contains %q:\n%s", blocked, got)
 		}
 	}
 }
