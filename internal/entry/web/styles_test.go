@@ -118,6 +118,36 @@ func TestProjectStyleCanChangeBeforeWritingStarts(t *testing.T) {
 	}
 }
 
+func TestProjectStyleCanChangeAfterProposalBeforeWritingStarts(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProjectWithStyle("Proposal Style", "default")
+	if err != nil {
+		t.Fatalf("CreateProjectWithStyle: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.snapshot = host.UISnapshot{
+		NovelName:      "半熟恋人",
+		Phase:          "ready",
+		TotalChapters:  36,
+		CompletedCount: 0,
+		TotalWordCount: 0,
+		RuntimeState:   "idle",
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+manifest.ID+"/style", bytes.NewBufferString(`{"style":"romance"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proposal style switch status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	overlay := readProjectOverlay(t, manifest)
+	if overlay.Style != "romance" {
+		t.Fatalf("project style = %q, want romance", overlay.Style)
+	}
+}
+
 func TestProjectStyleChangeRejectsStartedProject(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
@@ -126,7 +156,7 @@ func TestProjectStyleChangeRejectsStartedProject(t *testing.T) {
 		t.Fatalf("CreateProjectWithStyle: %v", err)
 	}
 	fake := installFakeSession(t, server, manifest)
-	fake.snapshot = host.UISnapshot{NovelName: "已开书", TotalChapters: 12}
+	fake.snapshot = host.UISnapshot{NovelName: "已开书", TotalChapters: 12, CompletedCount: 1, TotalWordCount: 3200}
 
 	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+manifest.ID+"/style", bytes.NewBufferString(`{"style":"suspense"}`))
 	rec := httptest.NewRecorder()

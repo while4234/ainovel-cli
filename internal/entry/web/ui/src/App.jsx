@@ -3598,7 +3598,7 @@ function ProjectSettingsPanel({
             </label>
 
             {styleLocked ? (
-              <div className="settings-note warning">写作开始后文风不可变更</div>
+              <div className="settings-note warning">正式开始创作后文风不可变更</div>
             ) : null}
             {projectSettings.loadStatus === 'error' ? (
               <div className="error-banner compact">{projectSettings.error}</div>
@@ -8338,18 +8338,15 @@ export function projectStyleLabel(styles = [], styleID = '') {
   return String(match?.label || '').trim() || id;
 }
 
-export function snapshotHasExistingBookContent(snapshot) {
+export function snapshotHasStartedWritingContent(snapshot) {
   return Boolean(
-    textValue(snapshot, 'NovelName', 'novel_name') ||
-      textValue(snapshot, 'Phase', 'phase') ||
-      numberValue(snapshot, 'TotalChapters', 'total_chapters') ||
-      numberValue(snapshot, 'CompletedCount', 'completed_count') ||
+    numberValue(snapshot, 'CompletedCount', 'completed_count') ||
       numberValue(snapshot, 'TotalWordCount', 'total_word_count')
   );
 }
 
 export function isProjectStyleLocked(snapshot) {
-  return isProjectRunning(snapshot) || snapshotHasExistingBookContent(snapshot);
+  return isProjectRunning(snapshot) || snapshotHasStartedWritingContent(snapshot);
 }
 
 export function canEditProjectStyle({ activeProject, busy = false, projectSettings = {}, snapshot = null } = {}) {

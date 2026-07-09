@@ -6,7 +6,7 @@ import {
   normalizeProjectStyleCatalog,
   projectStyleLabel,
   resolveProjectStyleID,
-  snapshotHasExistingBookContent
+  snapshotHasStartedWritingContent
 } from './App.jsx';
 
 const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
@@ -82,6 +82,33 @@ describe('project settings panel', () => {
     });
   });
 
+  it('allows style saves after proposal generation but before writing starts', () => {
+    const projectSettings = {
+      styles: [{ id: 'default', label: '通用写作风格' }, { id: 'romance', label: '言情风格' }],
+      selectedStyle: 'romance',
+      loadStatus: 'done',
+      saveStatus: 'idle'
+    };
+    const snapshot = {
+      NovelName: '半熟恋人',
+      Phase: 'ready',
+      TotalChapters: 36,
+      CompletedCount: 0,
+      TotalWordCount: 0,
+      RuntimeState: 'idle',
+      IsRunning: false
+    };
+
+    expect(snapshotHasStartedWritingContent(snapshot)).toBe(false);
+    expect(canSubmitProjectStyle({
+      activeProject: { id: 'project-1' },
+      busy: false,
+      currentStyle: 'default',
+      projectSettings,
+      snapshot
+    })).toBe(true);
+  });
+
   it('disables style saves after writing has started', () => {
     const projectSettings = {
       styles: [{ id: 'default', label: '通用写作风格' }, { id: 'romance', label: '言情风格' }],
@@ -89,9 +116,13 @@ describe('project settings panel', () => {
       loadStatus: 'done',
       saveStatus: 'idle'
     };
-    const snapshot = { NovelName: '旧书', TotalChapters: 12 };
+    const snapshot = {
+      TotalChapters: 12,
+      CompletedCount: 1,
+      TotalWordCount: 3200
+    };
 
-    expect(snapshotHasExistingBookContent(snapshot)).toBe(true);
+    expect(snapshotHasStartedWritingContent(snapshot)).toBe(true);
     expect(canSubmitProjectStyle({
       activeProject: { id: 'project-1' },
       busy: false,

@@ -251,6 +251,11 @@ func snapshotHasExistingBook(snapshot host.UISnapshot) bool {
 		snapshot.TotalWordCount > 0
 }
 
+func snapshotHasStartedWriting(snapshot host.UISnapshot) bool {
+	return snapshot.CompletedCount > 0 ||
+		snapshot.TotalWordCount > 0
+}
+
 func exportFormat(value string) (exp.Format, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "":

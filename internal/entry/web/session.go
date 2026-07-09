@@ -247,7 +247,7 @@ func (m *SessionManager) SetProjectStyle(id, style string) (*ProjectSession, Pro
 	defer unlock()
 
 	snapshot := session.Snapshot()
-	if snapshot.IsRunning || snapshotHasExistingBook(snapshot) {
+	if snapshot.IsRunning || snapshotHasStartedWriting(snapshot) {
 		return nil, ProjectManifest{}, fmt.Errorf("%w: cannot change style after writing has started", ErrProjectStyleLocked)
 	}
 
