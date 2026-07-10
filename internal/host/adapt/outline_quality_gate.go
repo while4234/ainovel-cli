@@ -1,0 +1,426 @@
+package adapt
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/voocel/ainovel-cli/internal/domain"
+)
+
+const (
+	outlineQualityIssueChapterMissingSegment = "chapter_source_segment_missing"
+	outlineQualityIssueChapterInvalidSegment = "chapter_source_segment_invalid"
+	outlineQualityIssueArcMissingMainline    = "arc_mainline_missing"
+	outlineQualityIssueArcDuplicateMainline  = "arc_mainline_duplicate"
+	outlineQualityIssueArcWrongVolume        = "arc_mainline_wrong_volume"
+	outlineQualityIssueArcAmbiguousVolume    = "arc_mainline_ambiguous_volume"
+	outlineQualityIssueFreeMissingLedger     = "free_target_ledger_missing"
+	outlineQualityIssueFreeUnknownEvent      = "free_target_event_unknown"
+	outlineQualityIssueFreeDuplicateBinding  = "free_target_event_duplicate_binding"
+	outlineQualityIssueFreeMissingBinding    = "free_target_event_missing_binding"
+	outlineQualityIssueFreeDependency        = "free_target_event_dependency"
+	outlineQualityIssueFreeRelationship      = "free_relationship_transition"
+	outlineQualityIssueFreeSetting           = "free_setting_consistency"
+)
+
+// AdaptationOutlineQualityIssue identifies one deterministic, plan-only
+// contract violation. It deliberately contains no draft/body evidence: this
+// gate runs before a Writer has created prose.
+type AdaptationOutlineQualityIssue struct {
+	Code          string
+	Detail        string
+	SourceChapter int
+	TargetChapter int
+	Volume        int
+	EventID       string
+}
+
+// AdaptationOutlineQualityError keeps all quality-gate failures available to a
+// caller that wants to request a structural retry. The gate itself never
+// invokes a model or retries work.
+type AdaptationOutlineQualityError struct {
+	Issues []AdaptationOutlineQualityIssue
+}
+
+func (e *AdaptationOutlineQualityError) Error() string {
+	if e == nil || len(e.Issues) == 0 {
+		return "adaptation outline quality gate failed"
+	}
+	parts := make([]string, 0, len(e.Issues))
+	for _, issue := range e.Issues {
+		parts = append(parts, "["+issue.Code+"] "+issue.Detail)
+	}
+	return "adaptation outline quality gate failed: " + strings.Join(parts, "; ")
+}
+
+// ValidateAdaptationOutlineQuality validates only durable planning contracts.
+// It is intentionally independent from adaptaudit.Audit, whose checks require
+// generated chapter bodies and therefore belong to the post-writing audit.
+// A nil manifest is supported for legacy/simple proposals; source-rune segment
+// coverage becomes enforceable as soon as a source manifest is available.
+func ValidateAdaptationOutlineQuality(plan *domain.AdaptationPlan, manifest *domain.AdaptationSourceManifest) error {
+	if plan == nil {
+		return &AdaptationOutlineQualityError{Issues: []AdaptationOutlineQualityIssue{{
+			Code: "outline_plan_missing", Detail: "adaptation plan is required",
+		}}}
+	}
+	mode := domain.NormalizeAdaptationGranularity(plan.Granularity)
+	var issues []AdaptationOutlineQualityIssue
+	switch mode {
+	case domain.AdaptationGranularityChapter:
+		issues = append(issues, validateChapterOutlineSegments(*plan, manifest)...)
+	case domain.AdaptationGranularityArc:
+		issues = append(issues, validateArcOutlineMainline(*plan)...)
+	case domain.AdaptationGranularityFree:
+		issues = append(issues, validateFreeOutlineLedger(*plan)...)
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	sort.SliceStable(issues, func(left, right int) bool {
+		if issues[left].Code != issues[right].Code {
+			return issues[left].Code < issues[right].Code
+		}
+		if issues[left].Volume != issues[right].Volume {
+			return issues[left].Volume < issues[right].Volume
+		}
+		if issues[left].SourceChapter != issues[right].SourceChapter {
+			return issues[left].SourceChapter < issues[right].SourceChapter
+		}
+		if issues[left].TargetChapter != issues[right].TargetChapter {
+			return issues[left].TargetChapter < issues[right].TargetChapter
+		}
+		if issues[left].EventID != issues[right].EventID {
+			return issues[left].EventID < issues[right].EventID
+		}
+		return issues[left].Detail < issues[right].Detail
+	})
+	return &AdaptationOutlineQualityError{Issues: issues}
+}
+
+func validateChapterOutlineSegments(plan domain.AdaptationPlan, manifest *domain.AdaptationSourceManifest) []AdaptationOutlineQualityIssue {
+	if manifest == nil {
+		return nil
+	}
+	sourceRunes := sourceRunesByChapter(manifest)
+	if len(sourceRunes) == 0 {
+		return nil
+	}
+	segmentsBySource := make(map[int][]domain.AdaptationSourceSegment, len(sourceRunes))
+	for _, chapter := range plan.Chapters {
+		for _, segment := range chapter.SourceSegments {
+			segmentsBySource[segment.SourceChapter] = append(segmentsBySource[segment.SourceChapter], segment)
+		}
+	}
+	issues := make([]AdaptationOutlineQualityIssue, 0)
+	for sourceChapter := 1; sourceChapter <= manifest.ChapterCount; sourceChapter++ {
+		runes := sourceRunes[sourceChapter]
+		if runes <= 0 {
+			continue
+		}
+		segments := segmentsBySource[sourceChapter]
+		if len(segments) == 0 {
+			issues = append(issues, AdaptationOutlineQualityIssue{
+				Code: outlineQualityIssueChapterMissingSegment, SourceChapter: sourceChapter,
+				Detail: fmt.Sprintf("source chapter %d has %d runes but no SourceSegment ownership", sourceChapter, runes),
+			})
+			continue
+		}
+		for _, segmentIssue := range domain.CheckAdaptationSourceSegments(sourceChapter, runes, segments) {
+			issues = append(issues, AdaptationOutlineQualityIssue{
+				Code:          outlineQualityIssueChapterInvalidSegment,
+				SourceChapter: sourceChapter,
+				Detail:        segmentIssue.Error(),
+			})
+		}
+	}
+	for sourceChapter := range segmentsBySource {
+		if _, known := sourceRunes[sourceChapter]; known {
+			continue
+		}
+		issues = append(issues, AdaptationOutlineQualityIssue{
+			Code: outlineQualityIssueChapterInvalidSegment, SourceChapter: sourceChapter,
+			Detail: fmt.Sprintf("SourceSegment references source chapter %d which is absent from the source manifest", sourceChapter),
+		})
+	}
+	return issues
+}
+
+func validateArcOutlineMainline(plan domain.AdaptationPlan) []AdaptationOutlineQualityIssue {
+	bindings := chapterEventBindings(plan.Chapters)
+	mainlineByID := make(map[string]domain.AdaptationEvent)
+	for _, event := range plan.SourceEvents {
+		if strings.TrimSpace(event.ID) == "" || event.Importance != domain.AdaptationEventMainline {
+			continue
+		}
+		mainlineByID[event.ID] = event
+	}
+
+	issues := make([]AdaptationOutlineQualityIssue, 0)
+	claimedByVolume := make(map[string][]int)
+	for _, volume := range plan.Volumes {
+		expected := make(map[string]bool)
+		for _, eventID := range volume.MainlineEventIDs {
+			if eventID = strings.TrimSpace(eventID); eventID != "" {
+				expected[eventID] = true
+			}
+		}
+		if volume.SourceFrom > 0 && volume.SourceTo >= volume.SourceFrom {
+			for eventID, event := range mainlineByID {
+				if event.SourceChapter >= volume.SourceFrom && event.SourceChapter <= volume.SourceTo {
+					expected[eventID] = true
+				}
+			}
+		}
+		for eventID := range expected {
+			claimedByVolume[eventID] = append(claimedByVolume[eventID], volume.Index)
+			validateArcMainlineBinding(&issues, eventID, volume, bindings[eventID])
+		}
+	}
+
+	for eventID, event := range mainlineByID {
+		if len(claimedByVolume[eventID]) == 0 {
+			validateArcMainlineBinding(&issues, eventID, domain.AdaptationVolumePlan{}, bindings[eventID])
+			continue
+		}
+		if len(claimedByVolume[eventID]) > 1 {
+			issues = append(issues, AdaptationOutlineQualityIssue{
+				Code: outlineQualityIssueArcAmbiguousVolume, EventID: eventID, SourceChapter: event.SourceChapter,
+				Detail: fmt.Sprintf("source mainline event %s belongs to multiple volume source ranges: %v", eventID, claimedByVolume[eventID]),
+			})
+		}
+	}
+	return issues
+}
+
+func validateArcMainlineBinding(
+	issues *[]AdaptationOutlineQualityIssue,
+	eventID string,
+	volume domain.AdaptationVolumePlan,
+	chapters []int,
+) {
+	if len(chapters) == 0 {
+		*issues = append(*issues, AdaptationOutlineQualityIssue{
+			Code: outlineQualityIssueArcMissingMainline, EventID: eventID, Volume: volume.Index,
+			Detail: fmt.Sprintf("mainline event %s has no target chapter binding", eventID),
+		})
+		return
+	}
+	if len(chapters) != 1 {
+		*issues = append(*issues, AdaptationOutlineQualityIssue{
+			Code: outlineQualityIssueArcDuplicateMainline, EventID: eventID, Volume: volume.Index,
+			Detail: fmt.Sprintf("mainline event %s is bound to target chapters %v; it must be assigned exactly once", eventID, chapters),
+		})
+		return
+	}
+	if volume.TargetFrom <= 0 || volume.TargetTo < volume.TargetFrom {
+		return
+	}
+	if chapters[0] < volume.TargetFrom || chapters[0] > volume.TargetTo {
+		*issues = append(*issues, AdaptationOutlineQualityIssue{
+			Code: outlineQualityIssueArcWrongVolume, EventID: eventID, Volume: volume.Index, TargetChapter: chapters[0],
+			Detail: fmt.Sprintf("mainline event %s is bound to target chapter %d, outside volume %d target range %d-%d", eventID, chapters[0], volume.Index, volume.TargetFrom, volume.TargetTo),
+		})
+	}
+}
+
+func validateFreeOutlineLedger(plan domain.AdaptationPlan) []AdaptationOutlineQualityIssue {
+	if len(plan.TargetEventLedger) == 0 {
+		return []AdaptationOutlineQualityIssue{{
+			Code:   outlineQualityIssueFreeMissingLedger,
+			Detail: "free adaptation requires a target_event_ledger before detailed outlines can be accepted",
+		}}
+	}
+	issues := make([]AdaptationOutlineQualityIssue, 0)
+	ledger := make(map[string]domain.AdaptationEvent, len(plan.TargetEventLedger))
+	for _, event := range plan.TargetEventLedger {
+		event.ID = strings.TrimSpace(event.ID)
+		if event.ID == "" {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeUnknownEvent, Detail: "target_event_ledger contains a blank event id"})
+			continue
+		}
+		if _, duplicate := ledger[event.ID]; duplicate {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeDuplicateBinding, EventID: event.ID, Detail: fmt.Sprintf("target_event_ledger contains duplicate event %s", event.ID)})
+			continue
+		}
+		ledger[event.ID] = event
+	}
+	bindings := chapterEventBindings(plan.Chapters)
+	for _, chapter := range plan.Chapters {
+		if len(nonEmptyEventIDs(chapter.EventIDs)) == 0 {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeMissingBinding, TargetChapter: chapter.Chapter, Detail: fmt.Sprintf("target chapter %d has no event_ids for the target ledger", chapter.Chapter)})
+		}
+	}
+	for eventID, chapters := range bindings {
+		if _, exists := ledger[eventID]; !exists {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeUnknownEvent, EventID: eventID, Detail: fmt.Sprintf("target chapter binding references %s, which is missing from target_event_ledger", eventID)})
+			continue
+		}
+		if len(chapters) != 1 {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeDuplicateBinding, EventID: eventID, Detail: fmt.Sprintf("target event %s is bound to chapters %v; ledger events need one owning chapter", eventID, chapters)})
+		}
+	}
+	for eventID := range ledger {
+		if len(bindings[eventID]) == 0 {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeMissingBinding, EventID: eventID, Detail: fmt.Sprintf("target ledger event %s has no chapter binding", eventID)})
+		}
+	}
+
+	for eventID, event := range ledger {
+		validateFreeEventDependencies(&issues, eventID, event.DependsOn, bindings, ledger)
+	}
+	issues = append(issues, validateFreeRelationshipTransitions(plan, ledger, bindings)...)
+	issues = append(issues, validateFreeSettingClaims(plan, ledger)...)
+	return issues
+}
+
+func validateFreeEventDependencies(
+	issues *[]AdaptationOutlineQualityIssue,
+	eventID string,
+	dependsOn []string,
+	bindings map[string][]int,
+	ledger map[string]domain.AdaptationEvent,
+) {
+	chapters := bindings[eventID]
+	if len(chapters) != 1 {
+		return
+	}
+	for _, dependencyID := range nonEmptyEventIDs(dependsOn) {
+		if _, exists := ledger[dependencyID]; !exists {
+			*issues = append(*issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeDependency, EventID: eventID, TargetChapter: chapters[0], Detail: fmt.Sprintf("target event %s depends on missing ledger event %s", eventID, dependencyID)})
+			continue
+		}
+		dependencyChapters := bindings[dependencyID]
+		if len(dependencyChapters) != 1 || dependencyChapters[0] >= chapters[0] {
+			*issues = append(*issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeDependency, EventID: eventID, TargetChapter: chapters[0], Detail: fmt.Sprintf("target event %s depends on %s, which is not established in an earlier target chapter", eventID, dependencyID)})
+		}
+	}
+}
+
+func validateFreeRelationshipTransitions(plan domain.AdaptationPlan, ledger map[string]domain.AdaptationEvent, bindings map[string][]int) []AdaptationOutlineQualityIssue {
+	type transition struct {
+		eventID string
+		chapter int
+		value   domain.AdaptationRelationshipTransition
+	}
+	var transitions []transition
+	for eventID, event := range ledger {
+		if event.Relationship == nil || len(bindings[eventID]) != 1 {
+			continue
+		}
+		transitions = append(transitions, transition{eventID: eventID, chapter: bindings[eventID][0], value: *event.Relationship})
+	}
+	sort.SliceStable(transitions, func(left, right int) bool {
+		if transitions[left].chapter != transitions[right].chapter {
+			return transitions[left].chapter < transitions[right].chapter
+		}
+		return transitions[left].eventID < transitions[right].eventID
+	})
+	issues := make([]AdaptationOutlineQualityIssue, 0)
+	currentState := make(map[string]string)
+	for _, item := range transitions {
+		relationship := item.value
+		relationship.Pair = strings.TrimSpace(relationship.Pair)
+		relationship.From = strings.TrimSpace(relationship.From)
+		relationship.To = strings.TrimSpace(relationship.To)
+		if relationship.Pair == "" || relationship.To == "" {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeRelationship, EventID: item.eventID, TargetChapter: item.chapter, Detail: fmt.Sprintf("relationship transition for event %s needs pair and to state", item.eventID)})
+			continue
+		}
+		if previous, exists := currentState[relationship.Pair]; exists && !relationshipStateAllows(previous, relationship) {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeRelationship, EventID: item.eventID, TargetChapter: item.chapter, Detail: fmt.Sprintf("relationship %s moves from %s after prior state %s", relationship.Pair, relationship.From, previous)})
+		}
+		validateFreeEventDependencies(&issues, item.eventID, relationship.RequiresEventIDs, bindings, ledger)
+		currentState[relationship.Pair] = relationship.To
+	}
+	for pair, expected := range plan.TargetRelationshipStates {
+		pair = strings.TrimSpace(pair)
+		expected = strings.TrimSpace(expected)
+		if pair == "" || expected == "" {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeRelationship, Detail: "target_relationship_states contains a blank pair or state"})
+			continue
+		}
+		if actual, known := currentState[pair]; known && actual != expected {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeRelationship, Detail: fmt.Sprintf("relationship %s ends at %s but target state is %s", pair, actual, expected)})
+		}
+	}
+	return issues
+}
+
+func relationshipStateAllows(previous string, relationship domain.AdaptationRelationshipTransition) bool {
+	if relationship.From != "" && relationship.From == previous {
+		return true
+	}
+	for _, allowed := range relationship.AllowedFrom {
+		if strings.TrimSpace(allowed) == previous {
+			return true
+		}
+	}
+	return relationship.From == "" && len(relationship.AllowedFrom) == 0
+}
+
+func validateFreeSettingClaims(plan domain.AdaptationPlan, ledger map[string]domain.AdaptationEvent) []AdaptationOutlineQualityIssue {
+	issues := make([]AdaptationOutlineQualityIssue, 0)
+	locks := make(map[string]string, len(plan.TargetSettingLocks))
+	for _, lock := range plan.TargetSettingLocks {
+		key, value := strings.TrimSpace(lock.Key), strings.TrimSpace(lock.Value)
+		if key == "" || value == "" {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeSetting, Detail: "target_setting_locks contains a blank key or value"})
+			continue
+		}
+		if existing, duplicate := locks[key]; duplicate && existing != value {
+			issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeSetting, Detail: fmt.Sprintf("target setting lock %s has conflicting values %s and %s", key, existing, value)})
+			continue
+		}
+		locks[key] = value
+	}
+	claims := make(map[string]string)
+	for eventID, event := range ledger {
+		for _, claim := range event.SettingClaims {
+			key, value := strings.TrimSpace(claim.Key), strings.TrimSpace(claim.Value)
+			if key == "" || value == "" {
+				issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeSetting, EventID: eventID, Detail: fmt.Sprintf("target event %s has a blank setting claim", eventID)})
+				continue
+			}
+			if locked, exists := locks[key]; exists && locked != value {
+				issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeSetting, EventID: eventID, Detail: fmt.Sprintf("target event %s claims setting %s=%s but lock requires %s", eventID, key, value, locked)})
+			}
+			if existing, exists := claims[key]; exists && existing != value {
+				issues = append(issues, AdaptationOutlineQualityIssue{Code: outlineQualityIssueFreeSetting, EventID: eventID, Detail: fmt.Sprintf("target setting %s changes from %s to %s without an explicit setting transition", key, existing, value)})
+				continue
+			}
+			claims[key] = value
+		}
+	}
+	return issues
+}
+
+func chapterEventBindings(chapters []domain.AdaptationChapterPlan) map[string][]int {
+	bindings := make(map[string][]int)
+	for index, chapter := range chapters {
+		number := chapter.Chapter
+		if number <= 0 {
+			number = index + 1
+		}
+		seen := make(map[string]bool)
+		for _, eventID := range nonEmptyEventIDs(chapter.EventIDs) {
+			if seen[eventID] {
+				continue
+			}
+			seen[eventID] = true
+			bindings[eventID] = append(bindings[eventID], number)
+		}
+	}
+	return bindings
+}
+
+func nonEmptyEventIDs(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}

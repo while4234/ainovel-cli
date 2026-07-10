@@ -21,15 +21,16 @@ var openAuthBrowser = openBrowser
 var startGrokAuthLogin = grokauth.StartLogin
 
 type apiModelConfig struct {
-	Providers                  []apiModelProvider `json:"providers"`
-	Roles                      []apiModelRoute    `json:"roles"`
-	ThinkingLevels             []string           `json:"thinking_levels"`
-	ThinkingRule               string             `json:"thinking_rule"`
-	CoCreateTimeoutSeconds     int                `json:"cocreate_timeout_seconds"`
-	CoCreateMaxTokens          int                `json:"cocreate_max_tokens"`
-	StructureRepairMaxAttempts int                `json:"structure_repair_max_attempts"`
-	BudgetQualityMaxAttempts   int                `json:"budget_quality_max_attempts"`
-	ModelAutoSwitch            apiModelAutoSwitch `json:"model_auto_switch"`
+	Providers                              []apiModelProvider `json:"providers"`
+	Roles                                  []apiModelRoute    `json:"roles"`
+	ThinkingLevels                         []string           `json:"thinking_levels"`
+	ThinkingRule                           string             `json:"thinking_rule"`
+	CoCreateTimeoutSeconds                 int                `json:"cocreate_timeout_seconds"`
+	CoCreateMaxTokens                      int                `json:"cocreate_max_tokens"`
+	StructureRepairMaxAttempts             int                `json:"structure_repair_max_attempts"`
+	BudgetQualityMaxAttempts               int                `json:"budget_quality_max_attempts"`
+	AdaptationOutlineAuditRetryMaxAttempts int                `json:"adaptation_outline_audit_retry_max_attempts"`
+	ModelAutoSwitch                        apiModelAutoSwitch `json:"model_auto_switch"`
 }
 
 type apiModelAutoSwitch struct {
@@ -96,10 +97,11 @@ type coCreateMaxTokensRequest struct {
 }
 
 type retrySettingsRequest struct {
-	ModelCallMaxAttempts         int `json:"model_call_max_attempts"`
-	NetworkDisconnectMaxAttempts int `json:"network_disconnect_max_attempts"`
-	StructureRepairMaxAttempts   int `json:"structure_repair_max_attempts"`
-	BudgetQualityMaxAttempts     int `json:"budget_quality_max_attempts"`
+	ModelCallMaxAttempts                   int `json:"model_call_max_attempts"`
+	NetworkDisconnectMaxAttempts           int `json:"network_disconnect_max_attempts"`
+	StructureRepairMaxAttempts             int `json:"structure_repair_max_attempts"`
+	BudgetQualityMaxAttempts               int `json:"budget_quality_max_attempts"`
+	AdaptationOutlineAuditRetryMaxAttempts int `json:"adaptation_outline_audit_retry_max_attempts"`
 }
 
 func (r retrySettingsRequest) modelCallAttempts() int {
@@ -379,10 +381,16 @@ func (s *Server) handleRetrySettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	auditAttempts, err := bootstrap.NormalizeAdaptationOutlineAuditRetryMaxAttempts(req.AdaptationOutlineAuditRetryMaxAttempts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	cfg := s.currentConfig()
 	cfg.ModelAutoSwitch.NetworkMaxAttempts = modelCallAttempts
 	cfg.StructureRepairMaxAttempts = repairAttempts
 	cfg.BudgetQualityMaxAttempts = budgetAttempts
+	cfg.AdaptationOutlineAuditRetryMaxAttempts = auditAttempts
 	if err := cfg.ValidateBase(); err != nil {
 		writeProjectLifecycleError(w, err)
 		return
@@ -639,15 +647,16 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 		})
 	}
 	return apiModelConfig{
-		Providers:                  outProviders,
-		Roles:                      roles,
-		ThinkingLevels:             []string{"", "off", "low", "medium", "high", "xhigh", "max"},
-		ThinkingRule:               "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
-		CoCreateTimeoutSeconds:     cfg.EffectiveCoCreateTimeoutSeconds(),
-		CoCreateMaxTokens:          cfg.EffectiveCoCreateMaxTokens(),
-		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
-		BudgetQualityMaxAttempts:   cfg.EffectiveBudgetQualityMaxAttempts(),
-		ModelAutoSwitch:            apiModelAutoSwitchFromConfig(cfg.ModelAutoSwitch),
+		Providers:                              outProviders,
+		Roles:                                  roles,
+		ThinkingLevels:                         []string{"", "off", "low", "medium", "high", "xhigh", "max"},
+		ThinkingRule:                           "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
+		CoCreateTimeoutSeconds:                 cfg.EffectiveCoCreateTimeoutSeconds(),
+		CoCreateMaxTokens:                      cfg.EffectiveCoCreateMaxTokens(),
+		StructureRepairMaxAttempts:             cfg.EffectiveStructureRepairMaxAttempts(),
+		BudgetQualityMaxAttempts:               cfg.EffectiveBudgetQualityMaxAttempts(),
+		AdaptationOutlineAuditRetryMaxAttempts: cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts(),
+		ModelAutoSwitch:                        apiModelAutoSwitchFromConfig(cfg.ModelAutoSwitch),
 	}
 }
 
@@ -876,7 +885,7 @@ func (s *Server) handleProjectRetrySettings(w http.ResponseWriter, r *http.Reque
 		writeProjectSessionError(w, err)
 		return
 	}
-	models, err := session.SetRetrySettings(req.modelCallAttempts(), req.StructureRepairMaxAttempts, req.BudgetQualityMaxAttempts)
+	models, err := session.SetRetrySettings(req.modelCallAttempts(), req.StructureRepairMaxAttempts, req.BudgetQualityMaxAttempts, req.AdaptationOutlineAuditRetryMaxAttempts)
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return

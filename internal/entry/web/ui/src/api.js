@@ -549,13 +549,14 @@ export function setGlobalCoCreateMaxTokens(tokens) {
   });
 }
 
-export function setGlobalRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts) {
+export function setGlobalRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts, adaptationOutlineAuditRetryMaxAttempts) {
   return request('/api/models/retry-settings', {
     method: 'POST',
     body: JSON.stringify({
       model_call_max_attempts: modelCallMaxAttempts,
       structure_repair_max_attempts: structureRepairMaxAttempts,
-      budget_quality_max_attempts: budgetQualityMaxAttempts
+      budget_quality_max_attempts: budgetQualityMaxAttempts,
+      adaptation_outline_audit_retry_max_attempts: adaptationOutlineAuditRetryMaxAttempts
     })
   });
 }
@@ -602,13 +603,14 @@ export function setProjectCoCreateMaxTokens(projectId, tokens) {
   });
 }
 
-export function setProjectRetrySettings(projectId, modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts) {
+export function setProjectRetrySettings(projectId, modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts, adaptationOutlineAuditRetryMaxAttempts) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/models/retry-settings`, {
     method: 'POST',
     body: JSON.stringify({
       model_call_max_attempts: modelCallMaxAttempts,
       structure_repair_max_attempts: structureRepairMaxAttempts,
-      budget_quality_max_attempts: budgetQualityMaxAttempts
+      budget_quality_max_attempts: budgetQualityMaxAttempts,
+      adaptation_outline_audit_retry_max_attempts: adaptationOutlineAuditRetryMaxAttempts
     })
   });
 }

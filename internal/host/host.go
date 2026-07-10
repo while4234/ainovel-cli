@@ -509,11 +509,12 @@ func (h *Host) adaptationDeps() adapt.Deps {
 	cfg := h.cfg
 	h.mu.Unlock()
 	return adapt.Deps{
-		Store:                      h.store,
-		LLM:                        llm,
-		ModelCallMaxAttempts:       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
-		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
-		BudgetQualityMaxAttempts:   cfg.EffectiveBudgetQualityMaxAttempts(),
+		Store:                                  h.store,
+		LLM:                                    llm,
+		ModelCallMaxAttempts:                   cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
+		StructureRepairMaxAttempts:             cfg.EffectiveStructureRepairMaxAttempts(),
+		BudgetQualityMaxAttempts:               cfg.EffectiveBudgetQualityMaxAttempts(),
+		AdaptationOutlineAuditRetryMaxAttempts: cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts(),
 		Prompts: adapt.Prompts{
 			Foundation:      h.bundle.Prompts.ImportFoundation,
 			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
@@ -1601,6 +1602,10 @@ func (h *Host) SyncInheritedProviderFromGlobal(globalCfg bootstrap.Config, origi
 		candidate.BudgetQualityMaxAttempts = globalCfg.BudgetQualityMaxAttempts
 		changed = true
 	}
+	if candidate.AdaptationOutlineAuditRetryMaxAttempts != globalCfg.AdaptationOutlineAuditRetryMaxAttempts {
+		candidate.AdaptationOutlineAuditRetryMaxAttempts = globalCfg.AdaptationOutlineAuditRetryMaxAttempts
+		changed = true
+	}
 	if candidate.PersistProjectConfig != nil {
 		overlay := cloneProjectConfig(*candidate.PersistProjectConfig)
 		overlayChanged := false
@@ -1682,6 +1687,10 @@ func (h *Host) SyncModelSettingsFromGlobal(globalCfg bootstrap.Config) error {
 		}
 		if nextOverlay.BudgetQualityMaxAttempts != globalCfg.BudgetQualityMaxAttempts {
 			nextOverlay.BudgetQualityMaxAttempts = globalCfg.BudgetQualityMaxAttempts
+			overlayChanged = true
+		}
+		if nextOverlay.AdaptationOutlineAuditRetryMaxAttempts != globalCfg.AdaptationOutlineAuditRetryMaxAttempts {
+			nextOverlay.AdaptationOutlineAuditRetryMaxAttempts = globalCfg.AdaptationOutlineAuditRetryMaxAttempts
 			overlayChanged = true
 		}
 		if overlayChanged {
@@ -3165,7 +3174,13 @@ func (h *Host) CurrentBudgetQualityMaxAttempts() int {
 	return h.cfg.EffectiveBudgetQualityMaxAttempts()
 }
 
-func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts int) error {
+func (h *Host) CurrentAdaptationOutlineAuditRetryMaxAttempts() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts()
+}
+
+func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts, adaptationOutlineAuditRetryMaxAttempts int) error {
 	modelAttempts, err := bootstrap.NormalizeRuntimeNetworkMaxAttempts(modelCallMaxAttempts)
 	if err != nil {
 		return err
@@ -3178,6 +3193,10 @@ func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts
 	if err != nil {
 		return err
 	}
+	auditAttempts, err := bootstrap.NormalizeAdaptationOutlineAuditRetryMaxAttempts(adaptationOutlineAuditRetryMaxAttempts)
+	if err != nil {
+		return err
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -3186,10 +3205,12 @@ func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts
 	h.cfg.ModelAutoSwitch.NetworkMaxAttempts = modelAttempts
 	h.cfg.StructureRepairMaxAttempts = repairAttempts
 	h.cfg.BudgetQualityMaxAttempts = budgetAttempts
+	h.cfg.AdaptationOutlineAuditRetryMaxAttempts = auditAttempts
 	if overlay := h.ensureProjectOverlayLocked(); overlay != nil {
 		overlay.ModelAutoSwitch.NetworkMaxAttempts = modelAttempts
 		overlay.StructureRepairMaxAttempts = repairAttempts
 		overlay.BudgetQualityMaxAttempts = budgetAttempts
+		overlay.AdaptationOutlineAuditRetryMaxAttempts = auditAttempts
 	}
 	if err := h.persistConfigLocked(); err != nil {
 		h.cfg = previous
@@ -3198,7 +3219,7 @@ func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
-		Summary:  fmt.Sprintf("重试设置已更新：模型调用最多 %d 次，结构修复最多 %d 次，预算复核最多 %d 次", modelAttempts, repairAttempts, budgetAttempts),
+		Summary:  fmt.Sprintf("重试设置已更新：模型调用最多 %d 次，结构修复最多 %d 次，预算复核最多 %d 次，改编章节纲质量审计失败后重试 %d 次", modelAttempts, repairAttempts, budgetAttempts, auditAttempts),
 		Level:    "info",
 	})
 	return nil

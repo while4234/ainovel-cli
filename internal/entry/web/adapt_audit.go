@@ -43,6 +43,10 @@ func (s *Server) handleProjectAdaptAudit(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusConflict, "pause the project before running an adaptation audit")
 			return
 		}
+		if state := session.CoCreateState(); state != nil && state.Active {
+			writeError(w, http.StatusConflict, "finish or cancel co-create before running an adaptation audit")
+			return
+		}
 		unlock, err := session.beginAction()
 		if err != nil {
 			writeProjectSessionError(w, err)
@@ -86,6 +90,10 @@ func (s *Server) handleProjectAdaptAuditApply(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusConflict, "pause the project before applying an adaptation repair")
 		return
 	}
+	if state := session.CoCreateState(); state != nil && state.Active {
+		writeError(w, http.StatusConflict, "finish or cancel co-create before applying an adaptation repair")
+		return
+	}
 	unlock, err := session.beginAction()
 	if err != nil {
 		writeProjectSessionError(w, err)
@@ -97,6 +105,7 @@ func (s *Server) handleProjectAdaptAuditApply(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	session.AppendSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"application": application,
 		"snapshot":    session.Snapshot(),

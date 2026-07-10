@@ -33,7 +33,8 @@ describe('project model settings panel', () => {
     const body = extractFunctionBody(appSource, 'changeRetrySettings');
 
     expect(body).toContain('activeProject?.id');
-    expect(body).toContain('setProjectRetrySettings(activeProject.id, modelAttempts, repairAttempts, budgetAttempts)');
-    expect(body).toContain('setGlobalRetrySettings(modelAttempts, repairAttempts, budgetAttempts)');
+    expect(body).toContain('setProjectRetrySettings(activeProject.id, modelAttempts, repairAttempts, budgetAttempts, auditAttempts)');
+    expect(body).toContain('setGlobalRetrySettings(modelAttempts, repairAttempts, budgetAttempts, auditAttempts)');
+    expect(body).toContain('adaptationOutlineAuditRetryMaxAttempts');
   });
 });

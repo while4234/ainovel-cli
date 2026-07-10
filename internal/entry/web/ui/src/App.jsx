@@ -33,6 +33,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeAdaptationSource,
   analyzeSimulation,
+  applyAdaptationAudit,
   addGlobalProviderModel,
   approveContinuationOutlines,
   approveContinuationProposal,
@@ -58,6 +59,7 @@ import {
   getBackendStatus,
   getCodexAuthStatus,
   getContinuation,
+  getAdaptationAudit,
   getGlobalModels,
   getChapter,
   getGrokLoginStatus,
@@ -95,6 +97,7 @@ import {
   resumeProject,
   rollbackProject,
   runProjectDiagnostic,
+  runAdaptationAudit,
   saveNovelToLibrary,
   saveSimulationToLibrary,
   sendCoCreate,
@@ -122,6 +125,14 @@ import {
   uploadSimulationLibrary,
   uploadSimulationFiles
 } from './api.js';
+import {
+  adaptationAuditApplicationText,
+  adaptationAuditScopeText,
+  buildAdaptationAuditApplyRequest,
+  buildAdaptationAuditOptions,
+  defaultAdaptationAuditScope,
+  normalizedAdaptationAuditReport
+} from './adaptation-audit.js';
 import {
   appendCoCreateInput,
   applyCoCreateSuggestion,
@@ -246,6 +257,18 @@ function createChapterRevisionState() {
     status: 'idle',
     message: '',
     error: ''
+  };
+}
+
+function createAdaptationAuditState() {
+  return {
+    ...defaultAdaptationAuditScope,
+    report: null,
+    application: null,
+    status: 'idle',
+    message: '',
+    error: '',
+    acknowledged: false
   };
 }
 
@@ -649,6 +672,7 @@ export default function App() {
   const [sideView, setSideView] = useState('status');
   const [simulation, setSimulation] = useState(createSimulationState);
   const [adaptation, setAdaptation] = useState(createAdaptationState);
+  const [adaptationAudit, setAdaptationAudit] = useState(createAdaptationAuditState);
   const [chapterRevision, setChapterRevision] = useState(createChapterRevisionState);
   const [outlineRevision, setOutlineRevision] = useState(createOutlineRevisionState);
   const [chapterContent, setChapterContent] = useState(createChapterContentState);
@@ -716,6 +740,7 @@ export default function App() {
     setWorkbench(createWorkbenchState());
     setSimulation(resetSimulationProjectState);
     setAdaptation(resetAdaptationProjectState);
+    setAdaptationAudit(createAdaptationAuditState());
     setChapterRevision(createChapterRevisionState());
     setOutlineRevision(createOutlineRevisionState());
     setChapterContent(createChapterContentState());
@@ -787,6 +812,157 @@ export default function App() {
       // Keep the original workflow error visible when snapshot refresh also fails.
     }
   }, [isCurrentProject]);
+
+  const loadAdaptationAuditReport = useCallback(async (projectId) => {
+    if (!projectId || !isCurrentProject(projectId)) {
+      return;
+    }
+    setAdaptationAudit((previous) => ({
+      ...previous,
+      status: 'loading',
+      error: ''
+    }));
+    try {
+      const data = await getAdaptationAudit(projectId);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      const report = normalizedAdaptationAuditReport(data?.report);
+      setAdaptationAudit((previous) => ({
+        ...previous,
+        report,
+        application: null,
+        acknowledged: false,
+        status: 'done',
+        message: report ? '已加载最近一次只读审计报告。' : '尚未生成审计报告。',
+        error: ''
+      }));
+    } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setAdaptationAudit((previous) => ({
+        ...previous,
+        status: 'error',
+        error: err.message
+      }));
+    }
+  }, [isCurrentProject]);
+
+  const runAdaptationAuditReport = async () => {
+    const projectId = activeProject?.id;
+    if (!projectId) {
+      return;
+    }
+    if (projectRunning) {
+      setAdaptationAudit((previous) => ({
+        ...previous,
+        status: 'error',
+        error: '请先暂停项目。审计不会自动暂停、恢复或生成正文。'
+      }));
+      return;
+    }
+    if (coCreate.active) {
+      setAdaptationAudit((previous) => ({
+        ...previous,
+        status: 'error',
+        error: '请先结束或取消共创流程，再运行改编审计。'
+      }));
+      return;
+    }
+    const request = buildAdaptationAuditOptions(adaptationAudit);
+    if (!request.ok) {
+      setAdaptationAudit((previous) => ({ ...previous, status: 'error', error: request.error }));
+      return;
+    }
+    setAdaptationAudit((previous) => ({
+      ...previous,
+      status: 'running',
+      message: '',
+      error: '',
+      application: null,
+      acknowledged: false
+    }));
+    try {
+      const data = await runAdaptationAudit(projectId, request.options);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setAdaptationAudit((previous) => ({
+        ...previous,
+        report: normalizedAdaptationAuditReport(data?.report),
+        status: 'done',
+        message: '只读审计已完成；尚未修改计划或正文。',
+        error: ''
+      }));
+    } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setAdaptationAudit((previous) => ({ ...previous, status: 'error', error: err.message }));
+    }
+  };
+
+  const applyAdaptationAuditRepair = async () => {
+    const projectId = activeProject?.id;
+    if (!projectId) {
+      return;
+    }
+    if (projectRunning) {
+      setAdaptationAudit((previous) => ({
+        ...previous,
+        status: 'error',
+        error: '请先暂停项目；修复计划不会自动暂停或恢复项目。'
+      }));
+      return;
+    }
+    if (coCreate.active) {
+      setAdaptationAudit((previous) => ({
+        ...previous,
+        status: 'error',
+        error: '请先结束或取消共创流程，再应用改编修复计划。'
+      }));
+      return;
+    }
+    const request = buildAdaptationAuditApplyRequest(adaptationAudit.report, adaptationAudit.acknowledged);
+    if (!request.ok) {
+      setAdaptationAudit((previous) => ({ ...previous, status: 'error', error: request.error }));
+      return;
+    }
+    const blockingCount = request.confirmation.acknowledged_finding_ids.length;
+    if (!window.confirm(`将创建改编元数据备份、修订章节计划，并把受影响的既有章节排入返工队列。\n\n已确认 ${blockingCount} 个阻塞问题。此操作不会立即改写正文，也不会自动恢复项目。\n\n确认应用修复计划？`)) {
+      return;
+    }
+    setAdaptationAudit((previous) => ({ ...previous, status: 'running', message: '', error: '' }));
+    try {
+      const data = await applyAdaptationAudit(projectId, request.confirmation);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      const application = data?.application || null;
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setAdaptationAudit((previous) => ({
+        ...previous,
+        application,
+        status: 'done',
+        message: adaptationAuditApplicationText(application),
+        error: ''
+      }));
+    } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setAdaptationAudit((previous) => ({ ...previous, status: 'error', error: err.message }));
+    }
+  };
+
+  useEffect(() => {
+    if (sideView !== 'audit' || !activeProject?.id) {
+      return;
+    }
+    loadAdaptationAuditReport(activeProject.id);
+  }, [activeProject?.id, loadAdaptationAuditReport, sideView]);
 
   useEffect(() => {
     const projectId = activeProject?.id || '';
@@ -2938,10 +3114,11 @@ export default function App() {
     }
   };
 
-  const changeRetrySettings = async (modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts) => {
+  const changeRetrySettings = async (modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts, adaptationOutlineAuditRetryMaxAttempts) => {
     const modelAttempts = Number(modelCallMaxAttempts);
     const repairAttempts = Number(structureRepairMaxAttempts);
     const budgetAttempts = Number(budgetQualityMaxAttempts);
+    const auditAttempts = Number(adaptationOutlineAuditRetryMaxAttempts);
     if (!Number.isInteger(modelAttempts) || modelAttempts < 1 || modelAttempts > 30) {
       setError('模型调用总尝试次数必须是 1-30 之间的整数');
       return;
@@ -2950,12 +3127,16 @@ export default function App() {
       setError('结构修复次数必须是 1-15 之间的整数');
       return;
     }
+    if (!Number.isInteger(auditAttempts) || auditAttempts < 1 || auditAttempts > 15) {
+      setError('改编章节提纲审计重试次数必须是 1-15 之间的整数');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
       const data = activeProject?.id
-        ? await setProjectRetrySettings(activeProject.id, modelAttempts, repairAttempts, budgetAttempts)
-        : await setGlobalRetrySettings(modelAttempts, repairAttempts, budgetAttempts);
+        ? await setProjectRetrySettings(activeProject.id, modelAttempts, repairAttempts, budgetAttempts, auditAttempts)
+        : await setGlobalRetrySettings(modelAttempts, repairAttempts, budgetAttempts, auditAttempts);
       if (activeProject?.id) {
         const modelData = await getProjectModels(activeProject.id);
         setModelConfig(modelData.models || data.models || modelConfig);
@@ -3629,6 +3810,10 @@ export default function App() {
             <FileText size={16} />
             改编
           </button>
+          <button className={sideView === 'audit' ? 'active' : ''} onClick={() => setSideView('audit')} title="改编审计" type="button">
+            <TestTube2 size={16} />
+            审计
+          </button>
           <button className={sideView === 'continuation' ? 'active' : ''} onClick={() => setSideView('continuation')} title="续写" type="button">
             <Upload size={16} />
             续写
@@ -3749,6 +3934,18 @@ export default function App() {
                   return beginCoCreateFlow('adapt', { initial: adaptation.brief });
                 });
               }}
+            />
+          ) : sideView === 'audit' ? (
+            <AdaptationAuditPanel
+              activeProject={activeProject}
+              audit={adaptationAudit}
+              busy={projectBusy}
+              coCreateActive={coCreate.active === true}
+              projectRunning={projectRunning}
+              setAudit={setAdaptationAudit}
+              onApply={applyAdaptationAuditRepair}
+              onReload={() => loadAdaptationAuditReport(activeProject?.id)}
+              onRun={runAdaptationAuditReport}
             />
           ) : sideView === 'continuation' ? (
             <ContinuationPanel
@@ -5821,6 +6018,179 @@ function ProposalRevisionControls({ adaptation, busy, proposal, setAdaptation, o
   );
 }
 
+function AdaptationAuditPanel({
+  activeProject,
+  audit,
+  busy,
+  coCreateActive,
+  projectRunning,
+  setAudit,
+  onApply,
+  onReload,
+  onRun
+}) {
+  const report = normalizedAdaptationAuditReport(audit.report);
+  const findings = report?.findings || [];
+  const metrics = report?.metrics || {};
+  const confirmation = report?.confirmation || {};
+  const application = audit.application;
+  const actionBusy = busy || audit.status === 'running' || audit.status === 'loading';
+  const blocked = projectRunning || coCreateActive;
+  const canRun = Boolean(activeProject?.id) && !actionBusy && !blocked;
+  const applyRequest = buildAdaptationAuditApplyRequest(report, audit.acknowledged);
+  const canApply = !actionBusy && !blocked && applyRequest.ok;
+  const modeLabel = {
+    chapter: 'Chapter：保留细节与分段覆盖',
+    arc: 'Arc：保留主线，可合并支线',
+    free: 'Free：校验目标故事自洽'
+  }[String(report?.mode || '').toLowerCase()] || '等待审计结果';
+  const updateScope = (field, value) => setAudit((previous) => ({
+    ...previous,
+    [field]: value,
+    report: null,
+    application: null,
+    acknowledged: false,
+    status: 'idle',
+    message: '',
+    error: ''
+  }));
+
+  return (
+    <div className="side-content adaptation-audit-panel">
+      {audit.error ? <div className="error-banner compact">{audit.error}</div> : null}
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <TestTube2 size={17} />
+          <span>改编质量审计</span>
+        </div>
+        <p className="audit-intro">
+          逐章核对来源事件、分卷主线承诺、完整章节细纲与已写正文。审计本身只读，不会自动暂停、恢复或改写正文。
+        </p>
+        {projectRunning ? <div className="settings-note warning">项目正在运行。请先点击顶部“暂停”，再运行审计或应用修复计划。</div> : null}
+        {coCreateActive ? <div className="settings-note warning">共创流程正在进行。请先结束或取消共创，再运行审计或应用修复计划。</div> : null}
+      </section>
+
+      <section className="simulation-section">
+        <div className="section-title">
+          <BookOpen size={17} />
+          <span>审计范围</span>
+        </div>
+        <div className="field-grid audit-scope-grid">
+          <label className="field-label">
+            <span>原著起始章</span>
+            <input inputMode="numeric" min="1" onChange={(event) => updateScope('sourceFrom', event.target.value)} placeholder="全部" type="number" value={audit.sourceFrom} />
+          </label>
+          <label className="field-label">
+            <span>原著结束章</span>
+            <input inputMode="numeric" min="1" onChange={(event) => updateScope('sourceTo', event.target.value)} placeholder="全部" type="number" value={audit.sourceTo} />
+          </label>
+          <label className="field-label">
+            <span>改编起始章</span>
+            <input inputMode="numeric" min="1" onChange={(event) => updateScope('targetFrom', event.target.value)} placeholder="全部" type="number" value={audit.targetFrom} />
+          </label>
+          <label className="field-label">
+            <span>改编结束章</span>
+            <input inputMode="numeric" min="1" onChange={(event) => updateScope('targetTo', event.target.value)} placeholder="全部" type="number" value={audit.targetTo} />
+          </label>
+        </div>
+        <div className="audit-scope-help">默认范围适用于当前回归：原著 1–30 章 / 改编 1–44 章。清空任一边界即可扩大到全书。</div>
+        <div className="project-settings-actions">
+          <button className="tool-button" disabled={!activeProject?.id || actionBusy} onClick={onReload} type="button">
+            <RefreshCw size={16} />
+            查看最近报告
+          </button>
+          <button className="tool-button accent" disabled={!canRun} onClick={onRun} type="button">
+            <TestTube2 size={16} />
+            生成只读审计报告
+          </button>
+        </div>
+      </section>
+
+      <section className="simulation-section audit-result-section">
+        <div className="section-title">
+          <FileText size={17} />
+          <span>审计结果</span>
+        </div>
+        {!report ? (
+          <div className="empty-state">尚未生成报告。新项目在细纲生成时已有模式化门禁；这里用于查看完整报告和审计既有章节。</div>
+        ) : (
+          <>
+            <div className={`workflow-status ${report.status === 'pass' ? 'done' : 'error'}`}>
+              <strong>{report.status === 'pass' ? '通过' : '发现阻塞问题'}</strong>
+              <span>{modeLabel} · {report.read_only ? '只读报告' : '报告'}</span>
+            </div>
+            <div className="audit-report-meta">
+              <span>{adaptationAuditScopeText(report.scope)}</span>
+              <span>{findings.length} 项发现 / {confirmation.blocking_finding_ids.length} 项阻塞</span>
+            </div>
+            <section className="metric-grid audit-metrics">
+              <Metric label="必需事件" value={`${metrics.bound_events || 0}/${metrics.required_events || 0}`} />
+              <Metric label="来源分段" value={`${metrics.covered_segments || 0}/${metrics.source_segments || 0}`} />
+              <Metric label="有效证据" value={metrics.valid_evidence_items || 0} />
+              <Metric label="事件总数" value={metrics.events || 0} />
+            </section>
+            {findings.length ? (
+              <div className="audit-finding-list">
+                {findings.map((finding, index) => (
+                  <div className={`finding-row audit-finding-row ${String(finding.severity || '').toLowerCase()}`} key={finding.id || `${finding.code}-${index}`}>
+                    <strong>{finding.code || 'adaptation_finding'}{finding.blocking ? ' · 阻塞' : ''}</strong>
+                    <span>{finding.event_id ? `事件：${finding.event_id}` : finding.segment_id ? `分段：${finding.segment_id}` : '章节契约'}</span>
+                    {Array.isArray(finding.target_chapters) && finding.target_chapters.length ? <span>目标章：{formatAuditChapterList(finding.target_chapters)}</span> : null}
+                    <small>{finding.message || '没有附加说明。'}</small>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="success-note">没有发现需要应用的改编修复。</div>}
+          </>
+        )}
+      </section>
+
+      {report?.confirmation?.required ? (
+        <section className="simulation-section audit-apply-section">
+          <div className="section-title">
+            <Check size={17} />
+            <span>确认应用修复计划</span>
+          </div>
+          <div className="audit-apply-help">{confirmation.suggested_action || '应用后会创建备份、修订计划，并把受影响的既有章节排入返工队列。不会立即改写正文。'}</div>
+          <label className="checkbox-row audit-confirmation-row">
+            <input checked={audit.acknowledged} disabled={actionBusy || blocked} onChange={(event) => setAudit((previous) => ({ ...previous, acknowledged: event.target.checked, error: '' }))} type="checkbox" />
+            <span>我已了解全部 {confirmation.blocking_finding_ids.length} 个阻塞问题，以及应用后仍需手动点击顶部“恢复”执行返工。</span>
+          </label>
+          <button className="tool-button accent full-width" disabled={!canApply} onClick={onApply} type="button">
+            <Check size={16} />
+            确认应用修复计划
+          </button>
+        </section>
+      ) : null}
+
+      {application ? (
+        <section className="simulation-section audit-application-section">
+          <div className="section-title">
+            <Check size={17} />
+            <span>修复计划已应用</span>
+          </div>
+          <div className="audit-application-summary">
+            <span>状态：{application.status || 'applied'}</span>
+            <span>影响章节：{formatAuditChapterList(application.affected_chapters)}</span>
+            <span>返工队列：{formatAuditChapterList(application.queued_chapters)}</span>
+          </div>
+          <div className="settings-note">{adaptationAuditApplicationText(application)}</div>
+        </section>
+      ) : null}
+
+      {audit.message ? <div className="success-note">{audit.message}</div> : null}
+    </div>
+  );
+}
+
+function formatAuditChapterList(chapters) {
+  if (!Array.isArray(chapters) || chapters.length === 0) {
+    return '无';
+  }
+  return chapters.join('、');
+}
+
 function AdaptationPanel({
   activeProject,
   busy,
@@ -6960,11 +7330,16 @@ function ModelPanel({
     modelConfig?.budget_quality_max_attempts ||
     config.budget_quality_max_attempts ||
     2;
+  const adaptationOutlineAuditRetryMaxAttempts =
+    modelConfig?.adaptation_outline_audit_retry_max_attempts ||
+    config.adaptation_outline_audit_retry_max_attempts ||
+    2;
   const [coCreateTimeoutDraft, setCoCreateTimeoutDraft] = useState(String(coCreateTimeoutSeconds));
   const [coCreateMaxTokensDraft, setCoCreateMaxTokensDraft] = useState(String(coCreateMaxTokens));
   const [modelCallAttemptsDraft, setModelCallAttemptsDraft] = useState(String(modelCallMaxAttempts));
   const [structureRepairAttemptsDraft, setStructureRepairAttemptsDraft] = useState(String(structureRepairMaxAttempts));
   const [budgetQualityAttemptsDraft, setBudgetQualityAttemptsDraft] = useState(String(budgetQualityMaxAttempts));
+  const [adaptationOutlineAuditRetryAttemptsDraft, setAdaptationOutlineAuditRetryAttemptsDraft] = useState(String(adaptationOutlineAuditRetryMaxAttempts));
   useEffect(() => {
     setCoCreateTimeoutDraft(String(coCreateTimeoutSeconds));
   }, [coCreateTimeoutSeconds]);
@@ -6975,7 +7350,8 @@ function ModelPanel({
     setModelCallAttemptsDraft(String(modelCallMaxAttempts));
     setStructureRepairAttemptsDraft(String(structureRepairMaxAttempts));
     setBudgetQualityAttemptsDraft(String(budgetQualityMaxAttempts));
-  }, [modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts]);
+    setAdaptationOutlineAuditRetryAttemptsDraft(String(adaptationOutlineAuditRetryMaxAttempts));
+  }, [modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts, adaptationOutlineAuditRetryMaxAttempts]);
   useEffect(() => {
     if (!activeProject?.id || projectRoles.length === 0) {
       if (selectedProjectRole !== 'default') {
@@ -7026,19 +7402,24 @@ function ModelPanel({
   const modelCallAttemptsValue = Number(modelCallAttemptsDraft);
   const structureRepairAttemptsValue = Number(structureRepairAttemptsDraft);
   const budgetQualityAttemptsValue = Number(budgetQualityAttemptsDraft);
+  const adaptationOutlineAuditRetryAttemptsValue = Number(adaptationOutlineAuditRetryAttemptsDraft);
   const canSaveRetrySettings =
     Number.isInteger(modelCallAttemptsValue) &&
     Number.isInteger(structureRepairAttemptsValue) &&
     Number.isInteger(budgetQualityAttemptsValue) &&
+    Number.isInteger(adaptationOutlineAuditRetryAttemptsValue) &&
     modelCallAttemptsValue >= 1 &&
     modelCallAttemptsValue <= 30 &&
     structureRepairAttemptsValue >= 1 &&
     structureRepairAttemptsValue <= 15 &&
     budgetQualityAttemptsValue >= 1 &&
     budgetQualityAttemptsValue <= 15 &&
+    adaptationOutlineAuditRetryAttemptsValue >= 1 &&
+    adaptationOutlineAuditRetryAttemptsValue <= 15 &&
     (modelCallAttemptsValue !== modelCallMaxAttempts ||
       structureRepairAttemptsValue !== structureRepairMaxAttempts ||
-      budgetQualityAttemptsValue !== budgetQualityMaxAttempts);
+      budgetQualityAttemptsValue !== budgetQualityMaxAttempts ||
+      adaptationOutlineAuditRetryAttemptsValue !== adaptationOutlineAuditRetryMaxAttempts);
   const selectedPreset = providerPresets.find((preset) => preset.provider === customModel.preset) || providerPresets[0];
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
@@ -7184,7 +7565,7 @@ function ModelPanel({
           className="model-timeout-form retry-settings-form"
           onSubmit={(event) => {
             event.preventDefault();
-            onRetrySettings(modelCallAttemptsValue, structureRepairAttemptsValue, budgetQualityAttemptsValue);
+            onRetrySettings(modelCallAttemptsValue, structureRepairAttemptsValue, budgetQualityAttemptsValue, adaptationOutlineAuditRetryAttemptsValue);
           }}
         >
           <label className="field-label">
@@ -7223,11 +7604,24 @@ function ModelPanel({
               onChange={(event) => setBudgetQualityAttemptsDraft(event.target.value)}
             />
           </label>
+          <label className="field-label">
+            <span>改编章节纲审计重试</span>
+            <input
+              disabled={busy}
+              inputMode="numeric"
+              max="15"
+              min="1"
+              type="number"
+              value={adaptationOutlineAuditRetryAttemptsDraft}
+              onChange={(event) => setAdaptationOutlineAuditRetryAttemptsDraft(event.target.value)}
+            />
+          </label>
           <button className="tool-button" disabled={busy || !canSaveRetrySettings} type="submit">
             <Check size={16} />
             保存
           </button>
         </form>
+        <p className="muted retry-settings-help">仅在改编详细章节提纲未通过质量审计时重新生成；不占用结构修复或网络重试次数。</p>
       </section>
       <section>
         <div className="section-title">

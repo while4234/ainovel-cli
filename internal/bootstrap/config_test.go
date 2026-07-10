@@ -30,6 +30,20 @@ func TestCoCreateMaxTokensDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestAdaptationOutlineAuditRetryDefaultsAndValidation(t *testing.T) {
+	cfg := Config{}
+	if got := cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts(); got != DefaultAdaptationOutlineAuditRetryMaxAttempts {
+		t.Fatalf("default adaptation outline audit attempts = %d, want %d", got, DefaultAdaptationOutlineAuditRetryMaxAttempts)
+	}
+	cfg.AdaptationOutlineAuditRetryMaxAttempts = 5
+	if got := cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts(); got != 5 {
+		t.Fatalf("configured adaptation outline audit attempts = %d, want 5", got)
+	}
+	if _, err := NormalizeAdaptationOutlineAuditRetryMaxAttempts(MaxAdaptationOutlineAuditRetryMaxAttempts + 1); err == nil {
+		t.Fatal("adaptation outline audit retry attempts above max should be rejected")
+	}
+}
+
 func TestSimulationModeDefaultsAndValidation(t *testing.T) {
 	cases := []struct {
 		name string

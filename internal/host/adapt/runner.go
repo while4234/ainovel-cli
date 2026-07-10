@@ -45,15 +45,18 @@ const (
 	adaptationPlannerRevisionExpansionMax    = 12
 	adaptationPlannerRepairMaxAttempts       = 2
 	adaptationPlannerBudgetQualityAttempts   = 2
-	adaptationVolumeBudgetRepairNeighborMax  = 2
-	adaptationVolumeBudgetRepairReportMax    = 12
-	adaptationVolumeBudgetRepairChapterMax   = 24
-	adaptationPlannerGenerateMaxAttempts     = retrypolicy.MaxAttempts
-	adaptationProposalRuntimeVersion         = 1
-	adaptationSourceFoundationVersion        = 1
-	adaptationSourceFoundationPromptVersion  = "source-foundation-merge-v1"
-	sourceFoundationBatchKindReports         = "reports"
-	sourceFoundationBatchKindSummary         = "summary"
+	// adaptationOutlineAuditRetryDefaultAttempts is intentionally distinct
+	// from structural JSON repair even though both defaults are presently two.
+	adaptationOutlineAuditRetryDefaultAttempts = 2
+	adaptationVolumeBudgetRepairNeighborMax    = 2
+	adaptationVolumeBudgetRepairReportMax      = 12
+	adaptationVolumeBudgetRepairChapterMax     = 24
+	adaptationPlannerGenerateMaxAttempts       = retrypolicy.MaxAttempts
+	adaptationProposalRuntimeVersion           = 1
+	adaptationSourceFoundationVersion          = 1
+	adaptationSourceFoundationPromptVersion    = "source-foundation-merge-v1"
+	sourceFoundationBatchKindReports           = "reports"
+	sourceFoundationBatchKindSummary           = "summary"
 )
 
 const plannerBudgetDeviationAcceptedNote = "budget_deviation_accepted:source_range_capacity_reviewed"
@@ -74,13 +77,14 @@ var (
 )
 
 type Deps struct {
-	Store                      *store.Store
-	LLM                        imp.LLMChat
-	Prompts                    Prompts
-	ModelCallMaxAttempts       int
-	StructureRepairMaxAttempts int
-	BudgetQualityMaxAttempts   int
-	PromptTokenCounter         promptcompile.TokenCounter
+	Store                                  *store.Store
+	LLM                                    imp.LLMChat
+	Prompts                                Prompts
+	ModelCallMaxAttempts                   int
+	StructureRepairMaxAttempts             int
+	BudgetQualityMaxAttempts               int
+	AdaptationOutlineAuditRetryMaxAttempts int
+	PromptTokenCounter                     promptcompile.TokenCounter
 }
 
 func RunSource(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
@@ -883,6 +887,13 @@ func (d Deps) budgetQualityMaxAttempts() int {
 	return adaptationPlannerBudgetQualityAttempts
 }
 
+func (d Deps) adaptationOutlineAuditRetryMaxAttempts() int {
+	if d.AdaptationOutlineAuditRetryMaxAttempts > 0 {
+		return d.AdaptationOutlineAuditRetryMaxAttempts
+	}
+	return adaptationOutlineAuditRetryDefaultAttempts
+}
+
 func PrepareRun(ctx context.Context, deps Deps, brief string) (*domain.AdaptationPlan, error) {
 	proposal, err := BuildAdaptationProposal(deps, ProposalOptions{
 		Brief:         brief,
@@ -965,6 +976,9 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 		if err != nil {
 			return nil, fmt.Errorf("build %s adaptation proposal from planner: %w", opts.Granularity, err)
 		}
+	}
+	if err := ValidateAdaptationOutlineQuality(&proposal, manifest); err != nil {
+		return nil, err
 	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编提案已生成，正在保存：%d 章", len(proposal.Chapters)), nil)
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
@@ -1272,8 +1286,11 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	if err := savePlannerProposalRuntime(deps, runtime); err != nil {
 		return nil, fmt.Errorf("save proposal runtime skeleton: %w", err)
 	}
-	proposal, err := buildPlanFromPlannerSkeletonDetails(ctx, deps, proposalOpts, reports, manifest, sourceFoundation, skeleton, runtime)
+	proposal, err := buildAdaptationProposalDetailsWithQualityRetries(ctx, deps, proposalOpts, reports, manifest, sourceFoundation, skeleton, runtime)
 	if err != nil {
+		return nil, err
+	}
+	if err := ValidateAdaptationOutlineQuality(&proposal, manifest); err != nil {
 		return nil, err
 	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编章节细纲已生成，正在保存：%d 章", len(proposal.Chapters)), nil)
@@ -1282,6 +1299,72 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	}
 	emitAdaptProgress(opts.EmitProgress, StageDone, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编提案已保存：%d 章", len(proposal.Chapters)), nil)
 	return &proposal, nil
+}
+
+func buildAdaptationProposalDetailsWithQualityRetries(
+	ctx context.Context,
+	deps Deps,
+	opts ProposalOptions,
+	reports []domain.AdaptationSourceReport,
+	manifest *domain.AdaptationSourceManifest,
+	sourceFoundation *domain.AdaptationSourceFoundation,
+	skeleton plannerSkeleton,
+	runtime *domain.AdaptationProposalRuntime,
+) (domain.AdaptationPlan, error) {
+	maxRetries := deps.adaptationOutlineAuditRetryMaxAttempts()
+	return retryAdaptationOutlineQuality(maxRetries,
+		func() (domain.AdaptationPlan, error) {
+			return buildPlanFromPlannerSkeletonDetails(ctx, deps, opts, reports, manifest, sourceFoundation, skeleton, runtime)
+		},
+		func(retry int, qualityErr *AdaptationOutlineQualityError) error {
+			if runtime != nil {
+				runtime.CompletedBatches = nil
+				if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+					return fmt.Errorf("clear invalid detail-outline runtime before audit retry: %w", err)
+				}
+			}
+			emitAdaptProgress(
+				opts.EmitProgress,
+				StagePlan,
+				0,
+				0,
+				fmt.Sprintf("改编详细章节提纲未通过质量审计，已清除本轮细纲并开始第 %d/%d 次重试（%d 项问题）", retry, maxRetries, len(qualityErr.Issues)),
+				qualityErr,
+			)
+			return nil
+		},
+	)
+}
+
+func retryAdaptationOutlineQuality(
+	maxRetries int,
+	generate func() (domain.AdaptationPlan, error),
+	prepareRetry func(retry int, qualityErr *AdaptationOutlineQualityError) error,
+) (domain.AdaptationPlan, error) {
+	var zero domain.AdaptationPlan
+	if maxRetries <= 0 {
+		maxRetries = adaptationOutlineAuditRetryDefaultAttempts
+	}
+	proposal, err := generate()
+	if err == nil {
+		return proposal, nil
+	}
+	for retry := 1; retry <= maxRetries; retry++ {
+		var qualityErr *AdaptationOutlineQualityError
+		if !errors.As(err, &qualityErr) {
+			return zero, err
+		}
+		if prepareRetry != nil {
+			if retryErr := prepareRetry(retry, qualityErr); retryErr != nil {
+				return zero, retryErr
+			}
+		}
+		proposal, err = generate()
+		if err == nil {
+			return proposal, nil
+		}
+	}
+	return zero, err
 }
 
 func reviseAdaptationProposalVolumeContext(
@@ -8129,7 +8212,7 @@ func validatePlannerProposal(
 	if err := finalizePlannerEventContracts(proposal, opts, reports); err != nil {
 		return err
 	}
-	return nil
+	return ValidateAdaptationOutlineQuality(proposal, manifest)
 }
 
 type plannerChapterBudgetGroup struct {
@@ -8792,6 +8875,13 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 	proposal.Status = domain.AdaptationPlanStatusConfirmed
 	proposal.Granularity = domain.NormalizeAdaptationGranularity(proposal.Granularity)
 	proposal.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(proposal.Granularity)
+	manifest, err := deps.Store.Adaptation.LoadSourceManifest()
+	if err != nil {
+		return nil, fmt.Errorf("load source manifest for outline quality gate: %w", err)
+	}
+	if err := ValidateAdaptationOutlineQuality(&proposal, manifest); err != nil {
+		return nil, err
+	}
 	fr := toFoundationResult(sourceFoundation)
 	fr.Premise = adaptationPremise(fr.Premise, proposal.Brief, proposal)
 	fr.Volumes = adaptationTargetVolumes(proposal)

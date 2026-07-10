@@ -96,6 +96,26 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 	}
 }
 
+func TestGlobalRetrySettingsKeepsAdaptationOutlineAuditRetryIndependent(t *testing.T) {
+	cfg := testWebConfig(t)
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	var updated struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/retry-settings", `{"model_call_max_attempts":9,"structure_repair_max_attempts":4,"budget_quality_max_attempts":3,"adaptation_outline_audit_retry_max_attempts":5}`, &updated)
+	if updated.Models.StructureRepairMaxAttempts != 4 {
+		t.Fatalf("structure repair attempts = %d, want 4", updated.Models.StructureRepairMaxAttempts)
+	}
+	if updated.Models.AdaptationOutlineAuditRetryMaxAttempts != 5 {
+		t.Fatalf("adaptation outline audit attempts = %d, want 5", updated.Models.AdaptationOutlineAuditRetryMaxAttempts)
+	}
+	if got := server.currentConfig().AdaptationOutlineAuditRetryMaxAttempts; got != 5 {
+		t.Fatalf("saved adaptation outline audit attempts = %d, want 5", got)
+	}
+}
+
 func TestGlobalModelSwitchRoutePersistsRole(t *testing.T) {
 	cfg := testWebConfig(t)
 	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")

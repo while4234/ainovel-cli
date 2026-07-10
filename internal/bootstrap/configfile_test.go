@@ -157,6 +157,16 @@ func TestMergeConfigSimulationModeOverride(t *testing.T) {
 	}
 }
 
+func TestMergeConfigAdaptationOutlineAuditRetryOverride(t *testing.T) {
+	base := Config{AdaptationOutlineAuditRetryMaxAttempts: 2}
+	overlay := Config{AdaptationOutlineAuditRetryMaxAttempts: 5}
+
+	merged := MergeConfig(base, overlay)
+	if merged.AdaptationOutlineAuditRetryMaxAttempts != 5 {
+		t.Fatalf("merged adaptation_outline_audit_retry_max_attempts = %d, want 5", merged.AdaptationOutlineAuditRetryMaxAttempts)
+	}
+}
+
 func TestMergeConfig_ProviderExtraFields(t *testing.T) {
 	baseUseProxy := true
 	overlayUseProxy := false

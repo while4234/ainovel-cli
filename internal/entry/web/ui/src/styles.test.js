@@ -26,6 +26,11 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.profile-status span\s*{[^}]*white-space:\s*nowrap;/s);
   });
 
+  it('keeps adaptation audit findings readable instead of truncating their causal evidence', () => {
+    expect(css).toMatch(/\.audit-finding-row strong,[\s\S]*?overflow-wrap:\s*anywhere;/s);
+    expect(css).toMatch(/\.audit-confirmation-row\s*{[^}]*align-items:\s*flex-start;/s);
+  });
+
   it('anchors hidden choice inputs so focusing them cannot scroll the page', () => {
     expect(css).toMatch(/\.target-option\s*{[^}]*position:\s*relative;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.target-option input\s*{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*margin:\s*0;/s);

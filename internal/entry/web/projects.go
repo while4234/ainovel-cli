@@ -556,6 +556,10 @@ func syncProjectGlobalModelSettings(cfg *bootstrap.Config, globalCfg bootstrap.C
 		cfg.BudgetQualityMaxAttempts = globalCfg.BudgetQualityMaxAttempts
 		changed = true
 	}
+	if cfg.AdaptationOutlineAuditRetryMaxAttempts != globalCfg.AdaptationOutlineAuditRetryMaxAttempts {
+		cfg.AdaptationOutlineAuditRetryMaxAttempts = globalCfg.AdaptationOutlineAuditRetryMaxAttempts
+		changed = true
+	}
 	return changed
 }
 

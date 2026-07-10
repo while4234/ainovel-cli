@@ -159,7 +159,8 @@ type projectHost interface {
 	SetCoCreateMaxTokens(int) error
 	CurrentStructureRepairMaxAttempts() int
 	CurrentBudgetQualityMaxAttempts() int
-	SetRetrySettings(int, int, int) error
+	CurrentAdaptationOutlineAuditRetryMaxAttempts() int
+	SetRetrySettings(int, int, int, int) error
 	Events() <-chan host.Event
 	Stream() <-chan string
 	Done() <-chan struct{}
@@ -479,12 +480,13 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 		})
 	}
 	return apiModelConfig{
-		Providers:                  outProviders,
-		Roles:                      roles,
-		CoCreateTimeoutSeconds:     s.host.CurrentCoCreateTimeoutSeconds(),
-		CoCreateMaxTokens:          s.host.CurrentCoCreateMaxTokens(),
-		StructureRepairMaxAttempts: s.host.CurrentStructureRepairMaxAttempts(),
-		BudgetQualityMaxAttempts:   s.host.CurrentBudgetQualityMaxAttempts(),
+		Providers:                              outProviders,
+		Roles:                                  roles,
+		CoCreateTimeoutSeconds:                 s.host.CurrentCoCreateTimeoutSeconds(),
+		CoCreateMaxTokens:                      s.host.CurrentCoCreateMaxTokens(),
+		StructureRepairMaxAttempts:             s.host.CurrentStructureRepairMaxAttempts(),
+		BudgetQualityMaxAttempts:               s.host.CurrentBudgetQualityMaxAttempts(),
+		AdaptationOutlineAuditRetryMaxAttempts: s.host.CurrentAdaptationOutlineAuditRetryMaxAttempts(),
 		ThinkingLevels: []string{
 			"",
 			"off",
@@ -539,8 +541,8 @@ func (s *ProjectSession) SetCoCreateMaxTokens(tokens int) (apiModelConfig, error
 	return s.ModelConfig(), nil
 }
 
-func (s *ProjectSession) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts int) (apiModelConfig, error) {
-	if err := s.host.SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts); err != nil {
+func (s *ProjectSession) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts, adaptationOutlineAuditRetryMaxAttempts int) (apiModelConfig, error) {
+	if err := s.host.SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts, adaptationOutlineAuditRetryMaxAttempts); err != nil {
 		return apiModelConfig{}, err
 	}
 	s.AppendSnapshot()

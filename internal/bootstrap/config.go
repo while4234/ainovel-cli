@@ -51,6 +51,14 @@ const (
 	MinBudgetQualityMaxAttempts     = 1
 	MaxBudgetQualityMaxAttempts     = 15
 
+	// AdaptationOutlineAuditRetryMaxAttempts controls the number of retry
+	// generations after the initial model-produced adaptation detail outline
+	// fails the adaptation quality gate. It must not consume structure-repair
+	// attempts.
+	DefaultAdaptationOutlineAuditRetryMaxAttempts = 2
+	MinAdaptationOutlineAuditRetryMaxAttempts     = 1
+	MaxAdaptationOutlineAuditRetryMaxAttempts     = 15
+
 	SimulationModeNormal     = "normal"
 	SimulationModeReinforced = "reinforced"
 )
@@ -136,6 +144,14 @@ func (c Config) EffectiveBudgetQualityMaxAttempts() int {
 	return attempts
 }
 
+func (c Config) EffectiveAdaptationOutlineAuditRetryMaxAttempts() int {
+	attempts, err := NormalizeAdaptationOutlineAuditRetryMaxAttempts(c.AdaptationOutlineAuditRetryMaxAttempts)
+	if err != nil {
+		return DefaultAdaptationOutlineAuditRetryMaxAttempts
+	}
+	return attempts
+}
+
 func NormalizeSimulationMode(mode string) (string, error) {
 	switch strings.TrimSpace(mode) {
 	case "":
@@ -194,6 +210,20 @@ func NormalizeBudgetQualityMaxAttempts(attempts int) (int, error) {
 			"budget_quality_max_attempts must be between %d and %d",
 			MinBudgetQualityMaxAttempts,
 			MaxBudgetQualityMaxAttempts,
+		)
+	}
+	return attempts, nil
+}
+
+func NormalizeAdaptationOutlineAuditRetryMaxAttempts(attempts int) (int, error) {
+	if attempts == 0 {
+		return DefaultAdaptationOutlineAuditRetryMaxAttempts, nil
+	}
+	if attempts < MinAdaptationOutlineAuditRetryMaxAttempts || attempts > MaxAdaptationOutlineAuditRetryMaxAttempts {
+		return 0, fmt.Errorf(
+			"adaptation_outline_audit_retry_max_attempts must be between %d and %d",
+			MinAdaptationOutlineAuditRetryMaxAttempts,
+			MaxAdaptationOutlineAuditRetryMaxAttempts,
 		)
 	}
 	return attempts, nil
@@ -339,13 +369,17 @@ type Config struct {
 	// 角色未单独配置 reasoning_effort 时回落到此值。
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// CoCreateTimeoutSeconds 是 Web 共创单次模型调用超时；0 表示使用默认 180 秒。
-	CoCreateTimeoutSeconds     int                   `json:"cocreate_timeout_seconds,omitempty"`
-	CoCreateMaxTokens          int                   `json:"cocreate_max_tokens,omitempty"`
-	StructureRepairMaxAttempts int                   `json:"structure_repair_max_attempts,omitempty"`
-	BudgetQualityMaxAttempts   int                   `json:"budget_quality_max_attempts,omitempty"`
-	SimulationMode             string                `json:"simulation_mode,omitempty"`
-	Proxy                      string                `json:"proxy,omitempty"`
-	ModelAutoSwitch            ModelAutoSwitchConfig `json:"model_auto_switch,omitzero"`
+	CoCreateTimeoutSeconds     int `json:"cocreate_timeout_seconds,omitempty"`
+	CoCreateMaxTokens          int `json:"cocreate_max_tokens,omitempty"`
+	StructureRepairMaxAttempts int `json:"structure_repair_max_attempts,omitempty"`
+	BudgetQualityMaxAttempts   int `json:"budget_quality_max_attempts,omitempty"`
+	// AdaptationOutlineAuditRetryMaxAttempts is deliberately separate from
+	// structural JSON repair. It retries a newly generated detail-outline batch
+	// only when the adaptation outline quality gate rejects it.
+	AdaptationOutlineAuditRetryMaxAttempts int                   `json:"adaptation_outline_audit_retry_max_attempts,omitempty"`
+	SimulationMode                         string                `json:"simulation_mode,omitempty"`
+	Proxy                                  string                `json:"proxy,omitempty"`
+	ModelAutoSwitch                        ModelAutoSwitchConfig `json:"model_auto_switch,omitzero"`
 
 	// Provider 凭证库
 	Providers map[string]ProviderConfig `json:"providers,omitempty"`
@@ -412,6 +446,9 @@ func (c *Config) ValidateBase() error {
 		return err
 	}
 	if _, err := NormalizeBudgetQualityMaxAttempts(c.BudgetQualityMaxAttempts); err != nil {
+		return err
+	}
+	if _, err := NormalizeAdaptationOutlineAuditRetryMaxAttempts(c.AdaptationOutlineAuditRetryMaxAttempts); err != nil {
 		return err
 	}
 	if _, err := NormalizeSimulationMode(c.SimulationMode); err != nil {

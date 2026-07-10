@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Current development change: surfaced the existing adaptation audit as a
+  dedicated Web tool page with an explicit `read-only audit -> acknowledge and
+  apply repair plan -> user clicks restore` workflow. Added plan-only quality
+  gates before detailed-outline acceptance for Chapter/Arc/Free and a separate
+  project-configurable `adaptation_outline_audit_retry_max_attempts` setting
+  (default: two retries after the initial generation). This setting is distinct
+  from model/network, structure-repair, and budget-review retries. No live
+  novel audit, plan repair, resume, or regeneration is part of validation.
 - Latest implementation commit: `83856d9` `feat: enforce mode-aware adaptation quality`:
   adds compact, capability-reviewed role prompts; bounded Agent contexts and a
   five-component planner compiler; Chapter 1:N SourceSegment contracts; Arc

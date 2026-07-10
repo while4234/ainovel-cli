@@ -166,6 +166,9 @@ func mergeConfig(base, overlay Config) Config {
 	if overlay.BudgetQualityMaxAttempts > 0 {
 		base.BudgetQualityMaxAttempts = overlay.BudgetQualityMaxAttempts
 	}
+	if overlay.AdaptationOutlineAuditRetryMaxAttempts > 0 {
+		base.AdaptationOutlineAuditRetryMaxAttempts = overlay.AdaptationOutlineAuditRetryMaxAttempts
+	}
 	if overlay.SimulationMode != "" {
 		base.SimulationMode = overlay.SimulationMode
 	}

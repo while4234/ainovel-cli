@@ -611,14 +611,15 @@ describe('web API helpers', () => {
   it('sends retry settings to the global route', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
 
-    await setGlobalRetrySettings(14, 8, 3);
+    await setGlobalRetrySettings(14, 8, 3, 5);
 
     expect(fetchMock).toHaveBeenCalledWith('/api/models/retry-settings', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({
         model_call_max_attempts: 14,
         structure_repair_max_attempts: 8,
-        budget_quality_max_attempts: 3
+        budget_quality_max_attempts: 3,
+        adaptation_outline_audit_retry_max_attempts: 5
       })
     }));
   });
@@ -626,14 +627,15 @@ describe('web API helpers', () => {
   it('sends retry settings to the project route', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
 
-    await setProjectRetrySettings('project-1', 14, 8, 3);
+    await setProjectRetrySettings('project-1', 14, 8, 3, 5);
 
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/models/retry-settings', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({
         model_call_max_attempts: 14,
         structure_repair_max_attempts: 8,
-        budget_quality_max_attempts: 3
+        budget_quality_max_attempts: 3,
+        adaptation_outline_audit_retry_max_attempts: 5
       })
     }));
   });

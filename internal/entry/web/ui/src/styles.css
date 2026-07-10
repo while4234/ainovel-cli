@@ -1292,6 +1292,63 @@ h2 {
   accent-color: var(--accent);
 }
 
+.audit-intro,
+.audit-scope-help,
+.audit-apply-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.audit-scope-grid input {
+  min-width: 0;
+}
+
+.audit-report-meta,
+.audit-application-summary {
+  display: grid;
+  gap: 4px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.audit-metrics {
+  margin-top: 2px;
+}
+
+.audit-finding-list {
+  display: grid;
+  gap: 7px;
+}
+
+.audit-finding-row strong,
+.audit-finding-row span,
+.audit-finding-row small {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.audit-confirmation-row {
+  align-items: flex-start;
+}
+
+.audit-confirmation-row input {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.audit-confirmation-row span {
+  line-height: 1.5;
+}
+
 .cocreate-mode-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2888,7 +2945,16 @@ h2 {
 }
 
 .retry-settings-form {
-  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.retry-settings-form .tool-button {
+	grid-column: 1 / -1;
+	justify-self: end;
+}
+
+.retry-settings-help {
+	margin: 8px 0 0;
 }
 
 .tool-button.danger {

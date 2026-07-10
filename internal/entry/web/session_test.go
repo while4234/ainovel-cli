@@ -1338,134 +1338,135 @@ type fakeProjectHost struct {
 	blockAdaptProposal         bool
 	blockSimulate              bool
 
-	resumeCalls                     int
-	reviseChapterCalls              int
-	reviseChapterOutlineCalls       int
-	continueCalls                   int
-	steerCalls                      int
-	simulateCalls                   int
-	importCalls                     int
-	importNovelCalls                int
-	adaptAnalyzeCalls               int
-	adaptProposalCalls              int
-	adaptProposalDetailsCalls       int
-	adaptBriefingCalls              int
-	resolveAdaptDecisionCalls       int
-	adaptConfirmCalls               int
-	adaptStartCalls                 int
-	continuationBeginDraftCalls     int
-	continuationCommitDraftCalls    int
-	continuationGenerateCalls       int
-	continuationReviseCalls         int
-	continuationApproveCalls        int
-	continuationStartCalls          int
-	exportCalls                     int
-	rollbackPreviewCalls            int
-	rollbackCalls                   int
-	abortCalls                      int
-	prepareRulesCalls               int
-	prepareExternalRulesCalls       int
-	setWordBudgetCalls              int
-	startPreparedCalls              int
-	cocreateCalls                   int
-	stageCoCreateCalls              int
-	adaptCoCreateCalls              int
-	pauseCoCreateCalls              int
-	resumeCoCreateCalls             int
-	cancelCoCreateCalls             int
-	closeCalls                      int
-	simulateDir                     string
-	importPath                      string
-	importNovelPath                 string
-	importNovelResumeFrom           int
-	adaptAnalyzeStarted             chan struct{}
-	adaptAnalyzeBeforeDone          func(string)
-	adaptAnalyzePrefixEvents        []adapt.Event
-	adaptProposalStarted            chan struct{}
-	adaptProposalContextHadDeadline bool
-	adaptBriefingStarted            chan struct{}
-	releaseAdaptBriefing            chan struct{}
-	simulateStarted                 chan struct{}
-	releaseSimulate                 chan struct{}
-	adaptSourcePath                 string
-	adaptProposalOptions            adapt.ProposalOptions
-	adaptRevisionOptions            adapt.ProposalRevisionOptions
-	adaptProposal                   *domain.AdaptationPlan
-	adaptBriefing                   *domain.AdaptationCoCreateBriefing
-	lastAdaptBriefingSource         string
-	lastAdaptBriefingIntent         domain.AdaptationCoCreateIntent
-	adaptRevisionProposal           *domain.AdaptationPlan
-	adaptConfirmedPlan              *domain.AdaptationPlan
-	adaptOptions                    adapt.ProposalOptions
-	continuationSnapshot            *domain.ContinuationSnapshot
-	continuationLastExpected        int
-	continuationLastInstruction     string
-	exportOptions                   exp.Options
-	rollbackPreview                 domain.RollbackPreview
-	rollbackResult                  domain.RollbackResult
-	addProviderRole                 string
-	configureProviderRole           string
-	configureOriginalProvider       string
-	addProviderName                 string
-	configureProviderName           string
-	addProviderConfig               bootstrap.ProviderConfig
-	configureProviderConfig         bootstrap.ProviderConfig
-	addProviderModel                string
-	configureProviderModel          string
-	configureNetworkAttempts        int
-	configureAutoSwitchPool         bool
-	removeProviderName              string
-	removeProviderModel             string
-	switchRole                      string
-	switchProvider                  string
-	switchModel                     string
-	grokStartAccountID              string
-	grokStartAccountName            string
-	grokCompleteCallback            string
-	grokStatusAccountID             string
-	preparedRulesPrompt             string
-	preparedExternalRulesPrompt     string
-	wordBudget                      *domain.WordBudget
-	startPreparedPrompt             string
-	reviseChapterRequest            host.ChapterRevisionRequest
-	reviseChapterResult             host.ChapterRevisionResult
-	reviseChapterOutlineRequest     host.ChapterOutlineRevisionRequest
-	reviseChapterOutlineResult      host.ChapterOutlineRevisionResult
-	resumeCoCreateDraft             string
-	lastCoCreateHistory             []host.CoCreateMessage
-	adaptCoCreateHistories          [][]host.CoCreateMessage
-	cocreateReply                   host.CoCreateReply
-	stageCoCreateReply              host.CoCreateReply
-	adaptCoCreateReply              host.CoCreateReply
-	cocreateReplies                 []host.CoCreateReply
-	stageCoCreateReplies            []host.CoCreateReply
-	adaptCoCreateReplies            []host.CoCreateReply
-	cocreateProgress                []coCreateProgressStep
-	pauseCoCreateOK                 bool
-	abortOK                         bool
-	exportResult                    *exp.Result
-	addProviderErr                  error
-	removeProviderErr               error
-	setCoCreateTimeoutErr           error
-	setCoCreateMaxTokensErr         error
-	setRetrySettingsErr             error
-	switchCalls                     int
-	clearModelRouteCalls            int
-	removeProviderCalls             int
-	setCoCreateTimeoutCalls         int
-	setCoCreateMaxTokensCalls       int
-	setRetrySettingsCalls           int
-	coCreateTimeoutSeconds          int
-	coCreateMaxTokens               int
-	modelCallMaxAttempts            int
-	structureRepairMaxAttempts      int
-	budgetQualityMaxAttempts        int
-	clearModelRouteRole             string
-	grokLoginStart                  grokauth.LoginStart
-	grokLoginPoll                   grokauth.LoginPoll
-	grokCompleteStatus              grokauth.AuthStatus
-	grokStatus                      grokauth.AuthStatus
-	adaptRevisionCalls              int
+	resumeCalls                            int
+	reviseChapterCalls                     int
+	reviseChapterOutlineCalls              int
+	continueCalls                          int
+	steerCalls                             int
+	simulateCalls                          int
+	importCalls                            int
+	importNovelCalls                       int
+	adaptAnalyzeCalls                      int
+	adaptProposalCalls                     int
+	adaptProposalDetailsCalls              int
+	adaptBriefingCalls                     int
+	resolveAdaptDecisionCalls              int
+	adaptConfirmCalls                      int
+	adaptStartCalls                        int
+	continuationBeginDraftCalls            int
+	continuationCommitDraftCalls           int
+	continuationGenerateCalls              int
+	continuationReviseCalls                int
+	continuationApproveCalls               int
+	continuationStartCalls                 int
+	exportCalls                            int
+	rollbackPreviewCalls                   int
+	rollbackCalls                          int
+	abortCalls                             int
+	prepareRulesCalls                      int
+	prepareExternalRulesCalls              int
+	setWordBudgetCalls                     int
+	startPreparedCalls                     int
+	cocreateCalls                          int
+	stageCoCreateCalls                     int
+	adaptCoCreateCalls                     int
+	pauseCoCreateCalls                     int
+	resumeCoCreateCalls                    int
+	cancelCoCreateCalls                    int
+	closeCalls                             int
+	simulateDir                            string
+	importPath                             string
+	importNovelPath                        string
+	importNovelResumeFrom                  int
+	adaptAnalyzeStarted                    chan struct{}
+	adaptAnalyzeBeforeDone                 func(string)
+	adaptAnalyzePrefixEvents               []adapt.Event
+	adaptProposalStarted                   chan struct{}
+	adaptProposalContextHadDeadline        bool
+	adaptBriefingStarted                   chan struct{}
+	releaseAdaptBriefing                   chan struct{}
+	simulateStarted                        chan struct{}
+	releaseSimulate                        chan struct{}
+	adaptSourcePath                        string
+	adaptProposalOptions                   adapt.ProposalOptions
+	adaptRevisionOptions                   adapt.ProposalRevisionOptions
+	adaptProposal                          *domain.AdaptationPlan
+	adaptBriefing                          *domain.AdaptationCoCreateBriefing
+	lastAdaptBriefingSource                string
+	lastAdaptBriefingIntent                domain.AdaptationCoCreateIntent
+	adaptRevisionProposal                  *domain.AdaptationPlan
+	adaptConfirmedPlan                     *domain.AdaptationPlan
+	adaptOptions                           adapt.ProposalOptions
+	continuationSnapshot                   *domain.ContinuationSnapshot
+	continuationLastExpected               int
+	continuationLastInstruction            string
+	exportOptions                          exp.Options
+	rollbackPreview                        domain.RollbackPreview
+	rollbackResult                         domain.RollbackResult
+	addProviderRole                        string
+	configureProviderRole                  string
+	configureOriginalProvider              string
+	addProviderName                        string
+	configureProviderName                  string
+	addProviderConfig                      bootstrap.ProviderConfig
+	configureProviderConfig                bootstrap.ProviderConfig
+	addProviderModel                       string
+	configureProviderModel                 string
+	configureNetworkAttempts               int
+	configureAutoSwitchPool                bool
+	removeProviderName                     string
+	removeProviderModel                    string
+	switchRole                             string
+	switchProvider                         string
+	switchModel                            string
+	grokStartAccountID                     string
+	grokStartAccountName                   string
+	grokCompleteCallback                   string
+	grokStatusAccountID                    string
+	preparedRulesPrompt                    string
+	preparedExternalRulesPrompt            string
+	wordBudget                             *domain.WordBudget
+	startPreparedPrompt                    string
+	reviseChapterRequest                   host.ChapterRevisionRequest
+	reviseChapterResult                    host.ChapterRevisionResult
+	reviseChapterOutlineRequest            host.ChapterOutlineRevisionRequest
+	reviseChapterOutlineResult             host.ChapterOutlineRevisionResult
+	resumeCoCreateDraft                    string
+	lastCoCreateHistory                    []host.CoCreateMessage
+	adaptCoCreateHistories                 [][]host.CoCreateMessage
+	cocreateReply                          host.CoCreateReply
+	stageCoCreateReply                     host.CoCreateReply
+	adaptCoCreateReply                     host.CoCreateReply
+	cocreateReplies                        []host.CoCreateReply
+	stageCoCreateReplies                   []host.CoCreateReply
+	adaptCoCreateReplies                   []host.CoCreateReply
+	cocreateProgress                       []coCreateProgressStep
+	pauseCoCreateOK                        bool
+	abortOK                                bool
+	exportResult                           *exp.Result
+	addProviderErr                         error
+	removeProviderErr                      error
+	setCoCreateTimeoutErr                  error
+	setCoCreateMaxTokensErr                error
+	setRetrySettingsErr                    error
+	switchCalls                            int
+	clearModelRouteCalls                   int
+	removeProviderCalls                    int
+	setCoCreateTimeoutCalls                int
+	setCoCreateMaxTokensCalls              int
+	setRetrySettingsCalls                  int
+	coCreateTimeoutSeconds                 int
+	coCreateMaxTokens                      int
+	modelCallMaxAttempts                   int
+	structureRepairMaxAttempts             int
+	budgetQualityMaxAttempts               int
+	adaptationOutlineAuditRetryMaxAttempts int
+	clearModelRouteRole                    string
+	grokLoginStart                         grokauth.LoginStart
+	grokLoginPoll                          grokauth.LoginPoll
+	grokCompleteStatus                     grokauth.AuthStatus
+	grokStatus                             grokauth.AuthStatus
+	adaptRevisionCalls                     int
 
 	events    chan host.Event
 	stream    chan string
@@ -2494,13 +2495,23 @@ func (f *fakeProjectHost) CurrentBudgetQualityMaxAttempts() int {
 	return bootstrap.DefaultBudgetQualityMaxAttempts
 }
 
-func (f *fakeProjectHost) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts int) error {
+func (f *fakeProjectHost) CurrentAdaptationOutlineAuditRetryMaxAttempts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.adaptationOutlineAuditRetryMaxAttempts > 0 {
+		return f.adaptationOutlineAuditRetryMaxAttempts
+	}
+	return bootstrap.DefaultAdaptationOutlineAuditRetryMaxAttempts
+}
+
+func (f *fakeProjectHost) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts, adaptationOutlineAuditRetryMaxAttempts int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.setRetrySettingsCalls++
 	f.modelCallMaxAttempts = modelCallMaxAttempts
 	f.structureRepairMaxAttempts = structureRepairMaxAttempts
 	f.budgetQualityMaxAttempts = budgetQualityMaxAttempts
+	f.adaptationOutlineAuditRetryMaxAttempts = adaptationOutlineAuditRetryMaxAttempts
 	return f.setRetrySettingsErr
 }
 

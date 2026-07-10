@@ -254,8 +254,9 @@ func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
 			"model_call_max_attempts":       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
 			"structure_repair_max_attempts": cfg.EffectiveStructureRepairMaxAttempts(),
 			"budget_quality_max_attempts":   cfg.EffectiveBudgetQualityMaxAttempts(),
-			"simulation_mode":               cfg.EffectiveSimulationMode(),
-			"roles":                         cfg.Roles,
+			"adaptation_outline_audit_retry_max_attempts": cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts(),
+			"simulation_mode": cfg.EffectiveSimulationMode(),
+			"roles":           cfg.Roles,
 		},
 		"active_projects": s.sessions.ActiveProjectIDs(),
 	}
