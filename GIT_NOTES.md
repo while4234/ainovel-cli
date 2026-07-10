@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest implementation commit: `83856d9` `feat: enforce mode-aware adaptation quality`:
+  adds compact, capability-reviewed role prompts; bounded Agent contexts and a
+  five-component planner compiler; Chapter 1:N SourceSegment contracts; Arc
+  mainline event bindings; Free target causality/relationship/setting ledgers;
+  independent evidence and anti-AI checks; and read-only audit/confirmed repair
+  APIs. Full Go tests, Go vet, 162 Web UI tests, UI production build, and staged
+  diff checks passed. No live novel audit, repair, resume, or regeneration was
+  run as acceptance.
 - Latest source/runtime change: `feat: add reviewed novel continuation workflow`:
   imported novels now stop at a durable planning gate instead of automatically
   resuming Writer. The shared continuation state machine requires source
