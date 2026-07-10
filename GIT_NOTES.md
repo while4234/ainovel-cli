@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest audit-safety change: `b46b8ff` `fix: audit only completed adaptation units`:
+  replaces manual source/target ranges with one titled source-ending picker;
+  derives Chapter completeness from valid full source-segment contracts and Arc
+  completeness from finished planner batches; filters audit inputs to the
+  effective range; and converts legacy evidence gaps into non-repairable
+  `inconclusive` reports. Server-side confirmation and stale-scope checks block
+  direct-API bypasses. Full Go tests, Go vet, 185 Web tests, production build,
+  and Playwright real-project acceptance passed. The restarted 武林高手 audit
+  resolves source 1-284 / target 1-315, reports 12 invalid legacy quotes without
+  claiming missing prose, and exposes no repair action.
 - Current Web-only workbench change on `codex/web-only-workbench`: removes the
   complete TUI and Charmbracelet dependency tree; makes no-arg startup open the
   localhost Web UI; adds strict non-interactive headless answers, first-run Web
