@@ -771,7 +771,7 @@ func TestContextToolSelectedMemoryIncludesGlobalReviewLessons(t *testing.T) {
 	}
 }
 
-func TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation(t *testing.T) {
+func TestContextToolInjectsOnlyStructuredActiveAdaptationRules(t *testing.T) {
 	plainStore := store.NewStore(testStoreDir(t))
 	if err := plainStore.Init(); err != nil {
 		t.Fatalf("Init plain store: %v", err)
@@ -808,8 +808,16 @@ func TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation(t *testing.
 
 	plan := domain.AdaptationPlan{
 		Granularity:   domain.AdaptationGranularityChapter,
+		ModePolicy:    domain.AdaptationPolicyDetailPreservationWithSplit,
 		RewritePolicy: domain.AdaptationRewritePreserveDetails,
 		Status:        domain.AdaptationPlanStatusConfirmed,
+		Brief:         "禁止使用补丁标签",
+		Rules: []domain.AdaptationRule{{
+			ID:   "brief-label",
+			Kind: domain.AdaptationRuleForbidden,
+			Text: "禁止使用补丁标签",
+			Mode: domain.AdaptationGranularityChapter,
+		}},
 		Chapters: []domain.AdaptationChapterPlan{{
 			Chapter:        1,
 			Title:          "目标章",
@@ -818,6 +826,7 @@ func TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation(t *testing.
 			TargetRunes:    100,
 			TargetMinRunes: 85,
 			TargetMaxRunes: 115,
+			RuleIDs:        []string{"brief-label"},
 		}},
 	}
 	adaptStore := newAdaptationToolStoreWithPlan(t, plan, []string{"原文主线事件。"})
@@ -842,27 +851,22 @@ func TestContextToolInjectsAdaptationWriterGuidanceOnlyForAdaptation(t *testing.
 	if !adaptPayload.AdaptationMode {
 		t.Fatal("expected adaptation_mode=true")
 	}
-	rawGuidance, ok := adaptPayload.Working["adaptation_writing_guidance"]
+	if _, ok := adaptPayload.Working["adaptation_writing_guidance"]; ok {
+		t.Fatal("adaptation context must not inject the all-mode writer markdown")
+	}
+	if _, ok := adaptPayload.Working["adaptation_editor_guidance"]; ok {
+		t.Fatal("writer context must not inject editor markdown")
+	}
+	rawRules, ok := adaptPayload.Working["adaptation_active_rules"]
 	if !ok {
-		t.Fatal("adaptation context should include adaptation writer guidance")
+		t.Fatal("adaptation context should include task-scoped structured rules")
 	}
-	var guidance string
-	if err := json.Unmarshal(rawGuidance, &guidance); err != nil {
-		t.Fatalf("Unmarshal guidance: %v", err)
+	var activeRules []domain.AdaptationRule
+	if err := json.Unmarshal(rawRules, &activeRules); err != nil {
+		t.Fatalf("Unmarshal active rules: %v", err)
 	}
-	if !strings.Contains(guidance, "某某内心独白") {
-		t.Fatalf("guidance missing label rule: %q", guidance)
-	}
-	rawEditorGuidance, ok := adaptPayload.Working["adaptation_editor_guidance"]
-	if !ok {
-		t.Fatal("adaptation context should include adaptation editor guidance")
-	}
-	var editorGuidance string
-	if err := json.Unmarshal(rawEditorGuidance, &editorGuidance); err != nil {
-		t.Fatalf("Unmarshal editor guidance: %v", err)
-	}
-	if !strings.Contains(editorGuidance, "preserve_details") || !strings.Contains(editorGuidance, "内心独白仅为示意") {
-		t.Fatalf("preserve-details editor guidance mismatch: %q", editorGuidance)
+	if len(activeRules) != 1 || activeRules[0].ID != "brief-label" {
+		t.Fatalf("active rules mismatch: %+v", activeRules)
 	}
 }
 

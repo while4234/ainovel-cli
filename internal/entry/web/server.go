@@ -494,6 +494,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectAdaptConfirm(w, r, id)
 	case "adapt/start":
 		s.handleProjectAdaptStart(w, r, id)
+	case "adapt/audit":
+		s.handleProjectAdaptAudit(w, r, id)
+	case "adapt/audit/apply":
+		s.handleProjectAdaptAuditApply(w, r, id)
 	case "adapt/library/save":
 		s.handleProjectNovelLibrarySave(w, r, id)
 	case "adapt/library/load":

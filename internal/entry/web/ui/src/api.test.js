@@ -17,6 +17,7 @@ import {
   exportProjectDownload,
   generateContinuationOutlines,
   generateContinuationProposal,
+  getAdaptationAudit,
   getChapter,
   getCodexAuthStatus,
   getGlobalModels,
@@ -32,6 +33,7 @@ import {
   renameProject,
   restoreTrashProject,
   retryContinuation,
+  runAdaptationAudit,
   resumeCoCreate,
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
@@ -56,6 +58,7 @@ import {
   setProjectSimulationMode,
   setProjectStyle,
   startContinuation,
+  applyAdaptationAudit,
   startGrokLogin,
   switchGlobalDefaultModel,
   switchGlobalModel,
@@ -352,6 +355,30 @@ describe('web API helpers', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/projects/project-1/adapt/confirm', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({})
+    }));
+  });
+
+  it('uses read-only adaptation audit and confirmed repair routes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+    const options = { source_from: 1, source_to: 30, target_from: 1, target_to: 44 };
+    const confirmation = {
+      report_digest: 'audit-digest',
+      decision: 'apply',
+      acknowledged_finding_ids: ['missing-mainline-1']
+    };
+
+    await getAdaptationAudit('project-1');
+    await runAdaptationAudit('project-1', options);
+    await applyAdaptationAudit('project-1', confirmation);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project-1/adapt/audit', expect.objectContaining({}));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/adapt/audit', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify(options)
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/projects/project-1/adapt/audit/apply', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify(confirmation)
     }));
   });
 

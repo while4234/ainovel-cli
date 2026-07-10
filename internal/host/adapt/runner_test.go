@@ -3844,7 +3844,7 @@ func TestRetryPlannerSkeletonChapterBudgetUsesGranularitySourceRangeRules(t *tes
 func TestRepairPlannerBatchTextClarifiesSourceRangeBudgetRepair(t *testing.T) {
 	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{"chapters":[]}`}}}
 	_, err := repairPlannerBatchText(
-		context.Background(),
+		withAdaptationPromptModeIfMissing(context.Background(), domain.AdaptationGranularityArc),
 		llm,
 		"system",
 		"original detail request",

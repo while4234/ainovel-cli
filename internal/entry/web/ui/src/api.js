@@ -413,6 +413,24 @@ export function confirmAdaptationProposal(projectId) {
   });
 }
 
+export function getAdaptationAudit(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audit`);
+}
+
+export function runAdaptationAudit(projectId, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audit`, {
+    method: 'POST',
+    body: JSON.stringify(options)
+  });
+}
+
+export function applyAdaptationAudit(projectId, confirmation) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audit/apply`, {
+    method: 'POST',
+    body: JSON.stringify(confirmation || {})
+  });
+}
+
 export function beginCoCreate(projectId, payload) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/begin`, {
     method: 'POST',

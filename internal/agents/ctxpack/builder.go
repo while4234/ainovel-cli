@@ -386,8 +386,12 @@ func appendJSONSection(parts *[]string, heading string, data any, remaining *int
 		if *remaining <= 100 {
 			return true
 		}
-		text = truncateJSONToTokens(b, *remaining-20)
-		*parts = append(*parts, fmt.Sprintf("## %s\n%s [已截断]", heading, text))
+		marker, _ := json.Marshal(map[string]any{
+			"omitted": true,
+			"reason":  "token_budget",
+			"section": heading,
+		})
+		*parts = append(*parts, fmt.Sprintf("## %s\n%s", heading, marker))
 		*remaining = 0
 		return true
 	}

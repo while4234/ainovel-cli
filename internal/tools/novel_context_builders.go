@@ -260,15 +260,18 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 		"chapter":         chapterPlan.Chapter,
 		"source_chapters": chapterPlan.SourceChapters,
 		"source_range":    chapterPlan.SourceRange,
+		"source_segments": chapterPlan.SourceSegments,
+		"event_ids":       chapterPlan.EventIDs,
 		"is_added":        chapterPlan.IsAdded,
 		"coverage_note":   chapterPlan.CoverageNote,
 		"source_role":     adaptationSourceRoleForGranularity(plan.Granularity),
 	}
-	if guidance := strings.TrimSpace(t.refs.AdaptationWriter); guidance != "" {
-		working["adaptation_writing_guidance"] = truncateRunes(guidance, maxContextAdaptationBriefRunes)
+	rules := plan.Rules
+	if len(rules) == 0 && strings.TrimSpace(plan.Brief) != "" {
+		rules = domain.CompileAdaptationRules(plan.Brief, plan.Granularity)
 	}
-	if guidance := strings.TrimSpace(t.adaptationEditorGuidance(plan.RewritePolicy)); guidance != "" {
-		working["adaptation_editor_guidance"] = truncateRunes(guidance, maxContextAdaptationBriefRunes)
+	if activeRules := domain.ApplicableAdaptationRules(rules, plan.Granularity, chapter); len(activeRules) > 0 {
+		working["adaptation_active_rules"] = compactActiveAdaptationRules(activeRules)
 	}
 
 	reports, reportErr := t.store.Adaptation.LoadSourceReports()
@@ -278,13 +281,36 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 	}
 }
 
-func (t *ContextTool) adaptationEditorGuidance(rewritePolicy string) string {
-	switch domain.NormalizeAdaptationRewritePolicy(rewritePolicy) {
-	case domain.AdaptationRewritePreserveDetails:
-		return t.refs.AdaptationEditorPreserveDetails
-	default:
-		return t.refs.AdaptationEditorFullRewrite
+func compactActiveAdaptationRules(rules []domain.AdaptationRule) []map[string]any {
+	const (
+		maxRules         = 16
+		maxForbidden     = 8
+		maxRuleTextRunes = 300
+	)
+	out := make([]map[string]any, 0, min(len(rules), maxRules))
+	forbidden := 0
+	for _, rule := range rules {
+		if len(out) >= maxRules {
+			break
+		}
+		if rule.Kind == domain.AdaptationRuleForbidden {
+			if forbidden >= maxForbidden {
+				continue
+			}
+			forbidden++
+		}
+		text := strings.TrimSpace(rule.Text)
+		payload := map[string]any{
+			"rule_id": rule.ID,
+			"kind":    rule.Kind,
+			"text":    truncateRunes(text, maxRuleTextRunes),
+		}
+		if len([]rune(text)) > maxRuleTextRunes {
+			payload["truncated"] = true
+		}
+		out = append(out, payload)
 	}
+	return out
 }
 
 func (t *ContextTool) buildAdaptationPlanningContext(result map[string]any, warn func(string, error)) {
@@ -360,7 +386,7 @@ func adaptationSourceRoleForGranularity(granularity string) string {
 	case domain.AdaptationGranularityArc:
 		return "mainline_anchor"
 	default:
-		return "one_to_one_source_mapping"
+		return "ordered_source_segment_ownership"
 	}
 }
 
@@ -371,7 +397,7 @@ func adaptationSourceReferencePolicy(granularity string) string {
 	case domain.AdaptationGranularityArc:
 		return "mainline_anchor"
 	default:
-		return "required_one_to_one"
+		return "required_source_segment"
 	}
 }
 
@@ -382,7 +408,7 @@ func adaptationSourceMappingMeaning(granularity string) string {
 	case domain.AdaptationGranularityArc:
 		return "主线与卷弧覆盖锚点；不要求目标章与原文章节一一对应"
 	default:
-		return "目标章与原文章节一一对应"
+		return "短来源章通常对应一个目标章；长来源章由多个有序 SourceSegment 连续承接"
 	}
 }
 

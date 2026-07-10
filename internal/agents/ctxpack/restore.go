@@ -177,18 +177,3 @@ func (p *WriterRestorePack) buildMessage(budgetTokens int) (agentcore.Message, b
 	}
 	return agentcore.UserMsg(p.text), true
 }
-
-// truncateJSONToTokens keeps the first portion of JSON bytes that fits within
-// the token budget. Simple byte-level truncation — the result may not be valid
-// JSON, but it preserves the most important leading content (keys, early fields).
-func truncateJSONToTokens(b []byte, budgetTokens int) string {
-	// Rough: 1 token ≈ 4 bytes for ASCII-dominant JSON
-	maxBytes := budgetTokens * 4
-	if maxBytes >= len(b) {
-		return string(b)
-	}
-	if maxBytes < 20 {
-		maxBytes = 20
-	}
-	return string(b[:maxBytes])
-}

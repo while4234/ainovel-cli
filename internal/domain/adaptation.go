@@ -53,6 +53,7 @@ type AdaptationSourceReport struct {
 	Characters     []string            `json:"characters,omitempty"`
 	CharacterFacts []string            `json:"character_facts,omitempty"`
 	KeyEvents      []string            `json:"key_events,omitempty"`
+	SourceEvents   []AdaptationEvent   `json:"source_events,omitempty"`
 	WorldRules     []string            `json:"world_rules,omitempty"`
 	HookType       string              `json:"hook_type,omitempty"`
 	DominantStrand string              `json:"dominant_strand,omitempty"`
@@ -260,20 +261,26 @@ type AdaptationResolvedDecision struct {
 
 // AdaptationPlan is the durable contract for rewriting the source as a new book.
 type AdaptationPlan struct {
-	Granularity       string                  `json:"granularity"`
-	Status            string                  `json:"status"`
-	RewritePolicy     string                  `json:"rewrite_policy"`
-	Brief             string                  `json:"brief"`
-	Planner           *AdaptationPlannerMeta  `json:"planner,omitempty"`
-	Volumes           []AdaptationVolumePlan  `json:"volumes,omitempty"`
-	WordTolerance     float64                 `json:"word_tolerance,omitempty"`
-	SourceTotalRunes  int                     `json:"source_total_runes,omitempty"`
-	TargetTotalRunes  int                     `json:"target_total_runes,omitempty"`
-	TargetMinRunes    int                     `json:"target_min_runes,omitempty"`
-	TargetMaxRunes    int                     `json:"target_max_runes,omitempty"`
-	MainlineRules     []string                `json:"mainline_rules,omitempty"`
-	RelationshipGoals []string                `json:"relationship_goals,omitempty"`
-	Chapters          []AdaptationChapterPlan `json:"chapters"`
+	Granularity              string                  `json:"granularity"`
+	ModePolicy               AdaptationModePolicy    `json:"mode_policy,omitempty"`
+	Status                   string                  `json:"status"`
+	RewritePolicy            string                  `json:"rewrite_policy"`
+	Brief                    string                  `json:"brief"`
+	Planner                  *AdaptationPlannerMeta  `json:"planner,omitempty"`
+	Volumes                  []AdaptationVolumePlan  `json:"volumes,omitempty"`
+	WordTolerance            float64                 `json:"word_tolerance,omitempty"`
+	SourceTotalRunes         int                     `json:"source_total_runes,omitempty"`
+	TargetTotalRunes         int                     `json:"target_total_runes,omitempty"`
+	TargetMinRunes           int                     `json:"target_min_runes,omitempty"`
+	TargetMaxRunes           int                     `json:"target_max_runes,omitempty"`
+	MainlineRules            []string                `json:"mainline_rules,omitempty"`
+	RelationshipGoals        []string                `json:"relationship_goals,omitempty"`
+	Rules                    []AdaptationRule        `json:"rules,omitempty"`
+	SourceEvents             []AdaptationEvent       `json:"source_events,omitempty"`
+	TargetEventLedger        []AdaptationEvent       `json:"target_event_ledger,omitempty"`
+	TargetRelationshipStates map[string]string       `json:"target_relationship_states,omitempty"`
+	TargetSettingLocks       []AdaptationSettingLock `json:"target_setting_locks,omitempty"`
+	Chapters                 []AdaptationChapterPlan `json:"chapters"`
 }
 
 // AdaptationProposalRuntime keeps resumable planner state while a proposal is
@@ -317,6 +324,7 @@ type AdaptationProposalRuntimeSkeletonBatch struct {
 	SourceFrom         int      `json:"source_from"`
 	SourceTo           int      `json:"source_to"`
 	SourceChapters     []int    `json:"source_chapters,omitempty"`
+	MainlineEventIDs   []string `json:"mainline_event_ids,omitempty"`
 	Notes              []string `json:"notes,omitempty"`
 }
 
@@ -352,18 +360,19 @@ type AdaptationVolumeReview struct {
 // proposal. It is model-chosen for long-form plans and remains optional for
 // shorter works that do not naturally need volumes.
 type AdaptationVolumePlan struct {
-	Index          int      `json:"index"`
-	Title          string   `json:"title"`
-	Theme          string   `json:"theme,omitempty"`
-	Goal           string   `json:"goal,omitempty"`
-	Summary        string   `json:"summary,omitempty"`
-	BudgetDecision string   `json:"budget_decision,omitempty"`
-	BudgetReason   string   `json:"budget_reason,omitempty"`
-	TargetFrom     int      `json:"target_from"`
-	TargetTo       int      `json:"target_to"`
-	SourceFrom     int      `json:"source_from,omitempty"`
-	SourceTo       int      `json:"source_to,omitempty"`
-	Notes          TextList `json:"notes,omitempty"`
+	Index            int      `json:"index"`
+	Title            string   `json:"title"`
+	Theme            string   `json:"theme,omitempty"`
+	Goal             string   `json:"goal,omitempty"`
+	Summary          string   `json:"summary,omitempty"`
+	BudgetDecision   string   `json:"budget_decision,omitempty"`
+	BudgetReason     string   `json:"budget_reason,omitempty"`
+	TargetFrom       int      `json:"target_from"`
+	TargetTo         int      `json:"target_to"`
+	SourceFrom       int      `json:"source_from,omitempty"`
+	SourceTo         int      `json:"source_to,omitempty"`
+	MainlineEventIDs []string `json:"mainline_event_ids,omitempty"`
+	Notes            TextList `json:"notes,omitempty"`
 }
 
 // AdaptationPlannerMeta records how an adaptation plan or proposal was made.
@@ -448,20 +457,27 @@ func (b *AdaptationChapterWordBudget) UnmarshalJSON(data []byte) error {
 // AdaptationChapterPlan defines one target chapter's source anchors and edits.
 type AdaptationChapterPlan struct {
 	OutlineEntry
-	Chapter         int                          `json:"chapter"`
-	Title           string                       `json:"title"`
-	SourceChapters  []int                        `json:"source_chapters"`
-	SourceRunes     int                          `json:"source_runes,omitempty"`
-	TargetRunes     int                          `json:"target_runes,omitempty"`
-	TargetMinRunes  int                          `json:"target_min_runes,omitempty"`
-	TargetMaxRunes  int                          `json:"target_max_runes,omitempty"`
-	WordBudget      *AdaptationChapterWordBudget `json:"word_budget,omitempty"`
-	SourceRange     SourceRange                  `json:"source_range,omitempty"`
-	IsAdded         bool                         `json:"is_added,omitempty"`
-	CoverageNote    string                       `json:"coverage_note,omitempty"`
-	PreserveEvents  []string                     `json:"preserve_events,omitempty"`
-	RequiredChanges []string                     `json:"required_changes,omitempty"`
-	ForbiddenMoves  []string                     `json:"forbidden_moves,omitempty"`
+	Chapter           int                               `json:"chapter"`
+	Title             string                            `json:"title"`
+	SourceChapters    []int                             `json:"source_chapters"`
+	SourceRunes       int                               `json:"source_runes,omitempty"`
+	TargetRunes       int                               `json:"target_runes,omitempty"`
+	TargetMinRunes    int                               `json:"target_min_runes,omitempty"`
+	TargetMaxRunes    int                               `json:"target_max_runes,omitempty"`
+	WordBudget        *AdaptationChapterWordBudget      `json:"word_budget,omitempty"`
+	SourceRange       SourceRange                       `json:"source_range,omitempty"`
+	SourceSegments    []AdaptationSourceSegment         `json:"source_segments,omitempty"`
+	EventIDs          []string                          `json:"event_ids,omitempty"`
+	AddedEventIDs     []string                          `json:"added_event_ids,omitempty"`
+	DependsOnEventIDs []string                          `json:"depends_on_event_ids,omitempty"`
+	Relationship      *AdaptationRelationshipTransition `json:"relationship,omitempty"`
+	SettingClaims     []AdaptationSettingClaim          `json:"setting_claims,omitempty"`
+	RuleIDs           []string                          `json:"rule_ids,omitempty"`
+	IsAdded           bool                              `json:"is_added,omitempty"`
+	CoverageNote      string                            `json:"coverage_note,omitempty"`
+	PreserveEvents    []string                          `json:"preserve_events,omitempty"`
+	RequiredChanges   []string                          `json:"required_changes,omitempty"`
+	ForbiddenMoves    []string                          `json:"forbidden_moves,omitempty"`
 }
 
 // AdaptationCheck is saved after a draft has been checked against the plan.
@@ -472,7 +488,15 @@ type AdaptationCheck struct {
 	Summary        string                     `json:"summary,omitempty"`
 	Issues         []string                   `json:"issues,omitempty"`
 	ChangeEvidence []AdaptationChangeEvidence `json:"change_evidence,omitempty"`
+	BodyEvidence   []AdaptationBodyEvidence   `json:"body_evidence,omitempty"`
 	CheckedAt      string                     `json:"checked_at"`
+}
+
+// AdaptationBodyEvidence is independently verified against the current draft;
+// unlike a writer summary, Quote must occur verbatim in prose.
+type AdaptationBodyEvidence struct {
+	EventID string `json:"event_id"`
+	Quote   string `json:"quote"`
 }
 
 // AdaptationChangeEvidence records how a required adaptation change was
@@ -523,8 +547,8 @@ func NormalizeAdaptationRewritePolicy(value string) string {
 }
 
 // AdaptationRewritePolicyForGranularity is the canonical policy mapping for
-// adaptation projects. preserve_details only works when target chapters map
-// one-to-one with source chapters; broader restructuring must use full rewrite.
+// adaptation projects. preserve_details keeps source detail ownership explicit;
+// a long source chapter may map to multiple ordered target chapters.
 func AdaptationRewritePolicyForGranularity(granularity string) string {
 	switch NormalizeAdaptationGranularity(granularity) {
 	case AdaptationGranularityChapter:

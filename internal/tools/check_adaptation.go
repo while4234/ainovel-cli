@@ -38,12 +38,17 @@ func (t *CheckAdaptationTool) Schema() map[string]any {
 		schema.Property("change", schema.String("required adaptation change that was applied")).Required(),
 		schema.Property("integration", schema.String("how the change appears inside normal prose, not as a note")),
 	)
+	bodyEvidenceSchema := schema.Object(
+		schema.Property("event_id", schema.String("event ID assigned by the current adaptation contract")).Required(),
+		schema.Property("quote", schema.String("short verbatim quote from the current draft proving the event or state transition")).Required(),
+	)
 	return schema.Object(
 		schema.Property("chapter", schema.Int("target chapter number")).Required(),
 		schema.Property("passed", schema.Bool("whether the draft satisfies the adaptation contract")).Required(),
 		schema.Property("summary", schema.String("review summary: preserved source events and implemented changes")),
 		schema.Property("issues", schema.Array("unmet requirements; any issue makes the check fail", schema.String(""))),
 		schema.Property("change_evidence", schema.Array("preserve_details only: evidence that required changes were integrated into prose; pass [] only when no visible source change is required", changeEvidenceSchema)).Required(),
+		schema.Property("body_evidence", schema.Array("verbatim draft evidence for assigned event_ids; independently checked by code", bodyEvidenceSchema)),
 	)
 }
 
@@ -54,6 +59,7 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 		Summary        string                            `json:"summary"`
 		Issues         []string                          `json:"issues"`
 		ChangeEvidence []domain.AdaptationChangeEvidence `json:"change_evidence"`
+		BodyEvidence   []domain.AdaptationBodyEvidence   `json:"body_evidence"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
@@ -112,8 +118,12 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 	issues = append(issues, adaptationDraftQualityIssues(t.store, plan, chapterPlan, a.Chapter, content)...)
 	changeEvidence := cleanChangeEvidence(a.ChangeEvidence)
 	issues = append(issues, adaptationChangeEvidenceIssues(plan, chapterPlan, changeEvidence)...)
+	bodyEvidence := cleanAdaptationBodyEvidence(a.BodyEvidence)
+	issues = append(issues, adaptationBodyEvidenceIssues(plan, chapterPlan, content, bodyEvidence)...)
 
-	passed := a.Passed && len(issues) == 0
+	// Writer's passed flag is retained for wire compatibility, but independent
+	// deterministic checks are the commit condition.
+	passed := len(issues) == 0
 	digest := store.TextSHA256(content)
 	check := domain.AdaptationCheck{
 		Chapter:        a.Chapter,
@@ -122,6 +132,7 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 		Summary:        strings.TrimSpace(a.Summary),
 		Issues:         issues,
 		ChangeEvidence: changeEvidence,
+		BodyEvidence:   bodyEvidence,
 		CheckedAt:      time.Now().Format(time.RFC3339),
 	}
 	if err := t.store.Adaptation.SaveCheck(check); err != nil {
@@ -136,6 +147,7 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 		"issues":                   issues,
 		"word_contract_warnings":   warnings,
 		"change_evidence":          changeEvidence,
+		"body_evidence":            bodyEvidence,
 		"required_change_evidence": adaptationRequiredChangeEvidencePrompt(plan, chapterPlan),
 		"source_refs":              sourceRefs,
 		"next_step":                adaptationCheckNextStep(passed, issues, contract, a.Chapter),

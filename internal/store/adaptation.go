@@ -1064,8 +1064,12 @@ func normalizeAdaptationPlan(plan *domain.AdaptationPlan, manifest *domain.Adapt
 		return
 	}
 	plan.Granularity = domain.NormalizeAdaptationGranularity(plan.Granularity)
+	plan.ModePolicy = domain.AdaptationModePolicyForGranularity(plan.Granularity)
 	plan.Status = domain.NormalizeAdaptationPlanStatus(plan.Status)
 	plan.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(plan.Granularity)
+	if len(plan.Rules) == 0 && strings.TrimSpace(plan.Brief) != "" {
+		plan.Rules = domain.CompileAdaptationRules(plan.Brief, plan.Granularity)
+	}
 	deriveBudgets := shouldDeriveAdaptationBudgets(plan)
 	tolerance := plan.WordTolerance
 	if tolerance <= 0 && deriveBudgets {
@@ -1075,6 +1079,9 @@ func normalizeAdaptationPlan(plan *domain.AdaptationPlan, manifest *domain.Adapt
 	sourceRunes := adaptationSourceRunesByChapter(manifest)
 	for i := range plan.Chapters {
 		normalizeAdaptationChapterPlan(&plan.Chapters[i], tolerance, sourceRunes, deriveBudgets)
+		if len(plan.Chapters[i].RuleIDs) == 0 {
+			plan.Chapters[i].RuleIDs = domain.AdaptationRuleIDs(domain.ApplicableAdaptationRules(plan.Rules, plan.Granularity, plan.Chapters[i].Chapter))
+		}
 	}
 	budgetsChanged := false
 	if deriveBudgets {

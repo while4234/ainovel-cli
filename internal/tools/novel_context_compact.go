@@ -251,10 +251,10 @@ func compactAdaptationPlanSummary(plan *domain.AdaptationPlan) map[string]any {
 	}
 	return map[string]any{
 		"granularity":        plan.Granularity,
+		"mode_policy":        plan.ModePolicy,
 		"status":             plan.Status,
 		"rewrite_policy":     plan.RewritePolicy,
 		"word_tolerance":     adaptationWordToleranceForContext(plan),
-		"brief":              truncateRunes(plan.Brief, maxContextAdaptationBriefRunes),
 		"mainline_rules":     compactStringList(plan.MainlineRules, maxContextAdaptationRuleItems, 120),
 		"relationship_goals": compactStringList(plan.RelationshipGoals, maxContextAdaptationRuleItems, 120),
 		"source_total_runes": plan.SourceTotalRunes,

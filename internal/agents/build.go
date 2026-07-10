@@ -20,6 +20,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/host/reminder"
+	"github.com/voocel/ainovel-cli/internal/promptcompile"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/rules"
 	"github.com/voocel/ainovel-cli/internal/store"
@@ -43,6 +44,15 @@ func agentToRole(name string) string {
 // 错误能在 subagent 层就近重试，而不是把整个 subagent 抛回 coordinator 重派发。
 // 项目铁律一保证写类工具走 checkpoint+digest 幂等，重试是安全的。
 const subagentMaxRetries = retrypolicy.MaxAttempts
+
+func boundedAgentContextWindow(modelWindow int, agent promptcompile.Agent) (int, int) {
+	budget, ok := promptcompile.BudgetFor(agent)
+	if !ok || modelWindow <= 0 {
+		return modelWindow, bootstrap.CompactReserveTokens(modelWindow)
+	}
+	window := min(modelWindow, budget.HardTokens+bootstrap.MinCompactReserve)
+	return window, bootstrap.CompactReserveTokens(window)
+}
 
 // UsageRecorder 是 BuildCoordinator 可选的用量回调；签名与 OnMessage 一致，
 // 每条 agent 消息都会调一次，由 Host 层负责聚合。nil 表示不追踪。
@@ -214,6 +224,11 @@ func BuildCoordinator(
 			return r.Type == "outline" && r.FoundationReady
 		},
 		StopGuardFactory: architectStopGuardFactory,
+		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
+			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
+			window, reserve := boundedAgentContextWindow(modelWindow, promptcompile.AgentArchitect)
+			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_short"})
+		},
 	}
 	architectLong := subagent.Config{
 		Name:                "architect_long",
@@ -228,6 +243,11 @@ func BuildCoordinator(
 		OnMessage:           onMsg,
 		StopAfterToolResult: architectLongShouldStopAfterToolResult,
 		StopGuardFactory:    architectStopGuardFactory,
+		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
+			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
+			window, reserve := boundedAgentContextWindow(modelWindow, promptcompile.AgentArchitect)
+			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_long"})
+		},
 	}
 
 	writerPrompt := bundle.Prompts.Writer
@@ -256,12 +276,13 @@ func BuildCoordinator(
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			// 每次 subagent(writer) 调用都会重建，从当前 runModel 读取最新模型名。
 			// /model 切换 writer 后下一章自动用新窗口。
-			window, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
+			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
+			window, reserve := boundedAgentContextWindow(modelWindow, promptcompile.AgentWriter)
 			return newContextManager(contextManagerConfig{
 				Model:            model,
 				ContextWindow:    window,
-				ReserveTokens:    bootstrap.CompactReserveTokens(window),
-				KeepRecentTokens: 20000,
+				ReserveTokens:    reserve,
+				KeepRecentTokens: 12_000,
 				Agent:            "writer",
 				ToolMicrocompact: &corecontext.ToolResultMicrocompactConfig{
 					IdleThreshold: 5 * time.Minute,
@@ -269,7 +290,7 @@ func BuildCoordinator(
 				ExtraStrategies: []corecontext.Strategy{
 					ctxpack.NewStoreSummaryCompact(ctxpack.StoreSummaryCompactConfig{
 						Store:            store,
-						KeepRecentTokens: 20000,
+						KeepRecentTokens: 12_000,
 					}),
 				},
 				Summary: &corecontext.FullSummaryConfig{
@@ -304,15 +325,21 @@ func BuildCoordinator(
 		StopGuardFactory: func(_, task string) agentcore.StopGuard {
 			return reminder.NewEditorStopGuard(store, task)
 		},
+		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
+			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
+			window, reserve := boundedAgentContextWindow(modelWindow, promptcompile.AgentEditor)
+			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 18_000, Agent: "editor"})
+		},
 	}
 
 	subagentTool := subagent.New(architectShort, architectLong, writer, editor)
 
+	coordinatorContextWindow, coordinatorReserve := boundedAgentContextWindow(coordinatorContextWindow, promptcompile.AgentCoordinator)
 	coordinatorEngine := newContextManager(contextManagerConfig{
 		Model:            coordinatorModel,
 		ContextWindow:    coordinatorContextWindow,
-		ReserveTokens:    bootstrap.CompactReserveTokens(coordinatorContextWindow),
-		KeepRecentTokens: 30000,
+		ReserveTokens:    coordinatorReserve,
+		KeepRecentTokens: 8_000,
 		Agent:            "coordinator",
 		CommitOnProject:  true,
 	})

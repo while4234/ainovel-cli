@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"path/filepath"
 	"regexp"
@@ -17,7 +18,9 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
+	"github.com/voocel/ainovel-cli/internal/promptcompile"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
@@ -77,6 +80,7 @@ type Deps struct {
 	ModelCallMaxAttempts       int
 	StructureRepairMaxAttempts int
 	BudgetQualityMaxAttempts   int
+	PromptTokenCounter         promptcompile.TokenCounter
 }
 
 func RunSource(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
@@ -170,9 +174,7 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 			continue
 		}
 		emit(StageChapter, chapterNum, total, fmt.Sprintf("分析原文第 %d/%d 章：%s", chapterNum, total, ch.Title), nil)
-		analysis, err := imp.AnalyzeChapterWithOptions(ctx, deps.LLM, deps.Prompts.Analyzer,
-			chapterNum, ch.Title, ch.Content, "", "", nil,
-			structuredCallOptionsWithDeps(deps, StageChapter, chapterNum, total, emit))
+		analysis, err := analyzeSourceChapterInSceneBatches(ctx, deps, chapterNum, ch.Title, ch.Content, total, emit)
 		if err != nil {
 			return fmt.Errorf("analyze source chapter %d: %w", chapterNum, err)
 		}
@@ -925,6 +927,13 @@ func prepareProposalPlannerInputs(ctx context.Context, deps Deps, opts ProposalO
 	opts.Granularity = granularity
 	opts.RewritePolicy = domain.AdaptationRewritePolicyForGranularity(opts.Granularity)
 	opts.WordTolerance = normalizeProposalWordTolerance(opts.Granularity, opts.WordTolerance)
+	compiledRules := domain.CompileAdaptationRules(opts.Brief, opts.Granularity)
+	if err := domain.ValidateAdaptationRules(compiledRules); err != nil {
+		return opts, nil, nil, nil, err
+	}
+	if err := domain.ValidateAdaptationRuleLimits(compiledRules, 16, 8); err != nil {
+		return opts, nil, nil, nil, err
+	}
 	manifest, reports, err := ValidatePreparedSource(deps.Store, opts.SourcePath)
 	if err != nil {
 		return opts, nil, nil, nil, err
@@ -944,6 +953,7 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 	if err != nil {
 		return nil, err
 	}
+	ctx = withAdaptationPromptContract(ctx, deps.PromptTokenCounter, opts.Granularity, opts.Brief)
 	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "改编规划准备完成，正在选择提案生成方式", nil)
 
 	var proposal domain.AdaptationPlan
@@ -969,6 +979,7 @@ func BuildAdaptationProposalVolumesContext(ctx context.Context, deps Deps, opts 
 	if err != nil {
 		return nil, err
 	}
+	ctx = withAdaptationPromptContract(ctx, deps.PromptTokenCounter, opts.Granularity, opts.Brief)
 	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "改编规划准备完成，正在判断是否需要分卷审核", nil)
 	targetChapterCount := plannerTargetChapterCount(opts, manifest)
 	if !shouldUseChunkedPlanner(opts, manifest, targetChapterCount) {
@@ -1026,6 +1037,7 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 	if proposal == nil || len(proposal.Chapters) == 0 {
 		return nil, fmt.Errorf("adaptation proposal is required")
 	}
+	ctx = withAdaptationPromptContract(ctx, deps.PromptTokenCounter, proposal.Granularity, proposal.Brief)
 	from, to, err := resolveProposalRevisionRange(*proposal, opts)
 	if err != nil {
 		return nil, err
@@ -1136,6 +1148,7 @@ func ReviseAdaptationVolumeReviewContext(ctx context.Context, deps Deps, opts Pr
 	if review == nil || len(review.Volumes) == 0 {
 		return nil, fmt.Errorf("adaptation volume review is required")
 	}
+	ctx = withAdaptationPromptContract(ctx, deps.PromptTokenCounter, review.Granularity, review.Brief)
 	manifest, reports, err := ValidatePreparedSource(deps.Store, review.SourcePath)
 	if err != nil {
 		return nil, err
@@ -1216,6 +1229,7 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	if review == nil || len(review.Volumes) == 0 {
 		return nil, fmt.Errorf("adaptation volume review is required")
 	}
+	ctx = withAdaptationPromptContract(ctx, deps.PromptTokenCounter, review.Granularity, review.Brief)
 	proposalOpts := proposalOptionsFromVolumeReview(*review)
 	proposalOpts.EmitProgress = opts.EmitProgress
 	manifest, reports, err := ValidatePreparedSource(deps.Store, review.SourcePath)
@@ -1466,7 +1480,17 @@ func buildPlanFromPlanner(
 	if shouldUseChunkedPlanner(opts, manifest, targetChapterCount) {
 		return buildPlanFromPlannerChunked(ctx, deps, opts, reports, manifest, sourceFoundation, targetChapterCount)
 	}
-	return buildPlanFromPlannerSingle(ctx, deps, opts, reports, manifest, sourceFoundation)
+	plan, err := buildPlanFromPlannerSingle(ctx, deps, opts, reports, manifest, sourceFoundation)
+	var splitRequired *promptcompile.SplitRequiredError
+	if errors.As(err, &splitRequired) {
+		sourceChapterCount := 0
+		if manifest != nil {
+			sourceChapterCount = manifest.ChapterCount
+		}
+		targetChapterCount = max(targetChapterCount, max(sourceChapterCount, adaptationPlannerChunkedMinChapters))
+		return buildPlanFromPlannerChunked(ctx, deps, opts, reports, manifest, sourceFoundation, targetChapterCount)
+	}
+	return plan, err
 }
 
 func shouldUseChunkedPlanner(opts ProposalOptions, manifest *domain.AdaptationSourceManifest, targetChapterCount int) bool {
@@ -1549,6 +1573,16 @@ func cloneAdaptationPlan(plan domain.AdaptationPlan) domain.AdaptationPlan {
 	out := plan
 	out.MainlineRules = append([]string(nil), plan.MainlineRules...)
 	out.RelationshipGoals = append([]string(nil), plan.RelationshipGoals...)
+	out.Rules = append([]domain.AdaptationRule(nil), plan.Rules...)
+	out.SourceEvents = append([]domain.AdaptationEvent(nil), plan.SourceEvents...)
+	out.TargetEventLedger = append([]domain.AdaptationEvent(nil), plan.TargetEventLedger...)
+	out.TargetSettingLocks = append([]domain.AdaptationSettingLock(nil), plan.TargetSettingLocks...)
+	if plan.TargetRelationshipStates != nil {
+		out.TargetRelationshipStates = make(map[string]string, len(plan.TargetRelationshipStates))
+		for key, value := range plan.TargetRelationshipStates {
+			out.TargetRelationshipStates[key] = value
+		}
+	}
 	out.Volumes = append([]domain.AdaptationVolumePlan(nil), plan.Volumes...)
 	out.Chapters = make([]domain.AdaptationChapterPlan, len(plan.Chapters))
 	for i := range plan.Chapters {
@@ -1565,6 +1599,18 @@ func cloneAdaptationPlan(plan domain.AdaptationPlan) domain.AdaptationPlan {
 func cloneAdaptationChapterPlan(chapter domain.AdaptationChapterPlan) domain.AdaptationChapterPlan {
 	out := chapter
 	out.SourceChapters = append([]int(nil), chapter.SourceChapters...)
+	out.SourceSegments = append([]domain.AdaptationSourceSegment(nil), chapter.SourceSegments...)
+	out.EventIDs = append([]string(nil), chapter.EventIDs...)
+	out.AddedEventIDs = append([]string(nil), chapter.AddedEventIDs...)
+	out.DependsOnEventIDs = append([]string(nil), chapter.DependsOnEventIDs...)
+	out.RuleIDs = append([]string(nil), chapter.RuleIDs...)
+	out.SettingClaims = append([]domain.AdaptationSettingClaim(nil), chapter.SettingClaims...)
+	if chapter.Relationship != nil {
+		relationship := *chapter.Relationship
+		relationship.AllowedFrom = append([]string(nil), chapter.Relationship.AllowedFrom...)
+		relationship.RequiresEventIDs = append([]string(nil), chapter.Relationship.RequiresEventIDs...)
+		out.Relationship = &relationship
+	}
 	out.Scenes = append([]string(nil), chapter.Scenes...)
 	out.PreserveEvents = append([]string(nil), chapter.PreserveEvents...)
 	out.RequiredChanges = append([]string(nil), chapter.RequiredChanges...)
@@ -1729,6 +1775,7 @@ func volumeReviewBatch(review domain.AdaptationVolumeReview, volumeIndex int) (p
 			TargetChapterCount: volume.TargetTo - volume.TargetFrom + 1,
 			SourceFrom:         volume.SourceFrom,
 			SourceTo:           volume.SourceTo,
+			MainlineEventIDs:   append([]string(nil), volume.MainlineEventIDs...),
 			Notes:              append([]string(nil), volume.Notes...),
 		}, nil
 	}
@@ -2005,6 +2052,7 @@ func plannerSkeletonFromVolumeReview(review domain.AdaptationVolumeReview) plann
 			TargetChapterCount: volume.TargetTo - volume.TargetFrom + 1,
 			SourceFrom:         volume.SourceFrom,
 			SourceTo:           volume.SourceTo,
+			MainlineEventIDs:   append([]string(nil), volume.MainlineEventIDs...),
 			Notes:              append([]string(nil), volume.Notes...),
 		})
 	}
@@ -2899,17 +2947,14 @@ func buildPlanFromPlannerSingle(
 	if err != nil {
 		return zero, err
 	}
-	resp, err := deps.LLM.Generate(ctx, []agentcore.Message{
-		agentcore.SystemMsg(systemPrompt),
-		agentcore.UserMsg(userPrompt),
-	}, nil, agentcore.WithMaxTokens(adaptationPlannerMaxTokens), agentcore.WithJSONMode())
+	responseText, err := generatePlannerTextForStage(
+		ctx, StagePlan, deps.LLM, systemPrompt, userPrompt, adaptationPlannerMaxTokens,
+		opts.EmitProgress, 0, 0, "短篇改编规划", deps.modelCallMaxAttempts(),
+	)
 	if err != nil {
 		return zero, fmt.Errorf("planner llm generate: %w", err)
 	}
-	if resp == nil {
-		return zero, fmt.Errorf("planner llm returned nil response")
-	}
-	proposal, err := parsePlannerProposal(resp.Message.TextContent())
+	proposal, err := parsePlannerProposal(responseText)
 	if err != nil {
 		return zero, plannerUnusableOutputError{err: err}
 	}
@@ -2950,6 +2995,7 @@ type plannerSkeletonBatch struct {
 	SourceFrom         int      `json:"source_from"`
 	SourceTo           int      `json:"source_to"`
 	SourceChapters     []int    `json:"source_chapters,omitempty"`
+	MainlineEventIDs   []string `json:"mainline_event_ids,omitempty"`
 	Notes              []string `json:"notes,omitempty"`
 }
 
@@ -3056,7 +3102,7 @@ func buildPlannerVolumeSkeleton(
 			return zero, nil, fmt.Errorf("prepare planner source map: %w", err)
 		}
 		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, plannerSkeletonRequestMessage(opts, manifest, targetChapterHint), nil)
-		skeleton, err = buildPlannerVolumeSkeletonFromSourceMap(ctx, deps, opts, manifest, sourceFoundation, dossier, runtime, targetChapterHint, systemPrompt)
+		skeleton, err = buildPlannerVolumeSkeletonFromSourceMap(ctx, deps, opts, reports, manifest, sourceFoundation, dossier, runtime, targetChapterHint, systemPrompt)
 		if err != nil {
 			return zero, nil, err
 		}
@@ -3067,6 +3113,7 @@ func buildPlannerVolumeSkeleton(
 			return zero, nil, fmt.Errorf("save proposal runtime skeleton: %w", err)
 		}
 	}
+	attachSkeletonMainlineEvents(&skeleton, reports)
 	return skeleton, runtime, nil
 }
 
@@ -3074,6 +3121,7 @@ func buildPlannerVolumeSkeletonFromSourceMap(
 	ctx context.Context,
 	deps Deps,
 	opts ProposalOptions,
+	reports []domain.AdaptationSourceReport,
 	manifest *domain.AdaptationSourceManifest,
 	sourceFoundation *domain.AdaptationSourceFoundation,
 	dossier *domain.AdaptationCoCreateDossier,
@@ -3081,7 +3129,7 @@ func buildPlannerVolumeSkeletonFromSourceMap(
 	targetChapterHint int,
 	systemPrompt string,
 ) (plannerSkeleton, error) {
-	sourceMap := plannerSourceMapFromDossier(dossier, manifest)
+	sourceMap := plannerSourceMapFromDossier(dossier, manifest, reports)
 	if len(sourceMap) == 0 {
 		return plannerSkeleton{}, fmt.Errorf("planner source map is empty")
 	}
@@ -4360,6 +4408,7 @@ func plannerSkeletonFromRuntime(runtime *domain.AdaptationProposalRuntime) plann
 			SourceFrom:         batch.SourceFrom,
 			SourceTo:           batch.SourceTo,
 			SourceChapters:     append([]int(nil), batch.SourceChapters...),
+			MainlineEventIDs:   append([]string(nil), batch.MainlineEventIDs...),
 			Notes:              append([]string(nil), batch.Notes...),
 		})
 	}
@@ -4393,6 +4442,7 @@ func plannerRuntimeOutlineFromSkeleton(skeleton plannerSkeleton) *domain.Adaptat
 			SourceFrom:         batch.SourceFrom,
 			SourceTo:           batch.SourceTo,
 			SourceChapters:     append([]int(nil), batch.SourceChapters...),
+			MainlineEventIDs:   append([]string(nil), batch.MainlineEventIDs...),
 			Notes:              append([]string(nil), batch.Notes...),
 		})
 	}
@@ -4736,6 +4786,7 @@ func upsertPlannerProposalRuntimeSkeletonBatches(runtime *domain.AdaptationPropo
 			SourceFrom:         batch.SourceFrom,
 			SourceTo:           batch.SourceTo,
 			SourceChapters:     append([]int(nil), batch.SourceChapters...),
+			MainlineEventIDs:   append([]string(nil), batch.MainlineEventIDs...),
 			Notes:              append([]string(nil), batch.Notes...),
 		})
 	}
@@ -4839,6 +4890,8 @@ func plannerDetailBatches(batches []plannerSkeletonBatch, batchMax int) []planne
 		if batch.TargetFrom <= 0 || batch.TargetTo < batch.TargetFrom {
 			continue
 		}
+		partCount := (batch.TargetTo - batch.TargetFrom + batchMax) / batchMax
+		partIndex := 0
 		for from := batch.TargetFrom; from <= batch.TargetTo; from += batchMax {
 			to := min(batch.TargetTo, from+batchMax-1)
 			sub := batch
@@ -4848,7 +4901,9 @@ func plannerDetailBatches(batches []plannerSkeletonBatch, batchMax int) []planne
 			sub.TargetFrom = from
 			sub.TargetTo = to
 			sub.TargetChapterCount = to - from + 1
+			sub.MainlineEventIDs = splitEventIDsForBatch(batch.MainlineEventIDs, partCount, partIndex)
 			out = append(out, sub)
+			partIndex++
 		}
 	}
 	return out
@@ -4892,9 +4947,33 @@ func generatePlannerTextForStage(
 	if label == "" {
 		label = "改编规划模型调用"
 	}
+	systemPrompt = globalprompt.ApplyForModel(plannerPromptModelIdentity(llm), systemPrompt)
+	compiledSystem, compiledUser := systemPrompt, userPrompt
+	var diagnostics *promptcompile.Diagnostics
+	if stage == StagePlan {
+		var err error
+		compiledSystem, compiledUser, diagnostics, err = compilePlannerCall(ctx, systemPrompt, userPrompt, promptTokenCounterFromContext(ctx))
+		if err != nil {
+			return "", err
+		}
+	}
+	if diagnostics != nil {
+		slog.Debug("adaptation prompt compiled",
+			"agent", diagnostics.Agent,
+			"mode", diagnostics.Mode,
+			"component_tokens", diagnostics.Components,
+			"total_tokens", diagnostics.TotalTokens,
+			"target_tokens", diagnostics.TargetTokens,
+			"hard_tokens", diagnostics.HardTokens,
+			"rules", diagnostics.RuleCount,
+			"deduplicated_rules", diagnostics.DeduplicatedRuleCount,
+			"strategy", diagnostics.Strategy,
+			"static_prefix_hash", diagnostics.StaticPrefixHash,
+		)
+	}
 	messages := []agentcore.Message{
-		agentcore.SystemMsg(systemPrompt),
-		agentcore.UserMsg(userPrompt),
+		agentcore.SystemMsg(compiledSystem),
+		agentcore.UserMsg(compiledUser),
 	}
 	callOpts := []agentcore.CallOption{agentcore.WithMaxTokens(maxTokens), agentcore.WithJSONMode()}
 	var lastErr error
@@ -4939,6 +5018,20 @@ func generatePlannerTextForStage(
 		lastErr = fmt.Errorf("planner llm generate exhausted")
 	}
 	return "", fmt.Errorf("planner llm generate exhausted %d attempts: %w", maxAttempts, lastErr)
+}
+
+func plannerPromptModelIdentity(llm imp.LLMChat) string {
+	if llm == nil {
+		return ""
+	}
+	var parts []string
+	if provider, ok := llm.(interface{ ProviderName() string }); ok {
+		parts = append(parts, provider.ProviderName())
+	}
+	if model, ok := llm.(interface{ ModelName() string }); ok {
+		parts = append(parts, model.ModelName())
+	}
+	return strings.Join(parts, "/")
 }
 
 func shouldRetryPlannerGenerate(ctx context.Context, err error, attempt, maxAttempts int) bool {
@@ -5024,6 +5117,11 @@ func plannerBatchChapterValidator(opts ProposalOptions, manifest *domain.Adaptat
 		}
 		if duplicate, ok := domain.FindDuplicateAdaptationChapterOutline(chapters, parentPriorChapters); ok {
 			return duplicate
+		}
+		if opts.Granularity == domain.AdaptationGranularityArc {
+			if err := validateArcBatchEventCoverage(chapters, batch); err != nil {
+				return err
+			}
 		}
 		return validatePlannerBatchChapterBudgetGroups(chapters, priorChapters, opts, sourceRunesByChapter, batch)
 	}
@@ -5864,6 +5962,7 @@ func repairPlannerSkeletonText(
 	total int,
 	maxModelCallAttempts int,
 ) (string, error) {
+	ctx = withAdaptationPromptModeIfMissing(ctx, granularity)
 	instructions := []string{
 		"Return exactly one JSON skeleton object and no prose.",
 		"The JSON must have a top-level batches array.",
@@ -5911,6 +6010,7 @@ func retryPlannerSkeletonChapterBudget(
 	total int,
 	maxModelCallAttempts int,
 ) (string, error) {
+	ctx = withAdaptationPromptModeIfMissing(ctx, granularity)
 	instructions := []string{
 		"Return exactly one JSON skeleton object and no prose.",
 		"The JSON must have a top-level batches array.",
@@ -6160,20 +6260,21 @@ func plannerAllowsSharedSourceMapEntryRanges(granularity string) bool {
 }
 
 type plannerSourceMapEntry struct {
-	Index               int                   `json:"index"`
-	SourceFrom          int                   `json:"source_from"`
-	SourceTo            int                   `json:"source_to"`
-	SourceRunes         int                   `json:"source_runes,omitempty"`
-	PlotPhase           string                `json:"plot_phase,omitempty"`
-	KeyCausality        []string              `json:"key_causality,omitempty"`
-	PlotThreads         []string              `json:"plot_threads,omitempty"`
-	CharacterArcs       []string              `json:"character_arcs,omitempty"`
-	WorldConstraints    []string              `json:"world_constraints,omitempty"`
-	MajorCharacters     []string              `json:"major_characters,omitempty"`
-	RelationshipSignals []plannerSourceSignal `json:"relationship_signals,omitempty"`
-	HeroineSignals      []plannerSourceSignal `json:"heroine_signals,omitempty"`
-	AmbiguityRisks      []plannerSourceRisk   `json:"ambiguity_risks,omitempty"`
-	CoupleMilestones    []plannerSourceSignal `json:"couple_milestones,omitempty"`
+	Index               int                      `json:"index"`
+	SourceFrom          int                      `json:"source_from"`
+	SourceTo            int                      `json:"source_to"`
+	SourceRunes         int                      `json:"source_runes,omitempty"`
+	PlotPhase           string                   `json:"plot_phase,omitempty"`
+	KeyCausality        []string                 `json:"key_causality,omitempty"`
+	PlotThreads         []string                 `json:"plot_threads,omitempty"`
+	CharacterArcs       []string                 `json:"character_arcs,omitempty"`
+	WorldConstraints    []string                 `json:"world_constraints,omitempty"`
+	MajorCharacters     []string                 `json:"major_characters,omitempty"`
+	RelationshipSignals []plannerSourceSignal    `json:"relationship_signals,omitempty"`
+	HeroineSignals      []plannerSourceSignal    `json:"heroine_signals,omitempty"`
+	AmbiguityRisks      []plannerSourceRisk      `json:"ambiguity_risks,omitempty"`
+	CoupleMilestones    []plannerSourceSignal    `json:"couple_milestones,omitempty"`
+	MainlineEvents      []domain.AdaptationEvent `json:"mainline_events,omitempty"`
 }
 
 type plannerSourceSignal struct {
@@ -6216,17 +6317,18 @@ type plannerFoundationArcSummary struct {
 }
 
 type plannerSourceReportExcerpt struct {
-	Chapter        int                   `json:"chapter"`
-	Title          string                `json:"title,omitempty"`
-	Summary        string                `json:"summary,omitempty"`
-	Characters     []string              `json:"characters,omitempty"`
-	CharacterFacts []string              `json:"character_facts,omitempty"`
-	KeyEvents      []string              `json:"key_events,omitempty"`
-	WorldRules     []string              `json:"world_rules,omitempty"`
-	HookType       string                `json:"hook_type,omitempty"`
-	DominantStrand string                `json:"dominant_strand,omitempty"`
-	Relationships  []plannerRelationNote `json:"relationships,omitempty"`
-	StateChanges   []plannerStateNote    `json:"state_changes,omitempty"`
+	Chapter        int                      `json:"chapter"`
+	Title          string                   `json:"title,omitempty"`
+	Summary        string                   `json:"summary,omitempty"`
+	Characters     []string                 `json:"characters,omitempty"`
+	CharacterFacts []string                 `json:"character_facts,omitempty"`
+	KeyEvents      []string                 `json:"key_events,omitempty"`
+	SourceEvents   []domain.AdaptationEvent `json:"source_events,omitempty"`
+	WorldRules     []string                 `json:"world_rules,omitempty"`
+	HookType       string                   `json:"hook_type,omitempty"`
+	DominantStrand string                   `json:"dominant_strand,omitempty"`
+	Relationships  []plannerRelationNote    `json:"relationships,omitempty"`
+	StateChanges   []plannerStateNote       `json:"state_changes,omitempty"`
 }
 
 type plannerRelationNote struct {
@@ -6267,7 +6369,7 @@ func plannerManifestSummary(manifest *domain.AdaptationSourceManifest) plannerSo
 	return summary
 }
 
-func plannerSourceMapFromDossier(dossier *domain.AdaptationCoCreateDossier, manifest *domain.AdaptationSourceManifest) []plannerSourceMapEntry {
+func plannerSourceMapFromDossier(dossier *domain.AdaptationCoCreateDossier, manifest *domain.AdaptationSourceManifest, reports []domain.AdaptationSourceReport) []plannerSourceMapEntry {
 	if dossier == nil {
 		return nil
 	}
@@ -6289,6 +6391,7 @@ func plannerSourceMapFromDossier(dossier *domain.AdaptationCoCreateDossier, mani
 			HeroineSignals:      plannerSignals(batch.HeroineSignals, 5),
 			AmbiguityRisks:      plannerRisks(batch.AmbiguityRisks, 4),
 			CoupleMilestones:    plannerSignals(batch.CoupleMilestones, 5),
+			MainlineEvents:      mainlineSourceEventsInRange(reports, batch.SourceFrom, batch.SourceTo),
 		}
 		entries = append(entries, entry)
 	}
@@ -6297,7 +6400,9 @@ func plannerSourceMapFromDossier(dossier *domain.AdaptationCoCreateDossier, mani
 
 func plannerSourceReportExcerpts(reports []domain.AdaptationSourceReport) []plannerSourceReportExcerpt {
 	excerpts := make([]plannerSourceReportExcerpt, 0, len(reports))
-	for _, report := range reports {
+	for index := range reports {
+		report := reports[index]
+		events := domain.EnsureAdaptationSourceEvents(&report)
 		excerpts = append(excerpts, plannerSourceReportExcerpt{
 			Chapter:        report.Chapter,
 			Title:          clipText(report.Title, 80),
@@ -6305,6 +6410,7 @@ func plannerSourceReportExcerpts(reports []domain.AdaptationSourceReport) []plan
 			Characters:     clippedStringList(report.Characters, 12, 60),
 			CharacterFacts: clippedStringList(report.CharacterFacts, 4, 120),
 			KeyEvents:      clippedStringList(report.KeyEvents, 5, 120),
+			SourceEvents:   compactPlannerSourceEvents(events, 8),
 			WorldRules:     clippedStringList(report.WorldRules, 4, 120),
 			HookType:       clipText(report.HookType, 60),
 			DominantStrand: clipText(report.DominantStrand, 80),
@@ -6558,6 +6664,12 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 		"The host will split oversized skeleton batches into detail calls and final generated outline batches of about recommended_batch_max target chapters.",
 	)
 	requirements = append(requirements, plannerSkeletonSourceRangeRequirements(opts.Granularity)...)
+	if opts.Granularity == domain.AdaptationGranularityArc {
+		requirements = append(requirements,
+			"source_map.mainline_events are high-level promises. Reserve enough target chapter positions for all of them before adding new plot.",
+			"Do not replace a required initial meeting, core case, identity reveal, fate turn, relationship milestone, major turn, foreshadowing, or payoff with an invented event.",
+		)
+	}
 	input := struct {
 		Brief                string                          `json:"brief"`
 		Granularity          string                          `json:"granularity"`
@@ -6683,6 +6795,19 @@ func buildAdaptationPlannerBatchUserPrompt(
 		"Do not use the target chapter number as a source chapter number unless that source chapter is actually inside batch.source_from/source_to.",
 	}
 	requirements = append(requirements, plannerBatchBudgetRequirements(opts.Granularity)...)
+	switch opts.Granularity {
+	case domain.AdaptationGranularityArc:
+		requirements = append(requirements,
+			"Every chapter must include event_ids and added_event_ids arrays.",
+			"Assign every batch.mainline_event_ids value to exactly one target chapter event_ids entry; do not omit, duplicate, paraphrase, or replace these stable IDs.",
+			"Put new plot IDs only in added_event_ids; added events may support assigned mainline events but cannot take their chapter space.",
+		)
+	case domain.AdaptationGranularityFree:
+		requirements = append(requirements,
+			"Every chapter must include stable target event_ids; use added_event_ids for events invented beyond the current target skeleton.",
+			"Plan target-story prerequisites with depends_on_event_ids and structured relationship/setting transitions; ordinary source events are optional references, not coverage obligations.",
+		)
+	}
 	requirements = append(requirements,
 		"Use the user's adaptation brief and the skeleton batch goal; do not ignore earlier user planning.",
 		"Use previous_detail_chapters only for continuity, callbacks, and handoff hooks; do not duplicate already generated chapters.",
@@ -7194,18 +7319,19 @@ func adaptationVolumesFromSkeleton(skeleton plannerSkeleton) []domain.Adaptation
 			title = fmt.Sprintf("第 %d-%d 章", batch.TargetFrom, batch.TargetTo)
 		}
 		volumes = append(volumes, domain.AdaptationVolumePlan{
-			Index:          batch.Index,
-			Title:          title,
-			Theme:          theme,
-			Goal:           goal,
-			Summary:        summary,
-			BudgetDecision: normalizePlannerBudgetDecision(batch.BudgetDecision),
-			BudgetReason:   strings.TrimSpace(batch.BudgetReason),
-			TargetFrom:     batch.TargetFrom,
-			TargetTo:       batch.TargetTo,
-			SourceFrom:     batch.SourceFrom,
-			SourceTo:       batch.SourceTo,
-			Notes:          append(domain.TextList(nil), batch.Notes...),
+			Index:            batch.Index,
+			Title:            title,
+			Theme:            theme,
+			Goal:             goal,
+			Summary:          summary,
+			BudgetDecision:   normalizePlannerBudgetDecision(batch.BudgetDecision),
+			BudgetReason:     strings.TrimSpace(batch.BudgetReason),
+			TargetFrom:       batch.TargetFrom,
+			TargetTo:         batch.TargetTo,
+			SourceFrom:       batch.SourceFrom,
+			SourceTo:         batch.SourceTo,
+			MainlineEventIDs: append([]string(nil), batch.MainlineEventIDs...),
+			Notes:            append(domain.TextList(nil), batch.Notes...),
 		})
 	}
 	return normalizeAdaptationProposalVolumes(volumes, skeleton.TargetChapterCount)
@@ -7474,24 +7600,26 @@ func buildAdaptationPlannerUserPrompt(
 	sourceFoundation *domain.AdaptationSourceFoundation,
 ) (string, error) {
 	input := struct {
-		Brief               string                             `json:"brief"`
-		Granularity         string                             `json:"granularity"`
-		RewritePolicy       string                             `json:"rewrite_policy"`
-		WordTolerance       float64                            `json:"word_tolerance"`
-		ChapterBudgetPolicy *plannerChapterBudgetPolicy        `json:"chapter_budget_policy,omitempty"`
-		SourceManifest      *domain.AdaptationSourceManifest   `json:"source_manifest"`
-		SourceFoundation    *domain.AdaptationSourceFoundation `json:"source_foundation"`
-		SourceReports       []domain.AdaptationSourceReport    `json:"source_reports"`
-		Requirements        []string                           `json:"requirements"`
+		Brief               string                          `json:"brief"`
+		Granularity         string                          `json:"granularity"`
+		RewritePolicy       string                          `json:"rewrite_policy"`
+		WordTolerance       float64                         `json:"word_tolerance"`
+		ChapterBudgetPolicy *plannerChapterBudgetPolicy     `json:"chapter_budget_policy,omitempty"`
+		SourceManifest      plannerSourceManifestSummary    `json:"source_manifest"`
+		SourceFoundation    *plannerSourceFoundationSummary `json:"source_foundation"`
+		SourceReports       []plannerSourceReportExcerpt    `json:"source_reports"`
+		SourceEvents        []domain.AdaptationEvent        `json:"source_events,omitempty"`
+		Requirements        []string                        `json:"requirements"`
 	}{
 		Brief:               opts.Brief,
 		Granularity:         opts.Granularity,
 		RewritePolicy:       opts.RewritePolicy,
 		WordTolerance:       opts.WordTolerance,
 		ChapterBudgetPolicy: plannerChapterBudgetPolicyForGranularity(opts.Granularity),
-		SourceManifest:      manifest,
-		SourceFoundation:    sourceFoundation,
-		SourceReports:       reports,
+		SourceManifest:      plannerManifestSummary(manifest),
+		SourceFoundation:    plannerSourceFoundationDigest(sourceFoundation),
+		SourceReports:       plannerSourceReportExcerpts(reports),
+		SourceEvents:        compactPlannerSourceEvents(sourceEventsFromReports(reports), 24),
 		Requirements: []string{
 			"Return exactly one JSON AdaptationPlan object and no prose.",
 			"Do not wrap the JSON in markdown fences.",
@@ -7500,11 +7628,22 @@ func buildAdaptationPlannerUserPrompt(
 			"Target chapters must be numbered continuously from 1.",
 			"Every chapter field must be an integer, not a string label like \"第1章\".",
 			"Every target chapter must include legal source_chapters anchors within the analyzed source range.",
-			"Every source chapter must be covered by at least one target chapter.",
 			"Added chapters must still include source_chapters anchors.",
-			"Every chapter must include chapter, title, non-empty core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
+			"Every chapter must include chapter, title, non-empty core_event, hook, scenes, source_chapters, source_range, word_budget, event_ids, added_event_ids, rule_ids, preserve_events, required_changes, and forbidden_moves.",
 			"If chapter_budget_policy is present, long source chapters must be split into enough target chapters so no target chapter budget exceeds chapter_budget_policy.max_runes.",
 		},
+	}
+	if opts.Granularity == domain.AdaptationGranularityArc {
+		input.Requirements = append(input.Requirements,
+			"Every source chapter must remain covered by at least one target chapter.",
+			"Every required mainline source_events event_id must appear exactly once across chapter event_ids before added_event_ids receive story space.",
+		)
+	} else {
+		input.Requirements = append(input.Requirements,
+			"Ordinary source events may be omitted; build coherent target event_ids and do not force a strict source partition.",
+			"Represent target causality with depends_on_event_ids; relationship changes with relationship {pair,from,to,allowed_from,requires_event_ids}; and changed setting facts with setting_claims.",
+			"When the brief locks target-world facts or starting relationships, persist target_setting_locks and target_relationship_states at the plan level.",
+		)
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
@@ -7512,7 +7651,7 @@ func buildAdaptationPlannerUserPrompt(
 	}
 	return "Use the following analyzed source foundation and reports to plan the adaptation proposal.\n\n" +
 		"Output contract: return exactly one JSON object, no prose and no markdown. The top-level object must contain a chapters array.\n" +
-		"Required shape: {\"granularity\":\"...\",\"status\":\"proposal\",\"rewrite_policy\":\"...\",\"brief\":\"...\",\"chapters\":[{\"chapter\":1,\"title\":\"...\",\"core_event\":\"...\",\"hook\":\"...\",\"scenes\":[\"...\"],\"source_chapters\":[1],\"source_range\":{\"from\":1,\"to\":1},\"word_budget\":{\"source_runes\":1000,\"target_runes\":1500,\"min_runes\":1400,\"max_runes\":1600,\"tolerance\":0.15},\"preserve_events\":[\"...\"],\"required_changes\":[\"...\"],\"forbidden_moves\":[\"...\"]}]}.\n" +
+		"Required shape: {\"granularity\":\"...\",\"status\":\"proposal\",\"rewrite_policy\":\"...\",\"brief\":\"...\",\"chapters\":[{\"chapter\":1,\"title\":\"...\",\"core_event\":\"...\",\"hook\":\"...\",\"scenes\":[\"...\"],\"source_chapters\":[1],\"source_range\":{\"from\":1,\"to\":1},\"word_budget\":{\"source_runes\":1000,\"target_runes\":1500,\"min_runes\":1400,\"max_runes\":1600,\"tolerance\":0.15},\"event_ids\":[\"evt-...\"],\"added_event_ids\":[],\"depends_on_event_ids\":[],\"rule_ids\":[],\"preserve_events\":[\"...\"],\"required_changes\":[],\"forbidden_moves\":[]}]}.\n" +
 		"Invalid shapes: {\"chapter\":1,...}; {\"summary\":\"...\"}; {\"key_turns\":[...]}; markdown text outside JSON.\n\n" +
 		"Planning input:\n```json\n" +
 		string(raw) + "\n```", nil
@@ -7921,9 +8060,11 @@ func validatePlannerProposal(
 			return err
 		}
 	}
-	for sourceChapter := 1; sourceChapter <= manifest.ChapterCount; sourceChapter++ {
-		if !covered[sourceChapter] {
-			return fmt.Errorf("planner proposal does not cover source chapter %d", sourceChapter)
+	if opts.Granularity != domain.AdaptationGranularityFree {
+		for sourceChapter := 1; sourceChapter <= manifest.ChapterCount; sourceChapter++ {
+			if !covered[sourceChapter] {
+				return fmt.Errorf("planner proposal does not cover source chapter %d", sourceChapter)
+			}
 		}
 	}
 	acceptedBudgetRanges := plannerAcceptedBudgetDeviationRanges(normalizeAdaptationProposalVolumes(proposal.Volumes, len(proposal.Chapters)))
@@ -7984,6 +8125,9 @@ func validatePlannerProposal(
 		if namer, ok := llm.(interface{ ModelName() string }); ok {
 			proposal.Planner.Model = namer.ModelName()
 		}
+	}
+	if err := finalizePlannerEventContracts(proposal, opts, reports); err != nil {
+		return err
 	}
 	return nil
 }
@@ -8832,6 +8976,7 @@ func buildPlanFromInputs(opts ProposalOptions, reports []domain.AdaptationSource
 
 	plan := domain.AdaptationPlan{
 		Granularity:      opts.Granularity,
+		ModePolicy:       domain.AdaptationModePolicyForGranularity(opts.Granularity),
 		Status:           domain.NormalizeAdaptationPlanStatus(status),
 		RewritePolicy:    opts.RewritePolicy,
 		Brief:            opts.Brief,
@@ -8844,6 +8989,7 @@ func buildPlanFromInputs(opts ProposalOptions, reports []domain.AdaptationSource
 			"改动关系线时必须用场景行动承接，不能破坏原书主线动机。",
 		},
 		RelationshipGoals: extractRelationshipGoals(opts.Brief),
+		Rules:             domain.CompileAdaptationRules(opts.Brief, opts.Granularity),
 		Chapters:          make([]domain.AdaptationChapterPlan, 0, len(reports)),
 	}
 	if opts.RewritePolicy == domain.AdaptationRewritePreserveDetails {
@@ -8857,8 +9003,24 @@ func buildPlanFromInputs(opts ProposalOptions, reports []domain.AdaptationSource
 			"完全重写：不得直接搬运原文段落或逐段同义替换；只锁定来源映射、主线事件和用户改编目标。",
 		)
 	}
-	for _, report := range reports {
-		plan.Chapters = append(plan.Chapters, buildChapterPlan(report, opts, sourceRunesByChapter))
+	nextTargetChapter := 1
+	for index := range reports {
+		report := reports[index]
+		events := domain.EnsureAdaptationSourceEvents(&report)
+		plan.SourceEvents = append(plan.SourceEvents, events...)
+		if opts.Granularity == domain.AdaptationGranularityChapter {
+			chapters := buildChapterSegmentPlans(report, events, opts, sourceRunesByChapter, plan.Rules, nextTargetChapter)
+			plan.Chapters = append(plan.Chapters, chapters...)
+			nextTargetChapter += len(chapters)
+			continue
+		}
+		chapter := buildChapterPlan(report, opts, sourceRunesByChapter)
+		chapter.Chapter = nextTargetChapter
+		chapter.OutlineEntry.Chapter = nextTargetChapter
+		chapter.EventIDs = adaptationEventIDs(events)
+		chapter.RuleIDs = domain.AdaptationRuleIDs(domain.ApplicableAdaptationRules(plan.Rules, opts.Granularity, nextTargetChapter))
+		plan.Chapters = append(plan.Chapters, chapter)
+		nextTargetChapter++
 	}
 	if plan.TargetMinRunes <= 0 {
 		plan.TargetMinRunes = plan.TargetTotalRunes
@@ -8895,7 +9057,7 @@ func buildChapterPlan(report domain.AdaptationSourceReport, opts ProposalOptions
 		SourceRange:     domain.SourceRange{From: report.Chapter, To: report.Chapter},
 		CoverageNote:    coverageNote(opts.Granularity, report.Chapter, report.Chapter),
 		PreserveEvents:  append([]string(nil), report.KeyEvents...),
-		RequiredChanges: []string{opts.Brief},
+		RequiredChanges: nil,
 		ForbiddenMoves: []string{
 			"不要遗漏原章关键事件。",
 			"不要改变原章核心因果顺序，除非 brief 明确要求。",

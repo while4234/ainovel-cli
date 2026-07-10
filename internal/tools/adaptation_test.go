@@ -86,6 +86,92 @@ func TestCheckAdaptationStoresDraftDigest(t *testing.T) {
 	}
 }
 
+func TestCheckAdaptationUsesVerifiedBodyEvidenceInsteadOfWriterPassedFlag(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Status:        domain.AdaptationPlanStatusConfirmed,
+		SourceEvents: []domain.AdaptationEvent{{
+			ID: "meet-event", Description: "两人初遇", Origin: domain.AdaptationEventOriginSource,
+			Importance: domain.AdaptationEventMainline, SourceChapter: 1, Required: true,
+		}},
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter: 1, Title: "初遇", SourceChapters: []int{1}, EventIDs: []string{"meet-event"},
+		}},
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, []string{"原著初遇场景。"})
+	draft := "雨水顺着伞骨落下，百里冰第一次报出自己的名字，林逸飞把伞往她那边偏了偏。"
+	if err := s.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	tool := NewCheckAdaptationTool(s)
+	args, _ := json.Marshal(map[string]any{
+		"chapter": 1,
+		"passed":  false,
+		"body_evidence": []map[string]any{{
+			"event_id": "meet-event",
+			"quote":    "百里冰第一次报出自己的名字",
+		}},
+		"change_evidence": []any{},
+	})
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Passed bool `json:"passed"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !payload.Passed {
+		t.Fatalf("verified evidence should pass independently of writer flag: %s", raw)
+	}
+
+	args, _ = json.Marshal(map[string]any{
+		"chapter": 1, "passed": true, "change_evidence": []any{},
+		"body_evidence": []map[string]any{{"event_id": "meet-event", "quote": "正文里没有的相识证据"}},
+	})
+	raw, err = tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute invalid evidence: %v", err)
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal invalid evidence: %v", err)
+	}
+	if payload.Passed || !strings.Contains(string(raw), "quote is absent") {
+		t.Fatalf("writer self-report must not override invalid evidence: %s", raw)
+	}
+
+	args, _ = json.Marshal(map[string]any{
+		"chapter": 1, "passed": true, "change_evidence": []any{},
+		"body_evidence": []map[string]any{{"event_id": "meet-event", "quote": "雨水顺着伞骨落下"}},
+	})
+	raw, err = tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute unrelated evidence: %v", err)
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal unrelated evidence: %v", err)
+	}
+	if payload.Passed || !strings.Contains(string(raw), "does not support") {
+		t.Fatalf("an unrelated in-body quote must not prove the event: %s", raw)
+	}
+}
+
+func TestAdaptationStyleChecksReportAtMostThreeWorstDeviations(t *testing.T) {
+	content := strings.Repeat("他没有说话，像是明白了什么——不是害怕，而是清醒。", 80)
+	issues := adaptationStyleIssues(content)
+	if len(issues) != 3 {
+		t.Fatalf("issues=%d want=3: %+v", len(issues), issues)
+	}
+	for _, issue := range issues {
+		if !strings.HasPrefix(issue, "adaptation_style:") {
+			t.Fatalf("unexpected issue: %s", issue)
+		}
+	}
+}
+
 func TestCommitChapterRequiresPassingAdaptationCheck(t *testing.T) {
 	s := newAdaptationToolStore(t)
 	if err := s.Progress.Init("test", 1); err != nil {
