@@ -26,6 +26,79 @@ export function getRuntime() {
   return request('/api/runtime');
 }
 
+function newIdempotencyKey(scope) {
+  const random = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${scope}:${random}`;
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds));
+}
+
+async function persistentAction(path, payload, completedResult) {
+  const submitted = await request(path, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...(payload || {}),
+      async: true,
+      idempotency_key: payload?.idempotency_key || newIdempotencyKey(path)
+    })
+  });
+  if (!submitted?.action_id) {
+    return submitted;
+  }
+
+  let delay = 400;
+  while (true) {
+    await wait(delay);
+    const current = await request(`${path}?action_id=${encodeURIComponent(submitted.action_id)}`);
+    const status = current?.action?.status;
+    if (status === 'completed') {
+      const result = completedResult ? await completedResult(current) : current;
+      return { ...result, action_id: submitted.action_id, action: current.action };
+    }
+    if (status === 'failed' || status === 'interrupted' || status === 'canceled') {
+      const error = new Error(current?.action?.error || '后台任务未完成，可安全重试');
+      error.data = current;
+      throw error;
+    }
+    delay = Math.min(Math.round(delay * 1.5), 2000);
+  }
+}
+
+export function getSetupStatus() {
+  return request('/api/setup');
+}
+
+export function getObservabilityUsage({ projectId = '', groupBy = 'model', from = '', to = '' } = {}) {
+  const params = new URLSearchParams();
+  if (projectId) params.set('project_id', projectId);
+  if (groupBy) params.set('group_by', groupBy);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  return request(`/api/observability/usage?${params.toString()}`);
+}
+
+export function getObservabilityRecommendations({ projectId = '' } = {}) {
+  const params = new URLSearchParams();
+  if (projectId) params.set('project_id', projectId);
+  return request(`/api/observability/recommendations?${params.toString()}`);
+}
+
+export function testSetupModel(payload) {
+  return request('/api/setup/test', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function completeSetup(payload) {
+  return request('/api/setup/complete', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
 export function listStyles() {
   return request('/api/styles');
 }
@@ -251,7 +324,8 @@ function continuationMutation(projectId, action, payload = {}) {
 }
 
 export function generateContinuationProposal(projectId, payload) {
-  return continuationMutation(projectId, 'proposal/generate', payload);
+  const path = `/api/projects/${encodeURIComponent(projectId)}/continuation/proposal/generate`;
+  return persistentAction(path, payload, () => getContinuation(projectId));
 }
 
 export function reviseContinuationProposal(projectId, payload) {
@@ -271,7 +345,8 @@ export function approveContinuationVolumes(projectId, payload) {
 }
 
 export function generateContinuationOutlines(projectId, payload) {
-  return continuationMutation(projectId, 'outlines/generate', payload);
+  const path = `/api/projects/${encodeURIComponent(projectId)}/continuation/outlines/generate`;
+  return persistentAction(path, payload, () => getContinuation(projectId));
 }
 
 export function reviseContinuationOutlines(projectId, payload) {
@@ -379,10 +454,12 @@ export function loadNovelFromLibrary(projectId, name) {
 }
 
 export function buildAdaptationProposal(projectId, sourceFile, mode, brief) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/proposal/volumes`, {
-    method: 'POST',
-    body: JSON.stringify({ source_file: sourceFile, mode, brief })
-  });
+  const path = `/api/projects/${encodeURIComponent(projectId)}/adapt/proposal/volumes`;
+  return persistentAction(path, { source_file: sourceFile, mode, brief }, (current) => ({
+    ...current,
+    mode,
+    rewrite_policy: current.snapshot?.adaptation_proposal?.rewrite_policy || ''
+  }));
 }
 
 export function reviseAdaptationProposal(projectId, payload) {

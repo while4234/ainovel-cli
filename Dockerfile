@@ -27,4 +27,7 @@ WORKDIR /workspace
 
 COPY --from=builder /out/ainovel-cli /usr/local/bin/ainovel-cli
 
+EXPOSE 9898
+
 ENTRYPOINT ["ainovel-cli"]
+CMD ["web", "--host", "0.0.0.0", "--port", "9898"]

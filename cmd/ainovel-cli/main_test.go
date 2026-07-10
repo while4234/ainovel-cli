@@ -6,7 +6,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/entry/web"
 )
 
-func TestParseCLIOptionsDefaultStartsTUI(t *testing.T) {
+func TestParseCLIOptionsDefaultStartsWebAndOpensBrowser(t *testing.T) {
 	opts, args, err := parseCLIOptions(nil)
 	if err != nil {
 		t.Fatalf("parseCLIOptions default: %v", err)
@@ -14,14 +14,25 @@ func TestParseCLIOptionsDefaultStartsTUI(t *testing.T) {
 	if len(args) != 0 {
 		t.Fatalf("unexpected args: %v", args)
 	}
-	if opts.Headless || opts.Web || opts.Version || opts.Update || opts.Prompt != "" || opts.PromptFile != "" || opts.AdaptPath != "" {
-		t.Fatalf("default options should leave interactive TUI mode selected: %+v", opts)
+	if opts.Headless || !opts.Web || !opts.WebOpen || opts.WebHost != web.DefaultHost || opts.WebPort != web.DefaultPort {
+		t.Fatalf("default options should start local Web and open the browser: %+v", opts)
+	}
+}
+
+func TestParseCLIOptionsConfigOnlyStartsDefaultWeb(t *testing.T) {
+	opts, _, err := parseCLIOptions([]string{"--config", "config.json"})
+	if err != nil {
+		t.Fatalf("parseCLIOptions: %v", err)
+	}
+	if !opts.Web || !opts.WebOpen || opts.ConfigPath != "config.json" {
+		t.Fatalf("config-only startup should use default Web mode: %+v", opts)
 	}
 }
 
 func TestParseCLIOptionsAdaptFlags(t *testing.T) {
 	opts, args, err := parseCLIOptions([]string{
 		"--headless",
+		"--answers-file", "answers.json",
 		"--adapt", "source.txt",
 		"--adapt-granularity", "arc",
 		"--adapt-rewrite-policy", "preserve_details",
@@ -34,7 +45,7 @@ func TestParseCLIOptionsAdaptFlags(t *testing.T) {
 	if len(args) != 0 {
 		t.Fatalf("unexpected args: %v", args)
 	}
-	if opts.AdaptPath != "source.txt" || opts.AdaptGranularity != "arc" || opts.AdaptRewritePolicy != "preserve_details" || opts.AdaptWordTolerance != 0.2 {
+	if opts.AnswersFile != "answers.json" || opts.AdaptPath != "source.txt" || opts.AdaptGranularity != "arc" || opts.AdaptRewritePolicy != "preserve_details" || opts.AdaptWordTolerance != 0.2 {
 		t.Fatalf("adapt options mismatch: %+v", opts)
 	}
 }
@@ -56,8 +67,24 @@ func TestParseCLIOptionsWebDefaults(t *testing.T) {
 	if len(args) != 0 {
 		t.Fatalf("web should not leave positional args: %v", args)
 	}
-	if !opts.Web || opts.WebHost != web.DefaultHost || opts.WebPort != web.DefaultPort {
+	if !opts.Web || opts.WebOpen || opts.WebHost != web.DefaultHost || opts.WebPort != web.DefaultPort {
 		t.Fatalf("web defaults mismatch: %+v", opts)
+	}
+}
+
+func TestParseCLIOptionsRejectsAnswersFileWithoutHeadless(t *testing.T) {
+	if _, _, err := parseCLIOptions([]string{"--answers-file", "answers.json"}); err == nil {
+		t.Fatal("expected answers file without headless to fail")
+	}
+}
+
+func TestParseCLIOptionsRejectsTwoStdinDocuments(t *testing.T) {
+	if _, _, err := parseCLIOptions([]string{
+		"--headless",
+		"--prompt-file", "-",
+		"--answers-file", "-",
+	}); err == nil {
+		t.Fatal("expected prompt and answers stdin conflict to fail")
 	}
 }
 

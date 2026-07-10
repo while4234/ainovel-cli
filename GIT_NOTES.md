@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Current Web-only workbench change on `codex/web-only-workbench`: removes the
+  complete TUI and Charmbracelet dependency tree; makes no-arg startup open the
+  localhost Web UI; adds strict non-interactive headless answers, first-run Web
+  setup, unified three-workflow progress, idempotent persistent background
+  actions, responsive/accessibility improvements, a 90-day privacy-safe
+  per-call usage ledger and Prompt Cache observability dashboard, and safe
+  legacy output migration. Full Go tests, Go vet, 183 Web tests, production UI
+  build, Docker config, release binary build, diff checks, and Playwright
+  1440/1024/390 no-overflow checks passed. Race tests are unavailable because
+  this Windows Go runtime has CGO disabled.
 - Current recovery/fix change: restored the usable local model registry after a
   Web test accidentally overwrote the real global config, isolated all Web
   tests behind temporary persist paths, and made global model deletion remove

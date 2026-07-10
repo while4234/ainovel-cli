@@ -34,7 +34,7 @@ Host 不直接调 SubAgent，而是在 Coordinator 的 `subagent` / `reopen_book
 
 UI、诊断、事件日志都是从事件流 / 只读工件投影出来的被动消费者。读事实，不产生事实，不影响控制流。
 
-**`internal/diag` 是引擎唯一的可观测性子系统**——一等支撑设施，但不是产品核心（核心是 §6 的创作引擎；diag 没了照样写小说）。它跨读几乎所有工件 + session + log + checkpoint，承担两职：① **创作质量诊断**（规则 → Finding，`/diag` 屏上报告）；② **运行时排错 + 脱敏导出**（行为骨架剥正文 + 循环聚合 → 覆盖式 `meta/diag-export.md`，供用户贴 issue；维护者拿不到本地 output 也能定位死循环/中断类问题）。
+**可观测性分为两条只读投影**：`internal/diag` 跨读工件、session、log 与 checkpoint，负责创作质量诊断和脱敏排错导出；usage ledger 记录每次模型调用的身份、token、缓存、费用、延迟与结果元数据，供 Web 的模型用量面板聚合。两者都不保存 prompt、模型回复、小说正文或推理内容，也不介入创作控制流。
 
 **观察者纪律（不可松动）**：diag 可以诊断、可以建议，但**永不自己动手**——不自动修复、不续跑、不改流程。它越强，越有人想让它"顺手修一下"，越要守住这条，否则撞回 idleResume / StallDetector 那类已删除的坑（见 §10.5、§10.14）。对外结构（如 `RuntimeCapture`）当基础设施契约维护，别随意改字段。
 
@@ -61,7 +61,7 @@ UI、诊断、事件日志都是从事件流 / 只读工件投影出来的被动
 ## 3. 架构全景
 
 ```
-[Entry: TUI / headless]
+[Entry: Web / non-interactive headless]
         │ prompt / steer
 [Host 薄外壳]
    ├── observer        事件 → UI/日志投影
@@ -179,7 +179,7 @@ Signals：`PendingCommit`（commit 中断恢复）/ `PendingSteer`（停机期�
 |---|---|---|
 | 网络超时 / 流式 EOF | Tools | 重试 3 次 |
 | provider 429/503 | litellm | failover 到备用 provider |
-| 鉴权 / 模型不存在 | Tools | terminal 上抛 |
+| 鉴权 / 模型不存在 | Tools | 作为不可恢复错误上抛 |
 | 缺前置 artifact | Tools | conflict 上抛，LLM 调 `novel_context` 后重试 |
 | 工具参数非法 | Tools | validation 上抛，LLM 改参数 |
 | MaxTurns 耗尽 | agentcore | run 结束，Host 发 done |
@@ -321,7 +321,7 @@ type Host struct {
 
 **观察通道**：`Events` / `Stream` / `Done`（清空流走 streamCh 内 sentinel）
 
-**UI 聚合**：`Snapshot()` —— TUI 一次拉取所有展示数据
+**UI 聚合**：`Snapshot()` —— Web 一次拉取当前展示状态，并由 SSE 接收后续增量
 
 **配置/扩展**：模型管理（`SwitchModel`）、外部小说反推导入（`ImportFrom`）、共创对话（`CoCreateStream`）、事件回放（`ReplayQueue`）、仿写画像（`Simulate`/`ImportSimulationProfile`）、导出（`Export`）
 
@@ -407,8 +407,8 @@ internal/
     reminder/     stop_guard.go (Coordinator) + subagent_guards.go (CheckpointDeltaGuard ×3)
     imp/          外部小说反推导入：split → foundation → 逐章分析
     exp/          已完成章节导出：合并章节 → TXT / EPUB 3，路径后缀驱动；纯只读，不依赖 LLM
-  entry/          tui (Bubble Tea) / headless / startup
-  bootstrap/      config + ModelSet + provider failover + setup 向导
+  entry/          web (React + SSE) / non-interactive headless / startup
+  bootstrap/      config + ModelSet + provider failover；首次设置由 Web 向导完成
   models/         OpenRouter 等公共模型注册表 + 价格刷新 (24h 磁盘缓存)
   errs/           错误分层
   diag/           订阅 host 事件流的只读诊断模块

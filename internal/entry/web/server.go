@@ -140,7 +140,12 @@ func NewHandler(cfg bootstrap.Config, bundle assets.Bundle, runtimeRoot string) 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/api/setup", s.handleSetup)
+	mux.HandleFunc("/api/setup/test", s.handleSetupTest)
+	mux.HandleFunc("/api/setup/complete", s.handleSetupComplete)
 	mux.HandleFunc("/api/runtime", s.handleRuntime)
+	mux.HandleFunc("/api/observability/usage", s.handleObservabilityUsage)
+	mux.HandleFunc("/api/observability/recommendations", s.handleObservabilityRecommendations)
 	mux.HandleFunc("/api/styles", s.handleStyles)
 	mux.HandleFunc("/api/libraries/simulation", s.handleSimulationLibrary)
 	mux.HandleFunc("/api/libraries/simulation/upload", s.handleSimulationLibraryUpload)
@@ -157,6 +162,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/models/codex-auth/status", s.handleCodexAuthStatus)
 	mux.HandleFunc("/api/models/grok-login/", s.handleGrokLogin)
 	mux.HandleFunc("/api/projects/trash", s.handleProjectTrash)
+	mux.HandleFunc("/api/projects/migrate-legacy", s.handleLegacyProjectMigration)
 	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/projects/", s.handleProject)
 	mux.HandleFunc("/api/trash/projects", s.handleTrashProjects)
@@ -241,8 +247,9 @@ func (s *Server) setCurrentConfig(cfg bootstrap.Config) {
 
 func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
 	return map[string]any{
-		"runtime_root": s.runtimeRoot,
-		"projects_dir": s.store.ProjectsDir(),
+		"runtime_root":   s.runtimeRoot,
+		"projects_dir":   s.store.ProjectsDir(),
+		"setup_required": webSetupRequired(cfg),
 		"config": map[string]any{
 			"provider":                      cfg.Provider,
 			"model":                         cfg.ModelName,
@@ -393,6 +400,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectModels(w, r, id)
 	case "models/switch":
 		s.handleProjectModelSwitch(w, r, id)
+	case "models/apply-recommendation":
+		s.handleProjectApplyModelRecommendation(w, r, id)
 	case "models/thinking":
 		s.handleProjectModelThinking(w, r, id)
 	case "models/cocreate-timeout":

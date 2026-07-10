@@ -8,7 +8,7 @@ import (
 
 // startup 层承载“进入 Engine 之前”的启动编排。
 // 分层约定：
-// 1. entry/tui、entry/headless 是宿主入口；
+// 1. entry/web 是唯一交互入口，entry/headless 仅用于非交互自动化；
 // 2. startup 负责快速/共创/续写等启动策略；
 // 3. orchestrator.Engine 只负责正式会话执行，不负责模式前置准备。
 
@@ -61,7 +61,7 @@ type Plan struct {
 var ErrNotImplemented = fmt.Errorf("startup mode not implemented")
 
 // PrepareContinueFromNovel 是“根据已有小说续写”的统一预留落点。
-// TUI/headless 未来都应先把输入整理到 Request，再从这里产出可进入 Engine 的 Plan。
+// Web/headless 都应先把输入整理到 Request，再从这里产出可进入 Engine 的 Plan。
 func PrepareContinueFromNovel(req Request) (Plan, error) {
 	return Plan{}, fmt.Errorf("%w: %s", ErrNotImplemented, ModeContinueFromNovel)
 }

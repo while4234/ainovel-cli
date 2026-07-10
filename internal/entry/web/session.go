@@ -447,13 +447,19 @@ type ProjectSession struct {
 	hostEventAt    map[string]int
 	subscribers    map[chan WebEvent]struct{}
 	cocreate       *webCoCreateSession
+	actions        *ActionRegistry
 	closed         bool
 }
 
 func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession, error) {
+	actions, err := NewActionRegistry(manifest.ID, projectActionRegistryPath(manifest))
+	if err != nil {
+		return nil, fmt.Errorf("open project action registry: %w", err)
+	}
 	session := &ProjectSession{
 		manifest:    manifest,
 		host:        h,
+		actions:     actions,
 		actionKinds: make(map[string]int),
 		hostEventAt: make(map[string]int),
 		subscribers: make(map[chan WebEvent]struct{}),
@@ -3046,9 +3052,11 @@ func (s *ProjectSession) cancelCurrentAction() (string, bool) {
 }
 
 func (s *ProjectSession) AppendSnapshot() WebEvent {
+	progress := s.WorkflowProgress()
 	return s.append(WebEvent{
-		Type:     webEventTypeSnapshot,
-		Snapshot: s.Snapshot(),
+		Type:             webEventTypeSnapshot,
+		Snapshot:         s.Snapshot(),
+		WorkflowProgress: &progress,
 	})
 }
 
@@ -3137,6 +3145,9 @@ func (s *ProjectSession) EventHistory(after int64) WebEventHistory {
 }
 
 func (s *ProjectSession) Close() {
+	if s.actions != nil {
+		s.actions.Close()
+	}
 	if s.host != nil {
 		s.host.Close()
 	}
@@ -3211,6 +3222,17 @@ func (s *ProjectSession) appendHostEvent(ev host.Event) WebEvent {
 		Type:        webEventTypeHostEvent,
 		HostEventID: strings.TrimSpace(ev.ID),
 		Event:       apiHostEventFromHost(ev),
+	})
+}
+
+func (s *ProjectSession) appendHostEventWithProgress(ev host.Event, current, total int) WebEvent {
+	apiEvent := apiHostEventFromHost(ev)
+	apiEvent.Current = current
+	apiEvent.Total = total
+	return s.append(WebEvent{
+		Type:        webEventTypeHostEvent,
+		HostEventID: strings.TrimSpace(ev.ID),
+		Event:       apiEvent,
 	})
 }
 
@@ -3368,7 +3390,7 @@ func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
 	} else if ev.Stage == string(adapt.StageDone) {
 		level = "success"
 	}
-	return s.appendHostEvent(host.Event{
+	return s.appendHostEventWithProgress(host.Event{
 		Time:     ev.Time,
 		Category: "ADAPT",
 		Agent:    "web",
@@ -3376,7 +3398,7 @@ func (s *ProjectSession) appendAdaptationEvent(ev apiAdaptationEvent) WebEvent {
 		Detail:   ev.Error,
 		Kind:     ev.Stage,
 		Level:    level,
-	})
+	}, ev.Current, ev.Total)
 }
 
 func (s *ProjectSession) appendLibraryEvent(kind, summary, detail, level string) WebEvent {
@@ -3436,7 +3458,7 @@ func (s *ProjectSession) adaptationProposalProgressEmitter() adapt.ProgressEmitt
 		if strings.TrimSpace(message) == "" && detail != "" {
 			message = detail
 		}
-		s.appendHostEvent(host.Event{
+		s.appendHostEventWithProgress(host.Event{
 			Time:     time.Now().UTC(),
 			Category: "ADAPT",
 			Agent:    "web",
@@ -3444,7 +3466,7 @@ func (s *ProjectSession) adaptationProposalProgressEmitter() adapt.ProgressEmitt
 			Detail:   detail,
 			Kind:     string(stage),
 			Level:    level,
-		})
+		}, current, total)
 	}
 }
 
@@ -3753,9 +3775,11 @@ func (s *ProjectSession) appendStreamClear() WebEvent {
 }
 
 func (s *ProjectSession) appendCoCreateState(state webCoCreateState) WebEvent {
+	progress := s.WorkflowProgress()
 	return s.append(WebEvent{
-		Type:     webEventTypeCoCreate,
-		CoCreate: &state,
+		Type:             webEventTypeCoCreate,
+		CoCreate:         &state,
+		WorkflowProgress: &progress,
 	})
 }
 
@@ -3826,15 +3850,16 @@ func (s *ProjectSession) historyAfterLocked(after int64) []WebEvent {
 }
 
 type WebEvent struct {
-	Seq         int64             `json:"seq"`
-	Type        string            `json:"type"`
-	ProjectID   string            `json:"project_id"`
-	Time        time.Time         `json:"time"`
-	HostEventID string            `json:"host_event_id,omitempty"`
-	Event       *APIHostEvent     `json:"event,omitempty"`
-	Stream      *APIStreamEvent   `json:"stream,omitempty"`
-	Snapshot    any               `json:"snapshot,omitempty"`
-	CoCreate    *webCoCreateState `json:"cocreate,omitempty"`
+	Seq              int64             `json:"seq"`
+	Type             string            `json:"type"`
+	ProjectID        string            `json:"project_id"`
+	Time             time.Time         `json:"time"`
+	HostEventID      string            `json:"host_event_id,omitempty"`
+	Event            *APIHostEvent     `json:"event,omitempty"`
+	Stream           *APIStreamEvent   `json:"stream,omitempty"`
+	Snapshot         any               `json:"snapshot,omitempty"`
+	CoCreate         *webCoCreateState `json:"cocreate,omitempty"`
+	WorkflowProgress *WorkflowProgress `json:"workflow_progress,omitempty"`
 }
 
 type WebEventHistory struct {
@@ -3859,6 +3884,8 @@ type APIHostEvent struct {
 	Depth          int        `json:"depth,omitempty"`
 	DurationMillis int64      `json:"duration_ms,omitempty"`
 	Running        bool       `json:"running"`
+	Current        int        `json:"current,omitempty"`
+	Total          int        `json:"total,omitempty"`
 }
 
 type APIStreamEvent struct {

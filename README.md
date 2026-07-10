@@ -1,11 +1,6 @@
 # ainovel-cli
 
-全自动 AI 长篇小说创作引擎。Coordinator 在一次 Prompt 里驱动 Architect / Writer / Editor 三个子代理完成整本书的创作，Host 只做启动、恢复和观察。从一句话需求到完整小说，全程无需人工干预。
-
-<p align="center">
-  <img src="scripts/sample.gif" alt="ainovel-cli demo" width="800">
-  <img src="scripts/novel.png" alt="ainovel-cli bg" width="800">
-</p>
+Web-only AI 长篇小说创作工作台。Coordinator 驱动 Architect / Writer / Editor 三个子代理完成整本书的创作，Host 负责启动、恢复和观察。普通共创、小说改编与小说续写都提供可视化进度和质量确认节点；项目可选择自动通过常规审核。
 
 ## 特性
 
@@ -17,8 +12,8 @@
 - **自适应上下文策略** — 根据总章节数自动切换全量 / 滑窗 / 分层摘要，支持 500+ 章长篇
 - **七维质量评审** — Editor 从设定一致性、角色行为、节奏、叙事连贯、伏笔、钩子、审美品质七个维度评审，审美维度细分描写质感/叙事手法/对话区分度/用词质量/情感打动力五项，每项必须引用原文举证
 - **用户实时干预** — 写作过程中随时在输入框注入修改意见（无需暂停），系统自动评估影响范围并重写受影响章节
-- **抗网络波动重试** — 共创、源书分析、规则归一化和子代理调用统一采用 7 次有间隔重试，TUI 在失败后明确提示可重试或继续
-- **统一 TUI 入口** — 交互界面实时观察进度，也支持携带一句需求直接启动；完成、导出和共创状态按终端尺寸整帧刷新，避免旧提示残留刷屏
+- **抗网络波动重试** — 共创、源书分析、规则归一化和子代理调用统一采用 7 次有间隔重试；Web 会显示断线、重试和可恢复状态
+- **唯一 Web 工作台** — 普通共创、小说改编和小说续写统一展示步骤进度、确认节点、失败恢复、模型用量与缓存效果
 - **多 LLM 支持** — OpenRouter / Anthropic / Gemini / OpenAI 等等随意切换
 
 ## 架构
@@ -47,7 +42,7 @@
 └─────────────────────────────────────────────────┘
 ```
 
-- **Host** — 启动 Coordinator、崩溃恢复、事件投影给 TUI。不做任何调度决策
+- **Host** — 启动 Coordinator、崩溃恢复、事件投影给 Web。不做任何调度决策
 - **Coordinator** — 唯一的决策者，在一次 Run 里驱动规划→写作→评审→总结的完整流程
 - **SubAgents** — Architect / Writer / Editor 各自独立 context，通过 Store 中的工件协作
 - **Tools** — 原子 IO + checkpoint 写入，只返事实 JSON，不夹带指令
@@ -191,7 +186,7 @@ ToolResultMicrocompact → LightTrim → StoreSummaryCompact → FullSummary
 - **压缩后恢复包** — FullSummary 后自动注入当前章节计划、大纲和角色快照，防止 Writer 压缩后"失忆"
 - **熔断器** — 压缩连续失败时自动跳过并显式告警，采用半开模式，下轮自动重试
 - **CJK Token 估算** — 中文 `runes × 1.5`，不会因为 `bytes/4` 低估而导致压缩触发滞后
-- **TUI 健康度渐变** — 上下文占用绿(<70%)→黄(70-85%)→红(>85%)实时展示
+- **Web 健康度可视化** — 上下文占用绿(<70%)→黄(70-85%)→红(>85%)实时展示
 
 ## 快速开始
 
@@ -209,15 +204,17 @@ go install github.com/voocel/ainovel-cli/cmd/ainovel-cli@latest
 ainovel-cli --version
 ainovel-cli update
 
-# 首次运行，自动进入引导流程（选择 Provider → 输入 API Key → Base URL → 模型名）
+# 默认启动本地 Web，并自动打开浏览器
 ainovel-cli
 ```
 
 > Windows 或手动安装：前往 [Releases](https://github.com/voocel/ainovel-cli/releases/latest) 下载对应平台的包。
 
-### Web UI
+### Web UI（唯一交互界面）
 
-`ainovel-cli web` 会启动内置浏览器界面，默认监听 `http://127.0.0.1:9898`。发布包里的 Go 二进制已经嵌入了 Web 前端构建产物，不需要另开静态文件服务器。
+直接运行 `ainovel-cli` 会在 `http://127.0.0.1:9898` 启动本地 Web 并自动打开浏览器。发布包里的 Go 二进制已经嵌入 Web 前端，不需要另开静态文件服务器。
+
+`ainovel-cli web` 是服务器部署入口，默认不会打开浏览器；只有显式传入 `--open` 才会打开。
 
 ```bash
 ainovel-cli web
@@ -237,7 +234,15 @@ ainovel-cli web --runtime-root D:\Ainovel\novels-preview
 
 这个脚本会按相对路径定位仓库，先构建 `internal/entry/web/ui`，再构建 Go 二进制到临时文件；构建成功后才停止旧端口、覆盖 `ainovel-cli.exe`、启动 Web 并检查 `/api/runtime` 和项目列表。运行时根目录解析顺序是：`-RuntimeRoot`、`AINOVEL_WEB_RUNTIME_ROOT`、`AINOVEL_RUNTIME_ROOT`、已存在的 `~/.ainovel/novels-preview`、最后退回 CLI 默认配置。后续开发重启请统一使用这个脚本，快速复用现有构建时可加 `-NoBuild`。
 
-Windows 用户不需要先在某本小说目录里打开终端。可以从 PowerShell、cmd、Windows Terminal 或快捷方式直接运行 `ainovel-cli web --open`，然后在浏览器里创建、打开和切换多本小说。
+Windows 用户可以从快捷方式或任意命令窗口直接运行 `ainovel-cli`，然后在浏览器里创建、打开和切换多本小说。
+
+如果还没有可用模型配置，Web 会先显示设置向导：选择服务商、填写模型和凭证、测试连接、保存。测试接口不会落盘或回显密钥；验证并保存成功后才开放项目创作。
+
+```text
+GET  /api/setup
+POST /api/setup/test
+POST /api/setup/complete
+```
 
 Web UI 把每本小说保存为运行时项目，默认运行时根目录是：
 
@@ -255,55 +260,77 @@ Web 运行时根目录必须在仓库外；如果指到仓库目录或其子目�
 
 ### Docker
 
-Docker 镜像适合在服务器/NAS 上运行 headless 长任务，也可以用 `-it` 进入 TUI。配置和作品目录建议挂载到宿主机：
+Docker 镜像默认以 Web-only 模式监听 `0.0.0.0:9898`，适合部署在服务器或 NAS。配置和作品目录建议挂载到宿主机：
 
 ```bash
 mkdir -p config workspace
 
-# TUI
-docker run --rm -it \
+# Web 服务
+docker run --rm -p 9898:9898 \
   -v "$PWD/config:/root/.ainovel" \
   -v "$PWD/workspace:/workspace" \
   ghcr.io/voocel/ainovel-cli:latest
 
-# Headless
+# 严格非交互的 headless 自动化
 docker run --rm \
   -v "$PWD/config:/root/.ainovel" \
   -v "$PWD/workspace:/workspace" \
+  -v "$PWD/answers.json:/workspace/answers.json:ro" \
   ghcr.io/voocel/ainovel-cli:latest \
-  --headless --prompt "写一本东方玄幻长篇，主角从边陲小城起步"
+  --headless --prompt "写一本东方玄幻长篇，主角从边陲小城起步" \
+  --answers-file /workspace/answers.json
 ```
 
 也可以用 Compose：
 
 ```bash
-docker compose run --rm ainovel
-docker compose run --rm ainovel --headless --prompt "写一本悬疑短篇"
+docker compose up -d
+docker compose run --rm ainovel --headless --prompt "写一本悬疑短篇" --answers-file /workspace/answers.json
 ```
 
-进入 TUI 后，启动阶段支持三种前置交互：
+Web 工作台提供三种创作入口：
 
-- `快速开始`：一句话直接进入创作
-- `共创规划`：与 AI 多轮对话澄清需求，**右侧实时同步整理出的创作指令草稿**；AI 每轮主动提供 1-3 条引导建议，按数字键一键填入输入框，按 `Ctrl+S` 进入正式创作
-- `小说改编`：输入原小说 txt/md 路径，系统先切分并分析原书快照，再选择 `chapter/arc/free`；改写策略由结构固定（`chapter => preserve_details`，`arc/free => full_rewrite`），随后进入改编共创选择具体改编方向；按 `Ctrl+S` 后逐章生成新的改编正文
+- `普通共创`：从创意输入、篇幅与结构、澄清决策、设定/规划审核进入正式创作
+- `小说改编`：上传原小说，完成原文分析、改编契约、提案审核、创作和质量审计
+- `小说续写`：建立原作基线，依次审核续写 Draft、提案/分卷和章节细纲，再从下一章继续
 
 三种模式最终都会收敛为同一套创作引擎。
 
+### Headless 自动化
+
+`--headless` 只用于严格非交互自动化，不会在终端逐题询问。可能需要用户确认的任务必须提供 `--answers-file <json|->`；答案不足时程序输出结构化错误并退出，便于 CI 或调度器处理。
+
+```json
+{
+  "answers": {
+    "问题或标题": "答案"
+  },
+  "notes": {
+    "问题或标题": "可选补充"
+  }
+}
+```
+
+```bash
+ainovel-cli --headless --prompt-file prompt.md --answers-file answers.json
+ainovel-cli --headless --prompt "写一本悬疑短篇" --answers-file - < answers.json
+```
+
+`--prompt-file -` 与 `--answers-file -` 不能同时读取标准输入。
+
 ### 管理多本小说
 
-TUI / headless 仍沿用目录即项目的方式：每本小说绑定到启动目录，产物落在 `{cwd}/output/novel/`。换目录启动 = 换一本，`cd` 回去启动 = 自动从最近 checkpoint 恢复。配置 `~/.ainovel/config.json` 全局共享，无需复制。
-
-Web UI 使用运行时根目录管理多本小说：运行 `ainovel-cli web` 后，在浏览器里创建和切换项目即可，不需要为每本小说 `cd` 到不同目录。项目数据落在 `<runtime-root>/projects/<project-id>/`，适合 Windows 桌面用户和需要同时管理多本书的场景。
+Web UI 使用运行时根目录管理多本小说：运行 `ainovel-cli` 后，在浏览器里创建和切换项目即可，不需要为每本小说切换工作目录。项目数据落在 `<runtime-root>/projects/<project-id>/`，适合桌面用户和需要同时管理多本书的场景。headless 自动化仍以当前工作目录作为单个任务的作品目录。
 
 ### 配置文件
 
-首次运行时自动引导生成配置文件 `~/.ainovel/config.json`，后续可直接编辑该文件调整设置。删除配置文件后重新运行会再次进入引导流程。
+首次运行不要求预先生成模型配置。Web 设置向导会先测试临时配置，验证通过后再原子保存到 `~/.ainovel/config.json` 并初始化运行时。后续可以在 Web 的模型设置中调整，也可以直接编辑配置文件。
 
-也可以手动创建配置文件，参考仓库根目录的 `config.example.jsonc`。首次引导也会复制一份到 `~/.ainovel/config.example.jsonc`，方便本机离线查看。
+也可以手动创建配置文件，参考仓库根目录的 `config.example.jsonc`。
 
-初始化完成后也可以在 TUI 里继续添加模型：输入 `/model add [role]`，或打开 `/model [role]` 面板后按 `a`。添加向导支持给已有 provider 增加模型、新增常见厂商 provider、新增 OpenAI/Anthropic/Gemini/Grok 协议的自定义中转 API，以及 Grok 账号登录。新增成功后会立即切换当前选择的 role/default，并写回全局 `~/.ainovel/config.json`。
+初始化完成后可以在 Web 的模型设置中为已有 provider 增加模型，或新增 OpenAI/Anthropic/Gemini/Grok 协议的服务商配置。保存成功后会写回全局 `~/.ainovel/config.json`。
 
-Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可用，可以把浏览器回调 URL 或 `?code=...&state=...` 查询串粘贴回向导。access/refresh token 只保存在本机 `~/.ainovel/auth/grok.json`，`config.json` 只记录 `type:"grok"`、`auth:"grok_oauth"` 和 `account_id`。
+Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可用，可以把浏览器回调 URL 或 `?code=...&state=...` 查询串粘贴回 Web 向导。access/refresh token 只保存在本机 `~/.ainovel/auth/grok.json`，`config.json` 只记录 `type:"grok"`、`auth:"grok_oauth"` 和 `account_id`。
 
 ```jsonc
 {
@@ -343,11 +370,11 @@ Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可
 
 > ⚠️ `provider`（以及 `roles.*.provider`）的值是 `providers` 里的 **key 名**——一根指针，不是协议名。项目级若把 `provider` 切到一个全局 `providers` 里不存在的账号，必须在项目级同时补上该账号的凭证（`api_key` / `base_url`），否则启动会报“未配置凭证”。
 
-`runtime_root` 只影响 Web UI 项目存储位置；TUI / headless 的作品目录仍由当前启动目录决定。Web UI 中 `--runtime-root` 和 `AINOVEL_RUNTIME_ROOT` 的优先级高于配置文件字段。
+`runtime_root` 只影响 Web UI 项目存储位置；headless 的作品目录仍由当前启动目录决定。Web UI 中 `--runtime-root` 和 `AINOVEL_RUNTIME_ROOT` 的优先级高于配置文件字段。
 
-`providers.<name>.models` 为可选字段，用于声明该 provider 下允许在 TUI `/model` 面板中切换的模型列表；如果未配置，系统会回退为当前配置文件里已经出现过的该 provider 模型。运行时通过 `/model add` 添加的模型也会追加到这里。
+`providers.<name>.models` 为可选字段，用于声明该 provider 在 Web 模型设置中的候选模型列表；如果未配置，系统会回退为当前配置文件里已经出现过的该 provider 模型。
 
-`reasoning_effort` 为默认推理强度，可选值为 `off` / `low` / `medium` / `high` / `xhigh` / `max`；省略或空字符串表示沿用模型/provider 默认。`roles.<role>.reasoning_effort` 可按角色覆盖，未配置时继承顶层 `reasoning_effort`。TUI `/model` 面板切换 provider、model、推理强度，或 `/model add` 添加并切换模型后，都会写回全局配置 `~/.ainovel/config.json`。
+`reasoning_effort` 为默认推理强度，可选值为 `off` / `low` / `medium` / `high` / `xhigh` / `max`；省略或空字符串表示沿用模型/provider 默认。`roles.<role>.reasoning_effort` 可按角色覆盖，未配置时继承顶层 `reasoning_effort`。在 Web 模型设置中切换 provider、model 或推理强度后，会写回全局配置 `~/.ainovel/config.json`。
 
 `providers.<name>.api` 仅对 `type: "openai"` 或内置 `openai` 生效，用于选择 OpenAI 协议 endpoint：`chat`（默认，`/v1/chat/completions`）或 `responses`（`/v1/responses`）。Codex 类代理通常需要配置为 `responses`。
 
@@ -359,9 +386,28 @@ Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可
 
 `providers.<name>.extra` 为 provider 级配置，会传给底层 HTTP 客户端，适合配置 `user_agent`、`headers`、`anthropic_beta` 等代理识别字段；`providers.<name>.extra_body` 才是请求体扩展参数，两者不要混用。
 
+## 模型用量与 Prompt Cache
+
+Web 的“高级工具 → 模型与缓存”按项目或全局展示调用量、输入/输出 token、非缓存输入、cache read/write、费用、节省、延迟、失败率、重试率与 usage 覆盖率。逐调用 ledger 只保存模型身份、阶段、计数、费用和延迟等元数据，不保存 prompt、模型回复、小说正文或推理内容；明细保留 90 天，之后压缩为日聚合。
+
+- 不支持 Prompt Cache 的模型显示“不支持/N/A”。
+- provider 未返回 usage 时显示“不完整”，不会伪装成 0% 命中。
+- 高置信度要求 usage 覆盖率 ≥95% 且同组调用 ≥30；中置信度要求覆盖率 ≥80% 且调用 ≥10。低于门槛只展示事实，不生成建议。
+- 优化建议只针对 Prompt Cache；系统不会缓存生成结果，也不会在后台自动切换模型。应用模型路由建议必须由用户确认，并校验当前配置 revision。
+
+观测 API：
+
+```text
+GET  /api/observability/usage
+GET  /api/observability/recommendations
+POST /api/projects/{id}/models/apply-recommendation
+```
+
+`/api/observability/usage` 支持 `project_id`、`group_by`、`from`、`to` 查询参数；`group_by` 可按模型、角色、流程或阶段聚合。旧累计用量仅作为 `legacy aggregate` 展示，时间和覆盖率标记为未知，不会伪造逐调用历史。
+
 ## 诊断报告
 
-在 TUI 中输入 `/diag` 可对当前小说的 output 产物进行诊断分析，产出可执行的发现和改进建议。
+在 Web 的“高级工具 → 诊断”中可以分析当前小说的 output 产物，得到可执行的发现和改进建议。
 
 诊断覆盖四个维度：
 
@@ -372,26 +418,19 @@ Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可
 
 每条发现包含：问题描述、数据证据、改进建议（指向具体的 prompt/flow/config）。
 
-`/diag` 同时会写出一份**已脱敏**的 `meta/diag-export.md`（移除小说正文，仅保留工具调用、错误串、重复次数等行为骨架）。遇到死循环 / 中断类问题，把它贴到 GitHub issue 即可，方便维护者在拿不到本地数据的情况下定位。
+诊断同时会写出一份**已脱敏**的 `meta/diag-export.md`（移除小说正文，仅保留工具调用、错误串、重复次数等行为骨架）。遇到死循环 / 中断类问题，把它贴到 GitHub issue 即可，方便维护者在拿不到本地数据的情况下定位。
 
 ## 仿写画像
 
-把参考文章放到当前启动目录的 `simulate/` 文件夹中，然后在 TUI 输入 `/simulate`。系统会递归读取 `.txt`、`.md`、`.markdown` 文件，用 architect 模型分析语料，并写入：
+在 Web 的“作品工具 → 仿写画像”上传 `.txt`、`.md` 或 `.markdown` 参考文章并点击“分析”。系统会用 architect 模型分析语料，并写入当前项目：
 
 ```text
 output/novel/meta/simulation_profile.json
 ```
 
-再次运行 `/simulate` 时，会按 `relative_path + sha256` 跳过未变化文件；如果没有新增或变更内容，会提示“画像已是最新”并且不会调用 LLM。若已有画像且 `simulate/` 中出现新增或修改文章，系统会在原画像基础上继续合成。
+再次分析时，会按 `relative_path + sha256` 跳过未变化文件；如果没有新增或变更内容，会提示“画像已是最新”并且不会调用 LLM。若已有画像且出现新增或修改文章，系统会在原画像基础上继续合成。
 
-也可以导入之前生成的画像，避免重复分析同一批文章：
-
-```text
-/simulate
-/importsim ./profile.json
-```
-
-`/importsim` 只接受本功能生成的 `simulation_profile.v1` JSON，并按语料指纹合并，重复来源会跳过。只导入可信来源的画像文件；导入内容会成为后续 Agent 的上下文参考。画像会以 compact 形式注入 `novel_context`，Coordinator、Architect、Writer、Editor 都能读取；各 Agent 只借鉴结构、节奏、钩子和吸引读者手法，不复制原文表达或专有设定。
+也可以在同一面板导入之前生成的画像，避免重复分析同一批文章。导入只接受本功能生成的 `simulation_profile.v1` JSON，并按语料指纹合并，重复来源会跳过。只导入可信来源的画像文件；导入内容会成为后续 Agent 的上下文参考。画像会以 compact 形式注入 `novel_context`，Coordinator、Architect、Writer、Editor 都能读取；各 Agent 只借鉴结构、节奏、钩子和吸引读者手法，不复制原文表达或专有设定。
 
 ### 普通仿写与强化仿写
 
@@ -407,14 +446,7 @@ Web UI 的上传入口会把仿写语料保存到当前项目的 `simulate/` 目
 
 ## 导入
 
-在 TUI 中输入 `/import <文件路径>` 可把一本已有的小说反推导入：先按章切分，再用 LLM 反推出前提 / 角色 / 世界观 / 分层大纲 / 指南针，逐章落盘。原文会作为已完成正文建立续写基线；导入完成后不会自动开写，需先在续写规划中确认 Draft、提案以及章节细纲，审核通过后才从下一章继续。
-
-```
-/import ~/我的小说.txt              # 从头导入并反推 foundation
-/import ~/我的小说.txt from=50      # 从第 50 章接着导入（跳过反推）
-```
-
-导入完成后可在 Web 的“续写”面板完成五阶段审核；TUI 则先用 `/cocreate` 确认 Draft，再用 `/continuation status|generate|approve|revise|retry|start` 查看并推进同一套持久化工作流。
+在 Web 的“续写”面板上传已有小说，可以按章切分，再用 LLM 反推出前提 / 角色 / 世界观 / 分层大纲 / 指南针并逐章落盘。原文会作为已完成正文建立续写基线；导入完成后不会自动开写，需依次确认 Draft、提案/分卷以及章节细纲，审核通过后才从下一章继续。流程状态会持久化，刷新页面后仍可查看、重试或继续。
 
 **章节切分规则**：自动识别这些标题格式（行首，可带 `#`/`##` Markdown 前缀、`【】`/`〖〗` 包裹、`【书名】第N章` 前缀、全角空格，兼容 GBK/BOM 编码）：
 
@@ -432,37 +464,23 @@ Web UI 的上传入口会把仿写语料保存到当前项目的 `simulate/` 目
 
 ## 小说改编
 
-`小说改编` 是启动模式，不等同于 `/import`：它会把原文章节保存到 `meta/adaptation/source_chapters/` 作为对照快照，生成原书分析和改编计划，但不会把原文章节写成最终正文。Writer 每章需要先读取对应 `source` 章节，再写新的改编正文，并在提交前通过 `check_consistency` 和 `check_adaptation`。
+`小说改编` 不等同于“续写导入”：它会把原文章节保存到 `meta/adaptation/source_chapters/` 作为对照快照，生成原书分析和改编计划，但不会把原文章节写成最终正文。Writer 每章需要先读取对应 `source` 章节，再写新的改编正文，并在提交前通过 `check_consistency` 和 `check_adaptation`。
 
-TUI：启动栏按 `Tab` 切到 `小说改编`，输入原小说路径；分析完成后只选择 `chapter` / `arc` / `free`。系统会按结构固定改写策略：`chapter => preserve_details`，`arc/free => full_rewrite`。模式确定后再进入改编共创，确认具体改编目标后按 `Ctrl+S` 开始。
+Web：打开“小说改编”，上传原小说并等待分析完成，再选择 `chapter` / `arc` / `free`。系统会按结构固定改写策略：`chapter => preserve_details`，`arc/free => full_rewrite`。模式确定后进入改编契约与提案审核，确认具体改编目标后开始创作。
 
-如果模型流式回复遇到临时 EOF、网络断开或服务端短暂抖动，CLI 会按统一退避策略最多尝试 7 次；重试仍失败时，TUI 会停留在当前共创/完成状态并显示明确错误提示，可直接按 `Enter` 重试、继续补充，或在已有 brief 足够时按 `Ctrl+S` 进入改编。
-
-完成或导出时，TUI 会把每一帧限制在当前终端高度内；即使输入框、实时输出或右侧面板临时变高，也不会把“创作已完成”等提示反复顶到滚屏区。
+如果模型流式回复遇到临时 EOF、网络断开或服务端短暂抖动，系统会按统一退避策略最多尝试 7 次；重试仍失败时，Web 会保留当前步骤、错误原因与可恢复操作。浏览器刷新或事件流重连不会取消后台任务。
 
 Headless：
 
 ```bash
-ainovel-cli --headless --adapt ./source.txt --prompt-file adapt.md
+ainovel-cli --headless --adapt ./source.txt --prompt-file adapt.md --answers-file answers.json
 ```
 
 改编 brief 可以写明关系线目标，例如"主线不要走偏，强化女主互动，弱化另一个女主与男主的感情戏，改成单女主纯爱"。系统支持 `chapter` / `arc` / `free` 三档粒度，默认 `chapter`；改写策略由粒度固定：`chapter` 使用 `preserve_details` 且字数容差为 ±15%，`arc/free` 使用 `full_rewrite`，不启用硬字数容差，只约束主线稳定、source coverage 和禁止搬运原文。若命令行在 `arc/free` 下传入 `--adapt-word-tolerance`，该值会被忽略并显示为 `disabled`。这些模式在改编共创前通过固定选项确认，不再由 AI 追问。
 
 ## 导出
 
-在 TUI 中输入 `/export` 可把已完成的章节合并导出，默认 TXT，写到 `{novelDir}/{NovelName}.txt`。导出是只读操作，写作中途也可以随时拿"现阶段成品"，不影响 Coordinator 运行。
-
-Web UI 的"小说导出"面板使用单独的格式选择：文件名不带 `.txt` / `.epub` 时会按所选格式自动补齐；如果手填的 `.txt` / `.epub` 后缀与所选格式冲突，导出会提示错误。
-
-格式由**输出路径后缀**决定（`.txt` / `.epub`）：
-
-```text
-/export                            # 默认 TXT，{novelDir}/{NovelName}.txt
-/export ~/光斑.txt                  # 后缀 .txt → TXT
-/export ~/光斑.epub                 # 后缀 .epub → EPUB（Apple Books / 微信读书 / Kindle 转换器可读）
-/export from=10 to=30 --overwrite  # 章节区间 + 覆盖
-/export from=10 ~/x.epub --overwrite
-```
+Web UI 的“作品工具 → 小说导出”可以把已完成章节合并为 TXT 或 EPUB。文件名不带 `.txt` / `.epub` 时会按所选格式自动补齐；手填后缀与所选格式冲突时会提示错误。导出是只读操作，写作中途也可以随时获取“现阶段成品”，不会影响 Coordinator 运行。
 
 - **TXT** — `《书名》` → 卷分隔 → 章节正文（长篇分层模式自动加卷分隔）。两类内部数据**不进导出**：premise（创作蓝图，含目标读者 / 写作禁区等后台信息，写给作者与引擎看的）、弧分隔（读者视角下弧是过细的内部结构）。导出器统一生成"第 N 章 标题"，正文里 writer 自带的重复标题（`# 第N章…` 或 `# 章节名`）会被剥掉。
 - **EPUB** — EPUB 3 标准容器，含封面页、目录、按章拆分的 XHTML，标识符基于内容稳定派生（重导出同一本书阅读器识别为更新版本）。不带封面图。
@@ -572,9 +590,9 @@ Web UI 的"小说导出"面板使用单独的格式选择：文件名不带 `.tx
       "models": ["gpt-5.4", "gpt-5.4-mini", "MiniMax-M3"],
       "api": "responses",
       "extra": {
-        "user_agent": "codex-tui/0.142.3 (Mac OS 26.5.1; arm64) Apple_Terminal/470.2 (codex-tui; 0.142.3)",
+        "user_agent": "example-model-client/1.0",
         "headers": {
-          "Originator": "codex-tui",
+          "Originator": "example-model-client",
           "Session_id": "replace-with-random-session-id",
           "X-Codex-Turn-Metadata": "replace-with-random-turn-metadata"
         }
@@ -679,15 +697,15 @@ output/{novel_name}/
 
 创作过程中可以随时通过输入框注入修改意见，**不需要暂停或重启**。
 
-### TUI 模式
+### Web 工作台
 
-创作启动后，底部输入框自动切换为干预模式：
+创作启动后，在当前流程的干预输入框填写修改意见：
 
 ```
 ❯ 把感情线提前到第4章，增加男女主的对手戏
 ```
 
-输入后按 Enter，系统自动：
+提交后系统自动：
 1. 记录干预指令到 `run.json`（崩溃恢复用）
 2. 注入到正在运行的 Coordinator
 3. Coordinator 评估影响范围，决定是修改设定、重写已有章节，还是在后续章节调整
@@ -714,9 +732,9 @@ output/{novel_name}/
 - **拒绝复杂编排** — 没有 task queue、没有 scheduler、没有 policy engine。Coordinator 的一次 Run 就是唯一的控制流
 - **模型越强收益越大** — 架构把决策权留在 prompt 和工具语义里，模型升级后直接吃到收益，Host 一行不用改
 
-### 全自动闭环
+### 可自动闭环
 
-一句话输入，完整小说输出：
+默认在创作契约、设定/提案和大纲处等待确认；开启项目“自动通过”后，可从一句话输入持续生成完整小说。质量检查失败、模型异常和规则冲突仍会暂停：
 
 ```
 “写一部悬疑小说” → 构建世界观 → 设计角色 → 规划大纲
@@ -746,7 +764,7 @@ output/{novel_name}/
 - **Go 1.25** — 主语言
 - **[agentcore](https://github.com/voocel/agentcore)** — 极简 Agent 内核（tool-calling + streaming）
 - **[litellm](https://github.com/voocel/litellm)** — 统一 LLM 接口适配
-- **[Bubble Tea](https://github.com/charmbracelet/bubbletea)** — 终端 TUI 框架
+- **React + Vite** — 唯一 Web 工作台与嵌入式前端构建
 
 ## License
 

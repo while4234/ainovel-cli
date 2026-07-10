@@ -2,7 +2,9 @@ package host
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 // recentSampleCap 是滑动窗大小：只保留每个 role 最近 N 次调用的 (cacheRead, input)
 // 样本，用于在左栏对比"累计 vs 近 N 次"命中率，识别"前期拖累"vs"稳态低命中"。
 const recentSampleCap = 10
+const usageCallRetention = 90 * 24 * time.Hour
 
 // UsageTracker 累计整个会话所有 agent 的 LLM 输入/输出 token 与美元成本。
 //
@@ -35,12 +38,13 @@ const recentSampleCap = 10
 //
 // 线程安全。
 type UsageTracker struct {
-	mu       sync.Mutex
-	overall  agentTotals
-	perAgent map[string]*agentTotals // key 为 agentRoleName 归一后的 role 名
-	perModel map[string]*agentTotals // key 为 provider/model；provider 未知时退化为 model
-	modelSet *bootstrap.ModelSet
-	store    *storepkg.Store // 可为 nil（测试场景），nil 时所有持久化方法静默 noop
+	mu        sync.Mutex
+	overall   agentTotals
+	perAgent  map[string]*agentTotals // key 为 agentRoleName 归一后的 role 名
+	perModel  map[string]*agentTotals // key 为 provider/model；provider 未知时退化为 model
+	modelSet  *bootstrap.ModelSet
+	store     *storepkg.Store // 可为 nil（测试场景），nil 时所有持久化方法静默 noop
+	projectID string
 
 	// missingAssistantUsage 累计"收到 assistant 消息但 Usage 为 nil"的次数。
 	// 实测下来主要发生在自建 OpenAI 兼容 backend 没在 streaming 末尾按 OpenAI
@@ -48,7 +52,7 @@ type UsageTracker struct {
 	// 始终为 nil，所有累计字段全部停在 0。计数器让 UI 能直接告诉用户"是上游不返
 	// usage 不是这边坏了"，而不是死磕缓存面板代码。
 	missingAssistantUsage int
-	loggedMissingUsage    bool // 整个会话只 warn 一次，避免 tui.log 被刷屏
+	loggedMissingUsage    bool // 整个会话只 warn 一次，避免运行日志被刷屏
 
 	// saveCh 由 Record 在累加后非阻塞触发；autoSaveLoop 监听并按 debounce 落盘。
 	// buffered=1：连续多次 Record 折叠为一次落盘信号；满了直接丢，下个 tick 一并写。
@@ -86,12 +90,21 @@ type agentTotals struct {
 }
 
 func NewUsageTracker(set *bootstrap.ModelSet, store *storepkg.Store) *UsageTracker {
+	projectID := ""
+	if store != nil {
+		outputDir := filepath.Clean(store.Dir())
+		projectDir := filepath.Dir(outputDir)
+		if strings.EqualFold(filepath.Base(filepath.Dir(projectDir)), "projects") {
+			projectID = filepath.Base(projectDir)
+		}
+	}
 	return &UsageTracker{
-		modelSet: set,
-		store:    store,
-		perAgent: make(map[string]*agentTotals, 4),
-		perModel: make(map[string]*agentTotals, 4),
-		saveCh:   make(chan struct{}, 1),
+		modelSet:  set,
+		store:     store,
+		projectID: projectID,
+		perAgent:  make(map[string]*agentTotals, 4),
+		perModel:  make(map[string]*agentTotals, 4),
+		saveCh:    make(chan struct{}, 1),
 	}
 }
 
@@ -102,6 +115,22 @@ func NewUsageTracker(set *bootstrap.ModelSet, store *storepkg.Store) *UsageTrack
 // 诊断要求 Role=Assistant 且 Content 非空，避免 AbortMsg / 异常恢复 / tool /
 // user 消息污染 missingAssistantUsage 计数。
 func (t *UsageTracker) Record(agentName string, msg agentcore.AgentMessage) {
+	t.RecordWithContext(UsageCallContext{}, agentName, msg)
+}
+
+type UsageCallContext struct {
+	ProjectID   string
+	RunID       string
+	Workflow    string
+	Stage       string
+	CallKind    string
+	Latency     time.Duration
+	Attempt     int
+	RetryReason string
+	Status      string
+}
+
+func (t *UsageTracker) RecordWithContext(callContext UsageCallContext, agentName string, msg agentcore.AgentMessage) {
 	if t == nil {
 		return
 	}
@@ -109,15 +138,88 @@ func (t *UsageTracker) Record(agentName string, msg agentcore.AgentMessage) {
 	if !ok {
 		return
 	}
+	if strings.TrimSpace(callContext.ProjectID) == "" {
+		callContext.ProjectID = t.projectID
+	}
 	if m.Usage == nil {
 		if m.Role == agentcore.RoleAssistant && len(m.Content) > 0 {
 			t.flagMissingUsage(agentName)
+			t.appendMissingUsageCall(callContext, agentRoleName(agentName))
 		}
 		return
 	}
 	role := agentRoleName(agentName)
 	provider, modelName := usageActualModel(m.Usage)
+	provider, modelName = t.effectiveModel(role, provider, modelName)
+	cost, saved, _ := t.resolveCost(modelName, *m.Usage)
 	t.accumulate(role, provider, modelName, *m.Usage)
+	t.appendUsageCall(callContext, role, provider, modelName, *m.Usage, cost, saved)
+}
+
+func (t *UsageTracker) appendMissingUsageCall(callContext UsageCallContext, role string) {
+	if t == nil || t.store == nil || t.store.Usage == nil {
+		return
+	}
+	now := time.Now().UTC()
+	callKind := strings.TrimSpace(callContext.CallKind)
+	if callKind == "" {
+		callKind = "agent_message"
+	}
+	attempt := callContext.Attempt
+	if attempt < 1 {
+		attempt = 1
+	}
+	event := domain.UsageCallEvent{
+		Schema: domain.UsageSchemaVersion, ID: fmt.Sprintf("usage-missing-%d", now.UnixNano()), Timestamp: now,
+		ProjectID: callContext.ProjectID, RunID: callContext.RunID, Workflow: callContext.Workflow, Stage: callContext.Stage,
+		Role: role, CallKind: callKind, CostSource: "unknown", LatencyMS: callContext.Latency.Milliseconds(), Attempt: attempt,
+		RetryReason: callContext.RetryReason, Status: "usage_missing", UsagePresent: false,
+	}
+	if err := t.store.Usage.AppendCall(event); err != nil {
+		slog.Warn("usage gap ledger append failed", "module", "usage", "err", err)
+	}
+}
+
+func (t *UsageTracker) appendUsageCall(callContext UsageCallContext, role, provider, modelName string, usage agentcore.Usage, cost, saved float64) {
+	if t == nil || t.store == nil || t.store.Usage == nil {
+		return
+	}
+	now := time.Now().UTC()
+	callKind := strings.TrimSpace(callContext.CallKind)
+	if callKind == "" {
+		callKind = "agent_message"
+	}
+	status := strings.TrimSpace(callContext.Status)
+	if status == "" {
+		status = "ok"
+	}
+	attempt := callContext.Attempt
+	if attempt < 1 {
+		attempt = 1
+	}
+	nonCached := usage.Input - usage.CacheRead
+	if nonCached < 0 {
+		nonCached = usage.Input
+	}
+	costSource := "unknown"
+	priceVersion := ""
+	if _, ok := models.DefaultRegistry().Resolve(modelName); ok && cost > 0 {
+		costSource = "registry"
+		priceVersion = now.Format("2006-01-02")
+	} else if usage.Cost != nil {
+		costSource = "provider"
+	}
+	event := domain.UsageCallEvent{
+		Schema: domain.UsageSchemaVersion, ID: fmt.Sprintf("usage-%d", now.UnixNano()), Timestamp: now,
+		ProjectID: callContext.ProjectID, RunID: callContext.RunID, Workflow: callContext.Workflow, Stage: callContext.Stage,
+		Role: role, CallKind: callKind, Provider: provider, Model: modelName,
+		Input: usage.Input, NonCachedInput: nonCached, Output: usage.Output, CacheRead: usage.CacheRead, CacheWrite: usage.CacheWrite,
+		CostUSD: cost, SavedUSD: saved, CostSource: costSource, PriceVersion: priceVersion, LatencyMS: callContext.Latency.Milliseconds(), Attempt: attempt,
+		RetryReason: callContext.RetryReason, Status: status, UsagePresent: true,
+	}
+	if err := t.store.Usage.AppendCall(event); err != nil {
+		slog.Warn("usage call ledger append failed", "module", "usage", "err", err)
+	}
 }
 
 func usageActualModel(u *agentcore.Usage) (provider, modelName string) {
@@ -128,7 +230,7 @@ func usageActualModel(u *agentcore.Usage) (provider, modelName string) {
 }
 
 // flagMissingUsage 累计一次"看似真 LLM 响应却没拿到 usage"事件，整会话只打一次
-// warn 日志避免 tui.log 被刷屏。
+// warn 日志只记录一次，避免运行日志被刷屏。
 func (t *UsageTracker) flagMissingUsage(agentName string) {
 	t.mu.Lock()
 	t.missingAssistantUsage++
@@ -369,6 +471,9 @@ func (t *UsageTracker) Snapshot() domain.UsageState {
 func (t *UsageTracker) LoadFromStore() (bool, error) {
 	if t == nil || t.store == nil {
 		return false, nil
+	}
+	if err := t.store.Usage.CompactCalls(time.Now().UTC(), usageCallRetention); err != nil {
+		slog.Warn("usage call ledger compaction failed", "module", "usage", "err", err)
 	}
 	state, err := t.store.Usage.Load()
 	if err != nil {

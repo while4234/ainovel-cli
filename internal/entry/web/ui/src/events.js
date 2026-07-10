@@ -27,10 +27,25 @@ export function reduceWebEvent(state, event) {
   } else if (event.type === 'stream_clear') {
     next.streamRounds = startStreamRound(state.streamRounds);
   } else if (event.type === 'snapshot') {
-    next.snapshot = event.snapshot || null;
+    next.snapshot = mergeWorkflowProgress(event.snapshot, event.workflow_progress);
+  } else if (event.workflow_progress) {
+    next.snapshot = mergeWorkflowProgress(state.snapshot, event.workflow_progress);
   }
 
   return next;
+}
+
+export function mergeWorkflowProgress(snapshot, workflowProgress) {
+  if (!snapshot) {
+    return workflowProgress ? { workflow_progress: workflowProgress } : null;
+  }
+  if (!workflowProgress || snapshot.workflow_progress === workflowProgress) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    workflow_progress: workflowProgress
+  };
 }
 
 export function reduceWebEvents(state, events = []) {

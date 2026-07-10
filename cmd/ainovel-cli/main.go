@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/entry/headless"
-	"github.com/voocel/ainovel-cli/internal/entry/tui"
 	"github.com/voocel/ainovel-cli/internal/entry/web"
 	"github.com/voocel/ainovel-cli/internal/rules"
 	buildversion "github.com/voocel/ainovel-cli/internal/version"
@@ -21,9 +21,6 @@ var (
 	commit  = "unknown"
 	date    = "unknown"
 )
-
-// headlessMode 记录本次是否 headless 启动，供 die 决定错误退出时是否暂停。
-var headlessMode bool
 
 func main() {
 	opts, args, err := parseCLIOptions(os.Args[1:])
@@ -41,74 +38,31 @@ func main() {
 		}
 		return
 	}
-	headlessMode = opts.Headless || opts.Web
 
-	if opts.Web {
-		cfg, err := bootstrap.LoadConfig(opts.ConfigPath)
-		if err != nil {
-			die("config: %v", err)
-		}
-		runWithConfig(cfg, opts, args)
-		return
-	}
-
-	// 首次引导
-	if bootstrap.NeedsSetup(opts.ConfigPath) {
-		if opts.Headless {
-			die("error: headless 模式不支持首次引导，请先运行一次 TUI 完成配置")
-		}
-		setupCfg, err := bootstrap.RunSetup()
-		if err != nil {
-			die("setup: %v", err)
-		}
-		// 引导完成后使用生成的配置继续
-		runWithConfig(setupCfg, opts, args)
-		return
-	}
-
-	// 加载配置
 	cfg, err := bootstrap.LoadConfig(opts.ConfigPath)
 	if err != nil {
 		die("config: %v", err)
 	}
-
 	runWithConfig(cfg, opts, args)
 }
 
-// die 统一处理致命错误退出：打印到 stderr、落盘到 ~/.ainovel/last-error.log，
-// 并在交互式终端（非 headless）下暂停等待回车——双击启动时控制台会随进程退出
-// 立即关闭，不暂停的话错误一闪而过，正是 issue #37 里用户无从排查的根因。
 func die(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintln(os.Stderr, msg)
 	if path := bootstrap.WriteStartupError(msg); path != "" {
 		fmt.Fprintf(os.Stderr, "（详细错误已记录到 %s）\n", path)
 	}
-	if !headlessMode && stdinIsTerminal() {
-		fmt.Fprint(os.Stderr, "\n按回车键退出...")
-		fmt.Fscanln(os.Stdin)
-	}
 	os.Exit(1)
-}
-
-// stdinIsTerminal 判断标准输入是否连接到终端（字符设备）。双击启动 / 交互式终端
-// 为 true；管道、重定向、CI 为 false。零依赖近似，足够区分要不要暂停。
-func stdinIsTerminal() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 func runWithConfig(cfg bootstrap.Config, opts cliOptions, args []string) {
 	rules.EnsureHomeRulesDir()
+	bundle := assets.Load(cfg.Style)
 
 	if opts.Web {
 		if len(args) > 0 {
 			die("error: web 不接受位置参数: %s", strings.Join(args, " "))
 		}
-		bundle := assets.Load(cfg.Style)
 		if err := web.Run(context.Background(), cfg, bundle, web.Options{
 			Host:        opts.WebHost,
 			Port:        opts.WebPort,
@@ -123,31 +77,25 @@ func runWithConfig(cfg bootstrap.Config, opts cliOptions, args []string) {
 	}
 
 	if len(args) > 0 {
-		die("error: 不再支持命令行直接传入小说需求，请启动后在 TUI 输入框中输入")
+		die("error: headless 不接受位置参数，请使用 --prompt 或 --prompt-file")
 	}
-
-	bundle := assets.Load(cfg.Style)
-	if opts.Headless {
-		prompt, err := loadPrompt(opts)
-		if err != nil {
-			die("error: %v", err)
-		}
-		if err := headless.Run(cfg, bundle, headless.Options{
-			Prompt:             prompt,
-			AdaptPath:          opts.AdaptPath,
-			AdaptGranularity:   opts.AdaptGranularity,
-			AdaptRewritePolicy: opts.AdaptRewritePolicy,
-			AdaptWordTolerance: opts.AdaptWordTolerance,
-		}); err != nil {
-			die("error: %v", err)
-		}
-		return
-	}
-	if opts.Prompt != "" || opts.PromptFile != "" || opts.AdaptPath != "" {
-		die("error: --prompt/--prompt-file/--adapt 仅能在 --headless 模式下使用")
-	}
-	if err := tui.Run(cfg, bundle, versionInfo().Version); err != nil {
+	prompt, err := loadPrompt(opts)
+	if err != nil {
 		die("error: %v", err)
+	}
+	answers, err := headless.LoadAnswersFile(opts.AnswersFile, os.Stdin)
+	if err != nil {
+		die("%s", headless.FormatError(err))
+	}
+	if err := headless.Run(cfg, bundle, headless.Options{
+		Prompt:             prompt,
+		Answers:            answers,
+		AdaptPath:          opts.AdaptPath,
+		AdaptGranularity:   opts.AdaptGranularity,
+		AdaptRewritePolicy: opts.AdaptRewritePolicy,
+		AdaptWordTolerance: opts.AdaptWordTolerance,
+	}); err != nil {
+		die("%s", headless.FormatError(err))
 	}
 }
 
@@ -156,6 +104,7 @@ type cliOptions struct {
 	Headless           bool
 	Prompt             string
 	PromptFile         string
+	AnswersFile        string
 	AdaptPath          string
 	AdaptGranularity   string
 	AdaptRewritePolicy string
@@ -170,7 +119,6 @@ type cliOptions struct {
 	WebOpen            bool
 }
 
-// parseCLIOptions 提取 CLI flag，返回选项和剩余参数。
 func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 	var opts cliOptions
 	var args []string
@@ -199,7 +147,7 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 				return opts, nil, fmt.Errorf("update 只接受一个可选版本参数")
 			}
 		case "web":
-			if opts.Version || opts.Update || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || opts.AdaptPath != "" || opts.AdaptGranularity != "" || opts.AdaptRewritePolicy != "" || opts.AdaptWordTolerance > 0 || len(args) > 0 {
+			if opts.Version || opts.Update || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || opts.AnswersFile != "" || opts.AdaptPath != "" || opts.AdaptGranularity != "" || opts.AdaptRewritePolicy != "" || opts.AdaptWordTolerance > 0 || len(args) > 0 {
 				return opts, nil, fmt.Errorf("web 不能与其他启动模式或位置参数混用")
 			}
 			opts.Web = true
@@ -229,6 +177,12 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 			}
 			opts.PromptFile = argv[i+1]
 			i++
+		case "--answers-file":
+			if i+1 >= len(argv) {
+				return opts, nil, fmt.Errorf("--answers-file 缺少值")
+			}
+			opts.AnswersFile = argv[i+1]
+			i++
 		case "--adapt":
 			if i+1 >= len(argv) {
 				return opts, nil, fmt.Errorf("--adapt 缺少值")
@@ -251,41 +205,57 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 			if i+1 >= len(argv) {
 				return opts, nil, fmt.Errorf("--adapt-word-tolerance 缺少值")
 			}
-			v, err := strconv.ParseFloat(argv[i+1], 64)
-			if err != nil || v <= 0 {
+			value, err := strconv.ParseFloat(argv[i+1], 64)
+			if err != nil || value <= 0 {
 				return opts, nil, fmt.Errorf("--adapt-word-tolerance 必须是大于 0 的数字")
 			}
-			opts.AdaptWordTolerance = v
+			opts.AdaptWordTolerance = value
 			i++
 		default:
 			args = append(args, argv[i])
 		}
 	}
-	if opts.Prompt != "" && opts.PromptFile != "" {
-		return opts, nil, fmt.Errorf("--prompt 和 --prompt-file 不能同时使用")
-	}
-	if opts.Version && (opts.Update || opts.ConfigPath != "" || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || opts.AdaptPath != "" || len(args) > 0) {
-		return opts, nil, fmt.Errorf("version 不能与其他启动参数混用")
-	}
-	if opts.Update && (opts.ConfigPath != "" || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || opts.AdaptPath != "" || len(args) > 0) {
-		return opts, nil, fmt.Errorf("update 不能与其他启动参数混用")
-	}
-	if opts.AdaptPath != "" && !opts.Headless {
-		return opts, nil, fmt.Errorf("--adapt 只能与 --headless 一起使用")
-	}
-	if opts.AdaptPath != "" && opts.Prompt == "" && opts.PromptFile == "" {
-		return opts, nil, fmt.Errorf("--adapt 需要同时提供 --prompt 或 --prompt-file 作为改编 brief")
-	}
-	if opts.AdaptPath == "" && (opts.AdaptGranularity != "" || opts.AdaptRewritePolicy != "" || opts.AdaptWordTolerance > 0) {
-		return opts, nil, fmt.Errorf("--adapt-granularity/--adapt-rewrite-policy/--adapt-word-tolerance 只能与 --adapt 一起使用")
-	}
-	if opts.AdaptGranularity != "" && !validAdaptGranularity(opts.AdaptGranularity) {
-		return opts, nil, fmt.Errorf("--adapt-granularity 可选 chapter/arc/free")
-	}
-	if opts.AdaptRewritePolicy != "" && !validAdaptRewritePolicy(opts.AdaptRewritePolicy) {
-		return opts, nil, fmt.Errorf("--adapt-rewrite-policy 可选 full_rewrite/preserve_details")
+	if err := validateCLIOptions(&opts, args); err != nil {
+		return opts, nil, err
 	}
 	return opts, args, nil
+}
+
+func validateCLIOptions(opts *cliOptions, args []string) error {
+	if opts.Prompt != "" && opts.PromptFile != "" {
+		return fmt.Errorf("--prompt 和 --prompt-file 不能同时使用")
+	}
+	if opts.PromptFile == "-" && opts.AnswersFile == "-" {
+		return fmt.Errorf("--prompt-file - 与 --answers-file - 不能同时读取标准输入")
+	}
+	if opts.Version && (opts.Update || opts.ConfigPath != "" || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || opts.AnswersFile != "" || opts.AdaptPath != "" || len(args) > 0) {
+		return fmt.Errorf("version 不能与其他启动参数混用")
+	}
+	if opts.Update && (opts.ConfigPath != "" || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || opts.AnswersFile != "" || opts.AdaptPath != "" || len(args) > 0) {
+		return fmt.Errorf("update 不能与其他启动参数混用")
+	}
+	if !opts.Headless && (opts.Prompt != "" || opts.PromptFile != "" || opts.AnswersFile != "" || opts.AdaptPath != "" || opts.AdaptGranularity != "" || opts.AdaptRewritePolicy != "" || opts.AdaptWordTolerance > 0) {
+		return fmt.Errorf("--prompt/--prompt-file/--answers-file/--adapt 只能在 --headless 模式下使用")
+	}
+	if opts.AdaptPath != "" && opts.Prompt == "" && opts.PromptFile == "" {
+		return fmt.Errorf("--adapt 需要同时提供 --prompt 或 --prompt-file 作为改编 brief")
+	}
+	if opts.AdaptPath == "" && (opts.AdaptGranularity != "" || opts.AdaptRewritePolicy != "" || opts.AdaptWordTolerance > 0) {
+		return fmt.Errorf("--adapt-granularity/--adapt-rewrite-policy/--adapt-word-tolerance 只能与 --adapt 一起使用")
+	}
+	if opts.AdaptGranularity != "" && !validAdaptGranularity(opts.AdaptGranularity) {
+		return fmt.Errorf("--adapt-granularity 可选 chapter/arc/free")
+	}
+	if opts.AdaptRewritePolicy != "" && !validAdaptRewritePolicy(opts.AdaptRewritePolicy) {
+		return fmt.Errorf("--adapt-rewrite-policy 可选 full_rewrite/preserve_details")
+	}
+	if !opts.Headless && !opts.Version && !opts.Update {
+		opts.Web = true
+		opts.WebHost = web.DefaultHost
+		opts.WebPort = web.DefaultPort
+		opts.WebOpen = true
+	}
+	return nil
 }
 
 func parseWebOptions(opts *cliOptions, argv []string) error {
@@ -328,9 +298,6 @@ func parseWebOptions(opts *cliOptions, argv []string) error {
 	if opts.WebHost == "" {
 		return fmt.Errorf("--host 不能为空")
 	}
-	if opts.WebPort == 0 {
-		opts.WebPort = web.DefaultPort
-	}
 	return nil
 }
 
@@ -353,11 +320,7 @@ func validAdaptRewritePolicy(value string) bool {
 }
 
 func versionInfo() buildversion.Info {
-	return buildversion.Resolve(buildversion.Info{
-		Version: version,
-		Commit:  commit,
-		Date:    date,
-	})
+	return buildversion.Resolve(buildversion.Info{Version: version, Commit: commit, Date: date})
 }
 
 func runSelfUpdate(target string) error {
@@ -384,11 +347,12 @@ func loadPrompt(opts cliOptions) (string, error) {
 	if opts.PromptFile == "" {
 		return strings.TrimSpace(opts.Prompt), nil
 	}
-
-	var data []byte
-	var err error
+	var (
+		data []byte
+		err  error
+	)
 	if opts.PromptFile == "-" {
-		data, err = os.ReadFile("/dev/stdin")
+		data, err = io.ReadAll(os.Stdin)
 	} else {
 		data, err = os.ReadFile(opts.PromptFile)
 	}

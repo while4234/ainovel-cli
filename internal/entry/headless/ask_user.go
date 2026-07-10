@@ -1,139 +1,182 @@
 package headless
 
 import (
-	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 
 	"github.com/voocel/ainovel-cli/internal/tools"
-	"github.com/voocel/ainovel-cli/internal/utils"
 )
 
-type terminalAskUser struct {
-	in  *bufio.Reader
-	out io.Writer
-	mu  sync.Mutex
+const (
+	errorCodeAnswersFileRead    = "answers_file_read_failed"
+	errorCodeAnswersFileInvalid = "answers_file_invalid"
+	errorCodeAnswersMissing     = "answers_missing"
+)
+
+// AnswersFile is the non-interactive answer contract consumed by headless runs.
+// Keys may be either the complete question text or its short header.
+type AnswersFile struct {
+	Answers map[string]string `json:"answers"`
+	Notes   map[string]string `json:"notes,omitempty"`
 }
 
-func newTerminalAskUser(in io.Reader, out io.Writer) *terminalAskUser {
-	return &terminalAskUser{
-		in:  bufio.NewReader(in),
-		out: out,
+// StructuredError is emitted as JSON so automation can distinguish missing
+// answers from malformed input and ordinary model/runtime failures.
+type StructuredError struct {
+	Code      string   `json:"code"`
+	Message   string   `json:"message"`
+	Questions []string `json:"questions,omitempty"`
+}
+
+func (e *StructuredError) Error() string { return e.Message }
+
+func FormatError(err error) string {
+	var structured *StructuredError
+	if errors.As(err, &structured) {
+		payload := struct {
+			Error *StructuredError `json:"error"`
+		}{Error: structured}
+		if data, marshalErr := json.Marshal(payload); marshalErr == nil {
+			return string(data)
+		}
 	}
+	return "error: " + err.Error()
 }
 
-func (h *terminalAskUser) handle(ctx context.Context, questions []tools.Question) (*tools.AskUserResponse, error) {
+func LoadAnswersFile(path string, stdin io.Reader) (AnswersFile, error) {
+	answers := AnswersFile{
+		Answers: map[string]string{},
+		Notes:   map[string]string{},
+	}
+	if strings.TrimSpace(path) == "" {
+		return answers, nil
+	}
+
+	var (
+		data []byte
+		err  error
+	)
+	if path == "-" {
+		if stdin == nil {
+			stdin = os.Stdin
+		}
+		data, err = io.ReadAll(stdin)
+	} else {
+		data, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return AnswersFile{}, &StructuredError{
+			Code:    errorCodeAnswersFileRead,
+			Message: fmt.Sprintf("读取答案文件失败: %v", err),
+		}
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&answers); err != nil {
+		return AnswersFile{}, &StructuredError{
+			Code:    errorCodeAnswersFileInvalid,
+			Message: fmt.Sprintf("答案文件必须是 {\"answers\":{...},\"notes\":{...}} 格式的 JSON: %v", err),
+		}
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return AnswersFile{}, &StructuredError{
+			Code:    errorCodeAnswersFileInvalid,
+			Message: err.Error(),
+		}
+	}
+	if answers.Answers == nil {
+		answers.Answers = map[string]string{}
+	}
+	if answers.Notes == nil {
+		answers.Notes = map[string]string{}
+	}
+	return answers, nil
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	err := decoder.Decode(&extra)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("答案文件包含无效的尾随内容: %v", err)
+	}
+	return fmt.Errorf("答案文件只能包含一个 JSON 对象")
+}
+
+type answerFileHandler struct {
+	answers AnswersFile
+	abort   func()
+
+	mu  sync.Mutex
+	err error
+}
+
+func newAnswerFileHandler(answers AnswersFile, abort func()) *answerFileHandler {
+	return &answerFileHandler{answers: answers, abort: abort}
+}
+
+func (h *answerFileHandler) handle(ctx context.Context, questions []tools.Question) (*tools.AskUserResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	resp := &tools.AskUserResponse{
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	response := &tools.AskUserResponse{
 		Answers: make(map[string]string, len(questions)),
 		Notes:   make(map[string]string),
 	}
-
-	for _, q := range questions {
-		answer, note, err := h.askOne(ctx, q)
-		if err != nil {
-			return nil, err
-		}
-		resp.Answers[q.Question] = answer
-		if strings.TrimSpace(note) != "" {
-			resp.Notes[q.Question] = note
-		}
-	}
-
-	return resp, nil
-}
-
-func (h *terminalAskUser) askOne(ctx context.Context, q tools.Question) (string, string, error) {
-	fmt.Fprintf(h.out, "\n[%s] %s\n", q.Header, q.Question)
-	for i, opt := range q.Options {
-		fmt.Fprintf(h.out, "  %d. %s - %s\n", i+1, opt.Label, opt.Description)
-	}
-	fmt.Fprintln(h.out, "  0. 自定义输入")
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return "", "", err
-		}
-		if q.MultiSelect {
-			fmt.Fprint(h.out, "请输入编号，多个用逗号分隔: ")
-		} else {
-			fmt.Fprint(h.out, "请输入编号: ")
-		}
-
-		line, err := h.readLine()
-		if err != nil {
-			return "", "", err
-		}
-		line = utils.CleanInputLine(line)
-		if line == "" {
-			fmt.Fprintln(h.out, "输入不能为空，请重试。")
+	var missing []string
+	for _, question := range questions {
+		answer, note, ok := h.lookup(question)
+		if !ok {
+			missing = append(missing, question.Question)
 			continue
 		}
-		if line == "0" {
-			fmt.Fprint(h.out, "请输入自定义内容: ")
-			note, err := h.readLine()
-			if err != nil {
-				return "", "", err
-			}
-			note = utils.CleanInputLine(note)
-			if note == "" {
-				fmt.Fprintln(h.out, "自定义内容不能为空，请重试。")
-				continue
-			}
-			return "自定义", note, nil
+		response.Answers[question.Question] = answer
+		if note != "" {
+			response.Notes[question.Question] = note
 		}
-
-		labels, err := parseSelections(line, q.Options, q.MultiSelect)
-		if err != nil {
-			fmt.Fprintf(h.out, "%v，请重试。\n", err)
-			continue
-		}
-		return strings.Join(labels, "、"), "", nil
 	}
+	if len(missing) == 0 {
+		return response, nil
+	}
+
+	missingErr := &StructuredError{
+		Code:      errorCodeAnswersMissing,
+		Message:   "答案文件缺少本次 headless 运行所需的问题答案",
+		Questions: missing,
+	}
+	h.err = missingErr
+	if h.abort != nil {
+		go h.abort()
+	}
+	return nil, missingErr
 }
 
-func (h *terminalAskUser) readLine() (string, error) {
-	line, err := h.in.ReadString('\n')
-	if err != nil && len(line) == 0 {
-		return "", err
-	}
-	return strings.TrimRight(line, "\r\n"), nil
-}
-
-func parseSelections(line string, options []tools.Option, multi bool) ([]string, error) {
-	parts := strings.Split(line, ",")
-	if !multi && len(parts) > 1 {
-		return nil, fmt.Errorf("当前问题只允许单选")
-	}
-
-	seen := make(map[int]bool, len(parts))
-	labels := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			return nil, fmt.Errorf("编号不能为空")
-		}
-
-		var idx int
-		if _, err := fmt.Sscanf(part, "%d", &idx); err != nil {
-			return nil, fmt.Errorf("无法识别编号 %q", part)
-		}
-		if idx <= 0 || idx > len(options) {
-			return nil, fmt.Errorf("编号 %d 超出范围", idx)
-		}
-		if seen[idx] {
+func (h *answerFileHandler) lookup(question tools.Question) (string, string, bool) {
+	keys := []string{question.Question, question.Header}
+	for _, key := range keys {
+		answer := strings.TrimSpace(h.answers.Answers[key])
+		if answer == "" {
 			continue
 		}
-		seen[idx] = true
-		labels = append(labels, options[idx-1].Label)
+		return answer, strings.TrimSpace(h.answers.Notes[key]), true
 	}
-	if len(labels) == 0 {
-		return nil, fmt.Errorf("至少选择一个选项")
-	}
-	return labels, nil
+	return "", "", false
+}
+
+func (h *answerFileHandler) Err() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.err
 }

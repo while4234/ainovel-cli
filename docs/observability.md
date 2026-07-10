@@ -8,17 +8,26 @@
 
 ## 1. 通用排查流程
 
-```
-1. /diag                       # 自动诊断，看 Findings 区
-2. cd output/{novel}/meta/     # 直接 cat 关键工件
-3. cat meta/sessions/coordinator.jsonl | tail  # 看最近几轮 LLM 行为
-```
+1. 在 Web 打开“高级工具 → 诊断”，查看 Findings。
+2. 在“高级工具 → 模型与缓存”检查 usage 覆盖率、失败率、重试率和缓存命中。
+3. 需要深度排障时，再检查项目的 `output/{novel}/meta/` 工件与最近 session 事件。
 
-`/diag` 覆盖不到的事实（包括本文档列出的"待补诊断"项），需要 step 2-3 手工查。
+Web 诊断覆盖不到的事实（包括本文档列出的“待补诊断”项），需要按步骤 2-3 继续核查。
 
 ### 报 issue：脱敏诊断导出
 
-每次 `/diag` 都会额外写出 `output/{novel}/meta/diag-export.md`——一份**已脱敏**的诊断（小说正文 / prompt / 思考已移除，仅保留行为骨架：工具名、错误串、重复次数、phase/flow、卡住的 step、日志错误分类）。遇到死循环 / 中断类问题，把这个文件贴到 GitHub issue 即可，维护者据此定位，无需用户的 `output/` 数据。
+每次在 Web 运行诊断都会额外写出 `output/{novel}/meta/diag-export.md`——一份**已脱敏**的诊断（小说正文 / prompt / 思考已移除，仅保留行为骨架：工具名、错误串、重复次数、phase/flow、卡住的 step、日志错误分类）。遇到死循环 / 中断类问题，把这个文件贴到 GitHub issue 即可，维护者据此定位，无需用户的 `output/` 数据。
+
+### 模型用量与 Prompt Cache
+
+逐调用 ledger 只记录 provider/model、project/run、workflow/stage/role、input/output/cache token、费用来源、延迟、attempt、重试原因、成功/失败和 usage 是否缺失，不记录创作内容。明细保留 90 天，随后压缩为长期日聚合。
+
+```text
+GET /api/observability/usage?project_id=<id>&group_by=model&from=2026-07-01&to=2026-07-31
+GET /api/observability/recommendations?project_id=<id>
+```
+
+可用聚合维度包括模型、角色、流程和阶段。`usage` 缺失必须显示“不完整”；模型不支持 Prompt Cache 时显示“不支持/N/A”。只有满足覆盖率与样本量门槛时才会生成缓存优化建议，建议也不会自动切换模型。
 
 ---
 

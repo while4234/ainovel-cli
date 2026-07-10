@@ -30,6 +30,7 @@ import {
   X
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { WorkflowProgressPanel, workflowProgressFromSnapshot } from './workflow-progress.jsx';
 import {
   analyzeAdaptationSource,
   analyzeSimulation,
@@ -46,6 +47,7 @@ import {
   confirmAdaptationProposal,
   confirmAdaptationProposalDetails,
   completeGrokLogin,
+  completeSetup,
   continueProject,
   createProject,
   deleteGlobalProviderModel,
@@ -63,9 +65,12 @@ import {
   getGlobalModels,
   getChapter,
   getGrokLoginStatus,
+  getObservabilityRecommendations,
+  getObservabilityUsage,
   getProjectEvents,
   getProjectModels,
   getRuntime,
+  getSetupStatus,
   getSnapshot,
   inheritProjectModel,
   importSimulationProfile,
@@ -119,6 +124,7 @@ import {
   testBackend,
   testGlobalProviderModel,
   testProjectProviderModel,
+  testSetupModel,
   trashProject,
   uploadAdaptationSource,
   uploadContinuationSource,
@@ -153,6 +159,9 @@ import {
   withExpectedRevision
 } from './continuation.js';
 import { createWorkbenchState, eventStatus, reduceWebEvent, reduceWebEvents, visibleStreamRounds } from './events.js';
+import { nextSSEReconnectDelay, parseSSEMessage, shouldRefreshSSESnapshot } from './sse.js';
+import { cacheHitLabel, usageConfidence, usageCoverage } from './usage-ui.js';
+import { UsageObservabilityTable } from './usage-observability.jsx';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 
@@ -503,6 +512,22 @@ function createContinuationState() {
   };
 }
 
+function createSetupState() {
+  return {
+    loading: true,
+    required: false,
+    providers: [],
+    provider: 'openrouter',
+    type: 'openai',
+    model: '',
+    apiKey: '',
+    baseURL: 'https://openrouter.ai/api/v1',
+    testStatus: 'idle',
+    message: '',
+    error: ''
+  };
+}
+
 function restoreContinuationState(previous, response, snapshot = null) {
   const workflow = continuationSnapshotFrom(response, continuationSnapshotFrom(snapshot, previous.workflow));
   const normalized = normalizeContinuationSnapshot(workflow);
@@ -656,6 +681,10 @@ export function isProjectScopedResponseCurrent(projectId, activeProjectId) {
 }
 
 export default function App() {
+  const [setup, setSetup] = useState(() => ({
+    ...createSetupState(),
+    loading: typeof window !== 'undefined'
+  }));
   const [runtime, setRuntime] = useState(null);
   const [projects, setProjects] = useState([]);
   const [trashProjects, setTrashProjects] = useState([]);
@@ -670,6 +699,8 @@ export default function App() {
   const [composerText, setComposerText] = useState('');
   const [steerText, setSteerText] = useState('');
   const [sideView, setSideView] = useState('status');
+  const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
+  const [toolDrawerOpen, setToolDrawerOpen] = useState(false);
   const [simulation, setSimulation] = useState(createSimulationState);
   const [adaptation, setAdaptation] = useState(createAdaptationState);
   const [adaptationAudit, setAdaptationAudit] = useState(createAdaptationAuditState);
@@ -686,6 +717,7 @@ export default function App() {
   const [customModel, setCustomModel] = useState(createCustomModelState);
   const [backendStatus, setBackendStatus] = useState(null);
   const [connection, setConnection] = useState('idle');
+  const [usageAnalytics, setUsageAnalytics] = useState({ status: 'idle', report: null, recommendations: [], error: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const lastSeqRef = useRef(0);
@@ -965,6 +997,30 @@ export default function App() {
   }, [activeProject?.id, loadAdaptationAuditReport, sideView]);
 
   useEffect(() => {
+    if (sideView !== 'cache') {
+      return undefined;
+    }
+    let disposed = false;
+    setUsageAnalytics((previous) => ({ ...previous, status: 'loading', error: '' }));
+    Promise.all([
+      getObservabilityUsage({ projectId: activeProject?.id || '', groupBy: 'model' }),
+      getObservabilityRecommendations({ projectId: activeProject?.id || '' })
+    ]).then(([report, advice]) => {
+      if (disposed) return;
+      setUsageAnalytics({
+        status: 'done',
+        report,
+        recommendations: Array.isArray(advice?.recommendations) ? advice.recommendations : [],
+        error: ''
+      });
+    }).catch((err) => {
+      if (disposed) return;
+      setUsageAnalytics((previous) => ({ ...previous, status: 'error', error: err.message }));
+    });
+    return () => { disposed = true; };
+  }, [activeProject?.id, sideView]);
+
+  useEffect(() => {
     const projectId = activeProject?.id || '';
     const chapter = selectedChapterRevisionView.chapter;
     if (!showChapterRevisionWorkspace || !projectId || !chapter) {
@@ -1117,7 +1173,14 @@ export default function App() {
   const loadShell = useCallback(async () => {
     setError('');
     try {
-      const [runtimeData, projectsData, modelData] = await Promise.all([getRuntime(), listProjects(), getGlobalModels()]);
+      const [setupData, runtimeData, projectsData, modelData] = await Promise.all([getSetupStatus(), getRuntime(), listProjects(), getGlobalModels()]);
+      setSetup((previous) => ({
+        ...previous,
+        loading: false,
+        required: Boolean(setupData?.setup_required),
+        providers: Array.isArray(setupData?.providers) ? setupData.providers : [],
+        error: ''
+      }));
       setRuntime(runtimeData);
       setProjects(projectsData.projects || []);
       if (!activeProjectIdRef.current) {
@@ -1125,6 +1188,7 @@ export default function App() {
       }
     } catch (err) {
       setError(err.message);
+      setSetup((previous) => ({ ...previous, loading: false, error: err.message }));
     }
   }, []);
 
@@ -1169,6 +1233,7 @@ export default function App() {
     setError('');
     resetProjectScopedState();
     setActiveProject(project);
+    setProjectDrawerOpen(false);
     try {
       const [snapshotData, modelData, backendData, eventsData, continuationData] = await Promise.all([
         getSnapshot(projectId),
@@ -1209,14 +1274,23 @@ export default function App() {
     let disposed = false;
     let source = null;
     let retryTimer = null;
+    let reconnectAttempt = 0;
 
     const apply = (message) => {
-      const event = JSON.parse(message.data);
+      const parsed = parseSSEMessage(message);
+      if (!parsed.event) {
+        setConnection('degraded');
+        return;
+      }
+      const event = parsed.event;
       if (activeProjectIdRef.current !== projectId || (event.project_id && event.project_id !== projectId)) {
         return;
       }
       if (event.seq <= lastSeqRef.current) {
         return;
+      }
+      if (shouldRefreshSSESnapshot(event, lastSeqRef.current)) {
+        refreshCurrentProjectSnapshot(projectId);
       }
       setWorkbench((previous) => {
         const next = reduceWebEvent(previous, event);
@@ -1231,6 +1305,7 @@ export default function App() {
         setAdaptation((previous) => applyHostEventToAdaptationState(previous, event));
       }
       setConnection('live');
+      reconnectAttempt = 0;
     };
 
     const connect = () => {
@@ -1247,11 +1322,27 @@ export default function App() {
         }
         setConnection('reconnecting');
         source.close();
-        retryTimer = window.setTimeout(connect, 1200);
+        const delay = nextSSEReconnectDelay(reconnectAttempt);
+        reconnectAttempt += 1;
+        retryTimer = window.setTimeout(connect, delay);
       };
     };
 
+    const handleOffline = () => {
+      setConnection('offline');
+      source?.close();
+    };
+    const handleOnline = () => {
+      reconnectAttempt = 0;
+      if (retryTimer) {
+        window.clearTimeout(retryTimer);
+      }
+      connect();
+    };
+
     connect();
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
     return () => {
       disposed = true;
       if (retryTimer) {
@@ -1260,8 +1351,10 @@ export default function App() {
       if (source) {
         source.close();
       }
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
     };
-  }, [activeProject?.id]);
+  }, [activeProject?.id, refreshCurrentProjectSnapshot]);
 
   const createAndOpen = async (event) => {
     event.preventDefault();
@@ -3429,10 +3522,104 @@ export default function App() {
   );
   const showCoCreatePlanningWorkspace = sideView === 'cocreate' && coCreatePlanningReview.active;
   const showCoCreateWorkspace = sideView === 'cocreate' && !showCoCreatePlanningWorkspace && hasCoCreateWorkspaceContent(coCreate);
+  const openTool = (view) => {
+    setSideView(view);
+    setToolDrawerOpen(true);
+  };
+
+  const updateSetupProvider = (providerID) => {
+    const option = setup.providers.find((item) => item.id === providerID) || {};
+    setSetup((previous) => ({
+      ...previous,
+      provider: providerID,
+      type: option.type || previous.type || 'openai',
+      baseURL: option.base_url || '',
+      testStatus: 'idle',
+      message: '',
+      error: ''
+    }));
+  };
+
+  const setupPayload = () => ({
+    role: 'default',
+    provider: setup.provider,
+    label: setup.providers.find((item) => item.id === setup.provider)?.label || setup.provider,
+    template_provider: setup.provider === 'custom' ? setup.type : setup.provider,
+    type: setup.type,
+    model: setup.model.trim(),
+    api_key: setup.apiKey.trim(),
+    base_url: setup.baseURL.trim(),
+    select_after_save: true
+  });
+
+  const testInitialModel = async () => {
+    setSetup((previous) => ({ ...previous, testStatus: 'running', message: '', error: '' }));
+    try {
+      const data = await testSetupModel(setupPayload());
+      const passed = data?.test?.status === 'ok';
+      setSetup((previous) => ({
+        ...previous,
+        testStatus: passed ? 'passed' : 'failed',
+        message: passed ? '连接测试通过，可以保存配置。' : '',
+        error: passed ? '' : (data?.test?.message || '连接测试失败')
+      }));
+    } catch (err) {
+      setSetup((previous) => ({ ...previous, testStatus: 'failed', error: err.message }));
+    }
+  };
+
+  const finishInitialSetup = async () => {
+    setSetup((previous) => ({ ...previous, testStatus: 'saving', error: '' }));
+    try {
+      await completeSetup(setupPayload());
+      setSetup((previous) => ({ ...previous, required: false, testStatus: 'passed', message: '配置已保存。' }));
+      await loadShell();
+    } catch (err) {
+      setSetup((previous) => ({ ...previous, testStatus: 'failed', error: err.message }));
+    }
+  };
+
+  if (setup.loading) {
+    return <div className="setup-loading" role="status">正在准备小说工作台…</div>;
+  }
+
+  if (setup.required) {
+    return (
+      <SetupWizard
+        setup={setup}
+        setSetup={setSetup}
+        onProviderChange={updateSetupProvider}
+        onTest={testInitialModel}
+        onComplete={finishInitialSetup}
+      />
+    );
+  }
 
   return (
     <div className="app-shell">
-      <aside className="project-pane">
+      <nav className="mobile-workspace-nav" aria-label="移动端工作台导航">
+        <button aria-expanded={projectDrawerOpen} onClick={() => setProjectDrawerOpen((open) => !open)} type="button">
+          <BookOpen size={17} />
+          项目
+        </button>
+        <strong>{activeProject?.name || '小说工作台'}</strong>
+        <button aria-expanded={toolDrawerOpen} onClick={() => setToolDrawerOpen((open) => !open)} type="button">
+          <SlidersHorizontal size={17} />
+          工具
+        </button>
+      </nav>
+      {(projectDrawerOpen || toolDrawerOpen) ? (
+        <button
+          aria-label="关闭侧栏"
+          className="mobile-drawer-backdrop"
+          onClick={() => {
+            setProjectDrawerOpen(false);
+            setToolDrawerOpen(false);
+          }}
+          type="button"
+        />
+      ) : null}
+      <aside className={`project-pane ${projectDrawerOpen ? 'mobile-open' : ''}`} aria-label="项目导航">
         <div className="pane-header">
           <div className="brand-lockup">
             <div className="brand-mark">
@@ -3547,10 +3734,10 @@ export default function App() {
 
       {renameDialog ? (
         <div className="dialog-backdrop" onMouseDown={() => setRenameDialog(null)}>
-          <form className="compact-dialog" onMouseDown={(event) => event.stopPropagation()} onSubmit={submitProjectRename}>
+          <form aria-labelledby="rename-dialog-title" aria-modal="true" className="compact-dialog" onMouseDown={(event) => event.stopPropagation()} onSubmit={submitProjectRename} role="dialog">
             <div className="dialog-title">
               <Pencil size={17} />
-              <strong>重命名项目</strong>
+              <strong id="rename-dialog-title">重命名项目</strong>
             </div>
             <input
               autoFocus
@@ -3580,10 +3767,10 @@ export default function App() {
 
       {deleteDialog ? (
         <div className="dialog-backdrop" onMouseDown={() => setDeleteDialog(null)}>
-          <div className="compact-dialog" onMouseDown={(event) => event.stopPropagation()}>
+          <div aria-labelledby="delete-dialog-title" aria-modal="true" className="compact-dialog" onMouseDown={(event) => event.stopPropagation()} role="dialog">
             <div className="dialog-title danger">
               <Trash2 size={17} />
-              <strong>移入回收站？</strong>
+              <strong id="delete-dialog-title">移入回收站？</strong>
             </div>
             <p className="dialog-copy">{deleteDialog.project.name || deleteDialog.project.id}</p>
             <div className="dialog-actions">
@@ -3602,10 +3789,10 @@ export default function App() {
 
       {rollbackDialog ? (
         <div className="dialog-backdrop" onMouseDown={() => setRollbackDialog(null)}>
-          <div className="compact-dialog rollback-dialog" onMouseDown={(event) => event.stopPropagation()}>
+          <div aria-labelledby="rollback-dialog-title" aria-modal="true" className="compact-dialog rollback-dialog" onMouseDown={(event) => event.stopPropagation()} role="dialog">
             <div className="dialog-title danger">
               <RotateCcw size={17} />
-              <strong>确认回退？</strong>
+              <strong id="rollback-dialog-title">确认回退？</strong>
             </div>
             <p className="dialog-copy">
               将回退到：{textValue(rollbackDialog.preview, 'target_label', 'targetLabel', 'TargetLabel') || '上一阶段'}
@@ -3653,7 +3840,7 @@ export default function App() {
               type="button"
             >
               <ListRestart size={16} />
-              Snapshot
+                保存快照
             </button>
             <button
               className="tool-button"
@@ -3710,7 +3897,11 @@ export default function App() {
           </div>
         </header>
 
-        <WorkspaceProgress progress={workspaceProgress} />
+        {workflowProgressFromSnapshot(snapshot) ? (
+          <WorkflowProgressPanel snapshot={snapshot} />
+        ) : (
+          <WorkspaceProgress progress={workspaceProgress} />
+        )}
 
         {error ? <div className="error-banner">{error}</div> : null}
 
@@ -3788,59 +3979,62 @@ export default function App() {
         </form>
       </main>
 
-      <aside className="status-pane">
-        <div className="side-tabs">
-          <button className={sideView === 'status' ? 'active' : ''} onClick={() => setSideView('status')} title="状态" type="button">
+      <aside className={`status-pane ${toolDrawerOpen ? 'mobile-open' : ''}`} aria-label="创作与高级工具">
+        <div className="side-tabs" role="tablist" aria-label="工作台工具">
+          <button aria-selected={sideView === 'status'} className={sideView === 'status' ? 'active' : ''} onClick={() => openTool('status')} role="tab" title="状态" type="button">
             <CircleDot size={16} />
             状态
           </button>
-          <button className={sideView === 'cocreate' ? 'active' : ''} onClick={() => setSideView('cocreate')} title="共创" type="button">
+          <button aria-selected={sideView === 'cocreate'} className={sideView === 'cocreate' ? 'active' : ''} onClick={() => openTool('cocreate')} role="tab" title="共创" type="button">
             <MessageSquareText size={16} />
             共创
           </button>
-          <button className={sideView === 'simulate' ? 'active' : ''} onClick={() => setSideView('simulate')} title="画像" type="button">
+          <button aria-selected={sideView === 'simulate'} className={sideView === 'simulate' ? 'active' : ''} onClick={() => openTool('simulate')} role="tab" title="画像" type="button">
             <WandSparkles size={16} />
             画像
           </button>
-          <button className={sideView === 'settings' ? 'active' : ''} onClick={() => setSideView('settings')} title="设定" type="button">
+          <button aria-selected={sideView === 'settings'} className={sideView === 'settings' ? 'active' : ''} onClick={() => { setSideView('settings'); setToolDrawerOpen(true); }} role="tab" title="设定" type="button">
             <SlidersHorizontal size={16} />
             设定
           </button>
-          <button className={sideView === 'adapt' ? 'active' : ''} onClick={() => setSideView('adapt')} title="改编" type="button">
+          <button aria-selected={sideView === 'adapt'} className={sideView === 'adapt' ? 'active' : ''} onClick={() => openTool('adapt')} role="tab" title="改编" type="button">
             <FileText size={16} />
             改编
           </button>
-          <button className={sideView === 'audit' ? 'active' : ''} onClick={() => setSideView('audit')} title="改编审计" type="button">
+          <button aria-selected={sideView === 'audit'} className={sideView === 'audit' ? 'active' : ''} onClick={() => openTool('audit')} role="tab" title="改编审计" type="button">
             <TestTube2 size={16} />
             审计
           </button>
-          <button className={sideView === 'continuation' ? 'active' : ''} onClick={() => setSideView('continuation')} title="续写" type="button">
+          <button aria-selected={sideView === 'continuation'} className={sideView === 'continuation' ? 'active' : ''} onClick={() => openTool('continuation')} role="tab" title="续写" type="button">
             <Upload size={16} />
             续写
           </button>
-          <button className={sideView === 'export' ? 'active' : ''} onClick={() => setSideView('export')} title="导出" type="button">
+          <button aria-selected={sideView === 'export'} className={sideView === 'export' ? 'active' : ''} onClick={() => openTool('export')} role="tab" title="导出" type="button">
             <Download size={16} />
             导出
           </button>
-          <button className={sideView === 'diag' ? 'active' : ''} onClick={() => setSideView('diag')} title="诊断" type="button">
+          <button aria-selected={sideView === 'diag'} className={sideView === 'diag' ? 'active' : ''} onClick={() => openTool('diag')} role="tab" title="诊断" type="button">
             <Activity size={16} />
             诊断
           </button>
-          <button className={sideView === 'cache' ? 'active' : ''} onClick={() => setSideView('cache')} title="缓存" type="button">
+          <button aria-selected={sideView === 'cache'} className={sideView === 'cache' ? 'active' : ''} onClick={() => openTool('cache')} role="tab" title="缓存" type="button">
             <Database size={16} />
             缓存
           </button>
-          <button className={sideView === 'backend' ? 'active' : ''} onClick={() => setSideView('backend')} title="后端" type="button">
+          <button aria-selected={sideView === 'backend'} className={sideView === 'backend' ? 'active' : ''} onClick={() => openTool('backend')} role="tab" title="后端" type="button">
             <Server size={16} />
             后端
           </button>
-          <button className={sideView === 'models' ? 'active' : ''} onClick={() => setSideView('models')} title="模型" type="button">
+          <button aria-selected={sideView === 'models'} className={sideView === 'models' ? 'active' : ''} onClick={() => openTool('models')} role="tab" title="模型" type="button">
             <Settings size={16} />
             模型
           </button>
         </div>
 
-        <div className="side-panel">
+        <div className="side-panel" role="tabpanel">
+          <button className="mobile-drawer-close" onClick={() => setToolDrawerOpen(false)} type="button">
+            <X size={16} /> 关闭工具
+          </button>
           {sideView === 'status' ? (
             <StatusPanel
               snapshot={snapshot}
@@ -3979,7 +4173,7 @@ export default function App() {
               onRun={runDiagnostic}
             />
           ) : sideView === 'cache' ? (
-            <CachePanel snapshot={snapshot} />
+            <CachePanel analytics={usageAnalytics} snapshot={snapshot} />
           ) : sideView === 'backend' ? (
             <BackendPanel backend={backendStatus} snapshot={snapshot} busy={projectBusy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
           ) : (
@@ -4019,16 +4213,23 @@ function WorkspaceProgress({ progress }) {
     ? Math.min(100, Math.round((progress.completedChapters / progress.totalChapters) * 100))
     : 0;
   return (
-    <section className="workspace-progress" aria-label="Workspace progress">
-      <div className="workspace-progress-meter" aria-hidden="true">
+    <section className="workspace-progress" aria-label="创作进度">
+      <div
+        aria-label="已完成章节比例"
+        aria-valuemax="100"
+        aria-valuemin="0"
+        aria-valuenow={chapterPercent}
+        className="workspace-progress-meter"
+        role="progressbar"
+      >
         <span style={{ width: `${chapterPercent}%` }} />
       </div>
       <div className="workspace-progress-items">
-        <ProgressItem label="Status" value={progress.statusLabel} />
-        <ProgressItem label="Chapters" value={progress.chapterLabel} />
-        <ProgressItem label="Current" value={progress.currentChapterLabel} />
-        <ProgressItem label="Words" value={progress.wordLabel} />
-        <ProgressItem label="Running" value={progress.runningLabel} wide />
+        <ProgressItem label="状态" value={progress.statusLabel} />
+        <ProgressItem label="章节" value={progress.chapterLabel} />
+        <ProgressItem label="当前" value={progress.currentChapterLabel} />
+        <ProgressItem label="字数" value={progress.wordLabel} />
+        <ProgressItem label="正在进行" value={progress.runningLabel} wide />
       </div>
     </section>
   );
@@ -4362,6 +4563,68 @@ function CoCreateWorkspace({ coCreate }) {
       ) : null}
       <div className="cocreate-workspace-bottom" aria-hidden="true" ref={bottomRef} />
     </div>
+  );
+}
+
+function SetupWizard({ setup, setSetup, onProviderChange, onTest, onComplete }) {
+  const selected = setup.providers.find((item) => item.id === setup.provider) || {};
+  const canTest = Boolean(setup.provider && setup.model.trim() && (selected.api_key_optional || setup.apiKey.trim()));
+  return (
+    <main className="setup-shell">
+      <section className="setup-card" aria-labelledby="setup-title">
+        <div className="setup-brand">
+          <div className="brand-mark"><BookOpen size={22} /></div>
+          <div>
+            <span className="eyebrow">ainovel Web-only</span>
+            <h1 id="setup-title">连接你的创作模型</h1>
+          </div>
+        </div>
+        <ol className="setup-steps" aria-label="首次设置进度">
+          <li className="complete">选择服务商</li>
+          <li className={setup.model ? 'complete' : 'active'}>填写模型</li>
+          <li className={setup.testStatus === 'passed' ? 'complete' : 'active'}>测试并保存</li>
+        </ol>
+        <label className="model-field">
+          <span>模型服务商</span>
+          <select value={setup.provider} onChange={(event) => onProviderChange(event.target.value)}>
+            {setup.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
+          </select>
+        </label>
+        {setup.provider === 'custom' ? (
+          <label className="model-field">
+            <span>API 协议</span>
+            <select value={setup.type} onChange={(event) => setSetup((previous) => ({ ...previous, type: event.target.value, testStatus: 'idle' }))}>
+              <option value="openai">OpenAI 兼容</option>
+              <option value="anthropic">Anthropic 兼容</option>
+              <option value="gemini">Gemini 兼容</option>
+            </select>
+          </label>
+        ) : null}
+        <label className="model-field">
+          <span>模型名称</span>
+          <input autoFocus placeholder="例如 gpt-5 / claude-sonnet / deepseek-chat" value={setup.model} onChange={(event) => setSetup((previous) => ({ ...previous, model: event.target.value, testStatus: 'idle' }))} />
+        </label>
+        <label className="model-field">
+          <span>API Key {selected.api_key_optional ? '（可留空）' : ''}</span>
+          <input autoComplete="off" placeholder="仅保存在本机配置中" type="password" value={setup.apiKey} onChange={(event) => setSetup((previous) => ({ ...previous, apiKey: event.target.value, testStatus: 'idle' }))} />
+        </label>
+        <label className="model-field">
+          <span>Base URL {selected.base_url ? '（已填默认值）' : '（可选）'}</span>
+          <input placeholder="使用官方地址时可留空" value={setup.baseURL} onChange={(event) => setSetup((previous) => ({ ...previous, baseURL: event.target.value, testStatus: 'idle' }))} />
+        </label>
+        {setup.error ? <div className="error-banner" role="alert">{setup.error}</div> : null}
+        {setup.message ? <div className="success-note" role="status">{setup.message}</div> : null}
+        <div className="setup-actions">
+          <button className="tool-button" disabled={!canTest || setup.testStatus === 'running' || setup.testStatus === 'saving'} onClick={onTest} type="button">
+            <TestTube2 size={16} /> {setup.testStatus === 'running' ? '测试中…' : '测试连接'}
+          </button>
+          <button className="tool-button accent" disabled={setup.testStatus !== 'passed'} onClick={onComplete} type="button">
+            <Check size={16} /> 保存并进入工作台
+          </button>
+        </div>
+        <p className="setup-privacy">密钥不会出现在接口响应、用量账本或诊断日志中。</p>
+      </section>
+    </main>
   );
 }
 
@@ -7091,28 +7354,97 @@ function DiagnosticPanel({ activeProject, busy, diagnostic, onRun }) {
   );
 }
 
-function CachePanel({ snapshot }) {
+function CachePanel({ snapshot, analytics = {} }) {
   const roles = snapshot?.CachePerAgent || snapshot?.cache_per_agent || [];
   const models = snapshot?.CachePerModel || snapshot?.cache_per_model || [];
   const input = snapshot?.TotalInputTokens || 0;
   const cacheRead = snapshot?.TotalCacheReadTokens || 0;
+  const cacheWrite = snapshot?.TotalCacheWriteTokens || 0;
+  const missing = snapshot?.MissingAssistantUsage || 0;
+  const observedCalls = Number(snapshot?.OverallRecentSamples || 0);
+  const coverage = usageCoverage(missing, observedCalls);
+  const confidence = usageConfidence(coverage, observedCalls);
+  const cacheCapable = Boolean(snapshot?.OverallCacheCapable || cacheRead > 0 || cacheWrite > 0);
   return (
-    <div className="side-content">
+    <div className="side-content usage-dashboard">
+      <header className="usage-dashboard-header">
+        <div>
+          <span className="eyebrow">模型与成本</span>
+          <strong>Prompt Cache 用量</strong>
+        </div>
+        <span className={`confidence-badge ${confidence.level}`}>{confidence.label}</span>
+      </header>
       <section className="metric-grid">
-        <Metric label="Input" value={formatCompact(input)} />
-        <Metric label="Cache read" value={formatCompact(cacheRead)} />
-        <Metric label="Output" value={formatCompact(snapshot?.TotalOutputTokens || 0)} />
-        <Metric label="Cost" value={formatUSD(snapshot?.TotalCostUSD || 0)} />
+        <Metric label="输入" value={formatCompact(input)} />
+        <Metric label="非缓存输入" value={formatCompact(Math.max(0, input - cacheRead))} />
+        <Metric label="缓存读取" value={formatCompact(cacheRead)} />
+        <Metric label="缓存写入" value={formatCompact(cacheWrite)} />
+        <Metric label="输出" value={formatCompact(snapshot?.TotalOutputTokens || 0)} />
+        <Metric label="费用" value={formatUSD(snapshot?.TotalCostUSD || 0)} />
       </section>
       <section className="model-summary">
-        <Metric label="Cache hit" value={formatPercent(cacheRead, input)} />
-        <Metric label="Saved" value={formatUSD(snapshot?.TotalSavedUSD || 0)} />
-        <Metric label="Recent hit" value={formatPercent(snapshot?.OverallRecentCacheRead || 0, snapshot?.OverallRecentInput || 0)} />
-        <Metric label="Usage gaps" value={snapshot?.MissingAssistantUsage || 0} />
+        <Metric label="缓存命中" value={cacheHitLabel({ cacheRead, input, cacheCapable })} />
+        <Metric label="节省费用" value={formatUSD(snapshot?.TotalSavedUSD || 0)} />
+        <Metric label="近期命中" value={cacheHitLabel({
+          cacheRead: snapshot?.OverallRecentCacheRead || 0,
+          input: snapshot?.OverallRecentInput || 0,
+          cacheCapable
+        })} />
+        <Metric label="Usage 缺口" value={missing} />
+        <Metric label="数据覆盖" value={coverage === null ? '待采集' : `${Math.round(coverage * 100)}%`} />
       </section>
       <UsageList title="按角色" items={roles} labelKey="Role" />
       <UsageList title="按模型" items={models} labelKey="Model" />
+      <UsageTrend report={analytics.report} />
+      <UsageObservabilityTable report={analytics.report} />
+      <UsageRecommendations analytics={analytics} />
     </div>
+  );
+}
+
+function UsageTrend({ report }) {
+  const trend = Array.isArray(report?.trend) ? report.trend.slice(-14) : [];
+  if (!trend.length) {
+    return null;
+  }
+  const maximum = Math.max(...trend.map((item) => Number(item.input_tokens || 0)), 1);
+  return (
+    <section aria-label="最近十四天模型输入趋势">
+      <div className="section-title"><Activity size={17} /><span>最近趋势</span></div>
+      <div className="usage-trend">
+        {trend.map((item) => (
+          <div className="usage-trend-row" key={item.date}>
+            <span>{item.date.slice(5)}</span>
+            <div><i style={{ width: `${Math.max(2, Math.round((Number(item.input_tokens || 0) / maximum) * 100))}%` }} /></div>
+            <small>{formatCompact(item.input_tokens || 0)} · {formatUSD(item.cost_usd || 0)}</small>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function UsageRecommendations({ analytics }) {
+  if (analytics.status === 'loading') {
+    return <div className="empty-state" role="status">正在分析模型用量…</div>;
+  }
+  if (analytics.error) {
+    return <div className="error-banner compact" role="alert">{analytics.error}</div>;
+  }
+  const recommendations = Array.isArray(analytics.recommendations) ? analytics.recommendations : [];
+  return (
+    <section>
+      <div className="section-title"><WandSparkles size={17} /><span>优化建议</span></div>
+      <div className="recommendation-list">
+        {recommendations.length ? recommendations.map((item) => (
+          <article key={item.id}>
+            <strong>{item.model || '当前模型'}</strong>
+            <span>{item.evidence}</span>
+            <small>{item.action}</small>
+          </article>
+        )) : <div className="empty-state">数据不足或当前无需优化；系统不会自动切换模型。</div>}
+      </div>
+    </section>
   );
 }
 
@@ -7131,12 +7463,14 @@ function UsageList({ title, items, labelKey }) {
             const label = item[labelKey] || item[labelKey.toLowerCase()] || 'unknown';
             const input = item.Input || item.input || 0;
             const cacheRead = item.CacheRead || item.cache_read || 0;
+            const cacheWrite = item.CacheWrite || item.cache_write || 0;
+            const cacheCapable = Boolean(item.CacheCapable || item.cache_capable || cacheRead > 0 || cacheWrite > 0);
             return (
               <div className="usage-row" key={label}>
                 <strong>{label}</strong>
-                <span>{formatPercent(cacheRead, input)}</span>
-                <small>{formatCompact(input)} in / {formatCompact(item.Output || item.output || 0)} out</small>
-                <small>{formatUSD(item.Cost || item.cost || 0)}</small>
+                <span>{cacheHitLabel({ cacheRead, input, cacheCapable })}</span>
+                <small>{formatCompact(input)} 输入 / {formatCompact(item.Output || item.output || 0)} 输出</small>
+                <small>{formatCompact(cacheRead)} 读取 / {formatCompact(cacheWrite)} 写入 · {formatUSD(item.Cost || item.cost || 0)}</small>
               </div>
             );
           })
@@ -8199,7 +8533,18 @@ function Metric({ label, value }) {
 }
 
 function StatusPill({ status }) {
-  return <span className={`status-pill ${status}`}>{status}</span>;
+  return <span aria-live="polite" className={`status-pill ${status}`} role="status">{connectionStatusLabel(status)}</span>;
+}
+
+function connectionStatusLabel(status) {
+  switch (status) {
+    case 'live': return '已连接';
+    case 'connecting': return '连接中';
+    case 'reconnecting': return '正在重连';
+    case 'offline': return '网络离线';
+    case 'degraded': return '数据异常';
+    default: return '未连接';
+  }
 }
 
 function formatDate(value) {

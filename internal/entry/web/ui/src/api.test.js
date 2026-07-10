@@ -327,12 +327,16 @@ describe('web API helpers', () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project-1/adapt/proposal/volumes', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({
-        source_file: 'source.txt',
-        mode: 'free',
-        brief: 'Make it a mystery'
-      })
+      body: expect.stringContaining('"async":true')
     }));
+	const firstBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+	expect(firstBody).toMatchObject({
+	  source_file: 'source.txt',
+	  mode: 'free',
+	  brief: 'Make it a mystery',
+	  async: true
+	});
+	expect(firstBody.idempotency_key).toEqual(expect.any(String));
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/adapt/proposal/volumes/revise', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({

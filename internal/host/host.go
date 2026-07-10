@@ -823,7 +823,7 @@ func (h *Host) emitEvent(ev Event) {
 	defer func() { recover() }()
 	// 所有事件的唯一 slog 入口。observer 翻译的 agentcore 事件和 Host 自发的
 	// SYSTEM 事件（Start/Abort/Resume…）都在这里落日志，避免 ESC abort 与外部
-	// 终止在 tui.log 上无法区分。
+	// 终止原因需要在结构化事件中可区分。
 	if ev.Summary != "" || ev.Detail != "" {
 		level := slog.LevelInfo
 		switch ev.Level {

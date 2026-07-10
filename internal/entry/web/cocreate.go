@@ -43,31 +43,35 @@ type webCoCreateBeginRequest struct {
 	Tolerance        float64 `json:"word_tolerance"`
 	TargetTotalWords int     `json:"target_total_words"`
 	ExpectedRevision int     `json:"expected_revision,omitempty"`
+	IdempotencyKey   string  `json:"idempotency_key,omitempty"`
 
 	sourcePath string
 	briefing   *domain.AdaptationCoCreateBriefing
 }
 
 type webCoCreateSendRequest struct {
-	Text         string `json:"text"`
-	Source       string `json:"source"`
-	ForceRebrief bool   `json:"force_rebrief,omitempty"`
+	Text           string `json:"text"`
+	Source         string `json:"source"`
+	ForceRebrief   bool   `json:"force_rebrief,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 type webCoCreateReviseRequest struct {
-	MessageID string `json:"message_id"`
-	Text      string `json:"text"`
+	MessageID      string `json:"message_id"`
+	Text           string `json:"text"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 type webCoCreatePlanningRevisionRequest struct {
-	Feedback    string `json:"feedback"`
-	Instruction string `json:"instruction"`
-	Target      string `json:"target,omitempty"`
-	Scope       string `json:"scope,omitempty"`
-	VolumeIndex int    `json:"volume_index,omitempty"`
-	Chapter     int    `json:"chapter,omitempty"`
-	FromChapter int    `json:"from_chapter,omitempty"`
-	ToChapter   int    `json:"to_chapter,omitempty"`
+	Feedback       string `json:"feedback"`
+	Instruction    string `json:"instruction"`
+	Target         string `json:"target,omitempty"`
+	Scope          string `json:"scope,omitempty"`
+	VolumeIndex    int    `json:"volume_index,omitempty"`
+	Chapter        int    `json:"chapter,omitempty"`
+	FromChapter    int    `json:"from_chapter,omitempty"`
+	ToChapter      int    `json:"to_chapter,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 type webCoCreateDecisionItem struct {
@@ -78,7 +82,8 @@ type webCoCreateDecisionItem struct {
 
 type webCoCreateDecisionRequest struct {
 	webCoCreateDecisionItem
-	Decisions []webCoCreateDecisionItem `json:"decisions,omitempty"`
+	Decisions      []webCoCreateDecisionItem `json:"decisions,omitempty"`
+	IdempotencyKey string                    `json:"idempotency_key,omitempty"`
 }
 
 type webCoCreateMessage struct {
@@ -375,7 +380,7 @@ func (s *Server) handleProjectCoCreateConfirm(w http.ResponseWriter, r *http.Req
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":  manifest,
-		"snapshot": session.Snapshot(),
+		"snapshot": session.WebSnapshot(),
 		"running":  session.Snapshot().IsRunning,
 		"label":    label,
 	})
@@ -412,7 +417,7 @@ func (s *Server) handleProjectCoCreatePlanningRevise(w http.ResponseWriter, r *h
 		writeProjectLifecycleError(w, err)
 		return
 	}
-	snapshot := session.Snapshot()
+	snapshot := session.WebSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":  manifest,
 		"snapshot": snapshot,
@@ -1614,7 +1619,7 @@ func decodeJSONBody(r *http.Request, target any) error {
 func writeCoCreateResponse(w http.ResponseWriter, manifest ProjectManifest, session *ProjectSession, state webCoCreateState) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":  manifest,
-		"snapshot": session.Snapshot(),
+		"snapshot": session.WebSnapshot(),
 		"cocreate": state,
 		"running":  session.Snapshot().IsRunning,
 	})

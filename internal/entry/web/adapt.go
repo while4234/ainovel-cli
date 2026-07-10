@@ -49,6 +49,11 @@ type apiAdaptationStatus struct {
 	Message        string               `json:"message,omitempty"`
 }
 
+type adaptationProposalRequestMeta struct {
+	Async          bool
+	IdempotencyKey string
+}
+
 func (s *Server) handleProjectAdaptSource(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -121,7 +126,7 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 		if matches {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"project":    manifest,
-				"snapshot":   session.Snapshot(),
+				"snapshot":   session.WebSnapshot(),
 				"adaptation": status,
 				"events":     status.AnalysisEvents,
 				"running":    false,
@@ -142,7 +147,7 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":    manifest,
-		"snapshot":   session.Snapshot(),
+		"snapshot":   session.WebSnapshot(),
 		"adaptation": status,
 		"events":     status.AnalysisEvents,
 		"running":    true,
@@ -199,7 +204,7 @@ func (s *Server) handleProjectAdaptStart(w http.ResponseWriter, r *http.Request,
 		writeAdaptationStartError(w, err)
 		return
 	}
-	snapshot := session.Snapshot()
+	snapshot := session.WebSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":        manifest,
 		"snapshot":       snapshot,
@@ -210,11 +215,15 @@ func (s *Server) handleProjectAdaptStart(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) handleProjectAdaptProposal(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method == http.MethodGet {
+		s.handleProjectBackgroundAction(w, r, id)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	options, mode, rewritePolicy, err := decodeAdaptationProposalRequest(r)
+	options, mode, rewritePolicy, meta, err := decodeAdaptationProposalRequest(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -230,6 +239,21 @@ func (s *Server) handleProjectAdaptProposal(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	options.SourcePath = sourcePath
+	if meta.Async {
+		action, created, err := session.StartBackgroundAction("adaptation_proposal_generate", meta.IdempotencyKey, func(ctx context.Context) error {
+			if readyErr := ensureAdaptationCoCreateBriefingReady(ctx, session, sourcePath, options); readyErr != nil {
+				return readyErr
+			}
+			_, buildErr := session.BuildAdaptationProposalContext(ctx, options)
+			return buildErr
+		})
+		if err != nil {
+			writeBackgroundActionStartError(w, err)
+			return
+		}
+		writeBackgroundActionAccepted(w, r, manifest, session, action, created)
+		return
+	}
 	if err := ensureAdaptationCoCreateBriefingReady(r.Context(), session, sourcePath, options); err != nil {
 		writeAdaptationStartError(w, err)
 		return
@@ -239,7 +263,7 @@ func (s *Server) handleProjectAdaptProposal(w http.ResponseWriter, r *http.Reque
 		writeAdaptationStartError(w, err)
 		return
 	}
-	snapshot := session.Snapshot()
+	snapshot := session.WebSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":        manifest,
 		"snapshot":       snapshot,
@@ -251,11 +275,15 @@ func (s *Server) handleProjectAdaptProposal(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleProjectAdaptProposalVolumes(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method == http.MethodGet {
+		s.handleProjectBackgroundAction(w, r, id)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	options, mode, rewritePolicy, err := decodeAdaptationProposalRequest(r)
+	options, mode, rewritePolicy, meta, err := decodeAdaptationProposalRequest(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -271,6 +299,21 @@ func (s *Server) handleProjectAdaptProposalVolumes(w http.ResponseWriter, r *htt
 		return
 	}
 	options.SourcePath = sourcePath
+	if meta.Async {
+		action, created, err := session.StartBackgroundAction("adaptation_volume_proposal_generate", meta.IdempotencyKey, func(ctx context.Context) error {
+			if readyErr := ensureAdaptationCoCreateBriefingReady(ctx, session, sourcePath, options); readyErr != nil {
+				return readyErr
+			}
+			_, buildErr := session.BuildAdaptationProposalVolumesContext(ctx, options)
+			return buildErr
+		})
+		if err != nil {
+			writeBackgroundActionStartError(w, err)
+			return
+		}
+		writeBackgroundActionAccepted(w, r, manifest, session, action, created)
+		return
+	}
 	if err := ensureAdaptationCoCreateBriefingReady(r.Context(), session, sourcePath, options); err != nil {
 		writeAdaptationStartError(w, err)
 		return
@@ -280,7 +323,7 @@ func (s *Server) handleProjectAdaptProposalVolumes(w http.ResponseWriter, r *htt
 		writeAdaptationStartError(w, err)
 		return
 	}
-	snapshot := session.Snapshot()
+	snapshot := session.WebSnapshot()
 	response := map[string]any{
 		"project":        manifest,
 		"snapshot":       snapshot,
@@ -337,7 +380,7 @@ func (s *Server) handleProjectAdaptProposalVolumesRevise(w http.ResponseWriter, 
 		writeAdaptationStartError(w, err)
 		return
 	}
-	snapshot := session.Snapshot()
+	snapshot := session.WebSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":       manifest,
 		"snapshot":      snapshot,
@@ -361,7 +404,7 @@ func (s *Server) handleProjectAdaptProposalDetails(w http.ResponseWriter, r *htt
 		writeAdaptationStartError(w, err)
 		return
 	}
-	snapshot := session.Snapshot()
+	snapshot := session.WebSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":  manifest,
 		"snapshot": snapshot,
@@ -410,7 +453,7 @@ func (s *Server) handleProjectAdaptProposalRevise(w http.ResponseWriter, r *http
 		writeAdaptationStartError(w, err)
 		return
 	}
-	snapshot := session.Snapshot()
+	snapshot := session.WebSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":  manifest,
 		"snapshot": snapshot,
@@ -434,7 +477,7 @@ func (s *Server) handleProjectAdaptConfirm(w http.ResponseWriter, r *http.Reques
 		writeAdaptationStartError(w, err)
 		return
 	}
-	snapshot := session.Snapshot()
+	snapshot := session.WebSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":  manifest,
 		"snapshot": snapshot,
@@ -443,34 +486,39 @@ func (s *Server) handleProjectAdaptConfirm(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-func decodeAdaptationProposalRequest(r *http.Request) (adapt.ProposalOptions, string, string, error) {
+func decodeAdaptationProposalRequest(r *http.Request) (adapt.ProposalOptions, string, string, adaptationProposalRequestMeta, error) {
 	var req struct {
-		Mode       string `json:"mode"`
-		Brief      string `json:"brief"`
-		SourceFile string `json:"source_file"`
+		Mode           string `json:"mode"`
+		Brief          string `json:"brief"`
+		SourceFile     string `json:"source_file"`
+		Async          bool   `json:"async,omitempty"`
+		IdempotencyKey string `json:"idempotency_key,omitempty"`
 	}
 	if r.Body != nil {
 		defer r.Body.Close()
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			return adapt.ProposalOptions{}, "", "", fmt.Errorf("invalid adaptation proposal request: %w", err)
+			return adapt.ProposalOptions{}, "", "", adaptationProposalRequestMeta{}, fmt.Errorf("invalid adaptation proposal request: %w", err)
 		}
 	}
 	mode := strings.TrimSpace(req.Mode)
 	rewritePolicy, err := adaptationRewritePolicyForMode(mode)
 	if err != nil {
-		return adapt.ProposalOptions{}, "", "", err
+		return adapt.ProposalOptions{}, "", "", adaptationProposalRequestMeta{}, err
 	}
 	brief := strings.TrimSpace(req.Brief)
 	if brief == "" {
-		return adapt.ProposalOptions{}, "", "", fmt.Errorf("adaptation brief is required")
+		return adapt.ProposalOptions{}, "", "", adaptationProposalRequestMeta{}, fmt.Errorf("adaptation brief is required")
 	}
 	return adapt.ProposalOptions{
-		Brief:         brief,
-		SourcePath:    strings.TrimSpace(req.SourceFile),
-		Granularity:   mode,
-		RewritePolicy: rewritePolicy,
-		WordTolerance: adapt.DefaultWordTolerance,
-	}, mode, rewritePolicy, nil
+			Brief:         brief,
+			SourcePath:    strings.TrimSpace(req.SourceFile),
+			Granularity:   mode,
+			RewritePolicy: rewritePolicy,
+			WordTolerance: adapt.DefaultWordTolerance,
+		}, mode, rewritePolicy, adaptationProposalRequestMeta{
+			Async:          req.Async,
+			IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
+		}, nil
 }
 
 func ensureAdaptationCoCreateBriefingReady(ctx context.Context, session *ProjectSession, sourcePath string, options adapt.ProposalOptions) error {

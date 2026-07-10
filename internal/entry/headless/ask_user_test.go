@@ -2,51 +2,85 @@ package headless
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/tools"
 )
 
-func TestTerminalAskUserSingleSelect(t *testing.T) {
-	handler := newTerminalAskUser(strings.NewReader("2\n"), &strings.Builder{})
-	resp, err := handler.handle(context.Background(), []tools.Question{
-		{
-			Question: "你想要什么风格？",
-			Header:   "风格",
-			Options: []tools.Option{
-				{Label: "热血", Description: "偏升级"},
-				{Label: "悬疑", Description: "偏谜团"},
-			},
-		},
-	})
+func TestLoadAnswersFileFromStdin(t *testing.T) {
+	got, err := LoadAnswersFile("-", strings.NewReader(`{
+		"answers":{"风格":"悬疑"},
+		"notes":{"风格":"不要感情线"}
+	}`))
 	if err != nil {
-		t.Fatalf("handle: %v", err)
+		t.Fatalf("LoadAnswersFile: %v", err)
 	}
-	if got := resp.Answers["你想要什么风格？"]; got != "悬疑" {
-		t.Fatalf("unexpected answer: %q", got)
+	if got.Answers["风格"] != "悬疑" || got.Notes["风格"] != "不要感情线" {
+		t.Fatalf("unexpected answers: %+v", got)
 	}
 }
 
-func TestTerminalAskUserCustomInput(t *testing.T) {
-	handler := newTerminalAskUser(strings.NewReader("0\n不要感情线\n"), &strings.Builder{})
-	resp, err := handler.handle(context.Background(), []tools.Question{
-		{
-			Question: "还有什么限制？",
-			Header:   "限制",
-			Options: []tools.Option{
-				{Label: "黑暗", Description: "整体压抑"},
-				{Label: "轻松", Description: "基调明快"},
-			},
+func TestLoadAnswersFileRejectsUnknownFields(t *testing.T) {
+	_, err := LoadAnswersFile("-", strings.NewReader(`{"answer":{"风格":"悬疑"}}`))
+	if err == nil {
+		t.Fatal("expected invalid answer document")
+	}
+	var payload struct {
+		Error StructuredError `json:"error"`
+	}
+	if decodeErr := json.Unmarshal([]byte(FormatError(err)), &payload); decodeErr != nil {
+		t.Fatalf("FormatError should be JSON: %v", decodeErr)
+	}
+	if payload.Error.Code != errorCodeAnswersFileInvalid {
+		t.Fatalf("unexpected error code: %q", payload.Error.Code)
+	}
+}
+
+func TestAnswerFileHandlerUsesQuestionThenHeader(t *testing.T) {
+	handler := newAnswerFileHandler(AnswersFile{
+		Answers: map[string]string{
+			"你想要什么风格？": "悬疑",
+			"篇幅":       "长篇",
 		},
-	})
+		Notes: map[string]string{"你想要什么风格？": "不要感情线"},
+	}, nil)
+	questions := []tools.Question{
+		{Question: "你想要什么风格？", Header: "风格"},
+		{Question: "计划写多长？", Header: "篇幅"},
+	}
+	response, err := handler.handle(context.Background(), questions)
 	if err != nil {
 		t.Fatalf("handle: %v", err)
 	}
-	if got := resp.Answers["还有什么限制？"]; got != "自定义" {
-		t.Fatalf("unexpected answer: %q", got)
+	if response.Answers[questions[0].Question] != "悬疑" || response.Answers[questions[1].Question] != "长篇" {
+		t.Fatalf("unexpected response: %+v", response)
 	}
-	if got := resp.Notes["还有什么限制？"]; got != "不要感情线" {
-		t.Fatalf("unexpected note: %q", got)
+	if response.Notes[questions[0].Question] != "不要感情线" {
+		t.Fatalf("unexpected notes: %+v", response.Notes)
+	}
+}
+
+func TestAnswerFileHandlerReportsAllMissingQuestionsAndAborts(t *testing.T) {
+	aborted := make(chan struct{}, 1)
+	handler := newAnswerFileHandler(AnswersFile{Answers: map[string]string{}}, func() {
+		aborted <- struct{}{}
+	})
+	questions := []tools.Question{
+		{Question: "你想要什么风格？", Header: "风格"},
+		{Question: "计划写多长？", Header: "篇幅"},
+	}
+	_, err := handler.handle(context.Background(), questions)
+	if err == nil {
+		t.Fatal("expected missing answers error")
+	}
+	structured, ok := err.(*StructuredError)
+	if !ok || structured.Code != errorCodeAnswersMissing || len(structured.Questions) != 2 {
+		t.Fatalf("unexpected error: %#v", err)
+	}
+	<-aborted
+	if handler.Err() == nil {
+		t.Fatal("expected handler to retain terminal error")
 	}
 }

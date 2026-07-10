@@ -1,0 +1,92 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it } from 'vitest';
+import {
+  WorkflowProgressPanel,
+  workflowOverallPercent,
+  workflowProgressFromSnapshot,
+  workflowRiskText
+} from './workflow-progress.jsx';
+
+function progress(overrides = {}) {
+  return {
+    workflow: 'normal',
+    run_id: 'run-1',
+    revision: 2,
+    status: 'waiting_confirmation',
+    current_step: 'review',
+    steps: [
+      { id: 'idea', label: '创意输入', status: 'completed' },
+      { id: 'review', label: '设定与规划审核', status: 'waiting_confirmation', current: 2, total: 4 }
+    ],
+    next_action: {
+      id: 'confirm',
+      label: '确认规划并开始创作',
+      expected_revision: 2,
+      idempotency_key: 'key-1',
+      requires_confirmation: true
+    },
+    recoverable: false,
+    ...overrides
+  };
+}
+
+describe('unified workflow progress', () => {
+  it('reads the shared workflow contract from a project snapshot', () => {
+    const value = progress();
+    expect(workflowProgressFromSnapshot({ workflow_progress: value })).toBe(value);
+    expect(workflowProgressFromSnapshot({ WorkflowProgress: value })).toBe(value);
+    expect(workflowProgressFromSnapshot({ workflow_progress: { steps: [] } })).toBeNull();
+  });
+
+  it('combines completed and current step progress without exceeding 100%', () => {
+    expect(workflowOverallPercent(progress())).toBe(75);
+    expect(workflowOverallPercent(progress({
+      steps: [{ id: 'writing', status: 'running', current: 14, total: 10 }]
+    }))).toBe(100);
+  });
+
+  it.each([
+    ['normal', '普通共创'],
+    ['adaptation', '小说改编'],
+    ['continuation', '小说续写']
+  ])('renders %s with the same Chinese progress and accessibility contract', (workflow, label) => {
+    const markup = renderToStaticMarkup(createElement(WorkflowProgressPanel, {
+      snapshot: { workflow_progress: progress({ workflow }) }
+    }));
+
+    expect(markup).toContain(label);
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('aria-live="polite"');
+    expect(markup).toContain('role="progressbar"');
+    expect(markup).toContain('aria-current="step"');
+    expect(markup).toContain('当前说明');
+    expect(markup).toContain('下一操作');
+    expect(markup).toContain('风险与恢复');
+    expect(markup).toContain('2/4');
+  });
+
+  it('shows the durable background action and refresh recovery state', () => {
+    const markup = renderToStaticMarkup(createElement(WorkflowProgressPanel, {
+      snapshot: {
+        workflow_progress: progress({ workflow: 'adaptation', status: 'running' }),
+        current_action: {
+          action_id: 'action-1',
+          kind: 'adaptation_proposal_generate',
+          status: 'running',
+          recoverable: false
+        }
+      }
+    }));
+
+    expect(markup).toContain('当前后台任务');
+    expect(markup).toContain('生成改编提案');
+    expect(markup).toContain('即使刷新页面');
+  });
+
+  it('prioritizes a workflow error and otherwise explains confirmation and recovery risk', () => {
+    expect(workflowRiskText(progress({ error: '模型连接中断', recoverable: true }))).toBe('模型连接中断');
+    expect(workflowRiskText(progress())).toContain('需要你确认');
+    expect(workflowRiskText(progress({ next_action: null, recoverable: true }))).toContain('检查点恢复');
+  });
+});

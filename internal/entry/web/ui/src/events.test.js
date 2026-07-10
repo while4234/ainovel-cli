@@ -3,6 +3,7 @@ import {
   appendStreamDelta,
   compactStreamRounds,
   createWorkbenchState,
+  mergeWorkflowProgress,
   mergeEventRows,
   reduceWebEvent,
   reduceWebEvents,
@@ -45,6 +46,24 @@ describe('web event reducer', () => {
     });
 
     expect(duplicate.streamRounds[0].text).toBe('alpha');
+  });
+
+  it('keeps top-level SSE workflow progress inside the current snapshot', () => {
+    const workflowProgress = {
+      workflow: 'continuation',
+      status: 'running',
+      steps: [{ id: 'writing', label: '续写正文', status: 'running' }]
+    };
+    const next = reduceWebEvent(createWorkbenchState(), {
+      seq: 1,
+      type: 'snapshot',
+      snapshot: { runtime_state: 'running' },
+      workflow_progress: workflowProgress
+    });
+
+    expect(next.snapshot.runtime_state).toBe('running');
+    expect(next.snapshot.workflow_progress).toBe(workflowProgress);
+    expect(mergeWorkflowProgress(null, workflowProgress)).toEqual({ workflow_progress: workflowProgress });
   });
 
   it('replays event history without duplicating stale events', () => {

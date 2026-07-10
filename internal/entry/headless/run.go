@@ -20,11 +20,11 @@ import (
 
 type Options struct {
 	Prompt             string
+	Answers            AnswersFile
 	AdaptPath          string
 	AdaptGranularity   string
 	AdaptRewritePolicy string
 	AdaptWordTolerance float64
-	Stdin              io.Reader
 	Stdout             io.Writer
 	Stderr             io.Writer
 }
@@ -41,16 +41,12 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	stdin := opts.Stdin
-	if stdin == nil {
-		stdin = os.Stdin
-	}
-
 	eng, err := host.New(cfg, bundle)
 	if err != nil {
 		return err
 	}
-	eng.AskUser().SetHandler(newTerminalAskUser(stdin, stderr).handle)
+	answerHandler := newAnswerFileHandler(opts.Answers, func() { eng.Abort() })
+	eng.AskUser().SetHandler(answerHandler.handle)
 	cleanup := logger.SetupFile(eng.Dir(), "headless.log", false)
 	defer cleanup()
 	defer eng.Close()
@@ -143,10 +139,18 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 			return fmt.Errorf("headless 模式需要 --prompt，或输出目录 %q 下已有可恢复会话", eng.Dir())
 		}
 		fmt.Fprintf(stderr, "headless 恢复: %s (%s)\n", eng.Dir(), label)
-		return consume(eng, stdout, stderr, roundHasContent)
+		return consumeWithAnswerCheck(eng, answerHandler, stdout, stderr, roundHasContent)
 	}
 
-	return consume(eng, stdout, stderr, false)
+	return consumeWithAnswerCheck(eng, answerHandler, stdout, stderr, false)
+}
+
+func consumeWithAnswerCheck(eng *host.Host, answers *answerFileHandler, stdout, stderr io.Writer, roundHasContent bool) error {
+	err := consume(eng, stdout, stderr, roundHasContent)
+	if answerErr := answers.Err(); answerErr != nil {
+		return answerErr
+	}
+	return err
 }
 
 func runAdaptPreparation(ctx context.Context, eng *host.Host, sourcePath string, stderr io.Writer) error {

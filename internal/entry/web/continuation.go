@@ -15,6 +15,8 @@ import (
 
 type continuationMutationRequest struct {
 	ExpectedRevision int    `json:"expected_revision"`
+	IdempotencyKey   string `json:"idempotency_key,omitempty"`
+	Async            bool   `json:"async,omitempty"`
 	Instruction      string `json:"instruction,omitempty"`
 	Scope            string `json:"scope,omitempty"`
 	VolumeIndex      int    `json:"volume_index,omitempty"`
@@ -99,7 +101,7 @@ func (s *Server) handleProjectContinuationSource(w http.ResponseWriter, r *http.
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":      manifest,
-		"snapshot":     session.Snapshot(),
+		"snapshot":     session.WebSnapshot(),
 		"continuation": continuation,
 		"source_file":  source.apiUploadedFile,
 		"files":        []apiUploadedFile{source.apiUploadedFile},
@@ -141,7 +143,7 @@ func (s *Server) handleProjectContinuationDraftCommit(w http.ResponseWriter, r *
 }
 
 func (s *Server) handleProjectContinuationProposalGenerate(w http.ResponseWriter, r *http.Request, id string) {
-	s.handleContinuationMutation(w, r, id, func(ctx context.Context, session *ProjectSession, req continuationMutationRequest) (*domain.ContinuationSnapshot, error) {
+	s.handleContinuationLongMutation(w, r, id, "continuation_proposal_generate", func(ctx context.Context, session *ProjectSession, req continuationMutationRequest) (*domain.ContinuationSnapshot, error) {
 		return session.GenerateContinuationProposal(ctx, req.ExpectedRevision)
 	})
 }
@@ -180,7 +182,7 @@ func (s *Server) handleProjectContinuationVolumesApprove(w http.ResponseWriter, 
 }
 
 func (s *Server) handleProjectContinuationOutlinesGenerate(w http.ResponseWriter, r *http.Request, id string) {
-	s.handleContinuationMutation(w, r, id, func(ctx context.Context, session *ProjectSession, req continuationMutationRequest) (*domain.ContinuationSnapshot, error) {
+	s.handleContinuationLongMutation(w, r, id, "continuation_outlines_generate", func(ctx context.Context, session *ProjectSession, req continuationMutationRequest) (*domain.ContinuationSnapshot, error) {
 		return session.GenerateContinuationOutlines(ctx, req.ExpectedRevision)
 	})
 }
@@ -234,6 +236,57 @@ func (s *Server) handleProjectContinuationStart(w http.ResponseWriter, r *http.R
 }
 
 type continuationMutation func(context.Context, *ProjectSession, continuationMutationRequest) (*domain.ContinuationSnapshot, error)
+
+func (s *Server) handleContinuationLongMutation(
+	w http.ResponseWriter,
+	r *http.Request,
+	id string,
+	kind string,
+	mutate continuationMutation,
+) {
+	if r.Method == http.MethodGet {
+		s.handleProjectBackgroundAction(w, r, id)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	req, err := decodeContinuationMutationRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !req.Async {
+		session, manifest, err := s.sessions.Open(id)
+		if err != nil {
+			writeProjectSessionError(w, err)
+			return
+		}
+		continuation, err := mutate(r.Context(), session, req)
+		if err != nil {
+			writeContinuationActionError(w, err)
+			return
+		}
+		writeContinuationResponse(w, manifest, session, continuation, "")
+		return
+	}
+
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	action, created, err := session.StartBackgroundAction(kind, req.IdempotencyKey, func(ctx context.Context) error {
+		_, runErr := mutate(ctx, session, req)
+		return runErr
+	})
+	if err != nil {
+		writeBackgroundActionStartError(w, err)
+		return
+	}
+	writeBackgroundActionAccepted(w, r, manifest, session, action, created)
+}
 
 func (s *Server) handleContinuationMutation(w http.ResponseWriter, r *http.Request, id string, mutate continuationMutation) {
 	if r.Method != http.MethodPost {
@@ -324,7 +377,7 @@ func writeContinuationResponse(
 	continuation *domain.ContinuationSnapshot,
 	label string,
 ) {
-	snapshot := session.Snapshot()
+	snapshot := session.WebSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":      manifest,
 		"snapshot":     snapshot,

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
@@ -20,6 +21,56 @@ func TestUsageStore_LoadMissing(t *testing.T) {
 	}
 	if state != nil {
 		t.Fatalf("Load missing file should return nil state, got %+v", state)
+	}
+}
+
+func TestUsageStoreMigratesSchemaTwoAsLegacyAggregate(t *testing.T) {
+	dir := t.TempDir()
+	us := NewUsageStore(newIO(dir))
+	raw := []byte(`{"schema":2,"overall":{"input":123}}`)
+	if err := os.MkdirAll(filepath.Join(dir, "meta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meta", "usage.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state, err := us.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state == nil || !state.LegacyAggregate || !state.CoverageUnknown || state.Overall.Input != 123 {
+		t.Fatalf("legacy migration = %+v", state)
+	}
+}
+
+func TestUsageStoreCompactsOldCallsIntoDailyAggregates(t *testing.T) {
+	dir := t.TempDir()
+	us := NewUsageStore(newIO(dir))
+	now := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
+	old := domain.UsageCallEvent{ID: "old", Timestamp: now.Add(-91 * 24 * time.Hour), Role: "writer", Provider: "p", Model: "m", Input: 100, CacheRead: 60, CostUSD: 1, Status: "ok", UsagePresent: true, Attempt: 1}
+	recent := domain.UsageCallEvent{ID: "recent", Timestamp: now.Add(-24 * time.Hour), Role: "writer", Provider: "p", Model: "m", Input: 50, Status: "ok", UsagePresent: true, Attempt: 1}
+	if err := us.AppendCall(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := us.AppendCall(recent); err != nil {
+		t.Fatal(err)
+	}
+	if err := us.CompactCalls(now, 90*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := us.LoadCalls()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].ID != "recent" {
+		t.Fatalf("calls = %+v", calls)
+	}
+	daily, err := us.LoadDailyAggregates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(daily) != 1 || daily[0].Calls != 1 || daily[0].CacheRead != 60 {
+		t.Fatalf("daily = %+v", daily)
 	}
 }
 

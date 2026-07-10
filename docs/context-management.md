@@ -128,13 +128,13 @@
 
 - `internal/orchestrator/run.go`
 - `internal/orchestrator/runtime.go`
-- `internal/entry/tui/panels.go`
+- `internal/entry/web/`
 
 作用：
 
 - 记录上下文重写事件
 - 输出策略名称、token 变化、消息保留量
-- 让 TUI 能看到当前上下文是 `projected` 还是 `compacted`
+- 让 Web 能看到当前上下文是 `projected` 还是 `compacted`
 
 ## 4. ContextManager 是怎么组装的
 
@@ -329,7 +329,7 @@ Writer 与默认代码助手不同的地方：
 
 - 当压缩连续失败达到阈值（默认 3 次）时，跳过当前轮压缩
 - 跳过时仍然发出 `RewriteEvent`（`Reason = “circuit_breaker”`）
-- TUI 会显示 scope 为”熔断跳过”
+- Web 会显示 scope 为“熔断跳过”
 - 采用半开模式：跳过一轮后下次会重试，成功则复位，再失败再跳过
 
 为什么需要：
@@ -340,7 +340,7 @@ Writer 与默认代码助手不同的地方：
 
 排障：
 
-- 如果 TUI 持续显示”熔断跳过”，说明 LLM 摘要路径有问题
+- 如果 Web 持续显示“熔断跳过”，说明 LLM 摘要路径有问题
 - 检查 slog 中 `reason=circuit_breaker` 的上下文重写事件
 - 熔断不影响 `StoreSummaryCompact`（它不调 LLM）
 
@@ -553,11 +553,11 @@ handoff pack 会记录：
 
 - `slog`
 - runtime boundary 队列
-- TUI `COMPACT` 事件
+- Web SSE `COMPACT` 事件
 
-### 10.2 TUI 中能看到什么
+### 10.2 Web 中能看到什么
 
-TUI 会展示：
+Web 会展示：
 
 - 当前上下文 token（带健康度渐变色）
 - context window
@@ -565,7 +565,7 @@ TUI 会展示：
 - 当前最后一次策略名称
 - summary 数量
 
-上下文百分比的颜色含义（实现在 `internal/entry/tui/layout.go`）：
+上下文百分比的颜色含义（由 Web 样式实现）：
 
 | 颜色 | 条件 | 含义 |
 |------|------|------|
