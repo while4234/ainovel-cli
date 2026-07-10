@@ -4,21 +4,31 @@ import {
   adaptationAuditScopeText,
   buildAdaptationAuditApplyRequest,
   buildAdaptationAuditOptions,
-  defaultAdaptationAuditScope
+  defaultAdaptationAuditScope,
+	normalizedAuditSourceChapters
 } from './adaptation-audit.js';
 
 describe('adaptation audit UI contracts', () => {
-  it('uses an explicit, bounded audit scope and permits a full-project audit', () => {
+  it('sends only the optional source endpoint and lets the backend derive target bounds', () => {
     expect(buildAdaptationAuditOptions(defaultAdaptationAuditScope)).toEqual({
-      ok: true,
-      options: { source_from: 1, source_to: 30, target_from: 1, target_to: 44 }
+		ok: true,
+		options: {}
     });
-    expect(buildAdaptationAuditOptions({})).toEqual({ ok: true, options: {} });
-    expect(buildAdaptationAuditOptions({ sourceFrom: '30', sourceTo: '1' })).toMatchObject({
-      ok: false,
-      error: '原著起始章不能大于结束章'
-    });
+	expect(buildAdaptationAuditOptions({ sourceTo: '284' })).toEqual({ ok: true, options: { source_to: 284 } });
+	expect(buildAdaptationAuditOptions({ sourceTo: '1.5' })).toMatchObject({ ok: false });
   });
+
+	it('normalizes source chapter choices without exposing manifest metadata', () => {
+		expect(normalizedAuditSourceChapters([
+		  { chapter: 2, title: '第二章', path: 'private' },
+		  { chapter: 1, title: ' 第一章 ' },
+		  { chapter: 2, title: '重复' },
+		  { chapter: 0, title: '无效' }
+		])).toEqual([
+		  { chapter: 1, title: '第一章' },
+		  { chapter: 2, title: '第二章' }
+		]);
+	});
 
   it('requires an acknowledgement before submitting every blocking finding id', () => {
     const report = {
@@ -40,7 +50,7 @@ describe('adaptation audit UI contracts', () => {
   });
 
   it('describes scope and queued repair without claiming that prose is already rewritten', () => {
-    expect(adaptationAuditScopeText({ source_from: 1, source_to: 30, target_from: 1, target_to: 44 })).toBe('原著 1–30 / 改编 1–44');
+	expect(adaptationAuditScopeText({ source_from: 1, source_to: 284, target_from: 1, target_to: 315 })).toBe('原著 1–284 / 改编 1–315');
     expect(adaptationAuditApplicationText({ queued_chapters: [1, 2] })).toContain('点击顶部“恢复”执行');
     expect(adaptationAuditApplicationText({ queued_chapters: [1, 2] })).not.toContain('已改写正文');
   });

@@ -9,6 +9,9 @@ func ValidateConfirmationRequest(report Report, request ConfirmationRequest) err
 	if err := ValidateReportDigest(report); err != nil {
 		return err
 	}
+	if report.Status != "fail" || !report.Confirmation.Required || len(report.Confirmation.BlockingFindingIDs) == 0 {
+		return fmt.Errorf("audit report is not eligible for automatic repair")
+	}
 	if strings.TrimSpace(request.ReportDigest) == "" || request.ReportDigest != report.Digest {
 		return fmt.Errorf("stale or missing report digest")
 	}

@@ -18,4 +18,13 @@ describe('adaptation audit web workflow', () => {
     expect(app.slice(start, end)).not.toContain('resumeProject(');
     expect(app).toContain('不会立即改写正文，也不会自动恢复项目');
   });
+
+	it('uses one source endpoint picker and derives every other boundary', () => {
+		expect(app).toContain('原著结束章');
+		expect(app).toContain('adaptation-audit-source-chapters');
+		expect(app).toContain('chapter.title');
+		expect(app).not.toContain('原著起始章');
+		expect(app).not.toContain('改编起始章');
+		expect(app).not.toContain('改编结束章');
+	});
 });

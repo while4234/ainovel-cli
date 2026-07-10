@@ -15,20 +15,20 @@ func TestAuditProjectArcAndConfirmedRepairQueue(t *testing.T) {
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	meet := domain.AdaptationEvent{ID: "meet", Description: "百里冰遇劫，林逸飞出手相救并相识", Origin: domain.AdaptationEventOriginSource, Importance: domain.AdaptationEventMainline, SourceChapter: 13, Required: true}
-	caseEvent := domain.AdaptationEvent{ID: "case", Description: "案件线索进入医院", Origin: domain.AdaptationEventOriginSource, Importance: domain.AdaptationEventMainline, SourceChapter: 14, Required: true}
+	meet := domain.AdaptationEvent{ID: "meet", Description: "百里冰遇劫，林逸飞出手相救并相识", Origin: domain.AdaptationEventOriginSource, Importance: domain.AdaptationEventMainline, SourceChapter: 1, Required: true}
+	caseEvent := domain.AdaptationEvent{ID: "case", Description: "案件线索进入医院", Origin: domain.AdaptationEventOriginSource, Importance: domain.AdaptationEventMainline, SourceChapter: 2, Required: true}
 	plan := domain.AdaptationPlan{
 		Granularity:   domain.AdaptationGranularityArc,
 		RewritePolicy: domain.AdaptationRewriteFullRewrite,
 		Status:        domain.AdaptationPlanStatusConfirmed,
 		SourceEvents:  []domain.AdaptationEvent{meet, caseEvent},
 		Volumes: []domain.AdaptationVolumePlan{{
-			Index: 1, Title: "初遇与案件", TargetFrom: 1, TargetTo: 2, SourceFrom: 13, SourceTo: 14,
+			Index: 1, Title: "初遇与案件", TargetFrom: 1, TargetTo: 2, SourceFrom: 1, SourceTo: 2,
 			MainlineEventIDs: []string{"meet", "case"},
 		}},
 		Chapters: []domain.AdaptationChapterPlan{
-			{Chapter: 1, Title: "案件", SourceChapters: []int{13, 14}, SourceRange: domain.SourceRange{From: 13, To: 14}, EventIDs: []string{"case"}},
-			{Chapter: 2, Title: "绑架", SourceChapters: []int{13, 14}, SourceRange: domain.SourceRange{From: 13, To: 14}, AddedEventIDs: []string{"kidnap"}},
+			{Chapter: 1, Title: "案件", SourceChapters: []int{1, 2}, SourceRange: domain.SourceRange{From: 1, To: 2}, EventIDs: []string{"case"}},
+			{Chapter: 2, Title: "绑架", SourceChapters: []int{1, 2}, SourceRange: domain.SourceRange{From: 1, To: 2}, AddedEventIDs: []string{"kidnap"}},
 		},
 	}
 	if err := st.Adaptation.SavePlan(plan); err != nil {
@@ -53,7 +53,7 @@ func TestAuditProjectArcAndConfirmedRepairQueue(t *testing.T) {
 		t.Fatalf("Save progress: %v", err)
 	}
 
-	report, err := AuditProject(st, AuditOptions{SourceFrom: 13, SourceTo: 14, TargetFrom: 1, TargetTo: 2})
+	report, err := AuditProject(st, AuditOptions{SourceTo: 2})
 	if err != nil {
 		t.Fatalf("AuditProject: %v", err)
 	}
@@ -156,6 +156,12 @@ func TestAuditProjectFreeUsesTargetRelationshipAndSettingContracts(t *testing.T)
 	}); err != nil {
 		t.Fatalf("SaveCheck: %v", err)
 	}
+	if err := st.Progress.Save(&domain.Progress{
+		NovelName: "free audit", Phase: domain.PhaseWriting, Flow: domain.FlowWriting,
+		TotalChapters: 1, CurrentChapter: 2, CompletedChapters: []int{1},
+	}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
 	report, err := AuditProject(st, AuditOptions{})
 	if err != nil {
 		t.Fatalf("AuditProject: %v", err)
@@ -167,7 +173,7 @@ func TestAuditProjectFreeUsesTargetRelationshipAndSettingContracts(t *testing.T)
 	}
 }
 
-func TestAuditProjectChapterRejectsLegacyLongChapterWithoutSegments(t *testing.T) {
+func TestAuditProjectChapterMarksLegacyLongChapterInconclusive(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -184,13 +190,105 @@ func TestAuditProjectChapterRejectsLegacyLongChapterWithoutSegments(t *testing.T
 	}); err != nil {
 		t.Fatalf("SavePlan: %v", err)
 	}
+	if err := st.Progress.Save(&domain.Progress{
+		NovelName: "legacy chapter audit", Phase: domain.PhaseWriting, Flow: domain.FlowWriting,
+		TotalChapters: 1, CurrentChapter: 2, CompletedChapters: []int{1},
+	}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
 	report, err := AuditProject(st, AuditOptions{})
 	if err != nil {
 		t.Fatalf("AuditProject: %v", err)
 	}
-	for _, code := range []string{"segment_contract_missing", "insufficient_segments"} {
-		if !reportHasFinding(report, code) {
-			t.Fatalf("missing %s: %+v", code, report.Findings)
-		}
+	if report.Status != "inconclusive" || !reportHasFinding(report, "audit_contract_unavailable") {
+		t.Fatalf("legacy report should be inconclusive and non-repairable: %+v", report)
+	}
+	if report.Confirmation.Required {
+		t.Fatalf("legacy report must not offer auto-repair: %+v", report.Confirmation)
+	}
+	if _, err := ApplyProjectAuditRepair(st, adaptaudit.ConfirmationRequest{
+		ReportDigest: report.Digest,
+		Decision:     "apply",
+	}); err == nil {
+		t.Fatal("direct apply must reject an inconclusive legacy report")
+	}
+}
+
+func TestResolveArcAuditScopeStopsBeforePartialBatch(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityArc,
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, SourceFrom: 1, SourceTo: 4, TargetFrom: 1, TargetTo: 2},
+			{Index: 2, SourceFrom: 5, SourceTo: 9, TargetFrom: 3, TargetTo: 5},
+		},
+	}
+	progress := &domain.Progress{CompletedChapters: []int{1, 2, 3, 4}}
+	scope, err := resolveAuditScope(plan, &domain.AdaptationSourceManifest{ChapterCount: 9}, progress, 9)
+	if err != nil {
+		t.Fatalf("resolveAuditScope: %v", err)
+	}
+	if scope.SourceFrom != 1 || scope.SourceTo != 4 || scope.TargetFrom != 1 || scope.TargetTo != 2 {
+		t.Fatalf("scope=%+v, want source 1-4 / target 1-2", scope)
+	}
+}
+
+func TestResolveArcAuditScopeSnapsSelectionToCompletedContainingBatch(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityArc,
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, SourceFrom: 1, SourceTo: 4, TargetFrom: 1, TargetTo: 2},
+			{Index: 2, SourceFrom: 5, SourceTo: 9, TargetFrom: 3, TargetTo: 5},
+		},
+	}
+	progress := &domain.Progress{CompletedChapters: []int{1, 2, 3, 4}}
+	scope, err := resolveAuditScope(plan, &domain.AdaptationSourceManifest{ChapterCount: 9}, progress, 3)
+	if err != nil {
+		t.Fatalf("resolveAuditScope: %v", err)
+	}
+	if scope.SourceTo != 4 || scope.TargetTo != 2 {
+		t.Fatalf("scope=%+v, want completed containing batch source 1-4 / target 1-2", scope)
+	}
+}
+
+func TestResolveChapterAuditScopeExcludesIncompleteSplit(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityChapter,
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, SourceSegments: []domain.AdaptationSourceSegment{{SourceChapter: 1, Sequence: 1, EventIDs: []string{"s1-a"}, RuneShare: domain.AdaptationSourceRuneShare{Start: 0, End: 5000}, EntryState: domain.AdaptationSegmentState{}, ExitState: domain.AdaptationSegmentState{"state": "middle"}}}},
+			{Chapter: 2, SourceSegments: []domain.AdaptationSourceSegment{{SourceChapter: 1, Sequence: 2, EventIDs: []string{"s1-b"}, RuneShare: domain.AdaptationSourceRuneShare{Start: 5000, End: 10000}, EntryState: domain.AdaptationSegmentState{"state": "middle"}, ExitState: domain.AdaptationSegmentState{"state": "done"}}}},
+			{Chapter: 3, SourceSegments: []domain.AdaptationSourceSegment{{SourceChapter: 2, Sequence: 1, EventIDs: []string{"s2-a"}, RuneShare: domain.AdaptationSourceRuneShare{Start: 0, End: 5000}, EntryState: domain.AdaptationSegmentState{}, ExitState: domain.AdaptationSegmentState{"state": "middle"}}}},
+			{Chapter: 4, SourceSegments: []domain.AdaptationSourceSegment{{SourceChapter: 2, Sequence: 2, EventIDs: []string{"s2-b"}, RuneShare: domain.AdaptationSourceRuneShare{Start: 5000, End: 10000}, EntryState: domain.AdaptationSegmentState{"state": "middle"}, ExitState: domain.AdaptationSegmentState{"state": "done"}}}},
+		},
+	}
+	progress := &domain.Progress{CompletedChapters: []int{1, 2, 3}}
+	manifest := &domain.AdaptationSourceManifest{ChapterCount: 2, Chapters: []domain.AdaptationSource{
+		{Chapter: 1, Runes: 10000},
+		{Chapter: 2, Runes: 10000},
+	}}
+	scope, err := resolveAuditScope(plan, manifest, progress, 2)
+	if err != nil {
+		t.Fatalf("resolveAuditScope: %v", err)
+	}
+	if scope.SourceTo != 1 || scope.TargetTo != 2 {
+		t.Fatalf("scope=%+v, want only fully adapted source chapter 1", scope)
+	}
+}
+
+func TestResolveChapterAuditScopeRejectsIncompleteSegmentContract(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityChapter,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter: 1,
+			SourceSegments: []domain.AdaptationSourceSegment{{
+				SourceChapter: 1, Sequence: 1, EventIDs: []string{"only-half"},
+				RuneShare:  domain.AdaptationSourceRuneShare{Start: 0, End: 5000},
+				EntryState: domain.AdaptationSegmentState{}, ExitState: domain.AdaptationSegmentState{},
+			}},
+		}},
+	}
+	progress := &domain.Progress{CompletedChapters: []int{1}}
+	manifest := &domain.AdaptationSourceManifest{ChapterCount: 1, Chapters: []domain.AdaptationSource{{Chapter: 1, Runes: 10000}}}
+	if _, err := resolveAuditScope(plan, manifest, progress, 1); err == nil {
+		t.Fatal("half-covered source chapter must not be treated as fully adapted")
 	}
 }

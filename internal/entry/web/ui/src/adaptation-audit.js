@@ -1,16 +1,6 @@
 export const defaultAdaptationAuditScope = Object.freeze({
-  sourceFrom: '1',
-  sourceTo: '30',
-  targetFrom: '1',
-  targetTo: '44'
+  sourceTo: ''
 });
-
-const scopeFields = [
-  ['sourceFrom', 'source_from'],
-  ['sourceTo', 'source_to'],
-  ['targetFrom', 'target_from'],
-  ['targetTo', 'target_to']
-];
 
 function positiveWholeNumber(value, label) {
   const text = String(value ?? '').trim();
@@ -24,23 +14,24 @@ function positiveWholeNumber(value, label) {
 }
 
 export function buildAdaptationAuditOptions(scope = {}) {
-  const options = {};
-  for (const [stateKey, requestKey] of scopeFields) {
-    const parsed = positiveWholeNumber(scope[stateKey], stateKey);
-    if (!parsed.ok) {
-      return parsed;
-    }
-    if (parsed.value > 0) {
-      options[requestKey] = parsed.value;
-    }
+  const parsed = positiveWholeNumber(scope.sourceTo, '原著结束章');
+  if (!parsed.ok) {
+    return parsed;
   }
-  if (options.source_from && options.source_to && options.source_from > options.source_to) {
-    return { ok: false, error: '原著起始章不能大于结束章' };
+  return parsed.value > 0
+    ? { ok: true, options: { source_to: parsed.value } }
+    : { ok: true, options: {} };
+}
+
+export function normalizedAuditSourceChapters(chapters) {
+  if (!Array.isArray(chapters)) {
+    return [];
   }
-  if (options.target_from && options.target_to && options.target_from > options.target_to) {
-    return { ok: false, error: '改编起始章不能大于结束章' };
-  }
-  return { ok: true, options };
+  const seen = new Set();
+  return chapters
+    .map((item) => ({ chapter: Number(item?.chapter), title: String(item?.title || '').trim() }))
+    .filter((item) => Number.isInteger(item.chapter) && item.chapter > 0 && !seen.has(item.chapter) && seen.add(item.chapter))
+    .sort((left, right) => left.chapter - right.chapter);
 }
 
 export function normalizedAdaptationAuditReport(report) {
@@ -86,12 +77,8 @@ export function buildAdaptationAuditApplyRequest(report, acknowledged) {
 }
 
 export function adaptationAuditScopeText(scope = {}) {
-  const source = scope.source_from || scope.source_to
-    ? `原著 ${scope.source_from || '起始'}–${scope.source_to || '末章'}`
-    : '原著全部';
-  const target = scope.target_from || scope.target_to
-    ? `改编 ${scope.target_from || '起始'}–${scope.target_to || '末章'}`
-    : '改编全部';
+  const source = scope.source_to ? `原著 ${scope.source_from || 1}–${scope.source_to}` : '原著暂无完整范围';
+  const target = scope.target_to ? `改编 ${scope.target_from || 1}–${scope.target_to}` : '改编暂无完整范围';
   return `${source} / ${target}`;
 }
 

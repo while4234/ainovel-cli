@@ -1481,6 +1481,10 @@ h2 {
   min-width: 0;
 }
 
+.audit-scope-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .audit-report-meta,
 .audit-application-summary {
   display: grid;

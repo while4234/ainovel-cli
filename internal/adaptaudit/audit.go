@@ -38,21 +38,43 @@ func Audit(input Input) Report {
 	if hasBlockingFinding(a.findings) {
 		status = "fail"
 	}
+	return a.report(status, true)
+}
+
+// AuditEvidenceOnly validates stored prose quotes without interpreting missing
+// canonical bindings as missing story content. It is used for legacy plans
+// that predate the current audit contract and must never offer auto-repair.
+func AuditEvidenceOnly(input Input, code, message string) Report {
+	a := newAuditor(input)
+	a.validateAllEvidence()
+	for index := range a.findings {
+		a.findings[index].Blocking = false
+	}
+	a.addFinding(code, "warning", false, message, "", "", nil)
+	a.metrics.ValidEvidenceItems = a.validEvidence
+	sortFindings(a.findings)
+	return a.report("inconclusive", false)
+}
+
+func (a *auditor) report(status string, allowConfirmation bool) Report {
 	report := Report{
 		Version:     reportVersion,
-		Mode:        input.Mode,
-		InputDigest: ComputeInputDigest(input),
+		Mode:        a.input.Mode,
+		InputDigest: ComputeInputDigest(a.input),
 		Status:      status,
 		ReadOnly:    true,
-		Scope:       input.Scope,
+		Scope:       a.input.Scope,
 		Findings:    a.findings,
 		Metrics:     a.metrics,
 	}
 	blocking := blockingFindingIDs(a.findings)
+	if !allowConfirmation {
+		blocking = nil
+	}
 	report.Confirmation = Confirmation{
-		Required:           len(blocking) > 0,
+		Required:           allowConfirmation && len(blocking) > 0,
 		BlockingFindingIDs: blocking,
-		SuggestedAction:    suggestedAction(input.Mode, len(blocking) > 0),
+		SuggestedAction:    suggestedAction(a.input.Mode, allowConfirmation && len(blocking) > 0),
 	}
 	report.Digest = computeReportDigest(report)
 	report.Confirmation.ReportDigest = report.Digest
@@ -83,7 +105,9 @@ func newAuditor(input Input) *auditor {
 	for _, binding := range input.Bindings {
 		if binding.EventID != "" {
 			a.bindings[binding.EventID] = append(a.bindings[binding.EventID], binding)
-			bound[binding.EventID] = true
+			if _, exists := a.events[binding.EventID]; exists {
+				bound[binding.EventID] = true
+			}
 		}
 	}
 	a.metrics.BoundEvents = len(bound)

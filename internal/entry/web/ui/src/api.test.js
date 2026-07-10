@@ -364,7 +364,7 @@ describe('web API helpers', () => {
 
   it('uses read-only adaptation audit and confirmed repair routes', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
-    const options = { source_from: 1, source_to: 30, target_from: 1, target_to: 44 };
+	const options = { source_to: 284 };
     const confirmation = {
       report_digest: 'audit-digest',
       decision: 'apply',

@@ -137,6 +137,7 @@ import {
   buildAdaptationAuditApplyRequest,
   buildAdaptationAuditOptions,
   defaultAdaptationAuditScope,
+  normalizedAuditSourceChapters,
   normalizedAdaptationAuditReport
 } from './adaptation-audit.js';
 import {
@@ -272,6 +273,8 @@ function createChapterRevisionState() {
 function createAdaptationAuditState() {
   return {
     ...defaultAdaptationAuditScope,
+    sourceChapters: [],
+    auditableScope: null,
     report: null,
     application: null,
     status: 'idle',
@@ -862,6 +865,8 @@ export default function App() {
       const report = normalizedAdaptationAuditReport(data?.report);
       setAdaptationAudit((previous) => ({
         ...previous,
+        sourceChapters: normalizedAuditSourceChapters(data?.source_chapters),
+        auditableScope: data?.auditable_scope || null,
         report,
         application: null,
         acknowledged: false,
@@ -924,6 +929,7 @@ export default function App() {
       setAdaptationAudit((previous) => ({
         ...previous,
         report: normalizedAdaptationAuditReport(data?.report),
+        auditableScope: data?.auditable_scope || data?.report?.scope || previous.auditableScope,
         status: 'done',
         message: '只读审计已完成；尚未修改计划或正文。',
         error: ''
@@ -6307,6 +6313,8 @@ function AdaptationAuditPanel({
     arc: 'Arc：保留主线，可合并支线',
     free: 'Free：校验目标故事自洽'
   }[String(report?.mode || '').toLowerCase()] || '等待审计结果';
+  const sourceChapters = normalizedAuditSourceChapters(audit.sourceChapters);
+  const maximumScope = audit.auditableScope || report?.scope || {};
   const updateScope = (field, value) => setAudit((previous) => ({
     ...previous,
     [field]: value,
@@ -6341,23 +6349,17 @@ function AdaptationAuditPanel({
         </div>
         <div className="field-grid audit-scope-grid">
           <label className="field-label">
-            <span>原著起始章</span>
-            <input inputMode="numeric" min="1" onChange={(event) => updateScope('sourceFrom', event.target.value)} placeholder="全部" type="number" value={audit.sourceFrom} />
-          </label>
-          <label className="field-label">
             <span>原著结束章</span>
-            <input inputMode="numeric" min="1" onChange={(event) => updateScope('sourceTo', event.target.value)} placeholder="全部" type="number" value={audit.sourceTo} />
-          </label>
-          <label className="field-label">
-            <span>改编起始章</span>
-            <input inputMode="numeric" min="1" onChange={(event) => updateScope('targetFrom', event.target.value)} placeholder="全部" type="number" value={audit.targetFrom} />
-          </label>
-          <label className="field-label">
-            <span>改编结束章</span>
-            <input inputMode="numeric" min="1" onChange={(event) => updateScope('targetTo', event.target.value)} placeholder="全部" type="number" value={audit.targetTo} />
+            <input inputMode="numeric" list="adaptation-audit-source-chapters" min="1" onChange={(event) => updateScope('sourceTo', event.target.value)} placeholder="自动取最近完整范围" type="number" value={audit.sourceTo} />
+            <datalist id="adaptation-audit-source-chapters">
+              {sourceChapters.map((chapter) => <option key={chapter.chapter} label={`第 ${chapter.chapter} 章 ${chapter.title || '（无标题）'}`} value={chapter.chapter} />)}
+            </datalist>
           </label>
         </div>
-        <div className="audit-scope-help">默认范围适用于当前回归：原著 1–30 章 / 改编 1–44 章。清空任一边界即可扩大到全书。</div>
+        <div className="audit-scope-help">
+          留空会自动审计到最近完整改编边界；选择尚未完成的章节也会自动回退。Chapter 模式会排除 1:N 拆分的中间态，Arc 模式按完整批次向下取整。
+          {maximumScope.source_to ? ` 当前最多可审：${adaptationAuditScopeText(maximumScope)}。` : ''}
+        </div>
         <div className="project-settings-actions">
           <button className="tool-button" disabled={!activeProject?.id || actionBusy} onClick={onReload} type="button">
             <RefreshCw size={16} />
@@ -6379,8 +6381,8 @@ function AdaptationAuditPanel({
           <div className="empty-state">尚未生成报告。新项目在细纲生成时已有模式化门禁；这里用于查看完整报告和审计既有章节。</div>
         ) : (
           <>
-            <div className={`workflow-status ${report.status === 'pass' ? 'done' : 'error'}`}>
-              <strong>{report.status === 'pass' ? '通过' : '发现阻塞问题'}</strong>
+            <div className={`workflow-status ${report.status === 'pass' ? 'done' : report.status === 'inconclusive' ? 'idle' : 'error'}`}>
+              <strong>{report.status === 'pass' ? '通过' : report.status === 'inconclusive' ? '证据不足，未下结论' : '发现阻塞问题'}</strong>
               <span>{modeLabel} · {report.read_only ? '只读报告' : '报告'}</span>
             </div>
             <div className="audit-report-meta">

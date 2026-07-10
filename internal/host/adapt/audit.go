@@ -31,11 +31,22 @@ func AuditProject(st *store.Store, options AuditOptions) (*adaptaudit.Report, er
 	if plan == nil {
 		return nil, fmt.Errorf("confirmed adaptation plan is required")
 	}
-	input, err := buildProjectAuditInput(st, *plan, options)
+	scope, err := ResolveProjectAuditScope(st, options)
+	if err != nil {
+		return nil, err
+	}
+	effectiveOptions := AuditOptions{
+		SourceFrom: scope.SourceFrom, SourceTo: scope.SourceTo,
+		TargetFrom: scope.TargetFrom, TargetTo: scope.TargetTo,
+	}
+	input, err := buildProjectAuditInput(st, *plan, effectiveOptions)
 	if err != nil {
 		return nil, err
 	}
 	report := adaptaudit.Audit(input)
+	if reason := auditContractUnavailable(*plan, input); reason != "" {
+		report = adaptaudit.AuditEvidenceOnly(input, "audit_contract_unavailable", reason)
+	}
 	if err := st.Adaptation.SaveAuditReport(report); err != nil {
 		return nil, fmt.Errorf("save adaptation audit report: %w", err)
 	}
@@ -60,12 +71,19 @@ func ApplyProjectAuditRepair(st *store.Store, request adaptaudit.ConfirmationReq
 	if err != nil || plan == nil {
 		return nil, fmt.Errorf("load confirmed adaptation plan: %w", err)
 	}
+	currentScope, err := ResolveProjectAuditScope(st, AuditOptions{SourceTo: report.Scope.SourceTo})
+	if err != nil || currentScope != report.Scope {
+		return nil, fmt.Errorf("adaptation audit is stale; run a new read-only audit before applying repairs")
+	}
 	currentInput, err := buildProjectAuditInput(st, *plan, AuditOptions{
 		SourceFrom: report.Scope.SourceFrom, SourceTo: report.Scope.SourceTo,
 		TargetFrom: report.Scope.TargetFrom, TargetTo: report.Scope.TargetTo,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("rebuild adaptation audit input: %w", err)
+	}
+	if auditContractUnavailable(*plan, currentInput) != "" {
+		return nil, fmt.Errorf("adaptation audit is not eligible for automatic repair because its evidence contract is unavailable")
 	}
 	if currentDigest := adaptaudit.ComputeInputDigest(currentInput); currentDigest != report.InputDigest {
 		return nil, fmt.Errorf("adaptation audit is stale; run a new read-only audit before applying repairs")
@@ -168,6 +186,15 @@ func buildProjectAuditInput(st *store.Store, plan domain.AdaptationPlan, options
 	}
 	sourceRunes := sourceRunesByChapter(manifest)
 
+	selectedEventIDs := make(map[string]bool)
+	for _, chapter := range plan.Chapters {
+		if !chapterSelected(chapter.Chapter, options) {
+			continue
+		}
+		for _, eventID := range append(append([]string(nil), chapter.EventIDs...), chapter.AddedEventIDs...) {
+			selectedEventIDs[eventID] = true
+		}
+	}
 	highArtifactIDs := make(map[string]string)
 	for _, volume := range plan.Volumes {
 		if !targetRangeSelected(volume.TargetFrom, volume.TargetTo, options) {
@@ -178,11 +205,20 @@ func buildProjectAuditInput(st *store.Store, plan domain.AdaptationPlan, options
 		input.Artifacts = append(input.Artifacts, adaptaudit.Artifact{ID: id, Kind: adaptaudit.ArtifactHighPlan, Text: string(raw)})
 		for _, eventID := range volume.MainlineEventIDs {
 			highArtifactIDs[eventID] = id
+			selectedEventIDs[eventID] = true
 		}
 	}
 
 	for _, event := range append(append([]domain.AdaptationEvent(nil), plan.SourceEvents...), plan.TargetEventLedger...) {
-		if !sourceChapterSelected(event.SourceChapter, options) {
+		if event.Origin == domain.AdaptationEventOriginSource {
+			if event.SourceChapter <= 0 && !selectedEventIDs[event.ID] {
+				continue
+			}
+			if event.SourceChapter > 0 && !sourceChapterSelected(event.SourceChapter, options) {
+				continue
+			}
+		}
+		if event.Origin != domain.AdaptationEventOriginSource && !selectedEventIDs[event.ID] {
 			continue
 		}
 		auditEvent := auditEventFromDomain(event)
@@ -217,10 +253,12 @@ func buildProjectAuditInput(st *store.Store, plan domain.AdaptationPlan, options
 		bodyArtifactID := fmt.Sprintf("target-body-%04d", chapter.Chapter)
 		input.Artifacts = append(input.Artifacts, adaptaudit.Artifact{ID: bodyArtifactID, Kind: adaptaudit.ArtifactTargetChapter, Chapter: chapter.Chapter, Text: body})
 		check, _ := st.Adaptation.LoadCheck(chapter.Chapter)
-		verifiedBody := verifiedBodyEvidence(check, body, bodyArtifactID)
-		attachSettingClaimEvidence(input.Events, verifiedBody)
+		evidenceByEvent := currentBodyEvidence(check, body, bodyArtifactID)
+		attachSettingClaimEvidence(input.Events, evidenceByEvent)
+		chapterEventIDs := make(map[string]bool, len(chapter.EventIDs))
 
 		for _, eventID := range chapter.EventIDs {
+			chapterEventIDs[eventID] = true
 			if !eventSeen[eventID] {
 				input.Events = append(input.Events, adaptaudit.Event{ID: eventID, Origin: adaptaudit.OriginTarget, Class: adaptaudit.ClassOrdinary})
 				eventSeen[eventID] = true
@@ -229,7 +267,7 @@ func buildProjectAuditInput(st *store.Store, plan domain.AdaptationPlan, options
 				EventID:        eventID,
 				TargetChapters: []int{chapter.Chapter},
 				PlanEvidence:   []adaptaudit.Evidence{{ArtifactID: planArtifactID, Quote: eventID}},
-				BodyEvidence:   verifiedBody[eventID],
+				BodyEvidence:   evidenceByEvent[eventID],
 			})
 		}
 		for _, eventID := range chapter.AddedEventIDs {
@@ -251,14 +289,22 @@ func buildProjectAuditInput(st *store.Store, plan domain.AdaptationPlan, options
 				TotalRunes: sourceRunes[segment.SourceChapter], MaxRunes: domain.AdaptationModelChapterMaxRunes,
 				EntryState: map[string]string(segment.EntryState), ExitState: map[string]string(segment.ExitState),
 			})
-			var bodyEvidence []adaptaudit.Evidence
+			var segmentBodyEvidence []adaptaudit.Evidence
 			for _, eventID := range segment.EventIDs {
-				bodyEvidence = append(bodyEvidence, verifiedBody[eventID]...)
+				segmentBodyEvidence = append(segmentBodyEvidence, evidenceByEvent[eventID]...)
 			}
 			input.Bindings = append(input.Bindings, adaptaudit.Binding{
 				SourceSegmentIDs: []string{segmentID}, TargetChapters: []int{chapter.Chapter},
 				PlanEvidence: []adaptaudit.Evidence{{ArtifactID: planArtifactID, Quote: segmentID}},
-				BodyEvidence: bodyEvidence,
+				BodyEvidence: segmentBodyEvidence,
+			})
+		}
+		for eventID, evidence := range evidenceByEvent {
+			if eventID == "" || chapterEventIDs[eventID] {
+				continue
+			}
+			input.Bindings = append(input.Bindings, adaptaudit.Binding{
+				EventID: eventID, TargetChapters: []int{chapter.Chapter}, BodyEvidence: evidence,
 			})
 		}
 	}
@@ -364,18 +410,81 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return out
 }
 
-func verifiedBodyEvidence(check *domain.AdaptationCheck, body, artifactID string) map[string][]adaptaudit.Evidence {
+func currentBodyEvidence(check *domain.AdaptationCheck, body, artifactID string) map[string][]adaptaudit.Evidence {
 	out := make(map[string][]adaptaudit.Evidence)
 	if check == nil || check.DraftSHA256 != store.TextSHA256(body) {
 		return out
 	}
 	for _, item := range check.BodyEvidence {
-		if item.EventID == "" || item.Quote == "" || !strings.Contains(body, item.Quote) {
+		if item.EventID == "" || item.Quote == "" {
 			continue
 		}
 		out[item.EventID] = append(out[item.EventID], adaptaudit.Evidence{ArtifactID: artifactID, Quote: item.Quote})
 	}
 	return out
+}
+
+func auditContractUnavailable(plan domain.AdaptationPlan, input adaptaudit.Input) string {
+	selectedChapters := make(map[int]bool)
+	for _, artifact := range input.Artifacts {
+		if artifact.Kind == adaptaudit.ArtifactTargetPlan && artifact.Chapter > 0 {
+			selectedChapters[artifact.Chapter] = true
+		}
+	}
+	switch input.Mode {
+	case adaptaudit.ModeArc:
+		if len(plan.SourceEvents) == 0 {
+			return "该项目由旧版 Arc 计划生成，缺少可验证的主线事件台账；本报告仅校验现有正文引文，不能据此判定正文遗漏，也不会提供自动修复。"
+		}
+		required := 0
+		requiredIDs := make(map[string]bool)
+		for _, event := range input.Events {
+			if event.Origin == adaptaudit.OriginSource && event.Class == adaptaudit.ClassMainline && event.Required {
+				required++
+				requiredIDs[event.ID] = true
+			}
+		}
+		bindings := 0
+		for _, chapter := range plan.Chapters {
+			if !selectedChapters[chapter.Chapter] {
+				continue
+			}
+			for _, eventID := range chapter.EventIDs {
+				if requiredIDs[eventID] {
+					bindings++
+				}
+			}
+		}
+		if required > 0 && bindings == 0 {
+			return "该项目由旧版 Arc 计划生成，缺少可验证的主线事件绑定；本报告仅校验现有正文引文，不能据此判定正文遗漏，也不会提供自动修复。"
+		}
+	case adaptaudit.ModeChapter:
+		for _, chapter := range plan.Chapters {
+			if selectedChapters[chapter.Chapter] && len(chapter.SourceSegments) == 0 {
+				return "该项目的 Chapter 计划缺少持久化原著分段合同；无法安全判断 1:N 拆分覆盖，本报告不会提供自动修复。"
+			}
+		}
+	case adaptaudit.ModeFree:
+		selectedEventIDs := make(map[string]bool)
+		for _, chapter := range plan.Chapters {
+			if selectedChapters[chapter.Chapter] {
+				for _, eventID := range chapter.EventIDs {
+					selectedEventIDs[eventID] = true
+				}
+			}
+		}
+		covered := false
+		for _, event := range plan.TargetEventLedger {
+			if selectedEventIDs[event.ID] {
+				covered = true
+				break
+			}
+		}
+		if len(selectedEventIDs) == 0 || !covered {
+			return "该项目的 Free 计划缺少目标事件台账；本报告仅校验现有正文引文，不能完整判断因果与关系状态。"
+		}
+	}
+	return ""
 }
 
 func sourceSegmentIDs(segments []domain.AdaptationSourceSegment) []string {
@@ -418,6 +527,9 @@ func repairPlanFromAudit(plan *domain.AdaptationPlan, findings []adaptaudit.Find
 	}
 	affected := make(map[int]bool)
 	for _, finding := range findings {
+		if !finding.Blocking {
+			continue
+		}
 		for _, chapter := range finding.TargetChapters {
 			affected[chapter] = true
 			appendAuditRepairDuty(plan, chapter, finding)

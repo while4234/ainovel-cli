@@ -11,6 +11,11 @@ import (
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
+type apiAuditSourceChapter struct {
+	Chapter int    `json:"chapter"`
+	Title   string `json:"title"`
+}
+
 func (s *Server) handleProjectAdaptAudit(w http.ResponseWriter, r *http.Request, id string) {
 	switch r.Method {
 	case http.MethodGet:
@@ -19,12 +24,27 @@ func (s *Server) handleProjectAdaptAudit(w http.ResponseWriter, r *http.Request,
 			writeProjectSessionError(w, err)
 			return
 		}
-		report, err := storepkg.NewStore(manifest.OutputDir).Adaptation.LoadAuditReport()
+		st := storepkg.NewStore(manifest.OutputDir)
+		report, err := st.Adaptation.LoadAuditReport()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"report": report})
+		chapters, err := auditSourceChapters(st)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		availableScope, scopeErr := adapt.ResolveProjectAuditScope(st, adapt.AuditOptions{})
+		if scopeErr != nil && !errors.Is(scopeErr, adapt.ErrNoAuditableScope) {
+			writeError(w, http.StatusInternalServerError, scopeErr.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"report":          report,
+			"source_chapters": chapters,
+			"auditable_scope": availableScope,
+		})
 	case http.MethodPost:
 		var options adapt.AuditOptions
 		if r.Body != nil {
@@ -59,13 +79,33 @@ func (s *Server) handleProjectAdaptAudit(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"report":   report,
-			"snapshot": session.Snapshot(),
-			"applied":  false,
+			"report":          report,
+			"snapshot":        session.Snapshot(),
+			"applied":         false,
+			"auditable_scope": report.Scope,
 		})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func auditSourceChapters(st *storepkg.Store) ([]apiAuditSourceChapter, error) {
+	manifest, err := st.Adaptation.LoadSourceManifest()
+	if err != nil {
+		return nil, err
+	}
+	chapters := make([]apiAuditSourceChapter, 0)
+	if manifest == nil {
+		return chapters, nil
+	}
+	chapters = make([]apiAuditSourceChapter, 0, len(manifest.Chapters))
+	for _, chapter := range manifest.Chapters {
+		if chapter.Chapter <= 0 {
+			continue
+		}
+		chapters = append(chapters, apiAuditSourceChapter{Chapter: chapter.Chapter, Title: chapter.Title})
+	}
+	return chapters, nil
 }
 
 func (s *Server) handleProjectAdaptAuditApply(w http.ResponseWriter, r *http.Request, id string) {
