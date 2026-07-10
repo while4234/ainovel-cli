@@ -362,6 +362,26 @@ func TestRoute_NormalContinue(t *testing.T) {
 	}
 }
 
+func TestRoute_ContinuationStartsAtFirstNewChapterWithoutBaselinePostprocess(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3}, domain.FlowWriting)
+	p.TotalChapters = 8
+	got := Route(State{
+		Progress:                p,
+		LastCompleted:           3,
+		ContinuationActive:      true,
+		ContinuationBaseChapter: 3,
+		ArcBoundary: &storepkg.ArcBoundary{
+			IsArcEnd:    true,
+			IsVolumeEnd: true,
+			Volume:      1,
+			Arc:         1,
+		},
+	})
+	if got == nil || got.Agent != "writer" || got.Chapter != 4 {
+		t.Fatalf("expected continuation to start at chapter 4, got %+v", got)
+	}
+}
+
 func TestRoute_AdaptationStopsAtConfirmedPlanBoundary(t *testing.T) {
 	p := writingProgress([]int{1, 2, 3}, domain.FlowWriting)
 	p.TotalChapters = 4

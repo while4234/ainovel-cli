@@ -34,6 +34,9 @@ import {
   analyzeAdaptationSource,
   analyzeSimulation,
   addGlobalProviderModel,
+  approveContinuationOutlines,
+  approveContinuationProposal,
+  approveContinuationVolumes,
   beginCoCreate,
   buildAdaptationProposal,
   cancelCoCreate,
@@ -50,8 +53,11 @@ import {
   discoverProjectProviderModels,
   emptyTrashProjects,
   exportProjectDownload,
+  generateContinuationOutlines,
+  generateContinuationProposal,
   getBackendStatus,
   getCodexAuthStatus,
+  getContinuation,
   getGlobalModels,
   getChapter,
   getGrokLoginStatus,
@@ -60,7 +66,6 @@ import {
   getRuntime,
   getSnapshot,
   inheritProjectModel,
-  importExternalNovel,
   importSimulationProfile,
   listNovelLibrary,
   listProjects,
@@ -75,12 +80,16 @@ import {
   renameProject,
   restoreTrashProject,
   resumeCoCreate,
+  retryContinuation,
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
   reviseChapter,
   reviseChapterOutline,
   reviseCoCreatePlanning,
   reviseCoCreate,
+  reviseContinuationOutlines,
+  reviseContinuationProposal,
+  reviseContinuationVolumes,
   resolveCoCreateDecisions,
   resolveCoCreateDecision,
   resumeProject,
@@ -98,6 +107,7 @@ import {
   setProjectSimulationMode,
   setProjectStyle,
   setProjectThinking,
+  startContinuation,
   startProject,
   startGrokLogin,
   steerProject,
@@ -108,6 +118,7 @@ import {
   testProjectProviderModel,
   trashProject,
   uploadAdaptationSource,
+  uploadContinuationSource,
   uploadSimulationLibrary,
   uploadSimulationFiles
 } from './api.js';
@@ -119,6 +130,17 @@ import {
   coCreateStateFromResponse,
   createCoCreateState
 } from './cocreate.js';
+import {
+  buildContinuationOutlineScopePayload,
+  continuationCanRetry,
+  continuationNeedsReview,
+  continuationReviewKind,
+  continuationSnapshotFrom,
+  continuationUploadSuccessMessage,
+  deriveContinuationSteps,
+  normalizeContinuationSnapshot,
+  withExpectedRevision
+} from './continuation.js';
 import { createWorkbenchState, eventStatus, reduceWebEvent, reduceWebEvents, visibleStreamRounds } from './events.js';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
@@ -439,14 +461,36 @@ export function applyAdaptationProposalSnapshot(previous, snapshot) {
   return next;
 }
 
-function createExternalImportState() {
+function createContinuationState() {
   return {
+    workflow: null,
     sourceFile: null,
-    from: '',
     status: 'idle',
     events: [],
     message: '',
-    error: ''
+    error: '',
+    actionStatus: 'idle',
+    actionMessage: '',
+    instruction: '',
+    scope: 'all',
+    chapter: '',
+    fromChapter: '',
+    toChapter: '',
+    volumeIndex: '1'
+  };
+}
+
+function restoreContinuationState(previous, response, snapshot = null) {
+  const workflow = continuationSnapshotFrom(response, continuationSnapshotFrom(snapshot, previous.workflow));
+  const normalized = normalizeContinuationSnapshot(workflow);
+  const sourceFile = response?.source_file || response?.sourceFile || normalized.sourceFile || previous.sourceFile;
+  return {
+    ...previous,
+    workflow,
+    sourceFile,
+    status: normalized.exists ? 'done' : previous.status,
+    error: '',
+    actionStatus: 'idle'
   };
 }
 
@@ -608,7 +652,7 @@ export default function App() {
   const [chapterRevision, setChapterRevision] = useState(createChapterRevisionState);
   const [outlineRevision, setOutlineRevision] = useState(createOutlineRevisionState);
   const [chapterContent, setChapterContent] = useState(createChapterContentState);
-  const [externalImport, setExternalImport] = useState(createExternalImportState);
+  const [continuation, setContinuation] = useState(createContinuationState);
   const [exportJob, setExportJob] = useState(createExportState);
   const [diagnostic, setDiagnostic] = useState(createDiagnosticState);
   const [coCreate, setCoCreate] = useState(createCoCreateState);
@@ -625,6 +669,10 @@ export default function App() {
   const activeProjectIdRef = useRef('');
 
   const snapshot = workbench.snapshot;
+  const continuationSnapshot = useMemo(
+    () => normalizeContinuationSnapshot(snapshot, continuation.workflow),
+    [snapshot, continuation.workflow]
+  );
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
   const projectRunning = isProjectRunning(snapshot);
   const workspaceProgress = useMemo(
@@ -660,6 +708,7 @@ export default function App() {
   );
   const showOutlineRevisionWorkspace = sideView === 'status' && selectedOutlineRevisionView.active;
   const showChapterRevisionWorkspace = sideView === 'status' && !showOutlineRevisionWorkspace && selectedChapterRevisionView.visible;
+  const showContinuationWorkspace = sideView === 'continuation' && continuationSnapshot.exists;
 
   const resetProjectScopedState = useCallback((clearProject = false) => {
     lastSeqRef.current = 0;
@@ -670,7 +719,7 @@ export default function App() {
     setChapterRevision(createChapterRevisionState());
     setOutlineRevision(createOutlineRevisionState());
     setChapterContent(createChapterContentState());
-    setExternalImport(createExternalImportState());
+    setContinuation(createContinuationState());
     setExportJob(createExportState());
     setDiagnostic(createDiagnosticState());
     setCoCreate(createCoCreateState());
@@ -945,11 +994,12 @@ export default function App() {
     resetProjectScopedState();
     setActiveProject(project);
     try {
-      const [snapshotData, modelData, backendData, eventsData] = await Promise.all([
+      const [snapshotData, modelData, backendData, eventsData, continuationData] = await Promise.all([
         getSnapshot(projectId),
         getProjectModels(projectId),
         getBackendStatus(projectId),
-        getProjectEvents(projectId, 0)
+        getProjectEvents(projectId, 0),
+        getContinuation(projectId).catch(() => null)
       ]);
       if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
         return;
@@ -963,6 +1013,7 @@ export default function App() {
       setCoCreate((previous) => coCreateStateFromResponse(snapshotData, previous));
       setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
       setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation, snapshotData.snapshot));
+      setContinuation((previous) => restoreContinuationState(previous, continuationData, snapshotData.snapshot));
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);
     } catch (err) {
@@ -1528,14 +1579,14 @@ export default function App() {
     }
   };
 
-  const importExternalSource = async (event) => {
+  const uploadContinuationNovel = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!activeProject?.id || !file) {
       return;
     }
     setBusy(true);
-    setExternalImport((previous) => ({
+    setContinuation((previous) => ({
       ...previous,
       sourceFile: null,
       status: 'running',
@@ -1544,18 +1595,18 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await importExternalNovel(activeProject.id, file, externalImport.from);
+      const data = await uploadContinuationSource(activeProject.id, file);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      setExternalImport((previous) => ({
-        ...previous,
-        sourceFile: data.source_file || null,
+      setContinuation((previous) => ({
+        ...restoreContinuationState(previous, data.continuation || data, data.snapshot),
+        sourceFile: data.source_file || data.sourceFile || { name: file.name, size: file.size },
         status: 'done',
         events: data.events || [],
-        message: data.label ? `已导入并恢复：${data.label}` : `已导入 ${data.source_file?.name || file.name}`,
+        message: continuationUploadSuccessMessage(data.continuation || data, file.name),
         error: ''
       }));
     } catch (err) {
-      setExternalImport((previous) => ({
+      setContinuation((previous) => ({
         ...previous,
         status: 'error',
         events: err.data?.events || previous.events,
@@ -1565,6 +1616,115 @@ export default function App() {
       setBusy(false);
     }
   };
+
+  const runContinuationAction = async (action, payload = {}, successMessage = '') => {
+    if (!activeProject?.id || busy) {
+      return;
+    }
+    const projectId = activeProject.id;
+    setBusy(true);
+    setContinuation((previous) => ({
+      ...previous,
+      actionStatus: 'running',
+      actionMessage: '',
+      error: ''
+    }));
+    try {
+      const requestPayload = withExpectedRevision(continuationSnapshot, payload);
+      const data = await action(projectId, requestPayload);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      setContinuation((previous) => ({
+        ...restoreContinuationState(previous, data.continuation || data, data.snapshot),
+        instruction: '',
+        actionStatus: 'done',
+        actionMessage: data.label || successMessage,
+        error: ''
+      }));
+    } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      await refreshCurrentProjectSnapshot(projectId);
+      setContinuation((previous) => ({
+        ...previous,
+        actionStatus: 'error',
+        actionMessage: '',
+        error: err.message
+      }));
+    } finally {
+      if (isCurrentProject(projectId)) {
+        setBusy(false);
+      }
+    }
+  };
+
+  const beginContinuationDraft = () => {
+    runWithWindowScrollPreserved(() => {
+      setSideView('cocreate');
+      return beginCoCreateFlow('continuation');
+    });
+  };
+
+  const generateContinuationProposalRun = () => runContinuationAction(
+    generateContinuationProposal,
+    {},
+    '续写提案正在生成'
+  );
+
+  const reviseContinuationReview = () => {
+    const instruction = continuation.instruction.trim();
+    if (!instruction) {
+      setContinuation((previous) => ({ ...previous, error: '请填写修改要求' }));
+      return;
+    }
+    const reviewKind = continuationReviewKind(continuationSnapshot);
+    if (reviewKind === 'proposal') {
+      runContinuationAction(reviseContinuationProposal, { instruction }, '提案已重新生成');
+      return;
+    }
+    if (reviewKind === 'volumes') {
+      runContinuationAction(reviseContinuationVolumes, {
+        instruction,
+        ...(continuation.scope === 'volume' ? { volume_index: Number(continuation.volumeIndex) || 1 } : {})
+      }, '分卷规划已重新生成');
+      return;
+    }
+    if (reviewKind === 'outlines') {
+      const scopePayload = buildContinuationOutlineScopePayload(continuation);
+      if (scopePayload.error) {
+        setContinuation((previous) => ({ ...previous, error: scopePayload.error }));
+        return;
+      }
+      runContinuationAction(reviseContinuationOutlines, {
+        instruction,
+        ...scopePayload.body
+      }, '章节细纲已重新生成');
+    }
+  };
+
+  const approveContinuationReview = () => {
+    const reviewKind = continuationReviewKind(continuationSnapshot);
+    if (reviewKind === 'proposal') {
+      runContinuationAction(approveContinuationProposal, {}, '提案审核通过');
+    } else if (reviewKind === 'volumes') {
+      runContinuationAction(approveContinuationVolumes, {}, '分卷规划审核通过');
+    } else if (reviewKind === 'outlines') {
+      runContinuationAction(approveContinuationOutlines, {}, '章节细纲审核通过，可以开始续写');
+    }
+  };
+
+  const generateContinuationOutlinesRun = () => runContinuationAction(
+    generateContinuationOutlines,
+    {},
+    '章节细纲正在生成'
+  );
+
+  const retryContinuationRun = () => runContinuationAction(retryContinuation, {}, '已继续当前续写规划任务');
+
+  const startContinuationRun = () => runContinuationAction(startContinuation, {}, '续写已启动');
 
   const runExport = async () => {
     if (!activeProject?.id) {
@@ -2485,6 +2645,17 @@ export default function App() {
       if ((data.cocreate?.kind || coCreate.kind) === 'adapt') {
         setAdaptation((previous) => applyAdaptationProposalSnapshot(previous, data.snapshot));
         setSideView('adapt');
+      } else if ((data.cocreate?.kind || coCreate.kind) === 'continuation') {
+        let continuationData = data.continuation || null;
+        if (!continuationData) {
+          try {
+            continuationData = await getContinuation(projectId);
+          } catch {
+            continuationData = null;
+          }
+        }
+        setContinuation((previous) => restoreContinuationState(previous, continuationData, data.snapshot));
+        setSideView('continuation');
       }
     } catch (err) {
       if (!isCurrentProject(projectId)) {
@@ -3315,7 +3486,32 @@ export default function App() {
             <button
               className="tool-button accent"
               disabled={!activeProject || projectBusy}
-              onClick={() => runAction(resumeProject)}
+              onClick={() => {
+                if (continuationNeedsReview(continuationSnapshot)) {
+                  setSideView('continuation');
+                  return;
+                }
+                if (continuationSnapshot.stage === 'proposal_generating') {
+                  setSideView('continuation');
+                  generateContinuationProposalRun();
+                  return;
+                }
+                if (continuationSnapshot.stage === 'outline_generating') {
+                  setSideView('continuation');
+                  generateContinuationOutlinesRun();
+                  return;
+                }
+                if (continuationCanRetry(continuationSnapshot)) {
+                  setSideView('continuation');
+                  retryContinuationRun();
+                  return;
+                }
+                if (continuationSnapshot.exists && continuationSnapshot.stage !== 'writing') {
+                  setSideView('continuation');
+                  return;
+                }
+                runAction(resumeProject);
+              }}
               type="button"
             >
               <Play size={16} />
@@ -3339,11 +3535,13 @@ export default function App() {
 
         <div className="workbench-stack">
           <section
-            className={`stream-area ${showAdaptationProposalWorkspace || showCoCreatePlanningWorkspace || showOutlineRevisionWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : showChapterRevisionWorkspace ? 'chapter-revision-workspace-output' : ''}`}
-            aria-label={showAdaptationProposalWorkspace ? '改编提案审稿区' : showOutlineRevisionWorkspace ? '章节细纲预览区' : showChapterRevisionWorkspace ? '单章返工预览区' : '实时创作流'}
+            className={`stream-area ${showContinuationWorkspace || showAdaptationProposalWorkspace || showCoCreatePlanningWorkspace || showOutlineRevisionWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : showChapterRevisionWorkspace ? 'chapter-revision-workspace-output' : ''}`}
+            aria-label={showContinuationWorkspace ? '小说续写审稿区' : showAdaptationProposalWorkspace ? '改编提案审稿区' : showOutlineRevisionWorkspace ? '章节细纲预览区' : showChapterRevisionWorkspace ? '单章返工预览区' : '实时创作流'}
           >
             {activeProject ? (
-              showAdaptationProposalWorkspace ? (
+              showContinuationWorkspace ? (
+                <ContinuationWorkspace continuation={continuationSnapshot} />
+              ) : showAdaptationProposalWorkspace ? (
                 <AdaptationProposalWorkspace proposal={adaptationProposalReview} />
               ) : showCoCreatePlanningWorkspace ? (
                 <CoCreatePlanningWorkspace
@@ -3431,9 +3629,9 @@ export default function App() {
             <FileText size={16} />
             改编
           </button>
-          <button className={sideView === 'import' ? 'active' : ''} onClick={() => setSideView('import')} title="导入" type="button">
+          <button className={sideView === 'continuation' ? 'active' : ''} onClick={() => setSideView('continuation')} title="续写" type="button">
             <Upload size={16} />
-            导入
+            续写
           </button>
           <button className={sideView === 'export' ? 'active' : ''} onClick={() => setSideView('export')} title="导出" type="button">
             <Download size={16} />
@@ -3552,13 +3750,21 @@ export default function App() {
                 });
               }}
             />
-          ) : sideView === 'import' ? (
-            <ImportPanel
+          ) : sideView === 'continuation' ? (
+            <ContinuationPanel
               activeProject={activeProject}
               busy={projectBusy}
-              externalImport={externalImport}
-              setExternalImport={setExternalImport}
-              onImport={importExternalSource}
+              continuation={continuation}
+              workflow={continuationSnapshot}
+              setContinuation={setContinuation}
+              onUpload={uploadContinuationNovel}
+              onBeginDraft={beginContinuationDraft}
+              onGenerateProposal={generateContinuationProposalRun}
+              onGenerateOutlines={generateContinuationOutlinesRun}
+              onRevise={reviseContinuationReview}
+              onApprove={approveContinuationReview}
+              onRetry={retryContinuationRun}
+              onStart={startContinuationRun}
             />
           ) : sideView === 'export' ? (
             <ExportPanel
@@ -5211,6 +5417,131 @@ function ProposalOutlineTree({ proposal }) {
   );
 }
 
+function ContinuationWorkspace({ continuation }) {
+  const proposal = continuation.proposal || {};
+  const reviewKind = continuationReviewKind(continuation);
+  const title = reviewKind === 'volumes'
+    ? '续写分卷规划'
+    : reviewKind === 'outlines'
+      ? '续写章节细纲'
+      : reviewKind === 'proposal'
+        ? '续写提案'
+        : '小说续写工作区';
+  return (
+    <div className="proposal-workspace continuation-workspace">
+      <header className="proposal-workspace-header">
+        <div>
+          <div className="eyebrow">小说续写 · Revision {continuation.revision}</div>
+          <h3>{title}</h3>
+        </div>
+        <div className="proposal-workspace-metrics">
+          <span>原作 {continuation.baseChapterCount || '-'} 章</span>
+          <span>{continuation.shortStory ? '短篇 / 不分卷' : continuation.structure === 'volumes' ? '长篇 / 分卷' : '结构待确认'}</span>
+          {continuation.nextChapter ? <span>从第 {continuation.nextChapter} 章续写</span> : null}
+        </div>
+      </header>
+      {continuation.draft ? (
+        <section className="continuation-draft-card">
+          <strong>已确认 Draft</strong>
+          <p>{continuation.draft}</p>
+        </section>
+      ) : null}
+      {proposal && Object.keys(proposal).length > 0 ? <ContinuationProposalSummary proposal={proposal} /> : null}
+      {reviewKind === 'volumes' || continuation.volumes.length > 0 ? (
+        <ContinuationVolumeList volumes={continuation.volumes} />
+      ) : null}
+      {reviewKind === 'outlines' || continuation.outlines.length > 0 ? (
+        <ContinuationOutlineList outlines={continuation.outlines} />
+      ) : null}
+      {!continuation.draft && !continuation.proposal && continuation.volumes.length === 0 && continuation.outlines.length === 0 ? (
+        <div className="empty-state">原作已建立基线。下一步先通过共创确定续写 Draft。</div>
+      ) : null}
+    </div>
+  );
+}
+
+function ContinuationProposalSummary({ proposal }) {
+  const summary = textValue(proposal, 'summary', 'Summary');
+  const direction = textValue(proposal, 'direction', 'Direction');
+  const targetChapters = Number(proposal.target_chapter_count || proposal.targetChapterCount || proposal.TargetChapterCount || 0);
+  const targetRunes = Number(proposal.target_total_runes || proposal.targetTotalRunes || proposal.TargetTotalRunes || 0);
+  const notes = arrayValue(proposal, 'notes', 'Notes');
+  return (
+    <section className="continuation-proposal-summary">
+      <div className="proposal-workspace-metrics">
+        {targetChapters > 0 ? <span>计划续写 {targetChapters} 章</span> : null}
+        {targetRunes > 0 ? <span>目标 {formatCompact(targetRunes)} 字</span> : null}
+      </div>
+      {summary ? <p><b>核心提案</b>{summary}</p> : null}
+      {direction ? <p><b>续写方向</b>{direction}</p> : null}
+      {notes.length ? <ProposalChipList label="规划约束" values={notes} /> : null}
+    </section>
+  );
+}
+
+function ContinuationVolumeList({ volumes }) {
+  if (!volumes.length) {
+    return <div className="empty-state">分卷规划生成中</div>;
+  }
+  return (
+    <div className="proposal-volume-stack">
+      {volumes.map((volume, volumePosition) => {
+        const index = Number(volume.index || volume.Index || volumePosition + 1);
+        const arcs = arrayValue(volume, 'arcs', 'Arcs');
+        return (
+          <section className="proposal-volume-block volume-review-block" key={`continuation-volume-${index}`}>
+            <div className="proposal-volume-head">
+              <div>
+                <strong>{textValue(volume, 'title', 'Title') || `第 ${index} 卷`}</strong>
+                <span>{arcs.length ? `${arcs.length} 个故事弧` : '等待故事弧规划'}</span>
+              </div>
+              {textValue(volume, 'theme', 'Theme') ? <p>{textValue(volume, 'theme', 'Theme')}</p> : null}
+            </div>
+            {arcs.length ? (
+              <div className="continuation-arc-grid">
+                {arcs.map((arc, arcPosition) => (
+                  <article key={`continuation-arc-${index}-${arc.index || arc.Index || arcPosition}`}>
+                    <strong>{textValue(arc, 'title', 'Title') || `故事弧 ${arcPosition + 1}`}</strong>
+                    {textValue(arc, 'goal', 'Goal') ? <p>{textValue(arc, 'goal', 'Goal')}</p> : null}
+                    <span>预计 {arc.estimated_chapters || arc.estimatedChapters || arc.EstimatedChapters || '-'} 章</span>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function ContinuationOutlineList({ outlines }) {
+  if (!outlines.length) {
+    return <div className="empty-state">章节细纲生成中</div>;
+  }
+  return (
+    <div className="proposal-chapter-grid continuation-outline-grid">
+      {outlines.map((outline, position) => {
+        const chapter = Number(outline.chapter || outline.Chapter || outline.index || outline.Index || position + 1);
+        const scenes = arrayValue(outline, 'scenes', 'Scenes');
+        return (
+          <article className="proposal-chapter-card" key={`continuation-outline-${chapter}-${position}`}>
+            <div className="proposal-chapter-title">
+              <span>{chapter}</span>
+              <strong>{textValue(outline, 'title', 'Title') || '未命名章节'}</strong>
+            </div>
+            {textValue(outline, 'summary', 'Summary', 'goal', 'Goal', 'core_event', 'coreEvent', 'CoreEvent') ? (
+              <p><b>本章目标</b>{textValue(outline, 'summary', 'Summary', 'goal', 'Goal', 'core_event', 'coreEvent', 'CoreEvent')}</p>
+            ) : null}
+            {textValue(outline, 'hook', 'Hook') ? <p><b>章末钩子</b>{textValue(outline, 'hook', 'Hook')}</p> : null}
+            {scenes.length ? <p><b>场景</b>{scenes.map((scene) => typeof scene === 'string' ? scene : textValue(scene, 'summary', 'Summary', 'location', 'Location')).filter(Boolean).join(' / ')}</p> : null}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 function AdaptationProposalWorkspace({ proposal }) {
   if (proposal.volumeReviewReady) {
     return <AdaptationVolumeReviewWorkspace proposal={proposal} />;
@@ -6009,56 +6340,225 @@ function SimulationEventList({ events }) {
   );
 }
 
-function ImportPanel({ activeProject, busy, externalImport, setExternalImport, onImport }) {
-  const latest = latestSimulationEvent(externalImport.events);
+function ContinuationPanel({
+  activeProject,
+  busy,
+  continuation,
+  workflow,
+  setContinuation,
+  onUpload,
+  onBeginDraft,
+  onGenerateProposal,
+  onGenerateOutlines,
+  onRevise,
+  onApprove,
+  onRetry,
+  onStart
+}) {
+  const latest = latestSimulationEvent(continuation.events);
+  const steps = deriveContinuationSteps(workflow);
+  const reviewKind = continuationReviewKind(workflow);
+  const showUpload = !workflow.exists || workflow.stage === 'source_importing';
+  const actionBusy = busy || continuation.actionStatus === 'running';
   return (
-    <div className="side-content">
-      {externalImport.error ? <div className="error-banner compact">{externalImport.error}</div> : null}
+    <div className="side-content continuation-panel">
+      {continuation.error || workflow.lastError ? <div className="error-banner compact">{continuation.error || workflow.lastError}</div> : null}
 
-      <section className="simulation-section">
+      <section className="continuation-stepper" aria-label="小说续写流程">
+        {steps.map((step, index) => (
+          <div className={`continuation-step ${step.status}`} key={step.id}>
+            <span>{step.status === 'complete' ? <Check size={13} /> : index + 1}</span>
+            <strong>{step.label}</strong>
+          </div>
+        ))}
+      </section>
+
+      <section className="simulation-section continuation-source-section">
         <div className="section-title">
           <Upload size={17} />
-          <span>外部小说导入</span>
+          <span>原作基线</span>
         </div>
-        <div className="tool-form">
-          <label className="field-label">
-            <span>续写起点</span>
-            <input
-              disabled={busy}
-              inputMode="numeric"
-              min="0"
-              placeholder="0"
-              type="number"
-              value={externalImport.from}
-              onChange={(event) => setExternalImport((previous) => ({ ...previous, from: event.target.value }))}
-            />
-          </label>
-          <label className={`tool-button file-picker full ${!activeProject || busy ? 'disabled' : ''}`}>
-            <Upload size={16} />
-            上传并导入
-            <input
-              accept=".txt,.md,.markdown,text/plain,text/markdown"
-              disabled={!activeProject || busy}
-              onChange={onImport}
-              type="file"
-            />
-          </label>
-        </div>
-        {externalImport.message ? <div className="success-note">{externalImport.message}</div> : null}
-        <div className={`workflow-status ${externalImport.status}`}>
-          <strong>{workflowStatusText(externalImport.status)}</strong>
-          <span>{latest?.message || '等待导入文本'}</span>
-        </div>
-        {externalImport.sourceFile ? (
+        {showUpload ? (
+          <div className="tool-form">
+            <p className="muted continuation-copy">上传只建立原作基线，不会自动开始续写。</p>
+            <label className={`tool-button file-picker full ${!activeProject || busy ? 'disabled' : ''}`}>
+              <Upload size={16} />
+              上传并建立原作基线
+              <input
+                accept=".txt,.md,.markdown,text/plain,text/markdown"
+                disabled={!activeProject || busy}
+                onChange={onUpload}
+                type="file"
+              />
+            </label>
+          </div>
+        ) : (
+          <div className="continuation-baseline">
+            <strong>原作已锁定</strong>
+            <span>{workflow.baseChapterCount > 0 ? `第 1–${workflow.baseChapterCount} 章` : '原作章节'}不会被续写规划覆盖</span>
+            {workflow.nextChapter > 0 ? <span>续写从第 {workflow.nextChapter} 章开始</span> : null}
+          </div>
+        )}
+        {continuation.message ? <div className="success-note">{continuation.message}</div> : null}
+        {showUpload || continuation.status === 'running' ? (
+          <div className={`workflow-status ${continuation.status}`}>
+            <strong>{workflowStatusText(continuation.status)}</strong>
+            <span>{latest?.message || '等待导入原作文本'}</span>
+          </div>
+        ) : null}
+        {continuation.sourceFile ? (
           <div className="file-list">
             <div className="file-row">
-              <span>{externalImport.sourceFile.name}</span>
-              <strong>{formatBytes(externalImport.sourceFile.size)}</strong>
+              <span>{continuation.sourceFile.name}</span>
+              <strong>{continuation.sourceFile.size ? formatBytes(continuation.sourceFile.size) : '已导入'}</strong>
             </div>
           </div>
         ) : null}
-        <SimulationEventList events={externalImport.events} />
+        <SimulationEventList events={continuation.events} />
       </section>
+
+      {workflow.exists && workflow.stage !== 'source_importing' ? (
+        <section className="simulation-section continuation-action-section">
+          <div className="section-title">
+            <BookOpen size={17} />
+            <span>{continuationStageTitle(workflow)}</span>
+          </div>
+          <p className="muted continuation-copy">{continuationStageDescription(workflow)}</p>
+
+          {workflow.stage === 'source_ready' || (workflow.stage === 'draft_collecting' && !workflow.draft) ? (
+            <button className="tool-button accent full-width" disabled={actionBusy} onClick={onBeginDraft} type="button">
+              <MessageSquareText size={16} />
+              进入 Draft 共创
+            </button>
+          ) : null}
+
+          {workflow.stage === 'draft_collecting' && workflow.draft ? (
+            <button className="tool-button accent full-width" disabled={actionBusy} onClick={onGenerateProposal} type="button">
+              <WandSparkles size={16} />
+              根据 Draft 生成续写提案
+            </button>
+          ) : null}
+
+          {workflow.stage === 'proposal_generating' ? (
+            <button className="tool-button accent full-width" disabled={actionBusy} onClick={onGenerateProposal} type="button">
+              <WandSparkles size={16} />
+              生成 / 继续生成提案
+            </button>
+          ) : null}
+
+          {workflow.stage === 'outline_generating' ? (
+            <button className="tool-button accent full-width" disabled={actionBusy} onClick={onGenerateOutlines} type="button">
+              <WandSparkles size={16} />
+              生成 / 继续生成章节细纲
+            </button>
+          ) : null}
+
+          {reviewKind ? (
+            <ContinuationReviewForm
+              busy={actionBusy}
+              continuation={continuation}
+              reviewKind={reviewKind}
+              setContinuation={setContinuation}
+              workflow={workflow}
+              onApprove={onApprove}
+              onRevise={onRevise}
+            />
+          ) : null}
+
+          {continuationCanRetry(workflow) ? (
+            <button className="tool-button full-width" disabled={actionBusy} onClick={onRetry} type="button">
+              <RefreshCw size={16} />
+              恢复当前规划任务
+            </button>
+          ) : null}
+
+          {workflow.stage === 'ready_to_write' ? (
+            <div className="continuation-start-card">
+              <strong>全部规划已审核通过</strong>
+              <span>确认后才会从第 {workflow.nextChapter || workflow.baseChapterCount + 1} 章开始续写。</span>
+              <button className="tool-button accent full-width" disabled={actionBusy} onClick={onStart} type="button">
+                <Play size={16} />
+                确认并开始续写
+              </button>
+            </div>
+          ) : null}
+
+          {workflow.stage === 'writing' ? <div className="success-note">续写已启动，Writer 正在按审核通过的细纲创作。</div> : null}
+          {continuation.actionMessage ? <div className="success-note">{continuation.actionMessage}</div> : null}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function ContinuationReviewForm({ busy, continuation, reviewKind, setContinuation, workflow, onApprove, onRevise }) {
+  const approveLabel = reviewKind === 'proposal'
+    ? workflow.shortStory ? '通过提案，进入章节细纲' : '通过提案，进入分卷审核'
+    : reviewKind === 'volumes'
+      ? '通过分卷，进入章节细纲'
+      : '通过细纲，允许准备开写';
+  return (
+    <div className="continuation-review-form">
+      {reviewKind === 'volumes' ? (
+        <div className="continuation-scope-row">
+          <button className={continuation.scope === 'all' ? 'active' : ''} onClick={() => setContinuation((previous) => ({ ...previous, scope: 'all' }))} type="button">全部</button>
+          <button className={continuation.scope === 'volume' ? 'active' : ''} onClick={() => setContinuation((previous) => ({ ...previous, scope: 'volume' }))} type="button">单卷</button>
+          {continuation.scope === 'volume' ? (
+            <input aria-label="分卷序号" min="1" type="number" value={continuation.volumeIndex} onChange={(event) => setContinuation((previous) => ({ ...previous, volumeIndex: event.target.value }))} />
+          ) : null}
+        </div>
+      ) : null}
+      {reviewKind === 'outlines' ? (
+        <ContinuationOutlineScope continuation={continuation} setContinuation={setContinuation} />
+      ) : null}
+      <label className="field-label">
+        <span>审核修改要求</span>
+        <textarea
+          disabled={busy}
+          placeholder={reviewKind === 'outlines' ? '说明需要修改的章节、节奏或情节...' : '说明需要调整的方向、结构或分卷...'}
+          rows="5"
+          value={continuation.instruction}
+          onChange={(event) => setContinuation((previous) => ({ ...previous, instruction: event.target.value, error: '' }))}
+        />
+      </label>
+      <div className="continuation-review-actions">
+        <button className="tool-button" disabled={busy || !continuation.instruction.trim()} onClick={onRevise} type="button">
+          <Pencil size={16} />
+          提交修改
+        </button>
+        <button className="tool-button accent" disabled={busy} onClick={onApprove} type="button">
+          <Check size={16} />
+          {approveLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ContinuationOutlineScope({ continuation, setContinuation }) {
+  return (
+    <div className="continuation-outline-scope">
+      <label className="field-label">
+        <span>修改范围</span>
+        <select value={continuation.scope} onChange={(event) => setContinuation((previous) => ({ ...previous, scope: event.target.value }))}>
+          <option value="all">全部细纲</option>
+          <option value="volume">单卷</option>
+          <option value="chapter">单章</option>
+          <option value="range">章节范围</option>
+        </select>
+      </label>
+      {continuation.scope === 'volume' ? (
+        <input aria-label="分卷序号" min="1" placeholder="卷" type="number" value={continuation.volumeIndex} onChange={(event) => setContinuation((previous) => ({ ...previous, volumeIndex: event.target.value }))} />
+      ) : null}
+      {continuation.scope === 'chapter' ? (
+        <input aria-label="章节序号" min="1" placeholder="章" type="number" value={continuation.chapter} onChange={(event) => setContinuation((previous) => ({ ...previous, chapter: event.target.value }))} />
+      ) : null}
+      {continuation.scope === 'range' ? (
+        <div className="field-grid">
+          <input aria-label="起始章节" min="1" placeholder="起始章" type="number" value={continuation.fromChapter} onChange={(event) => setContinuation((previous) => ({ ...previous, fromChapter: event.target.value }))} />
+          <input aria-label="结束章节" min="1" placeholder="结束章" type="number" value={continuation.toChapter} onChange={(event) => setContinuation((previous) => ({ ...previous, toChapter: event.target.value }))} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -8946,6 +9446,38 @@ export function buildAdaptationRevisionPayload(adaptation = {}, proposal = {}) {
       instruction
     }
   };
+}
+
+function continuationStageTitle(workflow) {
+  return {
+    source_ready: '确定续写 Draft',
+    draft_collecting: '确定续写 Draft',
+    proposal_generating: '生成续写提案',
+    proposal_review_pending: '审核续写提案',
+    volume_review_pending: '审核分卷规划',
+    outline_generating: '生成章节细纲',
+    outline_review_pending: '审核章节细纲',
+    ready_to_write: '最终开写确认',
+    writing: '续写进行中',
+    paused: '续写流程已暂停',
+    failed: '续写流程需要恢复'
+  }[workflow.stage] || '小说续写';
+}
+
+function continuationStageDescription(workflow) {
+  return {
+    source_ready: '先在共创中明确续写方向、目标冲突、人物弧和篇幅，再生成提案。',
+    draft_collecting: workflow.draft ? 'Draft 已保存，可以据此生成续写提案。' : '继续通过共创收敛 Draft，确认后再进入提案。',
+    proposal_generating: '系统将以已确认 Draft 和原作基线生成可审核的续写提案。',
+    proposal_review_pending: workflow.shortStory ? '短篇无需分卷；提案通过后仍须生成并审核章节细纲。' : '先审核总体方向；长篇提案通过后进入分卷规划审核。',
+    volume_review_pending: '可修改单卷或全部分卷；审核通过后才生成章节细纲。',
+    outline_generating: '生成正式章节细纲，完成后仍需逐项审核。',
+    outline_review_pending: '可按单章、章节范围、整卷或全部修改；通过后才允许开写。',
+    ready_to_write: 'Draft、提案、分卷和章节细纲均已通过审核，等待最终显式确认。',
+    writing: 'Writer 只能按审核通过的规划从原作下一章继续。',
+    paused: '恢复只会继续当前规划任务，不会跳过审核。',
+    failed: '修复错误后从上次阶段继续，不会自动跨过审核。'
+  }[workflow.stage] || '';
 }
 
 export function getOutlineRevisionView(snapshot, revision = {}) {

@@ -117,6 +117,7 @@ type UISnapshot struct {
 	SimulationSummary      *SimulationProfileSummary
 	CreativeBlueprint      *CreativeBlueprintSummary
 	PlanningReview         *PlanningReviewSummary
+	Continuation           *domain.ContinuationSnapshot
 	AdaptationVolumeReview *domain.AdaptationVolumeReview
 	AdaptationProposal     *domain.AdaptationPlan
 	AdaptationPlan         *domain.AdaptationPlan

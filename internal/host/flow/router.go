@@ -47,6 +47,9 @@ type State struct {
 
 	OutlineRepair *storepkg.OutlineRepairBatch
 
+	ContinuationActive      bool
+	ContinuationBaseChapter int
+
 	AdaptationActive          bool
 	AdaptationPlannedChapters map[int]struct{}
 	AdaptationMaxChapter      int
@@ -120,6 +123,15 @@ func Route(s State) *Instruction {
 	// 5. 用户干预处理中：Coordinator 正在裁定，Host 不抢占
 	if p.Flow == domain.FlowSteering {
 		return nil
+	}
+
+	// Imported chapters are historical source material, not chapters that were
+	// just written by this run. Once a reviewed continuation plan starts, route
+	// directly to N+1 instead of retrospectively reviewing the source boundary.
+	if s.ContinuationActive &&
+		s.LastCompleted == s.ContinuationBaseChapter &&
+		p.NextChapter() == s.ContinuationBaseChapter+1 {
+		return s.nextChapterInstruction(p, "续写规划已审核通过，从导入基线后的第一章开始")
 	}
 
 	// 6-10. 分层模式的弧末后处理

@@ -430,6 +430,36 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectBackendTest(w, r, id)
 	case "import":
 		s.handleProjectImport(w, r, id)
+	case "continuation":
+		s.handleProjectContinuation(w, r, id)
+	case "continuation/source":
+		s.handleProjectContinuationSource(w, r, id)
+	case "continuation/draft/begin":
+		s.handleProjectContinuationDraftBegin(w, r, id)
+	case "continuation/draft/send":
+		s.handleProjectContinuationDraftSend(w, r, id)
+	case "continuation/draft/commit":
+		s.handleProjectContinuationDraftCommit(w, r, id)
+	case "continuation/proposal/generate":
+		s.handleProjectContinuationProposalGenerate(w, r, id)
+	case "continuation/proposal/revise":
+		s.handleProjectContinuationProposalRevise(w, r, id)
+	case "continuation/proposal/approve":
+		s.handleProjectContinuationProposalApprove(w, r, id)
+	case "continuation/volumes/revise":
+		s.handleProjectContinuationVolumesRevise(w, r, id)
+	case "continuation/volumes/approve":
+		s.handleProjectContinuationVolumesApprove(w, r, id)
+	case "continuation/outlines/generate":
+		s.handleProjectContinuationOutlinesGenerate(w, r, id)
+	case "continuation/outlines/revise":
+		s.handleProjectContinuationOutlinesRevise(w, r, id)
+	case "continuation/outlines/approve":
+		s.handleProjectContinuationOutlinesApprove(w, r, id)
+	case "continuation/retry":
+		s.handleProjectContinuationRetry(w, r, id)
+	case "continuation/start":
+		s.handleProjectContinuationStart(w, r, id)
 	case "export":
 		s.handleProjectExport(w, r, id)
 	case "export/download":

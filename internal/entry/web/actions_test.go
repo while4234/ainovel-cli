@@ -271,8 +271,8 @@ func TestProjectChapterOutlineReviseCallsHostFlow(t *testing.T) {
 	}
 	var body struct {
 		Project  ProjectManifest           `json:"project"`
-		Snapshot host.UISnapshot          `json:"snapshot"`
-		Running  bool                     `json:"running"`
+		Snapshot host.UISnapshot           `json:"snapshot"`
+		Running  bool                      `json:"running"`
 		Revision apiChapterOutlineRevision `json:"revision"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
@@ -376,7 +376,7 @@ func TestProjectChapterContentReadsFinalChapter(t *testing.T) {
 	}
 }
 
-func TestProjectImportSavesSourceUnderProjectAndResumes(t *testing.T) {
+func TestProjectImportSavesSourceUnderProjectWithoutStartingWriting(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("External Import")
@@ -399,12 +399,111 @@ func TestProjectImportSavesSourceUnderProjectAndResumes(t *testing.T) {
 	if fake.importNovelResumeFrom != 2 {
 		t.Fatalf("resumeFrom = %d, want 2", fake.importNovelResumeFrom)
 	}
-	if fake.resumeCalls != 1 {
-		t.Fatalf("import should resume writing, calls=%d", fake.resumeCalls)
+	if fake.resumeCalls != 0 {
+		t.Fatalf("import must wait for continuation approval before writing, calls=%d", fake.resumeCalls)
 	}
 	if _, err := os.Stat(wantPath); err != nil {
 		t.Fatalf("import source was not saved: %v", err)
 	}
+}
+
+func TestProjectContinuationSourceImportsWithoutStartingWriting(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Continuation Source")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.continuationSnapshot = testContinuationSnapshot(domain.ContinuationStageSourceReady, 1)
+
+	req := newImportRequest(t, "/api/projects/"+manifest.ID+"/continuation/source", "source.txt", "第一章\n第二章", "")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("continuation source status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	wantPath := filepath.Join(manifest.RootDir, "uploads", "continuation", "source.txt")
+	if fake.importNovelPath != wantPath {
+		t.Fatalf("continuation import path = %q, want %q", fake.importNovelPath, wantPath)
+	}
+	if fake.resumeCalls != 0 {
+		t.Fatalf("continuation source import must not resume writing, calls=%d", fake.resumeCalls)
+	}
+	var body struct {
+		Continuation *domain.ContinuationSnapshot `json:"continuation"`
+		Running      bool                         `json:"running"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode continuation source response: %v", err)
+	}
+	if body.Continuation == nil || body.Continuation.Workflow.Stage != domain.ContinuationStageSourceReady || body.Running {
+		t.Fatalf("unexpected continuation source response: %+v", body)
+	}
+}
+
+func TestProjectContinuationStartResumesOnlyOnce(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Continuation Start")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.continuationSnapshot = testContinuationSnapshot(domain.ContinuationStageReadyToWrite, 7)
+
+	for attempt, wantStatus := range []int{http.StatusOK, http.StatusConflict} {
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/api/projects/"+manifest.ID+"/continuation/start",
+			bytes.NewBufferString(`{"expected_revision":7}`),
+		)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != wantStatus {
+			t.Fatalf("attempt %d status = %d body=%s, want %d", attempt+1, rec.Code, rec.Body.String(), wantStatus)
+		}
+	}
+	if fake.resumeCalls != 1 {
+		t.Fatalf("continuation start resumed writing %d times, want exactly 1", fake.resumeCalls)
+	}
+	if fake.continuationSnapshot.Workflow.Stage != domain.ContinuationStageWriting {
+		t.Fatalf("continuation stage = %q, want writing", fake.continuationSnapshot.Workflow.Stage)
+	}
+}
+
+func TestProjectContinuationMutationRejectsStaleRevision(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Continuation Revision")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.continuationSnapshot = testContinuationSnapshot(domain.ContinuationStageProposalGenerating, 4)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+manifest.ID+"/continuation/proposal/generate",
+		bytes.NewBufferString(`{"expected_revision":3}`),
+	)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale continuation mutation status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+}
+
+func testContinuationSnapshot(stage domain.ContinuationStage, revision int) *domain.ContinuationSnapshot {
+	return &domain.ContinuationSnapshot{Workflow: domain.ContinuationWorkflow{
+		Version:          domain.ContinuationSchemaVersion,
+		Stage:            stage,
+		SourceSignature:  "source-signature",
+		BaseChapterCount: 2,
+		Revision:         revision,
+	}}
 }
 
 func TestProjectExportUsesProjectExportsDir(t *testing.T) {

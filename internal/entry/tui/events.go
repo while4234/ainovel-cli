@@ -11,6 +11,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	continuationflow "github.com/voocel/ainovel-cli/internal/host/continuation"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -48,8 +49,15 @@ type (
 		reply host.CoCreateReply
 		err   error
 	}
-	steerResultMsg     struct{ err error }
-	continueResultMsg  struct{ err error }
+	steerResultMsg                struct{ err error }
+	continueResultMsg             struct{ err error }
+	continuationDraftCommittedMsg struct{ err error }
+	continuationActionMsg         struct {
+		action   string
+		snapshot *domain.ContinuationSnapshot
+		label    string
+		err      error
+	}
 	spinnerTickMsg     time.Time
 	toolSpinnerTickMsg time.Time // 事件流工具 spinner 独立 tick（更快、独立于顶栏/星星）
 	cursorTickMsg      time.Time // 流式光标独立 tick
@@ -155,7 +163,9 @@ func runCoCreate(rt *host.Host, state *cocreateState) tea.Cmd {
 	state.doneCh = make(chan cocreateDoneMsg, 1)
 	// 阶段共创带故事状态摘要、产出"后续方向 brief"；冷启动从零澄清需求。两者签名一致。
 	stream := rt.CoCreateStream
-	if state.stage {
+	if state.continuation {
+		stream = rt.ContinuationCoCreateStream
+	} else if state.stage {
 		stream = rt.StageCoCreateStream
 	} else if state.adapt {
 		stream = rt.AdaptCoCreateStream
@@ -230,6 +240,77 @@ func resumeFromCoCreate(rt *host.Host, draft string) tea.Cmd {
 	return func() tea.Msg {
 		err := rt.ResumeFromCoCreate(draft)
 		return continueResultMsg{err: err}
+	}
+}
+
+func commitContinuationDraft(rt *host.Host, draft string) tea.Cmd {
+	return func() tea.Msg {
+		snapshot, err := rt.ContinuationSnapshot()
+		if err != nil {
+			return continuationDraftCommittedMsg{err: err}
+		}
+		if snapshot == nil {
+			return continuationDraftCommittedMsg{err: fmt.Errorf("continuation workflow is not initialized")}
+		}
+		_, err = rt.CommitContinuationDraft(draft, snapshot.Workflow.Revision)
+		return continuationDraftCommittedMsg{err: err}
+	}
+}
+
+func runContinuationCommand(rt *host.Host, action, instruction string) tea.Cmd {
+	return func() tea.Msg {
+		snapshot, err := rt.ContinuationSnapshot()
+		if err != nil || snapshot == nil {
+			if err == nil {
+				err = fmt.Errorf("续写工作流尚未初始化，请先导入原作")
+			}
+			return continuationActionMsg{action: action, err: err}
+		}
+		revision := snapshot.Workflow.Revision
+		ctx := context.Background()
+		var label string
+		switch action {
+		case "status":
+			return continuationActionMsg{action: action, snapshot: snapshot}
+		case "generate":
+			switch snapshot.Workflow.Stage {
+			case domain.ContinuationStageProposalGenerating:
+				snapshot, err = rt.GenerateContinuationProposal(ctx, revision)
+			case domain.ContinuationStageOutlineGenerating:
+				snapshot, err = rt.GenerateContinuationOutlines(ctx, revision)
+			default:
+				err = fmt.Errorf("当前阶段 %s 不需要生成，请先查看 /continuation status", snapshot.Workflow.Stage)
+			}
+		case "approve":
+			switch snapshot.Workflow.Stage {
+			case domain.ContinuationStageProposalReviewPending:
+				snapshot, err = rt.ApproveContinuationProposal(ctx, revision)
+			case domain.ContinuationStageVolumeReviewPending:
+				snapshot, err = rt.ApproveContinuationVolumes(ctx, revision)
+			case domain.ContinuationStageOutlineReviewPending:
+				snapshot, err = rt.ApproveContinuationOutlines(revision)
+			default:
+				err = fmt.Errorf("当前阶段 %s 没有待审核内容", snapshot.Workflow.Stage)
+			}
+		case "revise":
+			switch snapshot.Workflow.Stage {
+			case domain.ContinuationStageProposalReviewPending:
+				snapshot, err = rt.ReviseContinuationProposal(ctx, instruction, revision)
+			case domain.ContinuationStageVolumeReviewPending:
+				snapshot, err = rt.ReviseContinuationVolumes(ctx, instruction, 0, revision)
+			case domain.ContinuationStageOutlineReviewPending:
+				snapshot, err = rt.ReviseContinuationOutlines(ctx, continuationflow.OutlineRevisionInput{Instruction: instruction}, revision)
+			default:
+				err = fmt.Errorf("当前阶段 %s 没有可修改的审核内容", snapshot.Workflow.Stage)
+			}
+		case "retry":
+			snapshot, err = rt.RetryContinuation(ctx, revision)
+		case "start":
+			label, snapshot, err = rt.StartContinuation(revision)
+		default:
+			err = fmt.Errorf("未知续写操作 %q", action)
+		}
+		return continuationActionMsg{action: action, snapshot: snapshot, label: label, err: err}
 	}
 }
 

@@ -18,6 +18,7 @@ func LoadState(store *storepkg.Store) State {
 	}
 	s.Progress = progress
 	loadAdaptationState(&s, store, progress)
+	loadContinuationState(&s, store)
 
 	if repair, rerr := store.FindDuplicateOutlineRepairBatch(progress); rerr == nil && repair != nil {
 		s.OutlineRepair = repair
@@ -62,6 +63,18 @@ func LoadState(store *storepkg.Store) State {
 	}
 
 	return s
+}
+
+func loadContinuationState(s *State, store *storepkg.Store) {
+	if s == nil || store == nil {
+		return
+	}
+	snapshot, err := store.Continuation.LoadSnapshot()
+	if err != nil || snapshot == nil || snapshot.Plan == nil || snapshot.Workflow.Stage != domain.ContinuationStageWriting {
+		return
+	}
+	s.ContinuationActive = true
+	s.ContinuationBaseChapter = snapshot.Workflow.BaseChapterCount
 }
 
 func loadAdaptationState(s *State, store *storepkg.Store, progress *domain.Progress) {

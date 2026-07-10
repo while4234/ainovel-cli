@@ -143,9 +143,9 @@ func (s *importState) refresh(contentW int) {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("Esc 关闭面板"))
 	default:
-		b.WriteString(okStyle.Render("导入完成，正在自动接力续写"))
+		b.WriteString(okStyle.Render("导入完成，已建立续写基线"))
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("Esc 关闭面板查看进度"))
+		b.WriteString(dimStyle.Render("Esc 关闭面板，然后进入续写规划确定 Draft"))
 	}
 
 	s.viewport.SetContent(b.String())

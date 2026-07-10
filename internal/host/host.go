@@ -2,7 +2,10 @@ package host
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -532,6 +535,9 @@ func (h *Host) Resume() (string, error) {
 		return "", fmt.Errorf("阶段共创进行中，请先结束共创")
 	}
 	h.mu.Unlock()
+	if err := h.ensureContinuationWritingAllowed(); err != nil {
+		return "", err
+	}
 
 	if _, err := h.store.ReconcilePendingRewriteProgress(); err != nil {
 		return "", err
@@ -603,6 +609,11 @@ func (h *Host) Continue(text string) error {
 	}
 	running := h.lifecycle == lifecycleRunning
 	h.mu.Unlock()
+	if !running {
+		if err := h.ensureContinuationWritingAllowed(); err != nil {
+			return err
+		}
+	}
 
 	h.emitEvent(Event{Time: time.Now(), Category: "USER", Summary: "[继续] " + text, Level: "info"})
 
@@ -962,6 +973,9 @@ func (h *Host) Snapshot() UISnapshot {
 		snap.PendingSteer = meta.PendingSteer
 		snap.WordBudget = meta.WordBudget
 		snap.PlanningReview = planningReviewSummary(meta.PlanningReview)
+	}
+	if continuation, err := h.ContinuationSnapshot(); err == nil {
+		snap.Continuation = continuation
 	}
 
 	snap.Agents = h.observer.agentSnapshots()
@@ -3224,6 +3238,14 @@ func (h *Host) StageCoCreateStream(ctx context.Context, history []CoCreateMessag
 	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), stageSystemPromptWithSimulation(h.store, h.cfg.EffectiveSimulationMode()), history, onProgress)
 }
 
+// ContinuationCoCreateStream uses the written source novel as immutable story
+// context while the user and model consolidate a continuation Draft. Committing
+// that Draft is handled by the continuation workflow; this method never resumes
+// the writer by itself.
+func (h *Host) ContinuationCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
+	return h.StageCoCreateStream(ctx, history, onProgress)
+}
+
 // AdaptCoCreateStream 改编共创：基于原书分析快照澄清改编目标。
 func (h *Host) AdaptCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
 	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), adaptSystemPrompt(h.store), history, onProgress)
@@ -3365,11 +3387,18 @@ func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Eve
 	if err := h.guardExclusive("导入"); err != nil {
 		return nil, err
 	}
+	if continuation, err := h.ContinuationSnapshot(); err != nil {
+		return nil, fmt.Errorf("inspect continuation state: %w", err)
+	} else if continuation != nil && continuation.Workflow.Stage != domain.ContinuationStageSourceReady {
+		return nil, fmt.Errorf("continuation planning already started at stage %q; roll it back before replacing the source", continuation.Workflow.Stage)
+	}
 	if err := h.PrepareExternalSourceUserRules(""); err != nil {
 		return nil, err
 	}
-	if err := h.store.Adaptation.Reset(); err != nil {
-		return nil, fmt.Errorf("reset adaptation state: %w", err)
+	if source, err := h.store.Adaptation.LoadSourceManifest(); err != nil {
+		return nil, fmt.Errorf("inspect adaptation state: %w", err)
+	} else if source != nil {
+		return nil, fmt.Errorf("project contains adaptation source state; create a new project or explicitly roll it back before importing a continuation source")
 	}
 
 	deps := imp.Deps{
@@ -3381,7 +3410,63 @@ func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Eve
 			Analyzer:   h.bundle.Prompts.ImportAnalyzer,
 		},
 	}
-	return imp.Run(ctx, deps, opts)
+	sourceSignature, err := sourceFileSignature(opts.SourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("hash continuation source: %w", err)
+	}
+	events, err := imp.Run(ctx, deps, opts)
+	if err != nil {
+		return nil, err
+	}
+	return h.withContinuationImportFinalization(ctx, sourceSignature, events), nil
+}
+
+func sourceFileSignature(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func (h *Host) withContinuationImportFinalization(ctx context.Context, sourceSignature string, source <-chan imp.Event) <-chan imp.Event {
+	out := make(chan imp.Event, 32)
+	go func() {
+		defer close(out)
+		for event := range source {
+			if event.Stage == imp.StageDone {
+				progress, err := h.store.Progress.Load()
+				baseChapterCount := 0
+				if progress != nil {
+					baseChapterCount = progress.LatestCompleted()
+				}
+				if err == nil && baseChapterCount <= 0 {
+					err = fmt.Errorf("import completed without committed source chapters")
+				}
+				if err == nil {
+					_, err = h.store.Continuation.InitializeSource(sourceSignature, baseChapterCount)
+				}
+				if err != nil {
+					event.Stage = imp.StageError
+					event.Message = "初始化续写规划失败"
+					event.Err = err
+				} else {
+					event.Message = fmt.Sprintf("导入完成：%d 章；已建立续写规划基线，等待确认 Draft", baseChapterCount)
+				}
+			}
+			select {
+			case out <- event:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
 }
 
 // PrepareAdaptationSource analyzes a source novel for adaptation without

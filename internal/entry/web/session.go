@@ -22,6 +22,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	continuationpkg "github.com/voocel/ainovel-cli/internal/host/continuation"
 	"github.com/voocel/ainovel-cli/internal/host/exp"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
@@ -48,6 +49,7 @@ const (
 	projectActionKindAdaptationAnalysis = "adaptation_analysis"
 	projectActionKindAdaptationProposal = "adaptation_proposal"
 	projectActionKindAdaptationRevision = "adaptation_proposal_revision"
+	projectActionKindContinuation       = "continuation_planning"
 	projectActionKindSimulationAnalysis = "simulation_analysis"
 	projectActionKindSimulationImport   = "simulation_import"
 	webCoCreateCheckpointRelPath        = "meta/sessions/web-cocreate-checkpoint.json"
@@ -95,6 +97,20 @@ type projectHost interface {
 	Steer(string) error
 	CoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
 	StageCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	ContinuationCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
+	ContinuationSnapshot() (*domain.ContinuationSnapshot, error)
+	BeginContinuationDraft(int) (*domain.ContinuationSnapshot, error)
+	CommitContinuationDraft(string, int) (*domain.ContinuationSnapshot, error)
+	GenerateContinuationProposal(context.Context, int) (*domain.ContinuationSnapshot, error)
+	ReviseContinuationProposal(context.Context, string, int) (*domain.ContinuationSnapshot, error)
+	ApproveContinuationProposal(context.Context, int) (*domain.ContinuationSnapshot, error)
+	ReviseContinuationVolumes(context.Context, string, int, int) (*domain.ContinuationSnapshot, error)
+	ApproveContinuationVolumes(context.Context, int) (*domain.ContinuationSnapshot, error)
+	GenerateContinuationOutlines(context.Context, int) (*domain.ContinuationSnapshot, error)
+	ReviseContinuationOutlines(context.Context, continuationpkg.OutlineRevisionInput, int) (*domain.ContinuationSnapshot, error)
+	ApproveContinuationOutlines(int) (*domain.ContinuationSnapshot, error)
+	RetryContinuation(context.Context, int) (*domain.ContinuationSnapshot, error)
+	StartContinuation(int) (string, *domain.ContinuationSnapshot, error)
 	AdaptCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
 	EnsureAdaptationCoCreateBriefing(context.Context, string, domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error)
 	ResolveAdaptationCoCreateDecision(string, string, string) (*domain.AdaptationCoCreateBriefing, error)
@@ -941,9 +957,105 @@ func (s *ProjectSession) ImportExternalNovel(ctx context.Context, sourcePath str
 		s.AppendSnapshot()
 		return apiEvents, "", err
 	}
-	label, err := s.host.Resume()
 	s.AppendSnapshot()
-	return apiEvents, label, err
+	return apiEvents, "", nil
+}
+
+func (s *ProjectSession) ContinuationSnapshot() (*domain.ContinuationSnapshot, error) {
+	return s.host.ContinuationSnapshot()
+}
+
+func (s *ProjectSession) runContinuationAction(
+	ctx context.Context,
+	action func(context.Context) (*domain.ContinuationSnapshot, error),
+) (*domain.ContinuationSnapshot, error) {
+	actionCtx, unlock, err := s.beginCancellableAction(ctx, projectActionKindContinuation)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
+	snapshot, err := action(actionCtx)
+	s.AppendSnapshot()
+	return snapshot, err
+}
+
+func (s *ProjectSession) GenerateContinuationProposal(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	return s.runContinuationAction(ctx, func(actionCtx context.Context) (*domain.ContinuationSnapshot, error) {
+		return s.host.GenerateContinuationProposal(actionCtx, expectedRevision)
+	})
+}
+
+func (s *ProjectSession) ReviseContinuationProposal(ctx context.Context, expectedRevision int, instruction string) (*domain.ContinuationSnapshot, error) {
+	return s.runContinuationAction(ctx, func(actionCtx context.Context) (*domain.ContinuationSnapshot, error) {
+		return s.host.ReviseContinuationProposal(actionCtx, instruction, expectedRevision)
+	})
+}
+
+func (s *ProjectSession) ApproveContinuationProposal(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	return s.runContinuationAction(ctx, func(actionCtx context.Context) (*domain.ContinuationSnapshot, error) {
+		return s.host.ApproveContinuationProposal(actionCtx, expectedRevision)
+	})
+}
+
+func (s *ProjectSession) ReviseContinuationVolumes(ctx context.Context, expectedRevision int, instruction string, volumeIndex int) (*domain.ContinuationSnapshot, error) {
+	return s.runContinuationAction(ctx, func(actionCtx context.Context) (*domain.ContinuationSnapshot, error) {
+		return s.host.ReviseContinuationVolumes(actionCtx, instruction, volumeIndex, expectedRevision)
+	})
+}
+
+func (s *ProjectSession) ApproveContinuationVolumes(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	return s.runContinuationAction(ctx, func(actionCtx context.Context) (*domain.ContinuationSnapshot, error) {
+		return s.host.ApproveContinuationVolumes(actionCtx, expectedRevision)
+	})
+}
+
+func (s *ProjectSession) GenerateContinuationOutlines(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	return s.runContinuationAction(ctx, func(actionCtx context.Context) (*domain.ContinuationSnapshot, error) {
+		return s.host.GenerateContinuationOutlines(actionCtx, expectedRevision)
+	})
+}
+
+func (s *ProjectSession) ReviseContinuationOutlines(
+	ctx context.Context,
+	expectedRevision int,
+	volumeIndex int,
+	fromChapter int,
+	toChapter int,
+	instruction string,
+) (*domain.ContinuationSnapshot, error) {
+	return s.runContinuationAction(ctx, func(actionCtx context.Context) (*domain.ContinuationSnapshot, error) {
+		return s.host.ReviseContinuationOutlines(actionCtx, continuationpkg.OutlineRevisionInput{
+			Instruction: instruction,
+			VolumeIndex: volumeIndex,
+			ChapterFrom: fromChapter,
+			ChapterTo:   toChapter,
+		}, expectedRevision)
+	})
+}
+
+func (s *ProjectSession) ApproveContinuationOutlines(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	return s.runContinuationAction(ctx, func(actionCtx context.Context) (*domain.ContinuationSnapshot, error) {
+		return s.host.ApproveContinuationOutlines(expectedRevision)
+	})
+}
+
+func (s *ProjectSession) RetryContinuation(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	return s.runContinuationAction(ctx, func(actionCtx context.Context) (*domain.ContinuationSnapshot, error) {
+		return s.host.RetryContinuation(actionCtx, expectedRevision)
+	})
+}
+
+func (s *ProjectSession) StartContinuation(expectedRevision int) (*domain.ContinuationSnapshot, string, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return nil, "", err
+	}
+	defer unlock()
+
+	label, snapshot, err := s.host.StartContinuation(expectedRevision)
+	s.AppendSnapshot()
+	return snapshot, label, err
 }
 
 func (s *ProjectSession) Continue(text string) error {
@@ -1378,6 +1490,9 @@ func (s *ProjectSession) Export(ctx context.Context, opts exp.Options) (*exp.Res
 }
 
 func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBeginRequest) (webCoCreateState, error) {
+	if strings.TrimSpace(req.Kind) == webCoCreateKindContinuation {
+		return s.BeginContinuationCoCreate(ctx, req)
+	}
 	unlock, err := s.beginAction()
 	if err != nil {
 		return webCoCreateState{}, err
@@ -1391,7 +1506,7 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 	if err != nil {
 		return webCoCreateState{}, err
 	}
-	if state.kind == webCoCreateKindStage {
+	if isPausedCoCreateKind(state.kind) {
 		if !s.host.PauseForCoCreate() {
 			return webCoCreateState{}, fmt.Errorf("cannot enter stage co-create")
 		}
@@ -1404,6 +1519,41 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 		s.appendCoCreateState(api)
 		return api, nil
 	}
+	return s.runCoCreateLocked(ctx)
+}
+
+func (s *ProjectSession) BeginContinuationCoCreate(ctx context.Context, req webCoCreateBeginRequest) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if state, err := s.resetRestartableCoCreateLocked(); err != nil {
+		return state, err
+	}
+	snapshot, err := s.host.ContinuationSnapshot()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	if snapshot == nil {
+		return webCoCreateState{}, fmt.Errorf("continuation source has not been imported")
+	}
+	if _, err := s.host.BeginContinuationDraft(snapshot.Workflow.Revision); err != nil {
+		return webCoCreateState{}, err
+	}
+	req.Kind = webCoCreateKindContinuation
+	req.ExpectedRevision = snapshot.Workflow.Revision
+	state, err := newWebCoCreateSession(req)
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	if !s.host.PauseForCoCreate() {
+		return webCoCreateState{}, fmt.Errorf("cannot enter continuation co-create")
+	}
+	s.cocreate = state
+	s.saveCoCreateCheckpoint()
+	s.AppendSnapshot()
 	return s.runCoCreateLocked(ctx)
 }
 
@@ -1442,7 +1592,7 @@ func (s *ProjectSession) resetRestartableCoCreateLocked() (webCoCreateState, err
 	if !s.cocreate.failed {
 		return s.cocreate.apiState(), fmt.Errorf("co-create already started")
 	}
-	if s.cocreate.kind == webCoCreateKindStage {
+	if isPausedCoCreateKind(s.cocreate.kind) {
 		s.host.CancelCoCreate()
 		s.AppendSnapshot()
 	}
@@ -1582,6 +1732,9 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 	if s.coCreateKind() == webCoCreateKindAdapt {
 		return s.commitAdaptCoCreate(ctx)
 	}
+	if s.coCreateKind() == webCoCreateKindContinuation {
+		return s.commitContinuationCoCreate(ctx)
+	}
 
 	unlock, err := s.beginAction()
 	if err != nil {
@@ -1640,6 +1793,51 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 	s.cocreate = nil
 	s.clearCoCreateCheckpoint()
 	api.Active = false
+	s.AppendSnapshot()
+	return api, nil
+}
+
+func (s *ProjectSession) commitContinuationCoCreate(ctx context.Context) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+
+	if s.cocreate == nil || s.cocreate.kind != webCoCreateKindContinuation {
+		return webCoCreateState{}, fmt.Errorf("continuation co-create has not started")
+	}
+	state := s.cocreate
+	needsRepair, repairBaseDraft := state.currentDraftNeedsRepair()
+	if state.session == nil || !state.session.DraftFresh() {
+		needsRepair = true
+		if repairBaseDraft == "" {
+			repairBaseDraft = state.draftPrompt()
+		}
+	}
+	if needsRepair {
+		if err := s.repairCoCreateDraftForCommitLocked(ctx, state, repairBaseDraft); err != nil {
+			return state.apiState(), err
+		}
+	}
+	if err := state.requireReadyDraft(); err != nil {
+		return state.apiState(), err
+	}
+	snapshot, err := s.host.ContinuationSnapshot()
+	if err != nil {
+		return state.apiState(), err
+	}
+	if snapshot == nil {
+		return state.apiState(), fmt.Errorf("continuation source has not been imported")
+	}
+	if _, err := s.host.CommitContinuationDraft(state.draftPrompt(), snapshot.Workflow.Revision); err != nil {
+		return state.apiState(), err
+	}
+	s.host.CancelCoCreate()
+	api := state.apiState()
+	api.Active = false
+	s.cocreate = nil
+	s.clearCoCreateCheckpoint()
 	s.AppendSnapshot()
 	return api, nil
 }
@@ -2087,7 +2285,7 @@ func (s *ProjectSession) restoreCoCreateCheckpoint() error {
 	if err := s.fillCoCreateAdaptationSource(state); err != nil {
 		return fmt.Errorf("restore %s: %w", path, err)
 	}
-	if state.kind == webCoCreateKindStage && !s.host.PauseForCoCreate() {
+	if isPausedCoCreateKind(state.kind) && !s.host.PauseForCoCreate() {
 		return fmt.Errorf("restore %s: cannot re-enter stage co-create", path)
 	}
 	s.cocreate = state
@@ -2137,7 +2335,7 @@ func (s *ProjectSession) restoreCoCreateCheckpointFromLog() error {
 	if err := s.fillCoCreateAdaptationSource(state); err != nil {
 		return fmt.Errorf("restore %s: %w", path, err)
 	}
-	if state.kind == webCoCreateKindStage && !s.host.PauseForCoCreate() {
+	if isPausedCoCreateKind(state.kind) && !s.host.PauseForCoCreate() {
 		return fmt.Errorf("restore %s: cannot re-enter stage co-create", path)
 	}
 	s.cocreate = state
@@ -2272,7 +2470,7 @@ func (s *ProjectSession) ResetCoCreateProgress() error {
 	}
 	defer unlock()
 
-	if s.cocreate != nil && s.cocreate.kind == webCoCreateKindStage {
+	if s.cocreate != nil && isPausedCoCreateKind(s.cocreate.kind) {
 		s.host.CancelCoCreate()
 	}
 	s.cocreate = nil
@@ -2324,6 +2522,10 @@ func (s *ProjectSession) coCreateKind() string {
 	return s.cocreate.kind
 }
 
+func isPausedCoCreateKind(kind string) bool {
+	return kind == webCoCreateKindStage || kind == webCoCreateKindContinuation
+}
+
 func (s *ProjectSession) CancelCoCreate() (webCoCreateState, error) {
 	if s.coCreateKind() == webCoCreateKindAdapt && s.currentActionKind() == projectActionKindAdaptationProposal {
 		if canceledKind, canceledAction := s.cancelCurrentAction(); canceledAction {
@@ -2350,7 +2552,7 @@ func (s *ProjectSession) CancelCoCreate() (webCoCreateState, error) {
 		return webCoCreateState{}, fmt.Errorf("co-create has not started")
 	}
 	state := s.cocreate.apiState()
-	if s.cocreate.kind == webCoCreateKindStage {
+	if isPausedCoCreateKind(s.cocreate.kind) {
 		s.host.CancelCoCreate()
 		s.AppendSnapshot()
 	}
@@ -2368,6 +2570,8 @@ func (s *ProjectSession) coCreateStreamFuncLocked() (webCoCreateStreamFunc, erro
 	switch s.cocreate.kind {
 	case webCoCreateKindStage:
 		return s.host.StageCoCreateStream, nil
+	case webCoCreateKindContinuation:
+		return s.host.ContinuationCoCreateStream, nil
 	case webCoCreateKindAdapt:
 		return s.host.AdaptCoCreateStream, nil
 	default:
@@ -3471,6 +3675,8 @@ func coCreateEventKind(kind string) string {
 		return webCoCreateKindStage
 	case webCoCreateKindAdapt:
 		return webCoCreateKindAdapt
+	case webCoCreateKindContinuation:
+		return webCoCreateKindContinuation
 	default:
 		return webCoCreateKindNormal
 	}
@@ -3482,6 +3688,8 @@ func coCreateKindLabel(kind string) string {
 		return "阶段共创"
 	case webCoCreateKindAdapt:
 		return "改编共创"
+	case webCoCreateKindContinuation:
+		return "续写共创"
 	default:
 		return "普通共创"
 	}

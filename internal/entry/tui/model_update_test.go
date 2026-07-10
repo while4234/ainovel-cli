@@ -4,8 +4,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/imp"
 )
 
 func TestSteerResultErrorShowsErrorEventAndRefocusesInput(t *testing.T) {
@@ -39,5 +41,39 @@ func TestSteerResultErrorShowsErrorEventAndRefocusesInput(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("steer failure should fetch a snapshot and return focus command")
+	}
+}
+
+func TestImportDoneStopsAtContinuationPlanningGate(t *testing.T) {
+	m := NewModel(&host.Host{}, nil, "")
+	m.width = 120
+	m.height = 36
+	m.importer = newImportState(7, "source.txt", m.width, m.height, nil)
+
+	next, cmd, handled := m.handleRuntimeMsg(importEventMsg{
+		reqID: 7,
+		ev: imp.Event{
+			Time:    time.Now(),
+			Stage:   imp.StageDone,
+			Current: 12,
+			Total:   12,
+			Message: "导入完成",
+		},
+	})
+	if !handled {
+		t.Fatal("import completion should be handled")
+	}
+	got := next.(Model)
+	if !got.importer.done {
+		t.Fatal("import modal should be marked done")
+	}
+	if !strings.Contains(got.textarea.Placeholder, "续写 Draft") {
+		t.Fatalf("placeholder = %q, want continuation planning guidance", got.textarea.Placeholder)
+	}
+	if cmd == nil {
+		t.Fatal("import completion should refresh the snapshot")
+	}
+	if strings.Contains(got.importer.viewport.View(), "自动接力续写") {
+		t.Fatalf("import completion must not promise automatic writing:\n%s", got.importer.viewport.View())
 	}
 }

@@ -13,22 +13,23 @@ import (
 type Store struct {
 	dir string
 
-	Progress    *ProgressStore
-	Outline     *OutlineStore
-	Drafts      *DraftStore
-	Summaries   *SummaryStore
-	RunMeta     *RunMetaStore
-	UserRules   *UserRulesStore
-	Signals     *SignalStore
-	Runtime     *RuntimeStore
-	Characters  *CharacterStore
-	Cast        *CastStore
-	World       *WorldStore
-	Checkpoints *CheckpointStore
-	Sessions    *SessionStore
-	Usage       *UsageStore
-	Simulation  *SimulationStore
-	Adaptation  *AdaptationStore
+	Progress     *ProgressStore
+	Outline      *OutlineStore
+	Drafts       *DraftStore
+	Summaries    *SummaryStore
+	RunMeta      *RunMetaStore
+	UserRules    *UserRulesStore
+	Signals      *SignalStore
+	Runtime      *RuntimeStore
+	Characters   *CharacterStore
+	Cast         *CastStore
+	World        *WorldStore
+	Checkpoints  *CheckpointStore
+	Sessions     *SessionStore
+	Usage        *UsageStore
+	Simulation   *SimulationStore
+	Adaptation   *AdaptationStore
+	Continuation *ContinuationStore
 
 	crossMu sync.Mutex // 保护跨域原子操作
 }
@@ -38,23 +39,24 @@ func NewStore(dir string) *Store {
 	io := newIO(dir)
 	outline := NewOutlineStore(io)
 	return &Store{
-		dir:         dir,
-		Progress:    NewProgressStore(newIO(dir)),
-		Outline:     outline,
-		Drafts:      NewDraftStore(newIO(dir)),
-		Summaries:   NewSummaryStore(newIO(dir), outline),
-		RunMeta:     NewRunMetaStore(newIO(dir)),
-		UserRules:   NewUserRulesStore(newIO(dir)),
-		Signals:     NewSignalStore(newIO(dir)),
-		Runtime:     NewRuntimeStore(newIO(dir)),
-		Characters:  NewCharacterStore(newIO(dir), outline),
-		Cast:        NewCastStore(newIO(dir)),
-		World:       NewWorldStore(newIO(dir)),
-		Checkpoints: NewCheckpointStore(io),
-		Sessions:    NewSessionStore(newIO(dir)),
-		Usage:       NewUsageStore(newIO(dir)),
-		Simulation:  NewSimulationStore(newIO(dir)),
-		Adaptation:  NewAdaptationStore(newIO(dir)),
+		dir:          dir,
+		Progress:     NewProgressStore(newIO(dir)),
+		Outline:      outline,
+		Drafts:       NewDraftStore(newIO(dir)),
+		Summaries:    NewSummaryStore(newIO(dir), outline),
+		RunMeta:      NewRunMetaStore(newIO(dir)),
+		UserRules:    NewUserRulesStore(newIO(dir)),
+		Signals:      NewSignalStore(newIO(dir)),
+		Runtime:      NewRuntimeStore(newIO(dir)),
+		Characters:   NewCharacterStore(newIO(dir), outline),
+		Cast:         NewCastStore(newIO(dir)),
+		World:        NewWorldStore(newIO(dir)),
+		Checkpoints:  NewCheckpointStore(io),
+		Sessions:     NewSessionStore(newIO(dir)),
+		Usage:        NewUsageStore(newIO(dir)),
+		Simulation:   NewSimulationStore(newIO(dir)),
+		Adaptation:   NewAdaptationStore(newIO(dir)),
+		Continuation: NewContinuationStore(newIO(dir)),
 	}
 }
 
@@ -130,7 +132,7 @@ func (s *Store) FoundationMissing() []string {
 func (s *Store) Init() error {
 	return s.Progress.io.EnsureDirs([]string{
 		"chapters", "summaries", "drafts", "reviews", "meta", "meta/runtime", "meta/runtime/tasks", "meta/sessions", "meta/sessions/agents",
-		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks",
+		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/continuation",
 	})
 }
 

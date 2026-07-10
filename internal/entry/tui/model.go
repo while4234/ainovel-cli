@@ -771,6 +771,12 @@ func (m Model) handleCoCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !state.canStart() {
 			return m, nil
 		}
+		if state.continuation {
+			draft := state.draftPrompt()
+			state.awaiting = true
+			m.textarea.Blur()
+			return m, commitContinuationDraft(m.runtime, draft)
+		}
 		// 阶段共创：把"后续方向 brief"注入并恢复创作，回到运行台。
 		if state.stage {
 			draft := state.draftPrompt()

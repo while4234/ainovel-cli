@@ -97,6 +97,7 @@ type cocreateState struct {
 	session            *startup.CoCreateSession
 	stage              bool // true=阶段共创（运行中规划后续走向）；false=冷启动共创（启动前澄清需求）
 	adapt              bool // true=启动前小说改编共创
+	continuation       bool // true=导入小说续写 Draft；确认后只进入提案，不恢复 Writer
 	sourcePath         string
 	adaptGranularity   string
 	adaptRewritePolicy string
@@ -139,12 +140,20 @@ const stageCoCreateOpener = "我先暂停一下，想和你一起规划接下来
 // 发给 LLM，见 renderCoCreateConversationPanel 的 i==0 特判）。
 const stageCoCreateSystemLine = "已暂停创作，进入阶段共创 —— AI 会结合当前故事进度，和你一起规划接下来的走向。"
 const adaptCoCreateSystemLine = "原书分析和模式选择完成，进入改编共创 —— AI 会结合原书主线、章节事实和已选模式，帮你确认具体改编目标。"
+const continuationCoCreateSystemLine = "原作已导入，进入续写 Draft 共创 —— AI 会结合已写内容整理后续方向；确认 Draft 后仍需审核提案、分卷和章节细纲。"
 
 // newStageCoCreateState 创建阶段共创状态：seed 开场并标记 stage，使 runCoCreate 走
 // StageCoCreateStream、Ctrl+S 走 ResumeFromCoCreate。
 func newStageCoCreateState() *cocreateState {
 	s := newCoCreateState(stageCoCreateOpener)
 	s.stage = true
+	return s
+}
+
+func newContinuationCoCreateState() *cocreateState {
+	s := newCoCreateState("我想和你一起确定这本小说接下来续写的 Draft。")
+	s.stage = true
+	s.continuation = true
 	return s
 }
 
@@ -444,7 +453,9 @@ func renderCoCreateModal(width, height int, state *cocreateState, errMsg, inputV
 	}
 
 	titleText, subtitleText := "共创规划", "先把需求聊清楚，再开始创作"
-	if state.stage {
+	if state.continuation {
+		titleText, subtitleText = "小说续写 Draft", "先确认续写方向，再生成并审核正式提案"
+	} else if state.stage {
 		titleText, subtitleText = "阶段共创", "规划后续走向，再继续创作"
 	} else if state.adapt {
 		titleText, subtitleText = "小说改编", "基于原书主线确认改编目标"
@@ -543,7 +554,11 @@ func renderCoCreateConversationPanel(width, height int, state *cocreateState, er
 		// 阶段共创的合成开场（恒为 history[0] 的 user 消息）以中性系统行显示，
 		// 不伪装成用户输入；它仍作为 kickoff user 轮次发给 LLM。
 		if isUser && state.stage && i == 0 {
-			for j, line := range wrapStreamText(stageCoCreateSystemLine, wrapW) {
+			systemLine := stageCoCreateSystemLine
+			if state.continuation {
+				systemLine = continuationCoCreateSystemLine
+			}
+			for j, line := range wrapStreamText(systemLine, wrapW) {
 				prefix := "· "
 				if j > 0 {
 					prefix = "  "

@@ -230,6 +230,66 @@ export function importExternalNovel(projectId, file, from = '') {
   });
 }
 
+export function getContinuation(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/continuation`);
+}
+
+export function uploadContinuationSource(projectId, file) {
+  const body = new FormData();
+  body.append('files', file);
+  return request(`/api/projects/${encodeURIComponent(projectId)}/continuation/source`, {
+    method: 'POST',
+    body
+  });
+}
+
+function continuationMutation(projectId, action, payload = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/continuation/${action}`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function generateContinuationProposal(projectId, payload) {
+  return continuationMutation(projectId, 'proposal/generate', payload);
+}
+
+export function reviseContinuationProposal(projectId, payload) {
+  return continuationMutation(projectId, 'proposal/revise', payload);
+}
+
+export function approveContinuationProposal(projectId, payload) {
+  return continuationMutation(projectId, 'proposal/approve', payload);
+}
+
+export function reviseContinuationVolumes(projectId, payload) {
+  return continuationMutation(projectId, 'volumes/revise', payload);
+}
+
+export function approveContinuationVolumes(projectId, payload) {
+  return continuationMutation(projectId, 'volumes/approve', payload);
+}
+
+export function generateContinuationOutlines(projectId, payload) {
+  return continuationMutation(projectId, 'outlines/generate', payload);
+}
+
+export function reviseContinuationOutlines(projectId, payload) {
+  return continuationMutation(projectId, 'outlines/revise', payload);
+}
+
+export function approveContinuationOutlines(projectId, payload) {
+  return continuationMutation(projectId, 'outlines/approve', payload);
+}
+
+export function startContinuation(projectId, payload) {
+  return continuationMutation(projectId, 'start', payload);
+}
+
+export function retryContinuation(projectId, payload) {
+  return continuationMutation(projectId, 'retry', payload);
+}
+
 export function exportProject(projectId, payload) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/export`, {
     method: 'POST',

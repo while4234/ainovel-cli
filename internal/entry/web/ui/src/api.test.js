@@ -3,6 +3,9 @@ import {
   addGlobalProviderModel,
   buildAdaptationProposal,
   clearProjectTrash,
+  approveContinuationOutlines,
+  approveContinuationProposal,
+  approveContinuationVolumes,
   confirmAdaptationProposal,
   confirmAdaptationProposalDetails,
   createProject,
@@ -12,9 +15,12 @@ import {
   discoverProjectProviderModels,
   emptyTrashProjects,
   exportProjectDownload,
+  generateContinuationOutlines,
+  generateContinuationProposal,
   getChapter,
   getCodexAuthStatus,
   getGlobalModels,
+  getContinuation,
   getProjectEvents,
   inheritProjectModel,
   listNovelLibrary,
@@ -25,6 +31,7 @@ import {
   previewProjectRollback,
   renameProject,
   restoreTrashProject,
+  retryContinuation,
   resumeCoCreate,
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
@@ -32,6 +39,9 @@ import {
   reviseChapterOutline,
   reviseCoCreatePlanning,
   reviseCoCreate,
+  reviseContinuationOutlines,
+  reviseContinuationProposal,
+  reviseContinuationVolumes,
   resolveCoCreateDecision,
   resolveCoCreateDecisions,
   rollbackProject,
@@ -45,13 +55,15 @@ import {
   setProjectRetrySettings,
   setProjectSimulationMode,
   setProjectStyle,
+  startContinuation,
   startGrokLogin,
   switchGlobalDefaultModel,
   switchGlobalModel,
   switchProjectModel,
   testGlobalProviderModel,
   testProjectProviderModel,
-  trashProject
+  trashProject,
+  uploadContinuationSource
 } from './api.js';
 
 function mockJSONResponse(body = {}) {
@@ -341,6 +353,64 @@ describe('web API helpers', () => {
       method: 'POST',
       body: JSON.stringify({})
     }));
+  });
+
+  it('uses revision-checked continuation review and start routes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await getContinuation('project-1');
+    await reviseContinuationProposal('project-1', { instruction: '强化冲突', expected_revision: 4 });
+    await approveContinuationProposal('project-1', { expected_revision: 5 });
+    await reviseContinuationVolumes('project-1', { volume_index: 2, instruction: '合并支线', expected_revision: 6 });
+    await approveContinuationVolumes('project-1', { expected_revision: 7 });
+    await reviseContinuationOutlines('project-1', { scope: 'chapter', chapter: 43, instruction: '提前揭示', expected_revision: 8 });
+    await approveContinuationOutlines('project-1', { expected_revision: 9 });
+    await startContinuation('project-1', { expected_revision: 10 });
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/projects/project-1/continuation',
+      '/api/projects/project-1/continuation/proposal/revise',
+      '/api/projects/project-1/continuation/proposal/approve',
+      '/api/projects/project-1/continuation/volumes/revise',
+      '/api/projects/project-1/continuation/volumes/approve',
+      '/api/projects/project-1/continuation/outlines/revise',
+      '/api/projects/project-1/continuation/outlines/approve',
+      '/api/projects/project-1/continuation/start'
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({
+      scope: 'chapter',
+      chapter: 43,
+      instruction: '提前揭示',
+      expected_revision: 8
+    });
+  });
+
+  it('uploads a continuation source without an automatic resume parameter', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+    const file = new File(['chapter one'], 'source.txt', { type: 'text/plain' });
+
+    await uploadContinuationSource('project-1', file);
+
+    const [, options] = fetchMock.mock.calls[0];
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/projects/project-1/continuation/source');
+    expect(options.method).toBe('POST');
+    expect(options.body.get('files')).toBe(file);
+    expect(options.body.has('from')).toBe(false);
+    expect(options.body.has('resume_from')).toBe(false);
+  });
+
+  it('uses explicit continuation generation and retry routes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await generateContinuationProposal('project-1', { expected_revision: 2 });
+    await generateContinuationOutlines('project-1', { expected_revision: 6 });
+    await retryContinuation('project-1', { expected_revision: 8 });
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/projects/project-1/continuation/proposal/generate',
+      '/api/projects/project-1/continuation/outlines/generate',
+      '/api/projects/project-1/continuation/retry'
+    ]);
   });
 
   it('uses the normal co-create planning revision route', async () => {

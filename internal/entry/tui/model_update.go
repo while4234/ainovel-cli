@@ -522,10 +522,10 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 		if msg.ev.Stage == imp.StageDone {
-			// 导入成功 → 自动接力续写：Resume 会启用 Router 并派发首条指令，
-			// 走与"重开项目恢复"完全一致的续写流程（补上同会话导入→续写的衔接）。
-			// 随后的 bootstrapMsg 处理会 enterRunning() 切到创作态。
-			return m, bootstrapRuntime(m.runtime), true
+			// 导入只建立已完成原作的创作基线。续写方向、提案和章节细纲
+			// 必须经过用户审核后才能启动 Writer，不能在导入完成时自动 Resume。
+			m.setTextareaPlaceholder("原作导入完成 · 输入 /cocreate 先确定续写 Draft")
+			return m, fetchSnapshot(m.runtime), true
 		}
 		return m, listenImportEvent(msg.reqID, msg.ch), true
 	case simEventMsg:
@@ -603,6 +603,35 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.err = nil
 		m.setTextareaPlaceholder(defaultSteerPlaceholder())
 		return m, tea.Batch(fetchSnapshot(m.runtime), listenDone(m.runtime), m.textarea.Focus()), true
+	case continuationDraftCommittedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			if m.cocreate != nil {
+				m.cocreate.awaiting = false
+			}
+			return m, m.textarea.Focus(), true
+		}
+		m.err = nil
+		m.cocreate = nil
+		m.resizeTextarea()
+		m.setTextareaPlaceholder("续写 Draft 已确认 · 输入 /continuation generate 生成提案")
+		return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus()), true
+	case continuationActionMsg:
+		if msg.err != nil {
+			m.applyEvent(host.Event{Time: time.Now(), Category: "ERROR", Summary: "续写规划操作失败：" + msg.err.Error(), Level: "error"})
+			m.refreshEventViewport()
+			m.setTextareaPlaceholder("输入 /continuation status 查看续写规划")
+			return m, m.textarea.Focus(), true
+		}
+		summary := continuationActionSummary(msg.action, msg.snapshot, msg.label)
+		m.applyEvent(host.Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Detail: formatContinuationSnapshot(msg.snapshot), Level: "info"})
+		m.refreshEventViewport()
+		m.setTextareaPlaceholder("输入 /continuation status 查看，或 approve / revise / start 推进")
+		cmds := []tea.Cmd{fetchSnapshot(m.runtime), m.textarea.Focus()}
+		if msg.action == "start" {
+			cmds = append(cmds, listenDone(m.runtime))
+		}
+		return m, tea.Batch(cmds...), true
 	case spinnerTickMsg:
 		m.spinnerIdx = (m.spinnerIdx + 1) % len(spinnerFrames)
 		if m.snapshot.IsRunning {

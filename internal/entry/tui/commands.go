@@ -5,6 +5,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
 
@@ -144,6 +145,23 @@ func commandRegistryInstance() commandRegistry {
 			Description: "暂停创作，共创规划后续阶段走向",
 			AutoExecute: true,
 			Run: func(m Model, _ []string) (tea.Model, tea.Cmd) {
+				if continuation, err := m.runtime.ContinuationSnapshot(); err != nil {
+					m.applyEvent(host.Event{Time: time.Now(), Category: "ERROR", Summary: "读取续写规划失败：" + err.Error(), Level: "error"})
+					m.refreshEventViewport()
+					return m, nil
+				} else if continuation != nil && (continuation.Workflow.Stage == domain.ContinuationStageSourceReady || continuation.Workflow.Stage == domain.ContinuationStageDraftCollecting) {
+					if continuation.Workflow.Stage == domain.ContinuationStageSourceReady {
+						if _, err := m.runtime.BeginContinuationDraft(continuation.Workflow.Revision); err != nil {
+							m.applyEvent(host.Event{Time: time.Now(), Category: "ERROR", Summary: "进入续写 Draft 失败：" + err.Error(), Level: "error"})
+							m.refreshEventViewport()
+							return m, nil
+						}
+					}
+					m.cocreate = newContinuationCoCreateState()
+					m.resizeTextarea()
+					m.textarea.Blur()
+					return m, m.sendCoCreate()
+				}
 				if m.mode != modeRunning {
 					m.applyEvent(host.Event{
 						Time: time.Now(), Category: "ERROR", Summary: "阶段共创仅在创作中可用", Level: "error",
@@ -184,6 +202,25 @@ func commandRegistryInstance() commandRegistry {
 				m.simulator = state
 				m.textarea.Blur()
 				return m, listenCmd
+			},
+		},
+		{
+			Name:        "continuation",
+			Aliases:     []string{"continueplan"},
+			Group:       "writing",
+			Usage:       "/continuation [status|generate|approve|revise <要求>|retry|start]",
+			Description: "查看并推进小说续写审核流程",
+			NeedsIdle:   true,
+			Run: func(m Model, args []string) (tea.Model, tea.Cmd) {
+				action, instruction, err := parseContinuationCommand(args)
+				if err != nil {
+					m.applyEvent(host.Event{Time: time.Now(), Category: "ERROR", Summary: err.Error(), Level: "error"})
+					m.refreshEventViewport()
+					return m, nil
+				}
+				m.setTextareaPlaceholder("续写规划处理中...")
+				m.textarea.Blur()
+				return m, runContinuationCommand(m.runtime, action, instruction)
 			},
 		},
 		{

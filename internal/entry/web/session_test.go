@@ -22,6 +22,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	continuationpkg "github.com/voocel/ainovel-cli/internal/host/continuation"
 	"github.com/voocel/ainovel-cli/internal/host/exp"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 	"github.com/voocel/ainovel-cli/internal/host/sim"
@@ -809,6 +810,13 @@ func TestProjectSessionPublishesCoCreateHostEventsByKind(t *testing.T) {
 				Mode: domain.AdaptationGranularityFree,
 			},
 		},
+		{
+			name: "continuation",
+			kind: webCoCreateKindContinuation,
+			req: webCoCreateBeginRequest{
+				Kind: webCoCreateKindContinuation,
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -822,6 +830,9 @@ func TestProjectSessionPublishesCoCreateHostEventsByKind(t *testing.T) {
 			fake.cocreateReply = reply
 			fake.stageCoCreateReply = reply
 			fake.adaptCoCreateReply = reply
+			if tc.kind == webCoCreateKindContinuation {
+				fake.continuationSnapshot = testContinuationSnapshot(domain.ContinuationStageSourceReady, 1)
+			}
 			session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
 			if err != nil {
 				t.Fatalf("NewProjectSession: %v", err)
@@ -851,6 +862,42 @@ func TestProjectSessionPublishesCoCreateHostEventsByKind(t *testing.T) {
 				t.Fatalf("event summary should not be empty: %+v", got)
 			}
 		})
+	}
+}
+
+func TestProjectSessionContinuationCoCreateCommitDoesNotResumeWriting(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.continuationSnapshot = testContinuationSnapshot(domain.ContinuationStageSourceReady, 1)
+	fake.stageCoCreateReply = host.CoCreateReply{
+		Message: "direction confirmed",
+		Prompt:  "## 续写方向\n- 主角追查旧案",
+		Ready:   true,
+		Raw:     "<reply>direction confirmed</reply><draft>## 续写方向\n- 主角追查旧案</draft><ready>true</ready><suggestions></suggestions>",
+	}
+	session, err := NewProjectSession(ProjectManifest{ID: "continuation-cocreate"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	if _, err := session.BeginCoCreate(context.Background(), webCoCreateBeginRequest{Kind: webCoCreateKindContinuation}); err != nil {
+		t.Fatalf("BeginCoCreate: %v", err)
+	}
+	state, err := session.CommitCoCreate(context.Background())
+	if err != nil {
+		t.Fatalf("CommitCoCreate: %v", err)
+	}
+	if state.Active || state.Kind != webCoCreateKindContinuation {
+		t.Fatalf("unexpected committed continuation co-create state: %+v", state)
+	}
+	if fake.continuationCommitDraftCalls != 1 {
+		t.Fatalf("continuation draft commit calls = %d, want 1", fake.continuationCommitDraftCalls)
+	}
+	if fake.resumeCalls != 0 || fake.resumeCoCreateCalls != 0 {
+		t.Fatalf("continuation Draft commit must not resume writing: resume=%d resumeFromCoCreate=%d", fake.resumeCalls, fake.resumeCoCreateCalls)
+	}
+	if fake.continuationSnapshot.Workflow.Stage != domain.ContinuationStageProposalGenerating {
+		t.Fatalf("continuation stage = %q, want proposal_generating", fake.continuationSnapshot.Workflow.Stage)
 	}
 }
 
@@ -1274,6 +1321,7 @@ type fakeProjectHost struct {
 	adaptBriefingErr           error
 	adaptConfirmErr            error
 	adaptStartErr              error
+	continuationErr            error
 	exportErr                  error
 	rollbackPreviewErr         error
 	rollbackErr                error
@@ -1305,6 +1353,12 @@ type fakeProjectHost struct {
 	resolveAdaptDecisionCalls       int
 	adaptConfirmCalls               int
 	adaptStartCalls                 int
+	continuationBeginDraftCalls     int
+	continuationCommitDraftCalls    int
+	continuationGenerateCalls       int
+	continuationReviseCalls         int
+	continuationApproveCalls        int
+	continuationStartCalls          int
 	exportCalls                     int
 	rollbackPreviewCalls            int
 	rollbackCalls                   int
@@ -1343,6 +1397,9 @@ type fakeProjectHost struct {
 	adaptRevisionProposal           *domain.AdaptationPlan
 	adaptConfirmedPlan              *domain.AdaptationPlan
 	adaptOptions                    adapt.ProposalOptions
+	continuationSnapshot            *domain.ContinuationSnapshot
+	continuationLastExpected        int
+	continuationLastInstruction     string
 	exportOptions                   exp.Options
 	rollbackPreview                 domain.RollbackPreview
 	rollbackResult                  domain.RollbackResult
@@ -1630,6 +1687,139 @@ func (f *fakeProjectHost) StageCoCreateStream(_ context.Context, history []host.
 	f.mu.Unlock()
 	emitCoCreateProgress(progress, onProgress)
 	return reply, err
+}
+
+func (f *fakeProjectHost) ContinuationCoCreateStream(_ context.Context, history []host.CoCreateMessage, onProgress func(kind, text string)) (host.CoCreateReply, error) {
+	f.mu.Lock()
+	f.stageCoCreateCalls++
+	f.lastCoCreateHistory = append([]host.CoCreateMessage(nil), history...)
+	reply := popCoCreateReply(&f.stageCoCreateReplies, f.stageCoCreateReply)
+	err := f.stageCoCreateErr
+	progress := append([]coCreateProgressStep(nil), f.cocreateProgress...)
+	f.mu.Unlock()
+	emitCoCreateProgress(progress, onProgress)
+	return reply, err
+}
+
+func (f *fakeProjectHost) ContinuationSnapshot() (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.continuationSnapshot, f.continuationErr
+}
+
+func (f *fakeProjectHost) updateContinuation(expected int, stage domain.ContinuationStage) (*domain.ContinuationSnapshot, error) {
+	if f.continuationErr != nil {
+		return nil, f.continuationErr
+	}
+	if f.continuationSnapshot == nil {
+		return nil, storepkg.ErrContinuationNotInitialized
+	}
+	actual := f.continuationSnapshot.Workflow.Revision
+	if expected != actual {
+		return nil, &storepkg.ContinuationRevisionConflictError{Expected: expected, Actual: actual}
+	}
+	f.continuationLastExpected = expected
+	f.continuationSnapshot.Workflow.Revision++
+	if stage != "" {
+		f.continuationSnapshot.Workflow.Stage = stage
+	}
+	return f.continuationSnapshot, nil
+}
+
+func (f *fakeProjectHost) BeginContinuationDraft(expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationBeginDraftCalls++
+	return f.updateContinuation(expected, domain.ContinuationStageDraftCollecting)
+}
+
+func (f *fakeProjectHost) CommitContinuationDraft(draft string, expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationCommitDraftCalls++
+	f.continuationLastInstruction = draft
+	return f.updateContinuation(expected, domain.ContinuationStageProposalGenerating)
+}
+
+func (f *fakeProjectHost) GenerateContinuationProposal(_ context.Context, expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationGenerateCalls++
+	return f.updateContinuation(expected, domain.ContinuationStageProposalReviewPending)
+}
+
+func (f *fakeProjectHost) ReviseContinuationProposal(_ context.Context, instruction string, expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationReviseCalls++
+	f.continuationLastInstruction = instruction
+	return f.updateContinuation(expected, domain.ContinuationStageProposalReviewPending)
+}
+
+func (f *fakeProjectHost) ApproveContinuationProposal(_ context.Context, expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationApproveCalls++
+	return f.updateContinuation(expected, domain.ContinuationStageVolumeReviewPending)
+}
+
+func (f *fakeProjectHost) ReviseContinuationVolumes(_ context.Context, instruction string, _ int, expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationReviseCalls++
+	f.continuationLastInstruction = instruction
+	return f.updateContinuation(expected, domain.ContinuationStageVolumeReviewPending)
+}
+
+func (f *fakeProjectHost) ApproveContinuationVolumes(_ context.Context, expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationApproveCalls++
+	return f.updateContinuation(expected, domain.ContinuationStageOutlineReviewPending)
+}
+
+func (f *fakeProjectHost) GenerateContinuationOutlines(_ context.Context, expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationGenerateCalls++
+	return f.updateContinuation(expected, domain.ContinuationStageOutlineReviewPending)
+}
+
+func (f *fakeProjectHost) ReviseContinuationOutlines(_ context.Context, revision continuationpkg.OutlineRevisionInput, expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationReviseCalls++
+	f.continuationLastInstruction = revision.Instruction
+	return f.updateContinuation(expected, domain.ContinuationStageOutlineReviewPending)
+}
+
+func (f *fakeProjectHost) ApproveContinuationOutlines(expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationApproveCalls++
+	return f.updateContinuation(expected, domain.ContinuationStageReadyToWrite)
+}
+
+func (f *fakeProjectHost) RetryContinuation(_ context.Context, expected int) (*domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationGenerateCalls++
+	return f.updateContinuation(expected, domain.ContinuationStageProposalGenerating)
+}
+
+func (f *fakeProjectHost) StartContinuation(expected int) (string, *domain.ContinuationSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.continuationStartCalls++
+	if f.continuationSnapshot == nil || f.continuationSnapshot.Workflow.Stage != domain.ContinuationStageReadyToWrite {
+		return "", nil, fmt.Errorf("continuation is not ready to write")
+	}
+	snapshot, err := f.updateContinuation(expected, domain.ContinuationStageWriting)
+	if err != nil {
+		return "", nil, err
+	}
+	f.resumeCalls++
+	return "resume continuation", snapshot, nil
 }
 
 func (f *fakeProjectHost) AdaptCoCreateStream(_ context.Context, history []host.CoCreateMessage, onProgress func(kind, text string)) (host.CoCreateReply, error) {

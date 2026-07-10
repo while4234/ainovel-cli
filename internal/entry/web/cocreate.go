@@ -19,17 +19,20 @@ import (
 )
 
 const (
-	webCoCreateKindNormal = "normal"
-	webCoCreateKindStage  = "stage"
-	webCoCreateKindAdapt  = "adapt"
+	webCoCreateKindNormal       = "normal"
+	webCoCreateKindStage        = "stage"
+	webCoCreateKindAdapt        = "adapt"
+	webCoCreateKindContinuation = "continuation"
 
 	webCoCreateCheckpointVersion = 1
 	adaptDecisionDraftBatchSize  = 4
 	adaptDecisionDraftMarker     = "Internal adaptation decision draft batch"
 
-	stageCoCreateOpener     = "我先暂停一下，想和你一起规划接下来的走向。"
-	stageCoCreateSystemLine = "已暂停创作，进入阶段共创。AI 会结合当前故事进度，和你一起规划接下来的走向。"
-	adaptCoCreateSystemLine = "原书分析和模式选择完成，进入改编共创。AI 会锁定已选模式，帮你确认具体改编目标。"
+	stageCoCreateOpener            = "我先暂停一下，想和你一起规划接下来的走向。"
+	stageCoCreateSystemLine        = "已暂停创作，进入阶段共创。AI 会结合当前故事进度，和你一起规划接下来的走向。"
+	adaptCoCreateSystemLine        = "原书分析和模式选择完成，进入改编共创。AI 会锁定已选模式，帮你确认具体改编目标。"
+	continuationCoCreateOpener     = "我想和你一起确定这本小说接下来续写的 Draft。"
+	continuationCoCreateSystemLine = "原作已经导入，进入续写 Draft 共创。AI 会基于已写内容协助确定后续方向；确认 Draft 后只进入续写提案，不会直接开始写正文。"
 )
 
 type webCoCreateBeginRequest struct {
@@ -39,6 +42,7 @@ type webCoCreateBeginRequest struct {
 	Mode             string  `json:"mode"`
 	Tolerance        float64 `json:"word_tolerance"`
 	TargetTotalWords int     `json:"target_total_words"`
+	ExpectedRevision int     `json:"expected_revision,omitempty"`
 
 	sourcePath string
 	briefing   *domain.AdaptationCoCreateBriefing
@@ -113,6 +117,7 @@ type webCoCreateCheckpoint struct {
 	AdaptationVolumeReview *domain.AdaptationVolumeReview     `json:"adaptation_volume_review,omitempty"`
 	DraftConsolidated      bool                               `json:"draft_consolidated_for_commit,omitempty"`
 	AdaptationBriefing     *domain.AdaptationCoCreateBriefing `json:"adaptation_briefing,omitempty"`
+	ExpectedRevision       int                                `json:"expected_revision,omitempty"`
 }
 
 type webCoCreateLogEntry struct {
@@ -167,6 +172,7 @@ type webCoCreateSession struct {
 	adaptationVolumeReview *domain.AdaptationVolumeReview
 	draftConsolidated      bool
 	adaptationBriefing     *domain.AdaptationCoCreateBriefing
+	expectedRevision       int
 }
 
 type webCoCreateBriefingState struct {
@@ -470,6 +476,24 @@ func newWebCoCreateSession(req webCoCreateBeginRequest) (*webCoCreateSession, er
 		}
 		state.messages = messages
 		return state, nil
+	case webCoCreateKindContinuation:
+		if req.ExpectedRevision < 0 {
+			return nil, fmt.Errorf("expected_revision must be a non-negative integer")
+		}
+		initial := strings.TrimSpace(req.Initial)
+		if initial == "" {
+			initial = continuationCoCreateOpener
+		}
+		state := &webCoCreateSession{
+			kind:             kind,
+			session:          startup.NewCoCreateSession(initial),
+			expectedRevision: req.ExpectedRevision,
+		}
+		state.messages = []webCoCreateMessage{state.newMessage("system", continuationCoCreateSystemLine, "", -1)}
+		if initial != continuationCoCreateOpener {
+			state.messages = append(state.messages, state.newMessage("user", initial, "custom", 0))
+		}
+		return state, nil
 	case webCoCreateKindAdapt:
 		granularity, ok := domain.StrictAdaptationGranularity(req.Mode)
 		if !ok {
@@ -496,7 +520,7 @@ func newWebCoCreateSession(req webCoCreateBeginRequest) (*webCoCreateSession, er
 		}
 		return state, nil
 	default:
-		return nil, fmt.Errorf("co-create kind must be one of normal, stage, adapt")
+		return nil, fmt.Errorf("co-create kind must be one of normal, stage, adapt, continuation")
 	}
 }
 
@@ -553,6 +577,7 @@ func (s *webCoCreateSession) checkpointWithFailed(now time.Time, failed bool) we
 		AdaptationVolumeReview: s.adaptationVolumeReview,
 		DraftConsolidated:      s.draftConsolidated,
 		AdaptationBriefing:     s.adaptationBriefing,
+		ExpectedRevision:       s.expectedRevision,
 	}
 }
 
@@ -565,7 +590,7 @@ func webCoCreateSessionFromCheckpoint(checkpoint webCoCreateCheckpoint) (*webCoC
 		kind = webCoCreateKindNormal
 	}
 	switch kind {
-	case webCoCreateKindNormal, webCoCreateKindStage, webCoCreateKindAdapt:
+	case webCoCreateKindNormal, webCoCreateKindStage, webCoCreateKindAdapt, webCoCreateKindContinuation:
 	default:
 		return nil, fmt.Errorf("unsupported co-create kind %q", checkpoint.Kind)
 	}
@@ -607,6 +632,7 @@ func webCoCreateSessionFromCheckpoint(checkpoint webCoCreateCheckpoint) (*webCoC
 		adaptationVolumeReview: checkpoint.AdaptationVolumeReview,
 		draftConsolidated:      checkpoint.DraftConsolidated,
 		adaptationBriefing:     checkpoint.AdaptationBriefing,
+		expectedRevision:       checkpoint.ExpectedRevision,
 	}, nil
 }
 
@@ -688,6 +714,9 @@ func inferWebCoCreateKindFromLog(history []host.CoCreateMessage) string {
 	}
 	if strings.TrimSpace(first) == strings.TrimSpace(stageCoCreateOpener) {
 		return webCoCreateKindStage
+	}
+	if strings.TrimSpace(first) == strings.TrimSpace(continuationCoCreateOpener) {
+		return webCoCreateKindContinuation
 	}
 	return webCoCreateKindNormal
 }
@@ -785,6 +814,9 @@ func webCoCreateMessagesFromLog(kind string, history []host.CoCreateMessage, ass
 	if kind == webCoCreateKindStage {
 		state.messages = append(state.messages, state.newMessage("system", stageCoCreateSystemLine, "", -1))
 	}
+	if kind == webCoCreateKindContinuation {
+		state.messages = append(state.messages, state.newMessage("system", continuationCoCreateSystemLine, "", -1))
+	}
 	for idx, message := range history {
 		if coCreateLogMessageHidden(kind, idx, message) {
 			continue
@@ -818,6 +850,8 @@ func coCreateLogMessageHidden(kind string, index int, message host.CoCreateMessa
 		return strings.Contains(message.Content, "granularity=") && strings.Contains(message.Content, "rewrite_policy=")
 	case webCoCreateKindStage:
 		return strings.TrimSpace(message.Content) == strings.TrimSpace(stageCoCreateOpener)
+	case webCoCreateKindContinuation:
+		return strings.TrimSpace(message.Content) == strings.TrimSpace(continuationCoCreateOpener)
 	default:
 		return false
 	}
@@ -1626,6 +1660,8 @@ func coCreateCommitLabel(kind string) string {
 	switch kind {
 	case webCoCreateKindStage:
 		return "阶段方向已应用"
+	case webCoCreateKindContinuation:
+		return "续写 Draft 已确认"
 	case webCoCreateKindAdapt:
 		return "改编已启动"
 	default:

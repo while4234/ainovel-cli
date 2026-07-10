@@ -3179,3 +3179,233 @@ h2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+.continuation-panel {
+  gap: 14px;
+}
+
+.continuation-stepper {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-solid);
+}
+
+.continuation-step {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted-soft);
+  text-align: center;
+}
+
+.continuation-step:not(:last-child)::after {
+  position: absolute;
+  top: 12px;
+  left: calc(50% + 15px);
+  width: calc(100% - 24px);
+  height: 2px;
+  background: var(--line);
+  content: "";
+}
+
+.continuation-step > span {
+  z-index: 1;
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface-solid);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.continuation-step strong {
+  overflow: hidden;
+  width: 100%;
+  font-size: 10px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.continuation-step.active,
+.continuation-step.complete {
+  color: var(--accent);
+}
+
+.continuation-step.active > span {
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+.continuation-step.complete > span,
+.continuation-step.complete:not(:last-child)::after {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.continuation-source-section,
+.continuation-action-section {
+  display: grid;
+  gap: 12px;
+}
+
+.continuation-copy {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.continuation-baseline,
+.continuation-start-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #b9dfd8;
+  border-radius: var(--radius-sm);
+  background: var(--accent-softer);
+}
+
+.continuation-baseline strong,
+.continuation-start-card strong {
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.continuation-baseline span,
+.continuation-start-card span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.continuation-review-form,
+.continuation-outline-scope {
+  display: grid;
+  gap: 10px;
+}
+
+.continuation-review-form textarea {
+  min-height: 112px;
+  padding: 10px 12px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+  color: var(--text);
+}
+
+.continuation-review-actions {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.2fr);
+  gap: 8px;
+}
+
+.continuation-scope-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr) minmax(70px, 0.6fr);
+  gap: 7px;
+}
+
+.continuation-scope-row button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--muted);
+}
+
+.continuation-scope-row button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.continuation-scope-row input,
+.continuation-outline-scope input {
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-solid);
+}
+
+.continuation-workspace {
+  gap: 18px;
+}
+
+.continuation-draft-card,
+.continuation-proposal-summary {
+  display: grid;
+  gap: 9px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-solid);
+}
+
+.continuation-draft-card strong {
+  color: var(--accent);
+}
+
+.continuation-draft-card p,
+.continuation-proposal-summary p {
+  margin: 0;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.continuation-proposal-summary p b,
+.continuation-outline-grid p b {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.continuation-arc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 9px;
+  padding: 12px;
+}
+
+.continuation-arc-grid article {
+  display: grid;
+  gap: 6px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.continuation-arc-grid p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.continuation-arc-grid span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 620px) {
+  .continuation-stepper {
+    overflow-x: auto;
+    grid-template-columns: repeat(5, minmax(76px, 1fr));
+  }
+
+  .continuation-review-actions {
+    grid-template-columns: 1fr;
+  }
+}

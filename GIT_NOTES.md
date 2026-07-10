@@ -28,6 +28,19 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest source/runtime change: `feat: add reviewed novel continuation workflow`:
+  imported novels now stop at a durable planning gate instead of automatically
+  resuming Writer. The shared continuation state machine requires source
+  baseline, Draft co-create, proposal review, conditional volume review,
+  detailed chapter-outline review, and an explicit final start. Web now has a
+  first-class five-step “续写” workspace with targeted revisions and optimistic
+  revision checks; TUI can drive the same workflow with `/cocreate` and
+  `/continuation`. Final approval appends only N+1..M to the canonical outline
+  through a journaled rollback-safe commit, and Host Resume/Continue cannot
+  bypass review. Validation passed for the clean staged-index full Go suite,
+  161 Web UI tests, production UI build, `git diff --cached --check`, read-only
+  Playwright inspection, and the restarted Web service at
+  `http://127.0.0.1:9898` (PID `12360`).
 - Latest source/runtime change: formal single-chapter outline
   revision after writing has started. The Web status panel can now select any
   completed, in-progress, or future chapter and send a natural-language edit
