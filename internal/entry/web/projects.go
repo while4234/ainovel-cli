@@ -404,6 +404,7 @@ func (s *ProjectStore) OpenProjectHost(cfg bootstrap.Config, bundle assets.Bundl
 	if err != nil {
 		return nil, err
 	}
+	ownedProviders := projectOwnedProviders(projectCfg, cfg)
 	cfg = projectBaseModelConfig(cfg)
 	if found {
 		cfg = bootstrap.MergeConfig(cfg, projectCfg)
@@ -413,7 +414,7 @@ func (s *ProjectStore) OpenProjectHost(cfg bootstrap.Config, bundle assets.Bundl
 	cfg.OutputDir = manifest.OutputDir
 	cfg.PersistPath = projectConfigPath
 	cfg.PersistProjectOverlay = true
-	cfg.PersistProviders = projectOwnedProviders(projectCfg)
+	cfg.PersistProviders = ownedProviders
 	cfg.PersistProjectConfig = &projectCfg
 	return host.New(cfg, bundle)
 }
@@ -488,6 +489,128 @@ func (s *ProjectStore) RefreshProjectProviderReferences(globalCfg bootstrap.Conf
 		updated++
 	}
 	return updated, nil
+}
+
+// RemoveInheritedProjectProviderModel removes a globally deleted model from
+// project overlays that inherited the global provider. Explicitly project-owned
+// providers are left untouched. Legacy overlays without ownership metadata are
+// treated as inherited only when their private provider configuration matches
+// the previous global provider configuration.
+func (s *ProjectStore) RemoveInheritedProjectProviderModel(previousGlobal, nextGlobal bootstrap.Config, provider, model string) (int, error) {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return 0, fmt.Errorf("provider and model are required")
+	}
+	projects, err := s.ListProjects()
+	if err != nil {
+		return 0, err
+	}
+	trashed, err := s.ListTrashedProjects()
+	if err != nil {
+		return 0, err
+	}
+	projects = append(projects, trashed...)
+
+	updated := 0
+	for _, manifest := range projects {
+		cfg, found, err := s.loadProjectConfig(manifest)
+		if err != nil {
+			return updated, err
+		}
+		if !found {
+			continue
+		}
+		next, changed := removeInheritedProjectProviderModel(cfg, previousGlobal, nextGlobal, provider, model)
+		if !changed {
+			continue
+		}
+		if err := bootstrap.SaveConfig(ProjectConfigPath(manifest), next); err != nil {
+			return updated, err
+		}
+		updated++
+	}
+	return updated, nil
+}
+
+func removeInheritedProjectProviderModel(cfg, previousGlobal, nextGlobal bootstrap.Config, provider, model string) (bootstrap.Config, bool) {
+	localPC, hasLocalProvider := cfg.Providers[provider]
+	if cfg.ProjectOwnedProviders[provider] {
+		return cfg, false
+	}
+	if len(cfg.ProjectOwnedProviders) == 0 && hasLocalProvider && providerHasPrivateConfig(localPC) {
+		previousPC, ok := previousGlobal.Providers[provider]
+		if !ok || !providerPrivateConfigEqual(localPC, previousPC) {
+			return cfg, false
+		}
+	}
+
+	next := cloneWebConfig(cfg)
+	if next.Provider == provider && next.ModelName == model {
+		next.Provider = ""
+		next.ModelName = ""
+	}
+	for role, route := range next.Roles {
+		if route.Provider == provider && route.Model == model {
+			route.Provider = ""
+			route.Model = ""
+		}
+		route.Fallbacks = removeProjectModelRef(route.Fallbacks, provider, model)
+		if route.Provider == "" && route.Model == "" && route.ReasoningEffort == "" && len(route.Fallbacks) == 0 {
+			delete(next.Roles, role)
+			continue
+		}
+		next.Roles[role] = route
+	}
+
+	globalPC, providerStillConfigured := nextGlobal.Providers[provider]
+	if hasLocalProvider {
+		if providerStillConfigured {
+			next.Providers[provider] = bootstrap.ProviderConfig{
+				Label:  globalPC.Label,
+				Models: append([]string(nil), globalPC.Models...),
+			}
+		} else {
+			delete(next.Providers, provider)
+		}
+	}
+	if !providerStillConfigured {
+		next.ModelAutoSwitch.FallbackBackends = removeProjectProvider(next.ModelAutoSwitch.FallbackBackends, provider)
+	}
+	delete(next.ProjectOwnedProviders, provider)
+	if len(next.ProjectOwnedProviders) == 0 {
+		next.ProjectOwnedProviders = nil
+	}
+	syncProjectGlobalModelSettings(&next, nextGlobal)
+	return next, !reflect.DeepEqual(cfg, next)
+}
+
+func removeProjectModelRef(values []bootstrap.ModelRef, provider, model string) []bootstrap.ModelRef {
+	out := make([]bootstrap.ModelRef, 0, len(values))
+	for _, value := range values {
+		if value.Provider == provider && value.Model == model {
+			continue
+		}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func removeProjectProvider(values []string, provider string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == provider {
+			continue
+		}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *ProjectStore) RefreshProjectModelSettings(globalCfg bootstrap.Config) (int, error) {
@@ -649,17 +772,40 @@ func (s *ProjectStore) SaveProjectSimulationMode(manifest ProjectManifest, mode 
 	return bootstrap.SaveConfig(ProjectConfigPath(manifest), cfg)
 }
 
-func projectOwnedProviders(cfg bootstrap.Config) map[string]bool {
+func projectOwnedProviders(cfg, globalCfg bootstrap.Config) map[string]bool {
 	if len(cfg.Providers) == 0 {
 		return nil
 	}
 	out := make(map[string]bool, len(cfg.Providers))
 	for name, pc := range cfg.Providers {
-		if providerHasPrivateConfig(pc) {
-			out[name] = true
+		if !providerHasPrivateConfig(pc) {
+			continue
 		}
+		if len(cfg.ProjectOwnedProviders) > 0 {
+			if cfg.ProjectOwnedProviders[name] {
+				out[name] = true
+			}
+			continue
+		}
+		if globalPC, ok := globalCfg.Providers[name]; ok && providerPrivateConfigEqual(pc, globalPC) {
+			continue
+		}
+		out[name] = true
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
+}
+
+func providerPrivateConfigEqual(left, right bootstrap.ProviderConfig) bool {
+	left = cloneWebProviderConfig(left)
+	right = cloneWebProviderConfig(right)
+	left.Label = ""
+	right.Label = ""
+	left.Models = nil
+	right.Models = nil
+	return reflect.DeepEqual(left, right)
 }
 
 func providerHasPrivateConfig(pc bootstrap.ProviderConfig) bool {

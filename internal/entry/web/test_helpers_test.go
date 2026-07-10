@@ -2,6 +2,7 @@ package web
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,8 +12,9 @@ import (
 func testWebConfig(t *testing.T) bootstrap.Config {
 	t.Helper()
 	return bootstrap.Config{
-		Provider:  "openai",
-		ModelName: "gpt-test",
+		Provider:    "openai",
+		ModelName:   "gpt-test",
+		PersistPath: filepath.Join(testTempDir(t), "config.json"),
 		Providers: map[string]bootstrap.ProviderConfig{
 			"openai": {Type: "openai", APIKey: "sk-test"},
 		},

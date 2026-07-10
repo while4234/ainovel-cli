@@ -2360,6 +2360,10 @@ func (f *fakeProjectHost) SyncInheritedProviderFromGlobal(bootstrap.Config, stri
 	return nil
 }
 
+func (f *fakeProjectHost) SyncInheritedProviderModelRemovalFromGlobal(bootstrap.Config, string, string) error {
+	return nil
+}
+
 func (f *fakeProjectHost) SyncModelSettingsFromGlobal(bootstrap.Config) error {
 	return nil
 }

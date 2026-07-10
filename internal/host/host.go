@@ -1655,6 +1655,115 @@ func (h *Host) SyncInheritedProviderFromGlobal(globalCfg bootstrap.Config, origi
 	return nil
 }
 
+// SyncInheritedProviderModelRemovalFromGlobal removes a globally deleted model
+// from an open project that inherits the provider. Project-owned providers keep
+// their credentials and routes.
+func (h *Host) SyncInheritedProviderModelRemovalFromGlobal(globalCfg bootstrap.Config, provider, model string) error {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" || model == "" {
+		return fmt.Errorf("provider and model are required")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg.PersistProviders[provider] {
+		return nil
+	}
+
+	candidate := cloneHostRuntimeConfig(h.cfg)
+	removeInheritedProviderModelFromRuntime(&candidate, globalCfg, provider, model)
+	if candidate.PersistProjectConfig != nil {
+		overlay := cloneProjectConfig(*candidate.PersistProjectConfig)
+		removeInheritedProviderModelFromOverlay(&overlay, globalCfg, provider, model)
+		candidate.PersistProjectConfig = &overlay
+	}
+	delete(candidate.PersistProviders, provider)
+	if len(candidate.PersistProviders) == 0 {
+		candidate.PersistProviders = nil
+	}
+	if err := candidate.ValidateBase(); err != nil {
+		return err
+	}
+	if err := h.models.ApplyConfig(candidate); err != nil {
+		return err
+	}
+	h.cfg = candidate
+	if err := h.persistConfigLocked(); err != nil {
+		return err
+	}
+	h.applyThinkingLocked("default")
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("inherited model removed: %s/%s", provider, model),
+		Level:    "info",
+	})
+	return nil
+}
+
+func removeInheritedProviderModelFromRuntime(cfg *bootstrap.Config, globalCfg bootstrap.Config, provider, model string) {
+	if cfg.Provider == provider && cfg.ModelName == model {
+		cfg.Provider = globalCfg.Provider
+		cfg.ModelName = globalCfg.ModelName
+	}
+	removeProviderModelRoutes(cfg, provider, model)
+	if globalPC, ok := globalCfg.Providers[provider]; ok {
+		if cfg.Providers == nil {
+			cfg.Providers = make(map[string]bootstrap.ProviderConfig)
+		}
+		cfg.Providers[provider] = cloneProviderConfig(globalPC)
+	} else {
+		delete(cfg.Providers, provider)
+	}
+	cfg.ModelAutoSwitch = cloneModelAutoSwitchConfig(globalCfg.ModelAutoSwitch)
+	cfg.StructureRepairMaxAttempts = globalCfg.StructureRepairMaxAttempts
+	cfg.BudgetQualityMaxAttempts = globalCfg.BudgetQualityMaxAttempts
+	cfg.AdaptationOutlineAuditRetryMaxAttempts = globalCfg.AdaptationOutlineAuditRetryMaxAttempts
+}
+
+func removeInheritedProviderModelFromOverlay(cfg *bootstrap.Config, globalCfg bootstrap.Config, provider, model string) {
+	if cfg.Provider == provider && cfg.ModelName == model {
+		cfg.Provider = ""
+		cfg.ModelName = ""
+	}
+	removeProviderModelRoutes(cfg, provider, model)
+	if globalPC, ok := globalCfg.Providers[provider]; ok {
+		if _, referenced := cfg.Providers[provider]; referenced {
+			cfg.Providers[provider] = bootstrap.ProviderConfig{
+				Label:  globalPC.Label,
+				Models: append([]string(nil), globalPC.Models...),
+			}
+		}
+	} else {
+		delete(cfg.Providers, provider)
+		cfg.ModelAutoSwitch.FallbackBackends = removeProviderCandidate(cfg.ModelAutoSwitch.FallbackBackends, provider)
+	}
+	delete(cfg.ProjectOwnedProviders, provider)
+	if len(cfg.ProjectOwnedProviders) == 0 {
+		cfg.ProjectOwnedProviders = nil
+	}
+	cfg.ModelAutoSwitch = cloneModelAutoSwitchConfig(globalCfg.ModelAutoSwitch)
+	cfg.StructureRepairMaxAttempts = globalCfg.StructureRepairMaxAttempts
+	cfg.BudgetQualityMaxAttempts = globalCfg.BudgetQualityMaxAttempts
+	cfg.AdaptationOutlineAuditRetryMaxAttempts = globalCfg.AdaptationOutlineAuditRetryMaxAttempts
+}
+
+func removeProviderModelRoutes(cfg *bootstrap.Config, provider, model string) {
+	for role, route := range cfg.Roles {
+		if route.Provider == provider && route.Model == model {
+			route.Provider = ""
+			route.Model = ""
+		}
+		route.Fallbacks = removeModelRef(route.Fallbacks, provider, model)
+		if roleConfigIsEmpty(route) {
+			delete(cfg.Roles, role)
+			continue
+		}
+		cfg.Roles[role] = route
+	}
+}
+
 func (h *Host) SyncModelSettingsFromGlobal(globalCfg bootstrap.Config) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2013,6 +2122,7 @@ func RemoveProviderModelFromConfig(cfg bootstrap.Config, providerName, model str
 	}
 	if len(candidate.CandidateModels(providerName)) == 0 {
 		delete(candidate.Providers, providerName)
+		candidate.ModelAutoSwitch.FallbackBackends = removeProviderCandidate(candidate.ModelAutoSwitch.FallbackBackends, providerName)
 	}
 	if err := candidate.ValidateBase(); err != nil {
 		return bootstrap.Config{}, err
@@ -2562,6 +2672,7 @@ func (h *Host) projectOverlayConfigLocked() bootstrap.Config {
 	if h.cfg.PersistProjectConfig != nil {
 		overlay = cloneProjectConfig(*h.cfg.PersistProjectConfig)
 	}
+	overlay.ProjectOwnedProviders = cloneBoolMap(h.cfg.PersistProviders)
 	overlay.Providers = h.projectOverlayProvidersLocked(overlay)
 	return overlay
 }
@@ -2883,6 +2994,7 @@ func cloneProjectConfig(cfg bootstrap.Config) bootstrap.Config {
 	out.ModelAutoSwitch = cloneModelAutoSwitchConfig(cfg.ModelAutoSwitch)
 	out.Providers = cloneProviderConfigs(cfg.Providers)
 	out.Roles = cloneRoleConfigs(cfg.Roles)
+	out.ProjectOwnedProviders = cloneBoolMap(cfg.ProjectOwnedProviders)
 	return out
 }
 
@@ -2900,6 +3012,17 @@ func cloneHostRuntimeConfig(cfg bootstrap.Config) bootstrap.Config {
 	if cfg.PersistProjectConfig != nil {
 		project := cloneProjectConfig(*cfg.PersistProjectConfig)
 		out.PersistProjectConfig = &project
+	}
+	return out
+}
+
+func cloneBoolMap(values map[string]bool) map[string]bool {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(values))
+	for key, value := range values {
+		out[key] = value
 	}
 	return out
 }

@@ -28,6 +28,7 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 
 	cfg := testWebConfig(t)
+	cfg.PersistPath = ""
 	cfg.Providers["openai"] = bootstrap.ProviderConfig{
 		Type:   "openai",
 		APIKey: "sk-test",
@@ -98,6 +99,7 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 
 func TestGlobalRetrySettingsKeepsAdaptationOutlineAuditRetryIndependent(t *testing.T) {
 	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
 	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 
@@ -279,6 +281,7 @@ func TestGlobalModelAddGrokOAuthProvider(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 
 	base := testWebConfig(t)
+	base.PersistPath = ""
 	server := NewServer(base, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 
@@ -686,8 +689,40 @@ func TestGlobalModelDeleteRemovesProviderAndRoleRoute(t *testing.T) {
 	cfg.Roles = map[string]bootstrap.RoleConfig{
 		"writer": {Provider: "proxy", Model: "proxy-model"},
 	}
+	cfg.ModelAutoSwitch.FallbackBackends = []string{"openai", "proxy"}
 	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
+	legacyProject, err := server.store.CreateProject("Legacy Inherited Provider")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := bootstrap.SaveConfig(ProjectConfigPath(legacyProject), bootstrap.Config{
+		Provider:  "proxy",
+		ModelName: "proxy-model",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"proxy": cfg.Providers["proxy"],
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"editor": {Provider: "proxy", Model: "proxy-model"},
+		},
+		ModelAutoSwitch: bootstrap.ModelAutoSwitchConfig{
+			FallbackBackends: []string{"proxy"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig legacy project: %v", err)
+	}
+	ownedProject, err := server.store.CreateProject("Project Owned Provider")
+	if err != nil {
+		t.Fatalf("CreateProject owned: %v", err)
+	}
+	if err := bootstrap.SaveConfig(ProjectConfigPath(ownedProject), bootstrap.Config{
+		Providers: map[string]bootstrap.ProviderConfig{
+			"proxy": cfg.Providers["proxy"],
+		},
+		ProjectOwnedProviders: map[string]bool{"proxy": true},
+	}); err != nil {
+		t.Fatalf("SaveConfig owned project: %v", err)
+	}
 
 	var deleted struct {
 		Models  apiModelConfig `json:"models"`
@@ -718,6 +753,36 @@ func TestGlobalModelDeleteRemovesProviderAndRoleRoute(t *testing.T) {
 	}
 	if _, ok := saved.Roles["writer"]; ok {
 		t.Fatalf("saved writer route still exists: %+v", saved.Roles["writer"])
+	}
+	if containsString(saved.ModelAutoSwitch.FallbackBackends, "proxy") {
+		t.Fatalf("saved fallback pool still includes deleted provider: %+v", saved.ModelAutoSwitch.FallbackBackends)
+	}
+	projectCfg, err := bootstrap.LoadConfigFile(ProjectConfigPath(legacyProject))
+	if err != nil {
+		t.Fatalf("LoadConfigFile project overlay: %v", err)
+	}
+	if _, ok := projectCfg.Providers["proxy"]; ok {
+		t.Fatalf("project overlay retained deleted inherited provider: %+v", projectCfg.Providers["proxy"])
+	}
+	if projectCfg.Provider != "" || projectCfg.ModelName != "" {
+		t.Fatalf("project overlay retained deleted default route: %s/%s", projectCfg.Provider, projectCfg.ModelName)
+	}
+	if _, ok := projectCfg.Roles["editor"]; ok {
+		t.Fatalf("project overlay retained deleted editor route: %+v", projectCfg.Roles["editor"])
+	}
+	projectBytes, err := os.ReadFile(ProjectConfigPath(legacyProject))
+	if err != nil {
+		t.Fatalf("read project overlay: %v", err)
+	}
+	if strings.Contains(string(projectBytes), "sk-proxy") {
+		t.Fatal("project overlay retained deleted inherited credential")
+	}
+	ownedCfg, err := bootstrap.LoadConfigFile(ProjectConfigPath(ownedProject))
+	if err != nil {
+		t.Fatalf("LoadConfigFile owned project: %v", err)
+	}
+	if ownedCfg.Providers["proxy"].APIKey != "sk-proxy" {
+		t.Fatal("global deletion changed an explicitly project-owned provider")
 	}
 }
 

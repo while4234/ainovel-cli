@@ -492,10 +492,27 @@ func (s *Server) handleModelDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setCurrentConfig(next)
+	s.refreshProjectsAfterGlobalModelDelete(cfg, next, req.Provider, req.Model)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"models":  s.globalModelConfig(next),
 		"runtime": s.runtimePayload(next),
 	})
+}
+
+func (s *Server) refreshProjectsAfterGlobalModelDelete(previous, next bootstrap.Config, provider, model string) {
+	if s.store != nil {
+		updated, err := s.store.RemoveInheritedProjectProviderModel(previous, next, provider, model)
+		if err != nil {
+			slog.Warn("remove inherited model from project configs failed", "module", "web", "provider", provider, "model", model, "err", err)
+		} else if updated > 0 {
+			slog.Info("removed inherited model from project configs", "module", "web", "provider", provider, "model", model, "projects", updated)
+		}
+	}
+	if s.sessions != nil {
+		if err := s.sessions.SyncInheritedProviderModelRemovalFromGlobal(next, provider, model); err != nil {
+			slog.Warn("remove inherited model from active projects failed", "module", "web", "provider", provider, "model", model, "err", err)
+		}
+	}
 }
 
 func (s *Server) addGlobalProviderModel(role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, map[string]any, error) {

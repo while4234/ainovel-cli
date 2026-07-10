@@ -142,6 +142,7 @@ type projectHost interface {
 	ConfigureProviderModel(context.Context, host.ProviderModelUpdate) error
 	SyncModelSettingsFromGlobal(bootstrap.Config) error
 	SyncInheritedProviderFromGlobal(bootstrap.Config, string, string) error
+	SyncInheritedProviderModelRemovalFromGlobal(bootstrap.Config, string, string) error
 	TestProviderModel(context.Context, string, string, bootstrap.ProviderConfig, string) (host.ProviderModelTestResult, error)
 	TestConfiguredProviderModel(context.Context, host.ProviderModelUpdate) (host.ProviderModelTestResult, error)
 	DiscoverProviderModels(context.Context, string, bootstrap.ProviderConfig, string) (host.ProviderModelDiscoveryResult, error)
@@ -194,6 +195,24 @@ func (m *SessionManager) SyncInheritedProviderFromGlobal(cfg bootstrap.Config, o
 	var errs []error
 	for _, session := range sessions {
 		if err := session.SyncInheritedProviderFromGlobal(cfg, originalProvider, provider); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (m *SessionManager) SyncInheritedProviderModelRemovalFromGlobal(cfg bootstrap.Config, provider, model string) error {
+	m.mu.Lock()
+	m.cfg = cloneWebConfig(cfg)
+	sessions := make([]*ProjectSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	m.mu.Unlock()
+
+	var errs []error
+	for _, session := range sessions {
+		if err := session.SyncInheritedProviderModelRemovalFromGlobal(cfg, provider, model); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -588,6 +607,14 @@ func (s *ProjectSession) SyncModelSettingsFromGlobal(cfg bootstrap.Config) error
 
 func (s *ProjectSession) SyncInheritedProviderFromGlobal(cfg bootstrap.Config, originalProvider, provider string) error {
 	if err := s.host.SyncInheritedProviderFromGlobal(cfg, originalProvider, provider); err != nil {
+		return err
+	}
+	s.AppendSnapshot()
+	return nil
+}
+
+func (s *ProjectSession) SyncInheritedProviderModelRemovalFromGlobal(cfg bootstrap.Config, provider, model string) error {
+	if err := s.host.SyncInheritedProviderModelRemovalFromGlobal(cfg, provider, model); err != nil {
 		return err
 	}
 	s.AppendSnapshot()

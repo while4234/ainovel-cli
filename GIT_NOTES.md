@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Current recovery/fix change: restored the usable local model registry after a
+  Web test accidentally overwrote the real global config, isolated all Web
+  tests behind temporary persist paths, and made global model deletion remove
+  inherited provider credentials/routes from active and trashed project
+  overlays while preserving explicitly project-owned providers. A real Web
+  model test confirmed `deepseek-suifeng-0` works and
+  `deepseek-suifeng-1` has an invalid token; the invalid provider and the
+  already-invalid `deepseek-infa` references were removed. The global registry
+  now contains `deepseek-suifeng-0`, `deepseek-yuanyu-0`, and `grok-oauth`, with
+  retry settings 7/7/2/2. Full Go tests passed without changing the live config.
 - Current development change: surfaced the existing adaptation audit as a
   dedicated Web tool page with an explicit `read-only audit -> acknowledge and
   apply repair plan -> user clicks restore` workflow. Added plan-only quality

@@ -359,6 +359,11 @@ type Config struct {
 	// persistence can avoid serializing inherited global defaults/routes.
 	PersistProjectConfig *Config `json:"-"`
 
+	// ProjectOwnedProviders records provider IDs whose credentials belong to a
+	// project overlay. It prevents global provider deletion from treating a
+	// deliberately project-scoped provider as a stale inherited credential copy.
+	ProjectOwnedProviders map[string]bool `json:"project_owned_providers,omitempty"`
+
 	// WebRuntimeRoot is the optional config-file override for web project storage.
 	RuntimeRoot string `json:"runtime_root,omitempty"`
 

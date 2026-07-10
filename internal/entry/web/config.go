@@ -7,15 +7,24 @@ func cloneWebConfig(cfg bootstrap.Config) bootstrap.Config {
 	out.ModelAutoSwitch = cloneWebModelAutoSwitchConfig(cfg.ModelAutoSwitch)
 	out.Providers = cloneWebProviderConfigs(cfg.Providers)
 	out.Roles = cloneWebRoleConfigs(cfg.Roles)
+	out.ProjectOwnedProviders = cloneWebBoolMap(cfg.ProjectOwnedProviders)
 	if cfg.PersistProviders != nil {
-		out.PersistProviders = make(map[string]bool, len(cfg.PersistProviders))
-		for name, owned := range cfg.PersistProviders {
-			out.PersistProviders[name] = owned
-		}
+		out.PersistProviders = cloneWebBoolMap(cfg.PersistProviders)
 	}
 	if cfg.PersistProjectConfig != nil {
 		project := cloneWebConfig(*cfg.PersistProjectConfig)
 		out.PersistProjectConfig = &project
+	}
+	return out
+}
+
+func cloneWebBoolMap(values map[string]bool) map[string]bool {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(values))
+	for key, value := range values {
+		out[key] = value
 	}
 	return out
 }
