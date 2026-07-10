@@ -35,7 +35,9 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   independent evidence and anti-AI checks; and read-only audit/confirmed repair
   APIs. Full Go tests, Go vet, 162 Web UI tests, UI production build, and staged
   diff checks passed. No live novel audit, repair, resume, or regeneration was
-  run as acceptance.
+  run as acceptance. Commits `83856d9` and `b91731d` were pushed to
+  `origin/main`; Web was rebuilt/restarted on `http://127.0.0.1:9898` as PID
+  `65228` with the external preview runtime root.
 - Latest source/runtime change: `feat: add reviewed novel continuation workflow`:
   imported novels now stop at a durable planning gate instead of automatically
   resuming Writer. The shared continuation state machine requires source
