@@ -42,6 +42,7 @@ import {
   isProjectRunning,
   normalizeCoCreateDecisionAnswers,
   outlineRevisionSuccessMessage,
+  prepareProjectOpenSnapshot,
   resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords,
   resolveVisibleDefaultModel,
@@ -239,6 +240,28 @@ describe('co-create begin payload helpers', () => {
     expect(prompt).toContain('全书总字数');
     expect(prompt).toContain('3000-5000');
     expect(prompt).toContain('不要拆成多个章节');
+  });
+});
+
+describe('project open snapshot preparation', () => {
+  it('accepts the first click response even while the active project ref is cleared', () => {
+    const prepared = prepareProjectOpenSnapshot(4, 4, {
+      project: { id: 'project-2', name: '第二个项目' },
+      snapshot: { RuntimeState: 'running' },
+      events: [],
+      latest_event_seq: 27
+    });
+
+    expect(prepared.project.id).toBe('project-2');
+    expect(prepared.workbench.lastSeq).toBe(27);
+    expect(prepared.workbench.snapshot.RuntimeState).toBe('running');
+  });
+
+  it('rejects a response superseded by a later project click', () => {
+    expect(prepareProjectOpenSnapshot(4, 5, {
+      project: { id: 'project-1' },
+      snapshot: { RuntimeState: 'running' }
+    })).toBeNull();
   });
 });
 

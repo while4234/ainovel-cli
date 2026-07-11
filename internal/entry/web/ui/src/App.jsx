@@ -763,6 +763,21 @@ export function isProjectScopedResponseCurrent(projectId, activeProjectId) {
   return Boolean(expectedProjectId) && expectedProjectId === String(activeProjectId || '').trim();
 }
 
+export function prepareProjectOpenSnapshot(requestSeq, currentRequestSeq, snapshotData) {
+  if (requestSeq !== currentRequestSeq || !snapshotData?.project?.id) {
+    return null;
+  }
+  return {
+    project: snapshotData.project,
+    workbench: restoreProjectWorkbenchSnapshot(
+      createWorkbenchState(),
+      snapshotData.snapshot,
+      snapshotData.events,
+      snapshotData.latest_event_seq
+    )
+  };
+}
+
 export default function App() {
   const [setup, setSetup] = useState(() => ({
     ...createSetupState(),
@@ -1386,18 +1401,14 @@ export default function App() {
     setProjectDrawerOpen(false);
     try {
       const snapshotData = await getSnapshot(projectId);
-      if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
+      const prepared = prepareProjectOpenSnapshot(requestSeq, projectOpenSeqRef.current, snapshotData);
+      if (!prepared) {
         return;
       }
-      const restoredWorkbench = restoreProjectWorkbenchSnapshot(
-        createWorkbenchState(),
-        snapshotData.snapshot,
-        snapshotData.events,
-        snapshotData.latest_event_seq
-      );
-      lastSeqRef.current = restoredWorkbench.lastSeq;
-      setWorkbench(restoredWorkbench);
-      setActiveProject(snapshotData.project);
+      activeProjectIdRef.current = projectId;
+      lastSeqRef.current = prepared.workbench.lastSeq;
+      setWorkbench(prepared.workbench);
+      setActiveProject(prepared.project);
       setCoCreate((previous) => coCreateStateFromResponse(snapshotData, previous));
       setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
       setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation, snapshotData.snapshot));
@@ -1424,7 +1435,7 @@ export default function App() {
         scheduledResumeError: projectScheduleResult.error
       }));
     } catch (err) {
-      if (projectOpenSeqRef.current === requestSeq && isCurrentProject(projectId)) {
+      if (projectOpenSeqRef.current === requestSeq) {
         setError(err.message);
       }
     }
