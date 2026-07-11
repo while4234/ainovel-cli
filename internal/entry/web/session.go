@@ -922,7 +922,43 @@ func (s *ProjectSession) pendingWebResumeAction() (*webResumeAction, error) {
 	if action, err := pendingAdaptationProposalResumeAction(st); err != nil || action != nil {
 		return action, err
 	}
+	hasPlanningState, err := hasDurableAdaptationPlanningState(st)
+	if err != nil {
+		return nil, err
+	}
+	if hasPlanningState {
+		return nil, nil
+	}
 	return pendingAdaptationAnalysisResumeAction(manifest)
+}
+
+func hasDurableAdaptationPlanningState(st *storepkg.Store) (bool, error) {
+	plan, err := st.Adaptation.LoadPlan()
+	if err != nil {
+		return false, fmt.Errorf("load adaptation plan: %w", err)
+	}
+	if plan != nil {
+		return true, nil
+	}
+	proposal, err := st.Adaptation.LoadProposal()
+	if err != nil {
+		return false, fmt.Errorf("load adaptation proposal: %w", err)
+	}
+	if proposal != nil {
+		return true, nil
+	}
+	review, err := st.Adaptation.LoadVolumeReview()
+	if err != nil {
+		return false, fmt.Errorf("load adaptation volume review: %w", err)
+	}
+	if review != nil {
+		return true, nil
+	}
+	runtime, err := st.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		return false, fmt.Errorf("load adaptation proposal runtime: %w", err)
+	}
+	return runtime != nil, nil
 }
 
 func pendingAdaptationProposalResumeAction(st *storepkg.Store) (*webResumeAction, error) {

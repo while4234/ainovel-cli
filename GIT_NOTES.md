@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Pending rollback-resume fix: projects with a durable adaptation plan,
+  proposal, volume review, or proposal runtime no longer restart stale source
+  analysis when the user clicks Resume. This preserves proposal/volume review
+  gates after cloning and rollback even when a later software version marks an
+  older dossier schema stale. The real `武林高手 - 副本` diagnosis confirmed
+  cloning retained all 451 source chapters and all 451 chapter reports; only
+  the dossier schema/batch layout had advanced after the clone was created.
+  Focused Web regressions, the full Web package, `go test ./... -count=1`,
+  `go vet ./...`, and `git diff --check` passed.
 - Latest mainline-binding recovery fix: `eee8841` `fix: repair duplicate
   mainline bindings`: detailed Arc planning now exposes only the current small
   batch's assigned mainline IDs, records duplicate bindings as structured

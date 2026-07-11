@@ -1367,6 +1367,67 @@ func TestProjectSessionResumeDoesNotCrossLegacyAdaptationVolumeReview(t *testing
 	}
 }
 
+func TestProjectSessionResumeDoesNotRestartStaleAnalysisAfterProposalRollback(t *testing.T) {
+	projectRoot := t.TempDir()
+	outputDir := filepath.Join(projectRoot, "output")
+	st := storepkg.NewStore(outputDir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init store: %v", err)
+	}
+	sourcePath := filepath.Join(projectRoot, "uploads", "adaptation", "source.txt")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create source directory: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{
+		SourcePath:   sourcePath,
+		ChapterCount: 1,
+		Chapters:     []domain.AdaptationSource{{Chapter: 1, SHA256: "source-hash"}},
+	}); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+	if err := st.Adaptation.SaveProposal(rollbackTestWebAdaptationProposal()); err != nil {
+		t.Fatalf("SaveProposal: %v", err)
+	}
+
+	fake := newFakeProjectHost()
+	session, err := NewProjectSession(ProjectManifest{
+		ID: "rolled-back-clone", RootDir: projectRoot, OutputDir: outputDir,
+	}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	label, err := session.Resume()
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if fake.adaptAnalyzeCalls != 0 {
+		t.Fatalf("adaptation analysis calls = %d, want 0", fake.adaptAnalyzeCalls)
+	}
+	if fake.resumeCalls != 0 {
+		t.Fatalf("host resume calls = %d, want 0", fake.resumeCalls)
+	}
+	if !strings.Contains(label, "用户") {
+		t.Fatalf("label = %q, want proposal review wait label", label)
+	}
+}
+
+func rollbackTestWebAdaptationProposal() domain.AdaptationPlan {
+	return domain.AdaptationPlan{
+		Brief:         "review restored proposal",
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter: 1,
+			Title:   "Opening",
+		}},
+	}
+}
+
 type fakeProjectHost struct {
 	mu sync.Mutex
 
