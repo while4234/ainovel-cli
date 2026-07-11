@@ -3737,7 +3737,7 @@ export default function App() {
         }),
         test_scope: scope,
         test_status: discovery.status || 'ok',
-        test_message: discovery.message || (discovery.supported === false ? '已使用本地模型列表' : '连接测试完成')
+        test_message: modelDiscoveryMessage(discovery, models)
       }));
     } catch (err) {
       setError(err.message);
@@ -9089,19 +9089,27 @@ function ModelPanel({
           </>
         ) : null}
         <label className="model-field">
-          <span>模型</span>
-          <input
-            disabled={busy}
-            list="model-editor-options"
-            placeholder="model"
-            value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'codex_auth' ? codexAuthDefaults.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
-            onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
-          />
-          <datalist id="model-editor-options">
-            {modelSuggestions.map((model) => (
-              <option key={model} value={model} />
-            ))}
-          </datalist>
+          <span>模型名称</span>
+          {discoveredModels.length > 0 ? (
+            <select
+              aria-label="模型名称"
+              disabled={busy}
+              value={customModel.model || modelSuggestions[0] || ''}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
+            >
+              {modelSuggestions.map((model) => (
+                <option key={model} value={model}>{model}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              aria-label="模型名称"
+              disabled={busy}
+              placeholder="model"
+              value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'codex_auth' ? codexAuthDefaults.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
+              onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
+            />
+          )}
         </label>
         {editorTestMessage ? (
           <div className={`model-test-note ${customModel.test_status || 'idle'}`}>
@@ -9111,7 +9119,7 @@ function ModelPanel({
         <div className="model-editor-actions">
           <button className="tool-button" disabled={busy || !canTestEditorConnection} onClick={() => onTestConnection()} type="button">
             <TestTube2 size={16} />
-            测试连接
+            测试并发现模型
           </button>
           <button className="tool-button" disabled={busy || !canTestEditorModel} onClick={() => onTestModel()} type="button">
             <ListRestart size={16} />
@@ -9590,6 +9598,21 @@ function mergeModelOptions(...groups) {
     }
   }
   return out;
+}
+
+export function modelDiscoveryMessage(discovery = {}, models = []) {
+  const count = Array.isArray(models) ? models.length : 0;
+  if (discovery.status === 'error') {
+    return discovery.message || '模型探测失败';
+  }
+  if (discovery.supported === false) {
+    return count > 0
+      ? `服务不支持在线探测，已加载 ${count} 个已配置模型`
+      : '服务不支持在线探测，且没有已配置模型';
+  }
+  return count > 0
+    ? `测试完成，发现 ${count} 个支持模型，请在“模型名称”下拉列表中选择`
+    : '测试完成，但服务未返回可用模型';
 }
 
 function modelAddPresetDefaults(state, providers = [], previousMode = '') {

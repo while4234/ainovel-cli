@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Pending model-discovery UI fix: clicking `测试并发现模型` now reports the
+  discovered model count and replaces the editable model-name field with a
+  true select control containing every returned model. Before discovery, the
+  field remains editable for custom model IDs. All 203 Web tests and the
+  production build passed; the restarted service (PID `42580`) returned 11
+  Grok OAuth models from `/api/models/discover`.
 - Latest upstream sync: `c4592c6a` `fix: bound adaptation detail prompt evidence`:
   fast-forwarded `main` by four commits from `f7da4ea9`, including project
   switching stability, adaptation planning convergence, first-click project
@@ -1142,6 +1148,11 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   proposal status `proposal`, 60 chapters, 5 volumes, last volume `47-60`.
 
 ## Change Log
+
+- 2026-07-11 pending `fix: show all discovered provider models`: replace the
+  filtered model `datalist` with a real select after discovery, show the number
+  of supported models, rebuild embedded assets, restart port 9898, and verify
+  the live Grok OAuth discovery returns 11 models.
 
 - 2026-07-05 current local commit `test: stabilize legacy library backfill test`:
   captured the fake adaptation-analysis start channel in the legacy

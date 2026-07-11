@@ -4,6 +4,7 @@ import {
   buildModelAddPayload,
   canSubmitModelAdd,
   createNewModelDraft,
+  modelDiscoveryMessage,
   modelAddValidationMessage,
   modelAddModeDefaults,
   modelAddSaveTarget,
@@ -411,6 +412,18 @@ describe('model add helpers', () => {
     expect(modelOptionsForProvider([
       { name: 'openai', models: ['gpt-a', 'gpt-b'] }
     ], 'openai', 'gpt-custom')).toEqual(['gpt-custom', 'gpt-a', 'gpt-b']);
+  });
+
+  it('summarizes discovered models for the model name dropdown', () => {
+    expect(modelDiscoveryMessage({ status: 'ok', supported: true }, [
+      'grok-4.3',
+      'grok-4.5',
+      'grok-4.20'
+    ])).toBe('测试完成，发现 3 个支持模型，请在“模型名称”下拉列表中选择');
+    expect(modelDiscoveryMessage({ status: 'fallback', supported: false }, [
+      'grok-4.3-latest'
+    ])).toBe('服务不支持在线探测，已加载 1 个已配置模型');
+    expect(modelDiscoveryMessage({ status: 'error', message: 'unauthorized' }, [])).toBe('unauthorized');
   });
 
   it('builds a minimal payload for testing configured models', () => {
