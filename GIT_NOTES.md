@@ -37,7 +37,9 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   inspected read-only: two of 121 cached batches account for all three bindings,
   so recovery will retain the other 119 batches. Focused regressions, the full
   `internal/host/adapt` package, `go test ./... -count=1`, `go vet ./...`, and
-  `git diff --check` passed.
+  `git diff --check` passed. Web was rebuilt from `12da231`, restarted on port
+  9898 as PID `76580`, and the runtime/project API smoke checks passed with the
+  intended preview runtime root and 19 visible projects.
 - Latest detailed-outline repair stability change: `171d387` `fix: reset
   polluted detail repair chains`: detailed
   chapter batches, proposal-revision batches, and missing-chapter fills now
