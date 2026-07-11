@@ -34,6 +34,7 @@ const (
 	adaptationPlannerSkeletonMaxTokens       = 4096
 	adaptationPlannerChunkedMinChapters      = 18
 	adaptationPlannerRecommendedBatchMax     = 4
+	adaptationPlannerContinuityChapterMax    = adaptationPlannerRecommendedBatchMax * 2
 	adaptationGeneratedOutlineBatchMax       = adaptationPlannerRecommendedBatchMax
 	adaptationPlannerSourceMapExpansionMax   = 6
 	adaptationPlannerSourceChunkedMin        = adaptationPlannerRecommendedBatchMax * 2
@@ -3746,6 +3747,17 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 		return nil, fmt.Errorf("no batches")
 	}
 	_ = allowBudgetDeviation
+	batches = plannerSourceMapCandidatesInRange(batches, entry)
+	sort.SliceStable(batches, func(i, j int) bool {
+		if batches[i].SourceFrom == batches[j].SourceFrom {
+			if batches[i].SourceTo == batches[j].SourceTo {
+				return batches[i].Index < batches[j].Index
+			}
+			return batches[i].SourceTo < batches[j].SourceTo
+		}
+		return batches[i].SourceFrom < batches[j].SourceFrom
+	})
+	batches = normalizePlannerStrictSourceRangePartition(batches, entry)
 	out := make([]plannerSkeletonBatch, 0, len(batches))
 	for idx, batch := range batches {
 		batch.BudgetDecision = normalizePlannerBudgetDecision(batch.BudgetDecision)
@@ -3789,20 +3801,12 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 		}
 		maxCount = max(maxCount, minCount)
 		if enforceSourceRuneSplitting && count < hardMinCount {
-			budgetErr := &plannerChapterBudgetQualityError{
-				BatchIndex:  idx + 1,
-				Count:       count,
-				MinCount:    hardMinCount,
-				MaxCount:    maxCount,
-				SourceFrom:  batch.SourceFrom,
-				SourceTo:    batch.SourceTo,
-				SourceRunes: sourceRunes,
-				Direction:   "low",
+			if plannerSkeletonBatchAcceptsBudgetDeviation(batch, "low") {
+				markPlannerBatchBudgetDeviationAccepted(&batch)
+			} else {
+				count = hardMinCount
+				markPlannerBatchCapacityFloorApplied(&batch, hardMinCount, sourceRunes)
 			}
-			if !plannerSkeletonBatchAcceptsBudgetDeviation(batch, "low") {
-				return nil, budgetErr
-			}
-			markPlannerBatchBudgetDeviationAccepted(&batch)
 		}
 		if enforceSourceRuneSplitting && count < minCount {
 			budgetErr := &plannerChapterBudgetQualityError{
@@ -3842,18 +3846,9 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 	if len(out) == 0 {
 		return nil, fmt.Errorf("source-map range %d-%d returned no in-range batches", entry.SourceFrom, entry.SourceTo)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].SourceFrom == out[j].SourceFrom {
-			if out[i].SourceTo == out[j].SourceTo {
-				return out[i].Index < out[j].Index
-			}
-			return out[i].SourceTo < out[j].SourceTo
-		}
-		return out[i].SourceFrom < out[j].SourceFrom
-	})
 	coveredTo := entry.SourceFrom - 1
 	for _, batch := range out {
-		if batch.SourceFrom < coveredTo {
+		if batch.SourceFrom <= coveredTo {
 			return nil, fmt.Errorf("source-map range %d-%d overlaps at source chapter %d", entry.SourceFrom, entry.SourceTo, batch.SourceFrom)
 		}
 		if batch.SourceFrom > coveredTo+1 {
@@ -3871,19 +3866,59 @@ func normalizePlannerSourceMapSkeletonBatchesWithOptions(batches []plannerSkelet
 	sourceRunes := plannerSourceMapRunesForRange(entry, sourceRunesByChapter, entry.SourceFrom, entry.SourceTo)
 	minTargetCount := plannerSourceMapBudgetMinTargetChaptersForRunes(sourceRunes, granularity)
 	if enforceSourceRuneSplitting && minTargetCount > 0 && targetCount < minTargetCount {
-		budgetErr := &plannerChapterBudgetQualityError{
-			Count:       targetCount,
-			MinCount:    minTargetCount,
-			SourceFrom:  entry.SourceFrom,
-			SourceTo:    entry.SourceTo,
-			SourceRunes: sourceRunes,
-			Direction:   "low",
-		}
 		if !markPlannerSkeletonBudgetDeviationAcceptedForDirection(out, "low") {
-			return nil, budgetErr
+			last := len(out) - 1
+			out[last].TargetChapterCount += minTargetCount - targetCount
+			markPlannerBatchCapacityFloorApplied(&out[last], minTargetCount, sourceRunes)
 		}
 	}
 	return out, nil
+}
+
+func plannerSourceMapCandidatesInRange(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) []plannerSkeletonBatch {
+	out := make([]plannerSkeletonBatch, 0, len(batches))
+	for _, batch := range batches {
+		if batch.SourceTo < entry.SourceFrom || batch.SourceFrom > entry.SourceTo {
+			continue
+		}
+		out = append(out, batch)
+	}
+	return out
+}
+
+func normalizePlannerStrictSourceRangePartition(batches []plannerSkeletonBatch, entry plannerSourceMapEntry) []plannerSkeletonBatch {
+	if len(batches) == 0 || len(batches) > entry.SourceTo-entry.SourceFrom+1 {
+		return batches
+	}
+	coveredTo := entry.SourceFrom - 1
+	for index := range batches {
+		remaining := len(batches) - index - 1
+		from := coveredTo + 1
+		maxTo := entry.SourceTo - remaining
+		to := batches[index].SourceTo
+		if to < from {
+			to = from
+		}
+		if to > maxTo || index == len(batches)-1 {
+			to = maxTo
+		}
+		batches[index].SourceFrom = from
+		batches[index].SourceTo = to
+		coveredTo = to
+	}
+	return batches
+}
+
+func markPlannerBatchCapacityFloorApplied(batch *plannerSkeletonBatch, minimum, sourceRunes int) {
+	if batch == nil {
+		return
+	}
+	batch.BudgetDecision = "expand_or_split"
+	reason := fmt.Sprintf("host capacity floor raised this source range to at least %d target chapters", minimum)
+	if sourceRunes > 0 {
+		reason += fmt.Sprintf(" for %d source_runes", sourceRunes)
+	}
+	batch.BudgetReason = reason
 }
 
 func plannerSourceMapChapterBudgetReviewRange(sourceSpan int) (int, int) {
@@ -6072,8 +6107,8 @@ func plannerSkeletonRepairSourceRangeInstructions(granularity string) []string {
 		}
 	}
 	return []string{
-		"Keep returned source ranges as a strict sorted partition of the requested source-map range: cover every source chapter exactly once, with no gaps, no overlaps, and no duplicated boundary chapter.",
-		"If the previous error says overlaps, does not advance, or has a gap, rewrite source_from/source_to for all returned batches so the sorted ranges are contiguous before changing chapter_count.",
+		"Suggest sorted source ranges that cover the requested source-map range. The host will normalize minor gaps, overlaps, and duplicated boundary chapters into a strict inclusive partition.",
+		"Focus repairs on story structure and chapter_count. Do not spend repeated attempts on exact source-range boundary arithmetic.",
 	}
 }
 
@@ -6816,7 +6851,7 @@ func plannerSkeletonSourceRangeRequirements(granularity string) []string {
 		}
 	}
 	return []string{
-		"The source ranges across returned batches must strictly partition the provided source_map range: cover every source chapter once, with no gaps and no overlaps.",
+		"Suggest source ranges across returned batches in story order. The host will normalize them into a strict inclusive partition that covers every source chapter once.",
 	}
 }
 
@@ -6891,6 +6926,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 	requirements = append(requirements,
 		"Use the user's adaptation brief and the skeleton batch goal; do not ignore earlier user planning.",
 		"Use previous_detail_chapters only for continuity, callbacks, and handoff hooks; do not duplicate already generated chapters.",
+		"Continue from the latest previous_detail_chapters hook and state changes so this small detail batch reads as the next part of the same parent volume.",
 	)
 	input := struct {
 		Brief                  string                          `json:"brief"`
@@ -6916,9 +6952,9 @@ func buildAdaptationPlannerBatchUserPrompt(
 		ChapterBudgetPolicy:    plannerChapterBudgetPolicyForGranularity(opts.Granularity),
 		SourceManifest:         plannerManifestSummary(manifest),
 		SourceFoundation:       plannerSourceFoundationDigest(sourceFoundation),
-		Skeleton:               skeleton,
+		Skeleton:               plannerSkeletonForDetailPrompt(skeleton, batch),
 		Batch:                  batch,
-		PreviousDetailChapters: plannerPreviousChapterContexts(previousChapters, adaptationPlannerRecommendedBatchMax),
+		PreviousDetailChapters: plannerPreviousChapterContexts(previousChapters, adaptationPlannerContinuityChapterMax),
 		SourceReports:          plannerSourceReportExcerpts(reports),
 		SourceReportNotes: []string{
 			"source_reports are clipped excerpts for the requested source range, not full raw reports.",
@@ -6951,6 +6987,19 @@ func buildAdaptationPlannerBatchUserPrompt(
 		batch.TargetFrom,
 		string(raw),
 	), nil
+}
+
+func plannerSkeletonForDetailPrompt(skeleton plannerSkeleton, detailBatch plannerSkeletonBatch) plannerSkeleton {
+	context := skeleton
+	context.Batches = nil
+	for _, candidate := range skeleton.Batches {
+		if candidate.TargetFrom <= detailBatch.TargetFrom && candidate.TargetTo >= detailBatch.TargetTo {
+			context.Batches = []plannerSkeletonBatch{candidate}
+			return context
+		}
+	}
+	context.Batches = []plannerSkeletonBatch{detailBatch}
+	return context
 }
 
 func plannerBatchBudgetRequirements(granularity string) []string {

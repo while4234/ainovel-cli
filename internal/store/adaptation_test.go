@@ -747,6 +747,28 @@ func TestAdaptationDossierBatchSpecsSplitByRuneLimit(t *testing.T) {
 	}
 }
 
+func TestAdaptationDossierBatchSpecsKeepsOversizedChapterWhole(t *testing.T) {
+	manifest := domain.AdaptationSourceManifest{
+		ChapterCount: 3,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, SHA256: "sha-1", Runes: 12000},
+			{Chapter: 2, SHA256: "sha-2", Runes: 51000},
+			{Chapter: 3, SHA256: "sha-3", Runes: 9000},
+		},
+	}
+
+	specs := AdaptationDossierBatchSpecs(manifest, 40, 40000)
+	if len(specs) != 3 {
+		t.Fatalf("specs=%+v, want the oversized chapter isolated between adjacent batches", specs)
+	}
+	for index, spec := range specs {
+		chapter := index + 1
+		if spec.SourceFrom != chapter || spec.SourceTo != chapter {
+			t.Fatalf("spec %d=%+v, want whole chapter %d without mid-chapter splitting", index, spec, chapter)
+		}
+	}
+}
+
 func TestCoCreateDossierMatchesManifestRequiresDynamicBatchRanges(t *testing.T) {
 	manifest := domain.AdaptationSourceManifest{
 		SourcePath:   "source.txt",

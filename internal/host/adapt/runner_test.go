@@ -2176,6 +2176,76 @@ func TestBuildAdaptationProposalSplitsOversizedSkeletonBatchForDetails(t *testin
 	}
 }
 
+func TestBuildAdaptationPlannerBatchPromptScopesLargeSkeletonToCurrentParent(t *testing.T) {
+	skeleton := plannerSkeleton{
+		Granularity:        domain.AdaptationGranularityArc,
+		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
+		TargetChapterCount: 300,
+	}
+	for index := 1; index <= 75; index++ {
+		from := (index-1)*4 + 1
+		skeleton.Batches = append(skeleton.Batches, plannerSkeletonBatch{
+			Index:              index,
+			Title:              fmt.Sprintf("Volume %d", index),
+			Theme:              strings.Repeat(fmt.Sprintf("theme-%d ", index), 80),
+			Summary:            strings.Repeat(fmt.Sprintf("summary-%d ", index), 120),
+			TargetFrom:         from,
+			TargetTo:           from + 3,
+			TargetChapterCount: 4,
+			SourceFrom:         index,
+			SourceTo:           index,
+		})
+	}
+	detailBatch := skeleton.Batches[0]
+	prompt, err := buildAdaptationPlannerBatchUserPrompt(
+		ProposalOptions{Brief: "large arc", Granularity: domain.AdaptationGranularityArc, RewritePolicy: domain.AdaptationRewriteFullRewrite},
+		&domain.AdaptationSourceManifest{ChapterCount: 75},
+		nil,
+		skeleton,
+		detailBatch,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildAdaptationPlannerBatchUserPrompt: %v", err)
+	}
+	if !strings.Contains(prompt, "Volume 1") || strings.Contains(prompt, "Volume 75") {
+		t.Fatalf("detail prompt should include only its parent skeleton batch")
+	}
+	if len(prompt) > 20000 {
+		t.Fatalf("detail prompt unexpectedly retained the full skeleton: %d bytes", len(prompt))
+	}
+}
+
+func TestBuildAdaptationPlannerBatchPromptKeepsTwoSmallBatchesForContinuity(t *testing.T) {
+	previous := make([]domain.AdaptationChapterPlan, 12)
+	for index := range previous {
+		chapter := index + 1
+		previous[index] = domain.AdaptationChapterPlan{
+			OutlineEntry: domain.OutlineEntry{
+				Chapter:   chapter,
+				Title:     fmt.Sprintf("Chapter %d", chapter),
+				CoreEvent: fmt.Sprintf("Event %d", chapter),
+				Hook:      fmt.Sprintf("Hook %d", chapter),
+			},
+			Chapter: chapter,
+			Title:   fmt.Sprintf("Chapter %d", chapter),
+		}
+	}
+	batch := testSourceMapSkeletonBatch(4, 1, 3, 13, 16)
+	skeleton := plannerSkeleton{Batches: []plannerSkeletonBatch{batch}}
+	prompt, err := buildAdaptationPlannerBatchUserPrompt(ProposalOptions{}, nil, nil, skeleton, batch, nil, previous)
+	if err != nil {
+		t.Fatalf("buildAdaptationPlannerBatchUserPrompt: %v", err)
+	}
+	if strings.Contains(prompt, `"chapter": 4`) || !strings.Contains(prompt, `"chapter": 5`) || !strings.Contains(prompt, `"chapter": 12`) {
+		t.Fatalf("continuity context should retain exactly the latest eight chapters")
+	}
+	if !strings.Contains(prompt, "Continue from the latest previous_detail_chapters hook") {
+		t.Fatalf("detail prompt should explicitly require cross-batch handoff continuity")
+	}
+}
+
 func TestBuildAdaptationProposalFillsMissingChunkedBatchChapter(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -2340,21 +2410,17 @@ func TestBuildAdaptationProposalDetailsSplitsLongSourceChapterBudget(t *testing.
 
 func TestNormalizePlannerSourceMapSkeletonBatchesRequiresBudgetSplitForLongSourceChapter(t *testing.T) {
 	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 1, SourceRunes: 16000}
-	_, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
+	batches, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
 		testSourceMapSkeletonBatch(1, 1, 1, 1, 1),
 	}, entry)
-	if err == nil {
-		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject under-split long source chapter")
+	if err != nil {
+		t.Fatalf("normalizePlannerSourceMapSkeletonBatches should apply the capacity floor: %v", err)
 	}
-	if !strings.Contains(err.Error(), "expected at least 3 target chapters") {
-		t.Fatalf("error=%v, want budget split guidance", err)
-	}
-	if !strings.Contains(err.Error(), "arc/full_rewrite source-map skeleton capacity review") ||
-		strings.Contains(err.Error(), "expected at least 3 target chapters to keep each chapter within 5000 runes") {
-		t.Fatalf("error=%v, want capacity-review wording without stale 5000-rune guarantee", err)
+	if len(batches) != 1 || batches[0].TargetChapterCount != 3 {
+		t.Fatalf("batches=%+v, want host-raised three target chapters", batches)
 	}
 
-	batches, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
+	batches, err = normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
 		testSourceMapSkeletonBatch(1, 1, 1, 1, 3),
 	}, entry)
 	if err != nil {
@@ -2427,14 +2493,11 @@ func TestPlannerBudgetGroupSplitUsesArcReviewCapacity(t *testing.T) {
 
 func TestNormalizePlannerSourceMapSkeletonBatchesRequiresLowBudgetRationale(t *testing.T) {
 	entry := plannerSourceMapEntry{Index: 1, SourceFrom: 1, SourceTo: 4, SourceRunes: 29588}
-	_, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
+	autoExpanded, err := normalizePlannerSourceMapSkeletonBatches([]plannerSkeletonBatch{
 		testSourceMapSkeletonBatch(1, 1, 4, 1, 4),
 	}, entry)
-	if err == nil {
-		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject low budget without rationale")
-	}
-	if !strings.Contains(err.Error(), "expected at least 6 target chapters") {
-		t.Fatalf("error=%v, want low budget quality review", err)
+	if err != nil || len(autoExpanded) != 1 || autoExpanded[0].TargetChapterCount != 6 {
+		t.Fatalf("low budget without compression rationale should be raised to six: batches=%+v err=%v", autoExpanded, err)
 	}
 
 	batch := testSourceMapSkeletonBatch(1, 1, 4, 1, 4)
@@ -2472,13 +2535,12 @@ func TestNormalizePlannerSourceMapSkeletonBatchesUsesExactSubrangeRunes(t *testi
 	if _, err := normalizePlannerSourceMapSkeletonBatchesForGranularity(batches, entry, domain.AdaptationGranularityArc); err != nil {
 		t.Fatalf("proportional fallback should accept this split before exact runes are available: %v", err)
 	}
-	_, err := normalizePlannerSourceMapSkeletonBatchesForGranularityWithSourceRunes(batches, entry, domain.AdaptationGranularityArc, sourceRunesByChapter)
-	if err == nil {
-		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject under-split exact source subrange")
+	exact, err := normalizePlannerSourceMapSkeletonBatchesForGranularityWithSourceRunes(batches, entry, domain.AdaptationGranularityArc, sourceRunesByChapter)
+	if err != nil {
+		t.Fatalf("exact rune capacity should be applied without another model retry: %v", err)
 	}
-	if !strings.Contains(err.Error(), "source-map range 4-6 has 18000 source_runes") ||
-		!strings.Contains(err.Error(), "expected at least 4 target chapters") {
-		t.Fatalf("error=%v, want exact subrange budget guidance", err)
+	if exact[1].TargetChapterCount != 4 {
+		t.Fatalf("exact 18000-rune subrange should be raised to four targets: %+v", exact[1])
 	}
 }
 
@@ -2538,9 +2600,13 @@ func TestNormalizePlannerSourceMapSkeletonBatchesFreeAllowsSharedSourceMapRanges
 		t.Fatalf("target chapter counts should be preserved: %+v", normalized)
 	}
 
-	_, err = normalizePlannerSourceMapSkeletonBatches(batches, entry)
-	if err == nil {
-		t.Fatal("strict arc/default normalizer should still reject this free-style shared source range")
+	arcBatches, err := normalizePlannerSourceMapSkeletonBatches(batches, entry)
+	if err != nil {
+		t.Fatalf("strict arc/default normalizer should repair the shared boundary: %v", err)
+	}
+	if arcBatches[0].SourceFrom != 8 || arcBatches[0].SourceTo != 10 ||
+		arcBatches[1].SourceFrom != 11 || arcBatches[1].SourceTo != 12 {
+		t.Fatalf("arc ranges should be normalized to an inclusive partition: %+v", arcBatches)
 	}
 }
 
@@ -2560,8 +2626,31 @@ func TestNormalizePlannerSourceMapSkeletonBatchesFreeAllowsRepeatedSingleSourceR
 	}
 
 	_, err = normalizePlannerSourceMapSkeletonBatches(batches, entry)
-	if err == nil || !strings.Contains(err.Error(), "does not advance") {
+	if err == nil || !strings.Contains(err.Error(), "overlaps") {
 		t.Fatalf("strict arc/default normalizer should still reject non-advancing repeated range, got %v", err)
+	}
+}
+
+func TestNormalizePlannerSourceMapSkeletonBatchesAppliesRuneCapacityFloor(t *testing.T) {
+	entry := plannerSourceMapEntry{Index: 5, SourceFrom: 17, SourceTo: 20, SourceRunes: 67196}
+	batches := []plannerSkeletonBatch{
+		testSourceMapSkeletonBatch(1, 17, 18, 1, 3),
+		testSourceMapSkeletonBatch(2, 18, 20, 4, 6),
+	}
+
+	normalized, err := normalizePlannerSourceMapSkeletonBatches(batches, entry)
+	if err != nil {
+		t.Fatalf("long source range should converge without model budget repair: %v", err)
+	}
+	if got := plannerSkeletonBatchTargetCount(normalized); got != 12 {
+		t.Fatalf("target chapter count=%d, want rune capacity floor 12", got)
+	}
+	if normalized[0].SourceFrom != 17 || normalized[0].SourceTo != 18 ||
+		normalized[1].SourceFrom != 19 || normalized[1].SourceTo != 20 {
+		t.Fatalf("overlap should be normalized to a strict partition: %+v", normalized)
+	}
+	if normalized[1].BudgetDecision != "expand_or_split" || normalized[1].BudgetReason == "" {
+		t.Fatalf("host capacity adjustment should remain observable: %+v", normalized[1])
 	}
 }
 
@@ -3683,12 +3772,13 @@ func TestNormalizePlannerSourceMapSkeletonBatchesRejectsOverlappingSourceRanges(
 		testSourceMapSkeletonBatch(2, 3, 6, 5, 8),
 	}
 
-	_, err := normalizePlannerSourceMapSkeletonBatches(batches, entry)
-	if err == nil {
-		t.Fatal("normalizePlannerSourceMapSkeletonBatches should reject overlapping source ranges")
+	normalized, err := normalizePlannerSourceMapSkeletonBatches(batches, entry)
+	if err != nil {
+		t.Fatalf("normalizePlannerSourceMapSkeletonBatches should repair overlapping source ranges: %v", err)
 	}
-	if !strings.Contains(err.Error(), "overlaps") {
-		t.Fatalf("error=%v, want overlap rejection", err)
+	if normalized[0].SourceFrom != 1 || normalized[0].SourceTo != 4 ||
+		normalized[1].SourceFrom != 5 || normalized[1].SourceTo != 6 {
+		t.Fatalf("overlap should become a strict inclusive partition: %+v", normalized)
 	}
 }
 
@@ -3811,8 +3901,8 @@ func TestRepairPlannerSkeletonTextClarifiesSourceMapPartition(t *testing.T) {
 	}
 	prompt := llm.got[0][1].TextContent()
 	if !strings.Contains(prompt, "source_from and source_to are model-owned source coverage") ||
-		!strings.Contains(prompt, "strict sorted partition") ||
-		!strings.Contains(prompt, "no duplicated boundary chapter") {
+		!strings.Contains(prompt, "host will normalize minor gaps, overlaps") ||
+		!strings.Contains(prompt, "Do not spend repeated attempts on exact source-range boundary arithmetic") {
 		t.Fatalf("repair prompt should clarify source-map partition ownership, got %s", prompt)
 	}
 }
@@ -3950,7 +4040,7 @@ func TestCollectPlannerSourceMapSkeletonBatchesSkipsQualityRetryWithExplicitRati
 	}
 }
 
-func TestCollectPlannerSourceMapSkeletonBatchesFailsRetryExhaustionWithoutRationale(t *testing.T) {
+func TestCollectPlannerSourceMapSkeletonBatchesAppliesCapacityFloorWithoutRetry(t *testing.T) {
 	text := `{
 		"granularity": "arc",
 		"status": "proposal",
@@ -3963,7 +4053,7 @@ func TestCollectPlannerSourceMapSkeletonBatchesFailsRetryExhaustionWithoutRation
 	}`
 	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: text}}}
 
-	_, err := collectPlannerSourceMapSkeletonBatches(
+	batches, err := collectPlannerSourceMapSkeletonBatches(
 		context.Background(),
 		llm,
 		"system",
@@ -3979,14 +4069,14 @@ func TestCollectPlannerSourceMapSkeletonBatchesFailsRetryExhaustionWithoutRation
 		1,
 		1,
 	)
-	if err == nil {
-		t.Fatal("retry-exhausted low budget without rationale should fail")
+	if err != nil {
+		t.Fatalf("capacity floor should converge without a model retry: %v", err)
 	}
-	if !strings.Contains(err.Error(), "expected at least 6 target chapters") {
-		t.Fatalf("error=%v, want last budget error", err)
+	if len(batches) != 1 || batches[0].TargetChapterCount != 6 {
+		t.Fatalf("batches=%+v, want host-raised six target chapters", batches)
 	}
-	if llm.calls != 1 {
-		t.Fatalf("planner calls=%d, want one quality retry before failure", llm.calls)
+	if llm.calls != 0 {
+		t.Fatalf("planner calls=%d, want no retry for deterministic capacity correction", llm.calls)
 	}
 }
 
@@ -4169,12 +4259,12 @@ func TestUpsertPlannerProposalRuntimeSkeletonBatchesRefreshesTargetChapterCount(
 	}
 }
 
-func TestBuildAdaptationProposalVolumesDiscardsInvalidCachedSourceMapSkeletonBatch(t *testing.T) {
+func TestBuildAdaptationProposalVolumesNormalizesCachedSourceMapCapacity(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	runeCounts := make([]int, 50)
+	runeCounts := make([]int, 47)
 	for i := range runeCounts {
 		runeCounts[i] = 1
 	}
@@ -4193,7 +4283,7 @@ func TestBuildAdaptationProposalVolumesDiscardsInvalidCachedSourceMapSkeletonBat
 	}
 	firstSpec := specs[0]
 	secondSpec := specs[1]
-	if firstSpec.SourceFrom != 1 || firstSpec.SourceTo < 10 {
+	if firstSpec.SourceFrom != 1 || firstSpec.SourceTo < 7 {
 		t.Fatalf("first source-map range should cover the skewed opening chapters, got %+v", firstSpec)
 	}
 	firstTailCount := firstSpec.SourceTo - 6
@@ -4212,7 +4302,7 @@ func TestBuildAdaptationProposalVolumesDiscardsInvalidCachedSourceMapSkeletonBat
 		Version:            adaptationProposalRuntimeVersion,
 		Brief:              "arc cached skeleton resume",
 		SourcePath:         "source.txt",
-		SourceChapterCount: 50,
+		SourceChapterCount: 47,
 		Granularity:        domain.AdaptationGranularityArc,
 		RewritePolicy:      domain.AdaptationRewriteFullRewrite,
 		WordTolerance:      runtimeWordTolerance,
@@ -4270,22 +4360,22 @@ func TestBuildAdaptationProposalVolumesDiscardsInvalidCachedSourceMapSkeletonBat
 	if err != nil {
 		t.Fatalf("BuildAdaptationProposalVolumesContext: %v; progress=%+v", err, progress)
 	}
-	if llm.calls != 1 {
-		t.Fatalf("planner calls=%d, want only invalid cached source-map range replanned", llm.calls)
+	if llm.calls != 0 {
+		t.Fatalf("planner calls=%d, want cached capacity normalized without replanning", llm.calls)
 	}
 	if result == nil || result.VolumeReview == nil || result.VolumeReview.TargetChapterCount != newTargetCount {
 		t.Fatalf("volume review mismatch: %+v", result)
 	}
-	replanned := result.VolumeReview.Volumes[1]
-	if replanned.SourceFrom != 4 || replanned.SourceTo != 6 || replanned.TargetFrom != 4 || replanned.TargetTo != 7 {
-		t.Fatalf("replanned volume=%+v, want source 4-6 shifted to target 4-7", replanned)
+	normalized := result.VolumeReview.Volumes[1]
+	if normalized.SourceFrom != 4 || normalized.SourceTo != 6 || normalized.TargetFrom != 4 || normalized.TargetTo != 7 {
+		t.Fatalf("normalized volume=%+v, want source 4-6 raised to target 4-7", normalized)
 	}
 	tail := result.VolumeReview.Volumes[len(result.VolumeReview.Volumes)-1]
 	if tail.SourceFrom != secondSpec.SourceFrom || tail.SourceTo != secondSpec.SourceTo || tail.TargetFrom != shiftedTailTargetFrom || tail.TargetTo != shiftedTailTargetTo {
 		t.Fatalf("reused tail volume=%+v, want source %d-%d shifted to target %d-%d", tail, secondSpec.SourceFrom, secondSpec.SourceTo, shiftedTailTargetFrom, shiftedTailTargetTo)
 	}
-	if !hasAdaptProgress(progress, "Discarded invalid cached skeleton planning batch") {
-		t.Fatalf("progress should report invalid cached skeleton discard, got %+v", progress)
+	if !hasAdaptProgress(progress, "复用骨架规划第 1/2 批") {
+		t.Fatalf("progress should report normalized cached skeleton reuse, got %+v", progress)
 	}
 	runtime, err := st.Adaptation.LoadProposalRuntime()
 	if err != nil {

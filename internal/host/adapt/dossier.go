@@ -14,8 +14,8 @@ import (
 
 const (
 	CoCreateDossierBatchSize      = 40
-	CoCreateDossierBatchRuneLimit = 70000
-	CoCreateDossierPromptVersion  = "v2"
+	CoCreateDossierBatchRuneLimit = 40000
+	CoCreateDossierPromptVersion  = "v3"
 
 	coCreateDossierVersion   = 1
 	coCreateDossierMaxTokens = 6144
