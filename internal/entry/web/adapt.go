@@ -124,19 +124,29 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if matches {
+			item, err := s.autoSaveAnalyzedNovel(session, manifest, sourcePath)
+			if err != nil {
+				writeAdaptationActionError(w, err, status.AnalysisEvents)
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"project":    manifest,
-				"snapshot":   session.WebSnapshot(),
-				"adaptation": status,
-				"events":     status.AnalysisEvents,
-				"running":    false,
-				"accepted":   false,
-				"analyzed":   true,
+				"project":       manifest,
+				"snapshot":      session.WebSnapshot(),
+				"adaptation":    status,
+				"events":        status.AnalysisEvents,
+				"running":       false,
+				"accepted":      false,
+				"analyzed":      true,
+				"library_saved": true,
+				"library_item":  item,
 			})
 			return
 		}
 	}
-	if err := session.StartPrepareAdaptationSource(sourcePath); err != nil {
+	if err := session.StartPrepareAdaptationSourceWithCompletion(sourcePath, func() error {
+		_, err := s.autoSaveAnalyzedNovel(session, manifest, sourcePath)
+		return err
+	}); err != nil {
 		writeAdaptationActionError(w, err, nil)
 		return
 	}
@@ -153,6 +163,24 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 		"running":    true,
 		"accepted":   true,
 	})
+}
+
+func (s *Server) autoSaveAnalyzedNovel(session *ProjectSession, manifest ProjectManifest, sourcePath string) (apiLibraryItem, error) {
+	name := strings.TrimSpace(strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath)))
+	if name == "" {
+		return apiLibraryItem{}, fmt.Errorf("derive novel library name from source file %q", filepath.Base(sourcePath))
+	}
+	item, err := s.libraries.UpsertNovelFromProject(manifest, name, filepath.Base(sourcePath))
+	if err != nil {
+		return apiLibraryItem{}, fmt.Errorf("auto-save analyzed novel %q: %w", name, err)
+	}
+	session.appendLibraryEvent(
+		"novel_auto_save",
+		fmt.Sprintf("已自动保存小说库：%s（%d 章）", item.Name, item.ChapterCount),
+		fmt.Sprintf("source_file=%s", item.SourceFile),
+		"success",
+	)
+	return item, nil
 }
 
 func (s *Server) handleProjectAdaptStart(w http.ResponseWriter, r *http.Request, id string) {

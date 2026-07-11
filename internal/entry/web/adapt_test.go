@@ -381,10 +381,12 @@ func TestProjectAdaptAnalyzeSkipsCompletedPreparedSource(t *testing.T) {
 		t.Fatalf("analyze status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var response struct {
-		Analyzed   bool                `json:"analyzed"`
-		Running    bool                `json:"running"`
-		Accepted   bool                `json:"accepted"`
-		Adaptation apiAdaptationStatus `json:"adaptation"`
+		Analyzed     bool                `json:"analyzed"`
+		Running      bool                `json:"running"`
+		Accepted     bool                `json:"accepted"`
+		LibrarySaved bool                `json:"library_saved"`
+		LibraryItem  apiLibraryItem      `json:"library_item"`
+		Adaptation   apiAdaptationStatus `json:"adaptation"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
 		t.Fatalf("decode analyze response: %v", err)
@@ -395,9 +397,57 @@ func TestProjectAdaptAnalyzeSkipsCompletedPreparedSource(t *testing.T) {
 	if response.Adaptation.AnalysisStatus != "done" {
 		t.Fatalf("analysis status = %q, want done", response.Adaptation.AnalysisStatus)
 	}
+	if !response.LibrarySaved || response.LibraryItem.Name != "source" {
+		t.Fatalf("completed source library save = saved:%v item:%+v, want source", response.LibrarySaved, response.LibraryItem)
+	}
+	if _, err := os.Stat(filepath.Join(server.libraries.NovelDir(), "source", novelLibraryManifestName)); err != nil {
+		t.Fatalf("auto-saved novel library manifest: %v", err)
+	}
 	if fake.adaptAnalyzeCalls != 0 {
 		t.Fatalf("completed source should not call host analyze, calls=%d", fake.adaptAnalyzeCalls)
 	}
+}
+
+func TestProjectAdaptAnalyzeAutoSavesCompletedBackgroundAnalysis(t *testing.T) {
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
+	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	defer server.Close()
+
+	donor, err := server.store.CreateProject("Prepared Analysis Donor")
+	if err != nil {
+		t.Fatalf("CreateProject donor: %v", err)
+	}
+	writePreparedAdaptationFixture(t, donor, "source.txt")
+
+	manifest, err := server.store.CreateProject("Background Analyze")
+	if err != nil {
+		t.Fatalf("CreateProject target: %v", err)
+	}
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	fake := installFakeSession(t, server, manifest)
+	fake.adaptAnalyzeBeforeDone = func(sourcePath string) {
+		targetAdaptationRoot := filepath.Join(manifest.OutputDir, "meta", "adaptation")
+		if err := copyPreparedAdaptationFiles(donor.OutputDir, targetAdaptationRoot); err != nil {
+			t.Errorf("copy completed adaptation data: %v", err)
+			return
+		}
+		if err := rewriteAdaptationManifestSource(manifest.OutputDir, sourcePath); err != nil {
+			t.Errorf("rewrite target adaptation source: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/analyze", bytes.NewBufferString(`{"source_file":"source.txt"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("analyze status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	waitForTestCondition(t, "background analysis auto-save", func() bool {
+		_, err := os.Stat(filepath.Join(runtimeRoot, novelLibraryDirName, "source", novelLibraryManifestName))
+		return err == nil
+	})
+	requireLibraryEvent(t, server.sessions.Project(manifest.ID), "novel_auto_save", "source")
 }
 
 func TestProjectAdaptStartStrictModesMapRewritePolicy(t *testing.T) {

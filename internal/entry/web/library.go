@@ -539,6 +539,34 @@ func (s *LibraryService) ReplaceNovelFromProject(manifest ProjectManifest, name,
 	return s.saveNovelEntry(displayName, entryName, adaptationRoot, sourcePath, true)
 }
 
+func (s *LibraryService) UpsertNovelFromProject(manifest ProjectManifest, name, sourceFile string) (apiLibraryItem, error) {
+	displayName, entryName, err := libraryEntryName(name)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	sourcePath, err := adaptationSourcePathFromName(sourceFile, manifest, false)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	adaptationRoot, err := findProjectAdaptationRoot(manifest)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	entryRoot, err := safeLibraryTarget(s.NovelDir(), entryName)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	_, err = os.Stat(entryRoot)
+	switch {
+	case err == nil:
+		return s.saveNovelEntry(displayName, entryName, adaptationRoot, sourcePath, true)
+	case os.IsNotExist(err):
+		return s.saveNovelEntry(displayName, entryName, adaptationRoot, sourcePath, false)
+	default:
+		return apiLibraryItem{}, fmt.Errorf("stat library item %q: %w", displayName, err)
+	}
+}
+
 func (s *LibraryService) SaveNovelFromPreparedRoot(name, adaptationRoot, sourcePath string) (apiLibraryItem, error) {
 	displayName, entryName, err := libraryEntryName(name)
 	if err != nil {

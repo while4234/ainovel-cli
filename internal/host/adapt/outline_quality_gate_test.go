@@ -184,6 +184,34 @@ func TestRetryAdaptationOutlineQualityDoesNotRetryOtherErrors(t *testing.T) {
 	}
 }
 
+func TestRetryAdaptationOutlineQualityReadsExpandedAttemptBudgetDuringRun(t *testing.T) {
+	qualityErr := &AdaptationOutlineQualityError{Issues: []AdaptationOutlineQualityIssue{{Code: outlineQualityIssueArcMissingMainline}}}
+	maxRetries := 1
+	var calls int
+	proposal, err := retryAdaptationOutlineQualityDynamic(
+		func() int { return maxRetries },
+		func() (domain.AdaptationPlan, error) {
+			calls++
+			if calls <= 3 {
+				return domain.AdaptationPlan{}, qualityErr
+			}
+			return domain.AdaptationPlan{Chapters: []domain.AdaptationChapterPlan{{Chapter: 1}}}, nil
+		},
+		func(attempt int, _ *AdaptationOutlineQualityError) error {
+			if attempt == 1 {
+				maxRetries = 3
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("retryAdaptationOutlineQualityDynamic: %v", err)
+	}
+	if len(proposal.Chapters) != 1 || calls != 4 {
+		t.Fatalf("proposal=%+v calls=%d, want expanded live budget to allow four total calls", proposal, calls)
+	}
+}
+
 func outlineQualityHasCode(err error, code string) bool {
 	var qualityErr *AdaptationOutlineQualityError
 	if !errors.As(err, &qualityErr) {

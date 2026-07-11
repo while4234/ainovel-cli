@@ -1480,6 +1480,25 @@ export default function App() {
       if (event.type === 'host_event') {
         setSimulation((previous) => applyHostEventToSimulationState(previous, event));
         setAdaptation((previous) => applyHostEventToAdaptationState(previous, event));
+        const hostEvent = event.event || {};
+        if (String(hostEvent.category || '').toUpperCase() === 'LIBRARY' &&
+            ['novel_auto_save', 'novel_sync'].includes(String(hostEvent.kind || '').toLowerCase())) {
+          listNovelLibrary('').then((data) => {
+            if (!disposed && isCurrentProject(projectId)) {
+              setAdaptation((previous) => ({
+                ...previous,
+                libraryStatus: 'done',
+                libraryItems: libraryItemsFromResponse(data),
+                libraryMessage: hostEvent.summary || previous.libraryMessage,
+                libraryError: ''
+              }));
+            }
+          }).catch((err) => {
+            if (!disposed && isCurrentProject(projectId)) {
+              setAdaptation((previous) => ({ ...previous, libraryStatus: 'error', libraryError: err.message }));
+            }
+          });
+        }
       }
       setConnection('live');
       reconnectAttempt = 0;
@@ -2776,6 +2795,18 @@ export default function App() {
         ...previous,
         analysisStatus: 'done',
         analysisEvents: data.events || [],
+        libraryItems: data.library_item
+          ? [data.library_item, ...previous.libraryItems.filter((item) => libraryEntryName(item) !== libraryEntryName(data.library_item))]
+          : previous.libraryItems,
+        libraryMessage: data.library_saved && data.library_item
+          ? `已自动保存小说：${libraryEntryName(data.library_item)}`
+          : previous.libraryMessage,
+        librarySaveName: data.library_saved && data.library_item
+          ? libraryEntryName(data.library_item)
+          : previous.librarySaveName,
+        libraryLoadedName: data.library_saved && data.library_item
+          ? libraryEntryName(data.library_item)
+          : previous.libraryLoadedName,
         error: ''
       }));
     } catch (err) {

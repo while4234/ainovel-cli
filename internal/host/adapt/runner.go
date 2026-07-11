@@ -78,14 +78,18 @@ var (
 )
 
 type Deps struct {
-	Store                                  *store.Store
-	LLM                                    imp.LLMChat
-	Prompts                                Prompts
-	ModelCallMaxAttempts                   int
-	StructureRepairMaxAttempts             int
-	BudgetQualityMaxAttempts               int
-	AdaptationOutlineAuditRetryMaxAttempts int
-	PromptTokenCounter                     promptcompile.TokenCounter
+	Store                                          *store.Store
+	LLM                                            imp.LLMChat
+	Prompts                                        Prompts
+	ModelCallMaxAttempts                           int
+	StructureRepairMaxAttempts                     int
+	BudgetQualityMaxAttempts                       int
+	AdaptationOutlineAuditRetryMaxAttempts         int
+	ModelCallMaxAttemptsProvider                   func() int
+	StructureRepairMaxAttemptsProvider             func() int
+	BudgetQualityMaxAttemptsProvider               func() int
+	AdaptationOutlineAuditRetryMaxAttemptsProvider func() int
+	PromptTokenCounter                             promptcompile.TokenCounter
 }
 
 func RunSource(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
@@ -868,6 +872,11 @@ func structuredCallOptionsWithDeps(deps Deps, stage Stage, current, total int, e
 }
 
 func (d Deps) modelCallMaxAttempts() int {
+	if d.ModelCallMaxAttemptsProvider != nil {
+		if attempts := d.ModelCallMaxAttemptsProvider(); attempts > 0 {
+			return attempts
+		}
+	}
 	if d.ModelCallMaxAttempts > 0 {
 		return d.ModelCallMaxAttempts
 	}
@@ -875,6 +884,11 @@ func (d Deps) modelCallMaxAttempts() int {
 }
 
 func (d Deps) structureRepairMaxAttempts() int {
+	if d.StructureRepairMaxAttemptsProvider != nil {
+		if attempts := d.StructureRepairMaxAttemptsProvider(); attempts > 0 {
+			return attempts
+		}
+	}
 	if d.StructureRepairMaxAttempts > 0 {
 		return d.StructureRepairMaxAttempts
 	}
@@ -882,6 +896,11 @@ func (d Deps) structureRepairMaxAttempts() int {
 }
 
 func (d Deps) budgetQualityMaxAttempts() int {
+	if d.BudgetQualityMaxAttemptsProvider != nil {
+		if attempts := d.BudgetQualityMaxAttemptsProvider(); attempts > 0 {
+			return attempts
+		}
+	}
 	if d.BudgetQualityMaxAttempts > 0 {
 		return d.BudgetQualityMaxAttempts
 	}
@@ -889,6 +908,11 @@ func (d Deps) budgetQualityMaxAttempts() int {
 }
 
 func (d Deps) adaptationOutlineAuditRetryMaxAttempts() int {
+	if d.AdaptationOutlineAuditRetryMaxAttemptsProvider != nil {
+		if attempts := d.AdaptationOutlineAuditRetryMaxAttemptsProvider(); attempts > 0 {
+			return attempts
+		}
+	}
 	if d.AdaptationOutlineAuditRetryMaxAttempts > 0 {
 		return d.AdaptationOutlineAuditRetryMaxAttempts
 	}
@@ -1309,8 +1333,7 @@ func buildAdaptationProposalDetailsWithQualityRetries(
 	skeleton plannerSkeleton,
 	runtime *domain.AdaptationProposalRuntime,
 ) (domain.AdaptationPlan, error) {
-	maxRetries := deps.adaptationOutlineAuditRetryMaxAttempts()
-	return retryAdaptationOutlineQuality(maxRetries,
+	return retryAdaptationOutlineQualityDynamic(deps.adaptationOutlineAuditRetryMaxAttempts,
 		func() (domain.AdaptationPlan, error) {
 			return buildPlanFromPlannerSkeletonDetails(ctx, deps, opts, reports, manifest, sourceFoundation, skeleton, runtime)
 		},
@@ -1326,7 +1349,7 @@ func buildAdaptationProposalDetailsWithQualityRetries(
 				StagePlan,
 				0,
 				0,
-				fmt.Sprintf("改编详细章节提纲未通过质量审计，已清除本轮细纲并开始第 %d/%d 次重试（%d 项问题）", retry, maxRetries, len(qualityErr.Issues)),
+				fmt.Sprintf("改编详细章节提纲未通过质量审计，已清除本轮细纲并开始第 %d/%d 次重试（%d 项问题）", retry, deps.adaptationOutlineAuditRetryMaxAttempts(), len(qualityErr.Issues)),
 				qualityErr,
 			)
 			return nil
@@ -1339,15 +1362,30 @@ func retryAdaptationOutlineQuality(
 	generate func() (domain.AdaptationPlan, error),
 	prepareRetry func(retry int, qualityErr *AdaptationOutlineQualityError) error,
 ) (domain.AdaptationPlan, error) {
+	return retryAdaptationOutlineQualityDynamic(func() int { return maxRetries }, generate, prepareRetry)
+}
+
+func retryAdaptationOutlineQualityDynamic(
+	maxRetries func() int,
+	generate func() (domain.AdaptationPlan, error),
+	prepareRetry func(retry int, qualityErr *AdaptationOutlineQualityError) error,
+) (domain.AdaptationPlan, error) {
 	var zero domain.AdaptationPlan
-	if maxRetries <= 0 {
-		maxRetries = adaptationOutlineAuditRetryDefaultAttempts
+	currentMaxRetries := func() int {
+		if maxRetries == nil {
+			return adaptationOutlineAuditRetryDefaultAttempts
+		}
+		attempts := maxRetries()
+		if attempts <= 0 {
+			return adaptationOutlineAuditRetryDefaultAttempts
+		}
+		return attempts
 	}
 	proposal, err := generate()
 	if err == nil {
 		return proposal, nil
 	}
-	for retry := 1; retry <= maxRetries; retry++ {
+	for retry := 1; retry <= currentMaxRetries(); retry++ {
 		var qualityErr *AdaptationOutlineQualityError
 		if !errors.As(err, &qualityErr) {
 			return zero, err

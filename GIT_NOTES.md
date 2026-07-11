@@ -28,6 +28,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Pending adaptation library/retry fix: completed or newly finishing source
+  analysis now upserts the full prepared novel package into `novel_library`,
+  including manual analysis resumed after loading a legacy library entry. The
+  Web library list refreshes from the resulting library event. Adaptation retry
+  dependencies now read live project settings, and the outer detail-outline
+  quality retry loop re-evaluates its limit between attempts. Full `go test
+  ./... -count=1`, all 203 Web tests, and the production Web build passed.
 - Latest model-discovery UI fix: `26f44d4` `fix: show all discovered provider
   models`: clicking `测试并发现模型` now reports the
   discovered model count and replaces the editable model-name field with a

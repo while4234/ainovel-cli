@@ -515,6 +515,10 @@ func (h *Host) adaptationDeps() adapt.Deps {
 		StructureRepairMaxAttempts:             cfg.EffectiveStructureRepairMaxAttempts(),
 		BudgetQualityMaxAttempts:               cfg.EffectiveBudgetQualityMaxAttempts(),
 		AdaptationOutlineAuditRetryMaxAttempts: cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts(),
+		ModelCallMaxAttemptsProvider:           h.CurrentModelCallMaxAttempts,
+		StructureRepairMaxAttemptsProvider:     h.CurrentStructureRepairMaxAttempts,
+		BudgetQualityMaxAttemptsProvider:       h.CurrentBudgetQualityMaxAttempts,
+		AdaptationOutlineAuditRetryMaxAttemptsProvider: h.CurrentAdaptationOutlineAuditRetryMaxAttempts,
 		Prompts: adapt.Prompts{
 			Foundation:      h.bundle.Prompts.ImportFoundation,
 			FoundationMerge: h.bundle.Prompts.ImportFoundationMerge,
@@ -3323,6 +3327,12 @@ func (h *Host) SetCoCreateMaxTokens(tokens int) error {
 		Level:    "info",
 	})
 	return nil
+}
+
+func (h *Host) CurrentModelCallMaxAttempts() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts()
 }
 
 func (h *Host) CurrentStructureRepairMaxAttempts() int {
