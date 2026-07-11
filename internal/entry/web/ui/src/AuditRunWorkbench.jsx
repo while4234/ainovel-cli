@@ -28,7 +28,8 @@ export function AuditRunWorkbench({ audit, disabled, onCancel, onCompare, onEsti
   const request = buildSemanticAuditRequest({ ...semantic, sourceTo: audit.sourceTo });
   const running = ['queued', 'running'].includes(String(semantic.run?.status || '').toLowerCase());
   const needsPriceAcknowledgement = semantic.estimate?.price_known === false;
-  const canStart = request.ok && (!needsPriceAcknowledgement || semantic.acknowledgeUnknownPrice === true);
+  const callLimitTooLow = Number(semantic.estimate?.estimated_calls || 0) > Number(semantic.maxCalls || 0);
+  const canStart = request.ok && !callLimitTooLow && (!needsPriceAcknowledgement || semantic.acknowledgeUnknownPrice === true);
   const selectedProvider = providers.find((provider) => provider.name === semantic.provider);
   const modelOptions = selectedProvider?.models || [];
 
@@ -70,6 +71,7 @@ export function AuditRunWorkbench({ audit, disabled, onCancel, onCompare, onEsti
         </div>
         {semantic.error || (!request.ok && (semantic.maxCostUsd || audit.sourceTo)) ? <div className="error-banner compact">{semantic.error || request.error}</div> : null}
         {semantic.estimate ? <div className="audit-scope-help">约 {semantic.estimate.artifact_runes || 0} runes、{semantic.estimate.estimated_calls || 0} 次调用；{semantic.estimate.price_known === false ? '价格未知，启动前请设置调用次数上限。' : `预计费用 $${Number(semantic.estimate.estimated_cost_usd || 0).toFixed(2)}。`}</div> : null}
+        {callLimitTooLow ? <div className="settings-note warning">当前调用上限为 {semantic.maxCalls || 0}，低于预计的 {semantic.estimate.estimated_calls} 次；提高上限或缩小审计范围后才能启动。</div> : null}
         {needsPriceAcknowledgement ? <label className="checkbox-row audit-confirmation-row"><input checked={semantic.acknowledgeUnknownPrice === true} disabled={disabled || running} onChange={(event) => updateSemantic({ acknowledgeUnknownPrice: event.target.checked })} type="checkbox" /><span>我已了解当前模型价格未知，本次运行以调用次数上限控制。</span></label> : null}
         {semantic.run ? <div className={`workflow-status ${semantic.run.status || 'idle'}`}><strong>{semantic.run.stage || semantic.run.status}</strong><span>{progress.completed}/{progress.total}（{progress.percent}%），已覆盖 {semantic.run.progress?.covered_runes || semantic.run.covered_target_runes || 0}/{semantic.run.progress?.total_runes || 0} runes</span></div> : null}
         <div className="project-settings-actions">
