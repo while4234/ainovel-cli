@@ -28,7 +28,8 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Pending model-discovery UI fix: clicking `测试并发现模型` now reports the
+- Latest model-discovery UI fix: `26f44d4` `fix: show all discovered provider
+  models`: clicking `测试并发现模型` now reports the
   discovered model count and replaces the editable model-name field with a
   true select control containing every returned model. Before discovery, the
   field remains editable for custom model IDs. All 203 Web tests and the
@@ -1149,7 +1150,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Change Log
 
-- 2026-07-11 pending `fix: show all discovered provider models`: replace the
+- 2026-07-11 `26f44d4` `fix: show all discovered provider models`: replace the
   filtered model `datalist` with a real select after discovery, show the number
   of supported models, rebuild embedded assets, restart port 9898, and verify
   the live Grok OAuth discovery returns 11 models.
