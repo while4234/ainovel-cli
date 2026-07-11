@@ -38,7 +38,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   and Playwright real-project acceptance passed. The restarted 武林高手 audit
   resolves source 1-284 / target 1-315, reports 12 invalid legacy quotes without
   claiming missing prose, and exposes no repair action.
-- Current Web-only workbench change on `codex/web-only-workbench`: removes the
+- Web-only workbench change merged into `main` through `becea42f`: removes the
   complete TUI and Charmbracelet dependency tree; makes no-arg startup open the
   localhost Web UI; adds strict non-interactive headless answers, first-run Web
   setup, unified three-workflow progress, idempotent persistent background
@@ -46,8 +46,10 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   per-call usage ledger and Prompt Cache observability dashboard, and safe
   legacy output migration. Full Go tests, Go vet, 183 Web tests, production UI
   build, Docker config, release binary build, diff checks, and Playwright
-  1440/1024/390 no-overflow checks passed. Race tests are unavailable because
-  this Windows Go runtime has CGO disabled.
+  1440/1024/390 no-overflow checks passed. After the fast-forward merge, full
+  Go tests, Go vet, all 185 Web tests, the production UI build, and diff checks
+  passed again. Race tests are unavailable because this Windows Go runtime has
+  CGO disabled.
 - Current recovery/fix change: restored the usable local model registry after a
   Web test accidentally overwrote the real global config, isolated all Web
   tests behind temporary persist paths, and made global model deletion remove
