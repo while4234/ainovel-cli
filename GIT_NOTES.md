@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest long-brief fix: `47716556` `fix: support long adaptation briefs`:
+  removes the proposal-entry 16/8 rule-count rejection, preserves the complete
+  brief and durable rule set, and gives adaptation-only planner/writer prompts
+  a prioritized 64-rule / 32-forbidden-rule view. Generic prompt compiler
+  defaults remain unchanged. Prompt-level and end-to-end regressions confirm a
+  96-rule brief compiles, reaches proposal generation, and persists all 96
+  rules. Full Go tests, Go vet, focused regressions, and diff checks passed.
+  Web was rebuilt/restarted on port 9898 as PID `82564`; runtime and project
+  API smoke checks passed with 20 projects visible.
 - Latest rollback fix: `51b6105` `fix: preserve adaptation rollback stages`:
   adaptation projects with generated
   volumes now step backward through proposal review, volume-skeleton review,
