@@ -28,7 +28,8 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest detailed-outline repair stability change (pending commit): detailed
+- Latest detailed-outline repair stability change: `171d387` `fix: reset
+  polluted detail repair chains`: detailed
   chapter batches, proposal-revision batches, and missing-chapter fills now
   reject multiple top-level JSON objects. Ambiguous output immediately starts
   a clean per-batch regeneration; after one unsuccessful ordinary repair,
