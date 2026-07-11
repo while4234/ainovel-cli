@@ -48,8 +48,9 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   build, Docker config, release binary build, diff checks, and Playwright
   1440/1024/390 no-overflow checks passed. After the fast-forward merge, full
   Go tests, Go vet, all 185 Web tests, the production UI build, and diff checks
-  passed again. Race tests are unavailable because this Windows Go runtime has
-  CGO disabled.
+  passed again. The local binary was rebuilt from `23d685b2`, restarted on
+  `http://127.0.0.1:9898` as PID `55416`, and `/api/runtime` returned HTTP 200.
+  Race tests are unavailable because this Windows Go runtime has CGO disabled.
 - Current recovery/fix change: restored the usable local model registry after a
   Web test accidentally overwrote the real global config, isolated all Web
   tests behind temporary persist paths, and made global model deletion remove
