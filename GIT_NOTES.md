@@ -28,14 +28,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Current rollback fix (pending commit): adaptation projects with generated
+- Latest rollback fix: `51b6105` `fix: preserve adaptation rollback stages`:
+  adaptation projects with generated
   volumes now step backward through proposal review, volume-skeleton review,
   co-create draft, and blank states without skipping a gate. Unvolumed short
   proposals retain the direct proposal-to-draft exception. The Web session and
   response restore durable co-create state after the draft rollback, and the UI
   no longer clears that recovered state. Full Go tests, Go vet, 199 Web tests,
-  the production build, focused rollback tests, and diff checks passed before
-  live clone/restart acceptance.
+  the production build, focused rollback tests, and diff checks passed. Web was
+  rebuilt/restarted on port 9898 as PID `74016`; a live clone of `武林高手`
+  passed all four transitions through blank, restored a ready/startable
+  2304-character adaptation draft at the draft stage, and left the source plan
+  SHA-256 unchanged. The temporary acceptance clone was moved to project trash.
 - Latest scheduled-resume change: `b4f898d` `feat: add safe scheduled project resume`:
   adds global multiple daily resume times, same-day catch-up, durable scheduler
   state, project default-on switches, explicit adaptation planning gates, and a
