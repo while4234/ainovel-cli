@@ -1965,6 +1965,9 @@ func TestParsePlannerSourceMapSkeletonRejectsAmbiguousMultipleObjects(t *testing
 	if !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "multiple complete JSON objects") {
 		t.Fatalf("error=%v, want ambiguous multiple-object rejection", err)
 	}
+	if !errors.Is(err, errPlannerSourceMapMultipleJSON) {
+		t.Fatalf("error=%v, want typed multiple-object error", err)
+	}
 }
 
 func TestParsePlannerSourceMapSkeletonRejectsContainmentLikeAmbiguousMultipleObjects(t *testing.T) {
@@ -1989,46 +1992,81 @@ func TestParsePlannerSourceMapSkeletonRejectsNoJSONObject(t *testing.T) {
 	}
 }
 
-func TestParsePlannerSourceMapSkeletonToleratesTopLevelRuleShapes(t *testing.T) {
+func TestParsePlannerSourceMapSkeletonAcceptsStringRuleArrays(t *testing.T) {
+	skeleton, err := parsePlannerSourceMapSkeleton(testPlannerSourceMapSkeletonJSON(
+		`"mainline_rules":["keep source","preserve causality"],"relationship_goals":["slow escalation"]`,
+	))
+	if err != nil {
+		t.Fatalf("parsePlannerSourceMapSkeleton: %v", err)
+	}
+	if strings.Join(skeleton.MainlineRules, "\n") != "keep source\npreserve causality" {
+		t.Fatalf("mainline_rules=%q", skeleton.MainlineRules)
+	}
+	if strings.Join(skeleton.RelationshipGoals, "\n") != "slow escalation" {
+		t.Fatalf("relationship_goals=%q", skeleton.RelationshipGoals)
+	}
+}
+
+func TestParsePlannerSourceMapSkeletonRejectsRuleTypeDrift(t *testing.T) {
 	for _, tc := range []struct {
-		name              string
-		extra             string
-		wantMainline      []string
-		wantRelationships []string
+		name  string
+		extra string
 	}{
 		{
-			name:         "mainline array",
-			extra:        `"mainline_rules":["keep source","preserve causality"]`,
-			wantMainline: []string{"keep source", "preserve causality"},
+			name:  "mainline string",
+			extra: `"mainline_rules":"keep source"`,
 		},
 		{
-			name:         "mainline string",
-			extra:        `"mainline_rules":"keep source"`,
-			wantMainline: []string{"keep source"},
+			name:  "relationship string",
+			extra: `"relationship_goals":"slow escalation"`,
 		},
 		{
-			name:              "relationship string",
-			extra:             `"relationship_goals":"slow escalation"`,
-			wantRelationships: []string{"slow escalation"},
+			name:  "mainline object",
+			extra: `"mainline_rules":{"rule":"keep source"}`,
 		},
 		{
-			name:         "mainline object",
-			extra:        `"mainline_rules":{"z":["late"],"a":"early"}`,
-			wantMainline: []string{`{"a":"early","z":["late"]}`},
+			name:  "relationship object array",
+			extra: `"relationship_goals":[{"characters":["A","B"],"goal":"slow escalation"}]`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			skeleton, err := parsePlannerSourceMapSkeleton(testPlannerSourceMapSkeletonJSON(tc.extra))
-			if err != nil {
-				t.Fatalf("parsePlannerSourceMapSkeleton: %v", err)
-			}
-			if strings.Join(skeleton.MainlineRules, "\n") != strings.Join(tc.wantMainline, "\n") {
-				t.Fatalf("mainline_rules=%q, want %q", skeleton.MainlineRules, tc.wantMainline)
-			}
-			if strings.Join(skeleton.RelationshipGoals, "\n") != strings.Join(tc.wantRelationships, "\n") {
-				t.Fatalf("relationship_goals=%q, want %q", skeleton.RelationshipGoals, tc.wantRelationships)
+			_, err := parsePlannerSourceMapSkeleton(testPlannerSourceMapSkeletonJSON(tc.extra))
+			if err == nil {
+				t.Fatal("parsePlannerSourceMapSkeleton should reject rule type drift")
 			}
 		})
+	}
+}
+
+func TestBuildPlannerRepairPromptRegeneratesAfterAmbiguousOutput(t *testing.T) {
+	prompt := buildPlannerRepairPrompt(
+		"skeleton",
+		"small original request",
+		`{"candidate_marker_one":true}\n{"candidate_marker_two":true}`,
+		errPlannerSourceMapMultipleJSON,
+		[]string{"Return exactly one JSON object."},
+	)
+	if !strings.Contains(prompt, `"regenerate_from_original": true`) {
+		t.Fatalf("repair prompt should request regeneration: %s", prompt)
+	}
+	if strings.Contains(prompt, "previous_output") || strings.Contains(prompt, "candidate_marker") {
+		t.Fatalf("repair prompt should not feed ambiguous candidates back to the model: %s", prompt)
+	}
+}
+
+func TestBuildPlannerRepairPromptKeepsSingleInvalidOutput(t *testing.T) {
+	prompt := buildPlannerRepairPrompt(
+		"skeleton",
+		"small original request",
+		`{"single_invalid_marker":true}`,
+		errors.New("missing top-level batches array"),
+		[]string{"Return exactly one JSON object."},
+	)
+	if !strings.Contains(prompt, "previous_output") || !strings.Contains(prompt, "single_invalid_marker") {
+		t.Fatalf("repair prompt should retain one structurally invalid candidate for correction: %s", prompt)
+	}
+	if strings.Contains(prompt, "regenerate_from_original") {
+		t.Fatalf("ordinary repair should not force full regeneration: %s", prompt)
 	}
 }
 
@@ -2105,6 +2143,9 @@ func TestBuildAdaptationPlannerSkeletonPromptUsesFoundationDigest(t *testing.T) 
 	}
 	if !strings.Contains(prompt, `"source_foundation"`) || !strings.Contains(prompt, "A compact source premise.") {
 		t.Fatalf("skeleton prompt should include compact foundation digest: %s", prompt)
+	}
+	if !strings.Contains(prompt, "mainline_rules and relationship_goals must each be a JSON array containing strings only") {
+		t.Fatalf("skeleton prompt should state the strict string-list contract: %s", prompt)
 	}
 	if strings.Contains(prompt, `"chapters"`) ||
 		strings.Contains(prompt, "Opening") ||
@@ -3976,6 +4017,7 @@ func TestRepairPlannerSkeletonTextClarifiesSourceMapPartition(t *testing.T) {
 		`{"batches":[]}`,
 		fmt.Errorf("source-map range 162-188 overlaps at source chapter 179"),
 		domain.AdaptationGranularityArc,
+		false,
 		nil,
 		7,
 		24,
@@ -4005,6 +4047,7 @@ func TestRepairPlannerSkeletonTextKeepsFreeSourceMapRangeFixed(t *testing.T) {
 		`{"batches":[]}`,
 		fmt.Errorf("source-map range 140-140 does not advance past source chapter 140"),
 		domain.AdaptationGranularityFree,
+		false,
 		nil,
 		29,
 		29,
@@ -4560,6 +4603,13 @@ func TestBuildAdaptationProposalVolumeSkeletonUsesConfiguredRepairBudget(t *test
 	if llm.calls != 5 {
 		t.Fatalf("planner calls=%d, want initial + 3 repairs + second source-map batch", llm.calls)
 	}
+	secondRepairPrompt := llm.got[2][1].TextContent()
+	if !strings.Contains(secondRepairPrompt, `"regenerate_from_original": true`) {
+		t.Fatalf("second structural repair should restart from the original batch request: %s", secondRepairPrompt)
+	}
+	if strings.Contains(secondRepairPrompt, "still not an array") || strings.Contains(secondRepairPrompt, "previous_output") {
+		t.Fatalf("second structural repair should not inherit the failed first repair: %s", secondRepairPrompt)
+	}
 	if result == nil || result.VolumeReview == nil || result.VolumeReview.TargetChapterCount != 57 {
 		t.Fatalf("volume review mismatch: %+v", result)
 	}
@@ -4623,6 +4673,58 @@ func TestBuildAdaptationProposalVolumeSkeletonDoesNotWrapSourceMapBatchObject(t 
 	repairPrompt := llm.got[1][1].TextContent()
 	if !strings.Contains(repairPrompt, "standalone batch object") {
 		t.Fatalf("repair prompt should reject locally wrapped batch objects: %s", repairPrompt)
+	}
+	if result == nil || result.VolumeReview == nil || len(result.VolumeReview.Volumes) != 1 {
+		t.Fatalf("volume review mismatch: %+v", result)
+	}
+}
+
+func TestBuildAdaptationProposalVolumeSkeletonRegeneratesAfterAmbiguousOutput(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20, 30, 40})
+	first := `{"batches":[{"index":1,"title":"Candidate one","theme":"ambiguous","chapter_count":20,"source_from":1,"source_to":4,"summary":"candidate_marker_one"}]}`
+	second := `{"batches":[{"index":1,"title":"Candidate two","theme":"ambiguous","chapter_count":20,"source_from":1,"source_to":4,"summary":"candidate_marker_two"}]}`
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: first + "\n" + second},
+		{text: `{
+			"granularity": "arc",
+			"status": "proposal",
+			"rewrite_policy": "full_rewrite",
+			"brief": "arc rewrite",
+			"target_chapter_count": 20,
+			"mainline_rules": [],
+			"relationship_goals": [],
+			"batches": [
+				{"index": 1, "title": "Regenerated arc", "theme": "focused", "chapter_count": 20, "source_from": 1, "source_to": 4, "summary": "one unambiguous skeleton"}
+			]
+		}`},
+	}}
+
+	result, err := BuildAdaptationProposalVolumesContext(context.Background(), Deps{
+		Store:                      st,
+		LLM:                        llm,
+		ModelCallMaxAttempts:       1,
+		StructureRepairMaxAttempts: 2,
+	}, ProposalOptions{
+		Brief:              "arc rewrite",
+		Granularity:        domain.AdaptationGranularityArc,
+		TargetChapterCount: 20,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposalVolumesContext: %v", err)
+	}
+	if llm.calls != 2 {
+		t.Fatalf("planner calls=%d, want initial source-map skeleton + clean regeneration", llm.calls)
+	}
+	repairPrompt := llm.got[1][1].TextContent()
+	if !strings.Contains(repairPrompt, `"regenerate_from_original": true`) {
+		t.Fatalf("repair prompt should request clean regeneration: %s", repairPrompt)
+	}
+	if strings.Contains(repairPrompt, "candidate_marker") || strings.Contains(repairPrompt, "previous_output") {
+		t.Fatalf("repair prompt should not feed ambiguous candidates back to the model: %s", repairPrompt)
 	}
 	if result == nil || result.VolumeReview == nil || len(result.VolumeReview.Volumes) != 1 {
 		t.Fatalf("volume review mismatch: %+v", result)

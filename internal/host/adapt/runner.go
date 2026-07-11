@@ -70,6 +70,8 @@ const (
 
 var plannerRetrySleep = retrypolicy.Wait
 
+var errPlannerSourceMapMultipleJSON = errors.New("ambiguous planner source-map skeleton: multiple complete JSON objects found")
+
 var (
 	targetChapterRangePattern        = regexp.MustCompile(`(\d{1,3})\s*(?:[-~～—–－至到]|\s+)\s*(\d{1,3})\s*(?:个)?(?:章节|章)`)
 	targetChapterSinglePattern       = regexp.MustCompile(`(\d{1,3})\s*(多|余|左右|上下)?\s*(?:个)?(?:章节|章)`)
@@ -3392,7 +3394,7 @@ func collectPlannerSourceMapSkeletonBatches(
 		}
 		structureAttempts++
 		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("骨架规划第 %d/%d 批结构无效，正在修复第 %d/%d 次：%v", current, total, structureAttempts, maxRepairAttempts, lastErr), lastErr)
-		repaired, err := repairPlannerSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, lastErr, granularity, emit, current, total, maxModelCallAttempts)
+		repaired, err := repairPlannerSkeletonText(ctx, llm, systemPrompt, originalPrompt, text, lastErr, granularity, structureAttempts > 1, emit, current, total, maxModelCallAttempts)
 		if err != nil {
 			return nil, err
 		}
@@ -3434,7 +3436,7 @@ func extractPlannerSourceMapSkeletonJSON(text string) ([]byte, error) {
 	case 1:
 		return []byte(segments[0].text), nil
 	default:
-		return nil, fmt.Errorf("ambiguous planner source-map skeleton: multiple complete JSON objects found")
+		return nil, errPlannerSourceMapMultipleJSON
 	}
 }
 
@@ -3564,35 +3566,8 @@ func decodePlannerSourceMapStringList(raw json.RawMessage, field string) ([]stri
 			return nil, fmt.Errorf("planner source-map skeleton %s array must contain strings: %w", field, err)
 		}
 		return values, nil
-	case '"':
-		var value string
-		if err := json.Unmarshal(raw, &value); err != nil {
-			return nil, fmt.Errorf("planner source-map skeleton %s string is invalid: %w", field, err)
-		}
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return nil, nil
-		}
-		return []string{value}, nil
-	case '{':
-		var object map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &object); err != nil {
-			return nil, fmt.Errorf("planner source-map skeleton %s object is invalid: %w", field, err)
-		}
-		if len(object) == 0 {
-			return nil, nil
-		}
-		var value any
-		if err := json.Unmarshal(raw, &value); err != nil {
-			return nil, fmt.Errorf("planner source-map skeleton %s object is invalid: %w", field, err)
-		}
-		compact, err := json.Marshal(value)
-		if err != nil {
-			return nil, fmt.Errorf("planner source-map skeleton %s object is invalid: %w", field, err)
-		}
-		return []string{string(compact)}, nil
 	default:
-		return nil, fmt.Errorf("planner source-map skeleton %s must be an array, string, object, or null", field)
+		return nil, fmt.Errorf("planner source-map skeleton %s must be an array containing strings", field)
 	}
 }
 
@@ -6110,6 +6085,7 @@ func repairPlannerSkeletonText(
 	previousText string,
 	previousErr error,
 	granularity string,
+	regenerateFromOriginal bool,
 	emit ProgressEmitter,
 	current int,
 	total int,
@@ -6119,6 +6095,7 @@ func repairPlannerSkeletonText(
 	instructions := []string{
 		"Return exactly one JSON skeleton object and no prose.",
 		"The JSON must have a top-level batches array.",
+		"mainline_rules and relationship_goals must each be a JSON array containing strings only; use [] when empty.",
 		"Each batch must have chapter_count, source_from, source_to, title, theme or goal, and summary.",
 		"Each batch may include budget_decision as balanced, compress_or_merge, or expand_or_split; include budget_reason for intentional low or high chapter budgets.",
 		"Do not calculate target_from or target_to in this source-map skeleton step; the host will assign continuous target chapter ranges from chapter_count.",
@@ -6129,7 +6106,14 @@ func repairPlannerSkeletonText(
 		"If the previous error says source_runes needs more target chapters or chapter_count is below the review floor, increase chapter_count so each target chapter stays within the model chapter budget.",
 		"Do not return only overall_arc, key_turns, pair, notes, markdown, or explanation.",
 	)
-	repairPrompt := buildPlannerRepairPrompt("skeleton", originalPrompt, previousText, previousErr, instructions)
+	repairPrompt := buildPlannerRepairPromptWithOptions(
+		"skeleton",
+		originalPrompt,
+		previousText,
+		previousErr,
+		instructions,
+		plannerRepairPromptOptions{RegenerateFromOriginal: regenerateFromOriginal},
+	)
 	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerSkeletonMaxTokens, emit, current, total, "骨架规划修复", maxModelCallAttempts)
 	if err != nil {
 		return "", fmt.Errorf("planner skeleton repair llm generate: %w", err)
@@ -6316,16 +6300,31 @@ func repairPlannerMissingChaptersText(
 }
 
 func buildPlannerRepairPrompt(step string, originalPrompt string, previousText string, previousErr error, requirements []string) string {
+	return buildPlannerRepairPromptWithOptions(step, originalPrompt, previousText, previousErr, requirements, plannerRepairPromptOptions{})
+}
+
+type plannerRepairPromptOptions struct {
+	RegenerateFromOriginal bool
+}
+
+func buildPlannerRepairPromptWithOptions(step string, originalPrompt string, previousText string, previousErr error, requirements []string, opts plannerRepairPromptOptions) string {
 	input := struct {
-		Step           string   `json:"step"`
-		Error          string   `json:"error"`
-		Requirements   []string `json:"requirements"`
-		PreviousOutput string   `json:"previous_output"`
+		Step                   string   `json:"step"`
+		Error                  string   `json:"error"`
+		Requirements           []string `json:"requirements"`
+		PreviousOutput         string   `json:"previous_output,omitempty"`
+		RegenerateFromOriginal bool     `json:"regenerate_from_original,omitempty"`
 	}{
-		Step:           step,
-		Error:          fmt.Sprint(previousErr),
-		Requirements:   requirements,
-		PreviousOutput: truncatePlannerFeedback(previousText),
+		Step:                   step,
+		Error:                  fmt.Sprint(previousErr),
+		Requirements:           requirements,
+		PreviousOutput:         truncatePlannerFeedback(previousText),
+		RegenerateFromOriginal: opts.RegenerateFromOriginal || errors.Is(previousErr, errPlannerSourceMapMultipleJSON),
+	}
+	if input.RegenerateFromOriginal {
+		// Multiple complete objects are not a trustworthy repair source. Feeding
+		// them back makes the model repeat both candidates on every retry.
+		input.PreviousOutput = ""
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
@@ -6802,6 +6801,7 @@ func buildAdaptationPlannerSkeletonUserPrompt(
 		"Do not wrap the JSON in markdown fences.",
 		"Do not return the final AdaptationPlan here.",
 		"Do not include a chapters array in the skeleton step; chapter details are generated in later batch calls.",
+		"mainline_rules and relationship_goals must each be a JSON array containing strings only; use [] when empty and never place objects in these arrays.",
 		"Choose how many target chapters this source-map range needs, then divide it into one or more model-planned batches/volumes.",
 	}
 	requirements = append(requirements, plannerSkeletonBudgetRequirements(opts.Granularity)...)

@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest adaptation skeleton stability change (pending commit): source-map
+  skeleton prompts now state that `mainline_rules` and `relationship_goals`
+  are string arrays, and the strict decoder rejects type drift instead of
+  coercing it. Ambiguous multi-JSON responses immediately regenerate from the
+  original small-batch request; after one unsuccessful ordinary structural
+  repair, later attempts also clear the transient failed output instead of
+  repeating a polluted repair chain. Focused regressions, the full
+  `internal/host/adapt` package, and `go test ./... -count=1` passed.
 - Latest adaptation library/retry fix: `66ca261` `fix: sync analyzed novels and
   live retries`: completed or newly finishing source
   analysis now upserts the full prepared novel package into `novel_library`,
