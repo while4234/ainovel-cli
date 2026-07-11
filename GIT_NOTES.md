@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest project-clone change: `25ef41f9` `feat: add independent project cloning`:
+  adds a project-menu clone dialog, atomic full-directory copies with new
+  project identity/provenance, project-owned absolute-path rebasing, and
+  exclusion of temporary/runtime action state. Running projects return a
+  conflict until paused. Full Go tests, Go vet, 185 Web tests, production UI
+  build, and diff checks passed in a clean worktree.
 - Latest audit-safety change: `b46b8ff` `fix: audit only completed adaptation units`:
   replaces manual source/target ranges with one titled source-ending picker;
   derives Chapter completeness from valid full source-segment contracts and Arc
