@@ -328,6 +328,32 @@ describe('workspace progress derivation', () => {
     expect(next.snapshot).toMatchObject({ RuntimeState: 'running' });
   });
 
+  it('starts live events after the snapshot sequence without replaying omitted state events', () => {
+    const next = restoreProjectWorkbenchSnapshot({
+      lastSeq: 0,
+      eventRows: [],
+      streamRounds: [{ id: 'round-0', text: '' }],
+      snapshot: null
+    }, {
+      RuntimeState: 'running',
+      WorkflowProgress: { Workflow: 'adaptation', Status: 'running' }
+    }, [
+      {
+        seq: 11,
+        type: 'host_event',
+        host_event_id: 'analysis-1',
+        event: { running: true, summary: 'analyzing source' }
+      }
+    ], 719);
+
+    expect(next.lastSeq).toBe(719);
+    expect(next.eventRows).toHaveLength(1);
+    expect(next.snapshot).toMatchObject({
+      RuntimeState: 'running',
+      WorkflowProgress: { Workflow: 'adaptation' }
+    });
+  });
+
   it('ignores stale running event rows when the latest snapshot is idle', () => {
     const progress = deriveWorkspaceProgress({
       RuntimeState: 'idle',

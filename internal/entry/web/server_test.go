@@ -139,14 +139,21 @@ func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
 		t.Fatalf("snapshot status = %d", snapshotResp.StatusCode)
 	}
 	var snapshotBody struct {
-		Project  ProjectManifest `json:"project"`
-		Snapshot map[string]any  `json:"snapshot"`
+		Project        ProjectManifest `json:"project"`
+		Snapshot       map[string]any  `json:"snapshot"`
+		Events         []WebEvent      `json:"events"`
+		LatestEventSeq int64           `json:"latest_event_seq"`
 	}
 	if err := json.NewDecoder(snapshotResp.Body).Decode(&snapshotBody); err != nil {
 		t.Fatalf("decode snapshot response: %v", err)
 	}
 	if snapshotBody.Project.ID != manifest.ID || snapshotBody.Snapshot == nil {
 		t.Fatalf("snapshot response missing project or snapshot: %+v", snapshotBody)
+	}
+	for _, ev := range snapshotBody.Events {
+		if !isWorkbenchReplayEvent(ev) {
+			t.Fatalf("snapshot response included state replay event: %+v", ev)
+		}
 	}
 
 	eventsResp, err := client.Get(httpServer.URL + "/api/projects/" + manifest.ID + "/events?after=0")

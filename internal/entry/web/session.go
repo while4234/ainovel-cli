@@ -3278,6 +3278,39 @@ func (s *ProjectSession) EventHistory(after int64) WebEventHistory {
 	}
 }
 
+func (s *ProjectSession) WorkbenchEventHistory(after int64) WebEventHistory {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var oldestSeq, latestSeq int64
+	if len(s.history) > 0 {
+		oldestSeq = s.history[0].Seq
+		latestSeq = s.history[len(s.history)-1].Seq
+	}
+	events := make([]WebEvent, 0, len(s.history))
+	for _, ev := range s.history {
+		if ev.Seq <= after || !isWorkbenchReplayEvent(ev) {
+			continue
+		}
+		events = append(events, ev)
+	}
+	return WebEventHistory{
+		ProjectID:    s.manifest.ID,
+		Events:       events,
+		OldestSeq:    oldestSeq,
+		LatestSeq:    latestSeq,
+		HistoryLimit: webEventHistoryLimit,
+	}
+}
+
+func isWorkbenchReplayEvent(ev WebEvent) bool {
+	switch ev.Type {
+	case webEventTypeHostEvent, webEventTypeStreamDelta, webEventTypeStreamClear:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *ProjectSession) Close() {
 	if s.actions != nil {
 		s.actions.Close()

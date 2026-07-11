@@ -73,7 +73,6 @@ import {
   getGrokLoginStatus,
   getObservabilityRecommendations,
   getObservabilityUsage,
-  getProjectEvents,
   getProjectModels,
   getProjectResumeSchedule,
   getResumeSchedule,
@@ -750,10 +749,11 @@ const providerPresets = [
 
 const customProviderTypes = ['openai', 'anthropic', 'gemini', 'grok'];
 
-export function restoreProjectWorkbenchSnapshot(previous = createWorkbenchState(), snapshot = null, events = []) {
+export function restoreProjectWorkbenchSnapshot(previous = createWorkbenchState(), snapshot = null, events = [], latestEventSeq = 0) {
   const restored = reduceWebEvents(previous, events);
   return {
     ...restored,
+    lastSeq: Math.max(restored.lastSeq, Number(latestEventSeq) || 0),
     snapshot: snapshot || restored.snapshot
   };
 }
@@ -1382,16 +1382,30 @@ export default function App() {
     activeProjectIdRef.current = projectId;
     setError('');
     resetProjectScopedState();
-    setActiveProject(project);
+    setActiveProject(null);
     setProjectDrawerOpen(false);
     try {
-      // Each project-scoped endpoint refreshes last_accessed_at. On Windows,
-      // concurrent opens can race the atomic project.json rename, so hydrate
-      // the workspace in a deterministic sequence.
       const snapshotData = await getSnapshot(projectId);
+      if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
+        return;
+      }
+      const restoredWorkbench = restoreProjectWorkbenchSnapshot(
+        createWorkbenchState(),
+        snapshotData.snapshot,
+        snapshotData.events,
+        snapshotData.latest_event_seq
+      );
+      lastSeqRef.current = restoredWorkbench.lastSeq;
+      setWorkbench(restoredWorkbench);
+      setActiveProject(snapshotData.project);
+      setCoCreate((previous) => coCreateStateFromResponse(snapshotData, previous));
+      setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
+      setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation, snapshotData.snapshot));
+
+      // Project-scoped reads update last_accessed_at. Keep them sequential on
+      // Windows, but hydrate them only after the latest workspace is visible.
       const modelData = await getProjectModels(projectId);
       const backendData = await getBackendStatus(projectId);
-      const eventsData = await getProjectEvents(projectId, 0);
       const continuationData = await getContinuation(projectId).catch(() => null);
       const projectScheduleResult = await getProjectResumeSchedule(projectId)
         .then((data) => ({ data, error: '' }))
@@ -1399,15 +1413,6 @@ export default function App() {
       if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
         return;
       }
-      setActiveProject(snapshotData.project);
-      setWorkbench(() => {
-        const next = restoreProjectWorkbenchSnapshot(createWorkbenchState(), snapshotData.snapshot, eventsData?.events);
-        lastSeqRef.current = next.lastSeq;
-        return next;
-      });
-      setCoCreate((previous) => coCreateStateFromResponse(snapshotData, previous));
-      setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
-      setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation, snapshotData.snapshot));
       setContinuation((previous) => restoreContinuationState(previous, continuationData, snapshotData.snapshot));
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);

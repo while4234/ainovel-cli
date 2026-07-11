@@ -729,6 +729,35 @@ func TestProjectSessionEventHistoryHonorsAfterWithoutAppendingSnapshot(t *testin
 	}
 }
 
+func TestProjectSessionWorkbenchEventHistoryExcludesStateReplay(t *testing.T) {
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, newFakeProjectHost())
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	hostEvent := session.appendHostEvent(host.Event{ID: "analysis-1", Summary: "analyzing source"})
+	session.AppendSnapshot()
+	session.appendCoCreateState(webCoCreateState{Kind: webCoCreateKindAdapt})
+	streamEvent := session.appendStreamDelta("current draft")
+
+	history := session.WorkbenchEventHistory(0)
+	if history.LatestSeq != streamEvent.Seq {
+		t.Fatalf("latest seq = %d, want %d", history.LatestSeq, streamEvent.Seq)
+	}
+	if len(history.Events) != 2 {
+		t.Fatalf("workbench events = %+v, want host and stream only", history.Events)
+	}
+	if history.Events[0].Seq != hostEvent.Seq || history.Events[1].Seq != streamEvent.Seq {
+		t.Fatalf("workbench event order = %+v", history.Events)
+	}
+	for _, ev := range history.Events {
+		if ev.Type == webEventTypeSnapshot || ev.Type == webEventTypeCoCreate {
+			t.Fatalf("workbench history included state replay event: %+v", ev)
+		}
+	}
+}
+
 func TestProjectSessionPublishesCoCreateProgressWithoutWritingStream(t *testing.T) {
 	fake := newFakeProjectHost()
 	fake.cocreateProgress = []coCreateProgressStep{

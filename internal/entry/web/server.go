@@ -903,11 +903,13 @@ func (s *Server) handleProjectEventsHistory(w http.ResponseWriter, r *http.Reque
 }
 
 type projectSnapshotResponse struct {
-	Project    ProjectManifest     `json:"project"`
-	Snapshot   any                 `json:"snapshot"`
-	Adaptation apiAdaptationStatus `json:"adaptation"`
-	Simulation apiSimulationStatus `json:"simulation"`
-	CoCreate   *webCoCreateState   `json:"cocreate,omitempty"`
+	Project        ProjectManifest     `json:"project"`
+	Snapshot       any                 `json:"snapshot"`
+	Adaptation     apiAdaptationStatus `json:"adaptation"`
+	Simulation     apiSimulationStatus `json:"simulation"`
+	CoCreate       *webCoCreateState   `json:"cocreate,omitempty"`
+	Events         []WebEvent          `json:"events,omitempty"`
+	LatestEventSeq int64               `json:"latest_event_seq"`
 }
 
 func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManifest) (projectSnapshotResponse, error) {
@@ -923,12 +925,15 @@ func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManif
 	if err != nil {
 		return projectSnapshotResponse{}, err
 	}
+	workbenchHistory := session.WorkbenchEventHistory(0)
 	return projectSnapshotResponse{
-		Project:    manifest,
-		Snapshot:   session.Snapshot(),
-		Adaptation: adaptation,
-		Simulation: simulation,
-		CoCreate:   session.CoCreateState(),
+		Project:        manifest,
+		Snapshot:       session.Snapshot(),
+		Adaptation:     adaptation,
+		Simulation:     simulation,
+		CoCreate:       session.CoCreateState(),
+		Events:         workbenchHistory.Events,
+		LatestEventSeq: workbenchHistory.LatestSeq,
 	}, nil
 }
 
