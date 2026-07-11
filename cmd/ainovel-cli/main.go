@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
@@ -63,7 +65,9 @@ func runWithConfig(cfg bootstrap.Config, opts cliOptions, args []string) {
 		if len(args) > 0 {
 			die("error: web 不接受位置参数: %s", strings.Join(args, " "))
 		}
-		if err := web.Run(context.Background(), cfg, bundle, web.Options{
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := web.Run(ctx, cfg, bundle, web.Options{
 			Host:        opts.WebHost,
 			Port:        opts.WebPort,
 			RuntimeRoot: opts.WebRuntimeRoot,

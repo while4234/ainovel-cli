@@ -107,6 +107,28 @@ export function listProjects() {
   return request('/api/projects');
 }
 
+export function getResumeSchedule() {
+  return request('/api/resume-schedule');
+}
+
+export function setResumeSchedule(dailyTimes, timezone = 'Asia/Shanghai') {
+  return request('/api/resume-schedule', {
+    method: 'PUT',
+    body: JSON.stringify({ daily_times: dailyTimes, timezone })
+  });
+}
+
+export function getProjectResumeSchedule(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/resume-schedule`);
+}
+
+export function setProjectResumeSchedule(projectId, enabled) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/resume-schedule`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled })
+  });
+}
+
 export function listTrashProjects() {
   return request('/api/trash/projects');
 }

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,6 +18,46 @@ import (
 
 // DefaultContextWindow 模型未在 registry 登记时的兜底窗口大小。
 const DefaultContextWindow = 200000
+
+const DefaultResumeScheduleTimezone = "Asia/Shanghai"
+
+// ResumeScheduleConfig describes recurring daily wall-clock resume checks.
+// DailyTimes is normalized as sorted unique HH:mm values.
+type ResumeScheduleConfig struct {
+	DailyTimes []string `json:"daily_times,omitempty"`
+	Timezone   string   `json:"timezone,omitempty"`
+}
+
+func (c ResumeScheduleConfig) EffectiveTimezone() string {
+	if timezone := strings.TrimSpace(c.Timezone); timezone != "" {
+		return timezone
+	}
+	return DefaultResumeScheduleTimezone
+}
+
+// NormalizeResumeSchedule validates the configured IANA timezone and returns a
+// deterministic set of daily HH:mm occurrences.
+func NormalizeResumeSchedule(cfg ResumeScheduleConfig) (ResumeScheduleConfig, error) {
+	timezone := cfg.EffectiveTimezone()
+	if _, err := time.LoadLocation(timezone); err != nil {
+		return ResumeScheduleConfig{}, fmt.Errorf("invalid resume schedule timezone %q: %w", timezone, err)
+	}
+	seen := make(map[string]bool, len(cfg.DailyTimes))
+	times := make([]string, 0, len(cfg.DailyTimes))
+	for _, raw := range cfg.DailyTimes {
+		value := strings.TrimSpace(raw)
+		parsed, err := time.Parse("15:04", value)
+		if err != nil || parsed.Format("15:04") != value {
+			return ResumeScheduleConfig{}, fmt.Errorf("invalid resume schedule time %q: use HH:mm", raw)
+		}
+		if !seen[value] {
+			seen[value] = true
+			times = append(times, value)
+		}
+	}
+	sort.Strings(times)
+	return ResumeScheduleConfig{DailyTimes: times, Timezone: timezone}, nil
+}
 
 // CompactRatio 触发上下文压缩的相对阈值：tokens >= window * CompactRatio 时压缩。
 // 0.85 是经验值，给"下一轮 prompt + 大工具结果"留 15% 头部空间，同时让大窗口
@@ -368,6 +409,11 @@ type Config struct {
 	// WebRuntimeRoot is the optional config-file override for web project storage.
 	RuntimeRoot string `json:"runtime_root,omitempty"`
 
+	// ResumeSchedule is global. Project overlays only use
+	// ScheduledResumeEnabled and never replace the global daily times.
+	ResumeSchedule         ResumeScheduleConfig `json:"resume_schedule,omitempty"`
+	ScheduledResumeEnabled *bool                `json:"scheduled_resume_enabled,omitempty"`
+
 	// 默认 LLM 配置
 	Provider  string `json:"provider"` // 默认 provider（Providers map 中的 key）
 	ModelName string `json:"model"`    // 默认模型名
@@ -433,6 +479,9 @@ func (n NotifyConfig) IsEnabled() bool { return n.Enabled == nil || *n.Enabled }
 
 // ValidateBase 校验基础配置。
 func (c *Config) ValidateBase() error {
+	if _, err := NormalizeResumeSchedule(c.ResumeSchedule); err != nil {
+		return err
+	}
 	if err := validateConfigText("provider", c.Provider); err != nil {
 		return err
 	}
@@ -567,6 +616,10 @@ func (c *Config) ValidateBase() error {
 	}
 
 	return nil
+}
+
+func (c Config) EffectiveScheduledResumeEnabled() bool {
+	return c.ScheduledResumeEnabled == nil || *c.ScheduledResumeEnabled
 }
 
 var knownNotifyEvents = map[string]bool{"run_end": true, "repeat": true, "budget": true}

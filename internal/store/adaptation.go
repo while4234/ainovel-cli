@@ -88,6 +88,9 @@ func (s *AdaptationStore) ResetGenerated() error {
 		if err != nil {
 			return err
 		}
+		if err := s.io.RemoveFileUnlocked(adaptationPlanningWorkflowFile); err != nil {
+			return err
+		}
 		return os.RemoveAll(s.io.path(adaptationCheckDir))
 	})
 }
@@ -733,7 +736,10 @@ func (s *AdaptationStore) SavePlan(plan domain.AdaptationPlan) error {
 		if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
 			return err
 		}
-		return s.io.WriteJSONUnlocked(adaptationPlanFile, plan)
+		if err := s.io.WriteJSONUnlocked(adaptationPlanFile, plan); err != nil {
+			return err
+		}
+		return s.writePlanningWorkflowStageUnlocked(domain.AdaptationPlanningStageConfirmed)
 	})
 }
 
@@ -759,7 +765,10 @@ func (s *AdaptationStore) SaveProposal(plan domain.AdaptationPlan) error {
 		if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
 			return err
 		}
-		return s.io.WriteJSONUnlocked(adaptationProposalFile, plan)
+		if err := s.io.WriteJSONUnlocked(adaptationProposalFile, plan); err != nil {
+			return err
+		}
+		return s.writePlanningWorkflowStageUnlocked(domain.AdaptationPlanningStageProposalReviewPending)
 	})
 }
 
@@ -785,7 +794,10 @@ func (s *AdaptationStore) SaveVolumeReview(review domain.AdaptationVolumeReview)
 		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
 			return err
 		}
-		return s.io.WriteJSONUnlocked(adaptationVolumeReviewFile, review)
+		if err := s.io.WriteJSONUnlocked(adaptationVolumeReviewFile, review); err != nil {
+			return err
+		}
+		return s.writePlanningWorkflowStageUnlocked(domain.AdaptationPlanningStageVolumeReviewPending)
 	})
 }
 
@@ -837,7 +849,10 @@ func (s *AdaptationStore) ClearProposal() error {
 		if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
 			return err
 		}
-		return s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile)
+		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
+			return err
+		}
+		return s.io.RemoveFileUnlocked(adaptationPlanningWorkflowFile)
 	})
 }
 

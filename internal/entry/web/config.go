@@ -4,6 +4,11 @@ import "github.com/voocel/ainovel-cli/internal/bootstrap"
 
 func cloneWebConfig(cfg bootstrap.Config) bootstrap.Config {
 	out := cfg
+	out.ResumeSchedule.DailyTimes = append([]string(nil), cfg.ResumeSchedule.DailyTimes...)
+	if cfg.ScheduledResumeEnabled != nil {
+		enabled := *cfg.ScheduledResumeEnabled
+		out.ScheduledResumeEnabled = &enabled
+	}
 	out.ModelAutoSwitch = cloneWebModelAutoSwitchConfig(cfg.ModelAutoSwitch)
 	out.Providers = cloneWebProviderConfigs(cfg.Providers)
 	out.Roles = cloneWebRoleConfigs(cfg.Roles)

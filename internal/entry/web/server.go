@@ -35,14 +35,18 @@ type Options struct {
 }
 
 type Server struct {
-	cfgMu       sync.RWMutex
-	cfg         bootstrap.Config
-	bundle      assets.Bundle
-	runtimeRoot string
-	store       *ProjectStore
-	sessions    *SessionManager
-	libraries   *LibraryService
-	static      fs.FS
+	cfgMu           sync.RWMutex
+	cfg             bootstrap.Config
+	bundle          assets.Bundle
+	runtimeRoot     string
+	store           *ProjectStore
+	sessions        *SessionManager
+	libraries       *LibraryService
+	static          fs.FS
+	resumeScheduler *ResumeScheduler
+	schedulerMu     sync.Mutex
+	schedulerCancel context.CancelFunc
+	schedulerDone   chan struct{}
 }
 
 func Run(ctx context.Context, cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
@@ -82,6 +86,7 @@ func Run(ctx context.Context, cfg bootstrap.Config, bundle assets.Bundle, opts O
 	defer listener.Close()
 
 	app := NewServer(cfg, bundle, runtimeRoot)
+	app.StartResumeScheduler(ctx)
 	defer app.Close()
 
 	server := &http.Server{
@@ -110,7 +115,7 @@ func Run(ctx context.Context, cfg bootstrap.Config, bundle assets.Bundle, opts O
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			return err
 		}
-		return ctx.Err()
+		return nil
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
@@ -130,6 +135,13 @@ func NewServer(cfg bootstrap.Config, bundle assets.Bundle, runtimeRoot string) *
 		static:      StaticFS(),
 	}
 	s.sessions = NewSessionManager(cfg, bundle, store)
+	s.resumeScheduler = NewResumeScheduler(runtimeRoot, ResumeSchedulerDeps{
+		LoadConfig: func() (bootstrap.ResumeScheduleConfig, error) {
+			return s.currentConfig().ResumeSchedule, nil
+		},
+		ListProjects:  store.ListProjects,
+		ResumeProject: s.resumeScheduledProject,
+	})
 	return s
 }
 
@@ -144,6 +156,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/setup/test", s.handleSetupTest)
 	mux.HandleFunc("/api/setup/complete", s.handleSetupComplete)
 	mux.HandleFunc("/api/runtime", s.handleRuntime)
+	mux.HandleFunc("/api/resume-schedule", s.handleResumeSchedule)
 	mux.HandleFunc("/api/observability/usage", s.handleObservabilityUsage)
 	mux.HandleFunc("/api/observability/recommendations", s.handleObservabilityRecommendations)
 	mux.HandleFunc("/api/styles", s.handleStyles)
@@ -171,9 +184,72 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) Close() {
+	s.schedulerMu.Lock()
+	cancel := s.schedulerCancel
+	done := s.schedulerDone
+	s.schedulerCancel = nil
+	s.schedulerDone = nil
+	s.schedulerMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
 	if s.sessions != nil {
 		s.sessions.CloseAll()
 	}
+}
+
+func (s *Server) StartResumeScheduler(parent context.Context) {
+	if s.resumeScheduler == nil {
+		return
+	}
+	s.schedulerMu.Lock()
+	if s.schedulerCancel != nil {
+		s.schedulerMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	s.schedulerCancel = cancel
+	s.schedulerDone = done
+	s.schedulerMu.Unlock()
+	go func() {
+		defer close(done)
+		if err := s.resumeScheduler.Run(ctx); err != nil {
+			slog.Error("scheduled resume stopped", "module", "web", "err", err)
+		}
+	}()
+}
+
+func (s *Server) resumeScheduledProject(ctx context.Context, manifest ProjectManifest) (ScheduledResumeResult, error) {
+	enabled, err := s.store.ProjectScheduledResumeEnabled(manifest)
+	if err != nil {
+		return ScheduledResumeResult{Outcome: ScheduledResumeFailed, ReasonCode: "project_config_error"}, err
+	}
+	if !enabled {
+		return ScheduledResumeResult{Outcome: ScheduledResumeSkipped, ReasonCode: "scheduled_resume_disabled"}, nil
+	}
+	session, err := s.sessions.OpenScheduled(manifest)
+	if err != nil {
+		return ScheduledResumeResult{Outcome: ScheduledResumeFailed, ReasonCode: "open_session_failed"}, err
+	}
+	decision, err := session.AutoResumeDecision()
+	if err != nil {
+		return ScheduledResumeResult{Outcome: ScheduledResumeFailed, ReasonCode: "decision_failed"}, err
+	}
+	result := ScheduledResumeResult{Action: decision.Action, ReasonCode: decision.ReasonCode, Label: decision.Label}
+	if decision.Disposition != AutoResumeActionable {
+		result.Outcome = ScheduledResumeSkipped
+		return result, nil
+	}
+	if _, err := session.ExecuteAutoResume(ctx, decision.StateFingerprint); err != nil {
+		result.Outcome = ScheduledResumeFailed
+		return result, err
+	}
+	result.Outcome = ScheduledResumeStarted
+	return result, nil
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -263,6 +339,7 @@ func (s *Server) runtimePayload(cfg bootstrap.Config) map[string]any {
 			"budget_quality_max_attempts":   cfg.EffectiveBudgetQualityMaxAttempts(),
 			"adaptation_outline_audit_retry_max_attempts": cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts(),
 			"simulation_mode": cfg.EffectiveSimulationMode(),
+			"resume_schedule": cfg.ResumeSchedule,
 			"roles":           cfg.Roles,
 		},
 		"active_projects": s.sessions.ActiveProjectIDs(),
@@ -378,6 +455,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectSnapshot(w, r, id)
 	case "resume":
 		s.handleProjectResume(w, r, id)
+	case "resume-schedule":
+		s.handleProjectResumeSchedule(w, r, id)
 	case "start":
 		s.handleProjectStart(w, r, id)
 	case "pause":

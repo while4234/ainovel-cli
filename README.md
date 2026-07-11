@@ -380,6 +380,8 @@ Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可
 
 `simulation_mode` 控制仿写画像的使用强度，可选值为 `normal` / `reinforced`；省略或留空时默认是 `normal`，新项目也默认使用 `normal`。
 
+Web 右侧的“定时”页签可以配置多个每日恢复时间。服务按 `resume_schedule.timezone` 的墙钟时间扫描全部项目；项目级“设定”可单独关闭。定时恢复只继续已经启动但被中断的生成流程，等待分卷、提案、共创建议或续写审核时不会自动推进。程序当天晚于配置时间启动或从休眠恢复时，遗漏的时间点会合并补跑一次。
+
 `providers.<name>.auth: "grok_oauth"` 表示使用 Grok 账号登录 token；该 provider 必须是 `type: "grok"`，可省略 `api_key`，`base_url` 留空时默认使用 `https://api.x.ai/v1`。
 
 `providers.<name>.auth: "codex"` 表示复用本机 Codex 登录凭证，不使用 OpenAI API key；该 provider 必须是 `type: "openai"` 且 `api: "responses"`，默认读取 `CODEX_AUTH_FILE`、`CODEX_HOME/auth.json`、项目 `.codex/auth.json` 或 `~/.codex/auth.json`。
@@ -729,7 +731,7 @@ output/{novel_name}/
 - **工具只返事实** — 原子 IO + checkpoint 写入，返回值是 JSON 事实字段（`final_verdict` / `pending_rewrites` / `arc_end_reached`），不夹带任何指令字符串
 - **Reminder 驱动每轮** — Host 在每轮 LLM 调用前读事实层，运行纯函数 generator 生成 `<system-reminder>` 注入，指令不进持久历史、每轮从事实重算
 - **StopGuard 物理守门** — `Phase ≠ Complete` 时 Coordinator 物理上不可 `end_turn`，连续阻拦超限才升级终止
-- **拒绝复杂编排** — 没有 task queue、没有 scheduler、没有 policy engine。Coordinator 的一次 Run 就是唯一的控制流
+- **拒绝复杂业务编排** — 没有把 Agent 决策拆成 task queue 或 policy engine；每日恢复调度器只负责在安全状态门禁后唤醒既有流程，Coordinator 的一次 Run 仍是唯一创作控制流
 - **模型越强收益越大** — 架构把决策权留在 prompt 和工具语义里，模型升级后直接吃到收益，Host 一行不用改
 
 ### 可自动闭环

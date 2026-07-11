@@ -32,6 +32,19 @@ func TestLoadConfigFileAllowsUTF8BOM(t *testing.T) {
 	}
 }
 
+func TestMergeConfigScheduledResumeFields(t *testing.T) {
+	base := Config{ResumeSchedule: ResumeScheduleConfig{DailyTimes: []string{"15:00"}, Timezone: DefaultResumeScheduleTimezone}}
+	disabled := false
+	overlay := Config{ScheduledResumeEnabled: &disabled}
+	merged := MergeConfig(base, overlay)
+	if merged.EffectiveScheduledResumeEnabled() {
+		t.Fatal("project overlay should explicitly disable scheduled resume")
+	}
+	if len(merged.ResumeSchedule.DailyTimes) != 1 || merged.ResumeSchedule.DailyTimes[0] != "15:00" {
+		t.Fatalf("project enabled overlay replaced global times: %#v", merged.ResumeSchedule.DailyTimes)
+	}
+}
+
 // writeGlobal 在隔离的 HOME 下写入全局配置，并返回该 HOME。
 func writeGlobal(t *testing.T, content string) string {
 	t.Helper()

@@ -168,6 +168,11 @@ type projectHost interface {
 	Close()
 }
 
+type scheduledResumeHost interface {
+	ScheduledResumeEnabled() bool
+	SetScheduledResumeEnabled(bool) error
+}
+
 func NewSessionManager(cfg bootstrap.Config, bundle assets.Bundle, store *ProjectStore) *SessionManager {
 	return &SessionManager{
 		cfg:      cfg,
@@ -266,6 +271,32 @@ func (m *SessionManager) Open(id string) (*ProjectSession, ProjectManifest, erro
 	}
 	m.sessions[id] = session
 	return session, manifest, nil
+}
+
+// OpenScheduled opens a manifest discovered by the scheduler without touching
+// project.json timestamps. Scheduled checks must not reorder the user's recent
+// project list.
+func (m *SessionManager) OpenScheduled(manifest ProjectManifest) (*ProjectSession, error) {
+	id := strings.TrimSpace(manifest.ID)
+	if err := validateProjectID(id); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if session, ok := m.sessions[id]; ok {
+		return session, nil
+	}
+	h, err := m.store.OpenProjectHost(cloneWebConfig(m.cfg), m.bundle, manifest)
+	if err != nil {
+		return nil, err
+	}
+	session, err := NewProjectSession(manifest, h)
+	if err != nil {
+		h.Close()
+		return nil, err
+	}
+	m.sessions[id] = session
+	return session, nil
 }
 
 func (m *SessionManager) SetProjectStyle(id, style string) (*ProjectSession, ProjectManifest, error) {
@@ -437,6 +468,7 @@ type ProjectSession struct {
 	host     projectHost
 
 	mu             sync.Mutex
+	autoResumeMu   sync.Mutex
 	actionMu       sync.Mutex
 	actionKinds    map[string]int
 	actionCancelMu sync.Mutex
@@ -483,6 +515,19 @@ func (s *ProjectSession) SetManifest(manifest ProjectManifest) {
 func (s *ProjectSession) Snapshot() host.UISnapshot {
 	snap := s.host.Snapshot()
 	return s.overlayActionSnapshot(snap)
+}
+
+func (s *ProjectSession) ScheduledResumeEnabled() bool {
+	h, ok := s.host.(scheduledResumeHost)
+	return !ok || h.ScheduledResumeEnabled()
+}
+
+func (s *ProjectSession) SetScheduledResumeEnabled(enabled bool) error {
+	h, ok := s.host.(scheduledResumeHost)
+	if !ok {
+		return fmt.Errorf("project host does not support scheduled resume settings")
+	}
+	return h.SetScheduledResumeEnabled(enabled)
 }
 
 func (s *ProjectSession) ModelConfig() apiModelConfig {
@@ -809,6 +854,22 @@ func (s *ProjectSession) Resume() (string, error) {
 	if label, resumed, err := s.resumePendingWebAction(context.Background()); resumed || err != nil {
 		return label, err
 	}
+	decision, err := s.AutoResumeDecision()
+	if err != nil {
+		return "", err
+	}
+	switch decision.Disposition {
+	case AutoResumeWaitUser, AutoResumeBlocked, AutoResumeBusy:
+		return decision.Label, nil
+	}
+	switch decision.Action {
+	case AutoResumeActionCoCreate:
+		_, err := s.ResumeCoCreate(context.Background())
+		return decision.Label, err
+	case AutoResumeActionContinuationPlanning:
+		_, err := s.RetryContinuation(context.Background(), decision.WorkflowRevision)
+		return decision.Label, err
+	}
 
 	unlock, err := s.beginAction()
 	if err != nil {
@@ -859,6 +920,10 @@ func (s *ProjectSession) pendingWebResumeAction() (*webResumeAction, error) {
 }
 
 func pendingAdaptationProposalResumeAction(st *storepkg.Store) (*webResumeAction, error) {
+	workflow, err := st.Adaptation.LoadPlanningWorkflow()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation planning workflow: %w", err)
+	}
 	plan, err := st.Adaptation.LoadPlan()
 	if err != nil {
 		return nil, fmt.Errorf("load adaptation plan: %w", err)
@@ -878,6 +943,9 @@ func pendingAdaptationProposalResumeAction(st *storepkg.Store) (*webResumeAction
 		return nil, fmt.Errorf("load adaptation volume review: %w", err)
 	}
 	if review != nil && len(review.Volumes) > 0 {
+		if workflow == nil || workflow.Stage != domain.AdaptationPlanningStageDetailsGenerating {
+			return nil, nil
+		}
 		return &webResumeAction{
 			Kind:  webResumeActionAdaptationProposalDetails,
 			Label: "恢复：生成章节细纲",
@@ -888,6 +956,9 @@ func pendingAdaptationProposalResumeAction(st *storepkg.Store) (*webResumeAction
 		return nil, fmt.Errorf("load adaptation proposal runtime: %w", err)
 	}
 	if runtime == nil {
+		return nil, nil
+	}
+	if workflow != nil && workflow.Stage != domain.AdaptationPlanningStageSkeletonGenerating {
 		return nil, nil
 	}
 	options, err := proposalOptionsFromRuntime(runtime)
@@ -1342,6 +1413,10 @@ func (s *ProjectSession) BuildAdaptationProposalVolumesContext(ctx context.Conte
 		}
 	}()
 
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageSkeletonGenerating, -1); err != nil {
+		return nil, fmt.Errorf("begin adaptation skeleton workflow: %w", err)
+	}
 	s.AppendSnapshot()
 	result, err := s.buildAdaptationProposalVolumes(actionCtx, options)
 	unlock()
@@ -1349,6 +1424,13 @@ func (s *ProjectSession) BuildAdaptationProposalVolumesContext(ctx context.Conte
 	s.AppendSnapshot()
 	if err != nil {
 		return nil, err
+	}
+	nextStage := domain.AdaptationPlanningStageProposalReviewPending
+	if result != nil && result.VolumeReview != nil {
+		nextStage = domain.AdaptationPlanningStageVolumeReviewPending
+	}
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(nextStage, -1); err != nil {
+		return nil, fmt.Errorf("finish adaptation skeleton workflow: %w", err)
 	}
 	return result, nil
 }
@@ -1471,6 +1553,23 @@ func (s *ProjectSession) BuildAdaptationProposalDetailsContext(ctx context.Conte
 		}
 	}()
 
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	workflow, err := st.Adaptation.LoadPlanningWorkflow()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation planning workflow: %w", err)
+	}
+	if workflow == nil || (workflow.Stage != domain.AdaptationPlanningStageVolumeReviewPending && workflow.Stage != domain.AdaptationPlanningStageDetailsGenerating) {
+		return nil, fmt.Errorf("adaptation volume review must be approved before generating chapter details")
+	}
+	if workflow.Stage == domain.AdaptationPlanningStageVolumeReviewPending {
+		expectedRevision := workflow.Revision
+		if workflow.UpdatedAt == "" { // conservatively inferred legacy workflow
+			expectedRevision = -1
+		}
+		if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageDetailsGenerating, expectedRevision); err != nil {
+			return nil, fmt.Errorf("approve adaptation volume review: %w", err)
+		}
+	}
 	s.AppendSnapshot()
 	eventID, startedAt := s.appendAdaptationProposalStarted(adapt.ProposalOptions{})
 	proposal, err := s.host.BuildAdaptationProposalDetailsContext(actionCtx, adapt.ProposalDetailsOptions{
@@ -1483,6 +1582,9 @@ func (s *ProjectSession) BuildAdaptationProposalDetailsContext(ctx context.Conte
 		err = adaptationProposalRunError(err)
 		s.appendAdaptationProposalFinished(eventID, startedAt, adapt.ProposalOptions{}, err)
 		return nil, err
+	}
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageProposalReviewPending, -1); err != nil {
+		return nil, fmt.Errorf("finish adaptation details workflow: %w", err)
 	}
 	s.appendAdaptationProposalFinished(eventID, startedAt, adapt.ProposalOptions{}, nil)
 	return proposal, nil
@@ -1509,6 +1611,10 @@ func (s *ProjectSession) ConfirmAdaptationProposal() (*domain.AdaptationPlan, er
 	plan, err := s.host.ConfirmAdaptationProposal()
 	if err != nil {
 		return nil, err
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageConfirmed, -1); err != nil {
+		return nil, fmt.Errorf("confirm adaptation planning workflow: %w", err)
 	}
 	s.cocreate = nil
 	s.clearCoCreateCheckpoint()

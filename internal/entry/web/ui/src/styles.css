@@ -1080,6 +1080,7 @@ h2 {
   padding: 10px 8px;
   border-right: 1px solid var(--line);
   background: rgba(247, 249, 252, 0.82);
+  overflow-y: auto;
 }
 
 .side-tabs button {
@@ -1155,6 +1156,105 @@ h2 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
+}
+
+.schedule-panel section {
+  display: grid;
+  gap: 8px;
+}
+
+.schedule-time-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.schedule-time-entry input {
+  min-width: 0;
+}
+
+.schedule-time-list {
+  display: grid;
+  gap: 7px;
+}
+
+.schedule-time-item {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px 6px 12px;
+  background: var(--surface-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-time-item button {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+}
+
+.schedule-time-item button:hover:not(:disabled) {
+  background: #fbeaec;
+  color: var(--danger);
+}
+
+.schedule-batch-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.schedule-batch-counts span {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.schedule-batch-counts strong {
+  color: var(--text);
+  font-size: 16px;
+}
+
+.settings-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: var(--surface-subtle);
+  cursor: pointer;
+}
+
+.settings-toggle input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.settings-toggle span {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-toggle small {
+  color: var(--muted);
+  line-height: 1.45;
 }
 
 .setup-loading,
@@ -3474,6 +3574,7 @@ h2 {
   .side-tabs {
     flex-direction: row;
     overflow-x: auto;
+    overflow-y: hidden;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
@@ -3503,6 +3604,11 @@ h2 {
 }
 
 @media (max-width: 620px) {
+  .schedule-time-entry,
+  .project-settings-actions {
+    grid-template-columns: 1fr;
+  }
+
   .writing-pane {
     overflow: hidden;
   }

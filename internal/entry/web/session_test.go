@@ -1274,6 +1274,9 @@ func TestProjectSessionResumeContinuesAdaptationProposalDetails(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveVolumeReview: %v", err)
 	}
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageDetailsGenerating, -1); err != nil {
+		t.Fatalf("SetPlanningWorkflowStage: %v", err)
+	}
 
 	fake := newFakeProjectHost()
 	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: outputDir}, fake)
@@ -1297,6 +1300,41 @@ func TestProjectSessionResumeContinuesAdaptationProposalDetails(t *testing.T) {
 	}
 	if fake.adaptProposalCalls != 0 {
 		t.Fatalf("adapt proposal calls = %d, want 0", fake.adaptProposalCalls)
+	}
+}
+
+func TestProjectSessionResumeDoesNotCrossLegacyAdaptationVolumeReview(t *testing.T) {
+	outputDir := t.TempDir()
+	st := storepkg.NewStore(outputDir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init store: %v", err)
+	}
+	if err := st.Adaptation.SaveVolumeReview(domain.AdaptationVolumeReview{
+		Brief: "awaiting user approval", Granularity: domain.AdaptationGranularityArc,
+		Volumes: []domain.AdaptationVolumePlan{{Index: 1, Title: "Volume", TargetFrom: 1, TargetTo: 3}},
+	}); err != nil {
+		t.Fatalf("SaveVolumeReview: %v", err)
+	}
+
+	action, err := pendingAdaptationProposalResumeAction(st)
+	if err != nil {
+		t.Fatalf("pendingAdaptationProposalResumeAction: %v", err)
+	}
+	if action != nil {
+		t.Fatalf("legacy volume review crossed user gate: %+v", action)
+	}
+	fake := newFakeProjectHost()
+	session, err := NewProjectSession(ProjectManifest{ID: "legacy-review", OutputDir: outputDir}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+	label, err := session.Resume()
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if fake.resumeCalls != 0 || fake.adaptProposalDetailsCalls != 0 {
+		t.Fatalf("review gate crossed: label=%q host=%d details=%d", label, fake.resumeCalls, fake.adaptProposalDetailsCalls)
 	}
 }
 

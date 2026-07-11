@@ -2987,6 +2987,11 @@ func appendUniqueString(values []string, value string) []string {
 
 func cloneProjectConfig(cfg bootstrap.Config) bootstrap.Config {
 	out := cfg
+	out.ResumeSchedule.DailyTimes = append([]string(nil), cfg.ResumeSchedule.DailyTimes...)
+	if cfg.ScheduledResumeEnabled != nil {
+		enabled := *cfg.ScheduledResumeEnabled
+		out.ScheduledResumeEnabled = &enabled
+	}
 	out.PersistPath = ""
 	out.PersistProjectOverlay = false
 	out.PersistProviders = nil
@@ -3227,6 +3232,41 @@ func (h *Host) CurrentCoCreateTimeoutSeconds() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.cfg.EffectiveCoCreateTimeoutSeconds()
+}
+
+func (h *Host) ScheduledResumeEnabled() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.cfg.EffectiveScheduledResumeEnabled()
+}
+
+func (h *Host) SetScheduledResumeEnabled(enabled bool) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	previous := cloneHostRuntimeConfig(h.cfg)
+	if h.cfg.PersistProjectOverlay {
+		path := strings.TrimSpace(h.cfg.PersistPath)
+		if path != "" {
+			if _, err := os.Stat(path); err == nil {
+				latest, err := bootstrap.LoadConfigFile(path)
+				if err != nil {
+					return fmt.Errorf("reload project settings before scheduled resume update: %w", err)
+				}
+				h.cfg.PersistProjectConfig = &latest
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("stat project settings before scheduled resume update: %w", err)
+			}
+		}
+	}
+	h.cfg.ScheduledResumeEnabled = &enabled
+	if overlay := h.ensureProjectOverlayLocked(); overlay != nil {
+		overlay.ScheduledResumeEnabled = &enabled
+	}
+	if err := h.persistConfigLocked(); err != nil {
+		h.cfg = previous
+		return fmt.Errorf("save scheduled resume setting: %w", err)
+	}
+	return nil
 }
 
 func (h *Host) SetCoCreateTimeoutSeconds(seconds int) error {

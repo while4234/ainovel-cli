@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleDot,
+  Clock3,
   Copy,
   Database,
   Download,
@@ -74,6 +75,8 @@ import {
   getObservabilityUsage,
   getProjectEvents,
   getProjectModels,
+  getProjectResumeSchedule,
+  getResumeSchedule,
   getRuntime,
   getSetupStatus,
   getSnapshot,
@@ -122,7 +125,9 @@ import {
   setProjectCoCreateTimeout,
   setProjectRetrySettings,
   setProjectSimulationMode,
+  setProjectResumeSchedule,
   setProjectStyle,
+  setResumeSchedule,
   setProjectThinking,
   startContinuation,
   startSemanticAdaptationAudit,
@@ -605,6 +610,10 @@ export function createProjectSettingsState() {
     loadStatus: 'idle',
     saveStatus: 'idle',
     simulationModeSaveStatus: 'idle',
+    scheduledResumeEnabled: true,
+    scheduledResumeLoadStatus: 'idle',
+    scheduledResumeSaveStatus: 'idle',
+    scheduledResumeError: '',
     message: '',
     error: '',
     simulationModeMessage: '',
@@ -619,11 +628,54 @@ function resetProjectSettingsForProject(previous) {
     selectedSimulationMode: 'normal',
     saveStatus: 'idle',
     simulationModeSaveStatus: 'idle',
+    scheduledResumeEnabled: true,
+    scheduledResumeLoadStatus: 'idle',
+    scheduledResumeSaveStatus: 'idle',
+    scheduledResumeError: '',
     message: '',
     error: '',
     simulationModeMessage: '',
     simulationModeError: ''
   };
+}
+
+export function normalizeDailyResumeTime(value) {
+  const time = String(value || '').trim();
+  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time) ? time : '';
+}
+
+export function normalizeDailyResumeTimes(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map(normalizeDailyResumeTime)
+    .filter(Boolean))].sort();
+}
+
+function createResumeScheduleState() {
+  return {
+    dailyTimes: [],
+    draftTime: '15:00',
+    timezone: 'Asia/Shanghai',
+    nextTriggerAt: '',
+    lastBatch: null,
+    status: 'idle',
+    message: '',
+    error: ''
+  };
+}
+
+export function normalizeResumeScheduleResponse(data) {
+  const schedule = data?.schedule || data?.config || data || {};
+  return {
+    dailyTimes: normalizeDailyResumeTimes(schedule.daily_times || schedule.dailyTimes),
+    timezone: String(schedule.timezone || 'Asia/Shanghai').trim() || 'Asia/Shanghai',
+    nextTriggerAt: String(data?.next_trigger_at || data?.next_run_at || data?.nextTriggerAt || ''),
+    lastBatch: data?.last_batch || data?.lastBatch || null
+  };
+}
+
+export function projectScheduledResumeEnabled(data) {
+  const value = data?.scheduled_resume_enabled ?? data?.enabled;
+  return value !== false;
 }
 
 const grokOAuthDefaults = {
@@ -745,6 +797,7 @@ export default function App() {
   const [coCreate, setCoCreate] = useState(createCoCreateState);
   const [planningRevision, setPlanningRevision] = useState(createCoCreatePlanningRevisionState);
   const [projectSettings, setProjectSettings] = useState(createProjectSettingsState);
+  const [resumeSchedule, setResumeScheduleState] = useState(createResumeScheduleState);
   const [modelConfig, setModelConfig] = useState(null);
   const [customModel, setCustomModel] = useState(createCustomModelState);
   const [backendStatus, setBackendStatus] = useState(null);
@@ -1236,6 +1289,27 @@ export default function App() {
     }
   }, []);
 
+  const loadResumeSchedule = useCallback(async () => {
+    setResumeScheduleState((previous) => ({ ...previous, status: 'loading', error: '' }));
+    try {
+      const data = await getResumeSchedule();
+      const schedule = normalizeResumeScheduleResponse(data);
+      setResumeScheduleState((previous) => ({
+        ...previous,
+        ...schedule,
+        status: 'done',
+        message: '',
+        error: ''
+      }));
+    } catch (err) {
+      setResumeScheduleState((previous) => ({
+        ...previous,
+        status: 'error',
+        error: err.message
+      }));
+    }
+  }, []);
+
   const refreshGlobalModels = useCallback(async () => {
     const data = await getGlobalModels();
     setModelConfig(data.models || null);
@@ -1277,6 +1351,10 @@ export default function App() {
   }, [loadProjectStyles]);
 
   useEffect(() => {
+    loadResumeSchedule();
+  }, [loadResumeSchedule]);
+
+  useEffect(() => {
     if (!projectMenu) {
       return undefined;
     }
@@ -1315,6 +1393,9 @@ export default function App() {
       const backendData = await getBackendStatus(projectId);
       const eventsData = await getProjectEvents(projectId, 0);
       const continuationData = await getContinuation(projectId).catch(() => null);
+      const projectScheduleResult = await getProjectResumeSchedule(projectId)
+        .then((data) => ({ data, error: '' }))
+        .catch((err) => ({ data: null, error: err.message }));
       if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
         return;
       }
@@ -1330,6 +1411,13 @@ export default function App() {
       setContinuation((previous) => restoreContinuationState(previous, continuationData, snapshotData.snapshot));
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);
+      setProjectSettings((previous) => ({
+        ...previous,
+        scheduledResumeEnabled: projectScheduledResumeEnabled(projectScheduleResult.data),
+        scheduledResumeLoadStatus: projectScheduleResult.error ? 'error' : 'done',
+        scheduledResumeSaveStatus: 'idle',
+        scheduledResumeError: projectScheduleResult.error
+      }));
     } catch (err) {
       if (projectOpenSeqRef.current === requestSeq && isCurrentProject(projectId)) {
         setError(err.message);
@@ -1799,6 +1887,54 @@ export default function App() {
       }));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const saveResumeSchedule = async (event) => {
+    event.preventDefault();
+    const dailyTimes = normalizeDailyResumeTimes(resumeSchedule.dailyTimes);
+    setResumeScheduleState((previous) => ({ ...previous, status: 'saving', message: '', error: '' }));
+    try {
+      const data = await setResumeSchedule(dailyTimes, resumeSchedule.timezone);
+      const schedule = normalizeResumeScheduleResponse(data);
+      setResumeScheduleState((previous) => ({
+        ...previous,
+        ...schedule,
+        status: 'done',
+        message: dailyTimes.length ? '定时启动时间已保存' : '定时启动已关闭',
+        error: ''
+      }));
+    } catch (err) {
+      setResumeScheduleState((previous) => ({ ...previous, status: 'error', message: '', error: err.message }));
+    }
+  };
+
+  const changeProjectResumeSchedule = async (enabled) => {
+    const projectId = activeProject?.id;
+    if (!projectId) return;
+    setProjectSettings((previous) => ({
+      ...previous,
+      scheduledResumeEnabled: enabled,
+      scheduledResumeSaveStatus: 'running',
+      scheduledResumeError: ''
+    }));
+    try {
+      const data = await setProjectResumeSchedule(projectId, enabled);
+      if (!isCurrentProject(projectId)) return;
+      setProjectSettings((previous) => ({
+        ...previous,
+        scheduledResumeEnabled: projectScheduledResumeEnabled(data),
+        scheduledResumeSaveStatus: 'done',
+        scheduledResumeError: ''
+      }));
+    } catch (err) {
+      if (!isCurrentProject(projectId)) return;
+      setProjectSettings((previous) => ({
+        ...previous,
+        scheduledResumeEnabled: !enabled,
+        scheduledResumeSaveStatus: 'error',
+        scheduledResumeError: err.message
+      }));
     }
   };
 
@@ -4263,6 +4399,10 @@ export default function App() {
             <SlidersHorizontal size={16} />
             设定
           </button>
+          <button aria-selected={sideView === 'schedule'} className={sideView === 'schedule' ? 'active' : ''} onClick={() => openTool('schedule')} role="tab" title="定时" type="button">
+            <Clock3 size={16} />
+            定时
+          </button>
           <button aria-selected={sideView === 'adapt'} className={sideView === 'adapt' ? 'active' : ''} onClick={() => openTool('adapt')} role="tab" title="改编" type="button">
             <FileText size={16} />
             改编
@@ -4371,7 +4511,15 @@ export default function App() {
               snapshot={snapshot}
               onSaveSimulationMode={saveProjectSimulationMode}
               onSaveStyle={saveProjectStyle}
+              onToggleScheduledResume={changeProjectResumeSchedule}
               onRefreshStyles={loadProjectStyles}
+            />
+          ) : sideView === 'schedule' ? (
+            <ResumeSchedulePanel
+              schedule={resumeSchedule}
+              setSchedule={setResumeScheduleState}
+              onRefresh={loadResumeSchedule}
+              onSave={saveResumeSchedule}
             />
           ) : sideView === 'adapt' ? (
             <AdaptationPanel
@@ -4981,6 +5129,129 @@ function CompletedChapterRevisionWorkspace({ selected, content }) {
   );
 }
 
+function formatScheduleTimestamp(value, timezone) {
+  if (!value) return '尚未安排';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  try {
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: timezone,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).format(date);
+  } catch {
+    return date.toLocaleString('zh-CN');
+  }
+}
+
+function batchCount(batch, name) {
+  const value = batch?.[name] ?? batch?.[`${name}_count`];
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+function ResumeSchedulePanel({ schedule, setSchedule, onRefresh, onSave }) {
+  const saving = schedule.status === 'saving';
+  const addDraftTime = () => {
+    const time = normalizeDailyResumeTime(schedule.draftTime);
+    if (!time) {
+      setSchedule((previous) => ({ ...previous, error: '请选择有效的每日时间' }));
+      return;
+    }
+    setSchedule((previous) => ({
+      ...previous,
+      dailyTimes: normalizeDailyResumeTimes([...previous.dailyTimes, time]),
+      error: '',
+      message: ''
+    }));
+  };
+  const lastBatchAt = schedule.lastBatch?.triggered_at || schedule.lastBatch?.started_at || schedule.lastBatch?.at || '';
+  return (
+    <div className="side-content schedule-panel">
+      <section>
+        <div className="section-title">
+          <Clock3 size={17} />
+          <span>定时启动</span>
+        </div>
+        <p className="settings-note">每天到达配置时间后，系统会扫描所有项目，只恢复已开始但未完成的中间态。</p>
+        <p className="settings-note warning">不会越过建议选择、分卷骨架、详细提案或续写提案等人工审核节点。</p>
+      </section>
+
+      <section className="settings-summary">
+        <Metric label="时区" value={schedule.timezone} />
+        <Metric label="下次检查" value={formatScheduleTimestamp(schedule.nextTriggerAt, schedule.timezone)} />
+      </section>
+
+      <form className="project-settings-form" onSubmit={onSave}>
+        <label className="field-label">
+          <span>添加每日时间</span>
+          <div className="schedule-time-entry">
+            <input
+              aria-label="每日启动时间"
+              disabled={saving}
+              onChange={(event) => setSchedule((previous) => ({ ...previous, draftTime: event.target.value, error: '' }))}
+              step="60"
+              type="time"
+              value={schedule.draftTime}
+            />
+            <button className="tool-button" disabled={saving} onClick={addDraftTime} type="button">
+              <Plus size={16} /> 添加
+            </button>
+          </div>
+        </label>
+
+        <div className="schedule-time-list" aria-label="已配置的每日启动时间">
+          {schedule.dailyTimes.length ? schedule.dailyTimes.map((time) => (
+            <div className="schedule-time-item" key={time}>
+              <strong>{time}</strong>
+              <button
+                aria-label={`删除 ${time}`}
+                disabled={saving}
+                onClick={() => setSchedule((previous) => ({
+                  ...previous,
+                  dailyTimes: previous.dailyTimes.filter((item) => item !== time),
+                  message: '',
+                  error: ''
+                }))}
+                type="button"
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
+          )) : <div className="empty-state compact">没有配置时间；保存后将关闭全局定时启动。</div>}
+        </div>
+
+        {schedule.error ? <div className="error-banner compact">{schedule.error}</div> : null}
+        {schedule.message ? <div className="success-note">{schedule.message}</div> : null}
+        <div className="project-settings-actions">
+          <button className="tool-button" disabled={schedule.status === 'loading' || saving} onClick={onRefresh} type="button">
+            <RefreshCw size={16} /> 刷新
+          </button>
+          <button className="tool-button accent" disabled={saving} type="submit">
+            <Check size={16} /> {saving ? '保存中…' : '统一保存'}
+          </button>
+        </div>
+      </form>
+
+      <section>
+        <div className="section-title"><Activity size={17} /><span>最近批次</span></div>
+        {schedule.lastBatch ? (
+          <div className="settings-summary">
+            <Metric label="执行时间" value={formatScheduleTimestamp(lastBatchAt, schedule.timezone)} />
+            <div className="schedule-batch-counts">
+              <span>启动 <strong>{batchCount(schedule.lastBatch, 'started')}</strong></span>
+              <span>跳过 <strong>{batchCount(schedule.lastBatch, 'skipped')}</strong></span>
+              <span>失败 <strong>{batchCount(schedule.lastBatch, 'failed')}</strong></span>
+            </div>
+          </div>
+        ) : <div className="empty-state compact">尚无定时执行记录</div>}
+      </section>
+    </div>
+  );
+}
+
 function ProjectSettingsPanel({
   activeProject,
   busy,
@@ -4993,6 +5264,7 @@ function ProjectSettingsPanel({
   snapshot,
   onSaveSimulationMode,
   onSaveStyle,
+  onToggleScheduledResume,
   onRefreshStyles
 }) {
   const styles = projectSettings.styles;
@@ -5033,6 +5305,28 @@ function ProjectSettingsPanel({
 
       {activeProject ? (
         <>
+        <section>
+          <div className="section-title">
+            <Clock3 size={17} />
+            <span>定时恢复</span>
+          </div>
+          <label className="settings-toggle">
+            <input
+              checked={projectSettings.scheduledResumeEnabled}
+              disabled={projectSettings.scheduledResumeLoadStatus === 'running' || projectSettings.scheduledResumeSaveStatus === 'running'}
+              onChange={(event) => onToggleScheduledResume(event.target.checked)}
+              role="switch"
+              type="checkbox"
+            />
+            <span>
+              <strong>允许此项目定时恢复</strong>
+              <small>默认开启。关闭后，全局定时检查会跳过此项目，但不会暂停当前正在运行的任务。</small>
+            </span>
+          </label>
+          <div className="settings-note">只恢复未完成的执行态；需要你审核或选择的阶段不会自动推进。</div>
+          {projectSettings.scheduledResumeSaveStatus === 'done' ? <div className="success-note">项目定时恢复设置已保存</div> : null}
+          {projectSettings.scheduledResumeError ? <div className="error-banner compact">{projectSettings.scheduledResumeError}</div> : null}
+        </section>
         <section>
           <div className="section-title">
             <FileText size={17} />

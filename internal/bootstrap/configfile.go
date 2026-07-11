@@ -7,8 +7,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
+
+var saveConfigMu sync.Mutex
 
 const configDirName = ".ainovel"
 
@@ -145,6 +149,16 @@ func MergeConfig(base, overlay Config) Config {
 
 // mergeConfig 将 overlay 合并到 base 上。非零值字段覆盖，map 按 key 合并。
 func mergeConfig(base, overlay Config) Config {
+	if overlay.ResumeSchedule.DailyTimes != nil {
+		base.ResumeSchedule.DailyTimes = append([]string(nil), overlay.ResumeSchedule.DailyTimes...)
+	}
+	if strings.TrimSpace(overlay.ResumeSchedule.Timezone) != "" {
+		base.ResumeSchedule.Timezone = overlay.ResumeSchedule.Timezone
+	}
+	if overlay.ScheduledResumeEnabled != nil {
+		enabled := *overlay.ScheduledResumeEnabled
+		base.ScheduledResumeEnabled = &enabled
+	}
 	if overlay.Provider != "" {
 		base.Provider = overlay.Provider
 	}
@@ -372,6 +386,8 @@ func WriteStartupError(msg string) string {
 
 // SaveConfig 将配置写入指定路径（JSON 格式，缩进美化）。
 func SaveConfig(path string, cfg Config) error {
+	saveConfigMu.Lock()
+	defer saveConfigMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -379,5 +395,26 @@ func SaveConfig(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }

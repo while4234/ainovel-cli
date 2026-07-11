@@ -38,6 +38,34 @@ type ProjectManifest struct {
 type ProjectStore struct {
 	RuntimeRoot string
 	openMu      sync.Mutex
+	configMu    sync.Mutex
+}
+
+func (s *ProjectStore) ProjectScheduledResumeEnabled(manifest ProjectManifest) (bool, error) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg, found, err := s.loadProjectConfig(manifest)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return true, nil
+	}
+	return cfg.EffectiveScheduledResumeEnabled(), nil
+}
+
+func (s *ProjectStore) SaveProjectScheduledResumeEnabled(manifest ProjectManifest, enabled bool) error {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	cfg, found, err := s.loadProjectConfig(manifest)
+	if err != nil {
+		return err
+	}
+	if !found {
+		cfg = bootstrap.Config{}
+	}
+	cfg.ScheduledResumeEnabled = &enabled
+	return bootstrap.SaveConfig(ProjectConfigPath(manifest), cfg)
 }
 
 func NewProjectStore(runtimeRoot string) *ProjectStore {

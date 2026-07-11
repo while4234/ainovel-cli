@@ -28,6 +28,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest scheduled-resume change: `9d77dd6` `feat: add safe scheduled project resume`:
+  adds global multiple daily resume times, same-day catch-up, durable scheduler
+  state, project default-on switches, explicit adaptation planning gates, and a
+  dedicated Web schedule tab. Full Go tests, Go vet, 198 Web tests, production
+  build, API smoke tests, Playwright acceptance, and port 9898 restart passed.
+  All pre-existing feature branches were audited as ancestors of `main`; after
+  the final push only `main` should remain locally and on `origin`.
 - Latest adaptation-audit change: `f6e89e3` `feat: add end-to-end adaptation audit safeguards`:
   adds completion and publish-export audit gates, immutable 50-run audit history,
   deterministic cross-run comparison, a dedicated resumable `auditor` model role,

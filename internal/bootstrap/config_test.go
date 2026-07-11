@@ -2,6 +2,38 @@ package bootstrap
 
 import "testing"
 
+func boolPointer(value bool) *bool { return &value }
+
+func TestNormalizeResumeSchedule(t *testing.T) {
+	got, err := NormalizeResumeSchedule(ResumeScheduleConfig{
+		DailyTimes: []string{"16:00", "15:00", "16:00"},
+	})
+	if err != nil {
+		t.Fatalf("NormalizeResumeSchedule: %v", err)
+	}
+	if got.Timezone != DefaultResumeScheduleTimezone {
+		t.Fatalf("timezone = %q, want %q", got.Timezone, DefaultResumeScheduleTimezone)
+	}
+	if len(got.DailyTimes) != 2 || got.DailyTimes[0] != "15:00" || got.DailyTimes[1] != "16:00" {
+		t.Fatalf("daily times = %#v", got.DailyTimes)
+	}
+}
+
+func TestNormalizeResumeScheduleRejectsInvalidTime(t *testing.T) {
+	if _, err := NormalizeResumeSchedule(ResumeScheduleConfig{DailyTimes: []string{"3:00"}}); err == nil {
+		t.Fatal("non-canonical time should be rejected")
+	}
+}
+
+func TestScheduledResumeDefaultsEnabled(t *testing.T) {
+	if !((Config{}).EffectiveScheduledResumeEnabled()) {
+		t.Fatal("scheduled resume should default enabled")
+	}
+	if (Config{ScheduledResumeEnabled: boolPointer(false)}).EffectiveScheduledResumeEnabled() {
+		t.Fatal("explicit false should disable scheduled resume")
+	}
+}
+
 func TestCoCreateTimeoutDefaultsAndValidation(t *testing.T) {
 	cfg := Config{}
 	if got := cfg.EffectiveCoCreateTimeoutSeconds(); got != DefaultCoCreateTimeoutSeconds {

@@ -337,7 +337,7 @@ func (s *Store) rollbackToChapterOutline(state rollbackState) ([]string, error) 
 
 func (s *Store) rollbackToVolumeOutline(state rollbackState) ([]string, error) {
 	if state.volumeReview != nil || state.proposal != nil || state.runtime != nil || state.plan != nil {
-		deleted, err := s.removePaths([]string{adaptationProposalFile, adaptationProposalRuntimeFile, adaptationPlanFile})
+		deleted, err := s.removePaths([]string{adaptationProposalFile, adaptationProposalRuntimeFile, adaptationPlanFile, adaptationPlanningWorkflowFile})
 		if err != nil {
 			return deleted, err
 		}
@@ -348,6 +348,11 @@ func (s *Store) rollbackToVolumeOutline(state rollbackState) ([]string, error) {
 		}
 		if err := s.savePlanningProgress(domain.PhaseOutline, adaptationVolumeTargetCount(state.volumeReview), true, state); err != nil {
 			return deleted, err
+		}
+		if state.volumeReview != nil {
+			if _, err := s.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageVolumeReviewPending, 0); err != nil {
+				return deleted, err
+			}
 		}
 		return deleted, nil
 	}
@@ -590,6 +595,7 @@ func adaptationGeneratedDeletePaths() []string {
 		adaptationVolumeReviewFile,
 		adaptationProposalRuntimeFile,
 		adaptationPlanFile,
+		adaptationPlanningWorkflowFile,
 		adaptationCheckDir,
 	}
 }

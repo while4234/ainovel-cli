@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -281,6 +282,54 @@ type AdaptationPlan struct {
 	TargetRelationshipStates map[string]string       `json:"target_relationship_states,omitempty"`
 	TargetSettingLocks       []AdaptationSettingLock `json:"target_setting_locks,omitempty"`
 	Chapters                 []AdaptationChapterPlan `json:"chapters"`
+}
+
+// AdaptationPlanningStage is the durable state of the human-gated adaptation
+// planning workflow.  It is intentionally separate from proposal artifacts so
+// their mere presence never implies that a user approved the next stage.
+type AdaptationPlanningStage string
+
+const (
+	AdaptationPlanningStageSkeletonGenerating    AdaptationPlanningStage = "skeleton_generating"
+	AdaptationPlanningStageVolumeReviewPending   AdaptationPlanningStage = "volume_review_pending"
+	AdaptationPlanningStageDetailsGenerating     AdaptationPlanningStage = "details_generating"
+	AdaptationPlanningStageProposalReviewPending AdaptationPlanningStage = "proposal_review_pending"
+	AdaptationPlanningStageConfirmed             AdaptationPlanningStage = "confirmed"
+)
+
+const AdaptationPlanningWorkflowVersion = 1
+
+type AdaptationPlanningWorkflow struct {
+	Version   int                     `json:"version"`
+	Stage     AdaptationPlanningStage `json:"stage"`
+	Revision  int                     `json:"revision"`
+	UpdatedAt string                  `json:"updated_at,omitempty"`
+}
+
+func (s AdaptationPlanningStage) Valid() bool {
+	switch s {
+	case AdaptationPlanningStageSkeletonGenerating,
+		AdaptationPlanningStageVolumeReviewPending,
+		AdaptationPlanningStageDetailsGenerating,
+		AdaptationPlanningStageProposalReviewPending,
+		AdaptationPlanningStageConfirmed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w AdaptationPlanningWorkflow) Validate() error {
+	if w.Version != AdaptationPlanningWorkflowVersion {
+		return fmt.Errorf("unsupported adaptation planning workflow version %d", w.Version)
+	}
+	if !w.Stage.Valid() {
+		return fmt.Errorf("invalid adaptation planning stage %q", w.Stage)
+	}
+	if w.Revision <= 0 {
+		return fmt.Errorf("adaptation planning workflow revision must be > 0")
+	}
+	return nil
 }
 
 // AdaptationProposalRuntime keeps resumable planner state while a proposal is
