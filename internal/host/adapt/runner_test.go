@@ -2113,6 +2113,123 @@ func testPlannerSourceMapSkeletonBatchJSON() string {
 	return `{"index":1,"title":"Opening volume","theme":"orientation","target_from":1,"target_to":4,"source_from":1,"source_to":2,"summary":"valid source-map skeleton batch"}`
 }
 
+func TestParsePlannerBatchPartialRejectsAmbiguousMultipleObjects(t *testing.T) {
+	batch := plannerSkeletonBatch{Index: 1, TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1}
+	first := plannerBatchProposalJSON(1, 1, 1, 1)
+	second := strings.Replace(first, "Target 1", "Alternative 1", 1)
+	_, _, _, err := parsePlannerBatchPartial(first+"\n"+second, batch)
+	if !errors.Is(err, errPlannerProposalMultipleJSON) {
+		t.Fatalf("error=%v, want strict multiple-object rejection", err)
+	}
+}
+
+func TestCollectPlannerBatchChaptersClearsRepeatedRepairOutput(t *testing.T) {
+	batch := plannerSkeletonBatch{Index: 1, TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1}
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{"summary":"invalid_marker_repair_one"}`},
+		{text: plannerBatchProposalJSON(1, 1, 1, 1)},
+	}}
+	chapters, err := collectPlannerBatchChaptersWithRepair(
+		withAdaptationPromptModeIfMissing(context.Background(), domain.AdaptationGranularityArc),
+		llm,
+		"system",
+		"original detail request",
+		`{"summary":"invalid_marker_initial"}`,
+		batch,
+		nil,
+		nil,
+		nil,
+		1,
+		1,
+		"detail batch",
+		2,
+		1,
+	)
+	if err != nil {
+		t.Fatalf("collectPlannerBatchChaptersWithRepair: %v", err)
+	}
+	if len(chapters) != 1 || len(llm.got) != 2 {
+		t.Fatalf("chapters=%d calls=%d, want one chapter after two repairs", len(chapters), len(llm.got))
+	}
+	firstRepairPrompt := llm.got[0][1].TextContent()
+	if !strings.Contains(firstRepairPrompt, "invalid_marker_initial") {
+		t.Fatalf("first repair should correct the initial candidate: %s", firstRepairPrompt)
+	}
+	secondRepairPrompt := llm.got[1][1].TextContent()
+	if !strings.Contains(secondRepairPrompt, `"regenerate_from_original": true`) ||
+		strings.Contains(secondRepairPrompt, "invalid_marker_repair_one") ||
+		strings.Contains(secondRepairPrompt, "previous_output") {
+		t.Fatalf("second repair should restart from the original detail request: %s", secondRepairPrompt)
+	}
+}
+
+func TestCollectPlannerBatchChaptersClearsAmbiguousOutputImmediately(t *testing.T) {
+	batch := plannerSkeletonBatch{Index: 1, TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1}
+	first := strings.Replace(plannerBatchProposalJSON(1, 1, 1, 1), "Target 1", "candidate_marker_one", 1)
+	second := strings.Replace(plannerBatchProposalJSON(1, 1, 1, 1), "Target 1", "candidate_marker_two", 1)
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: plannerBatchProposalJSON(1, 1, 1, 1)}}}
+	chapters, err := collectPlannerBatchChaptersWithRepair(
+		withAdaptationPromptModeIfMissing(context.Background(), domain.AdaptationGranularityArc), llm, "system", "original detail request", first+"\n"+second,
+		batch, nil, nil, nil, 1, 1, "detail batch", 1, 1,
+	)
+	if err != nil {
+		t.Fatalf("collectPlannerBatchChaptersWithRepair: %v", err)
+	}
+	if len(chapters) != 1 || len(llm.got) != 1 {
+		t.Fatalf("chapters=%d calls=%d, want one clean repair", len(chapters), len(llm.got))
+	}
+	repairPrompt := llm.got[0][1].TextContent()
+	if !strings.Contains(repairPrompt, `"regenerate_from_original": true`) ||
+		strings.Contains(repairPrompt, "candidate_marker") ||
+		strings.Contains(repairPrompt, "previous_output") {
+		t.Fatalf("ambiguous detail output should be cleared immediately: %s", repairPrompt)
+	}
+}
+
+func TestFillMissingPlannerBatchChaptersClearsRepeatedRepairOutput(t *testing.T) {
+	batch := plannerSkeletonBatch{Index: 1, TargetFrom: 1, TargetTo: 2, SourceFrom: 1, SourceTo: 2}
+	existingPlan, err := parsePlannerProposalStrict(plannerBatchProposalJSON(1, 1, 1, 1))
+	if err != nil {
+		t.Fatalf("parse existing chapter: %v", err)
+	}
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: `{"summary":"invalid_marker_missing_fill"}`},
+		{text: plannerBatchProposalJSON(2, 2, 2, 2)},
+	}}
+	chapters, err := fillMissingPlannerBatchChapters(
+		withAdaptationPromptModeIfMissing(context.Background(), domain.AdaptationGranularityArc),
+		llm,
+		"system",
+		"original detail request",
+		plannerBatchProposalJSON(1, 1, 1, 1),
+		batch,
+		existingPlan.Chapters,
+		[]int{2},
+		errors.New("missing chapter 2"),
+		nil,
+		1,
+		1,
+		"detail batch",
+		2,
+		1,
+	)
+	if err != nil {
+		t.Fatalf("fillMissingPlannerBatchChapters: %v", err)
+	}
+	if len(chapters) != 2 || len(llm.got) != 2 {
+		t.Fatalf("chapters=%d calls=%d, want completed two-chapter batch", len(chapters), len(llm.got))
+	}
+	secondRepairPrompt := llm.got[1][1].TextContent()
+	if !strings.Contains(secondRepairPrompt, `"regenerate_from_original": true`) ||
+		strings.Contains(secondRepairPrompt, "invalid_marker_missing_fill") ||
+		strings.Contains(secondRepairPrompt, "previous_output") {
+		t.Fatalf("second missing-chapter repair should clear failed fill output: %s", secondRepairPrompt)
+	}
+	if !strings.Contains(secondRepairPrompt, "existing_chapters") || !strings.Contains(secondRepairPrompt, "Target 1") {
+		t.Fatalf("clean missing-chapter retry must retain accepted chapters: %s", secondRepairPrompt)
+	}
+}
+
 func TestBuildAdaptationPlannerSkeletonPromptUsesFoundationDigest(t *testing.T) {
 	manifest := &domain.AdaptationSourceManifest{
 		SourcePath:   "source.txt",
@@ -4111,6 +4228,7 @@ func TestRepairPlannerBatchTextClarifiesSourceRangeBudgetRepair(t *testing.T) {
 		`{"chapters":[]}`,
 		plannerSkeletonBatch{Index: 22, TargetFrom: 73, TargetTo: 76, SourceFrom: 21, SourceTo: 23},
 		&plannerProposalBudgetSplitError{FirstChapter: 76, SourceFrom: 22, SourceTo: 23, SourceRunes: 53251, MinChapters: 11},
+		false,
 		nil,
 		22,
 		33,

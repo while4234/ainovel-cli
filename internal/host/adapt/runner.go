@@ -71,6 +71,7 @@ const (
 var plannerRetrySleep = retrypolicy.Wait
 
 var errPlannerSourceMapMultipleJSON = errors.New("ambiguous planner source-map skeleton: multiple complete JSON objects found")
+var errPlannerProposalMultipleJSON = errors.New("ambiguous planner proposal: multiple complete JSON objects found")
 
 var (
 	targetChapterRangePattern        = regexp.MustCompile(`(\d{1,3})\s*(?:[-~～—–－至到]|\s+)\s*(\d{1,3})\s*(?:个)?(?:章节|章)`)
@@ -5418,7 +5419,7 @@ func collectPlannerBatchChaptersWithRepair(
 			return nil, lastErr
 		}
 		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s不能直接使用，正在整批修复第 %d/%d 次：%v", label, attempt+1, maxRepairAttempts, lastErr), lastErr)
-		repairedText, err := repairPlannerBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, lastErr, emit, current, total, label, maxModelCallAttempts)
+		repairedText, err := repairPlannerBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, lastErr, attempt > 0, emit, current, total, label, maxModelCallAttempts)
 		if err != nil {
 			return nil, err
 		}
@@ -5932,7 +5933,7 @@ func collectProposalRevisionBatchChaptersWithRepair(
 			return nil, lastErr
 		}
 		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s不能直接使用，正在整批修复第 %d/%d 次：%v", label, attempt+1, maxRepairAttempts, lastErr), lastErr)
-		repairedText, err := repairProposalRevisionBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, expansionMaxTo, lastErr, emit, current, total, label, maxModelCallAttempts)
+		repairedText, err := repairProposalRevisionBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, expansionMaxTo, lastErr, attempt > 0, emit, current, total, label, maxModelCallAttempts)
 		if err != nil {
 			return nil, err
 		}
@@ -5941,7 +5942,7 @@ func collectProposalRevisionBatchChaptersWithRepair(
 }
 
 func parsePlannerBatchPartial(text string, batch plannerSkeletonBatch) ([]domain.AdaptationChapterPlan, []int, bool, error) {
-	plan, err := parsePlannerProposal(text)
+	plan, err := parsePlannerProposalStrict(text)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -5957,7 +5958,7 @@ func parsePlannerBatchPartial(text string, batch plannerSkeletonBatch) ([]domain
 }
 
 func parseProposalRevisionBatchPartial(text string, batch plannerSkeletonBatch, expansionMaxTo int) ([]domain.AdaptationChapterPlan, []int, bool, error) {
-	plan, err := parsePlannerProposal(text)
+	plan, err := parsePlannerProposalStrict(text)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -5997,7 +5998,7 @@ func fillMissingPlannerBatchChapters(
 	}
 	for attempt := 0; attempt < maxRepairAttempts; attempt++ {
 		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s缺少章节 %s，正在补齐第 %d/%d 次", label, formatPlannerChapterList(currentMissing), attempt+1, maxRepairAttempts), lastErr)
-		fillText, err := repairPlannerMissingChaptersText(ctx, llm, systemPrompt, originalPrompt, feedbackText, batch, currentChapters, currentMissing, lastErr, emit, current, total, label, maxModelCallAttempts)
+		fillText, err := repairPlannerMissingChaptersText(ctx, llm, systemPrompt, originalPrompt, feedbackText, batch, currentChapters, currentMissing, lastErr, attempt > 0, emit, current, total, label, maxModelCallAttempts)
 		if err != nil {
 			lastErr = err
 			feedbackText = ""
@@ -6037,7 +6038,7 @@ func fillMissingPlannerBatchChapters(
 }
 
 func parsePlannerMissingChapterResponse(text string, batch plannerSkeletonBatch, missing []int) ([]domain.AdaptationChapterPlan, []int, error) {
-	plan, err := parsePlannerProposal(text)
+	plan, err := parsePlannerProposalStrict(text)
 	if err != nil {
 		return nil, append([]int(nil), missing...), err
 	}
@@ -6175,13 +6176,14 @@ func repairPlannerBatchText(
 	previousText string,
 	batch plannerSkeletonBatch,
 	previousErr error,
+	regenerateFromOriginal bool,
 	emit ProgressEmitter,
 	current int,
 	total int,
 	label string,
 	maxModelCallAttempts int,
 ) (string, error) {
-	repairPrompt := buildPlannerRepairPrompt(
+	repairPrompt := buildPlannerRepairPromptWithOptions(
 		fmt.Sprintf("batch %d", batch.Index),
 		originalPrompt,
 		previousText,
@@ -6197,6 +6199,7 @@ func repairPlannerBatchText(
 			"If the previous error says outline beats are duplicated after model review, regenerate the full requested batch so each repeated chapter has a distinct core_event, hook, and scene progression. Do not only rename the chapter.",
 			"Do not return only summaries, key_turns, overall_arc, markdown, or explanation.",
 		},
+		plannerRepairPromptOptions{RegenerateFromOriginal: regenerateFromOriginal},
 	)
 	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens, emit, current, total, label+"整批修复", maxModelCallAttempts)
 	if err != nil {
@@ -6214,6 +6217,7 @@ func repairProposalRevisionBatchText(
 	batch plannerSkeletonBatch,
 	expansionMaxTo int,
 	previousErr error,
+	regenerateFromOriginal bool,
 	emit ProgressEmitter,
 	current int,
 	total int,
@@ -6223,7 +6227,7 @@ func repairProposalRevisionBatchText(
 	if expansionMaxTo < batch.TargetTo {
 		expansionMaxTo = batch.TargetTo
 	}
-	repairPrompt := buildPlannerRepairPrompt(
+	repairPrompt := buildPlannerRepairPromptWithOptions(
 		fmt.Sprintf("revision batch %d", batch.Index),
 		originalPrompt,
 		previousText,
@@ -6237,6 +6241,7 @@ func repairProposalRevisionBatchText(
 			"Every chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
 			"Do not return only summaries, key_turns, overall_arc, markdown, or explanation.",
 		},
+		plannerRepairPromptOptions{RegenerateFromOriginal: regenerateFromOriginal},
 	)
 	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens, emit, current, total, label+"整批修复", maxModelCallAttempts)
 	if err != nil {
@@ -6255,6 +6260,7 @@ func repairPlannerMissingChaptersText(
 	existing []domain.AdaptationChapterPlan,
 	missing []int,
 	previousErr error,
+	regenerateFromOriginal bool,
 	emit ProgressEmitter,
 	current int,
 	total int,
@@ -6267,7 +6273,8 @@ func repairPlannerMissingChaptersText(
 		MissingChapters  []int                          `json:"missing_chapters"`
 		Batch            plannerSkeletonBatch           `json:"batch"`
 		ExistingChapters []domain.AdaptationChapterPlan `json:"existing_chapters"`
-		PreviousOutput   string                         `json:"previous_output"`
+		PreviousOutput   string                         `json:"previous_output,omitempty"`
+		Regenerate       bool                           `json:"regenerate_from_original,omitempty"`
 		Requirements     []string                       `json:"requirements"`
 	}{
 		Step:             fmt.Sprintf("batch %d missing chapters", batch.Index),
@@ -6276,6 +6283,7 @@ func repairPlannerMissingChaptersText(
 		Batch:            batch,
 		ExistingChapters: append([]domain.AdaptationChapterPlan(nil), existing...),
 		PreviousOutput:   truncatePlannerFeedback(previousText),
+		Regenerate:       regenerateFromOriginal || errors.Is(previousErr, errPlannerProposalMultipleJSON),
 		Requirements: []string{
 			"Return exactly one JSON object and no prose.",
 			"The top-level object must be shaped exactly like {\"chapters\":[...]}",
@@ -6284,6 +6292,9 @@ func repairPlannerMissingChaptersText(
 			"Every returned chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
 			"Use integer absolute target chapter numbers from missing_chapters.",
 		},
+	}
+	if input.Regenerate {
+		input.PreviousOutput = ""
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
@@ -6315,11 +6326,13 @@ func buildPlannerRepairPromptWithOptions(step string, originalPrompt string, pre
 		PreviousOutput         string   `json:"previous_output,omitempty"`
 		RegenerateFromOriginal bool     `json:"regenerate_from_original,omitempty"`
 	}{
-		Step:                   step,
-		Error:                  fmt.Sprint(previousErr),
-		Requirements:           requirements,
-		PreviousOutput:         truncatePlannerFeedback(previousText),
-		RegenerateFromOriginal: opts.RegenerateFromOriginal || errors.Is(previousErr, errPlannerSourceMapMultipleJSON),
+		Step:           step,
+		Error:          fmt.Sprint(previousErr),
+		Requirements:   requirements,
+		PreviousOutput: truncatePlannerFeedback(previousText),
+		RegenerateFromOriginal: opts.RegenerateFromOriginal ||
+			errors.Is(previousErr, errPlannerSourceMapMultipleJSON) ||
+			errors.Is(previousErr, errPlannerProposalMultipleJSON),
 	}
 	if input.RegenerateFromOriginal {
 		// Multiple complete objects are not a trustworthy repair source. Feeding
@@ -7894,6 +7907,22 @@ func parsePlannerProposal(text string) (domain.AdaptationPlan, error) {
 		return firstProposal, fmt.Errorf("planner proposal has no chapters (%s)", firstShape)
 	}
 	return domain.AdaptationPlan{}, fmt.Errorf("planner proposal has no decodable JSON object")
+}
+
+func parsePlannerProposalStrict(text string) (domain.AdaptationPlan, error) {
+	segments, err := extractPlannerJSONSegmentRanges(text)
+	if err != nil {
+		return domain.AdaptationPlan{}, fmt.Errorf("extract planner proposal JSON: %w", err)
+	}
+	segments = outermostPlannerJSONSegments(segments)
+	switch len(segments) {
+	case 0:
+		return domain.AdaptationPlan{}, fmt.Errorf("extract planner proposal JSON: no complete JSON object found")
+	case 1:
+		return parsePlannerProposal(segments[0].text)
+	default:
+		return domain.AdaptationPlan{}, errPlannerProposalMultipleJSON
+	}
 }
 
 var plannerEnvelopeKeys = []string{

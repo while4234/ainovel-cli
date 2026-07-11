@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest detailed-outline repair stability change (pending commit): detailed
+  chapter batches, proposal-revision batches, and missing-chapter fills now
+  reject multiple top-level JSON objects. Ambiguous output immediately starts
+  a clean per-batch regeneration; after one unsuccessful ordinary repair,
+  later attempts also omit the failed response. Missing-chapter retries retain
+  already accepted chapters while clearing only the failed fill response.
+  Focused regressions, the full `internal/host/adapt` package, and
+  `go test ./... -count=1` passed.
 - Latest adaptation skeleton stability change: `08fdb9a` `fix: reset polluted
   skeleton repair chains`: source-map
   skeleton prompts now state that `mainline_rules` and `relationship_goals`
