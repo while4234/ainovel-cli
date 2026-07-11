@@ -36,4 +36,15 @@ describe('project creation flow', () => {
     expect(body).not.toContain('budgetAttempts');
     expect(body).not.toContain('budgetQualityMaxAttempts');
   });
+
+  it('keeps the clone dialog copy and default name readable', () => {
+    const body = extractFunctionBody(appSource, 'submitProjectClone');
+
+    expect(appSource).toContain('`${projectName} - 副本`');
+    expect(appSource).toContain('克隆项目与原项目完全独立');
+    expect(appSource).toContain('克隆完成后打开新项目');
+    expect(appSource).toContain('创建副本');
+    expect(body).toContain('await cloneProject(sourceProject.id, name)');
+    expect(body).toContain('await openProject(clonedProject)');
+  });
 });

@@ -1435,7 +1435,7 @@ export default function App() {
   const beginProjectClone = (project) => {
     const projectName = project.name || project.id;
     setProjectMenu(null);
-    setCloneDialog({ project, name: `${projectName} - ??`, openAfterClone: true });
+    setCloneDialog({ project, name: `${projectName} - 副本`, openAfterClone: true });
   };
 
   const submitProjectClone = async (event) => {
@@ -1451,7 +1451,7 @@ export default function App() {
       const response = await cloneProject(sourceProject.id, name);
       const clonedProject = response?.project || response;
       if (!clonedProject?.id) {
-        throw new Error('??????????????????');
+        throw new Error('项目克隆成功，但响应中缺少新项目信息');
       }
       await refreshProjects();
       const shouldOpen = cloneDialog.openAfterClone;
@@ -3818,11 +3818,11 @@ export default function App() {
           <form aria-labelledby="clone-dialog-title" aria-modal="true" className="compact-dialog clone-dialog" onMouseDown={(event) => event.stopPropagation()} onSubmit={submitProjectClone} role="dialog">
             <div className="dialog-title">
               <Copy size={17} />
-              <strong id="clone-dialog-title">????</strong>
+              <strong id="clone-dialog-title">克隆项目</strong>
             </div>
-            <p className="dialog-copy">?????????????????????????????????????????</p>
+            <p className="dialog-copy">将完整复制当前项目的文档和配置。克隆项目与原项目完全独立，后续修改不会影响原项目。</p>
             <label className="clone-name-field">
-              <span>????</span>
+              <span>项目名称</span>
               <input
                 autoFocus
                 disabled={busy}
@@ -3843,16 +3843,16 @@ export default function App() {
                 onChange={(event) => setCloneDialog((previous) => ({ ...previous, openAfterClone: event.target.checked }))}
                 type="checkbox"
               />
-              <span>??????????</span>
+              <span>克隆完成后打开新项目</span>
             </label>
             <div className="dialog-actions">
               <button className="tool-button" disabled={busy} onClick={() => setCloneDialog(null)} type="button">
                 <X size={16} />
-                ??
+                取消
               </button>
               <button className="tool-button accent" disabled={busy || !String(cloneDialog.name || '').trim()} type="submit">
                 <Copy size={16} />
-                ????
+                创建副本
               </button>
             </div>
           </form>
