@@ -372,6 +372,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectResource(w, r, id)
 	case "open":
 		s.handleProjectOpen(w, r, id)
+	case "clone":
+		s.handleProjectClone(w, r, id)
 	case "snapshot":
 		s.handleProjectSnapshot(w, r, id)
 	case "resume":
@@ -537,6 +539,44 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		}
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) handleProjectClone(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid project clone request: "+err.Error())
+		return
+	}
+	session, source, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	unlock, err := session.beginAction()
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	defer unlock()
+	if session.Snapshot().IsRunning {
+		writeError(w, http.StatusConflict, "current project is running; pause it before cloning")
+		return
+	}
+	manifest, err := s.store.CloneProject(source.ID, req.Name)
+	if err != nil {
+		writeProjectManifestError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"project":           manifest,
+		"source_project_id": source.ID,
+	})
 }
 
 func splitProjectRoute(path string) (string, string, bool) {

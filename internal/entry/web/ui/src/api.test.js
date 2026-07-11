@@ -8,6 +8,7 @@ import {
   approveContinuationVolumes,
   confirmAdaptationProposal,
   confirmAdaptationProposalDetails,
+  cloneProject,
   createProject,
   deleteGlobalProviderModel,
   deleteProviderModel,
@@ -94,10 +95,11 @@ describe('web API helpers', () => {
     vi.restoreAllMocks();
   });
 
-  it('sends project rename and trash requests to the project resource', async () => {
+  it('sends project rename, clone, and trash requests to the project resource', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
 
     await renameProject('project-1', 'Renamed');
+    await cloneProject('project/1', 'Renamed - ??');
     await trashProject('project-1');
     await listTrashProjects();
     await restoreTrashProject('project-1');
@@ -107,16 +109,20 @@ describe('web API helpers', () => {
       method: 'PATCH',
       body: JSON.stringify({ name: 'Renamed' })
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project%2F1/clone', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ name: 'Renamed - ??' })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/projects/project-1', expect.objectContaining({
       method: 'DELETE'
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/trash/projects', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/trash/projects', expect.objectContaining({
       headers: {}
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/trash/projects/project-1/restore', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/trash/projects/project-1/restore', expect.objectContaining({
       method: 'POST'
     }));
-    expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/trash/projects', expect.objectContaining({
+    expect(fetchMock).toHaveBeenNthCalledWith(6, '/api/trash/projects', expect.objectContaining({
       method: 'DELETE'
     }));
   });

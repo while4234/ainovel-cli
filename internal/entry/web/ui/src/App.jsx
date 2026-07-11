@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleDot,
+  Copy,
   Database,
   Download,
   FileText,
@@ -49,6 +50,7 @@ import {
   completeGrokLogin,
   completeSetup,
   continueProject,
+  cloneProject,
   createProject,
   deleteGlobalProviderModel,
   deleteProviderModel,
@@ -697,6 +699,7 @@ export default function App() {
   const [newProjectName, setNewProjectName] = useState('');
   const [projectMenu, setProjectMenu] = useState(null);
   const [renameDialog, setRenameDialog] = useState(null);
+  const [cloneDialog, setCloneDialog] = useState(null);
   const [deleteDialog, setDeleteDialog] = useState(null);
   const [rollbackDialog, setRollbackDialog] = useState(null);
   const [composerText, setComposerText] = useState('');
@@ -1382,7 +1385,7 @@ export default function App() {
     event.preventDefault();
     event.stopPropagation();
     const menuWidth = 220;
-    const menuHeight = 112;
+    const menuHeight = 152;
     setProjectMenu({
       project,
       x: Math.min(event.clientX, Math.max(8, window.innerWidth - menuWidth - 8)),
@@ -1395,10 +1398,11 @@ export default function App() {
     event.stopPropagation();
     const rect = event.currentTarget.getBoundingClientRect();
     const menuWidth = 220;
+    const menuHeight = 152;
     setProjectMenu({
       project,
       x: Math.min(rect.left, Math.max(8, window.innerWidth - menuWidth - 8)),
-      y: rect.bottom + 6
+      y: Math.min(rect.bottom + 6, Math.max(8, window.innerHeight - menuHeight - 8))
     });
   };
 
@@ -1421,6 +1425,40 @@ export default function App() {
       setProjects((previous) => previous.map((item) => (item.id === updated.id ? updated : item)));
       setActiveProject((previous) => (previous?.id === updated.id ? updated : previous));
       setRenameDialog(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const beginProjectClone = (project) => {
+    const projectName = project.name || project.id;
+    setProjectMenu(null);
+    setCloneDialog({ project, name: `${projectName} - ??`, openAfterClone: true });
+  };
+
+  const submitProjectClone = async (event) => {
+    event.preventDefault();
+    const sourceProject = cloneDialog?.project;
+    const name = String(cloneDialog?.name || '').trim();
+    if (!sourceProject || !name) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const response = await cloneProject(sourceProject.id, name);
+      const clonedProject = response?.project || response;
+      if (!clonedProject?.id) {
+        throw new Error('??????????????????');
+      }
+      await refreshProjects();
+      const shouldOpen = cloneDialog.openAfterClone;
+      setCloneDialog(null);
+      if (shouldOpen) {
+        await openProject(clonedProject);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -3730,6 +3768,10 @@ export default function App() {
               <Pencil size={16} />
               <span>重命名项目</span>
             </button>
+            <button onClick={() => beginProjectClone(projectMenu.project)} type="button">
+              <Copy size={16} />
+              <span>克隆项目</span>
+            </button>
             <button className="danger" onClick={() => beginProjectDelete(projectMenu.project)} type="button">
               <Trash2 size={16} />
               <span>移入回收站</span>
@@ -3765,6 +3807,52 @@ export default function App() {
               <button className="tool-button accent" disabled={busy || !String(renameDialog.name || '').trim()} type="submit">
                 <Check size={16} />
                 保存
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {cloneDialog ? (
+        <div className="dialog-backdrop" onMouseDown={() => setCloneDialog(null)}>
+          <form aria-labelledby="clone-dialog-title" aria-modal="true" className="compact-dialog clone-dialog" onMouseDown={(event) => event.stopPropagation()} onSubmit={submitProjectClone} role="dialog">
+            <div className="dialog-title">
+              <Copy size={17} />
+              <strong id="clone-dialog-title">????</strong>
+            </div>
+            <p className="dialog-copy">?????????????????????????????????????????</p>
+            <label className="clone-name-field">
+              <span>????</span>
+              <input
+                autoFocus
+                disabled={busy}
+                value={cloneDialog.name}
+                onChange={(event) => setCloneDialog((previous) => ({ ...previous, name: event.target.value }))}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setCloneDialog(null);
+                  }
+                }}
+              />
+            </label>
+            <label className="clone-open-option">
+              <input
+                checked={cloneDialog.openAfterClone}
+                disabled={busy}
+                onChange={(event) => setCloneDialog((previous) => ({ ...previous, openAfterClone: event.target.checked }))}
+                type="checkbox"
+              />
+              <span>??????????</span>
+            </label>
+            <div className="dialog-actions">
+              <button className="tool-button" disabled={busy} onClick={() => setCloneDialog(null)} type="button">
+                <X size={16} />
+                ??
+              </button>
+              <button className="tool-button accent" disabled={busy || !String(cloneDialog.name || '').trim()} type="submit">
+                <Copy size={16} />
+                ????
               </button>
             </div>
           </form>

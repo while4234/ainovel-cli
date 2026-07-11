@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -29,6 +30,8 @@ type ProjectManifest struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 	LastAccessedAt time.Time  `json:"last_accessed_at"`
 	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+	ClonedFromID   string     `json:"cloned_from_id,omitempty"`
+	ClonedAt       *time.Time `json:"cloned_at,omitempty"`
 }
 
 type ProjectStore struct {
@@ -97,6 +100,246 @@ func (s *ProjectStore) createProject(name string) (ProjectManifest, error) {
 		return ProjectManifest{}, err
 	}
 	return manifest, nil
+}
+
+func (s *ProjectStore) CloneProject(sourceID, name string) (ProjectManifest, error) {
+	sourceID = strings.TrimSpace(sourceID)
+	if err := validateProjectID(sourceID); err != nil {
+		return ProjectManifest{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ProjectManifest{}, fmt.Errorf("project name is required")
+	}
+	if err := EnsureRuntimeRoot(s.RuntimeRoot); err != nil {
+		return ProjectManifest{}, err
+	}
+
+	source, err := s.projectManifestWithoutTouch(sourceID)
+	if err != nil {
+		return ProjectManifest{}, err
+	}
+	now := time.Now().UTC()
+	id, err := newProjectID(name, now)
+	if err != nil {
+		return ProjectManifest{}, err
+	}
+	finalRoot := filepath.Join(s.ProjectsDir(), id)
+	stagingRoot, err := os.MkdirTemp(s.ProjectsDir(), ".clone-"+id+"-")
+	if err != nil {
+		return ProjectManifest{}, fmt.Errorf("create clone staging directory: %w", err)
+	}
+	installed := false
+	defer func() {
+		if installed {
+			return
+		}
+		_ = os.RemoveAll(stagingRoot)
+		_ = os.RemoveAll(finalRoot)
+	}()
+
+	if err := cloneProjectTree(source.RootDir, stagingRoot); err != nil {
+		return ProjectManifest{}, err
+	}
+	if err := rebaseClonedProjectJSON(stagingRoot, source.RootDir, finalRoot); err != nil {
+		return ProjectManifest{}, err
+	}
+	if err := os.Rename(stagingRoot, finalRoot); err != nil {
+		return ProjectManifest{}, fmt.Errorf("install cloned project: %w", err)
+	}
+	stagingRoot = ""
+
+	clonedAt := now
+	manifest := ProjectManifest{
+		Version:        manifestVersion,
+		ID:             id,
+		Name:           name,
+		RootDir:        finalRoot,
+		OutputDir:      filepath.Join(finalRoot, "output"),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		LastAccessedAt: now,
+		ClonedFromID:   source.ID,
+		ClonedAt:       &clonedAt,
+	}
+	if err := s.ensureProjectDirs(manifest); err != nil {
+		return ProjectManifest{}, err
+	}
+	if err := writeProjectManifest(manifest); err != nil {
+		return ProjectManifest{}, err
+	}
+	installed = true
+	return manifest, nil
+}
+
+func (s *ProjectStore) projectManifestWithoutTouch(id string) (ProjectManifest, error) {
+	root := filepath.Join(s.ProjectsDir(), id)
+	manifest, err := readProjectManifest(filepath.Join(root, "project.json"))
+	if err != nil {
+		return ProjectManifest{}, err
+	}
+	if manifest.DeletedAt != nil {
+		return ProjectManifest{}, os.ErrNotExist
+	}
+	return s.normalizeManifest(root, manifest), nil
+}
+
+func cloneProjectTree(sourceRoot, targetRoot string) error {
+	return filepath.WalkDir(sourceRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(sourceRoot, path)
+		if err != nil {
+			return err
+		}
+		if relative == "." {
+			return nil
+		}
+		if cloneExcludedPath(relative) || cloneTemporaryName(entry.Name()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("clone project: symbolic links are not supported: %s", relative)
+		}
+		target := filepath.Join(targetRoot, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if err := copyFileOverwrite(path, target); err != nil {
+			return err
+		}
+		if info, err := entry.Info(); err == nil {
+			_ = os.Chmod(target, info.Mode().Perm())
+		}
+		return nil
+	})
+}
+
+func cloneExcludedPath(relative string) bool {
+	path := strings.ToLower(filepath.ToSlash(relative))
+	return path == "project.json" ||
+		path == filepath.ToSlash(actionRegistryRelPath) ||
+		path == "output/meta/runtime" ||
+		strings.HasPrefix(path, "output/meta/runtime/")
+}
+
+func cloneTemporaryName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.HasPrefix(name, ".clone-") ||
+		strings.Contains(name, ".tmp-") ||
+		strings.HasSuffix(name, ".tmp")
+}
+
+func rebaseClonedProjectJSON(root, oldRoot, newRoot string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if !shouldRebaseClonedJSON(relative) {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read cloned JSON %s: %w", path, err)
+		}
+		var value any
+		if err := json.Unmarshal(data, &value); err != nil {
+			return fmt.Errorf("parse cloned JSON %s: %w", path, err)
+		}
+		rebased, changed := rebaseProjectValue(value, oldRoot, newRoot)
+		if !changed {
+			return nil
+		}
+		encoded, err := json.MarshalIndent(rebased, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode cloned JSON %s: %w", path, err)
+		}
+		encoded = append(encoded, '\n')
+		if err := os.WriteFile(path, encoded, 0o644); err != nil {
+			return fmt.Errorf("write cloned JSON %s: %w", path, err)
+		}
+		return nil
+	})
+}
+
+func shouldRebaseClonedJSON(relative string) bool {
+	path := strings.ToLower(filepath.ToSlash(relative))
+	if path == ".ainovel/config.json" ||
+		path == "output/meta/simulation_profile.json" ||
+		path == "output/meta/sessions/web-cocreate-checkpoint.json" {
+		return true
+	}
+	if strings.HasPrefix(path, "output/meta/adaptation_backups/") && strings.HasSuffix(path, ".json") {
+		return true
+	}
+	if !strings.HasPrefix(path, "output/meta/adaptation/") {
+		return false
+	}
+	relativeAdaptationPath := strings.TrimPrefix(path, "output/meta/adaptation/")
+	if strings.HasPrefix(relativeAdaptationPath, "source_foundation_batches/") ||
+		strings.HasPrefix(relativeAdaptationPath, "cocreate_dossier_batches/") {
+		return strings.HasSuffix(relativeAdaptationPath, ".json")
+	}
+	switch relativeAdaptationPath {
+	case "source_manifest.json",
+		"source_foundation.json",
+		"cocreate_dossier.json",
+		"cocreate_briefing.json",
+		"proposal_volume_review.json",
+		"proposal_runtime.json",
+		"audits/latest_application.json":
+		return true
+	default:
+		return false
+	}
+}
+
+func rebaseProjectValue(value any, oldRoot, newRoot string) (any, bool) {
+	switch typed := value.(type) {
+	case string:
+		rebased, ok := rebaseProjectPath(typed, oldRoot, newRoot)
+		return rebased, ok
+	case []any:
+		changed := false
+		for index, item := range typed {
+			rebased, itemChanged := rebaseProjectValue(item, oldRoot, newRoot)
+			typed[index] = rebased
+			changed = changed || itemChanged
+		}
+		return typed, changed
+	case map[string]any:
+		changed := false
+		for key, item := range typed {
+			rebased, itemChanged := rebaseProjectValue(item, oldRoot, newRoot)
+			typed[key] = rebased
+			changed = changed || itemChanged
+		}
+		return typed, changed
+	default:
+		return value, false
+	}
+}
+
+func rebaseProjectPath(value, oldRoot, newRoot string) (string, bool) {
+	if !filepath.IsAbs(value) {
+		return value, false
+	}
+	relative, err := filepath.Rel(oldRoot, value)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return value, false
+	}
+	return filepath.Join(newRoot, relative), true
 }
 
 func (s *ProjectStore) ListProjects() ([]ProjectManifest, error) {

@@ -597,6 +597,31 @@ h2 {
   line-height: 1.45;
 }
 
+.clone-dialog {
+  width: min(420px, 100%);
+}
+
+.clone-name-field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.clone-open-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.clone-open-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
 .dialog-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

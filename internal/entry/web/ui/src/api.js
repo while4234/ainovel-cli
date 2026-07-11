@@ -125,6 +125,13 @@ export function renameProject(projectId, name) {
   });
 }
 
+export function cloneProject(projectId, name) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/clone`, {
+    method: 'POST',
+    body: JSON.stringify({ name })
+  });
+}
+
 export function trashProject(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}`, {
     method: 'DELETE'
