@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -2214,6 +2215,93 @@ func TestBuildAdaptationPlannerBatchPromptScopesLargeSkeletonToCurrentParent(t *
 	}
 	if len(prompt) > 20000 {
 		t.Fatalf("detail prompt unexpectedly retained the full skeleton: %d bytes", len(prompt))
+	}
+}
+
+func TestBuildAdaptationPlannerBatchPromptOmitsFoundationArcTree(t *testing.T) {
+	foundation := testSourceFoundation()
+	foundation.Volumes = []domain.VolumeOutline{{Index: 1, Title: "Source volume"}}
+	for index := 1; index <= 500; index++ {
+		foundation.Volumes[0].Arcs = append(foundation.Volumes[0].Arcs, domain.ArcOutline{
+			Index: index,
+			Title: fmt.Sprintf("FOUNDATION-ARC-%d", index),
+			Goal:  strings.Repeat("dense source foundation arc ", 80),
+		})
+	}
+	batch := testSourceMapSkeletonBatch(1, 1, 4, 1, 4)
+	prompt, err := buildAdaptationPlannerBatchUserPrompt(ProposalOptions{}, nil, &foundation, plannerSkeleton{Batches: []plannerSkeletonBatch{batch}}, batch, nil, nil)
+	if err != nil {
+		t.Fatalf("buildAdaptationPlannerBatchUserPrompt: %v", err)
+	}
+	if strings.Contains(prompt, "FOUNDATION-ARC-500") {
+		t.Fatalf("detail prompt should not repeat the source foundation arc tree")
+	}
+	if !strings.Contains(prompt, "A compact source premise.") {
+		t.Fatalf("detail prompt should retain compact global foundation facts")
+	}
+}
+
+func TestBuildAdaptationPlannerBatchPromptRealProjectBudget(t *testing.T) {
+	outputRoot := strings.TrimSpace(os.Getenv("AINOVEL_REAL_DETAIL_OUTPUT"))
+	if outputRoot == "" {
+		t.Skip("set AINOVEL_REAL_DETAIL_OUTPUT for a local real-project prompt budget check")
+	}
+	st := store.NewStore(outputRoot)
+	manifest, err := st.Adaptation.LoadSourceManifest()
+	if err != nil || manifest == nil {
+		t.Fatalf("LoadSourceManifest: manifest=%v err=%v", manifest, err)
+	}
+	foundation, err := st.Adaptation.LoadSourceFoundation()
+	if err != nil || foundation == nil {
+		t.Fatalf("LoadSourceFoundation: foundation=%v err=%v", foundation, err)
+	}
+	reports, err := st.Adaptation.LoadSourceReports()
+	if err != nil {
+		t.Fatalf("LoadSourceReports: %v", err)
+	}
+	review, err := st.Adaptation.LoadVolumeReview()
+	if err != nil || review == nil {
+		t.Fatalf("LoadVolumeReview: review=%v err=%v", review, err)
+	}
+	skeleton := plannerSkeletonFromVolumeReview(*review)
+	detailBatches := plannerDetailBatches(skeleton.Batches, adaptationPlannerRecommendedBatchMax)
+	if len(detailBatches) == 0 {
+		t.Fatal("real project has no detail batches")
+	}
+	batch := detailBatches[0]
+	opts := proposalOptionsFromVolumeReview(*review)
+	prompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, foundation, skeleton, batch, reportsForPlannerDetailBatch(reports, batch), nil)
+	if err != nil {
+		t.Fatalf("buildAdaptationPlannerBatchUserPrompt: %v", err)
+	}
+	ctx := withAdaptationPromptContract(context.Background(), nil, opts.Granularity, opts.Brief)
+	_, _, diagnostics, err := compilePlannerCall(ctx, "planner role", prompt, nil)
+	if err != nil {
+		t.Fatalf("real detail prompt should compile before model invocation: %v", err)
+	}
+	t.Logf("real detail prompt bytes=%d estimated_tokens=%d target=%d hard=%d", len(prompt), diagnostics.TotalTokens, diagnostics.TargetTokens, diagnostics.HardTokens)
+	if diagnostics.TotalTokens > diagnostics.TargetTokens {
+		t.Fatalf("real detail prompt tokens=%d, want at or below target=%d", diagnostics.TotalTokens, diagnostics.TargetTokens)
+	}
+}
+
+func TestReportsForPlannerDetailBatchSlicesLargeParentRangeProportionally(t *testing.T) {
+	reports := make([]domain.AdaptationSourceReport, 27)
+	for index := range reports {
+		reports[index].Chapter = index + 1
+	}
+	parent := plannerSkeletonBatch{TargetFrom: 1, TargetTo: 15, SourceFrom: 1, SourceTo: 27}
+	details := plannerDetailBatches([]plannerSkeletonBatch{parent}, 4)
+	if len(details) != 4 {
+		t.Fatalf("detail batches=%d, want 4", len(details))
+	}
+	first := reportsForPlannerDetailBatch(reports, details[0])
+	last := reportsForPlannerDetailBatch(reports, details[len(details)-1])
+	if len(first) != 8 || first[0].Chapter != 1 || first[len(first)-1].Chapter != 8 {
+		t.Fatalf("first detail reports=%+v, want source chapters 1-8", first)
+	}
+	if last[0].Chapter != 22 || last[len(last)-1].Chapter != 27 {
+		t.Fatalf("last detail report range=%d-%d, want 22-27", last[0].Chapter, last[len(last)-1].Chapter)
 	}
 }
 

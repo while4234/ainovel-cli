@@ -1427,7 +1427,7 @@ func reviseAdaptationProposalVolumeContext(
 	revisedChapters := make([]domain.AdaptationChapterPlan, 0, revisedBatch.TargetTo-revisedBatch.TargetFrom+1)
 	detailOpts := proposalOptionsFromPlan(updated)
 	for idx, detailBatch := range detailBatches {
-		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(detailOpts, manifest, sourceFoundation, revisedSkeleton, detailBatch, reportsForPlannerBatch(reports, detailBatch), revisedChapters)
+		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(detailOpts, manifest, sourceFoundation, revisedSkeleton, detailBatch, reportsForPlannerDetailBatch(reports, detailBatch), revisedChapters)
 		if err != nil {
 			return nil, err
 		}
@@ -4271,7 +4271,7 @@ func buildPlanFromPlannerSkeletonDetails(
 				emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("Discarded invalid proposal detail batch %d/%d: target %d-%d", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), err)
 			}
 		}
-		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, sourceFoundation, skeleton, batch, reportsForPlannerBatch(reports, batch), chapters)
+		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, sourceFoundation, skeleton, batch, reportsForPlannerDetailBatch(reports, batch), chapters)
 		if err != nil {
 			return zero, err
 		}
@@ -6951,7 +6951,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 		ExpectedChapters:       batch.TargetTo - batch.TargetFrom + 1,
 		ChapterBudgetPolicy:    plannerChapterBudgetPolicyForGranularity(opts.Granularity),
 		SourceManifest:         plannerManifestSummary(manifest),
-		SourceFoundation:       plannerSourceFoundationDigest(sourceFoundation),
+		SourceFoundation:       plannerSourceFoundationDigestForDetail(sourceFoundation),
 		Skeleton:               plannerSkeletonForDetailPrompt(skeleton, batch),
 		Batch:                  batch,
 		PreviousDetailChapters: plannerPreviousChapterContexts(previousChapters, adaptationPlannerContinuityChapterMax),
@@ -7000,6 +7000,18 @@ func plannerSkeletonForDetailPrompt(skeleton plannerSkeleton, detailBatch planne
 	}
 	context.Batches = []plannerSkeletonBatch{detailBatch}
 	return context
+}
+
+func plannerSourceFoundationDigestForDetail(sourceFoundation *domain.AdaptationSourceFoundation) *plannerSourceFoundationSummary {
+	digest := plannerSourceFoundationDigest(sourceFoundation)
+	if digest == nil {
+		return nil
+	}
+	// The current parent skeleton batch already carries the relevant volume goal.
+	// Repeating the source foundation's full chapter/arc tree in every 3-4 chapter
+	// detail call can exceed the planner context before the model is invoked.
+	digest.Volumes = nil
+	return digest
 }
 
 func plannerBatchBudgetRequirements(granularity string) []string {
@@ -7525,6 +7537,26 @@ func reportsForPlannerBatch(reports []domain.AdaptationSourceReport, batch plann
 		}
 	}
 	return out
+}
+
+func reportsForPlannerDetailBatch(reports []domain.AdaptationSourceReport, batch plannerSkeletonBatch) []domain.AdaptationSourceReport {
+	parentReports := reportsForPlannerBatch(reports, batch)
+	parentFrom := batch.DetailParentFrom
+	parentTo := batch.DetailParentTo
+	if parentFrom <= 0 || parentTo < parentFrom || batch.TargetFrom < parentFrom || batch.TargetTo > parentTo {
+		return parentReports
+	}
+	parentTargetCount := parentTo - parentFrom + 1
+	if parentTargetCount <= 0 || len(parentReports) <= 1 {
+		return parentReports
+	}
+	startOffset := batch.TargetFrom - parentFrom
+	endOffset := batch.TargetTo - parentFrom + 1
+	start := startOffset * len(parentReports) / parentTargetCount
+	end := ceilPositiveDiv(endOffset*len(parentReports), parentTargetCount)
+	start = max(0, min(start, len(parentReports)-1))
+	end = max(start+1, min(end, len(parentReports)))
+	return append([]domain.AdaptationSourceReport(nil), parentReports[start:end]...)
 }
 
 func hasAnyRawKey(object map[string]json.RawMessage, keys ...string) bool {
