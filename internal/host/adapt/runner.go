@@ -4244,6 +4244,23 @@ func buildPlanFromPlannerSkeletonDetails(
 	skeleton plannerSkeleton,
 	runtime *domain.AdaptationProposalRuntime,
 ) (domain.AdaptationPlan, error) {
+	return buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
+		ctx, deps, opts, reports, manifest, sourceFoundation, skeleton, runtime,
+		max(1, deps.structureRepairMaxAttempts()),
+	)
+}
+
+func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
+	ctx context.Context,
+	deps Deps,
+	opts ProposalOptions,
+	reports []domain.AdaptationSourceReport,
+	manifest *domain.AdaptationSourceManifest,
+	sourceFoundation *domain.AdaptationSourceFoundation,
+	skeleton plannerSkeleton,
+	runtime *domain.AdaptationProposalRuntime,
+	remainingFinalRepairs int,
+) (domain.AdaptationPlan, error) {
 	var zero domain.AdaptationPlan
 	if runtime == nil {
 		runtime = newPlannerProposalRuntime(opts, manifest, skeleton.TargetChapterCount)
@@ -4366,8 +4383,16 @@ func buildPlanFromPlannerSkeletonDetails(
 		fmt.Sprintf("chunked planner: %d target chapters across %d model-planned batches", skeleton.TargetChapterCount, len(skeleton.Batches)),
 	)
 	if err := validatePlannerProposal(&proposal, opts, reports, manifest, deps.LLM); err != nil {
+		completedBeforeRepair := len(runtime.CompletedBatches)
 		if updateErr := preparePlannerRuntimeAfterValidationError(deps, runtime, err, opts, manifest, opts.EmitProgress); updateErr != nil {
 			return zero, fmt.Errorf("%w (also failed to update proposal runtime: %v)", err, updateErr)
+		}
+		if len(runtime.CompletedBatches) < completedBeforeRepair && remainingFinalRepairs > 0 {
+			emitAdaptProgress(opts.EmitProgress, StagePlan, 0, len(detailBatches), fmt.Sprintf("Final proposal validation discarded invalid detail batches; regenerating them automatically (%d repair attempt(s) remain)", remainingFinalRepairs), err)
+			return buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
+				ctx, deps, opts, reports, manifest, sourceFoundation, skeleton, runtime,
+				remainingFinalRepairs-1,
+			)
 		}
 		return zero, err
 	}
@@ -4664,6 +4689,14 @@ func preparePlannerRuntimeAfterValidationError(
 	if runtime == nil {
 		return nil
 	}
+	var bindingErr *arcMainlineBindingError
+	if errors.As(validationErr, &bindingErr) {
+		removed := removePlannerProposalRuntimeBatchesForMainlineBinding(runtime, bindingErr)
+		if removed > 0 {
+			emitAdaptProgress(emit, StagePlan, 0, 0, fmt.Sprintf("Discarded %d detail batch(es) that duplicated mainline event %s in target chapters %v", removed, bindingErr.EventID, bindingErr.Chapters), validationErr)
+			return savePlannerProposalRuntime(deps, runtime)
+		}
+	}
 	budgetErrs := plannerBudgetSplitErrorsFromError(validationErr)
 	if len(budgetErrs) > 0 {
 		budgetErrs = appendPlannerBudgetSplitErrorsUnique(budgetErrs, plannerRuntimeCompletedBudgetSplitErrors(runtime, opts, manifest)...)
@@ -4676,6 +4709,36 @@ func preparePlannerRuntimeAfterValidationError(
 	}
 	emitAdaptProgress(emit, StagePlan, 0, 0, "Retained proposal runtime after final validation failure for retry", validationErr)
 	return savePlannerProposalRuntime(deps, runtime)
+}
+
+func removePlannerProposalRuntimeBatchesForMainlineBinding(runtime *domain.AdaptationProposalRuntime, bindingErr *arcMainlineBindingError) int {
+	if runtime == nil || bindingErr == nil || strings.TrimSpace(bindingErr.EventID) == "" {
+		return 0
+	}
+	eventID := strings.TrimSpace(bindingErr.EventID)
+	removed := 0
+	out := runtime.CompletedBatches[:0]
+	for _, completed := range runtime.CompletedBatches {
+		containsEvent := false
+		for _, chapter := range completed.Chapters {
+			for _, candidate := range chapter.EventIDs {
+				if strings.TrimSpace(candidate) == eventID {
+					containsEvent = true
+					break
+				}
+			}
+			if containsEvent {
+				break
+			}
+		}
+		if containsEvent {
+			removed++
+			continue
+		}
+		out = append(out, completed)
+	}
+	runtime.CompletedBatches = out
+	return removed
 }
 
 func plannerBudgetSplitErrorsFromError(err error) plannerProposalBudgetSplitErrors {
@@ -6966,6 +7029,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 		requirements = append(requirements,
 			"Every chapter must include event_ids and added_event_ids arrays.",
 			"Assign every batch.mainline_event_ids value to exactly one target chapter event_ids entry; do not omit, duplicate, paraphrase, or replace these stable IDs.",
+			"Use only this detail batch's batch.mainline_event_ids for required mainline bindings. Do not copy mainline IDs from the parent skeleton or previous detail batches.",
 			"Put new plot IDs only in added_event_ids; added events may support assigned mainline events but cannot take their chapter space.",
 		)
 	case domain.AdaptationGranularityFree:
@@ -7045,6 +7109,7 @@ func plannerSkeletonForDetailPrompt(skeleton plannerSkeleton, detailBatch planne
 	context.Batches = nil
 	for _, candidate := range skeleton.Batches {
 		if candidate.TargetFrom <= detailBatch.TargetFrom && candidate.TargetTo >= detailBatch.TargetTo {
+			candidate.MainlineEventIDs = append([]string(nil), detailBatch.MainlineEventIDs...)
 			context.Batches = []plannerSkeletonBatch{candidate}
 			return context
 		}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1648,6 +1649,128 @@ func TestPreparePlannerRuntimeAfterValidationErrorScansCompletedParents(t *testi
 	}
 	if savedRuntime == nil || len(savedRuntime.CompletedBatches) != 1 || savedRuntime.CompletedBatches[0].SourceFrom != 31 {
 		t.Fatalf("saved runtime=%+v, want only unrelated completed parent", savedRuntime)
+	}
+}
+
+func TestPreparePlannerRuntimeAfterValidationErrorDropsDuplicateMainlineBatches(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	first := plannerBatchPlans(1, 2, 1, 1)
+	first[0].EventIDs = []string{"event-duplicate"}
+	second := plannerBatchPlans(3, 4, 2, 2)
+	second[1].EventIDs = []string{"event-duplicate"}
+	runtime := &domain.AdaptationProposalRuntime{
+		CompletedBatches: []domain.AdaptationProposalRuntimeBatch{
+			{Index: 1, TargetFrom: 1, TargetTo: 2, SourceFrom: 1, SourceTo: 1, Chapters: first},
+			{Index: 2, TargetFrom: 3, TargetTo: 4, SourceFrom: 2, SourceTo: 2, Chapters: second},
+			{Index: 3, TargetFrom: 5, TargetTo: 6, SourceFrom: 3, SourceTo: 3, Chapters: plannerBatchPlans(5, 6, 3, 3)},
+		},
+	}
+
+	err := preparePlannerRuntimeAfterValidationError(
+		Deps{Store: st},
+		runtime,
+		&arcMainlineBindingError{EventID: "event-duplicate", Count: 2, Chapters: []int{1, 4}},
+		ProposalOptions{},
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("preparePlannerRuntimeAfterValidationError: %v", err)
+	}
+	if len(runtime.CompletedBatches) != 1 || runtime.CompletedBatches[0].Index != 3 {
+		t.Fatalf("remaining batches=%+v, want only unrelated batch 3", runtime.CompletedBatches)
+	}
+	savedRuntime, err := st.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		t.Fatalf("LoadProposalRuntime: %v", err)
+	}
+	if savedRuntime == nil || len(savedRuntime.CompletedBatches) != 1 || savedRuntime.CompletedBatches[0].Index != 3 {
+		t.Fatalf("saved runtime=%+v, want only unrelated batch 3", savedRuntime)
+	}
+}
+
+func TestPlannerSkeletonForDetailPromptScopesMainlineEventsToDetailBatch(t *testing.T) {
+	parent := testSourceMapSkeletonBatch(1, 1, 4, 1, 8)
+	parent.MainlineEventIDs = []string{"event-1", "event-2", "event-3"}
+	detail := parent
+	detail.TargetFrom = 5
+	detail.TargetTo = 8
+	detail.MainlineEventIDs = []string{"event-3"}
+
+	context := plannerSkeletonForDetailPrompt(plannerSkeleton{Batches: []plannerSkeletonBatch{parent}}, detail)
+	if len(context.Batches) != 1 {
+		t.Fatalf("context batches=%+v, want one parent batch", context.Batches)
+	}
+	got := context.Batches[0]
+	if got.TargetFrom != parent.TargetFrom || got.TargetTo != parent.TargetTo {
+		t.Fatalf("parent target context changed to %d-%d", got.TargetFrom, got.TargetTo)
+	}
+	if !slices.Equal(got.MainlineEventIDs, []string{"event-3"}) {
+		t.Fatalf("mainline_event_ids=%v, want only current detail assignment", got.MainlineEventIDs)
+	}
+}
+
+func TestBuildPlanAutomaticallyRegeneratesDuplicateMainlineBatches(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	manifest := &domain.AdaptationSourceManifest{
+		ChapterCount: 2,
+		Chapters: []domain.AdaptationSource{
+			{Chapter: 1, Runes: 1000},
+			{Chapter: 2, Runes: 1000},
+		},
+	}
+	reports := []domain.AdaptationSourceReport{
+		{Chapter: 1, SourceEvents: []domain.AdaptationEvent{{ID: "event-1", Importance: domain.AdaptationEventMainline, SourceChapter: 1, Required: true}}},
+		{Chapter: 2, SourceEvents: []domain.AdaptationEvent{{ID: "event-2", Importance: domain.AdaptationEventMainline, SourceChapter: 2, Required: true}}},
+	}
+	opts := ProposalOptions{
+		Brief:         "repair duplicate mainline bindings",
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		WordTolerance: DefaultWordTolerance,
+	}
+	firstBatch := testSourceMapSkeletonBatch(1, 1, 1, 1, 1)
+	firstBatch.MainlineEventIDs = []string{"event-1"}
+	secondBatch := testSourceMapSkeletonBatch(2, 2, 2, 2, 2)
+	secondBatch.MainlineEventIDs = []string{"event-2"}
+	skeleton := plannerSkeleton{
+		Granularity:        opts.Granularity,
+		Status:             domain.AdaptationPlanStatusProposal,
+		RewritePolicy:      opts.RewritePolicy,
+		Brief:              opts.Brief,
+		TargetChapterCount: 2,
+		Batches:            []plannerSkeletonBatch{firstBatch, secondBatch},
+	}
+	first := plannerBatchPlans(1, 1, 1, 1)
+	first[0].EventIDs = []string{"event-1"}
+	second := plannerBatchPlans(2, 2, 2, 2)
+	second[0].EventIDs = []string{"event-2", "event-1"}
+	runtime := newPlannerProposalRuntime(opts, manifest, 2)
+	runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+	upsertPlannerProposalRuntimeBatch(runtime, firstBatch, first)
+	upsertPlannerProposalRuntimeBatch(runtime, secondBatch, second)
+	var progress []string
+	opts.EmitProgress = func(_ Stage, _ int, _ int, message string, _ error) {
+		progress = append(progress, message)
+	}
+
+	_, err := buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
+		context.Background(), Deps{Store: st}, opts, reports, manifest, &domain.AdaptationSourceFoundation{}, skeleton, runtime, 1,
+	)
+	if err == nil || !strings.Contains(err.Error(), "planner batch 1 llm generate") {
+		t.Fatalf("error=%v, want automatic regeneration to request the first discarded batch", err)
+	}
+	if !strings.Contains(strings.Join(progress, "\n"), "regenerating them automatically") {
+		t.Fatalf("progress=%v, want visible automatic final-validation repair", progress)
+	}
+	if len(runtime.CompletedBatches) != 0 {
+		t.Fatalf("completed batches=%+v, want both polluted batches discarded before regeneration", runtime.CompletedBatches)
 	}
 }
 

@@ -113,12 +113,15 @@ func finalizePlannerEventContracts(proposal *domain.AdaptationPlan, opts Proposa
 
 func validateArcProposalMainlineCoverage(proposal *domain.AdaptationPlan) error {
 	counts := make(map[string]int)
+	chaptersByEvent := make(map[string][]int)
 	addedCount := 0
 	for index := range proposal.Chapters {
 		chapter := &proposal.Chapters[index]
 		chapter.RuleIDs = domain.AdaptationRuleIDs(domain.ApplicableAdaptationRules(proposal.Rules, proposal.Granularity, chapter.Chapter))
 		for _, eventID := range chapter.EventIDs {
-			counts[strings.TrimSpace(eventID)]++
+			eventID = strings.TrimSpace(eventID)
+			counts[eventID]++
+			chaptersByEvent[eventID] = append(chaptersByEvent[eventID], chapter.Chapter)
 		}
 		addedCount += len(chapter.AddedEventIDs)
 	}
@@ -133,7 +136,11 @@ func validateArcProposalMainlineCoverage(proposal *domain.AdaptationPlan) error 
 		case 0:
 			missing = append(missing, event.ID)
 		default:
-			return fmt.Errorf("arc mainline event %s is assigned %d times; mainline events must be bound exactly once", event.ID, counts[event.ID])
+			return &arcMainlineBindingError{
+				EventID:  event.ID,
+				Count:    counts[event.ID],
+				Chapters: append([]int(nil), chaptersByEvent[event.ID]...),
+			}
 		}
 	}
 	if len(missing) > 0 {
@@ -144,6 +151,19 @@ func validateArcProposalMainlineCoverage(proposal *domain.AdaptationPlan) error 
 		return fmt.Errorf("missing_mainline_plan_binding: volume/source promises are absent from chapter event_ids: %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+type arcMainlineBindingError struct {
+	EventID  string
+	Count    int
+	Chapters []int
+}
+
+func (e *arcMainlineBindingError) Error() string {
+	if e == nil {
+		return "arc mainline event binding is invalid"
+	}
+	return fmt.Sprintf("arc mainline event %s is assigned %d times; mainline events must be bound exactly once", e.EventID, e.Count)
 }
 
 func buildFreeTargetEventLedger(proposal *domain.AdaptationPlan) {
