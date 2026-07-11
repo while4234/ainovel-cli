@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest mainline-binding recovery fix: `eee8841` `fix: repair duplicate
+  mainline bindings`: detailed Arc planning now exposes only the current small
+  batch's assigned mainline IDs, records duplicate bindings as structured
+  validation errors, discards only completed detail batches containing the
+  duplicated ID, and automatically regenerates those batches within the
+  configured structure-repair limit. The real `武林高手 - 副本` checkpoint was
+  inspected read-only: two of 121 cached batches account for all three bindings,
+  so recovery will retain the other 119 batches. Focused regressions, the full
+  `internal/host/adapt` package, `go test ./... -count=1`, `go vet ./...`, and
+  `git diff --check` passed.
 - Latest detailed-outline repair stability change: `171d387` `fix: reset
   polluted detail repair chains`: detailed
   chapter batches, proposal-revision batches, and missing-chapter fills now
