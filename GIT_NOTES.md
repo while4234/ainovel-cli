@@ -28,7 +28,8 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest adaptation skeleton stability change (pending commit): source-map
+- Latest adaptation skeleton stability change: `08fdb9a` `fix: reset polluted
+  skeleton repair chains`: source-map
   skeleton prompts now state that `mainline_rules` and `relationship_goals`
   are string arrays, and the strict decoder rejects type drift instead of
   coercing it. Ambiguous multi-JSON responses immediately regenerate from the
