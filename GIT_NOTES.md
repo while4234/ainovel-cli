@@ -28,7 +28,8 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Pending rollback-resume fix: projects with a durable adaptation plan,
+- Latest rollback-resume fix: `2f9f475` `fix: preserve adaptation review after rollback`:
+  projects with a durable adaptation plan,
   proposal, volume review, or proposal runtime no longer restart stale source
   analysis when the user clicks Resume. This preserves proposal/volume review
   gates after cloning and rollback even when a later software version marks an
@@ -36,7 +37,11 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   cloning retained all 451 source chapters and all 451 chapter reports; only
   the dossier schema/batch layout had advanced after the clone was created.
   Focused Web regressions, the full Web package, `go test ./... -count=1`,
-  `go vet ./...`, and `git diff --check` passed.
+  `go vet ./...`, and `git diff --check` passed. The parent project's 43
+  already-completed current dossier batches were copied into the existing
+  clone without changing clone-specific planning data. Web was rebuilt and
+  restarted on port 9898 as PID `87824`; the clone now reports analysis
+  `done`, 43 dossier batches, and an idle runtime.
 - Latest mainline-binding recovery fix: `eee8841` `fix: repair duplicate
   mainline bindings`: detailed Arc planning now exposes only the current small
   batch's assigned mainline IDs, records duplicate bindings as structured
