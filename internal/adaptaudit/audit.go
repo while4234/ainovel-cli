@@ -71,10 +71,14 @@ func (a *auditor) report(status string, allowConfirmation bool) Report {
 	if !allowConfirmation {
 		blocking = nil
 	}
+	action := suggestedAction(a.input.Mode, allowConfirmation && len(blocking) > 0)
+	if status == "inconclusive" && !allowConfirmation {
+		action = "read-only evidence report; canonical audit contracts are required before any repair"
+	}
 	report.Confirmation = Confirmation{
 		Required:           allowConfirmation && len(blocking) > 0,
 		BlockingFindingIDs: blocking,
-		SuggestedAction:    suggestedAction(a.input.Mode, allowConfirmation && len(blocking) > 0),
+		SuggestedAction:    action,
 	}
 	report.Digest = computeReportDigest(report)
 	report.Confirmation.ReportDigest = report.Digest
@@ -440,7 +444,7 @@ func (a *auditor) hasAnyValidEvidence(items []Evidence) bool {
 
 func (a *auditor) addFinding(code, severity string, blocking bool, message, eventID, segmentID string, chapters []int) {
 	base := code + ":" + eventID + ":" + segmentID + ":" + strings.TrimSpace(message)
-	a.findings = append(a.findings, Finding{
+	finding := Finding{
 		ID:             shortDigest(base),
 		Code:           code,
 		Severity:       severity,
@@ -449,7 +453,9 @@ func (a *auditor) addFinding(code, severity string, blocking bool, message, even
 		EventID:        eventID,
 		SegmentID:      segmentID,
 		TargetChapters: sortedPositiveInts(chapters),
-	})
+	}
+	finding.Fingerprint = ComputeFindingFingerprint(finding)
+	a.findings = append(a.findings, finding)
 }
 
 func bindingChapters(bindings []Binding) []int {

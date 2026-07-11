@@ -510,6 +510,16 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectAdaptAudit(w, r, id)
 	case "adapt/audit/apply":
 		s.handleProjectAdaptAuditApply(w, r, id)
+	case "adapt/audits/semantic/estimate":
+		s.handleProjectSemanticAuditEstimate(w, r, id)
+	case "adapt/audits/semantic":
+		s.handleProjectSemanticAuditStart(w, r, id)
+	case "completion/audit":
+		s.handleProjectCompletionAudit(w, r, id)
+	case "adapt/audits":
+		s.handleProjectAdaptAuditHistory(w, r, id, "")
+	case "adapt/audits/compare":
+		s.handleProjectAdaptAuditHistory(w, r, id, "compare")
 	case "adapt/library/save":
 		s.handleProjectNovelLibrarySave(w, r, id)
 	case "adapt/library/load":
@@ -533,6 +543,14 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 	case "cocreate/cancel":
 		s.handleProjectCoCreateCancel(w, r, id)
 	default:
+		if strings.HasPrefix(action, "adapt/audits/semantic/") {
+			s.handleProjectSemanticAuditRun(w, r, id, strings.TrimPrefix(action, "adapt/audits/semantic/"))
+			return
+		}
+		if strings.HasPrefix(action, "adapt/audits/") {
+			s.handleProjectAdaptAuditHistory(w, r, id, strings.TrimPrefix(action, "adapt/audits/"))
+			return
+		}
 		if strings.HasPrefix(action, "chapters/") {
 			s.handleProjectChapter(w, r, id, strings.TrimPrefix(action, "chapters/"))
 			return

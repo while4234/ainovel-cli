@@ -127,14 +127,17 @@ type Input struct {
 }
 
 type Finding struct {
-	ID             string `json:"id"`
-	Code           string `json:"code"`
-	Severity       string `json:"severity"`
-	Blocking       bool   `json:"blocking"`
-	Message        string `json:"message"`
-	EventID        string `json:"event_id,omitempty"`
-	SegmentID      string `json:"segment_id,omitempty"`
-	TargetChapters []int  `json:"target_chapters,omitempty"`
+	ID             string     `json:"id"`
+	Fingerprint    string     `json:"fingerprint,omitempty"`
+	Code           string     `json:"code"`
+	Severity       string     `json:"severity"`
+	Blocking       bool       `json:"blocking"`
+	Message        string     `json:"message"`
+	EventID        string     `json:"event_id,omitempty"`
+	SegmentID      string     `json:"segment_id,omitempty"`
+	TargetChapters []int      `json:"target_chapters,omitempty"`
+	Evidence       []Evidence `json:"evidence,omitempty"`
+	Source         string     `json:"source,omitempty"`
 }
 
 type Metrics struct {
@@ -167,16 +170,105 @@ type Report struct {
 }
 
 type ConfirmationRequest struct {
+	RunID                  string   `json:"run_id,omitempty"`
 	ReportDigest           string   `json:"report_digest"`
 	Decision               string   `json:"decision"`
 	AcknowledgedFindingIDs []string `json:"acknowledged_finding_ids,omitempty"`
 }
 
 type RepairApplication struct {
+	RunID            string `json:"run_id,omitempty"`
 	ReportDigest     string `json:"report_digest"`
 	BackupPath       string `json:"backup_path"`
 	AffectedChapters []int  `json:"affected_chapters,omitempty"`
 	QueuedChapters   []int  `json:"queued_chapters,omitempty"`
 	Status           string `json:"status"`
 	AppliedAt        string `json:"applied_at"`
+}
+
+type AuditKind string
+
+const (
+	AuditKindContract        AuditKind = "contract"
+	AuditKindModelSecondPass AuditKind = "model_second_pass"
+	AuditKindHybrid          AuditKind = "hybrid"
+)
+
+type AuditTrigger string
+
+const (
+	AuditTriggerManual     AuditTrigger = "manual"
+	AuditTriggerCompletion AuditTrigger = "completion"
+	AuditTriggerExport     AuditTrigger = "export"
+	AuditTriggerLegacy     AuditTrigger = "legacy"
+)
+
+type ModelSnapshot struct {
+	Provider        string `json:"provider,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
+type AuditUsage struct {
+	InputTokens  int      `json:"input_tokens,omitempty"`
+	OutputTokens int      `json:"output_tokens,omitempty"`
+	TotalTokens  int      `json:"total_tokens,omitempty"`
+	CallCount    int      `json:"call_count,omitempty"`
+	CostUSD      *float64 `json:"cost_usd,omitempty"`
+	PriceKnown   bool     `json:"price_known,omitempty"`
+}
+
+// AuditRun is an immutable snapshot. Mutable lifecycle facts such as retention
+// protection are kept in AuditRunIndexEntry rather than rewriting the run.
+type AuditRun struct {
+	RunID         string         `json:"run_id"`
+	Kind          AuditKind      `json:"kind"`
+	Trigger       AuditTrigger   `json:"trigger"`
+	StartedAt     string         `json:"started_at"`
+	CompletedAt   string         `json:"completed_at,omitempty"`
+	Status        string         `json:"status"`
+	Scope         Scope          `json:"scope,omitempty"`
+	InputDigest   string         `json:"input_digest"`
+	ReportDigest  string         `json:"report_digest"`
+	EngineVersion string         `json:"engine_version,omitempty"`
+	Model         *ModelSnapshot `json:"model,omitempty"`
+	Usage         AuditUsage     `json:"usage,omitempty"`
+	Report        Report         `json:"report"`
+}
+
+type AuditRunIndexEntry struct {
+	RunID            string         `json:"run_id"`
+	Kind             AuditKind      `json:"kind"`
+	Trigger          AuditTrigger   `json:"trigger"`
+	CompletedAt      string         `json:"completed_at,omitempty"`
+	Status           string         `json:"status"`
+	Scope            Scope          `json:"scope,omitempty"`
+	InputDigest      string         `json:"input_digest"`
+	ReportDigest     string         `json:"report_digest"`
+	Model            *ModelSnapshot `json:"model,omitempty"`
+	Usage            AuditUsage     `json:"usage,omitempty"`
+	ProtectedReasons []string       `json:"protected_reasons,omitempty"`
+	AppliedAt        string         `json:"applied_at,omitempty"`
+}
+
+type AuditRunIndex struct {
+	Version int                  `json:"version"`
+	Runs    []AuditRunIndexEntry `json:"runs"`
+}
+
+type FindingChange struct {
+	Fingerprint string   `json:"fingerprint"`
+	Change      string   `json:"change"`
+	Before      *Finding `json:"before,omitempty"`
+	After       *Finding `json:"after,omitempty"`
+}
+
+type AuditComparison struct {
+	BaseRunID           string          `json:"base_run_id"`
+	CandidateRunID      string          `json:"candidate_run_id"`
+	Confidence          string          `json:"confidence"`
+	AttributableToModel bool            `json:"attributable_to_model"`
+	ComparedScope       Scope           `json:"compared_scope"`
+	Warnings            []string        `json:"warnings,omitempty"`
+	Changes             []FindingChange `json:"changes"`
 }

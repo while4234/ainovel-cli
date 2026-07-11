@@ -36,6 +36,7 @@ import {
   analyzeAdaptationSource,
   analyzeSimulation,
   applyAdaptationAudit,
+  cancelSemanticAdaptationAudit,
   addGlobalProviderModel,
   approveContinuationOutlines,
   approveContinuationProposal,
@@ -64,6 +65,8 @@ import {
   getCodexAuthStatus,
   getContinuation,
   getAdaptationAudit,
+  getAdaptationAuditRun,
+  getSemanticAdaptationAudit,
   getGlobalModels,
   getChapter,
   getGrokLoginStatus,
@@ -77,6 +80,7 @@ import {
   inheritProjectModel,
   importSimulationProfile,
   listNovelLibrary,
+  listAdaptationAuditRuns,
   listProjects,
   listSimulationLibrary,
   listStyles,
@@ -90,6 +94,7 @@ import {
   restoreTrashProject,
   resumeCoCreate,
   retryContinuation,
+  retrySemanticAdaptationAudit,
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
   reviseChapter,
@@ -105,6 +110,8 @@ import {
   rollbackProject,
   runProjectDiagnostic,
   runAdaptationAudit,
+  compareAdaptationAuditRuns,
+  estimateSemanticAdaptationAudit,
   saveNovelToLibrary,
   saveSimulationToLibrary,
   sendCoCreate,
@@ -118,6 +125,7 @@ import {
   setProjectStyle,
   setProjectThinking,
   startContinuation,
+  startSemanticAdaptationAudit,
   startProject,
   startGrokLogin,
   steerProject,
@@ -133,6 +141,7 @@ import {
   uploadSimulationLibrary,
   uploadSimulationFiles
 } from './api.js';
+import { AuditRunWorkbench } from './AuditRunWorkbench.jsx';
 import {
   adaptationAuditApplicationText,
   adaptationAuditScopeText,
@@ -278,6 +287,21 @@ function createAdaptationAuditState() {
     sourceChapters: [],
     auditableScope: null,
     report: null,
+    runs: [],
+    selectedRunId: '',
+    comparison: null,
+    semantic: {
+      provider: '',
+      model: '',
+      reasoningEffort: '',
+      maxCostUsd: '',
+      maxCalls: '100',
+      acknowledgeUnknownPrice: false,
+      compareBaseRunId: '',
+      estimate: null,
+      run: null,
+      error: ''
+    },
     application: null,
     status: 'idle',
     message: '',
@@ -553,6 +577,8 @@ function createExportState() {
     format: 'txt',
     from: '',
     to: '',
+    purpose: 'preview',
+    audit: null,
     status: 'idle',
     result: null,
     message: '',
@@ -861,7 +887,10 @@ export default function App() {
       error: ''
     }));
     try {
+      // OpenProject refreshes the project manifest. Keep these requests
+      // sequential so Windows never races two atomic project.json renames.
       const data = await getAdaptationAudit(projectId);
+      const history = await listAdaptationAuditRuns(projectId, { limit: 50 });
       if (!isCurrentProject(projectId)) {
         return;
       }
@@ -871,6 +900,9 @@ export default function App() {
         sourceChapters: normalizedAuditSourceChapters(data?.source_chapters),
         auditableScope: data?.auditable_scope || null,
         report,
+        runs: Array.isArray(history?.runs) ? history.runs : [],
+        selectedRunId: history?.runs?.[0]?.run_id || '',
+        comparison: null,
         application: null,
         acknowledged: false,
         status: 'done',
@@ -928,10 +960,14 @@ export default function App() {
       if (!isCurrentProject(projectId)) {
         return;
       }
+      const history = await listAdaptationAuditRuns(projectId, { limit: 50 });
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setAdaptationAudit((previous) => ({
         ...previous,
         report: normalizedAdaptationAuditReport(data?.report),
+        runs: Array.isArray(history?.runs) ? history.runs : previous.runs,
+        selectedRunId: data?.run_id || data?.run?.run_id || history?.runs?.[0]?.run_id || previous.selectedRunId,
+        comparison: null,
         auditableScope: data?.auditable_scope || data?.report?.scope || previous.auditableScope,
         status: 'done',
         message: '只读审计已完成；尚未修改计划或正文。',
@@ -971,6 +1007,9 @@ export default function App() {
       setAdaptationAudit((previous) => ({ ...previous, status: 'error', error: request.error }));
       return;
     }
+    if (adaptationAudit.selectedRunId) {
+      request.confirmation.run_id = adaptationAudit.selectedRunId;
+    }
     const blockingCount = request.confirmation.acknowledged_finding_ids.length;
     if (!window.confirm(`将创建改编元数据备份、修订章节计划，并把受影响的既有章节排入返工队列。\n\n已确认 ${blockingCount} 个阻塞问题。此操作不会立即改写正文，也不会自动恢复项目。\n\n确认应用修复计划？`)) {
       return;
@@ -1004,6 +1043,30 @@ export default function App() {
     }
     loadAdaptationAuditReport(activeProject.id);
   }, [activeProject?.id, loadAdaptationAuditReport, sideView]);
+
+  useEffect(() => {
+    const projectId = activeProject?.id;
+    const run = adaptationAudit.semantic?.run;
+    if (!projectId || !run?.run_id || !['queued', 'running'].includes(String(run.status || '').toLowerCase())) return undefined;
+    let disposed = false;
+    const poll = async () => {
+      try {
+        const data = await getSemanticAdaptationAudit(projectId, run.run_id);
+        if (disposed || !isCurrentProject(projectId)) return;
+        const nextRun = data?.run || data;
+        setAdaptationAudit((previous) => ({ ...previous, semantic: { ...previous.semantic, run: nextRun, error: '' } }));
+        if (String(nextRun?.status || '').toLowerCase() === 'completed') {
+          const history = await listAdaptationAuditRuns(projectId, { limit: 50 });
+          if (!disposed) setAdaptationAudit((previous) => ({ ...previous, runs: history?.runs || previous.runs }));
+        }
+      } catch (err) {
+        if (!disposed) setAdaptationAudit((previous) => ({ ...previous, semantic: { ...previous.semantic, error: err.message } }));
+      }
+    };
+    const timer = window.setInterval(poll, 1500);
+    poll();
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [activeProject?.id, adaptationAudit.semantic?.run?.run_id, adaptationAudit.semantic?.run?.status, isCurrentProject]);
 
   useEffect(() => {
     if (sideView !== 'cache') {
@@ -1244,13 +1307,14 @@ export default function App() {
     setActiveProject(project);
     setProjectDrawerOpen(false);
     try {
-      const [snapshotData, modelData, backendData, eventsData, continuationData] = await Promise.all([
-        getSnapshot(projectId),
-        getProjectModels(projectId),
-        getBackendStatus(projectId),
-        getProjectEvents(projectId, 0),
-        getContinuation(projectId).catch(() => null)
-      ]);
+      // Each project-scoped endpoint refreshes last_accessed_at. On Windows,
+      // concurrent opens can race the atomic project.json rename, so hydrate
+      // the workspace in a deterministic sequence.
+      const snapshotData = await getSnapshot(projectId);
+      const modelData = await getProjectModels(projectId);
+      const backendData = await getBackendStatus(projectId);
+      const eventsData = await getProjectEvents(projectId, 0);
+      const continuationData = await getContinuation(projectId).catch(() => null);
       if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
         return;
       }
@@ -1404,6 +1468,90 @@ export default function App() {
       x: Math.min(rect.left, Math.max(8, window.innerWidth - menuWidth - 8)),
       y: Math.min(rect.bottom + 6, Math.max(8, window.innerHeight - menuHeight - 8))
     });
+  };
+
+  const selectAdaptationAuditRun = async (runId) => {
+    const projectId = activeProject?.id;
+    if (!projectId) return;
+    if (!runId) {
+      await loadAdaptationAuditReport(projectId);
+      return;
+    }
+    try {
+      const data = await getAdaptationAuditRun(projectId, runId);
+      if (!isCurrentProject(projectId)) return;
+      setAdaptationAudit((previous) => ({
+        ...previous,
+        selectedRunId: runId,
+        report: normalizedAdaptationAuditReport(data?.run?.report),
+        comparison: null,
+        application: null,
+        acknowledged: false,
+        error: ''
+      }));
+    } catch (err) {
+      setAdaptationAudit((previous) => ({ ...previous, error: err.message }));
+    }
+  };
+
+  const compareAdaptationAudits = async (baseRunId, candidateRunId) => {
+    const projectId = activeProject?.id;
+    if (!projectId) return;
+    try {
+      const data = await compareAdaptationAuditRuns(projectId, baseRunId, candidateRunId);
+      if (!isCurrentProject(projectId)) return;
+      setAdaptationAudit((previous) => ({ ...previous, comparison: data?.comparison || null, error: '' }));
+    } catch (err) {
+      setAdaptationAudit((previous) => ({ ...previous, error: err.message }));
+    }
+  };
+
+  const estimateSemanticAudit = async (payload) => {
+    const projectId = activeProject?.id;
+    if (!projectId) return;
+    try {
+      const data = await estimateSemanticAdaptationAudit(projectId, payload);
+      if (!isCurrentProject(projectId)) return;
+      setAdaptationAudit((previous) => ({ ...previous, semantic: { ...previous.semantic, estimate: data?.estimate || data, error: '' } }));
+    } catch (err) {
+      setAdaptationAudit((previous) => ({ ...previous, semantic: { ...previous.semantic, error: err.message } }));
+    }
+  };
+
+  const startSemanticAudit = async (payload) => {
+    const projectId = activeProject?.id;
+    if (!projectId) return;
+    try {
+      const data = await startSemanticAdaptationAudit(projectId, payload);
+      if (!isCurrentProject(projectId)) return;
+      setAdaptationAudit((previous) => ({ ...previous, semantic: { ...previous.semantic, run: data?.run || data, error: '' } }));
+    } catch (err) {
+      setAdaptationAudit((previous) => ({ ...previous, semantic: { ...previous.semantic, error: err.message } }));
+    }
+  };
+
+  const cancelSemanticAudit = async (runId) => {
+    const projectId = activeProject?.id;
+    if (!projectId || !runId) return;
+    try {
+      const data = await cancelSemanticAdaptationAudit(projectId, runId);
+      if (!isCurrentProject(projectId)) return;
+      setAdaptationAudit((previous) => ({ ...previous, semantic: { ...previous.semantic, run: data?.run || previous.semantic.run, error: '' } }));
+    } catch (err) {
+      setAdaptationAudit((previous) => ({ ...previous, semantic: { ...previous.semantic, error: err.message } }));
+    }
+  };
+
+  const retrySemanticAudit = async (runId) => {
+    const projectId = activeProject?.id;
+    if (!projectId || !runId) return;
+    try {
+      const data = await retrySemanticAdaptationAudit(projectId, runId);
+      if (!isCurrentProject(projectId)) return;
+      setAdaptationAudit((previous) => ({ ...previous, semantic: { ...previous.semantic, run: data?.run || data, error: '' } }));
+    } catch (err) {
+      setAdaptationAudit((previous) => ({ ...previous, semantic: { ...previous.semantic, error: err.message } }));
+    }
   };
 
   const beginProjectRename = (project) => {
@@ -2071,6 +2219,7 @@ export default function App() {
         format: exportJob.format,
         from,
         to,
+        purpose: exportJob.purpose || 'preview',
         overwrite: true
       });
       const savedName = await saveExportBlob(data.blob, target, data.export?.name || suggestedName);
@@ -2087,7 +2236,30 @@ export default function App() {
         error: ''
       }));
     } catch (err) {
-      setExportJob((previous) => ({ ...previous, status: 'error', error: err.message }));
+      const report = err.data?.report || err.data?.audit || null;
+      const canForce = exportJob.purpose === 'publish' && err.data?.force_allowed && report?.digest;
+      if (canForce && window.confirm(`正式导出审计状态为 ${report.status || '未通过'}。\n\n确认仍按报告 ${report.digest.slice(0, 12)} 导出，并保留未解决审计状态？`)) {
+        try {
+          const data = await exportProjectDownload(activeProject.id, {
+            path: suggestedName,
+            format: exportJob.format,
+            from,
+            to,
+            purpose: 'publish',
+            overwrite: true,
+            force_export: true,
+            acknowledged_report_digest: report.digest,
+            override_reason: 'user_confirmed_publish_with_unresolved_audit'
+          });
+          const savedName = await saveExportBlob(data.blob, target, data.export?.name || suggestedName);
+          setExportJob((previous) => ({ ...previous, status: 'done', audit: report, result: { ...(data.export || {}), path: `已导出：${savedName}` }, message: `已确认审计状态并导出 ${savedName}`, error: '' }));
+          return;
+        } catch (forceErr) {
+          setExportJob((previous) => ({ ...previous, status: 'error', audit: report, error: forceErr.message }));
+          return;
+        }
+      }
+      setExportJob((previous) => ({ ...previous, status: 'error', audit: report, error: err.message }));
     } finally {
       setBusy(false);
     }
@@ -4190,6 +4362,7 @@ export default function App() {
               activeProject={activeProject}
               busy={projectBusy}
               coCreateActive={coCreate.active === true}
+              modelConfig={modelConfig}
               currentSimulationMode={currentProjectSimulationMode}
               currentStyle={currentProjectStyle}
               globalBusy={busy}
@@ -4229,11 +4402,18 @@ export default function App() {
               audit={adaptationAudit}
               busy={projectBusy}
               coCreateActive={coCreate.active === true}
+              modelConfig={modelConfig}
               projectRunning={projectRunning}
               setAudit={setAdaptationAudit}
               onApply={applyAdaptationAuditRepair}
+              onCancelSemantic={cancelSemanticAudit}
+              onCompare={compareAdaptationAudits}
+              onEstimateSemantic={estimateSemanticAudit}
               onReload={() => loadAdaptationAuditReport(activeProject?.id)}
+              onRetrySemantic={retrySemanticAudit}
               onRun={runAdaptationAuditReport}
+              onSelectRun={selectAdaptationAuditRun}
+              onStartSemantic={startSemanticAudit}
             />
           ) : sideView === 'continuation' ? (
             <ContinuationPanel
@@ -6380,11 +6560,18 @@ function AdaptationAuditPanel({
   audit,
   busy,
   coCreateActive,
+  modelConfig,
   projectRunning,
   setAudit,
   onApply,
+  onCancelSemantic,
+  onCompare,
+  onEstimateSemantic,
   onReload,
-  onRun
+  onRetrySemantic,
+  onRun,
+  onSelectRun,
+  onStartSemantic
 }) {
   const report = normalizedAdaptationAuditReport(audit.report);
   const findings = report?.findings || [];
@@ -6395,7 +6582,9 @@ function AdaptationAuditPanel({
   const blocked = projectRunning || coCreateActive;
   const canRun = Boolean(activeProject?.id) && !actionBusy && !blocked;
   const applyRequest = buildAdaptationAuditApplyRequest(report, audit.acknowledged);
-  const canApply = !actionBusy && !blocked && applyRequest.ok;
+  const latestRunId = audit.runs?.[0]?.run_id || '';
+  const selectedRunIsCurrent = !audit.selectedRunId || !latestRunId || audit.selectedRunId === latestRunId;
+  const canApply = !actionBusy && !blocked && selectedRunIsCurrent && applyRequest.ok;
   const modeLabel = {
     chapter: 'Chapter：保留细节与分段覆盖',
     arc: 'Arc：保留主线，可合并支线',
@@ -6531,6 +6720,19 @@ function AdaptationAuditPanel({
           <div className="settings-note">{adaptationAuditApplicationText(application)}</div>
         </section>
       ) : null}
+
+      <AuditRunWorkbench
+        audit={audit}
+        disabled={actionBusy || blocked}
+        providers={modelConfig?.providers || []}
+        onCancel={onCancelSemantic}
+        onCompare={onCompare}
+        onEstimate={onEstimateSemantic}
+        onRetry={onRetrySemantic}
+        onSelect={onSelectRun}
+        onStart={onStartSemantic}
+        setAudit={setAudit}
+      />
 
       {audit.message ? <div className="success-note">{audit.message}</div> : null}
     </div>
@@ -7319,6 +7521,18 @@ function ExportPanel({ activeProject, busy, exportJob, setExportJob, onExport })
               <option value="epub">epub</option>
             </select>
           </label>
+          <label className="field-label">
+            <span>导出用途</span>
+            <select
+              disabled={busy}
+              value={exportJob.purpose || 'preview'}
+              onChange={(event) => setExportJob((previous) => ({ ...previous, purpose: event.target.value, audit: null, error: '' }))}
+            >
+              <option value="preview">阶段预览（不执行发布门禁）</option>
+              <option value="publish">正式发布（自动全书审计）</option>
+            </select>
+          </label>
+          {exportJob.purpose === 'publish' ? <div className="settings-note warning">正式发布必须覆盖全书、无待返工章节且项目已暂停。审计未通过时会展示当前报告，只有再次确认后才能导出。</div> : null}
           <div className="field-grid">
             <label className="field-label">
               <span>from</span>
@@ -7329,7 +7543,7 @@ function ExportPanel({ activeProject, busy, exportJob, setExportJob, onExport })
                 placeholder="0"
                 type="number"
                 value={exportJob.from}
-                onChange={(event) => setExportJob((previous) => ({ ...previous, from: event.target.value }))}
+                onChange={(event) => setExportJob((previous) => ({ ...previous, from: event.target.value, purpose: event.target.value ? 'preview' : previous.purpose }))}
               />
             </label>
             <label className="field-label">
@@ -7341,7 +7555,7 @@ function ExportPanel({ activeProject, busy, exportJob, setExportJob, onExport })
                 placeholder="0"
                 type="number"
                 value={exportJob.to}
-                onChange={(event) => setExportJob((previous) => ({ ...previous, to: event.target.value }))}
+                onChange={(event) => setExportJob((previous) => ({ ...previous, to: event.target.value, purpose: event.target.value ? 'preview' : previous.purpose }))}
               />
             </label>
           </div>
@@ -7351,6 +7565,7 @@ function ExportPanel({ activeProject, busy, exportJob, setExportJob, onExport })
           </button>
         </div>
         {exportJob.message ? <div className="success-note">{exportJob.message}</div> : null}
+        {exportJob.audit ? <div className="settings-note warning">导出审计：{exportJob.audit.status || 'unknown'} · {String(exportJob.audit.digest || '').slice(0, 12)}</div> : null}
         <div className={`workflow-status ${exportJob.status}`}>
           <strong>{workflowStatusText(exportJob.status)}</strong>
           <span>{result?.path || '等待导出'}</span>

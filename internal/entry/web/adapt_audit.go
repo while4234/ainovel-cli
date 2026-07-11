@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/adaptaudit"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
@@ -78,12 +79,22 @@ func (s *Server) handleProjectAdaptAudit(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		latestRun, runErr := storepkg.NewStore(manifest.OutputDir).Adaptation.LatestAuditRun()
+		if runErr != nil {
+			writeError(w, http.StatusInternalServerError, runErr.Error())
+			return
+		}
+		response := map[string]any{
 			"report":          report,
 			"snapshot":        session.Snapshot(),
 			"applied":         false,
 			"auditable_scope": report.Scope,
-		})
+			"run":             latestRun,
+		}
+		if latestRun != nil {
+			response["run_id"] = latestRun.RunID
+		}
+		writeJSON(w, http.StatusOK, response)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -120,6 +131,10 @@ func (s *Server) handleProjectAdaptAuditApply(w http.ResponseWriter, r *http.Req
 			writeError(w, http.StatusBadRequest, "invalid adaptation audit confirmation: "+err.Error())
 			return
 		}
+	}
+	if strings.TrimSpace(request.RunID) == "" {
+		writeError(w, http.StatusBadRequest, "audit run id is required")
+		return
 	}
 	session, manifest, err := s.sessions.Open(id)
 	if err != nil {

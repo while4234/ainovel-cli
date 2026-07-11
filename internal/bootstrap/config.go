@@ -338,6 +338,7 @@ var knownRoles = map[string]bool{
 	"architect":   true,
 	"writer":      true,
 	"editor":      true,
+	"auditor":     true,
 }
 
 // Config 小说应用配置。
@@ -514,7 +515,7 @@ func (c *Config) ValidateBase() error {
 			return err
 		}
 		if !knownRoles[role] {
-			return fmt.Errorf("unknown role %q in roles config (valid: coordinator/architect/writer/editor): %w", role, errs.ErrConfig)
+			return fmt.Errorf("unknown role %q in roles config (valid: coordinator/architect/writer/editor/auditor): %w", role, errs.ErrConfig)
 		}
 		if rc.Provider == "" && rc.Model == "" {
 			if len(rc.Fallbacks) > 0 {

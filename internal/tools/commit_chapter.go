@@ -18,18 +18,20 @@ import (
 
 // CommitChapterTool 提交章节：加载正文 → 保存终稿 → 生成摘要 → 更新状态 → 更新进度。
 type CommitChapterTool struct {
-	store *store.Store
+	store          *store.Store
+	completionGate CompletionGate
 }
 
-func NewCommitChapterTool(store *store.Store) *CommitChapterTool {
-	return &CommitChapterTool{store: store}
+func NewCommitChapterTool(store *store.Store, gates ...CompletionGate) *CommitChapterTool {
+	return &CommitChapterTool{store: store, completionGate: completionGateFrom(gates)}
 }
 
 // commitOutput 在 domain.CommitResult 之上嵌入扩展字段，保持 domain 包不依赖 rules。
 // 由于嵌入字段会被 JSON marshaler 提升（promoted），序列化结果等同于扁平结构。
 type commitOutput struct {
 	domain.CommitResult
-	RuleViolations []rules.Violation `json:"rule_violations,omitempty"`
+	RuleViolations  []rules.Violation      `json:"rule_violations,omitempty"`
+	CompletionAudit *CompletionAuditResult `json:"completion_audit,omitempty"`
 }
 
 func (t *CommitChapterTool) Name() string { return "commit_chapter" }
@@ -296,7 +298,8 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	}
 
 	// 8. 完成态判定：非分层写完最后一章 / 分层最终卷最后一章 → MarkComplete
-	if t.applyCompletion(&result, progress) {
+	completed, completionAudit := t.applyCompletion(&result, progress)
+	if completed {
 		result.BookComplete = true
 	}
 	if p, _ := t.store.Progress.Load(); p != nil {
@@ -328,7 +331,7 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 
 	// 11. 机械规则检查（仅返事实，不阻断）
 	violations := t.checkRules(content, wordCount)
-	return json.Marshal(commitOutput{CommitResult: result, RuleViolations: violations})
+	return json.Marshal(commitOutput{CommitResult: result, RuleViolations: violations, CompletionAudit: completionAudit})
 }
 
 func (t *CommitChapterTool) applyChapterFacts(
@@ -638,8 +641,10 @@ func (t *CommitChapterTool) executeRewriteCommit(
 	//     即重新完结——若因返工扰动了某条线索就卡在 writing，终卷末会落到越界续写死循环。
 	//   - 非分层：写满 TotalChapters 即完结（返工不增减章数，原本就满）。
 	bookComplete := false
+	var completionAudit *CompletionAuditResult
 	if drained && latest != nil {
 		reComplete := false
+		adaptationCompletion := t.store.Adaptation.Active()
 		switch {
 		case t.adaptationPlanComplete(latest):
 			reComplete = true
@@ -650,7 +655,11 @@ func (t *CommitChapterTool) executeRewriteCommit(
 		default:
 			reComplete = latest.TotalChapters > 0 && len(latest.CompletedChapters) >= latest.TotalChapters
 		}
-		if reComplete {
+		auditAllowed := true
+		if reComplete && adaptationCompletion {
+			auditAllowed, completionAudit = t.completionAuditAllows()
+		}
+		if reComplete && auditAllowed {
 			if cerr := t.store.Progress.MarkComplete(); cerr == nil {
 				bookComplete = true
 				if p, _ := t.store.Progress.Load(); p != nil {
@@ -663,16 +672,17 @@ func (t *CommitChapterTool) executeRewriteCommit(
 	// 同主路径：rewrite/polish 也做机械检查并附 rule_violations
 	violations := t.checkRules(content, wordCount)
 	return json.Marshal(map[string]any{
-		"chapter":         chapter,
-		"rewritten":       true,
-		"mode":            mode,
-		"word_count":      wordCount,
-		"remaining_queue": remaining,
-		"queue_drained":   drained,
-		"next_chapter":    nextChapter,
-		"flow":            flow,
-		"book_complete":   bookComplete,
-		"rule_violations": violations,
+		"chapter":          chapter,
+		"rewritten":        true,
+		"mode":             mode,
+		"word_count":       wordCount,
+		"remaining_queue":  remaining,
+		"queue_drained":    drained,
+		"next_chapter":     nextChapter,
+		"flow":             flow,
+		"book_complete":    bookComplete,
+		"completion_audit": completionAudit,
+		"rule_violations":  violations,
 	})
 }
 
@@ -742,29 +752,63 @@ func loadCoreCharacterNameSet(s *store.Store) map[string]bool {
 //     确定性兜底——当全书已客观满足完结条件（见 layeredBookComplete）时自动收尾。
 //     防止模型在终点既不 append_volume 也不 complete_book，导致"写手裸跑越界章节 →
 //     越界守卫拦截 → 反复重试"的 livelock（《凡骨》ch204..347 案例的根因）。
-func (t *CommitChapterTool) applyCompletion(result *domain.CommitResult, progress *domain.Progress) bool {
+func (t *CommitChapterTool) applyCompletion(result *domain.CommitResult, progress *domain.Progress) (bool, *CompletionAuditResult) {
 	if result == nil || progress == nil {
-		return false
+		return false, nil
 	}
 	if result.ReviewRequired {
-		return false
+		return false, nil
 	}
 	if t.adaptationPlanComplete(progress) {
+		allowed, audit := t.completionAuditAllows()
+		if !allowed {
+			return false, audit
+		}
 		_ = t.store.Progress.MarkComplete()
-		return true
+		return true, audit
 	}
 	if progress.Layered {
 		if t.layeredBookComplete(progress) {
+			if t.store.Adaptation.Active() {
+				allowed, audit := t.completionAuditAllows()
+				if !allowed {
+					return false, audit
+				}
+				_ = t.store.Progress.MarkComplete()
+				return true, audit
+			}
 			_ = t.store.Progress.MarkComplete()
-			return true
+			return true, nil
 		}
-		return false
+		return false, nil
 	}
 	if progress.TotalChapters > 0 && result.NextChapter > progress.TotalChapters {
+		if t.store.Adaptation.Active() {
+			allowed, audit := t.completionAuditAllows()
+			if !allowed {
+				return false, audit
+			}
+			_ = t.store.Progress.MarkComplete()
+			return true, audit
+		}
 		_ = t.store.Progress.MarkComplete()
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
+}
+
+func (t *CommitChapterTool) completionAuditAllows() (bool, *CompletionAuditResult) {
+	if t.completionGate == nil {
+		return true, nil
+	}
+	result, err := t.completionGate.EvaluateCompletion()
+	if err != nil {
+		slog.Warn("completion audit failed", "module", "tool", "err", err)
+		_ = t.store.Progress.SetCompletionAudit("error", "")
+		return false, &CompletionAuditResult{Applicable: true, Allowed: false, Status: "error", Warning: err.Error()}
+	}
+	_ = t.store.Progress.SetCompletionAudit(result.Status, result.ReportDigest)
+	return result.Allowed, &result
 }
 
 // layeredStructurallyComplete 判定分层长篇是否"结构上写完"：返工队列空 + 无骨架弧待展开

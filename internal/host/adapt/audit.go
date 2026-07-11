@@ -14,10 +14,11 @@ import (
 )
 
 type AuditOptions struct {
-	SourceFrom int `json:"source_from,omitempty"`
-	SourceTo   int `json:"source_to,omitempty"`
-	TargetFrom int `json:"target_from,omitempty"`
-	TargetTo   int `json:"target_to,omitempty"`
+	SourceFrom int                     `json:"source_from,omitempty"`
+	SourceTo   int                     `json:"source_to,omitempty"`
+	TargetFrom int                     `json:"target_from,omitempty"`
+	TargetTo   int                     `json:"target_to,omitempty"`
+	Trigger    adaptaudit.AuditTrigger `json:"-"`
 }
 
 func AuditProject(st *store.Store, options AuditOptions) (*adaptaudit.Report, error) {
@@ -47,8 +48,12 @@ func AuditProject(st *store.Store, options AuditOptions) (*adaptaudit.Report, er
 	if reason := auditContractUnavailable(*plan, input); reason != "" {
 		report = adaptaudit.AuditEvidenceOnly(input, "audit_contract_unavailable", reason)
 	}
-	if err := st.Adaptation.SaveAuditReport(report); err != nil {
-		return nil, fmt.Errorf("save adaptation audit report: %w", err)
+	run, err := adaptaudit.NewAuditRun(report, adaptaudit.AuditKindContract, options.Trigger, nil, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("create adaptation audit run: %w", err)
+	}
+	if err := st.Adaptation.SaveAuditRun(run); err != nil {
+		return nil, fmt.Errorf("save adaptation audit run: %w", err)
 	}
 	return &report, nil
 }
@@ -57,7 +62,20 @@ func ApplyProjectAuditRepair(st *store.Store, request adaptaudit.ConfirmationReq
 	if st == nil {
 		return nil, fmt.Errorf("store is required")
 	}
-	report, err := st.Adaptation.LoadAuditReport()
+	var report *adaptaudit.Report
+	var err error
+	if strings.TrimSpace(request.RunID) != "" {
+		run, loadErr := st.Adaptation.LoadAuditRun(request.RunID)
+		if loadErr != nil {
+			return nil, fmt.Errorf("load adaptation audit run: %w", loadErr)
+		}
+		if run == nil {
+			return nil, fmt.Errorf("adaptation audit run %s not found", request.RunID)
+		}
+		report = &run.Report
+	} else {
+		report, err = st.Adaptation.LoadAuditReport()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("load adaptation audit report: %w", err)
 	}
@@ -127,6 +145,7 @@ func ApplyProjectAuditRepair(st *store.Store, request adaptaudit.ConfirmationReq
 		status = "queued_for_project_repair"
 	}
 	application := adaptaudit.RepairApplication{
+		RunID:            request.RunID,
 		ReportDigest:     report.Digest,
 		BackupPath:       backupPath,
 		AffectedChapters: affected,
@@ -137,6 +156,11 @@ func ApplyProjectAuditRepair(st *store.Store, request adaptaudit.ConfirmationReq
 	if err := st.Adaptation.SaveRepairApplication(application); err != nil {
 		rollbackAuditRepair(st, originalPlan, originalProgress, originalChecks)
 		return nil, fmt.Errorf("save adaptation repair application: %w", err)
+	}
+	if request.RunID != "" {
+		if err := st.Adaptation.MarkAuditRunApplied(request.RunID, application.AppliedAt); err != nil {
+			return nil, fmt.Errorf("record applied audit run: %w", err)
+		}
 	}
 	return &application, nil
 }

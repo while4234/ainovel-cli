@@ -15,7 +15,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/host"
 )
 
-var modelConfigRoles = []string{"default", "coordinator", "architect", "writer", "editor"}
+var modelConfigRoles = []string{"default", "coordinator", "architect", "writer", "editor", "auditor"}
 
 var openAuthBrowser = openBrowser
 var startGrokAuthLogin = grokauth.StartLogin
@@ -667,7 +667,7 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 		Providers:                              outProviders,
 		Roles:                                  roles,
 		ThinkingLevels:                         []string{"", "off", "low", "medium", "high", "xhigh", "max"},
-		ThinkingRule:                           "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
+		ThinkingRule:                           "default applies to coordinator, architect, writer, editor, and auditor unless that agent has its own model or reasoning setting",
 		CoCreateTimeoutSeconds:                 cfg.EffectiveCoCreateTimeoutSeconds(),
 		CoCreateMaxTokens:                      cfg.EffectiveCoCreateMaxTokens(),
 		StructureRepairMaxAttempts:             cfg.EffectiveStructureRepairMaxAttempts(),

@@ -3,9 +3,30 @@ package flow
 import (
 	"testing"
 
+	"github.com/voocel/ainovel-cli/internal/adaptaudit"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
+
+func TestCompletionReportAllowsOnlyPassOrLegacyInconclusive(t *testing.T) {
+	cases := []struct {
+		name   string
+		report *adaptaudit.Report
+		want   bool
+	}{
+		{name: "pass", report: &adaptaudit.Report{Status: "pass"}, want: true},
+		{name: "fail", report: &adaptaudit.Report{Status: "fail"}, want: false},
+		{name: "new inconclusive", report: &adaptaudit.Report{Status: "inconclusive"}, want: false},
+		{name: "legacy inconclusive", report: &adaptaudit.Report{Status: "inconclusive", Findings: []adaptaudit.Finding{{Code: "audit_contract_unavailable"}}}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := completionReportAllows(tc.report); got != tc.want {
+				t.Fatalf("completionReportAllows=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestLoadStateUsesArcReviewCheckpointWhenReviewChapterDiffers(t *testing.T) {
 	st := storepkg.NewStore(t.TempDir())

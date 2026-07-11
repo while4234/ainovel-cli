@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +57,33 @@ func TestProjectManifestCreateListOpenTouches(t *testing.T) {
 	}
 	if !opened.LastAccessedAt.After(created.LastAccessedAt) {
 		t.Fatalf("LastAccessedAt was not updated: before=%s after=%s", created.LastAccessedAt, opened.LastAccessedAt)
+	}
+}
+
+func TestProjectOpenSerializesConcurrentManifestRefresh(t *testing.T) {
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
+	created, err := store.CreateProject("Concurrent Open")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	const workers = 12
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, openErr := store.OpenProject(created.ID)
+			errs <- openErr
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for openErr := range errs {
+		if openErr != nil {
+			t.Fatalf("concurrent OpenProject: %v", openErr)
+		}
 	}
 }
 

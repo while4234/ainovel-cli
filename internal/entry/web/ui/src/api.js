@@ -407,7 +407,9 @@ export async function exportProjectDownload(projectId, payload) {
       name: response.headers.get('x-ainovel-export-name') || '',
       chapters: Number.parseInt(response.headers.get('x-ainovel-export-chapters') || '0', 10) || 0,
       bytes: Number.parseInt(response.headers.get('x-ainovel-export-bytes') || String(blob.size), 10) || blob.size,
-      skipped
+      skipped,
+      audit_status: response.headers.get('x-ainovel-audit-status') || '',
+      audit_digest: response.headers.get('x-ainovel-audit-digest') || ''
     }
   };
 }
@@ -512,6 +514,60 @@ export function applyAdaptationAudit(projectId, confirmation) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audit/apply`, {
     method: 'POST',
     body: JSON.stringify(confirmation || {})
+  });
+}
+
+export function listAdaptationAuditRuns(projectId, options = {}) {
+  const params = new URLSearchParams();
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.cursor) params.set('cursor', String(options.cursor));
+  if (options.status) params.set('status', String(options.status));
+  if (options.kind) params.set('kind', String(options.kind));
+  const query = params.toString();
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audits${query ? `?${query}` : ''}`);
+}
+
+export function getAdaptationAuditRun(projectId, runId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audits/${encodeURIComponent(runId)}`);
+}
+
+export function compareAdaptationAuditRuns(projectId, baseRunId, candidateRunId) {
+  const params = new URLSearchParams({ base_run_id: baseRunId, candidate_run_id: candidateRunId });
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audits/compare?${params.toString()}`);
+}
+
+export function estimateSemanticAdaptationAudit(projectId, payload = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audits/semantic/estimate`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function startSemanticAdaptationAudit(projectId, payload = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audits/semantic`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function getSemanticAdaptationAudit(projectId, runId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audits/semantic/${encodeURIComponent(runId)}`);
+}
+
+export function getSemanticAdaptationAuditReport(projectId, runId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audits/semantic/${encodeURIComponent(runId)}/report`);
+}
+
+export function cancelSemanticAdaptationAudit(projectId, runId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audits/semantic/${encodeURIComponent(runId)}`, {
+    method: 'DELETE'
+  });
+}
+
+export function retrySemanticAdaptationAudit(projectId, runId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/audits/semantic/${encodeURIComponent(runId)}/retry`, {
+    method: 'POST',
+    body: JSON.stringify({})
   });
 }
 

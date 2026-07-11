@@ -15,7 +15,8 @@ import (
 
 // SaveFoundationTool 保存基础设定（premise/outline/characters），Architect 专用。
 type SaveFoundationTool struct {
-	store *store.Store
+	store          *store.Store
+	completionGate CompletionGate
 }
 
 type outlineSimilarityReviewVerdict struct {
@@ -25,8 +26,8 @@ type outlineSimilarityReviewVerdict struct {
 	Reason          string `json:"reason"`
 }
 
-func NewSaveFoundationTool(store *store.Store) *SaveFoundationTool {
-	return &SaveFoundationTool{store: store}
+func NewSaveFoundationTool(store *store.Store, gates ...CompletionGate) *SaveFoundationTool {
+	return &SaveFoundationTool{store: store, completionGate: completionGateFrom(gates)}
 }
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
@@ -279,6 +280,23 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		if len(progress.PendingRewrites) > 0 {
 			return nil, fmt.Errorf("还有 %d 章在返工队列中，处理完再调 complete_book: %w", len(progress.PendingRewrites), errs.ErrToolPrecondition)
+		}
+		if t.completionGate != nil {
+			audit, auditErr := t.completionGate.EvaluateCompletion()
+			if auditErr != nil {
+				_ = t.store.Progress.SetCompletionAudit("error", "")
+				return nil, fmt.Errorf("run completion audit: %w: %w", errs.ErrToolPrecondition, auditErr)
+			}
+			_ = t.store.Progress.SetCompletionAudit(audit.Status, audit.ReportDigest)
+			result["completion_audit"] = audit
+			if !audit.Allowed {
+				// This is a successful tool outcome rather than an error so the flow
+				// boundary is observed and Router can stop redispatching complete_book.
+				result["book_complete"] = false
+				result["phase"] = string(progress.Phase)
+				result["blocked"] = true
+				return json.Marshal(result)
+			}
 		}
 		if err := t.store.Progress.MarkComplete(); err != nil {
 			return nil, fmt.Errorf("mark complete: %w: %w", errs.ErrStoreWrite, err)

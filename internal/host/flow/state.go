@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"github.com/voocel/ainovel-cli/internal/adaptaudit"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
@@ -102,4 +103,31 @@ func loadAdaptationState(s *State, store *storepkg.Store, progress *domain.Progr
 			s.AdaptationComplete = false
 		}
 	}
+	if progress.CompletionAuditStatus != "" && progress.CompletionAuditStatus != "pass" && progress.CompletionAuditStatus != "inconclusive" {
+		s.CompletionAuditBlocked = true
+	}
+	if s.AdaptationComplete {
+		report, reportErr := store.Adaptation.LoadAuditReport()
+		if reportErr == nil && report != nil && !completionReportAllows(report) && report.Scope.TargetTo >= s.AdaptationMaxChapter {
+			s.CompletionAuditBlocked = true
+		}
+	}
+}
+
+func completionReportAllows(report *adaptaudit.Report) bool {
+	if report == nil {
+		return false
+	}
+	if report.Status == "pass" {
+		return true
+	}
+	if report.Status != "inconclusive" {
+		return false
+	}
+	for _, finding := range report.Findings {
+		if finding.Code == "audit_contract_unavailable" {
+			return true
+		}
+	}
+	return false
 }

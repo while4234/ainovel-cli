@@ -215,6 +215,21 @@ func (s *ProgressStore) MarkComplete() error {
 	})
 }
 
+func (s *ProgressStore) SetCompletionAudit(status, reportDigest string) error {
+	s.io.mu.Lock()
+	defer s.io.mu.Unlock()
+	p, err := s.loadUnlocked()
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		return fmt.Errorf("progress not initialized")
+	}
+	p.CompletionAuditStatus = status
+	p.CompletionAuditReportDigest = reportDigest
+	return s.saveUnlocked(p)
+}
+
 // Reopen 把已完结的书重新打开进入返工态：phase complete→writing + 目标章入队 + flow=rewriting，
 // 在一次写锁内原子完成。这是 phaseOrder“只前进”约束的唯一豁免出口——故意不走
 // ValidatePhaseTransition；回退的合法性收敛在本方法、且受 phase=complete 前置守卫保护，

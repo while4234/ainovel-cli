@@ -1151,7 +1151,7 @@ func deriveStatusLabel(s UISnapshot) string {
 
 // ── 模型管理 ──
 
-var projectAgentModelRoles = []string{"coordinator", "architect", "writer", "editor"}
+var projectAgentModelRoles = []string{"coordinator", "architect", "writer", "editor", "auditor"}
 
 func (h *Host) selectRuntimeFallback(ctx context.Context, current bootstrap.ModelRef, attempted map[string]bool, cause error) (bootstrap.RuntimeFallbackTarget, bool) {
 	h.mu.Lock()
@@ -3080,7 +3080,7 @@ func cloneMapAny(m map[string]any) map[string]any {
 
 func validModelRole(role string) bool {
 	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "", "default", "coordinator", "architect", "writer", "editor":
+	case "", "default", "coordinator", "architect", "writer", "editor", "auditor":
 		return true
 	default:
 		return false
@@ -3099,7 +3099,7 @@ func validateAddedProviderModel(cfg bootstrap.Config, role, provider string, pc 
 
 // concreteThinkingRoles 是可应用推理强度的具体角色（与 agents.ApplyThinking 路由一致）。
 // 调 default 时按各角色 ResolveReasoningEffort 逐个重新应用。
-var concreteThinkingRoles = []string{"coordinator", "architect", "writer", "editor"}
+var concreteThinkingRoles = []string{"coordinator", "architect", "writer", "editor", "auditor"}
 
 // CurrentThinking 返回某角色当前生效的推理强度原始串（供 /model 面板同步当前值）。
 func (h *Host) CurrentThinking(role string) string {
@@ -3547,7 +3547,7 @@ func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Eve
 
 	deps := imp.Deps{
 		Store:      h.store,
-		CommitTool: tools.NewCommitChapterTool(h.store),
+		CommitTool: tools.NewCommitChapterTool(h.store, adapt.NewCompletionGate(h.store)),
 		LLM:        h.models.ForRole("architect"),
 		Prompts: imp.Prompts{
 			Foundation: h.bundle.Prompts.ImportFoundation,

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addGlobalProviderModel,
   buildAdaptationProposal,
+  cancelSemanticAdaptationAudit,
   clearProjectTrash,
   approveContinuationOutlines,
   approveContinuationProposal,
@@ -9,6 +10,7 @@ import {
   confirmAdaptationProposal,
   confirmAdaptationProposalDetails,
   cloneProject,
+  compareAdaptationAuditRuns,
   createProject,
   deleteGlobalProviderModel,
   deleteProviderModel,
@@ -19,6 +21,9 @@ import {
   generateContinuationOutlines,
   generateContinuationProposal,
   getAdaptationAudit,
+  getAdaptationAuditRun,
+  getSemanticAdaptationAudit,
+  getSemanticAdaptationAuditReport,
   getChapter,
   getCodexAuthStatus,
   getGlobalModels,
@@ -26,6 +31,7 @@ import {
   getProjectEvents,
   inheritProjectModel,
   listNovelLibrary,
+  listAdaptationAuditRuns,
   listProjectTrash,
   listSimulationLibrary,
   listStyles,
@@ -34,7 +40,9 @@ import {
   renameProject,
   restoreTrashProject,
   retryContinuation,
+  retrySemanticAdaptationAudit,
   runAdaptationAudit,
+  estimateSemanticAdaptationAudit,
   resumeCoCreate,
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
@@ -59,6 +67,7 @@ import {
   setProjectSimulationMode,
   setProjectStyle,
   startContinuation,
+  startSemanticAdaptationAudit,
   applyAdaptationAudit,
   startGrokLogin,
   switchGlobalDefaultModel,
@@ -99,7 +108,7 @@ describe('web API helpers', () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
 
     await renameProject('project-1', 'Renamed');
-    await cloneProject('project/1', 'Renamed - ??');
+    await cloneProject('project/1', 'Renamed - 副本');
     await trashProject('project-1');
     await listTrashProjects();
     await restoreTrashProject('project-1');
@@ -111,7 +120,7 @@ describe('web API helpers', () => {
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project%2F1/clone', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ name: 'Renamed - ??' })
+      body: JSON.stringify({ name: 'Renamed - 副本' })
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/projects/project-1', expect.objectContaining({
       method: 'DELETE'
@@ -390,6 +399,35 @@ describe('web API helpers', () => {
       method: 'POST',
       body: JSON.stringify(confirmation)
     }));
+  });
+
+  it('uses immutable audit history, comparison, and resumable semantic audit routes', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ run: { run_id: 'sem_123' } }));
+    const semantic = { source_to: 12, max_calls: 20, acknowledge_unknown_price: true };
+
+    await listAdaptationAuditRuns('project-1', { limit: 50 });
+    await getAdaptationAuditRun('project-1', 'run/one');
+    await compareAdaptationAuditRuns('project-1', 'base run', 'candidate/run');
+    await estimateSemanticAdaptationAudit('project-1', semantic);
+    await startSemanticAdaptationAudit('project-1', semantic);
+    await getSemanticAdaptationAudit('project-1', 'sem/one');
+    await getSemanticAdaptationAuditReport('project-1', 'sem/one');
+    await cancelSemanticAdaptationAudit('project-1', 'sem/one');
+    await retrySemanticAdaptationAudit('project-1', 'sem/one');
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/projects/project-1/adapt/audits?limit=50',
+      '/api/projects/project-1/adapt/audits/run%2Fone',
+      '/api/projects/project-1/adapt/audits/compare?base_run_id=base+run&candidate_run_id=candidate%2Frun',
+      '/api/projects/project-1/adapt/audits/semantic/estimate',
+      '/api/projects/project-1/adapt/audits/semantic',
+      '/api/projects/project-1/adapt/audits/semantic/sem%2Fone',
+      '/api/projects/project-1/adapt/audits/semantic/sem%2Fone/report',
+      '/api/projects/project-1/adapt/audits/semantic/sem%2Fone',
+      '/api/projects/project-1/adapt/audits/semantic/sem%2Fone/retry'
+    ]);
+    expect(fetchMock.mock.calls[7][1].method).toBe('DELETE');
+    expect(JSON.parse(fetchMock.mock.calls[4][1].body)).toEqual(semantic);
   });
 
   it('uses revision-checked continuation review and start routes', async () => {

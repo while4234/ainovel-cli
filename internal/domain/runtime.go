@@ -70,6 +70,10 @@ type Progress struct {
 	// 不增减结构，故排空后应按"结构完整即重新完结"放行（避免终卷末伏笔被返工扰动后卡在
 	// writing → 越界续写死循环）；正向写作不置此标记，完结判定保持线索收束的保守语义。
 	ReopenedFromComplete bool `json:"reopened_from_complete,omitempty"`
+	// CompletionAuditStatus persists the last automatic completion-gate
+	// decision so routing can stop even when no ordinary report can be built.
+	CompletionAuditStatus       string `json:"completion_audit_status,omitempty"`
+	CompletionAuditReportDigest string `json:"completion_audit_report_digest,omitempty"`
 }
 
 type ArcPostprocessTarget struct {

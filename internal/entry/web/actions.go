@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/voocel/ainovel-cli/internal/adaptaudit"
 	"github.com/voocel/ainovel-cli/internal/diag"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
@@ -27,11 +28,15 @@ type apiExportResult struct {
 }
 
 type projectExportRequest struct {
-	Path      string `json:"path"`
-	Format    string `json:"format"`
-	From      int    `json:"from"`
-	To        int    `json:"to"`
-	Overwrite bool   `json:"overwrite"`
+	Path                     string `json:"path"`
+	Format                   string `json:"format"`
+	From                     int    `json:"from"`
+	To                       int    `json:"to"`
+	Overwrite                bool   `json:"overwrite"`
+	Purpose                  string `json:"purpose,omitempty"`
+	ForceExport              bool   `json:"force_export,omitempty"`
+	AcknowledgedReportDigest string `json:"acknowledged_report_digest,omitempty"`
+	OverrideReason           string `json:"override_reason,omitempty"`
 }
 
 func (s *Server) handleProjectStart(w http.ResponseWriter, r *http.Request, id string) {
@@ -171,6 +176,20 @@ func (s *Server) handleProjectExport(w http.ResponseWriter, r *http.Request, id 
 		writeProjectSessionError(w, err)
 		return
 	}
+	var auditReport *adaptaudit.Report
+	if req.Purpose == "publish" {
+		unlock, lockErr := session.beginAction()
+		if lockErr != nil {
+			writeProjectLifecycleError(w, lockErr)
+			return
+		}
+		defer unlock()
+		auditReport, err = validatePublishExport(session, store.NewStore(manifest.OutputDir), req)
+		if err != nil {
+			writePublishExportError(w, err, auditReport)
+			return
+		}
+	}
 	format, err := exportFormat(req.Format)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -180,6 +199,13 @@ func (s *Server) handleProjectExport(w http.ResponseWriter, r *http.Request, id 
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if req.Purpose == "publish" {
+		auditReport, err = validatePublishExport(session, store.NewStore(manifest.OutputDir), req)
+		if err != nil {
+			writePublishExportError(w, err, auditReport)
+			return
+		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -200,6 +226,7 @@ func (s *Server) handleProjectExport(w http.ResponseWriter, r *http.Request, id 
 		"snapshot": snapshot,
 		"export":   apiExportResultFromExp(result),
 		"running":  snapshot.IsRunning,
+		"audit":    auditReport,
 	})
 }
 
@@ -217,6 +244,20 @@ func (s *Server) handleProjectExportDownload(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		writeProjectSessionError(w, err)
 		return
+	}
+	var auditReport *adaptaudit.Report
+	if req.Purpose == "publish" {
+		unlock, lockErr := session.beginAction()
+		if lockErr != nil {
+			writeProjectLifecycleError(w, lockErr)
+			return
+		}
+		defer unlock()
+		auditReport, err = validatePublishExport(session, store.NewStore(manifest.OutputDir), req)
+		if err != nil {
+			writePublishExportError(w, err, auditReport)
+			return
+		}
 	}
 	format, err := exportFormat(req.Format)
 	if err != nil {
@@ -236,6 +277,13 @@ func (s *Server) handleProjectExportDownload(w http.ResponseWriter, r *http.Requ
 	defer os.RemoveAll(tmpDir)
 
 	outPath := filepath.Join(tmpDir, fileName)
+	if req.Purpose == "publish" {
+		auditReport, err = validatePublishExport(session, store.NewStore(manifest.OutputDir), req)
+		if err != nil {
+			writePublishExportError(w, err, auditReport)
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	result, err := session.Export(ctx, exp.Options{
@@ -260,8 +308,29 @@ func (s *Server) handleProjectExportDownload(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("X-AINovel-Export-Chapters", strconv.Itoa(result.Chapters))
 	w.Header().Set("X-AINovel-Export-Bytes", strconv.Itoa(len(data)))
 	w.Header().Set("X-AINovel-Export-Skipped", intsHeader(result.Skipped))
+	if auditReport != nil {
+		w.Header().Set("X-AINovel-Audit-Status", auditReport.Status)
+		w.Header().Set("X-AINovel-Audit-Digest", auditReport.Digest)
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+func writePublishExportError(w http.ResponseWriter, err error, report *adaptaudit.Report) {
+	response := map[string]any{
+		"code":          "publish_precondition_failed",
+		"error":         err.Error(),
+		"force_allowed": false,
+	}
+	if report != nil && report.Status != "pass" {
+		response["code"] = "completion_audit_blocked"
+		response["report"] = map[string]any{
+			"digest": report.Digest,
+			"status": report.Status,
+		}
+		response["force_allowed"] = true
+	}
+	writeJSON(w, http.StatusConflict, response)
 }
 
 func decodeProjectExportRequest(r *http.Request) (projectExportRequest, error) {
@@ -271,6 +340,18 @@ func decodeProjectExportRequest(r *http.Request) (projectExportRequest, error) {
 	}
 	req.Path = strings.TrimSpace(req.Path)
 	req.Format = strings.TrimSpace(req.Format)
+	if req.From < 0 || req.To < 0 {
+		return req, fmt.Errorf("from and to must be non-negative")
+	}
+	req.Purpose = strings.ToLower(strings.TrimSpace(req.Purpose))
+	if req.Purpose == "" {
+		req.Purpose = "preview"
+	}
+	if req.Purpose != "preview" && req.Purpose != "publish" {
+		return req, fmt.Errorf("purpose must be preview or publish")
+	}
+	req.AcknowledgedReportDigest = strings.TrimSpace(req.AcknowledgedReportDigest)
+	req.OverrideReason = strings.TrimSpace(req.OverrideReason)
 	return req, nil
 }
 

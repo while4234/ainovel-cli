@@ -287,6 +287,23 @@ func TestRoute_AdaptationCompleteNeedsCompleteBook(t *testing.T) {
 	}
 }
 
+func TestRoute_AdaptationCompletionAuditBlockedStopsRedispatch(t *testing.T) {
+	state := State{
+		Progress:               &domain.Progress{Phase: domain.PhaseWriting, Layered: true},
+		AdaptationActive:       true,
+		AdaptationComplete:     true,
+		CompletionAuditBlocked: true,
+		ArcBoundary: &storepkg.ArcBoundary{
+			IsArcEnd: true, IsVolumeEnd: true, NeedsNewVolume: true,
+			Volume: 1, Arc: 1,
+		},
+		HasArcReview: true, HasArcSummary: true, HasVolumeSummary: true,
+	}
+	if got := Route(state); got != nil {
+		t.Fatalf("blocked completion audit must stop redispatch, got %+v", got)
+	}
+}
+
 func TestRoute_AdaptationNeedsNewVolumeContinuesPlannedChapter(t *testing.T) {
 	p := writingProgress([]int{99}, domain.FlowWriting)
 	p.TotalChapters = 120

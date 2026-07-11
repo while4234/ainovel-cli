@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
@@ -36,6 +37,7 @@ type ProjectManifest struct {
 
 type ProjectStore struct {
 	RuntimeRoot string
+	openMu      sync.Mutex
 }
 
 func NewProjectStore(runtimeRoot string) *ProjectStore {
@@ -382,6 +384,10 @@ func (s *ProjectStore) ListProjects() ([]ProjectManifest, error) {
 }
 
 func (s *ProjectStore) OpenProject(id string) (ProjectManifest, error) {
+	// Opening refreshes project.json. Serialize the read-modify-rename cycle so
+	// concurrent project-scoped HTTP requests cannot race on Windows.
+	s.openMu.Lock()
+	defer s.openMu.Unlock()
 	if err := validateProjectID(id); err != nil {
 		return ProjectManifest{}, err
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/reminder"
 	"github.com/voocel/ainovel-cli/internal/promptcompile"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
@@ -128,10 +129,11 @@ func BuildCoordinator(
 	userRulesSvc := userrules.NewService(store, models.Default, rules.DefaultOptions())
 	readChapter := tools.NewReadChapterTool(store)
 	askUser := tools.NewAskUserTool()
+	completionGate := adapt.NewCompletionGate(store)
 
 	architectTools := []agentcore.Tool{
 		contextTool,
-		tools.NewSaveFoundationTool(store),
+		tools.NewSaveFoundationTool(store, completionGate),
 	}
 	writerTools := []agentcore.Tool{
 		contextTool,
@@ -141,7 +143,7 @@ func BuildCoordinator(
 		tools.NewEditChapterTool(store),
 		tools.NewCheckConsistencyTool(store),
 		tools.NewCheckAdaptationTool(store),
-		tools.NewCommitChapterTool(store),
+		tools.NewCommitChapterTool(store, completionGate),
 	}
 	editorTools := []agentcore.Tool{
 		contextTool,

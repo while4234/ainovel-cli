@@ -2,6 +2,7 @@ package adaptaudit
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -163,6 +164,12 @@ func TestConfirmationRequiresFreshDigestAndBlockingAcknowledgement(t *testing.T)
 
 func TestConfirmationRejectsInconclusiveEvidenceOnlyReport(t *testing.T) {
 	report := AuditEvidenceOnly(Input{Mode: ModeArc}, "audit_contract_unavailable", "legacy contract")
+	if report.Confirmation.Required {
+		t.Fatal("evidence-only report must not offer repair confirmation")
+	}
+	if !strings.Contains(report.Confirmation.SuggestedAction, "canonical audit contracts") {
+		t.Fatalf("suggested action = %q, want canonical-contract guidance", report.Confirmation.SuggestedAction)
+	}
 	request := ConfirmationRequest{ReportDigest: report.Digest, Decision: "apply"}
 	if err := ValidateConfirmationRequest(report, request); err == nil {
 		t.Fatal("inconclusive evidence-only report must never be eligible for automatic repair")
