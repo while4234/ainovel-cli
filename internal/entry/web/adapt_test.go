@@ -372,6 +372,9 @@ func TestProjectAdaptAnalyzeSkipsCompletedPreparedSource(t *testing.T) {
 	}
 	writePreparedAdaptationFixture(t, manifest, "source.txt")
 	fake := installFakeSession(t, server, manifest)
+	if _, err := server.libraries.SaveNovelFromProject(manifest, "Existing Library Name", "source.txt"); err != nil {
+		t.Fatalf("seed existing novel library entry: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/analyze", bytes.NewBufferString(`{"source_file":"source.txt"}`))
 	rec := httptest.NewRecorder()
@@ -397,11 +400,14 @@ func TestProjectAdaptAnalyzeSkipsCompletedPreparedSource(t *testing.T) {
 	if response.Adaptation.AnalysisStatus != "done" {
 		t.Fatalf("analysis status = %q, want done", response.Adaptation.AnalysisStatus)
 	}
-	if !response.LibrarySaved || response.LibraryItem.Name != "source" {
-		t.Fatalf("completed source library save = saved:%v item:%+v, want source", response.LibrarySaved, response.LibraryItem)
+	if !response.LibrarySaved || response.LibraryItem.Name != "Existing Library Name" {
+		t.Fatalf("completed source library save = saved:%v item:%+v, want existing entry", response.LibrarySaved, response.LibraryItem)
 	}
-	if _, err := os.Stat(filepath.Join(server.libraries.NovelDir(), "source", novelLibraryManifestName)); err != nil {
+	if _, err := os.Stat(filepath.Join(server.libraries.NovelDir(), "Existing Library Name", novelLibraryManifestName)); err != nil {
 		t.Fatalf("auto-saved novel library manifest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(server.libraries.NovelDir(), "source")); !os.IsNotExist(err) {
+		t.Fatalf("auto-save should update the source-file match instead of creating a duplicate, stat err=%v", err)
 	}
 	if fake.adaptAnalyzeCalls != 0 {
 		t.Fatalf("completed source should not call host analyze, calls=%d", fake.adaptAnalyzeCalls)

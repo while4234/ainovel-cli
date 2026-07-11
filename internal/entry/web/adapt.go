@@ -166,13 +166,9 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) autoSaveAnalyzedNovel(session *ProjectSession, manifest ProjectManifest, sourcePath string) (apiLibraryItem, error) {
-	name := strings.TrimSpace(strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath)))
-	if name == "" {
-		return apiLibraryItem{}, fmt.Errorf("derive novel library name from source file %q", filepath.Base(sourcePath))
-	}
-	item, err := s.libraries.UpsertNovelFromProject(manifest, name, filepath.Base(sourcePath))
+	item, err := s.libraries.UpsertAnalyzedNovelFromProject(manifest, filepath.Base(sourcePath))
 	if err != nil {
-		return apiLibraryItem{}, fmt.Errorf("auto-save analyzed novel %q: %w", name, err)
+		return apiLibraryItem{}, fmt.Errorf("auto-save analyzed novel %q: %w", filepath.Base(sourcePath), err)
 	}
 	session.appendLibraryEvent(
 		"novel_auto_save",

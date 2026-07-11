@@ -567,6 +567,25 @@ func (s *LibraryService) UpsertNovelFromProject(manifest ProjectManifest, name, 
 	}
 }
 
+func (s *LibraryService) UpsertAnalyzedNovelFromProject(manifest ProjectManifest, sourceFile string) (apiLibraryItem, error) {
+	sourceName := filepath.Base(strings.TrimSpace(sourceFile))
+	name := strings.TrimSpace(strings.TrimSuffix(sourceName, filepath.Ext(sourceName)))
+	if name == "" {
+		return apiLibraryItem{}, fmt.Errorf("derive novel library name from source file %q", sourceName)
+	}
+	items, err := s.ListNovelEntries("")
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	for _, item := range items {
+		if strings.EqualFold(filepath.Base(item.SourceFile), sourceName) {
+			name = item.Name
+			break
+		}
+	}
+	return s.UpsertNovelFromProject(manifest, name, sourceFile)
+}
+
 func (s *LibraryService) SaveNovelFromPreparedRoot(name, adaptationRoot, sourcePath string) (apiLibraryItem, error) {
 	displayName, entryName, err := libraryEntryName(name)
 	if err != nil {

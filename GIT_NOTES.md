@@ -32,6 +32,8 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   live retries`: completed or newly finishing source
   analysis now upserts the full prepared novel package into `novel_library`,
   including manual analysis resumed after loading a legacy library entry. The
+  upsert first matches the original `source_file`, so a display name such as
+  `术士手册` is preserved even when its source file is `术师手册.txt`. The
   Web library list refreshes from the resulting library event. Adaptation retry
   dependencies now read live project settings, and the outer detail-outline
   quality retry loop re-evaluates its limit between attempts. Full `go test
