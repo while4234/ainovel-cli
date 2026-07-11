@@ -28,7 +28,8 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Pending adaptation library/retry fix: completed or newly finishing source
+- Latest adaptation library/retry fix: `66ca261` `fix: sync analyzed novels and
+  live retries`: completed or newly finishing source
   analysis now upserts the full prepared novel package into `novel_library`,
   including manual analysis resumed after loading a legacy library entry. The
   Web library list refreshes from the resulting library event. Adaptation retry
