@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest adaptation-audit change: `f6e89e3` `feat: add end-to-end adaptation audit safeguards`:
+  adds completion and publish-export audit gates, immutable 50-run audit history,
+  deterministic cross-run comparison, a dedicated resumable `auditor` model role,
+  verified full-coverage semantic second review, and Web controls for history,
+  comparison, model selection, cost/call limits, cancel/retry, and publish acknowledgement.
+  Full `go test ./... -count=1`, `go vet ./...`, 191 Web tests, production build,
+  and Playwright acceptance passed. The restarted `武林高手` audit correctly resolves
+  source 1-284 / target 1-315 as legacy read-only `inconclusive`, with 13 findings,
+  zero blocking findings, no repair action, and immutable history. Port 9898 was
+  restarted successfully with the external preview runtime root.
 - Latest project-clone changes: `25ef41f9` `feat: add independent project cloning`
   and `3d459489` `fix: preserve clone dialog text encoding`:
   adds a project-menu clone dialog, atomic full-directory copies with new
