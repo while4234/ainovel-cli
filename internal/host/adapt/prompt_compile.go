@@ -43,6 +43,7 @@ func withAdaptationPromptContract(
 	ctx = withPromptTokenCounter(ctx, counter)
 	ctx = context.WithValue(ctx, promptModeContextKey{}, promptcompile.Mode(domain.NormalizeAdaptationGranularity(mode)))
 	rules := domain.CompileAdaptationRules(brief, mode)
+	rules = domain.SelectAdaptationPromptRules(rules, domain.AdaptationPromptMaxRules, domain.AdaptationPromptMaxForbiddenRules)
 	return context.WithValue(ctx, promptRulesContextKey{}, plannerPromptRules(rules))
 }
 
@@ -94,7 +95,11 @@ func compilePlannerCall(
 		return "", "", nil, err
 	}
 	rules, _ := ctx.Value(promptRulesContextKey{}).([]promptcompile.Rule)
-	result, err := promptcompile.New(counter).Compile(ctx, promptcompile.Request{
+	compiler := promptcompile.NewWithLimits(counter, promptcompile.Limits{
+		MaxRules:          domain.AdaptationPromptMaxRules,
+		MaxForbiddenRules: domain.AdaptationPromptMaxForbiddenRules,
+	})
+	result, err := compiler.Compile(ctx, promptcompile.Request{
 		Agent: promptcompile.AgentPlanner,
 		Mode:  mode,
 		RoleCore: promptcompile.Component{

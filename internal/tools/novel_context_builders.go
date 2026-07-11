@@ -283,22 +283,11 @@ func (t *ContextTool) buildAdaptationChapterContext(result map[string]any, chapt
 
 func compactActiveAdaptationRules(rules []domain.AdaptationRule) []map[string]any {
 	const (
-		maxRules         = 16
-		maxForbidden     = 8
 		maxRuleTextRunes = 300
 	)
-	out := make([]map[string]any, 0, min(len(rules), maxRules))
-	forbidden := 0
-	for _, rule := range rules {
-		if len(out) >= maxRules {
-			break
-		}
-		if rule.Kind == domain.AdaptationRuleForbidden {
-			if forbidden >= maxForbidden {
-				continue
-			}
-			forbidden++
-		}
+	selected := domain.SelectAdaptationPromptRules(rules, domain.AdaptationPromptMaxRules, domain.AdaptationPromptMaxForbiddenRules)
+	out := make([]map[string]any, 0, len(selected))
+	for _, rule := range selected {
 		text := strings.TrimSpace(rule.Text)
 		payload := map[string]any{
 			"rule_id": rule.ID,

@@ -2938,6 +2938,45 @@ func TestBuildAdaptationProposalFillsMissingPlannerConstants(t *testing.T) {
 	}
 }
 
+func TestBuildAdaptationProposalAcceptsLongBriefRuleSet(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	seedPreparedAdaptationSource(t, st, []int{10, 20})
+	parts := make([]string, 0, 96)
+	for index := 1; index <= 96; index++ {
+		parts = append(parts, fmt.Sprintf("必须落实长篇约束%d", index))
+	}
+	brief := strings.Join(parts, "。")
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{
+		"chapters": [{
+			"chapter": 1,
+			"title": "Merged opening",
+			"core_event": "The opening combines both source turns.",
+			"hook": "A shared clue reframes both turns.",
+			"scenes": ["station", "archive"],
+			"source_chapters": [1, 2],
+			"source_range": {"from": 1, "to": 2},
+			"word_budget": {"source_runes": 30, "target_runes": 35, "min_runes": 30, "max_runes": 40, "tolerance": 0.15}
+		}]
+	}`}}}
+
+	proposal, err := BuildAdaptationProposal(Deps{Store: st, LLM: llm}, ProposalOptions{
+		Brief:       brief,
+		Granularity: domain.AdaptationGranularityArc,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdaptationProposal: %v", err)
+	}
+	if proposal.Brief != brief {
+		t.Fatal("complete long brief was not preserved")
+	}
+	if len(proposal.Rules) != len(parts) {
+		t.Fatalf("durable rules=%d, want %d", len(proposal.Rules), len(parts))
+	}
+}
+
 func TestBuildAdaptationProposalRejectsPlannerWithNoChapters(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

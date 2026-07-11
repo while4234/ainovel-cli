@@ -3,9 +3,11 @@ package adapt
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/promptcompile"
 )
 
@@ -66,6 +68,26 @@ func TestCompilePlannerCallUsesExplicitModeForRepairPayloads(t *testing.T) {
 	}
 	if !strings.Contains(userPrompt, "不得让人物无前因恋爱") {
 		t.Fatalf("active structured rule was not compiled: %s", userPrompt)
+	}
+}
+
+func TestCompilePlannerCallBoundsLongBriefWithoutRejectingIt(t *testing.T) {
+	parts := make([]string, 0, 96)
+	for index := 1; index <= 96; index++ {
+		parts = append(parts, fmt.Sprintf("必须落实长篇约束%d", index))
+	}
+	brief := strings.Join(parts, "。")
+	ctx := withAdaptationPromptContract(t.Context(), fixedPromptCounter{tokens: 10}, "arc", brief)
+	payload := fmt.Sprintf(`{"granularity":"arc","brief":%q,"events":["meet"]}`, brief)
+	_, userPrompt, diagnostics, err := compilePlannerCall(ctx, "planner role", payload, promptTokenCounterFromContext(ctx))
+	if err != nil {
+		t.Fatalf("compile long brief: %v", err)
+	}
+	if diagnostics == nil || diagnostics.RuleCount != domain.AdaptationPromptMaxRules {
+		t.Fatalf("diagnostics=%+v", diagnostics)
+	}
+	if !strings.Contains(userPrompt, "必须落实长篇约束96") {
+		t.Fatalf("complete brief was not preserved in evidence payload")
 	}
 }
 

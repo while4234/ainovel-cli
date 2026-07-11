@@ -5,9 +5,15 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 	"unicode"
+)
+
+const (
+	// Adaptation prompts keep a larger structured-rule window than generic
+	// prompts. Longer briefs remain complete in evidence and durable storage.
+	AdaptationPromptMaxRules          = 64
+	AdaptationPromptMaxForbiddenRules = 32
 )
 
 type AdaptationModePolicy string
@@ -181,9 +187,11 @@ func CompileAdaptationRules(brief, granularity string) []AdaptationRule {
 			continue
 		}
 		kind := AdaptationRuleGuidance
-		if strings.Contains(text, "禁止") || strings.Contains(text, "不要") || strings.Contains(text, "不得") {
+		if strings.Contains(text, "禁止") || strings.Contains(text, "严禁") || strings.Contains(text, "不要") ||
+			strings.Contains(text, "不得") || strings.Contains(text, "不能") || strings.Contains(text, "不可") {
 			kind = AdaptationRuleForbidden
-		} else if strings.Contains(text, "必须") || strings.Contains(text, "保留") || strings.Contains(text, "需要") {
+		} else if strings.Contains(text, "必须") || strings.Contains(text, "务必") || strings.Contains(text, "只能") ||
+			strings.Contains(text, "保留") || strings.Contains(text, "需要") {
 			kind = AdaptationRuleRequired
 		}
 		dedupeKey := string(kind) + ":" + normalized
@@ -202,7 +210,6 @@ func CompileAdaptationRules(brief, granularity string) []AdaptationRule {
 			ChapterTo:   to,
 		})
 	}
-	sort.SliceStable(rules, func(i, j int) bool { return rules[i].ID < rules[j].ID })
 	return rules
 }
 
@@ -223,22 +230,6 @@ func ValidateAdaptationRules(rules []AdaptationRule) error {
 	return nil
 }
 
-func ValidateAdaptationRuleLimits(rules []AdaptationRule, maxRules, maxForbidden int) error {
-	if maxRules > 0 && len(rules) > maxRules {
-		return fmt.Errorf("adaptation brief compiles to %d active natural-language rules; limit is %d; consolidate or chapter-scope the brief", len(rules), maxRules)
-	}
-	forbidden := 0
-	for _, rule := range rules {
-		if rule.Kind == AdaptationRuleForbidden {
-			forbidden++
-		}
-	}
-	if maxForbidden > 0 && forbidden > maxForbidden {
-		return fmt.Errorf("adaptation brief compiles to %d forbidden rules; limit is %d; consolidate equivalent prohibitions", forbidden, maxForbidden)
-	}
-	return nil
-}
-
 func normalizeAdaptationRuleSubject(text string) string {
 	text = strings.TrimSpace(text)
 	for {
@@ -251,6 +242,47 @@ func normalizeAdaptationRuleSubject(text string) string {
 		}
 	}
 	return normalizeAdaptationRuleText(text)
+}
+
+// SelectAdaptationPromptRules returns a bounded view for one model call while
+// the complete brief and durable rule set remain untouched. Chapter-scoped
+// rules and explicit directives take precedence over general guidance.
+func SelectAdaptationPromptRules(rules []AdaptationRule, maxRules, maxForbidden int) []AdaptationRule {
+	if maxRules <= 0 || len(rules) == 0 {
+		return nil
+	}
+
+	scoped := make([]AdaptationRule, 0, len(rules))
+	directives := make([]AdaptationRule, 0, len(rules))
+	guidance := make([]AdaptationRule, 0, len(rules))
+	for _, rule := range rules {
+		switch {
+		case rule.ChapterFrom > 0 || rule.ChapterTo > 0:
+			scoped = append(scoped, rule)
+		case rule.Kind == AdaptationRuleRequired || rule.Kind == AdaptationRuleForbidden:
+			directives = append(directives, rule)
+		default:
+			guidance = append(guidance, rule)
+		}
+	}
+
+	selected := make([]AdaptationRule, 0, min(len(rules), maxRules))
+	forbidden := 0
+	for _, bucket := range [][]AdaptationRule{scoped, directives, guidance} {
+		for _, rule := range bucket {
+			if len(selected) >= maxRules {
+				return selected
+			}
+			if rule.Kind == AdaptationRuleForbidden {
+				if maxForbidden > 0 && forbidden >= maxForbidden {
+					continue
+				}
+				forbidden++
+			}
+			selected = append(selected, rule)
+		}
+	}
+	return selected
 }
 
 func ApplicableAdaptationRules(rules []AdaptationRule, mode string, chapter int) []AdaptationRule {

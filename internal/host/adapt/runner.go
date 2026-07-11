@@ -942,9 +942,6 @@ func prepareProposalPlannerInputs(ctx context.Context, deps Deps, opts ProposalO
 	if err := domain.ValidateAdaptationRules(compiledRules); err != nil {
 		return opts, nil, nil, nil, err
 	}
-	if err := domain.ValidateAdaptationRuleLimits(compiledRules, 16, 8); err != nil {
-		return opts, nil, nil, nil, err
-	}
 	manifest, reports, err := ValidatePreparedSource(deps.Store, opts.SourcePath)
 	if err != nil {
 		return opts, nil, nil, nil, err

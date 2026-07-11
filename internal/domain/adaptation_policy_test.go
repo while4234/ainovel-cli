@@ -46,6 +46,27 @@ func TestCompileAdaptationRulesDeduplicatesAndScopes(t *testing.T) {
 	}
 }
 
+func TestCompileAdaptationRulesPreservesBriefOrder(t *testing.T) {
+	rules := CompileAdaptationRules("总则说明。必须保留初遇。第10章不得提前恋爱", AdaptationGranularityArc)
+	if len(rules) != 3 {
+		t.Fatalf("rules=%+v", rules)
+	}
+	if rules[0].Text != "总则说明" || rules[1].Text != "必须保留初遇" || rules[2].Text != "第10章不得提前恋爱" {
+		t.Fatalf("rule order=%+v", rules)
+	}
+}
+
+func TestSelectAdaptationPromptRulesPrioritizesScopedAndDirectiveRules(t *testing.T) {
+	rules := CompileAdaptationRules("普通说明一。普通说明二。必须保留初遇。第10章不得提前恋爱", AdaptationGranularityArc)
+	selected := SelectAdaptationPromptRules(rules, 2, 1)
+	if len(selected) != 2 {
+		t.Fatalf("selected=%+v", selected)
+	}
+	if selected[0].Text != "第10章不得提前恋爱" || selected[1].Text != "必须保留初遇" {
+		t.Fatalf("selection priority=%+v", selected)
+	}
+}
+
 func TestValidateAdaptationRulesRejectsRequiredForbiddenConflict(t *testing.T) {
 	rules := CompileAdaptationRules("必须保留初遇。不得保留初遇", AdaptationGranularityArc)
 	if err := ValidateAdaptationRules(rules); err == nil {
