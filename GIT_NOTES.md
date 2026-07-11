@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest upstream sync: `c4592c6a` `fix: bound adaptation detail prompt evidence`:
+  fast-forwarded `main` by four commits from `f7da4ea9`, including project
+  switching stability, adaptation planning convergence, first-click project
+  opening, and bounded detail-prompt evidence. Rebuilt the Web UI and Go
+  executable, restarted port 9898 as PID `52192`, and verified the homepage,
+  runtime API, and 20-project listing.
 - Latest long-brief fix: `47716556` `fix: support long adaptation briefs`:
   removes the proposal-entry 16/8 rule-count rejection, preserves the complete
   brief and durable rule set, and gives adaptation-only planner/writer prompts
