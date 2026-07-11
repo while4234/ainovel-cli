@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- Latest scheduled-resume change: `9d77dd6` `feat: add safe scheduled project resume`:
+- Latest scheduled-resume change: `b4f898d` `feat: add safe scheduled project resume`:
   adds global multiple daily resume times, same-day catch-up, durable scheduler
   state, project default-on switches, explicit adaptation planning gates, and a
   dedicated Web schedule tab. Full Go tests, Go vet, 198 Web tests, production
