@@ -155,6 +155,7 @@ func (s *Server) handleProjectRollback(w http.ResponseWriter, r *http.Request, i
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":       manifest,
 		"snapshot":      snapshot,
+		"cocreate":      session.CoCreateState(),
 		"running":       snapshot.IsRunning,
 		"rollback":      result.Preview,
 		"deleted_paths": result.DeletedPaths,

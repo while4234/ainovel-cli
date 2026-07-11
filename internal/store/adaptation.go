@@ -801,6 +801,25 @@ func (s *AdaptationStore) SaveVolumeReview(review domain.AdaptationVolumeReview)
 	})
 }
 
+// RestoreVolumeReviewForRollback writes the earlier checkpoint before removing
+// later proposal artifacts. If cleanup fails, the durable review remains
+// available and a retry can safely finish the rollback.
+func (s *AdaptationStore) RestoreVolumeReviewForRollback(review domain.AdaptationVolumeReview) error {
+	review.Status = domain.AdaptationPlanStatusVolumeReview
+	return s.io.WithWriteLock(func() error {
+		if err := s.io.WriteJSONUnlocked(adaptationVolumeReviewFile, review); err != nil {
+			return err
+		}
+		if err := s.writePlanningWorkflowStageUnlocked(domain.AdaptationPlanningStageVolumeReviewPending); err != nil {
+			return err
+		}
+		if err := s.io.RemoveFileUnlocked(adaptationProposalFile); err != nil {
+			return err
+		}
+		return s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile)
+	})
+}
+
 func (s *AdaptationStore) LoadVolumeReview() (*domain.AdaptationVolumeReview, error) {
 	var review domain.AdaptationVolumeReview
 	if err := s.io.ReadJSON(adaptationVolumeReviewFile, &review); err != nil {

@@ -90,6 +90,85 @@ func TestRollbackConfirmedAdaptationRestoresProposalAndDeletesWritingArtifacts(t
 	if progress == nil || progress.Phase != domain.PhaseOutline || progress.CompletedChapters != nil {
 		t.Fatalf("progress after rollback = %+v", progress)
 	}
+	next, err := st.RollbackPreview()
+	if err != nil {
+		t.Fatalf("second RollbackPreview: %v", err)
+	}
+	if next.TargetStage != domain.RollbackStageDraft {
+		t.Fatalf("unvolumed proposal target = %q, want draft", next.TargetStage)
+	}
+}
+
+func TestRollbackAdaptationWithVolumesStopsAtVolumeReviewBeforeDraft(t *testing.T) {
+	st := NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	source, err := st.Adaptation.SaveSourceChapter(1, "source", "source text")
+	if err != nil {
+		t.Fatalf("SaveSourceChapter: %v", err)
+	}
+	if err := st.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{
+		SourcePath: "source.txt", ChapterCount: 1, Chapters: []domain.AdaptationSource{source},
+	}); err != nil {
+		t.Fatalf("SaveSourceManifest: %v", err)
+	}
+	plan := rollbackTestAdaptationPlan()
+	plan.Volumes = []domain.AdaptationVolumePlan{{
+		Index: 1, Title: "Volume 1", TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1,
+	}}
+	if err := st.Adaptation.SavePlan(plan); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+
+	first := mustRollbackPreview(t, st, domain.RollbackStageProposal)
+	if _, err := st.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: first.PreviewHash}); err != nil {
+		t.Fatalf("rollback to proposal: %v", err)
+	}
+	second := mustRollbackPreview(t, st, domain.RollbackStageVolumeOutline)
+	if _, err := st.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: second.PreviewHash}); err != nil {
+		t.Fatalf("rollback to volume outline: %v", err)
+	}
+	review, err := st.Adaptation.LoadVolumeReview()
+	if err != nil || review == nil {
+		t.Fatalf("LoadVolumeReview: review=%+v err=%v", review, err)
+	}
+	if len(review.Volumes) != 1 || review.TargetChapterCount != 1 || review.SourcePath != "source.txt" {
+		t.Fatalf("restored volume review = %+v", review)
+	}
+	third := mustRollbackPreview(t, st, domain.RollbackStageDraft)
+	if _, err := st.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: third.PreviewHash}); err != nil {
+		t.Fatalf("rollback to co-create draft: %v", err)
+	}
+	if review, err := st.Adaptation.LoadVolumeReview(); err != nil || review != nil {
+		t.Fatalf("volume review after draft rollback = %+v err=%v", review, err)
+	}
+	if manifest, err := st.Adaptation.LoadSourceManifest(); err != nil || manifest == nil {
+		t.Fatalf("source manifest must survive draft rollback: manifest=%+v err=%v", manifest, err)
+	}
+	fourth := mustRollbackPreview(t, st, domain.RollbackStageBlank)
+	if _, err := st.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: fourth.PreviewHash}); err != nil {
+		t.Fatalf("rollback to blank: %v", err)
+	}
+	final, err := st.RollbackPreview()
+	if err != nil {
+		t.Fatalf("final RollbackPreview: %v", err)
+	}
+	if final.CanRollback {
+		t.Fatalf("blank project should not roll back: %+v", final)
+	}
+}
+
+func mustRollbackPreview(t *testing.T, st *Store, target domain.RollbackStage) domain.RollbackPreview {
+	t.Helper()
+	preview, err := st.RollbackPreview()
+	if err != nil {
+		t.Fatalf("RollbackPreview: %v", err)
+	}
+	if !preview.CanRollback || preview.TargetStage != target {
+		t.Fatalf("preview = %+v, want target %q", preview, target)
+	}
+	return preview
 }
 
 func TestRollbackNormalChapterOutlineCollapsesLayeredOutlineToVolumeSkeleton(t *testing.T) {

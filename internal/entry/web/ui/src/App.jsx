@@ -2000,9 +2000,11 @@ export default function App() {
       const nextSnapshot = data.snapshot || snapshot;
       setActiveProject(data.project || activeProject);
       setWorkbench((previous) => ({ ...previous, snapshot: nextSnapshot || previous.snapshot }));
-      setCoCreate(createCoCreateState());
+      setCoCreate((previous) => data.cocreate
+        ? coCreateStateFromResponse(data, previous)
+        : createCoCreateState());
       setPlanningRevision(createCoCreatePlanningRevisionState());
-      if (getCoCreatePlanningReview(nextSnapshot).active) {
+      if (data.cocreate || getCoCreatePlanningReview(nextSnapshot).active) {
         setSideView('cocreate');
       }
       setRollbackDialog(null);

@@ -864,6 +864,112 @@ func TestProjectCoCreateRestoresFromLegacyLog(t *testing.T) {
 	}
 }
 
+func TestProjectRollbackToDraftRestoresCompletedAdaptationCoCreate(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Rollback Restore CoCreate")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	writeAdaptationUpload(t, manifest, "source.txt", "Chapter 1\nsource body")
+	seedAnalyzedAdaptationForCoCreateTest(t, manifest, "source.txt")
+	assistantRaw := "<reply>ready to start</reply><draft>## restored draft\n- keep current direction</draft><ready>true</ready>"
+	entry := webCoCreateLogEntry{
+		InputHistory: []host.CoCreateMessage{
+			{Role: "user", Content: "granularity=chapter\nrewrite_policy=preserve_details\nword_tolerance=0.15"},
+			{Role: "user", Content: "adapt the whole source"},
+		},
+		RawResponse: assistantRaw,
+		ParsedReply: "ready to start",
+		ParsedDraft: "## restored draft\n- keep current direction",
+		ParsedReady: true,
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal co-create log: %v", err)
+	}
+	logPath := filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateLogRelPath))
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir co-create log dir: %v", err)
+	}
+	normalEntry, err := json.Marshal(webCoCreateLogEntry{
+		InputHistory: []host.CoCreateMessage{{Role: "user", Content: "write a separate normal novel"}},
+		ParsedDraft:  "wrong normal draft",
+		ParsedReady:  true,
+	})
+	if err != nil {
+		t.Fatalf("marshal normal co-create log: %v", err)
+	}
+	logData := append(append(append([]byte(nil), data...), '\n'), normalEntry...)
+	logData = append(logData, '\n')
+	if err := os.WriteFile(logPath, logData, 0o644); err != nil {
+		t.Fatalf("write co-create log: %v", err)
+	}
+
+	st := storepkg.NewStore(manifest.OutputDir)
+	if err := st.Adaptation.SavePlan(domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityChapter,
+		Brief:       "adapt the whole source",
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:      1,
+			Title:        "Target",
+			OutlineEntry: domain.OutlineEntry{Chapter: 1, Title: "Target", CoreEvent: "event"},
+		}},
+	}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	if err := os.Remove(filepath.Join(manifest.OutputDir, "meta", "adaptation", "plan.json")); err != nil {
+		t.Fatalf("remove confirmed plan: %v", err)
+	}
+	fake.rollbackPreview = domain.RollbackPreviewWithHash(domain.RollbackPreview{
+		CanRollback: true,
+		Mode:        "adaptation",
+		TargetStage: domain.RollbackStageDraft,
+		TargetLabel: "共创草稿完成",
+	})
+	fake.rollbackResult = domain.RollbackResult{Preview: fake.rollbackPreview}
+
+	previewReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/rollback/preview", nil)
+	previewRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(previewRec, previewReq)
+	if previewRec.Code != http.StatusOK {
+		t.Fatalf("rollback preview status = %d body=%s", previewRec.Code, previewRec.Body.String())
+	}
+	rollbackBody := `{"confirm":true,"preview_hash":"` + fake.rollbackPreview.PreviewHash + `"}`
+	rollbackReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/rollback", strings.NewReader(rollbackBody))
+	rollbackRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rollbackRec, rollbackReq)
+	if rollbackRec.Code != http.StatusOK {
+		t.Fatalf("rollback status = %d body=%s", rollbackRec.Code, rollbackRec.Body.String())
+	}
+	var rollbackResponse struct {
+		CoCreate *webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(rollbackRec.Body).Decode(&rollbackResponse); err != nil {
+		t.Fatalf("decode rollback response: %v", err)
+	}
+	if rollbackResponse.CoCreate == nil || rollbackResponse.CoCreate.DraftPrompt != "## restored draft\n- keep current direction" {
+		t.Fatalf("rollback response co-create = %+v", rollbackResponse.CoCreate)
+	}
+
+	snapshotReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	snapshotRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(snapshotRec, snapshotReq)
+	var snapshot struct {
+		CoCreate *webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(snapshotRec.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snapshot.CoCreate == nil || snapshot.CoCreate.Kind != webCoCreateKindAdapt || !snapshot.CoCreate.Ready {
+		t.Fatalf("restored co-create = %+v", snapshot.CoCreate)
+	}
+	if snapshot.CoCreate.DraftPrompt != "## restored draft\n- keep current direction" || !snapshot.CoCreate.CanStart {
+		t.Fatalf("restored draft/can_start = %q/%v", snapshot.CoCreate.DraftPrompt, snapshot.CoCreate.CanStart)
+	}
+}
+
 func TestProjectCoCreatePersistsTargetTotalWords(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

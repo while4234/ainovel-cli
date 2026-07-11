@@ -799,6 +799,12 @@ func (s *ProjectSession) Rollback(req domain.RollbackRequest) (domain.RollbackRe
 	}
 
 	result, err := s.host.Rollback(req)
+	if err == nil && result.Preview.TargetStage == domain.RollbackStageDraft {
+		expectedKind := rollbackCoCreateKind(result.Preview.Mode)
+		if restoreErr := s.restoreCoCreateCheckpointFromLogKind(expectedKind); restoreErr != nil {
+			slog.Warn("restore co-create state after rollback failed", "module", "web", "project", s.projectID(), "kind", expectedKind, "err", restoreErr)
+		}
+	}
 	s.AppendSnapshot()
 	return result, err
 }
@@ -2455,11 +2461,15 @@ func (s *ProjectSession) coCreateRestoreBlockedByAdaptationState() bool {
 }
 
 func (s *ProjectSession) restoreCoCreateCheckpointFromLog() error {
+	return s.restoreCoCreateCheckpointFromLogKind("")
+}
+
+func (s *ProjectSession) restoreCoCreateCheckpointFromLogKind(expectedKind string) error {
 	path := s.coCreateLogPath()
 	if path == "" {
 		return nil
 	}
-	entry, ok, err := latestWebCoCreateLogEntry(path)
+	entry, ok, err := latestWebCoCreateLogEntryForKind(path, expectedKind)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -2486,6 +2496,10 @@ func (s *ProjectSession) restoreCoCreateCheckpointFromLog() error {
 }
 
 func latestWebCoCreateLogEntry(path string) (webCoCreateLogEntry, bool, error) {
+	return latestWebCoCreateLogEntryForKind(path, "")
+}
+
+func latestWebCoCreateLogEntryForKind(path, expectedKind string) (webCoCreateLogEntry, bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return webCoCreateLogEntry{}, false, err
@@ -2503,6 +2517,9 @@ func latestWebCoCreateLogEntry(path string) (webCoCreateLogEntry, bool, error) {
 		if len(cleanCoCreateLogHistory(entry.InputHistory)) == 0 {
 			continue
 		}
+		if expectedKind != "" && inferWebCoCreateKindFromLog(entry.InputHistory) != expectedKind {
+			continue
+		}
 		latest = entry
 		found = true
 	}
@@ -2510,6 +2527,17 @@ func latestWebCoCreateLogEntry(path string) (webCoCreateLogEntry, bool, error) {
 		return webCoCreateLogEntry{}, false, err
 	}
 	return latest, found, nil
+}
+
+func rollbackCoCreateKind(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "adaptation":
+		return webCoCreateKindAdapt
+	case "normal":
+		return webCoCreateKindNormal
+	default:
+		return ""
+	}
 }
 
 func (s *ProjectSession) fillCoCreateAdaptationSource(state *webCoCreateSession) error {

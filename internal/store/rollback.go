@@ -129,19 +129,19 @@ func (state rollbackState) adaptationPreview() domain.RollbackPreview {
 			adaptationWritingDeletePaths(),
 			[]string{"meta/adaptation/proposal.json", "meta/adaptation/source_*", "uploads/"})
 	case state.proposal != nil || state.runtime != nil:
-		if state.volumeReview != nil {
+		if state.volumeReview != nil || adaptationProposalHasVolumes(state.proposal) {
 			return state.readyPreview("adaptation", "chapter_outline", domain.RollbackStageVolumeOutline,
-				"分卷提纲完成待审核",
+				"分卷骨架规划完成，待审核",
 				[]string{adaptationProposalFile, adaptationProposalRuntimeFile},
 				[]string{adaptationVolumeReviewFile, "meta/adaptation/source_*", "uploads/"})
 		}
 		return state.readyPreview("adaptation", "proposal", domain.RollbackStageDraft,
-			"共创 draft",
+			"共创草稿已完成，可生成改编提案",
 			adaptationGeneratedDeletePaths(),
 			[]string{"meta/adaptation/source_*", "meta/adaptation/cocreate_*", "uploads/"})
 	case state.volumeReview != nil:
 		return state.readyPreview("adaptation", "volume_outline", domain.RollbackStageDraft,
-			"共创 draft",
+			"共创草稿已完成，可生成改编提案",
 			adaptationGeneratedDeletePaths(),
 			[]string{"meta/adaptation/source_*", "meta/adaptation/cocreate_*", "uploads/"})
 	case state.sourceManifest != nil:
@@ -337,22 +337,34 @@ func (s *Store) rollbackToChapterOutline(state rollbackState) ([]string, error) 
 
 func (s *Store) rollbackToVolumeOutline(state rollbackState) ([]string, error) {
 	if state.volumeReview != nil || state.proposal != nil || state.runtime != nil || state.plan != nil {
-		deleted, err := s.removePaths([]string{adaptationProposalFile, adaptationProposalRuntimeFile, adaptationPlanFile, adaptationPlanningWorkflowFile})
+		review := state.volumeReview
+		if review == nil {
+			review = adaptationVolumeReviewFromProposal(state.proposal, state.sourceManifest)
+		}
+		if review == nil {
+			return nil, fmt.Errorf("adaptation volume outline is missing")
+		}
+		var deleted []string
+		for _, rel := range []string{adaptationProposalFile, adaptationProposalRuntimeFile} {
+			if s.pathExists(rel) {
+				deleted = append(deleted, rel)
+			}
+		}
+		if err := s.Adaptation.RestoreVolumeReviewForRollback(*review); err != nil {
+			return deleted, fmt.Errorf("restore adaptation volume review: %w", err)
+		}
+		removed, err := s.removePaths([]string{adaptationPlanFile})
 		if err != nil {
 			return deleted, err
 		}
+		deleted = append(deleted, removed...)
 		if removed, err := s.removePaths([]string{adaptationCheckDir}); err != nil {
 			return deleted, err
 		} else {
 			deleted = append(deleted, removed...)
 		}
-		if err := s.savePlanningProgress(domain.PhaseOutline, adaptationVolumeTargetCount(state.volumeReview), true, state); err != nil {
+		if err := s.savePlanningProgress(domain.PhaseOutline, review.TargetChapterCount, true, state); err != nil {
 			return deleted, err
-		}
-		if state.volumeReview != nil {
-			if _, err := s.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageVolumeReviewPending, 0); err != nil {
-				return deleted, err
-			}
 		}
 		return deleted, nil
 	}
@@ -664,6 +676,34 @@ func adaptationVolumeTargetCount(review *domain.AdaptationVolumeReview) int {
 		return 0
 	}
 	return review.TargetChapterCount
+}
+
+func adaptationProposalHasVolumes(proposal *domain.AdaptationPlan) bool {
+	return proposal != nil && len(proposal.Volumes) > 0
+}
+
+func adaptationVolumeReviewFromProposal(proposal *domain.AdaptationPlan, manifest *domain.AdaptationSourceManifest) *domain.AdaptationVolumeReview {
+	if !adaptationProposalHasVolumes(proposal) {
+		return nil
+	}
+	review := &domain.AdaptationVolumeReview{
+		Status:             domain.AdaptationPlanStatusVolumeReview,
+		UpdatedAt:          time.Now().UTC().Format(time.RFC3339),
+		Brief:              proposal.Brief,
+		Granularity:        proposal.Granularity,
+		RewritePolicy:      proposal.RewritePolicy,
+		WordTolerance:      proposal.WordTolerance,
+		TargetChapterCount: len(proposal.Chapters),
+		MainlineRules:      append([]string(nil), proposal.MainlineRules...),
+		RelationshipGoals:  append([]string(nil), proposal.RelationshipGoals...),
+		Volumes:            append([]domain.AdaptationVolumePlan(nil), proposal.Volumes...),
+		Planner:            proposal.Planner,
+	}
+	if manifest != nil {
+		review.SourcePath = manifest.SourcePath
+		review.SourceChapterCount = manifest.ChapterCount
+	}
+	return review
 }
 
 func layeredOutlineHasExpandedArcs(volumes []domain.VolumeOutline) bool {
