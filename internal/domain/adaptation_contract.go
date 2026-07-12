@@ -16,8 +16,9 @@ const (
 )
 
 // AdaptationOutlineQualityAudit is a durable marker for the deterministic
-// plan-only gate. Its signature covers only contract fields, so normal store
-// normalization (budgets/status/rules) does not invalidate a valid audit.
+// plan-only gate. Its signature covers semantic contract fields and chapter
+// budgets, so changing either the story ownership or output capacity forces a
+// fresh audit.
 type AdaptationOutlineQualityAudit struct {
 	Version   int    `json:"version"`
 	Status    string `json:"status"`
@@ -46,6 +47,9 @@ func AdaptationPlanOutlineQualitySignature(plan AdaptationPlan) string {
 		CoreEvent       string   `json:"core_event"`
 		Hook            string   `json:"hook"`
 		Scenes          []string `json:"scenes,omitempty"`
+		TargetRunes     int      `json:"target_runes,omitempty"`
+		TargetMinRunes  int      `json:"target_min_runes,omitempty"`
+		TargetMaxRunes  int      `json:"target_max_runes,omitempty"`
 		EventIDs        []string `json:"event_ids,omitempty"`
 		AddedEventIDs   []string `json:"added_event_ids,omitempty"`
 		PreserveEvents  []string `json:"preserve_events,omitempty"`
@@ -76,6 +80,7 @@ func AdaptationPlanOutlineQualitySignature(plan AdaptationPlan) string {
 			Chapter: item.Chapter, Title: strings.TrimSpace(item.Title),
 			CoreEvent: strings.TrimSpace(item.CoreEvent), Hook: strings.TrimSpace(item.Hook),
 			Scenes: append([]string(nil), item.Scenes...), EventIDs: append([]string(nil), item.EventIDs...),
+			TargetRunes: item.TargetRunes, TargetMinRunes: item.TargetMinRunes, TargetMaxRunes: item.TargetMaxRunes,
 			AddedEventIDs: append([]string(nil), item.AddedEventIDs...), PreserveEvents: append([]string(nil), item.PreserveEvents...),
 			RequiredChanges: append([]string(nil), item.RequiredChanges...), ForbiddenMoves: append([]string(nil), item.ForbiddenMoves...),
 		})
@@ -139,6 +144,18 @@ type AdaptationEventOutlineMismatchIssue struct {
 	Detail              string
 }
 
+// AdaptationChapterBudgetDensityIssue reports a chapter whose outline contains
+// too many scenes for its configured maximum output. The threshold is
+// intentionally conservative: it catches impossible compression requests
+// without forcing ordinary short chapters to become long chapters.
+type AdaptationChapterBudgetDensityIssue struct {
+	Chapter             int
+	SceneCount          int
+	MaxRunes            int
+	RecommendedMinRunes int
+	Detail              string
+}
+
 type adaptationEventTheme struct {
 	name         string
 	eventTerms   []string
@@ -148,8 +165,18 @@ type adaptationEventTheme struct {
 var arcAdaptationEventThemes = []adaptationEventTheme{
 	{
 		name:         "encounter_conflict",
-		eventTerms:   []string{"抢劫", "劫匪", "黑衣人", "交出手机", "手机", "拦截", "夺刀", "放走", "抢钱", "救母", "晨练"},
-		outlineTerms: []string{"抢劫", "劫匪", "黑衣人", "被迫", "交出", "拦截", "夺刀", "钢管", "围堵", "讨债", "出手", "救下", "救人", "冲突"},
+		eventTerms:   []string{"抢劫", "劫匪", "黑衣人", "交出手机", "手机", "拦截", "夺刀", "放走", "抢钱", "救母", "晨练", "劫持", "跳楼", "钢管", "讨债", "围观", "劝阻", "体操"},
+		outlineTerms: []string{"抢劫", "劫匪", "黑衣人", "被迫", "交出", "拦截", "夺刀", "钢管", "围堵", "讨债", "出手", "救下", "救人", "冲突", "劫持", "跳楼", "围观", "劝阻", "体操", "物理", "计算", "瓦解", "死志", "篮球场"},
+	},
+	{
+		name:         "phone_alert",
+		eventTerms:   []string{"盖奇", "来上海", "紧急联系", "电话"},
+		outlineTerms: []string{"盖奇", "来上海", "紧急", "电话", "驱车", "大哥"},
+	},
+	{
+		name:         "financial_crisis",
+		eventTerms:   []string{"飞龙集团", "危机真相", "资金链", "多宝集团", "诈骗", "财务危机"},
+		outlineTerms: []string{"飞龙集团", "危机", "资金链", "多宝集团", "诈骗", "财务", "真相", "询问"},
 	},
 	{
 		name:         "first_meeting",
@@ -209,12 +236,87 @@ func ValidateArcSourceEventBindings(plan AdaptationPlan) []AdaptationEventBindin
 			Detail:   fmt.Sprintf("source event %s is bound to target chapters %v; it must have exactly one owning chapter", eventID, chapters),
 		})
 	}
+	for index, chapter := range plan.Chapters {
+		number := chapter.Chapter
+		if number <= 0 {
+			number = index + 1
+		}
+		preserved := sourceEventIDs(chapter.PreserveEvents)
+		if len(preserved) == 0 || !allSourceEventIDs(chapter.EventIDs) {
+			continue
+		}
+		assigned := make(map[string]bool, len(chapter.EventIDs))
+		for _, rawEventID := range chapter.EventIDs {
+			assigned[strings.TrimSpace(rawEventID)] = true
+		}
+		for _, eventID := range preserved {
+			if assigned[eventID] {
+				continue
+			}
+			issues = append(issues, AdaptationEventBindingIssue{
+				Code: "arc_event_preserve_unbound", EventID: eventID, Chapters: []int{number},
+				Detail: fmt.Sprintf("target chapter %d lists source event %s in preserve_events but not in event_ids; keep the source-event ownership fields aligned", number, eventID),
+			})
+		}
+		for _, rawEventID := range chapter.EventIDs {
+			eventID := strings.TrimSpace(rawEventID)
+			if containsString(preserved, eventID) {
+				continue
+			}
+			issues = append(issues, AdaptationEventBindingIssue{
+				Code: "arc_event_preserve_mismatch", EventID: eventID, Chapters: []int{number},
+				Detail: fmt.Sprintf("target chapter %d assigns source event %s in event_ids but preserve_events points to different source events; move the event ownership and matching plot beat together", number, eventID),
+			})
+		}
+	}
 	sort.SliceStable(issues, func(left, right int) bool {
 		if issues[left].Code != issues[right].Code {
 			return issues[left].Code < issues[right].Code
 		}
 		return issues[left].EventID < issues[right].EventID
 	})
+	return issues
+}
+
+const minimumArcRunesPerScene = 300
+
+// ValidateArcChapterBudgetDensity prevents a planner from packing a multi-
+// scene arc chapter into a budget that cannot express its own beats. A caller
+// may still choose fewer scenes or a larger budget; this validator never edits
+// a plan and never reasons about prose.
+func ValidateArcChapterBudgetDensity(plan AdaptationPlan) []AdaptationChapterBudgetDensityIssue {
+	if NormalizeAdaptationGranularity(plan.Granularity) != AdaptationGranularityArc {
+		return nil
+	}
+	issues := make([]AdaptationChapterBudgetDensityIssue, 0)
+	for index, chapter := range plan.Chapters {
+		sceneCount := len(chapter.Scenes)
+		// Keep the guard focused on real multi-beat chapters. Tiny synthetic
+		// plans and short chapters do not benefit from a hard density contract.
+		if sceneCount < 6 {
+			continue
+		}
+		maxRunes := chapter.TargetMaxRunes
+		if chapter.WordBudget != nil && chapter.WordBudget.MaxRunes > maxRunes {
+			maxRunes = chapter.WordBudget.MaxRunes
+		}
+		if maxRunes < 1000 {
+			continue
+		}
+		recommendedMin := sceneCount * minimumArcRunesPerScene
+		if maxRunes >= recommendedMin {
+			continue
+		}
+		number := chapter.Chapter
+		if number <= 0 {
+			number = index + 1
+		}
+		issues = append(issues, AdaptationChapterBudgetDensityIssue{
+			Chapter: number, SceneCount: sceneCount, MaxRunes: maxRunes, RecommendedMinRunes: recommendedMin,
+			Detail: fmt.Sprintf("target chapter %d has %d scenes but max budget is %d runes; raise the chapter budget to at least %d runes or reduce/split the scenes before writing", number, sceneCount, maxRunes, recommendedMin),
+		})
+	}
+	sort.SliceStable(issues, func(left, right int) bool { return issues[left].Chapter < issues[right].Chapter })
 	return issues
 }
 
@@ -359,6 +461,38 @@ func intersectThemeNames(themes []string, present map[string]bool) []string {
 }
 
 func containsInt(values []int, wanted int) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceEventIDs(values []string) []string {
+	ids := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if strings.HasPrefix(value, "src-") && !containsString(ids, value) {
+			ids = append(ids, value)
+		}
+	}
+	return ids
+}
+
+func allSourceEventIDs(values []string) bool {
+	if len(values) == 0 {
+		return false
+	}
+	for _, raw := range values {
+		if !strings.HasPrefix(strings.TrimSpace(raw), "src-") {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {
 			return true

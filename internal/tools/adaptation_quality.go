@@ -177,12 +177,12 @@ func adaptationSourceSimilarityIssues(st *store.Store, chapterPlan domain.Adapta
 
 func adaptationChangeEvidenceIssues(plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan, evidence []domain.AdaptationChangeEvidence) []string {
 	if plan == nil ||
-		plan.RewritePolicy != domain.AdaptationRewritePreserveDetails ||
-		!adaptationRequiresVisibleChanges(chapterPlan) {
+		(plan.RewritePolicy != domain.AdaptationRewritePreserveDetails && plan.RewritePolicy != domain.AdaptationRewriteFullRewrite) ||
+		!adaptationRequiresExplicitChangeEvidence(plan, chapterPlan) {
 		return nil
 	}
 	if len(evidence) == 0 {
-		return []string{"adaptation_change_evidence: preserve_details with required_changes must provide change_evidence"}
+		return []string{"adaptation_change_evidence: preserve_details/full_rewrite with required_changes must provide change_evidence"}
 	}
 	var issues []string
 	for i, item := range evidence {
@@ -209,6 +209,28 @@ func adaptationRequiresVisibleChanges(chapterPlan domain.AdaptationChapterPlan) 
 		}
 	}
 	return false
+}
+
+func adaptationRequiresExplicitChangeEvidence(plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan) bool {
+	if plan == nil || !adaptationRequiresVisibleChanges(chapterPlan) {
+		return false
+	}
+	if plan.RewritePolicy == domain.AdaptationRewriteFullRewrite {
+		return len(chapterPlan.RequiredChanges) > 0
+	}
+	return plan.RewritePolicy == domain.AdaptationRewritePreserveDetails
+}
+
+// Arc/full_rewrite chapters are allowed to transform an assigned source event
+// into a new target-story beat. When the plan explicitly declares visible
+// changes, requiring a verbatim source-event quote turns a valid rewrite into
+// a repair loop. Preserve-details chapters, and full rewrites without an
+// explicit change contract, retain the stricter body-evidence fallback.
+func adaptationBodyEvidenceRequired(plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan) bool {
+	if plan == nil {
+		return true
+	}
+	return !(plan.RewritePolicy == domain.AdaptationRewriteFullRewrite && adaptationRequiresExplicitChangeEvidence(plan, chapterPlan))
 }
 
 func adaptationQualityRepairStep(issues []string, chapter int) string {
@@ -275,6 +297,9 @@ func adaptationBodyEvidenceIssues(
 	evidence []domain.AdaptationBodyEvidence,
 	fulfilledByPriorChapter map[string]int,
 ) []string {
+	if !adaptationBodyEvidenceRequired(plan, chapterPlan) {
+		return nil
+	}
 	required := make(map[string]bool)
 	descriptions := make(map[string]string)
 	if plan != nil {

@@ -168,6 +168,51 @@ func TestCheckAdaptationUsesVerifiedBodyEvidenceInsteadOfWriterPassedFlag(t *tes
 	}
 }
 
+func TestCheckAdaptationFullRewriteUsesChangeEvidenceInsteadOfVerbatimEvent(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Status:        domain.AdaptationPlanStatusConfirmed,
+		SourceEvents: []domain.AdaptationEvent{{
+			ID: "event-1", Description: "原著中的旧版冲突", SourceChapter: 1,
+		}},
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter: 1, SourceChapters: []int{1}, EventIDs: []string{"event-1"},
+			RequiredChanges: []string{"将旧版冲突改写为新的校园冲突"},
+		}},
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, []string{"原著旧版冲突。"})
+	if err := s.Drafts.SaveDraft(1, "篮球场上的新冲突在钢管落下前被主角截住。百里冰确认了新的现场关系。 "); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	raw, err := NewCheckAdaptationTool(s).Execute(context.Background(), mustJSON(t, map[string]any{
+		"chapter": 1, "passed": true, "change_evidence": passingChangeEvidence(),
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Passed bool     `json:"passed"`
+		Issues []string `json:"issues"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !payload.Passed || issueContains(payload.Issues, "adaptation_body_evidence") {
+		t.Fatalf("full rewrite should not require a verbatim source event quote: %s", raw)
+	}
+
+	raw, err = NewCheckAdaptationTool(s).Execute(context.Background(), mustJSON(t, map[string]any{
+		"chapter": 1, "passed": true,
+	}))
+	if err != nil {
+		t.Fatalf("Execute missing change evidence: %v", err)
+	}
+	if !strings.Contains(string(raw), "adaptation_change_evidence") {
+		t.Fatalf("full rewrite with required changes should require change_evidence: %s", raw)
+	}
+}
+
 func TestCheckAdaptationAcceptsLegacyEventFulfilledByCommittedPriorChapter(t *testing.T) {
 	plan := domain.AdaptationPlan{
 		Granularity:   domain.AdaptationGranularityArc,

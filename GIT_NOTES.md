@@ -28,6 +28,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 outline-density and transformed-event evidence gate: `467680c`
+  `ValidateArcChapterBudgetDensity` now blocks high-density arc chapters whose
+  maximum output cannot express their planned scenes, and the planner prompt,
+  outline gate, routing, and final chapter contract all share the same guard.
+  Full-rewrite chapters with explicit `required_changes` now use structured
+  `change_evidence` for transformed source events instead of being forced to
+  reproduce those events verbatim; chapters without an explicit transform keep
+  the stricter body-evidence fallback. Source-event ownership and
+  `preserve_events` alignment are also checked before writing. Full Go tests,
+  build, and live restart passed. The live `天擎` chapter 39 plan was repaired
+  from 1200-1600 to 3400-4600 runes with six matching event owners; the live
+  `武林高手 - 副本` chapter 14 stale failed check was cleared for re-evaluation.
 - 2026-07-12 adaptation outline contract gate: arc proposals now validate
   supporting/texture source-event ownership and plot-theme alignment before
   any Writer body is generated. Successful whole-plan audits persist a

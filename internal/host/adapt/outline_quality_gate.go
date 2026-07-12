@@ -17,7 +17,10 @@ const (
 	outlineQualityIssueArcAmbiguousVolume    = "arc_mainline_ambiguous_volume"
 	outlineQualityIssueArcUnknownEvent       = "arc_event_unknown"
 	outlineQualityIssueArcDuplicateEvent     = "arc_event_duplicate_binding"
+	outlineQualityIssueArcPreserveUnbound    = "arc_event_preserve_unbound"
+	outlineQualityIssueArcPreserveMismatch   = "arc_event_preserve_mismatch"
 	outlineQualityIssueArcEventMismatch      = "arc_event_outline_mismatch"
+	outlineQualityIssueArcBudgetDensity      = "arc_chapter_budget_scene_density"
 	outlineQualityIssueFreeMissingLedger     = "free_target_ledger_missing"
 	outlineQualityIssueFreeUnknownEvent      = "free_target_event_unknown"
 	outlineQualityIssueFreeDuplicateBinding  = "free_target_event_duplicate_binding"
@@ -76,6 +79,7 @@ func ValidateAdaptationOutlineQuality(plan *domain.AdaptationPlan, manifest *dom
 	case domain.AdaptationGranularityArc:
 		issues = append(issues, validateArcOutlineMainline(*plan)...)
 		issues = append(issues, validateArcOutlineSourceEvents(*plan)...)
+		issues = append(issues, validateArcChapterBudgetDensity(*plan)...)
 	case domain.AdaptationGranularityFree:
 		issues = append(issues, validateFreeOutlineLedger(*plan)...)
 	}
@@ -243,6 +247,17 @@ func validateArcOutlineSourceEvents(plan domain.AdaptationPlan) []AdaptationOutl
 	return issues
 }
 
+func validateArcChapterBudgetDensity(plan domain.AdaptationPlan) []AdaptationOutlineQualityIssue {
+	issues := make([]AdaptationOutlineQualityIssue, 0)
+	for _, budgetIssue := range domain.ValidateArcChapterBudgetDensity(plan) {
+		issues = append(issues, AdaptationOutlineQualityIssue{
+			Code: outlineQualityIssueArcBudgetDensity, TargetChapter: budgetIssue.Chapter,
+			Detail: budgetIssue.Detail,
+		})
+	}
+	return issues
+}
+
 // ValidateAdaptationChapterOutlineQuality is the migration-safe runtime
 // boundary. New proposals use ValidateAdaptationOutlineQuality for the whole
 // plan and receive a durable pass marker. Older confirmed plans may contain
@@ -307,6 +322,12 @@ func ValidateAdaptationChapterOutlineQuality(plan *domain.AdaptationPlan, target
 			SourceChapter: mismatch.SourceChapter, TargetChapter: targetChapter,
 			Detail: mismatch.Detail,
 		})
+	}
+	for _, budgetIssue := range validateArcChapterBudgetDensity(*plan) {
+		if budgetIssue.TargetChapter != targetChapter {
+			continue
+		}
+		issues = append(issues, budgetIssue)
 	}
 	if len(issues) == 0 {
 		return nil

@@ -125,6 +125,29 @@ func TestValidateAdaptationOutlineQualityArcAcceptsSupportingEventInMatchingChap
 	}
 }
 
+func TestValidateAdaptationOutlineQualityArcRejectsDenseChapterBudget(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityArc,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter: 39,
+			OutlineEntry: domain.OutlineEntry{
+				CoreEvent: "九个连续场景组成一章。",
+				Scenes:    []string{"1", "2", "3", "4", "5", "6", "7", "8", "9"},
+			},
+			TargetRunes: 1400, TargetMinRunes: 1200, TargetMaxRunes: 1600,
+		}},
+	}
+	if err := ValidateAdaptationOutlineQuality(&plan, nil); !outlineQualityHasCode(err, outlineQualityIssueArcBudgetDensity) {
+		t.Fatalf("dense chapter budget should be rejected: %v", err)
+	}
+	plan.Chapters[0].TargetRunes = 4000
+	plan.Chapters[0].TargetMinRunes = 3400
+	plan.Chapters[0].TargetMaxRunes = 4600
+	if err := ValidateAdaptationOutlineQuality(&plan, nil); err != nil {
+		t.Fatalf("scene-capable chapter budget should pass: %v", err)
+	}
+}
+
 func TestValidateAdaptationChapterOutlineQualityScopesLegacyPlanToNextChapter(t *testing.T) {
 	plan := domain.AdaptationPlan{
 		Granularity: domain.AdaptationGranularityArc,

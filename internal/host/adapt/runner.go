@@ -7144,6 +7144,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 			"Use only this detail batch's batch.mainline_event_ids for required mainline bindings. Do not copy mainline IDs from the parent skeleton or previous detail batches.",
 			"Supporting and texture source event_ids are optional references, but if you include one, assign it exactly once to the target chapter whose title/core_event/hook/scenes actually contain that event's plot beat.",
 			"Do not copy a later chapter's supporting/texture event_id into the current chapter. Move the event_id, preserve_events, required_changes, and matching story beat together; do not keep a future beat after deleting only its ID.",
+			"Keep scene density and output capacity consistent: for arc chapters, word_budget.max_runes must be at least 300 runes per planned scene, or reduce/split the scenes before returning the outline.",
 			"Put new plot IDs only in added_event_ids; added events may support assigned mainline events but cannot take their chapter space.",
 		)
 	case domain.AdaptationGranularityFree:
@@ -7252,6 +7253,9 @@ func plannerSourceFoundationDigestForDetail(sourceFoundation *domain.AdaptationS
 func plannerBatchBudgetRequirements(granularity string) []string {
 	requirements := []string{
 		"If chapter_budget_policy is present, keep every word_budget.max_runes within chapter_budget_policy.max_runes; set word_budget.source_runes to this target chapter's share of the covered source material, not the full broad source_range total.",
+	}
+	if domain.NormalizeAdaptationGranularity(granularity) == domain.AdaptationGranularityArc {
+		requirements = append(requirements, "For arc chapters, word_budget.max_runes must be at least 300 runes per planned scene; if a chapter needs a smaller budget, reduce or split its scenes before returning the outline.")
 	}
 	if plannerEnforcesSourceRuneSplitting(granularity) {
 		return append(requirements, "If the full batch source range has more source_runes than chapter_budget_policy.max_runes, cover it with enough target chapters in the parent skeleton batch; the host validates this at the parent batch level.")

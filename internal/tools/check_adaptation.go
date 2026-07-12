@@ -52,7 +52,7 @@ func (t *CheckAdaptationTool) Schema() map[string]any {
 		// adaptationChangeEvidenceIssues：需要证据的章节不会因省略字段而通过，
 		// 但模型能收到具体缺项而不是在 schema 层反复空耗整轮。
 		schema.Property("change_evidence", schema.Array("evidence that required changes were integrated into prose; omitted means []; use [] only when no visible source change is required", changeEvidenceSchema)),
-		schema.Property("body_evidence", schema.Array("verbatim draft evidence for assigned event_ids; independently checked by code; failed results return assigned_event_evidence with each ID's description", bodyEvidenceSchema)),
+		schema.Property("body_evidence", schema.Array("verbatim draft evidence for assigned event_ids when preserve_details applies or no explicit rewrite is declared; arc/full_rewrite chapters with required_changes should use change_evidence for transformed events instead of forcing source events to appear verbatim", bodyEvidenceSchema)),
 	)
 }
 
@@ -275,6 +275,11 @@ func adaptationPlanContractIssues(plan *domain.AdaptationPlan, chapter int) []st
 			issues = append(issues, fmt.Sprintf("adaptation_outline_contract: %s", issue.Detail))
 		}
 	}
+	for _, issue := range domain.ValidateArcChapterBudgetDensity(*plan) {
+		if issue.Chapter == chapter {
+			issues = append(issues, fmt.Sprintf("adaptation_outline_contract: %s", issue.Detail))
+		}
+	}
 	sort.Strings(issues)
 	return issues
 }
@@ -290,8 +295,8 @@ func adaptationPlanContractRepairStep(issues []string) string {
 
 func adaptationRequiredChangeEvidencePrompt(plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan) map[string]any {
 	if plan == nil ||
-		plan.RewritePolicy != domain.AdaptationRewritePreserveDetails ||
-		!adaptationRequiresVisibleChanges(chapterPlan) {
+		(plan.RewritePolicy != domain.AdaptationRewritePreserveDetails && plan.RewritePolicy != domain.AdaptationRewriteFullRewrite) ||
+		!adaptationRequiresExplicitChangeEvidence(plan, chapterPlan) {
 		return map[string]any{
 			"required": false,
 		}
