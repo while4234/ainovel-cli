@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 immediate project-switch fix: `457a242`
+  `fix: switch projects immediately while loading`. Clicking another project
+  now selects the target immediately, clears the previous project's detail
+  view, and shows a target-specific loading state instead of leaving a running
+  project visible until the new snapshot returns. SSE startup is deferred until
+  the initial snapshot finishes, avoiding duplicate session-open work. All 205
+  UI tests, the Vite production build, and `git diff --check` passed. The Web
+  service is live on port 9898 as PID `91032` with the new bundle.
 - 2026-07-12 context-window and summary-evidence fix: `ab36715`
   `fix: stabilize agent context management`. Static prompt
   assembly budgets no longer cap live agent conversations. Runtime windows now
