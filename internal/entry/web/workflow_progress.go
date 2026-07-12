@@ -242,7 +242,7 @@ func adaptationWorkflowProgress(
 		{ID: "source", Label: "原文导入", Status: WorkflowStatusIdle},
 		{ID: "analysis", Label: "原文分析", Status: WorkflowStatusIdle},
 		{ID: "contract", Label: "改编契约", Status: WorkflowStatusIdle},
-		{ID: "proposal_review", Label: "提案审核", Status: WorkflowStatusIdle},
+		{ID: "proposal_review", Label: "章节细纲与审核", Status: WorkflowStatusIdle},
 		{ID: "writing", Label: "正文创作", Status: WorkflowStatusIdle, Current: snapshot.CompletedCount, Total: snapshot.TotalChapters},
 		{ID: "quality_audit", Label: "质量审计", Status: WorkflowStatusIdle},
 	}
@@ -273,7 +273,14 @@ func adaptationWorkflowProgress(
 		progress.Status = WorkflowStatusRunning
 		progress.CurrentStep = currentStep
 		progress.Steps = completeStepsBefore(progress.Steps, currentStep)
-		progress.Steps = setStep(progress.Steps, currentStep, progress.Status, 0, 0, message)
+		current, total := 0, 0
+		if latest != nil && latest.Total > 0 {
+			current, total = latest.Current, latest.Total
+			if strings.TrimSpace(latest.Summary) != "" {
+				message = latest.Summary
+			}
+		}
+		progress.Steps = setStep(progress.Steps, currentStep, progress.Status, current, total, message)
 		return progress
 	}
 
@@ -340,7 +347,7 @@ func adaptationRunningPresentation(actionKinds []string) (string, string, bool) 
 	case workflowContainsString(actionKinds, projectActionKindAdaptationRevision):
 		return "proposal_review", "正在修订改编提案", true
 	case workflowContainsString(actionKinds, projectActionKindAdaptationProposal):
-		return "proposal_review", "正在生成改编提案", true
+		return "proposal_review", "正在生成并逐批审核章节细纲", true
 	case workflowContainsString(actionKinds, projectActionKindAdaptationAnalysis):
 		return "analysis", "正在分析原文", true
 	default:

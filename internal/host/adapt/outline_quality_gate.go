@@ -107,6 +107,95 @@ func ValidateAdaptationOutlineQuality(plan *domain.AdaptationPlan, manifest *dom
 	return &AdaptationOutlineQualityError{Issues: issues}
 }
 
+// ValidateAdaptationDetailPrefixQuality checks every semantic contract that is
+// decidable before future detail batches exist. It deliberately omits global
+// missing-event checks, which would misclassify not-yet-generated chapters.
+func ValidateAdaptationDetailPrefixQuality(
+	plan *domain.AdaptationPlan,
+	manifest *domain.AdaptationSourceManifest,
+	sourceFrom int,
+	sourceTo int,
+) error {
+	if plan == nil {
+		return &AdaptationOutlineQualityError{Issues: []AdaptationOutlineQualityIssue{{
+			Code: "outline_plan_missing", Detail: "adaptation plan is required",
+		}}}
+	}
+	var issues []AdaptationOutlineQualityIssue
+	switch domain.NormalizeAdaptationGranularity(plan.Granularity) {
+	case domain.AdaptationGranularityChapter:
+		issues = append(issues, validateChapterOutlineSegmentsRange(*plan, manifest, sourceFrom, sourceTo)...)
+	case domain.AdaptationGranularityArc:
+		issues = append(issues, validateArcOutlineSourceEvents(*plan)...)
+		issues = append(issues, validateArcChapterBudgetDensity(*plan)...)
+	case domain.AdaptationGranularityFree:
+		issues = append(issues, validateFreeOutlineLedger(*plan)...)
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	sortAdaptationOutlineQualityIssues(issues)
+	return &AdaptationOutlineQualityError{Issues: issues}
+}
+
+func validateChapterOutlineSegmentsRange(
+	plan domain.AdaptationPlan,
+	manifest *domain.AdaptationSourceManifest,
+	from int,
+	to int,
+) []AdaptationOutlineQualityIssue {
+	if manifest == nil || from <= 0 || to < from {
+		return nil
+	}
+	sourceRunes := sourceRunesByChapter(manifest)
+	segmentsBySource := make(map[int][]domain.AdaptationSourceSegment)
+	for _, chapter := range plan.Chapters {
+		for _, segment := range chapter.SourceSegments {
+			segmentsBySource[segment.SourceChapter] = append(segmentsBySource[segment.SourceChapter], segment)
+		}
+	}
+	var issues []AdaptationOutlineQualityIssue
+	for sourceChapter := from; sourceChapter <= to; sourceChapter++ {
+		runes := sourceRunes[sourceChapter]
+		if runes <= 0 {
+			continue
+		}
+		segments := segmentsBySource[sourceChapter]
+		if len(segments) == 0 {
+			issues = append(issues, AdaptationOutlineQualityIssue{
+				Code: outlineQualityIssueChapterMissingSegment, SourceChapter: sourceChapter,
+				Detail: fmt.Sprintf("source chapter %d has %d runes but no SourceSegment ownership", sourceChapter, runes),
+			})
+			continue
+		}
+		for _, segmentIssue := range domain.CheckAdaptationSourceSegments(sourceChapter, runes, segments) {
+			issues = append(issues, AdaptationOutlineQualityIssue{
+				Code: outlineQualityIssueChapterInvalidSegment, SourceChapter: sourceChapter,
+				Detail: segmentIssue.Error(),
+			})
+		}
+	}
+	return issues
+}
+
+func sortAdaptationOutlineQualityIssues(issues []AdaptationOutlineQualityIssue) {
+	sort.SliceStable(issues, func(left, right int) bool {
+		if issues[left].Code != issues[right].Code {
+			return issues[left].Code < issues[right].Code
+		}
+		if issues[left].Volume != issues[right].Volume {
+			return issues[left].Volume < issues[right].Volume
+		}
+		if issues[left].SourceChapter != issues[right].SourceChapter {
+			return issues[left].SourceChapter < issues[right].SourceChapter
+		}
+		if issues[left].TargetChapter != issues[right].TargetChapter {
+			return issues[left].TargetChapter < issues[right].TargetChapter
+		}
+		return issues[left].EventID < issues[right].EventID
+	})
+}
+
 func validateChapterOutlineSegments(plan domain.AdaptationPlan, manifest *domain.AdaptationSourceManifest) []AdaptationOutlineQualityIssue {
 	if manifest == nil {
 		return nil
@@ -349,16 +438,34 @@ func formatAdaptationOutlineQualityFeedback(err *AdaptationOutlineQualityError) 
 	if err == nil || len(err.Issues) == 0 {
 		return ""
 	}
-	const maxIssues = 12
+	type issueGroup struct {
+		code    string
+		count   int
+		samples []string
+	}
+	groupsByCode := make(map[string]*issueGroup)
+	for _, issue := range err.Issues {
+		group := groupsByCode[issue.Code]
+		if group == nil {
+			group = &issueGroup{code: issue.Code}
+			groupsByCode[issue.Code] = group
+		}
+		group.count++
+		if len(group.samples) < 3 {
+			group.samples = append(group.samples, issue.Detail)
+		}
+	}
+	groups := make([]*issueGroup, 0, len(groupsByCode))
+	for _, group := range groupsByCode {
+		groups = append(groups, group)
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].code < groups[j].code })
 	var builder strings.Builder
 	builder.WriteString("The previous detail-outline attempt failed the plan-only adaptation quality gate. Repair the outline contract before generating any prose.\n")
-	for index, issue := range err.Issues {
-		if index >= maxIssues {
-			fmt.Fprintf(&builder, "- %d more quality issues omitted; repair the same class of violation everywhere.\n", len(err.Issues)-maxIssues)
-			break
-		}
-		fmt.Fprintf(&builder, "- [%s] %s\n", issue.Code, issue.Detail)
+	for _, group := range groups {
+		fmt.Fprintf(&builder, "- [%s] %d issue(s). Examples: %s\n", group.code, group.count, strings.Join(group.samples, " | "))
 	}
+	builder.WriteString("The runtime retains every individual issue and routes the complete per-batch set to its targeted repair; this summary only describes global issue classes.\n")
 	builder.WriteString("Do not silence the error by deleting an event_id while keeping its plot beat in another chapter. Reassign the event_id, preserve_events, required_changes, and matching outline beat together; each source event_id may have only one owner.")
 	return builder.String()
 }

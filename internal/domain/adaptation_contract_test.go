@@ -36,6 +36,25 @@ func TestAdaptationOutlineQualityAuditInvalidatesWhenBudgetChanges(t *testing.T)
 	}
 }
 
+func TestLayeredAdaptationOutlineAuditRequiresDigestAndInvalidatesWithPlan(t *testing.T) {
+	plan := AdaptationPlan{Granularity: AdaptationGranularityArc, Chapters: []AdaptationChapterPlan{{
+		Chapter: 1, Title: "一", OutlineEntry: OutlineEntry{CoreEvent: "事件", Hook: "钩子"},
+	}}}
+	MarkAdaptationOutlineQualityPassedWithLayers(&plan, "layered-digest")
+	if !AdaptationOutlineQualityPassed(plan) || plan.OutlineQualityAudit.Version != AdaptationOutlineQualityAuditVersion {
+		t.Fatalf("layered audit should pass: %+v", plan.OutlineQualityAudit)
+	}
+	plan.OutlineQualityAudit.LayeredAuditDigest = ""
+	if AdaptationOutlineQualityPassed(plan) {
+		t.Fatal("version 2 audit without layered digest must fail")
+	}
+	MarkAdaptationOutlineQualityPassedWithLayers(&plan, "layered-digest")
+	plan.Chapters[0].CoreEvent = "改变"
+	if AdaptationOutlineQualityPassed(plan) {
+		t.Fatal("changing the plan must invalidate the layered audit")
+	}
+}
+
 func TestValidateArcEventOutlineThemesFindsLaterOwner(t *testing.T) {
 	plan := AdaptationPlan{
 		Granularity:  AdaptationGranularityArc,

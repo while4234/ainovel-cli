@@ -80,3 +80,18 @@ func TestPlannerSkeletonFromVolumeReviewPreservesMainlineContracts(t *testing.T)
 		t.Fatalf("mainline event contract was lost: %+v", skeleton.Batches)
 	}
 }
+
+func TestAttachSkeletonEventsPublishesSupportingWhitelist(t *testing.T) {
+	skeleton := plannerSkeleton{Granularity: domain.AdaptationGranularityArc, Batches: []plannerSkeletonBatch{{SourceFrom: 1, SourceTo: 1}}}
+	reports := []domain.AdaptationSourceReport{{Chapter: 1, SourceEvents: []domain.AdaptationEvent{
+		{ID: "src-main", SourceChapter: 1, Importance: domain.AdaptationEventMainline},
+		{ID: "src-support", SourceChapter: 1, Importance: domain.AdaptationEventSupporting},
+	}}}
+	attachSkeletonMainlineEvents(&skeleton, reports)
+	if !detailAuditContainsString(skeleton.Batches[0].MainlineEventIDs, "src-main") {
+		t.Fatalf("mainline whitelist=%v", skeleton.Batches[0].MainlineEventIDs)
+	}
+	if !detailAuditContainsString(skeleton.Batches[0].AllowedEventIDs, "src-support") {
+		t.Fatalf("allowed whitelist=%v", skeleton.Batches[0].AllowedEventIDs)
+	}
+}

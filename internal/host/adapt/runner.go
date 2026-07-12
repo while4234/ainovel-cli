@@ -59,7 +59,8 @@ const (
 	// retry budget without treating explicit invalid-token/401 failures as
 	// transient or spending the full provider retry budget.
 	adaptationPlannerAuthorizationMaxAttempts = 3
-	adaptationProposalRuntimeVersion          = 1
+	adaptationProposalRuntimeVersion          = 2
+	adaptationProposalRuntimeLegacyVersion    = 1
 	adaptationSourceFoundationVersion         = 1
 	adaptationSourceFoundationPromptVersion   = "source-foundation-merge-v1"
 	sourceFoundationBatchKindReports          = "reports"
@@ -89,6 +90,7 @@ var (
 type Deps struct {
 	Store                                          *store.Store
 	LLM                                            imp.LLMChat
+	Auditor                                        imp.LLMChat
 	Prompts                                        Prompts
 	ModelCallMaxAttempts                           int
 	StructureRepairMaxAttempts                     int
@@ -113,6 +115,15 @@ func (d Deps) modelForStage(stage string) imp.LLMChat {
 			return model
 		}
 	}
+	return d.LLM
+}
+
+func (d Deps) detailAuditModel() imp.LLMChat {
+	if d.Auditor != nil {
+		return d.Auditor
+	}
+	// Non-Host callers historically supplied one model only. Keep that API
+	// usable, while the Web Host always injects the independent auditor route.
 	return d.LLM
 }
 
@@ -1026,7 +1037,9 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 	if err := ValidateAdaptationOutlineQuality(&proposal, manifest); err != nil {
 		return nil, err
 	}
-	domain.MarkAdaptationOutlineQualityPassed(&proposal)
+	if !domain.AdaptationOutlineQualityPassed(proposal) {
+		domain.MarkAdaptationOutlineQualityPassed(&proposal)
+	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编提案已生成，正在保存：%d 章", len(proposal.Chapters)), nil)
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation proposal: %w", err)
@@ -1319,6 +1332,7 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	if err := normalizePlannerSkeleton(&skeleton, proposalOpts, manifest, review.TargetChapterCount); err != nil {
 		return nil, fmt.Errorf("volume review skeleton invalid: %w", err)
 	}
+	attachSkeletonMainlineEvents(&skeleton, reports)
 	runtime, _, err := loadPlannerProposalRuntime(deps, proposalOpts, manifest, review.TargetChapterCount, opts.EmitProgress)
 	if err != nil {
 		return nil, err
@@ -1341,7 +1355,11 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	if err := ValidateAdaptationOutlineQuality(&proposal, manifest); err != nil {
 		return nil, err
 	}
-	domain.MarkAdaptationOutlineQualityPassed(&proposal)
+	digest := layeredDetailAuditDigest(runtime, len(plannerDetailBatches(skeleton.Batches, adaptationPlannerRecommendedBatchMax)))
+	if digest == "" {
+		return nil, fmt.Errorf("chapter detail audit layers are incomplete; proposal cannot enter review")
+	}
+	domain.MarkAdaptationOutlineQualityPassedWithLayers(&proposal, digest)
 	emitAdaptProgress(opts.EmitProgress, StagePlan, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编章节细纲已生成，正在保存：%d 章", len(proposal.Chapters)), nil)
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation proposal: %w", err)
@@ -1367,19 +1385,20 @@ func buildAdaptationProposalDetailsWithQualityRetries(
 		func(retry int, qualityErr *AdaptationOutlineQualityError) error {
 			opts.outlineQualityFeedback = formatAdaptationOutlineQualityFeedback(qualityErr)
 			if runtime != nil {
-				runtime.CompletedBatches = nil
-				if err := savePlannerProposalRuntime(deps, runtime); err != nil {
-					return fmt.Errorf("clear invalid detail-outline runtime before audit retry: %w", err)
+				affected := markPlannerRuntimeQualityIssues(runtime, skeleton, qualityErr)
+				if affected == 0 {
+					return fmt.Errorf("final outline audit could not locate its findings to a detail batch; runtime was preserved for diagnosis: %w", qualityErr)
 				}
+				if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+					return fmt.Errorf("save targeted detail-outline audit retry: %w", err)
+				}
+				emitAdaptProgress(
+					opts.EmitProgress, StageAudit, 0, len(runtime.CompletedBatches),
+					fmt.Sprintf("完整详纲审计发现 %d 项问题，已定位 %d 个批次；仅修复这些批次并立即复审", len(qualityErr.Issues), affected),
+					qualityErr,
+				)
 			}
-			emitAdaptProgress(
-				opts.EmitProgress,
-				StagePlan,
-				0,
-				0,
-				fmt.Sprintf("改编详细章节提纲未通过质量审计，已清除本轮细纲并开始第 %d/%d 次重试（%d 项问题）", retry, deps.adaptationOutlineAuditRetryMaxAttempts(), len(qualityErr.Issues)),
-				qualityErr,
-			)
+			emitAdaptProgress(opts.EmitProgress, StageAudit, 0, 0, fmt.Sprintf("开始第 %d/%d 次定点修复", retry, deps.adaptationOutlineAuditRetryMaxAttempts()), nil)
 			return nil
 		},
 	)
@@ -3148,6 +3167,7 @@ type plannerSkeletonBatch struct {
 	SourceTo           int      `json:"source_to"`
 	SourceChapters     []int    `json:"source_chapters,omitempty"`
 	MainlineEventIDs   []string `json:"mainline_event_ids,omitempty"`
+	AllowedEventIDs    []string `json:"allowed_event_ids,omitempty"`
 	Notes              []string `json:"notes,omitempty"`
 }
 
@@ -4317,12 +4337,39 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 	reusedBatchCount := 0
 	for batchOrdinal, batch := range detailBatches {
 		validateBatch := plannerBatchChapterValidator(opts, manifest, batch, chapters)
-		if batchChapters, ok := plannerRuntimeBatchChapters(runtime, batch); ok {
+		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, sourceFoundation, skeleton, batch, reportsForPlannerDetailBatch(reports, batch), chapters)
+		if err != nil {
+			return zero, err
+		}
+		label := fmt.Sprintf("章节详情第 %d/%d 批", batchOrdinal+1, len(detailBatches))
+		batchCtx := withDetailRepairObserver(ctx, persistDetailRepairFailureObserver(deps, runtime, batch))
+		if raw := plannerRuntimeRawBatch(runtime, batch); raw != nil && raw.Audit != nil &&
+			raw.Audit.Status == domain.AdaptationDetailAuditRepairPending &&
+			raw.Audit.RepairAttempts >= deps.adaptationOutlineAuditRetryMaxAttempts() {
+			if _, _, usable := plannerRuntimeBatchCandidate(runtime, batch); !usable {
+				return zero, fmt.Errorf("%s has exhausted %d persisted repair attempts for %s", label, raw.Audit.RepairAttempts, raw.Audit.LastErrorCategory)
+			}
+		}
+		if batchChapters, existingAudit, ok := plannerRuntimeBatchCandidate(runtime, batch); ok {
 			if err := validateBatch(batchChapters); err == nil {
-				chapters = append(chapters, batchChapters...)
+				auditedChapters, _, auditErr := auditAndRepairDetailBatch(
+					batchCtx, deps, opts, reports, manifest, skeleton, batch, chapters, batchChapters, existingAudit,
+					systemPrompt, batchPrompt, validateBatch, runtime, opts.EmitProgress, batchOrdinal+1, len(detailBatches), label,
+				)
+				if auditErr != nil {
+					return zero, fmt.Errorf("planner batch %d pre-writing audit: %w", batch.Index, auditErr)
+				}
+				chapters = append(chapters, auditedChapters...)
+				if err := runClosedDetailScopeAudits(batchCtx, deps, runtime, opts, reports, skeleton, batch, chapters, opts.EmitProgress, batchOrdinal+1, len(detailBatches)); err != nil {
+					return zero, fmt.Errorf("planner batch %d parent/volume audit: %w", batch.Index, err)
+				}
 				reusedBatchCount++
 				continue
 			} else {
+				if existingAudit != nil && existingAudit.Status == domain.AdaptationDetailAuditRepairPending &&
+					existingAudit.RepairAttempts >= deps.adaptationOutlineAuditRetryMaxAttempts() {
+					return zero, fmt.Errorf("%s has exhausted %d persisted repair attempts for %s: %w", label, existingAudit.RepairAttempts, existingAudit.LastErrorCategory, err)
+				}
 				var budgetErr *plannerProposalBudgetSplitError
 				if errors.As(err, &budgetErr) {
 					if updateErr := preparePlannerRuntimeAfterValidationError(deps, runtime, err, opts, manifest, opts.EmitProgress); updateErr != nil {
@@ -4330,20 +4377,15 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 					}
 					return zero, fmt.Errorf("planner batch %d: %w", batch.Index, err)
 				}
-				removePlannerProposalRuntimeBatch(runtime, batch)
-				if saveErr := savePlannerProposalRuntime(deps, runtime); saveErr != nil {
-					return zero, fmt.Errorf("save proposal runtime after invalid reused batch %d: %w", batch.Index, saveErr)
+				if observeErr := observeDetailRepairFailure(batchCtx, batchChapters, err); observeErr != nil {
+					return zero, fmt.Errorf("persist invalid detail batch fingerprint: %w", observeErr)
 				}
-				emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("Discarded invalid proposal detail batch %d/%d: target %d-%d", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), err)
+				emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("已保留无效详情批次 %d/%d 的错误指纹，正在从干净上下文重生成：第 %d-%d 章", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), err)
 			}
-		}
-		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, sourceFoundation, skeleton, batch, reportsForPlannerDetailBatch(reports, batch), chapters)
-		if err != nil {
-			return zero, err
 		}
 		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("请求章节详情第 %d/%d 批：第 %d-%d 章", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
 		batchText, err := generatePlannerText(
-			ctx,
+			batchCtx,
 			deps.modelForStage("detail_outline"),
 			systemPrompt,
 			batchPrompt,
@@ -4351,7 +4393,7 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 			opts.EmitProgress,
 			batchOrdinal+1,
 			len(detailBatches),
-			fmt.Sprintf("章节详情第 %d/%d 批", batchOrdinal+1, len(detailBatches)),
+			label,
 			deps.modelCallMaxAttempts(),
 		)
 		if err != nil {
@@ -4359,7 +4401,7 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 		}
 		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("章节详情第 %d/%d 批已返回，正在解析校验", batchOrdinal+1, len(detailBatches)), nil)
 		batchChapters, err := collectPlannerBatchChaptersWithRepair(
-			ctx,
+			batchCtx,
 			deps.modelForStage("detail_outline"),
 			systemPrompt,
 			batchPrompt,
@@ -4370,8 +4412,8 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 			opts.EmitProgress,
 			batchOrdinal+1,
 			len(detailBatches),
-			fmt.Sprintf("章节详情第 %d/%d 批", batchOrdinal+1, len(detailBatches)),
-			deps.structureRepairMaxAttempts(),
+			label,
+			detailBatchRepairMaxAttempts(deps),
 			deps.modelCallMaxAttempts(),
 		)
 		if err != nil {
@@ -4389,10 +4431,20 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 			}
 			return zero, fmt.Errorf("planner batch %d: no chapters", batch.Index)
 		}
-		chapters = append(chapters, batchChapters...)
-		upsertPlannerProposalRuntimeBatch(runtime, batch, batchChapters)
-		if err := savePlannerProposalRuntime(deps, runtime); err != nil {
-			return zero, fmt.Errorf("save proposal runtime batch %d: %w", batch.Index, err)
+		var candidateAudit *domain.AdaptationDetailBatchAudit
+		if raw := plannerRuntimeRawBatch(runtime, batch); raw != nil {
+			candidateAudit = raw.Audit
+		}
+		auditedChapters, _, auditErr := auditAndRepairDetailBatch(
+			batchCtx, deps, opts, reports, manifest, skeleton, batch, chapters, batchChapters, candidateAudit,
+			systemPrompt, batchPrompt, validateBatch, runtime, opts.EmitProgress, batchOrdinal+1, len(detailBatches), label,
+		)
+		if auditErr != nil {
+			return zero, fmt.Errorf("planner batch %d pre-writing audit: %w", batch.Index, auditErr)
+		}
+		chapters = append(chapters, auditedChapters...)
+		if err := runClosedDetailScopeAudits(batchCtx, deps, runtime, opts, reports, skeleton, batch, chapters, opts.EmitProgress, batchOrdinal+1, len(detailBatches)); err != nil {
+			return zero, fmt.Errorf("planner batch %d parent/volume audit: %w", batch.Index, err)
 		}
 		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("章节详情第 %d/%d 批完成：第 %d-%d 章", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
 	}
@@ -4434,6 +4486,14 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 		}
 		return zero, err
 	}
+	if err := ensureGlobalDetailAuditCheckpoint(ctx, deps, runtime, opts, skeleton, proposal.Chapters, opts.EmitProgress); err != nil {
+		return zero, fmt.Errorf("global pre-writing outline audit: %w", err)
+	}
+	digest := layeredDetailAuditDigest(runtime, len(detailBatches))
+	if digest == "" {
+		return zero, fmt.Errorf("pre-writing outline audit checkpoints are incomplete")
+	}
+	domain.MarkAdaptationOutlineQualityPassedWithLayers(&proposal, digest)
 	return proposal, nil
 }
 
@@ -4487,6 +4547,7 @@ func loadPlannerProposalRuntime(
 		return runtime, nil, nil
 	}
 	if existing.Skeleton == nil {
+		existing.Version = adaptationProposalRuntimeVersion
 		return existing, nil, nil
 	}
 	skeleton := plannerSkeletonFromRuntime(existing)
@@ -4498,6 +4559,7 @@ func loadPlannerProposalRuntime(
 		return runtime, nil, nil
 	}
 	existing.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+	existing.Version = adaptationProposalRuntimeVersion
 	return existing, &skeleton, nil
 }
 
@@ -4516,7 +4578,7 @@ func newPlannerProposalRuntime(opts ProposalOptions, manifest *domain.Adaptation
 }
 
 func plannerProposalRuntimeMatches(runtime *domain.AdaptationProposalRuntime, opts ProposalOptions, manifest *domain.AdaptationSourceManifest, targetChapterHint int) bool {
-	if runtime == nil || runtime.Version != adaptationProposalRuntimeVersion {
+	if runtime == nil || (runtime.Version != adaptationProposalRuntimeVersion && runtime.Version != adaptationProposalRuntimeLegacyVersion) {
 		return false
 	}
 	if strings.TrimSpace(runtime.Brief) != strings.TrimSpace(opts.Brief) {
@@ -4601,6 +4663,7 @@ func plannerSkeletonFromRuntime(runtime *domain.AdaptationProposalRuntime) plann
 			SourceTo:           batch.SourceTo,
 			SourceChapters:     append([]int(nil), batch.SourceChapters...),
 			MainlineEventIDs:   append([]string(nil), batch.MainlineEventIDs...),
+			AllowedEventIDs:    append([]string(nil), batch.AllowedEventIDs...),
 			Notes:              append([]string(nil), batch.Notes...),
 		})
 	}
@@ -4635,6 +4698,7 @@ func plannerRuntimeOutlineFromSkeleton(skeleton plannerSkeleton) *domain.Adaptat
 			SourceTo:           batch.SourceTo,
 			SourceChapters:     append([]int(nil), batch.SourceChapters...),
 			MainlineEventIDs:   append([]string(nil), batch.MainlineEventIDs...),
+			AllowedEventIDs:    append([]string(nil), batch.AllowedEventIDs...),
 			Notes:              append([]string(nil), batch.Notes...),
 		})
 	}
@@ -4676,8 +4740,16 @@ func plannerRuntimeSkeletonBatchMatches(a, b domain.AdaptationProposalRuntimeSke
 }
 
 func plannerRuntimeBatchChapters(runtime *domain.AdaptationProposalRuntime, batch plannerSkeletonBatch) ([]domain.AdaptationChapterPlan, bool) {
+	chapters, _, ok := plannerRuntimeBatchCandidate(runtime, batch)
+	return chapters, ok
+}
+
+func plannerRuntimeBatchCandidate(
+	runtime *domain.AdaptationProposalRuntime,
+	batch plannerSkeletonBatch,
+) ([]domain.AdaptationChapterPlan, *domain.AdaptationDetailBatchAudit, bool) {
 	if runtime == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	for _, completed := range runtime.CompletedBatches {
 		if !plannerRuntimeBatchMatches(completed, batch) {
@@ -4689,10 +4761,10 @@ func plannerRuntimeBatchChapters(runtime *domain.AdaptationProposalRuntime, batc
 		}
 		normalized, err := normalizePlannerBatchChapters(chapters, batch)
 		if err == nil {
-			return normalized, true
+			return normalized, cloneAdaptationDetailBatchAudit(completed.Audit), true
 		}
 	}
-	return nil, false
+	return nil, nil, false
 }
 
 func plannerRuntimeBatchMatches(completed domain.AdaptationProposalRuntimeBatch, batch plannerSkeletonBatch) bool {
@@ -5017,6 +5089,7 @@ func upsertPlannerProposalRuntimeSkeletonBatches(runtime *domain.AdaptationPropo
 			SourceTo:           batch.SourceTo,
 			SourceChapters:     append([]int(nil), batch.SourceChapters...),
 			MainlineEventIDs:   append([]string(nil), batch.MainlineEventIDs...),
+			AllowedEventIDs:    append([]string(nil), batch.AllowedEventIDs...),
 			Notes:              append([]string(nil), batch.Notes...),
 		})
 	}
@@ -5041,6 +5114,15 @@ func plannerRuntimeSkeletonTargetChapterCount(batches []domain.AdaptationProposa
 }
 
 func upsertPlannerProposalRuntimeBatch(runtime *domain.AdaptationProposalRuntime, batch plannerSkeletonBatch, chapters []domain.AdaptationChapterPlan) {
+	upsertPlannerProposalRuntimeBatchWithAudit(runtime, batch, chapters, nil)
+}
+
+func upsertPlannerProposalRuntimeBatchWithAudit(
+	runtime *domain.AdaptationProposalRuntime,
+	batch plannerSkeletonBatch,
+	chapters []domain.AdaptationChapterPlan,
+	audit *domain.AdaptationDetailBatchAudit,
+) {
 	if runtime == nil {
 		return
 	}
@@ -5063,6 +5145,7 @@ func upsertPlannerProposalRuntimeBatch(runtime *domain.AdaptationProposalRuntime
 		SourceTo:    batch.SourceTo,
 		CompletedAt: time.Now().UTC().Format(time.RFC3339),
 		Chapters:    storedChapters,
+		Audit:       cloneAdaptationDetailBatchAudit(audit),
 	})
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].TargetFrom == out[j].TargetFrom {
@@ -5071,6 +5154,19 @@ func upsertPlannerProposalRuntimeBatch(runtime *domain.AdaptationProposalRuntime
 		return out[i].TargetFrom < out[j].TargetFrom
 	})
 	runtime.CompletedBatches = out
+}
+
+func cloneAdaptationDetailBatchAudit(audit *domain.AdaptationDetailBatchAudit) *domain.AdaptationDetailBatchAudit {
+	if audit == nil {
+		return nil
+	}
+	out := *audit
+	out.Findings = append([]domain.AdaptationDetailAuditFinding(nil), audit.Findings...)
+	for index := range out.Findings {
+		out.Findings[index].TargetChapters = append([]int(nil), audit.Findings[index].TargetChapters...)
+		out.Findings[index].Evidence = append([]domain.AdaptationDetailAuditEvidence(nil), audit.Findings[index].Evidence...)
+	}
+	return &out
 }
 
 func clonePlannerRuntimeMeta(planner *domain.AdaptationPlannerMeta) *domain.AdaptationPlannerMeta {
@@ -5536,6 +5632,9 @@ func collectPlannerBatchChaptersWithRepair(
 		}
 		if lastErr == nil {
 			lastErr = fmt.Errorf("planner batch returned no usable chapters")
+		}
+		if observeErr := observeDetailRepairFailure(ctx, chapters, lastErr); observeErr != nil {
+			return nil, fmt.Errorf("persist detail repair failure: %w", observeErr)
 		}
 		if attempt >= maxRepairAttempts {
 			return nil, lastErr
@@ -6343,18 +6442,20 @@ func shouldRegeneratePlannerBatchFromOriginal(attempt int, previousErr error) bo
 }
 
 func plannerBatchEventRepairRequirements(batch plannerSkeletonBatch, previousErr error) []string {
-	if len(batch.MainlineEventIDs) == 0 || previousErr == nil {
+	if (len(batch.MainlineEventIDs) == 0 && len(batch.AllowedEventIDs) == 0) || previousErr == nil {
 		return nil
 	}
 	message := strings.ToLower(previousErr.Error())
 	if !strings.Contains(message, "event") && !strings.Contains(message, "outline beats") {
 		return nil
 	}
-	allowed, _ := json.Marshal(batch.MainlineEventIDs)
+	mainline, _ := json.Marshal(batch.MainlineEventIDs)
+	allowed, _ := json.Marshal(batch.AllowedEventIDs)
 	return []string{
-		fmt.Sprintf("For this isolated detail batch, the complete allowed mainline event_ids whitelist is %s. Across all returned chapters, use every listed ID exactly once and use no other mainline ID.", allowed),
+		fmt.Sprintf("For this isolated detail batch, the required mainline event_ids are %s. Across all returned chapters, use every required ID exactly once.", mainline),
+		fmt.Sprintf("The complete stable source-event whitelist is %s. Every event_ids value must come from this list. Never invent a source ID; put genuinely new target-story events in added_event_ids.", allowed),
 		"If the failed response pulled an event from another detail batch, rebuild the affected title, core_event, hook, and scenes around this batch's assigned events. Do not merely delete the foreign ID while keeping its future plot beat in prose.",
-		"Before returning JSON, verify that the union of chapter event_ids equals the whitelist exactly, with no missing, foreign, or duplicate ID.",
+		"Before returning JSON, verify that every required mainline ID appears exactly once, optional stable IDs appear at most once, and no foreign or invented source ID appears.",
 	}
 }
 
@@ -6741,17 +6842,23 @@ func plannerSourceReportExcerptsForDetail(reports []domain.AdaptationSourceRepor
 	if domain.NormalizeAdaptationGranularity(granularity) != domain.AdaptationGranularityArc {
 		return excerpts
 	}
-	allowedMainlineIDs := make(map[string]struct{}, len(batch.MainlineEventIDs))
+	allowedEventIDs := make(map[string]struct{}, len(batch.MainlineEventIDs)+len(batch.AllowedEventIDs))
 	for _, eventID := range batch.MainlineEventIDs {
 		eventID = strings.TrimSpace(eventID)
 		if eventID != "" {
-			allowedMainlineIDs[eventID] = struct{}{}
+			allowedEventIDs[eventID] = struct{}{}
+		}
+	}
+	for _, eventID := range batch.AllowedEventIDs {
+		eventID = strings.TrimSpace(eventID)
+		if eventID != "" {
+			allowedEventIDs[eventID] = struct{}{}
 		}
 	}
 	for index := range excerpts {
 		events := excerpts[index].SourceEvents[:0]
 		for _, event := range excerpts[index].SourceEvents {
-			if _, ok := allowedMainlineIDs[strings.TrimSpace(event.ID)]; !ok {
+			if _, ok := allowedEventIDs[strings.TrimSpace(event.ID)]; !ok {
 				continue
 			}
 			events = append(events, event)
@@ -7142,7 +7249,8 @@ func buildAdaptationPlannerBatchUserPrompt(
 			"Every chapter must include event_ids and added_event_ids arrays.",
 			"Assign every batch.mainline_event_ids value to exactly one target chapter event_ids entry; do not omit, duplicate, paraphrase, or replace these stable IDs.",
 			"Use only this detail batch's batch.mainline_event_ids for required mainline bindings. Do not copy mainline IDs from the parent skeleton or previous detail batches.",
-			"Supporting and texture source event_ids are optional references, but if you include one, assign it exactly once to the target chapter whose title/core_event/hook/scenes actually contain that event's plot beat.",
+			"Supporting and texture source event_ids are optional references, but they must come from batch.allowed_event_ids. If you include one, assign it exactly once to the target chapter whose title/core_event/hook/scenes actually contain that event's plot beat.",
+			"Never invent a source event ID. A genuinely new target-story event belongs in added_event_ids, not event_ids.",
 			"Do not copy a later chapter's supporting/texture event_id into the current chapter. Move the event_id, preserve_events, required_changes, and matching story beat together; do not keep a future beat after deleting only its ID.",
 			"Keep scene density and output capacity consistent: for arc chapters, word_budget.max_runes must be at least 300 runes per planned scene, or reduce/split the scenes before returning the outline.",
 			"Put new plot IDs only in added_event_ids; added events may support assigned mainline events but cannot take their chapter space.",

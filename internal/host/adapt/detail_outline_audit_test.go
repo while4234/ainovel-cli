@@ -1,0 +1,205 @@
+package adapt
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/store"
+)
+
+type blockingOnceDetailAuditor struct{ calls int }
+
+func (m *blockingOnceDetailAuditor) Generate(_ context.Context, messages []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	m.calls++
+	response := detailAuditModelResponse{Verdict: "pass", Summary: "re-audit passed"}
+	if m.calls == 1 {
+		var payload struct {
+			TargetFrom int                   `json:"target_from"`
+			Artifacts  []detailAuditArtifact `json:"artifacts"`
+		}
+		_ = json.Unmarshal([]byte(messages[len(messages)-1].TextContent()), &payload)
+		for _, artifact := range payload.Artifacts {
+			if artifact.ID != "candidate" || artifact.Text == "" {
+				continue
+			}
+			quote := string([]rune(artifact.Text)[:1])
+			response = detailAuditModelResponse{Verdict: "fail", Summary: "blocking issue", Findings: []detailAuditModelFinding{{
+				Code: "semantic_mismatch", Severity: "blocking", Message: "candidate conflicts with source",
+				RepairInstruction: "regenerate the complete batch", TargetChapters: []int{payload.TargetFrom},
+				Evidence: []domain.AdaptationDetailAuditEvidence{{ArtifactID: artifact.ID, ArtifactSHA256: artifact.SHA256, Quote: quote, FromRune: 0, ToRune: 1}},
+			}}}
+			break
+		}
+	}
+	data, _ := json.Marshal(response)
+	return &agentcore.LLMResponse{Message: agentcore.Message{
+		Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.TextBlock(string(data))}, Timestamp: time.Now(),
+	}}, nil
+}
+
+func TestValidateArcBatchEventCoverageAllowsStableSupportingAndRejectsInvented(t *testing.T) {
+	batch := plannerSkeletonBatch{
+		TargetFrom: 1, TargetTo: 1,
+		MainlineEventIDs: []string{"src-main"},
+		AllowedEventIDs:  []string{"src-main", "src-support"},
+	}
+	chapters := []domain.AdaptationChapterPlan{{Chapter: 1, EventIDs: []string{"src-main", "src-support"}}}
+	if err := validateArcBatchEventCoverage(chapters, batch); err != nil {
+		t.Fatalf("stable supporting event should be accepted: %v", err)
+	}
+	chapters[0].EventIDs = append(chapters[0].EventIDs, "src-invented")
+	if err := validateArcBatchEventCoverage(chapters, batch); detailRepairErrorCategory(err) != "foreign_event_id" {
+		t.Fatalf("invented event category=%q err=%v", detailRepairErrorCategory(err), err)
+	}
+}
+
+func TestDetailRepairCategoryFingerprintIgnoresChangingForeignEventID(t *testing.T) {
+	first := fmt.Errorf("arc mainline event EVT-NEW-A is not assigned to detail batch 203-205; remove it from event_ids")
+	second := fmt.Errorf("arc mainline event EVT-NEW-B is not assigned to detail batch 203-205; remove it from event_ids")
+	if detailRepairErrorCategory(first) != "foreign_event_id" || detailRepairErrorCategory(second) != "foreign_event_id" {
+		t.Fatalf("foreign IDs should share one category: %q %q", detailRepairErrorCategory(first), detailRepairErrorCategory(second))
+	}
+	if detailOutlineTextSHA256(first.Error()) == detailOutlineTextSHA256(second.Error()) {
+		t.Fatal("exact fingerprints should still distinguish concrete IDs")
+	}
+	firstCategory := detailOutlineTextSHA256("foreign_event_id:203-205")
+	secondCategory := detailOutlineTextSHA256("foreign_event_id:203-205")
+	if firstCategory != secondCategory {
+		t.Fatal("category fingerprint should be stable across concrete IDs")
+	}
+}
+
+func TestPersistDetailRepairFailureCountsAcrossCandidates(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	runtime := &domain.AdaptationProposalRuntime{Version: adaptationProposalRuntimeVersion}
+	batch := plannerSkeletonBatch{Index: 54, TargetFrom: 203, TargetTo: 205, SourceFrom: 100, SourceTo: 101}
+	observer := persistDetailRepairFailureObserver(Deps{Store: st}, runtime, batch)
+	if err := observer(nil, fmt.Errorf("event EVT-A is not assigned to detail batch 203-205")); err != nil {
+		t.Fatalf("persist first: %v", err)
+	}
+	first := plannerRuntimeRawBatch(runtime, batch)
+	if first == nil || first.Audit == nil {
+		t.Fatal("first structural failure was not persisted")
+	}
+	firstExact := first.Audit.ExactErrorFingerprint
+	if err := observer(nil, fmt.Errorf("event EVT-B is not assigned to detail batch 203-205")); err != nil {
+		t.Fatalf("persist second: %v", err)
+	}
+	second := plannerRuntimeRawBatch(runtime, batch)
+	if second.Audit.RepairAttempts != 2 || second.Audit.ConsecutiveCategoryFailures != 2 {
+		t.Fatalf("persisted audit=%+v, want two consecutive category failures", second.Audit)
+	}
+	if second.Audit.ExactErrorFingerprint == firstExact {
+		t.Fatal("changing concrete ID should change exact fingerprint")
+	}
+	if second.Audit.LastErrorCategory != "foreign_event_id" {
+		t.Fatalf("category=%q", second.Audit.LastErrorCategory)
+	}
+}
+
+func TestVerifiedDetailAuditFindingsRequireExactEvidenceAndTarget(t *testing.T) {
+	artifact := detailAuditArtifact{ID: "candidate", Text: "甲乙丙", TargetChapters: []int{7}}
+	artifact.SHA256 = detailOutlineTextSHA256(artifact.Text)
+	valid := detailAuditModelFinding{
+		Code: "timeline", Severity: "blocking", Message: "顺序冲突", RepairInstruction: "调整顺序", TargetChapters: []int{7},
+		Evidence: []domain.AdaptationDetailAuditEvidence{{ArtifactID: "candidate", ArtifactSHA256: artifact.SHA256, Quote: "乙", FromRune: 1, ToRune: 2}},
+	}
+	findings := verifiedDetailAuditFindings([]detailAuditModelFinding{valid}, []detailAuditArtifact{artifact}, 7, 8)
+	if len(findings) != 1 || !findings[0].Blocking {
+		t.Fatalf("valid evidence should remain blocking: %+v", findings)
+	}
+	invalid := valid
+	invalid.Evidence[0].Quote = "丙"
+	findings = verifiedDetailAuditFindings([]detailAuditModelFinding{invalid}, []detailAuditArtifact{artifact}, 7, 8)
+	if findings[0].Blocking || findings[0].Severity != "warning" {
+		t.Fatalf("invalid evidence should be downgraded: %+v", findings[0])
+	}
+}
+
+func TestLayeredDetailAuditDigestRequiresEveryBatchAndGlobalCheckpoint(t *testing.T) {
+	passed := func(signature string) *domain.AdaptationDetailBatchAudit {
+		return &domain.AdaptationDetailBatchAudit{
+			Version: domain.AdaptationDetailAuditVersion, Status: domain.AdaptationDetailAuditPassed,
+			ContentSignature: signature, DeterministicPassed: true, SemanticPassed: true,
+		}
+	}
+	runtime := &domain.AdaptationProposalRuntime{
+		CompletedBatches: []domain.AdaptationProposalRuntimeBatch{{TargetFrom: 1, TargetTo: 2, Audit: passed("a")}},
+		AuditCheckpoints: []domain.AdaptationDetailAuditCheckpoint{{
+			Version: domain.AdaptationDetailAuditVersion, Kind: "global", ID: "global-outline", Status: domain.AdaptationDetailAuditPassed,
+		}},
+	}
+	if digest := layeredDetailAuditDigest(runtime, 1); digest == "" {
+		t.Fatal("complete layered audit should produce a digest")
+	}
+	runtime.CompletedBatches[0].Audit.Status = domain.AdaptationDetailAuditPending
+	if digest := layeredDetailAuditDigest(runtime, 1); digest != "" {
+		t.Fatalf("pending batch produced digest %q", digest)
+	}
+}
+
+func TestDetailBatchAuditArtifactsExcludeOutOfRangeReports(t *testing.T) {
+	reports := make([]domain.AdaptationSourceReport, 0, 100)
+	for chapter := 1; chapter <= 100; chapter++ {
+		reports = append(reports, domain.AdaptationSourceReport{Chapter: chapter, Title: fmt.Sprintf("source-%03d", chapter), Summary: strings.Repeat("摘要", 200)})
+	}
+	batch := plannerSkeletonBatch{TargetFrom: 1, TargetTo: 1, SourceFrom: 50, SourceTo: 50}
+	artifacts := detailBatchAuditArtifacts(
+		ProposalOptions{Granularity: domain.AdaptationGranularityArc}, reports,
+		plannerSkeleton{Granularity: domain.AdaptationGranularityArc, Batches: []plannerSkeletonBatch{batch}}, batch, nil,
+		plannerBatchPlans(1, 1, 50, 50),
+	)
+	var sourceText string
+	for _, artifact := range artifacts {
+		if artifact.ID == "source" {
+			sourceText = artifact.Text
+		}
+	}
+	if !strings.Contains(sourceText, "source-050") || strings.Contains(sourceText, "source-049") || strings.Contains(sourceText, "source-051") {
+		t.Fatalf("audit source artifact was not range-scoped: %s", sourceText)
+	}
+}
+
+func TestAuditAndRepairDetailBatchOnlyCompletesAfterSemanticReaudit(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	batch := plannerSkeletonBatch{Index: 1, TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1}
+	skeleton := plannerSkeleton{Granularity: domain.AdaptationGranularityFree, TargetChapterCount: 1, Batches: []plannerSkeletonBatch{batch}}
+	opts := ProposalOptions{Brief: "free rewrite", Granularity: domain.AdaptationGranularityFree, RewritePolicy: domain.AdaptationRewriteFullRewrite}
+	manifest := &domain.AdaptationSourceManifest{ChapterCount: 1, Chapters: []domain.AdaptationSource{{Chapter: 1, Runes: 1000}}}
+	candidate := plannerBatchPlans(1, 1, 1, 1)
+	planner := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: plannerBatchProposalJSON(1, 1, 1, 1)}}}
+	auditor := &blockingOnceDetailAuditor{}
+	deps := Deps{Store: st, LLM: planner, Auditor: auditor, AdaptationOutlineAuditRetryMaxAttempts: 2, StructureRepairMaxAttempts: 2}
+	runtime := newPlannerProposalRuntime(opts, manifest, 1)
+	validate := plannerBatchChapterValidator(opts, manifest, batch)
+	var progress []string
+	emit := func(_ Stage, _, _ int, message string, _ error) { progress = append(progress, message) }
+	chapters, audit, err := auditAndRepairDetailBatch(
+		withAdaptationPromptModeIfMissing(context.Background(), opts.Granularity), deps, opts, nil, manifest, skeleton, batch, nil, candidate, nil,
+		"planner", "original", validate, runtime, emit, 1, 1, "章节详情第 1/1 批",
+	)
+	if err != nil {
+		t.Fatalf("auditAndRepairDetailBatch: %v", err)
+	}
+	if len(chapters) != 1 || audit.Status != domain.AdaptationDetailAuditPassed || audit.RepairAttempts != 1 || auditor.calls != 2 {
+		t.Fatalf("chapters=%+v audit=%+v auditor calls=%d", chapters, audit, auditor.calls)
+	}
+	joined := strings.Join(progress, "\n")
+	for _, want := range []string{"审核发现 1 项阻断问题", "修复稿已生成，正在复审", "复审通过，本批次修复完成"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("progress missing %q: %s", want, joined)
+		}
+	}
+}

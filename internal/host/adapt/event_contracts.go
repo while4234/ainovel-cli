@@ -61,7 +61,25 @@ func attachSkeletonMainlineEvents(skeleton *plannerSkeleton, reports []domain.Ad
 	for index := range skeleton.Batches {
 		batch := &skeleton.Batches[index]
 		batch.MainlineEventIDs = adaptationEventIDs(mainlineSourceEventsInRange(reports, batch.SourceFrom, batch.SourceTo))
+		batch.AllowedEventIDs = adaptationEventIDs(sourceEventsInRange(reports, batch.SourceFrom, batch.SourceTo))
 	}
+}
+
+func sourceEventsInRange(reports []domain.AdaptationSourceReport, from, to int) []domain.AdaptationEvent {
+	var events []domain.AdaptationEvent
+	for _, event := range sourceEventsFromReports(reports) {
+		if event.SourceChapter < from || event.SourceChapter > to {
+			continue
+		}
+		events = append(events, event)
+	}
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].SourceChapter != events[j].SourceChapter {
+			return events[i].SourceChapter < events[j].SourceChapter
+		}
+		return events[i].ID < events[j].ID
+	})
+	return events
 }
 
 func splitEventIDsForBatch(ids []string, partCount, partIndex int) []string {
@@ -73,9 +91,15 @@ func splitEventIDsForBatch(ids []string, partCount, partIndex int) []string {
 }
 
 func validateArcBatchEventCoverage(chapters []domain.AdaptationChapterPlan, batch plannerSkeletonBatch) error {
-	allowed := make(map[string]struct{}, len(batch.MainlineEventIDs))
+	allowed := make(map[string]struct{}, len(batch.AllowedEventIDs)+len(batch.MainlineEventIDs))
 	counts := make(map[string]int, len(batch.MainlineEventIDs))
 	for _, eventID := range batch.MainlineEventIDs {
+		eventID = strings.TrimSpace(eventID)
+		if eventID != "" {
+			allowed[eventID] = struct{}{}
+		}
+	}
+	for _, eventID := range batch.AllowedEventIDs {
 		eventID = strings.TrimSpace(eventID)
 		if eventID != "" {
 			allowed[eventID] = struct{}{}
@@ -88,7 +112,7 @@ func validateArcBatchEventCoverage(chapters []domain.AdaptationChapterPlan, batc
 				continue
 			}
 			if _, ok := allowed[eventID]; !ok {
-				return fmt.Errorf("arc mainline event %s is not assigned to detail batch %d-%d; remove it from event_ids", eventID, batch.TargetFrom, batch.TargetTo)
+				return fmt.Errorf("arc source event %s is not assigned to detail batch %d-%d; remove it from event_ids or use added_event_ids for a genuinely new target event", eventID, batch.TargetFrom, batch.TargetTo)
 			}
 			counts[eventID]++
 		}

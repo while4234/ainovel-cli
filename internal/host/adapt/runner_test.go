@@ -1761,20 +1761,20 @@ func TestBuildPlanRejectsForeignMainlineBeforeFinalValidation(t *testing.T) {
 	}
 
 	_, err := buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
-		context.Background(), Deps{Store: st}, opts, reports, manifest, &domain.AdaptationSourceFoundation{}, skeleton, runtime, 1,
+		context.Background(), Deps{Store: st, Auditor: &scriptedAdaptLLM{}}, opts, reports, manifest, &domain.AdaptationSourceFoundation{}, skeleton, runtime, 1,
 	)
 	if err == nil || !strings.Contains(err.Error(), "planner batch 2 llm generate") {
 		t.Fatalf("error=%v, want local validation to regenerate only polluted batch 2", err)
 	}
 	joinedProgress := strings.Join(progress, "\n")
-	if !strings.Contains(joinedProgress, "Discarded invalid proposal detail batch 2/2") {
-		t.Fatalf("progress=%v, want polluted cached batch rejected before final validation", progress)
+	if !strings.Contains(joinedProgress, "已保留无效详情批次 2/2 的错误指纹") {
+		t.Fatalf("progress=%v, want polluted cached batch checkpointed before clean regeneration", progress)
 	}
 	if strings.Contains(joinedProgress, "Final proposal validation discarded") {
 		t.Fatalf("progress=%v, foreign mainline ID should not reach final validation", progress)
 	}
-	if len(runtime.CompletedBatches) != 1 || runtime.CompletedBatches[0].Index != firstBatch.Index {
-		t.Fatalf("completed batches=%+v, want correct owner batch retained", runtime.CompletedBatches)
+	if len(runtime.CompletedBatches) != 2 || runtime.CompletedBatches[1].Audit == nil || runtime.CompletedBatches[1].Audit.LastErrorCategory != "foreign_event_id" {
+		t.Fatalf("completed batches=%+v, want correct batch plus persisted polluted candidate", runtime.CompletedBatches)
 	}
 }
 
@@ -1787,15 +1787,15 @@ func TestPlannerSourceReportExcerptsForDetailScopesEventIDsToCurrentArcBatch(t *
 			{ID: "event-supporting", Importance: domain.AdaptationEventSupporting},
 		},
 	}}
-	batch := plannerSkeletonBatch{MainlineEventIDs: []string{"event-current"}}
+	batch := plannerSkeletonBatch{MainlineEventIDs: []string{"event-current"}, AllowedEventIDs: []string{"event-current", "event-supporting"}}
 
 	excerpts := plannerSourceReportExcerptsForDetail(reports, domain.AdaptationGranularityArc, batch)
 	if len(excerpts) != 1 {
 		t.Fatalf("excerpts=%+v, want one source report", excerpts)
 	}
 	gotIDs := adaptationEventIDs(excerpts[0].SourceEvents)
-	if !slices.Equal(gotIDs, []string{"event-current"}) {
-		t.Fatalf("source event IDs=%v, want only current batch mainline IDs", gotIDs)
+	if !slices.Equal(gotIDs, []string{"event-current", "event-supporting"}) {
+		t.Fatalf("source event IDs=%v, want current mainline and stable supporting IDs", gotIDs)
 	}
 }
 
@@ -4428,6 +4428,7 @@ func TestRepairPlannerBatchTextRegeneratesPollutedEventBatchFromWhitelist(t *tes
 		TargetFrom:       165,
 		TargetTo:         168,
 		MainlineEventIDs: []string{"EVT-165-A", "EVT-168-B"},
+		AllowedEventIDs:  []string{"EVT-165-A", "EVT-168-B", "EVT-166-SUPPORT"},
 	}
 	previous := `{"chapters":[{"chapter":165,"event_ids":["EVT-228-FUTURE"]}]}`
 	previousErr := fmt.Errorf("arc mainline event EVT-228-FUTURE is not assigned to detail batch 165-168; remove it from event_ids")
@@ -4440,7 +4441,7 @@ func TestRepairPlannerBatchTextRegeneratesPollutedEventBatchFromWhitelist(t *tes
 		t.Fatalf("repairPlannerBatchText: %v", err)
 	}
 	prompt := llm.got[0][1].TextContent()
-	for _, want := range []string{"EVT-165-A", "EVT-168-B", "use no other mainline ID", "Do not merely delete the foreign ID"} {
+	for _, want := range []string{"EVT-165-A", "EVT-168-B", "EVT-166-SUPPORT", "Never invent a source ID", "Do not merely delete the foreign ID"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("event repair prompt missing %q: %s", want, prompt)
 		}
@@ -4878,6 +4879,13 @@ func TestPlannerProposalRuntimeKeepsPartialSourceMapSkeletonForImplicitScale(t *
 	}, manifest, 490) {
 		t.Fatal("implicit long-form scale hint should not discard a partial source-map skeleton checkpoint")
 	}
+	runtime.Version = adaptationProposalRuntimeLegacyVersion
+	if !plannerProposalRuntimeMatches(runtime, ProposalOptions{
+		Brief: "arc long rewrite", Granularity: domain.AdaptationGranularityArc, RewritePolicy: domain.AdaptationRewriteFullRewrite,
+	}, manifest, 490) {
+		t.Fatal("legacy runtime must be retained and audited instead of discarded")
+	}
+	runtime.Version = adaptationProposalRuntimeVersion
 	runtime.Brief = "changed brief"
 	if plannerProposalRuntimeMatches(runtime, ProposalOptions{
 		Brief:         "arc long rewrite",

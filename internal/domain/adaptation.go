@@ -363,6 +363,78 @@ type AdaptationProposalRuntime struct {
 	Skeleton           *AdaptationProposalRuntimeOutline        `json:"skeleton,omitempty"`
 	SkeletonBatches    []AdaptationProposalRuntimeSkeletonBatch `json:"skeleton_batches,omitempty"`
 	CompletedBatches   []AdaptationProposalRuntimeBatch         `json:"completed_batches,omitempty"`
+	AuditCheckpoints   []AdaptationDetailAuditCheckpoint        `json:"audit_checkpoints,omitempty"`
+}
+
+const (
+	AdaptationDetailAuditVersion       = 1
+	AdaptationDetailAuditGenerated     = "generated"
+	AdaptationDetailAuditPending       = "audit_pending"
+	AdaptationDetailAuditRepairPending = "repair_pending"
+	AdaptationDetailAuditPassed        = "passed"
+)
+
+// AdaptationDetailAuditEvidence is a server-verified quote used by the
+// independent outline auditor. Offsets are absolute rune offsets inside the
+// identified immutable input artifact.
+type AdaptationDetailAuditEvidence struct {
+	ArtifactID     string `json:"artifact_id"`
+	ArtifactSHA256 string `json:"artifact_sha256"`
+	Quote          string `json:"quote"`
+	FromRune       int    `json:"from_rune"`
+	ToRune         int    `json:"to_rune"`
+}
+
+type AdaptationDetailAuditFinding struct {
+	Code              string                          `json:"code"`
+	Severity          string                          `json:"severity"`
+	Blocking          bool                            `json:"blocking"`
+	Message           string                          `json:"message"`
+	RepairInstruction string                          `json:"repair_instruction,omitempty"`
+	TargetChapters    []int                           `json:"target_chapters,omitempty"`
+	Evidence          []AdaptationDetailAuditEvidence `json:"evidence,omitempty"`
+}
+
+// AdaptationDetailBatchAudit is resumable proof that one detail batch passed
+// both the deterministic contract gate and the independent semantic audit.
+// InputSignature includes the preceding accepted context, so repairing an
+// upstream batch automatically makes dependent audit results stale.
+type AdaptationDetailBatchAudit struct {
+	Version                     int                            `json:"version"`
+	Status                      string                         `json:"status"`
+	ContentSignature            string                         `json:"content_signature,omitempty"`
+	InputSignature              string                         `json:"input_signature,omitempty"`
+	ContextSignature            string                         `json:"context_signature,omitempty"`
+	DeterministicPassed         bool                           `json:"deterministic_passed"`
+	SemanticPassed              bool                           `json:"semantic_passed"`
+	RepairAttempts              int                            `json:"repair_attempts,omitempty"`
+	Provider                    string                         `json:"provider,omitempty"`
+	Model                       string                         `json:"model,omitempty"`
+	CheckedAt                   string                         `json:"checked_at,omitempty"`
+	LastError                   string                         `json:"last_error,omitempty"`
+	LastErrorCategory           string                         `json:"last_error_category,omitempty"`
+	ExactErrorFingerprint       string                         `json:"exact_error_fingerprint,omitempty"`
+	CategoryFingerprint         string                         `json:"category_fingerprint,omitempty"`
+	ConsecutiveCategoryFailures int                            `json:"consecutive_category_failures,omitempty"`
+	Findings                    []AdaptationDetailAuditFinding `json:"findings,omitempty"`
+}
+
+// AdaptationDetailAuditCheckpoint records parent, volume, and global audit
+// gates. A final proposal is eligible for review only when every required
+// checkpoint has a current passed signature.
+type AdaptationDetailAuditCheckpoint struct {
+	Version        int                            `json:"version"`
+	Kind           string                         `json:"kind"`
+	ID             string                         `json:"id"`
+	Status         string                         `json:"status"`
+	TargetFrom     int                            `json:"target_from,omitempty"`
+	TargetTo       int                            `json:"target_to,omitempty"`
+	InputSignature string                         `json:"input_signature,omitempty"`
+	Provider       string                         `json:"provider,omitempty"`
+	Model          string                         `json:"model,omitempty"`
+	CheckedAt      string                         `json:"checked_at,omitempty"`
+	Summary        string                         `json:"summary,omitempty"`
+	Findings       []AdaptationDetailAuditFinding `json:"findings,omitempty"`
 }
 
 // AdaptationProposalRuntimeOutline stores the model-planned long-form skeleton
@@ -390,17 +462,19 @@ type AdaptationProposalRuntimeSkeletonBatch struct {
 	SourceTo           int      `json:"source_to"`
 	SourceChapters     []int    `json:"source_chapters,omitempty"`
 	MainlineEventIDs   []string `json:"mainline_event_ids,omitempty"`
+	AllowedEventIDs    []string `json:"allowed_event_ids,omitempty"`
 	Notes              []string `json:"notes,omitempty"`
 }
 
 type AdaptationProposalRuntimeBatch struct {
-	Index       int                     `json:"index"`
-	TargetFrom  int                     `json:"target_from"`
-	TargetTo    int                     `json:"target_to"`
-	SourceFrom  int                     `json:"source_from"`
-	SourceTo    int                     `json:"source_to"`
-	CompletedAt string                  `json:"completed_at,omitempty"`
-	Chapters    []AdaptationChapterPlan `json:"chapters"`
+	Index       int                         `json:"index"`
+	TargetFrom  int                         `json:"target_from"`
+	TargetTo    int                         `json:"target_to"`
+	SourceFrom  int                         `json:"source_from"`
+	SourceTo    int                         `json:"source_to"`
+	CompletedAt string                      `json:"completed_at,omitempty"`
+	Chapters    []AdaptationChapterPlan     `json:"chapters"`
+	Audit       *AdaptationDetailBatchAudit `json:"audit,omitempty"`
 }
 
 // AdaptationVolumeReview is the user-visible high-level planning checkpoint

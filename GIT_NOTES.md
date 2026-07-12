@@ -28,6 +28,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 pending `feat: close the detail-outline audit loop`:
+  adaptation detail batches now persist candidate/audit/context signatures and
+  must pass deterministic plus independent auditor review before becoming later
+  planner context. Failed content is regenerated as a whole batch and fully
+  re-audited; unchanged repairs cannot pass, transport failures do not consume
+  content attempts, and parent/volume/global checkpoints invalidate only
+  affected downstream audits. Legacy v1 batches are reviewed before reuse. The
+  event whitelist contract now consistently permits stable supporting events,
+  fixing the repeated `foreign_event_id` loop seen in the Sorcerer's Handbook
+  copy, and auditor source reports are range-bounded. Full `go test ./...` and a
+  standalone build pass; live restart is intentionally deferred while two
+  writing projects are active.
 - 2026-07-12 `bb591f9 fix: auto-resume incomplete creative runs`:
   an unexpected Coordinator stop during a non-complete writing run now resumes
   from persisted progress/checkpoints up to three times per unchanged completed

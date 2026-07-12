@@ -16,6 +16,7 @@ const (
 	StageDossier    Stage = "dossier"
 	StageBriefing   Stage = "briefing"
 	StagePlan       Stage = "plan"
+	StageAudit      Stage = "audit"
 	StagePaused     Stage = "paused"
 	StageDone       Stage = "done"
 	StageError      Stage = "error"

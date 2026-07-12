@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	AdaptationOutlineQualityAuditVersion = 1
-	AdaptationOutlineQualityStatusPassed = "passed"
-	AdaptationBudgetRepairVersion        = 1
+	AdaptationOutlineQualityAuditLegacyVersion = 1
+	AdaptationOutlineQualityAuditVersion       = 2
+	AdaptationOutlineQualityStatusPassed       = "passed"
+	AdaptationBudgetRepairVersion              = 1
 )
 
 // AdaptationOutlineQualityAudit is a durable marker for the deterministic
@@ -21,10 +22,11 @@ const (
 // budgets, so changing either the story ownership or output capacity forces a
 // fresh audit.
 type AdaptationOutlineQualityAudit struct {
-	Version   int    `json:"version"`
-	Status    string `json:"status"`
-	Signature string `json:"signature"`
-	CheckedAt string `json:"checked_at"`
+	Version            int    `json:"version"`
+	Status             string `json:"status"`
+	Signature          string `json:"signature"`
+	LayeredAuditDigest string `json:"layered_audit_digest,omitempty"`
+	CheckedAt          string `json:"checked_at"`
 }
 
 func AdaptationPlanOutlineQualitySignature(plan AdaptationPlan) string {
@@ -130,9 +132,17 @@ func AdaptationPlanBudgetRepairLineageSignature(plan AdaptationPlan) string {
 
 func AdaptationOutlineQualityPassed(plan AdaptationPlan) bool {
 	audit := plan.OutlineQualityAudit
-	return audit != nil && audit.Version == AdaptationOutlineQualityAuditVersion &&
-		audit.Status == AdaptationOutlineQualityStatusPassed && audit.Signature != "" &&
-		audit.Signature == AdaptationPlanOutlineQualitySignature(plan)
+	if audit == nil || audit.Status != AdaptationOutlineQualityStatusPassed || audit.Signature == "" || audit.Signature != AdaptationPlanOutlineQualitySignature(plan) {
+		return false
+	}
+	switch audit.Version {
+	case AdaptationOutlineQualityAuditLegacyVersion:
+		return true
+	case AdaptationOutlineQualityAuditVersion:
+		return strings.TrimSpace(audit.LayeredAuditDigest) != ""
+	default:
+		return false
+	}
 }
 
 func MarkAdaptationOutlineQualityPassed(plan *AdaptationPlan) {
@@ -140,10 +150,26 @@ func MarkAdaptationOutlineQualityPassed(plan *AdaptationPlan) {
 		return
 	}
 	plan.OutlineQualityAudit = &AdaptationOutlineQualityAudit{
-		Version:   AdaptationOutlineQualityAuditVersion,
+		Version:   AdaptationOutlineQualityAuditLegacyVersion,
 		Status:    AdaptationOutlineQualityStatusPassed,
 		Signature: AdaptationPlanOutlineQualitySignature(*plan),
 		CheckedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+// MarkAdaptationOutlineQualityPassedWithLayers is the pre-writing gate for new
+// proposals. The digest proves that every required batch, parent, volume, and
+// global checkpoint passed for this exact plan.
+func MarkAdaptationOutlineQualityPassedWithLayers(plan *AdaptationPlan, layeredDigest string) {
+	if plan == nil || strings.TrimSpace(layeredDigest) == "" {
+		return
+	}
+	plan.OutlineQualityAudit = &AdaptationOutlineQualityAudit{
+		Version:            AdaptationOutlineQualityAuditVersion,
+		Status:             AdaptationOutlineQualityStatusPassed,
+		Signature:          AdaptationPlanOutlineQualitySignature(*plan),
+		LayeredAuditDigest: strings.TrimSpace(layeredDigest),
+		CheckedAt:          time.Now().UTC().Format(time.RFC3339),
 	}
 }
 

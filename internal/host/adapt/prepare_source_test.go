@@ -27,6 +27,11 @@ type adaptLLMResponse struct {
 }
 
 func (m *scriptedAdaptLLM) Generate(_ context.Context, msgs []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	if len(msgs) > 0 && strings.Contains(msgs[0].TextContent(), "independent pre-writing auditor") {
+		return &agentcore.LLMResponse{Message: agentcore.Message{
+			Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.TextBlock(`{"verdict":"pass","summary":"test audit pass","findings":[]}`)}, Timestamp: time.Now(),
+		}}, nil
+	}
 	m.got = append(m.got, msgs)
 	if m.calls >= len(m.responses) {
 		return nil, context.Canceled

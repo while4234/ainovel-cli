@@ -514,9 +514,11 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 
 func (h *Host) adaptationDeps() adapt.Deps {
 	var llm imp.LLMChat
+	var auditor imp.LLMChat
 	var modelName string
 	if h.models != nil {
 		llm = h.models.ForStageWithFailover(bootstrap.StageSkeleton, h.reportAdaptationFailover)
+		auditor = h.models.ForRoleWithFailover("auditor", h.reportAdaptationFailover)
 		_, modelName, _ = h.models.CurrentStageSelection(bootstrap.StageSourceAnalysis)
 	}
 	h.mu.Lock()
@@ -525,6 +527,7 @@ func (h *Host) adaptationDeps() adapt.Deps {
 	return adapt.Deps{
 		Store:     h.store,
 		LLM:       llm,
+		Auditor:   auditor,
 		ModelName: modelName,
 		ModelForStage: func(stage string) imp.LLMChat {
 			return h.models.ForStageWithFailover(stage, h.reportAdaptationFailover)

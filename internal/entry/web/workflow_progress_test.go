@@ -140,7 +140,7 @@ func TestAdaptationWorkflowProgressPrioritizesRunningProposalOverReviewArtifacts
 		t.Fatalf("running proposal unexpectedly requires confirmation: %+v", progress.NextAction)
 	}
 	step := workflowStepByID(progress.Steps, "proposal_review")
-	if step == nil || step.Status != WorkflowStatusRunning || step.Message != "正在生成改编提案" {
+	if step == nil || step.Status != WorkflowStatusRunning || step.Message != "正在生成并逐批审核章节细纲" {
 		t.Fatalf("proposal step = %+v", step)
 	}
 }
