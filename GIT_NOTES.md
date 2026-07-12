@@ -28,6 +28,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 context-window and summary-evidence fix: `ab36715`
+  `fix: stabilize agent context management`. Static prompt
+  assembly budgets no longer cap live agent conversations. Runtime windows now
+  use role-specific caps (Coordinator 64K, Writer/Architect 96K, Editor 128K)
+  while respecting the provider model window. Arc/volume summaries consume a
+  compact evidence pack first and only reread chapters/arcs with explicit
+  evidence gaps, preserving quality without routine full-arc rereads. Focused
+  agent/flow/tool tests, all 205 UI tests, the production build, and the full Go
+  suite passed; one Web timing test flaked once under full-suite load and then
+  passed three focused repetitions plus the full Web package. Live DeepSeek
+  Writer logs confirmed `model_window=1048576`, `runtime_window=96000`, and
+  real usage at `35094/96000` instead of the former 40K cap.
 - Latest stable-render/open-project fixes: `ba770ed` retains the last valid
   workflow panel at the render boundary for the same project, `43d5be3` keeps
   the current page visible while a newly clicked project loads, cancels stale
