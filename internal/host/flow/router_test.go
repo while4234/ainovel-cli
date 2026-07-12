@@ -188,6 +188,11 @@ func TestRoute_ArcEndHasReviewNeedsSummary(t *testing.T) {
 	if got == nil || got.Agent != "editor" || got.Reason != "弧摘要未完成" {
 		t.Fatalf("expected arc summary editor call, got %+v", got)
 	}
+	for _, want := range []string{"save_arc_summary", `novel_context(scope="summary"`, "complete=true", "定向 read_chapter", "禁止无差别重读整弧"} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("arc summary task missing %q: %s", want, got.Task)
+		}
+	}
 }
 
 func TestRoute_VolumeEndNeedsVolumeSummary(t *testing.T) {
@@ -207,6 +212,11 @@ func TestRoute_VolumeEndNeedsVolumeSummary(t *testing.T) {
 	got := Route(s)
 	if got == nil || got.Reason != "卷摘要未完成" {
 		t.Fatalf("expected volume summary request, got %+v", got)
+	}
+	for _, want := range []string{"save_volume_summary", `novel_context(scope="summary", volume=1)`, "complete=true", "missing_arcs", "禁止无差别逐章重读整卷"} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("volume summary task missing %q: %s", want, got.Task)
+		}
 	}
 }
 

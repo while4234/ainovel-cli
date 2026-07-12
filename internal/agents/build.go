@@ -46,13 +46,30 @@ func agentToRole(name string) string {
 // 项目铁律一保证写类工具走 checkpoint+digest 幂等，重试是安全的。
 const subagentMaxRetries = retrypolicy.MaxAttempts
 
+var runtimeContextWindows = map[promptcompile.Agent]int{
+	promptcompile.AgentCoordinator: 64_000,
+	promptcompile.AgentWriter:      96_000,
+	promptcompile.AgentArchitect:   96_000,
+	promptcompile.AgentEditor:      128_000,
+}
+
 func boundedAgentContextWindow(modelWindow int, agent promptcompile.Agent) (int, int) {
-	budget, ok := promptcompile.BudgetFor(agent)
-	if !ok || modelWindow <= 0 {
+	if modelWindow <= 0 {
 		return modelWindow, bootstrap.CompactReserveTokens(modelWindow)
 	}
-	window := min(modelWindow, budget.HardTokens+bootstrap.MinCompactReserve)
-	return window, bootstrap.CompactReserveTokens(window)
+	window := modelWindow
+	if roleWindow := runtimeContextWindows[agent]; roleWindow > 0 {
+		window = min(window, roleWindow)
+	}
+	reserve := bootstrap.CompactReserveTokens(window)
+	slog.Info("角色运行时上下文窗口",
+		"module", "context",
+		"role", agent,
+		"model_window", modelWindow,
+		"runtime_window", window,
+		"reserve", reserve,
+	)
+	return window, reserve
 }
 
 // UsageRecorder 是 BuildCoordinator 可选的用量回调；签名与 OnMessage 一致，

@@ -6,7 +6,7 @@
 2. 按需 `read_chapter` 回读前章结尾或指定证据。长篇项目不要索取全书大纲，只读取最小必要范围。
 3. 尚无计划时调用 `plan_chapter`；已有正式细纲或 `chapter_contract` 时直接执行，不重复规划。
 4. 用 `draft_chapter(mode="write")` 写完整正文。字数越界、结构跑题或因果硬伤都用完整覆盖稿修复；初稿阶段不做无止境小修。
-5. 回读草稿，调用 `check_consistency`；改编项目再调用 `check_adaptation`。任何修改都会使旧检查失效。
+5. 每个草稿版本只完整回读一次，不要用逐步增大 `max_runes` 的方式反复读取同一版本；随后调用 `check_consistency`，改编项目再调用 `check_adaptation`。任何修改都会使旧检查失效，修改后只回读新版本一次。
 6. 全部硬门禁通过后 `commit_chapter`。提交成功即结束本轮。
 
 返工已完成章节时，小范围精确修改可用 `edit_chapter`；结构问题仍用完整覆盖。禁止未修改就重复提交。

@@ -79,7 +79,8 @@ func (t *ContextTool) Name() string { return "novel_context" }
 func (t *ContextTool) Description() string {
 	return "获取小说当前状态和创作上下文。" +
 		"不传 chapter：返回 progress_status（phase/flow/next_chapter/pending_rewrites 等进度字段）+ 基础设定，用于判断下一步该做什么。" +
-		"传 chapter=N：额外返回该章的前情摘要、伏笔、角色状态、风格规则等写作上下文"
+		"传 chapter=N：额外返回该章的前情摘要、伏笔、角色状态、风格规则等写作上下文。" +
+		"scope=summary：返回指定章节范围的摘要证据包，供弧摘要/卷摘要复用，避免无差别重读正文"
 }
 func (t *ContextTool) Label() string { return "加载上下文" }
 
@@ -89,9 +90,10 @@ func (t *ContextTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 
 func (t *ContextTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("scope", schema.Enum("Context scope. Empty defaults to chapter when chapter is set, otherwise planning.", "chapter", "outline_range", "planning")),
+		schema.Property("scope", schema.Enum("Context scope. Empty defaults to chapter when chapter is set, otherwise planning. summary returns a compact evidence pack for an inclusive chapter range.", "chapter", "outline_range", "summary", "planning")),
 		schema.Property("from", schema.Int("First chapter for scope=outline_range.")),
 		schema.Property("to", schema.Int("Last chapter for scope=outline_range.")),
+		schema.Property("volume", schema.Int("Volume number for scope=summary when generating a volume summary.")),
 		schema.Property("chapter", schema.Int("章节号。不传则返回进度状态和基础设定（Coordinator 用于判断下一步）；传入则额外返回该章的写作上下文（Writer 用）")),
 	)
 }
@@ -102,6 +104,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		Scope   string `json:"scope"`
 		From    int    `json:"from"`
 		To      int    `json:"to"`
+		Volume  int    `json:"volume"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -126,6 +129,10 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	switch scope {
 	case "outline_range":
 		if err := t.buildOutlineRangeContext(result, a.From, a.To, warn); err != nil {
+			return nil, err
+		}
+	case "summary":
+		if err := t.buildSummaryEvidenceContext(result, a.From, a.To, a.Volume, warn); err != nil {
 			return nil, err
 		}
 	case "chapter":
@@ -157,7 +164,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		t.buildSimulationProfile(result, "planning_memory", warn)
 	}
 
-	if scope != "outline_range" {
+	if scope == "chapter" || scope == "planning" {
 		t.buildUserRules(result)
 		t.buildWordBudget(result, a.Chapter)
 	}
@@ -174,6 +181,8 @@ func normalizeContextScope(scope string, chapter int) string {
 	switch strings.TrimSpace(scope) {
 	case "outline_range":
 		return "outline_range"
+	case "summary":
+		return "summary"
 	case "chapter":
 		if chapter > 0 {
 			return "chapter"
@@ -187,6 +196,177 @@ func normalizeContextScope(scope string, chapter int) string {
 		}
 		return "planning"
 	}
+}
+
+func (t *ContextTool) buildSummaryEvidenceContext(
+	result map[string]any,
+	from int,
+	to int,
+	volume int,
+	warn func(string, error),
+) error {
+	if volume > 0 && from == 0 && to == 0 {
+		return t.buildVolumeSummaryEvidenceContext(result, volume, warn)
+	}
+	if from <= 0 || to < from {
+		return fmt.Errorf("summary scope requires either volume or a valid inclusive chapter range: volume=%d from=%d to=%d", volume, from, to)
+	}
+
+	summaries := make([]domain.ChapterSummary, 0, to-from+1)
+	missingChapters := make([]int, 0)
+	for chapter := from; chapter <= to; chapter++ {
+		summary, err := t.store.Summaries.LoadSummary(chapter)
+		if err != nil {
+			warn(fmt.Sprintf("summary.chapter.%d", chapter), err)
+			missingChapters = append(missingChapters, chapter)
+			continue
+		}
+		if summary == nil {
+			missingChapters = append(missingChapters, chapter)
+			continue
+		}
+		summaries = append(summaries, *summary)
+	}
+	result["chapter_summaries"] = summaries
+
+	if review, err := t.store.World.LoadReview(to); err != nil {
+		warn("summary.arc_review", err)
+	} else if review != nil {
+		result["arc_review"] = review
+	}
+
+	if snapshots, err := t.store.Characters.LoadLatestSnapshots(); err != nil {
+		warn("summary.previous_character_snapshots", err)
+	} else if len(snapshots) > 0 {
+		result["previous_character_snapshots"] = snapshots
+	}
+
+	if timeline, err := t.store.World.LoadTimeline(); err != nil {
+		warn("summary.timeline", err)
+	} else {
+		result["timeline"] = filterTimelineByChapter(timeline, from, to)
+	}
+	if relationships, err := t.store.World.LoadRelationships(); err != nil {
+		warn("summary.relationships", err)
+	} else {
+		result["relationship_changes"] = filterRelationshipsByChapter(relationships, from, to)
+	}
+	if changes, err := t.store.World.LoadStateChanges(); err != nil {
+		warn("summary.state_changes", err)
+	} else {
+		result["state_changes"] = filterStateChangesByChapter(changes, from, to)
+	}
+	if foreshadow, err := t.store.World.LoadForeshadowLedger(); err != nil {
+		warn("summary.foreshadow", err)
+	} else {
+		result["foreshadow_changes"] = filterForeshadowByChapter(foreshadow, from, to)
+	}
+
+	result["summary_evidence"] = map[string]any{
+		"from":                     from,
+		"to":                       to,
+		"expected_chapters":        to - from + 1,
+		"available_summaries":      len(summaries),
+		"missing_summary_chapters": missingChapters,
+		"complete":                 len(missingChapters) == 0,
+		"usage":                    "优先用本证据包生成摘要；只有 missing_summary_chapters 或评审证据明确指出缺口时，才定向回读对应章节，不要重读整个范围。",
+	}
+	return nil
+}
+
+func (t *ContextTool) buildVolumeSummaryEvidenceContext(
+	result map[string]any,
+	volume int,
+	warn func(string, error),
+) error {
+	arcSummaries, err := t.store.Summaries.LoadArcSummaries(volume)
+	if err != nil {
+		warn("summary.arc_summaries", err)
+	}
+	result["arc_summaries"] = arcSummaries
+
+	expectedArcs := make([]int, 0)
+	if volumes, outlineErr := t.store.Outline.LoadLayeredOutline(); outlineErr != nil {
+		warn("summary.layered_outline", outlineErr)
+	} else {
+		for _, candidate := range volumes {
+			if candidate.Index != volume {
+				continue
+			}
+			for _, arc := range candidate.Arcs {
+				expectedArcs = append(expectedArcs, arc.Index)
+			}
+			break
+		}
+	}
+
+	available := make(map[int]struct{}, len(arcSummaries))
+	for _, summary := range arcSummaries {
+		available[summary.Arc] = struct{}{}
+	}
+	missingArcs := make([]int, 0)
+	for _, arc := range expectedArcs {
+		if _, ok := available[arc]; !ok {
+			missingArcs = append(missingArcs, arc)
+		}
+	}
+	if snapshots, snapshotErr := t.store.Characters.LoadLatestSnapshots(); snapshotErr != nil {
+		warn("summary.character_snapshots", snapshotErr)
+	} else if len(snapshots) > 0 {
+		result["character_snapshots"] = snapshots
+	}
+	result["summary_evidence"] = map[string]any{
+		"kind":           "volume",
+		"volume":         volume,
+		"expected_arcs":  expectedArcs,
+		"available_arcs": len(arcSummaries),
+		"missing_arcs":   missingArcs,
+		"complete":       len(expectedArcs) > 0 && len(missingArcs) == 0,
+		"usage":          "优先用弧摘要生成卷摘要；只有 missing_arcs 非空时，才定向补取缺失弧证据，不要逐章重读整卷。",
+	}
+	return nil
+}
+
+func filterTimelineByChapter(items []domain.TimelineEvent, from, to int) []domain.TimelineEvent {
+	result := make([]domain.TimelineEvent, 0, len(items))
+	for _, item := range items {
+		if item.Chapter >= from && item.Chapter <= to {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func filterRelationshipsByChapter(items []domain.RelationshipEntry, from, to int) []domain.RelationshipEntry {
+	result := make([]domain.RelationshipEntry, 0, len(items))
+	for _, item := range items {
+		if item.Chapter >= from && item.Chapter <= to {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func filterStateChangesByChapter(items []domain.StateChange, from, to int) []domain.StateChange {
+	result := make([]domain.StateChange, 0, len(items))
+	for _, item := range items {
+		if item.Chapter >= from && item.Chapter <= to {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func filterForeshadowByChapter(items []domain.ForeshadowEntry, from, to int) []domain.ForeshadowEntry {
+	result := make([]domain.ForeshadowEntry, 0, len(items))
+	for _, item := range items {
+		plantedInRange := item.PlantedAt >= from && item.PlantedAt <= to
+		resolvedInRange := item.ResolvedAt >= from && item.ResolvedAt <= to
+		if plantedInRange || resolvedInRange {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func normalizeContextToolSimulationMode(mode string) string {

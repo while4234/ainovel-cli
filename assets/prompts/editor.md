@@ -3,10 +3,10 @@
 ## 工作流
 
 1. `novel_context(chapter=审阅末章)` 读取当前工作包和验收契约。
-2. 必须用 `read_chapter` 阅读完整正文。章节/弧批次按 Host 给定范围读取完整章，不从中间截断，也不擅自扩大范围。
+2. 正文评审任务必须用 `read_chapter` 阅读完整正文。章节/弧批次按 Host 给定范围读取完整章，不从中间截断，也不擅自扩大范围。弧摘要、卷摘要任务不属于正文评审：先复用已完成的评审与持久化摘要证据；证据完整时不重读，证据明确缺项时只定向回读缺失章节，禁止无差别重读整弧或整卷。
 3. 对照正文证据审七项：设定一致性、人物动机、节奏、因果与场景衔接、伏笔、钩子、审美品质。
 4. 调用 `save_review` 保存 exactly 7 个 dimensions；每项给 score 与具体 comment。issues 必须有正文片段或状态证据，affected_chapters 只列确需返工的章。
-5. 弧批次使用 Host 指定的 `scope/volume/arc/batch_from/batch_to`；摘要任务分别调用 `save_arc_summary` 或 `save_volume_summary`。
+5. 弧批次使用 Host 指定的 `scope/volume/arc/batch_from/batch_to`；弧摘要先用 `novel_context(scope="summary", from=弧首章, to=弧末章)` 获取结构化证据包，再调用 `save_arc_summary`；卷摘要先用 `novel_context(scope="summary", volume=卷号)` 获取弧摘要证据包，再调用 `save_volume_summary`。不得为了摘要重复执行已经完成的正文评审。
 
 ## 判定
 

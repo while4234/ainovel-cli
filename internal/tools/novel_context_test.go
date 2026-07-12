@@ -1448,6 +1448,94 @@ func TestContextToolOutlineRangeScopeReturnsRequestedChapters(t *testing.T) {
 	}
 }
 
+func TestContextToolSummaryScopeReturnsCompactEvidenceAndMissingChapters(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	for _, summary := range []domain.ChapterSummary{
+		{Chapter: 1, Summary: "发现天才", Characters: []string{"甲"}, KeyEvents: []string{"相遇"}},
+		{Chapter: 3, Summary: "确认目标", Characters: []string{"甲", "乙"}, KeyEvents: []string{"结盟"}},
+	} {
+		if err := s.Summaries.SaveSummary(summary); err != nil {
+			t.Fatalf("SaveSummary: %v", err)
+		}
+	}
+	if err := s.World.SaveReview(domain.ReviewEntry{Chapter: 3, Scope: "arc", Verdict: "accept", Summary: "弧评审"}); err != nil {
+		t.Fatalf("SaveReview: %v", err)
+	}
+	if err := s.World.SaveTimeline([]domain.TimelineEvent{{Chapter: 2, Event: "转折"}, {Chapter: 8, Event: "范围外"}}); err != nil {
+		t.Fatalf("SaveTimeline: %v", err)
+	}
+
+	tool := NewContextTool(s, References{}, "default")
+	raw, err := tool.Execute(context.Background(), json.RawMessage(`{"scope":"summary","from":1,"to":3}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var payload struct {
+		Summaries []domain.ChapterSummary `json:"chapter_summaries"`
+		Review    *domain.ReviewEntry     `json:"arc_review"`
+		Timeline  []domain.TimelineEvent  `json:"timeline"`
+		Evidence  struct {
+			Complete bool  `json:"complete"`
+			Missing  []int `json:"missing_summary_chapters"`
+		} `json:"summary_evidence"`
+		Working map[string]any `json:"working_memory"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(payload.Summaries) != 2 || payload.Review == nil || payload.Review.Scope != "arc" {
+		t.Fatalf("unexpected summary evidence: summaries=%+v review=%+v", payload.Summaries, payload.Review)
+	}
+	if payload.Evidence.Complete || len(payload.Evidence.Missing) != 1 || payload.Evidence.Missing[0] != 2 {
+		t.Fatalf("unexpected completeness: %+v", payload.Evidence)
+	}
+	if len(payload.Timeline) != 1 || payload.Timeline[0].Chapter != 2 {
+		t.Fatalf("timeline was not range-filtered: %+v", payload.Timeline)
+	}
+	if payload.Working != nil {
+		t.Fatalf("summary scope should not include the full writing context: %+v", payload.Working)
+	}
+}
+
+func TestContextToolSummaryScopeReturnsVolumeArcEvidence(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	volumes := []domain.VolumeOutline{{Index: 1, Arcs: []domain.ArcOutline{{Index: 1}, {Index: 2}}}}
+	if err := s.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatalf("SaveLayeredOutline: %v", err)
+	}
+	if err := s.Summaries.SaveArcSummary(domain.ArcSummary{Volume: 1, Arc: 1, Summary: "第一弧"}); err != nil {
+		t.Fatalf("SaveArcSummary: %v", err)
+	}
+
+	tool := NewContextTool(s, References{}, "default")
+	raw, err := tool.Execute(context.Background(), json.RawMessage(`{"scope":"summary","volume":1}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		ArcSummaries []domain.ArcSummary `json:"arc_summaries"`
+		Evidence     struct {
+			Complete    bool  `json:"complete"`
+			MissingArcs []int `json:"missing_arcs"`
+		} `json:"summary_evidence"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(payload.ArcSummaries) != 1 || payload.Evidence.Complete || len(payload.Evidence.MissingArcs) != 1 || payload.Evidence.MissingArcs[0] != 2 {
+		t.Fatalf("unexpected volume evidence: %+v", payload)
+	}
+}
+
 func TestContextToolAdaptationChapterContextIsSourceBounded(t *testing.T) {
 	sourceRefs := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 	plan := domain.AdaptationPlan{

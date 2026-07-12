@@ -138,7 +138,7 @@
 
 ## 4. ContextManager 是怎么组装的
 
-Writer 和 Coordinator 都走 `newContextManager`，但配置不同。
+Writer、Coordinator、Architect 和 Editor 都走 `newContextManager`，但配置不同。
 
 当前 `contextManagerConfig` 的关键参数：
 
@@ -160,18 +160,16 @@ Writer 和 Coordinator 都走 `newContextManager`，但配置不同。
 - `Summary`
   `FullSummary` 的配置，包括自定义 prompt 和 post-summary hook。
 
-当前实际配置值：
+运行时对话窗口与静态 Prompt 编译预算彼此独立。角色窗口只做上限，模型真实窗口更小时始终服从模型窗口：
 
-| 参数 | Writer | Coordinator |
-|------|--------|-------------|
-| ReserveTokens | 16,384 | 32,000 |
-| KeepRecentTokens | 20,000 | 30,000 |
-| CommitOnProject | false | true |
-| IdleThreshold | 5min | 无 |
-| ExtraStrategies | StoreSummaryCompact | 无 |
-| 自定义 Summary Prompt | 小说叙事版 | 默认(代码助手版) |
+| 角色 | 运行时窗口上限 | ReserveTokens | KeepRecentTokens |
+|------|---------------:|--------------:|-----------------:|
+| Coordinator | 64,000 | 9,600 | 8,000 |
+| Writer | 96,000 | 14,400 | 12,000 |
+| Architect | 96,000 | 14,400 | 14,000 |
+| Editor | 128,000 | 19,200 | 18,000 |
 
-压缩触发阈值 = `ContextWindow - ReserveTokens`。例如窗口 128K 时，Writer 在 ~112K 触发，Coordinator 在 ~96K 触发。
+`ReserveTokens` 按窗口的 15% 计算（最少 8,000）。压缩触发阈值 = `ContextWindow - ReserveTokens`，因此默认 Writer 在约 81.6K、Editor 在约 108.8K 触发。`promptcompile.Budget.HardTokens` 只约束静态 Prompt 组件，不再把整段运行时对话截成 40K/56K。
 
 当前 Writer 的策略管线顺序是：
 
@@ -637,6 +635,8 @@ Scope 的中文标签：
 
 - `ToolResultMicrocompact` 是否命中
 - `IdleThreshold` 是否生效
+
+弧摘要/卷摘要不要再次无差别读取全部正文。弧摘要先调用 `novel_context(scope="summary", from=弧首章, to=弧末章)` 获取章节摘要、合并评审、时间线、关系与状态变化证据包；卷摘要调用 `novel_context(scope="summary", volume=卷号)` 获取已有弧摘要与角色状态。只有 `missing_summary_chapters`、`missing_arcs` 或评审证据明确指出缺口时，才定向回读对应章节/弧。这样优先保证摘要质量，同时避免已完成批次被重复注入上下文。
 
 ## 11. 当前实现的取舍
 

@@ -152,13 +152,13 @@ func Route(s State) *Instruction {
 		case !s.HasArcSummary:
 			return &Instruction{
 				Agent:  "editor",
-				Task:   fmt.Sprintf("生成第 %d 卷第 %d 弧%s摘要（save_arc_summary）", b.Volume, b.Arc, chapterNote),
+				Task:   formatArcSummaryTask(b, chapterNote),
 				Reason: "弧摘要未完成",
 			}
 		case b.IsVolumeEnd && !s.HasVolumeSummary:
 			return &Instruction{
 				Agent:  "editor",
-				Task:   fmt.Sprintf("生成第 %d 卷卷摘要（save_volume_summary）", b.Volume),
+				Task:   formatVolumeSummaryTask(b.Volume),
 				Reason: "卷摘要未完成",
 			}
 		case b.NeedsExpansion && b.NextArc > 0:
@@ -263,5 +263,22 @@ func formatArcReviewTask(b *storepkg.ArcBoundary, batch *storepkg.ArcReviewBatch
 	return fmt.Sprintf(
 		"对第 %d 卷第 %d 弧%s做弧级评审（scope=arc）。必须按完整章节分批审阅：从第 %d 章开始调用 read_chapter(source=\"final\", from=批次起点, to=%d, max_total_runes=%d)，工具返回 next_from 时继续下一批；不要把一个章节从中间切开，若某一章单独超过预算，就把该章作为单章批次完整审阅。全部批次都审完后，合并各批问题与结论，只调用一次 save_review(chapter=%d, scope=\"arc\")。",
 		b.Volume, b.Arc, rangeNote, from, to, domain.ArcReviewBatchRuneBudget, to,
+	)
+}
+
+func formatArcSummaryTask(b *storepkg.ArcBoundary, chapterNote string) string {
+	if b == nil {
+		return "生成当前弧摘要（save_arc_summary）。先调用 novel_context(scope=\"summary\", from=弧首章, to=弧末章) 取得摘要证据包；证据完整时直接生成，只有证据包明确缺项时才定向 read_chapter 回读缺失章节，不要无差别重读整弧。"
+	}
+	return fmt.Sprintf(
+		"生成第 %d 卷第 %d 弧%s摘要（save_arc_summary）。先调用一次 novel_context(scope=\"summary\", from=%d, to=%d) 加载章节摘要、合并评审、时间线、关系与角色状态证据。证据包 complete=true 时直接生成，不要重新审阅或重读正文；只有 missing_summary_chapters 或评审证据明确指出信息缺口时，才定向 read_chapter 回读对应章节，禁止无差别重读整弧。完成后调用 save_arc_summary。",
+		b.Volume, b.Arc, chapterNote, b.FirstChapter, b.LastChapter,
+	)
+}
+
+func formatVolumeSummaryTask(volume int) string {
+	return fmt.Sprintf(
+		"生成第 %d 卷卷摘要（save_volume_summary）。先调用一次 novel_context(scope=\"summary\", volume=%d) 加载全部弧摘要与角色状态。证据包 complete=true 时直接生成；只有 missing_arcs 非空时才定向补取缺失弧证据，禁止无差别逐章重读整卷。完成后调用 save_volume_summary。",
+		volume, volume,
 	)
 }
