@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest workflow-status fix: `d0ff42a` `fix: show adaptation proposal generation as running`:
+  active adaptation proposal generation and revision now take precedence over
+  review artifacts in the unified workflow state. The workflow header and
+  proposal step remain `running` until the background task finishes; only then
+  can the UI show `waiting_confirmation`. The Chinese running label is now
+  “正在运行”. The full Web Go package, all 204 UI tests, Vite build,
+  `git diff --check`, and live HTTP asset/API smoke checks passed. Web was
+  rebuilt and restarted on port 9898 as PID `89664`.
 - Latest rollback-resume fix: `2f9f475` `fix: preserve adaptation review after rollback`:
   projects with a durable adaptation plan,
   proposal, volume review, or proposal runtime no longer restart stale source
