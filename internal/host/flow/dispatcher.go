@@ -1,6 +1,8 @@
 package flow
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -49,6 +51,17 @@ func (d *Dispatcher) Enable() { d.enabled.Store(true) }
 
 // Dispatch 立即计算路由并下达指令；可被 Host 在特殊时机（如 Resume 后）主动调用。
 func (d *Dispatcher) Dispatch() {
+	d.dispatch(false)
+}
+
+// DispatchFollowUp queues the current route as a follow-up. Resume starts a
+// prompt that may stop without tools; a steering message would then remain
+// queued, while a follow-up reliably starts the next model turn.
+func (d *Dispatcher) DispatchFollowUp() {
+	d.dispatch(true)
+}
+
+func (d *Dispatcher) dispatch(asFollowUp bool) {
 	if !d.enabled.Load() {
 		return
 	}
@@ -71,6 +84,15 @@ func (d *Dispatcher) Dispatch() {
 	}
 	msg := formatDispatchMessage(inst, n)
 	slog.Debug("flow router dispatch", "module", "host.flow", "agent", inst.Agent, "reason", inst.Reason, "repeat", n)
+	if asFollowUp {
+		d.coordinator.FollowUp(agentcore.UserMsg(msg))
+		if !d.coordinator.State().IsRunning {
+			if err := d.coordinator.Continue(context.Background()); err != nil && !errors.Is(err, agentcore.ErrAlreadyRunning) {
+				slog.Warn("flow router could not continue idle coordinator", "module", "host.flow", "err", err)
+			}
+		}
+		return
+	}
 	d.coordinator.Steer(agentcore.UserMsg(msg))
 }
 

@@ -606,6 +606,59 @@ func TestDispatcher_SteersAfterSuccessfulBoundaryToolBeforeNextModelCall(t *test
 	}
 }
 
+func TestDispatcher_FollowUpStartsNextRouteAfterResumePromptStops(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+	if err := st.Progress.Init("test", 3); err != nil {
+		t.Fatalf("init progress: %v", err)
+	}
+	if err := st.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
+		t.Fatalf("set writing phase: %v", err)
+	}
+
+	var secondReq *agentcore.LLMRequest
+	firstStarted := make(chan struct{})
+	coordinator := agentcore.NewAgent(
+		agentcore.WithModel(sequentialFlowTestModel(func(i int, req *agentcore.LLMRequest) (*agentcore.LLMResponse, error) {
+			if i == 0 {
+				close(firstStarted)
+				return &agentcore.LLMResponse{Message: flowTestAssistantMsg("resume prompt acknowledged", agentcore.StopReasonStop)}, nil
+			}
+			secondReq = req
+			return &agentcore.LLMResponse{Message: flowTestAssistantMsg("next chapter dispatched", agentcore.StopReasonStop)}, nil
+		})),
+	)
+
+	dispatcher := NewDispatcher(coordinator, st)
+	dispatcher.Enable()
+	if err := coordinator.Prompt(context.Background(), "resume"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	<-firstStarted
+	if inst := Route(LoadState(st)); inst == nil {
+		t.Fatalf("resume route is nil: %+v", LoadState(st))
+	}
+	dispatcher.DispatchFollowUp()
+	coordinator.WaitForIdle()
+
+	if secondReq == nil {
+		t.Fatal("expected follow-up model request after resume prompt")
+	}
+	got := secondReq.Messages[len(secondReq.Messages)-1].TextContent()
+	if !contains(got, "[Host") || !contains(got, "writer") || !contains(got, "1") {
+		t.Fatalf("follow-up Host instruction missing: %s", got)
+	}
+	progress, err := st.Progress.Load()
+	if err != nil {
+		t.Fatalf("load progress: %v", err)
+	}
+	if progress.InProgressChapter != 1 {
+		t.Fatalf("in-progress chapter = %d, want 1", progress.InProgressChapter)
+	}
+}
+
 type flowTestSequentialModel struct {
 	fn  func(i int, req *agentcore.LLMRequest) (*agentcore.LLMResponse, error)
 	idx int64

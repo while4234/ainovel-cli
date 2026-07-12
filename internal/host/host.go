@@ -590,7 +590,7 @@ func (h *Host) Resume() (string, error) {
 		return "", fmt.Errorf("resume prompt: %w", err)
 	}
 	// 主动派发一次首条指令，避免 Coordinator 对恢复 prompt 只回文字而 StopGuard 反复拦截。
-	h.router.Dispatch()
+	h.router.DispatchFollowUp()
 
 	h.mu.Lock()
 	h.lifecycle = lifecycleRunning

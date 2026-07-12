@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 resume-next-chapter fix: `80dc046`
+  Resume now queues the Host route as an agentcore follow-up and explicitly
+  continues an already-idle Coordinator. Previously Resume started a Prompt
+  and queued the next-chapter instruction with Steer; if that Prompt ended
+  without a tool call, the project became idle with the instruction stranded
+  in the queue. Normal start and in-run boundary dispatch keep their existing
+  steering behavior. Added a regression test for the immediate-stop resume
+  race. Full `go test ./... -count=1`, build, and `git diff --check` passed.
 - 2026-07-12 outline-density and transformed-event evidence gate: `467680c`
   `ValidateArcChapterBudgetDensity` now blocks high-density arc chapters whose
   maximum output cannot express their planned scenes, and the planner prompt,
