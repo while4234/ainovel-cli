@@ -266,6 +266,37 @@ func TestSetAndClearPendingSteer(t *testing.T) {
 	}
 }
 
+func TestClearHandledSteerIfPreservesNewerPendingSteer(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	if err := store.RunMeta.SetPendingSteer("旧干预"); err != nil {
+		t.Fatalf("SetPendingSteer old: %v", err)
+	}
+	if err := store.RunMeta.SetPendingSteer("新干预"); err != nil {
+		t.Fatalf("SetPendingSteer new: %v", err)
+	}
+	if err := store.ClearHandledSteerIf("旧干预"); err != nil {
+		t.Fatalf("ClearHandledSteerIf stale: %v", err)
+	}
+	meta, err := store.RunMeta.Load()
+	if err != nil {
+		t.Fatalf("Load after stale clear: %v", err)
+	}
+	if meta == nil || meta.PendingSteer != "新干预" {
+		t.Fatalf("newer pending steer was cleared: %+v", meta)
+	}
+	if err := store.ClearHandledSteerIf("新干预"); err != nil {
+		t.Fatalf("ClearHandledSteerIf current: %v", err)
+	}
+	meta, err = store.RunMeta.Load()
+	if err != nil {
+		t.Fatalf("Load after current clear: %v", err)
+	}
+	if meta == nil || meta.PendingSteer != "" {
+		t.Fatalf("current pending steer was not cleared: %+v", meta)
+	}
+}
+
 func TestSetPlanningTier(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)

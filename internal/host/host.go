@@ -569,6 +569,10 @@ func (h *Host) Resume() (string, error) {
 		return "", fmt.Errorf("阶段共创进行中，请先结束共创")
 	}
 	h.mu.Unlock()
+	pendingSteer := ""
+	if meta, loadErr := h.store.RunMeta.Load(); loadErr == nil && meta != nil {
+		pendingSteer = meta.PendingSteer
+	}
 	if err := h.ensureContinuationWritingAllowed(); err != nil {
 		return "", err
 	}
@@ -617,6 +621,11 @@ func (h *Host) Resume() (string, error) {
 	h.router.Enable()
 	if err := h.coordinator.Prompt(context.Background(), prompt); err != nil {
 		return "", fmt.Errorf("resume prompt: %w", err)
+	}
+	if pendingSteer != "" {
+		if err := h.store.ClearHandledSteerIf(pendingSteer); err != nil {
+			return "", fmt.Errorf("clear handled resume steer: %w", err)
+		}
 	}
 	// 主动派发一次首条指令，避免 Coordinator 对恢复 prompt 只回文字而 StopGuard 反复拦截。
 	h.router.DispatchFollowUp()

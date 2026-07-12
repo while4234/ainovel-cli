@@ -195,6 +195,17 @@ func (s *Store) AppendVolume(vol domain.VolumeOutline) error {
 // ClearHandledSteer 原子性清除 PendingSteer 并重置 FlowSteering 状态
 // （RunMeta + Progress 联动）。
 func (s *Store) ClearHandledSteer() error {
+	return s.clearHandledSteerIf("")
+}
+
+// ClearHandledSteerIf 仅在 PendingSteer 仍等于 expected 时清除它。
+// Resume 将干预注入 Coordinator 后调用此方法，避免清除注入期间新写入的
+// 用户干预。expected 为空时保留 ClearHandledSteer 的无条件清除语义。
+func (s *Store) ClearHandledSteerIf(expected string) error {
+	return s.clearHandledSteerIf(expected)
+}
+
+func (s *Store) clearHandledSteerIf(expected string) error {
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
 
@@ -205,7 +216,7 @@ func (s *Store) ClearHandledSteer() error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if meta != nil && meta.PendingSteer != "" {
+	if meta != nil && meta.PendingSteer != "" && (expected == "" || meta.PendingSteer == expected) {
 		meta.PendingSteer = ""
 		if err := s.RunMeta.saveUnlocked(*meta); err != nil {
 			return err
