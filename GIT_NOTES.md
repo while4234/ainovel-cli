@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest progress-panel stability fix: `ea5b451` `fix: remove legacy progress UI fallback`:
+  SSE snapshot updates that omit `workflow_progress` now retain the most recent
+  unified workflow state, preventing the header from disappearing between
+  high-frequency writing events. The retired compact workspace progress bar,
+  its derivation code, tests, and CSS were removed, so no project stage can
+  fall back to the old UI. All 203 UI tests, the Vite production build,
+  `git diff --check`, and live asset/API smoke checks passed. The served bundle
+  contains the unified workflow panel and no legacy `workspace-progress`
+  component or styles. Web was restarted on port 9898 as PID `88864`.
 - 2026-07-12 read-only duplicate-mainline diagnosis: live `武林高手 - 副本`
   checkpoint retains 92/94 proposal detail batches after correctly discarding
   batches 16-17 (target chapters 58-65) for duplicate event
