@@ -73,12 +73,20 @@ type webResumeAction struct {
 }
 
 type SessionManager struct {
-	cfg    bootstrap.Config
-	bundle assets.Bundle
-	store  *ProjectStore
+	cfg      bootstrap.Config
+	bundle   assets.Bundle
+	store    *ProjectStore
+	openHost func(bootstrap.Config, assets.Bundle, ProjectManifest) (projectHost, error)
 
 	mu       sync.Mutex
 	sessions map[string]*ProjectSession
+	openings map[string]*projectSessionOpening
+}
+
+type projectSessionOpening struct {
+	done    chan struct{}
+	session *ProjectSession
+	err     error
 }
 
 type projectHost interface {
@@ -174,12 +182,17 @@ type scheduledResumeHost interface {
 }
 
 func NewSessionManager(cfg bootstrap.Config, bundle assets.Bundle, store *ProjectStore) *SessionManager {
-	return &SessionManager{
+	manager := &SessionManager{
 		cfg:      cfg,
 		bundle:   bundle,
 		store:    store,
 		sessions: make(map[string]*ProjectSession),
+		openings: make(map[string]*projectSessionOpening),
 	}
+	manager.openHost = func(cfg bootstrap.Config, bundle assets.Bundle, manifest ProjectManifest) (projectHost, error) {
+		return store.OpenProjectHost(cfg, bundle, manifest)
+	}
+	return manager
 }
 
 func (m *SessionManager) SetConfig(cfg bootstrap.Config) {
@@ -248,29 +261,53 @@ func (m *SessionManager) Open(id string) (*ProjectSession, ProjectManifest, erro
 		return nil, ProjectManifest{}, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	manifest, err := m.store.OpenProject(id)
 	if err != nil {
 		return nil, ProjectManifest{}, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
 	}
+	session, err := m.openSession(manifest)
+	if err != nil {
+		return nil, ProjectManifest{}, err
+	}
+	session.SetManifest(manifest)
+	return session, manifest, nil
+}
+
+func (m *SessionManager) openSession(manifest ProjectManifest) (*ProjectSession, error) {
+	id := manifest.ID
+	m.mu.Lock()
 	if session, ok := m.sessions[id]; ok {
-		session.SetManifest(manifest)
-		return session, manifest, nil
+		m.mu.Unlock()
+		return session, nil
+	}
+	if opening, ok := m.openings[id]; ok {
+		m.mu.Unlock()
+		<-opening.done
+		return opening.session, opening.err
+	}
+	opening := &projectSessionOpening{done: make(chan struct{})}
+	m.openings[id] = opening
+	cfg := cloneWebConfig(m.cfg)
+	m.mu.Unlock()
+
+	h, err := m.openHost(cfg, m.bundle, manifest)
+	if err != nil {
+		opening.err = err
+	} else {
+		opening.session, opening.err = NewProjectSession(manifest, h)
+		if opening.err != nil {
+			h.Close()
+		}
 	}
 
-	h, err := m.store.OpenProjectHost(cloneWebConfig(m.cfg), m.bundle, manifest)
-	if err != nil {
-		return nil, ProjectManifest{}, err
+	m.mu.Lock()
+	if opening.err == nil {
+		m.sessions[id] = opening.session
 	}
-	session, err := NewProjectSession(manifest, h)
-	if err != nil {
-		h.Close()
-		return nil, ProjectManifest{}, err
-	}
-	m.sessions[id] = session
-	return session, manifest, nil
+	delete(m.openings, id)
+	close(opening.done)
+	m.mu.Unlock()
+	return opening.session, opening.err
 }
 
 // OpenScheduled opens a manifest discovered by the scheduler without touching
@@ -281,22 +318,7 @@ func (m *SessionManager) OpenScheduled(manifest ProjectManifest) (*ProjectSessio
 	if err := validateProjectID(id); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if session, ok := m.sessions[id]; ok {
-		return session, nil
-	}
-	h, err := m.store.OpenProjectHost(cloneWebConfig(m.cfg), m.bundle, manifest)
-	if err != nil {
-		return nil, err
-	}
-	session, err := NewProjectSession(manifest, h)
-	if err != nil {
-		h.Close()
-		return nil, err
-	}
-	m.sessions[id] = session
-	return session, nil
+	return m.openSession(manifest)
 }
 
 func (m *SessionManager) SetProjectStyle(id, style string) (*ProjectSession, ProjectManifest, error) {

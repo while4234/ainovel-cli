@@ -73,6 +73,60 @@ func TestSessionManagerReusesActiveProjectHostConcurrently(t *testing.T) {
 	}
 }
 
+func TestSessionManagerOpensDifferentProjectsIndependently(t *testing.T) {
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
+	blockedProject, err := store.CreateProject("Blocked Session")
+	if err != nil {
+		t.Fatalf("CreateProject blocked: %v", err)
+	}
+	independentProject, err := store.CreateProject("Independent Session")
+	if err != nil {
+		t.Fatalf("CreateProject independent: %v", err)
+	}
+
+	manager := NewSessionManager(testWebConfig(t), assets.Load("default"), store)
+	defer manager.CloseAll()
+	blockedStarted := make(chan struct{})
+	releaseBlocked := make(chan struct{})
+	manager.openHost = func(_ bootstrap.Config, _ assets.Bundle, manifest ProjectManifest) (projectHost, error) {
+		if manifest.ID == blockedProject.ID {
+			close(blockedStarted)
+			<-releaseBlocked
+		}
+		return newFakeProjectHost(), nil
+	}
+
+	blockedResult := make(chan error, 1)
+	go func() {
+		_, _, openErr := manager.Open(blockedProject.ID)
+		blockedResult <- openErr
+	}()
+	select {
+	case <-blockedStarted:
+	case <-time.After(time.Second):
+		t.Fatal("blocked project did not start opening")
+	}
+
+	independentResult := make(chan error, 1)
+	go func() {
+		_, _, openErr := manager.Open(independentProject.ID)
+		independentResult <- openErr
+	}()
+	select {
+	case openErr := <-independentResult:
+		if openErr != nil {
+			t.Fatalf("independent project open: %v", openErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("independent project was blocked by another project's host initialization")
+	}
+
+	close(releaseBlocked)
+	if openErr := <-blockedResult; openErr != nil {
+		t.Fatalf("blocked project open: %v", openErr)
+	}
+}
+
 func TestProjectSessionRejectsConcurrentResumeContinue(t *testing.T) {
 	fake := newFakeProjectHost()
 	fake.resumeStarted = make(chan struct{})
