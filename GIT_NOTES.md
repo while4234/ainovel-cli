@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- Latest stable-render/open-project fixes: `ba770ed` retains the last valid
+  workflow panel at the render boundary for the same project, `43d5be3` keeps
+  the current page visible while a newly clicked project loads, cancels stale
+  opens, shows an explicit loading state, and times out after 15 seconds, and
+  `a708ae8` includes `workflow_progress` in the initial project snapshot.
+  All 205 UI tests, the full Web Go package, production build, and
+  `git diff --check` passed. A live `天擎` snapshot returned in 0.46 seconds
+  with `adaptation/running` and six workflow steps in the first response. A
+  clean-worktree binary was deployed to port 9898 as PID `85384`; unrelated
+  prompt/router/context changes in the main worktree were not included.
 - Latest progress-panel stability fix: `ea5b451` `fix: remove legacy progress UI fallback`:
   SSE snapshot updates that omit `workflow_progress` now retain the most recent
   unified workflow state, preventing the header from disappearing between
