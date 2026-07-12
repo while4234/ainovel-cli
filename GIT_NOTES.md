@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 `bb591f9 fix: auto-resume incomplete creative runs`:
+  an unexpected Coordinator stop during a non-complete writing run now resumes
+  from persisted progress/checkpoints up to three times per unchanged completed
+  chapter count. Manual pause, closed Hosts, and completed books do not trigger
+  this path. This prevents transient authorization/network/tool failures from
+  leaving the next chapter in progress while still bounding token spend.
 - 2026-07-12 `01de103d fix: treat moderate full-rewrite budget overage as acceptable`:
   adaptation `full_rewrite/free` chapter budgets now expose an explicit soft
   allowance. A complete chapter within that allowance is accepted without a
