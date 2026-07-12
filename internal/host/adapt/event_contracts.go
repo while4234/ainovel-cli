@@ -73,13 +73,24 @@ func splitEventIDsForBatch(ids []string, partCount, partIndex int) []string {
 }
 
 func validateArcBatchEventCoverage(chapters []domain.AdaptationChapterPlan, batch plannerSkeletonBatch) error {
-	if len(batch.MainlineEventIDs) == 0 {
-		return nil
-	}
+	allowed := make(map[string]struct{}, len(batch.MainlineEventIDs))
 	counts := make(map[string]int, len(batch.MainlineEventIDs))
+	for _, eventID := range batch.MainlineEventIDs {
+		eventID = strings.TrimSpace(eventID)
+		if eventID != "" {
+			allowed[eventID] = struct{}{}
+		}
+	}
 	for _, chapter := range chapters {
-		for _, eventID := range chapter.EventIDs {
-			counts[strings.TrimSpace(eventID)]++
+		for _, rawEventID := range chapter.EventIDs {
+			eventID := strings.TrimSpace(rawEventID)
+			if eventID == "" {
+				continue
+			}
+			if _, ok := allowed[eventID]; !ok {
+				return fmt.Errorf("arc mainline event %s is not assigned to detail batch %d-%d; remove it from event_ids", eventID, batch.TargetFrom, batch.TargetTo)
+			}
+			counts[eventID]++
 		}
 	}
 	for _, eventID := range batch.MainlineEventIDs {

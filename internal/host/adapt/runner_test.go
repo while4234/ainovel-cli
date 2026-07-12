@@ -1713,7 +1713,7 @@ func TestPlannerSkeletonForDetailPromptScopesMainlineEventsToDetailBatch(t *test
 	}
 }
 
-func TestBuildPlanAutomaticallyRegeneratesDuplicateMainlineBatches(t *testing.T) {
+func TestBuildPlanRejectsForeignMainlineBeforeFinalValidation(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -1763,14 +1763,39 @@ func TestBuildPlanAutomaticallyRegeneratesDuplicateMainlineBatches(t *testing.T)
 	_, err := buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 		context.Background(), Deps{Store: st}, opts, reports, manifest, &domain.AdaptationSourceFoundation{}, skeleton, runtime, 1,
 	)
-	if err == nil || !strings.Contains(err.Error(), "planner batch 1 llm generate") {
-		t.Fatalf("error=%v, want automatic regeneration to request the first discarded batch", err)
+	if err == nil || !strings.Contains(err.Error(), "planner batch 2 llm generate") {
+		t.Fatalf("error=%v, want local validation to regenerate only polluted batch 2", err)
 	}
-	if !strings.Contains(strings.Join(progress, "\n"), "regenerating them automatically") {
-		t.Fatalf("progress=%v, want visible automatic final-validation repair", progress)
+	joinedProgress := strings.Join(progress, "\n")
+	if !strings.Contains(joinedProgress, "Discarded invalid proposal detail batch 2/2") {
+		t.Fatalf("progress=%v, want polluted cached batch rejected before final validation", progress)
 	}
-	if len(runtime.CompletedBatches) != 0 {
-		t.Fatalf("completed batches=%+v, want both polluted batches discarded before regeneration", runtime.CompletedBatches)
+	if strings.Contains(joinedProgress, "Final proposal validation discarded") {
+		t.Fatalf("progress=%v, foreign mainline ID should not reach final validation", progress)
+	}
+	if len(runtime.CompletedBatches) != 1 || runtime.CompletedBatches[0].Index != firstBatch.Index {
+		t.Fatalf("completed batches=%+v, want correct owner batch retained", runtime.CompletedBatches)
+	}
+}
+
+func TestPlannerSourceReportExcerptsForDetailScopesEventIDsToCurrentArcBatch(t *testing.T) {
+	reports := []domain.AdaptationSourceReport{{
+		Chapter: 1,
+		SourceEvents: []domain.AdaptationEvent{
+			{ID: "event-current", Importance: domain.AdaptationEventMainline, Required: true},
+			{ID: "event-foreign", Importance: domain.AdaptationEventMainline, Required: true},
+			{ID: "event-supporting", Importance: domain.AdaptationEventSupporting},
+		},
+	}}
+	batch := plannerSkeletonBatch{MainlineEventIDs: []string{"event-current"}}
+
+	excerpts := plannerSourceReportExcerptsForDetail(reports, domain.AdaptationGranularityArc, batch)
+	if len(excerpts) != 1 {
+		t.Fatalf("excerpts=%+v, want one source report", excerpts)
+	}
+	gotIDs := adaptationEventIDs(excerpts[0].SourceEvents)
+	if !slices.Equal(gotIDs, []string{"event-current"}) {
+		t.Fatalf("source event IDs=%v, want only current batch mainline IDs", gotIDs)
 	}
 }
 
@@ -2583,6 +2608,30 @@ func TestReportsForPlannerDetailBatchSlicesLargeParentRangeProportionally(t *tes
 	}
 	if last[0].Chapter != 22 || last[len(last)-1].Chapter != 27 {
 		t.Fatalf("last detail report range=%d-%d, want 22-27", last[0].Chapter, last[len(last)-1].Chapter)
+	}
+}
+
+func TestPlannerDetailBatchesAssignEachMainlineEventExactlyOnce(t *testing.T) {
+	parent := plannerSkeletonBatch{
+		TargetFrom:       1,
+		TargetTo:         8,
+		MainlineEventIDs: []string{"event-1", "event-2", "event-3"},
+	}
+
+	details := plannerDetailBatches([]plannerSkeletonBatch{parent}, 4)
+	if len(details) != 2 {
+		t.Fatalf("detail batches=%d, want 2", len(details))
+	}
+	counts := make(map[string]int)
+	for _, detail := range details {
+		for _, eventID := range detail.MainlineEventIDs {
+			counts[eventID]++
+		}
+	}
+	for _, eventID := range parent.MainlineEventIDs {
+		if counts[eventID] != 1 {
+			t.Fatalf("mainline event %s assigned %d times across detail batches, want exactly once", eventID, counts[eventID])
+		}
 	}
 }
 
@@ -5290,8 +5339,11 @@ func TestBuildAdaptationProposalDetailsResumesCompletedRuntimeBatch(t *testing.T
 	if second.calls != 1 {
 		t.Fatalf("resume calls=%d, want only remaining detail batch", second.calls)
 	}
-	if !hasAdaptProgress(progress, "Reused proposal detail batch 1/2") {
-		t.Fatalf("resume progress should report reused detail batch, got %+v", progress)
+	if !hasAdaptProgress(progress, "已复用并校验 1/2 个章节详情批次") {
+		t.Fatalf("resume progress should summarize reused detail batches, got %+v", progress)
+	}
+	if hasAdaptProgress(progress, "骨架规划完成") {
+		t.Fatalf("resume progress should not imply that the skeleton was regenerated, got %+v", progress)
 	}
 	if len(proposal.Chapters) != 8 || proposal.Chapters[0].Chapter != 1 || proposal.Chapters[7].Chapter != 8 {
 		t.Fatalf("resumed proposal chapters = %+v", proposal.Chapters)

@@ -4292,7 +4292,11 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 		systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested adaptation planning step."
 	}
 	detailBatches := plannerDetailBatches(skeleton.Batches, adaptationPlannerRecommendedBatchMax)
-	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, len(detailBatches), fmt.Sprintf("骨架规划完成：%d 章，%d 个模型规划段，拆为 %d 个详情子批次", skeleton.TargetChapterCount, len(skeleton.Batches), len(detailBatches)), nil)
+	if len(runtime.CompletedBatches) == 0 {
+		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, len(detailBatches), fmt.Sprintf("骨架规划完成：%d 章，%d 个模型规划段，拆为 %d 个详情子批次", skeleton.TargetChapterCount, len(skeleton.Batches), len(detailBatches)), nil)
+	} else {
+		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, len(detailBatches), fmt.Sprintf("已加载骨架规划，正在校验 %d 个已保存详情批次", len(runtime.CompletedBatches)), nil)
+	}
 
 	if budgetErrs := plannerRuntimeCompletedBudgetSplitErrors(runtime, opts, manifest); len(budgetErrs) > 0 {
 		if err := preparePlannerRuntimeAfterValidationError(deps, runtime, budgetErrs, opts, manifest, opts.EmitProgress); err != nil {
@@ -4301,12 +4305,13 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 	}
 
 	chapters := make([]domain.AdaptationChapterPlan, 0, skeleton.TargetChapterCount)
+	reusedBatchCount := 0
 	for batchOrdinal, batch := range detailBatches {
 		validateBatch := plannerBatchChapterValidator(opts, manifest, batch, chapters)
 		if batchChapters, ok := plannerRuntimeBatchChapters(runtime, batch); ok {
 			if err := validateBatch(batchChapters); err == nil {
 				chapters = append(chapters, batchChapters...)
-				emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("Reused proposal detail batch %d/%d: target %d-%d", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
+				reusedBatchCount++
 				continue
 			} else {
 				var budgetErr *plannerProposalBudgetSplitError
@@ -4381,6 +4386,9 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 			return zero, fmt.Errorf("save proposal runtime batch %d: %w", batch.Index, err)
 		}
 		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("章节详情第 %d/%d 批完成：第 %d-%d 章", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
+	}
+	if reusedBatchCount > 0 {
+		emitAdaptProgress(opts.EmitProgress, StagePlan, len(detailBatches), len(detailBatches), fmt.Sprintf("已复用并校验 %d/%d 个章节详情批次", reusedBatchCount, len(detailBatches)), nil)
 	}
 
 	proposal := domain.AdaptationPlan{
@@ -6670,6 +6678,31 @@ func plannerSourceReportExcerpts(reports []domain.AdaptationSourceReport) []plan
 	return excerpts
 }
 
+func plannerSourceReportExcerptsForDetail(reports []domain.AdaptationSourceReport, granularity string, batch plannerSkeletonBatch) []plannerSourceReportExcerpt {
+	excerpts := plannerSourceReportExcerpts(reports)
+	if domain.NormalizeAdaptationGranularity(granularity) != domain.AdaptationGranularityArc {
+		return excerpts
+	}
+	allowedMainlineIDs := make(map[string]struct{}, len(batch.MainlineEventIDs))
+	for _, eventID := range batch.MainlineEventIDs {
+		eventID = strings.TrimSpace(eventID)
+		if eventID != "" {
+			allowedMainlineIDs[eventID] = struct{}{}
+		}
+	}
+	for index := range excerpts {
+		events := excerpts[index].SourceEvents[:0]
+		for _, event := range excerpts[index].SourceEvents {
+			if _, ok := allowedMainlineIDs[strings.TrimSpace(event.ID)]; !ok {
+				continue
+			}
+			events = append(events, event)
+		}
+		excerpts[index].SourceEvents = events
+	}
+	return excerpts
+}
+
 func plannerSourceChapterSummariesInRange(manifest *domain.AdaptationSourceManifest, from, to, maxItems int) ([]plannerSourceChapterSummary, int) {
 	if manifest == nil || from <= 0 || to < from {
 		return nil, 0
@@ -7091,7 +7124,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 		Skeleton:               plannerSkeletonForDetailPrompt(skeleton, batch),
 		Batch:                  batch,
 		PreviousDetailChapters: plannerPreviousChapterContexts(previousChapters, adaptationPlannerContinuityChapterMax),
-		SourceReports:          plannerSourceReportExcerpts(reports),
+		SourceReports:          plannerSourceReportExcerptsForDetail(reports, opts.Granularity, batch),
 		SourceReportNotes: []string{
 			"source_reports are clipped excerpts for the requested source range, not full raw reports.",
 			"Use source_range and source_chapters as factual anchors; do not copy source prose.",

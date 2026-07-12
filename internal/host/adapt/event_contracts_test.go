@@ -39,6 +39,23 @@ func TestFinalizeArcAcceptsEachMainlineEventExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestValidateArcBatchEventCoverageRejectsForeignMainlineID(t *testing.T) {
+	batch := plannerSkeletonBatch{
+		TargetFrom:       5,
+		TargetTo:         8,
+		MainlineEventIDs: []string{"event-current"},
+	}
+	chapters := []domain.AdaptationChapterPlan{
+		{Chapter: 5, EventIDs: []string{"event-current"}},
+		{Chapter: 6, EventIDs: []string{"event-from-previous-batch"}},
+	}
+
+	err := validateArcBatchEventCoverage(chapters, batch)
+	if err == nil || !strings.Contains(err.Error(), "is not assigned to detail batch 5-8") {
+		t.Fatalf("expected foreign mainline ownership error, got %v", err)
+	}
+}
+
 func TestFinalizeFreeBuildsIndependentTargetLedger(t *testing.T) {
 	proposal := domain.AdaptationPlan{Granularity: domain.AdaptationGranularityFree, Chapters: []domain.AdaptationChapterPlan{{Chapter: 1, Title: "新开端", OutlineEntry: domain.OutlineEntry{CoreEvent: "陌生人收到一封信"}}}}
 	if err := finalizePlannerEventContracts(&proposal, ProposalOptions{Brief: "自由重构", Granularity: domain.AdaptationGranularityFree}, nil); err != nil {
