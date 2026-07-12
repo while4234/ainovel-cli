@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 project cold-open isolation: `db01753`, `28ac506`,
+  `f228bcd`, `4d09a58`, and `cf6dc0e`. Project Host initialization no
+  longer holds the global session-map mutex; different projects initialize in
+  parallel while duplicate opens of the same project share one in-flight
+  result. The UI keeps a stable target loading screen and uses a measured
+  90-second cold-restore timeout instead of the previous 15-second threshold.
+  The full Web Go package, five repeated concurrency regressions, the focused
+  57-test UI file, and clean Vite builds passed. Live verification returned
+  `女主播的秘密` in 43.85 seconds while an independent project returned in
+  4.17 seconds; both were HTTP 200. Web is running on port 9898 as PID `93192`
+  with `index-B_f3EFQx.js`.
 - 2026-07-12 quality-first defaults for new projects: `738ff75`
   `feat: default new projects to quality stage routes`. New Web-created
   projects now explicitly route co-create, source analysis, skeleton planning,
