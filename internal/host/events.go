@@ -29,6 +29,8 @@ type Event struct {
 	Level      string        // info / warn / error / success
 	Depth      int           // 0 = coordinator 层, 1 = sub-agent 层
 	Duration   time.Duration // 完成时的执行耗时
+	Current    int           // 可选的 Web/长任务进度当前值
+	Total      int           // 可选的 Web/长任务进度总值
 }
 
 // Running 返回事件是否处于进行中。

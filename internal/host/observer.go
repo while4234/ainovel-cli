@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 	"sync/atomic"
 )
@@ -20,6 +20,13 @@ import (
 // the rendered string fallback used when the chain has been flattened
 // (e.g. inside sub-agent JSON results).
 func errorKind(err error, msg string) string {
+	lowerMsg := strings.ToLower(msg)
+	if err != nil && errors.Is(err, errs.ErrToolUnavailable) {
+		return "tool_unavailable"
+	}
+	if strings.Contains(lowerMsg, "tool unavailable") || strings.Contains(lowerMsg, "required tool unavailable") {
+		return "tool_unavailable"
+	}
 	if err != nil && errors.Is(err, agentcore.ErrProviderStreamIdle) {
 		return "stream_idle"
 	}
@@ -139,31 +146,16 @@ func (o *observer) retryEventID(scope string, attempt int) string {
 	return o.retryEvents[scope]
 }
 
-// emitAndLog 用于调用类事件的"开始"态：发给 TUI 但不写入 runtime queue，
-// 避免 replay 时"开始一行、完成又一行"重复。slog 由 host.emitEvent 统一记录。
+// emitAndLog 发出调用开始态。Host.emitEvent 负责统一日志和运行队列落盘；
+// web session 会按 HostEventID 将开始/完成态折叠为一行。
 func (o *observer) emitAndLog(ev Event) {
 	o.emitEv(ev)
 }
 
-// persistEvent 把事件写入 runtime queue（slog 由 host.emitEvent 统一记录）。
-func (o *observer) persistEvent(ev Event) {
-	if o.store == nil || o.store.Runtime == nil {
-		return
-	}
-	priority := domain.RuntimePriorityBackground
-	switch ev.Category {
-	case "SYSTEM", "ERROR":
-		priority = domain.RuntimePriorityControl
-	}
-	_, _ = o.store.Runtime.AppendQueue(domain.RuntimeQueueItem{
-		Time:     ev.Time,
-		Kind:     domain.RuntimeQueueUIEvent,
-		Priority: priority,
-		Category: ev.Category,
-		Summary:  ev.Summary,
-		Payload:  ev,
-	})
-}
+// persistEvent is retained as an observer compatibility hook. Persistence is
+// deliberately centralized in Host.emitEvent so Host-generated SYSTEM events,
+// observer events, and tool start states cannot diverge or be silently lost.
+func (o *observer) persistEvent(_ Event) {}
 
 func (o *observer) updateAgent(name string, fn func(*agentState)) {
 	if name == "" {

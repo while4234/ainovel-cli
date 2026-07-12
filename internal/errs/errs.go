@@ -16,6 +16,7 @@ var (
 	ErrStoreRead        = errors.New("store read error")
 	ErrStoreWrite       = errors.New("store write error")
 	ErrToolArgs         = errors.New("tool args invalid")
+	ErrToolUnavailable  = errors.New("required tool unavailable")
 	ErrToolPrecondition = errors.New("tool precondition failed")
 	ErrToolConflict     = errors.New("tool conflict")
 	ErrPhaseTransition  = errors.New("invalid phase transition")

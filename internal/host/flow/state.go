@@ -95,9 +95,9 @@ func loadAdaptationState(s *State, store *storepkg.Store, progress *domain.Progr
 	// externally repaired plan must not keep dispatching Writer after its event
 	// ownership becomes invalid.
 	if domain.NormalizeAdaptationGranularity(plan.Granularity) == domain.AdaptationGranularityArc {
-		if _, repairErr := store.Adaptation.RepairLegacyArcChapterBudgetDensity(plan); repairErr != nil {
+		if densityIssues := domain.ValidateArcChapterBudgetDensity(*plan); len(densityIssues) > 0 {
 			s.AdaptationOutlineBlocked = true
-			s.AdaptationOutlineBlockReason = fmt.Sprintf("automatic legacy chapter-budget repair failed: %v", repairErr)
+			s.AdaptationOutlineBlockReason = fmt.Sprintf("legacy chapter-budget density requires Host budget-only model preflight: %s", densityIssues[0].Detail)
 			return
 		}
 		if !domain.AdaptationOutlineQualityPassed(*plan) {

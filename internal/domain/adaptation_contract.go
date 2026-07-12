@@ -13,6 +13,7 @@ import (
 const (
 	AdaptationOutlineQualityAuditVersion = 1
 	AdaptationOutlineQualityStatusPassed = "passed"
+	AdaptationBudgetRepairVersion        = 1
 )
 
 // AdaptationOutlineQualityAudit is a durable marker for the deterministic
@@ -93,6 +94,40 @@ func AdaptationPlanOutlineQualitySignature(plan AdaptationPlan) string {
 	return hex.EncodeToString(digest[:])
 }
 
+// AdaptationPlanStoryContractSignature excludes chapter output budgets while
+// retaining event ownership and all outline/story contract fields. It lets a
+// legacy-budget migration prove that an old backup is the same plan before
+// borrowing only its pre-repair budget values.
+func AdaptationPlanStoryContractSignature(plan AdaptationPlan) string {
+	copyPlan := plan
+	copyPlan.Chapters = append([]AdaptationChapterPlan(nil), plan.Chapters...)
+	for index := range copyPlan.Chapters {
+		copyPlan.Chapters[index].TargetRunes = 0
+		copyPlan.Chapters[index].TargetMinRunes = 0
+		copyPlan.Chapters[index].TargetMaxRunes = 0
+		copyPlan.Chapters[index].WordBudget = nil
+	}
+	return AdaptationPlanOutlineQualitySignature(copyPlan)
+}
+
+// AdaptationPlanBudgetRepairLineageSignature excludes chapter output budgets
+// and event-binding fields while retaining the plot contract. A legacy budget
+// backup can legitimately predate a targeted event-binding repair; that repair
+// must not make a budget-only migration look like a different story plan.
+func AdaptationPlanBudgetRepairLineageSignature(plan AdaptationPlan) string {
+	copyPlan := plan
+	copyPlan.Chapters = append([]AdaptationChapterPlan(nil), plan.Chapters...)
+	for index := range copyPlan.Chapters {
+		copyPlan.Chapters[index].TargetRunes = 0
+		copyPlan.Chapters[index].TargetMinRunes = 0
+		copyPlan.Chapters[index].TargetMaxRunes = 0
+		copyPlan.Chapters[index].WordBudget = nil
+		copyPlan.Chapters[index].EventIDs = nil
+		copyPlan.Chapters[index].PreserveEvents = nil
+	}
+	return AdaptationPlanOutlineQualitySignature(copyPlan)
+}
+
 func AdaptationOutlineQualityPassed(plan AdaptationPlan) bool {
 	audit := plan.OutlineQualityAudit
 	return audit != nil && audit.Version == AdaptationOutlineQualityAuditVersion &&
@@ -115,6 +150,27 @@ func MarkAdaptationOutlineQualityPassed(plan *AdaptationPlan) {
 func ClearAdaptationOutlineQualityAudit(plan *AdaptationPlan) {
 	if plan != nil {
 		plan.OutlineQualityAudit = nil
+	}
+}
+
+// MarkAdaptationBudgetRepair records a completed legacy-budget migration.
+// The record is metadata only; it is intentionally excluded from the outline
+// quality signature so the signature continues to describe the story and its
+// actual chapter contracts.
+func MarkAdaptationBudgetRepair(plan *AdaptationPlan, mode string, attempts int, chapters []int, reason string) {
+	if plan == nil {
+		return
+	}
+	copyChapters := append([]int(nil), chapters...)
+	sort.Ints(copyChapters)
+	plan.BudgetRepair = &AdaptationBudgetRepairRecord{
+		Version:       AdaptationBudgetRepairVersion,
+		Mode:          strings.TrimSpace(mode),
+		Attempts:      attempts,
+		Chapters:      copyChapters,
+		Reason:        strings.TrimSpace(reason),
+		CompletedAt:   time.Now().UTC().Format(time.RFC3339),
+		PlanSignature: AdaptationPlanOutlineQualitySignature(*plan),
 	}
 }
 

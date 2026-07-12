@@ -54,6 +54,7 @@ const (
 	projectActionKindSimulationImport   = "simulation_import"
 	webCoCreateCheckpointRelPath        = "meta/sessions/web-cocreate-checkpoint.json"
 	webCoCreateLogRelPath               = "meta/sessions/cocreate.jsonl"
+	webEventSeqRelPath                  = "meta/runtime/web-event-seq.json"
 	rollbackActionWaitTimeout           = 30 * time.Second
 )
 
@@ -500,6 +501,7 @@ type ProjectSession struct {
 	history        []WebEvent
 	hostEventAt    map[string]int
 	subscribers    map[chan WebEvent]struct{}
+	sequencePath   string
 	cocreate       *webCoCreateSession
 	actions        *ActionRegistry
 	closed         bool
@@ -510,13 +512,21 @@ func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession
 	if err != nil {
 		return nil, fmt.Errorf("open project action registry: %w", err)
 	}
+	sequencePath := ""
+	if strings.TrimSpace(manifest.OutputDir) != "" {
+		sequencePath = filepath.Join(manifest.OutputDir, filepath.FromSlash(webEventSeqRelPath))
+	}
 	session := &ProjectSession{
-		manifest:    manifest,
-		host:        h,
-		actions:     actions,
-		actionKinds: make(map[string]int),
-		hostEventAt: make(map[string]int),
-		subscribers: make(map[chan WebEvent]struct{}),
+		manifest:     manifest,
+		host:         h,
+		actions:      actions,
+		actionKinds:  make(map[string]int),
+		hostEventAt:  make(map[string]int),
+		subscribers:  make(map[chan WebEvent]struct{}),
+		sequencePath: sequencePath,
+	}
+	if err := session.loadPersistedSequence(); err != nil {
+		return nil, fmt.Errorf("load web event sequence: %w", err)
 	}
 	if err := session.seedHistory(); err != nil {
 		return nil, err
@@ -3442,7 +3452,7 @@ func (s *ProjectSession) pump() {
 				events = nil
 				continue
 			}
-			s.appendHostEvent(ev)
+			s.appendHostEventFromHost(ev)
 			s.AppendSnapshot()
 		case delta, ok := <-stream:
 			if !ok {
@@ -3465,6 +3475,14 @@ func (s *ProjectSession) pump() {
 }
 
 func (s *ProjectSession) appendHostEvent(ev host.Event) WebEvent {
+	if recorder, ok := s.host.(interface{ RecordEvent(host.Event) }); ok {
+		recorder.RecordEvent(ev)
+		return WebEvent{}
+	}
+	return s.appendHostEventFromHost(ev)
+}
+
+func (s *ProjectSession) appendHostEventFromHost(ev host.Event) WebEvent {
 	return s.append(WebEvent{
 		Type:        webEventTypeHostEvent,
 		HostEventID: strings.TrimSpace(ev.ID),
@@ -3473,14 +3491,9 @@ func (s *ProjectSession) appendHostEvent(ev host.Event) WebEvent {
 }
 
 func (s *ProjectSession) appendHostEventWithProgress(ev host.Event, current, total int) WebEvent {
-	apiEvent := apiHostEventFromHost(ev)
-	apiEvent.Current = current
-	apiEvent.Total = total
-	return s.append(WebEvent{
-		Type:        webEventTypeHostEvent,
-		HostEventID: strings.TrimSpace(ev.ID),
-		Event:       apiEvent,
-	})
+	ev.Current = current
+	ev.Total = total
+	return s.appendHostEvent(ev)
 }
 
 func (s *ProjectSession) consumeSimulationEvents(ctx context.Context, events <-chan sim.Event) ([]apiSimulationEvent, error) {
@@ -4045,6 +4058,11 @@ func (s *ProjectSession) append(ev WebEvent) WebEvent {
 	}
 	s.nextSeq++
 	ev.Seq = s.nextSeq
+	if ev.Type != webEventTypeStreamDelta && ev.Type != webEventTypeStreamClear {
+		if err := s.persistSequenceLocked(); err != nil {
+			slog.Error("persist web event sequence failed", "module", "web", "project", s.manifest.ID, "seq", ev.Seq, "err", err)
+		}
+	}
 	s.upsertLocked(ev)
 	for ch := range s.subscribers {
 		select {
@@ -4053,6 +4071,45 @@ func (s *ProjectSession) append(ev WebEvent) WebEvent {
 		}
 	}
 	return ev
+}
+
+func (s *ProjectSession) loadPersistedSequence() error {
+	if strings.TrimSpace(s.sequencePath) == "" {
+		return nil
+	}
+	data, err := os.ReadFile(s.sequencePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var sequence int64
+	if err := json.Unmarshal(data, &sequence); err != nil {
+		return err
+	}
+	if sequence > s.nextSeq {
+		s.nextSeq = sequence
+	}
+	return nil
+}
+
+func (s *ProjectSession) persistSequenceLocked() error {
+	if strings.TrimSpace(s.sequencePath) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(s.sequencePath), 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(s.nextSeq)
+	if err != nil {
+		return err
+	}
+	tmp := s.sequencePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.sequencePath)
 }
 
 func (s *ProjectSession) upsertLocked(ev WebEvent) {
@@ -4156,6 +4213,8 @@ func apiHostEventFromHost(ev host.Event) *APIHostEvent {
 		Level:          ev.Level,
 		Depth:          ev.Depth,
 		DurationMillis: ev.Duration.Milliseconds(),
+		Current:        ev.Current,
+		Total:          ev.Total,
 		Running:        ev.Running(),
 	}
 	if !ev.FinishedAt.IsZero() {

@@ -64,10 +64,11 @@ type Host struct {
 	doneMu     sync.Mutex
 	doneClosed bool
 
-	mu         sync.Mutex
-	lifecycle  lifecycle
-	cocreating bool // 阶段共创占用：paused 窗口内堵住 import/simulate/continue 的并发介入
-	closeOnce  sync.Once
+	mu                    sync.Mutex
+	adaptationPreflightMu sync.Mutex
+	lifecycle             lifecycle
+	cocreating            bool // 阶段共创占用：paused 窗口内堵住 import/simulate/continue 的并发介入
+	closeOnce             sync.Once
 }
 
 type lifecycle string
@@ -134,7 +135,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 
 	var router *flow.Dispatcher
 	var budget *BudgetSentinel
-	coordinator, askUser, restore, coordinatorCtxMgr, applyThinking := agents.BuildCoordinator(cfg, store, models, bundle, usage.Record, func(string) {
+	coordinator, askUser, restore, coordinatorCtxMgr, applyThinking, buildErr := agents.BuildCoordinator(cfg, store, models, bundle, usage.Record, func(string) {
 		if budget != nil && budget.HandleBoundary() {
 			return
 		}
@@ -142,6 +143,13 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 			router.Dispatch()
 		}
 	})
+	if buildErr != nil {
+		usageCancel()
+		if err := usage.SaveNow(); err != nil {
+			slog.Warn("Agent 构建失败后 usage 收尾落盘失败", "module", "usage", "err", err)
+		}
+		return nil, fmt.Errorf("build agent tool registry: %w", buildErr)
+	}
 	store.Signals.ClearStaleSignals()
 
 	h = &Host{
@@ -156,8 +164,8 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		writerRestore:     restore,
 		usage:             usage,
 		usageCancel:       usageCancel,
-		events:            make(chan Event, 100),
-		streamCh:          make(chan string, 256),
+		events:            make(chan Event, 4096),
+		streamCh:          make(chan string, 2048),
 		done:              make(chan struct{}, 4),
 		lifecycle:         lifecycleIdle,
 	}
@@ -553,6 +561,12 @@ func (h *Host) Resume() (string, error) {
 	if _, err := h.store.ReconcilePendingRewriteProgress(); err != nil {
 		return "", err
 	}
+	if err := h.budget.Refuse(); err != nil {
+		return "", err
+	}
+	if _, err := h.prepareAdaptationPreflight(context.Background()); err != nil {
+		return "", err
+	}
 
 	outlineRepair, err := prepareResumeOutlineRepair(h.store)
 	if err != nil {
@@ -622,6 +636,12 @@ func (h *Host) Continue(text string) error {
 	h.mu.Unlock()
 	if !running {
 		if err := h.ensureContinuationWritingAllowed(); err != nil {
+			return err
+		}
+		if err := h.budget.Refuse(); err != nil {
+			return err
+		}
+		if _, err := h.prepareAdaptationPreflight(context.Background()); err != nil {
 			return err
 		}
 	}
@@ -740,6 +760,9 @@ func (h *Host) Close() {
 func (h *Host) waitDone() {
 	h.coordinator.WaitForIdle()
 	h.observer.finalize()
+	if h.tryRepairStoppedAdaptation() {
+		return
+	}
 
 	h.mu.Lock()
 	progress, _ := h.store.Progress.Load()
@@ -777,6 +800,49 @@ func (h *Host) waitDone() {
 	}
 
 	h.notifyDone()
+}
+
+// tryRepairStoppedAdaptation handles the common legacy-plan failure where the
+// Coordinator has no safe next route because the confirmed adaptation outline
+// failed a plan-only gate. The repair runs at Host level, then the normal
+// Resume path is reused so this is not a one-off chapter retry.
+func (h *Host) tryRepairStoppedAdaptation() bool {
+	state := flow.LoadState(h.store)
+	if !state.AdaptationOutlineBlocked {
+		return false
+	}
+	report, err := h.prepareAdaptationPreflight(context.Background())
+	if err != nil {
+		h.emitEvent(Event{
+			Time:     time.Now().UTC(),
+			Category: "ERROR",
+			Summary:  "创作停止前的大纲定向修复失败",
+			Detail:   err.Error(),
+			Level:    "error",
+		})
+		return false
+	}
+	if !report.Changed {
+		return false
+	}
+	h.mu.Lock()
+	if h.lifecycle != lifecycleRunning {
+		h.mu.Unlock()
+		return false
+	}
+	h.lifecycle = lifecycleIdle
+	h.mu.Unlock()
+	if _, err := h.Resume(); err != nil {
+		h.emitEvent(Event{
+			Time:     time.Now().UTC(),
+			Category: "ERROR",
+			Summary:  "大纲修复完成后恢复创作失败",
+			Detail:   err.Error(),
+			Level:    "error",
+		})
+		return false
+	}
+	return true
 }
 
 func (h *Host) notifyDone() {
@@ -827,10 +893,19 @@ func (h *Host) Done() <-chan struct{}       { return h.done }
 func (h *Host) Dir() string                 { return h.store.Dir() }
 func (h *Host) AskUser() *tools.AskUserTool { return h.askUser }
 
+// RecordEvent lets Web-side long actions use the same durable event journal as
+// Coordinator/Writer events. It intentionally has no separate persistence
+// path, so reopening a project sees one monotonic queue instead of two logs.
+func (h *Host) RecordEvent(ev Event) { h.emitEvent(ev) }
+
 // ── 事件发射 ──
 
 func (h *Host) emitEvent(ev Event) {
 	defer func() { recover() }()
+	if ev.Time.IsZero() {
+		ev.Time = time.Now().UTC()
+	}
+	h.persistRuntimeEvent(ev)
 	// 所有事件的唯一 slog 入口。observer 翻译的 agentcore 事件和 Host 自发的
 	// SYSTEM 事件（Start/Abort/Resume…）都在这里落日志，避免 ESC abort 与外部
 	// 终止原因需要在结构化事件中可区分。
@@ -864,6 +939,36 @@ func (h *Host) emitEvent(ev Event) {
 		case h.events <- ev:
 		default:
 		}
+	}
+}
+
+// persistRuntimeEvent is the single durable event boundary. Persisting both
+// start and finish states makes a project recoverable even when the process is
+// interrupted between a tool call and its completion; the web session's
+// hostEventID upsert collapses the replayed pair back to one visible row.
+func (h *Host) persistRuntimeEvent(ev Event) {
+	if h == nil || h.store == nil || h.store.Runtime == nil {
+		return
+	}
+	priority := domain.RuntimePriorityBackground
+	if ev.Category == "SYSTEM" || ev.Category == "ERROR" {
+		priority = domain.RuntimePriorityControl
+	}
+	if _, err := h.store.Runtime.AppendQueue(domain.RuntimeQueueItem{
+		Time:     ev.Time,
+		Kind:     domain.RuntimeQueueUIEvent,
+		Priority: priority,
+		Category: ev.Category,
+		Summary:  ev.Summary,
+		Payload:  ev,
+	}); err != nil {
+		// Do not recursively emit another event when the event ledger itself is
+		// unavailable. The structured slog record is the last-resort diagnostic.
+		slog.Error("runtime event persistence failed", "module", "event", "category", ev.Category, "summary", ev.Summary, "err", err)
+		h.notifier.Send(notify.Notification{
+			Kind: "runtime_log", Level: "error", Title: "ainovel: 日志落盘失败",
+			Body: fmt.Sprintf("%s：%v", ev.Summary, err),
+		})
 	}
 }
 

@@ -267,6 +267,7 @@ type AdaptationPlan struct {
 	Status                   string                         `json:"status"`
 	RewritePolicy            string                         `json:"rewrite_policy"`
 	OutlineQualityAudit      *AdaptationOutlineQualityAudit `json:"outline_quality_audit,omitempty"`
+	BudgetRepair             *AdaptationBudgetRepairRecord  `json:"budget_repair,omitempty"`
 	Brief                    string                         `json:"brief"`
 	Planner                  *AdaptationPlannerMeta         `json:"planner,omitempty"`
 	Volumes                  []AdaptationVolumePlan         `json:"volumes,omitempty"`
@@ -283,6 +284,20 @@ type AdaptationPlan struct {
 	TargetRelationshipStates map[string]string              `json:"target_relationship_states,omitempty"`
 	TargetSettingLocks       []AdaptationSettingLock        `json:"target_setting_locks,omitempty"`
 	Chapters                 []AdaptationChapterPlan        `json:"chapters"`
+}
+
+// AdaptationBudgetRepairRecord records the one-time migration of a legacy
+// confirmed plan whose chapter budget could not express its own scene list.
+// Keeping this on the plan makes the repair mode and retry count auditable and
+// prevents a later Resume from treating an already repaired plan as unseen.
+type AdaptationBudgetRepairRecord struct {
+	Version       int    `json:"version"`
+	Mode          string `json:"mode"` // model / deterministic_fallback
+	Attempts      int    `json:"attempts,omitempty"`
+	Chapters      []int  `json:"chapters,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	CompletedAt   string `json:"completed_at"`
+	PlanSignature string `json:"plan_signature,omitempty"`
 }
 
 // AdaptationPlanningStage is the durable state of the human-gated adaptation

@@ -68,6 +68,53 @@ func (s *AdaptationStore) Backup(label string) (string, error) {
 	return targetRoot, nil
 }
 
+// LoadLatestPlanBackup returns the newest backup whose directory name ends in
+// "-label". It is used only for one-time migration of legacy plans; the
+// current plan remains the source of truth and callers must merge only the
+// fields that the migration is allowed to change.
+func (s *AdaptationStore) LoadLatestPlanBackup(label string) (*domain.AdaptationPlan, string, error) {
+	if s == nil || s.io == nil {
+		return nil, "", nil
+	}
+	label = safeAdaptationBackupLabel(label)
+	if label == "" {
+		return nil, "", nil
+	}
+	entries, err := os.ReadDir(s.io.path(adaptationBackupDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, "", nil
+		}
+		return nil, "", err
+	}
+	suffix := "-" + label
+	var newest os.DirEntry
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasSuffix(entry.Name(), suffix) {
+			continue
+		}
+		if newest == nil || entry.Name() > newest.Name() {
+			newest = entry
+		}
+	}
+	if newest == nil {
+		return nil, "", nil
+	}
+	var plan domain.AdaptationPlan
+	// Backup copies the contents of meta/adaptation into the backup root, so
+	// plan.json is one level below the timestamped directory rather than under
+	// a second meta/adaptation prefix.
+	backupPlan := filepath.ToSlash(filepath.Join(adaptationBackupDir, newest.Name(), filepath.Base(adaptationPlanFile)))
+	if err := s.io.ReadJSON(backupPlan, &plan); err != nil {
+		if os.IsNotExist(err) {
+			return nil, "", nil
+		}
+		return nil, "", err
+	}
+	s.normalizeAdaptationPlan(&plan)
+	return &plan, s.io.path(filepath.ToSlash(filepath.Join(adaptationBackupDir, newest.Name()))), nil
+}
+
 // RepairLegacyArcChapterBudgetDensity expands an old confirmed arc plan
 // before Writer or commit validation can reject its first dense chapter. The
 // original adaptation snapshot is backed up once per repair so the migration
@@ -76,7 +123,8 @@ func (s *AdaptationStore) RepairLegacyArcChapterBudgetDensity(plan *domain.Adapt
 	if s == nil || plan == nil || domain.NormalizeAdaptationGranularity(plan.Granularity) != domain.AdaptationGranularityArc {
 		return false, nil
 	}
-	if len(domain.ValidateArcChapterBudgetDensity(*plan)) == 0 {
+	issues := domain.ValidateArcChapterBudgetDensity(*plan)
+	if len(issues) == 0 {
 		return false, nil
 	}
 	wasPassed := domain.AdaptationOutlineQualityPassed(*plan)
@@ -86,6 +134,11 @@ func (s *AdaptationStore) RepairLegacyArcChapterBudgetDensity(plan *domain.Adapt
 	if len(domain.RepairArcChapterBudgetDensity(plan)) == 0 {
 		return false, nil
 	}
+	chapters := make([]int, 0, len(issues))
+	for _, issue := range issues {
+		chapters = append(chapters, issue.Chapter)
+	}
+	domain.MarkAdaptationBudgetRepair(plan, "deterministic_fallback", 0, chapters, "writer/commit safety-net fallback after preflight was missed")
 	if wasPassed {
 		domain.MarkAdaptationOutlineQualityPassed(plan)
 	}

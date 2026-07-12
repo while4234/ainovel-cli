@@ -143,8 +143,8 @@ func writerStopBlockMessage(st *store.Store) string {
 func writerAdaptationCheckBlockMessage(st *store.Store, chapter int, content string, chapterPlan domain.AdaptationChapterPlan) string {
 	if plan, err := st.Adaptation.LoadPlan(); err == nil && plan != nil && plan.Status == domain.AdaptationPlanStatusConfirmed &&
 		domain.NormalizeAdaptationGranularity(plan.Granularity) == domain.AdaptationGranularityArc {
-		if _, repairErr := st.Adaptation.RepairLegacyArcChapterBudgetDensity(plan); repairErr != nil {
-			return fmt.Sprintf("第 %d 章不能继续创作：无法自动修复旧大纲章节字数密度：%v", chapter, repairErr)
+		if densityIssues := domain.ValidateArcChapterBudgetDensity(*plan); len(densityIssues) > 0 {
+			return fmt.Sprintf("第 %d 章不能继续创作：旧改编大纲章节字数预算仍未通过创作前专项修复（%s）。不要修改正文；先由 Host 执行预算专项模型重分析并重新派发 writer。", chapter, densityIssues[0].Detail)
 		}
 		var qualityErr error
 		if !domain.AdaptationOutlineQualityPassed(*plan) {

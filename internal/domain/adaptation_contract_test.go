@@ -154,3 +154,42 @@ func TestValidateArcEventOutlineThemesFindsFinancialEventMovedToLaterChapter(t *
 		t.Fatalf("unexpected financial theme mismatch: %+v", issues)
 	}
 }
+
+func TestAdaptationPlanBudgetRepairLineageSignatureIgnoresEventBindingRepair(t *testing.T) {
+	base := AdaptationPlan{
+		Granularity: AdaptationGranularityArc,
+		SourceEvents: []AdaptationEvent{{
+			ID: "src-0001-e01", Description: "the source event", SourceChapter: 1,
+		}},
+		Chapters: []AdaptationChapterPlan{{
+			Chapter: 1,
+			Title:   "The contract",
+			OutlineEntry: OutlineEntry{
+				CoreEvent: "the core event",
+				Hook:      "the hook",
+				Scenes:    []string{"beat one", "beat two"},
+			},
+			TargetRunes:    2000,
+			TargetMinRunes: 1600,
+			TargetMaxRunes: 2400,
+			EventIDs:       []string{"src-0001-e01"},
+			PreserveEvents: []string{"src-0001-e01"},
+		}},
+	}
+	repaired := base
+	repaired.Chapters = append([]AdaptationChapterPlan(nil), base.Chapters...)
+	repaired.Chapters[0].EventIDs = []string{"src-0001-e02"}
+	repaired.Chapters[0].PreserveEvents = []string{"src-0001-e02"}
+
+	if AdaptationPlanStoryContractSignature(base) == AdaptationPlanStoryContractSignature(repaired) {
+		t.Fatal("story signature should detect event-binding changes")
+	}
+	if AdaptationPlanBudgetRepairLineageSignature(base) != AdaptationPlanBudgetRepairLineageSignature(repaired) {
+		t.Fatal("budget lineage should ignore targeted event-binding changes")
+	}
+
+	repaired.Chapters[0].CoreEvent = "a different story"
+	if AdaptationPlanBudgetRepairLineageSignature(base) == AdaptationPlanBudgetRepairLineageSignature(repaired) {
+		t.Fatal("budget lineage should detect plot changes")
+	}
+}

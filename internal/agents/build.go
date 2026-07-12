@@ -18,6 +18,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/agents/ctxpack"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/reminder"
@@ -148,7 +149,7 @@ func BuildCoordinator(
 	bundle assets.Bundle,
 	recordUsage UsageRecorder,
 	onFlowBoundary FlowBoundaryHook,
-) (*agentcore.Agent, *tools.AskUserTool, *ctxpack.WriterRestorePack, *corecontext.ContextEngine, ApplyThinking) {
+) (*agentcore.Agent, *tools.AskUserTool, *ctxpack.WriterRestorePack, *corecontext.ContextEngine, ApplyThinking, error) {
 	// 共享工具
 	contextTool := tools.NewContextToolWithOptions(store, bundle.References, cfg.Style, tools.ContextToolOptions{
 		SimulationMode: cfg.EffectiveSimulationMode(),
@@ -180,6 +181,19 @@ func BuildCoordinator(
 		tools.NewSaveReviewTool(store),
 		tools.NewSaveArcSummaryTool(store),
 		tools.NewSaveVolumeSummaryTool(store),
+	}
+	if err := validateAgentToolRegistry("architect", architectTools,
+		"novel_context", "save_foundation"); err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	if err := validateAgentToolRegistry("writer", writerTools,
+		"novel_context", "read_chapter", "plan_chapter", "draft_chapter", "edit_chapter",
+		"check_consistency", "check_adaptation", "commit_chapter"); err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	if err := validateAgentToolRegistry("editor", editorTools,
+		"novel_context", "read_chapter", "save_review", "save_arc_summary", "save_volume_summary"); err != nil {
+		return nil, nil, nil, nil, nil, err
 	}
 
 	// Provider failover 只记日志,不通知宿主
@@ -296,6 +310,7 @@ func BuildCoordinator(
 	}
 
 	writerPrompt := bundle.Prompts.Writer
+	writerPrompt += "\n\nRuntime tool contract: this Writer run has registered tools `novel_context`, `read_chapter`, `plan_chapter`, `draft_chapter`, `edit_chapter`, `check_consistency`, `check_adaptation`, and `commit_chapter`. Use these exact names. If a tool call is rejected as unavailable, do not invent a replacement name; report a tool-registry error so the Host can repair the runtime."
 	if style, ok := bundle.Styles[cfg.Style]; ok {
 		writerPrompt += "\n\n" + style
 	}
@@ -390,9 +405,10 @@ func BuildCoordinator(
 		CommitOnProject:  true,
 	})
 
+	coordinatorPrompt := bundle.Prompts.Coordinator + "\n\nCoordinator tool ownership contract: Coordinator itself only has `subagent`, `novel_context`, `save_user_rules`, and `reopen_book`. It does not directly own Writer tools such as `read_chapter`, `check_consistency`, `check_adaptation`, or `commit_chapter`; those are available inside the Writer subagent. Never tell the user that those Writer tools are missing merely because they are absent from Coordinator's own interface. After a Writer or Editor subagent returns, follow the Host route and dispatch the next required subagent; do not perform Writer checks yourself."
 	agent := agentcore.NewAgent(
 		agentcore.WithModel(coordinatorModel),
-		agentcore.WithSystemPrompt(globalprompt.Apply(bundle.Prompts.Coordinator)),
+		agentcore.WithSystemPrompt(globalprompt.Apply(coordinatorPrompt)),
 		agentcore.WithTools(subagentTool, contextTool, tools.NewSaveUserRulesTool(userRulesSvc), tools.NewReopenBookTool(store)),
 		agentcore.WithMaxTurns(100_000),
 		agentcore.WithOnMessage(coordinatorOnMessage),
@@ -431,7 +447,27 @@ func BuildCoordinator(
 		}
 	}
 
-	return agent, askUser, restore, coordinatorEngine, applyThinking
+	return agent, askUser, restore, coordinatorEngine, applyThinking, nil
+}
+
+func validateAgentToolRegistry(role string, actual []agentcore.Tool, required ...string) error {
+	available := make(map[string]struct{}, len(actual))
+	for _, tool := range actual {
+		if tool == nil || strings.TrimSpace(tool.Name()) == "" {
+			return fmt.Errorf("%s tool registry contains an unnamed tool: %w", role, errs.ErrToolUnavailable)
+		}
+		name := strings.TrimSpace(tool.Name())
+		if _, exists := available[name]; exists {
+			return fmt.Errorf("%s tool registry contains duplicate tool %q: %w", role, name, errs.ErrToolUnavailable)
+		}
+		available[name] = struct{}{}
+	}
+	for _, name := range required {
+		if _, ok := available[name]; !ok {
+			return fmt.Errorf("%s tool registry is missing required tool %q: %w", role, name, errs.ErrToolUnavailable)
+		}
+	}
+	return nil
 }
 
 func flowBoundaryMiddleware(onBoundary FlowBoundaryHook) agentcore.ToolMiddleware {

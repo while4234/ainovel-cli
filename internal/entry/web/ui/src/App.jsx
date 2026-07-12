@@ -74,6 +74,7 @@ import {
   getObservabilityRecommendations,
   getObservabilityUsage,
   getProjectModels,
+  getProjectEvents,
   getProjectResumeSchedule,
   getResumeSchedule,
   getRuntime,
@@ -175,7 +176,7 @@ import {
   withExpectedRevision
 } from './continuation.js';
 import { createWorkbenchState, eventStatus, reduceWebEvent, reduceWebEvents, visibleStreamRounds } from './events.js';
-import { nextSSEReconnectDelay, parseSSEMessage, shouldRefreshSSESnapshot } from './sse.js';
+import { nextSSEReconnectDelay, parseSSEMessage } from './sse.js';
 import { cacheHitLabel, usageConfidence, usageCoverage } from './usage-ui.js';
 import { UsageObservabilityTable } from './usage-observability.jsx';
 
@@ -822,8 +823,10 @@ export default function App() {
   const [usageAnalytics, setUsageAnalytics] = useState({ status: 'idle', report: null, recommendations: [], error: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const lastSeqRef = useRef(0);
-  const projectOpenSeqRef = useRef(0);
+	const lastSeqRef = useRef(0);
+	const gapRecoveryRef = useRef(null);
+	const pendingSSEEventsRef = useRef([]);
+	const projectOpenSeqRef = useRef(0);
   const projectOpenAbortRef = useRef(null);
   const activeProjectIdRef = useRef('');
 
@@ -865,8 +868,10 @@ export default function App() {
   const showChapterRevisionWorkspace = sideView === 'status' && !showOutlineRevisionWorkspace && selectedChapterRevisionView.visible;
   const showContinuationWorkspace = sideView === 'continuation' && continuationSnapshot.exists;
 
-  const resetProjectScopedState = useCallback((clearProject = false) => {
-    lastSeqRef.current = 0;
+	const resetProjectScopedState = useCallback((clearProject = false) => {
+		lastSeqRef.current = 0;
+		gapRecoveryRef.current = null;
+		pendingSSEEventsRef.current = [];
     setBusy(false);
     setWorkbench(createWorkbenchState());
     setSimulation(resetSimulationProjectState);
@@ -1476,21 +1481,63 @@ export default function App() {
     let retryTimer = null;
     let reconnectAttempt = 0;
 
-    const apply = (message) => {
-      const parsed = parseSSEMessage(message);
-      if (!parsed.event) {
-        setConnection('degraded');
+    const recoverSSEGap = () => {
+      if (gapRecoveryRef.current || disposed) {
         return;
       }
-      const event = parsed.event;
-      if (activeProjectIdRef.current !== projectId || (event.project_id && event.project_id !== projectId)) {
+      const after = lastSeqRef.current;
+      setConnection('reconnecting');
+      const recovery = getProjectEvents(projectId, after).then((history) => {
+        if (disposed || !isCurrentProject(projectId)) {
+          return;
+        }
+        const events = Array.isArray(history?.events) ? history.events.slice().sort((left, right) => (
+          Number(left?.seq || 0) - Number(right?.seq || 0)
+        )) : [];
+        const highestRecoveredSeq = events.reduce(
+          (highest, event) => Math.max(highest, Number(event?.seq || 0)),
+          after
+        );
+        lastSeqRef.current = Math.max(lastSeqRef.current, highestRecoveredSeq);
+        setWorkbench((previous) => {
+          const next = reduceWebEvents(previous, events);
+          lastSeqRef.current = Math.max(lastSeqRef.current, next.lastSeq);
+          return next;
+        });
+      }).catch(() => {
+        if (!disposed && isCurrentProject(projectId)) {
+          refreshCurrentProjectSnapshot(projectId);
+          setConnection('degraded');
+        }
+      }).finally(() => {
+        gapRecoveryRef.current = null;
+        if (disposed) {
+          return;
+        }
+        const pending = pendingSSEEventsRef.current.splice(0).sort((left, right) => (
+          Number(left?.seq || 0) - Number(right?.seq || 0)
+        ));
+        for (const event of pending) {
+          applyEvent(event);
+        }
+      });
+      gapRecoveryRef.current = recovery;
+    };
+
+    function applyEvent(event) {
+      if (!event || activeProjectIdRef.current !== projectId ||
+          (event.project_id && event.project_id !== projectId)) {
         return;
       }
-      if (event.seq <= lastSeqRef.current) {
+      const sequence = Number(event.seq || 0);
+      if (!sequence || sequence <= lastSeqRef.current) {
         return;
       }
-      if (shouldRefreshSSESnapshot(event, lastSeqRef.current)) {
+      if (sequence > lastSeqRef.current + 1) {
+        pendingSSEEventsRef.current.push(event);
         refreshCurrentProjectSnapshot(projectId);
+        recoverSSEGap();
+        return;
       }
       setWorkbench((previous) => {
         const next = reduceWebEvent(previous, event);
@@ -1525,11 +1572,45 @@ export default function App() {
       }
       setConnection('live');
       reconnectAttempt = 0;
+    }
+
+    const apply = (message) => {
+      const parsed = parseSSEMessage(message);
+      if (!parsed.event) {
+        setConnection('degraded');
+        return;
+      }
+      applyEvent(parsed.event);
     };
 
-    const connect = () => {
+    const connect = async () => {
+      if (disposed) {
+        return;
+      }
+      // Reconcile a restarted server before opening SSE. Stream deltas are
+      // intentionally ephemeral, so the server sequence may be lower after a
+      // restart even though the browser still has a higher lastSeq.
+      try {
+        const snapshotData = await getSnapshot(projectId);
+        const latest = Number(snapshotData?.latest_event_seq || 0);
+        if (!disposed && latest > 0 && latest < lastSeqRef.current) {
+          const restored = restoreProjectWorkbenchSnapshot(
+            createWorkbenchState(),
+            snapshotData.snapshot,
+            snapshotData.events || [],
+            latest
+          );
+          lastSeqRef.current = restored.lastSeq;
+          setWorkbench(restored);
+        }
+      } catch {
+        // Continue with SSE even when the preflight snapshot is unavailable.
+      }
+      if (disposed) {
+        return;
+      }
       const after = lastSeqRef.current;
-      const url = `/api/projects/${encodeURIComponent(projectId)}/events?after=${after}`;
+      const url = '/api/projects/' + encodeURIComponent(projectId) + '/events?after=' + after;
       source = new EventSource(url);
       setConnection(after > 0 ? 'reconnecting' : 'connecting');
       for (const type of eventTypes) {

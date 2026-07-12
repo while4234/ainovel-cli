@@ -82,8 +82,8 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 	if plan.Status != domain.AdaptationPlanStatusConfirmed {
 		return nil, fmt.Errorf("adaptation plan is not confirmed: %w", errs.ErrToolPrecondition)
 	}
-	if _, repairErr := t.store.Adaptation.RepairLegacyArcChapterBudgetDensity(plan); repairErr != nil {
-		return nil, fmt.Errorf("automatic legacy chapter-budget repair failed: %w: %w", errs.ErrStoreWrite, repairErr)
+	if densityIssues := domain.ValidateArcChapterBudgetDensity(*plan); len(densityIssues) > 0 {
+		return nil, fmt.Errorf("改编项目第 %d 章预算仍未通过创作前专项修复：%s。请先由 Host 执行预算专项模型重分析，不要在正文阶段强行补预算: %w", a.Chapter, densityIssues[0].Detail, errs.ErrToolPrecondition)
 	}
 	chapterPlan, ok := findAdaptationChapterPlan(plan, a.Chapter)
 	if !ok {

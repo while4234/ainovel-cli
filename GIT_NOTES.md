@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 targeted legacy-outline repair and observability hardening:
+  budget-only model reanalysis now retries against local density validation and
+  persists a one-time `budget_repair` marker; old event-binding repairs are
+  scoped to the current chapter and never regenerate story fields. Fixed the
+  legacy backup loader path so deterministic migration backups are actually
+  eligible for model reanalysis, added explicit tool-registry validation and
+  unified Host/Web event persistence with SSE history recovery. Full Go tests,
+  all 208 Web UI tests, and a live restart passed. Live projects confirmed
+  model budget repair markers and continued through new chapter submissions.
 - 2026-07-12 resume-next-chapter fix: `5e370cb8`
   Resume now queues the Host route as an agentcore follow-up and explicitly
   continues an already-idle Coordinator. Previously Resume started a Prompt
