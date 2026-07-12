@@ -239,7 +239,7 @@ func (m *runtimeFallbackModel) nextAfterFailure(ctx context.Context, current mod
 		return modelTarget{}, false, decision
 	}
 	target, ok := m.controller.SelectRuntimeFallback(ctx, ModelRef{Provider: current.provider, Model: current.name}, cloneAttemptedProviders(attempted), err)
-	if !ok || target.LLM == nil || target.Provider == "" || target.Model == "" {
+	if !ok || target.LLM == nil || target.Provider == "" || target.Model == "" || !sameRuntimeModelName(current.name, target.Model) {
 		return modelTarget{}, false, decision
 	}
 	reason := strings.TrimSpace(target.Reason)
@@ -248,6 +248,10 @@ func (m *runtimeFallbackModel) nextAfterFailure(ctx context.Context, current mod
 	}
 	decision.reason = reason
 	return modelTarget{provider: target.Provider, name: target.Model, model: target.LLM}, false, decision
+}
+
+func sameRuntimeModelName(current, candidate string) bool {
+	return strings.EqualFold(strings.TrimSpace(current), strings.TrimSpace(candidate))
 }
 
 func (m *runtimeFallbackModel) swapTo(from, to modelTarget, reason string, err error) {

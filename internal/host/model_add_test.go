@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -171,7 +172,7 @@ func TestReportAdaptationFailoverPromotesTargetToAllAgents(t *testing.T) {
 	}
 }
 
-func TestSelectRuntimeFallbackPromotesQuotaTargetToAllAgents(t *testing.T) {
+func TestSelectRuntimeFallbackKeepsModelAndDoesNotRewriteRoutes(t *testing.T) {
 	withModelConnectivityProbe(t, nil)
 
 	home := t.TempDir()
@@ -185,7 +186,7 @@ func TestSelectRuntimeFallbackPromotesQuotaTargetToAllAgents(t *testing.T) {
 		PersistProjectOverlay: true,
 		Providers: map[string]bootstrap.ProviderConfig{
 			"primary":  {Type: "openai", APIKey: "primary-key", Models: []string{"model-a"}},
-			"fallback": {Type: "openai", APIKey: "fallback-key", Models: []string{"model-b"}},
+			"fallback": {Type: "openai", APIKey: "fallback-key", Models: []string{"model-b", "model-a"}},
 		},
 		Roles: map[string]bootstrap.RoleConfig{
 			"architect":   {Provider: "primary", Model: "model-a"},
@@ -214,27 +215,49 @@ func TestSelectRuntimeFallbackPromotesQuotaTargetToAllAgents(t *testing.T) {
 	if !ok {
 		t.Fatal("selectRuntimeFallback did not find fallback target")
 	}
-	if target.Provider != "fallback" || target.Model != "model-b" {
-		t.Fatalf("target = %s/%s, want fallback/model-b", target.Provider, target.Model)
+	if target.Provider != "fallback" || target.Model != "model-a" {
+		t.Fatalf("target = %s/%s, want fallback/model-a", target.Provider, target.Model)
 	}
 	for _, role := range append([]string{"default"}, projectAgentModelRoles...) {
 		provider, model, _ := host.models.CurrentSelection(role)
-		if provider != "fallback" || model != "model-b" {
-			t.Fatalf("%s selection = %s/%s, want fallback/model-b", role, provider, model)
+		if provider != "primary" || model != "model-a" {
+			t.Fatalf("%s selection changed during candidate selection: %s/%s", role, provider, model)
 		}
 	}
-	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
+	if _, err := os.Stat(cfg.PersistPath); !os.IsNotExist(err) {
+		t.Fatalf("candidate selection should not persist route changes, stat err=%v", err)
+	}
+}
+
+func TestSelectRuntimeFallbackRejectsDifferentModel(t *testing.T) {
+	withModelConnectivityProbe(t, nil)
+	enabled := true
+	cfg := bootstrap.Config{
+		Provider:  "grok",
+		ModelName: "grok-4.5",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"grok":     {Type: "openai", APIKey: "grok-key", Models: []string{"grok-4.5"}},
+			"deepseek": {Type: "openai", APIKey: "deepseek-key", Models: []string{"deepseek-v4-pro"}},
+		},
+		ModelAutoSwitch: bootstrap.ModelAutoSwitchConfig{
+			Enabled:          &enabled,
+			FallbackBackends: []string{"deepseek"},
+		},
+	}
+	cfg.FillDefaults()
+	models, err := bootstrap.NewModelSet(cfg)
 	if err != nil {
-		t.Fatalf("LoadConfigFile: %v", err)
+		t.Fatalf("NewModelSet: %v", err)
 	}
-	if saved.Provider != "fallback" || saved.ModelName != "model-b" {
-		t.Fatalf("saved default route = %s/%s, want fallback/model-b", saved.Provider, saved.ModelName)
-	}
-	for _, role := range projectAgentModelRoles {
-		route := saved.Roles[role]
-		if route.Provider != "fallback" || route.Model != "model-b" {
-			t.Fatalf("saved %s route = %s/%s, want fallback/model-b", role, route.Provider, route.Model)
-		}
+	host := &Host{cfg: cfg, models: models, events: make(chan Event, 10)}
+
+	if target, ok := host.selectRuntimeFallback(
+		context.Background(),
+		bootstrap.ModelRef{Provider: "grok", Model: "grok-4.5"},
+		map[string]bool{"grok": true},
+		errors.New("rate_limit_exceeded"),
+	); ok {
+		t.Fatalf("cross-model fallback selected: %s/%s", target.Provider, target.Model)
 	}
 }
 

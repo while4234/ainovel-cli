@@ -57,6 +57,24 @@ func TestNormalWorkflowProgressWaitsForPlanningConfirmation(t *testing.T) {
 	}
 }
 
+func TestWorkflowProgressReportsTheRunningStageModel(t *testing.T) {
+	session, err := NewProjectSession(ProjectManifest{ID: "project-model-progress"}, newFakeProjectHost())
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	progress := session.workflowProgress(host.UISnapshot{
+		IsRunning:      true,
+		RuntimeState:   "running",
+		TotalChapters:  10,
+		CompletedCount: 2,
+	})
+	if progress.CurrentStep != "writing" || progress.CurrentModel != "model-a" {
+		t.Fatalf("running progress = step %q model %q, want writing/model-a", progress.CurrentStep, progress.CurrentModel)
+	}
+}
+
 func TestContinuationWorkflowProgressUsesDurableRevision(t *testing.T) {
 	continuation := &domain.ContinuationSnapshot{Workflow: domain.ContinuationWorkflow{
 		Stage:           domain.ContinuationStageProposalReviewPending,

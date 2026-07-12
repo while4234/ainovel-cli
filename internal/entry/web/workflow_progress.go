@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
@@ -51,15 +52,16 @@ type WorkflowNextAction struct {
 }
 
 type WorkflowProgress struct {
-	Workflow    string              `json:"workflow"`
-	RunID       string              `json:"run_id"`
-	Revision    int                 `json:"revision"`
-	Status      WorkflowStatus      `json:"status"`
-	CurrentStep string              `json:"current_step"`
-	Steps       []WorkflowStep      `json:"steps"`
-	NextAction  *WorkflowNextAction `json:"next_action,omitempty"`
-	Recoverable bool                `json:"recoverable"`
-	Error       string              `json:"error,omitempty"`
+	Workflow     string              `json:"workflow"`
+	RunID        string              `json:"run_id"`
+	Revision     int                 `json:"revision"`
+	Status       WorkflowStatus      `json:"status"`
+	CurrentStep  string              `json:"current_step"`
+	Steps        []WorkflowStep      `json:"steps"`
+	NextAction   *WorkflowNextAction `json:"next_action,omitempty"`
+	Recoverable  bool                `json:"recoverable"`
+	Error        string              `json:"error,omitempty"`
+	CurrentModel string              `json:"current_model,omitempty"`
 }
 
 // WebSnapshot preserves the legacy flat host snapshot while adding the
@@ -89,13 +91,47 @@ func (s *ProjectSession) workflowProgress(snapshot host.UISnapshot) WorkflowProg
 	adaptationEvent := s.latestAdaptationProgressEvent()
 
 	workflow := selectWorkflow(snapshot, coCreate, continuation, adaptationEvent, s.currentActionKinds())
+	var progress WorkflowProgress
 	switch workflow {
 	case workflowContinuation:
-		return continuationWorkflowProgress(s.manifest.ID, snapshot, coCreate, continuation)
+		progress = continuationWorkflowProgress(s.manifest.ID, snapshot, coCreate, continuation)
 	case workflowAdaptation:
-		return adaptationWorkflowProgress(s.manifest.ID, snapshot, coCreate, adaptationEvent, s.currentActionKinds())
+		progress = adaptationWorkflowProgress(s.manifest.ID, snapshot, coCreate, adaptationEvent, s.currentActionKinds())
 	default:
-		return normalWorkflowProgress(s.manifest.ID, snapshot, coCreate)
+		progress = normalWorkflowProgress(s.manifest.ID, snapshot, coCreate)
+	}
+	s.attachCurrentWorkflowModel(&progress)
+	return progress
+}
+
+func (s *ProjectSession) attachCurrentWorkflowModel(progress *WorkflowProgress) {
+	if progress == nil || progress.Status != WorkflowStatusRunning || s.host == nil {
+		return
+	}
+	stage := currentWorkflowModelStage(progress.CurrentStep)
+	if stage == "" {
+		return
+	}
+	_, model, _ := s.host.CurrentModelSelection(bootstrap.StageRouteKey(stage))
+	progress.CurrentModel = strings.TrimSpace(model)
+}
+
+func currentWorkflowModelStage(step string) string {
+	switch step {
+	case "creative_intent", "clarification", "contract", "draft":
+		return bootstrap.StageCoCreate
+	case "source", "source_baseline", "analysis":
+		return bootstrap.StageSourceAnalysis
+	case "structure", "proposal", "volumes":
+		return bootstrap.StageSkeleton
+	case "planning_review", "proposal_review", "outlines":
+		return bootstrap.StageDetailOutline
+	case "writing":
+		return bootstrap.StageWriting
+	case "quality_audit":
+		return bootstrap.StageReview
+	default:
+		return ""
 	}
 }
 

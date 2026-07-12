@@ -1172,11 +1172,10 @@ func (h *Host) selectRuntimeFallback(ctx context.Context, current bootstrap.Mode
 	}
 
 	for _, provider := range bootstrap.RuntimeAutoSwitchCandidateProviders(cfg, current.Provider, attempted) {
-		models := cfg.CandidateModels(provider)
-		if len(models) == 0 {
+		model, ok := matchingRuntimeFallbackModel(cfg.CandidateModels(provider), current.Model)
+		if !ok {
 			continue
 		}
-		model := models[0]
 		pc := cfg.Providers[provider]
 		candidate, err := bootstrap.NewProviderModelWithConfig(cfg, provider, model, pc)
 		if err != nil || candidate == nil || !candidate.SupportsTools() {
@@ -1186,7 +1185,6 @@ func (h *Host) selectRuntimeFallback(ctx context.Context, current bootstrap.Mode
 			continue
 		}
 		reason := fmt.Sprintf("%s:%s->%s", bootstrap.RuntimeFallbackPoolReasonPrefix, current.Provider, provider)
-		h.activateRuntimeFallbackTarget(provider, model, pc, reason, cause)
 		return bootstrap.RuntimeFallbackTarget{
 			Provider: provider,
 			Model:    model,
@@ -1197,37 +1195,13 @@ func (h *Host) selectRuntimeFallback(ctx context.Context, current bootstrap.Mode
 	return bootstrap.RuntimeFallbackTarget{}, false
 }
 
-func (h *Host) activateRuntimeFallbackTarget(provider, model string, pc bootstrap.ProviderConfig, reason string, cause error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if !h.cfg.PersistProjectOverlay {
-		return
+func matchingRuntimeFallbackModel(models []string, current string) (string, bool) {
+	for _, model := range models {
+		if strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(current)) {
+			return model, true
+		}
 	}
-	if current, ok := h.cfg.Providers[provider]; ok {
-		pc = current
-	}
-	if err := h.switchAllAgentModelsLocked(provider, model); err != nil {
-		slog.Warn("activate runtime fallback model failed", "module", "host", "provider", provider, "model", model, "err", err)
-		return
-	}
-	h.models.RegisterProvider(provider, pc)
-	h.recordAllProjectModelRoutesLocked(provider, model)
-	if err := h.persistConfigLocked(); err != nil {
-		slog.Warn("save runtime fallback route failed", "module", "host", "err", err)
-	}
-	if h.coordinator != nil && h.coordinatorCtxMgr != nil {
-		window, _ := h.cfg.ResolveContextWindow(model)
-		h.coordinator.SetContextWindow(window)
-		h.coordinatorCtxMgr.SetContextWindow(window)
-		h.coordinatorCtxMgr.SetReserveTokens(bootstrap.CompactReserveTokens(window))
-	}
-	h.emitEvent(Event{
-		Time:     time.Now(),
-		Category: "SYSTEM",
-		Summary:  fmt.Sprintf("project runtime model auto-switched: %s/%s (%s)", provider, model, reason),
-		Detail:   fmt.Sprint(cause),
-		Level:    "warn",
-	})
+	return "", false
 }
 
 func (h *Host) switchAllAgentModelsLocked(provider, model string) error {

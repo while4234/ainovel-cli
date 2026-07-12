@@ -96,6 +96,7 @@ export function WorkflowProgressPanel({ snapshot }) {
   const currentMessage = String(currentStep?.message || '').trim();
   const workflowLabel = workflowLabels[progress.workflow] || '创作流程';
   const statusLabel = statusLabels[progress.status] || '状态未知';
+  const currentModel = progress.status === 'running' ? String(progress.current_model || '').trim() : '';
   const nextAction = progress.next_action?.label || (progress.status === 'completed' ? '已全部完成' : '等待当前步骤更新');
 
   return (
@@ -106,7 +107,7 @@ export function WorkflowProgressPanel({ snapshot }) {
           <h3 id="workflow-progress-title">创作流程</h3>
         </div>
         <span className="workflow-progress-status" role="status" aria-live="polite">
-          {statusLabel}
+          {statusLabel}{currentModel ? ` · ${currentModel}` : ''}
         </span>
       </header>
 

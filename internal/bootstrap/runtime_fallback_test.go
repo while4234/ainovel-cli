@@ -18,7 +18,7 @@ import (
 func TestRuntimeAutoSwitchQuotaSwitchesImmediately(t *testing.T) {
 	restoreRuntimeFallbackWait(t)
 	first := &scriptedRuntimeModel{provider: "p1", model: "m1", errs: []error{errors.New("402 insufficient_quota")}}
-	second := &scriptedRuntimeModel{provider: "p2", model: "m2"}
+	second := &scriptedRuntimeModel{provider: "p2", model: "m1"}
 	primary := NewSwappableModel("p1", "m1", first)
 	controller := &runtimeFallbackControllerStub{order: []string{"p2"}, models: map[string]agentcore.ChatModel{"p2": second}}
 
@@ -27,8 +27,8 @@ func TestRuntimeAutoSwitchQuotaSwitchesImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if got := responseText(resp); got != "p2/m2" {
-		t.Fatalf("response = %q, want p2/m2", got)
+	if got := responseText(resp); got != "p2/m1" {
+		t.Fatalf("response = %q, want p2/m1", got)
 	}
 	if first.Calls() != 1 || second.Calls() != 1 {
 		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
@@ -45,13 +45,13 @@ func TestRuntimeAutoSwitchMonthlyUsageLimitSwitchesImmediately(t *testing.T) {
 		model:    "gpt-5.5",
 		errs:     []error{errors.New("Monthly usage limit reached. Resets in 18 days. To continue using this model, upgrade your plan.")},
 	}
-	second := &scriptedRuntimeModel{provider: "deepseek-backup", model: "deepseek-v4-pro"}
+	second := &scriptedRuntimeModel{provider: "codex-backup", model: "gpt-5.5"}
 	primary := NewSwappableModel("codex-primary", "gpt-5.5", first)
 	controller := &runtimeFallbackControllerStub{
-		order:  []string{"deepseek-backup"},
-		models: map[string]agentcore.ChatModel{"deepseek-backup": second},
+		order:  []string{"codex-backup"},
+		models: map[string]agentcore.ChatModel{"codex-backup": second},
 		modelNames: map[string]string{
-			"deepseek-backup": "deepseek-v4-pro",
+			"codex-backup": "gpt-5.5",
 		},
 	}
 
@@ -60,14 +60,38 @@ func TestRuntimeAutoSwitchMonthlyUsageLimitSwitchesImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if got := responseText(resp); got != "deepseek-backup/deepseek-v4-pro" {
-		t.Fatalf("response = %q, want deepseek-backup/deepseek-v4-pro", got)
+	if got := responseText(resp); got != "codex-backup/gpt-5.5" {
+		t.Fatalf("response = %q, want codex-backup/gpt-5.5", got)
 	}
 	if first.Calls() != 1 || second.Calls() != 1 {
 		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
 	}
 	if len(controller.calls) != 1 {
 		t.Fatalf("controller calls = %d, want 1", len(controller.calls))
+	}
+}
+
+func TestRuntimeAutoSwitchRejectsDifferentModelTarget(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{provider: "grok", model: "grok-4.5", errs: []error{errors.New("402 insufficient_quota")}}
+	second := &scriptedRuntimeModel{provider: "deepseek", model: "deepseek-v4-pro"}
+	primary := NewSwappableModel("grok", "grok-4.5", first)
+	controller := &runtimeFallbackControllerStub{
+		order:      []string{"deepseek"},
+		models:     map[string]agentcore.ChatModel{"deepseek": second},
+		modelNames: map[string]string{"deepseek": "deepseek-v4-pro"},
+	}
+
+	model := newRuntimeFallbackModel("stage:co_create", primary, primary, runtimeFallbackTestConfig(1), controller, nil)
+	if _, err := model.Generate(context.Background(), nil, nil); err == nil {
+		t.Fatal("Generate error = nil, want original Grok quota error")
+	}
+	if second.Calls() != 0 {
+		t.Fatalf("different model backend was called %d times", second.Calls())
+	}
+	provider, modelName := primary.Current()
+	if provider != "grok" || modelName != "grok-4.5" {
+		t.Fatalf("selection changed to %s/%s", provider, modelName)
 	}
 }
 
@@ -544,7 +568,7 @@ func (c *runtimeFallbackControllerStub) SelectRuntimeFallback(_ context.Context,
 		}
 		modelName := c.modelNames[provider]
 		if modelName == "" {
-			modelName = "m" + strings.TrimPrefix(provider, "p")
+			modelName = current.Model
 		}
 		return RuntimeFallbackTarget{
 			Provider: provider,
