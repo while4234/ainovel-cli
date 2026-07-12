@@ -54,7 +54,7 @@ import {
 
 describe('project opening', () => {
   it('allows cold project restoration to finish before reporting a timeout', () => {
-    expect(PROJECT_OPEN_TIMEOUT_MS).toBe(60_000);
+    expect(PROJECT_OPEN_TIMEOUT_MS).toBe(90_000);
   });
 });
 

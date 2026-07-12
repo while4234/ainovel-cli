@@ -180,7 +180,7 @@ import { cacheHitLabel, usageConfidence, usageCoverage } from './usage-ui.js';
 import { UsageObservabilityTable } from './usage-observability.jsx';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
-export const PROJECT_OPEN_TIMEOUT_MS = 60_000;
+export const PROJECT_OPEN_TIMEOUT_MS = 90_000;
 
 const coCreateTargetWordChoices = [
   { value: '5000', label: '短篇 5,000', hint: '通常不分章节' },
