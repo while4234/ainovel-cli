@@ -84,6 +84,24 @@ describe('unified workflow progress', () => {
     expect(markup).toContain('即使刷新页面');
   });
 
+  it('labels a running workflow explicitly as 正在运行', () => {
+    const markup = renderToStaticMarkup(createElement(WorkflowProgressPanel, {
+      snapshot: {
+        workflow_progress: progress({
+          status: 'running',
+          steps: [
+            { id: 'idea', label: '创意输入', status: 'completed' },
+            { id: 'review', label: '设定与规划审核', status: 'running' }
+          ],
+          next_action: null
+        })
+      }
+    }));
+
+    expect(markup).toContain('正在运行');
+    expect(markup).not.toContain('等待确认');
+  });
+
   it('prioritizes a workflow error and otherwise explains confirmation and recovery risk', () => {
     expect(workflowRiskText(progress({ error: '模型连接中断', recoverable: true }))).toBe('模型连接中断');
     expect(workflowRiskText(progress())).toContain('需要你确认');

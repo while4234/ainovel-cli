@@ -233,6 +233,14 @@ func adaptationWorkflowProgress(
 		}
 	}
 
+	if currentStep, message, running := adaptationRunningPresentation(actionKinds); running {
+		progress.Status = WorkflowStatusRunning
+		progress.CurrentStep = currentStep
+		progress.Steps = completeStepsBefore(progress.Steps, currentStep)
+		progress.Steps = setStep(progress.Steps, currentStep, progress.Status, 0, 0, message)
+		return progress
+	}
+
 	if coCreate != nil && coCreate.Kind == webCoCreateKindAdapt {
 		progress.CurrentStep = "contract"
 		progress.Status = WorkflowStatusWaitingConfirmation
@@ -266,17 +274,6 @@ func adaptationWorkflowProgress(
 		return progress
 	}
 
-	if containsAdaptationAction(actionKinds) {
-		progress.Status = WorkflowStatusRunning
-		progress.CurrentStep = "contract"
-		if workflowContainsString(actionKinds, projectActionKindAdaptationAnalysis) {
-			progress.CurrentStep = "analysis"
-		}
-		progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
-		progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "正在处理改编流程")
-		return progress
-	}
-
 	if proposal != nil && proposal.Status == domain.AdaptationPlanStatusConfirmed {
 		progress.Steps = completeStepsBefore(progress.Steps, "writing")
 		applyWritingState(&progress, snapshot)
@@ -300,6 +297,19 @@ func adaptationWorkflowProgress(
 	progress.CurrentStep = "source"
 	progress.NextAction = nextWorkflowAction(progress, "upload_adaptation_source", "上传原文", false)
 	return progress
+}
+
+func adaptationRunningPresentation(actionKinds []string) (string, string, bool) {
+	switch {
+	case workflowContainsString(actionKinds, projectActionKindAdaptationRevision):
+		return "proposal_review", "正在修订改编提案", true
+	case workflowContainsString(actionKinds, projectActionKindAdaptationProposal):
+		return "proposal_review", "正在生成改编提案", true
+	case workflowContainsString(actionKinds, projectActionKindAdaptationAnalysis):
+		return "analysis", "正在分析原文", true
+	default:
+		return "", "", false
+	}
 }
 
 func continuationWorkflowProgress(

@@ -103,6 +103,39 @@ func TestAdaptationEventPreservesCurrentAndTotalInAPIEvent(t *testing.T) {
 	}
 }
 
+func TestAdaptationWorkflowProgressPrioritizesRunningProposalOverReviewArtifacts(t *testing.T) {
+	snapshot := host.UISnapshot{
+		AdaptationProposal: &domain.AdaptationPlan{Status: domain.AdaptationPlanStatusProposal},
+	}
+	progress := adaptationWorkflowProgress(
+		"project-adaptation",
+		snapshot,
+		nil,
+		nil,
+		[]string{projectActionKindAdaptationProposal},
+	)
+
+	if progress.Status != WorkflowStatusRunning || progress.CurrentStep != "proposal_review" {
+		t.Fatalf("status/step = %q/%q, want running/proposal_review", progress.Status, progress.CurrentStep)
+	}
+	if progress.NextAction != nil {
+		t.Fatalf("running proposal unexpectedly requires confirmation: %+v", progress.NextAction)
+	}
+	step := workflowStepByID(progress.Steps, "proposal_review")
+	if step == nil || step.Status != WorkflowStatusRunning || step.Message != "正在生成改编提案" {
+		t.Fatalf("proposal step = %+v", step)
+	}
+}
+
+func workflowStepByID(steps []WorkflowStep, id string) *WorkflowStep {
+	for i := range steps {
+		if steps[i].ID == id {
+			return &steps[i]
+		}
+	}
+	return nil
+}
+
 func TestWebSnapshotSerializesWorkflowProgressWithoutDroppingLegacyFields(t *testing.T) {
 	snapshot := WebSnapshot{
 		UISnapshot: host.UISnapshot{NovelName: "legacy novel"},

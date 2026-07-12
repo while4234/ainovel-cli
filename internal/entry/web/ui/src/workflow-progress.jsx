@@ -8,7 +8,7 @@ const workflowLabels = {
 
 const statusLabels = {
   idle: '待开始',
-  running: '进行中',
+  running: '正在运行',
   waiting_confirmation: '等待确认',
   paused: '已暂停',
   failed: '需要处理',
