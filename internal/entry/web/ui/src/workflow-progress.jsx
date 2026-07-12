@@ -43,6 +43,10 @@ export function workflowProgressFromSnapshot(snapshot) {
   return value;
 }
 
+export function retainWorkflowProgress(previousProgress, snapshot) {
+  return workflowProgressFromSnapshot(snapshot) || previousProgress || null;
+}
+
 export function workflowOverallPercent(progress) {
   const steps = Array.isArray(progress?.steps) ? progress.steps : [];
   if (steps.length === 0) {
@@ -80,7 +84,9 @@ export function workflowRiskText(progress) {
 }
 
 export function WorkflowProgressPanel({ snapshot }) {
-  const progress = workflowProgressFromSnapshot(snapshot);
+  const progressRef = React.useRef(null);
+  progressRef.current = retainWorkflowProgress(progressRef.current, snapshot);
+  const progress = progressRef.current;
   if (!progress) {
     return null;
   }

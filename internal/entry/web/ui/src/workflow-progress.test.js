@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import {
   WorkflowProgressPanel,
+  retainWorkflowProgress,
   workflowOverallPercent,
   workflowProgressFromSnapshot,
   workflowRiskText
@@ -37,6 +38,21 @@ describe('unified workflow progress', () => {
     expect(workflowProgressFromSnapshot({ workflow_progress: value })).toBe(value);
     expect(workflowProgressFromSnapshot({ WorkflowProgress: value })).toBe(value);
     expect(workflowProgressFromSnapshot({ workflow_progress: { steps: [] } })).toBeNull();
+  });
+
+  it('retains the last valid workflow progress across incomplete snapshot replacements', () => {
+    const previous = progress({ status: 'running' });
+
+    expect(retainWorkflowProgress(previous, { runtime_state: 'running' })).toBe(previous);
+    expect(retainWorkflowProgress(previous, null)).toBe(previous);
+    expect(retainWorkflowProgress(previous, { workflow_progress: { steps: [] } })).toBe(previous);
+  });
+
+  it('replaces retained progress as soon as a newer valid workflow arrives', () => {
+    const previous = progress({ status: 'running' });
+    const current = progress({ status: 'completed', revision: 3 });
+
+    expect(retainWorkflowProgress(previous, { workflow_progress: current })).toBe(current);
   });
 
   it('combines completed and current step progress without exceeding 100%', () => {

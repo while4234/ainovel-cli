@@ -4344,7 +4344,7 @@ export default function App() {
           </div>
         </header>
 
-        <WorkflowProgressPanel snapshot={snapshot} />
+        <WorkflowProgressPanel key={activeProject?.id || 'no-project'} snapshot={snapshot} />
 
         {error ? <div className="error-banner">{error}</div> : null}
 
