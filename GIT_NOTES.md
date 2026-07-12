@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 quality-first defaults for new projects: `738ff75`
+  `feat: default new projects to quality stage routes`. New Web-created
+  projects now explicitly route co-create, source analysis, skeleton planning,
+  detailed outlines, and review/summary to Grok 4.5, while prose writing uses
+  DeepSeek V4 Pro. Provider IDs are selected automatically from configured,
+  enabled backends; when only one recommended model is available, all stages
+  fall back to that model. Existing projects are never migrated by this
+  initializer. The focused creation tests and full `go test ./... -count=1`
+  suite passed. Web was rebuilt and restarted on port 9898 as PID `89560`.
+  Separately, all 19 existing runtime projects were explicitly migrated through
+  the live project-model API and all 114 stage routes passed read-back checks.
 - 2026-07-12 adaptation detail-event ownership fix: `f696142`
   `fix: enforce adaptation detail event ownership`. Arc detail prompts now
   expose only the current child batch's assigned mainline event IDs, and local
