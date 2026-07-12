@@ -567,6 +567,77 @@ func TestFullRewriteSoftWordContractWarnsWithoutFailingCheckOrCommit(t *testing.
 	}
 }
 
+func TestFullRewriteModerateBudgetOverageIsAcceptedWithoutWarning(t *testing.T) {
+	source := strings.Repeat("s", 100)
+	draft := strings.Repeat("d", 135)
+	plan := domain.AdaptationPlan{
+		Granularity:      domain.AdaptationGranularityArc,
+		RewritePolicy:    domain.AdaptationRewriteFullRewrite,
+		WordTolerance:    0.15,
+		Brief:            "moderate soft overage",
+		SourceTotalRunes: 100,
+		TargetTotalRunes: 100,
+		TargetMinRunes:   85,
+		TargetMaxRunes:   115,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "Target",
+			SourceChapters: []int{1},
+			SourceRunes:    100,
+			TargetRunes:    100,
+			TargetMinRunes: 85,
+			TargetMaxRunes: 115,
+			SourceRange:    domain.SourceRange{From: 1, To: 1},
+		}},
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, []string{source})
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	checkArgs, _ := json.Marshal(map[string]any{
+		"chapter": 1,
+		"passed":  true,
+		"summary": "完整正文略高于规划值，但质量通过",
+	})
+	raw, err := NewCheckAdaptationTool(s).Execute(context.Background(), checkArgs)
+	if err != nil {
+		t.Fatalf("check_adaptation Execute: %v", err)
+	}
+	var checkPayload struct {
+		Passed   bool     `json:"passed"`
+		Issues   []string `json:"issues"`
+		Warnings []string `json:"word_contract_warnings"`
+		Contract struct {
+			BudgetStatus string   `json:"budget_status"`
+			SoftMaxRunes int      `json:"soft_max_runes"`
+			Warnings     []string `json:"warnings"`
+		} `json:"adaptation_word_contract"`
+	}
+	if err := json.Unmarshal(raw, &checkPayload); err != nil {
+		t.Fatalf("Unmarshal check payload: %v", err)
+	}
+	if !checkPayload.Passed || len(checkPayload.Issues) != 0 || len(checkPayload.Warnings) != 0 || len(checkPayload.Contract.Warnings) != 0 {
+		t.Fatalf("moderate soft overage should pass without a warning: %+v", checkPayload)
+	}
+	if checkPayload.Contract.BudgetStatus != "within_soft_overage" || checkPayload.Contract.SoftMaxRunes < len([]rune(draft)) {
+		t.Fatalf("unexpected soft overage contract: %+v", checkPayload.Contract)
+	}
+
+	commitArgs, _ := json.Marshal(map[string]any{
+		"chapter":    1,
+		"summary":    "摘要",
+		"characters": []string{"主角"},
+		"key_events": []string{"主线事件"},
+	})
+	if _, err := NewCommitChapterTool(s).Execute(context.Background(), commitArgs); err != nil {
+		t.Fatalf("commit should accept moderate soft overage: %v", err)
+	}
+}
+
 func TestAdaptationCommitStillEnforcesRunMetaWordBudget(t *testing.T) {
 	source := strings.Repeat("s", 100)
 	draft := strings.Repeat("d", 50)

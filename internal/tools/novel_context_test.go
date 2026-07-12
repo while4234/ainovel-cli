@@ -965,6 +965,7 @@ func TestContextToolClarifiesFreeFullRewriteSourceRefsAreAnchors(t *testing.T) {
 		SourceReferencePolicy     string   `json:"source_reference_policy"`
 		SourceMappingMeaning      string   `json:"source_mapping_meaning"`
 		SourceReadInstruction     string   `json:"source_read_instruction"`
+		BudgetInstruction         string   `json:"budget_instruction"`
 		LegacyRewritePolicyNotice string   `json:"legacy_rewrite_policy_notice"`
 		PreserveDetailsApplicable bool     `json:"preserve_details_applicable"`
 		MustNot                   []string `json:"must_not"`
@@ -978,8 +979,8 @@ func TestContextToolClarifiesFreeFullRewriteSourceRefsAreAnchors(t *testing.T) {
 		mode.PreserveDetailsApplicable {
 		t.Fatalf("free effective mode mismatch: %+v", mode)
 	}
-	for _, want := range []string{"不表示目标章对应原著章节", "不要因为 source_chapters/source_range 存在就读取原文", "rewrite_policy_rule"} {
-		joined := strings.Join([]string{mode.SourceMappingMeaning, mode.SourceReadInstruction, mode.LegacyRewritePolicyNotice, strings.Join(mode.MustNot, "\n")}, "\n")
+	for _, want := range []string{"不表示目标章对应原著章节", "不要因为 source_chapters/source_range 存在就读取原文", "rewrite_policy_rule", "word_budget 是提案规划参考而非正文硬上限", "适度超过 max_runes 可以保留并提交"} {
+		joined := strings.Join([]string{mode.SourceMappingMeaning, mode.SourceReadInstruction, mode.BudgetInstruction, mode.LegacyRewritePolicyNotice, strings.Join(mode.MustNot, "\n")}, "\n")
 		if !strings.Contains(joined, want) {
 			t.Fatalf("free effective mode missing %q:\n%+v", want, mode)
 		}

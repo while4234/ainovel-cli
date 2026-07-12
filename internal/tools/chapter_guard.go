@@ -10,6 +10,12 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
+// Full-rewrite/free chapter budgets are planning estimates. A complete,
+// quality-passing chapter may reasonably exceed the estimate; only a material
+// overage should remain visible as a budget warning. Preserve-details keeps
+// its existing hard contract below.
+const adaptationSoftBudgetOverageRatio = 0.25
+
 // EnsureChapterExpanded verifies that a chapter is inside the currently
 // expanded layered outline. Non-layered books and non-writing phases have no
 // layered range constraint.
@@ -60,17 +66,20 @@ type adaptationWordContract struct {
 	RewritePolicy       string   `json:"rewrite_policy"`
 	Hard                bool     `json:"hard"`
 	BudgetPolicy        string   `json:"budget_policy"`
+	BudgetStatus        string   `json:"budget_status,omitempty"`
 	Scope               string   `json:"scope,omitempty"`
 	Chapter             int      `json:"chapter"`
 	SourceRunes         int      `json:"source_runes,omitempty"`
 	TargetRunes         int      `json:"target_runes,omitempty"`
 	TargetMinRunes      int      `json:"target_min_runes,omitempty"`
 	TargetMaxRunes      int      `json:"target_max_runes,omitempty"`
+	SoftMaxRunes        int      `json:"soft_max_runes,omitempty"`
 	ActualRunes         int      `json:"actual_runes,omitempty"`
 	SourceTotalRunes    int      `json:"source_total_runes,omitempty"`
 	TargetTotalRunes    int      `json:"target_total_runes,omitempty"`
 	TargetTotalMinRunes int      `json:"target_total_min_runes,omitempty"`
 	TargetTotalMaxRunes int      `json:"target_total_max_runes,omitempty"`
+	SoftTotalMaxRunes   int      `json:"soft_total_max_runes,omitempty"`
 	ProjectedTotalRunes int      `json:"projected_total_runes,omitempty"`
 	TotalDeltaRunes     int      `json:"total_delta_runes,omitempty"`
 	TotalDeltaRatio     float64  `json:"total_delta_ratio,omitempty"`
@@ -103,14 +112,74 @@ func buildAdaptationWordContract(st *store.Store, plan *domain.AdaptationPlan, c
 	} else {
 		contract.Scope = "chapter"
 	}
+	if !hard {
+		contract.SoftMaxRunes = adaptationSoftBudgetMax(chapterPlan.TargetMaxRunes)
+		contract.SoftTotalMaxRunes = adaptationSoftBudgetMax(plan.TargetMaxRunes)
+	}
 	contract.ProjectedTotalRunes = projectedAdaptationTotalRunes(st, chapter, actualRunes)
 	if plan.TargetTotalRunes > 0 {
 		contract.TotalDeltaRunes = contract.ProjectedTotalRunes - plan.TargetTotalRunes
 		contract.TotalDeltaRatio = float64(contract.TotalDeltaRunes) / float64(plan.TargetTotalRunes)
 		contract.TotalDeltaRatio = math.Round(contract.TotalDeltaRatio*10000) / 10000
 	}
+	contract.BudgetStatus = adaptationWordBudgetStatus(plan, contract)
 	contract.Warnings = adaptationWordContractWarningsForContract(plan, contract)
 	return contract
+}
+
+func adaptationSoftBudgetMax(plannedMax int) int {
+	if plannedMax <= 0 {
+		return 0
+	}
+	extra := int(math.Ceil(float64(plannedMax) * adaptationSoftBudgetOverageRatio))
+	if extra < 1 {
+		extra = 1
+	}
+	return plannedMax + extra
+}
+
+func adaptationWordBudgetStatus(plan *domain.AdaptationPlan, contract adaptationWordContract) string {
+	if contract.ActualRunes <= 0 {
+		return "not_started"
+	}
+	if contract.Hard {
+		if contract.Scope != "total" {
+			switch {
+			case contract.TargetMinRunes > 0 && contract.ActualRunes < contract.TargetMinRunes:
+				return "below_hard_range"
+			case contract.TargetMaxRunes > 0 && contract.ActualRunes > contract.TargetMaxRunes:
+				return "above_hard_range"
+			default:
+				return "within_hard_range"
+			}
+		}
+		return "hard_total_contract"
+	}
+	if contract.Scope != "total" {
+		switch {
+		case contract.TargetMinRunes > 0 && contract.ActualRunes < contract.TargetMinRunes:
+			return "below_planned_range"
+		case contract.TargetMaxRunes <= 0 || contract.ActualRunes <= contract.TargetMaxRunes:
+			return "within_planned_range"
+		case contract.SoftMaxRunes <= 0 || contract.ActualRunes <= contract.SoftMaxRunes:
+			return "within_soft_overage"
+		default:
+			return "materially_over_planned_range"
+		}
+	}
+	if !isLastAdaptationChapter(plan, contract.Chapter) {
+		return "planned_total_pending"
+	}
+	switch {
+	case contract.TargetTotalMinRunes > 0 && contract.ProjectedTotalRunes < contract.TargetTotalMinRunes:
+		return "below_planned_total"
+	case contract.TargetTotalMaxRunes <= 0 || contract.ProjectedTotalRunes <= contract.TargetTotalMaxRunes:
+		return "within_planned_total"
+	case contract.SoftTotalMaxRunes <= 0 || contract.ProjectedTotalRunes <= contract.SoftTotalMaxRunes:
+		return "within_soft_total_overage"
+	default:
+		return "materially_over_planned_total"
+	}
 }
 
 func adaptationWordContractIssues(st *store.Store, plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan, chapter, actualRunes int) []string {
@@ -157,9 +226,10 @@ func adaptationWordContractWarningsForContract(plan *domain.AdaptationPlan, cont
 		warnings = append(warnings, fmt.Sprintf("adaptation_word_contract_soft: chapter %d has %d runes, below soft range %d-%d",
 			contract.Chapter, contract.ActualRunes, contract.TargetMinRunes, contract.TargetMaxRunes))
 	}
-	if contract.Scope != "total" && contract.TargetMaxRunes > 0 && contract.ActualRunes > contract.TargetMaxRunes {
+	if contract.Scope != "total" && contract.TargetMaxRunes > 0 &&
+		contract.ActualRunes > contract.SoftMaxRunes {
 		warnings = append(warnings, fmt.Sprintf("adaptation_word_contract_soft: chapter %d has %d runes, above soft range %d-%d",
-			contract.Chapter, contract.ActualRunes, contract.TargetMinRunes, contract.TargetMaxRunes))
+			contract.Chapter, contract.ActualRunes, contract.TargetMinRunes, contract.SoftMaxRunes))
 	}
 	if !isLastAdaptationChapter(plan, contract.Chapter) {
 		return warnings
@@ -168,9 +238,9 @@ func adaptationWordContractWarningsForContract(plan *domain.AdaptationPlan, cont
 		warnings = append(warnings, fmt.Sprintf("adaptation_word_contract_soft: projected total %d is below soft range %d-%d",
 			contract.ProjectedTotalRunes, contract.TargetTotalMinRunes, contract.TargetTotalMaxRunes))
 	}
-	if contract.TargetTotalMaxRunes > 0 && contract.ProjectedTotalRunes > contract.TargetTotalMaxRunes {
+	if contract.TargetTotalMaxRunes > 0 && contract.ProjectedTotalRunes > contract.SoftTotalMaxRunes {
 		warnings = append(warnings, fmt.Sprintf("adaptation_word_contract_soft: projected total %d is above soft range %d-%d",
-			contract.ProjectedTotalRunes, contract.TargetTotalMinRunes, contract.TargetTotalMaxRunes))
+			contract.ProjectedTotalRunes, contract.TargetTotalMinRunes, contract.SoftTotalMaxRunes))
 	}
 	return warnings
 }

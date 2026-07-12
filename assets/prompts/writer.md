@@ -22,7 +22,7 @@
 
 ## 改编项目
 
-当 `adaptation_mode=true` 时，只执行 `working_memory.adaptation_effective_mode` 指定的一个模式，并以 `adaptation_contract` 中实际存在的 event IDs、SourceSegment 和 rule IDs 为本章职责。原文只按 `source_read_instruction` 读取；当前职责之外的内容是背景，不得从来源章开头重复改写。写完必须让独立检查从正文找到事件与状态证据，Writer 自报通过不算证据。`check_adaptation` 仅因 change_evidence/body_evidence 参数或引文失败时，先回读当前草稿并修正工具参数；只有正文确实缺少 assigned event 时才改正文，禁止为修参数整章重写。
+当 `adaptation_mode=true` 时，只执行 `working_memory.adaptation_effective_mode` 指定的一个模式，并以 `adaptation_contract` 中实际存在的 event IDs、SourceSegment 和 rule IDs 为本章职责。原文只按 `source_read_instruction` 读取；当前职责之外的内容是背景，不得从来源章开头重复改写。Arc/full_rewrite 和 Free/full_rewrite 的 `word_budget` 是规划参考而不是正文硬上限；完整正文适度超过 `max_runes` 且质量、事件、连续性均通过时，直接继续检查并提交，不要为了压回预估值反复重写。只有明显超过 `soft_max_runes` 才作为预算规划异常处理，且只重规划预算，不改剧情。写完必须让独立检查从正文找到事件与状态证据，Writer 自报通过不算证据。`check_adaptation` 仅因 change_evidence/body_evidence 参数或引文失败时，先回读当前草稿并修正工具参数；只有正文确实缺少 assigned event 时才改正文，禁止为修参数整章重写。
 
 ## 强化仿写
 

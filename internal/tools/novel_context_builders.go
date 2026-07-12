@@ -343,6 +343,7 @@ func buildAdaptationEffectiveMode(plan *domain.AdaptationPlan, chapterPlan domai
 		"source_mapping_meaning":       adaptationSourceMappingMeaning(granularity),
 		"source_read_instruction":      adaptationSourceReadInstruction(granularity),
 		"writer_instruction":           adaptationModeWriterInstruction(granularity),
+		"budget_instruction":           adaptationBudgetWriterInstruction(granularity),
 		"legacy_rewrite_policy_notice": adaptationLegacyRewritePolicyNotice(plan.Brief),
 	}
 	switch granularity {
@@ -421,6 +422,13 @@ func adaptationModeWriterInstruction(granularity string) string {
 	default:
 		return "当前章按 chapter/preserve_details 写作：逐章对照原文，未受影响内容可承接，受影响完整场景单元原创重写"
 	}
+}
+
+func adaptationBudgetWriterInstruction(granularity string) string {
+	if domain.NormalizeAdaptationGranularity(granularity) == domain.AdaptationGranularityChapter {
+		return "当前章按 preserve_details 执行字数硬契约；超出或不足硬区间先修正文，再重新检查。"
+	}
+	return "当前章按 full_rewrite 执行：word_budget 是提案规划参考而非正文硬上限；完整正文只要质量和契约通过，适度超过 max_runes 可以保留并提交，不要仅为压回预估值而重写。只有明显超过 soft_max_runes 才报告预算规划异常，后续只重规划预算，不改剧情。"
 }
 
 func adaptationLegacyRewritePolicyNotice(brief string) string {
