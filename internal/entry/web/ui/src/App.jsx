@@ -788,6 +788,7 @@ export default function App() {
   const [trashProjects, setTrashProjects] = useState([]);
   const [trashOpen, setTrashOpen] = useState(false);
   const [activeProject, setActiveProject] = useState(null);
+  const [projectOpen, setProjectOpen] = useState({ status: 'idle', project: null, error: '' });
   const [workbench, setWorkbench] = useState(createWorkbenchState);
   const [newProjectName, setNewProjectName] = useState('');
   const [projectMenu, setProjectMenu] = useState(null);
@@ -822,6 +823,7 @@ export default function App() {
   const [error, setError] = useState('');
   const lastSeqRef = useRef(0);
   const projectOpenSeqRef = useRef(0);
+  const projectOpenAbortRef = useRef(null);
   const activeProjectIdRef = useRef('');
 
   const snapshot = workbench.snapshot;
@@ -1390,21 +1392,30 @@ export default function App() {
     }
     const requestSeq = projectOpenSeqRef.current + 1;
     projectOpenSeqRef.current = requestSeq;
+    projectOpenAbortRef.current?.abort();
+    const controller = new AbortController();
+    projectOpenAbortRef.current = controller;
+    let timedOut = false;
+    const timeoutID = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 15000);
     activeProjectIdRef.current = projectId;
     setError('');
-    resetProjectScopedState();
-    setActiveProject(null);
+    setProjectOpen({ status: 'loading', project, error: '' });
     setProjectDrawerOpen(false);
     try {
-      const snapshotData = await getSnapshot(projectId);
+      const snapshotData = await getSnapshot(projectId, { signal: controller.signal });
       const prepared = prepareProjectOpenSnapshot(requestSeq, projectOpenSeqRef.current, snapshotData);
       if (!prepared) {
         return;
       }
+      resetProjectScopedState();
       activeProjectIdRef.current = projectId;
       lastSeqRef.current = prepared.workbench.lastSeq;
       setWorkbench(prepared.workbench);
       setActiveProject(prepared.project);
+      setProjectOpen({ status: 'idle', project: null, error: '' });
       setCoCreate((previous) => coCreateStateFromResponse(snapshotData, previous));
       setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
       setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation, snapshotData.snapshot));
@@ -1432,10 +1443,20 @@ export default function App() {
       }));
     } catch (err) {
       if (projectOpenSeqRef.current === requestSeq) {
-        setError(err.message);
+        activeProjectIdRef.current = activeProject?.id || '';
+        const message = timedOut
+          ? `打开“${project.name || projectId}”超时，请重试`
+          : (err?.name === 'AbortError' ? '项目打开请求已取消' : err.message);
+        setError(message);
+        setProjectOpen({ status: 'error', project, error: message });
+      }
+    } finally {
+      window.clearTimeout(timeoutID);
+      if (projectOpenAbortRef.current === controller) {
+        projectOpenAbortRef.current = null;
       }
     }
-  }, [isCurrentProject, resetProjectScopedState]);
+  }, [activeProject?.id, isCurrentProject, resetProjectScopedState]);
 
   useEffect(() => {
     if (!activeProject?.id) {
@@ -4276,7 +4297,7 @@ export default function App() {
         <header className="workspace-toolbar">
           <div className="workspace-heading">
             <div className="eyebrow">当前项目</div>
-            <h2>{activeProject?.name || ''}</h2>
+            <h2>{activeProject?.name || projectOpen.project?.name || ''}</h2>
           </div>
           <div className="toolbar-actions">
             <StatusPill status={connection} />
@@ -4344,6 +4365,16 @@ export default function App() {
           </div>
         </header>
 
+        {projectOpen.status === 'loading' ? (
+          <div className="project-open-status" role="status" aria-live="polite">
+            <RefreshCw aria-hidden="true" className="is-spinning" size={17} />
+            <div>
+              <strong>正在打开“{projectOpen.project?.name || projectOpen.project?.id}”</strong>
+              <span>{activeProject ? '当前页面会保留到新项目加载完成。' : '正在加载项目快照，请稍候。'}</span>
+            </div>
+          </div>
+        ) : null}
+
         <WorkflowProgressPanel key={activeProject?.id || 'no-project'} snapshot={snapshot} />
 
         {error ? <div className="error-banner">{error}</div> : null}
@@ -4376,6 +4407,12 @@ export default function App() {
                 </article>
               ))
               )
+            ) : projectOpen.status === 'loading' ? (
+              <div className="no-project project-loading-state">
+                <RefreshCw aria-hidden="true" className="is-spinning" size={28} />
+                <strong>正在载入项目</strong>
+                <span>加载完成后会自动进入详细界面，无需切换其他项目。</span>
+              </div>
             ) : (
               <div className="no-project">
                 <SquarePen size={28} />

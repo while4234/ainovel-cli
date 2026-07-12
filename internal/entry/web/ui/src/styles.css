@@ -1102,6 +1102,43 @@ h2 {
   gap: 8px;
 }
 
+.project-open-status {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(15, 111, 109, 0.2);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.project-open-status div {
+  display: grid;
+  gap: 2px;
+}
+
+.project-open-status strong {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.project-open-status span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.is-spinning {
+  animation: project-open-spin 900ms linear infinite;
+}
+
+@keyframes project-open-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .schedule-panel section {
   display: grid;
   gap: 8px;

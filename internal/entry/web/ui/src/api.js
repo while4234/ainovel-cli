@@ -197,8 +197,8 @@ export function setProjectSimulationMode(projectId, mode) {
   });
 }
 
-export function getSnapshot(projectId) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/snapshot`);
+export function getSnapshot(projectId, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/snapshot`, options);
 }
 
 export function getChapter(projectId, chapter) {
