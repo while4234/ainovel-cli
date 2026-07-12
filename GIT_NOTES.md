@@ -28,6 +28,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 pending `fix: retry malformed outline audit responses`:
+  the layered detail-outline auditor now decodes the first complete JSON value
+  instead of spanning from the first to the last brace across trailing prose or
+  multiple objects. Truly malformed auditor output is discarded and retried up
+  to three times from the original clean payload without carrying the invalid
+  response forward or consuming content-repair attempts. This closes the live
+  Sorcerer's Handbook stop observed twice during legacy parent/volume review.
 - 2026-07-12 pending `feat: close the detail-outline audit loop`:
   adaptation detail batches now persist candidate/audit/context signatures and
   must pass deterministic plus independent auditor review before becoming later

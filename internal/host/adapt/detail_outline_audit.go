@@ -15,7 +15,10 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
-const detailOutlineAuditMaxTokens = 3600
+const (
+	detailOutlineAuditMaxTokens         = 3600
+	detailOutlineAuditFormatMaxAttempts = 3
+)
 
 type detailRepairObserverContextKey struct{}
 
@@ -484,19 +487,60 @@ func callDetailOutlineAuditor(
 		Artifacts  []detailAuditArtifact `json:"artifacts"`
 	}{scope, targetFrom, targetTo, artifacts})
 	systemPrompt := detailOutlineAuditorSystemPrompt()
-	text, err := generatePlannerTextForStage(
-		ctx, StageAudit, model, systemPrompt, string(payload), detailOutlineAuditMaxTokens,
-		emit, current, total, fmt.Sprintf("章节详情第 %d-%d 章独立审核", targetFrom, targetTo), deps.modelCallMaxAttempts(),
-	)
-	if err != nil {
-		return detailAuditModelResponse{}, fmt.Errorf("detail outline auditor transport failure: %w", err)
+	label := fmt.Sprintf("章节详情第 %d-%d 章独立审核", targetFrom, targetTo)
+	formatAttempts := min(max(1, deps.structureRepairMaxAttempts()), detailOutlineAuditFormatMaxAttempts)
+	var lastDecodeErr error
+	for attempt := 1; attempt <= formatAttempts; attempt++ {
+		text, err := generatePlannerTextForStage(
+			ctx, StageAudit, model, systemPrompt, string(payload), detailOutlineAuditMaxTokens,
+			emit, current, total, label, deps.modelCallMaxAttempts(),
+		)
+		if err != nil {
+			return detailAuditModelResponse{}, fmt.Errorf("detail outline auditor transport failure: %w", err)
+		}
+		response, decodeErr := decodeDetailOutlineAuditResponse(text)
+		if decodeErr == nil {
+			return response, nil
+		}
+		lastDecodeErr = decodeErr
+		if attempt < formatAttempts {
+			emitAdaptProgress(
+				emit, StageAudit, current, total,
+				fmt.Sprintf("%s返回格式无效，已丢弃该返回，使用干净上下文重试 %d/%d", label, attempt+1, formatAttempts),
+				decodeErr,
+			)
+		}
 	}
-	var response detailAuditModelResponse
-	raw := extractSemanticJSONObject(text)
-	if err := json.Unmarshal([]byte(raw), &response); err != nil {
-		return response, fmt.Errorf("decode detail outline audit response: %w", err)
+	return detailAuditModelResponse{}, fmt.Errorf("decode detail outline audit response after %d clean attempts: %w", formatAttempts, lastDecodeErr)
+}
+
+func decodeDetailOutlineAuditResponse(text string) (detailAuditModelResponse, error) {
+	var firstDecodeErr error
+	for offset, char := range text {
+		if char != '{' {
+			continue
+		}
+		var response detailAuditModelResponse
+		decoder := json.NewDecoder(strings.NewReader(text[offset:]))
+		if err := decoder.Decode(&response); err != nil {
+			if firstDecodeErr == nil {
+				firstDecodeErr = err
+			}
+			continue
+		}
+		response.Verdict = strings.ToLower(strings.TrimSpace(response.Verdict))
+		if response.Verdict != "pass" && response.Verdict != "fail" {
+			if firstDecodeErr == nil {
+				firstDecodeErr = fmt.Errorf("missing or invalid verdict %q", response.Verdict)
+			}
+			continue
+		}
+		return response, nil
 	}
-	return response, nil
+	if firstDecodeErr == nil {
+		firstDecodeErr = errors.New("no JSON object found")
+	}
+	return detailAuditModelResponse{}, firstDecodeErr
 }
 
 func detailOutlineAuditorSystemPrompt() string {

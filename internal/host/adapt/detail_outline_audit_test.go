@@ -15,6 +15,19 @@ import (
 
 type blockingOnceDetailAuditor struct{ calls int }
 
+type formatRetryDetailAuditor struct{ calls int }
+
+func (m *formatRetryDetailAuditor) Generate(_ context.Context, _ []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	m.calls++
+	text := `{"verdict":"pass","summary":"broken" 中文}`
+	if m.calls > 1 {
+		text = `{"verdict":"pass","summary":"clean retry passed","findings":[]}`
+	}
+	return &agentcore.LLMResponse{Message: agentcore.Message{
+		Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.TextBlock(text)}, Timestamp: time.Now(),
+	}}, nil
+}
+
 func (m *blockingOnceDetailAuditor) Generate(_ context.Context, messages []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
 	m.calls++
 	response := detailAuditModelResponse{Verdict: "pass", Summary: "re-audit passed"}
@@ -122,6 +135,37 @@ func TestVerifiedDetailAuditFindingsRequireExactEvidenceAndTarget(t *testing.T) 
 	findings = verifiedDetailAuditFindings([]detailAuditModelFinding{invalid}, []detailAuditArtifact{artifact}, 7, 8)
 	if findings[0].Blocking || findings[0].Severity != "warning" {
 		t.Fatalf("invalid evidence should be downgraded: %+v", findings[0])
+	}
+}
+
+func TestDecodeDetailOutlineAuditResponseReadsFirstCompleteJSONObject(t *testing.T) {
+	response, err := decodeDetailOutlineAuditResponse("审核结果：\n" +
+		`{"verdict":"pass","summary":"accepted","findings":[]}` +
+		"\n补充说明 {\"unrelated\":true}")
+	if err != nil {
+		t.Fatalf("decode first JSON object: %v", err)
+	}
+	if response.Verdict != "pass" || response.Summary != "accepted" {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestCallDetailOutlineAuditorRetriesMalformedResponseWithCleanContext(t *testing.T) {
+	auditor := &formatRetryDetailAuditor{}
+	var progress []string
+	response, err := callDetailOutlineAuditor(
+		context.Background(), Deps{StructureRepairMaxAttempts: 2, ModelCallMaxAttempts: 1}, auditor,
+		"parent", []detailAuditArtifact{{ID: "candidate", Text: "{}"}}, 43, 50,
+		func(_ Stage, _, _ int, message string, _ error) { progress = append(progress, message) }, 14, 370,
+	)
+	if err != nil {
+		t.Fatalf("callDetailOutlineAuditor: %v", err)
+	}
+	if auditor.calls != 2 || response.Verdict != "pass" {
+		t.Fatalf("calls=%d response=%+v", auditor.calls, response)
+	}
+	if joined := strings.Join(progress, "\n"); !strings.Contains(joined, "已丢弃该返回，使用干净上下文重试 2/2") {
+		t.Fatalf("progress did not explain clean retry: %s", joined)
 	}
 }
 
