@@ -842,7 +842,7 @@ export default function App() {
     [snapshot]
   );
   const coCreateRequestBusy = isCoCreateRequestBusy(coCreate);
-  const projectBusy = busy || coCreateRequestBusy;
+  const projectBusy = busy || coCreateRequestBusy || projectOpen.status === 'loading';
   const currentProjectStyle = useMemo(
     () => resolveProjectStyleID(snapshot, runtime, projectSettings),
     [snapshot, runtime, projectSettings.defaultStyle, projectSettings.styles]
@@ -1402,6 +1402,8 @@ export default function App() {
     }, 15000);
     activeProjectIdRef.current = projectId;
     setError('');
+    resetProjectScopedState();
+    setActiveProject(project);
     setProjectOpen({ status: 'loading', project, error: '' });
     setProjectDrawerOpen(false);
     try {
@@ -1410,8 +1412,6 @@ export default function App() {
       if (!prepared) {
         return;
       }
-      resetProjectScopedState();
-      activeProjectIdRef.current = projectId;
       lastSeqRef.current = prepared.workbench.lastSeq;
       setWorkbench(prepared.workbench);
       setActiveProject(prepared.project);
@@ -1443,7 +1443,7 @@ export default function App() {
       }));
     } catch (err) {
       if (projectOpenSeqRef.current === requestSeq) {
-        activeProjectIdRef.current = activeProject?.id || '';
+        activeProjectIdRef.current = projectId;
         const message = timedOut
           ? `打开“${project.name || projectId}”超时，请重试`
           : (err?.name === 'AbortError' ? '项目打开请求已取消' : err.message);
@@ -1456,11 +1456,16 @@ export default function App() {
         projectOpenAbortRef.current = null;
       }
     }
-  }, [activeProject?.id, isCurrentProject, resetProjectScopedState]);
+  }, [isCurrentProject, resetProjectScopedState]);
 
   useEffect(() => {
     if (!activeProject?.id) {
       setConnection('idle');
+      return undefined;
+    }
+
+    if (projectOpen.status === 'loading' && projectOpen.project?.id === activeProject.id) {
+      setConnection('connecting');
       return undefined;
     }
 
@@ -1567,7 +1572,7 @@ export default function App() {
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('online', handleOnline);
     };
-  }, [activeProject?.id, refreshCurrentProjectSnapshot]);
+  }, [activeProject?.id, projectOpen.project?.id, projectOpen.status, refreshCurrentProjectSnapshot]);
 
   const createAndOpen = async (event) => {
     event.preventDefault();
@@ -4370,7 +4375,7 @@ export default function App() {
             <RefreshCw aria-hidden="true" className="is-spinning" size={17} />
             <div>
               <strong>正在打开“{projectOpen.project?.name || projectOpen.project?.id}”</strong>
-              <span>{activeProject ? '当前页面会保留到新项目加载完成。' : '正在加载项目快照，请稍候。'}</span>
+              <span>已切换到目标项目，正在加载详细状态。</span>
             </div>
           </div>
         ) : null}
