@@ -50,6 +50,30 @@ func TestDraftChapterRejectsUnfinishedPendingRewrite(t *testing.T) {
 	}
 }
 
+func TestDraftChapterAdaptationNextStepRequiresCurrentDraftCheck(t *testing.T) {
+	s := newAdaptationToolStore(t)
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := s.Outline.SaveOutline([]domain.OutlineEntry{{Chapter: 1, Title: "目标章", CoreEvent: "主线事件"}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	raw, err := NewDraftChapterTool(s).Execute(context.Background(), json.RawMessage(`{"chapter":1,"content":"改编后的完整正文。","mode":"write"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	next, _ := payload["next_step"].(string)
+	for _, want := range []string{"check_consistency", "check_adaptation", "任何后续修改"} {
+		if !strings.Contains(next, want) {
+			t.Fatalf("next_step missing %q: %q", want, next)
+		}
+	}
+}
+
 func TestDraftChapterRejectsUnexpandedLayeredChapter(t *testing.T) {
 	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {

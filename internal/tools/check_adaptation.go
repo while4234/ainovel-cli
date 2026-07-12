@@ -47,8 +47,11 @@ func (t *CheckAdaptationTool) Schema() map[string]any {
 		schema.Property("passed", schema.Bool("whether the draft satisfies the adaptation contract")).Required(),
 		schema.Property("summary", schema.String("review summary: preserved source events and implemented changes")),
 		schema.Property("issues", schema.Array("unmet requirements; any issue makes the check fail", schema.String(""))),
-		schema.Property("change_evidence", schema.Array("preserve_details only: evidence that required changes were integrated into prose; pass [] only when no visible source change is required", changeEvidenceSchema)).Required(),
-		schema.Property("body_evidence", schema.Array("verbatim draft evidence for assigned event_ids; independently checked by code", bodyEvidenceSchema)),
+		// 允许模型省略中性默认值 []。代码仍会独立执行
+		// adaptationChangeEvidenceIssues：需要证据的章节不会因省略字段而通过，
+		// 但模型能收到具体缺项而不是在 schema 层反复空耗整轮。
+		schema.Property("change_evidence", schema.Array("evidence that required changes were integrated into prose; omitted means []; use [] only when no visible source change is required", changeEvidenceSchema)),
+		schema.Property("body_evidence", schema.Array("verbatim draft evidence for assigned event_ids; independently checked by code; failed results return assigned_event_evidence with each ID's description", bodyEvidenceSchema)),
 	)
 }
 
@@ -119,7 +122,8 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 	changeEvidence := cleanChangeEvidence(a.ChangeEvidence)
 	issues = append(issues, adaptationChangeEvidenceIssues(plan, chapterPlan, changeEvidence)...)
 	bodyEvidence := cleanAdaptationBodyEvidence(a.BodyEvidence)
-	issues = append(issues, adaptationBodyEvidenceIssues(plan, chapterPlan, content, bodyEvidence)...)
+	fulfilledByPriorChapter := adaptationPriorChapterEventEvidence(t.store, plan, chapterPlan)
+	issues = append(issues, adaptationBodyEvidenceIssues(plan, chapterPlan, content, bodyEvidence, fulfilledByPriorChapter)...)
 
 	// Writer's passed flag is retained for wire compatibility, but independent
 	// deterministic checks are the commit condition.
@@ -140,22 +144,96 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 	}
 
 	return json.Marshal(map[string]any{
-		"chapter":                  a.Chapter,
-		"passed":                   passed,
-		"draft_sha256":             digest,
-		"word_count":               wordCount,
-		"issues":                   issues,
-		"word_contract_warnings":   warnings,
-		"change_evidence":          changeEvidence,
-		"body_evidence":            bodyEvidence,
-		"required_change_evidence": adaptationRequiredChangeEvidencePrompt(plan, chapterPlan),
-		"source_refs":              sourceRefs,
-		"next_step":                adaptationCheckNextStep(passed, issues, contract, a.Chapter),
-		"chapter_plan":             chapterPlan,
-		"plan_granularity":         plan.Granularity,
-		"rewrite_policy":           plan.RewritePolicy,
-		"adaptation_word_contract": contract,
+		"chapter":                    a.Chapter,
+		"passed":                     passed,
+		"draft_sha256":               digest,
+		"word_count":                 wordCount,
+		"issues":                     issues,
+		"word_contract_warnings":     warnings,
+		"change_evidence":            changeEvidence,
+		"body_evidence":              bodyEvidence,
+		"assigned_event_evidence":    adaptationAssignedEventEvidence(plan, chapterPlan),
+		"fulfilled_by_prior_chapter": fulfilledByPriorChapter,
+		"required_change_evidence":   adaptationRequiredChangeEvidencePrompt(plan, chapterPlan),
+		"source_refs":                sourceRefs,
+		"next_step":                  adaptationCheckNextStep(passed, issues, contract, a.Chapter),
+		"chapter_plan":               chapterPlan,
+		"plan_granularity":           plan.Granularity,
+		"rewrite_policy":             plan.RewritePolicy,
+		"adaptation_word_contract":   contract,
 	})
+}
+
+func adaptationPriorChapterEventEvidence(
+	st *store.Store,
+	plan *domain.AdaptationPlan,
+	current domain.AdaptationChapterPlan,
+) map[string]int {
+	fulfilled := make(map[string]int)
+	if st == nil || plan == nil || current.Chapter <= 1 || len(current.EventIDs) == 0 {
+		return fulfilled
+	}
+
+	events := make(map[string]domain.AdaptationEvent)
+	for _, event := range append(append([]domain.AdaptationEvent(nil), plan.SourceEvents...), plan.TargetEventLedger...) {
+		events[strings.TrimSpace(event.ID)] = event
+	}
+	for _, rawEventID := range current.EventIDs {
+		eventID := strings.TrimSpace(rawEventID)
+		description := strings.TrimSpace(events[eventID].Description)
+		if eventID == "" || description == "" {
+			continue
+		}
+		for _, candidate := range plan.Chapters {
+			if candidate.Chapter <= 0 || candidate.Chapter >= current.Chapter {
+				continue
+			}
+			ownsEvent := false
+			for _, candidateEventID := range candidate.EventIDs {
+				if strings.TrimSpace(candidateEventID) == eventID {
+					ownsEvent = true
+					break
+				}
+			}
+			if !ownsEvent {
+				ownsEvent = adaptationEvidenceSupportsEvent(description, strings.Join(candidate.PreserveEvents, "\n"))
+			}
+			if !ownsEvent {
+				continue
+			}
+			finalText, err := st.Drafts.LoadChapterText(candidate.Chapter)
+			if err == nil && adaptationEvidenceSupportsEvent(description, finalText) {
+				fulfilled[eventID] = candidate.Chapter
+				break
+			}
+		}
+	}
+	return fulfilled
+}
+
+func adaptationAssignedEventEvidence(plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan) []map[string]any {
+	if plan == nil || len(chapterPlan.EventIDs) == 0 {
+		return nil
+	}
+	events := make(map[string]domain.AdaptationEvent)
+	for _, event := range append(append([]domain.AdaptationEvent(nil), plan.SourceEvents...), plan.TargetEventLedger...) {
+		events[strings.TrimSpace(event.ID)] = event
+	}
+	assigned := make([]map[string]any, 0, len(chapterPlan.EventIDs))
+	for _, eventID := range chapterPlan.EventIDs {
+		eventID = strings.TrimSpace(eventID)
+		if eventID == "" {
+			continue
+		}
+		event := events[eventID]
+		assigned = append(assigned, map[string]any{
+			"event_id":       eventID,
+			"description":    strings.TrimSpace(event.Description),
+			"source_chapter": event.SourceChapter,
+			"importance":     event.Importance,
+		})
+	}
+	return assigned
 }
 
 func adaptationCheckNextStep(passed bool, issues []string, contract adaptationWordContract, chapter int) string {

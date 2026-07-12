@@ -221,7 +221,7 @@ func adaptationQualityRepairStep(issues []string, chapter int) string {
 		case strings.Contains(issue, "adaptation_change_evidence"):
 			return fmt.Sprintf("do not commit chapter %d; call check_adaptation with a non-empty change_evidence JSON array. Each item must include source_chapter or source_anchor, change, and integration. Do not put evidence only in summary", chapter)
 		case strings.Contains(issue, "adaptation_body_evidence"):
-			return fmt.Sprintf("do not commit chapter %d; ensure every assigned event_id is present in prose, then call check_adaptation with body_evidence entries containing event_id and a verbatim draft quote", chapter)
+			return fmt.Sprintf("do not commit chapter %d; use assigned_event_evidence from the tool result to identify each event_id, ensure every assigned event is present in prose, then call check_adaptation with a verbatim draft quote that proves that exact event", chapter)
 		case strings.Contains(issue, "adaptation_style"):
 			return fmt.Sprintf("do not commit chapter %d; rewrite the reported high-frequency style patterns, then rerun check_adaptation", chapter)
 		}
@@ -273,6 +273,7 @@ func adaptationBodyEvidenceIssues(
 	chapterPlan domain.AdaptationChapterPlan,
 	content string,
 	evidence []domain.AdaptationBodyEvidence,
+	fulfilledByPriorChapter map[string]int,
 ) []string {
 	required := make(map[string]bool)
 	descriptions := make(map[string]string)
@@ -291,10 +292,18 @@ func adaptationBodyEvidenceIssues(
 		return nil
 	}
 	proved := make(map[string]bool)
+	for eventID := range fulfilledByPriorChapter {
+		if required[eventID] {
+			proved[eventID] = true
+		}
+	}
 	var issues []string
 	for index, item := range evidence {
 		if !required[item.EventID] {
 			issues = append(issues, fmt.Sprintf("adaptation_body_evidence: item %d event_id %q is not assigned to this chapter", index+1, item.EventID))
+			continue
+		}
+		if fulfilledByPriorChapter[item.EventID] > 0 {
 			continue
 		}
 		if len([]rune(item.Quote)) < 4 || !strings.Contains(content, item.Quote) {
@@ -302,14 +311,24 @@ func adaptationBodyEvidenceIssues(
 			continue
 		}
 		if !adaptationEvidenceSupportsEvent(descriptions[item.EventID], item.Quote) {
-			issues = append(issues, fmt.Sprintf("adaptation_body_evidence: event %s quote exists but does not support the assigned event", item.EventID))
+			description := strings.TrimSpace(descriptions[item.EventID])
+			if description == "" {
+				issues = append(issues, fmt.Sprintf("adaptation_body_evidence: event %s quote exists but does not support the assigned event", item.EventID))
+			} else {
+				issues = append(issues, fmt.Sprintf("adaptation_body_evidence: event %s quote exists but does not support the assigned event (event: %s)", item.EventID, description))
+			}
 			continue
 		}
 		proved[item.EventID] = true
 	}
 	for eventID := range required {
 		if !proved[eventID] {
-			issues = append(issues, fmt.Sprintf("adaptation_body_evidence: assigned event %s has no verified prose quote", eventID))
+			description := strings.TrimSpace(descriptions[eventID])
+			if description == "" {
+				issues = append(issues, fmt.Sprintf("adaptation_body_evidence: assigned event %s has no verified prose quote", eventID))
+				continue
+			}
+			issues = append(issues, fmt.Sprintf("adaptation_body_evidence: assigned event %s has no verified prose quote (event: %s)", eventID, description))
 		}
 	}
 	sort.Strings(issues)

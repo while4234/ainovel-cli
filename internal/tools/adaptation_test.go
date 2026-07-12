@@ -119,13 +119,22 @@ func TestCheckAdaptationUsesVerifiedBodyEvidenceInsteadOfWriterPassedFlag(t *tes
 		t.Fatalf("Execute: %v", err)
 	}
 	var payload struct {
-		Passed bool `json:"passed"`
+		Passed                bool `json:"passed"`
+		AssignedEventEvidence []struct {
+			EventID     string `json:"event_id"`
+			Description string `json:"description"`
+		} `json:"assigned_event_evidence"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if !payload.Passed {
 		t.Fatalf("verified evidence should pass independently of writer flag: %s", raw)
+	}
+	if len(payload.AssignedEventEvidence) != 1 ||
+		payload.AssignedEventEvidence[0].EventID != "meet-event" ||
+		payload.AssignedEventEvidence[0].Description != "两人初遇" {
+		t.Fatalf("assigned event descriptions missing from response: %+v", payload.AssignedEventEvidence)
 	}
 
 	args, _ = json.Marshal(map[string]any{
@@ -156,6 +165,58 @@ func TestCheckAdaptationUsesVerifiedBodyEvidenceInsteadOfWriterPassedFlag(t *tes
 	}
 	if payload.Passed || !strings.Contains(string(raw), "does not support") {
 		t.Fatalf("an unrelated in-body quote must not prove the event: %s", raw)
+	}
+}
+
+func TestCheckAdaptationAcceptsLegacyEventFulfilledByCommittedPriorChapter(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Status:        domain.AdaptationPlanStatusConfirmed,
+		SourceEvents: []domain.AdaptationEvent{{
+			ID: "awakening", Description: "ZXQVAWAKENINGEVENT", SourceChapter: 1,
+		}},
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, SourceChapters: []int{1}, PreserveEvents: []string{"ZXQVAWAKENINGEVENT"}},
+			{Chapter: 2, SourceChapters: []int{2}, EventIDs: []string{"awakening"}},
+		},
+	}
+	s := newAdaptationToolStoreWithPlan(t, plan, []string{"source one", "source two"})
+	if err := s.Drafts.SaveFinalChapter(1, "The hero completes ZXQVAWAKENINGEVENT and remembers what happened."); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(2, "The next chapter follows the consequences without replaying that scene."); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	raw, err := NewCheckAdaptationTool(s).Execute(context.Background(), mustJSON(t, map[string]any{
+		"chapter": 2, "passed": true, "change_evidence": []any{}, "body_evidence": []any{},
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Passed                  bool           `json:"passed"`
+		FulfilledByPriorChapter map[string]int `json:"fulfilled_by_prior_chapter"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !payload.Passed || payload.FulfilledByPriorChapter["awakening"] != 1 {
+		t.Fatalf("committed prior evidence should satisfy the legacy duplicate assignment: %s", raw)
+	}
+
+	if err := s.Drafts.SaveFinalChapter(1, "The hero discusses an unrelated matter."); err != nil {
+		t.Fatalf("replace final: %v", err)
+	}
+	raw, err = NewCheckAdaptationTool(s).Execute(context.Background(), mustJSON(t, map[string]any{
+		"chapter": 2, "passed": true, "change_evidence": []any{}, "body_evidence": []any{},
+	}))
+	if err != nil {
+		t.Fatalf("Execute without prior evidence: %v", err)
+	}
+	if !strings.Contains(string(raw), "has no verified prose quote") {
+		t.Fatalf("a prior plan alone must not satisfy evidence: %s", raw)
 	}
 }
 
@@ -668,6 +729,18 @@ func TestPreserveDetailsRequiresChangeEvidence(t *testing.T) {
 		payload.RequiredChangeEvidence.Field != "change_evidence" ||
 		!strings.Contains(payload.RequiredChangeEvidence.Note, "summary") {
 		t.Fatalf("required_change_evidence guidance missing, got %+v", payload.RequiredChangeEvidence)
+	}
+}
+
+func TestCheckAdaptationSchemaAllowsMissingNeutralEvidenceArray(t *testing.T) {
+	required := schemaRequiredNames(NewCheckAdaptationTool(nil).Schema())
+	if required["change_evidence"] {
+		t.Fatal("change_evidence should default to [] so deterministic evidence checks can return actionable issues")
+	}
+	for _, field := range []string{"chapter", "passed"} {
+		if !required[field] {
+			t.Fatalf("%s must remain required", field)
+		}
 	}
 }
 

@@ -288,6 +288,48 @@ func (s *ProgressStore) ReopenWithFlow(chapters []int, reason string, flow domai
 }
 
 // ClearInProgress 清除进度中间状态。
+// QueuePendingRewrites adds completed chapters to the active rewrite queue.
+// Unlike ReopenWithFlow, it also supports books that are still being written,
+// which lets a user repair an earlier chapter without waiting for completion.
+func (s *ProgressStore) QueuePendingRewrites(chapters []int, reason string, flow domain.FlowState) error {
+	if flow != domain.FlowRewriting && flow != domain.FlowPolishing {
+		return fmt.Errorf("queue rewrite flow must be rewriting or polishing, got %s: %w", flow, errs.ErrToolArgs)
+	}
+	reason = strings.TrimSpace(reason)
+	return s.io.WithWriteLock(func() error {
+		p, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if p == nil {
+			return fmt.Errorf("progress not initialized: %w", errs.ErrToolPrecondition)
+		}
+		if p.Phase != domain.PhaseWriting && p.Phase != domain.PhaseComplete {
+			return fmt.Errorf("chapter revision requires writing or complete phase (current phase=%s): %w", p.Phase, errs.ErrToolPrecondition)
+		}
+		normalized, err := normalizePendingRewrites(chapters, p.CompletedChapters)
+		if err != nil {
+			return err
+		}
+		p.PendingRewrites = mergePendingRewriteChapters(p.PendingRewrites, normalized)
+		if reason != "" && !strings.Contains(p.RewriteReason, reason) {
+			if p.RewriteReason == "" {
+				p.RewriteReason = reason
+			} else {
+				p.RewriteReason += "; " + reason
+			}
+		}
+		p.Flow = flow
+		p.InProgressChapter = 0
+		p.CompletedScenes = nil
+		if p.Phase == domain.PhaseComplete {
+			p.Phase = domain.PhaseWriting
+			p.ReopenedFromComplete = true
+		}
+		return s.saveUnlocked(p)
+	})
+}
+
 func (s *ProgressStore) ClearInProgress() error {
 	return s.io.WithWriteLock(func() error {
 		p, err := s.loadUnlocked()

@@ -729,6 +729,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 		warn("current_chapter_outline", currentEntryErr)
 	}
 	state.currentEntry = currentEntry
+	t.attachFutureChapterPromises(envelope, chapter, warn)
 
 	chapterPlan, chapterPlanErr := t.store.Drafts.LoadChapterPlan(chapter)
 	if chapterPlanErr == nil && chapterPlan != nil {
@@ -818,6 +819,36 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 	}
 
 	return state
+}
+
+const futureChapterPromiseWindow = 3
+
+// attachFutureChapterPromises exposes only the next few story promises. This
+// gives Writer and Editor an explicit ownership boundary without loading the
+// full outline or forbidding legitimate foreshadowing.
+func (t *ContextTool) attachFutureChapterPromises(envelope *chapterContextEnvelope, chapter int, warn func(string, error)) {
+	if envelope == nil || chapter <= 0 {
+		return
+	}
+	promises := make([]map[string]any, 0, futureChapterPromiseWindow)
+	for next := chapter + 1; next <= chapter+futureChapterPromiseWindow; next++ {
+		entry, err := t.store.Outline.GetChapterOutline(next)
+		if err != nil {
+			if next == chapter+1 {
+				warn("future_chapter_promises", err)
+			}
+			break
+		}
+		promises = append(promises, map[string]any{
+			"chapter":    entry.Chapter,
+			"title":      strings.TrimSpace(entry.Title),
+			"core_event": strings.TrimSpace(entry.CoreEvent),
+			"hook":       strings.TrimSpace(entry.Hook),
+		})
+	}
+	if len(promises) > 0 {
+		envelope.Working["future_chapter_promises"] = promises
+	}
 }
 
 func (t *ContextTool) buildChapterContext(result map[string]any, state contextBuildState, warn func(string, error)) {

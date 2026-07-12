@@ -48,6 +48,30 @@ func TestEditChapterAppliesEdit(t *testing.T) {
 	}
 }
 
+func TestEditChapterAdaptationInvalidatesBothChecks(t *testing.T) {
+	s := newAdaptationToolStore(t)
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, "他握紧了拳头。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), json.RawMessage(`{"chapter":1,"old_string":"握紧","new_string":"松开"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	next, _ := payload["next_step"].(string)
+	for _, want := range []string{"旧 check_consistency/check_adaptation 已失效", "重新调用", "commit_chapter"} {
+		if !strings.Contains(next, want) {
+			t.Fatalf("next_step missing %q: %q", want, next)
+		}
+	}
+}
+
 // TestEditChapterSeedsFromFinalChapter drafts 不存在但 chapters 有 → 自动从 chapters 播种。
 func TestEditChapterSeedsFromFinalChapter(t *testing.T) {
 	dir := testStoreDir(t)

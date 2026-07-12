@@ -1277,6 +1277,51 @@ func TestContextToolLongChapterUsesWindowedOutline(t *testing.T) {
 	}
 }
 
+func TestContextToolExposesOnlyNearbyFutureChapterPromises(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Outline.SaveOutline([]domain.OutlineEntry{
+		{Chapter: 1, Title: "已发生", CoreEvent: "主角发现密信"},
+		{Chapter: 2, Title: "当前章", CoreEvent: "主角追查落款"},
+		{Chapter: 3, Title: "后续揭示", CoreEvent: "盟友公开承认背叛", Hook: "真正主谋现身"},
+		{Chapter: 4, Title: "后果", CoreEvent: "队伍因背叛分裂"},
+		{Chapter: 5, Title: "追击", CoreEvent: "主角追上主谋"},
+		{Chapter: 6, Title: "窗口外", CoreEvent: "不应注入"},
+	}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Progress.Init("test", 6); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+
+	raw, err := NewContextTool(s, References{}, "default").Execute(context.Background(), json.RawMessage(`{"chapter":2}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	working, ok := payload["working_memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("working_memory = %#v", payload["working_memory"])
+	}
+	promises, ok := working["future_chapter_promises"].([]any)
+	if !ok || len(promises) != 3 {
+		t.Fatalf("future_chapter_promises = %#v, want three nearby chapters", working["future_chapter_promises"])
+	}
+	first := promises[0].(map[string]any)
+	if first["chapter"] != float64(3) || first["core_event"] != "盟友公开承认背叛" {
+		t.Fatalf("first future promise = %#v", first)
+	}
+	promiseJSON, _ := json.Marshal(promises)
+	if strings.Contains(string(promiseJSON), "不应注入") {
+		t.Fatal("future promise window must not include distant outline entries")
+	}
+}
+
 func TestContextToolLongChapterDoesNotGrowWithProgressHistory(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

@@ -177,6 +177,8 @@ func writerAdaptationIssueInstruction(chapter int, chapterPlan domain.Adaptation
 		switch {
 		case strings.Contains(issue, "adaptation_change_evidence"):
 			return writerChangeEvidenceInstruction(chapter, chapterPlan)
+		case strings.Contains(issue, "adaptation_body_evidence"):
+			return "先回读当前草稿，不要立即改写正文。用正文中逐字存在、能直接证明 assigned event 的短引文重新调用 check_adaptation(body_evidence=[...])；只有正文确实没有该事件时才修改正文，修改后必须重新执行全部检查。"
 		case strings.Contains(issue, "adaptation_source_similarity"):
 			return fmt.Sprintf("先 read_chapter(source=\"source\", chapter=%d) 对照原文，保留未受影响段落，只把 required_changes 影响的完整场景单元重写为新的小说正文。", chapter)
 		case strings.Contains(issue, "adaptation_quality"):

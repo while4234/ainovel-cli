@@ -1,6 +1,8 @@
 package store
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -167,6 +169,50 @@ func TestReopenWithFlowSupportsPolishing(t *testing.T) {
 	}
 	if p.RewriteReason != "polish chapter" {
 		t.Fatalf("RewriteReason = %q", p.RewriteReason)
+	}
+}
+
+func TestQueuePendingRewritesDuringWritingMergesAndRestartsEarlierChapter(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	_ = store.Progress.Init("test", 5)
+	for ch := 1; ch <= 3; ch++ {
+		_ = store.Progress.MarkChapterComplete(ch, 3000, "", "")
+	}
+	_ = store.Progress.SetPendingRewrites([]int{2}, "existing polish")
+	_ = store.Progress.SetFlow(domain.FlowPolishing)
+	_ = store.Progress.StartChapter(4)
+
+	if err := store.Progress.QueuePendingRewrites([]int{1}, "future event consumed early", domain.FlowRewriting); err != nil {
+		t.Fatalf("QueuePendingRewrites: %v", err)
+	}
+	p, _ := store.Progress.Load()
+	if p.Phase != domain.PhaseWriting || p.Flow != domain.FlowRewriting {
+		t.Fatalf("phase/flow = %s/%s, want writing/rewriting", p.Phase, p.Flow)
+	}
+	if !slices.Equal(p.PendingRewrites, []int{1, 2}) {
+		t.Fatalf("PendingRewrites = %v, want [1 2]", p.PendingRewrites)
+	}
+	if p.InProgressChapter != 0 || len(p.CompletedScenes) != 0 {
+		t.Fatalf("in-progress state was not cleared: chapter=%d scenes=%v", p.InProgressChapter, p.CompletedScenes)
+	}
+	if !strings.Contains(p.RewriteReason, "existing polish") || !strings.Contains(p.RewriteReason, "future event consumed early") {
+		t.Fatalf("RewriteReason did not preserve both reasons: %q", p.RewriteReason)
+	}
+}
+
+func TestQueuePendingRewritesRejectsUnfinishedChapter(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	_ = store.Progress.Init("test", 5)
+	_ = store.Progress.MarkChapterComplete(1, 3000, "", "")
+
+	if err := store.Progress.QueuePendingRewrites([]int{2}, "not completed", domain.FlowRewriting); err == nil {
+		t.Fatal("expected unfinished chapter to be rejected")
+	}
+	p, _ := store.Progress.Load()
+	if len(p.PendingRewrites) != 0 {
+		t.Fatalf("PendingRewrites changed after rejection: %v", p.PendingRewrites)
 	}
 }
 

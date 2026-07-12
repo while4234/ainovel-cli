@@ -54,7 +54,7 @@ func (h *Host) ReviseChapter(req ChapterRevisionRequest) (ChapterRevisionResult,
 	if normalized.Mode == ChapterRevisionModePolish {
 		flow = domain.FlowPolishing
 	}
-	if err := h.store.Progress.ReopenWithFlow([]int{normalized.Chapter}, normalized.Instruction, flow); err != nil {
+	if err := h.store.Progress.QueuePendingRewrites([]int{normalized.Chapter}, normalized.Instruction, flow); err != nil {
 		return ChapterRevisionResult{}, err
 	}
 	if _, err := h.store.Checkpoints.AppendArtifact(domain.GlobalScope(), "reopen", "meta/progress.json"); err != nil {

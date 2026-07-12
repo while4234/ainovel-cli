@@ -28,6 +28,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 cross-chapter adaptation deadlock repair: Writer and Editor now
+  receive future-chapter ownership promises, deterministic adaptation feedback
+  returns assigned event descriptions, and legacy plans can satisfy a duplicated
+  event assignment only when an earlier chapter both owns the event and its
+  committed prose proves it. Active projects can queue completed-chapter
+  rewrites without reopening the entire book. Full Go tests and a live Web run
+  passed; `武林高手 - 副本` advanced from 4/350 to 5/350 and began chapter 6.
 - 2026-07-12 same-model runtime failover and active-model display: `8b5794a`
   `fix: preserve model during backend failover`. Runtime automatic switching
   now searches only configured backends that expose the currently selected

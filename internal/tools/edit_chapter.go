@@ -124,8 +124,15 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 		return result, nil
 	}
 	passthrough["chapter"] = a.Chapter
-	passthrough["next_step"] = "edit 已落盘。仍有硬伤可再次 edit_chapter；否则 check_consistency 后 commit_chapter"
+	passthrough["next_step"] = t.nextStepAfterEdit()
 	return json.Marshal(passthrough)
+}
+
+func (t *EditChapterTool) nextStepAfterEdit() string {
+	if t.store != nil && t.store.Adaptation.Active() {
+		return "edit 已落盘，旧 check_consistency/check_adaptation 已失效。仍有硬伤可再次 edit_chapter；否则回读当前草稿，重新调用 check_consistency 和 check_adaptation，通过后再 commit_chapter。"
+	}
+	return "edit 已落盘。仍有硬伤可再次 edit_chapter；否则 check_consistency 后 commit_chapter"
 }
 
 // ensureDraft 保证 drafts/{ch}.draft.md 存在：

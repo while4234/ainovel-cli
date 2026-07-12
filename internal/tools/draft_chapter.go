@@ -132,7 +132,7 @@ func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount 
 		"chapter":    chapter,
 		"mode":       mode,
 		"word_count": wordCount,
-		"next_step":  "先 read_chapter(source=draft) 回读草稿，再调用 check_consistency，最后 commit_chapter",
+		"next_step":  t.validationNextStep(),
 	}
 	t.addNormalWordBudgetStatus(result, chapter, wordCount)
 	contract, issues, ok := adaptationWordContractStatus(t.store, chapter, wordCount)
@@ -146,7 +146,7 @@ func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount 
 	}
 	if len(issues) == 0 && normalWordBudgetAllowsDraftNextStep(result) {
 		if contract.Hard {
-			result["next_step"] = "字数硬契约已满足：按 read_chapter(source=\"draft\") → check_consistency → check_adaptation → commit_chapter 继续。"
+			result["next_step"] = "字数硬契约已满足：" + t.validationNextStep()
 		}
 	}
 	if len(issues) > 0 {
@@ -163,6 +163,13 @@ func (t *DraftChapterTool) buildDraftResult(chapter int, mode string, wordCount 
 		}
 	}
 	return result
+}
+
+func (t *DraftChapterTool) validationNextStep() string {
+	if t.store != nil && t.store.Adaptation.Active() {
+		return "先 read_chapter(source=\"draft\") 回读当前草稿，再调用 check_consistency 和 check_adaptation；两项均针对当前草稿通过后才能 commit_chapter。任何后续修改都会使旧校验失效。"
+	}
+	return "先 read_chapter(source=\"draft\") 回读草稿，再调用 check_consistency，最后 commit_chapter"
 }
 
 func normalWordBudgetAllowsDraftNextStep(result map[string]any) bool {

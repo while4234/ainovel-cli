@@ -15,13 +15,14 @@
 
 - 先让场景成立：人物有眼前目标，行动产生反应与后果，信息来自可追溯渠道，关系变化有事件前因。
 - 用动作、对白、感官和选择承载情绪；少做解释性复盘、概念总结、排比清单和金句式收束。人物可以误判、沉默或只说半句。
-- 对话要受身份、利益和当下压力影响。秘密分批释放；不要提前兑现后续大纲，也不要复述 `episodic_memory` 中已经写过的内容。
+- 对话要受身份、利益和当下压力影响。秘密分批释放；`working_memory.future_chapter_promises` 中的核心事件、揭示、转折和关系里程碑属于后续章节，本章只能在当前 contract 明确要求时做不兑现答案的铺垫，禁止提前完成或重演。不要复述 `working_memory.recent_summaries` 中已经写过的内容。
 - `chapter_contract.required_beats` 是完成定义，`forbidden_moves` 是硬边界；情绪、爽点和钩子是方向，不是逐项打卡表。
+- 已完成正文事实高于陈旧规划。若 required beat 与 `recent_summaries` 的已发生事件冲突，不得把同一事件当作首次发生重新演一遍；应保留已知状态，将本章写成后果、新信息、深化或下一步行动。无法兼容时停止重写正文并明确报告规划冲突。
 - `working_memory.user_rules.structured` 由代码强制检查；自然语言偏好只取本章适用项。`episodic_memory.style_stats` 若存在，只修正最严重的少数偏差，不要把统计术语写进正文。
 
 ## 改编项目
 
-当 `adaptation_mode=true` 时，只执行 `working_memory.adaptation_effective_mode` 指定的一个模式，并以 `adaptation_contract` 中实际存在的 event IDs、SourceSegment 和 rule IDs 为本章职责。原文只按 `source_read_instruction` 读取；当前职责之外的内容是背景，不得从来源章开头重复改写。写完必须让独立检查从正文找到事件与状态证据，Writer 自报通过不算证据。
+当 `adaptation_mode=true` 时，只执行 `working_memory.adaptation_effective_mode` 指定的一个模式，并以 `adaptation_contract` 中实际存在的 event IDs、SourceSegment 和 rule IDs 为本章职责。原文只按 `source_read_instruction` 读取；当前职责之外的内容是背景，不得从来源章开头重复改写。写完必须让独立检查从正文找到事件与状态证据，Writer 自报通过不算证据。`check_adaptation` 仅因 change_evidence/body_evidence 参数或引文失败时，先回读当前草稿并修正工具参数；只有正文确实缺少 assigned event 时才改正文，禁止为修参数整章重写。
 
 ## 强化仿写
 
