@@ -37,4 +37,13 @@ describe('project model settings panel', () => {
     expect(body).toContain('setGlobalRetrySettings(modelAttempts, repairAttempts, budgetAttempts, auditAttempts)');
     expect(body).toContain('adaptationOutlineAuditRetryMaxAttempts');
   });
+
+  it('shows project stage routes as provider-agnostic model names', () => {
+    expect(appSource).toContain("new Set(providers.flatMap((provider) => provider.models || []))");
+    expect(appSource).toContain('<span>创作阶段模型</span>');
+    expect(appSource).toContain('同名模型只显示一次，系统自动选择后端。');
+    expect(appSource).toContain('独立细纲生成与修订使用“详细提纲”模型');
+    expect(appSource).toContain("onSwitch(route.role, provider, model)");
+    expect(appSource).toContain('<span>Agent 高级路由</span>');
+  });
 });

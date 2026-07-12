@@ -30,7 +30,7 @@ func analyzeSourceChapterInSceneBatches(
 			batchTitle = fmt.Sprintf("%s（场景批次 %d/%d）", title, index+1, len(batches))
 		}
 		analysis, err := imp.AnalyzeChapterWithOptions(
-			ctx, deps.LLM, deps.Prompts.Analyzer, chapter, batchTitle, batch, "", "", nil,
+			ctx, deps.modelForStage("source_analysis"), deps.Prompts.Analyzer, chapter, batchTitle, batch, "", "", nil,
 			structuredCallOptionsWithDeps(deps, StageChapter, chapter, total, emit),
 		)
 		if err != nil {

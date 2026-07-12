@@ -3120,6 +3120,21 @@ h2 {
   gap: 8px;
 }
 
+.stage-model-list {
+  display: grid;
+  gap: 10px;
+}
+
+.stage-model-route {
+  grid-template-columns: minmax(88px, 0.7fr) minmax(0, 1.3fr);
+  align-items: center;
+}
+
+.stage-model-route select {
+  min-width: 0;
+  width: 100%;
+}
+
 .model-route-heading {
   display: flex;
   align-items: center;

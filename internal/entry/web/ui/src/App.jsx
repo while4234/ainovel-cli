@@ -8270,10 +8270,12 @@ function ModelPanel({
 }) {
   const config = runtime?.config || {};
   const roles = modelConfig?.roles || [];
+  const stages = activeProject?.id ? (modelConfig?.stages || []) : [];
   const projectRoles = activeProject?.id ? roles.filter((route) => route.role !== 'default') : [];
   const providers = modelConfig?.providers || [];
   const levels = modelConfig?.thinking_levels || ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'];
   const providerMap = new Map(providers.map((provider) => [provider.name, provider.models || []]));
+  const stageModelOptions = Array.from(new Set(providers.flatMap((provider) => provider.models || [])));
   const providerChips = providers.map((provider) => ({
     name: provider.name,
     label: provider.label || provider.name,
@@ -8416,6 +8418,13 @@ function ModelPanel({
       : (selectedProjectRoute.explicit ? 'project override' : 'inherits default')
     : '';
   const projectDefaultModelOption = '__project_default_model__';
+  const stageInheritedModelOption = '__stage_inherited_model__';
+  const providerForStageModel = (route, model) => {
+    const candidates = providers.filter((provider) => (provider.models || []).includes(model));
+    return candidates.find((provider) => provider.name === defaultProvider)?.name ||
+      candidates.find((provider) => provider.name === route?.provider)?.name ||
+      candidates[0]?.name || '';
+  };
   const selectedProjectInheritsDefault = Boolean(
     selectedProjectRoute &&
     selectedProjectRoute.role !== 'default' &&
@@ -8606,7 +8615,47 @@ function ModelPanel({
       <section>
         <div className="section-title">
           <SlidersHorizontal size={17} />
-          <span>项目模型</span>
+          <span>创作阶段模型</span>
+        </div>
+        {stages.length === 0 ? (
+          <div className="empty-state">打开项目后可按阶段选择模型</div>
+        ) : (
+          <div className="stage-model-list">
+            {stages.map((route) => (
+              <label className="field-label stage-model-route" key={route.role}>
+                <span>{route.label || route.role}</span>
+                <select
+                  disabled={busy || stageModelOptions.length === 0}
+                  value={route.explicit ? route.model : stageInheritedModelOption}
+                  onChange={(event) => {
+                    const model = event.target.value;
+                    if (model === stageInheritedModelOption) {
+                      onInherit?.(route.role);
+                      return;
+                    }
+                    const provider = providerForStageModel(route, model);
+                    if (provider) {
+                      onSwitch(route.role, provider, model);
+                    }
+                  }}
+                >
+                  <option value={stageInheritedModelOption}>
+                    继承 {route.fallback_role || 'Agent'}（{route.model || defaultModel}）
+                  </option>
+                  {stageModelOptions.map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+              </label>
+            ))}
+            <p className="muted">同名模型只显示一次，系统自动选择后端。一次 Architect 规划可能连续完成骨架和首批细纲，此时全程使用“骨架规划”模型；独立细纲生成与修订使用“详细提纲”模型。</p>
+          </div>
+        )}
+      </section>
+      <section>
+        <div className="section-title">
+          <SlidersHorizontal size={17} />
+          <span>Agent 高级路由</span>
         </div>
         {projectRoles.length === 0 ? (
           <div className="empty-state">打开项目后可配置模型</div>

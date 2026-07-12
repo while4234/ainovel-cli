@@ -238,7 +238,7 @@ func buildCoCreateBriefingBatch(ctx context.Context, deps Deps, intent domain.Ad
 	var lastErr error
 	regenerateAttempts := max(1, deps.structureRepairMaxAttempts())
 	for attempt := 1; attempt <= regenerateAttempts; attempt++ {
-		text, err := generatePlannerTextForStage(ctx, StageBriefing, deps.LLM, coCreateBriefingSystemPrompt, userPrompt, coCreateBriefingMaxTokens, emit, spec.Index, totalBatches, "前置摘要", deps.modelCallMaxAttempts())
+		text, err := generatePlannerTextForStage(ctx, StageBriefing, deps.modelForStage("co_create"), coCreateBriefingSystemPrompt, userPrompt, coCreateBriefingMaxTokens, emit, spec.Index, totalBatches, "前置摘要", deps.modelCallMaxAttempts())
 		if err != nil {
 			return domain.AdaptationCoCreateBriefingBatch{}, err
 		}
@@ -308,7 +308,7 @@ func repairCoCreateBriefingBatchText(ctx context.Context, deps Deps, originalPro
 			"Keep arrays compact, source-grounded, and directly relevant to the user's intent.",
 		},
 	)
-	text, err := generatePlannerTextForStage(ctx, StageBriefing, deps.LLM, coCreateBriefingSystemPrompt, repairPrompt, coCreateBriefingMaxTokens, emit, spec.Index, totalBatches, "前置摘要修复", deps.modelCallMaxAttempts())
+	text, err := generatePlannerTextForStage(ctx, StageBriefing, deps.modelForStage("co_create"), coCreateBriefingSystemPrompt, repairPrompt, coCreateBriefingMaxTokens, emit, spec.Index, totalBatches, "前置摘要修复", deps.modelCallMaxAttempts())
 	if err != nil {
 		return "", fmt.Errorf("co-create briefing batch repair llm generate: %w", err)
 	}

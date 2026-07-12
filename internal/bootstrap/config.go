@@ -375,11 +375,52 @@ type RoleConfig struct {
 
 // knownRoles 支持的角色名。
 var knownRoles = map[string]bool{
-	"coordinator": true,
-	"architect":   true,
-	"writer":      true,
-	"editor":      true,
-	"auditor":     true,
+	"coordinator":                      true,
+	"architect":                        true,
+	"writer":                           true,
+	"editor":                           true,
+	"auditor":                          true,
+	StageRouteKey(StageCoCreate):       true,
+	StageRouteKey(StageSourceAnalysis): true,
+	StageRouteKey(StageSkeleton):       true,
+	StageRouteKey(StageDetailOutline):  true,
+	StageRouteKey(StageWriting):        true,
+	StageRouteKey(StageReview):         true,
+}
+
+const (
+	StageCoCreate       = "co_create"
+	StageSourceAnalysis = "source_analysis"
+	StageSkeleton       = "skeleton"
+	StageDetailOutline  = "detail_outline"
+	StageWriting        = "writing"
+	StageReview         = "review"
+)
+
+var KnownModelStages = []string{
+	StageCoCreate,
+	StageSourceAnalysis,
+	StageSkeleton,
+	StageDetailOutline,
+	StageWriting,
+	StageReview,
+}
+
+func StageRouteKey(stage string) string {
+	return "stage:" + strings.ToLower(strings.TrimSpace(stage))
+}
+
+func StageFallbackRole(stage string) string {
+	switch strings.ToLower(strings.TrimSpace(stage)) {
+	case StageCoCreate, StageSourceAnalysis, StageSkeleton, StageDetailOutline:
+		return "architect"
+	case StageWriting:
+		return "writer"
+	case StageReview:
+		return "editor"
+	default:
+		return "default"
+	}
 }
 
 // Config 小说应用配置。
@@ -564,7 +605,7 @@ func (c *Config) ValidateBase() error {
 			return err
 		}
 		if !knownRoles[role] {
-			return fmt.Errorf("unknown role %q in roles config (valid: coordinator/architect/writer/editor/auditor): %w", role, errs.ErrConfig)
+			return fmt.Errorf("unknown role %q in roles config: %w", role, errs.ErrConfig)
 		}
 		if rc.Provider == "" && rc.Model == "" {
 			if len(rc.Fallbacks) > 0 {

@@ -233,7 +233,14 @@ Store (协作媒介，子代理之间不直接通信)
 
 子代理 turn 计数独立（agentcore 原生），不占 Coordinator 的 100_000 turn 配额。子代理之间通过 Store 中的结构化工件通信，Coordinator 只传"任务描述"不搬内容。
 
-`bootstrap.ModelSet` 支持角色级模型：coordinator/architect/writer/editor 各自独立配置 + provider failover。Writer 跑 Sonnet 而不是 Opus 在 200 章长篇上能省一个数量级成本。
+`bootstrap.ModelSet` 同时支持两层模型路由：
+
+1. 项目级创作阶段路由：首次共创、资料分析、骨架规划、详细提纲、正文创作、审校总结。
+2. Agent 高级路由：coordinator/architect/writer/editor 各自独立配置 + provider failover。
+
+阶段路由优先；未配置的阶段继承其职责对应的 Agent 路由。这样普通用户只需理解“现在在做什么”，高级用户仍可按 Agent 职责精调。同名模型在阶段下拉中只展示一次，不暴露提供方差异；系统优先使用项目默认提供方，其次沿用当前路由提供方，最后从已配置提供方中自动选择。路由仍保存 provider/model 精确对，运行时 failover 能区分后端。
+
+Architect 的单次自主 run 可能连续完成设定、骨架和首批详细提纲，运行中途不能安全切换模型，因此该 run 以“骨架规划”阶段路由为主；独立的详细提纲生成、续写规划和章节提纲修订走“详细提纲”阶段路由。`architect_short` / `architect_long` 表示短篇/长篇规划师，不是两个阶段。Coordinator 始终使用 Agent 路由，因为它横跨整条工作流。
 
 ### 6.3 三类协作模式
 

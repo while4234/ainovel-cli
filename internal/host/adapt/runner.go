@@ -20,6 +20,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
+	"github.com/voocel/ainovel-cli/internal/modelprofile"
 	"github.com/voocel/ainovel-cli/internal/promptcompile"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/store"
@@ -93,6 +94,21 @@ type Deps struct {
 	BudgetQualityMaxAttemptsProvider               func() int
 	AdaptationOutlineAuditRetryMaxAttemptsProvider func() int
 	PromptTokenCounter                             promptcompile.TokenCounter
+	ModelName                                      string
+	ModelForStage                                  func(string) imp.LLMChat
+}
+
+func (d Deps) foundationMergeBatchRunes() int {
+	return modelprofile.Resolve(d.ModelName).FoundationMergeBatchRunes
+}
+
+func (d Deps) modelForStage(stage string) imp.LLMChat {
+	if d.ModelForStage != nil {
+		if model := d.ModelForStage(stage); model != nil {
+			return model
+		}
+	}
+	return d.LLM
 }
 
 func RunSource(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
@@ -227,17 +243,17 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 	if foundation != nil && !sourceChanged && !reportsChanged {
 		reportSignature := sourceReportsSignature(reports)
 		promptSignature := sourceFoundationPromptSignature(deps.Prompts.FoundationMerge)
-		shouldMergeFoundation = !sourceFoundationCurrent(foundation, manifest, reportSignature, promptSignature, imp.DefaultFoundationMergeRunes)
+		shouldMergeFoundation = !sourceFoundationCurrent(foundation, manifest, reportSignature, promptSignature, deps.foundationMergeBatchRunes())
 	}
 	if !shouldMergeFoundation {
 		emit(StageFoundation, total, total, "源书 foundation 已存在，跳过聚合", nil)
 	} else {
 		emit(StageFoundation, total, total, "聚合逐章事实，生成源书 foundation...", nil)
-		fr, err := mergeSourceFoundationResumable(ctx, deps, manifest, reports, imp.DefaultFoundationMergeRunes, emit)
+		fr, err := mergeSourceFoundationResumable(ctx, deps, manifest, reports, deps.foundationMergeBatchRunes(), emit)
 		if err != nil {
 			return fmt.Errorf("merge source foundation: %w", err)
 		}
-		foundation := sourceFoundationWithMetadata(toSourceFoundation(fr), manifest, reports, deps.Prompts.FoundationMerge, imp.DefaultFoundationMergeRunes)
+		foundation := sourceFoundationWithMetadata(toSourceFoundation(fr), manifest, reports, deps.Prompts.FoundationMerge, deps.foundationMergeBatchRunes())
 		if err := deps.Store.Adaptation.SaveSourceFoundation(foundation); err != nil {
 			return fmt.Errorf("save source foundation: %w", err)
 		}
@@ -338,7 +354,7 @@ func mergeSourceFoundationResumable(
 		}
 
 		emit(StageFoundation, to, total, fmt.Sprintf("merge source foundation batch %d/%d: chapters %d-%d", index, len(reportBatches), from, to), nil)
-		result, err := imp.MergeFoundationFromReports(ctx, deps.LLM, deps.Prompts.FoundationMerge, batchReports, opts)
+		result, err := imp.MergeFoundationFromReports(ctx, deps.modelForStage("source_analysis"), deps.Prompts.FoundationMerge, batchReports, opts)
 		if err != nil {
 			return nil, fmt.Errorf("merge source foundation batch %d/%d (chapters %d-%d): %w", index, len(reportBatches), from, to, err)
 		}
@@ -417,7 +433,7 @@ func mergeSourceFoundationPartialsResumable(
 			}
 
 			emit(StageFoundation, to, totalReports, fmt.Sprintf("merge source foundation summary L%d %d/%d: chapters %d-%d", level, index, len(groups), from, to), nil)
-			result, err := imp.MergeFoundationPartials(ctx, deps.LLM, deps.Prompts.FoundationMerge, group, totalReports, opts)
+			result, err := imp.MergeFoundationPartials(ctx, deps.modelForStage("source_analysis"), deps.Prompts.FoundationMerge, group, totalReports, opts)
 			if err != nil {
 				return nil, fmt.Errorf("merge source foundation summary level %d batch %d/%d (chapters %d-%d): %w", level, index, len(groups), from, to, err)
 			}
@@ -1121,7 +1137,7 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal, totalBatches, fmt.Sprintf("请求修订第 %d/%d 批：第 %d-%d 章", batchOrdinal, totalBatches, chunkFrom, chunkTo), nil)
 		revisionText, err := generatePlannerText(
 			ctx,
-			deps.LLM,
+			deps.modelForStage("detail_outline"),
 			systemPrompt,
 			revisionPrompt,
 			adaptationPlannerMaxTokens,
@@ -1137,7 +1153,7 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal, totalBatches, fmt.Sprintf("修订模型已返回第 %d/%d 批，正在解析校验", batchOrdinal, totalBatches), nil)
 		revisedChapters, err := collectProposalRevisionBatchChaptersWithRepair(
 			ctx,
-			deps.LLM,
+			deps.modelForStage("detail_outline"),
 			systemPrompt,
 			revisionPrompt,
 			revisionText,
@@ -1213,9 +1229,10 @@ func ReviseAdaptationVolumeReviewContext(ctx context.Context, deps Deps, opts Pr
 	if err != nil {
 		return nil, err
 	}
+	skeletonModel := deps.modelForStage("skeleton")
 	revisionText, err := generatePlannerText(
 		ctx,
-		deps.LLM,
+		skeletonModel,
 		systemPrompt,
 		revisionPrompt,
 		adaptationPlannerSkeletonMaxTokens,
@@ -1229,7 +1246,7 @@ func ReviseAdaptationVolumeReviewContext(ctx context.Context, deps Deps, opts Pr
 		return nil, fmt.Errorf("planner volume review revision llm generate: %w", err)
 	}
 	minTargetTo := plannerSkeletonBatchMinTargetTo(originalBatch, proposalOptionsFromVolumeReview(*review), manifest)
-	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, revisionPrompt, revisionText, originalBatch, expansionMaxTo, true, manifest, minTargetTo, false, opts.EmitProgress, deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
+	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, skeletonModel, systemPrompt, revisionPrompt, revisionText, originalBatch, expansionMaxTo, true, manifest, minTargetTo, false, opts.EmitProgress, deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 	if err != nil {
 		return nil, fmt.Errorf("planner volume review revision skeleton: %w", err)
 	}
@@ -1431,9 +1448,10 @@ func reviseAdaptationProposalVolumeContext(
 	if err != nil {
 		return nil, err
 	}
+	skeletonModel := deps.modelForStage("skeleton")
 	skeletonText, err := generatePlannerText(
 		ctx,
-		deps.LLM,
+		skeletonModel,
 		systemPrompt,
 		skeletonPrompt,
 		adaptationPlannerSkeletonMaxTokens,
@@ -1447,7 +1465,7 @@ func reviseAdaptationProposalVolumeContext(
 		return nil, fmt.Errorf("planner volume revision skeleton llm generate: %w", err)
 	}
 	minTargetTo := plannerSkeletonBatchMinTargetTo(originalBatch, proposalOptionsFromPlan(updated), manifest)
-	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, deps.LLM, systemPrompt, skeletonPrompt, skeletonText, originalBatch, expansionMaxTo, allowExpansion, manifest, minTargetTo, false, opts.EmitProgress, deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
+	revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(ctx, skeletonModel, systemPrompt, skeletonPrompt, skeletonText, originalBatch, expansionMaxTo, allowExpansion, manifest, minTargetTo, false, opts.EmitProgress, deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 	if err != nil {
 		return nil, fmt.Errorf("planner volume revision skeleton: %w", err)
 	}
@@ -1467,6 +1485,7 @@ func reviseAdaptationProposalVolumeContext(
 	emitAdaptProgress(opts.EmitProgress, StagePlan, 0, len(detailBatches), fmt.Sprintf("第 %d 卷剧情重规划完成：第 %d-%d 章，正在生成详细章节提纲", opts.VolumeIndex, revisedBatch.TargetFrom, revisedBatch.TargetTo), nil)
 	revisedChapters := make([]domain.AdaptationChapterPlan, 0, revisedBatch.TargetTo-revisedBatch.TargetFrom+1)
 	detailOpts := proposalOptionsFromPlan(updated)
+	detailModel := deps.modelForStage("detail_outline")
 	for idx, detailBatch := range detailBatches {
 		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(detailOpts, manifest, sourceFoundation, revisedSkeleton, detailBatch, reportsForPlannerDetailBatch(reports, detailBatch), revisedChapters)
 		if err != nil {
@@ -1475,7 +1494,7 @@ func reviseAdaptationProposalVolumeContext(
 		emitAdaptProgress(opts.EmitProgress, StagePlan, idx+1, len(detailBatches), fmt.Sprintf("请求第 %d 卷章节详情第 %d/%d 批：第 %d-%d 章", opts.VolumeIndex, idx+1, len(detailBatches), detailBatch.TargetFrom, detailBatch.TargetTo), nil)
 		batchText, err := generatePlannerText(
 			ctx,
-			deps.LLM,
+			detailModel,
 			systemPrompt,
 			batchPrompt,
 			adaptationPlannerMaxTokens,
@@ -1490,7 +1509,7 @@ func reviseAdaptationProposalVolumeContext(
 		}
 		batchChapters, err := collectPlannerBatchChaptersWithRepair(
 			ctx,
-			deps.LLM,
+			detailModel,
 			systemPrompt,
 			batchPrompt,
 			batchText,
@@ -1535,12 +1554,13 @@ func finalizeRevisedAdaptationProposal(
 	updated.TargetMinRunes = 0
 	updated.TargetMaxRunes = 0
 	emitAdaptProgress(opts.EmitProgress, StagePlan, progressCurrent, progressTotal, "修订章节已合并，正在校验完整提案", nil)
-	if err := validatePlannerProposal(&updated, validateOpts, reports, manifest, deps.LLM); err != nil {
+	detailModel := deps.modelForStage("detail_outline")
+	if err := validatePlannerProposal(&updated, validateOpts, reports, manifest, detailModel); err != nil {
 		return nil, fmt.Errorf("revised adaptation proposal invalid: %w", err)
 	}
 	updated.Volumes = normalizeAdaptationProposalVolumes(updated.Volumes, len(updated.Chapters))
-	originalForCompare := normalizedProposalForRevisionCompare(original, reports, manifest, deps.LLM)
-	updatedForCompare := normalizedProposalForRevisionCompare(updated, reports, manifest, deps.LLM)
+	originalForCompare := normalizedProposalForRevisionCompare(original, reports, manifest, detailModel)
+	updatedForCompare := normalizedProposalForRevisionCompare(updated, reports, manifest, detailModel)
 	if !proposalRevisionChanged(originalForCompare, updatedForCompare) {
 		return nil, fmt.Errorf("revision produced no proposal changes; please make the instruction more specific or request added ending chapters")
 	}
@@ -2028,7 +2048,7 @@ func repairVolumeReviewBudgetSplitsBeforeDetails(
 		}
 		text, err := generatePlannerText(
 			ctx,
-			deps.LLM,
+			deps.modelForStage("skeleton"),
 			systemPrompt,
 			prompt,
 			adaptationPlannerSkeletonMaxTokens,
@@ -2043,7 +2063,7 @@ func repairVolumeReviewBudgetSplitsBeforeDetails(
 		}
 		revisedBatch, err := collectProposalVolumeRevisionSkeletonWithRepair(
 			ctx,
-			deps.LLM,
+			deps.modelForStage("skeleton"),
 			systemPrompt,
 			prompt,
 			text,
@@ -3069,8 +3089,9 @@ func buildPlanFromPlannerSingle(
 	if err != nil {
 		return zero, err
 	}
+	detailModel := deps.modelForStage("detail_outline")
 	responseText, err := generatePlannerTextForStage(
-		ctx, StagePlan, deps.LLM, systemPrompt, userPrompt, adaptationPlannerMaxTokens,
+		ctx, StagePlan, detailModel, systemPrompt, userPrompt, adaptationPlannerMaxTokens,
 		opts.EmitProgress, 0, 0, "短篇改编规划", deps.modelCallMaxAttempts(),
 	)
 	if err != nil {
@@ -3080,7 +3101,7 @@ func buildPlanFromPlannerSingle(
 	if err != nil {
 		return zero, plannerUnusableOutputError{err: err}
 	}
-	if err := validatePlannerProposal(&proposal, opts, reports, manifest, deps.LLM); err != nil {
+	if err := validatePlannerProposal(&proposal, opts, reports, manifest, detailModel); err != nil {
 		_ = deps.Store.Adaptation.ClearProposalRuntime()
 		return zero, err
 	}
@@ -3286,7 +3307,7 @@ func buildPlannerVolumeSkeletonFromSourceMap(
 		emitAdaptProgress(opts.EmitProgress, StagePlan, sourceIndex+1, len(sourceMap), fmt.Sprintf("请求骨架规划第 %d/%d 批：原书第 %d-%d 章", sourceIndex+1, len(sourceMap), entry.SourceFrom, entry.SourceTo), nil)
 		text, err := generatePlannerText(
 			ctx,
-			deps.LLM,
+			deps.modelForStage("skeleton"),
 			systemPrompt,
 			prompt,
 			adaptationPlannerSkeletonMaxTokens,
@@ -3299,7 +3320,7 @@ func buildPlannerVolumeSkeletonFromSourceMap(
 		if err != nil {
 			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d llm generate: %w", entry.Index, err)
 		}
-		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.LLM, systemPrompt, prompt, text, entry, opts.Granularity, sourceRunesByChapter, opts.EmitProgress, sourceIndex+1, len(sourceMap), deps.budgetQualityMaxAttempts(), deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
+		local, err := collectPlannerSourceMapSkeletonBatches(ctx, deps.modelForStage("skeleton"), systemPrompt, prompt, text, entry, opts.Granularity, sourceRunesByChapter, opts.EmitProgress, sourceIndex+1, len(sourceMap), deps.budgetQualityMaxAttempts(), deps.structureRepairMaxAttempts(), deps.modelCallMaxAttempts())
 		if err != nil {
 			return plannerSkeleton{}, fmt.Errorf("planner skeleton batch %d: %w", entry.Index, err)
 		}
@@ -4309,7 +4330,7 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("请求章节详情第 %d/%d 批：第 %d-%d 章", batchOrdinal+1, len(detailBatches), batch.TargetFrom, batch.TargetTo), nil)
 		batchText, err := generatePlannerText(
 			ctx,
-			deps.LLM,
+			deps.modelForStage("detail_outline"),
 			systemPrompt,
 			batchPrompt,
 			adaptationPlannerMaxTokens,
@@ -4325,7 +4346,7 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 		emitAdaptProgress(opts.EmitProgress, StagePlan, batchOrdinal+1, len(detailBatches), fmt.Sprintf("章节详情第 %d/%d 批已返回，正在解析校验", batchOrdinal+1, len(detailBatches)), nil)
 		batchChapters, err := collectPlannerBatchChaptersWithRepair(
 			ctx,
-			deps.LLM,
+			deps.modelForStage("detail_outline"),
 			systemPrompt,
 			batchPrompt,
 			batchText,
@@ -4382,7 +4403,7 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 	proposal.Planner.Notes = append(proposal.Planner.Notes,
 		fmt.Sprintf("chunked planner: %d target chapters across %d model-planned batches", skeleton.TargetChapterCount, len(skeleton.Batches)),
 	)
-	if err := validatePlannerProposal(&proposal, opts, reports, manifest, deps.LLM); err != nil {
+	if err := validatePlannerProposal(&proposal, opts, reports, manifest, deps.modelForStage("detail_outline")); err != nil {
 		completedBeforeRepair := len(runtime.CompletedBatches)
 		if updateErr := preparePlannerRuntimeAfterValidationError(deps, runtime, err, opts, manifest, opts.EmitProgress); updateErr != nil {
 			return zero, fmt.Errorf("%w (also failed to update proposal runtime: %v)", err, updateErr)

@@ -160,16 +160,17 @@ Writer、Coordinator、Architect 和 Editor 都走 `newContextManager`，但配�
 - `Summary`
   `FullSummary` 的配置，包括自定义 prompt 和 post-summary hook。
 
-运行时对话窗口与静态 Prompt 编译预算彼此独立。角色窗口只做上限，模型真实窗口更小时始终服从模型窗口：
+运行时对话窗口与静态 Prompt 编译预算彼此独立。窗口由 `internal/modelprofile` 按模型族和实际执行角色解析；模型真实窗口更小时始终服从模型窗口：
 
-| 角色 | 运行时窗口上限 | ReserveTokens | KeepRecentTokens |
-|------|---------------:|--------------:|-----------------:|
-| Coordinator | 64,000 | 9,600 | 8,000 |
-| Writer | 96,000 | 14,400 | 12,000 |
-| Architect | 96,000 | 14,400 | 14,000 |
-| Editor | 128,000 | 19,200 | 18,000 |
+| 模型族 | Coordinator | Architect | Writer | Editor |
+|------|------------:|----------:|-------:|-------:|
+| DeepSeek V4 Pro | 64,000 | 96,000 | 128,000 | 128,000 |
+| Grok 4.5 | 64,000 | 96,000 | 64,000 | 64,000 |
+| 未识别模型 | 64,000 | 96,000 | 96,000 | 128,000 |
 
-`ReserveTokens` 按窗口的 15% 计算（最少 8,000）。压缩触发阈值 = `ContextWindow - ReserveTokens`，因此默认 Writer 在约 81.6K、Editor 在约 108.8K 触发。`promptcompile.Budget.HardTokens` 只约束静态 Prompt 组件，不再把整段运行时对话截成 40K/56K。
+这些值来自 2026-07-12 的分阶段基准，不在 Web 暴露给普通用户。64K/128K 是在实测 48K、96K、160K 档位之间选取的运行边界，用来保留输出与工具调用余量，并不表示每轮都要主动填满窗口。完整结果见 `benchmarks/context-window-2026-07-12/`。
+
+`ReserveTokens` 按窗口的 15% 计算（最少 8,000），压缩触发阈值 = `ContextWindow - ReserveTokens`。`promptcompile.Budget.HardTokens` 只约束静态 Prompt 组件，不再把整段运行时对话截成 40K/56K。
 
 当前 Writer 的策略管线顺序是：
 

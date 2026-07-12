@@ -317,6 +317,18 @@ func (t *UsageTracker) effectiveModel(role, provider, modelName string) (string,
 	modelName = strings.TrimSpace(modelName)
 	if modelName == "" {
 		if t != nil && t.modelSet != nil {
+			if role == "architect" {
+				p, m, _ := t.modelSet.CurrentStageSelection(bootstrap.StageSkeleton)
+				return p, m
+			}
+			if role == "writer" {
+				p, m, _ := t.modelSet.CurrentStageSelection(bootstrap.StageWriting)
+				return p, m
+			}
+			if role == "editor" {
+				p, m, _ := t.modelSet.CurrentStageSelection(bootstrap.StageReview)
+				return p, m
+			}
 			p, m, _ := t.modelSet.CurrentSelection(role)
 			return p, m
 		}
@@ -324,6 +336,13 @@ func (t *UsageTracker) effectiveModel(role, provider, modelName string) (string,
 	}
 	if provider == "" && t != nil && t.modelSet != nil {
 		p, m, _ := t.modelSet.CurrentSelection(role)
+		if role == "architect" {
+			p, m, _ = t.modelSet.CurrentStageSelection(bootstrap.StageSkeleton)
+		} else if role == "writer" {
+			p, m, _ = t.modelSet.CurrentStageSelection(bootstrap.StageWriting)
+		} else if role == "editor" {
+			p, m, _ = t.modelSet.CurrentStageSelection(bootstrap.StageReview)
+		}
 		if m == modelName {
 			provider = p
 		}

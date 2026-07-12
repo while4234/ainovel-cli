@@ -502,22 +502,28 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 
 func (h *Host) adaptationDeps() adapt.Deps {
 	var llm imp.LLMChat
+	var modelName string
 	if h.models != nil {
-		llm = h.models.ForRoleWithFailover("architect", h.reportAdaptationFailover)
+		llm = h.models.ForStageWithFailover(bootstrap.StageSkeleton, h.reportAdaptationFailover)
+		_, modelName, _ = h.models.CurrentStageSelection(bootstrap.StageSourceAnalysis)
 	}
 	h.mu.Lock()
 	cfg := h.cfg
 	h.mu.Unlock()
 	return adapt.Deps{
-		Store:                                  h.store,
-		LLM:                                    llm,
-		ModelCallMaxAttempts:                   cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
-		StructureRepairMaxAttempts:             cfg.EffectiveStructureRepairMaxAttempts(),
-		BudgetQualityMaxAttempts:               cfg.EffectiveBudgetQualityMaxAttempts(),
-		AdaptationOutlineAuditRetryMaxAttempts: cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts(),
-		ModelCallMaxAttemptsProvider:           h.CurrentModelCallMaxAttempts,
-		StructureRepairMaxAttemptsProvider:     h.CurrentStructureRepairMaxAttempts,
-		BudgetQualityMaxAttemptsProvider:       h.CurrentBudgetQualityMaxAttempts,
+		Store:     h.store,
+		LLM:       llm,
+		ModelName: modelName,
+		ModelForStage: func(stage string) imp.LLMChat {
+			return h.models.ForStageWithFailover(stage, h.reportAdaptationFailover)
+		},
+		ModelCallMaxAttempts:                           cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
+		StructureRepairMaxAttempts:                     cfg.EffectiveStructureRepairMaxAttempts(),
+		BudgetQualityMaxAttempts:                       cfg.EffectiveBudgetQualityMaxAttempts(),
+		AdaptationOutlineAuditRetryMaxAttempts:         cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts(),
+		ModelCallMaxAttemptsProvider:                   h.CurrentModelCallMaxAttempts,
+		StructureRepairMaxAttemptsProvider:             h.CurrentStructureRepairMaxAttempts,
+		BudgetQualityMaxAttemptsProvider:               h.CurrentBudgetQualityMaxAttempts,
 		AdaptationOutlineAuditRetryMaxAttemptsProvider: h.CurrentAdaptationOutlineAuditRetryMaxAttempts,
 		Prompts: adapt.Prompts{
 			Foundation:      h.bundle.Prompts.ImportFoundation,
@@ -1289,8 +1295,14 @@ func (h *Host) ModelAutoSwitchConfig() bootstrap.ModelAutoSwitchConfig {
 func (h *Host) CurrentModelSelection(role string) (string, string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	provider, model, explicit := h.models.CurrentSelection(role)
 	role = strings.ToLower(strings.TrimSpace(role))
+	var provider, model string
+	var explicit bool
+	if strings.HasPrefix(role, "stage:") {
+		provider, model, explicit = h.models.CurrentStageSelection(strings.TrimPrefix(role, "stage:"))
+	} else {
+		provider, model, explicit = h.models.CurrentSelection(role)
+	}
 	if h.cfg.PersistProjectOverlay && (role == "" || role == "default") {
 		explicit = h.cfg.PersistProjectConfig != nil &&
 			strings.TrimSpace(h.cfg.PersistProjectConfig.Provider) != "" &&
@@ -3088,7 +3100,16 @@ func cloneMapAny(m map[string]any) map[string]any {
 }
 
 func validModelRole(role string) bool {
-	switch strings.ToLower(strings.TrimSpace(role)) {
+	normalized := strings.ToLower(strings.TrimSpace(role))
+	if strings.HasPrefix(normalized, "stage:") {
+		for _, stage := range bootstrap.KnownModelStages {
+			if normalized == bootstrap.StageRouteKey(stage) {
+				return true
+			}
+		}
+		return false
+	}
+	switch normalized {
 	case "", "default", "coordinator", "architect", "writer", "editor", "auditor":
 		return true
 	default:
@@ -3598,7 +3619,7 @@ func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Eve
 	deps := imp.Deps{
 		Store:      h.store,
 		CommitTool: tools.NewCommitChapterTool(h.store, adapt.NewCompletionGate(h.store)),
-		LLM:        h.models.ForRole("architect"),
+		LLM:        h.models.ForStage(bootstrap.StageSourceAnalysis),
 		Prompts: imp.Prompts{
 			Foundation: h.bundle.Prompts.ImportFoundation,
 			Analyzer:   h.bundle.Prompts.ImportAnalyzer,
@@ -3673,8 +3694,15 @@ func (h *Host) PrepareAdaptationSource(ctx context.Context, sourcePath string) (
 	cfg := h.cfg
 	h.mu.Unlock()
 	deps := adapt.Deps{
-		Store:                      h.store,
-		LLM:                        h.models.ForRoleWithFailover("architect", h.reportAdaptationFailover),
+		Store: h.store,
+		LLM:   h.models.ForStageWithFailover(bootstrap.StageSourceAnalysis, h.reportAdaptationFailover),
+		ModelForStage: func(stage string) imp.LLMChat {
+			return h.models.ForStageWithFailover(stage, h.reportAdaptationFailover)
+		},
+		ModelName: func() string {
+			_, model, _ := h.models.CurrentStageSelection(bootstrap.StageSourceAnalysis)
+			return model
+		}(),
 		ModelCallMaxAttempts:       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
 		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
 		BudgetQualityMaxAttempts:   cfg.EffectiveBudgetQualityMaxAttempts(),
@@ -3756,7 +3784,7 @@ func (h *Host) SimulateFromDir(ctx context.Context, dir string) (<-chan sim.Even
 	h.mu.Unlock()
 	deps := sim.Deps{
 		Store:                      h.store,
-		LLM:                        h.models.ForRole("architect"),
+		LLM:                        h.models.ForStage(bootstrap.StageSourceAnalysis),
 		ModelCallMaxAttempts:       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
 		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
 		Prompts: sim.Prompts{
@@ -3777,7 +3805,7 @@ func (h *Host) ImportSimulationProfile(ctx context.Context, path string) (<-chan
 	h.mu.Unlock()
 	deps := sim.Deps{
 		Store:                      h.store,
-		LLM:                        h.models.ForRole("architect"),
+		LLM:                        h.models.ForStage(bootstrap.StageSourceAnalysis),
 		ModelCallMaxAttempts:       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
 		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
 		Prompts: sim.Prompts{

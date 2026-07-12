@@ -209,7 +209,7 @@ func (g *continuationModelGenerator) generate(ctx context.Context, system string
 	if maxAttempts <= 0 {
 		maxAttempts = 1
 	}
-	model := g.host.models.ForRoleWithFailover("architect", g.host.reportContinuationFailover)
+	model := g.host.models.ForStageWithFailover(bootstrap.StageDetailOutline, g.host.reportContinuationFailover)
 	messages := []agentcore.Message{agentcore.SystemMsg(system), agentcore.UserMsg(string(data))}
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {

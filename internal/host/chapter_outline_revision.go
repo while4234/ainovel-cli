@@ -103,7 +103,7 @@ func (h *Host) ReviseChapterOutline(ctx context.Context, req ChapterOutlineRevis
 	h.mu.Lock()
 	structureAttempts := h.cfg.EffectiveStructureRepairMaxAttempts()
 	h.mu.Unlock()
-	model := h.models.ForRoleWithFailover("architect", h.reportChapterOutlineRevisionFailover)
+	model := h.models.ForStageWithFailover(bootstrap.StageDetailOutline, h.reportChapterOutlineRevisionFailover)
 	revised, err := generateChapterOutlineRevision(ctx, model, revisionContext, structureAttempts)
 	if err != nil {
 		return ChapterOutlineRevisionResult{}, err

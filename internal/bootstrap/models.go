@@ -146,6 +146,37 @@ func (ms *ModelSet) ForRoleWithFailover(role string, report FailoverReporter) ag
 	return newRuntimeFallbackModel(role, primary, base, ms.config.ModelAutoSwitch, ms.runtimeController, report)
 }
 
+// ForStageWithFailover resolves a user-facing workflow stage first, then falls
+// back to its Agent route. This keeps stage controls simple without removing
+// the lower-level Agent routing used by advanced users.
+func (ms *ModelSet) ForStageWithFailover(stage string, report FailoverReporter) agentcore.ChatModel {
+	key := StageRouteKey(stage)
+	if _, ok := ms.config.Roles[key]; ok {
+		return ms.ForRoleWithFailover(key, report)
+	}
+	if model, ok := ms.models[key]; ok {
+		return newRuntimeFallbackModel(key, model, model, ms.config.ModelAutoSwitch, ms.runtimeController, report)
+	}
+	return ms.ForRoleWithFailover(StageFallbackRole(stage), report)
+}
+
+func (ms *ModelSet) ForStage(stage string) agentcore.ChatModel {
+	return ms.ForStageWithFailover(stage, nil)
+}
+
+// CurrentStageSelection reports whether the stage itself is overridden. An
+// inherited Agent route remains visible in provider/model but explicit=false.
+func (ms *ModelSet) CurrentStageSelection(stage string) (provider, model string, explicit bool) {
+	key := StageRouteKey(stage)
+	if sw, ok := ms.models[key]; ok {
+		provider, model = sw.Current()
+		_, explicit = ms.config.Roles[key]
+		return provider, model, explicit
+	}
+	provider, model, _ = ms.CurrentSelection(StageFallbackRole(stage))
+	return provider, model, false
+}
+
 func (ms *ModelSet) SetRuntimeFallbackController(controller RuntimeFallbackController) {
 	ms.runtimeController = controller
 }
@@ -232,7 +263,6 @@ func (ms *ModelSet) ApplyConfig(cfg Config) error {
 			nextFallbacks[role] = targets
 		}
 	}
-
 	for role, existing := range ms.models {
 		if _, ok := nextModels[role]; ok {
 			continue
@@ -240,6 +270,7 @@ func (ms *ModelSet) ApplyConfig(cfg Config) error {
 		existing.Swap(cfg.Provider, cfg.ModelName, defaultModel)
 	}
 	ms.Default.Swap(cfg.Provider, cfg.ModelName, defaultModel)
+	ensureInheritedStageModels(nextModels, ms.models, ms.Default)
 	ms.models = nextModels
 	ms.fallbacks = nextFallbacks
 	ms.config = cfg
@@ -263,6 +294,7 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 		ms.config.Provider = provider
 		ms.config.ModelName = model
 		ms.config.RememberModelCandidate(provider, model)
+		ms.refreshInheritedStageModels()
 		return nil
 	}
 
@@ -280,6 +312,7 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 		rc.Model = model
 		ms.config.Roles[role] = rc
 		ms.config.RememberModelCandidate(provider, model)
+		ms.refreshInheritedStageModels()
 		return nil
 	}
 	ms.models[role] = NewSwappableModel(provider, model, next)
@@ -291,6 +324,7 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 	rc.Model = model
 	ms.config.Roles[role] = rc
 	ms.config.RememberModelCandidate(provider, model)
+	ms.refreshInheritedStageModels()
 	return nil
 }
 
@@ -343,8 +377,48 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 		}
 		ms.fallbacks[role] = targets
 	}
+	ensureInheritedStageModels(ms.models, nil, ms.Default)
 
 	return ms, nil
+}
+
+func ensureInheritedStageModels(models, existing map[string]*SwappableModel, defaultModel *SwappableModel) {
+	for _, stage := range KnownModelStages {
+		key := StageRouteKey(stage)
+		if _, ok := models[key]; ok {
+			continue
+		}
+		fallback := defaultModel
+		if roleModel, ok := models[StageFallbackRole(stage)]; ok {
+			fallback = roleModel
+		}
+		provider, model := fallback.Current()
+		if current, ok := existing[key]; ok {
+			current.Swap(provider, model, fallback)
+			models[key] = current
+			continue
+		}
+		models[key] = NewSwappableModel(provider, model, fallback)
+	}
+}
+
+func (ms *ModelSet) refreshInheritedStageModels() {
+	for _, stage := range KnownModelStages {
+		key := StageRouteKey(stage)
+		if _, explicit := ms.config.Roles[key]; explicit {
+			continue
+		}
+		fallback := ms.Default
+		if roleModel, ok := ms.models[StageFallbackRole(stage)]; ok {
+			fallback = roleModel
+		}
+		provider, model := fallback.Current()
+		if stageModel, ok := ms.models[key]; ok {
+			stageModel.Swap(provider, model, fallback)
+			continue
+		}
+		ms.models[key] = NewSwappableModel(provider, model, fallback)
+	}
 }
 
 func buildFallbackTargets(role string, fallbacks []ModelRef, cfg Config, cache map[string]agentcore.ChatModel) ([]modelTarget, error) {

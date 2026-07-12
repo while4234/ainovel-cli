@@ -21,6 +21,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/host/reminder"
+	"github.com/voocel/ainovel-cli/internal/modelprofile"
 	"github.com/voocel/ainovel-cli/internal/promptcompile"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/rules"
@@ -46,30 +47,41 @@ func agentToRole(name string) string {
 // 项目铁律一保证写类工具走 checkpoint+digest 幂等，重试是安全的。
 const subagentMaxRetries = retrypolicy.MaxAttempts
 
-var runtimeContextWindows = map[promptcompile.Agent]int{
-	promptcompile.AgentCoordinator: 64_000,
-	promptcompile.AgentWriter:      96_000,
-	promptcompile.AgentArchitect:   96_000,
-	promptcompile.AgentEditor:      128_000,
-}
-
-func boundedAgentContextWindow(modelWindow int, agent promptcompile.Agent) (int, int) {
+func boundedAgentContextWindow(modelName string, modelWindow int, agent promptcompile.Agent) (int, int) {
 	if modelWindow <= 0 {
 		return modelWindow, bootstrap.CompactReserveTokens(modelWindow)
 	}
 	window := modelWindow
-	if roleWindow := runtimeContextWindows[agent]; roleWindow > 0 {
+	profile := modelprofile.Resolve(modelName)
+	if roleWindow := profile.ContextWindow(modelProfileRole(agent)); roleWindow > 0 {
 		window = min(window, roleWindow)
 	}
 	reserve := bootstrap.CompactReserveTokens(window)
 	slog.Info("角色运行时上下文窗口",
 		"module", "context",
 		"role", agent,
+		"profile", profile.Name,
+		"model", modelName,
 		"model_window", modelWindow,
 		"runtime_window", window,
 		"reserve", reserve,
 	)
 	return window, reserve
+}
+
+func modelProfileRole(agent promptcompile.Agent) modelprofile.Role {
+	switch agent {
+	case promptcompile.AgentCoordinator:
+		return modelprofile.RoleCoordinator
+	case promptcompile.AgentArchitect:
+		return modelprofile.RoleArchitect
+	case promptcompile.AgentWriter:
+		return modelprofile.RoleWriter
+	case promptcompile.AgentEditor:
+		return modelprofile.RoleEditor
+	default:
+		return ""
+	}
 }
 
 // UsageRecorder 是 BuildCoordinator 可选的用量回调；签名与 OnMessage 一致，
@@ -182,9 +194,11 @@ func BuildCoordinator(
 		)
 	}
 
-	architectModel := models.ForRoleWithFailover("architect", reportFailover)
-	writerModel := models.ForRoleWithFailover("writer", reportFailover)
-	editorModel := models.ForRoleWithFailover("editor", reportFailover)
+	// Architect 的一次自主 run 可能连续完成设定、骨架和首批细纲，不能在
+	// run 中途换模型；以骨架规划阶段为主路由，未配置时继承 architect。
+	architectModel := models.ForStageWithFailover(bootstrap.StageSkeleton, reportFailover)
+	writerModel := models.ForStageWithFailover(bootstrap.StageWriting, reportFailover)
+	editorModel := models.ForStageWithFailover(bootstrap.StageReview, reportFailover)
 	coordinatorModel := models.ForRoleWithFailover("coordinator", reportFailover)
 	architectModel = NewToolCallRepairModel(architectModel)
 	writerModel = NewToolCallRepairModel(writerModel)
@@ -196,7 +210,7 @@ func BuildCoordinator(
 	_, coordinatorModelName, _ := models.CurrentSelection("coordinator")
 	coordinatorContextWindow, coordinatorSource := cfg.ResolveContextWindow(coordinatorModelName)
 	// Writer 的 ContextManager 由工厂每次调用重建，窗口随模型 swap 动态跟随（见下方工厂）。
-	_, writerModelName, _ := models.CurrentSelection("writer")
+	_, writerModelName, _ := models.CurrentStageSelection(bootstrap.StageWriting)
 	writerContextWindow, writerSource := cfg.ResolveContextWindow(writerModelName)
 	bootstrap.LogContextWindowChoice("coordinator", coordinatorModelName, coordinatorContextWindow, coordinatorSource)
 	bootstrap.LogContextWindowChoice("writer", writerModelName, writerContextWindow, writerSource)
@@ -205,6 +219,18 @@ func BuildCoordinator(
 	// 让 replay 不再依赖"当前 ModelSet"来反推历史 cost，运行中切换模型也能精确算。
 	modelLookup := func(agentName string) (string, string) {
 		role := agentToRole(agentName)
+		if role == "architect" {
+			provider, name, _ := models.CurrentStageSelection(bootstrap.StageSkeleton)
+			return provider, name
+		}
+		if role == "writer" {
+			provider, name, _ := models.CurrentStageSelection(bootstrap.StageWriting)
+			return provider, name
+		}
+		if role == "editor" {
+			provider, name, _ := models.CurrentStageSelection(bootstrap.StageReview)
+			return provider, name
+		}
 		provider, name, _ := models.CurrentSelection(role)
 		return provider, name
 	}
@@ -245,7 +271,7 @@ func BuildCoordinator(
 		StopGuardFactory: architectStopGuardFactory,
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
-			window, reserve := boundedAgentContextWindow(modelWindow, promptcompile.AgentArchitect)
+			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentArchitect)
 			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_short"})
 		},
 	}
@@ -264,7 +290,7 @@ func BuildCoordinator(
 		StopGuardFactory:    architectStopGuardFactory,
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
-			window, reserve := boundedAgentContextWindow(modelWindow, promptcompile.AgentArchitect)
+			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentArchitect)
 			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_long"})
 		},
 	}
@@ -296,7 +322,7 @@ func BuildCoordinator(
 			// 每次 subagent(writer) 调用都会重建，从当前 runModel 读取最新模型名。
 			// /model 切换 writer 后下一章自动用新窗口。
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
-			window, reserve := boundedAgentContextWindow(modelWindow, promptcompile.AgentWriter)
+			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentWriter)
 			return newContextManager(contextManagerConfig{
 				Model:            model,
 				ContextWindow:    window,
@@ -346,14 +372,14 @@ func BuildCoordinator(
 		},
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
-			window, reserve := boundedAgentContextWindow(modelWindow, promptcompile.AgentEditor)
+			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentEditor)
 			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 18_000, Agent: "editor"})
 		},
 	}
 
 	subagentTool := subagent.New(architectShort, architectLong, writer, editor)
 
-	coordinatorContextWindow, coordinatorReserve := boundedAgentContextWindow(coordinatorContextWindow, promptcompile.AgentCoordinator)
+	coordinatorContextWindow, coordinatorReserve := boundedAgentContextWindow(coordinatorModelName, coordinatorContextWindow, promptcompile.AgentCoordinator)
 	coordinatorEngine := newContextManager(contextManagerConfig{
 		Model:            coordinatorModel,
 		ContextWindow:    coordinatorContextWindow,

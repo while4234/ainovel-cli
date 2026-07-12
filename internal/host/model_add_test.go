@@ -66,6 +66,54 @@ func TestAddProviderModelRegistersAndPersists(t *testing.T) {
 	}
 }
 
+func TestProjectStageModelOverridesAgentAndCanInheritAgain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := bootstrap.Config{
+		Provider:  "deepseek",
+		ModelName: "deepseek-v4-pro",
+		Providers: map[string]bootstrap.ProviderConfig{
+			"deepseek": {Type: "openai", APIKey: "deepseek-key", Models: []string{"deepseek-v4-pro"}},
+			"grok":     {Type: "openai", APIKey: "grok-key", Models: []string{"grok-4.5"}},
+		},
+		Roles: map[string]bootstrap.RoleConfig{
+			"writer": {Provider: "deepseek", Model: "deepseek-v4-pro"},
+		},
+	}
+	cfg.FillDefaults()
+	models, err := bootstrap.NewModelSet(cfg)
+	if err != nil {
+		t.Fatalf("NewModelSet: %v", err)
+	}
+	host := &Host{cfg: cfg, models: models, events: make(chan Event, 10)}
+	stageKey := bootstrap.StageRouteKey(bootstrap.StageWriting)
+
+	provider, model, explicit := host.CurrentModelSelection(stageKey)
+	if explicit || provider != "deepseek" || model != "deepseek-v4-pro" {
+		t.Fatalf("inherited stage = %s/%s explicit=%v", provider, model, explicit)
+	}
+	if err := host.SwitchModel(stageKey, "grok", "grok-4.5"); err != nil {
+		t.Fatalf("SwitchModel(stage): %v", err)
+	}
+	provider, model, explicit = host.CurrentModelSelection(stageKey)
+	if !explicit || provider != "grok" || model != "grok-4.5" {
+		t.Fatalf("overridden stage = %s/%s explicit=%v", provider, model, explicit)
+	}
+	writerProvider, writerModel, _ := host.CurrentModelSelection("writer")
+	if writerProvider != "deepseek" || writerModel != "deepseek-v4-pro" {
+		t.Fatalf("writer route changed with stage: %s/%s", writerProvider, writerModel)
+	}
+	if err := host.ClearModelRoute(stageKey); err != nil {
+		t.Fatalf("ClearModelRoute(stage): %v", err)
+	}
+	provider, model, explicit = host.CurrentModelSelection(stageKey)
+	if explicit || provider != "deepseek" || model != "deepseek-v4-pro" {
+		t.Fatalf("restored inherited stage = %s/%s explicit=%v", provider, model, explicit)
+	}
+}
+
 func TestReportAdaptationFailoverPromotesTargetToAllAgents(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

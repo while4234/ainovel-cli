@@ -23,6 +23,7 @@ var startGrokAuthLogin = grokauth.StartLogin
 type apiModelConfig struct {
 	Providers                              []apiModelProvider `json:"providers"`
 	Roles                                  []apiModelRoute    `json:"roles"`
+	Stages                                 []apiModelRoute    `json:"stages,omitempty"`
 	ThinkingLevels                         []string           `json:"thinking_levels"`
 	ThinkingRule                           string             `json:"thinking_rule"`
 	CoCreateTimeoutSeconds                 int                `json:"cocreate_timeout_seconds"`
@@ -62,6 +63,8 @@ type apiModelProvider struct {
 
 type apiModelRoute struct {
 	Role            string `json:"role"`
+	Label           string `json:"label,omitempty"`
+	FallbackRole    string `json:"fallback_role,omitempty"`
 	Provider        string `json:"provider"`
 	Model           string `json:"model"`
 	Explicit        bool   `json:"explicit"`

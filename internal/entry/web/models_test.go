@@ -92,6 +92,15 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 	if snap := session.Snapshot(); snap.ModelName != "gpt-next" {
 		t.Fatalf("new project model = %q, want gpt-next", snap.ModelName)
 	}
+	stages := session.ModelConfig().Stages
+	if len(stages) != len(bootstrap.KnownModelStages) {
+		t.Fatalf("project stage routes = %d, want %d: %+v", len(stages), len(bootstrap.KnownModelStages), stages)
+	}
+	for _, route := range stages {
+		if route.Provider != "openai" || route.Model != "gpt-next" || route.Explicit {
+			t.Fatalf("inherited project stage route = %+v", route)
+		}
+	}
 	if _, err := os.Stat(ProjectConfigPath(manifest)); !os.IsNotExist(err) {
 		t.Fatalf("new project should inherit global default without project overlay, stat err=%v", err)
 	}
