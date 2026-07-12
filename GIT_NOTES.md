@@ -38,7 +38,10 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   now distinguishes loading an existing skeleton and summarizes reused batches
   instead of replaying hundreds of misleading per-batch `Reused` messages.
   Focused real-project prompt validation, the full adaptation package, full Go
-  suite, Go vet, all 206 Web tests, and the Vite production build passed.
+  suite, Go vet, all 206 Web tests, and the Vite production build passed. The
+  clean `81b6b929` build was installed and restarted on port 9898 as PID
+  `19120`; runtime, project-list, and project-snapshot endpoints returned 200,
+  and the failed project still retains 368/370 completed detail batches.
 - 2026-07-12 stage-aware model routing and context benchmark: `bb18f7f`
   `feat: add stage-aware model routing`. Added project-scoped model selection
   for six user-facing creative stages with provider-agnostic, deduplicated
