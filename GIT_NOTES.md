@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 diagnostic checkpoint: live project “天擎” reaches chapter 68,
+  where resume preflight detects `arc_event_outline_mismatch`. The targeted
+  legacy repair currently filters that code out, performs zero repair attempts,
+  and immediately fails the unchanged-plan recheck. The underlying theme scan
+  also omits `preserve_events` and accepts broad single-token alternatives;
+  `.codex/HANDOFF.md` records the exact code paths and next regression test.
 - 2026-07-12 pending `fix: normalize annotated preserved event IDs`:
   arc validation now compares the leading stable `src-*` token when a planner
   returns `preserve_events` as `src-ID：description`, while prompts explicitly
