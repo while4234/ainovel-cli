@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 adaptation detail-event ownership fix: `f696142`
+  `fix: enforce adaptation detail event ownership`. Arc detail prompts now
+  expose only the current child batch's assigned mainline event IDs, and local
+  validation rejects every foreign `event_id` before a generated or cached
+  batch can be persisted/reused. Detail splitting has regression coverage that
+  assigns every parent mainline event exactly once; cached recovery retains the
+  correct owner batch and regenerates only the polluted batch. Resume progress
+  now distinguishes loading an existing skeleton and summarizes reused batches
+  instead of replaying hundreds of misleading per-batch `Reused` messages.
+  Focused real-project prompt validation, the full adaptation package, full Go
+  suite, Go vet, all 206 Web tests, and the Vite production build passed.
 - 2026-07-12 stage-aware model routing and context benchmark: `bb18f7f`
   `feat: add stage-aware model routing`. Added project-scoped model selection
   for six user-facing creative stages with provider-agnostic, deduplicated
