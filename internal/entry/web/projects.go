@@ -1018,6 +1018,12 @@ func mergeProviderModelMetadata(primary, fallback []string) []string {
 }
 
 func (s *ProjectStore) SaveProjectStyle(manifest ProjectManifest, style string) error {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	return s.saveProjectStyle(manifest, style)
+}
+
+func (s *ProjectStore) saveProjectStyle(manifest ProjectManifest, style string) error {
 	style = assets.NormalizeStyleID(style)
 	if !assets.HasStyle(style) {
 		return fmt.Errorf("unknown style %q", style)
@@ -1030,6 +1036,36 @@ func (s *ProjectStore) SaveProjectStyle(manifest ProjectManifest, style string) 
 		cfg = bootstrap.Config{}
 	}
 	cfg.Style = style
+	return bootstrap.SaveConfig(ProjectConfigPath(manifest), cfg)
+}
+
+// InitializeProjectStageRoutes adds stage defaults only when a newly created
+// project has not already selected that stage. Existing project preferences are
+// therefore never migrated or overwritten by changes to the product defaults.
+func (s *ProjectStore) InitializeProjectStageRoutes(manifest ProjectManifest, routes map[string]bootstrap.RoleConfig) error {
+	if len(routes) == 0 {
+		return nil
+	}
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+
+	cfg, found, err := s.loadProjectConfig(manifest)
+	if err != nil {
+		return err
+	}
+	if !found {
+		cfg = bootstrap.Config{}
+	}
+	if cfg.Roles == nil {
+		cfg.Roles = make(map[string]bootstrap.RoleConfig, len(routes))
+	}
+	for stage, route := range routes {
+		key := bootstrap.StageRouteKey(stage)
+		if _, selected := cfg.Roles[key]; selected {
+			continue
+		}
+		cfg.Roles[key] = route
+	}
 	return bootstrap.SaveConfig(ProjectConfigPath(manifest), cfg)
 }
 

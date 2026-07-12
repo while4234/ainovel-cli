@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/voocel/ainovel-cli/assets"
+	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
 
@@ -55,6 +56,69 @@ func TestCreateProjectWithStyleWritesProjectOverlay(t *testing.T) {
 	overlay := readProjectOverlay(t, manifest)
 	if overlay.Style != "fantasy" {
 		t.Fatalf("project style = %q, want fantasy", overlay.Style)
+	}
+}
+
+func TestCreateProjectUsesQualityFirstStageModelDefaults(t *testing.T) {
+	cfg := testWebConfig(t)
+	cfg.Providers = map[string]bootstrap.ProviderConfig{
+		"deepseek-backend": {Type: "openai", APIKey: "sk-test", Models: []string{"deepseek-v4-pro"}},
+		"grok-backend":     {Type: "openai", APIKey: "sk-test", Models: []string{"grok-4.5"}},
+	}
+	cfg.Provider = "deepseek-backend"
+	cfg.ModelName = "deepseek-v4-pro"
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewBufferString(`{"name":"Recommended Models"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var manifest ProjectManifest
+	if err := json.NewDecoder(rec.Body).Decode(&manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	overlay := readProjectOverlay(t, manifest)
+	for _, stage := range qualityFirstGrokStages {
+		route := overlay.Roles[bootstrap.StageRouteKey(stage)]
+		if route.Provider != "grok-backend" || route.Model != "grok-4.5" {
+			t.Fatalf("%s route = %+v, want grok-backend/grok-4.5", stage, route)
+		}
+	}
+	writing := overlay.Roles[bootstrap.StageRouteKey(bootstrap.StageWriting)]
+	if writing.Provider != "deepseek-backend" || writing.Model != "deepseek-v4-pro" {
+		t.Fatalf("writing route = %+v, want deepseek-backend/deepseek-v4-pro", writing)
+	}
+}
+
+func TestCreateProjectStageDefaultsFallBackToAvailableRecommendedModel(t *testing.T) {
+	cfg := testWebConfig(t)
+	cfg.Providers = map[string]bootstrap.ProviderConfig{
+		"grok-backend": {Type: "openai", APIKey: "sk-test", Models: []string{"grok-4.5"}},
+	}
+	cfg.Provider = "grok-backend"
+	cfg.ModelName = "grok-4.5"
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewBufferString(`{"name":"Grok Only"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var manifest ProjectManifest
+	if err := json.NewDecoder(rec.Body).Decode(&manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	overlay := readProjectOverlay(t, manifest)
+	for _, stage := range bootstrap.KnownModelStages {
+		route := overlay.Roles[bootstrap.StageRouteKey(stage)]
+		if route.Provider != "grok-backend" || route.Model != "grok-4.5" {
+			t.Fatalf("%s fallback route = %+v, want grok-backend/grok-4.5", stage, route)
+		}
 	}
 }
 

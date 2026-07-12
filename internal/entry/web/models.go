@@ -17,6 +17,14 @@ import (
 
 var modelConfigRoles = []string{"default", "coordinator", "architect", "writer", "editor", "auditor"}
 
+var qualityFirstGrokStages = []string{
+	bootstrap.StageCoCreate,
+	bootstrap.StageSourceAnalysis,
+	bootstrap.StageSkeleton,
+	bootstrap.StageDetailOutline,
+	bootstrap.StageReview,
+}
+
 var openAuthBrowser = openBrowser
 var startGrokAuthLogin = grokauth.StartLogin
 
@@ -737,6 +745,74 @@ func configuredModelProviders(cfg bootstrap.Config) []string {
 	}
 	sort.Strings(providers)
 	return providers
+}
+
+type configuredModelRoute struct {
+	provider string
+	model    string
+}
+
+func recommendedNewProjectStageRoutes(cfg bootstrap.Config) map[string]bootstrap.RoleConfig {
+	grok := findConfiguredModelRoute(cfg, isGrok45Model, bootstrap.StageRouteKey(bootstrap.StageSkeleton), "architect", "editor")
+	deepseek := findConfiguredModelRoute(cfg, isDeepSeekV4ProModel, bootstrap.StageRouteKey(bootstrap.StageWriting), "writer")
+	if grok.model == "" && deepseek.model == "" {
+		return nil
+	}
+	if grok.model == "" {
+		grok = deepseek
+	}
+	if deepseek.model == "" {
+		deepseek = grok
+	}
+
+	routes := make(map[string]bootstrap.RoleConfig, len(bootstrap.KnownModelStages))
+	for _, stage := range qualityFirstGrokStages {
+		routes[stage] = bootstrap.RoleConfig{Provider: grok.provider, Model: grok.model}
+	}
+	routes[bootstrap.StageWriting] = bootstrap.RoleConfig{Provider: deepseek.provider, Model: deepseek.model}
+	return routes
+}
+
+func findConfiguredModelRoute(cfg bootstrap.Config, matches func(string) bool, preferredRoles ...string) configuredModelRoute {
+	for _, role := range preferredRoles {
+		route, ok := cfg.Roles[role]
+		if ok && matches(route.Model) && providerCanUseModel(cfg, route.Provider, route.Model) {
+			return configuredModelRoute{provider: route.Provider, model: route.Model}
+		}
+	}
+	if matches(cfg.ModelName) && providerCanUseModel(cfg, cfg.Provider, cfg.ModelName) {
+		return configuredModelRoute{provider: cfg.Provider, model: cfg.ModelName}
+	}
+	for _, provider := range configuredModelProviders(cfg) {
+		for _, model := range cfg.CandidateModels(provider) {
+			if matches(model) && providerCanUseModel(cfg, provider, model) {
+				return configuredModelRoute{provider: provider, model: model}
+			}
+		}
+	}
+	return configuredModelRoute{}
+}
+
+func providerCanUseModel(cfg bootstrap.Config, provider, model string) bool {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	pc, ok := cfg.Providers[provider]
+	return ok && !pc.Disabled && provider != "" && model != ""
+}
+
+func isGrok45Model(model string) bool {
+	normalized := compactModelName(model)
+	return strings.Contains(normalized, "grok45")
+}
+
+func isDeepSeekV4ProModel(model string) bool {
+	normalized := compactModelName(model)
+	return strings.Contains(normalized, "deepseekv4pro")
+}
+
+func compactModelName(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.NewReplacer("-", "", "_", "", ".", "", "/", "").Replace(model)
 }
 
 func saveWebConfig(cfg bootstrap.Config) error {

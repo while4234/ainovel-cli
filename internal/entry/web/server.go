@@ -377,6 +377,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if err := s.store.InitializeProjectStageRoutes(manifest, recommendedNewProjectStageRoutes(s.currentConfig())); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		writeJSON(w, http.StatusCreated, manifest)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
