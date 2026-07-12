@@ -75,7 +75,7 @@ func TestStopGuard_EscalatesAfterTooManyConsecutiveBlocks(t *testing.T) {
 	}
 }
 
-func TestStopGuard_DefaultBlockMessageWaitsForHost(t *testing.T) {
+func TestStopGuard_DefaultBlockMessageReissuesCurrentHostRoute(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.Progress.Init("test", 3); err != nil {
 		t.Fatalf("init progress: %v", err)
@@ -85,13 +85,13 @@ func TestStopGuard_DefaultBlockMessageWaitsForHost(t *testing.T) {
 	}
 
 	decision := NewStopGuard(s, nil)(context.Background(), agentcore.StopInfo{TurnIndex: 1})
-	if !strings.Contains(decision.InjectMessage, "[Host 下达指令]") {
-		t.Fatalf("inject message should point to Host instruction, got %q", decision.InjectMessage)
-	}
-	for _, forbidden := range []string{"查 novel_context", "调子代理"} {
-		if strings.Contains(decision.InjectMessage, forbidden) {
-			t.Fatalf("inject message should not suggest freelance action %q: %q", forbidden, decision.InjectMessage)
+	for _, want := range []string{"[Host 下达指令]", "subagent(writer", "不要只回复等待"} {
+		if !strings.Contains(decision.InjectMessage, want) {
+			t.Fatalf("inject message should reissue %q, got %q", want, decision.InjectMessage)
 		}
+	}
+	if strings.Contains(decision.InjectMessage, "等待并执行") {
+		t.Fatalf("inject message must not ask the coordinator to wait again: %q", decision.InjectMessage)
 	}
 }
 

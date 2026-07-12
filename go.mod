@@ -3,8 +3,8 @@ module github.com/voocel/ainovel-cli
 go 1.25.5
 
 require (
-	github.com/voocel/agentcore v1.7.7
-	github.com/voocel/litellm v1.8.3
+	github.com/voocel/agentcore v1.7.9
+	github.com/voocel/litellm v1.8.5
 	golang.org/x/text v0.38.0
 )
 

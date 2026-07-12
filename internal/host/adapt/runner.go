@@ -54,11 +54,16 @@ const (
 	adaptationVolumeBudgetRepairReportMax      = 12
 	adaptationVolumeBudgetRepairChapterMax     = 24
 	adaptationPlannerGenerateMaxAttempts       = retrypolicy.MaxAttempts
-	adaptationProposalRuntimeVersion           = 1
-	adaptationSourceFoundationVersion          = 1
-	adaptationSourceFoundationPromptVersion    = "source-foundation-merge-v1"
-	sourceFoundationBatchKindReports           = "reports"
-	sourceFoundationBatchKindSummary           = "summary"
+	// Relay backends can surface a temporary upstream rejection as the bare
+	// message "authorization failed". Give that ambiguous response a short
+	// retry budget without treating explicit invalid-token/401 failures as
+	// transient or spending the full provider retry budget.
+	adaptationPlannerAuthorizationMaxAttempts = 3
+	adaptationProposalRuntimeVersion          = 1
+	adaptationSourceFoundationVersion         = 1
+	adaptationSourceFoundationPromptVersion   = "source-foundation-merge-v1"
+	sourceFoundationBatchKindReports          = "reports"
+	sourceFoundationBatchKindSummary          = "summary"
 )
 
 const plannerBudgetDeviationAcceptedNote = "budget_deviation_accepted:source_range_capacity_reviewed"
@@ -5218,7 +5223,8 @@ func generatePlannerTextForStage(
 			err = fmt.Errorf("planner llm returned empty response")
 		}
 		lastErr = err
-		if !shouldRetryPlannerGenerate(ctx, err, attempt, maxAttempts) {
+		attemptLimit := plannerGenerateAttemptLimit(err, maxAttempts)
+		if !shouldRetryPlannerGenerate(ctx, err, attempt, attemptLimit) {
 			return "", err
 		}
 		nextAttempt := attempt + 1
@@ -5228,7 +5234,7 @@ func generatePlannerTextForStage(
 			stage,
 			current,
 			total,
-			fmt.Sprintf("%s模型调用失败，准备重试 %d/%d：%s", label, nextAttempt, maxAttempts, displayErr),
+			fmt.Sprintf("%s模型调用失败，准备重试 %d/%d：%s", label, nextAttempt, attemptLimit, displayErr),
 			fmt.Errorf("%s", displayErr),
 		)
 		if err := plannerRetrySleep(ctx, retrypolicy.Delay(attempt)); err != nil {
@@ -5239,6 +5245,23 @@ func generatePlannerTextForStage(
 		lastErr = fmt.Errorf("planner llm generate exhausted")
 	}
 	return "", fmt.Errorf("planner llm generate exhausted %d attempts: %w", maxAttempts, lastErr)
+}
+
+func plannerGenerateAttemptLimit(err error, configured int) int {
+	if configured <= 0 {
+		return configured
+	}
+	if isTransientPlannerAuthorizationError(err) && configured > adaptationPlannerAuthorizationMaxAttempts {
+		return adaptationPlannerAuthorizationMaxAttempts
+	}
+	return configured
+}
+
+func isTransientPlannerAuthorizationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.TrimSpace(strings.ToLower(err.Error())) == "authorization failed"
 }
 
 func plannerPromptModelIdentity(llm imp.LLMChat) string {
@@ -5258,6 +5281,9 @@ func plannerPromptModelIdentity(llm imp.LLMChat) string {
 func shouldRetryPlannerGenerate(ctx context.Context, err error, attempt, maxAttempts int) bool {
 	if err == nil || ctx.Err() != nil || attempt >= maxAttempts {
 		return false
+	}
+	if isTransientPlannerAuthorizationError(err) {
+		return true
 	}
 	var retryable interface{ Retryable() bool }
 	if errors.As(err, &retryable) && !retryable.Retryable() {
@@ -5511,7 +5537,8 @@ func collectPlannerBatchChaptersWithRepair(
 			return nil, lastErr
 		}
 		emitAdaptProgress(emit, StagePlan, current, total, fmt.Sprintf("%s不能直接使用，正在整批修复第 %d/%d 次：%v", label, attempt+1, maxRepairAttempts, lastErr), lastErr)
-		repairedText, err := repairPlannerBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, lastErr, attempt > 0, emit, current, total, label, maxModelCallAttempts)
+		regenerate := shouldRegeneratePlannerBatchFromOriginal(attempt, lastErr)
+		repairedText, err := repairPlannerBatchText(ctx, llm, systemPrompt, originalPrompt, text, batch, lastErr, regenerate, emit, current, total, label, maxModelCallAttempts)
 		if err != nil {
 			return nil, err
 		}
@@ -6275,22 +6302,24 @@ func repairPlannerBatchText(
 	label string,
 	maxModelCallAttempts int,
 ) (string, error) {
+	requirements := []string{
+		"Return exactly one JSON object and no prose.",
+		fmt.Sprintf("The top-level object must be shaped exactly like {\"chapters\":[...]} with exactly chapters %d through %d.", batch.TargetFrom, batch.TargetTo),
+		"Do not return a single chapter object. Do not return only the missing chapter. Return the full requested batch.",
+		"Every chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
+		"If the previous error says a source_range needs more target chapters, this is a shared source_range budget coverage failure, not a numeric word_budget failure.",
+		"Do not fix a source_range budget error by lowering source_runes, lowering word_budget.max_runes, or moving source anchors outside the batch source range.",
+		"Repair the offending source_range across the full requested batch: chapters adapting the same coherent source arc may share one broad source_range, but each chapter's word_budget.source_runes must be only that chapter's share and source_chapters must stay inside the shared range.",
+		"If the previous error says outline beats are duplicated after model review, regenerate the full requested batch so each repeated chapter has a distinct core_event, hook, and scene progression. Do not only rename the chapter.",
+		"Do not return only summaries, key_turns, overall_arc, markdown, or explanation.",
+	}
+	requirements = append(requirements, plannerBatchEventRepairRequirements(batch, previousErr)...)
 	repairPrompt := buildPlannerRepairPromptWithOptions(
 		fmt.Sprintf("batch %d", batch.Index),
 		originalPrompt,
 		previousText,
 		previousErr,
-		[]string{
-			"Return exactly one JSON object and no prose.",
-			fmt.Sprintf("The top-level object must be shaped exactly like {\"chapters\":[...]} with exactly chapters %d through %d.", batch.TargetFrom, batch.TargetTo),
-			"Do not return a single chapter object. Do not return only the missing chapter. Return the full requested batch.",
-			"Every chapter must include chapter, title, core_event, hook, scenes, source_chapters, source_range, word_budget, preserve_events, required_changes, and forbidden_moves.",
-			"If the previous error says a source_range needs more target chapters, this is a shared source_range budget coverage failure, not a numeric word_budget failure.",
-			"Do not fix a source_range budget error by lowering source_runes, lowering word_budget.max_runes, or moving source anchors outside the batch source range.",
-			"Repair the offending source_range across the full requested batch: chapters adapting the same coherent source arc may share one broad source_range, but each chapter's word_budget.source_runes must be only that chapter's share and source_chapters must stay inside the shared range.",
-			"If the previous error says outline beats are duplicated after model review, regenerate the full requested batch so each repeated chapter has a distinct core_event, hook, and scene progression. Do not only rename the chapter.",
-			"Do not return only summaries, key_turns, overall_arc, markdown, or explanation.",
-		},
+		requirements,
 		plannerRepairPromptOptions{RegenerateFromOriginal: regenerateFromOriginal},
 	)
 	text, err := generatePlannerText(ctx, llm, systemPrompt, repairPrompt, adaptationPlannerMaxTokens, emit, current, total, label+"整批修复", maxModelCallAttempts)
@@ -6298,6 +6327,31 @@ func repairPlannerBatchText(
 		return "", fmt.Errorf("planner batch repair llm generate: %w", err)
 	}
 	return text, nil
+}
+
+func shouldRegeneratePlannerBatchFromOriginal(attempt int, previousErr error) bool {
+	if attempt > 0 || previousErr == nil {
+		return attempt > 0
+	}
+	message := strings.ToLower(previousErr.Error())
+	return strings.Contains(message, "not assigned to detail batch") ||
+		strings.Contains(message, "duplicates outline beats")
+}
+
+func plannerBatchEventRepairRequirements(batch plannerSkeletonBatch, previousErr error) []string {
+	if len(batch.MainlineEventIDs) == 0 || previousErr == nil {
+		return nil
+	}
+	message := strings.ToLower(previousErr.Error())
+	if !strings.Contains(message, "event") && !strings.Contains(message, "outline beats") {
+		return nil
+	}
+	allowed, _ := json.Marshal(batch.MainlineEventIDs)
+	return []string{
+		fmt.Sprintf("For this isolated detail batch, the complete allowed mainline event_ids whitelist is %s. Across all returned chapters, use every listed ID exactly once and use no other mainline ID.", allowed),
+		"If the failed response pulled an event from another detail batch, rebuild the affected title, core_event, hook, and scenes around this batch's assigned events. Do not merely delete the foreign ID while keeping its future plot beat in prose.",
+		"Before returning JSON, verify that the union of chapter event_ids equals the whitelist exactly, with no missing, foreign, or duplicate ID.",
+	}
 }
 
 func repairProposalRevisionBatchText(

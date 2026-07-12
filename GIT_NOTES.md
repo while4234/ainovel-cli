@@ -28,6 +28,28 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 DeepSeek repair-loop stabilization: DeepSeek retains the tested
+  128K context profile. Writer threshold compaction now commits into the active
+  subagent baseline, preventing the observed 20-30K -> 110-150K rebound across
+  consecutive tool turns. Agentcore was upgraded from 1.7.7 to 1.7.9 so its
+  summary serializer truncates long Chinese tool results only at valid UTF-8
+  character boundaries; this fixes the live `messages[1]: text block must be
+  valid UTF-8` failure without deleting project context. Summary calls retain
+  their token cap but omit the explicit `thinking=off` rejected by the current
+  DeepSeek-compatible backend. StopGuard now reissues the exact current Host
+  route instead of repeatedly telling Coordinator to wait. Adaptation detail batches immediately discard
+  semantically polluted prior output for foreign-event and duplicate-outline
+  failures, expose the exact batch event whitelist, and require future plot
+  beats to be rebuilt rather than hidden by deleting metadata. Focused tests,
+  related packages, full `go test ./... -count=1`, `go vet ./...`, and
+  `git diff --check` passed.
+  A bare relay `authorization failed` is treated as ambiguous and receives at
+  most three attempts with normal backoff; explicit invalid-token/401 failures
+  and exhausted-quota errors are not allowed to burn the full 14-attempt
+  planner budget after model fallback is exhausted.
+  All six stage routes on all 19 current runtime projects (114 routes) were
+  explicitly switched to `deepseek-suifeng-0/deepseek-v4-pro` and passed API
+  read-back verification; Grok remains configured for later manual switching.
 - 2026-07-12 cross-chapter adaptation deadlock repair: Writer and Editor now
   receive future-chapter ownership promises, deterministic adaptation feedback
   returns assigned event descriptions, and legacy plans can satisfy a duplicated

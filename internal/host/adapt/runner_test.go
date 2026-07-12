@@ -4421,6 +4421,56 @@ func TestRepairPlannerBatchTextClarifiesSourceRangeBudgetRepair(t *testing.T) {
 	}
 }
 
+func TestRepairPlannerBatchTextRegeneratesPollutedEventBatchFromWhitelist(t *testing.T) {
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: `{"chapters":[]}`}}}
+	batch := plannerSkeletonBatch{
+		Index:            44,
+		TargetFrom:       165,
+		TargetTo:         168,
+		MainlineEventIDs: []string{"EVT-165-A", "EVT-168-B"},
+	}
+	previous := `{"chapters":[{"chapter":165,"event_ids":["EVT-228-FUTURE"]}]}`
+	previousErr := fmt.Errorf("arc mainline event EVT-228-FUTURE is not assigned to detail batch 165-168; remove it from event_ids")
+
+	_, err := repairPlannerBatchText(
+		withAdaptationPromptModeIfMissing(context.Background(), domain.AdaptationGranularityArc), llm, "system", "original detail request", previous,
+		batch, previousErr, true, nil, 44, 370, "detail batch", 1,
+	)
+	if err != nil {
+		t.Fatalf("repairPlannerBatchText: %v", err)
+	}
+	prompt := llm.got[0][1].TextContent()
+	for _, want := range []string{"EVT-165-A", "EVT-168-B", "use no other mainline ID", "Do not merely delete the foreign ID"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("event repair prompt missing %q: %s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, previous) || strings.Contains(prompt, "previous_output") {
+		t.Fatalf("polluted previous output should be removed from clean regeneration: %s", prompt)
+	}
+}
+
+func TestShouldRegeneratePlannerBatchFromOriginalOnSemanticPollution(t *testing.T) {
+	cases := []struct {
+		name    string
+		attempt int
+		err     error
+		want    bool
+	}{
+		{name: "foreign event on first repair", err: fmt.Errorf("event X is not assigned to detail batch 1-4"), want: true},
+		{name: "duplicate outline on first repair", err: fmt.Errorf("chapter 4 duplicates outline beats from chapter 3"), want: true},
+		{name: "ordinary parse error gets one feedback repair", err: fmt.Errorf("invalid JSON")},
+		{name: "second repair always resets", attempt: 1, err: fmt.Errorf("invalid JSON"), want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldRegeneratePlannerBatchFromOriginal(tc.attempt, tc.err); got != tc.want {
+				t.Fatalf("shouldRegeneratePlannerBatchFromOriginal()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCollectPlannerSourceMapSkeletonBatchesSkipsQualityRetryWithExplicitRationale(t *testing.T) {
 	text := `{
 		"granularity": "arc",
@@ -5382,6 +5432,33 @@ func TestShouldRetryPlannerGenerateRetriesRuntimeGatewayTerminalError(t *testing
 
 	if !shouldRetryPlannerGenerate(context.Background(), err, 1, 14) {
 		t.Fatal("retryable runtime gateway terminal error should remain retryable")
+	}
+}
+
+func TestPlannerGenerateAttemptLimitBrieflyRetriesBareAuthorizationFailure(t *testing.T) {
+	err := nonRetryablePlannerError{msg: "authorization failed"}
+	limit := plannerGenerateAttemptLimit(err, 14)
+	if limit != adaptationPlannerAuthorizationMaxAttempts {
+		t.Fatalf("attempt limit = %d, want %d", limit, adaptationPlannerAuthorizationMaxAttempts)
+	}
+	if !shouldRetryPlannerGenerate(context.Background(), err, 1, limit) {
+		t.Fatal("first bare authorization failure should receive a short retry")
+	}
+	if shouldRetryPlannerGenerate(context.Background(), err, limit, limit) {
+		t.Fatal("bare authorization failure should stop after the short retry budget")
+	}
+}
+
+func TestPlannerGenerateAttemptLimitDoesNotRetryCredentialErrors(t *testing.T) {
+	for _, message := range []string{"invalid token", "HTTP 401 unauthorized"} {
+		err := nonRetryablePlannerError{msg: message}
+		limit := plannerGenerateAttemptLimit(err, 14)
+		if limit != 14 {
+			t.Fatalf("%q attempt limit = %d, want configured limit", message, limit)
+		}
+		if shouldRetryPlannerGenerate(context.Background(), err, 1, limit) {
+			t.Fatalf("credential error %q must remain non-retryable", message)
+		}
 	}
 }
 

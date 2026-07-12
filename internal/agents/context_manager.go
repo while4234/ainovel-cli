@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/voocel/agentcore"
@@ -25,7 +26,7 @@ func newContextManager(cfg contextManagerConfig) *corecontext.ContextEngine {
 	if cfg.Summary != nil {
 		sc = *cfg.Summary
 	}
-	sc.Model = cfg.Model
+	sc.Model = summaryCompatibleModel(cfg.Model)
 	if sc.KeepRecentTokens <= 0 {
 		sc.KeepRecentTokens = cfg.KeepRecentTokens
 	}
@@ -53,6 +54,30 @@ func newContextManager(cfg contextManagerConfig) *corecontext.ContextEngine {
 	engine.SetProjectHook(callback)
 	engine.SetRecoverHook(callback)
 	return engine
+}
+
+// summaryCompatibleModel keeps summary calls provider-neutral. Agentcore asks
+// summaries to disable reasoning, but some OpenAI-compatible DeepSeek backends
+// reject an explicit thinking=off field even though they accept the same call
+// when the field is omitted. Appending ThinkingAuto restores the former,
+// provider-default behavior while retaining all other call options.
+func summaryCompatibleModel(model agentcore.ChatModel) agentcore.ChatModel {
+	if model == nil {
+		return nil
+	}
+	return &summaryModel{ChatModel: model}
+}
+
+type summaryModel struct {
+	agentcore.ChatModel
+}
+
+func (m *summaryModel) Generate(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	return m.ChatModel.Generate(ctx, messages, tools, append(opts, agentcore.WithThinking(agentcore.ThinkingAuto))...)
+}
+
+func (m *summaryModel) GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	return m.ChatModel.GenerateStream(ctx, messages, tools, append(opts, agentcore.WithThinking(agentcore.ThinkingAuto))...)
 }
 
 // contextRewriteCallback 创建上下文重写的日志回调。

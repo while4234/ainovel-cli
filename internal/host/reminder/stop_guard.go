@@ -70,8 +70,10 @@ func NewStopGuard(st *store.Store, onBlock func(reason string, consecutive int32
 }
 
 func blockMessage(st *store.Store, progress *domain.Progress) string {
-	if progress != nil && flow.Route(flow.LoadState(st)) != nil {
-		return "禁止结束对话。Phase 尚未 Complete；请等待并执行 Host 下达的 [Host 下达指令]，不要自行调用 novel_context 或 subagent。"
+	if progress != nil {
+		if instruction := flow.Route(flow.LoadState(st)); instruction != nil {
+			return "禁止结束对话。Phase 尚未 Complete；重新下达当前权威路由，请立即执行，不要只回复等待：\n" + flow.FormatMessage(instruction)
+		}
 	}
 	return "禁止结束对话。Phase 尚未 Complete，且当前没有 Host 路由指令；这是 Coordinator 裁定场景，请按 coordinator.md 的裁定规则继续处理，不要空等 Host 指令。"
 }

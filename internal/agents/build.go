@@ -329,6 +329,7 @@ func BuildCoordinator(
 				ReserveTokens:    reserve,
 				KeepRecentTokens: 12_000,
 				Agent:            "writer",
+				CommitOnProject:  true,
 				ToolMicrocompact: &corecontext.ToolResultMicrocompactConfig{
 					IdleThreshold: 5 * time.Minute,
 				},
