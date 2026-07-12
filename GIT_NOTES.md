@@ -48,7 +48,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   build, and live restart passed. The live `天擎` chapter 39 plan was repaired
   from 1200-1600 to 3400-4600 runes with six matching event owners; the live
   `武林高手 - 副本` chapter 14 stale failed check was cleared for re-evaluation.
-- 2026-07-12 legacy chapter-budget auto-repair: pending commit
+- 2026-07-12 legacy chapter-budget auto-repair: `f427a3b`
   Confirmed arc plans now repair positive but impossible scene-density budgets
   at adaptation-state load, Writer guard, `check_adaptation`, and
   `commit_chapter`. The pre-repair adaptation snapshot is backed up with the
