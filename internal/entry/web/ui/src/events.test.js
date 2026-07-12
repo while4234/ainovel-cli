@@ -3,6 +3,7 @@ import {
   appendStreamDelta,
   compactStreamRounds,
   createWorkbenchState,
+  mergeSnapshotUpdate,
   mergeWorkflowProgress,
   mergeEventRows,
   reduceWebEvent,
@@ -64,6 +65,49 @@ describe('web event reducer', () => {
     expect(next.snapshot.runtime_state).toBe('running');
     expect(next.snapshot.workflow_progress).toBe(workflowProgress);
     expect(mergeWorkflowProgress(null, workflowProgress)).toEqual({ workflow_progress: workflowProgress });
+  });
+
+  it('keeps the latest workflow progress when a legacy snapshot update omits it', () => {
+    const workflowProgress = {
+      workflow: 'normal',
+      status: 'running',
+      steps: [{ id: 'writing', label: '正文创作', status: 'running' }]
+    };
+    const current = {
+      runtime_state: 'running',
+      completed_count: 3,
+      workflow_progress: workflowProgress
+    };
+
+    const next = mergeSnapshotUpdate(current, {
+      runtime_state: 'running',
+      completed_count: 4
+    });
+
+    expect(next.completed_count).toBe(4);
+    expect(next.workflow_progress).toBe(workflowProgress);
+  });
+
+  it('does not drop workflow progress across consecutive snapshot events', () => {
+    const workflowProgress = {
+      workflow: 'normal',
+      status: 'running',
+      steps: [{ id: 'writing', label: '正文创作', status: 'running' }]
+    };
+    const withProgress = reduceWebEvent(createWorkbenchState(), {
+      seq: 1,
+      type: 'snapshot',
+      snapshot: { completed_count: 3 },
+      workflow_progress: workflowProgress
+    });
+    const legacyOnly = reduceWebEvent(withProgress, {
+      seq: 2,
+      type: 'snapshot',
+      snapshot: { completed_count: 4 }
+    });
+
+    expect(legacyOnly.snapshot.completed_count).toBe(4);
+    expect(legacyOnly.snapshot.workflow_progress).toBe(workflowProgress);
   });
 
   it('replays event history without duplicating stale events', () => {

@@ -27,7 +27,7 @@ export function reduceWebEvent(state, event) {
   } else if (event.type === 'stream_clear') {
     next.streamRounds = startStreamRound(state.streamRounds);
   } else if (event.type === 'snapshot') {
-    next.snapshot = mergeWorkflowProgress(event.snapshot, event.workflow_progress);
+    next.snapshot = mergeSnapshotUpdate(state.snapshot, event.snapshot, event.workflow_progress);
   } else if (event.workflow_progress) {
     next.snapshot = mergeWorkflowProgress(state.snapshot, event.workflow_progress);
   }
@@ -46,6 +46,18 @@ export function mergeWorkflowProgress(snapshot, workflowProgress) {
     ...snapshot,
     workflow_progress: workflowProgress
   };
+}
+
+export function mergeSnapshotUpdate(previousSnapshot, incomingSnapshot, workflowProgress) {
+  if (!incomingSnapshot) {
+    return mergeWorkflowProgress(previousSnapshot, workflowProgress);
+  }
+  const progress = workflowProgress ||
+    incomingSnapshot.workflow_progress ||
+    incomingSnapshot.WorkflowProgress ||
+    previousSnapshot?.workflow_progress ||
+    previousSnapshot?.WorkflowProgress;
+  return mergeWorkflowProgress(incomingSnapshot, progress);
 }
 
 export function reduceWebEvents(state, events = []) {

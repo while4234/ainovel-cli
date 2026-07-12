@@ -21,7 +21,6 @@ import {
   coCreateDecisionRecommendedLetter,
   CO_CREATE_DECISION_SKIP_ANSWER,
   clearAdaptationProposalSnapshot,
-  deriveWorkspaceProgress,
   formatAdaptationSourceCoverageLabel,
   formatAdaptationVolumeSourceLabel,
   getAdaptationProposalReview,
@@ -265,44 +264,7 @@ describe('project open snapshot preparation', () => {
   });
 });
 
-describe('workspace progress derivation', () => {
-  it('derives progress, budget, and running tool from snapshot agents first', () => {
-    const progress = deriveWorkspaceProgress({
-      runtime_state: 'running',
-      completed_count: 3,
-      total_chapters: 12,
-      current_chapter: 4,
-      total_word_count: 12000,
-      word_budget: 30000,
-      agents: [
-        { name: 'writer', state: 'tool', tool: 'draft_chapter', summary: 'drafting chapter' }
-      ]
-    }, []);
-
-    expect(progress.statusLabel).toBe('running');
-    expect(progress.chapterLabel).toBe('3/12');
-    expect(progress.currentChapter).toBe(4);
-    expect(progress.wordCount).toBe(12000);
-    expect(progress.targetWords).toBe(30000);
-    expect(progress.wordLabel).toContain('/');
-    expect(progress.runningLabel).toBe('writer / draft_chapter');
-  });
-
-  it('falls back to running event rows when no agent is active', () => {
-    const progress = deriveWorkspaceProgress({
-      RuntimeState: 'running',
-      CompletedCount: 1,
-      TotalChapters: 5,
-      TotalWordCount: 5000,
-      Agents: [{ Name: 'writer', State: 'idle' }]
-    }, [
-      { seq: 1, event: { running: false, agent: 'editor', summary: 'reviewed' } },
-      { seq: 2, event: { running: true, agent: 'architect', summary: 'planning volume' } }
-    ]);
-
-    expect(progress.runningLabel).toBe('architect / planning volume');
-  });
-
+describe('workspace progress state', () => {
   it('preserves replayed event rows when project snapshot resolves after event replay', () => {
     const previous = {
       lastSeq: 2,
@@ -375,21 +337,6 @@ describe('workspace progress derivation', () => {
       RuntimeState: 'running',
       WorkflowProgress: { Workflow: 'adaptation' }
     });
-  });
-
-  it('ignores stale running event rows when the latest snapshot is idle', () => {
-    const progress = deriveWorkspaceProgress({
-      RuntimeState: 'idle',
-      StatusLabel: 'READY',
-      CompletedCount: 1,
-      TotalChapters: 5,
-      TotalWordCount: 5000,
-      Agents: []
-    }, [
-      { seq: 1, event: { running: true, agent: 'web', summary: 'generating proposal' } }
-    ]);
-
-    expect(progress.runningLabel).toBe('idle');
   });
 
   it('detects running snapshots for pause controls', () => {

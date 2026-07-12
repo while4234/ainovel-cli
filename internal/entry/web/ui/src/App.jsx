@@ -32,7 +32,7 @@ import {
   X
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { WorkflowProgressPanel, workflowProgressFromSnapshot } from './workflow-progress.jsx';
+import { WorkflowProgressPanel } from './workflow-progress.jsx';
 import {
   analyzeAdaptationSource,
   analyzeSimulation,
@@ -831,10 +831,6 @@ export default function App() {
   );
   const quickStartAvailable = Boolean(activeProject && isFreshProject(snapshot));
   const projectRunning = isProjectRunning(snapshot);
-  const workspaceProgress = useMemo(
-    () => deriveWorkspaceProgress(snapshot, workbench.eventRows),
-    [snapshot, workbench.eventRows]
-  );
   const adaptationProposalReview = useMemo(
     () => getVisibleAdaptationProposalReview(snapshot, adaptation),
     [snapshot, adaptation]
@@ -4348,11 +4344,7 @@ export default function App() {
           </div>
         </header>
 
-        {workflowProgressFromSnapshot(snapshot) ? (
-          <WorkflowProgressPanel snapshot={snapshot} />
-        ) : (
-          <WorkspaceProgress progress={workspaceProgress} />
-        )}
+        <WorkflowProgressPanel snapshot={snapshot} />
 
         {error ? <div className="error-banner">{error}</div> : null}
 
@@ -4675,42 +4667,6 @@ export default function App() {
           )}
         </div>
       </aside>
-    </div>
-  );
-}
-
-function WorkspaceProgress({ progress }) {
-  const chapterPercent = progress.totalChapters > 0
-    ? Math.min(100, Math.round((progress.completedChapters / progress.totalChapters) * 100))
-    : 0;
-  return (
-    <section className="workspace-progress" aria-label="创作进度">
-      <div
-        aria-label="已完成章节比例"
-        aria-valuemax="100"
-        aria-valuemin="0"
-        aria-valuenow={chapterPercent}
-        className="workspace-progress-meter"
-        role="progressbar"
-      >
-        <span style={{ width: `${chapterPercent}%` }} />
-      </div>
-      <div className="workspace-progress-items">
-        <ProgressItem label="状态" value={progress.statusLabel} />
-        <ProgressItem label="章节" value={progress.chapterLabel} />
-        <ProgressItem label="当前" value={progress.currentChapterLabel} />
-        <ProgressItem label="字数" value={progress.wordLabel} />
-        <ProgressItem label="正在进行" value={progress.runningLabel} wide />
-      </div>
-    </section>
-  );
-}
-
-function ProgressItem({ label, value, wide = false }) {
-  return (
-    <div className={`workspace-progress-item ${wide ? 'wide' : ''}`}>
-      <span>{label}</span>
-      <strong title={value}>{value}</strong>
     </div>
   );
 }
@@ -10061,52 +10017,6 @@ function chineseNumberToArabic(text) {
   return total + section + number;
 }
 
-export function deriveWorkspaceProgress(snapshot, eventRows = []) {
-  const completedChapters = numberValue(snapshot, 'CompletedCount', 'completed_count');
-  const totalChapters = numberValue(snapshot, 'TotalChapters', 'total_chapters');
-  const currentChapter = numberValue(snapshot, 'InProgressChapter', 'in_progress_chapter') ||
-    numberValue(snapshot, 'CurrentChapter', 'current_chapter');
-  const wordCount = numberValue(snapshot, 'TotalWordCount', 'total_word_count');
-  const rawWordBudget = valueByKey(snapshot, 'WordBudget', 'word_budget');
-  const wordBudget = objectValue(snapshot, 'WordBudget', 'word_budget');
-  const wordBudgetTarget = objectValue(wordBudget, 'Target', 'target');
-  const targetWords = numberValue(
-    snapshot,
-    'TargetTotalWords',
-    'target_total_words',
-    'TargetWords',
-    'target_words',
-    'TotalWordBudget',
-    'total_word_budget',
-    'WordBudgetTotal',
-    'word_budget_total'
-  ) || numberValue(wordBudget, 'TargetTotalWords', 'target_total_words') ||
-    numberValue(wordBudgetTarget, 'TargetTotalWords', 'target_total_words') ||
-    numberFromValue(rawWordBudget);
-  const statusLabel = textValue(snapshot, 'StatusLabel', 'status_label', 'RuntimeState', 'runtime_state') || 'idle';
-  const chapterLabel = totalChapters > 0 ? `${completedChapters}/${totalChapters}` : `${completedChapters}`;
-  const currentChapterLabel = currentChapter > 0 ? `Ch. ${currentChapter}` : '-';
-  const wordLabel = targetWords > 0
-    ? `${formatCompact(wordCount)} / ${formatCompact(targetWords)}`
-    : formatCompact(wordCount);
-  const snapshotLoaded = Boolean(snapshot);
-  const runningLabel = snapshotLoaded && !isProjectRunning(snapshot)
-    ? 'idle'
-    : runningLabelFromSnapshot(snapshot) || runningLabelFromEventRows(eventRows) || 'idle';
-  return {
-    statusLabel,
-    completedChapters,
-    totalChapters,
-    currentChapter,
-    wordCount,
-    targetWords,
-    chapterLabel,
-    currentChapterLabel,
-    wordLabel,
-    runningLabel
-  };
-}
-
 export function getSimulationProfileStatus(snapshot) {
   const summary = objectValue(snapshot, 'SimulationSummary', 'simulationSummary', 'simulation_summary');
   const profile = objectValue(snapshot, 'SimulationProfile', 'simulationProfile', 'simulation_profile');
@@ -10548,6 +10458,15 @@ export function isProjectRunning(snapshot) {
     return false;
   }
   return arrayValue(snapshot, 'Agents', 'agents').some(isRunningAgent);
+}
+
+function isRunningAgent(agent) {
+  const state = textValue(agent, 'State', 'state').toLowerCase();
+  const tool = textValue(agent, 'Tool', 'tool');
+  if (tool) {
+    return true;
+  }
+  return Boolean(state && !['idle', 'done', 'complete', 'completed', 'paused'].includes(state));
 }
 
 function rowsFromAdaptationPlan(plan) {
@@ -11234,59 +11153,6 @@ function normalizeSourceCoverage(row) {
   return normalized.chapters.length || normalized.from || normalized.to || normalized.runes || normalized.isAdded || normalized.note
     ? normalized
     : null;
-}
-
-function runningLabelFromSnapshot(snapshot) {
-  const agents = arrayValue(snapshot, 'Agents', 'agents');
-  const agent = agents.find(isRunningAgent);
-  if (!agent) {
-    return '';
-  }
-  const name = textValue(agent, 'Name', 'name') || 'agent';
-  const tool = textValue(agent, 'Tool', 'tool');
-  const summary = textValue(agent, 'Summary', 'summary');
-  const state = textValue(agent, 'State', 'state') || 'running';
-  if (tool) {
-    return `${name} / ${tool}`;
-  }
-  if (summary) {
-    return `${name} / ${summary}`;
-  }
-  return `${name} / ${state}`;
-}
-
-function runningLabelFromEventRows(eventRows) {
-  const row = [...(eventRows || [])].reverse().find((event) => {
-    const payload = eventPayload(event);
-    return Boolean(payload?.running || payload?.Running);
-  });
-  const event = eventPayload(row);
-  if (!event) {
-    return '';
-  }
-  const agent = textValue(event, 'agent', 'Agent');
-  const category = textValue(event, 'category', 'Category') || 'EVENT';
-  const summary = textValue(event, 'summary', 'Summary');
-  if (agent && summary) {
-    return `${agent} / ${summary}`;
-  }
-  if (agent) {
-    return `${agent} / ${category}`;
-  }
-  return summary || category;
-}
-
-function isRunningAgent(agent) {
-  const state = textValue(agent, 'State', 'state').toLowerCase();
-  const tool = textValue(agent, 'Tool', 'tool');
-  if (tool) {
-    return true;
-  }
-  return Boolean(state && !['idle', 'done', 'complete', 'completed', 'paused'].includes(state));
-}
-
-function eventPayload(row) {
-  return row?.event || row?.Event || null;
 }
 
 export function normalizeProjectStyleCatalog(data = {}) {
