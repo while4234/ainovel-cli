@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 `377e67f2 fix: consume pending steering on resume`:
+  Resume now snapshots the persisted user intervention, injects it once, then
+  clears it atomically only if the same text is still pending. A newer
+  intervention is preserved. This fixes repeated recovery into an old chapter
+  caused by a stale `pending_steer`; controlled pause/resume recovered directly
+  to chapter 32, and chapter 32 subsequently committed successfully.
 - 2026-07-12 pending `fix: retry malformed outline audit responses`:
   the layered detail-outline auditor now decodes the first complete JSON value
   instead of spanning from the first to the last brace across trailing prose or
