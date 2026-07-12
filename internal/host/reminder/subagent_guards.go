@@ -9,6 +9,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	adaptpkg "github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -140,6 +141,16 @@ func writerStopBlockMessage(st *store.Store) string {
 }
 
 func writerAdaptationCheckBlockMessage(st *store.Store, chapter int, content string, chapterPlan domain.AdaptationChapterPlan) string {
+	if plan, err := st.Adaptation.LoadPlan(); err == nil && plan != nil && plan.Status == domain.AdaptationPlanStatusConfirmed &&
+		domain.NormalizeAdaptationGranularity(plan.Granularity) == domain.AdaptationGranularityArc {
+		var qualityErr error
+		if !domain.AdaptationOutlineQualityPassed(*plan) {
+			qualityErr = adaptpkg.ValidateAdaptationChapterOutlineQuality(plan, chapter)
+		}
+		if qualityErr != nil {
+			return fmt.Sprintf("第 %d 章不能继续创作：已确认的改编大纲契约未通过计划层校验：%v。不要修改正文、不要补 body_evidence、不要继续重试 check_adaptation；先修复 event_ids 的章节归属及对应章节提纲，再重新派发 writer。", chapter, qualityErr)
+		}
+	}
 	digest := store.TextSHA256(content)
 	check, err := st.Adaptation.LoadCheck(chapter)
 	if err != nil {
@@ -175,6 +186,8 @@ func writerAdaptationCheckBlockMessage(st *store.Store, chapter int, content str
 func writerAdaptationIssueInstruction(chapter int, chapterPlan domain.AdaptationChapterPlan, issues []string) string {
 	for _, issue := range issues {
 		switch {
+		case strings.Contains(issue, "adaptation_outline_contract") || strings.Contains(issue, "arc_event_"):
+			return "这是上游改编大纲契约错误，不是正文缺失。不要编辑正文或反复补 body_evidence；先让协调器修复事件归属、preserve_events、required_changes 与对应章节剧情，再重新派发本章。"
 		case strings.Contains(issue, "adaptation_change_evidence"):
 			return writerChangeEvidenceInstruction(chapter, chapterPlan)
 		case strings.Contains(issue, "adaptation_body_evidence"):

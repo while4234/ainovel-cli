@@ -262,26 +262,27 @@ type AdaptationResolvedDecision struct {
 
 // AdaptationPlan is the durable contract for rewriting the source as a new book.
 type AdaptationPlan struct {
-	Granularity              string                  `json:"granularity"`
-	ModePolicy               AdaptationModePolicy    `json:"mode_policy,omitempty"`
-	Status                   string                  `json:"status"`
-	RewritePolicy            string                  `json:"rewrite_policy"`
-	Brief                    string                  `json:"brief"`
-	Planner                  *AdaptationPlannerMeta  `json:"planner,omitempty"`
-	Volumes                  []AdaptationVolumePlan  `json:"volumes,omitempty"`
-	WordTolerance            float64                 `json:"word_tolerance,omitempty"`
-	SourceTotalRunes         int                     `json:"source_total_runes,omitempty"`
-	TargetTotalRunes         int                     `json:"target_total_runes,omitempty"`
-	TargetMinRunes           int                     `json:"target_min_runes,omitempty"`
-	TargetMaxRunes           int                     `json:"target_max_runes,omitempty"`
-	MainlineRules            []string                `json:"mainline_rules,omitempty"`
-	RelationshipGoals        []string                `json:"relationship_goals,omitempty"`
-	Rules                    []AdaptationRule        `json:"rules,omitempty"`
-	SourceEvents             []AdaptationEvent       `json:"source_events,omitempty"`
-	TargetEventLedger        []AdaptationEvent       `json:"target_event_ledger,omitempty"`
-	TargetRelationshipStates map[string]string       `json:"target_relationship_states,omitempty"`
-	TargetSettingLocks       []AdaptationSettingLock `json:"target_setting_locks,omitempty"`
-	Chapters                 []AdaptationChapterPlan `json:"chapters"`
+	Granularity              string                         `json:"granularity"`
+	ModePolicy               AdaptationModePolicy           `json:"mode_policy,omitempty"`
+	Status                   string                         `json:"status"`
+	RewritePolicy            string                         `json:"rewrite_policy"`
+	OutlineQualityAudit      *AdaptationOutlineQualityAudit `json:"outline_quality_audit,omitempty"`
+	Brief                    string                         `json:"brief"`
+	Planner                  *AdaptationPlannerMeta         `json:"planner,omitempty"`
+	Volumes                  []AdaptationVolumePlan         `json:"volumes,omitempty"`
+	WordTolerance            float64                        `json:"word_tolerance,omitempty"`
+	SourceTotalRunes         int                            `json:"source_total_runes,omitempty"`
+	TargetTotalRunes         int                            `json:"target_total_runes,omitempty"`
+	TargetMinRunes           int                            `json:"target_min_runes,omitempty"`
+	TargetMaxRunes           int                            `json:"target_max_runes,omitempty"`
+	MainlineRules            []string                       `json:"mainline_rules,omitempty"`
+	RelationshipGoals        []string                       `json:"relationship_goals,omitempty"`
+	Rules                    []AdaptationRule               `json:"rules,omitempty"`
+	SourceEvents             []AdaptationEvent              `json:"source_events,omitempty"`
+	TargetEventLedger        []AdaptationEvent              `json:"target_event_ledger,omitempty"`
+	TargetRelationshipStates map[string]string              `json:"target_relationship_states,omitempty"`
+	TargetSettingLocks       []AdaptationSettingLock        `json:"target_setting_locks,omitempty"`
+	Chapters                 []AdaptationChapterPlan        `json:"chapters"`
 }
 
 // AdaptationPlanningStage is the durable state of the human-gated adaptation

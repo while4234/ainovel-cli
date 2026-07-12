@@ -3,6 +3,7 @@ package flow
 import (
 	"github.com/voocel/ainovel-cli/internal/adaptaudit"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	adaptpkg "github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -88,6 +89,21 @@ func loadAdaptationState(s *State, store *storepkg.Store, progress *domain.Progr
 	}
 
 	s.AdaptationActive = true
+	// Re-check the durable arc contract at the routing boundary. A legacy or
+	// externally repaired plan must not keep dispatching Writer after its event
+	// ownership becomes invalid.
+	if domain.NormalizeAdaptationGranularity(plan.Granularity) == domain.AdaptationGranularityArc {
+		if !domain.AdaptationOutlineQualityPassed(*plan) {
+			targetChapter := progress.InProgressChapter
+			if targetChapter <= 0 {
+				targetChapter = progress.NextChapter()
+			}
+			if qualityErr := adaptpkg.ValidateAdaptationChapterOutlineQuality(plan, targetChapter); qualityErr != nil {
+				s.AdaptationOutlineBlocked = true
+				s.AdaptationOutlineBlockReason = qualityErr.Error()
+			}
+		}
+	}
 	s.AdaptationPlannedChapters = make(map[int]struct{}, len(plan.Chapters))
 	completed := make(map[int]struct{}, len(progress.CompletedChapters))
 	for _, chapter := range progress.CompletedChapters {

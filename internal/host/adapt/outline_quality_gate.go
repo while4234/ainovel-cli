@@ -15,6 +15,9 @@ const (
 	outlineQualityIssueArcDuplicateMainline  = "arc_mainline_duplicate"
 	outlineQualityIssueArcWrongVolume        = "arc_mainline_wrong_volume"
 	outlineQualityIssueArcAmbiguousVolume    = "arc_mainline_ambiguous_volume"
+	outlineQualityIssueArcUnknownEvent       = "arc_event_unknown"
+	outlineQualityIssueArcDuplicateEvent     = "arc_event_duplicate_binding"
+	outlineQualityIssueArcEventMismatch      = "arc_event_outline_mismatch"
 	outlineQualityIssueFreeMissingLedger     = "free_target_ledger_missing"
 	outlineQualityIssueFreeUnknownEvent      = "free_target_event_unknown"
 	outlineQualityIssueFreeDuplicateBinding  = "free_target_event_duplicate_binding"
@@ -72,6 +75,7 @@ func ValidateAdaptationOutlineQuality(plan *domain.AdaptationPlan, manifest *dom
 		issues = append(issues, validateChapterOutlineSegments(*plan, manifest)...)
 	case domain.AdaptationGranularityArc:
 		issues = append(issues, validateArcOutlineMainline(*plan)...)
+		issues = append(issues, validateArcOutlineSourceEvents(*plan)...)
 	case domain.AdaptationGranularityFree:
 		issues = append(issues, validateFreeOutlineLedger(*plan)...)
 	}
@@ -192,6 +196,150 @@ func validateArcOutlineMainline(plan domain.AdaptationPlan) []AdaptationOutlineQ
 		}
 	}
 	return issues
+}
+
+// validateArcOutlineSourceEvents closes the gap left by the mainline-only
+// check above. Supporting and texture events are optional in an arc plan, but
+// once a planner puts an event_id into a chapter contract it must be known,
+// owned exactly once, and describe the same plot beat as that chapter. This
+// keeps a later chapter's event from being "repaired" in Writer prose.
+func validateArcOutlineSourceEvents(plan domain.AdaptationPlan) []AdaptationOutlineQualityIssue {
+	issues := make([]AdaptationOutlineQualityIssue, 0)
+	sourceEvents := make(map[string]domain.AdaptationEvent, len(plan.SourceEvents))
+	for _, event := range plan.SourceEvents {
+		if eventID := strings.TrimSpace(event.ID); eventID != "" {
+			sourceEvents[eventID] = event
+		}
+	}
+	for _, bindingIssue := range domain.ValidateArcSourceEventBindings(plan) {
+		// Mainline duplicates already have a more specific, volume-aware issue
+		// from validateArcOutlineMainline. Keep one canonical issue for them.
+		if bindingIssue.Code == "arc_event_duplicate_binding" && sourceEvents[bindingIssue.EventID].Importance == domain.AdaptationEventMainline {
+			continue
+		}
+		issue := AdaptationOutlineQualityIssue{
+			Code:    bindingIssue.Code,
+			EventID: bindingIssue.EventID,
+			Detail:  bindingIssue.Detail,
+		}
+		if len(bindingIssue.Chapters) > 0 {
+			issue.TargetChapter = bindingIssue.Chapters[0]
+		}
+		if event, ok := sourceEvents[bindingIssue.EventID]; ok {
+			issue.SourceChapter = event.SourceChapter
+		}
+		issues = append(issues, issue)
+	}
+
+	for _, mismatch := range domain.ValidateArcEventOutlineThemes(plan) {
+		issues = append(issues, AdaptationOutlineQualityIssue{
+			Code:          outlineQualityIssueArcEventMismatch,
+			EventID:       mismatch.EventID,
+			SourceChapter: mismatch.SourceChapter,
+			TargetChapter: mismatch.TargetChapter,
+			Detail:        mismatch.Detail,
+		})
+	}
+	return issues
+}
+
+// ValidateAdaptationChapterOutlineQuality is the migration-safe runtime
+// boundary. New proposals use ValidateAdaptationOutlineQuality for the whole
+// plan and receive a durable pass marker. Older confirmed plans may contain
+// unrelated legacy issues in future chapters, so a resumed run validates only
+// the chapter that is about to be written; it still checks that chapter's
+// source-event ownership against the whole plan.
+func ValidateAdaptationChapterOutlineQuality(plan *domain.AdaptationPlan, targetChapter int) error {
+	if plan == nil {
+		return &AdaptationOutlineQualityError{Issues: []AdaptationOutlineQualityIssue{{
+			Code: "outline_plan_missing", Detail: "adaptation plan is required",
+		}}}
+	}
+	if domain.NormalizeAdaptationGranularity(plan.Granularity) != domain.AdaptationGranularityArc {
+		return nil
+	}
+	if targetChapter <= 0 {
+		return fmt.Errorf("target chapter must be > 0")
+	}
+	knownChapter := false
+	for _, chapter := range plan.Chapters {
+		if chapter.Chapter == targetChapter {
+			knownChapter = true
+			break
+		}
+	}
+	if !knownChapter {
+		return &AdaptationOutlineQualityError{Issues: []AdaptationOutlineQualityIssue{{
+			Code: "arc_target_chapter_missing", TargetChapter: targetChapter,
+			Detail: fmt.Sprintf("confirmed arc plan has no target chapter %d", targetChapter),
+		}}}
+	}
+	issues := make([]AdaptationOutlineQualityIssue, 0)
+	for _, bindingIssue := range domain.ValidateArcSourceEventBindings(*plan) {
+		ownsTarget := false
+		for _, chapter := range bindingIssue.Chapters {
+			if chapter == targetChapter {
+				ownsTarget = true
+				break
+			}
+		}
+		if !ownsTarget {
+			continue
+		}
+		issue := AdaptationOutlineQualityIssue{
+			Code: bindingIssue.Code, EventID: bindingIssue.EventID,
+			TargetChapter: targetChapter, Detail: bindingIssue.Detail,
+		}
+		for _, event := range plan.SourceEvents {
+			if strings.TrimSpace(event.ID) == bindingIssue.EventID {
+				issue.SourceChapter = event.SourceChapter
+				break
+			}
+		}
+		issues = append(issues, issue)
+	}
+	for _, mismatch := range domain.ValidateArcEventOutlineThemes(*plan) {
+		if mismatch.TargetChapter != targetChapter {
+			continue
+		}
+		issues = append(issues, AdaptationOutlineQualityIssue{
+			Code: outlineQualityIssueArcEventMismatch, EventID: mismatch.EventID,
+			SourceChapter: mismatch.SourceChapter, TargetChapter: targetChapter,
+			Detail: mismatch.Detail,
+		})
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	sort.SliceStable(issues, func(left, right int) bool {
+		if issues[left].Code != issues[right].Code {
+			return issues[left].Code < issues[right].Code
+		}
+		return issues[left].EventID < issues[right].EventID
+	})
+	return &AdaptationOutlineQualityError{Issues: issues}
+}
+
+// formatAdaptationOutlineQualityFeedback turns deterministic gate output into
+// a compact next-attempt instruction. It is intentionally attached to the
+// planner input rather than the Writer prompt, so the root contract is fixed
+// before any chapter body is generated.
+func formatAdaptationOutlineQualityFeedback(err *AdaptationOutlineQualityError) string {
+	if err == nil || len(err.Issues) == 0 {
+		return ""
+	}
+	const maxIssues = 12
+	var builder strings.Builder
+	builder.WriteString("The previous detail-outline attempt failed the plan-only adaptation quality gate. Repair the outline contract before generating any prose.\n")
+	for index, issue := range err.Issues {
+		if index >= maxIssues {
+			fmt.Fprintf(&builder, "- %d more quality issues omitted; repair the same class of violation everywhere.\n", len(err.Issues)-maxIssues)
+			break
+		}
+		fmt.Fprintf(&builder, "- [%s] %s\n", issue.Code, issue.Detail)
+	}
+	builder.WriteString("Do not silence the error by deleting an event_id while keeping its plot beat in another chapter. Reassign the event_id, preserve_events, required_changes, and matching outline beat together; each source event_id may have only one owner.")
+	return builder.String()
 }
 
 func validateArcMainlineBinding(

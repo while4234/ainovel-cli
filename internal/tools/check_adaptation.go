@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -112,6 +113,7 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 	}
 
 	issues := cleanIssueList(a.Issues)
+	issues = append(issues, adaptationPlanContractIssues(plan, a.Chapter)...)
 	if len(missingSourceRefs) > 0 {
 		issues = append(issues, fmt.Sprintf("source refs missing: %v", missingSourceRefs))
 	}
@@ -240,6 +242,9 @@ func adaptationCheckNextStep(passed bool, issues []string, contract adaptationWo
 	if passed {
 		return "adaptation check passed; continue with check_consistency if needed, then commit_chapter."
 	}
+	if repair := adaptationPlanContractRepairStep(issues); repair != "" {
+		return "adaptation check failed: " + repair
+	}
 	if repair := adaptationProseQualityRepairStep(issues, chapter); repair != "" {
 		return "adaptation check failed: " + repair
 	}
@@ -250,6 +255,37 @@ func adaptationCheckNextStep(passed bool, issues []string, contract adaptationWo
 		return "adaptation check failed: " + repair + " Then call check_adaptation again."
 	}
 	return "adaptation check failed: fix issues, then call check_adaptation again."
+}
+
+func adaptationPlanContractIssues(plan *domain.AdaptationPlan, chapter int) []string {
+	if plan == nil || domain.NormalizeAdaptationGranularity(plan.Granularity) != domain.AdaptationGranularityArc {
+		return nil
+	}
+	issues := make([]string, 0)
+	for _, issue := range domain.ValidateArcSourceEventBindings(*plan) {
+		for _, owner := range issue.Chapters {
+			if owner == chapter {
+				issues = append(issues, fmt.Sprintf("adaptation_outline_contract: %s", issue.Detail))
+				break
+			}
+		}
+	}
+	for _, issue := range domain.ValidateArcEventOutlineThemes(*plan) {
+		if issue.TargetChapter == chapter {
+			issues = append(issues, fmt.Sprintf("adaptation_outline_contract: %s", issue.Detail))
+		}
+	}
+	sort.Strings(issues)
+	return issues
+}
+
+func adaptationPlanContractRepairStep(issues []string) string {
+	for _, issue := range issues {
+		if strings.Contains(issue, "adaptation_outline_contract") || strings.Contains(issue, "arc_event_") {
+			return "上游改编大纲的 event_ids 归属无效；停止正文修复，先修复确认后的章节契约（每个 source event_id 只能有一个 owner，且 event_ids、preserve_events、required_changes 与剧情归属一致），再重新执行本章检查。"
+		}
+	}
+	return ""
 }
 
 func adaptationRequiredChangeEvidencePrompt(plan *domain.AdaptationPlan, chapterPlan domain.AdaptationChapterPlan) map[string]any {

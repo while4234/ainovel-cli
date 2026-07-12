@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 adaptation outline contract gate: arc proposals now validate
+  supporting/texture source-event ownership and plot-theme alignment before
+  any Writer body is generated. Successful whole-plan audits persist a
+  contract signature marker so new projects do not repeat the same audit on
+  every chapter. Legacy confirmed plans use a current-chapter migration gate
+  at routing, Writer, and commit boundaries, with a deterministic final
+  fallback in `check_adaptation`/`commit_chapter`. The repaired live project
+  `武林高手 - 副本` moved from 12/350 to a committed chapter 13 and entered
+  chapter 14; its chapter-13 event contract was backed up before repair.
 - 2026-07-12 DeepSeek repair-loop stabilization: DeepSeek retains the tested
   128K context profile. Writer threshold compaction now commits into the active
   subagent baseline, preventing the observed 20-30K -> 110-150K rebound across

@@ -50,11 +50,13 @@ type State struct {
 	ContinuationActive      bool
 	ContinuationBaseChapter int
 
-	AdaptationActive          bool
-	AdaptationPlannedChapters map[int]struct{}
-	AdaptationMaxChapter      int
-	AdaptationComplete        bool
-	CompletionAuditBlocked    bool
+	AdaptationActive             bool
+	AdaptationPlannedChapters    map[int]struct{}
+	AdaptationMaxChapter         int
+	AdaptationComplete           bool
+	AdaptationOutlineBlocked     bool
+	AdaptationOutlineBlockReason string
+	CompletionAuditBlocked       bool
 }
 
 // Route 根据事实返回下一步指令；返回 nil 表示让 Coordinator LLM 自主裁定。
@@ -87,6 +89,13 @@ func Route(s State) *Instruction {
 
 	// 2. 规划阶段由 Coordinator 裁定（选 architect_long/short + 补齐循环）
 	if p.Phase != domain.PhaseWriting {
+		return nil
+	}
+
+	// An upstream adaptation-contract defect must be fixed before any Writer
+	// turn. Returning no route also prevents the coordinator from receiving a
+	// fresh automatic chapter instruction while the plan is invalid.
+	if s.AdaptationOutlineBlocked {
 		return nil
 	}
 

@@ -1026,6 +1026,7 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 	if err := ValidateAdaptationOutlineQuality(&proposal, manifest); err != nil {
 		return nil, err
 	}
+	domain.MarkAdaptationOutlineQualityPassed(&proposal)
 	emitAdaptProgress(opts.EmitProgress, StagePlan, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编提案已生成，正在保存：%d 章", len(proposal.Chapters)), nil)
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation proposal: %w", err)
@@ -1340,6 +1341,7 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	if err := ValidateAdaptationOutlineQuality(&proposal, manifest); err != nil {
 		return nil, err
 	}
+	domain.MarkAdaptationOutlineQualityPassed(&proposal)
 	emitAdaptProgress(opts.EmitProgress, StagePlan, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编章节细纲已生成，正在保存：%d 章", len(proposal.Chapters)), nil)
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation proposal: %w", err)
@@ -1363,6 +1365,7 @@ func buildAdaptationProposalDetailsWithQualityRetries(
 			return buildPlanFromPlannerSkeletonDetails(ctx, deps, opts, reports, manifest, sourceFoundation, skeleton, runtime)
 		},
 		func(retry int, qualityErr *AdaptationOutlineQualityError) error {
+			opts.outlineQualityFeedback = formatAdaptationOutlineQualityFeedback(qualityErr)
 			if runtime != nil {
 				runtime.CompletedBatches = nil
 				if err := savePlannerProposalRuntime(deps, runtime); err != nil {
@@ -1563,6 +1566,7 @@ func finalizeRevisedAdaptationProposal(
 	if err := validatePlannerProposal(&updated, validateOpts, reports, manifest, detailModel); err != nil {
 		return nil, fmt.Errorf("revised adaptation proposal invalid: %w", err)
 	}
+	domain.MarkAdaptationOutlineQualityPassed(&updated)
 	updated.Volumes = normalizeAdaptationProposalVolumes(updated.Volumes, len(updated.Chapters))
 	originalForCompare := normalizedProposalForRevisionCompare(original, reports, manifest, detailModel)
 	updatedForCompare := normalizedProposalForRevisionCompare(updated, reports, manifest, detailModel)
@@ -7138,6 +7142,8 @@ func buildAdaptationPlannerBatchUserPrompt(
 			"Every chapter must include event_ids and added_event_ids arrays.",
 			"Assign every batch.mainline_event_ids value to exactly one target chapter event_ids entry; do not omit, duplicate, paraphrase, or replace these stable IDs.",
 			"Use only this detail batch's batch.mainline_event_ids for required mainline bindings. Do not copy mainline IDs from the parent skeleton or previous detail batches.",
+			"Supporting and texture source event_ids are optional references, but if you include one, assign it exactly once to the target chapter whose title/core_event/hook/scenes actually contain that event's plot beat.",
+			"Do not copy a later chapter's supporting/texture event_id into the current chapter. Move the event_id, preserve_events, required_changes, and matching story beat together; do not keep a future beat after deleting only its ID.",
 			"Put new plot IDs only in added_event_ids; added events may support assigned mainline events but cannot take their chapter space.",
 		)
 	case domain.AdaptationGranularityFree:
@@ -7151,6 +7157,9 @@ func buildAdaptationPlannerBatchUserPrompt(
 		"Use previous_detail_chapters only for continuity, callbacks, and handoff hooks; do not duplicate already generated chapters.",
 		"Continue from the latest previous_detail_chapters hook and state changes so this small detail batch reads as the next part of the same parent volume.",
 	)
+	if strings.TrimSpace(opts.outlineQualityFeedback) != "" {
+		requirements = append(requirements, opts.outlineQualityFeedback)
+	}
 	input := struct {
 		Brief                  string                          `json:"brief"`
 		Granularity            string                          `json:"granularity"`
@@ -7166,6 +7175,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 		SourceReports          []plannerSourceReportExcerpt    `json:"source_reports"`
 		SourceReportNotes      []string                        `json:"source_report_notes"`
 		Requirements           []string                        `json:"requirements"`
+		OutlineQualityFeedback string                          `json:"outline_quality_feedback,omitempty"`
 	}{
 		Brief:                  opts.Brief,
 		Granularity:            opts.Granularity,
@@ -7184,7 +7194,8 @@ func buildAdaptationPlannerBatchUserPrompt(
 			"Use source_range and source_chapters as factual anchors; do not copy source prose.",
 			"For arc/free full_rewrite, source_range is a broad coverage envelope, not a claim that the target chapter corresponds exactly to one original chapter.",
 		},
-		Requirements: requirements,
+		Requirements:           requirements,
+		OutlineQualityFeedback: strings.TrimSpace(opts.outlineQualityFeedback),
 	}
 	raw, err := json.MarshalIndent(input, "", "  ")
 	if err != nil {
@@ -9200,6 +9211,7 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 	if err := ValidateAdaptationOutlineQuality(&proposal, manifest); err != nil {
 		return nil, err
 	}
+	domain.MarkAdaptationOutlineQualityPassed(&proposal)
 	fr := toFoundationResult(sourceFoundation)
 	fr.Premise = adaptationPremise(fr.Premise, proposal.Brief, proposal)
 	fr.Volumes = adaptationTargetVolumes(proposal)

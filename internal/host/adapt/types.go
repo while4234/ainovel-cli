@@ -44,6 +44,9 @@ type ProposalOptions struct {
 	WordTolerance      float64
 	TargetChapterCount int
 	EmitProgress       ProgressEmitter `json:"-"`
+	// outlineQualityFeedback is populated only after a plan-only retry fails.
+	// It is intentionally not serialized or exposed as user brief text.
+	outlineQualityFeedback string
 }
 
 type ProposalRevisionOptions struct {

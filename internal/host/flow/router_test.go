@@ -314,6 +314,18 @@ func TestRoute_AdaptationCompletionAuditBlockedStopsRedispatch(t *testing.T) {
 	}
 }
 
+func TestRoute_AdaptationOutlineBlockedStopsWriterRedispatch(t *testing.T) {
+	state := State{
+		Progress:                  &domain.Progress{Phase: domain.PhaseWriting},
+		AdaptationActive:          true,
+		AdaptationOutlineBlocked:  true,
+		AdaptationPlannedChapters: map[int]struct{}{13: {}},
+	}
+	if got := Route(state); got != nil {
+		t.Fatalf("invalid adaptation outline must stop writer redispatch, got %+v", got)
+	}
+}
+
 func TestRoute_AdaptationNeedsNewVolumeContinuesPlannedChapter(t *testing.T) {
 	p := writingProgress([]int{99}, domain.FlowWriting)
 	p.TotalChapters = 120

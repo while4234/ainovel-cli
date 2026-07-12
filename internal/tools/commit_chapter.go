@@ -399,6 +399,9 @@ func (t *CommitChapterTool) ensureAdaptationGate(chapter int, content string) er
 	if !ok {
 		return fmt.Errorf("改编项目提交被拒：confirmed plan 中没有第 %d 章: %w", chapter, errs.ErrToolPrecondition)
 	}
+	if issues := adaptationPlanContractIssues(plan, chapter); len(issues) > 0 {
+		return fmt.Errorf("改编项目提交被拒：上游大纲契约无效，禁止把问题留给正文修复：%s: %w", issues[0], errs.ErrToolPrecondition)
+	}
 	wordCount := len([]rune(content))
 	if issues := adaptationWordContractIssues(t.store, plan, chapterPlan, chapter, wordCount); len(issues) > 0 {
 		contract := buildAdaptationWordContract(t.store, plan, chapterPlan, chapter, wordCount)
