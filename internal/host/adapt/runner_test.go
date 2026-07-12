@@ -2271,6 +2271,22 @@ func TestParsePlannerBatchPartialRejectsAmbiguousMultipleObjects(t *testing.T) {
 	}
 }
 
+func TestNormalizePlannerBatchChaptersCanonicalizesAnnotatedPreserveEventIDs(t *testing.T) {
+	batch := plannerSkeletonBatch{TargetFrom: 1, TargetTo: 1}
+	chapters := []domain.AdaptationChapterPlan{{
+		Chapter:        1,
+		EventIDs:       []string{"src-0298-e01-ad111f23"},
+		PreserveEvents: []string{"src-0298-e01-ad111f23：事件一的完整描述"},
+	}}
+	normalized, err := normalizePlannerBatchChapters(chapters, batch)
+	if err != nil {
+		t.Fatalf("normalizePlannerBatchChapters: %v", err)
+	}
+	if got := normalized[0].PreserveEvents; len(got) != 1 || got[0] != "src-0298-e01-ad111f23" {
+		t.Fatalf("preserve_events=%v", got)
+	}
+}
+
 func TestCollectPlannerBatchChaptersClearsRepeatedRepairOutput(t *testing.T) {
 	batch := plannerSkeletonBatch{Index: 1, TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1}
 	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{

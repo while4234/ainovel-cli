@@ -522,19 +522,28 @@ func ValidateArcEventOutlineThemes(plan AdaptationPlan) []AdaptationEventOutline
 			continue
 		}
 		for _, owner := range chapters {
+			ownerChapter, ownerKnown := adaptationChapterByNumber(plan.Chapters, owner)
+			// Explicit source lineage is stronger evidence than a fuzzy keyword
+			// match. A chapter that actually covers the event's source chapter is
+			// allowed to paraphrase the beat without repeating one trigger word.
+			if ownerKnown && adaptationChapterCoversSource(ownerChapter, event.SourceChapter) {
+				continue
+			}
 			ownerThemes := adaptationChapterThemeSet(plan.Chapters, owner)
 			missing := differenceThemeNames(themes, ownerThemes)
 			if len(missing) == 0 {
 				continue
 			}
-			alternatives := make([]int, 0)
-			for _, candidate := range plan.Chapters {
-				candidateNumber := candidate.Chapter
-				if candidateNumber == owner {
-					continue
-				}
-				if len(intersectThemeNames(missing, adaptationChapterThemeSet([]AdaptationChapterPlan{candidate}, candidateNumber))) > 0 {
-					alternatives = append(alternatives, candidateNumber)
+			alternatives := adaptationSourceLineageAlternatives(plan.Chapters, owner, event.SourceChapter)
+			if len(alternatives) == 0 {
+				for _, candidate := range plan.Chapters {
+					candidateNumber := candidate.Chapter
+					if candidateNumber == owner {
+						continue
+					}
+					if len(intersectThemeNames(missing, adaptationChapterThemeSet([]AdaptationChapterPlan{candidate}, candidateNumber))) > 0 {
+						alternatives = append(alternatives, candidateNumber)
+					}
 				}
 			}
 			if len(alternatives) == 0 {
@@ -561,6 +570,40 @@ func ValidateArcEventOutlineThemes(plan AdaptationPlan) []AdaptationEventOutline
 		return issues[left].EventID < issues[right].EventID
 	})
 	return issues
+}
+
+func adaptationChapterByNumber(chapters []AdaptationChapterPlan, number int) (AdaptationChapterPlan, bool) {
+	for _, chapter := range chapters {
+		if chapter.Chapter == number {
+			return chapter, true
+		}
+	}
+	return AdaptationChapterPlan{}, false
+}
+
+func adaptationChapterCoversSource(chapter AdaptationChapterPlan, sourceChapter int) bool {
+	if sourceChapter <= 0 {
+		return false
+	}
+	if containsInt(chapter.SourceChapters, sourceChapter) {
+		return true
+	}
+	return chapter.SourceRange.From > 0 && chapter.SourceRange.To >= chapter.SourceRange.From &&
+		sourceChapter >= chapter.SourceRange.From && sourceChapter <= chapter.SourceRange.To
+}
+
+func adaptationSourceLineageAlternatives(chapters []AdaptationChapterPlan, owner, sourceChapter int) []int {
+	if sourceChapter <= 0 {
+		return nil
+	}
+	var alternatives []int
+	for _, chapter := range chapters {
+		if chapter.Chapter == owner || !adaptationChapterCoversSource(chapter, sourceChapter) {
+			continue
+		}
+		alternatives = append(alternatives, chapter.Chapter)
+	}
+	return alternatives
 }
 
 func adaptationThemeNames(text string, event bool) []string {
@@ -638,6 +681,27 @@ func sourceEventIDs(values []string) []string {
 		}
 	}
 	return ids
+}
+
+// NormalizeSourceEventReferences removes model-added descriptions from stable
+// src-* references while preserving ordinary prose entries. The canonical
+// form prevents a harmless "src-id: description" decoration from consuming
+// content-repair attempts in later ownership audits.
+func NormalizeSourceEventReferences(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	normalized := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if eventID := leadingSourceEventID(value); eventID != "" {
+			value = eventID
+		}
+		if value != "" && !containsString(normalized, value) {
+			normalized = append(normalized, value)
+		}
+	}
+	return normalized
 }
 
 func leadingSourceEventID(value string) string {

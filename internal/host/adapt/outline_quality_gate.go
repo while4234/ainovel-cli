@@ -34,12 +34,13 @@ const (
 // contract violation. It deliberately contains no draft/body evidence: this
 // gate runs before a Writer has created prose.
 type AdaptationOutlineQualityIssue struct {
-	Code          string
-	Detail        string
-	SourceChapter int
-	TargetChapter int
-	Volume        int
-	EventID       string
+	Code                string
+	Detail              string
+	SourceChapter       int
+	TargetChapter       int
+	AlternativeChapters []int
+	Volume              int
+	EventID             string
 }
 
 // AdaptationOutlineQualityError keeps all quality-gate failures available to a
@@ -326,11 +327,12 @@ func validateArcOutlineSourceEvents(plan domain.AdaptationPlan) []AdaptationOutl
 
 	for _, mismatch := range domain.ValidateArcEventOutlineThemes(plan) {
 		issues = append(issues, AdaptationOutlineQualityIssue{
-			Code:          outlineQualityIssueArcEventMismatch,
-			EventID:       mismatch.EventID,
-			SourceChapter: mismatch.SourceChapter,
-			TargetChapter: mismatch.TargetChapter,
-			Detail:        mismatch.Detail,
+			Code:                outlineQualityIssueArcEventMismatch,
+			EventID:             mismatch.EventID,
+			SourceChapter:       mismatch.SourceChapter,
+			TargetChapter:       mismatch.TargetChapter,
+			AlternativeChapters: append([]int(nil), mismatch.AlternativeChapters...),
+			Detail:              mismatch.Detail,
 		})
 	}
 	return issues
@@ -409,7 +411,8 @@ func ValidateAdaptationChapterOutlineQuality(plan *domain.AdaptationPlan, target
 		issues = append(issues, AdaptationOutlineQualityIssue{
 			Code: outlineQualityIssueArcEventMismatch, EventID: mismatch.EventID,
 			SourceChapter: mismatch.SourceChapter, TargetChapter: targetChapter,
-			Detail: mismatch.Detail,
+			AlternativeChapters: append([]int(nil), mismatch.AlternativeChapters...),
+			Detail:              mismatch.Detail,
 		})
 	}
 	for _, budgetIssue := range validateArcChapterBudgetDensity(*plan) {

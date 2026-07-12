@@ -98,3 +98,31 @@ func TestReconcileLegacyArcEventBindingsChangesOnlyOwnershipFields(t *testing.T)
 		t.Fatalf("binding issues remain: %+v", issues)
 	}
 }
+
+func TestReconcileLegacyArcEventBindingsForChapterMovesMismatchWithItsSourceLineage(t *testing.T) {
+	model := &scriptedAdaptLLM{responses: []adaptLLMResponse{{
+		text: `{"chapters":[{"chapter":1,"event_ids":[],"preserve_events":[]},{"chapter":2,"event_ids":["src-0062-e01"],"preserve_events":["src-0062-e01"]}]}`,
+	}}}
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityArc,
+		SourceEvents: []domain.AdaptationEvent{{
+			ID: "src-0062-e01", Description: "龙过海询问飞龙集团危机真相", SourceChapter: 62,
+		}},
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, SourceRange: domain.SourceRange{From: 50, To: 55}, OutlineEntry: domain.OutlineEntry{CoreEvent: "书城劫持事件"}, EventIDs: []string{"src-0062-e01"}, PreserveEvents: []string{"src-0062-e01"}},
+			{Chapter: 2, SourceRange: domain.SourceRange{From: 62, To: 65}, OutlineEntry: domain.OutlineEntry{CoreEvent: "调查飞龙集团资金链危机"}},
+		},
+	}
+	result, err := ReconcileLegacyArcEventBindingsForChapter(context.Background(), Deps{
+		LLM: model, AdaptationOutlineAuditRetryMaxAttempts: 0, ModelCallMaxAttempts: 1,
+	}, plan, 1)
+	if err != nil {
+		t.Fatalf("ReconcileLegacyArcEventBindingsForChapter: %v", err)
+	}
+	if result.Attempts != 1 || model.calls != 1 || !reflect.DeepEqual(result.Chapters, []int{1, 2}) {
+		t.Fatalf("attempts=%d calls=%d chapters=%v", result.Attempts, model.calls, result.Chapters)
+	}
+	if len(result.Plan.Chapters[0].EventIDs) != 0 || !reflect.DeepEqual(result.Plan.Chapters[1].EventIDs, []string{"src-0062-e01"}) {
+		t.Fatalf("event ownership was not moved with source lineage: %+v", result.Plan.Chapters)
+	}
+}

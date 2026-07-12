@@ -17,6 +17,34 @@ type blockingOnceDetailAuditor struct{ calls int }
 
 type formatRetryDetailAuditor struct{ calls int }
 
+type alwaysBlockingDetailAuditor struct{ calls int }
+
+func (m *alwaysBlockingDetailAuditor) Generate(_ context.Context, messages []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	m.calls++
+	var payload struct {
+		TargetFrom int                   `json:"target_from"`
+		Artifacts  []detailAuditArtifact `json:"artifacts"`
+	}
+	_ = json.Unmarshal([]byte(messages[len(messages)-1].TextContent()), &payload)
+	response := detailAuditModelResponse{Verdict: "fail", Summary: "same blocking issue"}
+	for _, artifact := range payload.Artifacts {
+		if artifact.ID != "candidate" || artifact.Text == "" {
+			continue
+		}
+		quote := string([]rune(artifact.Text)[:1])
+		response.Findings = []detailAuditModelFinding{{
+			Code: "semantic_mismatch", Severity: "blocking", Message: "candidate still conflicts with source",
+			RepairInstruction: "regenerate the complete batch", TargetChapters: []int{payload.TargetFrom},
+			Evidence: []domain.AdaptationDetailAuditEvidence{{ArtifactID: artifact.ID, ArtifactSHA256: artifact.SHA256, Quote: quote, FromRune: 0, ToRune: 1}},
+		}}
+		break
+	}
+	data, _ := json.Marshal(response)
+	return &agentcore.LLMResponse{Message: agentcore.Message{
+		Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.TextBlock(string(data))}, Timestamp: time.Now(),
+	}}, nil
+}
+
 func (m *formatRetryDetailAuditor) Generate(_ context.Context, _ []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
 	m.calls++
 	text := `{"verdict":"pass","summary":"broken" 中文}`
@@ -245,5 +273,34 @@ func TestAuditAndRepairDetailBatchOnlyCompletesAfterSemanticReaudit(t *testing.T
 		if !strings.Contains(joined, want) {
 			t.Fatalf("progress missing %q: %s", want, joined)
 		}
+	}
+}
+
+func TestAuditAndRepairDetailBatchStopsAfterTwoUnchangedFindingRounds(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	batch := plannerSkeletonBatch{Index: 1, TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1}
+	skeleton := plannerSkeleton{Granularity: domain.AdaptationGranularityFree, TargetChapterCount: 1, Batches: []plannerSkeletonBatch{batch}}
+	opts := ProposalOptions{Brief: "free rewrite", Granularity: domain.AdaptationGranularityFree, RewritePolicy: domain.AdaptationRewriteFullRewrite}
+	manifest := &domain.AdaptationSourceManifest{ChapterCount: 1, Chapters: []domain.AdaptationSource{{Chapter: 1, Runes: 1000}}}
+	candidate := plannerBatchPlans(1, 1, 1, 1)
+	firstRepair := strings.Replace(plannerBatchProposalJSON(1, 1, 1, 1), "Harbor Cipher", "Repair One", 1)
+	secondRepair := strings.Replace(plannerBatchProposalJSON(1, 1, 1, 1), "Harbor Cipher", "Repair Two", 1)
+	planner := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: firstRepair}, {text: secondRepair}}}
+	auditor := &alwaysBlockingDetailAuditor{}
+	deps := Deps{Store: st, LLM: planner, Auditor: auditor, AdaptationOutlineAuditRetryMaxAttempts: 7, StructureRepairMaxAttempts: 7}
+	runtime := newPlannerProposalRuntime(opts, manifest, 1)
+	validate := plannerBatchChapterValidator(opts, manifest, batch)
+	_, _, err := auditAndRepairDetailBatch(
+		withAdaptationPromptModeIfMissing(context.Background(), opts.Granularity), deps, opts, nil, manifest, skeleton, batch, nil, candidate, nil,
+		"planner", "original", validate, runtime, nil, 1, 1, "章节详情第 1/1 批",
+	)
+	if err == nil || !strings.Contains(err.Error(), "made no audit progress after 2 content repair attempts") {
+		t.Fatalf("error=%v", err)
+	}
+	if planner.calls != 2 || auditor.calls != 3 {
+		t.Fatalf("planner calls=%d auditor calls=%d, want 2/3", planner.calls, auditor.calls)
 	}
 }

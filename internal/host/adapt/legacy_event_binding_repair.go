@@ -285,6 +285,11 @@ func legacyArcEventBindingAffectedChapters(plan domain.AdaptationPlan, issues []
 		if issue.TargetChapter > 0 {
 			set[issue.TargetChapter] = struct{}{}
 		}
+		for _, chapter := range issue.AlternativeChapters {
+			if chapter > 0 {
+				set[chapter] = struct{}{}
+			}
+		}
 		if issue.EventID == "" {
 			continue
 		}
@@ -334,7 +339,8 @@ func isLegacyArcEventBindingIssue(code string) bool {
 	case outlineQualityIssueArcUnknownEvent,
 		outlineQualityIssueArcDuplicateEvent,
 		outlineQualityIssueArcPreserveUnbound,
-		outlineQualityIssueArcPreserveMismatch:
+		outlineQualityIssueArcPreserveMismatch,
+		outlineQualityIssueArcEventMismatch:
 		return true
 	default:
 		return false

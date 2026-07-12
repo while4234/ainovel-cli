@@ -106,6 +106,34 @@ func TestValidateArcSourceEventBindingsAcceptsAnnotatedPreserveEventID(t *testin
 	}
 }
 
+func TestNormalizeSourceEventReferencesCanonicalizesAnnotationsAndKeepsProse(t *testing.T) {
+	got := NormalizeSourceEventReferences([]string{
+		"src-0298-e01-ad111f23：事件一的完整描述",
+		"保留普通剧情描述",
+		"src-0298-e01-ad111f23: duplicate annotation",
+	})
+	want := []string{"src-0298-e01-ad111f23", "保留普通剧情描述"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("normalized references=%v, want %v", got, want)
+	}
+}
+
+func TestValidateArcEventOutlineThemesTrustsExplicitSourceLineage(t *testing.T) {
+	plan := AdaptationPlan{
+		Granularity: AdaptationGranularityArc,
+		SourceEvents: []AdaptationEvent{{
+			ID: "src-0076-e01", Description: "凌雪伤打电话邀请段天狼参加父亲生日宴会", SourceChapter: 76,
+		}},
+		Chapters: []AdaptationChapterPlan{
+			{Chapter: 68, SourceRange: SourceRange{From: 71, To: 81}, OutlineEntry: OutlineEntry{CoreEvent: "凌雪伤安排段天狼参加父亲生日宴会"}, EventIDs: []string{"src-0076-e01"}},
+			{Chapter: 69, SourceRange: SourceRange{From: 82, To: 90}, OutlineEntry: OutlineEntry{CoreEvent: "主角接到紧急电话后驱车离开"}},
+		},
+	}
+	if issues := ValidateArcEventOutlineThemes(plan); len(issues) != 0 {
+		t.Fatalf("source-compatible owner should not be displaced by fuzzy keywords: %+v", issues)
+	}
+}
+
 func TestValidateArcChapterBudgetDensityRejectsImpossibleScenePacking(t *testing.T) {
 	plan := AdaptationPlan{
 		Granularity: AdaptationGranularityArc,
@@ -175,11 +203,11 @@ func TestValidateArcEventOutlineThemesFindsFinancialEventMovedToLaterChapter(t *
 	plan := AdaptationPlan{
 		Granularity: AdaptationGranularityArc,
 		SourceEvents: []AdaptationEvent{{
-			ID: "src-0062-e01", Description: "龙过海询问飞龙集团危机真相", Importance: AdaptationEventMainline,
+			ID: "src-0062-e01", Description: "龙过海询问飞龙集团危机真相", Importance: AdaptationEventMainline, SourceChapter: 62,
 		}},
 		Chapters: []AdaptationChapterPlan{
-			{Chapter: 39, OutlineEntry: OutlineEntry{CoreEvent: "龙过海接到电话后前往龙天翔办公室，随后发生书城劫持事件。"}, EventIDs: []string{"src-0062-e01"}},
-			{Chapter: 44, OutlineEntry: OutlineEntry{CoreEvent: "龙天翔邀请段天狼加入飞龙集团，双方讨论资金链危机。"}},
+			{Chapter: 39, SourceRange: SourceRange{From: 50, To: 55}, OutlineEntry: OutlineEntry{CoreEvent: "龙过海接到电话后前往龙天翔办公室，随后发生书城劫持事件。"}, EventIDs: []string{"src-0062-e01"}},
+			{Chapter: 44, SourceRange: SourceRange{From: 62, To: 65}, OutlineEntry: OutlineEntry{CoreEvent: "龙天翔邀请段天狼加入飞龙集团，双方讨论资金链危机。"}},
 		},
 	}
 	issues := ValidateArcEventOutlineThemes(plan)

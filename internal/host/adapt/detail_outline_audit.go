@@ -296,6 +296,8 @@ func auditAndRepairDetailBatch(
 	maxRepairs := deps.adaptationOutlineAuditRetryMaxAttempts()
 	storedRepairPending := existingAudit != nil && existingAudit.Status == domain.AdaptationDetailAuditRepairPending &&
 		existingAudit.ContentSignature == detailOutlineValueSignature(chapters) && len(blockingDetailAuditFindings(existingAudit.Findings)) > 0
+	lastBlockingSignature := ""
+	unchangedBlockingRounds := 0
 	for {
 		var audit *domain.AdaptationDetailBatchAudit
 		var auditErr error
@@ -324,6 +326,16 @@ func auditAndRepairDetailBatch(
 			// Transport and provider failures keep the candidate pending and do
 			// not consume the content-repair budget.
 			return nil, audit, auditErr
+		}
+		blockingSignature := blockingDetailAuditFingerprint(contentErr.Findings)
+		if blockingSignature == lastBlockingSignature {
+			unchangedBlockingRounds++
+		} else {
+			lastBlockingSignature = blockingSignature
+			unchangedBlockingRounds = 0
+		}
+		if unchangedBlockingRounds >= 2 {
+			return nil, audit, fmt.Errorf("%s made no audit progress after %d content repair attempts: %w", label, repairAttempts, auditErr)
 		}
 		if repairAttempts >= maxRepairs {
 			return nil, audit, fmt.Errorf("%s exhausted %d content repair attempts: %w", label, maxRepairs, auditErr)
@@ -597,6 +609,27 @@ func blockingDetailAuditFindings(findings []domain.AdaptationDetailAuditFinding)
 		}
 	}
 	return out
+}
+
+func blockingDetailAuditFingerprint(findings []domain.AdaptationDetailAuditFinding) string {
+	type stableFinding struct {
+		Code              string
+		Severity          string
+		Message           string
+		RepairInstruction string
+		TargetChapters    []int
+		Blocking          bool
+	}
+	stable := make([]stableFinding, 0, len(findings))
+	for _, finding := range findings {
+		stable = append(stable, stableFinding{
+			Code: finding.Code, Severity: finding.Severity, Message: finding.Message,
+			RepairInstruction: finding.RepairInstruction,
+			TargetChapters:    append([]int(nil), finding.TargetChapters...),
+			Blocking:          finding.Blocking,
+		})
+	}
+	return detailOutlineValueSignature(stable)
 }
 
 func detailAuditTargetsInRange(values []int, from int, to int) []int {

@@ -7612,6 +7612,9 @@ func normalizePlannerBatchChapterSubset(chapters []domain.AdaptationChapterPlan,
 
 func normalizePlannerBatchChapterNumbers(chapters []domain.AdaptationChapterPlan, batch plannerSkeletonBatch) []domain.AdaptationChapterPlan {
 	out := append([]domain.AdaptationChapterPlan(nil), chapters...)
+	for index := range out {
+		out[index].PreserveEvents = domain.NormalizeSourceEventReferences(out[index].PreserveEvents)
+	}
 	if batch.TargetFrom <= 1 || len(out) == 0 {
 		return out
 	}
