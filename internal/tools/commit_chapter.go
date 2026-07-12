@@ -395,6 +395,9 @@ func (t *CommitChapterTool) ensureAdaptationGate(chapter int, content string) er
 	if plan == nil || plan.Status != domain.AdaptationPlanStatusConfirmed {
 		return fmt.Errorf("改编项目提交被拒：改编计划尚未确认: %w", errs.ErrToolPrecondition)
 	}
+	if _, repairErr := t.store.Adaptation.RepairLegacyArcChapterBudgetDensity(plan); repairErr != nil {
+		return fmt.Errorf("改编项目提交被拒：无法自动修复旧大纲章节字数密度：%w: %w: %w", errs.ErrStoreWrite, repairErr, errs.ErrToolPrecondition)
+	}
 	chapterPlan, ok := findAdaptationChapterPlan(plan, chapter)
 	if !ok {
 		return fmt.Errorf("改编项目提交被拒：confirmed plan 中没有第 %d 章: %w", chapter, errs.ErrToolPrecondition)

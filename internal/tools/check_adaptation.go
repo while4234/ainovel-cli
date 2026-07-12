@@ -82,6 +82,9 @@ func (t *CheckAdaptationTool) Execute(_ context.Context, args json.RawMessage) (
 	if plan.Status != domain.AdaptationPlanStatusConfirmed {
 		return nil, fmt.Errorf("adaptation plan is not confirmed: %w", errs.ErrToolPrecondition)
 	}
+	if _, repairErr := t.store.Adaptation.RepairLegacyArcChapterBudgetDensity(plan); repairErr != nil {
+		return nil, fmt.Errorf("automatic legacy chapter-budget repair failed: %w: %w", errs.ErrStoreWrite, repairErr)
+	}
 	chapterPlan, ok := findAdaptationChapterPlan(plan, a.Chapter)
 	if !ok {
 		return nil, fmt.Errorf("adaptation plan has no 第 %d 章: %w", a.Chapter, errs.ErrToolPrecondition)

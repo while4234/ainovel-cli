@@ -291,8 +291,9 @@ func ValidateArcChapterBudgetDensity(plan AdaptationPlan) []AdaptationChapterBud
 	issues := make([]AdaptationChapterBudgetDensityIssue, 0)
 	for index, chapter := range plan.Chapters {
 		sceneCount := len(chapter.Scenes)
-		// Keep the guard focused on real multi-beat chapters. Tiny synthetic
-		// plans and short chapters do not benefit from a hard density contract.
+		// Keep the guard focused on real multi-beat chapters. A missing budget
+		// is handled by the broader plan validator; any positive budget is
+		// meaningful evidence, including extremely small legacy budgets.
 		if sceneCount < 6 {
 			continue
 		}
@@ -300,7 +301,7 @@ func ValidateArcChapterBudgetDensity(plan AdaptationPlan) []AdaptationChapterBud
 		if chapter.WordBudget != nil && chapter.WordBudget.MaxRunes > maxRunes {
 			maxRunes = chapter.WordBudget.MaxRunes
 		}
-		if maxRunes < 1000 {
+		if maxRunes <= 0 {
 			continue
 		}
 		recommendedMin := sceneCount * minimumArcRunesPerScene
@@ -318,6 +319,84 @@ func ValidateArcChapterBudgetDensity(plan AdaptationPlan) []AdaptationChapterBud
 	}
 	sort.SliceStable(issues, func(left, right int) bool { return issues[left].Chapter < issues[right].Chapter })
 	return issues
+}
+
+// RepairArcChapterBudgetDensity migrates legacy arc plans whose scene count
+// clearly exceeds their chapter capacity. It only expands budgets; event
+// ownership and scene content remain unchanged. Callers should persist the
+// plan through AdaptationStore so the pre-repair snapshot can be backed up.
+func RepairArcChapterBudgetDensity(plan *AdaptationPlan) []int {
+	if plan == nil || NormalizeAdaptationGranularity(plan.Granularity) != AdaptationGranularityArc {
+		return nil
+	}
+	issues := ValidateArcChapterBudgetDensity(*plan)
+	if len(issues) == 0 {
+		return nil
+	}
+	repaired := make([]int, 0, len(issues))
+	for _, issue := range issues {
+		for index := range plan.Chapters {
+			chapter := &plan.Chapters[index]
+			number := chapter.Chapter
+			if number <= 0 {
+				number = index + 1
+			}
+			if number != issue.Chapter {
+				continue
+			}
+			targetFloor, minFloor, maxFloor := arcChapterBudgetFloor(issue.SceneCount)
+			chapter.TargetRunes = maxAdaptationInt(chapter.TargetRunes, targetFloor)
+			chapter.TargetMinRunes = maxAdaptationInt(chapter.TargetMinRunes, minFloor)
+			chapter.TargetMaxRunes = maxAdaptationInt(chapter.TargetMaxRunes, maxFloor)
+			if chapter.TargetMinRunes > chapter.TargetRunes {
+				chapter.TargetRunes = chapter.TargetMinRunes
+			}
+			if chapter.TargetRunes > chapter.TargetMaxRunes {
+				chapter.TargetMaxRunes = chapter.TargetRunes
+			}
+			if chapter.WordBudget == nil {
+				chapter.WordBudget = &AdaptationChapterWordBudget{SourceRunes: chapter.SourceRunes}
+			}
+			chapter.WordBudget.TargetRunes = chapter.TargetRunes
+			chapter.WordBudget.MinRunes = chapter.TargetMinRunes
+			chapter.WordBudget.MaxRunes = chapter.TargetMaxRunes
+			if chapter.WordBudget.SourceRunes <= 0 {
+				chapter.WordBudget.SourceRunes = chapter.SourceRunes
+			}
+			if chapter.WordBudget.Tolerance <= 0 {
+				chapter.WordBudget.Tolerance = plan.WordTolerance
+			}
+			repaired = append(repaired, number)
+			break
+		}
+	}
+	if len(repaired) == 0 {
+		return nil
+	}
+	plan.TargetTotalRunes = 0
+	plan.TargetMinRunes = 0
+	plan.TargetMaxRunes = 0
+	for _, chapter := range plan.Chapters {
+		plan.TargetTotalRunes += chapter.TargetRunes
+		plan.TargetMinRunes += chapter.TargetMinRunes
+		plan.TargetMaxRunes += chapter.TargetMaxRunes
+	}
+	ClearAdaptationOutlineQualityAudit(plan)
+	return repaired
+}
+
+func arcChapterBudgetFloor(sceneCount int) (target, min, max int) {
+	if sceneCount >= 7 {
+		return 4000, 3400, 4600
+	}
+	return 3500, 3000, 4000
+}
+
+func maxAdaptationInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 // ValidateArcEventOutlineThemes is the shared semantic safety net for arc

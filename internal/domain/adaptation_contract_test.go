@@ -92,6 +92,52 @@ func TestValidateArcChapterBudgetDensityRejectsImpossibleScenePacking(t *testing
 	}
 }
 
+func TestValidateArcChapterBudgetDensityRejectsTinyPositiveLegacyBudget(t *testing.T) {
+	plan := AdaptationPlan{
+		Granularity: AdaptationGranularityArc,
+		Chapters: []AdaptationChapterPlan{{
+			Chapter:      51,
+			OutlineEntry: OutlineEntry{Scenes: make([]string, 6)},
+			TargetRunes:  792, TargetMinRunes: 673, TargetMaxRunes: 911,
+		}},
+	}
+
+	issues := ValidateArcChapterBudgetDensity(plan)
+	if len(issues) != 1 || issues[0].Chapter != 51 || issues[0].RecommendedMinRunes != 1800 {
+		t.Fatalf("tiny positive legacy budget should be rejected: %+v", issues)
+	}
+}
+
+func TestRepairArcChapterBudgetDensityExpandsLegacyBudgets(t *testing.T) {
+	plan := AdaptationPlan{
+		Granularity: AdaptationGranularityArc,
+		Chapters: []AdaptationChapterPlan{
+			{Chapter: 1, OutlineEntry: OutlineEntry{Scenes: make([]string, 6)}, TargetRunes: 1200, TargetMinRunes: 1000, TargetMaxRunes: 1400,
+				WordBudget: &AdaptationChapterWordBudget{SourceRunes: 800, TargetRunes: 1200, MinRunes: 1000, MaxRunes: 1400}},
+			{Chapter: 2, OutlineEntry: OutlineEntry{Scenes: make([]string, 7)}, TargetRunes: 1400, TargetMinRunes: 1200, TargetMaxRunes: 1600,
+				WordBudget: &AdaptationChapterWordBudget{SourceRunes: 1000, TargetRunes: 1400, MinRunes: 1200, MaxRunes: 1600}},
+			{Chapter: 3, OutlineEntry: OutlineEntry{Scenes: make([]string, 2)}, TargetRunes: 1000, TargetMinRunes: 800, TargetMaxRunes: 2000},
+		},
+	}
+
+	repaired := RepairArcChapterBudgetDensity(&plan)
+	if len(repaired) != 2 || repaired[0] != 1 || repaired[1] != 2 {
+		t.Fatalf("unexpected repaired chapters: %v", repaired)
+	}
+	if got := plan.Chapters[0]; got.TargetRunes != 3500 || got.TargetMinRunes != 3000 || got.TargetMaxRunes != 4000 || got.WordBudget.MaxRunes != 4000 {
+		t.Fatalf("six-scene budget was not repaired: %+v", got)
+	}
+	if got := plan.Chapters[1]; got.TargetRunes != 4000 || got.TargetMinRunes != 3400 || got.TargetMaxRunes != 4600 || got.WordBudget.MaxRunes != 4600 {
+		t.Fatalf("seven-scene budget was not repaired: %+v", got)
+	}
+	if plan.TargetTotalRunes != 8500 || plan.TargetMinRunes != 7200 || plan.TargetMaxRunes != 10600 {
+		t.Fatalf("plan totals were not rebuilt: %d/%d/%d", plan.TargetTotalRunes, plan.TargetMinRunes, plan.TargetMaxRunes)
+	}
+	if len(ValidateArcChapterBudgetDensity(plan)) != 0 {
+		t.Fatalf("repaired plan still violates density: %+v", ValidateArcChapterBudgetDensity(plan))
+	}
+}
+
 func TestValidateArcEventOutlineThemesFindsFinancialEventMovedToLaterChapter(t *testing.T) {
 	plan := AdaptationPlan{
 		Granularity: AdaptationGranularityArc,

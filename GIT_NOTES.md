@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-12 resume-next-chapter fix: `80dc046`
+- 2026-07-12 resume-next-chapter fix: `5e370cb8`
   Resume now queues the Host route as an agentcore follow-up and explicitly
   continues an already-idle Coordinator. Previously Resume started a Prompt
   and queued the next-chapter instruction with Steer; if that Prompt ended
@@ -36,7 +36,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   in the queue. Normal start and in-run boundary dispatch keep their existing
   steering behavior. Added a regression test for the immediate-stop resume
   race. Full `go test ./... -count=1`, build, and `git diff --check` passed.
-- 2026-07-12 outline-density and transformed-event evidence gate: `467680c`
+- 2026-07-12 outline-density and transformed-event evidence gate: `79b282b8`
   `ValidateArcChapterBudgetDensity` now blocks high-density arc chapters whose
   maximum output cannot express their planned scenes, and the planner prompt,
   outline gate, routing, and final chapter contract all share the same guard.
@@ -48,6 +48,16 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   build, and live restart passed. The live `天擎` chapter 39 plan was repaired
   from 1200-1600 to 3400-4600 runes with six matching event owners; the live
   `武林高手 - 副本` chapter 14 stale failed check was cleared for re-evaluation.
+- 2026-07-12 legacy chapter-budget auto-repair: pending commit
+  Confirmed arc plans now repair positive but impossible scene-density budgets
+  at adaptation-state load, Writer guard, `check_adaptation`, and
+  `commit_chapter`. The pre-repair adaptation snapshot is backed up with the
+  `auto-budget-density-repair` label, plan totals are rebuilt, and a passed
+  outline marker is reissued only after the repaired plan is persisted. The
+  density gate also catches extremely small positive legacy budgets while
+  leaving missing-budget placeholders to the broader plan validator. Full Go
+  tests and a live restart passed; `天擎` had 22 such chapters repaired,
+  including chapters 51, 54, and 55.
 - 2026-07-12 adaptation outline contract gate: arc proposals now validate
   supporting/texture source-event ownership and plot-theme alignment before
   any Writer body is generated. Successful whole-plan audits persist a

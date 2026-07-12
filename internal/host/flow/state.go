@@ -1,6 +1,8 @@
 package flow
 
 import (
+	"fmt"
+
 	"github.com/voocel/ainovel-cli/internal/adaptaudit"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	adaptpkg "github.com/voocel/ainovel-cli/internal/host/adapt"
@@ -93,6 +95,11 @@ func loadAdaptationState(s *State, store *storepkg.Store, progress *domain.Progr
 	// externally repaired plan must not keep dispatching Writer after its event
 	// ownership becomes invalid.
 	if domain.NormalizeAdaptationGranularity(plan.Granularity) == domain.AdaptationGranularityArc {
+		if _, repairErr := store.Adaptation.RepairLegacyArcChapterBudgetDensity(plan); repairErr != nil {
+			s.AdaptationOutlineBlocked = true
+			s.AdaptationOutlineBlockReason = fmt.Sprintf("automatic legacy chapter-budget repair failed: %v", repairErr)
+			return
+		}
 		if !domain.AdaptationOutlineQualityPassed(*plan) {
 			targetChapter := progress.InProgressChapter
 			if targetChapter <= 0 {

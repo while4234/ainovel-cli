@@ -68,6 +68,33 @@ func (s *AdaptationStore) Backup(label string) (string, error) {
 	return targetRoot, nil
 }
 
+// RepairLegacyArcChapterBudgetDensity expands an old confirmed arc plan
+// before Writer or commit validation can reject its first dense chapter. The
+// original adaptation snapshot is backed up once per repair so the migration
+// remains reversible and auditable.
+func (s *AdaptationStore) RepairLegacyArcChapterBudgetDensity(plan *domain.AdaptationPlan) (bool, error) {
+	if s == nil || plan == nil || domain.NormalizeAdaptationGranularity(plan.Granularity) != domain.AdaptationGranularityArc {
+		return false, nil
+	}
+	if len(domain.ValidateArcChapterBudgetDensity(*plan)) == 0 {
+		return false, nil
+	}
+	wasPassed := domain.AdaptationOutlineQualityPassed(*plan)
+	if _, err := s.Backup("auto-budget-density-repair"); err != nil {
+		return false, fmt.Errorf("backup adaptation before automatic budget repair: %w", err)
+	}
+	if len(domain.RepairArcChapterBudgetDensity(plan)) == 0 {
+		return false, nil
+	}
+	if wasPassed {
+		domain.MarkAdaptationOutlineQualityPassed(plan)
+	}
+	if err := s.SavePlan(*plan); err != nil {
+		return false, fmt.Errorf("save adaptation after automatic budget repair: %w", err)
+	}
+	return true, nil
+}
+
 // ResetGenerated removes adaptation artifacts derived from a confirmed brief
 // while preserving the analyzed source-novel snapshot.
 func (s *AdaptationStore) ResetGenerated() error {
