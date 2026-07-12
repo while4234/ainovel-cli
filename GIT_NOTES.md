@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 read-only `术士手册 - 副本` proposal-failure diagnosis:
+  the skeleton was not regenerated or awaiting review. Final detail-plan
+  validation repeatedly found mainline event `src-0629-e01-07d60f5b` copied
+  across adjacent detail batches 130/131 (target 488-494), discarded both,
+  replayed all 370 cached batches, and exhausted the final repair limit. Local
+  batch validation checks required current-batch IDs but does not reject a
+  foreign required mainline ID, so polluted output can pass locally and fail
+  only after whole-plan assembly. Recursive repair also re-emits the
+  skeleton-complete message and every retained-batch `Reused` event, creating
+  the false appearance of skeleton replanning. No business code or runtime data
+  was changed; the live checkpoint retains 368/370 completed detail batches.
 - 2026-07-12 immediate project-switch fix: `457a242`
   `fix: switch projects immediately while loading`. Clicking another project
   now selects the target immediately, clears the previous project's detail
