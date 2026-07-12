@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 read-only duplicate-mainline diagnosis: live `武林高手 - 副本`
+  checkpoint retains 92/94 proposal detail batches after correctly discarding
+  batches 16-17 (target chapters 58-65) for duplicate event
+  `src-0072-e07-fcc35134` in chapters 59 and 62. The persistent recovery loop
+  is caused by a validator gap: `validateArcBatchEventCoverage` enforces each
+  current-batch required ID exactly once but does not reject required mainline
+  IDs owned by another detail batch, allowing a polluted batch to be saved and
+  reused until final whole-plan validation fails. Existing focused recovery
+  tests pass but cover only discard/regeneration start, not foreign-event local
+  rejection or successful directed repair. No business code or runtime data was
+  changed.
 - Latest workflow-status fix: `d0ff42a` `fix: show adaptation proposal generation as running`:
   active adaptation proposal generation and revision now take precedence over
   review artifacts in the unified workflow state. The workflow header and
