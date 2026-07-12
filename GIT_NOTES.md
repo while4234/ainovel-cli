@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 same-model runtime failover and active-model display: `8b5794a`
+  `fix: preserve model during backend failover`. Runtime automatic switching
+  now searches only configured backends that expose the currently selected
+  model name, rejects cross-model targets defensively, and no longer rewrites
+  or persists unrelated stage/Agent routes while selecting a fallback. The
+  unified workflow header shows the active stage model beside “正在运行” while
+  intentionally hiding the provider/backend. Focused Go fallback/Web tests,
+  the workflow-progress UI test, `git diff --check`, and a clean Vite
+  production build passed.
 - 2026-07-12 project cold-open isolation: `db01753`, `28ac506`,
   `f228bcd`, `4d09a58`, and `cf6dc0e`. Project Host initialization no
   longer holds the global session-map mutex; different projects initialize in
