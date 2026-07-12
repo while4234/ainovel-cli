@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 pending `fix: normalize annotated preserved event IDs`:
+  arc validation now compares the leading stable `src-*` token when a planner
+  returns `preserve_events` as `src-ID：description`, while prompts explicitly
+  require exact IDs without appended descriptions. This removes the live false
+  50-finding loop in Sorcerer's Handbook batch 59 without weakening ownership
+  checks for genuinely different events.
 - 2026-07-12 `377e67f2 fix: consume pending steering on resume`:
   Resume now snapshots the persisted user intervention, injects it once, then
   clears it atomically only if the same text is still pending. A newer

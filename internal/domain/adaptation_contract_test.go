@@ -92,6 +92,20 @@ func TestValidateArcSourceEventBindingsRequiresPreserveEventAlignment(t *testing
 	}
 }
 
+func TestValidateArcSourceEventBindingsAcceptsAnnotatedPreserveEventID(t *testing.T) {
+	plan := AdaptationPlan{
+		Granularity:  AdaptationGranularityArc,
+		SourceEvents: []AdaptationEvent{{ID: "src-0298-e01-ad111f23", Description: "事件一"}},
+		Chapters: []AdaptationChapterPlan{{
+			Chapter: 1, EventIDs: []string{"src-0298-e01-ad111f23"},
+			PreserveEvents: []string{"src-0298-e01-ad111f23：事件一的完整描述"},
+		}},
+	}
+	if issues := ValidateArcSourceEventBindings(plan); len(issues) != 0 {
+		t.Fatalf("annotated stable preserve ID should align with event_ids: %+v", issues)
+	}
+}
+
 func TestValidateArcChapterBudgetDensityRejectsImpossibleScenePacking(t *testing.T) {
 	plan := AdaptationPlan{
 		Granularity: AdaptationGranularityArc,

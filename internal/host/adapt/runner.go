@@ -6454,6 +6454,7 @@ func plannerBatchEventRepairRequirements(batch plannerSkeletonBatch, previousErr
 	return []string{
 		fmt.Sprintf("For this isolated detail batch, the required mainline event_ids are %s. Across all returned chapters, use every required ID exactly once.", mainline),
 		fmt.Sprintf("The complete stable source-event whitelist is %s. Every event_ids value must come from this list. Never invent a source ID; put genuinely new target-story events in added_event_ids.", allowed),
+		"When preserve_events references a stable source event, use the exact stable ID as the whole array item. Do not append a colon or event description to that ID; put readable descriptions in core_event and scenes.",
 		"If the failed response pulled an event from another detail batch, rebuild the affected title, core_event, hook, and scenes around this batch's assigned events. Do not merely delete the foreign ID while keeping its future plot beat in prose.",
 		"Before returning JSON, verify that every required mainline ID appears exactly once, optional stable IDs appear at most once, and no foreign or invented source ID appears.",
 	}
@@ -7250,6 +7251,7 @@ func buildAdaptationPlannerBatchUserPrompt(
 			"Assign every batch.mainline_event_ids value to exactly one target chapter event_ids entry; do not omit, duplicate, paraphrase, or replace these stable IDs.",
 			"Use only this detail batch's batch.mainline_event_ids for required mainline bindings. Do not copy mainline IDs from the parent skeleton or previous detail batches.",
 			"Supporting and texture source event_ids are optional references, but they must come from batch.allowed_event_ids. If you include one, assign it exactly once to the target chapter whose title/core_event/hook/scenes actually contain that event's plot beat.",
+			"When preserve_events references a stable source event, use the exact stable ID as the whole array item. Do not append a colon or event description to that ID; put readable descriptions in core_event and scenes.",
 			"Never invent a source event ID. A genuinely new target-story event belongs in added_event_ids, not event_ids.",
 			"Do not copy a later chapter's supporting/texture event_id into the current chapter. Move the event_id, preserve_events, required_changes, and matching story beat together; do not keep a future beat after deleting only its ID.",
 			"Keep scene density and output capacity consistent: for arc chapters, word_budget.max_runes must be at least 300 runes per planned scene, or reduce/split the scenes before returning the outline.",

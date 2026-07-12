@@ -633,12 +633,25 @@ func containsInt(values []int, wanted int) bool {
 func sourceEventIDs(values []string) []string {
 	ids := make([]string, 0, len(values))
 	for _, raw := range values {
-		value := strings.TrimSpace(raw)
-		if strings.HasPrefix(value, "src-") && !containsString(ids, value) {
-			ids = append(ids, value)
+		if eventID := leadingSourceEventID(raw); eventID != "" && !containsString(ids, eventID) {
+			ids = append(ids, eventID)
 		}
 	}
 	return ids
+}
+
+func leadingSourceEventID(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "src-") {
+		return ""
+	}
+	for index, char := range value {
+		if char == '-' || char == '_' || char >= '0' && char <= '9' || char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' {
+			continue
+		}
+		return strings.TrimSpace(value[:index])
+	}
+	return value
 }
 
 func allSourceEventIDs(values []string) bool {
