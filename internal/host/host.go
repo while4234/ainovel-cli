@@ -67,6 +67,10 @@ type Host struct {
 	mu                    sync.Mutex
 	adaptationPreflightMu sync.Mutex
 	lifecycle             lifecycle
+	autoResumeAttempts    int
+	autoResumeCompleted   int
+	autoResumeInFlight    bool
+	closed                bool
 	cocreating            bool // 阶段共创占用：paused 窗口内堵住 import/simulate/continue 的并发介入
 	closeOnce             sync.Once
 }
@@ -545,6 +549,14 @@ func (h *Host) adaptationDeps() adapt.Deps {
 // Resume 恢复模式：从 checkpoint + progress 生成 resume prompt 并启动。
 func (h *Host) Resume() (string, error) {
 	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return "", fmt.Errorf("host is closed")
+	}
+	if !h.autoResumeInFlight {
+		h.autoResumeAttempts = 0
+		h.autoResumeCompleted = 0
+	}
 	if h.lifecycle == lifecycleRunning {
 		h.mu.Unlock()
 		return "", fmt.Errorf("already running")
@@ -729,6 +741,9 @@ func (h *Host) abortWithEvent(summary, level string) bool {
 // 调用回来，触发的 OnMessage → Record 会更新内存但**不会被持久化**。这部分
 // "最末几百 token" 的丢失在下次启动时会由 session jsonl replay 自动补回。
 func (h *Host) Close() {
+	h.mu.Lock()
+	h.closed = true
+	h.mu.Unlock()
 	h.observer.setAborting(true)
 	h.coordinator.AbortSilent()
 	if h.budgetDetach != nil {
@@ -749,18 +764,21 @@ func (h *Host) Close() {
 	})
 }
 
-// waitDone 等待 coordinator 停机并发布终态事件。
+// waitDone 等待 coordinator 停机并发布终态事件；未完结创作会先走有上限的自动恢复。
 //
-// 不做任何续跑。Run 结束 = Host 进入终态：
+// Run 结束后的处理：
 //   - Phase=Complete  → 标记 completed，发"创作完成"事件
-//   - 其它            → 标记 idle，发"Coordinator 停止"事件
+//   - 未完结且未超过恢复上限 → 从持久化 checkpoint 自动 Resume
+//   - 其它                  → 标记 idle，发"Coordinator 停止"事件
 //
-// 用户要继续创作只有两条路径：手动 Continue（停机注入）或重启进程走 Resume。
-// 见 docs/architecture.md §13.3、§8.3。
+// 手动暂停仍只保留 paused 状态，不会被自动恢复；恢复上限耗尽后也等待用户或定时任务。
 func (h *Host) waitDone() {
 	h.coordinator.WaitForIdle()
 	h.observer.finalize()
 	if h.tryRepairStoppedAdaptation() {
+		return
+	}
+	if h.tryAutoResumeIncompleteRun() {
 		return
 	}
 
@@ -800,6 +818,80 @@ func (h *Host) waitDone() {
 	}
 
 	h.notifyDone()
+}
+
+const maxAutomaticResumeAttempts = 3
+
+// hasIncompleteCreativeProgress reports whether an unexpected coordinator stop
+// still has ordinary writing work to resume. A paused Host never reaches the
+// automatic path because abortWithEvent changes lifecycle before cancellation.
+func hasIncompleteCreativeProgress(progress *domain.Progress) bool {
+	if progress == nil || progress.Phase != domain.PhaseWriting {
+		return false
+	}
+	if progress.InProgressChapter > 0 {
+		return true
+	}
+	return progress.TotalChapters > 0 && len(progress.CompletedChapters) < progress.TotalChapters
+}
+
+// tryAutoResumeIncompleteRun converts a transient coordinator stop into a
+// bounded Resume. It deliberately resumes from persisted progress rather than
+// injecting a guessed instruction, so pending rewrites, outline gates, and
+// chapter checkpoints keep their existing routing rules.
+func (h *Host) tryAutoResumeIncompleteRun() bool {
+	progress, err := h.store.Progress.Load()
+	if err != nil || !hasIncompleteCreativeProgress(progress) {
+		return false
+	}
+
+	h.mu.Lock()
+	if h.closed || h.lifecycle != lifecycleRunning || h.cocreating || h.autoResumeInFlight {
+		h.mu.Unlock()
+		return false
+	}
+	completed := len(progress.CompletedChapters)
+	if completed > h.autoResumeCompleted {
+		h.autoResumeAttempts = 0
+		h.autoResumeCompleted = completed
+	}
+	if h.autoResumeAttempts >= maxAutomaticResumeAttempts {
+		h.mu.Unlock()
+		h.emitEvent(Event{
+			Time:     time.Now(),
+			Category: "SYSTEM",
+			Summary:  fmt.Sprintf("自动恢复已达上限（同一进度%d次），等待手动恢复", maxAutomaticResumeAttempts),
+			Level:    "warn",
+		})
+		return false
+	}
+	h.autoResumeAttempts++
+	attempt := h.autoResumeAttempts
+	h.autoResumeInFlight = true
+	h.lifecycle = lifecycleIdle
+	h.mu.Unlock()
+
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  fmt.Sprintf("Coordinator 异常停止，自动恢复创作（第%d/%d次，已完成%d章）", attempt, maxAutomaticResumeAttempts, completed),
+		Level:    "warn",
+	})
+	_, resumeErr := h.Resume()
+	h.mu.Lock()
+	h.autoResumeInFlight = false
+	h.mu.Unlock()
+	if resumeErr != nil {
+		h.emitEvent(Event{
+			Time:     time.Now(),
+			Category: "ERROR",
+			Summary:  "自动恢复创作失败",
+			Detail:   resumeErr.Error(),
+			Level:    "error",
+		})
+		return false
+	}
+	return true
 }
 
 // tryRepairStoppedAdaptation handles the common legacy-plan failure where the
