@@ -550,7 +550,7 @@ func ensureAdaptationCoCreateBriefingReady(ctx context.Context, session *Project
 		return fmt.Errorf("project session is required")
 	}
 	intent := adapt.BuildCoCreateIntent(options.Brief, options.Granularity, options.RewritePolicy, options.WordTolerance)
-	briefing, err := session.host.EnsureAdaptationCoCreateBriefing(ctx, sourcePath, intent)
+	briefing, err := session.host.EnsureAdaptationProposalCoCreateBriefing(ctx, sourcePath, intent)
 	if err != nil {
 		return fmt.Errorf("prepare adaptation co-create briefing: %w", err)
 	}

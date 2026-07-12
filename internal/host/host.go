@@ -3656,6 +3656,13 @@ func (h *Host) EnsureAdaptationCoCreateBriefing(ctx context.Context, sourcePath 
 	return adapt.EnsureCoCreateBriefing(ctx, h.adaptationDeps(), intent, h.adaptationProgressEmitter())
 }
 
+func (h *Host) EnsureAdaptationProposalCoCreateBriefing(ctx context.Context, sourcePath string, intent domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {
+	if _, _, err := adapt.ValidatePreparedSource(h.store, sourcePath); err != nil {
+		return nil, err
+	}
+	return adapt.EnsureProposalCoCreateBriefing(ctx, h.adaptationDeps(), intent, h.adaptationProgressEmitter())
+}
+
 func (h *Host) adaptationProgressEmitter() adapt.ProgressEmitter {
 	return func(stage adapt.Stage, current, total int, message string, err error) {
 		level := "info"

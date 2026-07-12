@@ -160,6 +160,71 @@ func TestEnsureCoCreateBriefingDoesNotSaveInvalidBatchAfterRepairExhaustion(t *t
 	}
 }
 
+func TestEnsureProposalCoCreateBriefingMigratesAndPinsResumableProposal(t *testing.T) {
+	st := newLongBriefingTestStore(t, 321)
+	manifest, err := st.Adaptation.LoadSourceManifest()
+	if err != nil || manifest == nil {
+		t.Fatalf("LoadSourceManifest: manifest=%+v err=%v", manifest, err)
+	}
+	dossier, err := st.Adaptation.LoadCoCreateDossier()
+	if err != nil || dossier == nil {
+		t.Fatalf("LoadCoCreateDossier: dossier=%+v err=%v", dossier, err)
+	}
+	storedIntent := BuildCoCreateIntent("strict single heroine", domain.AdaptationGranularityArc, domain.AdaptationRewriteFullRewrite, 0)
+	if err := st.Adaptation.SaveCoCreateIntent(storedIntent); err != nil {
+		t.Fatalf("SaveCoCreateIntent: %v", err)
+	}
+	briefing := domain.AdaptationCoCreateBriefing{
+		Version: 1, PromptVersion: CoCreateBriefingPromptVersion,
+		DossierPromptVersion: "stale-v2", IntentHash: storedIntent.IntentHash,
+		SourceSignature: store.AdaptationSourceSignature(*manifest), SourceChapterCount: manifest.ChapterCount,
+		DossierBatchCount: len(dossier.Batches), ConfirmedFacts: []string{"pinned fact"},
+	}
+	if err := st.Adaptation.SaveCoCreateBriefing(briefing); err != nil {
+		t.Fatalf("SaveCoCreateBriefing: %v", err)
+	}
+	if err := st.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
+		Version: 2, Brief: "compiled brief", SourcePath: manifest.SourcePath, SourceChapterCount: manifest.ChapterCount,
+		Granularity: storedIntent.Granularity, RewritePolicy: storedIntent.RewritePolicy,
+		CompletedBatches: []domain.AdaptationProposalRuntimeBatch{{TargetFrom: 1, TargetTo: 4}},
+	}); err != nil {
+		t.Fatalf("SaveProposalRuntime: %v", err)
+	}
+	llm := &scriptedAdaptLLM{}
+	var progress []Event
+	incoming := BuildCoCreateIntent("compiled proposal brief", domain.AdaptationGranularityArc, domain.AdaptationRewriteFullRewrite, 0)
+	got, err := EnsureProposalCoCreateBriefing(context.Background(), Deps{Store: st, LLM: llm}, incoming, captureAdaptProgress(&progress))
+	if err != nil {
+		t.Fatalf("EnsureProposalCoCreateBriefing: %v", err)
+	}
+	if got == nil || len(got.ConfirmedFacts) != 1 || got.ConfirmedFacts[0] != "pinned fact" {
+		t.Fatalf("briefing=%+v", got)
+	}
+	if llm.calls != 0 {
+		t.Fatalf("llm calls=%d, want no upstream regeneration during proposal resume", llm.calls)
+	}
+	if !hasAdaptProgressWithStage(progress, StageBriefing, "pinned by proposal runtime") {
+		t.Fatalf("progress=%+v", progress)
+	}
+	runtime, err := st.Adaptation.LoadProposalRuntime()
+	if err != nil || runtime == nil || runtime.CoCreateDependency == nil {
+		t.Fatalf("runtime dependency was not migrated: runtime=%+v err=%v", runtime, err)
+	}
+	if runtime.CoCreateDependency.IntentHash != storedIntent.IntentHash {
+		t.Fatalf("dependency intent hash=%q", runtime.CoCreateDependency.IntentHash)
+	}
+	briefing.PromptVersion = "unexpected-replacement"
+	if err := st.Adaptation.SaveCoCreateBriefing(briefing); err != nil {
+		t.Fatalf("replace briefing: %v", err)
+	}
+	if _, err := EnsureProposalCoCreateBriefing(context.Background(), Deps{Store: st, LLM: llm}, incoming, nil); err == nil || !strings.Contains(err.Error(), "pinned co-create briefing changed") {
+		t.Fatalf("changed pinned dependency error=%v", err)
+	}
+	if llm.calls != 0 {
+		t.Fatalf("llm calls after dependency replacement=%d, want fail closed", llm.calls)
+	}
+}
+
 func newLongBriefingTestStore(t *testing.T, chapterCount int) *store.Store {
 	t.Helper()
 	st := store.NewStore(t.TempDir())

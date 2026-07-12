@@ -122,6 +122,7 @@ type projectHost interface {
 	StartContinuation(int) (string, *domain.ContinuationSnapshot, error)
 	AdaptCoCreateStream(context.Context, []host.CoCreateMessage, func(kind, text string)) (host.CoCreateReply, error)
 	EnsureAdaptationCoCreateBriefing(context.Context, string, domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error)
+	EnsureAdaptationProposalCoCreateBriefing(context.Context, string, domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error)
 	ResolveAdaptationCoCreateDecision(string, string, string) (*domain.AdaptationCoCreateBriefing, error)
 	ResolveAdaptationCoCreateDecisions([]domain.AdaptationResolvedDecision) (*domain.AdaptationCoCreateBriefing, error)
 	PauseForCoCreate() bool

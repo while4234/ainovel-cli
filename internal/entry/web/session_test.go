@@ -2047,6 +2047,10 @@ func (f *fakeProjectHost) EnsureAdaptationCoCreateBriefing(_ context.Context, so
 	return f.adaptBriefing, f.adaptBriefingErr
 }
 
+func (f *fakeProjectHost) EnsureAdaptationProposalCoCreateBriefing(ctx context.Context, sourcePath string, intent domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {
+	return f.EnsureAdaptationCoCreateBriefing(ctx, sourcePath, intent)
+}
+
 func (f *fakeProjectHost) ResolveAdaptationCoCreateDecision(decisionID, optionID, customAnswer string) (*domain.AdaptationCoCreateBriefing, error) {
 	return f.ResolveAdaptationCoCreateDecisions([]domain.AdaptationResolvedDecision{{
 		DecisionID:   decisionID,

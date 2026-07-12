@@ -4912,6 +4912,28 @@ func TestPlannerProposalRuntimeKeepsPartialSourceMapSkeletonForImplicitScale(t *
 	}
 }
 
+func TestRefuseProposalVolumeStageRegressionAfterDetailGenerationStarts(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageDetailsGenerating, -1); err != nil {
+		t.Fatalf("SetPlanningWorkflowStage: %v", err)
+	}
+	if err := refuseProposalVolumeStageRegression(Deps{Store: st}); err == nil || !strings.Contains(err.Error(), "resume the detail stage") {
+		t.Fatalf("detail-stage guard error=%v", err)
+	}
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageSkeletonGenerating, -1); err != nil {
+		t.Fatalf("reset workflow stage: %v", err)
+	}
+	if err := st.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
+		Version:          adaptationProposalRuntimeVersion,
+		CompletedBatches: []domain.AdaptationProposalRuntimeBatch{{TargetFrom: 1, TargetTo: 4}},
+	}); err != nil {
+		t.Fatalf("SaveProposalRuntime: %v", err)
+	}
+	if err := refuseProposalVolumeStageRegression(Deps{Store: st}); err == nil || !strings.Contains(err.Error(), "resume the detail stage") {
+		t.Fatalf("completed-batch guard error=%v", err)
+	}
+}
+
 func TestBuildAdaptationProposalVolumeSkeletonUsesConfiguredRepairBudget(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

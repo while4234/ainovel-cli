@@ -134,9 +134,6 @@ func EnsureCoCreateBriefing(ctx context.Context, deps Deps, intent domain.Adapta
 		return nil, fmt.Errorf("co-create dossier missing or stale")
 	}
 	intent.IntentHash = CoCreateIntentHash(intent)
-	if err := deps.Store.Adaptation.SaveCoCreateIntent(intent); err != nil {
-		return nil, fmt.Errorf("save co-create intent: %w", err)
-	}
 	triggerReason := CoCreateBriefingTriggerReason(*dossier)
 	if triggerReason == "" {
 		return nil, nil
@@ -144,6 +141,9 @@ func EnsureCoCreateBriefing(ctx context.Context, deps Deps, intent domain.Adapta
 	current, err := deps.Store.Adaptation.LoadCoCreateBriefing()
 	if err != nil {
 		return nil, fmt.Errorf("load co-create briefing: %w", err)
+	}
+	if err := deps.Store.Adaptation.SaveCoCreateIntent(intent); err != nil {
+		return nil, fmt.Errorf("save co-create intent: %w", err)
 	}
 	if current != nil && store.CoCreateBriefingMatches(*current, *manifest, *dossier, CoCreateBriefingPromptVersion, CoCreateDossierPromptVersion, intent.IntentHash) {
 		emitAdaptProgress(emit, StageBriefing, len(dossier.Batches), len(dossier.Batches), "co-create briefing already exists", nil)
@@ -179,6 +179,123 @@ func EnsureCoCreateBriefing(ctx context.Context, deps Deps, intent domain.Adapta
 	}
 	emitAdaptProgress(emit, StageBriefing, len(specs), len(specs), "co-create briefing generated", nil)
 	return &briefing, nil
+}
+
+// EnsureProposalCoCreateBriefing resolves the co-create artifact at the
+// proposal boundary. Once planner work exists, its upstream dependency is
+// immutable: resume either reuses that exact artifact or fails closed.
+func EnsureProposalCoCreateBriefing(
+	ctx context.Context,
+	deps Deps,
+	incoming domain.AdaptationCoCreateIntent,
+	emit ProgressEmitter,
+) (*domain.AdaptationCoCreateBriefing, error) {
+	if deps.Store == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	manifest, err := deps.Store.Adaptation.LoadSourceManifest()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation source manifest: %w", err)
+	}
+	briefing, err := deps.Store.Adaptation.LoadCoCreateBriefing()
+	if err != nil {
+		return nil, fmt.Errorf("load co-create briefing: %w", err)
+	}
+	storedIntent, err := deps.Store.Adaptation.LoadCoCreateIntent()
+	if err != nil {
+		return nil, fmt.Errorf("load co-create intent for proposal: %w", err)
+	}
+	runtime, err := deps.Store.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		return nil, fmt.Errorf("load proposal runtime for co-create briefing: %w", err)
+	}
+	if proposalRuntimeHasPlannerWork(runtime) {
+		dependency, valid := coCreateDependencyFromArtifacts(manifest, storedIntent, briefing)
+		if !valid || !proposalRuntimeSourceMatches(runtime, manifest) {
+			return nil, fmt.Errorf("in-progress proposal's pinned co-create briefing is missing or stale; explicitly restart proposal generation")
+		}
+		if runtime.CoCreateDependency == nil {
+			runtime.CoCreateDependency = dependency
+			if err := deps.Store.Adaptation.SaveProposalRuntime(*runtime); err != nil {
+				return nil, fmt.Errorf("migrate proposal co-create dependency: %w", err)
+			}
+		} else if !sameCoCreateDependency(runtime.CoCreateDependency, dependency) {
+			return nil, fmt.Errorf("in-progress proposal's pinned co-create briefing changed; explicitly restart proposal generation")
+		}
+		emitAdaptProgress(emit, StageBriefing, 1, 1, "reuse co-create briefing pinned by proposal runtime", nil)
+		return briefing, nil
+	}
+	if _, valid := coCreateDependencyFromArtifacts(manifest, storedIntent, briefing); valid {
+		emitAdaptProgress(emit, StageBriefing, 1, 1, "reuse completed co-create briefing for proposal", nil)
+		return briefing, nil
+	}
+	return EnsureCoCreateBriefing(ctx, deps, incoming, emit)
+}
+
+func proposalRuntimeHasPlannerWork(runtime *domain.AdaptationProposalRuntime) bool {
+	return runtime != nil && (runtime.Skeleton != nil || len(runtime.SkeletonBatches) > 0 || len(runtime.CompletedBatches) > 0)
+}
+
+func coCreateDependencyFromArtifacts(
+	manifest *domain.AdaptationSourceManifest,
+	intent *domain.AdaptationCoCreateIntent,
+	briefing *domain.AdaptationCoCreateBriefing,
+) (*domain.AdaptationProposalCoCreateDependency, bool) {
+	if manifest == nil || intent == nil || briefing == nil || strings.TrimSpace(intent.IntentHash) == "" || briefing.IntentHash != intent.IntentHash {
+		return nil, false
+	}
+	if briefing.SourceChapterCount != manifest.ChapterCount || briefing.SourceSignature != store.AdaptationSourceSignature(*manifest) {
+		return nil, false
+	}
+	return &domain.AdaptationProposalCoCreateDependency{
+		IntentHash:            briefing.IntentHash,
+		SourceSignature:       briefing.SourceSignature,
+		BriefingPromptVersion: briefing.PromptVersion,
+		DossierPromptVersion:  briefing.DossierPromptVersion,
+	}, true
+}
+
+func sameCoCreateDependency(a, b *domain.AdaptationProposalCoCreateDependency) bool {
+	return a != nil && b != nil &&
+		a.IntentHash == b.IntentHash &&
+		a.SourceSignature == b.SourceSignature &&
+		a.BriefingPromptVersion == b.BriefingPromptVersion &&
+		a.DossierPromptVersion == b.DossierPromptVersion
+}
+
+func proposalRuntimeSourceMatches(runtime *domain.AdaptationProposalRuntime, manifest *domain.AdaptationSourceManifest) bool {
+	return runtime != nil && manifest != nil &&
+		runtime.SourceChapterCount == manifest.ChapterCount &&
+		sameSourcePath(runtime.SourcePath, manifest.SourcePath)
+}
+
+func bindProposalCoCreateDependency(deps Deps, runtime *domain.AdaptationProposalRuntime) error {
+	if deps.Store == nil || runtime == nil {
+		return nil
+	}
+	manifest, err := deps.Store.Adaptation.LoadSourceManifest()
+	if err != nil {
+		return fmt.Errorf("load source manifest for proposal dependency: %w", err)
+	}
+	intent, err := deps.Store.Adaptation.LoadCoCreateIntent()
+	if err != nil {
+		return fmt.Errorf("load co-create intent for proposal dependency: %w", err)
+	}
+	briefing, err := deps.Store.Adaptation.LoadCoCreateBriefing()
+	if err != nil {
+		return fmt.Errorf("load co-create briefing for proposal dependency: %w", err)
+	}
+	dependency, valid := coCreateDependencyFromArtifacts(manifest, intent, briefing)
+	if runtime.CoCreateDependency != nil {
+		if !valid || !sameCoCreateDependency(runtime.CoCreateDependency, dependency) {
+			return fmt.Errorf("proposal's pinned co-create dependency changed")
+		}
+		return nil
+	}
+	if valid && proposalRuntimeSourceMatches(runtime, manifest) {
+		runtime.CoCreateDependency = dependency
+	}
+	return nil
 }
 
 type coCreateBriefingBatchSpec struct {

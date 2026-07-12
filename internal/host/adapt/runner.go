@@ -1049,6 +1049,9 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 }
 
 func BuildAdaptationProposalVolumesContext(ctx context.Context, deps Deps, opts ProposalOptions) (*ProposalStageResult, error) {
+	if err := refuseProposalVolumeStageRegression(deps); err != nil {
+		return nil, err
+	}
 	opts, manifest, reports, sourceFoundation, err := prepareProposalPlannerInputs(ctx, deps, opts)
 	if err != nil {
 		return nil, err
@@ -1084,6 +1087,25 @@ func BuildAdaptationProposalVolumesContext(ctx context.Context, deps Deps, opts 
 	}
 	emitAdaptProgress(opts.EmitProgress, StageDone, len(review.Volumes), len(review.Volumes), fmt.Sprintf("分卷剧情已保存，等待审核：%d 卷", len(review.Volumes)), nil)
 	return &ProposalStageResult{VolumeReview: &review}, nil
+}
+
+func refuseProposalVolumeStageRegression(deps Deps) error {
+	if deps.Store == nil {
+		return nil
+	}
+	workflow, err := deps.Store.Adaptation.LoadPlanningWorkflow()
+	if err != nil {
+		return fmt.Errorf("load adaptation planning workflow: %w", err)
+	}
+	runtime, err := deps.Store.Adaptation.LoadProposalRuntime()
+	if err != nil {
+		return fmt.Errorf("load proposal runtime before volume generation: %w", err)
+	}
+	if (workflow != nil && workflow.Stage == domain.AdaptationPlanningStageDetailsGenerating) ||
+		(runtime != nil && len(runtime.CompletedBatches) > 0) {
+		return fmt.Errorf("chapter detail outline generation already started; resume the detail stage instead of regenerating volumes")
+	}
+	return nil
 }
 
 func ReviseAdaptationProposal(ctx context.Context, deps Deps, opts ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
@@ -4635,6 +4657,9 @@ func savePlannerProposalRuntime(deps Deps, runtime *domain.AdaptationProposalRun
 	}
 	if runtime == nil {
 		return nil
+	}
+	if err := bindProposalCoCreateDependency(deps, runtime); err != nil {
+		return err
 	}
 	runtime.Version = adaptationProposalRuntimeVersion
 	runtime.UpdatedAt = time.Now().UTC().Format(time.RFC3339)

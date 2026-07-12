@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 pending `fix: make adaptation resume stage-monotonic`: proposal
+  runtimes now pin the exact co-create intent/source/prompt dependency used at
+  planner start. Resumes reuse that artifact or fail closed; they never
+  regenerate co-create work after skeleton/detail progress exists. Proposal
+  endpoints resolve completed co-create artifacts at the downstream boundary,
+  and volume generation refuses to run after detail generation starts or any
+  detail batch exists, preventing destructive workflow regression. Legacy
+  runtimes migrate the dependency once. Full Go tests and a local Web build
+  passed; live “术士手册 - 副本” is back in `details_generating` with the pinned
+  original intent and has regenerated/passed its first detail batch.
 - 2026-07-12 pending `fix: restore adaptation quality workflows`: source
   chapter lineage now outranks fuzzy theme keywords; genuine outline mismatches
   reach targeted owner/alternative repair; annotated `preserve_events` are

@@ -360,10 +360,21 @@ type AdaptationProposalRuntime struct {
 	RewritePolicy      string                                   `json:"rewrite_policy"`
 	WordTolerance      float64                                  `json:"word_tolerance,omitempty"`
 	TargetChapterCount int                                      `json:"target_chapter_count"`
+	CoCreateDependency *AdaptationProposalCoCreateDependency    `json:"co_create_dependency,omitempty"`
 	Skeleton           *AdaptationProposalRuntimeOutline        `json:"skeleton,omitempty"`
 	SkeletonBatches    []AdaptationProposalRuntimeSkeletonBatch `json:"skeleton_batches,omitempty"`
 	CompletedBatches   []AdaptationProposalRuntimeBatch         `json:"completed_batches,omitempty"`
 	AuditCheckpoints   []AdaptationDetailAuditCheckpoint        `json:"audit_checkpoints,omitempty"`
+}
+
+// AdaptationProposalCoCreateDependency pins the upstream co-create artifact
+// used when proposal generation starts. A resumable proposal must never
+// silently regenerate or switch this dependency after planner work exists.
+type AdaptationProposalCoCreateDependency struct {
+	IntentHash            string `json:"intent_hash"`
+	SourceSignature       string `json:"source_signature"`
+	BriefingPromptVersion string `json:"briefing_prompt_version"`
+	DossierPromptVersion  string `json:"dossier_prompt_version"`
 }
 
 const (
