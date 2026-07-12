@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-12 stage-aware model routing and context benchmark: `bb18f7f`
+  `feat: add stage-aware model routing`. Added project-scoped model selection
+  for six user-facing creative stages with provider-agnostic, deduplicated
+  model names; stage routes override Agent routes and inherit them when unset.
+  Added hidden DeepSeek V4 Pro / Grok 4.5 context profiles and a reproducible
+  40-call-per-model benchmark/report. DeepSeek completed 40 calls; Grok
+  completed 38 and retained two interrupted attempts without exceeding quota.
+  Full Go tests, 206 UI tests, Vite build, report verification at desktop and
+  mobile widths, live stage-route persistence round trip, and service smoke
+  checks passed. Web is live on port 9898 as PID `36840`; `天擎` was resumed
+  at chapter 10 and reached `RUNNING` with `draft_chapter` active.
 - 2026-07-12 read-only `术士手册 - 副本` proposal-failure diagnosis:
   the skeleton was not regenerated or awaiting review. Final detail-plan
   validation repeatedly found mainline event `src-0629-e01-07d60f5b` copied
