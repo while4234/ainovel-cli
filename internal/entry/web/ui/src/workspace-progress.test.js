@@ -42,6 +42,7 @@ import {
   normalizeCoCreateDecisionAnswers,
   outlineRevisionSuccessMessage,
   prepareProjectOpenSnapshot,
+  PROJECT_OPEN_TIMEOUT_MS,
   resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords,
   resolveVisibleDefaultModel,
@@ -50,6 +51,12 @@ import {
   simulationFilesFromResponse,
   simulationProfileSummaryText
 } from './App.jsx';
+
+describe('project opening', () => {
+  it('allows cold project restoration to finish before reporting a timeout', () => {
+    expect(PROJECT_OPEN_TIMEOUT_MS).toBe(60_000);
+  });
+});
 
 describe('co-create begin payload helpers', () => {
   it('clamps co-create decision pagination to visible pending decisions', () => {
