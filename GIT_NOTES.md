@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-12 pending `fix: treat moderate full-rewrite budget overage as acceptable`:
+- 2026-07-12 `01de103d fix: treat moderate full-rewrite budget overage as acceptable`:
   adaptation `full_rewrite/free` chapter budgets now expose an explicit soft
   allowance. A complete chapter within that allowance is accepted without a
   budget warning or length-only rewrite; preserve-details and normal book-level
