@@ -928,7 +928,7 @@ func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManif
 	workbenchHistory := session.WorkbenchEventHistory(0)
 	return projectSnapshotResponse{
 		Project:        manifest,
-		Snapshot:       session.Snapshot(),
+		Snapshot:       session.WebSnapshot(),
 		Adaptation:     adaptation,
 		Simulation:     simulation,
 		CoCreate:       session.CoCreateState(),
