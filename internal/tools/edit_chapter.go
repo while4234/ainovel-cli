@@ -129,9 +129,9 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 
 func (t *EditChapterTool) nextStepAfterEdit() string {
 	if t.store != nil && t.store.Adaptation.Active() {
-		return "edit 已落盘，旧 check_consistency/check_adaptation 已失效；旧 check_de_ai 也已失效。若正在处理去AI化问题，先完成当前类别的一小批精确修订并立即 check_de_ai；仍有 finding 再处理下一批。check_de_ai 通过后，重新调用 check_consistency 和 check_adaptation，通过后再 commit_chapter。"
+		return "edit 已落盘，旧 check_consistency/check_adaptation 已失效；旧 check_de_ai 也已失效。先重新调用 check_consistency 和 check_adaptation；若任一检查还要求改稿，重复本轮直到它们在同一版草稿上通过。随后必须调用 check_de_ai；仍有 finding 时同类问题用 repair_de_ai_batch 做一小批精确修订并立即复检。去AI化通过后再次重跑 check_consistency 和 check_adaptation；任何后续改稿都会使去AI报告失效，必须重新 check_de_ai。只有同一版草稿全部通过才能 commit_chapter。"
 	}
-	return "edit 已落盘。若在处理去AI化问题，先 check_de_ai，仍有 finding 再做下一批精确修订；通过后 check_consistency 再 commit_chapter。"
+	return "edit 已落盘，旧 check_consistency/check_de_ai 均已失效。先重新调用 check_consistency；若它要求改稿，重复本轮直到通过。随后必须调用 check_de_ai，仍有 finding 时用 repair_de_ai_batch 做一小批精确修订并立即复检；去AI化通过后再次 check_consistency。任何后续改稿都会使去AI报告失效，必须重新 check_de_ai。只有同一版草稿全部通过才能 commit_chapter。"
 }
 
 // ensureDraft 保证 drafts/{ch}.draft.md 存在：

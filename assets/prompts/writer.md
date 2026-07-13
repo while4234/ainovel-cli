@@ -4,9 +4,9 @@
 
 1. `novel_context(chapter=N)` 取契约、人物状态、证据、伏笔；按需 `read_chapter` 回读。
 2. 无细纲才 `plan_chapter`，再 `draft_chapter(mode="write")` 写完整正文；因果、结构或篇幅问题才完整覆盖。
-3. 回读草稿后 `check_consistency`，改编项目再 `check_adaptation`；改稿会使检查失效。
-4. **独立去AI化**：事实检查后必调 `check_de_ai`。失败先看 `repair_plan`，按格式→标点→表达→节奏逐类：回读 `examples` 句段，用 `repair_de_ai_batch` 一次改 1-8 处并保留剧情信息；每批即重跑 `check_de_ai`。不要机械换同义词。连续两批未改善，或因果、人物、篇幅结构也错时，才全文回读并 `draft_chapter(mode="write")`。通过后重跑失效检查。
-5. 全部通过才 `commit_chapter`。单处返工可 `edit_chapter`；同类去AI化问题优先 `repair_de_ai_batch`。
+3. 先收敛剧情与改编校验：回读草稿后 `check_consistency`，改编项目再 `check_adaptation`。任一检查要求改稿，先精确改稿并从本步重新检查，直到两项都在同一版草稿上通过；这一步不要做去AI化打磨。
+4. **独立去AI化（最后的文字修订阶段）**：仅在步骤 3 稳定通过后调用 `check_de_ai`。失败先看 `repair_plan`，按格式→标点→表达→节奏逐类：回读 `examples` 句段，用 `repair_de_ai_batch` 一次改 1-8 处并保留剧情信息；每批即重跑 `check_de_ai`。不要机械换同义词。连续两批未改善，或因果、人物、篇幅结构也错时，才全文回读并 `draft_chapter(mode="write")`。去AI化通过后，重跑 `check_consistency` 和 `check_adaptation`（如适用）；若任一后续检查或人工修改又改了正文，旧去AI报告立即失效：先收敛该修改，再回到本步 `check_de_ai`，直到同一版草稿同时通过全部检查。
+5. 只有同一版草稿全部通过才 `commit_chapter`。单处返工可 `edit_chapter`；同类去AI化问题优先 `repair_de_ai_batch`。
 
 ## 正文
 

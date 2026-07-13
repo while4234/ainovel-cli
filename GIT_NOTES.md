@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-13 pending `fix: enforce stable de-AI audit sequence`: a live
+  DeepSeek continuation completed chapter 71 using two `repair_de_ai_batch`
+  calls (three exact replacements per batch), each followed by a fresh audit.
+  The final audit passed and the chapter committed. Prompt and tool follow-up
+  contracts now require consistency/adaptation repairs to settle first, then
+  require every audit to pass on the same draft revision before commit. Full
+  `go test ./... -count=1` passed. The running service was intentionally not
+  restarted while the separate adaptation recovery remains active.
 - 2026-07-13 `4ba5fb1` `fix: recover adaptation and batch de-AI repair`: detail
   recovery now preserves validated proposal batches and repairs only the owning
   failed range; browser Resume reused 150 saved batches, passed batch 151, and

@@ -110,7 +110,7 @@ func (t *RepairDeAIBatchTool) Execute(_ context.Context, args json.RawMessage) (
 	return json.Marshal(map[string]any{
 		"chapter":        request.Chapter,
 		"repaired_count": len(request.Repairs),
-		"next_step":      "本批已落盘，旧的去AI化、一致性和改编检查均已失效。立即调用 check_de_ai；若仍有 repair finding，按下一类别再做一小批修订。check_de_ai 通过后，重跑 check_consistency、check_adaptation（如适用），最后 commit_chapter。",
+		"next_step":      "本批已落盘，旧的去AI化、一致性和改编检查均已失效。立即调用 check_de_ai；若仍有 repair finding，按下一类别再做一小批修订。check_de_ai 通过后，重跑 check_consistency、check_adaptation（如适用）。若任一后续检查又要求改稿，改完后必须重新 check_de_ai，直到同一版草稿的全部检查都通过，最后才 commit_chapter。",
 	})
 }
 

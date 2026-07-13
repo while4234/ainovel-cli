@@ -1,6 +1,9 @@
 package deai
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRepairPlanGroupsMultipleFindingsIntoBoundedBatches(t *testing.T) {
 	report := Report{Findings: []Finding{
@@ -28,6 +31,9 @@ func TestRepairPlanGroupsMultipleFindingsIntoBoundedBatches(t *testing.T) {
 	}
 	if len(plan.Attention) != 1 || plan.Attention[0].Code != "fragmented_paragraph_rhythm" {
 		t.Fatalf("attention = %#v", plan.Attention)
+	}
+	if !strings.Contains(plan.FinalCheck, "同一版草稿") {
+		t.Fatalf("final check must require one stable draft, got %q", plan.FinalCheck)
 	}
 }
 

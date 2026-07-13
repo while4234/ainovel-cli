@@ -38,6 +38,9 @@ func TestRepairDeAIBatchAppliesBoundedExactRevisions(t *testing.T) {
 	if !strings.Contains(string(result), `"repaired_count":2`) {
 		t.Fatalf("result = %s", result)
 	}
+	if !strings.Contains(string(result), "同一版草稿") {
+		t.Fatalf("result must require rechecking one stable draft: %s", result)
+	}
 	draft, err := s.Drafts.LoadDraft(1)
 	if err != nil {
 		t.Fatal(err)

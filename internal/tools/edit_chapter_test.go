@@ -65,7 +65,7 @@ func TestEditChapterAdaptationInvalidatesBothChecks(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	next, _ := payload["next_step"].(string)
-	for _, want := range []string{"旧 check_consistency/check_adaptation 已失效", "重新调用", "commit_chapter"} {
+	for _, want := range []string{"旧 check_consistency/check_adaptation 已失效", "重新调用", "同一版草稿", "commit_chapter"} {
 		if !strings.Contains(next, want) {
 			t.Fatalf("next_step missing %q: %q", want, next)
 		}

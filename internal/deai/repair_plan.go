@@ -64,7 +64,7 @@ var repairBatchDefinitions = []repairBatchDefinition{
 func (r Report) RepairPlan() RepairPlan {
 	plan := RepairPlan{
 		Mode:       "batched",
-		FinalCheck: "每完成一批先重新调用 check_de_ai；通过后再重跑 check_consistency、check_adaptation（如适用），最后 commit_chapter。连续两批未改善或剧情结构也失真时，才建议完整重写。",
+		FinalCheck: "先完成 check_consistency、check_adaptation（如适用）要求的全部改稿。每完成一批先重新调用 check_de_ai；去AI化通过后重跑 check_consistency、check_adaptation。若任一后续检查又要求改稿，改完后必须重新 check_de_ai，直到同一版草稿的全部检查都通过，最后才 commit_chapter。连续两批未改善或剧情结构也失真时，才建议完整重写。",
 	}
 	if r.Passed() {
 		plan.Mode = "passed"
