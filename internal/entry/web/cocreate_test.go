@@ -81,11 +81,22 @@ func TestProjectCoCreateSuggestionsAndCommitUseDraftPrompt(t *testing.T) {
 	if fake.prepareRulesCalls != 1 || fake.preparedRulesPrompt != "## 主题\n- 月城追凶" {
 		t.Fatalf("PrepareUserRules calls=%d prompt=%q", fake.prepareRulesCalls, fake.preparedRulesPrompt)
 	}
-	if fake.startPreparedCalls != 1 {
-		t.Fatalf("StartPrepared calls = %d, want 1", fake.startPreparedCalls)
+	if fake.startPreparedCalls != 0 {
+		t.Fatalf("commit must stop at the proposal checkpoint; StartPrepared calls = %d, want 0", fake.startPreparedCalls)
 	}
-	if !strings.Contains(fake.startPreparedPrompt, "[创作要求]\n## 主题\n- 月城追凶") {
-		t.Fatalf("StartPrepared prompt should wrap draft prompt, got %q", fake.startPreparedPrompt)
+	st := storepkg.NewStore(manifest.OutputDir)
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil || review == nil || review.Status != domain.PlanningReviewStatusPending || review.Kind != domain.PlanningReviewKindBlueprint {
+		t.Fatalf("planning checkpoint = %+v err=%v", review, err)
+	}
+	if !strings.Contains(review.StartPrompt, "[创作要求]\n## 主题\n- 月城追凶") {
+		t.Fatalf("saved start prompt should wrap draft prompt, got %q", review.StartPrompt)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/confirm", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || fake.startPreparedCalls != 1 {
+		t.Fatalf("generate proposal status=%d calls=%d body=%s", rec.Code, fake.startPreparedCalls, rec.Body.String())
 	}
 	if _, err := os.Stat(filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))); !os.IsNotExist(err) {
 		t.Fatalf("co-create checkpoint should be cleared after commit, stat err=%v", err)
@@ -163,11 +174,17 @@ func TestProjectCoCreatePlanningRevisionTargetsSingleChapter(t *testing.T) {
 	fake := installFakeSession(t, server, manifest)
 	fake.cocreateReply = webCoCreateReply("updated chapter plan", "## Revised\n- Give chapter two a sharper reversal", true)
 	st := storepkg.NewStore(manifest.OutputDir)
-	if err := st.Outline.SaveOutline([]domain.OutlineEntry{
-		{Chapter: 1, Title: "Opening", CoreEvent: "A slow start"},
-		{Chapter: 2, Title: "Reversal", CoreEvent: "The heroine takes charge"},
-	}); err != nil {
-		t.Fatalf("seed outline: %v", err)
+	seedChapters := []domain.OutlineEntry{
+		{Chapter: 1, Title: "Opening", CoreEvent: "A slow start", Hook: "a choice", Scenes: []string{"arrival"}},
+		{Chapter: 2, Title: "Reversal", CoreEvent: "The heroine takes charge", Hook: "a consequence", Scenes: []string{"confrontation"}},
+	}
+	if err := st.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		Index: 1, Title: "Opening volume", Theme: "Agency", Arcs: []domain.ArcOutline{{Index: 1, Title: "First choice", Goal: "the heroine takes agency", EstimatedChapters: 2, Chapters: seedChapters}},
+	}}); err != nil {
+		t.Fatalf("seed layered outline: %v", err)
+	}
+	if err := st.Outline.SaveOutline(seedChapters); err != nil {
+		t.Fatalf("seed flat outline: %v", err)
 	}
 	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
 		Status:           domain.PlanningReviewStatusPending,
@@ -188,16 +205,26 @@ func TestProjectCoCreatePlanningRevisionTargetsSingleChapter(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("planning revise status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.cocreateCalls != 1 {
-		t.Fatalf("co-create calls = %d, want 1", fake.cocreateCalls)
+	if fake.cocreateCalls != 0 {
+		t.Fatalf("targeted user instruction must not be rewritten by another co-create model call, got %d", fake.cocreateCalls)
 	}
-	if !coCreateHistoryContains(fake.lastCoCreateHistory, "Revision target: chapter 2: Reversal") ||
-		!coCreateHistoryContains(fake.lastCoCreateHistory, "tighten chapter two") {
-		t.Fatalf("revision history missing target or instruction: %+v", fake.lastCoCreateHistory)
+	if fake.resumeCalls != 1 || fake.startPreparedCalls != 0 {
+		t.Fatalf("targeted revision should resume durable repair router: resume=%d start=%d", fake.resumeCalls, fake.startPreparedCalls)
+	}
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil || review == nil || review.Status != domain.PlanningReviewStatusCollecting || review.Kind != domain.PlanningReviewKindVolumeSplit {
+		t.Fatalf("targeted revision review=%+v err=%v", review, err)
+	}
+	work, err := st.OriginalPlanningAudits.NextWork(st.Outline)
+	if err != nil || work == nil || work.Kind != "repair_arc" || work.Volume != 1 || work.Arc != 1 {
+		t.Fatalf("targeted revision work=%+v err=%v", work, err)
+	}
+	if work.Audit == nil || len(work.Audit.Issues) == 0 || work.Audit.Issues[0].RepairInstruction != "tighten chapter two around the reversal" {
+		t.Fatalf("raw user instruction was not preserved: %+v", work.Audit)
 	}
 }
 
-func TestProjectCoCreatePlanningConfirmRejectsBlueprintReview(t *testing.T) {
+func TestProjectCoCreatePlanningConfirmStartsBlueprintGeneration(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("CoCreate Blueprint Review")
@@ -206,12 +233,15 @@ func TestProjectCoCreatePlanningConfirmRejectsBlueprintReview(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 	st := storepkg.NewStore(manifest.OutputDir)
+	if err := st.RunMeta.SetWordBudget(domain.NewWordBudget(100_000, domain.WordBudgetSourceAPI)); err != nil {
+		t.Fatalf("seed word budget: %v", err)
+	}
 	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
 		Status:           domain.PlanningReviewStatusPending,
 		Kind:             domain.PlanningReviewKindBlueprint,
 		Brief:            "## Draft plan before structured planning",
 		StartPrompt:      "start prompt",
-		TargetTotalWords: 5000,
+		TargetTotalWords: 0,
 		CreatedAt:        "2026-07-05T00:00:00Z",
 		UpdatedAt:        "2026-07-05T00:01:00Z",
 	}); err != nil {
@@ -222,11 +252,92 @@ func TestProjectCoCreatePlanningConfirmRejectsBlueprintReview(t *testing.T) {
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("planning confirm status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("planning confirm status = %d body=%s, want 200", rec.Code, rec.Body.String())
 	}
-	if fake.resumeCalls != 0 {
-		t.Fatalf("blueprint review must not resume writing, calls=%d", fake.resumeCalls)
+	if fake.startPreparedCalls != 1 || !strings.Contains(fake.startPreparedPrompt, "target_total_words=100000") || fake.resumeCalls != 0 {
+		t.Fatalf("blueprint generation calls=%d prompt=%q resume=%d", fake.startPreparedCalls, fake.startPreparedPrompt, fake.resumeCalls)
+	}
+}
+
+func TestProjectCoCreatePlanningConfirmVolumeReviewResumesAuditedBatchRouter(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Volume Review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	st := storepkg.NewStore(manifest.OutputDir)
+	_ = st.Outline.SavePremise("# Audited original")
+	_ = st.Characters.Save([]domain.Character{{Name: "Heroine", Role: "lead", Description: "chooses her own future"}})
+	_ = st.World.SaveWorldRules([]domain.WorldRule{{Category: "society", Rule: "choices have consequences", Boundary: "no reset"}})
+	_ = st.Outline.SaveCompass(domain.StoryCompass{EndingDirection: "earned independence"})
+	_ = st.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		Index: 1, Title: "Choice", Theme: "Agency", Arcs: []domain.ArcOutline{
+			{Index: 1, Title: "Refusal", Goal: "reject the imposed role", EstimatedChapters: 3},
+			{Index: 2, Title: "Countermove", Goal: "build an alternative", EstimatedChapters: 3},
+		},
+	}})
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{Status: domain.PlanningReviewStatusPending, Kind: domain.PlanningReviewKindVolumeSplit, Brief: "audited original", TargetTotalWords: 30_000}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/confirm", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.resumeCalls != 1 || fake.continueCalls != 0 {
+		t.Fatalf("volume approval must resume durable router: resume=%d continue=%d", fake.resumeCalls, fake.continueCalls)
+	}
+	review, _ := st.RunMeta.PlanningReview()
+	if review == nil || review.Status != domain.PlanningReviewStatusCollecting || review.Kind != domain.PlanningReviewKindVolumeSplit {
+		t.Fatalf("review=%+v", review)
+	}
+}
+
+func TestProjectCoCreatePlanningRevisionTargetsOneVolumeAndReentersAudit(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("CoCreate Volume Revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply("updated final volume", "## Revised\n- Close every promised plot in volume three", true)
+	st := storepkg.NewStore(manifest.OutputDir)
+	volumes := []domain.VolumeOutline{
+		{Index: 1, Title: "Opening", Theme: "survival", Arcs: []domain.ArcOutline{{Index: 1, Title: "A", Goal: "escape", EstimatedChapters: 3}, {Index: 2, Title: "B", Goal: "counter", EstimatedChapters: 3}}},
+		{Index: 2, Title: "Middle", Theme: "power", Arcs: []domain.ArcOutline{{Index: 1, Title: "C", Goal: "return", EstimatedChapters: 3}, {Index: 2, Title: "D", Goal: "challenge", EstimatedChapters: 3}}},
+		{Index: 3, Title: "End", Theme: "closure", Arcs: []domain.ArcOutline{{Index: 1, Title: "E", Goal: "reveal", EstimatedChapters: 3}, {Index: 2, Title: "F", Goal: "finish", EstimatedChapters: 3}}},
+	}
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{Status: domain.PlanningReviewStatusPending, Kind: domain.PlanningReviewKindVolumeSplit, Brief: "audited original", TargetTotalWords: 100_000}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/planning/revise", bytes.NewBufferString(`{"scope":"volume","volume_index":3,"instruction":"make the final volume close every main plot"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.resumeCalls != 1 || fake.startPreparedCalls != 0 {
+		t.Fatalf("targeted volume revision must resume audit router: resume=%d start=%d", fake.resumeCalls, fake.startPreparedCalls)
+	}
+	if fake.cocreateCalls != 0 {
+		t.Fatalf("targeted user instruction must not be rewritten by another co-create model call, got %d", fake.cocreateCalls)
+	}
+	review, _ := st.RunMeta.PlanningReview()
+	if review == nil || review.Status != domain.PlanningReviewStatusCollecting || review.Kind != domain.PlanningReviewKindBlueprint {
+		t.Fatalf("review=%+v", review)
+	}
+	work, err := st.OriginalPlanningAudits.NextSkeletonWork(st.Outline)
+	if err != nil || work == nil || work.Kind != "repair_skeleton_volume" || work.Volume != 3 {
+		t.Fatalf("queued work=%+v err=%v", work, err)
 	}
 }
 
@@ -996,8 +1107,10 @@ func TestProjectCoCreatePersistsTargetTotalWords(t *testing.T) {
 	if fake.setWordBudgetCalls != 1 || fake.wordBudget == nil || fake.wordBudget.TargetTotalWords != 5000 {
 		t.Fatalf("SetWordBudget calls=%d budget=%+v", fake.setWordBudgetCalls, fake.wordBudget)
 	}
-	if !strings.Contains(fake.startPreparedPrompt, "target_total_words=5000") {
-		t.Fatalf("start prompt missing word budget contract: %q", fake.startPreparedPrompt)
+	st := storepkg.NewStore(manifest.OutputDir)
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil || review == nil || !strings.Contains(review.StartPrompt, "target_total_words=5000") {
+		t.Fatalf("saved start prompt missing word budget contract: review=%+v err=%v", review, err)
 	}
 }
 

@@ -149,6 +149,15 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		if budget != nil && budget.HandleBoundary() {
 			return
 		}
+		// A planning audit tool can open the durable user-review gate inside the
+		// just-finished subagent call. Stop at that boundary immediately. Waiting
+		// for another Coordinator turn first can trigger an unnecessary full
+		// context summary on long proposal runs, leaving the UI looking busy even
+		// though the reviewed proposal is already ready for the user.
+		if h != nil && store.RunMeta.PlanningReviewPending() {
+			h.stopForPlanningReview()
+			return
+		}
 		if router != nil {
 			router.Dispatch()
 		}
@@ -749,6 +758,31 @@ func (h *Host) abortWithEvent(summary, level string) bool {
 	h.observer.setAborting(true)
 	h.coordinator.Abort()
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Level: level})
+	return true
+}
+
+// stopForPlanningReview ends the active Coordinator run at a durable review
+// gate without marking the project as user-paused. The proposal and audit
+// reports are already persisted when this is called; no model turn is needed
+// to acknowledge the transition.
+func (h *Host) stopForPlanningReview() bool {
+	h.mu.Lock()
+	running := h.lifecycle == lifecycleRunning
+	if running {
+		h.lifecycle = lifecycleIdle
+	}
+	h.mu.Unlock()
+	if !running {
+		return false
+	}
+	h.observer.setAborting(true)
+	h.coordinator.Abort()
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  "规划自动审核完成，等待用户审核",
+		Level:    "success",
+	})
 	return true
 }
 

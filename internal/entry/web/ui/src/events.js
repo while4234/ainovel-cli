@@ -57,7 +57,62 @@ export function mergeSnapshotUpdate(previousSnapshot, incomingSnapshot, workflow
     incomingSnapshot.WorkflowProgress ||
     previousSnapshot?.workflow_progress ||
     previousSnapshot?.WorkflowProgress;
-  return mergeWorkflowProgress(incomingSnapshot, progress);
+  return mergeWorkflowProgress(preserveOutlineDetails(previousSnapshot, incomingSnapshot), progress);
+}
+
+// SSE snapshots deliberately omit heavyweight chapter detail. Preserve the
+// full outline already loaded by the project-open request while still taking
+// runtime counters, titles and budgets from the newer snapshot.
+export function preserveOutlineDetails(previousSnapshot, incomingSnapshot) {
+  if (!previousSnapshot || !incomingSnapshot) {
+    return incomingSnapshot;
+  }
+  const incomingKey = Array.isArray(incomingSnapshot.Outline)
+    ? 'Outline'
+    : Array.isArray(incomingSnapshot.outline) ? 'outline' : '';
+  const previousRows = Array.isArray(previousSnapshot.Outline)
+    ? previousSnapshot.Outline
+    : Array.isArray(previousSnapshot.outline) ? previousSnapshot.outline : [];
+  const incomingRows = incomingKey ? incomingSnapshot[incomingKey] : [];
+  if (!incomingRows.length || !previousRows.length) {
+    return incomingSnapshot;
+  }
+  const previousByChapter = new Map(previousRows.map((row) => [outlineChapter(row), row]));
+  const outline = incomingRows.map((row) => {
+    const previous = previousByChapter.get(outlineChapter(row));
+    if (!previous) {
+      return row;
+    }
+    return {
+      ...previous,
+      ...row,
+      CoreEvent: outlineText(row, 'CoreEvent', 'coreEvent', 'core_event') || outlineText(previous, 'CoreEvent', 'coreEvent', 'core_event'),
+      Hook: outlineText(row, 'Hook', 'hook') || outlineText(previous, 'Hook', 'hook'),
+      Scenes: outlineArray(row, 'Scenes', 'scenes').length
+        ? outlineArray(row, 'Scenes', 'scenes')
+        : outlineArray(previous, 'Scenes', 'scenes')
+    };
+  });
+  return { ...incomingSnapshot, [incomingKey]: outline };
+}
+
+function outlineChapter(row) {
+  return Number(row?.Chapter ?? row?.chapter ?? 0);
+}
+
+function outlineText(row, ...keys) {
+  for (const key of keys) {
+    const value = String(row?.[key] ?? '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+function outlineArray(row, ...keys) {
+  for (const key of keys) {
+    if (Array.isArray(row?.[key])) return row[key];
+  }
+  return [];
 }
 
 export function reduceWebEvents(state, events = []) {

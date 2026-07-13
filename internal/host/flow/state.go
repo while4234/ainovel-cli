@@ -16,6 +16,17 @@ func LoadState(store *storepkg.Store) State {
 	s := State{
 		FoundationMissing: store.FoundationMissing(),
 	}
+	if review, err := store.RunMeta.PlanningReview(); err == nil {
+		s.PlanningReview = review
+		if review != nil && review.Status == domain.PlanningReviewStatusCollecting {
+			switch review.Kind {
+			case domain.PlanningReviewKindBlueprint:
+				loadOriginalSkeletonState(&s, store, review)
+			case domain.PlanningReviewKindVolumeSplit:
+				s.OriginalPlanningWork, _ = store.OriginalPlanningAudits.NextWork(store.Outline)
+			}
+		}
+	}
 	progress, err := store.Progress.Load()
 	if err != nil || progress == nil {
 		return s
@@ -67,6 +78,47 @@ func LoadState(store *storepkg.Store) State {
 	}
 
 	return s
+}
+
+func loadOriginalSkeletonState(s *State, st *storepkg.Store, review *domain.PlanningReview) {
+	if s == nil || st == nil || review == nil {
+		return
+	}
+	volumes, err := st.Outline.LoadLayeredOutline()
+	if err != nil || len(volumes) == 0 {
+		return
+	}
+	s.BlueprintVolumeCount = len(volumes)
+	totalChapters := domain.TotalChapters(volumes)
+	missing := st.FoundationMissing()
+	foundationReady := true
+	for _, item := range missing {
+		if item != "outline" {
+			foundationReady = false
+			break
+		}
+	}
+	targetWords := review.TargetTotalWords
+	if targetWords <= 0 {
+		if meta, loadErr := st.RunMeta.Load(); loadErr == nil && meta != nil && meta.WordBudget != nil {
+			targetWords = meta.WordBudget.TargetTotalWords
+		}
+	}
+	minimumVolumes, minimumChapters := 2, 0
+	if targetWords > 0 {
+		minimumVolumes = (targetWords + 39_999) / 40_000
+		minimumChapters = (targetWords + 4_999) / 5_000
+	}
+	skeletonReady := foundationReady && len(volumes) >= minimumVolumes &&
+		(minimumChapters == 0 || totalChapters >= minimumChapters)
+	if skeletonReady {
+		s.SkeletonPlanningWork, _ = st.OriginalPlanningAudits.NextSkeletonWork(st.Outline)
+		return
+	}
+	// A new skeleton volume contains at least two three-chapter arcs. Tell the
+	// planner when that next bounded batch must also deliver the book ending.
+	s.BlueprintNextIsFinal = len(volumes)+1 >= minimumVolumes &&
+		(minimumChapters == 0 || totalChapters+6 >= minimumChapters)
 }
 
 func loadContinuationState(s *State, store *storepkg.Store) {

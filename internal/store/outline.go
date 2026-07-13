@@ -251,6 +251,12 @@ func (s *OutlineStore) expandArcUnlocked(volumeIdx, arcIdx int, chapters []domai
 		return nil, fmt.Errorf("arc not found: volume=%d, arc=%d", volumeIdx, arcIdx)
 	}
 	expanded := numberedOutlineEntries(chapters, location.startChapter)
+	if location.estimatedChapters > 0 && len(expanded) != location.estimatedChapters {
+		return nil, fmt.Errorf(
+			"expand_arc V%d A%d must contain exactly %d chapters from the approved volume plan, got %d",
+			volumeIdx, arcIdx, location.estimatedChapters, len(expanded),
+		)
+	}
 	if err := validateOutlineBatchEntries(fmt.Sprintf("expand_arc V%d A%d", volumeIdx, arcIdx), expanded); err != nil {
 		return nil, err
 	}
@@ -265,7 +271,7 @@ func (s *OutlineStore) expandArcUnlocked(volumeIdx, arcIdx int, chapters []domai
 				continue
 			}
 			volumes[vi].Arcs[ai].Chapters = expanded
-			volumes[vi].Arcs[ai].EstimatedChapters = 0
+			// Preserve the approved batch size for audit-directed repairs.
 			found = true
 			break
 		}
@@ -275,6 +281,9 @@ func (s *OutlineStore) expandArcUnlocked(volumeIdx, arcIdx int, chapters []domai
 	}
 	if !found {
 		return nil, fmt.Errorf("arc not found: volume=%d, arc=%d", volumeIdx, arcIdx)
+	}
+	if duplicate, ok := domain.FindDuplicateOutlineEntries(domain.FlattenOutline(volumes)); ok {
+		return nil, fmt.Errorf("expanded outline repeats an existing chapter promise: %w", duplicate)
 	}
 	if err := s.io.WriteJSONUnlocked("layered_outline.json", volumes); err != nil {
 		return nil, err
@@ -412,10 +421,29 @@ func (s *OutlineStore) appendVolumeUnlocked(vol domain.VolumeOutline) ([]domain.
 	return volumes, nil
 }
 
+func (s *OutlineStore) appendSkeletonVolumeUnlocked(vol domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+	var volumes []domain.VolumeOutline
+	if err := s.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
+		return nil, fmt.Errorf("load layered_outline: %w", err)
+	}
+	if err := validateAppendSkeletonVolume(volumes, vol); err != nil {
+		return nil, err
+	}
+	volumes = append(volumes, cloneVolumeOutline(vol))
+	if err := s.io.WriteJSONUnlocked("layered_outline.json", volumes); err != nil {
+		return nil, err
+	}
+	if err := s.io.WriteMarkdownUnlocked("layered_outline.md", renderLayeredOutline(volumes)); err != nil {
+		return nil, err
+	}
+	return volumes, nil
+}
+
 type outlineArcLocation struct {
-	found        bool
-	startChapter int
-	chapterCount int
+	found             bool
+	startChapter      int
+	chapterCount      int
+	estimatedChapters int
 }
 
 func locateOutlineArc(volumes []domain.VolumeOutline, volumeIdx, arcIdx int) outlineArcLocation {
@@ -425,9 +453,10 @@ func locateOutlineArc(volumes []domain.VolumeOutline, volumeIdx, arcIdx int) out
 			chapterCount := arcOutlineChapterCount(arc)
 			if volume.Index == volumeIdx && arc.Index == arcIdx {
 				return outlineArcLocation{
-					found:        true,
-					startChapter: nextChapter,
-					chapterCount: len(arc.Chapters),
+					found:             true,
+					startChapter:      nextChapter,
+					chapterCount:      len(arc.Chapters),
+					estimatedChapters: arc.EstimatedChapters,
 				}
 			}
 			nextChapter += chapterCount
@@ -511,17 +540,26 @@ func cloneOutlineEntry(entry domain.OutlineEntry) domain.OutlineEntry {
 }
 
 func validateAppendVolume(existing []domain.VolumeOutline, vol domain.VolumeOutline) error {
-	if len(existing) > 0 {
-		maxIdx := existing[len(existing)-1].Index
-		if vol.Index <= maxIdx {
-			return fmt.Errorf("卷 Index %d 必须大于现有最大值 %d", vol.Index, maxIdx)
-		}
-	}
-	if len(vol.Arcs) == 0 {
-		return fmt.Errorf("新卷必须至少包含一个弧")
+	if err := validateAppendSkeletonVolume(existing, vol); err != nil {
+		return err
 	}
 	if !vol.Arcs[0].IsExpanded() {
 		return fmt.Errorf("新卷的首弧必须包含详细章节")
+	}
+	return nil
+}
+
+func validateAppendSkeletonVolume(existing []domain.VolumeOutline, vol domain.VolumeOutline) error {
+	if len(existing) > 0 {
+		maxIdx := existing[len(existing)-1].Index
+		if vol.Index != maxIdx+1 {
+			return fmt.Errorf("卷 Index %d 必须紧接现有卷 %d", vol.Index, maxIdx)
+		}
+	} else if vol.Index != 1 {
+		return fmt.Errorf("首卷 Index 必须为 1")
+	}
+	if len(vol.Arcs) == 0 {
+		return fmt.Errorf("新卷必须至少包含一个弧")
 	}
 	return nil
 }

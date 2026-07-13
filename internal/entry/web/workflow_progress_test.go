@@ -40,6 +40,7 @@ func TestNormalWorkflowProgressWaitsForPlanningConfirmation(t *testing.T) {
 		NovelName: "test novel",
 		PlanningReview: &host.PlanningReviewSummary{
 			Status: domain.PlanningReviewStatusPending,
+			Kind:   domain.PlanningReviewKindVolumeSplit,
 		},
 	}
 	progress := normalWorkflowProgress("project-normal", snapshot, nil)
@@ -47,7 +48,7 @@ func TestNormalWorkflowProgressWaitsForPlanningConfirmation(t *testing.T) {
 	if progress.Workflow != workflowNormal || progress.Status != WorkflowStatusWaitingConfirmation {
 		t.Fatalf("progress = %+v", progress)
 	}
-	if progress.CurrentStep != "planning_review" {
+	if progress.CurrentStep != "volume_plan" {
 		t.Fatalf("current step = %q", progress.CurrentStep)
 	}
 	if progress.NextAction == nil || progress.NextAction.ID != "confirm_planning" {
@@ -55,6 +56,29 @@ func TestNormalWorkflowProgressWaitsForPlanningConfirmation(t *testing.T) {
 	}
 	if progress.NextAction.IdempotencyKey == "" {
 		t.Fatal("idempotency key is empty")
+	}
+}
+
+func TestNormalWorkflowProgressPlanningReviewSupersedesStaleCoCreateFailure(t *testing.T) {
+	snapshot := host.UISnapshot{PlanningReview: &host.PlanningReviewSummary{
+		Status: domain.PlanningReviewStatusPending,
+		Kind:   domain.PlanningReviewKindChapterOutline,
+	}}
+	coCreate := &webCoCreateState{
+		Kind:   webCoCreateKindNormal,
+		Failed: true,
+	}
+
+	progress := normalWorkflowProgress("project-normal", snapshot, coCreate)
+
+	if progress.Status != WorkflowStatusWaitingConfirmation || progress.CurrentStep != "chapter_outline" {
+		t.Fatalf("status/step = %q/%q", progress.Status, progress.CurrentStep)
+	}
+	if progress.NextAction == nil || progress.NextAction.ID != "confirm_planning" {
+		t.Fatalf("next action = %+v", progress.NextAction)
+	}
+	if progress.Error != "" || progress.Recoverable {
+		t.Fatalf("stale co-create failure leaked into planning progress: %+v", progress)
 	}
 }
 

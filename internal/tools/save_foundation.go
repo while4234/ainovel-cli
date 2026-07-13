@@ -32,7 +32,7 @@ func NewSaveFoundationTool(store *store.Store, gates ...CompletionGate) *SaveFou
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
 func (t *SaveFoundationTool) Description() string {
-	return "保存小说基础设定（premise/outline/characters/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?, from_chapter?, to_chapter?}。type 可选 premise / outline / layered_outline / characters / world_rules / expand_arc / repair_arc / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。expand_arc 展开骨架弧的详细章节（需 volume + arc，正常批次建议 3-5 章）；repair_arc 修复已展开弧的大纲，带 from_chapter/to_chapter 时只替换该全局章节窗口且必须保持窗口章节数不变，不带范围时保持旧的整弧修复行为；append_volume 追加新卷（content 为完整 VolumeOutline JSON，含弧结构；较大故事运动应拆成多个 3-5 章左右的小弧）；update_compass 更新终局方向（content 为 StoryCompass JSON）；complete_book 宣告全书完结（content 传空对象 {}，直接推 Phase=Complete；调用前必须先通过终卷判定清单，且无返工队列）。scale 可选，仅允许 short / mid / long。"
+	return "保存小说基础设定（premise/outline/characters/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?, from_chapter?, to_chapter?}。type 可选 premise / outline / layered_outline / characters / world_rules / expand_arc / repair_arc / repair_volume / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。expand_arc 展开骨架弧的详细章节（需 volume + arc，普通原创审核规划每批严格 3-4 章）；repair_arc 修复已展开弧；repair_volume 按自动审核或用户意见完整替换一个尚未展开的分卷骨架且不得改变该卷预估总章数；append_volume 追加新卷（普通原创分卷规划阶段每次只追加一个骨架卷，每弧3-4章）；update_compass 更新终局方向；complete_book 宣告全书完结。scale 可选，仅允许 short / mid / long。"
 }
 func (t *SaveFoundationTool) Label() string { return "保存设定" }
 
@@ -42,7 +42,7 @@ func (t *SaveFoundationTool) ConcurrencySafe(_ json.RawMessage) bool { return fa
 
 func (t *SaveFoundationTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("type", schema.Enum("设定类型。建议显式传；若缺失，工具会在内容和当前缺失项唯一明确时自动推断。", "premise", "outline", "layered_outline", "characters", "world_rules", "expand_arc", "repair_arc", "append_volume", "update_compass", "complete_book")),
+		schema.Property("type", schema.Enum("设定类型。建议显式传；若缺失，工具会在内容和当前缺失项唯一明确时自动推断。", "premise", "outline", "layered_outline", "characters", "world_rules", "expand_arc", "repair_arc", "repair_volume", "append_volume", "update_compass", "complete_book")),
 		schema.Property("content", map[string]any{
 			"description": "内容。premise 传 Markdown 字符串；其他类型直接传 JSON 数组或对象即可，也兼容传 JSON 字符串。expand_arc / repair_arc 时传章节数组。",
 		}).Required(),
@@ -99,6 +99,19 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	if t.store.Adaptation.Active() && (a.Type == "append_volume" || a.Type == "expand_arc") {
 		return nil, fmt.Errorf("改编模式已由 confirmed plan 锁定章节规模，不允许 %s；如需增删或重排章节，请重新生成规模提案并确认: %w", a.Type, errs.ErrToolPrecondition)
 	}
+	if t.longBlueprintSkeletonLocked() && a.Type != "append_volume" && a.Type != "repair_volume" && a.Type != "update_compass" {
+		return nil, fmt.Errorf(
+			"normal-original volume skeleton is already in batched generation; existing premise, characters, world_rules and layered_outline are locked. Only append_volume, audit-directed repair_volume, or update_compass is allowed until volume review: %w",
+			errs.ErrToolPrecondition,
+		)
+	}
+	if t.collectingLongBlueprint() && t.longBlueprintArtifactExists(a.Type) {
+		return nil, fmt.Errorf(
+			"normal-original blueprint artifact %s is already persisted and locked; continue with the remaining missing foundation instead of overwriting it: %w",
+			a.Type,
+			errs.ErrToolPrecondition,
+		)
+	}
 
 	// 写作阶段禁止全量覆盖大纲，只允许增量操作（expand_arc / repair_arc / append_volume）
 	if (a.Type == "outline" || a.Type == "layered_outline") && t.isWriting() {
@@ -123,6 +136,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		_ = t.store.Progress.UpdatePhase(domain.PhasePremise)
 
 	case "outline":
+		if t.collectingLongBlueprint() {
+			return nil, fmt.Errorf("long normal-original planning must save a layered volume skeleton before detailed chapters; flat outline is only for shorter works: %w", errs.ErrToolPrecondition)
+		}
 		var entries []domain.OutlineEntry
 		if err := decode("outline", &entries); err != nil {
 			return nil, err
@@ -153,6 +169,16 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		if err := validateGeneratedLayeredOutline(volumes, a.Review); err != nil {
 			return nil, err
+		}
+		if t.collectingLongBlueprint() {
+			if len(volumes) != 1 {
+				return nil, fmt.Errorf("normal-original long planning must generate the volume skeleton in batches; the first layered_outline call must contain exactly one volume, got %d: %w", len(volumes), errs.ErrToolPrecondition)
+			}
+			if err := t.validateLongVolumeSkeletonStructure(volumes); err != nil {
+				return nil, err
+			}
+			_ = t.store.OriginalPlanningAudits.Reset()
+			result["volume_batch_saved"] = true
 		}
 		flat := domain.FlattenOutline(volumes)
 		if err := t.store.Outline.SaveLayeredOutline(volumes); err != nil {
@@ -211,6 +237,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		result["volume"] = a.Volume
 		result["arc"] = a.Arc
 		result["chapters"] = len(chapters)
+		if review, _ := t.store.RunMeta.PlanningReview(); review != nil && review.Status == domain.PlanningReviewStatusCollecting && review.Kind == domain.PlanningReviewKindVolumeSplit {
+			result["audit_required"] = true
+		}
 		if err := t.refreshWordBudgetPlan(result); err != nil {
 			return nil, err
 		}
@@ -228,6 +257,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		if err := t.store.RepairArcOutlineRange(a.Volume, a.Arc, a.From, a.To, chapters); err != nil {
 			return nil, fmt.Errorf("repair arc: %w: %w", errs.ErrStoreWrite, err)
+		}
+		if err := t.store.OriginalPlanningAudits.InvalidateRepair(a.Volume, a.Arc); err != nil {
+			return nil, fmt.Errorf("invalidate repaired outline audits: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["volume"] = a.Volume
 		result["arc"] = a.Arc
@@ -248,18 +280,80 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := decode("append_volume", &vol); err != nil {
 			return nil, err
 		}
-		if err := t.store.AppendVolume(vol); err != nil {
+		if t.collectingLongBlueprint() {
+			if err := t.validateLongVolumeSkeletonStructure([]domain.VolumeOutline{vol}); err != nil {
+				return nil, err
+			}
+			if err := t.store.AppendSkeletonVolume(vol); err != nil {
+				return nil, fmt.Errorf("append skeleton volume: %w: %w", errs.ErrStoreWrite, err)
+			}
+			result["volume_batch_saved"] = true
+		} else if err := t.store.AppendVolume(vol); err != nil {
 			return nil, fmt.Errorf("append volume: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["volume"] = vol.Index
 		result["arcs"] = len(vol.Arcs)
 		chCount := 0
 		for _, arc := range vol.Arcs {
-			chCount += len(arc.Chapters)
+			if len(arc.Chapters) > 0 {
+				chCount += len(arc.Chapters)
+			} else {
+				chCount += arc.EstimatedChapters
+			}
 		}
 		if chCount > 0 {
 			result["chapters"] = chCount
 		}
+		if err := t.refreshWordBudgetPlan(result); err != nil {
+			return nil, err
+		}
+
+	case "repair_volume":
+		if a.Volume <= 0 {
+			return nil, fmt.Errorf("repair_volume requires volume: %w", errs.ErrToolArgs)
+		}
+		var repaired domain.VolumeOutline
+		if err := decode("repair_volume", &repaired); err != nil {
+			return nil, err
+		}
+		if repaired.Index != a.Volume {
+			return nil, fmt.Errorf("repair_volume target is V%d but content index is V%d: %w", a.Volume, repaired.Index, errs.ErrToolArgs)
+		}
+		if err := t.validateLongVolumeSkeletonStructure([]domain.VolumeOutline{repaired}); err != nil {
+			return nil, err
+		}
+		volumes, err := t.store.Outline.LoadLayeredOutline()
+		if err != nil {
+			return nil, fmt.Errorf("load skeleton for volume repair: %w", err)
+		}
+		found := false
+		for i := range volumes {
+			if volumes[i].Index != a.Volume {
+				continue
+			}
+			oldCount := domain.TotalChapters([]domain.VolumeOutline{volumes[i]})
+			newCount := domain.TotalChapters([]domain.VolumeOutline{repaired})
+			if oldCount != newCount {
+				return nil, fmt.Errorf("repair_volume V%d must keep %d estimated chapters, got %d: %w", a.Volume, oldCount, newCount, errs.ErrToolPrecondition)
+			}
+			volumes[i] = repaired
+			found = true
+			break
+		}
+		if !found {
+			return nil, fmt.Errorf("repair_volume V%d not found: %w", a.Volume, errs.ErrToolPrecondition)
+		}
+		if err := t.store.Outline.SaveLayeredOutline(volumes); err != nil {
+			return nil, fmt.Errorf("save repaired volume skeleton: %w", err)
+		}
+		if err := t.store.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+			return nil, fmt.Errorf("save repaired flattened outline: %w", err)
+		}
+		if err := t.store.OriginalPlanningAudits.InvalidateSkeletonRepair(a.Volume); err != nil {
+			return nil, fmt.Errorf("invalidate repaired skeleton audits: %w", err)
+		}
+		result["volume"] = a.Volume
+		result["volume_repaired"] = true
 		if err := t.refreshWordBudgetPlan(result); err != nil {
 			return nil, err
 		}
@@ -321,14 +415,14 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		result["last_updated"] = compass.LastUpdated
 
 	default:
-		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/world_rules/expand_arc/repair_arc/append_volume/update_compass/complete_book: %w", a.Type, errs.ErrToolArgs)
+		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/world_rules/expand_arc/repair_arc/repair_volume/append_volume/update_compass/complete_book: %w", a.Type, errs.ErrToolArgs)
 	}
 
 	// checkpoint
 	scope := domain.GlobalScope()
 	if a.Type == "expand_arc" || a.Type == "repair_arc" {
 		scope = domain.ArcScope(a.Volume, a.Arc)
-	} else if a.Type == "append_volume" {
+	} else if a.Type == "append_volume" || a.Type == "repair_volume" {
 		scope = domain.GlobalScope()
 	}
 	if _, err := t.store.Checkpoints.AppendArtifact(scope, a.Type, foundationArtifact(a.Type)); err != nil {
@@ -341,12 +435,45 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	ready := len(remaining) == 0
 	result["remaining"] = remaining
 	result["foundation_ready"] = ready
-	if ready {
-		if review, _ := t.store.RunMeta.PlanningReview(); review != nil &&
-			(review.Status == domain.PlanningReviewStatusCollecting || review.Status == domain.PlanningReviewStatusPending) {
+	if review, _ := t.store.RunMeta.PlanningReview(); review != nil &&
+		(review.Status == domain.PlanningReviewStatusCollecting || review.Status == domain.PlanningReviewStatusPending) {
+		reviewReady := false
+		nextKind := review.Kind
+		switch review.Kind {
+		case domain.PlanningReviewKindBlueprint:
+			if t.requiresLayeredPlanning() {
+				var reviewErr error
+				reviewReady, reviewErr = t.longVolumeSkeletonReady()
+				if reviewErr != nil {
+					return nil, reviewErr
+				}
+				if reviewReady {
+					// The semantic skeleton audit owns the transition to the user
+					// volume gate. Numeric coverage alone is never user-ready.
+					reviewReady = false
+					result["continue_planning"] = true
+					result["foundation_ready"] = false
+				}
+			} else {
+				reviewReady = ready
+				nextKind = domain.PlanningReviewKindChapterOutline
+			}
+		case domain.PlanningReviewKindVolumeSplit:
+			// The independent original-fiction audit router owns this transition.
+			// Even when all arcs are expanded, arc/volume/book batch gates must pass
+			// before chapter_outline can become pending.
+			reviewReady = false
+			if review.Status == domain.PlanningReviewStatusCollecting {
+				result["continue_planning"] = true
+				result["foundation_ready"] = false
+			}
+		case domain.PlanningReviewKindChapterOutline:
+			reviewReady = ready
+		}
+		if reviewReady {
 			now := time.Now().UTC().Format(time.RFC3339)
 			review.Status = domain.PlanningReviewStatusPending
-			review.Kind = planningReviewKindForFoundation(t.store)
+			review.Kind = nextKind
 			if review.CreatedAt == "" {
 				review.CreatedAt = now
 			}
@@ -356,7 +483,10 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			}
 			result["planning_review"] = review.Status
 			result["planning_review_kind"] = review.Kind
-		} else if p, _ := t.store.Progress.Load(); p != nil &&
+			result["foundation_ready"] = true
+		}
+	} else if ready {
+		if p, _ := t.store.Progress.Load(); p != nil &&
 			p.Phase != domain.PhaseWriting && p.Phase != domain.PhaseComplete {
 			_ = t.store.Progress.UpdatePhase(domain.PhaseWriting)
 			result["phase"] = string(domain.PhaseWriting)
@@ -370,9 +500,149 @@ func planningReviewKindForFoundation(st *store.Store) string {
 		return domain.PlanningReviewKindBlueprint
 	}
 	if layered, _ := st.Outline.LoadLayeredOutline(); len(layered) > 0 {
+		if layeredOutlineArcsExpanded(layered) {
+			return domain.PlanningReviewKindChapterOutline
+		}
 		return domain.PlanningReviewKindVolumeSplit
 	}
 	return domain.PlanningReviewKindChapterOutline
+}
+
+func (t *SaveFoundationTool) collectingLongBlueprint() bool {
+	review, _ := t.store.RunMeta.PlanningReview()
+	return review != nil && review.Status == domain.PlanningReviewStatusCollecting &&
+		review.Kind == domain.PlanningReviewKindBlueprint && t.requiresLayeredPlanning()
+}
+
+func (t *SaveFoundationTool) longBlueprintSkeletonLocked() bool {
+	if !t.collectingLongBlueprint() {
+		return false
+	}
+	volumes, err := t.store.Outline.LoadLayeredOutline()
+	return err == nil && len(volumes) > 0
+}
+
+func (t *SaveFoundationTool) longBlueprintArtifactExists(artifactType string) bool {
+	switch artifactType {
+	case "premise":
+		premise, err := t.store.Outline.LoadPremise()
+		return err == nil && strings.TrimSpace(premise) != ""
+	case "characters":
+		characters, err := t.store.Characters.Load()
+		return err == nil && len(characters) > 0
+	case "world_rules":
+		rules, err := t.store.World.LoadWorldRules()
+		return err == nil && len(rules) > 0
+	case "layered_outline":
+		volumes, err := t.store.Outline.LoadLayeredOutline()
+		return err == nil && len(volumes) > 0
+	default:
+		return false
+	}
+}
+
+func (t *SaveFoundationTool) requiresLayeredPlanning() bool {
+	meta, _ := t.store.RunMeta.Load()
+	if meta == nil {
+		return false
+	}
+	if meta.PlanningTier == domain.PlanningTierLong {
+		return true
+	}
+	return meta.WordBudget != nil && meta.WordBudget.TargetTotalWords >= 50_000
+}
+
+func (t *SaveFoundationTool) validateLongVolumeSkeletonStructure(volumes []domain.VolumeOutline) error {
+	if len(volumes) == 0 {
+		return fmt.Errorf("long volume skeleton must contain at least one volume: %w", errs.ErrToolPrecondition)
+	}
+	for _, volume := range volumes {
+		if strings.TrimSpace(volume.Title) == "" || strings.TrimSpace(volume.Theme) == "" || len(volume.Arcs) == 0 {
+			return fmt.Errorf("volume %d needs a title, conflict/theme, and at least one story arc: %w", volume.Index, errs.ErrToolPrecondition)
+		}
+		if len(volume.Arcs) < 2 || len(volume.Arcs) > 3 {
+			return fmt.Errorf("volume %d must contain 2-3 purposeful arcs so audit and pacing remain bounded, got %d: %w", volume.Index, len(volume.Arcs), errs.ErrToolPrecondition)
+		}
+		for _, arc := range volume.Arcs {
+			if len(arc.Chapters) > 0 {
+				return fmt.Errorf("initial long proposal must be skeleton-only; volume %d arc %d already contains detailed chapters: %w", volume.Index, arc.Index, errs.ErrToolPrecondition)
+			}
+			if strings.TrimSpace(arc.Title) == "" || strings.TrimSpace(arc.Goal) == "" {
+				return fmt.Errorf("volume %d arc %d needs a distinct title and causal goal: %w", volume.Index, arc.Index, errs.ErrToolPrecondition)
+			}
+			if arc.EstimatedChapters < 3 || arc.EstimatedChapters > 4 {
+				return fmt.Errorf("volume %d arc %d must reserve 3-4 chapters for one detailed-outline and audit batch, got %d: %w", volume.Index, arc.Index, arc.EstimatedChapters, errs.ErrToolPrecondition)
+			}
+		}
+	}
+	return nil
+}
+
+func (t *SaveFoundationTool) longVolumeSkeletonCoverage(volumes []domain.VolumeOutline) (bool, error) {
+	if err := t.validateLongVolumeSkeletonStructure(volumes); err != nil {
+		return false, err
+	}
+	meta, _ := t.store.RunMeta.Load()
+	targetWords := 0
+	if meta != nil && meta.WordBudget != nil {
+		targetWords = meta.WordBudget.TargetTotalWords
+	}
+	if targetWords <= 0 {
+		return len(volumes) >= 2, nil
+	}
+	total := domain.TotalChapters(volumes)
+	minimum := (targetWords + 4_999) / 5_000
+	maximum := targetWords / 3_000
+	if maximum < minimum {
+		maximum = minimum
+	}
+	minimumVolumes := (targetWords + 39_999) / 40_000
+	maximumVolumes := (targetWords + 19_999) / 20_000
+	if len(volumes) > maximumVolumes || total > maximum {
+		return false, fmt.Errorf(
+			"planned %d volumes/%d chapters exceeds the %d-word budget; expected %d-%d volumes and %d-%d chapters: %w",
+			len(volumes), total, targetWords, minimumVolumes, maximumVolumes, minimum, maximum, errs.ErrToolPrecondition,
+		)
+	}
+	return len(volumes) >= minimumVolumes && total >= minimum, nil
+}
+
+func (t *SaveFoundationTool) longVolumeSkeletonReady() (bool, error) {
+	for _, missing := range t.store.FoundationMissing() {
+		if missing != "outline" {
+			return false, nil
+		}
+	}
+	volumes, err := t.store.Outline.LoadLayeredOutline()
+	if err != nil || len(volumes) == 0 {
+		return false, err
+	}
+	return t.longVolumeSkeletonCoverage(volumes)
+}
+
+func allLayeredArcsExpanded(st *store.Store) bool {
+	if st == nil {
+		return false
+	}
+	volumes, err := st.Outline.LoadLayeredOutline()
+	return err == nil && layeredOutlineArcsExpanded(volumes)
+}
+
+func layeredOutlineArcsExpanded(volumes []domain.VolumeOutline) bool {
+	if len(volumes) == 0 {
+		return false
+	}
+	for _, volume := range volumes {
+		if len(volume.Arcs) == 0 {
+			return false
+		}
+		for _, arc := range volume.Arcs {
+			if len(arc.Chapters) == 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func foundationArtifact(t string) string {
@@ -381,7 +651,7 @@ func foundationArtifact(t string) string {
 		return "premise.md"
 	case "outline":
 		return "outline.json"
-	case "layered_outline", "expand_arc", "repair_arc", "append_volume":
+	case "layered_outline", "expand_arc", "repair_arc", "repair_volume", "append_volume":
 		return "layered_outline.json"
 	case "complete_book":
 		return "meta/progress.json"

@@ -1121,3 +1121,231 @@ func TestSaveFoundationCompleteBookRejectsWithPendingRewrites(t *testing.T) {
 		t.Fatalf("phase should not be Complete with PendingRewrites: %s", progress.Phase)
 	}
 }
+
+func TestSaveFoundationLongNormalPlanningUsesVolumeAndBatchedChapterReviews(t *testing.T) {
+	dir := testStoreDir(t)
+	st := store.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("long original", 0); err != nil {
+		t.Fatalf("Init progress: %v", err)
+	}
+	budget := domain.NewWordBudget(100_000, domain.WordBudgetSourceAPI)
+	if err := st.RunMeta.SetWordBudget(budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status: domain.PlanningReviewStatusCollecting,
+		Kind:   domain.PlanningReviewKindBlueprint,
+	}); err != nil {
+		t.Fatalf("SetPlanningReview: %v", err)
+	}
+	if err := st.Outline.SavePremise("# Long original"); err != nil {
+		t.Fatalf("SavePremise: %v", err)
+	}
+	if err := st.Characters.Save([]domain.Character{{Name: "Hero", Role: "lead", Description: "drives the central conflict"}}); err != nil {
+		t.Fatalf("SaveCharacters: %v", err)
+	}
+	if err := st.World.SaveWorldRules([]domain.WorldRule{{Category: "society", Rule: "Actions have public consequences", Boundary: "No consequence-free reset"}}); err != nil {
+		t.Fatalf("SaveWorldRules: %v", err)
+	}
+	alreadySavedPremiseArgs, _ := json.Marshal(map[string]any{"type": "premise", "content": "# Replaced before skeleton"})
+	if _, err := NewSaveFoundationTool(st).Execute(context.Background(), alreadySavedPremiseArgs); err == nil || !strings.Contains(err.Error(), "already persisted and locked") {
+		t.Fatalf("expected existing premise to be locked during blueprint recovery, got %v", err)
+	}
+
+	volumes := make([]domain.VolumeOutline, 3)
+	for vi := range volumes {
+		volumes[vi] = domain.VolumeOutline{Index: vi + 1, Title: fmt.Sprintf("Volume %d", vi+1), Theme: fmt.Sprintf("Escalation %d", vi+1)}
+		for ai := 1; ai <= 3; ai++ {
+			volumes[vi].Arcs = append(volumes[vi].Arcs, domain.ArcOutline{
+				Index: ai, Title: fmt.Sprintf("V%d arc %d", vi+1, ai), Goal: fmt.Sprintf("advance conflict through milestone %d", vi*3+ai), EstimatedChapters: 3,
+			})
+		}
+	}
+	tool := NewSaveFoundationTool(st)
+	execute := func(payload map[string]any) map[string]any {
+		t.Helper()
+		args, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		raw, err := tool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute(%v): %v", payload["type"], err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatalf("Unmarshal result: %v", err)
+		}
+		return result
+	}
+	auditTool := NewSaveOriginalPlanningAuditTool(st)
+	saveAudit := func(payload map[string]any) map[string]any {
+		t.Helper()
+		args, _ := json.Marshal(payload)
+		raw, err := auditTool.Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("save audit %v: %v", payload["scope"], err)
+		}
+		var out map[string]any
+		_ = json.Unmarshal(raw, &out)
+		return out
+	}
+	dimensions := func(names ...string) []map[string]any {
+		out := make([]map[string]any, 0, len(names))
+		for _, name := range names {
+			out = append(out, map[string]any{"name": name, "score": 8, "comment": "evidence-backed pass"})
+		}
+		return out
+	}
+	execute(map[string]any{"type": "layered_outline", "scale": "long", "content": volumes[:1]})
+	lockedPremiseArgs, _ := json.Marshal(map[string]any{"type": "premise", "content": "# Replaced by mistake"})
+	if _, err := tool.Execute(context.Background(), lockedPremiseArgs); err == nil || !strings.Contains(err.Error(), "volume skeleton is already in batched generation") {
+		t.Fatalf("expected persisted foundation replacement to be locked after first skeleton volume, got %v", err)
+	}
+	execute(map[string]any{"type": "append_volume", "content": volumes[1]})
+	execute(map[string]any{"type": "append_volume", "content": volumes[2]})
+	result := execute(map[string]any{"type": "update_compass", "content": domain.StoryCompass{EndingDirection: "The heroine wins without abandoning her chosen family"}})
+	if result["continue_planning"] != true || result["planning_review"] == domain.PlanningReviewStatusPending {
+		t.Fatalf("numeric skeleton coverage must enter automatic audit before user review: %+v", result)
+	}
+	for vi := 1; vi <= 3; vi++ {
+		saveAudit(map[string]any{
+			"scope": "skeleton_volume", "volume": vi, "verdict": "pass", "summary": "volume has causal progression and a paid phase result",
+			"dimensions": dimensions("volume_function", "arc_causality", "character_progression", "conflict_escalation", "budget_capacity", "payoff_and_handoff"),
+		})
+	}
+	saveAudit(map[string]any{
+		"scope": "skeleton_book_batch", "from_volume": 1, "to_volume": 2, "verdict": "pass", "summary": "first two volumes escalate coherently",
+		"dimensions": dimensions("cross_volume_continuity", "escalation", "character_progression", "setup_payoff", "pacing_balance", "plot_diversity"),
+	})
+	saveAudit(map[string]any{
+		"scope": "skeleton_book_batch", "from_volume": 3, "to_volume": 3, "verdict": "pass", "summary": "final volume closes the promised endgame",
+		"dimensions": dimensions("cross_volume_continuity", "escalation", "character_progression", "setup_payoff", "pacing_balance", "plot_diversity"),
+	})
+	result = saveAudit(map[string]any{
+		"scope": "skeleton_book", "verdict": "pass", "summary": "whole skeleton carries and closes every promise",
+		"dimensions": dimensions("mainline_completeness", "ending_closure", "character_arc_completeness", "setup_payoff", "volume_balance", "budget_capacity", "originality"),
+	})
+	if result["planning_review"] != domain.PlanningReviewStatusPending || result["planning_review_kind"] != domain.PlanningReviewKindVolumeSplit {
+		t.Fatalf("automatic skeleton audit should open volume review: %+v", result)
+	}
+
+	review, _ := st.RunMeta.PlanningReview()
+	review.Status = domain.PlanningReviewStatusCollecting
+	if err := st.RunMeta.SetPlanningReview(review); err != nil {
+		t.Fatalf("start detailed outline stage: %v", err)
+	}
+	chapter := 1
+	beats := []string{
+		"avalanche rescue exposes the hidden heir", "beacon sabotage strands the convoy", "cipher auction reveals the forged succession",
+		"drought council breaks the merchant alliance", "eclipse ritual awakens a disputed oath", "ferry mutiny transfers the royal witness",
+		"garden duel overturns the engagement pact", "harbor quarantine conceals a prison exchange", "icehouse fire destroys the blackmail ledger",
+		"jewel theft forces a public confession", "kestrel message redirects the border army", "lighthouse siege reunites the separated sisters",
+		"masquerade vote removes the corrupt regent", "nursery tunnel uncovers the missing child", "observatory trial disproves the ancient prophecy",
+		"pilgrim strike closes the mountain road", "quarry collapse traps the rival commanders", "river tribunal restores the stolen estate",
+		"salt riot divides the palace guard", "theater premiere identifies the masked assassin", "underground flood releases the sealed archive",
+		"vineyard bargain converts an enemy captain", "winter coronation triggers the final rebellion", "xylophone signal opens the evacuation route",
+		"yacht blockade exposes the treasury conspiracy", "zephyr code reunites the rebel councils", "archive verdict completes the succession struggle",
+	}
+	for vi := 1; vi <= 3; vi++ {
+		for ai := 1; ai <= 3; ai++ {
+			batchStart := chapter
+			entries := make([]domain.OutlineEntry, 3)
+			for i := range entries {
+				beat := beats[chapter-1]
+				entries[i] = domain.OutlineEntry{
+					Chapter:   chapter,
+					Title:     strings.Title(beat),
+					CoreEvent: beat,
+					Hook:      "unresolved " + beat,
+					Scenes:    []string{beat},
+				}
+				chapter++
+			}
+			result = execute(map[string]any{
+				"type": "expand_arc", "volume": vi, "arc": ai, "content": entries,
+				"similarity_review": []map[string]any{
+					{"chapter": batchStart + 1, "existing_chapter": batchStart, "duplicate": false, "reason": "distinct causal beat"},
+					{"chapter": batchStart + 2, "existing_chapter": batchStart, "duplicate": false, "reason": "distinct causal beat"},
+					{"chapter": batchStart + 2, "existing_chapter": batchStart + 1, "duplicate": false, "reason": "distinct causal beat"},
+				},
+			})
+			if result["continue_planning"] != true || result["audit_required"] != true {
+				t.Fatalf("batch V%d A%d should continue: %+v", vi, ai, result)
+			}
+			saveAudit(map[string]any{
+				"scope": "arc", "volume": vi, "arc": ai, "from_chapter": batchStart, "to_chapter": chapter - 1,
+				"verdict": "pass", "summary": "arc advances causally", "dimensions": dimensions("causal_progression", "character_logic", "chapter_value", "continuity", "hook_and_pacing", "originality"),
+			})
+		}
+		saveAudit(map[string]any{
+			"scope": "volume", "volume": vi, "verdict": "pass", "summary": "volume carries its budget and climax",
+			"dimensions": dimensions("structure_pacing", "theme_conflict", "climax_payoff", "character_arc", "budget_capacity", "next_volume_drive"),
+		})
+	}
+	saveAudit(map[string]any{
+		"scope": "book_batch", "from_volume": 1, "to_volume": 2, "verdict": "pass", "summary": "volumes one and two escalate coherently",
+		"dimensions": dimensions("cross_volume_continuity", "escalation", "character_progression", "setup_payoff", "pacing_balance", "originality"),
+	})
+	saveAudit(map[string]any{
+		"scope": "book_batch", "from_volume": 3, "to_volume": 3, "verdict": "pass", "summary": "final volume completes the escalation",
+		"dimensions": dimensions("cross_volume_continuity", "escalation", "character_progression", "setup_payoff", "pacing_balance", "originality"),
+	})
+	result = saveAudit(map[string]any{
+		"scope": "book", "verdict": "pass", "summary": "whole book closes every major promise",
+		"dimensions": dimensions("mainline_closure", "character_closure", "setup_payoff", "escalation_pacing", "world_consistency", "originality", "ending_delivery"),
+	})
+	if result["planning_review"] != domain.PlanningReviewStatusPending || result["planning_review_kind"] != domain.PlanningReviewKindChapterOutline {
+		t.Fatalf("chapter review transition = %+v", result)
+	}
+	flat, err := st.Outline.LoadOutline()
+	if err != nil || len(flat) != 27 {
+		t.Fatalf("detailed outline count=%d err=%v", len(flat), err)
+	}
+}
+
+func TestSaveFoundationRepairVolumeKeepsBudgetAndInvalidatesSkeletonAudit(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("repair skeleton", 18); err != nil {
+		t.Fatal(err)
+	}
+	volumes := []domain.VolumeOutline{
+		{Index: 1, Title: "Opening", Theme: "survive", Arcs: []domain.ArcOutline{{Index: 1, Title: "A", Goal: "escape", EstimatedChapters: 3}, {Index: 2, Title: "B", Goal: "counter", EstimatedChapters: 3}}},
+		{Index: 2, Title: "False ending", Theme: "open another mystery", Arcs: []domain.ArcOutline{{Index: 1, Title: "C", Goal: "find a clue", EstimatedChapters: 3}, {Index: 2, Title: "D", Goal: "start another hunt", EstimatedChapters: 3}}},
+	}
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindBlueprint}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.OriginalPlanningAudits.Save(domain.OriginalPlanningAudit{Scope: "skeleton_volume", Volume: 1, Verdict: "pass"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.OriginalPlanningAudits.Save(domain.OriginalPlanningAudit{Scope: "skeleton_volume", Volume: 2, Verdict: "revise", Issues: []domain.OriginalPlanningAuditIssue{{Volume: 2, Arc: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	repaired := domain.VolumeOutline{Index: 2, Title: "Final reckoning", Theme: "close every promise", Arcs: []domain.ArcOutline{
+		{Index: 1, Title: "Truth", Goal: "prove and pay off the mystery", EstimatedChapters: 3},
+		{Index: 2, Title: "Choice", Goal: "defeat the antagonist and deliver the ending", EstimatedChapters: 3},
+	}}
+	args, _ := json.Marshal(map[string]any{"type": "repair_volume", "volume": 2, "content": repaired})
+	if _, err := NewSaveFoundationTool(st).Execute(context.Background(), args); err != nil {
+		t.Fatalf("repair volume: %v", err)
+	}
+	got, _ := st.Outline.LoadLayeredOutline()
+	if got[0].Title != "Opening" || got[1].Title != "Final reckoning" || domain.TotalChapters(got) != 12 {
+		t.Fatalf("repaired volumes = %+v", got)
+	}
+	kept, _ := st.OriginalPlanningAudits.Get("skeleton_volume", 1, 0)
+	invalidated, _ := st.OriginalPlanningAudits.Get("skeleton_volume", 2, 0)
+	if kept == nil || invalidated != nil {
+		t.Fatalf("unaffected audit=%+v repaired audit=%+v", kept, invalidated)
+	}
+}

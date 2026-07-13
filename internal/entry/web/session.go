@@ -2033,7 +2033,7 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 		if err != nil {
 			return state.apiState(), err
 		}
-		if err := s.prepareNormalCoCreatePlanning(plan, "", nil); err != nil {
+		if err := s.prepareNormalCoCreateDraft(plan, ""); err != nil {
 			return state.apiState(), err
 		}
 	}
@@ -2165,6 +2165,19 @@ func (s *ProjectSession) commitAdaptCoCreate(ctx context.Context) (webCoCreateSt
 	return api, nil
 }
 
+// prepareNormalCoCreateDraft persists the completed co-create brief without
+// starting the planner. The user deliberately starts proposal generation from
+// the planning review checkpoint.
+func (s *ProjectSession) prepareNormalCoCreateDraft(plan startup.Plan, createdAt string) error {
+	if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+		return err
+	}
+	if err := s.persistWordBudget(plan.WordBudget); err != nil {
+		return err
+	}
+	return s.saveNormalCoCreatePlanningReview(plan, createdAt, domain.PlanningReviewStatusPending)
+}
+
 func (s *ProjectSession) prepareNormalCoCreatePlanning(plan startup.Plan, createdAt string, rollback *domain.PlanningReview) error {
 	if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
 		return err
@@ -2172,7 +2185,7 @@ func (s *ProjectSession) prepareNormalCoCreatePlanning(plan startup.Plan, create
 	if err := s.persistWordBudget(plan.WordBudget); err != nil {
 		return err
 	}
-	if err := s.saveNormalCoCreatePlanningReview(plan, createdAt); err != nil {
+	if err := s.saveNormalCoCreatePlanningReview(plan, createdAt, domain.PlanningReviewStatusCollecting); err != nil {
 		return err
 	}
 	if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
@@ -2187,9 +2200,18 @@ func (s *ProjectSession) prepareNormalCoCreatePlanning(plan startup.Plan, create
 	return nil
 }
 
-func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan, createdAt string) error {
+func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan, createdAt, status string) error {
 	if s == nil {
 		return fmt.Errorf("project session is nil")
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	budget := plan.WordBudget
+	if budget == nil || budget.TargetTotalWords <= 0 {
+		if meta, err := st.RunMeta.Load(); err == nil && meta != nil && meta.WordBudget != nil && meta.WordBudget.TargetTotalWords > 0 {
+			copy := *meta.WordBudget
+			budget = &copy
+			plan.StartPrompt = host.BuildStartPromptWithBudget(plan.RawPrompt, budget)
+		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	createdAt = strings.TrimSpace(createdAt)
@@ -2197,11 +2219,11 @@ func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan, cre
 		createdAt = now
 	}
 	targetWords := 0
-	if plan.WordBudget != nil {
-		targetWords = plan.WordBudget.TargetTotalWords
+	if budget != nil {
+		targetWords = budget.TargetTotalWords
 	}
 	review := &domain.PlanningReview{
-		Status:           domain.PlanningReviewStatusCollecting,
+		Status:           status,
 		Kind:             domain.PlanningReviewKindBlueprint,
 		Brief:            strings.TrimSpace(plan.RawPrompt),
 		StartPrompt:      strings.TrimSpace(plan.StartPrompt),
@@ -2209,7 +2231,6 @@ func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan, cre
 		CreatedAt:        createdAt,
 		UpdatedAt:        now,
 	}
-	st := storepkg.NewStore(s.manifest.OutputDir)
 	return st.RunMeta.SetPlanningReview(review)
 }
 
@@ -2262,6 +2283,20 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, req webCoCr
 	if err != nil {
 		return err
 	}
+	if review.Kind == domain.PlanningReviewKindVolumeSplit && target.Scope == "volume" {
+		if err := s.prepareNormalVolumeSplitRevision(st, review, target); err != nil {
+			return fmt.Errorf("start targeted volume revision: %w", err)
+		}
+		s.AppendSnapshot()
+		return nil
+	}
+	if review.Kind == domain.PlanningReviewKindChapterOutline && target.Scope == "chapter" {
+		if err := s.prepareNormalChapterOutlineRevision(st, review, target); err != nil {
+			return fmt.Errorf("start targeted chapter-outline revision: %w", err)
+		}
+		s.AppendSnapshot()
+		return nil
+	}
 
 	revision := newWebCoCreatePlanningRevisionSession(review, target)
 	reply, err := s.runCoCreatePlanningRevision(ctx, revision)
@@ -2277,11 +2312,110 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, req webCoCr
 		return fmt.Errorf("build revised co-create plan: %w", err)
 	}
 	rollback := *review
-	if err := s.prepareNormalCoCreatePlanning(plan, review.CreatedAt, &rollback); err != nil {
+	if review.Kind == domain.PlanningReviewKindBlueprint {
+		if err := s.prepareNormalCoCreateDraft(plan, review.CreatedAt); err != nil {
+			return fmt.Errorf("save revised co-create draft: %w", err)
+		}
+	} else if err := s.prepareNormalCoCreatePlanning(plan, review.CreatedAt, &rollback); err != nil {
 		return fmt.Errorf("start revised co-create planning: %w", err)
 	}
 	s.AppendSnapshot()
 	return nil
+}
+
+func (s *ProjectSession) prepareNormalVolumeSplitRevision(st *storepkg.Store, review *domain.PlanningReview, target coCreatePlanningRevisionTarget) error {
+	if st == nil || review == nil || target.VolumeIndex <= 0 {
+		return fmt.Errorf("volume planning review target is required")
+	}
+	if err := s.host.PrepareUserRules(review.Brief); err != nil {
+		return err
+	}
+	// A user preference enters the same repair queue as an editorial failure.
+	// After the selected volume is replaced, the normal skeleton audits rerun
+	// before the revised plan is exposed to the user again.
+	audit := domain.OriginalPlanningAudit{
+		Scope: "skeleton_book", Verdict: "revise", Summary: "user requested a reviewed volume-skeleton revision",
+		Issues: []domain.OriginalPlanningAuditIssue{{
+			Severity: "major", Volume: target.VolumeIndex, Arc: 1,
+			Description: target.Instruction, RepairInstruction: target.Instruction,
+		}},
+	}
+	if err := st.OriginalPlanningAudits.Save(audit); err != nil {
+		return fmt.Errorf("queue targeted volume revision: %w", err)
+	}
+	updated := *review
+	updated.Status = domain.PlanningReviewStatusCollecting
+	updated.Kind = domain.PlanningReviewKindBlueprint
+	updated.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := st.RunMeta.SetPlanningReview(&updated); err != nil {
+		return err
+	}
+	if _, err := s.host.Resume(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *ProjectSession) prepareNormalChapterOutlineRevision(st *storepkg.Store, review *domain.PlanningReview, target coCreatePlanningRevisionTarget) error {
+	if st == nil || review == nil {
+		return fmt.Errorf("planning review store is required")
+	}
+	volume, arc, from, to, err := locateNormalPlanningArc(st, target.FromChapter)
+	if err != nil {
+		return err
+	}
+	if target.ToChapter > to {
+		return fmt.Errorf("one revision batch cannot cross story arcs; selected chapter range %d-%d crosses V%d A%d ending at chapter %d", target.FromChapter, target.ToChapter, volume, arc, to)
+	}
+	if err := s.host.PrepareUserRules(review.Brief); err != nil {
+		return err
+	}
+	audit := domain.OriginalPlanningAudit{
+		Scope: "book", Verdict: "revise", Summary: "user requested a reviewed detailed-outline revision",
+		Issues: []domain.OriginalPlanningAuditIssue{{
+			Severity: "major", Volume: volume, Arc: arc, FromChapter: from, ToChapter: to,
+			Description: target.Instruction, RepairInstruction: target.Instruction,
+		}},
+	}
+	if err := st.OriginalPlanningAudits.Save(audit); err != nil {
+		return fmt.Errorf("queue targeted outline revision: %w", err)
+	}
+	updated := *review
+	updated.Status = domain.PlanningReviewStatusCollecting
+	updated.Kind = domain.PlanningReviewKindVolumeSplit
+	updated.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := st.RunMeta.SetPlanningReview(&updated); err != nil {
+		return err
+	}
+	if _, err := s.host.Resume(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func locateNormalPlanningArc(st *storepkg.Store, chapter int) (volume, arc, from, to int, err error) {
+	if chapter <= 0 {
+		return 0, 0, 0, 0, fmt.Errorf("chapter must be positive")
+	}
+	volumes, err := st.Outline.LoadLayeredOutline()
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	next := 1
+	for _, item := range volumes {
+		for _, storyArc := range item.Arcs {
+			count := len(storyArc.Chapters)
+			if count == 0 {
+				count = storyArc.EstimatedChapters
+			}
+			end := next + count - 1
+			if chapter >= next && chapter <= end && len(storyArc.Chapters) > 0 {
+				return item.Index, storyArc.Index, next, end, nil
+			}
+			next = end + 1
+		}
+	}
+	return 0, 0, 0, 0, fmt.Errorf("chapter %d is not in an expanded planning arc", chapter)
 }
 
 func normalizeCoCreatePlanningRevisionTarget(st *storepkg.Store, review *domain.PlanningReview, req webCoCreatePlanningRevisionRequest, instruction string) (coCreatePlanningRevisionTarget, error) {
@@ -2428,11 +2562,38 @@ func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
 	}
 	switch review.Kind {
 	case domain.PlanningReviewKindBlueprint:
-		return "", fmt.Errorf("co-create blueprint must be regenerated before it can be approved")
+		rollback := *review
+		if meta, loadErr := st.RunMeta.Load(); loadErr == nil && meta != nil && meta.WordBudget != nil && meta.WordBudget.TargetTotalWords > 0 {
+			review.TargetTotalWords = meta.WordBudget.TargetTotalWords
+			review.StartPrompt = host.BuildStartPromptWithBudget(review.Brief, meta.WordBudget)
+		}
+		review.Status = domain.PlanningReviewStatusCollecting
+		review.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := st.RunMeta.SetPlanningReview(review); err != nil {
+			return "", fmt.Errorf("start planning review: %w", err)
+		}
+		if err := s.host.StartPrepared(review.StartPrompt); err != nil {
+			_ = st.RunMeta.SetPlanningReview(&rollback)
+			return "", err
+		}
+		s.AppendSnapshot()
+		return "generating detailed proposal", nil
 	case domain.PlanningReviewKindVolumeSplit:
 		if missing := coCreatePlanningMissingForVolumeSplit(st.FoundationMissing()); len(missing) > 0 {
 			return "", fmt.Errorf("planning foundation is incomplete: %s", strings.Join(missing, ", "))
 		}
+		rollback := *review
+		review.Status = domain.PlanningReviewStatusCollecting
+		review.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := st.RunMeta.SetPlanningReview(review); err != nil {
+			return "", fmt.Errorf("start chapter outline generation: %w", err)
+		}
+		if _, err := s.host.Resume(); err != nil {
+			_ = st.RunMeta.SetPlanningReview(&rollback)
+			return "", err
+		}
+		s.AppendSnapshot()
+		return "volume outline approved; generating detailed chapter outline in batches", nil
 	default:
 		if missing := st.FoundationMissing(); len(missing) > 0 {
 			return "", fmt.Errorf("planning foundation is incomplete: %s", strings.Join(missing, ", "))
@@ -2456,11 +2617,17 @@ func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
 		}
 	}
 	label, err := s.host.Resume()
-	if label == "" && review.Kind == domain.PlanningReviewKindVolumeSplit {
-		label = "volume outline approved; generating detailed chapter outline"
-	}
 	s.AppendSnapshot()
 	return label, err
+}
+
+func normalDetailedOutlineInstruction(targetWords int) string {
+	target := "the persisted book word budget"
+	if targetWords > 0 {
+		target = fmt.Sprintf("the persisted %d-word book budget", targetWords)
+	}
+	return "The normal-original volume plan has been approved. Resume the durable planning router. It must expand one arc at a time in exact 3-4 chapter batches, run independent original-fiction arc and volume audits, synthesize at most two volumes per book-audit batch, then run the digest-only whole-book audit. " +
+		"Use " + target + "; preserve volume/arc order, causal handoffs, character state, clues and open threads across batches. Every chapter must have a distinct goal, obstacle, choice, consequence, state/relationship change, exit state and hook. Do not analyze or bind any source novel. Do not repeat chapter promises. Stop at chapter-outline user review; do not start prose writing."
 }
 
 func coCreatePlanningMissingForVolumeSplit(missing []string) []string {

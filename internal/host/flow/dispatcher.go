@@ -65,6 +65,13 @@ func (d *Dispatcher) dispatch(asFollowUp bool) {
 	if !d.enabled.Load() {
 		return
 	}
+	// A pending normal-planning review is an intentional user boundary. The
+	// subagent completion callback also reaches this dispatcher, so without this
+	// gate it can enqueue the next Architect route before Coordinator is allowed
+	// to stop, silently running past volume/chapter review.
+	if d.store != nil && d.store.RunMeta.PlanningReviewPending() {
+		return
+	}
 	state := LoadState(d.store)
 	inst := Route(state)
 	if inst == nil {

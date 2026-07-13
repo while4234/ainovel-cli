@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-14 pending `feat: audit original proposals before user review`:
+  normal-original long projects now generate volume skeletons and 3-4 chapter
+  arc batches behind durable, original-fiction semantic audits. Failed scopes
+  are repaired and re-audited before volume or chapter review becomes visible;
+  user volume/chapter feedback re-enters the same targeted quality gate. The
+  co-create workspace shows full reviewed content centrally and selection plus
+  feedback controls in the right panel. A cloned 100,000-word project completed
+  3 volumes, 9 arcs, and 33 detailed chapters; all latest audit scopes pass.
+  Full Go tests, Go vet, 213 UI tests, production build, and live Chrome
+  validation passed. The Web service was rebuilt on port 9898.
 - 2026-07-13 `55645c5` `fix: connect Codex credentials and reasoning controls`:
   added validated Codex credential upload and status checks, corrected the
   ChatGPT Codex Responses request/stream protocol, discovered the signed-in

@@ -42,6 +42,7 @@ import {
   normalizeCoCreateDecisionAnswers,
   outlineRevisionSuccessMessage,
   prepareProjectOpenSnapshot,
+  shouldHydrateProjectOpenSnapshot,
   PROJECT_OPEN_TIMEOUT_MS,
   resolveCoCreateStructureChoice,
   resolveCoCreateTargetTotalWords,
@@ -268,6 +269,19 @@ describe('project open snapshot preparation', () => {
       project: { id: 'project-1' },
       snapshot: { RuntimeState: 'running' }
     })).toBeNull();
+  });
+
+  it('hydrates full outline detail only while a planning review is active', () => {
+    expect(shouldHydrateProjectOpenSnapshot({
+      PlanningReview: { Status: 'pending', Kind: 'chapter_outline' },
+      Outline: [{ Chapter: 23, Title: '摘要标题' }]
+    })).toBe(true);
+    expect(shouldHydrateProjectOpenSnapshot({
+      PlanningReview: { Status: 'collecting', Kind: 'volume_split' }
+    })).toBe(true);
+    expect(shouldHydrateProjectOpenSnapshot({
+      PlanningReview: { Status: 'confirmed', Kind: 'chapter_outline' }
+    })).toBe(false);
   });
 });
 

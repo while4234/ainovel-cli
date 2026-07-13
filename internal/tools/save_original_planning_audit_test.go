@@ -1,0 +1,73 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/store"
+)
+
+func TestSaveOriginalPlanningAuditRejectsMoreThanFourRawChapters(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewSaveOriginalPlanningAuditTool(st)
+	args, _ := json.Marshal(map[string]any{
+		"scope": "arc", "volume": 1, "arc": 1, "from_chapter": 1, "to_chapter": 5,
+		"verdict": "pass", "summary": "too large",
+		"dimensions": originalAuditTestDimensions("causal_progression", "character_logic", "chapter_value", "continuity", "hook_and_pacing", "originality"),
+	})
+	if _, err := tool.Execute(context.Background(), args); err == nil {
+		t.Fatal("expected >4 chapter audit batch to be rejected")
+	}
+}
+
+func TestSaveOriginalPlanningAuditReviseRequiresPreciseRepairTarget(t *testing.T) {
+	audit := domain.OriginalPlanningAudit{
+		Scope: "book", Verdict: "revise", Summary: "ending is not earned",
+		Dimensions: []domain.OriginalPlanningAuditDimension{
+			{Name: "mainline_closure", Score: 6, Comment: "missing decision"},
+			{Name: "character_closure", Score: 8, Comment: "closed"},
+			{Name: "setup_payoff", Score: 8, Comment: "closed"},
+			{Name: "escalation_pacing", Score: 8, Comment: "balanced"},
+			{Name: "world_consistency", Score: 8, Comment: "consistent"},
+			{Name: "originality", Score: 8, Comment: "distinct"},
+			{Name: "ending_delivery", Score: 6, Comment: "missing decision"},
+		},
+		Issues: []domain.OriginalPlanningAuditIssue{{Severity: "major", Description: "ending skips the heroine's choice", RepairInstruction: "add the decisive choice"}},
+	}
+	if err := validateOriginalPlanningAudit(audit); err == nil {
+		t.Fatal("expected revise issue without volume/arc to be rejected")
+	}
+}
+
+func TestSaveOriginalPlanningSkeletonAuditCanRepairAWholeVolume(t *testing.T) {
+	audit := domain.OriginalPlanningAudit{
+		Scope: "skeleton_volume", Volume: 3, Verdict: "revise", Summary: "the final volume does not close the book",
+		Dimensions: []domain.OriginalPlanningAuditDimension{
+			{Name: "volume_function", Score: 6, Comment: "opens another investigation"},
+			{Name: "arc_causality", Score: 8, Comment: "causal"},
+			{Name: "character_progression", Score: 7, Comment: "partial"},
+			{Name: "conflict_escalation", Score: 8, Comment: "escalates"},
+			{Name: "budget_capacity", Score: 8, Comment: "fits"},
+			{Name: "payoff_and_handoff", Score: 4, Comment: "no ending"},
+		},
+		Issues: []domain.OriginalPlanningAuditIssue{{
+			Severity: "major", Volume: 3, Description: "the last volume only opens the old case", RepairInstruction: "replace the whole volume with an ending volume",
+		}},
+	}
+	if err := validateOriginalPlanningAudit(audit); err != nil {
+		t.Fatalf("whole-volume skeleton repair should be valid: %v", err)
+	}
+}
+
+func originalAuditTestDimensions(names ...string) []map[string]any {
+	result := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		result = append(result, map[string]any{"name": name, "score": 8, "comment": "supported by the bounded batch"})
+	}
+	return result
+}

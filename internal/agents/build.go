@@ -180,6 +180,7 @@ func BuildCoordinator(
 	editorTools := []agentcore.Tool{
 		contextTool,
 		readChapter,
+		tools.NewSaveOriginalPlanningAuditTool(store),
 		tools.NewSaveReviewTool(store),
 		tools.NewSaveArcSummaryTool(store),
 		tools.NewSaveVolumeSummaryTool(store),
@@ -194,7 +195,7 @@ func BuildCoordinator(
 		return nil, nil, nil, nil, nil, err
 	}
 	if err := validateAgentToolRegistry("editor", editorTools,
-		"novel_context", "read_chapter", "save_review", "save_arc_summary", "save_volume_summary"); err != nil {
+		"novel_context", "read_chapter", "save_original_planning_audit", "save_review", "save_arc_summary", "save_volume_summary"); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 
@@ -383,7 +384,7 @@ func BuildCoordinator(
 		// 的 editor 会在 save_review 处被砍断、够不到 save_arc_summary。评审/摘要任务的
 		// 收尾改由任务感知的 NewEditorStopGuard 把关。
 		StopAfterToolResult: func(toolName string, _ json.RawMessage) bool {
-			return toolName == "save_arc_summary" || toolName == "save_volume_summary"
+			return toolName == "save_original_planning_audit" || toolName == "save_arc_summary" || toolName == "save_volume_summary"
 		},
 		StopGuardFactory: func(_, task string) agentcore.StopGuard {
 			return reminder.NewEditorStopGuard(store, task)
@@ -585,8 +586,12 @@ func chapterFromTask(task string) int {
 }
 
 type saveFoundationResult struct {
-	Type            string `json:"type"`
-	FoundationReady bool   `json:"foundation_ready"`
+	Type             string `json:"type"`
+	FoundationReady  bool   `json:"foundation_ready"`
+	PlanningReview   string `json:"planning_review"`
+	ContinuePlanning bool   `json:"continue_planning"`
+	AuditRequired    bool   `json:"audit_required"`
+	VolumeBatchSaved bool   `json:"volume_batch_saved"`
 }
 
 func decodeSaveFoundationResult(toolName string, result json.RawMessage) saveFoundationResult {
@@ -600,8 +605,16 @@ func decodeSaveFoundationResult(toolName string, result json.RawMessage) saveFou
 
 func architectLongShouldStopAfterToolResult(toolName string, result json.RawMessage) bool {
 	r := decodeSaveFoundationResult(toolName, result)
+	if r.PlanningReview == domain.PlanningReviewStatusPending {
+		return true
+	}
+	if r.VolumeBatchSaved {
+		return true
+	}
 	switch r.Type {
-	case "expand_arc", "repair_arc", "complete_book":
+	case "expand_arc":
+		return r.AuditRequired || !r.ContinuePlanning
+	case "repair_arc", "complete_book":
 		return true
 	default:
 		return false

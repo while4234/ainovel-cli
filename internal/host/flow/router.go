@@ -10,6 +10,7 @@
 package flow
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -27,7 +28,12 @@ type Instruction struct {
 
 // State 是 Route 的输入：所有事实必须在此显式声明，禁止 Route 内部读 Store。
 type State struct {
-	Progress *domain.Progress
+	Progress             *domain.Progress
+	PlanningReview       *domain.PlanningReview
+	OriginalPlanningWork *storepkg.OriginalPlanningWork
+	SkeletonPlanningWork *storepkg.OriginalPlanningWork
+	BlueprintVolumeCount int
+	BlueprintNextIsFinal bool
 
 	// 上一个已完成章节（Progress.CompletedChapters 末尾）；为 0 表示尚未开始写作。
 	LastCompleted int
@@ -85,6 +91,9 @@ func Route(s State) *Instruction {
 	// 1. 终态：让 LLM 输出总结
 	if p.Phase == domain.PhaseComplete {
 		return nil
+	}
+	if route := routeOriginalPlanning(s); route != nil {
+		return route
 	}
 
 	// 2. 规划阶段由 Coordinator 裁定（选 architect_long/short + 补齐循环）
@@ -203,6 +212,114 @@ func Route(s State) *Instruction {
 
 	// 12. 正常续写
 	return s.nextChapterInstruction(p, "续写下一章")
+}
+
+func routeOriginalPlanning(s State) *Instruction {
+	review := s.PlanningReview
+	if review == nil || review.Status != domain.PlanningReviewStatusCollecting {
+		return nil
+	}
+	if review.Kind == domain.PlanningReviewKindBlueprint {
+		if s.SkeletonPlanningWork != nil {
+			return routeOriginalSkeletonAudit(s.SkeletonPlanningWork)
+		}
+		if s.Progress != nil && s.Progress.Layered && s.Progress.TotalChapters > 0 {
+			for _, item := range s.FoundationMissing {
+				if item == "compass" {
+					return &Instruction{
+						Agent:  "architect_long",
+						Task:   "The normal-original volume skeleton already exists. Read novel_context(scope=planning), then call save_foundation(type=update_compass) exactly once with a compact StoryCompass that preserves the approved premise, character arcs, volume escalation and promised ending. Do not append another volume, do not overwrite any existing foundation artifact, do not generate detailed chapters, and do not analyze a source novel.",
+						Reason: "分卷骨架已存在，先补齐全书指南针再判断字数覆盖",
+					}
+				}
+			}
+			finalContract := "This is not the final volume: end with a paid-off phase climax and a concrete causal handoff, without resolving the whole novel."
+			if s.BlueprintNextIsFinal {
+				finalContract = "This next volume is the FINAL volume allowed by the persisted word budget. It must close every promised main plot, antagonist outcome, setup, protagonist arc and relationship/ending contract; it must not end with a new-volume handoff or merely open another investigation."
+			}
+			return &Instruction{
+				Agent:  "architect_long",
+				Task:   fmt.Sprintf("Continue the normal-original long proposal from the persisted volume skeleton. Read novel_context(scope=planning), then call save_foundation(type=append_volume) exactly once to append only volume %d. The volume must contain 2-3 causal arcs, each reserving exactly 3-4 chapters with chapters omitted. Its theme must state entry state, central conflict, irreversible volume result and exit state; every arc goal must state protagonist goal, opposition, decisive choice/cost, phase payoff and the next causal consequence. %s Preserve all existing premise, characters, world_rules, compass and prior volumes; do not call any replacement foundation type, do not generate detailed chapters, and do not analyze a source novel. Stop after the single append_volume call so the next volume uses a fresh model batch.", s.BlueprintVolumeCount+1, finalContract),
+				Reason: "普通原创下一卷骨架待独立批次追加",
+			}
+		}
+		missing := make([]string, 0, len(s.FoundationMissing))
+		for _, item := range s.FoundationMissing {
+			if item != "outline" {
+				missing = append(missing, item)
+			}
+		}
+		if len(missing) > 0 {
+			return &Instruction{
+				Agent:  "architect_long",
+				Task:   fmt.Sprintf("Continue the normal-original long proposal by saving only these currently missing foundation artifacts: %s. Use novel_context(scope=planning), preserve every already persisted artifact verbatim, and do not call save_foundation for any artifact not in this missing list. Do not generate detailed chapters or analyze a source novel. After filling the listed artifacts, create the first skeleton-only volume only if all prerequisites are now present; the first layered_outline call must contain exactly one volume with 2-3 arcs of exactly 3-4 estimated chapters each.", strings.Join(missing, ", ")),
+				Reason: "普通原创蓝图仅补齐缺失设定",
+			}
+		}
+		return &Instruction{
+			Agent:  "architect_long",
+			Task:   "Continue the normal-original long proposal by creating only the first skeleton volume. Call novel_context(scope=planning), then save exactly one volume with save_foundation(type=layered_outline); it must contain 2-3 causal arcs, each reserving exactly 3-4 chapters with chapters omitted. The volume theme must state entry state, central conflict, irreversible phase result and exit state. Every arc goal must state protagonist goal, active opposition, decisive choice/cost, phase payoff and next causal consequence; distribute plot, character and relationship progress instead of repeating evidence discovery. Preserve every persisted foundation artifact verbatim, do not generate detailed chapters, and do not analyze a source novel. Stop after the one-volume save so later volumes use fresh model batches.",
+			Reason: "普通原创分卷骨架仍在分批生成",
+		}
+	}
+	if review.Kind != domain.PlanningReviewKindVolumeSplit || s.OriginalPlanningWork == nil {
+		return nil
+	}
+	w := s.OriginalPlanningWork
+	switch w.Kind {
+	case "expand_arc":
+		return &Instruction{Agent: "architect_long", Reason: "下一批3-4章原创细纲待生成", Task: fmt.Sprintf(
+			"展开普通原创细纲第%d卷第%d弧：调用 novel_context(scope=planning) 核对人物、规则、前后弧、已通过的分卷契约和字数预算；本批严格生成%d章（第%d-%d章，且永远不超过4章），再调用 save_foundation(type=expand_arc, volume=%d, arc=%d)。每章 core_event 必须明确写出本章目标、主动阻力、关键选择及代价、不可逆结果、人物/关系/信息状态变化；scenes 必须是可写成约3000-5000字的递进场景，不是同一事件的重复表述；hook 必须由本章结果自然产生并给下一章新的行动问题。各章功能不得重复，情感推进必须改变主线决策，不得参考原著。",
+			w.Volume, w.Arc, w.ToChapter-w.FromChapter+1, w.FromChapter, w.ToChapter, w.Volume, w.Arc)}
+	case "repair_arc":
+		payload, _ := json.Marshal(w.Audit)
+		return &Instruction{Agent: "architect_long", Reason: "原创细纲自动审核要求定点返修", Task: fmt.Sprintf(
+			"原创细纲审核未通过，定点修复第%d卷第%d弧。审核报告：%s。调用 novel_context(scope=planning) 和 novel_context(scope=outline_range, from=%d, to=%d) 核对证据，完整重写这一弧且保持已审核分卷约定的章节数不变，然后调用 save_foundation(type=repair_arc, volume=%d, arc=%d)。逐条落实 repair_instruction，修复因果、人物动机、节奏、伏笔或重复问题，不得分析原著。",
+			w.Volume, w.Arc, payload, w.FromChapter, w.ToChapter, w.Volume, w.Arc)}
+	case "audit_arc":
+		return &Instruction{Agent: "editor", Reason: "本批原创细纲需独立弧级审核", Task: fmt.Sprintf(
+			"作为专业原创小说审稿人，分批审核第%d卷第%d弧的第%d-%d章（本批%d章）。只调用 novel_context(scope=planning) 与 novel_context(scope=outline_range, from=%d, to=%d)，禁止读取正文或任何原著，禁止扩大本批范围。检查目标-阻力-选择-结果因果链、人物动机与状态变化、每章独立推进价值、前后连续性、节奏钩子、套路化与批次重复。必须额外核对世界规则与时间线：重生、穿越、回档前的物理实体不能无来源出现在当前时间线；任何决定高潮胜负的证据都必须在本批或已确认前文中有可验证来源与前置动作，不能在回收章临时发明。然后调用 save_original_planning_audit(scope=arc, volume=%d, arc=%d, from_chapter=%d, to_chapter=%d)，dimensions 必须恰含 causal_progression、character_logic、chapter_value、continuity、hook_and_pacing、originality。任一维度低于7或存在重大问题必须 verdict=revise，并把首个问题精确定位到本卷本弧及修复指令。",
+			w.Volume, w.Arc, w.FromChapter, w.ToChapter, w.ToChapter-w.FromChapter+1, w.FromChapter, w.ToChapter, w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
+	case "audit_volume":
+		return &Instruction{Agent: "editor", Reason: "逐弧审核已完成，需归并分卷质量审核", Task: fmt.Sprintf(
+			"作为专业原创小说审稿人审核第%d卷。不得一次重读整卷细纲；以下是已经逐弧分批通过、带章节证据索引的报告：%s。调用 novel_context(scope=planning) 只核对分卷骨架、人物和字数预算；仅有明确疑点时才定向调用一次 novel_context(scope=outline_range)，且范围最多4章。检查全卷结构节奏、主题与核心冲突、高潮兑现、人物弧阶段成果、规划内容能否承载目标字数、下一卷驱动力。调用 save_original_planning_audit(scope=volume, volume=%d)，dimensions 必须恰含 structure_pacing、theme_conflict、climax_payoff、character_arc、budget_capacity、next_volume_drive。问题必须定位到具体卷弧并给出可执行修复指令。",
+			w.Volume, w.Evidence, w.Volume)}
+	case "audit_book_batch":
+		return &Instruction{Agent: "editor", Reason: "全书审核按每批最多2卷归并", Task: fmt.Sprintf(
+			"分批进行原创全书细纲审核，本次只归并第%d-%d卷（最多2卷），不得读取全书原始细纲。已通过的卷级报告：%s。调用 novel_context(scope=planning) 核对指南针和卷间骨架，检查卷间因果承接、冲突升级、人物成长连续性、伏笔传递、节奏平衡与原创性。调用 save_original_planning_audit(scope=book_batch, from_volume=%d, to_volume=%d)，dimensions 必须恰含 cross_volume_continuity、escalation、character_progression、setup_payoff、pacing_balance、originality。发现问题须定位到具体卷弧。",
+			w.FromVolume, w.ToVolume, w.Evidence, w.FromVolume, w.ToVolume)}
+	case "audit_book":
+		return &Instruction{Agent: "editor", Reason: "分批审核已完成，需以审核摘要进行全书总审", Task: fmt.Sprintf(
+			"完成原创小说全书细纲总审。禁止加载全书原始细纲，只使用这些已通过的每2卷分批报告：%s，并调用 novel_context(scope=planning) 核对 premise、人物、世界规则、指南针和分卷骨架。检查主线闭环、人物成长闭环、伏笔回收、高潮梯度与节奏、世界规则一致、题材辨识度、结局兑现。调用 save_original_planning_audit(scope=book)，dimensions 必须恰含 mainline_closure、character_closure、setup_payoff、escalation_pacing、world_consistency、originality、ending_delivery。任何重大问题必须定位卷弧返修；只有全部维度不低于7且无重大问题才能 pass。",
+			w.Evidence)}
+	}
+	return nil
+}
+
+func routeOriginalSkeletonAudit(w *storepkg.OriginalPlanningWork) *Instruction {
+	if w == nil {
+		return nil
+	}
+	switch w.Kind {
+	case "repair_skeleton_volume":
+		payload, _ := json.Marshal(w.Audit)
+		return &Instruction{Agent: "architect_long", Reason: "分卷骨架自动审核要求定点返修", Task: fmt.Sprintf(
+			"原创分卷骨架审核未通过，只返修第%d卷。审核报告：%s。调用 novel_context(scope=planning) 核对全书承诺、相邻卷进出状态、人物弧和字数预算；保持本卷原有预估章节总数及2-3弧/每弧3-4章约束，调用 save_foundation(type=repair_volume, volume=%d) 完整替换本卷骨架。逐条落实 repair_instruction，不改其他卷，不生成详细章节，不参考原著。若本卷是终卷，必须闭合全部主线、人物弧、伏笔、反派结局和结局承诺，禁止留下“下一卷继续”的主线。",
+			w.Volume, payload, w.Volume)}
+	case "audit_skeleton_volume":
+		return &Instruction{Agent: "editor", Reason: "用户审核前先逐卷审核原创分卷骨架", Task: fmt.Sprintf(
+			"作为专业原创小说审稿人，只审核第%d卷分卷骨架。调用 novel_context(scope=planning)，不得生成细纲、不得参考原著。检查本卷功能与不可逆推进、弧间因果、人物阶段成长、主动反派与冲突升级、篇幅承载、卷高潮兑现和进出状态；若为终卷还必须检查全部主线/人物/伏笔/结局闭环，非终卷则检查有效交棒。调用 save_original_planning_audit(scope=skeleton_volume, volume=%d)，dimensions 必须恰含 volume_function、arc_causality、character_progression、conflict_escalation、budget_capacity、payoff_and_handoff。任一维度低于7、内容明显写不满预算、重复调查、或终卷只开新线不收束，必须 revise 并定位到具体卷弧。",
+			w.Volume, w.Volume)}
+	case "audit_skeleton_book_batch":
+		return &Instruction{Agent: "editor", Reason: "分卷骨架按最多两卷分批审核", Task: fmt.Sprintf(
+			"审核原创分卷骨架第%d-%d卷（最多2卷），只使用已通过的逐卷报告：%s，并调用 novel_context(scope=planning) 核对相邻卷骨架。检查卷间因果、冲突升级、人物成长、伏笔传递与回收、节奏分配和情节类型多样性。调用 save_original_planning_audit(scope=skeleton_book_batch, from_volume=%d, to_volume=%d)，dimensions 必须恰含 cross_volume_continuity、escalation、character_progression、setup_payoff、pacing_balance、plot_diversity；发现重大问题必须 revise 并定位问题卷弧。",
+			w.FromVolume, w.ToVolume, w.Evidence, w.FromVolume, w.ToVolume)}
+	case "audit_skeleton_book":
+		return &Instruction{Agent: "editor", Reason: "用户审核前完成原创分卷全书总审", Task: fmt.Sprintf(
+			"完成原创小说分卷骨架全书总审。禁止一次加载未来详细细纲，只使用这些已通过的分批报告：%s，并调用 novel_context(scope=planning) 核对 premise、人物、规则、指南针、总字数与全部分卷骨架。检查所有创作承诺是否都有卷弧承载、主线完整闭环、人物弧完整、伏笔回收、卷级高潮梯度、篇幅合理、题材辨识度和终卷结局兑现。调用 save_original_planning_audit(scope=skeleton_book)，dimensions 必须恰含 mainline_completeness、ending_closure、character_arc_completeness、setup_payoff、volume_balance、budget_capacity、originality。任何维度低于7、任何承诺无承载、或终卷没有真正结束全书都必须 revise；全部通过后系统才允许用户审核分卷。",
+			w.Evidence)}
+	}
+	return nil
 }
 
 func (s State) nextChapterInstruction(p *domain.Progress, reason string) *Instruction {

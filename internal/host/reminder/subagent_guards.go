@@ -296,7 +296,7 @@ func NewArchitectStopGuard(st *store.Store) agentcore.StopGuard {
 	return newCheckpointDeltaGuard(st, "architect",
 		[]string{
 			"premise", "outline", "layered_outline", "characters", "world_rules",
-			"expand_arc", "repair_arc", "append_volume", "update_compass", "complete_book",
+			"expand_arc", "repair_arc", "repair_volume", "append_volume", "update_compass", "complete_book",
 		},
 		"你必须调用 save_foundation 将产出落盘后才能结束。只输出 Markdown/JSON 文字等于丢失。",
 	)
@@ -311,6 +311,9 @@ func NewArchitectStopGuard(st *store.Store) agentcore.StopGuard {
 // 让复核后能继续走到摘要工具，再由本 guard 把关收尾。
 func NewEditorStopGuard(st *store.Store, task string) agentcore.StopGuard {
 	switch {
+	case strings.Contains(task, "save_original_planning_audit") || strings.Contains(task, "原创细纲"):
+		return newCheckpointDeltaGuard(st, "editor", []string{"original_planning_audit"},
+			"本次任务是审核原创细纲：你必须调用 save_original_planning_audit 落盘本批审核后才能结束。")
 	case strings.Contains(task, "save_volume_summary") || strings.Contains(task, "卷摘要"):
 		return newCheckpointDeltaGuard(st, "editor", []string{"volume_summary"},
 			"本次任务是生成卷摘要：你必须调用 save_volume_summary 落盘后才能结束，save_review 复核不算完成。")

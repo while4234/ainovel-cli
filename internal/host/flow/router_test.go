@@ -659,6 +659,51 @@ func TestDispatcher_FollowUpStartsNextRouteAfterResumePromptStops(t *testing.T) 
 	}
 }
 
+func TestDispatcher_DoesNotCrossPendingNormalPlanningReview(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+	if err := st.Progress.Init("test", 3); err != nil {
+		t.Fatalf("init progress: %v", err)
+	}
+	if err := st.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
+		t.Fatalf("set writing phase: %v", err)
+	}
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status: domain.PlanningReviewStatusPending,
+		Kind:   domain.PlanningReviewKindVolumeSplit,
+	}); err != nil {
+		t.Fatalf("set planning review: %v", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int64
+	coordinator := agentcore.NewAgent(agentcore.WithModel(sequentialFlowTestModel(func(_ int, _ *agentcore.LLMRequest) (*agentcore.LLMResponse, error) {
+		calls.Add(1)
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+		return &agentcore.LLMResponse{Message: flowTestAssistantMsg("wait for review", agentcore.StopReasonStop)}, nil
+	})))
+	dispatcher := NewDispatcher(coordinator, st)
+	dispatcher.Enable()
+	if err := coordinator.Prompt(context.Background(), "start"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	<-started
+	dispatcher.Dispatch()
+	close(release)
+	coordinator.WaitForIdle()
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("model calls = %d, pending review must not enqueue another route", got)
+	}
+}
+
 type flowTestSequentialModel struct {
 	fn  func(i int, req *agentcore.LLMRequest) (*agentcore.LLMResponse, error)
 	idx int64

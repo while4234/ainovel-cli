@@ -249,6 +249,42 @@ type PlanningReview struct {
 	UpdatedAt        string `json:"updated_at,omitempty"`
 }
 
+// OriginalPlanningAudit records an automated quality gate for a normal-original
+// detailed outline. Unlike adaptation audits it has no source-fidelity fields:
+// every finding must be grounded in story causality, character logic, pacing,
+// payoff, continuity, or originality.
+type OriginalPlanningAudit struct {
+	Scope       string                           `json:"scope"` // arc / volume / book
+	Volume      int                              `json:"volume,omitempty"`
+	Arc         int                              `json:"arc,omitempty"`
+	FromVolume  int                              `json:"from_volume,omitempty"`
+	ToVolume    int                              `json:"to_volume,omitempty"`
+	FromChapter int                              `json:"from_chapter,omitempty"`
+	ToChapter   int                              `json:"to_chapter,omitempty"`
+	Verdict     string                           `json:"verdict"` // pass / revise
+	Summary     string                           `json:"summary"`
+	Dimensions  []OriginalPlanningAuditDimension `json:"dimensions"`
+	Issues      []OriginalPlanningAuditIssue     `json:"issues,omitempty"`
+	Attempt     int                              `json:"attempt"`
+	UpdatedAt   string                           `json:"updated_at"`
+}
+
+type OriginalPlanningAuditDimension struct {
+	Name    string  `json:"name"`
+	Score   float64 `json:"score"`
+	Comment string  `json:"comment"`
+}
+
+type OriginalPlanningAuditIssue struct {
+	Severity          string `json:"severity"` // blocking / major / minor
+	Volume            int    `json:"volume,omitempty"`
+	Arc               int    `json:"arc,omitempty"`
+	FromChapter       int    `json:"from_chapter,omitempty"`
+	ToChapter         int    `json:"to_chapter,omitempty"`
+	Description       string `json:"description"`
+	RepairInstruction string `json:"repair_instruction"`
+}
+
 // SteerEntry 用户干预记录。
 type SteerEntry struct {
 	Input     string `json:"input"`

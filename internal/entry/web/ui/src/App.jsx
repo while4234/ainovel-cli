@@ -783,6 +783,10 @@ export function prepareProjectOpenSnapshot(requestSeq, currentRequestSeq, snapsh
   };
 }
 
+export function shouldHydrateProjectOpenSnapshot(snapshot) {
+  return getCoCreatePlanningReview(snapshot).active;
+}
+
 export default function App() {
   const [setup, setSetup] = useState(() => ({
     ...createSetupState(),
@@ -1458,6 +1462,21 @@ export default function App() {
       setSimulation((previous) => restoreSimulationProjectState(previous, snapshotData.simulation));
       setAdaptation((previous) => restoreAdaptationProjectState(previous, snapshotData.adaptation, snapshotData.snapshot));
 
+      // The summary snapshot makes ordinary project navigation fast, but a
+      // pending planning review must render the complete volume/chapter plan
+      // in the center workspace. Hydrate that heavyweight data only for the
+      // review state that actually needs it; compact SSE updates will retain
+      // these fields through mergeSnapshotUpdate.
+      let openedSnapshot = snapshotData.snapshot;
+      if (shouldHydrateProjectOpenSnapshot(openedSnapshot)) {
+        const detailedSnapshotData = await getSnapshot(projectId, { signal: controller.signal });
+        if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
+          return;
+        }
+        openedSnapshot = detailedSnapshotData.snapshot || openedSnapshot;
+        setWorkbench((previous) => ({ ...previous, snapshot: openedSnapshot }));
+      }
+
       // Project-scoped reads update last_accessed_at. Keep them sequential on
       // Windows, but hydrate them only after the latest workspace is visible.
       // The continuation endpoint includes the complete continuation plan and
@@ -1470,7 +1489,7 @@ export default function App() {
       if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
         return;
       }
-      setContinuation((previous) => restoreContinuationState(previous, null, snapshotData.snapshot));
+      setContinuation((previous) => restoreContinuationState(previous, null, openedSnapshot));
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);
       setProjectSettings((previous) => ({
@@ -4925,11 +4944,22 @@ function coCreatePlanningWorkspaceGroups(review = {}, revision = {}) {
 function coCreatePlanningConfirmAction(review = {}) {
   switch (String(review?.kind || '').trim()) {
     case 'blueprint':
-      return { visible: false, label: '' };
+      return { visible: true, label: '生成详细提案' };
     case 'volume_split':
       return { visible: true, label: '审核通过并生成章节细纲' };
     default:
       return { visible: true, label: '审核通过并启动创作' };
+  }
+}
+
+function coCreatePlanningRunningCopy(review = {}) {
+  switch (String(review?.kind || '').trim()) {
+    case 'blueprint':
+      return 'AI 正在生成分卷提案或短篇章节细纲。';
+	case 'volume_split':
+		return 'AI 正在按已审核分卷逐弧生成（每批最多 4 章），并依次进行弧审、卷审和分批全书总审；未通过会自动定点返修。';
+    default:
+      return 'AI 正在根据审核意见重新生成规划。';
   }
 }
 
@@ -6019,7 +6049,7 @@ function CoCreatePanel({
             <span>规划审核</span>
           </div>
           <div className="proposal-side-summary">
-            <strong>{planningReview.collecting ? '重新生成中' : '待审核'}</strong>
+            <strong>{planningReview.collecting ? '生成中' : '待审核'}</strong>
             <span>
               {coCreatePlanningKindLabel(planningReview.kind)}
               {planningReview.chapterCount ? ` / ${planningReview.chapterCount} 章` : ''}
@@ -6029,8 +6059,8 @@ function CoCreatePanel({
           </div>
           {planningReview.collecting ? (
             <div className="workflow-status running">
-              <strong>重新生成中</strong>
-              <span>AI 正在根据审核意见重新生成规划。</span>
+              <strong>生成中</strong>
+              <span>{coCreatePlanningRunningCopy(planningReview)}</span>
             </div>
           ) : null}
         </section>

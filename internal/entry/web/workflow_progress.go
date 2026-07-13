@@ -178,7 +178,8 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 		{ID: "creative_intent", Label: "创意输入", Status: WorkflowStatusIdle},
 		{ID: "structure", Label: "篇幅与结构", Status: WorkflowStatusIdle},
 		{ID: "clarification", Label: "澄清决策", Status: WorkflowStatusIdle},
-		{ID: "planning_review", Label: "设定与规划审核", Status: WorkflowStatusIdle},
+		{ID: "volume_plan", Label: "分卷规划与审核", Status: WorkflowStatusIdle},
+		{ID: "chapter_outline", Label: "章节细纲与审核", Status: WorkflowStatusIdle},
 		{ID: "writing", Label: "正文创作", Status: WorkflowStatusIdle, Current: snapshot.CompletedCount, Total: snapshot.TotalChapters},
 	}
 	revision := normalWorkflowRevision(snapshot, coCreate)
@@ -188,6 +189,25 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 		Revision: revision,
 		Status:   WorkflowStatusIdle,
 		Steps:    steps,
+	}
+
+	// The durable planning checkpoint supersedes stale co-create transport
+	// state. A previous co-create request may have failed or been cancelled
+	// after its accepted brief already advanced into volume/detail planning;
+	// showing that old error here would send the user back to clarification
+	// even though a reviewed proposal is waiting for confirmation.
+	if review := snapshot.PlanningReview; review != nil &&
+		(review.Status == domain.PlanningReviewStatusPending || review.Status == domain.PlanningReviewStatusCollecting) {
+		progress.CurrentStep, progress.Status, progress.NextAction = normalPlanningReviewProgress(progress, review)
+		progress.Steps = completeStepsBefore(steps, progress.CurrentStep)
+		message := "正在生成规划"
+		if progress.Status == WorkflowStatusWaitingConfirmation {
+			message = "规划已生成，等待审核"
+		} else if review.Kind == domain.PlanningReviewKindVolumeSplit {
+			message = "正在逐弧生成细纲并进行原创质量审核"
+		}
+		progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, message)
+		return progress
 	}
 
 	if coCreate != nil && (coCreate.Kind == webCoCreateKindNormal || coCreate.Kind == webCoCreateKindStage) {
@@ -203,22 +223,13 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 			progress.Steps = setStep(progress.Steps, "clarification", WorkflowStatusFailed, 0, 0, progress.Error)
 			progress.NextAction = nextWorkflowAction(progress, "retry_cocreate", "重试共创", false)
 		case coCreate.CanStart:
-			progress.CurrentStep = "planning_review"
-			progress.Steps = completeStepsBefore(progress.Steps, "planning_review")
-			progress.Steps = setStep(progress.Steps, "planning_review", WorkflowStatusWaitingConfirmation, 0, 0, "创作方向已就绪，等待确认")
-			progress.NextAction = nextWorkflowAction(progress, "commit_cocreate", "生成规划", true)
+			progress.CurrentStep = "volume_plan"
+			progress.Steps = completeStepsBefore(progress.Steps, "volume_plan")
+			progress.Steps = setStep(progress.Steps, "volume_plan", WorkflowStatusWaitingConfirmation, 0, 0, "共创方向已就绪，确认后保存为详细提案生成点")
+			progress.NextAction = nextWorkflowAction(progress, "commit_cocreate", "完成共创", true)
 		default:
 			progress.NextAction = nextWorkflowAction(progress, "continue_cocreate", "继续共创", true)
 		}
-		return progress
-	}
-
-	if snapshot.PlanningReview != nil && snapshot.PlanningReview.Status == domain.PlanningReviewStatusPending {
-		progress.Status = WorkflowStatusWaitingConfirmation
-		progress.CurrentStep = "planning_review"
-		progress.Steps = completeStepsBefore(steps, progress.CurrentStep)
-		progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "规划已生成，等待确认")
-		progress.NextAction = nextWorkflowAction(progress, "confirm_planning", "确认规划并开始创作", true)
 		return progress
 	}
 
@@ -229,6 +240,32 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 		progress.NextAction = nextWorkflowAction(progress, "begin_cocreate", "开始普通共创", false)
 	}
 	return progress
+}
+
+func normalPlanningReviewProgress(progress WorkflowProgress, review *host.PlanningReviewSummary) (string, WorkflowStatus, *WorkflowNextAction) {
+	status := WorkflowStatusRunning
+	if review.Status == domain.PlanningReviewStatusPending {
+		status = WorkflowStatusWaitingConfirmation
+	}
+	switch review.Kind {
+	case domain.PlanningReviewKindBlueprint:
+		var action *WorkflowNextAction
+		if status == WorkflowStatusWaitingConfirmation {
+			action = nextWorkflowAction(progress, "confirm_planning", "生成详细提案", true)
+		}
+		return "volume_plan", status, action
+	case domain.PlanningReviewKindVolumeSplit:
+		if status == WorkflowStatusWaitingConfirmation {
+			return "volume_plan", status, nextWorkflowAction(progress, "confirm_planning", "审核通过并生成章节细纲", true)
+		}
+		return "chapter_outline", status, nil
+	default:
+		var action *WorkflowNextAction
+		if status == WorkflowStatusWaitingConfirmation {
+			action = nextWorkflowAction(progress, "confirm_planning", "审核通过并开始创作", true)
+		}
+		return "chapter_outline", status, action
+	}
 }
 
 func adaptationWorkflowProgress(

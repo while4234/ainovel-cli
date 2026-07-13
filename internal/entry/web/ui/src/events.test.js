@@ -6,6 +6,7 @@ import {
   mergeSnapshotUpdate,
   mergeWorkflowProgress,
   mergeEventRows,
+  preserveOutlineDetails,
   reduceWebEvent,
   reduceWebEvents,
   startStreamRound
@@ -103,6 +104,38 @@ describe('web event reducer', () => {
 
     expect(next.completed_count).toBe(4);
     expect(next.workflow_progress).toBe(workflowProgress);
+  });
+
+  it('preserves full chapter detail when a compact SSE snapshot updates counters', () => {
+    const previous = {
+      Outline: [{
+        Chapter: 23,
+        Title: '预审名单上的空位',
+        CoreEvent: '完整核心事件',
+        Hook: '完整钩子',
+        Scenes: ['场景一', '场景二'],
+        WordBudget: { TargetWords: 3000 }
+      }]
+    };
+    const incoming = {
+      RuntimeState: 'idle',
+      Outline: [{
+        Chapter: 23,
+        Title: '预审名单上的空位',
+        CoreEvent: '',
+        Hook: '',
+        Scenes: null,
+        WordBudget: { TargetWords: 3030 }
+      }]
+    };
+
+    const next = preserveOutlineDetails(previous, incoming);
+
+    expect(next.RuntimeState).toBe('idle');
+    expect(next.Outline[0].CoreEvent).toBe('完整核心事件');
+    expect(next.Outline[0].Hook).toBe('完整钩子');
+    expect(next.Outline[0].Scenes).toEqual(['场景一', '场景二']);
+    expect(next.Outline[0].WordBudget.TargetWords).toBe(3030);
   });
 
   it('does not drop workflow progress across consecutive snapshot events', () => {
