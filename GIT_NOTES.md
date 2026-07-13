@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-14 `0501e92` `test: cover model reasoning inheritance`:
+  completed the previously uncommitted reasoning-effort regression coverage.
+  Tests now verify role overrides, stage inheritance, stage overrides, and
+  per-model defaults. `go test ./... -count=1`, `go vet ./...`, and
+  `git diff --check` passed; all other apparent working-tree changes were
+  content-identical Windows line-ending/stat noise and normalized cleanly.
 - 2026-07-14 `f8541c6` `feat: audit original proposals before user review`:
   normal-original long projects now generate volume skeletons and 3-4 chapter
   arc batches behind durable, original-fiction semantic audits. Failed scopes
