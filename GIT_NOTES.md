@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-13 pending `fix: connect Codex credentials and reasoning controls`:
+- 2026-07-13 `55645c5` `fix: connect Codex credentials and reasoning controls`:
   added validated Codex credential upload and status checks, corrected the
   ChatGPT Codex Responses request/stream protocol, discovered the signed-in
   account model catalog through `codex app-server`, and added persistent
