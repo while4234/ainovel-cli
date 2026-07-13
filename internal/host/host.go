@@ -2312,6 +2312,7 @@ func RemoveProviderModelFromConfig(cfg bootstrap.Config, providerName, model str
 
 	pc := candidate.Providers[providerName]
 	pc.Models = removeModelCandidate(pc.Models, model)
+	delete(pc.ModelReasoningEfforts, model)
 	candidate.Providers[providerName] = pc
 	for role, rc := range candidate.Roles {
 		if rc.Provider == providerName && rc.Model == model {
@@ -2385,6 +2386,12 @@ func prepareAddedProviderModelConfig(cfg bootstrap.Config, role, providerName st
 		existing = normalizeProviderConfigForSave(existing)
 		if !providerConfigCanAddModel(existing, providerConfig) {
 			return bootstrap.Config{}, bootstrap.ProviderConfig{}, false, fmt.Errorf("provider %q already exists; use the existing provider flow to add models", providerName)
+		}
+		if providerConfig.ModelReasoningEfforts != nil {
+			if existing.ModelReasoningEfforts == nil {
+				existing.ModelReasoningEfforts = make(map[string]string)
+			}
+			existing.ModelReasoningEfforts[model] = providerConfig.ModelReasoningEfforts[model]
 		}
 		providerConfig = existing
 	} else {
@@ -2512,6 +2519,16 @@ func mergeEditedProviderConfig(existing, incoming bootstrap.ProviderConfig, mode
 		merged.APIKey = apiKey
 	}
 	merged.Models = appendUniqueString(models, model)
+	if incoming.ModelReasoningEfforts != nil {
+		if merged.ModelReasoningEfforts == nil {
+			merged.ModelReasoningEfforts = make(map[string]string)
+		}
+		if effort := strings.TrimSpace(incoming.ModelReasoningEfforts[model]); effort != "" {
+			merged.ModelReasoningEfforts[model] = effort
+		} else {
+			delete(merged.ModelReasoningEfforts, model)
+		}
+	}
 	return merged
 }
 
@@ -2523,6 +2540,21 @@ func normalizeProviderConfigForSave(pc bootstrap.ProviderConfig) bootstrap.Provi
 			pc.API = "responses"
 		}
 		pc.APIKey = ""
+	}
+	for model, effort := range pc.ModelReasoningEfforts {
+		trimmedModel := strings.TrimSpace(model)
+		trimmedEffort := strings.ToLower(strings.TrimSpace(effort))
+		if trimmedModel == "" || trimmedEffort == "" {
+			delete(pc.ModelReasoningEfforts, model)
+			continue
+		}
+		if trimmedModel != model {
+			delete(pc.ModelReasoningEfforts, model)
+		}
+		pc.ModelReasoningEfforts[trimmedModel] = trimmedEffort
+	}
+	if len(pc.ModelReasoningEfforts) == 0 {
+		pc.ModelReasoningEfforts = nil
 	}
 	return pc
 }
@@ -2747,6 +2779,7 @@ func (h *Host) switchModelLocked(role, provider, model string) error {
 	if err := h.persistConfigLocked(); err != nil {
 		slog.Warn("保存配置失败", "module", "host", "err", err)
 	}
+	h.models.ApplyReasoningConfig(h.cfg)
 	h.applyThinkingLocked(role)
 	// 切到未登记模型时打一行 warn，提示用户走了 128k 兜底——长篇容易被提前压缩。
 	logRole := role
@@ -2812,6 +2845,8 @@ func providerConfigCanAddModel(existing, incoming bootstrap.ProviderConfig) bool
 	}
 	existing.Models = nil
 	incoming.Models = nil
+	existing.ModelReasoningEfforts = nil
+	incoming.ModelReasoningEfforts = nil
 	return reflect.DeepEqual(existing, incoming)
 }
 
@@ -2830,6 +2865,7 @@ func providerConfigIsEmpty(pc bootstrap.ProviderConfig) bool {
 		pc.APIKey == "" &&
 		pc.BaseURL == "" &&
 		len(pc.Models) == 0 &&
+		len(pc.ModelReasoningEfforts) == 0 &&
 		len(pc.ExtraBody) == 0 &&
 		len(pc.Extra) == 0
 }
@@ -3034,6 +3070,7 @@ func (h *Host) removeProjectProviderModelLocked(provider, model string) {
 	}
 	if pc, ok := overlay.Providers[provider]; ok {
 		pc.Models = removeModelCandidate(pc.Models, model)
+		delete(pc.ModelReasoningEfforts, model)
 		if len(h.cfg.CandidateModels(provider)) == 0 {
 			delete(overlay.Providers, provider)
 		} else {
@@ -3272,6 +3309,13 @@ func cloneProviderConfigs(providers map[string]bootstrap.ProviderConfig) map[str
 
 func cloneProviderConfig(provider bootstrap.ProviderConfig) bootstrap.ProviderConfig {
 	provider.Models = append([]string(nil), provider.Models...)
+	if len(provider.ModelReasoningEfforts) > 0 {
+		cloned := make(map[string]string, len(provider.ModelReasoningEfforts))
+		for model, effort := range provider.ModelReasoningEfforts {
+			cloned[model] = effort
+		}
+		provider.ModelReasoningEfforts = cloned
+	}
 	provider.ExtraBody = cloneMapAny(provider.ExtraBody)
 	provider.Extra = cloneMapAny(provider.Extra)
 	return provider
@@ -3423,6 +3467,7 @@ func (h *Host) SetRoleThinking(role, level string) error {
 
 	// 联动 live：具体角色直接应用；default 则遍历各具体角色按 ResolveReasoningEffort 重新应用
 	// （已被角色级覆盖的保留自身，未覆盖的吃上新默认）。
+	h.models.ApplyReasoningConfig(h.cfg)
 	h.applyThinkingLocked(role)
 
 	logRole := role

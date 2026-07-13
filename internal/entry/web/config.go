@@ -58,8 +58,20 @@ func cloneWebProviderConfigs(providers map[string]bootstrap.ProviderConfig) map[
 func cloneWebProviderConfig(provider bootstrap.ProviderConfig) bootstrap.ProviderConfig {
 	out := provider
 	out.Models = append([]string(nil), provider.Models...)
+	out.ModelReasoningEfforts = cloneWebStringMap(provider.ModelReasoningEfforts)
 	out.ExtraBody = cloneWebAnyMap(provider.ExtraBody)
 	out.Extra = cloneWebAnyMap(provider.Extra)
+	return out
+}
+
+func cloneWebStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
 	return out
 }
 

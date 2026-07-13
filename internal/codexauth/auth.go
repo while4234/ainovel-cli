@@ -161,13 +161,50 @@ func GetStatus(authFile string) AuthStatus {
 }
 
 func ResolveAuthPath(authFile string) string {
-	if envPath := strings.TrimSpace(os.Getenv("CODEX_AUTH_FILE")); envPath != "" {
-		return expandHome(envPath)
-	}
 	if value := strings.TrimSpace(authFile); value != "" {
 		return expandHome(value)
 	}
+	if envPath := strings.TrimSpace(os.Getenv("CODEX_AUTH_FILE")); envPath != "" {
+		return expandHome(envPath)
+	}
 	return DefaultAuthPath()
+}
+
+// InstallAuthFile validates and atomically stores an uploaded Codex login.
+// Callers should persist only the target path, never the credential payload.
+func InstallAuthFile(data []byte, target string) (AuthStatus, error) {
+	if len(data) == 0 {
+		return AuthStatus{}, authError("codex_auth_invalid", true, "Codex auth file is empty.")
+	}
+	if int64(len(data)) > maxCodexAuthFileSize {
+		return AuthStatus{}, authError("codex_auth_invalid", true, "Codex auth file exceeds the 1 MiB limit.")
+	}
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	var payload authPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return AuthStatus{}, authError("codex_auth_invalid", true, "Codex auth file is not valid JSON.")
+	}
+	if payload == nil {
+		return AuthStatus{}, authError("codex_auth_invalid", true, "Codex auth file must contain a JSON object.")
+	}
+	tokens, err := tokensFromPayload(payload)
+	if err != nil {
+		return AuthStatus{}, err
+	}
+	if tokenString(tokens, "access_token") == "" {
+		return AuthStatus{}, authError("codex_auth_invalid", true, "Codex auth file is missing an access token.")
+	}
+	if expiredWithoutRefresh(tokens) {
+		return AuthStatus{}, authError("codex_auth_expired", true, "Codex access token is expired. Run codex login and retry.")
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return AuthStatus{}, fmt.Errorf("Codex auth target path is required")
+	}
+	if err := savePayload(target, payload); err != nil {
+		return AuthStatus{}, fmt.Errorf("save uploaded Codex auth file: %w", err)
+	}
+	return GetStatus(target), nil
 }
 
 func DefaultAuthPath() string {

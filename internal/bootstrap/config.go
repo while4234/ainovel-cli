@@ -286,6 +286,9 @@ type ProviderConfig struct {
 	APIKey                     string   `json:"api_key,omitempty"`    // API Key
 	BaseURL                    string   `json:"base_url,omitempty"`   // API Base URL
 	Models                     []string `json:"models,omitempty"`     // 可选模型列表，供 TUI 切换时展示
+	// ModelReasoningEfforts stores the default reasoning level for each
+	// provider/model pair. A role or workflow-stage override still wins.
+	ModelReasoningEfforts map[string]string `json:"model_reasoning_efforts,omitempty"`
 	// ExtraBody 透传给该 provider 每次请求的额外参数（如 temperature/top_p/min_p/
 	// presence_penalty，或厂商特有键如 nvidia 开 think 的 chat_template_kwargs）。
 	// OpenAI 兼容端逐字并入请求体（即 extra_body 约定）；值由用户自负其责。
@@ -812,15 +815,44 @@ func (c Config) ResolveContextWindow(modelName string) (int, ContextWindowSource
 }
 
 // ResolveReasoningEffort 返回某角色生效的推理强度原始串（off/low/medium/high/xhigh/max 或空）。
-// 优先级：角色级 Roles[role].ReasoningEffort → 顶层默认 ReasoningEffort → ""（不覆盖，沿用模型/provider 默认）。
-// role 为空或 "default" 时直接取顶层默认。值的合法性由 agents.ParseThinkingLevel 把关。
+// 优先级：角色/阶段显式值 → 阶段对应 Agent 显式值 → provider 的模型默认值
+// → 顶层默认 ReasoningEffort → ""（不覆盖，沿用服务端默认）。
+// 值的合法性由 agents.ParseThinkingLevel 把关。
 func (c Config) ResolveReasoningEffort(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
 	if role != "" && role != "default" {
-		if rc, ok := c.Roles[role]; ok && rc.ReasoningEffort != "" {
-			return rc.ReasoningEffort
+		if rc, ok := c.Roles[role]; ok && strings.TrimSpace(rc.ReasoningEffort) != "" {
+			return strings.TrimSpace(rc.ReasoningEffort)
+		}
+		if strings.HasPrefix(role, "stage:") {
+			fallbackRole := StageFallbackRole(strings.TrimPrefix(role, "stage:"))
+			if rc, ok := c.Roles[fallbackRole]; ok && strings.TrimSpace(rc.ReasoningEffort) != "" {
+				return strings.TrimSpace(rc.ReasoningEffort)
+			}
 		}
 	}
-	return c.ReasoningEffort
+	provider, model := c.effectiveModelSelection(role)
+	if pc, ok := c.Providers[provider]; ok {
+		if effort := strings.TrimSpace(pc.ModelReasoningEfforts[model]); effort != "" {
+			return effort
+		}
+	}
+	return strings.TrimSpace(c.ReasoningEffort)
+}
+
+func (c Config) effectiveModelSelection(role string) (string, string) {
+	if role != "" && role != "default" {
+		if rc, ok := c.Roles[role]; ok && strings.TrimSpace(rc.Provider) != "" && strings.TrimSpace(rc.Model) != "" {
+			return strings.TrimSpace(rc.Provider), strings.TrimSpace(rc.Model)
+		}
+		if strings.HasPrefix(role, "stage:") {
+			fallbackRole := StageFallbackRole(strings.TrimPrefix(role, "stage:"))
+			if rc, ok := c.Roles[fallbackRole]; ok && strings.TrimSpace(rc.Provider) != "" && strings.TrimSpace(rc.Model) != "" {
+				return strings.TrimSpace(rc.Provider), strings.TrimSpace(rc.Model)
+			}
+		}
+	}
+	return strings.TrimSpace(c.Provider), strings.TrimSpace(c.ModelName)
 }
 
 // LogContextWindowChoice 打印某个角色的窗口决策。source=default 时发 Warn 提示

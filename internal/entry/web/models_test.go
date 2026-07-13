@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -645,6 +646,15 @@ func TestGlobalModelTestDoesNotPersistOrLeakAPIKey(t *testing.T) {
 	}
 }
 
+func TestModelProviderRequestIncludesPerModelReasoningDefault(t *testing.T) {
+	effort := " high "
+	req := modelProviderRequest{Model: "gpt-5.6-sol", ModelReasoningEffort: &effort}
+	pc := req.providerConfig()
+	if got := pc.ModelReasoningEfforts["gpt-5.6-sol"]; got != "high" {
+		t.Fatalf("model reasoning effort = %q, want high", got)
+	}
+}
+
 func TestGlobalModelTestExistingProviderUsesEditFlow(t *testing.T) {
 	restore := hostpkg.SetAddedModelConnectivityProbeForTest(func(context.Context, agentcore.ChatModel) error {
 		return nil
@@ -1177,6 +1187,51 @@ func TestCodexAuthStatusEndpointReadsExistingLogin(t *testing.T) {
 	}
 	if strings.Contains(status.Status.Message, authPath) {
 		t.Fatalf("status message leaked auth path: %q", status.Status.Message)
+	}
+}
+
+func TestCodexAuthUploadStoresManagedCredential(t *testing.T) {
+	runtimeRoot := testTempDir(t)
+	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	defer server.Close()
+
+	credential := []byte(`{"tokens":{"access_token":"uploaded-secret","account_id":"acct-uploaded"}}`)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("auth_file", "auth.json")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := part.Write(credential); err != nil {
+		t.Fatalf("write credential: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/models/codex-auth/upload", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "uploaded-secret") {
+		t.Fatal("upload response leaked credential")
+	}
+	var response struct {
+		AuthFile string               `json:"auth_file"`
+		Status   codexauth.AuthStatus `json:"status"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	wantPath := filepath.Join(runtimeRoot, "auth", "codex", "auth.json")
+	if response.AuthFile != wantPath || !response.Status.LoggedIn || response.Status.AccountID != "acct-uploaded" {
+		t.Fatalf("upload response = %+v, want path %q", response, wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("managed auth file: %v", err)
 	}
 }
 

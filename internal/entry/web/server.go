@@ -174,6 +174,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/models/test", s.handleModelTest)
 	mux.HandleFunc("/api/models/discover", s.handleModelDiscover)
 	mux.HandleFunc("/api/models/codex-auth/status", s.handleCodexAuthStatus)
+	mux.HandleFunc("/api/models/codex-auth/upload", s.handleCodexAuthUpload)
 	mux.HandleFunc("/api/models/grok-login/", s.handleGrokLogin)
 	mux.HandleFunc("/api/projects/trash", s.handleProjectTrash)
 	mux.HandleFunc("/api/projects/migrate-legacy", s.handleLegacyProjectMigration)

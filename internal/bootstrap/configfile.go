@@ -256,6 +256,14 @@ func mergeConfig(base, overlay Config) Config {
 			if len(v.Models) > 0 {
 				existing.Models = append([]string(nil), v.Models...)
 			}
+			if len(v.ModelReasoningEfforts) > 0 {
+				if existing.ModelReasoningEfforts == nil {
+					existing.ModelReasoningEfforts = make(map[string]string)
+				}
+				for model, effort := range v.ModelReasoningEfforts {
+					existing.ModelReasoningEfforts[model] = effort
+				}
+			}
 			if len(v.ExtraBody) > 0 {
 				existing.ExtraBody = cloneMap(v.ExtraBody)
 			}

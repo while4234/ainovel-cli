@@ -142,6 +142,7 @@ import {
   testSetupModel,
   trashProject,
   uploadAdaptationSource,
+  uploadCodexAuthFile,
   uploadContinuationSource,
   uploadSimulationLibrary,
   uploadSimulationFiles
@@ -712,6 +713,7 @@ function createCustomModelState() {
     template_provider: 'deepseek',
     type: 'openai',
     model: '',
+	model_reasoning_effort: '',
     base_url: '',
     api_key: '',
     api: 'chat',
@@ -731,6 +733,7 @@ function createCustomModelState() {
     grok_status: null,
     grok_message: '',
     auth_file: '',
+    auth_file_name: '',
     codex_status: null,
     codex_message: ''
   };
@@ -4017,6 +4020,36 @@ export default function App() {
     }
   };
 
+  const uploadCodexCredential = async (event) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setCustomModel((previous) => ({ ...previous, codex_message: '正在上传并校验 auth.json...' }));
+    try {
+      const data = await uploadCodexAuthFile(file);
+      const status = data.status || null;
+      setCustomModel((previous) => ({
+        ...previous,
+        auth_file: data.auth_file || '',
+        auth_file_name: data.file?.name || file.name,
+        codex_status: status,
+        codex_message: `auth.json 上传成功；${codexAuthSummary(status)}`,
+        test_status: 'idle',
+        test_message: ''
+      }));
+    } catch (err) {
+      setError(err.message);
+      setCustomModel((previous) => ({ ...previous, codex_message: err.message }));
+    } finally {
+      input.value = '';
+      setBusy(false);
+    }
+  };
+
   const sortedEvents = useMemo(
     () => workbench.eventRows.slice().sort((a, b) => b.seq - a.seq),
     [workbench.eventRows]
@@ -4783,6 +4816,7 @@ export default function App() {
               onCompleteGrokLogin={completeGrokOAuthLogin}
               onRefreshGrokStatus={refreshGrokOAuthStatus}
               onRefreshCodexStatus={refreshCodexAuthStatus}
+              onUploadCodexAuth={uploadCodexCredential}
             />
           )}
         </div>
@@ -8344,7 +8378,8 @@ function ModelPanel({
   onPollGrokLogin,
   onCompleteGrokLogin,
   onRefreshGrokStatus,
-  onRefreshCodexStatus
+  onRefreshCodexStatus,
+  onUploadCodexAuth
 }) {
   const config = runtime?.config || {};
   const roles = modelConfig?.roles || [];
@@ -8484,6 +8519,8 @@ function ModelPanel({
   const grokURL = grokAuthorizeURL(customModel.grok_login);
   const grokReady = grokLoggedIn(customModel.grok_status);
   const codexReady = codexLoggedIn(customModel.codex_status);
+	const isCodexEditor = customModel.mode === 'codex_auth' || String(customModel.auth || '').trim().toLowerCase() === 'codex';
+	const isGrokOAuthEditor = customModel.mode === 'grok_oauth' || String(customModel.auth || '').trim().toLowerCase() === 'grok_oauth';
   const addValidationMessage = modelAddValidationMessage(customModel, modelConfig);
   const canAdd = !addValidationMessage;
   const selectedProjectRoute = projectRoles.find((route) => route.role === selectedProjectRole) || projectRoles[0] || null;
@@ -8516,6 +8553,11 @@ function ModelPanel({
   const selectedProviderModels = modelOptionsForProvider(providers, editorModelProvider, customModel.model);
   const discoveredModels = Array.isArray(customModel.discovered_models) ? customModel.discovered_models : [];
   const modelSuggestions = mergeModelOptions(discoveredModels, selectedProviderModels, customModel.model);
+	const editorReasoningLevels = reasoningLevelsForModel(customModel.model, {
+		name: editorModelProvider,
+		type: customModel.type,
+		auth: customModel.auth
+	});
   const providerEditorID = String(customModel.mode === 'existing' ? customModel.provider : customModel.provider || selectedPreset.provider || '').trim();
   const providerEditorLabel = String(customModel.label || (customModel.mode === 'existing' ? customModel.provider : selectedPreset.label) || '').trim();
   const editingExistingModel = customModel.mode === 'existing';
@@ -8699,9 +8741,13 @@ function ModelPanel({
           <div className="empty-state">打开项目后可按阶段选择模型</div>
         ) : (
           <div className="stage-model-list">
-            {stages.map((route) => (
-              <label className="field-label stage-model-route" key={route.role}>
-                <span>{route.label || route.role}</span>
+            {stages.map((route) => {
+			  const stageProvider = providers.find((provider) => provider.name === route.provider) || {};
+			  const stageReasoningLevels = reasoningLevelsForModel(route.model, stageProvider);
+			  return (
+			  <div className="stage-model-route" key={route.role}>
+				<label className="field-label">
+				<span>{route.label || route.role}</span>
                 <select
                   disabled={busy || stageModelOptions.length === 0}
                   value={route.explicit ? route.model : stageInheritedModelOption}
@@ -8724,8 +8770,24 @@ function ModelPanel({
                     <option key={model} value={model}>{model}</option>
                   ))}
                 </select>
-              </label>
-            ))}
+				</label>
+				{stageReasoningLevels ? (
+				  <label className="field-label stage-thinking-route">
+					<span>思考深度</span>
+					<select
+					  disabled={busy}
+					  value={route.reasoning_effort || ''}
+					  onChange={(event) => onThinking(route.role, event.target.value)}
+					>
+					  {stageReasoningLevels.map((level) => (
+						<option key={level || 'inherit'} value={level}>{level || '继承模型默认'}</option>
+					  ))}
+					</select>
+				  </label>
+				) : null}
+			  </div>
+			  );
+			})}
             <p className="muted">同名模型只显示一次，系统自动选择后端。一次 Architect 规划可能连续完成骨架和首批细纲，此时全程使用“骨架规划”模型；独立细纲生成与修订使用“详细提纲”模型。</p>
           </div>
         )}
@@ -9145,17 +9207,19 @@ function ModelPanel({
             />
           </>
         ) : null}
-        {customModel.mode === 'codex_auth' ? (
+		{isCodexEditor ? (
           <>
-            <label className="model-field">
-              <span>配置 ID (provider key)</span>
-              <input
-                disabled={busy}
-                placeholder="例如 codex-login；不是 API key"
-                value={customModel.provider}
-                onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
-              />
-            </label>
+            {customModel.mode === 'codex_auth' ? (
+              <label className="model-field">
+                <span>配置 ID (provider key)</span>
+                <input
+                  disabled={busy}
+                  placeholder="例如 codex-login；不是 API key"
+                  value={customModel.provider}
+                  onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+                />
+              </label>
+            ) : null}
             <label className="model-field">
               <span>Codex auth.json</span>
               <input
@@ -9165,33 +9229,47 @@ function ModelPanel({
                 onChange={(event) => setCustomModel((previous) => ({
                   ...previous,
                   auth_file: event.target.value,
+                  auth_file_name: '',
                   codex_status: null
                 }))}
               />
             </label>
             <div className="grok-action-grid">
+				<label className={`tool-button codex-auth-upload ${busy ? 'disabled' : ''}`}>
+					<Upload size={16} />
+					上传 auth.json
+					<input
+						accept="application/json,.json"
+						disabled={busy}
+						onChange={onUploadCodexAuth}
+						type="file"
+					/>
+				</label>
               <button className="tool-button" onClick={onRefreshCodexStatus} type="button">
                 <RefreshCw size={16} />
-                Status
+				检查登录
               </button>
             </div>
+			{customModel.auth_file_name ? <small>已上传：{customModel.auth_file_name}</small> : null}
             <div className={`grok-status ${codexReady ? 'ready' : ''}`}>
               <strong>{codexReady ? 'Codex 已登录' : 'Codex 未登录'}</strong>
               <span>{customModel.codex_message || codexAuthSummary(customModel.codex_status)}</span>
             </div>
           </>
         ) : null}
-        {customModel.mode === 'grok_oauth' ? (
+		{isGrokOAuthEditor ? (
           <>
-            <label className="model-field">
-              <span>配置 ID (provider key)</span>
-              <input
-                disabled={busy}
-                placeholder="例如 grok-oauth-work；不是 API key"
-                value={customModel.provider}
-                onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
-              />
-            </label>
+            {customModel.mode === 'grok_oauth' ? (
+              <label className="model-field">
+                <span>配置 ID (provider key)</span>
+                <input
+                  disabled={busy}
+                  placeholder="例如 grok-oauth-work；不是 API key"
+                  value={customModel.provider}
+                  onChange={(event) => setCustomModel((previous) => ({ ...previous, provider: event.target.value }))}
+                />
+              </label>
+            ) : null}
             <input
               disabled={busy}
               placeholder="account ID"
@@ -9251,7 +9329,11 @@ function ModelPanel({
               aria-label="模型名称"
               disabled={busy}
               value={customModel.model || modelSuggestions[0] || ''}
-              onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
+			  onChange={(event) => setCustomModel((previous) => ({
+				...previous,
+				model: event.target.value,
+				model_reasoning_effort: modelReasoningEffortForProvider(providers, editorModelProvider, event.target.value)
+			  }))}
             >
               {modelSuggestions.map((model) => (
                 <option key={model} value={model}>{model}</option>
@@ -9262,11 +9344,27 @@ function ModelPanel({
               aria-label="模型名称"
               disabled={busy}
               placeholder="model"
-              value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : customModel.mode === 'codex_auth' ? codexAuthDefaults.model : customModel.mode === 'grok_oauth' ? grokOAuthDefaults.model : '')}
-              onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
+			  value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : isCodexEditor ? codexAuthDefaults.model : isGrokOAuthEditor ? grokOAuthDefaults.model : '')}
+			  onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
             />
           )}
         </label>
+		{editorReasoningLevels ? (
+		  <label className="model-field">
+			<span>模型默认思考深度</span>
+			<select
+			  aria-label="模型默认思考深度"
+			  disabled={busy}
+			  value={customModel.model_reasoning_effort || ''}
+			  onChange={(event) => setCustomModel((previous) => ({ ...previous, model_reasoning_effort: event.target.value }))}
+			>
+			  {editorReasoningLevels.map((level) => (
+				<option key={level || 'provider-default'} value={level}>{level || '服务默认'}</option>
+			  ))}
+			</select>
+			<small>{String(customModel.model || '').toLowerCase() === 'grok-4.5' ? 'Grok 4.5 支持 low / medium / high，默认 high，不能关闭思考。' : '切换到该模型时自动使用此深度；项目或创作阶段可以单独覆盖。'}</small>
+		  </label>
+		) : null}
         {editorTestMessage ? (
           <div className={`model-test-note ${customModel.test_status || 'idle'}`}>
             {editorTestMessage}
@@ -9594,6 +9692,7 @@ export function modelAddModeDefaults(state, providers = [], previousMode = '') {
       template_provider: state.template_provider || 'custom',
       type: state.type || 'openai',
       model: fromExisting ? '' : (state.model || ''),
+	  model_reasoning_effort: '',
       api: state.api || 'chat',
       use_proxy: Boolean(state.use_proxy),
       auth: '',
@@ -9624,11 +9723,13 @@ export function modelAddModeDefaults(state, providers = [], previousMode = '') {
       type: codexAuthDefaults.type,
       auth: codexAuthDefaults.auth,
       model,
+	  model_reasoning_effort: '',
       api: 'responses',
       use_proxy: true,
       api_key: '',
       base_url: codexAuthDefaults.base_url,
       auth_file: state.auth_file || '',
+      auth_file_name: state.auth_file_name || '',
       request_timeout_seconds: state.request_timeout_seconds || defaultModelRequestTimeoutSeconds,
       connectivity_timeout_seconds: state.connectivity_timeout_seconds || defaultModelConnectivityTimeoutSeconds,
       network_disconnect_max_attempts: state.network_disconnect_max_attempts || defaultModelNetworkDisconnectMaxAttempts,
@@ -9654,6 +9755,7 @@ export function modelAddModeDefaults(state, providers = [], previousMode = '') {
       type: grokOAuthDefaults.type,
       auth: grokOAuthDefaults.auth,
       model,
+	  model_reasoning_effort: '',
       api: '',
       use_proxy: true,
       api_key: '',
@@ -9687,10 +9789,12 @@ function modelAddExistingProviderDefaults(state, providers = [], providerName = 
     type: provider?.type || '',
     auth: provider?.auth || '',
     auth_file: '',
+    auth_file_name: '',
     api,
     api_key: '',
     base_url: provider?.base_url || '',
     model: selectedModel,
+	model_reasoning_effort: String(provider?.model_reasoning_efforts?.[selectedModel] || '').trim(),
     use_proxy: provider?.use_proxy === true,
     request_timeout_seconds: providerNumberDraft(provider, 'request_timeout_seconds', 'requestTimeoutSeconds'),
     connectivity_timeout_seconds: providerNumberDraft(provider, 'connectivity_timeout_seconds', 'connectivityTimeoutSeconds'),
@@ -9756,6 +9860,24 @@ function mergeModelOptions(...groups) {
   return out;
 }
 
+function modelReasoningEffortForProvider(providers = [], providerName = '', model = '') {
+	const provider = providers.find((item) => item.name === providerName);
+	return String(provider?.model_reasoning_efforts?.[model] || '').trim();
+}
+
+function reasoningLevelsForModel(model = '', provider = {}) {
+	const normalizedModel = String(model || '').trim().toLowerCase();
+	const providerType = String(provider?.type || '').trim().toLowerCase();
+	const providerAuth = String(provider?.auth || '').trim().toLowerCase();
+	if (normalizedModel === 'grok-4.5') {
+		return ['', 'low', 'medium', 'high'];
+	}
+	if (normalizedModel.startsWith('gpt-') || providerAuth === 'codex' || (providerType === 'openai' && normalizedModel.includes('codex'))) {
+		return ['', 'off', 'low', 'medium', 'high', 'xhigh'];
+	}
+	return null;
+}
+
 export function modelDiscoveryMessage(discovery = {}, models = []) {
   const count = Array.isArray(models) ? models.length : 0;
   if (discovery.status === 'error') {
@@ -9784,6 +9906,7 @@ function modelAddPresetDefaults(state, providers = [], previousMode = '') {
     auth: '',
     base_url: preset.base_url || '',
     model: preset.model,
+	model_reasoning_effort: '',
     api: preset.api || 'chat',
     use_proxy: Boolean(preset.useProxy),
     api_key: fromExisting ? '' : (state.api_key || ''),
@@ -9833,15 +9956,19 @@ function optionalModelTimeout(value) {
 }
 
 function providerPayloadFields(state, fallback = {}) {
-  return {
+	const fields = {
     label: String(state.label || fallback.label || '').trim(),
     template_provider: String(state.template_provider || fallback.template_provider || fallback.provider || '').trim(),
     use_proxy: Boolean(state.use_proxy),
     request_timeout_seconds: optionalModelTimeout(state.request_timeout_seconds),
     connectivity_timeout_seconds: optionalModelTimeout(state.connectivity_timeout_seconds),
     network_disconnect_max_attempts: optionalModelTimeout(state.network_disconnect_max_attempts),
-    auto_switch_candidate_pool: Boolean(state.auto_switch_candidate_pool)
+	auto_switch_candidate_pool: Boolean(state.auto_switch_candidate_pool)
   };
+	if (Object.prototype.hasOwnProperty.call(state, 'model_reasoning_effort')) {
+		fields.model_reasoning_effort = String(state.model_reasoning_effort || '').trim();
+	}
+	return fields;
 }
 
 export function buildExistingModelActionPayload(role, provider, model) {
@@ -9879,11 +10006,20 @@ export function buildModelAddPayload(state, modelConfig) {
       api: providerUsesOpenAIEndpoint({ ...state, provider }) ? String(state.api || 'chat').trim() : '',
       base_url: String(state.base_url || '').trim()
     };
-    const apiKey = String(state.api_key || '').trim();
-    if (apiKey) {
-      payload.api_key = apiKey;
-    }
-    return payload;
+		const apiKey = String(state.api_key || '').trim();
+		if (apiKey) {
+			payload.api_key = apiKey;
+		}
+		if (String(state.auth || '').trim().toLowerCase() === 'codex') {
+			const authFile = String(state.auth_file || '').trim();
+			if (authFile) {
+				payload.auth_file = authFile;
+			}
+		}
+		if (String(state.auth || '').trim().toLowerCase() === 'grok_oauth') {
+			payload.account_id = String(state.account_id || grokOAuthDefaults.account_id).trim();
+		}
+		return payload;
   }
   if (state.mode === 'grok_oauth') {
     return {

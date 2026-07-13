@@ -604,12 +604,13 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 		key := bootstrap.StageRouteKey(stage)
 		provider, model, explicit := s.host.CurrentModelSelection(key)
 		stages = append(stages, apiModelRoute{
-			Role:         key,
-			Label:        stageLabels[stage],
-			FallbackRole: bootstrap.StageFallbackRole(stage),
-			Provider:     provider,
-			Model:        model,
-			Explicit:     explicit,
+			Role:            key,
+			Label:           stageLabels[stage],
+			FallbackRole:    bootstrap.StageFallbackRole(stage),
+			Provider:        provider,
+			Model:           model,
+			Explicit:        explicit,
+			ReasoningEffort: s.host.CurrentThinking(key),
 		})
 	}
 	return apiModelConfig{

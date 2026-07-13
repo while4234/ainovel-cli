@@ -2,9 +2,11 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +26,11 @@ var qualityFirstGrokStages = []string{
 	bootstrap.StageDetailOutline,
 	bootstrap.StageReview,
 }
+
+const (
+	maxCodexAuthUploadBytes    int64 = 1 << 20
+	maxCodexAuthMultipartBytes       = maxCodexAuthUploadBytes + 64<<10
+)
 
 var openAuthBrowser = openBrowser
 var startGrokAuthLogin = grokauth.StartLogin
@@ -50,23 +57,24 @@ type apiModelAutoSwitch struct {
 }
 
 type apiModelProvider struct {
-	Name                         string   `json:"name"`
-	Label                        string   `json:"label,omitempty"`
-	TemplateProvider             string   `json:"template_provider,omitempty"`
-	Disabled                     bool     `json:"disabled,omitempty"`
-	Type                         string   `json:"type,omitempty"`
-	Auth                         string   `json:"auth,omitempty"`
-	AccountID                    string   `json:"account_id,omitempty"`
-	AuthFileConfigured           bool     `json:"auth_file_configured,omitempty"`
-	API                          string   `json:"api,omitempty"`
-	BaseURL                      string   `json:"base_url,omitempty"`
-	UseProxy                     *bool    `json:"use_proxy,omitempty"`
-	RequestTimeoutSeconds        int      `json:"request_timeout_seconds,omitempty"`
-	ConnectivityTimeoutSeconds   int      `json:"connectivity_timeout_seconds,omitempty"`
-	APIKeyConfigured             bool     `json:"key_configured,omitempty"`
-	Models                       []string `json:"models"`
-	NetworkDisconnectMaxAttempts int      `json:"network_disconnect_max_attempts,omitempty"`
-	AutoSwitchCandidatePool      bool     `json:"auto_switch_candidate_pool,omitempty"`
+	Name                         string            `json:"name"`
+	Label                        string            `json:"label,omitempty"`
+	TemplateProvider             string            `json:"template_provider,omitempty"`
+	Disabled                     bool              `json:"disabled,omitempty"`
+	Type                         string            `json:"type,omitempty"`
+	Auth                         string            `json:"auth,omitempty"`
+	AccountID                    string            `json:"account_id,omitempty"`
+	AuthFileConfigured           bool              `json:"auth_file_configured,omitempty"`
+	API                          string            `json:"api,omitempty"`
+	BaseURL                      string            `json:"base_url,omitempty"`
+	UseProxy                     *bool             `json:"use_proxy,omitempty"`
+	RequestTimeoutSeconds        int               `json:"request_timeout_seconds,omitempty"`
+	ConnectivityTimeoutSeconds   int               `json:"connectivity_timeout_seconds,omitempty"`
+	APIKeyConfigured             bool              `json:"key_configured,omitempty"`
+	Models                       []string          `json:"models"`
+	ModelReasoningEfforts        map[string]string `json:"model_reasoning_efforts,omitempty"`
+	NetworkDisconnectMaxAttempts int               `json:"network_disconnect_max_attempts,omitempty"`
+	AutoSwitchCandidatePool      bool              `json:"auto_switch_candidate_pool,omitempty"`
 }
 
 type apiModelRoute struct {
@@ -128,26 +136,27 @@ type modelDeleteRequest struct {
 }
 
 type modelProviderRequest struct {
-	Role                         string `json:"role"`
-	OriginalProvider             string `json:"original_provider"`
-	Provider                     string `json:"provider"`
-	Model                        string `json:"model"`
-	Label                        string `json:"label"`
-	TemplateProvider             string `json:"template_provider"`
-	Disabled                     bool   `json:"disabled"`
-	Type                         string `json:"type"`
-	Auth                         string `json:"auth"`
-	AccountID                    string `json:"account_id"`
-	AuthFile                     string `json:"auth_file"`
-	APIKey                       string `json:"api_key"`
-	BaseURL                      string `json:"base_url"`
-	API                          string `json:"api"`
-	UseProxy                     *bool  `json:"use_proxy"`
-	RequestTimeoutSeconds        int    `json:"request_timeout_seconds"`
-	ConnectivityTimeoutSeconds   int    `json:"connectivity_timeout_seconds"`
-	NetworkDisconnectMaxAttempts int    `json:"network_disconnect_max_attempts"`
-	AutoSwitchCandidatePool      bool   `json:"auto_switch_candidate_pool"`
-	SelectAfterSave              *bool  `json:"select_after_save"`
+	Role                         string  `json:"role"`
+	OriginalProvider             string  `json:"original_provider"`
+	Provider                     string  `json:"provider"`
+	Model                        string  `json:"model"`
+	ModelReasoningEffort         *string `json:"model_reasoning_effort"`
+	Label                        string  `json:"label"`
+	TemplateProvider             string  `json:"template_provider"`
+	Disabled                     bool    `json:"disabled"`
+	Type                         string  `json:"type"`
+	Auth                         string  `json:"auth"`
+	AccountID                    string  `json:"account_id"`
+	AuthFile                     string  `json:"auth_file"`
+	APIKey                       string  `json:"api_key"`
+	BaseURL                      string  `json:"base_url"`
+	API                          string  `json:"api"`
+	UseProxy                     *bool   `json:"use_proxy"`
+	RequestTimeoutSeconds        int     `json:"request_timeout_seconds"`
+	ConnectivityTimeoutSeconds   int     `json:"connectivity_timeout_seconds"`
+	NetworkDisconnectMaxAttempts int     `json:"network_disconnect_max_attempts"`
+	AutoSwitchCandidatePool      bool    `json:"auto_switch_candidate_pool"`
+	SelectAfterSave              *bool   `json:"select_after_save"`
 }
 
 func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
@@ -164,6 +173,11 @@ func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
 		API:                        strings.TrimSpace(r.API),
 		RequestTimeoutSeconds:      r.RequestTimeoutSeconds,
 		ConnectivityTimeoutSeconds: r.ConnectivityTimeoutSeconds,
+	}
+	if r.ModelReasoningEffort != nil {
+		pc.ModelReasoningEfforts = map[string]string{
+			strings.TrimSpace(r.Model): strings.ToLower(strings.TrimSpace(*r.ModelReasoningEffort)),
+		}
 	}
 	if pc.UsesGrokOAuth() {
 		pc.API = ""
@@ -706,9 +720,21 @@ func apiProviderFromConfig(name string, pc bootstrap.ProviderConfig, models []st
 		ConnectivityTimeoutSeconds:   pc.ConnectivityTimeoutSeconds,
 		APIKeyConfigured:             strings.TrimSpace(pc.APIKey) != "",
 		Models:                       append([]string(nil), models...),
+		ModelReasoningEfforts:        cloneStringMap(pc.ModelReasoningEfforts),
 		NetworkDisconnectMaxAttempts: autoSwitch.EffectiveNetworkMaxAttempts(),
 		AutoSwitchCandidatePool:      modelAutoSwitchHasProvider(autoSwitch, name),
 	}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func apiModelAutoSwitchFromConfig(cfg bootstrap.ModelAutoSwitchConfig) apiModelAutoSwitch {
@@ -1388,6 +1414,54 @@ func (s *Server) handleCodexAuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": codexauth.GetStatus(authFile),
+	})
+}
+
+func (s *Server) handleCodexAuthUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	headers, cleanup, err := parseMultipartFiles(w, r, maxCodexAuthMultipartBytes)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(headers) != 1 {
+		writeError(w, http.StatusBadRequest, "exactly one auth.json file is required")
+		return
+	}
+	name, err := sanitizeUploadedFilename(rawMultipartFilename(headers[0]), profileUploadExtensions)
+	if err != nil {
+		writeUploadValidationError(w, err)
+		return
+	}
+	data, err := readMultipartFile(headers[0], maxCodexAuthUploadBytes)
+	if err != nil {
+		writeUploadValidationError(w, err)
+		return
+	}
+	target := filepath.Join(s.runtimeRoot, "auth", "codex", "auth.json")
+	status, err := codexauth.InstallAuthFile(data, target)
+	if err != nil {
+		var authErr *codexauth.AuthError
+		if errors.As(err, &authErr) {
+			writeError(w, http.StatusBadRequest, authErr.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "save Codex auth file failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"auth_file": target,
+		"file": map[string]any{
+			"name": name,
+			"size": len(data),
+		},
+		"status": status,
 	})
 }
 

@@ -78,6 +78,7 @@ import {
   testGlobalProviderModel,
   testProjectProviderModel,
   trashProject,
+  uploadCodexAuthFile,
   uploadContinuationSource
 } from './api.js';
 
@@ -561,6 +562,19 @@ describe('web API helpers', () => {
       method: 'POST',
       body: JSON.stringify({ auth_file: 'D:/codex/auth.json' })
     }));
+  });
+
+  it('uploads Codex auth through multipart without setting a JSON content type', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+    const file = new File(['{"tokens":{}}'], 'auth.json', { type: 'application/json' });
+
+    await uploadCodexAuthFile(file);
+
+    const [, options] = fetchMock.mock.calls[0];
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/models/codex-auth/upload');
+    expect(options.method).toBe('POST');
+    expect(options.body).toBeInstanceOf(FormData);
+    expect(options.headers).toEqual({});
   });
 
   it('uses global model routes for default model controls', async () => {

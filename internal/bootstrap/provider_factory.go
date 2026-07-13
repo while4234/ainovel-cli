@@ -1,10 +1,13 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -63,7 +66,28 @@ func newProviderClientWithTransport(cfg Config, providerKey, model string, pc Pr
 // exposes one. supported=false means the provider has no list-models endpoint.
 func DiscoverProviderModels(ctx context.Context, cfg Config, providerKey, model string, pc ProviderConfig) ([]string, bool, error) {
 	if pc.UsesCodexAuth() {
-		return nil, false, nil
+		if timeout := ProviderConnectivityTimeout(pc); timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+		catalog, err := codexauth.ReadModelCatalog(ctx, pc.AuthFile)
+		models := make([]string, 0, len(catalog)+len(codexauth.OfficialGPT56Models))
+		seen := make(map[string]bool)
+		for _, entry := range catalog {
+			id := strings.TrimSpace(entry.ID)
+			if id != "" && !seen[id] {
+				seen[id] = true
+				models = append(models, id)
+			}
+		}
+		for _, id := range codexauth.OfficialGPT56Models {
+			if !seen[id] {
+				seen[id] = true
+				models = append(models, id)
+			}
+		}
+		return models, true, err
 	}
 	transport, _, err := ProviderTransport(cfg, providerKey, model, pc)
 	if err != nil {
@@ -191,7 +215,7 @@ func createCodexAuthModel(cfg Config, providerKey, model string, pc ProviderConf
 	if err != nil {
 		return nil, fmt.Errorf("provider %s (codex auth): %w: %w", providerKey, errs.ErrProvider, err)
 	}
-	wrapped := globalprompt.WrapModel(llm.NewLiteLLMAdapter(model, client))
+	wrapped := globalprompt.WrapModel(&codexStreamModel{model: llm.NewLiteLLMAdapter(model, client)})
 	if timeout := ProviderRequestTimeout(pc); timeout > 0 {
 		return &requestTimeoutModel{model: wrapped, timeout: timeout}, nil
 	}
@@ -281,6 +305,9 @@ func (t codexAuthTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		req.Header.Set("x-client-request-id", newCodexRequestID())
 	}
 	rewriteCodexBackendPath(req)
+	if err := normalizeCodexResponsesInput(req); err != nil {
+		return nil, err
+	}
 	return t.base.RoundTrip(req)
 }
 
@@ -292,6 +319,141 @@ func rewriteCodexBackendPath(req *http.Request) {
 		req.URL.Path = strings.TrimSuffix(req.URL.Path, "/v1/responses") + "/responses"
 		req.URL.RawPath = ""
 	}
+}
+
+func normalizeCodexResponsesInput(req *http.Request) error {
+	if req == nil || req.Body == nil || req.Method != http.MethodPost || !strings.HasSuffix(req.URL.Path, "/responses") {
+		return nil
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return fmt.Errorf("read Codex responses request: %w", err)
+	}
+	_ = req.Body.Close()
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return fmt.Errorf("decode Codex responses request: %w", err)
+	}
+	if input, ok := payload["input"]; ok {
+		var text string
+		if err := json.Unmarshal(input, &text); err == nil {
+			wrapped, err := json.Marshal([]map[string]any{{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]string{{
+					"type": "input_text",
+					"text": text,
+				}},
+			}})
+			if err != nil {
+				return fmt.Errorf("encode Codex responses input: %w", err)
+			}
+			payload["input"] = wrapped
+		}
+	}
+	payload["store"] = json.RawMessage("false")
+	payload["stream"] = json.RawMessage("true")
+	delete(payload, "max_output_tokens")
+	body, err = json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode Codex responses request: %w", err)
+	}
+	resetRequestBody(req, body)
+	return nil
+}
+
+func resetRequestBody(req *http.Request, body []byte) {
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+}
+
+// codexStreamModel adapts ChatGPT's Codex backend, which accepts Responses
+// requests only in streaming mode, to the full ChatModel contract.
+type codexStreamModel struct {
+	model agentcore.ChatModel
+}
+
+func (m *codexStreamModel) Generate(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	if m == nil || m.model == nil {
+		return nil, agentcore.ErrNoModel
+	}
+	stream, err := m.model.GenerateStream(ctx, messages, tools, opts...)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case event, ok := <-stream:
+			if !ok {
+				return nil, fmt.Errorf("Codex response stream ended before completion")
+			}
+			switch event.Type {
+			case agentcore.StreamEventError:
+				if event.Err != nil {
+					return nil, event.Err
+				}
+				return nil, fmt.Errorf("Codex response stream failed")
+			case agentcore.StreamEventDone:
+				if event.Message.StopReason == "" {
+					event.Message.StopReason = event.StopReason
+				}
+				return &agentcore.LLMResponse{Message: event.Message}, nil
+			}
+		}
+	}
+}
+
+func (m *codexStreamModel) GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	if m == nil || m.model == nil {
+		return nil, agentcore.ErrNoModel
+	}
+	return m.model.GenerateStream(ctx, messages, tools, opts...)
+}
+
+func (m *codexStreamModel) SupportsTools() bool {
+	return m != nil && m.model != nil && m.model.SupportsTools()
+}
+
+func (m *codexStreamModel) ProviderName() string {
+	if m != nil {
+		if namer, ok := m.model.(interface{ ProviderName() string }); ok {
+			return namer.ProviderName()
+		}
+	}
+	return ""
+}
+
+func (m *codexStreamModel) ModelName() string {
+	if m != nil {
+		if namer, ok := m.model.(interface{ ModelName() string }); ok {
+			return namer.ModelName()
+		}
+	}
+	return ""
+}
+
+func (m *codexStreamModel) Info() llm.ModelInfo {
+	if m != nil {
+		if info, ok := m.model.(interface{ Info() llm.ModelInfo }); ok {
+			return info.Info()
+		}
+	}
+	return llm.ModelInfo{}
+}
+
+func (m *codexStreamModel) Capabilities() llm.Capabilities {
+	if m != nil {
+		if provider, ok := m.model.(llm.CapabilityProvider); ok {
+			return provider.Capabilities()
+		}
+	}
+	return llm.Capabilities{}
 }
 
 func newCodexRequestID() string {
@@ -307,18 +469,19 @@ func newGrokOAuthProviderWithTransport(cfg Config, providerKey, model string, pc
 	if err != nil {
 		return nil, fmt.Errorf("provider %s extra.headers: %w", providerKey, err)
 	}
+	apiKeyFunc := func(ctx context.Context) (string, error) {
+		credentials, err := grokauth.ResolveRuntimeCredentials(ctx, pc.AccountID)
+		if err != nil {
+			return "", err
+		}
+		return credentials.APIKey, nil
+	}
 	baseURL := strings.TrimSpace(pc.BaseURL)
 	if baseURL == "" {
 		baseURL = grokauth.DefaultBaseURL
 	}
 	return newGrokProvider(model, grok.Config{
-		APIKeyFunc: func(ctx context.Context) (string, error) {
-			credentials, err := grokauth.ResolveRuntimeCredentials(ctx, pc.AccountID)
-			if err != nil {
-				return "", err
-			}
-			return credentials.APIKey, nil
-		},
+		APIKeyFunc:                  apiKeyFunc,
 		BaseURL:                     baseURL,
 		Headers:                     headers,
 		Transport:                   transport,

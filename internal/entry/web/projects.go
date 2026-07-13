@@ -844,8 +844,9 @@ func removeInheritedProjectProviderModel(cfg, previousGlobal, nextGlobal bootstr
 	if hasLocalProvider {
 		if providerStillConfigured {
 			next.Providers[provider] = bootstrap.ProviderConfig{
-				Label:  globalPC.Label,
-				Models: append([]string(nil), globalPC.Models...),
+				Label:                 globalPC.Label,
+				Models:                append([]string(nil), globalPC.Models...),
+				ModelReasoningEfforts: cloneWebStringMap(globalPC.ModelReasoningEfforts),
 			}
 		} else {
 			delete(next.Providers, provider)
@@ -989,7 +990,11 @@ func refreshProjectProviderDisplayMetadata(cfg *bootstrap.Config, globalCfg boot
 	if hasGlobal {
 		models = mergeProviderModelMetadata(globalPC.Models, models)
 	}
-	safe := bootstrap.ProviderConfig{Label: globalLabel, Models: models}
+	safe := bootstrap.ProviderConfig{
+		Label:                 globalLabel,
+		Models:                models,
+		ModelReasoningEfforts: cloneWebStringMap(globalPC.ModelReasoningEfforts),
+	}
 	if reflect.DeepEqual(pc, safe) {
 		return false
 	}
@@ -1118,6 +1123,8 @@ func providerPrivateConfigEqual(left, right bootstrap.ProviderConfig) bool {
 	right.Label = ""
 	left.Models = nil
 	right.Models = nil
+	left.ModelReasoningEfforts = nil
+	right.ModelReasoningEfforts = nil
 	return reflect.DeepEqual(left, right)
 }
 

@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-13 pending `fix: connect Codex credentials and reasoning controls`:
+  added validated Codex credential upload and status checks, corrected the
+  ChatGPT Codex Responses request/stream protocol, discovered the signed-in
+  account model catalog through `codex app-server`, and added persistent
+  per-model plus per-stage reasoning depth for GPT/Codex and Grok 4.5. The
+  staged-source snapshot passed all 211 UI tests, a production UI build, and
+  `go test ./... -count=1`; live Codex login, discovery, and model inference
+  also passed.
 - 2026-07-13 `93c8ac3` `fix: stabilize de-AI audit sequence`: a live
   DeepSeek continuation completed chapter 71 using two `repair_de_ai_batch`
   calls (three exact replacements per batch), each followed by a fresh audit.

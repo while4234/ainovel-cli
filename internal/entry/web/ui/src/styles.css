@@ -3126,8 +3126,9 @@ h2 {
 }
 
 .stage-model-route {
-  grid-template-columns: minmax(88px, 0.7fr) minmax(0, 1.3fr);
-  align-items: center;
+	display: grid;
+	gap: 8px;
+	grid-template-columns: minmax(0, 1fr);
 }
 
 .stage-model-route select {
@@ -3283,6 +3284,30 @@ h2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.codex-auth-upload {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.codex-auth-upload.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.codex-auth-upload input[type='file'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.codex-auth-upload input[type='file']:disabled {
+  cursor: not-allowed;
 }
 
 .grok-login-link,

@@ -13,9 +13,7 @@ import (
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
-	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/litellm"
-	"github.com/voocel/litellm/provider/grok"
 )
 
 // 长输出 + 长 ctx 场景下，reasoning-aware provider（mimo / deepseek-r1 等）
@@ -53,6 +51,7 @@ type SwappableModel struct {
 	mu       sync.RWMutex
 	provider string
 	name     string
+	thinking agentcore.ThinkingLevel
 }
 
 func NewSwappableModel(provider, name string, model agentcore.ChatModel) *SwappableModel {
@@ -67,6 +66,31 @@ func (m *SwappableModel) ProviderName() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.provider
+}
+
+func (m *SwappableModel) Generate(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	return m.SwappableModel.Generate(ctx, messages, tools, m.withThinking(opts)...)
+}
+
+func (m *SwappableModel) GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	return m.SwappableModel.GenerateStream(ctx, messages, tools, m.withThinking(opts)...)
+}
+
+func (m *SwappableModel) withThinking(opts []agentcore.CallOption) []agentcore.CallOption {
+	m.mu.RLock()
+	level := m.thinking
+	m.mu.RUnlock()
+	if level == "" {
+		return opts
+	}
+	next := append([]agentcore.CallOption(nil), opts...)
+	return append(next, agentcore.WithThinking(level))
+}
+
+func (m *SwappableModel) SetThinking(level string) {
+	m.mu.Lock()
+	m.thinking = agentcore.ThinkingLevel(strings.ToLower(strings.TrimSpace(level)))
+	m.mu.Unlock()
 }
 
 func (m *SwappableModel) Info() llm.ModelInfo {
@@ -220,6 +244,16 @@ func (ms *ModelSet) RegisterProvider(provider string, pc ProviderConfig) {
 	ms.config.Providers[provider] = pc
 }
 
+// ApplyReasoningConfig refreshes per-route defaults without rebuilding provider
+// clients. Route-specific values override provider/model defaults at call time.
+func (ms *ModelSet) ApplyReasoningConfig(cfg Config) {
+	ms.config = cfg
+	ms.Default.SetThinking(cfg.ResolveReasoningEffort("default"))
+	for role, model := range ms.models {
+		model.SetThinking(cfg.ResolveReasoningEffort(role))
+	}
+}
+
 // ApplyConfig refreshes the ModelSet after provider/model routes are removed
 // or otherwise changed outside Swap. Existing role wrappers are swapped to the
 // new target where possible so already-built agents stop using deleted models.
@@ -251,9 +285,11 @@ func (ms *ModelSet) ApplyConfig(cfg Config) error {
 		}
 		if existing, ok := ms.models[role]; ok {
 			existing.Swap(rc.Provider, rc.Model, model)
+			existing.SetThinking(cfg.ResolveReasoningEffort(role))
 			nextModels[role] = existing
 		} else {
 			nextModels[role] = NewSwappableModel(rc.Provider, rc.Model, model)
+			nextModels[role].SetThinking(cfg.ResolveReasoningEffort(role))
 		}
 		targets, err := buildFallbackTargets(role, rc.Fallbacks, cfg, cache)
 		if err != nil {
@@ -273,7 +309,7 @@ func (ms *ModelSet) ApplyConfig(cfg Config) error {
 	ensureInheritedStageModels(nextModels, ms.models, ms.Default)
 	ms.models = nextModels
 	ms.fallbacks = nextFallbacks
-	ms.config = cfg
+	ms.ApplyReasoningConfig(cfg)
 	return nil
 }
 
@@ -295,6 +331,7 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 		ms.config.ModelName = model
 		ms.config.RememberModelCandidate(provider, model)
 		ms.refreshInheritedStageModels()
+		ms.ApplyReasoningConfig(ms.config)
 		return nil
 	}
 
@@ -313,6 +350,7 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 		ms.config.Roles[role] = rc
 		ms.config.RememberModelCandidate(provider, model)
 		ms.refreshInheritedStageModels()
+		ms.ApplyReasoningConfig(ms.config)
 		return nil
 	}
 	ms.models[role] = NewSwappableModel(provider, model, next)
@@ -325,6 +363,7 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 	ms.config.Roles[role] = rc
 	ms.config.RememberModelCandidate(provider, model)
 	ms.refreshInheritedStageModels()
+	ms.ApplyReasoningConfig(ms.config)
 	return nil
 }
 
@@ -355,6 +394,7 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 		fallbacks: make(map[string][]modelTarget),
 		config:    cfg,
 	}
+	ms.Default.SetThinking(cfg.ResolveReasoningEffort("default"))
 
 	// 创建角色覆盖模型
 	for role, rc := range cfg.Roles {
@@ -370,6 +410,7 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 			return nil, fmt.Errorf("role %s model: %w", role, err)
 		}
 		ms.models[role] = NewSwappableModel(rc.Provider, rc.Model, m)
+		ms.models[role].SetThinking(cfg.ResolveReasoningEffort(role))
 		slog.Info("角色模型分配", "module", "config", "role", role, "provider", rc.Provider, "model", rc.Model)
 		targets, err := buildFallbackTargets(role, rc.Fallbacks, cfg, cache)
 		if err != nil {
@@ -378,6 +419,7 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 		ms.fallbacks[role] = targets
 	}
 	ensureInheritedStageModels(ms.models, nil, ms.Default)
+	ms.ApplyReasoningConfig(cfg)
 
 	return ms, nil
 }
@@ -519,32 +561,11 @@ func createModelFromConfig(cfg Config, providerKey, model string, pc ProviderCon
 }
 
 func createGrokOAuthModel(cfg Config, providerKey, model string, pc ProviderConfig) (agentcore.ChatModel, error) {
-	headers, err := headersFromProviderExtra(pc.Extra)
-	if err != nil {
-		return nil, fmt.Errorf("provider %s extra.headers: %w", providerKey, err)
-	}
 	transport, _, err := ProviderTransport(cfg, providerKey, model, pc)
 	if err != nil {
 		return nil, err
 	}
-	baseURL := strings.TrimSpace(pc.BaseURL)
-	if baseURL == "" {
-		baseURL = grokauth.DefaultBaseURL
-	}
-	provider, err := newGrokProvider(model, grok.Config{
-		APIKeyFunc: func(ctx context.Context) (string, error) {
-			credentials, err := grokauth.ResolveRuntimeCredentials(ctx, pc.AccountID)
-			if err != nil {
-				return "", err
-			}
-			return credentials.APIKey, nil
-		},
-		BaseURL:                     baseURL,
-		Headers:                     headers,
-		Transport:                   transport,
-		UserAgent:                   stringFromProviderExtra(pc.Extra, "user_agent"),
-		AllowUnknownProviderOptions: true,
-	})
+	provider, err := newGrokOAuthProviderWithTransport(cfg, providerKey, model, pc, transport)
 	if err != nil {
 		return nil, fmt.Errorf("provider %s (grok oauth): %w: %w", providerKey, errs.ErrProvider, err)
 	}

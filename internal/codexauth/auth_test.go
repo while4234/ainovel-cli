@@ -40,6 +40,52 @@ func TestResolveRuntimeCredentialsUsesCodexAuthFile(t *testing.T) {
 	}
 }
 
+func TestResolveAuthPathPrefersExplicitFileOverEnvironment(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "environment-auth.json")
+	explicitPath := filepath.Join(t.TempDir(), "uploaded-auth.json")
+	t.Setenv("CODEX_AUTH_FILE", envPath)
+
+	if got := ResolveAuthPath(explicitPath); got != explicitPath {
+		t.Fatalf("ResolveAuthPath() = %q, want explicit path %q", got, explicitPath)
+	}
+}
+
+func TestInstallAuthFileValidatesAndStoresCredential(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "managed", "auth.json")
+	payload, err := json.Marshal(map[string]any{
+		"tokens": map[string]any{
+			"access_token": testJWT(t, map[string]any{
+				"exp":        time.Now().Add(time.Hour).Unix(),
+				"account_id": "acct-uploaded",
+			}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	status, err := InstallAuthFile(payload, target)
+	if err != nil {
+		t.Fatalf("InstallAuthFile: %v", err)
+	}
+	if !status.LoggedIn || status.AccountID != "acct-uploaded" || status.AuthFileName != "auth.json" {
+		t.Fatalf("status = %+v", status)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("stored auth file: %v", err)
+	}
+}
+
+func TestInstallAuthFileRejectsInvalidJSON(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "auth.json")
+	if _, err := InstallAuthFile([]byte(`{"tokens":`), target); err == nil {
+		t.Fatal("InstallAuthFile accepted invalid JSON")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("invalid upload should not be stored: %v", err)
+	}
+}
+
 func TestResolveRuntimeCredentialsRefreshesExpiredToken(t *testing.T) {
 	authPath := filepath.Join(t.TempDir(), "auth.json")
 	writeTestAuthFile(t, authPath, map[string]any{

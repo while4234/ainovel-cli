@@ -890,6 +890,15 @@ export function getCodexAuthStatus(projectId, authFile = '') {
   });
 }
 
+export function uploadCodexAuthFile(file) {
+  const body = new FormData();
+  body.append('auth_file', file);
+  return request('/api/models/codex-auth/upload', {
+    method: 'POST',
+    body
+  });
+}
+
 export function getBackendStatus(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/backend/status`);
 }
