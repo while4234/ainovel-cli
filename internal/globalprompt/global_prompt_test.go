@@ -125,6 +125,23 @@ func TestWrapModelAppliesPromptForCurrentModel(t *testing.T) {
 	}
 }
 
+func TestWrapModelCanSuppressProviderPromptForScopedCall(t *testing.T) {
+	capture := &captureModel{provider: "grok", model: "grok-4.5"}
+	wrapped := WrapModel(capture)
+
+	_, err := wrapped.Generate(WithoutModelPrompt(context.Background()), []agentcore.Message{
+		agentcore.SystemMsg("structured extraction prompt"),
+		agentcore.UserMsg("hello"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if got := capture.messages[0].TextContent(); got != "structured extraction prompt" {
+		t.Fatalf("scoped call should bypass the provider prompt, got %q", got)
+	}
+}
+
 func TestWrapModelKeepsThinkingHistoryForNonGrokModels(t *testing.T) {
 	capture := &captureModel{provider: "openai", model: "gpt-5.5"}
 	wrapped := WrapModel(capture)

@@ -115,7 +115,7 @@ func newLiteLLMProviderWithTransport(cfg Config, providerKey, model string, pc P
 		if strings.ToLower(strings.TrimSpace(providerType)) != "grok" {
 			return nil, fmt.Errorf("provider %s auth %q requires grok type: %w", providerKey, pc.Auth, errs.ErrConfig)
 		}
-		return newGrokOAuthProviderWithTransport(cfg, providerKey, pc, transport)
+		return newGrokOAuthProviderWithTransport(cfg, providerKey, model, pc, transport)
 	}
 	if pc.UsesCodexAuth() {
 		if strings.ToLower(strings.TrimSpace(providerType)) != "openai" {
@@ -162,7 +162,7 @@ func newLiteLLMProviderWithTransport(cfg Config, providerKey, model string, pc P
 	case "glm":
 		return glm.New(compatConfigWithTransport(pc, headers, userAgent, transport))
 	case "grok":
-		return grok.New(compatConfigWithTransport(pc, headers, userAgent, transport))
+		return newGrokProvider(model, compatConfigWithTransport(pc, headers, userAgent, transport))
 	case "minimax":
 		return minimax.New(compatConfigWithTransport(pc, headers, userAgent, transport))
 	case "mimo":
@@ -302,7 +302,7 @@ func newCodexRequestID() string {
 	return hex.EncodeToString(buf[:])
 }
 
-func newGrokOAuthProviderWithTransport(cfg Config, providerKey string, pc ProviderConfig, transport http.RoundTripper) (litellm.Provider, error) {
+func newGrokOAuthProviderWithTransport(cfg Config, providerKey, model string, pc ProviderConfig, transport http.RoundTripper) (litellm.Provider, error) {
 	headers, err := headersFromProviderExtra(pc.Extra)
 	if err != nil {
 		return nil, fmt.Errorf("provider %s extra.headers: %w", providerKey, err)
@@ -311,7 +311,7 @@ func newGrokOAuthProviderWithTransport(cfg Config, providerKey string, pc Provid
 	if baseURL == "" {
 		baseURL = grokauth.DefaultBaseURL
 	}
-	return grok.New(grok.Config{
+	return newGrokProvider(model, grok.Config{
 		APIKeyFunc: func(ctx context.Context) (string, error) {
 			credentials, err := grokauth.ResolveRuntimeCredentials(ctx, pc.AccountID)
 			if err != nil {

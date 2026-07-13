@@ -24,11 +24,30 @@ type modelPromptWrapper struct {
 	inner agentcore.ChatModel
 }
 
+type suppressModelPromptKey struct{}
+
+// WithoutModelPrompt keeps provider-specific creative-writing instructions out
+// of narrowly scoped backend calls such as structured source extraction.
+func WithoutModelPrompt(ctx context.Context) context.Context {
+	return context.WithValue(ctx, suppressModelPromptKey{}, true)
+}
+
+func modelPromptSuppressed(ctx context.Context) bool {
+	suppressed, _ := ctx.Value(suppressModelPromptKey{}).(bool)
+	return suppressed
+}
+
 func (m *modelPromptWrapper) Generate(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	if modelPromptSuppressed(ctx) {
+		return m.inner.Generate(ctx, messages, tools, opts...)
+	}
 	return m.inner.Generate(ctx, m.prepare(messages), tools, opts...)
 }
 
 func (m *modelPromptWrapper) GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	if modelPromptSuppressed(ctx) {
+		return m.inner.GenerateStream(ctx, messages, tools, opts...)
+	}
 	return m.inner.GenerateStream(ctx, m.prepare(messages), tools, opts...)
 }
 

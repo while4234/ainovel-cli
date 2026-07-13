@@ -5436,7 +5436,13 @@ func generatePlannerTextForStage(
 	if label == "" {
 		label = "改编规划模型调用"
 	}
-	systemPrompt = globalprompt.ApplyForModel(plannerPromptModelIdentity(llm), systemPrompt)
+	modelIdentity := plannerPromptModelIdentity(llm)
+	grok45Dossier := stage == StageDossier && isGrok45ModelIdentity(modelIdentity)
+	if grok45Dossier {
+		ctx = globalprompt.WithoutModelPrompt(ctx)
+	} else {
+		systemPrompt = globalprompt.ApplyForModel(modelIdentity, systemPrompt)
+	}
 	compiledSystem, compiledUser := systemPrompt, userPrompt
 	var diagnostics *promptcompile.Diagnostics
 	if stage == StagePlan {
@@ -5465,6 +5471,18 @@ func generatePlannerTextForStage(
 		agentcore.UserMsg(compiledUser),
 	}
 	callOpts := []agentcore.CallOption{agentcore.WithMaxTokens(maxTokens), agentcore.WithJSONMode()}
+	if grok45Dossier {
+		callOpts = []agentcore.CallOption{
+			agentcore.WithMaxTokens(maxTokens),
+			agentcore.WithThinking(agentcore.ThinkingHigh),
+			agentcore.WithJSONSchema(
+				"adaptation_co_create_dossier_batch",
+				"Source-grounded adaptation continuity dossier batch.",
+				coCreateDossierBatchJSONSchema(),
+				true,
+			),
+		}
+	}
 	var lastErr error
 	maxAttempts := adaptationPlannerGenerateMaxAttempts
 	if len(maxAttemptsOverride) > 0 && maxAttemptsOverride[0] > 0 {
@@ -5539,6 +5557,11 @@ func plannerPromptModelIdentity(llm imp.LLMChat) string {
 		parts = append(parts, model.ModelName())
 	}
 	return strings.Join(parts, "/")
+}
+
+func isGrok45ModelIdentity(identity string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(identity))
+	return strings.Contains(normalized, "grok-4.5")
 }
 
 func shouldRetryPlannerGenerate(ctx context.Context, err error, attempt, maxAttempts int) bool {

@@ -531,7 +531,7 @@ func createGrokOAuthModel(cfg Config, providerKey, model string, pc ProviderConf
 	if baseURL == "" {
 		baseURL = grokauth.DefaultBaseURL
 	}
-	provider, err := grok.New(grok.Config{
+	provider, err := newGrokProvider(model, grok.Config{
 		APIKeyFunc: func(ctx context.Context) (string, error) {
 			credentials, err := grokauth.ResolveRuntimeCredentials(ctx, pc.AccountID)
 			if err != nil {

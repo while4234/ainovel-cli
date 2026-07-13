@@ -46,6 +46,69 @@ Rules:
 - Do not invent romance. Record heroine/couple/ambiguity items only when supported by reports.
 - Keep each array compact: usually 3-8 items, prioritizing facts useful across future user requests.`
 
+func coCreateDossierBatchJSONSchema() map[string]any {
+	stringArray := map[string]any{
+		"type":  "array",
+		"items": map[string]any{"type": "string"},
+	}
+	integerArray := map[string]any{
+		"type":  "array",
+		"items": map[string]any{"type": "integer"},
+	}
+	signal := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"chapters":   integerArray,
+			"characters": stringArray,
+			"type":       map[string]any{"type": "string"},
+			"summary":    map[string]any{"type": "string"},
+			"evidence":   map[string]any{"type": "string"},
+		},
+		"required": []string{"chapters", "characters", "type", "summary", "evidence"},
+	}
+	risk := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"chapters":   integerArray,
+			"characters": stringArray,
+			"risk":       map[string]any{"type": "string"},
+			"evidence":   map[string]any{"type": "string"},
+			"severity":   map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}},
+		},
+		"required": []string{"chapters", "characters", "risk", "evidence", "severity"},
+	}
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"plot_phase":           map[string]any{"type": "string", "minLength": 1},
+			"key_causality":        stringArray,
+			"plot_threads":         stringArray,
+			"character_arcs":       stringArray,
+			"world_constraints":    stringArray,
+			"major_characters":     stringArray,
+			"relationship_signals": map[string]any{"type": "array", "items": signal},
+			"heroine_signals":      map[string]any{"type": "array", "items": signal},
+			"ambiguity_risks":      map[string]any{"type": "array", "items": risk},
+			"couple_milestones":    map[string]any{"type": "array", "items": signal},
+		},
+		"required": []string{
+			"plot_phase",
+			"key_causality",
+			"plot_threads",
+			"character_arcs",
+			"world_constraints",
+			"major_characters",
+			"relationship_signals",
+			"heroine_signals",
+			"ambiguity_risks",
+			"couple_milestones",
+		},
+	}
+}
+
 func EnsureCoCreateDossier(ctx context.Context, deps Deps, manifest *domain.AdaptationSourceManifest, reports []domain.AdaptationSourceReport, emit ProgressEmitter) (*domain.AdaptationCoCreateDossier, error) {
 	if deps.Store == nil || deps.LLM == nil {
 		return nil, fmt.Errorf("deps incomplete")
