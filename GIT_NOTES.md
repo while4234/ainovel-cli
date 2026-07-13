@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-13 pending `fix: enforce stable de-AI audit sequence`: a live
+- 2026-07-13 `93c8ac3` `fix: stabilize de-AI audit sequence`: a live
   DeepSeek continuation completed chapter 71 using two `repair_de_ai_batch`
   calls (three exact replacements per batch), each followed by a fresh audit.
   The final audit passed and the chapter committed. Prompt and tool follow-up
