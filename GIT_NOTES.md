@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-13 pending `fix: recover adaptation and batch de-AI repair`: detail
+- 2026-07-13 `4ba5fb1` `fix: recover adaptation and batch de-AI repair`: detail
   recovery now preserves validated proposal batches and repairs only the owning
   failed range; browser Resume reused 150 saved batches, passed batch 151, and
   continued to batch 152. Long project opens now use a slim progress/navigation
