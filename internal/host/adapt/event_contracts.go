@@ -10,6 +10,13 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
+// plannerDetailEventContractVersionPartitioned makes every stable source
+// event belong to exactly one detail sub-batch inside a parent planner batch.
+// The old shared-whitelist contract let neighboring sub-batches independently
+// select the same supporting event, which delayed ownership failures until a
+// later cross-batch audit.
+const plannerDetailEventContractVersionPartitioned = 1
+
 func sourceEventsFromReports(reports []domain.AdaptationSourceReport) []domain.AdaptationEvent {
 	var events []domain.AdaptationEvent
 	for index := range reports {
@@ -90,8 +97,179 @@ func splitEventIDsForBatch(ids []string, partCount, partIndex int) []string {
 	return append([]string(nil), ids[start:end]...)
 }
 
+func inheritPlannerRuntimeDetailEventContracts(skeleton *plannerSkeleton, outline *domain.AdaptationProposalRuntimeOutline) {
+	if skeleton == nil || outline == nil {
+		return
+	}
+	for index := range skeleton.Batches {
+		batch := &skeleton.Batches[index]
+		for _, persisted := range outline.Batches {
+			if batch.Index != persisted.Index ||
+				batch.TargetFrom != persisted.TargetFrom || batch.TargetTo != persisted.TargetTo ||
+				batch.SourceFrom != persisted.SourceFrom || batch.SourceTo != persisted.SourceTo {
+				continue
+			}
+			batch.DetailEventContractVersion = persisted.DetailEventContractVersion
+			break
+		}
+	}
+}
+
+func enablePlannerDetailEventContractsForFreshRuntime(skeleton *plannerSkeleton, runtime *domain.AdaptationProposalRuntime) {
+	if skeleton == nil || (runtime != nil && len(runtime.CompletedBatches) > 0) {
+		return
+	}
+	for index := range skeleton.Batches {
+		if skeleton.Batches[index].DetailEventContractVersion < plannerDetailEventContractVersionPartitioned {
+			skeleton.Batches[index].DetailEventContractVersion = plannerDetailEventContractVersionPartitioned
+		}
+	}
+}
+
+func plannerDetailBatchEventContract(parent plannerSkeletonBatch, partCount, partIndex int) ([]string, []string) {
+	mainline := splitEventIDsForBatch(parent.MainlineEventIDs, partCount, partIndex)
+	mainlineSet := make(map[string]struct{}, len(parent.MainlineEventIDs))
+	for _, eventID := range parent.MainlineEventIDs {
+		if eventID = strings.TrimSpace(eventID); eventID != "" {
+			mainlineSet[eventID] = struct{}{}
+		}
+	}
+	optional := make([]string, 0, len(parent.AllowedEventIDs))
+	for _, eventID := range parent.AllowedEventIDs {
+		eventID = strings.TrimSpace(eventID)
+		if eventID == "" {
+			continue
+		}
+		if _, isMainline := mainlineSet[eventID]; !isMainline {
+			optional = append(optional, eventID)
+		}
+	}
+	optional = uniquePlannerEventIDs(optional)
+	allowedSet := make(map[string]struct{}, len(mainline)+len(optional))
+	for _, eventID := range mainline {
+		if eventID = strings.TrimSpace(eventID); eventID != "" {
+			allowedSet[eventID] = struct{}{}
+		}
+	}
+	for _, eventID := range splitEventIDsForBatch(optional, partCount, partIndex) {
+		if eventID = strings.TrimSpace(eventID); eventID != "" {
+			allowedSet[eventID] = struct{}{}
+		}
+	}
+	allowed := make([]string, 0, len(allowedSet))
+	seen := make(map[string]struct{}, len(allowedSet))
+	for _, eventID := range append(append([]string(nil), parent.AllowedEventIDs...), mainline...) {
+		eventID = strings.TrimSpace(eventID)
+		if eventID == "" {
+			continue
+		}
+		if _, assigned := allowedSet[eventID]; !assigned {
+			continue
+		}
+		if _, duplicate := seen[eventID]; duplicate {
+			continue
+		}
+		seen[eventID] = struct{}{}
+		allowed = append(allowed, eventID)
+	}
+	return uniquePlannerEventIDs(mainline), allowed
+}
+
+func uniquePlannerEventIDs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+// plannerDetailBatchWithPriorEventOwnership keeps a legacy in-progress
+// proposal consistent without silently accepting a duplicate. If an older
+// completed detail batch already owns a stable event, the current batch sees
+// that event as explicitly forbidden and any stale current audit receives a
+// new contract signature. New proposals avoid this path through partitioned
+// contracts, while this migration keeps existing projects resumable.
+func plannerDetailBatchWithPriorEventOwnership(batch plannerSkeletonBatch, previous []domain.AdaptationChapterPlan) plannerSkeletonBatch {
+	if len(previous) == 0 || (len(batch.AllowedEventIDs) == 0 && len(batch.MainlineEventIDs) == 0) {
+		return batch
+	}
+	owned := make(map[string]int)
+	for _, chapter := range previous {
+		for _, eventID := range chapter.EventIDs {
+			eventID = strings.TrimSpace(eventID)
+			if eventID != "" {
+				owned[eventID]++
+			}
+		}
+	}
+	forbidden := make(map[string]struct{})
+	for _, eventID := range append(append([]string(nil), batch.AllowedEventIDs...), batch.MainlineEventIDs...) {
+		eventID = strings.TrimSpace(eventID)
+		if eventID != "" && owned[eventID] == 1 {
+			forbidden[eventID] = struct{}{}
+		}
+	}
+	if len(forbidden) == 0 {
+		return batch
+	}
+	batch.PriorOwnedEventIDs = plannerEventIDsInOriginalOrder(append(batch.AllowedEventIDs, batch.MainlineEventIDs...), forbidden)
+	batch.AllowedEventIDs = plannerEventIDsWithout(batch.AllowedEventIDs, forbidden)
+	batch.MainlineEventIDs = plannerEventIDsWithout(batch.MainlineEventIDs, forbidden)
+	return batch
+}
+
+func plannerEventIDsInOriginalOrder(values []string, wanted map[string]struct{}) []string {
+	out := make([]string, 0, len(wanted))
+	seen := make(map[string]struct{}, len(wanted))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, wanted := wanted[value]; !wanted {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func plannerEventIDsWithout(values []string, forbidden map[string]struct{}) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, blocked := forbidden[value]; blocked {
+			continue
+		}
+		out = append(out, value)
+	}
+	return uniquePlannerEventIDs(out)
+}
+
 func validateArcBatchEventCoverage(chapters []domain.AdaptationChapterPlan, batch plannerSkeletonBatch) error {
 	allowed := make(map[string]struct{}, len(batch.AllowedEventIDs)+len(batch.MainlineEventIDs))
+	priorOwned := make(map[string]struct{}, len(batch.PriorOwnedEventIDs))
+	for _, eventID := range batch.PriorOwnedEventIDs {
+		if eventID = strings.TrimSpace(eventID); eventID != "" {
+			priorOwned[eventID] = struct{}{}
+		}
+	}
 	counts := make(map[string]int, len(batch.MainlineEventIDs))
 	for _, eventID := range batch.MainlineEventIDs {
 		eventID = strings.TrimSpace(eventID)
@@ -111,10 +289,19 @@ func validateArcBatchEventCoverage(chapters []domain.AdaptationChapterPlan, batc
 			if eventID == "" {
 				continue
 			}
+			if _, alreadyOwned := priorOwned[eventID]; alreadyOwned {
+				return fmt.Errorf("arc source event %s is already owned by an earlier accepted detail batch; remove it from event_ids and preserve_events in target chapters %d-%d", eventID, batch.TargetFrom, batch.TargetTo)
+			}
 			if _, ok := allowed[eventID]; !ok {
 				return fmt.Errorf("arc source event %s is not assigned to detail batch %d-%d; remove it from event_ids or use added_event_ids for a genuinely new target event", eventID, batch.TargetFrom, batch.TargetTo)
 			}
 			counts[eventID]++
+		}
+		for _, rawEventID := range chapter.PreserveEvents {
+			eventID := strings.TrimSpace(rawEventID)
+			if _, alreadyOwned := priorOwned[eventID]; alreadyOwned {
+				return fmt.Errorf("arc source event %s is already owned by an earlier accepted detail batch; remove it from preserve_events and the matching target beat in chapters %d-%d", eventID, batch.TargetFrom, batch.TargetTo)
+			}
 		}
 	}
 	for _, eventID := range batch.MainlineEventIDs {

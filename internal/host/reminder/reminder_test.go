@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/deai"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
@@ -285,6 +286,52 @@ func TestSubAgentGuard_PreserveDetailsMissingEvidenceRepairsBeforeCommit(t *test
 		if !strings.Contains(d.InjectMessage, want) {
 			t.Fatalf("inject message missing %q: %q", want, d.InjectMessage)
 		}
+	}
+}
+
+func TestWriterStopGuardRechecksStaleDeAIBatchBeforeAdaptation(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("init progress: %v", err)
+	}
+	if err := s.Progress.StartChapter(1); err != nil {
+		t.Fatalf("start chapter: %v", err)
+	}
+	if err := s.Adaptation.SavePlan(domain.AdaptationPlan{
+		Granularity:      domain.AdaptationGranularityChapter,
+		RewritePolicy:    domain.AdaptationRewritePreserveDetails,
+		Status:           domain.AdaptationPlanStatusConfirmed,
+		WordTolerance:    0.15,
+		SourceTotalRunes: 100,
+		TargetTotalRunes: 100,
+		TargetMinRunes:   85,
+		TargetMaxRunes:   115,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter:        1,
+			Title:          "目标章",
+			SourceChapters: []int{1},
+			SourceRunes:    100,
+			TargetRunes:    100,
+			TargetMinRunes: 85,
+			TargetMaxRunes: 115,
+		}},
+	}); err != nil {
+		t.Fatalf("save adaptation plan: %v", err)
+	}
+	if err := s.DeAI.Enable(); err != nil {
+		t.Fatalf("enable de-AI: %v", err)
+	}
+	draft := strings.Repeat("正", 100)
+	if err := s.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("save draft: %v", err)
+	}
+	if err := s.DeAI.SaveAudit(deai.Audit{Chapter: 1, DraftSHA256: store.TextSHA256("旧草稿"), Passed: true}); err != nil {
+		t.Fatalf("save stale de-AI audit: %v", err)
+	}
+
+	message := writerStopBlockMessage(s)
+	if !strings.Contains(message, "尚未对当前草稿完成独立去AI化阶段") || !strings.Contains(message, "check_de_ai") {
+		t.Fatalf("stale de-AI audit should be rechecked first, got %q", message)
 	}
 }
 

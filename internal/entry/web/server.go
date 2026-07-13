@@ -22,6 +22,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/host"
 )
 
 type Options struct {
@@ -764,7 +765,7 @@ func (s *Server) handleProjectOpen(w http.ResponseWriter, r *http.Request, id st
 		writeProjectSessionError(w, err)
 		return
 	}
-	response, err := buildProjectSnapshotResponse(session, manifest)
+	response, err := buildProjectSnapshotResponse(session, manifest, projectSnapshotDetailLevel(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -782,7 +783,7 @@ func (s *Server) handleProjectSnapshot(w http.ResponseWriter, r *http.Request, i
 		writeProjectSessionError(w, err)
 		return
 	}
-	response, err := buildProjectSnapshotResponse(session, manifest)
+	response, err := buildProjectSnapshotResponse(session, manifest, projectSnapshotDetailLevel(r))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -914,9 +915,24 @@ type projectSnapshotResponse struct {
 	CoCreate       *webCoCreateState   `json:"cocreate,omitempty"`
 	Events         []WebEvent          `json:"events,omitempty"`
 	LatestEventSeq int64               `json:"latest_event_seq"`
+	DetailLevel    string              `json:"detail_level"`
 }
 
-func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManifest) (projectSnapshotResponse, error) {
+const (
+	projectSnapshotDetailFull    = "full"
+	projectSnapshotDetailSummary = "summary"
+	projectSnapshotSummaryEvents = 80
+	projectSnapshotSummaryRunes  = 280
+)
+
+func projectSnapshotDetailLevel(r *http.Request) string {
+	if r != nil && strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("detail")), projectSnapshotDetailSummary) {
+		return projectSnapshotDetailSummary
+	}
+	return projectSnapshotDetailFull
+}
+
+func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManifest, detailLevel string) (projectSnapshotResponse, error) {
 	adaptation, err := projectAdaptationStatus(manifest, session.isActionRunning(projectActionKindAdaptationAnalysis))
 	if err != nil {
 		return projectSnapshotResponse{}, err
@@ -929,16 +945,97 @@ func buildProjectSnapshotResponse(session *ProjectSession, manifest ProjectManif
 	if err != nil {
 		return projectSnapshotResponse{}, err
 	}
+	snapshot := session.WebSnapshot()
 	workbenchHistory := session.WorkbenchEventHistory(0)
+	if detailLevel == projectSnapshotDetailSummary {
+		snapshot = compactProjectSnapshot(snapshot)
+		workbenchHistory = compactProjectSnapshotHistory(workbenchHistory)
+	}
 	return projectSnapshotResponse{
 		Project:        manifest,
-		Snapshot:       session.WebSnapshot(),
+		Snapshot:       snapshot,
 		Adaptation:     adaptation,
 		Simulation:     simulation,
 		CoCreate:       session.CoCreateState(),
 		Events:         workbenchHistory.Events,
 		LatestEventSeq: workbenchHistory.LatestSeq,
+		DetailLevel:    detailLevel,
 	}, nil
+}
+
+// compactProjectSnapshot keeps the immediately useful progress and navigation
+// data while removing large, expandable artifacts. Project opening uses this
+// shape so a long adaptation does not freeze the browser while JSON parsing
+// several megabytes of already-persisted chapter detail.
+func compactProjectSnapshot(snapshot WebSnapshot) WebSnapshot {
+	snapshot.UISnapshot = compactUISnapshot(snapshot.UISnapshot)
+	return snapshot
+}
+
+func compactUISnapshot(snapshot host.UISnapshot) host.UISnapshot {
+	snapshot.PremiseFull = ""
+	snapshot.Outline = compactProjectSnapshotOutline(snapshot.Outline)
+	snapshot.CharacterDetails = nil
+	snapshot.WorldRules = nil
+	snapshot.SimulationProfile = nil
+	snapshot.AdaptationVolumeReview = nil
+	snapshot.AdaptationProposal = nil
+	snapshot.AdaptationPlan = nil
+	return snapshot
+}
+
+func compactProjectSnapshotOutline(outline []host.OutlineSnapshot) []host.OutlineSnapshot {
+	if len(outline) == 0 {
+		return nil
+	}
+	compact := make([]host.OutlineSnapshot, 0, len(outline))
+	for _, row := range outline {
+		row.Title = compactProjectSnapshotText(row.Title)
+		// A project-opening snapshot needs chapter navigation and progress, not
+		// the full prose of every detailed outline. Keep coverage ranges and
+		// budgets for the row metadata; load a full snapshot only from a detail
+		// workflow that explicitly needs chapter content.
+		row.CoreEvent = ""
+		row.Hook = ""
+		row.Scenes = nil
+		row.SourceCoverage = compactProjectSnapshotCoverage(row.SourceCoverage)
+		row.PreserveEvents = nil
+		row.RequiredChanges = nil
+		row.ForbiddenMoves = nil
+		row.CoverageNote = ""
+		compact = append(compact, row)
+	}
+	return compact
+}
+
+func compactProjectSnapshotCoverage(coverage *host.SourceCoverageSnapshot) *host.SourceCoverageSnapshot {
+	if coverage == nil {
+		return nil
+	}
+	return &host.SourceCoverageSnapshot{
+		From:    coverage.From,
+		To:      coverage.To,
+		Runes:   coverage.Runes,
+		IsAdded: coverage.IsAdded,
+	}
+}
+
+func compactProjectSnapshotText(value string) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) <= projectSnapshotSummaryRunes {
+		return value
+	}
+	return string(runes[:projectSnapshotSummaryRunes]) + "…"
+}
+
+func compactProjectSnapshotHistory(history WebEventHistory) WebEventHistory {
+	if len(history.Events) <= projectSnapshotSummaryEvents {
+		return history
+	}
+	history.Events = append([]WebEvent(nil), history.Events[len(history.Events)-projectSnapshotSummaryEvents:]...)
+	history.OldestSeq = history.Events[0].Seq
+	return history
 }
 
 type projectActionResponse struct {

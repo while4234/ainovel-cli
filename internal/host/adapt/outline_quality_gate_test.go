@@ -323,6 +323,31 @@ func TestRetryAdaptationOutlineQualityReadsExpandedAttemptBudgetDuringRun(t *tes
 	}
 }
 
+func TestValidateArcOutlineSourceEventsRetainsEveryDuplicateOwner(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityArc,
+		SourceEvents: []domain.AdaptationEvent{{
+			ID: "src-event", SourceChapter: 6, Importance: domain.AdaptationEventSupporting,
+		}},
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 461, EventIDs: []string{"src-event"}},
+			{Chapter: 462, EventIDs: []string{"src-event"}},
+		},
+	}
+	issues := validateArcOutlineSourceEvents(plan)
+	if len(issues) != 1 {
+		t.Fatalf("issues=%+v, want one duplicate ownership issue", issues)
+	}
+	issue := issues[0]
+	if issue.Code != outlineQualityIssueArcDuplicateEvent || issue.TargetChapter != 461 {
+		t.Fatalf("issue=%+v", issue)
+	}
+	targets := outlineIssueTargetChapters(issue)
+	if len(targets) != 2 || targets[0] != 461 || targets[1] != 462 {
+		t.Fatalf("duplicate owner targets=%v, want [461 462]", targets)
+	}
+}
+
 func outlineQualityHasCode(err error, code string) bool {
 	var qualityErr *AdaptationOutlineQualityError
 	if !errors.As(err, &qualityErr) {

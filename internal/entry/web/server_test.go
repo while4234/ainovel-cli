@@ -16,6 +16,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
 
@@ -82,6 +83,92 @@ func TestStaticAssetsCanUseImmutableCache(t *testing.T) {
 	cacheControl := rec.Header().Get("cache-control")
 	if !strings.Contains(cacheControl, "immutable") || !strings.Contains(cacheControl, "max-age=31536000") {
 		t.Fatalf("asset cache-control = %q, want immutable hashed asset cache", cacheControl)
+	}
+}
+
+func TestProjectSnapshotSummaryKeepsNavigationAndDropsHeavyArtifacts(t *testing.T) {
+	long := strings.Repeat("内容", projectSnapshotSummaryRunes+20)
+	snapshot := WebSnapshot{UISnapshot: host.UISnapshot{
+		Premise:                "保留给项目卡片的简介",
+		PremiseFull:            long,
+		CharacterDetails:       []domain.Character{{Name: "角色"}},
+		WorldRules:             []domain.WorldRule{{Rule: "规则"}},
+		SimulationProfile:      &domain.SimulationCompactProfile{},
+		AdaptationVolumeReview: &domain.AdaptationVolumeReview{},
+		AdaptationProposal:     &domain.AdaptationPlan{},
+		AdaptationPlan:         &domain.AdaptationPlan{},
+		Outline: []host.OutlineSnapshot{{
+			Chapter:         55,
+			Title:           long,
+			CoreEvent:       long,
+			Hook:            long,
+			Scenes:          []string{long, long, long},
+			PreserveEvents:  []string{long, long, long},
+			RequiredChanges: []string{long, long, long},
+			ForbiddenMoves:  []string{long, long, long},
+			CoverageNote:    long,
+			SourceCoverage: &host.SourceCoverageSnapshot{
+				Chapters: []int{11, 12},
+				From:     11,
+				To:       12,
+				Runes:    2000,
+				Note:     long,
+			},
+		}},
+	}}
+
+	compact := compactProjectSnapshot(snapshot)
+	if compact.Premise != snapshot.Premise || compact.PremiseFull != "" {
+		t.Fatalf("premise summary was not preserved/trimmed: %+v", compact.UISnapshot)
+	}
+	if compact.CharacterDetails != nil || compact.WorldRules != nil || compact.SimulationProfile != nil ||
+		compact.AdaptationVolumeReview != nil || compact.AdaptationProposal != nil || compact.AdaptationPlan != nil {
+		t.Fatalf("summary snapshot retained a heavyweight artifact: %+v", compact.UISnapshot)
+	}
+	if len(compact.Outline) != 1 || compact.Outline[0].Chapter != 55 {
+		t.Fatalf("outline navigation was lost: %+v", compact.Outline)
+	}
+	row := compact.Outline[0]
+	if len([]rune(row.Title)) != projectSnapshotSummaryRunes+1 || !strings.HasSuffix(row.Title, "…") {
+		t.Fatalf("title was not rune-truncated: %q", row.Title)
+	}
+	for label, values := range map[string][]string{
+		"scenes":           row.Scenes,
+		"preserve_events":  row.PreserveEvents,
+		"required_changes": row.RequiredChanges,
+		"forbidden_moves":  row.ForbiddenMoves,
+	} {
+		if len(values) != 0 {
+			t.Fatalf("%s should not be included in a project-opening summary: %+v", label, values)
+		}
+	}
+	if row.CoreEvent != "" || row.Hook != "" || row.CoverageNote != "" {
+		t.Fatalf("summary retained detailed prose: %+v", row)
+	}
+	if row.SourceCoverage == nil || row.SourceCoverage.From != 11 || row.SourceCoverage.To != 12 ||
+		row.SourceCoverage.Runes != 2000 || row.SourceCoverage.IsAdded || len(row.SourceCoverage.Chapters) != 0 || row.SourceCoverage.Note != "" {
+		t.Fatalf("summary coverage should retain only range metadata: %+v", row.SourceCoverage)
+	}
+
+	history := WebEventHistory{LatestSeq: 500, Events: make([]WebEvent, projectSnapshotSummaryEvents+3)}
+	for index := range history.Events {
+		history.Events[index].Seq = int64(index + 1)
+	}
+	compactHistory := compactProjectSnapshotHistory(history)
+	if len(compactHistory.Events) != projectSnapshotSummaryEvents || compactHistory.OldestSeq != 4 || compactHistory.Events[0].Seq != 4 {
+		t.Fatalf("history was not reduced to its newest events: %+v", compactHistory)
+	}
+}
+
+func TestProjectSnapshotDetailLevelDefaultsToFull(t *testing.T) {
+	for rawURL, want := range map[string]string{
+		"/api/projects/demo/snapshot":                projectSnapshotDetailFull,
+		"/api/projects/demo/snapshot?detail=summary": projectSnapshotDetailSummary,
+		"/api/projects/demo/snapshot?detail=FULL":    projectSnapshotDetailFull,
+	} {
+		if got := projectSnapshotDetailLevel(httptest.NewRequest(http.MethodGet, rawURL, nil)); got != want {
+			t.Fatalf("%s detail=%q, want %q", rawURL, got, want)
+		}
 	}
 }
 

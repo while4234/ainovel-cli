@@ -28,6 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-13 pending `fix: recover adaptation and batch de-AI repair`: detail
+  recovery now preserves validated proposal batches and repairs only the owning
+  failed range; browser Resume reused 150 saved batches, passed batch 151, and
+  continued to batch 152. Long project opens now use a slim progress/navigation
+  snapshot, lazy-load continuation content, and treat SSE sequence as a cursor
+  with legal coalescing holes. The independent de-AI stage emits a bounded
+  repair plan and applies 1-8 exact, non-overlapping replacements atomically;
+  whole-chapter rewrite is conditional only after two non-improving batches or
+  a structural story issue. Full Go tests, 210 UI tests, and live Chrome
+  switching/recovery validation passed. Service is running on port 9898.
 - 2026-07-12 pending `fix: make adaptation resume stage-monotonic`: proposal
   runtimes now pin the exact co-create intent/source/prompt dependency used at
   planner start. Resumes reuse that artifact or fail closed; they never

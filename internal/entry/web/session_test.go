@@ -73,6 +73,53 @@ func TestSessionManagerReusesActiveProjectHostConcurrently(t *testing.T) {
 	}
 }
 
+func TestSessionManagerOpenSkipsManifestRewriteForCachedSession(t *testing.T) {
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
+	created, err := store.CreateProject("Cached Session")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	manager := NewSessionManager(testWebConfig(t), assets.Load("default"), store)
+	defer manager.CloseAll()
+
+	first, opened, err := manager.Open(created.ID)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	second, reopened, err := manager.Open(created.ID)
+	if err != nil {
+		t.Fatalf("cached Open: %v", err)
+	}
+	if first != second {
+		t.Fatalf("cached Open returned a different session: %p != %p", first, second)
+	}
+	if !reopened.LastAccessedAt.Equal(opened.LastAccessedAt) || !reopened.UpdatedAt.Equal(opened.UpdatedAt) {
+		t.Fatalf("cached Open rewrote manifest timestamps: first=%+v second=%+v", opened, reopened)
+	}
+	projects, err := store.ListProjects()
+	if err != nil || len(projects) != 1 {
+		t.Fatalf("ListProjects: projects=%+v err=%v", projects, err)
+	}
+	if !projects[0].LastAccessedAt.Equal(opened.LastAccessedAt) || !projects[0].UpdatedAt.Equal(opened.UpdatedAt) {
+		t.Fatalf("cached Open rewrote project.json: first=%+v disk=%+v", opened, projects[0])
+	}
+}
+
+func TestRetainedRuntimeQueueItemsKeepsNewestHistoryWindow(t *testing.T) {
+	items := make([]domain.RuntimeQueueItem, webEventHistoryLimit+2)
+	for index := range items {
+		items[index].Seq = int64(index + 1)
+	}
+	retained := retainedRuntimeQueueItems(items, webEventHistoryLimit)
+	if len(retained) != webEventHistoryLimit || retained[0].Seq != 3 || retained[len(retained)-1].Seq != int64(len(items)) {
+		t.Fatalf("retained queue=%+v", retained)
+	}
+	if got := retainedRuntimeQueueItems(items, 0); len(got) != len(items) {
+		t.Fatalf("zero limit should preserve caller semantics, got %d items", len(got))
+	}
+}
+
 func TestSessionManagerOpensDifferentProjectsIndependently(t *testing.T) {
 	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	blockedProject, err := store.CreateProject("Blocked Session")

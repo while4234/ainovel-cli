@@ -95,3 +95,61 @@ func TestAttachSkeletonEventsPublishesSupportingWhitelist(t *testing.T) {
 		t.Fatalf("allowed whitelist=%v", skeleton.Batches[0].AllowedEventIDs)
 	}
 }
+
+func TestPlannerDetailEventContractPartitionsEveryStableEvent(t *testing.T) {
+	parent := plannerSkeletonBatch{
+		TargetFrom:                 1,
+		TargetTo:                   8,
+		DetailEventContractVersion: plannerDetailEventContractVersionPartitioned,
+		MainlineEventIDs:           []string{"main-1", "main-2", "main-3"},
+		AllowedEventIDs:            []string{"main-1", "support-1", "main-2", "texture-1", "main-3", "support-2", "texture-2"},
+	}
+	details := plannerDetailBatches([]plannerSkeletonBatch{parent}, 4)
+	if len(details) != 2 {
+		t.Fatalf("detail batches=%d, want 2", len(details))
+	}
+	counts := make(map[string]int)
+	for _, detail := range details {
+		allowed := make(map[string]bool)
+		for _, eventID := range detail.AllowedEventIDs {
+			counts[eventID]++
+			allowed[eventID] = true
+		}
+		for _, eventID := range detail.MainlineEventIDs {
+			if !allowed[eventID] {
+				t.Fatalf("mainline %q is missing from its detail whitelist: %+v", eventID, detail)
+			}
+		}
+	}
+	for _, eventID := range parent.AllowedEventIDs {
+		if counts[eventID] != 1 {
+			t.Fatalf("stable event %q is assigned %d times, want once", eventID, counts[eventID])
+		}
+	}
+}
+
+func TestPlannerDetailBatchTreatsAcceptedPriorEventAsForbidden(t *testing.T) {
+	legacy := plannerSkeletonBatch{
+		TargetFrom:       5,
+		TargetTo:         8,
+		MainlineEventIDs: []string{"already-owned", "current-mainline"},
+		AllowedEventIDs:  []string{"already-owned", "current-mainline", "current-support"},
+	}
+	previous := []domain.AdaptationChapterPlan{{Chapter: 4, EventIDs: []string{"already-owned"}}}
+	batch := plannerDetailBatchWithPriorEventOwnership(legacy, previous)
+	if !slices.Equal(batch.PriorOwnedEventIDs, []string{"already-owned"}) ||
+		slices.Contains(batch.AllowedEventIDs, "already-owned") ||
+		slices.Contains(batch.MainlineEventIDs, "already-owned") {
+		t.Fatalf("legacy ownership contract=%+v", batch)
+	}
+	if err := validateArcBatchEventCoverage([]domain.AdaptationChapterPlan{{
+		Chapter: 5, EventIDs: []string{"already-owned"},
+	}}, batch); err == nil || !strings.Contains(err.Error(), "already owned by an earlier accepted") {
+		t.Fatalf("event ownership error=%v", err)
+	}
+	if err := validateArcBatchEventCoverage([]domain.AdaptationChapterPlan{{
+		Chapter: 5, EventIDs: []string{"current-mainline"}, PreserveEvents: []string{"already-owned"},
+	}}, batch); err == nil || !strings.Contains(err.Error(), "preserve_events") {
+		t.Fatalf("preserve ownership error=%v", err)
+	}
+}

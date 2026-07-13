@@ -43,6 +43,25 @@ type AdaptationOutlineQualityIssue struct {
 	EventID             string
 }
 
+// outlineIssueTargetChapters returns every target chapter that participates in
+// an issue. Most issues have a single owner. Duplicate event ownership is an
+// intentional exception: all owners must be retained so a later detail batch
+// can repair the copy it is actually able to change.
+func outlineIssueTargetChapters(issue AdaptationOutlineQualityIssue) []int {
+	values := append([]int{issue.TargetChapter}, issue.AlternativeChapters...)
+	seen := make(map[int]bool, len(values))
+	out := make([]int, 0, len(values))
+	for _, chapter := range values {
+		if chapter <= 0 || seen[chapter] {
+			continue
+		}
+		seen[chapter] = true
+		out = append(out, chapter)
+	}
+	sort.Ints(out)
+	return out
+}
+
 // AdaptationOutlineQualityError keeps all quality-gate failures available to a
 // caller that wants to request a structural retry. The gate itself never
 // invokes a model or retries work.
@@ -318,6 +337,7 @@ func validateArcOutlineSourceEvents(plan domain.AdaptationPlan) []AdaptationOutl
 		}
 		if len(bindingIssue.Chapters) > 0 {
 			issue.TargetChapter = bindingIssue.Chapters[0]
+			issue.AlternativeChapters = append([]int(nil), bindingIssue.Chapters[1:]...)
 		}
 		if event, ok := sourceEvents[bindingIssue.EventID]; ok {
 			issue.SourceChapter = event.SourceChapter

@@ -27,9 +27,9 @@ func TestComputePatterns(t *testing.T) {
 		t.Fatal("expected stats")
 	}
 	want := map[string]int{
-		"矫正句『不是…(而)是…』":          6,
-		"计时量词『X息/X瞬』":            6,
-		"明喻『像一/仿佛/如同/宛如』":        6,
+		"矫正句『不是…(而)是…』":       6,
+		"计时量词『X息/X瞬』":         6,
+		"明喻『像一/仿佛/如同/宛如』":     6,
 		"沉默节拍『沉默了/没有说话/没有回头』": 6,
 	}
 	for _, p := range s.Patterns {
@@ -129,5 +129,22 @@ func TestComputeTitleFormats(t *testing.T) {
 	s = Compute(Input{Chapters: chapters, Titles: []string{"风起", "云涌"}})
 	if s.TitleFormats != nil {
 		t.Errorf("uniform titles should not report: %+v", s.TitleFormats)
+	}
+}
+
+func TestComputeProseStatsUsesChapterAudits(t *testing.T) {
+	chapters := []string{
+		"## 标题\n\n## 一\n然后他没有回答——不是因为害怕，而是没有路。\n\n短句。",
+		"# 标题\n\n然后他没有说话——不是因为冷静，而是不能走。\n\n短句。",
+		"# 标题\n\n窗外下雨。\n\n短句。",
+		"# 标题\n\n门开了。\n\n短句。",
+		"# 标题\n\n人走了。\n\n短句。",
+	}
+	stats := Compute(Input{Chapters: chapters})
+	if stats == nil || stats.Prose.EmDashPerKRunes == 0 || stats.Prose.BodySubheadings != 1 || stats.Prose.InvalidChapterTitles != 1 {
+		t.Fatalf("prose stats = %+v", stats)
+	}
+	if stats.Prose.CorrectionPerChapter == 0 || stats.Prose.ReactionTemplatesPerChapter == 0 {
+		t.Fatalf("prose stats misses recurring symptoms: %+v", stats.Prose)
 	}
 }

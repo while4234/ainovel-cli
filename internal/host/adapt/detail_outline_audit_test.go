@@ -304,3 +304,71 @@ func TestAuditAndRepairDetailBatchStopsAfterTwoUnchangedFindingRounds(t *testing
 		t.Fatalf("planner calls=%d auditor calls=%d, want 2/3", planner.calls, auditor.calls)
 	}
 }
+
+func TestDeterministicDetailAuditRoutesDuplicateOwnershipToCurrentBatch(t *testing.T) {
+	qualityErr := &AdaptationOutlineQualityError{Issues: []AdaptationOutlineQualityIssue{{
+		Code: outlineQualityIssueArcDuplicateEvent, Detail: "source event src-event is bound to target chapters [461 462]",
+		TargetChapter: 461, AlternativeChapters: []int{462},
+	}}}
+	batch := plannerSkeletonBatch{TargetFrom: 462, TargetTo: 465}
+	findings := deterministicDetailAuditFindings(qualityErr, batch)
+	if len(findings) != 1 {
+		t.Fatalf("findings=%+v", findings)
+	}
+	targets := findings[0].TargetChapters
+	if len(targets) != 1 || targets[0] != 462 {
+		t.Fatalf("repair targets=%v, want current-batch chapter 462", targets)
+	}
+}
+
+func TestResetStaleCrossBatchOwnershipAuditPreservesCandidateAndResetsOnlyOldScope(t *testing.T) {
+	batch := plannerSkeletonBatch{TargetFrom: 462, TargetTo: 465}
+	original := &domain.AdaptationDetailBatchAudit{
+		Version: domain.AdaptationDetailAuditVersion, Status: domain.AdaptationDetailAuditRepairPending,
+		RepairAttempts: 7, LastError: "old duplicate ownership scope", LastErrorCategory: "detail_contract",
+		ExactErrorFingerprint: "old", CategoryFingerprint: "old", ConsecutiveCategoryFailures: 7,
+		Findings: []domain.AdaptationDetailAuditFinding{{
+			Code: outlineQualityIssueArcDuplicateEvent, Blocking: true, TargetChapters: []int{461},
+		}},
+	}
+	migrated, changed := resetStaleCrossBatchOwnershipAudit(original, batch)
+	if !changed {
+		t.Fatal("expected old cross-batch ownership scope to migrate")
+	}
+	if original.RepairAttempts != 7 || original.Status != domain.AdaptationDetailAuditRepairPending {
+		t.Fatalf("migration mutated persisted source audit: %+v", original)
+	}
+	if migrated.Status != domain.AdaptationDetailAuditPending || migrated.RepairAttempts != 0 || len(migrated.Findings) != 0 {
+		t.Fatalf("migrated audit=%+v", migrated)
+	}
+
+	inScope := &domain.AdaptationDetailBatchAudit{
+		Status: domain.AdaptationDetailAuditRepairPending,
+		Findings: []domain.AdaptationDetailAuditFinding{{
+			Code: outlineQualityIssueArcDuplicateEvent, Blocking: true, TargetChapters: []int{462},
+		}},
+	}
+	if _, changed := resetStaleCrossBatchOwnershipAudit(inScope, batch); changed {
+		t.Fatal("current-batch duplicate ownership must retain its established repair budget")
+	}
+}
+
+func TestResetStaleDetailBatchContractAuditResetsOnlyChangedContract(t *testing.T) {
+	batch := plannerSkeletonBatch{TargetFrom: 5, TargetTo: 5, SourceFrom: 3, SourceTo: 3, AllowedEventIDs: []string{"old-owner"}}
+	chapters := []domain.AdaptationChapterPlan{{Chapter: 5, OutlineEntry: domain.OutlineEntry{Title: "chapter", CoreEvent: "event", Hook: "hook", Scenes: []string{"scene"}}}}
+	audit := &domain.AdaptationDetailBatchAudit{
+		Version: domain.AdaptationDetailAuditVersion, Status: domain.AdaptationDetailAuditRepairPending,
+		RepairAttempts: 4, InputSignature: "legacy-contract", LastError: "duplicate binding",
+		Findings: []domain.AdaptationDetailAuditFinding{{Code: outlineQualityIssueArcDuplicateEvent, Blocking: true}},
+	}
+	migrated, changed := resetStaleDetailBatchContractAudit(audit, ProposalOptions{Granularity: domain.AdaptationGranularityArc}, nil, batch, nil, chapters)
+	if !changed || migrated.RepairAttempts != 0 || migrated.Status != domain.AdaptationDetailAuditPending || len(migrated.Findings) != 0 {
+		t.Fatalf("migrated audit=%+v changed=%v", migrated, changed)
+	}
+
+	_, _, currentSignature := detailBatchAuditSignatures(ProposalOptions{Granularity: domain.AdaptationGranularityArc}, nil, batch, nil, chapters)
+	audit.InputSignature = currentSignature
+	if _, changed := resetStaleDetailBatchContractAudit(audit, ProposalOptions{Granularity: domain.AdaptationGranularityArc}, nil, batch, nil, chapters); changed {
+		t.Fatal("matching detail contract must retain its existing repair budget")
+	}
+}

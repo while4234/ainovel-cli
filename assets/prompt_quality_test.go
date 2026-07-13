@@ -128,6 +128,15 @@ func TestCompactRolePromptsRetainQualityCapabilities(t *testing.T) {
 	}
 }
 
+func TestWriterPromptCanStripModelGlobalPrefix(t *testing.T) {
+	prompt := Load("").Prompts.Writer
+	stripped := globalprompt.Strip(prompt)
+	if strings.Contains(stripped, "系统核心指令") {
+		t.Fatalf("writer prompt retained global prefix after Strip")
+	}
+	t.Logf("writer prompt runes: full=%d stripped=%d", len([]rune(prompt)), len([]rune(stripped)))
+}
+
 func promptReviewHasMissingCapability(report promptreview.Report, capabilityID string) bool {
 	for _, finding := range report.Findings {
 		if finding.Code == "missing_capability" && finding.Subject == capabilityID {

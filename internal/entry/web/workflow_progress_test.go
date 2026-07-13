@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +146,38 @@ func TestAdaptationWorkflowProgressPrioritizesRunningProposalOverReviewArtifacts
 	}
 }
 
+func TestAdaptationWorkflowProgressKeepsDetailAuditFailureInProposalStage(t *testing.T) {
+	snapshot := host.UISnapshot{
+		AdaptationVolumeReview: &domain.AdaptationVolumeReview{
+			Status: domain.AdaptationPlanStatusVolumeReview,
+		},
+	}
+	latest := &APIHostEvent{
+		Category: "ADAPT",
+		Kind:     string(adapt.StageAudit),
+		Level:    "error",
+		Current:  123,
+		Total:    370,
+		Summary:  "章节详情审核失败",
+		Detail:   "duplicate source event owner",
+	}
+	progress := adaptationWorkflowProgress("project-adaptation", snapshot, nil, latest, nil)
+
+	if progress.Status != WorkflowStatusFailed || progress.CurrentStep != "proposal_review" {
+		t.Fatalf("status/step=%q/%q, want failed/proposal_review", progress.Status, progress.CurrentStep)
+	}
+	step := workflowStepByID(progress.Steps, "proposal_review")
+	if step == nil || step.Status != WorkflowStatusFailed || step.Current != 123 || step.Total != 370 {
+		t.Fatalf("proposal step=%+v", step)
+	}
+	if progress.NextAction == nil || progress.NextAction.ID != "resume_adaptation_proposal_details" || progress.NextAction.Label != "继续章节详细提案" {
+		t.Fatalf("next action=%+v", progress.NextAction)
+	}
+	if progress.Error != latest.Detail {
+		t.Fatalf("error=%q, want %q", progress.Error, latest.Detail)
+	}
+}
+
 func workflowStepByID(steps []WorkflowStep, id string) *WorkflowStep {
 	for i := range steps {
 		if steps[i].ID == id {
@@ -182,7 +215,16 @@ func TestWebSnapshotSerializesWorkflowProgressWithoutDroppingLegacyFields(t *tes
 
 func TestSnapshotSSECarriesWorkflowProgressAlongsideLegacySnapshot(t *testing.T) {
 	fake := newFakeProjectHost()
-	fake.snapshot = host.UISnapshot{NovelName: "sse novel"}
+	fake.snapshot = host.UISnapshot{
+		NovelName:        "sse novel",
+		PremiseFull:      strings.Repeat("正文", projectSnapshotSummaryRunes+1),
+		CharacterDetails: []domain.Character{{Name: "角色"}},
+		Outline: []host.OutlineSnapshot{{
+			Chapter:   1,
+			CoreEvent: strings.Repeat("事件", projectSnapshotSummaryRunes+1),
+			Scenes:    []string{"场景一", "场景二", "场景三"},
+		}},
+	}
 	session := &ProjectSession{
 		manifest:    ProjectManifest{ID: "project-sse-progress"},
 		host:        fake,
@@ -192,8 +234,16 @@ func TestSnapshotSSECarriesWorkflowProgressAlongsideLegacySnapshot(t *testing.T)
 	}
 
 	event := session.AppendSnapshot()
-	if _, ok := event.Snapshot.(host.UISnapshot); !ok {
+	snapshot, ok := event.Snapshot.(host.UISnapshot)
+	if !ok {
 		t.Fatalf("legacy snapshot type = %T", event.Snapshot)
+	}
+	if snapshot.PremiseFull != "" || len(snapshot.CharacterDetails) != 0 {
+		t.Fatalf("SSE snapshot retained heavyweight fields: %+v", snapshot)
+	}
+	if len(snapshot.Outline) != 1 || len(snapshot.Outline[0].Scenes) != 0 ||
+		snapshot.Outline[0].CoreEvent != "" {
+		t.Fatalf("SSE outline was not compacted: %+v", snapshot.Outline)
 	}
 	if event.WorkflowProgress == nil || event.WorkflowProgress.Workflow != workflowNormal {
 		t.Fatalf("workflow progress = %+v", event.WorkflowProgress)

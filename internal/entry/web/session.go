@@ -262,6 +262,9 @@ func (m *SessionManager) Open(id string) (*ProjectSession, ProjectManifest, erro
 	if err := validateProjectID(id); err != nil {
 		return nil, ProjectManifest{}, fmt.Errorf("%w: %v", ErrProjectNotFound, err)
 	}
+	if session := m.Project(id); session != nil {
+		return session, session.Manifest(), nil
+	}
 
 	manifest, err := m.store.OpenProject(id)
 	if err != nil {
@@ -543,6 +546,12 @@ func (s *ProjectSession) SetManifest(manifest ProjectManifest) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.manifest = manifest
+}
+
+func (s *ProjectSession) Manifest() ProjectManifest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.manifest
 }
 
 func (s *ProjectSession) Snapshot() host.UISnapshot {
@@ -3280,7 +3289,7 @@ func (s *ProjectSession) AppendSnapshot() WebEvent {
 	progress := s.WorkflowProgress()
 	return s.append(WebEvent{
 		Type:             webEventTypeSnapshot,
-		Snapshot:         s.Snapshot(),
+		Snapshot:         compactUISnapshot(s.Snapshot()),
 		WorkflowProgress: &progress,
 	})
 }
@@ -3427,6 +3436,7 @@ func (s *ProjectSession) seedHistory() error {
 	if err != nil {
 		return err
 	}
+	items = retainedRuntimeQueueItems(items, webEventHistoryLimit)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, item := range items {
@@ -3440,6 +3450,13 @@ func (s *ProjectSession) seedHistory() error {
 		s.upsertLocked(ev)
 	}
 	return nil
+}
+
+func retainedRuntimeQueueItems(items []domain.RuntimeQueueItem, limit int) []domain.RuntimeQueueItem {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[len(items)-limit:]
 }
 
 func (s *ProjectSession) pump() {

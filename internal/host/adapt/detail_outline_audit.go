@@ -281,6 +281,16 @@ func auditAndRepairDetailBatch(
 	if detailBatchAuditIsCurrent(existingAudit, opts, reports, batch, previous, chapters) {
 		return chapters, cloneAdaptationDetailBatchAudit(existingAudit), nil
 	}
+	var migrated bool
+	existingAudit, migrated = resetStaleCrossBatchOwnershipAudit(existingAudit, batch)
+	if migrated {
+		emitAdaptProgress(emit, StageAudit, current, total, fmt.Sprintf("%s检测到旧版跨批次事件归属审核记录，已按当前批次重新审核", label), nil)
+	}
+	var contractMigrated bool
+	existingAudit, contractMigrated = resetStaleDetailBatchContractAudit(existingAudit, opts, reports, batch, previous, chapters)
+	if contractMigrated {
+		emitAdaptProgress(emit, StageAudit, current, total, fmt.Sprintf("%s事件归属合同已更新，已按新合同重新审核", label), nil)
+	}
 	repairAttempts := 0
 	if existingAudit != nil {
 		repairAttempts = existingAudit.RepairAttempts
@@ -430,10 +440,8 @@ func deterministicDetailAuditFindings(err error, batch plannerSkeletonBatch) []d
 	}
 	findings := make([]domain.AdaptationDetailAuditFinding, 0, len(qualityErr.Issues))
 	for _, issue := range qualityErr.Issues {
-		targets := []int(nil)
-		if issue.TargetChapter > 0 {
-			targets = []int{issue.TargetChapter}
-		} else {
+		targets := detailAuditTargetsInRange(outlineIssueTargetChapters(issue), batch.TargetFrom, batch.TargetTo)
+		if len(targets) == 0 {
 			targets = detailAuditChapterRange(batch.TargetFrom, batch.TargetTo)
 		}
 		findings = append(findings, domain.AdaptationDetailAuditFinding{
@@ -443,6 +451,66 @@ func deterministicDetailAuditFindings(err error, batch plannerSkeletonBatch) []d
 		})
 	}
 	return findings
+}
+
+// resetStaleCrossBatchOwnershipAudit migrates only an audit record produced
+// before duplicate-event issues carried every owner. In that old shape a
+// detail batch could be told to repair a chapter from an earlier, immutable
+// batch, so spending more retries could never resolve the reported conflict.
+// The candidate itself remains intact; the current batch is re-audited with
+// the corrected ownership scope and a fresh, narrowly justified budget.
+func resetStaleCrossBatchOwnershipAudit(
+	audit *domain.AdaptationDetailBatchAudit,
+	batch plannerSkeletonBatch,
+) (*domain.AdaptationDetailBatchAudit, bool) {
+	if audit == nil || audit.Status != domain.AdaptationDetailAuditRepairPending {
+		return audit, false
+	}
+	for _, finding := range audit.Findings {
+		if finding.Code != outlineQualityIssueArcDuplicateEvent ||
+			len(detailAuditTargetsInRange(finding.TargetChapters, batch.TargetFrom, batch.TargetTo)) > 0 {
+			continue
+		}
+		return resetDetailBatchAuditForReaudit(audit), true
+	}
+	return audit, false
+}
+
+// resetStaleDetailBatchContractAudit gives a candidate a fresh repair budget
+// only when the persisted audit was produced under a different deterministic
+// batch contract. This is used by the legacy ownership migration; ordinary
+// model failures under the same contract keep their bounded retry budget.
+func resetStaleDetailBatchContractAudit(
+	audit *domain.AdaptationDetailBatchAudit,
+	opts ProposalOptions,
+	reports []domain.AdaptationSourceReport,
+	batch plannerSkeletonBatch,
+	previous []domain.AdaptationChapterPlan,
+	chapters []domain.AdaptationChapterPlan,
+) (*domain.AdaptationDetailBatchAudit, bool) {
+	if audit == nil || audit.Status != domain.AdaptationDetailAuditRepairPending || strings.TrimSpace(audit.InputSignature) == "" {
+		return audit, false
+	}
+	_, _, currentInputSignature := detailBatchAuditSignatures(opts, reports, batch, previous, chapters)
+	if audit.InputSignature == currentInputSignature {
+		return audit, false
+	}
+	return resetDetailBatchAuditForReaudit(audit), true
+}
+
+func resetDetailBatchAuditForReaudit(audit *domain.AdaptationDetailBatchAudit) *domain.AdaptationDetailBatchAudit {
+	migrated := cloneAdaptationDetailBatchAudit(audit)
+	migrated.Status = domain.AdaptationDetailAuditPending
+	migrated.DeterministicPassed = false
+	migrated.SemanticPassed = false
+	migrated.RepairAttempts = 0
+	migrated.LastError = ""
+	migrated.LastErrorCategory = ""
+	migrated.ExactErrorFingerprint = ""
+	migrated.CategoryFingerprint = ""
+	migrated.ConsecutiveCategoryFailures = 0
+	migrated.Findings = nil
+	return migrated
 }
 
 func detailBatchAuditArtifacts(
@@ -694,7 +762,7 @@ func markPlannerRuntimeQualityIssues(
 				continue
 			}
 			key := [2]int{batch.TargetFrom, batch.TargetTo}
-			targets := detailAuditTargetsInRange([]int{issue.TargetChapter}, batch.TargetFrom, batch.TargetTo)
+			targets := detailAuditTargetsInRange(outlineIssueTargetChapters(issue), batch.TargetFrom, batch.TargetTo)
 			if len(targets) == 0 {
 				targets = detailAuditChapterRange(batch.TargetFrom, batch.TargetTo)
 			}
@@ -729,8 +797,10 @@ func outlineIssueMatchesDetailBatch(
 	batch plannerSkeletonBatch,
 	runtime *domain.AdaptationProposalRuntime,
 ) bool {
-	if issue.TargetChapter >= batch.TargetFrom && issue.TargetChapter <= batch.TargetTo {
-		return true
+	for _, target := range outlineIssueTargetChapters(issue) {
+		if target >= batch.TargetFrom && target <= batch.TargetTo {
+			return true
+		}
 	}
 	if issue.SourceChapter >= batch.SourceFrom && issue.SourceChapter <= batch.SourceTo {
 		return true

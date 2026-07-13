@@ -255,20 +255,6 @@ func adaptationWorkflowProgress(
 		Steps:    steps,
 	}
 
-	if latest != nil {
-		progress.CurrentStep = "analysis"
-		progress.Steps = completeStepsBefore(steps, "analysis")
-		stepStatus := workflowStatusFromAdaptationEvent(*latest)
-		progress.Status = stepStatus
-		progress.Steps = setStep(progress.Steps, "analysis", stepStatus, latest.Current, latest.Total, latest.Summary)
-		if stepStatus == WorkflowStatusFailed || stepStatus == WorkflowStatusPaused {
-			progress.Recoverable = true
-			progress.Error = strings.TrimSpace(latest.Detail)
-			progress.NextAction = nextWorkflowAction(progress, "resume_analysis", "继续原文分析", false)
-			return progress
-		}
-	}
-
 	if currentStep, message, running := adaptationRunningPresentation(actionKinds); running {
 		progress.Status = WorkflowStatusRunning
 		progress.CurrentStep = currentStep
@@ -308,6 +294,34 @@ func adaptationWorkflowProgress(
 	if proposal == nil {
 		proposal = snapshot.AdaptationPlan
 	}
+	if latest != nil && snapshot.AdaptationVolumeReview != nil {
+		stepStatus := workflowStatusFromAdaptationEvent(*latest)
+		if stepStatus == WorkflowStatusFailed || stepStatus == WorkflowStatusPaused {
+			progress.CurrentStep = "proposal_review"
+			progress.Status = stepStatus
+			progress.Steps = completeStepsBefore(steps, progress.CurrentStep)
+			progress.Steps = setStep(progress.Steps, progress.CurrentStep, stepStatus, latest.Current, latest.Total, latest.Summary)
+			progress.Recoverable = true
+			progress.Error = strings.TrimSpace(latest.Detail)
+			progress.NextAction = nextWorkflowAction(progress, "resume_adaptation_proposal_details", "继续章节详细提案", false)
+			return progress
+		}
+	}
+
+	if latest != nil {
+		progress.CurrentStep = "analysis"
+		progress.Steps = completeStepsBefore(steps, "analysis")
+		stepStatus := workflowStatusFromAdaptationEvent(*latest)
+		progress.Status = stepStatus
+		progress.Steps = setStep(progress.Steps, "analysis", stepStatus, latest.Current, latest.Total, latest.Summary)
+		if stepStatus == WorkflowStatusFailed || stepStatus == WorkflowStatusPaused {
+			progress.Recoverable = true
+			progress.Error = strings.TrimSpace(latest.Detail)
+			progress.NextAction = nextWorkflowAction(progress, "resume_analysis", "继续原文分析", false)
+			return progress
+		}
+	}
+
 	if snapshot.AdaptationVolumeReview != nil || (proposal != nil && proposal.Status != domain.AdaptationPlanStatusConfirmed) {
 		progress.CurrentStep = "proposal_review"
 		progress.Status = WorkflowStatusWaitingConfirmation

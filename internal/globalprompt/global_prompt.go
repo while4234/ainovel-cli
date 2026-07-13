@@ -41,9 +41,11 @@ func TextForModel(model string) string {
 	}
 }
 
-// Apply prepends the global prompt to a system prompt. It is intentionally
-// idempotent so callers can use it at both resource-loading and LLM-call
-// boundaries without duplicating the prefix.
+// Apply prepends the role-agnostic global prompt to a system prompt. It is
+// intentionally idempotent so callers can use it at both resource-loading and
+// LLM-call boundaries without duplicating the prefix. Writing-only rules must
+// live in the Writer/Editor prompt or a dedicated tool gate: this prefix also
+// enters bounded planner calls.
 func Apply(systemPrompt string) string {
 	return ApplyForModel("", systemPrompt)
 }

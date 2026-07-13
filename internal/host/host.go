@@ -99,6 +99,12 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	if err := store.Init(); err != nil {
 		return nil, fmt.Errorf("init store: %w", err)
 	}
+	// The de-AI stage is enabled when a Host owns a project. This deliberately
+	// leaves already committed legacy chapters intact, while every newly drafted
+	// or resumed chapter receives the same post-writing gate.
+	if err := store.DeAI.Enable(); err != nil {
+		return nil, fmt.Errorf("enable de-AI stage: %w", err)
+	}
 
 	models, err := bootstrap.NewModelSet(cfg)
 	if err != nil {

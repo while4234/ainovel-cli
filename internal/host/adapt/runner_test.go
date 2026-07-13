@@ -2651,6 +2651,47 @@ func TestPlannerDetailBatchesAssignEachMainlineEventExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyDetailEventContractReopensOnlyBlockedParent(t *testing.T) {
+	skeleton := plannerSkeleton{Batches: []plannerSkeletonBatch{
+		{Index: 1, TargetFrom: 1, TargetTo: 4, SourceFrom: 1, SourceTo: 4},
+		{Index: 2, TargetFrom: 5, TargetTo: 12, SourceFrom: 5, SourceTo: 12},
+	}}
+	passed := &domain.AdaptationDetailBatchAudit{
+		Version: domain.AdaptationDetailAuditVersion, Status: domain.AdaptationDetailAuditPassed,
+		DeterministicPassed: true, SemanticPassed: true,
+	}
+	blocked := &domain.AdaptationDetailBatchAudit{
+		Version: domain.AdaptationDetailAuditVersion, Status: domain.AdaptationDetailAuditRepairPending,
+		Findings: []domain.AdaptationDetailAuditFinding{{Code: outlineQualityIssueArcDuplicateEvent, Blocking: true}},
+	}
+	runtime := &domain.AdaptationProposalRuntime{
+		CompletedBatches: []domain.AdaptationProposalRuntimeBatch{
+			{TargetFrom: 1, TargetTo: 4, SourceFrom: 1, SourceTo: 4, Audit: passed},
+			{TargetFrom: 5, TargetTo: 8, SourceFrom: 5, SourceTo: 12, Audit: passed},
+			{TargetFrom: 9, TargetTo: 12, SourceFrom: 5, SourceTo: 12, Audit: blocked},
+		},
+		AuditCheckpoints: []domain.AdaptationDetailAuditCheckpoint{
+			{Kind: "parent", ID: "parent-1", TargetFrom: 1, TargetTo: 4},
+			{Kind: "parent", ID: "parent-2", TargetFrom: 5, TargetTo: 12},
+			{Kind: "global", ID: "global-outline", TargetFrom: 1, TargetTo: 12},
+		},
+	}
+
+	parent, removed, migrated := migrateLegacyDetailEventContractForBlockedBatch(runtime, &skeleton)
+	if !migrated || removed != 2 || parent.TargetFrom != 5 || parent.TargetTo != 12 {
+		t.Fatalf("migration parent=%+v removed=%d migrated=%v", parent, removed, migrated)
+	}
+	if skeleton.Batches[1].DetailEventContractVersion != plannerDetailEventContractVersionPartitioned {
+		t.Fatalf("parent contract version=%d", skeleton.Batches[1].DetailEventContractVersion)
+	}
+	if len(runtime.CompletedBatches) != 1 || runtime.CompletedBatches[0].TargetFrom != 1 {
+		t.Fatalf("remaining batches=%+v", runtime.CompletedBatches)
+	}
+	if len(runtime.AuditCheckpoints) != 1 || runtime.AuditCheckpoints[0].ID != "parent-1" {
+		t.Fatalf("remaining checkpoints=%+v", runtime.AuditCheckpoints)
+	}
+}
+
 func TestBuildAdaptationPlannerBatchPromptKeepsTwoSmallBatchesForContinuity(t *testing.T) {
 	previous := make([]domain.AdaptationChapterPlan, 12)
 	for index := range previous {

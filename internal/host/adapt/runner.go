@@ -1354,7 +1354,6 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	if err := normalizePlannerSkeleton(&skeleton, proposalOpts, manifest, review.TargetChapterCount); err != nil {
 		return nil, fmt.Errorf("volume review skeleton invalid: %w", err)
 	}
-	attachSkeletonMainlineEvents(&skeleton, reports)
 	runtime, _, err := loadPlannerProposalRuntime(deps, proposalOpts, manifest, review.TargetChapterCount, opts.EmitProgress)
 	if err != nil {
 		return nil, err
@@ -1362,6 +1361,9 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	if runtime == nil {
 		runtime = newPlannerProposalRuntime(proposalOpts, manifest, review.TargetChapterCount)
 	}
+	inheritPlannerRuntimeDetailEventContracts(&skeleton, runtime.Skeleton)
+	enablePlannerDetailEventContractsForFreshRuntime(&skeleton, runtime)
+	attachSkeletonMainlineEvents(&skeleton, reports)
 	if runtime.Skeleton != nil && !plannerRuntimeOutlineMatchesSkeleton(runtime.Skeleton, skeleton) {
 		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, 0, "分卷剧情已变化，清除旧章节细纲断点后重新生成", nil)
 		runtime.CompletedBatches = nil
@@ -3171,25 +3173,30 @@ type plannerSkeleton struct {
 }
 
 type plannerSkeletonBatch struct {
-	Index              int      `json:"index"`
-	Title              string   `json:"title,omitempty"`
-	Theme              string   `json:"theme,omitempty"`
-	Goal               string   `json:"goal,omitempty"`
-	Summary            string   `json:"summary,omitempty"`
-	ExpansionDecision  string   `json:"expansion_decision,omitempty"`
-	ExpansionReason    string   `json:"expansion_reason,omitempty"`
-	BudgetDecision     string   `json:"budget_decision,omitempty"`
-	BudgetReason       string   `json:"budget_reason,omitempty"`
-	TargetFrom         int      `json:"target_from"`
-	TargetTo           int      `json:"target_to"`
-	TargetChapterCount int      `json:"chapter_count,omitempty"`
-	DetailParentFrom   int      `json:"-"`
-	DetailParentTo     int      `json:"-"`
-	SourceFrom         int      `json:"source_from"`
-	SourceTo           int      `json:"source_to"`
-	SourceChapters     []int    `json:"source_chapters,omitempty"`
-	MainlineEventIDs   []string `json:"mainline_event_ids,omitempty"`
-	AllowedEventIDs    []string `json:"allowed_event_ids,omitempty"`
+	Index                      int      `json:"index"`
+	Title                      string   `json:"title,omitempty"`
+	Theme                      string   `json:"theme,omitempty"`
+	Goal                       string   `json:"goal,omitempty"`
+	Summary                    string   `json:"summary,omitempty"`
+	ExpansionDecision          string   `json:"expansion_decision,omitempty"`
+	ExpansionReason            string   `json:"expansion_reason,omitempty"`
+	BudgetDecision             string   `json:"budget_decision,omitempty"`
+	BudgetReason               string   `json:"budget_reason,omitempty"`
+	TargetFrom                 int      `json:"target_from"`
+	TargetTo                   int      `json:"target_to"`
+	TargetChapterCount         int      `json:"chapter_count,omitempty"`
+	DetailParentFrom           int      `json:"-"`
+	DetailParentTo             int      `json:"-"`
+	SourceFrom                 int      `json:"source_from"`
+	SourceTo                   int      `json:"source_to"`
+	SourceChapters             []int    `json:"source_chapters,omitempty"`
+	MainlineEventIDs           []string `json:"mainline_event_ids,omitempty"`
+	AllowedEventIDs            []string `json:"allowed_event_ids,omitempty"`
+	DetailEventContractVersion int      `json:"detail_event_contract_version,omitempty"`
+	// PriorOwnedEventIDs is populated only for an in-flight detail call. It
+	// makes already accepted source-event ownership explicit to the planner
+	// rather than asking a later global audit to infer it from a collision.
+	PriorOwnedEventIDs []string `json:"prior_owned_event_ids,omitempty"`
 	Notes              []string `json:"notes,omitempty"`
 }
 
@@ -3308,6 +3315,13 @@ func buildPlannerVolumeSkeleton(
 		}
 	}
 	attachSkeletonMainlineEvents(&skeleton, reports)
+	enablePlannerDetailEventContractsForFreshRuntime(&skeleton, runtime)
+	if runtime != nil && !plannerRuntimeOutlineMatchesSkeleton(runtime.Skeleton, skeleton) {
+		runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+		if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+			return zero, nil, fmt.Errorf("save planner detail event contracts: %w", err)
+		}
+	}
 	return skeleton, runtime, nil
 }
 
@@ -4343,6 +4357,21 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 		systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested adaptation planning step."
 	}
 	detailBatches := plannerDetailBatches(skeleton.Batches, adaptationPlannerRecommendedBatchMax)
+	if parent, removed, migrated := migrateLegacyDetailEventContractForBlockedBatch(runtime, &skeleton); migrated {
+		runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
+		if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+			return zero, fmt.Errorf("migrate legacy detail event contract for chapters %d-%d: %w", parent.TargetFrom, parent.TargetTo, err)
+		}
+		detailBatches = plannerDetailBatches(skeleton.Batches, adaptationPlannerRecommendedBatchMax)
+		emitAdaptProgress(
+			opts.EmitProgress,
+			StageAudit,
+			0,
+			len(detailBatches),
+			fmt.Sprintf("已升级第 %d-%d 章的旧版事件归属合同，重新生成 %d 个相关详情批次", parent.TargetFrom, parent.TargetTo, removed),
+			nil,
+		)
+	}
 	if len(runtime.CompletedBatches) == 0 {
 		emitAdaptProgress(opts.EmitProgress, StagePlan, 0, len(detailBatches), fmt.Sprintf("骨架规划完成：%d 章，%d 个模型规划段，拆为 %d 个详情子批次", skeleton.TargetChapterCount, len(skeleton.Batches), len(detailBatches)), nil)
 	} else {
@@ -4358,6 +4387,14 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 	chapters := make([]domain.AdaptationChapterPlan, 0, skeleton.TargetChapterCount)
 	reusedBatchCount := 0
 	for batchOrdinal, batch := range detailBatches {
+		raw := plannerRuntimeRawBatch(runtime, batch)
+		// Existing passed legacy batches remain immutable and keep their
+		// original audit signature. Apply the ownership overlay only to a
+		// new/pending batch, where it prevents another cross-batch collision
+		// without forcing every historical batch through a fresh model audit.
+		if raw == nil || raw.Audit == nil || raw.Audit.Status != domain.AdaptationDetailAuditPassed {
+			batch = plannerDetailBatchWithPriorEventOwnership(batch, chapters)
+		}
 		validateBatch := plannerBatchChapterValidator(opts, manifest, batch, chapters)
 		batchPrompt, err := buildAdaptationPlannerBatchUserPrompt(opts, manifest, sourceFoundation, skeleton, batch, reportsForPlannerDetailBatch(reports, batch), chapters)
 		if err != nil {
@@ -4365,11 +4402,26 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 		}
 		label := fmt.Sprintf("章节详情第 %d/%d 批", batchOrdinal+1, len(detailBatches))
 		batchCtx := withDetailRepairObserver(ctx, persistDetailRepairFailureObserver(deps, runtime, batch))
-		if raw := plannerRuntimeRawBatch(runtime, batch); raw != nil && raw.Audit != nil &&
-			raw.Audit.Status == domain.AdaptationDetailAuditRepairPending &&
-			raw.Audit.RepairAttempts >= deps.adaptationOutlineAuditRetryMaxAttempts() {
-			if _, _, usable := plannerRuntimeBatchCandidate(runtime, batch); !usable {
-				return zero, fmt.Errorf("%s has exhausted %d persisted repair attempts for %s", label, raw.Audit.RepairAttempts, raw.Audit.LastErrorCategory)
+		if raw != nil && raw.Audit != nil {
+			if migrated, ok := resetStaleCrossBatchOwnershipAudit(raw.Audit, batch); ok {
+				raw.Audit = migrated
+				if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+					return zero, fmt.Errorf("migrate stale detail audit scope for %s: %w", label, err)
+				}
+				emitAdaptProgress(opts.EmitProgress, StageAudit, batchOrdinal+1, len(detailBatches), fmt.Sprintf("%s已迁移旧版跨批次事件归属审核记录，准备重新审核", label), nil)
+			}
+			if migrated, ok := resetStaleDetailBatchContractAudit(raw.Audit, opts, reports, batch, chapters, raw.Chapters); ok {
+				raw.Audit = migrated
+				if err := savePlannerProposalRuntime(deps, runtime); err != nil {
+					return zero, fmt.Errorf("migrate detail event contract for %s: %w", label, err)
+				}
+				emitAdaptProgress(opts.EmitProgress, StageAudit, batchOrdinal+1, len(detailBatches), fmt.Sprintf("%s事件归属合同已更新，准备重新审核", label), nil)
+			}
+			if raw.Audit.Status == domain.AdaptationDetailAuditRepairPending &&
+				raw.Audit.RepairAttempts >= deps.adaptationOutlineAuditRetryMaxAttempts() {
+				if _, _, usable := plannerRuntimeBatchCandidate(runtime, batch); !usable {
+					return zero, fmt.Errorf("%s has exhausted %d persisted repair attempts for %s", label, raw.Audit.RepairAttempts, raw.Audit.LastErrorCategory)
+				}
 			}
 		}
 		if batchChapters, existingAudit, ok := plannerRuntimeBatchCandidate(runtime, batch); ok {
@@ -4674,22 +4726,23 @@ func plannerSkeletonFromRuntime(runtime *domain.AdaptationProposalRuntime) plann
 	batches := make([]plannerSkeletonBatch, 0, len(outline.Batches))
 	for _, batch := range outline.Batches {
 		batches = append(batches, plannerSkeletonBatch{
-			Index:              batch.Index,
-			Title:              batch.Title,
-			Theme:              batch.Theme,
-			Goal:               batch.Goal,
-			Summary:            batch.Summary,
-			BudgetDecision:     batch.BudgetDecision,
-			BudgetReason:       batch.BudgetReason,
-			TargetFrom:         batch.TargetFrom,
-			TargetTo:           batch.TargetTo,
-			TargetChapterCount: batch.TargetChapterCount,
-			SourceFrom:         batch.SourceFrom,
-			SourceTo:           batch.SourceTo,
-			SourceChapters:     append([]int(nil), batch.SourceChapters...),
-			MainlineEventIDs:   append([]string(nil), batch.MainlineEventIDs...),
-			AllowedEventIDs:    append([]string(nil), batch.AllowedEventIDs...),
-			Notes:              append([]string(nil), batch.Notes...),
+			Index:                      batch.Index,
+			Title:                      batch.Title,
+			Theme:                      batch.Theme,
+			Goal:                       batch.Goal,
+			Summary:                    batch.Summary,
+			BudgetDecision:             batch.BudgetDecision,
+			BudgetReason:               batch.BudgetReason,
+			TargetFrom:                 batch.TargetFrom,
+			TargetTo:                   batch.TargetTo,
+			TargetChapterCount:         batch.TargetChapterCount,
+			SourceFrom:                 batch.SourceFrom,
+			SourceTo:                   batch.SourceTo,
+			SourceChapters:             append([]int(nil), batch.SourceChapters...),
+			MainlineEventIDs:           append([]string(nil), batch.MainlineEventIDs...),
+			AllowedEventIDs:            append([]string(nil), batch.AllowedEventIDs...),
+			DetailEventContractVersion: batch.DetailEventContractVersion,
+			Notes:                      append([]string(nil), batch.Notes...),
 		})
 	}
 	return plannerSkeleton{
@@ -4709,22 +4762,23 @@ func plannerRuntimeOutlineFromSkeleton(skeleton plannerSkeleton) *domain.Adaptat
 	batches := make([]domain.AdaptationProposalRuntimeSkeletonBatch, 0, len(skeleton.Batches))
 	for _, batch := range skeleton.Batches {
 		batches = append(batches, domain.AdaptationProposalRuntimeSkeletonBatch{
-			Index:              batch.Index,
-			Title:              batch.Title,
-			Theme:              batch.Theme,
-			Goal:               batch.Goal,
-			Summary:            batch.Summary,
-			BudgetDecision:     batch.BudgetDecision,
-			BudgetReason:       batch.BudgetReason,
-			TargetFrom:         batch.TargetFrom,
-			TargetTo:           batch.TargetTo,
-			TargetChapterCount: batch.TargetChapterCount,
-			SourceFrom:         batch.SourceFrom,
-			SourceTo:           batch.SourceTo,
-			SourceChapters:     append([]int(nil), batch.SourceChapters...),
-			MainlineEventIDs:   append([]string(nil), batch.MainlineEventIDs...),
-			AllowedEventIDs:    append([]string(nil), batch.AllowedEventIDs...),
-			Notes:              append([]string(nil), batch.Notes...),
+			Index:                      batch.Index,
+			Title:                      batch.Title,
+			Theme:                      batch.Theme,
+			Goal:                       batch.Goal,
+			Summary:                    batch.Summary,
+			BudgetDecision:             batch.BudgetDecision,
+			BudgetReason:               batch.BudgetReason,
+			TargetFrom:                 batch.TargetFrom,
+			TargetTo:                   batch.TargetTo,
+			TargetChapterCount:         batch.TargetChapterCount,
+			SourceFrom:                 batch.SourceFrom,
+			SourceTo:                   batch.SourceTo,
+			SourceChapters:             append([]int(nil), batch.SourceChapters...),
+			MainlineEventIDs:           append([]string(nil), batch.MainlineEventIDs...),
+			AllowedEventIDs:            append([]string(nil), batch.AllowedEventIDs...),
+			DetailEventContractVersion: batch.DetailEventContractVersion,
+			Notes:                      append([]string(nil), batch.Notes...),
 		})
 	}
 	return &domain.AdaptationProposalRuntimeOutline{
@@ -4761,7 +4815,8 @@ func plannerRuntimeSkeletonBatchMatches(a, b domain.AdaptationProposalRuntimeSke
 		a.TargetTo == b.TargetTo &&
 		a.TargetChapterCount == b.TargetChapterCount &&
 		a.SourceFrom == b.SourceFrom &&
-		a.SourceTo == b.SourceTo
+		a.SourceTo == b.SourceTo &&
+		a.DetailEventContractVersion == b.DetailEventContractVersion
 }
 
 func plannerRuntimeBatchChapters(runtime *domain.AdaptationProposalRuntime, batch plannerSkeletonBatch) ([]domain.AdaptationChapterPlan, bool) {
@@ -5034,20 +5089,21 @@ func plannerRuntimeSkeletonBatchesForSource(runtime *domain.AdaptationProposalRu
 			continue
 		}
 		batches = append(batches, plannerSkeletonBatch{
-			Index:              completed.Index,
-			Title:              completed.Title,
-			Theme:              completed.Theme,
-			Goal:               completed.Goal,
-			Summary:            completed.Summary,
-			BudgetDecision:     completed.BudgetDecision,
-			BudgetReason:       completed.BudgetReason,
-			TargetFrom:         completed.TargetFrom,
-			TargetTo:           completed.TargetTo,
-			TargetChapterCount: completed.TargetChapterCount,
-			SourceFrom:         completed.SourceFrom,
-			SourceTo:           completed.SourceTo,
-			SourceChapters:     append([]int(nil), completed.SourceChapters...),
-			Notes:              append([]string(nil), completed.Notes...),
+			Index:                      completed.Index,
+			Title:                      completed.Title,
+			Theme:                      completed.Theme,
+			Goal:                       completed.Goal,
+			Summary:                    completed.Summary,
+			BudgetDecision:             completed.BudgetDecision,
+			BudgetReason:               completed.BudgetReason,
+			TargetFrom:                 completed.TargetFrom,
+			TargetTo:                   completed.TargetTo,
+			TargetChapterCount:         completed.TargetChapterCount,
+			SourceFrom:                 completed.SourceFrom,
+			SourceTo:                   completed.SourceTo,
+			SourceChapters:             append([]int(nil), completed.SourceChapters...),
+			DetailEventContractVersion: completed.DetailEventContractVersion,
+			Notes:                      append([]string(nil), completed.Notes...),
 		})
 	}
 	if len(batches) == 0 {
@@ -5100,22 +5156,23 @@ func upsertPlannerProposalRuntimeSkeletonBatches(runtime *domain.AdaptationPropo
 	}
 	for _, batch := range batches {
 		out = append(out, domain.AdaptationProposalRuntimeSkeletonBatch{
-			Index:              batch.Index,
-			Title:              batch.Title,
-			Theme:              batch.Theme,
-			Goal:               batch.Goal,
-			Summary:            batch.Summary,
-			BudgetDecision:     batch.BudgetDecision,
-			BudgetReason:       batch.BudgetReason,
-			TargetFrom:         batch.TargetFrom,
-			TargetTo:           batch.TargetTo,
-			TargetChapterCount: batch.TargetChapterCount,
-			SourceFrom:         batch.SourceFrom,
-			SourceTo:           batch.SourceTo,
-			SourceChapters:     append([]int(nil), batch.SourceChapters...),
-			MainlineEventIDs:   append([]string(nil), batch.MainlineEventIDs...),
-			AllowedEventIDs:    append([]string(nil), batch.AllowedEventIDs...),
-			Notes:              append([]string(nil), batch.Notes...),
+			Index:                      batch.Index,
+			Title:                      batch.Title,
+			Theme:                      batch.Theme,
+			Goal:                       batch.Goal,
+			Summary:                    batch.Summary,
+			BudgetDecision:             batch.BudgetDecision,
+			BudgetReason:               batch.BudgetReason,
+			TargetFrom:                 batch.TargetFrom,
+			TargetTo:                   batch.TargetTo,
+			TargetChapterCount:         batch.TargetChapterCount,
+			SourceFrom:                 batch.SourceFrom,
+			SourceTo:                   batch.SourceTo,
+			SourceChapters:             append([]int(nil), batch.SourceChapters...),
+			MainlineEventIDs:           append([]string(nil), batch.MainlineEventIDs...),
+			AllowedEventIDs:            append([]string(nil), batch.AllowedEventIDs...),
+			DetailEventContractVersion: batch.DetailEventContractVersion,
+			Notes:                      append([]string(nil), batch.Notes...),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -5252,12 +5309,93 @@ func plannerDetailBatches(batches []plannerSkeletonBatch, batchMax int) []planne
 			sub.TargetFrom = from
 			sub.TargetTo = to
 			sub.TargetChapterCount = to - from + 1
-			sub.MainlineEventIDs = splitEventIDsForBatch(batch.MainlineEventIDs, partCount, partIndex)
+			if batch.DetailEventContractVersion >= plannerDetailEventContractVersionPartitioned {
+				sub.MainlineEventIDs, sub.AllowedEventIDs = plannerDetailBatchEventContract(batch, partCount, partIndex)
+			} else {
+				sub.MainlineEventIDs = splitEventIDsForBatch(batch.MainlineEventIDs, partCount, partIndex)
+			}
 			out = append(out, sub)
 			partIndex++
 		}
 	}
 	return out
+}
+
+// migrateLegacyDetailEventContractForBlockedBatch upgrades only the affected
+// parent range of a resumable legacy proposal. Legacy detail sub-batches shared
+// one broad optional-event whitelist, so an earlier accepted child could claim
+// events that a later child still needed. Reopening the small parent range and
+// applying the partitioned event contract preserves all work outside that
+// range while repairing ownership at the detailed-proposal stage.
+func migrateLegacyDetailEventContractForBlockedBatch(
+	runtime *domain.AdaptationProposalRuntime,
+	skeleton *plannerSkeleton,
+) (plannerSkeletonBatch, int, bool) {
+	if runtime == nil || skeleton == nil || len(runtime.CompletedBatches) == 0 {
+		return plannerSkeletonBatch{}, 0, false
+	}
+	for _, completed := range runtime.CompletedBatches {
+		if !detailBatchAuditHasLegacyDuplicateOwnership(completed.Audit) {
+			continue
+		}
+		for index := range skeleton.Batches {
+			parent := &skeleton.Batches[index]
+			if parent.DetailEventContractVersion >= plannerDetailEventContractVersionPartitioned ||
+				parent.TargetTo-parent.TargetFrom+1 <= adaptationPlannerRecommendedBatchMax ||
+				completed.TargetFrom < parent.TargetFrom || completed.TargetTo > parent.TargetTo {
+				continue
+			}
+			parent.DetailEventContractVersion = plannerDetailEventContractVersionPartitioned
+			removed := removePlannerProposalRuntimeBatchesForTargetRange(runtime, parent.TargetFrom, parent.TargetTo)
+			invalidatePlannerRuntimeAuditCheckpointsForTargetRange(runtime, parent.TargetFrom, parent.TargetTo)
+			return *parent, removed, removed > 0
+		}
+	}
+	return plannerSkeletonBatch{}, 0, false
+}
+
+func detailBatchAuditHasLegacyDuplicateOwnership(audit *domain.AdaptationDetailBatchAudit) bool {
+	if audit == nil || audit.Status != domain.AdaptationDetailAuditRepairPending {
+		return false
+	}
+	for _, finding := range audit.Findings {
+		if finding.Code == outlineQualityIssueArcDuplicateEvent {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(audit.LastError), outlineQualityIssueArcDuplicateEvent)
+}
+
+func removePlannerProposalRuntimeBatchesForTargetRange(runtime *domain.AdaptationProposalRuntime, targetFrom, targetTo int) int {
+	if runtime == nil || targetFrom <= 0 || targetTo < targetFrom || len(runtime.CompletedBatches) == 0 {
+		return 0
+	}
+	out := runtime.CompletedBatches[:0]
+	removed := 0
+	for _, completed := range runtime.CompletedBatches {
+		if completed.TargetFrom <= targetTo && completed.TargetTo >= targetFrom {
+			removed++
+			continue
+		}
+		out = append(out, completed)
+	}
+	runtime.CompletedBatches = out
+	return removed
+}
+
+func invalidatePlannerRuntimeAuditCheckpointsForTargetRange(runtime *domain.AdaptationProposalRuntime, targetFrom, targetTo int) {
+	if runtime == nil {
+		return
+	}
+	out := runtime.AuditCheckpoints[:0]
+	for _, checkpoint := range runtime.AuditCheckpoints {
+		if checkpoint.Kind == "global" ||
+			(checkpoint.TargetFrom > 0 && checkpoint.TargetTo >= checkpoint.TargetFrom && checkpoint.TargetFrom <= targetTo && checkpoint.TargetTo >= targetFrom) {
+			continue
+		}
+		out = append(out, checkpoint)
+	}
+	runtime.AuditCheckpoints = out
 }
 
 func generatePlannerText(
@@ -6476,13 +6614,21 @@ func plannerBatchEventRepairRequirements(batch plannerSkeletonBatch, previousErr
 	}
 	mainline, _ := json.Marshal(batch.MainlineEventIDs)
 	allowed, _ := json.Marshal(batch.AllowedEventIDs)
-	return []string{
+	requirements := []string{
 		fmt.Sprintf("For this isolated detail batch, the required mainline event_ids are %s. Across all returned chapters, use every required ID exactly once.", mainline),
 		fmt.Sprintf("The complete stable source-event whitelist is %s. Every event_ids value must come from this list. Never invent a source ID; put genuinely new target-story events in added_event_ids.", allowed),
 		"When preserve_events references a stable source event, use the exact stable ID as the whole array item. Do not append a colon or event description to that ID; put readable descriptions in core_event and scenes.",
+		"When the validation error reports an event bound to both an earlier accepted chapter and this batch, retain the prior chapter as context and repair this returned batch's ownership. Move event_ids, preserve_events, core_event, required_changes, and the matching scene beat together; never silence the error by deleting only the ID.",
 		"If the failed response pulled an event from another detail batch, rebuild the affected title, core_event, hook, and scenes around this batch's assigned events. Do not merely delete the foreign ID while keeping its future plot beat in prose.",
 		"Before returning JSON, verify that every required mainline ID appears exactly once, optional stable IDs appear at most once, and no foreign or invented source ID appears.",
 	}
+	if len(batch.PriorOwnedEventIDs) > 0 {
+		priorOwned, _ := json.Marshal(batch.PriorOwnedEventIDs)
+		requirements = append(requirements,
+			fmt.Sprintf("These stable source IDs are already owned by earlier accepted detail chapters and are forbidden in this batch: %s. Remove them from event_ids, preserve_events, core_event, required_changes, and scenes together; use only this batch's whitelist for source-event IDs.", priorOwned),
+		)
+	}
+	return requirements
 }
 
 func repairProposalRevisionBatchText(
@@ -7286,6 +7432,11 @@ func buildAdaptationPlannerBatchUserPrompt(
 		requirements = append(requirements,
 			"Every chapter must include stable target event_ids; use added_event_ids for events invented beyond the current target skeleton.",
 			"Plan target-story prerequisites with depends_on_event_ids and structured relationship/setting transitions; ordinary source events are optional references, not coverage obligations.",
+		)
+	}
+	if len(batch.PriorOwnedEventIDs) > 0 {
+		requirements = append(requirements,
+			"batch.prior_owned_event_ids are already owned by earlier accepted detail chapters. They are forbidden in this batch: never reuse them in event_ids or preserve_events, and do not retain their matching story beat after removing an ID.",
 		)
 	}
 	requirements = append(requirements,

@@ -197,8 +197,16 @@ export function setProjectSimulationMode(projectId, mode) {
   });
 }
 
-export function getSnapshot(projectId, options = {}) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/snapshot`, options);
+export function getSnapshot(projectId, { detail = 'full', ...options } = {}) {
+  const query = detail === 'summary' ? '?detail=summary' : '';
+  return request(`/api/projects/${encodeURIComponent(projectId)}/snapshot${query}`, options);
+}
+
+// Project-open and reconnect only need the navigation snapshot. Keep this
+// separate from getSnapshot so latency-sensitive paths cannot accidentally
+// fall back to the full long-novel payload.
+export function getSummarySnapshot(projectId, options = {}) {
+  return getSnapshot(projectId, { ...options, detail: 'summary' });
 }
 
 export function getChapter(projectId, chapter) {

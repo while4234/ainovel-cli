@@ -74,12 +74,12 @@ import {
   getObservabilityRecommendations,
   getObservabilityUsage,
   getProjectModels,
-  getProjectEvents,
   getProjectResumeSchedule,
   getResumeSchedule,
   getRuntime,
   getSetupStatus,
   getSnapshot,
+  getSummarySnapshot,
   inheritProjectModel,
   importSimulationProfile,
   listNovelLibrary,
@@ -824,8 +824,6 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 	const lastSeqRef = useRef(0);
-	const gapRecoveryRef = useRef(null);
-	const pendingSSEEventsRef = useRef([]);
 	const projectOpenSeqRef = useRef(0);
   const projectOpenAbortRef = useRef(null);
   const activeProjectIdRef = useRef('');
@@ -870,8 +868,6 @@ export default function App() {
 
 	const resetProjectScopedState = useCallback((clearProject = false) => {
 		lastSeqRef.current = 0;
-		gapRecoveryRef.current = null;
-		pendingSSEEventsRef.current = [];
     setBusy(false);
     setWorkbench(createWorkbenchState());
     setSimulation(resetSimulationProjectState);
@@ -939,7 +935,7 @@ export default function App() {
       return;
     }
     try {
-      const snapshotData = await getSnapshot(projectId);
+      const snapshotData = await getSummarySnapshot(projectId);
       if (!isCurrentProject(projectId)) {
         return;
       }
@@ -1115,6 +1111,39 @@ export default function App() {
     }
     loadAdaptationAuditReport(activeProject.id);
   }, [activeProject?.id, loadAdaptationAuditReport, sideView]);
+
+  useEffect(() => {
+    const projectId = activeProject?.id;
+    if (sideView !== 'continuation' || !projectId || projectOpen.status === 'loading') {
+      return undefined;
+    }
+    let disposed = false;
+    setContinuation((previous) => ({ ...previous, status: 'loading', error: '' }));
+    getContinuation(projectId).then((data) => {
+      if (disposed || !isCurrentProject(projectId)) {
+        return;
+      }
+      setContinuation((previous) => {
+        const restored = restoreContinuationState(previous, data);
+        return {
+          ...restored,
+          status: normalizeContinuationSnapshot(restored.workflow).exists ? 'done' : 'idle'
+        };
+      });
+    }).catch((err) => {
+      if (disposed || !isCurrentProject(projectId)) {
+        return;
+      }
+      setContinuation((previous) => ({
+        ...previous,
+        status: normalizeContinuationSnapshot(previous.workflow).exists ? 'done' : 'idle',
+        error: err.message
+      }));
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [activeProject?.id, isCurrentProject, projectOpen.status, sideView]);
 
   useEffect(() => {
     const projectId = activeProject?.id;
@@ -1413,7 +1442,7 @@ export default function App() {
     setProjectOpen({ status: 'loading', project, error: '' });
     setProjectDrawerOpen(false);
     try {
-      const snapshotData = await getSnapshot(projectId, { signal: controller.signal });
+      const snapshotData = await getSummarySnapshot(projectId, { signal: controller.signal });
       const prepared = prepareProjectOpenSnapshot(requestSeq, projectOpenSeqRef.current, snapshotData);
       if (!prepared) {
         return;
@@ -1428,16 +1457,17 @@ export default function App() {
 
       // Project-scoped reads update last_accessed_at. Keep them sequential on
       // Windows, but hydrate them only after the latest workspace is visible.
+      // The continuation endpoint includes the complete continuation plan and
+      // can be several megabytes; fetch it only when the user opens that tool.
       const modelData = await getProjectModels(projectId);
       const backendData = await getBackendStatus(projectId);
-      const continuationData = await getContinuation(projectId).catch(() => null);
       const projectScheduleResult = await getProjectResumeSchedule(projectId)
         .then((data) => ({ data, error: '' }))
         .catch((err) => ({ data: null, error: err.message }));
       if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
         return;
       }
-      setContinuation((previous) => restoreContinuationState(previous, continuationData, snapshotData.snapshot));
+      setContinuation((previous) => restoreContinuationState(previous, null, snapshotData.snapshot));
       setModelConfig(modelData.models || null);
       setBackendStatus(backendData.backend || null);
       setProjectSettings((previous) => ({
@@ -1481,49 +1511,6 @@ export default function App() {
     let retryTimer = null;
     let reconnectAttempt = 0;
 
-    const recoverSSEGap = () => {
-      if (gapRecoveryRef.current || disposed) {
-        return;
-      }
-      const after = lastSeqRef.current;
-      setConnection('reconnecting');
-      const recovery = getProjectEvents(projectId, after).then((history) => {
-        if (disposed || !isCurrentProject(projectId)) {
-          return;
-        }
-        const events = Array.isArray(history?.events) ? history.events.slice().sort((left, right) => (
-          Number(left?.seq || 0) - Number(right?.seq || 0)
-        )) : [];
-        const highestRecoveredSeq = events.reduce(
-          (highest, event) => Math.max(highest, Number(event?.seq || 0)),
-          after
-        );
-        lastSeqRef.current = Math.max(lastSeqRef.current, highestRecoveredSeq);
-        setWorkbench((previous) => {
-          const next = reduceWebEvents(previous, events);
-          lastSeqRef.current = Math.max(lastSeqRef.current, next.lastSeq);
-          return next;
-        });
-      }).catch(() => {
-        if (!disposed && isCurrentProject(projectId)) {
-          refreshCurrentProjectSnapshot(projectId);
-          setConnection('degraded');
-        }
-      }).finally(() => {
-        gapRecoveryRef.current = null;
-        if (disposed) {
-          return;
-        }
-        const pending = pendingSSEEventsRef.current.splice(0).sort((left, right) => (
-          Number(left?.seq || 0) - Number(right?.seq || 0)
-        ));
-        for (const event of pending) {
-          applyEvent(event);
-        }
-      });
-      gapRecoveryRef.current = recovery;
-    };
-
     function applyEvent(event) {
       if (!event || activeProjectIdRef.current !== projectId ||
           (event.project_id && event.project_id !== projectId)) {
@@ -1533,12 +1520,11 @@ export default function App() {
       if (!sequence || sequence <= lastSeqRef.current) {
         return;
       }
-      if (sequence > lastSeqRef.current + 1) {
-        pendingSSEEventsRef.current.push(event);
-        refreshCurrentProjectSnapshot(projectId);
-        recoverSSEGap();
-        return;
-      }
+      // Sequence values are a cursor, not a contiguous packet counter. A
+      // restarted session, retained runtime queue, or coalesced host-event
+      // update can legitimately leave holes. The SSE subscription itself
+      // starts with a fresh snapshot, so accepting the newer event avoids a
+      // gap -> summary fetch -> reconnect feedback loop.
       setWorkbench((previous) => {
         const next = reduceWebEvent(previous, event);
         lastSeqRef.current = next.lastSeq;
@@ -1583,28 +1569,31 @@ export default function App() {
       applyEvent(parsed.event);
     };
 
-    const connect = async () => {
+    const connect = async (reconcile = false) => {
       if (disposed) {
         return;
       }
-      // Reconcile a restarted server before opening SSE. Stream deltas are
-      // intentionally ephemeral, so the server sequence may be lower after a
-      // restart even though the browser still has a higher lastSeq.
-      try {
-        const snapshotData = await getSnapshot(projectId);
-        const latest = Number(snapshotData?.latest_event_seq || 0);
-        if (!disposed && latest > 0 && latest < lastSeqRef.current) {
-          const restored = restoreProjectWorkbenchSnapshot(
-            createWorkbenchState(),
-            snapshotData.snapshot,
-            snapshotData.events || [],
-            latest
-          );
-          lastSeqRef.current = restored.lastSeq;
-          setWorkbench(restored);
+      if (reconcile) {
+        // Reconcile only after a broken connection or an offline transition.
+        // The project-open request has already supplied this same snapshot, so
+        // doing another read for the first EventSource connection doubles the
+        // largest payload on every project switch.
+        try {
+          const snapshotData = await getSummarySnapshot(projectId);
+          const latest = Number(snapshotData?.latest_event_seq || 0);
+          if (!disposed && latest > 0 && latest < lastSeqRef.current) {
+            const restored = restoreProjectWorkbenchSnapshot(
+              createWorkbenchState(),
+              snapshotData.snapshot,
+              snapshotData.events || [],
+              latest
+            );
+            lastSeqRef.current = restored.lastSeq;
+            setWorkbench(restored);
+          }
+        } catch {
+          // Continue with SSE even when the reconciliation snapshot is unavailable.
         }
-      } catch {
-        // Continue with SSE even when the preflight snapshot is unavailable.
       }
       if (disposed) {
         return;
@@ -1613,6 +1602,13 @@ export default function App() {
       const url = '/api/projects/' + encodeURIComponent(projectId) + '/events?after=' + after;
       source = new EventSource(url);
       setConnection(after > 0 ? 'reconnecting' : 'connecting');
+      source.onopen = () => {
+        if (disposed) {
+          return;
+        }
+        reconnectAttempt = 0;
+        setConnection('live');
+      };
       for (const type of eventTypes) {
         source.addEventListener(type, apply);
       }
@@ -1624,7 +1620,7 @@ export default function App() {
         source.close();
         const delay = nextSSEReconnectDelay(reconnectAttempt);
         reconnectAttempt += 1;
-        retryTimer = window.setTimeout(connect, delay);
+        retryTimer = window.setTimeout(() => connect(true), delay);
       };
     };
 
@@ -1637,7 +1633,7 @@ export default function App() {
       if (retryTimer) {
         window.clearTimeout(retryTimer);
       }
-      connect();
+      connect(true);
     };
 
     connect();

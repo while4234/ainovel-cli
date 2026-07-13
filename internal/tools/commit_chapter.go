@@ -181,6 +181,9 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	if content == "" {
 		return nil, fmt.Errorf("no content found for chapter %d: %w", a.Chapter, errs.ErrToolPrecondition)
 	}
+	if err := t.ensureDeAIGate(a.Chapter, content); err != nil {
+		return nil, err
+	}
 	if err := t.ensureAdaptationGate(a.Chapter, content); err != nil {
 		return nil, err
 	}
@@ -444,6 +447,46 @@ func (t *CommitChapterTool) ensureAdaptationGate(chapter int, content string) er
 	}
 }
 
+// ensureDeAIGate binds commit to the exact draft version that passed the
+// dedicated post-writing pass. Unlike generic review, this gate is local to a
+// chapter and can be rerun immediately after a targeted paragraph rewrite.
+func (t *CommitChapterTool) ensureDeAIGate(chapter int, content string) error {
+	if t == nil || t.store == nil || t.store.DeAI == nil {
+		return nil
+	}
+	enabled, err := t.store.DeAI.Enabled()
+	if err != nil {
+		return fmt.Errorf("load de-AI policy: %w: %w", errs.ErrStoreRead, err)
+	}
+	if !enabled {
+		return nil
+	}
+	audit, err := t.store.DeAI.LoadAudit(chapter)
+	if err != nil {
+		return fmt.Errorf("load de-AI audit: %w: %w", errs.ErrStoreRead, err)
+	}
+	digest := store.TextSHA256(content)
+	if audit == nil {
+		return fmt.Errorf("第 %d 章尚未完成独立去AI化审校。先调用 check_de_ai；如有问题，按报告做段落级修复并在最终草稿上重新检查: %w", chapter, errs.ErrToolPrecondition)
+	}
+	if audit.DraftSHA256 != digest {
+		return fmt.Errorf("第 %d 章在去AI化审校后已修改，旧审校不再适用。先重新调用 check_de_ai，再提交: %w", chapter, errs.ErrToolPrecondition)
+	}
+	if !audit.Passed {
+		repair := audit.Report.RepairSummary()
+		if repair == "" {
+			repair = "按去AI化报告进行段落级修复"
+		}
+		next := "先调用 check_de_ai 查看 repair_plan，再按报告中的首个类别处理 1-8 处精确原文。"
+		if batches := audit.Report.RepairPlan().Batches; len(batches) > 0 {
+			first := batches[0]
+			next = fmt.Sprintf("先处理“%s”批次：用 repair_de_ai_batch 修订 %d 处以内的 examples 原文。", first.Label, first.SuggestedEdits)
+		}
+		return fmt.Errorf("第 %d 章未通过独立去AI化审校：%s。%s 每批落盘后立即重跑 check_de_ai；仍有 repair finding 才进入下一类别。只有连续两批没有改善，或剧情因果、人物、篇幅结构也需要调整时，才回读全文并用 draft_chapter(mode=write)。通过后重跑 check_consistency、改编项目的 check_adaptation（如适用），再 commit_chapter: %w", chapter, repair, next, errs.ErrToolPrecondition)
+	}
+	return nil
+}
+
 // checkRules 对章节正文做机械检查：内置产品底线 Lint（机制残留，始终执行）
 // + 用户规则 Check（读本书快照的 structured；快照缺失退到内置默认，保证机械底线始终在）。
 type wordBudgetGateRejection struct {
@@ -563,6 +606,9 @@ func (t *CommitChapterTool) executeRewriteCommit(
 	}
 	if content == "" {
 		return nil, fmt.Errorf("no content found for chapter %d: %w", chapter, errs.ErrToolPrecondition)
+	}
+	if err := t.ensureDeAIGate(chapter, content); err != nil {
+		return nil, err
 	}
 
 	// 2. 硬校验：drafts 与现终稿完全相同 → 判定为未真正打磨/重写（writer 跳过了 draft_chapter）

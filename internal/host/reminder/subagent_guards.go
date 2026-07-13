@@ -89,7 +89,7 @@ func NewWriterStopGuard(st *store.Store) agentcore.StopGuard {
 
 func writerStopBlockMessage(st *store.Store) string {
 	const generic = "你必须调用 commit_chapter 提交本章后才能结束。draft_chapter 只是保存草稿，不算完成。"
-	if st == nil || !st.Adaptation.Active() {
+	if st == nil {
 		return generic
 	}
 	progress, err := st.Progress.Load()
@@ -103,9 +103,22 @@ func writerStopBlockMessage(st *store.Store) string {
 	if chapter <= 0 {
 		return generic
 	}
+	if !st.Adaptation.Active() {
+		if content, _, contentErr := st.Drafts.LoadChapterContent(chapter); contentErr == nil {
+			if msg := writerDeAICheckBlockMessage(st, chapter, content); msg != "" {
+				return msg
+			}
+		}
+		return generic
+	}
 	plan, err := st.Adaptation.LoadPlan()
 	if err != nil || plan == nil || plan.Status != domain.AdaptationPlanStatusConfirmed ||
 		plan.RewritePolicy != domain.AdaptationRewritePreserveDetails {
+		if content, _, contentErr := st.Drafts.LoadChapterContent(chapter); contentErr == nil {
+			if msg := writerDeAICheckBlockMessage(st, chapter, content); msg != "" {
+				return msg
+			}
+		}
 		return generic
 	}
 	var chapterPlan *domain.AdaptationChapterPlan
@@ -134,10 +147,59 @@ func writerStopBlockMessage(st *store.Store) string {
 			chapter, wordCount, chapterPlan.TargetMinRunes, chapterPlan.TargetMaxRunes,
 		)
 	}
+	// A previously checked de-AI audit that no longer matches the draft means a
+	// prose-repair batch just changed the text. Recheck that batch before the
+	// broader factual checks so the Writer gets a tight feedback loop. A brand
+	// new draft has no audit and still follows adaptation -> de-AI order.
+	if writerDeAIAuditRefreshesFirst(st, chapter, content) {
+		return writerDeAICheckBlockMessage(st, chapter, content)
+	}
 	if msg := writerAdaptationCheckBlockMessage(st, chapter, content, *chapterPlan); msg != "" {
 		return msg
 	}
+	if msg := writerDeAICheckBlockMessage(st, chapter, content); msg != "" {
+		return msg
+	}
 	return generic
+}
+
+func writerDeAIAuditRefreshesFirst(st *store.Store, chapter int, content string) bool {
+	if st == nil || st.DeAI == nil || chapter <= 0 || content == "" {
+		return false
+	}
+	enabled, err := st.DeAI.Enabled()
+	if err != nil || !enabled {
+		return false
+	}
+	audit, err := st.DeAI.LoadAudit(chapter)
+	return err == nil && audit != nil && audit.DraftSHA256 != store.TextSHA256(content)
+}
+
+func writerDeAICheckBlockMessage(st *store.Store, chapter int, content string) string {
+	if st == nil || st.DeAI == nil || chapter <= 0 || content == "" {
+		return ""
+	}
+	enabled, err := st.DeAI.Enabled()
+	if err != nil || !enabled {
+		return ""
+	}
+	audit, err := st.DeAI.LoadAudit(chapter)
+	if err != nil {
+		return fmt.Sprintf("第 %d 章无法读取去AI化审校结果：%v。先重新调用 check_de_ai。", chapter, err)
+	}
+	digest := store.TextSHA256(content)
+	if audit == nil || audit.DraftSHA256 != digest {
+		return fmt.Sprintf("第 %d 章尚未对当前草稿完成独立去AI化阶段。先调用 check_de_ai；若报告指出问题，按段落重写后重新执行全部检查。", chapter)
+	}
+	if !audit.Passed {
+		plan := audit.Report.RepairPlan()
+		batch := "按 repair_plan 的第一个类别做 1-8 处精确修订"
+		if len(plan.Batches) > 0 {
+			batch = fmt.Sprintf("先处理“%s”批次（%s）", plan.Batches[0].Label, plan.Batches[0].Instruction)
+		}
+		return fmt.Sprintf("第 %d 章未通过独立去AI化审校。报告 examples 是精确原文；%s，用 repair_de_ai_batch 落盘后立即重新 check_de_ai。仍有 repair finding 才处理下一类别，不要机械换同义词或整章重写。连续两批没有改善、或剧情结构也需要调整时，才回读全文后用 draft_chapter(mode=write)。去AI化通过后重跑 check_consistency、check_adaptation（如适用）。", chapter, batch)
+	}
+	return ""
 }
 
 func writerAdaptationCheckBlockMessage(st *store.Store, chapter int, content string, chapterPlan domain.AdaptationChapterPlan) string {

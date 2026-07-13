@@ -332,3 +332,25 @@ func TestEditChapterWorksWithCommitValidation(t *testing.T) {
 		t.Fatalf("expected queue drained, got %v", progress.PendingRewrites)
 	}
 }
+
+func TestEditChapterAllowsExactRepairWhenDeAIReportHasMultipleKinds(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 2); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	content := "# 第一章\n\n林逸飞没有回答——门外有人敲了一下。\n\n林逸飞没有回答——桌上的杯子晃了晃。\n\n林逸飞没有回答——吴宇申把文件推过来。\n\n林逸飞没有回答——窗帘动了一下。"
+	if err := s.Drafts.SaveDraft(1, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if _, err := NewCheckDeAITool(s).Execute(context.Background(), json.RawMessage(`{"chapter":1}`)); err != nil {
+		t.Fatalf("check_de_ai: %v", err)
+	}
+	_, err := NewEditChapterTool(s).Execute(context.Background(), json.RawMessage(`{"chapter":1,"old_string":"林逸飞没有回答——门外有人敲了一下。","new_string":"门外传来两下轻敲，林逸飞把视线移向门缝。"}`))
+	if err != nil {
+		t.Fatalf("expected exact repair to remain available, got %v", err)
+	}
+}

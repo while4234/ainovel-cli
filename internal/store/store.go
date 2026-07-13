@@ -28,6 +28,7 @@ type Store struct {
 	Sessions     *SessionStore
 	Usage        *UsageStore
 	Simulation   *SimulationStore
+	DeAI         *DeAIStore
 	Adaptation   *AdaptationStore
 	Continuation *ContinuationStore
 
@@ -55,6 +56,7 @@ func NewStore(dir string) *Store {
 		Sessions:     NewSessionStore(newIO(dir)),
 		Usage:        NewUsageStore(newIO(dir)),
 		Simulation:   NewSimulationStore(newIO(dir)),
+		DeAI:         NewDeAIStore(newIO(dir)),
 		Adaptation:   NewAdaptationStore(newIO(dir)),
 		Continuation: NewContinuationStore(newIO(dir)),
 	}
@@ -132,7 +134,7 @@ func (s *Store) FoundationMissing() []string {
 func (s *Store) Init() error {
 	return s.Progress.io.EnsureDirs([]string{
 		"chapters", "summaries", "drafts", "reviews", "meta", "meta/runtime", "meta/runtime/tasks", "meta/sessions", "meta/sessions/agents",
-		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/continuation",
+		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/continuation", "meta/deai", "meta/deai/checks",
 	})
 }
 

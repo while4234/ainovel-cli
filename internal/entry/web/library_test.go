@@ -97,6 +97,10 @@ func TestSimulationLibraryUploadSearchAndLoad(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(realManifest.OutputDir, "meta", "simulation_profile.json")); err != nil {
 		t.Fatalf("simulation profile was not imported into project output: %v", err)
 	}
+	waitForTestCondition(t, "simulation library import completion", func() bool {
+		session := server.sessions.Project(realManifest.ID)
+		return session != nil && !session.isActionRunning(projectActionKindSimulationImport)
+	})
 
 	req = httptest.NewRequest(http.MethodGet, "/api/projects/"+realManifest.ID+"/snapshot", nil)
 	rec = httptest.NewRecorder()

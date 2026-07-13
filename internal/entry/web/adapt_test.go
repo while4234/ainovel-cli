@@ -621,6 +621,10 @@ func TestProjectAdaptStartFailsAfterNewUploadUntilAnalyzeCompletes(t *testing.T)
 		defer fake.mu.Unlock()
 		return fake.adaptSourcePath == newPath
 	})
+	waitForTestCondition(t, "new adaptation analysis completion", func() bool {
+		session := server.sessions.Project(manifest.ID)
+		return session != nil && !session.isActionRunning(projectActionKindAdaptationAnalysis)
+	})
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/start", bytes.NewBufferString(`{"source_file":"new.txt","mode":"chapter","brief":"adapt the new source"}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)

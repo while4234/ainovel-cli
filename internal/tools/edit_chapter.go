@@ -48,7 +48,7 @@ func (t *EditChapterTool) ConcurrencySafe(_ json.RawMessage) bool { return false
 func (t *EditChapterTool) ActivityDescription(_ json.RawMessage) string { return "编辑章节草稿" }
 
 func (t *EditChapterTool) Description() string {
-	return "对章节草稿做定点字符串替换（打磨场景首选，比 draft_chapter 整章重写省 token）。" +
+	return "对章节草稿做定点字符串替换（适合单处、唯一的精确打磨；同类去AI化问题优先用 repair_de_ai_batch 分批处理）。" +
 		"找到 old_string 并替换为 new_string，要求精确匹配且唯一（多处匹配需 replace_all=true）。" +
 		"写入 drafts/{ch}.draft.md；drafts 不存在时自动从 chapters 播种。" +
 		"章节已完成且不在 PendingRewrites 队列中时拒绝执行。每次调用只改一处，多处修改请多次调用。"
@@ -95,7 +95,6 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 	if err := t.ensureDraft(a.Chapter); err != nil {
 		return nil, err
 	}
-
 	// 委托 agentcore.EditTool 完成找-换
 	subArgs, _ := json.Marshal(map[string]any{
 		"path":        fmt.Sprintf("drafts/%02d.draft.md", a.Chapter),
@@ -130,9 +129,9 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 
 func (t *EditChapterTool) nextStepAfterEdit() string {
 	if t.store != nil && t.store.Adaptation.Active() {
-		return "edit 已落盘，旧 check_consistency/check_adaptation 已失效。仍有硬伤可再次 edit_chapter；否则回读当前草稿，重新调用 check_consistency 和 check_adaptation，通过后再 commit_chapter。"
+		return "edit 已落盘，旧 check_consistency/check_adaptation 已失效；旧 check_de_ai 也已失效。若正在处理去AI化问题，先完成当前类别的一小批精确修订并立即 check_de_ai；仍有 finding 再处理下一批。check_de_ai 通过后，重新调用 check_consistency 和 check_adaptation，通过后再 commit_chapter。"
 	}
-	return "edit 已落盘。仍有硬伤可再次 edit_chapter；否则 check_consistency 后 commit_chapter"
+	return "edit 已落盘。若在处理去AI化问题，先 check_de_ai，仍有 finding 再做下一批精确修订；通过后 check_consistency 再 commit_chapter。"
 }
 
 // ensureDraft 保证 drafts/{ch}.draft.md 存在：

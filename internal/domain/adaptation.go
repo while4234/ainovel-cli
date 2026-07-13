@@ -474,7 +474,12 @@ type AdaptationProposalRuntimeSkeletonBatch struct {
 	SourceChapters     []int    `json:"source_chapters,omitempty"`
 	MainlineEventIDs   []string `json:"mainline_event_ids,omitempty"`
 	AllowedEventIDs    []string `json:"allowed_event_ids,omitempty"`
-	Notes              []string `json:"notes,omitempty"`
+	// DetailEventContractVersion records the detail-batch event ownership
+	// policy used when this parent skeleton was created. Zero is the legacy
+	// shared-whitelist shape; later versions partition stable events across
+	// detail sub-batches before any chapter outline is generated.
+	DetailEventContractVersion int      `json:"detail_event_contract_version,omitempty"`
+	Notes                      []string `json:"notes,omitempty"`
 }
 
 type AdaptationProposalRuntimeBatch struct {

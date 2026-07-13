@@ -49,6 +49,23 @@ describe('web event reducer', () => {
     expect(duplicate.streamRounds[0].text).toBe('alpha');
   });
 
+  it('accepts a newer sparse sequence after replay compaction', () => {
+    const initial = reduceWebEvent(createWorkbenchState(), {
+      seq: 4,
+      type: 'host_event',
+      host_event_id: 'tool-1',
+      event: { id: 'tool-1', summary: 'drafting', running: true }
+    });
+    const compactedReplay = reduceWebEvent(initial, {
+      seq: 9,
+      type: 'snapshot',
+      snapshot: { runtime_state: 'running', completed_count: 5 }
+    });
+
+    expect(compactedReplay.lastSeq).toBe(9);
+    expect(compactedReplay.snapshot.completed_count).toBe(5);
+  });
+
   it('keeps top-level SSE workflow progress inside the current snapshot', () => {
     const workflowProgress = {
       workflow: 'continuation',

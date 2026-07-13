@@ -25,6 +25,8 @@ import {
   getSemanticAdaptationAudit,
   getSemanticAdaptationAuditReport,
   getChapter,
+  getSnapshot,
+  getSummarySnapshot,
   getCodexAuthStatus,
   getGlobalModels,
   getContinuation,
@@ -102,6 +104,20 @@ function mockBlobResponse(body = 'book') {
 describe('web API helpers', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('keeps project-open and recovery snapshots on the compact route', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await getSummarySnapshot('project/1');
+    await getSnapshot('project/1');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project%2F1/snapshot?detail=summary', expect.objectContaining({
+      headers: {}
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project%2F1/snapshot', expect.objectContaining({
+      headers: {}
+    }));
   });
 
   it('sends project rename, clone, and trash requests to the project resource', async () => {

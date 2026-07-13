@@ -67,6 +67,28 @@ func TestContextToolInjectsStyleStats(t *testing.T) {
 	}
 }
 
+func TestContextToolInjectsAntiAIToneForEveryWritingChapter(t *testing.T) {
+	dir := testStoreDir(t)
+	st := store.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	tool := NewContextTool(st, References{AntiAITone: "去AI化：不要用破折号解释；不要章内小标题。"}, "default")
+	raw, err := tool.Execute(context.Background(), json.RawMessage(`{"chapter":12}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		References map[string]string `json:"references"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got := payload.References["anti_ai_tone"]; !strings.Contains(got, "章内小标题") {
+		t.Fatalf("anti_ai_tone missing from chapter context: %+v", payload.References)
+	}
+}
+
 func TestContextToolInjectsWordBudget(t *testing.T) {
 	dir := testStoreDir(t)
 	st := store.NewStore(dir)

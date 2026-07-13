@@ -651,10 +651,19 @@ func (t *ContextTool) writerReferences(chapter int) map[string]string {
 			refs[k] = truncateRunes(v, 2600)
 		}
 	}
+	addWithLimit := func(k, v string, limit int) {
+		if v != "" {
+			refs[k] = truncateRunes(v, limit)
+		}
+	}
 	// 渐进式加载：始终保留核心参考，前 3 章额外加载完整写作指南
 	add("consistency", t.refs.Consistency)
 	add("hook_techniques", t.refs.HookTechniques)
 	add("quality_checklist", t.refs.QualityChecklist)
+	// This is a core prose constraint, not an optional chapter-one reference.
+	// Previously the bundle loaded AntiAITone but never placed it in Writer or
+	// Editor context, so its most important long-form instructions were inert.
+	addWithLimit("anti_ai_tone", t.refs.AntiAITone, 6000)
 	if chapter <= 3 {
 		add("chapter_guide", t.refs.ChapterGuide)
 		add("dialogue_writing", t.refs.DialogueWriting)

@@ -23,6 +23,7 @@ var toolDisplays = map[string]toolDisplay{
 
 	"plan_chapter":        {header: "✻ 规划"},
 	"edit_chapter":        {header: "✻ 打磨"},
+	"repair_de_ai_batch":  {header: "✻ 去AI化分批修订"},
 	"commit_chapter":      {header: "✻ 章节提交"},
 	"save_review":         {header: "✻ 审阅"},
 	"save_arc_summary":    {header: "✻ 弧摘要"},
@@ -30,6 +31,7 @@ var toolDisplays = map[string]toolDisplay{
 	"save_foundation":     {header: "✻ 设定"},
 	"read_chapter":        {header: "✻ 读章节"},
 	"check_consistency":   {header: "✻ 一致性检查"},
+	"check_de_ai":         {header: "✻ 去AI化审校"},
 	"novel_context":       {header: "✻ 查询上下文"},
 }
 

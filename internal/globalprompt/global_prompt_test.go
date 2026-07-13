@@ -25,6 +25,19 @@ func TestApplyPrefixesSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestDeepSeekGlobalPromptExcludesWritingOnlyContracts(t *testing.T) {
+	prefix := TextForModel("deepseek/deepseek-v4-pro")
+	for _, writingOnly := range []string{
+		"正文生成的反模板约束",
+		"单独完成去AI化复检",
+		"破折号仅用于真实语气中断",
+	} {
+		if strings.Contains(prefix, writingOnly) {
+			t.Fatalf("writing-only contract %q leaked into the shared DeepSeek prefix", writingOnly)
+		}
+	}
+}
+
 func TestApplyForModelSelectsGPTPrompt(t *testing.T) {
 	gptPrefix := TextForModel("openai/gpt-5.5")
 	deepSeekPrefix := TextForModel("deepseek/deepseek-v4-pro")

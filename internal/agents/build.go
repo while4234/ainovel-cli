@@ -171,8 +171,10 @@ func BuildCoordinator(
 		tools.NewPlanChapterTool(store),
 		newWriterDraftChapterTool(store),
 		tools.NewEditChapterTool(store),
+		tools.NewRepairDeAIBatchTool(store),
 		tools.NewCheckConsistencyTool(store),
 		tools.NewCheckAdaptationTool(store),
+		tools.NewCheckDeAITool(store),
 		tools.NewCommitChapterTool(store, completionGate),
 	}
 	editorTools := []agentcore.Tool{
@@ -187,8 +189,8 @@ func BuildCoordinator(
 		return nil, nil, nil, nil, nil, err
 	}
 	if err := validateAgentToolRegistry("writer", writerTools,
-		"novel_context", "read_chapter", "plan_chapter", "draft_chapter", "edit_chapter",
-		"check_consistency", "check_adaptation", "commit_chapter"); err != nil {
+		"novel_context", "read_chapter", "plan_chapter", "draft_chapter", "edit_chapter", "repair_de_ai_batch",
+		"check_consistency", "check_adaptation", "check_de_ai", "commit_chapter"); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 	if err := validateAgentToolRegistry("editor", editorTools,
@@ -310,7 +312,7 @@ func BuildCoordinator(
 	}
 
 	writerPrompt := bundle.Prompts.Writer
-	writerPrompt += "\n\nRuntime tool contract: this Writer run has registered tools `novel_context`, `read_chapter`, `plan_chapter`, `draft_chapter`, `edit_chapter`, `check_consistency`, `check_adaptation`, and `commit_chapter`. Use these exact names. If a tool call is rejected as unavailable, do not invent a replacement name; report a tool-registry error so the Host can repair the runtime."
+	writerPrompt += "\n\nRuntime tool contract: this Writer run has registered tools `novel_context`, `read_chapter`, `plan_chapter`, `draft_chapter`, `edit_chapter`, `repair_de_ai_batch`, `check_consistency`, `check_adaptation`, `check_de_ai`, and `commit_chapter`. Use these exact names. If a tool call is rejected as unavailable, do not invent a replacement name; report a tool-registry error so the Host can repair the runtime."
 	if style, ok := bundle.Styles[cfg.Style]; ok {
 		writerPrompt += "\n\n" + style
 	}

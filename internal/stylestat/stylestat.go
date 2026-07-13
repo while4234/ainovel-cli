@@ -2,13 +2,15 @@
 //
 // 动机：弧内评审窗口（~10 章）对全书级模式固化天然失明——句式 tic 章均几十次、
 // 章末形态同构、跨章复读，单章看每处都"正常"，只有全书统计能暴露。统计归代码
-//（确定性、零幻觉），裁定归 LLM（editor 按数字判维度分，writer 据此自避免）。
+// （确定性、零幻觉），裁定归 LLM（editor 按数字判维度分，writer 据此自避免）。
 package stylestat
 
 import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/voocel/ainovel-cli/internal/deai"
 )
 
 // minChapters 少于此章数不出统计——样本太小，频率没有意义。
@@ -34,6 +36,7 @@ type Stats struct {
 	Ending            EndingStat     `json:"ending"`
 	OpeningTimeRate   float64        `json:"opening_time_rate"`
 	TitleFormats      *TitleStat     `json:"title_formats,omitempty"`
+	Prose             ProseStat      `json:"prose"`
 }
 
 // PatternStat 固定句式模式类的全书计数（通用 AI 文风 tic）。
@@ -66,6 +69,20 @@ type EndingStat struct {
 type TitleStat struct {
 	WithPrefix    int `json:"with_prefix"`
 	WithoutPrefix int `json:"without_prefix"`
+}
+
+// ProseStat is the long-form counterpart to a single de-AI audit. It lets the
+// next Writer see drift that looks harmless in one chapter but becomes a
+// recognizable generated cadence over dozens of chapters.
+type ProseStat struct {
+	EmDashPerKRunes             float64 `json:"em_dash_per_k_runes"`
+	MeanParagraphRunes          float64 `json:"mean_paragraph_runes"`
+	ShortParagraphRatio         float64 `json:"short_paragraph_ratio"`
+	BodySubheadings             int     `json:"body_subheadings"`
+	InvalidChapterTitles        int     `json:"invalid_chapter_titles"`
+	CorrectionPerChapter        float64 `json:"correction_per_chapter"`
+	ReactionTemplatesPerChapter float64 `json:"reaction_templates_per_chapter"`
+	ThenOpenersPerChapter       float64 `json:"then_openers_per_chapter"`
 }
 
 // patternDefs 通用 AI 文风句式模式。计数是近似（正则不做语法分析），
@@ -114,7 +131,59 @@ func Compute(in Input) *Stats {
 	s.Ending = endingShape(in.Chapters)
 	s.OpeningTimeRate = openingTimeRate(in.Chapters)
 	s.TitleFormats = titleFormats(in.Titles)
+	s.Prose = proseStats(in.Chapters)
 	return s
+}
+
+func proseStats(chapters []string) ProseStat {
+	if len(chapters) == 0 {
+		return ProseStat{}
+	}
+	var bodyRunes, dashes, paragraphs, shortParagraphs, subheadings, invalidTitles, corrections, reactions, thenOpeners int
+	for _, chapter := range chapters {
+		report := deai.Analyze(chapter)
+		metrics := report.Metrics
+		bodyRunes += metrics.BodyRunes
+		dashes += metrics.EmDashes
+		paragraphs += metrics.Paragraphs
+		subheadings += metrics.MarkdownSubheadings
+		invalidTitles += metrics.InvalidChapterTitles
+		corrections += metrics.CorrectionSentences
+		reactions += metrics.ReactionTemplates
+		thenOpeners += metrics.ThenParagraphOpeners
+		for _, paragraph := range styleParagraphs(chapter) {
+			if len([]rune(paragraph)) <= shortEndingRunes {
+				shortParagraphs++
+			}
+		}
+	}
+	stat := ProseStat{
+		BodySubheadings:             subheadings,
+		InvalidChapterTitles:        invalidTitles,
+		CorrectionPerChapter:        round2(float64(corrections) / float64(len(chapters))),
+		ReactionTemplatesPerChapter: round2(float64(reactions) / float64(len(chapters))),
+		ThenOpenersPerChapter:       round2(float64(thenOpeners) / float64(len(chapters))),
+	}
+	if bodyRunes > 0 {
+		stat.EmDashPerKRunes = round2(float64(dashes) * 1000 / float64(bodyRunes))
+	}
+	if paragraphs > 0 {
+		stat.MeanParagraphRunes = round2(float64(bodyRunes) / float64(paragraphs))
+		stat.ShortParagraphRatio = round2(float64(shortParagraphs) / float64(paragraphs))
+	}
+	return stat
+}
+
+func styleParagraphs(text string) []string {
+	var paragraphs []string
+	for _, paragraph := range strings.Split(text, "\n\n") {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph == "" || strings.HasPrefix(paragraph, "#") {
+			continue
+		}
+		paragraphs = append(paragraphs, paragraph)
+	}
+	return paragraphs
 }
 
 func recentWindow(chapters []string) []string {
@@ -200,7 +269,7 @@ func validGram(gram []rune) bool {
 }
 
 // stopwordBigrams 把专有名词拆成 2 字片段：人名常以部分形式入文
-//（"九渊负手"含"九渊"），按整名匹配会漏网。宁可过滤偏严——短语事实少一条
+// （"九渊负手"含"九渊"），按整名匹配会漏网。宁可过滤偏严——短语事实少一条
 // 无碍，人名混进口头禅清单才是噪声。
 func stopwordBigrams(stopwords []string) []string {
 	var grams []string
