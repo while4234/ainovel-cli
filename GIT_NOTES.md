@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-14 pending `feat: audit original proposals before user review`:
+- 2026-07-14 `f8541c6` `feat: audit original proposals before user review`:
   normal-original long projects now generate volume skeletons and 3-4 chapter
   arc batches behind durable, original-fiction semantic audits. Failed scopes
   are repaired and re-audited before volume or chapter review becomes visible;
