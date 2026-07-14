@@ -28,12 +28,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-14 pending `fix: fail over insufficient user quota errors`:
+- 2026-07-14 `80107a6` + pending stream follow-up
+  `fix: fail over insufficient user quota errors`:
   Provider precharge failures reported as `insufficient_user_quota` now
   classify as hard quota exhaustion and immediately enter the configured
-  same-model backend pool. The exact live Yuanyu-to-Suifeng writing-stage
-  shape has regression coverage. Focused fallback tests, full bootstrap tests,
-  package vet, and diff-check passed before mainline integration.
+  same-model backend pool. Empty stream-start events are buffered until actual
+  text, thinking, or tool output appears, so a precharge failure after an empty
+  stream prelude remains safe to retry on another backend. The exact live
+  Yuanyu-to-Suifeng writing-stage shapes have sync and stream regression
+  coverage. Focused fallback tests, full bootstrap tests, package vet, full Go
+  tests, 213 UI tests, production build, and diff-check passed.
 - 2026-07-14 `14df0ba` `feat: add adaptive manuscript structure planning`:
   PR-03 adds mode-neutral seven-operation structure planning, sealed previews,
   exact stable-ID delta validation, dynamic soft budgets, causal required/

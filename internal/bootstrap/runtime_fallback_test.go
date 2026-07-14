@@ -65,6 +65,49 @@ func TestRuntimeAutoSwitchInsufficientUserQuotaSwitchesImmediately(t *testing.T)
 	}
 }
 
+func TestRuntimeAutoSwitchInsufficientUserQuotaAfterEmptyStreamPrelude(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	quotaErr := errors.New("insufficient_user_quota: 预扣费额度失败")
+	first := &emptyPreludeErrorRuntimeModel{
+		provider: "deepseek-yuanyu-0",
+		model:    "deepseek-v4-pro",
+		err:      quotaErr,
+	}
+	second := &scriptedRuntimeModel{provider: "deepseek-suifeng-0", model: "deepseek-v4-pro"}
+	primary := NewSwappableModel("deepseek-yuanyu-0", "deepseek-v4-pro", first)
+	controller := &runtimeFallbackControllerStub{
+		order:  []string{"deepseek-suifeng-0"},
+		models: map[string]agentcore.ChatModel{"deepseek-suifeng-0": second},
+	}
+
+	model := newRuntimeFallbackModel("stage:writing", primary, primary, runtimeFallbackTestConfig(7), controller, nil)
+	stream, err := model.GenerateStream(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+	var (
+		response  string
+		streamErr error
+	)
+	for event := range stream {
+		switch event.Type {
+		case agentcore.StreamEventDone:
+			response = event.Message.TextContent()
+		case agentcore.StreamEventError:
+			streamErr = event.Err
+		}
+	}
+	if streamErr != nil {
+		t.Fatalf("stream error = %v, want fallback success", streamErr)
+	}
+	if response != "deepseek-suifeng-0/deepseek-v4-pro" {
+		t.Fatalf("response = %q, want deepseek-suifeng-0/deepseek-v4-pro", response)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
+	}
+}
+
 func TestRuntimeAutoSwitchMonthlyUsageLimitSwitchesImmediately(t *testing.T) {
 	restoreRuntimeFallbackWait(t)
 	first := &scriptedRuntimeModel{
@@ -530,6 +573,44 @@ type scriptedRuntimeModel struct {
 	model    string
 	errs     []error
 	calls    int
+}
+
+type emptyPreludeErrorRuntimeModel struct {
+	mu       sync.Mutex
+	provider string
+	model    string
+	err      error
+	calls    int
+}
+
+func (m *emptyPreludeErrorRuntimeModel) Generate(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	return nil, m.err
+}
+
+func (m *emptyPreludeErrorRuntimeModel) GenerateStream(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
+	stream := make(chan agentcore.StreamEvent, 3)
+	stream <- agentcore.StreamEvent{Type: agentcore.StreamEventTextStart}
+	stream <- agentcore.StreamEvent{Type: agentcore.StreamEventTextDelta}
+	stream <- agentcore.StreamEvent{Type: agentcore.StreamEventError, Err: m.err}
+	close(stream)
+	return stream, nil
+}
+
+func (m *emptyPreludeErrorRuntimeModel) SupportsTools() bool { return true }
+
+func (m *emptyPreludeErrorRuntimeModel) ProviderName() string { return m.provider }
+
+func (m *emptyPreludeErrorRuntimeModel) Info() llm.ModelInfo {
+	return llm.ModelInfo{Provider: m.provider, Name: m.model}
+}
+
+func (m *emptyPreludeErrorRuntimeModel) Calls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
 }
 
 func (m *scriptedRuntimeModel) Generate(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (*agentcore.LLMResponse, error) {

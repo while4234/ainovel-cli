@@ -176,6 +176,7 @@ func (m *runtimeFallbackModel) Info() llm.ModelInfo {
 
 func (m *runtimeFallbackModel) forwardStream(ctx context.Context, out chan<- agentcore.StreamEvent, source <-chan agentcore.StreamEvent, current modelTarget, attempted map[string]bool, networkAttempt *int) bool {
 	forwarded := false
+	pendingPrelude := make([]agentcore.StreamEvent, 0, 2)
 	for ev := range source {
 		switch ev.Type {
 		case agentcore.StreamEventError:
@@ -196,9 +197,20 @@ func (m *runtimeFallbackModel) forwardStream(ctx context.Context, out chan<- age
 			out <- ev
 			return true
 		case agentcore.StreamEventDone:
+			for _, pending := range pendingPrelude {
+				out <- pending
+			}
 			out <- ev
 			return true
 		default:
+			if !forwarded && !streamEventHasMaterialOutput(ev) {
+				pendingPrelude = append(pendingPrelude, ev)
+				continue
+			}
+			for _, pending := range pendingPrelude {
+				out <- pending
+			}
+			pendingPrelude = nil
 			forwarded = true
 			out <- ev
 		}
@@ -221,6 +233,25 @@ func (m *runtimeFallbackModel) forwardStream(ctx context.Context, out chan<- age
 	}
 	out <- agentcore.StreamEvent{Type: agentcore.StreamEventError, Err: runtimeFallbackTerminalError{err: err}}
 	return true
+}
+
+func streamEventHasMaterialOutput(event agentcore.StreamEvent) bool {
+	switch event.Type {
+	case agentcore.StreamEventTextStart,
+		agentcore.StreamEventTextEnd,
+		agentcore.StreamEventThinkingStart,
+		agentcore.StreamEventThinkingEnd:
+		return false
+	case agentcore.StreamEventTextDelta,
+		agentcore.StreamEventThinkingDelta,
+		agentcore.StreamEventToolCallDelta:
+		return event.Delta != ""
+	case agentcore.StreamEventToolCallStart,
+		agentcore.StreamEventToolCallEnd:
+		return true
+	default:
+		return true
+	}
 }
 
 func (m *runtimeFallbackModel) nextAfterFailure(ctx context.Context, current modelTarget, attempted map[string]bool, err error, networkAttempt *int) (modelTarget, bool, runtimeFallbackDecision) {
