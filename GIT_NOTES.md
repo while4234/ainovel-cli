@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-14 `14df0ba` `feat: add adaptive manuscript structure planning`:
+  PR-03 adds mode-neutral seven-operation structure planning, sealed previews,
+  exact stable-ID delta validation, dynamic soft budgets, causal required/
+  recommended impacts, strict output/context batch limits, failed-batch
+  recovery fences, and local/per-volume/whole-book audit gates. Five fresh
+  fix/re-review rounds closed preview forgery, cross-planner replay, evidence
+  matching, overflow, and planner-scope lifecycle issues. Sequential final
+  gates passed full Go tests/vet, 213 UI tests, UI build, and diff-check. The
+  commit is local and was not pushed by this pipeline.
 - 2026-07-14 `152c16b` `feat: add reversible manuscript revision sessions`:
   PR-02 adds durable candidate-isolated revision sessions, version history,
   expected-revision and idempotency checks, one-active-revision enforcement,
