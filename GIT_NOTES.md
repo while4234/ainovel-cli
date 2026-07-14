@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-14 `25bedb6` `fix: ignore stale co-create after writing starts`
+  and `6cec895` `fix: complete prerequisites in writing progress`: writing,
+  paused, and completed projects now show all five planning stages as complete;
+  untouched new projects remain idle. Startup recovery treats persisted
+  writing/complete progress as authoritative and removes stale co-create
+  checkpoints instead of rebuilding them from legacy logs. Focused regressions,
+  full Web tests, Web vet, two clean-binary cold restarts, API checks, and live
+  Chrome validation passed. The affected live project retained chapters 1-2
+  (5624 words) and resumed chapter 3 with no planning review or co-create state.
 - 2026-07-14 `af0da9b` `feat: add stable manuscript structure identities`:
   The accepted PR-01 candidate introduces stable volume/arc/chapter IDs,
   canonical stable-ID artifact storage, numeric compatibility projections, and
