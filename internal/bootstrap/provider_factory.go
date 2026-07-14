@@ -552,7 +552,10 @@ func (m *requestTimeoutModel) Generate(ctx context.Context, messages []agentcore
 }
 
 func (m *requestTimeoutModel) GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
-	if m.timeout > 0 {
+	// Streaming callers such as co-create own their stage deadline. Applying a
+	// shorter provider deadline here would silently override that user-visible
+	// setting while the response is still making progress.
+	if m.timeout > 0 && !hasContextDeadline(ctx) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, m.timeout)
 		ch, err := m.model.GenerateStream(ctx, messages, tools, opts...)
@@ -563,6 +566,11 @@ func (m *requestTimeoutModel) GenerateStream(ctx context.Context, messages []age
 		return cancelOnStreamDone(ch, cancel), nil
 	}
 	return m.model.GenerateStream(ctx, messages, tools, opts...)
+}
+
+func hasContextDeadline(ctx context.Context) bool {
+	_, ok := ctx.Deadline()
+	return ok
 }
 
 func (m *requestTimeoutModel) SupportsTools() bool {
