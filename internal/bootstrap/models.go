@@ -80,11 +80,21 @@ func (m *SwappableModel) withThinking(opts []agentcore.CallOption) []agentcore.C
 	m.mu.RLock()
 	level := m.thinking
 	m.mu.RUnlock()
-	if level == "" {
-		return opts
+	next := opts
+	if level != "" {
+		next = append([]agentcore.CallOption(nil), opts...)
+		next = append(next, agentcore.WithThinking(level))
 	}
-	next := append([]agentcore.CallOption(nil), opts...)
-	return append(next, agentcore.WithThinking(level))
+
+	requested := agentcore.ResolveCallConfig(next).ThinkingLevel
+	resolved, supported := llm.ThinkingPolicyFor(m).Resolve(requested)
+	if supported {
+		return next
+	}
+	if len(next) == len(opts) {
+		next = append([]agentcore.CallOption(nil), opts...)
+	}
+	return append(next, agentcore.WithThinking(resolved))
 }
 
 func (m *SwappableModel) SetThinking(level string) {
