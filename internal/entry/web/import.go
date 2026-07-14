@@ -38,6 +38,12 @@ func (s *Server) handleProjectImport(w http.ResponseWriter, r *http.Request, id 
 		writeProjectSessionError(w, err)
 		return
 	}
+	finishAction, err := session.beginActionKind(projectActionKindContinuation)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	defer finishAction()
 	headers, cleanup, err := parseMultipartFiles(w, r, unlimitedUploadBytes)
 	if cleanup != nil {
 		defer cleanup()
@@ -70,7 +76,7 @@ func (s *Server) handleProjectImport(w http.ResponseWriter, r *http.Request, id 
 	source := uploads[0]
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
-	events, label, err := session.ImportExternalNovel(ctx, filepath.Join(importDir, source.Name), resumeFrom)
+	events, label, err := session.importExternalNovelOwned(ctx, filepath.Join(importDir, source.Name), resumeFrom)
 	if err != nil {
 		writeImportActionError(w, err, events)
 		return

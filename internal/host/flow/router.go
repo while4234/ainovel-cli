@@ -24,10 +24,14 @@ type Instruction struct {
 	Task    string // 给子代理的任务描述
 	Reason  string // 给 Coordinator 看的理由（可选，方便调试与日志）
 	Chapter int    // writer 任务涉及的章节号（续写/重写/打磨）；0 表示不涉及（editor/architect 任务）
+	Fence   storepkg.RevisionFence
 }
 
 // State 是 Route 的输入：所有事实必须在此显式声明，禁止 Route 内部读 Store。
 type State struct {
+	RevisionActive bool
+	RevisionRoute  *domain.RevisionRoute
+
 	Progress             *domain.Progress
 	PlanningReview       *domain.PlanningReview
 	OriginalPlanningWork *storepkg.OriginalPlanningWork
@@ -83,6 +87,24 @@ type State struct {
 // 11. 卷末需决策下一卷       → architect_long(append_volume / complete_book)
 // 12. 其它                  → writer(写 next_chapter)
 func Route(s State) *Instruction {
+	// An active revision owns the router. Manual approval, pause, and failure
+	// stages intentionally return no instruction while still blocking every
+	// ordinary planning/writing route below.
+	if s.RevisionActive {
+		if s.RevisionRoute == nil {
+			return nil
+		}
+		return &Instruction{
+			Agent:  s.RevisionRoute.Agent,
+			Task:   s.RevisionRoute.Task,
+			Reason: s.RevisionRoute.Reason,
+			Fence: storepkg.RevisionFence{
+				Generation: s.RevisionRoute.Generation,
+				SessionID:  s.RevisionRoute.SessionID,
+				Revision:   s.RevisionRoute.Revision,
+			},
+		}
+	}
 	p := s.Progress
 	if p == nil {
 		return nil

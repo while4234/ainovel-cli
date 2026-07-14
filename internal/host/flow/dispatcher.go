@@ -33,6 +33,8 @@ type Dispatcher struct {
 	// onRepeat 是纯 telemetry 回调（无人值守告警用），在同一指令第 repeatNotifyAt
 	// 次下达时触发一次；不反向影响派发，派发逻辑对它的存在无感知。
 	onRepeat func(agent, task string, n int)
+	leaseMu  sync.RWMutex
+	lease    *storepkg.NormalFlowLease
 }
 
 // repeatNotifyAt 写死不进配置：它不是控制流阈值（不触发任何动作，只是"喊人"），
@@ -48,6 +50,17 @@ func NewDispatcher(coordinator *agentcore.Agent, store *storepkg.Store) *Dispatc
 // Enable 打开路由派发；关闭时 Dispatch 不产生指令。
 // Host 在 Start/Resume 完成首条 prompt 之后启用，避免与启动流程冲突。
 func (d *Dispatcher) Enable() { d.enabled.Store(true) }
+
+func (d *Dispatcher) SetNormalFlowLease(lease *storepkg.NormalFlowLease) {
+	d.leaseMu.Lock()
+	defer d.leaseMu.Unlock()
+	if lease == nil {
+		d.lease = nil
+		return
+	}
+	copy := *lease
+	d.lease = &copy
+}
 
 // Dispatch 立即计算路由并下达指令；可被 Host 在特殊时机（如 Resume 后）主动调用。
 func (d *Dispatcher) Dispatch() {
@@ -65,25 +78,46 @@ func (d *Dispatcher) dispatch(asFollowUp bool) {
 	if !d.enabled.Load() {
 		return
 	}
-	// A pending normal-planning review is an intentional user boundary. The
-	// subagent completion callback also reaches this dispatcher, so without this
-	// gate it can enqueue the next Architect route before Coordinator is allowed
-	// to stop, silently running past volume/chapter review.
-	if d.store != nil && d.store.RunMeta.PlanningReviewPending() {
+	state := LoadState(d.store)
+	// A revision owns the router even if older workflow state still contains a
+	// pending normal-planning review. Only apply that legacy human boundary when
+	// there is no active revision.
+	if !state.RevisionActive && d.store != nil && d.store.RunMeta.PlanningReviewPending() {
 		return
 	}
-	state := LoadState(d.store)
 	inst := Route(state)
 	if inst == nil {
 		return
 	}
+	fence := storepkg.RevisionFence{}
+	if state.RevisionActive {
+		if state.RevisionRoute == nil {
+			return
+		}
+		fence = inst.Fence
+	} else {
+		d.leaseMu.RLock()
+		lease := d.lease
+		d.leaseMu.RUnlock()
+		if lease == nil {
+			return
+		}
+		fence = storepkg.RevisionFence{Generation: lease.Generation, LeaseToken: lease.Token}
+		inst.Fence = fence
+	}
+	if err := d.store.Revisions.WithFence(fence, func() error { return d.dispatchFenced(inst, fence, asFollowUp) }); err != nil {
+		slog.Warn("flow router discarded stale dispatch", "module", "host.flow", "err", err)
+	}
+}
+
+func (d *Dispatcher) dispatchFenced(inst *Instruction, fence storepkg.RevisionFence, asFollowUp bool) error {
 	n := d.trackRepeat(inst)
 	// Writer 任务：在派发同一刻把章节标为进行中，UI 右侧大纲立即反映"▸ 进行中"，
 	// 不用等 plan_chapter 真正执行（plan_chapter 会再调一次 StartChapter，幂等）。
 	if inst.Agent == "writer" && inst.Chapter > 0 && d.store != nil {
 		if err := d.store.Progress.ValidateChapterWork(inst.Chapter); err != nil {
 			slog.Error("flow router refuses invalid writer dispatch", "module", "host.flow", "chapter", inst.Chapter, "err", err)
-			return
+			return err
 		}
 		if err := d.store.Progress.StartChapter(inst.Chapter); err != nil {
 			slog.Warn("flow router pre-mark in-progress failed", "module", "host.flow", "chapter", inst.Chapter, "err", err)
@@ -94,13 +128,15 @@ func (d *Dispatcher) dispatch(asFollowUp bool) {
 	if asFollowUp {
 		d.coordinator.FollowUp(agentcore.UserMsg(msg))
 		if !d.coordinator.State().IsRunning {
-			if err := d.coordinator.Continue(context.Background()); err != nil && !errors.Is(err, agentcore.ErrAlreadyRunning) {
+			ctx := storepkg.ContextWithRevisionFence(context.Background(), fence)
+			if err := d.coordinator.Continue(ctx); err != nil && !errors.Is(err, agentcore.ErrAlreadyRunning) {
 				slog.Warn("flow router could not continue idle coordinator", "module", "host.flow", "err", err)
 			}
 		}
-		return
+		return nil
 	}
 	d.coordinator.Steer(agentcore.UserMsg(msg))
+	return nil
 }
 
 // formatDispatchMessage 组装下达给 Coordinator 的指令消息。

@@ -16,6 +16,17 @@ func LoadState(store *storepkg.Store) State {
 	s := State{
 		FoundationMissing: store.FoundationMissing(),
 	}
+	if active, err := store.Revisions.Active(); err != nil {
+		// Corrupt or unreadable revision state must fail closed. Treat it as an
+		// unroutable active revision so ordinary creation cannot overwrite work.
+		s.RevisionActive = true
+	} else if active != nil {
+		s.RevisionActive = true
+		if active.Route != nil {
+			route := *active.Route
+			s.RevisionRoute = &route
+		}
+	}
 	if review, err := store.RunMeta.PlanningReview(); err == nil {
 		s.PlanningReview = review
 		if review != nil && review.Status == domain.PlanningReviewStatusCollecting {

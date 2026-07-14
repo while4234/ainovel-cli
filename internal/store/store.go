@@ -34,6 +34,7 @@ type Store struct {
 	DeAI                   *DeAIStore
 	Adaptation             *AdaptationStore
 	Continuation           *ContinuationStore
+	Revisions              *RevisionStore
 	OriginalPlanningAudits *OriginalPlanningAuditStore
 
 	crossMu sync.Mutex // 保护跨域原子操作
@@ -69,6 +70,7 @@ func NewStore(dir string) *Store {
 		DeAI:                   NewDeAIStore(newIO(dir)),
 		Adaptation:             NewAdaptationStore(newIO(dir), identity, migration),
 		Continuation:           NewContinuationStore(newIO(dir), migration),
+		Revisions:              NewRevisionStore(dir),
 		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir)),
 	}
 }
@@ -167,7 +169,7 @@ func (s *Store) FoundationMissing() []string {
 func (s *Store) Init() error {
 	return s.Progress.io.EnsureDirs([]string{
 		"chapters", "summaries", "drafts", "reviews", "meta", "meta/runtime", "meta/runtime/tasks", "meta/sessions", "meta/sessions/agents",
-		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/continuation", "meta/deai", "meta/deai/checks", "meta/original_planning",
+		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/continuation", "meta/revisions", "meta/deai", "meta/deai/checks", "meta/original_planning",
 	})
 }
 

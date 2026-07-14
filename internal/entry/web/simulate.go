@@ -75,11 +75,17 @@ func (s *Server) handleProjectSimulateFiles(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	manifest, err := s.store.OpenProject(id)
+	session, manifest, err := s.sessions.Open(id)
 	if err != nil {
 		writeProjectSessionError(w, fmt.Errorf("%w: %v", ErrProjectNotFound, err))
 		return
 	}
+	finishAction, err := session.beginActionKind(projectActionKindSimulationUpload)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	defer finishAction()
 	headers, cleanup, err := parseMultipartFiles(w, r, unlimitedUploadBytes)
 	if cleanup != nil {
 		defer cleanup()
@@ -134,14 +140,26 @@ func (s *Server) handleProjectSimulateAnalyze(w http.ResponseWriter, r *http.Req
 		writeProjectSessionError(w, err)
 		return
 	}
+	finishAction, err := session.beginActionKind(projectActionKindSimulationAnalysis)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			finishAction()
+		}
+	}()
 	if _, err := prepareSimulationSourcesForAnalysis(projectSimulateDir(manifest)); err != nil {
 		writeSimulationActionError(w, err, nil)
 		return
 	}
-	if err := session.StartSimulateFromDir(projectSimulateDir(manifest)); err != nil {
+	if err := session.startSimulateFromDirOwned(projectSimulateDir(manifest), finishAction); err != nil {
 		writeSimulationActionError(w, err, nil)
 		return
 	}
+	transferred = true
 	status, err := projectSimulationStatus(
 		manifest,
 		session.isActionRunning(projectActionKindSimulationAnalysis),
@@ -171,6 +189,17 @@ func (s *Server) handleProjectSimulateImport(w http.ResponseWriter, r *http.Requ
 		writeProjectSessionError(w, err)
 		return
 	}
+	finishAction, err := session.beginActionKind(projectActionKindSimulationImport)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			finishAction()
+		}
+	}()
 	headers, cleanup, err := parseMultipartFiles(w, r, maxMultipartUploadBytes)
 	if cleanup != nil {
 		defer cleanup()
@@ -200,10 +229,11 @@ func (s *Server) handleProjectSimulateImport(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := session.StartImportSimulationProfile(filepath.Join(importedDir, profile.Name)); err != nil {
+	if err := session.startImportSimulationProfileOwned(filepath.Join(importedDir, profile.Name), finishAction); err != nil {
 		writeSimulationActionError(w, err, nil)
 		return
 	}
+	transferred = true
 	libraryItem, librarySaved, libraryWarning := s.trySaveImportedSimulationProfile(profile)
 	status, err := projectSimulationStatus(
 		manifest,

@@ -18,6 +18,11 @@ func (h *Host) Rollback(req domain.RollbackRequest) (domain.RollbackResult, erro
 	if h == nil || h.store == nil {
 		return domain.RollbackResult{}, fmt.Errorf("host store is not available")
 	}
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return domain.RollbackResult{}, err
+	}
+	defer release()
 	h.mu.Lock()
 	running := h.lifecycle == lifecycleRunning
 	h.mu.Unlock()

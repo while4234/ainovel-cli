@@ -23,6 +23,7 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/host"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 type Options struct {
@@ -1092,6 +1093,10 @@ func parseAfter(r *http.Request) (int64, error) {
 func writeProjectSessionError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrProjectNotFound) {
 		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if errors.Is(err, ErrSessionActionInProgress) || errors.Is(err, storepkg.ErrActiveRevisionBlocksNormalFlow) {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeError(w, http.StatusInternalServerError, err.Error())

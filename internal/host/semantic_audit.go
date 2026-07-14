@@ -20,6 +20,11 @@ func (h *Host) EstimateSemanticAudit(options adapt.SemanticAuditOptions) (*adapt
 // PrepareSemanticAudit freezes the auditable scope and input digest before the
 // background model job starts.
 func (h *Host) PrepareSemanticAudit(options adapt.SemanticAuditOptions) (*adapt.SemanticAuditRun, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	provider, model, _, err := h.semanticAuditModel(options)
 	if err != nil {
 		return nil, err
@@ -28,6 +33,11 @@ func (h *Host) PrepareSemanticAudit(options adapt.SemanticAuditOptions) (*adapt.
 }
 
 func (h *Host) ExecuteSemanticAudit(ctx context.Context, runID string) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	run, err := adapt.LoadSemanticAuditRun(h.store, runID)
 	if err != nil {
 		return err
@@ -79,6 +89,11 @@ func (h *Host) LoadSemanticAudit(runID string) (*adapt.SemanticAuditRun, error) 
 }
 
 func (h *Host) ResumeSemanticAudit(runID string) (*adapt.SemanticAuditRun, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	return adapt.ResumeSemanticAudit(h.store, runID)
 }
 

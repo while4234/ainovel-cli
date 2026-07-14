@@ -163,27 +163,27 @@ func BuildCoordinator(
 
 	architectTools := []agentcore.Tool{
 		contextTool,
-		tools.NewSaveFoundationTool(store, completionGate),
+		revisionFenceWrites(store.Revisions, tools.NewSaveFoundationTool(store, completionGate)),
 	}
 	writerTools := []agentcore.Tool{
 		contextTool,
 		readChapter,
-		tools.NewPlanChapterTool(store),
-		newWriterDraftChapterTool(store),
-		tools.NewEditChapterTool(store),
-		tools.NewRepairDeAIBatchTool(store),
-		tools.NewCheckConsistencyTool(store),
-		tools.NewCheckAdaptationTool(store),
-		tools.NewCheckDeAITool(store),
-		tools.NewCommitChapterTool(store, completionGate),
+		revisionFenceWrites(store.Revisions, tools.NewPlanChapterTool(store)),
+		revisionFenceWrites(store.Revisions, newWriterDraftChapterTool(store)),
+		revisionFenceWrites(store.Revisions, tools.NewEditChapterTool(store)),
+		revisionFenceWrites(store.Revisions, tools.NewRepairDeAIBatchTool(store)),
+		revisionFenceWrites(store.Revisions, tools.NewCheckConsistencyTool(store)),
+		revisionFenceWrites(store.Revisions, tools.NewCheckAdaptationTool(store)),
+		revisionFenceWrites(store.Revisions, tools.NewCheckDeAITool(store)),
+		revisionFenceWrites(store.Revisions, tools.NewCommitChapterTool(store, completionGate)),
 	}
 	editorTools := []agentcore.Tool{
 		contextTool,
 		readChapter,
-		tools.NewSaveOriginalPlanningAuditTool(store),
-		tools.NewSaveReviewTool(store),
-		tools.NewSaveArcSummaryTool(store),
-		tools.NewSaveVolumeSummaryTool(store),
+		revisionFenceWrites(store.Revisions, tools.NewSaveOriginalPlanningAuditTool(store)),
+		revisionFenceWrites(store.Revisions, tools.NewSaveReviewTool(store)),
+		revisionFenceWrites(store.Revisions, tools.NewSaveArcSummaryTool(store)),
+		revisionFenceWrites(store.Revisions, tools.NewSaveVolumeSummaryTool(store)),
 	}
 	if err := validateAgentToolRegistry("architect", architectTools,
 		"novel_context", "save_foundation"); err != nil {
@@ -412,7 +412,12 @@ func BuildCoordinator(
 	agent := agentcore.NewAgent(
 		agentcore.WithModel(coordinatorModel),
 		agentcore.WithSystemPrompt(globalprompt.Apply(coordinatorPrompt)),
-		agentcore.WithTools(subagentTool, contextTool, tools.NewSaveUserRulesTool(userRulesSvc), tools.NewReopenBookTool(store)),
+		agentcore.WithTools(
+			subagentTool,
+			contextTool,
+			revisionFenceWrites(store.Revisions, tools.NewSaveUserRulesTool(userRulesSvc)),
+			revisionFenceWrites(store.Revisions, tools.NewReopenBookTool(store)),
+		),
 		agentcore.WithMaxTurns(100_000),
 		agentcore.WithOnMessage(coordinatorOnMessage),
 		agentcore.WithToolsAreIdempotent(true),

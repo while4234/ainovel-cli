@@ -582,6 +582,12 @@ func TestDispatcher_SteersAfterSuccessfulBoundaryToolBeforeNextModelCall(t *test
 	)
 
 	dispatcher = NewDispatcher(coordinator, st)
+	lease, err := st.Revisions.AcquireNormalFlow("dispatcher-test")
+	if err != nil {
+		t.Fatalf("acquire normal flow lease: %v", err)
+	}
+	defer st.Revisions.ReleaseNormalFlow(lease.Token)
+	dispatcher.SetNormalFlowLease(lease)
 	dispatcher.Enable()
 
 	if err := coordinator.Prompt(context.Background(), "start"); err != nil {
@@ -632,6 +638,12 @@ func TestDispatcher_FollowUpStartsNextRouteAfterResumePromptStops(t *testing.T) 
 	)
 
 	dispatcher := NewDispatcher(coordinator, st)
+	lease, err := st.Revisions.AcquireNormalFlow("dispatcher-follow-up-test")
+	if err != nil {
+		t.Fatalf("acquire normal flow lease: %v", err)
+	}
+	defer st.Revisions.ReleaseNormalFlow(lease.Token)
+	dispatcher.SetNormalFlowLease(lease)
 	dispatcher.Enable()
 	if err := coordinator.Prompt(context.Background(), "resume"); err != nil {
 		t.Fatalf("prompt: %v", err)

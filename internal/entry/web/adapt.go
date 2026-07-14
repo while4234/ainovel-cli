@@ -59,11 +59,17 @@ func (s *Server) handleProjectAdaptSource(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	manifest, err := s.store.OpenProject(id)
+	session, manifest, err := s.sessions.Open(id)
 	if err != nil {
 		writeProjectSessionError(w, fmt.Errorf("%w: %v", ErrProjectNotFound, err))
 		return
 	}
+	finishAction, err := session.beginActionKind(projectActionKindAdaptationUpload)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	defer finishAction()
 	headers, cleanup, err := parseMultipartFiles(w, r, unlimitedUploadBytes)
 	if cleanup != nil {
 		defer cleanup()
@@ -124,7 +130,13 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if matches {
+			finishAction, beginErr := session.beginAction()
+			if beginErr != nil {
+				writeAdaptationActionError(w, beginErr, status.AnalysisEvents)
+				return
+			}
 			item, err := s.autoSaveAnalyzedNovel(session, manifest, sourcePath)
+			finishAction()
 			if err != nil {
 				writeAdaptationActionError(w, err, status.AnalysisEvents)
 				return

@@ -64,6 +64,11 @@ type ActionRegistry struct {
 	closed    bool
 }
 
+type actionLifecycle struct {
+	started  func()
+	finished func()
+}
+
 func NewActionRegistry(projectID, path string) (*ActionRegistry, error) {
 	registry := &ActionRegistry{
 		projectID: strings.TrimSpace(projectID),
@@ -88,6 +93,7 @@ func (r *ActionRegistry) Start(
 	kind string,
 	idempotencyKey string,
 	run func(context.Context) error,
+	lifecycle actionLifecycle,
 ) (ActionRecord, bool, error) {
 	if r == nil {
 		return ActionRecord{}, false, fmt.Errorf("action registry is unavailable")
@@ -132,7 +138,10 @@ func (r *ActionRegistry) Start(
 	}
 	r.mu.Unlock()
 
-	go r.execute(action.ActionID, run)
+	if lifecycle.started != nil {
+		lifecycle.started()
+	}
+	go r.execute(action.ActionID, run, lifecycle.finished)
 	return action, true, nil
 }
 
@@ -147,6 +156,20 @@ func (r *ActionRegistry) Get(actionID string) (ActionRecord, error) {
 		return ActionRecord{}, ErrActionNotFound
 	}
 	return action, nil
+}
+
+func (r *ActionRegistry) find(kind, idempotencyKey string) (ActionRecord, bool) {
+	if r == nil {
+		return ActionRecord{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	actionID, ok := r.byKey[actionKeyScope(kind, idempotencyKey)]
+	if !ok {
+		return ActionRecord{}, false
+	}
+	action, ok := r.actions[actionID]
+	return action, ok
 }
 
 func (r *ActionRegistry) Latest() *ActionRecord {
@@ -174,29 +197,31 @@ func (r *ActionRegistry) Close() {
 	r.mu.Unlock()
 }
 
-func (r *ActionRegistry) execute(actionID string, run func(context.Context) error) {
+func (r *ActionRegistry) execute(actionID string, run func(context.Context) error, finished func()) {
 	err := run(context.Background())
 	finishedAt := time.Now().UTC()
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	action, ok := r.actions[actionID]
-	if !ok {
-		return
+	if ok {
+		action.FinishedAt = &finishedAt
+		if err != nil {
+			action.Status = ActionStatusFailed
+			action.Recoverable = true
+			action.Error = strings.TrimSpace(retrypolicy.SanitizeProviderError(err))
+		} else {
+			action.Status = ActionStatusCompleted
+			action.Recoverable = false
+			action.Error = ""
+		}
+		r.actions[actionID] = action
+		if persistErr := r.persistLocked(); persistErr != nil {
+			slog.Error("persist web action status failed", "module", "web", "project", r.projectID, "action", actionID, "err", persistErr)
+		}
 	}
-	action.FinishedAt = &finishedAt
-	if err != nil {
-		action.Status = ActionStatusFailed
-		action.Recoverable = true
-		action.Error = strings.TrimSpace(retrypolicy.SanitizeProviderError(err))
-	} else {
-		action.Status = ActionStatusCompleted
-		action.Recoverable = false
-		action.Error = ""
-	}
-	r.actions[actionID] = action
-	if persistErr := r.persistLocked(); persistErr != nil {
-		slog.Error("persist web action status failed", "module", "web", "project", r.projectID, "action", actionID, "err", persistErr)
+	r.mu.Unlock()
+	if finished != nil {
+		finished()
 	}
 }
 
@@ -303,13 +328,33 @@ func (s *ProjectSession) StartBackgroundAction(
 	if s == nil || s.actions == nil {
 		return ActionRecord{}, false, fmt.Errorf("project action registry is unavailable")
 	}
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return ActionRecord{}, false, ErrActionKeyRequired
+	}
+	if run == nil {
+		return ActionRecord{}, false, fmt.Errorf("action runner is required")
+	}
+	if action, ok := s.actions.find(kind, idempotencyKey); ok {
+		return action, false, nil
+	}
+	finishAction, err := s.beginActionKind(kind)
+	if err != nil {
+		return ActionRecord{}, false, err
+	}
 	action, created, err := s.actions.Start(kind, idempotencyKey, func(ctx context.Context) error {
-		err := run(ctx)
-		s.AppendSnapshot()
-		return err
+		return run(ctx)
+	}, actionLifecycle{
+		started: func() {
+			s.AppendSnapshot()
+		},
+		finished: func() {
+			s.AppendSnapshot()
+			finishAction()
+		},
 	})
-	if err == nil {
-		s.AppendSnapshot()
+	if err != nil || !created {
+		finishAction()
 	}
 	return action, created, err
 }

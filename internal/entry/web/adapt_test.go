@@ -54,6 +54,42 @@ func TestProjectAdaptSourceUploadSavesSourceUnderProjectUploads(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptSourceUploadDoesNotWriteDuringActiveRevision(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Blocked Adapt Upload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := server.sessions.Open(manifest.ID); err != nil {
+		t.Fatal(err)
+	}
+	st := storepkg.NewStore(manifest.OutputDir)
+	impact, err := domain.NewRevisionImpact("active revision", []domain.RevisionImpactItem{{
+		ArtifactID: "chapter-1", ArtifactKind: "prose", Change: "rewrite",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Revisions.Start(fakeAutoResumeRevisionPolicy{}, storepkg.StartRevisionInput{
+		Intent: "revise", Impact: impact, IdempotencyKey: "block-adapt-upload",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := newMultipartUploadRequest(t, http.MethodPost, "/api/projects/"+manifest.ID+"/adapt/source", []testMultipartFile{
+		{field: "source", filename: "blocked.txt", body: "must not be written"},
+	})
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("upload status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(manifest.RootDir, "uploads", "adaptation", "blocked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("blocked upload changed project files: %v", err)
+	}
+}
+
 func TestProjectAdaptSourceUploadAllowsSourceLargerThanFormerTenMiBLimit(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

@@ -13,6 +13,11 @@ import (
 )
 
 func (h *Host) BeginContinuationDraft(expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if h == nil || h.store == nil || h.store.Continuation == nil {
 		return nil, fmt.Errorf("continuation store is unavailable")
 	}
@@ -30,6 +35,11 @@ func (h *Host) BeginContinuationDraft(expectedRevision int) (*domain.Continuatio
 }
 
 func (h *Host) CommitContinuationDraft(draft string, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	draft = strings.TrimSpace(draft)
 	if draft == "" {
 		return nil, fmt.Errorf("continuation Draft is required")
@@ -54,6 +64,11 @@ func (h *Host) CommitContinuationDraft(draft string, expectedRevision int) (*dom
 }
 
 func (h *Host) GenerateContinuationProposal(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := h.guardContinuationPlanningAction("生成续写提案"); err != nil {
 		return nil, err
 	}
@@ -63,6 +78,11 @@ func (h *Host) GenerateContinuationProposal(ctx context.Context, expectedRevisio
 }
 
 func (h *Host) ReviseContinuationProposal(ctx context.Context, instruction string, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := h.guardContinuationPlanningAction("修改续写提案"); err != nil {
 		return nil, err
 	}
@@ -72,6 +92,11 @@ func (h *Host) ReviseContinuationProposal(ctx context.Context, instruction strin
 }
 
 func (h *Host) ApproveContinuationProposal(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := h.guardContinuationPlanningAction("审核续写提案"); err != nil {
 		return nil, err
 	}
@@ -81,6 +106,11 @@ func (h *Host) ApproveContinuationProposal(ctx context.Context, expectedRevision
 }
 
 func (h *Host) ReviseContinuationVolumes(ctx context.Context, instruction string, volumeIndex, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := h.guardContinuationPlanningAction("修改续写分卷"); err != nil {
 		return nil, err
 	}
@@ -90,6 +120,11 @@ func (h *Host) ReviseContinuationVolumes(ctx context.Context, instruction string
 }
 
 func (h *Host) ApproveContinuationVolumes(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := h.guardContinuationPlanningAction("审核续写分卷"); err != nil {
 		return nil, err
 	}
@@ -99,6 +134,11 @@ func (h *Host) ApproveContinuationVolumes(ctx context.Context, expectedRevision 
 }
 
 func (h *Host) GenerateContinuationOutlines(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := h.guardContinuationPlanningAction("生成续写章节细纲"); err != nil {
 		return nil, err
 	}
@@ -108,6 +148,11 @@ func (h *Host) GenerateContinuationOutlines(ctx context.Context, expectedRevisio
 }
 
 func (h *Host) ReviseContinuationOutlines(ctx context.Context, revision continuationflow.OutlineRevisionInput, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := h.guardContinuationPlanningAction("修改续写章节细纲"); err != nil {
 		return nil, err
 	}
@@ -117,6 +162,11 @@ func (h *Host) ReviseContinuationOutlines(ctx context.Context, revision continua
 }
 
 func (h *Host) ApproveContinuationOutlines(expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := h.guardContinuationPlanningAction("审核续写章节细纲"); err != nil {
 		return nil, err
 	}
@@ -131,6 +181,15 @@ func (h *Host) StartContinuation(expectedRevision int) (string, *domain.Continua
 	if err := h.guardContinuationPlanningAction("开始小说续写"); err != nil {
 		return "", nil, err
 	}
+	if h.coordinator != nil {
+		h.coordinator.WaitForIdle()
+	}
+	h.releaseNormalFlowRunOwnership()
+	ownership, err := h.acquireNormalFlowOwnership("host:start-continuation")
+	if err != nil {
+		return "", nil, err
+	}
+	defer ownership.Release()
 	committed, err := h.store.CommitContinuationPlan(expectedRevision)
 	if err != nil {
 		return "", nil, err
@@ -140,7 +199,7 @@ func (h *Host) StartContinuation(expectedRevision int) (string, *domain.Continua
 		return "", nil, err
 	}
 	h.refreshWriterRestore()
-	label, err := h.Resume()
+	label, err := h.resume(true)
 	if err != nil {
 		return "", writing, err
 	}
@@ -149,6 +208,11 @@ func (h *Host) StartContinuation(expectedRevision int) (string, *domain.Continua
 }
 
 func (h *Host) RetryContinuation(ctx context.Context, expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := h.guardContinuationPlanningAction("重试续写规划"); err != nil {
 		return nil, err
 	}

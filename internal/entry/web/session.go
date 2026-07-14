@@ -47,11 +47,14 @@ const (
 	webEventHistoryLimit = 1000
 
 	projectActionKindAdaptationAnalysis = "adaptation_analysis"
+	projectActionKindAdaptationUpload   = "adaptation_upload"
 	projectActionKindAdaptationProposal = "adaptation_proposal"
 	projectActionKindAdaptationRevision = "adaptation_proposal_revision"
 	projectActionKindContinuation       = "continuation_planning"
 	projectActionKindSimulationAnalysis = "simulation_analysis"
 	projectActionKindSimulationImport   = "simulation_import"
+	projectActionKindSimulationUpload   = "simulation_upload"
+	projectActionKindSemanticAudit      = "semantic_audit"
 	webCoCreateCheckpointRelPath        = "meta/sessions/web-cocreate-checkpoint.json"
 	webCoCreateLogRelPath               = "meta/sessions/cocreate.jsonl"
 	webEventSeqRelPath                  = "meta/runtime/web-event-seq.json"
@@ -176,6 +179,10 @@ type projectHost interface {
 	Stream() <-chan string
 	Done() <-chan struct{}
 	Close()
+}
+
+type normalFlowActionHost interface {
+	BeginNormalFlowAction(string) (func(), error)
 }
 
 type scheduledResumeHost interface {
@@ -494,21 +501,24 @@ type ProjectSession struct {
 	manifest ProjectManifest
 	host     projectHost
 
-	mu             sync.Mutex
-	autoResumeMu   sync.Mutex
-	actionMu       sync.Mutex
-	actionKinds    map[string]int
-	actionCancelMu sync.Mutex
-	actionCancel   context.CancelFunc
-	actionKind     string
-	nextSeq        int64
-	history        []WebEvent
-	hostEventAt    map[string]int
-	subscribers    map[chan WebEvent]struct{}
-	sequencePath   string
-	cocreate       *webCoCreateSession
-	actions        *ActionRegistry
-	closed         bool
+	mu                  sync.Mutex
+	autoResumeMu        sync.Mutex
+	actionMu            sync.Mutex
+	actionKinds         map[string]int
+	actionRevisionStore *storepkg.RevisionStore
+	actionRevisionLease *storepkg.NormalFlowLease
+	actionLeaseRelease  func()
+	actionCancelMu      sync.Mutex
+	actionCancel        context.CancelFunc
+	actionKind          string
+	nextSeq             int64
+	history             []WebEvent
+	hostEventAt         map[string]int
+	subscribers         map[chan WebEvent]struct{}
+	sequencePath        string
+	cocreate            *webCoCreateSession
+	actions             *ActionRegistry
+	closed              bool
 }
 
 func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession, error) {
@@ -922,6 +932,18 @@ func (s *ProjectSession) hasActiveAction() bool {
 }
 
 func (s *ProjectSession) Resume() (string, error) {
+	s.mu.Lock()
+	outputDir := s.manifest.OutputDir
+	s.mu.Unlock()
+	if strings.TrimSpace(outputDir) != "" {
+		active, err := storepkg.NewStore(outputDir).Revisions.Active()
+		if err != nil {
+			return "", fmt.Errorf("read active revision before resume: %w", err)
+		}
+		if active != nil {
+			return "", fmt.Errorf("%w: %s", storepkg.ErrActiveRevisionBlocksNormalFlow, active.ID)
+		}
+	}
 	if label, resumed, err := s.resumePendingWebAction(context.Background()); resumed || err != nil {
 		return label, err
 	}
@@ -1149,12 +1171,15 @@ func (s *ProjectSession) ReviseChapterOutline(ctx context.Context, req host.Chap
 }
 
 func (s *ProjectSession) ImportExternalNovel(ctx context.Context, sourcePath string, resumeFrom int) ([]apiImportEvent, string, error) {
-	unlock, err := s.beginAction()
+	unlock, err := s.beginActionKind(projectActionKindContinuation)
 	if err != nil {
 		return nil, "", err
 	}
 	defer unlock()
+	return s.importExternalNovelOwned(ctx, sourcePath, resumeFrom)
+}
 
+func (s *ProjectSession) importExternalNovelOwned(ctx context.Context, sourcePath string, resumeFrom int) ([]apiImportEvent, string, error) {
 	events, err := s.host.ImportFrom(ctx, imp.Options{
 		SourcePath: sourcePath,
 		ResumeFrom: resumeFrom,
@@ -1323,6 +1348,10 @@ func (s *ProjectSession) StartSimulateFromDir(dir string) error {
 	if err != nil {
 		return err
 	}
+	return s.startSimulateFromDirOwned(dir, unlock)
+}
+
+func (s *ProjectSession) startSimulateFromDirOwned(dir string, unlock func()) error {
 	s.AppendSnapshot()
 	go func() {
 		defer func() {
@@ -1372,6 +1401,10 @@ func (s *ProjectSession) StartImportSimulationProfile(path string) error {
 	if err != nil {
 		return err
 	}
+	return s.startImportSimulationProfileOwned(path, unlock)
+}
+
+func (s *ProjectSession) startImportSimulationProfileOwned(path string, unlock func()) error {
 	s.AppendSnapshot()
 	go func() {
 		defer func() {
@@ -1512,12 +1545,9 @@ func (s *ProjectSession) BuildAdaptationProposalVolumesContext(ctx context.Conte
 	if err != nil {
 		return nil, err
 	}
-	finished := false
 	defer func() {
-		if !finished {
-			unlock()
-			s.AppendSnapshot()
-		}
+		s.AppendSnapshot()
+		unlock()
 	}()
 
 	st := storepkg.NewStore(s.manifest.OutputDir)
@@ -1526,9 +1556,6 @@ func (s *ProjectSession) BuildAdaptationProposalVolumesContext(ctx context.Conte
 	}
 	s.AppendSnapshot()
 	result, err := s.buildAdaptationProposalVolumes(actionCtx, options)
-	unlock()
-	finished = true
-	s.AppendSnapshot()
 	if err != nil {
 		return nil, err
 	}
@@ -1652,12 +1679,9 @@ func (s *ProjectSession) BuildAdaptationProposalDetailsContext(ctx context.Conte
 	if err != nil {
 		return nil, err
 	}
-	finished := false
 	defer func() {
-		if !finished {
-			unlock()
-			s.AppendSnapshot()
-		}
+		s.AppendSnapshot()
+		unlock()
 	}()
 
 	st := storepkg.NewStore(s.manifest.OutputDir)
@@ -1682,9 +1706,6 @@ func (s *ProjectSession) BuildAdaptationProposalDetailsContext(ctx context.Conte
 	proposal, err := s.host.BuildAdaptationProposalDetailsContext(actionCtx, adapt.ProposalDetailsOptions{
 		EmitProgress: s.adaptationProposalProgressEmitter(),
 	})
-	unlock()
-	finished = true
-	s.AppendSnapshot()
 	if err != nil {
 		err = adaptationProposalRunError(err)
 		s.appendAdaptationProposalFinished(eventID, startedAt, adapt.ProposalOptions{}, err)
@@ -3272,29 +3293,71 @@ func (s *ProjectSession) beginAction() (func(), error) {
 
 func (s *ProjectSession) beginActionKind(kind string) (func(), error) {
 	kind = strings.TrimSpace(kind)
+	s.mu.Lock()
+	outputDir := strings.TrimSpace(s.manifest.OutputDir)
+	s.mu.Unlock()
 	s.actionMu.Lock()
-	defer s.actionMu.Unlock()
 	if s.actionKinds == nil {
 		s.actionKinds = make(map[string]int)
 	}
 	for active := range s.actionKinds {
 		if !projectSessionActionsCompatible(kind, active) {
+			s.actionMu.Unlock()
 			return nil, ErrSessionActionInProgress
 		}
 	}
+	if s.actionRevisionLease == nil && s.actionLeaseRelease == nil {
+		owner := "web:" + kind
+		if kind == "" {
+			owner = "web:action"
+		}
+		if leaseHost, ok := s.host.(normalFlowActionHost); ok {
+			release, err := leaseHost.BeginNormalFlowAction(owner)
+			if err != nil {
+				s.actionMu.Unlock()
+				return nil, err
+			}
+			s.actionLeaseRelease = release
+		} else if outputDir != "" {
+			revisions := storepkg.NewRevisionStore(outputDir)
+			lease, err := revisions.AcquireNormalFlow(owner)
+			if err != nil {
+				s.actionMu.Unlock()
+				return nil, err
+			}
+			s.actionRevisionStore = revisions
+			s.actionRevisionLease = lease
+		}
+	}
 	s.actionKinds[kind]++
+	s.actionMu.Unlock()
 	return func() { s.finishActionKind(kind) }, nil
 }
 
 func (s *ProjectSession) finishActionKind(kind string) {
 	kind = strings.TrimSpace(kind)
 	s.actionMu.Lock()
-	defer s.actionMu.Unlock()
 	if s.actionKinds[kind] <= 1 {
 		delete(s.actionKinds, kind)
+	} else {
+		s.actionKinds[kind]--
+	}
+	if len(s.actionKinds) > 0 {
+		s.actionMu.Unlock()
 		return
 	}
-	s.actionKinds[kind]--
+	revisions, lease, release := s.actionRevisionStore, s.actionRevisionLease, s.actionLeaseRelease
+	s.actionRevisionStore, s.actionRevisionLease = nil, nil
+	s.actionLeaseRelease = nil
+	s.actionMu.Unlock()
+	if release != nil {
+		release()
+	}
+	if revisions != nil && lease != nil {
+		if err := revisions.ReleaseNormalFlow(lease.Token); err != nil {
+			slog.Warn("release web action revision fence failed", "module", "web", "err", err)
+		}
+	}
 }
 
 func (s *ProjectSession) beginCancellableAction(parent context.Context, kind string) (context.Context, func(), error) {
@@ -3418,7 +3481,11 @@ func projectSessionActionsCompatible(a, b string) bool {
 		return false
 	}
 	return (a == projectActionKindAdaptationAnalysis && projectSessionSimulationPreparationAction(b)) ||
-		(b == projectActionKindAdaptationAnalysis && projectSessionSimulationPreparationAction(a))
+		(b == projectActionKindAdaptationAnalysis && projectSessionSimulationPreparationAction(a)) ||
+		(a == projectActionKindAdaptationUpload && b == projectActionKindAdaptationAnalysis) ||
+		(b == projectActionKindAdaptationUpload && a == projectActionKindAdaptationAnalysis) ||
+		(a == projectActionKindSimulationUpload && b == projectActionKindSimulationAnalysis) ||
+		(b == projectActionKindSimulationUpload && a == projectActionKindSimulationAnalysis)
 }
 
 func projectSessionSimulationPreparationAction(kind string) bool {

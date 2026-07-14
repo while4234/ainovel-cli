@@ -78,6 +78,14 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 		return makeAutoResumeDecision(autoResumeState{Disposition: AutoResumeNoWork, Reason: "missing_output_dir"}, "项目没有可恢复目录"), nil
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
+	if active, err := st.Revisions.Active(); err != nil {
+		return blockedAutoResume("revision_read_failed", err), nil
+	} else if active != nil {
+		return makeAutoResumeDecision(
+			autoResumeState{Disposition: AutoResumeBlocked, Reason: "active_revision", Revision: active.Revision},
+			"活动修订等待修订任务或人工确认",
+		), nil
+	}
 	if review, err := st.RunMeta.PlanningReview(); err != nil {
 		return blockedAutoResume("planning_review_read_failed", err), nil
 	} else if review != nil && review.Status == domain.PlanningReviewStatusPending {

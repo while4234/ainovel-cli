@@ -61,18 +61,25 @@ type Host struct {
 	streamCh chan string
 	done     chan struct{}
 
+	appendRuntimeQueue func(domain.RuntimeQueueItem) (domain.RuntimeQueueItem, error)
+
 	doneMu     sync.Mutex
 	doneClosed bool
 
-	mu                    sync.Mutex
-	adaptationPreflightMu sync.Mutex
-	lifecycle             lifecycle
-	autoResumeAttempts    int
-	autoResumeCompleted   int
-	autoResumeInFlight    bool
-	closed                bool
-	cocreating            bool // 阶段共创占用：paused 窗口内堵住 import/simulate/continue 的并发介入
-	closeOnce             sync.Once
+	mu                      sync.Mutex
+	adaptationPreflightMu   sync.Mutex
+	lifecycle               lifecycle
+	autoResumeAttempts      int
+	autoResumeCompleted     int
+	autoResumeInFlight      bool
+	normalFlowLease         *storepkg.NormalFlowLease
+	normalFlowActionRefs    int
+	normalFlowScopedRefs    int
+	normalFlowRunOwned      bool
+	normalFlowCoCreateOwned bool
+	closed                  bool
+	cocreating              bool // 阶段共创占用：paused 窗口内堵住 import/simulate/continue 的并发介入
+	closeOnce               sync.Once
 }
 
 type lifecycle string
@@ -243,16 +250,31 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 // 归一化失败只降级不报错（增强路径）；只有快照无法落盘才返回 error 中止开书——
 // 后续运行将没有稳定事实源（见设计 §失败与降级）。
 func (h *Host) PrepareUserRules(rawPrompt string) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	return h.prepareUserRules(rawPrompt, rules.SystemDefaults())
 }
 
 // PrepareExternalSourceUserRules 生成外部来源项目的用户规则快照。
 // 导入续写与小说改编应保留禁语/疲劳词等机械基线，但不套用原创项目的默认章字数。
 func (h *Host) PrepareExternalSourceUserRules(rawPrompt string) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	return h.prepareUserRules(rawPrompt, rules.SystemDefaultsWithoutChapterWords())
 }
 
 func (h *Host) SetWordBudget(budget *domain.WordBudget) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	return h.store.RunMeta.SetWordBudget(budget)
 }
 
@@ -313,6 +335,9 @@ func (h *Host) StartPrepared(promptText string) error {
 		return fmt.Errorf("阶段共创进行中，请先结束共创")
 	}
 	h.mu.Unlock()
+	if err := h.refuseNormalFlowDuringRevision(); err != nil {
+		return err
+	}
 
 	promptText = strings.TrimSpace(promptText)
 	if promptText == "" {
@@ -321,6 +346,11 @@ func (h *Host) StartPrepared(promptText string) error {
 	if err := h.budget.Refuse(); err != nil {
 		return err
 	}
+	ownership, err := h.acquireNormalFlowOwnership("host:start")
+	if err != nil {
+		return err
+	}
+	defer ownership.Release()
 	if err := h.store.Checkpoints.Reset(); err != nil {
 		return fmt.Errorf("reset checkpoints: %w", err)
 	}
@@ -334,7 +364,11 @@ func (h *Host) StartPrepared(promptText string) error {
 	// 先重置重复追踪并启用路由，再启动 Prompt，避免首轮事件先于 Enable 抵达
 	h.router.ResetRepeat()
 	h.router.Enable()
-	if err := h.coordinator.Prompt(context.Background(), promptText); err != nil {
+	runCtx, err := h.normalFlowContext(context.Background())
+	if err != nil {
+		return err
+	}
+	if err := h.coordinator.Prompt(runCtx, promptText); err != nil {
 		return fmt.Errorf("prompt: %w", err)
 	}
 	// 主动派发一次首条指令：若已进入写作阶段（Phase=Writing），Host 立即下达；
@@ -344,6 +378,7 @@ func (h *Host) StartPrepared(promptText string) error {
 	h.mu.Lock()
 	h.lifecycle = lifecycleRunning
 	h.mu.Unlock()
+	ownership.TransferToRun()
 	go h.waitDone()
 	return nil
 }
@@ -364,10 +399,15 @@ func (h *Host) StartAdaptationPreparedWithOptions(options adapt.ProposalOptions)
 	if options.Brief == "" {
 		return fmt.Errorf("adaptation brief is required")
 	}
+	ownership, err := h.acquireNormalFlowOwnership("host:start-adaptation-prepared")
+	if err != nil {
+		return err
+	}
+	defer ownership.Release()
 	if _, err := h.BuildAdaptationProposal(options); err != nil {
 		return err
 	}
-	_, err := h.ConfirmAdaptationProposal()
+	_, err = h.ConfirmAdaptationProposal()
 	return err
 }
 
@@ -376,6 +416,11 @@ func (h *Host) BuildAdaptationProposal(options adapt.ProposalOptions) (*domain.A
 }
 
 func (h *Host) BuildAdaptationProposalContext(ctx context.Context, options adapt.ProposalOptions) (*domain.AdaptationPlan, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	h.mu.Lock()
 	if h.lifecycle == lifecycleRunning {
 		h.mu.Unlock()
@@ -395,6 +440,11 @@ func (h *Host) BuildAdaptationProposalContext(ctx context.Context, options adapt
 }
 
 func (h *Host) BuildAdaptationProposalVolumesContext(ctx context.Context, options adapt.ProposalOptions) (*adapt.ProposalStageResult, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	h.mu.Lock()
 	if h.lifecycle == lifecycleRunning {
 		h.mu.Unlock()
@@ -414,6 +464,11 @@ func (h *Host) BuildAdaptationProposalVolumesContext(ctx context.Context, option
 }
 
 func (h *Host) ReviseAdaptationProposalContext(ctx context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	h.mu.Lock()
 	if h.lifecycle == lifecycleRunning {
 		h.mu.Unlock()
@@ -432,6 +487,11 @@ func (h *Host) ReviseAdaptationProposalContext(ctx context.Context, options adap
 }
 
 func (h *Host) ReviseAdaptationVolumeReviewContext(ctx context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationVolumeReview, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	h.mu.Lock()
 	if h.lifecycle == lifecycleRunning {
 		h.mu.Unlock()
@@ -450,6 +510,11 @@ func (h *Host) ReviseAdaptationVolumeReviewContext(ctx context.Context, options 
 }
 
 func (h *Host) BuildAdaptationProposalDetailsContext(ctx context.Context, options adapt.ProposalDetailsOptions) (*domain.AdaptationPlan, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	h.mu.Lock()
 	if h.lifecycle == lifecycleRunning {
 		h.mu.Unlock()
@@ -482,6 +547,11 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 	if err := h.budget.Refuse(); err != nil {
 		return nil, err
 	}
+	ownership, err := h.acquireNormalFlowOwnership("host:confirm-adaptation")
+	if err != nil {
+		return nil, err
+	}
+	defer ownership.Release()
 	proposal, err := h.store.Adaptation.LoadProposal()
 	if err != nil {
 		return nil, err
@@ -518,7 +588,11 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 	h.observer.setAborting(false)
 	h.router.ResetRepeat()
 	h.router.Enable()
-	if err := h.coordinator.Prompt(context.Background(), BuildAdaptationStartPrompt(*plan)); err != nil {
+	runCtx, err := h.normalFlowContext(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	if err := h.coordinator.Prompt(runCtx, BuildAdaptationStartPrompt(*plan)); err != nil {
 		return nil, fmt.Errorf("prompt: %w", err)
 	}
 	h.router.Dispatch()
@@ -526,6 +600,7 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 	h.mu.Lock()
 	h.lifecycle = lifecycleRunning
 	h.mu.Unlock()
+	ownership.TransferToRun()
 	go h.waitDone()
 	return plan, nil
 }
@@ -569,6 +644,10 @@ func (h *Host) adaptationDeps() adapt.Deps {
 
 // Resume 恢复模式：从 checkpoint + progress 生成 resume prompt 并启动。
 func (h *Host) Resume() (string, error) {
+	return h.resume(false)
+}
+
+func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -587,6 +666,23 @@ func (h *Host) Resume() (string, error) {
 		return "", fmt.Errorf("阶段共创进行中，请先结束共创")
 	}
 	h.mu.Unlock()
+	if !keepNormalFlowLease {
+		if h.coordinator != nil {
+			h.coordinator.WaitForIdle()
+		}
+		// A paused run may have reached coordinator idle before its waitDone
+		// goroutine releases ownership. Retire that epoch synchronously so the
+		// resumed run cannot inherit a lease that waitDone is about to clear.
+		h.releaseNormalFlowRunOwnership()
+	}
+	if err := h.refuseNormalFlowDuringRevision(); err != nil {
+		return "", err
+	}
+	ownership, err := h.acquireNormalFlowOwnership("host:resume")
+	if err != nil {
+		return "", err
+	}
+	defer ownership.Release()
 	pendingSteer := ""
 	if meta, loadErr := h.store.RunMeta.Load(); loadErr == nil && meta != nil {
 		pendingSteer = meta.PendingSteer
@@ -637,7 +733,11 @@ func (h *Host) Resume() (string, error) {
 	h.observer.setAborting(false)
 	h.router.ResetRepeat()
 	h.router.Enable()
-	if err := h.coordinator.Prompt(context.Background(), prompt); err != nil {
+	runCtx, err := h.normalFlowContext(context.Background())
+	if err != nil {
+		return "", err
+	}
+	if err := h.coordinator.Prompt(runCtx, prompt); err != nil {
 		return "", fmt.Errorf("resume prompt: %w", err)
 	}
 	if pendingSteer != "" {
@@ -651,6 +751,7 @@ func (h *Host) Resume() (string, error) {
 	h.mu.Lock()
 	h.lifecycle = lifecycleRunning
 	h.mu.Unlock()
+	ownership.TransferToRun()
 	go h.waitDone()
 	return label, nil
 }
@@ -676,6 +777,14 @@ func (h *Host) Continue(text string) error {
 	}
 	running := h.lifecycle == lifecycleRunning
 	h.mu.Unlock()
+	if err := h.refuseNormalFlowDuringRevision(); err != nil {
+		return err
+	}
+	ownership, err := h.acquireNormalFlowOwnership("host:continue")
+	if err != nil {
+		return err
+	}
+	defer ownership.Release()
 	if !running {
 		if err := h.ensureContinuationWritingAllowed(); err != nil {
 			return err
@@ -687,12 +796,13 @@ func (h *Host) Continue(text string) error {
 			return err
 		}
 	}
-
 	h.emitEvent(Event{Time: time.Now(), Category: "USER", Summary: "[继续] " + text, Level: "info"})
 
 	if running {
-		h.coordinator.FollowUp(interventionMsg(text))
-		return nil
+		return h.withNormalFlowFence(func() error {
+			h.coordinator.FollowUp(interventionMsg(text))
+			return nil
+		})
 	}
 	// 停机后 → 注入并自动恢复（恢复 run 也受预算前置约束）
 	if err := h.budget.Refuse(); err != nil {
@@ -700,15 +810,252 @@ func (h *Host) Continue(text string) error {
 	}
 	h.refreshWriterRestore()
 	h.observer.setAborting(false)
-	_, err := h.coordinator.Inject(interventionMsg(text))
+	runCtx, err := h.normalFlowContext(context.Background())
+	if err != nil {
+		return err
+	}
+	var injectErr error
+	err = h.withNormalFlowFence(func() error {
+		_, injectErr = h.coordinator.InjectContext(runCtx, interventionMsg(text))
+		return injectErr
+	})
 	if err != nil {
 		return fmt.Errorf("inject: %w", err)
 	}
 	h.mu.Lock()
 	h.lifecycle = lifecycleRunning
 	h.mu.Unlock()
+	ownership.TransferToRun()
 	go h.waitDone()
 	return nil
+}
+
+func (h *Host) refuseNormalFlowDuringRevision() error {
+	if h == nil || h.store == nil || h.store.Revisions == nil {
+		return nil
+	}
+	active, err := h.store.Revisions.Active()
+	if err != nil {
+		return fmt.Errorf("read active revision before normal flow: %w", err)
+	}
+	if active == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", storepkg.ErrActiveRevisionBlocksNormalFlow, active.ID)
+}
+
+type normalFlowOwnership struct {
+	host *Host
+	once sync.Once
+}
+
+func (h *Host) acquireNormalFlowOwnership(owner string) (*normalFlowOwnership, error) {
+	if h == nil || h.store == nil || h.store.Revisions == nil {
+		return &normalFlowOwnership{}, nil
+	}
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		owner = "host"
+	}
+	h.mu.Lock()
+	if h.normalFlowLease != nil {
+		if !h.normalFlowRunOwned && !h.normalFlowCoCreateOwned && h.normalFlowActionRefs == 0 && h.normalFlowScopedRefs == 0 {
+			h.mu.Unlock()
+			return nil, fmt.Errorf("normal flow lease has no live owner")
+		}
+		h.normalFlowScopedRefs++
+		h.mu.Unlock()
+		return &normalFlowOwnership{host: h}, nil
+	}
+	lease, err := h.store.Revisions.AcquireNormalFlow(owner)
+	if err != nil {
+		h.mu.Unlock()
+		return nil, err
+	}
+	h.normalFlowLease = lease
+	h.normalFlowScopedRefs = 1
+	if h.router != nil {
+		h.router.SetNormalFlowLease(lease)
+	}
+	h.mu.Unlock()
+	return &normalFlowOwnership{host: h}, nil
+}
+
+func (h *Host) beginNormalFlowMutation() (func(), error) {
+	ownership, err := h.acquireNormalFlowOwnership("host:mutation")
+	if err != nil {
+		return nil, err
+	}
+	return ownership.Release, nil
+}
+
+func (o *normalFlowOwnership) Release() {
+	if o == nil {
+		return
+	}
+	o.once.Do(func() {
+		h := o.host
+		if h == nil {
+			return
+		}
+		h.mu.Lock()
+		if h.normalFlowScopedRefs > 0 {
+			h.normalFlowScopedRefs--
+		}
+		lease := h.detachUnusedNormalFlowLeaseLocked()
+		h.mu.Unlock()
+		h.releaseDetachedNormalFlowLease(lease)
+	})
+}
+
+func (o *normalFlowOwnership) TransferToRun() {
+	o.transfer(func(h *Host) { h.normalFlowRunOwned = true })
+}
+
+func (o *normalFlowOwnership) TransferToCoCreate() {
+	o.transfer(func(h *Host) { h.normalFlowCoCreateOwned = true })
+}
+
+func (o *normalFlowOwnership) transfer(retain func(*Host)) {
+	if o == nil {
+		return
+	}
+	o.once.Do(func() {
+		h := o.host
+		if h == nil {
+			return
+		}
+		h.mu.Lock()
+		if h.normalFlowLease != nil && h.normalFlowScopedRefs > 0 {
+			retain(h)
+			h.normalFlowScopedRefs--
+		}
+		lease := h.detachUnusedNormalFlowLeaseLocked()
+		h.mu.Unlock()
+		h.releaseDetachedNormalFlowLease(lease)
+	})
+}
+
+// BeginNormalFlowAction gives a Web action explicit ownership of the Host's
+// durable normal-flow lease. A Web action may deliberately reuse a running
+// coordinator's lease, but it never borrows an unrelated short Host call.
+func (h *Host) BeginNormalFlowAction(owner string) (func(), error) {
+	if h == nil || h.store == nil || h.store.Revisions == nil {
+		return func() {}, nil
+	}
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		owner = "web:action"
+	}
+
+	h.mu.Lock()
+	if h.normalFlowLease != nil {
+		if !h.normalFlowRunOwned && !h.normalFlowCoCreateOwned && h.normalFlowActionRefs == 0 {
+			h.mu.Unlock()
+			return nil, fmt.Errorf("normal flow is owned by another Host operation")
+		}
+		h.normalFlowActionRefs++
+		h.mu.Unlock()
+		return h.normalFlowActionRelease(), nil
+	}
+	lease, err := h.store.Revisions.AcquireNormalFlow(owner)
+	if err != nil {
+		h.mu.Unlock()
+		return nil, err
+	}
+	h.normalFlowLease = lease
+	h.normalFlowActionRefs = 1
+	h.mu.Unlock()
+	if h.router != nil {
+		h.router.SetNormalFlowLease(lease)
+	}
+	return h.normalFlowActionRelease(), nil
+}
+
+func (h *Host) normalFlowActionRelease() func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			if h.normalFlowActionRefs > 0 {
+				h.normalFlowActionRefs--
+			}
+			lease := h.detachUnusedNormalFlowLeaseLocked()
+			h.mu.Unlock()
+			h.releaseDetachedNormalFlowLease(lease)
+		})
+	}
+}
+
+func (h *Host) detachUnusedNormalFlowLeaseLocked() *storepkg.NormalFlowLease {
+	if h.normalFlowLease == nil || h.normalFlowRunOwned || h.normalFlowCoCreateOwned || h.normalFlowActionRefs > 0 || h.normalFlowScopedRefs > 0 {
+		return nil
+	}
+	lease := h.normalFlowLease
+	h.normalFlowLease = nil
+	return lease
+}
+
+func (h *Host) releaseDetachedNormalFlowLease(lease *storepkg.NormalFlowLease) {
+	if lease == nil {
+		return
+	}
+	if h.router != nil {
+		h.router.SetNormalFlowLease(nil)
+	}
+	if err := h.store.Revisions.ReleaseNormalFlow(lease.Token); err != nil {
+		slog.Warn("release normal flow revision fence failed", "module", "host", "err", err)
+	}
+}
+
+func (h *Host) releaseNormalFlowRunOwnership() {
+	if h == nil || h.store == nil || h.store.Revisions == nil {
+		return
+	}
+	h.mu.Lock()
+	h.normalFlowRunOwned = false
+	lease := h.detachUnusedNormalFlowLeaseLocked()
+	h.mu.Unlock()
+	h.releaseDetachedNormalFlowLease(lease)
+}
+
+func (h *Host) releaseNormalFlowCoCreateOwnership() {
+	if h == nil || h.store == nil || h.store.Revisions == nil {
+		return
+	}
+	h.mu.Lock()
+	h.normalFlowCoCreateOwned = false
+	lease := h.detachUnusedNormalFlowLeaseLocked()
+	h.mu.Unlock()
+	h.releaseDetachedNormalFlowLease(lease)
+}
+
+func (h *Host) withNormalFlowFence(fn func() error) error {
+	h.mu.Lock()
+	lease := h.normalFlowLease
+	h.mu.Unlock()
+	if lease == nil {
+		return fmt.Errorf("normal flow lease is not active")
+	}
+	fence, err := h.store.Revisions.FenceForNormalFlow(lease.Token)
+	if err != nil {
+		return err
+	}
+	return h.store.Revisions.WithFence(fence, fn)
+}
+
+func (h *Host) normalFlowContext(ctx context.Context) (context.Context, error) {
+	h.mu.Lock()
+	lease := h.normalFlowLease
+	h.mu.Unlock()
+	if lease == nil {
+		return nil, fmt.Errorf("normal flow lease is not active")
+	}
+	fence, err := h.store.Revisions.FenceForNormalFlow(lease.Token)
+	if err != nil {
+		return nil, err
+	}
+	return storepkg.ContextWithRevisionFence(ctx, fence), nil
 }
 
 // Steer 提交用户干预。
@@ -720,6 +1067,14 @@ func (h *Host) Steer(text string) error {
 	h.mu.Lock()
 	running := h.lifecycle == lifecycleRunning
 	h.mu.Unlock()
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		if !running {
+			return fmt.Errorf("set pending steer: %w", err)
+		}
+		return err
+	}
+	defer release()
 
 	h.emitEvent(Event{Time: time.Now(), Category: "USER", Summary: "[用户干预] " + text, Level: "info"})
 
@@ -801,6 +1156,12 @@ func (h *Host) Close() {
 	h.mu.Unlock()
 	h.observer.setAborting(true)
 	h.coordinator.AbortSilent()
+	// Do not wait for the coordinator here. A model stream may ignore context
+	// cancellation and remain blocked indefinitely; waitDone already owns run
+	// finalization and releases its normal-flow lease only after durable terminal
+	// state has been published. Waiting (or releasing that lease) here would
+	// either deadlock Close or let a revision cross unfinished finalization.
+	h.releaseNormalFlowCoCreateOwnership()
 	if h.budgetDetach != nil {
 		h.budgetDetach()
 		h.budgetDetach = nil
@@ -828,7 +1189,9 @@ func (h *Host) Close() {
 //
 // 手动暂停仍只保留 paused 状态，不会被自动恢复；恢复上限耗尽后也等待用户或定时任务。
 func (h *Host) waitDone() {
-	h.coordinator.WaitForIdle()
+	if h.coordinator != nil {
+		h.coordinator.WaitForIdle()
+	}
 	h.observer.finalize()
 	if h.tryRepairStoppedAdaptation() {
 		return
@@ -836,6 +1199,11 @@ func (h *Host) waitDone() {
 	if h.tryAutoResumeIncompleteRun() {
 		return
 	}
+	// Successful repair/auto-resume paths return above after handing ownership
+	// to the replacement run. A genuinely terminal run keeps its ownership
+	// until lifecycle state, durable terminal events, and Done notification are
+	// all finalized.
+	defer h.releaseNormalFlowRunOwnership()
 
 	h.mu.Lock()
 	progress, _ := h.store.Progress.Load()
@@ -932,7 +1300,7 @@ func (h *Host) tryAutoResumeIncompleteRun() bool {
 		Summary:  fmt.Sprintf("Coordinator 异常停止，自动恢复创作（第%d/%d次，已完成%d章）", attempt, maxAutomaticResumeAttempts, completed),
 		Level:    "warn",
 	})
-	_, resumeErr := h.Resume()
+	_, resumeErr := h.resume(true)
 	h.mu.Lock()
 	h.autoResumeInFlight = false
 	h.mu.Unlock()
@@ -951,11 +1319,12 @@ func (h *Host) tryAutoResumeIncompleteRun() bool {
 
 // tryRepairStoppedAdaptation handles the common legacy-plan failure where the
 // Coordinator has no safe next route because the confirmed adaptation outline
-// failed a plan-only gate. The repair runs at Host level, then the normal
-// Resume path is reused so this is not a one-off chapter retry.
+// failed a plan-only gate. The repair runs at Host level, then the replacement
+// Resume explicitly reuses the current run ownership so this is not a one-off
+// chapter retry and no revision can enter between the two runs.
 func (h *Host) tryRepairStoppedAdaptation() bool {
 	state := flow.LoadState(h.store)
-	if !state.AdaptationOutlineBlocked {
+	if state.RevisionActive || !state.AdaptationOutlineBlocked {
 		return false
 	}
 	report, err := h.prepareAdaptationPreflight(context.Background())
@@ -979,7 +1348,7 @@ func (h *Host) tryRepairStoppedAdaptation() bool {
 	}
 	h.lifecycle = lifecycleIdle
 	h.mu.Unlock()
-	if _, err := h.Resume(); err != nil {
+	if _, err := h.resume(true); err != nil {
 		h.emitEvent(Event{
 			Time:     time.Now().UTC(),
 			Category: "ERROR",
@@ -1043,7 +1412,15 @@ func (h *Host) AskUser() *tools.AskUserTool { return h.askUser }
 // RecordEvent lets Web-side long actions use the same durable event journal as
 // Coordinator/Writer events. It intentionally has no separate persistence
 // path, so reopening a project sees one monotonic queue instead of two logs.
-func (h *Host) RecordEvent(ev Event) { h.emitEvent(ev) }
+func (h *Host) RecordEvent(ev Event) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		slog.Warn("record event blocked by revision ownership", "module", "host", "err", err)
+		return
+	}
+	defer release()
+	h.emitEvent(ev)
+}
 
 // ── 事件发射 ──
 
@@ -1101,7 +1478,11 @@ func (h *Host) persistRuntimeEvent(ev Event) {
 	if ev.Category == "SYSTEM" || ev.Category == "ERROR" {
 		priority = domain.RuntimePriorityControl
 	}
-	if _, err := h.store.Runtime.AppendQueue(domain.RuntimeQueueItem{
+	appendQueue := h.store.Runtime.AppendQueue
+	if h.appendRuntimeQueue != nil {
+		appendQueue = h.appendRuntimeQueue
+	}
+	if _, err := appendQueue(domain.RuntimeQueueItem{
 		Time:     ev.Time,
 		Kind:     domain.RuntimeQueueUIEvent,
 		Priority: priority,
@@ -1542,12 +1923,22 @@ func (h *Host) CurrentModelSelection(role string) (string, string, bool) {
 }
 
 func (h *Host) SwitchModel(role, provider, model string) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.switchModelLocked(role, provider, model)
 }
 
 func (h *Host) ClearModelRoute(role string) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	role = strings.ToLower(strings.TrimSpace(role))
 	if role == "" || role == "default" {
 		return fmt.Errorf("default model route cannot inherit")
@@ -1594,6 +1985,11 @@ func (h *Host) ClearModelRoute(role string) error {
 }
 
 func (h *Host) AddProviderModel(role, providerName string, providerConfig bootstrap.ProviderConfig, model string) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	providerName = strings.TrimSpace(providerName)
 	model = strings.TrimSpace(model)
 	if providerName == "" || model == "" {
@@ -1645,6 +2041,11 @@ func (h *Host) AddProviderModel(role, providerName string, providerConfig bootst
 }
 
 func (h *Host) RemoveProviderModel(providerName, model string) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	providerName = strings.TrimSpace(providerName)
 	model = strings.TrimSpace(model)
 	if providerName == "" || model == "" {
@@ -1715,6 +2116,11 @@ func (u ProviderModelUpdate) shouldSelectAfterSave() bool {
 }
 
 func (h *Host) ConfigureProviderModel(ctx context.Context, update ProviderModelUpdate) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1791,6 +2197,11 @@ func (h *Host) ConfigureProviderModel(ctx context.Context, update ProviderModelU
 // providers keep their local credentials/config; inherited provider references
 // and safe overlay metadata follow the global provider key.
 func (h *Host) SyncInheritedProviderFromGlobal(globalCfg bootstrap.Config, originalProvider, provider string) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	originalProvider = strings.TrimSpace(originalProvider)
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
@@ -1905,6 +2316,11 @@ func (h *Host) SyncInheritedProviderFromGlobal(globalCfg bootstrap.Config, origi
 // from an open project that inherits the provider. Project-owned providers keep
 // their credentials and routes.
 func (h *Host) SyncInheritedProviderModelRemovalFromGlobal(globalCfg bootstrap.Config, provider, model string) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	provider = strings.TrimSpace(provider)
 	model = strings.TrimSpace(model)
 	if provider == "" || model == "" {
@@ -2011,6 +2427,11 @@ func removeProviderModelRoutes(cfg *bootstrap.Config, provider, model string) {
 }
 
 func (h *Host) SyncModelSettingsFromGlobal(globalCfg bootstrap.Config) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -3472,6 +3893,11 @@ func (h *Host) applyThinkingLocked(role string) {
 // SetRoleThinking 设置某角色（或 default）的推理强度：校验→持久化→联动 live agent→事件。
 // 镜像 SwitchModel 的结构；与模型选择正交，可单独调整。level 为空 = 不覆盖（继承）。
 func (h *Host) SetRoleThinking(role, level string) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -3541,6 +3967,11 @@ func (h *Host) ScheduledResumeEnabled() bool {
 }
 
 func (h *Host) SetScheduledResumeEnabled(enabled bool) error {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return err
+	}
+	defer release()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	previous := cloneHostRuntimeConfig(h.cfg)
@@ -3570,6 +4001,11 @@ func (h *Host) SetScheduledResumeEnabled(enabled bool) error {
 }
 
 func (h *Host) SetCoCreateTimeoutSeconds(seconds int) error {
+	release, leaseErr := h.beginNormalFlowMutation()
+	if leaseErr != nil {
+		return leaseErr
+	}
+	defer release()
 	normalized, err := bootstrap.NormalizeCoCreateTimeoutSeconds(seconds)
 	if err != nil {
 		return err
@@ -3601,6 +4037,11 @@ func (h *Host) CurrentCoCreateMaxTokens() int {
 }
 
 func (h *Host) SetCoCreateMaxTokens(tokens int) error {
+	release, leaseErr := h.beginNormalFlowMutation()
+	if leaseErr != nil {
+		return leaseErr
+	}
+	defer release()
 	normalized, err := bootstrap.NormalizeCoCreateMaxTokens(tokens)
 	if err != nil {
 		return err
@@ -3650,6 +4091,11 @@ func (h *Host) CurrentAdaptationOutlineAuditRetryMaxAttempts() int {
 }
 
 func (h *Host) SetRetrySettings(modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts, adaptationOutlineAuditRetryMaxAttempts int) error {
+	release, leaseErr := h.beginNormalFlowMutation()
+	if leaseErr != nil {
+		return leaseErr
+	}
+	defer release()
 	modelAttempts, err := bootstrap.NormalizeRuntimeNetworkMaxAttempts(modelCallMaxAttempts)
 	if err != nil {
 		return err
@@ -3719,12 +4165,22 @@ func (h *Host) ReplayQueue(afterSeq int64) ([]domain.RuntimeQueueItem, error) {
 
 // CoCreateStream 冷启动共创：从零澄清需求，产出整本书的创作指令。
 func (h *Host) CoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return CoCreateReply{}, err
+	}
+	defer release()
 	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), coCreateSystemPromptWithSimulation(h.store, h.cfg.EffectiveSimulationMode()), history, onProgress)
 }
 
 // StageCoCreateStream 阶段共创：在已写内容的基础上规划后续方向。
 // 系统提示 = 阶段 prompt + 当前故事状态摘要，让助手知道"已经写了什么"。
 func (h *Host) StageCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return CoCreateReply{}, err
+	}
+	defer release()
 	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), stageSystemPromptWithSimulation(h.store, h.cfg.EffectiveSimulationMode()), history, onProgress)
 }
 
@@ -3738,10 +4194,20 @@ func (h *Host) ContinuationCoCreateStream(ctx context.Context, history []CoCreat
 
 // AdaptCoCreateStream 改编共创：基于原书分析快照澄清改编目标。
 func (h *Host) AdaptCoCreateStream(ctx context.Context, history []CoCreateMessage, onProgress func(kind, text string)) (CoCreateReply, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return CoCreateReply{}, err
+	}
+	defer release()
 	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), adaptSystemPrompt(h.store), history, onProgress)
 }
 
 func (h *Host) EnsureAdaptationCoCreateBriefing(ctx context.Context, sourcePath string, intent domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if _, _, err := adapt.ValidatePreparedSource(h.store, sourcePath); err != nil {
 		return nil, err
 	}
@@ -3749,6 +4215,11 @@ func (h *Host) EnsureAdaptationCoCreateBriefing(ctx context.Context, sourcePath 
 }
 
 func (h *Host) EnsureAdaptationProposalCoCreateBriefing(ctx context.Context, sourcePath string, intent domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if _, _, err := adapt.ValidatePreparedSource(h.store, sourcePath); err != nil {
 		return nil, err
 	}
@@ -3785,10 +4256,20 @@ func (h *Host) adaptationProgressEmitter() adapt.ProgressEmitter {
 }
 
 func (h *Host) ResolveAdaptationCoCreateDecision(decisionID, optionID, customAnswer string) (*domain.AdaptationCoCreateBriefing, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	return h.store.Adaptation.ResolveCoCreateBriefingDecision(decisionID, optionID, customAnswer)
 }
 
 func (h *Host) ResolveAdaptationCoCreateDecisions(decisions []domain.AdaptationResolvedDecision) (*domain.AdaptationCoCreateBriefing, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	return h.store.Adaptation.ResolveCoCreateBriefingDecisions(decisions)
 }
 
@@ -3809,9 +4290,21 @@ func (h *Host) PauseForCoCreate() bool {
 		h.mu.Unlock()
 		return false
 	}
-	h.cocreating = true
 	running := h.lifecycle == lifecycleRunning
 	h.mu.Unlock()
+	ownership, err := h.acquireNormalFlowOwnership("host:co-create")
+	if err != nil {
+		return false
+	}
+	h.mu.Lock()
+	if h.cocreating || h.lifecycle == lifecycleCompleted {
+		h.mu.Unlock()
+		ownership.Release()
+		return false
+	}
+	h.cocreating = true
+	h.mu.Unlock()
+	ownership.TransferToCoCreate()
 
 	// 运行中复用 abortWithEvent 停机（running→paused + setAborting + Abort + 事件），与手动
 	// 暂停同序、不另抄一遍；已停止（idle/paused）只置标记，规划完经 Continue 续跑。
@@ -3837,20 +4330,52 @@ func (h *Host) ResumeFromCoCreate(draft string) error {
 		h.mu.Unlock()
 		return fmt.Errorf("not in co-create")
 	}
-	h.cocreating = false
 	h.mu.Unlock()
 
 	// PauseForCoCreate 的 Abort 是异步的：恢复前等旧 run 收敛，回到与手动暂停后 Continue
 	// 一致的"真停机"前提，避免把续跑指令 steer 进正在退出的旧 run。非运行态进共创（未
 	// Abort）时 coordinator 本就 idle，WaitForIdle 立即返回。
-	h.coordinator.WaitForIdle()
+	if h.coordinator != nil {
+		h.coordinator.WaitForIdle()
+	}
+	if err := h.refuseNormalFlowDuringRevision(); err != nil {
+		return err
+	}
+	ownership, err := h.acquireNormalFlowOwnership("host:resume-co-create")
+	if err != nil {
+		return err
+	}
+	defer ownership.Release()
+	h.mu.Lock()
+	if !h.cocreating {
+		h.mu.Unlock()
+		return fmt.Errorf("not in co-create")
+	}
+	h.cocreating = false
+	h.mu.Unlock()
 
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "阶段共创完成，已注入后续方向并恢复创作", Level: "info"})
-	return h.Continue(stagePlanPrefix + draft)
+	if err := h.Continue(stagePlanPrefix + draft); err != nil {
+		h.mu.Lock()
+		h.cocreating = true
+		h.mu.Unlock()
+		return err
+	}
+	h.releaseNormalFlowCoCreateOwnership()
+	return nil
 }
 
 // CancelCoCreate 放弃阶段共创：清占用标记，保持暂停态（用户可在输入框继续或重启 Resume）。
 func (h *Host) CancelCoCreate() {
+	if h.coordinator != nil {
+		h.coordinator.WaitForIdle()
+	}
+	ownership, err := h.acquireNormalFlowOwnership("host:cancel-co-create")
+	if err != nil {
+		slog.Warn("cancel co-create could not acquire normal-flow ownership", "module", "host", "err", err)
+		return
+	}
+	defer ownership.Release()
 	h.mu.Lock()
 	if !h.cocreating {
 		h.mu.Unlock()
@@ -3858,6 +4383,7 @@ func (h *Host) CancelCoCreate() {
 	}
 	h.cocreating = false
 	h.mu.Unlock()
+	h.releaseNormalFlowCoCreateOwnership()
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "已退出阶段共创，创作保持暂停（可在输入框继续）", Level: "info"})
 }
 
@@ -3880,21 +4406,37 @@ func truncate(s string, maxRunes int) string {
 // ImportFrom 启动一次外部小说反推导入：切分 → 反推 foundation → 逐章分析落盘。
 // 与 Coordinator 互斥；导入完成后调用方可立即 Resume() 续写。
 // 返回的事件通道由 imp.Run 关闭，调用方负责消费（满则丢弃以防阻塞分析协程）。
+var prepareContinuationImportUserRules = func(h *Host) error {
+	return h.PrepareExternalSourceUserRules("")
+}
+
+var runContinuationImport = imp.Run
+
 func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Event, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
 	if err := h.guardExclusive("导入"); err != nil {
+		release()
 		return nil, err
 	}
 	if continuation, err := h.ContinuationSnapshot(); err != nil {
+		release()
 		return nil, fmt.Errorf("inspect continuation state: %w", err)
 	} else if continuation != nil && continuation.Workflow.Stage != domain.ContinuationStageSourceReady {
+		release()
 		return nil, fmt.Errorf("continuation planning already started at stage %q; roll it back before replacing the source", continuation.Workflow.Stage)
 	}
-	if err := h.PrepareExternalSourceUserRules(""); err != nil {
+	if err := prepareContinuationImportUserRules(h); err != nil {
+		release()
 		return nil, err
 	}
 	if source, err := h.store.Adaptation.LoadSourceManifest(); err != nil {
+		release()
 		return nil, fmt.Errorf("inspect adaptation state: %w", err)
 	} else if source != nil {
+		release()
 		return nil, fmt.Errorf("project contains adaptation source state; create a new project or explicitly roll it back before importing a continuation source")
 	}
 
@@ -3909,13 +4451,19 @@ func (h *Host) ImportFrom(ctx context.Context, opts imp.Options) (<-chan imp.Eve
 	}
 	sourceSignature, err := sourceFileSignature(opts.SourcePath)
 	if err != nil {
+		release()
 		return nil, fmt.Errorf("hash continuation source: %w", err)
 	}
-	events, err := imp.Run(ctx, deps, opts)
+	events, err := runContinuationImport(ctx, deps, opts)
 	if err != nil {
+		release()
 		return nil, err
 	}
-	return h.withContinuationImportFinalization(ctx, sourceSignature, events), nil
+	if events == nil {
+		release()
+		return nil, fmt.Errorf("continuation import event stream is nil")
+	}
+	return holdNormalFlowStream(ctx, h.withContinuationImportFinalization(ctx, sourceSignature, events), release), nil
 }
 
 func sourceFileSignature(path string) (string, error) {
@@ -3932,10 +4480,24 @@ func sourceFileSignature(path string) (string, error) {
 }
 
 func (h *Host) withContinuationImportFinalization(ctx context.Context, sourceSignature string, source <-chan imp.Event) <-chan imp.Event {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	out := make(chan imp.Event, 32)
 	go func() {
 		defer close(out)
+		canceled := false
 		for event := range source {
+			if !canceled {
+				select {
+				case <-ctx.Done():
+					canceled = true
+				default:
+				}
+			}
+			if canceled {
+				continue
+			}
 			if event.Stage == imp.StageDone {
 				progress, err := h.store.Progress.Load()
 				baseChapterCount := 0
@@ -3959,7 +4521,7 @@ func (h *Host) withContinuationImportFinalization(ctx context.Context, sourceSig
 			select {
 			case out <- event:
 			case <-ctx.Done():
-				return
+				canceled = true
 			}
 		}
 	}()
@@ -3968,8 +4530,15 @@ func (h *Host) withContinuationImportFinalization(ctx context.Context, sourceSig
 
 // PrepareAdaptationSource analyzes a source novel for adaptation without
 // committing its chapters as final output.
+var runAdaptationSource = adapt.RunSource
+
 func (h *Host) PrepareAdaptationSource(ctx context.Context, sourcePath string) (<-chan adapt.Event, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
 	if err := h.guardExclusive("改编源书分析"); err != nil {
+		release()
 		return nil, err
 	}
 	h.mu.Lock()
@@ -3995,7 +4564,16 @@ func (h *Host) PrepareAdaptationSource(ctx context.Context, sourcePath string) (
 			Planner:         h.bundle.Prompts.AdaptationPlanner,
 		},
 	}
-	return adapt.RunSource(ctx, deps, adapt.Options{SourcePath: sourcePath})
+	events, err := runAdaptationSource(ctx, deps, adapt.Options{SourcePath: sourcePath})
+	if err != nil {
+		release()
+		return nil, err
+	}
+	if events == nil {
+		release()
+		return nil, fmt.Errorf("adaptation source event stream is nil")
+	}
+	return holdNormalFlowStream(ctx, events, release), nil
 }
 
 func (h *Host) reportAdaptationFailover(ev bootstrap.FailoverEvent) {
@@ -4053,12 +4631,20 @@ func (h *Host) Simulate(ctx context.Context) (<-chan sim.Event, error) {
 // SimulateFromDir reads the supplied simulate source directory. Web projects use
 // this to keep uploaded corpus files inside the selected project root, while
 // Simulate keeps the legacy cwd/simulate behavior for CLI and TUI users.
+var runSimulation = sim.Run
+
 func (h *Host) SimulateFromDir(ctx context.Context, dir string) (<-chan sim.Event, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
 	if err := h.guardExclusive("生成仿写画像"); err != nil {
+		release()
 		return nil, err
 	}
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
+		release()
 		return nil, fmt.Errorf("simulate source dir is required")
 	}
 	h.mu.Lock()
@@ -4074,12 +4660,28 @@ func (h *Host) SimulateFromDir(ctx context.Context, dir string) (<-chan sim.Even
 			Merge:  h.bundle.Prompts.SimulationMerge,
 		},
 	}
-	return sim.Run(ctx, deps, sim.Options{SourceDir: dir})
+	events, err := runSimulation(ctx, deps, sim.Options{SourceDir: dir})
+	if err != nil {
+		release()
+		return nil, err
+	}
+	if events == nil {
+		release()
+		return nil, fmt.Errorf("simulation event stream is nil")
+	}
+	return holdNormalFlowStream(ctx, events, release), nil
 }
 
 // ImportSimulationProfile 导入此前生成的仿写画像。
+var runSimulationImport = sim.RunImport
+
 func (h *Host) ImportSimulationProfile(ctx context.Context, path string) (<-chan sim.Event, error) {
+	release, err := h.beginNormalFlowMutation()
+	if err != nil {
+		return nil, err
+	}
 	if err := h.guardExclusive("导入仿写画像"); err != nil {
+		release()
 		return nil, err
 	}
 	h.mu.Lock()
@@ -4094,7 +4696,39 @@ func (h *Host) ImportSimulationProfile(ctx context.Context, path string) (<-chan
 			Merge: h.bundle.Prompts.SimulationMerge,
 		},
 	}
-	return sim.RunImport(ctx, deps, path)
+	events, err := runSimulationImport(ctx, deps, path)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	if events == nil {
+		release()
+		return nil, fmt.Errorf("simulation import event stream is nil")
+	}
+	return holdNormalFlowStream(ctx, events, release), nil
+}
+
+func holdNormalFlowStream[T any](ctx context.Context, source <-chan T, release func()) <-chan T {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	out := make(chan T, 32)
+	go func() {
+		defer close(out)
+		defer release()
+		canceled := false
+		for event := range source {
+			if canceled {
+				continue
+			}
+			select {
+			case out <- event:
+			case <-ctx.Done():
+				canceled = true
+			}
+		}
+	}()
+	return out
 }
 
 // guardExclusive 检查独占占用：coordinator 运行中或阶段共创窗口内时拒绝会改写状态的入口

@@ -6,14 +6,19 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	hostpkg "github.com/voocel/ainovel-cli/internal/host"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 func TestActionRegistryDeduplicatesIdempotencyKey(t *testing.T) {
@@ -29,14 +34,14 @@ func TestActionRegistryDeduplicatesIdempotencyKey(t *testing.T) {
 		return nil
 	}
 
-	first, created, err := registry.Start("proposal", "request-1", runner)
+	first, created, err := registry.Start("proposal", "request-1", runner, actionLifecycle{})
 	if err != nil {
 		t.Fatalf("Start first: %v", err)
 	}
 	if !created {
 		t.Fatal("first action was not created")
 	}
-	second, created, err := registry.Start("proposal", "request-1", runner)
+	second, created, err := registry.Start("proposal", "request-1", runner, actionLifecycle{})
 	if err != nil {
 		t.Fatalf("Start duplicate: %v", err)
 	}
@@ -68,7 +73,7 @@ func TestActionRegistryMarksRunningActionInterruptedAfterReload(t *testing.T) {
 	action, _, err := registry.Start("outlines", "request-2", func(context.Context) error {
 		<-release
 		return nil
-	})
+	}, actionLifecycle{})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -100,7 +105,7 @@ func TestActionRegistryRequiresIdempotencyKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewActionRegistry: %v", err)
 	}
-	_, _, err = registry.Start("proposal", "", func(context.Context) error { return nil })
+	_, _, err = registry.Start("proposal", "", func(context.Context) error { return nil }, actionLifecycle{})
 	if !errors.Is(err, ErrActionKeyRequired) {
 		t.Fatalf("Start error = %v, want ErrActionKeyRequired", err)
 	}
@@ -112,7 +117,7 @@ func TestActionRegistryLatestSurvivesReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewActionRegistry: %v", err)
 	}
-	action, _, err := registry.Start("proposal", "request-latest", func(context.Context) error { return nil })
+	action, _, err := registry.Start("proposal", "request-latest", func(context.Context) error { return nil }, actionLifecycle{})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -226,4 +231,246 @@ func waitForActionStatus(t *testing.T, registry *ActionRegistry, actionID string
 	action, _ := registry.Get(actionID)
 	t.Fatalf("action status = %q, want %q", action.Status, want)
 	return ActionRecord{}
+}
+
+type blockingSnapshotProjectHost struct {
+	*fakeProjectHost
+	block       atomic.Bool
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+}
+
+func newBlockingSnapshotProjectHost() *blockingSnapshotProjectHost {
+	return &blockingSnapshotProjectHost{
+		fakeProjectHost: newFakeProjectHost(),
+		entered:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+}
+
+func (h *blockingSnapshotProjectHost) Snapshot() hostpkg.UISnapshot {
+	if h.block.Load() {
+		h.enteredOnce.Do(func() { close(h.entered) })
+		<-h.release
+	}
+	return h.fakeProjectHost.Snapshot()
+}
+
+func (h *blockingSnapshotProjectHost) arm() {
+	h.block.Store(true)
+}
+
+type blockingAdaptationPostProcessHost struct {
+	*blockingSnapshotProjectHost
+}
+
+func (h *blockingAdaptationPostProcessHost) BuildAdaptationProposalVolumesContext(ctx context.Context, options adapt.ProposalOptions) (*adapt.ProposalStageResult, error) {
+	result, err := h.fakeProjectHost.BuildAdaptationProposalVolumesContext(ctx, options)
+	h.arm()
+	return result, err
+}
+
+func (h *blockingAdaptationPostProcessHost) BuildAdaptationProposalDetailsContext(ctx context.Context, options adapt.ProposalDetailsOptions) (*domain.AdaptationPlan, error) {
+	result, err := h.fakeProjectHost.BuildAdaptationProposalDetailsContext(ctx, options)
+	h.arm()
+	return result, err
+}
+
+func TestActiveRevisionBlocksBackgroundActionCreationWithoutSideEffects(t *testing.T) {
+	dir := t.TempDir()
+	st := storepkg.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	impact, err := domain.NewRevisionImpact("background action gate", []domain.RevisionImpactItem{{
+		ArtifactID: "chapter-1", ArtifactKind: "prose", Change: "rewrite",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Revisions.Start(fakeAutoResumeRevisionPolicy{}, storepkg.StartRevisionInput{
+		Intent: "active", Impact: impact, IdempotencyKey: "active-background-action",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	host := newFakeProjectHost()
+	session, err := NewProjectSession(ProjectManifest{ID: "blocked-background", RootDir: dir, OutputDir: dir}, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	session.mu.Lock()
+	historyBefore := len(session.history)
+	session.mu.Unlock()
+	var runs atomic.Int32
+	_, _, err = session.StartBackgroundAction("continuation", "blocked-request", func(context.Context) error {
+		runs.Add(1)
+		return nil
+	})
+	if !errors.Is(err, storepkg.ErrActiveRevisionBlocksNormalFlow) {
+		t.Fatalf("StartBackgroundAction error = %v", err)
+	}
+	if runs.Load() != 0 {
+		t.Fatalf("blocked background runner executed %d times", runs.Load())
+	}
+	if latest := session.LatestBackgroundAction(); latest != nil {
+		t.Fatalf("blocked background action created registry record: %+v", latest)
+	}
+	session.mu.Lock()
+	historyAfter := len(session.history)
+	session.mu.Unlock()
+	if historyAfter != historyBefore {
+		t.Fatalf("blocked background action appended snapshots: before=%d after=%d", historyBefore, historyAfter)
+	}
+	if _, err := os.Stat(projectActionRegistryPath(session.Manifest())); !os.IsNotExist(err) {
+		t.Fatalf("blocked background action persisted registry: %v", err)
+	}
+}
+
+func TestBackgroundActionOwnershipIncludesFinalRegistryAndSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	st := storepkg.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	host := newBlockingSnapshotProjectHost()
+	session, err := NewProjectSession(ProjectManifest{ID: "background-post-process", RootDir: dir, OutputDir: dir}, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	action, created, err := session.StartBackgroundAction("continuation", "post-process", func(context.Context) error {
+		host.arm()
+		return nil
+	})
+	if err != nil || !created {
+		t.Fatalf("StartBackgroundAction = created=%v err=%v", created, err)
+	}
+	select {
+	case <-host.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("final background snapshot did not start")
+	}
+	completed := waitForActionStatus(t, session.actions, action.ActionID, ActionStatusCompleted)
+	if completed.FinishedAt == nil {
+		t.Fatal("completed registry state was not persisted before final snapshot")
+	}
+
+	impact, err := domain.NewRevisionImpact("background post-processing", []domain.RevisionImpactItem{{
+		ArtifactID: "chapter-1", ArtifactKind: "prose", Change: "rewrite",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Revisions.Start(fakeAutoResumeRevisionPolicy{}, storepkg.StartRevisionInput{
+		Intent: "must wait", Impact: impact, IdempotencyKey: "during-background-final-snapshot",
+	}); !errors.Is(err, storepkg.ErrActiveRevisionExists) {
+		t.Fatalf("revision crossed background final snapshot: %v", err)
+	}
+	close(host.release)
+	if !session.waitForActionsIdle(2 * time.Second) {
+		t.Fatal("background ownership was not released after final snapshot")
+	}
+	if _, err := st.Revisions.Start(fakeAutoResumeRevisionPolicy{}, storepkg.StartRevisionInput{
+		Intent: "after action", Impact: impact, IdempotencyKey: "after-background-final-snapshot",
+	}); err != nil {
+		t.Fatalf("revision did not start after background post-processing: %v", err)
+	}
+}
+
+func TestAdaptationWorkflowFinalWritesRemainOwned(t *testing.T) {
+	tests := []struct {
+		name string
+		seed func(*testing.T, *storepkg.Store)
+		run  func(context.Context, *ProjectSession) error
+	}{
+		{
+			name: "volumes",
+			run: func(ctx context.Context, session *ProjectSession) error {
+				_, err := session.BuildAdaptationProposalVolumesContext(ctx, adapt.ProposalOptions{
+					Brief: "adapt", Granularity: domain.AdaptationGranularityFree,
+				})
+				return err
+			},
+		},
+		{
+			name: "details",
+			seed: func(t *testing.T, st *storepkg.Store) {
+				t.Helper()
+				started, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageSkeletonGenerating, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageVolumeReviewPending, started.Revision); err != nil {
+					t.Fatal(err)
+				}
+			},
+			run: func(ctx context.Context, session *ProjectSession) error {
+				_, err := session.BuildAdaptationProposalDetailsContext(ctx)
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			st := storepkg.NewStore(dir)
+			if err := st.Init(); err != nil {
+				t.Fatal(err)
+			}
+			if test.seed != nil {
+				test.seed(t, st)
+			}
+			host := &blockingAdaptationPostProcessHost{newBlockingSnapshotProjectHost()}
+			session, err := NewProjectSession(ProjectManifest{ID: "adaptation-" + test.name, RootDir: dir, OutputDir: dir}, host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+
+			done := make(chan error, 1)
+			go func() { done <- test.run(context.Background(), session) }()
+			select {
+			case <-host.entered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("adaptation final snapshot did not start")
+			}
+			workflow, err := st.Adaptation.LoadPlanningWorkflow()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if workflow == nil || workflow.Stage != domain.AdaptationPlanningStageProposalReviewPending {
+				t.Fatalf("workflow before final snapshot = %+v, want proposal review pending", workflow)
+			}
+			impact, err := domain.NewRevisionImpact("adaptation final write", []domain.RevisionImpactItem{{
+				ArtifactID: "adaptation-plan", ArtifactKind: "outline", Change: "revise",
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.Revisions.Start(fakeAutoResumeRevisionPolicy{}, storepkg.StartRevisionInput{
+				Intent: "must wait", Impact: impact, IdempotencyKey: "during-adaptation-" + test.name,
+			}); !errors.Is(err, storepkg.ErrActiveRevisionExists) {
+				t.Fatalf("revision crossed adaptation %s post-processing: %v", test.name, err)
+			}
+			close(host.release)
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("adaptation %s: %v", test.name, err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("adaptation %s did not finish", test.name)
+			}
+			if _, err := st.Revisions.Start(fakeAutoResumeRevisionPolicy{}, storepkg.StartRevisionInput{
+				Intent: "after action", Impact: impact, IdempotencyKey: "after-adaptation-" + test.name,
+			}); err != nil {
+				t.Fatalf("revision did not start after adaptation %s: %v", test.name, err)
+			}
+		})
+	}
 }

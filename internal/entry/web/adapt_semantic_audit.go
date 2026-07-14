@@ -89,16 +89,23 @@ func (s *Server) handleProjectSemanticAuditStart(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusConflict, "finish or cancel co-create before starting a semantic audit")
 		return
 	}
+	actionCtx, finishAction, err := session.beginCancellableAction(context.Background(), projectActionKindSemanticAudit)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
 	run, err := h.PrepareSemanticAudit(options)
 	if err != nil {
+		finishAction()
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(actionCtx)
 	semanticAuditJobs.Store(run.RunID, semanticAuditJob{cancel: cancel})
 	go func() {
 		defer semanticAuditJobs.Delete(run.RunID)
 		defer cancel()
+		defer finishAction()
 		_ = h.ExecuteSemanticAudit(ctx, run.RunID)
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]any{"run": run})
@@ -129,7 +136,13 @@ func (s *Server) handleProjectSemanticAuditRun(w http.ResponseWriter, r *http.Re
 		}
 		if run.Status == "running" || run.Status == "queued" {
 			if _, live := semanticAuditJobs.Load(runID); !live {
+				finish, beginErr := session.beginActionKind(projectActionKindSemanticAudit)
+				if beginErr != nil {
+					writeProjectSessionError(w, beginErr)
+					return
+				}
 				run, err = adapt.MarkSemanticAuditInterrupted(storepkg.NewStore(session.manifest.OutputDir), runID)
+				finish()
 			}
 		}
 		if err != nil {
@@ -179,16 +192,23 @@ func (s *Server) handleProjectSemanticAuditRun(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
+		actionCtx, finishAction, err := session.beginCancellableAction(context.Background(), projectActionKindSemanticAudit)
+		if err != nil {
+			writeProjectSessionError(w, err)
+			return
+		}
 		run, err := h.ResumeSemanticAudit(previous.RunID)
 		if err != nil {
+			finishAction()
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(actionCtx)
 		semanticAuditJobs.Store(run.RunID, semanticAuditJob{cancel: cancel})
 		go func() {
 			defer semanticAuditJobs.Delete(run.RunID)
 			defer cancel()
+			defer finishAction()
 			_ = h.ExecuteSemanticAudit(ctx, run.RunID)
 		}()
 		writeJSON(w, http.StatusAccepted, map[string]any{"run": run, "retry_of": runID})

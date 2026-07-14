@@ -49,6 +49,15 @@ func (h *Host) ReviseChapter(req ChapterRevisionRequest) (ChapterRevisionResult,
 	if err := h.budget.Refuse(); err != nil {
 		return ChapterRevisionResult{}, err
 	}
+	if h.coordinator != nil {
+		h.coordinator.WaitForIdle()
+	}
+	h.releaseNormalFlowRunOwnership()
+	ownership, err := h.acquireNormalFlowOwnership("host:revise-chapter")
+	if err != nil {
+		return ChapterRevisionResult{}, err
+	}
+	defer ownership.Release()
 
 	flow := domain.FlowRewriting
 	if normalized.Mode == ChapterRevisionModePolish {
@@ -75,7 +84,7 @@ func (h *Host) ReviseChapter(req ChapterRevisionRequest) (ChapterRevisionResult,
 		Level:    "warn",
 	})
 
-	label, err := h.Resume()
+	label, err := h.resume(true)
 	if err != nil {
 		return ChapterRevisionResult{}, err
 	}

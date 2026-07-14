@@ -86,6 +86,12 @@ func (h *Host) ReviseChapterOutline(ctx context.Context, req ChapterOutlineRevis
 	if err := h.budget.Refuse(); err != nil {
 		return ChapterOutlineRevisionResult{}, err
 	}
+	h.releaseNormalFlowRunOwnership()
+	ownership, err := h.acquireNormalFlowOwnership("host:revise-chapter-outline")
+	if err != nil {
+		return ChapterOutlineRevisionResult{}, err
+	}
+	defer ownership.Release()
 
 	progressBefore, err := h.store.Progress.Load()
 	if err != nil {
