@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-14 `b6311d5` `fix: omit unsupported thinking parameters`:
+  the swappable model boundary now resolves the final per-call thinking level
+  against the active provider/model capabilities. Unsupported OpenAI-compatible
+  models such as DeepSeek receive no explicit `thinking` option, even when a
+  configured or upstream call-level override requested one. The focused
+  regression, related bootstrap/agents/host packages, `go test ./... -count=1`,
+  `go vet ./...`, and `git diff --check` passed. The active Web service was not
+  restarted because this fix was isolated from unrelated work on another branch.
 - 2026-07-14 `0501e92` `test: cover model reasoning inheritance`:
   completed the previously uncommitted reasoning-effort regression coverage.
   Tests now verify role overrides, stage inheritance, stage overrides, and
