@@ -720,6 +720,150 @@ func TestRevisionCancelPermanentlyFencesQueuedRouteBeforeReleasingOwnership(t *t
 	}
 }
 
+func TestRevisionAcceptsRepeatedFeedbackWhileCandidateIsGenerating(t *testing.T) {
+	store := NewRevisionStore(t.TempDir())
+	policy := fakeRevisionPolicy{}
+	session, err := store.Start(policy, StartRevisionInput{
+		Intent: "multi-round candidate", Impact: mustRevisionImpact(t), IdempotencyKey: "feedback-start",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session = mustApproveImpact(t, store, policy, session, "feedback-impact")
+	for index, message := range []string{"make the reversal earlier", "keep the final choice irreversible"} {
+		session, err = store.SubmitFeedback(policy, RevisionFeedbackInput{
+			RevisionMutationInput: RevisionMutationInput{
+				SessionID: session.ID, ExpectedRevision: session.Revision,
+				IdempotencyKey: fmt.Sprintf("feedback-%d", index+1),
+			},
+			Message: message,
+		})
+		if err != nil {
+			t.Fatalf("feedback %d: %v", index+1, err)
+		}
+		if session.Stage != domain.RevisionStageCandidateGenerating || session.Route == nil {
+			t.Fatalf("feedback %d locked the candidate: %+v", index+1, session)
+		}
+	}
+	if session.Round != 3 || len(session.Feedback) != 2 {
+		t.Fatalf("multi-round feedback state = %+v", session)
+	}
+}
+
+func TestNormalRevisionStagesStructureBeforeOutlineAndMinimalProse(t *testing.T) {
+	store := NewRevisionStore(t.TempDir())
+	policy := domain.NormalRevisionPolicy{}
+	volumeID := domain.LegacyStructureID("store-normal-stage", domain.StructureKindVolume, "final")
+	arcID := domain.LegacyStructureID("store-normal-stage", domain.StructureKindArc, "final")
+	chapterID := domain.LegacyStructureID("store-normal-stage", domain.StructureKindChapter, "affected")
+	impact, err := domain.NewRevisionImpact("insert a final volume", []domain.RevisionImpactItem{
+		{
+			ArtifactID: volumeID, ArtifactKind: domain.StructureKindVolume, Change: "insert final volume",
+			Requirement: domain.StructureImpactRequired, Cause: domain.StructureImpactStructureChange,
+			DependencyEvidence: []string{"the existing ending opens a separate final conflict"},
+		},
+		{
+			ArtifactID: chapterID, ArtifactKind: domain.StructureKindChapter, Change: "coordinate and rewrite one affected chapter",
+			Requirement: domain.StructureImpactRequired, Cause: domain.StructureImpactContentDependency, RequiresBodyRewrite: true,
+			DependencyEvidence: []string{"the inserted volume changes this chapter's irreversible exit"},
+		},
+		{
+			ArtifactID: "batch-plan", ArtifactKind: domain.NormalArtifactBatchPlan, Change: "bound generation and review scope",
+			Requirement: domain.StructureImpactRequired, Cause: domain.StructureImpactContentDependency,
+			DependencyEvidence: []string{"the affected chapter must be generated in a bounded batch"},
+		},
+		{ArtifactID: domain.NormalStructureSnapshotID, ArtifactKind: domain.NormalArtifactStructureSnapshot, Change: "bind snapshot", Requirement: domain.StructureImpactRequired, Cause: domain.StructureImpactContentDependency, DependencyEvidence: []string{"accepted version"}},
+		{ArtifactID: "rework:" + chapterID, ArtifactKind: domain.NormalArtifactProseReworkIntent, Change: "queue exact rework", Requirement: domain.StructureImpactRequired, Cause: domain.StructureImpactContentDependency, DependencyEvidence: []string{"stable target"}},
+		{ArtifactID: domain.NormalProseReworkQueueID, ArtifactKind: domain.NormalArtifactProseReworkQueue, Change: "queue slots", Requirement: domain.StructureImpactRequired, Cause: domain.StructureImpactContentDependency, DependencyEvidence: []string{"PR-06 boundary"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.Start(policy, StartRevisionInput{Intent: "completed-book expansion", Impact: impact, IdempotencyKey: "normal-stage-start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err = store.ApproveImpact(policy, RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "normal-stage-impact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := fmt.Sprintf(`[{"id":%q,"index":1,"title":"Final","arcs":[{"id":%q,"index":1,"title":"Arc","chapters":[{"id":%q,"chapter":1,"title":"Coordinated","core_event":"choice","hook":"cost","scenes":["choose"]}]}]}]`, volumeID, arcID, chapterID)
+	plan := fmt.Sprintf(`{"batches":[{"id":"batch-001","index":1,"chapter_ids":[%q],"volume_id":%q,"arc_id":%q,"estimated_output_words":3000,"status":"pending"}],"volume_reviews":[{"scope_id":%q,"status":"pending"}],"whole_book_review":{"scope_id":"whole-book","status":"pending"}}`, chapterID, volumeID, arcID, volumeID)
+	submitStage := func(prefix, stage string) {
+		t.Helper()
+		var artifacts []CandidateArtifactInput
+		switch stage {
+		case domain.NormalApprovalStructure:
+			artifacts = []CandidateArtifactInput{
+				{ArtifactID: volumeID, ArtifactKind: domain.StructureKindVolume, Payload: json.RawMessage(`{"entry_state":"old ending","independent_conflict":"succession","arc_progression":"alliances fracture","climax":"capital falls","irreversible_outcome":"realm divides","cannot_fit_current_volume":"prior phase paid off","soft_budget":{"estimated_chapters":1,"chapter_min_words":3000,"chapter_max_words":5000,"target_total_words":4000,"total_min_words":3000,"total_max_words":5000}}`)},
+				{ArtifactID: domain.NormalStructureSnapshotID, ArtifactKind: domain.NormalArtifactStructureSnapshot, Payload: json.RawMessage(snapshot)},
+			}
+		case domain.NormalApprovalOutline:
+			detail := fmt.Sprintf(`{"chapter_id":%q,"current_number":1,"volume_id":%q,"arc_id":%q,"outline":{"id":%q,"chapter":1,"title":"Coordinated","core_event":"choice","hook":"cost","scenes":["choose"]}}`, chapterID, volumeID, arcID, chapterID)
+			artifacts = []CandidateArtifactInput{
+				{ArtifactID: chapterID, ArtifactKind: domain.StructureKindChapter, Payload: json.RawMessage(detail)},
+				{ArtifactID: "batch-plan", ArtifactKind: domain.NormalArtifactBatchPlan, Payload: json.RawMessage(plan)},
+				{ArtifactID: domain.NormalStructureSnapshotID, ArtifactKind: domain.NormalArtifactStructureSnapshot, Payload: json.RawMessage(snapshot)},
+			}
+		case domain.NormalApprovalProse:
+			intent := fmt.Sprintf(`{"chapter_id":%q,"current_number":1,"volume_id":%q,"arc_id":%q,"reason":"stable dependency"}`, chapterID, volumeID, arcID)
+			queue := fmt.Sprintf(`{"chapter_ids":[%q]}`, chapterID)
+			artifacts = []CandidateArtifactInput{
+				{ArtifactID: "rework:" + chapterID, ArtifactKind: domain.NormalArtifactProseReworkIntent, Payload: json.RawMessage(intent)},
+				{ArtifactID: domain.NormalProseReworkQueueID, ArtifactKind: domain.NormalArtifactProseReworkQueue, Payload: json.RawMessage(queue)},
+			}
+		}
+		candidate, submitErr := store.SubmitCandidate(policy, SubmitRevisionCandidateInput{
+			SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: prefix + "-candidate",
+			Artifacts: artifacts,
+		})
+		if submitErr != nil {
+			t.Fatalf("%s candidate: %v", stage, submitErr)
+		}
+		evidence := make([]domain.RevisionAuditEvidence, 0, len(candidate.AuditExpectations))
+		for _, expected := range candidate.AuditExpectations {
+			evidence = append(evidence, domain.RevisionAuditEvidence{Scope: expected.Scope, ScopeID: expected.ScopeID, FromChapter: expected.FromChapter, ToChapter: expected.ToChapter, ContentSignature: expected.ContentSignature, Passed: true})
+		}
+		session, submitErr = store.RecordAudit(policy, RevisionAuditInput{
+			RevisionMutationInput: RevisionMutationInput{SessionID: candidate.ID, ExpectedRevision: candidate.Revision, IdempotencyKey: prefix + "-audit"},
+			CandidateSignature:    candidate.CandidateSignature, Evidence: evidence, Report: "current signatures pass",
+		})
+		if submitErr != nil {
+			t.Fatalf("%s audit: %v", stage, submitErr)
+		}
+		session, submitErr = store.ApproveStage(policy, RevisionApprovalInput{
+			RevisionMutationInput: RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: prefix + "-approve"},
+			StageID:               stage,
+		})
+		if submitErr != nil {
+			t.Fatalf("%s approval: %v", stage, submitErr)
+		}
+	}
+
+	submitStage("normal-structure", domain.NormalApprovalStructure)
+	if session.Stage != domain.RevisionStageCandidateGenerating || len(session.AcceptedVersionIDs) != 2 || len(session.Approvals) != 1 {
+		t.Fatalf("structure approval did not open outline round: %+v", session)
+	}
+	submitStage("normal-outline", domain.NormalApprovalOutline)
+	if session.Stage != domain.RevisionStageCandidateGenerating || len(session.Approvals) != 2 {
+		t.Fatalf("outline approval did not open prose round: %+v", session)
+	}
+	submitStage("normal-prose", domain.NormalApprovalProse)
+	if session.Stage != domain.RevisionStageReadyToPublish {
+		t.Fatalf("normal revision not ready after ordered stages: %+v", session)
+	}
+	published, err := store.Publish(policy, RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "normal-publish"})
+	if err != nil || published.Stage != domain.RevisionStageCompleted {
+		t.Fatalf("publish staged normal revision: session=%+v err=%v", published, err)
+	}
+	for _, id := range []string{volumeID, chapterID, "rework:" + chapterID, domain.NormalProseReworkQueueID} {
+		if current, loadErr := store.CurrentVersion(id); loadErr != nil || current == nil {
+			t.Fatalf("published artifact %s missing: current=%+v err=%v", id, current, loadErr)
+		}
+	}
+}
+
 func TestRevisionStoreRecoversCrashedNormalFlowLease(t *testing.T) {
 	dir := t.TempDir()
 	state := newRevisionState()

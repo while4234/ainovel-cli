@@ -80,7 +80,7 @@ func (r StructureRevisionRequest) Validate() error {
 	if r.BaseRevision <= 0 {
 		return fmt.Errorf("base revision must be positive")
 	}
-	if err := ValidateStructureSnapshot(r.Current); err != nil {
+	if err := ValidateStructureSnapshotForStage(r.Current, r.Stage); err != nil {
 		return fmt.Errorf("validate current structure: %w", err)
 	}
 	chapters := StructureChapterIDs(r.Current)
@@ -127,14 +127,18 @@ func requiresStructureTarget(operation StructureRevisionOperation) bool {
 }
 
 type DramaticStageEvidence struct {
+	EntryState             string `json:"entry_state"`
 	IndependentConflict    string `json:"independent_conflict"`
+	ArcProgression         string `json:"arc_progression"`
 	Climax                 string `json:"climax"`
 	IrreversibleOutcome    string `json:"irreversible_outcome"`
 	CannotFitCurrentVolume string `json:"cannot_fit_current_volume"`
 }
 
 func (e DramaticStageEvidence) SupportsNewVolume() bool {
-	return strings.TrimSpace(e.IndependentConflict) != "" &&
+	return strings.TrimSpace(e.EntryState) != "" &&
+		strings.TrimSpace(e.IndependentConflict) != "" &&
+		strings.TrimSpace(e.ArcProgression) != "" &&
 		strings.TrimSpace(e.Climax) != "" &&
 		strings.TrimSpace(e.IrreversibleOutcome) != "" &&
 		strings.TrimSpace(e.CannotFitCurrentVolume) != ""
@@ -151,7 +155,7 @@ func (a ContentAdditionAssessment) Validate() error {
 		return fmt.Errorf("content-addition assessment reason is required")
 	}
 	if a.NewVolume != nil && !a.NewVolume.SupportsNewVolume() {
-		return fmt.Errorf("new volume requires an independent conflict, climax, irreversible outcome, and cannot-fit evidence")
+		return fmt.Errorf("new volume requires an entry state, independent conflict, arc progression, climax, irreversible outcome, and cannot-fit evidence")
 	}
 	return nil
 }
@@ -284,10 +288,14 @@ func (p StructureRevisionProposal) RevisionImpact(summary string) (RevisionImpac
 }
 
 func (p StructureRevisionProposal) Validate() error {
+	return p.ValidateForStage(ManuscriptStageOutlineComplete)
+}
+
+func (p StructureRevisionProposal) ValidateForStage(stage ManuscriptStage) error {
 	if err := p.Assessment.Validate(); err != nil {
 		return err
 	}
-	if err := ValidateStructureSnapshot(p.Candidate); err != nil {
+	if err := ValidateStructureSnapshotForStage(p.Candidate, stage); err != nil {
 		return fmt.Errorf("validate candidate structure: %w", err)
 	}
 	if err := p.SoftBudget.Validate(); err != nil {
@@ -302,6 +310,41 @@ func (p StructureRevisionProposal) Validate() error {
 			return fmt.Errorf("duplicate structure impact for artifact %q", impact.ArtifactID)
 		}
 		seen[impact.ArtifactID] = struct{}{}
+	}
+	return nil
+}
+
+// ValidateStructureSnapshotForStage permits a proposal-complete volume/arc
+// skeleton with reserved chapter counts. Later stages require stable chapter
+// slots because detailed generation and prose queues bind to those identities.
+func ValidateStructureSnapshotForStage(volumes []VolumeOutline, stage ManuscriptStage) error {
+	if stage != ManuscriptStageProposalComplete {
+		return ValidateStructureSnapshot(volumes)
+	}
+	if len(volumes) == 0 {
+		return fmt.Errorf("structure must contain at least one volume")
+	}
+	seen := make(map[string]string)
+	for _, volume := range volumes {
+		if err := validateStructureNodeID(seen, volume.ID, StructureKindVolume); err != nil {
+			return err
+		}
+		if len(volume.Arcs) == 0 {
+			return fmt.Errorf("proposal skeleton volume %q must contain at least one arc", volume.ID)
+		}
+		for _, arc := range volume.Arcs {
+			if err := validateStructureNodeID(seen, arc.ID, StructureKindArc); err != nil {
+				return err
+			}
+			if len(arc.Chapters) == 0 && arc.EstimatedChapters <= 0 {
+				return fmt.Errorf("proposal skeleton arc %q must reserve chapters", arc.ID)
+			}
+			for _, chapter := range arc.Chapters {
+				if err := validateStructureNodeID(seen, chapter.ID, StructureKindChapter); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
 }

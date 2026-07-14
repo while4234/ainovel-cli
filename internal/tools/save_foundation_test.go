@@ -22,6 +22,44 @@ func TestSaveFoundationSchemaAllowsMissingType(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationBlocksDirectFormalOutlineWritesDuringActiveRevision(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	impact, err := domain.NewRevisionImpact("direct write gate", []domain.RevisionImpactItem{{
+		ArtifactID: "chapter-1", ArtifactKind: domain.StructureKindChapter, Change: "revise outline",
+		DependencyEvidence: []string{"active revision owns the formal write"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Revisions.Start(toolRevisionPolicy{}, store.StartRevisionInput{Intent: "gate", Impact: impact, IdempotencyKey: "tool-gate"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"outline", "layered_outline", "expand_arc", "repair_arc", "repair_volume", "append_volume", "update_compass", "complete_book"} {
+		args, _ := json.Marshal(map[string]any{"type": kind, "content": map[string]any{}})
+		if _, err := NewSaveFoundationTool(st).Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "blocked by active revision") {
+			t.Fatalf("direct formal write %s was not blocked: %v", kind, err)
+		}
+	}
+}
+
+type toolRevisionPolicy struct{}
+
+func (toolRevisionPolicy) Mode() domain.RevisionMode                  { return domain.RevisionModeNormal }
+func (toolRevisionPolicy) Identity() (string, string)                 { return "tools.test", "1" }
+func (toolRevisionPolicy) ValidateImpact(domain.RevisionImpact) error { return nil }
+func (toolRevisionPolicy) ApprovalStages(domain.RevisionImpact) ([]domain.RevisionApprovalStage, error) {
+	return []domain.RevisionApprovalStage{{ID: "outline", Label: "outline"}}, nil
+}
+func (toolRevisionPolicy) ValidateCandidate(domain.RevisionSession, []domain.ArtifactVersion) error {
+	return nil
+}
+func (toolRevisionPolicy) Route(domain.RevisionSession) (*domain.RevisionRoute, error) {
+	return nil, nil
+}
+
 func TestSaveFoundationInfersPremiseFromMarkdownWhenTypeMissing(t *testing.T) {
 	dir := testStoreDir(t)
 	store := store.NewStore(dir)
@@ -1276,6 +1314,17 @@ func TestSaveFoundationLongNormalPlanningUsesVolumeAndBatchedChapterReviews(t *t
 			if result["continue_planning"] != true || result["audit_required"] != true {
 				t.Fatalf("batch V%d A%d should continue: %+v", vi, ai, result)
 			}
+			for currentChapter := batchStart; currentChapter < chapter; currentChapter++ {
+				entry, loadErr := st.Outline.GetChapterOutline(currentChapter)
+				if loadErr != nil {
+					t.Fatalf("load chapter %d stable identity: %v", currentChapter, loadErr)
+				}
+				saveAudit(map[string]any{
+					"scope": "chapter", "scope_id": entry.ID, "from_chapter": currentChapter, "to_chapter": currentChapter,
+					"verdict": "pass", "summary": "chapter promise is independently sound",
+					"dimensions": dimensions("causal_value", "character_logic", "continuity", "scene_progression", "hook_and_pacing", "originality"),
+				})
+			}
 			saveAudit(map[string]any{
 				"scope": "arc", "volume": vi, "arc": ai, "from_chapter": batchStart, "to_chapter": chapter - 1,
 				"verdict": "pass", "summary": "arc advances causally", "dimensions": dimensions("causal_progression", "character_logic", "chapter_value", "continuity", "hook_and_pacing", "originality"),
@@ -1343,9 +1392,9 @@ func TestSaveFoundationRepairVolumeKeepsBudgetAndInvalidatesSkeletonAudit(t *tes
 	if got[0].Title != "Opening" || got[1].Title != "Final reckoning" || domain.TotalChapters(got) != 12 {
 		t.Fatalf("repaired volumes = %+v", got)
 	}
-	kept, _ := st.OriginalPlanningAudits.Get("skeleton_volume", 1, 0)
+	adjacent, _ := st.OriginalPlanningAudits.Get("skeleton_volume", 1, 0)
 	invalidated, _ := st.OriginalPlanningAudits.Get("skeleton_volume", 2, 0)
-	if kept == nil || invalidated != nil {
-		t.Fatalf("unaffected audit=%+v repaired audit=%+v", kept, invalidated)
+	if adjacent != nil || invalidated != nil {
+		t.Fatalf("adjacent audit=%+v repaired audit=%+v", adjacent, invalidated)
 	}
 }

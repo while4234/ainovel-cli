@@ -203,9 +203,57 @@ type RevisionFeedback struct {
 type RevisionAudit struct {
 	Round              int    `json:"round"`
 	CandidateSignature string `json:"candidate_signature"`
+	Scope              string `json:"scope,omitempty"`
+	ScopeID            string `json:"scope_id,omitempty"`
+	FromChapter        int    `json:"from_chapter,omitempty"`
+	ToChapter          int    `json:"to_chapter,omitempty"`
+	ContentSignature   string `json:"content_signature,omitempty"`
 	Passed             bool   `json:"passed"`
 	Report             string `json:"report,omitempty"`
 	CreatedAt          string `json:"created_at"`
+}
+
+// RevisionAuditEvidence is one independently signed audit in the complete
+// quality set required for a candidate. Chapter identity deliberately carries
+// both its stable ID and current display range so renumbering cannot make an
+// old chapter audit appear current.
+type RevisionAuditEvidence struct {
+	Scope            string `json:"scope"`
+	ScopeID          string `json:"scope_id"`
+	FromChapter      int    `json:"from_chapter,omitempty"`
+	ToChapter        int    `json:"to_chapter,omitempty"`
+	ContentSignature string `json:"content_signature"`
+	Passed           bool   `json:"passed"`
+	Report           string `json:"report,omitempty"`
+}
+
+func (e RevisionAuditEvidence) Validate() error {
+	if strings.TrimSpace(e.Scope) == "" || strings.TrimSpace(e.ScopeID) == "" ||
+		strings.TrimSpace(e.ContentSignature) == "" {
+		return fmt.Errorf("revision audit evidence requires scope, scope_id, and content signature")
+	}
+	if e.Scope == "chapter" && (e.FromChapter <= 0 || e.ToChapter != e.FromChapter) {
+		return fmt.Errorf("chapter audit %q must identify exactly one current chapter number", e.ScopeID)
+	}
+	return nil
+}
+
+// RevisionAuditExpectation is the exact scope-local signature that must be
+// returned by an auditor. Persisting the complete set with the candidate makes
+// missing, invented, or whole-candidate-substituted scopes impossible.
+type RevisionAuditExpectation struct {
+	Scope            string `json:"scope"`
+	ScopeID          string `json:"scope_id"`
+	FromChapter      int    `json:"from_chapter,omitempty"`
+	ToChapter        int    `json:"to_chapter,omitempty"`
+	ContentSignature string `json:"content_signature"`
+}
+
+func (e RevisionAuditExpectation) Validate() error {
+	return (RevisionAuditEvidence{
+		Scope: e.Scope, ScopeID: e.ScopeID, FromChapter: e.FromChapter,
+		ToChapter: e.ToChapter, ContentSignature: e.ContentSignature, Passed: true,
+	}).Validate()
 }
 
 type RevisionRoute struct {
@@ -228,30 +276,33 @@ func (r RevisionRoute) Validate() error {
 }
 
 type RevisionSession struct {
-	Version             int                     `json:"version"`
-	ID                  string                  `json:"id"`
-	Mode                RevisionMode            `json:"mode"`
-	Stage               RevisionStage           `json:"stage"`
-	ResumeStage         RevisionStage           `json:"resume_stage,omitempty"`
-	Revision            int                     `json:"revision"`
-	Generation          uint64                  `json:"generation"`
-	PolicyID            string                  `json:"policy_id"`
-	PolicyVersion       string                  `json:"policy_version"`
-	Intent              string                  `json:"intent"`
-	Impact              RevisionImpact          `json:"impact"`
-	ApprovalStages      []RevisionApprovalStage `json:"approval_stages"`
-	Approvals           []RevisionApproval      `json:"approvals,omitempty"`
-	CandidateVersionIDs []string                `json:"candidate_version_ids,omitempty"`
-	CandidateSignature  string                  `json:"candidate_signature,omitempty"`
-	Round               int                     `json:"round"`
-	Audits              []RevisionAudit         `json:"audits,omitempty"`
-	Feedback            []RevisionFeedback      `json:"feedback,omitempty"`
-	Route               *RevisionRoute          `json:"route,omitempty"`
-	RestoresVersionID   string                  `json:"restores_version_id,omitempty"`
-	LastError           string                  `json:"last_error,omitempty"`
-	CreatedAt           string                  `json:"created_at"`
-	UpdatedAt           string                  `json:"updated_at"`
-	CompletedAt         string                  `json:"completed_at,omitempty"`
+	Version             int                        `json:"version"`
+	ID                  string                     `json:"id"`
+	Mode                RevisionMode               `json:"mode"`
+	Stage               RevisionStage              `json:"stage"`
+	ResumeStage         RevisionStage              `json:"resume_stage,omitempty"`
+	Revision            int                        `json:"revision"`
+	Generation          uint64                     `json:"generation"`
+	PolicyID            string                     `json:"policy_id"`
+	PolicyVersion       string                     `json:"policy_version"`
+	Intent              string                     `json:"intent"`
+	Impact              RevisionImpact             `json:"impact"`
+	PreviewSignature    string                     `json:"preview_signature,omitempty"`
+	ApprovalStages      []RevisionApprovalStage    `json:"approval_stages"`
+	Approvals           []RevisionApproval         `json:"approvals,omitempty"`
+	AcceptedVersionIDs  []string                   `json:"accepted_version_ids,omitempty"`
+	CandidateVersionIDs []string                   `json:"candidate_version_ids,omitempty"`
+	CandidateSignature  string                     `json:"candidate_signature,omitempty"`
+	AuditExpectations   []RevisionAuditExpectation `json:"audit_expectations,omitempty"`
+	Round               int                        `json:"round"`
+	Audits              []RevisionAudit            `json:"audits,omitempty"`
+	Feedback            []RevisionFeedback         `json:"feedback,omitempty"`
+	Route               *RevisionRoute             `json:"route,omitempty"`
+	RestoresVersionID   string                     `json:"restores_version_id,omitempty"`
+	LastError           string                     `json:"last_error,omitempty"`
+	CreatedAt           string                     `json:"created_at"`
+	UpdatedAt           string                     `json:"updated_at"`
+	CompletedAt         string                     `json:"completed_at,omitempty"`
 }
 
 func (s RevisionSession) Active() bool {
@@ -264,6 +315,14 @@ func (s RevisionSession) CurrentApprovalStage() *RevisionApprovalStage {
 	}
 	stage := s.ApprovalStages[len(s.Approvals)]
 	return &stage
+}
+
+func (s RevisionSession) CurrentApprovalStageID() string {
+	stage := s.CurrentApprovalStage()
+	if stage == nil {
+		return ""
+	}
+	return stage.ID
 }
 
 func (s RevisionSession) LatestAuditPassed() bool {
@@ -306,6 +365,27 @@ func (s RevisionSession) Validate() error {
 	}
 	if len(s.Approvals) > len(s.ApprovalStages) {
 		return fmt.Errorf("revision approvals exceed configured stages")
+	}
+	expectations := make(map[string]struct{}, len(s.AuditExpectations))
+	for _, expectation := range s.AuditExpectations {
+		if err := expectation.Validate(); err != nil {
+			return err
+		}
+		key := expectation.Scope + "\x00" + expectation.ScopeID
+		if _, duplicate := expectations[key]; duplicate {
+			return fmt.Errorf("duplicate revision audit expectation %s/%s", expectation.Scope, expectation.ScopeID)
+		}
+		expectations[key] = struct{}{}
+	}
+	accepted := make(map[string]struct{}, len(s.AcceptedVersionIDs))
+	for _, versionID := range s.AcceptedVersionIDs {
+		if strings.TrimSpace(versionID) == "" {
+			return fmt.Errorf("accepted revision version ID is required")
+		}
+		if _, duplicate := accepted[versionID]; duplicate {
+			return fmt.Errorf("duplicate accepted revision version %q", versionID)
+		}
+		accepted[versionID] = struct{}{}
 	}
 	for index, approval := range s.Approvals {
 		if approval.StageID != s.ApprovalStages[index].ID {
@@ -377,6 +457,28 @@ type RevisionPolicy interface {
 	ValidateImpact(RevisionImpact) error
 	ValidateCandidate(RevisionSession, []ArtifactVersion) error
 	Route(RevisionSession) (*RevisionRoute, error)
+}
+
+// StagedRevisionPolicy is an optional extension for policies whose later
+// candidates must not be generated before an earlier human approval. Policies
+// that do not implement it retain the single-candidate RevisionPolicy flow.
+type StagedRevisionPolicy interface {
+	RevisionPolicy
+	ContinueAfterApproval(RevisionSession, RevisionApprovalStage) bool
+}
+
+// SignedAuditSetPolicy is implemented by policies that require more than one
+// boolean audit decision before a human approval can open.
+type SignedAuditSetPolicy interface {
+	RevisionPolicy
+	ValidateAuditSet(RevisionSession, []RevisionAuditEvidence) error
+}
+
+// ScopedAuditPolicy derives the exact scope-local audit contract from the
+// immutable candidate versions accepted by RevisionStore.
+type ScopedAuditPolicy interface {
+	RevisionPolicy
+	AuditExpectations(RevisionSession, []ArtifactVersion) ([]RevisionAuditExpectation, error)
 }
 
 func ContentSignature(content []byte) string {

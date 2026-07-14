@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,14 @@ import (
 	adaptpkg "github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
+
+type webNormalStructurePlanner struct {
+	proposal domain.StructureRevisionProposal
+}
+
+func (p webNormalStructurePlanner) PlanStructure(context.Context, domain.StructureRevisionRequest) (domain.StructureRevisionProposal, error) {
+	return p.proposal, nil
+}
 
 func TestAdaptCoCreateOpenerUsesCurrentModeContractOnly(t *testing.T) {
 	opener := adaptCoCreateOpener(domain.AdaptationGranularityFree, domain.AdaptationRewritePreserveDetails, 0.2)
@@ -339,6 +348,28 @@ func TestProjectCoCreatePlanningRevisionTargetsOneVolumeAndReentersAudit(t *test
 	if err != nil || work == nil || work.Kind != "repair_skeleton_volume" || work.Volume != 3 {
 		t.Fatalf("queued work=%+v err=%v", work, err)
 	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/planning/revise", bytes.NewBufferString(`{"scope":"volume","volume_index":3,"instruction":"also make the heroine pay the promised personal cost"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second feedback status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.resumeCalls != 1 {
+		t.Fatalf("additional feedback should join the active candidate without starting a second run: resume=%d", fake.resumeCalls)
+	}
+	work, err = st.OriginalPlanningAudits.NextSkeletonWork(st.Outline)
+	if err != nil || work == nil || work.Audit == nil ||
+		!strings.Contains(work.Audit.Issues[0].RepairInstruction, "close every main plot") ||
+		!strings.Contains(work.Audit.Issues[0].RepairInstruction, "promised personal cost") {
+		t.Fatalf("multi-round revision feedback=%+v err=%v", work, err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/planning/revise", bytes.NewBufferString(`{"scope":"volume","volume_index":2,"instruction":"redirect this feedback"}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK || !strings.Contains(rec.Body.String(), "no active original-fiction revision candidate") {
+		t.Fatalf("stable target drift was accepted: status=%d body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestProjectCoCreatePlanningRevisionRejectsInvalidState(t *testing.T) {
@@ -365,6 +396,163 @@ func TestProjectCoCreatePlanningRevisionRejectsInvalidState(t *testing.T) {
 	}
 	if fake.cocreateCalls != 0 || fake.startPreparedCalls != 0 {
 		t.Fatalf("invalid request should not touch model or planning start: co-create=%d start=%d", fake.cocreateCalls, fake.startPreparedCalls)
+	}
+}
+
+func TestNormalCoCreateTransportRejectsSourceAndAdaptationFieldsBeforeDecoding(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Normal Firewall")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		`{"kind":"normal","initial":"original story","originalNovel":{"title":"forbidden"}}`,
+		`{"feedback":"revise","DependencySourceIDs":["source-1"]}`,
+		`{"feedback":"revise","adaptationContract":{"event":"forbidden"}}`,
+	} {
+		path := "/api/projects/" + manifest.ID + "/cocreate/planning/revise"
+		if strings.Contains(body, `"kind"`) {
+			path = "/api/projects/" + manifest.ID + "/cocreate/begin"
+		}
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "forbidden") {
+			t.Fatalf("normal firewall status=%d body=%s input=%s", rec.Code, rec.Body.String(), body)
+		}
+	}
+}
+
+func TestProjectSessionNormalRevisionPreviewPersistsAndTamperedCandidateIsIsolated(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Normal Revision Service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installFakeSession(t, server, manifest)
+	session, _, err := server.sessions.Open(manifest.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := storepkg.NewStore(manifest.OutputDir)
+	vol := domain.LegacyStructureID("web-normal", domain.StructureKindVolume, "volume")
+	arc := domain.LegacyStructureID("web-normal", domain.StructureKindArc, "arc")
+	ch1 := domain.LegacyStructureID("web-normal", domain.StructureKindChapter, "chapter-1")
+	ch2 := domain.LegacyStructureID("web-normal", domain.StructureKindChapter, "chapter-2")
+	current := []domain.VolumeOutline{{ID: vol, Index: 1, Title: "Volume", Theme: "choice", Arcs: []domain.ArcOutline{{ID: arc, Index: 1, Title: "Arc", Goal: "choose", Chapters: []domain.OutlineEntry{{ID: ch1, Chapter: 1, Title: "One", CoreEvent: "choice", Hook: "cost", Scenes: []string{"choose"}}}}}}}
+	candidate := domain.CloneStructureSnapshot(current)
+	candidate[0].Arcs[0].Chapters = append(candidate[0].Arcs[0].Chapters, domain.OutlineEntry{ID: ch2, Chapter: 2, Title: "Two", CoreEvent: "cost lands", Hook: "aftermath", Scenes: []string{"pay cost"}})
+	if err := st.Outline.SaveLayeredOutline(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("web normal", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.UpdatePhase(domain.PhaseOutline); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
+		t.Fatal(err)
+	}
+	budget, _ := domain.NewDynamicSoftBudget(2, 3000, 5000)
+	previewed, err := session.PreviewNormalStructureRevision(context.Background(), webNormalStructurePlanner{proposal: domain.StructureRevisionProposal{
+		Assessment: domain.ContentAdditionAssessment{NeedsAdditionalChapters: true, Reason: "the consequence needs a chapter"}, Candidate: candidate, SoftBudget: budget,
+	}}, domain.StructureRevisionRequest{
+		Operation: domain.StructureRevisionAppendChapter, Intent: "add consequence", Stage: domain.ManuscriptStageWriting,
+		BaseRevision: 1, Current: current, CurrentSoftBudget: &budget,
+	}, "web-preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := st.Revisions.Active()
+	if err != nil || active == nil || active.ID != previewed.Session.ID {
+		t.Fatalf("web persistent session=%+v err=%v", active, err)
+	}
+	approved, err := session.NormalRevisionService().ApproveImpact(active.ID, active.Revision, "web-impact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := *previewed.Preview
+	tampered.Proposal.Candidate[0].Arcs[0].Chapters[1].Title = "tampered after preview"
+	if _, err := session.NormalRevisionService().SubmitStructureCandidate(tampered, approved.ID, approved.Revision, "web-tampered"); err == nil {
+		t.Fatal("tampered web candidate was accepted")
+	}
+	formal, _ := st.Outline.LoadLayeredOutline()
+	active, _ = st.Revisions.Active()
+	if len(formal[0].Arcs[0].Chapters) != 1 || active == nil || active.Stage != domain.RevisionStageCandidateGenerating {
+		t.Fatalf("failed candidate escaped isolation: formal=%+v active=%+v", formal, active)
+	}
+}
+
+func TestNormalRevisionProductionPreviewHandlerUsesRealStageAcrossLifecycle(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	for _, stage := range []domain.ManuscriptStage{
+		domain.ManuscriptStageProposalComplete,
+		domain.ManuscriptStageOutlineComplete,
+		domain.ManuscriptStageWriting,
+		domain.ManuscriptStageComplete,
+	} {
+		t.Run(string(stage), func(t *testing.T) {
+			manifest, err := server.store.CreateProject("handler " + string(stage))
+			if err != nil {
+				t.Fatal(err)
+			}
+			installFakeSession(t, server, manifest)
+			st := storepkg.NewStore(manifest.OutputDir)
+			vol := domain.LegacyStructureID("handler-"+string(stage), domain.StructureKindVolume, "vol")
+			arc := domain.LegacyStructureID("handler-"+string(stage), domain.StructureKindArc, "arc")
+			ch1 := domain.LegacyStructureID("handler-"+string(stage), domain.StructureKindChapter, "ch-1")
+			ch2 := domain.LegacyStructureID("handler-"+string(stage), domain.StructureKindChapter, "ch-2")
+			current := []domain.VolumeOutline{{ID: vol, Index: 1, Title: "Volume", Theme: "change", Arcs: []domain.ArcOutline{{ID: arc, Index: 1, Title: "Arc", Goal: "choose", Chapters: []domain.OutlineEntry{{ID: ch1, Chapter: 1, Title: "One", CoreEvent: "choice", Hook: "cost", Scenes: []string{"choose"}}}}}}}
+			candidate := domain.CloneStructureSnapshot(current)
+			candidate[0].Arcs[0].Chapters = append(candidate[0].Arcs[0].Chapters, domain.OutlineEntry{ID: ch2, Chapter: 2, Title: "Two", CoreEvent: "cost lands", Hook: "aftermath", Scenes: []string{"pay"}})
+			if err := st.Outline.SaveLayeredOutline(current); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Progress.Init("handler", 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Progress.UpdatePhase(domain.PhaseOutline); err != nil {
+				t.Fatal(err)
+			}
+			switch stage {
+			case domain.ManuscriptStageProposalComplete:
+				_ = st.RunMeta.SetPlanningReview(&domain.PlanningReview{Status: domain.PlanningReviewStatusPending, Kind: domain.PlanningReviewKindVolumeSplit, Brief: "proposal"})
+			case domain.ManuscriptStageOutlineComplete:
+				_ = st.RunMeta.SetPlanningReview(&domain.PlanningReview{Status: domain.PlanningReviewStatusPending, Kind: domain.PlanningReviewKindChapterOutline, Brief: "outline"})
+			default:
+				_ = st.Progress.UpdatePhase(domain.PhaseWriting)
+				if stage == domain.ManuscriptStageComplete {
+					_ = st.Progress.UpdatePhase(domain.PhaseComplete)
+				}
+			}
+			budget, _ := domain.NewDynamicSoftBudget(2, 3000, 5000)
+			body, _ := json.Marshal(webNormalRevisionPreviewRequest{
+				Operation: domain.StructureRevisionAppendChapter, Intent: "add consequence", IdempotencyKey: "handler-" + string(stage),
+				Proposal: domain.StructureRevisionProposal{
+					Assessment: domain.ContentAdditionAssessment{NeedsAdditionalChapters: true, Reason: "consequence"},
+					Candidate:  candidate, SoftBudget: budget,
+				},
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/revision/preview", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("handler status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var response struct {
+				Revision host.NormalStructureRevisionPreview `json:"revision"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Revision.Preview == nil || response.Revision.Preview.Stage != stage || response.Revision.Session == nil {
+				t.Fatalf("real handler stage=%+v want=%s", response.Revision, stage)
+			}
+		})
 	}
 }
 

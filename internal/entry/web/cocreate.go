@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,6 +73,36 @@ type webCoCreatePlanningRevisionRequest struct {
 	FromChapter    int    `json:"from_chapter,omitempty"`
 	ToChapter      int    `json:"to_chapter,omitempty"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+type webNormalRevisionPreviewRequest struct {
+	Operation         domain.StructureRevisionOperation `json:"operation"`
+	Intent            string                            `json:"intent"`
+	TargetID          string                            `json:"target_id,omitempty"`
+	DestinationID     string                            `json:"destination_id,omitempty"`
+	BaseRevision      int                               `json:"base_revision,omitempty"`
+	CurrentSoftBudget *domain.DynamicSoftBudget         `json:"current_soft_budget,omitempty"`
+	Proposal          domain.StructureRevisionProposal  `json:"proposal"`
+	IdempotencyKey    string                            `json:"idempotency_key"`
+}
+
+type webNormalRevisionCommandRequest struct {
+	Action           string                           `json:"action"`
+	ExpectedRevision int                              `json:"expected_revision,omitempty"`
+	IdempotencyKey   string                           `json:"idempotency_key"`
+	Preview          *domain.StructureRevisionPreview `json:"preview,omitempty"`
+	Candidate        []domain.VolumeOutline           `json:"candidate,omitempty"`
+	Evidence         []domain.RevisionAuditEvidence   `json:"evidence,omitempty"`
+	ImpactSignature  string                           `json:"impact_signature,omitempty"`
+	Feedback         string                           `json:"feedback,omitempty"`
+}
+
+type webNormalRevisionPlanner struct {
+	proposal domain.StructureRevisionProposal
+}
+
+func (p webNormalRevisionPlanner) PlanStructure(context.Context, domain.StructureRevisionRequest) (domain.StructureRevisionProposal, error) {
+	return p.proposal, nil
 }
 
 type webCoCreateDecisionItem struct {
@@ -194,9 +225,16 @@ func (s *Server) handleProjectCoCreateBegin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var req webCoCreateBeginRequest
-	if err := decodeJSONBody(r, &req); err != nil {
+	raw, err := decodeJSONBodyRaw(r, &req)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid co-create request: "+err.Error())
 		return
+	}
+	if strings.TrimSpace(req.Kind) != webCoCreateKindAdapt {
+		if err := domain.ValidateNormalRevisionPayload(raw); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid normal co-create request: "+err.Error())
+			return
+		}
 	}
 	session, manifest, err := s.sessions.Open(id)
 	if err != nil {
@@ -392,8 +430,13 @@ func (s *Server) handleProjectCoCreatePlanningRevise(w http.ResponseWriter, r *h
 		return
 	}
 	var req webCoCreatePlanningRevisionRequest
-	if err := decodeJSONBody(r, &req); err != nil {
+	raw, err := decodeJSONBodyRaw(r, &req)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid co-create planning revision request: "+err.Error())
+		return
+	}
+	if err := domain.ValidateNormalRevisionPayload(raw); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid normal planning revision request: "+err.Error())
 		return
 	}
 	req.Feedback = strings.TrimSpace(req.Feedback)
@@ -424,6 +467,161 @@ func (s *Server) handleProjectCoCreatePlanningRevise(w http.ResponseWriter, r *h
 		"running":  snapshot.IsRunning,
 		"label":    "planning revision started",
 	})
+}
+
+func (s *Server) handleProjectNormalRevisionPreview(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req webNormalRevisionPreviewRequest
+	raw, err := decodeJSONBodyRaw(r, &req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid normal revision preview: "+err.Error())
+		return
+	}
+	if err := domain.ValidateNormalRevisionPayload(raw); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid normal revision preview: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.IdempotencyKey) == "" {
+		writeError(w, http.StatusBadRequest, "idempotency_key is required")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	st := storepkg.NewStore(manifest.OutputDir)
+	current, err := st.Outline.LoadLayeredOutline()
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	stage, err := session.NormalRevisionService().CurrentManuscriptStage()
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	completed := normalCompletedChapterIDs(st, current)
+	if req.BaseRevision <= 0 {
+		req.BaseRevision = 1
+	}
+	if req.CurrentSoftBudget == nil {
+		budget, budgetErr := domain.NewDynamicSoftBudget(domain.TotalChapters(current), 3000, 5000)
+		if budgetErr != nil {
+			writeProjectLifecycleError(w, budgetErr)
+			return
+		}
+		req.CurrentSoftBudget = &budget
+	}
+	previewed, err := session.PreviewNormalStructureRevision(r.Context(), webNormalRevisionPlanner{proposal: req.Proposal}, domain.StructureRevisionRequest{
+		Operation: req.Operation, Intent: req.Intent, Stage: stage, TargetID: req.TargetID,
+		DestinationID: req.DestinationID, BaseRevision: req.BaseRevision, Current: current,
+		CompletedChapterIDs: completed, CurrentSoftBudget: req.CurrentSoftBudget,
+	}, req.IdempotencyKey)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "revision": previewed})
+}
+
+func normalCompletedChapterIDs(st *storepkg.Store, current []domain.VolumeOutline) []string {
+	progress, _ := st.Progress.Load()
+	if progress == nil {
+		return nil
+	}
+	completed := make(map[int]struct{}, len(progress.CompletedChapters))
+	for _, chapter := range progress.CompletedChapters {
+		completed[chapter] = struct{}{}
+	}
+	ids := make([]string, 0, len(completed))
+	for _, chapter := range domain.FlattenOutline(current) {
+		if _, ok := completed[chapter.Chapter]; ok {
+			ids = append(ids, chapter.ID)
+		}
+	}
+	return ids
+}
+
+func (s *Server) handleProjectNormalRevisionCommand(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req webNormalRevisionCommandRequest
+	raw, err := decodeJSONBodyRaw(r, &req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid normal revision command: "+err.Error())
+		return
+	}
+	if err := domain.ValidateNormalRevisionPayload(raw); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid normal revision command: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.IdempotencyKey) == "" {
+		writeError(w, http.StatusBadRequest, "idempotency_key is required")
+		return
+	}
+	projectSession, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	service := projectSession.NormalRevisionService()
+	active, err := storepkg.NewStore(manifest.OutputDir).Revisions.Active()
+	if err != nil {
+		writeProjectLifecycleError(w, fmt.Errorf("load active normal revision: %w", err))
+		return
+	}
+	if active == nil {
+		writeProjectLifecycleError(w, fmt.Errorf("no active normal revision"))
+		return
+	}
+	if req.ExpectedRevision <= 0 {
+		writeError(w, http.StatusBadRequest, "expected_revision is required")
+		return
+	}
+	if req.ExpectedRevision != active.Revision {
+		writeProjectLifecycleError(w, fmt.Errorf("revision conflict: expected %d, actual %d", req.ExpectedRevision, active.Revision))
+		return
+	}
+	var result *domain.RevisionSession
+	switch strings.TrimSpace(req.Action) {
+	case "approve_impact":
+		result, err = service.ApproveImpact(active.ID, active.Revision, req.IdempotencyKey)
+	case "submit_structure":
+		if req.Preview == nil {
+			err = fmt.Errorf("sealed preview is required")
+		} else {
+			result, err = service.SubmitStructureCandidate(*req.Preview, active.ID, active.Revision, req.IdempotencyKey)
+		}
+	case "submit_details":
+		result, err = service.SubmitDetailedOutlineCandidate(req.Candidate, active, req.IdempotencyKey)
+	case "record_audit":
+		result, err = service.RecordAuditSet(active, req.Evidence, req.IdempotencyKey)
+	case "approve_stage":
+		result, err = service.ApproveStage(active, req.IdempotencyKey)
+	case "submit_prose_intents":
+		result, err = service.SubmitProseReworkCandidate(active, req.IdempotencyKey)
+	case "feedback":
+		result, err = service.SubmitFeedback(active, req.ImpactSignature, req.Feedback, req.IdempotencyKey)
+	case "publish":
+		if req.Preview == nil {
+			err = fmt.Errorf("sealed preview is required")
+		} else {
+			result, err = service.PublishStructure(*req.Preview, active, req.IdempotencyKey)
+		}
+	default:
+		err = fmt.Errorf("unsupported normal revision command %q", req.Action)
+	}
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "revision": result})
 }
 
 func (s *Server) handleProjectCoCreateCancel(w http.ResponseWriter, r *http.Request, id string) {
@@ -1614,6 +1812,24 @@ func decodeJSONBody(r *http.Request, target any) error {
 		return err
 	}
 	return nil
+}
+
+func decodeJSONBodyRaw(r *http.Request, target any) (json.RawMessage, error) {
+	if r.Body == nil {
+		return json.RawMessage(`{}`), nil
+	}
+	defer r.Body.Close()
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		raw = []byte(`{}`)
+	}
+	if err := json.Unmarshal(raw, target); err != nil {
+		return nil, err
+	}
+	return json.RawMessage(raw), nil
 }
 
 func writeCoCreateResponse(w http.ResponseWriter, manifest ProjectManifest, session *ProjectSession, state webCoCreateState) {

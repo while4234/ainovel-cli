@@ -296,8 +296,12 @@ func routeOriginalPlanning(s State) *Instruction {
 	case "repair_arc":
 		payload, _ := json.Marshal(w.Audit)
 		return &Instruction{Agent: "architect_long", Reason: "原创细纲自动审核要求定点返修", Task: fmt.Sprintf(
-			"原创细纲审核未通过，定点修复第%d卷第%d弧。审核报告：%s。调用 novel_context(scope=planning) 和 novel_context(scope=outline_range, from=%d, to=%d) 核对证据，完整重写这一弧且保持已审核分卷约定的章节数不变，然后调用 save_foundation(type=repair_arc, volume=%d, arc=%d)。逐条落实 repair_instruction，修复因果、人物动机、节奏、伏笔或重复问题，不得分析原著。",
-			w.Volume, w.Arc, payload, w.FromChapter, w.ToChapter, w.Volume, w.Arc)}
+			"原创细纲审核未通过，只修复第%d卷第%d弧内第%d-%d章。审核报告：%s。调用 novel_context(scope=planning) 和 novel_context(scope=outline_range, from=%d, to=%d) 核对证据，只返回这个窗口的%d章并调用 save_foundation(type=repair_arc, volume=%d, arc=%d, from_chapter=%d, to_chapter=%d)。不得改写同弧兄弟章节；逐条落实 repair_instruction，不得分析原著。",
+			w.Volume, w.Arc, w.FromChapter, w.ToChapter, payload, w.FromChapter, w.ToChapter, w.ToChapter-w.FromChapter+1, w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
+	case "audit_chapter":
+		return &Instruction{Agent: "editor", Reason: "修订章节需独立签名审核", Task: fmt.Sprintf(
+			"只审核普通原创第%d章当前细纲。调用 novel_context(scope=outline_range, from=%d, to=%d)，不得读取正文、原著或扩大范围。然后调用 save_original_planning_audit(scope=chapter, scope_id=当前章节稳定ID, from_chapter=%d, to_chapter=%d)；必须按 causal_value、character_logic、continuity、scene_progression、hook_and_pacing、originality 六维审核。",
+			w.FromChapter, w.FromChapter, w.ToChapter, w.FromChapter, w.ToChapter)}
 	case "audit_arc":
 		return &Instruction{Agent: "editor", Reason: "本批原创细纲需独立弧级审核", Task: fmt.Sprintf(
 			"作为专业原创小说审稿人，分批审核第%d卷第%d弧的第%d-%d章（本批%d章）。只调用 novel_context(scope=planning) 与 novel_context(scope=outline_range, from=%d, to=%d)，禁止读取正文或任何原著，禁止扩大本批范围。检查目标-阻力-选择-结果因果链、人物动机与状态变化、每章独立推进价值、前后连续性、节奏钩子、套路化与批次重复。必须额外核对世界规则与时间线：重生、穿越、回档前的物理实体不能无来源出现在当前时间线；任何决定高潮胜负的证据都必须在本批或已确认前文中有可验证来源与前置动作，不能在回收章临时发明。然后调用 save_original_planning_audit(scope=arc, volume=%d, arc=%d, from_chapter=%d, to_chapter=%d)，dimensions 必须恰含 causal_progression、character_logic、chapter_value、continuity、hook_and_pacing、originality。任一维度低于7或存在重大问题必须 verdict=revise，并把首个问题精确定位到本卷本弧及修复指令。",

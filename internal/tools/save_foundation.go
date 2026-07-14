@@ -83,6 +83,15 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		a.Type = inferred
 	}
+	if blocksDuringActiveRevision(a.Type) {
+		active, activeErr := t.store.Revisions.Active()
+		if activeErr != nil {
+			return nil, fmt.Errorf("read active revision before formal outline write: %w", activeErr)
+		}
+		if active != nil {
+			return nil, fmt.Errorf("formal save_foundation type=%s is blocked by active revision %s; use NormalRevisionService candidates: %w", a.Type, active.ID, errs.ErrToolPrecondition)
+		}
+	}
 	if a.Scale != "" {
 		switch domain.PlanningTier(a.Scale) {
 		case domain.PlanningTierShort, domain.PlanningTierMid, domain.PlanningTierLong:
@@ -274,7 +283,13 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 
 	case "append_volume":
 		if p, _ := t.store.Progress.Load(); p != nil && p.Phase == domain.PhaseComplete {
-			return nil, fmt.Errorf("全书已完结（phase=complete），不允许追加新卷: %w", errs.ErrToolPrecondition)
+			active, err := t.store.Revisions.Active()
+			if err != nil {
+				return nil, fmt.Errorf("read completed-book revision gate: %w", err)
+			}
+			if active == nil || active.Mode != domain.RevisionModeNormal || active.Stage != domain.RevisionStageCandidateGenerating {
+				return nil, fmt.Errorf("全书已完结；追加新卷必须先通过普通原创修订影响预览与人工确认: %w", errs.ErrToolPrecondition)
+			}
 		}
 		var vol domain.VolumeOutline
 		if err := decode("append_volume", &vol); err != nil {
@@ -493,6 +508,15 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 	}
 	return json.Marshal(result)
+}
+
+func blocksDuringActiveRevision(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "outline", "layered_outline", "expand_arc", "repair_arc", "repair_volume", "append_volume", "complete_book", "update_compass":
+		return true
+	default:
+		return false
+	}
 }
 
 func planningReviewKindForFoundation(st *store.Store) string {

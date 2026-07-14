@@ -498,8 +498,9 @@ func (m *SessionManager) CloseAll() {
 }
 
 type ProjectSession struct {
-	manifest ProjectManifest
-	host     projectHost
+	manifest        ProjectManifest
+	host            projectHost
+	normalRevisions *host.NormalRevisionService
 
 	mu                  sync.Mutex
 	autoResumeMu        sync.Mutex
@@ -531,13 +532,14 @@ func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession
 		sequencePath = filepath.Join(manifest.OutputDir, filepath.FromSlash(webEventSeqRelPath))
 	}
 	session := &ProjectSession{
-		manifest:     manifest,
-		host:         h,
-		actions:      actions,
-		actionKinds:  make(map[string]int),
-		hostEventAt:  make(map[string]int),
-		subscribers:  make(map[chan WebEvent]struct{}),
-		sequencePath: sequencePath,
+		manifest:        manifest,
+		host:            h,
+		normalRevisions: host.NewNormalRevisionService(storepkg.NewStore(manifest.OutputDir)),
+		actions:         actions,
+		actionKinds:     make(map[string]int),
+		hostEventAt:     make(map[string]int),
+		subscribers:     make(map[chan WebEvent]struct{}),
+		sequencePath:    sequencePath,
 	}
 	if err := session.loadPersistedSequence(); err != nil {
 		return nil, fmt.Errorf("load web event sequence: %w", err)
@@ -550,6 +552,23 @@ func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession
 	}
 	go session.pump()
 	return session, nil
+}
+
+// PreviewNormalStructureRevision is the web/host production boundary for
+// normal co-creation revisions. HTTP presentation can remain separate; every
+// caller receives the same persistent impact-preview and kernel-sealed result.
+func (s *ProjectSession) PreviewNormalStructureRevision(ctx context.Context, planner host.StructureRevisionPlanner, request domain.StructureRevisionRequest, idempotencyKey string) (*host.NormalStructureRevisionPreview, error) {
+	if s == nil || s.normalRevisions == nil {
+		return nil, fmt.Errorf("normal revision service is unavailable")
+	}
+	return s.normalRevisions.Preview(ctx, planner, request, idempotencyKey)
+}
+
+func (s *ProjectSession) NormalRevisionService() *host.NormalRevisionService {
+	if s == nil {
+		return nil
+	}
+	return s.normalRevisions
 }
 
 func (s *ProjectSession) SetManifest(manifest ProjectManifest) {
@@ -2267,6 +2286,7 @@ type coCreatePlanningRevisionTarget struct {
 	Instruction string
 	Scope       string
 	Label       string
+	StableID    string
 	VolumeIndex int
 	FromChapter int
 	ToChapter   int
@@ -2294,7 +2314,7 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, req webCoCr
 	if err != nil {
 		return fmt.Errorf("read planning review: %w", err)
 	}
-	if review == nil || review.Status != domain.PlanningReviewStatusPending {
+	if review == nil || (review.Status != domain.PlanningReviewStatusPending && review.Status != domain.PlanningReviewStatusCollecting) {
 		return fmt.Errorf("no pending co-create planning review")
 	}
 	if strings.TrimSpace(review.Brief) == "" {
@@ -2303,6 +2323,13 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, req webCoCr
 	target, err := normalizeCoCreatePlanningRevisionTarget(st, review, req, instruction)
 	if err != nil {
 		return err
+	}
+	if review.Status == domain.PlanningReviewStatusCollecting {
+		if err := appendNormalPlanningRevisionFeedback(st, review, target); err != nil {
+			return fmt.Errorf("append planning revision feedback: %w", err)
+		}
+		s.AppendSnapshot()
+		return nil
 	}
 	if review.Kind == domain.PlanningReviewKindVolumeSplit && target.Scope == "volume" {
 		if err := s.prepareNormalVolumeSplitRevision(st, review, target); err != nil {
@@ -2344,6 +2371,57 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, req webCoCr
 	return nil
 }
 
+func appendNormalPlanningRevisionFeedback(st *storepkg.Store, review *domain.PlanningReview, target coCreatePlanningRevisionTarget) error {
+	if st == nil {
+		return fmt.Errorf("planning revision store is required")
+	}
+	audits, err := st.OriginalPlanningAudits.Load()
+	if err != nil {
+		return err
+	}
+	for index := len(audits) - 1; index >= 0; index-- {
+		audit := audits[index]
+		if audit.Verdict != "revise" || len(audit.Issues) == 0 {
+			continue
+		}
+		if target.Scope == "volume" && audit.Scope != "skeleton_book" {
+			continue
+		}
+		if target.Scope == "chapter" && audit.Scope != "book" {
+			continue
+		}
+		if strings.TrimSpace(target.StableID) == "" || strings.TrimSpace(audit.ScopeID) == "" || target.StableID != audit.ScopeID {
+			continue
+		}
+		message := strings.TrimSpace(target.Instruction)
+		if message == "" {
+			return fmt.Errorf("feedback is required")
+		}
+		issue := &audit.Issues[0]
+		issue.Description = appendRevisionFeedback(issue.Description, message)
+		issue.RepairInstruction = appendRevisionFeedback(issue.RepairInstruction, message)
+		audit.Summary = appendRevisionFeedback(audit.Summary, message)
+		if err := st.OriginalPlanningAudits.Save(audit); err != nil {
+			return err
+		}
+		review.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		return st.RunMeta.SetPlanningReview(review)
+	}
+	return fmt.Errorf("no active original-fiction revision candidate accepts feedback")
+}
+
+func appendRevisionFeedback(current, message string) string {
+	current = strings.TrimSpace(current)
+	message = strings.TrimSpace(message)
+	if current == "" || current == message {
+		return message
+	}
+	if strings.Contains(current, message) {
+		return current
+	}
+	return current + "\n\nAdditional feedback:\n" + message
+}
+
 func (s *ProjectSession) prepareNormalVolumeSplitRevision(st *storepkg.Store, review *domain.PlanningReview, target coCreatePlanningRevisionTarget) error {
 	if st == nil || review == nil || target.VolumeIndex <= 0 {
 		return fmt.Errorf("volume planning review target is required")
@@ -2355,7 +2433,7 @@ func (s *ProjectSession) prepareNormalVolumeSplitRevision(st *storepkg.Store, re
 	// After the selected volume is replaced, the normal skeleton audits rerun
 	// before the revised plan is exposed to the user again.
 	audit := domain.OriginalPlanningAudit{
-		Scope: "skeleton_book", Verdict: "revise", Summary: "user requested a reviewed volume-skeleton revision",
+		Scope: "skeleton_book", ScopeID: target.StableID, Verdict: "revise", Summary: "user requested a reviewed volume-skeleton revision",
 		Issues: []domain.OriginalPlanningAuditIssue{{
 			Severity: "major", Volume: target.VolumeIndex, Arc: 1,
 			Description: target.Instruction, RepairInstruction: target.Instruction,
@@ -2381,7 +2459,7 @@ func (s *ProjectSession) prepareNormalChapterOutlineRevision(st *storepkg.Store,
 	if st == nil || review == nil {
 		return fmt.Errorf("planning review store is required")
 	}
-	volume, arc, from, to, err := locateNormalPlanningArc(st, target.FromChapter)
+	volume, arc, _, to, err := locateNormalPlanningArc(st, target.FromChapter)
 	if err != nil {
 		return err
 	}
@@ -2392,9 +2470,9 @@ func (s *ProjectSession) prepareNormalChapterOutlineRevision(st *storepkg.Store,
 		return err
 	}
 	audit := domain.OriginalPlanningAudit{
-		Scope: "book", Verdict: "revise", Summary: "user requested a reviewed detailed-outline revision",
+		Scope: "book", ScopeID: target.StableID, Verdict: "revise", Summary: "user requested a reviewed detailed-outline revision",
 		Issues: []domain.OriginalPlanningAuditIssue{{
-			Severity: "major", Volume: volume, Arc: arc, FromChapter: from, ToChapter: to,
+			Severity: "major", Volume: volume, Arc: arc, FromChapter: target.FromChapter, ToChapter: target.ToChapter,
 			Description: target.Instruction, RepairInstruction: target.Instruction,
 		}},
 	}
@@ -2475,7 +2553,7 @@ func normalizeCoCreatePlanningRevisionTarget(st *storepkg.Store, review *domain.
 		}
 		return target, nil
 	case "volume":
-		if review.Kind == domain.PlanningReviewKindBlueprint {
+		if review.Kind == domain.PlanningReviewKindBlueprint && review.Status != domain.PlanningReviewStatusCollecting {
 			return target, fmt.Errorf("blueprint review does not support volume-targeted revision")
 		}
 		if target.VolumeIndex <= 0 {
@@ -2488,9 +2566,22 @@ func normalizeCoCreatePlanningRevisionTarget(st *storepkg.Store, review *domain.
 		if target.Label == "" {
 			target.Label = label
 		}
+		volumes, err := st.Outline.LoadLayeredOutline()
+		if err != nil {
+			return target, err
+		}
+		for _, volume := range volumes {
+			if volume.Index == target.VolumeIndex {
+				target.StableID = volume.ID
+				break
+			}
+		}
+		if target.StableID == "" {
+			return target, fmt.Errorf("volume target has no stable identity")
+		}
 		return target, nil
 	case "chapter":
-		if review.Kind != domain.PlanningReviewKindChapterOutline {
+		if review.Kind != domain.PlanningReviewKindChapterOutline && review.Status != domain.PlanningReviewStatusCollecting {
 			return target, fmt.Errorf("chapter-targeted revision requires a chapter outline review")
 		}
 		if target.FromChapter <= 0 || target.ToChapter <= 0 {
@@ -2505,6 +2596,22 @@ func normalizeCoCreatePlanningRevisionTarget(st *storepkg.Store, review *domain.
 		}
 		if target.Label == "" {
 			target.Label = label
+		}
+		if review.Status == domain.PlanningReviewStatusCollecting && target.FromChapter != target.ToChapter {
+			return target, fmt.Errorf("collecting feedback requires one exact stable chapter target")
+		}
+		volumes, err := st.Outline.LoadLayeredOutline()
+		if err != nil {
+			return target, err
+		}
+		for _, chapter := range domain.FlattenOutline(volumes) {
+			if chapter.Chapter == target.FromChapter {
+				target.StableID = chapter.ID
+				break
+			}
+		}
+		if review.Status == domain.PlanningReviewStatusCollecting && target.StableID == "" {
+			return target, fmt.Errorf("chapter target has no stable identity")
 		}
 		return target, nil
 	default:

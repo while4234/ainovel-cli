@@ -1136,6 +1136,16 @@ func (s *AdaptationStore) Active() bool {
 	return err == nil && plan != nil && plan.Status == domain.AdaptationPlanStatusConfirmed
 }
 
+// Exists is a mode boundary check that does not deserialize or expose any
+// adaptation/source contract to normal-fiction code paths.
+func (s *AdaptationStore) Exists() bool {
+	if s == nil || s.io == nil {
+		return false
+	}
+	_, err := os.Stat(s.io.path(adaptationPlanFile))
+	return err == nil
+}
+
 func (s *AdaptationStore) SaveCheck(check domain.AdaptationCheck) error {
 	if check.Chapter <= 0 {
 		return fmt.Errorf("chapter must be > 0")

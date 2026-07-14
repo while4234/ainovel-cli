@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -71,7 +72,7 @@ func NewStore(dir string) *Store {
 		Adaptation:             NewAdaptationStore(newIO(dir), identity, migration),
 		Continuation:           NewContinuationStore(newIO(dir), migration),
 		Revisions:              NewRevisionStore(dir),
-		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir)),
+		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir), outline),
 	}
 }
 
@@ -187,7 +188,7 @@ func (s *Store) ExpandArc(volumeIdx, arcIdx int, chapters []domain.OutlineEntry)
 	}
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
-	return s.saveLayeredStructureMutation("expand_arc", requestID, false, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+	return s.saveLayeredStructureMutation("expand_arc", requestID, false, false, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 		return s.Outline.expandArc(existing, volumeIdx, arcIdx, chapters)
 	})
 }
@@ -200,7 +201,7 @@ func (s *Store) AppendVolume(vol domain.VolumeOutline) error {
 	}
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
-	return s.saveLayeredStructureMutation("append_volume", requestID, false, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+	return s.saveLayeredStructureMutation("append_volume", requestID, false, true, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 		return s.Outline.appendVolume(existing, vol)
 	})
 }
@@ -215,8 +216,57 @@ func (s *Store) AppendSkeletonVolume(vol domain.VolumeOutline) error {
 	}
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
-	return s.saveLayeredStructureMutation("append_skeleton_volume", requestID, true, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+	return s.saveLayeredStructureMutation("append_skeleton_volume", requestID, true, false, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 		return s.Outline.appendSkeletonVolume(existing, vol)
+	})
+}
+
+// ReplaceLayeredStructureForRevision applies a kernel-confirmed normal
+// revision candidate through the same crash-recoverable structure migration as
+// incremental edits. Callers remain responsible for the RevisionStore human
+// gates; this method deliberately exposes no model or adaptation semantics.
+func (s *Store) ReplaceLayeredStructureForRevision(candidate []domain.VolumeOutline) error {
+	return s.PublishLayeredStructureForRevision(candidate, "legacy")
+}
+
+func (s *Store) PublishLayeredStructureForRevision(candidate []domain.VolumeOutline, commandKey string) error {
+	if err := domain.ValidateStructureSnapshot(candidate); err != nil {
+		return err
+	}
+	requestID, err := migrationRequestIdentity("normal_revision_publish", struct {
+		Candidate  []domain.VolumeOutline
+		CommandKey string
+	}{candidate, strings.TrimSpace(commandKey)})
+	if err != nil {
+		return err
+	}
+	s.crossMu.Lock()
+	defer s.crossMu.Unlock()
+	cloned := domain.CloneStructureSnapshot(candidate)
+	return s.saveLayeredStructureMutation("normal_revision_publish", requestID, true, true, nil, func([]domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+		return domain.CloneStructureSnapshot(cloned), nil
+	})
+}
+
+// RestoreLayeredStructureForRevision restores both formal structure and the
+// exact progress snapshot, including complete/reopened state and completion
+// audit fields, when the final RevisionStore commit fails.
+func (s *Store) RestoreLayeredStructureForRevision(candidate []domain.VolumeOutline, progress *domain.Progress) error {
+	if err := domain.ValidateStructureSnapshotForStage(candidate, domain.ManuscriptStageProposalComplete); err != nil {
+		return err
+	}
+	requestID, err := migrationRequestIdentity("normal_revision_rollback", struct {
+		Candidate []domain.VolumeOutline
+		Progress  *domain.Progress
+	}{candidate, progress})
+	if err != nil {
+		return err
+	}
+	s.crossMu.Lock()
+	defer s.crossMu.Unlock()
+	cloned := domain.CloneStructureSnapshot(candidate)
+	return s.saveLayeredStructureMutation("normal_revision_rollback", requestID, progress != nil && progress.Layered, false, cloneProgress(progress), func([]domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+		return domain.CloneStructureSnapshot(cloned), nil
 	})
 }
 
@@ -224,6 +274,8 @@ func (s *Store) saveLayeredStructureMutation(
 	kind string,
 	requestID string,
 	markLayered bool,
+	reopenCompletedExpansion bool,
+	progressOverride *domain.Progress,
 	mutate func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error),
 ) error {
 	if s.Outline.migration == nil {
@@ -248,18 +300,28 @@ func (s *Store) saveLayeredStructureMutation(
 		if err != nil {
 			return structureMigrationBuild{}, err
 		}
-		progress, err := s.Progress.loadUnlocked()
-		if err != nil {
-			return structureMigrationBuild{}, err
-		}
+		progress := cloneProgress(progressOverride)
 		if progress == nil {
-			progress = &domain.Progress{}
-		} else {
-			progress = cloneProgress(progress)
+			progress, err = s.Progress.loadUnlocked()
+			if err != nil {
+				return structureMigrationBuild{}, err
+			}
+			if progress == nil {
+				progress = &domain.Progress{}
+			} else {
+				progress = cloneProgress(progress)
+			}
 		}
 		progress.TotalChapters = domain.TotalChapters(volumes)
 		if markLayered {
 			progress.Layered = true
+		}
+		if reopenCompletedExpansion && progress.Phase == domain.PhaseComplete {
+			progress.Phase = domain.PhaseWriting
+			progress.Flow = domain.FlowWriting
+			progress.ReopenedFromComplete = false
+			progress.CompletionAuditStatus = ""
+			progress.CompletionAuditReportDigest = ""
 		}
 		payloads, err := layeredOutlineMigrationPayloads(volumes)
 		if err != nil {

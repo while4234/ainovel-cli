@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -12,7 +13,10 @@ import (
 
 const originalPlanningAuditsFile = "meta/original_planning/audits.json"
 
-type OriginalPlanningAuditStore struct{ io *IO }
+type OriginalPlanningAuditStore struct {
+	io      *IO
+	outline *OutlineStore
+}
 
 type OriginalPlanningWork struct {
 	Kind        string
@@ -26,8 +30,12 @@ type OriginalPlanningWork struct {
 	Evidence    string
 }
 
-func NewOriginalPlanningAuditStore(io *IO) *OriginalPlanningAuditStore {
-	return &OriginalPlanningAuditStore{io: io}
+func NewOriginalPlanningAuditStore(io *IO, outlines ...*OutlineStore) *OriginalPlanningAuditStore {
+	var outline *OutlineStore
+	if len(outlines) > 0 {
+		outline = outlines[0]
+	}
+	return &OriginalPlanningAuditStore{io: io, outline: outline}
 }
 
 func (s *OriginalPlanningAuditStore) Load() ([]domain.OriginalPlanningAudit, error) {
@@ -42,6 +50,15 @@ func (s *OriginalPlanningAuditStore) Load() ([]domain.OriginalPlanningAudit, err
 }
 
 func (s *OriginalPlanningAuditStore) Save(audit domain.OriginalPlanningAudit) error {
+	if audit.Verdict == "pass" && (audit.StructureSignature == "" || audit.ContentSignature == "") && s.outline != nil {
+		volumes, err := s.outline.LoadLayeredOutline()
+		if err != nil {
+			return err
+		}
+		if err := domain.BindOriginalPlanningAudit(&audit, volumes); err != nil {
+			return err
+		}
+	}
 	return s.io.WithWriteLock(func() error {
 		var audits []domain.OriginalPlanningAudit
 		if err := s.io.ReadJSONUnlocked(originalPlanningAuditsFile, &audits); err != nil && !os.IsNotExist(err) {
@@ -73,7 +90,7 @@ func (s *OriginalPlanningAuditStore) Save(audit domain.OriginalPlanningAudit) er
 }
 
 func (s *OriginalPlanningAuditStore) Get(scope string, volume, arc int) (*domain.OriginalPlanningAudit, error) {
-	audits, err := s.Load()
+	audits, err := s.loadCurrent()
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +104,7 @@ func (s *OriginalPlanningAuditStore) Get(scope string, volume, arc int) (*domain
 }
 
 func (s *OriginalPlanningAuditStore) GetBookBatch(fromVolume, toVolume int) (*domain.OriginalPlanningAudit, error) {
-	audits, err := s.Load()
+	audits, err := s.loadCurrent()
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +120,26 @@ func (s *OriginalPlanningAuditStore) Reset() error {
 	return s.io.RemoveFile(originalPlanningAuditsFile)
 }
 
+// loadCurrent keeps revise instructions actionable while refusing to reuse a
+// pass whose topology or scoped outline content no longer matches the project.
+func (s *OriginalPlanningAuditStore) loadCurrent() ([]domain.OriginalPlanningAudit, error) {
+	audits, err := s.Load()
+	if err != nil || s.outline == nil {
+		return audits, err
+	}
+	volumes, err := s.outline.LoadLayeredOutline()
+	if err != nil {
+		return nil, err
+	}
+	current := make([]domain.OriginalPlanningAudit, 0, len(audits))
+	for _, audit := range audits {
+		if audit.Verdict != "pass" || domain.OriginalPlanningAuditCurrent(audit, volumes) {
+			current = append(current, audit)
+		}
+	}
+	return current, nil
+}
+
 // NextWork returns the next bounded generation/audit action. The order is
 // deliberately serial: expand one <=4 chapter arc, audit it, finish and audit
 // its volume, then synthesize at most two volumes per book batch.
@@ -114,7 +151,7 @@ func (s *OriginalPlanningAuditStore) NextWork(outline *OutlineStore) (*OriginalP
 	if err != nil || len(volumes) == 0 {
 		return nil, err
 	}
-	audits, err := s.Load()
+	audits, err := s.loadCurrent()
 	if err != nil {
 		return nil, err
 	}
@@ -141,6 +178,13 @@ func (s *OriginalPlanningAuditStore) NextWork(outline *OutlineStore) (*OriginalP
 			if len(arc.Chapters) == 0 {
 				return &OriginalPlanningWork{Kind: "expand_arc", Volume: volume.Index, Arc: arc.Index, FromChapter: from, ToChapter: to}, nil
 			}
+			for offset, chapter := range arc.Chapters {
+				number := from + offset
+				audit := findOriginalPlanningChapterAudit(audits, chapter.ID, number)
+				if audit == nil || audit.Verdict != "pass" {
+					return &OriginalPlanningWork{Kind: "audit_chapter", Volume: volume.Index, Arc: arc.Index, FromChapter: number, ToChapter: number}, nil
+				}
+			}
 			audit := findOriginalPlanningAudit(audits, "arc", volume.Index, arc.Index, 0, 0)
 			if audit == nil || audit.Verdict != "pass" {
 				return &OriginalPlanningWork{Kind: "audit_arc", Volume: volume.Index, Arc: arc.Index, FromChapter: from, ToChapter: to}, nil
@@ -166,6 +210,17 @@ func (s *OriginalPlanningAuditStore) NextWork(outline *OutlineStore) (*OriginalP
 	return &OriginalPlanningWork{Kind: "complete"}, nil
 }
 
+func findOriginalPlanningChapterAudit(audits []domain.OriginalPlanningAudit, chapterID string, chapter int) *domain.OriginalPlanningAudit {
+	for index := range audits {
+		audit := &audits[index]
+		if audit.Scope == "chapter" && audit.FromChapter == chapter && audit.ToChapter == chapter &&
+			strings.TrimSpace(audit.ScopeID) == strings.TrimSpace(chapterID) {
+			return audit
+		}
+	}
+	return nil
+}
+
 // NextSkeletonWork runs before the volume plan is exposed to the user. It
 // audits one bounded volume at a time, then at most two volumes per synthesis,
 // and finally the whole-book promise/ending contract from audit digests.
@@ -177,7 +232,7 @@ func (s *OriginalPlanningAuditStore) NextSkeletonWork(outline *OutlineStore) (*O
 	if err != nil || len(volumes) == 0 {
 		return nil, err
 	}
-	audits, err := s.Load()
+	audits, err := s.loadCurrent()
 	if err != nil {
 		return nil, err
 	}
@@ -288,8 +343,8 @@ func (s *OriginalPlanningAuditStore) InvalidateRepair(volume, arc int) error {
 	})
 }
 
-// InvalidateSkeletonRepair retains unaffected volume reports but reruns every
-// synthesis that could depend on the replaced volume.
+// InvalidateSkeletonRepair reruns the changed volume, adjacent handoff
+// volumes, and every synthesis that could depend on the replaced volume.
 func (s *OriginalPlanningAuditStore) InvalidateSkeletonRepair(volume int) error {
 	if volume <= 0 {
 		return fmt.Errorf("skeleton repair audit invalidation requires volume")
@@ -305,8 +360,8 @@ func (s *OriginalPlanningAuditStore) InvalidateSkeletonRepair(volume int) error 
 		kept := audits[:0]
 		for _, audit := range audits {
 			remove := audit.Scope == "skeleton_book" ||
-				(audit.Scope == "skeleton_book_batch" && audit.FromVolume <= volume && audit.ToVolume >= volume) ||
-				(audit.Scope == "skeleton_volume" && audit.Volume == volume)
+				(audit.Scope == "skeleton_book_batch" && audit.ToVolume >= volume-1 && audit.FromVolume <= volume+1) ||
+				(audit.Scope == "skeleton_volume" && audit.Volume >= volume-1 && audit.Volume <= volume+1)
 			if !remove {
 				kept = append(kept, audit)
 			}
@@ -319,7 +374,14 @@ func (s *OriginalPlanningAuditStore) InvalidateSkeletonRepair(volume int) error 
 }
 
 func sameOriginalPlanningAuditScope(a, b domain.OriginalPlanningAudit) bool {
-	return a.Scope == b.Scope && a.Volume == b.Volume && a.Arc == b.Arc && a.FromVolume == b.FromVolume && a.ToVolume == b.ToVolume
+	if a.Scope != b.Scope || a.Volume != b.Volume || a.Arc != b.Arc ||
+		a.FromVolume != b.FromVolume || a.ToVolume != b.ToVolume {
+		return false
+	}
+	if a.Scope == "chapter" {
+		return a.ScopeID == b.ScopeID && a.FromChapter == b.FromChapter && a.ToChapter == b.ToChapter
+	}
+	return true
 }
 
 func originalPlanningAuditScopeRank(scope string) int {

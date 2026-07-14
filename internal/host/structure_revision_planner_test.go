@@ -72,7 +72,9 @@ func TestStructurePlanningKernelInsertionMayCreateVolumeOnlyWithDramaticStageEvi
 		}},
 	})
 	evidence := &domain.DramaticStageEvidence{
+		EntryState:             "the old alliance survives the prior ending but loses political legitimacy",
 		IndependentConflict:    "the alliance becomes the new antagonist",
+		ArcProgression:         "the survivors split, compete for the provinces, and choose irreversible sides",
 		Climax:                 "the capital falls",
 		IrreversibleOutcome:    "the old regime is permanently dissolved",
 		CannotFitCurrentVolume: "the current volume's conflict already resolves before this stage begins",
@@ -91,8 +93,13 @@ func TestStructurePlanningKernelInsertionMayCreateVolumeOnlyWithDramaticStageEvi
 	}
 }
 
-func TestStructurePlanningKernelAllowsCompletedBookAppendAndProposalStageSupplement(t *testing.T) {
-	for _, stage := range []domain.ManuscriptStage{domain.ManuscriptStageComplete, domain.ManuscriptStageProposalComplete} {
+func TestStructurePlanningKernelAllowsRepeatedRevisionAtEveryManuscriptStage(t *testing.T) {
+	for _, stage := range []domain.ManuscriptStage{
+		domain.ManuscriptStageProposalComplete,
+		domain.ManuscriptStageOutlineComplete,
+		domain.ManuscriptStageWriting,
+		domain.ManuscriptStageComplete,
+	} {
 		t.Run(string(stage), func(t *testing.T) {
 			formal := testStructure()
 			candidate := domain.CloneStructureSnapshot(formal)
@@ -116,7 +123,8 @@ func TestStructurePlanningKernelAllowsCompletedBookAppendAndProposalStageSupplem
 func TestStructurePlanningKernelSupportsExpandSplitAppendArcAppendVolumeAndMove(t *testing.T) {
 	formal := testStructure()
 	volumeEvidence := &domain.DramaticStageEvidence{
-		IndependentConflict: "a successor war begins", Climax: "the heir defeats the council",
+		EntryState: "the prior trial leaves succession unresolved", IndependentConflict: "a successor war begins",
+		ArcProgression: "rivals gather claims, fracture alliances, and fight for the capital", Climax: "the heir defeats the council",
 		IrreversibleOutcome: "the realm permanently divides", CannotFitCurrentVolume: "the opening trial is already resolved",
 	}
 	tests := []struct {

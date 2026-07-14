@@ -33,7 +33,7 @@ func (t *SaveOriginalPlanningAuditTool) StrictSchema() bool                   { 
 
 func (t *SaveOriginalPlanningAuditTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("scope", schema.Enum("审核层级", "skeleton_volume", "skeleton_book_batch", "skeleton_book", "arc", "volume", "book_batch", "book")).Required(),
+		schema.Property("scope", schema.Enum("审核层级", "skeleton_volume", "skeleton_book_batch", "skeleton_book", "chapter", "arc", "volume", "book_batch", "book")).Required(),
 		schema.Property("volume", schema.Int("弧/卷审核的卷号")),
 		schema.Property("arc", schema.Int("弧审核的弧号")),
 		schema.Property("from_volume", schema.Int("book_batch 起始卷号")),
@@ -57,6 +57,13 @@ func (t *SaveOriginalPlanningAuditTool) Execute(_ context.Context, args json.Raw
 	}
 	if err := validateOriginalPlanningAudit(audit); err != nil {
 		return nil, fmt.Errorf("invalid original planning audit: %w: %w", errs.ErrToolArgs, err)
+	}
+	volumes, err := t.store.Outline.LoadLayeredOutline()
+	if err != nil {
+		return nil, fmt.Errorf("load original planning audit structure: %w", err)
+	}
+	if err := domain.BindOriginalPlanningAudit(&audit, volumes); err != nil {
+		return nil, fmt.Errorf("bind original planning audit: %w: %w", errs.ErrToolPrecondition, err)
 	}
 	if err := validateOriginalPlanningAuditEvidence(t.store, audit); err != nil {
 		return nil, fmt.Errorf("original planning audit evidence: %w: %w", errs.ErrToolPrecondition, err)
@@ -120,6 +127,7 @@ var originalPlanningAuditDimensions = map[string][]string{
 	"skeleton_volume":     {"volume_function", "arc_causality", "character_progression", "conflict_escalation", "budget_capacity", "payoff_and_handoff"},
 	"skeleton_book_batch": {"cross_volume_continuity", "escalation", "character_progression", "setup_payoff", "pacing_balance", "plot_diversity"},
 	"skeleton_book":       {"mainline_completeness", "ending_closure", "character_arc_completeness", "setup_payoff", "volume_balance", "budget_capacity", "originality"},
+	"chapter":             {"causal_value", "character_logic", "continuity", "scene_progression", "hook_and_pacing", "originality"},
 	"arc":                 {"causal_progression", "character_logic", "chapter_value", "continuity", "hook_and_pacing", "originality"},
 	"volume":              {"structure_pacing", "theme_conflict", "climax_payoff", "character_arc", "budget_capacity", "next_volume_drive"},
 	"book_batch":          {"cross_volume_continuity", "escalation", "character_progression", "setup_payoff", "pacing_balance", "originality"},
@@ -152,6 +160,10 @@ func validateOriginalPlanningAudit(audit domain.OriginalPlanningAudit) error {
 		}
 		if audit.FromChapter <= 0 || audit.ToChapter < audit.FromChapter || audit.ToChapter-audit.FromChapter+1 > 4 {
 			return fmt.Errorf("arc audit must cite one batch of at most 4 chapters")
+		}
+	case "chapter":
+		if strings.TrimSpace(audit.ScopeID) == "" || audit.FromChapter <= 0 || audit.ToChapter != audit.FromChapter {
+			return fmt.Errorf("chapter audit must cite a stable scope_id and exactly one current chapter number")
 		}
 	case "volume":
 		if audit.Volume <= 0 {
@@ -215,11 +227,8 @@ func validateOriginalPlanningAuditEvidence(st *store.Store, audit domain.Origina
 			if volume.Index != audit.Volume {
 				continue
 			}
-			for _, arc := range volume.Arcs {
-				if len(arc.Chapters) > 0 {
-					return fmt.Errorf("skeleton volume %d must not contain detailed chapters", audit.Volume)
-				}
-			}
+			// Detailed projects are intentionally projected back to their
+			// volume/arc skeleton for a structure-only re-review.
 			return nil
 		}
 		return fmt.Errorf("skeleton volume %d not found", audit.Volume)
@@ -248,6 +257,11 @@ func validateOriginalPlanningAuditEvidence(st *store.Store, audit domain.Origina
 		}
 		if audit.FromChapter != from || audit.ToChapter != to {
 			return fmt.Errorf("V%d A%d evidence range is %d-%d, got %d-%d", audit.Volume, audit.Arc, from, to, audit.FromChapter, audit.ToChapter)
+		}
+	}
+	if audit.Scope == "chapter" {
+		if _, _, from, to, id, found := originalPlanningChapterLocation(volumes, audit.FromChapter); !found || from != to || id != audit.ScopeID {
+			return fmt.Errorf("chapter %d is not present in the detailed outline", audit.FromChapter)
 		}
 	}
 	if audit.Scope == "volume" {
@@ -290,13 +304,36 @@ func findOriginalSkeletonBookBatch(st *store.Store, fromVolume, toVolume int) (*
 	if err != nil {
 		return nil, err
 	}
+	volumes, err := st.Outline.LoadLayeredOutline()
+	if err != nil {
+		return nil, err
+	}
 	for i := range audits {
 		audit := &audits[i]
-		if audit.Scope == "skeleton_book_batch" && audit.FromVolume == fromVolume && audit.ToVolume == toVolume {
+		if audit.Scope == "skeleton_book_batch" && audit.FromVolume == fromVolume && audit.ToVolume == toVolume &&
+			domain.OriginalPlanningAuditCurrent(*audit, volumes) {
 			return audit, nil
 		}
 	}
 	return nil, nil
+}
+
+func originalPlanningChapterLocation(volumes []domain.VolumeOutline, chapter int) (volume, arc, from, to int, id string, found bool) {
+	next := 1
+	for _, item := range volumes {
+		for _, storyArc := range item.Arcs {
+			count := len(storyArc.Chapters)
+			if count == 0 {
+				count = storyArc.EstimatedChapters
+			}
+			end := next + count - 1
+			if chapter >= next && chapter <= end && len(storyArc.Chapters) > 0 {
+				return item.Index, storyArc.Index, chapter, chapter, storyArc.Chapters[chapter-next].ID, true
+			}
+			next = end + 1
+		}
+	}
+	return 0, 0, 0, 0, "", false
 }
 
 func originalPlanningArcRange(volumes []domain.VolumeOutline, volumeIndex, arcIndex int) (int, int, bool) {
@@ -318,6 +355,8 @@ func originalPlanningArcRange(volumes []domain.VolumeOutline, volumeIndex, arcIn
 
 func originalPlanningAuditKey(audit domain.OriginalPlanningAudit) string {
 	switch audit.Scope {
+	case "chapter":
+		return fmt.Sprintf("ch%d", audit.FromChapter)
 	case "arc":
 		return fmt.Sprintf("v%d-a%d", audit.Volume, audit.Arc)
 	case "volume":

@@ -18,7 +18,7 @@ func TestGenerateChapterOutlineRevisionRetriesMalformedJSON(t *testing.T) {
 	chapterOutlineRevisionRetrySleep = func(context.Context, time.Duration) error { return nil }
 	t.Cleanup(func() { chapterOutlineRevisionRetrySleep = previousSleep })
 
-	got, err := generateChapterOutlineRevision(context.Background(), model, chapterOutlineRevisionContext{
+	got, err := generateChapterOutlineRevision(context.Background(), model, normalChapterOutlineRevisionSystemPrompt, chapterOutlineRevisionContext{
 		Current:     domain.OutlineEntry{Chapter: 2, Title: "旧标题", CoreEvent: "旧事件", Hook: "旧悬念", Scenes: []string{"旧场景"}},
 		Instruction: "改成一次谈判失败",
 	}, 2)
@@ -37,7 +37,7 @@ func TestGenerateChapterOutlineRevisionIncludesAdaptationContract(t *testing.T) 
 	model := &chapterOutlineScriptedModel{responses: []string{
 		`{"chapter":4,"title":"改编新章","core_event":"保留原事件但改换结构","hook":"证物来源成谜","scenes":["重组原事件","加入新的对抗"]}`,
 	}}
-	_, err := generateChapterOutlineRevision(context.Background(), model, chapterOutlineRevisionContext{
+	_, err := generateChapterOutlineRevision(context.Background(), model, adaptationChapterOutlineRevisionSystemPrompt, chapterOutlineRevisionContext{
 		Current: domain.OutlineEntry{Chapter: 4, Title: "旧章", CoreEvent: "旧事件", Hook: "旧钩子", Scenes: []string{"旧场景"}},
 		Adaptation: &domain.AdaptationChapterPlan{
 			Chapter:         4,

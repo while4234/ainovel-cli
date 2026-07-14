@@ -226,9 +226,10 @@ func NewRevisionStore(dir string) *RevisionStore {
 }
 
 type StartRevisionInput struct {
-	Intent         string
-	Impact         domain.RevisionImpact
-	IdempotencyKey string
+	Intent           string
+	Impact           domain.RevisionImpact
+	PreviewSignature string
+	IdempotencyKey   string
 }
 
 type CandidateArtifactInput struct {
@@ -255,12 +256,14 @@ type RevisionAuditInput struct {
 	CandidateSignature string
 	Passed             bool
 	Report             string
+	Evidence           []domain.RevisionAuditEvidence
 }
 
 type RevisionFeedbackInput struct {
 	RevisionMutationInput
-	StageID string
-	Message string
+	StageID         string
+	ImpactSignature string
+	Message         string
 }
 
 type RevisionApprovalInput struct {
@@ -289,9 +292,10 @@ func (s *RevisionStore) Start(policy domain.RevisionPolicy, input StartRevisionI
 		return nil, err
 	}
 	payload := struct {
-		Intent string
-		Impact domain.RevisionImpact
-	}{intent, impact}
+		Intent           string
+		Impact           domain.RevisionImpact
+		PreviewSignature string
+	}{intent, impact, strings.TrimSpace(input.PreviewSignature)}
 	operation, fingerprint, err := revisionCommandFingerprint(input.IdempotencyKey, "start", payload)
 	if err != nil {
 		return nil, err
@@ -343,7 +347,8 @@ func (s *RevisionStore) Start(policy domain.RevisionPolicy, input StartRevisionI
 		Version: domain.RevisionSchemaVersion, ID: fmt.Sprintf("rev-%06d", working.NextSession), Mode: policyMode,
 		Stage: domain.RevisionStageImpactReviewPending, Revision: 1, Generation: working.Generation,
 		PolicyID: policyID, PolicyVersion: policyVersion, Intent: intent, Impact: impact,
-		ApprovalStages: stages, Round: 1, CreatedAt: now, UpdatedAt: now,
+		PreviewSignature: strings.TrimSpace(input.PreviewSignature),
+		ApprovalStages:   stages, Round: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := applyRevisionRoute(policy, &session); err != nil {
 		return nil, err
@@ -416,11 +421,24 @@ func (s *RevisionStore) SubmitCandidate(policy domain.RevisionPolicy, input Subm
 		if err := policy.ValidateCandidate(*policySession, policyVersions); err != nil {
 			return fmt.Errorf("validate revision candidate: %w", err)
 		}
+		var expectations []domain.RevisionAuditExpectation
+		if scoped, ok := policy.(domain.ScopedAuditPolicy); ok {
+			expectations, err = scoped.AuditExpectations(*policySession, cloneArtifactVersions(canonicalVersions))
+			if err != nil {
+				return fmt.Errorf("derive revision audit expectations: %w", err)
+			}
+			for _, expectation := range expectations {
+				if err := expectation.Validate(); err != nil {
+					return err
+				}
+			}
+		}
 		for _, version := range canonicalVersions {
 			state.Versions[version.ID] = version
 			session.CandidateVersionIDs = append(session.CandidateVersionIDs, version.ID)
 		}
 		session.CandidateSignature = domain.CandidateSignature(canonicalVersions)
+		session.AuditExpectations = append([]domain.RevisionAuditExpectation(nil), expectations...)
 		session.Stage = domain.RevisionStageCandidateAudit
 		return nil
 	})
@@ -438,11 +456,34 @@ func (s *RevisionStore) RecordAudit(policy domain.RevisionPolicy, input Revision
 		if strings.TrimSpace(input.CandidateSignature) == "" || input.CandidateSignature != session.CandidateSignature {
 			return fmt.Errorf("revision audit candidate signature mismatch")
 		}
+		if signed, ok := policy.(domain.SignedAuditSetPolicy); ok {
+			if err := signed.ValidateAuditSet(*session, append([]domain.RevisionAuditEvidence(nil), input.Evidence...)); err != nil {
+				return fmt.Errorf("validate signed revision audit set: %w", err)
+			}
+			input.Passed = true
+			for _, evidence := range input.Evidence {
+				if !evidence.Passed {
+					input.Passed = false
+					break
+				}
+			}
+		}
 		now := domain.RevisionTimestamp()
-		session.Audits = append(session.Audits, domain.RevisionAudit{
-			Round: session.Round, CandidateSignature: session.CandidateSignature,
-			Passed: input.Passed, Report: strings.TrimSpace(input.Report), CreatedAt: now,
-		})
+		if len(input.Evidence) == 0 {
+			session.Audits = append(session.Audits, domain.RevisionAudit{
+				Round: session.Round, CandidateSignature: session.CandidateSignature,
+				Passed: input.Passed, Report: strings.TrimSpace(input.Report), CreatedAt: now,
+			})
+		} else {
+			for _, evidence := range input.Evidence {
+				session.Audits = append(session.Audits, domain.RevisionAudit{
+					Round: session.Round, CandidateSignature: session.CandidateSignature,
+					Scope: evidence.Scope, ScopeID: evidence.ScopeID, FromChapter: evidence.FromChapter,
+					ToChapter: evidence.ToChapter, ContentSignature: evidence.ContentSignature,
+					Passed: evidence.Passed, Report: strings.TrimSpace(evidence.Report), CreatedAt: now,
+				})
+			}
+		}
 		if input.Passed {
 			session.Stage = domain.RevisionStageApprovalPending
 			return nil
@@ -451,7 +492,10 @@ func (s *RevisionStore) RecordAudit(policy domain.RevisionPolicy, input Revision
 		session.Stage = domain.RevisionStageCandidateGenerating
 		session.CandidateVersionIDs = nil
 		session.CandidateSignature = ""
-		session.Approvals = nil
+		session.AuditExpectations = nil
+		if _, staged := policy.(domain.StagedRevisionPolicy); !staged {
+			session.Approvals = nil
+		}
 		return nil
 	})
 }
@@ -462,7 +506,11 @@ func (s *RevisionStore) SubmitFeedback(policy domain.RevisionPolicy, input Revis
 		return nil, fmt.Errorf("revision feedback is required")
 	}
 	return s.mutate(policy, input.RevisionMutationInput, "submit_feedback", input, func(_ *revisionState, session *domain.RevisionSession) error {
-		if session.Stage != domain.RevisionStageCandidateAudit && session.Stage != domain.RevisionStageApprovalPending {
+		if _, signed := policy.(domain.SignedAuditSetPolicy); signed &&
+			(strings.TrimSpace(input.ImpactSignature) == "" || input.ImpactSignature != session.Impact.Signature) {
+			return fmt.Errorf("revision feedback target drift requires a new impact preview")
+		}
+		if session.Stage != domain.RevisionStageCandidateGenerating && session.Stage != domain.RevisionStageCandidateAudit && session.Stage != domain.RevisionStageApprovalPending {
 			return fmt.Errorf("revision feedback is not allowed from stage %q", session.Stage)
 		}
 		if session.Stage == domain.RevisionStageApprovalPending {
@@ -478,7 +526,10 @@ func (s *RevisionStore) SubmitFeedback(policy domain.RevisionPolicy, input Revis
 		session.Stage = domain.RevisionStageCandidateGenerating
 		session.CandidateVersionIDs = nil
 		session.CandidateSignature = ""
-		session.Approvals = nil
+		session.AuditExpectations = nil
+		if _, staged := policy.(domain.StagedRevisionPolicy); !staged {
+			session.Approvals = nil
+		}
 		return nil
 	})
 }
@@ -495,6 +546,15 @@ func (s *RevisionStore) ApproveStage(policy domain.RevisionPolicy, input Revisio
 		session.Approvals = append(session.Approvals, domain.RevisionApproval{StageID: stage.ID, ApprovedAt: domain.RevisionTimestamp()})
 		if len(session.Approvals) == len(session.ApprovalStages) {
 			session.Stage = domain.RevisionStageReadyToPublish
+			return nil
+		}
+		if staged, ok := policy.(domain.StagedRevisionPolicy); ok && staged.ContinueAfterApproval(*session, *stage) {
+			session.AcceptedVersionIDs = append(session.AcceptedVersionIDs, session.CandidateVersionIDs...)
+			session.Round++
+			session.Stage = domain.RevisionStageCandidateGenerating
+			session.CandidateVersionIDs = nil
+			session.CandidateSignature = ""
+			session.AuditExpectations = nil
 		}
 		return nil
 	})
@@ -502,59 +562,11 @@ func (s *RevisionStore) ApproveStage(policy domain.RevisionPolicy, input Revisio
 
 func (s *RevisionStore) Publish(policy domain.RevisionPolicy, input RevisionMutationInput) (*domain.RevisionSession, error) {
 	return s.mutate(policy, input, "publish", input, func(state *revisionState, session *domain.RevisionSession) error {
-		if session.Stage != domain.RevisionStageReadyToPublish || !session.LatestAuditPassed() || len(session.CandidateVersionIDs) == 0 {
-			return fmt.Errorf("revision is not ready to publish")
-		}
-		if err := session.Impact.Validate(); err != nil {
-			return fmt.Errorf("revalidate revision impact: %w", err)
-		}
-		if err := policy.ValidateImpact(cloneRevisionImpact(session.Impact)); err != nil {
-			return fmt.Errorf("revalidate revision impact policy: %w", err)
-		}
-		currentStages, err := validateApprovalStages(policy, cloneRevisionImpact(session.Impact))
+		versions, err := prepareRevisionPublish(policy, state, session)
 		if err != nil {
 			return err
 		}
-		if !approvalStagesEqual(currentStages, session.ApprovalStages) {
-			return fmt.Errorf("revision approval stages changed before publish")
-		}
-		if len(session.Approvals) != len(session.ApprovalStages) {
-			return fmt.Errorf("revision is missing ordered approvals")
-		}
-		versions := make([]domain.ArtifactVersion, 0, len(session.CandidateVersionIDs))
-		seenArtifacts := make(map[string]struct{}, len(session.CandidateVersionIDs))
-		for _, versionID := range session.CandidateVersionIDs {
-			version, exists := state.Versions[versionID]
-			if !exists {
-				return fmt.Errorf("candidate version %q is missing", versionID)
-			}
-			if version.ParentVersionID != state.CurrentArtifacts[version.ArtifactID] {
-				return fmt.Errorf("artifact %q changed after candidate generation", version.ArtifactID)
-			}
-			if version.Round != session.Round {
-				return fmt.Errorf("candidate version %q is from round %d, want %d", version.ID, version.Round, session.Round)
-			}
-			if _, duplicate := seenArtifacts[version.ArtifactID]; duplicate {
-				return fmt.Errorf("candidate contains duplicate artifact %q", version.ArtifactID)
-			}
-			seenArtifacts[version.ArtifactID] = struct{}{}
-			if err := version.Validate(); err != nil {
-				return err
-			}
-			versions = append(versions, version)
-		}
-		if domain.CandidateSignature(versions) != session.CandidateSignature {
-			return fmt.Errorf("revision candidate signature changed before publish")
-		}
-		policySession, err := cloneRevisionSession(*session)
-		if err != nil {
-			return err
-		}
-		if err := policy.ValidateCandidate(*policySession, cloneArtifactVersions(versions)); err != nil {
-			return fmt.Errorf("revalidate revision candidate: %w", err)
-		}
-		for _, versionID := range session.CandidateVersionIDs {
-			version := state.Versions[versionID]
+		for _, version := range versions {
 			state.CurrentArtifacts[version.ArtifactID] = version.ID
 		}
 		now := domain.RevisionTimestamp()
@@ -563,6 +575,97 @@ func (s *RevisionStore) Publish(policy domain.RevisionPolicy, input RevisionMuta
 		state.ActiveSessionID = ""
 		return nil
 	})
+}
+
+// ValidatePublish performs every RevisionStore policy/version/generation check
+// without mutating either formal artifacts or revision state. Production
+// publication must call this before any formal structure write.
+func (s *RevisionStore) ValidatePublish(policy domain.RevisionPolicy, input RevisionMutationInput) ([]domain.ArtifactVersion, error) {
+	var versions []domain.ArtifactVersion
+	err := s.withRevisionTransaction(func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if state.ActiveSessionID != strings.TrimSpace(input.SessionID) {
+			return ErrRevisionNotFound
+		}
+		session := state.Sessions[state.ActiveSessionID]
+		if input.ExpectedRevision != session.Revision {
+			return &RevisionConflictError{Expected: input.ExpectedRevision, Actual: session.Revision}
+		}
+		mode, id, version, err := describeRevisionPolicy(policy)
+		if err != nil {
+			return err
+		}
+		if session.Mode != mode || session.PolicyID != id || session.PolicyVersion != version {
+			return fmt.Errorf("revision publish policy drift")
+		}
+		versions, err = prepareRevisionPublish(policy, state, &session)
+		return err
+	})
+	return cloneArtifactVersions(versions), err
+}
+
+func prepareRevisionPublish(policy domain.RevisionPolicy, state *revisionState, session *domain.RevisionSession) ([]domain.ArtifactVersion, error) {
+	if session.Stage != domain.RevisionStageReadyToPublish || !session.LatestAuditPassed() || len(session.CandidateVersionIDs) == 0 {
+		return nil, fmt.Errorf("revision is not ready to publish")
+	}
+	if err := session.Impact.Validate(); err != nil {
+		return nil, fmt.Errorf("revalidate revision impact: %w", err)
+	}
+	if err := policy.ValidateImpact(cloneRevisionImpact(session.Impact)); err != nil {
+		return nil, fmt.Errorf("revalidate revision impact policy: %w", err)
+	}
+	currentStages, err := validateApprovalStages(policy, cloneRevisionImpact(session.Impact))
+	if err != nil {
+		return nil, err
+	}
+	if !approvalStagesEqual(currentStages, session.ApprovalStages) {
+		return nil, fmt.Errorf("revision approval stages changed before publish")
+	}
+	if len(session.Approvals) != len(session.ApprovalStages) {
+		return nil, fmt.Errorf("revision is missing ordered approvals")
+	}
+	currentVersions := make([]domain.ArtifactVersion, 0, len(session.CandidateVersionIDs))
+	for _, versionID := range session.CandidateVersionIDs {
+		version, exists := state.Versions[versionID]
+		if !exists || version.ParentVersionID != state.CurrentArtifacts[version.ArtifactID] || version.Round != session.Round {
+			return nil, fmt.Errorf("current candidate version %q is stale or missing", versionID)
+		}
+		currentVersions = append(currentVersions, version)
+	}
+	if domain.CandidateSignature(currentVersions) != session.CandidateSignature {
+		return nil, fmt.Errorf("revision candidate signature changed before publish")
+	}
+	versionIDs := append(append([]string(nil), session.AcceptedVersionIDs...), session.CandidateVersionIDs...)
+	versionsByArtifact := make(map[string]domain.ArtifactVersion, len(versionIDs))
+	artifactOrder := make([]string, 0, len(versionIDs))
+	for _, versionID := range versionIDs {
+		version, exists := state.Versions[versionID]
+		if !exists || version.ParentVersionID != state.CurrentArtifacts[version.ArtifactID] {
+			return nil, fmt.Errorf("accepted candidate version %q is stale or missing", versionID)
+		}
+		if err := version.Validate(); err != nil {
+			return nil, err
+		}
+		if _, exists := versionsByArtifact[version.ArtifactID]; !exists {
+			artifactOrder = append(artifactOrder, version.ArtifactID)
+		}
+		versionsByArtifact[version.ArtifactID] = version
+	}
+	versions := make([]domain.ArtifactVersion, 0, len(artifactOrder))
+	for _, artifactID := range artifactOrder {
+		versions = append(versions, versionsByArtifact[artifactID])
+	}
+	policySession, err := cloneRevisionSession(*session)
+	if err != nil {
+		return nil, err
+	}
+	if err := policy.ValidateCandidate(*policySession, cloneArtifactVersions(versions)); err != nil {
+		return nil, fmt.Errorf("revalidate revision candidate: %w", err)
+	}
+	return versions, nil
 }
 
 func (s *RevisionStore) Pause(policy domain.RevisionPolicy, input RevisionMutationInput) (*domain.RevisionSession, error) {
@@ -1016,6 +1119,12 @@ func validateRevisionState(state *revisionState) error {
 			activeCount++
 		}
 		candidateVersions := make([]domain.ArtifactVersion, 0, len(session.CandidateVersionIDs))
+		for _, versionID := range session.AcceptedVersionIDs {
+			version, exists := state.Versions[versionID]
+			if !exists || version.RevisionID != session.ID || version.Round >= session.Round {
+				return fmt.Errorf("revision session %q references invalid accepted version %q", id, versionID)
+			}
+		}
 		for _, versionID := range session.CandidateVersionIDs {
 			version, exists := state.Versions[versionID]
 			if !exists || version.RevisionID != session.ID {

@@ -255,6 +255,7 @@ type PlanningReview struct {
 // payoff, continuity, or originality.
 type OriginalPlanningAudit struct {
 	Scope       string                           `json:"scope"` // arc / volume / book
+	ScopeID     string                           `json:"scope_id,omitempty"`
 	Volume      int                              `json:"volume,omitempty"`
 	Arc         int                              `json:"arc,omitempty"`
 	FromVolume  int                              `json:"from_volume,omitempty"`
@@ -265,8 +266,12 @@ type OriginalPlanningAudit struct {
 	Summary     string                           `json:"summary"`
 	Dimensions  []OriginalPlanningAuditDimension `json:"dimensions"`
 	Issues      []OriginalPlanningAuditIssue     `json:"issues,omitempty"`
-	Attempt     int                              `json:"attempt"`
-	UpdatedAt   string                           `json:"updated_at"`
+	// StructureSignature binds every pass to the current stable-ID topology.
+	// ContentSignature binds it to the exact outline content in its audit scope.
+	StructureSignature string `json:"structure_signature,omitempty"`
+	ContentSignature   string `json:"content_signature,omitempty"`
+	Attempt            int    `json:"attempt"`
+	UpdatedAt          string `json:"updated_at"`
 }
 
 type OriginalPlanningAuditDimension struct {

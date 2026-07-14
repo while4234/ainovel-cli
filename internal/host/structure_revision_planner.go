@@ -214,7 +214,7 @@ func normalizeStructureProposal(
 	if err := proposal.Assessment.Validate(); err != nil {
 		return err
 	}
-	if err := domain.ValidateStructureSnapshot(proposal.Candidate); err != nil {
+	if err := domain.ValidateStructureSnapshotForStage(proposal.Candidate, request.Stage); err != nil {
 		return fmt.Errorf("validate candidate structure: %w", err)
 	}
 	if err := validateOperationDelta(request, formal, proposal.Candidate); err != nil {
@@ -266,7 +266,7 @@ func normalizeStructureProposal(
 		return err
 	}
 	proposal.Impacts = impacts
-	return proposal.Validate()
+	return proposal.ValidateForStage(request.Stage)
 }
 
 func requireStableStructureIdentities(current, candidate []domain.VolumeOutline) error {
@@ -386,7 +386,8 @@ func validateOperationDelta(request domain.StructureRevisionRequest, current, ca
 			return fmt.Errorf("appended chapter must be the final chapter of arc %q", lastArc.ID)
 		}
 	case domain.StructureRevisionAppendArc:
-		if len(added[domain.StructureKindArc]) != 1 || len(added[domain.StructureKindVolume]) != 0 || len(added[domain.StructureKindChapter]) == 0 {
+		if len(added[domain.StructureKindArc]) != 1 || len(added[domain.StructureKindVolume]) != 0 ||
+			(len(added[domain.StructureKindChapter]) == 0 && request.Stage != domain.ManuscriptStageProposalComplete) {
 			return fmt.Errorf("append_arc must add exactly one arc and its non-empty chapter set")
 		}
 		lastVolume := current[len(current)-1]
@@ -401,7 +402,8 @@ func validateOperationDelta(request domain.StructureRevisionRequest, current, ca
 			}
 		}
 	case domain.StructureRevisionAppendVolume:
-		if len(added[domain.StructureKindVolume]) != 1 || len(added[domain.StructureKindArc]) == 0 || len(added[domain.StructureKindChapter]) == 0 {
+		if len(added[domain.StructureKindVolume]) != 1 || len(added[domain.StructureKindArc]) == 0 ||
+			(len(added[domain.StructureKindChapter]) == 0 && request.Stage != domain.ManuscriptStageProposalComplete) {
 			return fmt.Errorf("append_volume must add exactly one volume with non-empty arcs and chapters")
 		}
 		newVolumeID := added[domain.StructureKindVolume][0]

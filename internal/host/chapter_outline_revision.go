@@ -55,7 +55,7 @@ type chapterOutlineArc struct {
 
 var chapterOutlineRevisionRetrySleep = retrypolicy.Wait
 
-const chapterOutlineRevisionSystemPrompt = `你是小说项目的章节细纲编辑。根据用户的修改要求，只重写指定章节的正式详细提纲。
+const normalChapterOutlineRevisionSystemPrompt = `你是原创小说项目的章节细纲编辑。根据用户的修改要求，只重写指定章节的正式详细提纲。
 
 硬性规则：
 - 只输出一个 JSON 对象，不要 Markdown、解释或代码围栏。
@@ -63,7 +63,15 @@ const chapterOutlineRevisionSystemPrompt = `你是小说项目的章节细纲编
 - chapter 必须保持原章节号；不得增加、删除、合并或拆分章节。
 - title、core_event、hook 必须是非空字符串；scenes 必须是非空字符串数组。
 - 保持与前后章节、所属卷主题和所属弧目标连续。
-- 如果存在 adaptation_contract，必须保留其 source_chapters、source_range、字数预算、preserve_events、required_changes、forbidden_moves 的约束；只修改章节细纲五项。
+- 必须落实用户指令，不能原样返回旧细纲。`
+
+const adaptationChapterOutlineRevisionSystemPrompt = `你是小说改编项目的章节细纲编辑。根据用户的修改要求，只重写指定章节的正式详细提纲。
+
+硬性规则：
+- 只输出一个 JSON 对象，不要 Markdown、解释或代码围栏。
+- JSON 必须严格使用字段：chapter、title、core_event、hook、scenes。
+- chapter 必须保持原章节号；不得增加、删除、合并或拆分章节。
+- 必须保留 adaptation_contract 中的来源覆盖、字数预算、保留事件、必要改动和禁止项；只修改章节细纲五项。
 - 必须落实用户指令，不能原样返回旧细纲。`
 
 func (h *Host) ReviseChapterOutline(ctx context.Context, req ChapterOutlineRevisionRequest) (ChapterOutlineRevisionResult, error) {
@@ -101,7 +109,7 @@ func (h *Host) ReviseChapterOutline(ctx context.Context, req ChapterOutlineRevis
 	if err != nil {
 		return ChapterOutlineRevisionResult{}, fmt.Errorf("load chapter outline: %w", err)
 	}
-	revisionContext, err := h.buildChapterOutlineRevisionContext(*current, req.Instruction)
+	revisionContext, prompt, err := h.buildChapterOutlineRevisionContext(*current, req.Instruction)
 	if err != nil {
 		return ChapterOutlineRevisionResult{}, err
 	}
@@ -110,7 +118,7 @@ func (h *Host) ReviseChapterOutline(ctx context.Context, req ChapterOutlineRevis
 	structureAttempts := h.cfg.EffectiveStructureRepairMaxAttempts()
 	h.mu.Unlock()
 	model := h.models.ForStageWithFailover(bootstrap.StageDetailOutline, h.reportChapterOutlineRevisionFailover)
-	revised, err := generateChapterOutlineRevision(ctx, model, revisionContext, structureAttempts)
+	revised, err := generateChapterOutlineRevision(ctx, model, prompt, revisionContext, structureAttempts)
 	if err != nil {
 		return ChapterOutlineRevisionResult{}, err
 	}
@@ -136,10 +144,10 @@ func (h *Host) ReviseChapterOutline(ctx context.Context, req ChapterOutlineRevis
 	return result, nil
 }
 
-func (h *Host) buildChapterOutlineRevisionContext(current domain.OutlineEntry, instruction string) (chapterOutlineRevisionContext, error) {
+func (h *Host) buildChapterOutlineRevisionContext(current domain.OutlineEntry, instruction string) (chapterOutlineRevisionContext, string, error) {
 	entries, err := h.store.Outline.LoadOutline()
 	if err != nil {
-		return chapterOutlineRevisionContext{}, err
+		return chapterOutlineRevisionContext{}, "", err
 	}
 	ctx := chapterOutlineRevisionContext{Current: current, Instruction: instruction}
 	for i := range entries {
@@ -158,7 +166,7 @@ func (h *Host) buildChapterOutlineRevisionContext(current domain.OutlineEntry, i
 	}
 	volumes, err := h.store.Outline.LoadLayeredOutline()
 	if err != nil {
-		return chapterOutlineRevisionContext{}, err
+		return chapterOutlineRevisionContext{}, "", err
 	}
 	nextChapter := 1
 	for _, volume := range volumes {
@@ -174,9 +182,12 @@ func (h *Host) buildChapterOutlineRevisionContext(current domain.OutlineEntry, i
 			nextChapter += arcCount
 		}
 	}
+	if !h.store.Adaptation.Exists() {
+		return ctx, normalChapterOutlineRevisionSystemPrompt, nil
+	}
 	plan, err := h.store.Adaptation.LoadPlan()
 	if err != nil {
-		return chapterOutlineRevisionContext{}, fmt.Errorf("load adaptation plan: %w", err)
+		return chapterOutlineRevisionContext{}, "", fmt.Errorf("load adaptation plan: %w", err)
 	}
 	if plan != nil {
 		for i := range plan.Chapters {
@@ -187,10 +198,10 @@ func (h *Host) buildChapterOutlineRevisionContext(current domain.OutlineEntry, i
 			}
 		}
 	}
-	return ctx, nil
+	return ctx, adaptationChapterOutlineRevisionSystemPrompt, nil
 }
 
-func generateChapterOutlineRevision(ctx context.Context, model agentcore.ChatModel, revisionContext chapterOutlineRevisionContext, maxAttempts int) (domain.OutlineEntry, error) {
+func generateChapterOutlineRevision(ctx context.Context, model agentcore.ChatModel, systemPrompt string, revisionContext chapterOutlineRevisionContext, maxAttempts int) (domain.OutlineEntry, error) {
 	if model == nil {
 		return domain.OutlineEntry{}, fmt.Errorf("architect model is unavailable")
 	}
@@ -202,7 +213,7 @@ func generateChapterOutlineRevision(ctx context.Context, model agentcore.ChatMod
 		return domain.OutlineEntry{}, err
 	}
 	messages := []agentcore.Message{
-		agentcore.SystemMsg(chapterOutlineRevisionSystemPrompt),
+		agentcore.SystemMsg(systemPrompt),
 		agentcore.UserMsg(string(payload)),
 	}
 	var lastErr error
