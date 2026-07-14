@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-14 `80107a6` + pending stream follow-up
+- 2026-07-14 `80107a6` + `f4829f7`
   `fix: fail over insufficient user quota errors`:
   Provider precharge failures reported as `insufficient_user_quota` now
   classify as hard quota exhaustion and immediately enter the configured
@@ -37,7 +37,13 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   stream prelude remains safe to retry on another backend. The exact live
   Yuanyu-to-Suifeng writing-stage shapes have sync and stream regression
   coverage. Focused fallback tests, full bootstrap tests, package vet, full Go
-  tests, 213 UI tests, production build, and diff-check passed.
+  tests, 213 UI tests, production build, and diff-check passed. A clean-commit
+  binary was deployed on port 9898. Project and global live probes both report
+  Yuanyu `Invalid token`; Suifeng passes small probes. A controlled 80,008-rune
+  input failed even with `max_tokens=8`: the provider reported about $3.376
+  available versus about $5.102 required; `max_tokens=4096` required about
+  $5.408. The project remains safely idle at chapter 29 pending provider credit
+  or an explicitly selected different model.
 - 2026-07-14 `14df0ba` `feat: add adaptive manuscript structure planning`:
   PR-03 adds mode-neutral seven-operation structure planning, sealed previews,
   exact stable-ID delta validation, dynamic soft budgets, causal required/
