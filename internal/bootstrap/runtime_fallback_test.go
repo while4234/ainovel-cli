@@ -38,6 +38,33 @@ func TestRuntimeAutoSwitchQuotaSwitchesImmediately(t *testing.T) {
 	}
 }
 
+func TestRuntimeAutoSwitchInsufficientUserQuotaSwitchesImmediately(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	quotaErr := errors.New("insufficient_user_quota: 预扣费额度失败, 用户剩余额度: ＄4.675172, 需要预扣费额度: ＄6.642374")
+	first := &scriptedRuntimeModel{provider: "deepseek-yuanyu-0", model: "deepseek-v4-pro", errs: []error{quotaErr}}
+	second := &scriptedRuntimeModel{provider: "deepseek-suifeng-0", model: "deepseek-v4-pro"}
+	primary := NewSwappableModel("deepseek-yuanyu-0", "deepseek-v4-pro", first)
+	controller := &runtimeFallbackControllerStub{
+		order:  []string{"deepseek-suifeng-0"},
+		models: map[string]agentcore.ChatModel{"deepseek-suifeng-0": second},
+	}
+
+	model := newRuntimeFallbackModel("stage:writing", primary, primary, runtimeFallbackTestConfig(7), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "deepseek-suifeng-0/deepseek-v4-pro" {
+		t.Fatalf("response = %q, want deepseek-suifeng-0/deepseek-v4-pro", got)
+	}
+	if first.Calls() != 1 || second.Calls() != 1 {
+		t.Fatalf("calls first=%d second=%d", first.Calls(), second.Calls())
+	}
+	if len(controller.calls) != 1 {
+		t.Fatalf("controller calls = %d, want 1", len(controller.calls))
+	}
+}
+
 func TestRuntimeAutoSwitchMonthlyUsageLimitSwitchesImmediately(t *testing.T) {
 	restoreRuntimeFallbackWait(t)
 	first := &scriptedRuntimeModel{

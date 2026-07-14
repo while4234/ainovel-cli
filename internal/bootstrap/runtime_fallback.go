@@ -403,6 +403,7 @@ func isRuntimeQuotaErrorMessage(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "402") ||
+		strings.Contains(msg, "insufficient_user_quota") ||
 		strings.Contains(msg, "insufficient_quota") ||
 		strings.Contains(msg, "quota_exceeded") ||
 		strings.Contains(msg, "quota exhausted") ||
@@ -445,6 +446,7 @@ func isRuntimeTemporaryRateLimitErrorMessage(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "rate_limit_exceeded") ||
+		strings.Contains(msg, "insufficient_user_quota") ||
 		strings.Contains(msg, "insufficient_quota") ||
 		strings.Contains(msg, "quota_exceeded") ||
 		strings.Contains(msg, "quota exhausted") ||
