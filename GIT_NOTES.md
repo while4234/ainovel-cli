@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-14 `14d1de0` `feat: add normal manuscript revision workflow`:
+  PR-04 wires real normal-fiction Web/Host revision entry points through
+  persistent sessions, skeleton-first approval, exact scope-local audits,
+  affected-detail generation, complete-book expansion, stable-ID prose rework
+  intents, atomic rollback and a strict source/adaptation firewall. Three
+  fresh fix/re-review rounds closed production-path, audit and sibling-detail
+  injection gaps. Full Go/vet, 213 UI tests, UI build and diff/bootstrap gates
+  passed. The pipeline did not push this commit.
 - 2026-07-14 `80107a6` + `f4829f7`
   `fix: fail over insufficient user quota errors`:
   Provider precharge failures reported as `insufficient_user_quota` now
