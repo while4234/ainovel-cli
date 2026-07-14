@@ -100,6 +100,75 @@ func TestWorkflowProgressReportsTheRunningStageModel(t *testing.T) {
 	}
 }
 
+func TestNormalWorkflowProgressCompletesPrerequisitesAfterWritingStarts(t *testing.T) {
+	tests := []struct {
+		name           string
+		snapshot       host.UISnapshot
+		expectedStatus WorkflowStatus
+	}{
+		{
+			name: "running",
+			snapshot: host.UISnapshot{
+				IsRunning:     true,
+				RuntimeState:  "running",
+				Phase:         string(domain.PhaseWriting),
+				TotalChapters: 12,
+			},
+			expectedStatus: WorkflowStatusRunning,
+		},
+		{
+			name: "paused",
+			snapshot: host.UISnapshot{
+				RuntimeState:  "paused",
+				Phase:         string(domain.PhaseWriting),
+				TotalChapters: 12,
+			},
+			expectedStatus: WorkflowStatusPaused,
+		},
+		{
+			name: "completed",
+			snapshot: host.UISnapshot{
+				RuntimeState:   "completed",
+				Phase:          string(domain.PhaseComplete),
+				CompletedCount: 12,
+				TotalChapters:  12,
+			},
+			expectedStatus: WorkflowStatusCompleted,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			progress := normalWorkflowProgress("project-writing", test.snapshot, nil)
+			if progress.CurrentStep != "writing" || progress.Status != test.expectedStatus {
+				t.Fatalf("progress step/status = %q/%q, want writing/%q", progress.CurrentStep, progress.Status, test.expectedStatus)
+			}
+			for _, stepID := range []string{"creative_intent", "structure", "clarification", "volume_plan", "chapter_outline"} {
+				step := workflowStepByID(progress.Steps, stepID)
+				if step == nil || step.Status != WorkflowStatusCompleted {
+					t.Fatalf("prerequisite step %q = %+v, want completed", stepID, step)
+				}
+			}
+			writing := workflowStepByID(progress.Steps, "writing")
+			if writing == nil || writing.Status != test.expectedStatus {
+				t.Fatalf("writing step = %+v, want status %q", writing, test.expectedStatus)
+			}
+		})
+	}
+}
+
+func TestNormalWorkflowProgressKeepsNewProjectStepsIdle(t *testing.T) {
+	progress := normalWorkflowProgress("project-new", host.UISnapshot{}, nil)
+	if progress.CurrentStep != "creative_intent" || progress.Status != WorkflowStatusIdle {
+		t.Fatalf("new project progress = %+v", progress)
+	}
+	for _, step := range progress.Steps {
+		if step.Status != WorkflowStatusIdle {
+			t.Fatalf("new project step %q status = %q, want idle", step.ID, step.Status)
+		}
+	}
+}
+
 func TestContinuationWorkflowProgressUsesDurableRevision(t *testing.T) {
 	continuation := &domain.ContinuationSnapshot{Workflow: domain.ContinuationWorkflow{
 		Stage:           domain.ContinuationStageProposalReviewPending,

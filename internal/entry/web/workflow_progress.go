@@ -541,6 +541,9 @@ func applyWritingState(progress *WorkflowProgress, snapshot host.UISnapshot) {
 		progress.Recoverable = true
 	}
 	progress.Status = status
+	if status != WorkflowStatusIdle {
+		progress.Steps = completeStepsBefore(progress.Steps, "writing")
+	}
 	progress.Steps = setStep(progress.Steps, "writing", status, snapshot.CompletedCount, snapshot.TotalChapters, message)
 	if status == WorkflowStatusPaused {
 		progress.NextAction = nextWorkflowAction(*progress, "resume_writing", "继续创作", false)
