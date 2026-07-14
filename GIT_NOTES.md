@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-14 `152c16b` `feat: add reversible manuscript revision sessions`:
+  PR-02 adds durable candidate-isolated revision sessions, version history,
+  expected-revision and idempotency checks, one-active-revision enforcement,
+  cross-process Windows/Unix locking, scoped normal-flow ownership, routed
+  generation fences, crash/restart invariants, staged human approvals, and
+  Host/Web resume guards. Eight fresh fix/re-review rounds closed process
+  races, policy reentrancy, cancellation fencing, async ownership, terminal
+  handoff, Close/waitDone, and Steer error-contract regressions. Final gates
+  passed sequentially: `go test ./... -count=1 -timeout 15m`, `go vet ./...`,
+  213 UI tests, production UI build, and `git diff --check`. The commit is
+  local and has not been pushed by this pipeline.
 - 2026-07-14 `25bedb6` `fix: ignore stale co-create after writing starts`
   and `6cec895` `fix: complete prerequisites in writing progress`: writing,
   paused, and completed projects now show all five planning stages as complete;
