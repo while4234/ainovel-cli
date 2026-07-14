@@ -124,6 +124,32 @@ func TestCoCreateStreamRetriesProviderGatewayError(t *testing.T) {
 	}
 }
 
+func TestCoCreateStreamGivesEachRetryItsOwnTimeout(t *testing.T) {
+	restore := stubCoCreateRetrySleep(t)
+	defer restore()
+
+	model := &timeoutThenSuccessCoCreateModel{}
+	reply, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		20*time.Millisecond,
+		bootstrap.DefaultCoCreateMaxTokens,
+		"system",
+		[]CoCreateMessage{{Role: "user", Content: "start"}},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("coCreateStream: %v", err)
+	}
+	if model.streamCalls != 2 {
+		t.Fatalf("stream calls = %d, want 2", model.streamCalls)
+	}
+	if reply.Message != "ok" {
+		t.Fatalf("reply = %+v", reply)
+	}
+}
+
 func TestCoCreateStreamUsesSuggestionJudgeWhenModelOmitsSuggestions(t *testing.T) {
 	model := &scriptedCoCreateModel{
 		streams: [][]agentcore.StreamEvent{{
@@ -338,6 +364,32 @@ type scriptedCoCreateModel struct {
 	streamCalls       int
 	generateCalls     int
 }
+
+type timeoutThenSuccessCoCreateModel struct {
+	streamCalls int
+}
+
+func (m *timeoutThenSuccessCoCreateModel) Generate(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	return nil, io.ErrUnexpectedEOF
+}
+
+func (m *timeoutThenSuccessCoCreateModel) GenerateStream(ctx context.Context, _ []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	m.streamCalls++
+	ch := make(chan agentcore.StreamEvent, 2)
+	go func(call int) {
+		defer close(ch)
+		if call == 1 {
+			<-ctx.Done()
+			ch <- agentcore.StreamEvent{Type: agentcore.StreamEventError, Err: ctx.Err()}
+			return
+		}
+		ch <- agentcore.StreamEvent{Type: agentcore.StreamEventTextDelta, Delta: validCoCreateXML("ok")}
+		ch <- agentcore.StreamEvent{Type: agentcore.StreamEventDone}
+	}(m.streamCalls)
+	return ch, nil
+}
+
+func (m *timeoutThenSuccessCoCreateModel) SupportsTools() bool { return false }
 
 func (m *scriptedCoCreateModel) Generate(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
 	if m.generateCalls >= len(m.generateResponses) {

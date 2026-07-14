@@ -77,6 +77,26 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   -count=1`, `go vet ./...`, 213 UI tests, the production UI build, and
   `git diff --check`. The accepted PR-01 change is committed locally and is
   not pushed.
+- 2026-07-14 `7dc754c` `fix: honor co-create streaming timeouts`:
+  explicit stage deadlines now remain authoritative for streamed provider
+  calls, and every co-create retry receives a fresh configured timeout budget.
+  Regressions reproduce both the former 120-second provider cutoff and the
+  shared retry-deadline failure. `go test ./... -count=1`, `go vet ./...`, and
+  `git diff --check` passed. A live Chrome retry on
+  `codex-login/gpt-5.6-sol` completed after 311.164 seconds and two attempts
+  with `error=null`, an 8056-character ready draft, and three clickable AI
+  suggestions. The affected project now persists a 600-second co-create
+  timeout. Deployment used compatibility commit `f31150b` so the active
+  writing project retained the already-committed workflow recovery behavior;
+  it resumed from 4/33 chapters and 11099 words without rollback.
+- 2026-07-14 `b6311d5` `fix: omit unsupported thinking parameters`:
+  the swappable model boundary now resolves the final per-call thinking level
+  against the active provider/model capabilities. Unsupported OpenAI-compatible
+  models such as DeepSeek receive no explicit `thinking` option, even when a
+  configured or upstream call-level override requested one. The focused
+  regression, related bootstrap/agents/host packages, `go test ./... -count=1`,
+  `go vet ./...`, and `git diff --check` passed. The active Web service was not
+  restarted because this fix was isolated from unrelated work on another branch.
 - 2026-07-14 `0501e92` `test: cover model reasoning inheritance`:
   completed the previously uncommitted reasoning-effort regression coverage.
   Tests now verify role overrides, stage inheritance, stage overrides, and

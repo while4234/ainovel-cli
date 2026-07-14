@@ -251,9 +251,6 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 
 	model := models.ForStageWithFailover(bootstrap.StageCoCreate, nil)
 	modelIdentity := newCoCreateModelIdentity(model)
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	msgs := []agentcore.Message{agentcore.SystemMsg(globalprompt.Apply(sysPrompt))}
 	for _, item := range history {
 		content := strings.TrimSpace(item.Content)
@@ -305,8 +302,18 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 
 	var streamCh <-chan agentcore.StreamEvent
 	var streamed, done bool
+	var attemptCtx context.Context
+	var cancelAttempt context.CancelFunc
+	cancelCurrentAttempt := func() {
+		if cancelAttempt != nil {
+			cancelAttempt()
+			cancelAttempt = nil
+		}
+	}
+	defer cancelCurrentAttempt()
 
 retry:
+	cancelCurrentAttempt()
 	attempts++
 	raw.Reset()
 	thinking.Reset()
@@ -314,8 +321,11 @@ retry:
 	streamed = false
 	done = false
 
-	streamCh, err = model.GenerateStream(ctx, msgs, nil, agentcore.WithMaxTokens(maxTokens))
+	attemptCtx, cancelAttempt = context.WithTimeout(ctx, timeout)
+	defer cancelAttempt()
+	streamCh, err = model.GenerateStream(attemptCtx, msgs, nil, agentcore.WithMaxTokens(maxTokens))
 	if err != nil {
+		cancelCurrentAttempt()
 		if ok, sleepErr := prepareCoCreateRetry(ctx, err, attempts, onProgress, &retryErrors); sleepErr != nil {
 			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
 		} else if ok {
@@ -348,6 +358,7 @@ retry:
 			}
 		case agentcore.StreamEventError:
 			if ev.Err != nil {
+				cancelCurrentAttempt()
 				if ok, sleepErr := prepareCoCreateRetry(ctx, ev.Err, attempts, onProgress, &retryErrors); sleepErr != nil {
 					return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
 				} else if ok {
@@ -356,6 +367,7 @@ retry:
 				return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(ev.Err))
 			}
 			streamErr := fmt.Errorf("cocreate generate failed: %w", agentcore.ErrProviderNetwork)
+			cancelCurrentAttempt()
 			if ok, sleepErr := prepareCoCreateRetry(ctx, streamErr, attempts, onProgress, &retryErrors); sleepErr != nil {
 				return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
 			} else if ok {
@@ -364,6 +376,7 @@ retry:
 			return CoCreateReply{}, modelIdentity.wrapError(streamErr)
 		}
 	}
+	cancelCurrentAttempt()
 	if !done {
 		streamErr := fmt.Errorf("cocreate stream closed before done: %w", agentcore.ErrProviderNetwork)
 		if ok, sleepErr := prepareCoCreateRetry(ctx, streamErr, attempts, onProgress, &retryErrors); sleepErr != nil {
