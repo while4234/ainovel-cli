@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -9,21 +10,71 @@ import (
 
 // SummaryStore 管理章节、弧、卷摘要。
 type SummaryStore struct {
-	io      *IO
-	outline *OutlineStore // 只读依赖，用于获取弧/卷数量
+	io        *IO
+	outline   *OutlineStore // 只读依赖，用于获取弧/卷数量
+	migration *structureMigration
 }
 
-func NewSummaryStore(io *IO, outline *OutlineStore) *SummaryStore {
-	return &SummaryStore{io: io, outline: outline}
+func NewSummaryStore(io *IO, outline *OutlineStore, migrations ...*structureMigration) *SummaryStore {
+	var migration *structureMigration
+	if len(migrations) > 0 {
+		migration = migrations[0]
+	}
+	return &SummaryStore{io: io, outline: outline, migration: migration}
 }
 
 // SaveSummary 保存章节摘要到 summaries/{ch}.json。
 func (s *SummaryStore) SaveSummary(sum domain.ChapterSummary) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return s.io.WriteJSON(chapterSummaryRel(sum.Chapter), sum)
+			}
+			ref, ok := index.chapterRef(sum.Chapter)
+			if !ok {
+				return s.io.WriteJSON(chapterSummaryRel(sum.Chapter), sum)
+			}
+			canonical := sum
+			canonical.Chapter = 0
+			return writeJSONProjectionPair(s.io,
+				chapterCanonicalRel(ref.ID, "summary.json"), canonicalChapterSummary{ChapterID: ref.ID, Summary: canonical},
+				chapterSummaryRel(sum.Chapter), sum,
+			)
+		})
+	}
 	return s.io.WriteJSON(fmt.Sprintf("summaries/%02d.json", sum.Chapter), sum)
 }
 
 // LoadSummary 读取指定章节的摘要。
 func (s *SummaryStore) LoadSummary(chapter int) (*domain.ChapterSummary, error) {
+	if s.migration != nil {
+		var result *domain.ChapterSummary
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return nil
+			}
+			ref, ok := index.chapterRef(chapter)
+			if !ok {
+				return nil
+			}
+			var canonical canonicalChapterSummary
+			if err := s.io.ReadJSON(chapterCanonicalRel(ref.ID, "summary.json"), &canonical); err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if canonical.ChapterID != ref.ID {
+				return fmt.Errorf("chapter summary identity mismatch for chapter %d", chapter)
+			}
+			canonical.Summary.Chapter = chapter
+			result = &canonical.Summary
+			return nil
+		})
+		if err != nil || result != nil {
+			return result, err
+		}
+	}
 	var sum domain.ChapterSummary
 	if err := s.io.ReadJSON(fmt.Sprintf("summaries/%02d.json", chapter), &sum); err != nil {
 		if os.IsNotExist(err) {
@@ -38,7 +89,13 @@ func (s *SummaryStore) DeleteChapterSummary(chapter int) error {
 	if chapter <= 0 {
 		return nil
 	}
-	return s.io.RemoveFile(fmt.Sprintf("summaries/%02d.json", chapter))
+	return s.removeScopedSummary(chapterSummaryRel(chapter), func(index structureIndex) (string, bool) {
+		ref, ok := index.chapterRef(chapter)
+		if !ok {
+			return "", false
+		}
+		return chapterCanonicalRel(ref.ID, "summary.json"), true
+	})
 }
 
 // LoadRecentSummaries 加载 current 章之前最近 count 章的摘要。
@@ -59,6 +116,20 @@ func (s *SummaryStore) LoadRecentSummaries(current, count int) ([]domain.Chapter
 
 // SaveArcSummary 保存弧级摘要。
 func (s *SummaryStore) SaveArcSummary(sum domain.ArcSummary) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return s.io.WriteJSON(arcSummaryRel(sum.Volume, sum.Arc), sum)
+			}
+			ref, ok := index.arcRef(sum.Volume, sum.Arc)
+			if !ok {
+				return s.io.WriteJSON(arcSummaryRel(sum.Volume, sum.Arc), sum)
+			}
+			canonical := sum
+			canonical.Volume, canonical.Arc = 0, 0
+			return writeJSONProjectionPair(s.io, arcCanonicalRel(ref.ID, "summary.json"), canonicalArcSummary{ArcID: ref.ID, Summary: canonical}, arcSummaryRel(sum.Volume, sum.Arc), sum)
+		})
+	}
 	return s.io.WriteJSON(fmt.Sprintf("summaries/arc-v%02da%02d.json", sum.Volume, sum.Arc), sum)
 }
 
@@ -76,6 +147,36 @@ func (s *SummaryStore) HasVolumeSummary(volume int) bool {
 
 // LoadArcSummary 读取指定弧的摘要。
 func (s *SummaryStore) LoadArcSummary(volume, arc int) (*domain.ArcSummary, error) {
+	if s.migration != nil {
+		var result *domain.ArcSummary
+		var indexed bool
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			indexed = migrated
+			if !migrated {
+				return nil
+			}
+			ref, ok := index.arcRef(volume, arc)
+			if !ok {
+				return nil
+			}
+			var canonical canonicalArcSummary
+			if err := s.io.ReadJSON(arcCanonicalRel(ref.ID, "summary.json"), &canonical); err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if canonical.ArcID != ref.ID {
+				return fmt.Errorf("arc summary identity mismatch for V%d A%d", volume, arc)
+			}
+			canonical.Summary.Volume, canonical.Summary.Arc = volume, arc
+			result = &canonical.Summary
+			return nil
+		})
+		if err != nil || result != nil || indexed {
+			return result, err
+		}
+	}
 	var sum domain.ArcSummary
 	if err := s.io.ReadJSON(fmt.Sprintf("summaries/arc-v%02da%02d.json", volume, arc), &sum); err != nil {
 		if os.IsNotExist(err) {
@@ -90,7 +191,13 @@ func (s *SummaryStore) DeleteArcSummary(volume, arc int) error {
 	if volume <= 0 || arc <= 0 {
 		return nil
 	}
-	return s.io.RemoveFile(fmt.Sprintf("summaries/arc-v%02da%02d.json", volume, arc))
+	return s.removeScopedSummary(arcSummaryRel(volume, arc), func(index structureIndex) (string, bool) {
+		ref, ok := index.arcRef(volume, arc)
+		if !ok {
+			return "", false
+		}
+		return arcCanonicalRel(ref.ID, "summary.json"), true
+	})
 }
 
 // LoadArcSummaries 加载一卷内所有已有弧摘要。
@@ -111,11 +218,55 @@ func (s *SummaryStore) LoadArcSummaries(volume int) ([]domain.ArcSummary, error)
 
 // SaveVolumeSummary 保存卷级摘要。
 func (s *SummaryStore) SaveVolumeSummary(sum domain.VolumeSummary) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return s.io.WriteJSON(volumeSummaryRel(sum.Volume), sum)
+			}
+			ref, ok := index.volumeRef(sum.Volume)
+			if !ok {
+				return s.io.WriteJSON(volumeSummaryRel(sum.Volume), sum)
+			}
+			canonical := sum
+			canonical.Volume = 0
+			return writeJSONProjectionPair(s.io, volumeCanonicalRel(ref.ID, "summary.json"), canonicalVolumeSummary{VolumeID: ref.ID, Summary: canonical}, volumeSummaryRel(sum.Volume), sum)
+		})
+	}
 	return s.io.WriteJSON(fmt.Sprintf("summaries/vol-v%02d.json", sum.Volume), sum)
 }
 
 // LoadVolumeSummary 读取指定卷的摘要。
 func (s *SummaryStore) LoadVolumeSummary(volume int) (*domain.VolumeSummary, error) {
+	if s.migration != nil {
+		var result *domain.VolumeSummary
+		var indexed bool
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			indexed = migrated
+			if !migrated {
+				return nil
+			}
+			ref, ok := index.volumeRef(volume)
+			if !ok {
+				return nil
+			}
+			var canonical canonicalVolumeSummary
+			if err := s.io.ReadJSON(volumeCanonicalRel(ref.ID, "summary.json"), &canonical); err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if canonical.VolumeID != ref.ID {
+				return fmt.Errorf("volume summary identity mismatch for volume %d", volume)
+			}
+			canonical.Summary.Volume = volume
+			result = &canonical.Summary
+			return nil
+		})
+		if err != nil || result != nil || indexed {
+			return result, err
+		}
+	}
 	var sum domain.VolumeSummary
 	if err := s.io.ReadJSON(fmt.Sprintf("summaries/vol-v%02d.json", volume), &sum); err != nil {
 		if os.IsNotExist(err) {
@@ -130,7 +281,48 @@ func (s *SummaryStore) DeleteVolumeSummary(volume int) error {
 	if volume <= 0 {
 		return nil
 	}
-	return s.io.RemoveFile(fmt.Sprintf("summaries/vol-v%02d.json", volume))
+	return s.removeScopedSummary(volumeSummaryRel(volume), func(index structureIndex) (string, bool) {
+		ref, ok := index.volumeRef(volume)
+		if !ok {
+			return "", false
+		}
+		return volumeCanonicalRel(ref.ID, "summary.json"), true
+	})
+}
+
+func (s *SummaryStore) removeScopedSummary(legacyRel string, canonicalRel func(structureIndex) (string, bool)) error {
+	if s.migration == nil {
+		return s.io.RemoveFile(legacyRel)
+	}
+	return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+		return s.io.WithWriteLock(func() error {
+			if migrated {
+				if rel, ok := canonicalRel(index); ok {
+					if err := s.io.RemoveFileUnlocked(rel); err != nil {
+						return err
+					}
+				}
+			}
+			return s.io.RemoveFileUnlocked(legacyRel)
+		})
+	})
+}
+
+func writeJSONProjectionPair(io *IO, canonicalRel string, canonical any, legacyRel string, legacy any) error {
+	canonicalData, err := json.MarshalIndent(canonical, "", "  ")
+	if err != nil {
+		return err
+	}
+	legacyData, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		return err
+	}
+	return io.WithWriteLock(func() error {
+		if err := io.WriteFileUnlocked(canonicalRel, canonicalData); err != nil {
+			return err
+		}
+		return io.WriteFileUnlocked(legacyRel, legacyData)
+	})
 }
 
 // LoadAllVolumeSummaries 加载所有已有卷摘要。

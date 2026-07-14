@@ -40,11 +40,39 @@ func IsContinuationRevisionConflict(err error) bool {
 // ContinuationStore owns the isolated candidate-planning files. Update keeps
 // read/check/write under one lock, preventing stale concurrent review actions.
 type ContinuationStore struct {
-	io *IO
+	io        *IO
+	migration *structureMigration
 }
 
-func NewContinuationStore(io *IO) *ContinuationStore {
-	return &ContinuationStore{io: io}
+func NewContinuationStore(io *IO, migrations ...*structureMigration) *ContinuationStore {
+	var migration *structureMigration
+	if len(migrations) > 0 {
+		migration = migrations[0]
+	}
+	return &ContinuationStore{io: io, migration: migration}
+}
+
+func (s *ContinuationStore) withRecovery(fn func() error) error {
+	if s.migration == nil {
+		return fn()
+	}
+	return s.migration.withRead(fn)
+}
+
+func (s *ContinuationStore) withReadLock(fn func() error) error {
+	return s.withRecovery(func() error {
+		s.io.mu.RLock()
+		defer s.io.mu.RUnlock()
+		return fn()
+	})
+}
+
+func (s *ContinuationStore) withWriteLock(fn func() error) error {
+	return s.withRecovery(func() error {
+		s.io.mu.Lock()
+		defer s.io.mu.Unlock()
+		return fn()
+	})
 }
 
 func (s *ContinuationStore) InitializeSource(sourceSignature string, baseChapterCount int) (*domain.ContinuationSnapshot, error) {
@@ -52,24 +80,23 @@ func (s *ContinuationStore) InitializeSource(sourceSignature string, baseChapter
 	if err != nil {
 		return nil, err
 	}
-	s.io.mu.Lock()
-	defer s.io.mu.Unlock()
+	var result *domain.ContinuationSnapshot
+	err = s.withWriteLock(func() error {
+		current, loadErr := s.loadSnapshotUnlocked()
+		if loadErr != nil && !errors.Is(loadErr, ErrContinuationNotInitialized) {
+			return loadErr
+		}
+		if loadErr == nil &&
+			current.Workflow.SourceSignature == workflow.SourceSignature &&
+			current.Workflow.BaseChapterCount == workflow.BaseChapterCount {
+			result = current
+			return nil
+		}
 
-	current, err := s.loadSnapshotUnlocked()
-	if err != nil && !errors.Is(err, ErrContinuationNotInitialized) {
-		return nil, err
-	}
-	if err == nil &&
-		current.Workflow.SourceSignature == workflow.SourceSignature &&
-		current.Workflow.BaseChapterCount == workflow.BaseChapterCount {
-		return current, nil
-	}
-
-	snapshot := &domain.ContinuationSnapshot{Workflow: workflow}
-	if err := s.saveSnapshotUnlocked(snapshot); err != nil {
-		return nil, err
-	}
-	return snapshot, nil
+		result = &domain.ContinuationSnapshot{Workflow: workflow}
+		return s.saveSnapshotUnlocked(result)
+	})
+	return result, err
 }
 
 func (s *ContinuationStore) LoadWorkflow() (*domain.ContinuationWorkflow, error) {
@@ -82,9 +109,13 @@ func (s *ContinuationStore) LoadWorkflow() (*domain.ContinuationWorkflow, error)
 }
 
 func (s *ContinuationStore) LoadSnapshot() (*domain.ContinuationSnapshot, error) {
-	s.io.mu.RLock()
-	defer s.io.mu.RUnlock()
-	return s.loadSnapshotUnlocked()
+	var snapshot *domain.ContinuationSnapshot
+	err := s.withReadLock(func() error {
+		var err error
+		snapshot, err = s.loadSnapshotUnlocked()
+		return err
+	})
+	return snapshot, err
 }
 
 // Update atomically serializes workflow mutations in-process and increments
@@ -94,50 +125,49 @@ func (s *ContinuationStore) Update(expectedRevision int, mutate func(*domain.Con
 	if mutate == nil {
 		return nil, fmt.Errorf("continuation mutation is required")
 	}
-	s.io.mu.Lock()
-	defer s.io.mu.Unlock()
-
-	snapshot, err := s.loadSnapshotUnlocked()
-	if err != nil {
-		return nil, err
-	}
-	if snapshot.Workflow.Revision != expectedRevision {
-		return nil, &ContinuationRevisionConflictError{Expected: expectedRevision, Actual: snapshot.Workflow.Revision}
-	}
-	before := snapshot.Workflow
-	if err := mutate(snapshot); err != nil {
-		return nil, err
-	}
-	if snapshot.Workflow.SourceSignature != before.SourceSignature ||
-		snapshot.Workflow.BaseChapterCount != before.BaseChapterCount {
-		return nil, fmt.Errorf("continuation source baseline is immutable")
-	}
-	if snapshot.Workflow.Stage != before.Stage {
-		if err := domain.ValidateContinuationTransition(before.Stage, snapshot.Workflow.Stage); err != nil {
-			return nil, err
+	var snapshot *domain.ContinuationSnapshot
+	err := s.withWriteLock(func() error {
+		var err error
+		snapshot, err = s.loadSnapshotUnlocked()
+		if err != nil {
+			return err
 		}
-	}
-	if err := validateContinuationSnapshot(snapshot); err != nil {
-		return nil, err
-	}
-	snapshot.Workflow.Version = domain.ContinuationSchemaVersion
-	snapshot.Workflow.Revision = before.Revision + 1
-	snapshot.Workflow.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := s.saveSnapshotUnlocked(snapshot); err != nil {
-		return nil, err
-	}
-	return snapshot, nil
+		if snapshot.Workflow.Revision != expectedRevision {
+			return &ContinuationRevisionConflictError{Expected: expectedRevision, Actual: snapshot.Workflow.Revision}
+		}
+		before := snapshot.Workflow
+		if err := mutate(snapshot); err != nil {
+			return err
+		}
+		if snapshot.Workflow.SourceSignature != before.SourceSignature ||
+			snapshot.Workflow.BaseChapterCount != before.BaseChapterCount {
+			return fmt.Errorf("continuation source baseline is immutable")
+		}
+		if snapshot.Workflow.Stage != before.Stage {
+			if err := domain.ValidateContinuationTransition(before.Stage, snapshot.Workflow.Stage); err != nil {
+				return err
+			}
+		}
+		if err := validateContinuationSnapshot(snapshot); err != nil {
+			return err
+		}
+		snapshot.Workflow.Version = domain.ContinuationSchemaVersion
+		snapshot.Workflow.Revision = before.Revision + 1
+		snapshot.Workflow.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		return s.saveSnapshotUnlocked(snapshot)
+	})
+	return snapshot, err
 }
 
 func (s *ContinuationStore) Clear() error {
-	s.io.mu.Lock()
-	defer s.io.mu.Unlock()
-	for _, rel := range continuationArtifactFiles() {
-		if err := s.io.RemoveFileUnlocked(rel); err != nil {
-			return err
+	return s.withWriteLock(func() error {
+		for _, rel := range continuationArtifactFiles() {
+			if err := s.io.RemoveFileUnlocked(rel); err != nil {
+				return err
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (s *ContinuationStore) loadSnapshotUnlocked() (*domain.ContinuationSnapshot, error) {

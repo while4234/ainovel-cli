@@ -509,6 +509,7 @@ func updateAdaptationPlanOutlineEntries(plan *domain.AdaptationPlan, entries []d
 			continue
 		}
 		plan.Chapters[i].Title = entry.Title
+		plan.Chapters[i].OutlineEntry.ID = entry.ID
 		plan.Chapters[i].OutlineEntry.Title = entry.Title
 		plan.Chapters[i].OutlineEntry.CoreEvent = entry.CoreEvent
 		plan.Chapters[i].OutlineEntry.Hook = entry.Hook

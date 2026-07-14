@@ -13,6 +13,9 @@ import (
 type Store struct {
 	dir string
 
+	recoveryMu  sync.Mutex
+	recoveryErr error
+
 	Progress               *ProgressStore
 	Outline                *OutlineStore
 	Drafts                 *DraftStore
@@ -38,34 +41,62 @@ type Store struct {
 
 // NewStore 创建状态管理器，dir 为小说输出根目录。
 func NewStore(dir string) *Store {
+	identity := newStructureIdentity(dir)
+	migration := newStructureMigration(dir)
+	// Recover before constructing cache-bearing sub-stores such as checkpoints;
+	// otherwise they could retain the pre-transaction file generation in memory.
+	recoveryErr := migration.recover()
 	io := newIO(dir)
-	outline := NewOutlineStore(io)
+	outline := NewOutlineStore(io, identity, migration)
 	return &Store{
 		dir:                    dir,
-		Progress:               NewProgressStore(newIO(dir)),
+		recoveryErr:            recoveryErr,
+		Progress:               NewProgressStore(newIO(dir), migration),
 		Outline:                outline,
-		Drafts:                 NewDraftStore(newIO(dir)),
-		Summaries:              NewSummaryStore(newIO(dir), outline),
+		Drafts:                 NewDraftStore(newIO(dir), migration),
+		Summaries:              NewSummaryStore(newIO(dir), outline, migration),
 		RunMeta:                NewRunMetaStore(newIO(dir)),
 		UserRules:              NewUserRulesStore(newIO(dir)),
 		Signals:                NewSignalStore(newIO(dir)),
 		Runtime:                NewRuntimeStore(newIO(dir)),
 		Characters:             NewCharacterStore(newIO(dir), outline),
 		Cast:                   NewCastStore(newIO(dir)),
-		World:                  NewWorldStore(newIO(dir)),
-		Checkpoints:            NewCheckpointStore(io),
+		World:                  NewWorldStore(newIO(dir), migration),
+		Checkpoints:            newCheckpointStore(io, recoveryErr == nil),
 		Sessions:               NewSessionStore(newIO(dir)),
 		Usage:                  NewUsageStore(newIO(dir)),
 		Simulation:             NewSimulationStore(newIO(dir)),
 		DeAI:                   NewDeAIStore(newIO(dir)),
-		Adaptation:             NewAdaptationStore(newIO(dir)),
-		Continuation:           NewContinuationStore(newIO(dir)),
+		Adaptation:             NewAdaptationStore(newIO(dir), identity, migration),
+		Continuation:           NewContinuationStore(newIO(dir), migration),
 		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir)),
 	}
 }
 
 // Dir 返回输出根目录。
 func (s *Store) Dir() string { return s.dir }
+
+// RecoverStructureMigration completes an interrupted structure transaction
+// before a caller assembles a compound diagnostic snapshot.
+func (s *Store) RecoverStructureMigration() error {
+	if s == nil || s.Outline == nil || s.Outline.migration == nil {
+		return nil
+	}
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	if err := s.Outline.migration.recover(); err != nil {
+		s.recoveryErr = err
+		if s.Checkpoints != nil {
+			s.Checkpoints.invalidateCache()
+		}
+		return err
+	}
+	s.recoveryErr = nil
+	if s.Checkpoints != nil {
+		s.Checkpoints.loadFromDisk()
+	}
+	return nil
+}
 
 // CheckConsistency 对事实层做一次浅层校验，用于启动/恢复时生成 warning。
 // 纯只读：不修正数据，仅返回可读的问题描述。调用方决定如何展示（log / UI）。
@@ -144,82 +175,105 @@ func (s *Store) Init() error {
 
 // ExpandArc 将骨架弧展开为详细章节（Outline + Progress 联动）。
 func (s *Store) ExpandArc(volumeIdx, arcIdx int, chapters []domain.OutlineEntry) error {
+	requestID, err := migrationRequestIdentity("expand_arc", struct {
+		Volume   int
+		Arc      int
+		Chapters []domain.OutlineEntry
+	}{Volume: volumeIdx, Arc: arcIdx, Chapters: chapters})
+	if err != nil {
+		return err
+	}
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
-
-	s.Outline.io.mu.Lock()
-	defer s.Outline.io.mu.Unlock()
-
-	volumes, err := s.Outline.expandArcUnlocked(volumeIdx, arcIdx, chapters)
-	if err != nil {
-		return err
-	}
-
-	s.Progress.io.mu.Lock()
-	defer s.Progress.io.mu.Unlock()
-
-	p, err := s.Progress.loadUnlocked()
-	if err != nil {
-		return err
-	}
-	if p == nil {
-		p = &domain.Progress{}
-	}
-	p.TotalChapters = domain.TotalChapters(volumes)
-	return s.Progress.saveUnlocked(p)
+	return s.saveLayeredStructureMutation("expand_arc", requestID, false, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+		return s.Outline.expandArc(existing, volumeIdx, arcIdx, chapters)
+	})
 }
 
 // AppendVolume 追加新卷到分层大纲末尾（Outline + Progress 联动）。
 func (s *Store) AppendVolume(vol domain.VolumeOutline) error {
+	requestID, err := migrationRequestIdentity("append_volume", vol)
+	if err != nil {
+		return err
+	}
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
-
-	s.Outline.io.mu.Lock()
-	defer s.Outline.io.mu.Unlock()
-
-	volumes, err := s.Outline.appendVolumeUnlocked(vol)
-	if err != nil {
-		return err
-	}
-
-	s.Progress.io.mu.Lock()
-	defer s.Progress.io.mu.Unlock()
-
-	p, err := s.Progress.loadUnlocked()
-	if err != nil {
-		return err
-	}
-	if p == nil {
-		p = &domain.Progress{}
-	}
-	p.TotalChapters = domain.TotalChapters(volumes)
-	return s.Progress.saveUnlocked(p)
+	return s.saveLayeredStructureMutation("append_volume", requestID, false, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+		return s.Outline.appendVolume(existing, vol)
+	})
 }
 
 // AppendSkeletonVolume appends one skeleton-only volume during the reviewed
 // normal-original proposal stage. Writing-time AppendVolume keeps requiring an
 // already expanded first arc.
 func (s *Store) AppendSkeletonVolume(vol domain.VolumeOutline) error {
+	requestID, err := migrationRequestIdentity("append_skeleton_volume", vol)
+	if err != nil {
+		return err
+	}
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
-	s.Outline.io.mu.Lock()
-	defer s.Outline.io.mu.Unlock()
-	volumes, err := s.Outline.appendSkeletonVolumeUnlocked(vol)
-	if err != nil {
-		return err
+	return s.saveLayeredStructureMutation("append_skeleton_volume", requestID, true, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+		return s.Outline.appendSkeletonVolume(existing, vol)
+	})
+}
+
+func (s *Store) saveLayeredStructureMutation(
+	kind string,
+	requestID string,
+	markLayered bool,
+	mutate func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error),
+) error {
+	if s.Outline.migration == nil {
+		return fmt.Errorf("structure migration is required for %s", kind)
 	}
-	s.Progress.io.mu.Lock()
-	defer s.Progress.io.mu.Unlock()
-	p, err := s.Progress.loadUnlocked()
-	if err != nil {
-		return err
-	}
-	if p == nil {
-		p = &domain.Progress{}
-	}
-	p.TotalChapters = domain.TotalChapters(volumes)
-	p.Layered = true
-	return s.Progress.saveUnlocked(p)
+	return s.Outline.migration.saveRequested(kind, requestID, func(_ structureIndex, _ bool) (structureMigrationBuild, error) {
+		s.Outline.io.mu.Lock()
+		defer s.Outline.io.mu.Unlock()
+		s.Progress.io.mu.Lock()
+		defer s.Progress.io.mu.Unlock()
+
+		var existing []domain.VolumeOutline
+		if err := s.Outline.io.ReadJSONUnlocked("layered_outline.json", &existing); err != nil {
+			return structureMigrationBuild{}, fmt.Errorf("load layered_outline: %w", err)
+		}
+		var flat []domain.OutlineEntry
+		if err := s.Outline.io.ReadJSONUnlocked("outline.json", &flat); err != nil && !os.IsNotExist(err) {
+			return structureMigrationBuild{}, err
+		}
+		legacySource := s.Outline.identity.sourceIndex(flat, existing)
+		volumes, err := mutate(existing)
+		if err != nil {
+			return structureMigrationBuild{}, err
+		}
+		progress, err := s.Progress.loadUnlocked()
+		if err != nil {
+			return structureMigrationBuild{}, err
+		}
+		if progress == nil {
+			progress = &domain.Progress{}
+		} else {
+			progress = cloneProgress(progress)
+		}
+		progress.TotalChapters = domain.TotalChapters(volumes)
+		if markLayered {
+			progress.Layered = true
+		}
+		payloads, err := layeredOutlineMigrationPayloads(volumes)
+		if err != nil {
+			return structureMigrationBuild{}, err
+		}
+		progressPayload, err := jsonMigrationPayload("meta/progress.json", progress)
+		if err != nil {
+			return structureMigrationBuild{}, err
+		}
+		payloads = append(payloads, progressPayload)
+		return structureMigrationBuild{
+			LegacySource: legacySource,
+			Target:       structureIndexFromLayered(volumes),
+			Payloads:     payloads,
+		}, nil
+	})
 }
 
 // ClearHandledSteer 原子性清除 PendingSteer 并重置 FlowSteering 状态

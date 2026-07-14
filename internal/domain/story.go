@@ -8,6 +8,7 @@ type Novel struct {
 
 // OutlineEntry 大纲条目，对应一章。
 type OutlineEntry struct {
+	ID        string   `json:"id,omitempty"`
 	Chapter   int      `json:"chapter"`
 	Title     string   `json:"title"`
 	CoreEvent string   `json:"core_event"`
@@ -28,6 +29,7 @@ type Character struct {
 
 // VolumeOutline 卷级大纲（长篇分层模式）。
 type VolumeOutline struct {
+	ID    string       `json:"id,omitempty"`
 	Index int          `json:"index"`
 	Title string       `json:"title"`
 	Theme string       `json:"theme"` // 本卷核心冲突/主题
@@ -48,6 +50,7 @@ type StoryCompass struct {
 
 // ArcOutline 弧级大纲。
 type ArcOutline struct {
+	ID                string         `json:"id,omitempty"`
 	Index             int            `json:"index"` // 卷内弧序号
 	Title             string         `json:"title"`
 	Goal              string         `json:"goal"`                         // 弧目标（起承转合）
@@ -89,6 +92,44 @@ func FlattenOutline(volumes []VolumeOutline) []OutlineEntry {
 		}
 	}
 	return result
+}
+
+// ProjectOutlineOrder derives display chapter numbers from slice order while
+// preserving each target chapter's stable identity.
+func ProjectOutlineOrder(entries []OutlineEntry) []OutlineEntry {
+	projected := make([]OutlineEntry, len(entries))
+	for i := range entries {
+		projected[i] = entries[i]
+		projected[i].Scenes = append([]string(nil), entries[i].Scenes...)
+		projected[i].Chapter = i + 1
+	}
+	return projected
+}
+
+// ProjectLayeredOutlineOrder derives volume, arc, and display chapter ordinals
+// from the current slice order. IDs are never rewritten by this projection.
+func ProjectLayeredOutlineOrder(volumes []VolumeOutline) []VolumeOutline {
+	projected := make([]VolumeOutline, len(volumes))
+	chapter := 1
+	for volumeIndex := range volumes {
+		projected[volumeIndex] = volumes[volumeIndex]
+		projected[volumeIndex].Index = volumeIndex + 1
+		projected[volumeIndex].Arcs = make([]ArcOutline, len(volumes[volumeIndex].Arcs))
+		for arcIndex := range volumes[volumeIndex].Arcs {
+			arc := volumes[volumeIndex].Arcs[arcIndex]
+			projected[volumeIndex].Arcs[arcIndex] = arc
+			projected[volumeIndex].Arcs[arcIndex].Index = arcIndex + 1
+			projected[volumeIndex].Arcs[arcIndex].Chapters = make([]OutlineEntry, len(arc.Chapters))
+			for chapterIndex := range arc.Chapters {
+				entry := arc.Chapters[chapterIndex]
+				entry.Scenes = append([]string(nil), entry.Scenes...)
+				entry.Chapter = chapter
+				projected[volumeIndex].Arcs[arcIndex].Chapters[chapterIndex] = entry
+				chapter++
+			}
+		}
+	}
+	return projected
 }
 
 // WorldRule 世界观规则条目。

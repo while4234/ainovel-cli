@@ -9624,6 +9624,7 @@ func adaptationVolumeOutlinesFromPlans(plan domain.AdaptationPlan, entries []dom
 		title := firstNonEmptyString(volume.Title, fmt.Sprintf("Volume %d", volume.Index))
 		goal := firstNonEmptyString(volume.Goal, volume.Summary, volume.Theme, strings.TrimSpace(plan.Brief))
 		out = append(out, domain.VolumeOutline{
+			ID:    volume.ID,
 			Index: volume.Index,
 			Title: title,
 			Theme: firstNonEmptyString(volume.Theme, volume.Summary, strings.TrimSpace(plan.Brief)),
@@ -9688,6 +9689,7 @@ func adaptationTargetOutline(plan domain.AdaptationPlan) []domain.OutlineEntry {
 		title := firstNonEmptyString(chapter.Title, chapter.OutlineEntry.Title, fmt.Sprintf("Chapter %d", number))
 		coreEvent := firstNonEmptyString(chapter.CoreEvent, chapter.CoverageNote, strings.Join(chapter.PreserveEvents, "；"))
 		entries = append(entries, domain.OutlineEntry{
+			ID:        chapter.OutlineEntry.ID,
 			Chapter:   number,
 			Title:     title,
 			CoreEvent: coreEvent,

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -9,9 +10,19 @@ import (
 )
 
 // OutlineStore 管理故事前提、大纲（扁平/分层）和指南针。
-type OutlineStore struct{ io *IO }
+type OutlineStore struct {
+	io        *IO
+	identity  structureIdentity
+	migration *structureMigration
+}
 
-func NewOutlineStore(io *IO) *OutlineStore { return &OutlineStore{io: io} }
+func NewOutlineStore(io *IO, identity structureIdentity, migrations ...*structureMigration) *OutlineStore {
+	var migration *structureMigration
+	if len(migrations) > 0 {
+		migration = migrations[0]
+	}
+	return &OutlineStore{io: io, identity: identity, migration: migration}
+}
 
 // SavePremise 保存故事前提到 premise.md。
 func (s *OutlineStore) SavePremise(content string) error {
@@ -29,24 +40,87 @@ func (s *OutlineStore) LoadPremise() (string, error) {
 
 // SaveOutline 同时保存 outline.json 和 outline.md（原子写入）。
 func (s *OutlineStore) SaveOutline(entries []domain.OutlineEntry) error {
+	if s.migration != nil {
+		return s.saveOutlineWithMigration(entries)
+	}
 	return s.io.WithWriteLock(func() error {
-		if err := s.io.WriteJSONUnlocked("outline.json", entries); err != nil {
+		var existing []domain.OutlineEntry
+		if err := s.io.ReadJSONUnlocked("outline.json", &existing); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		return s.io.WriteMarkdownUnlocked("outline.md", renderOutline(entries))
+		var layered []domain.VolumeOutline
+		if err := s.io.ReadJSONUnlocked("layered_outline.json", &layered); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		prepared, err := s.identity.prepareOutlineForSave(entries, existing, layered)
+		if err != nil {
+			return err
+		}
+		if err := s.io.WriteJSONUnlocked("outline.json", prepared); err != nil {
+			return err
+		}
+		return s.io.WriteMarkdownUnlocked("outline.md", renderOutline(prepared))
 	})
+}
+
+func (s *OutlineStore) saveOutlineWithMigration(entries []domain.OutlineEntry) error {
+	var existing []domain.OutlineEntry
+	if err := s.io.ReadJSON("outline.json", &existing); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	var layered []domain.VolumeOutline
+	if err := s.io.ReadJSON("layered_outline.json", &layered); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	prepared, err := s.identity.prepareOutlineForSave(entries, existing, layered)
+	if err != nil {
+		return err
+	}
+	source := s.identity.sourceIndex(existing, layered)
+	target, syncedLayered, err := s.identity.targetIndexForOutline(prepared, layered)
+	if err != nil {
+		return err
+	}
+	payloads, err := outlineMigrationPayloads(prepared, syncedLayered)
+	if err != nil {
+		return err
+	}
+	return s.migration.save("outline", source, target, payloads)
 }
 
 // LoadOutline 从 outline.json 读取结构化大纲。
 func (s *OutlineStore) LoadOutline() ([]domain.OutlineEntry, error) {
-	var entries []domain.OutlineEntry
-	if err := s.io.ReadJSON("outline.json", &entries); err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+	var result []domain.OutlineEntry
+	err := s.withStructureRead(func() error {
+		s.io.mu.RLock()
+		defer s.io.mu.RUnlock()
+		var entries []domain.OutlineEntry
+		if err := s.io.ReadJSONUnlocked("outline.json", &entries); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
 		}
-		return nil, err
-	}
-	return entries, nil
+		var layered []domain.VolumeOutline
+		_ = s.io.ReadJSONUnlocked("layered_outline.json", &layered)
+		hydrated := s.identity.hydrateOutline(entries)
+		layeredIDs := make(map[int]string)
+		for _, entry := range domain.FlattenOutline(s.identity.hydrateLayeredOutline(layered)) {
+			layeredIDs[entry.Chapter] = entry.ID
+		}
+		for i := range hydrated {
+			if strings.TrimSpace(entries[i].ID) == "" && layeredIDs[entries[i].Chapter] != "" {
+				hydrated[i].ID = layeredIDs[entries[i].Chapter]
+			}
+		}
+		if outlineChapterNumbersUseOrderProjection(entries) {
+			result = domain.ProjectOutlineOrder(hydrated)
+		} else {
+			result = hydrated
+		}
+		return nil
+	})
+	return result, err
 }
 
 // GetChapterOutline 获取指定章节的大纲条目。
@@ -65,24 +139,133 @@ func (s *OutlineStore) GetChapterOutline(chapter int) (*domain.OutlineEntry, err
 
 // SaveLayeredOutline 保存分层大纲（长篇模式，原子写入）。
 func (s *OutlineStore) SaveLayeredOutline(volumes []domain.VolumeOutline) error {
+	if s.migration != nil {
+		return s.saveLayeredOutlineWithMigration(volumes)
+	}
 	return s.io.WithWriteLock(func() error {
-		if err := s.io.WriteJSONUnlocked("layered_outline.json", volumes); err != nil {
+		var existing []domain.VolumeOutline
+		if err := s.io.ReadJSONUnlocked("layered_outline.json", &existing); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		return s.io.WriteMarkdownUnlocked("layered_outline.md", renderLayeredOutline(volumes))
+		var flat []domain.OutlineEntry
+		if err := s.io.ReadJSONUnlocked("outline.json", &flat); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		prepared, err := s.identity.prepareLayeredOutlineForSave(volumes, existing, flat)
+		if err != nil {
+			return err
+		}
+		if err := s.io.WriteJSONUnlocked("layered_outline.json", prepared); err != nil {
+			return err
+		}
+		return s.io.WriteMarkdownUnlocked("layered_outline.md", renderLayeredOutline(prepared))
 	})
+}
+
+func (s *OutlineStore) saveLayeredOutlineWithMigration(volumes []domain.VolumeOutline) error {
+	var existing []domain.VolumeOutline
+	if err := s.io.ReadJSON("layered_outline.json", &existing); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	var flat []domain.OutlineEntry
+	if err := s.io.ReadJSON("outline.json", &flat); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	prepared, err := s.identity.prepareLayeredOutlineForSave(volumes, existing, flat)
+	if err != nil {
+		return err
+	}
+	source := s.identity.sourceIndex(flat, existing)
+	target := structureIndexFromLayered(prepared)
+	payloads, err := layeredOutlineMigrationPayloads(prepared)
+	if err != nil {
+		return err
+	}
+	return s.migration.save("layered_outline", source, target, payloads)
 }
 
 // LoadLayeredOutline 读取分层大纲。
 func (s *OutlineStore) LoadLayeredOutline() ([]domain.VolumeOutline, error) {
-	var volumes []domain.VolumeOutline
-	if err := s.io.ReadJSON("layered_outline.json", &volumes); err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+	var result []domain.VolumeOutline
+	err := s.withStructureRead(func() error {
+		s.io.mu.RLock()
+		defer s.io.mu.RUnlock()
+		var volumes []domain.VolumeOutline
+		if err := s.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
 		}
+		var flat []domain.OutlineEntry
+		_ = s.io.ReadJSONUnlocked("outline.json", &flat)
+		hydrated := s.identity.hydrateLayeredOutline(volumes)
+		flatIDs := make(map[int]string)
+		for _, entry := range s.identity.hydrateOutline(flat) {
+			flatIDs[entry.Chapter] = entry.ID
+		}
+		for volumeIndex := range hydrated {
+			for arcIndex := range hydrated[volumeIndex].Arcs {
+				for chapterIndex := range hydrated[volumeIndex].Arcs[arcIndex].Chapters {
+					raw := volumes[volumeIndex].Arcs[arcIndex].Chapters[chapterIndex]
+					if strings.TrimSpace(raw.ID) == "" && flatIDs[raw.Chapter] != "" {
+						hydrated[volumeIndex].Arcs[arcIndex].Chapters[chapterIndex].ID = flatIDs[raw.Chapter]
+					}
+				}
+			}
+		}
+		result = domain.ProjectLayeredOutlineOrder(hydrated)
+		return nil
+	})
+	return result, err
+}
+
+func (s *OutlineStore) withStructureRead(fn func() error) error {
+	if s.migration == nil {
+		return fn()
+	}
+	return s.migration.withRead(fn)
+}
+
+func outlineMigrationPayloads(entries []domain.OutlineEntry, layered []domain.VolumeOutline) ([]migrationPayload, error) {
+	payloads := make([]migrationPayload, 0, 4)
+	outlineJSON, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
 		return nil, err
 	}
-	return volumes, nil
+	payloads = append(payloads,
+		migrationPayload{Rel: "outline.json", Data: outlineJSON},
+		migrationPayload{Rel: "outline.md", Data: []byte(renderOutline(entries))},
+	)
+	if len(layered) == 0 {
+		return payloads, nil
+	}
+	layeredJSON, err := json.MarshalIndent(layered, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(payloads,
+		migrationPayload{Rel: "layered_outline.json", Data: layeredJSON},
+		migrationPayload{Rel: "layered_outline.md", Data: []byte(renderLayeredOutline(layered))},
+	), nil
+}
+
+func layeredOutlineMigrationPayloads(volumes []domain.VolumeOutline) ([]migrationPayload, error) {
+	flat := domain.FlattenOutline(volumes)
+	layeredJSON, err := json.MarshalIndent(volumes, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	flatJSON, err := json.MarshalIndent(flat, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return []migrationPayload{
+		{Rel: "layered_outline.json", Data: layeredJSON},
+		{Rel: "layered_outline.md", Data: []byte(renderLayeredOutline(volumes))},
+		{Rel: "outline.json", Data: flatJSON},
+		{Rel: "outline.md", Data: []byte(renderOutline(flat))},
+	}, nil
 }
 
 // ClearLayeredOutline 清理分层大纲文件。
@@ -246,11 +429,19 @@ func (s *OutlineStore) expandArcUnlocked(volumeIdx, arcIdx int, chapters []domai
 	if err := s.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
 		return nil, fmt.Errorf("load layered_outline: %w", err)
 	}
+	return s.expandArc(volumes, volumeIdx, arcIdx, chapters)
+}
+
+func (s *OutlineStore) expandArc(volumes []domain.VolumeOutline, volumeIdx, arcIdx int, chapters []domain.OutlineEntry) ([]domain.VolumeOutline, error) {
+	volumes = s.identity.hydrateLayeredOutline(volumes)
 	location := locateOutlineArc(volumes, volumeIdx, arcIdx)
 	if !location.found {
 		return nil, fmt.Errorf("arc not found: volume=%d, arc=%d", volumeIdx, arcIdx)
 	}
 	expanded := numberedOutlineEntries(chapters, location.startChapter)
+	if err := assignMissingOutlineIDs(expanded); err != nil {
+		return nil, err
+	}
 	if location.estimatedChapters > 0 && len(expanded) != location.estimatedChapters {
 		return nil, fmt.Errorf(
 			"expand_arc V%d A%d must contain exactly %d chapters from the approved volume plan, got %d",
@@ -285,20 +476,7 @@ func (s *OutlineStore) expandArcUnlocked(volumeIdx, arcIdx int, chapters []domai
 	if duplicate, ok := domain.FindDuplicateOutlineEntries(domain.FlattenOutline(volumes)); ok {
 		return nil, fmt.Errorf("expanded outline repeats an existing chapter promise: %w", duplicate)
 	}
-	if err := s.io.WriteJSONUnlocked("layered_outline.json", volumes); err != nil {
-		return nil, err
-	}
-	if err := s.io.WriteMarkdownUnlocked("layered_outline.md", renderLayeredOutline(volumes)); err != nil {
-		return nil, err
-	}
-	flat := domain.FlattenOutline(volumes)
-	if err := s.io.WriteJSONUnlocked("outline.json", flat); err != nil {
-		return nil, err
-	}
-	if err := s.io.WriteMarkdownUnlocked("outline.md", renderOutline(flat)); err != nil {
-		return nil, err
-	}
-	return volumes, nil
+	return domain.ProjectLayeredOutlineOrder(volumes), nil
 }
 
 // replaceArcChaptersUnlocked 内部方法，在 Store.RepairArcOutline 跨域协调中调用。
@@ -314,6 +492,7 @@ func (s *OutlineStore) replaceArcChapterRangeUnlocked(volumeIdx, arcIdx, fromCha
 	if err := s.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
 		return nil, nil, fmt.Errorf("load layered_outline: %w", err)
 	}
+	volumes = s.identity.hydrateLayeredOutline(volumes)
 
 	location := locateOutlineArc(volumes, volumeIdx, arcIdx)
 	if !location.found {
@@ -341,6 +520,15 @@ func (s *OutlineStore) replaceArcChapterRangeUnlocked(volumeIdx, arcIdx, fromCha
 			if volumes[vi].Index != volumeIdx || arc.Index != arcIdx {
 				continue
 			}
+			existingOffset := 0
+			if fromChapter > 0 || toChapter > 0 {
+				existingOffset = fromChapter - location.startChapter
+			}
+			for i := range repaired {
+				if strings.TrimSpace(repaired[i].ID) == "" {
+					repaired[i].ID = arc.Chapters[existingOffset+i].ID
+				}
+			}
 			merged := numberedOutlineEntries(arc.Chapters, location.startChapter)
 			if fromChapter > 0 || toChapter > 0 {
 				offset := fromChapter - location.startChapter
@@ -362,6 +550,7 @@ func (s *OutlineStore) replaceArcChapterRangeUnlocked(volumeIdx, arcIdx, fromCha
 	if !found {
 		return nil, nil, fmt.Errorf("arc not found: volume=%d arc=%d", volumeIdx, arcIdx)
 	}
+	volumes = domain.ProjectLayeredOutlineOrder(volumes)
 	if err := s.io.WriteJSONUnlocked("layered_outline.json", volumes); err != nil {
 		return nil, nil, err
 	}
@@ -397,28 +586,25 @@ func (s *OutlineStore) appendVolumeUnlocked(vol domain.VolumeOutline) ([]domain.
 	if err := s.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
 		return nil, fmt.Errorf("load layered_outline: %w", err)
 	}
+	return s.appendVolume(volumes, vol)
+}
+
+func (s *OutlineStore) appendVolume(volumes []domain.VolumeOutline, vol domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+	volumes = s.identity.hydrateLayeredOutline(volumes)
 	if err := validateAppendVolume(volumes, vol); err != nil {
 		return nil, err
 	}
 	numberedVolume, _ := numberedAppendedVolume(volumes, vol)
+	preparedVolume := []domain.VolumeOutline{numberedVolume}
+	if err := assignMissingLayeredIDs(preparedVolume); err != nil {
+		return nil, err
+	}
+	numberedVolume = preparedVolume[0]
 	if err := validateOutlineVolumeBatches(fmt.Sprintf("append_volume V%d", vol.Index), numberedVolume); err != nil {
 		return nil, err
 	}
 	volumes = append(volumes, numberedVolume)
-	if err := s.io.WriteJSONUnlocked("layered_outline.json", volumes); err != nil {
-		return nil, err
-	}
-	if err := s.io.WriteMarkdownUnlocked("layered_outline.md", renderLayeredOutline(volumes)); err != nil {
-		return nil, err
-	}
-	flat := domain.FlattenOutline(volumes)
-	if err := s.io.WriteJSONUnlocked("outline.json", flat); err != nil {
-		return nil, err
-	}
-	if err := s.io.WriteMarkdownUnlocked("outline.md", renderOutline(flat)); err != nil {
-		return nil, err
-	}
-	return volumes, nil
+	return domain.ProjectLayeredOutlineOrder(volumes), nil
 }
 
 func (s *OutlineStore) appendSkeletonVolumeUnlocked(vol domain.VolumeOutline) ([]domain.VolumeOutline, error) {
@@ -426,17 +612,22 @@ func (s *OutlineStore) appendSkeletonVolumeUnlocked(vol domain.VolumeOutline) ([
 	if err := s.io.ReadJSONUnlocked("layered_outline.json", &volumes); err != nil {
 		return nil, fmt.Errorf("load layered_outline: %w", err)
 	}
+	return s.appendSkeletonVolume(volumes, vol)
+}
+
+func (s *OutlineStore) appendSkeletonVolume(volumes []domain.VolumeOutline, vol domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+	volumes = s.identity.hydrateLayeredOutline(volumes)
 	if err := validateAppendSkeletonVolume(volumes, vol); err != nil {
 		return nil, err
 	}
-	volumes = append(volumes, cloneVolumeOutline(vol))
-	if err := s.io.WriteJSONUnlocked("layered_outline.json", volumes); err != nil {
+	newVolume := cloneVolumeOutline(vol)
+	preparedVolume := []domain.VolumeOutline{newVolume}
+	if err := assignMissingLayeredIDs(preparedVolume); err != nil {
 		return nil, err
 	}
-	if err := s.io.WriteMarkdownUnlocked("layered_outline.md", renderLayeredOutline(volumes)); err != nil {
-		return nil, err
-	}
-	return volumes, nil
+	newVolume = preparedVolume[0]
+	volumes = append(volumes, newVolume)
+	return domain.ProjectLayeredOutlineOrder(volumes), nil
 }
 
 type outlineArcLocation struct {

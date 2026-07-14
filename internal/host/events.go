@@ -61,6 +61,7 @@ type UISnapshot struct {
 	RewriteReason      string
 	PendingSteer       string
 	RecoveryLabel      string
+	RecoveryError      string
 	IsRunning          bool
 	Agents             []AgentSnapshot
 

@@ -12,7 +12,13 @@ import (
 
 const continuationCommitJournalFile = "meta/continuation/commit_journal.json"
 
+const (
+	continuationJournalPrepared  = "prepared"
+	continuationJournalCommitted = "committed"
+)
+
 type continuationCommitJournal struct {
+	Stage          string                      `json:"stage"`
 	OutlineExisted bool                        `json:"outline_existed"`
 	Outline        []domain.OutlineEntry       `json:"outline,omitempty"`
 	LayeredExisted bool                        `json:"layered_existed"`
@@ -100,8 +106,35 @@ func (s *Store) CommitContinuationPlan(expectedRevision int) (*domain.Continuati
 	if !reflect.DeepEqual(mergedOutline[:snapshot.Workflow.BaseChapterCount], canonical) {
 		return nil, fmt.Errorf("continuation commit would modify imported chapters 1-%d", snapshot.Workflow.BaseChapterCount)
 	}
+	if layeredExisted {
+		stableLayered, err := s.Outline.identity.prepareLayeredOutlineForSave(layered, layered, canonical)
+		if err != nil {
+			return nil, err
+		}
+		prepared, err := s.Outline.identity.prepareLayeredOutlineForSave(mergedLayered, stableLayered, domain.FlattenOutline(stableLayered))
+		if err != nil {
+			return nil, err
+		}
+		layered = stableLayered
+		canonical = domain.FlattenOutline(stableLayered)
+		mergedLayered = prepared
+		mergedOutline = domain.FlattenOutline(prepared)
+	} else {
+		stableCanonical, err := s.Outline.identity.prepareOutlineForSave(canonical, canonical, nil)
+		if err != nil {
+			return nil, err
+		}
+		prepared, err := s.Outline.identity.prepareOutlineForSave(mergedOutline, stableCanonical, nil)
+		if err != nil {
+			return nil, err
+		}
+		canonical = stableCanonical
+		mergedOutline = prepared
+	}
+	plan.Chapters = cloneOutlineEntries(mergedOutline[snapshot.Workflow.BaseChapterCount:])
 
 	journal := continuationCommitJournal{
+		Stage:          continuationJournalPrepared,
 		OutlineExisted: outlineExisted,
 		Outline:        cloneOutlineEntries(canonical),
 		LayeredExisted: layeredExisted,
@@ -153,7 +186,7 @@ func continuationPlanForCommit(snapshot *domain.ContinuationSnapshot) (*domain.C
 		return nil, fmt.Errorf("continuation outline has %d chapters, want %d", len(chapters), snapshot.Proposal.TargetChapterCount)
 	}
 	if snapshot.Plan != nil {
-		if !reflect.DeepEqual(snapshot.Plan.Chapters, chapters) {
+		if !continuationPlanMatchesCandidate(snapshot.Plan.Chapters, chapters) {
 			return nil, fmt.Errorf("approved continuation plan differs from candidate outline")
 		}
 		return cloneContinuationPlan(snapshot.Plan), nil
@@ -166,6 +199,23 @@ func continuationPlanForCommit(snapshot *domain.ContinuationSnapshot) (*domain.C
 		Outlines:         cloneContinuationOutline(*snapshot.Outlines),
 		Chapters:         cloneOutlineEntries(chapters),
 	}, nil
+}
+
+func continuationPlanMatchesCandidate(plan, candidate []domain.OutlineEntry) bool {
+	if len(plan) != len(candidate) {
+		return false
+	}
+	for i := range plan {
+		planned := cloneOutlineEntry(plan[i])
+		proposed := cloneOutlineEntry(candidate[i])
+		if proposed.ID == "" {
+			proposed.ID = planned.ID
+		}
+		if !reflect.DeepEqual(planned, proposed) {
+			return false
+		}
+	}
+	return true
 }
 
 func validateContinuationBaseline(base int, canonical []domain.OutlineEntry, layered []domain.VolumeOutline, layeredExisted bool, progress *domain.Progress) error {
@@ -238,33 +288,66 @@ func continuationPlanAlreadyCommitted(canonical []domain.OutlineEntry, progress 
 }
 
 func (s *Store) writeContinuationCommitUnlocked(outline []domain.OutlineEntry, layered []domain.VolumeOutline, layeredExisted bool, progress *domain.Progress, snapshot *domain.ContinuationSnapshot) error {
-	if err := s.Outline.io.WriteJSONUnlocked("outline.json", outline); err != nil {
-		return err
+	if s.Outline.migration == nil {
+		return fmt.Errorf("structure migration is required for continuation commit")
 	}
-	if err := s.Outline.io.WriteMarkdownUnlocked("outline.md", renderOutline(outline)); err != nil {
-		return err
-	}
+	var payloads []migrationPayload
+	var target structureIndex
+	var err error
 	if layeredExisted {
-		if err := s.Outline.io.WriteJSONUnlocked("layered_outline.json", layered); err != nil {
-			return err
-		}
-		if err := s.Outline.io.WriteMarkdownUnlocked("layered_outline.md", renderLayeredOutline(layered)); err != nil {
-			return err
-		}
+		payloads, err = layeredOutlineMigrationPayloads(layered)
+		target = structureIndexFromLayered(layered)
+	} else {
+		payloads, err = outlineMigrationPayloads(outline, nil)
+		target = structureIndexFromOutline(outline)
 	}
-	if err := s.Progress.saveUnlocked(progress); err != nil {
+	if err != nil {
 		return err
 	}
-	return s.Continuation.saveSnapshotUnlocked(snapshot)
+	progressPayload, err := jsonMigrationPayload("meta/progress.json", progress)
+	if err != nil {
+		return err
+	}
+	workflowPayload, err := jsonMigrationPayload(continuationWorkflowFile, snapshot.Workflow)
+	if err != nil {
+		return err
+	}
+	planPayload, err := jsonMigrationPayload(continuationPlanFile, snapshot.Plan)
+	if err != nil {
+		return err
+	}
+	var journal continuationCommitJournal
+	if err := s.Continuation.io.ReadJSONUnlocked(continuationCommitJournalFile, &journal); err != nil {
+		return err
+	}
+	journal.Stage = continuationJournalCommitted
+	journalPayload, err := jsonMigrationPayload(continuationCommitJournalFile, journal)
+	if err != nil {
+		return err
+	}
+	payloads = append(payloads, progressPayload, workflowPayload, planPayload, journalPayload)
+	legacySource := structureIndexFromOutline(journal.Outline)
+	if journal.LayeredExisted {
+		legacySource = structureIndexFromLayered(journal.Layered)
+	}
+	return s.Outline.migration.save("continuation_commit", legacySource, target, payloads)
 }
 
 func (s *Store) recoverContinuationCommitUnlocked() error {
+	if s.Outline.migration != nil {
+		if err := s.Outline.migration.recover(); err != nil {
+			return err
+		}
+	}
 	var journal continuationCommitJournal
 	if err := s.Continuation.io.ReadJSONUnlocked(continuationCommitJournalFile, &journal); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
+	}
+	if journal.Stage == continuationJournalCommitted {
+		return s.Continuation.io.RemoveFileUnlocked(continuationCommitJournalFile)
 	}
 	if err := s.restoreContinuationCommitUnlocked(journal); err != nil {
 		return err
@@ -279,27 +362,55 @@ func (s *Store) rollbackContinuationCommitUnlocked(journal continuationCommitJou
 }
 
 func (s *Store) restoreContinuationCommitUnlocked(journal continuationCommitJournal) error {
-	var restoreErr error
-	if journal.OutlineExisted {
-		restoreErr = errors.Join(restoreErr, s.Outline.io.WriteJSONUnlocked("outline.json", journal.Outline))
-		restoreErr = errors.Join(restoreErr, s.Outline.io.WriteMarkdownUnlocked("outline.md", renderOutline(journal.Outline)))
-	} else {
-		restoreErr = errors.Join(restoreErr, s.Outline.io.RemoveFileUnlocked("outline.json"))
-		restoreErr = errors.Join(restoreErr, s.Outline.io.RemoveFileUnlocked("outline.md"))
+	if s.Outline.migration == nil {
+		return fmt.Errorf("structure migration is required for continuation recovery")
 	}
+	var payloads []migrationPayload
+	var removePaths []string
+	target := structureIndex{Version: structureSchemaVersion}
 	if journal.LayeredExisted {
-		restoreErr = errors.Join(restoreErr, s.Outline.io.WriteJSONUnlocked("layered_outline.json", journal.Layered))
-		restoreErr = errors.Join(restoreErr, s.Outline.io.WriteMarkdownUnlocked("layered_outline.md", renderLayeredOutline(journal.Layered)))
+		var err error
+		payloads, err = layeredOutlineMigrationPayloads(journal.Layered)
+		if err != nil {
+			return err
+		}
+		target = structureIndexFromLayered(journal.Layered)
 	} else {
-		restoreErr = errors.Join(restoreErr, s.Outline.io.RemoveFileUnlocked("layered_outline.json"))
-		restoreErr = errors.Join(restoreErr, s.Outline.io.RemoveFileUnlocked("layered_outline.md"))
+		removePaths = append(removePaths, "layered_outline.json", "layered_outline.md")
+		if journal.OutlineExisted {
+			var err error
+			payloads, err = outlineMigrationPayloads(journal.Outline, nil)
+			if err != nil {
+				return err
+			}
+			target = structureIndexFromOutline(journal.Outline)
+		}
+	}
+	if !journal.OutlineExisted {
+		removePaths = append(removePaths, "outline.json", "outline.md")
 	}
 	if journal.Progress != nil {
-		restoreErr = errors.Join(restoreErr, s.Progress.saveUnlocked(journal.Progress))
+		payload, err := jsonMigrationPayload("meta/progress.json", journal.Progress)
+		if err != nil {
+			return err
+		}
+		payloads = append(payloads, payload)
 	}
-	restoreErr = errors.Join(restoreErr, s.Continuation.io.WriteJSONUnlocked(continuationWorkflowFile, journal.Workflow))
-	restoreErr = errors.Join(restoreErr, writeOptionalJSONUnlocked(s.Continuation.io, continuationPlanFile, journal.Plan))
-	return restoreErr
+	workflowPayload, err := jsonMigrationPayload(continuationWorkflowFile, journal.Workflow)
+	if err != nil {
+		return err
+	}
+	payloads = append(payloads, workflowPayload)
+	if journal.Plan != nil {
+		planPayload, err := jsonMigrationPayload(continuationPlanFile, journal.Plan)
+		if err != nil {
+			return err
+		}
+		payloads = append(payloads, planPayload)
+	} else {
+		removePaths = append(removePaths, continuationPlanFile)
+	}
+	return s.Outline.migration.saveWithRemovals("continuation_recovery", target, target, payloads, removePaths)
 }
 
 func loadOptionalOutlineUnlocked(io *IO) ([]domain.OutlineEntry, bool, error) {

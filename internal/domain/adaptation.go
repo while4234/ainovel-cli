@@ -515,6 +515,7 @@ type AdaptationVolumeReview struct {
 // proposal. It is model-chosen for long-form plans and remains optional for
 // shorter works that do not naturally need volumes.
 type AdaptationVolumePlan struct {
+	ID               string   `json:"id,omitempty"`
 	Index            int      `json:"index"`
 	Title            string   `json:"title"`
 	Theme            string   `json:"theme,omitempty"`

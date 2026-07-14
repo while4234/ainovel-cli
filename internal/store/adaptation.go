@@ -3,6 +3,7 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -37,9 +38,19 @@ const (
 )
 
 // AdaptationStore keeps source-novel snapshots and adaptation validation data.
-type AdaptationStore struct{ io *IO }
+type AdaptationStore struct {
+	io        *IO
+	identity  structureIdentity
+	migration *structureMigration
+}
 
-func NewAdaptationStore(io *IO) *AdaptationStore { return &AdaptationStore{io: io} }
+func NewAdaptationStore(io *IO, identity structureIdentity, migrations ...*structureMigration) *AdaptationStore {
+	var migration *structureMigration
+	if len(migrations) > 0 {
+		migration = migrations[0]
+	}
+	return &AdaptationStore{io: io, identity: identity, migration: migration}
+}
 
 func (s *AdaptationStore) Reset() error {
 	return os.RemoveAll(s.io.path(adaptationRootDir))
@@ -151,7 +162,7 @@ func (s *AdaptationStore) RepairLegacyArcChapterBudgetDensity(plan *domain.Adapt
 // ResetGenerated removes adaptation artifacts derived from a confirmed brief
 // while preserving the analyzed source-novel snapshot.
 func (s *AdaptationStore) ResetGenerated() error {
-	return s.io.WithWriteLock(func() error {
+	if err := s.io.WithWriteLock(func() error {
 		err := os.Remove(s.io.path(adaptationPlanFile))
 		if err != nil && !os.IsNotExist(err) {
 			return err
@@ -172,6 +183,28 @@ func (s *AdaptationStore) ResetGenerated() error {
 			return err
 		}
 		return os.RemoveAll(s.io.path(adaptationCheckDir))
+	}); err != nil {
+		return err
+	}
+	return s.clearCanonicalChecks()
+}
+
+func (s *AdaptationStore) clearCanonicalChecks() error {
+	if s.migration == nil {
+		return nil
+	}
+	return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+		if !migrated {
+			return nil
+		}
+		return s.io.WithWriteLock(func() error {
+			for _, ref := range index.Chapters {
+				if err := s.io.RemoveFileUnlocked(chapterCanonicalRel(ref.ID, "adaptation-check.json")); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 	})
 }
 
@@ -807,9 +840,27 @@ func adaptationDossierBatchCount(chapterCount, batchSize int) int {
 }
 
 func (s *AdaptationStore) SavePlan(plan domain.AdaptationPlan) error {
+	cloned, err := cloneAdaptationPlanRequest(plan)
+	if err != nil {
+		return err
+	}
+	plan = cloned
 	s.normalizeAdaptationPlan(&plan)
 	plan.Status = domain.AdaptationPlanStatusConfirmed
+	if s.migration != nil {
+		return s.savePlanWithMigration(plan)
+	}
 	return s.io.WithWriteLock(func() error {
+		var existing domain.AdaptationPlan
+		existingPlan := (*domain.AdaptationPlan)(nil)
+		if err := s.io.ReadJSONUnlocked(adaptationPlanFile, &existing); err == nil {
+			existingPlan = &existing
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := s.identity.prepareAdaptationPlanForSave(&plan, existingPlan); err != nil {
+			return err
+		}
 		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
 			return err
 		}
@@ -823,22 +874,125 @@ func (s *AdaptationStore) SavePlan(plan domain.AdaptationPlan) error {
 	})
 }
 
-func (s *AdaptationStore) LoadPlan() (*domain.AdaptationPlan, error) {
-	var plan domain.AdaptationPlan
-	if err := s.io.ReadJSON(adaptationPlanFile, &plan); err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+func cloneAdaptationPlanRequest(plan domain.AdaptationPlan) (domain.AdaptationPlan, error) {
+	data, err := json.Marshal(plan)
+	if err != nil {
+		return domain.AdaptationPlan{}, fmt.Errorf("clone adaptation plan request: %w", err)
+	}
+	var cloned domain.AdaptationPlan
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		return domain.AdaptationPlan{}, fmt.Errorf("clone adaptation plan request: %w", err)
+	}
+	return cloned, nil
+}
+
+func (s *AdaptationStore) savePlanWithMigration(plan domain.AdaptationPlan) error {
+	requestID, err := migrationRequestIdentity("adaptation_plan", plan)
+	if err != nil {
+		return err
+	}
+	return s.migration.saveRequested("adaptation_plan", requestID, func(_ structureIndex, _ bool) (structureMigrationBuild, error) {
+		s.io.mu.Lock()
+		defer s.io.mu.Unlock()
+
+		var existing domain.AdaptationPlan
+		existingPlan := (*domain.AdaptationPlan)(nil)
+		if err := s.io.ReadJSONUnlocked(adaptationPlanFile, &existing); err == nil {
+			existingPlan = &existing
+		} else if !os.IsNotExist(err) {
+			return structureMigrationBuild{}, err
 		}
+		if err := s.identity.prepareAdaptationPlanForSave(&plan, existingPlan); err != nil {
+			return structureMigrationBuild{}, err
+		}
+		legacySource := structureIndex{Version: structureSchemaVersion}
+		if existingPlan != nil {
+			s.identity.hydrateAdaptationPlan(existingPlan)
+			legacySource = structureIndexFromAdaptation(existingPlan)
+		}
+		planPayload, err := jsonMigrationPayload(adaptationPlanFile, plan)
+		if err != nil {
+			return structureMigrationBuild{}, err
+		}
+		currentWorkflow, err := s.loadPlanningWorkflowUnlocked()
+		if err != nil {
+			return structureMigrationBuild{}, err
+		}
+		workflow := domain.AdaptationPlanningWorkflow{
+			Version:   domain.AdaptationPlanningWorkflowVersion,
+			Stage:     domain.AdaptationPlanningStageConfirmed,
+			Revision:  currentWorkflow.Revision + 1,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+		workflowPayload, err := jsonMigrationPayload(adaptationPlanningWorkflowFile, workflow)
+		if err != nil {
+			return structureMigrationBuild{}, err
+		}
+		return structureMigrationBuild{
+			LegacySource: legacySource,
+			Target:       structureIndexFromAdaptation(&plan),
+			Payloads:     []migrationPayload{planPayload, workflowPayload},
+			RemovePaths:  []string{adaptationProposalRuntimeFile, adaptationVolumeReviewFile},
+		}, nil
+	})
+}
+
+func (s *AdaptationStore) LoadPlan() (*domain.AdaptationPlan, error) {
+	var result *domain.AdaptationPlan
+	load := func() error {
+		var plan domain.AdaptationPlan
+		if err := s.io.ReadJSON(adaptationPlanFile, &plan); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		s.normalizeAdaptationPlan(&plan)
+		s.identity.hydrateAdaptationPlan(&plan)
+		result = &plan
+		return nil
+	}
+	if s.migration != nil {
+		if err := s.migration.withRead(load); err != nil {
+			return nil, err
+		}
+	} else if err := load(); err != nil {
 		return nil, err
 	}
-	s.normalizeAdaptationPlan(&plan)
-	return &plan, nil
+	return result, nil
 }
 
 func (s *AdaptationStore) SaveProposal(plan domain.AdaptationPlan) error {
 	s.normalizeAdaptationPlan(&plan)
 	plan.Status = domain.AdaptationPlanStatusProposal
 	return s.io.WithWriteLock(func() error {
+		var existing domain.AdaptationPlan
+		existingPlan := (*domain.AdaptationPlan)(nil)
+		if err := s.io.ReadJSONUnlocked(adaptationProposalFile, &existing); err == nil {
+			existingPlan = &existing
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if existingPlan == nil {
+			var review domain.AdaptationVolumeReview
+			if err := s.io.ReadJSONUnlocked(adaptationVolumeReviewFile, &review); err == nil {
+				s.identity.hydrateAdaptationVolumeReview(&review)
+				ids := make(map[int]string, len(review.Volumes))
+				for _, volume := range review.Volumes {
+					ids[volume.Index] = volume.ID
+				}
+				for i := range plan.Volumes {
+					if strings.TrimSpace(plan.Volumes[i].ID) == "" {
+						plan.Volumes[i].ID = ids[plan.Volumes[i].Index]
+					}
+				}
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
+		if err := s.identity.prepareAdaptationPlanForSave(&plan, existingPlan); err != nil {
+			return err
+		}
 		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
 			return err
 		}
@@ -861,6 +1015,7 @@ func (s *AdaptationStore) LoadProposal() (*domain.AdaptationPlan, error) {
 		return nil, err
 	}
 	s.normalizeAdaptationPlan(&proposal)
+	s.identity.hydrateAdaptationPlan(&proposal)
 	proposal.Status = domain.AdaptationPlanStatusProposal
 	return &proposal, nil
 }
@@ -868,6 +1023,16 @@ func (s *AdaptationStore) LoadProposal() (*domain.AdaptationPlan, error) {
 func (s *AdaptationStore) SaveVolumeReview(review domain.AdaptationVolumeReview) error {
 	review.Status = domain.AdaptationPlanStatusVolumeReview
 	return s.io.WithWriteLock(func() error {
+		var existing domain.AdaptationVolumeReview
+		existingReview := (*domain.AdaptationVolumeReview)(nil)
+		if err := s.io.ReadJSONUnlocked(adaptationVolumeReviewFile, &existing); err == nil {
+			existingReview = &existing
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := s.identity.prepareAdaptationVolumeReviewForSave(&review, existingReview); err != nil {
+			return err
+		}
 		if err := s.io.RemoveFileUnlocked(adaptationProposalFile); err != nil {
 			return err
 		}
@@ -887,6 +1052,16 @@ func (s *AdaptationStore) SaveVolumeReview(review domain.AdaptationVolumeReview)
 func (s *AdaptationStore) RestoreVolumeReviewForRollback(review domain.AdaptationVolumeReview) error {
 	review.Status = domain.AdaptationPlanStatusVolumeReview
 	return s.io.WithWriteLock(func() error {
+		var existing domain.AdaptationVolumeReview
+		existingReview := (*domain.AdaptationVolumeReview)(nil)
+		if err := s.io.ReadJSONUnlocked(adaptationVolumeReviewFile, &existing); err == nil {
+			existingReview = &existing
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := s.identity.prepareAdaptationVolumeReviewForSave(&review, existingReview); err != nil {
+			return err
+		}
 		if err := s.io.WriteJSONUnlocked(adaptationVolumeReviewFile, review); err != nil {
 			return err
 		}
@@ -909,6 +1084,7 @@ func (s *AdaptationStore) LoadVolumeReview() (*domain.AdaptationVolumeReview, er
 		return nil, err
 	}
 	review.Status = domain.AdaptationPlanStatusVolumeReview
+	s.identity.hydrateAdaptationVolumeReview(&review)
 	return &review, nil
 }
 
@@ -964,12 +1140,54 @@ func (s *AdaptationStore) SaveCheck(check domain.AdaptationCheck) error {
 	if check.Chapter <= 0 {
 		return fmt.Errorf("chapter must be > 0")
 	}
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return s.io.WriteJSON(checkRelPath(check.Chapter), check)
+			}
+			ref, ok := index.chapterRef(check.Chapter)
+			if !ok {
+				return s.io.WriteJSON(checkRelPath(check.Chapter), check)
+			}
+			canonical := check
+			canonical.Chapter = 0
+			return writeJSONProjectionPair(s.io, chapterCanonicalRel(ref.ID, "adaptation-check.json"), canonicalAdaptationCheck{ChapterID: ref.ID, Check: canonical}, checkRelPath(check.Chapter), check)
+		})
+	}
 	return s.io.WriteJSON(checkRelPath(check.Chapter), check)
 }
 
 func (s *AdaptationStore) LoadCheck(chapter int) (*domain.AdaptationCheck, error) {
 	if chapter <= 0 {
 		return nil, fmt.Errorf("chapter must be > 0")
+	}
+	if s.migration != nil {
+		var result *domain.AdaptationCheck
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return nil
+			}
+			ref, ok := index.chapterRef(chapter)
+			if !ok {
+				return nil
+			}
+			var canonical canonicalAdaptationCheck
+			if err := s.io.ReadJSON(chapterCanonicalRel(ref.ID, "adaptation-check.json"), &canonical); err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if canonical.ChapterID != ref.ID {
+				return fmt.Errorf("adaptation check identity mismatch for chapter %d", chapter)
+			}
+			canonical.Check.Chapter = chapter
+			result = &canonical.Check
+			return nil
+		})
+		if err != nil || result != nil {
+			return result, err
+		}
 	}
 	var check domain.AdaptationCheck
 	if err := s.io.ReadJSON(checkRelPath(chapter), &check); err != nil {
@@ -984,6 +1202,23 @@ func (s *AdaptationStore) LoadCheck(chapter int) (*domain.AdaptationCheck, error
 func (s *AdaptationStore) DeleteCheck(chapter int) error {
 	if chapter <= 0 {
 		return nil
+	}
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			return s.io.WithWriteLock(func() error {
+				if err := s.io.RemoveFileUnlocked(checkRelPath(chapter)); err != nil {
+					return err
+				}
+				if !migrated {
+					return nil
+				}
+				id, ok := index.chapterID(chapter)
+				if !ok {
+					return nil
+				}
+				return s.io.RemoveFileUnlocked(chapterCanonicalRel(id, "adaptation-check.json"))
+			})
+		})
 	}
 	return s.io.RemoveFile(checkRelPath(chapter))
 }

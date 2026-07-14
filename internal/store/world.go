@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -10,14 +11,39 @@ import (
 )
 
 // WorldStore 管理时间线、伏笔、人物关系、状态变化、世界规则、风格规则、审阅和交接。
-type WorldStore struct{ io *IO }
+type WorldStore struct {
+	io        *IO
+	migration *structureMigration
+}
 
-func NewWorldStore(io *IO) *WorldStore { return &WorldStore{io: io} }
+func NewWorldStore(io *IO, migrations ...*structureMigration) *WorldStore {
+	var migration *structureMigration
+	if len(migrations) > 0 {
+		migration = migrations[0]
+	}
+	return &WorldStore{io: io, migration: migration}
+}
 
 // ── 时间线 ──
 
 // SaveTimeline 全量写入 timeline.json + timeline.md（原子写入）。
 func (s *WorldStore) SaveTimeline(events []domain.TimelineEvent) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if migrated {
+				canonical, err := canonicalTimeline(events, index)
+				if err != nil {
+					return err
+				}
+				return s.updateCanonicalFacts(index, func(facts *canonicalFacts) error { facts.Timeline = canonical; return nil })
+			}
+			return s.saveTimelineLegacy(events)
+		})
+	}
+	return s.saveTimelineLegacy(events)
+}
+
+func (s *WorldStore) saveTimelineLegacy(events []domain.TimelineEvent) error {
 	return s.io.WithWriteLock(func() error {
 		if err := s.io.WriteJSONUnlocked("timeline.json", events); err != nil {
 			return err
@@ -28,6 +54,35 @@ func (s *WorldStore) SaveTimeline(events []domain.TimelineEvent) error {
 
 // LoadTimeline 读取时间线。
 func (s *WorldStore) LoadTimeline() ([]domain.TimelineEvent, error) {
+	if s.migration != nil {
+		var result []domain.TimelineEvent
+		found := false
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return nil
+			}
+			found = true
+			var facts canonicalFacts
+			if err := s.io.ReadJSON(structureFactsFile, &facts); err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			projected, _, _, _, err := projectCanonicalFacts(facts, index)
+			if err != nil {
+				return err
+			}
+			result = projected
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return result, nil
+		}
+	}
 	var events []domain.TimelineEvent
 	if err := s.io.ReadJSON("timeline.json", &events); err != nil {
 		if os.IsNotExist(err) {
@@ -40,6 +95,22 @@ func (s *WorldStore) LoadTimeline() ([]domain.TimelineEvent, error) {
 
 // AppendTimelineEvents 追加时间线事件。
 func (s *WorldStore) AppendTimelineEvents(newEvents []domain.TimelineEvent) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if migrated {
+				canonical, err := canonicalTimeline(newEvents, index)
+				if err != nil {
+					return err
+				}
+				return s.updateCanonicalFacts(index, func(facts *canonicalFacts) error { facts.Timeline = append(facts.Timeline, canonical...); return nil })
+			}
+			return s.appendTimelineLegacy(newEvents)
+		})
+	}
+	return s.appendTimelineLegacy(newEvents)
+}
+
+func (s *WorldStore) appendTimelineLegacy(newEvents []domain.TimelineEvent) error {
 	return s.io.WithWriteLock(func() error {
 		var existing []domain.TimelineEvent
 		if err := s.io.ReadJSONUnlocked("timeline.json", &existing); err != nil {
@@ -76,6 +147,63 @@ func (s *WorldStore) DeleteChapterFacts(chapters []int) error {
 	if len(chapterSet) == 0 {
 		return nil
 	}
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return s.deleteChapterFactsLegacy(chapterSet)
+			}
+			ids := make(map[string]struct{}, len(chapterSet))
+			for chapter := range chapterSet {
+				id, ok := index.chapterID(chapter)
+				if !ok {
+					return fmt.Errorf("chapter %d is outside current structure", chapter)
+				}
+				ids[id] = struct{}{}
+			}
+			return s.updateCanonicalFacts(index, func(facts *canonicalFacts) error {
+				timeline := facts.Timeline[:0]
+				for _, item := range facts.Timeline {
+					if _, remove := ids[item.ChapterID]; !remove {
+						timeline = append(timeline, item)
+					}
+				}
+				facts.Timeline = timeline
+				foreshadow := facts.Foreshadow[:0]
+				for _, item := range facts.Foreshadow {
+					if _, remove := ids[item.PlantedChapterID]; remove {
+						continue
+					}
+					if _, clear := ids[item.ResolvedChapterID]; clear {
+						item.ResolvedChapterID = ""
+						if item.Entry.Status == "resolved" {
+							item.Entry.Status = "planted"
+						}
+					}
+					foreshadow = append(foreshadow, item)
+				}
+				facts.Foreshadow = foreshadow
+				relationships := facts.Relationships[:0]
+				for _, item := range facts.Relationships {
+					if _, remove := ids[item.ChapterID]; !remove {
+						relationships = append(relationships, item)
+					}
+				}
+				facts.Relationships = relationships
+				changes := facts.StateChanges[:0]
+				for _, item := range facts.StateChanges {
+					if _, remove := ids[item.ChapterID]; !remove {
+						changes = append(changes, item)
+					}
+				}
+				facts.StateChanges = changes
+				return nil
+			})
+		})
+	}
+	return s.deleteChapterFactsLegacy(chapterSet)
+}
+
+func (s *WorldStore) deleteChapterFactsLegacy(chapterSet map[int]struct{}) error {
 	return s.io.WithWriteLock(func() error {
 		if err := s.deleteTimelineFactsUnlocked(chapterSet); err != nil {
 			return err
@@ -181,6 +309,22 @@ func (s *WorldStore) deleteStateChangeFactsUnlocked(chapters map[int]struct{}) e
 
 // SaveForeshadowLedger 全量写入 foreshadow_ledger.json + foreshadow_ledger.md（原子写入）。
 func (s *WorldStore) SaveForeshadowLedger(entries []domain.ForeshadowEntry) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if migrated {
+				canonical, err := canonicalForeshadow(entries, index)
+				if err != nil {
+					return err
+				}
+				return s.updateCanonicalFacts(index, func(facts *canonicalFacts) error { facts.Foreshadow = canonical; return nil })
+			}
+			return s.saveForeshadowLegacy(entries)
+		})
+	}
+	return s.saveForeshadowLegacy(entries)
+}
+
+func (s *WorldStore) saveForeshadowLegacy(entries []domain.ForeshadowEntry) error {
 	return s.io.WithWriteLock(func() error {
 		if err := s.io.WriteJSONUnlocked("foreshadow_ledger.json", entries); err != nil {
 			return err
@@ -191,6 +335,35 @@ func (s *WorldStore) SaveForeshadowLedger(entries []domain.ForeshadowEntry) erro
 
 // LoadForeshadowLedger 读取伏笔账本。
 func (s *WorldStore) LoadForeshadowLedger() ([]domain.ForeshadowEntry, error) {
+	if s.migration != nil {
+		var result []domain.ForeshadowEntry
+		found := false
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return nil
+			}
+			found = true
+			var facts canonicalFacts
+			if err := s.io.ReadJSON(structureFactsFile, &facts); err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			_, projected, _, _, err := projectCanonicalFacts(facts, index)
+			if err != nil {
+				return err
+			}
+			result = projected
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return result, nil
+		}
+	}
 	var entries []domain.ForeshadowEntry
 	if err := s.io.ReadJSON("foreshadow_ledger.json", &entries); err != nil {
 		if os.IsNotExist(err) {
@@ -203,6 +376,50 @@ func (s *WorldStore) LoadForeshadowLedger() ([]domain.ForeshadowEntry, error) {
 
 // UpdateForeshadow 批量应用伏笔增量操作。
 func (s *WorldStore) UpdateForeshadow(chapter int, updates []domain.ForeshadowUpdate) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return s.updateForeshadowLegacy(chapter, updates)
+			}
+			chapterID, mapped := index.chapterID(chapter)
+			return s.updateCanonicalFacts(index, func(facts *canonicalFacts) error {
+				positions := make(map[string]int, len(facts.Foreshadow))
+				for i, item := range facts.Foreshadow {
+					positions[item.Entry.ID] = i
+				}
+				for _, update := range updates {
+					switch update.Action {
+					case "plant":
+						positions[update.ID] = len(facts.Foreshadow)
+						plantedAt := 0
+						if !mapped {
+							plantedAt = chapter
+						}
+						facts.Foreshadow = append(facts.Foreshadow, canonicalForeshadowEntry{PlantedChapterID: chapterID, Entry: domain.ForeshadowEntry{ID: update.ID, Description: update.Description, PlantedAt: plantedAt, Status: "planted"}})
+					case "advance":
+						if i, ok := positions[update.ID]; ok {
+							facts.Foreshadow[i].Entry.Status = "advanced"
+						}
+					case "resolve":
+						if i, ok := positions[update.ID]; ok {
+							facts.Foreshadow[i].Entry.Status = "resolved"
+							facts.Foreshadow[i].ResolvedChapterID = chapterID
+							if mapped {
+								facts.Foreshadow[i].Entry.ResolvedAt = 0
+							} else {
+								facts.Foreshadow[i].Entry.ResolvedAt = chapter
+							}
+						}
+					}
+				}
+				return nil
+			})
+		})
+	}
+	return s.updateForeshadowLegacy(chapter, updates)
+}
+
+func (s *WorldStore) updateForeshadowLegacy(chapter int, updates []domain.ForeshadowUpdate) error {
 	return s.io.WithWriteLock(func() error {
 		var entries []domain.ForeshadowEntry
 		if err := s.io.ReadJSONUnlocked("foreshadow_ledger.json", &entries); err != nil {
@@ -261,6 +478,22 @@ func (s *WorldStore) LoadActiveForeshadow() ([]domain.ForeshadowEntry, error) {
 
 // SaveRelationships 全量写入 relationship_state.json + relationship_state.md（原子写入）。
 func (s *WorldStore) SaveRelationships(entries []domain.RelationshipEntry) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if migrated {
+				canonical, err := canonicalRelationships(entries, index)
+				if err != nil {
+					return err
+				}
+				return s.updateCanonicalFacts(index, func(facts *canonicalFacts) error { facts.Relationships = canonical; return nil })
+			}
+			return s.saveRelationshipsLegacy(entries)
+		})
+	}
+	return s.saveRelationshipsLegacy(entries)
+}
+
+func (s *WorldStore) saveRelationshipsLegacy(entries []domain.RelationshipEntry) error {
 	return s.io.WithWriteLock(func() error {
 		if err := s.io.WriteJSONUnlocked("relationship_state.json", entries); err != nil {
 			return err
@@ -271,6 +504,35 @@ func (s *WorldStore) SaveRelationships(entries []domain.RelationshipEntry) error
 
 // LoadRelationships 读取人物关系状态。
 func (s *WorldStore) LoadRelationships() ([]domain.RelationshipEntry, error) {
+	if s.migration != nil {
+		var result []domain.RelationshipEntry
+		found := false
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return nil
+			}
+			found = true
+			var facts canonicalFacts
+			if err := s.io.ReadJSON(structureFactsFile, &facts); err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			_, _, projected, _, err := projectCanonicalFacts(facts, index)
+			if err != nil {
+				return err
+			}
+			result = projected
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return result, nil
+		}
+	}
 	var entries []domain.RelationshipEntry
 	if err := s.io.ReadJSON("relationship_state.json", &entries); err != nil {
 		if os.IsNotExist(err) {
@@ -283,6 +545,37 @@ func (s *WorldStore) LoadRelationships() ([]domain.RelationshipEntry, error) {
 
 // UpdateRelationships 合并关系变化。
 func (s *WorldStore) UpdateRelationships(changes []domain.RelationshipEntry) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return s.updateRelationshipsLegacy(changes)
+			}
+			canonical, err := canonicalRelationships(changes, index)
+			if err != nil {
+				return err
+			}
+			return s.updateCanonicalFacts(index, func(facts *canonicalFacts) error {
+				positions := make(map[string]int, len(facts.Relationships))
+				for i, item := range facts.Relationships {
+					positions[pairKey(item.Entry.CharacterA, item.Entry.CharacterB)] = i
+				}
+				for _, change := range canonical {
+					key := pairKey(change.Entry.CharacterA, change.Entry.CharacterB)
+					if i, ok := positions[key]; ok {
+						facts.Relationships[i] = change
+					} else {
+						positions[key] = len(facts.Relationships)
+						facts.Relationships = append(facts.Relationships, change)
+					}
+				}
+				return nil
+			})
+		})
+	}
+	return s.updateRelationshipsLegacy(changes)
+}
+
+func (s *WorldStore) updateRelationshipsLegacy(changes []domain.RelationshipEntry) error {
 	return s.io.WithWriteLock(func() error {
 		var existing []domain.RelationshipEntry
 		if err := s.io.ReadJSONUnlocked("relationship_state.json", &existing); err != nil {
@@ -315,6 +608,25 @@ func (s *WorldStore) UpdateRelationships(changes []domain.RelationshipEntry) err
 
 // AppendStateChanges 追加角色状态变化。
 func (s *WorldStore) AppendStateChanges(changes []domain.StateChange) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if migrated {
+				canonical, err := canonicalStateChanges(changes, index)
+				if err != nil {
+					return err
+				}
+				return s.updateCanonicalFacts(index, func(facts *canonicalFacts) error {
+					facts.StateChanges = append(facts.StateChanges, canonical...)
+					return nil
+				})
+			}
+			return s.appendStateChangesLegacy(changes)
+		})
+	}
+	return s.appendStateChangesLegacy(changes)
+}
+
+func (s *WorldStore) appendStateChangesLegacy(changes []domain.StateChange) error {
 	return s.io.WithWriteLock(func() error {
 		var existing []domain.StateChange
 		if err := s.io.ReadJSONUnlocked("meta/state_changes.json", &existing); err != nil {
@@ -328,6 +640,35 @@ func (s *WorldStore) AppendStateChanges(changes []domain.StateChange) error {
 
 // LoadStateChanges 读取全部状态变化记录。
 func (s *WorldStore) LoadStateChanges() ([]domain.StateChange, error) {
+	if s.migration != nil {
+		var result []domain.StateChange
+		found := false
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return nil
+			}
+			found = true
+			var facts canonicalFacts
+			if err := s.io.ReadJSON(structureFactsFile, &facts); err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			_, _, _, projected, err := projectCanonicalFacts(facts, index)
+			if err != nil {
+				return err
+			}
+			result = projected
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return result, nil
+		}
+	}
 	var changes []domain.StateChange
 	if err := s.io.ReadJSON("meta/state_changes.json", &changes); err != nil {
 		if os.IsNotExist(err) {
@@ -392,6 +733,41 @@ func (s *WorldStore) SaveReview(r domain.ReviewEntry) error {
 	case "arc_batch":
 		rel = ArcBatchReviewRelPath(r.Volume, r.Arc, r.BatchFrom, r.BatchTo)
 	}
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return s.io.WriteJSON(rel, r)
+			}
+			if r.Scope == "arc_batch" {
+				canonical, err := canonicalizeArcBatchReview(r, index)
+				if err != nil {
+					return err
+				}
+				return writeJSONProjectionPair(s.io, arcBatchCanonicalRel(canonical), canonical, rel, r)
+			}
+			ref, ok := index.chapterRef(r.Chapter)
+			if !ok {
+				return s.io.WriteJSON(rel, r)
+			}
+			raw, err := json.Marshal(r)
+			if err != nil {
+				return err
+			}
+			canonicalData, err := canonicalizeChapterReview(raw, index, ref)
+			if err != nil {
+				return err
+			}
+			var canonical canonicalChapterReview
+			if err := json.Unmarshal(canonicalData, &canonical); err != nil {
+				return err
+			}
+			name := "review.json"
+			if r.Scope == "global" {
+				name = "review-global.json"
+			}
+			return writeJSONProjectionPair(s.io, chapterCanonicalRel(ref.ID, name), canonical, rel, r)
+		})
+	}
 	return s.io.WriteJSON(rel, r)
 }
 
@@ -404,6 +780,38 @@ func (s *WorldStore) HasArcReview(chapter int) bool {
 
 // LoadReview 读取章节审阅结果。
 func (s *WorldStore) LoadReview(chapter int) (*domain.ReviewEntry, error) {
+	if s.migration != nil {
+		var result *domain.ReviewEntry
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return nil
+			}
+			ref, ok := index.chapterRef(chapter)
+			if !ok {
+				return nil
+			}
+			data, err := s.io.ReadFile(chapterCanonicalRel(ref.ID, "review.json"))
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			projected, err := projectChapterReview(data, index, ref)
+			if err != nil {
+				return err
+			}
+			var review domain.ReviewEntry
+			if err := json.Unmarshal(projected, &review); err != nil {
+				return err
+			}
+			result = &review
+			return nil
+		})
+		if err != nil || result != nil {
+			return result, err
+		}
+	}
 	var r domain.ReviewEntry
 	if err := s.io.ReadJSON(fmt.Sprintf("reviews/%02d.json", chapter), &r); err != nil {
 		if os.IsNotExist(err) {
@@ -415,6 +823,52 @@ func (s *WorldStore) LoadReview(chapter int) (*domain.ReviewEntry, error) {
 }
 
 func (s *WorldStore) LoadArcBatchReviews(volume, arc int) ([]domain.ReviewEntry, error) {
+	if s.migration != nil {
+		var result []domain.ReviewEntry
+		handled := false
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return nil
+			}
+			handled = true
+			arcRef, ok := index.arcRef(volume, arc)
+			if !ok {
+				return nil
+			}
+			entries, err := os.ReadDir(s.io.path(arcBatchCanonicalDir(arcRef.VolumeID, arcRef.ID)))
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+					continue
+				}
+				var canonical canonicalChapterReview
+				rel := arcBatchCanonicalDir(arcRef.VolumeID, arcRef.ID) + "/" + entry.Name()
+				if err := s.io.ReadJSON(rel, &canonical); err != nil {
+					return err
+				}
+				review, err := projectArcBatchReview(canonical, index)
+				if err != nil {
+					return err
+				}
+				if review.Scope == "arc_batch" {
+					result = append(result, review)
+				}
+			}
+			sortReviewsByBatch(result)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			return result, nil
+		}
+	}
 	dir := arcBatchReviewDir(volume, arc)
 	entries, err := os.ReadDir(s.io.path(dir))
 	if err != nil {
@@ -458,16 +912,142 @@ func sortReviewsByBatch(reviews []domain.ReviewEntry) {
 	})
 }
 
+func (s *WorldStore) loadCanonicalFactsUnlocked() (canonicalFacts, bool, error) {
+	var facts canonicalFacts
+	if err := s.io.ReadJSONUnlocked(structureFactsFile, &facts); err != nil {
+		if os.IsNotExist(err) {
+			return canonicalFacts{}, false, nil
+		}
+		return canonicalFacts{}, false, err
+	}
+	return facts, true, nil
+}
+
+func (s *WorldStore) updateCanonicalFacts(index structureIndex, update func(*canonicalFacts) error) error {
+	return s.io.WithWriteLock(func() error {
+		facts, _, err := s.loadCanonicalFactsUnlocked()
+		if err != nil {
+			return err
+		}
+		if err := update(&facts); err != nil {
+			return err
+		}
+		return s.writeCanonicalFactsUnlocked(index, facts)
+	})
+}
+
+func (s *WorldStore) writeCanonicalFactsUnlocked(index structureIndex, facts canonicalFacts) error {
+	if err := s.io.WriteJSONUnlocked(structureFactsFile, facts); err != nil {
+		return err
+	}
+	timeline, foreshadow, relationships, changes, err := projectCanonicalFacts(facts, index)
+	if err != nil {
+		return err
+	}
+	if err := s.io.WriteJSONUnlocked("timeline.json", timeline); err != nil {
+		return err
+	}
+	if err := s.io.WriteMarkdownUnlocked("timeline.md", renderTimeline(timeline)); err != nil {
+		return err
+	}
+	if err := s.io.WriteJSONUnlocked("foreshadow_ledger.json", foreshadow); err != nil {
+		return err
+	}
+	if err := s.io.WriteMarkdownUnlocked("foreshadow_ledger.md", renderForeshadow(foreshadow)); err != nil {
+		return err
+	}
+	if err := s.io.WriteJSONUnlocked("relationship_state.json", relationships); err != nil {
+		return err
+	}
+	if err := s.io.WriteMarkdownUnlocked("relationship_state.md", renderRelationships(relationships)); err != nil {
+		return err
+	}
+	return s.io.WriteJSONUnlocked("meta/state_changes.json", changes)
+}
+
+func canonicalTimeline(events []domain.TimelineEvent, index structureIndex) ([]canonicalTimelineEvent, error) {
+	result := make([]canonicalTimelineEvent, 0, len(events))
+	for _, event := range events {
+		id, ok := index.chapterID(event.Chapter)
+		if ok {
+			event.Chapter = 0
+		}
+		result = append(result, canonicalTimelineEvent{ChapterID: id, Event: event})
+	}
+	return result, nil
+}
+
+func canonicalForeshadow(entries []domain.ForeshadowEntry, index structureIndex) ([]canonicalForeshadowEntry, error) {
+	result := make([]canonicalForeshadowEntry, 0, len(entries))
+	for _, entry := range entries {
+		planted, plantedOK := index.chapterID(entry.PlantedAt)
+		if plantedOK {
+			entry.PlantedAt = 0
+		}
+		resolved, resolvedOK := index.chapterID(entry.ResolvedAt)
+		if resolvedOK {
+			entry.ResolvedAt = 0
+		}
+		result = append(result, canonicalForeshadowEntry{PlantedChapterID: planted, ResolvedChapterID: resolved, Entry: entry})
+	}
+	return result, nil
+}
+
+func canonicalRelationships(entries []domain.RelationshipEntry, index structureIndex) ([]canonicalRelationshipEntry, error) {
+	result := make([]canonicalRelationshipEntry, 0, len(entries))
+	for _, entry := range entries {
+		id, ok := index.chapterID(entry.Chapter)
+		if ok {
+			entry.Chapter = 0
+		}
+		result = append(result, canonicalRelationshipEntry{ChapterID: id, Entry: entry})
+	}
+	return result, nil
+}
+
+func canonicalStateChanges(changes []domain.StateChange, index structureIndex) ([]canonicalStateChange, error) {
+	result := make([]canonicalStateChange, 0, len(changes))
+	for _, change := range changes {
+		id, ok := index.chapterID(change.Chapter)
+		if ok {
+			change.Chapter = 0
+		}
+		result = append(result, canonicalStateChange{ChapterID: id, Change: change})
+	}
+	return result, nil
+}
+
 func (s *WorldStore) DeleteReview(chapter int) error {
 	if chapter <= 0 {
 		return nil
 	}
-	return s.io.WithWriteLock(func() error {
-		if err := s.io.RemoveFileUnlocked(fmt.Sprintf("reviews/%02d.json", chapter)); err != nil {
-			return err
-		}
-		return s.io.RemoveFileUnlocked(fmt.Sprintf("reviews/%02d-global.json", chapter))
-	})
+	deleteReview := func(id string) error {
+		return s.io.WithWriteLock(func() error {
+			if err := s.io.RemoveFileUnlocked(fmt.Sprintf("reviews/%02d.json", chapter)); err != nil {
+				return err
+			}
+			if err := s.io.RemoveFileUnlocked(fmt.Sprintf("reviews/%02d-global.json", chapter)); err != nil {
+				return err
+			}
+			if id != "" {
+				if err := s.io.RemoveFileUnlocked(chapterCanonicalRel(id, "review.json")); err != nil {
+					return err
+				}
+				return s.io.RemoveFileUnlocked(chapterCanonicalRel(id, "review-global.json"))
+			}
+			return nil
+		})
+	}
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return deleteReview("")
+			}
+			id, _ := index.chapterID(chapter)
+			return deleteReview(id)
+		})
+	}
+	return deleteReview("")
 }
 
 // LoadLastReview 读取最近一次全局审阅。

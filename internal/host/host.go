@@ -96,6 +96,9 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	modelreg.StartPricingRefresh(modelreg.DefaultRegistry(), bootstrap.DefaultConfigDir())
 
 	store := storepkg.NewStore(cfg.OutputDir)
+	if err := store.RecoverStructureMigration(); err != nil {
+		return nil, fmt.Errorf("recover structure migration: %w", err)
+	}
 	if err := store.Init(); err != nil {
 		return nil, fmt.Errorf("init store: %w", err)
 	}
@@ -1140,6 +1143,10 @@ func (h *Host) emitClear() {
 // ── Snapshot (TUI 状态聚合) ──
 
 func (h *Host) Snapshot() UISnapshot {
+	if err := h.store.RecoverStructureMigration(); err != nil {
+		return UISnapshot{RecoveryError: err.Error()}
+	}
+
 	h.mu.Lock()
 	state := h.lifecycle
 	provider, model, _ := h.models.CurrentSelection("default")

@@ -25,6 +25,7 @@ func (s *Store) ReviseChapterOutline(chapter int, revised domain.OutlineEntry) e
 	if err != nil {
 		return err
 	}
+	revised.ID = current.ID
 	if equalOutlineEntry(*current, revised) {
 		return fmt.Errorf("chapter %d outline is unchanged", chapter)
 	}

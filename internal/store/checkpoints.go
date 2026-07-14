@@ -27,8 +27,14 @@ type CheckpointStore struct {
 
 // NewCheckpointStore 创建 checkpoint 存储，从磁盘一次性加载已有 checkpoint 到 cache。
 func NewCheckpointStore(io *IO) *CheckpointStore {
+	return newCheckpointStore(io, true)
+}
+
+func newCheckpointStore(io *IO, load bool) *CheckpointStore {
 	cs := &CheckpointStore{io: io}
-	cs.loadFromDisk()
+	if load {
+		cs.loadFromDisk()
+	}
 	return cs
 }
 
@@ -45,6 +51,13 @@ func (cs *CheckpointStore) loadFromDisk() {
 		}
 	}
 	cs.seqGen.Store(maxSeq)
+}
+
+func (cs *CheckpointStore) invalidateCache() {
+	cs.io.mu.Lock()
+	defer cs.io.mu.Unlock()
+	cs.cache = nil
+	cs.seqGen.Store(0)
 }
 
 // Append 追加一条 checkpoint。

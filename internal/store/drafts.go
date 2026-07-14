@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -11,17 +12,72 @@ import (
 )
 
 // DraftStore 管理章节构思、草稿和终稿。
-type DraftStore struct{ io *IO }
+type DraftStore struct {
+	io        *IO
+	migration *structureMigration
+}
 
-func NewDraftStore(io *IO) *DraftStore { return &DraftStore{io: io} }
+func NewDraftStore(io *IO, migrations ...*structureMigration) *DraftStore {
+	var migration *structureMigration
+	if len(migrations) > 0 {
+		migration = migrations[0]
+	}
+	return &DraftStore{io: io, migration: migration}
+}
 
 // SaveChapterPlan 保存章节构思到 drafts/{ch}.plan.json。
 func (s *DraftStore) SaveChapterPlan(plan domain.ChapterPlan) error {
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return s.io.WriteJSON(chapterPlanRel(plan.Chapter), plan)
+			}
+			ref, ok := index.chapterRef(plan.Chapter)
+			if !ok {
+				return s.io.WriteJSON(chapterPlanRel(plan.Chapter), plan)
+			}
+			canonical := plan
+			canonical.Chapter = 0
+			return s.writeJSONPair(
+				chapterCanonicalRel(ref.ID, "plan.json"),
+				canonicalChapterPlan{ChapterID: ref.ID, Plan: canonical},
+				chapterPlanRel(plan.Chapter), plan,
+			)
+		})
+	}
 	return s.io.WriteJSON(fmt.Sprintf("drafts/%02d.plan.json", plan.Chapter), plan)
 }
 
 // LoadChapterPlan 读取章节构思。
 func (s *DraftStore) LoadChapterPlan(chapter int) (*domain.ChapterPlan, error) {
+	if s.migration != nil {
+		var result *domain.ChapterPlan
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return nil
+			}
+			ref, ok := index.chapterRef(chapter)
+			if !ok {
+				return nil
+			}
+			var canonical canonicalChapterPlan
+			if err := s.io.ReadJSON(chapterCanonicalRel(ref.ID, "plan.json"), &canonical); err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if canonical.ChapterID != ref.ID {
+				return fmt.Errorf("chapter plan identity mismatch for chapter %d", chapter)
+			}
+			canonical.Plan.Chapter = chapter
+			result = &canonical.Plan
+			return nil
+		})
+		if err != nil || result != nil {
+			return result, err
+		}
+	}
 	var plan domain.ChapterPlan
 	if err := s.io.ReadJSON(fmt.Sprintf("drafts/%02d.plan.json", chapter), &plan); err != nil {
 		if os.IsNotExist(err) {
@@ -34,11 +90,24 @@ func (s *DraftStore) LoadChapterPlan(chapter int) (*domain.ChapterPlan, error) {
 
 // SaveDraft 保存整章草稿到 drafts/{ch}.draft.md。
 func (s *DraftStore) SaveDraft(chapter int, content string) error {
+	if s.migration != nil {
+		return s.writeTextForChapter(chapter, "draft.md", chapterDraftRel(chapter), []byte(content))
+	}
 	return s.io.WriteMarkdown(fmt.Sprintf("drafts/%02d.draft.md", chapter), content)
 }
 
 // AppendDraft 追加内容到现有草稿（续写模式）。
 func (s *DraftStore) AppendDraft(chapter int, content string) error {
+	if s.migration != nil {
+		existing, err := s.LoadDraft(chapter)
+		if err != nil {
+			return err
+		}
+		if existing != "" {
+			content = existing + "\n\n" + content
+		}
+		return s.SaveDraft(chapter, content)
+	}
 	rel := fmt.Sprintf("drafts/%02d.draft.md", chapter)
 	return s.io.WithWriteLock(func() error {
 		existing, err := s.io.ReadFileUnlocked(rel)
@@ -57,6 +126,13 @@ func (s *DraftStore) AppendDraft(chapter int, content string) error {
 
 // LoadDraft 读取整章草稿。
 func (s *DraftStore) LoadDraft(chapter int) (string, error) {
+	if s.migration != nil {
+		if data, migrated, err := s.readTextForChapter(chapter, "draft.md", chapterDraftRel(chapter)); err != nil {
+			return "", err
+		} else if migrated {
+			return string(data), nil
+		}
+	}
 	data, err := s.io.ReadFile(fmt.Sprintf("drafts/%02d.draft.md", chapter))
 	if os.IsNotExist(err) {
 		return "", nil
@@ -81,11 +157,21 @@ func (s *DraftStore) LoadChapterContent(chapter int) (string, int, error) {
 
 // SaveFinalChapter 保存最终章节正文到 chapters/{ch}.md。
 func (s *DraftStore) SaveFinalChapter(chapter int, content string) error {
+	if s.migration != nil {
+		return s.writeTextForChapter(chapter, "final.md", chapterFinalRel(chapter), []byte(content))
+	}
 	return s.io.WriteMarkdown(fmt.Sprintf("chapters/%02d.md", chapter), content)
 }
 
 // LoadChapterText 读取已提交的终稿原文。
 func (s *DraftStore) LoadChapterText(chapter int) (string, error) {
+	if s.migration != nil {
+		if data, migrated, err := s.readTextForChapter(chapter, "final.md", chapterFinalRel(chapter)); err != nil {
+			return "", err
+		} else if migrated {
+			return string(data), nil
+		}
+	}
 	data, err := s.io.ReadFile(fmt.Sprintf("chapters/%02d.md", chapter))
 	if os.IsNotExist(err) {
 		return "", nil
@@ -100,18 +186,102 @@ func (s *DraftStore) DeleteChapterArtifacts(chapter int) error {
 	if chapter <= 0 {
 		return nil
 	}
-	return s.io.WithWriteLock(func() error {
-		paths := []string{
-			fmt.Sprintf("drafts/%02d.plan.json", chapter),
-			fmt.Sprintf("drafts/%02d.draft.md", chapter),
-			fmt.Sprintf("chapters/%02d.md", chapter),
+	deleteArtifacts := func(canonicalID string) error {
+		return s.io.WithWriteLock(func() error {
+			paths := []string{
+				fmt.Sprintf("drafts/%02d.plan.json", chapter),
+				fmt.Sprintf("drafts/%02d.draft.md", chapter),
+				fmt.Sprintf("chapters/%02d.md", chapter),
+			}
+			if canonicalID != "" {
+				paths = append(paths,
+					chapterCanonicalRel(canonicalID, "plan.json"),
+					chapterCanonicalRel(canonicalID, "draft.md"),
+					chapterCanonicalRel(canonicalID, "final.md"),
+				)
+			}
+			for _, path := range paths {
+				if err := s.io.RemoveFileUnlocked(path); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
+	if s.migration != nil {
+		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return deleteArtifacts("")
+			}
+			id, ok := index.chapterID(chapter)
+			if !ok {
+				return nil
+			}
+			return deleteArtifacts(id)
+		})
+	}
+	return deleteArtifacts("")
+}
+
+func (s *DraftStore) writeTextForChapter(chapter int, name, legacyRel string, data []byte) error {
+	return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+		if !migrated {
+			return s.io.WithWriteLock(func() error { return s.io.WriteFileUnlocked(legacyRel, data) })
 		}
-		for _, path := range paths {
-			if err := s.io.RemoveFileUnlocked(path); err != nil {
+		ref, ok := index.chapterRef(chapter)
+		if !ok {
+			return s.io.WithWriteLock(func() error { return s.io.WriteFileUnlocked(legacyRel, data) })
+		}
+		return s.io.WithWriteLock(func() error {
+			if err := s.io.WriteFileUnlocked(chapterCanonicalRel(ref.ID, name), data); err != nil {
 				return err
 			}
+			return s.io.WriteFileUnlocked(legacyRel, data)
+		})
+	})
+}
+
+func (s *DraftStore) readTextForChapter(chapter int, name, legacyRel string) ([]byte, bool, error) {
+	var data []byte
+	migrated := false
+	err := s.migration.withIndexRead(func(index structureIndex, ok bool) error {
+		if !ok {
+			return nil
 		}
-		return nil
+		migrated = true
+		ref, exists := index.chapterRef(chapter)
+		if !exists {
+			migrated = false
+			return nil
+		}
+		var err error
+		data, err = s.io.ReadFile(chapterCanonicalRel(ref.ID, name))
+		if os.IsNotExist(err) {
+			data, err = s.io.ReadFile(legacyRel)
+			if os.IsNotExist(err) {
+				data = nil
+				return nil
+			}
+		}
+		return err
+	})
+	return data, migrated, err
+}
+
+func (s *DraftStore) writeJSONPair(canonicalRel string, canonical any, legacyRel string, legacy any) error {
+	canonicalData, err := json.MarshalIndent(canonical, "", "  ")
+	if err != nil {
+		return err
+	}
+	legacyData, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		return err
+	}
+	return s.io.WithWriteLock(func() error {
+		if err := s.io.WriteFileUnlocked(canonicalRel, canonicalData); err != nil {
+			return err
+		}
+		return s.io.WriteFileUnlocked(legacyRel, legacyData)
 	})
 }
 

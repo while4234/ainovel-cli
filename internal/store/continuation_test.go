@@ -68,6 +68,10 @@ func TestCommitContinuationPlanPreservesImportedBaselineAndAppendsNPlusOne(t *te
 	if err := st.Outline.SaveLayeredOutline(baseVolumes); err != nil {
 		t.Fatalf("save layered outline: %v", err)
 	}
+	baseOutline, err := st.Outline.LoadOutline()
+	if err != nil {
+		t.Fatalf("load identity-aware baseline: %v", err)
+	}
 	if err := st.Progress.Save(&domain.Progress{
 		NovelName: "imported", TotalChapters: 3, CurrentChapter: 4,
 		CompletedChapters: []int{1, 2, 3}, Layered: true,

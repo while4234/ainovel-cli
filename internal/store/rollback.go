@@ -20,6 +20,7 @@ type rollbackState struct {
 	proposal       *domain.AdaptationPlan
 	volumeReview   *domain.AdaptationVolumeReview
 	runtime        *domain.AdaptationProposalRuntime
+	planningFlow   *domain.AdaptationPlanningWorkflow
 	sourceManifest *domain.AdaptationSourceManifest
 	flatOutline    []domain.OutlineEntry
 	layeredOutline []domain.VolumeOutline
@@ -54,9 +55,12 @@ func (s *Store) Rollback(req domain.RollbackRequest) (domain.RollbackResult, err
 		return domain.RollbackResult{Preview: preview}, fmt.Errorf("rollback preview expired; refresh and confirm again")
 	}
 
-	deleted, err := s.executeRollback(preview.TargetStage, state)
+	deleted, err := s.migrateRollbackStructure(preview.TargetStage, state)
 	if err != nil {
 		return domain.RollbackResult{Preview: preview, DeletedPaths: deleted}, err
+	}
+	if err := s.Checkpoints.Reset(); err != nil {
+		return domain.RollbackResult{Preview: preview, DeletedPaths: deleted}, fmt.Errorf("reset checkpoint cache: %w", err)
 	}
 	if err := s.Init(); err != nil {
 		return domain.RollbackResult{Preview: preview, DeletedPaths: deleted}, fmt.Errorf("recreate project directories: %w", err)
@@ -90,6 +94,9 @@ func (s *Store) inspectRollbackState() (rollbackState, error) {
 	}
 	if state.runtime, err = s.Adaptation.LoadProposalRuntime(); err != nil {
 		return state, fmt.Errorf("load adaptation proposal runtime: %w", err)
+	}
+	if state.planningFlow, err = s.Adaptation.LoadPlanningWorkflow(); err != nil {
+		return state, fmt.Errorf("load adaptation planning workflow: %w", err)
 	}
 	if state.sourceManifest, err = s.Adaptation.LoadSourceManifest(); err != nil {
 		return state, fmt.Errorf("load adaptation source manifest: %w", err)
@@ -278,6 +285,234 @@ func (s *Store) executeRollback(target domain.RollbackStage, state rollbackState
 	default:
 		return nil, fmt.Errorf("unsupported rollback target %q", target)
 	}
+}
+
+func (s *Store) migrateRollbackStructure(targetStage domain.RollbackStage, state rollbackState) ([]string, error) {
+	if s.Outline.migration == nil {
+		return nil, fmt.Errorf("structure migration is required for rollback")
+	}
+	source := s.Outline.identity.sourceIndex(state.flatOutline, state.layeredOutline)
+	if state.plan != nil {
+		source = structureIndexFromAdaptation(state.plan)
+	}
+	target := source
+	removePaths := append([]string(nil), writingDeletePaths()...)
+	removePaths = append(removePaths, "meta/continuation", structureRequestReceiptDir)
+	var payloads []migrationPayload
+	var err error
+	switch targetStage {
+	case domain.RollbackStageProposal:
+		proposal := state.proposal
+		if proposal == nil {
+			proposal = state.plan
+		}
+		if proposal != nil {
+			target = structureIndexFromAdaptation(proposal)
+			prepared := *proposal
+			s.Adaptation.normalizeAdaptationPlan(&prepared)
+			prepared.Status = domain.AdaptationPlanStatusProposal
+			if err := s.Adaptation.identity.prepareAdaptationPlanForSave(&prepared, state.proposal); err != nil {
+				return nil, err
+			}
+			payloads, err = appendJSONMigrationPayload(payloads, adaptationProposalFile, prepared)
+			if err != nil {
+				return nil, err
+			}
+			payloads, err = appendRollbackAdaptationWorkflow(payloads, state, domain.AdaptationPlanningStageProposalReviewPending)
+			if err != nil {
+				return nil, err
+			}
+			payloads, err = appendJSONMigrationPayload(payloads, "meta/progress.json", rollbackPlanningProgress(domain.PhaseOutline, len(prepared.Chapters), false, state))
+			if err != nil {
+				return nil, err
+			}
+		}
+		removePaths = append(removePaths, adaptationConfirmedDeletePaths()...)
+		removePaths = append(removePaths, adaptationProposalRuntimeFile, adaptationVolumeReviewFile)
+		removePaths = append(removePaths, foundationDeletePaths()...)
+	case domain.RollbackStageChapterOutline:
+		if len(state.layeredOutline) > 0 {
+			payloads, err = layeredOutlineMigrationPayloads(state.layeredOutline)
+			target = structureIndexFromLayered(state.layeredOutline)
+		} else {
+			payloads, err = outlineMigrationPayloads(state.flatOutline, nil)
+			target = structureIndexFromOutline(state.flatOutline)
+		}
+		if err == nil {
+			total := len(state.flatOutline)
+			layered := len(state.layeredOutline) > 0
+			if total == 0 && layered {
+				total = domain.TotalChapters(state.layeredOutline)
+			}
+			payloads, err = appendJSONMigrationPayload(payloads, "meta/progress.json", rollbackPlanningProgress(domain.PhaseOutline, total, layered, state))
+		}
+		if err == nil {
+			payloads, err = appendRollbackRunMeta(payloads, domain.PlanningReviewKindChapterOutline, state, false)
+		}
+	case domain.RollbackStageVolumeOutline:
+		if state.hasAdaptationState() {
+			review := state.volumeReview
+			if review == nil {
+				review = adaptationVolumeReviewFromProposal(state.proposal, state.sourceManifest)
+			}
+			target = structureIndexFromAdaptationVolumeReview(review)
+			if review != nil {
+				prepared := *review
+				prepared.Status = domain.AdaptationPlanStatusVolumeReview
+				if err := s.Adaptation.identity.prepareAdaptationVolumeReviewForSave(&prepared, state.volumeReview); err != nil {
+					return nil, err
+				}
+				payloads, err = appendJSONMigrationPayload(payloads, adaptationVolumeReviewFile, prepared)
+				if err == nil {
+					payloads, err = appendRollbackAdaptationWorkflow(payloads, state, domain.AdaptationPlanningStageVolumeReviewPending)
+				}
+				if err == nil {
+					payloads, err = appendJSONMigrationPayload(payloads, "meta/progress.json", rollbackPlanningProgress(domain.PhaseOutline, prepared.TargetChapterCount, true, state))
+				}
+			}
+			removePaths = append(removePaths, adaptationPlanFile, adaptationProposalFile, adaptationProposalRuntimeFile, adaptationCheckDir)
+		} else {
+			collapsed := collapseLayeredOutline(state.layeredOutline)
+			payloads, err = layeredOutlineMigrationPayloads(collapsed)
+			target = structureIndexFromLayered(collapsed)
+			removePaths = append(removePaths, "outline.json", "outline.md")
+			if err == nil {
+				payloads, err = appendJSONMigrationPayload(payloads, "meta/progress.json", rollbackPlanningProgress(domain.PhaseOutline, domain.TotalChapters(collapsed), true, state))
+			}
+			if err == nil {
+				payloads, err = appendRollbackRunMeta(payloads, domain.PlanningReviewKindVolumeSplit, state, false)
+			}
+		}
+	case domain.RollbackStageDraft:
+		target = structureIndex{Version: structureSchemaVersion}
+		removePaths = append(removePaths, adaptationGeneratedDeletePaths()...)
+		removePaths = append(removePaths, foundationDeletePaths()...)
+		removePaths = append(removePaths, "meta/progress.json")
+		payloads, err = appendRollbackRunMeta(payloads, domain.PlanningReviewKindBlueprint, state, state.hasAdaptationState())
+	case domain.RollbackStageBlank:
+		target = structureIndex{Version: structureSchemaVersion}
+		removePaths = append(removePaths, blankDeletePaths()...)
+		payloads, err = appendRollbackRunMeta(payloads, "", state, true)
+		if err == nil {
+			var meta domain.RunMeta
+			if state.meta != nil {
+				meta = *state.meta
+			}
+			meta.PlanningReview = nil
+			meta.WordBudget = nil
+			meta.PendingSteer = ""
+			payloads = removeMigrationPayload(payloads, "meta/run.json")
+			payloads, err = appendJSONMigrationPayload(payloads, "meta/run.json", meta)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported rollback target %q", targetStage)
+	}
+	if err != nil {
+		return nil, err
+	}
+	removePaths = removePayloadPaths(sortedUnique(removePaths), payloads)
+	deleted := make([]string, 0, len(removePaths))
+	for _, rel := range removePaths {
+		if s.pathExists(rel) {
+			deleted = append(deleted, filepath.ToSlash(rel))
+		}
+	}
+	if err := s.Outline.migration.saveWithRemovals("rollback_"+string(targetStage), source, target, payloads, removePaths); err != nil {
+		return deleted, err
+	}
+	return deleted, nil
+}
+
+func appendJSONMigrationPayload(payloads []migrationPayload, rel string, value any) ([]migrationPayload, error) {
+	payload, err := jsonMigrationPayload(rel, value)
+	if err != nil {
+		return payloads, err
+	}
+	return append(payloads, payload), nil
+}
+
+func appendRollbackAdaptationWorkflow(payloads []migrationPayload, state rollbackState, stage domain.AdaptationPlanningStage) ([]migrationPayload, error) {
+	revision := 1
+	if state.planningFlow != nil {
+		revision = state.planningFlow.Revision + 1
+	}
+	workflow := domain.AdaptationPlanningWorkflow{
+		Version:   domain.AdaptationPlanningWorkflowVersion,
+		Stage:     stage,
+		Revision:  revision,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	return appendJSONMigrationPayload(payloads, adaptationPlanningWorkflowFile, workflow)
+}
+
+func appendRollbackRunMeta(payloads []migrationPayload, reviewKind string, state rollbackState, clear bool) ([]migrationPayload, error) {
+	var meta domain.RunMeta
+	if state.meta != nil {
+		meta = *state.meta
+	}
+	if clear {
+		meta.PlanningReview = nil
+	} else {
+		review, err := rollbackPlanningReview(reviewKind, state)
+		if err != nil {
+			return payloads, err
+		}
+		meta.PlanningReview = review
+	}
+	return appendJSONMigrationPayload(payloads, "meta/run.json", meta)
+}
+
+func removeMigrationPayload(payloads []migrationPayload, rel string) []migrationPayload {
+	result := payloads[:0]
+	for _, payload := range payloads {
+		if filepath.ToSlash(payload.Rel) != filepath.ToSlash(rel) {
+			result = append(result, payload)
+		}
+	}
+	return result
+}
+
+func removePayloadPaths(paths []string, payloads []migrationPayload) []string {
+	installed := make(map[string]struct{}, len(payloads))
+	for _, payload := range payloads {
+		installed[filepath.ToSlash(filepath.Clean(filepath.FromSlash(payload.Rel)))] = struct{}{}
+	}
+	result := paths[:0]
+	for _, rel := range paths {
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel)))
+		if _, exists := installed[clean]; !exists {
+			result = append(result, rel)
+		}
+	}
+	return result
+}
+
+func rollbackPlanningProgress(phase domain.Phase, total int, layered bool, state rollbackState) *domain.Progress {
+	if total < 0 {
+		total = 0
+	}
+	currentChapter := 0
+	if total > 0 {
+		currentChapter = 1
+	}
+	return &domain.Progress{
+		NovelName:      rollbackNovelName(state),
+		Phase:          phase,
+		CurrentChapter: currentChapter,
+		TotalChapters:  total,
+		Layered:        layered,
+	}
+}
+
+func structureIndexFromAdaptationVolumeReview(review *domain.AdaptationVolumeReview) structureIndex {
+	index := structureIndex{Version: structureSchemaVersion}
+	if review == nil {
+		return index
+	}
+	for i, volume := range review.Volumes {
+		index.Volumes = append(index.Volumes, structureVolumeRef{ID: volume.ID, Number: i + 1})
+	}
+	return index
 }
 
 func (s *Store) rollbackToAdaptationProposal(state rollbackState) ([]string, error) {
@@ -489,23 +724,18 @@ func (s *Store) removePaths(paths []string) ([]string, error) {
 }
 
 func (s *Store) savePlanningProgress(phase domain.Phase, total int, layered bool, state rollbackState) error {
-	if total < 0 {
-		total = 0
-	}
-	currentChapter := 0
-	if total > 0 {
-		currentChapter = 1
-	}
-	return s.Progress.Save(&domain.Progress{
-		NovelName:      rollbackNovelName(state),
-		Phase:          phase,
-		CurrentChapter: currentChapter,
-		TotalChapters:  total,
-		Layered:        layered,
-	})
+	return s.Progress.Save(rollbackPlanningProgress(phase, total, layered, state))
 }
 
 func (s *Store) ensureNormalPlanningReview(kind string, state rollbackState) error {
+	review, err := rollbackPlanningReview(kind, state)
+	if err != nil {
+		return err
+	}
+	return s.RunMeta.SetPlanningReview(review)
+}
+
+func rollbackPlanningReview(kind string, state rollbackState) (*domain.PlanningReview, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	review := &domain.PlanningReview{
 		Status:      domain.PlanningReviewStatusPending,
@@ -531,9 +761,9 @@ func (s *Store) ensureNormalPlanningReview(kind string, state rollbackState) err
 		review.TargetTotalWords = state.meta.WordBudget.TargetTotalWords
 	}
 	if strings.TrimSpace(review.Brief) == "" && kind == domain.PlanningReviewKindBlueprint {
-		return fmt.Errorf("cannot restore draft without a planning brief")
+		return nil, fmt.Errorf("cannot restore draft without a planning brief")
 	}
-	return s.RunMeta.SetPlanningReview(review)
+	return review, nil
 }
 
 func (s *Store) appendRollbackLog(preview domain.RollbackPreview, deleted []string) error {
@@ -573,6 +803,10 @@ func writingDeletePathsWithoutRuntime() []string {
 		"drafts",
 		"summaries",
 		"reviews",
+		structureRootDir + "/chapters",
+		structureRootDir + "/volumes",
+		structureRootDir + "/arcs",
+		structureFactsFile,
 		adaptationCheckDir,
 		"timeline.json",
 		"timeline.md",

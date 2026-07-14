@@ -237,7 +237,7 @@ func writerStoreSummarySections(state *writerStoreSummaryState) []writerStoreSec
 		{heading: "当前进度", data: writerStoreProgressSection(state)},
 		{heading: "最近章节摘要", data: state.recentSummaries},
 		{heading: "当前章节计划", data: state.chapterPlan},
-		{heading: "当前章节大纲", data: state.currentOutline},
+		{heading: "当前章节大纲", data: writerOutlineForContext(state.currentOutline)},
 		{heading: "当前弧摘要", data: state.currentArcSummary},
 		{heading: "当前卷摘要", data: state.currentVolSummary},
 		{heading: "角色快照", data: state.snapshots},
@@ -252,7 +252,7 @@ func writerRestoreSections(state *writerStoreSummaryState) []writerStoreSection 
 	return []writerStoreSection{
 		{heading: "当前进度", data: writerStoreProgressSection(state)},
 		{heading: "当前章节计划", data: state.chapterPlan},
-		{heading: "当前章节大纲", data: state.currentOutline},
+		{heading: "当前章节大纲", data: writerOutlineForContext(state.currentOutline)},
 		{heading: "待修审稿问题", data: state.pendingReviews},
 		{heading: "角色快照", data: state.snapshots},
 		{heading: "最近章节摘要", data: state.recentSummaries},
@@ -262,6 +262,15 @@ func writerRestoreSections(state *writerStoreSummaryState) []writerStoreSection 
 		{heading: "最近时间线", data: state.timeline},
 		{heading: "风格规则", data: state.styleRules},
 	}
+}
+
+func writerOutlineForContext(entry *domain.OutlineEntry) *domain.OutlineEntry {
+	if entry == nil {
+		return nil
+	}
+	copyEntry := *entry
+	copyEntry.ID = ""
+	return &copyEntry
 }
 
 func renderWriterStoreSections(state *writerStoreSummaryState, budgetTokens int, sections []writerStoreSection) []string {

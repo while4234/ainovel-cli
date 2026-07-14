@@ -28,6 +28,20 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-14 pending `feat: add stable manuscript structure identities`:
+  The accepted PR-01 candidate introduces stable volume/arc/chapter IDs,
+  canonical stable-ID artifact storage, numeric compatibility projections, and
+  a staged migration log. Review-gated fixes add a shared recovery gate for
+  Progress, Continuation, and diagnostic snapshots; durable request receipts
+  for public ID-less expansion/append/SavePlan retries; one migration boundary
+  for rollback structure and semantic state; and deletion of replacement
+  backup/temp files before targets. Regression tests exercise migration stages,
+  delayed exact retries, rollback recovery, asymmetric volume/arc summaries,
+  arc-batch identity, canonical-fact authority, and adaptation ambiguity. The
+  fifth independent re-review passed. Main-agent gates passed `go test ./...
+  -count=1`, `go vet ./...`, 213 UI tests, the production UI build, and
+  `git diff --check`. The change is ready for local integration and is not
+  pushed.
 - 2026-07-14 `0501e92` `test: cover model reasoning inheritance`:
   completed the previously uncommitted reasoning-effort regression coverage.
   Tests now verify role overrides, stage inheritance, stage overrides, and

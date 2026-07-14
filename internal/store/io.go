@@ -31,11 +31,21 @@ func (io *IO) ReadFile(rel string) ([]byte, error) {
 }
 
 func (io *IO) ReadFileUnlocked(rel string) ([]byte, error) {
-	return os.ReadFile(io.path(rel))
+	p, err := io.safeRelPath(rel)
+	if err != nil {
+		return nil, err
+	}
+	if err := recoverInterruptedReplacement(p); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(p)
 }
 
 func (io *IO) WriteFileUnlocked(rel string, data []byte) error {
-	p := io.path(rel)
+	p, err := io.safeRelPath(rel)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
@@ -61,7 +71,7 @@ func (io *IO) WriteFileUnlocked(rel string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, p)
+	return replaceFile(tmpPath, p)
 }
 
 func (io *IO) ReadJSON(rel string, v any) error {
@@ -109,7 +119,10 @@ func (io *IO) AppendLine(rel string, data []byte) error {
 }
 
 func (io *IO) AppendLineUnlocked(rel string, data []byte) error {
-	p := io.path(rel)
+	p, err := io.safeRelPath(rel)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
@@ -131,11 +144,66 @@ func (io *IO) RemoveFile(rel string) error {
 }
 
 func (io *IO) RemoveFileUnlocked(rel string) error {
-	err := os.Remove(io.path(rel))
+	p, pathErr := io.safeRelPath(rel)
+	if pathErr != nil {
+		return pathErr
+	}
+	if _, err := removeInterruptedReplacementState(p); err != nil {
+		return err
+	}
+	err := os.Remove(p)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
+}
+
+func replaceFile(tempPath, targetPath string) error {
+	backupPath := targetPath + ".replace-backup"
+	if err := recoverInterruptedReplacement(targetPath); err != nil {
+		return err
+	}
+	if _, err := os.Stat(targetPath); err == nil {
+		if err := os.Rename(targetPath, backupPath); err != nil {
+			return fmt.Errorf("prepare file replacement: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		_ = os.Rename(backupPath, targetPath)
+		return err
+	}
+	if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("clean file replacement backup: %w", err)
+	}
+	return nil
+}
+
+func recoverInterruptedReplacement(targetPath string) error {
+	backupPath := targetPath + ".replace-backup"
+	_, backupErr := os.Stat(backupPath)
+	if os.IsNotExist(backupErr) {
+		return nil
+	}
+	if backupErr != nil {
+		return backupErr
+	}
+	_, targetErr := os.Stat(targetPath)
+	switch {
+	case os.IsNotExist(targetErr):
+		if err := os.Rename(backupPath, targetPath); err != nil {
+			return fmt.Errorf("restore interrupted file replacement: %w", err)
+		}
+		return nil
+	case targetErr != nil:
+		return targetErr
+	default:
+		if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove completed file replacement backup: %w", err)
+		}
+		return nil
+	}
 }
 
 func (io *IO) RemoveAllRel(rel string) (bool, error) {
@@ -149,13 +217,40 @@ func (io *IO) RemoveAllRelUnlocked(rel string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	interruptedExisted, err := removeInterruptedReplacementState(target)
+	if err != nil {
+		return false, err
+	}
 	if _, err := os.Lstat(target); err != nil {
 		if os.IsNotExist(err) {
-			return false, nil
+			return interruptedExisted, nil
 		}
 		return false, err
 	}
 	return true, os.RemoveAll(target)
+}
+
+func removeInterruptedReplacementState(targetPath string) (bool, error) {
+	paths := []string{targetPath + ".replace-backup"}
+	temporary, err := filepath.Glob(targetPath + ".tmp-*")
+	if err != nil {
+		return false, err
+	}
+	paths = append(paths, temporary...)
+	existed := false
+	for _, path := range paths {
+		if _, err := os.Lstat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return existed, err
+		}
+		existed = true
+		if err := os.RemoveAll(path); err != nil {
+			return existed, fmt.Errorf("remove interrupted replacement state %s: %w", filepath.Base(path), err)
+		}
+	}
+	return existed, nil
 }
 
 func (io *IO) safeRelPath(rel string) (string, error) {
