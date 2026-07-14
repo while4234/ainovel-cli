@@ -415,6 +415,95 @@ func TestProjectCoCreateCheckpointRestoresAfterSessionRestart(t *testing.T) {
 	}
 }
 
+func TestProjectCoCreateRecoveryIgnoredAfterWritingStarts(t *testing.T) {
+	tests := []struct {
+		name       string
+		legacyOnly bool
+	}{
+		{name: "checkpoint"},
+		{name: "legacy log", legacyOnly: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+			defer server.Close()
+			manifest, err := server.store.CreateProject("Writing Must Win")
+			if err != nil {
+				t.Fatalf("CreateProject: %v", err)
+			}
+			st := storepkg.NewStore(manifest.OutputDir)
+			if err := st.Progress.Save(&domain.Progress{
+				NovelName:         "Writing Must Win",
+				Phase:             domain.PhaseWriting,
+				CurrentChapter:    3,
+				TotalChapters:     33,
+				CompletedChapters: []int{1, 2},
+			}); err != nil {
+				t.Fatalf("save writing progress: %v", err)
+			}
+
+			sessionsDir := filepath.Join(manifest.OutputDir, "meta", "sessions")
+			if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+				t.Fatalf("mkdir sessions dir: %v", err)
+			}
+			if test.legacyOnly {
+				entry, err := json.Marshal(webCoCreateLogEntry{
+					InputHistory: []host.CoCreateMessage{{Role: "user", Content: "stale normal novel direction"}},
+					ParsedDraft:  "## stale direction",
+					ParsedReady:  true,
+				})
+				if err != nil {
+					t.Fatalf("marshal legacy log: %v", err)
+				}
+				logPath := filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateLogRelPath))
+				if err := os.WriteFile(logPath, append(entry, '\n'), 0o644); err != nil {
+					t.Fatalf("write legacy log: %v", err)
+				}
+			} else {
+				checkpoint, err := json.Marshal(webCoCreateCheckpoint{
+					Version: webCoCreateCheckpointVersion,
+					Kind:    webCoCreateKindNormal,
+					Session: startup.CoCreateSnapshot{
+						History:     []host.CoCreateMessage{{Role: "user", Content: "stale normal novel direction"}},
+						DraftPrompt: "## stale direction",
+						Ready:       true,
+					},
+				})
+				if err != nil {
+					t.Fatalf("marshal checkpoint: %v", err)
+				}
+				checkpointPath := filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))
+				if err := os.WriteFile(checkpointPath, checkpoint, 0o644); err != nil {
+					t.Fatalf("write checkpoint: %v", err)
+				}
+			}
+
+			installFakeSession(t, server, manifest)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("snapshot status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			var restored struct {
+				CoCreate *webCoCreateState `json:"cocreate"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&restored); err != nil {
+				t.Fatalf("decode snapshot response: %v", err)
+			}
+			if restored.CoCreate != nil {
+				t.Fatalf("stale co-create should not override writing progress: %+v", restored.CoCreate)
+			}
+			checkpointPath := filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))
+			if _, err := os.Stat(checkpointPath); !os.IsNotExist(err) {
+				t.Fatalf("stale checkpoint should be absent, stat err=%v", err)
+			}
+		})
+	}
+}
+
 func TestProjectAdaptCoCreateCheckpointRestoresModeAndCommits(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

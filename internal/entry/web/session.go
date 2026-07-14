@@ -2678,7 +2678,7 @@ func (s *ProjectSession) restoreCoCreateCheckpoint() error {
 	if path == "" {
 		return nil
 	}
-	if s.coCreateRestoreBlockedByAdaptationState() {
+	if s.coCreateRestoreBlockedByProjectState() {
 		s.clearCoCreateCheckpoint()
 		return nil
 	}
@@ -2708,7 +2708,7 @@ func (s *ProjectSession) restoreCoCreateCheckpoint() error {
 	return nil
 }
 
-func (s *ProjectSession) coCreateRestoreBlockedByAdaptationState() bool {
+func (s *ProjectSession) coCreateRestoreBlockedByProjectState() bool {
 	s.mu.Lock()
 	outputDir := strings.TrimSpace(s.manifest.OutputDir)
 	s.mu.Unlock()
@@ -2716,6 +2716,11 @@ func (s *ProjectSession) coCreateRestoreBlockedByAdaptationState() bool {
 		return false
 	}
 	st := storepkg.NewStore(outputDir)
+	if progress, err := st.Progress.Load(); err == nil && progress != nil {
+		if progress.Phase == domain.PhaseWriting || progress.Phase == domain.PhaseComplete {
+			return true
+		}
+	}
 	if plan, err := st.Adaptation.LoadPlan(); err == nil && plan != nil && len(plan.Chapters) > 0 {
 		return true
 	}
