@@ -50,10 +50,14 @@ func (s RevisionStage) Terminal() bool {
 }
 
 type RevisionImpactItem struct {
-	ArtifactID         string   `json:"artifact_id"`
-	ArtifactKind       string   `json:"artifact_kind"`
-	Change             string   `json:"change"`
-	DependencyEvidence []string `json:"dependency_evidence,omitempty"`
+	ArtifactID          string               `json:"artifact_id"`
+	ArtifactKind        string               `json:"artifact_kind"`
+	Change              string               `json:"change"`
+	Requirement         StructureImpactLevel `json:"requirement,omitempty"`
+	Cause               StructureImpactCause `json:"cause,omitempty"`
+	RequiresBodyRewrite bool                 `json:"requires_body_rewrite,omitempty"`
+	DependencyEvidence  []string             `json:"dependency_evidence,omitempty"`
+	DependencySourceIDs []string             `json:"dependency_source_ids,omitempty"`
 }
 
 type RevisionImpact struct {
@@ -66,11 +70,15 @@ func NewRevisionImpact(summary string, items []RevisionImpactItem) (RevisionImpa
 	impact := RevisionImpact{Summary: strings.TrimSpace(summary), Items: append([]RevisionImpactItem(nil), items...)}
 	for index := range impact.Items {
 		impact.Items[index].DependencyEvidence = append([]string(nil), impact.Items[index].DependencyEvidence...)
+		impact.Items[index].DependencySourceIDs = append([]string(nil), impact.Items[index].DependencySourceIDs...)
 		impact.Items[index].ArtifactID = strings.TrimSpace(impact.Items[index].ArtifactID)
 		impact.Items[index].ArtifactKind = strings.TrimSpace(impact.Items[index].ArtifactKind)
 		impact.Items[index].Change = strings.TrimSpace(impact.Items[index].Change)
 		for evidenceIndex := range impact.Items[index].DependencyEvidence {
 			impact.Items[index].DependencyEvidence[evidenceIndex] = strings.TrimSpace(impact.Items[index].DependencyEvidence[evidenceIndex])
+		}
+		for sourceIndex := range impact.Items[index].DependencySourceIDs {
+			impact.Items[index].DependencySourceIDs[sourceIndex] = strings.TrimSpace(impact.Items[index].DependencySourceIDs[sourceIndex])
 		}
 	}
 	if err := impact.Validate(); err != nil {
@@ -101,6 +109,30 @@ func (i RevisionImpact) Validate() error {
 		item.Change = strings.TrimSpace(item.Change)
 		if item.ArtifactID == "" || item.ArtifactKind == "" || item.Change == "" {
 			return fmt.Errorf("revision impact item %d requires artifact_id, artifact_kind, and change", index)
+		}
+		if item.Requirement != "" && item.Requirement != StructureImpactRequired && item.Requirement != StructureImpactRecommended {
+			return fmt.Errorf("revision impact item %d has invalid requirement %q", index, item.Requirement)
+		}
+		if item.Cause != "" {
+			switch item.Cause {
+			case StructureImpactContentDependency, StructureImpactStructureChange, StructureImpactDisplayRenumber:
+			default:
+				return fmt.Errorf("revision impact item %d has invalid cause %q", index, item.Cause)
+			}
+		}
+		if item.Cause == StructureImpactDisplayRenumber && item.RequiresBodyRewrite {
+			return fmt.Errorf("revision impact item %d cannot rewrite body content for display renumbering", index)
+		}
+		sources := make(map[string]struct{}, len(item.DependencySourceIDs))
+		for _, sourceID := range item.DependencySourceIDs {
+			sourceID = strings.TrimSpace(sourceID)
+			if sourceID == "" {
+				return fmt.Errorf("revision impact item %d contains an empty dependency source ID", index)
+			}
+			if _, duplicate := sources[sourceID]; duplicate {
+				return fmt.Errorf("revision impact item %d contains duplicate dependency source ID %q", index, sourceID)
+			}
+			sources[sourceID] = struct{}{}
 		}
 		if _, exists := seen[item.ArtifactID]; exists {
 			return fmt.Errorf("revision impact contains duplicate artifact %q", item.ArtifactID)
