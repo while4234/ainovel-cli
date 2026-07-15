@@ -169,6 +169,28 @@ func TestNormalWorkflowProgressKeepsNewProjectStepsIdle(t *testing.T) {
 	}
 }
 
+func TestNormalWorkflowProgressDoesNotTreatBackgroundActionAsWriting(t *testing.T) {
+	snapshot := host.UISnapshot{
+		IsRunning:    true,
+		RuntimeState: "running",
+		Agents: []host.AgentSnapshot{{
+			TaskKind: projectActionKindSimulationAnalysis,
+			State:    "running",
+		}},
+	}
+
+	progress := normalWorkflowProgress("project-simulation-analysis", snapshot, nil)
+
+	if progress.CurrentStep != "creative_intent" || progress.Status != WorkflowStatusIdle {
+		t.Fatalf("background analysis progress = %+v, want idle creative intent", progress)
+	}
+	for _, step := range progress.Steps {
+		if step.Status != WorkflowStatusIdle {
+			t.Fatalf("background analysis step %q status = %q, want idle", step.ID, step.Status)
+		}
+	}
+}
+
 func TestContinuationWorkflowProgressUsesDurableRevision(t *testing.T) {
 	continuation := &domain.ContinuationSnapshot{Workflow: domain.ContinuationWorkflow{
 		Stage:           domain.ContinuationStageProposalReviewPending,

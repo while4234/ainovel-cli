@@ -524,6 +524,11 @@ func applyWritingState(progress *WorkflowProgress, snapshot host.UISnapshot) {
 	progress.CurrentStep = "writing"
 	status := WorkflowStatusIdle
 	message := ""
+	if !snapshotHasWritingEvidence(snapshot) {
+		progress.Status = status
+		progress.Steps = setStep(progress.Steps, "writing", status, 0, 0, message)
+		return
+	}
 	switch {
 	case snapshot.RuntimeState == "completed" || snapshot.Phase == string(domain.PhaseComplete):
 		status = WorkflowStatusCompleted
@@ -548,6 +553,16 @@ func applyWritingState(progress *WorkflowProgress, snapshot host.UISnapshot) {
 	if status == WorkflowStatusPaused {
 		progress.NextAction = nextWorkflowAction(*progress, "resume_writing", "继续创作", false)
 	}
+}
+
+func snapshotHasWritingEvidence(snapshot host.UISnapshot) bool {
+	return snapshot.Phase == string(domain.PhaseWriting) ||
+		snapshot.Phase == string(domain.PhaseComplete) ||
+		snapshot.CurrentChapter > 0 ||
+		snapshot.TotalChapters > 0 ||
+		snapshot.CompletedCount > 0 ||
+		snapshot.TotalWordCount > 0 ||
+		snapshot.InProgressChapter > 0
 }
 
 func nextWorkflowAction(progress WorkflowProgress, id, label string, confirmation bool) *WorkflowNextAction {
