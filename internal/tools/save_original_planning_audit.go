@@ -34,6 +34,7 @@ func (t *SaveOriginalPlanningAuditTool) StrictSchema() bool                   { 
 func (t *SaveOriginalPlanningAuditTool) Schema() map[string]any {
 	return schema.Object(
 		schema.Property("scope", schema.Enum("审核层级", "skeleton_volume", "skeleton_book_batch", "skeleton_book", "chapter", "arc", "volume", "book_batch", "book")).Required(),
+		schema.Property("scope_id", schema.String("章节审核必须填写 novel_context 返回的当前章节稳定 ID；其他审核层级留空")),
 		schema.Property("volume", schema.Int("弧/卷审核的卷号")),
 		schema.Property("arc", schema.Int("弧审核的弧号")),
 		schema.Property("from_volume", schema.Int("book_batch 起始卷号")),

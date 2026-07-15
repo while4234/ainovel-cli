@@ -9,6 +9,58 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
+func TestSaveOriginalPlanningAuditSchemaExposesChapterScopeID(t *testing.T) {
+	toolSchema := NewSaveOriginalPlanningAuditTool(nil).Schema()
+	properties, ok := toolSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties missing: %#v", toolSchema["properties"])
+	}
+	scopeID, ok := properties["scope_id"].(map[string]any)
+	if !ok {
+		t.Fatalf("scope_id schema missing: %#v", properties["scope_id"])
+	}
+	if got := scopeID["type"]; got != "string" {
+		t.Fatalf("scope_id type = %v, want string", got)
+	}
+}
+
+func TestSaveOriginalPlanningAuditAcceptsChapterScopeID(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	chapterID := domain.LegacyStructureID("audit-tool-test", domain.StructureKindChapter, "volume-1/arc-1/chapter-1")
+	if err := st.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		ID: domain.LegacyStructureID("audit-tool-test", domain.StructureKindVolume, "volume-1"), Index: 1, Title: "Opening", Theme: "survival",
+		Arcs: []domain.ArcOutline{{
+			ID: domain.LegacyStructureID("audit-tool-test", domain.StructureKindArc, "volume-1/arc-1"), Index: 1, Title: "Wake", Goal: "survive the deadline",
+			Chapters: []domain.OutlineEntry{{ID: chapterID, Chapter: 1, Title: "Evidence", CoreEvent: "the heroine verifies changed evidence", Hook: "someone arrives", Scenes: []string{"verify the evidence"}}},
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	args, err := json.Marshal(map[string]any{
+		"scope": "chapter", "scope_id": chapterID, "from_chapter": 1, "to_chapter": 1,
+		"verdict": "pass", "summary": "the current chapter is causally complete",
+		"dimensions": originalAuditTestDimensions("causal_value", "character_logic", "continuity", "scene_progression", "hook_and_pacing", "originality"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSaveOriginalPlanningAuditTool(st).Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute with schema-advertised scope_id: %v", err)
+	}
+
+	audits, err := st.OriginalPlanningAudits.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audits) != 1 || audits[0].ScopeID != chapterID {
+		t.Fatalf("saved chapter audit = %+v, want scope_id %q", audits, chapterID)
+	}
+}
+
 func TestSaveOriginalPlanningAuditRejectsMoreThanFourRawChapters(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

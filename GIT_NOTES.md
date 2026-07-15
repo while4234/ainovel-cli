@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-15 `pending` `fix: expose planning chapter audit scope ids`:
+  adds the missing `scope_id` field to the model-visible
+  `save_original_planning_audit` schema so chapter-detail audits can submit the
+  stable ID already required by routing and runtime validation instead of
+  repeating an impossible tool call. Schema and real persistence regressions
+  pass 10/10, `go vet ./...` passes, and the full Go suite passes all affected
+  packages; one unrelated Web simulation-library assertion passed 5/5 when
+  rerun in isolation.
 - 2026-07-15 `ee084c5` `fix: recover interrupted planning safely`:
   prevents a committed normal-planning checkpoint from being replaced by a
   stale co-create log after restart, reconciles `collecting` planning with an
