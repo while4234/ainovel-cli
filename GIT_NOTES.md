@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-15 `8dd42ef` `fix: show planning workflow model`:
+  Maps the actual normal-planning workflow IDs `volume_plan` and
+  `chapter_outline` to their configured skeleton/detail-outline model routes,
+  so the running workflow header now reports the active model just like
+  adaptation analysis and proposal review. Focused regressions, the full Web
+  package tests, 213 UI tests, UI/Go production builds, restart smoke checks,
+  the live project snapshot, and a browser render all passed. Port 9898 now
+  runs PID 133704 and the affected project visibly reports
+  `正在运行 · grok-4.5`.
 - 2026-07-15 `95d7743c` `fix: distinguish background work from prose writing`:
   `applyWritingState` now requires durable writing evidence before projecting a
   generic running snapshot as prose writing, so simulation-profile analysis on
