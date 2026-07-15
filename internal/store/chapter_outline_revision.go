@@ -42,7 +42,9 @@ func (s *Store) ReviseChapterOutline(chapter int, revised domain.OutlineEntry) e
 		return s.RepairArcOutlineRange(volume, arc, chapter, chapter, []domain.OutlineEntry{revised})
 	}
 
-	return s.reviseFlatChapterOutline(chapter, revised)
+	return s.Revisions.withLegacyMutation("revise flat adaptation chapter outline", func() error {
+		return s.reviseFlatChapterOutline(chapter, revised)
+	})
 }
 
 func (s *Store) reviseFlatChapterOutline(chapter int, revised domain.OutlineEntry) error {
@@ -67,7 +69,7 @@ func (s *Store) reviseFlatChapterOutline(chapter int, revised domain.OutlineEntr
 	if err := validateOutlineBatchEntries("revise chapter outline", entries); err != nil {
 		return err
 	}
-	if err := s.Outline.SaveOutline(entries); err != nil {
+	if err := s.Outline.saveOutline(entries); err != nil {
 		return err
 	}
 
@@ -82,7 +84,7 @@ func (s *Store) reviseFlatChapterOutline(chapter int, revised domain.OutlineEntr
 			if err := updateAdaptationPlanOutlineEntries(&planToSave, []domain.OutlineEntry{revised}); err != nil {
 				return err
 			}
-			if err := s.Adaptation.SavePlan(planToSave); err != nil {
+			if err := s.Adaptation.savePlan(planToSave); err != nil {
 				return fmt.Errorf("save revised adaptation plan: %w", err)
 			}
 		}
@@ -145,7 +147,7 @@ func (s *Store) deleteRevisedChapterArtifacts(chapters []int) error {
 		if err := s.World.DeleteReview(chapter); err != nil {
 			return fmt.Errorf("delete chapter %d review: %w", chapter, err)
 		}
-		if err := s.Adaptation.DeleteCheck(chapter); err != nil {
+		if err := s.Adaptation.deleteCheck(chapter); err != nil {
 			return fmt.Errorf("delete chapter %d adaptation check: %w", chapter, err)
 		}
 	}

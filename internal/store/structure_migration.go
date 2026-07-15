@@ -41,9 +41,10 @@ const (
 )
 
 type structureMigration struct {
-	io        *IO
-	mu        sync.RWMutex
-	failpoint func(string) error
+	io                       *IO
+	mu                       sync.RWMutex
+	failpoint                func(string) error
+	recoverWithRevisionFence func(string, func() error) error
 }
 
 type structureIndex struct {
@@ -192,12 +193,43 @@ func (m *structureMigration) withRead(fn func() error) error {
 	if m == nil {
 		return fn()
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, err := m.resumeUnlocked(); err != nil {
-		return fmt.Errorf("recover structure migration before read: %w", err)
+	for {
+		pending, err := m.pending()
+		if err != nil {
+			return fmt.Errorf("check structure migration before read: %w", err)
+		}
+		if pending {
+			return m.withFencedRead(fn)
+		}
+
+		m.mu.Lock()
+		pending, err = m.pending()
+		if err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("check structure migration before read: %w", err)
+		}
+		if pending {
+			m.mu.Unlock()
+			continue
+		}
+		err = fn()
+		m.mu.Unlock()
+		return err
 	}
-	return fn()
+}
+
+func (m *structureMigration) withFencedRead(fn func() error) error {
+	if m.recoverWithRevisionFence == nil {
+		return fmt.Errorf("recover structure migration before read: revision fence is not configured")
+	}
+	return m.recoverWithRevisionFence("recover pending structure migration before read", func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if _, err := m.resumeUnlocked(); err != nil {
+			return fmt.Errorf("recover structure migration before read: %w", err)
+		}
+		return fn()
+	})
 }
 
 func (m *structureMigration) save(kind string, legacySource, target structureIndex, payloads []migrationPayload) error {
@@ -290,6 +322,20 @@ func (m *structureMigration) recover() error {
 	defer m.mu.Unlock()
 	_, err := m.resumeUnlocked()
 	return err
+}
+
+func (m *structureMigration) pending() (bool, error) {
+	if m == nil {
+		return false, nil
+	}
+	_, err := os.Stat(m.io.path(structureMigrationLogFile))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 func (m *structureMigration) resumeUnlocked() (structureMigrationResume, error) {

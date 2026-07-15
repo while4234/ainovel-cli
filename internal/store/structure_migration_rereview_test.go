@@ -5,10 +5,72 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
+
+func TestContinuationCommitRejectsActiveRevisionBeforePendingMigrationRecovery(t *testing.T) {
+	dir := t.TempDir()
+	st := NewStore(dir)
+	impact, err := domain.NewRevisionImpact("continuation ownership", []domain.RevisionImpactItem{{
+		ArtifactID: "chapter-1", ArtifactKind: "outline", Change: "revise",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Revisions.Start(fakeRevisionPolicy{}, StartRevisionInput{
+		Intent: "active adaptation revision", Impact: impact, IdempotencyKey: "continuation-owner",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	migrationLog := filepath.Join(dir, filepath.FromSlash(structureMigrationLogFile))
+	if err := os.MkdirAll(filepath.Dir(migrationLog), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(migrationLog, []byte(`{"version":1,"stage":"planned"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := continuationOwnershipProjectBytes(t, dir)
+	if _, err := st.CommitContinuationPlan(1); !errors.Is(err, ErrActiveRevisionBlocksNormalFlow) {
+		t.Fatalf("continuation commit error = %v", err)
+	}
+	if after := continuationOwnershipProjectBytes(t, dir); !reflect.DeepEqual(before, after) {
+		t.Fatal("rejected continuation commit recovered or changed pending structure bytes")
+	}
+}
+
+func continuationOwnershipProjectBytes(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+	result := make(map[string][]byte)
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if strings.HasSuffix(rel, ".lock") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		result[rel] = data
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
 
 func TestIndexedExpansionAndAppendUseStructureMigration(t *testing.T) {
 	dir := t.TempDir()

@@ -12,8 +12,9 @@ import (
 
 // ProgressStore 管理创作进度状态。
 type ProgressStore struct {
-	io        *IO
-	migration *structureMigration
+	io                 *IO
+	migration          *structureMigration
+	withLegacyMutation func(string, func() error) error
 }
 
 func NewProgressStore(io *IO, migrations ...*structureMigration) *ProgressStore {
@@ -41,10 +42,32 @@ func (s *ProgressStore) withReadLock(fn func() error) error {
 
 func (s *ProgressStore) withWriteLock(fn func() error) error {
 	return s.withRecovery(func() error {
-		s.io.mu.Lock()
-		defer s.io.mu.Unlock()
-		return fn()
+		return s.withLegacyFormalMutation("write formal progress", func() error {
+			return s.withOwnedWriteLock(fn)
+		})
 	})
+}
+
+func (s *ProgressStore) withLegacyFormalMutation(operation string, mutation func() error) error {
+	if s == nil {
+		return fmt.Errorf("progress store is required before %s", operation)
+	}
+	if s.withLegacyMutation == nil {
+		return mutation()
+	}
+	return s.withLegacyMutation(operation, mutation)
+}
+
+// withOwnedWriteLock is reserved for Store operations that already hold the
+// matching RevisionStore transaction and have proved their opaque owner.
+func (s *ProgressStore) withOwnedWriteLock(fn func() error) error {
+	s.io.mu.Lock()
+	defer s.io.mu.Unlock()
+	return fn()
+}
+
+func (s *ProgressStore) saveOwned(p *domain.Progress) error {
+	return s.withOwnedWriteLock(func() error { return s.saveUnlocked(p) })
 }
 
 // Load 读取 meta/progress.json。不存在时返回 nil。

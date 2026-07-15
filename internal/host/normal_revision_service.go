@@ -641,7 +641,7 @@ func (s *NormalRevisionService) PublishStructure(sealed domain.StructureRevision
 	if strings.TrimSpace(session.PreviewSignature) == "" || sealed.Signature != session.PreviewSignature {
 		return nil, fmt.Errorf("normal revision publish preview substitution is not allowed")
 	}
-	versions, err := s.store.Revisions.ValidatePublish(domain.NormalRevisionPolicy{}, storepkg.RevisionMutationInput{
+	versions, publicationOwner, err := s.store.Revisions.ValidatePublishWithOwner(domain.NormalRevisionPolicy{}, storepkg.RevisionMutationInput{
 		SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
@@ -659,16 +659,8 @@ func (s *NormalRevisionService) PublishStructure(sealed domain.StructureRevision
 	if err := domain.ValidateStructureSnapshot(candidate); err != nil {
 		return nil, fmt.Errorf("accepted normal structure snapshot is not publishable: %w", err)
 	}
-	current, err := s.store.Outline.LoadLayeredOutline()
-	if err != nil {
-		return nil, err
-	}
-	progress, err := s.store.Progress.Load()
-	if err != nil {
-		return nil, err
-	}
-	if err := s.store.PublishLayeredStructureForRevision(candidate, fmt.Sprintf("%s:%d:%s", session.ID, session.Revision, idempotencyKey)); err != nil {
-		if rollbackErr := s.store.RestoreLayeredStructureForRevision(current, progress); rollbackErr != nil {
+	if err := s.store.PublishLayeredStructureForRevision(publicationOwner, candidate, idempotencyKey); err != nil {
+		if rollbackErr := s.store.RollbackLayeredStructureForRevision(publicationOwner); rollbackErr != nil {
 			return nil, fmt.Errorf("publish normal revision structure: %v; rollback exact formal state: %w", err, rollbackErr)
 		}
 		return nil, err
@@ -676,13 +668,13 @@ func (s *NormalRevisionService) PublishStructure(sealed domain.StructureRevision
 	if s.beforeRevisionCommit != nil {
 		s.beforeRevisionCommit()
 	}
-	published, publishErr := s.store.Revisions.Publish(domain.NormalRevisionPolicy{}, storepkg.RevisionMutationInput{
+	published, publishErr := s.store.Revisions.PublishWithOwner(domain.NormalRevisionPolicy{}, storepkg.RevisionMutationInput{
 		SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: idempotencyKey,
-	})
+	}, publicationOwner)
 	if publishErr == nil {
 		return published, nil
 	}
-	if rollbackErr := s.store.RestoreLayeredStructureForRevision(current, progress); rollbackErr != nil {
+	if rollbackErr := s.store.RollbackLayeredStructureForRevision(publicationOwner); rollbackErr != nil {
 		return nil, fmt.Errorf("publish normal revision: %v; rollback exact formal structure/progress: %w", publishErr, rollbackErr)
 	}
 	return nil, publishErr

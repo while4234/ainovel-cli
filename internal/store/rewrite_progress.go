@@ -5,6 +5,16 @@ import "github.com/voocel/ainovel-cli/internal/domain"
 // ReconcilePendingRewriteProgress keeps progress counters aligned with deleted
 // final chapters while preserving CompletedChapters for rewrite-queue routing.
 func (s *Store) ReconcilePendingRewriteProgress() (*domain.Progress, error) {
+	var reconciled *domain.Progress
+	err := s.Revisions.withLegacyMutation("reconcile pending rewrite progress", func() error {
+		var err error
+		reconciled, err = s.reconcilePendingRewriteProgressOwned()
+		return err
+	})
+	return reconciled, err
+}
+
+func (s *Store) reconcilePendingRewriteProgressOwned() (*domain.Progress, error) {
 	progress, err := s.Progress.Load()
 	if err != nil || progress == nil || len(progress.PendingRewrites) == 0 {
 		return progress, err

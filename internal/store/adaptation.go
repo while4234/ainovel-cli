@@ -39,9 +39,10 @@ const (
 
 // AdaptationStore keeps source-novel snapshots and adaptation validation data.
 type AdaptationStore struct {
-	io        *IO
-	identity  structureIdentity
-	migration *structureMigration
+	io                 *IO
+	identity           structureIdentity
+	migration          *structureMigration
+	withLegacyMutation func(string, func() error) error
 }
 
 func NewAdaptationStore(io *IO, identity structureIdentity, migrations ...*structureMigration) *AdaptationStore {
@@ -53,7 +54,9 @@ func NewAdaptationStore(io *IO, identity structureIdentity, migrations ...*struc
 }
 
 func (s *AdaptationStore) Reset() error {
-	return os.RemoveAll(s.io.path(adaptationRootDir))
+	return s.withLegacyFormalMutation("reset all adaptation state", func() error {
+		return os.RemoveAll(s.io.path(adaptationRootDir))
+	})
 }
 
 // Backup copies the current adaptation snapshot before destructive maintenance.
@@ -134,59 +137,66 @@ func (s *AdaptationStore) RepairLegacyArcChapterBudgetDensity(plan *domain.Adapt
 	if s == nil || plan == nil || domain.NormalizeAdaptationGranularity(plan.Granularity) != domain.AdaptationGranularityArc {
 		return false, nil
 	}
-	issues := domain.ValidateArcChapterBudgetDensity(*plan)
-	if len(issues) == 0 {
-		return false, nil
-	}
-	wasPassed := domain.AdaptationOutlineQualityPassed(*plan)
-	if _, err := s.Backup("auto-budget-density-repair"); err != nil {
-		return false, fmt.Errorf("backup adaptation before automatic budget repair: %w", err)
-	}
-	if len(domain.RepairArcChapterBudgetDensity(plan)) == 0 {
-		return false, nil
-	}
-	chapters := make([]int, 0, len(issues))
-	for _, issue := range issues {
-		chapters = append(chapters, issue.Chapter)
-	}
-	domain.MarkAdaptationBudgetRepair(plan, "deterministic_fallback", 0, chapters, "writer/commit safety-net fallback after preflight was missed")
-	if wasPassed {
-		domain.MarkAdaptationOutlineQualityPassed(plan)
-	}
-	if err := s.SavePlan(*plan); err != nil {
-		return false, fmt.Errorf("save adaptation after automatic budget repair: %w", err)
-	}
-	return true, nil
+	var repaired bool
+	err := s.withLegacyFormalMutation("migrate legacy chapter budget density", func() error {
+		issues := domain.ValidateArcChapterBudgetDensity(*plan)
+		if len(issues) == 0 {
+			return nil
+		}
+		wasPassed := domain.AdaptationOutlineQualityPassed(*plan)
+		if _, err := s.Backup("auto-budget-density-repair"); err != nil {
+			return fmt.Errorf("backup adaptation before automatic budget repair: %w", err)
+		}
+		if len(domain.RepairArcChapterBudgetDensity(plan)) == 0 {
+			return nil
+		}
+		chapters := make([]int, 0, len(issues))
+		for _, issue := range issues {
+			chapters = append(chapters, issue.Chapter)
+		}
+		domain.MarkAdaptationBudgetRepair(plan, "deterministic_fallback", 0, chapters, "writer/commit safety-net fallback after preflight was missed")
+		if wasPassed {
+			domain.MarkAdaptationOutlineQualityPassed(plan)
+		}
+		if err := s.savePlan(*plan); err != nil {
+			return fmt.Errorf("save adaptation after automatic budget repair: %w", err)
+		}
+		repaired = true
+		return nil
+	})
+	return repaired, err
 }
 
 // ResetGenerated removes adaptation artifacts derived from a confirmed brief
 // while preserving the analyzed source-novel snapshot.
 func (s *AdaptationStore) ResetGenerated() error {
-	if err := s.io.WithWriteLock(func() error {
-		err := os.Remove(s.io.path(adaptationPlanFile))
-		if err != nil && !os.IsNotExist(err) {
+	return s.withLegacyFormalMutation("reset generated adaptation state", func() error {
+		if err := s.io.WithWriteLock(func() error {
+			err := os.Remove(s.io.path(adaptationPlanFile))
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			err = os.Remove(s.io.path(adaptationProposalFile))
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			err = os.Remove(s.io.path(adaptationVolumeReviewFile))
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			err = s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile)
+			if err != nil {
+				return err
+			}
+			if err := s.io.RemoveFileUnlocked(adaptationPlanningWorkflowFile); err != nil {
+				return err
+			}
+			return os.RemoveAll(s.io.path(adaptationCheckDir))
+		}); err != nil {
 			return err
 		}
-		err = os.Remove(s.io.path(adaptationProposalFile))
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		err = os.Remove(s.io.path(adaptationVolumeReviewFile))
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		err = s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile)
-		if err != nil {
-			return err
-		}
-		if err := s.io.RemoveFileUnlocked(adaptationPlanningWorkflowFile); err != nil {
-			return err
-		}
-		return os.RemoveAll(s.io.path(adaptationCheckDir))
-	}); err != nil {
-		return err
-	}
-	return s.clearCanonicalChecks()
+		return s.clearCanonicalChecks()
+	})
 }
 
 func (s *AdaptationStore) clearCanonicalChecks() error {
@@ -209,7 +219,9 @@ func (s *AdaptationStore) clearCanonicalChecks() error {
 }
 
 func (s *AdaptationStore) SaveSourceManifest(manifest domain.AdaptationSourceManifest) error {
-	return s.io.WriteJSON(adaptationRootDir+"/source_manifest.json", manifest)
+	return s.withLegacyFormalMutation("replace immutable source manifest", func() error {
+		return s.io.WriteJSON(adaptationRootDir+"/source_manifest.json", manifest)
+	})
 }
 
 func (s *AdaptationStore) LoadSourceManifest() (*domain.AdaptationSourceManifest, error) {
@@ -229,7 +241,9 @@ func (s *AdaptationStore) SaveSourceChapter(chapter int, title, content string) 
 	}
 	rel := SourceChapterRelPath(chapter)
 	content = strings.TrimSpace(content)
-	if err := s.io.WriteMarkdown(rel, content); err != nil {
+	if err := s.withLegacyFormalMutation("replace immutable source chapter", func() error {
+		return s.io.WriteMarkdown(rel, content)
+	}); err != nil {
 		return domain.AdaptationSource{}, err
 	}
 	return domain.AdaptationSource{
@@ -297,14 +311,18 @@ func (s *AdaptationStore) LoadSourceChapterRange(from, to, maxRunes int) (map[in
 }
 
 func (s *AdaptationStore) SaveSourceReports(reports []domain.AdaptationSourceReport) error {
-	return s.io.WriteJSON(adaptationSourceReportsFile, reports)
+	return s.withLegacyFormalMutation("save source reports", func() error {
+		return s.io.WriteJSON(adaptationSourceReportsFile, reports)
+	})
 }
 
 func (s *AdaptationStore) SaveSourceReport(report domain.AdaptationSourceReport) error {
 	if report.Chapter <= 0 {
 		return fmt.Errorf("chapter must be > 0")
 	}
-	return s.io.WriteJSON(SourceReportRelPath(report.Chapter), report)
+	return s.withLegacyFormalMutation("save source report", func() error {
+		return s.io.WriteJSON(SourceReportRelPath(report.Chapter), report)
+	})
 }
 
 func (s *AdaptationStore) LoadSourceReport(chapter int) (*domain.AdaptationSourceReport, error) {
@@ -401,11 +419,13 @@ func sourceReportMatches(report domain.AdaptationSourceReport, sha256 string) bo
 }
 
 func (s *AdaptationStore) SaveSourceFoundation(foundation domain.AdaptationSourceFoundation) error {
-	return s.io.WithWriteLock(func() error {
-		if err := s.io.WriteJSONUnlocked(adaptationSourceFoundationFile, foundation); err != nil {
-			return err
-		}
-		return os.RemoveAll(s.io.path(adaptationSourceFoundationDir))
+	return s.withLegacyFormalMutation("save source foundation", func() error {
+		return s.io.WithWriteLock(func() error {
+			if err := s.io.WriteJSONUnlocked(adaptationSourceFoundationFile, foundation); err != nil {
+				return err
+			}
+			return os.RemoveAll(s.io.path(adaptationSourceFoundationDir))
+		})
 	})
 }
 
@@ -427,7 +447,9 @@ func (s *AdaptationStore) SaveSourceFoundationBatch(batch domain.AdaptationSourc
 	if batch.Index <= 0 {
 		return fmt.Errorf("batch index must be > 0")
 	}
-	return s.io.WriteJSON(SourceFoundationBatchRelPath(batch.Level, batch.Index), batch)
+	return s.withLegacyFormalMutation("save source foundation batch", func() error {
+		return s.io.WriteJSON(SourceFoundationBatchRelPath(batch.Level, batch.Index), batch)
+	})
 }
 
 func (s *AdaptationStore) LoadSourceFoundationBatch(level, index int) (*domain.AdaptationSourceFoundationBatch, error) {
@@ -454,13 +476,13 @@ func (s *AdaptationStore) LoadSourceFoundationBatch(level, index int) (*domain.A
 }
 
 func (s *AdaptationStore) ClearSourceFoundationBatches() error {
-	return s.io.WithWriteLock(func() error {
-		return os.RemoveAll(s.io.path(adaptationSourceFoundationDir))
+	return s.withLegacyFormalMutation("clear source foundation batches", func() error {
+		return s.io.WithWriteLock(func() error { return os.RemoveAll(s.io.path(adaptationSourceFoundationDir)) })
 	})
 }
 
 func (s *AdaptationStore) SaveCoCreateDossier(dossier domain.AdaptationCoCreateDossier) error {
-	return s.io.WriteJSON(adaptationCoCreateDossierFile, dossier)
+	return s.withLegacyFormalMutation("save adaptation co-create dossier", func() error { return s.io.WriteJSON(adaptationCoCreateDossierFile, dossier) })
 }
 
 func (s *AdaptationStore) LoadCoCreateDossier() (*domain.AdaptationCoCreateDossier, error) {
@@ -478,7 +500,7 @@ func (s *AdaptationStore) SaveCoCreateDossierBatch(batch domain.AdaptationCoCrea
 	if batch.Index <= 0 {
 		return fmt.Errorf("batch index must be > 0")
 	}
-	return s.io.WriteJSON(CoCreateDossierBatchRelPath(batch.Index), batch)
+	return s.withLegacyFormalMutation("save adaptation co-create dossier batch", func() error { return s.io.WriteJSON(CoCreateDossierBatchRelPath(batch.Index), batch) })
 }
 
 func (s *AdaptationStore) LoadCoCreateDossierBatch(index int) (*domain.AdaptationCoCreateDossierBatch, error) {
@@ -525,7 +547,7 @@ func (s *AdaptationStore) LoadCoCreateDossierBatches() ([]domain.AdaptationCoCre
 }
 
 func (s *AdaptationStore) SaveCoCreateIntent(intent domain.AdaptationCoCreateIntent) error {
-	return s.io.WriteJSON(adaptationCoCreateIntentFile, intent)
+	return s.withLegacyFormalMutation("save adaptation co-create intent", func() error { return s.io.WriteJSON(adaptationCoCreateIntentFile, intent) })
 }
 
 func (s *AdaptationStore) LoadCoCreateIntent() (*domain.AdaptationCoCreateIntent, error) {
@@ -540,7 +562,7 @@ func (s *AdaptationStore) LoadCoCreateIntent() (*domain.AdaptationCoCreateIntent
 }
 
 func (s *AdaptationStore) SaveCoCreateBriefing(briefing domain.AdaptationCoCreateBriefing) error {
-	return s.io.WriteJSON(adaptationCoCreateBriefingFile, briefing)
+	return s.withLegacyFormalMutation("save adaptation co-create briefing", func() error { return s.io.WriteJSON(adaptationCoCreateBriefingFile, briefing) })
 }
 
 func (s *AdaptationStore) LoadCoCreateBriefing() (*domain.AdaptationCoCreateBriefing, error) {
@@ -558,7 +580,7 @@ func (s *AdaptationStore) SaveCoCreateBriefingBatch(batch domain.AdaptationCoCre
 	if batch.Index <= 0 {
 		return fmt.Errorf("batch index must be > 0")
 	}
-	return s.io.WriteJSON(CoCreateBriefingBatchRelPath(batch.Index), batch)
+	return s.withLegacyFormalMutation("save adaptation co-create briefing batch", func() error { return s.io.WriteJSON(CoCreateBriefingBatchRelPath(batch.Index), batch) })
 }
 
 func (s *AdaptationStore) LoadCoCreateBriefingBatch(index int) (*domain.AdaptationCoCreateBriefingBatch, error) {
@@ -840,6 +862,10 @@ func adaptationDossierBatchCount(chapterCount, batchSize int) int {
 }
 
 func (s *AdaptationStore) SavePlan(plan domain.AdaptationPlan) error {
+	return s.withLegacyFormalMutation("save confirmed plan", func() error { return s.savePlan(plan) })
+}
+
+func (s *AdaptationStore) savePlan(plan domain.AdaptationPlan) error {
 	cloned, err := cloneAdaptationPlanRequest(plan)
 	if err != nil {
 		return err
@@ -963,6 +989,10 @@ func (s *AdaptationStore) LoadPlan() (*domain.AdaptationPlan, error) {
 }
 
 func (s *AdaptationStore) SaveProposal(plan domain.AdaptationPlan) error {
+	return s.withLegacyFormalMutation("save proposal", func() error { return s.saveProposal(plan) })
+}
+
+func (s *AdaptationStore) saveProposal(plan domain.AdaptationPlan) error {
 	s.normalizeAdaptationPlan(&plan)
 	plan.Status = domain.AdaptationPlanStatusProposal
 	return s.io.WithWriteLock(func() error {
@@ -1022,27 +1052,29 @@ func (s *AdaptationStore) LoadProposal() (*domain.AdaptationPlan, error) {
 
 func (s *AdaptationStore) SaveVolumeReview(review domain.AdaptationVolumeReview) error {
 	review.Status = domain.AdaptationPlanStatusVolumeReview
-	return s.io.WithWriteLock(func() error {
-		var existing domain.AdaptationVolumeReview
-		existingReview := (*domain.AdaptationVolumeReview)(nil)
-		if err := s.io.ReadJSONUnlocked(adaptationVolumeReviewFile, &existing); err == nil {
-			existingReview = &existing
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-		if err := s.identity.prepareAdaptationVolumeReviewForSave(&review, existingReview); err != nil {
-			return err
-		}
-		if err := s.io.RemoveFileUnlocked(adaptationProposalFile); err != nil {
-			return err
-		}
-		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
-			return err
-		}
-		if err := s.io.WriteJSONUnlocked(adaptationVolumeReviewFile, review); err != nil {
-			return err
-		}
-		return s.writePlanningWorkflowStageUnlocked(domain.AdaptationPlanningStageVolumeReviewPending)
+	return s.withLegacyFormalMutation("save volume review", func() error {
+		return s.io.WithWriteLock(func() error {
+			var existing domain.AdaptationVolumeReview
+			existingReview := (*domain.AdaptationVolumeReview)(nil)
+			if err := s.io.ReadJSONUnlocked(adaptationVolumeReviewFile, &existing); err == nil {
+				existingReview = &existing
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+			if err := s.identity.prepareAdaptationVolumeReviewForSave(&review, existingReview); err != nil {
+				return err
+			}
+			if err := s.io.RemoveFileUnlocked(adaptationProposalFile); err != nil {
+				return err
+			}
+			if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
+				return err
+			}
+			if err := s.io.WriteJSONUnlocked(adaptationVolumeReviewFile, review); err != nil {
+				return err
+			}
+			return s.writePlanningWorkflowStageUnlocked(domain.AdaptationPlanningStageVolumeReviewPending)
+		})
 	})
 }
 
@@ -1050,6 +1082,10 @@ func (s *AdaptationStore) SaveVolumeReview(review domain.AdaptationVolumeReview)
 // later proposal artifacts. If cleanup fails, the durable review remains
 // available and a retry can safely finish the rollback.
 func (s *AdaptationStore) RestoreVolumeReviewForRollback(review domain.AdaptationVolumeReview) error {
+	return s.withLegacyFormalMutation("restore volume review", func() error { return s.restoreVolumeReviewForRollback(review) })
+}
+
+func (s *AdaptationStore) restoreVolumeReviewForRollback(review domain.AdaptationVolumeReview) error {
 	review.Status = domain.AdaptationPlanStatusVolumeReview
 	return s.io.WithWriteLock(func() error {
 		var existing domain.AdaptationVolumeReview
@@ -1089,16 +1125,18 @@ func (s *AdaptationStore) LoadVolumeReview() (*domain.AdaptationVolumeReview, er
 }
 
 func (s *AdaptationStore) ClearVolumeReview() error {
-	return s.io.WithWriteLock(func() error {
-		if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
-			return err
-		}
-		return s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile)
+	return s.withLegacyFormalMutation("clear volume review", func() error {
+		return s.io.WithWriteLock(func() error {
+			if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
+				return err
+			}
+			return s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile)
+		})
 	})
 }
 
 func (s *AdaptationStore) SaveProposalRuntime(runtime domain.AdaptationProposalRuntime) error {
-	return s.io.WriteJSON(adaptationProposalRuntimeFile, runtime)
+	return s.withLegacyFormalMutation("save proposal runtime", func() error { return s.io.WriteJSON(adaptationProposalRuntimeFile, runtime) })
 }
 
 func (s *AdaptationStore) LoadProposalRuntime() (*domain.AdaptationProposalRuntime, error) {
@@ -1113,21 +1151,23 @@ func (s *AdaptationStore) LoadProposalRuntime() (*domain.AdaptationProposalRunti
 }
 
 func (s *AdaptationStore) ClearProposalRuntime() error {
-	return s.io.RemoveFile(adaptationProposalRuntimeFile)
+	return s.withLegacyFormalMutation("clear proposal runtime", func() error { return s.io.RemoveFile(adaptationProposalRuntimeFile) })
 }
 
 func (s *AdaptationStore) ClearProposal() error {
-	return s.io.WithWriteLock(func() error {
-		if err := s.io.RemoveFileUnlocked(adaptationProposalFile); err != nil {
-			return err
-		}
-		if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
-			return err
-		}
-		if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
-			return err
-		}
-		return s.io.RemoveFileUnlocked(adaptationPlanningWorkflowFile)
+	return s.withLegacyFormalMutation("clear proposal workflow", func() error {
+		return s.io.WithWriteLock(func() error {
+			if err := s.io.RemoveFileUnlocked(adaptationProposalFile); err != nil {
+				return err
+			}
+			if err := s.io.RemoveFileUnlocked(adaptationVolumeReviewFile); err != nil {
+				return err
+			}
+			if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
+				return err
+			}
+			return s.io.RemoveFileUnlocked(adaptationPlanningWorkflowFile)
+		})
 	})
 }
 
@@ -1150,21 +1190,23 @@ func (s *AdaptationStore) SaveCheck(check domain.AdaptationCheck) error {
 	if check.Chapter <= 0 {
 		return fmt.Errorf("chapter must be > 0")
 	}
-	if s.migration != nil {
-		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
-			if !migrated {
-				return s.io.WriteJSON(checkRelPath(check.Chapter), check)
-			}
-			ref, ok := index.chapterRef(check.Chapter)
-			if !ok {
-				return s.io.WriteJSON(checkRelPath(check.Chapter), check)
-			}
-			canonical := check
-			canonical.Chapter = 0
-			return writeJSONProjectionPair(s.io, chapterCanonicalRel(ref.ID, "adaptation-check.json"), canonicalAdaptationCheck{ChapterID: ref.ID, Check: canonical}, checkRelPath(check.Chapter), check)
-		})
-	}
-	return s.io.WriteJSON(checkRelPath(check.Chapter), check)
+	return s.withLegacyFormalMutation("save adaptation chapter audit", func() error {
+		if s.migration != nil {
+			return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+				if !migrated {
+					return s.io.WriteJSON(checkRelPath(check.Chapter), check)
+				}
+				ref, ok := index.chapterRef(check.Chapter)
+				if !ok {
+					return s.io.WriteJSON(checkRelPath(check.Chapter), check)
+				}
+				canonical := check
+				canonical.Chapter = 0
+				return writeJSONProjectionPair(s.io, chapterCanonicalRel(ref.ID, "adaptation-check.json"), canonicalAdaptationCheck{ChapterID: ref.ID, Check: canonical}, checkRelPath(check.Chapter), check)
+			})
+		}
+		return s.io.WriteJSON(checkRelPath(check.Chapter), check)
+	})
 }
 
 func (s *AdaptationStore) LoadCheck(chapter int) (*domain.AdaptationCheck, error) {
@@ -1213,6 +1255,10 @@ func (s *AdaptationStore) DeleteCheck(chapter int) error {
 	if chapter <= 0 {
 		return nil
 	}
+	return s.withLegacyFormalMutation("delete adaptation chapter audit", func() error { return s.deleteCheck(chapter) })
+}
+
+func (s *AdaptationStore) deleteCheck(chapter int) error {
 	if s.migration != nil {
 		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
 			return s.io.WithWriteLock(func() error {

@@ -3,11 +3,13 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -23,6 +25,7 @@ var (
 	ErrNoActiveRevision               = errors.New("no active revision")
 	ErrRevisionIdempotencyConflict    = errors.New("revision idempotency key was reused for a different command")
 	ErrActiveRevisionBlocksNormalFlow = errors.New("normal flow is blocked by an active revision")
+	ErrRevisionCommandInProgress      = errors.New("a revision service command owns the project")
 	revisionLocks                     sync.Map
 )
 
@@ -50,6 +53,8 @@ type revisionState struct {
 	Version          int                               `json:"version"`
 	Generation       uint64                            `json:"generation"`
 	NormalLease      *NormalFlowLease                  `json:"normal_lease,omitempty"`
+	CommandFence     *revisionCommandFence             `json:"command_fence,omitempty"`
+	Publication      *revisionPublicationAttempt       `json:"publication,omitempty"`
 	ActiveSessionID  string                            `json:"active_session_id,omitempty"`
 	NextSession      int                               `json:"next_session"`
 	NextVersion      int                               `json:"next_version"`
@@ -59,9 +64,73 @@ type revisionState struct {
 	Receipts         map[string]revisionReceipt        `json:"receipts"`
 }
 
+type revisionCommandFence struct {
+	Key                       string `json:"key"`
+	Operation                 string `json:"operation"`
+	Fingerprint               string `json:"fingerprint"`
+	OwnerToken                string `json:"owner_token"`
+	RemoveEmptyStateOnRelease bool   `json:"remove_empty_state_on_release,omitempty"`
+}
+
+type revisionCommandOwner struct {
+	Key         string
+	Operation   string
+	Fingerprint string
+	Token       string
+}
+
+const (
+	revisionPublicationPrepared = "prepared"
+	revisionPublicationApplied  = "formal_applied"
+)
+
+type revisionPublicationAttempt struct {
+	Token              string                       `json:"token"`
+	SessionID          string                       `json:"session_id"`
+	ExpectedRevision   int                          `json:"expected_revision"`
+	Generation         uint64                       `json:"generation"`
+	Mode               domain.RevisionMode          `json:"mode"`
+	PolicyID           string                       `json:"policy_id"`
+	PolicyVersion      string                       `json:"policy_version"`
+	PublishKey         string                       `json:"publish_key"`
+	PublishFingerprint string                       `json:"publish_fingerprint"`
+	AcceptedVersionIDs []string                     `json:"accepted_version_ids"`
+	AcceptedDigest     string                       `json:"accepted_digest"`
+	CandidateDigest    string                       `json:"candidate_digest"`
+	Status             string                       `json:"status"`
+	PrepublishSnapshot normalRevisionFormalSnapshot `json:"prepublish_snapshot"`
+}
+
+type normalRevisionFormalSnapshot struct {
+	Structure []domain.VolumeOutline `json:"structure"`
+	Progress  *domain.Progress       `json:"progress,omitempty"`
+	Digest    string                 `json:"digest"`
+}
+
 type RevisionStore struct {
-	io *IO
-	mu *sync.Mutex
+	io               *IO
+	mu               *sync.Mutex
+	commandOwner     *revisionCommandOwner
+	publicationOwner *RevisionPublicationOwner
+}
+
+func (s *RevisionStore) withLegacyMutation(operation string, mutation func() error) error {
+	if s == nil || s.io == nil {
+		return fmt.Errorf("revision store is required before %s", operation)
+	}
+	return s.withRevisionTransaction(func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return fmt.Errorf("read active revision before %s: %w", operation, err)
+		}
+		if state.ActiveSessionID != "" {
+			return fmt.Errorf("legacy adaptation formal write %q is blocked by active revision %s: %w", operation, state.ActiveSessionID, ErrActiveRevisionBlocksNormalFlow)
+		}
+		if state.CommandFence != nil {
+			return fmt.Errorf("legacy adaptation formal write %q is blocked by prepared service command %q: %w", operation, state.CommandFence.Operation, ErrRevisionCommandInProgress)
+		}
+		return mutation()
+	})
 }
 
 type NormalFlowLease struct {
@@ -112,6 +181,9 @@ func (s *RevisionStore) AcquireNormalFlow(owner string) (*NormalFlowLease, error
 		}
 		if state.ActiveSessionID != "" {
 			return ErrActiveRevisionBlocksNormalFlow
+		}
+		if state.CommandFence != nil {
+			return ErrRevisionCommandInProgress
 		}
 		if state.NormalLease != nil {
 			return fmt.Errorf("normal flow is already leased by %q", state.NormalLease.Owner)
@@ -194,6 +266,31 @@ func (s *RevisionStore) SnapshotFence() (RevisionFence, error) {
 }
 
 func (s *RevisionStore) WithFence(fence RevisionFence, fn func() error) error {
+	// A normal-flow lease is itself the durable exclusion boundary: active
+	// revision commands cannot begin while the lease remains current. Validate
+	// it transactionally, then let each lowest-level formal writer acquire its
+	// own revision transaction immediately before the side effect. Holding this
+	// transaction across fn would make those guarded writers re-enter the same
+	// non-reentrant project lock.
+	if fence.LeaseToken != "" {
+		if err := s.withRevisionTransaction(func() error {
+			state, err := s.loadUnlocked()
+			if err != nil {
+				return err
+			}
+			if state.Generation != fence.Generation {
+				return fmt.Errorf("revision generation fence is stale")
+			}
+			if state.ActiveSessionID != "" || state.NormalLease == nil || state.NormalLease.Token != fence.LeaseToken {
+				return ErrActiveRevisionBlocksNormalFlow
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		return fn()
+	}
+
 	return s.withRevisionTransaction(func() error {
 		state, err := s.loadUnlocked()
 		if err != nil {
@@ -202,15 +299,9 @@ func (s *RevisionStore) WithFence(fence RevisionFence, fn func() error) error {
 		if state.Generation != fence.Generation {
 			return fmt.Errorf("revision generation fence is stale")
 		}
-		if fence.LeaseToken != "" {
-			if state.ActiveSessionID != "" || state.NormalLease == nil || state.NormalLease.Token != fence.LeaseToken {
-				return ErrActiveRevisionBlocksNormalFlow
-			}
-		} else {
-			session, exists := state.Sessions[fence.SessionID]
-			if !exists || state.ActiveSessionID != fence.SessionID || session.Revision != fence.Revision {
-				return ErrRevisionNotFound
-			}
+		session, exists := state.Sessions[fence.SessionID]
+		if !exists || state.ActiveSessionID != fence.SessionID || session.Revision != fence.Revision {
+			return ErrRevisionNotFound
 		}
 		return fn()
 	})
@@ -223,6 +314,180 @@ func NewRevisionStore(dir string) *RevisionStore {
 	}
 	lock, _ := revisionLocks.LoadOrStore(filepath.Clean(abs), &sync.Mutex{})
 	return &RevisionStore{io: newIO(dir), mu: lock.(*sync.Mutex)}
+}
+
+func newRevisionCommandFence(key, operation, fingerprint, ownerToken string) (*revisionCommandFence, error) {
+	fence := &revisionCommandFence{
+		Key: strings.TrimSpace(key), Operation: strings.TrimSpace(operation), Fingerprint: strings.TrimSpace(fingerprint), OwnerToken: strings.TrimSpace(ownerToken),
+	}
+	if fence.Key == "" || fence.Operation == "" || fence.Fingerprint == "" {
+		return nil, fmt.Errorf("revision command fence identity is required")
+	}
+	decodedToken, err := hex.DecodeString(fence.OwnerToken)
+	if err != nil || len(decodedToken) != 32 {
+		return nil, fmt.Errorf("revision command owner capability must be 256 bits")
+	}
+	return fence, nil
+}
+
+func revisionCommandMatches(fence *revisionCommandFence, key, operation, fingerprint string) bool {
+	return fence != nil && fence.Key == strings.TrimSpace(key) && fence.Operation == strings.TrimSpace(operation) && fence.Fingerprint == strings.TrimSpace(fingerprint)
+}
+
+func revisionCommandOwnerMatches(fence *revisionCommandFence, owner *revisionCommandOwner) bool {
+	return fence != nil && owner != nil && fence.Key == owner.Key && fence.Operation == owner.Operation &&
+		fence.Fingerprint == owner.Fingerprint && fence.OwnerToken == owner.Token
+}
+
+func allowRevisionCommandMutation(state *revisionState, commandOwner *revisionCommandOwner, publicationOwner ...*RevisionPublicationOwner) error {
+	if state == nil {
+		return nil
+	}
+	if state.Publication != nil {
+		if len(publicationOwner) == 1 && revisionPublicationOwnerMatches(state.Publication, publicationOwner[0]) {
+			return nil
+		}
+		return ErrRevisionCommandInProgress
+	}
+	if len(publicationOwner) == 1 && publicationOwner[0] != nil {
+		return ErrRevisionCommandInProgress
+	}
+	if state.CommandFence == nil {
+		if commandOwner == nil {
+			return nil
+		}
+		return ErrRevisionCommandInProgress
+	}
+	if revisionCommandOwnerMatches(state.CommandFence, commandOwner) {
+		return nil
+	}
+	return ErrRevisionCommandInProgress
+}
+
+func (s *RevisionStore) claimCommandFence(key, operation, fingerprint string) (*RevisionStore, error) {
+	key, operation, fingerprint = strings.TrimSpace(key), strings.TrimSpace(operation), strings.TrimSpace(fingerprint)
+	if key == "" || operation == "" || fingerprint == "" {
+		return nil, fmt.Errorf("revision command fence identity is required")
+	}
+	var owned *RevisionStore
+	err := s.withRevisionTransaction(func() error {
+		_, statErr := os.Stat(s.io.path(revisionStateFile))
+		stateMissing := os.IsNotExist(statErr)
+		if statErr != nil && !stateMissing {
+			return statErr
+		}
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if state.CommandFence != nil {
+			if revisionCommandMatches(state.CommandFence, key, operation, fingerprint) {
+				owned = s.withCommandOwner(state.CommandFence)
+				return nil
+			}
+			return ErrRevisionCommandInProgress
+		}
+		if state.NormalLease != nil {
+			return fmt.Errorf("%w: normal flow is still running", ErrRevisionCommandInProgress)
+		}
+		tokenBytes := make([]byte, 32)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			return err
+		}
+		fence, err := newRevisionCommandFence(key, operation, fingerprint, fmt.Sprintf("%x", tokenBytes))
+		if err != nil {
+			return err
+		}
+		if stateMissing {
+			fence.RemoveEmptyStateOnRelease = true
+		}
+		state.CommandFence = fence
+		if err := s.io.WriteJSON(revisionStateFile, state); err != nil {
+			return err
+		}
+		owned = s.withCommandOwner(fence)
+		return nil
+	})
+	return owned, err
+}
+
+func (s *RevisionStore) withCommandOwner(fence *revisionCommandFence) *RevisionStore {
+	owned := *s
+	owned.commandOwner = &revisionCommandOwner{Key: fence.Key, Operation: fence.Operation, Fingerprint: fence.Fingerprint, Token: fence.OwnerToken}
+	return &owned
+}
+
+func (s *RevisionStore) requireCommandFence() error {
+	return s.withRevisionTransaction(func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if !revisionCommandOwnerMatches(state.CommandFence, s.commandOwner) {
+			return ErrRevisionCommandInProgress
+		}
+		return nil
+	})
+}
+
+func (s *RevisionStore) requireCommandFenceFor(key, operation, fingerprint string) error {
+	if s.commandOwner == nil || s.commandOwner.Key != strings.TrimSpace(key) ||
+		s.commandOwner.Operation != strings.TrimSpace(operation) || s.commandOwner.Fingerprint != strings.TrimSpace(fingerprint) {
+		return ErrRevisionCommandInProgress
+	}
+	return s.requireCommandFence()
+}
+
+func (s *RevisionStore) releaseCommandFence() error {
+	return s.withRevisionTransaction(func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if state.CommandFence == nil {
+			return nil
+		}
+		if !revisionCommandOwnerMatches(state.CommandFence, s.commandOwner) {
+			return ErrRevisionCommandInProgress
+		}
+		removeEmptyState := state.CommandFence.RemoveEmptyStateOnRelease
+		state.CommandFence = nil
+		if removeEmptyState && revisionStateIsEmpty(state) {
+			return s.io.RemoveFile(revisionStateFile)
+		}
+		return s.io.WriteJSON(revisionStateFile, state)
+	})
+}
+
+func revisionStateIsEmpty(state *revisionState) bool {
+	return state != nil && state.Version == domain.RevisionSchemaVersion && state.Generation == 1 &&
+		state.NormalLease == nil && state.CommandFence == nil && state.Publication == nil && state.ActiveSessionID == "" &&
+		state.NextSession == 0 && state.NextVersion == 0 && len(state.Sessions) == 0 &&
+		len(state.Versions) == 0 && len(state.CurrentArtifacts) == 0 && len(state.Receipts) == 0
+}
+
+func (s *RevisionStore) currentCommandFence() (*revisionCommandFence, error) {
+	var result *revisionCommandFence
+	err := s.withRevisionTransaction(func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if state.CommandFence != nil {
+			copy := *state.CommandFence
+			result = &copy
+		}
+		return nil
+	})
+	return result, err
+}
+
+func (s *RevisionStore) currentCommandOwner() (*RevisionStore, error) {
+	fence, err := s.currentCommandFence()
+	if err != nil || fence == nil {
+		return nil, err
+	}
+	return s.withCommandOwner(fence), nil
 }
 
 type StartRevisionInput struct {
@@ -276,6 +541,132 @@ type RevisionFailureInput struct {
 	Error string
 }
 
+// RevisionPublicationOwner is an opaque capability minted only after the
+// RevisionStore has validated the exact active revision and its publish gates.
+// Formal Store writers revalidate it while holding the revision transaction.
+type RevisionPublicationOwner struct {
+	revisions          *RevisionStore
+	policy             domain.RevisionPolicy
+	sessionID          string
+	expectedRevision   int
+	mode               domain.RevisionMode
+	policyID           string
+	policyVersion      string
+	generation         uint64
+	token              string
+	publishKey         string
+	publishFingerprint string
+	acceptedVersionIDs []string
+	acceptedDigest     string
+	candidateDigest    string
+}
+
+func revisionPublicationOwnerMatches(attempt *revisionPublicationAttempt, owner *RevisionPublicationOwner) bool {
+	return attempt != nil && owner != nil && attempt.Token == owner.token &&
+		attempt.SessionID == owner.sessionID && attempt.ExpectedRevision == owner.expectedRevision &&
+		attempt.Generation == owner.generation && attempt.Mode == owner.mode &&
+		attempt.PolicyID == owner.policyID && attempt.PolicyVersion == owner.policyVersion &&
+		attempt.PublishKey == owner.publishKey &&
+		attempt.PublishFingerprint == owner.publishFingerprint &&
+		attempt.AcceptedDigest == owner.acceptedDigest && attempt.CandidateDigest == owner.candidateDigest &&
+		slices.Equal(attempt.AcceptedVersionIDs, owner.acceptedVersionIDs)
+}
+
+func revisionPublishFingerprint(input RevisionMutationInput) (string, error) {
+	_, fingerprint, err := revisionCommandFingerprint(input.IdempotencyKey, "publish", input)
+	return fingerprint, err
+}
+
+func publicationAcceptedVersions(state *revisionState, session *domain.RevisionSession) ([]domain.ArtifactVersion, error) {
+	versionIDs := append(append([]string(nil), session.AcceptedVersionIDs...), session.CandidateVersionIDs...)
+	versions := make([]domain.ArtifactVersion, 0, len(versionIDs))
+	for _, versionID := range versionIDs {
+		version, exists := state.Versions[versionID]
+		if !exists || version.ParentVersionID != state.CurrentArtifacts[version.ArtifactID] {
+			return nil, fmt.Errorf("accepted candidate version %q is stale or missing", versionID)
+		}
+		if err := version.Validate(); err != nil {
+			return nil, err
+		}
+		versions = append(versions, version)
+	}
+	return versions, nil
+}
+
+func canonicalNormalCandidateDigest(versions []domain.ArtifactVersion) (string, error) {
+	var candidate []domain.VolumeOutline
+	found := false
+	for _, version := range versions {
+		if version.ArtifactID != domain.NormalStructureSnapshotID || version.ArtifactKind != domain.NormalArtifactStructureSnapshot {
+			continue
+		}
+		if found {
+			return "", fmt.Errorf("normal publication contains multiple canonical structure snapshots")
+		}
+		if err := json.Unmarshal(version.Payload, &candidate); err != nil {
+			return "", fmt.Errorf("decode canonical normal structure snapshot: %w", err)
+		}
+		found = true
+	}
+	if !found {
+		return "", fmt.Errorf("normal publication is missing its canonical structure snapshot")
+	}
+	return normalStructureDigest(candidate)
+}
+
+func latestNormalStructureDigest(versions []domain.ArtifactVersion) (string, error) {
+	for index := len(versions) - 1; index >= 0; index-- {
+		version := versions[index]
+		if version.ArtifactID != domain.NormalStructureSnapshotID || version.ArtifactKind != domain.NormalArtifactStructureSnapshot {
+			continue
+		}
+		var candidate []domain.VolumeOutline
+		if err := json.Unmarshal(version.Payload, &candidate); err != nil {
+			return "", err
+		}
+		return normalStructureDigest(candidate)
+	}
+	return "", fmt.Errorf("normal publication is missing its canonical structure snapshot")
+}
+
+func normalStructureDigest(candidate []domain.VolumeOutline) (string, error) {
+	if err := domain.ValidateStructureSnapshot(candidate); err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(domain.CloneStructureSnapshot(candidate))
+	if err != nil {
+		return "", err
+	}
+	return domain.JSONContentSignature(payload), nil
+}
+
+func publicationBinding(state *revisionState, session *domain.RevisionSession, canonical []domain.ArtifactVersion) ([]string, string, string, error) {
+	accepted, err := publicationAcceptedVersions(state, session)
+	if err != nil {
+		return nil, "", "", err
+	}
+	ids := make([]string, 0, len(accepted))
+	for _, version := range accepted {
+		ids = append(ids, version.ID)
+	}
+	candidateDigest := ""
+	if session.Mode == domain.RevisionModeNormal {
+		candidateDigest, err = canonicalNormalCandidateDigest(canonical)
+		if err != nil {
+			return nil, "", "", err
+		}
+	}
+	return ids, domain.CandidateSignature(accepted), candidateDigest, nil
+}
+
+func newRevisionPublicationToken() (string, error) {
+	token := make([]byte, 32)
+	if _, err := rand.Read(token); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(token), nil
+}
+
 type RestoreArtifactVersionInput struct {
 	VersionID      string
 	Intent         string
@@ -314,6 +705,9 @@ func (s *RevisionStore) Start(policy domain.RevisionPolicy, input StartRevisionI
 		state, loadErr := s.loadUnlocked()
 		if loadErr != nil {
 			return loadErr
+		}
+		if err := allowRevisionCommandMutation(state, s.commandOwner, s.publicationOwner); err != nil {
+			return err
 		}
 		if found, receiptErr := matchingRevisionReceipt(state, input.IdempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
 			receipt, err = found, receiptErr
@@ -561,9 +955,32 @@ func (s *RevisionStore) ApproveStage(policy domain.RevisionPolicy, input Revisio
 }
 
 func (s *RevisionStore) Publish(policy domain.RevisionPolicy, input RevisionMutationInput) (*domain.RevisionSession, error) {
+	return s.publish(policy, input)
+}
+
+// PublishWithOwner completes the exact durable normal-publication attempt.
+// Other revision modes keep using Publish because their formal transaction is
+// fenced by the adaptation command owner instead.
+func (s *RevisionStore) PublishWithOwner(policy domain.RevisionPolicy, input RevisionMutationInput, owner *RevisionPublicationOwner) (*domain.RevisionSession, error) {
+	if s == nil || owner == nil || owner.revisions == nil || !revisionStoresShareProject(s, owner.revisions) {
+		return nil, ErrRevisionCommandInProgress
+	}
+	owned := *s
+	owned.publicationOwner = owner
+	return owned.publish(policy, input)
+}
+
+func (s *RevisionStore) publish(policy domain.RevisionPolicy, input RevisionMutationInput) (*domain.RevisionSession, error) {
 	return s.mutate(policy, input, "publish", input, func(state *revisionState, session *domain.RevisionSession) error {
+		attempt, err := s.requireNormalPublicationAttempt(input, state, session)
+		if err != nil {
+			return err
+		}
 		versions, err := prepareRevisionPublish(policy, state, session)
 		if err != nil {
+			return err
+		}
+		if err := s.revalidateNormalPublicationBinding(attempt, state, session, versions); err != nil {
 			return err
 		}
 		for _, version := range versions {
@@ -573,22 +990,96 @@ func (s *RevisionStore) Publish(policy domain.RevisionPolicy, input RevisionMuta
 		session.Stage = domain.RevisionStageCompleted
 		session.CompletedAt = now
 		state.ActiveSessionID = ""
+		state.Publication = nil
 		return nil
 	})
+}
+
+func (s *RevisionStore) requireNormalPublicationAttempt(input RevisionMutationInput, state *revisionState, session *domain.RevisionSession) (*revisionPublicationAttempt, error) {
+	if session.Mode != domain.RevisionModeNormal {
+		return nil, nil
+	}
+	attempt := state.Publication
+	if attempt == nil || attempt.Status != revisionPublicationApplied ||
+		!revisionPublicationOwnerMatches(attempt, s.publicationOwner) {
+		return nil, ErrRevisionCommandInProgress
+	}
+	publishFingerprint, err := revisionPublishFingerprint(input)
+	if err != nil {
+		return nil, err
+	}
+	if attempt.SessionID != strings.TrimSpace(input.SessionID) ||
+		attempt.ExpectedRevision != input.ExpectedRevision ||
+		attempt.PublishKey != strings.TrimSpace(input.IdempotencyKey) ||
+		attempt.PublishFingerprint != publishFingerprint {
+		return nil, ErrRevisionCommandInProgress
+	}
+	return attempt, nil
+}
+
+func (s *RevisionStore) revalidateNormalPublicationBinding(
+	attempt *revisionPublicationAttempt,
+	state *revisionState,
+	session *domain.RevisionSession,
+	versions []domain.ArtifactVersion,
+) error {
+	if session.Mode != domain.RevisionModeNormal {
+		return nil
+	}
+	if attempt == nil {
+		return ErrRevisionCommandInProgress
+	}
+	ids, acceptedDigest, candidateDigest, err := publicationBinding(state, session, versions)
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(ids, attempt.AcceptedVersionIDs) ||
+		acceptedDigest != attempt.AcceptedDigest || candidateDigest != attempt.CandidateDigest {
+		return fmt.Errorf("normal publication accepted artifacts changed")
+	}
+	var formalStructure []domain.VolumeOutline
+	if err := s.io.ReadJSON("layered_outline.json", &formalStructure); err != nil {
+		return fmt.Errorf("read normal publication formal structure: %w", err)
+	}
+	formalDigest, err := normalStructureDigest(formalStructure)
+	if err != nil {
+		return fmt.Errorf("validate normal publication formal structure: %w", err)
+	}
+	if formalDigest != candidateDigest {
+		return fmt.Errorf("normal publication formal structure changed")
+	}
+	return nil
 }
 
 // ValidatePublish performs every RevisionStore policy/version/generation check
 // without mutating either formal artifacts or revision state. Production
 // publication must call this before any formal structure write.
 func (s *RevisionStore) ValidatePublish(policy domain.RevisionPolicy, input RevisionMutationInput) ([]domain.ArtifactVersion, error) {
+	versions, _, err := s.ValidatePublishWithOwner(policy, input)
+	return versions, err
+}
+
+// ValidatePublishWithOwner returns the accepted versions together with the
+// opaque capability required by formal Store publication and rollback APIs.
+func (s *RevisionStore) ValidatePublishWithOwner(policy domain.RevisionPolicy, input RevisionMutationInput) ([]domain.ArtifactVersion, *RevisionPublicationOwner, error) {
 	var versions []domain.ArtifactVersion
-	err := s.withRevisionTransaction(func() error {
+	var owner *RevisionPublicationOwner
+	publishFingerprint, err := revisionPublishFingerprint(input)
+	if err != nil {
+		return nil, nil, err
+	}
+	err = s.withRevisionTransaction(func() error {
 		state, err := s.loadUnlocked()
 		if err != nil {
 			return err
 		}
 		if state.ActiveSessionID != strings.TrimSpace(input.SessionID) {
 			return ErrRevisionNotFound
+		}
+		if state.Publication == nil {
+			if err := allowRevisionCommandMutation(state, s.commandOwner, s.publicationOwner); err != nil {
+				return err
+			}
 		}
 		session := state.Sessions[state.ActiveSessionID]
 		if input.ExpectedRevision != session.Revision {
@@ -602,9 +1093,41 @@ func (s *RevisionStore) ValidatePublish(policy domain.RevisionPolicy, input Revi
 			return fmt.Errorf("revision publish policy drift")
 		}
 		versions, err = prepareRevisionPublish(policy, state, &session)
-		return err
+		if err != nil {
+			return err
+		}
+		ids, acceptedDigest, candidateDigest, err := publicationBinding(state, &session, versions)
+		if err != nil {
+			return err
+		}
+		token := ""
+		generation := state.Generation
+		if state.Publication != nil {
+			attempt := state.Publication
+			if attempt.SessionID != session.ID || attempt.ExpectedRevision != session.Revision ||
+				attempt.Mode != mode || attempt.PolicyID != id || attempt.PolicyVersion != version ||
+				attempt.PublishKey != strings.TrimSpace(input.IdempotencyKey) ||
+				attempt.PublishFingerprint != publishFingerprint || !slices.Equal(attempt.AcceptedVersionIDs, ids) ||
+				attempt.AcceptedDigest != acceptedDigest || attempt.CandidateDigest != candidateDigest {
+				return ErrRevisionCommandInProgress
+			}
+			token, generation = attempt.Token, attempt.Generation
+		} else {
+			token, err = newRevisionPublicationToken()
+			if err != nil {
+				return err
+			}
+		}
+		owner = &RevisionPublicationOwner{
+			revisions: s, policy: policy, sessionID: session.ID, expectedRevision: session.Revision,
+			mode: mode, policyID: id, policyVersion: version, generation: generation, token: token,
+			publishKey:         strings.TrimSpace(input.IdempotencyKey),
+			publishFingerprint: publishFingerprint, acceptedVersionIDs: ids,
+			acceptedDigest: acceptedDigest, candidateDigest: candidateDigest,
+		}
+		return nil
 	})
-	return cloneArtifactVersions(versions), err
+	return cloneArtifactVersions(versions), owner, err
 }
 
 func prepareRevisionPublish(policy domain.RevisionPolicy, state *revisionState, session *domain.RevisionSession) ([]domain.ArtifactVersion, error) {
@@ -749,6 +1272,9 @@ func (s *RevisionStore) RestoreVersion(policy domain.RevisionPolicy, input Resto
 		state, loadErr := s.loadUnlocked()
 		if loadErr != nil {
 			return loadErr
+		}
+		if err := allowRevisionCommandMutation(state, s.commandOwner, s.publicationOwner); err != nil {
+			return err
 		}
 		if found, receiptErr := matchingRevisionReceipt(state, input.IdempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
 			receipt, err = found, receiptErr
@@ -920,6 +1446,9 @@ func (s *RevisionStore) mutate(
 		if loadErr != nil {
 			return loadErr
 		}
+		if err := allowRevisionCommandMutation(state, s.commandOwner, s.publicationOwner); err != nil {
+			return err
+		}
 		if found, receiptErr := matchingRevisionReceipt(state, input.IdempotencyKey, command, fingerprint); found != nil || receiptErr != nil {
 			receipt, err = found, receiptErr
 			return err
@@ -994,6 +1523,9 @@ func (s *RevisionStore) lookupRevisionReceipt(key, operation, fingerprint string
 		if err != nil {
 			return err
 		}
+		if err := allowRevisionCommandMutation(state, s.commandOwner, s.publicationOwner); err != nil {
+			return err
+		}
 		receipt, err = matchingRevisionReceipt(state, key, operation, fingerprint)
 		return err
 	})
@@ -1022,6 +1554,9 @@ func (s *RevisionStore) commitOptimistic(
 	err := s.withRevisionTransaction(func() error {
 		current, err := s.loadUnlocked()
 		if err != nil {
+			return err
+		}
+		if err := allowRevisionCommandMutation(current, s.commandOwner, s.publicationOwner); err != nil {
 			return err
 		}
 		if found, receiptErr := matchingRevisionReceipt(current, idempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
@@ -1105,6 +1640,58 @@ func validateRevisionState(state *revisionState) error {
 		}
 		if state.ActiveSessionID != "" {
 			return fmt.Errorf("normal flow lease and revision cannot both be active")
+		}
+	}
+	if state.CommandFence != nil {
+		if _, err := newRevisionCommandFence(state.CommandFence.Key, state.CommandFence.Operation, state.CommandFence.Fingerprint, state.CommandFence.OwnerToken); err != nil {
+			return err
+		}
+		if state.NormalLease != nil {
+			return fmt.Errorf("normal flow lease and revision command fence cannot both be active")
+		}
+	}
+	if state.Publication != nil {
+		attempt := state.Publication
+		decodedToken, err := hex.DecodeString(attempt.Token)
+		if err != nil || len(decodedToken) != 32 || attempt.SessionID == "" || attempt.ExpectedRevision <= 0 ||
+			attempt.Generation != state.Generation || attempt.Mode != domain.RevisionModeNormal ||
+			attempt.PolicyID == "" || attempt.PolicyVersion == "" || attempt.PublishKey == "" ||
+			attempt.PublishFingerprint == "" || len(attempt.AcceptedVersionIDs) == 0 ||
+			attempt.AcceptedDigest == "" || attempt.CandidateDigest == "" ||
+			(attempt.Status != revisionPublicationPrepared && attempt.Status != revisionPublicationApplied) {
+			return fmt.Errorf("normal publication attempt is invalid")
+		}
+		if state.NormalLease != nil || state.CommandFence != nil || state.ActiveSessionID != attempt.SessionID {
+			return fmt.Errorf("normal publication attempt has conflicting ownership")
+		}
+		session, exists := state.Sessions[attempt.SessionID]
+		if !exists || !session.Active() || session.Mode != domain.RevisionModeNormal ||
+			session.Revision != attempt.ExpectedRevision || session.Generation != attempt.Generation ||
+			session.PolicyID != attempt.PolicyID || session.PolicyVersion != attempt.PolicyVersion {
+			return fmt.Errorf("normal publication attempt session binding is invalid")
+		}
+		expectedIDs := append(append([]string(nil), session.AcceptedVersionIDs...), session.CandidateVersionIDs...)
+		if !slices.Equal(expectedIDs, attempt.AcceptedVersionIDs) {
+			return fmt.Errorf("normal publication accepted version binding is invalid")
+		}
+		accepted := make([]domain.ArtifactVersion, 0, len(expectedIDs))
+		for _, versionID := range expectedIDs {
+			version, exists := state.Versions[versionID]
+			if !exists {
+				return fmt.Errorf("normal publication version %q is missing", versionID)
+			}
+			accepted = append(accepted, version)
+		}
+		if domain.CandidateSignature(accepted) != attempt.AcceptedDigest {
+			return fmt.Errorf("normal publication accepted artifact digest is invalid")
+		}
+		candidateDigest, err := latestNormalStructureDigest(accepted)
+		if err != nil || candidateDigest != attempt.CandidateDigest {
+			return fmt.Errorf("normal publication candidate digest is invalid: %w", err)
+		}
+		snapshotDigest, err := normalRevisionFormalSnapshotDigest(attempt.PrepublishSnapshot.Structure, attempt.PrepublishSnapshot.Progress)
+		if err != nil || snapshotDigest != attempt.PrepublishSnapshot.Digest {
+			return fmt.Errorf("normal publication prepublish snapshot is invalid: %w", err)
 		}
 	}
 	activeCount := 0

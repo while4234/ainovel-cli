@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -141,34 +142,34 @@ func TestNormalRevisionServicePersistsCompletedBookExpansionThroughKernelAndSign
 	if _, err := service.PublishStructure(*alternate, session, "substituted-publish"); err == nil {
 		t.Fatal("different valid sealed preview was accepted for publication")
 	}
-	var paused *domain.RevisionSession
+	publishInput := storepkg.RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "publish"}
+	if _, err := st.Revisions.Publish(domain.NormalRevisionPolicy{}, publishInput); !errors.Is(err, storepkg.ErrRevisionCommandInProgress) {
+		t.Fatalf("host-ready normal session accepted plain Publish: %v", err)
+	}
+	active, err := st.Revisions.Active()
+	if err != nil || active == nil || active.ID != session.ID || active.Stage != domain.RevisionStageReadyToPublish {
+		t.Fatalf("plain Publish consumed host lifecycle: active=%+v err=%v", active, err)
+	}
+	formalBeforeOwner, err := st.Outline.LoadLayeredOutline()
+	if err != nil || len(formalBeforeOwner) != 1 {
+		t.Fatalf("plain Publish changed host formal structure: volumes=%d err=%v", len(formalBeforeOwner), err)
+	}
+	var pauseErr error
 	service.beforeRevisionCommit = func() {
-		paused, _ = st.Revisions.Pause(domain.NormalRevisionPolicy{}, storepkg.RevisionMutationInput{
+		_, pauseErr = st.Revisions.Pause(domain.NormalRevisionPolicy{}, storepkg.RevisionMutationInput{
 			SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "pause-during-publish",
 		})
 		service.beforeRevisionCommit = nil
 	}
-	if _, err := service.PublishStructure(*previewed.Preview, session, "publish-with-race"); err == nil {
-		t.Fatal("publish race unexpectedly succeeded")
-	}
-	rolledBack, _ := st.Outline.LoadLayeredOutline()
-	rolledBackProgress, _ := st.Progress.Load()
-	if len(rolledBack) != 1 || rolledBackProgress == nil || rolledBackProgress.Phase != domain.PhaseComplete ||
-		rolledBackProgress.CompletionAuditStatus != "pass" || rolledBackProgress.CompletionAuditReportDigest != "completion-before-expansion" {
-		t.Fatalf("failed completed publish did not restore exact state: volumes=%d progress=%+v", len(rolledBack), rolledBackProgress)
-	}
-	if paused == nil {
-		t.Fatal("publish race did not mutate revision as expected")
-	}
-	session, err = st.Revisions.Resume(domain.NormalRevisionPolicy{}, storepkg.RevisionMutationInput{
-		SessionID: paused.ID, ExpectedRevision: paused.Revision, IdempotencyKey: "resume-after-publish-race",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	published, err := service.PublishStructure(*previewed.Preview, session, "publish")
+	published, err := service.PublishStructure(*previewed.Preview, session, publishInput.IdempotencyKey)
 	if err != nil || published.Stage != domain.RevisionStageCompleted {
 		t.Fatalf("publish=%+v err=%v", published, err)
+	}
+	if !errors.Is(pauseErr, storepkg.ErrRevisionCommandInProgress) {
+		t.Fatalf("successor mutation entered durable publication attempt: %v", pauseErr)
+	}
+	if _, err := service.PublishStructure(*previewed.Preview, session, "publish"); err == nil {
+		t.Fatal("completed normal publication owner was replayable")
 	}
 	formal, _ := st.Outline.LoadLayeredOutline()
 	progress, _ := st.Progress.Load()

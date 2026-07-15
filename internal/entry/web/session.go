@@ -498,9 +498,10 @@ func (m *SessionManager) CloseAll() {
 }
 
 type ProjectSession struct {
-	manifest        ProjectManifest
-	host            projectHost
-	normalRevisions *host.NormalRevisionService
+	manifest            ProjectManifest
+	host                projectHost
+	normalRevisions     *host.NormalRevisionService
+	adaptationRevisions *host.AdaptationRevisionService
 
 	mu                  sync.Mutex
 	autoResumeMu        sync.Mutex
@@ -532,14 +533,15 @@ func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession
 		sequencePath = filepath.Join(manifest.OutputDir, filepath.FromSlash(webEventSeqRelPath))
 	}
 	session := &ProjectSession{
-		manifest:        manifest,
-		host:            h,
-		normalRevisions: host.NewNormalRevisionService(storepkg.NewStore(manifest.OutputDir)),
-		actions:         actions,
-		actionKinds:     make(map[string]int),
-		hostEventAt:     make(map[string]int),
-		subscribers:     make(map[chan WebEvent]struct{}),
-		sequencePath:    sequencePath,
+		manifest:            manifest,
+		host:                h,
+		normalRevisions:     host.NewNormalRevisionService(storepkg.NewStore(manifest.OutputDir)),
+		adaptationRevisions: host.NewAdaptationRevisionService(storepkg.NewStore(manifest.OutputDir)),
+		actions:             actions,
+		actionKinds:         make(map[string]int),
+		hostEventAt:         make(map[string]int),
+		subscribers:         make(map[chan WebEvent]struct{}),
+		sequencePath:        sequencePath,
 	}
 	if err := session.loadPersistedSequence(); err != nil {
 		return nil, fmt.Errorf("load web event sequence: %w", err)
@@ -569,6 +571,13 @@ func (s *ProjectSession) NormalRevisionService() *host.NormalRevisionService {
 		return nil
 	}
 	return s.normalRevisions
+}
+
+func (s *ProjectSession) AdaptationRevisionService() *host.AdaptationRevisionService {
+	if s == nil {
+		return nil
+	}
+	return s.adaptationRevisions
 }
 
 func (s *ProjectSession) SetManifest(manifest ProjectManifest) {

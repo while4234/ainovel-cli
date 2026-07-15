@@ -40,35 +40,46 @@ func (s *Store) Rollback(req domain.RollbackRequest) (domain.RollbackResult, err
 	if !req.Confirm {
 		return domain.RollbackResult{}, fmt.Errorf("rollback confirmation is required")
 	}
-	s.crossMu.Lock()
-	defer s.crossMu.Unlock()
+	var result domain.RollbackResult
+	err := s.Revisions.withLegacyMutation("roll back project structure and adaptation state", func() error {
+		s.crossMu.Lock()
+		defer s.crossMu.Unlock()
 
-	state, err := s.inspectRollbackState()
-	if err != nil {
-		return domain.RollbackResult{}, err
-	}
-	preview := domain.RollbackPreviewWithHash(state.preview())
-	if !preview.CanRollback {
-		return domain.RollbackResult{Preview: preview}, fmt.Errorf("project cannot roll back: %s", preview.Reason)
-	}
-	if strings.TrimSpace(req.PreviewHash) != "" && req.PreviewHash != preview.PreviewHash {
-		return domain.RollbackResult{Preview: preview}, fmt.Errorf("rollback preview expired; refresh and confirm again")
-	}
+		state, err := s.inspectRollbackState()
+		if err != nil {
+			return err
+		}
+		preview := domain.RollbackPreviewWithHash(state.preview())
+		if !preview.CanRollback {
+			result = domain.RollbackResult{Preview: preview}
+			return fmt.Errorf("project cannot roll back: %s", preview.Reason)
+		}
+		if strings.TrimSpace(req.PreviewHash) != "" && req.PreviewHash != preview.PreviewHash {
+			result = domain.RollbackResult{Preview: preview}
+			return fmt.Errorf("rollback preview expired; refresh and confirm again")
+		}
 
-	deleted, err := s.migrateRollbackStructure(preview.TargetStage, state)
-	if err != nil {
-		return domain.RollbackResult{Preview: preview, DeletedPaths: deleted}, err
-	}
-	if err := s.Checkpoints.Reset(); err != nil {
-		return domain.RollbackResult{Preview: preview, DeletedPaths: deleted}, fmt.Errorf("reset checkpoint cache: %w", err)
-	}
-	if err := s.Init(); err != nil {
-		return domain.RollbackResult{Preview: preview, DeletedPaths: deleted}, fmt.Errorf("recreate project directories: %w", err)
-	}
-	if err := s.appendRollbackLog(preview, deleted); err != nil {
-		return domain.RollbackResult{Preview: preview, DeletedPaths: deleted}, fmt.Errorf("append rollback log: %w", err)
-	}
-	return domain.RollbackResult{Preview: preview, DeletedPaths: deleted}, nil
+		deleted, err := s.migrateRollbackStructure(preview.TargetStage, state)
+		if err != nil {
+			result = domain.RollbackResult{Preview: preview, DeletedPaths: deleted}
+			return err
+		}
+		if err := s.Checkpoints.Reset(); err != nil {
+			result = domain.RollbackResult{Preview: preview, DeletedPaths: deleted}
+			return fmt.Errorf("reset checkpoint cache: %w", err)
+		}
+		if err := s.Init(); err != nil {
+			result = domain.RollbackResult{Preview: preview, DeletedPaths: deleted}
+			return fmt.Errorf("recreate project directories: %w", err)
+		}
+		if err := s.appendRollbackLog(preview, deleted); err != nil {
+			result = domain.RollbackResult{Preview: preview, DeletedPaths: deleted}
+			return fmt.Errorf("append rollback log: %w", err)
+		}
+		result = domain.RollbackResult{Preview: preview, DeletedPaths: deleted}
+		return nil
+	})
+	return result, err
 }
 
 func (s *Store) inspectRollbackState() (rollbackState, error) {
@@ -525,7 +536,7 @@ func (s *Store) rollbackToAdaptationProposal(state rollbackState) ([]string, err
 	}
 	proposal := *source
 	proposal.Status = domain.AdaptationPlanStatusProposal
-	if err := s.Adaptation.SaveProposal(proposal); err != nil {
+	if err := s.Adaptation.saveProposal(proposal); err != nil {
 		return nil, fmt.Errorf("restore adaptation proposal: %w", err)
 	}
 	deleted, err := s.removeWritingArtifacts()
@@ -585,7 +596,7 @@ func (s *Store) rollbackToVolumeOutline(state rollbackState) ([]string, error) {
 				deleted = append(deleted, rel)
 			}
 		}
-		if err := s.Adaptation.RestoreVolumeReviewForRollback(*review); err != nil {
+		if err := s.Adaptation.restoreVolumeReviewForRollback(*review); err != nil {
 			return deleted, fmt.Errorf("restore adaptation volume review: %w", err)
 		}
 		removed, err := s.removePaths([]string{adaptationPlanFile})
@@ -607,7 +618,7 @@ func (s *Store) rollbackToVolumeOutline(state rollbackState) ([]string, error) {
 		return nil, fmt.Errorf("volume outline is missing")
 	}
 	collapsed := collapseLayeredOutline(state.layeredOutline)
-	if err := s.Outline.SaveLayeredOutline(collapsed); err != nil {
+	if err := s.Outline.saveLayeredOutline(collapsed); err != nil {
 		return nil, fmt.Errorf("collapse layered outline: %w", err)
 	}
 	deleted, err := s.removeWritingArtifacts()
@@ -724,7 +735,7 @@ func (s *Store) removePaths(paths []string) ([]string, error) {
 }
 
 func (s *Store) savePlanningProgress(phase domain.Phase, total int, layered bool, state rollbackState) error {
-	return s.Progress.Save(rollbackPlanningProgress(phase, total, layered, state))
+	return s.Progress.saveOwned(rollbackPlanningProgress(phase, total, layered, state))
 }
 
 func (s *Store) ensureNormalPlanningReview(kind string, state rollbackState) error {

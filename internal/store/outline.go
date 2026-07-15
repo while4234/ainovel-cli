@@ -11,9 +11,10 @@ import (
 
 // OutlineStore 管理故事前提、大纲（扁平/分层）和指南针。
 type OutlineStore struct {
-	io        *IO
-	identity  structureIdentity
-	migration *structureMigration
+	io                 *IO
+	identity           structureIdentity
+	migration          *structureMigration
+	withLegacyMutation func(string, func() error) error
 }
 
 func NewOutlineStore(io *IO, identity structureIdentity, migrations ...*structureMigration) *OutlineStore {
@@ -40,6 +41,10 @@ func (s *OutlineStore) LoadPremise() (string, error) {
 
 // SaveOutline 同时保存 outline.json 和 outline.md（原子写入）。
 func (s *OutlineStore) SaveOutline(entries []domain.OutlineEntry) error {
+	return s.withLegacyFormalMutation("save flat outline", func() error { return s.saveOutline(entries) })
+}
+
+func (s *OutlineStore) saveOutline(entries []domain.OutlineEntry) error {
 	if s.migration != nil {
 		return s.saveOutlineWithMigration(entries)
 	}
@@ -139,6 +144,10 @@ func (s *OutlineStore) GetChapterOutline(chapter int) (*domain.OutlineEntry, err
 
 // SaveLayeredOutline 保存分层大纲（长篇模式，原子写入）。
 func (s *OutlineStore) SaveLayeredOutline(volumes []domain.VolumeOutline) error {
+	return s.withLegacyFormalMutation("save layered outline", func() error { return s.saveLayeredOutline(volumes) })
+}
+
+func (s *OutlineStore) saveLayeredOutline(volumes []domain.VolumeOutline) error {
 	if s.migration != nil {
 		return s.saveLayeredOutlineWithMigration(volumes)
 	}
@@ -227,6 +236,16 @@ func (s *OutlineStore) withStructureRead(fn func() error) error {
 	return s.migration.withRead(fn)
 }
 
+func (s *OutlineStore) withLegacyFormalMutation(operation string, mutation func() error) error {
+	if s == nil {
+		return fmt.Errorf("outline store is required before %s", operation)
+	}
+	if s.withLegacyMutation == nil {
+		return mutation()
+	}
+	return s.withLegacyMutation(operation, mutation)
+}
+
 func outlineMigrationPayloads(entries []domain.OutlineEntry, layered []domain.VolumeOutline) ([]migrationPayload, error) {
 	payloads := make([]migrationPayload, 0, 4)
 	outlineJSON, err := json.MarshalIndent(entries, "", "  ")
@@ -270,6 +289,10 @@ func layeredOutlineMigrationPayloads(volumes []domain.VolumeOutline) ([]migratio
 
 // ClearLayeredOutline 清理分层大纲文件。
 func (s *OutlineStore) ClearLayeredOutline() error {
+	return s.withLegacyFormalMutation("clear layered outline", s.clearLayeredOutline)
+}
+
+func (s *OutlineStore) clearLayeredOutline() error {
 	return s.io.WithWriteLock(func() error {
 		if err := s.io.RemoveFileUnlocked("layered_outline.json"); err != nil {
 			return err

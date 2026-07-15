@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-15 `PR-05 checkpoint pending commit`:
+  Captures the complete uncommitted adaptation-revision implementation and its
+  Store/Host/HTTP regression suite for upload to `main`. This is intentionally
+  a checkpoint, not an accepted PR-05 completion: pending structure migration
+  plus guarded Progress/Adaptation writers can re-enter the non-reentrant
+  revision transaction and deadlock; `ResetGenerated` can partially delete
+  state first. The exact call chains and required tests are recorded in
+  `docs/pr05-known-pending-migration-deadlock.md`.
 - 2026-07-14 `14d1de0` `feat: add normal manuscript revision workflow`:
   PR-04 wires real normal-fiction Web/Host revision entry points through
   persistent sessions, skeleton-first approval, exact scope-local audits,

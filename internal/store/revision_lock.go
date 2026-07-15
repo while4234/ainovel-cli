@@ -24,7 +24,14 @@ func (s *RevisionStore) withRevisionTransaction(fn func() error) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	lockPath := s.io.path(revisionLockFile)
+	return withRevisionFileTransaction(s.io, revisionLockFile, fn)
+}
+
+func withRevisionFileTransaction(io *IO, lockFile string, fn func() error) error {
+	if io == nil {
+		return fmt.Errorf("revision transaction store is required")
+	}
+	lockPath := io.path(lockFile)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return err
 	}

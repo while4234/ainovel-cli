@@ -853,13 +853,32 @@ func TestNormalRevisionStagesStructureBeforeOutlineAndMinimalProse(t *testing.T)
 	if session.Stage != domain.RevisionStageReadyToPublish {
 		t.Fatalf("normal revision not ready after ordered stages: %+v", session)
 	}
-	published, err := store.Publish(policy, RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "normal-publish"})
-	if err != nil || published.Stage != domain.RevisionStageCompleted {
-		t.Fatalf("publish staged normal revision: session=%+v err=%v", published, err)
+	stateBefore, err := os.ReadFile(filepath.Join(store.io.dir, filepath.FromSlash(revisionStateFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "normal-publish"}
+	if _, err := store.Publish(policy, input); !errors.Is(err, ErrRevisionCommandInProgress) {
+		t.Fatalf("plain Publish completed staged normal revision: %v", err)
+	}
+	stateAfter, err := os.ReadFile(filepath.Join(store.io.dir, filepath.FromSlash(revisionStateFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stateAfter) != string(stateBefore) {
+		t.Fatal("plain normal Publish changed revision state")
+	}
+	active, err := store.Active()
+	if err != nil || active == nil || active.Stage != domain.RevisionStageReadyToPublish {
+		t.Fatalf("plain normal Publish consumed lifecycle: active=%+v err=%v", active, err)
+	}
+	versions, owner, err := store.ValidatePublishWithOwner(policy, input)
+	if err != nil || owner == nil || len(versions) == 0 {
+		t.Fatalf("owner-bound validation: versions=%d owner=%+v err=%v", len(versions), owner, err)
 	}
 	for _, id := range []string{volumeID, chapterID, "rework:" + chapterID, domain.NormalProseReworkQueueID} {
-		if current, loadErr := store.CurrentVersion(id); loadErr != nil || current == nil {
-			t.Fatalf("published artifact %s missing: current=%+v err=%v", id, current, loadErr)
+		if current, loadErr := store.CurrentVersion(id); loadErr != nil || current != nil {
+			t.Fatalf("plain Publish consumed artifact %s: current=%+v err=%v", id, current, loadErr)
 		}
 	}
 }

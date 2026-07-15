@@ -24,9 +24,10 @@ const (
 )
 
 const (
-	AdaptationModelChapterTargetRunes = 4000
-	AdaptationModelChapterMaxRunes    = 5000
-	AdaptationModelChapterTolerance   = 0.15
+	AdaptationModelChapterTargetRunes      = 4000
+	AdaptationModelChapterMaxRunes         = 5000
+	AdaptationModelChapterTolerance        = 0.15
+	AdaptationRevisionBatchContextMaxUnits = 10000
 )
 
 // AdaptationSourceManifest records the imported source novel identity.

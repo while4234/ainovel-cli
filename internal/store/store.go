@@ -1,6 +1,8 @@
 package store
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -14,8 +16,10 @@ import (
 type Store struct {
 	dir string
 
-	recoveryMu  sync.Mutex
-	recoveryErr error
+	recoveryMu             sync.Mutex
+	recoveryErr            error
+	commandRecoveryErr     error
+	publicationRecoveryErr error
 
 	Progress               *ProgressStore
 	Outline                *OutlineStore
@@ -45,14 +49,15 @@ type Store struct {
 func NewStore(dir string) *Store {
 	identity := newStructureIdentity(dir)
 	migration := newStructureMigration(dir)
-	// Recover before constructing cache-bearing sub-stores such as checkpoints;
-	// otherwise they could retain the pre-transaction file generation in memory.
-	recoveryErr := migration.recover()
+	revisions := NewRevisionStore(dir)
+	migration.recoverWithRevisionFence = revisions.withLegacyMutation
 	io := newIO(dir)
 	outline := NewOutlineStore(io, identity, migration)
-	return &Store{
+	outline.withLegacyMutation = revisions.withLegacyMutation
+	adaptation := NewAdaptationStore(newIO(dir), identity, migration)
+	adaptation.withLegacyMutation = revisions.withLegacyMutation
+	store := &Store{
 		dir:                    dir,
-		recoveryErr:            recoveryErr,
 		Progress:               NewProgressStore(newIO(dir), migration),
 		Outline:                outline,
 		Drafts:                 NewDraftStore(newIO(dir), migration),
@@ -64,16 +69,31 @@ func NewStore(dir string) *Store {
 		Characters:             NewCharacterStore(newIO(dir), outline),
 		Cast:                   NewCastStore(newIO(dir)),
 		World:                  NewWorldStore(newIO(dir), migration),
-		Checkpoints:            newCheckpointStore(io, recoveryErr == nil),
 		Sessions:               NewSessionStore(newIO(dir)),
 		Usage:                  NewUsageStore(newIO(dir)),
 		Simulation:             NewSimulationStore(newIO(dir)),
 		DeAI:                   NewDeAIStore(newIO(dir)),
-		Adaptation:             NewAdaptationStore(newIO(dir), identity, migration),
+		Adaptation:             adaptation,
 		Continuation:           NewContinuationStore(newIO(dir), migration),
-		Revisions:              NewRevisionStore(dir),
+		Revisions:              revisions,
 		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir), outline),
 	}
+	store.Progress.withLegacyMutation = revisions.withLegacyMutation
+	// Recover the outer service journal before the inner structure journal. The
+	// outer snapshot may intentionally restore a pending structure generation.
+	commandRecoveryPending, commandRecoveryErr := store.adaptationRevisionCommandPending()
+	if commandRecoveryErr == nil && commandRecoveryPending {
+		commandRecoveryErr = store.WithAdaptationRevisionCommand(func() error { return nil })
+	}
+	publicationRecoveryErr := store.recoverNormalRevisionPublication()
+	structureRecoveryErr := recoverStructureMigrationIfPending(revisions, migration, "recover pending structure migration during startup")
+	store.commandRecoveryErr = commandRecoveryErr
+	store.publicationRecoveryErr = publicationRecoveryErr
+	store.recoveryErr = errors.Join(commandRecoveryErr, publicationRecoveryErr, structureRecoveryErr)
+	// Recover before constructing cache-bearing sub-stores such as checkpoints;
+	// otherwise they could retain the pre-transaction file generation in memory.
+	store.Checkpoints = newCheckpointStore(io, store.recoveryErr == nil)
+	return store
 }
 
 // Dir 返回输出根目录。
@@ -87,7 +107,23 @@ func (s *Store) RecoverStructureMigration() error {
 	}
 	s.recoveryMu.Lock()
 	defer s.recoveryMu.Unlock()
-	if err := s.Outline.migration.recover(); err != nil {
+	if s.commandRecoveryErr != nil {
+		if err := s.WithAdaptationRevisionCommand(func() error { return nil }); err != nil {
+			s.commandRecoveryErr = err
+			s.recoveryErr = err
+			return err
+		}
+		s.commandRecoveryErr = nil
+	}
+	if s.publicationRecoveryErr != nil {
+		if err := s.recoverNormalRevisionPublication(); err != nil {
+			s.publicationRecoveryErr = err
+			s.recoveryErr = err
+			return err
+		}
+		s.publicationRecoveryErr = nil
+	}
+	if err := recoverStructureMigrationIfPending(s.Revisions, s.Outline.migration, "recover pending structure migration"); err != nil {
 		s.recoveryErr = err
 		if s.Checkpoints != nil {
 			s.Checkpoints.invalidateCache()
@@ -99,6 +135,14 @@ func (s *Store) RecoverStructureMigration() error {
 		s.Checkpoints.loadFromDisk()
 	}
 	return nil
+}
+
+func recoverStructureMigrationIfPending(revisions *RevisionStore, migration *structureMigration, operation string) error {
+	pending, err := migration.pending()
+	if err != nil || !pending {
+		return err
+	}
+	return revisions.withLegacyMutation(operation, migration.recover)
 }
 
 // CheckConsistency 对事实层做一次浅层校验，用于启动/恢复时生成 warning。
@@ -186,10 +230,12 @@ func (s *Store) ExpandArc(volumeIdx, arcIdx int, chapters []domain.OutlineEntry)
 	if err != nil {
 		return err
 	}
-	s.crossMu.Lock()
-	defer s.crossMu.Unlock()
-	return s.saveLayeredStructureMutation("expand_arc", requestID, false, false, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
-		return s.Outline.expandArc(existing, volumeIdx, arcIdx, chapters)
+	return s.Revisions.withLegacyMutation("expand adaptation arc", func() error {
+		s.crossMu.Lock()
+		defer s.crossMu.Unlock()
+		return s.saveLayeredStructureMutation("expand_arc", requestID, false, false, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+			return s.Outline.expandArc(existing, volumeIdx, arcIdx, chapters)
+		})
 	})
 }
 
@@ -199,10 +245,12 @@ func (s *Store) AppendVolume(vol domain.VolumeOutline) error {
 	if err != nil {
 		return err
 	}
-	s.crossMu.Lock()
-	defer s.crossMu.Unlock()
-	return s.saveLayeredStructureMutation("append_volume", requestID, false, true, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
-		return s.Outline.appendVolume(existing, vol)
+	return s.Revisions.withLegacyMutation("append adaptation volume", func() error {
+		s.crossMu.Lock()
+		defer s.crossMu.Unlock()
+		return s.saveLayeredStructureMutation("append_volume", requestID, false, true, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+			return s.Outline.appendVolume(existing, vol)
+		})
 	})
 }
 
@@ -214,59 +262,274 @@ func (s *Store) AppendSkeletonVolume(vol domain.VolumeOutline) error {
 	if err != nil {
 		return err
 	}
-	s.crossMu.Lock()
-	defer s.crossMu.Unlock()
-	return s.saveLayeredStructureMutation("append_skeleton_volume", requestID, true, false, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
-		return s.Outline.appendSkeletonVolume(existing, vol)
+	return s.Revisions.withLegacyMutation("append adaptation skeleton volume", func() error {
+		s.crossMu.Lock()
+		defer s.crossMu.Unlock()
+		return s.saveLayeredStructureMutation("append_skeleton_volume", requestID, true, false, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+			return s.Outline.appendSkeletonVolume(existing, vol)
+		})
 	})
 }
 
 // ReplaceLayeredStructureForRevision applies a kernel-confirmed normal
 // revision candidate through the same crash-recoverable structure migration as
-// incremental edits. Callers remain responsible for the RevisionStore human
-// gates; this method deliberately exposes no model or adaptation semantics.
-func (s *Store) ReplaceLayeredStructureForRevision(candidate []domain.VolumeOutline) error {
-	return s.PublishLayeredStructureForRevision(candidate, "legacy")
+// incremental edits. The opaque publication owner proves that the exact normal
+// revision passed every human and audit gate.
+func (s *Store) ReplaceLayeredStructureForRevision(owner *RevisionPublicationOwner, candidate []domain.VolumeOutline) error {
+	if owner == nil {
+		return ErrRevisionCommandInProgress
+	}
+	return s.PublishLayeredStructureForRevision(owner, candidate, owner.publishKey)
 }
 
-func (s *Store) PublishLayeredStructureForRevision(candidate []domain.VolumeOutline, commandKey string) error {
-	if err := domain.ValidateStructureSnapshot(candidate); err != nil {
+func (s *Store) PublishLayeredStructureForRevision(owner *RevisionPublicationOwner, candidate []domain.VolumeOutline, commandKey string) error {
+	candidateDigest, err := normalStructureDigest(candidate)
+	if err != nil {
+		return err
+	}
+	if owner == nil || strings.TrimSpace(commandKey) != owner.publishKey {
+		return ErrRevisionCommandInProgress
+	}
+	snapshot, err := s.captureNormalRevisionFormalSnapshot()
+	if err != nil {
 		return err
 	}
 	requestID, err := migrationRequestIdentity("normal_revision_publish", struct {
 		Candidate  []domain.VolumeOutline
 		CommandKey string
-	}{candidate, strings.TrimSpace(commandKey)})
+		OwnerToken string
+	}{candidate, strings.TrimSpace(commandKey), owner.token})
 	if err != nil {
 		return err
 	}
-	s.crossMu.Lock()
-	defer s.crossMu.Unlock()
 	cloned := domain.CloneStructureSnapshot(candidate)
-	return s.saveLayeredStructureMutation("normal_revision_publish", requestID, true, true, nil, func([]domain.VolumeOutline) ([]domain.VolumeOutline, error) {
-		return domain.CloneStructureSnapshot(cloned), nil
+	return s.beginNormalRevisionPublication(owner, candidateDigest, snapshot, func() error {
+		s.crossMu.Lock()
+		defer s.crossMu.Unlock()
+		return s.saveLayeredStructureMutation("normal_revision_publish", requestID, true, true, nil, func([]domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+			return domain.CloneStructureSnapshot(cloned), nil
+		})
 	})
 }
 
-// RestoreLayeredStructureForRevision restores both formal structure and the
-// exact progress snapshot, including complete/reopened state and completion
-// audit fields, when the final RevisionStore commit fails.
-func (s *Store) RestoreLayeredStructureForRevision(candidate []domain.VolumeOutline, progress *domain.Progress) error {
-	if err := domain.ValidateStructureSnapshotForStage(candidate, domain.ManuscriptStageProposalComplete); err != nil {
-		return err
+// RestoreLayeredStructureForRevision restores only the durable prepublication
+// snapshot bound to owner. Non-nil values are compatibility assertions: they
+// must identify that exact snapshot and can never substitute rollback data.
+func (s *Store) RestoreLayeredStructureForRevision(owner *RevisionPublicationOwner, candidate []domain.VolumeOutline, progress *domain.Progress) error {
+	return s.rollbackNormalRevisionPublication(owner, candidate, progress)
+}
+
+func (s *Store) RollbackLayeredStructureForRevision(owner *RevisionPublicationOwner) error {
+	return s.rollbackNormalRevisionPublication(owner, nil, nil)
+}
+
+func (s *Store) captureNormalRevisionFormalSnapshot() (normalRevisionFormalSnapshot, error) {
+	structure, err := s.Outline.LoadLayeredOutline()
+	if err != nil {
+		return normalRevisionFormalSnapshot{}, err
 	}
+	progress, err := s.Progress.Load()
+	if err != nil {
+		return normalRevisionFormalSnapshot{}, err
+	}
+	snapshot := normalRevisionFormalSnapshot{
+		Structure: domain.CloneStructureSnapshot(structure),
+		Progress:  cloneProgress(progress),
+	}
+	snapshot.Digest, err = normalRevisionFormalSnapshotDigest(snapshot.Structure, snapshot.Progress)
+	return snapshot, err
+}
+
+func normalRevisionFormalSnapshotDigest(structure []domain.VolumeOutline, progress *domain.Progress) (string, error) {
+	payload, err := json.Marshal(struct {
+		Structure []domain.VolumeOutline `json:"structure"`
+		Progress  *domain.Progress       `json:"progress,omitempty"`
+	}{domain.CloneStructureSnapshot(structure), cloneProgress(progress)})
+	if err != nil {
+		return "", err
+	}
+	return domain.ContentSignature(payload), nil
+}
+
+func cloneNormalRevisionFormalSnapshot(snapshot normalRevisionFormalSnapshot) normalRevisionFormalSnapshot {
+	return normalRevisionFormalSnapshot{
+		Structure: domain.CloneStructureSnapshot(snapshot.Structure),
+		Progress:  cloneProgress(snapshot.Progress),
+		Digest:    snapshot.Digest,
+	}
+}
+
+func (s *Store) requireNormalRevisionPublicationOwner(state *revisionState, owner *RevisionPublicationOwner, candidateDigest string) (domain.RevisionSession, error) {
+	if s == nil || s.Revisions == nil || owner == nil || owner.revisions == nil ||
+		!revisionStoresShareProject(s.Revisions, owner.revisions) {
+		return domain.RevisionSession{}, ErrRevisionCommandInProgress
+	}
+	if state == nil || state.NormalLease != nil || state.CommandFence != nil || state.ActiveSessionID != owner.sessionID {
+		return domain.RevisionSession{}, ErrRevisionCommandInProgress
+	}
+	session, exists := state.Sessions[owner.sessionID]
+	if !exists || !session.Active() || session.Revision != owner.expectedRevision ||
+		session.Mode != domain.RevisionModeNormal || session.Mode != owner.mode ||
+		session.PolicyID != owner.policyID || session.PolicyVersion != owner.policyVersion {
+		return domain.RevisionSession{}, ErrRevisionNotFound
+	}
+	if state.Generation != owner.generation || session.Generation != owner.generation {
+		return domain.RevisionSession{}, &RevisionConflictError{Expected: int(owner.generation), Actual: int(state.Generation)}
+	}
+	versions, err := prepareRevisionPublish(owner.policy, state, &session)
+	if err != nil {
+		return domain.RevisionSession{}, err
+	}
+	ids, acceptedDigest, canonicalDigest, err := publicationBinding(state, &session, versions)
+	if err != nil {
+		return domain.RevisionSession{}, err
+	}
+	if !slices.Equal(ids, owner.acceptedVersionIDs) || acceptedDigest != owner.acceptedDigest ||
+		canonicalDigest != owner.candidateDigest || candidateDigest != owner.candidateDigest {
+		return domain.RevisionSession{}, fmt.Errorf("normal publication candidate or accepted artifacts changed")
+	}
+	return session, nil
+}
+
+func (s *Store) beginNormalRevisionPublication(owner *RevisionPublicationOwner, candidateDigest string, snapshot normalRevisionFormalSnapshot, write func() error) error {
+	return s.Revisions.withRevisionTransaction(func() error {
+		state, err := s.Revisions.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if state.Publication != nil {
+			return ErrRevisionCommandInProgress
+		}
+		session, err := s.requireNormalRevisionPublicationOwner(state, owner, candidateDigest)
+		if err != nil {
+			return err
+		}
+		digest, err := normalRevisionFormalSnapshotDigest(snapshot.Structure, snapshot.Progress)
+		if err != nil || digest != snapshot.Digest {
+			return errors.Join(fmt.Errorf("normal prepublication snapshot changed"), err)
+		}
+		state.Generation++
+		session.Generation = state.Generation
+		state.Sessions[session.ID] = session
+		owner.generation = state.Generation
+		state.Publication = &revisionPublicationAttempt{
+			Token: owner.token, SessionID: owner.sessionID, ExpectedRevision: owner.expectedRevision,
+			Generation: state.Generation, Mode: owner.mode, PolicyID: owner.policyID, PolicyVersion: owner.policyVersion,
+			PublishKey: owner.publishKey, PublishFingerprint: owner.publishFingerprint,
+			AcceptedVersionIDs: append([]string(nil), owner.acceptedVersionIDs...),
+			AcceptedDigest:     owner.acceptedDigest, CandidateDigest: owner.candidateDigest,
+			Status: revisionPublicationPrepared, PrepublishSnapshot: cloneNormalRevisionFormalSnapshot(snapshot),
+		}
+		if err := validateRevisionState(state); err != nil {
+			return err
+		}
+		if err := s.Revisions.io.WriteJSON(revisionStateFile, state); err != nil {
+			return err
+		}
+		if err := write(); err != nil {
+			return err
+		}
+		state.Publication.Status = revisionPublicationApplied
+		return s.Revisions.io.WriteJSON(revisionStateFile, state)
+	})
+}
+
+func (s *Store) rollbackNormalRevisionPublication(owner *RevisionPublicationOwner, assertedStructure []domain.VolumeOutline, assertedProgress *domain.Progress) error {
+	if s == nil || s.Revisions == nil || owner == nil || owner.revisions == nil ||
+		!revisionStoresShareProject(s.Revisions, owner.revisions) {
+		return ErrRevisionCommandInProgress
+	}
+	return s.Revisions.withRevisionTransaction(func() error {
+		state, err := s.Revisions.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		attempt := state.Publication
+		if !revisionPublicationOwnerMatches(attempt, owner) ||
+			(attempt.Status != revisionPublicationPrepared && attempt.Status != revisionPublicationApplied) ||
+			state.NormalLease != nil || state.CommandFence != nil || state.ActiveSessionID != attempt.SessionID ||
+			state.Generation != attempt.Generation {
+			return ErrRevisionCommandInProgress
+		}
+		session, exists := state.Sessions[attempt.SessionID]
+		if !exists || !session.Active() || session.Revision != attempt.ExpectedRevision ||
+			session.Generation != attempt.Generation || session.Mode != domain.RevisionModeNormal {
+			return ErrRevisionCommandInProgress
+		}
+		digest, err := normalRevisionFormalSnapshotDigest(attempt.PrepublishSnapshot.Structure, attempt.PrepublishSnapshot.Progress)
+		if err != nil || digest != attempt.PrepublishSnapshot.Digest {
+			return errors.Join(fmt.Errorf("normal prepublication snapshot is invalid"), err)
+		}
+		if assertedStructure != nil || assertedProgress != nil {
+			assertedDigest, err := normalRevisionFormalSnapshotDigest(assertedStructure, assertedProgress)
+			if err != nil || assertedDigest != attempt.PrepublishSnapshot.Digest {
+				return errors.Join(fmt.Errorf("normal rollback snapshot substitution is not allowed"), err)
+			}
+		}
+		if err := s.restoreNormalRevisionFormalSnapshot(attempt); err != nil {
+			return err
+		}
+		return s.clearNormalRevisionPublicationAttempt(state)
+	})
+}
+
+func (s *Store) restoreNormalRevisionFormalSnapshot(attempt *revisionPublicationAttempt) error {
+	snapshot := cloneNormalRevisionFormalSnapshot(attempt.PrepublishSnapshot)
 	requestID, err := migrationRequestIdentity("normal_revision_rollback", struct {
-		Candidate []domain.VolumeOutline
-		Progress  *domain.Progress
-	}{candidate, progress})
+		Token  string
+		Digest string
+	}{attempt.Token, snapshot.Digest})
 	if err != nil {
 		return err
 	}
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
-	cloned := domain.CloneStructureSnapshot(candidate)
-	return s.saveLayeredStructureMutation("normal_revision_rollback", requestID, progress != nil && progress.Layered, false, cloneProgress(progress), func([]domain.VolumeOutline) ([]domain.VolumeOutline, error) {
-		return domain.CloneStructureSnapshot(cloned), nil
+	return s.saveLayeredStructureMutation("normal_revision_rollback", requestID, snapshot.Progress != nil && snapshot.Progress.Layered, false, snapshot.Progress, func([]domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+		return domain.CloneStructureSnapshot(snapshot.Structure), nil
+	})
+}
+
+func (s *Store) clearNormalRevisionPublicationAttempt(state *revisionState) error {
+	attempt := state.Publication
+	if attempt == nil {
+		return ErrRevisionCommandInProgress
+	}
+	state.Publication = nil
+	state.Generation++
+	if session, exists := state.Sessions[attempt.SessionID]; exists && session.Active() {
+		session.Generation = state.Generation
+		state.Sessions[session.ID] = session
+	}
+	if err := validateRevisionState(state); err != nil {
+		return err
+	}
+	return s.Revisions.io.WriteJSON(revisionStateFile, state)
+}
+
+func (s *Store) recoverNormalRevisionPublication() error {
+	if s == nil || s.Revisions == nil {
+		return nil
+	}
+	if _, err := os.Stat(s.Revisions.io.path(revisionStateFile)); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return s.Revisions.withRevisionTransaction(func() error {
+		state, err := s.Revisions.loadUnlocked()
+		if err != nil || state.Publication == nil {
+			return err
+		}
+		attempt := state.Publication
+		if state.NormalLease != nil || state.CommandFence != nil || state.ActiveSessionID != attempt.SessionID ||
+			state.Generation != attempt.Generation {
+			return ErrRevisionCommandInProgress
+		}
+		if err := s.restoreNormalRevisionFormalSnapshot(attempt); err != nil {
+			return fmt.Errorf("recover interrupted normal publication: %w", err)
+		}
+		return s.clearNormalRevisionPublicationAttempt(state)
 	})
 }
 
@@ -354,6 +617,12 @@ func (s *Store) ClearHandledSteerIf(expected string) error {
 }
 
 func (s *Store) clearHandledSteerIf(expected string) error {
+	return s.Revisions.withLegacyMutation("clear handled steering progress", func() error {
+		return s.clearHandledSteerIfOwned(expected)
+	})
+}
+
+func (s *Store) clearHandledSteerIfOwned(expected string) error {
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
 

@@ -604,6 +604,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectCompletionAudit(w, r, id)
 	case "adapt/audits":
 		s.handleProjectAdaptAuditHistory(w, r, id, "")
+	case "adapt/revision/preview":
+		s.handleProjectAdaptationRevisionPreview(w, r, id)
+	case "adapt/revision/command":
+		s.handleProjectAdaptationRevisionCommand(w, r, id)
 	case "adapt/audits/compare":
 		s.handleProjectAdaptAuditHistory(w, r, id, "compare")
 	case "adapt/library/save":

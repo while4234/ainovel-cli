@@ -434,10 +434,24 @@ func TestActiveRevisionBlocksContinuationAndChapterRevisionBeforeSideEffects(t *
 	}); err != nil {
 		t.Fatal(err)
 	}
+	migrationLog := filepath.Join(st.Dir(), "meta", "structure", "migration.json")
+	if err := os.MkdirAll(filepath.Dir(migrationLog), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(migrationLog, []byte(`{"version":1,"stage":"planned"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	h := &Host{store: st}
 
+	beforeContinuation := adaptationRevisionProjectBytes(t, st.Dir())
 	if _, _, err := h.StartContinuation(1); !errors.Is(err, storepkg.ErrActiveRevisionBlocksNormalFlow) {
 		t.Fatalf("StartContinuation error = %v", err)
+	}
+	if afterContinuation := adaptationRevisionProjectBytes(t, st.Dir()); !reflect.DeepEqual(beforeContinuation, afterContinuation) {
+		t.Fatal("rejected Host continuation recovered or changed pending structure bytes")
+	}
+	if err := os.Remove(migrationLog); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := h.ReviseChapter(ChapterRevisionRequest{Chapter: 1, Instruction: "rewrite"}); !errors.Is(err, storepkg.ErrActiveRevisionBlocksNormalFlow) {
 		t.Fatalf("ReviseChapter error = %v", err)

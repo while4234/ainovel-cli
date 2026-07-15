@@ -60,21 +60,23 @@ func (s *AdaptationStore) SetPlanningWorkflowStage(stage domain.AdaptationPlanni
 		return nil, fmt.Errorf("invalid adaptation planning stage %q", stage)
 	}
 	var saved domain.AdaptationPlanningWorkflow
-	err := s.io.WithWriteLock(func() error {
-		current, err := s.loadPlanningWorkflowUnlocked()
-		if err != nil {
-			return err
-		}
-		if expectedRevision >= 0 && current.Revision != expectedRevision {
-			return fmt.Errorf("adaptation planning workflow revision changed: expected %d, got %d", expectedRevision, current.Revision)
-		}
-		saved = domain.AdaptationPlanningWorkflow{
-			Version:   domain.AdaptationPlanningWorkflowVersion,
-			Stage:     stage,
-			Revision:  current.Revision + 1,
-			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		}
-		return s.io.WriteJSONUnlocked(adaptationPlanningWorkflowFile, saved)
+	err := s.withLegacyFormalMutation("change planning workflow", func() error {
+		return s.io.WithWriteLock(func() error {
+			current, err := s.loadPlanningWorkflowUnlocked()
+			if err != nil {
+				return err
+			}
+			if expectedRevision >= 0 && current.Revision != expectedRevision {
+				return fmt.Errorf("adaptation planning workflow revision changed: expected %d, got %d", expectedRevision, current.Revision)
+			}
+			saved = domain.AdaptationPlanningWorkflow{
+				Version:   domain.AdaptationPlanningWorkflowVersion,
+				Stage:     stage,
+				Revision:  current.Revision + 1,
+				UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+			}
+			return s.io.WriteJSONUnlocked(adaptationPlanningWorkflowFile, saved)
+		})
 	})
 	if err != nil {
 		return nil, err

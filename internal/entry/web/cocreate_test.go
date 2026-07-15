@@ -603,6 +603,179 @@ func TestProjectCoCreateCheckpointRestoresAfterSessionRestart(t *testing.T) {
 	}
 }
 
+func TestNormalRevisionHTTPRecoversCrashedPublicationAndRejectsReplay(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Normal Revision Publication")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installFakeSession(t, server, manifest)
+	st := storepkg.NewStore(manifest.OutputDir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	volumeID := domain.LegacyStructureID("http-publication", domain.StructureKindVolume, "volume")
+	arcID := domain.LegacyStructureID("http-publication", domain.StructureKindArc, "arc")
+	chapter1 := domain.LegacyStructureID("http-publication", domain.StructureKindChapter, "chapter-1")
+	chapter2 := domain.LegacyStructureID("http-publication", domain.StructureKindChapter, "chapter-2")
+	current := []domain.VolumeOutline{{
+		ID: volumeID, Index: 1, Title: "Volume", Theme: "choice",
+		Arcs: []domain.ArcOutline{{
+			ID: arcID, Index: 1, Title: "Arc", Goal: "choose",
+			Chapters: []domain.OutlineEntry{{ID: chapter1, Chapter: 1, Title: "One", CoreEvent: "choice begins", Hook: "cost", Scenes: []string{"choose"}}},
+		}},
+	}}
+	candidate := domain.CloneStructureSnapshot(current)
+	candidate[0].Arcs[0].Chapters = append(candidate[0].Arcs[0].Chapters, domain.OutlineEntry{
+		ID: chapter2, Chapter: 2, Title: "Two", CoreEvent: "cost lands", Hook: "aftermath", Scenes: []string{"pay"},
+	})
+	if err := st.Outline.SaveLayeredOutline(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Save(&domain.Progress{NovelName: "http", Phase: domain.PhaseWriting, Flow: domain.FlowWriting, Layered: true, TotalChapters: 1}); err != nil {
+		t.Fatal(err)
+	}
+	budget, _ := domain.NewDynamicSoftBudget(2, 3000, 5000)
+	previewBody, _ := json.Marshal(webNormalRevisionPreviewRequest{
+		Operation: domain.StructureRevisionAppendChapter, Intent: "add the consequence", BaseRevision: 1,
+		CurrentSoftBudget: &budget, IdempotencyKey: "http-preview",
+		Proposal: domain.StructureRevisionProposal{
+			Assessment: domain.ContentAdditionAssessment{NeedsAdditionalChapters: true, Reason: "the consequence needs its own chapter"},
+			Candidate:  candidate, SoftBudget: budget,
+		},
+	})
+	previewRequest := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/revision/preview", bytes.NewReader(previewBody))
+	previewResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(previewResponse, previewRequest)
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", previewResponse.Code, previewResponse.Body.String())
+	}
+	var previewed struct {
+		Revision host.NormalStructureRevisionPreview `json:"revision"`
+	}
+	if err := json.Unmarshal(previewResponse.Body.Bytes(), &previewed); err != nil {
+		t.Fatal(err)
+	}
+	if previewed.Revision.Session == nil || previewed.Revision.Preview == nil {
+		t.Fatalf("preview response=%s", previewResponse.Body.String())
+	}
+
+	postCommand := func(command webNormalRevisionCommandRequest) (*domain.RevisionSession, int, string) {
+		t.Helper()
+		body, _ := json.Marshal(command)
+		req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/revision/command", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			return nil, rec.Code, rec.Body.String()
+		}
+		var response struct {
+			Revision *domain.RevisionSession `json:"revision"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response.Revision, rec.Code, rec.Body.String()
+	}
+
+	session := previewed.Revision.Session
+	session, status, body := postCommand(webNormalRevisionCommandRequest{
+		Action: "approve_impact", ExpectedRevision: session.Revision, IdempotencyKey: "http-impact",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("approve impact status=%d body=%s", status, body)
+	}
+	for session.Stage != domain.RevisionStageReadyToPublish {
+		if session.Stage != domain.RevisionStageCandidateGenerating || len(session.Approvals) >= len(session.ApprovalStages) {
+			t.Fatalf("unexpected staged session=%+v", session)
+		}
+		stage := session.ApprovalStages[len(session.Approvals)].ID
+		command := webNormalRevisionCommandRequest{ExpectedRevision: session.Revision, IdempotencyKey: "http-candidate-" + stage}
+		switch stage {
+		case domain.NormalApprovalStructure:
+			command.Action, command.Preview = "submit_structure", previewed.Revision.Preview
+		case domain.NormalApprovalOutline:
+			command.Action, command.Candidate = "submit_details", candidate
+		case domain.NormalApprovalProse:
+			command.Action = "submit_prose_intents"
+		default:
+			t.Fatalf("unexpected approval stage %q", stage)
+		}
+		session, status, body = postCommand(command)
+		if status != http.StatusOK {
+			t.Fatalf("submit %s status=%d body=%s", stage, status, body)
+		}
+		evidence := make([]domain.RevisionAuditEvidence, 0, len(session.AuditExpectations))
+		for _, expected := range session.AuditExpectations {
+			evidence = append(evidence, domain.RevisionAuditEvidence{
+				Scope: expected.Scope, ScopeID: expected.ScopeID, FromChapter: expected.FromChapter,
+				ToChapter: expected.ToChapter, ContentSignature: expected.ContentSignature, Passed: true,
+			})
+		}
+		session, status, body = postCommand(webNormalRevisionCommandRequest{
+			Action: "record_audit", ExpectedRevision: session.Revision, IdempotencyKey: "http-audit-" + stage, Evidence: evidence,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("audit %s status=%d body=%s", stage, status, body)
+		}
+		session, status, body = postCommand(webNormalRevisionCommandRequest{
+			Action: "approve_stage", ExpectedRevision: session.Revision, IdempotencyKey: "http-approve-" + stage,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("approve %s status=%d body=%s", stage, status, body)
+		}
+	}
+
+	publishInput := storepkg.RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "http-publish"}
+	if _, err := st.Revisions.Publish(domain.NormalRevisionPolicy{}, publishInput); !errors.Is(err, storepkg.ErrRevisionCommandInProgress) {
+		t.Fatalf("HTTP-ready normal session accepted plain Publish: %v", err)
+	}
+	active, err := st.Revisions.Active()
+	if err != nil || active == nil || active.ID != session.ID || active.Stage != domain.RevisionStageReadyToPublish {
+		t.Fatalf("plain Publish consumed HTTP lifecycle: active=%+v err=%v", active, err)
+	}
+	formalBeforeOwner, err := st.Outline.LoadLayeredOutline()
+	if err != nil || len(formalBeforeOwner) != 1 || len(formalBeforeOwner[0].Arcs[0].Chapters) != 1 {
+		t.Fatalf("plain Publish changed HTTP formal structure: structure=%+v err=%v", formalBeforeOwner, err)
+	}
+	_, owner, err := st.Revisions.ValidatePublishWithOwner(domain.NormalRevisionPolicy{}, publishInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PublishLayeredStructureForRevision(owner, candidate, publishInput.IdempotencyKey); err != nil {
+		t.Fatal(err)
+	}
+	// Closing and recreating the real project session simulates a process crash
+	// between formal replacement and the RevisionStore commit.
+	server.sessions.CloseProject(manifest.ID)
+	installFakeSession(t, server, manifest)
+	recovered := storepkg.NewStore(manifest.OutputDir)
+	recoveredStructure, err := recovered.Outline.LoadLayeredOutline()
+	if err != nil || len(recoveredStructure) != 1 {
+		t.Fatalf("restart did not restore bound prepublish snapshot: volumes=%d err=%v", len(recoveredStructure), err)
+	}
+
+	publishCommand := webNormalRevisionCommandRequest{
+		Action: "publish", ExpectedRevision: session.Revision, IdempotencyKey: publishInput.IdempotencyKey, Preview: previewed.Revision.Preview,
+	}
+	published, status, body := postCommand(publishCommand)
+	if status != http.StatusOK || published == nil || published.Stage != domain.RevisionStageCompleted {
+		t.Fatalf("publish status=%d revision=%+v body=%s", status, published, body)
+	}
+	formal, _ := storepkg.NewStore(manifest.OutputDir).Outline.LoadLayeredOutline()
+	if len(formal) != 1 || len(formal[0].Arcs[0].Chapters) != 2 {
+		t.Fatalf("HTTP publication formal structure=%+v", formal)
+	}
+	if _, replayStatus, _ := postCommand(publishCommand); replayStatus == http.StatusOK {
+		t.Fatal("real HTTP replay reused completed normal publication")
+	}
+	formalAfterReplay, _ := storepkg.NewStore(manifest.OutputDir).Outline.LoadLayeredOutline()
+	if len(formalAfterReplay) != 1 || len(formalAfterReplay[0].Arcs[0].Chapters) != 2 {
+		t.Fatalf("rejected HTTP replay changed formal structure=%+v", formalAfterReplay)
+	}
+}
+
 func TestProjectCoCreateRecoveryIgnoredAfterWritingStarts(t *testing.T) {
 	tests := []struct {
 		name       string

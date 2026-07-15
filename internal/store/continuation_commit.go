@@ -37,6 +37,19 @@ type continuationCommitJournal struct {
 // multi-file transaction. If a process dies mid-commit, the next attempt first
 // restores the before-image and can then safely retry.
 func (s *Store) CommitContinuationPlan(expectedRevision int) (*domain.ContinuationSnapshot, error) {
+	if s == nil || s.Revisions == nil {
+		return nil, fmt.Errorf("revision store is required before continuation commit")
+	}
+	var committed *domain.ContinuationSnapshot
+	err := s.Revisions.withLegacyMutation("commit continuation plan", func() error {
+		var commitErr error
+		committed, commitErr = s.commitContinuationPlanOwned(expectedRevision)
+		return commitErr
+	})
+	return committed, err
+}
+
+func (s *Store) commitContinuationPlanOwned(expectedRevision int) (*domain.ContinuationSnapshot, error) {
 	if s == nil || s.Continuation == nil {
 		return nil, fmt.Errorf("continuation store is required")
 	}

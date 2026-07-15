@@ -26,7 +26,7 @@ func (s *AdaptationStore) SaveAuditReport(report adaptaudit.Report) error {
 	if err := adaptaudit.ValidateReportDigest(report); err != nil {
 		return err
 	}
-	return s.io.WriteJSON(adaptationAuditReportFile, report)
+	return s.withLegacyFormalMutation("save adaptation audit", func() error { return s.io.WriteJSON(adaptationAuditReportFile, report) })
 }
 
 func (s *AdaptationStore) LoadAuditReport() (*adaptaudit.Report, error) {
@@ -50,6 +50,10 @@ func (s *AdaptationStore) SaveAuditRun(run adaptaudit.AuditRun) error {
 	if err := adaptaudit.ValidateAuditRun(run); err != nil {
 		return err
 	}
+	return s.withLegacyFormalMutation("save adaptation audit run", func() error { return s.saveAuditRun(run) })
+}
+
+func (s *AdaptationStore) saveAuditRun(run adaptaudit.AuditRun) error {
 	return s.io.WithWriteLock(func() error {
 		path := auditRunFile(run.RunID)
 		encoded, err := json.MarshalIndent(run, "", "  ")
@@ -140,6 +144,10 @@ func (s *AdaptationStore) ProtectAuditRun(runID, reason string) error {
 	if reason == "" {
 		return fmt.Errorf("audit run protection reason is required")
 	}
+	return s.withLegacyFormalMutation("protect audit run", func() error { return s.protectAuditRun(runID, reason) })
+}
+
+func (s *AdaptationStore) protectAuditRun(runID, reason string) error {
 	return s.io.WithWriteLock(func() error {
 		protection, err := s.loadAuditRunProtectionUnlocked(runID)
 		if err != nil {
@@ -172,32 +180,34 @@ func (s *AdaptationStore) MarkAuditRunApplied(runID, appliedAt string) error {
 	if !validAuditRunID(runID) || strings.TrimSpace(appliedAt) == "" {
 		return fmt.Errorf("audit run id and applied_at are required")
 	}
-	return s.io.WithWriteLock(func() error {
-		protection, err := s.loadAuditRunProtectionUnlocked(runID)
-		if err != nil {
-			return err
-		}
-		if !slices.Contains(protection.Reasons, "repair") {
-			protection.Reasons = append(protection.Reasons, "repair")
-			sort.Strings(protection.Reasons)
-		}
-		protection.AppliedAt = appliedAt
-		if err := s.io.WriteJSONUnlocked(auditRunProtectionFile(runID), protection); err != nil {
-			return err
-		}
-		index, err := s.loadAuditRunIndexUnlocked()
-		if err != nil {
-			return err
-		}
-		for i := range index.Runs {
-			if index.Runs[i].RunID != runID {
-				continue
+	return s.withLegacyFormalMutation("mark audit run applied", func() error {
+		return s.io.WithWriteLock(func() error {
+			protection, err := s.loadAuditRunProtectionUnlocked(runID)
+			if err != nil {
+				return err
 			}
-			index.Runs[i].ProtectedReasons = append([]string(nil), protection.Reasons...)
-			index.Runs[i].AppliedAt = appliedAt
-			return s.io.WriteJSONUnlocked(adaptationAuditIndexFile, index)
-		}
-		return fmt.Errorf("audit run %s not found", runID)
+			if !slices.Contains(protection.Reasons, "repair") {
+				protection.Reasons = append(protection.Reasons, "repair")
+				sort.Strings(protection.Reasons)
+			}
+			protection.AppliedAt = appliedAt
+			if err := s.io.WriteJSONUnlocked(auditRunProtectionFile(runID), protection); err != nil {
+				return err
+			}
+			index, err := s.loadAuditRunIndexUnlocked()
+			if err != nil {
+				return err
+			}
+			for i := range index.Runs {
+				if index.Runs[i].RunID != runID {
+					continue
+				}
+				index.Runs[i].ProtectedReasons = append([]string(nil), protection.Reasons...)
+				index.Runs[i].AppliedAt = appliedAt
+				return s.io.WriteJSONUnlocked(adaptationAuditIndexFile, index)
+			}
+			return fmt.Errorf("audit run %s not found", runID)
+		})
 	})
 }
 
@@ -224,7 +234,7 @@ func (s *AdaptationStore) CompareAuditRuns(baseRunID, candidateRunID string) (*a
 }
 
 func (s *AdaptationStore) SaveRepairApplication(application adaptaudit.RepairApplication) error {
-	return s.io.WriteJSON(adaptationRepairApplicationFile, application)
+	return s.withLegacyFormalMutation("save adaptation audit repair", func() error { return s.io.WriteJSON(adaptationRepairApplicationFile, application) })
 }
 func (s *AdaptationStore) LoadRepairApplication() (*adaptaudit.RepairApplication, error) {
 	var application adaptaudit.RepairApplication
@@ -238,26 +248,52 @@ func (s *AdaptationStore) LoadRepairApplication() (*adaptaudit.RepairApplication
 }
 
 func (s *AdaptationStore) ensureLegacyAuditRun(report adaptaudit.Report) error {
-	entries, err := s.loadAuditRunIndex()
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries.Runs {
-		if entry.ReportDigest == report.Digest {
-			return nil
+	var existing adaptaudit.AuditRunIndex
+	if err := s.io.ReadJSON(adaptationAuditIndexFile, &existing); err == nil {
+		for _, entry := range existing.Runs {
+			if entry.ReportDigest == report.Digest {
+				return nil
+			}
 		}
 	}
-	runID := "legacy-" + report.Digest[:16]
-	run := adaptaudit.AuditRun{
-		RunID: runID, Kind: adaptaudit.AuditKindContract, Trigger: adaptaudit.AuditTriggerLegacy,
-		StartedAt: time.Unix(0, 0).UTC().Format(time.RFC3339), CompletedAt: time.Unix(0, 0).UTC().Format(time.RFC3339),
-		Status: report.Status, Scope: report.Scope, InputDigest: report.InputDigest, ReportDigest: report.Digest,
-		EngineVersion: "legacy", Report: report,
+	return s.withLegacyFormalMutation("migrate legacy adaptation audit", func() error {
+		entries, err := s.loadAuditRunIndexWithinLegacyMutation()
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries.Runs {
+			if entry.ReportDigest == report.Digest {
+				return nil
+			}
+		}
+		runID := "legacy-" + report.Digest[:16]
+		run := adaptaudit.AuditRun{
+			RunID: runID, Kind: adaptaudit.AuditKindContract, Trigger: adaptaudit.AuditTriggerLegacy,
+			StartedAt: time.Unix(0, 0).UTC().Format(time.RFC3339), CompletedAt: time.Unix(0, 0).UTC().Format(time.RFC3339),
+			Status: report.Status, Scope: report.Scope, InputDigest: report.InputDigest, ReportDigest: report.Digest,
+			EngineVersion: "legacy", Report: report,
+		}
+		if err := s.saveAuditRun(run); err != nil {
+			return err
+		}
+		return s.protectAuditRun(runID, "legacy")
+	})
+}
+
+func (s *AdaptationStore) loadAuditRunIndexWithinLegacyMutation() (adaptaudit.AuditRunIndex, error) {
+	var index adaptaudit.AuditRunIndex
+	if err := s.io.ReadJSON(adaptationAuditIndexFile, &index); err == nil {
+		return index, nil
 	}
-	if err := s.SaveAuditRun(run); err != nil {
-		return err
-	}
-	return s.ProtectAuditRun(runID, "legacy")
+	err := s.io.WithWriteLock(func() error {
+		var rebuildErr error
+		index, rebuildErr = s.rebuildAuditRunIndexUnlocked()
+		if rebuildErr != nil {
+			return rebuildErr
+		}
+		return s.io.WriteJSONUnlocked(adaptationAuditIndexFile, index)
+	})
+	return index, err
 }
 
 func (s *AdaptationStore) loadAuditReportWithoutMigration() (*adaptaudit.Report, error) {
@@ -289,16 +325,18 @@ func (s *AdaptationStore) loadAuditRunIndexUnlocked() (adaptaudit.AuditRunIndex,
 }
 
 func (s *AdaptationStore) rebuildAuditRunIndex() (adaptaudit.AuditRunIndex, error) {
-	s.io.mu.Lock()
-	defer s.io.mu.Unlock()
-	index, err := s.rebuildAuditRunIndexUnlocked()
-	if err != nil {
-		return index, err
-	}
-	if err := s.io.WriteJSONUnlocked(adaptationAuditIndexFile, index); err != nil {
-		return index, err
-	}
-	return index, nil
+	var rebuilt adaptaudit.AuditRunIndex
+	err := s.withLegacyFormalMutation("rebuild adaptation audit index", func() error {
+		s.io.mu.Lock()
+		defer s.io.mu.Unlock()
+		var err error
+		rebuilt, err = s.rebuildAuditRunIndexUnlocked()
+		if err != nil {
+			return err
+		}
+		return s.io.WriteJSONUnlocked(adaptationAuditIndexFile, rebuilt)
+	})
+	return rebuilt, err
 }
 
 func (s *AdaptationStore) rebuildAuditRunIndexUnlocked() (adaptaudit.AuditRunIndex, error) {
