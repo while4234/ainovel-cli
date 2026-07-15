@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-15 deployment checkpoint: rebuilt the Vite UI and
+  `D:\ainovel\ainovel-cli.exe` from current `main` (`ba3c0f2`), stopped the old
+  9898 listener only after successful builds, and started PID 45924 with the
+  existing preview runtime root. `/`, `/api/runtime`, `/api/projects`, and one
+  real-project summary snapshot passed; 23 projects are visible and persisted
+  active adaptation work resumed.
 - 2026-07-15 `b329b6c` `fix: serialize pending migration formal writes`:
   Closes PR-05's final known Major issue by making pending structure recovery
   and the following formal write share one outer revision transaction with
