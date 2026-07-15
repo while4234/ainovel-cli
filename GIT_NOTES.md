@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-15 `b5d7a34` `fix: complete planning audit recovery lifecycle`:
+  makes the planning-audit write tool strict and fully describes nested
+  dimensions/issues, carries the exact chapter repair location through routing,
+  and invalidates the repaired chapter's failed audit so the gate re-audits it
+  instead of dispatching the same repair forever. Chapter repair/re-audit was
+  verified against the live stuck project, targeted regressions passed 10/10,
+  all affected package tests pass, `go vet ./...` passes, and the full
+  `go test ./... -count=1` suite passes.
 - 2026-07-15 `c523df7` `fix: expose planning chapter audit scope ids`:
   adds the missing `scope_id` field to the model-visible
   `save_original_planning_audit` schema so chapter-detail audits can submit the
