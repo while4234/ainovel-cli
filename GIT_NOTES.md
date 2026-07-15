@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-15 `pending` `fix: expose planning chapter audit scope ids`:
+- 2026-07-15 `c523df7` `fix: expose planning chapter audit scope ids`:
   adds the missing `scope_id` field to the model-visible
   `save_original_planning_audit` schema so chapter-detail audits can submit the
   stable ID already required by routing and runtime validation instead of
