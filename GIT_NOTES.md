@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-15 `ebb7c2b` `fix: serialize pending migration formal writes`:
+- 2026-07-15 `b329b6c` `fix: serialize pending migration formal writes`:
   Closes PR-05's final known Major issue by making pending structure recovery
   and the following formal write share one outer revision transaction with
   `revision -> migration -> IO` lock order. Timeout/failpoint tests cover
