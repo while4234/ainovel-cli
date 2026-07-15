@@ -28,6 +28,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-15 diagnosis checkpoint: a fresh project's simulation-profile analysis
+  is incorrectly projected as `writing/running` because the background action
+  overlay sets the generic snapshot running and `applyWritingState` treats any
+  generic running snapshot as prose writing. The project has a unique ID and no
+  novel/chapter artifacts, so same-name deleted-project residue is ruled out.
+  No business-code change was made; the focused regression and fix remain next.
 - 2026-07-15 deployment checkpoint: rebuilt the Vite UI and
   `D:\ainovel\ainovel-cli.exe` from current `main` (`ba3c0f2`), stopped the old
   9898 listener only after successful builds, and started PID 45924 with the
