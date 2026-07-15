@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-15 `PR-05 checkpoint pending commit`:
+- 2026-07-15 `c19dac1` `feat: checkpoint adaptation revision workflow`:
   Captures the complete uncommitted adaptation-revision implementation and its
   Store/Host/HTTP regression suite for upload to `main`. This is intentionally
   a checkpoint, not an accepted PR-05 completion: pending structure migration
