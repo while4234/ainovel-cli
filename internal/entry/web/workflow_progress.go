@@ -122,9 +122,9 @@ func currentWorkflowModelStage(step string) string {
 		return bootstrap.StageCoCreate
 	case "source", "source_baseline", "analysis":
 		return bootstrap.StageSourceAnalysis
-	case "structure", "proposal", "volumes":
+	case "structure", "volume_plan", "proposal", "volumes":
 		return bootstrap.StageSkeleton
-	case "planning_review", "proposal_review", "outlines":
+	case "planning_review", "chapter_outline", "proposal_review", "outlines":
 		return bootstrap.StageDetailOutline
 	case "writing":
 		return bootstrap.StageWriting

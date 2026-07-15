@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
@@ -97,6 +98,43 @@ func TestWorkflowProgressReportsTheRunningStageModel(t *testing.T) {
 	})
 	if progress.CurrentStep != "writing" || progress.CurrentModel != "model-a" {
 		t.Fatalf("running progress = step %q model %q, want writing/model-a", progress.CurrentStep, progress.CurrentModel)
+	}
+}
+
+func TestCurrentWorkflowModelStageCoversNormalAndAdaptationPlanning(t *testing.T) {
+	tests := []struct {
+		step string
+		want string
+	}{
+		{step: "volume_plan", want: bootstrap.StageSkeleton},
+		{step: "chapter_outline", want: bootstrap.StageDetailOutline},
+		{step: "analysis", want: bootstrap.StageSourceAnalysis},
+		{step: "contract", want: bootstrap.StageCoCreate},
+		{step: "proposal_review", want: bootstrap.StageDetailOutline},
+	}
+
+	for _, test := range tests {
+		t.Run(test.step, func(t *testing.T) {
+			if got := currentWorkflowModelStage(test.step); got != test.want {
+				t.Fatalf("currentWorkflowModelStage(%q) = %q, want %q", test.step, got, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowProgressReportsNormalPlanningModel(t *testing.T) {
+	session, err := NewProjectSession(ProjectManifest{ID: "project-planning-model-progress"}, newFakeProjectHost())
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	progress := session.workflowProgress(host.UISnapshot{PlanningReview: &host.PlanningReviewSummary{
+		Status: domain.PlanningReviewStatusCollecting,
+		Kind:   domain.PlanningReviewKindBlueprint,
+	}})
+	if progress.CurrentStep != "volume_plan" || progress.Status != WorkflowStatusRunning || progress.CurrentModel != "model-a" {
+		t.Fatalf("planning progress = step %q status %q model %q, want volume_plan/running/model-a", progress.CurrentStep, progress.Status, progress.CurrentModel)
 	}
 }
 
