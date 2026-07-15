@@ -14,7 +14,7 @@ import (
 type ProgressStore struct {
 	io                 *IO
 	migration          *structureMigration
-	withLegacyMutation func(string, func() error) error
+	withLegacyMutation func(string, *structureMigration, func() error) error
 }
 
 func NewProgressStore(io *IO, migrations ...*structureMigration) *ProgressStore {
@@ -41,10 +41,11 @@ func (s *ProgressStore) withReadLock(fn func() error) error {
 }
 
 func (s *ProgressStore) withWriteLock(fn func() error) error {
-	return s.withRecovery(func() error {
-		return s.withLegacyFormalMutation("write formal progress", func() error {
-			return s.withOwnedWriteLock(fn)
-		})
+	if s.withLegacyMutation == nil {
+		return s.withRecovery(func() error { return s.withOwnedWriteLock(fn) })
+	}
+	return s.withLegacyFormalMutation("write formal progress", func() error {
+		return s.withOwnedWriteLock(fn)
 	})
 }
 
@@ -55,7 +56,7 @@ func (s *ProgressStore) withLegacyFormalMutation(operation string, mutation func
 	if s.withLegacyMutation == nil {
 		return mutation()
 	}
-	return s.withLegacyMutation(operation, mutation)
+	return s.withLegacyMutation(operation, s.migration, mutation)
 }
 
 // withOwnedWriteLock is reserved for Store operations that already hold the

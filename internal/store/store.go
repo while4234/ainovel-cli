@@ -53,9 +53,9 @@ func NewStore(dir string) *Store {
 	migration.recoverWithRevisionFence = revisions.withLegacyMutation
 	io := newIO(dir)
 	outline := NewOutlineStore(io, identity, migration)
-	outline.withLegacyMutation = revisions.withLegacyMutation
+	outline.withLegacyMutation = revisions.withLegacyMigrationMutation
 	adaptation := NewAdaptationStore(newIO(dir), identity, migration)
-	adaptation.withLegacyMutation = revisions.withLegacyMutation
+	adaptation.withLegacyMutation = revisions.withLegacyMigrationMutation
 	store := &Store{
 		dir:                    dir,
 		Progress:               NewProgressStore(newIO(dir), migration),
@@ -78,7 +78,7 @@ func NewStore(dir string) *Store {
 		Revisions:              revisions,
 		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir), outline),
 	}
-	store.Progress.withLegacyMutation = revisions.withLegacyMutation
+	store.Progress.withLegacyMutation = revisions.withLegacyMigrationMutation
 	// Recover the outer service journal before the inner structure journal. The
 	// outer snapshot may intentionally restore a pending structure generation.
 	commandRecoveryPending, commandRecoveryErr := store.adaptationRevisionCommandPending()
@@ -142,7 +142,7 @@ func recoverStructureMigrationIfPending(revisions *RevisionStore, migration *str
 	if err != nil || !pending {
 		return err
 	}
-	return revisions.withLegacyMutation(operation, migration.recover)
+	return revisions.withLegacyMigrationMutation(operation, migration, func() error { return nil })
 }
 
 // CheckConsistency 对事实层做一次浅层校验，用于启动/恢复时生成 warning。
@@ -230,7 +230,7 @@ func (s *Store) ExpandArc(volumeIdx, arcIdx int, chapters []domain.OutlineEntry)
 	if err != nil {
 		return err
 	}
-	return s.Revisions.withLegacyMutation("expand adaptation arc", func() error {
+	return s.Revisions.withLegacyMigrationMutation("expand adaptation arc", s.Outline.migration, func() error {
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
 		return s.saveLayeredStructureMutation("expand_arc", requestID, false, false, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
@@ -245,7 +245,7 @@ func (s *Store) AppendVolume(vol domain.VolumeOutline) error {
 	if err != nil {
 		return err
 	}
-	return s.Revisions.withLegacyMutation("append adaptation volume", func() error {
+	return s.Revisions.withLegacyMigrationMutation("append adaptation volume", s.Outline.migration, func() error {
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
 		return s.saveLayeredStructureMutation("append_volume", requestID, false, true, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
@@ -262,7 +262,7 @@ func (s *Store) AppendSkeletonVolume(vol domain.VolumeOutline) error {
 	if err != nil {
 		return err
 	}
-	return s.Revisions.withLegacyMutation("append adaptation skeleton volume", func() error {
+	return s.Revisions.withLegacyMigrationMutation("append adaptation skeleton volume", s.Outline.migration, func() error {
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
 		return s.saveLayeredStructureMutation("append_skeleton_volume", requestID, true, false, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {

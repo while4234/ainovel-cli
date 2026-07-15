@@ -14,7 +14,7 @@ type OutlineStore struct {
 	io                 *IO
 	identity           structureIdentity
 	migration          *structureMigration
-	withLegacyMutation func(string, func() error) error
+	withLegacyMutation func(string, *structureMigration, func() error) error
 }
 
 func NewOutlineStore(io *IO, identity structureIdentity, migrations ...*structureMigration) *OutlineStore {
@@ -243,7 +243,7 @@ func (s *OutlineStore) withLegacyFormalMutation(operation string, mutation func(
 	if s.withLegacyMutation == nil {
 		return mutation()
 	}
-	return s.withLegacyMutation(operation, mutation)
+	return s.withLegacyMutation(operation, s.migration, mutation)
 }
 
 func outlineMigrationPayloads(entries []domain.OutlineEntry, layered []domain.VolumeOutline) ([]migrationPayload, error) {

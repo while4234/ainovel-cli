@@ -68,7 +68,7 @@ func (s *AdaptationStore) withLegacyFormalMutation(operation string, mutation fu
 	if s.withLegacyMutation == nil {
 		return mutation()
 	}
-	return s.withLegacyMutation(operation, mutation)
+	return s.withLegacyMutation(operation, s.migration, mutation)
 }
 
 func (s *AdaptationStore) saveRevisionRuntimeRaw(runtime domain.AdaptationRevisionRuntime) error {

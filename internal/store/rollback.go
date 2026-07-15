@@ -41,7 +41,7 @@ func (s *Store) Rollback(req domain.RollbackRequest) (domain.RollbackResult, err
 		return domain.RollbackResult{}, fmt.Errorf("rollback confirmation is required")
 	}
 	var result domain.RollbackResult
-	err := s.Revisions.withLegacyMutation("roll back project structure and adaptation state", func() error {
+	err := s.Revisions.withLegacyMigrationMutation("roll back project structure and adaptation state", s.Outline.migration, func() error {
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
 

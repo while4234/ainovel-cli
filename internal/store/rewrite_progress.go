@@ -6,7 +6,7 @@ import "github.com/voocel/ainovel-cli/internal/domain"
 // final chapters while preserving CompletedChapters for rewrite-queue routing.
 func (s *Store) ReconcilePendingRewriteProgress() (*domain.Progress, error) {
 	var reconciled *domain.Progress
-	err := s.Revisions.withLegacyMutation("reconcile pending rewrite progress", func() error {
+	err := s.Revisions.withLegacyMigrationMutation("reconcile pending rewrite progress", s.Outline.migration, func() error {
 		var err error
 		reconciled, err = s.reconcilePendingRewriteProgressOwned()
 		return err

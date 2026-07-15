@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-15 `ebb7c2b` `fix: serialize pending migration formal writes`:
+  Closes PR-05's final known Major issue by making pending structure recovery
+  and the following formal write share one outer revision transaction with
+  `revision -> migration -> IO` lock order. Timeout/failpoint tests cover
+  Progress, cross-Store retry, adaptation check writers, ResetGenerated safety,
+  and byte-identical active/prepared/publication rejection. Full sequential Go,
+  vet, 213 UI tests/build, and real normal/adaptation project clone validation
+  passed; original real projects remained byte-identical. The GPT-5.6 Pro
+  PR-06～PR-09 replanning prompt is saved under `docs/`.
 - 2026-07-15 `c19dac1` `feat: checkpoint adaptation revision workflow`:
   Captures the complete uncommitted adaptation-revision implementation and its
   Store/Host/HTTP regression suite for upload to `main`. This is intentionally

@@ -31,7 +31,7 @@ func (b *OutlineRepairBatch) Repairable() bool {
 // repair window inside the expanded layered arc.
 func (s *Store) FindDuplicateOutlineRepairBatch(progress *domain.Progress) (*OutlineRepairBatch, error) {
 	var batch *OutlineRepairBatch
-	err := s.Revisions.withLegacyMutation("recover or checkpoint outline repair", func() error {
+	err := s.Revisions.withLegacyMigrationMutation("recover or checkpoint outline repair", s.Outline.migration, func() error {
 		recoveredProgress, recoverErr := s.completePendingOutlineRepairFinalization(progress)
 		if recoverErr != nil {
 			return recoverErr
@@ -217,7 +217,7 @@ func (s *Store) RepairArcOutline(volumeIdx, arcIdx int, chapters []domain.Outlin
 // already-expanded arc. Passing fromChapter/toChapter as zero preserves the
 // historical full-arc repair behavior.
 func (s *Store) RepairArcOutlineRange(volumeIdx, arcIdx, fromChapter, toChapter int, chapters []domain.OutlineEntry) error {
-	return s.Revisions.withLegacyMutation("repair adaptation outline", func() error {
+	return s.Revisions.withLegacyMigrationMutation("repair adaptation outline", s.Outline.migration, func() error {
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
 

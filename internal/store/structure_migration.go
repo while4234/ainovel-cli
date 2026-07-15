@@ -314,7 +314,11 @@ func (m *structureMigration) saveRequested(
 	return m.executeUnlocked(&log)
 }
 
-func (m *structureMigration) recover() error {
+// recoverWithinRevisionTransaction is the raw migration recovery primitive for
+// callers that already hold the project's revision transaction. It must never
+// acquire the revision fence itself; doing so would re-enter the non-reentrant
+// per-project transaction mutex.
+func (m *structureMigration) recoverWithinRevisionTransaction() error {
 	if m == nil {
 		return nil
 	}

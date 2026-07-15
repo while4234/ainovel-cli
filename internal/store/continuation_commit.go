@@ -41,7 +41,7 @@ func (s *Store) CommitContinuationPlan(expectedRevision int) (*domain.Continuati
 		return nil, fmt.Errorf("revision store is required before continuation commit")
 	}
 	var committed *domain.ContinuationSnapshot
-	err := s.Revisions.withLegacyMutation("commit continuation plan", func() error {
+	err := s.Revisions.withLegacyMigrationMutation("commit continuation plan", s.Outline.migration, func() error {
 		var commitErr error
 		committed, commitErr = s.commitContinuationPlanOwned(expectedRevision)
 		return commitErr
@@ -347,11 +347,6 @@ func (s *Store) writeContinuationCommitUnlocked(outline []domain.OutlineEntry, l
 }
 
 func (s *Store) recoverContinuationCommitUnlocked() error {
-	if s.Outline.migration != nil {
-		if err := s.Outline.migration.recover(); err != nil {
-			return err
-		}
-	}
 	var journal continuationCommitJournal
 	if err := s.Continuation.io.ReadJSONUnlocked(continuationCommitJournalFile, &journal); err != nil {
 		if os.IsNotExist(err) {

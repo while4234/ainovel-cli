@@ -42,7 +42,7 @@ func (s *Store) ReviseChapterOutline(chapter int, revised domain.OutlineEntry) e
 		return s.RepairArcOutlineRange(volume, arc, chapter, chapter, []domain.OutlineEntry{revised})
 	}
 
-	return s.Revisions.withLegacyMutation("revise flat adaptation chapter outline", func() error {
+	return s.Revisions.withLegacyMigrationMutation("revise flat adaptation chapter outline", s.Outline.migration, func() error {
 		return s.reviseFlatChapterOutline(chapter, revised)
 	})
 }

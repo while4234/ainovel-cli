@@ -42,7 +42,7 @@ type AdaptationStore struct {
 	io                 *IO
 	identity           structureIdentity
 	migration          *structureMigration
-	withLegacyMutation func(string, func() error) error
+	withLegacyMutation func(string, *structureMigration, func() error) error
 }
 
 func NewAdaptationStore(io *IO, identity structureIdentity, migrations ...*structureMigration) *AdaptationStore {

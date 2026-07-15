@@ -115,6 +115,13 @@ type RevisionStore struct {
 }
 
 func (s *RevisionStore) withLegacyMutation(operation string, mutation func() error) error {
+	return s.withLegacyMigrationMutation(operation, nil, mutation)
+}
+
+// withLegacyMigrationMutation owns the complete formal-write transaction. It
+// checks revision ownership before recovering a structure journal, then keeps
+// the same revision transaction held through the caller's mutation.
+func (s *RevisionStore) withLegacyMigrationMutation(operation string, migration *structureMigration, mutation func() error) error {
 	if s == nil || s.io == nil {
 		return fmt.Errorf("revision store is required before %s", operation)
 	}
@@ -128,6 +135,11 @@ func (s *RevisionStore) withLegacyMutation(operation string, mutation func() err
 		}
 		if state.CommandFence != nil {
 			return fmt.Errorf("legacy adaptation formal write %q is blocked by prepared service command %q: %w", operation, state.CommandFence.Operation, ErrRevisionCommandInProgress)
+		}
+		if migration != nil {
+			if err := migration.recoverWithinRevisionTransaction(); err != nil {
+				return fmt.Errorf("recover structure migration before %s: %w", operation, err)
+			}
 		}
 		return mutation()
 	})
