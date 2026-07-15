@@ -28,6 +28,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-15 `ee084c5` `fix: recover interrupted planning safely`:
+  prevents a committed normal-planning checkpoint from being replaced by a
+  stale co-create log after restart, reconciles `collecting` planning with an
+  idle Host as paused/recoverable instead of permanently running, returns a
+  complete workflow snapshot from manual resume, and surfaces a visible reason
+  when resume does not start. Focused and full Web tests, 216 UI tests, UI/Go
+  builds, Web vet, and diff checks passed. The repository-wide parallel Go run
+  hit two Windows TempDir cleanup flakes; both named tests passed together when
+  rerun in isolation. Port 9898 was rebuilt and restarted as PID 137628; the
+  affected project resumed at `volume_plan`, reports `grok-4.5`, has two active
+  agents, and emitted new streaming events.
 - 2026-07-15 `8dd42ef` `fix: show planning workflow model`:
   Maps the actual normal-planning workflow IDs `volume_plan` and
   `chapter_outline` to their configured skeleton/detail-outline model routes,
