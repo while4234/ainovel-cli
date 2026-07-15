@@ -129,12 +129,37 @@ func TestWorkflowProgressReportsNormalPlanningModel(t *testing.T) {
 	}
 	defer session.Close()
 
-	progress := session.workflowProgress(host.UISnapshot{PlanningReview: &host.PlanningReviewSummary{
-		Status: domain.PlanningReviewStatusCollecting,
-		Kind:   domain.PlanningReviewKindBlueprint,
-	}})
+	progress := session.workflowProgress(host.UISnapshot{
+		IsRunning:    true,
+		RuntimeState: "running",
+		PlanningReview: &host.PlanningReviewSummary{
+			Status: domain.PlanningReviewStatusCollecting,
+			Kind:   domain.PlanningReviewKindBlueprint,
+		},
+	})
 	if progress.CurrentStep != "volume_plan" || progress.Status != WorkflowStatusRunning || progress.CurrentModel != "model-a" {
 		t.Fatalf("planning progress = step %q status %q model %q, want volume_plan/running/model-a", progress.CurrentStep, progress.Status, progress.CurrentModel)
+	}
+}
+
+func TestNormalWorkflowProgressMarksInterruptedPlanningRecoverable(t *testing.T) {
+	progress := normalWorkflowProgress("project-interrupted-planning", host.UISnapshot{
+		RuntimeState: "idle",
+		PlanningReview: &host.PlanningReviewSummary{
+			Status: domain.PlanningReviewStatusCollecting,
+			Kind:   domain.PlanningReviewKindBlueprint,
+		},
+	}, nil)
+
+	if progress.Status != WorkflowStatusPaused || !progress.Recoverable {
+		t.Fatalf("planning progress status/recoverable = %q/%v, want paused/true", progress.Status, progress.Recoverable)
+	}
+	if progress.Error == "" || progress.NextAction == nil || progress.NextAction.ID != "resume_project" {
+		t.Fatalf("planning recovery metadata = error %q action %+v", progress.Error, progress.NextAction)
+	}
+	step := workflowStepByID(progress.Steps, "volume_plan")
+	if step == nil || step.Status != WorkflowStatusPaused || step.Message != progress.Error {
+		t.Fatalf("interrupted planning step = %+v, want paused with recovery message", step)
 	}
 }
 

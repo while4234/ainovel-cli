@@ -2853,6 +2853,9 @@ func (s *ProjectSession) coCreateRestoreBlockedByProjectState() bool {
 		return false
 	}
 	st := storepkg.NewStore(outputDir)
+	if review, err := st.RunMeta.PlanningReview(); err == nil && review != nil {
+		return true
+	}
 	if progress, err := st.Progress.Load(); err == nil && progress != nil {
 		if progress.Phase == domain.PhaseWriting || progress.Phase == domain.PhaseComplete {
 			return true

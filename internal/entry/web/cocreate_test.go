@@ -1351,6 +1351,64 @@ func TestProjectAdaptCoCreateCheckpointIgnoredWhenPlanExists(t *testing.T) {
 	}
 }
 
+func TestProjectNormalCoCreateLegacyLogIgnoredWhenPlanningReviewExists(t *testing.T) {
+	for _, status := range []string{
+		domain.PlanningReviewStatusPending,
+		domain.PlanningReviewStatusCollecting,
+	} {
+		t.Run(status, func(t *testing.T) {
+			outputDir := t.TempDir()
+			st := storepkg.NewStore(outputDir)
+			if err := st.Init(); err != nil {
+				t.Fatalf("Init store: %v", err)
+			}
+			if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+				Status: status,
+				Kind:   domain.PlanningReviewKindBlueprint,
+				Brief:  "accepted planning brief",
+			}); err != nil {
+				t.Fatalf("seed planning review: %v", err)
+			}
+
+			entry := webCoCreateLogEntry{
+				InputHistory: []host.CoCreateMessage{{Role: "user", Content: "write a normal novel"}},
+				RawResponse:  "<reply>ready</reply><draft>## stale draft</draft><ready>true</ready>",
+				ParsedReply:  "ready",
+				ParsedDraft:  "## stale draft",
+				ParsedReady:  true,
+			}
+			data, err := json.Marshal(entry)
+			if err != nil {
+				t.Fatalf("marshal co-create log: %v", err)
+			}
+			logPath := filepath.Join(outputDir, filepath.FromSlash(webCoCreateLogRelPath))
+			if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+				t.Fatalf("mkdir co-create log dir: %v", err)
+			}
+			if err := os.WriteFile(logPath, append(data, '\n'), 0o644); err != nil {
+				t.Fatalf("write co-create log: %v", err)
+			}
+
+			session, err := NewProjectSession(ProjectManifest{
+				ID:        "normal-planning-" + status,
+				OutputDir: outputDir,
+			}, newFakeProjectHost())
+			if err != nil {
+				t.Fatalf("NewProjectSession: %v", err)
+			}
+			defer session.Close()
+
+			if restored := session.CoCreateState(); restored != nil {
+				t.Fatalf("stale co-create log restored over planning review: %+v", restored)
+			}
+			checkpointPath := filepath.Join(outputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))
+			if _, err := os.Stat(checkpointPath); !os.IsNotExist(err) {
+				t.Fatalf("stale co-create checkpoint should remain absent, stat err=%v", err)
+			}
+		})
+	}
+}
+
 func TestProjectCoCreateRestoresFromLegacyLog(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

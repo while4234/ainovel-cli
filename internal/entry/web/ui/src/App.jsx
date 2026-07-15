@@ -768,6 +768,14 @@ export function isProjectScopedResponseCurrent(projectId, activeProjectId) {
   return Boolean(expectedProjectId) && expectedProjectId === String(activeProjectId || '').trim();
 }
 
+export function resumeNoOpMessage(response = {}) {
+  if (response?.running !== false) {
+    return '';
+  }
+  const label = String(response?.label || '').trim();
+  return label ? `恢复未启动：${label}` : '恢复未启动，请检查当前阶段后重试。';
+}
+
 export function prepareProjectOpenSnapshot(requestSeq, currentRequestSeq, snapshotData) {
   if (requestSeq !== currentRequestSeq || !snapshotData?.project?.id) {
     return null;
@@ -1940,7 +1948,7 @@ export default function App() {
     }
   };
 
-  const runAction = async (action) => {
+  const runAction = async (action, { reportResumeNoOp = false } = {}) => {
     if (!activeProject?.id) {
       return;
     }
@@ -1949,6 +1957,9 @@ export default function App() {
     try {
       const data = await action(activeProject.id);
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      if (reportResumeNoOp) {
+        setError(resumeNoOpMessage(data));
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -4481,7 +4492,7 @@ export default function App() {
                   setSideView('continuation');
                   return;
                 }
-                runAction(resumeProject);
+                runAction(resumeProject, { reportResumeNoOp: true });
               }}
               type="button"
             >

@@ -816,7 +816,7 @@ func (s *Server) handleProjectResume(w http.ResponseWriter, r *http.Request, id 
 		writeProjectLifecycleError(w, err)
 		return
 	}
-	snapshot := session.Snapshot()
+	snapshot := session.WebSnapshot()
 	writeJSON(w, http.StatusOK, projectActionResponse{
 		Project:  manifest,
 		Snapshot: snapshot,

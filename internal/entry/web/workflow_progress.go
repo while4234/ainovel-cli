@@ -199,9 +199,17 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 	if review := snapshot.PlanningReview; review != nil &&
 		(review.Status == domain.PlanningReviewStatusPending || review.Status == domain.PlanningReviewStatusCollecting) {
 		progress.CurrentStep, progress.Status, progress.NextAction = normalPlanningReviewProgress(progress, review)
+		if review.Status == domain.PlanningReviewStatusCollecting && !snapshot.IsRunning {
+			progress.Status = WorkflowStatusPaused
+			progress.Recoverable = true
+			progress.Error = "规划任务已中断，可从检查点恢复"
+			progress.NextAction = nextWorkflowAction(progress, "resume_project", "恢复规划", false)
+		}
 		progress.Steps = completeStepsBefore(steps, progress.CurrentStep)
 		message := "正在生成规划"
-		if progress.Status == WorkflowStatusWaitingConfirmation {
+		if progress.Error != "" {
+			message = progress.Error
+		} else if progress.Status == WorkflowStatusWaitingConfirmation {
 			message = "规划已生成，等待审核"
 		} else if review.Kind == domain.PlanningReviewKindVolumeSplit {
 			message = "正在逐弧生成细纲并进行原创质量审核"
