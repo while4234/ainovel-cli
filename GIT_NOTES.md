@@ -28,12 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-15 pending `fix: distinguish background work from prose writing`:
+- 2026-07-15 `95d7743c` `fix: distinguish background work from prose writing`:
   `applyWritingState` now requires durable writing evidence before projecting a
   generic running snapshot as prose writing, so simulation-profile analysis on
   a blank new project no longer completes every planning stage. Existing phase/chapter/
   word-backed writing progress is preserved. The focused regression, full Go
-  test suite, `go vet ./...`, and `git diff --check` pass.
+  test suite, `go vet ./...`, and `git diff --check` pass. A clean detached
+  build was deployed without including unrelated working-tree changes; port
+  9898 now runs PID 133616 and the real 59-source project reports every novel
+  workflow step idle after its simulation analysis completed.
 - 2026-07-15 deployment checkpoint: rebuilt the Vite UI and
   `D:\ainovel\ainovel-cli.exe` from current `main` (`ba3c0f2`), stopped the old
   9898 listener only after successful builds, and started PID 45924 with the
