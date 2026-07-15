@@ -42,6 +42,7 @@ import {
   normalizeCoCreateDecisionAnswers,
   outlineRevisionSuccessMessage,
   prepareProjectOpenSnapshot,
+  shouldHydratePendingPlanningReviewDetails,
   shouldHydrateProjectOpenSnapshot,
   PROJECT_OPEN_TIMEOUT_MS,
   resolveCoCreateStructureChoice,
@@ -281,6 +282,27 @@ describe('project open snapshot preparation', () => {
     })).toBe(true);
     expect(shouldHydrateProjectOpenSnapshot({
       PlanningReview: { Status: 'confirmed', Kind: 'chapter_outline' }
+    })).toBe(false);
+  });
+
+  it('hydrates a completed chapter review when any generated chapter still has summary-only data', () => {
+    expect(shouldHydratePendingPlanningReviewDetails({
+      PlanningReview: { Status: 'pending', Kind: 'chapter_outline' },
+      Outline: [
+        { Chapter: 8, Title: '完整章节', CoreEvent: '完整核心事件', Hook: '完整钩子', Scenes: ['场景'] },
+        { Chapter: 9, Title: '仅有摘要字段' }
+      ]
+    })).toBe(true);
+    expect(shouldHydratePendingPlanningReviewDetails({
+      PlanningReview: { Status: 'pending', Kind: 'chapter_outline' },
+      Outline: [
+        { Chapter: 8, Title: '完整章节', CoreEvent: '完整核心事件' },
+        { Chapter: 9, Title: '完整章节', Scenes: ['场景'] }
+      ]
+    })).toBe(false);
+    expect(shouldHydratePendingPlanningReviewDetails({
+      PlanningReview: { Status: 'collecting', Kind: 'chapter_outline' },
+      Outline: [{ Chapter: 9, Title: '生成中' }]
     })).toBe(false);
   });
 });

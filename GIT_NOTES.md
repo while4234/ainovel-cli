@@ -28,6 +28,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-15 `pending` `fix: hydrate completed planning review details`:
+  confirms the affected 93-chapter project has complete persisted outlines,
+  detects mixed full/summary-only chapter data when generation transitions to
+  pending review, and automatically fetches one full snapshot without losing
+  newer runtime state. The focused and full UI suites (69/222 tests), full Go
+  suite, `go vet ./...`, production UI/Go builds, restart smoke checks, and live
+  resume into chapter 2 passed. Port 9898 runs PID 124012.
 - 2026-07-15 `ee084c5` `fix: recover interrupted planning safely`:
   prevents a committed normal-planning checkpoint from being replaced by a
   stale co-create log after restart, reconciles `collecting` planning with an

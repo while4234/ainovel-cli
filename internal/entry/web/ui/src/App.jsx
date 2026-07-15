@@ -176,7 +176,7 @@ import {
   normalizeContinuationSnapshot,
   withExpectedRevision
 } from './continuation.js';
-import { createWorkbenchState, eventStatus, reduceWebEvent, reduceWebEvents, visibleStreamRounds } from './events.js';
+import { createWorkbenchState, eventStatus, mergeSnapshotUpdate, reduceWebEvent, reduceWebEvents, visibleStreamRounds } from './events.js';
 import { nextSSEReconnectDelay, parseSSEMessage } from './sse.js';
 import { cacheHitLabel, usageConfidence, usageCoverage } from './usage-ui.js';
 import { UsageObservabilityTable } from './usage-observability.jsx';
@@ -795,6 +795,16 @@ export function shouldHydrateProjectOpenSnapshot(snapshot) {
   return getCoCreatePlanningReview(snapshot).active;
 }
 
+export function shouldHydratePendingPlanningReviewDetails(snapshot) {
+  const review = getCoCreatePlanningReview(snapshot);
+  if (!review.pending || review.kind !== 'chapter_outline' || review.chapters.length === 0) {
+    return false;
+  }
+  return review.chapters.some((chapter) => (
+    !chapter.coreEvent && !chapter.hook && chapter.scenes.length === 0
+  ));
+}
+
 export default function App() {
   const [setup, setSetup] = useState(() => ({
     ...createSetupState(),
@@ -842,6 +852,7 @@ export default function App() {
 	const projectOpenSeqRef = useRef(0);
   const projectOpenAbortRef = useRef(null);
   const activeProjectIdRef = useRef('');
+  const planningReviewHydrationProjectRef = useRef('');
 
   const snapshot = workbench.snapshot;
   const continuationSnapshot = useMemo(
@@ -944,6 +955,46 @@ export default function App() {
   const isCurrentProject = useCallback((projectId) => (
     isProjectScopedResponseCurrent(projectId, activeProjectIdRef.current)
   ), []);
+
+  const pendingPlanningReviewNeedsHydration = shouldHydratePendingPlanningReviewDetails(snapshot);
+
+  useEffect(() => {
+    const projectId = activeProject?.id;
+    if (!projectId || projectOpen.status === 'loading' || !pendingPlanningReviewNeedsHydration ||
+        planningReviewHydrationProjectRef.current === projectId) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    planningReviewHydrationProjectRef.current = projectId;
+    getSnapshot(projectId, { signal: controller.signal })
+      .then((data) => {
+        if (controller.signal.aborted || !isCurrentProject(projectId) || !data?.snapshot) {
+          return;
+        }
+        setWorkbench((previous) => {
+          if (!shouldHydratePendingPlanningReviewDetails(previous.snapshot)) {
+            return previous;
+          }
+          return {
+            ...previous,
+            snapshot: mergeSnapshotUpdate(data.snapshot, previous.snapshot)
+          };
+        });
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted && isCurrentProject(projectId)) {
+          setError(`详细章节大纲加载失败：${err.message}`);
+        }
+      })
+      .finally(() => {
+        if (planningReviewHydrationProjectRef.current === projectId) {
+          planningReviewHydrationProjectRef.current = '';
+        }
+      });
+
+    return () => controller.abort();
+  }, [activeProject?.id, isCurrentProject, pendingPlanningReviewNeedsHydration, projectOpen.status]);
 
   const refreshCurrentProjectSnapshot = useCallback(async (projectId) => {
     if (!isCurrentProject(projectId)) {
@@ -1477,12 +1528,19 @@ export default function App() {
       // these fields through mergeSnapshotUpdate.
       let openedSnapshot = snapshotData.snapshot;
       if (shouldHydrateProjectOpenSnapshot(openedSnapshot)) {
-        const detailedSnapshotData = await getSnapshot(projectId, { signal: controller.signal });
-        if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
-          return;
+        planningReviewHydrationProjectRef.current = projectId;
+        try {
+          const detailedSnapshotData = await getSnapshot(projectId, { signal: controller.signal });
+          if (projectOpenSeqRef.current !== requestSeq || !isCurrentProject(projectId)) {
+            return;
+          }
+          openedSnapshot = detailedSnapshotData.snapshot || openedSnapshot;
+          setWorkbench((previous) => ({ ...previous, snapshot: openedSnapshot }));
+        } finally {
+          if (planningReviewHydrationProjectRef.current === projectId) {
+            planningReviewHydrationProjectRef.current = '';
+          }
         }
-        openedSnapshot = detailedSnapshotData.snapshot || openedSnapshot;
-        setWorkbench((previous) => ({ ...previous, snapshot: openedSnapshot }));
       }
 
       // Project-scoped reads update last_accessed_at. Keep them sequential on
