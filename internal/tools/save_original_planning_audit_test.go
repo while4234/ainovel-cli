@@ -9,8 +9,18 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-func TestSaveOriginalPlanningAuditSchemaExposesChapterScopeID(t *testing.T) {
-	toolSchema := NewSaveOriginalPlanningAuditTool(nil).Schema()
+func TestSaveOriginalPlanningAuditSchemaIsStrictCompatible(t *testing.T) {
+	tool := NewSaveOriginalPlanningAuditTool(nil)
+	if !tool.StrictSchema() {
+		t.Fatal("save_original_planning_audit should use strict tool calling")
+	}
+	toolSchema := tool.Schema()
+	requireRequiredFields(t, toolSchema,
+		"scope", "scope_id", "volume", "arc", "from_volume", "to_volume",
+		"from_chapter", "to_chapter", "verdict", "summary", "dimensions", "issues",
+	)
+	requireAllPropertiesRequired(t, toolSchema)
+
 	properties, ok := toolSchema["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("schema properties missing: %#v", toolSchema["properties"])
@@ -21,6 +31,22 @@ func TestSaveOriginalPlanningAuditSchemaExposesChapterScopeID(t *testing.T) {
 	}
 	if got := scopeID["type"]; got != "string" {
 		t.Fatalf("scope_id type = %v, want string", got)
+	}
+	for _, field := range []string{"dimensions", "issues"} {
+		arraySchema, ok := properties[field].(map[string]any)
+		if !ok {
+			t.Fatalf("%s schema missing: %#v", field, properties[field])
+		}
+		itemSchema, ok := arraySchema["items"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s.items schema missing: %#v", field, arraySchema["items"])
+		}
+		requireAllPropertiesRequired(t, itemSchema)
+		if field == "dimensions" {
+			requireRequiredFields(t, itemSchema, "name", "score", "comment")
+		} else {
+			requireRequiredFields(t, itemSchema, "severity", "volume", "arc", "from_chapter", "to_chapter", "description", "repair_instruction")
+		}
 	}
 }
 
@@ -42,8 +68,10 @@ func TestSaveOriginalPlanningAuditAcceptsChapterScopeID(t *testing.T) {
 
 	args, err := json.Marshal(map[string]any{
 		"scope": "chapter", "scope_id": chapterID, "from_chapter": 1, "to_chapter": 1,
+		"volume": 0, "arc": 0, "from_volume": 0, "to_volume": 0,
 		"verdict": "pass", "summary": "the current chapter is causally complete",
 		"dimensions": originalAuditTestDimensions("causal_value", "character_logic", "continuity", "scene_progression", "hook_and_pacing", "originality"),
+		"issues":     []map[string]any{},
 	})
 	if err != nil {
 		t.Fatal(err)

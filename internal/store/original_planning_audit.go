@@ -311,12 +311,16 @@ func findOriginalPlanningAudit(audits []domain.OriginalPlanningAudit, scope stri
 	return nil
 }
 
-// InvalidateRepair removes the repaired arc audit plus enclosing volume/book
-// audits. Earlier accepted arc audits remain valid; the enclosing gates are
-// always rerun against the repaired causal chain.
-func (s *OriginalPlanningAuditStore) InvalidateRepair(volume, arc int) error {
+// InvalidateRepair consumes chapter failures in the repaired window and
+// removes the repaired arc plus enclosing volume/book audits. Earlier chapter
+// passes outside the repair window remain valid; every enclosing gate reruns
+// against the repaired causal chain.
+func (s *OriginalPlanningAuditStore) InvalidateRepair(volume, arc, fromChapter, toChapter int) error {
 	if volume <= 0 || arc <= 0 {
 		return fmt.Errorf("repair audit invalidation requires volume and arc")
+	}
+	if (fromChapter == 0) != (toChapter == 0) || fromChapter < 0 || toChapter < fromChapter {
+		return fmt.Errorf("repair audit invalidation requires a valid chapter window or 0-0")
 	}
 	return s.io.WithWriteLock(func() error {
 		var audits []domain.OriginalPlanningAudit
@@ -328,7 +332,9 @@ func (s *OriginalPlanningAuditStore) InvalidateRepair(volume, arc int) error {
 		}
 		kept := audits[:0]
 		for _, audit := range audits {
-			remove := audit.Scope == "book" ||
+			removeChapter := audit.Scope == "chapter" && ((fromChapter > 0 && audit.FromChapter <= toChapter && audit.ToChapter >= fromChapter) ||
+				(fromChapter == 0 && audit.Volume == volume && audit.Arc == arc))
+			remove := removeChapter || audit.Scope == "book" ||
 				(audit.Scope == "book_batch" && audit.FromVolume <= volume && audit.ToVolume >= volume) ||
 				(audit.Scope == "volume" && audit.Volume == volume) ||
 				(audit.Scope == "arc" && audit.Volume == volume && audit.Arc == arc)

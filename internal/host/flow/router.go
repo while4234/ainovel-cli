@@ -300,8 +300,8 @@ func routeOriginalPlanning(s State) *Instruction {
 			w.Volume, w.Arc, w.FromChapter, w.ToChapter, payload, w.FromChapter, w.ToChapter, w.ToChapter-w.FromChapter+1, w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
 	case "audit_chapter":
 		return &Instruction{Agent: "editor", Reason: "修订章节需独立签名审核", Task: fmt.Sprintf(
-			"只审核普通原创第%d章当前细纲。调用 novel_context(scope=outline_range, from=%d, to=%d)，不得读取正文、原著或扩大范围。然后调用 save_original_planning_audit(scope=chapter, scope_id=当前章节稳定ID, from_chapter=%d, to_chapter=%d)；必须按 causal_value、character_logic、continuity、scene_progression、hook_and_pacing、originality 六维审核。",
-			w.FromChapter, w.FromChapter, w.ToChapter, w.FromChapter, w.ToChapter)}
+			"只审核第%d卷第%d弧普通原创第%d章当前细纲。调用 novel_context(scope=outline_range, from=%d, to=%d)，不得读取正文、原著或扩大范围。然后调用 save_original_planning_audit(scope=chapter, scope_id=当前章节稳定ID, volume=%d, arc=%d, from_volume=0, to_volume=0, from_chapter=%d, to_chapter=%d)；必须按 causal_value、character_logic、continuity、scene_progression、hook_and_pacing、originality 六维审核。通过时 verdict=pass 且 issues=[]；不通过时 verdict=revise，issues 首项必须填写 volume=%d、arc=%d、from_chapter=%d、to_chapter=%d、问题描述和定点修复指令。",
+			w.Volume, w.Arc, w.FromChapter, w.FromChapter, w.ToChapter, w.Volume, w.Arc, w.FromChapter, w.ToChapter, w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
 	case "audit_arc":
 		return &Instruction{Agent: "editor", Reason: "本批原创细纲需独立弧级审核", Task: fmt.Sprintf(
 			"作为专业原创小说审稿人，分批审核第%d卷第%d弧的第%d-%d章（本批%d章）。只调用 novel_context(scope=planning) 与 novel_context(scope=outline_range, from=%d, to=%d)，禁止读取正文或任何原著，禁止扩大本批范围。检查目标-阻力-选择-结果因果链、人物动机与状态变化、每章独立推进价值、前后连续性、节奏钩子、套路化与批次重复。必须额外核对世界规则与时间线：重生、穿越、回档前的物理实体不能无来源出现在当前时间线；任何决定高潮胜负的证据都必须在本批或已确认前文中有可验证来源与前置动作，不能在回收章临时发明。然后调用 save_original_planning_audit(scope=arc, volume=%d, arc=%d, from_chapter=%d, to_chapter=%d)，dimensions 必须恰含 causal_progression、character_logic、chapter_value、continuity、hook_and_pacing、originality。任一维度低于7或存在重大问题必须 verdict=revise，并把首个问题精确定位到本卷本弧及修复指令。",

@@ -72,6 +72,55 @@ func TestSkeletonAuditProjectsDetailedChaptersOutOfItsSignature(t *testing.T) {
 	}
 }
 
+func TestOriginalPlanningRepairConsumesRejectedChapterAndRerunsAudit(t *testing.T) {
+	st := NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	volumes := originalAuditSignatureStructure()
+	secondID := domain.LegacyStructureID("audit-test", domain.StructureKindChapter, "volume-1/arc-1/chapter-2")
+	volumes[0].Arcs[0].Chapters = append(volumes[0].Arcs[0].Chapters, domain.OutlineEntry{
+		ID: secondID, Chapter: 2, Title: "Refusal", CoreEvent: "the heroine refuses the demand", Hook: "the family escalates", Scenes: []string{"refuse the demand"},
+	})
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	firstID := volumes[0].Arcs[0].Chapters[0].ID
+	for _, audit := range []domain.OriginalPlanningAudit{
+		{Scope: "chapter", ScopeID: firstID, Volume: 1, Arc: 1, FromChapter: 1, ToChapter: 1, Verdict: "pass", Summary: "chapter one passes"},
+		{
+			Scope: "chapter", ScopeID: secondID, Volume: 1, Arc: 1, FromChapter: 2, ToChapter: 2, Verdict: "revise", Summary: "chapter two conflicts",
+			Issues: []domain.OriginalPlanningAuditIssue{{Severity: "major", Volume: 1, Arc: 1, FromChapter: 2, ToChapter: 2, Description: "conflicting refusal count", RepairInstruction: "make the count consistent"}},
+		},
+		{Scope: "arc", Volume: 1, Arc: 1, FromChapter: 1, ToChapter: 2, Verdict: "pass", Summary: "arc passes"},
+		{Scope: "volume", Volume: 1, Verdict: "pass", Summary: "volume passes"},
+		{Scope: "book_batch", FromVolume: 1, ToVolume: 1, Verdict: "pass", Summary: "batch passes"},
+		{Scope: "book", Verdict: "pass", Summary: "book passes"},
+	} {
+		if err := st.OriginalPlanningAudits.Save(audit); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := st.OriginalPlanningAudits.InvalidateRepair(1, 1, 2, 2); err != nil {
+		t.Fatal(err)
+	}
+	audits, err := st.OriginalPlanningAudits.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audits) != 1 || audits[0].Scope != "chapter" || audits[0].ScopeID != firstID || audits[0].Verdict != "pass" {
+		t.Fatalf("audits after repair invalidation = %+v, want only chapter one pass", audits)
+	}
+	work, err := st.OriginalPlanningAudits.NextWork(st.Outline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work == nil || work.Kind != "audit_chapter" || work.FromChapter != 2 || work.ToChapter != 2 {
+		t.Fatalf("next work after repair = %+v, want chapter two re-audit", work)
+	}
+}
+
 func originalAuditSignatureStructure() []domain.VolumeOutline {
 	return []domain.VolumeOutline{{
 		ID: domain.LegacyStructureID("audit-test", domain.StructureKindVolume, "volume-1"), Index: 1, Title: "Opening", Theme: "trust",

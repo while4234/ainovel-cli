@@ -25,6 +25,29 @@ func TestRouteOriginalPlanningAlternatesGenerationAndIndependentAudit(t *testing
 	}
 }
 
+func TestRouteOriginalPlanningChapterAuditCarriesRepairLocation(t *testing.T) {
+	state := State{
+		Progress:       &domain.Progress{Phase: domain.PhaseOutline},
+		PlanningReview: &domain.PlanningReview{Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindVolumeSplit},
+		OriginalPlanningWork: &storepkg.OriginalPlanningWork{
+			Kind: "audit_chapter", Volume: 2, Arc: 3, FromChapter: 9, ToChapter: 9,
+		},
+	}
+
+	got := Route(state)
+	if got == nil || got.Agent != "editor" {
+		t.Fatalf("chapter audit route = %+v", got)
+	}
+	for _, want := range []string{
+		"第2卷第3弧", "scope_id=当前章节稳定ID", "volume=2", "arc=3",
+		"from_volume=0", "from_chapter=9", "issues=[]", "issues 首项必须填写 volume=2、arc=3",
+	} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("chapter audit task missing %q: %s", want, got.Task)
+		}
+	}
+}
+
 func TestRouteOriginalPlanningBookAuditUsesDigestOnly(t *testing.T) {
 	state := State{
 		Progress:             &domain.Progress{Phase: domain.PhaseOutline},
