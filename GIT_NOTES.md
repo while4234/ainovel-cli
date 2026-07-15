@@ -28,7 +28,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-15 `pending` `fix: hydrate completed planning review details`:
+- 2026-07-15 `7347baa` `fix: hydrate completed planning review details`:
   confirms the affected 93-chapter project has complete persisted outlines,
   detects mixed full/summary-only chapter data when generation transitions to
   pending review, and automatically fetches one full snapshot without losing
