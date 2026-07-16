@@ -133,6 +133,11 @@ func (s *RevisionStore) withLegacyMigrationMutation(operation string, migration 
 		if state.ActiveSessionID != "" {
 			return fmt.Errorf("legacy adaptation formal write %q is blocked by active revision %s: %w", operation, state.ActiveSessionID, ErrActiveRevisionBlocksNormalFlow)
 		}
+		if manuscriptID, err := activeManuscriptRevisionID(s.io); err != nil {
+			return err
+		} else if manuscriptID != "" {
+			return fmt.Errorf("legacy formal write %q is blocked by active manuscript revision %s: %w", operation, manuscriptID, ErrActiveRevisionBlocksNormalFlow)
+		}
 		if state.CommandFence != nil {
 			return fmt.Errorf("legacy adaptation formal write %q is blocked by prepared service command %q: %w", operation, state.CommandFence.Operation, ErrRevisionCommandInProgress)
 		}
@@ -192,6 +197,11 @@ func (s *RevisionStore) AcquireNormalFlow(owner string) (*NormalFlowLease, error
 			return err
 		}
 		if state.ActiveSessionID != "" {
+			return ErrActiveRevisionBlocksNormalFlow
+		}
+		if manuscriptID, err := activeManuscriptRevisionID(s.io); err != nil {
+			return err
+		} else if manuscriptID != "" {
 			return ErrActiveRevisionBlocksNormalFlow
 		}
 		if state.CommandFence != nil {
@@ -401,6 +411,11 @@ func (s *RevisionStore) claimCommandFence(key, operation, fingerprint string) (*
 		}
 		if state.NormalLease != nil {
 			return fmt.Errorf("%w: normal flow is still running", ErrRevisionCommandInProgress)
+		}
+		if manuscriptID, err := activeManuscriptRevisionID(s.io); err != nil {
+			return err
+		} else if manuscriptID != "" {
+			return ErrRevisionCommandInProgress
 		}
 		tokenBytes := make([]byte, 32)
 		if _, err := rand.Read(tokenBytes); err != nil {
@@ -726,6 +741,11 @@ func (s *RevisionStore) Start(policy domain.RevisionPolicy, input StartRevisionI
 			return err
 		}
 		if state.ActiveSessionID != "" {
+			return ErrActiveRevisionExists
+		}
+		if manuscriptID, loadErr := activeManuscriptRevisionID(s.io); loadErr != nil {
+			return loadErr
+		} else if manuscriptID != "" {
 			return ErrActiveRevisionExists
 		}
 		if state.NormalLease != nil {
@@ -1574,6 +1594,13 @@ func (s *RevisionStore) commitOptimistic(
 		if found, receiptErr := matchingRevisionReceipt(current, idempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
 			committed = found
 			return receiptErr
+		}
+		if operation == "start" {
+			if manuscriptID, loadErr := activeManuscriptRevisionID(s.io); loadErr != nil {
+				return loadErr
+			} else if manuscriptID != "" {
+				return ErrActiveRevisionExists
+			}
 		}
 		if current.Generation != expectedGeneration {
 			if operation == "start" && current.ActiveSessionID != "" {

@@ -4179,3 +4179,51 @@ h2 {
     max-width: none;
   }
 }
+.manuscript-revision-workbench {
+  margin: 12px 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.manuscript-revision-workbench > summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.manuscript-revision-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.manuscript-revision-controls label,
+.manuscript-instruction {
+  display: grid;
+  gap: 4px;
+}
+
+.manuscript-instruction {
+  grid-column: 1 / -1;
+}
+
+.manuscript-instruction textarea {
+  min-height: 72px;
+}
+
+.manuscript-current-candidate {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.manuscript-current-candidate pre {
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 760px) {
+  .manuscript-current-candidate { grid-template-columns: 1fr; }
+}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/host"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
@@ -85,24 +86,49 @@ func (s *Server) handleProjectChapterRevise(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	session, manifest, err := s.sessions.Open(id)
-	if err != nil {
-		writeProjectSessionError(w, err)
+	manifest, openErr := s.store.OpenProject(id)
+	if openErr != nil {
+		writeProjectSessionError(w, fmt.Errorf("%w: %v", ErrProjectNotFound, openErr))
 		return
 	}
-	result, err := session.ReviseChapter(req)
-	if err != nil {
-		writeChapterRevisionError(w, err)
+	st := storepkg.NewStore(manifest.OutputDir)
+	stableID, stableErr := stableChapterIDForNumber(st, req.Chapter)
+	if stableErr != nil {
+		writeManuscriptError(w, stableErr)
 		return
 	}
-	snapshot := session.Snapshot()
-	revision := apiChapterRevisionFromHost(result)
-	writeJSON(w, http.StatusOK, projectActionResponse{
-		Project:  manifest,
-		Snapshot: snapshot,
-		Running:  snapshot.IsRunning,
-		Revision: &revision,
-	})
+	{
+		kind := domain.ManuscriptInstructionRewrite
+		if req.Mode == host.ChapterRevisionModePolish {
+			kind = domain.ManuscriptInstructionPolish
+		}
+		keyPayload, _ := json.Marshal(struct {
+			ChapterID   string
+			Instruction string
+			Kind        domain.ManuscriptInstructionKind
+		}{stableID, req.Instruction, kind})
+		session, _, sessionErr := s.sessions.Open(id)
+		if sessionErr != nil {
+			writeProjectSessionError(w, sessionErr)
+			return
+		}
+		service := session.ManuscriptRevisionService()
+		if service == nil {
+			writeManuscriptError(w, fmt.Errorf("production manuscript writer and auditor are unavailable"))
+			return
+		}
+		preview, previewErr := service.PreviewContext(r.Context(), host.ManuscriptPreviewRequest{
+			ChapterID: stableID, Instruction: req.Instruction, Kind: kind,
+		}, "legacy-chapter-revise:"+domain.ContentSignature(keyPayload))
+		if previewErr != nil {
+			writeManuscriptError(w, previewErr)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"project": manifest, "preview": preview, "awaiting_confirmation": true, "running": false,
+		})
+		return
+	}
 }
 
 func decodeChapterRevisionRequest(r *http.Request) (host.ChapterRevisionRequest, error) {

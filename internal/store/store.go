@@ -16,10 +16,11 @@ import (
 type Store struct {
 	dir string
 
-	recoveryMu             sync.Mutex
-	recoveryErr            error
-	commandRecoveryErr     error
-	publicationRecoveryErr error
+	recoveryMu                     sync.Mutex
+	recoveryErr                    error
+	commandRecoveryErr             error
+	publicationRecoveryErr         error
+	manuscriptPublicationFailpoint func(string) error
 
 	Progress               *ProgressStore
 	Outline                *OutlineStore
@@ -40,6 +41,7 @@ type Store struct {
 	Adaptation             *AdaptationStore
 	Continuation           *ContinuationStore
 	Revisions              *RevisionStore
+	ManuscriptRevisions    *ManuscriptRevisionStore
 	OriginalPlanningAudits *OriginalPlanningAuditStore
 
 	crossMu sync.Mutex // 保护跨域原子操作
@@ -76,6 +78,7 @@ func NewStore(dir string) *Store {
 		Adaptation:             adaptation,
 		Continuation:           NewContinuationStore(newIO(dir), migration),
 		Revisions:              revisions,
+		ManuscriptRevisions:    NewManuscriptRevisionStore(newIO(dir), revisions),
 		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir), outline),
 	}
 	store.Progress.withLegacyMutation = revisions.withLegacyMigrationMutation
@@ -86,10 +89,11 @@ func NewStore(dir string) *Store {
 		commandRecoveryErr = store.WithAdaptationRevisionCommand(func() error { return nil })
 	}
 	publicationRecoveryErr := store.recoverNormalRevisionPublication()
+	manuscriptPublicationRecoveryErr := store.recoverManuscriptPublication()
 	structureRecoveryErr := recoverStructureMigrationIfPending(revisions, migration, "recover pending structure migration during startup")
 	store.commandRecoveryErr = commandRecoveryErr
 	store.publicationRecoveryErr = publicationRecoveryErr
-	store.recoveryErr = errors.Join(commandRecoveryErr, publicationRecoveryErr, structureRecoveryErr)
+	store.recoveryErr = errors.Join(commandRecoveryErr, publicationRecoveryErr, manuscriptPublicationRecoveryErr, structureRecoveryErr)
 	// Recover before constructing cache-bearing sub-stores such as checkpoints;
 	// otherwise they could retain the pre-transaction file generation in memory.
 	store.Checkpoints = newCheckpointStore(io, store.recoveryErr == nil)
@@ -214,7 +218,7 @@ func (s *Store) FoundationMissing() []string {
 func (s *Store) Init() error {
 	return s.Progress.io.EnsureDirs([]string{
 		"chapters", "summaries", "drafts", "reviews", "meta", "meta/runtime", "meta/runtime/tasks", "meta/sessions", "meta/sessions/agents",
-		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/continuation", "meta/revisions", "meta/deai", "meta/deai/checks", "meta/original_planning",
+		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/continuation", "meta/revisions", "meta/revisions/manuscript", "meta/revisions/content/sha256", "meta/deai", "meta/deai/checks", "meta/original_planning",
 	})
 }
 

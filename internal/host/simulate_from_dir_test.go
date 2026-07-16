@@ -64,10 +64,11 @@ func newSimulationTestHost(t *testing.T) *Host {
 }
 
 func firstSimulationError(events <-chan sim.Event) error {
+	var first error
 	for ev := range events {
-		if ev.Err != nil {
-			return ev.Err
+		if first == nil && ev.Err != nil {
+			first = ev.Err
 		}
 	}
-	return nil
+	return first
 }

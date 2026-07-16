@@ -10,7 +10,7 @@ async function request(path, options = {}) {
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    const error = new Error(data?.error || `${response.status} ${response.statusText}`);
+    const error = new Error(data?.error?.message || data?.error || `${response.status} ${response.statusText}`);
     error.data = data;
     throw error;
   }
@@ -105,6 +105,26 @@ export function listStyles() {
 
 export function listProjects() {
   return request('/api/projects');
+}
+
+export function getManuscriptTree(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/manuscript/tree`);
+}
+
+export function getManuscriptChapter(projectId, stableId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/manuscript/chapters/${encodeURIComponent(stableId)}`);
+}
+
+export function previewManuscriptRevision(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/manuscript/revision/preview`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function commandManuscriptRevision(projectId, payload) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/manuscript/revision/command`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function getManuscriptRevisionBatches(projectId, revisionId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/manuscript/revisions/${encodeURIComponent(revisionId)}/batches`);
 }
 
 export function getResumeSchedule() {

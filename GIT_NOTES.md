@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-16 accepted PR-01 (this local commit), `feat: add safe manuscript revision publication`:
+  adds candidate-isolated manuscript polish/rewrite sessions, stable-ID scope and
+  revision/idempotency boundaries, independently signed contract/adaptation audits,
+  atomic publication recovery/rollback, normal-path recursive source isolation,
+  Web/API/UI integration, and focused/full regression coverage. Eleven fresh
+  fix/re-review rounds closed all Blocker/Major/Minor findings. Final independent
+  gates passed full sequential Go tests/vet, 222 UI tests, production build,
+  focused `-count=5` adversarial groups, gofmt/diff/static/source/planning gates.
+  This pipeline creates the commit locally and does not push it.
 - 2026-07-15 `7347baa` `fix: hydrate completed planning review details`:
   confirms the affected 93-chapter project has complete persisted outlines,
   detects mixed full/summary-only chapter data when generation transitions to

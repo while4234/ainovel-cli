@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { WorkflowProgressPanel } from './workflow-progress.jsx';
+import { ManuscriptRevisionWorkbench } from './ManuscriptRevisionWorkbench.jsx';
 import {
   analyzeAdaptationSource,
   analyzeSimulation,
@@ -4580,6 +4581,7 @@ export default function App() {
         ) : null}
 
         <WorkflowProgressPanel key={activeProject?.id || 'no-project'} snapshot={snapshot} />
+        <ManuscriptRevisionWorkbench projectId={activeProject?.id || ''} />
 
         {error ? <div className="error-banner">{error}</div> : null}
 

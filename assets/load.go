@@ -22,17 +22,23 @@ var stylesFS embed.FS
 
 // Prompts 表示嵌入的提示词集合。
 type Prompts struct {
-	Coordinator           string
-	ArchitectShort        string
-	ArchitectLong         string
-	Writer                string
-	Editor                string
-	ImportFoundation      string
-	ImportFoundationMerge string
-	ImportAnalyzer        string
-	AdaptationPlanner     string
-	SimulationSource      string
-	SimulationMerge       string
+	Coordinator                 string
+	ArchitectShort              string
+	ArchitectLong               string
+	Writer                      string
+	Editor                      string
+	ImportFoundation            string
+	ImportFoundationMerge       string
+	ImportAnalyzer              string
+	AdaptationPlanner           string
+	SimulationSource            string
+	SimulationMerge             string
+	NormalManuscriptPolish      string
+	NormalManuscriptRewrite     string
+	NormalManuscriptAudit       string
+	AdaptationManuscriptPolish  string
+	AdaptationManuscriptRewrite string
+	AdaptationManuscriptAudit   string
 }
 
 // Bundle 表示运行所需的静态资源集合。
@@ -116,17 +122,23 @@ func loadReferences(style string) tools.References {
 
 func loadPrompts() Prompts {
 	return Prompts{
-		Coordinator:           loadRolePrompt("prompts/coordinator.md", "coordinator"),
-		ArchitectShort:        loadRolePrompt("prompts/architect-short.md", "architect"),
-		ArchitectLong:         loadRolePrompt("prompts/architect-long.md", "architect"),
-		Writer:                loadRolePrompt("prompts/writer.md", "writer"),
-		Editor:                loadRolePrompt("prompts/editor.md", "editor"),
-		ImportFoundation:      loadSystemPrompt("prompts/import-foundation.md"),
-		ImportFoundationMerge: loadSystemPrompt("prompts/import-foundation-merge.md"),
-		ImportAnalyzer:        loadSystemPrompt("prompts/import-chapter-analyzer.md"),
-		AdaptationPlanner:     loadSystemPrompt("prompts/adaptation-planner.md"),
-		SimulationSource:      loadSystemPrompt("prompts/simulation-source.md"),
-		SimulationMerge:       loadSystemPrompt("prompts/simulation-merge.md"),
+		Coordinator:                 loadRolePrompt("prompts/coordinator.md", "coordinator"),
+		ArchitectShort:              loadRolePrompt("prompts/architect-short.md", "architect"),
+		ArchitectLong:               loadRolePrompt("prompts/architect-long.md", "architect"),
+		Writer:                      loadRolePrompt("prompts/writer.md", "writer"),
+		Editor:                      loadRolePrompt("prompts/editor.md", "editor"),
+		ImportFoundation:            loadSystemPrompt("prompts/import-foundation.md"),
+		ImportFoundationMerge:       loadSystemPrompt("prompts/import-foundation-merge.md"),
+		ImportAnalyzer:              loadSystemPrompt("prompts/import-chapter-analyzer.md"),
+		AdaptationPlanner:           loadSystemPrompt("prompts/adaptation-planner.md"),
+		SimulationSource:            loadSystemPrompt("prompts/simulation-source.md"),
+		SimulationMerge:             loadSystemPrompt("prompts/simulation-merge.md"),
+		NormalManuscriptPolish:      loadSystemPrompt("prompts/manuscript-normal-polish.md"),
+		NormalManuscriptRewrite:     loadSystemPrompt("prompts/manuscript-normal-rewrite.md"),
+		NormalManuscriptAudit:       loadSystemPrompt("prompts/manuscript-normal-audit.md"),
+		AdaptationManuscriptPolish:  loadSystemPrompt("prompts/manuscript-adaptation-polish.md"),
+		AdaptationManuscriptRewrite: loadSystemPrompt("prompts/manuscript-adaptation-rewrite.md"),
+		AdaptationManuscriptAudit:   loadSystemPrompt("prompts/manuscript-adaptation-audit.md"),
 	}
 }
 

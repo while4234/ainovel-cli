@@ -175,7 +175,7 @@ func TestProjectRollbackPreviewAndConfirmRoutes(t *testing.T) {
 	}
 }
 
-func TestProjectChapterReviseCallsDeterministicHostFlow(t *testing.T) {
+func TestProjectChapterReviseFailsClosedWhenStableIDCannotResolve(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Chapter Revise")
@@ -189,26 +189,11 @@ func TestProjectChapterReviseCallsDeterministicHostFlow(t *testing.T) {
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusConflict {
 		t.Fatalf("chapter revise status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.reviseChapterCalls != 1 {
-		t.Fatalf("ReviseChapter calls = %d, want 1", fake.reviseChapterCalls)
-	}
-	if fake.reviseChapterRequest.Chapter != 2 ||
-		fake.reviseChapterRequest.Instruction != "加强悬念" ||
-		fake.reviseChapterRequest.Mode != host.ChapterRevisionModePolish {
-		t.Fatalf("ReviseChapter request = %+v", fake.reviseChapterRequest)
-	}
-	var body struct {
-		Running  bool               `json:"running"`
-		Revision apiChapterRevision `json:"revision"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("decode chapter revise response: %v", err)
-	}
-	if !body.Running || body.Revision.Chapter != 2 || body.Revision.Mode != host.ChapterRevisionModePolish {
-		t.Fatalf("unexpected chapter revise response: %+v", body)
+	if fake.reviseChapterCalls != 0 {
+		t.Fatalf("legacy ReviseChapter calls = %d, want 0", fake.reviseChapterCalls)
 	}
 }
 

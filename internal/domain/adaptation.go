@@ -639,21 +639,44 @@ type AdaptationChapterPlan struct {
 
 // AdaptationCheck is saved after a draft has been checked against the plan.
 type AdaptationCheck struct {
-	Chapter        int                        `json:"chapter"`
-	DraftSHA256    string                     `json:"draft_sha256"`
-	Passed         bool                       `json:"passed"`
-	Summary        string                     `json:"summary,omitempty"`
-	Issues         []string                   `json:"issues,omitempty"`
-	ChangeEvidence []AdaptationChangeEvidence `json:"change_evidence,omitempty"`
-	BodyEvidence   []AdaptationBodyEvidence   `json:"body_evidence,omitempty"`
-	CheckedAt      string                     `json:"checked_at"`
+	Chapter                        int                                     `json:"chapter"`
+	DraftSHA256                    string                                  `json:"draft_sha256"`
+	Passed                         bool                                    `json:"passed"`
+	Summary                        string                                  `json:"summary,omitempty"`
+	Issues                         []string                                `json:"issues,omitempty"`
+	ChangeEvidence                 []AdaptationChangeEvidence              `json:"change_evidence,omitempty"`
+	BodyEvidence                   []AdaptationBodyEvidence                `json:"body_evidence,omitempty"`
+	SemanticVerificationTaskSHA256 string                                  `json:"semantic_verification_task_sha256,omitempty"`
+	SemanticVerificationSHA256     string                                  `json:"semantic_verification_sha256,omitempty"`
+	SemanticVerificationReceipts   []AdaptationSemanticVerificationReceipt `json:"semantic_verification_receipts,omitempty"`
+	AbsenceAuditSHA256             string                                  `json:"absence_audit_sha256,omitempty"`
+	AbsenceAuditTaskSHA256         string                                  `json:"absence_audit_task_sha256,omitempty"`
+	AbsenceAuditProseRunes         int                                     `json:"absence_audit_prose_runes,omitempty"`
+	AbsenceAuditForbiddenIDs       []string                                `json:"absence_audit_forbidden_ids,omitempty"`
+	CheckedAt                      string                                  `json:"checked_at"`
+}
+
+type AdaptationSemanticVerificationReceipt struct {
+	Kind              string `json:"kind"`
+	ID                string `json:"id"`
+	SourceDescription string `json:"source_description,omitempty"`
+	Quote             string `json:"quote"`
+	StartRune         int    `json:"start_rune"`
+	EndRune           int    `json:"end_rune"`
+	Verdict           string `json:"verdict"`
+	TaskSignature     string `json:"task_signature"`
+	CandidateSHA256   string `json:"candidate_sha256"`
 }
 
 // AdaptationBodyEvidence is independently verified against the current draft;
 // unlike a writer summary, Quote must occur verbatim in prose.
 type AdaptationBodyEvidence struct {
-	EventID string `json:"event_id"`
-	Quote   string `json:"quote"`
+	EventID         string `json:"event_id"`
+	Quote           string `json:"quote"`
+	StartRune       int    `json:"start_rune"`
+	EndRune         int    `json:"end_rune"`
+	EvidenceSHA256  string `json:"evidence_sha256"`
+	CandidateSHA256 string `json:"candidate_sha256"`
 }
 
 // AdaptationChangeEvidence records how a required adaptation change was

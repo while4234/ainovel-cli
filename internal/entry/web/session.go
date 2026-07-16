@@ -190,6 +190,21 @@ type scheduledResumeHost interface {
 	SetScheduledResumeEnabled(bool) error
 }
 
+type manuscriptRevisionHost interface {
+	ManuscriptRevisionService() *host.ManuscriptRevisionService
+}
+
+func (s *ProjectSession) ManuscriptRevisionService() *host.ManuscriptRevisionService {
+	if s == nil {
+		return nil
+	}
+	h, ok := s.host.(manuscriptRevisionHost)
+	if !ok {
+		return nil
+	}
+	return h.ManuscriptRevisionService()
+}
+
 func NewSessionManager(cfg bootstrap.Config, bundle assets.Bundle, store *ProjectStore) *SessionManager {
 	manager := &SessionManager{
 		cfg:      cfg,

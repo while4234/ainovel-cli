@@ -86,6 +86,14 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 			"活动修订等待修订任务或人工确认",
 		), nil
 	}
+	if active, err := st.ManuscriptRevisions.Active(); err != nil {
+		return blockedAutoResume("manuscript_revision_read_failed", err), nil
+	} else if active != nil {
+		return makeAutoResumeDecision(
+			autoResumeState{Disposition: AutoResumeBlocked, Reason: "active_manuscript_revision", Revision: active.Revision},
+			"正文修订等待签名审核或人工确认",
+		), nil
+	}
 	if review, err := st.RunMeta.PlanningReview(); err != nil {
 		return blockedAutoResume("planning_review_read_failed", err), nil
 	} else if review != nil && review.Status == domain.PlanningReviewStatusPending {

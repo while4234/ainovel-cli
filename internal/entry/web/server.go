@@ -451,6 +451,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if strings.HasPrefix(action, "manuscript/") {
+		s.handleManuscriptRoute(w, r, id, action)
+		return
+	}
 	switch action {
 	case "":
 		s.handleProjectResource(w, r, id)

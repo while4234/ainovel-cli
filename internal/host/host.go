@@ -839,7 +839,17 @@ func (h *Host) refuseNormalFlowDuringRevision() error {
 		return fmt.Errorf("read active revision before normal flow: %w", err)
 	}
 	if active == nil {
-		return nil
+		if h.store.ManuscriptRevisions == nil {
+			return nil
+		}
+		manuscript, manuscriptErr := h.store.ManuscriptRevisions.Active()
+		if manuscriptErr != nil {
+			return fmt.Errorf("read active manuscript revision before normal flow: %w", manuscriptErr)
+		}
+		if manuscript == nil {
+			return nil
+		}
+		return fmt.Errorf("%w: %s", storepkg.ErrActiveRevisionBlocksNormalFlow, manuscript.RevisionID)
 	}
 	return fmt.Errorf("%w: %s", storepkg.ErrActiveRevisionBlocksNormalFlow, active.ID)
 }

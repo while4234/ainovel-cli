@@ -1532,7 +1532,8 @@ func rollbackTestWebAdaptationProposal() domain.AdaptationPlan {
 type fakeProjectHost struct {
 	mu sync.Mutex
 
-	snapshot host.UISnapshot
+	snapshot          host.UISnapshot
+	manuscriptService *host.ManuscriptRevisionService
 
 	resumeStarted              chan struct{}
 	resumeStartedOnce          sync.Once
@@ -1701,6 +1702,10 @@ type fakeProjectHost struct {
 	stream    chan string
 	done      chan struct{}
 	closeOnce sync.Once
+}
+
+func (f *fakeProjectHost) ManuscriptRevisionService() *host.ManuscriptRevisionService {
+	return f.manuscriptService
 }
 
 type coCreateProgressStep struct {
