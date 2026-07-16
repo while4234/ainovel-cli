@@ -7,6 +7,7 @@ import { RevisionCompare } from './RevisionCompare.jsx';
 import { RevisionHistory } from './RevisionHistory.jsx';
 import { RevisionStatus } from './RevisionStatus.jsx';
 import { ManuscriptReader } from './ManuscriptReader.jsx';
+import { ExpansionLauncher } from './ExpansionLauncher.jsx';
 import { discussManuscriptContext, invalidateManuscriptCache, invalidateManuscriptViews, loadManuscriptArtifact, loadManuscriptChunk, loadManuscriptHistory, loadManuscriptReviewDetail, loadManuscriptReviewPage, loadManuscriptTree, loadManuscriptVersion, previewManuscriptRestore, restoreManuscriptVersion } from './manuscript-api.js';
 import { flattenManuscriptTree, MANUSCRIPT_TABS, mergeParagraphChunk } from './manuscript-state.js';
 import { normalizeManuscriptMutationEvent } from './manuscript-events.js';
@@ -17,6 +18,7 @@ const newKey = () => `manuscript-workspace:${globalThis.crypto?.randomUUID?.() |
 export function ManuscriptWorkspace({ projectId, onDiscussionReady }) {
   const [open, setOpen] = useState(false), [drawerOpen, setDrawerOpen] = useState(false);
   const [tree, setTree] = useState([]), [selectedId, setSelectedId] = useState(''), [activeRevision, setActiveRevision] = useState(null);
+  const [expansionMeta, setExpansionMeta] = useState({ phase: '', mode: 'normal', structureRevision: 1, structureSignature: '' }), [expansionLaunch, setExpansionLaunch] = useState(null);
   const [tab, setTab] = useState('prose'), [current, setCurrent] = useState(null), [candidate, setCandidate] = useState(null);
   const [history, setHistory] = useState({ items: [], nextCursor: 0, hasMore: false }), [historyVersion, setHistoryVersion] = useState(null);
   const [restorePreview, setRestorePreview] = useState(null), [artifacts, setArtifacts] = useState({}), [reviewDetails, setReviewDetails] = useState({});
@@ -76,7 +78,7 @@ export function ManuscriptWorkspace({ projectId, onDiscussionReady }) {
     Object.values(requestRef.current).forEach((entry) => entry.controller.abort());
     requestRef.current = {};
     restoreKeys.current.clear();
-    setTree([]); setSelectedId(''); setActiveRevision(null); setCurrent(null); setCandidate(null);
+    setTree([]); setSelectedId(''); setActiveRevision(null); setCurrent(null); setCandidate(null); setExpansionMeta({ phase: '', mode: 'normal', structureRevision: 1, structureSignature: '' }); setExpansionLaunch(null);
     setHistory({ items: [], nextCursor: 0, hasMore: false }); setHistoryVersion(null); setRestorePreview(null); setHistoryRecovery(false);
     busyOwnerRef.current = '';
     tabRef.current = 'prose';
@@ -152,7 +154,7 @@ export function ManuscriptWorkspace({ projectId, onDiscussionReady }) {
       const data = await loadManuscriptTree(projectId, { signal: controller.signal });
       if (!isLatest('tree', sequence, epoch)) return null;
       const nodes = data.nodes || [];
-      setTree(nodes); setActiveRevision(data.active_revision || null);
+      setTree(nodes); setActiveRevision(data.active_revision || null); setExpansionMeta({ phase: data.phase || '', mode: data.mode || 'normal', structureRevision: data.structure_revision || 1, structureSignature: data.structure_signature || '' });
       const first = flattenManuscriptTree(nodes)[0]?.stable_id || '';
       if (selectFirst && !selectedId && first) await selectChapter(first, false, nodes, data.active_revision);
       return data;
@@ -320,8 +322,8 @@ export function ManuscriptWorkspace({ projectId, onDiscussionReady }) {
     <button type="button" className="manuscript-workspace-toggle" aria-expanded={open} onClick={() => { setOpen(!open); if (!open && !tree.length) void loadTree(); }}>专业长篇稿件工作区</button>
     {open ? <div className="manuscript-workspace">
       <button ref={treeButtonRef} className="manuscript-tree-open" type="button" tabIndex={drawerOpen ? -1 : 0} aria-haspopup="dialog" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}>打开稿件目录</button>
-      <div ref={drawerRef} className={drawerOpen ? 'manuscript-tree-drawer open' : 'manuscript-tree-drawer'} role="dialog" aria-modal={drawerOpen ? 'true' : undefined} aria-label="稿件目录抽屉"><ManuscriptTree nodes={tree} selectedId={selectedId} onSelect={selectChapter} onClose={() => { setDrawerOpen(false); queueMicrotask(() => treeButtonRef.current?.focus()); }} /></div>
-      <main inert={drawerOpen || undefined}><RevisionStatus node={node} /><div role="tablist" aria-label="稿件视图">{MANUSCRIPT_TABS.map(([id, label], index) => <button id={`manuscript-tab-${id}`} key={id} role="tab" aria-selected={tab === id} aria-controls={`manuscript-panel-${id}`} tabIndex={tab === id ? 0 : -1} onKeyDown={(event) => tabKeyDown(event, index)} onClick={() => void chooseTab(id)}>{label}</button>)}</div>
+      <div ref={drawerRef} className={drawerOpen ? 'manuscript-tree-drawer open' : 'manuscript-tree-drawer'} role="dialog" aria-modal={drawerOpen ? 'true' : undefined} aria-label="稿件目录抽屉"><ManuscriptTree nodes={tree} selectedId={selectedId} onSelect={selectChapter} onExpandBetween={(stableId) => setExpansionLaunch({ location: 'after', referenceIds: [stableId], nonce: Date.now() })} onClose={() => { setDrawerOpen(false); queueMicrotask(() => treeButtonRef.current?.focus()); }} /></div>
+      <main inert={drawerOpen || undefined}><ExpansionLauncher projectId={projectId} phase={expansionMeta.phase} mode={expansionMeta.mode} structureRevision={expansionMeta.structureRevision} structureSignature={expansionMeta.structureSignature} selectedId={selectedId} launchRequest={expansionLaunch} activeRevision={activeRevision} onConfirmed={() => void refreshVisible()} /><RevisionStatus node={node} /><div role="tablist" aria-label="稿件视图">{MANUSCRIPT_TABS.map(([id, label], index) => <button id={`manuscript-tab-${id}`} key={id} role="tab" aria-selected={tab === id} aria-controls={`manuscript-panel-${id}`} tabIndex={tab === id ? 0 : -1} onKeyDown={(event) => tabKeyDown(event, index)} onClick={() => void chooseTab(id)}>{label}</button>)}</div>
         <div role="tabpanel" id={`manuscript-panel-${tab}`} aria-labelledby={`manuscript-tab-${tab}`} tabIndex="0">
           {tab === 'prose' ? <RevisionCompare current={current} candidate={candidate} busy={busy} error={error} onMoreCurrent={() => more('current')} onMoreCandidate={() => more('candidate')} onRetry={() => selectChapter(selectedId)} /> : null}
           {tab === 'outline' ? <ManuscriptOutlineView artifact={artifacts.outline} busy={busy} /> : null}

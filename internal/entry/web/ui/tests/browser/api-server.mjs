@@ -14,12 +14,17 @@ let delayNextHistory = false;
 let delayNextTree = false;
 let failDelayedTree = false;
 let delayNextChapter = false;
+let manuscriptPhase = 'writing';
 const streams = new Set();
+let expansionMetadata = await fetch('http://127.0.0.1:4182/api/test/expansion-metadata').then((response) => response.json());
 const json = (response, status, body, headers = {}) => {
-  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers });
-  response.end(JSON.stringify(body));
+	if (response.destroyed || response.writableEnded) return;
+	try {
+		response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers });
+		response.end(JSON.stringify(body));
+	} catch { /* aborted race-test requests are intentionally discarded */ }
 };
-const tree = () => ({ active_revision: { revision_id: revisionId, stage: 'audit_pending' }, nodes: [{ kind: 'volume', stable_id: 'vol_0123456789abcdef0123456789abcdef', display_label: '第一卷', state: 'planned', children: [{ kind: 'arc', stable_id: 'arc_0123456789abcdef0123456789abcdef', display_label: '第一故事弧', state: 'planned', children: [{ kind: 'chapter', stable_id: chapterId, display_order: 1, display_label: '真实后端长章', state: 'review_pending', has_current: true, has_candidate: true, has_history: true, content_signature: 'outline-signature', target_display: '目标第 1 章', source_display: '原著第 7–8 章' }] }] }] });
+const tree = () => ({ phase: manuscriptPhase, mode: 'adaptation', structure_revision: expansionMetadata.structure_revision, structure_signature: expansionMetadata.structure_signature, active_revision: { revision_id: revisionId, stage: 'audit_pending' }, nodes: [{ kind: 'volume', stable_id: 'vol_0123456789abcdef0123456789abcdef', display_label: '第一卷', state: 'planned', children: [{ kind: 'arc', stable_id: 'arc_0123456789abcdef0123456789abcdef', display_label: '第一故事弧', state: 'planned', children: [{ kind: 'chapter', stable_id: chapterId, display_order: 1, display_label: '真实后端长章', state: 'review_pending', has_current: true, has_candidate: true, has_history: true, content_signature: 'outline-signature', target_display: '目标第 1 章', source_display: '原著第 7–8 章' }] }] }] });
 const extraTreeChapters = Array.from({ length: 129 }, (_, index) => ({
   kind: 'chapter', stable_id: `ch_${(index + 2).toString(16).padStart(32, '0')}`, display_order: index + 2,
   display_label: `keyboard chapter ${index + 2}`, state: 'planned', has_current: false, has_candidate: false, has_history: false
@@ -38,10 +43,13 @@ function manuscriptChapter(url, stableId = chapterId) {
   const values = paragraphs.slice(cursor, cursor + limit).map((paragraph) => prefix + paragraph);
   return { chapter: { stable_id: stableId, display_chapter: 1, view, revision_id: view === 'candidate' ? revisionId : undefined, content_signature: `${stableId}-${view}-signature-${generation}`, paragraphs: values.map((value) => stableId === chapterId ? value : `B章节：${value}`), next_cursor: cursor + limit < paragraphs.length ? cursor + limit : null, total_paragraphs: paragraphs.length } };
 }
-const server = http.createServer((request, response) => {
+const server = http.createServer(async (request, response) => {
+	response.on('error', () => {});
   const url = new URL(request.url, `http://${request.headers.host}`), path = url.pathname;
   if (path === '/health') return json(response, 200, { ok: true });
-  if (path === '/api/test/reset' && request.method === 'POST') { generation = 1; failNextChapter = false; historyTombstoned = false; delayNextHistory = false; delayNextTree = false; failDelayedTree = false; delayNextChapter = false; return json(response, 200, { reset: true }); }
+	if (path === '/api/test/reset' && request.method === 'POST') { generation = 1; manuscriptPhase = 'writing'; failNextChapter = false; historyTombstoned = false; delayNextHistory = false; delayNextTree = false; failDelayedTree = false; delayNextChapter = false; return json(response, 200, { reset: true }); }
+	if (path === '/api/test/refresh-expansion-metadata' && request.method === 'POST') { expansionMetadata = await fetch('http://127.0.0.1:4182/api/test/expansion-metadata').then((result) => result.json()); generation += 1; return json(response, 200, expansionMetadata); }
+	if (path === '/api/test/phase-complete' && request.method === 'POST') { manuscriptPhase = 'complete'; generation += 1; return json(response, 200, { phase: manuscriptPhase }); }
 	if (path === '/api/test/tombstone-history' && request.method === 'POST') { historyTombstoned = true; return json(response, 200, { tombstoned: true }); }
   if (path === '/api/test/delay-next-history' && request.method === 'POST') { delayNextHistory = true; return json(response, 200, { delayed: true }); }
   if (path === '/api/test/delay-next-tree' && request.method === 'POST') { delayNextTree = true; failDelayedTree = url.searchParams.get('fail') === '1'; return json(response, 200, { delayed: true, fail: failDelayedTree }); }
@@ -123,6 +131,8 @@ const server = http.createServer((request, response) => {
   }
   json(response, 404, { error: { code: 'not_found', message: path } });
 });
+
+server.on('clientError', (_error, socket) => socket.destroy());
 
 server.listen(port, '127.0.0.1');
 const shutdown = () => server.close(() => process.exit(0));

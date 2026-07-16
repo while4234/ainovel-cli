@@ -905,8 +905,9 @@ func testStructure() []domain.VolumeOutline {
 }
 
 func testChapter(id, title string) domain.OutlineEntry {
+	facts := domain.ExpansionDramaticFactSet{SchemaVersion: domain.ExpansionDramaticFactsSchemaV1, GoalState: "pursued", ConflictState: "active", ChoiceState: "committed", CostState: "paid", ResultState: "achieved", CharacterBefore: "passive", CharacterAfter: "active", ClimaxState: "occurred", ExitState: "irreversible", ImpactState: "required"}
 	return domain.OutlineEntry{
-		ID: id, Title: title, CoreEvent: title + " event", Hook: title + " hook", Scenes: []string{title + " scene"},
+		ID: id, Title: title, CoreEvent: title + " event", Hook: title + " hook", Scenes: []string{title + " scene"}, DramaticFacts: &facts,
 	}
 }
 

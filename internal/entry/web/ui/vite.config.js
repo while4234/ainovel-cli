@@ -50,6 +50,13 @@ export default defineConfig({
   plugins: [react(), normalizeStaticLineEndings()],
   server: {
     proxy: {
+	  '/api/projects/browser-project/manuscript/expansion': 'http://127.0.0.1:4182',
+	  '/api/test/reset-expansion': 'http://127.0.0.1:4182',
+	  '/api/test/restart-expansion': 'http://127.0.0.1:4182',
+	  '/api/test/expire-expansion': 'http://127.0.0.1:4182',
+	  '/api/test/expansion-metadata': 'http://127.0.0.1:4182',
+	  '/api/test/adaptation-contract': 'http://127.0.0.1:4182',
+	  '/api/test/process-expansion-audit': 'http://127.0.0.1:4182',
       '/api': 'http://127.0.0.1:4180'
     }
   },

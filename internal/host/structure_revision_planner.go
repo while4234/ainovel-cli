@@ -195,6 +195,21 @@ func (kernel *StructurePlanningKernel) structurePreviewScope() *structurePreview
 	return scope
 }
 
+func (kernel *StructurePlanningKernel) restoreSigningKey(key []byte) {
+	if kernel == nil || len(key) != 32 {
+		return
+	}
+	scope := kernel.structurePreviewScope()
+	scope.signingKey = append(scope.signingKey[:0], key...)
+}
+
+func (kernel *StructurePlanningKernel) signingKeyCopy() []byte {
+	if kernel == nil {
+		return nil
+	}
+	return append([]byte(nil), kernel.structurePreviewScope().signingKey...)
+}
+
 func cleanupStructurePreviewScope(cleanup structurePreviewScopeCleanup) {
 	structurePreviewScopes.mu.Lock()
 	defer structurePreviewScopes.mu.Unlock()

@@ -102,7 +102,11 @@ func (s *Server) handleManuscriptWorkspaceTree(w http.ResponseWriter, r *http.Re
 		return
 	}
 	activeMetadata := manuscriptActiveRevisionMetadata(active)
-	payload := map[string]any{"project": manifest, "phase": progress.Phase, "nodes": nodes, "active_revision": activeMetadata}
+	mode := domain.RevisionModeNormal
+	if st.Adaptation.Exists() {
+		mode = domain.RevisionModeAdaptation
+	}
+	payload := map[string]any{"project": manifest, "phase": progress.Phase, "nodes": nodes, "active_revision": activeMetadata, "structure_revision": domain.StructureRevision(volumes), "structure_signature": domain.StructureSignature(volumes), "mode": mode}
 	// The project manifest contains access-time metadata. Keep it in the body,
 	// but derive validators only from manuscript truth.
 	etag := `"` + domain.ContentSignature(mustJSON(struct {

@@ -29,17 +29,21 @@ func (s *Server) handleManuscriptRoute(w http.ResponseWriter, r *http.Request, i
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
 	service := host.NewManuscriptRevisionService(st)
-	if action == "manuscript/revision/preview" || action == "manuscript/revision/command" || strings.HasPrefix(action, "manuscript/workspace/restore") {
+	if action == "manuscript/revision/preview" || action == "manuscript/revision/command" || strings.HasPrefix(action, "manuscript/workspace/restore") || strings.HasPrefix(action, "manuscript/expansion/") {
 		session, _, openErr := s.sessions.Open(id)
 		if openErr != nil {
 			writeManuscriptError(w, openErr)
 			return
 		}
 		service = session.ManuscriptRevisionService()
-		if service == nil {
+		if service == nil && !strings.HasPrefix(action, "manuscript/expansion/") {
 			writeManuscriptError(w, fmt.Errorf("production manuscript writer and auditor are unavailable"))
 			return
 		}
+	}
+	if strings.HasPrefix(action, "manuscript/expansion/") {
+		s.handleManuscriptExpansionRoute(w, r, manifest, id, action)
+		return
 	}
 	if s.handleManuscriptWorkspaceRoute(w, r, manifest, st, service, action) {
 		return

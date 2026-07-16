@@ -212,7 +212,7 @@ ainovel-cli
 
 ### Web UI（唯一交互界面）
 
-直接运行 `ainovel-cli` 会在 `http://127.0.0.1:9898` 启动本地 Web 并自动打开浏览器。发布包里的 Go 二进制已经嵌入 Web 前端，不需要另开静态文件服务器。
+直接运行 `ainovel-cli` 会在 `http://127.0.0.1:9898` 启动本地 Web 并自动打开浏览器。发布包里的 Go 主程序已经嵌入 Web 前端，并与独立的 `expansion-auditor`（Windows 为 `expansion-auditor.exe`）一起安装在同一目录；扩写审核所需私钥只存在于该独立组件。缺少或无法启动该组件时，服务日志会明确记录诊断，扩写 API 返回 `503 expansion_auditor_unavailable` 并停止本次扩写，不会静默跳过审核；其他不依赖扩写审核器的项目功能仍可使用。
 
 `ainovel-cli web` 是服务器部署入口，默认不会打开浏览器；只有显式传入 `--open` 才会打开。
 

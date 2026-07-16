@@ -17,6 +17,11 @@ RUN GOOS=$TARGETOS GOARCH=$TARGETARCH \
     -o /out/ainovel-cli \
     ./cmd/ainovel-cli
 
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" \
+    -o /out/expansion-auditor \
+    ./cmd/expansion-auditor
+
 FROM alpine:3.22
 
 RUN apk add --no-cache \
@@ -26,6 +31,7 @@ RUN apk add --no-cache \
 WORKDIR /workspace
 
 COPY --from=builder /out/ainovel-cli /usr/local/bin/ainovel-cli
+COPY --from=builder /out/expansion-auditor /usr/local/bin/expansion-auditor
 
 EXPOSE 9898
 

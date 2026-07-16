@@ -543,6 +543,28 @@ type RevisionMutationInput struct {
 	IdempotencyKey   string
 }
 
+type RebindRevisionPreviewInput struct {
+	RevisionMutationInput
+	PreviousSignature string
+	NextSignature     string
+}
+
+// RebindPreviewAfterFeedback replaces only the sealed generator input after a
+// signed audit failure and explicit user feedback. It cannot change impact,
+// approvals, candidate versions, or any non-generating revision.
+func (s *RevisionStore) RebindPreviewAfterFeedback(policy domain.RevisionPolicy, input RebindRevisionPreviewInput) (*domain.RevisionSession, error) {
+	return s.mutate(policy, input.RevisionMutationInput, "rebind_preview_after_feedback", input, func(_ *revisionState, session *domain.RevisionSession) error {
+		if session.Stage != domain.RevisionStageCandidateGenerating || len(session.Feedback) == 0 {
+			return fmt.Errorf("revision preview can only be rebound after audit feedback")
+		}
+		if strings.TrimSpace(input.PreviousSignature) == "" || session.PreviewSignature != strings.TrimSpace(input.PreviousSignature) || strings.TrimSpace(input.NextSignature) == "" || input.NextSignature == input.PreviousSignature {
+			return fmt.Errorf("revision preview feedback rebind signature mismatch")
+		}
+		session.PreviewSignature = strings.TrimSpace(input.NextSignature)
+		return nil
+	})
+}
+
 type RevisionAuditInput struct {
 	RevisionMutationInput
 	CandidateSignature string

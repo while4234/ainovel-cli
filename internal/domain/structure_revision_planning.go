@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -369,6 +370,22 @@ var ErrStructurePreviewTampered = errors.New("structure revision preview signatu
 func StructureSignature(volumes []VolumeOutline) string {
 	payload, _ := json.Marshal(ProjectLayeredOutlineOrder(CloneStructureSnapshot(volumes)))
 	return ContentSignature(payload)
+}
+
+// StructureRevision derives the optimistic concurrency token from the same
+// canonical structure bytes as StructureSignature. It is not a display
+// sequence; it is an authoritative positive ETag revision that changes with
+// every formal structure mutation and survives process restarts.
+func StructureRevision(volumes []VolumeOutline) int {
+	signature := StructureSignature(volumes)
+	if len(signature) < 8 {
+		return 1
+	}
+	value, err := strconv.ParseUint(signature[:8], 16, 32)
+	if err != nil {
+		return 1
+	}
+	return int(value%2_147_483_646) + 1
 }
 
 func CloneStructureSnapshot(volumes []VolumeOutline) []VolumeOutline {

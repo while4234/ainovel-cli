@@ -19,6 +19,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/entry/startup"
+	"github.com/voocel/ainovel-cli/internal/expansionauditorclient"
 	"github.com/voocel/ainovel-cli/internal/grokauth"
 	"github.com/voocel/ainovel-cli/internal/host"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
@@ -518,6 +519,8 @@ type ProjectSession struct {
 	host                projectHost
 	normalRevisions     *host.NormalRevisionService
 	adaptationRevisions *host.AdaptationRevisionService
+	expansionPlanner    *host.ExpansionPlanner
+	expansionAuditorErr error
 
 	mu                  sync.Mutex
 	autoResumeMu        sync.Mutex
@@ -559,6 +562,21 @@ func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession
 		subscribers:         make(map[chan WebEvent]struct{}),
 		sequencePath:        sequencePath,
 	}
+	if expansionHost, ok := h.(interface{ ExpansionPlanner() *host.ExpansionPlanner }); ok {
+		client, clientErr := expansionauditorclient.New()
+		if clientErr != nil {
+			session.expansionAuditorErr = fmt.Errorf("initialize required expansion auditor component: %w", clientErr)
+		} else if clientErr = client.Init(context.Background(), manifest.OutputDir); clientErr != nil {
+			session.expansionAuditorErr = fmt.Errorf("initialize required expansion auditor component %q: %w", client.Command(), clientErr)
+		}
+		if session.expansionAuditorErr != nil {
+			slog.Error("required expansion auditor unavailable", "module", "web", "project", manifest.ID, "err", session.expansionAuditorErr)
+		}
+		session.expansionPlanner = expansionHost.ExpansionPlanner()
+		if session.expansionPlanner == nil {
+			return nil, fmt.Errorf("initialize expansion planner after auditor bootstrap")
+		}
+	}
 	if err := session.loadPersistedSequence(); err != nil {
 		return nil, fmt.Errorf("load web event sequence: %w", err)
 	}
@@ -570,6 +588,20 @@ func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession
 	}
 	go session.pump()
 	return session, nil
+}
+
+func (s *ProjectSession) ExpansionPlanner() *host.ExpansionPlanner {
+	if s == nil {
+		return nil
+	}
+	return s.expansionPlanner
+}
+
+func (s *ProjectSession) ExpansionAuditorError() error {
+	if s == nil {
+		return fmt.Errorf("expansion project session is unavailable")
+	}
+	return s.expansionAuditorErr
 }
 
 // PreviewNormalStructureRevision is the web/host production boundary for

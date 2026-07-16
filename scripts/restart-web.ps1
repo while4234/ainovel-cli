@@ -308,6 +308,8 @@ $repoRoot = Resolve-RepoRoot
 $uiDir = Join-Path $repoRoot "internal\entry\web\ui"
 $exePath = Join-Path $repoRoot "ainovel-cli.exe"
 $tempExePath = Join-Path $repoRoot "ainovel-cli.restart.tmp.exe"
+$auditorPath = Join-Path $repoRoot "expansion-auditor.exe"
+$tempAuditorPath = Join-Path $repoRoot "expansion-auditor.restart.tmp.exe"
 $runtimeRootValue = Resolve-RuntimeRoot -RequestedRuntimeRoot $RuntimeRoot -RepoRoot $repoRoot
 
 $stopPortValues = @()
@@ -331,6 +333,9 @@ if ($NoBuild) {
     if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
         throw "Cannot use -NoBuild because executable is missing: $exePath"
     }
+    if (-not (Test-Path -LiteralPath $auditorPath -PathType Leaf)) {
+        throw "Cannot use -NoBuild because independent expansion auditor is missing: $auditorPath"
+    }
     Write-Step "Skipping build because -NoBuild was passed."
 } else {
     Require-Command "npm.cmd" | Out-Null
@@ -342,12 +347,17 @@ if ($NoBuild) {
     if (Test-Path -LiteralPath $tempExePath) {
         Remove-Item -LiteralPath $tempExePath -Force
     }
+    if (Test-Path -LiteralPath $tempAuditorPath) {
+        Remove-Item -LiteralPath $tempAuditorPath -Force
+    }
 
     Write-Step "Building Web UI..."
     Invoke-Checked -FilePath "npm.cmd" -Arguments @("run", "build") -WorkingDirectory $uiDir
 
     Write-Step "Building Go executable..."
     Invoke-Checked -FilePath "go" -Arguments @("build", "-o", $tempExePath, ".\cmd\ainovel-cli") -WorkingDirectory $repoRoot
+    Write-Step "Building independent expansion auditor..."
+    Invoke-Checked -FilePath "go" -Arguments @("build", "-o", $tempAuditorPath, ".\cmd\expansion-auditor") -WorkingDirectory $repoRoot
 }
 
 Stop-ListeningPorts -Ports $stopPortValues
@@ -355,6 +365,8 @@ Stop-ListeningPorts -Ports $stopPortValues
 if (-not $NoBuild) {
     Write-Step "Replacing executable: $exePath"
     Move-Item -LiteralPath $tempExePath -Destination $exePath -Force
+    Write-Step "Replacing independent expansion auditor: $auditorPath"
+    Move-Item -LiteralPath $tempAuditorPath -Destination $auditorPath -Force
 }
 
 $logRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ainovel-cli-web"

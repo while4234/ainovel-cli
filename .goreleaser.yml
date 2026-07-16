@@ -23,11 +23,26 @@ builds:
     goarch:
       - amd64
       - arm64
+  - id: expansion-auditor
+    main: ./cmd/expansion-auditor
+    binary: expansion-auditor
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
 
 archives:
   - id: ainovel-cli-archive
     ids:
       - ainovel-cli
+      - expansion-auditor
     formats:
       - tar.gz
     format_overrides:

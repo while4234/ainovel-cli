@@ -3,7 +3,7 @@ import { statusLabel } from './manuscript-state.js';
 
 const TREE_WINDOW = 120;
 
-export function ManuscriptTree({ nodes = [], selectedId, onSelect, onClose }) {
+export function ManuscriptTree({ nodes = [], selectedId, onSelect, onClose, onExpandBetween }) {
   const [expanded, setExpanded] = useState(() => new Set());
   const [windowStart, setWindowStart] = useState(0);
   const [focusedIndex, setFocusedIndex] = useState(0);
@@ -94,6 +94,7 @@ export function ManuscriptTree({ nodes = [], selectedId, onSelect, onClose }) {
           {row.target_display ? <small className="manuscript-target-label">{row.target_display}</small> : null}
           {row.source_display ? <small className="manuscript-source-label">{row.source_display}</small> : null}
         </button>
+        {isChapter && onExpandBetween ? <button type="button" className="manuscript-expansion-between" aria-label={`在第 ${row.display_order} 章后补充剧情`} onClick={() => onExpandBetween(row.stable_id)}>＋ 补充剧情</button> : null}
         {expandable && expanded.has(row.stable_id) ? <div role="group" aria-label={`${row.display_label} 子项`}>{renderNodes(children, level + 1)}</div> : null}
       </div>;
     });

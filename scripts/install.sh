@@ -10,6 +10,7 @@ set -e
 
 REPO="voocel/ainovel-cli"
 BIN="ainovel-cli"
+AUDITOR="expansion-auditor"
 DEST="${AINOVEL_INSTALL_DIR:-/usr/local/bin}"
 VERSION="${AINOVEL_VERSION:-${1:-latest}}"
 
@@ -60,16 +61,20 @@ echo "安装到 $DEST"
 [ -d "$DEST" ] || mkdir -p "$DEST" 2>/dev/null || sudo mkdir -p "$DEST"
 if [ -w "$DEST" ]; then
 	mv "$TMP/$BIN" "$DEST/$BIN"
+	mv "$TMP/$AUDITOR" "$DEST/$AUDITOR"
 else
 	echo "需要管理员权限写入 $DEST"
 	sudo mv "$TMP/$BIN" "$DEST/$BIN"
+	sudo mv "$TMP/$AUDITOR" "$DEST/$AUDITOR"
 fi
-chmod +x "$DEST/$BIN"
+chmod +x "$DEST/$BIN" "$DEST/$AUDITOR"
 
 # 二进制未签名，macOS 首次运行会被 Gatekeeper 拦，解除隔离
 [ "$OS" = "Darwin" ] && xattr -d com.apple.quarantine "$DEST/$BIN" 2>/dev/null || true
+[ "$OS" = "Darwin" ] && xattr -d com.apple.quarantine "$DEST/$AUDITOR" 2>/dev/null || true
 
 echo "✓ 安装完成：$DEST/$BIN"
+echo "✓ 独立扩写审核组件：$DEST/$AUDITOR"
 [ -n "$TAG" ] && echo "版本：$TAG"
 command -v "$BIN" >/dev/null 2>&1 || echo "提示：$DEST 不在 PATH 中，请将其加入 PATH"
 echo "运行 $BIN 开始使用"

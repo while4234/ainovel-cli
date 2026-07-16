@@ -197,6 +197,9 @@ func (io *IO) replaceFile(rel, tempPath, targetPath string) error {
 		}
 		return err
 	}
+	if err := io.injectWriteFault(rel, "after_replace"); err != nil {
+		return fmt.Errorf("write %s after replace: %w", rel, err)
+	}
 	if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("clean file replacement backup: %w", err)
 	}

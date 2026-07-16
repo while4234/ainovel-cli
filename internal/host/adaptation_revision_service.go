@@ -22,8 +22,9 @@ type AdaptationRevisionService struct {
 }
 
 type AdaptationRevisionPreviewRequest struct {
-	Intent    string                `json:"intent"`
-	Candidate domain.AdaptationPlan `json:"candidate"`
+	Intent            string                `json:"intent"`
+	Candidate         domain.AdaptationPlan `json:"candidate"`
+	RequireAddedProse bool                  `json:"require_added_prose,omitempty"`
 }
 
 type AdaptationStructureRevisionPreview struct {
@@ -226,6 +227,42 @@ func (s *AdaptationRevisionService) Preview(request AdaptationRevisionPreviewReq
 	})
 }
 
+// SealExpansionCandidate performs the production adaptation contract,
+// topology, coverage and source-manifest validation without starting a
+// revision. Expansion planning uses it to bind its kernel result to the exact
+// PR-01 preview signature before asking for human confirmation.
+func (s *AdaptationRevisionService) SealExpansionCandidate(request AdaptationRevisionPreviewRequest) (*AdaptationStructureRevisionPreview, error) {
+	if s == nil || s.store == nil || strings.TrimSpace(request.Intent) == "" {
+		return nil, fmt.Errorf("adaptation revision intent is required")
+	}
+	base, manifest, stage, completed, err := s.loadProductionContract()
+	if err != nil {
+		return nil, err
+	}
+	candidate, err := cloneAdaptationPlan(request.Candidate)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateWrittenAdaptationTopology(*base, candidate, completed); err != nil {
+		return nil, err
+	}
+	if err := domain.ValidateAdaptationRevisionPlan(*base, candidate, manifest); err != nil {
+		return nil, err
+	}
+	impact, err := deriveAdaptationRevisionImpact(*base, candidate, completed, request.RequireAddedProse)
+	if err != nil {
+		return nil, err
+	}
+	skeleton := adaptationStructureSkeleton(*base, candidate, impact)
+	preview := &AdaptationStructureRevisionPreview{
+		Stage: stage, BasePlanSignature: adaptationPlanSignature(*base),
+		SourceManifestSignature: domain.AdaptationSourceManifestContractSignature(*manifest),
+		Candidate:               skeleton, Impact: impact,
+	}
+	preview.Signature = adaptationPreviewSignature(*preview)
+	return preview, nil
+}
+
 func (s *AdaptationRevisionService) ApproveImpact(sessionID string, revision int, idempotencyKey string) (*domain.RevisionSession, error) {
 	return withAdaptationRevisionCommandReceipt(s, idempotencyKey, adaptationCommandReceiptRequest("approve_impact", revision), func(owned *AdaptationRevisionService) (*domain.RevisionSession, error) {
 		return owned.approveImpact(sessionID, revision, idempotencyKey)
@@ -238,6 +275,29 @@ func (s *AdaptationRevisionService) SubmitFeedback(session *domain.RevisionSessi
 	return withAdaptationRevisionCommandReceipt(s, idempotencyKey, request, func(owned *AdaptationRevisionService) (*domain.RevisionSession, error) {
 		return owned.submitFeedback(session, impactSignature, message, idempotencyKey)
 	})
+}
+
+func (s *AdaptationRevisionService) RebindExpansionPreviewAfterFeedback(session *domain.RevisionSession, previousSignature, nextSignature, idempotencyKey string) (*domain.RevisionSession, error) {
+	if session == nil {
+		return nil, fmt.Errorf("adaptation revision session is required")
+	}
+	policy, runtime, err := s.boundPolicy(session.ID)
+	if err != nil {
+		return nil, err
+	}
+	if runtime.PreviewSignature != previousSignature {
+		return nil, fmt.Errorf("adaptation feedback preview runtime binding mismatch")
+	}
+	prior := *runtime
+	runtime.PreviewSignature = nextSignature
+	if err := s.persistRevisionRuntime(*runtime); err != nil {
+		return nil, err
+	}
+	updated, err := s.revisionStore().RebindPreviewAfterFeedback(policy, storepkg.RebindRevisionPreviewInput{RevisionMutationInput: storepkg.RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: idempotencyKey}, PreviousSignature: previousSignature, NextSignature: nextSignature})
+	if err != nil {
+		return nil, s.restoreRevisionRuntime(prior, err)
+	}
+	return updated, nil
 }
 
 func (s *AdaptationRevisionService) Fail(session *domain.RevisionSession, message, idempotencyKey string) (*domain.RevisionSession, error) {
@@ -387,7 +447,7 @@ func (s *AdaptationRevisionService) preview(request AdaptationRevisionPreviewReq
 	if err := domain.ValidateAdaptationRevisionPlan(*base, candidate, manifest); err != nil {
 		return nil, err
 	}
-	impact, err := deriveAdaptationRevisionImpact(*base, candidate, completed)
+	impact, err := deriveAdaptationRevisionImpact(*base, candidate, completed, request.RequireAddedProse)
 	if err != nil {
 		return nil, err
 	}
@@ -1079,7 +1139,7 @@ func adaptationChapterLocations(plan domain.AdaptationPlan) map[string]adaptatio
 	return locations
 }
 
-func deriveAdaptationRevisionImpact(base, candidate domain.AdaptationPlan, completed []string) (domain.RevisionImpact, error) {
+func deriveAdaptationRevisionImpact(base, candidate domain.AdaptationPlan, completed []string, requireAddedProse bool) (domain.RevisionImpact, error) {
 	items := make([]domain.RevisionImpactItem, 0)
 	baseLocations, candidateLocations := adaptationChapterLocations(base), adaptationChapterLocations(candidate)
 	completedSet := make(map[string]struct{}, len(completed))
@@ -1126,7 +1186,10 @@ func deriveAdaptationRevisionImpact(base, candidate domain.AdaptationPlan, compl
 			item.DependencyEvidence = nil
 		}
 		_, item.RequiresBodyRewrite = completedSet[chapter.ID]
-		item.RequiresBodyRewrite = item.RequiresBodyRewrite && contentChanged
+		// A newly inserted target chapter has no formal prose yet, but it still
+		// requires the same audited prose candidate stage as a written chapter
+		// rework. Existing unwritten outline-only changes remain outline scoped.
+		item.RequiresBodyRewrite = (!existed && requireAddedProse) || (item.RequiresBodyRewrite && contentChanged)
 		items = append(items, item)
 	}
 	items = append(items,

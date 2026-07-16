@@ -120,3 +120,13 @@ export const restoreManuscriptVersion = async (projectId, payload, signal) => {
   return result;
 };
 export const discussManuscriptContext = (projectId, payload, signal) => readPost(`/api/projects/${encodeURIComponent(projectId)}/manuscript/context/discuss`, payload, signal);
+
+const expansionBase = (projectId) => `/api/projects/${encodeURIComponent(projectId)}/manuscript/expansion`;
+export const planManuscriptExpansion = (projectId, payload, signal) => readPost(`${expansionBase(projectId)}/plan`, payload, signal);
+export const adjustManuscriptExpansion = (projectId, payload, signal) => readPost(`${expansionBase(projectId)}/adjust`, payload, signal);
+export const confirmManuscriptExpansion = (projectId, payload, signal) => readPost(`${expansionBase(projectId)}/confirm`, payload, signal);
+export const cancelManuscriptExpansion = (projectId, previewId, expectedRevision, idempotencyKey, signal) => readPost(`${expansionBase(projectId)}/${encodeURIComponent(previewId)}/cancel`, { expected_revision: expectedRevision, idempotency_key: idempotencyKey }, signal);
+export const getManuscriptExpansion = (projectId, previewId, signal) => request(`${expansionBase(projectId)}/${encodeURIComponent(previewId)}`, { signal });
+export const getExpansionRevision = (projectId, signal) => request(`${expansionBase(projectId)}/revision`, { signal });
+export const commandExpansionRevision = (projectId, action, expectedRevision, idempotencyKey, message = '', signal) => readPost(`${expansionBase(projectId)}/revision/command`, { action, message, expected_revision: expectedRevision, idempotency_key: idempotencyKey }, signal);
+export const processExpansionRevisionAudit = (projectId, signal) => readPost(`${expansionBase(projectId)}/revision/auditor/process`, {}, signal);

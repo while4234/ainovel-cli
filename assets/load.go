@@ -39,6 +39,8 @@ type Prompts struct {
 	AdaptationManuscriptPolish  string
 	AdaptationManuscriptRewrite string
 	AdaptationManuscriptAudit   string
+	NormalExpansionPlanner      string
+	AdaptationExpansionPlanner  string
 }
 
 // Bundle 表示运行所需的静态资源集合。
@@ -139,6 +141,8 @@ func loadPrompts() Prompts {
 		AdaptationManuscriptPolish:  loadSystemPrompt("prompts/manuscript-adaptation-polish.md"),
 		AdaptationManuscriptRewrite: loadSystemPrompt("prompts/manuscript-adaptation-rewrite.md"),
 		AdaptationManuscriptAudit:   loadSystemPrompt("prompts/manuscript-adaptation-audit.md"),
+		NormalExpansionPlanner:      loadSystemPrompt("prompts/normal-expansion-planner.md"),
+		AdaptationExpansionPlanner:  loadSystemPrompt("prompts/adaptation-expansion-planner.md"),
 	}
 }
 

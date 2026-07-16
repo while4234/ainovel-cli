@@ -15,7 +15,7 @@ import (
 // novel dependency and refuses to operate on adaptation projects.
 type NormalRevisionService struct {
 	store                *storepkg.Store
-	kernel               StructurePlanningKernel
+	kernel               *StructurePlanningKernel
 	beforeRevisionCommit func()
 }
 
@@ -25,7 +25,79 @@ type NormalStructureRevisionPreview struct {
 }
 
 func NewNormalRevisionService(st *storepkg.Store) *NormalRevisionService {
-	return &NormalRevisionService{store: st}
+	return &NormalRevisionService{store: st, kernel: &StructurePlanningKernel{}}
+}
+
+// NewNormalRevisionServiceWithKernel joins an already sealed structure bundle
+// to the normal revision state machine. Sharing the exact kernel scope is
+// intentional: every step remains authenticated by the same private scope that
+// produced it, so the aggregate boundary cannot weaken preview substitution.
+func NewNormalRevisionServiceWithKernel(st *storepkg.Store, kernel *StructurePlanningKernel) *NormalRevisionService {
+	if kernel == nil {
+		kernel = &StructurePlanningKernel{}
+	}
+	return &NormalRevisionService{store: st, kernel: kernel}
+}
+
+// PreviewSealedExpansion validates every ordered kernel preview against the
+// authoritative formal structure and starts exactly one normal revision bound
+// to the aggregate expansion signature.
+func (s *NormalRevisionService) PreviewSealedExpansion(preview domain.ExpansionPreview, impact domain.RevisionImpact, idempotencyKey string) (*domain.RevisionSession, error) {
+	if s == nil || s.store == nil || s.kernel == nil {
+		return nil, fmt.Errorf("normal revision store and kernel are required")
+	}
+	if s.store.Adaptation.Exists() || preview.Mode != domain.RevisionModeNormal {
+		return nil, fmt.Errorf("normal sealed expansion requires a normal project")
+	}
+	current, err := s.store.Outline.LoadLayeredOutline()
+	if err != nil {
+		return nil, err
+	}
+	if domain.StructureSignature(current) != preview.BaseStructureSignature {
+		return nil, domain.ErrStructurePreviewStale
+	}
+	for index, sealed := range preview.KernelPreviews {
+		current, err = s.kernel.Confirm(sealed, sealed.BaseRevision, current)
+		if err != nil {
+			return nil, fmt.Errorf("validate sealed expansion step %d: %w", index+1, err)
+		}
+	}
+	if len(preview.KernelPreviews) == 0 || domain.StructureSignature(current) != preview.CandidateSignature ||
+		domain.StructureSignature(current) != domain.StructureSignature(preview.Candidate) {
+		return nil, fmt.Errorf("sealed expansion aggregate candidate mismatch")
+	}
+	return s.store.Revisions.Start(domain.NormalRevisionPolicy{}, storepkg.StartRevisionInput{
+		Intent: preview.Request.Sentence, Impact: impact, PreviewSignature: preview.Signature, IdempotencyKey: idempotencyKey,
+	})
+}
+
+// SubmitSealedExpansionCandidate revalidates the complete ordered bundle and
+// persists its final candidate through the ordinary PR-01 candidate boundary.
+func (s *NormalRevisionService) SubmitSealedExpansionCandidate(preview domain.ExpansionPreview, session *domain.RevisionSession, idempotencyKey string) (*domain.RevisionSession, error) {
+	if session == nil || session.PreviewSignature != preview.Signature || normalServiceApprovalStage(*session) != domain.NormalApprovalStructure {
+		return nil, fmt.Errorf("normal expansion preview substitution is not allowed")
+	}
+	current, err := s.store.Outline.LoadLayeredOutline()
+	if err != nil {
+		return nil, err
+	}
+	for index, sealed := range preview.KernelPreviews {
+		current, err = s.kernel.Confirm(sealed, sealed.BaseRevision, current)
+		if err != nil {
+			return nil, fmt.Errorf("confirm sealed expansion step %d: %w", index+1, err)
+		}
+	}
+	if domain.StructureSignature(current) != preview.CandidateSignature {
+		return nil, fmt.Errorf("normal expansion aggregate candidate signature mismatch")
+	}
+	proposal := preview.KernelPreviews[len(preview.KernelPreviews)-1].Proposal
+	artifacts, err := normalStructureCandidateArtifacts(*session, proposal, current)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.Revisions.SubmitCandidate(domain.NormalRevisionPolicy{}, storepkg.SubmitRevisionCandidateInput{
+		SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: idempotencyKey, Artifacts: artifacts,
+	})
 }
 
 func (s *NormalRevisionService) CurrentManuscriptStage() (domain.ManuscriptStage, error) {
@@ -641,6 +713,33 @@ func (s *NormalRevisionService) PublishStructure(sealed domain.StructureRevision
 	if strings.TrimSpace(session.PreviewSignature) == "" || sealed.Signature != session.PreviewSignature {
 		return nil, fmt.Errorf("normal revision publish preview substitution is not allowed")
 	}
+	return s.publishAcceptedStructure(session, idempotencyKey)
+}
+
+// PublishSealedExpansion keeps the aggregate expansion signature at the final
+// publication gate while the accepted canonical snapshot remains the sole
+// payload allowed to reach formal storage.
+func (s *NormalRevisionService) PublishSealedExpansion(preview domain.ExpansionPreview, session *domain.RevisionSession, idempotencyKey string) (*domain.RevisionSession, error) {
+	if session == nil || strings.TrimSpace(preview.Signature) == "" || session.PreviewSignature != preview.Signature {
+		return nil, fmt.Errorf("normal expansion publish preview substitution is not allowed")
+	}
+	current, err := s.store.Outline.LoadLayeredOutline()
+	if err != nil {
+		return nil, err
+	}
+	for index, sealed := range preview.KernelPreviews {
+		current, err = s.kernel.Confirm(sealed, sealed.BaseRevision, current)
+		if err != nil {
+			return nil, fmt.Errorf("validate expansion publication step %d: %w", index+1, err)
+		}
+	}
+	if domain.StructureSignature(current) != preview.CandidateSignature {
+		return nil, fmt.Errorf("normal expansion publication candidate signature mismatch")
+	}
+	return s.publishAcceptedStructure(session, idempotencyKey)
+}
+
+func (s *NormalRevisionService) publishAcceptedStructure(session *domain.RevisionSession, idempotencyKey string) (*domain.RevisionSession, error) {
 	versions, publicationOwner, err := s.store.Revisions.ValidatePublishWithOwner(domain.NormalRevisionPolicy{}, storepkg.RevisionMutationInput{
 		SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: idempotencyKey,
 	})
