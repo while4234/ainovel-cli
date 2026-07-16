@@ -37,18 +37,19 @@ type Options struct {
 }
 
 type Server struct {
-	cfgMu           sync.RWMutex
-	cfg             bootstrap.Config
-	bundle          assets.Bundle
-	runtimeRoot     string
-	store           *ProjectStore
-	sessions        *SessionManager
-	libraries       *LibraryService
-	static          fs.FS
-	resumeScheduler *ResumeScheduler
-	schedulerMu     sync.Mutex
-	schedulerCancel context.CancelFunc
-	schedulerDone   chan struct{}
+	cfgMu            sync.RWMutex
+	cfg              bootstrap.Config
+	bundle           assets.Bundle
+	runtimeRoot      string
+	store            *ProjectStore
+	sessions         *SessionManager
+	libraries        *LibraryService
+	static           fs.FS
+	sourceDownloader simulationSourceDownloader
+	resumeScheduler  *ResumeScheduler
+	schedulerMu      sync.Mutex
+	schedulerCancel  context.CancelFunc
+	schedulerDone    chan struct{}
 }
 
 func Run(ctx context.Context, cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
@@ -129,12 +130,13 @@ func Run(ctx context.Context, cfg bootstrap.Config, bundle assets.Bundle, opts O
 func NewServer(cfg bootstrap.Config, bundle assets.Bundle, runtimeRoot string) *Server {
 	store := NewProjectStore(runtimeRoot)
 	s := &Server{
-		cfg:         cfg,
-		bundle:      bundle,
-		runtimeRoot: runtimeRoot,
-		store:       store,
-		libraries:   NewLibraryService(runtimeRoot),
-		static:      StaticFS(),
+		cfg:              cfg,
+		bundle:           bundle,
+		runtimeRoot:      runtimeRoot,
+		store:            store,
+		libraries:        NewLibraryService(runtimeRoot),
+		static:           StaticFS(),
+		sourceDownloader: newSimulationSourceDownloader(runtimeRoot),
 	}
 	s.sessions = NewSessionManager(cfg, bundle, store)
 	s.resumeScheduler = NewResumeScheduler(runtimeRoot, ResumeSchedulerDeps{
@@ -566,6 +568,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectDiag(w, r, id)
 	case "simulate/files":
 		s.handleProjectSimulateFiles(w, r, id)
+	case "simulate/search":
+		s.handleProjectSimulationSearch(w, r, id)
+	case "simulate/search/download":
+		s.handleProjectSimulationSearchDownload(w, r, id)
 	case "simulate/analyze":
 		s.handleProjectSimulateAnalyze(w, r, id)
 	case "simulate/import":
