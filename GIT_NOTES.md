@@ -28,6 +28,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-16 `689c90d` `fix: make chapter planning audits callable`:
+  exposes the stable chapter `scope_id` and every conditional audit field in a
+  strict model-visible schema, fully describes nested dimensions/issues, and
+  routes exact volume/arc/chapter repair coordinates. This prevents the editor
+  from repeatedly submitting an impossible partial `save_original_planning_audit`
+  call before chapter-outline generation can advance. Focused regressions passed
+  10/10, the full Go suite and `go vet ./...` pass, and the production binary
+  builds successfully.
 - 2026-07-16 `fix: keep workflow progress panel mounted`: removes the
   project-ID key that forced the workflow progress panel to remount while a
   project snapshot was opening. This prevents React from leaving duplicate
