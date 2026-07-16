@@ -51,6 +51,12 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   fallback probes, two live BaiduPCS downloads, service hash/restart smoke, and
   disk validation passed. The repository-wide Go run hit one known Windows
   TempDir cleanup flake; that exact test passed immediately in isolation.
+- 2026-07-16 `fix: retry empty context summaries`:
+  retries transient empty context-compaction responses twice with cancellable
+  exponential backoff before preserving the existing terminal diagnostic. Each
+  retry is emitted as a durable SYSTEM event with the responsible agent so Web
+  users can see recovery progress instead of an unexplained immediate stop.
+  Focused and complete agents/host tests, package vet, and diff checks passed.
 - 2026-07-16 accepted PR-01 (this local commit), `feat: add safe manuscript revision publication`:
   adds candidate-isolated manuscript polish/rewrite sessions, stable-ID scope and
   revision/idempotency boundaries, independently signed contract/adaptation audits,

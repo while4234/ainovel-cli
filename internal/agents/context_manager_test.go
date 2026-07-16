@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/voocel/agentcore"
@@ -88,7 +89,7 @@ func TestContextSummaryKeepsChineseToolResultsValidUTF8(t *testing.T) {
 
 func TestSummaryCompatibleModelOmitsForcedThinkingOff(t *testing.T) {
 	model := &utf8CheckingSummaryModel{}
-	wrapped := summaryCompatibleModel(model)
+	wrapped := summaryCompatibleModel(model, "writer", nil)
 	if _, err := wrapped.Generate(context.Background(), nil, nil, agentcore.WithMaxTokens(800), agentcore.WithThinking(agentcore.ThinkingOff)); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -100,14 +101,64 @@ func TestSummaryCompatibleModelOmitsForcedThinkingOff(t *testing.T) {
 	}
 }
 
+func TestSummaryCompatibleModelRetriesEmptyContent(t *testing.T) {
+	model := &utf8CheckingSummaryModel{emptyResponses: 1}
+	var retries []int
+	wrapped := summaryCompatibleModel(model, "coordinator", func(agent string, retry, maxRetries int, _ time.Duration) {
+		if agent != "coordinator" || maxRetries != summaryMaxAttempts-1 {
+			t.Fatalf("retry hook = agent %q max %d", agent, maxRetries)
+		}
+		retries = append(retries, retry)
+	})
+	summary := wrapped.(*summaryModel)
+	summary.delay = func(int) time.Duration { return 0 }
+	summary.wait = func(context.Context, time.Duration) error { return nil }
+
+	response, err := wrapped.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if model.calls != 2 {
+		t.Fatalf("calls = %d, want 2", model.calls)
+	}
+	if !summaryResponseHasContent(response) {
+		t.Fatal("retry did not return the later non-empty summary")
+	}
+	if len(retries) != 1 || retries[0] != 1 {
+		t.Fatalf("retries = %v, want [1]", retries)
+	}
+}
+
+func TestSummaryCompatibleModelStopsRetryWhenCanceled(t *testing.T) {
+	model := &utf8CheckingSummaryModel{emptyResponses: summaryMaxAttempts}
+	ctx, cancel := context.WithCancel(context.Background())
+	wrapped := summaryCompatibleModel(model, "coordinator", nil).(*summaryModel)
+	wrapped.delay = func(int) time.Duration { return time.Second }
+	wrapped.wait = func(context.Context, time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+
+	if _, err := wrapped.Generate(ctx, nil, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Generate error = %v, want context.Canceled", err)
+	}
+	if model.calls != 1 {
+		t.Fatalf("calls = %d, want 1", model.calls)
+	}
+}
+
 type utf8CheckingSummaryModel struct {
-	calls      int
-	callConfig agentcore.CallConfig
+	calls          int
+	callConfig     agentcore.CallConfig
+	emptyResponses int
 }
 
 func (m *utf8CheckingSummaryModel) Generate(_ context.Context, messages []agentcore.Message, _ []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
 	m.calls++
 	m.callConfig = agentcore.ResolveCallConfig(opts)
+	if m.calls <= m.emptyResponses {
+		return &agentcore.LLMResponse{Message: agentcore.Message{Role: agentcore.RoleAssistant}}, nil
+	}
 	for index, message := range messages {
 		for _, block := range message.Content {
 			if block.Type == agentcore.ContentText && !utf8.ValidString(block.Text) {

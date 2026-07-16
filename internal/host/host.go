@@ -171,6 +171,20 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		if router != nil {
 			router.Dispatch()
 		}
+	}, func(agent string, retry, maxRetries int, delay time.Duration) {
+		if h == nil {
+			return
+		}
+		summary := fmt.Sprintf("上下文摘要重试 (%d/%d): 模型返回空内容，%s 后重试", retry, maxRetries, delay)
+		h.emitEvent(Event{
+			Time:     time.Now(),
+			Category: "SYSTEM",
+			Agent:    agent,
+			Summary:  summary,
+			Detail:   summary,
+			Kind:     "empty_context_summary",
+			Level:    "warn",
+		})
 	})
 	if buildErr != nil {
 		usageCancel()
