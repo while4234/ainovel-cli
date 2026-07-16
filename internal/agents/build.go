@@ -149,6 +149,7 @@ func BuildCoordinator(
 	bundle assets.Bundle,
 	recordUsage UsageRecorder,
 	onFlowBoundary FlowBoundaryHook,
+	onSummaryRetry SummaryRetryHook,
 ) (*agentcore.Agent, *tools.AskUserTool, *ctxpack.WriterRestorePack, *corecontext.ContextEngine, ApplyThinking, error) {
 	// 共享工具
 	contextTool := tools.NewContextToolWithOptions(store, bundle.References, cfg.Style, tools.ContextToolOptions{
@@ -289,7 +290,7 @@ func BuildCoordinator(
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentArchitect)
-			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_short"})
+			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_short", OnSummaryRetry: onSummaryRetry})
 		},
 	}
 	architectLong := subagent.Config{
@@ -308,7 +309,7 @@ func BuildCoordinator(
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentArchitect)
-			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_long"})
+			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_long", OnSummaryRetry: onSummaryRetry})
 		},
 	}
 
@@ -364,6 +365,7 @@ func BuildCoordinator(
 					UpdateSummaryPrompt: ctxpack.WriterUpdateSummaryPrompt,
 					TurnPrefixPrompt:    ctxpack.WriterTurnPrefixPrompt,
 				},
+				OnSummaryRetry: onSummaryRetry,
 			})
 		},
 	}
@@ -392,7 +394,7 @@ func BuildCoordinator(
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentEditor)
-			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 18_000, Agent: "editor"})
+			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 18_000, Agent: "editor", OnSummaryRetry: onSummaryRetry})
 		},
 	}
 
@@ -406,6 +408,7 @@ func BuildCoordinator(
 		KeepRecentTokens: 8_000,
 		Agent:            "coordinator",
 		CommitOnProject:  true,
+		OnSummaryRetry:   onSummaryRetry,
 	})
 
 	coordinatorPrompt := bundle.Prompts.Coordinator + "\n\nCoordinator tool ownership contract: Coordinator itself only has `subagent`, `novel_context`, `save_user_rules`, and `reopen_book`. It does not directly own Writer tools such as `read_chapter`, `check_consistency`, `check_adaptation`, or `commit_chapter`; those are available inside the Writer subagent. Never tell the user that those Writer tools are missing merely because they are absent from Coordinator's own interface. After a Writer or Editor subagent returns, follow the Host route and dispatch the next required subagent; do not perform Writer checks yourself."

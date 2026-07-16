@@ -2,11 +2,19 @@ package agents
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	"github.com/voocel/agentcore"
 	corecontext "github.com/voocel/agentcore/context"
+	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
+
+const summaryMaxAttempts = 3
+
+type SummaryRetryHook func(agent string, retry, maxRetries int, delay time.Duration)
 
 // contextManagerConfig 聚合 ContextManager 的全部配置参数。
 type contextManagerConfig struct {
@@ -19,6 +27,7 @@ type contextManagerConfig struct {
 	Summary          *corecontext.FullSummaryConfig
 	ToolMicrocompact *corecontext.ToolResultMicrocompactConfig
 	ExtraStrategies  []corecontext.Strategy
+	OnSummaryRetry   SummaryRetryHook
 }
 
 func newContextManager(cfg contextManagerConfig) *corecontext.ContextEngine {
@@ -26,7 +35,7 @@ func newContextManager(cfg contextManagerConfig) *corecontext.ContextEngine {
 	if cfg.Summary != nil {
 		sc = *cfg.Summary
 	}
-	sc.Model = summaryCompatibleModel(cfg.Model)
+	sc.Model = summaryCompatibleModel(cfg.Model, cfg.Agent, cfg.OnSummaryRetry)
 	if sc.KeepRecentTokens <= 0 {
 		sc.KeepRecentTokens = cfg.KeepRecentTokens
 	}
@@ -61,23 +70,75 @@ func newContextManager(cfg contextManagerConfig) *corecontext.ContextEngine {
 // reject an explicit thinking=off field even though they accept the same call
 // when the field is omitted. Appending ThinkingAuto restores the former,
 // provider-default behavior while retaining all other call options.
-func summaryCompatibleModel(model agentcore.ChatModel) agentcore.ChatModel {
+func summaryCompatibleModel(model agentcore.ChatModel, agent string, onRetry SummaryRetryHook) agentcore.ChatModel {
 	if model == nil {
 		return nil
 	}
-	return &summaryModel{ChatModel: model}
+	return &summaryModel{
+		ChatModel: model,
+		agent:     agent,
+		onRetry:   onRetry,
+		delay:     retrypolicy.Delay,
+		wait:      retrypolicy.Wait,
+	}
 }
 
 type summaryModel struct {
 	agentcore.ChatModel
+	agent   string
+	onRetry SummaryRetryHook
+	delay   func(int) time.Duration
+	wait    func(context.Context, time.Duration) error
 }
 
 func (m *summaryModel) Generate(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
-	return m.ChatModel.Generate(ctx, messages, tools, append(opts, agentcore.WithThinking(agentcore.ThinkingAuto))...)
+	opts = append(opts, agentcore.WithThinking(agentcore.ThinkingAuto))
+	var lastResponse *agentcore.LLMResponse
+	for attempt := 1; attempt <= summaryMaxAttempts; attempt++ {
+		response, err := m.ChatModel.Generate(ctx, messages, tools, opts...)
+		if err != nil {
+			return nil, err
+		}
+		lastResponse = response
+		if summaryResponseHasContent(response) {
+			return response, nil
+		}
+		if attempt == summaryMaxAttempts {
+			break
+		}
+
+		retry := attempt
+		delay := m.delay(retry)
+		if m.onRetry != nil {
+			m.onRetry(m.agent, retry, summaryMaxAttempts-1, delay)
+		}
+		if err := m.wait(ctx, delay); err != nil {
+			return nil, err
+		}
+	}
+	if lastResponse == nil {
+		return nil, fmt.Errorf("summary model returned nil response")
+	}
+	// Return the final empty response so agentcore preserves its established
+	// "summarization returned empty content" terminal diagnostic.
+	return lastResponse, nil
 }
 
 func (m *summaryModel) GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
 	return m.ChatModel.GenerateStream(ctx, messages, tools, append(opts, agentcore.WithThinking(agentcore.ThinkingAuto))...)
+}
+
+func summaryResponseHasContent(response *agentcore.LLMResponse) bool {
+	if response == nil {
+		return false
+	}
+	text := strings.TrimSpace(response.Message.TextContent())
+	start := strings.Index(text, "<analysis>")
+	end := strings.Index(text, "</analysis>")
+	if start >= 0 && end >= start {
+		text = strings.TrimSpace(text[:start] + text[end+len("</analysis>"):])
+	}
+	return text != ""
 }
 
 // contextRewriteCallback 创建上下文重写的日志回调。
