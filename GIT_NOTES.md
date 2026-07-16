@@ -28,6 +28,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-16 `fix: preserve co-create identities during reinforced imitation`:
+  injects the confirmed normal co-create brief into Architect planning context
+  as the canonical story authority, rejects premise/character saves that replace
+  its locked title, protagonists, or setting, and makes original-planning audit
+  tool calls strict so omitted summaries/dimensions are caught before execution.
+  Focused and complete tools/agents/assets tests passed; the repository-wide run
+  passed every package except one Web background-event timing case that passed
+  immediately in isolation. The local Web service was rebuilt without touching
+  the existing UI worktree and restarted successfully on port 9898.
 - 2026-07-16 accepted PR-01 (this local commit), `feat: add safe manuscript revision publication`:
   adds candidate-isolated manuscript polish/rewrite sessions, stable-ID scope and
   revision/idempotency boundaries, independently signed contract/adaptation audits,

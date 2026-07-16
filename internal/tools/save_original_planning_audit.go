@@ -29,21 +29,36 @@ func (t *SaveOriginalPlanningAuditTool) Description() string {
 }
 func (t *SaveOriginalPlanningAuditTool) ReadOnly(json.RawMessage) bool        { return false }
 func (t *SaveOriginalPlanningAuditTool) ConcurrencySafe(json.RawMessage) bool { return false }
-func (t *SaveOriginalPlanningAuditTool) StrictSchema() bool                   { return false }
+func (t *SaveOriginalPlanningAuditTool) StrictSchema() bool                   { return true }
 
 func (t *SaveOriginalPlanningAuditTool) Schema() map[string]any {
+	dimensionSchema := schema.Object(
+		schema.Property("name", schema.String("审核维度名称；必须使用当前 scope 要求的固定名称")).Required(),
+		schema.Property("score", schema.Int("0-10 分")).Required(),
+		schema.Property("comment", schema.String("引用当前审核范围内具体结构事实的评语")).Required(),
+	)
+	issueSchema := schema.Object(
+		schema.Property("severity", schema.String("问题严重度；建议 blocking / major / warning")).Required(),
+		schema.Property("volume", schema.Int("问题所在卷；不适用传0")).Required(),
+		schema.Property("arc", schema.Int("问题所在弧；不适用传0")).Required(),
+		schema.Property("from_chapter", schema.Int("问题起始章；不适用传0")).Required(),
+		schema.Property("to_chapter", schema.Int("问题结束章；不适用传0")).Required(),
+		schema.Property("description", schema.String("可核验的问题描述")).Required(),
+		schema.Property("repair_instruction", schema.String("定点返修指令")).Required(),
+	)
 	return schema.Object(
 		schema.Property("scope", schema.Enum("审核层级", "skeleton_volume", "skeleton_book_batch", "skeleton_book", "chapter", "arc", "volume", "book_batch", "book")).Required(),
-		schema.Property("volume", schema.Int("弧/卷审核的卷号")),
-		schema.Property("arc", schema.Int("弧审核的弧号")),
-		schema.Property("from_volume", schema.Int("book_batch 起始卷号")),
-		schema.Property("to_volume", schema.Int("book_batch 结束卷号（最多2卷）")),
-		schema.Property("from_chapter", schema.Int("审核证据起始章节")),
-		schema.Property("to_chapter", schema.Int("审核证据结束章节")),
+		schema.Property("scope_id", schema.String("chapter 等需稳定绑定的审核范围ID；不适用传空字符串")).Required(),
+		schema.Property("volume", schema.Int("弧/卷审核的卷号；不适用传0")).Required(),
+		schema.Property("arc", schema.Int("弧审核的弧号；不适用传0")).Required(),
+		schema.Property("from_volume", schema.Int("book_batch 起始卷号；不适用传0")).Required(),
+		schema.Property("to_volume", schema.Int("book_batch 结束卷号（最多2卷）；不适用传0")).Required(),
+		schema.Property("from_chapter", schema.Int("审核证据起始章节；不适用传0")).Required(),
+		schema.Property("to_chapter", schema.Int("审核证据结束章节；不适用传0")).Required(),
 		schema.Property("verdict", schema.Enum("审核结论", "pass", "revise")).Required(),
 		schema.Property("summary", schema.String("有证据的审核结论")).Required(),
-		schema.Property("dimensions", map[string]any{"type": "array", "description": "审核维度数组，每项{name,score,comment}，score为0-10"}).Required(),
-		schema.Property("issues", map[string]any{"type": "array", "description": "问题数组，每项{severity,volume,arc,from_chapter,to_chapter,description,repair_instruction}"}),
+		schema.Property("dimensions", schema.Array("审核维度数组；必须完整填写当前 scope 的固定维度", dimensionSchema)).Required(),
+		schema.Property("issues", schema.Array("问题数组；pass 无问题时必须传 []", issueSchema)).Required(),
 	)
 }
 

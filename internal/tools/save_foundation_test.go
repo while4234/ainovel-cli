@@ -45,6 +45,69 @@ func TestSaveFoundationBlocksDirectFormalOutlineWritesDuringActiveRevision(t *te
 	}
 }
 
+func TestSaveFoundationRejectsStoryIdentityDriftFromCoCreateBrief(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("novel", 0); err != nil {
+		t.Fatal(err)
+	}
+	brief := "## 主题\n- 书名：《重生后，我被太子爷宠上天》\n- 地点：A市\n\n## 人物设定\n- 女主 林舒然：20岁\n- 男主 墨子曜：28岁"
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status: domain.PlanningReviewStatusCollecting,
+		Kind:   domain.PlanningReviewKindBlueprint,
+		Brief:  brief,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewSaveFoundationTool(st)
+
+	wrongPremise, _ := json.Marshal(map[string]any{
+		"type":    "premise",
+		"content": "# 《声线入骨》\n沈知夏在H市为影帝谢承晏配乐。",
+	})
+	if _, err := tool.Execute(context.Background(), wrongPremise); err == nil || !strings.Contains(err.Error(), "canonical co-create brief") {
+		t.Fatalf("wrong premise should be rejected by the creative brief guard: %v", err)
+	}
+	if saved, _ := st.Outline.LoadPremise(); saved != "" {
+		t.Fatalf("rejected premise was persisted: %q", saved)
+	}
+
+	correctPremise, _ := json.Marshal(map[string]any{
+		"type":    "premise",
+		"content": "# 《重生后，我被太子爷宠上天》\n林舒然在A市救下失忆的墨子曜，重生后守住两人的命运。",
+	})
+	if _, err := tool.Execute(context.Background(), correctPremise); err != nil {
+		t.Fatalf("canonical premise should pass: %v", err)
+	}
+
+	wrongCharacters, _ := json.Marshal(map[string]any{
+		"type": "characters",
+		"content": []map[string]any{
+			{"name": "沈知夏", "role": "女主"},
+			{"name": "谢承晏", "role": "男主"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), wrongCharacters); err == nil || !strings.Contains(err.Error(), "missing canonical protagonists") {
+		t.Fatalf("wrong character identities should be rejected: %v", err)
+	}
+	if characters, _ := st.Characters.Load(); len(characters) != 0 {
+		t.Fatalf("rejected characters were persisted: %+v", characters)
+	}
+
+	correctCharacters, _ := json.Marshal(map[string]any{
+		"type": "characters",
+		"content": []map[string]any{
+			{"name": "林舒然", "role": "女主"},
+			{"name": "墨子曜", "role": "男主"},
+		},
+	})
+	if _, err := tool.Execute(context.Background(), correctCharacters); err != nil {
+		t.Fatalf("canonical characters should pass: %v", err)
+	}
+}
+
 type toolRevisionPolicy struct{}
 
 func (toolRevisionPolicy) Mode() domain.RevisionMode                  { return domain.RevisionModeNormal }

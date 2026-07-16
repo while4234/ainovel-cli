@@ -9,6 +9,32 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
+func TestSaveOriginalPlanningAuditSchemaIsStrictCompatible(t *testing.T) {
+	tool := NewSaveOriginalPlanningAuditTool(nil)
+	if !tool.StrictSchema() {
+		t.Fatal("save_original_planning_audit should opt into strict schema")
+	}
+	root := tool.Schema()
+	requireRequiredFields(t, root,
+		"scope", "scope_id", "volume", "arc", "from_volume", "to_volume",
+		"from_chapter", "to_chapter", "verdict", "summary", "dimensions", "issues",
+	)
+	requireAllPropertiesRequired(t, root)
+
+	properties := root["properties"].(map[string]any)
+	dimensions := properties["dimensions"].(map[string]any)
+	dimensionItem := dimensions["items"].(map[string]any)
+	requireRequiredFields(t, dimensionItem, "name", "score", "comment")
+	requireAllPropertiesRequired(t, dimensionItem)
+
+	issues := properties["issues"].(map[string]any)
+	issueItem := issues["items"].(map[string]any)
+	requireRequiredFields(t, issueItem,
+		"severity", "volume", "arc", "from_chapter", "to_chapter", "description", "repair_instruction",
+	)
+	requireAllPropertiesRequired(t, issueItem)
+}
+
 func TestSaveOriginalPlanningAuditRejectsMoreThanFourRawChapters(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
