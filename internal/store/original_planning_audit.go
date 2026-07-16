@@ -120,8 +120,8 @@ func (s *OriginalPlanningAuditStore) Reset() error {
 	return s.io.RemoveFile(originalPlanningAuditsFile)
 }
 
-// loadCurrent keeps revise instructions actionable while refusing to reuse a
-// pass whose topology or scoped outline content no longer matches the project.
+// loadCurrent keeps current revise instructions actionable while refusing to
+// reuse any signed audit after its scoped outline content has changed.
 func (s *OriginalPlanningAuditStore) loadCurrent() ([]domain.OriginalPlanningAudit, error) {
 	audits, err := s.Load()
 	if err != nil || s.outline == nil {
@@ -133,7 +133,12 @@ func (s *OriginalPlanningAuditStore) loadCurrent() ([]domain.OriginalPlanningAud
 	}
 	current := make([]domain.OriginalPlanningAudit, 0, len(audits))
 	for _, audit := range audits {
-		if audit.Verdict != "pass" || domain.OriginalPlanningAuditCurrent(audit, volumes) {
+		if audit.Verdict == "pass" && domain.OriginalPlanningAuditCurrent(audit, volumes) {
+			current = append(current, audit)
+			continue
+		}
+		legacyUnsignedRevise := audit.Verdict == "revise" && (audit.StructureSignature == "" || audit.ContentSignature == "")
+		if audit.Verdict == "revise" && (legacyUnsignedRevise || domain.OriginalPlanningAuditBindingCurrent(audit, volumes)) {
 			current = append(current, audit)
 		}
 	}
@@ -331,7 +336,8 @@ func (s *OriginalPlanningAuditStore) InvalidateRepair(volume, arc int) error {
 			remove := audit.Scope == "book" ||
 				(audit.Scope == "book_batch" && audit.FromVolume <= volume && audit.ToVolume >= volume) ||
 				(audit.Scope == "volume" && audit.Volume == volume) ||
-				(audit.Scope == "arc" && audit.Volume == volume && audit.Arc == arc)
+				(audit.Scope == "arc" && audit.Volume == volume && audit.Arc == arc) ||
+				originalPlanningAuditRequestedRepair(audit, volume, arc)
 			if !remove {
 				kept = append(kept, audit)
 			}
@@ -341,6 +347,18 @@ func (s *OriginalPlanningAuditStore) InvalidateRepair(volume, arc int) error {
 		}
 		return s.io.WriteJSONUnlocked(originalPlanningAuditsFile, kept)
 	})
+}
+
+func originalPlanningAuditRequestedRepair(audit domain.OriginalPlanningAudit, volume, arc int) bool {
+	if audit.Verdict != "revise" {
+		return false
+	}
+	for _, issue := range audit.Issues {
+		if issue.Volume == volume && issue.Arc == arc {
+			return true
+		}
+	}
+	return false
 }
 
 // InvalidateSkeletonRepair reruns the changed volume, adjacent handoff

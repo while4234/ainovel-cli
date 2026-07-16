@@ -164,7 +164,16 @@ func validateOriginalPlanningBindingStructure(scope string, volumes []VolumeOutl
 }
 
 func OriginalPlanningAuditCurrent(audit OriginalPlanningAudit, volumes []VolumeOutline) bool {
-	if audit.Verdict != "pass" || strings.TrimSpace(audit.StructureSignature) == "" || strings.TrimSpace(audit.ContentSignature) == "" {
+	if audit.Verdict != "pass" {
+		return false
+	}
+	return OriginalPlanningAuditBindingCurrent(audit, volumes)
+}
+
+// OriginalPlanningAuditBindingCurrent reports whether the reviewed structure
+// and content still match, independently of the audit verdict.
+func OriginalPlanningAuditBindingCurrent(audit OriginalPlanningAudit, volumes []VolumeOutline) bool {
+	if strings.TrimSpace(audit.StructureSignature) == "" || strings.TrimSpace(audit.ContentSignature) == "" {
 		return false
 	}
 	current := audit

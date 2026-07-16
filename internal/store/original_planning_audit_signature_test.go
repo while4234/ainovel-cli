@@ -72,6 +72,81 @@ func TestSkeletonAuditProjectsDetailedChaptersOutOfItsSignature(t *testing.T) {
 	}
 }
 
+func TestInvalidateRepairConsumesFailedChapterAudit(t *testing.T) {
+	st := NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	volumes := originalAuditSignatureStructure()
+	first := volumes[0].Arcs[0].Chapters[0]
+	second := first
+	second.ID = domain.LegacyStructureID("audit-test", domain.StructureKindChapter, "volume-1/arc-1/chapter-2")
+	second.Chapter = 2
+	second.Title = "Bridge"
+	second.CoreEvent = "the warning forces a costly crossing"
+	volumes[0].Arcs[0].Chapters = append(volumes[0].Arcs[0].Chapters, second)
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.OriginalPlanningAudits.Save(domain.OriginalPlanningAudit{
+		Scope: "chapter", ScopeID: first.ID, FromChapter: 1, ToChapter: 1, Verdict: "pass", Summary: "chapter one passes",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.OriginalPlanningAudits.Save(domain.OriginalPlanningAudit{
+		Scope: "chapter", ScopeID: second.ID, FromChapter: 2, ToChapter: 2, Verdict: "revise", Summary: "chapter two needs repair",
+		Issues: []domain.OriginalPlanningAuditIssue{{Volume: 1, Arc: 1, FromChapter: 2, ToChapter: 2, Description: "missing consequence", RepairInstruction: "add an irreversible consequence"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	work, err := st.OriginalPlanningAudits.NextWork(st.Outline)
+	if err != nil || work == nil || work.Kind != "repair_arc" || work.FromChapter != 2 {
+		t.Fatalf("work before repair = %+v err=%v", work, err)
+	}
+	if err := st.OriginalPlanningAudits.InvalidateRepair(1, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	work, err = st.OriginalPlanningAudits.NextWork(st.Outline)
+	if err != nil || work == nil || work.Kind != "audit_chapter" || work.FromChapter != 2 || work.ToChapter != 2 {
+		t.Fatalf("work after repair = %+v err=%v", work, err)
+	}
+}
+
+func TestNextWorkIgnoresFailedChapterAuditAfterContentChanges(t *testing.T) {
+	st := NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	volumes := originalAuditSignatureStructure()
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	failed := domain.OriginalPlanningAudit{
+		Scope: "chapter", ScopeID: volumes[0].Arcs[0].Chapters[0].ID, FromChapter: 1, ToChapter: 1, Verdict: "revise", Summary: "chapter needs repair",
+		Issues: []domain.OriginalPlanningAuditIssue{{Volume: 1, Arc: 1, FromChapter: 1, ToChapter: 1, Description: "missing consequence", RepairInstruction: "add an irreversible consequence"}},
+	}
+	if err := domain.BindOriginalPlanningAudit(&failed, volumes); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.OriginalPlanningAudits.Save(failed); err != nil {
+		t.Fatal(err)
+	}
+	if work, err := st.OriginalPlanningAudits.NextWork(st.Outline); err != nil || work == nil || work.Kind != "repair_arc" {
+		t.Fatalf("current failed audit work = %+v err=%v", work, err)
+	}
+
+	volumes[0].Arcs[0].Chapters[0].CoreEvent = "the warning now forces an irreversible departure"
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	work, err := st.OriginalPlanningAudits.NextWork(st.Outline)
+	if err != nil || work == nil || work.Kind != "audit_chapter" || work.FromChapter != 1 {
+		t.Fatalf("work after signed failed audit became stale = %+v err=%v", work, err)
+	}
+}
+
 func originalAuditSignatureStructure() []domain.VolumeOutline {
 	return []domain.VolumeOutline{{
 		ID: domain.LegacyStructureID("audit-test", domain.StructureKindVolume, "volume-1"), Index: 1, Title: "Opening", Theme: "trust",
