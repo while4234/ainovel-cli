@@ -28,6 +28,11 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-16 `fix: keep workflow progress panel mounted`: removes the
+  project-ID key that forced the workflow progress panel to remount while a
+  project snapshot was opening. This prevents React from leaving duplicate
+  workflow panels in the production DOM; the UI suite and an isolated-browser
+  production-build check both pass.
 - 2026-07-16 `fix: retry empty context summaries`:
   retries transient empty context-compaction responses twice with cancellable
   exponential backoff before preserving the existing terminal diagnostic. Each

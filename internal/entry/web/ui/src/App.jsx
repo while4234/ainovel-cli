@@ -4580,7 +4580,7 @@ export default function App() {
           </div>
         ) : null}
 
-        <WorkflowProgressPanel key={activeProject?.id || 'no-project'} snapshot={snapshot} />
+        <WorkflowProgressPanel snapshot={snapshot} />
         <ManuscriptWorkspace
           key={activeProject?.id || 'no-project-manuscript'}
           projectId={activeProject?.id || ''}
