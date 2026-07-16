@@ -14,6 +14,16 @@ credentials, API keys, `.env` values, private keys, cookies, or raw local auth
 paths. Safe example configuration files may be tracked when they contain
 placeholders only.
 
+Project-specific exception approved on 2026-07-16: the private-repository
+simulation corpus downloader tracks only
+`internal/entry/web/simulation_download_credentials.enc`. It is an AES-GCM
+bundle containing the DaliPan authorization value and BaiduPCS-Go config, with
+the matching application key material intentionally shipped for zero-config
+private deployment. Never commit the plaintext inputs, temporary browser
+profiles, decrypted runtime config, or any console output containing their
+values. Treat repository read access as credential access and rotate/reseal the
+bundle if that access boundary changes.
+
 ## Project GitHub Rule
 
 For this project, a completed future development task is not done until the
@@ -28,6 +38,19 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-16 `feat: add simulation corpus search and download` (pending commit):
+  adds project-scoped TXT search and one-click ingestion to the simulation
+  sidebar, exact normalized-title filtering, background DaliPan API search,
+  headless Edge/Chrome Baidu smart-agent fallback, BaiduPCS-Go download and
+  verified automatic installation, long-source splitting, and an encrypted
+  private-deployment credential bundle. The real acceptance project
+  `仿写语料搜索验收-20260716` ingested all three requested books into 259 non-empty
+  ordered TXT parts (139 + 41 + 79); a synthetic absent title returned zero
+  results and maps to the explicit `没有找到 TXT 文件` UI message. Focused/full
+  Web tests, Web/full vet, 223 UI tests, production build, four live search/
+  fallback probes, two live BaiduPCS downloads, service hash/restart smoke, and
+  disk validation passed. The repository-wide Go run hit one known Windows
+  TempDir cleanup flake; that exact test passed immediately in isolation.
 - 2026-07-16 accepted PR-01 (this local commit), `feat: add safe manuscript revision publication`:
   adds candidate-isolated manuscript polish/rewrite sessions, stable-ID scope and
   revision/idempotency boundaries, independently signed contract/adaptation audits,

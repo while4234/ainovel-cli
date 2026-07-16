@@ -16,6 +16,7 @@ import {
   deleteProviderModel,
   discoverGlobalProviderModels,
   discoverProjectProviderModels,
+  downloadSimulationSource,
   emptyTrashProjects,
   exportProjectDownload,
   generateContinuationOutlines,
@@ -59,6 +60,7 @@ import {
   resolveCoCreateDecisions,
   rollbackProject,
   saveNovelToLibrary,
+  searchSimulationSources,
   sendCoCreate,
   setGlobalCoCreateMaxTokens,
   setGlobalCoCreateTimeout,
@@ -212,6 +214,22 @@ describe('web API helpers', () => {
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/libraries/novels?q=source%20book', expect.objectContaining({
       headers: {}
+    }));
+  });
+
+  it('sends simulation source search and download payloads', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ results: [] }));
+
+    await searchSimulationSources('project-1', '异兽迷城');
+    await downloadSimulationSource('project-1', 'result-1');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/projects/project-1/simulate/search', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ file_name: '异兽迷城' })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/simulate/search/download', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ result_id: 'result-1' })
     }));
   });
 
