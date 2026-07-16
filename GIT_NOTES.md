@@ -35,7 +35,9 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   from repeatedly submitting an impossible partial `save_original_planning_audit`
   call before chapter-outline generation can advance. Focused regressions passed
   10/10, the full Go suite and `go vet ./...` pass, and the production binary
-  builds successfully.
+  builds successfully. The fixed binary was deployed to port 9898; live project
+  `重生v4` saved its chapter and arc audits without another missing-`scope_id`
+  error, then advanced to `architect_long` chapter-outline repair.
 - 2026-07-16 `fix: keep workflow progress panel mounted`: removes the
   project-ID key that forced the workflow progress panel to remount while a
   project snapshot was opening. This prevents React from leaving duplicate
