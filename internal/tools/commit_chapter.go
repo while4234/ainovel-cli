@@ -211,6 +211,9 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	if err := t.store.Drafts.SaveFinalChapter(a.Chapter, content); err != nil {
 		return nil, fmt.Errorf("save final chapter: %w: %w", errs.ErrStoreWrite, err)
 	}
+	if err := t.store.CaptureManuscriptContentProvenance(a.Chapter, content); err != nil {
+		return nil, fmt.Errorf("freeze manuscript content provenance: %w: %w", errs.ErrStoreWrite, err)
+	}
 
 	// 3. 保存摘要
 	summary := domain.ChapterSummary{
@@ -635,6 +638,9 @@ func (t *CommitChapterTool) executeRewriteCommit(
 	// 3. 覆盖终稿
 	if err := t.store.Drafts.SaveFinalChapter(chapter, content); err != nil {
 		return nil, fmt.Errorf("rewrite: save final chapter: %w: %w", errs.ErrStoreWrite, err)
+	}
+	if err := t.store.CaptureManuscriptContentProvenance(chapter, content); err != nil {
+		return nil, fmt.Errorf("rewrite: freeze manuscript content provenance: %w: %w", errs.ErrStoreWrite, err)
 	}
 
 	// 3. 覆盖摘要

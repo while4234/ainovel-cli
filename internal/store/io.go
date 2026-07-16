@@ -12,8 +12,9 @@ import (
 // IO 封装文件系统读写操作，提供加锁和原子写入。
 // 每个子存储持有独立的 IO 实例，拥有各自的 sync.RWMutex。
 type IO struct {
-	dir string
-	mu  sync.RWMutex
+	dir        string
+	mu         sync.RWMutex
+	writeFault func(rel, stage string) error
 }
 
 func newIO(dir string) *IO {
@@ -71,7 +72,17 @@ func (io *IO) WriteFileUnlocked(rel string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return replaceFile(tmpPath, p)
+	if err := io.injectWriteFault(rel, "after_temp_sync"); err != nil {
+		return fmt.Errorf("write %s after temp sync: %w", rel, err)
+	}
+	return io.replaceFile(rel, tmpPath, p)
+}
+
+func (io *IO) injectWriteFault(rel, stage string) error {
+	if io.writeFault == nil {
+		return nil
+	}
+	return io.writeFault(filepath.ToSlash(rel), stage)
 }
 
 func (io *IO) ReadJSON(rel string, v any) error {
@@ -158,20 +169,32 @@ func (io *IO) RemoveFileUnlocked(rel string) error {
 	return err
 }
 
-func replaceFile(tempPath, targetPath string) error {
+func (io *IO) replaceFile(rel, tempPath, targetPath string) error {
 	backupPath := targetPath + ".replace-backup"
 	if err := recoverInterruptedReplacement(targetPath); err != nil {
 		return err
 	}
+	backedUp := false
 	if _, err := os.Stat(targetPath); err == nil {
 		if err := os.Rename(targetPath, backupPath); err != nil {
 			return fmt.Errorf("prepare file replacement: %w", err)
 		}
+		backedUp = true
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	if err := io.injectWriteFault(rel, "after_backup"); err != nil {
+		if backedUp {
+			if rollbackErr := os.Rename(backupPath, targetPath); rollbackErr != nil {
+				return fmt.Errorf("write %s after backup: %v (rollback: %w)", rel, err, rollbackErr)
+			}
+		}
+		return fmt.Errorf("write %s after backup: %w", rel, err)
+	}
 	if err := os.Rename(tempPath, targetPath); err != nil {
-		_ = os.Rename(backupPath, targetPath)
+		if backedUp {
+			_ = os.Rename(backupPath, targetPath)
+		}
 		return err
 	}
 	if err := os.Remove(backupPath); err != nil && !os.IsNotExist(err) {

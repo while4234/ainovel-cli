@@ -37,9 +37,12 @@ type ManuscriptCandidateInput struct {
 }
 
 type ManuscriptRevisionService struct {
-	store   *storepkg.Store
-	writer  ManuscriptWriter
-	auditor ManuscriptAuditor
+	store                  *storepkg.Store
+	writer                 ManuscriptWriter
+	auditor                ManuscriptAuditor
+	beforeRestoreOwnership func()
+	beforeRestoreEvidence  func() error
+	beforeRestoreCommit    func() error
 }
 
 type ManuscriptPlan struct {
@@ -279,6 +282,180 @@ func (s *ManuscriptRevisionService) CurrentChapter(stableID string) (domain.Manu
 	baseline.NarrativeContract = contract
 	baseline.ContractArtifact = newNarrativeContractArtifactWithProtectedState(contract, baseline.CurrentProseSHA256, baseline.ApprovedOutlineSHA256, protectedState)
 	return baseline, prose, baseline.Validate()
+}
+
+// RestoreVersion opens a new revision around an immutable historical
+// candidate. It deliberately reuses the normal audit/approval/publication
+// state machine: restoring never overwrites current prose directly.
+func (s *ManuscriptRevisionService) RestoreVersion(sourceRevisionID, chapterID, expectedSignature, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	source, err := s.store.ManuscriptRevisions.Load(strings.TrimSpace(sourceRevisionID))
+	if err != nil {
+		return nil, err
+	}
+	var historical *domain.ManuscriptCandidate
+	for i := range source.Candidates {
+		if source.Candidates[i].ChapterID == strings.TrimSpace(chapterID) && source.Candidates[i].Prose.SHA256 == strings.TrimSpace(expectedSignature) {
+			copy := source.Candidates[i]
+			historical = &copy
+			break
+		}
+	}
+	if historical == nil {
+		return nil, fmt.Errorf("historical manuscript version does not match chapter and signature")
+	}
+	if _, err := s.store.ManuscriptRevisions.Content().Read(historical.Prose); err != nil {
+		return nil, fmt.Errorf("read historical manuscript version: %w", err)
+	}
+	baseline, _, err := s.CurrentChapter(chapterID)
+	if err != nil {
+		return nil, err
+	}
+	if historical.OutlineSignature != baseline.ApprovedOutlineSHA256 || historical.ModeSignature != manuscriptModeSignature(baseline) {
+		return nil, fmt.Errorf("historical manuscript version is stale against the current outline or mode")
+	}
+	historical.AuditSignature = ""
+	historical.AuditArtifact = nil
+	baselinePayload, _ := json.Marshal(baseline)
+	historical.BaselineSignature = domain.ContentSignature(baselinePayload)
+	revisionID, err := newManuscriptRevisionID()
+	if err != nil {
+		return nil, err
+	}
+	rebound, evidenceEnvelope, err := s.prepareHistoricalCandidate(revisionID, baseline, *historical)
+	if err != nil {
+		return nil, fmt.Errorf("rebind historical manuscript candidate: %w", err)
+	}
+	historical = &rebound
+	policyID := domain.NormalManuscriptRevisionPolicyID
+	if baseline.Mode == domain.RevisionModeAdaptation {
+		policyID = domain.AdaptationManuscriptRevisionPolicyID
+	}
+	runtime := domain.ManuscriptRevisionRuntime{
+		Version: 1, RevisionID: revisionID, Revision: 1, Mode: baseline.Mode,
+		PolicyID: policyID, PolicyVersion: domain.ManuscriptRevisionPolicyVersion,
+		Instruction:     "restore signed historical version " + sourceRevisionID,
+		InstructionKind: domain.ManuscriptInstructionRewrite, Stage: "audit_pending",
+		Baseline: baseline, Queue: []domain.ManuscriptReworkItem{{
+			ChapterID: baseline.ChapterID, DisplayChapter: baseline.DisplayChapter,
+			Requirement:        domain.StructureImpactRequired,
+			ExpectedSignatures: []string{baseline.CurrentProseSHA256, baseline.ApprovedOutlineSHA256, baseline.StructureSignature},
+			Status:             "generated", Attempt: 1, IdempotencyKey: idempotencyKey + ":" + baseline.ChapterID,
+		}}, Candidates: []domain.ManuscriptCandidate{*historical},
+		PublicationStatus: domain.ManuscriptPublicationNone, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if progress, progressErr := s.store.Progress.Load(); progressErr != nil {
+		return nil, progressErr
+	} else if progress != nil && progress.Phase == domain.PhaseComplete {
+		runtime.RequiresCompletionRevalidation = true
+		runtime.CompletionRevalidationStatus = "pending"
+	}
+	if s.beforeRestoreOwnership != nil {
+		s.beforeRestoreOwnership()
+	}
+	var createdEvidence domain.ManuscriptContentRef
+	var evidenceWasCreated bool
+	created, startErr := s.store.ManuscriptRevisions.StartAtomic(runtime, idempotencyKey, func(current *domain.ManuscriptRevisionRuntime) error {
+		fresh, _, refreshErr := s.CurrentChapter(chapterID)
+		if refreshErr != nil {
+			return refreshErr
+		}
+		if manuscriptRestoreOwnershipDrift(baseline, fresh) {
+			return &domain.ManuscriptRevisionError{Class: "preview_stale", Err: fmt.Errorf("manuscript mode or signed baseline changed before restore ownership")}
+		}
+		if s.beforeRestoreEvidence != nil {
+			if evidenceErr := s.beforeRestoreEvidence(); evidenceErr != nil {
+				return evidenceErr
+			}
+		}
+		evidence, wasCreated, evidenceErr := s.store.ManuscriptRevisions.Content().PutJSONTracked(evidenceEnvelope)
+		if evidenceErr != nil {
+			return evidenceErr
+		}
+		createdEvidence, evidenceWasCreated = evidence, wasCreated
+		rebound.ContractEvidence = evidence
+		if validateErr := rebound.Validate(); validateErr != nil {
+			return validateErr
+		}
+		if s.beforeRestoreCommit != nil {
+			if commitErr := s.beforeRestoreCommit(); commitErr != nil {
+				return commitErr
+			}
+		}
+		current.Candidates = []domain.ManuscriptCandidate{rebound}
+		return nil
+	})
+	if startErr != nil && evidenceWasCreated {
+		if cleanupErr := s.store.ManuscriptRevisions.Content().RemoveCreated(createdEvidence); cleanupErr != nil {
+			return nil, errors.Join(startErr, fmt.Errorf("rollback restore candidate evidence: %w", cleanupErr))
+		}
+	}
+	return created, startErr
+}
+
+func manuscriptRestoreOwnershipDrift(expected, fresh domain.ManuscriptBaseline) bool {
+	return fresh.CurrentProseSHA256 != expected.CurrentProseSHA256 ||
+		fresh.ApprovedOutlineSHA256 != expected.ApprovedOutlineSHA256 ||
+		fresh.StructureSignature != expected.StructureSignature ||
+		fresh.Mode != expected.Mode ||
+		fresh.AdaptationPlanSHA256 != expected.AdaptationPlanSHA256 ||
+		fresh.SourceManifestSHA256 != expected.SourceManifestSHA256
+}
+
+func (s *ManuscriptRevisionService) prepareHistoricalCandidate(revisionID string, baseline domain.ManuscriptBaseline, historical domain.ManuscriptCandidate) (domain.ManuscriptCandidate, manuscriptContractEvidenceEnvelope, error) {
+	prosePayload, err := s.store.ManuscriptRevisions.Content().Read(historical.Prose)
+	if err != nil {
+		return domain.ManuscriptCandidate{}, manuscriptContractEvidenceEnvelope{}, err
+	}
+	entry, _, structure, err := s.resolveChapter(historical.ChapterID)
+	if err != nil {
+		return domain.ManuscriptCandidate{}, manuscriptContractEvidenceEnvelope{}, err
+	}
+	protectedState, err := s.manuscriptProtectedState(entry)
+	if err != nil {
+		return domain.ManuscriptCandidate{}, manuscriptContractEvidenceEnvelope{}, err
+	}
+	contract := narrativeContractFromEntry(entry, structure)
+	contract.ChapterID = historical.ChapterID
+	contract.OutlineSHA256 = baseline.ApprovedOutlineSHA256
+	contract.StateSHA256 = protectedState.aggregate()
+	outlinePayload, _ := json.Marshal(entry)
+	task := newManuscriptContractAuditTask(revisionID, historical.ChapterID, historical.Prose.SHA256, baseline.ApprovedOutlineSHA256, entry, protectedState)
+	task.AuthoritativeOutlineSHA256 = domain.JSONContentSignature(outlinePayload)
+	task.AuthoritativeStructureSHA256 = domain.StructureSignature(structure)
+	task = signManuscriptContractAuditTask(task)
+	auditor, ok := s.auditor.(ManuscriptStructuredContractAuditor)
+	if !ok {
+		return domain.ManuscriptCandidate{}, manuscriptContractEvidenceEnvelope{}, fmt.Errorf("independent structured candidate contract auditor is unavailable")
+	}
+	decision, err := auditor.AuditCandidateContract(context.Background(), task, string(prosePayload))
+	if err != nil {
+		return domain.ManuscriptCandidate{}, manuscriptContractEvidenceEnvelope{}, err
+	}
+	if err = validateManuscriptContractAuditDecision(task, decision, string(prosePayload), contract); err != nil {
+		return domain.ManuscriptCandidate{}, manuscriptContractEvidenceEnvelope{}, err
+	}
+	verificationTask := newManuscriptContractVerificationTask(task, decision)
+	verification, err := auditor.VerifyCandidateContract(context.Background(), verificationTask, decision, contract, string(prosePayload))
+	if err != nil {
+		return domain.ManuscriptCandidate{}, manuscriptContractEvidenceEnvelope{}, err
+	}
+	if err = validateManuscriptContractVerification(task, decision, verificationTask, verification, string(prosePayload), contract); err != nil {
+		return domain.ManuscriptCandidate{}, manuscriptContractEvidenceEnvelope{}, err
+	}
+	contract = decision.Contract
+	artifact := newNarrativeContractArtifactWithProtectedState(contract, historical.Prose.SHA256, baseline.ApprovedOutlineSHA256, protectedState)
+	evidence := manuscriptContractEvidenceEnvelope{Version: 1, Contract: contract, Prose: historical.Prose, Sidecar: historical.Sidecar, ProtectedFields: artifact.ProtectedFields, ArtifactSignature: artifact.Signature, AuditTask: task, AuditDecision: decision, VerificationTask: verificationTask, VerificationDecision: verification}
+	baselinePayload, _ := json.Marshal(baseline)
+	contractPayload, _ := json.Marshal(contract)
+	historical.BaselineSignature = domain.ContentSignature(baselinePayload)
+	historical.ContractSignature = domain.ContentSignature(contractPayload)
+	historical.ContractArtifact = artifact
+	historical.ContractEvidence = domain.ManuscriptContentRef{}
+	historical.OutlineSignature = baseline.ApprovedOutlineSHA256
+	historical.ModeSignature = manuscriptModeSignature(baseline)
+	historical.AuditSignature = ""
+	historical.AuditArtifact = nil
+	return historical, evidence, nil
 }
 
 type manuscriptProtectedState struct {
@@ -1728,6 +1905,16 @@ func (s *ManuscriptRevisionService) Publish(revisionID string, expectedRevision 
 	}
 	if runtime.Revision != expectedRevision {
 		return nil, fmt.Errorf("%w: expected %d actual %d", storepkg.ErrManuscriptRevisionConflict, expectedRevision, runtime.Revision)
+	}
+	for _, candidate := range runtime.Candidates {
+		if err := s.store.ManuscriptRevisions.BindContentProvenance(storepkg.ManuscriptContentProvenance{
+			ChapterID: candidate.ChapterID, ContentSHA256: candidate.Prose.SHA256,
+			ApprovedOutlineSHA256: candidate.OutlineSignature, Mode: runtime.Mode,
+			AdaptationPlanSHA256: runtime.Baseline.AdaptationPlanSHA256,
+			SourceManifestSHA256: runtime.Baseline.SourceManifestSHA256,
+		}); err != nil {
+			return nil, fmt.Errorf("freeze publication provenance: %w", err)
+		}
 	}
 	completed, err := s.store.PublishManuscriptCandidate(runtime, idempotencyKey)
 	if err != nil {

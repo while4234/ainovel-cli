@@ -244,6 +244,12 @@ func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
 			t.Fatalf("snapshot response included state replay event: %+v", ev)
 		}
 	}
+	session, _, err := server.sessions.Open(manifest.ID)
+	if err != nil {
+		t.Fatalf("open production project session: %v", err)
+	}
+	chapterID := "ch_0123456789abcdef0123456789abcdef"
+	session.appendManuscriptMutation("prose_publish", chapterID)
 
 	eventsResp, err := client.Get(httpServer.URL + "/api/projects/" + manifest.ID + "/events?after=0")
 	if err != nil {
@@ -257,8 +263,8 @@ func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
 		t.Fatalf("events content-type = %q", ctype)
 	}
 	reader := bufio.NewReader(eventsResp.Body)
-	var sawID, sawSnapshotEvent, sawSnapshotData bool
-	for i := 0; i < 20 && !(sawID && sawSnapshotEvent && sawSnapshotData); i++ {
+	var sawID, sawSnapshotEvent, sawSnapshotData, sawMutationData bool
+	for i := 0; i < 30 && !(sawID && sawSnapshotEvent && sawSnapshotData && sawMutationData); i++ {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			t.Fatalf("read SSE line: %v", err)
@@ -267,9 +273,10 @@ func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
 		sawID = sawID || strings.HasPrefix(line, "id:")
 		sawSnapshotEvent = sawSnapshotEvent || line == "event: snapshot"
 		sawSnapshotData = sawSnapshotData || (strings.HasPrefix(line, "data:") && strings.Contains(line, `"type":"snapshot"`))
+		sawMutationData = sawMutationData || (strings.HasPrefix(line, "data:") && strings.Contains(line, `"manuscript_mutation":{"scope":"prose_publish","stable_id":"`+chapterID+`"}`))
 	}
-	if !sawID || !sawSnapshotEvent || !sawSnapshotData {
-		t.Fatalf("SSE stream missing snapshot event: id=%v event=%v data=%v", sawID, sawSnapshotEvent, sawSnapshotData)
+	if !sawID || !sawSnapshotEvent || !sawSnapshotData || !sawMutationData {
+		t.Fatalf("SSE stream missing production envelope: id=%v snapshot_event=%v snapshot_data=%v mutation=%v", sawID, sawSnapshotEvent, sawSnapshotData, sawMutationData)
 	}
 	eventsResp.Body.Close()
 
@@ -296,6 +303,15 @@ func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
 	}
 	if historyBody.Events[len(historyBody.Events)-1].Type != webEventTypeSnapshot {
 		t.Fatalf("event history should include the replayed snapshot from SSE setup: %+v", historyBody.Events)
+	}
+	foundMutation := false
+	for _, event := range historyBody.Events {
+		if event.ManuscriptMutation != nil && event.ManuscriptMutation.Scope == "prose_publish" && event.ManuscriptMutation.StableID == chapterID {
+			foundMutation = true
+		}
+	}
+	if !foundMutation {
+		t.Fatalf("event history omitted manuscript mutation projection: %+v", historyBody.Events)
 	}
 }
 

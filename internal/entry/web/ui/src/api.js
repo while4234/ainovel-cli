@@ -1,4 +1,6 @@
-async function request(path, options = {}) {
+import { classifyManuscriptMutation } from './manuscript/manuscript-events.js';
+
+export async function request(path, options = {}) {
   const isFormData = options.body instanceof FormData;
   const response = await fetch(path, {
     ...options,
@@ -13,6 +15,10 @@ async function request(path, options = {}) {
     const error = new Error(data?.error?.message || data?.error || `${response.status} ${response.statusText}`);
     error.data = data;
     throw error;
+  }
+  if (String(options.method || 'GET').toUpperCase() !== 'GET' && path.includes('/manuscript/') && typeof window !== 'undefined') {
+    const mutation = classifyManuscriptMutation(path, options, data);
+    if (mutation) window.dispatchEvent(new CustomEvent('ainovel:manuscript-mutated', { detail: { path, ...mutation } }));
   }
   return data;
 }

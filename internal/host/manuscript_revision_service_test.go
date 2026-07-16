@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -73,6 +74,323 @@ func TestManuscriptRevisionPublishesSignedCandidateWithoutTouchingCurrentEarly(t
 	replayed, err := service.Publish(approved.RevisionID, approved.Revision, "publish-1")
 	if err != nil || replayed.Stage != "completed" {
 		t.Fatalf("publish receipt replay before stale/CAS checks = %+v err=%v", replayed, err)
+	}
+}
+
+func TestRestoreHistoricalCandidateCreatesOneIdempotentAuditPendingRevision(t *testing.T) {
+	st, chapterID := seedManuscriptRevisionProject(t)
+	service := NewManuscriptRevisionServiceWithAuditor(st, passingManuscriptAuditor{})
+	preview, err := service.Preview(ManuscriptPreviewRequest{ChapterID: chapterID, Instruction: "rewrite", Kind: domain.ManuscriptInstructionRewrite}, "restore-source-preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	historicalProse := manuscriptContractFixtureProse(preview.Runtime.Baseline.NarrativeContract)
+	candidate, err := service.SubmitCandidate(preview.Runtime.RevisionID, preview.Runtime.Revision, "restore-source-candidate", ManuscriptCandidateInput{ChapterID: chapterID, Prose: historicalProse, Sidecars: completeManuscriptSidecars()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audited, err := service.RunAudit(t.Context(), candidate.RevisionID, candidate.Revision, "restore-source-audit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := service.Approve(audited.RevisionID, audited.Revision, "restore-source-approve")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Publish(approved.RevisionID, approved.Revision, "restore-source-publish"); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.Drafts.SaveFinalChapter(1, "newer formal prose"); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := service.RestoreVersion(candidate.RevisionID, chapterID, candidate.Candidates[0].Prose.SHA256, "restore-history-once")
+	if err != nil {
+		t.Fatalf("RestoreVersion: %v", err)
+	}
+	if restored.Stage != "audit_pending" || len(restored.Candidates) != 1 || restored.Candidates[0].AuditArtifact != nil || restored.Candidates[0].AuditSignature != "" {
+		t.Fatalf("restored runtime did not clear audit ownership: %+v", restored)
+	}
+	if restored.RevisionID == candidate.RevisionID || restored.Candidates[0].BaselineSignature == candidate.Candidates[0].BaselineSignature || restored.Candidates[0].ContractArtifact.Signature == candidate.Candidates[0].ContractArtifact.Signature || restored.Candidates[0].ContractArtifact.Validate() != nil {
+		t.Fatalf("restore did not rebind baseline while preserving signed candidate contract: %+v", restored.Candidates[0])
+	}
+	if formal, _ := st.Drafts.LoadChapterText(1); formal != "newer formal prose" {
+		t.Fatalf("restore overwrote formal prose: %q", formal)
+	}
+	replayed, err := service.RestoreVersion(candidate.RevisionID, chapterID, candidate.Candidates[0].Prose.SHA256, "restore-history-once")
+	if err != nil || replayed.RevisionID != restored.RevisionID {
+		t.Fatalf("idempotent restore replay=%+v err=%v", replayed, err)
+	}
+	rerun, err := service.RunAudit(t.Context(), restored.RevisionID, restored.Revision, "restore-new-audit")
+	if err != nil || rerun.Candidates[0].AuditArtifact == nil {
+		t.Fatalf("restored candidate did not execute a new audit: %+v err=%v", rerun, err)
+	}
+	if _, err = service.Cancel(rerun.RevisionID, rerun.Revision, "restore-cancel"); err != nil {
+		t.Fatal(err)
+	}
+	service.beforeRestoreOwnership = func() {
+		source, saveErr := st.Adaptation.SaveSourceChapter(1, "Source", "frozen source")
+		if saveErr != nil {
+			t.Errorf("save barrier source: %v", saveErr)
+			return
+		}
+		if saveErr = st.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{SourcePath: "source.txt", ChapterCount: 1, Chapters: []domain.AdaptationSource{source}}); saveErr != nil {
+			t.Errorf("save barrier manifest: %v", saveErr)
+			return
+		}
+		outline, loadErr := st.Outline.LoadOutline()
+		if loadErr != nil {
+			t.Errorf("load barrier outline: %v", loadErr)
+			return
+		}
+		saveErr = st.Adaptation.SavePlan(domain.AdaptationPlan{Granularity: domain.AdaptationGranularityChapter, Brief: "barrier drift", Chapters: []domain.AdaptationChapterPlan{{OutlineEntry: outline[0], Chapter: 1, SourceChapters: []int{1}, CoverageNote: "covered"}}})
+		if saveErr != nil {
+			t.Errorf("save barrier plan: %v", saveErr)
+		}
+	}
+	if _, err = service.RestoreVersion(candidate.RevisionID, chapterID, candidate.Candidates[0].Prose.SHA256, "restore-mode-barrier"); err == nil || !strings.Contains(err.Error(), "preview_stale") {
+		t.Fatalf("mode drift at ownership barrier err=%v", err)
+	}
+	service.beforeRestoreOwnership = nil
+	if active, activeErr := st.ManuscriptRevisions.Active(); activeErr != nil || active != nil {
+		t.Fatalf("barrier rejection created active revision: active=%+v err=%v", active, activeErr)
+	}
+	outline, err := st.Outline.LoadOutline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outline[0].CoreEvent = "changed outline contract"
+	if err = st.Outline.SaveOutline(outline); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.RestoreVersion(candidate.RevisionID, chapterID, candidate.Candidates[0].Prose.SHA256, "restore-stale-outline"); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("stale outline restore err=%v", err)
+	}
+}
+
+func TestRestoreOwnershipRejectsIndependentModePlanAndManifestDrift(t *testing.T) {
+	type fixture struct {
+		service   *ManuscriptRevisionService
+		store     *storepkg.Store
+		chapterID string
+		source    domain.AdaptationSource
+		manifest  domain.AdaptationSourceManifest
+		plan      domain.AdaptationPlan
+		candidate *domain.ManuscriptRevisionRuntime
+	}
+	newFixture := func(t *testing.T) fixture {
+		st, chapterID := seedManuscriptRevisionProject(t)
+		source, err := st.Adaptation.SaveSourceChapter(1, "source", "source event")
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest := domain.AdaptationSourceManifest{SourcePath: "source.txt", ChapterCount: 1, Chapters: []domain.AdaptationSource{source}}
+		if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
+			t.Fatal(err)
+		}
+		outline, err := st.Outline.LoadOutline()
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan := domain.AdaptationPlan{Granularity: domain.AdaptationGranularityChapter, RewritePolicy: domain.AdaptationRewriteFullRewrite, Brief: "valid original plan", Chapters: []domain.AdaptationChapterPlan{{OutlineEntry: outline[0], Chapter: 1, Title: outline[0].Title, SourceChapters: []int{1}, CoverageNote: "covered"}}}
+		if err := st.Adaptation.SavePlan(plan); err != nil {
+			t.Fatal(err)
+		}
+		service := NewManuscriptRevisionServiceWithAuditor(st, passingManuscriptAuditor{})
+		preview, err := service.Preview(ManuscriptPreviewRequest{ChapterID: chapterID, Instruction: "rewrite", Kind: domain.ManuscriptInstructionRewrite}, "drift-source-preview")
+		if err != nil {
+			t.Fatal(err)
+		}
+		prose := manuscriptContractFixtureProse(preview.Runtime.Baseline.NarrativeContract) + "\nsource event"
+		candidate, err := service.SubmitCandidate(preview.Runtime.RevisionID, preview.Runtime.Revision, "drift-source-candidate", ManuscriptCandidateInput{ChapterID: chapterID, Prose: prose, Sidecars: completeManuscriptSidecars()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Cancel(candidate.RevisionID, candidate.Revision, "drift-source-cancel"); err != nil {
+			t.Fatal(err)
+		}
+		return fixture{service: service, store: st, chapterID: chapterID, source: source, manifest: manifest, plan: plan, candidate: candidate}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(f fixture) error
+	}{
+		{name: "mode", mutate: func(f fixture) error {
+			return os.Remove(filepath.Join(f.store.Dir(), "meta", "adaptation", "source_manifest.json"))
+		}},
+		{name: "plan", mutate: func(f fixture) error {
+			replacement := f.plan
+			replacement.Brief = "different but still valid plan"
+			replacement.Chapters = append([]domain.AdaptationChapterPlan(nil), f.plan.Chapters...)
+			return f.store.Adaptation.SavePlan(replacement)
+		}},
+		{name: "manifest", mutate: func(f fixture) error {
+			replacement, err := f.store.Adaptation.SaveSourceChapter(1, "source", "legitimate replacement source event")
+			if err != nil {
+				return err
+			}
+			manifest := f.manifest
+			manifest.Chapters = []domain.AdaptationSource{replacement}
+			return f.store.Adaptation.SaveSourceManifest(manifest)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t)
+			beforeContent := snapshotRevisionContent(t, f.store.Dir())
+			f.service.beforeRestoreOwnership = func() {
+				if err := test.mutate(f); err != nil {
+					t.Errorf("mutate %s: %v", test.name, err)
+				}
+			}
+			_, err := f.service.RestoreVersion(f.candidate.RevisionID, f.chapterID, f.candidate.Candidates[0].Prose.SHA256, "restore-"+test.name+"-barrier")
+			if err == nil || !strings.Contains(err.Error(), "preview_stale") {
+				t.Fatalf("%s drift err=%v", test.name, err)
+			}
+			active, activeErr := f.store.ManuscriptRevisions.Active()
+			if activeErr != nil || active != nil {
+				t.Fatalf("%s drift created active revision: active=%+v err=%v", test.name, active, activeErr)
+			}
+			afterContent := snapshotRevisionContent(t, f.store.Dir())
+			if !reflect.DeepEqual(beforeContent, afterContent) {
+				t.Fatalf("%s drift changed candidate content objects: before=%v after=%v", test.name, beforeContent, afterContent)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name  string
+		stage string
+		match func(string) bool
+	}{
+		{name: "content temp write failure", stage: "after_temp_sync", match: func(rel string) bool { return strings.Contains(rel, "meta/revisions/content/") }},
+		{name: "index commit failure after backup", stage: "after_backup", match: func(rel string) bool { return rel == "meta/revisions/manuscript/index.json" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t)
+			before := snapshotRevisionState(t, f.store.Dir())
+			beforePage, err := f.store.ManuscriptRevisions.List("", 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			injected := false
+			clearFault := f.store.ManuscriptRevisions.SetWriteFaultForTesting(func(rel, stage string) error {
+				if !injected && stage == test.stage && test.match(rel) {
+					injected = true
+					return errors.New("injected real storage write failure")
+				}
+				return nil
+			})
+			key := "restore-real-fault-" + strings.ReplaceAll(test.name, " ", "-")
+			_, restoreErr := f.service.RestoreVersion(f.candidate.RevisionID, f.chapterID, f.candidate.Candidates[0].Prose.SHA256, key)
+			clearFault()
+			if !injected || restoreErr == nil || !strings.Contains(restoreErr.Error(), "injected real storage write failure") {
+				t.Fatalf("real storage failure was not reached: injected=%v err=%v", injected, restoreErr)
+			}
+			if after := snapshotRevisionState(t, f.store.Dir()); !reflect.DeepEqual(before, after) {
+				t.Fatalf("storage failure changed revision bytes or left temp/backup state: before=%v after=%v", before, after)
+			}
+			restarted := storepkg.NewStore(f.store.Dir())
+			if active, activeErr := restarted.ManuscriptRevisions.Active(); activeErr != nil || active != nil {
+				t.Fatalf("restart observed failed active revision: active=%+v err=%v", active, activeErr)
+			}
+			if afterRestart := snapshotRevisionState(t, f.store.Dir()); !reflect.DeepEqual(before, afterRestart) {
+				t.Fatalf("restart recovery changed failed transaction state: before=%v after=%v", before, afterRestart)
+			}
+			retryService := NewManuscriptRevisionServiceWithAuditor(restarted, passingManuscriptAuditor{})
+			created, retryErr := retryService.RestoreVersion(f.candidate.RevisionID, f.chapterID, f.candidate.Candidates[0].Prose.SHA256, key)
+			if retryErr != nil {
+				t.Fatalf("retry after real storage failure: %v", retryErr)
+			}
+			replayed, replayErr := retryService.RestoreVersion(f.candidate.RevisionID, f.chapterID, f.candidate.Candidates[0].Prose.SHA256, key)
+			if replayErr != nil || replayed.RevisionID != created.RevisionID {
+				t.Fatalf("idempotent replay created a different revision: created=%+v replayed=%+v err=%v", created, replayed, replayErr)
+			}
+			afterPage, listErr := restarted.ManuscriptRevisions.List("", 0, 100)
+			if listErr != nil || len(afterPage.Items) != len(beforePage.Items)+1 {
+				t.Fatalf("retry revision count: before=%d after=%d err=%v", len(beforePage.Items), len(afterPage.Items), listErr)
+			}
+		})
+	}
+}
+
+func snapshotRevisionState(t *testing.T, projectDir string) map[string]string {
+	t.Helper()
+	root := filepath.Join(projectDir, "meta", "revisions")
+	result := make(map[string]string)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		if entry.Name() == "transaction.lock" {
+			return nil
+		}
+		payload, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		result[filepath.ToSlash(rel)] = string(payload)
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func snapshotRevisionContent(t *testing.T, projectDir string) map[string]string {
+	t.Helper()
+	root := filepath.Join(projectDir, "meta", "revisions", "content")
+	result := make(map[string]string)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		payload, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		result[filepath.ToSlash(rel)] = domain.ContentSignature(payload)
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func TestManuscriptRestoreOwnershipDriftMatrixIsFieldIndependent(t *testing.T) {
+	expected := domain.ManuscriptBaseline{CurrentProseSHA256: "prose", ApprovedOutlineSHA256: "outline", StructureSignature: "structure", Mode: domain.RevisionModeAdaptation, AdaptationPlanSHA256: "plan", SourceManifestSHA256: "manifest"}
+	tests := map[string]func(*domain.ManuscriptBaseline){
+		"mode":     func(value *domain.ManuscriptBaseline) { value.Mode = domain.RevisionModeNormal },
+		"plan":     func(value *domain.ManuscriptBaseline) { value.AdaptationPlanSHA256 = "new-plan" },
+		"manifest": func(value *domain.ManuscriptBaseline) { value.SourceManifestSHA256 = "new-manifest" },
+	}
+	if manuscriptRestoreOwnershipDrift(expected, expected) {
+		t.Fatal("identical baseline reported drift")
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			fresh := expected
+			mutate(&fresh)
+			if !manuscriptRestoreOwnershipDrift(expected, fresh) {
+				t.Fatalf("%s-only drift was accepted", name)
+			}
+		})
 	}
 }
 

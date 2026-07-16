@@ -43,6 +43,7 @@ const (
 	webEventTypeStreamClear = "stream_clear"
 	webEventTypeSnapshot    = "snapshot"
 	webEventTypeCoCreate    = "cocreate_state"
+	webEventTypeAction      = "action"
 
 	webEventHistoryLimit = 1000
 
@@ -4546,16 +4547,34 @@ func (s *ProjectSession) historyAfterLocked(after int64) []WebEvent {
 }
 
 type WebEvent struct {
-	Seq              int64             `json:"seq"`
-	Type             string            `json:"type"`
-	ProjectID        string            `json:"project_id"`
-	Time             time.Time         `json:"time"`
-	HostEventID      string            `json:"host_event_id,omitempty"`
-	Event            *APIHostEvent     `json:"event,omitempty"`
-	Stream           *APIStreamEvent   `json:"stream,omitempty"`
-	Snapshot         any               `json:"snapshot,omitempty"`
-	CoCreate         *webCoCreateState `json:"cocreate,omitempty"`
-	WorkflowProgress *WorkflowProgress `json:"workflow_progress,omitempty"`
+	Seq                int64                    `json:"seq"`
+	Type               string                   `json:"type"`
+	ProjectID          string                   `json:"project_id"`
+	Time               time.Time                `json:"time"`
+	HostEventID        string                   `json:"host_event_id,omitempty"`
+	Event              *APIHostEvent            `json:"event,omitempty"`
+	Stream             *APIStreamEvent          `json:"stream,omitempty"`
+	Snapshot           any                      `json:"snapshot,omitempty"`
+	CoCreate           *webCoCreateState        `json:"cocreate,omitempty"`
+	WorkflowProgress   *WorkflowProgress        `json:"workflow_progress,omitempty"`
+	ManuscriptMutation *ManuscriptMutationEvent `json:"manuscript_mutation,omitempty"`
+}
+
+// ManuscriptMutationEvent is the stable, machine-readable projection consumed
+// by manuscript workspaces. It deliberately does not infer mutations from
+// human-facing host-event summaries or details.
+type ManuscriptMutationEvent struct {
+	Scope    string `json:"scope"`
+	StableID string `json:"stable_id"`
+}
+
+func (s *ProjectSession) appendManuscriptMutation(scope, stableID string) WebEvent {
+	return s.append(WebEvent{
+		Type: webEventTypeAction,
+		ManuscriptMutation: &ManuscriptMutationEvent{
+			Scope: strings.TrimSpace(scope), StableID: strings.TrimSpace(stableID),
+		},
+	})
 }
 
 type WebEventHistory struct {

@@ -29,7 +29,7 @@ func (s *Server) handleManuscriptRoute(w http.ResponseWriter, r *http.Request, i
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
 	service := host.NewManuscriptRevisionService(st)
-	if action == "manuscript/revision/preview" || action == "manuscript/revision/command" {
+	if action == "manuscript/revision/preview" || action == "manuscript/revision/command" || strings.HasPrefix(action, "manuscript/workspace/restore") {
 		session, _, openErr := s.sessions.Open(id)
 		if openErr != nil {
 			writeManuscriptError(w, openErr)
@@ -40,6 +40,9 @@ func (s *Server) handleManuscriptRoute(w http.ResponseWriter, r *http.Request, i
 			writeManuscriptError(w, fmt.Errorf("production manuscript writer and auditor are unavailable"))
 			return
 		}
+	}
+	if s.handleManuscriptWorkspaceRoute(w, r, manifest, st, service, action) {
+		return
 	}
 	switch {
 	case action == "manuscript/tree":
@@ -166,7 +169,29 @@ func (s *Server) handleManuscriptCommand(w http.ResponseWriter, r *http.Request,
 		writeManuscriptError(w, err)
 		return
 	}
+	if scope := manuscriptMutationScope(request.Action); scope != "" && runtime != nil {
+		if session, _, openErr := s.sessions.Open(manifest.ID); openErr == nil {
+			session.appendManuscriptMutation(scope, runtime.Baseline.ChapterID)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "revision": runtime})
+}
+
+func manuscriptMutationScope(action string) string {
+	switch strings.TrimSpace(action) {
+	case "generate":
+		return "generation"
+	case "audit":
+		return "audit"
+	case "approve", "publish", "revalidate_completion":
+		return "prose_publish"
+	case "confirm_impacts":
+		return "structure_publish"
+	case "cancel":
+		return "cancel"
+	default:
+		return ""
+	}
 }
 
 func (s *Server) handleManuscriptBatches(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, revisionID string) {

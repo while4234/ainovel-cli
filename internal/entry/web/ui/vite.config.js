@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { configDefaults } from 'vitest/config';
 
 const configDir = path.dirname(fileURLToPath(import.meta.url));
 const staticDir = path.resolve(configDir, '../static');
@@ -47,12 +48,18 @@ async function normalizeTextOutputs(directory) {
 
 export default defineConfig({
   plugins: [react(), normalizeStaticLineEndings()],
+  server: {
+    proxy: {
+      '/api': 'http://127.0.0.1:4180'
+    }
+  },
   build: {
     outDir: '../static',
     emptyOutDir: true,
     sourcemap: false
   },
   test: {
-    environment: 'node'
+    environment: 'node',
+    exclude: [...configDefaults.exclude, 'tests/browser/**']
   }
 });
