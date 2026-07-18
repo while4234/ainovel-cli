@@ -146,6 +146,66 @@ func TestWriterManagerUsesPhaseEvictionForOverflowRecovery(t *testing.T) {
 	}
 }
 
+func TestWriterPhaseCompactsPersistedDraftArgumentsImmediately(t *testing.T) {
+	callID := "draft-write"
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("polish chapter"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ThinkingBlock(strings.Repeat("old drafting rationale ", 500)),
+			agentcore.ToolCallBlock(agentcore.ToolCall{
+				ID: callID, Name: "draft_chapter", Args: []byte(fmt.Sprintf(`{"chapter":39,"content":%q}`, strings.Repeat("chapter prose ", 1_200))),
+			}),
+		}},
+		agentcore.ToolResultMsg(callID, []byte(`{"written":true,"chapter":39}`), false),
+	}
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	before := corecontext.EstimateTotal(messages)
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatal("persisted draft arguments must be evicted before the next provider call")
+	}
+	assistant := view[1].(agentcore.Message)
+	calls := assistant.ToolCalls()
+	if len(calls) != 1 || string(calls[0].Args) != `{"_context_compacted":true}` {
+		t.Fatalf("draft call args were not compacted: %+v", calls)
+	}
+	if assistant.ThinkingContent() != "" {
+		t.Fatal("completed drafting rationale must not cross the persisted-write boundary")
+	}
+	if after := corecontext.EstimateTotal(view); after >= before-5_000 {
+		t.Fatalf("draft phase saved only %d tokens, want a whole-payload reduction", before-after)
+	}
+	second, secondResult, err := strategy.Apply(t.Context(), view, view, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondResult.Applied || corecontext.EstimateTotal(second) != corecontext.EstimateTotal(view) {
+		t.Fatalf("phase compaction must be idempotent: %+v", secondResult)
+	}
+}
+
+func TestWriterPhaseFinishesLegacyClearedCallArguments(t *testing.T) {
+	messages := writerPhaseMessages(t, "novel_context", "read_chapter", "check_consistency")
+	legacyResult := messages[2].(agentcore.Message)
+	legacyResult.Metadata["compacted_tool_result"] = true
+	messages[2] = legacyResult
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatal("legacy cleared result still has an oversized originating call")
+	}
+	call := view[1].(agentcore.Message).ToolCalls()[0]
+	if string(call.Args) != `{"_context_compacted":true}` {
+		t.Fatalf("legacy call args=%s", call.Args)
+	}
+}
+
 func TestWriterOverflowRecoveryEvictsWholePriorPhase(t *testing.T) {
 	messages := []agentcore.AgentMessage{agentcore.UserMsg(strings.Repeat("baseline ", 2_200))}
 	for index, toolName := range []string{"novel_context", "read_chapter", "check_consistency"} {
