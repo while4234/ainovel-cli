@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,40 @@ func TestEditChapterOutOfBudgetReportsCountWithoutReread(t *testing.T) {
 		!strings.Contains(payload.NextStep, "不要重新 read_chapter") ||
 		!strings.Contains(payload.NextStep, "edit_chapter(edits=[...])") {
 		t.Fatalf("out-of-budget feedback is incomplete: %+v", payload)
+	}
+}
+
+func TestEditChapterBatchAllowsQualityPreservingSmallEdits(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	var content strings.Builder
+	edits := make([]map[string]string, 20)
+	for index := range edits {
+		oldText := fmt.Sprintf("verbose-detail-%02d", index)
+		newText := fmt.Sprintf("detail-%02d", index)
+		content.WriteString(oldText)
+		content.WriteByte('\n')
+		edits[index] = map[string]string{"old_string": oldText, "new_string": newText}
+	}
+	if err := s.Drafts.SaveDraft(1, content.String()); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	args, _ := json.Marshal(map[string]any{"chapter": 1, "edits": edits})
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		EditCount int `json:"edit_count"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.EditCount != 20 {
+		t.Fatalf("twenty-edit batch result=%+v err=%v raw=%s", payload, err, raw)
 	}
 }
 

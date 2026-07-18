@@ -31,7 +31,7 @@ type EditChapterTool struct {
 	edit  *agentcoretools.EditTool
 }
 
-const maxChapterBatchEdits = 12
+const maxChapterBatchEdits = 24
 
 type chapterTextEdit struct {
 	OldString string `json:"old_string"`
@@ -71,7 +71,7 @@ func (t *EditChapterTool) Description() string {
 		"找到 old_string 并替换为 new_string，要求精确匹配且唯一（多处匹配需 replace_all=true）。" +
 		"写入 drafts/{ch}.draft.md；drafts 不存在时自动从 chapters 播种。" +
 		"章节已完成且不在 PendingRewrites 队列中时拒绝执行。单处修改传 old_string/new_string；" +
-		"一次回读已确定多处局部修改时，用 edits 一次原子落盘 1-12 处，不要为每处修改重读整章。"
+		"一次回读已确定多处局部修改时，用 edits 一次原子落盘 1-24 处，不要为每处修改重读整章。"
 }
 
 func (t *EditChapterTool) Schema() map[string]any {
@@ -84,7 +84,7 @@ func (t *EditChapterTool) Schema() map[string]any {
 		schema.Property("old_string", schema.String("单处替换的原文精确片段；与 edits 二选一")),
 		schema.Property("new_string", schema.String("单处替换的新文本，可为空")),
 		schema.Property("replace_all", schema.Bool("替换所有匹配（默认 false）")),
-		schema.Property("edits", schema.Array("一次回读后确定的 1-12 处不重叠局部替换；与 old_string/new_string 二选一", edit)),
+		schema.Property("edits", schema.Array("一次回读后确定的 1-24 处不重叠局部替换；与 old_string/new_string 二选一", edit)),
 	)
 }
 
