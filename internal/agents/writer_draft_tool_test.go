@@ -90,14 +90,24 @@ func TestWriterReadChapterToolBoundsPriorContinuityTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	var payload struct {
-		ReturnedRunes int  `json:"returned_runes"`
-		Truncated     bool `json:"truncated"`
+		ReturnedRunes              int    `json:"returned_runes"`
+		Truncated                  bool   `json:"truncated"`
+		ContextProfile             string `json:"context_profile"`
+		ContinuityEvidenceComplete bool   `json:"continuity_evidence_complete"`
+		DoNotRetryForMore          bool   `json:"do_not_retry_for_more"`
+		Hint                       string `json:"hint"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatal(err)
 	}
 	if !payload.Truncated || payload.ReturnedRunes > writerPriorChapterMaxRunes+3 {
 		t.Fatalf("prior chapter was not bounded: %+v", payload)
+	}
+	if payload.ContextProfile != "bounded_prior_continuity_tail" || !payload.ContinuityEvidenceComplete || !payload.DoNotRetryForMore {
+		t.Fatalf("prior continuity guidance is incomplete: %+v", payload)
+	}
+	if !strings.Contains(payload.Hint, "Proceed directly") || strings.Contains(payload.Hint, "increase the limit") {
+		t.Fatalf("prior continuity hint can trigger a retry loop: %q", payload.Hint)
 	}
 }
 

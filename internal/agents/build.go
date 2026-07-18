@@ -706,7 +706,7 @@ func newWriterReadChapterTool(inner agentcore.Tool, st *store.Store) agentcore.T
 
 func (t *writerReadChapterTool) Name() string { return t.inner.Name() }
 func (t *writerReadChapterTool) Description() string {
-	return t.inner.Description() + " Writer reads the active draft in full; prior chapters are continuity tails capped by the runtime because the active work package already contains previous_tail and recent summaries."
+	return t.inner.Description() + " Writer reads the active draft in full; prior chapters are continuity tails capped by the runtime because the active work package already contains previous_tail and recent summaries. A bounded prior result is complete for continuity purposes: do not repeat the read or increase max_runes; proceed to plan_chapter or draft_chapter."
 }
 func (t *writerReadChapterTool) Label() string {
 	if labeled, ok := t.inner.(agentcore.ToolLabeler); ok {
@@ -750,7 +750,19 @@ func (t *writerReadChapterTool) Execute(ctx context.Context, args json.RawMessag
 	if err != nil {
 		return nil, fmt.Errorf("bound prior read_chapter args: %w", err)
 	}
-	return t.inner.Execute(ctx, nextArgs)
+	result, err := t.inner.Execute(ctx, nextArgs)
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]any
+	if json.Unmarshal(result, &payload) != nil {
+		return result, nil
+	}
+	payload["context_profile"] = "bounded_prior_continuity_tail"
+	payload["continuity_evidence_complete"] = true
+	payload["do_not_retry_for_more"] = true
+	payload["hint"] = "This bounded tail is the complete prior-chapter evidence required for continuity; novel_context already includes previous_tail and recent summaries. Do not reread this or another prior chapter and do not increase max_runes. Proceed directly to plan_chapter or draft_chapter."
+	return json.Marshal(payload)
 }
 
 func (t *writerContextTool) Name() string { return t.inner.Name() }
