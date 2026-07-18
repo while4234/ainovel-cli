@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `989b74b` `fix: avoid duplicate consistency payloads`: changes
+  `check_consistency` from a second copy of the complete draft and global state
+  into a same-draft SHA receipt referencing the chapter contract, episodic
+  evidence, and already-read draft. This preserves the semantic review inputs
+  while preventing the final validation turn from re-adding roughly 8,000
+  Chinese characters to the Writer request. The focused compact-receipt
+  regression and full `internal/tools` suite passed.
 - 2026-07-18 `654a3b4` `fix: route recovery context by agent role`: binds an
   empty Writer `novel_context` call to the single active/in-progress chapter,
   gives Coordinator status-only context by default, removes duplicated
