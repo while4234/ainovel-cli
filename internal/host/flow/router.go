@@ -277,7 +277,7 @@ func RouteResume(s State) *Instruction {
 	wordRepairStep := ""
 	if s.InProgressWordMin > 0 && s.InProgressWordMax >= s.InProgressWordMin && !s.InProgressWordBudgetValid {
 		wordRepairStep = fmt.Sprintf(
-			"当前草稿 %d 字，不在 %d-%d 字区间；回读后先用 edit_chapter 做有依据的局部删减或补足，只处理冗余解释、重复动作或缺失的必要承接，保留全部关键情节、人物选择、情感落点和章末钩子，直到进入区间。禁止为字数整章重写。",
+			"当前草稿 %d 字，不在 %d-%d 字区间；只依据这次回读，先把多处有依据的局部删减或补足合并进一次 edit_chapter(edits=[...]) 原子调用，只处理冗余解释、重复动作或缺失的必要承接，保留全部关键情节、人物选择、情感落点和章末钩子，直到进入区间。edit_chapter 会回传最新字数，禁止为确认字数再次 read_chapter，禁止为字数整章重写。",
 			s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax,
 		)
 	}

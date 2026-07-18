@@ -437,6 +437,8 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 		"word_count=4292",
 		"word_budget=2550-3703",
 		"edit_chapter",
+		"edit_chapter(edits=[...])",
+		"禁止为确认字数再次 read_chapter",
 		"禁止调用 plan_chapter 或 draft_chapter",
 		"禁止读取其他章节",
 		`read_chapter(chapter=5, source="draft")`,

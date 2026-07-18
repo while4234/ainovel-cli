@@ -50,6 +50,93 @@ func TestEditChapterAppliesEdit(t *testing.T) {
 	}
 }
 
+func TestEditChapterBatchAppliesMultipleEditsAndReportsWordBudget(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	first := " REMOVE-ONE-1234567890 "
+	second := " REMOVE-TWO-1234567890 "
+	content := strings.Repeat("a", 50) + first + strings.Repeat("b", 50) + second
+	if err := s.Drafts.SaveDraft(1, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	args, _ := json.Marshal(map[string]any{
+		"chapter": 1,
+		"edits": []map[string]string{
+			{"old_string": first, "new_string": "x"},
+			{"old_string": second, "new_string": "y"},
+		},
+	})
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Changed          bool `json:"changed"`
+		EditCount        int  `json:"edit_count"`
+		WordCount        int  `json:"word_count"`
+		WordBudgetPassed bool `json:"word_budget_passed"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !payload.Changed || payload.EditCount != 2 || payload.WordCount != 102 || !payload.WordBudgetPassed {
+		t.Fatalf("unexpected batch result: %+v raw=%s", payload, raw)
+	}
+	got, err := s.Drafts.LoadDraft(1)
+	if err != nil || got != strings.Repeat("a", 50)+"x"+strings.Repeat("b", 50)+"y" {
+		t.Fatalf("batch edit mismatch: got=%q err=%v", got, err)
+	}
+}
+
+func TestEditChapterOutOfBudgetReportsCountWithoutReread(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	content := strings.Repeat("a", 140) + "tail"
+	if err := s.Drafts.SaveDraft(1, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	args, _ := json.Marshal(map[string]any{
+		"chapter": 1, "old_string": "tail", "new_string": "x",
+	})
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		WordCount        int    `json:"word_count"`
+		WordBudgetPassed bool   `json:"word_budget_passed"`
+		NextStep         string `json:"next_step"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload.WordCount != 141 || payload.WordBudgetPassed ||
+		!strings.Contains(payload.NextStep, "不要重新 read_chapter") ||
+		!strings.Contains(payload.NextStep, "edit_chapter(edits=[...])") {
+		t.Fatalf("out-of-budget feedback is incomplete: %+v", payload)
+	}
+}
+
 func TestEditChapterRepeatedPatchIsIdempotent(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)
