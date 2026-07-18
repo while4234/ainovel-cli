@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `e583702` `fix: bound writer continuity evidence`: normal Writer
+  turns now keep the active `novel_context` package plus only the newest
+  prior-chapter continuity read. Repeated reads of chapters 38/39/40 no longer
+  accumulate across provider calls, while distinct adaptation-source chapter
+  reads remain intact. Live diagnostics had confirmed the initial chapter-41
+  package was reduced to 22,931 bytes but repeated history lookups still grew
+  51,934 -> 61,295 -> 64,201 bytes; the new semantic evidence slot fixes that
+  remaining source of unbounded growth. Focused Agent tests and diff checks
+  passed before deployment.
 - 2026-07-18 `8e844bf` `fix: bound writer chapter evidence`: normal Writer
   chapter work packages now source-bound references and one representative
   signal per style/pacing category to a 28-KiB ceiling. Prior-chapter reads are
