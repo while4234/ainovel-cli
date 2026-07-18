@@ -46,6 +46,20 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 `6665cc6` `fix: retain writer recovery across dispatches`:
+  Host Resume now opens a durable-draft recovery lease in the Flow dispatcher.
+  Every subagent boundary in that resumed run continues through `RouteResume`
+  until the draft is committed or the workflow leaves the recovery state; a
+  Writer that returns analysis without completing its edit can no longer make
+  the next dispatch fall back to generic “write chapter.” Repeated recovery
+  notes also preserve all read/context prohibitions instead of granting the
+  ordinary repeat permission to reload `novel_context`. The word-budget repair
+  task now requires silent selection followed immediately by one atomic batch
+  edit, preventing a long visible paragraph-by-paragraph plan from consuming
+  the tool-call turn. This fixes the live fallback that reread chapter 44 and
+  chapter 45 several times after the first recovery Writer stopped without an
+  edit. Focused ten-run regressions, full Host Flow, Host, Tools, and Agents
+  suites, vet, and diff checks passed.
 - 2026-07-19 `324f17f` `fix: batch writer recovery edits before validation`:
   `edit_chapter` now accepts an optional atomic batch of 1-12 unique,
   non-overlapping exact replacements after a single grounded chapter read.
