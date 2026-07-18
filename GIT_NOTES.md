@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `d2b8c05` `fix: retain authoritative writer package`: duplicate
+  pre-draft `novel_context` calls now preserve the first authoritative work
+  package and clear the later duplicate result plus its lookup rationale. Once
+  a draft is persisted or validation starts, the normal newest-receipt policy
+  still applies. This addresses the live 56,210 -> 67,336 byte jump caused by
+  retaining the newest duplicate package rather than the original one.
+  Focused Agent tests and vet passed.
 - 2026-07-18 `e583702` `fix: bound writer continuity evidence`: normal Writer
   turns now keep the active `novel_context` package plus only the newest
   prior-chapter continuity read. Repeated reads of chapters 38/39/40 no longer
