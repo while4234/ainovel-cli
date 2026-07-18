@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import {
   WorkflowProgressPanel,
+  retainProjectWorkflowProgress,
   retainWorkflowProgress,
   workflowOverallPercent,
   workflowProgressFromSnapshot,
@@ -53,6 +54,19 @@ describe('unified workflow progress', () => {
     const current = progress({ status: 'completed', revision: 3 });
 
     expect(retainWorkflowProgress(previous, { workflow_progress: current })).toBe(current);
+  });
+
+  it('never leaks retained workflow progress into another project', () => {
+    const projectA = progress({ workflow: 'normal' });
+    const retainedA = retainProjectWorkflowProgress(null, 'project-a', { workflow_progress: projectA });
+    const openingB = retainProjectWorkflowProgress(retainedA, 'project-b', null);
+    const projectB = progress({ workflow: 'adaptation', run_id: 'run-b' });
+
+    expect(openingB).toEqual({ projectId: 'project-b', progress: null });
+    expect(retainProjectWorkflowProgress(openingB, 'project-b', { workflow_progress: projectB })).toEqual({
+      projectId: 'project-b',
+      progress: projectB
+    });
   });
 
   it('combines completed and current step progress without exceeding 100%', () => {

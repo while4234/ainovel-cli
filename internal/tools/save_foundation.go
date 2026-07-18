@@ -134,6 +134,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 
 	switch a.Type {
 	case "premise":
+		if err := t.validateCreativeBriefPremise(content); err != nil {
+			return nil, err
+		}
 		name := domain.ExtractNovelNameFromPremise(content)
 		if err := t.store.Outline.SavePremise(content); err != nil {
 			return nil, fmt.Errorf("save premise: %w: %w", errs.ErrStoreWrite, err)
@@ -212,6 +215,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	case "characters":
 		var chars []domain.Character
 		if err := decode("characters", &chars); err != nil {
+			return nil, err
+		}
+		if err := t.validateCreativeBriefCharacters(chars); err != nil {
 			return nil, err
 		}
 		if err := t.store.Characters.Save(chars); err != nil {
@@ -508,6 +514,42 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 	}
 	return json.Marshal(result)
+}
+
+func (t *SaveFoundationTool) validateCreativeBriefPremise(content string) error {
+	brief, err := t.canonicalCreativeBrief()
+	if err != nil || brief == "" {
+		return err
+	}
+	if err := validatePremiseAgainstCreativeBrief(content, brief); err != nil {
+		return fmt.Errorf("%w: %w", errs.ErrToolPrecondition, err)
+	}
+	return nil
+}
+
+func (t *SaveFoundationTool) validateCreativeBriefCharacters(characters []domain.Character) error {
+	brief, err := t.canonicalCreativeBrief()
+	if err != nil || brief == "" {
+		return err
+	}
+	if err := validateCharactersAgainstCreativeBrief(characters, brief); err != nil {
+		return fmt.Errorf("%w: %w", errs.ErrToolPrecondition, err)
+	}
+	return nil
+}
+
+func (t *SaveFoundationTool) canonicalCreativeBrief() (string, error) {
+	if t == nil || t.store == nil {
+		return "", nil
+	}
+	review, err := t.store.RunMeta.PlanningReview()
+	if err != nil {
+		return "", fmt.Errorf("load canonical co-create brief: %w", err)
+	}
+	if review == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(review.Brief), nil
 }
 
 func blocksDuringActiveRevision(kind string) bool {

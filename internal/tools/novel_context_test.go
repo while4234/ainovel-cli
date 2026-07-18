@@ -89,6 +89,49 @@ func TestContextToolInjectsAntiAIToneForEveryWritingChapter(t *testing.T) {
 	}
 }
 
+func TestContextToolInjectsCanonicalCoCreateBriefForPlanning(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	brief := "## 主题\n- 书名：《重生后，我被太子爷宠上天》\n- 地点：A市\n\n## 人物设定\n- 女主 林舒然：20岁\n- 男主 墨子曜：28岁\n- 关系关键词：救命之恩、出租屋同居、失忆依赖"
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status: domain.PlanningReviewStatusCollecting,
+		Kind:   domain.PlanningReviewKindBlueprint,
+		Brief:  brief,
+	}); err != nil {
+		t.Fatalf("SetPlanningReview: %v", err)
+	}
+
+	raw, err := NewContextTool(st, References{}, "default").Execute(context.Background(), json.RawMessage(`{"scope":"planning"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	planning, ok := result["planning_memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("planning_memory missing: %+v", result)
+	}
+	contract, ok := planning["creative_brief"].(map[string]any)
+	if !ok {
+		t.Fatalf("creative_brief missing: %+v", planning)
+	}
+	if contract["authority"] != "canonical_user_confirmed" || contract["content"] != brief {
+		t.Fatalf("unexpected creative brief contract: %+v", contract)
+	}
+	locks, ok := contract["identity_locks"].(map[string]any)
+	if !ok || locks["novel_name"] != "重生后，我被太子爷宠上天" || locks["primary_setting"] != "A市" {
+		t.Fatalf("unexpected identity locks: %+v", contract["identity_locks"])
+	}
+	protagonists, ok := locks["protagonists"].(map[string]any)
+	if !ok || protagonists["女主"] != "林舒然" || protagonists["男主"] != "墨子曜" {
+		t.Fatalf("unexpected protagonist locks: %+v", locks["protagonists"])
+	}
+}
+
 func TestContextToolInjectsWordBudget(t *testing.T) {
 	dir := testStoreDir(t)
 	st := store.NewStore(dir)

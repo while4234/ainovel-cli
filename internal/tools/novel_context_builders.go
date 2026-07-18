@@ -1113,6 +1113,11 @@ func (t *ContextTool) buildArchitectPlanning(envelope *architectContextEnvelope,
 	if runMeta != nil && runMeta.PlanningTier != "" {
 		envelope.Planning["planning_tier"] = runMeta.PlanningTier
 	}
+	if runMeta != nil && runMeta.PlanningReview != nil {
+		if contract := newCreativeBriefContract(runMeta.PlanningReview.Brief); contract != nil {
+			envelope.Planning["creative_brief"] = contract
+		}
+	}
 
 	var layered []domain.VolumeOutline
 	progress, _ := t.store.Progress.Load()

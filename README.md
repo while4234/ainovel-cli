@@ -234,6 +234,17 @@ ainovel-cli web --runtime-root D:\Ainovel\novels-preview
 
 这个脚本会按相对路径定位仓库，先构建 `internal/entry/web/ui`，再构建 Go 二进制到临时文件；构建成功后才停止旧端口、覆盖 `ainovel-cli.exe`、启动 Web 并检查 `/api/runtime` 和项目列表。运行时根目录解析顺序是：`-RuntimeRoot`、`AINOVEL_WEB_RUNTIME_ROOT`、`AINOVEL_RUNTIME_ROOT`、已存在的 `~/.ainovel/novels-preview`、最后退回 CLI 默认配置。后续开发重启请统一使用这个脚本，快速复用现有构建时可加 `-NoBuild`。
 
+Windows 本地 Go 构建和测试统一使用项目入口，所有构建缓存、模块缓存和临时文件都会写入 D 盘仓库下的 `.cache/`，不再占用 `AppData\Local\go-build`。`test` 命令结束后会自动删除本次 Go 构建/测试缓存和临时文件：
+
+```powershell
+.\configure-go-cache.cmd
+.\go-project.cmd test ./...
+.\go-project.cmd build ./cmd/ainovel-cli
+.\clean-project-cache.cmd
+```
+
+`configure-go-cache.cmd` 会把 Go 的持久缓存位置保存到当前用户的 Go 配置，确保直接调用 `go` 时构建缓存仍落在 D 盘；日常仍应优先使用 `go-project.cmd`，因为它还会隔离测试进程的 `TEMP/TMP` 并自动清理。需要同时清除迁移前遗留的 C 盘缓存时，运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\clean-project-cache.ps1 -IncludeLegacyCDriveCache`。
+
 Windows 用户可以从快捷方式或任意命令窗口直接运行 `ainovel-cli`，然后在浏览器里创建、打开和切换多本小说。
 
 如果还没有可用模型配置，Web 会先显示设置向导：选择服务商、填写模型和凭证、测试连接、保存。测试接口不会落盘或回显密钥；验证并保存成功后才开放项目创作。

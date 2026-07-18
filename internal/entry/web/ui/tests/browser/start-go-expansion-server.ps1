@@ -1,16 +1,8 @@
 $ErrorActionPreference = 'Stop'
-$go = $env:AINOVEL_GO
-if (-not $go) {
-  $command = Get-Command go -ErrorAction SilentlyContinue
-  if ($command) { $go = $command.Source }
-}
-if (-not $go) {
-  $go = 'C:\Users\RondleLiu\.codex\tools\go1.25.5\go\bin\go.exe'
-}
-if (-not (Test-Path -LiteralPath $go)) {
-  throw 'Go toolchain not found; set AINOVEL_GO to go.exe'
-}
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..\..\..')
+. (Join-Path $repo 'scripts\project-go-env.ps1')
+$goEnvironment = Initialize-AINovelGoEnvironment -RepoRoot $repo
+$go = Resolve-AINovelGoExecutable
 Push-Location $repo
 try {
   $layout = Join-Path ([System.IO.Path]::GetTempPath()) 'ainovel-expansion-release-layout'
@@ -26,4 +18,8 @@ try {
   exit $LASTEXITCODE
 } finally {
   Pop-Location
+  if ($layout -and (Test-Path -LiteralPath $layout)) {
+    Remove-Item -LiteralPath $layout -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  Clear-AINovelTransientStorage -Environment $goEnvironment -IncludeBuildCache
 }

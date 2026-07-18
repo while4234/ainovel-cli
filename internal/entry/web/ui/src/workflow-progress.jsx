@@ -47,6 +47,21 @@ export function retainWorkflowProgress(previousProgress, snapshot) {
   return workflowProgressFromSnapshot(snapshot) || previousProgress || null;
 }
 
+export function retainProjectWorkflowProgress(previousState, projectId, snapshot) {
+  const normalizedProjectId = String(projectId || '').trim();
+  const incomingProgress = workflowProgressFromSnapshot(snapshot);
+  if (previousState?.projectId !== normalizedProjectId) {
+    return {
+      projectId: normalizedProjectId,
+      progress: incomingProgress
+    };
+  }
+  return {
+    projectId: normalizedProjectId,
+    progress: incomingProgress || previousState?.progress || null
+  };
+}
+
 export function workflowOverallPercent(progress) {
   const steps = Array.isArray(progress?.steps) ? progress.steps : [];
   if (steps.length === 0) {
@@ -83,10 +98,10 @@ export function workflowRiskText(progress) {
   return '暂无需要处理的风险。';
 }
 
-export function WorkflowProgressPanel({ snapshot }) {
-  const progressRef = React.useRef(null);
-  progressRef.current = retainWorkflowProgress(progressRef.current, snapshot);
-  const progress = progressRef.current;
+export function WorkflowProgressPanel({ projectId = '', snapshot }) {
+  const progressRef = React.useRef({ projectId: '', progress: null });
+  progressRef.current = retainProjectWorkflowProgress(progressRef.current, projectId, snapshot);
+  const progress = progressRef.current.progress;
   if (!progress) {
     return null;
   }

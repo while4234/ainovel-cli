@@ -21,6 +21,7 @@ profile.cov
 # vendor/
 node_modules/
 build/
+.cache/
 .venv/
 __pycache__/
 

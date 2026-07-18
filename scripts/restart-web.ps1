@@ -305,6 +305,9 @@ if ($Port -le 0 -or $Port -gt 65535) {
 }
 
 $repoRoot = Resolve-RepoRoot
+. (Join-Path $PSScriptRoot "project-go-env.ps1")
+$goEnvironment = Initialize-AINovelGoEnvironment -RepoRoot $repoRoot
+$goExecutable = Resolve-AINovelGoExecutable
 $uiDir = Join-Path $repoRoot "internal\entry\web\ui"
 $exePath = Join-Path $repoRoot "ainovel-cli.exe"
 $tempExePath = Join-Path $repoRoot "ainovel-cli.restart.tmp.exe"
@@ -323,6 +326,7 @@ if ($stopPortValues.Count -eq 0) {
 }
 
 Write-Step "Repository: $repoRoot"
+Write-Step "Go cache: $($goEnvironment.CacheRoot)"
 if ([string]::IsNullOrWhiteSpace($runtimeRootValue)) {
     Write-Step "Runtime root: CLI default/config"
 } else {
@@ -339,7 +343,6 @@ if ($NoBuild) {
     Write-Step "Skipping build because -NoBuild was passed."
 } else {
     Require-Command "npm.cmd" | Out-Null
-    Require-Command "go" | Out-Null
 
     if (-not (Test-Path -LiteralPath $uiDir -PathType Container)) {
         throw "Missing Web UI directory: $uiDir"
@@ -355,9 +358,9 @@ if ($NoBuild) {
     Invoke-Checked -FilePath "npm.cmd" -Arguments @("run", "build") -WorkingDirectory $uiDir
 
     Write-Step "Building Go executable..."
-    Invoke-Checked -FilePath "go" -Arguments @("build", "-o", $tempExePath, ".\cmd\ainovel-cli") -WorkingDirectory $repoRoot
+    Invoke-Checked -FilePath $goExecutable -Arguments @("build", "-o", $tempExePath, ".\cmd\ainovel-cli") -WorkingDirectory $repoRoot
     Write-Step "Building independent expansion auditor..."
-    Invoke-Checked -FilePath "go" -Arguments @("build", "-o", $tempAuditorPath, ".\cmd\expansion-auditor") -WorkingDirectory $repoRoot
+    Invoke-Checked -FilePath $goExecutable -Arguments @("build", "-o", $tempAuditorPath, ".\cmd\expansion-auditor") -WorkingDirectory $repoRoot
 }
 
 Stop-ListeningPorts -Ports $stopPortValues

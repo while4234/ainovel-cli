@@ -28,12 +28,36 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `pending` `fix: isolate workflow progress by project`:
+  removes the project-keyed remount path that accumulated duplicate workflow
+  cards across snapshot updates, resets retained progress when the project ID
+  changes, and adds component lifecycle coverage. All 269 UI tests, focused Go
+  regressions, production builds, service restart smoke checks, and a four-step
+  live project-switch DOM check passed; port 9898 runs the rebuilt service.
+- 2026-07-16 `8175a364` `fix: consume repaired chapter audit failures`:
+  prevents normal-original outline review from repeatedly dispatching the same
+  repaired chapter. Successful `repair_arc` saves now consume the failed audit
+  that requested that arc repair, while signed revise audits whose scoped
+  content has already changed are ignored as stale. Focused regressions passed,
+  a clean-worktree production build succeeded, Web restarted on port 9898 as
+  PID 27596, and live read-only inspection of `重生v4` advanced from the stale
+  chapter-6 repair to chapter auditing. The unrelated dirty PR-03 expansion
+  work still blocks an all-packages build in the shared worktree.
 - 2026-07-16 `fix: retry empty context summaries`:
   retries transient empty context-compaction responses twice with cancellable
   exponential backoff before preserving the existing terminal diagnostic. Each
   retry is emitted as a durable SYSTEM event with the responsible agent so Web
   users can see recovery progress instead of an unexplained immediate stop.
   Focused and complete agents/host tests, package vet, and diff checks passed.
+- 2026-07-16 `fix: preserve co-create identities during reinforced imitation`:
+  injects the confirmed normal co-create brief into Architect planning context
+  as the canonical story authority, rejects premise/character saves that replace
+  its locked title, protagonists, or setting, and makes original-planning audit
+  tool calls strict so omitted summaries/dimensions are caught before execution.
+  Focused and complete tools/agents/assets tests passed; the repository-wide run
+  passed every package except one Web background-event timing case that passed
+  immediately in isolation. The local Web service was rebuilt without touching
+  the existing UI worktree and restarted successfully on port 9898.
 - 2026-07-16 accepted PR-01 (this local commit), `feat: add safe manuscript revision publication`:
   adds candidate-isolated manuscript polish/rewrite sessions, stable-ID scope and
   revision/idempotency boundaries, independently signed contract/adaptation audits,
