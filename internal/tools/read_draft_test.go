@@ -81,6 +81,13 @@ func TestReadChapterDraftLineSegmentKeepsFullDraftIdentity(t *testing.T) {
 	if err := s.Drafts.SaveDraft(3, content); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 3, InProgressChapter: 3}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(300, "test").WithPlannedChapters(3)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
 
 	raw, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(
 		`{"chapter":3,"source":"draft","from_line":2,"to_line":3}`,
@@ -107,6 +114,32 @@ func TestReadChapterDraftLineSegmentKeepsFullDraftIdentity(t *testing.T) {
 	}
 	if payload.WordCount != len([]rune(content)) || payload.ContentSHA256 != store.TextSHA256(content) {
 		t.Fatalf("segment lost full-draft identity: %+v", payload)
+	}
+}
+
+func TestReadChapterDraftLineSegmentRejectsInBudgetDraft(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	const content = "line one\nline two\nline three\nline four"
+	if err := s.Drafts.SaveDraft(3, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 3, InProgressChapter: 3}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(120, "test").WithPlannedChapters(3)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	_, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(
+		`{"chapter":3,"source":"draft","from_line":2,"to_line":3}`,
+	))
+	if err == nil || !strings.Contains(err.Error(), "only available for the current out-of-budget draft") {
+		t.Fatalf("in-budget draft must reject segmented read, err=%v", err)
 	}
 }
 

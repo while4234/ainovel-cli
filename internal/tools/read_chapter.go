@@ -38,8 +38,8 @@ func (t *ReadChapterTool) Schema() map[string]any {
 		schema.Property("to", schema.Int("结束章节号（读范围时使用）")),
 		schema.Property("source", schema.Enum("来源", "final", "draft", "source")).Required(),
 		schema.Property("character", schema.String("角色名（提取对话片段时使用）")),
-		schema.Property("from_line", schema.Int("单章分段读取的起始行（1-based，需与 to_line 同时使用）")),
-		schema.Property("to_line", schema.Int("单章分段读取的结束行（1-based，包含该行）")),
+		schema.Property("from_line", schema.Int("仅限 Host 明确发出的字数超限恢复；单章草稿分段读取起始行（1-based）")),
+		schema.Property("to_line", schema.Int("仅限 Host 明确发出的字数超限恢复；单章草稿分段读取结束行（包含该行）")),
 		schema.Property("max_runes", schema.Int("最大字符数；范围读取时表示每章上限，单章读取时表示该章上限；不传则不截断章节")),
 		schema.Property("max_total_runes", schema.Int("范围读取总字符预算；只在章节边界处分批，单章超预算时返回该整章作为独立批次")),
 	)
@@ -152,6 +152,9 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 	originalRunes := len([]rune(fullContent))
 	segmentFrom, segmentTo := 0, 0
 	if a.FromLine > 0 || a.ToLine > 0 {
+		if a.Source != "draft" || !t.wordBudgetLineSegmentAllowed(a.Chapter, originalRunes) {
+			return nil, fmt.Errorf("from_line/to_line are only available for the current out-of-budget draft")
+		}
 		lines := strings.Split(fullContent, "\n")
 		if a.FromLine <= 0 || a.ToLine < a.FromLine || a.FromLine > len(lines) {
 			return nil, fmt.Errorf("invalid line range %d-%d for chapter with %d lines", a.FromLine, a.ToLine, len(lines))
@@ -206,6 +209,24 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 		result["hint"] = "内容已按 max_runes 截断；如需完整章节请重新读取并提高上限"
 	}
 	return json.Marshal(result)
+}
+
+func (t *ReadChapterTool) wordBudgetLineSegmentAllowed(chapter, wordCount int) bool {
+	meta, err := t.store.RunMeta.Load()
+	if err != nil || meta == nil || meta.WordBudget == nil {
+		return false
+	}
+	progress, err := t.store.Progress.Load()
+	if err != nil || progress == nil || progress.InProgressChapter != chapter {
+		return false
+	}
+	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
+	if !ok || runtime.CurrentChapter.Chapter == 0 {
+		return false
+	}
+	minWords := runtime.CurrentChapter.RecommendedMinWords
+	maxWords := runtime.CurrentChapter.RecommendedMaxWords
+	return wordCount < minWords || wordCount > maxWords
 }
 
 type chapterRangePayload struct {
