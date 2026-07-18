@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `d19f201` `fix: infer writer chapter tool defaults`: Writer-only
+  chapter tools now infer the active chapter when the model omits it. Its
+  `read_chapter` also defaults the active chapter to `source=draft` and prior
+  chapters to `source=final`, while Editor and other roles retain their strict
+  schemas. This removes the live post-repair loop of rejected empty/missing
+  `source` reads and intermittent missing-chapter edit/check calls. Agent tests
+  and vet passed.
 - 2026-07-18 `664a41d` `fix: reserve long draft recovery headroom`: stored-draft
   recovery is now source-bounded to 8 KiB and omits character snapshots and
   whole-book style statistics already observable in the full current draft.
