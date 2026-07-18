@@ -1681,6 +1681,7 @@ type fakeProjectHost struct {
 	setCoCreateTimeoutErr                  error
 	setCoCreateMaxTokensErr                error
 	setRetrySettingsErr                    error
+	currentModelSelections                 map[string][2]string
 	switchCalls                            int
 	clearModelRouteCalls                   int
 	removeProviderCalls                    int
@@ -2561,6 +2562,9 @@ func (f *fakeProjectHost) ModelAutoSwitchConfig() bootstrap.ModelAutoSwitchConfi
 }
 
 func (f *fakeProjectHost) CurrentModelSelection(role string) (string, string, bool) {
+	if selection, ok := f.currentModelSelections[role]; ok {
+		return selection[0], selection[1], true
+	}
 	if role == "" || role == "default" {
 		return "openrouter", "model-a", true
 	}

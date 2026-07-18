@@ -35,6 +35,14 @@ const actionStatusLabels = {
   interrupted: '服务重启后待恢复'
 };
 
+const activeAgentLabels = {
+  coordinator: '流程协调',
+  architect: '结构规划',
+  writer: '正文写作',
+  editor: '质量审核',
+  auditor: '质量审核'
+};
+
 export function workflowProgressFromSnapshot(snapshot) {
   const value = snapshot?.workflow_progress || snapshot?.WorkflowProgress;
   if (!value || !Array.isArray(value.steps) || value.steps.length === 0) {
@@ -111,6 +119,8 @@ export function WorkflowProgressPanel({ projectId = '', snapshot }) {
   const currentMessage = String(currentStep?.message || '').trim();
   const workflowLabel = workflowLabels[progress.workflow] || '创作流程';
   const statusLabel = statusLabels[progress.status] || '状态未知';
+  const currentAgent = progress.status === 'running' ? String(progress.current_agent || '').trim().toLowerCase() : '';
+  const currentAgentLabel = activeAgentLabels[currentAgent] || currentAgent;
   const currentProvider = progress.status === 'running' ? String(progress.current_provider || '').trim() : '';
   const currentModel = progress.status === 'running' ? String(progress.current_model || '').trim() : '';
   const currentRoute = currentProvider && currentModel
@@ -126,7 +136,7 @@ export function WorkflowProgressPanel({ projectId = '', snapshot }) {
           <h3 id="workflow-progress-title">创作流程</h3>
         </div>
         <span className="workflow-progress-status" role="status" aria-live="polite">
-          {statusLabel}{currentRoute ? ` · ${currentRoute}` : ''}
+          {statusLabel}{currentAgentLabel ? ` · 当前：${currentAgentLabel}` : ''}{currentRoute ? ` · ${currentRoute}` : ''}
         </span>
       </header>
 

@@ -145,6 +145,7 @@ describe('unified workflow progress', () => {
       snapshot: {
         workflow_progress: progress({
           status: 'running',
+          current_agent: 'writer',
           current_model: 'deepseek-v4-pro',
           current_provider: 'deepseek-yuanyu-0',
           steps: [{ id: 'review', label: '正文创作', status: 'running' }]
@@ -152,7 +153,7 @@ describe('unified workflow progress', () => {
       }
     }));
 
-    expect(markup).toContain('正在运行 · 后端：deepseek-yuanyu-0 · 模型：deepseek-v4-pro');
+    expect(markup).toContain('正在运行 · 当前：正文写作 · 后端：deepseek-yuanyu-0 · 模型：deepseek-v4-pro');
   });
 
   it('prioritizes a workflow error and otherwise explains confirmation and recovery risk', () => {

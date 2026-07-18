@@ -101,6 +101,61 @@ func TestWorkflowProgressReportsTheRunningStageModel(t *testing.T) {
 	}
 }
 
+func TestWorkflowProgressReportsTheMostRecentlyWorkingAgentModel(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.currentModelSelections = map[string][2]string{
+		"coordinator": {"deepseek-yuanyu-0", "deepseek-v4-pro"},
+		bootstrap.StageRouteKey(bootstrap.StageWriting): {"deepseek-suifeng", "deepseek-v4-pro"},
+	}
+	session, err := NewProjectSession(ProjectManifest{ID: "project-active-agent-model"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	now := time.Now()
+	progress := session.workflowProgress(host.UISnapshot{
+		IsRunning:     true,
+		RuntimeState:  "running",
+		TotalChapters: 10,
+		Agents: []host.AgentSnapshot{
+			{Name: "coordinator", State: "working", UpdatedAt: now},
+			{Name: "writer", State: "working", UpdatedAt: now.Add(time.Second)},
+		},
+	})
+
+	if progress.CurrentAgent != "writer" || progress.CurrentProvider != "deepseek-suifeng" || progress.CurrentModel != "deepseek-v4-pro" {
+		t.Fatalf("active route = agent %q route %q/%q, want writer/deepseek-suifeng/deepseek-v4-pro", progress.CurrentAgent, progress.CurrentProvider, progress.CurrentModel)
+	}
+}
+
+func TestWorkflowProgressReportsCoordinatorModelWhenCoordinatorIsWorking(t *testing.T) {
+	fake := newFakeProjectHost()
+	fake.currentModelSelections = map[string][2]string{
+		"coordinator": {"deepseek-yuanyu-0", "deepseek-v4-pro"},
+		bootstrap.StageRouteKey(bootstrap.StageWriting): {"deepseek-suifeng", "deepseek-v4-pro"},
+	}
+	session, err := NewProjectSession(ProjectManifest{ID: "project-active-coordinator-model"}, fake)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	progress := session.workflowProgress(host.UISnapshot{
+		IsRunning:     true,
+		RuntimeState:  "running",
+		TotalChapters: 10,
+		Agents: []host.AgentSnapshot{
+			{Name: "writer", State: "idle", UpdatedAt: time.Now()},
+			{Name: "coordinator", State: "working", UpdatedAt: time.Now().Add(time.Second)},
+		},
+	})
+
+	if progress.CurrentAgent != "coordinator" || progress.CurrentProvider != "deepseek-yuanyu-0" || progress.CurrentModel != "deepseek-v4-pro" {
+		t.Fatalf("active route = agent %q route %q/%q, want coordinator/deepseek-yuanyu-0/deepseek-v4-pro", progress.CurrentAgent, progress.CurrentProvider, progress.CurrentModel)
+	}
+}
+
 func TestCurrentWorkflowModelStageCoversNormalAndAdaptationPlanning(t *testing.T) {
 	tests := []struct {
 		step string

@@ -4649,14 +4649,14 @@ func (h *Host) recordModelFailoverEvent(roleLabel string, ev bootstrap.FailoverE
 	if from == to || from == "" || to == "" {
 		return
 	}
-	reason := modelFailoverReasonLabel(ev.Reason)
+	reason := modelFailoverReasonLabel(ev.Reason, ev.Err)
 	summary := fmt.Sprintf("模型自动切换（%s）：%s → %s", roleLabel, from, to)
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
 		Agent:    ev.Role,
 		Summary:  summary,
-		Detail:   fmt.Sprintf("%s；原因：%s", summary, reason),
+		Detail:   fmt.Sprintf("原因：%s", reason),
 		Kind:     "model_auto_switch",
 		Level:    "warn",
 	})
@@ -4690,12 +4690,17 @@ func modelFailoverRoleLabel(role string) string {
 	}
 }
 
-func modelFailoverReasonLabel(reason string) string {
+func modelFailoverReasonLabel(reason string, err error) string {
 	normalized := strings.ToLower(strings.TrimSpace(reason))
+	if err != nil {
+		normalized += " " + strings.ToLower(err.Error())
+	}
 	switch {
+	case strings.Contains(normalized, "insufficient_user_quota"), strings.Contains(normalized, "insufficient quota"), strings.Contains(normalized, "quota"), strings.Contains(normalized, "额度"):
+		return "额度不足"
 	case strings.Contains(normalized, "rate"):
 		return "服务限流"
-	case strings.Contains(normalized, "timeout"), strings.Contains(normalized, "stream_idle"):
+	case strings.Contains(normalized, "timeout"), strings.Contains(normalized, "stream_idle"), strings.Contains(normalized, "context deadline exceeded"):
 		return "响应超时"
 	case strings.Contains(normalized, "network"), strings.Contains(normalized, "disconnect"):
 		return "网络连接失败"

@@ -61,6 +61,7 @@ type WorkflowProgress struct {
 	NextAction      *WorkflowNextAction `json:"next_action,omitempty"`
 	Recoverable     bool                `json:"recoverable"`
 	Error           string              `json:"error,omitempty"`
+	CurrentAgent    string              `json:"current_agent,omitempty"`
 	CurrentProvider string              `json:"current_provider,omitempty"`
 	CurrentModel    string              `json:"current_model,omitempty"`
 }
@@ -101,21 +102,67 @@ func (s *ProjectSession) workflowProgress(snapshot host.UISnapshot) WorkflowProg
 	default:
 		progress = normalWorkflowProgress(s.manifest.ID, snapshot, coCreate)
 	}
-	s.attachCurrentWorkflowModel(&progress)
+	s.attachCurrentWorkflowModel(&progress, snapshot)
 	return progress
 }
 
-func (s *ProjectSession) attachCurrentWorkflowModel(progress *WorkflowProgress) {
+func (s *ProjectSession) attachCurrentWorkflowModel(progress *WorkflowProgress, snapshot host.UISnapshot) {
 	if progress == nil || progress.Status != WorkflowStatusRunning || s.host == nil {
 		return
 	}
-	stage := currentWorkflowModelStage(progress.CurrentStep)
-	if stage == "" {
+	route, agent := currentWorkflowModelRoute(progress.CurrentStep, snapshot.Agents)
+	if route == "" {
 		return
 	}
-	provider, model, _ := s.host.CurrentModelSelection(bootstrap.StageRouteKey(stage))
+	provider, model, _ := s.host.CurrentModelSelection(route)
+	progress.CurrentAgent = agent
 	progress.CurrentProvider = strings.TrimSpace(provider)
 	progress.CurrentModel = strings.TrimSpace(model)
+}
+
+func currentWorkflowModelRoute(step string, agents []host.AgentSnapshot) (route, agent string) {
+	if active := latestWorkingAgent(agents); active != "" {
+		return workflowModelRouteForAgent(active, step), active
+	}
+	stage := currentWorkflowModelStage(step)
+	if stage == "" {
+		return "", ""
+	}
+	return bootstrap.StageRouteKey(stage), ""
+}
+
+func latestWorkingAgent(agents []host.AgentSnapshot) string {
+	var latest *host.AgentSnapshot
+	for i := range agents {
+		candidate := &agents[i]
+		if !strings.EqualFold(strings.TrimSpace(candidate.State), "working") || strings.TrimSpace(candidate.Name) == "" {
+			continue
+		}
+		if latest == nil || candidate.UpdatedAt.After(latest.UpdatedAt) {
+			latest = candidate
+		}
+	}
+	if latest == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(latest.Name))
+}
+
+func workflowModelRouteForAgent(agent, step string) string {
+	agent = strings.ToLower(strings.TrimSpace(agent))
+	switch {
+	case strings.Contains(agent, "coordinator"):
+		return "coordinator"
+	case strings.Contains(agent, "writer"):
+		return bootstrap.StageRouteKey(bootstrap.StageWriting)
+	case strings.Contains(agent, "editor"), strings.Contains(agent, "auditor"):
+		return bootstrap.StageRouteKey(bootstrap.StageReview)
+	case strings.Contains(agent, "architect"):
+		if stage := currentWorkflowModelStage(step); stage != "" {
+			return bootstrap.StageRouteKey(stage)
+		}
+	}
+	return agent
 }
 
 func currentWorkflowModelStage(step string) string {
