@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `fa8cd158` `fix: compact writer results by validation phase`:
+  Writer projection now retains the two most recent distinct tool results. Once
+  consistency/de-AI validation advances, earlier chapter-context and draft
+  echoes have completed their phase and are deterministically cleared from the
+  next model request. This makes final request size independent of a lucky
+  2-KiB margin while preserving the current validation receipts. The focused
+  phase-compaction and Writer projection regressions passed.
 - 2026-07-18 `a86826a` `fix: reserve polish validation headroom`: keeps one
   representative reinforced-simulation signal per prose/pacing category during
   polishing and shortens the duplicated anti-AI reference excerpt because the
