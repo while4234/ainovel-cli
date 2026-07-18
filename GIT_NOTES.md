@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `d926ade` `fix: tolerate stale de-ai batch entries`:
+  `repair_de_ai_batch` now visibly skips only entries whose `old_string` is
+  absent from the current draft, continues applying the remaining unique
+  non-overlapping replacements, and requires an immediate fresh de-AI check.
+  A fully stale batch is a non-mutating structured no-op. Ambiguous matches,
+  overlapping patches, duplicate inputs, and malformed replacements remain
+  hard failures. This fixes the live iterative repair where one sentence from
+  an already-applied batch aborted seven still-valid replacements. Focused
+  ten-run regressions, the full Tools suite, vet, and diff checks passed.
 - 2026-07-18 `ed6f1ea` `fix: preserve latest writer write receipt`:
   persisted Writer body calls are still removed as complete protocol pairs so
   full chapter arguments and fabricated placeholder arguments never cross the
