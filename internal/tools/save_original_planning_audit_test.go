@@ -12,27 +12,81 @@ import (
 func TestSaveOriginalPlanningAuditSchemaIsStrictCompatible(t *testing.T) {
 	tool := NewSaveOriginalPlanningAuditTool(nil)
 	if !tool.StrictSchema() {
-		t.Fatal("save_original_planning_audit should opt into strict schema")
+		t.Fatal("save_original_planning_audit should use strict tool calling")
 	}
-	root := tool.Schema()
-	requireRequiredFields(t, root,
+	toolSchema := tool.Schema()
+	requireRequiredFields(t, toolSchema,
 		"scope", "scope_id", "volume", "arc", "from_volume", "to_volume",
 		"from_chapter", "to_chapter", "verdict", "summary", "dimensions", "issues",
 	)
-	requireAllPropertiesRequired(t, root)
+	requireAllPropertiesRequired(t, toolSchema)
 
-	properties := root["properties"].(map[string]any)
-	dimensions := properties["dimensions"].(map[string]any)
-	dimensionItem := dimensions["items"].(map[string]any)
-	requireRequiredFields(t, dimensionItem, "name", "score", "comment")
-	requireAllPropertiesRequired(t, dimensionItem)
+	properties, ok := toolSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties missing: %#v", toolSchema["properties"])
+	}
+	scopeID, ok := properties["scope_id"].(map[string]any)
+	if !ok {
+		t.Fatalf("scope_id schema missing: %#v", properties["scope_id"])
+	}
+	if got := scopeID["type"]; got != "string" {
+		t.Fatalf("scope_id type = %v, want string", got)
+	}
+	for _, field := range []string{"dimensions", "issues"} {
+		arraySchema, ok := properties[field].(map[string]any)
+		if !ok {
+			t.Fatalf("%s schema missing: %#v", field, properties[field])
+		}
+		itemSchema, ok := arraySchema["items"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s.items schema missing: %#v", field, arraySchema["items"])
+		}
+		requireAllPropertiesRequired(t, itemSchema)
+		if field == "dimensions" {
+			requireRequiredFields(t, itemSchema, "name", "score", "comment")
+		} else {
+			requireRequiredFields(t, itemSchema, "severity", "volume", "arc", "from_chapter", "to_chapter", "description", "repair_instruction")
+		}
+	}
+}
 
-	issues := properties["issues"].(map[string]any)
-	issueItem := issues["items"].(map[string]any)
-	requireRequiredFields(t, issueItem,
-		"severity", "volume", "arc", "from_chapter", "to_chapter", "description", "repair_instruction",
-	)
-	requireAllPropertiesRequired(t, issueItem)
+func TestSaveOriginalPlanningAuditAcceptsChapterScopeID(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	chapterID := domain.LegacyStructureID("audit-tool-test", domain.StructureKindChapter, "volume-1/arc-1/chapter-1")
+	if err := st.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		ID: domain.LegacyStructureID("audit-tool-test", domain.StructureKindVolume, "volume-1"), Index: 1, Title: "Opening", Theme: "survival",
+		Arcs: []domain.ArcOutline{{
+			ID: domain.LegacyStructureID("audit-tool-test", domain.StructureKindArc, "volume-1/arc-1"), Index: 1, Title: "Wake", Goal: "survive the deadline",
+			Chapters: []domain.OutlineEntry{{ID: chapterID, Chapter: 1, Title: "Evidence", CoreEvent: "the heroine verifies changed evidence", Hook: "someone arrives", Scenes: []string{"verify the evidence"}}},
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	args, err := json.Marshal(map[string]any{
+		"scope": "chapter", "scope_id": chapterID, "from_chapter": 1, "to_chapter": 1,
+		"volume": 0, "arc": 0, "from_volume": 0, "to_volume": 0,
+		"verdict": "pass", "summary": "the current chapter is causally complete",
+		"dimensions": originalAuditTestDimensions("causal_value", "character_logic", "continuity", "scene_progression", "hook_and_pacing", "originality"),
+		"issues":     []map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSaveOriginalPlanningAuditTool(st).Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute with schema-advertised scope_id: %v", err)
+	}
+
+	audits, err := st.OriginalPlanningAudits.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audits) != 1 || audits[0].ScopeID != chapterID {
+		t.Fatalf("saved chapter audit = %+v, want scope_id %q", audits, chapterID)
+	}
 }
 
 func TestSaveOriginalPlanningAuditRejectsMoreThanFourRawChapters(t *testing.T) {

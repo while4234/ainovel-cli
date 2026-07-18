@@ -273,7 +273,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := t.store.RepairArcOutlineRange(a.Volume, a.Arc, a.From, a.To, chapters); err != nil {
 			return nil, fmt.Errorf("repair arc: %w: %w", errs.ErrStoreWrite, err)
 		}
-		if err := t.store.OriginalPlanningAudits.InvalidateRepair(a.Volume, a.Arc); err != nil {
+		if err := t.store.OriginalPlanningAudits.InvalidateRepair(a.Volume, a.Arc, a.From, a.To); err != nil {
 			return nil, fmt.Errorf("invalidate repaired outline audits: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["volume"] = a.Volume

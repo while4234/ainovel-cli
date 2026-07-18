@@ -120,6 +120,22 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   newer runtime state. The focused and full UI suites (69/222 tests), full Go
   suite, `go vet ./...`, production UI/Go builds, restart smoke checks, and live
   resume into chapter 2 passed. Port 9898 runs PID 124012.
+- 2026-07-15 `b5d7a34` `fix: complete planning audit recovery lifecycle`:
+  makes the planning-audit write tool strict and fully describes nested
+  dimensions/issues, carries the exact chapter repair location through routing,
+  and invalidates the repaired chapter's failed audit so the gate re-audits it
+  instead of dispatching the same repair forever. Chapter repair/re-audit was
+  verified against the live stuck project, targeted regressions passed 10/10,
+  all affected package tests pass, `go vet ./...` passes, and the full
+  `go test ./... -count=1` suite passes.
+- 2026-07-15 `c523df7` `fix: expose planning chapter audit scope ids`:
+  adds the missing `scope_id` field to the model-visible
+  `save_original_planning_audit` schema so chapter-detail audits can submit the
+  stable ID already required by routing and runtime validation instead of
+  repeating an impossible tool call. Schema and real persistence regressions
+  pass 10/10, `go vet ./...` passes, and the full Go suite passes all affected
+  packages; one unrelated Web simulation-library assertion passed 5/5 when
+  rerun in isolation.
 - 2026-07-15 `ee084c5` `fix: recover interrupted planning safely`:
   prevents a committed normal-planning checkpoint from being replaced by a
   stale co-create log after restart, reconciles `collecting` planning with an

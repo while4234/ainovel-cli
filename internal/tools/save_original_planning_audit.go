@@ -25,7 +25,7 @@ func NewSaveOriginalPlanningAuditTool(st *store.Store) *SaveOriginalPlanningAudi
 func (t *SaveOriginalPlanningAuditTool) Name() string  { return "save_original_planning_audit" }
 func (t *SaveOriginalPlanningAuditTool) Label() string { return "保存原创细纲审核" }
 func (t *SaveOriginalPlanningAuditTool) Description() string {
-	return "保存普通原创长篇的分批质量审核。分卷交给用户前使用 skeleton_volume / skeleton_book_batch / skeleton_book；详细细纲交给用户前使用 arc / volume / book_batch / book。每次只审一个卷、一个3-4章弧或最多2卷摘要；不通过必须定点返修并复审。原创审核只判断因果、人物、节奏、冲突、情感、伏笔回收、世界规则、原创性和结局兑现，不得引用原著覆盖率。"
+	return "保存普通原创长篇的分批质量审核。分卷交给用户前使用 skeleton_volume / skeleton_book_batch / skeleton_book；详细细纲交给用户前使用 chapter / arc / volume / book_batch / book。每次只审一章、一个卷、一个3-4章弧或最多2卷摘要；不通过必须定点返修并复审。原创审核只判断因果、人物、节奏、冲突、情感、伏笔回收、世界规则、原创性和结局兑现，不得引用原著覆盖率。"
 }
 func (t *SaveOriginalPlanningAuditTool) ReadOnly(json.RawMessage) bool        { return false }
 func (t *SaveOriginalPlanningAuditTool) ConcurrencySafe(json.RawMessage) bool { return false }

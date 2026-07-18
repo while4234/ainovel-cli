@@ -104,7 +104,7 @@ func TestInvalidateRepairConsumesFailedChapterAudit(t *testing.T) {
 	if err != nil || work == nil || work.Kind != "repair_arc" || work.FromChapter != 2 {
 		t.Fatalf("work before repair = %+v err=%v", work, err)
 	}
-	if err := st.OriginalPlanningAudits.InvalidateRepair(1, 1); err != nil {
+	if err := st.OriginalPlanningAudits.InvalidateRepair(1, 1, 2, 2); err != nil {
 		t.Fatal(err)
 	}
 
