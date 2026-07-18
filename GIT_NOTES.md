@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `a86826a` `fix: reserve polish validation headroom`: keeps one
+  representative reinforced-simulation signal per prose/pacing category during
+  polishing and shortens the duplicated anti-AI reference excerpt because the
+  exact current-draft findings come from `check_de_ai`. The live chapter-39
+  source payload is 18,920 bytes (down from 22,165) while its contract,
+  continuity evidence, formal style rules, and deterministic validation remain
+  intact. Focused context/simulation regressions passed.
 - 2026-07-18 `989b74b` `fix: avoid duplicate consistency payloads`: changes
   `check_consistency` from a second copy of the complete draft and global state
   into a same-draft SHA receipt referencing the chapter contract, episodic
