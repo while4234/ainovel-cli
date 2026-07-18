@@ -46,6 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 `58f18c5` `fix: evict late writer project context`:
+  once Writer validation has begun, `novel_context` results are no longer
+  eligible for the protected recent-result slots; current-draft evidence and
+  validation receipts take priority. Overflow recovery applies the same rule
+  even when the oversized project context is the newest tool result. This
+  fixes the live recovery sequence whose late full context expanded the next
+  request from 39,867 to 188,544 bytes and remained 186,268 bytes after the
+  former recovery pass. Chapter prose, tool arguments, and validation reports
+  remain intact, with durable project data still available in Store. Focused
+  ten-run regressions, the full Agents suite, vet, and diff checks passed.
 - 2026-07-18 `d926ade` `fix: tolerate stale de-ai batch entries`:
   `repair_de_ai_batch` now visibly skips only entries whose `old_string` is
   absent from the current draft, continues applying the remaining unique
