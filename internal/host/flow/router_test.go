@@ -488,6 +488,34 @@ func TestRouteResume_RepairsOnlyOneWordBudgetSegment(t *testing.T) {
 	}
 }
 
+func TestRoute_RepairsNewlyPersistedOutOfBudgetDraftBySegment(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	got := Route(State{
+		Progress:                  p,
+		LastCompleted:             4,
+		InProgressDraftExists:     true,
+		InProgressCheckpoint:      "draft",
+		InProgressWordCount:       5490,
+		InProgressWordMin:         2545,
+		InProgressWordMax:         3721,
+		InProgressWordBudgetValid: false,
+		InProgressLineCount:       220,
+	})
+	if got == nil || !got.ResumeRecovery || got.Agent != "writer" || got.Chapter != 5 {
+		t.Fatalf("normal routing must segment a newly persisted oversized draft: %+v", got)
+	}
+	for _, want := range []string{
+		`read_chapter(chapter=5, source="draft", from_line=193, to_line=220)`,
+		`edit_chapter(chapter=5, budget_segment=4, edits=[...])`,
+	} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("normal segment task missing %q: %s", want, got.Task)
+		}
+	}
+}
+
 func TestWriterBudgetSegmentProgressesFromEndToStart(t *testing.T) {
 	cases := []struct {
 		checkpoint  string

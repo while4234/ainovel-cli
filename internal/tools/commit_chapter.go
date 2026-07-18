@@ -513,16 +513,11 @@ func (r wordBudgetGateRejection) message() string {
 }
 
 func (r wordBudgetGateRejection) result(flow domain.FlowState) map[string]any {
+	_ = flow
 	nextStep := fmt.Sprintf(
-		"不要再次调用 commit_chapter，也禁止调用 draft_chapter 或整章重写。保留当前完整草稿；如果本轮尚未取得当前全文，只调用一次 read_chapter(chapter=%d, source=\"draft\")，否则不要重复回读。依据现有原文用 edit_chapter(edits=[...]) 原子执行多处有依据的局部删减或补足，保留关键情节、人物选择、情感落点和章末钩子，使本章进入 %d-%d 字；edit_chapter 会直接回传最新字数，不要为确认字数重读。进入区间后重新执行 check_de_ai、check_consistency（改编项目还需 check_adaptation），全部通过后再提交。",
-		r.chapter, r.minWords, r.maxWords,
+		"不要再次调用 commit_chapter、read_chapter、edit_chapter 或 draft_chapter，也不要整章重写。当前完整草稿已经保留，但不在 %d-%d 字预算内；立即结束本轮，由 Host 按行段逐段派发局部修复，保留关键情节、人物选择、情感落点和章末钩子。进入区间后，Host 会在同一草稿上重新派发完整质量校验。",
+		r.minWords, r.maxWords,
 	)
-	if flow == domain.FlowPolishing {
-		nextStep = fmt.Sprintf(
-			"不要再次调用 commit_chapter，也不要丢弃当前完整草稿或无结构理由整章重写。请保留现有正文，只用 edit_chapter(edits=[...]) 对相关段落做局部扩写或删减，使第 %d 章进入 %d-%d 字；工具会回传最新字数，不要为确认字数重复回读。随后重新执行 check_consistency、check_de_ai，全部通过后再提交。",
-			r.chapter, r.minWords, r.maxWords,
-		)
-	}
 	return map[string]any{
 		"committed":            false,
 		"chapter":              r.chapter,

@@ -108,6 +108,10 @@ func TestEditChapterBudgetSegmentPersistsRecoveryCheckpoint(t *testing.T) {
 	if err := s.Progress.Init("test", 1); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
 	if err := s.Drafts.SaveDraft(1, "keep verbose detail"); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
@@ -117,7 +121,8 @@ func TestEditChapterBudgetSegmentPersistsRecoveryCheckpoint(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	var payload struct {
-		BudgetSegment int `json:"budget_segment"`
+		BudgetSegment int    `json:"budget_segment"`
+		NextStep      string `json:"next_step"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil || payload.BudgetSegment != 2 {
 		t.Fatalf("segment result=%+v err=%v raw=%s", payload, err, raw)
@@ -125,6 +130,9 @@ func TestEditChapterBudgetSegmentPersistsRecoveryCheckpoint(t *testing.T) {
 	latest := s.Checkpoints.Latest(domain.ChapterScope(1))
 	if latest == nil || latest.Step != "word_budget_edit_segment_2" {
 		t.Fatalf("segment checkpoint not persisted: %+v", latest)
+	}
+	if !strings.Contains(payload.NextStep, "立即结束本轮") || !strings.Contains(payload.NextStep, "Host 将派发下一行段") {
+		t.Fatalf("segment must return control to Host: %+v", payload)
 	}
 }
 
@@ -161,8 +169,8 @@ func TestEditChapterOutOfBudgetReportsCountWithoutReread(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	if payload.WordCount != 141 || payload.WordBudgetPassed ||
-		!strings.Contains(payload.NextStep, "不要重新 read_chapter") ||
-		!strings.Contains(payload.NextStep, "edit_chapter(edits=[...])") {
+		!strings.Contains(payload.NextStep, "立即结束本轮") ||
+		!strings.Contains(payload.NextStep, "Host 将按行段派发") {
 		t.Fatalf("out-of-budget feedback is incomplete: %+v", payload)
 	}
 }

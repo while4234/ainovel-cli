@@ -70,9 +70,9 @@ type State struct {
 	AdaptationOutlineBlockReason string
 	CompletionAuditBlocked       bool
 
-	// Resume-only Writer facts. Normal routing intentionally ignores these;
-	// a Resume recovery lease keeps using them across subagent boundaries until
-	// the durable draft is committed or the workflow leaves this recovery state.
+	// Writer recovery facts. Normal routing uses only the word-budget subset so
+	// a newly persisted oversized draft also enters bounded segment repair; a
+	// Resume recovery lease additionally uses the validation facts below.
 	InProgressDraftExists      bool
 	InProgressCheckpoint       string
 	InProgressDeAIState        string
@@ -150,6 +150,10 @@ func Route(s State) *Instruction {
 	// fresh automatic chapter instruction while the plan is invalid.
 	if s.AdaptationOutlineBlocked {
 		return nil
+	}
+	if s.InProgressDraftExists && s.InProgressWordMin > 0 &&
+		s.InProgressWordMax >= s.InProgressWordMin && !s.InProgressWordBudgetValid {
+		return routeWriterBudgetSegment(s, p.InProgressChapter)
 	}
 
 	if s.OutlineRepair != nil && s.OutlineRepair.Repairable() {

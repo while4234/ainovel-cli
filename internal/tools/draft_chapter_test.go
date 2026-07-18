@@ -193,13 +193,16 @@ func TestDraftChapterReportsNormalWordBudget(t *testing.T) {
 		t.Fatalf("expected word_budget payload, got %+v", result)
 	}
 	next := result["next_step"].(string)
-	for _, want := range []string{"当前草稿已经保存", "edit_chapter(edits=[...])", "不要为确认字数重复回读", "commit_chapter"} {
+	for _, want := range []string{"当前草稿已经保存", "立即结束本轮", "Host 会按行段逐段派发", "不要调用 read_chapter"} {
 		if !strings.Contains(next, want) {
 			t.Fatalf("next_step missing %q: %q", want, next)
 		}
 	}
 	if strings.Contains(next, "整章重写到") {
 		t.Fatalf("next_step must not force another whole rewrite: %q", next)
+	}
+	if strings.Contains(next, "edit_chapter(edits=[...])") {
+		t.Fatalf("new draft must return to Host before segmented edits: %q", next)
 	}
 }
 

@@ -745,11 +745,11 @@ func TestAdaptationDraftPreservesRunMetaWordBudgetLocalRepairGuidance(t *testing
 	if !payload.WordContractPassed || len(payload.WordContractIssues) > 0 {
 		t.Fatalf("adaptation word contract should pass, got %+v", payload)
 	}
-	if !strings.Contains(payload.Next, `read_chapter(chapter=1, source="draft")`) ||
-		!strings.Contains(payload.Next, "edit_chapter(edits=[...])") ||
-		!strings.Contains(payload.Next, "check_adaptation") ||
+	if !strings.Contains(payload.Next, "立即结束本轮") ||
+		!strings.Contains(payload.Next, "Host 会按行段逐段派发") ||
+		strings.Contains(payload.Next, "edit_chapter(edits=[...])") ||
 		strings.Contains(payload.Next, `draft_chapter(mode="write", chapter=1)`) {
-		t.Fatalf("next_step should keep normal budget local-repair guidance, got %q", payload.Next)
+		t.Fatalf("next_step should return adaptation budget repair to Host, got %q", payload.Next)
 	}
 }
 

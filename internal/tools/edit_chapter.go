@@ -307,11 +307,19 @@ func (t *EditChapterTool) addDraftStatus(payload map[string]any, chapter int) {
 	payload["word_budget"] = map[string]any{"min_words": minWords, "max_words": maxWords}
 	withinBudget := wordCount >= minWords && wordCount <= maxWords
 	payload["word_budget_passed"] = withinBudget
+	if segment, segmented := payload["budget_segment"]; segmented {
+		if withinBudget {
+			payload["next_step"] = fmt.Sprintf("字数分段 %v 已保存，当前草稿已进入预算。立即结束本轮；Host 将派发同一草稿的完整质量校验。", segment)
+		} else {
+			payload["next_step"] = fmt.Sprintf("字数分段 %v 已保存，当前草稿仍未进入预算。立即结束本轮；不要回读或继续编辑，Host 将派发下一行段。", segment)
+		}
+		return
+	}
 	if withinBudget {
 		return
 	}
 	payload["next_step"] = fmt.Sprintf(
-		"当前草稿 %d 字，仍不在 %d-%d 字区间。不要重新 read_chapter；依据本轮最初回读的原文，用 edit_chapter(edits=[...]) 再做一批不重叠的局部删减或补足，保留关键情节、人物选择、情感落点和章末钩子。进入区间后再执行各项检查。",
+		"当前草稿 %d 字，仍不在 %d-%d 字区间。立即结束本轮，不要重新 read_chapter 或继续 edit_chapter；Host 将按行段派发下一次局部修复，保留关键情节、人物选择、情感落点和章末钩子。进入区间后再执行各项检查。",
 		wordCount, minWords, maxWords,
 	)
 }

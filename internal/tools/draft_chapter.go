@@ -233,8 +233,8 @@ func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chap
 		fmt.Sprintf("第 %d 章草稿%s预算区间：当前 %d 字，要求 %d-%d 字。", chapter, direction, wordCount, minWords, maxWords),
 	}
 	result["next_step"] = fmt.Sprintf(
-		"不要调用 commit_chapter，也不要再次调用 draft_chapter 或整章重写。当前草稿已经保存；只调用一次 read_chapter(chapter=%d, source=\"draft\")，然后依据现有原文用 edit_chapter(edits=[...]) 原子执行多处有依据的局部删减或补足，保留关键情节、人物选择、情感落点和章末钩子，使本章进入 %d-%d 字。edit_chapter 会回传最新字数，不要为确认字数重复回读；进入区间后再执行 check_de_ai、check_consistency（改编项目还需 check_adaptation），全部通过后 commit_chapter。",
-		chapter, minWords, maxWords,
+		"当前草稿已经保存，但不在 %d-%d 字预算内。立即结束本轮，不要调用 read_chapter、edit_chapter、commit_chapter，不要再次调用 draft_chapter 或整章重写。Host 会按行段逐段派发局部修复，每段保留章节契约、关键情节、人物选择、情感落点和章末钩子；进入预算后再在同一草稿上执行完整质量校验。",
+		minWords, maxWords,
 	)
 }
 
