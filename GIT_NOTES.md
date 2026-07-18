@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `0ed4996` `fix: prevent blank screen during project open`:
+  normalizes explicit null snapshot/co-create inputs before evaluating global
+  co-create visibility, covering the project-open reset render that previously
+  dereferenced `snapshot.Phase` and emptied the React root. The null regression,
+  all 296 UI tests, production build, restart, and an isolated live click on
+  `重生v4` passed with chapter progress visible and no browser errors. Port 9898
+  runs PID 46124.
 - 2026-07-18 `81cce909` `feat: converge manuscript workspace actions`:
   widens and aligns the manuscript reading surface, adds an accessible chapter
   combobox with Arabic/full-width/Chinese-number lookup, persists bounded
