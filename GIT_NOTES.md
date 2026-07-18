@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `pending` `fix: hydrate outline details and bound trash list`:
+  loads complete outline fields only when the writing-side chapter preview is
+  explicitly opened, keeps large trash lists internally scrollable with the
+  destructive action visible, and removes one obsolete smoke-test assertion
+  that conflicted with the repository-local test-cache policy while preserving
+  the end-to-end test. All 273 UI tests, the production build, the complete Web
+  Go package, restart smoke checks, and live browser acceptance passed.
 - 2026-07-18 `129648f` / `eba8e26` `fix: isolate workflow progress by project`:
   removes the project-keyed remount path that accumulated duplicate workflow
   cards across snapshot updates, resets retained progress when the project ID

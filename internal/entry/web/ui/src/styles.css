@@ -440,7 +440,11 @@ h2 {
 
 .trash-panel {
   display: grid;
+  flex: 0 1 auto;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
+  min-height: 0;
+  max-height: min(56vh, 520px);
   border-top: 1px solid var(--line);
   padding-top: 10px;
 }
@@ -467,7 +471,20 @@ h2 {
 
 .trash-list {
   display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 6px;
+  min-height: 0;
+}
+
+.trash-items {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+  scrollbar-gutter: stable;
 }
 
 .trash-row {

@@ -26,6 +26,12 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.profile-status span\s*{[^}]*white-space:\s*nowrap;/s);
   });
 
+  it('keeps trash actions visible while a long trash list scrolls independently', () => {
+    expect(css).toMatch(/\.trash-panel\s*{[^}]*grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\);[^}]*max-height:\s*min\(56vh,\s*520px\);/s);
+    expect(css).toMatch(/\.trash-list\s*{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto;/s);
+    expect(css).toMatch(/\.trash-items\s*{[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*stable;/s);
+  });
+
   it('keeps adaptation audit findings readable instead of truncating their causal evidence', () => {
     expect(css).toMatch(/\.audit-finding-row strong,[\s\S]*?overflow-wrap:\s*anywhere;/s);
     expect(css).toMatch(/\.audit-confirmation-row\s*{[^}]*align-items:\s*flex-start;/s);

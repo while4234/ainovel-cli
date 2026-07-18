@@ -862,6 +862,7 @@ export default function App() {
   const projectOpenAbortRef = useRef(null);
   const activeProjectIdRef = useRef('');
   const planningReviewHydrationProjectRef = useRef('');
+  const outlineRevisionHydrationRef = useRef('');
 
   const snapshot = workbench.snapshot;
   const continuationSnapshot = useMemo(
@@ -903,6 +904,7 @@ export default function App() {
 
 	const resetProjectScopedState = useCallback((clearProject = false) => {
 		lastSeqRef.current = 0;
+    outlineRevisionHydrationRef.current = '';
     setBusy(false);
     setWorkbench(createWorkbenchState());
     setSimulation(resetSimulationProjectState);
@@ -966,6 +968,7 @@ export default function App() {
   ), []);
 
   const pendingPlanningReviewNeedsHydration = shouldHydratePendingPlanningReviewDetails(snapshot);
+  const outlineRevisionNeedsHydration = shouldHydrateOutlineRevisionDetails(snapshot, outlineRevision);
 
   useEffect(() => {
     const projectId = activeProject?.id;
@@ -1004,6 +1007,53 @@ export default function App() {
 
     return () => controller.abort();
   }, [activeProject?.id, isCurrentProject, pendingPlanningReviewNeedsHydration, projectOpen.status]);
+
+  useEffect(() => {
+    const projectId = activeProject?.id;
+    const chapter = selectedOutlineRevisionView.chapter;
+    const hydrationKey = projectId && chapter ? `${projectId}:${chapter}` : '';
+    if (!hydrationKey || projectOpen.status === 'loading' || !outlineRevisionNeedsHydration ||
+        outlineRevisionHydrationRef.current === hydrationKey) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    outlineRevisionHydrationRef.current = hydrationKey;
+    getSnapshot(projectId, { signal: controller.signal })
+      .then((data) => {
+        if (controller.signal.aborted || !isCurrentProject(projectId) || !data?.snapshot) {
+          return;
+        }
+        setWorkbench((previous) => {
+          const selection = { active: true, chapter: String(chapter) };
+          if (!shouldHydrateOutlineRevisionDetails(previous.snapshot, selection)) {
+            return previous;
+          }
+          return {
+            ...previous,
+            snapshot: mergeSnapshotUpdate(data.snapshot, previous.snapshot)
+          };
+        });
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted && isCurrentProject(projectId)) {
+          setError(`详细章节细纲加载失败：${err.message}`);
+        }
+      })
+      .finally(() => {
+        if (outlineRevisionHydrationRef.current === hydrationKey) {
+          outlineRevisionHydrationRef.current = '';
+        }
+      });
+
+    return () => controller.abort();
+  }, [
+    activeProject?.id,
+    isCurrentProject,
+    outlineRevisionNeedsHydration,
+    projectOpen.status,
+    selectedOutlineRevisionView.chapter
+  ]);
 
   const refreshCurrentProjectSnapshot = useCallback(async (projectId) => {
     if (!isCurrentProject(projectId)) {
@@ -4393,27 +4443,29 @@ export default function App() {
           </button>
           {trashOpen ? (
             <div className="trash-list">
-              {trashProjects.length === 0 ? (
-                <div className="empty-state">回收站为空</div>
-              ) : (
-                trashProjects.map((project) => (
-                  <div className="trash-row" key={project.id}>
-                    <span>
-                      <strong>{project.name || project.id}</strong>
-                      <small>{formatDate(project.deleted_at || project.updated_at)}</small>
-                    </span>
-                    <button
-                      className="icon-button"
-                      disabled={busy}
-                      onClick={() => restoreProjectFromTrash(project)}
-                      title="恢复项目"
-                      type="button"
-                    >
-                      <ListRestart size={16} />
-                    </button>
-                  </div>
-                ))
-              )}
+              <div className="trash-items">
+                {trashProjects.length === 0 ? (
+                  <div className="empty-state">回收站为空</div>
+                ) : (
+                  trashProjects.map((project) => (
+                    <div className="trash-row" key={project.id}>
+                      <span>
+                        <strong>{project.name || project.id}</strong>
+                        <small>{formatDate(project.deleted_at || project.updated_at)}</small>
+                      </span>
+                      <button
+                        className="icon-button"
+                        disabled={busy}
+                        onClick={() => restoreProjectFromTrash(project)}
+                        title="恢复项目"
+                        type="button"
+                      >
+                        <ListRestart size={16} />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
               <button className="tool-button full-width" disabled={busy || trashProjects.length === 0} onClick={emptyProjectTrash} type="button">
                 <Trash2 size={16} />
                 清空回收站
@@ -11376,6 +11428,15 @@ export function getOutlineRevisionView(snapshot, revision = {}) {
     outline,
     granularity: getSnapshotOutlineGranularity(snapshot)
   };
+}
+
+export function shouldHydrateOutlineRevisionDetails(snapshot, revision = {}) {
+  if (!revision.active) {
+    return false;
+  }
+  const selected = getOutlineRevisionView(snapshot, revision);
+  const row = selected.outlineRow;
+  return Boolean(row && !row.coreEvent && !row.hook && row.scenes.length === 0);
 }
 
 export function buildOutlineRevisionPayload(revision = {}, snapshot = {}) {

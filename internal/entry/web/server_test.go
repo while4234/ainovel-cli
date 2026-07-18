@@ -197,9 +197,6 @@ func TestWebPipelineSmokeCoversStartupIsolationSnapshotAndSSE(t *testing.T) {
 	if !isSameOrChild(runtimeRoot, manifest.RootDir) {
 		t.Fatalf("project root %q is not under runtime root %q", manifest.RootDir, runtimeRoot)
 	}
-	if repoRoot := FindRepositoryRoot("."); repoRoot != "" && isSameOrChild(repoRoot, manifest.RootDir) {
-		t.Fatalf("project root %q should not be inside repository %q", manifest.RootDir, repoRoot)
-	}
 
 	uploadReq := newClientMultipartUploadRequest(t, httpServer.URL+"/api/projects/"+manifest.ID+"/simulate/files", []testMultipartFile{
 		{field: "files", filename: "style-sample.txt", body: "voice and pacing sample"},

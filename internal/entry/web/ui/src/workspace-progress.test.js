@@ -43,6 +43,7 @@ import {
   outlineRevisionSuccessMessage,
   prepareProjectOpenSnapshot,
   shouldHydratePendingPlanningReviewDetails,
+  shouldHydrateOutlineRevisionDetails,
   shouldHydrateProjectOpenSnapshot,
   PROJECT_OPEN_TIMEOUT_MS,
   resolveCoCreateStructureChoice,
@@ -303,6 +304,30 @@ describe('project open snapshot preparation', () => {
     expect(shouldHydratePendingPlanningReviewDetails({
       PlanningReview: { Status: 'collecting', Kind: 'chapter_outline' },
       Outline: [{ Chapter: 9, Title: '生成中' }]
+    })).toBe(false);
+  });
+
+  it('hydrates chapter details on demand when the writing workspace opens a summary-only outline', () => {
+    const summarySnapshot = {
+      Outline: [
+        { Chapter: 39, Title: '摘要标题' },
+        { Chapter: 40, Title: '另一章摘要' }
+      ]
+    };
+
+    expect(shouldHydrateOutlineRevisionDetails(summarySnapshot, {
+      active: true,
+      chapter: '40'
+    })).toBe(true);
+    expect(shouldHydrateOutlineRevisionDetails(summarySnapshot, {
+      active: false,
+      chapter: '40'
+    })).toBe(false);
+    expect(shouldHydrateOutlineRevisionDetails({
+      Outline: [{ Chapter: 40, Title: '完整细纲', CoreEvent: '核心事件', Scenes: ['场景一'] }]
+    }, {
+      active: true,
+      chapter: '40'
     })).toBe(false);
   });
 });
