@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-18 `401a388` `fix: bound arc review dispatches`: arc-end Editor
+- 2026-07-18 `90a0fc0` `fix: bound arc review dispatches`: arc-end Editor
   reviews now use a 5,000-rune whole-chapter batch budget instead of 12,000
   runes. Each routed batch explicitly reads only its assigned final chapter
   range, forbids `novel_context` and unrelated chapter reads, and persists the
