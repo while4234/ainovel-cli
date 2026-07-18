@@ -46,6 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `8e844bf` `fix: bound writer chapter evidence`: normal Writer
+  chapter work packages now source-bound references and one representative
+  signal per style/pacing category to a 28-KiB ceiling. Prior-chapter reads are
+  continuity tails capped at 600 runes because the active package already
+  includes `previous_tail` and recent summaries, and repeated current
+  `novel_context` results are semantically deduplicated before the provider
+  boundary. This addresses the live chapter-41 55,111 -> 89,059 and 57,492 ->
+  69,420 byte sequences without removing the active chapter contract, outline,
+  continuity state, user rules, style constraints, or deterministic checks.
+  Full Agent/Tools tests and vet passed.
 - 2026-07-18 `c410a7f` `fix: scope writer context to active chapter`: Writer
   can now load a full chapter work package only for the active work unit; a
   request for an earlier chapter returns a sub-2-KiB redirect to
