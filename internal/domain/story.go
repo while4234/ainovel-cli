@@ -20,6 +20,7 @@ type OutlineEntry struct {
 
 // Character 角色档案。
 type Character struct {
+	ID          string   `json:"id,omitempty"`
 	Name        string   `json:"name"`
 	Aliases     []string `json:"aliases,omitempty"` // 别名/称号/绰号（如"废物少年"、"炎哥"）
 	Role        string   `json:"role"`
@@ -27,6 +28,13 @@ type Character struct {
 	Arc         string   `json:"arc"`
 	Traits      []string `json:"traits"`
 	Tier        string   `json:"tier,omitempty"` // core / important / secondary / decorative（默认 important）
+	Faction     string   `json:"faction,omitempty"`
+	Goal        string   `json:"goal,omitempty"`
+	Motivation  string   `json:"motivation,omitempty"`
+	Conflict    string   `json:"conflict,omitempty"`
+	Voice       string   `json:"voice,omitempty"`
+	Constraints []string `json:"constraints,omitempty"`
+	Notes       string   `json:"notes,omitempty"`
 }
 
 // VolumeOutline 卷级大纲（长篇分层模式）。
@@ -136,7 +144,12 @@ func ProjectLayeredOutlineOrder(volumes []VolumeOutline) []VolumeOutline {
 
 // WorldRule 世界观规则条目。
 type WorldRule struct {
-	Category string `json:"category"` // magic / technology / geography / society / other
-	Rule     string `json:"rule"`     // 规则描述
-	Boundary string `json:"boundary"` // 不可违反的边界
+	ID       string            `json:"id,omitempty"`
+	Category string            `json:"category"` // magic / technology / geography / society / other
+	Title    string            `json:"title,omitempty"`
+	Rule     string            `json:"rule"`     // 规则描述
+	Boundary string            `json:"boundary"` // 不可违反的边界
+	Strength WorldRuleStrength `json:"strength,omitempty"`
+	Priority int               `json:"priority,omitempty"`
+	Tags     []string          `json:"tags,omitempty"`
 }

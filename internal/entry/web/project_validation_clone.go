@@ -406,7 +406,8 @@ type validationClonePathContract struct {
 
 var validationClonePathContracts = []validationClonePathContract{
 	{"project_manifest", regexp.MustCompile(`^project\.json$`)},
-	{"formal_root", regexp.MustCompile(`^output/(premise\.md|characters\.(json|md)|world_rules\.(json|md)|outline\.(json|md)|layered_outline\.(json|md)|timeline\.json|relationships\.json|foreshadow\.json)$`)},
+	{"formal_root", regexp.MustCompile(`^output/(story_foundation\.json|premise\.md|characters\.(json|md)|world_rules\.(json|md)|planned_relationships\.(json|md)|outline\.(json|md)|layered_outline\.(json|md)|timeline\.json|relationships\.json|foreshadow\.json)$`)},
+	{"foundation_manifest", regexp.MustCompile(`^output/meta/foundation/projections\.json$`)},
 	{"formal_chapter", regexp.MustCompile(`^output/chapters/(?:[0-9]{1,6}\.md|[a-z0-9][a-z0-9_-]{0,127}/final\.md)$`)},
 	{"draft", regexp.MustCompile(`^output/drafts/[0-9]{1,6}\.(?:draft\.md|plan\.json)$`)},
 	{"summary", regexp.MustCompile(`^output/summaries/[0-9]{1,6}\.json$`)},
@@ -432,6 +433,11 @@ func validationCloneManifest(root string) (map[string]validationCloneArtifact, e
 	allowed := make(map[string]validationCloneArtifact)
 	if err := validateCloneSourceTree(root); err != nil {
 		return nil, anonymousCloneError("source_identity_invalid", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "output", filepath.FromSlash("meta/foundation/journal.json"))); err == nil {
+		return nil, anonymousCloneError("foundation_transaction_pending", nil)
+	} else if !os.IsNotExist(err) {
+		return nil, anonymousCloneError("foundation_transaction_unreadable", err)
 	}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -471,6 +477,9 @@ func validationCloneManifest(root string) (map[string]validationCloneArtifact, e
 	}
 	if err := validateCloneArtifacts(root, allowed); err != nil {
 		return nil, err
+	}
+	if err := validateCloneFoundationSet(root, allowed); err != nil {
+		return nil, anonymousCloneError("foundation_projection_invalid", err)
 	}
 	if err := validateCloneExpansionPublicationAuthority(root, allowed); err != nil {
 		return nil, anonymousCloneError("artifact_schema_invalid", err)
@@ -727,6 +736,8 @@ func validateCloneArtifact(root, rel, kind string, data []byte) error {
 		return storepkg.ValidateExpansionValidationCloneReportForClone(data)
 	case "formal_root":
 		return validateCloneFormalRoot(rel, data)
+	case "foundation_manifest":
+		return validateCloneFoundationManifest(data)
 	case "formal_state":
 		return validateCloneFormalState(rel, data)
 	default:
@@ -813,10 +824,20 @@ func validateCloneAdaptationManifest(data []byte) error {
 
 func validateCloneFormalRoot(rel string, data []byte) error {
 	switch filepath.Base(rel) {
+	case "story_foundation.json":
+		var foundation domain.StoryFoundation
+		if err := decodeCloneJSON(data, &foundation); err != nil {
+			return err
+		}
+		_, err := domain.NormalizeStoryFoundation(foundation)
+		return err
 	case "characters.json":
 		return validateNonEmptyCloneSlice(data, &[]domain.Character{})
 	case "world_rules.json":
 		return validateNonEmptyCloneSlice(data, &[]domain.WorldRule{})
+	case "planned_relationships.json":
+		var relationships []domain.CharacterRelationship
+		return decodeCloneJSON(data, &relationships)
 	case "outline.json":
 		var outline []domain.OutlineEntry
 		if err := decodeCloneJSON(data, &outline); err != nil || len(outline) == 0 {
@@ -843,6 +864,106 @@ func validateCloneFormalRoot(rel string, data []byte) error {
 		return validateNonEmptyCloneSlice(data, &[]domain.ForeshadowEntry{})
 	}
 	return fmt.Errorf("formal root path has no exact schema")
+}
+
+type cloneFoundationManifest struct {
+	Version          int               `json:"version"`
+	Revision         int64             `json:"revision"`
+	ContentSignature string            `json:"content_signature"`
+	AuditSignature   string            `json:"audit_signature"`
+	Files            map[string]string `json:"files"`
+}
+
+func validateCloneFoundationManifest(data []byte) error {
+	var manifest cloneFoundationManifest
+	if err := decodeCloneJSON(data, &manifest); err != nil {
+		return err
+	}
+	if manifest.Version != 1 || manifest.Revision <= 0 || !validCloneSHA256(manifest.ContentSignature) || !validCloneSHA256(manifest.AuditSignature) {
+		return fmt.Errorf("foundation projection manifest identity is invalid")
+	}
+	if len(manifest.Files) != 8 {
+		return fmt.Errorf("foundation projection manifest file set is incomplete")
+	}
+	return nil
+}
+
+func validateCloneFoundationSet(root string, allowed map[string]validationCloneArtifact) error {
+	const canonical = "output/story_foundation.json"
+	_, canonicalExists := allowed[canonical]
+	required := []string{
+		canonical,
+		"output/premise.md",
+		"output/characters.json",
+		"output/characters.md",
+		"output/world_rules.json",
+		"output/world_rules.md",
+		"output/planned_relationships.json",
+		"output/planned_relationships.md",
+		"output/meta/foundation/projections.json",
+	}
+	if !canonicalExists {
+		for _, rel := range required[6:] {
+			if _, exists := allowed[rel]; exists {
+				return fmt.Errorf("foundation projection %s exists without canonical foundation", rel)
+			}
+		}
+		return nil
+	}
+	for _, rel := range required {
+		if _, exists := allowed[rel]; !exists {
+			return fmt.Errorf("canonical foundation clone is missing %s", rel)
+		}
+	}
+	canonicalData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(canonical)))
+	if err != nil {
+		return err
+	}
+	var foundation domain.StoryFoundation
+	if err := decodeCloneJSON(canonicalData, &foundation); err != nil {
+		return err
+	}
+	normalized, err := domain.NormalizeStoryFoundation(foundation)
+	if err != nil {
+		return err
+	}
+	manifestData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash("output/meta/foundation/projections.json")))
+	if err != nil {
+		return err
+	}
+	var manifest cloneFoundationManifest
+	if err := decodeCloneJSON(manifestData, &manifest); err != nil {
+		return err
+	}
+	content, err := domain.FoundationContentSignature(normalized)
+	if err != nil {
+		return err
+	}
+	audit, err := domain.FoundationAuditSignature(normalized)
+	if err != nil {
+		return err
+	}
+	if manifest.Revision != foundation.Revision || manifest.ContentSignature != content || manifest.AuditSignature != audit {
+		return fmt.Errorf("canonical foundation and projection manifest are not the same revision")
+	}
+	expectedFiles := []string{
+		"story_foundation.json", "premise.md", "characters.json", "characters.md",
+		"world_rules.json", "world_rules.md", "planned_relationships.json", "planned_relationships.md",
+	}
+	if len(manifest.Files) != len(expectedFiles) {
+		return fmt.Errorf("foundation projection manifest file set is incomplete")
+	}
+	for _, rel := range expectedFiles {
+		data, err := os.ReadFile(filepath.Join(root, "output", filepath.FromSlash(rel)))
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256(data)
+		if manifest.Files[rel] != hex.EncodeToString(digest[:]) {
+			return fmt.Errorf("foundation clone file %s signature mismatch", rel)
+		}
+	}
+	return nil
 }
 
 type cloneTimelineEvent struct {

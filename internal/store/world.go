@@ -13,6 +13,7 @@ import (
 // WorldStore 管理时间线、伏笔、人物关系、状态变化、世界规则、风格规则、审阅和交接。
 type WorldStore struct {
 	io                 *IO
+	foundation         *FoundationStore
 	migration          *structureMigration
 	withFormalMutation func(string, *structureMigration, func() error) error
 }
@@ -684,6 +685,9 @@ func (s *WorldStore) LoadStateChanges() ([]domain.StateChange, error) {
 
 // SaveWorldRules 全量写入 world_rules.json + world_rules.md（原子写入）。
 func (s *WorldStore) SaveWorldRules(rules []domain.WorldRule) error {
+	if s.foundation != nil {
+		return s.foundation.UpdateWorldRules(rules)
+	}
 	return s.io.WithWriteLock(func() error {
 		if err := s.io.WriteJSONUnlocked("world_rules.json", rules); err != nil {
 			return err
@@ -694,6 +698,10 @@ func (s *WorldStore) SaveWorldRules(rules []domain.WorldRule) error {
 
 // LoadWorldRules 读取世界规则。
 func (s *WorldStore) LoadWorldRules() ([]domain.WorldRule, error) {
+	if s.foundation != nil {
+		foundation, err := s.foundation.Load()
+		return foundation.WorldRules, err
+	}
 	var rules []domain.WorldRule
 	if err := s.io.ReadJSON("world_rules.json", &rules); err != nil {
 		if os.IsNotExist(err) {

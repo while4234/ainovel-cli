@@ -17,6 +17,7 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/host"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 const manifestVersion = 1
@@ -200,7 +201,9 @@ func (s *ProjectStore) CloneProject(sourceID, name string) (ProjectManifest, err
 		_ = os.RemoveAll(finalRoot)
 	}()
 
-	if err := cloneProjectTree(source.RootDir, stagingRoot); err != nil {
+	if err := storepkg.WithCloneReadyStoryFoundationSnapshot(source.OutputDir, func() error {
+		return cloneProjectTree(source.RootDir, stagingRoot)
+	}); err != nil {
 		return ProjectManifest{}, err
 	}
 	if err := rebaseClonedProjectJSON(stagingRoot, source.RootDir, finalRoot); err != nil {
@@ -305,6 +308,9 @@ func cloneProgramOwnedDirectory(relative string) bool {
 	if rel == "meta/runtime" || strings.HasPrefix(rel, "meta/runtime/") {
 		return false
 	}
+	if rel == "meta/foundation/stage" || strings.HasPrefix(rel, "meta/foundation/stage/") {
+		return false
+	}
 	root := strings.Split(rel, "/")[0]
 	switch root {
 	case "chapters", "summaries", "structure", "meta", "novel", "logs", "checkpoints", "sessions", "exports":
@@ -346,11 +352,14 @@ func cloneProgramOwnedPath(path string) bool {
 	if rel == "meta/runtime" || strings.HasPrefix(rel, "meta/runtime/") {
 		return false
 	}
+	if strings.HasPrefix(rel, "meta/foundation/") {
+		return rel == "meta/foundation/projections.json"
+	}
 	root := strings.Split(rel, "/")[0]
 	switch root {
 	case "chapters", "summaries", "structure", "meta", "novel", "logs", "checkpoints", "sessions", "exports":
 		return cloneAllowedExtension(rel, ".json", ".jsonl", ".md", ".txt", ".epub", ".log")
-	case "outline.json", "layered_outline.json", "progress.json", "world.json", "characters.json", "cast.json", "signals.json", "user_rules.json":
+	case "story_foundation.json", "premise.md", "characters.json", "characters.md", "world_rules.json", "world_rules.md", "planned_relationships.json", "planned_relationships.md", "outline.json", "layered_outline.json", "progress.json", "world.json", "cast.json", "signals.json", "user_rules.json":
 		return !strings.Contains(rel, "/")
 	default:
 		return false

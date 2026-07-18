@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `pending` `feat: establish canonical story foundation`:
+  adds the canonical `StoryFoundation` domain and recoverable CAS-backed store,
+  stable legacy migration/projections, planned-relationship isolation, and
+  clone/rollback lifecycle safety. Three independent fix/re-review rounds
+  closed stale-journal, orphan-projection, clone-snapshot, rollback concurrency,
+  and test-assertion findings. Focused changed-package/direct-boundary tests,
+  focused race tests with local WinLibs GCC, scoped vet, gofmt/diff checks, and
+  sensitive-path scans passed; unrelated full-repository tests were intentionally
+  not repeated. Publication must exclude unrelated base commit `94da71e1`.
 - 2026-07-18 `2713b7b` `fix: honor configured backend routes on resume`:
   removes novel settings and chapter outlines from backend diagnostics, exposes
   stage routes as explicit `provider / model` choices even when providers share
