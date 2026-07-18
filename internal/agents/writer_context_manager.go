@@ -67,7 +67,7 @@ func (m *writerContextManager) RecoverOverflow(ctx context.Context, msgs []agent
 		ShouldCommit:   true,
 		Strategy:       result.Name,
 		CompactedCount: countCompactedToolResults(view),
-		KeptCount:      2,
+		KeptCount:      1,
 	}, nil
 }
 
@@ -96,7 +96,13 @@ func (s *writerValidationPhaseStrategy) Apply(ctx context.Context, transcript, v
 }
 
 func (s *writerValidationPhaseStrategy) ForceApply(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
-	return s.compact(ctx, transcript, view, budget)
+	_ = ctx
+	_ = transcript
+	_ = budget
+	// Crossing the exact production boundary is an emergency phase split. Keep
+	// only the newest tool result; every chapter/context payload is durable and
+	// can be re-read, while retrying the same oversized pair cannot recover.
+	return compactWriterPhase(view, 1, s.clearedMessage)
 }
 
 func (s *writerValidationPhaseStrategy) compact(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {

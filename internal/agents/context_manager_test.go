@@ -141,8 +141,8 @@ func TestWriterManagerUsesPhaseEvictionForOverflowRecovery(t *testing.T) {
 	if !recovery.Changed || !recovery.ShouldCommit || recovery.Strategy != "writer_validation_phase" {
 		t.Fatalf("unexpected recovery: %+v", recovery)
 	}
-	if countCompactedToolResults(recovery.View) != 1 {
-		t.Fatalf("recovered compacted results=%d, want 1", countCompactedToolResults(recovery.View))
+	if countCompactedToolResults(recovery.View) != 2 {
+		t.Fatalf("recovered compacted results=%d, want 2", countCompactedToolResults(recovery.View))
 	}
 }
 
@@ -228,7 +228,7 @@ func TestWriterOverflowRecoveryEvictsWholePriorPhase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Applied || countCompactedToolResults(view) != 1 {
+	if !result.Applied || countCompactedToolResults(view) != 2 {
 		t.Fatalf("forced phase eviction result=%+v compacted=%d", result, countCompactedToolResults(view))
 	}
 	compiled, err := compileAgentInput(toLLMMessages(t, view), nil)

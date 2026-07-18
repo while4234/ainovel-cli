@@ -693,9 +693,11 @@ func newWriterContextTool(inner *tools.ContextTool, st *store.Store) agentcore.T
 	return &writerContextTool{inner: inner, store: st}
 }
 
-func (t *writerContextTool) Name() string        { return t.inner.Name() }
-func (t *writerContextTool) Description() string { return t.inner.Description() }
-func (t *writerContextTool) Label() string       { return t.inner.Label() }
+func (t *writerContextTool) Name() string { return t.inner.Name() }
+func (t *writerContextTool) Description() string {
+	return t.inner.Description() + " Writer may load the full work package only for the active chapter; use read_chapter for prior-chapter continuity."
+}
+func (t *writerContextTool) Label() string { return t.inner.Label() }
 func (t *writerContextTool) Schema() map[string]any {
 	return t.inner.Schema()
 }
@@ -711,10 +713,25 @@ func (t *writerContextTool) Execute(ctx context.Context, args json.RawMessage) (
 	if err := json.Unmarshal(args, &raw); err != nil {
 		return t.inner.Execute(ctx, args)
 	}
-	if hasPositiveChapter(raw["chapter"]) || hasExplicitContextScope(raw["scope"]) {
+	if hasExplicitContextScope(raw["scope"]) {
 		return t.inner.Execute(ctx, args)
 	}
 	chapter := inferWriterDraftChapter(t.store)
+	requestedChapter := positiveChapter(raw["chapter"])
+	if requestedChapter > 0 {
+		if chapter > 0 && requestedChapter != chapter {
+			return json.Marshal(map[string]any{
+				"context_profile":            "cross_chapter_redirect",
+				"requested_chapter":          requestedChapter,
+				"active_chapter":             chapter,
+				"full_context_loaded":        false,
+				"prior_chapter_source":       "read_chapter",
+				"do_not_retry_novel_context": true,
+				"next_step":                  fmt.Sprintf("Call novel_context(chapter=%d) for the active work package only; use read_chapter(chapter=%d) if prior prose is needed for continuity.", chapter, requestedChapter),
+			})
+		}
+		return t.inner.Execute(ctx, args)
+	}
 	if chapter <= 0 {
 		return t.inner.Execute(ctx, args)
 	}
@@ -788,11 +805,18 @@ func (t *writerDraftChapterTool) Execute(ctx context.Context, args json.RawMessa
 }
 
 func hasPositiveChapter(raw json.RawMessage) bool {
+	return positiveChapter(raw) > 0
+}
+
+func positiveChapter(raw json.RawMessage) int {
 	if len(raw) == 0 {
-		return false
+		return 0
 	}
 	var chapter int
-	return json.Unmarshal(raw, &chapter) == nil && chapter > 0
+	if json.Unmarshal(raw, &chapter) != nil || chapter <= 0 {
+		return 0
+	}
+	return chapter
 }
 
 func inferWriterDraftChapter(st *store.Store) int {

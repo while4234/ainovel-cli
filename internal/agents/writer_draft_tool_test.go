@@ -42,6 +42,34 @@ func TestWriterContextToolInfersPendingPolishChapter(t *testing.T) {
 	}
 }
 
+func TestWriterContextToolRejectsFullCrossChapterWorkPackage(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 50); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.StartChapter(41); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	tool := newWriterContextTool(tools.NewContextTool(st, tools.References{}, "default"), st)
+	raw, err := tool.Execute(t.Context(), json.RawMessage(`{"chapter":40}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["context_profile"] != "cross_chapter_redirect" || payload["full_context_loaded"] != false {
+		t.Fatalf("unexpected cross-chapter payload: %+v", payload)
+	}
+	if len(raw) >= 2*1024 {
+		t.Fatalf("cross-chapter redirect=%d bytes, want compact tool guidance", len(raw))
+	}
+}
+
 func TestCoordinatorContextToolDefaultsToProgressStatus(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
