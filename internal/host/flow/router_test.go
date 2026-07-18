@@ -430,6 +430,9 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 	if got == nil || got.Agent != "writer" || got.Chapter != 5 {
 		t.Fatalf("expected Writer draft recovery, got %+v", got)
 	}
+	if !got.ResumeRecovery {
+		t.Fatalf("resume instruction must retain recovery identity: %+v", got)
+	}
 	for _, want := range []string{
 		"恢复第 5 章现有草稿",
 		"checkpoint=plan",
@@ -459,6 +462,43 @@ func TestRouteResume_DoesNotOverrideNewChapterWithoutDraft(t *testing.T) {
 	got := RouteResume(State{Progress: p, LastCompleted: 4})
 	if got == nil || got.Task != "写第 5 章" {
 		t.Fatalf("draftless chapter must keep normal route, got %+v", got)
+	}
+}
+
+func TestDispatcher_ResumeRecoverySurvivesSubagentBoundaries(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	state := State{
+		Progress:                   p,
+		LastCompleted:              4,
+		InProgressDraftExists:      true,
+		InProgressCheckpoint:       "edit",
+		InProgressDeAIState:        writerDeAIStateStale,
+		InProgressConsistencyValid: false,
+		InProgressWordCount:        4263,
+		InProgressWordMin:          2550,
+		InProgressWordMax:          3703,
+	}
+	dispatcher := NewDispatcher(nil, nil)
+	dispatcher.BeginResumeRecovery()
+	first := dispatcher.route(state)
+	second := dispatcher.route(state)
+	for index, got := range []*Instruction{first, second} {
+		if got == nil || !got.ResumeRecovery || !strings.Contains(got.Task, "恢复第 5 章现有草稿") {
+			t.Fatalf("recovery route %d lost durable constraints: %+v", index+1, got)
+		}
+	}
+	repeated := formatDispatchMessage(second, 2)
+	if strings.Contains(repeated, "允许先调 novel_context") ||
+		!strings.Contains(repeated, "不得退回普通写章") {
+		t.Fatalf("repeat note loosened recovery constraints: %s", repeated)
+	}
+
+	state.InProgressDraftExists = false
+	normal := dispatcher.route(state)
+	if normal == nil || normal.ResumeRecovery || dispatcher.resumeRecovery.Load() {
+		t.Fatalf("recovery lease did not clear after draft state ended: %+v", normal)
 	}
 }
 

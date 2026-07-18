@@ -20,11 +20,12 @@ import (
 
 // Instruction 指示 Host 下一步要求 Coordinator 调用的子代理与任务。
 type Instruction struct {
-	Agent   string // architect_long / architect_short / writer / editor
-	Task    string // 给子代理的任务描述
-	Reason  string // 给 Coordinator 看的理由（可选，方便调试与日志）
-	Chapter int    // writer 任务涉及的章节号（续写/重写/打磨）；0 表示不涉及（editor/architect 任务）
-	Fence   storepkg.RevisionFence
+	Agent          string // architect_long / architect_short / writer / editor
+	Task           string // 给子代理的任务描述
+	Reason         string // 给 Coordinator 看的理由（可选，方便调试与日志）
+	Chapter        int    // writer 任务涉及的章节号（续写/重写/打磨）；0 表示不涉及（editor/architect 任务）
+	ResumeRecovery bool   // durable draft recovery constraints survive repeated subagent boundaries
+	Fence          storepkg.RevisionFence
 }
 
 // State 是 Route 的输入：所有事实必须在此显式声明，禁止 Route 内部读 Store。
@@ -69,8 +70,8 @@ type State struct {
 	CompletionAuditBlocked       bool
 
 	// Resume-only Writer facts. Normal routing intentionally ignores these;
-	// DispatchFollowUp uses them once after Host.Resume so a durable draft is
-	// validated instead of being mistaken for a brand-new chapter.
+	// a Resume recovery lease keeps using them across subagent boundaries until
+	// the durable draft is committed or the workflow leaves this recovery state.
 	InProgressDraftExists      bool
 	InProgressCheckpoint       string
 	InProgressDeAIState        string
@@ -255,20 +256,16 @@ func Route(s State) *Instruction {
 	return s.nextChapterInstruction(p, "续写下一章")
 }
 
-// RouteResume refines only the first post-Resume instruction. A chapter with a
-// durable draft is recovery work, even if an interrupted weak Writer moved the
-// latest checkpoint back to "plan". Subsequent synchronous routing continues
-// through Route and its existing repeat/fencing behavior.
+// RouteResume refines routing while a Resume recovery lease is active. A
+// chapter with a durable draft is recovery work, even if an interrupted weak
+// Writer moved the latest checkpoint back to "plan".
 func RouteResume(s State) *Instruction {
 	instruction := Route(s)
-	progress := s.Progress
-	if instruction == nil || progress == nil || instruction.Agent != "writer" ||
-		progress.Flow == domain.FlowPolishing || len(progress.PendingRewrites) > 0 ||
-		progress.InProgressChapter <= 0 || instruction.Chapter != progress.InProgressChapter ||
-		!s.InProgressDraftExists {
+	if !writerResumeRouteApplicable(s, instruction) {
 		return instruction
 	}
 
+	progress := s.Progress
 	chapter := progress.InProgressChapter
 	adaptationStep := ""
 	if s.AdaptationActive {
@@ -277,7 +274,7 @@ func RouteResume(s State) *Instruction {
 	wordRepairStep := ""
 	if s.InProgressWordMin > 0 && s.InProgressWordMax >= s.InProgressWordMin && !s.InProgressWordBudgetValid {
 		wordRepairStep = fmt.Sprintf(
-			"当前草稿 %d 字，不在 %d-%d 字区间；只依据这次回读，先把多处有依据的局部删减或补足合并进一次 edit_chapter(edits=[...]) 原子调用，只处理冗余解释、重复动作或缺失的必要承接，保留全部关键情节、人物选择、情感落点和章末钩子，直到进入区间。edit_chapter 会回传最新字数，禁止为确认字数再次 read_chapter，禁止为字数整章重写。",
+			"当前草稿 %d 字，不在 %d-%d 字区间；只依据这次回读，静默选择多处有依据的局部删减或补足，下一次响应必须直接调用一次 edit_chapter(edits=[...]) 原子落盘，不要输出逐段分析或修改清单。只处理冗余解释、重复动作或缺失的必要承接，保留全部关键情节、人物选择、情感落点和章末钩子，直到进入区间。edit_chapter 会回传最新字数，禁止为确认字数再次 read_chapter，禁止为字数整章重写。",
 			s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax,
 		)
 	}
@@ -289,9 +286,18 @@ func RouteResume(s State) *Instruction {
 			s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax, s.InProgressWordBudgetValid,
 			chapter, wordRepairStep, chapter, adaptationStep,
 		),
-		Reason:  fmt.Sprintf("恢复第 %d 章已有草稿的当前验证阶段", chapter),
-		Chapter: chapter,
+		Reason:         fmt.Sprintf("恢复第 %d 章已有草稿的当前验证阶段", chapter),
+		Chapter:        chapter,
+		ResumeRecovery: true,
 	}
+}
+
+func writerResumeRouteApplicable(s State, instruction *Instruction) bool {
+	progress := s.Progress
+	return instruction != nil && progress != nil && instruction.Agent == "writer" &&
+		progress.Flow != domain.FlowPolishing && len(progress.PendingRewrites) == 0 &&
+		progress.InProgressChapter > 0 && instruction.Chapter == progress.InProgressChapter &&
+		s.InProgressDraftExists
 }
 
 func resumeFact(value string) string {

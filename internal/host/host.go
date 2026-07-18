@@ -756,6 +756,7 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	h.refreshWriterRestore()
 	h.observer.setAborting(false)
 	h.router.ResetRepeat()
+	h.router.BeginResumeRecovery()
 	h.router.Enable()
 	runCtx, err := h.normalFlowContext(context.Background())
 	if err != nil {

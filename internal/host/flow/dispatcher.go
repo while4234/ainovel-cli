@@ -17,7 +17,8 @@ type Dispatcher struct {
 	coordinator *agentcore.Agent
 	store       *storepkg.Store
 
-	enabled atomic.Bool // 由 Host 控制是否派发（启动完成前应关）
+	enabled        atomic.Bool // 由 Host 控制是否派发（启动完成前应关）
+	resumeRecovery atomic.Bool
 
 	// 重复追踪：记住最近一次派发的 Agent+Task 与连续下达次数。
 	// 同一指令重复计算（子代理返回后状态未推进，Route 重算结果不变）不静默吞掉，
@@ -74,6 +75,11 @@ func (d *Dispatcher) DispatchFollowUp() {
 	d.dispatch(true)
 }
 
+// BeginResumeRecovery keeps durable-draft recovery routing active across every
+// subagent boundary in the resumed run. It clears itself when the draft is
+// committed or the workflow no longer matches the recovery state.
+func (d *Dispatcher) BeginResumeRecovery() { d.resumeRecovery.Store(true) }
+
 func (d *Dispatcher) dispatch(asFollowUp bool) {
 	if !d.enabled.Load() {
 		return
@@ -85,12 +91,7 @@ func (d *Dispatcher) dispatch(asFollowUp bool) {
 	if !state.RevisionActive && d.store != nil && d.store.RunMeta.PlanningReviewPending() {
 		return
 	}
-	var inst *Instruction
-	if asFollowUp {
-		inst = RouteResume(state)
-	} else {
-		inst = Route(state)
-	}
+	inst := d.route(state)
 	if inst == nil {
 		return
 	}
@@ -113,6 +114,17 @@ func (d *Dispatcher) dispatch(asFollowUp bool) {
 	if err := d.store.Revisions.WithFence(fence, func() error { return d.dispatchFenced(inst, fence, asFollowUp) }); err != nil {
 		slog.Warn("flow router discarded stale dispatch", "module", "host.flow", "err", err)
 	}
+}
+
+func (d *Dispatcher) route(state State) *Instruction {
+	if !d.resumeRecovery.Load() {
+		return Route(state)
+	}
+	inst := RouteResume(state)
+	if !writerResumeRouteApplicable(state, inst) {
+		d.resumeRecovery.Store(false)
+	}
+	return inst
 }
 
 func (d *Dispatcher) dispatchFenced(inst *Instruction, fence storepkg.RevisionFence, asFollowUp bool) error {
@@ -150,7 +162,11 @@ func (d *Dispatcher) dispatchFenced(inst *Instruction, fence storepkg.RevisionFe
 func formatDispatchMessage(inst *Instruction, n int) string {
 	msg := FormatMessage(inst)
 	if n > 1 {
-		msg += fmt.Sprintf("\n（注意：本指令为第 %d 次下达——上次派发后路由事实未变化。本次允许先调 novel_context 核对事实，再裁定照常执行或改派其它子代理。）", n)
+		if inst.ResumeRecovery {
+			msg += fmt.Sprintf("\n（注意：本恢复指令为第 %d 次下达——上次子代理结束后持久化草稿仍未提交，恢复约束继续完整生效；不得退回普通写章、不得放宽回读或上下文限制。）", n)
+		} else {
+			msg += fmt.Sprintf("\n（注意：本指令为第 %d 次下达——上次派发后路由事实未变化。本次允许先调 novel_context 核对事实，再裁定照常执行或改派其它子代理。）", n)
+		}
 	}
 	return msg
 }
@@ -184,6 +200,7 @@ func (d *Dispatcher) trackRepeat(next *Instruction) int {
 // ResetRepeat 清空重复追踪。Resume / 新 Start 时 Host 调用，
 // 确保恢复或新建后首条指令以"第 1 次"语义下达。
 func (d *Dispatcher) ResetRepeat() {
+	d.resumeRecovery.Store(false)
 	d.lastMu.Lock()
 	defer d.lastMu.Unlock()
 	d.lastSent = nil
