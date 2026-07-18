@@ -12,6 +12,7 @@ import (
 // OutlineStore 管理故事前提、大纲（扁平/分层）和指南针。
 type OutlineStore struct {
 	io                 *IO
+	foundation         *FoundationStore
 	identity           structureIdentity
 	migration          *structureMigration
 	withLegacyMutation func(string, *structureMigration, func() error) error
@@ -27,11 +28,18 @@ func NewOutlineStore(io *IO, identity structureIdentity, migrations ...*structur
 
 // SavePremise 保存故事前提到 premise.md。
 func (s *OutlineStore) SavePremise(content string) error {
+	if s.foundation != nil {
+		return s.foundation.UpdatePremise(content)
+	}
 	return s.io.WriteMarkdown("premise.md", content)
 }
 
 // LoadPremise 读取 premise.md。不存在时返回空字符串。
 func (s *OutlineStore) LoadPremise() (string, error) {
+	if s.foundation != nil {
+		foundation, err := s.foundation.Load()
+		return foundation.Premise, err
+	}
 	data, err := s.io.ReadFile("premise.md")
 	if os.IsNotExist(err) {
 		return "", nil

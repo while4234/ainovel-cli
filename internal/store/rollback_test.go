@@ -1,12 +1,15 @@
 package store
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
@@ -249,6 +252,299 @@ func TestRollbackSafeRemoveRejectsEscapingPaths(t *testing.T) {
 	}
 }
 
+func TestRollbackToDraftRemovesCanonicalFoundationAndProjections(t *testing.T) {
+	dir := t.TempDir()
+	st := NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status: domain.PlanningReviewStatusPending,
+		Kind:   domain.PlanningReviewKindBlueprint,
+		Brief:  "foundation rollback brief",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Foundation.SaveCAS(domain.StoryFoundation{
+		Premise:    "rollback premise",
+		Characters: []domain.Character{{Name: "Lin"}},
+		WorldRules: []domain.WorldRule{{Rule: "No reset"}},
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := st.RollbackPreview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.CanRollback || preview.TargetStage != domain.RollbackStageDraft {
+		t.Fatalf("rollback preview = %+v", preview)
+	}
+	if _, err := st.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: preview.PreviewHash}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range append([]string{foundationCanonicalFile, foundationManifestFile, foundationJournalFile}, foundationProjectionPaths()...) {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Fatalf("foundation artifact remains after rollback: %s (%v)", rel, err)
+		}
+	}
+	loaded, err := st.Foundation.Load()
+	if err != nil || loaded.Revision != 0 || loaded.Premise != "" {
+		t.Fatalf("foundation after rollback = %+v, %v", loaded, err)
+	}
+}
+
+func TestRollbackSerializesWithConcurrentFoundationSave(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status: domain.PlanningReviewStatusPending,
+		Kind:   domain.PlanningReviewKindBlueprint,
+		Brief:  "concurrent rollback brief",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	base, err := store.Foundation.SaveCAS(domain.StoryFoundation{
+		Premise:    "base premise",
+		Characters: []domain.Character{{Name: "Lin"}},
+		WorldRules: []domain.WorldRule{{Rule: "No reset"}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := store.RollbackPreview()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	savePaused := make(chan struct{})
+	releaseSave := make(chan struct{})
+	var pauseOnce sync.Once
+	store.Foundation.failpoint = func(stage string) error {
+		if stage == foundationFailAfterJournal {
+			pauseOnce.Do(func() { close(savePaused) })
+			<-releaseSave
+		}
+		return nil
+	}
+	saveDone := make(chan error, 1)
+	go func() {
+		candidate := domain.CloneStoryFoundation(base)
+		candidate.Premise = "concurrent candidate"
+		_, saveErr := store.Foundation.SaveCAS(candidate, base.Revision)
+		saveDone <- saveErr
+	}()
+	select {
+	case <-savePaused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("foundation save did not reach journal barrier")
+	}
+
+	rollbackStarted := make(chan struct{})
+	var rollbackStartedOnce sync.Once
+	store.Foundation.lifecycleHook = func(stage string) {
+		if stage == foundationLifecycleRollbackStarted {
+			rollbackStartedOnce.Do(func() { close(rollbackStarted) })
+		}
+	}
+	rollbackDone := make(chan error, 1)
+	go func() {
+		_, rollbackErr := store.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: preview.PreviewHash})
+		rollbackDone <- rollbackErr
+	}()
+	select {
+	case <-rollbackStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("rollback did not enter the foundation lifecycle")
+	}
+	close(releaseSave)
+	if err := <-saveDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-rollbackDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("rollback deadlocked with foundation save")
+	}
+
+	for _, rel := range append([]string{foundationCanonicalFile, foundationManifestFile, foundationJournalFile, foundationStageDir}, foundationProjectionPaths()...) {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Fatalf("foundation artifact remains after concurrent save and rollback: %s (%v)", rel, err)
+		}
+	}
+}
+
+func TestRollbackFirstRejectsFoundationSaveCASEnteredBeforeRollback(t *testing.T) {
+	store, dir, base, preview := newFoundationRollbackFixture(t)
+	mutationEntered := make(chan struct{})
+	mutationMayLock := make(chan struct{})
+	rollbackLocked := make(chan struct{})
+	releaseRollback := make(chan struct{})
+	var mutationOnce sync.Once
+	var rollbackOnce sync.Once
+	store.Foundation.lifecycleHook = func(stage string) {
+		switch stage {
+		case foundationLifecycleMutationEntered:
+			mutationOnce.Do(func() { close(mutationEntered) })
+			<-mutationMayLock
+		case foundationLifecycleRollbackLocked:
+			rollbackOnce.Do(func() { close(rollbackLocked) })
+			<-releaseRollback
+		}
+	}
+
+	saveDone := make(chan error, 1)
+	go func() {
+		candidate := domain.CloneStoryFoundation(base)
+		candidate.Premise = "queued before rollback"
+		_, saveErr := store.Foundation.SaveCAS(candidate, base.Revision)
+		saveDone <- saveErr
+	}()
+	waitFoundationBarrier(t, mutationEntered, "foundation save did not capture its pre-rollback epoch")
+
+	rollbackDone := make(chan error, 1)
+	go func() {
+		_, rollbackErr := store.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: preview.PreviewHash})
+		rollbackDone <- rollbackErr
+	}()
+	waitFoundationBarrier(t, rollbackLocked, "rollback did not acquire the foundation lifecycle lock")
+	close(mutationMayLock)
+	close(releaseRollback)
+	if err := <-rollbackDone; err != nil {
+		t.Fatal(err)
+	}
+	assertFoundationLifecycleConflict(t, <-saveDone, false)
+	assertFoundationArtifactsAbsent(t, dir)
+
+	store.Foundation.lifecycleHook = nil
+	postRollback, err := store.Foundation.SaveCAS(domain.StoryFoundation{Premise: "post rollback"}, 0)
+	if err != nil || postRollback.Revision != 1 || postRollback.Premise != "post rollback" {
+		t.Fatalf("post-rollback CAS save = %+v, %v", postRollback, err)
+	}
+}
+
+func TestRollbackFirstRejectsFoundationSectionUpdateEnteredDuringRollback(t *testing.T) {
+	store, dir, _, preview := newFoundationRollbackFixture(t)
+	rollbackLocked := make(chan struct{})
+	releaseRollback := make(chan struct{})
+	mutationEntered := make(chan struct{})
+	var rollbackOnce sync.Once
+	var mutationOnce sync.Once
+	store.Foundation.lifecycleHook = func(stage string) {
+		switch stage {
+		case foundationLifecycleRollbackLocked:
+			rollbackOnce.Do(func() { close(rollbackLocked) })
+			<-releaseRollback
+		case foundationLifecycleMutationEntered:
+			mutationOnce.Do(func() { close(mutationEntered) })
+		}
+	}
+
+	rollbackDone := make(chan error, 1)
+	go func() {
+		_, rollbackErr := store.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: preview.PreviewHash})
+		rollbackDone <- rollbackErr
+	}()
+	waitFoundationBarrier(t, rollbackLocked, "rollback did not acquire the foundation lifecycle lock")
+
+	updateDone := make(chan error, 1)
+	go func() { updateDone <- store.Outline.SavePremise("queued during rollback") }()
+	waitFoundationBarrier(t, mutationEntered, "section update did not capture its rollback-active epoch")
+	close(releaseRollback)
+	if err := <-rollbackDone; err != nil {
+		t.Fatal(err)
+	}
+	assertFoundationLifecycleConflict(t, <-updateDone, true)
+	assertFoundationArtifactsAbsent(t, dir)
+
+	store.Foundation.lifecycleHook = nil
+	if err := store.Outline.SavePremise("post rollback section"); err != nil {
+		t.Fatalf("post-rollback section save: %v", err)
+	}
+	loaded, err := store.Foundation.Load()
+	if err != nil || loaded.Revision != 1 || loaded.Premise != "post rollback section" {
+		t.Fatalf("post-rollback foundation = %+v, %v", loaded, err)
+	}
+}
+
+func newFoundationRollbackFixture(t *testing.T) (*Store, string, domain.StoryFoundation, domain.RollbackPreview) {
+	t.Helper()
+	dir := t.TempDir()
+	store := NewStore(dir)
+	if err := store.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status: domain.PlanningReviewStatusPending,
+		Kind:   domain.PlanningReviewKindBlueprint,
+		Brief:  "foundation lifecycle rollback brief",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	base, err := store.Foundation.SaveCAS(domain.StoryFoundation{
+		Premise:    "base premise",
+		Characters: []domain.Character{{Name: "Lin"}},
+		WorldRules: []domain.WorldRule{{Rule: "No reset"}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := store.RollbackPreview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.CanRollback || preview.TargetStage != domain.RollbackStageDraft {
+		t.Fatalf("rollback preview = %+v", preview)
+	}
+	return store, dir, base, preview
+}
+
+func waitFoundationBarrier(t *testing.T, barrier <-chan struct{}, failure string) {
+	t.Helper()
+	select {
+	case <-barrier:
+	case <-time.After(5 * time.Second):
+		t.Fatal(failure)
+	}
+}
+
+func assertFoundationLifecycleConflict(t *testing.T, err error, startedDuringRollback bool) {
+	t.Helper()
+	var conflict *FoundationLifecycleConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("foundation mutation error = %T %v, want lifecycle conflict", err, err)
+	}
+	if conflict.StartedDuringRollback != startedDuringRollback {
+		t.Fatalf("lifecycle conflict = %+v, started during rollback want %t", conflict, startedDuringRollback)
+	}
+	if startedDuringRollback {
+		if conflict.StartedEpoch%2 == 0 {
+			t.Fatalf("rollback-active mutation generation = %+v, want odd generation", conflict)
+		}
+		return
+	}
+	if conflict.StartedEpoch%2 != 0 {
+		t.Fatalf("pre-rollback mutation generation = %+v, want even generation", conflict)
+	}
+	if conflict.StartedEpoch == conflict.CurrentEpoch {
+		t.Fatalf("lifecycle conflict epochs = %+v, want advanced epoch", conflict)
+	}
+}
+
+func assertFoundationArtifactsAbsent(t *testing.T, dir string) {
+	t.Helper()
+	for _, rel := range append([]string{foundationCanonicalFile, foundationManifestFile, foundationJournalFile, foundationStageDir}, foundationProjectionPaths()...) {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Fatalf("foundation artifact remains after rollback: %s (%v)", rel, err)
+		}
+	}
+}
+
 func TestRollbackCompletedProjectFixtureDoesNotDeleteOutsideWhitelist(t *testing.T) {
 	fixture := strings.TrimSpace(os.Getenv("AINOVEL_ROLLBACK_FIXTURE_OUTPUT"))
 	if fixture == "" {
@@ -322,6 +618,10 @@ func rollbackFixtureDeletionAllowed(rel string) bool {
 	}
 	allowedExact := map[string]bool{
 		"premise.md":                                  true,
+		"story_foundation.json":                       true,
+		"planned_relationships.json":                  true,
+		"planned_relationships.md":                    true,
+		"meta/foundation":                             true,
 		"outline.json":                                true,
 		"outline.md":                                  true,
 		"layered_outline.json":                        true,

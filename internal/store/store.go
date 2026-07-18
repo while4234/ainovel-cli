@@ -24,6 +24,7 @@ type Store struct {
 	commandRecoveryErr               error
 	publicationRecoveryErr           error
 	manuscriptPublicationRecoveryErr error
+	foundationRecoveryErr            error
 	manuscriptPublicationFailpoint   func(string) error
 
 	Progress               *ProgressStore
@@ -47,6 +48,7 @@ type Store struct {
 	Revisions              *RevisionStore
 	ManuscriptRevisions    *ManuscriptRevisionStore
 	OriginalPlanningAudits *OriginalPlanningAuditStore
+	Foundation             *FoundationStore
 
 	crossMu sync.Mutex // 保护跨域原子操作
 }
@@ -60,6 +62,8 @@ func NewStore(dir string) *Store {
 	publicationAuthorityRecoveryErr := recoverExpansionAuthorityProjectForOutput(dir, revisions)
 	migration.recoverWithRevisionFence = revisions.withLegacyMutation
 	io := newIO(dir)
+	foundation := newFoundationStore(io)
+	foundationRecoveryErr := foundation.Recover()
 	outline := NewOutlineStore(io, identity, migration)
 	outline.withLegacyMutation = revisions.withLegacyMigrationMutation
 	adaptation := NewAdaptationStore(newIO(dir), identity, migration)
@@ -86,7 +90,11 @@ func NewStore(dir string) *Store {
 		Revisions:              revisions,
 		ManuscriptRevisions:    NewManuscriptRevisionStore(newIO(dir), revisions),
 		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir), outline),
+		Foundation:             foundation,
 	}
+	store.Outline.foundation = foundation
+	store.Characters.foundation = foundation
+	store.World.foundation = foundation
 	store.Progress.withLegacyMutation = revisions.withLegacyMigrationMutation
 	store.Drafts.withFormalMutation = revisions.withLegacyMigrationMutation
 	store.Summaries.withFormalMutation = revisions.withLegacyMigrationMutation
@@ -106,6 +114,7 @@ func NewStore(dir string) *Store {
 	store.authorityRecoveryErr = authorityRecoveryErr
 	store.publicationAuthorityRecoveryErr = publicationAuthorityRecoveryErr
 	store.structureMigrationRecoveryErr = structureRecoveryErr
+	store.foundationRecoveryErr = foundationRecoveryErr
 	store.refreshRecoveryErrorLocked()
 	// Recover before constructing cache-bearing sub-stores such as checkpoints;
 	// otherwise they could retain the pre-transaction file generation in memory.
@@ -148,6 +157,13 @@ func (s *Store) RecoverStructureMigration() error {
 		}
 		s.manuscriptPublicationRecoveryErr = nil
 	}
+	if s.Foundation != nil {
+		s.foundationRecoveryErr = s.Foundation.Recover()
+		if s.foundationRecoveryErr != nil {
+			s.refreshRecoveryErrorLocked()
+			return s.foundationRecoveryErr
+		}
+	}
 	s.authorityRecoveryErr = recoverExpansionAuthorityGlobal()
 	s.publicationAuthorityRecoveryErr = recoverExpansionAuthorityProjectForOutput(s.dir, s.Revisions)
 	s.structureMigrationRecoveryErr = recoverStructureMigrationIfPending(s.Revisions, s.Outline.migration, "recover pending structure migration")
@@ -158,6 +174,7 @@ func (s *Store) RecoverStructureMigration() error {
 		s.publicationRecoveryErr,
 		s.manuscriptPublicationRecoveryErr,
 		s.structureMigrationRecoveryErr,
+		s.foundationRecoveryErr,
 	)
 	if projectRecoveryErr != nil {
 		if s.Checkpoints != nil {
@@ -217,6 +234,7 @@ func (s *Store) refreshRecoveryErrorLocked() {
 		s.publicationRecoveryErr,
 		s.manuscriptPublicationRecoveryErr,
 		s.structureMigrationRecoveryErr,
+		s.foundationRecoveryErr,
 	)
 }
 
@@ -297,7 +315,7 @@ func (s *Store) FoundationMissing() []string {
 func (s *Store) Init() error {
 	return s.Progress.io.EnsureDirs([]string{
 		"chapters", "summaries", "drafts", "reviews", "meta", "meta/runtime", "meta/runtime/tasks", "meta/sessions", "meta/sessions/agents",
-		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/continuation", "meta/revisions", "meta/revisions/manuscript", "meta/revisions/content/sha256", "meta/deai", "meta/deai/checks", "meta/original_planning",
+		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/continuation", "meta/foundation", "meta/revisions", "meta/revisions/manuscript", "meta/revisions/content/sha256", "meta/deai", "meta/deai/checks", "meta/original_planning",
 	})
 }
 

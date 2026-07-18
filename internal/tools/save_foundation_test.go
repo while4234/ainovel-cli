@@ -22,6 +22,53 @@ func TestSaveFoundationSchemaAllowsMissingType(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationPersistsPlannedRelationshipsByStableIDOnly(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Characters.Save([]domain.Character{{ID: "lin", Name: "Lin"}, {ID: "mara", Name: "Mara"}}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := []domain.RelationshipEntry{{CharacterA: "Lin", CharacterB: "Mara", Relation: "met", Chapter: 3}}
+	if err := st.World.SaveRelationships(runtime); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{
+		"type": "planned_relationships",
+		"content": []map[string]any{{
+			"source_character_id": "lin",
+			"target_character_id": "mara",
+			"type":                "ally",
+			"direction":           "mutual",
+			"status":              "planned",
+		}},
+	})
+	if _, err := NewSaveFoundationTool(st).Execute(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+	foundation, err := st.Foundation.Load()
+	if err != nil || len(foundation.Relationships) != 1 {
+		t.Fatalf("planned relationships = %+v, %v", foundation.Relationships, err)
+	}
+	gotRuntime, err := st.World.LoadRelationships()
+	if err != nil || len(gotRuntime) != 1 || gotRuntime[0].Chapter != 3 {
+		t.Fatalf("runtime relationship state changed: %+v, %v", gotRuntime, err)
+	}
+
+	invalid, _ := json.Marshal(map[string]any{
+		"type": "planned_relationships",
+		"content": []map[string]any{{
+			"source_character_id": "Lin",
+			"target_character_id": "Mara",
+			"type":                "ally",
+		}},
+	})
+	if _, err := NewSaveFoundationTool(st).Execute(context.Background(), invalid); err == nil {
+		t.Fatal("character names were accepted in place of stable IDs")
+	}
+}
+
 func TestSaveFoundationBlocksDirectFormalOutlineWritesDuringActiveRevision(t *testing.T) {
 	st := store.NewStore(testStoreDir(t))
 	if err := st.Init(); err != nil {

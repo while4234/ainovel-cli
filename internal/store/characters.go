@@ -10,8 +10,9 @@ import (
 
 // CharacterStore 管理角色档案和状态快照。
 type CharacterStore struct {
-	io      *IO
-	outline *OutlineStore // 只读依赖，用于快照遍历
+	io         *IO
+	outline    *OutlineStore // 只读依赖，用于快照遍历
+	foundation *FoundationStore
 }
 
 func NewCharacterStore(io *IO, outline *OutlineStore) *CharacterStore {
@@ -20,6 +21,9 @@ func NewCharacterStore(io *IO, outline *OutlineStore) *CharacterStore {
 
 // Save 同时保存 characters.json 和 characters.md（原子写入）。
 func (s *CharacterStore) Save(chars []domain.Character) error {
+	if s.foundation != nil {
+		return s.foundation.UpdateCharacters(chars)
+	}
 	return s.io.WithWriteLock(func() error {
 		if err := s.io.WriteJSONUnlocked("characters.json", chars); err != nil {
 			return err
@@ -30,6 +34,10 @@ func (s *CharacterStore) Save(chars []domain.Character) error {
 
 // Load 从 characters.json 读取角色档案。
 func (s *CharacterStore) Load() ([]domain.Character, error) {
+	if s.foundation != nil {
+		foundation, err := s.foundation.Load()
+		return foundation.Characters, err
+	}
 	var chars []domain.Character
 	if err := s.io.ReadJSON("characters.json", &chars); err != nil {
 		if os.IsNotExist(err) {
