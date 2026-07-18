@@ -144,18 +144,38 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 			"hint":    "该章节尚未写入，如需写作请先调用 draft_chapter",
 		})
 	}
-	originalRunes := len([]rune(content))
+	fullContent := content
+	originalRunes := len([]rune(fullContent))
 	var truncated bool
 	if a.MaxRunes > 0 {
 		content, truncated = truncateReadText(content, a.MaxRunes)
 	}
 
 	result := map[string]any{
-		"chapter":    a.Chapter,
-		"title":      title,
-		"source":     a.Source,
-		"content":    content,
-		"word_count": originalRunes,
+		"chapter":        a.Chapter,
+		"title":          title,
+		"source":         a.Source,
+		"content":        content,
+		"word_count":     originalRunes,
+		"content_sha256": store.TextSHA256(fullContent),
+	}
+	if a.Source == "draft" {
+		final, finalErr := t.store.Drafts.LoadChapterText(a.Chapter)
+		if finalErr != nil {
+			return nil, fmt.Errorf("compare draft with final chapter %d: %w", a.Chapter, finalErr)
+		}
+		if final != "" {
+			differs := fullContent != final
+			result["final_sha256"] = store.TextSHA256(final)
+			result["differs_from_final"] = differs
+			if differs {
+				result["polish_state"] = "modified"
+				result["polish_hint"] = "当前草稿已包含相对终稿的打磨改动；恢复流程应保留该版本并进入同版校验，不要为满足修改次数重复改稿。"
+			} else {
+				result["polish_state"] = "unchanged"
+				result["polish_hint"] = "当前草稿与终稿相同；打磨任务需先依据 rewrite_brief 做局部实质改动。"
+			}
+		}
 	}
 	if truncated {
 		result["truncated"] = true

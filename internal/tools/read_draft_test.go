@@ -71,6 +71,76 @@ func TestReadChapterDraft(t *testing.T) {
 	}
 }
 
+func TestReadChapterDraftReportsPolishDifference(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Drafts.SaveFinalChapter(3, "终稿含有校对残留。加粗去掉正文。"); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(3, "终稿含有校对残留。正文。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	raw, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(`{"chapter":3,"source":"draft"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		ContentSHA256    string `json:"content_sha256"`
+		FinalSHA256      string `json:"final_sha256"`
+		DiffersFromFinal bool   `json:"differs_from_final"`
+		PolishState      string `json:"polish_state"`
+		PolishHint       string `json:"polish_hint"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !payload.DiffersFromFinal || payload.PolishState != "modified" {
+		t.Fatalf("draft difference was not exposed: %+v", payload)
+	}
+	if payload.ContentSHA256 == "" || payload.FinalSHA256 == "" || payload.ContentSHA256 == payload.FinalSHA256 {
+		t.Fatalf("expected distinct draft/final hashes: %+v", payload)
+	}
+	if !strings.Contains(payload.PolishHint, "不要为满足修改次数重复改稿") {
+		t.Fatalf("missing recovery guidance: %q", payload.PolishHint)
+	}
+}
+
+func TestReadChapterDraftReportsUnchangedPolishState(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	const content = "草稿与终稿完全相同。"
+	if err := s.Drafts.SaveFinalChapter(3, content); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(3, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	raw, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(`{"chapter":3,"source":"draft"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		ContentSHA256    string `json:"content_sha256"`
+		FinalSHA256      string `json:"final_sha256"`
+		DiffersFromFinal bool   `json:"differs_from_final"`
+		PolishState      string `json:"polish_state"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload.DiffersFromFinal || payload.PolishState != "unchanged" || payload.ContentSHA256 != payload.FinalSHA256 {
+		t.Fatalf("unchanged draft state was not exposed: %+v", payload)
+	}
+}
+
 func TestReadChapterDialogue(t *testing.T) {
 	dir := testStoreDir(t)
 	store := store.NewStore(dir)
