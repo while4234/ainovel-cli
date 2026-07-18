@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-18 `(pending)` `fix: preserve targeted polish at word gate`: when
+- 2026-07-18 `f9c7738` `fix: preserve targeted polish at word gate`: when
   an already-completed chapter misses its configured word range during
   polishing, the structured rejection now tells Writer to retain the complete
   draft and make local `edit_chapter` expansions or cuts, then rerun the normal
