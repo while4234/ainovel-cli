@@ -46,6 +46,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `084c50e` `fix: source-bound stored draft recovery`: a restarted
+  normal-writing chapter with an existing uncommitted draft now enters a
+  dedicated `recovering` context profile. The package keeps the current
+  outline, signed chapter contract, draft metadata, user rules, compact
+  character/style evidence, consistency/quality/anti-AI constraints, and word
+  budget; it omits drafting-only chapter plans, future promises, repeated
+  continuity memory, and simulation material because the full current draft is
+  read separately. The source package is regression-bounded to 16 KiB. This
+  addresses the live intermediate-state loop where full chapter-41 draft plus
+  normal drafting context produced 71-75 KiB requests. Tools/Agents tests and
+  vet passed.
 - 2026-07-18 `c645a63` `fix: stop prior chapter reread loops`: the Writer-only
   prior-chapter wrapper now replaces the generic truncated-text instruction to
   "reread with a higher limit" with an explicit bounded-continuity receipt:
