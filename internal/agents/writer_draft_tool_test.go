@@ -111,6 +111,68 @@ func TestWriterReadChapterToolBoundsPriorContinuityTail(t *testing.T) {
 	}
 }
 
+func TestWriterReadChapterToolInfersCurrentDraftAndSource(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 50); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.StartChapter(41); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	if err := st.Drafts.SaveDraft(41, "current stored draft"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	tool := newWriterReadChapterTool(tools.NewReadChapterTool(st), st)
+	raw, err := tool.Execute(t.Context(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Chapter int    `json:"chapter"`
+		Source  string `json:"source"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Chapter != 41 || payload.Source != "draft" || payload.Content != "current stored draft" {
+		t.Fatalf("inferred current read=%+v", payload)
+	}
+}
+
+func TestWriterChapterInferenceToolAddsActiveChapter(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 50); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.StartChapter(41); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	if err := st.Drafts.SaveDraft(41, strings.Repeat("自然叙事句子。", 500)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	tool := newWriterChapterInferenceTool(tools.NewCheckDeAITool(st), st)
+	raw, err := tool.Execute(t.Context(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Chapter int `json:"chapter"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Chapter != 41 {
+		t.Fatalf("inferred chapter=%d, want 41", payload.Chapter)
+	}
+}
+
 func TestCoordinatorContextToolDefaultsToProgressStatus(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
