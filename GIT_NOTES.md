@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `fa6437f` `fix: evict persisted writer payloads`: Writer phase
+  cleanup now removes completed draft/edit/repair prose from historical tool
+  arguments after the Store confirms the write, clears matching old reasoning,
+  skips results already compacted by an earlier phase, and repairs legacy
+  sessions where only the result had been cleared. This addresses live
+  48,536 -> 63,763 and 55,209 -> 64,457 byte regressions that result-only
+  cleanup could not affect. Tests cover whole-payload reduction, idempotence,
+  legacy cleanup, proactive validation transitions, and forced recovery; the
+  full Agent suite and vet passed.
 - 2026-07-18 `560b413` `fix: advance writer context by validation phase`:
   Writer now commits a deterministic phase transition as soon as consistency,
   adaptation, or de-AI validation returns. It keeps the two newest useful
