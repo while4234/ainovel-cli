@@ -190,7 +190,7 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	if budgetRejection, err := t.checkWordBudgetGate(a.Chapter, wordCount); err != nil {
 		return nil, err
 	} else if budgetRejection != nil {
-		return json.Marshal(budgetRejection.result())
+		return json.Marshal(budgetRejection.result(domain.FlowWriting))
 	}
 
 	now := time.Now().Format(time.RFC3339)
@@ -512,7 +512,17 @@ func (r wordBudgetGateRejection) message() string {
 	)
 }
 
-func (r wordBudgetGateRejection) result() map[string]any {
+func (r wordBudgetGateRejection) result(flow domain.FlowState) map[string]any {
+	nextStep := fmt.Sprintf(
+		"不要再次调用 commit_chapter。请先调用 draft_chapter(mode=\"write\", chapter=%d) 整章重写到 %d-%d 字，再重新 read_chapter(source=\"draft\")、check_consistency、commit_chapter。",
+		r.chapter, r.minWords, r.maxWords,
+	)
+	if flow == domain.FlowPolishing {
+		nextStep = fmt.Sprintf(
+			"不要再次调用 commit_chapter，也不要丢弃当前完整草稿或无结构理由整章重写。请保留现有正文，只用 edit_chapter 对相关段落做局部扩写或删减，使第 %d 章进入 %d-%d 字；随后 read_chapter(source=\"draft\") 回读同一草稿，并重新执行 check_consistency、check_de_ai，全部通过后再提交。",
+			r.chapter, r.minWords, r.maxWords,
+		)
+	}
 	return map[string]any{
 		"committed":            false,
 		"chapter":              r.chapter,
@@ -527,10 +537,7 @@ func (r wordBudgetGateRejection) result() map[string]any {
 			"remaining_target_words": r.remainingTargetWords,
 			"remaining_chapters":     r.remainingChapters,
 		},
-		"next_step": fmt.Sprintf(
-			"不要再次调用 commit_chapter。请先调用 draft_chapter(mode=\"write\", chapter=%d) 整章重写到 %d-%d 字，再重新 read_chapter(source=\"draft\")、check_consistency、commit_chapter。",
-			r.chapter, r.minWords, r.maxWords,
-		),
+		"next_step": nextStep,
 	}
 }
 
@@ -632,7 +639,7 @@ func (t *CommitChapterTool) executeRewriteCommit(
 	if budgetRejection, err := t.checkWordBudgetGate(chapter, wordCount); err != nil {
 		return nil, err
 	} else if budgetRejection != nil {
-		return json.Marshal(budgetRejection.result())
+		return json.Marshal(budgetRejection.result(progress.Flow))
 	}
 
 	// 3. 覆盖终稿

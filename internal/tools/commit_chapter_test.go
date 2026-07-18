@@ -273,6 +273,56 @@ func TestCommitChapterRejectsNonAdaptationOutsideWordBudget(t *testing.T) {
 	}
 }
 
+func TestCommitChapterPolishBudgetRejectionPreservesTargetedEdits(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 2); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	budget, _ := domain.NewWordBudgetFromTarget(10000, domain.WordBudgetSourcePrompt)
+	planned := budget.WithPlannedChapters(2)
+	if err := s.RunMeta.SetWordBudget(&planned); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	original := strings.Repeat("原", 1000)
+	if err := s.Drafts.SaveFinalChapter(1, original); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, original+"改"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := s.Progress.MarkChapterComplete(1, len([]rune(original)), "", ""); err != nil {
+		t.Fatalf("MarkChapterComplete: %v", err)
+	}
+	if err := s.Progress.SetPendingRewrites([]int{1}, "局部打磨"); err != nil {
+		t.Fatalf("SetPendingRewrites: %v", err)
+	}
+	if err := s.Progress.SetFlow(domain.FlowPolishing); err != nil {
+		t.Fatalf("SetFlow: %v", err)
+	}
+
+	raw, err := NewCommitChapterTool(s).Execute(context.Background(), commitChapterArgs(t, 1))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	next, _ := result["next_step"].(string)
+	for _, want := range []string{"保留现有正文", "edit_chapter", `read_chapter(source="draft")`, "check_de_ai"} {
+		if !strings.Contains(next, want) {
+			t.Fatalf("polish next_step missing %q: %q", want, next)
+		}
+	}
+	if strings.Contains(next, `请先调用 draft_chapter(mode="write"`) {
+		t.Fatalf("polish next_step must not force a full rewrite: %q", next)
+	}
+}
+
 // TestCommitChapterUpdatesCastLedger 验证：commit_chapter 把本章 characters 累加进 cast_ledger，
 // cast_intros 提供的 brief_role 被采用，且 characters.json 中的核心角色不进入 ledger。
 func TestCommitChapterUpdatesCastLedger(t *testing.T) {

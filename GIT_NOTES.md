@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `(pending)` `fix: preserve targeted polish at word gate`: when
+  an already-completed chapter misses its configured word range during
+  polishing, the structured rejection now tells Writer to retain the complete
+  draft and make local `edit_chapter` expansions or cuts, then rerun the normal
+  gates. It no longer orders a whole-chapter rewrite for a small length delta;
+  normal first-pass creation keeps the existing strict whole-draft guidance.
+  Focused five-run regressions, full Tools tests, vet, and diff checks passed.
 - 2026-07-18 `c691a6c` `fix: sync canonical chapter edits`: `edit_chapter`
   now synchronizes the migration-aware canonical draft before and after the
   legacy-path edit operation. Previously the tool reported a successful diff
