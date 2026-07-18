@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `8277ee3` `fix: recover at exact production context boundary`:
+  the exact 60-KiB byte guard now reports agentcore's recoverable context
+  overflow sentinel after recording its rejected-budget diagnostic. Agentcore
+  therefore force-applies Writer phase compaction and retries once instead of
+  terminating the subagent before the token-window manager notices pressure.
+  Exact under/over-boundary and phase-compaction regressions passed.
 - 2026-07-18 `fa8cd158` `fix: compact writer results by validation phase`:
   Writer projection now retains the two most recent distinct tool results. Once
   consistency/de-AI validation advances, earlier chapter-context and draft
