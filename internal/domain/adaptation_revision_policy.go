@@ -640,6 +640,105 @@ func ValidateAdaptationRevisionPlan(base AdaptationPlan, candidate AdaptationPla
 	return validateAdaptationChapterRevisionContracts(base, candidate)
 }
 
+// ValidateAdaptationRevisionPreviewCandidate validates the complete candidate
+// persisted in a service receipt against its durable base and source manifest.
+// Stage-specific structure skeletons are validated later when they are
+// submitted; a preview may still contain the currently approved detail facts.
+func ValidateAdaptationRevisionPreviewCandidate(
+	base AdaptationPlan,
+	candidate AdaptationPlan,
+	manifest *AdaptationSourceManifest,
+	impact RevisionImpact,
+) error {
+	if err := impact.Validate(); err != nil {
+		return fmt.Errorf("adaptation revision preview impact is invalid: %w", err)
+	}
+	if len(candidate.Chapters) == 0 || len(candidate.Volumes) == 0 {
+		return fmt.Errorf("adaptation revision preview candidate requires chapters and volumes")
+	}
+	if err := ValidateAdaptationRevisionPlan(base, candidate, manifest); err != nil {
+		return err
+	}
+	baseByID := make(map[string]AdaptationChapterPlan, len(base.Chapters))
+	for _, chapter := range base.Chapters {
+		baseByID[chapter.ID] = chapter
+	}
+	for _, chapter := range candidate.Chapters {
+		if err := validateAdaptationChapterWordBudget(candidate, chapter); err != nil {
+			return err
+		}
+		for label, values := range map[string][]string{
+			"preserve_events":  chapter.PreserveEvents,
+			"required_changes": chapter.RequiredChanges,
+			"forbidden_moves":  chapter.ForbiddenMoves,
+		} {
+			if err := validateAdaptationContractStrings(chapter.ID, label, values); err != nil {
+				return err
+			}
+		}
+		prior, existed := baseByID[chapter.ID]
+		changed := !existed || adaptationJSONSignature(prior) != adaptationJSONSignature(chapter)
+		if adaptationChapterHasSourceLineage(chapter) && len(nonBlankAdaptationStrings(chapter.PreserveEvents)) == 0 {
+			return fmt.Errorf("source-backed preview chapter %q requires preserve_events", chapter.ID)
+		}
+		if changed && len(nonBlankAdaptationStrings(chapter.RequiredChanges)) == 0 {
+			return fmt.Errorf("changed preview chapter %q requires required_changes", chapter.ID)
+		}
+		if changed && len(nonBlankAdaptationStrings(chapter.ForbiddenMoves)) == 0 {
+			return fmt.Errorf("changed preview chapter %q requires forbidden_moves", chapter.ID)
+		}
+	}
+	return nil
+}
+
+// AdaptationPlanFromVolumeReview reconstructs the immutable proposal-complete
+// contract from durable review, manifest, and source-report facts. Keeping the
+// conversion in domain lets both the service and receipt recovery verify the
+// same base without trusting request data.
+func AdaptationPlanFromVolumeReview(
+	review AdaptationVolumeReview,
+	manifest AdaptationSourceManifest,
+	reports []AdaptationSourceReport,
+) (*AdaptationPlan, error) {
+	seenEvents := make(map[string]struct{})
+	events := make([]AdaptationEvent, 0)
+	for _, report := range reports {
+		for _, event := range report.SourceEvents {
+			id := strings.TrimSpace(event.ID)
+			if id == "" {
+				return nil, fmt.Errorf("source report chapter %d contains an event without stable identity", report.Chapter)
+			}
+			if _, exists := seenEvents[id]; exists {
+				return nil, fmt.Errorf("source event %q has duplicate persisted ownership", id)
+			}
+			seenEvents[id] = struct{}{}
+			events = append(events, event)
+		}
+	}
+	if len(events) == 0 {
+		return nil, fmt.Errorf("persisted source event ledger is required at proposal-complete stage")
+	}
+	sourceRunes := 0
+	for _, chapter := range manifest.Chapters {
+		sourceRunes += chapter.Runes
+	}
+	return &AdaptationPlan{
+		Granularity:       review.Granularity,
+		ModePolicy:        AdaptationModePolicyForGranularity(review.Granularity),
+		Status:            AdaptationPlanStatusVolumeReview,
+		RewritePolicy:     review.RewritePolicy,
+		Brief:             review.Brief,
+		Volumes:           append([]AdaptationVolumePlan(nil), review.Volumes...),
+		WordTolerance:     review.WordTolerance,
+		SourceTotalRunes:  sourceRunes,
+		MainlineRules:     append([]string(nil), review.MainlineRules...),
+		RelationshipGoals: append([]string(nil), review.RelationshipGoals...),
+		Rules:             CompileAdaptationRules(review.Brief, review.Granularity),
+		SourceEvents:      events,
+		Chapters:          []AdaptationChapterPlan{},
+	}, nil
+}
+
 func (p AdaptationRevisionPolicy) validatePlan(candidate AdaptationPlan) error {
 	base := AdaptationPlan{}
 	if p.BasePlan != nil {
@@ -798,12 +897,12 @@ func validateAdaptationStableTargets(base, candidate AdaptationPlan) error {
 			return fmt.Errorf("adaptation target chapter %q cannot change immutable IsAdded ownership", id)
 		}
 		if chapter.IsAdded {
-			if len(chapter.SourceChapters) > 0 || len(chapter.SourceSegments) > 0 || chapter.SourceRange.From > 0 || chapter.SourceRange.To > 0 || chapter.SourceRunes > 0 || len(chapter.EventIDs) > 0 {
+			if adaptationChapterHasSourceLineage(chapter) {
 				return fmt.Errorf("added target chapter %q cannot own source anchors, segments, runes, or source events", id)
 			}
 		}
 		if !existing {
-			hasSource := len(chapter.SourceChapters) > 0 || len(chapter.SourceSegments) > 0 || chapter.SourceRange.From > 0
+			hasSource := adaptationChapterHasSourceLineage(chapter)
 			if chapter.IsAdded {
 				if hasSource {
 					return fmt.Errorf("added target chapter %q must remain independent from immutable source coverage", id)
@@ -1305,8 +1404,7 @@ func validateAdaptationChapterRevisionContracts(base, candidate AdaptationPlan) 
 		if len(nonBlankAdaptationStrings(chapter.ForbiddenMoves)) == 0 {
 			return fmt.Errorf("revised target chapter %q requires forbidden_moves", chapter.ID)
 		}
-		sourceBacked := len(chapter.SourceChapters) > 0 || len(chapter.SourceSegments) > 0 || chapter.SourceRange.From > 0
-		if sourceBacked && len(nonBlankAdaptationStrings(chapter.PreserveEvents)) == 0 {
+		if adaptationChapterHasSourceLineage(chapter) && len(nonBlankAdaptationStrings(chapter.PreserveEvents)) == 0 {
 			return fmt.Errorf("revised source-backed target chapter %q requires preserve_events", chapter.ID)
 		}
 		if err := validateAdaptationChapterWordBudget(candidate, chapter); err != nil {
@@ -1526,6 +1624,12 @@ func nonBlankAdaptationStrings(values []string) []string {
 		}
 	}
 	return result
+}
+
+func adaptationChapterHasSourceLineage(chapter AdaptationChapterPlan) bool {
+	return len(chapter.SourceChapters) > 0 || len(chapter.SourceSegments) > 0 ||
+		chapter.SourceRange.From > 0 || chapter.SourceRange.To > 0 || chapter.SourceRunes > 0 ||
+		len(chapter.EventIDs) > 0
 }
 
 func adaptationJSONSignature(value any) string {

@@ -145,7 +145,9 @@ func (s *Store) SaveExpansionAuditorTrust(trust ExpansionAuditorTrust) error {
 	if s == nil || s.Revisions == nil || s.Revisions.io == nil {
 		return errors.New("expansion auditor trust store is unavailable")
 	}
-	return s.Revisions.io.WriteJSON(expansionAuditorTrustPath, trust)
+	return s.Revisions.withRevisionTransaction(func() error {
+		return s.Revisions.io.WriteJSON(expansionAuditorTrustPath, trust)
+	})
 }
 
 func (s *Store) SaveExpansionRuntime(runtime ExpansionRuntime) error {
@@ -153,5 +155,7 @@ func (s *Store) SaveExpansionRuntime(runtime ExpansionRuntime) error {
 		return errors.New("expansion runtime store is unavailable")
 	}
 	runtime.Version = 1
-	return s.Revisions.io.WriteJSON(expansionRuntimePath, runtime)
+	return s.Revisions.withRevisionTransaction(func() error {
+		return s.Revisions.io.WriteJSON(expansionRuntimePath, runtime)
+	})
 }

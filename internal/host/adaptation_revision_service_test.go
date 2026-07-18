@@ -3,6 +3,7 @@ package host
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -202,6 +203,214 @@ func TestAdaptationRevisionServiceReplaysRuntimeAndTerminalSideEffects(t *testin
 	})
 }
 
+func TestAdaptationRevisionNonPublishOperationIdentityMatrix(t *testing.T) {
+	t.Run("staged operations", func(t *testing.T) {
+		st, _, candidate := seedAdaptationRevisionProject(t, domain.ManuscriptStageWriting, domain.AdaptationGranularityArc, false)
+		service := NewAdaptationRevisionService(st)
+		previewed, err := service.Preview(AdaptationRevisionPreviewRequest{
+			Intent: "exercise durable non-publish identities", Candidate: candidate, RequireAddedProse: true,
+		}, "identity-preview")
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err := service.ApproveImpact(previewed.Session.ID, previewed.Session.Revision, "identity-impact")
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err = service.SubmitStructureCandidate(*previewed.Preview, session, "identity-structure")
+		if err != nil {
+			t.Fatal(err)
+		}
+		completeAdaptationRuntime(t, service, session.ID)
+		evidence := adaptationPassingEvidence(session)
+		session, err = service.RecordAuditSet(session, evidence, "identity-structure-audit")
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err = service.ApproveStage(session, "identity-structure-approve")
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err = service.SubmitDetailedOutlineCandidate(candidate, session, "identity-details")
+		if err != nil {
+			t.Fatal(err)
+		}
+		completeAdaptationRuntime(t, service, session.ID)
+		session, err = service.RecordAuditSet(session, adaptationPassingEvidence(session), "identity-details-audit")
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err = service.ApproveStage(session, "identity-details-approve")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if adaptationServiceApprovalStage(*session) == domain.AdaptationApprovalProse {
+			session, err = service.SubmitProseReworkCandidate(session, "identity-prose")
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err = service.RecordAuditSet(session, adaptationPassingEvidence(session), "identity-prose-audit")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = service.ApproveStage(session, "identity-prose-approve"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for key, operation := range map[string]string{
+			"identity-preview": "preview", "identity-impact": "approve_impact",
+			"identity-structure": "submit_structure", "identity-structure-audit": "record_audit",
+			"identity-structure-approve": "approve_stage", "identity-details": "submit_details",
+			"identity-details-audit": "record_audit", "identity-details-approve": "approve_stage",
+			"identity-prose": "submit_prose_intents", "identity-prose-audit": "record_audit",
+			"identity-prose-approve": "approve_stage",
+		} {
+			assertAdaptationNonPublishReceiptIdentity(t, st, key, operation)
+		}
+	})
+
+	t.Run("feedback pause resume fail cancel", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			operations func(*AdaptationRevisionService, *AdaptationRevisionPreview) map[string]string
+		}{
+			{name: "feedback", operations: func(service *AdaptationRevisionService, previewed *AdaptationRevisionPreview) map[string]string {
+				session, err := service.ApproveImpact(previewed.Session.ID, previewed.Session.Revision, "feedback-impact")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.SubmitFeedback(session, session.Impact.Signature, "revise candidate", "identity-feedback"); err != nil {
+					t.Fatal(err)
+				}
+				return map[string]string{"identity-feedback": "feedback"}
+			}},
+			{name: "pause-resume", operations: func(service *AdaptationRevisionService, previewed *AdaptationRevisionPreview) map[string]string {
+				paused, err := service.Pause(previewed.Session, "identity-pause")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.Resume(paused, "identity-resume"); err != nil {
+					t.Fatal(err)
+				}
+				return map[string]string{"identity-pause": "pause", "identity-resume": "resume"}
+			}},
+			{name: "fail", operations: func(service *AdaptationRevisionService, previewed *AdaptationRevisionPreview) map[string]string {
+				if _, err := service.Fail(previewed.Session, "durable failure", "identity-fail"); err != nil {
+					t.Fatal(err)
+				}
+				return map[string]string{"identity-fail": "fail"}
+			}},
+			{name: "cancel", operations: func(service *AdaptationRevisionService, previewed *AdaptationRevisionPreview) map[string]string {
+				if _, err := service.Cancel(previewed.Session, "identity-cancel"); err != nil {
+					t.Fatal(err)
+				}
+				return map[string]string{"identity-cancel": "cancel"}
+			}},
+		}
+		for _, test := range cases {
+			t.Run(test.name, func(t *testing.T) {
+				st, _, candidate := seedAdaptationRevisionProject(t, domain.ManuscriptStageWriting, domain.AdaptationGranularityArc, false)
+				service := NewAdaptationRevisionService(st)
+				previewed, err := service.Preview(AdaptationRevisionPreviewRequest{Intent: test.name, Candidate: candidate}, "setup-"+test.name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for key, operation := range test.operations(service, previewed) {
+					assertAdaptationNonPublishReceiptIdentity(t, st, key, operation)
+				}
+			})
+		}
+	})
+
+	if _, _, err := NewAdaptationRevisionService(&storepkg.Store{}).LoadCommandReceipt(AdaptationRevisionCommandReceiptRequest{Action: "unknown"}, "unknown"); err == nil {
+		t.Fatal("unknown non-publish operation was accepted")
+	}
+}
+
+func assertAdaptationNonPublishReceiptIdentity(t *testing.T, st *storepkg.Store, key, operation string) {
+	t.Helper()
+	servicePath := filepath.Join(st.Dir(), "meta", "adaptation", "revision_service_receipts.json")
+	serviceData, err := os.ReadFile(servicePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var serviceState map[string]any
+	if err := json.Unmarshal(serviceData, &serviceState); err != nil {
+		t.Fatal(err)
+	}
+	serviceReceipt, ok := serviceState["receipts"].(map[string]any)[key].(map[string]any)
+	if !ok || serviceReceipt["operation"] != operation {
+		t.Fatalf("service receipt %q/%q is absent", key, operation)
+	}
+	serviceFingerprint := serviceReceipt["fingerprint"].(string)
+
+	statePath := filepath.Join(st.Dir(), "meta", "revisions", "state.json")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var revisionState map[string]any
+	if err := json.Unmarshal(stateData, &revisionState); err != nil {
+		t.Fatal(err)
+	}
+	internal := revisionState["receipts"].(map[string]any)[key].(map[string]any)
+	if internal["service_operation"] != operation || internal["service_fingerprint"] != serviceFingerprint {
+		t.Fatalf("internal receipt %q did not atomically bind service identity", key)
+	}
+	internalFingerprint := internal["fingerprint"].(string)
+	assertLoad := func(store *storepkg.Store, fingerprint string) error {
+		if operation == "preview" {
+			var result *AdaptationRevisionPreview
+			_, err := store.LoadVerifiedAdaptationRevisionServiceReceipt(key, operation, fingerprint, &result)
+			return err
+		}
+		var result *domain.RevisionSession
+		_, err := store.LoadVerifiedAdaptationRevisionServiceReceipt(key, operation, fingerprint, &result)
+		return err
+	}
+	if err := assertLoad(st, serviceFingerprint); err != nil {
+		t.Fatalf("exact service receipt %q failed verification: %v", key, err)
+	}
+	if err := assertLoad(storepkg.NewStore(st.Dir()), serviceFingerprint); err != nil {
+		t.Fatalf("restarted exact service receipt %q failed verification: %v", key, err)
+	}
+
+	changedFingerprint := strings.Repeat("f", 64)
+	serviceReceipt["fingerprint"] = changedFingerprint
+	writeJSONTestFile(t, servicePath, serviceState)
+	if err := assertLoad(storepkg.NewStore(st.Dir()), changedFingerprint); err == nil {
+		t.Fatalf("coherent outer fingerprint substitution for %q was accepted", key)
+	}
+	if err := os.WriteFile(servicePath, serviceData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceReceipt["fingerprint"] = changedFingerprint
+	internal["service_fingerprint"] = changedFingerprint
+	writeJSONTestFile(t, servicePath, serviceState)
+	writeJSONTestFile(t, statePath, revisionState)
+	if err := assertLoad(storepkg.NewStore(st.Dir()), changedFingerprint); err == nil {
+		t.Fatalf("paired outer/internal service fingerprint substitution for %q was accepted", key)
+	}
+	if err := os.WriteFile(servicePath, serviceData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, stateData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tamperedState := []byte(strings.Replace(string(stateData), internalFingerprint, strings.Repeat("e", 64), 1))
+	if err := os.WriteFile(statePath, tamperedState, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertLoad(storepkg.NewStore(st.Dir()), serviceFingerprint); err == nil {
+		t.Fatalf("internal fingerprint substitution for %q was accepted", key)
+	}
+	if err := os.WriteFile(statePath, stateData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAdaptationRevisionReceiptFailureRollsBackAndRestartsEveryTransition(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -315,6 +524,7 @@ func TestAdaptationRevisionReceiptFailureRollsBackAndRestartsEveryTransition(t *
 		t.Run(test.name+"/write failure", func(t *testing.T) {
 			st, service, command := test.setup(t)
 			before := adaptationRevisionProjectBytes(t, st.Dir())
+			registryBefore := snapshotPublicationAuthorityRegistry(t)
 			service.saveRevisionReceipt = func(string, string, string, any) error {
 				return errors.New("injected receipt write failure")
 			}
@@ -322,8 +532,24 @@ func TestAdaptationRevisionReceiptFailureRollsBackAndRestartsEveryTransition(t *
 				t.Fatalf("receipt failure was not returned: %v", err)
 			}
 			after := adaptationRevisionProjectBytes(t, st.Dir())
+			if test.name == "publish" {
+				if reflect.DeepEqual(before, after) {
+					t.Fatal("committed publish was rolled back after service receipt failure")
+				}
+				if registryAfter := snapshotPublicationAuthorityRegistry(t); len(registryAfter) != len(registryBefore)+1 {
+					t.Fatalf("committed publish authority count before=%d after=%d", len(registryBefore), len(registryAfter))
+				}
+				restarted := NewAdaptationRevisionService(storepkg.NewStore(st.Dir()))
+				if err := command(restarted); err != nil {
+					t.Fatalf("committed publish receipt was not recoverable: %v", err)
+				}
+				return
+			}
 			if !reflect.DeepEqual(before, after) {
 				t.Fatal("receipt failure did not restore the exact pre-command project snapshot")
+			}
+			if registryAfter := snapshotPublicationAuthorityRegistry(t); !reflect.DeepEqual(registryBefore, registryAfter) {
+				t.Fatalf("receipt failure changed external authority registry\nbefore=%+v\nafter=%+v", registryBefore, registryAfter)
 			}
 			restarted := NewAdaptationRevisionService(storepkg.NewStore(st.Dir()))
 			if err := command(restarted); err != nil {
@@ -333,6 +559,7 @@ func TestAdaptationRevisionReceiptFailureRollsBackAndRestartsEveryTransition(t *
 		t.Run(test.name+"/interrupted before receipt", func(t *testing.T) {
 			st, service, command := test.setup(t)
 			before := adaptationRevisionProjectBytes(t, st.Dir())
+			registryBefore := snapshotPublicationAuthorityRegistry(t)
 			service.saveRevisionReceipt = func(string, string, string, any) error {
 				panic("simulated process interruption before receipt")
 			}
@@ -345,6 +572,21 @@ func TestAdaptationRevisionReceiptFailureRollsBackAndRestartsEveryTransition(t *
 				_ = command(service)
 			}()
 			restarted := NewAdaptationRevisionService(storepkg.NewStore(st.Dir()))
+			if test.name == "publish" {
+				if err := command(restarted); err != nil {
+					t.Fatalf("committed interrupted publish was not recoverable: %v", err)
+				}
+				if after := adaptationRevisionProjectBytes(t, st.Dir()); reflect.DeepEqual(before, after) {
+					t.Fatal("committed interrupted publish restored its pre-command snapshot")
+				}
+				if registryAfter := snapshotPublicationAuthorityRegistry(t); len(registryAfter) != len(registryBefore)+1 {
+					t.Fatalf("committed interrupted publish authority count before=%d after=%d", len(registryBefore), len(registryAfter))
+				}
+				if err := command(NewAdaptationRevisionService(storepkg.NewStore(st.Dir()))); err != nil {
+					t.Fatalf("committed interrupted publish did not replay: %v", err)
+				}
+				return
+			}
 			restarted.saveRevisionReceipt = func(string, string, string, any) error {
 				return errors.New("stop after restart recovery")
 			}
@@ -353,6 +595,9 @@ func TestAdaptationRevisionReceiptFailureRollsBackAndRestartsEveryTransition(t *
 			}
 			if after := adaptationRevisionProjectBytes(t, st.Dir()); !reflect.DeepEqual(before, after) {
 				t.Fatal("restart recovery did not restore the exact pre-command project snapshot")
+			}
+			if registryAfter := snapshotPublicationAuthorityRegistry(t); !reflect.DeepEqual(registryBefore, registryAfter) {
+				t.Fatalf("restart recovery changed external authority registry\nbefore=%+v\nafter=%+v", registryBefore, registryAfter)
 			}
 			if err := command(NewAdaptationRevisionService(storepkg.NewStore(st.Dir()))); err != nil {
 				t.Fatalf("same command was not retryable after interrupted-command recovery: %v", err)
@@ -415,6 +660,7 @@ func TestAdaptationRevisionPreparedOwnershipExcludesNormalFlowAcrossRestart(t *t
 		name        string
 		key         string
 		nonterminal bool
+		committed   bool
 		setup       func(*testing.T) (*storepkg.Store, *AdaptationRevisionService, func(*AdaptationRevisionService) (*domain.RevisionSession, error))
 	}{
 		{
@@ -446,7 +692,7 @@ func TestAdaptationRevisionPreparedOwnershipExcludesNormalFlowAcrossRestart(t *t
 			},
 		},
 		{
-			name: "publish before receipt", key: "publish-ownership-race",
+			name: "publish before receipt", key: "publish-ownership-race", committed: true,
 			setup: func(t *testing.T) (*storepkg.Store, *AdaptationRevisionService, func(*AdaptationRevisionService) (*domain.RevisionSession, error)) {
 				st, _, candidate := seedAdaptationRevisionProject(t, domain.ManuscriptStageWriting, domain.AdaptationGranularityArc, false)
 				service := NewAdaptationRevisionService(st)
@@ -496,7 +742,12 @@ func TestAdaptationRevisionPreparedOwnershipExcludesNormalFlowAcrossRestart(t *t
 				t.Fatalf("same-key direct mutation entered prepared command: %v", mutationErr)
 			}
 			restartedStore := storepkg.NewStore(st.Dir())
-			if after := adaptationRevisionProjectBytes(t, st.Dir()); !reflect.DeepEqual(before, after) {
+			after := adaptationRevisionProjectBytes(t, st.Dir())
+			if test.committed {
+				if reflect.DeepEqual(before, after) {
+					t.Fatal("restart recovery rolled back a committed terminal publication")
+				}
+			} else if !reflect.DeepEqual(before, after) {
 				t.Fatal("restart recovery overwrote or failed to restore the exact terminal-command snapshot")
 			}
 			result, err := command(NewAdaptationRevisionService(restartedStore))
@@ -922,6 +1173,1185 @@ func TestAdaptationRevisionPublishMergesRewritesAndPreservesReopenState(t *testi
 	if !reflect.DeepEqual(progress.PendingRewrites, []int{2, 1}) || progress.Phase != domain.PhaseWriting || !progress.ReopenedFromComplete || progress.Flow != domain.FlowRewriting || !strings.Contains(progress.RewriteReason, "existing repair") {
 		t.Fatalf("published progress did not preserve/merge rewrite state: %+v", progress)
 	}
+}
+
+func TestAdaptationRevisionServiceCommittedPublicationFinalizeFaultRetryAndUnavailableGC(t *testing.T) {
+	for _, fault := range []struct {
+		name      string
+		pathPart  string
+		stage     string
+		writeCall int
+	}{
+		{name: "before acceptance replace", pathPart: "/acceptances/", stage: "after_sync", writeCall: 1},
+		{name: "after acceptance replace", pathPart: "/acceptances/", stage: "after_replace", writeCall: 1},
+		{name: "before accepted journal replace", pathPart: "/publications/", stage: "after_sync", writeCall: 2},
+		{name: "after accepted journal replace", pathPart: "/publications/", stage: "after_replace", writeCall: 2},
+	} {
+		t.Run(fault.name, func(t *testing.T) {
+			st, service, preview, session, candidate := prepareAdaptationServicePublication(t)
+			calls := 0
+			restoreFault := storepkg.SetExpansionAuthorityWriteFaultForTesting(func(path, stage string) error {
+				if strings.Contains(filepath.ToSlash(path), fault.pathPart) && stage == fault.stage {
+					calls++
+					if calls == fault.writeCall {
+						return errors.New("injected adaptation service finalize fault")
+					}
+				}
+				return nil
+			})
+			published, err := service.Publish(preview, session, "publish-finalize")
+			restoreFault()
+			if err == nil || published == nil || published.Stage != domain.RevisionStageCompleted {
+				t.Fatalf("committed finalize fault result=%+v err=%v", published, err)
+			}
+			formal, loadErr := st.Adaptation.LoadPlan()
+			if loadErr != nil || formal == nil || len(formal.Chapters) != len(candidate.Chapters) || formal.Chapters[len(formal.Chapters)-1].ID != adaptationTestAddedID {
+				t.Fatalf("committed finalize fault rolled back formal adaptation: plan=%+v err=%v", formal, loadErr)
+			}
+
+			restarted := NewAdaptationRevisionService(storepkg.NewStore(st.Dir()))
+			replayed, err := restarted.Publish(preview, session, "publish-finalize")
+			if err != nil || replayed == nil || replayed.Stage != domain.RevisionStageCompleted || replayed.ID != published.ID {
+				t.Fatalf("exact restart retry result=%+v err=%v", replayed, err)
+			}
+			replayedAgain, err := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).Publish(preview, session, "publish-finalize")
+			if err != nil || !reflect.DeepEqual(replayed, replayedAgain) {
+				t.Fatalf("completed service receipt replay=%+v err=%v", replayedAgain, err)
+			}
+			changedPreview := preview
+			changedPreview.Stage = domain.ManuscriptStageWriting
+			if _, err := restarted.Publish(changedPreview, session, "publish-finalize"); err == nil {
+				t.Fatal("same-key different adaptation service fingerprint bypassed the committed receipt")
+			}
+		})
+	}
+
+	for _, unavailable := range []string{"moved", "deleted"} {
+		t.Run("committed service publication survives "+unavailable+" project GC", func(t *testing.T) {
+			restoreRetention := storepkg.SetExpansionAuthorityOrphanRetentionForTesting(0)
+			defer restoreRetention()
+			st, service, preview, session, _ := prepareAdaptationServicePublication(t)
+			before := snapshotPublicationAuthorityRegistry(t)
+			restoreFault := storepkg.SetExpansionAuthorityWriteFaultForTesting(func(path, stage string) error {
+				if strings.Contains(filepath.ToSlash(path), "/acceptances/") && stage == "after_replace" {
+					return errors.New("injected committed adaptation service finalize fault")
+				}
+				return nil
+			})
+			published, err := service.Publish(preview, session, "publish-unavailable")
+			restoreFault()
+			if err == nil || published == nil || published.Stage != domain.RevisionStageCompleted {
+				t.Fatalf("committed unavailable setup result=%+v err=%v", published, err)
+			}
+			committedRegistry := snapshotPublicationAuthorityRegistry(t)
+			if len(committedRegistry) != len(before)+1 {
+				t.Fatalf("committed service publication authority count before=%d after=%d", len(before), len(committedRegistry))
+			}
+			projectRoot := filepath.Dir(st.Dir())
+			if unavailable == "moved" {
+				if err := os.Rename(projectRoot, projectRoot+"-moved"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.RemoveAll(projectRoot); err != nil {
+				t.Fatal(err)
+			}
+			report, err := storepkg.ReconcileExpansionAuthorityOrphans()
+			if err != nil || report.Finalized != 1 {
+				t.Fatalf("unavailable adaptation service reconciliation=%+v err=%v", report, err)
+			}
+			if after := snapshotPublicationAuthorityRegistry(t); !reflect.DeepEqual(committedRegistry, after) {
+				t.Fatalf("unavailable GC changed committed adaptation owner capability\nbefore=%+v\nafter=%+v", committedRegistry, after)
+			}
+		})
+	}
+}
+
+func TestAdaptationRevisionCommittedFinalizeServiceReceiptRecoveryMatrix(t *testing.T) {
+	tests := []struct {
+		name         string
+		authorityDir string
+		authorityAt  string
+		writeCall    int
+		receiptFault string
+	}{
+		{name: "acceptance before replace plus receipt before replace", authorityDir: "/acceptances/", authorityAt: "after_sync", writeCall: 1, receiptFault: "before_replace"},
+		{name: "acceptance after replace plus receipt before replace", authorityDir: "/acceptances/", authorityAt: "after_replace", writeCall: 1, receiptFault: "before_replace"},
+		{name: "accepted journal before replace plus receipt panic", authorityDir: "/publications/", authorityAt: "after_sync", writeCall: 2, receiptFault: "panic"},
+		{name: "accepted journal after replace plus receipt panic", authorityDir: "/publications/", authorityAt: "after_replace", writeCall: 2, receiptFault: "panic"},
+		{name: "ambiguous durable service receipt replace", authorityDir: "/acceptances/", authorityAt: "after_replace", writeCall: 1, receiptFault: "after_replace"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			st, service, preview, session, candidate := prepareAdaptationServicePublication(t)
+			registryBefore := snapshotPublicationAuthorityRegistry(t)
+			authorityCalls := 0
+			restoreAuthority := storepkg.SetExpansionAuthorityWriteFaultForTesting(func(path, stage string) error {
+				if strings.Contains(filepath.ToSlash(path), test.authorityDir) && stage == test.authorityAt {
+					authorityCalls++
+					if authorityCalls == test.writeCall {
+						return errors.New("injected committed finalize failure")
+					}
+				}
+				return nil
+			})
+			var restoreWrite func()
+			switch test.receiptFault {
+			case "before_replace":
+				restoreWrite = st.SetExpansionWriteFaultForTesting(func(rel, stage string) error {
+					if rel == "meta/adaptation/revision_service_receipts.json" && stage == "after_temp_sync" {
+						return errors.New("injected service receipt before replace failure")
+					}
+					return nil
+				})
+			case "after_replace":
+				restoreWrite = st.SetExpansionWriteFaultForTesting(func(rel, stage string) error {
+					if rel == "meta/adaptation/revision_service_receipts.json" && stage == "after_replace" {
+						return errors.New("injected service receipt ambiguous replace failure")
+					}
+					return nil
+				})
+			case "panic":
+				service.saveRevisionReceipt = func(string, string, string, any) error {
+					panic("simulated service receipt process interruption")
+				}
+			}
+
+			var published *domain.RevisionSession
+			var publishErr error
+			panicked := false
+			func() {
+				defer func() {
+					if recover() != nil {
+						panicked = true
+					}
+				}()
+				published, publishErr = service.Publish(preview, session, "publish-receipt-recovery")
+			}()
+			restoreAuthority()
+			if restoreWrite != nil {
+				restoreWrite()
+			}
+			if test.receiptFault == "panic" {
+				if !panicked {
+					t.Fatal("service receipt panic did not interrupt the prepared command")
+				}
+			} else if publishErr == nil || published == nil || published.Stage != domain.RevisionStageCompleted {
+				t.Fatalf("committed receipt fault result=%+v err=%v", published, publishErr)
+			}
+			assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+
+			replayed, err := service.Publish(preview, session, "publish-receipt-recovery")
+			if err != nil || replayed == nil || replayed.Stage != domain.RevisionStageCompleted {
+				t.Fatalf("same-process committed recovery result=%+v err=%v", replayed, err)
+			}
+			assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+			restarted, err := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).Publish(preview, session, "publish-receipt-recovery")
+			if err != nil || !reflect.DeepEqual(replayed, restarted) {
+				t.Fatalf("restart committed replay result=%+v err=%v", restarted, err)
+			}
+			changed := preview
+			changed.Stage = domain.ManuscriptStageWriting
+			if _, err := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).Publish(changed, session, "publish-receipt-recovery"); err == nil {
+				t.Fatal("different service fingerprint bypassed repaired receipt")
+			}
+		})
+	}
+}
+
+func TestAdaptationRevisionCommittedFinalizePreparedCleanupRecoveryMatrix(t *testing.T) {
+	for _, fault := range []struct{ path, stage string }{
+		{path: "meta/revisions/adaptation-command-journal.json", stage: "before_delete"},
+		{path: "meta/revisions/adaptation-command-journal.json", stage: "after_delete"},
+		{path: "meta/revisions/adaptation-command-snapshot", stage: "before_delete"},
+		{path: "meta/revisions/adaptation-command-snapshot", stage: "after_delete"},
+	} {
+		t.Run(fault.path+"/"+fault.stage, func(t *testing.T) {
+			st, service, preview, session, candidate := prepareAdaptationServicePublication(t)
+			registryBefore := snapshotPublicationAuthorityRegistry(t)
+			restoreAuthority := storepkg.SetExpansionAuthorityWriteFaultForTesting(func(path, stage string) error {
+				if strings.Contains(filepath.ToSlash(path), "/acceptances/") && stage == "after_replace" {
+					return errors.New("injected committed finalize failure")
+				}
+				return nil
+			})
+			fired := false
+			restoreCleanup := storepkg.SetAdaptationRevisionCommandCleanupFaultForTesting(func(path, stage string) error {
+				if path == fault.path && stage == fault.stage && !fired {
+					fired = true
+					return errors.New("injected prepared cleanup failure")
+				}
+				return nil
+			})
+			published, err := service.Publish(preview, session, "publish-cleanup-recovery")
+			restoreAuthority()
+			restoreCleanup()
+			if err == nil || published == nil || published.Stage != domain.RevisionStageCompleted || !fired {
+				t.Fatalf("prepared cleanup fault result=%+v err=%v fired=%v", published, err, fired)
+			}
+			assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+			replayed, err := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).Publish(preview, session, "publish-cleanup-recovery")
+			if err != nil || replayed == nil || replayed.Stage != domain.RevisionStageCompleted {
+				t.Fatalf("prepared cleanup restart result=%+v err=%v", replayed, err)
+			}
+			assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+		})
+	}
+}
+
+func TestAdaptationRevisionCommittedFinalizeRuntimeCleanupRecovery(t *testing.T) {
+	st, service, preview, session, candidate := prepareAdaptationServicePublication(t)
+	registryBefore := snapshotPublicationAuthorityRegistry(t)
+	runtimePath := filepath.Join(st.Dir(), "meta", "adaptation", "revision_runtime.json")
+	runtimeBytes, err := os.ReadFile(runtimePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreAuthority := storepkg.SetExpansionAuthorityWriteFaultForTesting(func(path, stage string) error {
+		if strings.Contains(filepath.ToSlash(path), "/acceptances/") && stage == "after_replace" {
+			return errors.New("injected committed finalize failure")
+		}
+		return nil
+	})
+	service.saveRevisionReceipt = func(string, string, string, any) error {
+		if err := os.WriteFile(runtimePath, runtimeBytes, 0o644); err != nil {
+			return err
+		}
+		// Simulate an interrupted caller that did not know whether the receipt
+		// was durable. Recovery must reconstruct it from the internal receipt.
+		return nil
+	}
+	published, publishErr := service.Publish(preview, session, "publish-runtime-recovery")
+	restoreAuthority()
+	if publishErr == nil || published == nil || published.Stage != domain.RevisionStageCompleted {
+		t.Fatalf("runtime recovery setup result=%+v err=%v", published, publishErr)
+	}
+	assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+	fired := false
+	restoreCleanup := storepkg.SetAdaptationRevisionCommandCleanupFaultForTesting(func(path, stage string) error {
+		if path == "meta/adaptation/revision_runtime.json" && stage == "before_delete" {
+			fired = true
+			return errors.New("injected committed runtime cleanup failure")
+		}
+		return nil
+	})
+	_, cleanupErr := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).Publish(preview, session, "publish-runtime-recovery")
+	if cleanupErr == nil || !fired {
+		t.Fatalf("runtime cleanup fault was not retained for retry: fired=%v err=%v", fired, cleanupErr)
+	}
+	restoreCleanup()
+	assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+	replayed, err := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).Publish(preview, session, "publish-runtime-recovery")
+	if err != nil || replayed == nil || replayed.Stage != domain.RevisionStageCompleted {
+		t.Fatalf("runtime cleanup restart result=%+v err=%v", replayed, err)
+	}
+	if _, err := os.Stat(runtimePath); !os.IsNotExist(err) {
+		t.Fatalf("committed runtime remains after recovery: %v", err)
+	}
+}
+
+func TestAdaptationRevisionCommittedRuntimeRestoreWriteFailureRecoveryMatrix(t *testing.T) {
+	for _, cleanupStage := range []string{"before_delete", "after_delete"} {
+		t.Run(cleanupStage, func(t *testing.T) {
+			st, service, preview, session, candidate := prepareAdaptationServicePublication(t)
+			registryBefore := snapshotPublicationAuthorityRegistry(t)
+			runtimePath := filepath.Join(st.Dir(), "meta", "adaptation", "revision_runtime.json")
+			restoreAuthority := storepkg.SetExpansionAuthorityWriteFaultForTesting(func(path, stage string) error {
+				if strings.Contains(filepath.ToSlash(path), "/acceptances/") && stage == "after_replace" {
+					return errors.New("injected committed authority finalize failure")
+				}
+				return nil
+			})
+			runtimeRestoreFault := false
+			restoreWrite := st.SetExpansionWriteFaultForTesting(func(rel, stage string) error {
+				if rel == "meta/adaptation/revision_runtime.json" && stage == "after_replace" {
+					runtimeRestoreFault = true
+					return errors.New("injected committed runtime restore write failure")
+				}
+				return nil
+			})
+			published, publishErr := service.Publish(preview, session, "publish-runtime-restore-failure")
+			restoreWrite()
+			restoreAuthority()
+			if publishErr == nil || published == nil || published.Stage != domain.RevisionStageCompleted || !runtimeRestoreFault {
+				t.Fatalf("committed runtime restore fault result=%+v err=%v fired=%v", published, publishErr, runtimeRestoreFault)
+			}
+			assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+			if _, err := os.Stat(runtimePath); err != nil {
+				t.Fatalf("ambiguous runtime restore did not leave a cleanup target: %v", err)
+			}
+			for _, path := range []string{
+				filepath.Join(st.Dir(), "meta", "revisions", "adaptation-command-journal.json"),
+				filepath.Join(st.Dir(), "meta", "revisions", "adaptation-command-snapshot"),
+			} {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("runtime restore failure lost prepared recovery evidence %s: %v", filepath.Base(path), err)
+				}
+			}
+			found, err := st.Adaptation.HasRevisionServiceReceipt(
+				"publish-runtime-restore-failure", "publish", adaptationPublishServiceFingerprint(t, preview, session),
+			)
+			if err != nil || found {
+				t.Fatalf("runtime restore failure forged a service receipt: found=%v err=%v", found, err)
+			}
+
+			cleanupFired := false
+			restoreCleanup := storepkg.SetAdaptationRevisionCommandCleanupFaultForTesting(func(path, stage string) error {
+				if path == "meta/adaptation/revision_runtime.json" && stage == cleanupStage {
+					cleanupFired = true
+					return errors.New("injected committed runtime cleanup retry failure")
+				}
+				return nil
+			})
+			restarted := storepkg.NewStore(st.Dir())
+			firstRetryErr := restarted.RecoverStructureMigration()
+			if !cleanupFired || (cleanupStage == "before_delete" && firstRetryErr == nil) || (cleanupStage == "after_delete" && firstRetryErr != nil) {
+				restoreCleanup()
+				t.Fatalf("runtime cleanup %s recovery mismatch: fired=%v err=%v", cleanupStage, cleanupFired, firstRetryErr)
+			}
+			restoreCleanup()
+			assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+			if err := restarted.RecoverStructureMigration(); err != nil {
+				t.Fatalf("runtime cleanup %s exact retry failed: %v", cleanupStage, err)
+			}
+			replayed, err := NewAdaptationRevisionService(restarted).Publish(preview, session, "publish-runtime-restore-failure")
+			if err != nil || !reflect.DeepEqual(published, replayed) {
+				t.Fatalf("runtime restore/cleanup %s replay=%+v err=%v", cleanupStage, replayed, err)
+			}
+			if _, err := os.Stat(runtimePath); !os.IsNotExist(err) {
+				t.Fatalf("runtime cleanup %s left checkpoint after retry: %v", cleanupStage, err)
+			}
+		})
+	}
+}
+
+func adaptationPublishServiceFingerprint(t *testing.T, preview AdaptationStructureRevisionPreview, session *domain.RevisionSession) string {
+	t.Helper()
+	request := adaptationCommandReceiptRequest("publish", adaptationRevisionNumber(session))
+	request.Preview = &preview
+	_, payload, err := adaptationRevisionCommandReceiptIdentity(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return domain.ContentSignature(encoded)
+}
+
+func TestAdaptationRevisionCommittedFinalizePreparedBindingTamperFailsClosed(t *testing.T) {
+	for _, tamper := range []string{"missing publication", "different internal fingerprint", "unknown journal field", "duplicate journal field", "path escape"} {
+		t.Run(tamper, func(t *testing.T) {
+			st, service, preview, session, candidate := prepareAdaptationServicePublication(t)
+			registryBefore := snapshotPublicationAuthorityRegistry(t)
+			restoreAuthority := storepkg.SetExpansionAuthorityWriteFaultForTesting(func(path, stage string) error {
+				if strings.Contains(filepath.ToSlash(path), "/acceptances/") && stage == "after_replace" {
+					return errors.New("injected committed finalize failure")
+				}
+				return nil
+			})
+			service.saveRevisionReceipt = func(string, string, string, any) error {
+				panic("interrupt before service receipt")
+			}
+			panicked := false
+			func() {
+				defer func() { panicked = recover() != nil }()
+				_, _ = service.Publish(preview, session, "publish-binding-tamper")
+			}()
+			restoreAuthority()
+			if !panicked {
+				t.Fatal("service receipt interruption did not retain prepared state")
+			}
+			assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+
+			journalPath := filepath.Join(st.Dir(), "meta", "revisions", "adaptation-command-journal.json")
+			data, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var journal map[string]any
+			if err := json.Unmarshal(data, &journal); err != nil {
+				t.Fatal(err)
+			}
+			switch tamper {
+			case "missing publication":
+				delete(journal, "publication")
+			case "different internal fingerprint":
+				publication := journal["publication"].(map[string]any)
+				publication["internal_receipt_fingerprint"] = strings.Repeat("0", 64)
+			case "unknown journal field":
+				journal["unexpected"] = true
+			case "path escape":
+				journal["files"] = []any{"../escaped"}
+			}
+			data, err = json.MarshalIndent(journal, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tamper == "duplicate journal field" {
+				data = append([]byte("{\"version\":2,"), data[1:]...)
+			}
+			if err := os.WriteFile(journalPath, append(data, '\n'), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			restarted := NewAdaptationRevisionService(storepkg.NewStore(st.Dir()))
+			if _, err := restarted.Publish(preview, session, "publish-binding-tamper"); err == nil {
+				t.Fatal("tampered prepared publication binding was recovered")
+			}
+			assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+		})
+	}
+}
+
+func TestAdaptationRevisionV1PublishUpgradeRecoveryMatrix(t *testing.T) {
+	t.Run("precommit rollback", func(t *testing.T) {
+		st, service, preview, session, _ := prepareAdaptationServicePublication(t)
+		before, err := st.CaptureAdaptationFormalSnapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		service.SetCommandPreparedHookForTesting(func() { rewritePreparedAdaptationJournalAsV1(t, st.Dir()) })
+		service.clearRevisionRuntime = func(string) error { return errors.New("injected precommit runtime cleanup failure") }
+		if _, err := service.Publish(preview, session, "v1-publish-precommit"); err == nil {
+			t.Fatal("v1 precommit publish did not fail")
+		}
+		after, err := st.CaptureAdaptationFormalSnapshot()
+		if err != nil || !reflect.DeepEqual(before, after) {
+			t.Fatalf("v1 precommit rollback changed formal snapshot: err=%v", err)
+		}
+	})
+
+	t.Run("committed service receipt cleanup", func(t *testing.T) {
+		st, service, preview, session, candidate := prepareAdaptationServicePublication(t)
+		registryBefore := snapshotPublicationAuthorityRegistry(t)
+		service.SetCommandPreparedHookForTesting(func() { rewritePreparedAdaptationJournalAsV1(t, st.Dir()) })
+		fired := false
+		restoreCleanup := storepkg.SetAdaptationRevisionCommandCleanupFaultForTesting(func(path, stage string) error {
+			if path == "meta/revisions/adaptation-command-journal.json" && stage == "before_delete" && !fired {
+				fired = true
+				return errors.New("retain v1 prepared journal after service receipt")
+			}
+			return nil
+		})
+		published, publishErr := service.Publish(preview, session, "v1-publish-service-receipt")
+		restoreCleanup()
+		if publishErr == nil || published == nil || !fired {
+			t.Fatalf("v1 receipt cleanup setup result=%+v err=%v fired=%v", published, publishErr, fired)
+		}
+		assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+		restarted := storepkg.NewStore(st.Dir())
+		if err := restarted.RecoverStructureMigration(); err != nil {
+			t.Fatalf("v1 receipt-backed NewStore cleanup failed: %v", err)
+		}
+		replayed, err := NewAdaptationRevisionService(restarted).Publish(preview, session, "v1-publish-service-receipt")
+		if err != nil || !reflect.DeepEqual(published, replayed) {
+			t.Fatalf("v1 receipt-backed exact replay=%+v err=%v", replayed, err)
+		}
+	})
+
+	t.Run("internal receipt forward without service receipt", func(t *testing.T) {
+		st, service, preview, session, candidate := prepareAdaptationServicePublication(t)
+		registryBefore := snapshotPublicationAuthorityRegistry(t)
+		service.SetCommandPreparedHookForTesting(func() { rewritePreparedAdaptationJournalAsV1(t, st.Dir()) })
+		restoreAuthority := storepkg.SetExpansionAuthorityWriteFaultForTesting(func(path, stage string) error {
+			if strings.Contains(filepath.ToSlash(path), "/acceptances/") && stage == "after_replace" {
+				return errors.New("interrupt v1 committed authority finalize")
+			}
+			return nil
+		})
+		service.saveRevisionReceipt = func(string, string, string, any) error {
+			panic("interrupt before v1 service receipt")
+		}
+		panicked := false
+		func() {
+			defer func() { panicked = recover() != nil }()
+			_, _ = service.Publish(preview, session, "v1-publish-internal-receipt")
+		}()
+		restoreAuthority()
+		if !panicked {
+			t.Fatal("v1 committed publication did not stop before service receipt")
+		}
+		assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+
+		restarted := storepkg.NewStore(st.Dir())
+		if err := restarted.RecoverStructureMigration(); err != nil {
+			t.Fatalf("v1 internal-receipt NewStore forward recovery failed: %v", err)
+		}
+		replayed, err := NewAdaptationRevisionService(restarted).Publish(preview, session, "v1-publish-internal-receipt")
+		if err != nil || replayed == nil || replayed.Stage != domain.RevisionStageCompleted {
+			t.Fatalf("v1 internal-receipt exact replay=%+v err=%v", replayed, err)
+		}
+	})
+
+	t.Run("unprovable internal receipt fails closed", func(t *testing.T) {
+		st, service, preview, session, candidate := prepareAdaptationServicePublication(t)
+		registryBefore := snapshotPublicationAuthorityRegistry(t)
+		service.SetCommandPreparedHookForTesting(func() { rewritePreparedAdaptationJournalAsV1(t, st.Dir()) })
+		restoreAuthority := storepkg.SetExpansionAuthorityWriteFaultForTesting(func(path, stage string) error {
+			if strings.Contains(filepath.ToSlash(path), "/acceptances/") && stage == "after_replace" {
+				return errors.New("interrupt unprovable v1 authority finalize")
+			}
+			return nil
+		})
+		service.saveRevisionReceipt = func(string, string, string, any) error { panic("interrupt before service receipt") }
+		func() {
+			defer func() { _ = recover() }()
+			_, _ = service.Publish(preview, session, "v1-publish-unprovable")
+		}()
+		restoreAuthority()
+		assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+
+		statePath := filepath.Join(st.Dir(), "meta", "revisions", "state.json")
+		var state map[string]any
+		data, err := os.ReadFile(statePath)
+		if err != nil || json.Unmarshal(data, &state) != nil {
+			t.Fatal(err)
+		}
+		receipts := state["receipts"].(map[string]any)
+		receipt := receipts["v1-publish-unprovable"].(map[string]any)
+		originalFingerprint := receipt["fingerprint"].(string)
+		tampered := strings.Replace(string(data), originalFingerprint, strings.Repeat("0", 64), 1)
+		if tampered == string(data) {
+			t.Fatal("internal receipt fingerprint was not found for exact tamper")
+		}
+		if err := os.WriteFile(statePath, []byte(tampered), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		restarted := storepkg.NewStore(st.Dir())
+		if err := restarted.RecoverStructureMigration(); err == nil {
+			t.Fatal("unprovable v1 committed publication did not fail closed")
+		}
+		if _, err := os.Stat(filepath.Join(st.Dir(), "meta", "revisions", "adaptation-command-journal.json")); err != nil {
+			t.Fatalf("unprovable v1 diagnostic journal was removed: %v", err)
+		}
+		if err := os.WriteFile(statePath, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+	})
+}
+
+func TestAdaptationRevisionLegacyPublicationServiceBindingFailsClosed(t *testing.T) {
+	for _, journalVersion := range []int{1, 2} {
+		for _, serviceReceiptPresent := range []bool{false, true} {
+			t.Run(fmt.Sprintf("journal-v%d/service-receipt-%t", journalVersion, serviceReceiptPresent), func(t *testing.T) {
+				st, service, preview, session, candidate := prepareAdaptationServicePublication(t)
+				key := fmt.Sprintf("legacy-service-binding-v%d-%t", journalVersion, serviceReceiptPresent)
+				registryBefore := snapshotPublicationAuthorityRegistry(t)
+				var rawInternalFingerprint string
+				service.SetCommandPreparedHookForTesting(func() {
+					rawInternalFingerprint = preparedAdaptationPublicationInternalFingerprint(t, st.Dir())
+					if journalVersion == 1 {
+						rewritePreparedAdaptationJournalAsV1(t, st.Dir())
+					}
+				})
+				restoreLegacy, err := storepkg.SetAdaptationPublicationLegacyBindingForTesting(true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				service.saveRevisionReceipt = func(string, string, string, any) error {
+					panic("interrupt after legacy signed receipt commit")
+				}
+				panicked := false
+				func() {
+					defer func() { panicked = recover() != nil }()
+					_, _ = service.Publish(preview, session, key)
+				}()
+				restoreLegacy()
+				if !panicked {
+					t.Fatal("legacy migration setup did not stop before service receipt")
+				}
+
+				receiptPath := filepath.Join(st.Dir(), "meta", "revisions", "expansion-publication-receipt.json")
+				signedReceipt, err := os.ReadFile(receiptPath)
+				var receipt storepkg.ExpansionPublicationReceipt
+				if err != nil || json.Unmarshal(signedReceipt, &receipt) != nil {
+					t.Fatal(err)
+				}
+				if receipt.AdaptationServiceBinding != "" {
+					t.Fatal("legacy publication fixture unexpectedly contained a service binding")
+				}
+				registryCommitted := snapshotPublicationAuthorityRegistry(t)
+
+				changed := preview
+				changed.Stage = domain.ManuscriptStageWriting
+				originalFingerprint := adaptationPublishServiceFingerprint(t, preview, session)
+				changedFingerprint := adaptationPublishServiceFingerprint(t, changed, session)
+				journalPath := filepath.Join(st.Dir(), "meta", "revisions", "adaptation-command-journal.json")
+				journalData, err := os.ReadFile(journalPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var journal map[string]any
+				if err := json.Unmarshal(journalData, &journal); err != nil {
+					t.Fatal(err)
+				}
+				journal["fingerprint"] = changedFingerprint
+				writeJSONTestFile(t, journalPath, journal)
+
+				statePath := filepath.Join(st.Dir(), "meta", "revisions", "state.json")
+				stateData, err := os.ReadFile(statePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var revisionState map[string]any
+				if err := json.Unmarshal(stateData, &revisionState); err != nil {
+					t.Fatal(err)
+				}
+				internalReceipt := revisionState["receipts"].(map[string]any)[key].(map[string]any)
+				if internalReceipt["service_fingerprint"] != originalFingerprint || rawInternalFingerprint == "" {
+					t.Fatal("legacy service fingerprint was absent from durable state")
+				}
+				originalBoundFingerprint := internalReceipt["fingerprint"].(string)
+				changedBoundFingerprint := adaptationServiceBoundInternalFingerprintForTest(
+					key, "publish", rawInternalFingerprint, "publish", changedFingerprint,
+				)
+				tamperedState := strings.ReplaceAll(string(stateData), originalFingerprint, changedFingerprint)
+				tamperedState = strings.Replace(tamperedState, originalBoundFingerprint, changedBoundFingerprint, 1)
+				if tamperedState == string(stateData) {
+					t.Fatal("legacy service identity substitution did not change durable state")
+				}
+				if err := os.WriteFile(statePath, []byte(tamperedState), 0o644); err != nil {
+					t.Fatal(err)
+				}
+
+				if serviceReceiptPresent {
+					committed, err := st.Revisions.LoadSession(session.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					serviceReceiptPath := filepath.Join(st.Dir(), "meta", "adaptation", "revision_service_receipts.json")
+					writeJSONTestFile(t, serviceReceiptPath, map[string]any{
+						"version": 1,
+						"receipts": map[string]any{key: map[string]any{
+							"operation": "publish", "fingerprint": changedFingerprint, "result": committed,
+						}},
+					})
+				}
+
+				restarted := storepkg.NewStore(st.Dir())
+				if err := restarted.RecoverStructureMigration(); err == nil {
+					t.Fatalf("legacy coherent substitution did not fail closed: %v", err)
+				}
+				if _, err := NewAdaptationRevisionService(restarted).Publish(changed, session, key); err == nil {
+					t.Fatal("legacy coherent P' replay bypassed manual recovery")
+				}
+				request := adaptationCommandReceiptRequest("publish", session.Revision)
+				request.Preview = &changed
+				if _, _, err := NewAdaptationRevisionService(restarted).LoadCommandReceipt(request, key); err == nil {
+					t.Fatal("legacy coherent P' LoadCommandReceipt bypassed manual recovery")
+				}
+				if err := restarted.WithPreparedAdaptationRevisionCommand(key, "publish", changedFingerprint, func(owner *storepkg.RevisionStore) error {
+					return restarted.CompleteAdaptationRevisionCommand(owner, key, "publish", changedFingerprint)
+				}); err == nil {
+					t.Fatal("legacy coherent P' Complete bypassed manual recovery")
+				}
+				if after, err := os.ReadFile(receiptPath); err != nil || !reflect.DeepEqual(after, signedReceipt) {
+					t.Fatalf("legacy signed receipt changed while failing closed: err=%v", err)
+				}
+				if _, err := os.Stat(journalPath); err != nil {
+					t.Fatalf("legacy diagnostic journal was removed: %v", err)
+				}
+				assertAdaptationPublicationRemainedCommitted(t, st, session.ID, candidate, registryBefore)
+				if registryAfter := snapshotPublicationAuthorityRegistry(t); !reflect.DeepEqual(registryCommitted, registryAfter) {
+					t.Fatal("legacy failure changed protected authority facts")
+				}
+			})
+		}
+	}
+}
+
+func writeJSONTestFile(t *testing.T, path string, value any) {
+	t.Helper()
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func preparedAdaptationPublicationInternalFingerprint(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "meta", "revisions", "adaptation-command-journal.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var journal struct {
+		Publication *struct {
+			InternalReceiptFingerprint string `json:"internal_receipt_fingerprint"`
+		} `json:"publication"`
+	}
+	if err := json.Unmarshal(data, &journal); err != nil {
+		t.Fatal(err)
+	}
+	if journal.Publication == nil || journal.Publication.InternalReceiptFingerprint == "" {
+		t.Fatal("prepared publication omitted its internal receipt fingerprint")
+	}
+	return journal.Publication.InternalReceiptFingerprint
+}
+
+func adaptationServiceBoundInternalFingerprintForTest(
+	key, internalOperation, internalFingerprint, serviceOperation, serviceFingerprint string,
+) string {
+	payload, _ := json.Marshal(struct {
+		Key                 string
+		InternalOperation   string
+		InternalFingerprint string
+		ServiceOperation    string
+		ServiceFingerprint  string
+	}{
+		Key:                 strings.TrimSpace(key),
+		InternalOperation:   strings.TrimSpace(internalOperation),
+		InternalFingerprint: strings.TrimSpace(internalFingerprint),
+		ServiceOperation:    strings.TrimSpace(serviceOperation),
+		ServiceFingerprint:  strings.TrimSpace(serviceFingerprint),
+	})
+	return domain.JSONContentSignature(payload)
+}
+
+func rewritePreparedAdaptationJournalAsV1(t *testing.T, dir string) {
+	t.Helper()
+	path := filepath.Join(dir, "meta", "revisions", "adaptation-command-journal.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current struct {
+		Key, Operation, Fingerprint string
+		Files                       []string
+	}
+	if err := json.Unmarshal(data, &current); err != nil {
+		t.Fatal(err)
+	}
+	legacyFiles := make([]string, 0, len(current.Files))
+	for _, rel := range current.Files {
+		if rel == "meta/revisions/expansion-publication-trust.json" || rel == "meta/revisions/expansion-publication-receipt.json" {
+			continue
+		}
+		legacyFiles = append(legacyFiles, rel)
+	}
+	legacy := struct {
+		Version     int      `json:"version"`
+		Key         string   `json:"key"`
+		Operation   string   `json:"operation"`
+		Fingerprint string   `json:"fingerprint"`
+		Files       []string `json:"files"`
+	}{1, current.Key, current.Operation, current.Fingerprint, legacyFiles}
+	data, err = json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdaptationRevisionTerminalPublishReceiptTamperFailsClosed(t *testing.T) {
+	mutations := []struct {
+		name   string
+		mutate func(map[string]any, map[string]any, map[string]any)
+	}{
+		{name: "result id", mutate: func(_, _, result map[string]any) { result["id"] = "forged-session" }},
+		{name: "result mode", mutate: func(_, _, result map[string]any) { result["mode"] = "normal" }},
+		{name: "result stage", mutate: func(_, _, result map[string]any) { result["stage"] = "failed" }},
+		{name: "result revision", mutate: func(_, _, result map[string]any) { result["revision"] = result["revision"].(float64) + 1 }},
+		{name: "result generation", mutate: func(_, _, result map[string]any) { result["generation"] = result["generation"].(float64) + 1 }},
+		{name: "session content", mutate: func(_, _, result map[string]any) { result["intent"] = "forged intent" }},
+		{name: "operation", mutate: func(_, receipt, _ map[string]any) { receipt["operation"] = "cancel" }},
+		{name: "fingerprint", mutate: func(_, receipt, _ map[string]any) { receipt["fingerprint"] = strings.Repeat("0", 64) }},
+		{name: "state version", mutate: func(state, _, _ map[string]any) { state["version"] = float64(2) }},
+		{name: "unknown state", mutate: func(state, _, _ map[string]any) { state["unexpected"] = true }},
+		{name: "unknown receipt", mutate: func(_, receipt, _ map[string]any) { receipt["unexpected"] = true }},
+		{name: "unknown result", mutate: func(_, _, result map[string]any) { result["unexpected"] = true }},
+		{name: "partial result", mutate: func(_, _, result map[string]any) { delete(result, "policy_id") }},
+		{name: "null result", mutate: func(_, receipt, _ map[string]any) { receipt["result"] = nil }},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.name, func(t *testing.T) {
+			st, service, preview, session, _ := prepareAdaptationServicePublication(t)
+			key := "terminal-receipt-tamper"
+			if _, err := service.Publish(preview, session, key); err != nil {
+				t.Fatal(err)
+			}
+			assertPreparedAdaptationEvidenceAbsent(t, st.Dir())
+			path := filepath.Join(st.Dir(), "meta", "adaptation", "revision_service_receipts.json")
+			var state map[string]any
+			data, err := os.ReadFile(path)
+			if err != nil || json.Unmarshal(data, &state) != nil {
+				t.Fatal(err)
+			}
+			receipt := state["receipts"].(map[string]any)[key].(map[string]any)
+			result := receipt["result"].(map[string]any)
+			mutation.mutate(state, receipt, result)
+			tampered, err := json.MarshalIndent(state, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tampered = append(tampered, '\n')
+			if err := os.WriteFile(path, tampered, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			formalBefore, err := st.CaptureAdaptationFormalSnapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			registryBefore := snapshotPublicationAuthorityRegistry(t)
+			if _, err := service.Publish(preview, session, key); err == nil {
+				t.Fatal("tampered terminal publish receipt was returned")
+			}
+			if after, err := os.ReadFile(path); err != nil || !reflect.DeepEqual(after, tampered) {
+				t.Fatalf("tampered diagnostic receipt changed: err=%v", err)
+			}
+			formalAfter, err := st.CaptureAdaptationFormalSnapshot()
+			if err != nil || !reflect.DeepEqual(formalBefore, formalAfter) {
+				t.Fatalf("tampered receipt replay changed formal facts: err=%v", err)
+			}
+			if registryAfter := snapshotPublicationAuthorityRegistry(t); !reflect.DeepEqual(registryBefore, registryAfter) {
+				t.Fatal("tampered receipt replay changed authority facts")
+			}
+		})
+	}
+
+	for _, mutation := range []struct {
+		name   string
+		mutate func([]byte) []byte
+	}{
+		{name: "duplicate JSON", mutate: func(data []byte) []byte {
+			return []byte(strings.Replace(string(data), "\"version\": 1,", "\"version\": 1, \"version\": 1,", 1))
+		}},
+		{name: "duplicate result JSON", mutate: func(data []byte) []byte {
+			return []byte(strings.Replace(string(data), "\"id\":", "\"id\": \"duplicate\", \"id\":", 1))
+		}},
+		{name: "multiple JSON values", mutate: func(data []byte) []byte { return append(data, []byte("{}\n")...) }},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			st, service, preview, session, _ := prepareAdaptationServicePublication(t)
+			key := "terminal-receipt-json-tamper"
+			if _, err := service.Publish(preview, session, key); err != nil {
+				t.Fatal(err)
+			}
+			assertPreparedAdaptationEvidenceAbsent(t, st.Dir())
+			path := filepath.Join(st.Dir(), "meta", "adaptation", "revision_service_receipts.json")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tampered := mutation.mutate(data)
+			if err := os.WriteFile(path, tampered, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Publish(preview, session, key); err == nil {
+				t.Fatal("invalid terminal receipt JSON was returned")
+			}
+			if after, err := os.ReadFile(path); err != nil || !reflect.DeepEqual(after, tampered) {
+				t.Fatalf("invalid terminal receipt evidence changed: err=%v", err)
+			}
+		})
+	}
+}
+
+func TestAdaptationRevisionTerminalPublishDurableFactTamperFailsClosed(t *testing.T) {
+	for _, fact := range []string{"internal receipt", "formal plan", "publication trust", "publication receipt", "authority record"} {
+		t.Run(fact, func(t *testing.T) {
+			st, service, preview, session, _ := prepareAdaptationServicePublication(t)
+			key := "terminal-fact-tamper"
+			registryBeforePublish := snapshotPublicationAuthorityRegistry(t)
+			published, err := service.Publish(preview, session, key)
+			if err != nil || published == nil {
+				t.Fatal(err)
+			}
+			assertPreparedAdaptationEvidenceAbsent(t, st.Dir())
+			formalBefore, err := st.CaptureAdaptationFormalSnapshot()
+			if err != nil {
+				t.Fatal(err)
+			}
+			registryCommitted := snapshotPublicationAuthorityRegistry(t)
+
+			var restore func()
+			switch fact {
+			case "internal receipt":
+				path := filepath.Join(st.Dir(), "meta", "revisions", "state.json")
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var state map[string]any
+				if err := json.Unmarshal(data, &state); err != nil {
+					t.Fatal(err)
+				}
+				receipts := state["receipts"].(map[string]any)
+				internalFingerprint := receipts[key].(map[string]any)["fingerprint"].(string)
+				tampered := strings.Replace(string(data), internalFingerprint, strings.Repeat("0", 64), 1)
+				if tampered == string(data) {
+					t.Fatal("internal receipt fingerprint not found")
+				}
+				if err := os.WriteFile(path, []byte(tampered), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				restore = func() { _ = os.WriteFile(path, data, 0o644) }
+			case "formal plan":
+				path := filepath.Join(st.Dir(), "meta", "adaptation", "plan.json")
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				restore = func() { _ = os.WriteFile(path, data, 0o644) }
+			case "publication trust", "publication receipt":
+				name := "expansion-publication-trust.json"
+				if fact == "publication receipt" {
+					name = "expansion-publication-receipt.json"
+				}
+				path := filepath.Join(st.Dir(), "meta", "revisions", name)
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var document map[string]any
+				if err := json.Unmarshal(data, &document); err != nil {
+					t.Fatal(err)
+				}
+				document["project_id"] = "forged-project"
+				tampered, _ := json.MarshalIndent(document, "", "  ")
+				if err := os.WriteFile(path, append(tampered, '\n'), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				restore = func() { _ = os.WriteFile(path, data, 0o644) }
+			case "authority record":
+				var recordName string
+				for name := range registryCommitted {
+					if _, existed := registryBeforePublish[name]; !existed {
+						recordName = name
+						break
+					}
+				}
+				if recordName == "" {
+					t.Fatal("committed authority record was not identified")
+				}
+				path := filepath.Join(publicationTestAuthorityRoot, "projects", recordName)
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("tampered-authority-record"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				restore = func() { _ = os.WriteFile(path, data, 0o600) }
+			}
+
+			if _, err := service.Publish(preview, session, key); err == nil {
+				restore()
+				t.Fatalf("%s tamper returned a terminal publish result", fact)
+			}
+			restore()
+			formalAfter, err := st.CaptureAdaptationFormalSnapshot()
+			if err != nil || !reflect.DeepEqual(formalBefore, formalAfter) {
+				t.Fatalf("%s tamper replay changed formal facts after restore: err=%v", fact, err)
+			}
+			if registryAfter := snapshotPublicationAuthorityRegistry(t); !reflect.DeepEqual(registryCommitted, registryAfter) {
+				t.Fatalf("%s tamper replay changed authority facts", fact)
+			}
+		})
+	}
+}
+
+func TestAdaptationRevisionTerminalPublishExactReplayAfterPreparedCleanup(t *testing.T) {
+	st, service, preview, session, _ := prepareAdaptationServicePublication(t)
+	key := "terminal-exact-replay"
+	published, err := service.Publish(preview, session, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedAdaptationEvidenceAbsent(t, st.Dir())
+	lease, err := st.Revisions.AcquireNormalFlow("terminal-exact-replay-successor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Revisions.ReleaseNormalFlow(lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := service.Publish(preview, session, key)
+	if err != nil || !reflect.DeepEqual(published, replayed) {
+		t.Fatalf("same-process terminal exact replay=%+v err=%v", replayed, err)
+	}
+	restarted, err := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).Publish(preview, session, key)
+	if err != nil || !reflect.DeepEqual(published, restarted) {
+		t.Fatalf("restart terminal exact replay=%+v err=%v", restarted, err)
+	}
+	changed := preview
+	changed.Stage = domain.ManuscriptStageWriting
+	if _, err := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).Publish(changed, session, key); err == nil {
+		t.Fatal("same-key different terminal fingerprint did not conflict")
+	}
+}
+
+func TestAdaptationRevisionTerminalPublishServiceIdentityBindingFailsClosed(t *testing.T) {
+	t.Run("coherent payload fingerprint substitution", func(t *testing.T) {
+		st, service, preview, session, _ := prepareAdaptationServicePublication(t)
+		key := "terminal-coherent-substitution"
+		if _, err := service.Publish(preview, session, key); err != nil {
+			t.Fatal(err)
+		}
+		assertPreparedAdaptationEvidenceAbsent(t, st.Dir())
+		changed := preview
+		changed.Stage = domain.ManuscriptStageWriting
+		changedFingerprint := adaptationPublishServiceFingerprint(t, changed, session)
+		serviceReceiptPath := filepath.Join(st.Dir(), "meta", "adaptation", "revision_service_receipts.json")
+		data, err := os.ReadFile(serviceReceiptPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var state map[string]any
+		if err := json.Unmarshal(data, &state); err != nil {
+			t.Fatal(err)
+		}
+		state["receipts"].(map[string]any)[key].(map[string]any)["fingerprint"] = changedFingerprint
+		tampered, err := json.MarshalIndent(state, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tampered = append(tampered, '\n')
+		if err := os.WriteFile(serviceReceiptPath, tampered, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		formalBefore, err := st.CaptureAdaptationFormalSnapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		authorityBefore := snapshotPublicationAuthorityRegistry(t)
+		if _, err := service.Publish(changed, session, key); err == nil {
+			t.Fatal("same-process coherent service fingerprint substitution was accepted")
+		}
+		if _, err := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).Publish(changed, session, key); err == nil {
+			t.Fatal("restart coherent service fingerprint substitution was accepted")
+		}
+		request := adaptationCommandReceiptRequest("publish", session.Revision)
+		request.Preview = &changed
+		if _, _, err := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).LoadCommandReceipt(request, key); err == nil {
+			t.Fatal("LoadCommandReceipt accepted coherent service fingerprint substitution")
+		}
+		if after, err := os.ReadFile(serviceReceiptPath); err != nil || !reflect.DeepEqual(after, tampered) {
+			t.Fatalf("coherent tamper evidence changed: err=%v", err)
+		}
+		formalAfter, err := st.CaptureAdaptationFormalSnapshot()
+		if err != nil || !reflect.DeepEqual(formalBefore, formalAfter) {
+			t.Fatalf("coherent substitution changed formal facts: err=%v", err)
+		}
+		if authorityAfter := snapshotPublicationAuthorityRegistry(t); !reflect.DeepEqual(authorityBefore, authorityAfter) {
+			t.Fatal("coherent substitution changed protected authority facts")
+		}
+	})
+
+	t.Run("key remap", func(t *testing.T) {
+		st, service, preview, session, _ := prepareAdaptationServicePublication(t)
+		key, remapped := "terminal-key-binding", "terminal-key-remapped"
+		if _, err := service.Publish(preview, session, key); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(st.Dir(), "meta", "adaptation", "revision_service_receipts.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var state map[string]any
+		if err := json.Unmarshal(data, &state); err != nil {
+			t.Fatal(err)
+		}
+		receipts := state["receipts"].(map[string]any)
+		receipts[remapped] = receipts[key]
+		delete(receipts, key)
+		tampered, _ := json.MarshalIndent(state, "", "  ")
+		if err := os.WriteFile(path, append(tampered, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewAdaptationRevisionService(storepkg.NewStore(st.Dir())).Publish(preview, session, remapped); err == nil {
+			t.Fatal("service receipt key remap bypassed signed publication identity")
+		}
+	})
+
+	t.Run("binding digest", func(t *testing.T) {
+		st, service, preview, session, _ := prepareAdaptationServicePublication(t)
+		key := "terminal-binding-digest"
+		if _, err := service.Publish(preview, session, key); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(st.Dir(), "meta", "revisions", "expansion-publication-receipt.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var receipt map[string]any
+		if err := json.Unmarshal(data, &receipt); err != nil {
+			t.Fatal(err)
+		}
+		if binding, _ := receipt["adaptation_service_binding"].(string); len(binding) != 64 {
+			t.Fatalf("new adaptation publication omitted service binding: %q", binding)
+		}
+		receipt["adaptation_service_binding"] = strings.Repeat("0", 64)
+		tampered, _ := json.MarshalIndent(receipt, "", "  ")
+		if err := os.WriteFile(path, append(tampered, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Publish(preview, session, key); err == nil {
+			t.Fatal("tampered signed service binding was accepted")
+		}
+	})
+}
+
+func assertPreparedAdaptationEvidenceAbsent(t *testing.T, dir string) {
+	t.Helper()
+	for _, path := range []string{
+		filepath.Join(dir, "meta", "revisions", "adaptation-command-journal.json"),
+		filepath.Join(dir, "meta", "revisions", "adaptation-command-snapshot"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("prepared adaptation evidence remains after terminal commit: %s err=%v", filepath.Base(path), err)
+		}
+	}
+}
+
+func assertAdaptationPublicationRemainedCommitted(
+	t *testing.T,
+	st *storepkg.Store,
+	sessionID string,
+	candidate domain.AdaptationPlan,
+	registryBefore map[string]publicationAuthorityRegistrySnapshot,
+) {
+	t.Helper()
+	formal, err := st.Adaptation.LoadPlan()
+	if err != nil || formal == nil || len(formal.Chapters) != len(candidate.Chapters) ||
+		formal.Chapters[len(formal.Chapters)-1].ID != candidate.Chapters[len(candidate.Chapters)-1].ID {
+		t.Fatalf("committed formal adaptation rolled back: plan=%+v err=%v", formal, err)
+	}
+	committed, err := st.Revisions.LoadSession(sessionID)
+	if err != nil || committed == nil || committed.Stage != domain.RevisionStageCompleted || committed.Generation == 0 {
+		t.Fatalf("committed internal revision rolled back: session=%+v err=%v", committed, err)
+	}
+	progress, err := st.Progress.Load()
+	if err != nil || progress == nil || progress.TotalChapters != len(candidate.Chapters) {
+		t.Fatalf("committed progress rolled back: progress=%+v err=%v", progress, err)
+	}
+	registryAfter := snapshotPublicationAuthorityRegistry(t)
+	if len(registryAfter) != len(registryBefore)+1 {
+		t.Fatalf("committed authority record count before=%d after=%d", len(registryBefore), len(registryAfter))
+	}
+}
+
+func prepareAdaptationServicePublication(t *testing.T) (*storepkg.Store, *AdaptationRevisionService, AdaptationStructureRevisionPreview, *domain.RevisionSession, domain.AdaptationPlan) {
+	t.Helper()
+	st, _, candidate := seedAdaptationRevisionProject(t, domain.ManuscriptStageProposalComplete, domain.AdaptationGranularityChapter, false)
+	service := NewAdaptationRevisionService(st)
+	previewed, err := service.Preview(AdaptationRevisionPreviewRequest{Intent: "append a committed bridge chapter", Candidate: candidate}, "preview-finalize")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := runAdaptationStructureAndDetailApproval(t, service, *previewed.Preview, previewed.Session, candidate)
+	return st, service, *previewed.Preview, session, candidate
 }
 
 func TestAdaptationRevisionRuntimeTransitionsAreRollbackSafeAndSerialized(t *testing.T) {
@@ -1480,7 +2910,7 @@ func passAdaptationAuditAndApprove(t *testing.T, service *AdaptationRevisionServ
 
 func seedAdaptationRevisionProject(t *testing.T, stage domain.ManuscriptStage, granularity string, completed bool) (*storepkg.Store, domain.AdaptationPlan, domain.AdaptationPlan) {
 	t.Helper()
-	st := storepkg.NewStore(t.TempDir())
+	st := newPublicationTestStore(t)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}

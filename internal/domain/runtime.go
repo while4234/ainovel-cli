@@ -72,8 +72,31 @@ type Progress struct {
 	ReopenedFromComplete bool `json:"reopened_from_complete,omitempty"`
 	// CompletionAuditStatus persists the last automatic completion-gate
 	// decision so routing can stop even when no ordinary report can be built.
-	CompletionAuditStatus       string `json:"completion_audit_status,omitempty"`
-	CompletionAuditReportDigest string `json:"completion_audit_report_digest,omitempty"`
+	CompletionAuditStatus       string                            `json:"completion_audit_status,omitempty"`
+	CompletionAuditReportDigest string                            `json:"completion_audit_report_digest,omitempty"`
+	CompletionRevalidation      *CompletionRevalidationCheckpoint `json:"completion_revalidation,omitempty"`
+}
+
+// CompletionRevalidationCheckpoint is the durable human-node created when a
+// completed book accepts a new structure. It binds the accepted revision and
+// stable order to the new formal publication and records only signatures of
+// the prose/postprocess/hierarchical evidence needed to complete again.
+type CompletionRevalidationCheckpoint struct {
+	Version                    int               `json:"version"`
+	Status                     string            `json:"status"`
+	Mode                       RevisionMode      `json:"mode"`
+	AcceptedRevisionID         string            `json:"accepted_revision_id"`
+	AcceptedVersionSignature   string            `json:"accepted_version_signature"`
+	PreviousStructureSignature string            `json:"previous_structure_signature"`
+	PreviousStableOrder        []string          `json:"previous_stable_order"`
+	CurrentStructureSignature  string            `json:"current_structure_signature"`
+	CurrentStableOrder         []string          `json:"current_stable_order"`
+	CreatedAt                  string            `json:"created_at"`
+	ChapterSignatures          map[string]string `json:"chapter_signatures,omitempty"`
+	PostprocessSignature       string            `json:"postprocess_signature,omitempty"`
+	ArcAuditSignature          string            `json:"arc_audit_signature,omitempty"`
+	VolumeAuditSignature       string            `json:"volume_audit_signature,omitempty"`
+	BookAuditSignature         string            `json:"book_audit_signature,omitempty"`
 }
 
 type ArcPostprocessTarget struct {

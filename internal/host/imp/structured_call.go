@@ -2,11 +2,13 @@ package imp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
 
@@ -54,7 +56,7 @@ func runStructuredCall[T any](
 			return zero, err
 		}
 
-		text, err := generateStructuredText(ctx, llm, currentMessages, opts)
+		text, recorder, usage, err := generateStructuredText(ctx, llm, currentMessages, opts, attempt)
 		if err != nil {
 			if !agentcore.IsFailoverEligible(err) || attempt == maxAttempts {
 				return zero, err
@@ -67,8 +69,12 @@ func runStructuredCall[T any](
 
 		parsed, err := parse(text)
 		if err == nil {
+			if diagnosticErr := recorder.Finish(modeldiag.StatusCompleted, text, usage); diagnosticErr != nil {
+				return zero, diagnosticErr
+			}
 			return parsed, nil
 		}
+		_ = recorder.Finish(structuredDiagnosticStatus(err), text, usage)
 		if attempt == maxAttempts {
 			return zero, err
 		}
@@ -81,29 +87,54 @@ func runStructuredCall[T any](
 	return zero, fmt.Errorf("structured call exhausted %d attempts", maxAttempts)
 }
 
-func generateStructuredText(ctx context.Context, llm LLMChat, messages []agentcore.Message, opts StructuredCallOptions) (string, error) {
+func generateStructuredText(ctx context.Context, llm LLMChat, messages []agentcore.Message, opts StructuredCallOptions, attempt int) (string, *modeldiag.Recorder, *agentcore.Usage, error) {
 	callOpts := callOptions(opts)
 	if streamer, ok := llm.(LLMStreamChat); ok && !opts.DisableStream {
+		recorder, beginErr := beginIMPDiagnostic(ctx, "import_structured_stream", 0, messages, opts.MaxTokens, attempt)
+		if beginErr != nil {
+			return "", nil, nil, beginErr
+		}
 		ch, err := streamer.GenerateStream(ctx, messages, nil, callOpts...)
 		if err == nil {
-			return collectStreamText(ch)
+			text, usage, collectErr := collectStreamText(ch)
+			if collectErr != nil {
+				_ = recorder.Finish(modeldiag.StatusProviderError, text, usage)
+				return "", nil, nil, collectErr
+			}
+			if strings.TrimSpace(text) == "" {
+				_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", usage)
+				return "", nil, nil, fmt.Errorf("llm returned empty response")
+			}
+			return text, recorder, usage, nil
 		}
+		_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 		if agentcore.IsFailoverEligible(err) {
-			return "", err
+			return "", nil, nil, err
 		}
 	}
 
+	recorder, beginErr := beginIMPDiagnostic(ctx, "import_structured_generate", 0, messages, opts.MaxTokens, attempt)
+	if beginErr != nil {
+		return "", nil, nil, beginErr
+	}
 	resp, err := llm.Generate(ctx, messages, nil, callOpts...)
 	if err != nil {
-		return "", err
+		_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
+		return "", nil, nil, err
 	}
 	if resp == nil {
-		return "", fmt.Errorf("llm returned nil response")
+		_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", nil)
+		return "", nil, nil, fmt.Errorf("llm returned nil response")
 	}
-	return resp.Message.TextContent(), nil
+	text := resp.Message.TextContent()
+	if strings.TrimSpace(text) == "" {
+		_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", resp.Message.Usage)
+		return "", nil, nil, fmt.Errorf("llm returned empty response")
+	}
+	return text, recorder, resp.Message.Usage, nil
 }
 
-func collectStreamText(ch <-chan agentcore.StreamEvent) (string, error) {
+func collectStreamText(ch <-chan agentcore.StreamEvent) (string, *agentcore.Usage, error) {
 	var sb strings.Builder
 	for ev := range ch {
 		switch ev.Type {
@@ -111,17 +142,44 @@ func collectStreamText(ch <-chan agentcore.StreamEvent) (string, error) {
 			sb.WriteString(ev.Delta)
 		case agentcore.StreamEventDone:
 			if sb.Len() > 0 {
-				return sb.String(), nil
+				return sb.String(), ev.Message.Usage, nil
 			}
-			return ev.Message.TextContent(), nil
+			return ev.Message.TextContent(), ev.Message.Usage, nil
 		case agentcore.StreamEventError:
 			if ev.Err != nil {
-				return "", ev.Err
+				return sb.String(), nil, ev.Err
 			}
-			return "", fmt.Errorf("llm stream returned error event")
+			return sb.String(), nil, fmt.Errorf("llm stream returned error event")
 		}
 	}
-	return "", fmt.Errorf("llm stream closed before done")
+	return sb.String(), nil, fmt.Errorf("llm stream closed before done")
+}
+
+func beginIMPDiagnostic(ctx context.Context, task string, chapter int, messages []agentcore.Message, maxTokens, attempt int) (*modeldiag.Recorder, error) {
+	var system string
+	if len(messages) > 0 {
+		system = messages[0].TextContent()
+	}
+	user, _ := json.Marshal(messages[1:])
+	return modeldiag.Begin(modeldiag.Request{Store: modeldiag.StoreFromContext(ctx), Task: task, ChapterID: impChapterDiagnosticID(chapter), Batch: attempt, System: system, User: user, InputLimitBytes: 60 * 1024, OutputLimitTokens: maxTokens})
+}
+
+func impChapterDiagnosticID(chapter int) string {
+	if chapter <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("chapter-%d", chapter)
+}
+
+func structuredDiagnosticStatus(err error) string {
+	if err == nil {
+		return modeldiag.StatusCompleted
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "json") || strings.Contains(message, "envelope") || strings.Contains(message, "tag") {
+		return modeldiag.StatusDecodeError
+	}
+	return modeldiag.StatusInvalidSchema
 }
 
 func callOptions(opts StructuredCallOptions) []agentcore.CallOption {

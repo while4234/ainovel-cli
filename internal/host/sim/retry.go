@@ -2,11 +2,13 @@ package sim
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
 
@@ -55,15 +57,19 @@ func runStructuredJSONCall[T any](
 			return zero, err
 		}
 
-		resp, err := generateStructuredJSONResponse(ctx, llm, currentMessages, opts)
+		resp, recorder, err := generateStructuredJSONResponse(ctx, llm, currentMessages, opts)
 		if err != nil {
 			return zero, err
 		}
 
 		parsed, err := parse(resp.Message.TextContent())
 		if err == nil {
+			if diagnosticErr := recorder.Finish(modeldiag.StatusCompleted, resp.Message.TextContent(), resp.Message.Usage); diagnosticErr != nil {
+				return zero, diagnosticErr
+			}
 			return parsed, nil
 		}
+		_ = recorder.Finish(simulationParseDiagnosticStatus(err), resp.Message.TextContent(), resp.Message.Usage)
 		if repairAttempt >= maxStructureRepairAttempts {
 			return zero, err
 		}
@@ -83,21 +89,31 @@ func runStructuredJSONCall[T any](
 	}
 }
 
-func generateStructuredJSONResponse(ctx context.Context, llm LLMChat, messages []agentcore.Message, opts structuredJSONCallOptions) (*agentcore.LLMResponse, error) {
+func generateStructuredJSONResponse(ctx context.Context, llm LLMChat, messages []agentcore.Message, opts structuredJSONCallOptions) (*agentcore.LLMResponse, *modeldiag.Recorder, error) {
 	maxAttempts := structuredJSONModelCallMaxAttempts(opts)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		system, user := simulationDiagnosticInput(messages)
+		recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: modeldiag.StoreFromContext(ctx), Task: "simulation_structured_json", Batch: attempt, System: system, User: user, InputLimitBytes: 60 * 1024})
+		if beginErr != nil {
+			return nil, nil, beginErr
 		}
 		resp, err := llm.Generate(ctx, messages, nil)
 		if err == nil && resp == nil {
 			err = fmt.Errorf("llm returned nil response")
 		}
-		if err == nil {
-			return resp, nil
+		if err == nil && strings.TrimSpace(resp.Message.TextContent()) == "" {
+			_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", resp.Message.Usage)
+			err = fmt.Errorf("llm returned empty response")
 		}
+		if err == nil {
+			return resp, recorder, nil
+		}
+		_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 		if !shouldRetryStructuredJSONModelCall(ctx, err, attempt, maxAttempts) {
-			return nil, err
+			return nil, nil, err
 		}
 		if opts.OnRetry != nil {
 			opts.OnRetry(structuredJSONRetryEvent{
@@ -108,10 +124,30 @@ func generateStructuredJSONResponse(ctx context.Context, llm LLMChat, messages [
 			})
 		}
 		if err := waitStructuredJSONRetryDelay(ctx, opts, attempt); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return nil, fmt.Errorf("structured JSON model call exhausted %d attempts", maxAttempts)
+	return nil, nil, fmt.Errorf("structured JSON model call exhausted %d attempts", maxAttempts)
+}
+
+func simulationParseDiagnosticStatus(err error) string {
+	if err == nil {
+		return modeldiag.StatusCompleted
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "json") || strings.Contains(message, "decode") || strings.Contains(message, "parse") {
+		return modeldiag.StatusDecodeError
+	}
+	return modeldiag.StatusInvalidSchema
+}
+
+func simulationDiagnosticInput(messages []agentcore.Message) (string, []byte) {
+	if len(messages) == 0 {
+		return "", nil
+	}
+	system := messages[0].TextContent()
+	payload, _ := json.Marshal(messages[1:])
+	return system, payload
 }
 
 func shouldRetryStructuredJSONModelCall(ctx context.Context, err error, attempt, maxAttempts int) bool {

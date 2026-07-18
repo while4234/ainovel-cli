@@ -668,3 +668,9 @@ Scope 的中文标签：
 1. 不要让 Writer 的关键记忆再次只依赖聊天历史。
 2. 不要让 `store_summary` 和 `writer_restore` 口径分叉。
 3. 出现连续性问题时，先查结构化工件有没有进入上下文，再决定是否改 prompt。
+
+## 13. 稿件模型调用预算证据
+
+所有会读取稿件 current/candidate/revision 或改编 source 的真实模型边界都会把脱敏诊断追加到 `meta/manuscript/context-diagnostics.json`，覆盖正文 plan/segment、独立审核、扩写推荐与规划、续写与章节提纲、共同创作、改编 runner/detail/dossier/briefing/semantic map-reduce、IMP 分析与结构化调用。每次调用在预算检查前登记，并且只落一条终态记录：`completed`、`rejected_budget`、`provider_error`、`empty_response`、`truncated_response`、`decode_error` 或 `invalid_schema`。记录包含 task/revision/chapter/batch/segment、各层字节数、输入 token 估算、provider 返回时的 actual input/output/total usage、输出 rune/token 估算与输出签名、限制、selector 数量、split reason 和内容/合同签名；provider 未返回 usage 时显式标记 `usage_present=false`，不把估算冒充实际值。诊断不保存 prompt、source、prose、模型原文输出、人物名、绝对路径或凭据。仅做固定 8-token 连通性探测且不读取项目稿件的 model probe、独立仿写画像流程，以及已有内层真实调用诊断的 usage 聚合包装器不重复记稿件边界诊断。
+
+当前所有生产模型调用的已编译 system+user 输入统一不超过 60 KiB；generation context 自身不超过 60 KiB，expansion recommender 亦不超过 60 KiB，adaptation source 不超过 10,000 units；单次正文调用只处理一个 stable chapter 的一个 segment。全书语义 audit、simulation 合成与导入 foundation 均使用有界 map/reduce，任何单次调用都在调用前按真实已编译输入执行 60 KiB 门禁。`meta/manuscript/content-index.json` 是签名化可重建索引，不是真值；程序内 authoritative atomic write 会推进 durable mutation generation，cache hit 只读取 journal 与文件身份/ctime/metadata，不读取整本正文；绕过写边界的外部原地修改在 Windows 使用 `FILE_BASIC_INFO.ChangeTime`、在主流 Unix/macOS 使用 inode ctime 触发回源重建。未知 Go 平台只能退化为 mtime，因此不宣称能识别“修改后伪造回原 mtime”的带外篡改；正式支持与验收平台是 Windows、Linux 和 macOS。

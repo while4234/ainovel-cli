@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	expansionContextBudgetBytes = 60 * 1024
+	expansionContextBudgetBytes = 48 * 1024
 	expansionSourceBudgetUnits  = 10_000
 )
 
@@ -372,7 +372,7 @@ func (planner *ExpansionPlanner) AcceptDependencyReview(taskID string, review do
 	defer planner.mu.Unlock()
 	task, ok := planner.pendingDependencyAudits[strings.TrimSpace(taskID)]
 	if !ok {
-		return fmt.Errorf("pending dependency audit task not found")
+		return ErrExpansionDependencyTaskNotFound
 	}
 	if review.Stage != task.Stage || review.ScopeID != task.ScopeID || review.InputSignature != task.InputSignature || review.OutputSignature != domain.JSONContentSignature([]byte(task.Output)) || !slices.Equal(review.DependencyIDs, task.DependencyIDs) {
 		return fmt.Errorf("dependency review does not match its durable task")

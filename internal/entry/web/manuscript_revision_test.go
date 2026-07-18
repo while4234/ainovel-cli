@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,14 @@ import (
 	"github.com/voocel/ainovel-cli/internal/host"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
+
+func TestManuscriptBatchFailureUsesUnifiedEnvelope(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeManuscriptError(recorder, &domain.ManuscriptRevisionError{Class: "truncated_response", Err: errors.New("provider truncated output")})
+	if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), `"code":"batch_failed"`) || !strings.Contains(recorder.Body.String(), `"error_class":"truncated_response"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
 
 func TestLegacyChapterReviseCreatesSafePreviewWithoutResume(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), testTempDir(t))

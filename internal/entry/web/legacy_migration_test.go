@@ -2,12 +2,16 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -225,7 +229,11 @@ func writeTestFile(t *testing.T, path, body string) {
 
 func performLegacyMigration(t *testing.T, server *Server, source, name string) *httptest.ResponseRecorder {
 	t.Helper()
-	body, err := json.Marshal(legacyMigrationRequest{SourceDir: source, Name: name})
+	expected := ""
+	if preview, err := server.store.DryRunLegacyProjectMigration(source); err == nil {
+		expected = preview.SourceSHA256
+	}
+	body, err := json.Marshal(legacyMigrationRequest{SourceDir: source, Name: name, ExpectedSourceSHA256: expected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,5 +247,303 @@ func decodeRecorderJSON(t *testing.T, recorder *httptest.ResponseRecorder, targe
 	t.Helper()
 	if err := json.Unmarshal(recorder.Body.Bytes(), target); err != nil {
 		t.Fatalf("decode response %s: %v", recorder.Body.String(), err)
+	}
+}
+
+func TestLegacyMigrationDryRunApplyAndChecksumRollback(t *testing.T) {
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
+	source := filepath.Join(testTempDir(t), "legacy")
+	writeTestFile(t, filepath.Join(source, "outline.json"), `[{"chapter":1,"title":"one"}]`)
+	writeTestFile(t, filepath.Join(source, "chapters", "0001", "final.md"), "formal prose")
+	store := NewProjectStore(runtimeRoot)
+	preview, err := store.DryRunLegacyProjectMigration(source)
+	if err != nil || len(preview.SourceSHA256) != 64 || preview.FileCount != 2 {
+		t.Fatalf("preview = %+v, err = %v", preview, err)
+	}
+	sourceBefore := preview.SourceSHA256
+	result, err := store.MigrateLegacyProject(source, "Migrated", preview.SourceSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after, err := store.DryRunLegacyProjectMigration(source); err != nil || after.SourceSHA256 != sourceBefore {
+		t.Fatalf("source changed during atomic migration: before=%s after=%+v err=%v", sourceBefore, after, err)
+	}
+	if err := store.RollbackLegacyProjectMigration(result.Project.ID, strings.Repeat("0", 64)); err == nil {
+		t.Fatal("rollback accepted a mismatched dry-run checksum")
+	}
+	if _, err := os.Stat(result.Project.RootDir); err != nil {
+		t.Fatalf("mismatched rollback changed target: %v", err)
+	}
+	if err := store.RollbackLegacyProjectMigration(result.Project.ID, preview.SourceSHA256); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(result.Project.RootDir); !os.IsNotExist(err) {
+		t.Fatalf("migrated target remains after rollback: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(source, "chapters", "0001", "final.md")); err != nil || string(got) != "formal prose" {
+		t.Fatalf("source changed during migration rollback: %q %v", got, err)
+	}
+	if after, err := store.DryRunLegacyProjectMigration(source); err != nil || after.SourceSHA256 != sourceBefore {
+		t.Fatalf("source changed during rollback: before=%s after=%+v err=%v", sourceBefore, after, err)
+	}
+}
+
+func TestLegacyMigrationRejectsSourceDriftAfterDryRun(t *testing.T) {
+	base := testTempDir(t)
+	source := filepath.Join(base, "legacy")
+	writeLegacyFixture(t, source)
+	store := NewProjectStore(filepath.Join(base, "runtime"))
+	preview, err := store.DryRunLegacyProjectMigration(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(source, "chapters", "01.md"), "changed after dry-run")
+	if _, err := store.MigrateLegacyProject(source, "Must Reject", preview.SourceSHA256); !errors.Is(err, errLegacySourceInvalid) {
+		t.Fatalf("migration error = %v, want invalid source", err)
+	}
+	projects, err := store.ListProjects()
+	if err != nil || len(projects) != 0 {
+		t.Fatalf("projects after rejected drift = %v, err=%v", projects, err)
+	}
+}
+
+func TestLegacyMigrationRecoversInterruptedStagingAndInstall(t *testing.T) {
+	base := testTempDir(t)
+	store := NewProjectStore(filepath.Join(base, "runtime"))
+	if err := os.MkdirAll(store.ProjectsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("incomplete staging is removed", func(t *testing.T) {
+		projectID := "legacy-interrupted-stage"
+		staging, err := os.MkdirTemp(store.ProjectsDir(), ".legacy-"+projectID+"-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(staging, "partial"), "partial")
+		finalRoot := filepath.Join(store.ProjectsDir(), projectID)
+		journal := legacyMigrationJournal{Version: legacyMigrationJournalVersion, ProjectID: projectID, StagingRoot: staging, FinalRoot: finalRoot, ExpectedSourceSHA256: strings.Repeat("1", 64)}
+		if _, err := store.writeLegacyMigrationJournal(journal); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.recoverLegacyMigrationJournals(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(staging); !os.IsNotExist(err) {
+			t.Fatalf("staging remains after recovery: %v", err)
+		}
+	})
+
+	t.Run("complete atomic install is retained", func(t *testing.T) {
+		projectID := "legacy-installed-stage"
+		staging := filepath.Join(store.ProjectsDir(), ".legacy-"+projectID+"-gone")
+		finalRoot := filepath.Join(store.ProjectsDir(), projectID)
+		writeTestFile(t, filepath.Join(finalRoot, "output", "chapters", "01.md"), "complete payload")
+		payloadHash, copiedFiles, err := hashLegacyStagedPayload(finalRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		marker := legacyImportMarker{Version: legacyImportMarkerVersion, SourceHash: payloadHash, CopiedFiles: copiedFiles}
+		if err := writeLegacyImportMarkerAt(finalRoot, marker); err != nil {
+			t.Fatal(err)
+		}
+		manifest := ProjectManifest{Version: manifestVersion, ID: projectID, Name: "installed", RootDir: finalRoot, OutputDir: filepath.Join(finalRoot, "output")}
+		if err := writeProjectManifestAt(finalRoot, manifest); err != nil {
+			t.Fatal(err)
+		}
+		journal := legacyMigrationJournal{Version: legacyMigrationJournalVersion, ProjectID: projectID, StagingRoot: staging, FinalRoot: finalRoot, ExpectedSourceSHA256: marker.SourceHash}
+		journalPath, err := store.writeLegacyMigrationJournal(journal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.recoverLegacyMigrationJournals(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(finalRoot); err != nil {
+			t.Fatalf("complete install removed: %v", err)
+		}
+		if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
+			t.Fatalf("journal remains: %v", err)
+		}
+	})
+
+	t.Run("invalid final install and staging are removed", func(t *testing.T) {
+		projectID := "legacy-invalid-install"
+		staging, err := os.MkdirTemp(store.ProjectsDir(), ".legacy-"+projectID+"-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		finalRoot := filepath.Join(store.ProjectsDir(), projectID)
+		writeTestFile(t, filepath.Join(staging, "partial"), "partial")
+		writeTestFile(t, filepath.Join(finalRoot, "project.json"), "partial-visible-install")
+		journal := legacyMigrationJournal{Version: legacyMigrationJournalVersion, ProjectID: projectID, StagingRoot: staging, FinalRoot: finalRoot, ExpectedSourceSHA256: strings.Repeat("4", 64)}
+		if _, err := store.writeLegacyMigrationJournal(journal); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.recoverLegacyMigrationJournals(); err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{staging, finalRoot} {
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("interrupted path remains %s: %v", path, err)
+			}
+		}
+	})
+}
+
+func TestLegacyMigrationStartupRecoveryAndStagedPayloadVerification(t *testing.T) {
+	base := testTempDir(t)
+	runtimeRoot := filepath.Join(base, "runtime")
+	store := NewProjectStore(runtimeRoot)
+	if err := os.MkdirAll(store.ProjectsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectID := "legacy-startup-recovery"
+	staging, err := os.MkdirTemp(store.ProjectsDir(), ".legacy-"+projectID+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalRoot := filepath.Join(store.ProjectsDir(), projectID)
+	writeTestFile(t, filepath.Join(staging, "output", "chapters", "01.md"), "partial")
+	journal := legacyMigrationJournal{Version: legacyMigrationJournalVersion, ProjectID: projectID, StagingRoot: staging, FinalRoot: finalRoot, ExpectedSourceSHA256: strings.Repeat("a", 64)}
+	journalPath, err := store.writeLegacyMigrationJournal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := NewProjectStore(runtimeRoot)
+	if projects, err := reopened.ListProjects(); err != nil || len(projects) != 0 {
+		t.Fatalf("startup recovery ListProjects = %v, err=%v", projects, err)
+	}
+	for _, path := range []string{staging, finalRoot, journalPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("startup recovery left %s: %v", path, err)
+		}
+	}
+}
+
+func TestLegacyMigrationRejectsTamperedOrDeletedStagedPayload(t *testing.T) {
+	base := testTempDir(t)
+	source := filepath.Join(base, "legacy")
+	writeLegacyFixture(t, source)
+	store := NewProjectStore(filepath.Join(base, "runtime"))
+	plan, err := store.buildLegacyImportPlan(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(t *testing.T, root string)
+	}{
+		{name: "content tamper", mutate: func(t *testing.T, root string) {
+			writeTestFile(t, filepath.Join(root, "output", "chapters", "01.md"), "tampered")
+		}},
+		{name: "payload deletion", mutate: func(t *testing.T, root string) {
+			if err := os.Remove(filepath.Join(root, "output", "chapters", "01.md")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(base, strings.ReplaceAll(test.name, " ", "-"))
+			copied, copiedHash, err := copyLegacyImportPlan(plan, filepath.Join(root, "output"))
+			if err != nil || copiedHash != plan.SourceHash {
+				t.Fatalf("copy = %d %s, err=%v", copied, copiedHash, err)
+			}
+			marker := legacyImportMarker{Version: legacyImportMarkerVersion, SourceHash: plan.SourceHash, CopiedFiles: copied}
+			if err := writeLegacyImportMarkerAt(root, marker); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeProjectManifestAt(root, ProjectManifest{Version: manifestVersion, ID: "staged", RootDir: root, OutputDir: filepath.Join(root, "output")}); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(t, root)
+			if err := verifyStagedLegacyMigration(root, marker); err == nil {
+				t.Fatal("tampered staged payload passed verification")
+			}
+		})
+	}
+}
+
+func TestLegacyMigrationCanonicalHashSeparatesEntryBoundariesAndMetadata(t *testing.T) {
+	hashRecord := func(records ...struct {
+		kind, path string
+		mode       fs.FileMode
+		content    []byte
+	}) string {
+		h := sha256.New()
+		for _, record := range records {
+			hashLegacyCanonicalBytes(h, record.kind, record.path, record.mode, record.content)
+		}
+		return hex.EncodeToString(h.Sum(nil))
+	}
+	a := hashRecord(struct {
+		kind, path string
+		mode       fs.FileMode
+		content    []byte
+	}{"file", "chapters/a.md", 0o644, []byte("bc")})
+	b := hashRecord(struct {
+		kind, path string
+		mode       fs.FileMode
+		content    []byte
+	}{"file", "chapters/ab.md", 0o644, []byte("c")})
+	if a == b {
+		t.Fatal("length-prefixed records permitted a cross-field boundary collision")
+	}
+	modeA := hashRecord(struct {
+		kind, path string
+		mode       fs.FileMode
+		content    []byte
+	}{"file", "chapters/a.md", 0o644, []byte("same")})
+	modeB := hashRecord(struct {
+		kind, path string
+		mode       fs.FileMode
+		content    []byte
+	}{"file", "chapters/a.md", 0o600, []byte("same")})
+	if runtime.GOOS != "windows" && modeA == modeB {
+		t.Fatal("canonical record omitted the file mode")
+	}
+}
+
+func TestLegacyMigrationStartupRefusesVersionOneJournal(t *testing.T) {
+	base := testTempDir(t)
+	runtimeRoot := filepath.Join(base, "runtime")
+	store := NewProjectStore(runtimeRoot)
+	if err := os.MkdirAll(store.legacyMigrationJournalDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(store.ProjectsDir(), ".legacy-old-v1-stage")
+	writeTestFile(t, filepath.Join(staging, "partial"), "must remain for operator inspection")
+	journalPath := filepath.Join(store.legacyMigrationJournalDir(), "old-v1.json")
+	writeTestFile(t, journalPath, `{"version":1,"project_id":"old-v1"}`)
+
+	reopened := NewProjectStore(runtimeRoot)
+	if _, err := reopened.ListProjects(); err == nil {
+		t.Fatal("startup accepted a version-one legacy migration journal")
+	}
+	for _, path := range []string{staging, journalPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("version-one refusal modified %s: %v", path, err)
+		}
+	}
+}
+
+func TestLegacyMigrationRollbackDoesNotUpgradeVersionOneMarker(t *testing.T) {
+	store := NewProjectStore(filepath.Join(testTempDir(t), "runtime"))
+	project, err := store.CreateProject("Legacy v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.Repeat("3", 64)
+	if err := writeLegacyImportMarker(project, legacyImportMarker{Version: 1, SourceHash: hash}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RollbackLegacyProjectMigration(project.ID, hash); err == nil {
+		t.Fatal("rollback accepted a version-one marker")
+	}
+	marker, err := readLegacyImportMarkerAt(project.RootDir)
+	if err != nil || marker.Version != 1 {
+		t.Fatalf("version-one marker was changed: %+v err=%v", marker, err)
 	}
 }

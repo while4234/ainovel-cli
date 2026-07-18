@@ -47,13 +47,21 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Result, error) {
 	}
 
 	completed := make(map[int]struct{}, len(progress.CompletedChapters))
-	maxCh := 0
 	for _, c := range progress.CompletedChapters {
 		completed[c] = struct{}{}
-		if c > maxCh {
-			maxCh = c
+	}
+	outline, err := deps.Store.Outline.LoadOutline()
+	if err != nil {
+		return nil, fmt.Errorf("load formal outline: %w", err)
+	}
+	var volumes []domain.VolumeOutline
+	if progress.Layered {
+		volumes, err = deps.Store.Outline.LoadLayeredOutline()
+		if err != nil {
+			return nil, fmt.Errorf("load formal layered outline: %w", err)
 		}
 	}
+	ordered := manuscriptDisplayOrder(outline, volumes, progress.CompletedChapters)
 
 	from := opts.From
 	if from <= 0 {
@@ -61,18 +69,23 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Result, error) {
 	}
 	to := opts.To
 	if to <= 0 {
-		to = maxCh
+		to = len(ordered)
 	}
 	if from > to {
 		return nil, fmt.Errorf("章节范围无效：from=%d > to=%d", from, to)
 	}
 
 	var chapters, skipped []int
-	for ch := from; ch <= to; ch++ {
-		if _, ok := completed[ch]; ok {
-			chapters = append(chapters, ch)
+	for display := from; display <= to; display++ {
+		if display > len(ordered) {
+			skipped = append(skipped, display)
+			continue
+		}
+		chapter := ordered[display-1]
+		if _, ok := completed[chapter]; ok {
+			chapters = append(chapters, chapter)
 		} else {
-			skipped = append(skipped, ch)
+			skipped = append(skipped, display)
 		}
 	}
 	if len(chapters) == 0 {
@@ -89,12 +102,6 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Result, error) {
 			return nil, fmt.Errorf("progress 标记第 %d 章已完成，但 chapters/%02d.md 缺失或为空", ch, ch)
 		}
 		bodies[ch] = text
-	}
-
-	outline, _ := deps.Store.Outline.LoadOutline()
-	var volumes []domain.VolumeOutline
-	if progress.Layered {
-		volumes, _ = deps.Store.Outline.LoadLayeredOutline()
 	}
 
 	outPath := opts.OutPath
@@ -142,6 +149,45 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Result, error) {
 		Bytes:    len(data),
 		Skipped:  skipped,
 	}, nil
+}
+
+// manuscriptDisplayOrder resolves the reader-visible order from the formal
+// outline. Numeric chapter fields remain compatibility locators for files;
+// they are not used to sort a revised manuscript. CompletedChapters is used
+// only for a structure-less legacy project; a formal tree is authoritative
+// for inclusion as well as display order.
+func manuscriptDisplayOrder(outline []domain.OutlineEntry, volumes []domain.VolumeOutline, completed []int) []int {
+	ordered := make([]int, 0, len(outline)+len(completed))
+	seen := make(map[int]struct{}, len(outline)+len(completed))
+	appendChapter := func(chapter int) {
+		if chapter <= 0 {
+			return
+		}
+		if _, exists := seen[chapter]; exists {
+			return
+		}
+		seen[chapter] = struct{}{}
+		ordered = append(ordered, chapter)
+	}
+	if len(volumes) > 0 {
+		for _, volume := range volumes {
+			for _, arc := range volume.Arcs {
+				for _, chapter := range arc.Chapters {
+					appendChapter(chapter.Chapter)
+				}
+			}
+		}
+	} else {
+		for _, chapter := range outline {
+			appendChapter(chapter.Chapter)
+		}
+	}
+	if len(volumes) == 0 && len(outline) == 0 {
+		for _, chapter := range completed {
+			appendChapter(chapter)
+		}
+	}
+	return ordered
 }
 
 // inferFormat 从输出路径后缀推断格式。空路径回退 TXT；未知后缀报错（避免静默错误）。

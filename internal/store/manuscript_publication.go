@@ -95,6 +95,12 @@ func (s *Store) PublishManuscriptCandidate(runtime *domain.ManuscriptRevisionRun
 		} else if journal != nil {
 			return fmt.Errorf("publication recovery required")
 		}
+		// Invalidate the rebuildable projection before any formal bytes change.
+		// Failure is safe here because no publication journal or formal write has
+		// started yet; a successful publication can never leave a stale index.
+		if err := s.ManuscriptRevisions.io.RemoveFile(manuscriptContentIndexPath); err != nil {
+			return fmt.Errorf("invalidate manuscript content index: %w", err)
+		}
 		formalFiles, err := s.snapshotManuscriptFormalFiles(chapters)
 		if err != nil {
 			return err
@@ -297,7 +303,7 @@ func (s *Store) applyManuscriptCandidate(runtime domain.ManuscriptRevisionRuntim
 	if err := s.Drafts.writeTextForChapter(candidate.DisplayChapter, "final.md", chapterFinalRel(candidate.DisplayChapter), prose); err != nil {
 		return err
 	}
-	if err := s.Summaries.SaveSummary(summary); err != nil {
+	if err := s.Summaries.saveSummaryOwned(summary); err != nil {
 		return err
 	}
 	if err := s.World.DeleteChapterFacts([]int{candidate.DisplayChapter}); err != nil {
@@ -337,13 +343,13 @@ func (s *Store) applyManuscriptCandidate(runtime domain.ManuscriptRevisionRuntim
 	}
 	if carry.ArcSummary != nil {
 		carry.ArcSummary.Volume, carry.ArcSummary.Arc = volume, arc
-		if err := s.Summaries.SaveArcSummary(*carry.ArcSummary); err != nil {
+		if err := s.Summaries.saveArcSummaryOwned(*carry.ArcSummary); err != nil {
 			return err
 		}
 	}
 	if carry.VolumeSummary != nil {
 		carry.VolumeSummary.Volume = volume
-		if err := s.Summaries.SaveVolumeSummary(*carry.VolumeSummary); err != nil {
+		if err := s.Summaries.saveVolumeSummaryOwned(*carry.VolumeSummary); err != nil {
 			return err
 		}
 	}

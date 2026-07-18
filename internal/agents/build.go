@@ -222,6 +222,11 @@ func BuildCoordinator(
 	writerModel = NewToolCallRepairModel(writerModel)
 	editorModel = NewToolCallRepairModel(editorModel)
 	coordinatorModel = NewToolCallRepairModel(coordinatorModel)
+	architectShortModel := withProductionAgentBoundary(architectModel, store, "agent_architect_short")
+	architectLongModel := withProductionAgentBoundary(architectModel, store, "agent_architect_long")
+	writerModel = withProductionAgentBoundary(writerModel, store, "agent_writer")
+	editorModel = withProductionAgentBoundary(editorModel, store, "agent_editor")
+	coordinatorModel = withProductionAgentBoundary(coordinatorModel, store, "agent_coordinator")
 
 	// Coordinator 的 ContextManager 在 Agent 构造时一次性生成，按启动模型解析。
 	// 运行中 /model 切换到更小窗口的模型时，建议用户显式配置 context_window 兜底。
@@ -274,7 +279,7 @@ func BuildCoordinator(
 	architectShort := subagent.Config{
 		Name:               "architect_short",
 		Description:        "短篇规划师：为单卷、单冲突、高密度故事生成紧凑设定与扁平大纲",
-		Model:              architectModel,
+		Model:              architectShortModel,
 		SystemPrompt:       globalprompt.Apply(bundle.Prompts.ArchitectShort),
 		Tools:              architectTools,
 		MaxTurns:           15,
@@ -290,13 +295,13 @@ func BuildCoordinator(
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentArchitect)
-			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_short", OnSummaryRetry: onSummaryRetry})
+			return newContextManager(contextManagerConfig{Model: model, Store: store, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_short", OnSummaryRetry: onSummaryRetry})
 		},
 	}
 	architectLong := subagent.Config{
 		Name:                "architect_long",
 		Description:         "长篇规划师：为连载型、可持续升级的故事生成分层设定与卷弧大纲",
-		Model:               architectModel,
+		Model:               architectLongModel,
 		SystemPrompt:        globalprompt.Apply(bundle.Prompts.ArchitectLong),
 		Tools:               architectTools,
 		MaxTurns:            20,
@@ -309,7 +314,7 @@ func BuildCoordinator(
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentArchitect)
-			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_long", OnSummaryRetry: onSummaryRetry})
+			return newContextManager(contextManagerConfig{Model: model, Store: store, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_long", OnSummaryRetry: onSummaryRetry})
 		},
 	}
 
@@ -344,6 +349,7 @@ func BuildCoordinator(
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentWriter)
 			return newContextManager(contextManagerConfig{
 				Model:            model,
+				Store:            store,
 				ContextWindow:    window,
 				ReserveTokens:    reserve,
 				KeepRecentTokens: 12_000,
@@ -394,7 +400,7 @@ func BuildCoordinator(
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentEditor)
-			return newContextManager(contextManagerConfig{Model: model, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 18_000, Agent: "editor", OnSummaryRetry: onSummaryRetry})
+			return newContextManager(contextManagerConfig{Model: model, Store: store, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 18_000, Agent: "editor", OnSummaryRetry: onSummaryRetry})
 		},
 	}
 
@@ -403,6 +409,7 @@ func BuildCoordinator(
 	coordinatorContextWindow, coordinatorReserve := boundedAgentContextWindow(coordinatorModelName, coordinatorContextWindow, promptcompile.AgentCoordinator)
 	coordinatorEngine := newContextManager(contextManagerConfig{
 		Model:            coordinatorModel,
+		Store:            store,
 		ContextWindow:    coordinatorContextWindow,
 		ReserveTokens:    coordinatorReserve,
 		KeepRecentTokens: 8_000,

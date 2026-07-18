@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
 
@@ -45,6 +46,7 @@ type legacyArcEventBindingChapterView struct {
 // for a legacy confirmed arc plan. It is deliberately separate from budget
 // repair: a budget error cannot authorize a story or event reassignment.
 func ReconcileLegacyArcEventBindings(ctx context.Context, deps Deps, plan domain.AdaptationPlan) (LegacyArcEventBindingRepairResult, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if domain.NormalizeAdaptationGranularity(plan.Granularity) != domain.AdaptationGranularityArc {
 		return LegacyArcEventBindingRepairResult{Plan: plan}, nil
 	}
@@ -58,6 +60,7 @@ func ReconcileLegacyArcEventBindings(ctx context.Context, deps Deps, plan domain
 // future-contract defects; loading those into one planner prompt is both
 // wasteful and unsafe.
 func ReconcileLegacyArcEventBindingsForChapter(ctx context.Context, deps Deps, plan domain.AdaptationPlan, targetChapter int) (LegacyArcEventBindingRepairResult, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if domain.NormalizeAdaptationGranularity(plan.Granularity) != domain.AdaptationGranularityArc {
 		return LegacyArcEventBindingRepairResult{Plan: plan}, nil
 	}

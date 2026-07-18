@@ -8,13 +8,14 @@ type Novel struct {
 
 // OutlineEntry 大纲条目，对应一章。
 type OutlineEntry struct {
-	ID            string                    `json:"id,omitempty"`
-	Chapter       int                       `json:"chapter"`
-	Title         string                    `json:"title"`
-	CoreEvent     string                    `json:"core_event"`
-	Hook          string                    `json:"hook"`
-	Scenes        []string                  `json:"scenes"`
-	DramaticFacts *ExpansionDramaticFactSet `json:"dramatic_facts,omitempty"`
+	ID              string                    `json:"id,omitempty"`
+	Chapter         int                       `json:"chapter"`
+	Title           string                    `json:"title"`
+	CoreEvent       string                    `json:"core_event"`
+	Hook            string                    `json:"hook"`
+	Scenes          []string                  `json:"scenes"`
+	DramaticFacts   *ExpansionDramaticFactSet `json:"dramatic_facts,omitempty"`
+	ExpansionOrigin *ExpansionOrigin          `json:"expansion_origin,omitempty"`
 }
 
 // Character 角色档案。

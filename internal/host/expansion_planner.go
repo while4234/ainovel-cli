@@ -21,6 +21,7 @@ import (
 
 var (
 	ErrExpansionPreviewNotFound        = errors.New("expansion preview not found")
+	ErrExpansionDependencyTaskNotFound = errors.New("expansion dependency task not found")
 	ErrExpansionPreviewStale           = errors.New("expansion preview is stale")
 	ErrExpansionPreviewExpired         = errors.New("expansion preview expired")
 	ErrExpansionPreviewCancelled       = errors.New("expansion preview cancelled")
@@ -234,6 +235,9 @@ func decodeExpansionReceiptResult[T any](receipt storepkg.ExpansionCommandReceip
 }
 
 func (planner *ExpansionPlanner) Plan(ctx context.Context, request domain.ExpansionRequest) (*domain.ExpansionPreview, error) {
+	if err := planner.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	if planner == nil || planner.store == nil || planner.recommender == nil {
 		return nil, fmt.Errorf("expansion planner runtime is unavailable")
 	}
@@ -308,7 +312,7 @@ func (planner *ExpansionPlanner) prepareExpansionPreview(ctx context.Context, re
 				return nil, fmt.Errorf("dependency audit gate: %w", err)
 			}
 			if review.Decision != "pass" {
-				return nil, fmt.Errorf("dependency audit gate %s/%s needs fix: %s", review.Stage, review.ScopeID, strings.Join(review.Findings, "; "))
+				return nil, &domain.ManuscriptRevisionError{Class: "dependency_audit_needs_fix", Err: fmt.Errorf("dependency audit gate %s/%s needs fix: %s", review.Stage, review.ScopeID, strings.Join(review.Findings, "; "))}
 			}
 			recommendation.AuditChain = append(recommendation.AuditChain, "dependency-review:"+review.Stage+":"+review.ScopeID+":"+review.ArtifactSignature)
 		}
@@ -344,9 +348,25 @@ func (planner *ExpansionPlanner) prepareExpansionPreview(ctx context.Context, re
 			return nil, err
 		}
 	}
+	previewID := newExpansionPreviewID()
+	candidate, err = bindExpansionOrigins(previewID, contextSnapshot.Structure, candidate, recommendation.OrderedOperations, recommendation.Assessment.TypedClaims)
+	if err != nil {
+		return nil, err
+	}
+	if len(sealedSteps) == 0 {
+		return nil, fmt.Errorf("one-line expansion has no sealed structure step")
+	}
+	sealedSteps[len(sealedSteps)-1].Proposal.Candidate = domain.CloneStructureSnapshot(candidate)
+	sealedSteps[len(sealedSteps)-1].Signature, err = planner.kernel.signStructureRevisionPreview(sealedSteps[len(sealedSteps)-1])
+	if err != nil {
+		return nil, err
+	}
+	if recommendation.AdaptationCandidate != nil {
+		bindAdaptationExpansionOrigins(recommendation.AdaptationCandidate, candidate)
+	}
 	recommendation.Impacts = impacts
 	preview := &domain.ExpansionPreview{
-		ID: newExpansionPreviewID(), Mode: contextSnapshot.Mode, Request: request, Recommendation: recommendation,
+		ID: previewID, Mode: contextSnapshot.Mode, Request: request, Recommendation: recommendation,
 		Candidate: candidate, BaseRevision: request.ExpectedStructureRevision,
 		BaseStructureSignature: contextSnapshot.StructureSignature, CandidateSignature: domain.StructureSignature(candidate),
 		ExpiresAt: planner.now().UTC().Add(planner.ttl), KernelPreviews: sealedSteps,
@@ -366,6 +386,73 @@ func (planner *ExpansionPlanner) prepareExpansionPreview(ctx context.Context, re
 		return nil, err
 	}
 	return preview, nil
+}
+
+func bindAdaptationExpansionOrigins(plan *domain.AdaptationPlan, candidate []domain.VolumeOutline) {
+	if plan == nil {
+		return
+	}
+	byID := make(map[string]domain.OutlineEntry)
+	for _, chapter := range domain.FlattenOutline(candidate) {
+		byID[chapter.ID] = chapter
+	}
+	for index := range plan.Chapters {
+		if chapter, ok := byID[plan.Chapters[index].ID]; ok {
+			plan.Chapters[index].OutlineEntry.ExpansionOrigin = chapter.ExpansionOrigin
+			plan.Chapters[index].OutlineEntry.DramaticFacts = chapter.DramaticFacts
+		}
+	}
+}
+
+func bindExpansionOrigins(previewID string, base, candidate []domain.VolumeOutline, operations []domain.ExpansionOperation, facts *domain.ExpansionDramaticFactSet) ([]domain.VolumeOutline, error) {
+	if facts == nil || facts.Validate() != nil {
+		return nil, fmt.Errorf("one-line expansion requires a complete dramatic source contract")
+	}
+	baseChapters := make(map[string]struct{})
+	for _, chapter := range domain.FlattenOutline(domain.ProjectLayeredOutlineOrder(base)) {
+		baseChapters[chapter.ID] = struct{}{}
+	}
+	affected := make(map[string]struct{})
+	for _, operation := range operations {
+		if id := strings.TrimSpace(operation.TargetID); id != "" &&
+			(operation.Operation == domain.StructureRevisionExpandChapter || operation.Operation == domain.StructureRevisionSplitChapter) {
+			affected[id] = struct{}{}
+		}
+	}
+	for _, chapter := range domain.FlattenOutline(domain.ProjectLayeredOutlineOrder(candidate)) {
+		if _, existed := baseChapters[chapter.ID]; !existed {
+			affected[chapter.ID] = struct{}{}
+		}
+	}
+	result := domain.CloneStructureSnapshot(candidate)
+	changed := 0
+	for volumeIndex := range result {
+		for arcIndex := range result[volumeIndex].Arcs {
+			for chapterIndex := range result[volumeIndex].Arcs[arcIndex].Chapters {
+				chapter := &result[volumeIndex].Arcs[arcIndex].Chapters[chapterIndex]
+				if _, isExpansionChapter := affected[chapter.ID]; !isExpansionChapter {
+					continue
+				}
+				if chapter.DramaticFacts == nil {
+					copy := *facts
+					chapter.DramaticFacts = &copy
+				}
+				if chapter.DramaticFacts.Validate() != nil {
+					return nil, fmt.Errorf("one-line expansion chapter %q is not bound to its dramatic source contract", chapter.ID)
+				}
+				origin, err := domain.NewExpansionOrigin(previewID, *chapter.DramaticFacts)
+				if err != nil {
+					return nil, err
+				}
+				chapter.ExpansionOrigin = &origin
+				changed++
+			}
+		}
+	}
+	if changed == 0 {
+		return nil, fmt.Errorf("one-line expansion did not produce a provenance-bound chapter")
+	}
+	return domain.ProjectLayeredOutlineOrder(result), nil
 }
 
 // validateAdaptationExpansionProjection makes the kernel candidate and the
@@ -440,6 +527,9 @@ func canonicalAdaptationExpansionCandidate(candidate []domain.VolumeOutline, pla
 }
 
 func (planner *ExpansionPlanner) Adjust(ctx context.Context, previewID string, expectedRevision int, adjustment domain.ExpansionAdjustment, sentence, idempotencyKey string) (*domain.ExpansionPreview, error) {
+	if err := planner.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	planner.mu.Lock()
 	storedSource := planner.previews[strings.TrimSpace(previewID)]
 	if storedSource == nil {
@@ -646,6 +736,9 @@ func (planner *ExpansionPlanner) ActiveRevision() (*domain.RevisionSession, erro
 }
 
 func (planner *ExpansionPlanner) RevisionCommand(action, message string, expectedRevision int, idempotencyKey string) (*domain.RevisionSession, error) {
+	if err := planner.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	if planner == nil || planner.store == nil || strings.TrimSpace(idempotencyKey) == "" || expectedRevision <= 0 {
 		return nil, fmt.Errorf("expansion revision command, expected revision, and idempotency key are required")
 	}
@@ -714,6 +807,9 @@ func (planner *ExpansionPlanner) RevisionCommand(action, message string, expecte
 			return nil, fmt.Errorf("unsupported expansion revision command %q", action)
 		}
 		if err != nil {
+			if strings.TrimSpace(action) == "approve" {
+				return nil, &domain.ManuscriptRevisionError{Class: "human_confirmation_required", Err: err}
+			}
 			return nil, err
 		}
 		if err := planner.recordReceiptResultLocked(receiptKey, operation, fingerprint, "", updated.ID, updated); err != nil {
@@ -755,6 +851,9 @@ func (planner *ExpansionPlanner) RevisionCommand(action, message string, expecte
 		return nil, fmt.Errorf("unsupported expansion revision command %q", action)
 	}
 	if err != nil {
+		if strings.TrimSpace(action) == "approve" {
+			return nil, &domain.ManuscriptRevisionError{Class: "human_confirmation_required", Err: err}
+		}
 		return nil, err
 	}
 	if err := planner.recordReceiptResultLocked(receiptKey, operation, fingerprint, "", updated.ID, updated); err != nil {
@@ -974,6 +1073,9 @@ func buildExpansionDramaticContract(candidate []domain.VolumeOutline, versions [
 // AcceptAuditArtifact is the public-key-only ingestion boundary. The caller
 // must obtain the artifact from an independently composed ExpansionAuditRunner.
 func (planner *ExpansionPlanner) AcceptAuditArtifact(revisionID string, artifact ExpansionAuditArtifact) (*domain.RevisionSession, error) {
+	if err := planner.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	if planner == nil {
 		return nil, fmt.Errorf("expansion planner is unavailable")
 	}
@@ -1000,7 +1102,7 @@ func (planner *ExpansionPlanner) AcceptAuditArtifact(revisionID string, artifact
 		}
 	}
 	if !ok || task.Status != "pending" {
-		return nil, fmt.Errorf("pending expansion audit task not found")
+		return nil, ErrExpansionDependencyTaskNotFound
 	}
 	active, err = planner.store.Revisions.Active()
 	if err != nil || active == nil || active.ID != task.RevisionID || active.Revision != task.Revision || active.Stage != task.Stage {
@@ -1061,6 +1163,9 @@ func (planner *ExpansionPlanner) AuditTask(revisionID string) *ExpansionAuditTas
 }
 
 func (planner *ExpansionPlanner) Cancel(previewID string, expectedRevision int, idempotencyKey string) (*domain.ExpansionPreview, error) {
+	if err := planner.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(idempotencyKey) == "" || expectedRevision <= 0 {
 		return nil, fmt.Errorf("cancel expected revision and idempotency key are required")
 	}
@@ -1100,6 +1205,9 @@ func (planner *ExpansionPlanner) Cancel(previewID string, expectedRevision int, 
 }
 
 func (planner *ExpansionPlanner) Confirm(ctx context.Context, previewID string, expectedRevision int, idempotencyKey string) (*ExpansionConfirmation, error) {
+	if err := planner.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(idempotencyKey) == "" || expectedRevision <= 0 {
 		return nil, fmt.Errorf("expected revision and idempotency key are required")
 	}
@@ -1212,6 +1320,13 @@ func (planner *ExpansionPlanner) Confirm(ctx context.Context, previewID string, 
 		return nil, err
 	}
 	return result, nil
+}
+
+func (planner *ExpansionPlanner) requireWriteReady() error {
+	if planner == nil || planner.store == nil {
+		return fmt.Errorf("publication_recovery_required: expansion store is unavailable")
+	}
+	return planner.store.RequireManuscriptWriteReady()
 }
 
 // completeExpansionConfirmation is deliberately resumable at each durable

@@ -32,8 +32,9 @@ type Options struct {
 	// ext 由 Format 决定（NovelName 为空则用目录名）。
 	OutPath string
 
-	// From / To 章节范围，闭区间。0 表示从第 1 章 / 到最后一章。
-	// 范围内未完成的章节会被跳过并写入 Result.Skipped，不视为错误。
+	// From / To 是当前正式大纲显示顺序的闭区间。0 表示从第 1 个显示
+	// 条目 / 到最后一个条目。兼容数字只用于定位历史章节文件；插章后
+	// 范围不会退回按旧数字排序。范围内未完成的显示位置会写入 Skipped。
 	From, To int
 
 	// Overwrite 文件存在时是否覆盖；默认拒绝。

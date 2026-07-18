@@ -30,7 +30,7 @@ func NewService(st *store.Store, model agentcore.ChatModel, opts rules.LoadOptio
 // NewServiceWithSystemDefaults 构造带指定系统基线的服务。
 // 外部来源流程可用无默认章字数的基线，避免把导入原文章节或改编章节压进原创默认长度。
 func NewServiceWithSystemDefaults(st *store.Store, model agentcore.ChatModel, opts rules.LoadOptions, defaults rules.Candidate) *Service {
-	return &Service{store: st, norm: NewNormalizer(model), rulesOpts: opts, systemDefaults: defaults}
+	return &Service{store: st, norm: NewNormalizer(model).withStore(st), rulesOpts: opts, systemDefaults: defaults}
 }
 
 // Build 从静态来源（system_defaults + rules 文件 + 启动 prompt）归一化生成快照并落盘。

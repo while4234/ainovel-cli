@@ -28,6 +28,7 @@ type manuscriptTreeNode struct {
 	HasHistory       bool                 `json:"has_history"`
 	ActiveRevision   bool                 `json:"active_revision"`
 	ContentSignature string               `json:"content_signature,omitempty"`
+	CurrentSignature string               `json:"current_signature,omitempty"`
 	TargetDisplay    string               `json:"target_display,omitempty"`
 	SourceDisplay    string               `json:"source_display,omitempty"`
 	Children         []manuscriptTreeNode `json:"children,omitempty"`
@@ -74,7 +75,7 @@ func (s *Server) handleManuscriptWorkspaceRoute(w http.ResponseWriter, r *http.R
 
 func (s *Server) handleManuscriptWorkspaceTree(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, service *host.ManuscriptRevisionService) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	progress, err := st.Progress.Load()
@@ -96,7 +97,12 @@ func (s *Server) handleManuscriptWorkspaceTree(w http.ResponseWriter, r *http.Re
 		writeManuscriptError(w, err)
 		return
 	}
-	nodes, err := buildManuscriptTreeNodes(st, volumes, progress, active)
+	contentIndex, err := st.LoadOrRebuildManuscriptContentIndex()
+	if err != nil {
+		writeManuscriptError(w, err)
+		return
+	}
+	nodes, err := buildManuscriptTreeNodes(st, volumes, progress, active, contentIndex)
 	if err != nil {
 		writeManuscriptError(w, err)
 		return
@@ -106,14 +112,15 @@ func (s *Server) handleManuscriptWorkspaceTree(w http.ResponseWriter, r *http.Re
 	if st.Adaptation.Exists() {
 		mode = domain.RevisionModeAdaptation
 	}
-	payload := map[string]any{"project": manifest, "phase": progress.Phase, "nodes": nodes, "active_revision": activeMetadata, "structure_revision": domain.StructureRevision(volumes), "structure_signature": domain.StructureSignature(volumes), "mode": mode}
+	payload := map[string]any{"project": manifest, "phase": progress.Phase, "nodes": nodes, "active_revision": activeMetadata, "structure_revision": domain.StructureRevision(volumes), "structure_signature": domain.StructureSignature(volumes), "content_index_signature": contentIndex.Signature, "mode": mode}
 	// The project manifest contains access-time metadata. Keep it in the body,
 	// but derive validators only from manuscript truth.
 	etag := `"` + domain.ContentSignature(mustJSON(struct {
 		Phase  domain.Phase         `json:"phase"`
 		Nodes  []manuscriptTreeNode `json:"nodes"`
 		Active any                  `json:"active_revision"`
-	}{progress.Phase, nodes, activeMetadata})) + `"`
+		Index  string               `json:"content_index_signature"`
+	}{progress.Phase, nodes, activeMetadata, contentIndex.Signature})) + `"`
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -122,7 +129,7 @@ func (s *Server) handleManuscriptWorkspaceTree(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, payload)
 }
 
-func buildManuscriptTreeNodes(st *storepkg.Store, volumes []domain.VolumeOutline, progress *domain.Progress, active *domain.ManuscriptRevisionRuntime) ([]manuscriptTreeNode, error) {
+func buildManuscriptTreeNodes(st *storepkg.Store, volumes []domain.VolumeOutline, progress *domain.Progress, active *domain.ManuscriptRevisionRuntime, contentIndex *storepkg.ManuscriptContentIndex) ([]manuscriptTreeNode, error) {
 	adaptationMode := active != nil && active.Mode == domain.RevisionModeAdaptation
 	if !adaptationMode {
 		if plan, err := st.Adaptation.LoadPlan(); err == nil && plan != nil {
@@ -132,6 +139,12 @@ func buildManuscriptTreeNodes(st *storepkg.Store, volumes []domain.VolumeOutline
 	completed := make(map[int]bool, len(progress.CompletedChapters))
 	for _, chapter := range progress.CompletedChapters {
 		completed[chapter] = true
+	}
+	currentSignatures := make(map[string]string)
+	if contentIndex != nil {
+		for _, entry := range contentIndex.Entries {
+			currentSignatures[entry.StableID] = entry.CurrentSHA256
+		}
 	}
 	result := make([]manuscriptTreeNode, 0, len(volumes))
 	for vi, volume := range volumes {
@@ -192,7 +205,7 @@ func buildManuscriptTreeNodes(st *storepkg.Store, volumes []domain.VolumeOutline
 				if err != nil {
 					return nil, err
 				}
-				node := manuscriptTreeNode{Kind: "chapter", StableID: id, ParentID: arcID, DisplayOrder: chapter.Chapter, DisplayLabel: chapter.Title, State: state, HasCurrent: hasCurrent, HasCandidate: hasCandidate, HasHistory: hasHistory, ActiveRevision: activeForChapter, ContentSignature: signedManuscriptArtifact("outline", id, chapter).Signature}
+				node := manuscriptTreeNode{Kind: "chapter", StableID: id, ParentID: arcID, DisplayOrder: chapter.Chapter, DisplayLabel: chapter.Title, State: state, HasCurrent: hasCurrent, HasCandidate: hasCandidate, HasHistory: hasHistory, ActiveRevision: activeForChapter, ContentSignature: signedManuscriptArtifact("outline", id, chapter).Signature, CurrentSignature: currentSignatures[id]}
 				if adaptationMode {
 					node.TargetDisplay = fmt.Sprintf("目标第 %d 章", chapter.Chapter)
 					node.SourceDisplay = adaptationSourceDisplay(st, id)
@@ -233,12 +246,12 @@ func signedManuscriptArtifact(kind, stableID string, content any) manuscriptArti
 
 func (s *Server) handleManuscriptArtifact(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, rest string) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	parts := strings.SplitN(strings.Trim(rest, "/"), "/", 2)
 	if len(parts) != 2 {
-		writeError(w, http.StatusBadRequest, "artifact kind and stable id are required")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "artifact kind and stable id are required")
 		return
 	}
 	kind, stableID := parts[0], parts[1]
@@ -413,26 +426,26 @@ func manuscriptRuntimeHasChapter(runtime domain.ManuscriptRevisionRuntime, stabl
 
 func (s *Server) handleManuscriptWorkspaceChapter(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, service *host.ManuscriptRevisionService, rest string) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	stableID := strings.TrimSuffix(rest, "/content")
 	if !manuscriptChapterStableIDPattern.MatchString(stableID) {
-		writeError(w, http.StatusBadRequest, "stable_id must be a chapter stable ID")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "stable_id must be a chapter stable ID")
 		return
 	}
 	view := defaultString(strings.TrimSpace(r.URL.Query().Get("view")), "current")
 	version := strings.TrimSpace(r.URL.Query().Get("version"))
 	if view != "current" && view != "candidate" {
-		writeError(w, http.StatusBadRequest, "chapter content view must be current or candidate; use the version endpoint for history")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "chapter content view must be current or candidate; use the version endpoint for history")
 		return
 	}
 	if view == "current" && version != "" {
-		writeError(w, http.StatusBadRequest, "current view must not carry version")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "current view must not carry version")
 		return
 	}
 	if view == "candidate" && version == "" {
-		writeError(w, http.StatusBadRequest, "candidate view requires version")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "candidate view requires version")
 		return
 	}
 	baseline, prose, err := service.CurrentChapter(stableID)
@@ -502,7 +515,7 @@ func writeManuscriptChunk(w http.ResponseWriter, r *http.Request, manifest Proje
 
 func (s *Server) handleManuscriptHistory(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	offset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
@@ -528,13 +541,13 @@ func (s *Server) handleManuscriptHistory(w http.ResponseWriter, r *http.Request,
 
 func (s *Server) handleManuscriptVersion(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, revisionID string) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	revisionID = strings.TrimSpace(revisionID)
 	chapterID := strings.TrimSpace(r.URL.Query().Get("chapter_id"))
 	if !manuscriptRevisionStableIDPattern.MatchString(revisionID) || !manuscriptChapterStableIDPattern.MatchString(chapterID) {
-		writeError(w, http.StatusBadRequest, "revision_id and chapter_id must be stable IDs")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "revision_id and chapter_id must be stable IDs")
 		return
 	}
 	runtime, err := st.ManuscriptRevisions.Load(revisionID)
@@ -568,9 +581,7 @@ func (s *Server) handleManuscriptVersion(w http.ResponseWriter, r *http.Request,
 }
 
 func writeManuscriptVersionGone(w http.ResponseWriter) {
-	writeJSON(w, http.StatusGone, map[string]any{"error": map[string]any{
-		"code": "version_gone", "message": "historical version is no longer available", "action": "reload_history",
-	}})
+	writeManuscriptEnvelope(w, http.StatusGone, "version_gone", "historical version is no longer available", map[string]any{"action": "reload_history"})
 }
 
 func splitManuscriptParagraphs(value string) []string {

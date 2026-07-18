@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	manuscriptContextBudgetBytes       = 60 * 1024
+	manuscriptContextBudgetBytes       = 48 * 1024
 	adaptationSourceContextBudgetUnits = 10000
 	manuscriptSegmentTargetRunes       = 3200
 	manuscriptSegmentMinRunes          = 2200

@@ -9,7 +9,9 @@ import (
 
 	"github.com/voocel/agentcore"
 	corecontext "github.com/voocel/agentcore/context"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
+	"github.com/voocel/ainovel-cli/internal/store"
 )
 
 const summaryMaxAttempts = 3
@@ -19,6 +21,7 @@ type SummaryRetryHook func(agent string, retry, maxRetries int, delay time.Durat
 // contextManagerConfig 聚合 ContextManager 的全部配置参数。
 type contextManagerConfig struct {
 	Model            agentcore.ChatModel
+	Store            *store.Store
 	ContextWindow    int
 	ReserveTokens    int
 	KeepRecentTokens int
@@ -35,7 +38,7 @@ func newContextManager(cfg contextManagerConfig) *corecontext.ContextEngine {
 	if cfg.Summary != nil {
 		sc = *cfg.Summary
 	}
-	sc.Model = summaryCompatibleModel(cfg.Model, cfg.Agent, cfg.OnSummaryRetry)
+	sc.Model = summaryCompatibleModelWithStore(cfg.Model, cfg.Store, cfg.Agent, cfg.OnSummaryRetry)
 	if sc.KeepRecentTokens <= 0 {
 		sc.KeepRecentTokens = cfg.KeepRecentTokens
 	}
@@ -71,11 +74,16 @@ func newContextManager(cfg contextManagerConfig) *corecontext.ContextEngine {
 // when the field is omitted. Appending ThinkingAuto restores the former,
 // provider-default behavior while retaining all other call options.
 func summaryCompatibleModel(model agentcore.ChatModel, agent string, onRetry SummaryRetryHook) agentcore.ChatModel {
+	return summaryCompatibleModelWithStore(model, nil, agent, onRetry)
+}
+
+func summaryCompatibleModelWithStore(model agentcore.ChatModel, diagnosticStore *store.Store, agent string, onRetry SummaryRetryHook) agentcore.ChatModel {
 	if model == nil {
 		return nil
 	}
 	return &summaryModel{
-		ChatModel: model,
+		ChatModel: unwrapProductionAgentBoundary(model),
+		store:     diagnosticStore,
 		agent:     agent,
 		onRetry:   onRetry,
 		delay:     retrypolicy.Delay,
@@ -85,6 +93,7 @@ func summaryCompatibleModel(model agentcore.ChatModel, agent string, onRetry Sum
 
 type summaryModel struct {
 	agentcore.ChatModel
+	store   *store.Store
 	agent   string
 	onRetry SummaryRetryHook
 	delay   func(int) time.Duration
@@ -95,13 +104,27 @@ func (m *summaryModel) Generate(ctx context.Context, messages []agentcore.Messag
 	opts = append(opts, agentcore.WithThinking(agentcore.ThinkingAuto))
 	var lastResponse *agentcore.LLMResponse
 	for attempt := 1; attempt <= summaryMaxAttempts; attempt++ {
+		system, user := summaryDiagnosticInput(messages)
+		recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: m.store, Task: "agent_context_summary", Batch: attempt, System: system, User: user, InputLimitBytes: 60 * 1024})
+		if beginErr != nil {
+			return nil, beginErr
+		}
 		response, err := m.ChatModel.Generate(ctx, messages, tools, opts...)
 		if err != nil {
+			_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 			return nil, err
 		}
 		lastResponse = response
 		if summaryResponseHasContent(response) {
+			if diagnosticErr := recorder.Finish(modeldiag.StatusCompleted, response.Message.TextContent(), response.Message.Usage); diagnosticErr != nil {
+				return nil, diagnosticErr
+			}
 			return response, nil
+		}
+		if response == nil {
+			_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", nil)
+		} else {
+			_ = recorder.Finish(modeldiag.StatusEmptyResponse, response.Message.TextContent(), response.Message.Usage)
 		}
 		if attempt == summaryMaxAttempts {
 			break
@@ -124,8 +147,61 @@ func (m *summaryModel) Generate(ctx context.Context, messages []agentcore.Messag
 	return lastResponse, nil
 }
 
+func summaryDiagnosticInput(messages []agentcore.Message) (string, []byte) {
+	if len(messages) == 0 {
+		return "", nil
+	}
+	user := strings.Builder{}
+	for _, message := range messages[1:] {
+		user.WriteString(message.TextContent())
+		user.WriteByte('\n')
+	}
+	return messages[0].TextContent(), []byte(user.String())
+}
+
 func (m *summaryModel) GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
-	return m.ChatModel.GenerateStream(ctx, messages, tools, append(opts, agentcore.WithThinking(agentcore.ThinkingAuto))...)
+	system, user := summaryDiagnosticInput(messages)
+	recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: m.store, Task: "agent_context_summary_stream", System: system, User: user, InputLimitBytes: 60 * 1024})
+	if beginErr != nil {
+		return nil, beginErr
+	}
+	source, err := m.ChatModel.GenerateStream(ctx, messages, tools, append(opts, agentcore.WithThinking(agentcore.ThinkingAuto))...)
+	if err != nil {
+		_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
+		return nil, err
+	}
+	output := make(chan agentcore.StreamEvent)
+	go func() {
+		defer close(output)
+		var text strings.Builder
+		for event := range source {
+			if event.Type == agentcore.StreamEventTextDelta {
+				text.WriteString(event.Delta)
+			}
+			if event.Type == agentcore.StreamEventDone {
+				final := text.String()
+				if final == "" {
+					final = event.Message.TextContent()
+				}
+				status := modeldiag.StatusCompleted
+				if strings.TrimSpace(final) == "" {
+					status = modeldiag.StatusEmptyResponse
+				}
+				_ = recorder.Finish(status, final, event.Message.Usage)
+			}
+			if event.Type == agentcore.StreamEventError {
+				_ = recorder.Finish(modeldiag.StatusProviderError, text.String(), nil)
+			}
+			select {
+			case output <- event:
+			case <-ctx.Done():
+				_ = recorder.Finish(modeldiag.StatusProviderError, text.String(), nil)
+				return
+			}
+		}
+		_ = recorder.Finish(modeldiag.StatusProviderError, text.String(), nil)
+	}()
+	return output, nil
 }
 
 func summaryResponseHasContent(response *agentcore.LLMResponse) bool {

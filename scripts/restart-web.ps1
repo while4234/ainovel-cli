@@ -310,6 +310,8 @@ $exePath = Join-Path $repoRoot "ainovel-cli.exe"
 $tempExePath = Join-Path $repoRoot "ainovel-cli.restart.tmp.exe"
 $auditorPath = Join-Path $repoRoot "expansion-auditor.exe"
 $tempAuditorPath = Join-Path $repoRoot "expansion-auditor.restart.tmp.exe"
+$completionAuditorPath = Join-Path $repoRoot "manuscript-completion-auditor.exe"
+$tempCompletionAuditorPath = Join-Path $repoRoot "manuscript-completion-auditor.restart.tmp.exe"
 $runtimeRootValue = Resolve-RuntimeRoot -RequestedRuntimeRoot $RuntimeRoot -RepoRoot $repoRoot
 
 $stopPortValues = @()
@@ -336,6 +338,9 @@ if ($NoBuild) {
     if (-not (Test-Path -LiteralPath $auditorPath -PathType Leaf)) {
         throw "Cannot use -NoBuild because independent expansion auditor is missing: $auditorPath"
     }
+    if (-not (Test-Path -LiteralPath $completionAuditorPath -PathType Leaf)) {
+        throw "Cannot use -NoBuild because independent completion auditor is missing: $completionAuditorPath"
+    }
     Write-Step "Skipping build because -NoBuild was passed."
 } else {
     Require-Command "npm.cmd" | Out-Null
@@ -350,6 +355,9 @@ if ($NoBuild) {
     if (Test-Path -LiteralPath $tempAuditorPath) {
         Remove-Item -LiteralPath $tempAuditorPath -Force
     }
+    if (Test-Path -LiteralPath $tempCompletionAuditorPath) {
+        Remove-Item -LiteralPath $tempCompletionAuditorPath -Force
+    }
 
     Write-Step "Building Web UI..."
     Invoke-Checked -FilePath "npm.cmd" -Arguments @("run", "build") -WorkingDirectory $uiDir
@@ -358,6 +366,8 @@ if ($NoBuild) {
     Invoke-Checked -FilePath "go" -Arguments @("build", "-o", $tempExePath, ".\cmd\ainovel-cli") -WorkingDirectory $repoRoot
     Write-Step "Building independent expansion auditor..."
     Invoke-Checked -FilePath "go" -Arguments @("build", "-o", $tempAuditorPath, ".\cmd\expansion-auditor") -WorkingDirectory $repoRoot
+    Write-Step "Building independent completion auditor..."
+    Invoke-Checked -FilePath "go" -Arguments @("build", "-o", $tempCompletionAuditorPath, ".\cmd\manuscript-completion-auditor") -WorkingDirectory $repoRoot
 }
 
 Stop-ListeningPorts -Ports $stopPortValues
@@ -367,6 +377,8 @@ if (-not $NoBuild) {
     Move-Item -LiteralPath $tempExePath -Destination $exePath -Force
     Write-Step "Replacing independent expansion auditor: $auditorPath"
     Move-Item -LiteralPath $tempAuditorPath -Destination $auditorPath -Force
+    Write-Step "Replacing independent completion auditor: $completionAuditorPath"
+    Move-Item -LiteralPath $tempCompletionAuditorPath -Destination $completionAuditorPath -Force
 }
 
 $logRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ainovel-cli-web"

@@ -422,10 +422,10 @@ func (s *Store) deleteRepairedArcArtifacts(volumeIdx, arcIdx int, chapters []int
 	if err := s.deleteRevisedChapterArtifacts(chapters); err != nil {
 		return err
 	}
-	if err := s.Summaries.DeleteArcSummary(volumeIdx, arcIdx); err != nil {
+	if err := s.Summaries.deleteArcSummaryOwned(volumeIdx, arcIdx); err != nil {
 		return fmt.Errorf("delete arc summary V%d A%d: %w", volumeIdx, arcIdx, err)
 	}
-	if err := s.Summaries.DeleteVolumeSummary(volumeIdx); err != nil {
+	if err := s.Summaries.deleteVolumeSummaryOwned(volumeIdx); err != nil {
 		return fmt.Errorf("delete volume summary V%d: %w", volumeIdx, err)
 	}
 	return nil

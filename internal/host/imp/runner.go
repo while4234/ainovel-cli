@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
 )
@@ -33,6 +34,7 @@ type Prompts struct {
 //   - 任意一步失败都直接结束，发 StageError 事件；
 //   - chapter 阶段对已完成章节静默跳过（commit_chapter 的幂等是兜底，但跳过 LLM 更省 token）。
 func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if deps.Store == nil || deps.CommitTool == nil || deps.LLM == nil {
 		return nil, fmt.Errorf("deps incomplete")
 	}

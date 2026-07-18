@@ -10,9 +10,10 @@ import (
 
 // SummaryStore 管理章节、弧、卷摘要。
 type SummaryStore struct {
-	io        *IO
-	outline   *OutlineStore // 只读依赖，用于获取弧/卷数量
-	migration *structureMigration
+	io                 *IO
+	outline            *OutlineStore // 只读依赖，用于获取弧/卷数量
+	migration          *structureMigration
+	withFormalMutation func(string, *structureMigration, func() error) error
 }
 
 func NewSummaryStore(io *IO, outline *OutlineStore, migrations ...*structureMigration) *SummaryStore {
@@ -25,6 +26,13 @@ func NewSummaryStore(io *IO, outline *OutlineStore, migrations ...*structureMigr
 
 // SaveSummary 保存章节摘要到 summaries/{ch}.json。
 func (s *SummaryStore) SaveSummary(sum domain.ChapterSummary) error {
+	if s.withFormalMutation != nil {
+		return s.withFormalMutation("save chapter summary", s.migration, func() error { return s.saveSummaryOwned(sum) })
+	}
+	return s.saveSummaryOwned(sum)
+}
+
+func (s *SummaryStore) saveSummaryOwned(sum domain.ChapterSummary) error {
 	if s.migration != nil {
 		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
 			if !migrated {
@@ -89,7 +97,16 @@ func (s *SummaryStore) DeleteChapterSummary(chapter int) error {
 	if chapter <= 0 {
 		return nil
 	}
-	return s.removeScopedSummary(chapterSummaryRel(chapter), func(index structureIndex) (string, bool) {
+	if s.withFormalMutation != nil {
+		return s.withFormalMutation("delete chapter summary", s.migration, func() error {
+			return s.deleteChapterSummaryOwned(chapter)
+		})
+	}
+	return s.deleteChapterSummaryOwned(chapter)
+}
+
+func (s *SummaryStore) deleteChapterSummaryOwned(chapter int) error {
+	return s.removeScopedSummaryOwned(chapterSummaryRel(chapter), func(index structureIndex) (string, bool) {
 		ref, ok := index.chapterRef(chapter)
 		if !ok {
 			return "", false
@@ -116,6 +133,13 @@ func (s *SummaryStore) LoadRecentSummaries(current, count int) ([]domain.Chapter
 
 // SaveArcSummary 保存弧级摘要。
 func (s *SummaryStore) SaveArcSummary(sum domain.ArcSummary) error {
+	if s.withFormalMutation != nil {
+		return s.withFormalMutation("save arc summary", s.migration, func() error { return s.saveArcSummaryOwned(sum) })
+	}
+	return s.saveArcSummaryOwned(sum)
+}
+
+func (s *SummaryStore) saveArcSummaryOwned(sum domain.ArcSummary) error {
 	if s.migration != nil {
 		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
 			if !migrated {
@@ -191,7 +215,16 @@ func (s *SummaryStore) DeleteArcSummary(volume, arc int) error {
 	if volume <= 0 || arc <= 0 {
 		return nil
 	}
-	return s.removeScopedSummary(arcSummaryRel(volume, arc), func(index structureIndex) (string, bool) {
+	if s.withFormalMutation != nil {
+		return s.withFormalMutation("delete arc summary", s.migration, func() error {
+			return s.deleteArcSummaryOwned(volume, arc)
+		})
+	}
+	return s.deleteArcSummaryOwned(volume, arc)
+}
+
+func (s *SummaryStore) deleteArcSummaryOwned(volume, arc int) error {
+	return s.removeScopedSummaryOwned(arcSummaryRel(volume, arc), func(index structureIndex) (string, bool) {
 		ref, ok := index.arcRef(volume, arc)
 		if !ok {
 			return "", false
@@ -218,6 +251,13 @@ func (s *SummaryStore) LoadArcSummaries(volume int) ([]domain.ArcSummary, error)
 
 // SaveVolumeSummary 保存卷级摘要。
 func (s *SummaryStore) SaveVolumeSummary(sum domain.VolumeSummary) error {
+	if s.withFormalMutation != nil {
+		return s.withFormalMutation("save volume summary", s.migration, func() error { return s.saveVolumeSummaryOwned(sum) })
+	}
+	return s.saveVolumeSummaryOwned(sum)
+}
+
+func (s *SummaryStore) saveVolumeSummaryOwned(sum domain.VolumeSummary) error {
 	if s.migration != nil {
 		return s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
 			if !migrated {
@@ -281,7 +321,16 @@ func (s *SummaryStore) DeleteVolumeSummary(volume int) error {
 	if volume <= 0 {
 		return nil
 	}
-	return s.removeScopedSummary(volumeSummaryRel(volume), func(index structureIndex) (string, bool) {
+	if s.withFormalMutation != nil {
+		return s.withFormalMutation("delete volume summary", s.migration, func() error {
+			return s.deleteVolumeSummaryOwned(volume)
+		})
+	}
+	return s.deleteVolumeSummaryOwned(volume)
+}
+
+func (s *SummaryStore) deleteVolumeSummaryOwned(volume int) error {
+	return s.removeScopedSummaryOwned(volumeSummaryRel(volume), func(index structureIndex) (string, bool) {
 		ref, ok := index.volumeRef(volume)
 		if !ok {
 			return "", false
@@ -290,7 +339,7 @@ func (s *SummaryStore) DeleteVolumeSummary(volume int) error {
 	})
 }
 
-func (s *SummaryStore) removeScopedSummary(legacyRel string, canonicalRel func(structureIndex) (string, bool)) error {
+func (s *SummaryStore) removeScopedSummaryOwned(legacyRel string, canonicalRel func(structureIndex) (string, bool)) error {
 	if s.migration == nil {
 		return s.io.RemoveFile(legacyRel)
 	}

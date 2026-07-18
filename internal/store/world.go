@@ -12,8 +12,9 @@ import (
 
 // WorldStore 管理时间线、伏笔、人物关系、状态变化、世界规则、风格规则、审阅和交接。
 type WorldStore struct {
-	io        *IO
-	migration *structureMigration
+	io                 *IO
+	migration          *structureMigration
+	withFormalMutation func(string, *structureMigration, func() error) error
 }
 
 func NewWorldStore(io *IO, migrations ...*structureMigration) *WorldStore {
@@ -726,6 +727,13 @@ func (s *WorldStore) LoadStyleRules() (*domain.WritingStyleRules, error) {
 
 // SaveReview 保存审阅结果。
 func (s *WorldStore) SaveReview(r domain.ReviewEntry) error {
+	if s.withFormalMutation != nil {
+		return s.withFormalMutation("save manuscript review", s.migration, func() error { return s.saveReviewOwned(r) })
+	}
+	return s.saveReviewOwned(r)
+}
+
+func (s *WorldStore) saveReviewOwned(r domain.ReviewEntry) error {
 	rel := fmt.Sprintf("reviews/%02d.json", r.Chapter)
 	switch r.Scope {
 	case "global":
@@ -820,6 +828,52 @@ func (s *WorldStore) LoadReview(chapter int) (*domain.ReviewEntry, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// LoadGlobalReview reads the independently persisted whole-book review. It is
+// intentionally separate from LoadReview so a chapter/arc review cannot be
+// mistaken for the final completion receipt.
+func (s *WorldStore) LoadGlobalReview(chapter int) (*domain.ReviewEntry, error) {
+	if s.migration != nil {
+		var result *domain.ReviewEntry
+		err := s.migration.withIndexRead(func(index structureIndex, migrated bool) error {
+			if !migrated {
+				return nil
+			}
+			ref, ok := index.chapterRef(chapter)
+			if !ok {
+				return nil
+			}
+			data, err := s.io.ReadFile(chapterCanonicalRel(ref.ID, "review-global.json"))
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			projected, err := projectChapterReview(data, index, ref)
+			if err != nil {
+				return err
+			}
+			var review domain.ReviewEntry
+			if err := json.Unmarshal(projected, &review); err != nil {
+				return err
+			}
+			result = &review
+			return nil
+		})
+		if err != nil || result != nil {
+			return result, err
+		}
+	}
+	var review domain.ReviewEntry
+	if err := s.io.ReadJSON(chapterReviewRel(chapter, true), &review); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &review, nil
 }
 
 func (s *WorldStore) LoadArcBatchReviews(volume, arc int) ([]domain.ReviewEntry, error) {
@@ -1021,6 +1075,17 @@ func (s *WorldStore) DeleteReview(chapter int) error {
 	if chapter <= 0 {
 		return nil
 	}
+	if s.withFormalMutation != nil {
+		return s.withFormalMutation("delete manuscript review", s.migration, func() error {
+			return s.deleteReviewOwned(chapter)
+		})
+	}
+	return s.deleteReviewOwned(chapter)
+}
+
+// deleteReviewOwned is used by compound store transactions that already hold
+// meta/revisions/transaction.lock.
+func (s *WorldStore) deleteReviewOwned(chapter int) error {
 	deleteReview := func(id string) error {
 		return s.io.WithWriteLock(func() error {
 			if err := s.io.RemoveFileUnlocked(fmt.Sprintf("reviews/%02d.json", chapter)); err != nil {

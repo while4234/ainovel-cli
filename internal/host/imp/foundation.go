@@ -8,6 +8,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -38,19 +39,93 @@ func ReverseFoundation(ctx context.Context, llm LLMChat, systemPrompt string, ch
 
 	system := cleanLLMText(strings.ReplaceAll(systemPrompt, "${chapter_count}", fmt.Sprintf("%d", len(chapters))))
 	user := cleanLLMText(buildFoundationUserPrompt(chapters))
+	if len(system)+len(user) > 60*1024 {
+		return reverseFoundationMapReduce(ctx, llm, systemPrompt, chapters)
+	}
 
-	resp, err := llm.Generate(ctx, []agentcore.Message{
+	messages := []agentcore.Message{
 		agentcore.SystemMsg(system),
 		agentcore.UserMsg(user),
-	}, nil)
+	}
+	recorder, beginErr := beginIMPDiagnostic(ctx, "import_foundation", 0, messages, 0, 0)
+	if beginErr != nil {
+		return nil, beginErr
+	}
+	resp, err := llm.Generate(ctx, messages, nil)
 	if err != nil {
+		_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 		return nil, fmt.Errorf("llm generate: %w", err)
 	}
 	if resp == nil {
+		_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", nil)
 		return nil, fmt.Errorf("llm returned nil response")
 	}
+	output := resp.Message.TextContent()
+	if strings.TrimSpace(output) == "" {
+		_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", resp.Message.Usage)
+		return nil, fmt.Errorf("llm returned empty response")
+	}
+	parsed, parseErr := parseFoundationOutput(output, len(chapters))
+	if parseErr != nil {
+		_ = recorder.Finish(structuredDiagnosticStatus(parseErr), output, resp.Message.Usage)
+		return nil, parseErr
+	}
+	if diagnosticErr := recorder.Finish(modeldiag.StatusCompleted, output, resp.Message.Usage); diagnosticErr != nil {
+		return nil, diagnosticErr
+	}
+	return parsed, nil
+}
 
-	return parseFoundationOutput(resp.Message.TextContent(), len(chapters))
+func reverseFoundationMapReduce(ctx context.Context, llm LLMChat, systemPrompt string, chapters []Chapter) (*FoundationResult, error) {
+	batches := foundationChapterBatches(systemPrompt, chapters, 48*1024)
+	if len(batches) <= 1 {
+		return nil, fmt.Errorf("import foundation chapter exceeds the 60 KiB compiled request budget")
+	}
+	partials := make([]FoundationMergePartial, 0, len(batches))
+	from := 1
+	for index, batch := range batches {
+		result, err := ReverseFoundation(ctx, llm, systemPrompt, batch)
+		if err != nil {
+			return nil, fmt.Errorf("import foundation map batch %d/%d: %w", index+1, len(batches), err)
+		}
+		partials = append(partials, FoundationMergePartial{Index: index + 1, From: from, To: from + len(batch) - 1, Result: result})
+		from += len(batch)
+	}
+	result, err := MergeFoundationPartialsBatched(ctx, llm, systemPrompt, partials, len(chapters), StructuredCallOptions{DisableStream: true}, 12_000, nil)
+	if err != nil {
+		return nil, fmt.Errorf("import foundation reduce: %w", err)
+	}
+	reports := make([]domain.AdaptationSourceReport, len(chapters))
+	for index, chapter := range chapters {
+		reports[index] = domain.AdaptationSourceReport{Chapter: index + 1, Title: chapter.Title, Summary: "imported chapter"}
+	}
+	result.Volumes = BuildSourceOutlineFromReports(reports)
+	return result, nil
+}
+
+func foundationChapterBatches(systemPrompt string, chapters []Chapter, limit int) [][]Chapter {
+	if limit <= 0 {
+		limit = 48 * 1024
+	}
+	var batches [][]Chapter
+	for start := 0; start < len(chapters); {
+		end := start
+		for end < len(chapters) {
+			candidate := chapters[start : end+1]
+			system := strings.ReplaceAll(systemPrompt, "${chapter_count}", fmt.Sprintf("%d", len(candidate)))
+			if len(system)+len(buildFoundationUserPrompt(candidate)) > limit && end > start {
+				break
+			}
+			if len(system)+len(buildFoundationUserPrompt(candidate)) > limit {
+				end++
+				break
+			}
+			end++
+		}
+		batches = append(batches, chapters[start:end])
+		start = end
+	}
+	return batches
 }
 
 // buildFoundationUserPrompt 拼装用户提示：所有章节顺序拼接，附章号锚点便于 LLM 引用。

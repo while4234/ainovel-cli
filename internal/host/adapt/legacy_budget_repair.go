@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
 
@@ -50,6 +51,7 @@ type legacyArcBudgetChapterView struct {
 // chapter budgets reported by the deterministic density gate. It retries with
 // exact local validation feedback and rejects incomplete patches.
 func ReanalyzeLegacyArcChapterBudgets(ctx context.Context, deps Deps, plan domain.AdaptationPlan) (LegacyArcBudgetRepairResult, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	var result LegacyArcBudgetRepairResult
 	if ctx == nil {
 		ctx = context.Background()

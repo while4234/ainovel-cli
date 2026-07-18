@@ -17,6 +17,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/adaptaudit"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -265,7 +266,7 @@ func ExecuteSemanticAudit(ctx context.Context, st *store.Store, runID string, mo
 				_ = SaveSemanticAuditRun(st, run)
 				return err
 			}
-			output, usage, callErr := callVerifiedSemanticStage(ctx, model, "unit_window", map[string]any{"unit_id": unit.ID, "artifacts": window}, run.ReasoningEffort, run, artifactMap)
+			output, usage, callErr := callVerifiedSemanticStage(ctx, st, model, "unit_window", map[string]any{"unit_id": unit.ID, "artifacts": window}, run.ReasoningEffort, run, artifactMap)
 			if callErr != nil {
 				return failSemanticRun(st, run, callErr)
 			}
@@ -289,7 +290,7 @@ func ExecuteSemanticAudit(ctx context.Context, st *store.Store, runID string, mo
 			unitSummaries = append(unitSummaries, checkpoint.Summary)
 			continue
 		}
-		output, usage, callErr := callVerifiedSemanticStage(ctx, model, "unit_synthesis", map[string]any{"unit_id": unit.ID, "unverified_structured_summaries": localSummaries, "verified_findings": run.Findings, "unverified_model_assessments": run.Judgments}, run.ReasoningEffort, run, artifactMap)
+		output, usage, callErr := callVerifiedSemanticStage(ctx, st, model, "unit_synthesis", map[string]any{"unit_id": unit.ID, "unverified_structured_summaries": localSummaries, "verified_findings": run.Findings, "unverified_model_assessments": run.Judgments}, run.ReasoningEffort, run, artifactMap)
 		if callErr != nil {
 			return failSemanticRun(st, run, callErr)
 		}
@@ -303,7 +304,7 @@ func ExecuteSemanticAudit(ctx context.Context, st *store.Store, runID string, mo
 	}
 	globalKey := "global/synthesis"
 	if _, ok := run.CompletedStages[globalKey]; !ok {
-		globalOutput, usage, callErr := callVerifiedSemanticStage(ctx, model, "global_synthesis", map[string]any{"unverified_unit_summaries": unitSummaries, "verified_findings": run.Findings, "unverified_model_assessments": run.Judgments}, run.ReasoningEffort, run, artifactMap)
+		globalOutput, usage, callErr := callVerifiedSemanticStage(ctx, st, model, "global_synthesis", map[string]any{"unverified_unit_summaries": unitSummaries, "verified_findings": run.Findings, "unverified_model_assessments": run.Judgments}, run.ReasoningEffort, run, artifactMap)
 		if callErr != nil {
 			return failSemanticRun(st, run, callErr)
 		}
@@ -579,29 +580,44 @@ func semanticUnitWindows(unit semanticAuditUnit) [][]semanticArtifactChunk {
 	return out
 }
 
+var (
+	errSemanticAuditEmptyResponse = errors.New("semantic auditor returned no response")
+	errSemanticAuditInvalidJSON   = errors.New("semantic auditor returned invalid JSON")
+)
+
+func semanticAuditorPrompt(stage string) string {
+	return "You are a read-only novel adaptation auditor. Stage=" + stage + ". Compare source material, target plan, and target prose together. For global_synthesis check cross-unit character state, causality, foreshadowing, repetition and contradictions. Return one JSON object only. Findings must quote exact text from a supplied artifact and provide absolute rune offsets [from_rune,to_rune). Claims that something is absent must go in judgments, never findings. Include a concise structured summary. Schema: {\"summary\":string,\"findings\":[{\"code\":string,\"severity\":\"info|warning|blocking\",\"message\":string,\"artifact_id\":string,\"artifact_sha256\":string,\"quote\":string,\"from_rune\":int,\"to_rune\":int,\"target_chapters\":[int]}],\"judgments\":[{\"code\":string,\"message\":string,\"target_chapters\":[int],\"verified_fact\":false}]}"
+}
+
 func callSemanticAuditor(ctx context.Context, model agentcore.ChatModel, stage string, payloadValue any, reasoning string) (semanticModelOutput, *agentcore.Usage, error) {
+	out, usage, _, err := callSemanticAuditorRaw(ctx, model, stage, payloadValue, reasoning)
+	return out, usage, err
+}
+
+func callSemanticAuditorRaw(ctx context.Context, model agentcore.ChatModel, stage string, payloadValue any, reasoning string) (semanticModelOutput, *agentcore.Usage, string, error) {
 	payload, _ := json.Marshal(payloadValue)
-	prompt := "You are a read-only novel adaptation auditor. Stage=" + stage + ". Compare source material, target plan, and target prose together. For global_synthesis check cross-unit character state, causality, foreshadowing, repetition and contradictions. Return one JSON object only. Findings must quote exact text from a supplied artifact and provide absolute rune offsets [from_rune,to_rune). Claims that something is absent must go in judgments, never findings. Include a concise structured summary. Schema: {\"summary\":string,\"findings\":[{\"code\":string,\"severity\":\"info|warning|blocking\",\"message\":string,\"artifact_id\":string,\"artifact_sha256\":string,\"quote\":string,\"from_rune\":int,\"to_rune\":int,\"target_chapters\":[int]}],\"judgments\":[{\"code\":string,\"message\":string,\"target_chapters\":[int],\"verified_fact\":false}]}"
+	prompt := semanticAuditorPrompt(stage)
 	opts := []agentcore.CallOption{agentcore.WithMaxTokens(2200), agentcore.WithJSONMode()}
 	if strings.TrimSpace(reasoning) != "" {
 		opts = append(opts, agentcore.WithThinking(agentcore.ThinkingLevel(reasoning)))
 	}
 	resp, err := model.Generate(ctx, []agentcore.Message{agentcore.SystemMsg(prompt), agentcore.UserMsg(string(payload))}, nil, opts...)
 	if err != nil {
-		return semanticModelOutput{}, nil, err
+		return semanticModelOutput{}, nil, "", err
 	}
 	if resp == nil {
-		return semanticModelOutput{}, nil, errors.New("auditor returned no response")
+		return semanticModelOutput{}, nil, "", errSemanticAuditEmptyResponse
 	}
 	var out semanticModelOutput
-	raw := extractSemanticJSONObject(resp.Message.TextContent())
+	rawResponse := resp.Message.TextContent()
+	raw := extractSemanticJSONObject(rawResponse)
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return out, resp.Message.Usage, fmt.Errorf("decode semantic audit response: %w", err)
+		return out, resp.Message.Usage, rawResponse, fmt.Errorf("%w: %v", errSemanticAuditInvalidJSON, err)
 	}
-	return out, resp.Message.Usage, nil
+	return out, resp.Message.Usage, rawResponse, nil
 }
 
-func callVerifiedSemanticStage(ctx context.Context, model agentcore.ChatModel, stage string, payload any, reasoning string, run *SemanticAuditRun, artifacts map[string]semanticArtifact) (semanticModelOutput, *agentcore.Usage, error) {
+func callVerifiedSemanticStage(ctx context.Context, st *store.Store, model agentcore.ChatModel, stage string, payload any, reasoning string, run *SemanticAuditRun, artifacts map[string]semanticArtifact) (semanticModelOutput, *agentcore.Usage, error) {
 	var combined agentcore.Usage
 	for attempt := 0; attempt < 2; attempt++ {
 		maxCalls := run.Options.MaxCalls
@@ -612,7 +628,25 @@ func callVerifiedSemanticStage(ctx context.Context, model agentcore.ChatModel, s
 			return semanticModelOutput{}, &combined, fmt.Errorf("semantic audit max_calls %d exhausted", maxCalls)
 		}
 		run.Progress.AttemptedCalls++
-		out, usage, err := callSemanticAuditor(ctx, model, stage, payload, reasoning)
+		encoded, _ := json.Marshal(payload)
+		prompt := semanticAuditorPrompt(stage)
+		recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: st, Task: "adaptation_map_reduce_" + stage, RevisionID: run.RunID, Batch: run.Progress.AttemptedCalls, System: prompt, User: encoded, InputLimitBytes: manuscriptSemanticAuditBudgetBytes, OutputLimitTokens: 2200, SelectorCounts: map[string]int{"source_units": run.Progress.TotalRunes, "model_calls": run.Progress.AttemptedCalls}, SplitReason: stage, ContractSignature: run.InputDigest})
+		if beginErr != nil {
+			return semanticModelOutput{}, &combined, beginErr
+		}
+		out, usage, rawOutput, err := callSemanticAuditorRaw(ctx, model, stage, payload, reasoning)
+		status := modeldiag.StatusCompleted
+		if err != nil {
+			status = modeldiag.StatusProviderError
+			if errors.Is(err, errSemanticAuditInvalidJSON) {
+				status = modeldiag.StatusDecodeError
+			} else if errors.Is(err, errSemanticAuditEmptyResponse) {
+				status = modeldiag.StatusEmptyResponse
+			}
+		}
+		if diagnosticErr := recorder.Finish(status, rawOutput, usage); diagnosticErr != nil {
+			return semanticModelOutput{}, &combined, diagnosticErr
+		}
 		combined.Add(usage)
 		if err != nil {
 			if attempt == 0 {
@@ -630,6 +664,8 @@ func callVerifiedSemanticStage(ctx context.Context, model agentcore.ChatModel, s
 	}
 	return semanticModelOutput{}, &combined, errors.New("auditor returned invalid evidence after 2 attempts")
 }
+
+const manuscriptSemanticAuditBudgetBytes = 60 * 1024
 
 func acceptSemanticOutput(run *SemanticAuditRun, out semanticModelOutput, artifacts map[string]semanticArtifact) bool {
 	rejectedBefore := run.RejectedEvidence

@@ -509,7 +509,7 @@ func TestManuscriptAdaptationDiscussionHandlerSafetyMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	drift := request(chapterID)
-	if drift.Code == http.StatusOK || !strings.Contains(drift.Body.String(), "drift") {
+	if drift.Code != http.StatusConflict || !strings.Contains(drift.Body.String(), `"code":"preview_stale"`) {
 		t.Fatalf("source drift status=%d body=%s", drift.Code, drift.Body.String())
 	}
 
@@ -538,7 +538,7 @@ func TestManuscriptAdaptationDiscussionHandlerSafetyMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifestDrift := request(chapterID)
-	if manifestDrift.Code == http.StatusOK || !strings.Contains(manifestDrift.Body.String(), "binding drift") {
+	if manifestDrift.Code != http.StatusConflict || !strings.Contains(manifestDrift.Body.String(), `"code":"preview_stale"`) {
 		t.Fatalf("valid manifest replacement escaped frozen binding: status=%d body=%s", manifestDrift.Code, manifestDrift.Body.String())
 	}
 	if err := st.Adaptation.SaveSourceManifest(manifestContract); err != nil {
@@ -551,7 +551,7 @@ func TestManuscriptAdaptationDiscussionHandlerSafetyMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	planDrift := request(chapterID)
-	if planDrift.Code == http.StatusOK || !strings.Contains(planDrift.Body.String(), "binding drift") {
+	if planDrift.Code != http.StatusConflict || !strings.Contains(planDrift.Body.String(), `"code":"preview_stale"`) {
 		t.Fatalf("valid plan replacement escaped frozen binding: status=%d body=%s", planDrift.Code, planDrift.Body.String())
 	}
 	if err := st.Adaptation.SavePlan(plan); err != nil {
@@ -563,7 +563,7 @@ func TestManuscriptAdaptationDiscussionHandlerSafetyMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	zero := request(chapterID)
-	if zero.Code == http.StatusOK || !strings.Contains(zero.Body.String(), "binding drift") {
+	if zero.Code != http.StatusConflict || !strings.Contains(zero.Body.String(), `"code":"preview_stale"`) {
 		t.Fatalf("valid replacement escaped frozen plan binding: status=%d body=%s", zero.Code, zero.Body.String())
 	}
 	added := zeroCoverage
@@ -573,7 +573,7 @@ func TestManuscriptAdaptationDiscussionHandlerSafetyMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	addedResponse := request(chapterID)
-	if addedResponse.Code == http.StatusOK || !strings.Contains(addedResponse.Body.String(), "binding drift") {
+	if addedResponse.Code != http.StatusConflict || !strings.Contains(addedResponse.Body.String(), `"code":"preview_stale"`) {
 		t.Fatalf("added replacement escaped frozen plan binding: status=%d body=%s", addedResponse.Code, addedResponse.Body.String())
 	}
 

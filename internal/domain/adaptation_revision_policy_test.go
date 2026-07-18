@@ -49,6 +49,35 @@ func TestValidateAdaptationRevisionPlanSupportsArcSourceReallocation(t *testing.
 	}
 }
 
+func TestValidateAdaptationRevisionPreviewCandidateRequiresPreserveForRangeOnlySourceLineage(t *testing.T) {
+	base, manifest := adaptationRevisionFixture(AdaptationGranularityArc)
+	base.SourceEvents = nil
+	base.Volumes[0].MainlineEventIDs = nil
+	for index := range base.Chapters {
+		base.Chapters[index].SourceChapters = nil
+		base.Chapters[index].SourceSegments = nil
+		base.Chapters[index].EventIDs = nil
+	}
+	base.Chapters[0].SourceRunes = 0
+	base.Chapters[0].PreserveEvents = nil
+	candidate := cloneAdaptationRevisionPlan(t, base)
+	chapter := candidate.Chapters[0]
+	if len(chapter.SourceChapters) != 0 || len(chapter.SourceSegments) != 0 || chapter.SourceRunes != 0 || len(chapter.EventIDs) != 0 ||
+		chapter.SourceRange.From <= 0 || chapter.SourceRange.To < chapter.SourceRange.From {
+		t.Fatalf("range-only fixture has another source carrier: %+v", chapter)
+	}
+	impact := adaptationRevisionImpact(t, []RevisionImpactItem{{
+		ArtifactID: candidate.Chapters[0].ID, ArtifactKind: StructureKindChapter,
+		Change: "validate range-only source ownership", Requirement: StructureImpactRequired,
+		Cause: StructureImpactContentDependency, DependencyEvidence: []string{"durable source range"},
+	}})
+
+	err := ValidateAdaptationRevisionPreviewCandidate(base, candidate, &manifest, impact)
+	if err == nil || !strings.Contains(err.Error(), "requires preserve_events") {
+		t.Fatalf("range-only source lineage without preserve_events was accepted: %v", err)
+	}
+}
+
 func TestValidateAdaptationRevisionPlanSupportsFreeOriginalVolume(t *testing.T) {
 	base, manifest := adaptationRevisionFixture(AdaptationGranularityFree)
 	base.TargetEventLedger = []AdaptationEvent{{

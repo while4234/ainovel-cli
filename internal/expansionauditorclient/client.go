@@ -17,9 +17,10 @@ import (
 )
 
 var (
-	ErrUnavailable = fmt.Errorf("expansion auditor unavailable")
-	ErrProcess     = fmt.Errorf("expansion auditor process failed")
-	ErrDecode      = fmt.Errorf("expansion auditor response invalid")
+	ErrUnavailable  = fmt.Errorf("expansion auditor unavailable")
+	ErrProcess      = fmt.Errorf("expansion auditor process failed")
+	ErrDecode       = fmt.Errorf("expansion auditor response invalid")
+	ErrTaskNotFound = fmt.Errorf("expansion auditor task not found")
 )
 
 const commandEnvironment = "AINOVEL_EXPANSION_AUDITOR"
@@ -99,6 +100,10 @@ func (client *Client) run(ctx context.Context, result any, args ...string) error
 		}
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("%w: %s", ErrUnavailable, message)
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+			return ErrTaskNotFound
 		}
 		return fmt.Errorf("%w: %s", ErrProcess, message)
 	}

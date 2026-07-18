@@ -45,6 +45,16 @@ type ManuscriptRevisionService struct {
 	beforeRestoreCommit    func() error
 }
 
+func (s *ManuscriptRevisionService) requireWriteReady() error {
+	if s == nil || s.store == nil {
+		return &domain.ManuscriptRevisionError{Class: "publication_recovery_required", Err: fmt.Errorf("manuscript store is unavailable")}
+	}
+	if err := s.store.RequireManuscriptWriteReady(); err != nil {
+		return &domain.ManuscriptRevisionError{Class: "publication_recovery_required", Err: err}
+	}
+	return nil
+}
+
 type ManuscriptPlan struct {
 	StoryChanged       bool
 	Outline            domain.OutlineEntry
@@ -288,6 +298,9 @@ func (s *ManuscriptRevisionService) CurrentChapter(stableID string) (domain.Manu
 // candidate. It deliberately reuses the normal audit/approval/publication
 // state machine: restoring never overwrites current prose directly.
 func (s *ManuscriptRevisionService) RestoreVersion(sourceRevisionID, chapterID, expectedSignature, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	if err := s.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	source, err := s.store.ManuscriptRevisions.Load(strings.TrimSpace(sourceRevisionID))
 	if err != nil {
 		return nil, err
@@ -520,6 +533,9 @@ func (s *ManuscriptRevisionService) Preview(request ManuscriptPreviewRequest, id
 }
 
 func (s *ManuscriptRevisionService) PreviewContext(ctx context.Context, request ManuscriptPreviewRequest, idempotencyKey string) (*ManuscriptPreview, error) {
+	if err := s.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	request.ChapterID = strings.TrimSpace(request.ChapterID)
 	request.Instruction = strings.TrimSpace(request.Instruction)
 	if request.ChapterID == "" || request.Instruction == "" {
@@ -651,6 +667,9 @@ func (s *ManuscriptRevisionService) PreviewContext(ctx context.Context, request 
 }
 
 func (s *ManuscriptRevisionService) ConfirmAdditionalImpacts(revisionID string, expectedRevision int, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	if err := s.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	runtime, err := s.store.ManuscriptRevisions.Load(revisionID)
 	if err != nil {
 		return nil, err
@@ -690,6 +709,9 @@ func (s *ManuscriptRevisionService) ConfirmAdditionalImpacts(revisionID string, 
 }
 
 func (s *ManuscriptRevisionService) SubmitCandidate(revisionID string, expectedRevision int, idempotencyKey string, input ManuscriptCandidateInput) (*domain.ManuscriptRevisionRuntime, error) {
+	if err := s.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	runtime, err := s.store.ManuscriptRevisions.Load(revisionID)
 	if err != nil {
 		return nil, err
@@ -981,6 +1003,9 @@ func validateManuscriptContractVerification(locatorTask ManuscriptContractAuditT
 // independent audit. HTTP clients never provide prose, sidecars, dependency
 // evidence, or audit truth.
 func (s *ManuscriptRevisionService) GenerateCandidates(ctx context.Context, revisionID string, expectedRevision, expectedAttempt int, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	if err := s.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	if s.writer == nil {
 		return nil, fmt.Errorf("manuscript writer is unavailable")
 	}
@@ -1008,7 +1033,7 @@ func (s *ManuscriptRevisionService) GenerateCandidates(ctx context.Context, revi
 		return nil, fmt.Errorf("generation attempt conflict: expected %d actual %d", expectedAttempt, item.Attempt+1)
 	}
 	if item.ChapterID != runtime.Baseline.ChapterID && !item.ImpactConfirmed {
-		return nil, fmt.Errorf("human confirmation required for additional stable ID %q", item.ChapterID)
+		return nil, &domain.ManuscriptRevisionError{Class: "human_confirmation_required", Err: fmt.Errorf("additional stable ID %q requires confirmation", item.ChapterID)}
 	}
 	generationContext, err := s.buildGenerationContext(*runtime, *item)
 	if err != nil {
@@ -1236,23 +1261,6 @@ func classifyManuscriptGenerationError(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return "provider_timeout"
 	}
-	message := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(message, "unauthorized"), strings.Contains(message, "authentication"), strings.Contains(message, "api key"), strings.Contains(message, "status 401"):
-		return "provider_auth"
-	case strings.Contains(message, "quota"), strings.Contains(message, "rate limit"), strings.Contains(message, "status 429"):
-		return "provider_quota"
-	case strings.Contains(message, "empty response"):
-		return "empty_response"
-	case strings.Contains(message, "decode manuscript segment"), strings.Contains(message, "invalid json"):
-		return "invalid_json"
-	case strings.Contains(message, "sidecar"), strings.Contains(message, "schema"):
-		return "invalid_schema"
-	case strings.Contains(message, "signature"):
-		return "signature_drift"
-	case strings.Contains(message, "missing segment"):
-		return "missing_segment"
-	}
 	return "provider_error"
 }
 
@@ -1368,6 +1376,9 @@ func (s *ManuscriptRevisionService) validateAuditArtifact(runtime domain.Manuscr
 }
 
 func (s *ManuscriptRevisionService) RunAudit(ctx context.Context, revisionID string, expectedRevision int, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	if err := s.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	if s.auditor == nil {
 		return nil, fmt.Errorf("independent manuscript auditor is unavailable")
 	}
@@ -1874,6 +1885,9 @@ func (s *ManuscriptRevisionService) validateModeEvidence(runtime domain.Manuscri
 }
 
 func (s *ManuscriptRevisionService) Approve(revisionID string, expectedRevision int, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	if err := s.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	return s.store.ManuscriptRevisions.Mutate(revisionID, expectedRevision, idempotencyKey, "approve", revisionID, func(current *domain.ManuscriptRevisionRuntime) error {
 		if current.Stage != "final_approval_pending" || len(current.Candidates) == 0 {
 			return fmt.Errorf("final approval requires the current signed audit")
@@ -1889,6 +1903,9 @@ func (s *ManuscriptRevisionService) Approve(revisionID string, expectedRevision 
 }
 
 func (s *ManuscriptRevisionService) Publish(revisionID string, expectedRevision int, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	if err := s.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	runtime, err := s.store.ManuscriptRevisions.Load(revisionID)
 	if err != nil {
 		return nil, err
@@ -1927,6 +1944,9 @@ func (s *ManuscriptRevisionService) Publish(revisionID string, expectedRevision 
 }
 
 func (s *ManuscriptRevisionService) RevalidateCompletion(revisionID string, expectedRevision int, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	if err := s.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	runtime, err := s.store.ManuscriptRevisions.Load(revisionID)
 	if err != nil {
 		return nil, err
@@ -1966,6 +1986,9 @@ func (s *ManuscriptRevisionService) RevalidateCompletion(revisionID string, expe
 }
 
 func (s *ManuscriptRevisionService) Cancel(revisionID string, expectedRevision int, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	if err := s.requireWriteReady(); err != nil {
+		return nil, err
+	}
 	return s.store.ManuscriptRevisions.Mutate(revisionID, expectedRevision, idempotencyKey, "cancel", revisionID, func(current *domain.ManuscriptRevisionRuntime) error {
 		if current.PublicationStatus != domain.ManuscriptPublicationNone {
 			return fmt.Errorf("publication recovery required")

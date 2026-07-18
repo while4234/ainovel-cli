@@ -1,10 +1,13 @@
 package adapt
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/adaptaudit"
+	"github.com/voocel/ainovel-cli/internal/completionauditorclient"
 	"github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
 )
@@ -24,7 +27,17 @@ func (g *CompletionGate) EvaluateCompletion() (tools.CompletionAuditResult, erro
 		return tools.CompletionAuditResult{}, fmt.Errorf("completion audit store is required")
 	}
 	if !g.store.Adaptation.Active() {
-		return tools.CompletionAuditResult{Allowed: true, Status: "not_applicable"}, nil
+		client, err := completionauditorclient.New()
+		if err != nil {
+			return tools.CompletionAuditResult{Applicable: true, Allowed: false, Status: "incomplete", Warning: "independent completion auditor is unavailable"}, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		result, err := client.Audit(ctx, g.store.Dir())
+		if err != nil {
+			return tools.CompletionAuditResult{Applicable: true, Allowed: false, Status: "incomplete", Warning: "independent completion audit failed"}, nil
+		}
+		return tools.CompletionAuditResult{Applicable: true, Allowed: true, Status: "pass", ReportDigest: result.ReportDigest}, nil
 	}
 	if incomplete := incompleteAdaptationReason(g.store); incomplete != "" {
 		return tools.CompletionAuditResult{
@@ -37,6 +50,19 @@ func (g *CompletionGate) EvaluateCompletion() (tools.CompletionAuditResult, erro
 	}
 	if err := ProtectAuditReport(g.store, report, "completion"); err != nil {
 		return tools.CompletionAuditResult{}, err
+	}
+	progress, progressErr := g.store.Progress.Load()
+	if progressErr != nil {
+		return tools.CompletionAuditResult{}, fmt.Errorf("load completion checkpoint: %w", progressErr)
+	}
+	if progress != nil && progress.CompletionRevalidation != nil {
+		run, runErr := g.store.Adaptation.LatestAuditRun()
+		if runErr != nil || run == nil {
+			return tools.CompletionAuditResult{}, fmt.Errorf("load independent completion audit run: %w", runErr)
+		}
+		if err := g.store.RecordAdaptationCompletionAudit(run.RunID, run.InputDigest, run.ReportDigest, run.CompletedAt); err != nil {
+			return tools.CompletionAuditResult{}, fmt.Errorf("record independent adaptation completion receipt: %w", err)
+		}
 	}
 	legacyWarning := report.Status == "inconclusive" && reportHasFindingCode(report.Findings, "audit_contract_unavailable")
 	result := tools.CompletionAuditResult{

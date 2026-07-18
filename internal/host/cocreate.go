@@ -12,6 +12,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
@@ -238,7 +239,7 @@ const (
 	tagSuggestions = "suggestions"
 )
 
-func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, timeout time.Duration, maxTokens int, sysPrompt string, history []CoCreateMessage, onProgress func(kind, text string)) (reply CoCreateReply, err error) {
+func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *store.SessionStore, timeout time.Duration, maxTokens int, sysPrompt string, history []CoCreateMessage, onProgress func(kind, text string), diagnosticStores ...*store.Store) (reply CoCreateReply, err error) {
 	if len(history) == 0 {
 		return CoCreateReply{}, fmt.Errorf("cocreate history is empty")
 	}
@@ -251,7 +252,8 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 
 	model := models.ForStageWithFailover(bootstrap.StageCoCreate, nil)
 	modelIdentity := newCoCreateModelIdentity(model)
-	msgs := []agentcore.Message{agentcore.SystemMsg(globalprompt.Apply(sysPrompt))}
+	compiledSystem := globalprompt.Apply(sysPrompt)
+	msgs := []agentcore.Message{agentcore.SystemMsg(compiledSystem)}
 	for _, item := range history {
 		content := strings.TrimSpace(item.Content)
 		if content == "" {
@@ -269,6 +271,11 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 	var attempts int
 	var retryErrors []string
 	var stopReason agentcore.StopReason
+	var diagnosticStore *store.Store
+	if len(diagnosticStores) > 0 {
+		diagnosticStore = diagnosticStores[0]
+	}
+	diagnosticPayload, _ := json.Marshal(msgs[1:])
 
 	// 排查 "cocreate empty response" 等偶发问题需要看到模型实际返回什么。
 	// 每轮全程落盘到 <output>/meta/sessions/cocreate.jsonl，与正式创作的 session 日志同位。
@@ -320,11 +327,17 @@ retry:
 	stopReason = ""
 	streamed = false
 	done = false
+	recorder, budgetErr := modeldiag.Begin(modeldiag.Request{Store: diagnosticStore, Task: "cocreate_stream", Batch: attempts, System: compiledSystem, User: diagnosticPayload, InputLimitBytes: manuscriptCompiledRequestBudgetBytes, OutputLimitTokens: maxTokens, SelectorCounts: map[string]int{"messages": len(msgs)}})
+	if budgetErr != nil {
+		return CoCreateReply{}, budgetErr
+	}
+	var responseUsage *agentcore.Usage
 
 	attemptCtx, cancelAttempt = context.WithTimeout(ctx, timeout)
 	defer cancelAttempt()
 	streamCh, err = model.GenerateStream(attemptCtx, msgs, nil, agentcore.WithMaxTokens(maxTokens))
 	if err != nil {
+		_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 		cancelCurrentAttempt()
 		if ok, sleepErr := prepareCoCreateRetry(ctx, err, attempts, onProgress, &retryErrors); sleepErr != nil {
 			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
@@ -356,8 +369,10 @@ retry:
 			if !streamed {
 				raw.WriteString(ev.Message.TextContent())
 			}
+			responseUsage = ev.Message.Usage
 		case agentcore.StreamEventError:
 			if ev.Err != nil {
+				_ = recorder.Finish(modeldiag.StatusProviderError, raw.String(), responseUsage)
 				cancelCurrentAttempt()
 				if ok, sleepErr := prepareCoCreateRetry(ctx, ev.Err, attempts, onProgress, &retryErrors); sleepErr != nil {
 					return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
@@ -367,6 +382,7 @@ retry:
 				return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(ev.Err))
 			}
 			streamErr := fmt.Errorf("cocreate generate failed: %w", agentcore.ErrProviderNetwork)
+			_ = recorder.Finish(modeldiag.StatusProviderError, raw.String(), responseUsage)
 			cancelCurrentAttempt()
 			if ok, sleepErr := prepareCoCreateRetry(ctx, streamErr, attempts, onProgress, &retryErrors); sleepErr != nil {
 				return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
@@ -378,6 +394,7 @@ retry:
 	}
 	cancelCurrentAttempt()
 	if !done {
+		_ = recorder.Finish(modeldiag.StatusProviderError, raw.String(), responseUsage)
 		streamErr := fmt.Errorf("cocreate stream closed before done: %w", agentcore.ErrProviderNetwork)
 		if ok, sleepErr := prepareCoCreateRetry(ctx, streamErr, attempts, onProgress, &retryErrors); sleepErr != nil {
 			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
@@ -387,6 +404,7 @@ retry:
 		return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(streamErr))
 	}
 	if stopReason == agentcore.StopReasonLength {
+		_ = recorder.Finish(modeldiag.StatusTruncated, raw.String(), responseUsage)
 		return CoCreateReply{}, fmt.Errorf("cocreate response truncated: stop_reason=%s", stopReason)
 	}
 
@@ -401,27 +419,52 @@ retry:
 		}
 	}
 	if err := rejectIncompleteCoCreateXML(rawText); err != nil {
+		_ = recorder.Finish(modeldiag.StatusInvalidSchema, rawText, responseUsage)
 		return CoCreateReply{}, err
 	}
 	reply, err = parseCoCreateResponse(rawText)
+	if err != nil {
+		_ = recorder.Finish(modeldiag.StatusDecodeError, rawText, responseUsage)
+		return reply, err
+	}
 	if err == nil && len(reply.Suggestions) == 0 {
-		reply.Suggestions = judgeCoCreateSuggestions(ctx, model, reply)
+		reply.Suggestions = judgeCoCreateSuggestions(ctx, model, reply, diagnosticStore)
+	}
+	if diagnosticErr := recorder.Finish(modeldiag.StatusCompleted, rawText, responseUsage); diagnosticErr != nil {
+		return CoCreateReply{}, diagnosticErr
 	}
 	return reply, err
 }
 
-func judgeCoCreateSuggestions(ctx context.Context, model agentcore.ChatModel, reply CoCreateReply) []string {
+func judgeCoCreateSuggestions(ctx context.Context, model agentcore.ChatModel, reply CoCreateReply, diagnosticStores ...*store.Store) []string {
 	if model == nil || strings.TrimSpace(reply.Message) == "" {
+		return nil
+	}
+	input := buildCoCreateSuggestionJudgeInput(reply.Message)
+	var diagnosticStore *store.Store
+	if len(diagnosticStores) > 0 {
+		diagnosticStore = diagnosticStores[0]
+	}
+	recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: diagnosticStore, Task: "cocreate_suggestion_judge", System: coCreateSuggestionJudgePrompt, User: []byte(input), InputLimitBytes: manuscriptCompiledRequestBudgetBytes, OutputLimitTokens: coCreateSuggestionJudgeMaxTokens})
+	if beginErr != nil {
 		return nil
 	}
 	resp, err := model.Generate(ctx, []agentcore.Message{
 		agentcore.SystemMsg(coCreateSuggestionJudgePrompt),
-		agentcore.UserMsg(buildCoCreateSuggestionJudgeInput(reply.Message)),
+		agentcore.UserMsg(input),
 	}, nil, agentcore.WithMaxTokens(coCreateSuggestionJudgeMaxTokens), agentcore.WithJSONMode())
-	if err != nil || resp == nil {
+	if err != nil {
+		_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 		return nil
 	}
-	return parseSuggestionJudgeResponse(resp.Message.TextContent())
+	if resp == nil || strings.TrimSpace(resp.Message.TextContent()) == "" {
+		_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", nil)
+		return nil
+	}
+	output := resp.Message.TextContent()
+	suggestions := parseSuggestionJudgeResponse(output)
+	_ = recorder.Finish(modeldiag.StatusCompleted, output, resp.Message.Usage)
+	return suggestions
 }
 
 const coCreateSuggestionJudgePrompt = `你是小说共创 UI 的建议按钮判定器。你的任务是判断助手回复里是否真的包含适合显示为“用户下一句可以点击发送”的建议。
