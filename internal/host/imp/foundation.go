@@ -208,11 +208,19 @@ func PersistFoundation(ctx context.Context, st *store.Store, scale domain.Planni
 	if err := st.RunMeta.SetPlanningTier(scale); err != nil {
 		return fmt.Errorf("save planning tier: %w", err)
 	}
+	current, err := st.Foundation.Load()
+	if err != nil {
+		return fmt.Errorf("load story foundation: %w", err)
+	}
+	candidate := domain.CloneStoryFoundation(current)
+	candidate.Premise = fr.Premise
+	candidate.Characters = fr.Characters
+	candidate.WorldRules = fr.WorldRules
+	if _, err := st.Foundation.SaveCAS(candidate, current.Revision); err != nil {
+		return fmt.Errorf("save story foundation: %w", err)
+	}
 
 	// 1. premise
-	if err := st.Outline.SavePremise(fr.Premise); err != nil {
-		return fmt.Errorf("save premise: %w", err)
-	}
 	if name := domain.ExtractNovelNameFromPremise(fr.Premise); name != "" {
 		_ = st.Progress.SetNovelName(name)
 	}
@@ -222,17 +230,11 @@ func PersistFoundation(ctx context.Context, st *store.Store, scale domain.Planni
 	}
 
 	// 2. characters
-	if err := st.Characters.Save(fr.Characters); err != nil {
-		return fmt.Errorf("save characters: %w", err)
-	}
 	if _, err := st.Checkpoints.AppendArtifact(domain.GlobalScope(), "characters", "characters.json"); err != nil {
 		return fmt.Errorf("checkpoint characters: %w", err)
 	}
 
 	// 3. world_rules
-	if err := st.World.SaveWorldRules(fr.WorldRules); err != nil {
-		return fmt.Errorf("save world_rules: %w", err)
-	}
 	if _, err := st.Checkpoints.AppendArtifact(domain.GlobalScope(), "world_rules", "world_rules.json"); err != nil {
 		return fmt.Errorf("checkpoint world_rules: %w", err)
 	}

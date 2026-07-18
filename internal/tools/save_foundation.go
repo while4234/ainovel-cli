@@ -32,7 +32,7 @@ func NewSaveFoundationTool(store *store.Store, gates ...CompletionGate) *SaveFou
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
 func (t *SaveFoundationTool) Description() string {
-	return "保存小说基础设定（premise/outline/characters/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?, from_chapter?, to_chapter?}。type 可选 premise / outline / layered_outline / characters / world_rules / expand_arc / repair_arc / repair_volume / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。expand_arc 展开骨架弧的详细章节（需 volume + arc，普通原创审核规划每批严格 3-4 章）；repair_arc 修复已展开弧；repair_volume 按自动审核或用户意见完整替换一个尚未展开的分卷骨架且不得改变该卷预估总章数；append_volume 追加新卷（普通原创分卷规划阶段每次只追加一个骨架卷，每弧3-4章）；update_compass 更新终局方向；complete_book 宣告全书完结。scale 可选，仅允许 short / mid / long。"
+	return "保存小说基础设定（premise/outline/characters/planned_relationships/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?, from_chapter?, to_chapter?}。type 可选 premise / outline / layered_outline / characters / planned_relationships / world_rules / expand_arc / repair_arc / repair_volume / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。planned_relationships 必须使用 characters 中的稳定 ID，且只保存创作前计划关系，不写入 relationship_state。expand_arc 展开骨架弧的详细章节（需 volume + arc，普通原创审核规划每批严格 3-4 章）；repair_arc 修复已展开弧；repair_volume 按自动审核或用户意见完整替换一个尚未展开的分卷骨架且不得改变该卷预估总章数；append_volume 追加新卷（普通原创分卷规划阶段每次只追加一个骨架卷，每弧3-4章）；update_compass 更新终局方向；complete_book 宣告全书完结。scale 可选，仅允许 short / mid / long。"
 }
 func (t *SaveFoundationTool) Label() string { return "保存设定" }
 
@@ -42,7 +42,7 @@ func (t *SaveFoundationTool) ConcurrencySafe(_ json.RawMessage) bool { return fa
 
 func (t *SaveFoundationTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("type", schema.Enum("设定类型。建议显式传；若缺失，工具会在内容和当前缺失项唯一明确时自动推断。", "premise", "outline", "layered_outline", "characters", "world_rules", "expand_arc", "repair_arc", "repair_volume", "append_volume", "update_compass", "complete_book")),
+		schema.Property("type", schema.Enum("设定类型。建议显式传；若缺失，工具会在内容和当前缺失项唯一明确时自动推断。", "premise", "outline", "layered_outline", "characters", "planned_relationships", "world_rules", "expand_arc", "repair_arc", "repair_volume", "append_volume", "update_compass", "complete_book")),
 		schema.Property("content", map[string]any{
 			"description": "内容。premise 传 Markdown 字符串；其他类型直接传 JSON 数组或对象即可，也兼容传 JSON 字符串。expand_arc / repair_arc 时传章节数组。",
 		}).Required(),
@@ -224,6 +224,16 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, fmt.Errorf("save characters: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["count"] = len(chars)
+
+	case "planned_relationships":
+		var relationships []domain.CharacterRelationship
+		if err := decode("planned_relationships", &relationships); err != nil {
+			return nil, err
+		}
+		if err := t.store.Foundation.UpdateRelationships(relationships, false); err != nil {
+			return nil, fmt.Errorf("save planned_relationships: %w: %w", errs.ErrStoreWrite, err)
+		}
+		result["count"] = len(relationships)
 
 	case "world_rules":
 		var rules []domain.WorldRule
@@ -436,7 +446,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		result["last_updated"] = compass.LastUpdated
 
 	default:
-		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/world_rules/expand_arc/repair_arc/repair_volume/append_volume/update_compass/complete_book: %w", a.Type, errs.ErrToolArgs)
+		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/planned_relationships/world_rules/expand_arc/repair_arc/repair_volume/append_volume/update_compass/complete_book: %w", a.Type, errs.ErrToolArgs)
 	}
 
 	// checkpoint
@@ -723,6 +733,8 @@ func foundationArtifact(t string) string {
 		return "meta/progress.json"
 	case "characters":
 		return "characters.json"
+	case "planned_relationships":
+		return "planned_relationships.json"
 	case "world_rules":
 		return "world_rules.json"
 	case "update_compass":
@@ -876,6 +888,9 @@ func inferFoundationTypeFromObject(obj map[string]any, fromArray bool) string {
 	}
 	if hasAnyKey(obj, "name", "role", "description", "arc", "traits", "aliases") {
 		return "characters"
+	}
+	if hasAnyKey(obj, "source_character_id", "target_character_id", "direction", "status") {
+		return "planned_relationships"
 	}
 	if hasAnyKey(obj, "category", "rule", "boundary") {
 		return "world_rules"

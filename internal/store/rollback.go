@@ -44,8 +44,23 @@ func (s *Store) Rollback(req domain.RollbackRequest) (domain.RollbackResult, err
 	err := s.Revisions.withLegacyMigrationMutation("roll back project structure and adaptation state", s.Outline.migration, func() error {
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
+		if s.Foundation != nil {
+			// Lock order is revision migration -> crossMu -> foundation projectMu
+			// -> section I/O. Foundation saves acquire only projectMu -> I/O.
+			if err := s.Foundation.lifecycle.beginRollback(); err != nil {
+				return err
+			}
+			defer s.Foundation.lifecycle.endRollback()
+			s.Foundation.runLifecycleHook(foundationLifecycleRollbackStarted)
+			s.Foundation.projectMu.Lock()
+			defer s.Foundation.projectMu.Unlock()
+			s.Foundation.runLifecycleHook(foundationLifecycleRollbackLocked)
+			if err := s.Foundation.recoverUnlocked(); err != nil {
+				return fmt.Errorf("recover story foundation before rollback: %w", err)
+			}
+		}
 
-		state, err := s.inspectRollbackState()
+		state, err := s.inspectRollbackStateForMutation()
 		if err != nil {
 			return err
 		}
@@ -83,6 +98,20 @@ func (s *Store) Rollback(req domain.RollbackRequest) (domain.RollbackResult, err
 }
 
 func (s *Store) inspectRollbackState() (rollbackState, error) {
+	return s.inspectRollbackStateWithPremise(s.Outline.LoadPremise)
+}
+
+func (s *Store) inspectRollbackStateForMutation() (rollbackState, error) {
+	if s.Foundation == nil {
+		return s.inspectRollbackState()
+	}
+	return s.inspectRollbackStateWithPremise(func() (string, error) {
+		foundation, err := s.Foundation.loadCurrentUnlocked(true)
+		return foundation.Premise, err
+	})
+}
+
+func (s *Store) inspectRollbackStateWithPremise(loadPremise func() (string, error)) (rollbackState, error) {
 	var state rollbackState
 	var err error
 	if state.progress, err = s.Progress.Load(); err != nil {
@@ -118,7 +147,8 @@ func (s *Store) inspectRollbackState() (rollbackState, error) {
 	if state.layeredOutline, err = s.Outline.LoadLayeredOutline(); err != nil {
 		return state, fmt.Errorf("load layered outline: %w", err)
 	}
-	if state.premise, err = s.Outline.LoadPremise(); err != nil {
+	state.premise, err = loadPremise()
+	if err != nil {
 		return state, fmt.Errorf("load premise: %w", err)
 	}
 	return state, nil
@@ -859,6 +889,7 @@ func adaptationGeneratedDeletePaths() []string {
 
 func foundationDeletePaths() []string {
 	return []string{
+		foundationCanonicalFile,
 		"premise.md",
 		"outline.json",
 		"outline.md",
@@ -868,6 +899,9 @@ func foundationDeletePaths() []string {
 		"characters.md",
 		"world_rules.json",
 		"world_rules.md",
+		"planned_relationships.json",
+		"planned_relationships.md",
+		foundationRootDir,
 		"meta/compass.json",
 		"meta/snapshots",
 	}

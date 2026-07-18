@@ -142,6 +142,192 @@ func TestCloneProjectFailureLeavesNoPartialProject(t *testing.T) {
 	}
 }
 
+func TestCloneProjectCopiesCompletedStoryFoundationAndRejectsPendingJournal(t *testing.T) {
+	projects := NewProjectStore(filepath.Join(testTempDir(t), "runtime"))
+	source, err := projects.CreateProject("Foundation Source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := storepkg.NewStore(source.OutputDir)
+	if _, err := st.Foundation.SaveCAS(domain.StoryFoundation{
+		Premise:    "A complete foundation.",
+		Characters: []domain.Character{{ID: "lin", Name: "Lin"}},
+		WorldRules: []domain.WorldRule{{ID: "rule", Rule: "No reset"}},
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	for rel, kind := range map[string]string{
+		"output/story_foundation.json":            "formal_root",
+		"output/characters.json":                  "formal_root",
+		"output/world_rules.json":                 "formal_root",
+		"output/planned_relationships.json":       "formal_root",
+		"output/meta/foundation/projections.json": "foundation_manifest",
+	} {
+		data := cloneTestReadFile(t, filepath.Join(source.RootDir, filepath.FromSlash(rel)))
+		if err := validateCloneArtifact(source.RootDir, rel, kind, data); err != nil {
+			t.Fatalf("foundation artifact %s is not clone-valid: %v", rel, err)
+		}
+	}
+	cloned, err := projects.CloneProject(source.ID, "Foundation Copy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"story_foundation.json", "premise.md", "characters.json", "characters.md",
+		"world_rules.json", "world_rules.md", "planned_relationships.json", "planned_relationships.md",
+		"meta/foundation/projections.json",
+	} {
+		if _, err := os.Stat(filepath.Join(cloned.OutputDir, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("clone did not copy %s: %v", rel, err)
+		}
+	}
+
+	journal := filepath.Join(source.OutputDir, filepath.FromSlash("meta/foundation/journal.json"))
+	cloneTestWriteJSON(t, journal, map[string]any{"version": 1, "stage": "prepared"})
+	if _, err := projects.CloneProject(source.ID, "Pending Copy"); err == nil || !strings.Contains(err.Error(), "pending story foundation transaction") {
+		t.Fatalf("clone accepted pending foundation transaction: %v", err)
+	}
+	validationRoot := filepath.Join(testTempDir(t), "validation-pending")
+	if _, _, err := projects.CloneProjectForValidation(source.ID, validationRoot, "normal-fedcba"); err == nil || !strings.Contains(err.Error(), "foundation_transaction_pending") {
+		t.Fatalf("validation clone accepted pending foundation transaction: %v", err)
+	}
+}
+
+func TestValidationCloneVerifiesStoryFoundationProjectionSet(t *testing.T) {
+	projects := NewProjectStore(filepath.Join(testTempDir(t), "runtime"))
+	source, err := projects.CreateProject("Foundation Validation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := storepkg.NewStore(source.OutputDir)
+	if _, err := st.Foundation.SaveCAS(domain.StoryFoundation{
+		Premise:    "A valid foundation.",
+		Characters: []domain.Character{{ID: "lin", Name: "Lin"}},
+		WorldRules: []domain.WorldRule{{ID: "rule", Rule: "No reset"}},
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	validationRoot := filepath.Join(testTempDir(t), "validation-foundation")
+	clone, _, err := projects.CloneProjectForValidation(source.ID, validationRoot, "normal-aabbcc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(clone.RootDir) })
+	if _, err := os.Stat(filepath.Join(clone.OutputDir, "story_foundation.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source.OutputDir, "premise.md"), []byte("mixed projection"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projects.CloneProject(source.ID, "Mixed Foundation Copy"); err == nil || !strings.Contains(err.Error(), "not clone-ready") {
+		t.Fatalf("regular clone accepted a mixed projection: %v", err)
+	}
+	if _, _, err := projects.CloneProjectForValidation(source.ID, filepath.Join(testTempDir(t), "validation-mixed"), "normal-bbccdd"); err == nil || !strings.Contains(err.Error(), "foundation_projection_invalid") {
+		t.Fatalf("validation clone accepted a mixed projection: %v", err)
+	}
+}
+
+func TestRegularAndValidationCloneRejectOrphanFoundationArtifacts(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		rel  string
+		data []byte
+	}{
+		{name: "planned relationships", rel: "planned_relationships.json", data: []byte("[]")},
+		{name: "projection manifest", rel: "meta/foundation/projections.json", data: orphanFoundationManifest(t)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			projects := NewProjectStore(filepath.Join(testTempDir(t), "runtime"))
+			source, err := projects.CreateProject("Orphan Foundation " + test.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cloneTestWriteFile(t, filepath.Join(source.OutputDir, filepath.FromSlash(test.rel)), test.data)
+			if _, err := projects.CloneProject(source.ID, "Rejected Orphan"); err == nil || !strings.Contains(err.Error(), "without canonical foundation") {
+				t.Fatalf("regular clone accepted orphan %s: %v", test.rel, err)
+			}
+			validationRoot := filepath.Join(testTempDir(t), "validation-orphan")
+			if _, _, err := projects.CloneProjectForValidation(source.ID, validationRoot, "normal-acde12"); err == nil || !strings.Contains(err.Error(), "foundation_projection_invalid") {
+				t.Fatalf("validation clone accepted orphan %s: %v", test.rel, err)
+			}
+		})
+	}
+}
+
+func TestCloneProjectGetsConsistentFoundationDuringConcurrentSave(t *testing.T) {
+	projects := NewProjectStore(filepath.Join(testTempDir(t), "runtime"))
+	source, err := projects.CreateProject("Concurrent Foundation Source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := storepkg.NewStore(source.OutputDir)
+	base, err := store.Foundation.SaveCAS(domain.StoryFoundation{
+		Premise:    "base foundation",
+		Characters: []domain.Character{{ID: "lin", Name: "Lin"}},
+		WorldRules: []domain.WorldRule{{ID: "rule", Rule: "No reset"}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	saveDone := make(chan error, 1)
+	go func() {
+		<-start
+		for revision := base.Revision; revision < base.Revision+8; revision++ {
+			current, loadErr := store.Foundation.Load()
+			if loadErr != nil {
+				saveDone <- loadErr
+				return
+			}
+			candidate := domain.CloneStoryFoundation(current)
+			candidate.Premise = fmt.Sprintf("concurrent foundation %d", revision)
+			if _, saveErr := store.Foundation.SaveCAS(candidate, current.Revision); saveErr != nil {
+				saveDone <- saveErr
+				return
+			}
+		}
+		saveDone <- nil
+	}()
+	close(start)
+
+	for i := 0; i < 4; i++ {
+		cloned, err := projects.CloneProject(source.ID, fmt.Sprintf("Concurrent Copy %d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		clonedFoundation, err := storepkg.NewStore(cloned.OutputDir).Foundation.Load()
+		if err != nil {
+			t.Fatalf("clone %d has a mixed foundation snapshot: %v", i, err)
+		}
+		if clonedFoundation.Revision < base.Revision {
+			t.Fatalf("clone %d revision = %d", i, clonedFoundation.Revision)
+		}
+	}
+	if err := <-saveDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func orphanFoundationManifest(t *testing.T) []byte {
+	t.Helper()
+	files := make(map[string]string, 8)
+	for i := 0; i < 8; i++ {
+		files[fmt.Sprintf("artifact-%d", i)] = strings.Repeat("0", 64)
+	}
+	data, err := json.Marshal(map[string]any{
+		"version":           1,
+		"revision":          1,
+		"content_signature": strings.Repeat("1", 64),
+		"audit_signature":   strings.Repeat("2", 64),
+		"files":             files,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func TestValidationCloneUsesExplicitExternalRootAndExcludesCredentials(t *testing.T) {
 	store := NewProjectStore(filepath.Join(testTempDir(t), "runtime"))
 	source, err := store.CreateProject("Private Source")

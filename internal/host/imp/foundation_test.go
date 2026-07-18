@@ -258,6 +258,13 @@ func TestPersistFoundation_PromotesPhaseToWriting(t *testing.T) {
 	if got := st.FoundationMissing(); len(got) != 0 {
 		t.Errorf("foundation should be complete, missing: %v", got)
 	}
+	foundation, err := st.Foundation.Load()
+	if err != nil {
+		t.Fatalf("load canonical foundation: %v", err)
+	}
+	if foundation.Revision != 1 || foundation.Premise != fr.Premise || len(foundation.Characters) != len(fr.Characters) || len(foundation.WorldRules) != len(fr.WorldRules) {
+		t.Errorf("import foundation was not one atomic revision: %+v", foundation)
+	}
 }
 
 func mustParse(t *testing.T, raw string, expect int) *FoundationResult {
