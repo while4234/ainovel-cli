@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `ade5c27` `fix: preserve valid writer tool history`: Writer
+  context compaction now keeps the original schema-valid arguments for bounded
+  read and validation calls. Persisted draft/edit exchanges are removed as
+  complete call/result pairs after their data reaches the Store, instead of
+  rewriting every historical call to the invalid
+  `{"_context_compacted":true}` sentinel that weaker models copied into new
+  tool calls. Agent, Tools, and Host flow tests plus vet passed before live
+  redeployment.
 - 2026-07-18 `f9c7738` `fix: preserve targeted polish at word gate`: when
   an already-completed chapter misses its configured word range during
   polishing, the structured rejection now tells Writer to retain the complete
