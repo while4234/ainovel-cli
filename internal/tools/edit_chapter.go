@@ -135,7 +135,8 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 	if err != nil {
 		return nil, fmt.Errorf("load current draft before edit: %w: %w", errs.ErrStoreRead, err)
 	}
-	if a.BudgetSegment == nil && currentDraftOutsideWordBudget(t.store, a.Chapter, len([]rune(current))) {
+	_, outsideWordBudget := currentWriterBudgetWindow(t.store, a.Chapter, current)
+	if a.BudgetSegment == nil && outsideWordBudget {
 		return json.Marshal(map[string]any{
 			"chapter":          a.Chapter,
 			"changed":          false,
@@ -143,6 +144,27 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 			"deferred_to_host": true,
 			"next_step":        "当前进行中草稿超出字数预算，未执行非分段编辑。立即结束本轮；Host 将指定唯一行段与 budget_segment 后再派发局部编辑。",
 		})
+	}
+	if a.BudgetSegment != nil {
+		window, outside := currentWriterBudgetWindow(t.store, a.Chapter, current)
+		if !outside || *a.BudgetSegment != window.Segment {
+			return json.Marshal(map[string]any{
+				"chapter": a.Chapter, "changed": false, "word_count": len([]rune(current)),
+				"deferred_to_host": true, "expected_budget_segment": window.Segment,
+				"next_step": "budget_segment 不是 Host 当前指定的唯一恢复段，未执行修改。立即结束本轮，由 Host 重新派发。",
+			})
+		}
+		lines := strings.Split(current, "\n")
+		segmentText := strings.Join(lines[window.FromLine-1:window.ToLine], "\n")
+		for index, edit := range a.Edits {
+			if strings.Count(segmentText, edit.OldString) != 1 || strings.Count(edit.OldString, "\n") != strings.Count(edit.NewString, "\n") {
+				return json.Marshal(map[string]any{
+					"chapter": a.Chapter, "changed": false, "word_count": len([]rune(current)),
+					"deferred_to_host": true, "expected_budget_segment": window.Segment,
+					"next_step": fmt.Sprintf("edits[%d] 不完全属于 Host 当前指定行段，或改变了行边界；未执行任何修改。立即结束本轮，由 Host 重新派发。", index),
+				})
+			}
+		}
 	}
 	if batchMode {
 		return t.executeBatch(a.Chapter, current, a.Edits, a.BudgetSegment)
@@ -199,6 +221,18 @@ func (t *EditChapterTool) executeBatch(chapter int, current string, edits []chap
 	updated, changed, alreadyApplied, err := applyChapterEditBatch(current, edits)
 	if err != nil {
 		return nil, err
+	}
+	if budgetSegment != nil && changed > 0 {
+		window, outside := currentWriterBudgetWindow(t.store, chapter, current)
+		before := wordBudgetDistance(window.WordCount, window.MinWords, window.MaxWords)
+		after := wordBudgetDistance(len([]rune(updated)), window.MinWords, window.MaxWords)
+		if !outside || after >= before {
+			return json.Marshal(map[string]any{
+				"chapter": chapter, "changed": false, "word_count": len([]rune(current)),
+				"deferred_to_host": true, "expected_budget_segment": window.Segment,
+				"next_step": "本段修改没有缩小与字数预算的距离，未执行任何落盘。立即结束本轮，由 Host 重新派发当前行段。",
+			})
+		}
 	}
 	payload := map[string]any{
 		"chapter":               chapter,

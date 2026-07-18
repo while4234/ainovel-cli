@@ -53,6 +53,49 @@ func TestRepairDeAIBatchAppliesBoundedExactRevisions(t *testing.T) {
 	}
 }
 
+func TestRepairDeAIBatchDefersCurrentOutOfBudgetDraft(t *testing.T) {
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 1, InProgressChapter: 1}); err != nil {
+		t.Fatal(err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatal(err)
+	}
+	problem := "林逸飞没有回答——门外有人敲了一下。"
+	content := strings.Repeat("前文。", 50) + problem +
+		"林逸飞没有回答——桌上的杯子晃了晃。" +
+		"林逸飞没有回答——吴宇申把文件推过来。" +
+		"林逸飞没有回答——窗帘动了一下。"
+	if err := s.Drafts.SaveDraft(1, content); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewCheckDeAITool(s).Execute(context.Background(), json.RawMessage(`{"chapter":1}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := NewRepairDeAIBatchTool(s).Execute(context.Background(), json.RawMessage(`{
+		"chapter":1,
+		"repairs":[{"old_string":"林逸飞没有回答——门外有人敲了一下。","new_string":"门外传来两下轻敲，林逸飞看向门缝。"}]
+	}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Changed        bool `json:"changed"`
+		DeferredToHost bool `json:"deferred_to_host"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.Changed || !payload.DeferredToHost {
+		t.Fatalf("out-of-budget de-AI repair was not deferred: %+v err=%v raw=%s", payload, err, raw)
+	}
+	if got, loadErr := s.Drafts.LoadDraft(1); loadErr != nil || got != content {
+		t.Fatalf("deferred repair changed draft: err=%v", loadErr)
+	}
+}
+
 func TestRepairDeAIBatchSkipsStaleEntryAndAppliesCurrentMatches(t *testing.T) {
 	s := store.NewStore(t.TempDir())
 	if err := s.Init(); err != nil {

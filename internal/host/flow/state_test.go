@@ -57,6 +57,12 @@ func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 	if _, err := st.Checkpoints.Append(domain.ChapterScope(5), "plan", "", ""); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.Checkpoints.Append(domain.ChapterScope(5), "word_budget_edit_segment_2", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Checkpoints.Append(domain.ChapterScope(5), "de_ai_check", "", ""); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.Progress.Save(&domain.Progress{
 		Phase:             domain.PhaseWriting,
 		Flow:              domain.FlowWriting,
@@ -68,7 +74,8 @@ func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 	}
 
 	state := LoadState(st)
-	if !state.InProgressDraftExists || state.InProgressCheckpoint != "plan" ||
+	if !state.InProgressDraftExists || state.InProgressCheckpoint != "de_ai_check" ||
+		state.InProgressBudgetCheckpoint != "word_budget_edit_segment_2" ||
 		state.InProgressDeAIState != writerDeAIStateFailed || !state.InProgressConsistencyValid {
 		t.Fatalf("in-progress recovery facts were not loaded: %+v", state)
 	}

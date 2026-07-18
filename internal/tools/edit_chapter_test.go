@@ -112,14 +112,17 @@ func TestEditChapterBudgetSegmentPersistsRecoveryCheckpoint(t *testing.T) {
 	if err := s.Progress.Init("test", 1); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 1, InProgressChapter: 1}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
 	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
 	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
 		t.Fatalf("SetWordBudget: %v", err)
 	}
-	if err := s.Drafts.SaveDraft(1, "keep verbose detail"); err != nil {
+	if err := s.Drafts.SaveDraft(1, strings.Repeat("x", 120)+" keep verbose detail"); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
-	args := json.RawMessage(`{"chapter":1,"budget_segment":2,"edits":[{"old_string":" verbose","new_string":""}]}`)
+	args := json.RawMessage(`{"chapter":1,"budget_segment":0,"edits":[{"old_string":" verbose","new_string":""}]}`)
 	raw, err := NewEditChapterTool(s).Execute(context.Background(), args)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -128,15 +131,59 @@ func TestEditChapterBudgetSegmentPersistsRecoveryCheckpoint(t *testing.T) {
 		BudgetSegment int    `json:"budget_segment"`
 		NextStep      string `json:"next_step"`
 	}
-	if err := json.Unmarshal(raw, &payload); err != nil || payload.BudgetSegment != 2 {
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.BudgetSegment != 0 {
 		t.Fatalf("segment result=%+v err=%v raw=%s", payload, err, raw)
 	}
 	latest := s.Checkpoints.Latest(domain.ChapterScope(1))
-	if latest == nil || latest.Step != "word_budget_edit_segment_2" {
+	if latest == nil || latest.Step != "word_budget_edit_segment_0" {
 		t.Fatalf("segment checkpoint not persisted: %+v", latest)
 	}
 	if !strings.Contains(payload.NextStep, "立即结束本轮") || !strings.Contains(payload.NextStep, "Host 将派发下一行段") {
 		t.Fatalf("segment must return control to Host: %+v", payload)
+	}
+}
+
+func TestEditChapterBudgetSegmentDefersWrongOrOutOfRangeSegment(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 1, InProgressChapter: 1}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(300, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	lines := make([]string, 100)
+	for index := range lines {
+		lines[index] = fmt.Sprintf("line-%03d-verbose", index+1)
+	}
+	content := strings.Join(lines, "\n")
+	if err := s.Drafts.SaveDraft(1, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	for _, args := range []json.RawMessage{
+		json.RawMessage(`{"chapter":1,"budget_segment":0,"edits":[{"old_string":"line-001-verbose","new_string":"line-001"}]}`),
+		json.RawMessage(`{"chapter":1,"budget_segment":2,"edits":[{"old_string":"line-001-verbose","new_string":"line-001"}]}`),
+	} {
+		raw, err := NewEditChapterTool(s).Execute(context.Background(), args)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		var payload struct {
+			Changed        bool `json:"changed"`
+			DeferredToHost bool `json:"deferred_to_host"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil || payload.Changed || !payload.DeferredToHost {
+			t.Fatalf("out-of-scope segment edit was not deferred: %+v err=%v raw=%s", payload, err, raw)
+		}
+	}
+	got, err := s.Drafts.LoadDraft(1)
+	if err != nil || got != content {
+		t.Fatalf("deferred segment edit changed draft: err=%v", err)
 	}
 }
 

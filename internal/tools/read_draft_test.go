@@ -90,7 +90,7 @@ func TestReadChapterDraftLineSegmentKeepsFullDraftIdentity(t *testing.T) {
 	}
 
 	raw, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(
-		`{"chapter":3,"source":"draft","from_line":2,"to_line":3}`,
+		`{"chapter":3,"source":"draft","from_line":1,"to_line":4}`,
 	))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -107,13 +107,134 @@ func TestReadChapterDraftLineSegmentKeepsFullDraftIdentity(t *testing.T) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if payload.Content != "line two\nline three" || payload.SegmentFromLine != 2 ||
-		payload.SegmentToLine != 3 || payload.SegmentRunes != len([]rune(payload.Content)) ||
+	if payload.Content != content || payload.SegmentFromLine != 1 ||
+		payload.SegmentToLine != 4 || payload.SegmentRunes != len([]rune(payload.Content)) ||
 		!payload.SegmentComplete {
 		t.Fatalf("unexpected line segment: %+v", payload)
 	}
 	if payload.WordCount != len([]rune(content)) || payload.ContentSHA256 != store.TextSHA256(content) {
 		t.Fatalf("segment lost full-draft identity: %+v", payload)
+	}
+}
+
+func TestReadChapterDraftDefersRangeOutsideCurrentHostBudgetSegment(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	lines := make([]string, 130)
+	for index := range lines {
+		lines[index] = strings.Repeat("x", 4)
+	}
+	content := strings.Join(lines, "\n")
+	if err := s.Drafts.SaveDraft(3, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 3, InProgressChapter: 3}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(300, "test").WithPlannedChapters(3)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	raw, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(
+		`{"chapter":3,"source":"draft","from_line":1,"to_line":100,"max_runes":3000}`,
+	))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Content               string `json:"content"`
+		DeferredToHost        bool   `json:"deferred_to_host"`
+		ExpectedBudgetSegment int    `json:"expected_budget_segment"`
+		ExpectedFromLine      int    `json:"expected_from_line"`
+		ExpectedToLine        int    `json:"expected_to_line"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !payload.DeferredToHost || payload.Content != "" || payload.ExpectedBudgetSegment != 2 ||
+		payload.ExpectedFromLine != 97 || payload.ExpectedToLine != 130 {
+		t.Fatalf("non-Host range leaked draft content: %+v", payload)
+	}
+}
+
+func TestReadChapterDraftUsesLatestBudgetCursorAfterValidationCheckpoint(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	lines := make([]string, 295)
+	for index := range lines {
+		lines[index] = "over budget prose"
+	}
+	content := strings.Join(lines, "\n")
+	if err := s.Drafts.SaveDraft(47, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 96, InProgressChapter: 47}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(300000, "test").WithPlannedChapters(96)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if _, err := s.Checkpoints.Append(domain.ChapterScope(47), "word_budget_edit_segment_6", "", ""); err != nil {
+		t.Fatalf("append budget checkpoint: %v", err)
+	}
+	if _, err := s.Checkpoints.Append(domain.ChapterScope(47), "de_ai_check", "", ""); err != nil {
+		t.Fatalf("append validation checkpoint: %v", err)
+	}
+
+	raw, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(
+		`{"chapter":47,"source":"draft","from_line":1,"to_line":100}`,
+	))
+	if err != nil {
+		t.Fatalf("Execute wrong range: %v", err)
+	}
+	var deferred struct {
+		DeferredToHost        bool `json:"deferred_to_host"`
+		ExpectedBudgetSegment int  `json:"expected_budget_segment"`
+		ExpectedFromLine      int  `json:"expected_from_line"`
+		ExpectedToLine        int  `json:"expected_to_line"`
+	}
+	if err := json.Unmarshal(raw, &deferred); err != nil || !deferred.DeferredToHost ||
+		deferred.ExpectedBudgetSegment != 5 || deferred.ExpectedFromLine != 241 || deferred.ExpectedToLine != 288 {
+		t.Fatalf("validation checkpoint reset tool cursor: %+v err=%v raw=%s", deferred, err, raw)
+	}
+}
+
+func TestReadChapterFinalFallbackStillDefersOutOfBudgetDraft(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	content := strings.Repeat("x", 400)
+	if err := s.Drafts.SaveDraft(3, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 3, InProgressChapter: 3}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(300, "test").WithPlannedChapters(3)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	raw, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(`{"chapter":3,"source":"final"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Content        string `json:"content"`
+		DeferredToHost bool   `json:"deferred_to_host"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || !payload.DeferredToHost || payload.Content != "" {
+		t.Fatalf("final fallback leaked out-of-budget draft: %+v err=%v raw=%s", payload, err, raw)
 	}
 }
 

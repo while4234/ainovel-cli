@@ -79,6 +79,15 @@ func (t *DraftChapterTool) Execute(_ context.Context, args json.RawMessage) (jso
 	if err := EnsureChapterExpanded(t.store, a.Chapter); err != nil {
 		return nil, err
 	}
+	if existing, loadErr := t.store.Drafts.LoadDraft(a.Chapter); loadErr == nil && existing != "" {
+		if _, outside := currentWriterBudgetWindow(t.store, a.Chapter, existing); outside {
+			return json.Marshal(map[string]any{
+				"chapter": a.Chapter, "written": false, "deferred_to_host": true,
+				"word_count": len([]rune(existing)),
+				"next_step":  "当前进行中草稿超出字数预算，未覆盖或追加正文。立即结束本轮；Host 会按唯一行段完成局部字数恢复。",
+			})
+		}
+	}
 	if t.store.Progress.IsChapterCompleted(a.Chapter) {
 		// 打磨/重写路径：章节虽已完成，但仍在 pending_rewrites 中，允许覆盖草稿
 		progress, _ := t.store.Progress.Load()

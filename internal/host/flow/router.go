@@ -75,6 +75,7 @@ type State struct {
 	// Resume recovery lease additionally uses the validation facts below.
 	InProgressDraftExists      bool
 	InProgressCheckpoint       string
+	InProgressBudgetCheckpoint string
 	InProgressDeAIState        string
 	InProgressConsistencyValid bool
 	InProgressWordCount        int
@@ -300,7 +301,11 @@ func routeWriterBudgetSegment(s State, chapter int) *Instruction {
 	lineCount := max(s.InProgressLineCount, 1)
 	segmentCount := (lineCount + writerBudgetSegmentLines - 1) / writerBudgetSegmentLines
 	segment := segmentCount - 1
-	if completed, ok := writerBudgetCompletedSegment(s.InProgressCheckpoint); ok {
+	budgetCheckpoint := s.InProgressBudgetCheckpoint
+	if budgetCheckpoint == "" {
+		budgetCheckpoint = s.InProgressCheckpoint
+	}
+	if completed, ok := writerBudgetCompletedSegment(budgetCheckpoint); ok {
 		if completed > 0 {
 			segment = min(completed-1, segmentCount-1)
 		}

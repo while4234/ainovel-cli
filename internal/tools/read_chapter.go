@@ -118,6 +118,7 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 
 	var content string
 	var title string
+	loadedDraft := false
 	var err error
 	switch a.Source {
 	case "source":
@@ -131,11 +132,13 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 		}
 	case "draft":
 		content, err = t.store.Drafts.LoadDraft(a.Chapter)
+		loadedDraft = true
 	default: // final
 		content, err = t.store.Drafts.LoadChapterText(a.Chapter)
 		if err == nil && content == "" {
 			slog.Warn("read_chapter 读取终稿为空，回退到草稿", "module", "tool", "chapter", a.Chapter)
 			content, err = t.store.Drafts.LoadDraft(a.Chapter)
+			loadedDraft = true
 		}
 	}
 	if err != nil {
@@ -150,18 +153,25 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 	}
 	fullContent := content
 	originalRunes := len([]rune(fullContent))
-	outOfBudgetDraft := a.Source == "draft" && currentDraftOutsideWordBudget(t.store, a.Chapter, originalRunes)
+	budgetWindow, outOfBudgetDraft := currentWriterBudgetWindow(t.store, a.Chapter, fullContent)
+	outOfBudgetDraft = loadedDraft && outOfBudgetDraft
 	segmentFrom, segmentTo := 0, 0
 	if a.FromLine > 0 || a.ToLine > 0 {
 		if !outOfBudgetDraft {
 			return nil, fmt.Errorf("from_line/to_line are only available for the current out-of-budget draft")
 		}
-		lines := strings.Split(fullContent, "\n")
-		if a.FromLine <= 0 || a.ToLine < a.FromLine || a.FromLine > len(lines) {
-			return nil, fmt.Errorf("invalid line range %d-%d for chapter with %d lines", a.FromLine, a.ToLine, len(lines))
+		if a.FromLine != budgetWindow.FromLine || a.ToLine != budgetWindow.ToLine || a.MaxRunes > 0 {
+			return json.Marshal(map[string]any{
+				"chapter": a.Chapter, "source": a.Source, "word_count": originalRunes,
+				"deferred_to_host":        true,
+				"expected_budget_segment": budgetWindow.Segment,
+				"expected_from_line":      budgetWindow.FromLine, "expected_to_line": budgetWindow.ToLine,
+				"next_step": "请求的行段不是 Host 当前指定的唯一字数恢复段，未返回任何正文。立即结束本轮，由 Host 重新派发。",
+			})
 		}
+		lines := strings.Split(fullContent, "\n")
 		segmentFrom = a.FromLine
-		segmentTo = min(a.ToLine, len(lines))
+		segmentTo = a.ToLine
 		content = strings.Join(lines[segmentFrom-1:segmentTo], "\n")
 	} else if outOfBudgetDraft {
 		return json.Marshal(map[string]any{
@@ -218,27 +228,6 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 		result["hint"] = "内容已按 max_runes 截断；如需完整章节请重新读取并提高上限"
 	}
 	return json.Marshal(result)
-}
-
-func currentDraftOutsideWordBudget(st *store.Store, chapter, wordCount int) bool {
-	if st == nil {
-		return false
-	}
-	meta, err := st.RunMeta.Load()
-	if err != nil || meta == nil || meta.WordBudget == nil {
-		return false
-	}
-	progress, err := st.Progress.Load()
-	if err != nil || progress == nil || progress.InProgressChapter != chapter {
-		return false
-	}
-	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
-	if !ok || runtime.CurrentChapter.Chapter == 0 {
-		return false
-	}
-	minWords := runtime.CurrentChapter.RecommendedMinWords
-	maxWords := runtime.CurrentChapter.RecommendedMaxWords
-	return wordCount < minWords || wordCount > maxWords
 }
 
 type chapterRangePayload struct {

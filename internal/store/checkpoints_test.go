@@ -46,6 +46,24 @@ func TestCheckpointStore_AppendAndQuery(t *testing.T) {
 	}
 }
 
+func TestCheckpointStoreLatestByStepPrefixIgnoresLaterUnrelatedCheckpoint(t *testing.T) {
+	cs, _ := newTestCheckpointStore(t)
+	if _, err := cs.Append(domain.ChapterScope(47), "word_budget_edit_segment_6", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Append(domain.ChapterScope(47), "de_ai_check", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.Append(domain.ChapterScope(48), "word_budget_edit_segment_2", "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got := cs.LatestByStepPrefix(domain.ChapterScope(47), "word_budget_edit_segment_")
+	if got == nil || got.Step != "word_budget_edit_segment_6" {
+		t.Fatalf("latest prefix checkpoint = %+v", got)
+	}
+}
+
 func TestCheckpointStore_Idempotent(t *testing.T) {
 	cs, dir := newTestCheckpointStore(t)
 

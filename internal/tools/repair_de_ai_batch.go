@@ -93,6 +93,13 @@ func (t *RepairDeAIBatchTool) Execute(_ context.Context, args json.RawMessage) (
 	if content == "" || audit.DraftSHA256 != store.TextSHA256(content) {
 		return nil, fmt.Errorf("第 %d 章草稿已在上次 check_de_ai 后变化；先重新审校再修订: %w", request.Chapter, errs.ErrToolPrecondition)
 	}
+	if _, outside := currentWriterBudgetWindow(t.store, request.Chapter, content); outside {
+		return json.Marshal(map[string]any{
+			"chapter": request.Chapter, "changed": false, "deferred_to_host": true,
+			"word_count": len([]rune(content)),
+			"next_step":  "当前进行中草稿超出字数预算，去AI化批量修订未执行。立即结束本轮；Host 会先按唯一行段完成字数恢复，进入预算后再在同一草稿上重新检查去AI化。",
+		})
+	}
 
 	updated, repairedCount, staleIndices, err := applyDeAIBatch(content, request.Repairs)
 	if err != nil {

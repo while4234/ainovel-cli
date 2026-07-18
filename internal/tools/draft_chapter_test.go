@@ -206,6 +206,43 @@ func TestDraftChapterReportsNormalWordBudget(t *testing.T) {
 	}
 }
 
+func TestDraftChapterDefersOverwriteOfCurrentOutOfBudgetDraft(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 1, InProgressChapter: 1}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	existing := strings.Repeat("原", 140)
+	if err := s.Drafts.SaveDraft(1, existing); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	raw, err := NewDraftChapterTool(s).Execute(context.Background(), mustJSON(t, map[string]any{
+		"chapter": 1,
+		"content": "模型试图覆盖现有草稿。",
+		"mode":    "write",
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Written        bool `json:"written"`
+		DeferredToHost bool `json:"deferred_to_host"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.Written || !payload.DeferredToHost {
+		t.Fatalf("out-of-budget overwrite was not deferred: %+v err=%v raw=%s", payload, err, raw)
+	}
+	if got, loadErr := s.Drafts.LoadDraft(1); loadErr != nil || got != existing {
+		t.Fatalf("deferred draft write changed content: err=%v", loadErr)
+	}
+}
+
 func mustJSON(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	raw, err := json.Marshal(v)

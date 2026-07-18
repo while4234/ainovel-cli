@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -133,6 +134,21 @@ func (cs *CheckpointStore) LatestByStep(scope domain.Scope, step string) *domain
 	for i := len(cs.cache) - 1; i >= 0; i-- {
 		cp := cs.cache[i]
 		if cp.Scope.Matches(scope) && cp.Step == step {
+			return &cp
+		}
+	}
+	return nil
+}
+
+// LatestByStepPrefix returns the latest checkpoint whose step begins with
+// prefix. Recovery workflows use it to keep their own durable cursor even
+// when validation checkpoints are appended afterward.
+func (cs *CheckpointStore) LatestByStepPrefix(scope domain.Scope, prefix string) *domain.Checkpoint {
+	cs.io.mu.RLock()
+	defer cs.io.mu.RUnlock()
+	for i := len(cs.cache) - 1; i >= 0; i-- {
+		cp := cs.cache[i]
+		if cp.Scope.Matches(scope) && strings.HasPrefix(cp.Step, prefix) {
 			return &cp
 		}
 	}

@@ -109,6 +109,9 @@ func loadWriterResumeState(s *State, st *storepkg.Store, progress *domain.Progre
 	if checkpoint := st.Checkpoints.Latest(domain.ChapterScope(chapter)); checkpoint != nil {
 		s.InProgressCheckpoint = checkpoint.Step
 	}
+	if checkpoint := st.Checkpoints.LatestByStepPrefix(domain.ChapterScope(chapter), "word_budget_edit_segment_"); checkpoint != nil {
+		s.InProgressBudgetCheckpoint = checkpoint.Step
+	}
 	if checkpoint := st.Checkpoints.LatestByStep(domain.ChapterScope(chapter), "consistency_check"); checkpoint != nil {
 		s.InProgressConsistencyValid = checkpoint.Digest == "sha256:"+draftSHA
 	}

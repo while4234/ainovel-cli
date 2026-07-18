@@ -549,6 +549,26 @@ func TestWriterBudgetSegmentProgressesFromEndToStart(t *testing.T) {
 	}
 }
 
+func TestWriterBudgetSegmentKeepsCursorAfterValidationCheckpoint(t *testing.T) {
+	got := routeWriterBudgetSegment(State{
+		InProgressCheckpoint:       "de_ai_check",
+		InProgressBudgetCheckpoint: "word_budget_edit_segment_6",
+		InProgressWordCount:        3973,
+		InProgressWordMin:          2544,
+		InProgressWordMax:          3743,
+		InProgressLineCount:        295,
+	}, 47)
+	for _, want := range []string{
+		"budget_segment=5",
+		"from_line=241",
+		"to_line=288",
+	} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("validation checkpoint reset recovery cursor; missing %q: %s", want, got.Task)
+		}
+	}
+}
+
 func TestRouteResume_DoesNotOverrideNewChapterWithoutDraft(t *testing.T) {
 	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
 	p.TotalChapters = 20
