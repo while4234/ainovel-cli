@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `401a388` `fix: bound arc review dispatches`: arc-end Editor
+  reviews now use a 5,000-rune whole-chapter batch budget instead of 12,000
+  runes. Each routed batch explicitly reads only its assigned final chapter
+  range, forbids `novel_context` and unrelated chapter reads, and persists the
+  batch review immediately. This fixes the live V4/A2 request that combined
+  chapters 41-44 with extra context into about 69.9 KiB. Writer drafting and
+  de-AI repair behavior are unchanged. Full Store, Flow, and Tools tests,
+  focused five-run regressions, scoped vet, and diff checks passed.
 - 2026-07-18 `d19f201` `fix: infer writer chapter tool defaults`: Writer-only
   chapter tools now infer the active chapter when the model omits it. Its
   `read_chapter` also defaults the active chapter to `source=draft` and prior

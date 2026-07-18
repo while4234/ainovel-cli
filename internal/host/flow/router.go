@@ -406,7 +406,7 @@ func formatArcReviewTask(b *storepkg.ArcBoundary, batch *storepkg.ArcReviewBatch
 	}
 	if batch != nil {
 		return fmt.Sprintf(
-			"对第 %d 卷第 %d 弧%s做弧级评审的第 %d/%d 批（完整章节第 %d-%d 章）。本轮只审核这一批：调用 read_chapter(source=\"final\", from=%d, to=%d, max_total_runes=%d) 读取本批完整章节；不要使用 max_runes，不要把章节从中间截断。若本批发现问题，affected_chapters 只写本批内确有问题的章节。审完本批后调用 save_review(chapter=%d, scope=\"arc_batch\", volume=%d, arc=%d, batch_from=%d, batch_to=%d) 保存批次结果；不要在本轮调用 scope=\"arc\"，最后一批保存后系统会合并为弧级 review。",
+			"对第 %d 卷第 %d 弧%s做弧级评审的第 %d/%d 批（完整章节第 %d-%d 章）。本轮只审核这一批：第一步且只调用一次 read_chapter(source=\"final\", from=%d, to=%d, max_total_runes=%d) 读取本批完整章节；禁止调用 novel_context，禁止读取其他章节或追加下一批，不要使用 max_runes，不要把章节从中间截断。若本批发现问题，affected_chapters 只写本批内确有问题的章节。读取后立即调用 save_review(chapter=%d, scope=\"arc_batch\", volume=%d, arc=%d, batch_from=%d, batch_to=%d) 保存本批结果并结束；不要在本轮调用 scope=\"arc\"，最后一批保存后系统会合并为弧级 review。",
 			b.Volume, b.Arc, rangeNote, batch.Index, batch.Total, batch.From, batch.To,
 			batch.From, batch.To, domain.ArcReviewBatchRuneBudget,
 			to, b.Volume, b.Arc, batch.From, batch.To,

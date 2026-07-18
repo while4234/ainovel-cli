@@ -5,7 +5,11 @@ import (
 	"strings"
 )
 
-const ArcReviewBatchRuneBudget = 12000
+// ArcReviewBatchRuneBudget keeps one arc-review dispatch comfortably below
+// the production request boundary even if the Editor also emits a small
+// amount of unnecessary context. Normal 3k-5k chapters therefore review one
+// complete chapter per persisted batch instead of accumulating a whole arc.
+const ArcReviewBatchRuneBudget = 5000
 
 // TimelineEvent 时间线事件。
 type TimelineEvent struct {

@@ -134,7 +134,7 @@ func TestRoute_ArcEndNeedsReview(t *testing.T) {
 	if got.Reason != "弧末评审未完成" {
 		t.Errorf("reason mismatch: %q", got.Reason)
 	}
-	for _, want := range []string{"第 7-10 章", "按完整章节分批审阅", "max_total_runes=12000", "next_from", "不要把一个章节从中间切开", "单章批次", `save_review(chapter=10, scope="arc")`} {
+	for _, want := range []string{"第 7-10 章", "按完整章节分批审阅", "max_total_runes=5000", "next_from", "不要把一个章节从中间切开", "单章批次", `save_review(chapter=10, scope="arc")`} {
 		if !strings.Contains(got.Task, want) {
 			t.Fatalf("arc review task missing %q: %s", want, got.Task)
 		}
@@ -165,7 +165,7 @@ func TestRoute_ArcEndNeedsReviewDispatchesNextBatch(t *testing.T) {
 	if got == nil || got.Agent != "editor" {
 		t.Fatalf("expected editor for arc review batch, got %+v", got)
 	}
-	for _, want := range []string{"第 1/2 批", "完整章节第 7-8 章", `scope="arc_batch"`, "batch_from=7", "batch_to=8", "不要在本轮调用 scope=\"arc\""} {
+	for _, want := range []string{"第 1/2 批", "完整章节第 7-8 章", `scope="arc_batch"`, "batch_from=7", "batch_to=8", "禁止调用 novel_context", "读取后立即调用 save_review", "不要在本轮调用 scope=\"arc\""} {
 		if !strings.Contains(got.Task, want) {
 			t.Fatalf("arc review batch task missing %q: %s", want, got.Task)
 		}

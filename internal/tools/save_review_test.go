@@ -537,7 +537,7 @@ func TestSaveReviewArcBatchMergesAfterAllChapterBatches(t *testing.T) {
 		t.Fatalf("SaveLayeredOutline: %v", err)
 	}
 	for chapter := 1; chapter <= 4; chapter++ {
-		if err := s.Drafts.SaveFinalChapter(chapter, strings.Repeat("正文", 3000)); err != nil {
+		if err := s.Drafts.SaveFinalChapter(chapter, strings.Repeat("正文", 1000)); err != nil {
 			t.Fatalf("SaveFinalChapter(%d): %v", chapter, err)
 		}
 	}
