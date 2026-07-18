@@ -88,6 +88,12 @@ func TestWriterToolResultsCompactByValidationPhase(t *testing.T) {
 			t.Fatalf("recent validation result at index %d was compacted", index)
 		}
 	}
+	for _, index := range []int{1, 3, 5, 7} {
+		calls := view[index].(agentcore.Message).ToolCalls()
+		if len(calls) != 1 || string(calls[0].Args) != `{"chapter":39}` {
+			t.Fatalf("compaction exposed fabricated tool args at index %d: %+v", index, calls)
+		}
+	}
 }
 
 func TestWriterPhaseKeepsContextAndDraftUntilValidation(t *testing.T) {
@@ -249,12 +255,19 @@ func TestWriterPhaseCompactsPersistedDraftArgumentsImmediately(t *testing.T) {
 		t.Fatal("persisted draft arguments must be evicted before the next provider call")
 	}
 	assistant := view[1].(agentcore.Message)
-	calls := assistant.ToolCalls()
-	if len(calls) != 1 || string(calls[0].Args) != `{"_context_compacted":true}` {
-		t.Fatalf("draft call args were not compacted: %+v", calls)
+	if calls := assistant.ToolCalls(); len(calls) != 0 {
+		t.Fatalf("persisted draft call must be removed from model history: %+v", calls)
 	}
 	if assistant.ThinkingContent() != "" {
 		t.Fatal("completed drafting rationale must not cross the persisted-write boundary")
+	}
+	if !strings.Contains(assistant.TextContent(), "Prior Writer phase cleared") {
+		t.Fatalf("collapsed draft turn lost its durable-state marker: %q", assistant.TextContent())
+	}
+	for _, message := range view {
+		if typed, ok := message.(agentcore.Message); ok && typed.Role == agentcore.RoleTool {
+			t.Fatal("persisted draft result must be removed with its originating call")
+		}
 	}
 	if after := corecontext.EstimateTotal(view); after >= before-5_000 {
 		t.Fatalf("draft phase saved only %d tokens, want a whole-payload reduction", before-after)
@@ -268,7 +281,7 @@ func TestWriterPhaseCompactsPersistedDraftArgumentsImmediately(t *testing.T) {
 	}
 }
 
-func TestWriterPhaseFinishesLegacyClearedCallArguments(t *testing.T) {
+func TestWriterPhaseKeepsSchemaValidArgumentsForClearedResults(t *testing.T) {
 	messages := writerPhaseMessages(t, "novel_context", "read_chapter", "check_consistency")
 	legacyResult := messages[2].(agentcore.Message)
 	legacyResult.Metadata["compacted_tool_result"] = true
@@ -278,12 +291,12 @@ func TestWriterPhaseFinishesLegacyClearedCallArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Applied {
-		t.Fatal("legacy cleared result still has an oversized originating call")
+	if result.Applied {
+		t.Fatalf("already-cleared result with small valid args must be stable: %+v", result)
 	}
 	call := view[1].(agentcore.Message).ToolCalls()[0]
-	if string(call.Args) != `{"_context_compacted":true}` {
-		t.Fatalf("legacy call args=%s", call.Args)
+	if string(call.Args) != `{"chapter":39}` {
+		t.Fatalf("cleared result fabricated invalid call args: %s", call.Args)
 	}
 }
 

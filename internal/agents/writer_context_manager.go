@@ -172,6 +172,7 @@ func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMe
 
 	protected := protectRecentWriterResults(candidates, keepRecent, preferOriginalContext)
 	compactCalls := make(map[string]struct{})
+	collapseCalls := make(map[string]struct{})
 	applied := false
 	for _, candidate := range candidates {
 		if candidate.alreadyCleared {
@@ -180,6 +181,7 @@ func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMe
 		}
 		if isPersistedWriterDraftTool(candidate.toolName) {
 			compactCalls[candidate.callID] = struct{}{}
+			collapseCalls[candidate.callID] = struct{}{}
 		}
 		if _, keep := protected[candidate.resultIndex]; keep {
 			continue
@@ -194,8 +196,9 @@ func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMe
 		applied = true
 	}
 
-	argsChanged := compactWriterToolCalls(out, compactCalls)
-	applied = applied || argsChanged
+	var historyChanged bool
+	out, historyChanged = compactWriterToolHistory(out, compactCalls, collapseCalls, clearedMessage)
+	applied = applied || historyChanged
 	if !applied {
 		return view, corecontext.StrategyResult{Name: "writer_validation_phase"}, nil
 	}
@@ -302,62 +305,89 @@ func protectRecentWriterResults(candidates []writerToolResultCandidate, keepRece
 	return protected
 }
 
-func compactWriterToolCalls(msgs []agentcore.AgentMessage, callIDs map[string]struct{}) bool {
+// compactWriterToolHistory clears stale rationale while preserving schema-valid
+// arguments for read/validation calls. Persisted write exchanges are removed as
+// complete call/result pairs: their payload already lives in the Store, and
+// leaving a fabricated argument object in history teaches weaker models to
+// copy that invalid object into their next real tool call.
+func compactWriterToolHistory(
+	msgs []agentcore.AgentMessage,
+	callIDs map[string]struct{},
+	collapseCalls map[string]struct{},
+	clearedMessage string,
+) ([]agentcore.AgentMessage, bool) {
+	out := make([]agentcore.AgentMessage, 0, len(msgs))
 	changed := false
-	for index, item := range msgs {
+	for _, item := range msgs {
 		message, ok := item.(agentcore.Message)
-		if !ok || message.Role != agentcore.RoleAssistant {
+		if !ok {
+			out = append(out, item)
 			continue
 		}
+		if message.Role == agentcore.RoleTool {
+			callID, _ := message.Metadata["tool_call_id"].(string)
+			if _, collapse := collapseCalls[callID]; collapse {
+				changed = true
+				continue
+			}
+			out = append(out, message)
+			continue
+		}
+		if message.Role != agentcore.RoleAssistant {
+			out = append(out, message)
+			continue
+		}
+
 		content := append([]agentcore.ContentBlock(nil), message.Content...)
-		messageChanged := false
 		allCallsCompacted := true
 		hasCall := false
-		for blockIndex, block := range content {
+		collapsedCall := false
+		for _, block := range content {
 			if block.Type != agentcore.ContentToolCall || block.ToolCall == nil {
 				continue
 			}
 			hasCall = true
 			if _, compact := callIDs[block.ToolCall.ID]; !compact {
 				allCallsCompacted = false
-				continue
 			}
-			if string(block.ToolCall.Args) == `{"_context_compacted":true}` {
-				continue
+			if _, collapse := collapseCalls[block.ToolCall.ID]; collapse {
+				collapsedCall = true
 			}
-			call := *block.ToolCall
-			call.Args = json.RawMessage(`{"_context_compacted":true}`)
-			call.ArgsInvalid = false
-			call.ArgsRawText = ""
-			call.ArgsParseError = ""
-			content[blockIndex] = agentcore.ToolCallBlock(call)
-			messageChanged = true
 		}
-		if hasCall && allCallsCompacted {
-			for blockIndex, block := range content {
-				switch block.Type {
-				case agentcore.ContentText:
-					if block.Text != "" {
-						content[blockIndex] = agentcore.TextBlock("")
+
+		messageChanged := false
+		if collapsedCall || (hasCall && allCallsCompacted) {
+			filtered := make([]agentcore.ContentBlock, 0, len(content))
+			for _, block := range content {
+				if block.Type == agentcore.ContentToolCall && block.ToolCall != nil {
+					if _, collapse := collapseCalls[block.ToolCall.ID]; collapse {
 						messageChanged = true
-					}
-				case agentcore.ContentThinking:
-					if block.Thinking != "" {
-						content[blockIndex] = agentcore.ThinkingBlock("")
-						messageChanged = true
+						continue
 					}
 				}
+				if hasCall && allCallsCompacted && (block.Type == agentcore.ContentText || block.Type == agentcore.ContentThinking) {
+					messageChanged = true
+					continue
+				}
+				filtered = append(filtered, block)
+			}
+			content = filtered
+		}
+		if hasCall && allCallsCompacted {
+			if len(content) == 0 {
+				content = append(content, agentcore.TextBlock(clearedMessage))
+				messageChanged = true
 			}
 		}
 		if messageChanged {
 			message.Content = content
 			message.Metadata = cloneWriterMetadata(message.Metadata)
-			message.Metadata["compacted_tool_args"] = true
-			msgs[index] = message
+			message.Metadata["compacted_tool_turn"] = true
 			changed = true
 		}
+		out = append(out, message)
 	}
-	return changed
+	return out, changed
 }
 
 func cloneWriterMessages(msgs []agentcore.AgentMessage) []agentcore.AgentMessage {
