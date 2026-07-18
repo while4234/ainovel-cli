@@ -51,7 +51,7 @@ const (
 	writerChapterContextBudgetBytes = 60 * 1024
 	writerChapterSourceBudgetBytes  = 28 * 1024
 	writerPolishingContextBytes     = 24 * 1024
-	writerRecoveryContextBytes      = 16 * 1024
+	writerRecoveryContextBytes      = 8 * 1024
 	planningContextBudgetBytes      = 60 * 1024
 	planningContextSourceBytes      = 42 * 1024
 	nearbyOutlineBeforeChapters     = 2
@@ -684,9 +684,9 @@ func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpos
 	if purpose == chapterContextRecovering {
 		// A full current draft will be read beside this package. Keep only the
 		// stable validation constraints that are still needed after prose exists.
-		addWithLimit("consistency", t.refs.Consistency, 200)
-		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 250)
-		addWithLimit("quality_checklist", t.refs.QualityChecklist, 200)
+		addWithLimit("consistency", t.refs.Consistency, 150)
+		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 150)
+		addWithLimit("quality_checklist", t.refs.QualityChecklist, 150)
 		return refs
 	}
 	// New writing and substantive rewrites retain the core writing references,

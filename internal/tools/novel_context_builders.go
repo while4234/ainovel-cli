@@ -909,11 +909,11 @@ func (t *ContextTool) buildChapterContext(result map[string]any, state contextBu
 	envelope := newChapterContextEnvelope()
 	result["memory_policy"] = domain.NewChapterMemoryPolicy(state.progress, state.profile, state.currentEntry != nil)
 
-	if state.purpose == chapterContextPolishing || state.purpose == chapterContextRecovering {
+	if state.purpose == chapterContextPolishing {
 		t.loadPolishingCharacters(envelope.Episodic, warn)
-	} else if state.profile.Layered {
+	} else if state.purpose != chapterContextRecovering && state.profile.Layered {
 		t.loadLayeredCharacters(envelope.Episodic, state.chapter, warn)
-	} else {
+	} else if state.purpose != chapterContextRecovering {
 		t.loadFilteredCharacters(envelope.Episodic, state.chapter, warn)
 	}
 
@@ -925,7 +925,9 @@ func (t *ContextTool) buildChapterContext(result map[string]any, state contextBu
 	if chapterPurposeNeedsDraftingContext(state.purpose) {
 		t.buildChapterSelectedMemory(&envelope, state, warn)
 	}
-	t.buildStyleStats(&envelope, state)
+	if state.purpose != chapterContextRecovering {
+		t.buildStyleStats(&envelope, state)
+	}
 	envelope.apply(result)
 }
 
