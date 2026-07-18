@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `664a41d` `fix: reserve long draft recovery headroom`: stored-draft
+  recovery is now source-bounded to 8 KiB and omits character snapshots and
+  whole-book style statistics already observable in the full current draft.
+  It retains the signed outline/contract, user rules, word budget, and compact
+  consistency/quality/anti-AI constraints. This closes the remaining live
+  66-67 KiB boundary crossings after chapter 41 grew during quality repair,
+  without truncating the draft. Focused and full Tools/Agents tests plus vet
+  passed.
 - 2026-07-18 `084c50e` `fix: source-bound stored draft recovery`: a restarted
   normal-writing chapter with an existing uncommitted draft now enters a
   dedicated `recovering` context profile. The package keeps the current
