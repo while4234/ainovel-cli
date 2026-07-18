@@ -98,7 +98,7 @@ func TestRoute_PendingPolishingVerb(t *testing.T) {
 	if got == nil {
 		t.Fatalf("expected polish verb, got %+v", got)
 	}
-	for _, want := range []string{"打磨第 2 章", "rewrite_brief", "edit_chapter", "局部实质改动", "check_consistency", "check_de_ai", "commit_chapter"} {
+	for _, want := range []string{"打磨第 2 章", "rewrite_brief", "edit_chapter", "局部实质改动", "草稿已包含打磨改动", "不要为了满足次数重复修改", "check_consistency", "check_de_ai", "commit_chapter"} {
 		if !strings.Contains(got.Task, want) {
 			t.Fatalf("polish task missing %q: %s", want, got.Task)
 		}
