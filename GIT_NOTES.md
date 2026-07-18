@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `560b413` `fix: advance writer context by validation phase`:
+  Writer now commits a deterministic phase transition as soon as consistency,
+  adaptation, or de-AI validation returns. It keeps the two newest useful
+  results and clears whole prior-phase context/draft payloads that remain
+  durably readable from the project store. The same strategy now handles the
+  exact 60-KiB overflow recovery path, replacing the ineffective full-summary
+  retry observed live (61,482 -> 61,481 bytes). Synthetic boundary coverage
+  verifies at least 20 KiB of post-transition headroom without truncating the
+  active draft or its validation receipt; the full Agent suite and vet passed.
 - 2026-07-18 `8277ee3` `fix: recover at exact production context boundary`:
   the exact 60-KiB byte guard now reports agentcore's recoverable context
   overflow sentinel after recording its rejected-budget diagnostic. Agentcore
