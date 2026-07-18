@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `81cce909` `feat: converge manuscript workspace actions`:
+  widens and aligns the manuscript reading surface, adds an accessible chapter
+  combobox with Arabic/full-width/Chinese-number lookup, persists bounded
+  manuscript-action clarification in the right panel, preserves the existing
+  revision/expansion audit and publication gates, removes the manuscript
+  discussion jump, and keeps continuation Draft co-create inside continuation.
+  All 296 UI tests, the affected Go packages and vet, the production build, 20
+  manuscript workspace browser scenarios, 12 expansion browser scenarios,
+  restart, and live route/static smoke checks passed. Port 9898 runs PID 30392.
 - 2026-07-18 `dec625f` `feat: redesign manuscript workspace`:
   moves all manuscript selection and writing controls into the right tool panel,
   keeps formal/candidate/outline/review/history content in the central reader,
