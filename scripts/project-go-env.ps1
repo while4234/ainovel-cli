@@ -92,8 +92,18 @@ function Clear-AINovelCacheDirectory {
     }
 
     if (Test-Path -LiteralPath $Path -PathType Container) {
-        Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop |
-            Remove-Item -Recurse -Force -ErrorAction Stop
+        for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+                Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop |
+                    Remove-Item -Recurse -Force -ErrorAction Stop
+                break
+            } catch {
+                if ($attempt -eq 5) {
+                    throw
+                }
+                Start-Sleep -Milliseconds 250
+            }
+        }
     }
     [System.IO.Directory]::CreateDirectory($Path) | Out-Null
 }

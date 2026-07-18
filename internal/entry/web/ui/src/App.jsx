@@ -59,6 +59,7 @@ import {
   deleteProviderModel,
   discoverGlobalProviderModels,
   discoverProjectProviderModels,
+  downloadSimulationSource,
   emptyTrashProjects,
   exportProjectDownload,
   generateContinuationOutlines,
@@ -119,6 +120,7 @@ import {
   saveNovelToLibrary,
   saveSimulationToLibrary,
   sendCoCreate,
+  searchSimulationSources,
   setGlobalCoCreateMaxTokens,
   setGlobalCoCreateTimeout,
   setGlobalRetrySettings,
@@ -233,6 +235,12 @@ function createSimulationState() {
     importStatus: 'idle',
     importEvents: [],
     importMessage: '',
+    sourceSearchQuery: '',
+    sourceSearchStatus: 'idle',
+    sourceSearchResults: [],
+    sourceSearchMessage: '',
+    sourceSearchError: '',
+    sourceDownloadID: '',
     libraryQuery: '',
     libraryStatus: 'idle',
     libraryItems: [],
@@ -2723,6 +2731,83 @@ export default function App() {
     }
   };
 
+  const searchSimulationCorpus = async () => {
+    const projectId = activeProject?.id;
+    const fileName = simulation.sourceSearchQuery.trim();
+    if (!projectId || !fileName) {
+      return;
+    }
+    setSimulation((previous) => ({
+      ...previous,
+      sourceSearchStatus: 'running',
+      sourceSearchResults: [],
+      sourceSearchMessage: '',
+      sourceSearchError: ''
+    }));
+    try {
+      const data = await searchSimulationSources(projectId, fileName);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      const results = Array.isArray(data.results) ? data.results : [];
+      setSimulation((previous) => ({
+        ...previous,
+        sourceSearchStatus: 'done',
+        sourceSearchResults: results,
+        sourceSearchMessage: results.length ? `找到 ${results.length} 个 TXT 结果` : '没有找到 TXT 文件',
+        sourceSearchError: ''
+      }));
+    } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setSimulation((previous) => ({
+        ...previous,
+        sourceSearchStatus: 'error',
+        sourceSearchError: err.message
+      }));
+    }
+  };
+
+  const downloadSimulationCorpus = async (result) => {
+    const projectId = activeProject?.id;
+    if (!projectId || !result?.id) {
+      return;
+    }
+    if (String(result.file_type || '').toLowerCase() !== 'txt') {
+      setSimulation((previous) => ({ ...previous, sourceSearchError: '请选择 TXT 文件进行下载' }));
+      return;
+    }
+    setSimulation((previous) => ({
+      ...previous,
+      sourceDownloadID: result.id,
+      sourceSearchMessage: '',
+      sourceSearchError: ''
+    }));
+    try {
+      const data = await downloadSimulationSource(projectId, result.id);
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setSimulation((previous) => ({
+        ...previous,
+        files: simulationFilesFromResponse(data),
+        sourceDownloadID: '',
+        sourceSearchMessage: data.message || `已加入语料：${result.name}`,
+        sourceSearchError: ''
+      }));
+    } catch (err) {
+      if (!isCurrentProject(projectId)) {
+        return;
+      }
+      setSimulation((previous) => ({
+        ...previous,
+        sourceDownloadID: '',
+        sourceSearchError: err.message
+      }));
+    }
+  };
+
   const refreshSimulationLibrary = async () => {
     const query = simulation.libraryQuery;
     setSimulation((previous) => ({
@@ -4782,6 +4867,8 @@ export default function App() {
               simulation={simulation}
               setSimulation={setSimulation}
               onUploadSources={uploadSimulationSources}
+              onSearchSources={searchSimulationCorpus}
+              onDownloadSource={downloadSimulationCorpus}
               onAnalyze={runSimulationAnalysis}
               onImportProfile={importSimulation}
               onRefreshLibrary={refreshSimulationLibrary}
@@ -7571,6 +7658,8 @@ function SimulationPanel({
   simulation,
   setSimulation,
   onUploadSources,
+  onSearchSources,
+  onDownloadSource,
   onAnalyze,
   onImportProfile,
   onRefreshLibrary,
@@ -7668,6 +7757,57 @@ function SimulationPanel({
           <Upload size={17} />
           <span>仿写画像</span>
         </div>
+        <form className="library-search" onSubmit={(event) => { event.preventDefault(); onSearchSources(); }}>
+          <label>
+            <span>搜索下载语料</span>
+            <input
+              disabled={!activeProject || simulationActionDisabled || simulation.sourceSearchStatus === 'running'}
+              onChange={(event) => setSimulation((previous) => ({
+                ...previous,
+                sourceSearchQuery: event.target.value,
+                sourceSearchError: ''
+              }))}
+              placeholder="输入文件名，只显示 TXT 结果"
+              value={simulation.sourceSearchQuery}
+            />
+          </label>
+          <button
+            className="tool-button"
+            disabled={!activeProject || simulationActionDisabled || simulation.sourceSearchStatus === 'running' || !simulation.sourceSearchQuery.trim()}
+            type="submit"
+          >
+            <RefreshCw size={15} className={simulation.sourceSearchStatus === 'running' ? 'spin' : ''} />
+            搜索
+          </button>
+        </form>
+        {simulation.sourceSearchResults.length ? (
+          <div className="library-list source-search-results">
+            {simulation.sourceSearchResults.slice(0, 5).map((result) => {
+              const isTxt = String(result.file_type || '').toLowerCase() === 'txt';
+              const downloading = simulation.sourceDownloadID === result.id;
+              return (
+                <div className="library-row" key={result.id}>
+                  <div className="library-row-copy">
+                    <strong>{result.name}</strong>
+                    <span>{result.size || result.file_type || '未知类型'}</span>
+                  </div>
+                  <button
+                    className="tool-button small"
+                    disabled={!isTxt || simulationActionDisabled || Boolean(simulation.sourceDownloadID)}
+                    onClick={() => onDownloadSource(result)}
+                    title={isTxt ? '下载并加入仿写语料' : '请选择 TXT 文件进行下载'}
+                    type="button"
+                  >
+                    <Download size={14} />
+                    {downloading ? '下载中' : '下载'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+        {simulation.sourceSearchError ? <div className="error-banner compact">{simulation.sourceSearchError}</div> : null}
+        {simulation.sourceSearchMessage ? <div className="success-note">{simulation.sourceSearchMessage}</div> : null}
         <div className="simulation-actions">
           <label className={`tool-button file-picker ${!activeProject || simulationActionDisabled ? 'disabled' : ''}`}>
             <Upload size={16} />

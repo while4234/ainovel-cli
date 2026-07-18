@@ -31,7 +31,13 @@ try {
 } finally {
     Pop-Location
     try {
-        Clear-AINovelTransientStorage -Environment $environment -IncludeBuildCache:$isTestCommand
+        if ($isTestCommand) {
+            & $goExecutable clean -cache -testcache
+            if ($LASTEXITCODE -ne 0) {
+                throw "go clean failed with exit code $LASTEXITCODE"
+            }
+        }
+        Clear-AINovelTransientStorage -Environment $environment
         if ($isTestCommand) {
             Write-Host "[ainovel-go] Test build cache and transient files cleaned."
         } else {

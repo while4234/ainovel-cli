@@ -310,6 +310,20 @@ export function uploadSimulationFiles(projectId, files) {
   });
 }
 
+export function searchSimulationSources(projectId, fileName) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/simulate/search`, {
+    method: 'POST',
+    body: JSON.stringify({ file_name: fileName })
+  });
+}
+
+export function downloadSimulationSource(projectId, resultId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/simulate/search/download`, {
+    method: 'POST',
+    body: JSON.stringify({ result_id: resultId })
+  });
+}
+
 export function analyzeSimulation(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/simulate/analyze`, {
     method: 'POST'
