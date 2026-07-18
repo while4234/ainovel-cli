@@ -54,6 +54,42 @@ func TestWriterContextProjectionCommitsCompactedBaseline(t *testing.T) {
 	}
 }
 
+func TestWriterToolResultsCompactByValidationPhase(t *testing.T) {
+	messages := []agentcore.AgentMessage{agentcore.UserMsg("polish chapter 39")}
+	for index, toolName := range []string{"novel_context", "read_chapter", "check_consistency", "check_de_ai"} {
+		callID := fmt.Sprintf("phase-%d", index)
+		messages = append(messages,
+			agentcore.Message{
+				Role: agentcore.RoleAssistant,
+				Content: []agentcore.ContentBlock{agentcore.ToolCallBlock(agentcore.ToolCall{
+					ID: callID, Name: toolName, Args: []byte(`{"chapter":39}`),
+				})},
+			},
+			agentcore.ToolResultMsg(callID, []byte(fmt.Sprintf(`"%s"`, strings.Repeat(toolName+" evidence ", 300))), false),
+		)
+	}
+	strategy := corecontext.NewToolResultMicrocompact(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.Apply(context.Background(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !result.Applied {
+		t.Fatal("expected older Writer phase results to be compacted")
+	}
+	for _, index := range []int{2, 4} {
+		message := view[index].(agentcore.Message)
+		if message.Metadata["compacted_tool_result"] != true {
+			t.Fatalf("tool result at index %d was not compacted: %+v", index, message.Metadata)
+		}
+	}
+	for _, index := range []int{6, 8} {
+		message := view[index].(agentcore.Message)
+		if message.Metadata["compacted_tool_result"] == true {
+			t.Fatalf("recent validation result at index %d was compacted", index)
+		}
+	}
+}
+
 func TestContextSummaryKeepsChineseToolResultsValidUTF8(t *testing.T) {
 	model := &utf8CheckingSummaryModel{}
 	mgr := corecontext.NewEngine(corecontext.EngineConfig{

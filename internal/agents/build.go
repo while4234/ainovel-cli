@@ -358,9 +358,7 @@ func BuildCoordinator(
 				KeepRecentTokens: 12_000,
 				Agent:            "writer",
 				CommitOnProject:  true,
-				ToolMicrocompact: &corecontext.ToolResultMicrocompactConfig{
-					IdleThreshold: 5 * time.Minute,
-				},
+				ToolMicrocompact: writerToolResultMicrocompactConfig(),
 				ExtraStrategies: []corecontext.Strategy{
 					ctxpack.NewStoreSummaryCompact(ctxpack.StoreSummaryCompactConfig{
 						Store:            store,
@@ -469,6 +467,19 @@ func BuildCoordinator(
 	}
 
 	return agent, askUser, restore, coordinatorEngine, applyThinking, nil
+}
+
+func writerToolResultMicrocompactConfig() *corecontext.ToolResultMicrocompactConfig {
+	// Writer consumes tools in phases: context + draft, consistency receipt,
+	// then de-AI/adaptation receipts. Once a third distinct result arrives, the
+	// earlier source result has already served its phase and can be cleared from
+	// the projected request. Keeping the default five retained every large result
+	// until the final validation turn and made request size depend on chapter
+	// length and report wording.
+	return &corecontext.ToolResultMicrocompactConfig{
+		KeepRecent:    2,
+		IdleThreshold: 5 * time.Minute,
+	}
 }
 
 func validateAgentToolRegistry(role string, actual []agentcore.Tool, required ...string) error {
