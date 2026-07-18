@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-18 `pending` `feat: redesign manuscript workspace`:
+- 2026-07-18 `dec625f` `feat: redesign manuscript workspace`:
   moves all manuscript selection and writing controls into the right tool panel,
   keeps formal/candidate/outline/review/history content in the central reader,
   automatically completes paginated chapters with a bounded DOM window, fixes
