@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `c645a63` `fix: stop prior chapter reread loops`: the Writer-only
+  prior-chapter wrapper now replaces the generic truncated-text instruction to
+  "reread with a higher limit" with an explicit bounded-continuity receipt:
+  the 600-rune tail is complete for this purpose, must not be retried, and the
+  next action is planning or drafting. This removes the contradictory guidance
+  that caused repeated chapter-40 draft reads even after context growth was
+  bounded. Focused Agent tests and vet passed.
 - 2026-07-18 `d2b8c05` `fix: retain authoritative writer package`: duplicate
   pre-draft `novel_context` calls now preserve the first authoritative work
   package and clear the later duplicate result plus its lookup rationale. Once
