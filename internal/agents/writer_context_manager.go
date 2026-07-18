@@ -90,10 +90,13 @@ func newWriterValidationPhaseStrategy(cfg corecontext.ToolResultMicrocompactConf
 func (s *writerValidationPhaseStrategy) Name() string { return "writer_validation_phase" }
 
 func (s *writerValidationPhaseStrategy) Apply(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
-	if !hasWriterValidationReceipt(view) && !hasPersistedWriterDraftReceipt(view) && !hasDuplicateWriterContextResults(view) {
+	hasValidation := hasWriterValidationReceipt(view)
+	hasPersistedDraft := hasPersistedWriterDraftReceipt(view)
+	hasDuplicateEvidence := hasDuplicateWriterContextResults(view)
+	if !hasValidation && !hasPersistedDraft && !hasDuplicateEvidence {
 		return view, corecontext.StrategyResult{Name: s.Name()}, nil
 	}
-	return s.compact(ctx, transcript, view, budget)
+	return s.compact(ctx, transcript, view, budget, hasDuplicateEvidence && !hasValidation && !hasPersistedDraft)
 }
 
 func (s *writerValidationPhaseStrategy) ForceApply(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
@@ -103,14 +106,14 @@ func (s *writerValidationPhaseStrategy) ForceApply(ctx context.Context, transcri
 	// Crossing the exact production boundary is an emergency phase split. Keep
 	// only the newest tool result; every chapter/context payload is durable and
 	// can be re-read, while retrying the same oversized pair cannot recover.
-	return compactWriterPhase(view, 1, s.clearedMessage)
+	return compactWriterPhase(view, 1, s.clearedMessage, false)
 }
 
-func (s *writerValidationPhaseStrategy) compact(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
+func (s *writerValidationPhaseStrategy) compact(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget, preferOriginalContext bool) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
 	_ = ctx
 	_ = transcript
 	_ = budget
-	return compactWriterPhase(view, s.keepRecent, s.clearedMessage)
+	return compactWriterPhase(view, s.keepRecent, s.clearedMessage, preferOriginalContext)
 }
 
 func hasWriterValidationReceipt(msgs []agentcore.AgentMessage) bool {
@@ -160,14 +163,14 @@ type writerToolResultCandidate struct {
 	alreadyCleared bool
 }
 
-func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMessage string) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
+func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMessage string, preferOriginalContext bool) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
 	out := cloneWriterMessages(view)
 	candidates := collectWriterToolResults(out)
 	if len(candidates) == 0 {
 		return view, corecontext.StrategyResult{Name: "writer_validation_phase"}, nil
 	}
 
-	protected := protectRecentWriterResults(candidates, keepRecent)
+	protected := protectRecentWriterResults(candidates, keepRecent, preferOriginalContext)
 	compactCalls := make(map[string]struct{})
 	applied := false
 	for _, candidate := range candidates {
@@ -268,9 +271,23 @@ func writerToolResultKey(name string, args json.RawMessage) string {
 	}
 }
 
-func protectRecentWriterResults(candidates []writerToolResultCandidate, keepRecent int) map[int]struct{} {
+func protectRecentWriterResults(candidates []writerToolResultCandidate, keepRecent int, preferOriginalContext bool) map[int]struct{} {
 	protected := make(map[int]struct{}, keepRecent)
 	seen := make(map[string]struct{}, keepRecent)
+	if preferOriginalContext && keepRecent > 1 {
+		// The first active work package is authoritative for the turn. Keeping a
+		// later duplicate also keeps the extra lookup rationale that led to it,
+		// which can make an otherwise identical package cross the byte boundary.
+		// Retain the original package and clear the redundant call/result instead.
+		for _, candidate := range candidates {
+			if candidate.toolName != "novel_context" || candidate.alreadyCleared {
+				continue
+			}
+			protected[candidate.resultIndex] = struct{}{}
+			seen[candidate.key] = struct{}{}
+			break
+		}
+	}
 	for index := len(candidates) - 1; index >= 0 && len(protected) < keepRecent; index-- {
 		candidate := candidates[index]
 		if candidate.alreadyCleared {

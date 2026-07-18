@@ -112,6 +112,12 @@ func TestWriterPhaseDeduplicatesRepeatedCurrentContextBeforeBoundary(t *testing.
 	if !result.Applied || countCompactedToolResults(view) != 1 {
 		t.Fatalf("duplicate current context result=%+v compacted=%d", result, countCompactedToolResults(view))
 	}
+	if first := view[2].(agentcore.Message); first.Metadata["compacted_tool_result"] == true {
+		t.Fatal("the original authoritative work package must be retained")
+	}
+	if duplicate := view[4].(agentcore.Message); duplicate.Metadata["compacted_tool_result"] != true {
+		t.Fatal("the later duplicate work package must be cleared with its lookup rationale")
+	}
 }
 
 func TestWriterPhaseBoundsRepeatedContinuityReadsBeforeBoundary(t *testing.T) {
