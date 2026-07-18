@@ -168,7 +168,7 @@ func BuildCoordinator(
 		revisionFenceWrites(store.Revisions, tools.NewSaveFoundationTool(store, completionGate)),
 	}
 	writerTools := []agentcore.Tool{
-		contextTool,
+		newWriterContextTool(contextTool, store),
 		readChapter,
 		revisionFenceWrites(store.Revisions, tools.NewPlanChapterTool(store)),
 		revisionFenceWrites(store.Revisions, newWriterDraftChapterTool(store)),
@@ -427,7 +427,7 @@ func BuildCoordinator(
 		agentcore.WithSystemPrompt(globalprompt.Apply(coordinatorPrompt)),
 		agentcore.WithTools(
 			subagentTool,
-			contextTool,
+			newCoordinatorContextTool(contextTool),
 			revisionFenceWrites(store.Revisions, tools.NewSaveUserRulesTool(userRulesSvc)),
 			revisionFenceWrites(store.Revisions, tools.NewReopenBookTool(store)),
 		),
@@ -642,6 +642,88 @@ func architectLongShouldStopAfterToolResult(toolName string, result json.RawMess
 type writerDraftChapterTool struct {
 	inner *tools.DraftChapterTool
 	store *store.Store
+}
+
+type writerContextTool struct {
+	inner *tools.ContextTool
+	store *store.Store
+}
+
+type coordinatorContextTool struct {
+	inner *tools.ContextTool
+}
+
+func newCoordinatorContextTool(inner *tools.ContextTool) agentcore.Tool {
+	return &coordinatorContextTool{inner: inner}
+}
+
+func (t *coordinatorContextTool) Name() string        { return t.inner.Name() }
+func (t *coordinatorContextTool) Description() string { return t.inner.Description() }
+func (t *coordinatorContextTool) Label() string       { return t.inner.Label() }
+func (t *coordinatorContextTool) Schema() map[string]any {
+	return t.inner.Schema()
+}
+func (t *coordinatorContextTool) ReadOnly(args json.RawMessage) bool {
+	return t.inner.ReadOnly(args)
+}
+func (t *coordinatorContextTool) ConcurrencySafe(args json.RawMessage) bool {
+	return t.inner.ConcurrencySafe(args)
+}
+func (t *coordinatorContextTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(args, &raw) != nil || hasPositiveChapter(raw["chapter"]) || hasExplicitContextScope(raw["scope"]) {
+		return t.inner.Execute(ctx, args)
+	}
+	return t.inner.Execute(ctx, json.RawMessage(`{"scope":"status"}`))
+}
+
+func newWriterContextTool(inner *tools.ContextTool, st *store.Store) agentcore.Tool {
+	return &writerContextTool{inner: inner, store: st}
+}
+
+func (t *writerContextTool) Name() string        { return t.inner.Name() }
+func (t *writerContextTool) Description() string { return t.inner.Description() }
+func (t *writerContextTool) Label() string       { return t.inner.Label() }
+func (t *writerContextTool) Schema() map[string]any {
+	return t.inner.Schema()
+}
+func (t *writerContextTool) ReadOnly(args json.RawMessage) bool {
+	return t.inner.ReadOnly(args)
+}
+func (t *writerContextTool) ConcurrencySafe(args json.RawMessage) bool {
+	return t.inner.ConcurrencySafe(args)
+}
+
+func (t *writerContextTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(args, &raw); err != nil {
+		return t.inner.Execute(ctx, args)
+	}
+	if hasPositiveChapter(raw["chapter"]) || hasExplicitContextScope(raw["scope"]) {
+		return t.inner.Execute(ctx, args)
+	}
+	chapter := inferWriterDraftChapter(t.store)
+	if chapter <= 0 {
+		return t.inner.Execute(ctx, args)
+	}
+	encodedChapter, err := json.Marshal(chapter)
+	if err != nil {
+		return nil, err
+	}
+	raw["chapter"] = encodedChapter
+	nextArgs, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("augment novel_context args: %w", err)
+	}
+	return t.inner.Execute(ctx, nextArgs)
+}
+
+func hasExplicitContextScope(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var scope string
+	return json.Unmarshal(raw, &scope) == nil && strings.TrimSpace(scope) != ""
 }
 
 func newWriterDraftChapterTool(st *store.Store) agentcore.Tool {

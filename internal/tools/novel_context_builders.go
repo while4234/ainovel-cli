@@ -103,32 +103,9 @@ func (e architectContextEnvelope) apply(result map[string]any) {
 	result["planning_memory"] = e.Planning
 	result["foundation_memory"] = e.Foundation
 	result["reference_pack"] = e.References
-	mergeSelectedContextSection(result, e.Planning, architectTopLevelMirrorKeys)
-	mergeSelectedContextSection(result, e.Foundation, architectTopLevelMirrorKeys)
-	mergeSelectedContextSection(result, e.References, architectTopLevelMirrorKeys)
-}
-
-func mergeSelectedContextSection(result map[string]any, section map[string]any, keys map[string]struct{}) {
-	for key, value := range section {
-		if _, ok := keys[key]; !ok {
-			continue
-		}
-		result[key] = value
-	}
-}
-
-var architectTopLevelMirrorKeys = map[string]struct{}{
-	"characters":        {},
-	"compass":           {},
-	"foundation_status": {},
-	"layered_outline":   {},
-	"planning_tier":     {},
-	"premise_sections":  {},
-	"premise_structure": {},
-	"references":        {},
-	"skeleton_arcs":     {},
-	"style_rules":       {},
-	"world_rules":       {},
+	// Architect consumers use the canonical memory sections. Top-level mirrors
+	// duplicated the complete outline, foundation and reference payload, adding
+	// more than 50 KiB to a mature project's model request.
 }
 
 // buildProgressStatus 仅在 Coordinator 调用（不传 chapter）时返回进度摘要,
@@ -217,7 +194,7 @@ func (t *ContextTool) buildSimulationProfile(result map[string]any, sectionKey s
 		warn("simulation_profile", err)
 		return
 	}
-	compact := t.compactSimulationProfile(profile)
+	compact := t.compactArchitectSimulationProfile(profile)
 	if compact == nil {
 		return
 	}
@@ -230,6 +207,41 @@ func (t *ContextTool) buildSimulationProfile(result map[string]any, sectionKey s
 	result["simulation_profile"] = true
 	if t.simulationMode == contextSimulationModeReinforced {
 		result["simulation_mode"] = contextSimulationModeReinforced
+	}
+}
+
+func (t *ContextTool) compactArchitectSimulationProfile(profile *domain.SimulationProfile) *domain.SimulationCompactProfile {
+	compact := t.compactSimulationProfile(profile)
+	if compact == nil {
+		return nil
+	}
+	// Planning needs structural imitation only. Prose lexicon, sentence-level
+	// style, pacing and non-Architect role instructions belong to chapter work.
+	return &domain.SimulationCompactProfile{
+		Version:     compact.Version,
+		Mode:        compact.Mode,
+		SourceCount: compact.SourceCount,
+		PlotDesign: domain.SimulationPlotDesign{
+			OpeningPatterns:      compactStringList(compact.PlotDesign.OpeningPatterns, 1, 60),
+			EscalationPatterns:   compactStringList(compact.PlotDesign.EscalationPatterns, 1, 60),
+			TurningPointPatterns: compactStringList(compact.PlotDesign.TurningPointPatterns, 1, 60),
+			PayoffPatterns:       compactStringList(compact.PlotDesign.PayoffPatterns, 1, 60),
+		},
+		HookDesign: domain.SimulationHookDesign{
+			HookTypes:           compactStringList(compact.HookDesign.HookTypes, 1, 60),
+			Placement:           compactStringList(compact.HookDesign.Placement, 1, 60),
+			CliffhangerPatterns: compactStringList(compact.HookDesign.CliffhangerPatterns, 1, 60),
+			PayoffRules:         compactStringList(compact.HookDesign.PayoffRules, 1, 60),
+		},
+		ReaderEngagement: domain.SimulationReaderEngagement{
+			Methods:            compactStringList(compact.ReaderEngagement.Methods, 1, 60),
+			EmotionalDrivers:   compactStringList(compact.ReaderEngagement.EmotionalDrivers, 1, 60),
+			ProgressionRewards: compactStringList(compact.ReaderEngagement.ProgressionRewards, 1, 60),
+			AntiPatterns:       compactStringList(compact.ReaderEngagement.AntiPatterns, 1, 60),
+		},
+		RoleGuidance: domain.SimulationRoleGuidance{
+			Architect: compactStringList(compact.RoleGuidance.Architect, 1, 60),
+		},
 	}
 }
 
@@ -1201,7 +1213,7 @@ func (t *ContextTool) buildArchitectPlanning(envelope *architectContextEnvelope,
 		warn("compass", err)
 	}
 	if volSummaries, err := t.store.Summaries.LoadAllVolumeSummaries(); err == nil && len(volSummaries) > 0 {
-		envelope.Planning["volume_summaries"] = compactVolumeSummaries(volSummaries, maxContextPlanningVolumeSummaries)
+		envelope.Planning["volume_summaries"] = compactVolumeSummaries(volSummaries, 2)
 	} else {
 		warn("volume_summaries", err)
 	}

@@ -172,6 +172,25 @@ func TestObserverMarksCoordinatorWorkingDuringModelStream(t *testing.T) {
 	}
 }
 
+func TestObserverMarksDispatchTargetWorkingBeforeFirstModelDelta(t *testing.T) {
+	var events []Event
+	o := testObserver(&events)
+
+	o.handleToolStart(agentcore.Event{
+		Type: agentcore.EventToolExecStart,
+		Tool: "subagent",
+		Args: json.RawMessage(`{"agent":"writer","task":"打磨第 39 章"}`),
+	})
+
+	states := map[string]string{}
+	for _, snapshot := range o.agentSnapshots() {
+		states[snapshot.Name] = snapshot.State
+	}
+	if states["writer"] != "working" {
+		t.Fatalf("states = %+v, want dispatch target writer working before first delta", states)
+	}
+}
+
 func TestObserverSubagentToolDeltaUpdatesSaveFoundationTypeAcrossChunks(t *testing.T) {
 	var events []Event
 	o := testObserver(&events)

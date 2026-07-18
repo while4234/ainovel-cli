@@ -30,6 +30,9 @@ func (o *observer) handleToolStart(ev agentcore.Event) {
 			a.summary = fmt.Sprintf("%s → %s", agent, dispatchSummary)
 		})
 		o.currentDispatchTarget = target
+		if target != "subagent" {
+			o.markAgentWorking(target)
+		}
 		if call, ok := o.dispatchStarts["subagent"]; ok {
 			delete(o.dispatchStarts, "subagent")
 			o.dispatchStarts[target] = call
@@ -290,6 +293,8 @@ func (o *observer) updateCoordinatorDispatchSummaryFromDelta(delta string) {
 	if agent == "" {
 		return
 	}
+	o.currentDispatchTarget = agent
+	o.markAgentWorking(agent)
 	task := firstJSONStringField(prefix, "task")
 	summary := dispatchSummary(agent, task)
 	labelKey := streamArgKey("coordinator", key)

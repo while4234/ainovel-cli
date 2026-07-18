@@ -599,23 +599,87 @@ func TestContextToolArchitectModeIncludesPlanningAndFoundation(t *testing.T) {
 
 	for _, key := range []string{
 		"memory_policy",
-		"planning_tier",
 		"planning_memory",
 		"foundation_memory",
 		"reference_pack",
-		"premise_sections",
-		"premise_structure",
-		"characters",
-		"layered_outline",
-		"skeleton_arcs",
-		"compass",
-		"style_rules",
-		"references",
-		"foundation_status",
 	} {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("expected key %q in architect context", key)
 		}
+	}
+	for _, duplicate := range []string{"planning_tier", "premise_sections", "characters", "layered_outline", "compass", "style_rules", "references"} {
+		if _, ok := payload[duplicate]; ok {
+			t.Fatalf("architect context must not mirror canonical field %q at top level", duplicate)
+		}
+	}
+	planning := payload["planning_memory"].(map[string]any)
+	foundation := payload["foundation_memory"].(map[string]any)
+	references := payload["reference_pack"].(map[string]any)
+	for key, section := range map[string]map[string]any{
+		"planning_tier":     planning,
+		"layered_outline":   planning,
+		"compass":           planning,
+		"premise_sections":  foundation,
+		"characters":        foundation,
+		"foundation_status": foundation,
+		"style_rules":       references,
+		"references":        references,
+	} {
+		if _, ok := section[key]; !ok {
+			t.Fatalf("expected canonical architect field %q", key)
+		}
+	}
+}
+
+func TestContextToolMaturePlanningContextIsSourceBounded(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("mature", 96); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	progress, _ := s.Progress.Load()
+	progress.Layered = true
+	progress.CurrentChapter = 39
+	progress.InProgressChapter = 39
+	progress.CurrentVolume = 4
+	progress.CurrentArc = 2
+	if err := s.Progress.Save(progress); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	volumes := make([]domain.VolumeOutline, 0, 8)
+	for volume := 1; volume <= 8; volume++ {
+		arcs := make([]domain.ArcOutline, 0, 4)
+		for arc := 1; arc <= 4; arc++ {
+			arcs = append(arcs, domain.ArcOutline{
+				Index: arc, Title: strings.Repeat("arc title ", 20), Goal: strings.Repeat("arc goal ", 80), EstimatedChapters: 3,
+			})
+		}
+		volumes = append(volumes, domain.VolumeOutline{Index: volume, Title: strings.Repeat("volume ", 20), Theme: strings.Repeat("theme ", 80), Arcs: arcs})
+	}
+	if err := s.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatalf("SaveLayeredOutline: %v", err)
+	}
+	if err := s.Outline.SavePremise(strings.Repeat("premise section ", 800)); err != nil {
+		t.Fatalf("SavePremise: %v", err)
+	}
+	if err := s.World.SaveWorldRules(testWorldRules(120)); err != nil {
+		t.Fatalf("SaveWorldRules: %v", err)
+	}
+	refs := strings.Repeat("reference guidance ", 2000)
+	raw, err := NewContextTool(s, References{
+		OutlineTemplate: refs, CharacterTemplate: refs, LongformPlanning: refs,
+		Differentiation: refs, StyleReference: refs, ArcTemplates: refs,
+	}, "default").Execute(context.Background(), json.RawMessage(`{"scope":"planning"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(raw) > planningContextSourceBytes {
+		t.Fatalf("mature planning context = %d bytes, want <= %d", len(raw), planningContextSourceBytes)
+	}
+	if strings.Contains(string(raw), `"_trimmed"`) {
+		t.Fatal("planning context must be source-bounded without a post-build truncation marker")
 	}
 }
 

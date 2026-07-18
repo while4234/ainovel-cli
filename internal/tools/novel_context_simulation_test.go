@@ -189,13 +189,15 @@ func TestContextToolReinforcedSimulationProfileUsesExpandedCompactProfile(t *tes
 	if !strings.Contains(stringValue(normal["_loading_summary"]), "仿写模式:ok") {
 		t.Fatalf("normal loading summary = %q, want ok simulation mode", normal["_loading_summary"])
 	}
-	if reinforcedSources, normalSources := sliceLenAny(reinforcedCompact["source_files"]), sliceLenAny(normalCompact["source_files"]); reinforcedSources <= normalSources {
-		t.Fatalf("reinforced source cap should be larger than normal: reinforced=%d normal=%d", reinforcedSources, normalSources)
+	if style, exists := reinforcedCompact["style"].(map[string]any); exists && len(style) > 0 {
+		t.Fatal("planning simulation profile must omit prose style owned by chapter work")
 	}
-	normalStyle := nestedMap(t, normalCompact, "style")
-	reinforcedStyle := nestedMap(t, reinforcedCompact, "style")
-	if reinforcedItems, normalItems := sliceLenAny(reinforcedStyle["narrative_voice"]), sliceLenAny(normalStyle["narrative_voice"]); reinforcedItems <= normalItems {
-		t.Fatalf("reinforced category cap should be larger than normal: reinforced=%d normal=%d", reinforcedItems, normalItems)
+	if lexicon, exists := reinforcedCompact["lexicon"].(map[string]any); exists && len(lexicon) > 0 {
+		t.Fatal("planning simulation profile must omit prose lexicon owned by chapter work")
+	}
+	plot := nestedMap(t, reinforcedCompact, "plot_design")
+	if sliceLenAny(plot["opening_patterns"]) == 0 {
+		t.Fatal("planning simulation profile must retain structural plot guidance")
 	}
 
 	reinforcedChapterRaw, err := reinforcedTool.Execute(context.Background(), json.RawMessage(`{"chapter":1}`))

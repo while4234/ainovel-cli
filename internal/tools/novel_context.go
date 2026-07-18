@@ -52,6 +52,7 @@ const (
 	writerChapterSourceBudgetBytes  = 36 * 1024
 	writerPolishingContextBytes     = 24 * 1024
 	planningContextBudgetBytes      = 60 * 1024
+	planningContextSourceBytes      = 42 * 1024
 	nearbyOutlineBeforeChapters     = 2
 	nearbyOutlineAfterChapters      = 3
 	maxOutlineRangeChapters         = 80
@@ -92,7 +93,7 @@ func (t *ContextTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 
 func (t *ContextTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("scope", schema.Enum("Context scope. Empty defaults to chapter when chapter is set, otherwise planning. summary returns a compact evidence pack for an inclusive chapter range.", "chapter", "outline_range", "summary", "planning")),
+		schema.Property("scope", schema.Enum("Context scope. Empty defaults to chapter when chapter is set, otherwise planning. status returns progress only; summary returns a compact evidence pack for an inclusive chapter range.", "chapter", "outline_range", "summary", "planning", "status")),
 		schema.Property("from", schema.Int("First chapter for scope=outline_range.")),
 		schema.Property("to", schema.Int("Last chapter for scope=outline_range.")),
 		schema.Property("volume", schema.Int("Volume number for scope=summary when generating a volume summary.")),
@@ -130,6 +131,8 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	}
 
 	switch scope {
+	case "status":
+		t.buildProgressStatus(result)
 	case "outline_range":
 		if err := t.buildOutlineRangeContext(result, a.From, a.To, warn); err != nil {
 			return nil, err
@@ -201,6 +204,8 @@ func normalizeContextScope(scope string, chapter int) string {
 		return "planning"
 	case "planning":
 		return "planning"
+	case "status":
+		return "status"
 	default:
 		if chapter > 0 {
 			return "chapter"
@@ -702,7 +707,10 @@ func (t *ContextTool) architectReferences() map[string]string {
 	refs := map[string]string{}
 	add := func(k, v string) {
 		if v != "" {
-			refs[k] = truncateRunes(v, 2600)
+			// Architect receives concise procedural references. Full templates are
+			// useful while authoring assets, but repeating six multi-page documents
+			// on every planning/status check displaces the actual saved foundation.
+			refs[k] = truncateRunes(v, 250)
 		}
 	}
 	add("outline_template", t.refs.OutlineTemplate)

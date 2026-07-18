@@ -297,10 +297,14 @@ func compactLayeredOutlineForPlanning(volumes []domain.VolumeOutline, progress *
 			}
 			arcStart := globalChapter
 			arcEnd := globalChapter + max(chapterCount-1, 0)
+			goalLimit := 30
+			if volume.Index == currentVolume && arc.Index == currentArc {
+				goalLimit = maxContextSummaryRunes
+			}
 			arcPayload := map[string]any{
 				"index":         arc.Index,
-				"title":         truncateRunes(arc.Title, 80),
-				"goal":          truncateRunes(arc.Goal, maxContextSummaryRunes),
+				"title":         truncateRunes(arc.Title, 40),
+				"goal":          truncateRunes(arc.Goal, goalLimit),
 				"from":          arcStart,
 				"to":            arcEnd,
 				"chapter_count": chapterCount,
@@ -310,8 +314,8 @@ func compactLayeredOutlineForPlanning(volumes []domain.VolumeOutline, progress *
 				arcPayload["estimated_chapters"] = arc.EstimatedChapters
 			}
 			if arc.IsExpanded() && volume.Index == currentVolume && arc.Index == currentArc {
-				from := max(currentChapter-nearbyOutlineBeforeChapters, arcStart)
-				to := min(currentChapter+nearbyOutlineAfterChapters, arcEnd)
+				from := max(currentChapter-1, arcStart)
+				to := min(currentChapter+1, arcEnd)
 				chapters := make([]domain.OutlineEntry, 0, len(arc.Chapters))
 				chapterNo := arcStart
 				for _, entry := range arc.Chapters {

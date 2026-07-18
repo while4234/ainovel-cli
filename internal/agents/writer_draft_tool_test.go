@@ -8,7 +8,63 @@ import (
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
+	"github.com/voocel/ainovel-cli/internal/tools"
 )
+
+func TestWriterContextToolInfersPendingPolishChapter(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 40); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	progress, _ := st.Progress.Load()
+	progress.Flow = domain.FlowPolishing
+	progress.PendingRewrites = []int{39}
+	progress.InProgressChapter = 39
+	if err := st.Progress.Save(progress); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	raw, err := newWriterContextTool(tools.NewContextTool(st, tools.References{}, "default"), st).Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload["context_profile"] != "polishing" {
+		t.Fatalf("context_profile = %v, want polishing", payload["context_profile"])
+	}
+	if _, ok := payload["planning_memory"]; ok {
+		t.Fatal("writer empty context call must not fall through to planning context")
+	}
+}
+
+func TestCoordinatorContextToolDefaultsToProgressStatus(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 40); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	raw, err := newCoordinatorContextTool(tools.NewContextTool(st, tools.References{}, "default")).Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := payload["progress_status"]; !ok {
+		t.Fatalf("progress_status missing: %+v", payload)
+	}
+	if _, ok := payload["planning_memory"]; ok {
+		t.Fatal("coordinator default context call must not load Architect planning context")
+	}
+}
 
 func TestWriterDraftChapterToolInfersInProgressChapter(t *testing.T) {
 	st := store.NewStore(t.TempDir())
