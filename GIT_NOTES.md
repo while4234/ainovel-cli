@@ -46,6 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `ed6f1ea` `fix: preserve latest writer write receipt`:
+  persisted Writer body calls are still removed as complete protocol pairs so
+  full chapter arguments and fabricated placeholder arguments never cross the
+  next provider boundary. The newest completed write result is now retained as
+  an ordinary, explicitly non-callable receipt containing its exact structured
+  outcome and `next_step`. This fixes the live chapter 45 loop where a valid
+  3,368-word draft and its `word_budget_passed=true` instruction disappeared,
+  causing unnecessary 4,205- and 4,956-word rewrites. No prose, plan, or
+  validation evidence is discarded. Focused ten-run regression, the full
+  Agents suite, vet, and diff checks passed.
 - 2026-07-18 `6824950` `fix: drop completed writer tool rationale`:
   Writer phase compaction now removes private rationale from an assistant turn
   once every tool call in that turn has a completed result, while preserving
