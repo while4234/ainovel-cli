@@ -104,6 +104,7 @@ type Deps struct {
 	PromptTokenCounter                             promptcompile.TokenCounter
 	ModelName                                      string
 	ModelForStage                                  func(string) imp.LLMChat
+	ConfirmationFailpoint                         func(string) error
 }
 
 func (d Deps) foundationMergeBatchRunes() int {
@@ -9555,18 +9556,25 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 	if err := validateAdaptationGeneratedParentBatches(fr.Volumes); err != nil {
 		return nil, err
 	}
-	if err := deps.Store.Adaptation.SavePlan(proposal); err != nil {
-		return nil, fmt.Errorf("save adaptation plan: %w", err)
-	}
-	_ = deps.Store.Adaptation.ClearProposal()
 	if fr.Compass == nil {
 		fr.Compass = &domain.StoryCompass{
 			EndingDirection: strings.TrimSpace(proposal.Brief),
 			EstimatedScale:  fmt.Sprintf("%d chapters", len(proposal.Chapters)),
 		}
 	}
-	if err := imp.PersistFoundation(ctx, deps.Store, planningTier(len(proposal.Chapters)), fr); err != nil {
+	if err := imp.PersistFoundationPreservingCast(ctx, deps.Store, planningTier(len(proposal.Chapters)), fr); err != nil {
 		return nil, fmt.Errorf("persist adaptation foundation: %w", err)
+	}
+	if deps.ConfirmationFailpoint != nil {
+		if err := deps.ConfirmationFailpoint("after_foundation"); err != nil {
+			return nil, err
+		}
+	}
+	if err := deps.Store.Adaptation.SavePlan(proposal); err != nil {
+		return nil, fmt.Errorf("save adaptation plan: %w", err)
+	}
+	if err := deps.Store.Adaptation.ClearProposal(); err != nil {
+		return nil, fmt.Errorf("clear adaptation proposal: %w", err)
 	}
 	return &proposal, nil
 }

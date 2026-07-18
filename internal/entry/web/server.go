@@ -644,6 +644,12 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectCoCreateResume(w, r, id)
 	case "cocreate/commit":
 		s.handleProjectCoCreateCommit(w, r, id)
+	case "cocreate/core-cast":
+		s.handleProjectCoreCast(w, r, id, "update")
+	case "cocreate/core-cast/confirm":
+		s.handleProjectCoreCast(w, r, id, "confirm")
+	case "cocreate/core-cast/unconfirm":
+		s.handleProjectCoreCast(w, r, id, "unconfirm")
 	case "cocreate/planning/revise":
 		s.handleProjectCoCreatePlanningRevise(w, r, id)
 	case "cocreate/revision/preview":

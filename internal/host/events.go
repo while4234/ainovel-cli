@@ -305,6 +305,7 @@ type CoCreateMessage struct {
 type CoCreateReply struct {
 	Message     string
 	Prompt      string
+	CoreCast    *domain.CoreCastContract
 	Ready       bool
 	Suggestions []string
 	Raw         string

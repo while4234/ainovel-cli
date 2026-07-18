@@ -136,6 +136,9 @@ func EnsureCoCreateBriefing(ctx context.Context, deps Deps, intent domain.Adapta
 		return nil, fmt.Errorf("co-create dossier missing or stale")
 	}
 	intent.IntentHash = CoCreateIntentHash(intent)
+	if err := deps.Store.Adaptation.SaveCoCreateIntent(intent); err != nil {
+		return nil, fmt.Errorf("save co-create intent: %w", err)
+	}
 	triggerReason := CoCreateBriefingTriggerReason(*dossier)
 	if triggerReason == "" {
 		return nil, nil
@@ -143,9 +146,6 @@ func EnsureCoCreateBriefing(ctx context.Context, deps Deps, intent domain.Adapta
 	current, err := deps.Store.Adaptation.LoadCoCreateBriefing()
 	if err != nil {
 		return nil, fmt.Errorf("load co-create briefing: %w", err)
-	}
-	if err := deps.Store.Adaptation.SaveCoCreateIntent(intent); err != nil {
-		return nil, fmt.Errorf("save co-create intent: %w", err)
 	}
 	if current != nil && store.CoCreateBriefingMatches(*current, *manifest, *dossier, CoCreateBriefingPromptVersion, CoCreateDossierPromptVersion, intent.IntentHash) {
 		emitAdaptProgress(emit, StageBriefing, len(dossier.Batches), len(dossier.Batches), "co-create briefing already exists", nil)

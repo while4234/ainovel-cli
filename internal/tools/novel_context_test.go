@@ -2046,6 +2046,36 @@ func testWorldRules(count int) []domain.WorldRule {
 	return rules
 }
 
+func TestPlanningContextIncludesPublishedCoreCastRelationships(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	characters := []domain.Character{{ID: "lin", Name: "Lin"}, {ID: "mara", Name: "Mara"}}
+	relationships := []domain.CharacterRelationship{{
+		ID: "bond", SourceCharacterID: "lin", TargetCharacterID: "mara",
+		Type: domain.RelationshipTypeAlly, Direction: domain.RelationshipDirectionMutual, Status: domain.RelationshipStatusPlanned,
+	}}
+	if _, err := st.Foundation.SaveCAS(domain.StoryFoundation{Characters: characters, Relationships: relationships, RelationshipsReviewed: true}, 0); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := NewContextTool(st, References{}, "default").Execute(context.Background(), json.RawMessage(`{"scope":"planning"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	foundation, ok := result["foundation_memory"].(map[string]any)
+	if !ok {
+		t.Fatalf("foundation memory missing: %s", raw)
+	}
+	if got, ok := foundation["characters"].([]any); !ok || len(got) != 2 {
+		t.Fatalf("published core characters missing: %#v", foundation["characters"])
+	}
+	if got, ok := foundation["planned_relationships"].([]any); !ok || len(got) != 1 {
+		t.Fatalf("published planned relationships missing: %#v", foundation["planned_relationships"])
+	}
+}
+
 func testAdaptationSourceReports(count int) []domain.AdaptationSourceReport {
 	reports := make([]domain.AdaptationSourceReport, 0, count)
 	for i := 1; i <= count; i++ {

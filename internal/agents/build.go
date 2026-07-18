@@ -230,6 +230,7 @@ func BuildCoordinator(
 	writerModel = withProductionAgentBoundary(writerModel, store, "agent_writer")
 	editorModel = withProductionAgentBoundary(editorModel, store, "agent_editor")
 	coordinatorModel = withProductionAgentBoundary(coordinatorModel, store, "agent_coordinator")
+	coordinatorModel = WithExecutionBarrierModel(coordinatorModel)
 
 	// Coordinator 的 ContextManager 在 Agent 构造时一次性生成，按启动模型解析。
 	// 运行中 /model 切换到更小窗口的模型时，建议用户显式配置 context_window 兜底。

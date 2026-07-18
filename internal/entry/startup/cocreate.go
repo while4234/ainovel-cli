@@ -1,6 +1,7 @@
 package startup
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strings"
 
@@ -12,6 +13,8 @@ type CoCreateSession struct {
 	history         []host.CoCreateMessage
 	draftPrompt     string
 	draftHistoryLen int
+	draftRevision   int64
+	draftHash       string
 	ready           bool
 	streamReply     string
 	streamThinking  string
@@ -22,6 +25,8 @@ type CoCreateSnapshot struct {
 	History         []host.CoCreateMessage `json:"history"`
 	DraftPrompt     string                 `json:"draft_prompt,omitempty"`
 	DraftHistoryLen int                    `json:"draft_history_len,omitempty"`
+	DraftRevision   int64                  `json:"draft_revision,omitempty"`
+	DraftHash       string                 `json:"draft_hash,omitempty"`
 	Ready           bool                   `json:"ready,omitempty"`
 	StreamReply     string                 `json:"stream_reply,omitempty"`
 	StreamThinking  string                 `json:"stream_thinking,omitempty"`
@@ -29,9 +34,10 @@ type CoCreateSnapshot struct {
 }
 
 func NewCoCreateSession(initial string) *CoCreateSession {
+	initial = strings.TrimSpace(initial)
 	return &CoCreateSession{
 		history: []host.CoCreateMessage{
-			{Role: "user", Content: strings.TrimSpace(initial)},
+			{Role: "user", Content: initial},
 		},
 	}
 }
@@ -40,14 +46,23 @@ func NewCoCreateSessionFromSnapshot(snapshot CoCreateSnapshot) *CoCreateSession 
 	history := append([]host.CoCreateMessage(nil), snapshot.History...)
 	draftPrompt := strings.TrimSpace(snapshot.DraftPrompt)
 	draftHistoryLen := snapshot.DraftHistoryLen
+	draftRevision := snapshot.DraftRevision
+	draftHash := normalizedDraftHash(draftPrompt)
+	if draftRevision == 0 && draftPrompt != "" {
+		draftRevision = 1
+	}
 	if latestDraft, latestLen := latestDraftFromHistory(history); latestDraft != "" && latestLen > draftHistoryLen {
 		draftPrompt = latestDraft
 		draftHistoryLen = latestLen
+		draftRevision++
+		draftHash = normalizedDraftHash(latestDraft)
 	}
 	return &CoCreateSession{
 		history:         history,
 		draftPrompt:     draftPrompt,
 		draftHistoryLen: draftHistoryLen,
+		draftRevision:   draftRevision,
+		draftHash:       draftHash,
 		ready:           snapshot.Ready,
 		streamReply:     strings.TrimSpace(snapshot.StreamReply),
 		streamThinking:  strings.TrimSpace(snapshot.StreamThinking),
@@ -63,6 +78,8 @@ func (s *CoCreateSession) Snapshot() CoCreateSnapshot {
 		History:         append([]host.CoCreateMessage(nil), s.history...),
 		DraftPrompt:     s.draftPrompt,
 		DraftHistoryLen: s.draftHistoryLen,
+		DraftRevision:   s.draftRevision,
+		DraftHash:       s.draftHash,
 		Ready:           s.ready,
 		StreamReply:     s.streamReply,
 		StreamThinking:  s.streamThinking,
@@ -84,6 +101,8 @@ func (s *CoCreateSession) ResetHistory(history []host.CoCreateMessage) {
 	s.history = append([]host.CoCreateMessage(nil), history...)
 	s.draftPrompt = ""
 	s.draftHistoryLen = 0
+	s.draftRevision++
+	s.draftHash = ""
 	s.ready = false
 	s.streamReply = ""
 	s.streamThinking = ""
@@ -112,6 +131,8 @@ func (s *CoCreateSession) ApplyReply(reply host.CoCreateReply) {
 	if prompt := strings.TrimSpace(reply.Prompt); prompt != "" {
 		s.draftPrompt = prompt
 		s.draftHistoryLen = len(s.history)
+		s.draftRevision++
+		s.draftHash = normalizedDraftHash(prompt)
 	}
 	s.ready = reply.Ready
 	// suggestions 直接覆盖（包括覆盖为空）：每轮的引导只对当下有意义。
@@ -174,6 +195,41 @@ func (s *CoCreateSession) DraftFresh() bool {
 		return false
 	}
 	return s.draftHistoryLen >= len(s.history)
+}
+
+func (s *CoCreateSession) DraftRevision() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.draftRevision
+}
+
+func (s *CoCreateSession) DraftHash() string {
+	if s == nil {
+		return ""
+	}
+	return s.draftHash
+}
+
+func (s *CoCreateSession) SetDraftRevisionFloor(revision int64) {
+	if s != nil && revision > s.draftRevision {
+		s.draftRevision = revision
+	}
+}
+
+func normalizedDraftHash(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\r", "\n")
+	lines := strings.Split(value, "\n")
+	for idx := range lines {
+		lines[idx] = strings.TrimRight(lines[idx], " \t")
+	}
+	normalized := strings.TrimSpace(strings.Join(lines, "\n"))
+	if normalized == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(normalized))
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func (s *CoCreateSession) DraftStale() bool {

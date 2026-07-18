@@ -52,6 +52,8 @@ func NewDispatcher(coordinator *agentcore.Agent, store *storepkg.Store) *Dispatc
 // Host 在 Start/Resume 完成首条 prompt 之后启用，避免与启动流程冲突。
 func (d *Dispatcher) Enable() { d.enabled.Store(true) }
 
+func (d *Dispatcher) IsEnabled() bool { return d != nil && d.enabled.Load() }
+
 func (d *Dispatcher) SetNormalFlowLease(lease *storepkg.NormalFlowLease) {
 	d.leaseMu.Lock()
 	defer d.leaseMu.Unlock()

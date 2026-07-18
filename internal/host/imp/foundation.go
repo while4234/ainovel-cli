@@ -202,6 +202,16 @@ func parseFoundationOutput(text string, expectChapters int) (*FoundationResult, 
 // 不直接调 SaveFoundationTool 是因为这里是确定性回放，无需走 LLM 工具调度。
 // 但保持与 SaveFoundationTool 相同的副作用：phase 推进、checkpoint 追加。
 func PersistFoundation(ctx context.Context, st *store.Store, scale domain.PlanningTier, fr *FoundationResult) error {
+	return persistFoundation(ctx, st, scale, fr, false)
+}
+
+// PersistFoundationPreservingCast persists adaptation planning products while
+// retaining the already-published target CoreCast characters/relationships.
+func PersistFoundationPreservingCast(ctx context.Context, st *store.Store, scale domain.PlanningTier, fr *FoundationResult) error {
+	return persistFoundation(ctx, st, scale, fr, true)
+}
+
+func persistFoundation(ctx context.Context, st *store.Store, scale domain.PlanningTier, fr *FoundationResult, preserveCast bool) error {
 	if fr == nil {
 		return fmt.Errorf("nil foundation result")
 	}
@@ -214,7 +224,9 @@ func PersistFoundation(ctx context.Context, st *store.Store, scale domain.Planni
 	}
 	candidate := domain.CloneStoryFoundation(current)
 	candidate.Premise = fr.Premise
-	candidate.Characters = fr.Characters
+	if !preserveCast {
+		candidate.Characters = fr.Characters
+	}
 	candidate.WorldRules = fr.WorldRules
 	if _, err := st.Foundation.SaveCAS(candidate, current.Revision); err != nil {
 		return fmt.Errorf("save story foundation: %w", err)
@@ -222,9 +234,13 @@ func PersistFoundation(ctx context.Context, st *store.Store, scale domain.Planni
 
 	// 1. premise
 	if name := domain.ExtractNovelNameFromPremise(fr.Premise); name != "" {
-		_ = st.Progress.SetNovelName(name)
+		if err := persistAdaptationProgress(preserveCast, "set novel name", func() error { return st.Progress.SetNovelName(name) }); err != nil {
+			return err
+		}
 	}
-	_ = st.Progress.UpdatePhase(domain.PhasePremise)
+	if err := persistAdaptationProgress(preserveCast, "set premise phase", func() error { return st.Progress.UpdatePhase(domain.PhasePremise) }); err != nil {
+		return err
+	}
 	if _, err := st.Checkpoints.AppendArtifact(domain.GlobalScope(), "premise", "premise.md"); err != nil {
 		return fmt.Errorf("checkpoint premise: %w", err)
 	}
@@ -246,11 +262,21 @@ func PersistFoundation(ctx context.Context, st *store.Store, scale domain.Planni
 	if err := st.Outline.SaveOutline(domain.FlattenOutline(fr.Volumes)); err != nil {
 		return fmt.Errorf("save flattened outline: %w", err)
 	}
-	_ = st.Progress.UpdatePhase(domain.PhaseOutline)
-	_ = st.Progress.SetTotalChapters(domain.TotalChapters(fr.Volumes))
-	_ = st.Progress.SetLayered(true)
+	if err := persistAdaptationProgress(preserveCast, "set outline phase", func() error { return st.Progress.UpdatePhase(domain.PhaseOutline) }); err != nil {
+		return err
+	}
+	if err := persistAdaptationProgress(preserveCast, "set total chapters", func() error { return st.Progress.SetTotalChapters(domain.TotalChapters(fr.Volumes)) }); err != nil {
+		return err
+	}
+	if err := persistAdaptationProgress(preserveCast, "set layered planning", func() error { return st.Progress.SetLayered(true) }); err != nil {
+		return err
+	}
 	if len(fr.Volumes) > 0 && len(fr.Volumes[0].Arcs) > 0 {
-		_ = st.Progress.UpdateVolumeArc(fr.Volumes[0].Index, fr.Volumes[0].Arcs[0].Index)
+		if err := persistAdaptationProgress(preserveCast, "set current volume and arc", func() error {
+			return st.Progress.UpdateVolumeArc(fr.Volumes[0].Index, fr.Volumes[0].Arcs[0].Index)
+		}); err != nil {
+			return err
+		}
 	}
 	if _, err := st.Checkpoints.AppendArtifact(domain.GlobalScope(), "layered_outline", "layered_outline.json"); err != nil {
 		return fmt.Errorf("checkpoint layered outline: %w", err)
@@ -267,10 +293,24 @@ func PersistFoundation(ctx context.Context, st *store.Store, scale domain.Planni
 
 	// 6. foundation 完整 → 推进到 writing 阶段（与 save_foundation 末尾逻辑一致）
 	if len(st.FoundationMissing()) == 0 {
-		if p, _ := st.Progress.Load(); p != nil &&
-			p.Phase != domain.PhaseWriting && p.Phase != domain.PhaseComplete {
-			_ = st.Progress.UpdatePhase(domain.PhaseWriting)
+		p, loadErr := st.Progress.Load()
+		if loadErr != nil && preserveCast {
+			return fmt.Errorf("load progress before writing phase: %w", loadErr)
 		}
+		if p != nil &&
+			p.Phase != domain.PhaseWriting && p.Phase != domain.PhaseComplete {
+			if err := persistAdaptationProgress(preserveCast, "set writing phase", func() error { return st.Progress.UpdatePhase(domain.PhaseWriting) }); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func persistAdaptationProgress(strict bool, action string, fn func() error) error {
+	err := fn()
+	if err != nil && strict {
+		return fmt.Errorf("%s: %w", action, err)
 	}
 	return nil
 }
