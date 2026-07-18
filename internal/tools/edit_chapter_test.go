@@ -99,6 +99,35 @@ func TestEditChapterBatchAppliesMultipleEditsAndReportsWordBudget(t *testing.T) 
 	}
 }
 
+func TestEditChapterBudgetSegmentPersistsRecoveryCheckpoint(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, "keep verbose detail"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	args := json.RawMessage(`{"chapter":1,"budget_segment":2,"edits":[{"old_string":" verbose","new_string":""}]}`)
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		BudgetSegment int `json:"budget_segment"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.BudgetSegment != 2 {
+		t.Fatalf("segment result=%+v err=%v raw=%s", payload, err, raw)
+	}
+	latest := s.Checkpoints.Latest(domain.ChapterScope(1))
+	if latest == nil || latest.Step != "word_budget_edit_segment_2" {
+		t.Fatalf("segment checkpoint not persisted: %+v", latest)
+	}
+}
+
 func TestEditChapterOutOfBudgetReportsCountWithoutReread(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

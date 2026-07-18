@@ -71,6 +71,45 @@ func TestReadChapterDraft(t *testing.T) {
 	}
 }
 
+func TestReadChapterDraftLineSegmentKeepsFullDraftIdentity(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	const content = "line one\nline two\nline three\nline four"
+	if err := s.Drafts.SaveDraft(3, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	raw, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(
+		`{"chapter":3,"source":"draft","from_line":2,"to_line":3}`,
+	))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Content         string `json:"content"`
+		WordCount       int    `json:"word_count"`
+		ContentSHA256   string `json:"content_sha256"`
+		SegmentFromLine int    `json:"segment_from_line"`
+		SegmentToLine   int    `json:"segment_to_line"`
+		SegmentRunes    int    `json:"segment_runes"`
+		SegmentComplete bool   `json:"segment_complete"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload.Content != "line two\nline three" || payload.SegmentFromLine != 2 ||
+		payload.SegmentToLine != 3 || payload.SegmentRunes != len([]rune(payload.Content)) ||
+		!payload.SegmentComplete {
+		t.Fatalf("unexpected line segment: %+v", payload)
+	}
+	if payload.WordCount != len([]rune(content)) || payload.ContentSHA256 != store.TextSHA256(content) {
+		t.Fatalf("segment lost full-draft identity: %+v", payload)
+	}
+}
+
 func TestReadChapterDraftReportsPolishDifference(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

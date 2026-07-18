@@ -417,10 +417,10 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 		InProgressCheckpoint:       "plan",
 		InProgressDeAIState:        writerDeAIStateFailed,
 		InProgressConsistencyValid: false,
-		InProgressWordCount:        4292,
+		InProgressWordCount:        3300,
 		InProgressWordMin:          2550,
 		InProgressWordMax:          3703,
-		InProgressWordBudgetValid:  false,
+		InProgressWordBudgetValid:  true,
 	}
 
 	if normal := Route(state); normal == nil || normal.Task != "写第 5 章" {
@@ -437,11 +437,8 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 		"恢复第 5 章现有草稿",
 		"checkpoint=plan",
 		"de_ai=failed",
-		"word_count=4292",
+		"word_count=3300",
 		"word_budget=2550-3703",
-		"edit_chapter",
-		"edit_chapter(edits=[...])",
-		"禁止为确认字数再次 read_chapter",
 		"禁止调用 plan_chapter 或 draft_chapter",
 		"禁止读取其他章节",
 		`read_chapter(chapter=5, source="draft")`,
@@ -452,6 +449,75 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 		if !strings.Contains(got.Task, want) {
 			t.Fatalf("resume task missing %q: %s", want, got.Task)
 		}
+	}
+}
+
+func TestRouteResume_RepairsOnlyOneWordBudgetSegment(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	state := State{
+		Progress:                  p,
+		LastCompleted:             4,
+		InProgressDraftExists:     true,
+		InProgressCheckpoint:      "edit",
+		InProgressWordCount:       4292,
+		InProgressWordMin:         2550,
+		InProgressWordMax:         3703,
+		InProgressWordBudgetValid: false,
+		InProgressLineCount:       130,
+	}
+
+	got := RouteResume(state)
+	if got == nil || !got.ResumeRecovery || got.Agent != "writer" || got.Chapter != 5 {
+		t.Fatalf("expected segmented Writer recovery, got %+v", got)
+	}
+	for _, want := range []string{
+		`novel_context(chapter=5)`,
+		`read_chapter(chapter=5, source="draft", from_line=97, to_line=130)`,
+		`edit_chapter(chapter=5, budget_segment=2, edits=[...])`,
+	} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("segment task missing %q: %s", want, got.Task)
+		}
+	}
+	for _, forbidden := range []string{"check_de_ai", "check_consistency"} {
+		if strings.Contains(got.Task, forbidden) {
+			t.Fatalf("segment task must not mix later validation %q: %s", forbidden, got.Task)
+		}
+	}
+}
+
+func TestWriterBudgetSegmentProgressesFromEndToStart(t *testing.T) {
+	cases := []struct {
+		checkpoint  string
+		wantSegment int
+		wantFrom    int
+		wantTo      int
+	}{
+		{checkpoint: "word_budget_edit_segment_2", wantSegment: 1, wantFrom: 49, wantTo: 96},
+		{checkpoint: "word_budget_edit_segment_1", wantSegment: 0, wantFrom: 1, wantTo: 48},
+		{checkpoint: "word_budget_edit_segment_0", wantSegment: 2, wantFrom: 97, wantTo: 130},
+	}
+	for _, tc := range cases {
+		t.Run(tc.checkpoint, func(t *testing.T) {
+			got := routeWriterBudgetSegment(State{
+				InProgressCheckpoint: tc.checkpoint,
+				InProgressWordCount:  4292,
+				InProgressWordMin:    2550,
+				InProgressWordMax:    3703,
+				InProgressLineCount:  130,
+			}, 5)
+			for _, want := range []string{
+				fmt.Sprintf("budget_segment=%d", tc.wantSegment),
+				fmt.Sprintf("from_line=%d", tc.wantFrom),
+				fmt.Sprintf("to_line=%d", tc.wantTo),
+			} {
+				if !strings.Contains(got.Task, want) {
+					t.Fatalf("task missing %q: %s", want, got.Task)
+				}
+			}
+		})
 	}
 }
 

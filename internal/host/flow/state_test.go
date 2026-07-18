@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/adaptaudit"
@@ -72,6 +73,7 @@ func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 		t.Fatalf("in-progress recovery facts were not loaded: %+v", state)
 	}
 	if state.InProgressWordCount != len([]rune(draft)) ||
+		state.InProgressLineCount != len(strings.Split(draft, "\n")) ||
 		state.InProgressWordMin != 45 || state.InProgressWordMax != 55 ||
 		state.InProgressWordBudgetValid {
 		t.Fatalf("in-progress word budget facts were not loaded: %+v", state)

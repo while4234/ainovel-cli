@@ -12,6 +12,7 @@ package flow
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -80,6 +81,7 @@ type State struct {
 	InProgressWordMin          int
 	InProgressWordMax          int
 	InProgressWordBudgetValid  bool
+	InProgressLineCount        int
 }
 
 const (
@@ -267,29 +269,74 @@ func RouteResume(s State) *Instruction {
 
 	progress := s.Progress
 	chapter := progress.InProgressChapter
+	if s.InProgressWordMin > 0 && s.InProgressWordMax >= s.InProgressWordMin && !s.InProgressWordBudgetValid {
+		return routeWriterBudgetSegment(s, chapter)
+	}
 	adaptationStep := ""
 	if s.AdaptationActive {
 		adaptationStep = "；若本书处于改编模式，还必须在同一版草稿上通过 check_adaptation"
 	}
-	wordRepairStep := ""
-	if s.InProgressWordMin > 0 && s.InProgressWordMax >= s.InProgressWordMin && !s.InProgressWordBudgetValid {
-		wordRepairStep = fmt.Sprintf(
-			"当前草稿 %d 字，不在 %d-%d 字区间；只依据这次回读，静默选择多处有依据的局部删减或补足，下一次响应必须直接调用一次 edit_chapter(edits=[...]) 原子落盘，不要输出逐段分析或修改清单。只处理冗余解释、重复动作或缺失的必要承接，保留全部关键情节、人物选择、情感落点和章末钩子，直到进入区间。edit_chapter 会回传最新字数，禁止为确认字数再次 read_chapter，禁止为字数整章重写。",
-			s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax,
-		)
-	}
 	return &Instruction{
 		Agent: "writer",
 		Task: fmt.Sprintf(
-			"恢复第 %d 章现有草稿（checkpoint=%s，de_ai=%s，consistency_current=%t，word_count=%d，word_budget=%d-%d，word_budget_current=%t）。当前草稿是唯一工作版本：禁止调用 plan_chapter 或 draft_chapter，禁止读取其他章节，禁止重复调用 novel_context。先且只先调用一次 read_chapter(chapter=%d, source=\"draft\")。%s随后调用 check_de_ai；若有 repair finding，依据刚回读的当前原文用 repair_de_ai_batch 做一小批唯一精确替换并立即复检，过期 old_string 让工具跳过，不要重放旧批次，直到 check_de_ai 通过。随后调用 novel_context(chapter=%d) 一次并在同一版草稿上通过 check_consistency%s；任何后续改稿都要重新完成这些检查。最后直接 commit_chapter，不要重新规划或整章重写。",
+			"恢复第 %d 章现有草稿（checkpoint=%s，de_ai=%s，consistency_current=%t，word_count=%d，word_budget=%d-%d，word_budget_current=%t）。当前草稿是唯一工作版本：禁止调用 plan_chapter 或 draft_chapter，禁止读取其他章节，禁止重复调用 novel_context。先且只先调用一次 read_chapter(chapter=%d, source=\"draft\")。随后调用 check_de_ai；若有 repair finding，依据刚回读的当前原文用 repair_de_ai_batch 做一小批唯一精确替换并立即复检，过期 old_string 让工具跳过，不要重放旧批次，直到 check_de_ai 通过。随后调用 novel_context(chapter=%d) 一次并在同一版草稿上通过 check_consistency%s；任何后续改稿都要重新完成这些检查。最后直接 commit_chapter，不要重新规划或整章重写。",
 			chapter, resumeFact(s.InProgressCheckpoint), resumeFact(s.InProgressDeAIState), s.InProgressConsistencyValid,
 			s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax, s.InProgressWordBudgetValid,
-			chapter, wordRepairStep, chapter, adaptationStep,
+			chapter, chapter, adaptationStep,
 		),
 		Reason:         fmt.Sprintf("恢复第 %d 章已有草稿的当前验证阶段", chapter),
 		Chapter:        chapter,
 		ResumeRecovery: true,
 	}
+}
+
+const writerBudgetSegmentLines = 48
+
+func routeWriterBudgetSegment(s State, chapter int) *Instruction {
+	lineCount := max(s.InProgressLineCount, 1)
+	segmentCount := (lineCount + writerBudgetSegmentLines - 1) / writerBudgetSegmentLines
+	segment := segmentCount - 1
+	if completed, ok := writerBudgetCompletedSegment(s.InProgressCheckpoint); ok {
+		if completed > 0 {
+			segment = min(completed-1, segmentCount-1)
+		}
+	}
+	fromLine := segment*writerBudgetSegmentLines + 1
+	toLine := min(fromLine+writerBudgetSegmentLines-1, lineCount)
+	delta := s.InProgressWordCount - s.InProgressWordMax
+	direction := "删减"
+	if delta < 0 {
+		delta = s.InProgressWordMin - s.InProgressWordCount
+		direction = "补足"
+	}
+	remainingSegments := segment + 1
+	target := (delta + remainingSegments - 1) / remainingSegments
+	return &Instruction{
+		Agent: "writer",
+		Task: fmt.Sprintf(
+			"恢复第 %d 章现有草稿的字数分段修复：当前 %d 字，预算 %d-%d 字；本轮只处理第 %d 段（行 %d-%d，草稿共 %d 行），目标约%s %d 字。先调用 novel_context(chapter=%d) 一次保留章节契约、连续性和人物情感依据，再且只再调用 read_chapter(chapter=%d, source=\"draft\", from_line=%d, to_line=%d) 读取本段。静默选择本段内多处有依据的局部修改，下一次响应必须直接调用一次 edit_chapter(chapter=%d, budget_segment=%d, edits=[...]) 原子落盘；只处理冗余解释、重复动作或缺失承接，保留本段关键事件、人物选择、情感落点和钩子。工具调用后立即结束本轮，由 Host 派下一段。禁止读取整章或其他章节，禁止 plan_chapter、draft_chapter、commit_chapter，禁止输出逐段分析或修改清单。",
+			chapter, s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax,
+			segment, fromLine, toLine, lineCount, direction, max(target, 1), chapter,
+			chapter, fromLine, toLine, chapter, segment,
+		),
+		Reason:         fmt.Sprintf("第 %d 章按行段局部修复字数预算", chapter),
+		Chapter:        chapter,
+		ResumeRecovery: true,
+	}
+}
+
+func writerBudgetCompletedSegment(checkpoint string) (int, bool) {
+	const prefix = "word_budget_edit_segment_"
+	trimmed := strings.TrimSpace(checkpoint)
+	if !strings.HasPrefix(trimmed, prefix) {
+		return 0, false
+	}
+	raw := strings.TrimPrefix(trimmed, prefix)
+	if raw == "" {
+		return 0, false
+	}
+	segment, err := strconv.Atoi(raw)
+	return segment, err == nil && segment >= 0
 }
 
 func writerResumeRouteApplicable(s State, instruction *Instruction) bool {

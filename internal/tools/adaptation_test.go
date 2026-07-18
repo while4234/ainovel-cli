@@ -694,7 +694,7 @@ func TestAdaptationCommitStillEnforcesRunMetaWordBudget(t *testing.T) {
 	}
 }
 
-func TestAdaptationDraftPreservesRunMetaWordBudgetFailureGuidance(t *testing.T) {
+func TestAdaptationDraftPreservesRunMetaWordBudgetLocalRepairGuidance(t *testing.T) {
 	source := strings.Repeat("s", 50)
 	draft := strings.Repeat("abcde", 10)
 	plan := domain.AdaptationPlan{
@@ -745,9 +745,11 @@ func TestAdaptationDraftPreservesRunMetaWordBudgetFailureGuidance(t *testing.T) 
 	if !payload.WordContractPassed || len(payload.WordContractIssues) > 0 {
 		t.Fatalf("adaptation word contract should pass, got %+v", payload)
 	}
-	if !strings.Contains(payload.Next, `draft_chapter(mode="write", chapter=1)`) ||
-		strings.Contains(payload.Next, "check_adaptation") {
-		t.Fatalf("next_step should keep normal budget rewrite guidance, got %q", payload.Next)
+	if !strings.Contains(payload.Next, `read_chapter(chapter=1, source="draft")`) ||
+		!strings.Contains(payload.Next, "edit_chapter(edits=[...])") ||
+		!strings.Contains(payload.Next, "check_adaptation") ||
+		strings.Contains(payload.Next, `draft_chapter(mode="write", chapter=1)`) {
+		t.Fatalf("next_step should keep normal budget local-repair guidance, got %q", payload.Next)
 	}
 }
 

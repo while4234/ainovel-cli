@@ -39,11 +39,12 @@ type chapterTextEdit struct {
 }
 
 type editChapterRequest struct {
-	Chapter    int               `json:"chapter"`
-	OldString  string            `json:"old_string"`
-	NewString  string            `json:"new_string"`
-	ReplaceAll bool              `json:"replace_all"`
-	Edits      []chapterTextEdit `json:"edits"`
+	Chapter       int               `json:"chapter"`
+	OldString     string            `json:"old_string"`
+	NewString     string            `json:"new_string"`
+	ReplaceAll    bool              `json:"replace_all"`
+	Edits         []chapterTextEdit `json:"edits"`
+	BudgetSegment *int              `json:"budget_segment"`
 }
 
 func NewEditChapterTool(s *store.Store) *EditChapterTool {
@@ -85,6 +86,7 @@ func (t *EditChapterTool) Schema() map[string]any {
 		schema.Property("new_string", schema.String("单处替换的新文本，可为空")),
 		schema.Property("replace_all", schema.Bool("替换所有匹配（默认 false）")),
 		schema.Property("edits", schema.Array("一次回读后确定的 1-24 处不重叠局部替换；与 old_string/new_string 二选一", edit)),
+		schema.Property("budget_segment", schema.Int("仅用于 Host 字数恢复分段；原样传回恢复指令给出的非负段号")),
 	)
 }
 
@@ -103,6 +105,12 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 	}
 	if batchMode && len(a.Edits) > maxChapterBatchEdits {
 		return nil, fmt.Errorf("edits must contain 1-%d items: %w", maxChapterBatchEdits, errs.ErrToolArgs)
+	}
+	if a.BudgetSegment != nil && *a.BudgetSegment < 0 {
+		return nil, fmt.Errorf("budget_segment must be >= 0: %w", errs.ErrToolArgs)
+	}
+	if a.BudgetSegment != nil && !batchMode {
+		return nil, fmt.Errorf("budget_segment requires edits batch mode: %w", errs.ErrToolArgs)
 	}
 	if !batchMode && a.OldString == "" {
 		return nil, fmt.Errorf("old_string 不能为空: %w", errs.ErrToolArgs)
@@ -128,7 +136,7 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 		return nil, fmt.Errorf("load current draft before edit: %w: %w", errs.ErrStoreRead, err)
 	}
 	if batchMode {
-		return t.executeBatch(a.Chapter, current, a.Edits)
+		return t.executeBatch(a.Chapter, current, a.Edits, a.BudgetSegment)
 	}
 	// Recovery and context compaction can make a weak model repeat the exact
 	// same patch. Treat only a provably completed replacement as an idempotent
@@ -178,7 +186,7 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 	return json.Marshal(passthrough)
 }
 
-func (t *EditChapterTool) executeBatch(chapter int, current string, edits []chapterTextEdit) (json.RawMessage, error) {
+func (t *EditChapterTool) executeBatch(chapter int, current string, edits []chapterTextEdit, budgetSegment *int) (json.RawMessage, error) {
 	updated, changed, alreadyApplied, err := applyChapterEditBatch(current, edits)
 	if err != nil {
 		return nil, err
@@ -193,13 +201,24 @@ func (t *EditChapterTool) executeBatch(chapter int, current string, edits []chap
 	if changed == 0 {
 		payload["already_applied"] = true
 		payload["message"] = "这一批局部修改已全部存在于当前草稿，无需重复写入。"
+		if budgetSegment != nil {
+			payload["budget_segment"] = *budgetSegment
+			if err := t.checkpointEdit(chapter, fmt.Sprintf("word_budget_edit_segment_%d", *budgetSegment)); err != nil {
+				return nil, err
+			}
+		}
 		t.addDraftStatus(payload, chapter)
 		return json.Marshal(payload)
 	}
 	if err := t.store.Drafts.SaveDraft(chapter, updated); err != nil {
 		return nil, fmt.Errorf("save batch-edited draft: %w: %w", errs.ErrStoreWrite, err)
 	}
-	if err := t.checkpointEdit(chapter); err != nil {
+	checkpointStep := "edit"
+	if budgetSegment != nil {
+		checkpointStep = fmt.Sprintf("word_budget_edit_segment_%d", *budgetSegment)
+		payload["budget_segment"] = *budgetSegment
+	}
+	if err := t.checkpointEdit(chapter, checkpointStep); err != nil {
 		return nil, err
 	}
 	t.addDraftStatus(payload, chapter)
@@ -252,9 +271,13 @@ func applyChapterEditBatch(content string, edits []chapterTextEdit) (string, int
 	return updated, len(patches), alreadyApplied, nil
 }
 
-func (t *EditChapterTool) checkpointEdit(chapter int) error {
+func (t *EditChapterTool) checkpointEdit(chapter int, step ...string) error {
+	checkpointStep := "edit"
+	if len(step) > 0 && step[0] != "" {
+		checkpointStep = step[0]
+	}
 	if _, err := t.store.Checkpoints.AppendArtifact(
-		domain.ChapterScope(chapter), "edit", fmt.Sprintf("drafts/%02d.draft.md", chapter),
+		domain.ChapterScope(chapter), checkpointStep, fmt.Sprintf("drafts/%02d.draft.md", chapter),
 	); err != nil {
 		return fmt.Errorf("checkpoint edit: %w: %w", errs.ErrStoreWrite, err)
 	}

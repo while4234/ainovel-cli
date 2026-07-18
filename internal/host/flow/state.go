@@ -2,6 +2,7 @@ package flow
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/adaptaudit"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -103,6 +104,7 @@ func loadWriterResumeState(s *State, st *storepkg.Store, progress *domain.Progre
 	}
 	s.InProgressDraftExists = true
 	s.InProgressWordCount = len([]rune(draft))
+	s.InProgressLineCount = len(strings.Split(draft, "\n"))
 	draftSHA := storepkg.TextSHA256(draft)
 	if checkpoint := st.Checkpoints.Latest(domain.ChapterScope(chapter)); checkpoint != nil {
 		s.InProgressCheckpoint = checkpoint.Step
