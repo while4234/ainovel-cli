@@ -51,6 +51,7 @@ const (
 	writerChapterContextBudgetBytes = 60 * 1024
 	writerChapterSourceBudgetBytes  = 28 * 1024
 	writerPolishingContextBytes     = 24 * 1024
+	writerRecoveryContextBytes      = 16 * 1024
 	planningContextBudgetBytes      = 60 * 1024
 	planningContextSourceBytes      = 42 * 1024
 	nearbyOutlineBeforeChapters     = 2
@@ -169,7 +170,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	// 注入 working_memory.user_rules（canonical 路径）。架构师路径原本没有 working_memory，
 	// 由 buildUserRules 按需新建只装 user_rules 的容器。快照缺失时退到内置默认，
 	// 始终输出稳定结构，避免 LLM 看到 user_rules=null 走异常分支。
-	if scope == "chapter" {
+	if scope == "chapter" && chapterPurpose != chapterContextRecovering {
 		t.buildChapterSimulationProfile(result, chapterPurpose, warn)
 	} else if scope == "planning" {
 		t.buildSimulationProfile(result, "planning_memory", warn)
@@ -676,6 +677,14 @@ func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpos
 		// Polishing is a local prose operation. The exact anti-AI repair evidence
 		// remains available through check_de_ai; this pack supplies only stable
 		// prose constraints and the final quality checklist.
+		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 250)
+		addWithLimit("quality_checklist", t.refs.QualityChecklist, 200)
+		return refs
+	}
+	if purpose == chapterContextRecovering {
+		// A full current draft will be read beside this package. Keep only the
+		// stable validation constraints that are still needed after prose exists.
+		addWithLimit("consistency", t.refs.Consistency, 200)
 		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 250)
 		addWithLimit("quality_checklist", t.refs.QualityChecklist, 200)
 		return refs

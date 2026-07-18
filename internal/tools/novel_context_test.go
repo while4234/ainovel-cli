@@ -1424,6 +1424,87 @@ func TestContextToolPolishingUsesChapterOwnedSourceProfile(t *testing.T) {
 	}
 }
 
+func TestContextToolUsesSourceBoundedRecoveryPackageForStoredDraft(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("recovery", 4); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := s.Progress.StartChapter(2); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	if err := s.Outline.SaveOutline([]domain.OutlineEntry{
+		{Chapter: 1, Title: "previous", CoreEvent: "establish continuity"},
+		{Chapter: 2, Title: "current", CoreEvent: "make the irreversible choice", Hook: "new evidence arrives"},
+		{Chapter: 3, Title: "future", CoreEvent: "pay the cost"},
+	}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Drafts.SaveChapterPlan(domain.ChapterPlan{
+		Chapter: 2,
+		Title:   "current",
+		Goal:    strings.Repeat("drafting rationale ", 300),
+		Contract: domain.ChapterContract{
+			RequiredBeats:    []string{"make the irreversible choice"},
+			ContinuityChecks: []string{"preserve the prior consequence"},
+			HookGoal:         "end on new evidence",
+		},
+	}); err != nil {
+		t.Fatalf("SaveChapterPlan: %v", err)
+	}
+	if err := s.Drafts.SaveFinalChapter(1, strings.Repeat("previous chapter prose ", 500)); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(2, strings.Repeat("stored current draft prose ", 700)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	longItems := []string{strings.Repeat("simulation guidance ", 500)}
+	if err := s.Simulation.Save(domain.SimulationProfile{
+		Version: domain.SimulationProfileVersion,
+		Synthesis: domain.SimulationSynthesis{
+			Style:        domain.SimulationStyle{NarrativeVoice: longItems, SentenceRhythm: longItems},
+			RoleGuidance: domain.SimulationRoleGuidance{Writer: longItems},
+		},
+	}); err != nil {
+		t.Fatalf("Simulation.Save: %v", err)
+	}
+	refs := References{
+		Consistency:      strings.Repeat("consistency rule ", 2_000),
+		QualityChecklist: strings.Repeat("quality rule ", 2_000),
+		AntiAITone:       strings.Repeat("anti ai rule ", 3_000),
+	}
+	raw, err := NewContextToolWithOptions(s, refs, "default", ContextToolOptions{SimulationMode: "reinforced"}).Execute(t.Context(), json.RawMessage(`{"chapter":2}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(raw) > writerRecoveryContextBytes {
+		t.Fatalf("recovery context=%d bytes, want <=%d beside the full draft", len(raw), writerRecoveryContextBytes)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload["context_profile"] != "recovering" {
+		t.Fatalf("context_profile=%v, want recovering", payload["context_profile"])
+	}
+	working, _ := payload["working_memory"].(map[string]any)
+	for _, key := range []string{"current_chapter_outline", "chapter_contract", "chapter_draft", "user_rules"} {
+		if _, ok := working[key]; !ok {
+			t.Fatalf("recovery context missing working_memory.%s", key)
+		}
+	}
+	for _, key := range []string{"chapter_plan", "future_chapter_promises", "recent_summaries", "previous_tail", "simulation_profile"} {
+		if _, ok := working[key]; ok {
+			t.Fatalf("recovery context must not reload drafting-only working_memory.%s", key)
+		}
+	}
+	if _, ok := payload["simulation_profile"]; ok {
+		t.Fatal("recovery context must not place simulation material beside the stored draft")
+	}
+}
+
 func TestContextToolDoesNotInjectUserDirectives(t *testing.T) {
 	// save_directive 已移除：novel_context 不再注入 working_memory.user_directives，
 	// 长期写作要求统一走 user_rules。锁死这条，防止回归。

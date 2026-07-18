@@ -28,9 +28,10 @@ type contextBuildState struct {
 type chapterContextPurpose string
 
 const (
-	chapterContextWriting   chapterContextPurpose = "writing"
-	chapterContextRewriting chapterContextPurpose = "rewriting"
-	chapterContextPolishing chapterContextPurpose = "polishing"
+	chapterContextWriting    chapterContextPurpose = "writing"
+	chapterContextRewriting  chapterContextPurpose = "rewriting"
+	chapterContextPolishing  chapterContextPurpose = "polishing"
+	chapterContextRecovering chapterContextPurpose = "recovering"
 )
 
 func resolveChapterContextPurpose(progress *domain.Progress, chapter int) chapterContextPurpose {
@@ -41,6 +42,10 @@ func resolveChapterContextPurpose(progress *domain.Progress, chapter int) chapte
 		return chapterContextPolishing
 	}
 	return chapterContextRewriting
+}
+
+func chapterPurposeNeedsDraftingContext(purpose chapterContextPurpose) bool {
+	return purpose != chapterContextPolishing && purpose != chapterContextRecovering
 }
 
 type chapterContextEnvelope struct {
@@ -742,6 +747,17 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 	state.progress = progress
 	state.runMeta = runMeta
 	state.purpose = resolveChapterContextPurpose(progress, chapter)
+	_, draftWords, draftErr := t.store.Drafts.LoadChapterContent(chapter)
+	if draftErr != nil {
+		warn("chapter_draft", draftErr)
+	}
+	if state.purpose == chapterContextWriting && draftWords > 0 {
+		// A restarted normal-writing turn with stored prose is no longer in the
+		// source-gathering phase. Its full draft is loaded separately through
+		// read_chapter, so the context package must become a validation/repair
+		// contract rather than repeat all drafting inputs beside that prose.
+		state.purpose = chapterContextRecovering
+	}
 
 	if runMeta != nil && runMeta.PlanningTier != "" {
 		envelope.Episodic["planning_tier"] = runMeta.PlanningTier
@@ -760,7 +776,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 		warn("current_chapter_outline", currentEntryErr)
 	}
 	state.currentEntry = currentEntry
-	if state.purpose != chapterContextPolishing {
+	if chapterPurposeNeedsDraftingContext(state.purpose) {
 		t.attachFutureChapterPromises(envelope, chapter, warn)
 	}
 
@@ -779,7 +795,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 			// inside chapter_plan.
 			compactPlan.Contract = domain.ChapterContract{}
 		}
-		if state.purpose != chapterContextPolishing {
+		if chapterPurposeNeedsDraftingContext(state.purpose) {
 			envelope.Working["chapter_plan"] = compactPlan
 		}
 	} else {
@@ -792,13 +808,11 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 
 	// 暴露 draft 是否已存在的事实：让 writer 被重派时能自行判断跳过重写还是覆盖。
 	// 只暴露 exists + word_count，不注入正文（正文让 writer 按需用 read_chapter 拉）。
-	if _, draftWords, draftErr := t.store.Drafts.LoadChapterContent(chapter); draftErr == nil && draftWords > 0 {
+	if draftWords > 0 {
 		envelope.Working["chapter_draft"] = map[string]any{
 			"exists":     true,
 			"word_count": draftWords,
 		}
-	} else if draftErr != nil {
-		warn("chapter_draft", draftErr)
 	}
 
 	// 重写时把"为什么改 + 改哪里"交给 writer：理由来自返工队列，具体批评来自本章评审
@@ -895,7 +909,7 @@ func (t *ContextTool) buildChapterContext(result map[string]any, state contextBu
 	envelope := newChapterContextEnvelope()
 	result["memory_policy"] = domain.NewChapterMemoryPolicy(state.progress, state.profile, state.currentEntry != nil)
 
-	if state.purpose == chapterContextPolishing {
+	if state.purpose == chapterContextPolishing || state.purpose == chapterContextRecovering {
 		t.loadPolishingCharacters(envelope.Episodic, warn)
 	} else if state.profile.Layered {
 		t.loadLayeredCharacters(envelope.Episodic, state.chapter, warn)
@@ -903,12 +917,12 @@ func (t *ContextTool) buildChapterContext(result map[string]any, state contextBu
 		t.loadFilteredCharacters(envelope.Episodic, state.chapter, warn)
 	}
 
-	if state.purpose != chapterContextPolishing {
+	if chapterPurposeNeedsDraftingContext(state.purpose) {
 		t.buildChapterEpisodicMemory(&envelope, state, warn)
 		t.buildChapterWorkingMemory(&envelope, state, warn)
 	}
 	t.buildChapterReferencePack(&envelope, state)
-	if state.purpose != chapterContextPolishing {
+	if chapterPurposeNeedsDraftingContext(state.purpose) {
 		t.buildChapterSelectedMemory(&envelope, state, warn)
 	}
 	t.buildStyleStats(&envelope, state)
