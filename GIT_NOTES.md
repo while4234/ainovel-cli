@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `c410a7f` `fix: scope writer context to active chapter`: Writer
+  can now load a full chapter work package only for the active work unit; a
+  request for an earlier chapter returns a sub-2-KiB redirect to
+  `read_chapter` instead of another contract/simulation bundle. Exact-boundary
+  recovery retains only the newest durable result so an oversized pair cannot
+  be retried unchanged. This addresses the live chapter-41 route that combined
+  chapter-41 context, chapter-40 full context, and chapter-40 prose (70,205 ->
+  69,931 bytes after the old recovery). Focused wrapper/recovery regressions,
+  the full Agent suite, and vet passed.
 - 2026-07-18 `fa6437f` `fix: evict persisted writer payloads`: Writer phase
   cleanup now removes completed draft/edit/repair prose from historical tool
   arguments after the Store confirms the write, clears matching old reasoning,
