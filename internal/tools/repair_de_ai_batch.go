@@ -94,9 +94,23 @@ func (t *RepairDeAIBatchTool) Execute(_ context.Context, args json.RawMessage) (
 		return nil, fmt.Errorf("第 %d 章草稿已在上次 check_de_ai 后变化；先重新审校再修订: %w", request.Chapter, errs.ErrToolPrecondition)
 	}
 
-	updated, err := applyDeAIBatch(content, request.Repairs)
+	updated, repairedCount, staleIndices, err := applyDeAIBatch(content, request.Repairs)
 	if err != nil {
 		return nil, err
+	}
+	nextStep := "本批已落盘，旧的去AI化、一致性和改编检查均已失效。立即调用 check_de_ai；若仍有 repair finding，按下一类别再做一小批修订。check_de_ai 通过后，重跑 check_consistency、check_adaptation（如适用）。若任一后续检查又要求改稿，改完后必须重新 check_de_ai，直到同一版草稿的全部检查都通过，最后才 commit_chapter。"
+	if len(staleIndices) > 0 {
+		nextStep = "本批中已跳过当前草稿里不再存在的过期 old_string，其余唯一匹配项已安全处理。不要重放旧批次；立即调用 check_de_ai。若仍有 repair finding，先回读当前草稿，再按最新原文做下一小批精确修订。全部检查必须在同一版草稿上通过后才能 commit_chapter。"
+	}
+	if repairedCount == 0 {
+		return json.Marshal(map[string]any{
+			"chapter":               request.Chapter,
+			"changed":               false,
+			"repaired_count":        0,
+			"skipped_stale_count":   len(staleIndices),
+			"skipped_stale_indices": staleIndices,
+			"next_step":             nextStep,
+		})
 	}
 	if err := t.store.Drafts.SaveDraft(request.Chapter, updated); err != nil {
 		return nil, fmt.Errorf("save repaired draft: %w: %w", errs.ErrStoreWrite, err)
@@ -108,33 +122,45 @@ func (t *RepairDeAIBatchTool) Execute(_ context.Context, args json.RawMessage) (
 	}
 
 	return json.Marshal(map[string]any{
-		"chapter":        request.Chapter,
-		"repaired_count": len(request.Repairs),
-		"next_step":      "本批已落盘，旧的去AI化、一致性和改编检查均已失效。立即调用 check_de_ai；若仍有 repair finding，按下一类别再做一小批修订。check_de_ai 通过后，重跑 check_consistency、check_adaptation（如适用）。若任一后续检查又要求改稿，改完后必须重新 check_de_ai，直到同一版草稿的全部检查都通过，最后才 commit_chapter。",
+		"chapter":               request.Chapter,
+		"changed":               true,
+		"repaired_count":        repairedCount,
+		"skipped_stale_count":   len(staleIndices),
+		"skipped_stale_indices": staleIndices,
+		"next_step":             nextStep,
 	})
 }
 
-func applyDeAIBatch(content string, repairs []deAIBatchReplacement) (string, error) {
+func applyDeAIBatch(content string, repairs []deAIBatchReplacement) (string, int, []int, error) {
 	type patch struct {
 		index       int
 		start, end  int
 		replacement string
 	}
 	patches := make([]patch, 0, len(repairs))
+	staleIndices := make([]int, 0)
 	seen := make(map[string]struct{}, len(repairs))
 	for index, repair := range repairs {
 		if strings.TrimSpace(repair.OldString) == "" || strings.TrimSpace(repair.NewString) == "" {
-			return "", fmt.Errorf("repairs[%d] old_string and new_string cannot be empty: %w", index, errs.ErrToolArgs)
+			return "", 0, nil, fmt.Errorf("repairs[%d] old_string and new_string cannot be empty: %w", index, errs.ErrToolArgs)
 		}
 		if repair.OldString == repair.NewString {
-			return "", fmt.Errorf("repairs[%d] does not change the text: %w", index, errs.ErrToolArgs)
+			return "", 0, nil, fmt.Errorf("repairs[%d] does not change the text: %w", index, errs.ErrToolArgs)
 		}
 		if _, duplicate := seen[repair.OldString]; duplicate {
-			return "", fmt.Errorf("repairs[%d] duplicates an earlier old_string: %w", index, errs.ErrToolArgs)
+			return "", 0, nil, fmt.Errorf("repairs[%d] duplicates an earlier old_string: %w", index, errs.ErrToolArgs)
 		}
 		seen[repair.OldString] = struct{}{}
-		if matches := strings.Count(content, repair.OldString); matches != 1 {
-			return "", fmt.Errorf("repairs[%d] old_string must match exactly once in the current draft, got %d: %w", index, matches, errs.ErrToolPrecondition)
+		matches := strings.Count(content, repair.OldString)
+		if matches == 0 {
+			// A model can carry one already-repaired sentence into the next
+			// bounded batch. Skipping that stale entry is safe because there is
+			// no match to mutate; the mandatory next check decides what remains.
+			staleIndices = append(staleIndices, index)
+			continue
+		}
+		if matches != 1 {
+			return "", 0, nil, fmt.Errorf("repairs[%d] old_string must match exactly once in the current draft, got %d: %w", index, matches, errs.ErrToolPrecondition)
 		}
 		start := strings.Index(content, repair.OldString)
 		patches = append(patches, patch{
@@ -150,7 +176,7 @@ func applyDeAIBatch(content string, repairs []deAIBatchReplacement) (string, err
 	for index := 1; index < len(patches); index++ {
 		previous, current := patches[index-1], patches[index]
 		if current.start < previous.end {
-			return "", fmt.Errorf("repairs[%d] overlaps repairs[%d]; use one non-overlapping exact replacement: %w", current.index, previous.index, errs.ErrToolArgs)
+			return "", 0, nil, fmt.Errorf("repairs[%d] overlaps repairs[%d]; use one non-overlapping exact replacement: %w", current.index, previous.index, errs.ErrToolArgs)
 		}
 	}
 	sort.Slice(patches, func(left, right int) bool {
@@ -160,5 +186,5 @@ func applyDeAIBatch(content string, repairs []deAIBatchReplacement) (string, err
 	for _, patch := range patches {
 		updated = updated[:patch.start] + patch.replacement + updated[patch.end:]
 	}
-	return updated, nil
+	return updated, len(patches), staleIndices, nil
 }
