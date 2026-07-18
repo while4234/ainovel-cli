@@ -915,7 +915,7 @@ func (t *ContextTool) buildChapterContext(result map[string]any, state contextBu
 	envelope.apply(result)
 }
 
-func (t *ContextTool) buildChapterSimulationProfile(result map[string]any, _ chapterContextPurpose, warn func(string, error)) {
+func (t *ContextTool) buildChapterSimulationProfile(result map[string]any, purpose chapterContextPurpose, warn func(string, error)) {
 	profile, err := t.store.Simulation.Load()
 	if err != nil {
 		warn("simulation_profile", err)
@@ -939,9 +939,13 @@ func (t *ContextTool) buildChapterSimulationProfile(result map[string]any, _ cha
 			Writer: compact.RoleGuidance.Writer,
 		},
 	}
-	chapterProfile.Style = compactPolishingSimulationStyle(chapterProfile.Style)
-	chapterProfile.PacingDensity = compactPolishingSimulationPacing(chapterProfile.PacingDensity)
-	chapterProfile.RoleGuidance.Writer = compactStringList(chapterProfile.RoleGuidance.Writer, 2, 60)
+	itemLimit := 2
+	if purpose == chapterContextPolishing {
+		itemLimit = 1
+	}
+	chapterProfile.Style = compactPolishingSimulationStyle(chapterProfile.Style, itemLimit)
+	chapterProfile.PacingDensity = compactPolishingSimulationPacing(chapterProfile.PacingDensity, itemLimit)
+	chapterProfile.RoleGuidance.Writer = compactStringList(chapterProfile.RoleGuidance.Writer, itemLimit, 60)
 	working, ok := result["working_memory"].(map[string]any)
 	if !ok {
 		working = map[string]any{}
@@ -954,21 +958,21 @@ func (t *ContextTool) buildChapterSimulationProfile(result map[string]any, _ cha
 	}
 }
 
-func compactPolishingSimulationStyle(style domain.SimulationStyle) domain.SimulationStyle {
-	style.NarrativeVoice = compactStringList(style.NarrativeVoice, 2, 60)
-	style.SentenceRhythm = compactStringList(style.SentenceRhythm, 2, 60)
-	style.ProseTexture = compactStringList(style.ProseTexture, 2, 60)
-	style.Perspective = compactStringList(style.Perspective, 2, 60)
-	style.Mood = compactStringList(style.Mood, 2, 60)
-	style.DoNotCopy = compactStringList(style.DoNotCopy, 2, 60)
+func compactPolishingSimulationStyle(style domain.SimulationStyle, maxItems int) domain.SimulationStyle {
+	style.NarrativeVoice = compactStringList(style.NarrativeVoice, maxItems, 60)
+	style.SentenceRhythm = compactStringList(style.SentenceRhythm, maxItems, 60)
+	style.ProseTexture = compactStringList(style.ProseTexture, maxItems, 60)
+	style.Perspective = compactStringList(style.Perspective, maxItems, 60)
+	style.Mood = compactStringList(style.Mood, maxItems, 60)
+	style.DoNotCopy = compactStringList(style.DoNotCopy, maxItems, 60)
 	return style
 }
 
-func compactPolishingSimulationPacing(pacing domain.SimulationPacingDensity) domain.SimulationPacingDensity {
-	pacing.SceneDensity = compactStringList(pacing.SceneDensity, 2, 60)
-	pacing.InformationRelease = compactStringList(pacing.InformationRelease, 2, 60)
-	pacing.DialogueActionRatio = compactStringList(pacing.DialogueActionRatio, 2, 60)
-	pacing.CompressionRules = compactStringList(pacing.CompressionRules, 2, 60)
+func compactPolishingSimulationPacing(pacing domain.SimulationPacingDensity, maxItems int) domain.SimulationPacingDensity {
+	pacing.SceneDensity = compactStringList(pacing.SceneDensity, maxItems, 60)
+	pacing.InformationRelease = compactStringList(pacing.InformationRelease, maxItems, 60)
+	pacing.DialogueActionRatio = compactStringList(pacing.DialogueActionRatio, maxItems, 60)
+	pacing.CompressionRules = compactStringList(pacing.CompressionRules, maxItems, 60)
 	return pacing
 }
 

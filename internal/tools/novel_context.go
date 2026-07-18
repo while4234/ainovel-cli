@@ -676,8 +676,8 @@ func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpos
 		// Polishing is a local prose operation. The exact anti-AI repair evidence
 		// remains available through check_de_ai; this pack supplies only stable
 		// prose constraints and the final quality checklist.
-		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 800)
-		addWithLimit("quality_checklist", t.refs.QualityChecklist, 300)
+		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 250)
+		addWithLimit("quality_checklist", t.refs.QualityChecklist, 200)
 		return refs
 	}
 	// New writing and substantive rewrites retain the core writing references,
