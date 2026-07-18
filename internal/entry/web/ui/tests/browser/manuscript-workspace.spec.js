@@ -55,7 +55,7 @@ test('真实 API 支持分层树、键盘 tabs、candidate、懒审核和十万�
   expect(totalRunes).toBeGreaterThan(100000);
 });
 
-test('真实 history 分页、restore preview/确认和受限共创投递可用', async ({ page }) => {
+test('真实 history 分页、restore preview/确认可用且讨论跳转已移除', async ({ page }) => {
   await page.getByRole('tab', { name: '修订历史' }).click();
   await page.getByRole('button', { name: '加载更多历史' }).click();
   await expect(page.getByText(/2026-07-15/)).toBeVisible();
@@ -71,10 +71,37 @@ test('真实 history 分页、restore preview/确认和受限共创投递可用'
   await page.getByRole('button', { name: '确认并新建修订' }).click();
   await expect(page.getByText('已从历史版本创建新的修订；当前正式稿未被覆盖，仍需独立审核与确认。')).toBeVisible();
 
-  await page.getByRole('button', { name: '带当前上下文去讨论' }).click();
-  await expect(page.getByLabel('共创已接收上下文')).toContainText('服务端核验并裁剪');
-  await expect(page.getByRole('status')).toContainText('送入共创');
-  await expect(page.getByRole('status')).toContainText('当前章、章节提纲、所属分卷、修订摘要');
+  await expect(page.getByRole('button', { name: '带当前上下文去讨论' })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: '润色' })).toBeVisible();
+});
+
+test('桌面正文约 920px，章节组合框支持三种章号格式并在稿件区原地追问', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop');
+  const width = await page.locator('.manuscript-reader').first().evaluate((element) => element.getBoundingClientRect().width);
+  expect(width).toBeGreaterThanOrEqual(900);
+  expect(width).toBeLessThanOrEqual(925);
+
+  const combobox = page.getByRole('combobox', { name: '选择章节' });
+  for (const value of ['2', '第2章', '第二章']) {
+    await combobox.fill(value);
+    await expect(page.getByRole('option', { name: /第 2 章/ })).toBeVisible();
+    await combobox.press('Enter');
+    await expect(page.getByRole('heading', { name: /第 2 章/ })).toBeVisible();
+  }
+  await combobox.fill('999');
+  await expect(page.getByText('未找到匹配章节')).toBeVisible();
+  await combobox.press('Enter');
+  await expect(page.getByRole('heading', { name: /第 2 章/ })).toBeVisible();
+
+  await page.getByRole('tab', { name: '润色' }).click();
+  await page.getByLabel('修改意见').fill('加强冲突，但范围不明确');
+  await page.getByRole('button', { name: '提交意见' }).click();
+  const clarification = page.getByLabel('只修改冲突场景，还是整章？');
+  await expect(clarification).toBeVisible();
+  await clarification.fill('只修改冲突场景');
+  await page.getByRole('button', { name: '回答' }).click();
+  await expect(page.getByText('意见已明确，可以生成安全预览')).toBeVisible();
+  await expect(page.locator('.manuscript-workspace-shell')).toBeVisible();
 });
 
 test('历史正文被清理时保留当前稿并提供重新加载动作', async ({ page }) => {

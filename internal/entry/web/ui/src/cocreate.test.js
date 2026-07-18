@@ -6,6 +6,7 @@ import {
   coCreateStateFromEvent,
   coCreateStateFromResponse,
   createCoCreateState,
+  shouldShowGlobalCoCreate,
   visibleCoCreateSuggestions
 } from './cocreate.js';
 
@@ -257,5 +258,14 @@ describe('co-create UI state', () => {
     expect(state.active).toBe(true);
     expect(state.kind).toBe('stage');
     expect(state.input).toBe('retry text');
+  });
+
+  it('shows global co-create only for first normal/adaptation creation or unfinished recovery', () => {
+    expect(shouldShowGlobalCoCreate({ snapshot: { phase: 'init' }, coCreate: createCoCreateState() })).toBe(true);
+    expect(shouldShowGlobalCoCreate({ snapshot: { phase: 'writing' }, coCreate: { ...createCoCreateState(), status: 'started' } })).toBe(false);
+    expect(shouldShowGlobalCoCreate({ snapshot: { phase: 'writing' }, coCreate: { ...createCoCreateState(), kind: 'adapt', active: true } })).toBe(true);
+    expect(shouldShowGlobalCoCreate({ snapshot: { phase: 'writing' }, coCreate: { ...createCoCreateState(), kind: 'normal', failed: true, status: 'error' } })).toBe(true);
+    expect(shouldShowGlobalCoCreate({ snapshot: { phase: 'outline' }, coCreate: { ...createCoCreateState(), kind: 'continuation', active: true } })).toBe(false);
+    expect(shouldShowGlobalCoCreate({ snapshot: { phase: 'writing' }, coCreate: createCoCreateState(), planningReview: { active: true } })).toBe(true);
   });
 });

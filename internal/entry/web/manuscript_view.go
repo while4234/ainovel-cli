@@ -63,8 +63,6 @@ func (s *Server) handleManuscriptWorkspaceRoute(w http.ResponseWriter, r *http.R
 		s.handleManuscriptArtifact(w, r, manifest, st, strings.TrimPrefix(action, "manuscript/workspace/artifacts/"))
 	case strings.HasPrefix(action, "manuscript/workspace/chapters/"):
 		s.handleManuscriptWorkspaceChapter(w, r, manifest, st, service, strings.TrimPrefix(action, "manuscript/workspace/chapters/"))
-	case action == "manuscript/context/discuss":
-		s.handleManuscriptDiscuss(w, r, manifest, st, service)
 	case action == "manuscript/workspace/restore/preview":
 		s.handleManuscriptRestorePreview(w, r, manifest, st, service)
 	case action == "manuscript/workspace/restore":

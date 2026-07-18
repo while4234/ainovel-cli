@@ -20,15 +20,15 @@ export const createExpansionOperationRegistry = (keyFactory = expansionKey) => {
   };
 };
 
-export function ExpansionLauncher({ projectId, phase, mode = 'normal', structureRevision = 1, structureSignature = '', selectedId = '', launchRequest, activeRevision, onConfirmed }) {
-  const [open, setOpen] = useState(false);
+export function ExpansionLauncher({ projectId, phase, mode = 'normal', structureRevision = 1, structureSignature = '', selectedId = '', launchRequest, activeRevision, onConfirmed, hideLauncher = false, initialPreview = null, initialInstruction = '' }) {
+  const [open, setOpen] = useState(Boolean(hideLauncher || initialPreview));
   const [busy, setBusy] = useState(false);
-  const [preview, setPreview] = useState(null);
+  const [preview, setPreview] = useState(initialPreview);
   const [confirmation, setConfirmation] = useState(null);
 	const [revision, setRevision] = useState(null);
   const [error, setError] = useState('');
 	const retryRevision = useRef(null);
-  const [form, setForm] = useState({ location: phase === 'complete' ? 'book_end' : 'inside', sentence: '', adjustment: 'default', referenceIds: selectedId ? [selectedId] : [] });
+  const [form, setForm] = useState({ location: phase === 'complete' ? 'book_end' : 'inside', sentence: initialInstruction, adjustment: 'default', referenceIds: selectedId ? [selectedId] : [] });
   const controller = useRef(null);
 	const operationKeys = useRef(null);
 	if (!operationKeys.current) operationKeys.current = createExpansionOperationRegistry();
@@ -37,6 +37,11 @@ export function ExpansionLauncher({ projectId, phase, mode = 'normal', structure
 	};
 	const completeOperation = (operation) => operationKeys.current.complete(operation);
   useEffect(() => () => controller.current?.abort(), []);
+	useEffect(() => {
+		if (!initialPreview) return;
+		setPreview(initialPreview); setOpen(true);
+		setForm((old) => ({ ...old, sentence: initialInstruction || old.sentence }));
+	}, [initialPreview?.preview_id, initialInstruction]);
 	useEffect(() => {
 		if (!confirmation && !activeRevision) return undefined;
 		let stopped = false;
@@ -112,8 +117,8 @@ export function ExpansionLauncher({ projectId, phase, mode = 'normal', structure
 		}
 	}
   const label = phase === 'complete' ? '继续扩写' : '补剧情 / 扩写';
-  return <section className="expansion-launcher"><button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>{label}</button>
+  return <section className="expansion-launcher">{!hideLauncher ? <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>{label}</button> : null}
     {revision || activeRevision ? <p className="expansion-active-revision">已有修订正在进行，请先进入当前修订处理。<button type="button" onClick={() => onConfirmed?.({ revision: revision || activeRevision })}>进入当前修订</button></p> : null}
-    {open ? <div className="expansion-dialog" role="region" aria-label="一句话补剧情与扩写"><ExpansionForm value={form} onChange={setForm} onSubmit={plan} busy={busy} mode={mode} />{error ? <div role="alert">{error}<button type="button" onClick={() => retryRevision.current ? revisionCommand(retryRevision.current.action, retryRevision.current.message) : preview ? adjust(form.adjustment) : plan()}>重试</button></div> : null}<ExpansionPreview preview={preview} onAdjust={adjust} onConfirm={revision ? undefined : confirm} onCancel={cancel} busy={busy || Boolean(revision)} />{confirmation || revision ? <RevisionStepper revision={revision || confirmation?.revision} onCommand={revisionCommand} onNavigate={() => onConfirmed?.({ revision })} /> : null}</div> : null}
+    {open ? <div className="expansion-dialog" role="region" aria-label="一句话补剧情与扩写">{!hideLauncher ? <ExpansionForm value={form} onChange={setForm} onSubmit={plan} busy={busy} mode={mode} /> : null}{error ? <div role="alert">{error}<button type="button" onClick={() => retryRevision.current ? revisionCommand(retryRevision.current.action, retryRevision.current.message) : preview ? adjust(form.adjustment) : plan()}>重试</button></div> : null}<ExpansionPreview preview={preview} onAdjust={adjust} onConfirm={revision ? undefined : confirm} onCancel={cancel} busy={busy || Boolean(revision)} />{confirmation || revision ? <RevisionStepper revision={revision || confirmation?.revision} onCommand={revisionCommand} onNavigate={() => onConfirmed?.({ revision })} /> : null}</div> : null}
   </section>;
 }

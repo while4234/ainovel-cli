@@ -52,24 +52,35 @@ async function finishRevisionThroughUI(page, region) {
   throw new Error('visible revision flow exceeded bounded steps');
 }
 
-test.beforeEach(async ({ page }) => {
-  await page.request.post('/api/test/reset-expansion');
+test.beforeEach(async ({ page }, testInfo) => {
+  const adaptationMode = testInfo.title.includes('production Go adaptation') ? '?mode=adaptation' : '';
+  await page.request.post(`/api/test/reset-expansion${adaptationMode}`);
   await page.request.post('/api/test/reset');
   await page.request.post('/api/test/refresh-expansion-metadata');
   await page.goto('/browser-fixture.html');
-  await page.getByRole('button', { name: '专业长篇稿件工作区' }).click();
 });
 
+async function planExpansionInManuscript(page, sentence) {
+  await page.getByRole('tab', { name: '补剧情 / 扩写' }).click();
+  const form = page.locator('.manuscript-action-compose .expansion-form');
+  await form.getByLabel('一句话描述').fill(sentence);
+  await form.getByRole('button', { name: '提交意见' }).click();
+  await page.getByRole('button', { name: '生成签名预览' }).click();
+  return page.getByRole('region', { name: '一句话补剧情与扩写' });
+}
+
 test('一句话扩写支持极简表单、专业预览、快捷调整、取消和键盘可访问性', async ({ page }, testInfo) => {
-  await page.getByRole('button', { name: '补剧情 / 扩写' }).click();
-  const region = page.getByRole('region', { name: '一句话补剧情与扩写' });
-  await expect(region.getByText('改编模式：会校验原著覆盖与受保护合同。')).toBeVisible();
-  await expect(region.locator('details').first()).not.toHaveAttribute('open', '');
-  const description = region.getByLabel('一句话描述');
+  await page.getByRole('tab', { name: '补剧情 / 扩写' }).click();
+  const form = page.locator('.manuscript-action-compose .expansion-form');
+  await expect(form.getByText('改编模式：会校验原著覆盖与受保护合同。')).toBeVisible();
+  await expect(form.locator('details').first()).not.toHaveAttribute('open', '');
+  const description = form.getByLabel('一句话描述');
   await description.focus();
   await expect(description).toBeFocused();
   await description.fill('让盟友隐瞒的证据迫使主角公开站队');
-  await region.getByRole('button', { name: '让 AI 规划' }).click();
+  await form.getByRole('button', { name: '提交意见' }).click();
+  await page.getByRole('button', { name: '生成签名预览' }).click();
+  const region = page.getByRole('region', { name: '一句话补剧情与扩写' });
   await expect(region.getByRole('heading', { name: '插入一章' })).toBeVisible();
   await expect(region.getByText('独立的选择与代价需要结构空间')).toBeVisible();
   await expect(region.getByText(/目标第 2 章/)).toBeVisible();
@@ -84,10 +95,7 @@ test('一句话扩写支持极简表单、专业预览、快捷调整、取消�
 });
 
 test('生产 Go 确认拒绝客户端自签审核并完成独立审核、人工确认和原子发布', async ({ page }) => {
-  await page.getByRole('button', { name: '补剧情 / 扩写' }).click();
-  const region = page.getByRole('region', { name: '一句话补剧情与扩写' });
-  await region.getByLabel('一句话描述').fill('让盟友隐瞒的证据迫使主角公开站队');
-  await region.getByRole('button', { name: '让 AI 规划' }).click();
+  const region = await planExpansionInManuscript(page, '让盟友隐瞒的证据迫使主角公开站队');
   await expect(region.getByRole('heading', { name: '插入一章' })).toBeVisible();
   await clickLive(region.getByRole('button', { name: '确认影响并进入固定修订' }));
   await expect(region.getByRole('heading', { name: '修订进度' })).toBeVisible();
@@ -128,34 +136,25 @@ test('安全 API 合同覆盖 restart、two-tab、stale 与 expiry', async ({ pa
 test('完本项目提供继续扩写入口', async ({ page }) => {
   await page.request.post('/api/test/phase-complete');
   await page.reload();
-  await page.getByRole('button', { name: '专业长篇稿件工作区' }).click();
-  await expect(page.getByRole('button', { name: '继续扩写' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '补剧情 / 扩写' })).toBeVisible();
 });
 
-test('章节间入口会带入稳定位置且不会暴露签名、事件账本或 source ID', async ({ page }, testInfo) => {
-  if (testInfo.project.name === 'mobile') await page.getByRole('button', { name: '打开稿件目录' }).click();
-  const surface = testInfo.project.name === 'mobile' ? page.getByRole('dialog', { name: '稿件目录抽屉' }) : page;
+test('章节间入口会带入稳定位置且不会暴露签名、事件账本或 source ID', async ({ page }) => {
+  await page.getByRole('button', { name: '打开完整目录' }).click();
+  const surface = page.getByRole('dialog', { name: '稿件目录抽屉' });
   await surface.getByRole('button', { name: /在第 1 章后补充剧情/ }).click();
-  if (testInfo.project.name === 'mobile') await page.keyboard.press('Escape');
-  const region = page.getByRole('region', { name: '一句话补剧情与扩写' });
-  await expect(region.getByLabel('插入位置')).toHaveValue('after');
-  await expect(region).not.toContainText('browser-structure-signature');
-  await expect(region).not.toContainText('event ledger');
-  await expect(region).not.toContainText('source_id');
+  await surface.getByRole('button', { name: '关闭目录' }).click();
+  const form = page.locator('.manuscript-action-compose .expansion-form');
+  await expect(form.getByLabel('插入位置')).toHaveValue('after');
+  await expect(form).not.toContainText('browser-structure-signature');
+  await expect(form).not.toContainText('event ledger');
+  await expect(form).not.toContainText('source_id');
 });
 
 test('production Go adaptation project preserves source contracts through audit, human gates, and publish', async ({ page }) => {
-  const reset = await page.request.post('/api/test/reset-expansion?mode=adaptation');
-  expect(reset.ok()).toBeTruthy();
-  const refreshed = await page.request.post('/api/test/refresh-expansion-metadata');
-  expect(refreshed.ok(), await refreshed.text()).toBeTruthy();
-  await page.reload();
-  await page.getByRole('button', { name: '专业长篇稿件工作区' }).click();
-  await page.getByRole('button', { name: '补剧情 / 扩写' }).click();
-  const region = page.getByRole('region', { name: '一句话补剧情与扩写' });
-  await expect(region.getByText('改编模式：会校验原著覆盖与受保护合同。')).toBeVisible();
-  await region.getByLabel('一句话描述').fill('add an original bridge without replacing protected source events');
-  await region.getByRole('button', { name: '让 AI 规划' }).click();
+  await page.getByRole('tab', { name: '补剧情 / 扩写' }).click();
+  await expect(page.locator('.manuscript-action-compose .expansion-form').getByText('改编模式：会校验原著覆盖与受保护合同。')).toBeVisible();
+  const region = await planExpansionInManuscript(page, 'add an original bridge without replacing protected source events');
   await expect(region.getByText('目标第 3 章 · 无原著章映射 · 新增剧情', { exact: true })).toBeVisible();
   await clickLive(region.getByRole('button', { name: '确认影响并进入固定修订' }));
   await expect(region.getByText('当前状态：candidate_audit_pending')).toBeVisible();

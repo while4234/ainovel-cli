@@ -17,7 +17,9 @@ describe('professional manuscript workspace layout', () => {
 
   it('uses one central scroll surface and a readable prose measure', () => {
     expect(manuscriptStyles).toMatch(/\.manuscript-content-scroll[\s\S]*overflow:\s*auto/);
-    expect(manuscriptStyles).toMatch(/\.manuscript-reader[\s\S]*max-width:\s*72ch/);
+    expect(manuscriptStyles).toMatch(/\.manuscript-reading-surface[\s\S]*1120px/);
+    expect(manuscriptStyles).toMatch(/\.manuscript-reader[\s\S]*920px/);
+    expect(manuscriptStyles).not.toContain('max-width: 72ch');
     expect(manuscriptStyles).not.toContain('max-height: 78vh');
   });
 });

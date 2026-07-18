@@ -166,7 +166,8 @@ import {
   coCreateStateFromError,
   coCreateStateFromEvent,
   coCreateStateFromResponse,
-  createCoCreateState
+  createCoCreateState,
+  shouldShowGlobalCoCreate
 } from './cocreate.js';
 import {
   buildContinuationOutlineScopePayload,
@@ -902,7 +903,9 @@ export default function App() {
   );
   const showOutlineRevisionWorkspace = sideView === 'status' && selectedOutlineRevisionView.active;
   const showChapterRevisionWorkspace = sideView === 'status' && !showOutlineRevisionWorkspace && selectedChapterRevisionView.visible;
-  const showContinuationWorkspace = sideView === 'continuation' && continuationSnapshot.exists;
+  const continuationCoCreateActive = coCreate.kind === 'continuation' && coCreate.status !== 'started' && Boolean(coCreate.active || coCreate.ready || coCreate.draftPrompt || hasCoCreateWorkspaceContent(coCreate));
+  const showContinuationCoCreateWorkspace = sideView === 'continuation' && continuationCoCreateActive;
+  const showContinuationWorkspace = sideView === 'continuation' && continuationSnapshot.exists && !showContinuationCoCreateWorkspace;
 
 	const resetProjectScopedState = useCallback((clearProject = false) => {
 		lastSeqRef.current = 0;
@@ -2554,7 +2557,6 @@ export default function App() {
 
   const beginContinuationDraft = () => {
     runWithWindowScrollPreserved(() => {
-      setSideView('cocreate');
       return beginCoCreateFlow('continuation');
     });
   };
@@ -4287,6 +4289,11 @@ export default function App() {
   );
   const showCoCreatePlanningWorkspace = sideView === 'cocreate' && coCreatePlanningReview.active;
   const showCoCreateWorkspace = sideView === 'cocreate' && !showCoCreatePlanningWorkspace && hasCoCreateWorkspaceContent(coCreate);
+  const globalCoCreateVisible = Boolean(activeProject && shouldShowGlobalCoCreate({ snapshot, coCreate, planningReview: coCreatePlanningReview }));
+  useEffect(() => {
+    if (sideView !== 'cocreate' || globalCoCreateVisible) return;
+    setSideView(coCreate.kind === 'adapt' ? 'adapt' : 'status');
+  }, [sideView, globalCoCreateVisible, coCreate.kind]);
   const openTool = (view) => {
     setSideView(view);
     if (view === 'manuscript') setCenterView('manuscript');
@@ -4735,23 +4742,19 @@ export default function App() {
             setCenterView('writing');
             if (sideView === 'manuscript') setSideView('status');
           }}
-          onDiscussionReady={(message) => {
-            setCoCreate((previous) => appendCoCreateInput(previous, message));
-            setCenterView('writing');
-            setSideView('cocreate');
-            setToolDrawerOpen(true);
-          }}
         />
 
         {error ? <div className="error-banner">{error}</div> : null}
 
         {centerView === 'writing' ? <><div className="workbench-stack">
           <section
-            className={`stream-area ${showContinuationWorkspace || showAdaptationProposalWorkspace || showCoCreatePlanningWorkspace || showOutlineRevisionWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : showChapterRevisionWorkspace ? 'chapter-revision-workspace-output' : ''}`}
-            aria-label={showContinuationWorkspace ? '小说续写审稿区' : showAdaptationProposalWorkspace ? '改编提案审稿区' : showOutlineRevisionWorkspace ? '章节细纲预览区' : showChapterRevisionWorkspace ? '单章返工预览区' : '实时创作流'}
+            className={`stream-area ${showContinuationWorkspace || showAdaptationProposalWorkspace || showCoCreatePlanningWorkspace || showOutlineRevisionWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace || showContinuationCoCreateWorkspace ? 'cocreate-workspace-output' : showChapterRevisionWorkspace ? 'chapter-revision-workspace-output' : ''}`}
+            aria-label={showContinuationCoCreateWorkspace ? '续写 Draft 共创区' : showContinuationWorkspace ? '小说续写审稿区' : showAdaptationProposalWorkspace ? '改编提案审稿区' : showOutlineRevisionWorkspace ? '章节细纲预览区' : showChapterRevisionWorkspace ? '单章返工预览区' : '实时创作流'}
           >
             {activeProject ? (
-              showContinuationWorkspace ? (
+              showContinuationCoCreateWorkspace ? (
+                <CoCreateWorkspace coCreate={coCreate} />
+              ) : showContinuationWorkspace ? (
                 <ContinuationWorkspace continuation={continuationSnapshot} />
               ) : showAdaptationProposalWorkspace ? (
                 <AdaptationProposalWorkspace proposal={adaptationProposalReview} />
@@ -4835,10 +4838,10 @@ export default function App() {
             <BookOpen size={16} />
             稿件
           </button>
-          <button aria-selected={sideView === 'cocreate'} className={sideView === 'cocreate' ? 'active' : ''} onClick={() => openTool('cocreate')} role="tab" title="共创" type="button">
+          {globalCoCreateVisible ? <button aria-selected={sideView === 'cocreate'} className={sideView === 'cocreate' ? 'active' : ''} onClick={() => openTool('cocreate')} role="tab" title="共创" type="button">
             <MessageSquareText size={16} />
             共创
-          </button>
+          </button> : null}
           <button aria-selected={sideView === 'simulate'} className={sideView === 'simulate' ? 'active' : ''} onClick={() => openTool('simulate')} role="tab" title="画像" type="button">
             <WandSparkles size={16} />
             画像
@@ -5030,6 +5033,20 @@ export default function App() {
               onApprove={approveContinuationReview}
               onRetry={retryContinuationRun}
               onStart={startContinuationRun}
+              coCreate={coCreate}
+              planningRevision={planningRevision}
+              planningReview={coCreatePlanningReview}
+              setCoCreate={setCoCreate}
+              setPlanningRevision={setPlanningRevision}
+              adaptation={adaptation}
+              onCoCreateBegin={beginCoCreateFlow}
+              onCoCreateSubmit={submitCoCreate}
+              onCoCreateResume={resumeCoCreateFlow}
+              onCoCreateSuggestion={submitCoCreateSuggestion}
+              onCoCreateRevise={reviseCoCreateMessage}
+              onCoCreateResolveDecision={resolveCoCreateDecisionFlow}
+              onCoCreateCommit={commitCoCreateFlow}
+              onCoCreateCancel={cancelCoCreateFlow}
             />
           ) : sideView === 'export' ? (
             <ExportPanel
@@ -6212,7 +6229,8 @@ function CoCreatePanel({
   onConfirmPlanning = () => {},
   onRevisePlanning = () => {},
   onCancel,
-  workspaceTranscript = false
+  workspaceTranscript = false,
+  continuationOnly = false
 }) {
   const [editing, setEditing] = useState(null);
   const hasConversation = coCreate.messages.length > 0;
@@ -6220,7 +6238,6 @@ function CoCreatePanel({
   const showIntakeControls = coCreate.intakeActive && !hasBackendSession;
   const targetTotalWords = resolveCoCreateTargetTotalWords(coCreate);
   const canBeginNormal = Boolean(activeProject && !busy && !hasBackendSession && !coCreate.intakeActive && coCreate.input.trim());
-  const canBeginStage = Boolean(activeProject && !busy && !hasBackendSession && !coCreate.intakeActive);
   const canBeginAdapt = Boolean(
     activeProject &&
       !busy &&
@@ -6263,7 +6280,7 @@ function CoCreatePanel({
       ))}
     </div>
   ) : null;
-  const title = coCreateTitle(coCreate.kind);
+  const title = continuationOnly ? '续写 Draft 共创' : coCreateTitle(coCreate.kind);
   const handleCoCreateFormSubmit = (event) => {
     event.preventDefault();
     if (hasBackendSession) {
@@ -6343,20 +6360,16 @@ function CoCreatePanel({
           <MessageSquareText size={17} />
           <span>{title}</span>
         </div>
-        <div className="cocreate-mode-grid">
+        {!continuationOnly ? <div className="cocreate-mode-grid">
           <button className="tool-button" disabled={!canBeginNormal} onClick={() => onBegin('normal')} type="button">
             <SquarePen size={16} />
             普通
-          </button>
-          <button className="tool-button" disabled={!canBeginStage} onClick={() => onBegin('stage')} type="button">
-            <PauseCircle size={16} />
-            Stage
           </button>
           <button className="tool-button" disabled={!canBeginAdapt} onClick={() => onBegin('adapt')} type="button">
             <FileText size={16} />
             Adapt
           </button>
-        </div>
+        </div> : null}
         {coCreate.modeLocked ? (
           <div className="success-note">已锁定 {coCreate.adaptMode} / {coCreate.rewritePolicy}</div>
         ) : null}
@@ -6587,7 +6600,7 @@ function CoCreatePanel({
           {showDraftWorkspace ? (
             <button className="tool-button accent" disabled={!canCommit} onClick={onCommit} type="button">
               <Play size={16} />
-              启动
+              {continuationOnly ? '确认 Draft' : '启动'}
             </button>
           ) : null}
           <button className="tool-button" disabled={!canCancel} onClick={onCancel} type="button">
@@ -8053,13 +8066,27 @@ function ContinuationPanel({
   onRevise,
   onApprove,
   onRetry,
-  onStart
+  onStart,
+  coCreate,
+  planningRevision,
+  setCoCreate,
+  setPlanningRevision,
+  adaptation,
+  onCoCreateBegin,
+  onCoCreateSubmit,
+  onCoCreateResume,
+  onCoCreateSuggestion,
+  onCoCreateRevise,
+  onCoCreateResolveDecision,
+  onCoCreateCommit,
+  onCoCreateCancel
 }) {
   const latest = latestSimulationEvent(continuation.events);
   const steps = deriveContinuationSteps(workflow);
   const reviewKind = continuationReviewKind(workflow);
   const showUpload = !workflow.exists || workflow.stage === 'source_importing';
   const actionBusy = busy || continuation.actionStatus === 'running';
+  const showDraftDialogue = coCreate?.kind === 'continuation' && coCreate.status !== 'started' && Boolean(coCreate.active || coCreate.ready || coCreate.draftPrompt || hasCoCreateWorkspaceContent(coCreate));
   return (
     <div className="side-content continuation-panel">
       {continuation.error || workflow.lastError ? <div className="error-banner compact">{continuation.error || workflow.lastError}</div> : null}
@@ -8072,6 +8099,29 @@ function ContinuationPanel({
           </div>
         ))}
       </section>
+
+      {showDraftDialogue ? <CoCreatePanel
+        activeProject={activeProject}
+        busy={busy}
+        coCreate={coCreate}
+        planningRevision={planningRevision}
+        planningReview={{}}
+        setCoCreate={setCoCreate}
+        setPlanningRevision={setPlanningRevision}
+        adaptation={adaptation}
+        onBegin={onCoCreateBegin}
+        onConfirmIntake={() => {}}
+        onSubmit={onCoCreateSubmit}
+        onRebrief={onCoCreateSubmit}
+        onResume={onCoCreateResume}
+        onSuggestion={onCoCreateSuggestion}
+        onRevise={onCoCreateRevise}
+        onResolveDecision={onCoCreateResolveDecision}
+        onCommit={onCoCreateCommit}
+        onCancel={onCoCreateCancel}
+        continuationOnly
+        workspaceTranscript
+      /> : null}
 
       <section className="simulation-section continuation-source-section">
         <div className="section-title">

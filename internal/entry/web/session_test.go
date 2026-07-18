@@ -1532,8 +1532,10 @@ func rollbackTestWebAdaptationProposal() domain.AdaptationPlan {
 type fakeProjectHost struct {
 	mu sync.Mutex
 
-	snapshot          host.UISnapshot
-	manuscriptService *host.ManuscriptRevisionService
+	snapshot                       host.UISnapshot
+	manuscriptService              *host.ManuscriptRevisionService
+	manuscriptActionClarifications []host.ManuscriptActionClarification
+	manuscriptActionRequests       []host.ManuscriptActionClarificationRequest
 
 	resumeStarted              chan struct{}
 	resumeStartedOnce          sync.Once
@@ -1706,6 +1708,18 @@ type fakeProjectHost struct {
 
 func (f *fakeProjectHost) ManuscriptRevisionService() *host.ManuscriptRevisionService {
 	return f.manuscriptService
+}
+
+func (f *fakeProjectHost) ClarifyManuscriptAction(_ context.Context, request host.ManuscriptActionClarificationRequest) (host.ManuscriptActionClarification, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.manuscriptActionRequests = append(f.manuscriptActionRequests, request)
+	if len(f.manuscriptActionClarifications) == 0 {
+		return host.ManuscriptActionClarification{Status: "ready", AssistantMessage: "意见已明确", ResolvedInstruction: request.InitialInput}, nil
+	}
+	result := f.manuscriptActionClarifications[0]
+	f.manuscriptActionClarifications = f.manuscriptActionClarifications[1:]
+	return result, nil
 }
 
 type coCreateProgressStep struct {

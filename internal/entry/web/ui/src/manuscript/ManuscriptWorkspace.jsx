@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ManuscriptRevisionWorkbench } from '../ManuscriptRevisionWorkbench.jsx';
 import { ManuscriptTree } from './ManuscriptTree.jsx';
 import { ManuscriptOutlineView } from './ManuscriptOutlineView.jsx';
 import { ManuscriptReviewView } from './ManuscriptReviewView.jsx';
@@ -8,8 +7,9 @@ import { RevisionCompare } from './RevisionCompare.jsx';
 import { RevisionHistory } from './RevisionHistory.jsx';
 import { RevisionStatus } from './RevisionStatus.jsx';
 import { ManuscriptReader } from './ManuscriptReader.jsx';
-import { ExpansionLauncher } from './ExpansionLauncher.jsx';
-import { discussManuscriptContext, invalidateManuscriptCache, invalidateManuscriptViews, loadManuscriptArtifact, loadManuscriptChunk, loadManuscriptHistory, loadManuscriptRecovery, loadManuscriptReviewDetail, loadManuscriptReviewPage, loadManuscriptTree, loadManuscriptVersion, previewManuscriptRestore, restoreManuscriptVersion, retryManuscriptRecovery } from './manuscript-api.js';
+import { ManuscriptActionPanel } from './ManuscriptActionPanel.jsx';
+import { ChapterCombobox } from './ChapterCombobox.jsx';
+import { invalidateManuscriptCache, invalidateManuscriptViews, loadManuscriptArtifact, loadManuscriptChunk, loadManuscriptHistory, loadManuscriptRecovery, loadManuscriptReviewDetail, loadManuscriptReviewPage, loadManuscriptTree, loadManuscriptVersion, previewManuscriptRestore, restoreManuscriptVersion, retryManuscriptRecovery } from './manuscript-api.js';
 import { flattenManuscriptTree, MANUSCRIPT_TABS, mergeParagraphChunk } from './manuscript-state.js';
 import { normalizeManuscriptMutationEvent } from './manuscript-events.js';
 import './manuscript.css';
@@ -24,7 +24,7 @@ const RECOVERY_OWNER_LABELS = {
   unknown: '未知恢复事务'
 };
 
-export function ManuscriptWorkspace({ active = false, controlsTarget = null, projectId, onDiscussionReady, onReturnToWriting }) {
+export function ManuscriptWorkspace({ active = false, controlsTarget = null, projectId, onReturnToWriting }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [tree, setTree] = useState([]), [selectedId, setSelectedId] = useState(''), [activeRevision, setActiveRevision] = useState(null);
   const [expansionMeta, setExpansionMeta] = useState({ phase: '', mode: 'normal', structureRevision: 1, structureSignature: '' }), [expansionLaunch, setExpansionLaunch] = useState(null);
@@ -34,7 +34,6 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
   const [historyRecovery, setHistoryRecovery] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [autoLoading, setAutoLoading] = useState({ current: false, candidate: false });
-  const [chapterQuery, setChapterQuery] = useState('');
   const [recovery, setRecovery] = useState(null);
   const requestRef = useRef({}), busyOwnerRef = useRef(''), projectEpochRef = useRef(0), selectionEpochRef = useRef(0), selectionIdRef = useRef(''), tabRef = useRef('prose'), previousProjectRef = useRef(projectId);
   const restoreKeys = useRef(new Map()), treeButtonRef = useRef(null), drawerRef = useRef(null);
@@ -42,17 +41,6 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
   const chapters = useMemo(() => flattenManuscriptTree(tree), [tree]);
   const node = chapters.find((item) => item.stable_id === selectedId);
   const selectedIndex = chapters.findIndex((item) => item.stable_id === selectedId);
-  const filteredTree = useMemo(() => {
-    const query = chapterQuery.trim().toLowerCase();
-    if (!query) return tree;
-    return tree.map((volume) => ({
-      ...volume,
-      children: (volume.children || []).map((arc) => ({
-        ...arc,
-        children: (arc.children || []).filter((chapter) => `${chapter.display_order} ${chapter.display_label}`.toLowerCase().includes(query))
-      })).filter((arc) => arc.children.length)
-    })).filter((volume) => volume.children.length);
-  }, [chapterQuery, tree]);
   function beginRequest(kind, stableId = selectionIdRef.current) {
     requestRef.current[kind]?.controller.abort();
     const controller = new AbortController(), sequence = (requestRef.current[kind]?.sequence || 0) + 1;
@@ -109,7 +97,7 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     tabRef.current = 'prose';
     setArtifacts({}); setReviewDetails({}); setDrawerOpen(false); setError(''); setNotice(''); setBusy(false);
     invalidateManuscriptCache(projectId);
-    setProseMode('current'); setChapterQuery(''); setRecovery(null); setAutoLoading({ current: false, candidate: false });
+    setProseMode('current'); setRecovery(null); setAutoLoading({ current: false, candidate: false });
     if (active && projectId) queueMicrotask(() => void loadTree());
   }, [projectId]);
   useEffect(() => {
@@ -389,17 +377,6 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     catch (cause) { if (cause.name !== 'AbortError' && isLatest('restore-confirm', sequence, epoch)) { setRestorePreview(null); setError(cause.message); setNotice('恢复条件已变化，请重新预览后再确认。'); } }
     finally { endBusy(busyOwner); }
   }
-  async function discuss() {
-    if (!current) return; const request = beginRequest('discuss'), { controller, sequence, epoch } = request, busyOwner = beginBusy('discuss', request); setError('');
-    try {
-      const data = await discussManuscriptContext(projectId, { stable_id: selectedId, artifact_kind: 'prose', view: 'current', selection_start: 0, selection_end: 0, intent: '讨论当前章节并提出可执行修改建议', content_signature: current.content_signature }, controller.signal);
-      if (!isLatest('discuss', sequence, epoch)) return;
-      if (data.discussion?.target !== 'cocreate' || !data.discussion?.message) throw new Error('讨论入口未返回可消费的共创消息');
-		onDiscussionReady?.(data.discussion.message);
-		setNotice(`已将服务端裁剪的受限上下文送入共创：${(data.chips || []).join('、')}`);
-    } catch (cause) { if (cause.name !== 'AbortError' && isLatest('discuss', sequence, epoch)) setError(cause.message); }
-    finally { endBusy(busyOwner); }
-  }
   async function retryRecovery() {
     if (!projectId) return;
     const request = beginRequest('recovery'), { controller, sequence } = request;
@@ -432,10 +409,10 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
         <button type="button" className="tool-button" disabled={selectedIndex <= 0 || busy} onClick={() => void selectChapter(chapters[selectedIndex - 1]?.stable_id)}>上一章</button>
         <button type="button" className="tool-button" disabled={selectedIndex < 0 || selectedIndex >= chapters.length - 1 || busy} onClick={() => void selectChapter(chapters[selectedIndex + 1]?.stable_id)}>下一章</button>
       </div>
-      <label className="manuscript-search">搜索章节<input type="search" value={chapterQuery} onChange={(event) => setChapterQuery(event.target.value)} placeholder="输入章节号或标题" /></label>
+      <ChapterCombobox chapters={chapters} selectedId={selectedId} disabled={busy} onSelect={(stableId) => void selectChapter(stableId)} />
       <button ref={treeButtonRef} className="manuscript-tree-open" type="button" tabIndex={drawerOpen ? -1 : 0} aria-haspopup="dialog" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}>打开完整目录</button>
       <div ref={drawerRef} className={drawerOpen ? 'manuscript-tree-drawer open' : 'manuscript-tree-drawer'} role="dialog" aria-modal={drawerOpen ? 'true' : undefined} aria-label="稿件目录抽屉">
-        <ManuscriptTree nodes={filteredTree} selectedId={selectedId} onSelect={selectChapter} onExpandBetween={(stableId) => setExpansionLaunch({ location: 'after', referenceIds: [stableId], nonce: Date.now() })} onClose={() => { setDrawerOpen(false); queueMicrotask(() => treeButtonRef.current?.focus()); }} />
+        <ManuscriptTree nodes={tree} selectedId={selectedId} onSelect={selectChapter} onExpandBetween={(stableId) => setExpansionLaunch({ location: 'after', referenceIds: [stableId], nonce: Date.now() })} onClose={() => { setDrawerOpen(false); queueMicrotask(() => treeButtonRef.current?.focus()); }} />
       </div>
     </section>
     <section className="manuscript-control-card">
@@ -449,9 +426,7 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     </section>
     <section className="manuscript-control-card">
       <strong>正文操作</strong>
-      <button type="button" className="tool-button" onClick={discuss} disabled={!current || busy}>带当前上下文去讨论</button>
-      <ExpansionLauncher projectId={projectId} phase={expansionMeta.phase} mode={expansionMeta.mode} structureRevision={expansionMeta.structureRevision} structureSignature={expansionMeta.structureSignature} selectedId={selectedId} launchRequest={expansionLaunch} activeRevision={activeRevision} onConfirmed={() => void refreshVisible()} />
-      <ManuscriptRevisionWorkbench projectId={projectId} selectedChapterId={selectedId} controlsOnly />
+      <ManuscriptActionPanel projectId={projectId} selectedId={selectedId} current={current} phase={expansionMeta.phase} mode={expansionMeta.mode} structureRevision={expansionMeta.structureRevision} structureSignature={expansionMeta.structureSignature} launchRequest={expansionLaunch} activeRevision={activeRevision} onReturnChapter={(stableId) => void selectChapter(stableId)} onChanged={() => void refreshVisible()} />
     </section>
   </div>;
 
@@ -464,13 +439,13 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     </header>
     <main ref={contentScrollRef} className="manuscript-content-scroll" inert={drawerOpen || undefined} onScroll={(event) => scrollPositionsRef.current.set(`${projectId}:${selectedId}:${tab}:${proseMode}`, event.currentTarget.scrollTop)}>
       <div className="manuscript-reading-surface" role="tabpanel" id={`manuscript-panel-${tab}`} aria-labelledby={`manuscript-tab-${tab}`} tabIndex="0">
-        {tab === 'prose' && proseMode === 'current' ? <section><h3>当前正式稿</h3><ManuscriptReader chapter={current} busy={autoLoading.current} error={error} onMore={() => more('current')} onRetry={() => selectChapter(selectedId)} /></section> : null}
-        {tab === 'prose' && proseMode === 'candidate' ? <section className="manuscript-candidate"><h3>候选稿 <span>尚未发布</span></h3>{candidate ? <ManuscriptReader chapter={candidate} busy={autoLoading.candidate} error={error} onMore={() => more('candidate')} onRetry={() => selectChapter(selectedId)} /> : <p className="empty-state">当前章节没有候选稿。</p>}</section> : null}
+        {tab === 'prose' && proseMode === 'current' ? <section className="manuscript-prose-section"><h3>当前正式稿</h3><ManuscriptReader chapter={current} busy={autoLoading.current} error={error} onMore={() => more('current')} onRetry={() => selectChapter(selectedId)} /></section> : null}
+        {tab === 'prose' && proseMode === 'candidate' ? <section className="manuscript-candidate manuscript-prose-section"><h3>候选稿 <span>尚未发布</span></h3>{candidate ? <ManuscriptReader chapter={candidate} busy={autoLoading.candidate} error={error} onMore={() => more('candidate')} onRetry={() => selectChapter(selectedId)} /> : <p className="empty-state">当前章节没有候选稿。</p>}</section> : null}
         {tab === 'prose' && proseMode === 'compare' ? <RevisionCompare current={current} candidate={candidate} busy={busy} currentBusy={autoLoading.current} candidateBusy={autoLoading.candidate} error={error} onMoreCurrent={() => more('current')} onMoreCandidate={() => more('candidate')} onRetry={() => selectChapter(selectedId)} /> : null}
         {tab === 'outline' ? <ManuscriptOutlineView artifact={artifacts.outline} busy={busy} /> : null}
         {tab === 'volume' ? <section className="manuscript-artifact-card" aria-busy={busy}><h3>所属分卷</h3>{artifacts.volume ? <><h4>{artifacts.volume.content?.title}</h4><p>{artifacts.volume.content?.theme}</p><ol>{(artifacts.volume.content?.arcs || []).map((arc) => <li key={arc.id}>{arc.title}：{arc.goal}</li>)}</ol><small>分卷内容已校验</small></> : <p>正在加载已校验的分卷视图…</p>}</section> : null}
         {tab === 'review' ? <ManuscriptReviewView artifact={artifacts.review} details={reviewDetails} busy={busy} onOpen={openReview} onMore={loadMoreReview} /> : null}
-        {tab === 'history' ? <><RevisionHistory items={history.items} selected={historyVersion} preview={restorePreview} onOpen={openVersion} onPreview={previewRestore} onConfirm={confirmRestore} onMore={() => loadHistory(false)} hasMore={history.hasMore} loading={busy} />{historyRecovery ? <button type="button" disabled={busy} onClick={() => { setHistoryRecovery(false); void loadHistory(true); }}>重新加载历史</button> : null}{historyVersion ? <section><h3>历史版本正文</h3><ManuscriptReader chapter={historyVersion} busy={busy} error={error} onMore={moreVersion} onRetry={() => openVersion({ revision_id: historyVersion.revision_id })} /></section> : null}</> : null}
+        {tab === 'history' ? <><RevisionHistory items={history.items} selected={historyVersion} preview={restorePreview} onOpen={openVersion} onPreview={previewRestore} onConfirm={confirmRestore} onMore={() => loadHistory(false)} hasMore={history.hasMore} loading={busy} />{historyRecovery ? <button type="button" disabled={busy} onClick={() => { setHistoryRecovery(false); void loadHistory(true); }}>重新加载历史</button> : null}{historyVersion ? <section className="manuscript-prose-section"><h3>历史版本正文</h3><ManuscriptReader chapter={historyVersion} busy={busy} error={error} onMore={moreVersion} onRetry={() => openVersion({ revision_id: historyVersion.revision_id })} /></section> : null}</> : null}
       </div>
     </main>
     {notice ? <div className="manuscript-notice" role="status" aria-live="polite">{notice}</div> : null}

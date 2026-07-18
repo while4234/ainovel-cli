@@ -121,7 +121,12 @@ export const restoreManuscriptVersion = async (projectId, payload, signal) => {
   invalidateManuscriptViews(projectId, { scope: 'generation', stable_id: payload.chapter_id });
   return result;
 };
-export const discussManuscriptContext = (projectId, payload, signal) => readPost(`/api/projects/${encodeURIComponent(projectId)}/manuscript/context/discuss`, payload, signal);
+const manuscriptActionBase = (projectId) => `/api/projects/${encodeURIComponent(projectId)}/manuscript/actions/dialogues`;
+export const loadActiveManuscriptActionDialogue = (projectId, signal) => request(`${manuscriptActionBase(projectId)}/active`, { signal });
+export const createManuscriptActionDialogue = (projectId, payload, signal) => readPost(manuscriptActionBase(projectId), payload, signal);
+export const replyManuscriptActionDialogue = (projectId, dialogueId, payload, signal) => readPost(`${manuscriptActionBase(projectId)}/${encodeURIComponent(dialogueId)}/reply`, payload, signal);
+export const executeManuscriptActionDialogue = (projectId, dialogueId, payload, signal) => readPost(`${manuscriptActionBase(projectId)}/${encodeURIComponent(dialogueId)}/execute`, payload, signal);
+export const cancelManuscriptActionDialogue = (projectId, dialogueId, payload, signal) => readPost(`${manuscriptActionBase(projectId)}/${encodeURIComponent(dialogueId)}/cancel`, payload, signal);
 
 const expansionBase = (projectId) => `/api/projects/${encodeURIComponent(projectId)}/manuscript/expansion`;
 export const planManuscriptExpansion = (projectId, payload, signal) => readPost(`${expansionBase(projectId)}/plan`, payload, signal);

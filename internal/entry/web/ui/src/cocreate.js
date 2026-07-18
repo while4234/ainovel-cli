@@ -29,6 +29,23 @@ export function createCoCreateState() {
   };
 }
 
+export function shouldShowGlobalCoCreate({ snapshot = {}, coCreate = {}, planningReview = {} } = {}) {
+  const phase = String(snapshot.Phase || snapshot.phase || '').trim().toLowerCase();
+  const kind = String(coCreate.kind || 'normal').trim().toLowerCase();
+  if (kind === 'continuation') return false;
+  const supportedFlow = kind === 'normal' || kind === 'adapt';
+  const unfinished = supportedFlow && coCreate.status !== 'started' && Boolean(
+    coCreate.active ||
+    coCreate.intakeActive ||
+    coCreate.failed ||
+    coCreate.streamThinking ||
+    coCreate.streamReply ||
+    (Array.isArray(coCreate.messages) && coCreate.messages.length)
+  );
+  const firstCreationWindow = phase === '' || phase === 'init' || phase === 'premise' || phase === 'outline';
+  return Boolean(planningReview.active || unfinished || firstCreationWindow);
+}
+
 export function coCreateStateFromResponse(response, previous = createCoCreateState(), options = {}) {
   return coCreateStateFromBackend(response?.cocreate || {}, previous, options);
 }

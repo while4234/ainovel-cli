@@ -59,7 +59,7 @@
 }
 
 .manuscript-reading-surface {
-  width: min(100%, 980px);
+  width: min(100%, 1120px);
   min-height: 100%;
   margin: 0 auto;
   padding: 30px clamp(22px, 5vw, 72px) 64px;
@@ -74,9 +74,19 @@
 }
 
 .manuscript-reader {
-  max-width: 72ch;
+  width: min(100%, 920px);
+  max-width: none;
   margin: 0 auto;
   color: #25323c;
+}
+
+.manuscript-prose-section {
+  width: min(100%, 920px);
+  margin: 0 auto;
+}
+
+.manuscript-prose-section .manuscript-reader {
+  width: 100%;
 }
 
 .manuscript-prose p {
@@ -237,7 +247,7 @@
   flex: 1;
 }
 
-.manuscript-search,
+.chapter-combobox,
 .expansion-form label,
 .manuscript-revision-controls label,
 .manuscript-instruction {
@@ -248,7 +258,7 @@
   font-weight: 650;
 }
 
-.manuscript-search input,
+.chapter-combobox input,
 .expansion-form textarea,
 .expansion-form select,
 .manuscript-revision-controls textarea,
@@ -263,7 +273,7 @@
   outline: none;
 }
 
-.manuscript-search input:focus,
+.chapter-combobox input:focus,
 .expansion-form textarea:focus,
 .expansion-form select:focus,
 .manuscript-revision-controls textarea:focus,
@@ -293,6 +303,65 @@
   background: var(--surface-solid);
   color: var(--text);
   font-weight: 700;
+}
+
+.chapter-combobox {
+  position: relative;
+}
+
+.chapter-combobox > label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.chapter-combobox-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 5px);
+  right: 0;
+  left: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-md);
+}
+
+.chapter-combobox [role="listbox"] {
+  max-height: 300px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chapter-combobox [role="option"] {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  min-height: 48px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 8px 10px;
+  background: var(--surface-solid);
+  color: var(--text);
+  text-align: left;
+}
+
+.chapter-combobox [role="option"].active,
+.chapter-combobox [role="option"][aria-selected="true"] {
+  background: var(--accent-softer);
+  color: var(--accent);
+}
+
+.chapter-combobox [role="option"] small {
+  color: var(--muted);
+}
+
+.chapter-combobox-empty {
+  padding: 12px;
+  color: var(--muted);
+  text-align: center;
 }
 
 .manuscript-tree-drawer {
@@ -370,6 +439,97 @@
   gap: 8px;
   margin: 10px 0;
 }
+
+.manuscript-action-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.manuscript-action-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.manuscript-action-tabs button,
+.manuscript-action-form button,
+.manuscript-action-dialogue button,
+.manuscript-action-origin button {
+  min-height: 34px;
+}
+
+.manuscript-action-tabs button[aria-selected="true"] {
+  border-color: var(--accent, #0f766e);
+  background: color-mix(in srgb, var(--accent, #0f766e) 11%, white);
+  color: var(--accent-strong, #0f5f59);
+}
+
+.manuscript-action-form,
+.manuscript-action-dialogue,
+.manuscript-action-origin,
+.manuscript-action-ready {
+  display: grid;
+  gap: 8px;
+}
+
+.manuscript-action-form label,
+.manuscript-action-dialogue label {
+  display: grid;
+  gap: 5px;
+  font-weight: 650;
+}
+
+.manuscript-action-form textarea,
+.manuscript-action-dialogue textarea {
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+}
+
+.manuscript-action-safety,
+.manuscript-action-origin p,
+.manuscript-action-ready p {
+  margin: 0;
+  color: var(--muted, #64748b);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.manuscript-action-dialogue,
+.manuscript-action-origin,
+.manuscript-action-ready {
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent, #0f766e) 22%, #dbe3ec);
+  border-radius: 9px;
+  background: #fff;
+}
+
+.manuscript-action-dialogue > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.manuscript-action-dialogue > header span {
+  color: var(--muted, #64748b);
+  font-size: 12px;
+}
+
+.manuscript-action-message {
+  margin: 0;
+  padding: 8px;
+  border-radius: 7px;
+  background: #f5f8fb;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.manuscript-action-message.user { background: color-mix(in srgb, var(--accent, #0f766e) 8%, white); }
+.manuscript-action-origin > div { display: flex; gap: 7px; }
+.manuscript-action-panel .expansion-form { margin-top: 0; }
+.manuscript-action-panel .manuscript-revision-workbench { margin-top: 0; }
 
 .manuscript-instruction { grid-column: 1 / -1; }
 .manuscript-instruction textarea { min-height: 88px; max-height: 180px; resize: vertical; }

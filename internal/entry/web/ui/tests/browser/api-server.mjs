@@ -15,6 +15,7 @@ let delayNextTree = false;
 let failDelayedTree = false;
 let delayNextChapter = false;
 let manuscriptPhase = 'writing';
+let manuscriptActionDialogue = null;
 const streams = new Set();
 let expansionMetadata = await fetch('http://127.0.0.1:4182/api/test/expansion-metadata').then((response) => response.json());
 const json = (response, status, body, headers = {}) => {
@@ -47,7 +48,7 @@ const server = http.createServer(async (request, response) => {
 	response.on('error', () => {});
   const url = new URL(request.url, `http://${request.headers.host}`), path = url.pathname;
   if (path === '/health') return json(response, 200, { ok: true });
-	if (path === '/api/test/reset' && request.method === 'POST') { generation = 1; manuscriptPhase = 'writing'; failNextChapter = false; historyTombstoned = false; delayNextHistory = false; delayNextTree = false; failDelayedTree = false; delayNextChapter = false; return json(response, 200, { reset: true }); }
+	if (path === '/api/test/reset' && request.method === 'POST') { generation = 1; manuscriptPhase = 'writing'; manuscriptActionDialogue = null; failNextChapter = false; historyTombstoned = false; delayNextHistory = false; delayNextTree = false; failDelayedTree = false; delayNextChapter = false; return json(response, 200, { reset: true }); }
 	if (path === '/api/test/refresh-expansion-metadata' && request.method === 'POST') { expansionMetadata = await fetch('http://127.0.0.1:4182/api/test/expansion-metadata').then((result) => result.json()); generation += 1; return json(response, 200, expansionMetadata); }
 	if (path === '/api/test/phase-complete' && request.method === 'POST') { manuscriptPhase = 'complete'; generation += 1; return json(response, 200, { phase: manuscriptPhase }); }
 	if (path === '/api/test/tombstone-history' && request.method === 'POST') { historyTombstoned = true; return json(response, 200, { tombstoned: true }); }
@@ -122,11 +123,38 @@ const server = http.createServer(async (request, response) => {
       json(response, 202, { revision: { revision_id: 'rev_restored', stage: 'audit_pending', baseline: { chapter_id: chapterId } } });
     }); return;
   }
-  if (path.endsWith('/manuscript/context/discuss') && request.method === 'POST') {
+  if (path.endsWith('/manuscript/actions/dialogues/active') && request.method === 'GET') return json(response, 200, { dialogue: manuscriptActionDialogue });
+  if (path.endsWith('/manuscript/actions/dialogues') && request.method === 'POST') {
     let raw = ''; request.on('data', (chunk) => { raw += chunk; }); request.on('end', () => {
       const incoming = JSON.parse(raw || '{}');
-      if (!incoming.stable_id || !incoming.intent || incoming.source_evidence) return json(response, 400, { error: { code: 'invalid_request', message: 'identifier-only boundary required' } });
-      json(response, 200, { chips: ['当前章', '章节提纲', '所属分卷', '修订摘要'], discussion: { accepted: true, target: 'cocreate', context_is_server_cropped: true, message: '讨论意图：讨论当前章节\n服务端核验并裁剪的稿件上下文' } });
+      if (!incoming.chapter_id || !incoming.content_signature || incoming.prose) return json(response, 400, { error: { code: 'invalid_request', message: 'identifier-only boundary required' } });
+      manuscriptActionDialogue = incoming.type === 'expand'
+        ? { id: 'mad_browser', type: incoming.type, status: 'ready', chapter_id: incoming.chapter_id, original_chapter_label: '第 1 章', version: 2, round: 1, initial_input: incoming.initial_input, resolved_instruction: incoming.initial_input, expansion: incoming.expansion, messages: [{ role: 'user', content: incoming.initial_input }, { role: 'assistant', content: '扩写要求已明确。' }], questions: [] }
+        : { id: 'mad_browser', type: incoming.type, status: 'needs_input', chapter_id: incoming.chapter_id, original_chapter_label: '第 1 章', version: 2, round: 1, initial_input: incoming.initial_input, messages: [{ role: 'user', content: incoming.initial_input }, { role: 'assistant', content: '修改范围会实质影响剧情。' }, { role: 'assistant', question_id: 'r1-scope', content: '只修改冲突场景，还是整章？' }], questions: [{ id: 'r1-scope', prompt: '只修改冲突场景，还是整章？' }] };
+      json(response, 201, { dialogue: manuscriptActionDialogue });
+    }); return;
+  }
+  if (path.endsWith('/manuscript/actions/dialogues/mad_browser/reply') && request.method === 'POST') {
+    let raw = ''; request.on('data', (chunk) => { raw += chunk; }); request.on('end', () => {
+      const incoming = JSON.parse(raw || '{}');
+      manuscriptActionDialogue = { ...manuscriptActionDialogue, status: 'ready', version: 3, questions: [], resolved_instruction: `只修改冲突场景：${incoming.answer}`, messages: [...manuscriptActionDialogue.messages, { role: 'user', question_id: incoming.question_id, content: incoming.answer }, { role: 'assistant', content: '范围已确认。' }] };
+      json(response, 200, { dialogue: manuscriptActionDialogue });
+    }); return;
+  }
+  if (path.endsWith('/manuscript/actions/dialogues/mad_browser/cancel') && request.method === 'POST') {
+    manuscriptActionDialogue = { ...manuscriptActionDialogue, status: 'cancelled', version: (manuscriptActionDialogue?.version || 0) + 1 };
+    return json(response, 200, { dialogue: manuscriptActionDialogue });
+  }
+  if (path.endsWith('/manuscript/actions/dialogues/mad_browser/execute') && request.method === 'POST') {
+    let raw = ''; request.on('data', (chunk) => { raw += chunk; }); request.on('end', async () => {
+      const incoming = JSON.parse(raw || '{}');
+      if (manuscriptActionDialogue?.type !== 'expand') return json(response, 409, { error: { code: 'invalid_state', message: 'fixture only executes expansion dialogues' } });
+      const expansion = manuscriptActionDialogue.expansion || {};
+      const planned = await fetch('http://127.0.0.1:4182/api/projects/browser-project/manuscript/expansion/plan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ location: expansion.location, reference_ids: expansion.reference_ids || [], sentence: manuscriptActionDialogue.resolved_instruction, adjustment: expansion.adjustment || 'default', expected_structure_revision: expansion.expected_structure_revision, expected_structure_signature: expansion.expected_structure_signature, idempotency_key: incoming.idempotency_key }) });
+      const body = await planned.json();
+      if (!planned.ok) return json(response, planned.status, body);
+      manuscriptActionDialogue = { ...manuscriptActionDialogue, status: 'completed', version: manuscriptActionDialogue.version + 2, result: { kind: 'expansion', preview: body.preview, awaiting_human_confirmation: true } };
+      json(response, 202, { dialogue: manuscriptActionDialogue });
     }); return;
   }
   json(response, 404, { error: { code: 'not_found', message: path } });

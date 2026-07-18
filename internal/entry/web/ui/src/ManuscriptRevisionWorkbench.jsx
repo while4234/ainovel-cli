@@ -26,8 +26,8 @@ export function resolveRefreshedManuscriptRevision(preferredRevision, activeRevi
   return { ...active, revision: details.revision, stage: details.stage, publication_status: details.publication_status, last_error_class: details.last_error_class, recovery_class: details.recovery_class, queue: details.queue, batches: details.batches };
 }
 
-export function ManuscriptRevisionWorkbench({ projectId, controlsOnly = false, selectedChapterId = '' }) {
-  const [opened, setOpened] = useState(false);
+export function ManuscriptRevisionWorkbench({ projectId, controlsOnly = false, selectedChapterId = '', hideLauncher = false, initialRevision = null }) {
+  const [opened, setOpened] = useState(Boolean(hideLauncher || initialRevision));
   const [tree, setTree] = useState(null);
   const [stableId, setStableId] = useState('');
   const [chapter, setChapter] = useState(null);
@@ -44,6 +44,13 @@ export function ManuscriptRevisionWorkbench({ projectId, controlsOnly = false, s
   useEffect(() => {
     setTree(null); setStableId(''); setChapter(null); setRevision(null); setCandidateViews([]); setError(''); setErrorClass(''); setLastTerminalStage('');
   }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId || !hideLauncher) return;
+    setOpened(true);
+    if (initialRevision) setRevision(initialRevision);
+    void refresh(initialRevision || revision);
+  }, [projectId, hideLauncher, initialRevision?.revision_id]);
 
   async function refresh(preferredRevision = revision) {
     if (!projectId) return;
@@ -105,18 +112,18 @@ export function ManuscriptRevisionWorkbench({ projectId, controlsOnly = false, s
     }}>
       <summary>安全正文修订与原子发布</summary>
       <div className="manuscript-revision-controls" aria-busy={Boolean(status)}>
-        <label>章节
+        {!hideLauncher ? <label>章节
           <select aria-label="选择稳定章节" value={stableId} onChange={(event) => selectChapter(event.target.value)}>
             {chapters.map((item) => <option key={item.id} value={item.id}>第 {item.chapter} 章 · {item.title}</option>)}
           </select>
-        </label>
-        <label>修订方式
+        </label> : null}
+        {!hideLauncher ? <label>修订方式
           <select value={kind} onChange={(event) => setKind(event.target.value)}><option value="polish">润色</option><option value="rewrite">改写</option></select>
-        </label>
-        <label className="manuscript-instruction">修订要求
+        </label> : null}
+        {!hideLauncher ? <label className="manuscript-instruction">修订要求
           <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} />
-        </label>
-        <button disabled={!stableId || !instruction.trim() || Boolean(revision)} onClick={() => run('正在生成预览', () => previewManuscriptRevision(projectId, { chapter_id: stableId, instruction: instruction.trim(), kind, idempotency_key: idempotencyKey('preview') }))} type="button">生成签名预览</button>
+        </label> : null}
+        {!hideLauncher ? <button disabled={!stableId || !instruction.trim() || Boolean(revision)} onClick={() => run('正在生成预览', () => previewManuscriptRevision(projectId, { chapter_id: stableId, instruction: instruction.trim(), kind, idempotency_key: idempotencyKey('preview') }))} type="button">生成签名预览</button> : null}
         {hasAdditionalUnconfirmed ? <button onClick={() => run('正在确认关联章节', () => command('confirm_impacts'))} type="button">确认关联稳定 ID</button> : null}
         <button disabled={!revision || !['approval_pending', 'candidate_generating', 'failed'].includes(revision.stage) || hasAdditionalUnconfirmed} onClick={() => run('正在生成候选正文', () => command('generate', { expected_attempt: ((revision.queue || []).find((item) => ['pending', 'failed'].includes(item.status))?.attempt || 0) + 1 }))} type="button">生成候选</button>
         <button disabled={revision?.stage !== 'audit_pending'} onClick={() => run('正在独立审核', () => command('audit'))} type="button">独立审核</button>

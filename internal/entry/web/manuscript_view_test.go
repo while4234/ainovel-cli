@@ -393,32 +393,9 @@ func TestManuscriptWorkspaceTreeChunkETagAndDiscussionSignature(t *testing.T) {
 	if err := json.Unmarshal(chunk.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	discussPayload := []byte(`{"stable_id":"` + chapterID + `","artifact_kind":"prose","view":"current","content_signature":"` + body.Chapter.Signature + `","selection_start":0,"selection_end":3,"intent":"discuss selected prose"}`)
-	discuss := requestWorkspace(t, server, http.MethodPost, "/api/projects/"+manifest.ID+"/manuscript/context/discuss", discussPayload, "")
-	if discuss.Code != http.StatusOK || bytes.Contains(discuss.Body.Bytes(), []byte(`"source_display"`)) {
-		t.Fatalf("normal discussion status=%d body=%s", discuss.Code, discuss.Body.String())
-	}
-	for _, forbidden := range []string{`"project"`, `"context"`, `"artifact_kind"`, `"content_signature"`, manifest.ID, manifest.RootDir, manifest.OutputDir} {
-		if strings.Contains(discuss.Body.String(), forbidden) {
-			t.Fatalf("normal discussion leaked %q: %s", forbidden, discuss.Body.String())
-		}
-	}
-	var discussionDTO struct {
-		Discussion struct {
-			Message string `json:"message"`
-		} `json:"discussion"`
-	}
-	if err := json.Unmarshal(discuss.Body.Bytes(), &discussionDTO); err != nil || strings.HasPrefix(strings.TrimSpace(discussionDTO.Discussion.Message), "{") || !strings.Contains(discussionDTO.Discussion.Message, "discuss selected prose") {
-		t.Fatalf("discussion message is not human-readable: body=%s err=%v", discuss.Body.String(), err)
-	}
-	stale := bytes.Replace(discussPayload, []byte(body.Chapter.Signature), []byte("stale"), 1)
-	staleResponse := requestWorkspace(t, server, http.MethodPost, "/api/projects/"+manifest.ID+"/manuscript/context/discuss", stale, "")
-	if staleResponse.Code != http.StatusConflict || !bytes.Contains(staleResponse.Body.Bytes(), []byte("preview_stale")) {
-		t.Fatalf("stale status=%d body=%s", staleResponse.Code, staleResponse.Body.String())
-	}
-	unknown := requestWorkspace(t, server, http.MethodPost, "/api/projects/"+manifest.ID+"/manuscript/context/discuss", []byte(`{"stable_id":"`+chapterID+`","view":"current","content_signature":"`+body.Chapter.Signature+`","intent":"must not cross boundary","source_prose":"forbidden"}`), "")
-	if unknown.Code != http.StatusBadRequest {
-		t.Fatalf("unknown discussion field status=%d body=%s", unknown.Code, unknown.Body.String())
+	removedDiscussion := requestWorkspace(t, server, http.MethodPost, "/api/projects/"+manifest.ID+"/manuscript/context/discuss", []byte(`{}`), "")
+	if removedDiscussion.Code != http.StatusNotFound {
+		t.Fatalf("removed discussion route status=%d body=%s", removedDiscussion.Code, removedDiscussion.Body.String())
 	}
 
 	outline := requestWorkspace(t, server, http.MethodGet, "/api/projects/"+manifest.ID+"/manuscript/workspace/artifacts/outline/"+chapterID, nil, "")
@@ -431,7 +408,7 @@ func TestManuscriptWorkspaceTreeChunkETagAndDiscussionSignature(t *testing.T) {
 	}
 }
 
-func TestManuscriptAdaptationDiscussionHandlerSafetyMatrix(t *testing.T) {
+func TestRemovedManuscriptAdaptationDiscussionRoute(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), testTempDir(t))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("adaptation discussion handler")
@@ -485,104 +462,8 @@ func TestManuscriptAdaptationDiscussionHandlerSafetyMatrix(t *testing.T) {
 	}
 
 	success := request(chapterID)
-	if success.Code != http.StatusOK {
-		t.Fatalf("adaptation discussion status=%d body=%s", success.Code, success.Body.String())
-	}
-	if !bytes.Contains(success.Body.Bytes(), []byte(`"budget_units":10000`)) || success.Body.Len() > manuscriptDiscussionBudgetBytes {
-		t.Fatalf("budget status=%d bytes=%d body=%s", success.Code, success.Body.Len(), success.Body.String())
-	}
-	for _, forbidden := range []string{`"project"`, `"context"`, `"artifact_kind"`, `"content_signature"`, `"signature"`, `"ledger"`, manifest.ID, manifest.RootDir, manifest.OutputDir, chapterID} {
-		if strings.Contains(success.Body.String(), forbidden) {
-			t.Fatalf("adaptation discussion leaked %q: %s", forbidden, success.Body.String())
-		}
-	}
-	invalidID := request("1")
-	if invalidID.Code != http.StatusBadRequest {
-		t.Fatalf("numeric stable ID status=%d body=%s", invalidID.Code, invalidID.Body.String())
-	}
-	mismatch := request("ch_ffffffffffffffffffffffffffffffff")
-	if mismatch.Code == http.StatusOK {
-		t.Fatalf("unknown stable ID accepted: %s", mismatch.Body.String())
-	}
-
-	if _, err := st.Adaptation.SaveSourceChapter(7, "Source", "drifted bytes"); err != nil {
-		t.Fatal(err)
-	}
-	drift := request(chapterID)
-	if drift.Code != http.StatusConflict || !strings.Contains(drift.Body.String(), `"code":"preview_stale"`) {
-		t.Fatalf("source drift status=%d body=%s", drift.Code, drift.Body.String())
-	}
-
-	source, err = st.Adaptation.SaveSourceChapter(7, "Source", sourceText)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifestContract.Chapters = []domain.AdaptationSource{source}
-	if err := st.Adaptation.SaveSourceManifest(manifestContract); err != nil {
-		t.Fatal(err)
-	}
-	manifestPath := filepath.Join(st.Dir(), "meta", "adaptation", "source_manifest.json")
-	if err := os.Remove(manifestPath); err != nil {
-		t.Fatal(err)
-	}
-	modeDrift := request(chapterID)
-	if modeDrift.Code == http.StatusOK {
-		t.Fatalf("mode-only replacement escaped frozen binding: status=%d body=%s", modeDrift.Code, modeDrift.Body.String())
-	}
-	if err := st.Adaptation.SaveSourceManifest(manifestContract); err != nil {
-		t.Fatal(err)
-	}
-	replacementManifest := manifestContract
-	replacementManifest.SourcePath = "replacement-source.txt"
-	if err := st.Adaptation.SaveSourceManifest(replacementManifest); err != nil {
-		t.Fatal(err)
-	}
-	manifestDrift := request(chapterID)
-	if manifestDrift.Code != http.StatusConflict || !strings.Contains(manifestDrift.Body.String(), `"code":"preview_stale"`) {
-		t.Fatalf("valid manifest replacement escaped frozen binding: status=%d body=%s", manifestDrift.Code, manifestDrift.Body.String())
-	}
-	if err := st.Adaptation.SaveSourceManifest(manifestContract); err != nil {
-		t.Fatal(err)
-	}
-	validReplacement := plan
-	validReplacement.Brief = "different but valid bound plan"
-	validReplacement.Chapters = append([]domain.AdaptationChapterPlan(nil), plan.Chapters...)
-	if err := st.Adaptation.SavePlan(validReplacement); err != nil {
-		t.Fatal(err)
-	}
-	planDrift := request(chapterID)
-	if planDrift.Code != http.StatusConflict || !strings.Contains(planDrift.Body.String(), `"code":"preview_stale"`) {
-		t.Fatalf("valid plan replacement escaped frozen binding: status=%d body=%s", planDrift.Code, planDrift.Body.String())
-	}
-	if err := st.Adaptation.SavePlan(plan); err != nil {
-		t.Fatal(err)
-	}
-	zeroCoverage := plan
-	zeroCoverage.Chapters = []domain.AdaptationChapterPlan{{OutlineEntry: entry, Chapter: 1, Title: "Target"}}
-	if err := st.Adaptation.SavePlan(zeroCoverage); err != nil {
-		t.Fatal(err)
-	}
-	zero := request(chapterID)
-	if zero.Code != http.StatusConflict || !strings.Contains(zero.Body.String(), `"code":"preview_stale"`) {
-		t.Fatalf("valid replacement escaped frozen plan binding: status=%d body=%s", zero.Code, zero.Body.String())
-	}
-	added := zeroCoverage
-	added.Chapters[0].IsAdded = true
-	added.Chapters[0].CoverageNote = "new transition"
-	if err := st.Adaptation.SavePlan(added); err != nil {
-		t.Fatal(err)
-	}
-	addedResponse := request(chapterID)
-	if addedResponse.Code != http.StatusConflict || !strings.Contains(addedResponse.Body.String(), `"code":"preview_stale"`) {
-		t.Fatalf("added replacement escaped frozen plan binding: status=%d body=%s", addedResponse.Code, addedResponse.Body.String())
-	}
-
-	unknown := requestWorkspace(t, server, http.MethodPost, "/api/projects/"+manifest.ID+"/manuscript/context/discuss", []byte(`{"stable_id":"`+chapterID+`","view":"current","content_signature":"`+baseline.CurrentProseSHA256+`","intent":"blocked","adaptation":{"source":"forbidden"}}`), "")
-	if unknown.Code != http.StatusBadRequest {
-		t.Fatalf("recursive adaptation input status=%d body=%s", unknown.Code, unknown.Body.String())
-	}
-	if active, activeErr := st.ManuscriptRevisions.Active(); activeErr != nil || active != nil {
-		t.Fatalf("discussion drift matrix created active revision: active=%+v err=%v", active, activeErr)
+	if success.Code != http.StatusNotFound {
+		t.Fatalf("removed adaptation discussion status=%d body=%s", success.Code, success.Body.String())
 	}
 }
 

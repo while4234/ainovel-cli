@@ -196,6 +196,10 @@ type manuscriptRevisionHost interface {
 	ManuscriptRevisionService() *host.ManuscriptRevisionService
 }
 
+type manuscriptActionDialogueHost interface {
+	ClarifyManuscriptAction(context.Context, host.ManuscriptActionClarificationRequest) (host.ManuscriptActionClarification, error)
+}
+
 func (s *ProjectSession) ManuscriptRevisionService() *host.ManuscriptRevisionService {
 	if s == nil {
 		return nil
@@ -205,6 +209,17 @@ func (s *ProjectSession) ManuscriptRevisionService() *host.ManuscriptRevisionSer
 		return nil
 	}
 	return h.ManuscriptRevisionService()
+}
+
+func (s *ProjectSession) ClarifyManuscriptAction(ctx context.Context, request host.ManuscriptActionClarificationRequest) (host.ManuscriptActionClarification, error) {
+	if s == nil {
+		return host.ManuscriptActionClarification{}, fmt.Errorf("project session is unavailable")
+	}
+	clarifier, ok := s.host.(manuscriptActionDialogueHost)
+	if !ok {
+		return host.ManuscriptActionClarification{}, fmt.Errorf("manuscript action clarification is unavailable")
+	}
+	return clarifier.ClarifyManuscriptAction(ctx, request)
 }
 
 func NewSessionManager(cfg bootstrap.Config, bundle assets.Bundle, store *ProjectStore) *SessionManager {

@@ -96,10 +96,10 @@ describe('ManuscriptWorkspace', () => {
       expect(container.querySelector('[data-tree-index="3"]').getAttribute('aria-selected')).toBe('true');
       expect(container.textContent).not.toContain('c1-current');
       expect(container.textContent).not.toContain('STALE_TREE_ERROR');
-      expect([...container.querySelectorAll('button')].find((button) => button.textContent.includes('讨论')).disabled).toBe(true);
+      expect(container.querySelector('[role="combobox"]').disabled).toBe(true);
       await act(async () => delayedChapter.resolve(chapter('c2'))); await settle();
       expect(container.textContent).toContain('c2-current');
-      expect([...container.querySelectorAll('button')].find((button) => button.textContent.includes('讨论')).disabled).toBe(false);
+      expect(container.querySelector('[role="combobox"]').disabled).toBe(false);
     } finally {
       globalThis.EventSource = oldEventSource;
     }
@@ -143,19 +143,14 @@ describe('ManuscriptWorkspace', () => {
     expect(document.activeElement).toBe(opener);
     expect(container.querySelector('main').hasAttribute('inert')).toBe(false);
   });
-	it('renders top-level human chips and never forwards an internal context object', async () => {
-		const onDiscussionReady = vi.fn();
+	it('keeps all manuscript operations in the manuscript panel without a discussion jump', async () => {
 		api.loadManuscriptTree.mockResolvedValue(tree);
 		api.loadManuscriptChunk.mockImplementation(async (_p, id, options = {}) => chapter(id, options.view));
-		api.discussManuscriptContext.mockResolvedValue({
-			chips: ['当前章', '章节提纲', '所属分卷', '修订摘要'],
-			discussion: { target: 'cocreate', message: 'server-cropped message' }
-		});
-		await act(async () => root.render(<WorkspaceFixture projectId="p" onDiscussionReady={onDiscussionReady} />)); await settle();
-		await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === '带当前上下文去讨论').click()); await settle();
-		expect(onDiscussionReady).toHaveBeenCalledWith('server-cropped message');
-		expect(container.textContent).toContain('当前章、章节提纲、所属分卷、修订摘要');
-		expect(container.textContent).not.toContain('selected_prose');
+		await act(async () => root.render(<WorkspaceFixture projectId="p" />)); await settle();
+		expect(container.textContent).not.toContain('带当前上下文去讨论');
+		expect(container.textContent).toContain('润色');
+		expect(container.textContent).toContain('改写');
+		expect(container.textContent).toContain('补剧情 / 扩写');
 	});
 	it('cursor-loads one signed history version and keeps its DOM window bounded', async () => {
 		api.loadManuscriptTree.mockResolvedValue(tree);
