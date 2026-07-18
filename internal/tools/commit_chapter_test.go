@@ -62,6 +62,15 @@ func TestCommitChapterRejectsWordBudgetOutOfRange(t *testing.T) {
 	if result["word_budget_rejected"] != true || result["committed"] != false {
 		t.Fatalf("expected word budget rejection result, got %v", result)
 	}
+	next, _ := result["next_step"].(string)
+	for _, want := range []string{"保留当前完整草稿", "edit_chapter(edits=[...])", "不要为确认字数重读", "check_de_ai"} {
+		if !strings.Contains(next, want) {
+			t.Fatalf("normal creation next_step missing %q: %q", want, next)
+		}
+	}
+	if strings.Contains(next, "draft_chapter") && !strings.Contains(next, "禁止调用 draft_chapter") {
+		t.Fatalf("normal creation next_step must not force a whole rewrite: %q", next)
+	}
 	if next, _ := result["next_step"].(string); !strings.Contains(next, "不要再次调用 commit_chapter") {
 		t.Fatalf("next_step should steer rewrite, got %q", next)
 	}
@@ -313,7 +322,7 @@ func TestCommitChapterPolishBudgetRejectionPreservesTargetedEdits(t *testing.T) 
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	next, _ := result["next_step"].(string)
-	for _, want := range []string{"保留现有正文", "edit_chapter", `read_chapter(source="draft")`, "check_de_ai"} {
+	for _, want := range []string{"保留现有正文", "edit_chapter(edits=[...])", "不要为确认字数重复回读", "check_de_ai"} {
 		if !strings.Contains(next, want) {
 			t.Fatalf("polish next_step missing %q: %q", want, next)
 		}

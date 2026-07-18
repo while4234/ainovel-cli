@@ -192,8 +192,14 @@ func TestDraftChapterReportsNormalWordBudget(t *testing.T) {
 	if _, ok := result["word_budget"]; !ok {
 		t.Fatalf("expected word_budget payload, got %+v", result)
 	}
-	if !strings.Contains(result["next_step"].(string), "commit_chapter") {
-		t.Fatalf("next_step should guide rewrite before commit, got %q", result["next_step"])
+	next := result["next_step"].(string)
+	for _, want := range []string{"当前草稿已经保存", "edit_chapter(edits=[...])", "不要为确认字数重复回读", "commit_chapter"} {
+		if !strings.Contains(next, want) {
+			t.Fatalf("next_step missing %q: %q", want, next)
+		}
+	}
+	if strings.Contains(next, "整章重写到") {
+		t.Fatalf("next_step must not force another whole rewrite: %q", next)
 	}
 }
 

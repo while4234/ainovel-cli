@@ -233,7 +233,7 @@ func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chap
 		fmt.Sprintf("第 %d 章草稿%s预算区间：当前 %d 字，要求 %d-%d 字。", chapter, direction, wordCount, minWords, maxWords),
 	}
 	result["next_step"] = fmt.Sprintf(
-		"不要调用 commit_chapter。请调用 draft_chapter(mode=\"write\", chapter=%d) 干净地整章重写到 %d-%d 字，再 read_chapter(source=\"draft\")、check_consistency、commit_chapter。",
+		"不要调用 commit_chapter，也不要再次调用 draft_chapter 或整章重写。当前草稿已经保存；只调用一次 read_chapter(chapter=%d, source=\"draft\")，然后依据现有原文用 edit_chapter(edits=[...]) 原子执行多处有依据的局部删减或补足，保留关键情节、人物选择、情感落点和章末钩子，使本章进入 %d-%d 字。edit_chapter 会回传最新字数，不要为确认字数重复回读；进入区间后再执行 check_de_ai、check_consistency（改编项目还需 check_adaptation），全部通过后 commit_chapter。",
 		chapter, minWords, maxWords,
 	)
 }
