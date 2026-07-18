@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `c44fb79` `fix: make repeated chapter edits idempotent`:
+  `edit_chapter` now returns `already_applied=true` when and only when the full
+  non-empty replacement already exists and the requested old text is gone.
+  Recovery retries therefore continue to validation without an ERROR, while
+  unrelated missing-text edits remain hard failures. Focused ten-run
+  regressions, the full Tools suite, and vet passed before live redeployment.
 - 2026-07-18 `c90c3eb` `fix: require targeted polish before commit`: Writer
   polish dispatches now require at least one review-grounded `edit_chapter`
   change before validation and commit. An unchanged polish draft returns a
