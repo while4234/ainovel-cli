@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -9,6 +10,8 @@ import {
   workflowProgressFromSnapshot,
   workflowRiskText
 } from './workflow-progress.jsx';
+
+const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
 
 function progress(overrides = {}) {
   return {
@@ -34,6 +37,11 @@ function progress(overrides = {}) {
 }
 
 describe('unified workflow progress', () => {
+  it('keeps the workflow panel mounted while project snapshots load', () => {
+    expect(appSource).toContain('<WorkflowProgressPanel snapshot={snapshot} />');
+    expect(appSource).not.toMatch(/<WorkflowProgressPanel\s+key=/);
+  });
+
   it('reads the shared workflow contract from a project snapshot', () => {
     const value = progress();
     expect(workflowProgressFromSnapshot({ workflow_progress: value })).toBe(value);

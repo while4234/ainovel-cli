@@ -24,6 +24,14 @@ profiles, decrypted runtime config, or any console output containing their
 values. Treat repository read access as credential access and rotate/reseal the
 bundle if that access boundary changes.
 
+## Build And Test Storage Policy
+
+On this Windows workstation, all AINovel build, test, and local deployment
+working storage must stay under `D:\ainovel\.cache`. Use `go-project.cmd` for
+Go commands and `restart-web.cmd` for deployment builds. Go tests automatically
+clean their build/test cache and transient files when they finish; do not allow
+`AppData\Local\go-build` on the C drive to accumulate again.
+
 ## Project GitHub Rule
 
 For this project, a completed future development task is not done until the
@@ -66,6 +74,21 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   fallback probes, two live BaiduPCS downloads, service hash/restart smoke, and
   disk validation passed. The repository-wide Go run hit one known Windows
   TempDir cleanup flake; that exact test passed immediately in isolation.
+- 2026-07-16 `3bd6269` `fix: make chapter planning audits callable`:
+  exposes the stable chapter `scope_id` and every conditional audit field in a
+  strict model-visible schema, fully describes nested dimensions/issues, and
+  routes exact volume/arc/chapter repair coordinates. This prevents the editor
+  from repeatedly submitting an impossible partial `save_original_planning_audit`
+  call before chapter-outline generation can advance. Focused regressions passed
+  10/10, the full Go suite and `go vet ./...` pass, and the production binary
+  builds successfully. The fixed binary was deployed to port 9898; live project
+  `重生v4` saved its chapter and arc audits without another missing-`scope_id`
+  error, then advanced to `architect_long` chapter-outline repair.
+- 2026-07-16 `fix: keep workflow progress panel mounted`: removes the
+  project-ID key that forced the workflow progress panel to remount while a
+  project snapshot was opening. This prevents React from leaving duplicate
+  workflow panels in the production DOM; the UI suite and an isolated-browser
+  production-build check both pass.
 - 2026-07-16 `fix: retry empty context summaries`:
   retries transient empty context-compaction responses twice with cancellable
   exponential backoff before preserving the existing terminal diagnostic. Each

@@ -21,5 +21,9 @@ try {
   if ($layout -and (Test-Path -LiteralPath $layout)) {
     Remove-Item -LiteralPath $layout -Recurse -Force -ErrorAction SilentlyContinue
   }
-  Clear-AINovelTransientStorage -Environment $goEnvironment -IncludeBuildCache
+  & $go clean -cache -testcache
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "go clean failed with exit code $LASTEXITCODE"
+  }
+  Clear-AINovelTransientStorage -Environment $goEnvironment
 }
