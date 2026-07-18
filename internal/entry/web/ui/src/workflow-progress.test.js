@@ -38,7 +38,7 @@ function progress(overrides = {}) {
 
 describe('unified workflow progress', () => {
   it('keeps the workflow panel mounted while project snapshots load', () => {
-    expect(appSource).toContain('<WorkflowProgressPanel snapshot={snapshot} />');
+    expect(appSource).toContain("<WorkflowProgressPanel projectId={activeProject?.id || ''} snapshot={snapshot} />");
     expect(appSource).not.toMatch(/<WorkflowProgressPanel\s+key=/);
   });
 
