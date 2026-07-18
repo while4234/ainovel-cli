@@ -281,6 +281,52 @@ func TestWriterPhaseCompactsPersistedDraftArgumentsImmediately(t *testing.T) {
 	}
 }
 
+func TestWriterPhaseDropsCompletedPlanRationaleBeforeNextProviderCall(t *testing.T) {
+	draftCallID := "draft-write"
+	planCallID := "replacement-plan"
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("write chapter 45"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{
+				ID: draftCallID, Name: "draft_chapter", Args: []byte(`{"chapter":45,"content":"stored prose"}`),
+			}),
+		}},
+		agentcore.ToolResultMsg(draftCallID, []byte(`{"written":true,"chapter":45}`), false),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ThinkingBlock(strings.Repeat("redundant plan deliberation ", 2_000)),
+			agentcore.TextBlock("I will now save the replacement plan."),
+			agentcore.ToolCallBlock(agentcore.ToolCall{
+				ID: planCallID, Name: "plan_chapter", Args: []byte(`{"chapter":45,"title":"Witness席"}`),
+			}),
+		}},
+		agentcore.ToolResultMsg(planCallID, []byte(`{"planned":true,"chapter":45}`), false),
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	before := corecontext.EstimateTotal(messages)
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatal("completed plan rationale must be removed after the preceding draft is persisted")
+	}
+	planMessage := view[2].(agentcore.Message)
+	if planMessage.ThinkingContent() != "" || planMessage.TextContent() != "" {
+		t.Fatalf("completed plan retained redundant rationale: thinking=%d text=%q", len(planMessage.ThinkingContent()), planMessage.TextContent())
+	}
+	calls := planMessage.ToolCalls()
+	if len(calls) != 1 || calls[0].Name != "plan_chapter" || string(calls[0].Args) != `{"chapter":45,"title":"Witness席"}` {
+		t.Fatalf("completed plan lost its schema-valid decision record: %+v", calls)
+	}
+	if resultText := view[3].(agentcore.Message).TextContent(); !strings.Contains(resultText, `"planned":true`) {
+		t.Fatalf("completed plan lost its receipt: %q", resultText)
+	}
+	if after := corecontext.EstimateTotal(view); after >= before-10_000 {
+		t.Fatalf("completed plan rationale saved only %d tokens", before-after)
+	}
+}
+
 func TestWriterPhaseKeepsSchemaValidArgumentsForClearedResults(t *testing.T) {
 	messages := writerPhaseMessages(t, "novel_context", "read_chapter", "check_consistency")
 	legacyResult := messages[2].(agentcore.Message)

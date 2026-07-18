@@ -173,8 +173,10 @@ func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMe
 	protected := protectRecentWriterResults(candidates, keepRecent, preferOriginalContext)
 	compactCalls := make(map[string]struct{})
 	collapseCalls := make(map[string]struct{})
+	completedCalls := make(map[string]struct{}, len(candidates))
 	applied := false
 	for _, candidate := range candidates {
+		completedCalls[candidate.callID] = struct{}{}
 		if candidate.alreadyCleared {
 			compactCalls[candidate.callID] = struct{}{}
 			continue
@@ -197,7 +199,7 @@ func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMe
 	}
 
 	var historyChanged bool
-	out, historyChanged = compactWriterToolHistory(out, compactCalls, collapseCalls, clearedMessage)
+	out, historyChanged = compactWriterToolHistory(out, compactCalls, collapseCalls, completedCalls, clearedMessage)
 	applied = applied || historyChanged
 	if !applied {
 		return view, corecontext.StrategyResult{Name: "writer_validation_phase"}, nil
@@ -314,6 +316,7 @@ func compactWriterToolHistory(
 	msgs []agentcore.AgentMessage,
 	callIDs map[string]struct{},
 	collapseCalls map[string]struct{},
+	completedCalls map[string]struct{},
 	clearedMessage string,
 ) ([]agentcore.AgentMessage, bool) {
 	out := make([]agentcore.AgentMessage, 0, len(msgs))
@@ -340,6 +343,7 @@ func compactWriterToolHistory(
 
 		content := append([]agentcore.ContentBlock(nil), message.Content...)
 		allCallsCompacted := true
+		allCallsCompleted := true
 		hasCall := false
 		collapsedCall := false
 		for _, block := range content {
@@ -350,13 +354,16 @@ func compactWriterToolHistory(
 			if _, compact := callIDs[block.ToolCall.ID]; !compact {
 				allCallsCompacted = false
 			}
+			if _, completed := completedCalls[block.ToolCall.ID]; !completed {
+				allCallsCompleted = false
+			}
 			if _, collapse := collapseCalls[block.ToolCall.ID]; collapse {
 				collapsedCall = true
 			}
 		}
 
 		messageChanged := false
-		if collapsedCall || (hasCall && allCallsCompacted) {
+		if collapsedCall || (hasCall && (allCallsCompacted || allCallsCompleted)) {
 			filtered := make([]agentcore.ContentBlock, 0, len(content))
 			for _, block := range content {
 				if block.Type == agentcore.ContentToolCall && block.ToolCall != nil {
@@ -365,7 +372,11 @@ func compactWriterToolHistory(
 						continue
 					}
 				}
-				if hasCall && allCallsCompacted && (block.Type == agentcore.ContentText || block.Type == agentcore.ContentThinking) {
+				// Once every call in this assistant turn has a result, its tool
+				// arguments and receipts are the durable decision record. Keeping a
+				// long private rationale beside that completed record can make the
+				// very next request cross the byte boundary without adding evidence.
+				if hasCall && allCallsCompleted && (block.Type == agentcore.ContentText || block.Type == agentcore.ContentThinking) {
 					messageChanged = true
 					continue
 				}
