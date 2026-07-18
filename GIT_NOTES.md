@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `c90c3eb` `fix: require targeted polish before commit`: Writer
+  polish dispatches now require at least one review-grounded `edit_chapter`
+  change before validation and commit. An unchanged polish draft returns a
+  structured, non-error rejection with the same targeted guidance; it no
+  longer orders `draft_chapter` whole rewrites or sends a passed de-AI report
+  to `repair_de_ai_batch`. Focused ten-run regressions, full Tools/Host flow
+  suites, and vet passed before live redeployment.
 - 2026-07-18 `ade5c27` `fix: preserve valid writer tool history`: Writer
   context compaction now keeps the original schema-valid arguments for bounded
   read and validation calls. Persisted draft/edit exchanges are removed as
