@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `654a3b4` `fix: route recovery context by agent role`: binds an
+  empty Writer `novel_context` call to the single active/in-progress chapter,
+  gives Coordinator status-only context by default, removes duplicated
+  Architect top-level mirrors, and source-bounds structural planning inputs.
+  On the live mature project, planning context falls from 130,710 to 39,370
+  bytes while chapter-39 polishing remains 22,165 bytes. Dispatch start now
+  marks the target Agent working before its first model delta. Full tool tests,
+  Agent wrapper tests, and focused Host observer tests passed.
 - 2026-07-18 `9accf0e` `fix: scope writer context by workflow`: gives
   polishing a chapter-owned source profile (current outline/contract, review
   brief, draft state, relevant continuity, prose/style constraints) instead of
