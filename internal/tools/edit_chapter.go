@@ -157,11 +157,11 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 		lines := strings.Split(current, "\n")
 		segmentText := strings.Join(lines[window.FromLine-1:window.ToLine], "\n")
 		for index, edit := range a.Edits {
-			if strings.Count(segmentText, edit.OldString) != 1 || strings.Count(edit.OldString, "\n") != strings.Count(edit.NewString, "\n") {
+			if strings.Count(segmentText, edit.OldString) != 1 {
 				return json.Marshal(map[string]any{
 					"chapter": a.Chapter, "changed": false, "word_count": len([]rune(current)),
 					"deferred_to_host": true, "expected_budget_segment": window.Segment,
-					"next_step": fmt.Sprintf("edits[%d] 不完全属于 Host 当前指定行段，或改变了行边界；未执行任何修改。立即结束本轮，由 Host 重新派发。", index),
+					"next_step": fmt.Sprintf("edits[%d] 不完全属于 Host 当前指定行段；未执行任何修改。立即结束本轮，由 Host 重新派发。", index),
 				})
 			}
 		}

@@ -187,6 +187,37 @@ func TestEditChapterBudgetSegmentDefersWrongOrOutOfRangeSegment(t *testing.T) {
 	}
 }
 
+func TestEditChapterBudgetSegmentAllowsParagraphMergeInsideHostSegment(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 1, InProgressChapter: 1}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	content := strings.Repeat("x", 120) + "\n\n重复解释。\n\n继续动作。"
+	if err := s.Drafts.SaveDraft(1, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	args := json.RawMessage(`{"chapter":1,"budget_segment":0,"edits":[{"old_string":"重复解释。\n\n继续动作。","new_string":"继续动作。"}]}`)
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Changed        bool `json:"changed"`
+		DeferredToHost bool `json:"deferred_to_host"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || !payload.Changed || payload.DeferredToHost {
+		t.Fatalf("quality-preserving paragraph merge was rejected: %+v err=%v raw=%s", payload, err, raw)
+	}
+}
+
 func TestEditChapterOutOfBudgetDefersUnsegmentedEditToHost(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)
