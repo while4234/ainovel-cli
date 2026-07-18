@@ -54,6 +54,9 @@ func TestProductionAgentBoundaryChecksExactSixtyKiBBoundaryBeforeProvider(t *tes
 			if err == nil || provider.calls != 0 {
 				t.Fatalf("over-limit err=%v calls=%d", err, provider.calls)
 			}
+			if !agentcore.IsContextOverflow(err) {
+				t.Fatalf("over-limit error = %v, want recoverable context overflow", err)
+			}
 			records, _ := readAgentDiagnostics(t, st.Dir())
 			if len(records) != 1 || records[0].Status != "rejected_budget" || records[0].InputBytes != productionAgentInputLimitBytes+1 {
 				t.Fatalf("over-limit diagnostics=%+v", records)

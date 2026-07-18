@@ -127,12 +127,19 @@ func (m *diagnosticModel) begin(messages []agentcore.Message, tools []agentcore.
 	if err != nil {
 		return nil, fmt.Errorf("compile %s model input: %w", m.task, err)
 	}
-	return modeldiag.Begin(modeldiag.Request{
+	recorder, err := modeldiag.Begin(modeldiag.Request{
 		Store:           m.store,
 		Task:            m.task,
 		User:            compiled,
 		InputLimitBytes: productionAgentInputLimitBytes,
 	})
+	if err != nil && len(compiled) > productionAgentInputLimitBytes {
+		// This is the same recoverable condition as a provider context overflow.
+		// Mapping the exact byte boundary onto agentcore's sentinel activates its
+		// forced ContextManager rewrite and one retry before the subagent fails.
+		return nil, &agentcore.ContextOverflowError{Cause: err}
+	}
+	return recorder, err
 }
 
 func compileAgentInput(messages []agentcore.Message, tools []agentcore.ToolSpec) ([]byte, error) {
