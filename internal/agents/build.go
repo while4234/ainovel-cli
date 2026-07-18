@@ -331,17 +331,18 @@ func BuildCoordinator(
 	restore.Refresh(store)
 
 	writer := subagent.Config{
-		Name:               "writer",
-		Description:        "创作者：自主完成一章的构思、写作、自审和提交",
-		Model:              writerModel,
-		SystemPrompt:       globalprompt.Apply(writerPrompt),
-		Tools:              writerTools,
-		MaxTurns:           30,
-		MaxRetries:         subagentMaxRetries,
-		ThinkingLevel:      resolvedRoleThinking(writerModel, cfg, "writer"),
-		ToolsAreIdempotent: true,
-		StopAfterTools:     []string{"commit_chapter"},
-		OnMessage:          onMsg,
+		Name:                "writer",
+		Description:         "创作者：自主完成一章的构思、写作、自审和提交",
+		Model:               writerModel,
+		SystemPrompt:        globalprompt.Apply(writerPrompt),
+		Tools:               writerTools,
+		MaxTurns:            30,
+		MaxRetries:          subagentMaxRetries,
+		ThinkingLevel:       resolvedRoleThinking(writerModel, cfg, "writer"),
+		ToolsAreIdempotent:  true,
+		StopAfterTools:      []string{"commit_chapter"},
+		StopAfterToolResult: writerShouldStopAfterToolResult,
+		OnMessage:           onMsg,
 		StopGuardFactory: func(_, _ string) agentcore.StopGuard {
 			return reminder.NewWriterStopGuard(store)
 		},
@@ -649,6 +650,20 @@ func architectLongShouldStopAfterToolResult(toolName string, result json.RawMess
 	default:
 		return false
 	}
+}
+
+func writerShouldStopAfterToolResult(toolName string, result json.RawMessage) bool {
+	var payload struct {
+		DeferredToHost bool `json:"deferred_to_host"`
+		BudgetSegment  *int `json:"budget_segment"`
+	}
+	if json.Unmarshal(result, &payload) != nil {
+		return false
+	}
+	if payload.DeferredToHost {
+		return true
+	}
+	return toolName == "edit_chapter" && payload.BudgetSegment != nil
 }
 
 type writerDraftChapterTool struct {
