@@ -12,7 +12,6 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/expansionauditorclient"
 	"github.com/voocel/ainovel-cli/internal/host"
-	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 type expansionPreviewDTO struct {
@@ -142,21 +141,18 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 	}
 	planner := session.ExpansionPlanner()
 	if planner == nil {
-		writeError(w, http.StatusServiceUnavailable, "expansion planner is unavailable")
+		writeManuscriptRequestError(w, http.StatusServiceUnavailable, "expansion planner is unavailable")
 		return
 	}
 	if auditorErr := session.ExpansionAuditorError(); auditorErr != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": map[string]string{
-			"code":    "expansion_auditor_unavailable",
-			"message": auditorErr.Error(),
-		}})
+		writeExpansionError(w, fmt.Errorf("%w: required independent component failed", expansionauditorclient.ErrUnavailable))
 		return
 	}
 	rest := strings.TrimPrefix(action, "manuscript/expansion/")
 	switch {
 	case rest == "revision/command":
 		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		var request struct {
@@ -166,7 +162,7 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 			IdempotencyKey   string `json:"idempotency_key"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid expansion revision command")
+			writeManuscriptRequestError(w, http.StatusBadRequest, "invalid expansion revision command")
 			return
 		}
 		revision, commandErr := planner.RevisionCommand(request.Action, request.Message, request.ExpectedRevision, request.IdempotencyKey)
@@ -179,7 +175,7 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "revision": publicRevision})
 	case rest == "revision/auditor/process":
 		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		active, loadErr := planner.ActiveRevision()
@@ -210,7 +206,7 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "revision": publicRevision})
 	case rest == "revision":
 		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		active, loadErr := planner.ActiveRevision()
@@ -221,12 +217,12 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "revision": publicExpansionRevision(active)})
 	case rest == "plan":
 		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		var request domain.ExpansionRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid expansion plan request")
+			writeManuscriptRequestError(w, http.StatusBadRequest, "invalid expansion plan request")
 			return
 		}
 		client, clientErr := expansionauditorclient.New()
@@ -242,7 +238,7 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusAccepted, map[string]any{"project": manifest, "preview": publicExpansionPreview(preview), "awaiting_human_confirmation": true})
 	case rest == "adjust":
 		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		var request struct {
@@ -253,7 +249,7 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 			IdempotencyKey   string                     `json:"idempotency_key"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid expansion adjustment request")
+			writeManuscriptRequestError(w, http.StatusBadRequest, "invalid expansion adjustment request")
 			return
 		}
 		client, clientErr := expansionauditorclient.New()
@@ -269,7 +265,7 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusAccepted, map[string]any{"project": manifest, "preview": publicExpansionPreview(preview), "awaiting_human_confirmation": true})
 	case rest == "confirm":
 		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		var request struct {
@@ -278,7 +274,7 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 			IdempotencyKey   string `json:"idempotency_key"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid expansion confirmation request")
+			writeManuscriptRequestError(w, http.StatusBadRequest, "invalid expansion confirmation request")
 			return
 		}
 		confirmation, err := planner.Confirm(r.Context(), request.PreviewID, request.ExpectedRevision, request.IdempotencyKey)
@@ -290,7 +286,7 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "confirmation": confirmation, "human_confirmed": true})
 	case strings.HasSuffix(rest, "/cancel"):
 		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		previewID := strings.TrimSuffix(rest, "/cancel")
@@ -299,7 +295,7 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 			IdempotencyKey   string `json:"idempotency_key"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid expansion cancel request")
+			writeManuscriptRequestError(w, http.StatusBadRequest, "invalid expansion cancel request")
 			return
 		}
 		preview, err := planner.Cancel(previewID, request.ExpectedRevision, request.IdempotencyKey)
@@ -310,7 +306,7 @@ func (s *Server) handleManuscriptExpansionRoute(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "preview": publicExpansionPreview(preview)})
 	default:
 		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		preview, err := planner.Get(rest)
@@ -331,19 +327,19 @@ func planWithExpansionAuditorProcess(ctx context.Context, planner *host.Expansio
 		}
 		review, err := client.ReviewDependency(ctx, projectRoot, pending.TaskID)
 		if err != nil {
-			if strings.Contains(err.Error(), "not found") {
+			if errors.Is(err, expansionauditorclient.ErrTaskNotFound) {
 				continue
 			}
 			return nil, err
 		}
 		if err := planner.AcceptDependencyReview(pending.TaskID, review); err != nil {
-			if strings.Contains(err.Error(), "not found") {
+			if errors.Is(err, host.ErrExpansionDependencyTaskNotFound) {
 				continue
 			}
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("expansion dependency audit graph exceeded bounded task count")
+	return nil, &domain.ManuscriptRevisionError{Class: "batch_failed", Err: fmt.Errorf("expansion dependency audit graph exceeded bounded task count")}
 }
 
 func adjustWithExpansionAuditorProcess(ctx context.Context, planner *host.ExpansionPlanner, client *expansionauditorclient.Client, projectRoot, previewID string, expectedRevision int, adjustment domain.ExpansionAdjustment, sentence, idempotencyKey string) (*domain.ExpansionPreview, error) {
@@ -355,19 +351,19 @@ func adjustWithExpansionAuditorProcess(ctx context.Context, planner *host.Expans
 		}
 		review, reviewErr := client.ReviewDependency(ctx, projectRoot, pending.TaskID)
 		if reviewErr != nil {
-			if strings.Contains(reviewErr.Error(), "not found") {
+			if errors.Is(reviewErr, expansionauditorclient.ErrTaskNotFound) {
 				continue
 			}
 			return nil, reviewErr
 		}
 		if acceptErr := planner.AcceptDependencyReview(pending.TaskID, review); acceptErr != nil {
-			if strings.Contains(acceptErr.Error(), "not found") {
+			if errors.Is(acceptErr, host.ErrExpansionDependencyTaskNotFound) {
 				continue
 			}
 			return nil, acceptErr
 		}
 	}
-	return nil, fmt.Errorf("expansion adjustment dependency audit graph exceeded bounded task count")
+	return nil, &domain.ManuscriptRevisionError{Class: "batch_failed", Err: fmt.Errorf("expansion adjustment dependency audit graph exceeded bounded task count")}
 }
 
 func publicExpansionRevision(session *domain.RevisionSession) any {
@@ -396,22 +392,5 @@ func publicExpansionRevision(session *domain.RevisionSession) any {
 }
 
 func writeExpansionError(w http.ResponseWriter, err error) {
-	status, code := http.StatusBadRequest, "invalid_request"
-	switch {
-	case errors.Is(err, expansionauditorclient.ErrUnavailable), errors.Is(err, expansionauditorclient.ErrProcess), errors.Is(err, expansionauditorclient.ErrDecode):
-		status, code = http.StatusServiceUnavailable, "expansion_auditor_unavailable"
-	case errors.Is(err, host.ErrExpansionPreviewNotFound):
-		status, code = http.StatusNotFound, "not_found"
-	case errors.Is(err, host.ErrExpansionPreviewStale), errors.Is(err, host.ErrExpansionPreviewExpired), errors.Is(err, host.ErrExpansionPreviewSealInvalidated):
-		status, code = http.StatusConflict, "preview_stale"
-	case errors.Is(err, host.ErrExpansionPreviewCancelled):
-		status, code = http.StatusConflict, "preview_cancelled"
-	case errors.Is(err, storepkg.ErrActiveRevisionExists), errors.Is(err, storepkg.ErrRevisionCommandInProgress):
-		status, code = http.StatusConflict, "active_revision"
-	case errors.Is(err, storepkg.ErrManuscriptIdempotencyConflict):
-		status, code = http.StatusConflict, "idempotency_conflict"
-	case storepkg.IsRevisionConflict(err):
-		status, code = http.StatusConflict, "revision_conflict"
-	}
-	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})
+	writeManuscriptOperationError(w, err)
 }

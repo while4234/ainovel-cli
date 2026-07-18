@@ -67,7 +67,7 @@ func (s *Server) handleManuscriptRoute(w http.ResponseWriter, r *http.Request, i
 
 func (s *Server) handleManuscriptTree(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	progress, err := st.Progress.Load()
@@ -102,7 +102,7 @@ func (s *Server) handleManuscriptTree(w http.ResponseWriter, r *http.Request, ma
 
 func (s *Server) handleManuscriptChapter(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, service *host.ManuscriptRevisionService, stableID string) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	baseline, prose, err := service.CurrentChapter(strings.TrimSpace(stableID))
@@ -115,7 +115,7 @@ func (s *Server) handleManuscriptChapter(w http.ResponseWriter, r *http.Request,
 
 func (s *Server) handleManuscriptPreview(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, service *host.ManuscriptRevisionService) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var request struct {
@@ -123,7 +123,7 @@ func (s *Server) handleManuscriptPreview(w http.ResponseWriter, r *http.Request,
 		IdempotencyKey string `json:"idempotency_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid manuscript preview request")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "invalid manuscript preview request")
 		return
 	}
 	preview, err := service.PreviewContext(r.Context(), request.ManuscriptPreviewRequest, request.IdempotencyKey)
@@ -136,16 +136,16 @@ func (s *Server) handleManuscriptPreview(w http.ResponseWriter, r *http.Request,
 
 func (s *Server) handleManuscriptCommand(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, service *host.ManuscriptRevisionService) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var request manuscriptCommandRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid manuscript command request")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "invalid manuscript command request")
 		return
 	}
 	if strings.TrimSpace(request.RevisionID) == "" || request.ExpectedRevision <= 0 || strings.TrimSpace(request.IdempotencyKey) == "" {
-		writeError(w, http.StatusBadRequest, "revision_id, expected_revision, and idempotency_key are required")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "revision_id, expected_revision, and idempotency_key are required")
 		return
 	}
 	var runtime *domain.ManuscriptRevisionRuntime
@@ -166,7 +166,7 @@ func (s *Server) handleManuscriptCommand(w http.ResponseWriter, r *http.Request,
 	case "cancel":
 		runtime, err = service.Cancel(request.RevisionID, request.ExpectedRevision, request.IdempotencyKey)
 	default:
-		writeError(w, http.StatusBadRequest, "unsupported manuscript command")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "unsupported manuscript command")
 		return
 	}
 	if err != nil {
@@ -200,7 +200,7 @@ func manuscriptMutationScope(action string) string {
 
 func (s *Server) handleManuscriptBatches(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, revisionID string) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	runtime, err := st.ManuscriptRevisions.Load(strings.TrimSpace(revisionID))
@@ -249,36 +249,13 @@ func manuscriptRecoveryClass(runtime domain.ManuscriptRevisionRuntime) string {
 }
 
 func writeManuscriptError(w http.ResponseWriter, err error) {
-	status := http.StatusConflict
-	code := "manuscript_revision_error"
-	message := err.Error()
-	switch {
-	case errors.Is(err, ErrProjectNotFound), errors.Is(err, storepkg.ErrManuscriptRevisionNotFound):
-		status, code = http.StatusNotFound, "not_found"
-	case errors.Is(err, storepkg.ErrManuscriptRevisionConflict):
-		code = "revision_conflict"
-	case errors.Is(err, storepkg.ErrManuscriptIdempotencyConflict):
-		code = "idempotency_conflict"
-	case errors.Is(err, storepkg.ErrRevisionCommandInProgress):
-		code = "active_revision"
-	case strings.Contains(err.Error(), "stale baseline") || strings.Contains(err.Error(), "signature drift"):
-		code = "preview_stale"
-	case strings.Contains(err.Error(), "publication recovery"):
-		code = "publication_recovery_required"
-	case strings.Contains(err.Error(), "human confirmation required"):
-		code = "human_confirmation_required"
-	case strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "invalid"):
-		status, code = http.StatusBadRequest, "invalid_request"
+	status, envelope := classifyManuscriptOperationError(err)
+	var classified *domain.ManuscriptRevisionError
+	if status == http.StatusBadRequest && envelope.Code == "invalid_request" && !errors.As(err, &classified) {
+		status = http.StatusConflict
+		envelope.Code = "manuscript_revision_error"
 	}
-	var revisionErr *domain.ManuscriptRevisionError
-	if errors.As(err, &revisionErr) && strings.TrimSpace(revisionErr.Class) != "" {
-		code = revisionErr.Class
-		message = "manuscript operation failed: " + code
-		if code == "invalid_json" || code == "invalid_schema" || code == "missing_segment" || code == "empty_response" || code == "truncated_response" {
-			status = http.StatusUnprocessableEntity
-		}
-	}
-	writeJSON(w, status, map[string]any{"error": map[string]any{"code": code, "message": message}})
+	writeJSON(w, status, map[string]any{"error": envelope})
 }
 
 func stableChapterIDForNumber(st *storepkg.Store, chapter int) (string, error) {

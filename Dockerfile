@@ -22,6 +22,11 @@ RUN GOOS=$TARGETOS GOARCH=$TARGETARCH \
     -o /out/expansion-auditor \
     ./cmd/expansion-auditor
 
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" \
+    -o /out/manuscript-completion-auditor \
+    ./cmd/manuscript-completion-auditor
+
 FROM alpine:3.22
 
 RUN apk add --no-cache \
@@ -30,10 +35,23 @@ RUN apk add --no-cache \
 
 WORKDIR /workspace
 
+ENV HOME=/home/ainovel
+
+VOLUME ["/home/ainovel/.ainovel", "/var/lib/ainovel"]
+
 COPY --from=builder /out/ainovel-cli /usr/local/bin/ainovel-cli
 COPY --from=builder /out/expansion-auditor /usr/local/bin/expansion-auditor
+COPY --from=builder /out/manuscript-completion-auditor /usr/local/bin/manuscript-completion-auditor
+
+# Runtime is deliberately non-root. An administrator-owned bootstrap job must
+# provision the mounted authority volume before this container starts.
+RUN addgroup -g 65532 ainovel && \
+    adduser -D -h /home/ainovel -u 65532 -G ainovel ainovel && \
+    install -d -o 65532 -g 65532 -m 0700 /home/ainovel/.ainovel
 
 EXPOSE 9898
+
+USER 65532:65532
 
 ENTRYPOINT ["ainovel-cli"]
 CMD ["web", "--host", "0.0.0.0", "--port", "9898"]

@@ -1,13 +1,31 @@
 package web
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
+
+func TestMain(m *testing.M) {
+	authorityRoot, err := os.MkdirTemp("", "ainovel-web-authority-test-")
+	if err != nil {
+		panic(fmt.Sprintf("create web authority test root: %v", err))
+	}
+	restore, err := storepkg.ConfigureExpansionAuthorityForTestProcess(authorityRoot)
+	if err != nil {
+		_ = os.RemoveAll(authorityRoot)
+		panic(fmt.Sprintf("configure web authority test root: %v", err))
+	}
+	code := m.Run()
+	restore()
+	_ = os.RemoveAll(authorityRoot)
+	os.Exit(code)
+}
 
 func testWebConfig(t *testing.T) bootstrap.Config {
 	t.Helper()

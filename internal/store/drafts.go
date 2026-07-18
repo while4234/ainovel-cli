@@ -13,8 +13,9 @@ import (
 
 // DraftStore 管理章节构思、草稿和终稿。
 type DraftStore struct {
-	io        *IO
-	migration *structureMigration
+	io                 *IO
+	migration          *structureMigration
+	withFormalMutation func(string, *structureMigration, func() error) error
 }
 
 func NewDraftStore(io *IO, migrations ...*structureMigration) *DraftStore {
@@ -157,6 +158,17 @@ func (s *DraftStore) LoadChapterContent(chapter int) (string, int, error) {
 
 // SaveFinalChapter 保存最终章节正文到 chapters/{ch}.md。
 func (s *DraftStore) SaveFinalChapter(chapter int, content string) error {
+	if s.withFormalMutation != nil {
+		return s.withFormalMutation("save final chapter", s.migration, func() error {
+			return s.saveFinalChapterOwned(chapter, content)
+		})
+	}
+	return s.saveFinalChapterOwned(chapter, content)
+}
+
+// saveFinalChapterOwned is used by compound store transactions that already
+// hold meta/revisions/transaction.lock.
+func (s *DraftStore) saveFinalChapterOwned(chapter int, content string) error {
 	if s.migration != nil {
 		return s.writeTextForChapter(chapter, "final.md", chapterFinalRel(chapter), []byte(content))
 	}
@@ -186,6 +198,17 @@ func (s *DraftStore) DeleteChapterArtifacts(chapter int) error {
 	if chapter <= 0 {
 		return nil
 	}
+	if s.withFormalMutation != nil {
+		return s.withFormalMutation("delete chapter artifacts", s.migration, func() error {
+			return s.deleteChapterArtifactsOwned(chapter)
+		})
+	}
+	return s.deleteChapterArtifactsOwned(chapter)
+}
+
+// deleteChapterArtifactsOwned is used by compound store transactions that
+// already hold meta/revisions/transaction.lock.
+func (s *DraftStore) deleteChapterArtifactsOwned(chapter int) error {
 	deleteArtifacts := func(canonicalID string) error {
 		return s.io.WithWriteLock(func() error {
 			paths := []string{

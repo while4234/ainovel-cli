@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/voocel/ainovel-cli/cmd/expansion-auditor/internal/runner"
+	"github.com/voocel/ainovel-cli/internal/host"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -45,6 +47,10 @@ func main() {
 		}
 		review, err := auditRunner.ProcessDependencyTask(ctx, *taskID)
 		if err != nil {
+			if errors.Is(err, host.ErrExpansionDependencyTaskNotFound) {
+				fmt.Fprintln(os.Stderr, "dependency task is no longer pending")
+				os.Exit(3)
+			}
 			fatalf("review dependency task: %v", err)
 		}
 		writeJSON(review)

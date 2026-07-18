@@ -78,6 +78,12 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 		return makeAutoResumeDecision(autoResumeState{Disposition: AutoResumeNoWork, Reason: "missing_output_dir"}, "项目没有可恢复目录"), nil
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
+	if recovery := st.ManuscriptRecoveryState(); recovery.Required {
+		return makeAutoResumeDecision(
+			autoResumeState{Disposition: AutoResumeBlocked, Reason: "publication_recovery_required"},
+			"正式稿件恢复尚未完成，当前只允许读取",
+		), nil
+	}
 	if active, err := st.Revisions.Active(); err != nil {
 		return blockedAutoResume("revision_read_failed", err), nil
 	} else if active != nil {
@@ -92,6 +98,16 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 		return makeAutoResumeDecision(
 			autoResumeState{Disposition: AutoResumeBlocked, Reason: "active_manuscript_revision", Revision: active.Revision},
 			"正文修订等待签名审核或人工确认",
+		), nil
+	}
+	progress, err := st.Progress.Load()
+	if err != nil {
+		return blockedAutoResume("progress_read_failed", err), nil
+	}
+	if progress != nil && progress.CompletionRevalidation != nil && progress.CompletionRevalidation.Status != "completed" {
+		return makeAutoResumeDecision(
+			autoResumeState{Disposition: AutoResumeWaitUser, Reason: "completion_revalidation_required", Phase: string(progress.Phase)},
+			"完结作品结构已变更，等待正文、后处理与分层审核重新验证",
 		), nil
 	}
 	if review, err := st.RunMeta.PlanningReview(); err != nil {
@@ -168,10 +184,7 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 		}
 	}
 
-	progress, err := st.Progress.Load()
-	if err != nil {
-		return blockedAutoResume("progress_read_failed", err), nil
-	}
+	progress, err = st.Progress.Load()
 	if progress == nil {
 		return makeAutoResumeDecision(autoResumeState{Disposition: AutoResumeNoWork, Reason: "empty_project"}, "项目尚未开始"), nil
 	}

@@ -212,7 +212,7 @@ ainovel-cli
 
 ### Web UI（唯一交互界面）
 
-直接运行 `ainovel-cli` 会在 `http://127.0.0.1:9898` 启动本地 Web 并自动打开浏览器。发布包里的 Go 主程序已经嵌入 Web 前端，并与独立的 `expansion-auditor`（Windows 为 `expansion-auditor.exe`）一起安装在同一目录；扩写审核所需私钥只存在于该独立组件。缺少或无法启动该组件时，服务日志会明确记录诊断，扩写 API 返回 `503 expansion_auditor_unavailable` 并停止本次扩写，不会静默跳过审核；其他不依赖扩写审核器的项目功能仍可使用。
+直接运行 `ainovel-cli` 会在 `http://127.0.0.1:9898` 启动本地 Web 并自动打开浏览器。发布包里的 Go 主程序已经嵌入 Web 前端，并与独立的 `expansion-auditor`、`manuscript-completion-auditor`（Windows 使用同名 `.exe`）一起安装在同一目录；两类审核私钥只存在于各自独立组件。缺少或无法启动对应组件时，相关扩写或完本复审保持 pending 并 fail closed，不会静默跳过审核；其他不依赖该审核器的项目功能仍可使用。
 
 `ainovel-cli web` 是服务器部署入口，默认不会打开浏览器；只有显式传入 `--open` 才会打开。
 
@@ -274,23 +274,27 @@ Web 运行时根目录必须在仓库外；如果指到仓库目录或其子目�
 Docker 镜像默认以 Web-only 模式监听 `0.0.0.0:9898`，适合部署在服务器或 NAS。配置和作品目录建议挂载到宿主机：
 
 ```bash
-mkdir -p config workspace
+mkdir -p config workspace authority
 
 # Web 服务
 docker run --rm -p 9898:9898 \
-  -v "$PWD/config:/root/.ainovel" \
+  -v "$PWD/config:/home/ainovel/.ainovel" \
   -v "$PWD/workspace:/workspace" \
+  -v "$PWD/authority:/var/lib/ainovel" \
   ghcr.io/voocel/ainovel-cli:latest
 
 # 严格非交互的 headless 自动化
 docker run --rm \
-  -v "$PWD/config:/root/.ainovel" \
+  -v "$PWD/config:/home/ainovel/.ainovel" \
   -v "$PWD/workspace:/workspace" \
+  -v "$PWD/authority:/var/lib/ainovel" \
   -v "$PWD/answers.json:/workspace/answers.json:ro" \
   ghcr.io/voocel/ainovel-cli:latest \
   --headless --prompt "写一本东方玄幻长篇，主角从边陲小城起步" \
   --answers-file /workspace/answers.json
 ```
+
+镜像固定以 UID/GID `65532` 运行，并设置 `HOME=/home/ainovel`；因此普通 provider 配置必须挂载到 `/home/ainovel/.ainovel`，代码会从该 HOME 下的 `config.json` 读取。这个可写配置卷与 root 管理的 `/var/lib/ainovel` authority 卷严格分离：后者丢失、未 bootstrap 或被普通 runtime 重建时，发布与完稿审核会 fail closed。
 
 也可以用 Compose：
 
@@ -782,6 +786,52 @@ output/{novel_name}/
 - **[agentcore](https://github.com/voocel/agentcore)** — 极简 Agent 内核（tool-calling + streaming）
 - **[litellm](https://github.com/voocel/litellm)** — 统一 LLM 接口适配
 - **React + Vite** — 唯一 Web 工作台与嵌入式前端构建
+
+## 稿件修订与生产恢复
+
+专业稿件工作区把 stable ID、current publication、revision journal 和签名工件作为正式真值；candidate、content index、cache 和 numeric chapter 都只是可重建投影。启动恢复未完成时仍可读取 current，但正文修订、一句话扩写、自动/定时恢复等写入口会统一返回 `publication_recovery_required`，且人工确认节点不会被 resume 越过。
+
+- [稿件修订架构](docs/manuscript-revision-architecture.md)
+- [稿件工作区用户指南](docs/manuscript-workspace-user-guide.md)
+- [真实项目克隆验收指南](docs/manuscript-real-project-validation.md)
+
+真实项目验收必须显式选择一个 normal 和一个 adaptation 项目，并只在独立 clone root 操作；脚本不会自动选择项目：
+
+```powershell
+powershell -NoProfile -File .\scripts\e2e\manuscript-clone-validation.ps1 -Config C:\private\validation.json
+```
+
+首次启动前，必须在同一个持久化 authority volume 中执行一次受管初始化；该目录是发布签名根、trust pin 与单调 checkpoint 的固定部署位置，不能用 `XDG_CONFIG_HOME`/`APPDATA` 或项目内容重定向：
+
+```bash
+docker run --rm -u 0 \
+  -v "$PWD/authority:/var/lib/ainovel" alpine:3.22 \
+  sh -c 'install -d -o root -g root -m 0755 /var/lib/ainovel /var/lib/ainovel/publication-authority-installation-v1 && install -d -o 65532 -g 65532 -m 0700 /var/lib/ainovel/publication-authority-v1'
+docker run --rm \
+  -v "$PWD/authority:/var/lib/ainovel" \
+  --user 0 ghcr.io/voocel/ainovel-cli:latest authority init
+# bootstrap 完成后仅把可写 root 交给镜像运行 UID；installation sibling 保持 root-owned
+docker run --rm --entrypoint sh -u 0 \
+  -v "$PWD/authority:/var/lib/ainovel" alpine:3.22 \
+  -c 'chown -R 65532:65532 /var/lib/ainovel/publication-authority-v1 && chmod 0700 /var/lib/ainovel/publication-authority-v1'
+```
+
+Windows 原生安装应从提升的管理员 PowerShell 运行 `scripts/install-authority-windows.ps1 -ServiceAccount <account>`；脚本在 `C:\ProgramData\AINovel` 建立受保护 DACL。普通服务账户只能修改 root 内的子工件并读取 installation anchor，不拥有 parent/root/installation 对象的删除、改 DACL 或改 owner 权限。
+
+### Authority orphan maintenance
+
+Every `NewStore` startup performs a bounded scan of the release-managed
+`publications/` journal registry. Operators can also run it explicitly:
+
+```bash
+ainovel-cli authority gc
+```
+
+The command prints anonymous counts only. Reachable projects are reconciled
+under their project revision transaction lock; moved or deleted projects are
+processed only after the retention period and only when the protected journal
+and private registry record match exactly. Unknown schema, unsafe links,
+permission drift, and record ABA fail closed without deleting evidence.
 
 ## License
 

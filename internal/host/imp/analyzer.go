@@ -8,6 +8,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
 )
@@ -51,14 +52,33 @@ func AnalyzeChapter(
 	if err != nil {
 		return nil, err
 	}
+	recorder, beginErr := beginIMPDiagnostic(ctx, "import_chapter_analysis", chapter, messages, 0, 0)
+	if beginErr != nil {
+		return nil, beginErr
+	}
 	resp, err := llm.Generate(ctx, messages, nil)
 	if err != nil {
+		_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 		return nil, fmt.Errorf("llm generate ch%d: %w", chapter, err)
 	}
 	if resp == nil {
+		_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", nil)
 		return nil, fmt.Errorf("ch%d: nil response", chapter)
 	}
-	return parseAnalyzerOutput(resp.Message.TextContent())
+	output := resp.Message.TextContent()
+	if strings.TrimSpace(output) == "" {
+		_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", resp.Message.Usage)
+		return nil, fmt.Errorf("ch%d: empty response", chapter)
+	}
+	parsed, parseErr := parseAnalyzerOutput(output)
+	if parseErr != nil {
+		_ = recorder.Finish(structuredDiagnosticStatus(parseErr), output, resp.Message.Usage)
+		return nil, parseErr
+	}
+	if diagnosticErr := recorder.Finish(modeldiag.StatusCompleted, output, resp.Message.Usage); diagnosticErr != nil {
+		return nil, diagnosticErr
+	}
+	return parsed, nil
 }
 
 func AnalyzeChapterWithOptions(

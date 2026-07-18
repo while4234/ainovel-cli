@@ -487,7 +487,15 @@ func TestProjectAdaptAnalyzeAutoSavesCompletedBackgroundAnalysis(t *testing.T) {
 
 	waitForTestCondition(t, "background analysis auto-save", func() bool {
 		_, err := os.Stat(filepath.Join(runtimeRoot, novelLibraryDirName, "source", novelLibraryManifestName))
-		return err == nil
+		if err != nil {
+			return false
+		}
+		for _, event := range server.sessions.Project(manifest.ID).HistoryAfter(0) {
+			if event.Type == webEventTypeHostEvent && event.Event != nil && event.Event.Category == "LIBRARY" && event.Event.Kind == "novel_auto_save" {
+				return true
+			}
+		}
+		return false
 	})
 	requireLibraryEvent(t, server.sessions.Project(manifest.ID), "novel_auto_save", "source")
 }

@@ -28,6 +28,39 @@ func TestExpansionAuditorRuntimeFailuresUseServiceUnavailableEnvelope(t *testing
 		if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"expansion_auditor_unavailable"`) {
 			t.Fatalf("classified=%v status=%d body=%s", classified, recorder.Code, recorder.Body.String())
 		}
+		if strings.Contains(recorder.Body.String(), "non-sensitive diagnostic") {
+			t.Fatalf("classified error leaked its internal diagnostic: %s", recorder.Body.String())
+		}
+	}
+}
+
+func TestUnifiedManuscriptEnvelopeDoesNotExposeUntypedInternals(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeManuscriptOperationError(recorder, errors.New(`open C:\private\novel\chapter.md: secret prose`))
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"invalid_request"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	for _, forbidden := range []string{"C:\\private", "chapter.md", "secret prose"} {
+		if strings.Contains(recorder.Body.String(), forbidden) {
+			t.Fatalf("untyped error leaked %q in %s", forbidden, recorder.Body.String())
+		}
+	}
+}
+
+func TestExpansionErrorsUseUnifiedHumanAndBatchEnvelopes(t *testing.T) {
+	for _, test := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{&domain.ManuscriptRevisionError{Class: "human_confirmation_required", Err: errors.New("approval is pending")}, http.StatusConflict, "human_confirmation_required"},
+		{&domain.ManuscriptRevisionError{Class: "provider_error", Err: errors.New("provider failed")}, http.StatusUnprocessableEntity, "batch_failed"},
+	} {
+		recorder := httptest.NewRecorder()
+		writeExpansionError(recorder, test.err)
+		if recorder.Code != test.status || !strings.Contains(recorder.Body.String(), `"code":"`+test.code+`"`) {
+			t.Fatalf("err=%v status=%d body=%s", test.err, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 
@@ -59,11 +92,12 @@ func TestManuscriptExpansionAPIPlansSanitizedPreviewAndConfirmsOneRevision(t *te
 	}
 	installFakeSession(t, server, manifest)
 	candidate := domain.CloneStructureSnapshot(current)
-	candidate[0].Arcs[0].Chapters = append(candidate[0].Arcs[0].Chapters, domain.OutlineEntry{ID: "ch_22222222222222222222222222222222", Title: "代价", CoreEvent: "公开站队", Hook: "失去盟友", Scenes: []string{"证据公开"}})
+	facts := domain.ExpansionDramaticFactSet{SchemaVersion: domain.ExpansionDramaticFactsSchemaV1, GoalState: "pursued", ConflictState: "active", ChoiceState: "committed", CostState: "paid", ResultState: "achieved", CharacterBefore: "passive", CharacterAfter: "active", ClimaxState: "occurred", ExitState: "irreversible", ImpactState: "required"}
+	candidate[0].Arcs[0].Chapters = append(candidate[0].Arcs[0].Chapters, domain.OutlineEntry{ID: "ch_22222222222222222222222222222222", Title: "代价", CoreEvent: "公开站队", Hook: "失去盟友", Scenes: []string{"证据公开"}, DramaticFacts: &facts})
 	proposalBudget, _ := domain.NewDynamicSoftBudget(2, 2200, 3600)
 	deltaBudget, _ := domain.NewDynamicSoftBudget(1, 2200, 3600)
 	proposal := domain.StructureRevisionProposal{Assessment: domain.ContentAdditionAssessment{NeedsAdditionalChapters: true, Reason: "需要独立选择与代价"}, Candidate: candidate, SoftBudget: proposalBudget}
-	recommendation := domain.ExpansionRecommendation{Form: domain.ExpansionFormInsertOne, Reason: "专业戏剧判断", Location: domain.ExpansionAfter, ChapterCount: 1, ChapterMinWords: 2200, ChapterMaxWords: 3600, TotalMinWords: 2200, TotalMaxWords: 3600, OldSummary: "隐瞒", NewSummary: "公开", Assessment: domain.ExpansionDramaticAssessment{Goal: "取证", Conflict: "信任破裂", Choice: "公开", Cost: "失去盟友", Result: "新联盟", CharacterStageChange: "主动承担", CharacterBeforeStage: "被动", CharacterAfterStage: "主动", IndependentClimax: "公开证据", IrreversibleExit: "旧盟友离开", CurrentFit: "独立单元", VolumePacingEffect: "中点转折"}, AuditChain: []string{"结构", "提纲"}, ModeConstraints: []string{"normal source firewall"}, OrderedOperations: []domain.ExpansionOperation{{Operation: domain.StructureRevisionAppendChapter, Intent: "追加代价章", Proposal: proposal}}, SoftBudgetDelta: deltaBudget}
+	recommendation := domain.ExpansionRecommendation{Form: domain.ExpansionFormInsertOne, Reason: "专业戏剧判断", Location: domain.ExpansionAfter, ChapterCount: 1, ChapterMinWords: 2200, ChapterMaxWords: 3600, TotalMinWords: 2200, TotalMaxWords: 3600, OldSummary: "隐瞒", NewSummary: "公开", Assessment: domain.ExpansionDramaticAssessment{Goal: "取证", Conflict: "信任破裂", Choice: "公开", Cost: "失去盟友", Result: "新联盟", CharacterStageChange: "主动承担", CharacterBeforeStage: "被动", CharacterAfterStage: "主动", IndependentClimax: "公开证据", IrreversibleExit: "旧盟友离开", CurrentFit: "独立单元", VolumePacingEffect: "中点转折", TypedClaims: &facts}, AuditChain: []string{"结构", "提纲"}, ModeConstraints: []string{"normal source firewall"}, OrderedOperations: []domain.ExpansionOperation{{Operation: domain.StructureRevisionAppendChapter, Intent: "追加代价章", Proposal: proposal}}, SoftBudgetDelta: deltaBudget}
 	auditorPath := filepath.Join(t.TempDir(), "expansion-auditor.exe")
 	build := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go.exe"), "build", "-o", auditorPath, "./cmd/expansion-auditor")
 	build.Dir = filepath.Clean(filepath.Join("..", "..", ".."))

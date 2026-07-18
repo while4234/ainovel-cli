@@ -26,16 +26,23 @@ import (
 // Only the recommendation model is deterministic; mapping, CAS, audit stages,
 // findings, persistence and publication all come from production Go code.
 type ExpansionBrowserAcceptanceHandler struct {
-	mu   sync.Mutex
-	root string
-	app  *Server
-	id   string
-	mode domain.RevisionMode
+	mu               sync.Mutex
+	root             string
+	app              *Server
+	id               string
+	mode             domain.RevisionMode
+	restoreAuthority func()
 }
 
 func NewExpansionBrowserAcceptanceHandler(root string) (*ExpansionBrowserAcceptanceHandler, error) {
 	handler := &ExpansionBrowserAcceptanceHandler{root: filepath.Clean(root)}
+	restoreAuthority, err := storepkg.ConfigureExpansionAuthorityForAcceptanceProcess(filepath.Join(handler.root, "publication-authority"))
+	if err != nil {
+		return nil, err
+	}
+	handler.restoreAuthority = restoreAuthority
 	if err := handler.reset(domain.RevisionModeNormal); err != nil {
+		restoreAuthority()
 		return nil, err
 	}
 	return handler, nil
@@ -47,6 +54,10 @@ func (handler *ExpansionBrowserAcceptanceHandler) Close() {
 	if handler.app != nil {
 		handler.app.Close()
 	}
+	if handler.restoreAuthority != nil {
+		handler.restoreAuthority()
+		handler.restoreAuthority = nil
+	}
 }
 
 func (handler *ExpansionBrowserAcceptanceHandler) reset(mode domain.RevisionMode) error {
@@ -55,6 +66,9 @@ func (handler *ExpansionBrowserAcceptanceHandler) reset(mode domain.RevisionMode
 	}
 	if err := os.RemoveAll(handler.root); err != nil {
 		return err
+	}
+	if _, err := storepkg.InitializeExpansionAuthorityRoot(); err != nil {
+		return fmt.Errorf("initialize browser acceptance publication authority: %w", err)
 	}
 	cfg := bootstrap.Config{Provider: "openai", ModelName: "acceptance-model", PersistPath: filepath.Join(handler.root, "config.json"), Providers: map[string]bootstrap.ProviderConfig{"openai": {Type: "openai", APIKey: "acceptance-not-a-credential"}}}
 	app := NewServer(cfg, assets.Load("default"), filepath.Join(handler.root, "runtime"))

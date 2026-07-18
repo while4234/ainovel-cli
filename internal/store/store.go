@@ -16,11 +16,12 @@ import (
 type Store struct {
 	dir string
 
-	recoveryMu                     sync.Mutex
-	recoveryErr                    error
-	commandRecoveryErr             error
-	publicationRecoveryErr         error
-	manuscriptPublicationFailpoint func(string) error
+	recoveryMu                       sync.Mutex
+	recoveryErr                      error
+	commandRecoveryErr               error
+	publicationRecoveryErr           error
+	manuscriptPublicationRecoveryErr error
+	manuscriptPublicationFailpoint   func(string) error
 
 	Progress               *ProgressStore
 	Outline                *OutlineStore
@@ -49,9 +50,39 @@ type Store struct {
 
 // NewStore 创建状态管理器，dir 为小说输出根目录。
 func NewStore(dir string) *Store {
+	rootAuthorityRecoveryErr := recoverExpansionAuthorityRootLifecycle()
+	_, authorityOrphanRecoveryErr := ReconcileExpansionAuthorityOrphans()
 	identity := newStructureIdentity(dir)
 	migration := newStructureMigration(dir)
 	revisions := NewRevisionStore(dir)
+	var authorityCreationRecoveryErr, authorityRotationRecoveryErr error
+	var authorityProjectRecoveryErr error
+	authorityRootDir, authorityRootDirErr := expansionAuthorityRootDir()
+	if authorityRootDirErr != nil {
+		authorityProjectRecoveryErr = authorityRootDirErr
+	} else if _, err := os.Stat(authorityRootDir); err == nil {
+		// Global creation recovery above already discovers first-publication
+		// journals. Do not create a project transaction lock for unrelated,
+		// read-only legacy projects that have never owned an authority.
+		if _, trustErr := os.Stat(revisions.io.path(expansionPublicationTrustFile)); trustErr == nil {
+			authorityProjectRecoveryErr = revisions.withRevisionTransaction(func() error {
+				authorityCreationRecoveryErr = withExpansionAuthorityRootOperation(func() error {
+					return recoverExpansionAuthorityCreationForOutputLocked(dir)
+				})
+				if authorityCreationRecoveryErr != nil {
+					return authorityCreationRecoveryErr
+				}
+				authorityRotationRecoveryErr = withExpansionAuthorityRootOperation(func() error {
+					return recoverExpansionAuthorityRotationForOutputLocked(dir)
+				})
+				return authorityRotationRecoveryErr
+			})
+		} else if !os.IsNotExist(trustErr) {
+			authorityProjectRecoveryErr = trustErr
+		}
+	} else if !os.IsNotExist(err) {
+		authorityProjectRecoveryErr = err
+	}
 	migration.recoverWithRevisionFence = revisions.withLegacyMutation
 	io := newIO(dir)
 	outline := NewOutlineStore(io, identity, migration)
@@ -82,6 +113,9 @@ func NewStore(dir string) *Store {
 		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir), outline),
 	}
 	store.Progress.withLegacyMutation = revisions.withLegacyMigrationMutation
+	store.Drafts.withFormalMutation = revisions.withLegacyMigrationMutation
+	store.Summaries.withFormalMutation = revisions.withLegacyMigrationMutation
+	store.World.withFormalMutation = revisions.withLegacyMigrationMutation
 	// Recover the outer service journal before the inner structure journal. The
 	// outer snapshot may intentionally restore a pending structure generation.
 	commandRecoveryPending, commandRecoveryErr := store.adaptationRevisionCommandPending()
@@ -93,7 +127,8 @@ func NewStore(dir string) *Store {
 	structureRecoveryErr := recoverStructureMigrationIfPending(revisions, migration, "recover pending structure migration during startup")
 	store.commandRecoveryErr = commandRecoveryErr
 	store.publicationRecoveryErr = publicationRecoveryErr
-	store.recoveryErr = errors.Join(commandRecoveryErr, publicationRecoveryErr, manuscriptPublicationRecoveryErr, structureRecoveryErr)
+	store.manuscriptPublicationRecoveryErr = manuscriptPublicationRecoveryErr
+	store.recoveryErr = errors.Join(rootAuthorityRecoveryErr, authorityOrphanRecoveryErr, authorityProjectRecoveryErr, authorityCreationRecoveryErr, authorityRotationRecoveryErr, commandRecoveryErr, publicationRecoveryErr, manuscriptPublicationRecoveryErr, structureRecoveryErr)
 	// Recover before constructing cache-bearing sub-stores such as checkpoints;
 	// otherwise they could retain the pre-transaction file generation in memory.
 	store.Checkpoints = newCheckpointStore(io, store.recoveryErr == nil)
@@ -126,6 +161,14 @@ func (s *Store) RecoverStructureMigration() error {
 			return err
 		}
 		s.publicationRecoveryErr = nil
+	}
+	if s.manuscriptPublicationRecoveryErr != nil {
+		if err := s.recoverManuscriptPublication(); err != nil {
+			s.manuscriptPublicationRecoveryErr = err
+			s.recoveryErr = err
+			return err
+		}
+		s.manuscriptPublicationRecoveryErr = nil
 	}
 	if err := recoverStructureMigrationIfPending(s.Revisions, s.Outline.migration, "recover pending structure migration"); err != nil {
 		s.recoveryErr = err
@@ -237,7 +280,7 @@ func (s *Store) ExpandArc(volumeIdx, arcIdx int, chapters []domain.OutlineEntry)
 	return s.Revisions.withLegacyMigrationMutation("expand adaptation arc", s.Outline.migration, func() error {
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
-		return s.saveLayeredStructureMutation("expand_arc", requestID, false, false, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+		return s.saveLayeredStructureMutation("expand_arc", requestID, false, false, "", "", nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 			return s.Outline.expandArc(existing, volumeIdx, arcIdx, chapters)
 		})
 	})
@@ -252,7 +295,7 @@ func (s *Store) AppendVolume(vol domain.VolumeOutline) error {
 	return s.Revisions.withLegacyMigrationMutation("append adaptation volume", s.Outline.migration, func() error {
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
-		return s.saveLayeredStructureMutation("append_volume", requestID, false, true, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+		return s.saveLayeredStructureMutation("append_volume", requestID, false, true, "", "", nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 			return s.Outline.appendVolume(existing, vol)
 		})
 	})
@@ -269,7 +312,7 @@ func (s *Store) AppendSkeletonVolume(vol domain.VolumeOutline) error {
 	return s.Revisions.withLegacyMigrationMutation("append adaptation skeleton volume", s.Outline.migration, func() error {
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
-		return s.saveLayeredStructureMutation("append_skeleton_volume", requestID, true, false, nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+		return s.saveLayeredStructureMutation("append_skeleton_volume", requestID, true, false, "", "", nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 			return s.Outline.appendSkeletonVolume(existing, vol)
 		})
 	})
@@ -310,7 +353,7 @@ func (s *Store) PublishLayeredStructureForRevision(owner *RevisionPublicationOwn
 	return s.beginNormalRevisionPublication(owner, candidateDigest, snapshot, func() error {
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
-		return s.saveLayeredStructureMutation("normal_revision_publish", requestID, true, true, nil, func([]domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+		return s.saveLayeredStructureMutation("normal_revision_publish", requestID, true, true, owner.sessionID, candidateDigest, nil, func([]domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 			return domain.CloneStructureSnapshot(cloned), nil
 		})
 	})
@@ -424,6 +467,10 @@ func (s *Store) beginNormalRevisionPublication(owner *RevisionPublicationOwner, 
 			AcceptedDigest:     owner.acceptedDigest, CandidateDigest: owner.candidateDigest,
 			Status: revisionPublicationPrepared, PrepublishSnapshot: cloneNormalRevisionFormalSnapshot(snapshot),
 		}
+		state.Publication.AuthoritySnapshot, err = capturePublicationAuthoritySnapshot(s.Revisions.io)
+		if err != nil {
+			return err
+		}
 		if err := validateRevisionState(state); err != nil {
 			return err
 		}
@@ -473,6 +520,9 @@ func (s *Store) rollbackNormalRevisionPublication(owner *RevisionPublicationOwne
 		if err := s.restoreNormalRevisionFormalSnapshot(attempt); err != nil {
 			return err
 		}
+		if err := restorePublicationAuthoritySnapshot(s.Revisions.io, attempt.AuthoritySnapshot); err != nil {
+			return fmt.Errorf("restore normal publication authority: %w", err)
+		}
 		return s.clearNormalRevisionPublicationAttempt(state)
 	})
 }
@@ -488,7 +538,7 @@ func (s *Store) restoreNormalRevisionFormalSnapshot(attempt *revisionPublication
 	}
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
-	return s.saveLayeredStructureMutation("normal_revision_rollback", requestID, snapshot.Progress != nil && snapshot.Progress.Layered, false, snapshot.Progress, func([]domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+	return s.saveLayeredStructureMutation("normal_revision_rollback", requestID, snapshot.Progress != nil && snapshot.Progress.Layered, false, "", "", snapshot.Progress, func([]domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 		return domain.CloneStructureSnapshot(snapshot.Structure), nil
 	})
 }
@@ -533,6 +583,9 @@ func (s *Store) recoverNormalRevisionPublication() error {
 		if err := s.restoreNormalRevisionFormalSnapshot(attempt); err != nil {
 			return fmt.Errorf("recover interrupted normal publication: %w", err)
 		}
+		if err := restorePublicationAuthoritySnapshot(s.Revisions.io, attempt.AuthoritySnapshot); err != nil {
+			return fmt.Errorf("recover interrupted normal publication authority: %w", err)
+		}
 		return s.clearNormalRevisionPublicationAttempt(state)
 	})
 }
@@ -542,6 +595,8 @@ func (s *Store) saveLayeredStructureMutation(
 	requestID string,
 	markLayered bool,
 	reopenCompletedExpansion bool,
+	completionRevisionID string,
+	completionVersionSignature string,
 	progressOverride *domain.Progress,
 	mutate func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error),
 ) error {
@@ -584,9 +639,16 @@ func (s *Store) saveLayeredStructureMutation(
 			progress.Layered = true
 		}
 		if reopenCompletedExpansion && progress.Phase == domain.PhaseComplete {
+			if strings.TrimSpace(completionRevisionID) == "" {
+				completionRevisionID = requestID
+			}
+			if len(completionVersionSignature) != 64 {
+				completionVersionSignature = domain.StructureSignature(volumes)
+			}
+			progress.CompletionRevalidation = newCompletionRevalidationCheckpoint(domain.RevisionModeNormal, completionRevisionID, completionVersionSignature, existing, volumes)
 			progress.Phase = domain.PhaseWriting
 			progress.Flow = domain.FlowWriting
-			progress.ReopenedFromComplete = false
+			progress.ReopenedFromComplete = true
 			progress.CompletionAuditStatus = ""
 			progress.CompletionAuditReportDigest = ""
 		}

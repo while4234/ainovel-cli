@@ -14,7 +14,7 @@ import (
 func (s *Server) handleProjectCompletionAudit(w http.ResponseWriter, r *http.Request, id string) {
 	manifest, err := s.store.OpenProject(id)
 	if err != nil {
-		writeProjectSessionError(w, err)
+		writeManuscriptOperationError(w, fmt.Errorf("%w: project is unavailable", ErrProjectNotFound))
 		return
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
@@ -22,22 +22,22 @@ func (s *Server) handleProjectCompletionAudit(w http.ResponseWriter, r *http.Req
 	case http.MethodGet:
 		report, loadErr := st.Adaptation.LoadAuditReport()
 		if loadErr != nil {
-			writeError(w, http.StatusInternalServerError, loadErr.Error())
+			writeManuscriptEnvelope(w, http.StatusInternalServerError, "completion_audit_load_failed", "completion audit report is unavailable", nil)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"report": report})
 	case http.MethodPost:
 		session, _, openErr := s.sessions.Open(id)
 		if openErr != nil {
-			writeProjectSessionError(w, openErr)
+			writeManuscriptOperationError(w, openErr)
 			return
 		}
 		if session.Snapshot().IsRunning {
-			writeError(w, http.StatusConflict, "pause the project before running a completion audit")
+			writeManuscriptRequestError(w, http.StatusConflict, "pause the project before running a completion audit")
 			return
 		}
 		if state := session.CoCreateState(); state != nil && state.Active {
-			writeError(w, http.StatusConflict, "finish or cancel co-create before running a completion audit")
+			writeManuscriptRequestError(w, http.StatusConflict, "finish or cancel co-create before running a completion audit")
 			return
 		}
 		if !st.Adaptation.Active() {
@@ -46,12 +46,12 @@ func (s *Server) handleProjectCompletionAudit(w http.ResponseWriter, r *http.Req
 		}
 		gateResult, auditErr := adapt.NewCompletionGate(st).EvaluateCompletion()
 		if auditErr != nil {
-			writeError(w, http.StatusBadRequest, auditErr.Error())
+			writeManuscriptOperationError(w, auditErr)
 			return
 		}
 		report, loadErr := st.Adaptation.LoadAuditReport()
 		if loadErr != nil {
-			writeError(w, http.StatusInternalServerError, loadErr.Error())
+			writeManuscriptEnvelope(w, http.StatusInternalServerError, "completion_audit_load_failed", "completion audit report is unavailable", nil)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -60,7 +60,7 @@ func (s *Server) handleProjectCompletionAudit(w http.ResponseWriter, r *http.Req
 			"legacy_warning": gateResult.Warning != "",
 		})
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 

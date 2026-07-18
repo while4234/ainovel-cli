@@ -12,6 +12,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	continuationflow "github.com/voocel/ainovel-cli/internal/host/continuation"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
 
@@ -213,19 +214,36 @@ func (g *continuationModelGenerator) generate(ctx context.Context, system string
 	messages := []agentcore.Message{agentcore.SystemMsg(system), agentcore.UserMsg(string(data))}
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		compiledUser, _ := json.Marshal(messages[1:])
+		recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: g.host.store, Task: "continuation_planner", Batch: attempt, System: system, User: compiledUser, InputLimitBytes: manuscriptCompiledRequestBudgetBytes, OutputLimitTokens: maxTokens})
+		if beginErr != nil {
+			return beginErr
+		}
 		response, callErr := model.Generate(ctx, messages, nil, agentcore.WithMaxTokens(maxTokens), agentcore.WithJSONMode())
 		if callErr != nil {
+			_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 			return fmt.Errorf("continuation planner model call: %w", callErr)
 		}
 		if response == nil {
+			_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", nil)
 			lastErr = errors.New("model returned nil response")
 		} else {
-			raw := extractJSONObject(response.Message.TextContent())
+			output := response.Message.TextContent()
+			raw := extractJSONObject(output)
 			if raw == "" {
+				status := modeldiag.StatusDecodeError
+				if strings.TrimSpace(output) == "" {
+					status = modeldiag.StatusEmptyResponse
+				}
+				_ = recorder.Finish(status, output, response.Message.Usage)
 				lastErr = errors.New("response does not contain a JSON object")
 			} else if err := json.Unmarshal([]byte(raw), target); err != nil {
+				_ = recorder.Finish(modeldiag.StatusDecodeError, output, response.Message.Usage)
 				lastErr = fmt.Errorf("decode continuation JSON: %w", err)
 			} else {
+				if diagnosticErr := recorder.Finish(modeldiag.StatusCompleted, output, response.Message.Usage); diagnosticErr != nil {
+					return diagnosticErr
+				}
 				return nil
 			}
 		}

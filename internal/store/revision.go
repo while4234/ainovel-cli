@@ -20,13 +20,14 @@ import (
 const revisionStateFile = "meta/revisions/state.json"
 
 var (
-	ErrRevisionNotFound               = errors.New("revision session is not found")
-	ErrActiveRevisionExists           = errors.New("an active revision already exists")
-	ErrNoActiveRevision               = errors.New("no active revision")
-	ErrRevisionIdempotencyConflict    = errors.New("revision idempotency key was reused for a different command")
-	ErrActiveRevisionBlocksNormalFlow = errors.New("normal flow is blocked by an active revision")
-	ErrRevisionCommandInProgress      = errors.New("a revision service command owns the project")
-	revisionLocks                     sync.Map
+	ErrRevisionNotFound                       = errors.New("revision session is not found")
+	ErrActiveRevisionExists                   = errors.New("an active revision already exists")
+	ErrNoActiveRevision                       = errors.New("no active revision")
+	ErrRevisionIdempotencyConflict            = errors.New("revision idempotency key was reused for a different command")
+	ErrActiveRevisionBlocksNormalFlow         = errors.New("normal flow is blocked by an active revision")
+	ErrCompletionRevalidationBlocksNormalFlow = errors.New("normal flow is blocked by pending completion revalidation")
+	ErrRevisionCommandInProgress              = errors.New("a revision service command owns the project")
+	revisionLocks                             sync.Map
 )
 
 type RevisionConflictError struct {
@@ -44,9 +45,11 @@ func IsRevisionConflict(err error) bool {
 }
 
 type revisionReceipt struct {
-	Operation   string                 `json:"operation"`
-	Fingerprint string                 `json:"fingerprint"`
-	Result      domain.RevisionSession `json:"result"`
+	Operation          string                 `json:"operation"`
+	Fingerprint        string                 `json:"fingerprint"`
+	ServiceOperation   string                 `json:"service_operation,omitempty"`
+	ServiceFingerprint string                 `json:"service_fingerprint,omitempty"`
+	Result             domain.RevisionSession `json:"result"`
 }
 
 type revisionState struct {
@@ -99,12 +102,34 @@ type revisionPublicationAttempt struct {
 	CandidateDigest    string                       `json:"candidate_digest"`
 	Status             string                       `json:"status"`
 	PrepublishSnapshot normalRevisionFormalSnapshot `json:"prepublish_snapshot"`
+	AuthoritySnapshot  publicationAuthoritySnapshot `json:"authority_snapshot"`
 }
 
 type normalRevisionFormalSnapshot struct {
 	Structure []domain.VolumeOutline `json:"structure"`
 	Progress  *domain.Progress       `json:"progress,omitempty"`
 	Digest    string                 `json:"digest"`
+}
+
+type publicationAuthorityFileSnapshot struct {
+	Exists bool        `json:"exists"`
+	Data   []byte      `json:"data,omitempty"`
+	Mode   os.FileMode `json:"mode,omitempty"`
+}
+
+type publicationAuthoritySnapshot struct {
+	Version        int                                        `json:"version"`
+	Trust          publicationAuthorityFileSnapshot           `json:"trust"`
+	Receipt        publicationAuthorityFileSnapshot           `json:"receipt"`
+	ExternalRecord publicationAuthorityExternalRecordSnapshot `json:"external_record"`
+}
+
+type publicationAuthorityExternalRecordSnapshot struct {
+	Exists          bool        `json:"exists"`
+	ProjectInstance string      `json:"project_instance,omitempty"`
+	Data            []byte      `json:"data,omitempty"`
+	Mode            os.FileMode `json:"mode,omitempty"`
+	Digest          string      `json:"digest,omitempty"`
 }
 
 type RevisionStore struct {
@@ -192,6 +217,11 @@ func (s *RevisionStore) AcquireNormalFlow(owner string) (*NormalFlowLease, error
 	}
 	var lease *NormalFlowLease
 	err := s.withRevisionTransaction(func() error {
+		if pending, err := completionRevalidationPendingUnlocked(s.io); err != nil {
+			return err
+		} else if pending {
+			return ErrCompletionRevalidationBlocksNormalFlow
+		}
 		state, err := s.loadUnlocked()
 		if err != nil {
 			return err
@@ -254,6 +284,11 @@ func (s *RevisionStore) ReleaseNormalFlow(token string) error {
 func (s *RevisionStore) FenceForNormalFlow(token string) (RevisionFence, error) {
 	var fence RevisionFence
 	err := s.withRevisionTransaction(func() error {
+		if pending, err := completionRevalidationPendingUnlocked(s.io); err != nil {
+			return err
+		} else if pending {
+			return ErrCompletionRevalidationBlocksNormalFlow
+		}
 		state, err := s.loadUnlocked()
 		if err != nil {
 			return err
@@ -265,6 +300,18 @@ func (s *RevisionStore) FenceForNormalFlow(token string) (RevisionFence, error) 
 		return nil
 	})
 	return fence, err
+}
+
+func completionRevalidationPendingUnlocked(io *IO) (bool, error) {
+	var progress domain.Progress
+	if err := io.ReadJSONUnlocked("meta/progress.json", &progress); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	checkpoint := progress.CompletionRevalidation
+	return checkpoint != nil && checkpoint.Status != "completed", nil
 }
 
 func (s *RevisionStore) SnapshotFence() (RevisionFence, error) {
@@ -758,7 +805,7 @@ func (s *RevisionStore) Start(policy domain.RevisionPolicy, input StartRevisionI
 		if err := allowRevisionCommandMutation(state, s.commandOwner, s.publicationOwner); err != nil {
 			return err
 		}
-		if found, receiptErr := matchingRevisionReceipt(state, input.IdempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
+		if found, receiptErr := matchingRevisionReceipt(state, s.commandOwner, input.IdempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
 			receipt, err = found, receiptErr
 			return err
 		}
@@ -1022,6 +1069,37 @@ func (s *RevisionStore) PublishWithOwner(policy domain.RevisionPolicy, input Rev
 	owned := *s
 	owned.publicationOwner = owner
 	return owned.publish(policy, input)
+}
+
+// FinalizeCommittedPublication replays only an already committed publish
+// receipt. It never starts a new publication, so service layers may safely call
+// it before their ordinary active-session validation after a finalize fault.
+func (s *RevisionStore) FinalizeCommittedPublication(input RevisionMutationInput) (*domain.RevisionSession, bool, error) {
+	command, fingerprint, err := revisionCommandFingerprint(input.IdempotencyKey, "publish", input)
+	if err != nil {
+		return nil, false, err
+	}
+	receipt, err := s.lookupRevisionReceipt(input.IdempotencyKey, command, fingerprint)
+	if err != nil || receipt == nil {
+		return receipt, false, err
+	}
+	if validExpansionPublicationPolicy(*receipt) {
+		if err := s.withRevisionTransaction(func() error {
+			return finalizeExpansionAuthorityCreationForOutput(s.io.dir)
+		}); err != nil {
+			return receipt, true, fmt.Errorf("finalize committed expansion authority creation: %w", err)
+		}
+	}
+	return receipt, true, nil
+}
+
+// CommittedPublicationNeedsFinalize reports whether the current project still
+// has a durable authority-creation journal after its revision receipt commit.
+func (s *RevisionStore) CommittedPublicationNeedsFinalize() (bool, error) {
+	if s == nil || s.io == nil {
+		return false, fmt.Errorf("revision store is required")
+	}
+	return expansionAuthorityCreationNeedsFinalize(s.io.dir)
 }
 
 func (s *RevisionStore) publish(policy domain.RevisionPolicy, input RevisionMutationInput) (*domain.RevisionSession, error) {
@@ -1330,7 +1408,7 @@ func (s *RevisionStore) RestoreVersion(policy domain.RevisionPolicy, input Resto
 		if err := allowRevisionCommandMutation(state, s.commandOwner, s.publicationOwner); err != nil {
 			return err
 		}
-		if found, receiptErr := matchingRevisionReceipt(state, input.IdempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
+		if found, receiptErr := matchingRevisionReceipt(state, s.commandOwner, input.IdempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
 			receipt, err = found, receiptErr
 			return err
 		}
@@ -1486,11 +1564,31 @@ func (s *RevisionStore) mutate(
 		return nil, err
 	}
 	if receipt, err := s.lookupRevisionReceipt(input.IdempotencyKey, command, fingerprint); receipt != nil || err != nil {
+		if receipt != nil && err == nil && operation == "publish" && validExpansionPublicationPolicy(*receipt) {
+			err = s.withRevisionTransaction(func() error {
+				return finalizeExpansionAuthorityCreationForOutput(s.io.dir)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("finalize expansion authority creation retry: %w", err)
+			}
+		}
 		return receipt, err
 	}
 	policyMode, policyID, policyVersion, err := describeRevisionPolicy(policy)
 	if err != nil {
 		return nil, err
+	}
+	if operation == "publish" {
+		return s.mutatePublicationAtomically(
+			policy,
+			input,
+			command,
+			fingerprint,
+			policyMode,
+			policyID,
+			policyVersion,
+			apply,
+		)
 	}
 	var working *revisionState
 	var generation uint64
@@ -1503,7 +1601,7 @@ func (s *RevisionStore) mutate(
 		if err := allowRevisionCommandMutation(state, s.commandOwner, s.publicationOwner); err != nil {
 			return err
 		}
-		if found, receiptErr := matchingRevisionReceipt(state, input.IdempotencyKey, command, fingerprint); found != nil || receiptErr != nil {
+		if found, receiptErr := matchingRevisionReceipt(state, s.commandOwner, input.IdempotencyKey, command, fingerprint); found != nil || receiptErr != nil {
 			receipt, err = found, receiptErr
 			return err
 		}
@@ -1528,6 +1626,11 @@ func (s *RevisionStore) mutate(
 		return receipt, err
 	}
 	session := working.Sessions[working.ActiveSessionID]
+	var normalAuthoritySnapshot *publicationAuthoritySnapshot
+	if operation == "publish" && session.Mode == domain.RevisionModeNormal && working.Publication != nil {
+		snapshot := working.Publication.AuthoritySnapshot
+		normalAuthoritySnapshot = &snapshot
+	}
 	if err := apply(working, &session); err != nil {
 		return nil, err
 	}
@@ -1544,7 +1647,155 @@ func (s *RevisionStore) mutate(
 		return nil, err
 	}
 	working.Sessions[session.ID] = session
-	return s.commitOptimistic(input.IdempotencyKey, command, fingerprint, generation, working, session)
+	if operation == "publish" && validExpansionPublicationPolicy(session) {
+		if err := s.writeExpansionPublicationReceipt(working, session); err != nil {
+			if normalAuthoritySnapshot != nil {
+				if restoreErr := restorePublicationAuthoritySnapshot(s.io, *normalAuthoritySnapshot); restoreErr != nil {
+					return nil, errors.Join(fmt.Errorf("seal expansion publication receipt: %w", err), fmt.Errorf("restore failed normal publication authority: %w", restoreErr))
+				}
+			}
+			return nil, fmt.Errorf("seal expansion publication receipt: %w", err)
+		}
+	}
+	committed, commitErr := s.commitOptimistic(input.IdempotencyKey, command, fingerprint, generation, working, session)
+	if commitErr != nil && normalAuthoritySnapshot != nil {
+		if restoreErr := restorePublicationAuthoritySnapshot(s.io, *normalAuthoritySnapshot); restoreErr != nil {
+			return nil, errors.Join(commitErr, fmt.Errorf("restore failed normal publication authority: %w", restoreErr))
+		}
+	}
+	return committed, commitErr
+}
+
+// mutatePublicationAtomically keeps the final formal-artifact verification,
+// signed expansion receipt, and revision generation commit under one project
+// transaction. The surrounding normal/adaptation publication journals remain
+// responsible for crash recovery of formal files; this boundary removes the
+// live race in which another formal writer could previously enter after the
+// receipt was sealed but before state.json advanced.
+func (s *RevisionStore) mutatePublicationAtomically(
+	policy domain.RevisionPolicy,
+	input RevisionMutationInput,
+	operation, fingerprint string,
+	policyMode domain.RevisionMode,
+	policyID, policyVersion string,
+	apply func(*revisionState, *domain.RevisionSession) error,
+) (*domain.RevisionSession, error) {
+	var committed *domain.RevisionSession
+	err := s.withRevisionTransaction(func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if err := allowRevisionCommandMutation(state, s.commandOwner, s.publicationOwner); err != nil {
+			return err
+		}
+		if found, receiptErr := matchingRevisionReceipt(state, s.commandOwner, input.IdempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
+			if found != nil && receiptErr == nil && validExpansionPublicationPolicy(*found) {
+				if err := finalizeExpansionAuthorityCreationForOutput(s.io.dir); err != nil {
+					return fmt.Errorf("finalize expansion authority creation retry: %w", err)
+				}
+			}
+			committed = found
+			return receiptErr
+		}
+		if state.ActiveSessionID == "" {
+			return ErrNoActiveRevision
+		}
+		if strings.TrimSpace(input.SessionID) != state.ActiveSessionID {
+			return ErrRevisionNotFound
+		}
+		session := state.Sessions[state.ActiveSessionID]
+		if session.Mode != policyMode || session.PolicyID != policyID || session.PolicyVersion != policyVersion {
+			return fmt.Errorf("revision policy %q@%q does not match persisted policy %q@%q", policyID, policyVersion, session.PolicyID, session.PolicyVersion)
+		}
+		if input.ExpectedRevision != session.Revision {
+			return &RevisionConflictError{Expected: input.ExpectedRevision, Actual: session.Revision}
+		}
+
+		expectedGeneration := state.Generation
+		working, err := cloneRevisionState(state)
+		if err != nil {
+			return err
+		}
+		session = working.Sessions[working.ActiveSessionID]
+		if err := apply(working, &session); err != nil {
+			return err
+		}
+		session.Revision++
+		working.Generation++
+		session.Generation = working.Generation
+		session.UpdatedAt = domain.RevisionTimestamp()
+		if session.Stage.Terminal() {
+			session.Route = nil
+		} else if err := applyRevisionRoute(policy, &session); err != nil {
+			return err
+		}
+		if err := session.Validate(); err != nil {
+			return err
+		}
+		if working.Generation != expectedGeneration+1 || session.Generation != working.Generation {
+			return fmt.Errorf("revision generation fence did not advance exactly once")
+		}
+		working.Sessions[session.ID] = session
+		receipt, err := s.revisionReceiptForCommit(input.IdempotencyKey, operation, fingerprint, session)
+		if err != nil {
+			return err
+		}
+		working.Receipts[input.IdempotencyKey] = receipt
+		if err := validateRevisionState(working); err != nil {
+			return err
+		}
+
+		if validExpansionPublicationPolicy(session) {
+			authoritySnapshot, err := capturePublicationAuthoritySnapshot(s.io)
+			if err != nil {
+				return fmt.Errorf("snapshot expansion publication authority: %w", err)
+			}
+			if err := s.writeExpansionPublicationReceiptOwned(working, session); err != nil {
+				if restoreErr := restorePublicationAuthoritySnapshot(s.io, authoritySnapshot); restoreErr != nil {
+					return errors.Join(fmt.Errorf("seal expansion publication receipt: %w", err), fmt.Errorf("restore publication authority: %w", restoreErr))
+				}
+				return fmt.Errorf("seal expansion publication receipt: %w", err)
+			}
+			if err := s.io.WriteJSON(revisionStateFile, working); err != nil {
+				persisted, loadErr := s.loadUnlocked()
+				if loadErr == nil && revisionPublicationCommitMatches(persisted, input.IdempotencyKey, operation, fingerprint, session) {
+					committed, err = cloneRevisionSession(session)
+					return err
+				}
+				if restoreErr := restorePublicationAuthoritySnapshot(s.io, authoritySnapshot); restoreErr != nil {
+					return errors.Join(err, fmt.Errorf("restore publication authority: %w", restoreErr))
+				}
+				return err
+			}
+			committed, err = cloneRevisionSession(session)
+			if err != nil {
+				return err
+			}
+			if err := finalizeExpansionAuthorityCreationForOutput(s.io.dir); err != nil {
+				return fmt.Errorf("finalize expansion authority creation: %w", err)
+			}
+		} else if err := s.io.WriteJSON(revisionStateFile, working); err != nil {
+			return err
+		}
+		committed, err = cloneRevisionSession(session)
+		return err
+	})
+	return committed, err
+}
+
+func revisionPublicationCommitMatches(
+	state *revisionState,
+	idempotencyKey, operation, fingerprint string,
+	result domain.RevisionSession,
+) bool {
+	if state == nil || state.Generation != result.Generation {
+		return false
+	}
+	receipt, ok := state.Receipts[strings.TrimSpace(idempotencyKey)]
+	return ok && receipt.Operation == operation && receipt.Fingerprint == fingerprint &&
+		receipt.Result.ID == result.ID && receipt.Result.Revision == result.Revision &&
+		receipt.Result.Generation == result.Generation && receipt.Result.Stage == result.Stage
 }
 
 func revisionCommandFingerprint(idempotencyKey, operation string, payload any) (string, string, error) {
@@ -1559,15 +1810,52 @@ func revisionCommandFingerprint(idempotencyKey, operation string, payload any) (
 	return operation, domain.ContentSignature(fingerprintPayload), nil
 }
 
-func matchingRevisionReceipt(state *revisionState, key, operation, fingerprint string) (*domain.RevisionSession, error) {
+func matchingRevisionReceipt(state *revisionState, owner *revisionCommandOwner, key, operation, fingerprint string) (*domain.RevisionSession, error) {
 	receipt, exists := state.Receipts[strings.TrimSpace(key)]
 	if !exists {
 		return nil, nil
 	}
-	if receipt.Operation != operation || receipt.Fingerprint != fingerprint {
+	expectedFingerprint := fingerprint
+	if owner != nil && strings.TrimSpace(key) == owner.Key {
+		internalOperation, ok := adaptationRevisionInternalReceiptOperation(owner.Operation)
+		if !ok || internalOperation != operation {
+			return nil, ErrRevisionIdempotencyConflict
+		}
+		expectedFingerprint = adaptationRevisionServiceBoundInternalFingerprint(
+			key, operation, fingerprint, owner.Operation, owner.Fingerprint,
+		)
+	}
+	if receipt.Operation != operation || receipt.Fingerprint != expectedFingerprint {
 		return nil, ErrRevisionIdempotencyConflict
 	}
 	return cloneRevisionSession(receipt.Result)
+}
+
+func (s *RevisionStore) revisionReceiptForCommit(
+	key, operation, fingerprint string,
+	result domain.RevisionSession,
+) (revisionReceipt, error) {
+	receipt := revisionReceipt{Operation: operation, Fingerprint: fingerprint, Result: result}
+	if s == nil || s.commandOwner == nil {
+		return receipt, nil
+	}
+	owner := s.commandOwner
+	if strings.TrimSpace(key) != owner.Key {
+		// Compensating/rollback mutations may use their own idempotency key while
+		// the outer command still owns the project. They are not service receipts
+		// and therefore deliberately remain unbound.
+		return receipt, nil
+	}
+	internalOperation, ok := adaptationRevisionInternalReceiptOperation(owner.Operation)
+	if !ok || internalOperation != operation || strings.TrimSpace(owner.Fingerprint) == "" {
+		return revisionReceipt{}, fmt.Errorf("revision receipt does not match its service command identity")
+	}
+	receipt.ServiceOperation = owner.Operation
+	receipt.ServiceFingerprint = owner.Fingerprint
+	receipt.Fingerprint = adaptationRevisionServiceBoundInternalFingerprint(
+		key, operation, fingerprint, owner.Operation, owner.Fingerprint,
+	)
+	return receipt, nil
 }
 
 func (s *RevisionStore) lookupRevisionReceipt(key, operation, fingerprint string) (*domain.RevisionSession, error) {
@@ -1577,11 +1865,24 @@ func (s *RevisionStore) lookupRevisionReceipt(key, operation, fingerprint string
 		if err != nil {
 			return err
 		}
+		found, receiptErr := matchingRevisionReceipt(state, s.commandOwner, key, operation, fingerprint)
+		if receiptErr == nil && found != nil {
+			receipt = found
+			if operation == "publish" && validExpansionPublicationPolicy(*found) {
+				needsFinalize, finalizeErr := expansionAuthorityCreationNeedsFinalize(s.io.dir)
+				if finalizeErr != nil {
+					return finalizeErr
+				}
+				if needsFinalize {
+					return nil
+				}
+			}
+		}
 		if err := allowRevisionCommandMutation(state, s.commandOwner, s.publicationOwner); err != nil {
 			return err
 		}
-		receipt, err = matchingRevisionReceipt(state, key, operation, fingerprint)
-		return err
+		receipt = found
+		return receiptErr
 	})
 	return receipt, err
 }
@@ -1613,7 +1914,7 @@ func (s *RevisionStore) commitOptimistic(
 		if err := allowRevisionCommandMutation(current, s.commandOwner, s.publicationOwner); err != nil {
 			return err
 		}
-		if found, receiptErr := matchingRevisionReceipt(current, idempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
+		if found, receiptErr := matchingRevisionReceipt(current, s.commandOwner, idempotencyKey, operation, fingerprint); found != nil || receiptErr != nil {
 			committed = found
 			return receiptErr
 		}
@@ -1633,7 +1934,11 @@ func (s *RevisionStore) commitOptimistic(
 		if working.Generation != expectedGeneration+1 || result.Generation != working.Generation {
 			return fmt.Errorf("revision generation fence did not advance exactly once")
 		}
-		working.Receipts[idempotencyKey] = revisionReceipt{Operation: operation, Fingerprint: fingerprint, Result: result}
+		receipt, err := s.revisionReceiptForCommit(idempotencyKey, operation, fingerprint, result)
+		if err != nil {
+			return err
+		}
+		working.Receipts[idempotencyKey] = receipt
 		if err := validateRevisionState(working); err != nil {
 			return err
 		}
@@ -1822,6 +2127,26 @@ func validateRevisionState(state *revisionState) error {
 	for key, receipt := range state.Receipts {
 		if strings.TrimSpace(key) == "" || strings.TrimSpace(receipt.Operation) == "" || strings.TrimSpace(receipt.Fingerprint) == "" {
 			return fmt.Errorf("revision receipt identity is invalid")
+		}
+		if (receipt.ServiceOperation == "") != (receipt.ServiceFingerprint == "") {
+			return fmt.Errorf("revision receipt %q has a partial service identity", key)
+		}
+		if receipt.ServiceOperation != "" {
+			internalOperation, ok := adaptationRevisionInternalReceiptOperation(receipt.ServiceOperation)
+			if !ok || internalOperation != receipt.Operation || strings.TrimSpace(receipt.ServiceFingerprint) == "" ||
+				receipt.ServiceFingerprint != strings.TrimSpace(receipt.ServiceFingerprint) {
+				return fmt.Errorf("revision receipt %q has an invalid service identity", key)
+			}
+			internalFingerprint, err := adaptationRevisionInternalReceiptFingerprint(state, key, receipt.Operation, receipt.Result)
+			if err != nil {
+				return fmt.Errorf("revision receipt %q cannot reconstruct its internal fingerprint: %w", key, err)
+			}
+			expectedFingerprint := adaptationRevisionServiceBoundInternalFingerprint(
+				key, receipt.Operation, internalFingerprint, receipt.ServiceOperation, receipt.ServiceFingerprint,
+			)
+			if receipt.Fingerprint != expectedFingerprint {
+				return fmt.Errorf("revision receipt %q has an invalid service-bound fingerprint", key)
+			}
 		}
 		if err := receipt.Result.Validate(); err != nil {
 			return fmt.Errorf("validate revision receipt %q: %w", key, err)

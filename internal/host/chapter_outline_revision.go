@@ -12,7 +12,9 @@ import (
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/errs"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
+	"github.com/voocel/ainovel-cli/internal/store"
 )
 
 type ChapterOutlineRevisionRequest struct {
@@ -118,7 +120,7 @@ func (h *Host) ReviseChapterOutline(ctx context.Context, req ChapterOutlineRevis
 	structureAttempts := h.cfg.EffectiveStructureRepairMaxAttempts()
 	h.mu.Unlock()
 	model := h.models.ForStageWithFailover(bootstrap.StageDetailOutline, h.reportChapterOutlineRevisionFailover)
-	revised, err := generateChapterOutlineRevision(ctx, model, prompt, revisionContext, structureAttempts)
+	revised, err := generateChapterOutlineRevision(ctx, model, prompt, revisionContext, structureAttempts, h.store)
 	if err != nil {
 		return ChapterOutlineRevisionResult{}, err
 	}
@@ -201,7 +203,7 @@ func (h *Host) buildChapterOutlineRevisionContext(current domain.OutlineEntry, i
 	return ctx, adaptationChapterOutlineRevisionSystemPrompt, nil
 }
 
-func generateChapterOutlineRevision(ctx context.Context, model agentcore.ChatModel, systemPrompt string, revisionContext chapterOutlineRevisionContext, maxAttempts int) (domain.OutlineEntry, error) {
+func generateChapterOutlineRevision(ctx context.Context, model agentcore.ChatModel, systemPrompt string, revisionContext chapterOutlineRevisionContext, maxAttempts int, diagnosticStores ...*store.Store) (domain.OutlineEntry, error) {
 	if model == nil {
 		return domain.OutlineEntry{}, fmt.Errorf("architect model is unavailable")
 	}
@@ -217,22 +219,41 @@ func generateChapterOutlineRevision(ctx context.Context, model agentcore.ChatMod
 		agentcore.UserMsg(string(payload)),
 	}
 	var lastErr error
+	var diagnosticStore *store.Store
+	if len(diagnosticStores) > 0 {
+		diagnosticStore = diagnosticStores[0]
+	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return domain.OutlineEntry{}, err
 		}
+		compiledUser, _ := json.Marshal(messages[1:])
+		recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: diagnosticStore, Task: "chapter_outline_revision", ChapterID: revisionContext.Current.ID, Batch: attempt, System: systemPrompt, User: compiledUser, InputLimitBytes: manuscriptCompiledRequestBudgetBytes, OutputLimitTokens: 1800, SelectorCounts: map[string]int{"chapters": 1}})
+		if beginErr != nil {
+			return domain.OutlineEntry{}, beginErr
+		}
 		response, err := model.Generate(ctx, messages, nil, agentcore.WithMaxTokens(1800), agentcore.WithJSONMode())
 		if err != nil {
+			_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 			return domain.OutlineEntry{}, fmt.Errorf("revise chapter outline model call: %w", err)
 		}
 		if response == nil {
+			_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", nil)
 			lastErr = errors.New("model returned nil response")
 		} else {
-			revised, parseErr := parseChapterOutlineRevision(response.Message.TextContent(), revisionContext.Current.Chapter)
-			if parseErr == nil {
+			output := response.Message.TextContent()
+			if strings.TrimSpace(output) == "" {
+				_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", response.Message.Usage)
+				lastErr = errors.New("model returned empty response")
+			} else if revised, parseErr := parseChapterOutlineRevision(output, revisionContext.Current.Chapter); parseErr == nil {
+				if diagnosticErr := recorder.Finish(modeldiag.StatusCompleted, output, response.Message.Usage); diagnosticErr != nil {
+					return domain.OutlineEntry{}, diagnosticErr
+				}
 				return revised, nil
+			} else {
+				_ = recorder.Finish(chapterOutlineDiagnosticStatus(parseErr), output, response.Message.Usage)
+				lastErr = parseErr
 			}
-			lastErr = parseErr
 		}
 		if attempt == maxAttempts {
 			break
@@ -245,6 +266,16 @@ func generateChapterOutlineRevision(ctx context.Context, model agentcore.ChatMod
 		}
 	}
 	return domain.OutlineEntry{}, fmt.Errorf("invalid chapter outline after %d attempts: %w", maxAttempts, lastErr)
+}
+
+func chapterOutlineDiagnosticStatus(err error) string {
+	if err == nil {
+		return modeldiag.StatusCompleted
+	}
+	if strings.Contains(err.Error(), "decode JSON") || strings.Contains(err.Error(), "JSON object") {
+		return modeldiag.StatusDecodeError
+	}
+	return modeldiag.StatusInvalidSchema
 }
 
 func parseChapterOutlineRevision(raw string, chapter int) (domain.OutlineEntry, error) {

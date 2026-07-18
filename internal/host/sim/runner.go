@@ -11,13 +11,14 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
 
 const (
-	maxSourceRunes = 60000
+	maxSourceRunes = 15000
 
-	maxMergePromptBytes           = 180 << 10
+	maxMergePromptBytes           = 60 << 10
 	maxMergeReportsPerBatch       = 24
 	maxMergeReportTitleRunes      = 120
 	maxMergeReportSummaryRunes    = 600
@@ -50,6 +51,7 @@ type mergeSynthesisCheckpoint struct {
 }
 
 func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if deps.Store == nil || deps.LLM == nil {
 		return nil, fmt.Errorf("deps incomplete")
 	}
@@ -268,7 +270,7 @@ func mergeSynthesisBatchedWithLimit(ctx context.Context, llm LLMChat, systemProm
 	if len(compactReports) == 0 {
 		return mergeSynthesisWithOptions(ctx, llm, systemPrompt, existing, nil, opts.Call)
 	}
-	estimatedBatchTotal := len(splitMergeReportBatches(existing, compactReports, promptLimitBytes))
+	estimatedBatchTotal := len(splitMergeReportBatches(systemPrompt, existing, compactReports, promptLimitBytes))
 	if estimatedBatchTotal == 0 {
 		estimatedBatchTotal = 1
 	}
@@ -290,7 +292,7 @@ func mergeSynthesisBatchedWithLimit(ctx context.Context, llm LLMChat, systemProm
 			return nil, err
 		}
 		mergeBase := profileWithSynthesisForMerge(existing, reports, synthesis)
-		batch := nextMergeReportBatch(mergeBase, compactReports[processed:], promptLimitBytes)
+		batch := nextMergeReportBatch(systemPrompt, mergeBase, compactReports[processed:], promptLimitBytes)
 		if len(batch) == 0 {
 			return nil, fmt.Errorf("merge profile: empty merge batch")
 		}
@@ -674,14 +676,14 @@ func buildMergeUserPrompt(existing *domain.SimulationProfile, reports []domain.S
 	return "Merge these reports into a reusable writing simulation profile. Return only the requested JSON object.\n\n" + string(data)
 }
 
-func splitMergeReportBatches(existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, promptLimitBytes int) [][]domain.SimulationSourceReport {
+func splitMergeReportBatches(systemPrompt string, existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, promptLimitBytes int) [][]domain.SimulationSourceReport {
 	compactReports := compactSourceReportsForMerge(reports)
 	if len(compactReports) == 0 {
 		return nil
 	}
 	var batches [][]domain.SimulationSourceReport
 	for len(compactReports) > 0 {
-		batch := nextMergeReportBatch(existing, compactReports, promptLimitBytes)
+		batch := nextMergeReportBatch(systemPrompt, existing, compactReports, promptLimitBytes)
 		if len(batch) == 0 {
 			break
 		}
@@ -691,7 +693,7 @@ func splitMergeReportBatches(existing *domain.SimulationProfile, reports []domai
 	return batches
 }
 
-func nextMergeReportBatch(existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, promptLimitBytes int) []domain.SimulationSourceReport {
+func nextMergeReportBatch(systemPrompt string, existing *domain.SimulationProfile, reports []domain.SimulationSourceReport, promptLimitBytes int) []domain.SimulationSourceReport {
 	if len(reports) == 0 {
 		return nil
 	}
@@ -702,7 +704,9 @@ func nextMergeReportBatch(existing *domain.SimulationProfile, reports []domain.S
 	for _, report := range reports {
 		candidate := append(append([]domain.SimulationSourceReport(nil), current...), report)
 		tooManyReports := len(candidate) > maxMergeReportsPerBatch
-		tooManyBytes := len(buildMergeUserPrompt(existing, candidate)) > promptLimitBytes
+		messages := []agentcore.Message{agentcore.SystemMsg(systemPrompt), agentcore.UserMsg(buildMergeUserPrompt(existing, candidate))}
+		diagnosticSystem, diagnosticUser := simulationDiagnosticInput(messages)
+		tooManyBytes := len(diagnosticSystem)+len(diagnosticUser) > promptLimitBytes
 		if len(current) > 0 && (tooManyReports || tooManyBytes) {
 			break
 		}

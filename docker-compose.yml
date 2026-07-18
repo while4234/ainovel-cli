@@ -4,7 +4,8 @@ services:
     build:
       context: .
     volumes:
-      - ./config:/root/.ainovel
+      - ./config:/home/ainovel/.ainovel
       - ./workspace:/workspace
+      - ./authority:/var/lib/ainovel
     ports:
       - "9898:9898"

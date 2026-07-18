@@ -34,41 +34,41 @@ type manuscriptDiscussRequest struct {
 
 func (s *Server) handleManuscriptDiscuss(w http.ResponseWriter, r *http.Request, _ ProjectManifest, st *storepkg.Store, service *host.ManuscriptRevisionService) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var request manuscriptDiscussRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid manuscript discussion request")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "invalid manuscript discussion request")
 		return
 	}
 	request.View = defaultString(strings.TrimSpace(request.View), "current")
 	request.ArtifactKind = defaultString(strings.TrimSpace(request.ArtifactKind), "prose")
 	request.Intent = strings.TrimSpace(request.Intent)
 	if strings.TrimSpace(request.StableID) == "" || strings.TrimSpace(request.ContentSignature) == "" || request.Intent == "" {
-		writeError(w, http.StatusBadRequest, "stable_id, content_signature, and intent are required")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "stable_id, content_signature, and intent are required")
 		return
 	}
 	if !manuscriptChapterStableIDPattern.MatchString(strings.TrimSpace(request.StableID)) {
-		writeError(w, http.StatusBadRequest, "stable_id must be a chapter stable ID")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "stable_id must be a chapter stable ID")
 		return
 	}
 	if request.ArtifactKind != "prose" {
-		writeError(w, http.StatusBadRequest, "artifact_kind must be prose")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "artifact_kind must be prose")
 		return
 	}
 	if request.View != "current" && request.View != "candidate" && request.View != "history" {
-		writeError(w, http.StatusBadRequest, "view must be current, candidate, or history")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "view must be current, candidate, or history")
 		return
 	}
 	if request.View == "current" && request.VersionID != "" {
-		writeError(w, http.StatusBadRequest, "current view must not carry version_id")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "current view must not carry version_id")
 		return
 	}
 	if request.View != "current" && strings.TrimSpace(request.VersionID) == "" {
-		writeError(w, http.StatusBadRequest, "candidate and history views require version_id")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "candidate and history views require version_id")
 		return
 	}
 	baseline, prose, err := service.CurrentChapter(request.StableID)
@@ -141,19 +141,19 @@ func (s *Server) handleManuscriptDiscuss(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	if provenance == nil || provenance.Mode != baseline.Mode || provenance.ApprovedOutlineSHA256 != baseline.ApprovedOutlineSHA256 {
-		writeManuscriptError(w, fmt.Errorf("content provenance drift: manuscript mode or outline changed"))
+		writeManuscriptError(w, &domain.ManuscriptRevisionError{Class: "signature_drift", Err: fmt.Errorf("content provenance drift: manuscript mode or outline changed")})
 		return
 	}
 	baseline.Mode = provenance.Mode
 	baseline.AdaptationPlanSHA256 = provenance.AdaptationPlanSHA256
 	baseline.SourceManifestSHA256 = provenance.SourceManifestSHA256
 	if request.ContentSignature != baseline.CurrentProseSHA256 {
-		writeManuscriptError(w, fmt.Errorf("signature drift: discussion source changed"))
+		writeManuscriptError(w, &domain.ManuscriptRevisionError{Class: "signature_drift", Err: fmt.Errorf("discussion source changed")})
 		return
 	}
 	selected, err := manuscriptSelection(prose, request.SelectionStart, request.SelectionEnd)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeManuscriptRequestError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	chips := []string{"当前章", "章节提纲", "所属分卷", "修订摘要"}
@@ -163,7 +163,7 @@ func (s *Server) handleManuscriptDiscuss(w http.ResponseWriter, r *http.Request,
 		context["source_display"] = adaptationSourceDisplay(st, baseline.ChapterID)
 		evidence, evidenceUnits, evidenceErr := adaptationDiscussionEvidence(st, baseline.ChapterID, manuscriptDiscussionBudgetUnits-budgetUnits, baseline.AdaptationPlanSHA256, baseline.SourceManifestSHA256)
 		if evidenceErr != nil {
-			writeManuscriptError(w, evidenceErr)
+			writeManuscriptError(w, &domain.ManuscriptRevisionError{Class: "signature_drift", Err: evidenceErr})
 			return
 		}
 		context["source_evidence"] = evidence
@@ -171,7 +171,7 @@ func (s *Server) handleManuscriptDiscuss(w http.ResponseWriter, r *http.Request,
 	}
 	payload := mustJSON(context)
 	if len(payload) > manuscriptDiscussionBudgetBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "discussion context exceeds 60 KiB budget")
+		writeManuscriptRequestError(w, http.StatusRequestEntityTooLarge, "discussion context exceeds 60 KiB budget")
 		return
 	}
 	discussionMessage := renderManuscriptDiscussionMessage(request.Intent, selected, context["source_display"], context["source_evidence"])
@@ -434,24 +434,24 @@ type manuscriptRestoreRequest struct {
 
 func (s *Server) handleManuscriptRestorePreview(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, service *host.ManuscriptRevisionService) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var request manuscriptRestoreRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid restore preview request")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "invalid restore preview request")
 		return
 	}
 	if err := validateRestoreRequest(request, false); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeManuscriptRequestError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	runtime, candidate, err := loadRestoreCandidate(st, request)
 	if err != nil {
 		if errors.Is(err, storepkg.ErrManuscriptRevisionNotFound) {
-			writeJSON(w, http.StatusGone, map[string]any{"error": map[string]any{"code": "version_gone", "message": "historical version is no longer available"}})
+			writeManuscriptEnvelope(w, http.StatusGone, "version_gone", "historical version is no longer available", nil)
 			return
 		}
 		writeManuscriptError(w, err)
@@ -463,14 +463,14 @@ func (s *Server) handleManuscriptRestorePreview(w http.ResponseWriter, r *http.R
 		return
 	}
 	if candidate.OutlineSignature != baseline.ApprovedOutlineSHA256 || candidate.ModeSignature != manuscriptModeSignatureForPreview(baseline) {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "preview_stale", "message": "historical version no longer matches the current outline or mode", "action": "refresh_preview"}})
+		writeManuscriptEnvelope(w, http.StatusConflict, "preview_stale", "historical version no longer matches the current outline or mode", map[string]any{"action": "refresh_preview"})
 		return
 	}
 	if active, activeErr := st.ManuscriptRevisions.Active(); activeErr != nil {
 		writeManuscriptError(w, activeErr)
 		return
 	} else if active != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "active_revision", "message": "finish or cancel the active revision before restoring", "active_revision_id": active.RevisionID, "stage": active.Stage}})
+		writeManuscriptEnvelope(w, http.StatusConflict, "active_revision", "finish or cancel the active revision before restoring", map[string]any{"active_revision_id": active.RevisionID, "stage": active.Stage})
 		return
 	}
 	previewSignature := manuscriptRestorePreviewSignature(runtime.RevisionID, request.ChapterID, baseline, *candidate)
@@ -531,31 +531,31 @@ func manuscriptRestorePreviewSignature(sourceRevisionID, chapterID string, basel
 
 func (s *Server) handleManuscriptRestore(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, service *host.ManuscriptRevisionService) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var request manuscriptRestoreRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid restore request")
+		writeManuscriptRequestError(w, http.StatusBadRequest, "invalid restore request")
 		return
 	}
 	if err := validateRestoreRequest(request, true); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeManuscriptRequestError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	runtime, candidate, err := loadRestoreCandidate(st, request)
 	if err != nil {
 		if errors.Is(err, storepkg.ErrManuscriptRevisionNotFound) {
-			writeJSON(w, http.StatusGone, map[string]any{"error": map[string]any{"code": "version_gone", "message": "historical version is no longer available"}})
+			writeManuscriptEnvelope(w, http.StatusGone, "version_gone", "historical version is no longer available", nil)
 			return
 		}
 		writeManuscriptError(w, err)
 		return
 	}
 	if candidate.Prose.SHA256 != request.ExpectedContentSignature {
-		writeManuscriptError(w, fmt.Errorf("signature drift: historical version changed"))
+		writeManuscriptError(w, &domain.ManuscriptRevisionError{Class: "signature_drift", Err: fmt.Errorf("historical version changed")})
 		return
 	}
 	baseline, _, err := service.CurrentChapter(request.ChapterID)
@@ -564,12 +564,12 @@ func (s *Server) handleManuscriptRestore(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if candidate.OutlineSignature != baseline.ApprovedOutlineSHA256 || candidate.ModeSignature != manuscriptModeSignatureForPreview(baseline) {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "preview_stale", "message": "historical version no longer matches the current outline or mode", "action": "refresh_preview"}})
+		writeManuscriptEnvelope(w, http.StatusConflict, "preview_stale", "historical version no longer matches the current outline or mode", map[string]any{"action": "refresh_preview"})
 		return
 	}
 	expectedPreview := manuscriptRestorePreviewSignature(runtime.RevisionID, request.ChapterID, baseline, *candidate)
 	if request.PreviewSignature != expectedPreview {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "preview_stale", "message": "restore confirmation does not match the signed preview", "action": "refresh_preview"}})
+		writeManuscriptEnvelope(w, http.StatusConflict, "preview_stale", "restore confirmation does not match the signed preview", map[string]any{"action": "refresh_preview"})
 		return
 	}
 	revision, err := service.RestoreVersion(request.RevisionID, request.ChapterID, request.ExpectedContentSignature, request.IdempotencyKey)

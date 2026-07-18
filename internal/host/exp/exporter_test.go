@@ -149,6 +149,87 @@ func TestRun_RangeWithSkipped(t *testing.T) {
 	}
 }
 
+func TestRunUsesFormalDisplayOrderAndInterpretsRangeAsDisplayPositions(t *testing.T) {
+	ordered := manuscriptDisplayOrder([]domain.OutlineEntry{
+		{Chapter: 3, Title: "Inserted First"},
+		{Chapter: 1, Title: "Original First"},
+		{Chapter: 2, Title: "Original Second"},
+	}, nil, []int{1, 2, 3, 9})
+	want := []int{3, 1, 2}
+	if len(ordered) != len(want) {
+		t.Fatalf("display order = %v, want %v", ordered, want)
+	}
+	for index := range want {
+		if ordered[index] != want[index] {
+			t.Fatalf("display order = %v, want %v", ordered, want)
+		}
+	}
+}
+
+func TestRunExcludesCompletedChapterDeletedFromFormalTreeTXTAndEPUB(t *testing.T) {
+	for _, format := range []Format{FormatTXT, FormatEPUB} {
+		t.Run(string(format), func(t *testing.T) {
+			s, dir := newTestStore(t, "Approved Tree", []int{1, 2, 3})
+			if err := s.Outline.SaveOutline([]domain.OutlineEntry{{Chapter: 1, Title: "Kept"}, {Chapter: 3, Title: "Inserted"}}); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "approved."+string(format))
+			result, err := Run(context.Background(), Deps{Store: s}, Options{Format: format, OutPath: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Chapters != 2 {
+				t.Fatalf("exported chapters = %d, want 2", result.Chapters)
+			}
+			payload, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(payload), "正文 ch 2") {
+				t.Fatal("formal-tree-deleted chapter leaked into export")
+			}
+		})
+	}
+}
+
+func TestRunFailsClosedWhenFormalOutlineIsCorrupt(t *testing.T) {
+	s, dir := newTestStore(t, "Corrupt Tree", []int{1})
+	if err := os.WriteFile(filepath.Join(dir, "outline.json"), []byte("not-json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), Deps{Store: s}, Options{OutPath: filepath.Join(dir, "must-not-exist.txt")}); err == nil {
+		t.Fatal("export fell back after a corrupt formal outline")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "must-not-exist.txt")); !os.IsNotExist(err) {
+		t.Fatalf("failed export created output: %v", err)
+	}
+}
+
+func TestRunFailsClosedWhenFormalLayeredOutlineIsCorrupt(t *testing.T) {
+	s, dir := newTestStore(t, "Corrupt Layered Tree", []int{1})
+	progress, err := s.Progress.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress.Layered = true
+	if err := s.Progress.Save(progress); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "layered_outline.json"), []byte("not-json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), Deps{Store: s}, Options{OutPath: filepath.Join(dir, "must-not-exist.txt")}); err == nil {
+		t.Fatal("export fell back after a corrupt formal layered outline")
+	}
+}
+
+func TestManuscriptDisplayOrderUsesLayeredVolumes(t *testing.T) {
+	volumes := []domain.VolumeOutline{{Arcs: []domain.ArcOutline{{Chapters: []domain.OutlineEntry{{Chapter: 4}, {Chapter: 2}}}}}, {Arcs: []domain.ArcOutline{{Chapters: []domain.OutlineEntry{{Chapter: 7}}}}}}
+	if got := manuscriptDisplayOrder(nil, volumes, []int{2, 4, 7, 99}); fmt.Sprint(got) != "[4 2 7]" {
+		t.Fatalf("layered display order = %v", got)
+	}
+}
+
 func TestRun_FromGreaterThanTo(t *testing.T) {
 	s, _ := newTestStore(t, "X", []int{1, 2})
 	_, err := Run(context.Background(), Deps{Store: s}, Options{From: 5, To: 2})

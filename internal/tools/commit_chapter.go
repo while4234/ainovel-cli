@@ -822,8 +822,7 @@ func (t *CommitChapterTool) applyCompletion(result *domain.CommitResult, progres
 		if !allowed {
 			return false, audit
 		}
-		_ = t.store.Progress.MarkComplete()
-		return true, audit
+		return t.markCompleteAfterRevalidation(), audit
 	}
 	if progress.Layered {
 		if t.layeredBookComplete(progress) {
@@ -832,11 +831,9 @@ func (t *CommitChapterTool) applyCompletion(result *domain.CommitResult, progres
 				if !allowed {
 					return false, audit
 				}
-				_ = t.store.Progress.MarkComplete()
-				return true, audit
+				return t.markCompleteAfterRevalidation(), audit
 			}
-			_ = t.store.Progress.MarkComplete()
-			return true, nil
+			return t.markCompleteAfterRevalidation(), nil
 		}
 		return false, nil
 	}
@@ -846,13 +843,23 @@ func (t *CommitChapterTool) applyCompletion(result *domain.CommitResult, progres
 			if !allowed {
 				return false, audit
 			}
-			_ = t.store.Progress.MarkComplete()
-			return true, audit
+			return t.markCompleteAfterRevalidation(), audit
 		}
-		_ = t.store.Progress.MarkComplete()
-		return true, nil
+		return t.markCompleteAfterRevalidation(), nil
 	}
 	return false, nil
+}
+
+func (t *CommitChapterTool) markCompleteAfterRevalidation() bool {
+	if err := t.store.RefreshCompletionRevalidationEvidence(); err != nil {
+		slog.Warn("completion revalidation remains pending", "module", "tool", "err", err)
+		return false
+	}
+	if err := t.store.Progress.MarkComplete(); err != nil {
+		slog.Warn("mark complete rejected", "module", "tool", "err", err)
+		return false
+	}
+	return true
 }
 
 func (t *CommitChapterTool) completionAuditAllows() (bool, *CompletionAuditResult) {

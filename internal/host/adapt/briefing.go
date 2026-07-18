@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -119,6 +120,7 @@ func CoCreateBriefingTriggerReason(dossier domain.AdaptationCoCreateDossier) str
 }
 
 func EnsureCoCreateBriefing(ctx context.Context, deps Deps, intent domain.AdaptationCoCreateIntent, emit ProgressEmitter) (*domain.AdaptationCoCreateBriefing, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if deps.Store == nil || deps.LLM == nil {
 		return nil, fmt.Errorf("deps incomplete")
 	}

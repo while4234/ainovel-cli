@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -180,6 +181,55 @@ func (facts ExpansionDramaticFactSet) Validate() error {
 }
 
 const ExpansionDramaticFactsSchemaV1 = "expansion-dramatic-facts/v1"
+
+const (
+	ExpansionOriginSchemaV1 = "expansion-origin/v1"
+	ExpansionOriginOneLine  = "one-line-expansion"
+)
+
+// ExpansionOrigin is content-independent provenance for a chapter created or
+// revised by the one-line expansion workflow. PreviewID is a stable journal
+// identity, while SourceContractSignature binds the exact executable dramatic
+// facts approved by that preview. The formal structure signature covers this
+// value, so display-number projections cannot manufacture the provenance.
+type ExpansionOrigin struct {
+	SchemaVersion             string `json:"schema_version"`
+	Kind                      string `json:"kind"`
+	PreviewID                 string `json:"preview_id"`
+	DramaticContractSignature string `json:"dramatic_contract_signature"`
+}
+
+func ExpansionDramaticFactsSignature(facts ExpansionDramaticFactSet) string {
+	payload, _ := json.Marshal(facts)
+	return ContentSignature(payload)
+}
+
+func NewExpansionOrigin(previewID string, facts ExpansionDramaticFactSet) (ExpansionOrigin, error) {
+	if err := facts.Validate(); err != nil {
+		return ExpansionOrigin{}, err
+	}
+	previewID = strings.TrimSpace(previewID)
+	if previewID == "" {
+		return ExpansionOrigin{}, fmt.Errorf("expansion origin preview identity is required")
+	}
+	return ExpansionOrigin{
+		SchemaVersion:             ExpansionOriginSchemaV1,
+		Kind:                      ExpansionOriginOneLine,
+		PreviewID:                 previewID,
+		DramaticContractSignature: ExpansionDramaticFactsSignature(facts),
+	}, nil
+}
+
+func (origin ExpansionOrigin) Validate(facts *ExpansionDramaticFactSet) error {
+	if origin.SchemaVersion != ExpansionOriginSchemaV1 || origin.Kind != ExpansionOriginOneLine ||
+		strings.TrimSpace(origin.PreviewID) == "" || len(origin.DramaticContractSignature) != 64 {
+		return fmt.Errorf("expansion origin identity is invalid")
+	}
+	if facts == nil || facts.Validate() != nil || ExpansionDramaticFactsSignature(*facts) != origin.DramaticContractSignature {
+		return fmt.Errorf("expansion origin dramatic source contract is invalid")
+	}
+	return nil
+}
 
 func (assessment ExpansionDramaticAssessment) Validate(mode RevisionMode) error {
 	required := []string{assessment.Goal, assessment.Conflict, assessment.Choice, assessment.Cost, assessment.Result, assessment.CharacterStageChange, assessment.CharacterBeforeStage, assessment.CharacterAfterStage, assessment.IndependentClimax, assessment.IrreversibleExit, assessment.CurrentFit, assessment.VolumePacingEffect}

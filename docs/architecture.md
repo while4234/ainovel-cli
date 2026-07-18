@@ -510,3 +510,21 @@ assets/
 **扩展性来自对的扩展点**：改风格 → 改 prompt；新评审维度 → 改 prompt；新题材 → 加参考资料；新子代理类型 → 加一行 SubAgentConfig；并行多本小说 → 多进程。
 
 唯一的纪律：**有人想"让 Host 更聪明一点"时，先问"为什么不让 LLM 更聪明一点"**。这个问题回答不出"Host 必须"的理由，就不要往 Host 里加代码。
+
+---
+
+## 13. 稿件修订恢复边界
+
+稿件修订没有引入第二个创作调度器。Store 只负责 durable owner 的确定性恢复和写屏障；Coordinator 仍负责创作决策。恢复顺序固定为：
+
+```text
+adaptation outer command
+  -> revision publication
+  -> manuscript publication
+  -> structure migration
+  -> runtime/session reconciliation
+  -> read snapshot
+  -> normal-flow eligibility
+```
+
+锁序保持 `revision transaction -> migration -> artifact IO`，同一路径只获取一次 revision transaction。任何 owner 恢复失败时 current read 仍可用，写入口和 auto/scheduled/manual resume 均停在 `publication_recovery_required`。详见 [manuscript-revision-architecture.md](manuscript-revision-architecture.md)。

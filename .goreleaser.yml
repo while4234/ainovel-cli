@@ -37,12 +37,27 @@ builds:
     goarch:
       - amd64
       - arm64
+  - id: manuscript-completion-auditor
+    main: ./cmd/manuscript-completion-auditor
+    binary: manuscript-completion-auditor
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
 
 archives:
   - id: ainovel-cli-archive
     ids:
       - ainovel-cli
       - expansion-auditor
+      - manuscript-completion-auditor
     formats:
       - tar.gz
     format_overrides:
@@ -52,6 +67,7 @@ archives:
     files:
       - README.md
       - LICENSE
+      - scripts/install-authority-windows.ps1
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_
       {{- title .Os }}_

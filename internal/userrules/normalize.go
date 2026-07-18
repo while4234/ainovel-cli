@@ -16,8 +16,10 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	"github.com/voocel/ainovel-cli/internal/rules"
+	"github.com/voocel/ainovel-cli/internal/store"
 )
 
 // normalizeMaxTokens 单次归一化的输出上限（思考 token 与 JSON 输出共享这一预算）。
@@ -35,6 +37,14 @@ var normalizeRetrySleep = retrypolicy.Wait
 type Normalizer struct {
 	model    agentcore.ChatModel
 	thinking agentcore.ThinkingLevel // 归一化是机械抽取，能关思考就关（见 NewNormalizer）
+	store    *store.Store
+}
+
+func (n *Normalizer) withStore(st *store.Store) *Normalizer {
+	if n != nil {
+		n.store = st
+	}
+	return n
 }
 
 // NewNormalizer 用一个 ChatModel 构造归一化器。归一化是一次性启动工具，
@@ -66,17 +76,27 @@ func (n *Normalizer) Normalize(ctx context.Context, source, text string) rules.C
 	// 快照只留 status=degraded + 来源标注（见设计 §失败与降级 / §回显）。
 	var lastErr string
 	for attempt := 1; attempt <= normalizeMaxAttempts; attempt++ {
+		system := messages[0].TextContent()
+		user, _ := json.Marshal(messages[1:])
+		recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: n.store, Task: "userrules_normalizer", Batch: attempt, System: system, User: user, InputLimitBytes: 60 * 1024, OutputLimitTokens: normalizeMaxTokens})
+		if beginErr != nil {
+			lastErr = beginErr.Error()
+			break
+		}
 		resp, err := n.model.Generate(ctx, messages, nil,
 			agentcore.WithThinking(n.thinking),
 			agentcore.WithMaxTokens(normalizeMaxTokens))
 		switch {
 		case err != nil:
+			_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 			lastErr = err.Error()
 		case resp == nil:
+			_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", nil)
 			lastErr = "模型返回空响应"
 		default:
 			raw := resp.Message.TextContent()
 			if out, ok := parseNormalizerJSON(raw); ok {
+				_ = recorder.Finish(modeldiag.StatusCompleted, raw, resp.Message.Usage)
 				return rules.Candidate{
 					Source:      source,
 					Structured:  out.Structured,
@@ -84,6 +104,7 @@ func (n *Normalizer) Normalize(ctx context.Context, source, text string) rules.C
 					Uncertain:   coerceUncertain(out.Uncertain),
 				}
 			}
+			_ = recorder.Finish(modeldiag.StatusDecodeError, raw, resp.Message.Usage)
 			lastErr = "返回非合法 JSON"
 			// 反馈式重试：把上次的非法输出与纠正提示并入对话，让下一轮带着错误针对性
 			// 重出 JSON，而非原样盲重试。只对"格式坏"有意义——网络错误 / 空响应那两支

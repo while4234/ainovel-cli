@@ -1,10 +1,30 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/entry/web"
+	"github.com/voocel/ainovel-cli/internal/store"
 )
+
+func TestAuthorityGCCommandUsesReleaseManagedMaintenance(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "authority")
+	restore, err := store.ConfigureExpansionAuthorityForTestProcess(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restore()
+	if _, err := store.InitializeExpansionAuthorityRoot(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAuthorityCommand([]string{"gc"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAuthorityCommand([]string{"gc", "unexpected"}); err == nil {
+		t.Fatal("authority gc accepted positional input")
+	}
+}
 
 func TestParseCLIOptionsDefaultStartsWebAndOpensBrowser(t *testing.T) {
 	opts, args, err := parseCLIOptions(nil)

@@ -11,7 +11,7 @@ import (
 )
 
 func TestNormalRevisionServicePersistsCompletedBookExpansionThroughKernelAndSignedGates(t *testing.T) {
-	st := storepkg.NewStore(t.TempDir())
+	st := newPublicationTestStore(t)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestNormalRevisionServicePersistsPreviewAtEveryManuscriptStage(t *testing.T
 		domain.ManuscriptStageComplete,
 	} {
 		t.Run(string(stage), func(t *testing.T) {
-			st := storepkg.NewStore(t.TempDir())
+			st := newPublicationTestStore(t)
 			if err := st.Init(); err != nil {
 				t.Fatal(err)
 			}
@@ -260,7 +260,7 @@ func TestNormalRevisionServicePersistsPreviewAtEveryManuscriptStage(t *testing.T
 }
 
 func TestNormalRevisionServiceProposalCompleteAcceptsSkeletonAndCreatesNoDetails(t *testing.T) {
-	st := storepkg.NewStore(t.TempDir())
+	st := newPublicationTestStore(t)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestNormalRevisionServiceProposalCompleteAcceptsSkeletonAndCreatesNoDetails
 }
 
 func TestNormalRevisionWritingPersistsOnlyExactProseReworkIntents(t *testing.T) {
-	st := storepkg.NewStore(t.TempDir())
+	st := newPublicationTestStore(t)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestNormalRevisionWritingPersistsOnlyExactProseReworkIntents(t *testing.T) 
 }
 
 func TestNormalRevisionRejectsUnauditedSiblingDetailInjection(t *testing.T) {
-	st := storepkg.NewStore(t.TempDir())
+	st := newPublicationTestStore(t)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}

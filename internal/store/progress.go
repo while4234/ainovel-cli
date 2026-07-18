@@ -267,6 +267,16 @@ func (s *ProgressStore) MarkComplete() error {
 		if err := domain.ValidatePhaseTransition(p.Phase, domain.PhaseComplete); err != nil {
 			return err
 		}
+		if checkpoint := p.CompletionRevalidation; checkpoint != nil {
+			if checkpoint.Version != completionRevalidationVersion || checkpoint.Status != "ready" ||
+				strings.TrimSpace(checkpoint.AcceptedRevisionID) == "" || strings.TrimSpace(checkpoint.CreatedAt) == "" || len(checkpoint.AcceptedVersionSignature) != 64 || len(checkpoint.CurrentStructureSignature) != 64 ||
+				len(checkpoint.ChapterSignatures) != len(checkpoint.CurrentStableOrder) ||
+				len(checkpoint.PostprocessSignature) != 64 || len(checkpoint.ArcAuditSignature) != 64 ||
+				len(checkpoint.VolumeAuditSignature) != 64 || len(checkpoint.BookAuditSignature) != 64 {
+				return fmt.Errorf("completion revalidation evidence is incomplete: %w", errs.ErrToolPrecondition)
+			}
+			checkpoint.Status = "completed"
+		}
 		p.Phase = domain.PhaseComplete
 		p.ReopenedFromComplete = false
 		return s.saveUnlocked(p)

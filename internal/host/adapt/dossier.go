@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -110,6 +111,7 @@ func coCreateDossierBatchJSONSchema() map[string]any {
 }
 
 func EnsureCoCreateDossier(ctx context.Context, deps Deps, manifest *domain.AdaptationSourceManifest, reports []domain.AdaptationSourceReport, emit ProgressEmitter) (*domain.AdaptationCoCreateDossier, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if deps.Store == nil || deps.LLM == nil {
 		return nil, fmt.Errorf("deps incomplete")
 	}

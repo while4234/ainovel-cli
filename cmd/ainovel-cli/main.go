@@ -15,6 +15,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/entry/headless"
 	"github.com/voocel/ainovel-cli/internal/entry/web"
 	"github.com/voocel/ainovel-cli/internal/rules"
+	"github.com/voocel/ainovel-cli/internal/store"
 	buildversion "github.com/voocel/ainovel-cli/internal/version"
 )
 
@@ -25,6 +26,12 @@ var (
 )
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "authority" {
+		if err := runAuthorityCommand(os.Args[2:]); err != nil {
+			die("authority: %v", err)
+		}
+		return
+	}
 	opts, args, err := parseCLIOptions(os.Args[1:])
 	if err != nil {
 		die("flags: %v", err)
@@ -46,6 +53,59 @@ func main() {
 		die("config: %v", err)
 	}
 	runWithConfig(cfg, opts, args)
+}
+
+func runAuthorityCommand(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("expected init, rotate, revoke, export, import, or gc")
+	}
+	switch args[0] {
+	case "init":
+		if len(args) != 1 {
+			return fmt.Errorf("init accepts no arguments")
+		}
+		keyID, err := store.InitializeExpansionAuthorityRoot()
+		if err == nil {
+			fmt.Fprintf(os.Stdout, "authority initialized: %s\n", keyID)
+		}
+		return err
+	case "rotate":
+		if len(args) != 1 {
+			return fmt.Errorf("rotate accepts no arguments")
+		}
+		return store.RotateExpansionAuthorityRoot()
+	case "revoke":
+		if len(args) != 2 {
+			return fmt.Errorf("revoke requires a key id")
+		}
+		return store.RevokeExpansionAuthorityRootKey(args[1])
+	case "gc":
+		if len(args) != 1 {
+			return fmt.Errorf("gc accepts no arguments")
+		}
+		report, err := store.ReconcileExpansionAuthorityOrphans()
+		if err == nil {
+			fmt.Fprintf(os.Stdout, "authority maintenance: examined=%d recovered=%d finalized=%d deferred=%d\n", report.Examined, report.Recovered, report.Finalized, report.Deferred)
+		}
+		return err
+	case "export", "import":
+		if len(args) != 3 {
+			return fmt.Errorf("%s requires an absolute bundle path and a 32-byte key file", args[0])
+		}
+		key, err := os.ReadFile(args[2])
+		if err != nil {
+			return err
+		}
+		if len(key) != 32 {
+			return fmt.Errorf("wrapping key file must contain exactly 32 bytes")
+		}
+		if args[0] == "export" {
+			return store.ExportExpansionAuthorityRoot(args[1], key)
+		}
+		return store.ImportExpansionAuthorityRoot(args[1], key)
+	default:
+		return fmt.Errorf("unknown authority command %q", args[0])
+	}
 }
 
 func die(format string, args ...any) {

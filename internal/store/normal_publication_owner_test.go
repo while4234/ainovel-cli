@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
@@ -19,7 +20,7 @@ type oneStageNormalPublicationPolicy struct{}
 func (oneStageNormalPublicationPolicy) Mode() domain.RevisionMode { return domain.RevisionModeNormal }
 
 func (oneStageNormalPublicationPolicy) Identity() (string, string) {
-	return "test.normal-publication", "1"
+	return domain.NormalRevisionPolicyID, domain.NormalRevisionPolicyVersion
 }
 
 func (oneStageNormalPublicationPolicy) ApprovalStages(domain.RevisionImpact) ([]domain.RevisionApprovalStage, error) {
@@ -44,10 +45,22 @@ func (oneStageNormalPublicationPolicy) Route(domain.RevisionSession) (*domain.Re
 	return nil, nil
 }
 
+type oneStageAdaptationPublicationPolicy struct {
+	oneStageNormalPublicationPolicy
+}
+
+func (oneStageAdaptationPublicationPolicy) Mode() domain.RevisionMode {
+	return domain.RevisionModeAdaptation
+}
+
+func (oneStageAdaptationPublicationPolicy) Identity() (string, string) {
+	return domain.AdaptationRevisionPolicyID, domain.AdaptationRevisionPolicyVersion
+}
+
 type normalPublicationFixture struct {
 	dir       string
 	store     *Store
-	policy    oneStageNormalPublicationPolicy
+	policy    domain.RevisionPolicy
 	baseline  []domain.VolumeOutline
 	candidate []domain.VolumeOutline
 	progress  *domain.Progress
@@ -56,9 +69,37 @@ type normalPublicationFixture struct {
 	owner     *RevisionPublicationOwner
 }
 
-func newNormalPublicationFixture(t *testing.T, label string) normalPublicationFixture {
+func writeAdaptationPublicationPlan(t *testing.T, fixture normalPublicationFixture) {
 	t.Helper()
+	chapters := fixture.candidate[0].Arcs[0].Chapters
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityChapter,
+		Status:      domain.AdaptationPlanStatusConfirmed,
+		Volumes: []domain.AdaptationVolumePlan{{
+			ID: fixture.candidate[0].ID, Index: 1, Title: fixture.candidate[0].Title, Theme: fixture.candidate[0].Theme,
+			TargetFrom: 1, TargetTo: len(chapters), SourceFrom: 1, SourceTo: len(chapters),
+		}},
+	}
+	for index, outline := range chapters {
+		plan.Chapters = append(plan.Chapters, domain.AdaptationChapterPlan{
+			OutlineEntry: outline, Chapter: index + 1, Title: outline.Title,
+			SourceChapters: []int{index + 1}, SourceRange: domain.SourceRange{From: index + 1, To: index + 1},
+		})
+	}
+	if err := newIO(fixture.dir).WriteJSON(adaptationPlanFile, plan); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newNormalPublicationFixture(t *testing.T, label string) normalPublicationFixture {
+	return newPublicationFixture(t, label, oneStageNormalPublicationPolicy{})
+}
+
+func newPublicationFixture(t *testing.T, label string, policy domain.RevisionPolicy) normalPublicationFixture {
+	t.Helper()
+	useExpansionAuthorityRootForTest(t, filepath.Join(t.TempDir(), "normal-publication-authority"))
 	dir := t.TempDir()
+	writeStoreTestProjectManifest(t, dir, "normal-publication-"+label)
 	st := NewStore(dir)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
@@ -89,7 +130,6 @@ func newNormalPublicationFixture(t *testing.T, label string) normalPublicationFi
 	if err := st.Progress.Save(progress); err != nil {
 		t.Fatal(err)
 	}
-	policy := oneStageNormalPublicationPolicy{}
 	impact, err := domain.NewRevisionImpact("publish exact structure", []domain.RevisionImpactItem{{
 		ArtifactID: domain.NormalStructureSnapshotID, ArtifactKind: domain.NormalArtifactStructureSnapshot,
 		Change: "replace structure", Requirement: domain.StructureImpactRequired, Cause: domain.StructureImpactContentDependency,
@@ -362,6 +402,10 @@ func TestNormalPublicationOwnerBindsCandidateAndOneShotAttempt(t *testing.T) {
 			t.Fatal("successful publication owner rolled back committed formal state")
 		}
 		assertFormalStructure(t, fixture.store, fixture.candidate, 2)
+		progress, progressErr := fixture.store.Progress.Load()
+		if progressErr != nil || progress == nil || progress.Phase != domain.PhaseWriting || progress.CompletionRevalidation == nil || progress.CompletionRevalidation.Status != "pending" || progress.CompletionRevalidation.AcceptedRevisionID != fixture.owner.sessionID || progress.CompletionRevalidation.CurrentStructureSignature != domain.StructureSignature(fixture.candidate) {
+			t.Fatalf("durable completion checkpoint=%+v err=%v", progress, progressErr)
+		}
 	})
 
 	t.Run("restart recovers bound snapshot", func(t *testing.T) {
@@ -417,6 +461,413 @@ func TestNormalPublicationOwnerBindsCandidateAndOneShotAttempt(t *testing.T) {
 	})
 }
 
+func TestNormalPublicationAuthorityRollsBackWriteCommitAndCrashFailures(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		faultFile string
+	}{
+		{"receipt write", expansionPublicationReceiptFile},
+		{"trust write", expansionPublicationTrustFile},
+		{"revision state commit", revisionStateFile},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newNormalPublicationFixture(t, "authority-"+strings.ReplaceAll(test.name, " ", "-"))
+			if err := fixture.store.PublishLayeredStructureForRevision(fixture.owner, fixture.candidate, fixture.input.IdempotencyKey); err != nil {
+				t.Fatal(err)
+			}
+			before, err := capturePublicationAuthoritySnapshot(newIO(fixture.dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			registryBefore := snapshotExpansionAuthorityRegistry(t)
+			restoreFault := fixture.store.SetExpansionWriteFaultForTesting(func(rel, stage string) error {
+				if rel == test.faultFile && stage == "after_temp_sync" {
+					return errors.New("injected authority transaction failure")
+				}
+				return nil
+			})
+			if _, err := fixture.store.Revisions.Publish(fixture.policy, fixture.input); err == nil {
+				t.Fatal("injected publication failure did not fire")
+			}
+			restoreFault()
+			after, err := capturePublicationAuthoritySnapshot(newIO(fixture.dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatalf("authority changed across failed %s\nbefore=%+v\nafter=%+v", test.name, before, after)
+			}
+			if registryAfter := snapshotExpansionAuthorityRegistry(t); !reflect.DeepEqual(registryBefore, registryAfter) {
+				t.Fatalf("external authority registry changed across failed %s\nbefore=%+v\nafter=%+v", test.name, registryBefore, registryAfter)
+			}
+			if err := fixture.store.RollbackLayeredStructureForRevision(fixture.owner); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	t.Run("external private write", func(t *testing.T) {
+		fixture := newNormalPublicationFixture(t, "authority-private-write")
+		if err := fixture.store.PublishLayeredStructureForRevision(fixture.owner, fixture.candidate, fixture.input.IdempotencyKey); err != nil {
+			t.Fatal(err)
+		}
+		before, _ := capturePublicationAuthoritySnapshot(newIO(fixture.dir))
+		expansionAuthorityWriteFault = func(path, stage string) error {
+			if strings.Contains(filepath.ToSlash(path), "/projects/") && stage == "after_sync" {
+				return errors.New("injected protected private-key write failure")
+			}
+			return nil
+		}
+		defer func() { expansionAuthorityWriteFault = nil }()
+		if _, err := fixture.store.Revisions.PublishWithOwner(fixture.policy, fixture.input, fixture.owner); err == nil {
+			t.Fatal("private-key write failure did not fire")
+		}
+		expansionAuthorityWriteFault = nil
+		after, _ := capturePublicationAuthoritySnapshot(newIO(fixture.dir))
+		if !reflect.DeepEqual(before, after) {
+			t.Fatalf("authority changed across private-key failure\nbefore=%+v\nafter=%+v", before, after)
+		}
+		if err := fixture.store.RollbackLayeredStructureForRevision(fixture.owner); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("startup crash recovery", func(t *testing.T) {
+		fixture := newNormalPublicationFixture(t, "authority-crash")
+		if err := fixture.store.PublishLayeredStructureForRevision(fixture.owner, fixture.candidate, fixture.input.IdempotencyKey); err != nil {
+			t.Fatal(err)
+		}
+		beforeState, err := fixture.store.Revisions.loadUnlocked()
+		if err != nil || beforeState.Publication == nil {
+			t.Fatalf("durable publication attempt missing: %v", err)
+		}
+		identity, err := capturePublicationProjectIdentity(fixture.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trust, _, err := createExpansionProjectAuthority(identity.Manifest.ID, fixture.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := newIO(fixture.dir).WriteJSON(expansionPublicationTrustFile, trust); err != nil {
+			t.Fatal(err)
+		}
+		if err := newIO(fixture.dir).WriteJSON(expansionPublicationReceiptFile, ExpansionPublicationReceipt{Version: 1, ProjectID: trust.ProjectID, ProjectInstance: trust.ProjectInstance}); err != nil {
+			t.Fatal(err)
+		}
+		reopened := NewStore(fixture.dir)
+		if err := reopened.RecoverStructureMigration(); err != nil {
+			t.Fatal(err)
+		}
+		after, err := capturePublicationAuthoritySnapshot(newIO(fixture.dir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(beforeState.Publication.AuthoritySnapshot, after) {
+			t.Fatalf("startup recovery did not restore authority snapshot\nwant=%+v\ngot=%+v", beforeState.Publication.AuthoritySnapshot, after)
+		}
+	})
+
+	t.Run("repeated failure retry and committed replay keep one exact generation", func(t *testing.T) {
+		fixture := newNormalPublicationFixture(t, "authority-retry-generation")
+		if err := fixture.store.PublishLayeredStructureForRevision(fixture.owner, fixture.candidate, fixture.input.IdempotencyKey); err != nil {
+			t.Fatal(err)
+		}
+		before := snapshotExpansionAuthorityRegistry(t)
+		restoreFault := fixture.store.SetExpansionWriteFaultForTesting(func(rel, stage string) error {
+			if rel == expansionPublicationReceiptFile && stage == "after_temp_sync" {
+				return errors.New("repeatable receipt failure")
+			}
+			return nil
+		})
+		for attempt := 0; attempt < 2; attempt++ {
+			if _, err := fixture.store.Revisions.PublishWithOwner(fixture.policy, fixture.input, fixture.owner); err == nil {
+				t.Fatal("repeated injected publication failure did not fire")
+			}
+			if got := snapshotExpansionAuthorityRegistry(t); !reflect.DeepEqual(before, got) {
+				t.Fatalf("failed retry %d left an authority generation\nbefore=%+v\nafter=%+v", attempt+1, before, got)
+			}
+		}
+		restoreFault()
+		committed, err := fixture.store.Revisions.PublishWithOwner(fixture.policy, fixture.input, fixture.owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		afterCommit := snapshotExpansionAuthorityRegistry(t)
+		if len(afterCommit) != len(before)+1 {
+			t.Fatalf("successful first publication did not add exactly one authority record: before=%d after=%d", len(before), len(afterCommit))
+		}
+		replayed, err := fixture.store.Revisions.lookupRevisionReceipt(fixture.input.IdempotencyKey, "publish", fixture.owner.publishFingerprint)
+		if err != nil || !reflect.DeepEqual(committed, replayed) {
+			t.Fatalf("committed publication replay=%+v err=%v", replayed, err)
+		}
+		if got := snapshotExpansionAuthorityRegistry(t); !reflect.DeepEqual(afterCommit, got) {
+			t.Fatalf("idempotent replay changed external authority bytes\ncommitted=%+v\nreplay=%+v", afterCommit, got)
+		}
+	})
+}
+
+func TestExpansionPublicationReceiptAndRevisionStateShareOneTransaction(t *testing.T) {
+	fixture := newNormalPublicationFixture(t, "receipt-state-single-transaction")
+	if err := fixture.store.PublishLayeredStructureForRevision(fixture.owner, fixture.candidate, fixture.input.IdempotencyKey); err != nil {
+		t.Fatal(err)
+	}
+
+	receiptWritten := make(chan struct{})
+	releaseCommit := make(chan struct{})
+	restoreFault := fixture.store.SetExpansionWriteFaultForTesting(func(rel, stage string) error {
+		if rel == expansionPublicationReceiptFile && stage == "after_replace" {
+			close(receiptWritten)
+			<-releaseCommit
+		}
+		return nil
+	})
+	defer restoreFault()
+
+	publishResult := make(chan error, 1)
+	go func() {
+		_, err := fixture.store.Revisions.PublishWithOwner(fixture.policy, fixture.input, fixture.owner)
+		publishResult <- err
+	}()
+	select {
+	case <-receiptWritten:
+	case err := <-publishResult:
+		t.Fatalf("publication failed before the signed receipt boundary: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("publication did not reach the signed receipt boundary")
+	}
+
+	competingWriter := make(chan error, 1)
+	go func() {
+		competingWriter <- fixture.store.SaveExpansionAuditorTrust(ExpansionAuditorTrust{PublicKeyHex: strings.Repeat("a", 64)})
+	}()
+	select {
+	case err := <-competingWriter:
+		t.Fatalf("formal writer entered between receipt and revision state commit: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	competingStartup := make(chan *Store, 1)
+	go func() { competingStartup <- NewStore(fixture.dir) }()
+	select {
+	case <-competingStartup:
+		t.Fatal("NewStore entered while the live publisher owned the project transaction")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(releaseCommit)
+	if err := <-publishResult; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case reopened := <-competingStartup:
+		if err := reopened.RecoverStructureMigration(); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("NewStore deadlocked after the live publisher committed")
+	}
+	if err := <-competingWriter; err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := fixture.store.Revisions.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, ok := state.Receipts[fixture.input.IdempotencyKey]
+	if !ok || committed.Result.Stage != domain.RevisionStageCompleted || committed.Result.Generation != state.Generation {
+		t.Fatalf("revision receipt/state generation was not committed atomically: state=%+v receipt=%+v", state, committed)
+	}
+	var publication ExpansionPublicationReceipt
+	if err := newIO(fixture.dir).ReadJSON(expansionPublicationReceiptFile, &publication); err != nil {
+		t.Fatal(err)
+	}
+	if publication.SessionID != committed.Result.ID || publication.SessionRevision != committed.Result.Revision || publication.PublicationGeneration != committed.Result.Generation {
+		t.Fatalf("signed publication receipt does not bind the committed revision generation: publication=%+v revision=%+v", publication, committed.Result)
+	}
+}
+
+func TestCommittedPublicationFinalizeFaultRetryAndUnavailableGC(t *testing.T) {
+	previousRetention := authorityOrphanRetention
+	authorityOrphanRetention = 0
+	defer func() { authorityOrphanRetention = previousRetention }()
+	t.Run("acceptance write failure retries the committed receipt", func(t *testing.T) {
+		fixture := newNormalPublicationFixture(t, "acceptance-finalize-retry")
+		if err := fixture.store.PublishLayeredStructureForRevision(fixture.owner, fixture.candidate, fixture.input.IdempotencyKey); err != nil {
+			t.Fatal(err)
+		}
+		expansionAuthorityWriteFault = func(path, stage string) error {
+			if strings.Contains(filepath.ToSlash(path), "/acceptances/") && stage == "after_sync" {
+				return errors.New("injected acceptance finalize failure")
+			}
+			return nil
+		}
+		if _, err := fixture.store.Revisions.PublishWithOwner(fixture.policy, fixture.input, fixture.owner); err == nil {
+			t.Fatal("acceptance finalize failure did not fire")
+		}
+		expansionAuthorityWriteFault = nil
+		state, err := fixture.store.Revisions.loadUnlocked()
+		if err != nil || state.Receipts[fixture.input.IdempotencyKey].Result.Stage != domain.RevisionStageCompleted {
+			t.Fatalf("formal state was not committed before finalize failure: %v", err)
+		}
+		if _, err := fixture.store.Revisions.PublishWithOwner(fixture.policy, fixture.input, fixture.owner); err != nil {
+			t.Fatalf("idempotent retry did not finish finalize: %v", err)
+		}
+		rootHash, _ := expansionPublicationRootHash(fixture.dir)
+		journalPath, _ := authorityCreationJournalPath(rootHash)
+		if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
+			t.Fatalf("finalized journal remains after retry: %v", err)
+		}
+	})
+
+	for _, unavailable := range []string{"moved", "deleted"} {
+		t.Run("accepted evidence protects "+unavailable+" committed project", func(t *testing.T) {
+			fixture := newNormalPublicationFixture(t, "accepted-evidence-"+unavailable)
+			if err := fixture.store.PublishLayeredStructureForRevision(fixture.owner, fixture.candidate, fixture.input.IdempotencyKey); err != nil {
+				t.Fatal(err)
+			}
+			publicationJournalWrites := 0
+			expansionAuthorityWriteFault = func(path, stage string) error {
+				if strings.Contains(filepath.ToSlash(path), "/publications/") && stage == "after_sync" {
+					publicationJournalWrites++
+					if publicationJournalWrites == 2 {
+						return errors.New("injected accepted journal transition failure")
+					}
+				}
+				return nil
+			}
+			if _, err := fixture.store.Revisions.PublishWithOwner(fixture.policy, fixture.input, fixture.owner); err == nil {
+				t.Fatal("accepted journal transition failure did not fire")
+			}
+			expansionAuthorityWriteFault = nil
+			rootHash, err := expansionPublicationRootHash(fixture.dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journalPath, _ := authorityCreationJournalPath(rootHash)
+			var journal expansionAuthorityCreationJournal
+			if err := readProtectedAuthorityJSONStrict(journalPath, &journal); err != nil || journal.State != authorityCreationPending {
+				t.Fatalf("pending committed journal missing: state=%q err=%v", journal.State, err)
+			}
+			recordPath, _ := authorityProjectRecordPath(journal.ProjectInstance)
+			if unavailable == "moved" {
+				if err := os.Rename(fixture.dir, fixture.dir+"-moved"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.RemoveAll(fixture.dir); err != nil {
+				t.Fatal(err)
+			}
+			report, err := ReconcileExpansionAuthorityOrphans()
+			if err != nil || report.Finalized != 1 {
+				t.Fatalf("committed unavailable reconciliation report=%+v err=%v", report, err)
+			}
+			if _, err := os.Stat(recordPath); err != nil {
+				t.Fatalf("committed private record was deleted: %v", err)
+			}
+			if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
+				t.Fatalf("committed journal was not finalized: %v", err)
+			}
+		})
+	}
+}
+
+func TestAdaptationCommittedPublicationFinalizeFaultRetryAndUnavailableGC(t *testing.T) {
+	previousRetention := authorityOrphanRetention
+	authorityOrphanRetention = 0
+	defer func() { authorityOrphanRetention = previousRetention }()
+
+	for _, fault := range []struct {
+		name      string
+		pathPart  string
+		stage     string
+		writeCall int
+	}{
+		{name: "before acceptance replace", pathPart: "/acceptances/", stage: "after_sync", writeCall: 1},
+		{name: "after acceptance replace", pathPart: "/acceptances/", stage: "after_replace", writeCall: 1},
+		{name: "before accepted journal replace", pathPart: "/publications/", stage: "after_sync", writeCall: 2},
+		{name: "after accepted journal replace", pathPart: "/publications/", stage: "after_replace", writeCall: 2},
+	} {
+		t.Run(fault.name, func(t *testing.T) {
+			defer func() { expansionAuthorityWriteFault = nil }()
+			label := "adaptation-" + strings.ReplaceAll(fault.name, " ", "-")
+			fixture := newPublicationFixture(t, label, oneStageAdaptationPublicationPolicy{})
+			writeAdaptationPublicationPlan(t, fixture)
+			if _, _, err := fixture.store.Revisions.loadOrCreateExpansionPublicationAuthority("normal-publication-" + label); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			expansionAuthorityWriteFault = func(path, stage string) error {
+				if strings.Contains(filepath.ToSlash(path), fault.pathPart) && stage == fault.stage {
+					calls++
+					if calls == fault.writeCall {
+						return errors.New("injected adaptation finalize fault")
+					}
+				}
+				return nil
+			}
+			if _, err := fixture.store.Revisions.PublishWithOwner(fixture.policy, fixture.input, fixture.owner); err == nil {
+				t.Fatal("adaptation finalize fault did not fire")
+			}
+			expansionAuthorityWriteFault = nil
+			result, err := fixture.store.Revisions.Publish(fixture.policy, fixture.input)
+			if err != nil || result.Stage != domain.RevisionStageCompleted {
+				t.Fatalf("exact adaptation retry did not finish finalize: result=%+v err=%v", result, err)
+			}
+			restarted := NewStore(fixture.dir).Revisions
+			if replay, err := restarted.Publish(fixture.policy, fixture.input); err != nil || replay.Stage != domain.RevisionStageCompleted {
+				t.Fatalf("adaptation restart exact replay failed: result=%+v err=%v", replay, err)
+			}
+			conflict := fixture.input
+			conflict.ExpectedRevision++
+			if _, err := restarted.Publish(fixture.policy, conflict); err == nil {
+				t.Fatal("same-key different adaptation fingerprint bypassed exact replay")
+			}
+		})
+	}
+
+	for _, unavailable := range []string{"moved", "deleted"} {
+		t.Run("committed adaptation survives "+unavailable+" output GC", func(t *testing.T) {
+			defer func() { expansionAuthorityWriteFault = nil }()
+			label := "adaptation-unavailable-" + unavailable
+			fixture := newPublicationFixture(t, label, oneStageAdaptationPublicationPolicy{})
+			writeAdaptationPublicationPlan(t, fixture)
+			if _, _, err := fixture.store.Revisions.loadOrCreateExpansionPublicationAuthority("normal-publication-" + label); err != nil {
+				t.Fatal(err)
+			}
+			expansionAuthorityWriteFault = func(path, stage string) error {
+				if strings.Contains(filepath.ToSlash(path), "/acceptances/") && stage == "after_replace" {
+					return errors.New("injected adaptation acceptance post-replace failure")
+				}
+				return nil
+			}
+			if _, err := fixture.store.Revisions.Publish(fixture.policy, fixture.input); err == nil {
+				t.Fatal("adaptation accepted transition fault did not fire")
+			}
+			expansionAuthorityWriteFault = nil
+			rootHash, _ := expansionPublicationRootHash(fixture.dir)
+			journalPath, _ := authorityCreationJournalPath(rootHash)
+			var journal expansionAuthorityCreationJournal
+			if err := readProtectedAuthorityJSONStrict(journalPath, &journal); err != nil {
+				t.Fatal(err)
+			}
+			recordPath, _ := authorityProjectRecordPath(journal.ProjectInstance)
+			if unavailable == "moved" {
+				if err := os.Rename(fixture.dir, fixture.dir+"-moved"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.RemoveAll(fixture.dir); err != nil {
+				t.Fatal(err)
+			}
+			report, err := ReconcileExpansionAuthorityOrphans()
+			if err != nil || report.Finalized != 1 {
+				t.Fatalf("adaptation reconciliation report=%+v err=%v", report, err)
+			}
+			if _, err := os.Stat(recordPath); err != nil {
+				t.Fatalf("adaptation owner capability was removed: %v", err)
+			}
+		})
+	}
+}
+
 func snapshotFormalWriterFiles(t *testing.T, root string) map[string]string {
 	t.Helper()
 	result := make(map[string]string)
@@ -444,6 +895,47 @@ func snapshotFormalWriterFiles(t *testing.T, root string) map[string]string {
 		return nil
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+type authorityRegistryFileSnapshot struct {
+	Data   string
+	Mode   fs.FileMode
+	Digest string
+}
+
+func snapshotExpansionAuthorityRegistry(t *testing.T) map[string]authorityRegistryFileSnapshot {
+	t.Helper()
+	root, err := expansionAuthorityRootDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projects := filepath.Join(root, "projects")
+	result := make(map[string]authorityRegistryFileSnapshot)
+	err = filepath.WalkDir(projects, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		result[filepath.Base(path)] = authorityRegistryFileSnapshot{Data: string(data), Mode: info.Mode().Perm(), Digest: domain.ContentSignature(data)}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 	return result

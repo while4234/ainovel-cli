@@ -20,6 +20,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/globalprompt"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
+	"github.com/voocel/ainovel-cli/internal/modeldiag"
 	"github.com/voocel/ainovel-cli/internal/modelprofile"
 	"github.com/voocel/ainovel-cli/internal/promptcompile"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
@@ -128,6 +129,7 @@ func (d Deps) detailAuditModel() imp.LLMChat {
 }
 
 func RunSource(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if deps.Store == nil || deps.LLM == nil {
 		return nil, fmt.Errorf("deps incomplete")
 	}
@@ -154,6 +156,7 @@ func RunSource(ctx context.Context, deps Deps, opts Options) (<-chan Event, erro
 }
 
 func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(Stage, int, int, string, error)) error {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if deps.Store == nil || deps.LLM == nil {
 		return fmt.Errorf("deps incomplete")
 	}
@@ -955,6 +958,7 @@ func (d Deps) adaptationOutlineAuditRetryMaxAttempts() int {
 }
 
 func PrepareRun(ctx context.Context, deps Deps, brief string) (*domain.AdaptationPlan, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	proposal, err := BuildAdaptationProposal(deps, ProposalOptions{
 		Brief:         brief,
 		Granularity:   inferGranularity(brief),
@@ -1017,6 +1021,7 @@ func prepareProposalPlannerInputs(ctx context.Context, deps Deps, opts ProposalO
 }
 
 func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts ProposalOptions) (*domain.AdaptationPlan, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	opts, manifest, reports, sourceFoundation, err := prepareProposalPlannerInputs(ctx, deps, opts)
 	if err != nil {
 		return nil, err
@@ -1049,6 +1054,7 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 }
 
 func BuildAdaptationProposalVolumesContext(ctx context.Context, deps Deps, opts ProposalOptions) (*ProposalStageResult, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if err := refuseProposalVolumeStageRegression(deps); err != nil {
 		return nil, err
 	}
@@ -1109,10 +1115,12 @@ func refuseProposalVolumeStageRegression(deps Deps) error {
 }
 
 func ReviseAdaptationProposal(ctx context.Context, deps Deps, opts ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	return ReviseAdaptationProposalContext(ctx, deps, opts)
 }
 
 func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if deps.Store == nil {
 		return nil, fmt.Errorf("store is required")
 	}
@@ -1221,6 +1229,7 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 }
 
 func ReviseAdaptationVolumeReviewContext(ctx context.Context, deps Deps, opts ProposalRevisionOptions) (*domain.AdaptationVolumeReview, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if deps.Store == nil {
 		return nil, fmt.Errorf("store is required")
 	}
@@ -1310,6 +1319,7 @@ func ReviseAdaptationVolumeReviewContext(ctx context.Context, deps Deps, opts Pr
 }
 
 func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts ProposalDetailsOptions) (*domain.AdaptationPlan, error) {
+	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if deps.Store == nil {
 		return nil, fmt.Errorf("store is required")
 	}
@@ -5492,16 +5502,27 @@ func generatePlannerTextForStage(
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
+		recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: modeldiag.StoreFromContext(ctx), Task: "adapt_planner_" + string(stage), Batch: attempt, System: compiledSystem, User: []byte(compiledUser), InputLimitBytes: 60 * 1024, OutputLimitTokens: maxTokens, SelectorCounts: map[string]int{"model_calls": 1}, SplitReason: string(stage)})
+		if beginErr != nil {
+			return "", beginErr
+		}
 		resp, err := llm.Generate(ctx, messages, nil, callOpts...)
 		if err == nil && resp == nil {
+			_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", nil)
 			err = fmt.Errorf("planner llm returned nil response")
 		}
 		if err == nil {
 			text := resp.Message.TextContent()
 			if strings.TrimSpace(text) != "" {
+				if diagnosticErr := recorder.Finish(modeldiag.StatusCompleted, text, resp.Message.Usage); diagnosticErr != nil {
+					return "", diagnosticErr
+				}
 				return text, nil
 			}
+			_ = recorder.Finish(modeldiag.StatusEmptyResponse, "", resp.Message.Usage)
 			err = fmt.Errorf("planner llm returned empty response")
+		} else {
+			_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
 		}
 		lastErr = err
 		attemptLimit := plannerGenerateAttemptLimit(err, maxAttempts)

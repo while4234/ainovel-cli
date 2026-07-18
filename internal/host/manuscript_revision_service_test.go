@@ -740,12 +740,19 @@ func (*scriptedManuscriptModel) GenerateStream(context.Context, []agentcore.Mess
 func (*scriptedManuscriptModel) SupportsTools() bool { return false }
 
 func TestManuscriptGenerationErrorClassesArePrecise(t *testing.T) {
-	for message, want := range map[string]string{
-		"status 401 unauthorized": "provider_auth", "rate limit quota": "provider_quota", "manuscript model returned an empty response": "empty_response",
-		"decode manuscript segment: invalid character": "invalid_json", "missing segment 2": "missing_segment", "candidate signature drift": "signature_drift",
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{&domain.ManuscriptRevisionError{Class: "provider_auth", Err: errors.New("provider rejected credentials")}, "provider_auth"},
+		{&domain.ManuscriptRevisionError{Class: "provider_quota", Err: errors.New("provider rejected request")}, "provider_quota"},
+		{&domain.ManuscriptRevisionError{Class: "empty_response", Err: errors.New("empty")}, "empty_response"},
+		{&domain.ManuscriptRevisionError{Class: "invalid_json", Err: errors.New("decode")}, "invalid_json"},
+		{&domain.ManuscriptRevisionError{Class: "missing_segment", Err: errors.New("missing")}, "missing_segment"},
+		{&domain.ManuscriptRevisionError{Class: "signature_drift", Err: errors.New("drift")}, "signature_drift"},
 	} {
-		if got := classifyManuscriptGenerationError(errors.New(message)); got != want {
-			t.Fatalf("classify %q = %q, want %q", message, got, want)
+		if got := classifyManuscriptGenerationError(test.err); got != test.want {
+			t.Fatalf("classify %T = %q, want %q", test.err, got, test.want)
 		}
 	}
 }

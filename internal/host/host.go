@@ -55,6 +55,7 @@ type Host struct {
 	usageCancel       context.CancelFunc // 停掉 autoSaveLoop 并触发最后一次 flush
 	budget            *BudgetSentinel    // 预算政策；未启用为 nil（方法 nil 安全）
 	budgetDetach      func()
+	pricingRefresh    *modelreg.PricingRefresh
 	notifier          *notify.Notifier // 无人值守告警；未启用为 nil（Send nil 安全）
 
 	events   chan Event
@@ -98,9 +99,6 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		return nil, err
 	}
 	slog.Info("启动", "module", "boot", "provider", cfg.Provider, "model", cfg.ModelName, "output", cfg.OutputDir)
-
-	// 起后台 goroutine 从 OpenRouter 刷新模型元数据（窗口/价格），磁盘缓存 24h。
-	modelreg.StartPricingRefresh(modelreg.DefaultRegistry(), bootstrap.DefaultConfigDir())
 
 	store := storepkg.NewStore(cfg.OutputDir)
 	if err := store.RecoverStructureMigration(); err != nil {
@@ -212,6 +210,9 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		done:              make(chan struct{}, 4),
 		lifecycle:         lifecycleIdle,
 	}
+	// Keep refresh ownership on Host so Close can cancel and join the cache
+	// writer before a project directory or test home is removed.
+	h.pricingRefresh = modelreg.StartPricingRefresh(modelreg.DefaultRegistry(), bootstrap.DefaultConfigDir())
 	h.observer = newObserver(coordinator, store, h.emitEvent, h.emitDelta, h.emitClear)
 	if cfg.Notify.IsEnabled() {
 		h.notifier = notify.New(cfg.Notify.Command, cfg.Notify.Events)
@@ -1193,6 +1194,10 @@ func (h *Host) Close() {
 	if h.usageCancel != nil {
 		h.usageCancel()
 		h.usageCancel = nil
+	}
+	if h.pricingRefresh != nil {
+		h.pricingRefresh.Close()
+		h.pricingRefresh = nil
 	}
 	if err := h.usage.SaveNow(); err != nil {
 		slog.Warn("usage 退出前落盘失败", "module", "usage", "err", err)
@@ -4194,7 +4199,7 @@ func (h *Host) CoCreateStream(ctx context.Context, history []CoCreateMessage, on
 		return CoCreateReply{}, err
 	}
 	defer release()
-	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), coCreateSystemPromptWithSimulation(h.store, h.cfg.EffectiveSimulationMode()), history, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), coCreateSystemPromptWithSimulation(h.store, h.cfg.EffectiveSimulationMode()), history, onProgress, h.store)
 }
 
 // StageCoCreateStream 阶段共创：在已写内容的基础上规划后续方向。
@@ -4205,7 +4210,7 @@ func (h *Host) StageCoCreateStream(ctx context.Context, history []CoCreateMessag
 		return CoCreateReply{}, err
 	}
 	defer release()
-	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), stageSystemPromptWithSimulation(h.store, h.cfg.EffectiveSimulationMode()), history, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), stageSystemPromptWithSimulation(h.store, h.cfg.EffectiveSimulationMode()), history, onProgress, h.store)
 }
 
 // ContinuationCoCreateStream uses the written source novel as immutable story
@@ -4223,7 +4228,7 @@ func (h *Host) AdaptCoCreateStream(ctx context.Context, history []CoCreateMessag
 		return CoCreateReply{}, err
 	}
 	defer release()
-	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), adaptSystemPrompt(h.store), history, onProgress)
+	return coCreateStream(ctx, h.models, h.store.Sessions, h.coCreateTimeout(), h.coCreateMaxTokens(), adaptSystemPrompt(h.store), history, onProgress, h.store)
 }
 
 func (h *Host) EnsureAdaptationCoCreateBriefing(ctx context.Context, sourcePath string, intent domain.AdaptationCoCreateIntent) (*domain.AdaptationCoCreateBriefing, error) {

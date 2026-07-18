@@ -39,9 +39,25 @@ type ProjectStore struct {
 	RuntimeRoot string
 	openMu      sync.Mutex
 	configMu    sync.Mutex
+	startupErr  error
+}
+
+var ErrProjectStartupRecovery = fmt.Errorf("project startup recovery required")
+
+func (s *ProjectStore) requireStartupRecovery() error {
+	if s == nil {
+		return fmt.Errorf("%w: project store is unavailable", ErrProjectStartupRecovery)
+	}
+	if s.startupErr != nil {
+		return fmt.Errorf("%w: legacy migration recovery failed", ErrProjectStartupRecovery)
+	}
+	return nil
 }
 
 func (s *ProjectStore) ProjectScheduledResumeEnabled(manifest ProjectManifest) (bool, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return false, err
+	}
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 	cfg, found, err := s.loadProjectConfig(manifest)
@@ -55,6 +71,9 @@ func (s *ProjectStore) ProjectScheduledResumeEnabled(manifest ProjectManifest) (
 }
 
 func (s *ProjectStore) SaveProjectScheduledResumeEnabled(manifest ProjectManifest, enabled bool) error {
+	if err := s.requireStartupRecovery(); err != nil {
+		return err
+	}
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 	cfg, found, err := s.loadProjectConfig(manifest)
@@ -69,7 +88,11 @@ func (s *ProjectStore) SaveProjectScheduledResumeEnabled(manifest ProjectManifes
 }
 
 func NewProjectStore(runtimeRoot string) *ProjectStore {
-	return &ProjectStore{RuntimeRoot: filepath.Clean(runtimeRoot)}
+	store := &ProjectStore{RuntimeRoot: filepath.Clean(runtimeRoot)}
+	legacyMigrationMu.Lock()
+	store.startupErr = store.recoverLegacyMigrationJournals()
+	legacyMigrationMu.Unlock()
+	return store
 }
 
 func (s *ProjectStore) ProjectsDir() string {
@@ -81,10 +104,16 @@ func (s *ProjectStore) ProjectTrashDir() string {
 }
 
 func (s *ProjectStore) CreateProject(name string) (ProjectManifest, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return ProjectManifest{}, err
+	}
 	return s.createProject(name)
 }
 
 func (s *ProjectStore) CreateProjectWithStyle(name, style string) (ProjectManifest, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return ProjectManifest{}, err
+	}
 	style = assets.NormalizeStyleID(style)
 	if !assets.HasStyle(style) {
 		return ProjectManifest{}, fmt.Errorf("unknown style %q", style)
@@ -133,6 +162,9 @@ func (s *ProjectStore) createProject(name string) (ProjectManifest, error) {
 }
 
 func (s *ProjectStore) CloneProject(sourceID, name string) (ProjectManifest, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return ProjectManifest{}, err
+	}
 	sourceID = strings.TrimSpace(sourceID)
 	if err := validateProjectID(sourceID); err != nil {
 		return ProjectManifest{}, err
@@ -203,6 +235,9 @@ func (s *ProjectStore) CloneProject(sourceID, name string) (ProjectManifest, err
 }
 
 func (s *ProjectStore) projectManifestWithoutTouch(id string) (ProjectManifest, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return ProjectManifest{}, err
+	}
 	root := filepath.Join(s.ProjectsDir(), id)
 	manifest, err := readProjectManifest(filepath.Join(root, "project.json"))
 	if err != nil {
@@ -215,6 +250,9 @@ func (s *ProjectStore) projectManifestWithoutTouch(id string) (ProjectManifest, 
 }
 
 func cloneProjectTree(sourceRoot, targetRoot string) error {
+	if err := validateCloneSourceTree(sourceRoot); err != nil {
+		return err
+	}
 	return filepath.WalkDir(sourceRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -226,14 +264,17 @@ func cloneProjectTree(sourceRoot, targetRoot string) error {
 		if relative == "." {
 			return nil
 		}
-		if cloneExcludedPath(relative) || cloneTemporaryName(entry.Name()) {
+		if entry.IsDir() && !cloneProgramOwnedDirectory(relative) {
+			return filepath.SkipDir
+		}
+		if !entry.IsDir() && (cloneExcludedPath(relative) || cloneTemporaryName(entry.Name())) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("clone project: symbolic links are not supported: %s", relative)
+			return fmt.Errorf("clone project source contains an unsupported symbolic link")
 		}
 		target := filepath.Join(targetRoot, relative)
 		if entry.IsDir() {
@@ -249,12 +290,145 @@ func cloneProjectTree(sourceRoot, targetRoot string) error {
 	})
 }
 
+func cloneProgramOwnedDirectory(relative string) bool {
+	path := strings.Trim(strings.ToLower(filepath.ToSlash(filepath.Clean(relative))), "/")
+	if path == "output" || path == "uploads" || path == "uploads/adaptation" || path == "exports" {
+		return true
+	}
+	if strings.HasPrefix(path, "uploads/adaptation/") || strings.HasPrefix(path, "exports/") {
+		return true
+	}
+	if !strings.HasPrefix(path, "output/") {
+		return false
+	}
+	rel := strings.TrimPrefix(path, "output/")
+	if rel == "meta/runtime" || strings.HasPrefix(rel, "meta/runtime/") {
+		return false
+	}
+	root := strings.Split(rel, "/")[0]
+	switch root {
+	case "chapters", "summaries", "structure", "meta", "novel", "logs", "checkpoints", "sessions", "exports":
+		return true
+	default:
+		return false
+	}
+}
+
 func cloneExcludedPath(relative string) bool {
-	path := strings.ToLower(filepath.ToSlash(relative))
-	return path == "project.json" ||
-		path == filepath.ToSlash(actionRegistryRelPath) ||
-		path == "output/meta/runtime" ||
-		strings.HasPrefix(path, "output/meta/runtime/")
+	path := strings.ToLower(filepath.ToSlash(filepath.Clean(relative)))
+	return !cloneProgramOwnedPath(path)
+}
+
+// cloneProgramOwnedPath is an allowlist of persisted application schemas. It
+// intentionally rejects arbitrary user files even when they are placed under
+// a familiar top-level directory. New durable schemas must be added here
+// explicitly before validation clones may copy them.
+func cloneProgramOwnedPath(path string) bool {
+	path = strings.Trim(strings.ToLower(filepath.ToSlash(filepath.Clean(path))), "/")
+	if path == "" || path == "." || path == "project.json" || path == filepath.ToSlash(actionRegistryRelPath) {
+		return false
+	}
+	for _, component := range strings.Split(path, "/") {
+		if cloneSensitivePathComponent(component) || cloneTemporaryName(component) {
+			return false
+		}
+	}
+	if strings.HasPrefix(path, "uploads/adaptation/") {
+		return cloneAllowedExtension(path, ".txt", ".md", ".json", ".epub")
+	}
+	if strings.HasPrefix(path, "exports/") {
+		return cloneAllowedExtension(path, ".txt", ".epub", ".json")
+	}
+	if !strings.HasPrefix(path, "output/") {
+		return false
+	}
+	rel := strings.TrimPrefix(path, "output/")
+	if rel == "meta/runtime" || strings.HasPrefix(rel, "meta/runtime/") {
+		return false
+	}
+	root := strings.Split(rel, "/")[0]
+	switch root {
+	case "chapters", "summaries", "structure", "meta", "novel", "logs", "checkpoints", "sessions", "exports":
+		return cloneAllowedExtension(rel, ".json", ".jsonl", ".md", ".txt", ".epub", ".log")
+	case "outline.json", "layered_outline.json", "progress.json", "world.json", "characters.json", "cast.json", "signals.json", "user_rules.json":
+		return !strings.Contains(rel, "/")
+	default:
+		return false
+	}
+}
+
+func cloneAllowedExtension(path string, extensions ...string) bool {
+	extension := strings.ToLower(filepath.Ext(path))
+	for _, allowed := range extensions {
+		if extension == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneSensitivePathComponent(component string) bool {
+	component = strings.ToLower(strings.TrimSpace(component))
+	if component == ".ainovel" || component == ".ssh" || component == ".aws" ||
+		component == "auth" || component == "credentials" || component == "secrets" {
+		return true
+	}
+	if component == ".env" || strings.HasPrefix(component, ".env.") ||
+		component == "auth.json" || strings.HasPrefix(component, "credentials.") ||
+		component == "credentials.json" || strings.HasPrefix(component, "secrets.") ||
+		component == "secrets.json" || strings.HasPrefix(component, "id_rsa") ||
+		strings.HasPrefix(component, "id_ed25519") || component == "token" ||
+		strings.HasPrefix(component, "token.") || strings.Contains(component, "oauth") ||
+		component == ".netrc" || component == ".npmrc" || component == ".git-credentials" ||
+		strings.Contains(component, "keystore") || strings.HasPrefix(component, "secret.") {
+		return true
+	}
+	switch filepath.Ext(component) {
+	case ".pem", ".key", ".p12", ".pfx":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateCloneSourceTree(sourceRoot string) error {
+	identities := make(map[string]string)
+	err := filepath.WalkDir(sourceRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(sourceRoot, path)
+		if err != nil || relative == "." {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("clone project source contains an unsupported link or junction")
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("clone project source contains an unsupported special file")
+		}
+		identity, links, identityErr := cloneFileIdentity(path, info)
+		if identityErr != nil {
+			return fmt.Errorf("clone project source file identity is unavailable")
+		}
+		if links > 1 {
+			return fmt.Errorf("clone project source contains an unsupported hardlink identity")
+		}
+		if previous, exists := identities[identity]; exists {
+			_ = previous
+			return fmt.Errorf("clone project source contains a duplicate file identity")
+		}
+		identities[identity] = relative
+		return nil
+	})
+	return err
 }
 
 func cloneTemporaryName(name string) bool {
@@ -373,6 +547,9 @@ func rebaseProjectPath(value, oldRoot, newRoot string) (string, bool) {
 }
 
 func (s *ProjectStore) ListProjects() ([]ProjectManifest, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(s.ProjectsDir())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -412,6 +589,9 @@ func (s *ProjectStore) ListProjects() ([]ProjectManifest, error) {
 }
 
 func (s *ProjectStore) OpenProject(id string) (ProjectManifest, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return ProjectManifest{}, err
+	}
 	// Opening refreshes project.json. Serialize the read-modify-rename cycle so
 	// concurrent project-scoped HTTP requests cannot race on Windows.
 	s.openMu.Lock()
@@ -441,6 +621,9 @@ func (s *ProjectStore) OpenProject(id string) (ProjectManifest, error) {
 }
 
 func (s *ProjectStore) RenameProject(id, name string) (ProjectManifest, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return ProjectManifest{}, err
+	}
 	if err := validateProjectID(strings.TrimSpace(id)); err != nil {
 		return ProjectManifest{}, err
 	}
@@ -466,6 +649,9 @@ func (s *ProjectStore) RenameProject(id, name string) (ProjectManifest, error) {
 }
 
 func (s *ProjectStore) TrashProject(id string) (ProjectManifest, string, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return ProjectManifest{}, "", err
+	}
 	id = strings.TrimSpace(id)
 	if err := validateProjectID(id); err != nil {
 		return ProjectManifest{}, "", err
@@ -505,6 +691,9 @@ func (s *ProjectStore) TrashProject(id string) (ProjectManifest, string, error) 
 }
 
 func (s *ProjectStore) ListTrashedProjects() ([]ProjectManifest, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(s.ProjectTrashDir())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -550,6 +739,9 @@ func (s *ProjectStore) ListTrashedProjects() ([]ProjectManifest, error) {
 }
 
 func (s *ProjectStore) ClearProjectTrash() (int, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return 0, err
+	}
 	trashDir := s.ProjectTrashDir()
 	entries, err := os.ReadDir(trashDir)
 	if err != nil {
@@ -571,10 +763,16 @@ func (s *ProjectStore) ClearProjectTrash() (int, error) {
 }
 
 func (s *ProjectStore) ListTrashProjects() ([]ProjectManifest, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return nil, err
+	}
 	return s.ListTrashedProjects()
 }
 
 func (s *ProjectStore) RestoreTrashProject(id string) (ProjectManifest, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return ProjectManifest{}, err
+	}
 	if err := validateProjectID(strings.TrimSpace(id)); err != nil {
 		return ProjectManifest{}, err
 	}
@@ -610,6 +808,9 @@ func (s *ProjectStore) RestoreTrashProject(id string) (ProjectManifest, error) {
 }
 
 func (s *ProjectStore) EmptyTrashProjects() (int, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return 0, err
+	}
 	return s.ClearProjectTrash()
 }
 
@@ -672,6 +873,9 @@ func removeAllWithRetry(path string) error {
 }
 
 func (s *ProjectStore) OpenProjectHost(cfg bootstrap.Config, bundle assets.Bundle, manifest ProjectManifest) (*host.Host, error) {
+	if err := s.requireStartupRecovery(); err != nil {
+		return nil, err
+	}
 	manifest = s.normalizeManifest(manifest.RootDir, manifest)
 	if err := s.ensureProjectDirs(manifest); err != nil {
 		return nil, err
@@ -1023,6 +1227,9 @@ func mergeProviderModelMetadata(primary, fallback []string) []string {
 }
 
 func (s *ProjectStore) SaveProjectStyle(manifest ProjectManifest, style string) error {
+	if err := s.requireStartupRecovery(); err != nil {
+		return err
+	}
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 	return s.saveProjectStyle(manifest, style)
@@ -1048,6 +1255,9 @@ func (s *ProjectStore) saveProjectStyle(manifest ProjectManifest, style string) 
 // project has not already selected that stage. Existing project preferences are
 // therefore never migrated or overwritten by changes to the product defaults.
 func (s *ProjectStore) InitializeProjectStageRoutes(manifest ProjectManifest, routes map[string]bootstrap.RoleConfig) error {
+	if err := s.requireStartupRecovery(); err != nil {
+		return err
+	}
 	if len(routes) == 0 {
 		return nil
 	}
@@ -1075,6 +1285,9 @@ func (s *ProjectStore) InitializeProjectStageRoutes(manifest ProjectManifest, ro
 }
 
 func (s *ProjectStore) SaveProjectSimulationMode(manifest ProjectManifest, mode string) error {
+	if err := s.requireStartupRecovery(); err != nil {
+		return err
+	}
 	normalized, err := bootstrap.NormalizeSimulationMode(mode)
 	if err != nil {
 		return err

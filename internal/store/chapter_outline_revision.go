@@ -138,13 +138,13 @@ func (s *Store) deleteRevisedChapterArtifacts(chapters []int) error {
 		return fmt.Errorf("delete revised chapter cast appearances: %w", err)
 	}
 	for _, chapter := range revisedChapters {
-		if err := s.Drafts.DeleteChapterArtifacts(chapter); err != nil {
+		if err := s.Drafts.deleteChapterArtifactsOwned(chapter); err != nil {
 			return fmt.Errorf("delete chapter %d draft artifacts: %w", chapter, err)
 		}
-		if err := s.Summaries.DeleteChapterSummary(chapter); err != nil {
+		if err := s.Summaries.deleteChapterSummaryOwned(chapter); err != nil {
 			return fmt.Errorf("delete chapter %d summary: %w", chapter, err)
 		}
-		if err := s.World.DeleteReview(chapter); err != nil {
+		if err := s.World.deleteReviewOwned(chapter); err != nil {
 			return fmt.Errorf("delete chapter %d review: %w", chapter, err)
 		}
 		if err := s.Adaptation.deleteCheck(chapter); err != nil {

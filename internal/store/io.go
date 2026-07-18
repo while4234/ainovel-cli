@@ -75,7 +75,10 @@ func (io *IO) WriteFileUnlocked(rel string, data []byte) error {
 	if err := io.injectWriteFault(rel, "after_temp_sync"); err != nil {
 		return fmt.Errorf("write %s after temp sync: %w", rel, err)
 	}
-	return io.replaceFile(rel, tmpPath, p)
+	if err := io.replaceFile(rel, tmpPath, p); err != nil {
+		return err
+	}
+	return recordManuscriptMutation(io.dir, rel, data)
 }
 
 func (io *IO) injectWriteFault(rel, stage string) error {
@@ -145,7 +148,10 @@ func (io *IO) AppendLineUnlocked(rel string, data []byte) error {
 	if _, err = f.Write(data); err != nil {
 		return err
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return recordManuscriptMutation(io.dir, rel, data)
 }
 
 func (io *IO) RemoveFile(rel string) error {
@@ -166,7 +172,10 @@ func (io *IO) RemoveFileUnlocked(rel string) error {
 	if os.IsNotExist(err) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return recordManuscriptMutation(io.dir, rel, nil)
 }
 
 func (io *IO) replaceFile(rel, tempPath, targetPath string) error {
@@ -253,7 +262,10 @@ func (io *IO) RemoveAllRelUnlocked(rel string) (bool, error) {
 		}
 		return false, err
 	}
-	return true, os.RemoveAll(target)
+	if err := os.RemoveAll(target); err != nil {
+		return true, err
+	}
+	return true, recordManuscriptMutation(io.dir, rel, nil)
 }
 
 func removeInterruptedReplacementState(targetPath string) (bool, error) {

@@ -241,6 +241,7 @@ func TestExpansionPlannerPreviewStaleCancelExpiryAndSingleConfirm(t *testing.T) 
 	if err != nil || domain.StructureSignature(formal) != preview.CandidateSignature {
 		t.Fatalf("formal expansion candidate was not atomically published: %v", err)
 	}
+	assertExpansionPublicationAuthorityFiles(t, st.Dir())
 
 	otherStore, otherCurrent := expansionTestStore(t)
 	otherTargetID := otherCurrent[0].Arcs[0].Chapters[1].ID
@@ -1413,6 +1414,23 @@ func TestAdaptationExpansionProductionFullFlowUsesOneAuditedContract(t *testing.
 	if err != nil || formal == nil || len(formal.Chapters) != len(candidate.Chapters) || formal.Chapters[len(formal.Chapters)-1].ID != candidate.Chapters[len(candidate.Chapters)-1].ID {
 		t.Fatalf("published adaptation contract is not the audited candidate: plan=%+v err=%v", formal, err)
 	}
+	assertExpansionPublicationAuthorityFiles(t, st.Dir())
+}
+
+func assertExpansionPublicationAuthorityFiles(t *testing.T, outputDir string) {
+	t.Helper()
+	for _, rel := range []string{
+		"meta/revisions/expansion-publication-trust.json",
+		"meta/revisions/expansion-publication-receipt.json",
+	} {
+		info, err := os.Stat(filepath.Join(outputDir, filepath.FromSlash(rel)))
+		if err != nil || info.Size() == 0 {
+			t.Fatalf("real publish path did not generate %s: %v", rel, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outputDir, "meta", "runtime", "expansion-publication-authority.json")); !os.IsNotExist(err) {
+		t.Fatalf("real publish path retained project-local private authority: %v", err)
+	}
 }
 
 func adaptationExpansionStructure(plan domain.AdaptationPlan) []domain.VolumeOutline {
@@ -1436,7 +1454,7 @@ func adaptationExpansionStructure(plan domain.AdaptationPlan) []domain.VolumeOut
 
 func expansionTestStore(t *testing.T) (*storepkg.Store, []domain.VolumeOutline) {
 	t.Helper()
-	st := storepkg.NewStore(t.TempDir())
+	st := newPublicationTestStore(t)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}

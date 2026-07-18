@@ -2,7 +2,9 @@ package host
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -51,6 +53,20 @@ type AdaptationRevisionCommandReceiptRequest struct {
 	ImpactSignature  string
 }
 
+type committedAdaptationPublicationError struct {
+	cause error
+}
+
+func (e *committedAdaptationPublicationError) Error() string { return e.cause.Error() }
+func (e *committedAdaptationPublicationError) Unwrap() error { return e.cause }
+
+type revisionRuntimeRestoreError struct {
+	cause error
+}
+
+func (e *revisionRuntimeRestoreError) Error() string { return e.cause.Error() }
+func (e *revisionRuntimeRestoreError) Unwrap() error { return e.cause }
+
 func NewAdaptationRevisionService(st *storepkg.Store) *AdaptationRevisionService {
 	return &AdaptationRevisionService{store: st}
 }
@@ -76,7 +92,13 @@ func withAdaptationRevisionCommand[T any](s *AdaptationRevisionService, command 
 	return result, err
 }
 
-func withAdaptationRevisionReceipt[T any](s *AdaptationRevisionService, idempotencyKey, operation string, payload any, command func(*AdaptationRevisionService) (T, error)) (T, error) {
+func withAdaptationRevisionReceipt[T any](
+	s *AdaptationRevisionService,
+	idempotencyKey, operation string,
+	payload any,
+	publication *storepkg.AdaptationRevisionPublicationCommand,
+	command func(*AdaptationRevisionService) (T, error),
+) (T, error) {
 	var result T
 	if s == nil || s.store == nil {
 		return result, fmt.Errorf("adaptation revision store is required")
@@ -88,21 +110,79 @@ func withAdaptationRevisionReceipt[T any](s *AdaptationRevisionService, idempote
 	fingerprint := domain.ContentSignature(encoded)
 	err = s.store.WithPreparedAdaptationRevisionCommand(idempotencyKey, operation, fingerprint, func(revisions *storepkg.RevisionStore) error {
 		owned := s.withRevisionStore(revisions)
-		found, err := owned.store.Adaptation.LoadRevisionServiceReceipt(idempotencyKey, operation, fingerprint, &result)
-		if err != nil || found {
+		found, err := owned.store.LoadVerifiedAdaptationRevisionServiceReceipt(idempotencyKey, operation, fingerprint, &result)
+		if err != nil {
 			return err
 		}
-		if err := owned.store.PrepareAdaptationRevisionCommand(revisions, idempotencyKey, operation, fingerprint); err != nil {
-			return err
+		if found {
+			if operation != "publish" {
+				return nil
+			}
+			if published, ok := any(result).(*domain.RevisionSession); !ok || published == nil {
+				return fmt.Errorf("adaptation publication service receipt result is invalid")
+			} else if err := owned.store.VerifyCommittedAdaptationPublication(idempotencyKey, fingerprint, published); err != nil {
+				return fmt.Errorf("verify committed adaptation publication replay: %w", err)
+			}
+			needsFinalize, err := owned.revisionStore().CommittedPublicationNeedsFinalize()
+			if err != nil {
+				return err
+			}
+			if needsFinalize {
+				expected := result
+				result, err = command(owned)
+				if err != nil {
+					return err
+				}
+				if !reflect.DeepEqual(expected, result) {
+					return fmt.Errorf("committed adaptation publication changed during replay")
+				}
+			}
+			return nil
+		}
+		var prepareErr error
+		if publication == nil {
+			prepareErr = owned.store.PrepareAdaptationRevisionCommand(revisions, idempotencyKey, operation, fingerprint)
+		} else {
+			prepareErr = owned.store.PrepareAdaptationRevisionPublicationCommand(
+				revisions, idempotencyKey, fingerprint, publication.SessionID, publication.ExpectedRevision,
+			)
+		}
+		if prepareErr != nil {
+			return prepareErr
 		}
 		if owned.afterCommandPrepared != nil {
 			owned.afterCommandPrepared()
 		}
 		result, err = command(owned)
 		if err != nil {
+			var committedErr *committedAdaptationPublicationError
+			if errors.As(err, &committedErr) {
+				var restoreErr *revisionRuntimeRestoreError
+				if errors.As(err, &restoreErr) {
+					// The internal publication is committed, but runtime recovery
+					// itself was not durable. Preserve the prepared journal so the
+					// next recovery can reconstruct the service receipt and finish.
+					return err
+				}
+				if receiptErr := owned.persistRevisionReceipt(idempotencyKey, operation, fingerprint, result); receiptErr != nil {
+					return errors.Join(err, receiptErr)
+				}
+				if completeErr := owned.store.CompleteAdaptationRevisionCommand(revisions, idempotencyKey, operation, fingerprint); completeErr != nil {
+					return errors.Join(err, completeErr)
+				}
+				return err
+			}
 			return owned.rollbackReceiptCommand(err)
 		}
 		if err := owned.persistRevisionReceipt(idempotencyKey, operation, fingerprint, result); err != nil {
+			if operation == "publish" {
+				if published, ok := any(result).(*domain.RevisionSession); ok && published != nil && published.Stage == domain.RevisionStageCompleted {
+					// The internal receipt is already the commit point. Leave the
+					// prepared recovery evidence intact so restart can reconstruct
+					// the service receipt instead of restoring the old snapshot.
+					return err
+				}
+			}
 			return owned.rollbackReceiptCommand(err)
 		}
 		if err := owned.store.CompleteAdaptationRevisionCommand(revisions, idempotencyKey, operation, fingerprint); err != nil {
@@ -153,12 +233,16 @@ func (s *AdaptationRevisionService) LoadCommandReceipt(request AdaptationRevisio
 		}
 		var loadErr error
 		found := false
-		found, loadErr = s.store.Adaptation.LoadRevisionServiceReceipt(idempotencyKey, operation, domain.ContentSignature(encoded), &result)
+		found, loadErr = s.store.LoadVerifiedAdaptationRevisionServiceReceipt(idempotencyKey, operation, domain.ContentSignature(encoded), &result)
 		if loadErr != nil {
 			return loadErr
 		}
 		if !found {
 			result = nil
+		} else if operation == "publish" {
+			if verifyErr := s.store.VerifyCommittedAdaptationPublication(idempotencyKey, domain.ContentSignature(encoded), result); verifyErr != nil {
+				return fmt.Errorf("verify loaded adaptation publication receipt: %w", verifyErr)
+			}
 		}
 		return nil
 	})
@@ -218,11 +302,11 @@ func withAdaptationRevisionCommandReceipt[T any](s *AdaptationRevisionService, i
 		var result T
 		return result, err
 	}
-	return withAdaptationRevisionReceipt(s, idempotencyKey, operation, payload, command)
+	return withAdaptationRevisionReceipt(s, idempotencyKey, operation, payload, nil, command)
 }
 
 func (s *AdaptationRevisionService) Preview(request AdaptationRevisionPreviewRequest, idempotencyKey string) (*AdaptationRevisionPreview, error) {
-	return withAdaptationRevisionReceipt(s, idempotencyKey, "preview", request, func(owned *AdaptationRevisionService) (*AdaptationRevisionPreview, error) {
+	return withAdaptationRevisionReceipt(s, idempotencyKey, "preview", request, nil, func(owned *AdaptationRevisionService) (*AdaptationRevisionPreview, error) {
 		return owned.preview(request, idempotencyKey)
 	})
 }
@@ -371,7 +455,15 @@ func (s *AdaptationRevisionService) SubmitProseReworkCandidate(session *domain.R
 func (s *AdaptationRevisionService) Publish(preview AdaptationStructureRevisionPreview, session *domain.RevisionSession, idempotencyKey string) (*domain.RevisionSession, error) {
 	request := adaptationCommandReceiptRequest("publish", adaptationRevisionNumber(session))
 	request.Preview = &preview
-	return withAdaptationRevisionCommandReceipt(s, idempotencyKey, request, func(owned *AdaptationRevisionService) (*domain.RevisionSession, error) {
+	operation, payload, err := adaptationRevisionCommandReceiptIdentity(request)
+	if err != nil {
+		return nil, err
+	}
+	publication := &storepkg.AdaptationRevisionPublicationCommand{ExpectedRevision: adaptationRevisionNumber(session)}
+	if session != nil {
+		publication.SessionID = session.ID
+	}
+	return withAdaptationRevisionReceipt(s, idempotencyKey, operation, payload, publication, func(owned *AdaptationRevisionService) (*domain.RevisionSession, error) {
 		return owned.publish(preview, session, idempotencyKey)
 	})
 }
@@ -726,7 +818,7 @@ func (s *AdaptationRevisionService) removeRevisionRuntime(sessionID string) erro
 
 func (s *AdaptationRevisionService) restoreRevisionRuntime(previous domain.AdaptationRevisionRuntime, cause error) error {
 	if err := s.store.SaveAdaptationRevisionRuntime(s.revisionStore(), previous); err != nil {
-		return fmt.Errorf("adaptation revision transition: %v; restore runtime checkpoint: %w", cause, err)
+		return &revisionRuntimeRestoreError{cause: fmt.Errorf("adaptation revision transition: %v; restore runtime checkpoint: %w", cause, err)}
 	}
 	return cause
 }
@@ -849,7 +941,17 @@ func (s *AdaptationRevisionService) publish(preview AdaptationStructureRevisionP
 	if preview.Signature != session.PreviewSignature || adaptationPreviewSignature(preview) != preview.Signature || preview.Signature != runtime.PreviewSignature {
 		return nil, fmt.Errorf("adaptation revision publish preview substitution is not allowed")
 	}
-	versions, err := s.revisionStore().ValidatePublish(policy, storepkg.RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: idempotencyKey})
+	publishInput := storepkg.RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: idempotencyKey}
+	if replayed, found, replayErr := s.revisionStore().FinalizeCommittedPublication(publishInput); found || replayErr != nil {
+		if replayErr != nil {
+			return replayed, replayErr
+		}
+		if err := s.removeRevisionRuntime(session.ID); err != nil {
+			return nil, err
+		}
+		return replayed, nil
+	}
+	versions, err := s.revisionStore().ValidatePublish(policy, publishInput)
 	if err != nil {
 		return nil, err
 	}
@@ -867,7 +969,7 @@ func (s *AdaptationRevisionService) publish(preview AdaptationStructureRevisionP
 	if err := s.store.SaveAdaptationPlanForRevision(s.revisionStore(), candidate, session.ID); err != nil {
 		return nil, err
 	}
-	if err := s.applyPublishedProgress(candidate, session.Impact, session.ID); err != nil {
+	if err := s.applyPublishedProgress(*policy.BasePlan, candidate, session.Impact, session.ID); err != nil {
 		return nil, s.rollbackAdaptationPublish(policy, session.ID, formalSnapshot, err)
 	}
 	if err := s.store.ClearAdaptationRevisionAudits(s.revisionStore(), session.ID); err != nil {
@@ -879,8 +981,11 @@ func (s *AdaptationRevisionService) publish(preview AdaptationStructureRevisionP
 	if err := s.removeRevisionRuntime(session.ID); err != nil {
 		return nil, s.rollbackAdaptationPublish(policy, session.ID, formalSnapshot, err)
 	}
-	published, publishErr := s.revisionStore().Publish(policy, storepkg.RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: idempotencyKey})
+	published, publishErr := s.revisionStore().Publish(policy, publishInput)
 	if publishErr != nil {
+		if published != nil && published.Stage == domain.RevisionStageCompleted {
+			return published, &committedAdaptationPublicationError{cause: s.restoreRevisionRuntime(*runtime, publishErr)}
+		}
 		rollbackErr := s.rollbackAdaptationPublish(policy, session.ID, formalSnapshot, publishErr)
 		return nil, s.restoreRevisionRuntime(*runtime, rollbackErr)
 	}
@@ -897,12 +1002,21 @@ func (s *AdaptationRevisionService) rollbackAdaptationPublish(policy domain.Adap
 	return cause
 }
 
-func (s *AdaptationRevisionService) applyPublishedProgress(candidate domain.AdaptationPlan, impact domain.RevisionImpact, sessionID string) error {
+func (s *AdaptationRevisionService) applyPublishedProgress(previous, candidate domain.AdaptationPlan, impact domain.RevisionImpact, sessionID string) error {
 	progress, err := s.store.Progress.Load()
 	if err != nil || progress == nil {
 		return err
 	}
 	wasComplete := progress.Phase == domain.PhaseComplete
+	if wasComplete {
+		payload, _ := json.Marshal(candidate)
+		progress.CompletionRevalidation = storepkg.NewAdaptationCompletionRevalidationCheckpoint(sessionID, domain.JSONContentSignature(payload), adaptationPlanStructureForDramaticBindings(previous), adaptationPlanStructureForDramaticBindings(candidate))
+		progress.Phase = domain.PhaseWriting
+		progress.Flow = domain.FlowReviewing
+		progress.ReopenedFromComplete = true
+		progress.CompletionAuditStatus = ""
+		progress.CompletionAuditReportDigest = ""
+	}
 	progress.TotalChapters = len(candidate.Chapters)
 	rewrites := make([]int, 0)
 	locations := adaptationChapterLocations(candidate)
@@ -921,20 +1035,12 @@ func (s *AdaptationRevisionService) applyPublishedProgress(candidate domain.Adap
 			progress.RewriteReason += "; approved adaptation revision"
 		}
 		progress.Flow = domain.FlowRewriting
-		if wasComplete {
-			progress.Phase = domain.PhaseWriting
-			progress.ReopenedFromComplete = true
-			progress.CompletionAuditStatus = ""
-			progress.CompletionAuditReportDigest = ""
-		}
+		// A completed publication already entered the review gate above.
 	}
 	if wasComplete && len(candidate.Chapters) > len(progress.CompletedChapters) {
-		progress.Phase = domain.PhaseWriting
 		if len(rewrites) == 0 {
 			progress.Flow = domain.FlowWriting
 		}
-		progress.CompletionAuditStatus = ""
-		progress.CompletionAuditReportDigest = ""
 	}
 	return s.store.SaveAdaptationRevisionProgress(s.revisionStore(), progress, sessionID)
 }
@@ -1048,43 +1154,7 @@ func (s *AdaptationRevisionService) loadStagePlan(manifest domain.AdaptationSour
 }
 
 func adaptationPlanFromVolumeReview(review domain.AdaptationVolumeReview, manifest domain.AdaptationSourceManifest, reports []domain.AdaptationSourceReport) (*domain.AdaptationPlan, error) {
-	seenEvents := make(map[string]struct{})
-	events := make([]domain.AdaptationEvent, 0)
-	for _, report := range reports {
-		for _, event := range report.SourceEvents {
-			id := strings.TrimSpace(event.ID)
-			if id == "" {
-				return nil, fmt.Errorf("source report chapter %d contains an event without stable identity", report.Chapter)
-			}
-			if _, exists := seenEvents[id]; exists {
-				return nil, fmt.Errorf("source event %q has duplicate persisted ownership", id)
-			}
-			seenEvents[id] = struct{}{}
-			events = append(events, event)
-		}
-	}
-	if len(events) == 0 {
-		return nil, fmt.Errorf("persisted source event ledger is required at proposal-complete stage")
-	}
-	sourceRunes := 0
-	for _, chapter := range manifest.Chapters {
-		sourceRunes += chapter.Runes
-	}
-	return &domain.AdaptationPlan{
-		Granularity:       review.Granularity,
-		ModePolicy:        domain.AdaptationModePolicyForGranularity(review.Granularity),
-		Status:            domain.AdaptationPlanStatusVolumeReview,
-		RewritePolicy:     review.RewritePolicy,
-		Brief:             review.Brief,
-		Volumes:           append([]domain.AdaptationVolumePlan(nil), review.Volumes...),
-		WordTolerance:     review.WordTolerance,
-		SourceTotalRunes:  sourceRunes,
-		MainlineRules:     append([]string(nil), review.MainlineRules...),
-		RelationshipGoals: append([]string(nil), review.RelationshipGoals...),
-		Rules:             domain.CompileAdaptationRules(review.Brief, review.Granularity),
-		SourceEvents:      events,
-		Chapters:          []domain.AdaptationChapterPlan{},
-	}, nil
+	return domain.AdaptationPlanFromVolumeReview(review, manifest, reports)
 }
 
 func (s *AdaptationRevisionService) completedStableTargetIDs(plan domain.AdaptationPlan) ([]string, error) {

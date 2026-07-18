@@ -185,7 +185,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/projects/", s.handleProject)
 	mux.HandleFunc("/api/trash/projects", s.handleTrashProjects)
 	mux.HandleFunc("/api/trash/projects/", s.handleTrashProject)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/projects") || strings.HasPrefix(r.URL.Path, "/api/trash/projects") {
+			if err := s.store.requireStartupRecovery(); err != nil {
+				writeManuscriptOperationError(w, err)
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) Close() {
