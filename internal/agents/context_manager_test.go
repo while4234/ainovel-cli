@@ -407,6 +407,45 @@ func TestWriterPhaseDropsCompletedPlanRationaleBeforeNextProviderCall(t *testing
 	}
 }
 
+func TestWriterPhaseDropsCompletedPlanRationaleDuringNewChapterCreation(t *testing.T) {
+	planCallID := "new-chapter-plan"
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("write chapter 46"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ThinkingBlock(strings.Repeat("private planning deliberation ", 2_000)),
+			agentcore.TextBlock("I will save the chapter plan."),
+			agentcore.ToolCallBlock(agentcore.ToolCall{
+				ID: planCallID, Name: "plan_chapter", Args: []byte(`{"chapter":46,"title":"A Paper Confirmation"}`),
+			}),
+		}},
+		agentcore.ToolResultMsg(planCallID, []byte(`{"planned":true,"chapter":46}`), false),
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	before := corecontext.EstimateTotal(messages)
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatal("a completed new-chapter plan must drop its private rationale before drafting")
+	}
+	planMessage := view[1].(agentcore.Message)
+	if planMessage.ThinkingContent() != "" || planMessage.TextContent() != "" {
+		t.Fatalf("completed new-chapter plan retained rationale: thinking=%d text=%q", len(planMessage.ThinkingContent()), planMessage.TextContent())
+	}
+	calls := planMessage.ToolCalls()
+	if len(calls) != 1 || calls[0].Name != "plan_chapter" || string(calls[0].Args) != `{"chapter":46,"title":"A Paper Confirmation"}` {
+		t.Fatalf("completed new-chapter plan lost its decision record: %+v", calls)
+	}
+	if resultText := view[2].(agentcore.Message).TextContent(); !strings.Contains(resultText, `"planned":true`) {
+		t.Fatalf("completed new-chapter plan lost its receipt: %q", resultText)
+	}
+	if after := corecontext.EstimateTotal(view); after >= before-10_000 {
+		t.Fatalf("completed new-chapter rationale saved only %d tokens", before-after)
+	}
+}
+
 func TestWriterPhaseKeepsSchemaValidArgumentsForClearedResults(t *testing.T) {
 	messages := writerPhaseMessages(t, "novel_context", "read_chapter", "check_consistency")
 	legacyResult := messages[2].(agentcore.Message)

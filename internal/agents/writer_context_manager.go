@@ -93,10 +93,46 @@ func (s *writerValidationPhaseStrategy) Apply(ctx context.Context, transcript, v
 	hasValidation := hasWriterValidationReceipt(view)
 	hasPersistedDraft := hasPersistedWriterDraftReceipt(view)
 	hasDuplicateEvidence := hasDuplicateWriterContextResults(view)
-	if !hasValidation && !hasPersistedDraft && !hasDuplicateEvidence {
+	hasCompletedRationale := hasCompletedWriterToolRationale(view)
+	if !hasValidation && !hasPersistedDraft && !hasDuplicateEvidence && !hasCompletedRationale {
 		return view, corecontext.StrategyResult{Name: s.Name()}, nil
 	}
 	return s.compact(ctx, transcript, view, budget, hasDuplicateEvidence && !hasValidation && !hasPersistedDraft)
+}
+
+func hasCompletedWriterToolRationale(msgs []agentcore.AgentMessage) bool {
+	completed := make(map[string]struct{})
+	for _, item := range msgs {
+		message, ok := item.(agentcore.Message)
+		if !ok || message.Role != agentcore.RoleTool {
+			continue
+		}
+		callID, _ := message.Metadata["tool_call_id"].(string)
+		if callID != "" {
+			completed[callID] = struct{}{}
+		}
+	}
+	for _, item := range msgs {
+		message, ok := item.(agentcore.Message)
+		if !ok || message.Role != agentcore.RoleAssistant {
+			continue
+		}
+		calls := message.ToolCalls()
+		if len(calls) == 0 {
+			continue
+		}
+		allCompleted := true
+		for _, call := range calls {
+			if _, ok := completed[call.ID]; !ok {
+				allCompleted = false
+				break
+			}
+		}
+		if allCompleted && (message.ThinkingContent() != "" || message.TextContent() != "") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *writerValidationPhaseStrategy) ForceApply(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
