@@ -548,6 +548,9 @@ func (t *CommitChapterTool) checkWordBudgetGate(chapter int, wordCount int) (*wo
 	if err != nil {
 		return nil, fmt.Errorf("load progress for word budget: %w: %w", errs.ErrStoreRead, err)
 	}
+	if progress == nil || progress.Flow == domain.FlowPolishing || len(progress.PendingRewrites) > 0 {
+		return nil, nil
+	}
 	runtime, runtimeOK := meta.WordBudget.Runtime(progress, chapter)
 	minWords, maxWords := 0, 0
 	if runtimeOK && runtime.CurrentChapter.Chapter > 0 {

@@ -282,7 +282,7 @@ func TestCommitChapterRejectsNonAdaptationOutsideWordBudget(t *testing.T) {
 	}
 }
 
-func TestCommitChapterPolishBudgetRejectionPreservesTargetedEdits(t *testing.T) {
+func TestCommitChapterPendingPolishSkipsCreationWordBudgetGate(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
@@ -321,14 +321,25 @@ func TestCommitChapterPolishBudgetRejectionPreservesTargetedEdits(t *testing.T) 
 	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	next, _ := result["next_step"].(string)
-	for _, want := range []string{"当前完整草稿已经保留", "立即结束本轮", "Host 按行段逐段派发", "完整质量校验"} {
-		if !strings.Contains(next, want) {
-			t.Fatalf("polish next_step missing %q: %q", want, next)
-		}
+	if result["rewritten"] != true || result["queue_drained"] != true {
+		t.Fatalf("pending polish was not committed: %+v", result)
 	}
-	if strings.Contains(next, `请先调用 draft_chapter(mode="write"`) {
-		t.Fatalf("polish next_step must not force a full rewrite: %q", next)
+	if _, exists := result["word_budget_rejected"]; exists {
+		t.Fatalf("pending polish returned creation budget rejection: %+v", result)
+	}
+	progress, err := s.Progress.Load()
+	if err != nil {
+		t.Fatalf("Progress.Load: %v", err)
+	}
+	if len(progress.PendingRewrites) != 0 || progress.Flow != domain.FlowWriting {
+		t.Fatalf("pending polish queue was not completed: %+v", progress)
+	}
+	final, err := s.Drafts.LoadChapterText(1)
+	if err != nil {
+		t.Fatalf("LoadChapterText: %v", err)
+	}
+	if final != original+"改" {
+		t.Fatalf("targeted polish was not preserved: %q", final)
 	}
 }
 
