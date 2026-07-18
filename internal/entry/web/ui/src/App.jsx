@@ -5066,7 +5066,7 @@ export default function App() {
           ) : sideView === 'cache' ? (
             <CachePanel analytics={usageAnalytics} snapshot={snapshot} />
           ) : sideView === 'backend' ? (
-            <BackendPanel backend={backendStatus} snapshot={snapshot} busy={projectBusy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
+            <BackendPanel backend={backendStatus} busy={projectBusy} onRefresh={refreshBackendStatus} onTest={runBackendTest} />
           ) : (
             <ModelPanel
               activeProject={activeProject}
@@ -8610,13 +8610,8 @@ function UsageList({ title, items, labelKey }) {
   );
 }
 
-function BackendPanel({ backend, snapshot, busy, onRefresh, onTest }) {
+function BackendPanel({ backend, busy, onRefresh, onTest }) {
   const calls = backend?.recent_calls || [];
-  const outline = getSnapshotOutlineRows(snapshot);
-  const premise = textValue(snapshot, 'PremiseFull', 'premise_full', 'Premise', 'premise');
-  const characterDetails = arrayValue(snapshot, 'CharacterDetails', 'character_details');
-  const worldRules = arrayValue(snapshot, 'WorldRules', 'world_rules');
-  const hasFoundation = Boolean(premise || outline.length || characterDetails.length || worldRules.length);
   return (
     <div className="side-content">
       <section className="model-summary">
@@ -8657,73 +8652,6 @@ function BackendPanel({ backend, snapshot, busy, onRefresh, onTest }) {
           )}
         </div>
       </section>
-
-      <section className="foundation-section">
-        <div className="section-title">
-          <BookOpen size={17} />
-          <span>设定</span>
-        </div>
-        {!hasFoundation ? (
-          <div className="empty-state">暂无设定</div>
-        ) : (
-          <div className="foundation-stack">
-            {premise ? (
-              <div className="foundation-block">
-                <strong>小说设定</strong>
-                <p>{premise}</p>
-              </div>
-            ) : null}
-            {outline.length ? (
-              <div className="foundation-block">
-                <strong>章节大纲</strong>
-                <div className="outline-detail-list">
-                  {outline.map((item) => (
-                    <div className="outline-detail" key={`detail-${item.Chapter || item.chapter}-${item.Title || item.title}`}>
-                      <b>{item.Chapter || item.chapter}. {item.Title || item.title || '未命名章节'}</b>
-                      {textValue(item, 'CoreEvent', 'core_event') ? <p>{textValue(item, 'CoreEvent', 'core_event')}</p> : null}
-                      {textValue(item, 'Hook', 'hook') ? <p>{textValue(item, 'Hook', 'hook')}</p> : null}
-                      {arrayValue(item, 'Scenes', 'scenes').length ? (
-                        <ul>
-                          {arrayValue(item, 'Scenes', 'scenes').map((scene, index) => (
-                            <li key={`${item.Chapter || item.chapter}-scene-${index}`}>{scene}</li>
-                          ))}
-                        </ul>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            {characterDetails.length ? (
-              <div className="foundation-block">
-                <strong>角色</strong>
-                <div className="foundation-chip-list">
-                  {characterDetails.map((character) => (
-                    <span key={textValue(character, 'Name', 'name')}>
-                      {textValue(character, 'Name', 'name')}
-                      {textValue(character, 'Role', 'role') ? ` / ${textValue(character, 'Role', 'role')}` : ''}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            {worldRules.length ? (
-              <div className="foundation-block">
-                <strong>世界规则</strong>
-                <ul>
-                  {worldRules.slice(0, 12).map((rule, index) => (
-                    <li key={`${textValue(rule, 'Category', 'category')}-${index}`}>
-                      {textValue(rule, 'Category', 'category') ? `${textValue(rule, 'Category', 'category')}：` : ''}
-                      {textValue(rule, 'Rule', 'rule')}
-                      {textValue(rule, 'Boundary', 'boundary') ? `（边界：${textValue(rule, 'Boundary', 'boundary')}）` : ''}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
-        )}
-      </section>
     </div>
   );
 }
@@ -8760,7 +8688,7 @@ function ModelPanel({
   const providers = modelConfig?.providers || [];
   const levels = modelConfig?.thinking_levels || ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'];
   const providerMap = new Map(providers.map((provider) => [provider.name, provider.models || []]));
-  const stageModelOptions = Array.from(new Set(providers.flatMap((provider) => provider.models || [])));
+  const stageModelRouteOptions = buildStageModelRouteOptions(providers);
   const providerChips = providers.map((provider) => ({
     name: provider.name,
     label: provider.label || provider.name,
@@ -8906,12 +8834,6 @@ function ModelPanel({
     : '';
   const projectDefaultModelOption = '__project_default_model__';
   const stageInheritedModelOption = '__stage_inherited_model__';
-  const providerForStageModel = (route, model) => {
-    const candidates = providers.filter((provider) => (provider.models || []).includes(model));
-    return candidates.find((provider) => provider.name === defaultProvider)?.name ||
-      candidates.find((provider) => provider.name === route?.provider)?.name ||
-      candidates[0]?.name || '';
-  };
   const selectedProjectInheritsDefault = Boolean(
     selectedProjectRoute &&
     selectedProjectRoute.role !== 'default' &&
@@ -9121,25 +9043,25 @@ function ModelPanel({
 				<label className="field-label">
 				<span>{route.label || route.role}</span>
                 <select
-                  disabled={busy || stageModelOptions.length === 0}
-                  value={route.explicit ? route.model : stageInheritedModelOption}
+                  disabled={busy || stageModelRouteOptions.length === 0}
+                  value={route.explicit ? modelRouteOptionValue(route.provider, route.model) : stageInheritedModelOption}
                   onChange={(event) => {
-                    const model = event.target.value;
-                    if (model === stageInheritedModelOption) {
+                    const value = event.target.value;
+                    if (value === stageInheritedModelOption) {
                       onInherit?.(route.role);
                       return;
                     }
-                    const provider = providerForStageModel(route, model);
-                    if (provider) {
-                      onSwitch(route.role, provider, model);
+                    const target = stageModelRouteOptions.find((option) => option.value === value);
+                    if (target) {
+                      onSwitch(route.role, target.provider, target.model);
                     }
                   }}
                 >
                   <option value={stageInheritedModelOption}>
-                    继承 {route.fallback_role || 'Agent'}（{route.model || defaultModel}）
+                    继承 {route.fallback_role || 'Agent'}（{defaultProvider} / {defaultModel}）
                   </option>
-                  {stageModelOptions.map((model) => (
-                    <option key={model} value={model}>{model}</option>
+                  {stageModelRouteOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
 				</label>
@@ -9160,7 +9082,7 @@ function ModelPanel({
 			  </div>
 			  );
 			})}
-            <p className="muted">同名模型只显示一次，系统自动选择后端。一次 Architect 规划可能连续完成骨架和首批细纲，此时全程使用“骨架规划”模型；独立细纲生成与修订使用“详细提纲”模型。</p>
+            <p className="muted">每个阶段可继承项目默认路由，或明确选择“后端 / 模型”组合。一次 Architect 规划可能连续完成骨架和首批细纲，此时全程使用“骨架规划”模型；独立细纲生成与修订使用“详细提纲”模型。</p>
           </div>
         )}
       </section>
@@ -10189,6 +10111,19 @@ export function modelOptionsForProvider(providers = [], providerName = '', curre
     return [selected, ...models];
   }
   return models;
+}
+
+export function buildStageModelRouteOptions(providers = []) {
+  return providers.flatMap((provider) => (provider.models || []).map((model) => ({
+    provider: provider.name,
+    model,
+    value: modelRouteOptionValue(provider.name, model),
+    label: `${provider.name} / ${model}`
+  })));
+}
+
+function modelRouteOptionValue(provider, model) {
+  return JSON.stringify([provider, model]);
 }
 
 export function resolveVisibleDefaultModel(activeProject, runtime, modelConfig) {

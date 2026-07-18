@@ -702,6 +702,11 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 		return "", err
 	}
 	defer ownership.Release()
+	if !keepNormalFlowLease {
+		if err := h.restoreConfiguredModelRoutes(); err != nil {
+			return "", fmt.Errorf("restore configured model routes: %w", err)
+		}
+	}
 	pendingSteer := ""
 	if meta, loadErr := h.store.RunMeta.Load(); loadErr == nil && meta != nil {
 		pendingSteer = meta.PendingSteer
@@ -773,6 +778,19 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	ownership.TransferToRun()
 	go h.waitDone()
 	return label, nil
+}
+
+// restoreConfiguredModelRoutes starts a new manual or scheduled run from the
+// routes the user saved. Runtime failover may swap an in-memory route for the
+// remainder of one run, but a later explicit Resume must try the configured
+// primary before considering fallback providers again.
+func (h *Host) restoreConfiguredModelRoutes() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.models == nil {
+		return nil
+	}
+	return h.models.ApplyConfig(cloneHostRuntimeConfig(h.cfg))
 }
 
 // interventionMsg 把用户文本包装成 Coordinator 可识别的干预消息。
@@ -1849,9 +1867,6 @@ func (h *Host) selectRuntimeFallback(ctx context.Context, current bootstrap.Mode
 		pc := cfg.Providers[provider]
 		candidate, err := bootstrap.NewProviderModelWithConfig(cfg, provider, model, pc)
 		if err != nil || candidate == nil || !candidate.SupportsTools() {
-			continue
-		}
-		if err := addedModelConnectivityProbe(ctx, candidate, bootstrap.ProviderConnectivityTimeout(pc)); err != nil {
 			continue
 		}
 		reason := fmt.Sprintf("%s:%s->%s", bootstrap.RuntimeFallbackPoolReasonPrefix, current.Provider, provider)

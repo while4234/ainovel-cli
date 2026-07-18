@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { buildStageModelRouteOptions } from './App.jsx';
 
 const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
 
@@ -38,12 +39,41 @@ describe('project model settings panel', () => {
     expect(body).toContain('adaptationOutlineAuditRetryMaxAttempts');
   });
 
-  it('shows project stage routes as provider-agnostic model names', () => {
-    expect(appSource).toContain("new Set(providers.flatMap((provider) => provider.models || []))");
+  it('keeps same-named stage models distinguishable by provider', () => {
+    expect(buildStageModelRouteOptions([
+      { name: 'deepseek-suifeng', models: ['deepseek-v4-pro'] },
+      { name: 'deepseek-yuanyu-0', models: ['deepseek-v4-pro'] }
+    ])).toEqual([
+      {
+        provider: 'deepseek-suifeng',
+        model: 'deepseek-v4-pro',
+        value: '["deepseek-suifeng","deepseek-v4-pro"]',
+        label: 'deepseek-suifeng / deepseek-v4-pro'
+      },
+      {
+        provider: 'deepseek-yuanyu-0',
+        model: 'deepseek-v4-pro',
+        value: '["deepseek-yuanyu-0","deepseek-v4-pro"]',
+        label: 'deepseek-yuanyu-0 / deepseek-v4-pro'
+      }
+    ]);
     expect(appSource).toContain('<span>创作阶段模型</span>');
-    expect(appSource).toContain('同名模型只显示一次，系统自动选择后端。');
+    expect(appSource).toContain('每个阶段可继承项目默认路由，或明确选择“后端 / 模型”组合。');
     expect(appSource).toContain('独立细纲生成与修订使用“详细提纲”模型');
-    expect(appSource).toContain("onSwitch(route.role, provider, model)");
+    expect(appSource).toContain("onSwitch(route.role, target.provider, target.model)");
     expect(appSource).toContain('<span>Agent 高级路由</span>');
+  });
+
+  it('keeps novel settings and outlines out of the backend diagnostics panel', () => {
+    const start = appSource.indexOf('function BackendPanel(');
+    const end = appSource.indexOf('\nfunction ', start + 1);
+    const panelSource = appSource.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(panelSource).toContain('<span>最近调用</span>');
+    expect(panelSource).not.toContain('snapshot');
+    expect(panelSource).not.toContain('小说设定');
+    expect(panelSource).not.toContain('章节大纲');
   });
 });

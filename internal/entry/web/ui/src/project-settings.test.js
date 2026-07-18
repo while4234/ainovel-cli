@@ -45,7 +45,7 @@ describe('project settings panel', () => {
   it('adds the settings tab alongside project side tools', () => {
     expect(appSource).toContain("sideView === 'settings'");
     expect(appSource).toContain("setSideView('settings')");
-    expect(appSource).toContain('>设定<');
+    expect(appSource).toContain('role="tab" title="设定"');
   });
 
   it('uses style labels for display while preserving ids for values', () => {

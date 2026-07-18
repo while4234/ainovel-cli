@@ -2530,10 +2530,6 @@ h2 {
   color: var(--muted);
 }
 
-.foundation-section {
-  padding-bottom: 16px;
-}
-
 .snapshot-summary-card,
 .proposal-review {
   border: 1px solid var(--line);
@@ -2984,76 +2980,6 @@ h2 {
 .proposal-revision-textarea:focus {
   border-color: var(--accent);
   box-shadow: var(--focus);
-}
-
-.foundation-stack,
-.foundation-block,
-.outline-detail-list,
-.outline-detail {
-  display: grid;
-  gap: 8px;
-}
-
-.foundation-block {
-  min-width: 0;
-  border-top: 1px solid var(--line);
-  padding-top: 8px;
-}
-
-.foundation-block > strong,
-.outline-detail b {
-  color: var(--text-strong);
-  font-size: 13px;
-}
-
-.foundation-block p,
-.outline-detail p {
-  overflow-wrap: anywhere;
-  margin: 0;
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-}
-
-.foundation-block ul {
-  display: grid;
-  gap: 5px;
-  margin: 0;
-  padding-left: 18px;
-}
-
-.foundation-block li {
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.outline-detail {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: 8px;
-  background: var(--surface-solid);
-}
-
-.foundation-chip-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.foundation-chip-list span {
-  max-width: 100%;
-  overflow: hidden;
-  border: 1px solid rgba(15, 111, 109, 0.22);
-  border-radius: 999px;
-  padding: 3px 7px;
-  background: var(--accent-softer);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 800;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .model-route-list,

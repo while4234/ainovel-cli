@@ -261,6 +261,43 @@ func TestSelectRuntimeFallbackRejectsDifferentModel(t *testing.T) {
 	}
 }
 
+func TestSelectRuntimeFallbackDoesNotSilentlyPreflightCandidate(t *testing.T) {
+	withModelConnectivityProbe(t, errors.New("runtime candidate probe must not run"))
+	enabled := true
+	cfg := bootstrap.Config{
+		Provider:              "deepseek-yuanyu-0",
+		ModelName:             "deepseek-v4-pro",
+		PersistProjectOverlay: true,
+		Providers: map[string]bootstrap.ProviderConfig{
+			"deepseek-yuanyu-0": {Type: "openai", APIKey: "primary-key", Models: []string{"deepseek-v4-pro"}},
+			"deepseek-suifeng":  {Type: "openai", APIKey: "fallback-key", Models: []string{"deepseek-v4-pro"}},
+		},
+		ModelAutoSwitch: bootstrap.ModelAutoSwitchConfig{
+			Enabled:          &enabled,
+			FallbackBackends: []string{"deepseek-yuanyu-0", "deepseek-suifeng"},
+		},
+	}
+	cfg.FillDefaults()
+	models, err := bootstrap.NewModelSet(cfg)
+	if err != nil {
+		t.Fatalf("NewModelSet: %v", err)
+	}
+	host := &Host{cfg: cfg, models: models, events: make(chan Event, 10)}
+
+	target, ok := host.selectRuntimeFallback(
+		context.Background(),
+		bootstrap.ModelRef{Provider: "deepseek-yuanyu-0", Model: "deepseek-v4-pro"},
+		map[string]bool{"deepseek-yuanyu-0": true},
+		errors.New("insufficient_user_quota"),
+	)
+	if !ok {
+		t.Fatal("selectRuntimeFallback silently rejected the configured candidate")
+	}
+	if target.Provider != "deepseek-suifeng" || target.Model != "deepseek-v4-pro" {
+		t.Fatalf("target = %s/%s, want deepseek-suifeng/deepseek-v4-pro", target.Provider, target.Model)
+	}
+}
+
 func TestAddProviderModelDoesNotOverwriteExistingProvider(t *testing.T) {
 	cfg := bootstrap.Config{
 		Provider:  "openai",
