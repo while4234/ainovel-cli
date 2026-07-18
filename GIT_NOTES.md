@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-18 `pending` `fix: hydrate outline details and bound trash list`:
+- 2026-07-18 `7992979` `fix: restore outline details and trash actions`:
   loads complete outline fields only when the writing-side chapter preview is
   explicitly opened, keeps large trash lists internally scrollable with the
   destructive action visible, and removes one obsolete smoke-test assertion
