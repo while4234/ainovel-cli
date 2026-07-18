@@ -531,6 +531,51 @@ func TestEditChapterSeedsFromFinalChapter(t *testing.T) {
 }
 
 // TestEditChapterRejectsCompletedWithoutQueue 已完成且不在重写队列中 → 拒绝。
+func TestEditChapterPendingPolishDoesNotReturnCreationBudgetRecovery(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	const original = "completed chapter awaiting a targeted polish"
+	if err := s.Drafts.SaveDraft(3, original); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{
+		NovelName:         "test",
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowPolishing,
+		TotalChapters:     3,
+		CompletedChapters: []int{1, 2, 3},
+		InProgressChapter: 3,
+		PendingRewrites:   []int{3},
+	}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(300, "test").WithPlannedChapters(3)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), json.RawMessage(
+		`{"chapter":3,"old_string":"targeted","new_string":"focused"}`,
+	))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, exists := payload["word_budget_passed"]; exists {
+		t.Fatalf("pending polish returned creation budget status: %+v", payload)
+	}
+	next, _ := payload["next_step"].(string)
+	if !strings.Contains(next, "check_consistency") || strings.Contains(next, "Host") {
+		t.Fatalf("pending polish returned the wrong next step: %q", next)
+	}
+}
+
 func TestEditChapterRejectsCompletedWithoutQueue(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

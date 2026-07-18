@@ -351,7 +351,7 @@ func (t *EditChapterTool) addDraftStatus(payload map[string]any, chapter int) {
 		return
 	}
 	progress, err := t.store.Progress.Load()
-	if err != nil {
+	if err != nil || progress == nil || progress.Flow == domain.FlowPolishing || len(progress.PendingRewrites) > 0 {
 		return
 	}
 	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
