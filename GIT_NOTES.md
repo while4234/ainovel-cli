@@ -46,6 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `2713b7b` `fix: honor configured backend routes on resume`:
+  removes novel settings and chapter outlines from backend diagnostics, exposes
+  stage routes as explicit `provider / model` choices even when providers share
+  a model name, resets a fresh manual or scheduled resume to the saved primary
+  route, and makes runtime failover attempt the selected candidate through the
+  normal request path so switch and failure events stay visible. The affected Go
+  regressions and vet, all 297 UI tests, production build, restart, live route
+  repair for `重生v4`, and isolated browser acceptance passed. Port 9898 runs
+  PID 41972 with 正文创作 inheriting
+  `deepseek-suifeng / deepseek-v4-pro`.
 - 2026-07-18 `0ed4996` `fix: prevent blank screen during project open`:
   normalizes explicit null snapshot/co-create inputs before evaluating global
   co-create visibility, covering the project-open reset render that previously
