@@ -49,6 +49,8 @@ const (
 	contextSimulationModeNormal     = "normal"
 	contextSimulationModeReinforced = "reinforced"
 	writerChapterContextBudgetBytes = 60 * 1024
+	writerChapterSourceBudgetBytes  = 36 * 1024
+	writerPolishingContextBytes     = 24 * 1024
 	planningContextBudgetBytes      = 60 * 1024
 	nearbyOutlineBeforeChapters     = 2
 	nearbyOutlineAfterChapters      = 3
@@ -112,6 +114,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	scope := normalizeContextScope(a.Scope, a.Chapter)
 
 	result := make(map[string]any)
+	chapterPurpose := chapterContextWriting
 	var warnings []string
 	seenWarnings := make(map[string]struct{})
 	warn := func(scope string, err error) {
@@ -139,7 +142,12 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		// Writer 路径：加载当前章工作包，长篇/大资料项目使用窗口化与源头压缩。
 		seed := newChapterContextEnvelope()
 		state := t.prepareChapterContext(a.Chapter, &seed, warn)
-		t.buildBaseContext(result, state, warn)
+		chapterPurpose = state.purpose
+		// A chapter request is assembled from chapter-owned source sections.
+		// Polishing intentionally excludes premise/world/arc planning: the draft,
+		// rewrite brief, contract and continuity facts are the authoritative scope.
+		// Premise/world/arc planning belongs to Architect. Writer receives the
+		// signed chapter contract and chapter-owned continuity evidence instead.
 		seed.apply(result)
 		t.buildChapterContext(result, state, warn)
 		t.buildAdaptationChapterContext(result, a.Chapter, warn)
@@ -159,7 +167,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	// 由 buildUserRules 按需新建只装 user_rules 的容器。快照缺失时退到内置默认，
 	// 始终输出稳定结构，避免 LLM 看到 user_rules=null 走异常分支。
 	if scope == "chapter" {
-		t.buildSimulationProfile(result, "working_memory", warn)
+		t.buildChapterSimulationProfile(result, chapterPurpose, warn)
 	} else if scope == "planning" {
 		t.buildSimulationProfile(result, "planning_memory", warn)
 	}
@@ -167,6 +175,9 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	if scope == "chapter" || scope == "planning" {
 		t.buildUserRules(result)
 		t.buildWordBudget(result, a.Chapter)
+	}
+	if scope == "chapter" {
+		result["context_profile"] = string(chapterPurpose)
 	}
 
 	if len(warnings) > 0 {
@@ -644,7 +655,7 @@ func (t *ContextTool) loadLayeredCharacters(result map[string]any, chapter int, 
 }
 
 // writerReferences 返回写作参考资料。章节 1 返回全量，后续章节裁剪掉不再需要的模板。
-func (t *ContextTool) writerReferences(chapter int) map[string]string {
+func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpose) map[string]string {
 	refs := map[string]string{}
 	add := func(k, v string) {
 		if v != "" {
@@ -656,14 +667,23 @@ func (t *ContextTool) writerReferences(chapter int) map[string]string {
 			refs[k] = truncateRunes(v, limit)
 		}
 	}
-	// 渐进式加载：始终保留核心参考，前 3 章额外加载完整写作指南
-	add("consistency", t.refs.Consistency)
-	add("hook_techniques", t.refs.HookTechniques)
-	add("quality_checklist", t.refs.QualityChecklist)
+	if purpose == chapterContextPolishing {
+		// Polishing is a local prose operation. The exact anti-AI repair evidence
+		// remains available through check_de_ai; this pack supplies only stable
+		// prose constraints and the final quality checklist.
+		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 800)
+		addWithLimit("quality_checklist", t.refs.QualityChecklist, 300)
+		return refs
+	}
+	// New writing and substantive rewrites retain the core writing references,
+	// with deterministic source limits rather than a post-build truncation pass.
+	addWithLimit("consistency", t.refs.Consistency, 400)
+	addWithLimit("hook_techniques", t.refs.HookTechniques, 300)
+	addWithLimit("quality_checklist", t.refs.QualityChecklist, 300)
 	// This is a core prose constraint, not an optional chapter-one reference.
 	// Previously the bundle loaded AntiAITone but never placed it in Writer or
 	// Editor context, so its most important long-form instructions were inert.
-	addWithLimit("anti_ai_tone", t.refs.AntiAITone, 6000)
+	addWithLimit("anti_ai_tone", t.refs.AntiAITone, 800)
 	if chapter <= 3 {
 		add("chapter_guide", t.refs.ChapterGuide)
 		add("dialogue_writing", t.refs.DialogueWriting)

@@ -79,13 +79,15 @@ func TestContextToolInjectsAntiAIToneForEveryWritingChapter(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	var payload struct {
-		References map[string]string `json:"references"`
+		ReferencePack struct {
+			References map[string]string `json:"references"`
+		} `json:"reference_pack"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if got := payload.References["anti_ai_tone"]; !strings.Contains(got, "章内小标题") {
-		t.Fatalf("anti_ai_tone missing from chapter context: %+v", payload.References)
+	if got := payload.ReferencePack.References["anti_ai_tone"]; !strings.Contains(got, "章内小标题") {
+		t.Fatalf("anti_ai_tone missing from chapter context: %+v", payload.ReferencePack.References)
 	}
 }
 
@@ -398,20 +400,11 @@ func TestContextToolChapterModeIncludesWorkingAndReferenceFields(t *testing.T) {
 	}
 
 	for _, key := range []string{
-		"premise",
-		"premise_sections",
-		"premise_structure",
-		"outline",
-		"world_rules",
 		"memory_policy",
-		"planning_tier",
 		"working_memory",
 		"episodic_memory",
 		"reference_pack",
-		"current_chapter_outline",
-		"chapter_contract",
-		"style_rules",
-		"references",
+		"context_profile",
 	} {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("expected key %q in chapter context", key)
@@ -421,10 +414,13 @@ func TestContextToolChapterModeIncludesWorkingAndReferenceFields(t *testing.T) {
 	if !ok {
 		t.Fatal("expected working_memory object")
 	}
-	for _, key := range []string{"recent_summaries", "chapter_plan", "previous_tail"} {
+	for _, key := range []string{"recent_summaries", "chapter_plan", "previous_tail", "current_chapter_outline", "chapter_contract"} {
 		if _, ok := working[key]; !ok {
 			t.Fatalf("expected working_memory.%s in chapter context", key)
 		}
+	}
+	if _, duplicated := payload["references"]; duplicated {
+		t.Fatal("chapter context must not duplicate canonical reference_pack at top level")
 	}
 }
 
@@ -1199,9 +1195,10 @@ func TestContextToolInjectsRewriteBriefForPendingRewriteChapter(t *testing.T) {
 	if err := json.Unmarshal(result, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	brief, ok := payload["rewrite_brief"].(map[string]any)
+	working, _ := payload["working_memory"].(map[string]any)
+	brief, ok := working["rewrite_brief"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected rewrite_brief in chapter context, got %T", payload["rewrite_brief"])
+		t.Fatalf("expected working_memory.rewrite_brief in chapter context, got %T", working["rewrite_brief"])
 	}
 	if got := brief["reason"]; got != "节奏拖沓，需要压缩前半段" {
 		t.Fatalf("expected rewrite reason, got %v", got)
@@ -1241,8 +1238,125 @@ func TestContextToolOmitsRewriteBriefForNormalChapter(t *testing.T) {
 	if err := json.Unmarshal(result, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if _, ok := payload["rewrite_brief"]; ok {
+	working, _ := payload["working_memory"].(map[string]any)
+	if _, ok := working["rewrite_brief"]; ok {
 		t.Fatal("expected no rewrite_brief for chapter outside PendingRewrites")
+	}
+}
+
+func TestContextToolPolishingUsesChapterOwnedSourceProfile(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Outline.SaveOutline([]domain.OutlineEntry{
+		{Chapter: 1, Title: "前章", CoreEvent: strings.Repeat("前情", 500)},
+		{Chapter: 2, Title: "当前章", CoreEvent: strings.Repeat("本章既定事件", 500), Hook: strings.Repeat("既定钩子", 300)},
+		{Chapter: 3, Title: "后章", CoreEvent: strings.Repeat("未来事件", 500)},
+	}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Progress.Init("polish-source-profile", 3); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := s.Drafts.SaveFinalChapter(2, strings.Repeat("需要局部打磨的正文。", 300)); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(2, strings.Repeat("需要局部打磨的正文。", 300)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := s.Progress.MarkChapterComplete(2, 3000, "", ""); err != nil {
+		t.Fatalf("MarkChapterComplete: %v", err)
+	}
+	if err := s.Progress.SetPendingRewrites([]int{2}, "只修正节奏、措辞和 AI 痕迹，不改变剧情合同"); err != nil {
+		t.Fatalf("SetPendingRewrites: %v", err)
+	}
+	if err := s.Progress.SetFlow(domain.FlowPolishing); err != nil {
+		t.Fatalf("SetFlow: %v", err)
+	}
+	if err := s.Drafts.SaveChapterPlan(domain.ChapterPlan{
+		Chapter: 2,
+		Title:   "当前章",
+		Goal:    strings.Repeat("不应在打磨上下文重复的计划说明", 200),
+		Contract: domain.ChapterContract{
+			RequiredBeats:    []string{"保留既定事件"},
+			ForbiddenMoves:   []string{"不得改变剧情"},
+			ContinuityChecks: []string{"保持人物关系"},
+			HookGoal:         "保留既定章末钩子",
+		},
+	}); err != nil {
+		t.Fatalf("SaveChapterPlan: %v", err)
+	}
+	if err := s.World.SaveReview(domain.ReviewEntry{
+		Chapter: 2,
+		Scope:   "chapter",
+		Verdict: "polish",
+		Summary: "表达和节奏需打磨",
+		Issues: []domain.ConsistencyIssue{{
+			Type: "aesthetic", Severity: "warning", Description: "解释性复盘偏多", Suggestion: "逐处精确修订",
+		}},
+	}); err != nil {
+		t.Fatalf("SaveReview: %v", err)
+	}
+	if err := s.World.SaveStyleRules(domain.WritingStyleRules{Prose: []string{"叙述克制", "用动作承载情绪"}}); err != nil {
+		t.Fatalf("SaveStyleRules: %v", err)
+	}
+	if err := s.Characters.SaveSnapshots(1, 1, []domain.CharacterSnapshot{{Name: "林舒然", Status: "仍在犹豫", Relations: "与墨子曜保持信任"}}); err != nil {
+		t.Fatalf("SaveSnapshots: %v", err)
+	}
+	if err := s.World.SaveRelationships([]domain.RelationshipEntry{{Chapter: 1, CharacterA: "林舒然", CharacterB: "墨子曜", Relation: "互相信任"}}); err != nil {
+		t.Fatalf("SaveRelationships: %v", err)
+	}
+	longItems := []string{strings.Repeat("仿写观察", 200), strings.Repeat("节奏观察", 200), strings.Repeat("禁复制提醒", 200)}
+	if err := s.Simulation.Save(domain.SimulationProfile{
+		Version: domain.SimulationProfileVersion,
+		Synthesis: domain.SimulationSynthesis{
+			Style:         domain.SimulationStyle{NarrativeVoice: longItems, SentenceRhythm: longItems, ProseTexture: longItems, DoNotCopy: longItems},
+			PlotDesign:    domain.SimulationPlotDesign{OpeningPatterns: longItems, EscalationPatterns: longItems},
+			HookDesign:    domain.SimulationHookDesign{HookTypes: longItems, PayoffRules: longItems},
+			PacingDensity: domain.SimulationPacingDensity{SceneDensity: longItems, InformationRelease: longItems, DialogueActionRatio: longItems},
+			RoleGuidance:  domain.SimulationRoleGuidance{Writer: longItems, Architect: longItems, Editor: longItems},
+		},
+	}); err != nil {
+		t.Fatalf("Simulation.Save: %v", err)
+	}
+
+	refs := References{
+		Consistency:      strings.Repeat("全书一致性资料", 2000),
+		HookTechniques:   strings.Repeat("钩子设计资料", 2000),
+		QualityChecklist: strings.Repeat("质量检查", 2000),
+		AntiAITone:       strings.Repeat("去AI规则", 3000),
+	}
+	raw, err := NewContextToolWithOptions(s, refs, "romance", ContextToolOptions{SimulationMode: "reinforced"}).Execute(context.Background(), json.RawMessage(`{"chapter":2}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(raw) > writerPolishingContextBytes {
+		t.Fatalf("polishing context = %d bytes, want source-bounded <= %d", len(raw), writerPolishingContextBytes)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload["context_profile"] != "polishing" {
+		t.Fatalf("context_profile = %v, want polishing", payload["context_profile"])
+	}
+	working, _ := payload["working_memory"].(map[string]any)
+	for _, key := range []string{"current_chapter_outline", "chapter_contract", "rewrite_brief", "chapter_draft", "user_rules", "simulation_profile"} {
+		if _, ok := working[key]; !ok {
+			t.Fatalf("polishing context missing working_memory.%s", key)
+		}
+	}
+	for _, key := range []string{"chapter_plan", "future_chapter_promises", "recent_summaries", "timeline", "checkpoint"} {
+		if _, ok := working[key]; ok {
+			t.Fatalf("polishing context must not load working_memory.%s", key)
+		}
+	}
+	for _, key := range []string{"premise", "world_rules", "nearby_outline", "arc_outline_compact", "references", "rewrite_brief"} {
+		if _, ok := payload[key]; ok {
+			t.Fatalf("polishing context must not include top-level planning/duplicate field %s", key)
+		}
 	}
 }
 
@@ -1307,8 +1421,8 @@ func TestContextToolLongChapterUsesWindowedOutline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(raw) > writerChapterContextBudgetBytes {
-		t.Fatalf("long chapter context = %d bytes, want <= %d", len(raw), writerChapterContextBudgetBytes)
+	if len(raw) > writerChapterSourceBudgetBytes {
+		t.Fatalf("long chapter context = %d bytes, want <= %d", len(raw), writerChapterSourceBudgetBytes)
 	}
 
 	var payload map[string]any
@@ -1318,25 +1432,14 @@ func TestContextToolLongChapterUsesWindowedOutline(t *testing.T) {
 	if _, ok := payload["outline"]; ok {
 		t.Fatal("long chapter context must not include full outline")
 	}
-	if _, ok := payload["current_chapter_outline"]; !ok {
-		t.Fatal("expected current_chapter_outline")
+	working, _ := payload["working_memory"].(map[string]any)
+	if _, ok := working["current_chapter_outline"]; !ok {
+		t.Fatal("expected working_memory.current_chapter_outline")
 	}
-	nearby, ok := payload["nearby_outline"].([]any)
-	if !ok || len(nearby) == 0 {
-		t.Fatalf("expected nearby_outline, got %T", payload["nearby_outline"])
-	}
-	scope, ok := payload["outline_scope"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected outline_scope, got %T", payload["outline_scope"])
-	}
-	if scope["mode"] != "windowed" || scope["full_outline_omitted"] != true {
-		t.Fatalf("unexpected outline_scope: %+v", scope)
-	}
-	if got := int(scope["total_chapters"].(float64)); got != 1567 {
-		t.Fatalf("total_chapters = %d, want 1567", got)
-	}
-	if _, ok := payload["arc_outline_compact"]; !ok {
-		t.Fatal("flat long outline should expose arc_outline_compact fallback")
+	for _, planningKey := range []string{"nearby_outline", "arc_outline_compact", "outline_scope", "premise", "world_rules"} {
+		if _, ok := payload[planningKey]; ok {
+			t.Fatalf("writer chapter context must not include architect planning field %q", planningKey)
+		}
 	}
 	if _, ok := payload["_trimmed"]; ok {
 		t.Fatalf("long chapter context should be source-bounded without hard trimming, got %v", payload["_trimmed"])
@@ -1375,8 +1478,8 @@ func TestContextToolExposesOnlyNearbyFutureChapterPromises(t *testing.T) {
 		t.Fatalf("working_memory = %#v", payload["working_memory"])
 	}
 	promises, ok := working["future_chapter_promises"].([]any)
-	if !ok || len(promises) != 3 {
-		t.Fatalf("future_chapter_promises = %#v, want three nearby chapters", working["future_chapter_promises"])
+	if !ok || len(promises) != futureChapterPromiseWindow {
+		t.Fatalf("future_chapter_promises = %#v, want %d nearby chapters", working["future_chapter_promises"], futureChapterPromiseWindow)
 	}
 	first := promises[0].(map[string]any)
 	if first["chapter"] != float64(3) || first["core_event"] != "盟友公开承认背叛" {
@@ -1471,20 +1574,13 @@ func TestContextToolLongChapterDoesNotGrowWithProgressHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(raw) > writerChapterContextBudgetBytes {
-		t.Fatalf("chapter context after long progress = %d bytes, want <= %d", len(raw), writerChapterContextBudgetBytes)
+	if len(raw) > writerChapterSourceBudgetBytes {
+		t.Fatalf("chapter context after long progress = %d bytes, want <= %d", len(raw), writerChapterSourceBudgetBytes)
 	}
 
 	var payload struct {
-		Trimmed any `json:"_trimmed"`
-		Working struct {
-			Checkpoint struct {
-				StrandHistory []string `json:"strand_history_recent"`
-				HookHistory   []string `json:"hook_history_recent"`
-				StrandTotal   int      `json:"strand_history_total"`
-				HookTotal     int      `json:"hook_history_total"`
-			} `json:"checkpoint"`
-		} `json:"working_memory"`
+		Trimmed  any            `json:"_trimmed"`
+		Working  map[string]any `json:"working_memory"`
 		Episodic struct {
 			Foreshadow    []domain.ForeshadowEntry   `json:"foreshadow_ledger"`
 			Relationships []domain.RelationshipEntry `json:"relationship_state"`
@@ -1497,19 +1593,16 @@ func TestContextToolLongChapterDoesNotGrowWithProgressHistory(t *testing.T) {
 	if payload.Trimmed != nil {
 		t.Fatalf("context should not rely on hard trimming, got %v", payload.Trimmed)
 	}
-	if len(payload.Working.Checkpoint.StrandHistory) > maxContextHistoryItems ||
-		len(payload.Working.Checkpoint.HookHistory) > maxContextHistoryItems ||
-		payload.Working.Checkpoint.StrandTotal != 100 ||
-		payload.Working.Checkpoint.HookTotal != 100 {
-		t.Fatalf("checkpoint history not bounded: %+v", payload.Working.Checkpoint)
+	if _, ok := payload.Working["checkpoint"]; ok {
+		t.Fatal("writer chapter context must source progress from the signed chapter contract, not full progress history")
 	}
-	if len(payload.Episodic.Foreshadow) > maxContextForeshadowEntries {
+	if len(payload.Episodic.Foreshadow) > 12 {
 		t.Fatalf("foreshadow ledger length = %d", len(payload.Episodic.Foreshadow))
 	}
-	if len(payload.Episodic.Relationships) > maxContextRelationships {
+	if len(payload.Episodic.Relationships) > 12 {
 		t.Fatalf("relationships length = %d", len(payload.Episodic.Relationships))
 	}
-	if len(payload.Episodic.StateChanges) > maxContextStateChanges {
+	if len(payload.Episodic.StateChanges) > 12 {
 		t.Fatalf("state changes length = %d", len(payload.Episodic.StateChanges))
 	}
 }

@@ -136,6 +136,42 @@ func TestObserverSubagentToolDeltaUpdatesSaveFoundationType(t *testing.T) {
 	}
 }
 
+func TestObserverMarksSubagentWorkingDuringModelStream(t *testing.T) {
+	var events []Event
+	o := testObserver(&events)
+
+	o.handleSubagentDelta(&agentcore.ProgressPayload{
+		Kind:      agentcore.ProgressToolDelta,
+		Agent:     "writer",
+		DeltaKind: agentcore.DeltaText,
+		Delta:     "正在分析本章",
+	})
+
+	snapshots := o.agentSnapshots()
+	if len(snapshots) != 1 || snapshots[0].Name != "writer" || snapshots[0].State != "working" {
+		t.Fatalf("snapshots = %+v, want streaming writer working", snapshots)
+	}
+	if snapshots[0].Tool != "" {
+		t.Fatalf("streaming model must not report a tool before tool call, got %q", snapshots[0].Tool)
+	}
+}
+
+func TestObserverMarksCoordinatorWorkingDuringModelStream(t *testing.T) {
+	var events []Event
+	o := testObserver(&events)
+
+	o.handleMessageUpdate(agentcore.Event{
+		Type:      agentcore.EventMessageUpdate,
+		DeltaKind: agentcore.DeltaText,
+		Delta:     "正在选择下一步",
+	})
+
+	snapshots := o.agentSnapshots()
+	if len(snapshots) != 1 || snapshots[0].Name != "coordinator" || snapshots[0].State != "working" {
+		t.Fatalf("snapshots = %+v, want streaming coordinator working", snapshots)
+	}
+}
+
 func TestObserverSubagentToolDeltaUpdatesSaveFoundationTypeAcrossChunks(t *testing.T) {
 	var events []Event
 	o := testObserver(&events)

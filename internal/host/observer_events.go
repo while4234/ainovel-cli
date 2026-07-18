@@ -90,6 +90,7 @@ func (o *observer) handleMessageUpdate(ev agentcore.Event) {
 	if ev.Delta == "" {
 		return
 	}
+	o.markAgentWorking("coordinator")
 	if ev.DeltaKind == agentcore.DeltaToolCall {
 		o.handleCoordinatorToolDelta(ev)
 		return
@@ -103,6 +104,7 @@ func (o *observer) handleThinkingProgress(ev agentcore.Event) {
 	if agent == "" || thinking == "" {
 		return
 	}
+	o.markAgentWorking(agent)
 
 	prev := o.lastThinkingByAgent[agent]
 	delta := thinking

@@ -11,6 +11,10 @@ import (
 // - DeltaText 直接作为 markdown 流出
 // - DeltaToolCall 只对已知的长内容工具（如 draft_chapter.content）抽取字段流出；其他工具的参数 JSON 全部丢弃
 func (o *observer) handleSubagentDelta(p *agentcore.ProgressPayload) {
+	if p == nil {
+		return
+	}
+	o.markAgentWorking(p.Agent)
 	if p.DeltaKind != agentcore.DeltaToolCall {
 		o.emitStreamDelta(p.Delta, false)
 		return

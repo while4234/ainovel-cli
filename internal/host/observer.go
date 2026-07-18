@@ -172,6 +172,28 @@ func (o *observer) updateAgent(name string, fn func(*agentState)) {
 	a.updated = time.Now()
 }
 
+// markAgentWorking records the model-generation interval itself, not only the
+// much shorter tool execution interval. It updates the timestamp only on an
+// idle -> working transition so streaming tokens do not contend on snapshots.
+func (o *observer) markAgentWorking(name string) {
+	if name == "" {
+		return
+	}
+	o.agentMu.Lock()
+	defer o.agentMu.Unlock()
+	a, ok := o.agents[name]
+	if !ok {
+		a = &agentState{name: name, state: "idle"}
+		o.agents[name] = a
+	}
+	if a.state == "working" {
+		return
+	}
+	a.state = "working"
+	a.tool = ""
+	a.updated = time.Now()
+}
+
 func (o *observer) agentSnapshots() []AgentSnapshot {
 	o.agentMu.Lock()
 	defer o.agentMu.Unlock()

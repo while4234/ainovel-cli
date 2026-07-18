@@ -22,6 +22,25 @@ type contextBuildState struct {
 	relationships   []domain.RelationshipEntry
 	allStateChanges []domain.StateChange
 	styleRules      *domain.WritingStyleRules
+	purpose         chapterContextPurpose
+}
+
+type chapterContextPurpose string
+
+const (
+	chapterContextWriting   chapterContextPurpose = "writing"
+	chapterContextRewriting chapterContextPurpose = "rewriting"
+	chapterContextPolishing chapterContextPurpose = "polishing"
+)
+
+func resolveChapterContextPurpose(progress *domain.Progress, chapter int) chapterContextPurpose {
+	if progress == nil || !slices.Contains(progress.PendingRewrites, chapter) {
+		return chapterContextWriting
+	}
+	if progress.Flow == domain.FlowPolishing {
+		return chapterContextPolishing
+	}
+	return chapterContextRewriting
 }
 
 type chapterContextEnvelope struct {
@@ -64,9 +83,9 @@ func (e chapterContextEnvelope) apply(result map[string]any) {
 	if len(e.Selected) > 0 {
 		mergeEnvelopeSection(result, "selected_memory", e.Selected)
 	}
-	mergeSelectedContextSection(result, e.Working, chapterTopLevelMirrorKeys)
-	mergeSelectedContextSection(result, e.Episodic, chapterTopLevelMirrorKeys)
-	mergeSelectedContextSection(result, e.References, chapterTopLevelMirrorKeys)
+	// Chapter consumers use the canonical memory sections. Mirroring the same
+	// payload at the top level used to duplicate large references and contracts
+	// in every Writer request (20 KiB of references twice in a mature project).
 }
 
 // mergeEnvelopeSection 把 section 合并进 result[key] 的既有容器；容器不存在时直接挂载。
@@ -96,15 +115,6 @@ func mergeSelectedContextSection(result map[string]any, section map[string]any, 
 		}
 		result[key] = value
 	}
-}
-
-var chapterTopLevelMirrorKeys = map[string]struct{}{
-	"chapter_contract":        {},
-	"current_chapter_outline": {},
-	"planning_tier":           {},
-	"references":              {},
-	"rewrite_brief":           {},
-	"style_rules":             {},
 }
 
 var architectTopLevelMirrorKeys = map[string]struct{}{
@@ -719,6 +729,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 	warn("run_meta", err)
 	state.progress = progress
 	state.runMeta = runMeta
+	state.purpose = resolveChapterContextPurpose(progress, chapter)
 
 	if runMeta != nil && runMeta.PlanningTier != "" {
 		envelope.Episodic["planning_tier"] = runMeta.PlanningTier
@@ -737,11 +748,13 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 		warn("current_chapter_outline", currentEntryErr)
 	}
 	state.currentEntry = currentEntry
-	t.attachFutureChapterPromises(envelope, chapter, warn)
+	if state.purpose != chapterContextPolishing {
+		t.attachFutureChapterPromises(envelope, chapter, warn)
+	}
 
 	chapterPlan, chapterPlanErr := t.store.Drafts.LoadChapterPlan(chapter)
 	if chapterPlanErr == nil && chapterPlan != nil {
-		envelope.Working["chapter_plan"] = compactChapterPlan(*chapterPlan)
+		compactPlan := compactChapterPlan(*chapterPlan)
 		if len(chapterPlan.Contract.RequiredBeats) > 0 ||
 			len(chapterPlan.Contract.ForbiddenMoves) > 0 ||
 			len(chapterPlan.Contract.ContinuityChecks) > 0 ||
@@ -750,6 +763,12 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 			len(chapterPlan.Contract.PayoffPoints) > 0 ||
 			chapterPlan.Contract.HookGoal != "" {
 			envelope.Working["chapter_contract"] = compactChapterContract(chapterPlan.Contract)
+			// Contract has a dedicated canonical field. Do not serialize it again
+			// inside chapter_plan.
+			compactPlan.Contract = domain.ChapterContract{}
+		}
+		if state.purpose != chapterContextPolishing {
+			envelope.Working["chapter_plan"] = compactPlan
 		}
 	} else {
 		warn("chapter_plan", chapterPlanErr)
@@ -798,7 +817,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 	relationships, relErr := t.store.World.LoadRelationships()
 	warn("relationship_state", relErr)
 	if len(relationships) > 0 {
-		envelope.Episodic["relationship_state"] = compactRelationshipEntries(relationships, chapter, maxContextRelationships)
+		envelope.Episodic["relationship_state"] = compactRelationshipEntries(relationships, chapter, 12)
 	}
 	state.relationships = relationships
 
@@ -814,7 +833,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 			}
 		}
 		if len(recent) > 0 {
-			envelope.Episodic["recent_state_changes"] = compactStateChanges(recent, maxContextStateChanges)
+			envelope.Episodic["recent_state_changes"] = compactStateChanges(recent, 12)
 		}
 	}
 
@@ -829,7 +848,7 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 	return state
 }
 
-const futureChapterPromiseWindow = 3
+const futureChapterPromiseWindow = 2
 
 // attachFutureChapterPromises exposes only the next few story promises. This
 // gives Writer and Editor an explicit ownership boundary without loading the
@@ -847,11 +866,12 @@ func (t *ContextTool) attachFutureChapterPromises(envelope *chapterContextEnvelo
 			}
 			break
 		}
+		compact := compactOutlineEntry(*entry)
 		promises = append(promises, map[string]any{
 			"chapter":    entry.Chapter,
-			"title":      strings.TrimSpace(entry.Title),
-			"core_event": strings.TrimSpace(entry.CoreEvent),
-			"hook":       strings.TrimSpace(entry.Hook),
+			"title":      strings.TrimSpace(compact.Title),
+			"core_event": strings.TrimSpace(compact.CoreEvent),
+			"hook":       strings.TrimSpace(compact.Hook),
 		})
 	}
 	if len(promises) > 0 {
@@ -863,18 +883,92 @@ func (t *ContextTool) buildChapterContext(result map[string]any, state contextBu
 	envelope := newChapterContextEnvelope()
 	result["memory_policy"] = domain.NewChapterMemoryPolicy(state.progress, state.profile, state.currentEntry != nil)
 
-	if state.profile.Layered {
+	if state.purpose == chapterContextPolishing {
+		t.loadPolishingCharacters(envelope.Episodic, warn)
+	} else if state.profile.Layered {
 		t.loadLayeredCharacters(envelope.Episodic, state.chapter, warn)
 	} else {
 		t.loadFilteredCharacters(envelope.Episodic, state.chapter, warn)
 	}
 
-	t.buildChapterEpisodicMemory(&envelope, state, warn)
-	t.buildChapterWorkingMemory(&envelope, state, warn)
+	if state.purpose != chapterContextPolishing {
+		t.buildChapterEpisodicMemory(&envelope, state, warn)
+		t.buildChapterWorkingMemory(&envelope, state, warn)
+	}
 	t.buildChapterReferencePack(&envelope, state)
-	t.buildChapterSelectedMemory(&envelope, state, warn)
+	if state.purpose != chapterContextPolishing {
+		t.buildChapterSelectedMemory(&envelope, state, warn)
+	}
 	t.buildStyleStats(&envelope, state)
 	envelope.apply(result)
+}
+
+func (t *ContextTool) buildChapterSimulationProfile(result map[string]any, _ chapterContextPurpose, warn func(string, error)) {
+	profile, err := t.store.Simulation.Load()
+	if err != nil {
+		warn("simulation_profile", err)
+		return
+	}
+	compact := t.compactSimulationProfile(profile)
+	if compact == nil {
+		return
+	}
+
+	// Writer preserves prose voice, sentence density and Writer-specific
+	// guidance. Plot, hook and reader-retention design are owned by the signed
+	// chapter contract and are not duplicated from the simulation profile.
+	chapterProfile := &domain.SimulationCompactProfile{
+		Version:       compact.Version,
+		Mode:          compact.Mode,
+		SourceCount:   compact.SourceCount,
+		Style:         compact.Style,
+		PacingDensity: compact.PacingDensity,
+		RoleGuidance: domain.SimulationRoleGuidance{
+			Writer: compact.RoleGuidance.Writer,
+		},
+	}
+	chapterProfile.Style = compactPolishingSimulationStyle(chapterProfile.Style)
+	chapterProfile.PacingDensity = compactPolishingSimulationPacing(chapterProfile.PacingDensity)
+	chapterProfile.RoleGuidance.Writer = compactStringList(chapterProfile.RoleGuidance.Writer, 2, 60)
+	working, ok := result["working_memory"].(map[string]any)
+	if !ok {
+		working = map[string]any{}
+		result["working_memory"] = working
+	}
+	working["simulation_profile"] = chapterProfile
+	result["simulation_profile"] = true
+	if t.simulationMode == contextSimulationModeReinforced {
+		result["simulation_mode"] = contextSimulationModeReinforced
+	}
+}
+
+func compactPolishingSimulationStyle(style domain.SimulationStyle) domain.SimulationStyle {
+	style.NarrativeVoice = compactStringList(style.NarrativeVoice, 2, 60)
+	style.SentenceRhythm = compactStringList(style.SentenceRhythm, 2, 60)
+	style.ProseTexture = compactStringList(style.ProseTexture, 2, 60)
+	style.Perspective = compactStringList(style.Perspective, 2, 60)
+	style.Mood = compactStringList(style.Mood, 2, 60)
+	style.DoNotCopy = compactStringList(style.DoNotCopy, 2, 60)
+	return style
+}
+
+func compactPolishingSimulationPacing(pacing domain.SimulationPacingDensity) domain.SimulationPacingDensity {
+	pacing.SceneDensity = compactStringList(pacing.SceneDensity, 2, 60)
+	pacing.InformationRelease = compactStringList(pacing.InformationRelease, 2, 60)
+	pacing.DialogueActionRatio = compactStringList(pacing.DialogueActionRatio, 2, 60)
+	pacing.CompressionRules = compactStringList(pacing.CompressionRules, 2, 60)
+	return pacing
+}
+
+func (t *ContextTool) loadPolishingCharacters(result map[string]any, warn func(string, error)) {
+	snapshots, err := t.store.Characters.LoadLatestSnapshots()
+	if err != nil {
+		warn("character_snapshots", err)
+		return
+	}
+	if len(snapshots) > 0 {
+		result["character_snapshots"] = compactCharacterSnapshots(snapshots, 8)
+	}
 }
 
 // buildStyleStats 对全部已完成章节做全书级风格统计，注入 episodic_memory.style_stats。
@@ -932,39 +1026,21 @@ func (t *ContextTool) styleStopwords() []string {
 }
 
 func (t *ContextTool) buildChapterWorkingMemory(envelope *chapterContextEnvelope, state contextBuildState, warn func(string, error)) {
-	if next, err := t.store.Outline.GetChapterOutline(state.chapter + 1); err == nil && next != nil {
-		envelope.Working["next_chapter_outline"] = compactOutlineEntry(*next)
-	}
-
-	if state.profile.Layered {
-		t.loadLayeredSummaries(envelope.Working, state.chapter, state.profile.SummaryWindow, warn)
+	// The current contract and nearby chapter outlines already establish the
+	// structural position. Recent chapter summaries provide continuity without
+	// also loading redundant volume and arc summaries.
+	if summaries, err := t.store.Summaries.LoadRecentSummaries(state.chapter, min(state.profile.SummaryWindow, 4)); err == nil && len(summaries) > 0 {
+		compact := compactChapterSummaries(summaries)
+		if len(compact) > 3 {
+			compact = compact[len(compact)-3:]
+		}
+		for i := range compact {
+			compact[i].Summary = truncateRunes(compact[i].Summary, 120)
+			compact[i].KeyEvents = compactStringList(compact[i].KeyEvents, 3, 120)
+		}
+		envelope.Working["recent_summaries"] = compact
 	} else {
-		if summaries, err := t.store.Summaries.LoadRecentSummaries(state.chapter, state.profile.SummaryWindow); err == nil && len(summaries) > 0 {
-			envelope.Working["recent_summaries"] = compactChapterSummaries(summaries)
-		} else {
-			warn("recent_summaries", err)
-		}
-	}
-
-	if timeline, err := t.store.World.LoadRecentTimeline(state.chapter, state.profile.TimelineWindow); err == nil && len(timeline) > 0 {
-		envelope.Working["timeline"] = compactTimelineEvents(timeline, maxContextTimelineEvents)
-	} else {
-		warn("timeline", err)
-	}
-
-	if state.progress != nil {
-		checkpoint := map[string]any{
-			"in_progress_chapter": state.progress.InProgressChapter,
-		}
-		if len(state.progress.StrandHistory) > 0 {
-			checkpoint["strand_history_recent"] = compactRecentStrings(state.progress.StrandHistory, maxContextHistoryItems)
-			checkpoint["strand_history_total"] = len(state.progress.StrandHistory)
-		}
-		if len(state.progress.HookHistory) > 0 {
-			checkpoint["hook_history_recent"] = compactRecentStrings(state.progress.HookHistory, maxContextHistoryItems)
-			checkpoint["hook_history_total"] = len(state.progress.HookHistory)
-		}
-		envelope.Working["checkpoint"] = checkpoint
+		warn("recent_summaries", err)
 	}
 
 	if state.chapter > 1 {
@@ -989,12 +1065,13 @@ func (t *ContextTool) buildChapterSelectedMemory(envelope *chapterContextEnvelop
 
 func (t *ContextTool) buildChapterEpisodicMemory(envelope *chapterContextEnvelope, state contextBuildState, warn func(string, error)) {
 	if len(state.foreshadow) > 0 && len(state.storyThreads) == 0 {
-		envelope.Episodic["foreshadow_ledger"] = compactForeshadowEntries(state.foreshadow, maxContextForeshadowEntries)
+		envelope.Episodic["foreshadow_ledger"] = compactForeshadowEntries(state.foreshadow, 12)
 	}
 
 	// 配角名册：召回最近活跃的次要角色，让 Writer 在引入旧角色时能保持口吻/定位一致
 	// 不召回所有条目（长篇会膨胀），只给最近活跃的前 N 个，按 LastSeenChapter 倒序
-	if recentCast, err := t.store.Cast.RecentActive(15); err == nil && len(recentCast) > 0 {
+	_, hasSnapshots := envelope.Episodic["character_snapshots"]
+	if recentCast, err := t.store.Cast.RecentActive(15); !hasSnapshots && err == nil && len(recentCast) > 0 {
 		simplified := make([]map[string]any, 0, len(recentCast))
 		for _, e := range recentCast {
 			item := map[string]any{
@@ -1028,35 +1105,6 @@ func (t *ContextTool) buildChapterEpisodicMemory(envelope *chapterContextEnvelop
 		}
 	}
 
-	if state.profile.Layered && state.progress != nil {
-		pos := map[string]any{
-			"volume": state.progress.CurrentVolume,
-			"arc":    state.progress.CurrentArc,
-		}
-		if volumes, err := t.store.Outline.LoadLayeredOutline(); err == nil {
-			globalCh := 1
-			for _, v := range volumes {
-				if v.Index == state.progress.CurrentVolume {
-					pos["volume_title"] = v.Title
-					pos["volume_theme"] = v.Theme
-				}
-				for _, arc := range v.Arcs {
-					if v.Index == state.progress.CurrentVolume && arc.Index == state.progress.CurrentArc {
-						pos["arc_title"] = arc.Title
-						pos["arc_goal"] = arc.Goal
-						if n := len(arc.Chapters); n > 0 {
-							pos["arc_total_chapters"] = n
-							pos["arc_chapter_index"] = state.chapter - globalCh + 1
-						}
-					}
-					globalCh += len(arc.Chapters)
-				}
-			}
-		} else {
-			warn("layered_outline", err)
-		}
-		envelope.Episodic["position"] = pos
-	}
 }
 
 func (t *ContextTool) buildChapterReferencePack(envelope *chapterContextEnvelope, state contextBuildState) {
@@ -1095,7 +1143,7 @@ func (t *ContextTool) buildChapterReferencePack(envelope *chapterContextEnvelope
 		}
 	}
 
-	envelope.References["references"] = t.writerReferences(state.chapter)
+	envelope.References["references"] = t.writerReferences(state.chapter, state.purpose)
 }
 
 func (t *ContextTool) buildArchitectContext(result map[string]any, warn func(string, error)) {
