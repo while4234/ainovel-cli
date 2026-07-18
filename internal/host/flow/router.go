@@ -67,7 +67,22 @@ type State struct {
 	AdaptationOutlineBlocked     bool
 	AdaptationOutlineBlockReason string
 	CompletionAuditBlocked       bool
+
+	// Resume-only Writer facts. Normal routing intentionally ignores these;
+	// DispatchFollowUp uses them once after Host.Resume so a durable draft is
+	// validated instead of being mistaken for a brand-new chapter.
+	InProgressDraftExists      bool
+	InProgressCheckpoint       string
+	InProgressDeAIState        string
+	InProgressConsistencyValid bool
 }
+
+const (
+	writerDeAIStateMissing = "missing"
+	writerDeAIStateStale   = "stale"
+	writerDeAIStateFailed  = "failed"
+	writerDeAIStatePassed  = "passed"
+)
 
 // Route 根据事实返回下一步指令；返回 nil 表示让 Coordinator LLM 自主裁定。
 //
@@ -234,6 +249,45 @@ func Route(s State) *Instruction {
 
 	// 12. 正常续写
 	return s.nextChapterInstruction(p, "续写下一章")
+}
+
+// RouteResume refines only the first post-Resume instruction. A chapter with a
+// durable draft is recovery work, even if an interrupted weak Writer moved the
+// latest checkpoint back to "plan". Subsequent synchronous routing continues
+// through Route and its existing repeat/fencing behavior.
+func RouteResume(s State) *Instruction {
+	instruction := Route(s)
+	progress := s.Progress
+	if instruction == nil || progress == nil || instruction.Agent != "writer" ||
+		progress.Flow == domain.FlowPolishing || len(progress.PendingRewrites) > 0 ||
+		progress.InProgressChapter <= 0 || instruction.Chapter != progress.InProgressChapter ||
+		!s.InProgressDraftExists {
+		return instruction
+	}
+
+	chapter := progress.InProgressChapter
+	adaptationStep := ""
+	if s.AdaptationActive {
+		adaptationStep = "；若本书处于改编模式，还必须在同一版草稿上通过 check_adaptation"
+	}
+	return &Instruction{
+		Agent: "writer",
+		Task: fmt.Sprintf(
+			"恢复第 %d 章现有草稿（checkpoint=%s，de_ai=%s，consistency_current=%t）。当前草稿是唯一工作版本：禁止调用 plan_chapter 或 draft_chapter，禁止读取其他章节，禁止重复调用 novel_context。先且只先调用一次 read_chapter(chapter=%d, source=\"draft\")，再调用 check_de_ai；若有 repair finding，依据刚回读的当前原文用 repair_de_ai_batch 做一小批唯一精确替换并立即复检，过期 old_string 让工具跳过，不要重放旧批次，直到 check_de_ai 通过。随后调用 novel_context(chapter=%d) 一次并在同一版草稿上通过 check_consistency%s；任何后续改稿都要重新完成这些检查。最后直接 commit_chapter，不要重新规划或整章重写。",
+			chapter, resumeFact(s.InProgressCheckpoint), resumeFact(s.InProgressDeAIState), s.InProgressConsistencyValid,
+			chapter, chapter, adaptationStep,
+		),
+		Reason:  fmt.Sprintf("恢复第 %d 章已有草稿的当前验证阶段", chapter),
+		Chapter: chapter,
+	}
+}
+
+func resumeFact(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func routeOriginalPlanning(s State) *Instruction {

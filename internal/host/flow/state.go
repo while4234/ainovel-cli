@@ -43,6 +43,7 @@ func LoadState(store *storepkg.Store) State {
 		return s
 	}
 	s.Progress = progress
+	loadWriterResumeState(&s, store, progress)
 	loadAdaptationState(&s, store, progress)
 	loadContinuationState(&s, store)
 
@@ -89,6 +90,40 @@ func LoadState(store *storepkg.Store) State {
 	}
 
 	return s
+}
+
+func loadWriterResumeState(s *State, st *storepkg.Store, progress *domain.Progress) {
+	if s == nil || st == nil || progress == nil || progress.InProgressChapter <= 0 {
+		return
+	}
+	chapter := progress.InProgressChapter
+	draft, err := st.Drafts.LoadDraft(chapter)
+	if err != nil || draft == "" {
+		return
+	}
+	s.InProgressDraftExists = true
+	draftSHA := storepkg.TextSHA256(draft)
+	if checkpoint := st.Checkpoints.Latest(domain.ChapterScope(chapter)); checkpoint != nil {
+		s.InProgressCheckpoint = checkpoint.Step
+	}
+	if checkpoint := st.Checkpoints.LatestByStep(domain.ChapterScope(chapter), "consistency_check"); checkpoint != nil {
+		s.InProgressConsistencyValid = checkpoint.Digest == "sha256:"+draftSHA
+	}
+
+	s.InProgressDeAIState = writerDeAIStateMissing
+	audit, auditErr := st.DeAI.LoadAudit(chapter)
+	if auditErr != nil || audit == nil {
+		return
+	}
+	if audit.DraftSHA256 != draftSHA {
+		s.InProgressDeAIState = writerDeAIStateStale
+		return
+	}
+	if audit.Passed {
+		s.InProgressDeAIState = writerDeAIStatePassed
+		return
+	}
+	s.InProgressDeAIState = writerDeAIStateFailed
 }
 
 func loadOriginalSkeletonState(s *State, st *storepkg.Store, review *domain.PlanningReview) {

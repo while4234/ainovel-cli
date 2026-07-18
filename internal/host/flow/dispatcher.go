@@ -85,7 +85,12 @@ func (d *Dispatcher) dispatch(asFollowUp bool) {
 	if !state.RevisionActive && d.store != nil && d.store.RunMeta.PlanningReviewPending() {
 		return
 	}
-	inst := Route(state)
+	var inst *Instruction
+	if asFollowUp {
+		inst = RouteResume(state)
+	} else {
+		inst = Route(state)
+	}
 	if inst == nil {
 		return
 	}

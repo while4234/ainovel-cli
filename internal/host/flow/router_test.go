@@ -406,6 +406,53 @@ func TestRoute_NormalContinue(t *testing.T) {
 	}
 }
 
+func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	state := State{
+		Progress:                   p,
+		LastCompleted:              4,
+		InProgressDraftExists:      true,
+		InProgressCheckpoint:       "plan",
+		InProgressDeAIState:        writerDeAIStateFailed,
+		InProgressConsistencyValid: false,
+	}
+
+	if normal := Route(state); normal == nil || normal.Task != "写第 5 章" {
+		t.Fatalf("normal routing changed: %+v", normal)
+	}
+	got := RouteResume(state)
+	if got == nil || got.Agent != "writer" || got.Chapter != 5 {
+		t.Fatalf("expected Writer draft recovery, got %+v", got)
+	}
+	for _, want := range []string{
+		"恢复第 5 章现有草稿",
+		"checkpoint=plan",
+		"de_ai=failed",
+		"禁止调用 plan_chapter 或 draft_chapter",
+		"禁止读取其他章节",
+		`read_chapter(chapter=5, source="draft")`,
+		"repair_de_ai_batch",
+		"check_consistency",
+		"commit_chapter",
+	} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("resume task missing %q: %s", want, got.Task)
+		}
+	}
+}
+
+func TestRouteResume_DoesNotOverrideNewChapterWithoutDraft(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	got := RouteResume(State{Progress: p, LastCompleted: 4})
+	if got == nil || got.Task != "写第 5 章" {
+		t.Fatalf("draftless chapter must keep normal route, got %+v", got)
+	}
+}
+
 func TestRoute_ContinuationStartsAtFirstNewChapterWithoutBaselinePostprocess(t *testing.T) {
 	p := writingProgress([]int{1, 2, 3}, domain.FlowWriting)
 	p.TotalChapters = 8

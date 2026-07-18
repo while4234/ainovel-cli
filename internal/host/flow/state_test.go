@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/adaptaudit"
+	"github.com/voocel/ainovel-cli/internal/deai"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
@@ -25,6 +26,46 @@ func TestCompletionReportAllowsOnlyPassOrLegacyInconclusive(t *testing.T) {
 				t.Fatalf("completionReportAllows=%v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	const draft = "# 第五章\n\n当前草稿已经存在，需要继续验证。"
+	if err := st.Drafts.SaveDraft(5, draft); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Checkpoints.AppendArtifact(domain.ChapterScope(5), "consistency_check", "drafts/05.draft.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DeAI.SaveAudit(deai.Audit{
+		Version:     deai.PolicyVersion,
+		Chapter:     5,
+		DraftSHA256: storepkg.TextSHA256(draft),
+		Passed:      false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Checkpoints.Append(domain.ChapterScope(5), "plan", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		CompletedChapters: []int{1, 2, 3, 4},
+		InProgressChapter: 5,
+		TotalChapters:     20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := LoadState(st)
+	if !state.InProgressDraftExists || state.InProgressCheckpoint != "plan" ||
+		state.InProgressDeAIState != writerDeAIStateFailed || !state.InProgressConsistencyValid {
+		t.Fatalf("in-progress recovery facts were not loaded: %+v", state)
 	}
 }
 
