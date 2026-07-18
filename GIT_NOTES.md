@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `0fe1942d` `fix: show active backend route`: the running
+  workflow badge now follows the most recently working Agent route and names
+  that Agent (for example, 正文写作 or 流程协调), so its provider/model
+  matches the request currently being handled instead of only the configured
+  workflow stage. Automatic-switch events now classify real quota and timeout
+  errors and avoid repeating the full switch summary in their detail. Focused
+  Go and UI regressions plus the production Vite build passed.
 - 2026-07-18 `2713b7b` `fix: honor configured backend routes on resume`:
   removes novel settings and chapter outlines from backend diagnostics, exposes
   stage routes as explicit `provider / model` choices even when providers share
