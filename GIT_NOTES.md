@@ -46,6 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `6824950` `fix: drop completed writer tool rationale`:
+  Writer phase compaction now removes private rationale from an assistant turn
+  once every tool call in that turn has a completed result, while preserving
+  the schema-valid call arguments and result receipts. The live chapter 45
+  failure retained about 11.5k characters of repeated deliberation beside an
+  already-materialized `plan_chapter` call, inflating the following request
+  from 57,191 to 72,136 bytes against a 61,440-byte boundary. This change does
+  not remove chapter text, plan arguments, receipts, or project context.
+  Focused ten-run regression, the full Agents suite, vet, and diff checks
+  passed.
 - 2026-07-18 `afaa00b` `fix: expose recovered polish draft state`:
   single-chapter `read_chapter` results now include a hash of the complete
   canonical content. Draft reads also expose the final hash,
