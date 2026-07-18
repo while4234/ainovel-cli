@@ -144,13 +144,13 @@ func Route(s State) *Instruction {
 		if !s.adaptationAllowsChapter(ch) {
 			return nil
 		}
-		verb := "重写"
+		task := fmt.Sprintf("重写第 %d 章", ch)
 		if p.Flow == domain.FlowPolishing {
-			verb = "打磨"
+			task = fmt.Sprintf("打磨第 %d 章：先读取 novel_context.rewrite_brief 与当前完整草稿，使用 edit_chapter 落实至少一处有审核依据的局部实质改动；不要在 check_de_ai 已通过时调用 repair_de_ai_batch，不要无结构理由整章重写。改后回读，并在同一版草稿上通过 check_consistency、check_de_ai 后再 commit_chapter", ch)
 		}
 		return &Instruction{
 			Agent:   "writer",
-			Task:    fmt.Sprintf("%s第 %d 章", verb, ch),
+			Task:    task,
 			Reason:  fmt.Sprintf("PendingRewrites 队列剩余 %d 章", len(p.PendingRewrites)),
 			Chapter: ch,
 		}

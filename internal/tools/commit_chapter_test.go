@@ -386,8 +386,9 @@ func TestCommitChapterUpdatesCastLedger(t *testing.T) {
 }
 
 // TestCommitChapterRejectsPolishWithoutDraftChange 验证：已完成章节进入打磨/重写队列后，
-// 若 writer 跳过 draft_chapter 直接 commit（drafts 与 chapters 内容完全相同），
-// commit_chapter 必须拒绝，强制 writer 先调 draft_chapter 写入新版本。
+// 若 writer 尚未落实打磨意见就直接 commit（drafts 与 chapters 内容完全相同），
+// commit_chapter 必须结构化拒绝并引导局部 edit_chapter，不能把正常控制流
+// 记成 ERROR，也不能诱发无依据的整章重写。
 // TestCommitChapterNonLayeredRecompletesAfterRework 验证非分层书完本后经 reopen 返工，
 // 改完章节 commit、队列排空时能自动重新回到 complete（补 drain 后判完结的非分层分支）。
 func TestCommitChapterNonLayeredRecompletesAfterRework(t *testing.T) {
@@ -674,9 +675,28 @@ func TestCommitChapterRejectsPolishWithoutDraftChange(t *testing.T) {
 		"characters": []string{"主角"},
 		"key_events": []string{"无改动"},
 	})
-	_, err := tool.Execute(context.Background(), args)
-	if err == nil {
-		t.Fatal("expected commit to be rejected when drafts equals final content")
+	raw, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("unchanged polish must be a structured rejection, got %v", err)
+	}
+	var rejection struct {
+		Committed      bool   `json:"committed"`
+		UnchangedDraft bool   `json:"unchanged_draft"`
+		NextStep       string `json:"next_step"`
+	}
+	if err := json.Unmarshal(raw, &rejection); err != nil {
+		t.Fatalf("Unmarshal rejection: %v", err)
+	}
+	if rejection.Committed || !rejection.UnchangedDraft {
+		t.Fatalf("unexpected rejection payload: %+v", rejection)
+	}
+	for _, want := range []string{"rewrite_brief", "edit_chapter", "局部实质改动", `read_chapter(source="draft")`, "check_consistency", "check_de_ai"} {
+		if !strings.Contains(rejection.NextStep, want) {
+			t.Fatalf("polish rejection missing %q: %s", want, rejection.NextStep)
+		}
+	}
+	if strings.Contains(rejection.NextStep, "draft_chapter") {
+		t.Fatalf("polish rejection must not force a whole rewrite: %s", rejection.NextStep)
 	}
 
 	// 再写一版不同的草稿 → 应该通过

@@ -621,17 +621,27 @@ func (t *CommitChapterTool) executeRewriteCommit(
 		return nil, err
 	}
 
-	// 2. 硬校验：drafts 与现终稿完全相同 → 判定为未真正打磨/重写（writer 跳过了 draft_chapter）
-	// 拒绝 commit，强制 writer 先调 draft_chapter(mode=write) 写入新版本。
+	// 2. drafts 与现终稿完全相同，说明 Writer 尚未落实审核意见。
+	// 打磨是正常的可恢复控制流：返回结构化拒绝，要求基于 rewrite_brief
+	// 做局部 edit_chapter，避免把一次过早提交记录成运行错误或诱发整章重写。
+	// 显式重写仍维持硬失败，要求写入一份完整的新正文。
 	existingFinal, _ := t.store.Drafts.LoadChapterText(chapter)
 	recreateChapterFacts := existingFinal == ""
 	if existingFinal != "" && existingFinal == content {
-		mode := "重写"
 		if progress != nil && progress.Flow == domain.FlowPolishing {
-			mode = "打磨"
+			return json.Marshal(map[string]any{
+				"chapter":         chapter,
+				"committed":       false,
+				"unchanged_draft": true,
+				"reason":          fmt.Sprintf("第 %d 章草稿与终稿完全相同，审核意见尚未落实。", chapter),
+				"next_step": fmt.Sprintf(
+					"不要再次调用 commit_chapter，也不要整章重写。回看 novel_context.rewrite_brief 与当前完整草稿，使用 edit_chapter 对第 %d 章做至少一处有审核依据的局部实质改动；不要在 check_de_ai 已通过时调用 repair_de_ai_batch。改后 read_chapter(source=\"draft\") 回读，并在同一版草稿上重新通过 check_consistency、check_de_ai，再提交。",
+					chapter,
+				),
+			})
 		}
-		return nil, fmt.Errorf("第 %d 章 drafts 与 chapters 内容完全相同，未检测到%s改动。请先调 draft_chapter(mode=write, chapter=%d) 写入%s后的新正文，再 commit_chapter: %w",
-			chapter, mode, chapter, mode, errs.ErrToolPrecondition)
+		return nil, fmt.Errorf("第 %d 章 drafts 与 chapters 内容完全相同，未检测到重写改动。请先调 draft_chapter(mode=write, chapter=%d) 写入重写后的完整新正文，再 commit_chapter: %w",
+			chapter, chapter, errs.ErrToolPrecondition)
 	}
 	if err := t.ensureAdaptationGate(chapter, content); err != nil {
 		return nil, err
