@@ -49,6 +49,7 @@ type Store struct {
 	ManuscriptRevisions    *ManuscriptRevisionStore
 	OriginalPlanningAudits *OriginalPlanningAuditStore
 	Foundation             *FoundationStore
+	CoreCast               *CoreCastStore
 
 	crossMu sync.Mutex // 保护跨域原子操作
 }
@@ -91,7 +92,9 @@ func NewStore(dir string) *Store {
 		ManuscriptRevisions:    NewManuscriptRevisionStore(newIO(dir), revisions),
 		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir), outline),
 		Foundation:             foundation,
+		CoreCast:               newCoreCastStore(newIO(dir)),
 	}
+	foundation.coreCast = store.CoreCast
 	store.Outline.foundation = foundation
 	store.Characters.foundation = foundation
 	store.World.foundation = foundation
@@ -315,7 +318,7 @@ func (s *Store) FoundationMissing() []string {
 func (s *Store) Init() error {
 	return s.Progress.io.EnsureDirs([]string{
 		"chapters", "summaries", "drafts", "reviews", "meta", "meta/runtime", "meta/runtime/tasks", "meta/sessions", "meta/sessions/agents",
-		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/continuation", "meta/foundation", "meta/revisions", "meta/revisions/manuscript", "meta/revisions/content/sha256", "meta/deai", "meta/deai/checks", "meta/original_planning",
+		"meta/adaptation", "meta/adaptation/source_chapters", "meta/adaptation/source_reports", "meta/adaptation/source_foundation_batches", "meta/adaptation/cocreate_dossier_batches", "meta/adaptation/cocreate_briefing_batches", "meta/adaptation/checks", "meta/cocreate", "meta/continuation", "meta/foundation", "meta/revisions", "meta/revisions/manuscript", "meta/revisions/content/sha256", "meta/deai", "meta/deai/checks", "meta/original_planning",
 	})
 }
 

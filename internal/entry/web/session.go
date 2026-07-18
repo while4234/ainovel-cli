@@ -882,6 +882,9 @@ func (s *ProjectSession) StartQuick(text string, targetTotalWords int) error {
 		return err
 	}
 	defer unlock()
+	if err := host.RequireCoreCastGate(storepkg.NewStore(s.manifest.OutputDir), domain.CoreCastModeNormal, true); err != nil {
+		return err
+	}
 
 	plan, err := startup.PrepareQuick(startup.Request{
 		Mode:             startup.ModeQuick,
@@ -1025,8 +1028,12 @@ func (s *ProjectSession) hasActiveAction() bool {
 func (s *ProjectSession) Resume() (string, error) {
 	s.mu.Lock()
 	outputDir := s.manifest.OutputDir
+	cocreate := s.cocreate
 	s.mu.Unlock()
-	if strings.TrimSpace(outputDir) != "" {
+	if strings.TrimSpace(outputDir) != "" && !cocreate.coreCastResumeExempt() {
+		if err := host.RequireManagedCoreCastGate(storepkg.NewStore(outputDir), true); err != nil {
+			return "", err
+		}
 		active, err := storepkg.NewStore(outputDir).Revisions.Active()
 		if err != nil {
 			return "", fmt.Errorf("read active revision before resume: %w", err)
@@ -1592,6 +1599,9 @@ func (s *ProjectSession) StartAdaptationPrepared(options adapt.ProposalOptions) 
 		return err
 	}
 	defer unlock()
+	if err := host.RequireCoreCastGate(storepkg.NewStore(s.manifest.OutputDir), domain.CoreCastModeAdaptation, true); err != nil {
+		return err
+	}
 
 	if err := s.host.PrepareExternalSourceUserRules(options.Brief); err != nil {
 		return err
@@ -1619,6 +1629,9 @@ func (s *ProjectSession) BuildAdaptationProposalContext(ctx context.Context, opt
 			s.AppendSnapshot()
 		}
 	}()
+	if err := host.RequireCoreCastGate(storepkg.NewStore(s.manifest.OutputDir), domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 
 	s.AppendSnapshot()
 	proposal, err := s.buildAdaptationProposal(actionCtx, options)
@@ -1640,6 +1653,9 @@ func (s *ProjectSession) BuildAdaptationProposalVolumesContext(ctx context.Conte
 		s.AppendSnapshot()
 		unlock()
 	}()
+	if err := host.RequireCoreCastGate(storepkg.NewStore(s.manifest.OutputDir), domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 
 	st := storepkg.NewStore(s.manifest.OutputDir)
 	if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageSkeletonGenerating, -1); err != nil {
@@ -1719,6 +1735,9 @@ func (s *ProjectSession) ReviseAdaptationProposalContext(ctx context.Context, op
 			s.AppendSnapshot()
 		}
 	}()
+	if err := host.RequireCoreCastGate(storepkg.NewStore(s.manifest.OutputDir), domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 
 	s.AppendSnapshot()
 	eventID, startedAt := s.appendAdaptationProposalRevisionStarted(options)
@@ -1748,6 +1767,9 @@ func (s *ProjectSession) ReviseAdaptationVolumeReviewContext(ctx context.Context
 			s.AppendSnapshot()
 		}
 	}()
+	if err := host.RequireCoreCastGate(storepkg.NewStore(s.manifest.OutputDir), domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 
 	s.AppendSnapshot()
 	eventID, startedAt := s.appendAdaptationProposalRevisionStarted(options)
@@ -1774,6 +1796,9 @@ func (s *ProjectSession) BuildAdaptationProposalDetailsContext(ctx context.Conte
 		s.AppendSnapshot()
 		unlock()
 	}()
+	if err := host.RequireCoreCastGate(storepkg.NewStore(s.manifest.OutputDir), domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 
 	st := storepkg.NewStore(s.manifest.OutputDir)
 	workflow, err := st.Adaptation.LoadPlanningWorkflow()
@@ -1826,6 +1851,9 @@ func (s *ProjectSession) ConfirmAdaptationProposal() (*domain.AdaptationPlan, er
 		return nil, err
 	}
 	defer unlock()
+	if err := host.RequireCoreCastGate(storepkg.NewStore(s.manifest.OutputDir), domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 
 	plan, err := s.host.ConfirmAdaptationProposal()
 	if err != nil {
@@ -1866,6 +1894,9 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 	if err != nil {
 		return webCoCreateState{}, err
 	}
+	if err := s.seedCoreCastDraftRevision(state); err != nil {
+		return webCoCreateState{}, err
+	}
 	if isPausedCoCreateKind(state.kind) {
 		if !s.host.PauseForCoCreate() {
 			return webCoCreateState{}, fmt.Errorf("cannot enter stage co-create")
@@ -1873,6 +1904,9 @@ func (s *ProjectSession) BeginCoCreate(ctx context.Context, req webCoCreateBegin
 		s.AppendSnapshot()
 	}
 	s.cocreate = state
+	if err := s.refreshCoreCastLocked(state, true); err != nil {
+		return state.apiState(), err
+	}
 	s.saveCoCreateCheckpoint()
 	if s.cocreate.hasPendingBriefingDecisions() {
 		api := s.cocreate.apiState()
@@ -1908,6 +1942,9 @@ func (s *ProjectSession) BeginContinuationCoCreate(ctx context.Context, req webC
 	if err != nil {
 		return webCoCreateState{}, err
 	}
+	if err := s.seedCoreCastDraftRevision(state); err != nil {
+		return webCoCreateState{}, err
+	}
 	if !s.host.PauseForCoCreate() {
 		return webCoCreateState{}, fmt.Errorf("cannot enter continuation co-create")
 	}
@@ -1932,7 +1969,13 @@ func (s *ProjectSession) BeginAdaptCoCreate(ctx context.Context, req webCoCreate
 	if err != nil {
 		return webCoCreateState{}, err
 	}
+	if err := s.seedCoreCastDraftRevision(state); err != nil {
+		return webCoCreateState{}, err
+	}
 	s.cocreate = state
+	if err := s.refreshCoreCastLocked(state, true); err != nil {
+		return state.apiState(), err
+	}
 	s.saveRecoverableCoCreateCheckpoint()
 	if err := s.ensureAdaptCoCreateBriefingLocked(ctx, false); err != nil {
 		return s.cocreate.apiState(), err
@@ -2131,6 +2174,11 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 	if err := s.cocreate.requireReadyDraft(); err != nil {
 		return webCoCreateState{}, err
 	}
+	if state.requiresCoreCast() {
+		if err := s.requireAndPublishCoreCastLocked(state); err != nil {
+			return state.apiState(), err
+		}
+	}
 	if needsFinalConsolidation {
 		state.draftConsolidated = true
 		s.saveCoCreateCheckpoint()
@@ -2244,6 +2292,9 @@ func (s *ProjectSession) commitAdaptCoCreate(ctx context.Context) (webCoCreateSt
 	}
 	if err := state.requireReadyDraft(); err != nil {
 		return webCoCreateState{}, err
+	}
+	if err := s.requireAndPublishCoreCastLocked(state); err != nil {
+		return state.apiState(), err
 	}
 	if needsFinalConsolidation {
 		state.draftConsolidated = true
@@ -2884,7 +2935,7 @@ func (s *ProjectSession) restoreCoCreateCheckpoint() error {
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return s.restoreCoCreateCheckpointFromLog()
+		return nil
 	}
 	if err != nil {
 		return err
@@ -2904,6 +2955,9 @@ func (s *ProjectSession) restoreCoCreateCheckpoint() error {
 		return fmt.Errorf("restore %s: cannot re-enter stage co-create", path)
 	}
 	s.cocreate = state
+	if err := s.refreshCoreCastLocked(state, false); err != nil {
+		return fmt.Errorf("restore %s core cast: %w", path, err)
+	}
 	s.appendCoCreateState(state.apiState())
 	return nil
 }
@@ -2941,34 +2995,7 @@ func (s *ProjectSession) restoreCoCreateCheckpointFromLog() error {
 }
 
 func (s *ProjectSession) restoreCoCreateCheckpointFromLogKind(expectedKind string) error {
-	path := s.coCreateLogPath()
-	if path == "" {
-		return nil
-	}
-	entry, ok, err := latestWebCoCreateLogEntryForKind(path, expectedKind)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil
-	}
-	state, err := webCoCreateSessionFromLogEntry(entry)
-	if err != nil {
-		return fmt.Errorf("restore %s: %w", path, err)
-	}
-	if err := s.fillCoCreateAdaptationSource(state); err != nil {
-		return fmt.Errorf("restore %s: %w", path, err)
-	}
-	if isPausedCoCreateKind(state.kind) && !s.host.PauseForCoCreate() {
-		return fmt.Errorf("restore %s: cannot re-enter stage co-create", path)
-	}
-	s.cocreate = state
-	s.saveCoCreateCheckpoint()
-	s.appendCoCreateState(state.apiState())
-	return nil
+	return fmt.Errorf("redacted co-create diagnostics cannot restore business state; a durable checkpoint is required")
 }
 
 func latestWebCoCreateLogEntry(path string) (webCoCreateLogEntry, bool, error) {
@@ -3067,6 +3094,9 @@ func (s *ProjectSession) writeCoCreateCheckpointWithFailed(failed bool) error {
 	if path == "" {
 		return nil
 	}
+	if err := s.persistCoreCastGateBinding(s.cocreate); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(s.cocreate.checkpointWithFailed(time.Now(), failed), "", "  ")
 	if err != nil {
 		return err
@@ -3096,6 +3126,54 @@ func (s *ProjectSession) writeCoCreateCheckpointWithFailed(failed bool) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+func (s *ProjectSession) persistCoreCastGateBinding(state *webCoCreateSession) error {
+	if state == nil || !state.requiresCoreCast() || state.session.DraftRevision() <= 0 || state.session.DraftHash() == "" {
+		return nil
+	}
+	binding := storepkg.CoreCastGateBinding{
+		Mode:          domain.CoreCastModeNormal,
+		DraftRevision: state.session.DraftRevision(),
+		DraftHash:     state.session.DraftHash(),
+	}
+	if state.kind == webCoCreateKindAdapt {
+		binding.Mode = domain.CoreCastModeAdaptation
+		var err error
+		binding.SourceSignature, binding.AdaptationIntentHash, err = s.currentAdaptationCoreCastBinding()
+		if err != nil {
+			return err
+		}
+	}
+	_, err := storepkg.NewStore(s.manifest.OutputDir).CoreCast.SaveGateBinding(binding)
+	return err
+}
+
+func (s *ProjectSession) currentAdaptationCoreCastBinding() (string, string, error) {
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	manifest, err := st.Adaptation.LoadSourceManifest()
+	if err != nil || manifest == nil {
+		return "", "", fmt.Errorf("current adaptation source manifest is required for core cast binding")
+	}
+	intent, err := st.Adaptation.LoadCoCreateIntent()
+	if err != nil || intent == nil {
+		return "", "", fmt.Errorf("current adaptation intent is required for core cast binding")
+	}
+	return storepkg.AdaptationSourceSignature(*manifest), adapt.CoCreateIntentHash(*intent), nil
+}
+
+func (s *ProjectSession) seedCoreCastDraftRevision(state *webCoCreateSession) error {
+	if state == nil || !state.requiresCoreCast() {
+		return nil
+	}
+	binding, err := storepkg.NewStore(s.manifest.OutputDir).CoreCast.LoadGateBinding()
+	if err != nil {
+		return err
+	}
+	if binding != nil {
+		state.session.SetDraftRevisionFloor(binding.DraftRevision)
+	}
+	return nil
 }
 
 func (s *ProjectSession) clearCoCreateCheckpoint() {
@@ -3280,6 +3358,9 @@ func (s *ProjectSession) repairCoCreateDraftForCommitLocked(ctx context.Context,
 	}
 	state.failed = false
 	state.applyReply(repairReply)
+	if err := s.persistReplyCoreCastLocked(repairReply); err != nil {
+		return err
+	}
 	api := state.apiState()
 	s.saveCoCreateCheckpoint()
 	s.appendCoCreateState(api)
@@ -3434,6 +3515,15 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 		reply = repairReply
 	}
 	s.cocreate.applyReply(reply)
+	if err := s.persistReplyCoreCastLocked(reply); err != nil {
+		s.cocreate.failed = true
+		s.cocreate.castError = err.Error()
+		state := s.cocreate.apiState()
+		s.saveCoCreateCheckpoint()
+		s.appendCoCreateState(state)
+		s.appendCoCreateRunFinished(eventID, startedAt, state, err)
+		return state, err
+	}
 	if s.cocreate.kind == webCoCreateKindAdapt && s.cocreate.session != nil && s.cocreate.session.DraftFresh() {
 		s.cocreate.draftConsolidated = true
 	}
@@ -3442,6 +3532,191 @@ func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateStat
 	s.appendCoCreateState(state)
 	s.appendCoCreateRunFinished(eventID, startedAt, state, nil)
 	return state, nil
+}
+
+func (s *ProjectSession) refreshCoreCastLocked(state *webCoCreateSession, persistBinding bool) error {
+	if state == nil || !state.requiresCoreCast() {
+		return nil
+	}
+	if persistBinding {
+		if err := s.persistCoreCastGateBinding(state); err != nil {
+			return err
+		}
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	contract, err := st.CoreCast.Load()
+	if err != nil {
+		return err
+	}
+	state.coreCast = contract
+	state.sourceCharacters = nil
+	state.sourceMajorCharacters = nil
+	state.sourceResolutionMissing = nil
+	if state.kind != webCoCreateKindAdapt {
+		return nil
+	}
+	source, err := st.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return err
+	}
+	dossier, err := st.Adaptation.LoadCoCreateDossier()
+	if err != nil {
+		return err
+	}
+	if source == nil || dossier == nil {
+		state.sourceResolutionMissing = []domain.CoreCastMissingItem{{Code: "source_major_set_required", Description: "adaptation source major character set is unavailable"}}
+		return nil
+	}
+	state.sourceCharacters = domain.ResolveSourceCharacters(*source)
+	state.sourceMajorCharacters, state.sourceResolutionMissing = domain.ResolveSourceMajorCharacters(*source, *dossier)
+	return nil
+}
+
+func (s *ProjectSession) persistReplyCoreCastLocked(reply host.CoCreateReply) error {
+	if s.cocreate == nil || !s.cocreate.requiresCoreCast() || reply.CoreCast == nil {
+		return nil
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	expected := int64(0)
+	if current, err := st.CoreCast.Load(); err != nil {
+		return err
+	} else if current != nil {
+		expected = current.Revision
+	}
+	candidate := *s.cocreate.coreCast
+	candidate.DraftRevision = s.cocreate.session.DraftRevision()
+	candidate.DraftHash = s.cocreate.session.DraftHash()
+	if s.cocreate.kind == webCoCreateKindAdapt {
+		sourceSignature, intentHash, err := s.currentAdaptationCoreCastBinding()
+		if err != nil {
+			return err
+		}
+		candidate.SourceSignature = sourceSignature
+		candidate.AdaptationIntentHash = intentHash
+	}
+	saved, err := st.CoreCast.SaveCAS(candidate, expected)
+	if err != nil {
+		return err
+	}
+	s.cocreate.coreCast = &saved
+	return nil
+}
+
+func (s *ProjectSession) requireAndPublishCoreCastLocked(state *webCoCreateSession) error {
+	if state == nil || !state.requiresCoreCast() {
+		return nil
+	}
+	if err := s.refreshCoreCastLocked(state, true); err != nil {
+		return err
+	}
+	api := state.apiState()
+	if !api.CanStart {
+		return fmt.Errorf("core cast gate blocked: %s", strings.Join(api.BlockingReasons, "; "))
+	}
+	if state.kind == webCoCreateKindAdapt && state.adaptationBriefing != nil &&
+		(state.coreCast.SourceSignature != strings.TrimSpace(state.adaptationBriefing.SourceSignature) ||
+			state.coreCast.AdaptationIntentHash != strings.TrimSpace(state.adaptationBriefing.IntentHash)) {
+		return fmt.Errorf("core cast gate blocked: source or adaptation intent binding is stale")
+	}
+	mode := domain.CoreCastModeNormal
+	if state.kind == webCoCreateKindAdapt {
+		mode = domain.CoreCastModeAdaptation
+	}
+	if err := host.RequireCoreCastGate(storepkg.NewStore(s.manifest.OutputDir), mode, true); err != nil {
+		return err
+	}
+	return s.refreshCoreCastLocked(state, true)
+}
+
+func (s *ProjectSession) UpdateCoreCast(candidate domain.CoreCastContract, expectedRevision int64) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+	if s.cocreate == nil || !s.cocreate.requiresCoreCast() {
+		return webCoCreateState{}, fmt.Errorf("normal or adaptation co-create has not started")
+	}
+	state := s.cocreate
+	candidate.DraftRevision = state.session.DraftRevision()
+	candidate.DraftHash = state.session.DraftHash()
+	if state.kind == webCoCreateKindAdapt {
+		candidate.Mode = domain.CoreCastModeAdaptation
+		candidate.SourceSignature, candidate.AdaptationIntentHash, err = s.currentAdaptationCoreCastBinding()
+		if err != nil {
+			return state.apiState(), err
+		}
+	} else {
+		candidate.Mode = domain.CoreCastModeNormal
+		candidate.SourceSignature = ""
+		candidate.AdaptationIntentHash = ""
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	saved, err := st.CoreCast.SaveCAS(candidate, expectedRevision)
+	if err != nil {
+		return state.apiState(), err
+	}
+	state.coreCast = &saved
+	state.castError = ""
+	s.saveCoCreateCheckpoint()
+	api := state.apiState()
+	s.appendCoCreateState(api)
+	return api, nil
+}
+
+func (s *ProjectSession) ConfirmCoreCast(expectedRevision int64, signature string) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+	if s.cocreate == nil || !s.cocreate.requiresCoreCast() {
+		return webCoCreateState{}, fmt.Errorf("normal or adaptation co-create has not started")
+	}
+	state := s.cocreate
+	if err := s.refreshCoreCastLocked(state, true); err != nil {
+		return state.apiState(), err
+	}
+	if state.coreCast == nil || state.coreCast.DraftRevision != state.session.DraftRevision() || state.coreCast.DraftHash != state.session.DraftHash() {
+		return state.apiState(), fmt.Errorf("core cast confirmation is stale for the current co-create draft")
+	}
+	if state.kind == webCoCreateKindAdapt && state.adaptationBriefing != nil &&
+		(state.coreCast.SourceSignature != strings.TrimSpace(state.adaptationBriefing.SourceSignature) ||
+			state.coreCast.AdaptationIntentHash != strings.TrimSpace(state.adaptationBriefing.IntentHash)) {
+		return state.apiState(), fmt.Errorf("core cast confirmation is stale for the current adaptation source or intent")
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	confirmed, _, err := st.CoreCast.ConfirmCAS(expectedRevision, signature, state.sourceCharacters, state.sourceMajorCharacters, state.sourceResolutionMissing)
+	if err != nil {
+		return state.apiState(), err
+	}
+	state.coreCast = &confirmed
+	s.saveCoCreateCheckpoint()
+	api := state.apiState()
+	s.appendCoCreateState(api)
+	return api, nil
+}
+
+func (s *ProjectSession) UnconfirmCoreCast(expectedRevision int64) (webCoCreateState, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return webCoCreateState{}, err
+	}
+	defer unlock()
+	if s.cocreate == nil || !s.cocreate.requiresCoreCast() {
+		return webCoCreateState{}, fmt.Errorf("normal or adaptation co-create has not started")
+	}
+	state := s.cocreate
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	unconfirmed, err := st.CoreCast.UnconfirmCAS(expectedRevision)
+	if err != nil {
+		return state.apiState(), err
+	}
+	state.coreCast = &unconfirmed
+	s.saveCoCreateCheckpoint()
+	api := state.apiState()
+	s.appendCoCreateState(api)
+	return api, nil
 }
 
 func (s *ProjectSession) runAdaptDecisionDraftBatchesLocked(ctx context.Context) (webCoCreateState, error) {

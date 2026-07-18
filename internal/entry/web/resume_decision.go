@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/host"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -68,6 +69,14 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 	cocreate := s.cocreate
 	s.mu.Unlock()
 	if cocreate != nil {
+		if !cocreate.coreCastResumeExempt() {
+			if strings.TrimSpace(manifest.OutputDir) == "" {
+				return blockedAutoResume("core_cast_gate_blocked", fmt.Errorf("project output directory is required for core cast gate")), nil
+			}
+			if err := host.RequireManagedCoreCastGate(storepkg.NewStore(manifest.OutputDir), false); err != nil {
+				return blockedAutoResume("core_cast_gate_blocked", err), nil
+			}
+		}
 		state := cocreate.apiState()
 		if state.Failed && len(state.Suggestions) == 0 && len(state.PendingDecisions) == 0 && !state.Ready {
 			return makeAutoResumeDecision(autoResumeState{Disposition: AutoResumeActionable, Action: AutoResumeActionCoCreate, Reason: "cocreate_failed"}, "恢复共创模型调用"), nil
@@ -79,6 +88,9 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 		return makeAutoResumeDecision(autoResumeState{Disposition: AutoResumeNoWork, Reason: "missing_output_dir"}, "项目没有可恢复目录"), nil
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
+	if err := host.RequireManagedCoreCastGate(st, false); err != nil {
+		return blockedAutoResume("core_cast_gate_blocked", err), nil
+	}
 	if err := st.RequireManuscriptWriteReady(); err != nil {
 		recovery := st.ManuscriptRecoveryState()
 		return makeRecoveryAutoResumeDecision(recovery), nil
@@ -211,6 +223,17 @@ func (s *ProjectSession) ExecuteAutoResume(ctx context.Context, expectedFingerpr
 	}
 	if expectedFingerprint != "" && decision.StateFingerprint != expectedFingerprint {
 		return decision, fmt.Errorf("auto-resume state changed before execution")
+	}
+	s.mu.Lock()
+	outputDir := s.manifest.OutputDir
+	cocreate := s.cocreate
+	s.mu.Unlock()
+	if !cocreate.coreCastResumeExempt() {
+		if strings.TrimSpace(outputDir) != "" {
+			if gateErr := host.RequireManagedCoreCastGate(storepkg.NewStore(outputDir), true); gateErr != nil {
+				return blockedAutoResume("core_cast_gate_blocked", gateErr), nil
+			}
+		}
 	}
 	switch decision.Action {
 	case AutoResumeActionCoCreate:

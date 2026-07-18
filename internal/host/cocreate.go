@@ -3,7 +3,9 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -20,7 +22,7 @@ import (
 // 冷启动共创：从零澄清需求，产出整本书的创作指令。
 const coCreateSystemPrompt = `你是一个小说共创助手。你的任务不是直接开始写小说，而是通过多轮简短对话帮助用户澄清创作需求，并持续整理出一段可直接交给创作引擎的中文创作指令。
 
-每一轮回复严格按以下 XML 格式输出，包含四个标签，依次出现，每个标签都必须有正确的开闭标签：
+每一轮回复严格按以下 XML 格式输出，包含五个标签，依次出现，每个标签都必须有正确的开闭标签：
 
 <reply>
 给用户看的中文自然回复：先回应用户的输入，再最多提出 1 到 2 个当前最关键的问题。如果信息已足够开始创作，告诉用户可以按 Ctrl+S 开始。
@@ -29,7 +31,7 @@ const coCreateSystemPrompt = `你是一个小说共创助手。你的任务不�
 <draft>
 当前完整的创作指令草稿，使用 Markdown：直接从二级标题开始，例如 "## 主题"、"## 关键要素"、"## 待澄清信息"；用项目符号列出要点。每一轮都要在已有结论上**累积更新**，吸收用户最新意图；即使本轮没有新增也要把完整草稿原样再写一次——不要省略、不要写"（保持上一轮）"之类的占位。
 </draft>
-` + coCreateProtocolTail
+` + coCreateCastProtocolTail
 
 // 阶段共创：小说已写了一部分，规划"后续阶段"的走向。调用方需把当前故事状态摘要
 // 追加到本 prompt 之后（"## 当前故事状态" 段），让模型在已写内容的基础上规划。
@@ -62,7 +64,7 @@ const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用�
 - preserve_details：仅适用于 chapter；原著细节优先，未受改编目标影响的剧情/段落允许复用原文，受影响部分再重写，并使用 source 字数容差。
 - 上面是解释表，不是 draft 内容模板；draft 的"## 改编模式"只写第一条用户消息中的当前模式字段和当前模式说明，不要写 rewrite_policy_rule=chapter=>preserve_details;arc/free=>full_rewrite 这类所有模式混在一起的规则串。
 
-每一轮回复严格按以下 XML 格式输出，包含四个标签，依次出现，每个标签都必须有正确的开闭标签：
+每一轮回复严格按以下 XML 格式输出，包含五个标签，依次出现，每个标签都必须有正确的开闭标签：
 
 <reply>
 给用户看的中文自然回复：先回应用户的改编意图，再最多提出 1 到 2 个当前最关键的问题。如果改编目标已足够明确，告诉用户可以按 Ctrl+S 开始改编。
@@ -75,7 +77,7 @@ const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用�
 
 每一轮都要在已有结论上累积更新，吸收用户最新意图；即使本轮没有新增也要把完整 brief 原样再写一次。
 </draft>
-` + coCreateProtocolTail
+` + coCreateCastProtocolTail
 
 // coCreateProtocolTail 是两种共创模式共用的输出协议尾部（<ready> / <suggestions> + 输出规范）。
 // 两模式只在开场语境与 <draft> 语义上不同，协议完全一致。
@@ -93,12 +95,21 @@ const coCreateProtocolTail = `
 </suggestions>
 
 输出规范：
-- 必须使用四个 XML 标签：<reply> / <draft> / <ready> / <suggestions>，每个都必须完整开闭。
+- 必须使用本提示在上文定义的 XML 标签并保持顺序，每个标签都必须完整开闭。
 - 标签名只能小写英文，不要改写成 <REPLY> / <REWRITE> / <回复> 等任何变体。
 - 标签外不要添加任何说明、思考或代码围栏。
 - <draft> 内允许多行 Markdown，直接换行书写，不需要任何转义。
 - <ready> 只写 true 或 false，不要写 true|false。只要当前 <draft> 已经可以直接交给创作引擎执行，或你没有必须继续追问的关键问题，就必须填 true；只有还缺少会阻塞执行的核心信息时才填 false。
 - <ready>true</ready> 时 <suggestions> 可以为空（保留空标签 <suggestions></suggestions> 即可）。`
+
+const coCreateCastProtocolTail = `
+<cast>
+严格 JSON 的 CoreCastContract 草稿。不得使用 Markdown 代码围栏。必须包含 version=1、mode、members、planned_relationships、source_dispositions。
+members 每项必须包含 character、importance、origin、mainline_function、source_character_ids、inclusion_rationale、no_core_relationships；character 使用完整角色字段。
+importance 只能是 protagonist/co_protagonist/major_pov/antagonist/love_interest/major_support/user_important。
+origin 只能是 original/source；source disposition action 只能是 keep/rename/merge/split/exclude。
+</cast>
+` + coCreateProtocolTail
 
 func coCreateSystemPromptWithSimulation(st *store.Store, mode string) string {
 	return appendSimulationCoCreatePrompt(coCreateSystemPrompt, st, mode)
@@ -235,6 +246,7 @@ func (e coCreateSelectedModelError) Unwrap() error {
 const (
 	tagReply       = "reply"
 	tagDraft       = "draft"
+	tagCast        = "cast"
 	tagReady       = "ready"
 	tagSuggestions = "suggestions"
 )
@@ -292,14 +304,14 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 			ModelRole:        coCreateModelRole,
 			SelectedProvider: modelIdentity.Provider,
 			SelectedModel:    modelIdentity.Model,
-			InputHistory:     history,
+			InputHistory:     coCreateLogHistoryMetadata(history),
 			Attempts:         attempts,
 			RetryErrors:      retryErrors,
-			RawResponse:      raw.String(),
+			RawResponse:      coCreateLogTextMetadata("response", raw.String()),
 			RawLen:           len([]rune(raw.String())),
-			Thinking:         thinking.String(),
-			ParsedReply:      reply.Message,
-			ParsedDraft:      reply.Prompt,
+			Thinking:         coCreateLogTextMetadata("thinking", thinking.String()),
+			ParsedReply:      coCreateLogTextMetadata("reply", reply.Message),
+			ParsedDraft:      coCreateLogTextMetadata("draft", reply.Prompt),
 			ParsedReady:      reply.Ready,
 			ParsedSugs:       reply.Suggestions,
 			StopReason:       string(stopReason),
@@ -418,11 +430,12 @@ retry:
 			rawText = t
 		}
 	}
-	if err := rejectIncompleteCoCreateXML(rawText); err != nil {
+	requireCast := strings.Contains(sysPrompt, "<cast>")
+	if err := rejectIncompleteCoCreateXML(rawText, requireCast); err != nil {
 		_ = recorder.Finish(modeldiag.StatusInvalidSchema, rawText, responseUsage)
 		return CoCreateReply{}, err
 	}
-	reply, err = parseCoCreateResponse(rawText)
+	reply, err = parseCoCreateResponseForProtocol(rawText, requireCast)
 	if err != nil {
 		_ = recorder.Finish(modeldiag.StatusDecodeError, rawText, responseUsage)
 		return reply, err
@@ -758,6 +771,21 @@ func errString(err error) string {
 	return err.Error()
 }
 
+func coCreateLogHistoryMetadata(history []CoCreateMessage) []CoCreateMessage {
+	out := make([]CoCreateMessage, 0, len(history))
+	for _, message := range history {
+		out = append(out, CoCreateMessage{Role: strings.TrimSpace(message.Role), Content: coCreateLogTextMetadata("message", message.Content)})
+	}
+	return out
+}
+
+func coCreateLogTextMetadata(kind, text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return fmt.Sprintf("[%s redacted; runes=%d]", kind, len([]rune(text)))
+}
+
 func assistantMsg(text string) agentcore.Message {
 	return agentcore.Message{
 		Role:      agentcore.RoleAssistant,
@@ -769,43 +797,105 @@ func assistantMsg(text string) agentcore.Message {
 // parseCoCreateResponse 解析 XML 标签输出。模型若没遵守协议（直接说自然语言），
 // 整段作为 reply 显示，draft 留空让 session 保留上一轮。
 func parseCoCreateResponse(raw string) (CoCreateReply, error) {
+	return parseCoCreateResponseForProtocol(raw, false)
+}
+
+const coCreateCastMaxBytes = 128 * 1024
+
+func parseCoCreateResponseForProtocol(raw string, requireCast bool) (CoCreateReply, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return CoCreateReply{}, fmt.Errorf("cocreate empty response")
 	}
 
-	reply, draft, ready, suggestions := splitCoCreateMarkers(raw)
-	if reply == "" {
-		// 模型没遵守 XML 协议：整段作为 reply。
-		return CoCreateReply{Message: raw, Prompt: "", Ready: false, Raw: raw}, nil
+	tags := []string{tagReply, tagDraft, tagReady, tagSuggestions}
+	if requireCast {
+		tags = []string{tagReply, tagDraft, tagCast, tagReady, tagSuggestions}
 	}
-	return CoCreateReply{
-		Message:     reply,
-		Prompt:      draft,
-		Ready:       ready,
-		Suggestions: suggestions,
+	sections, err := strictCoCreateSections(raw, tags)
+	if err != nil {
+		return CoCreateReply{}, err
+	}
+	readyText := strings.ToLower(strings.TrimSpace(sections[tagReady]))
+	if readyText != "true" && readyText != "false" {
+		return CoCreateReply{}, fmt.Errorf("cocreate response invalid: <ready> must be true or false")
+	}
+	parsed := CoCreateReply{
+		Message:     sections[tagReply],
+		Prompt:      sections[tagDraft],
+		Ready:       readyText == "true",
+		Suggestions: parseSuggestions(sections[tagSuggestions]),
 		Raw:         raw,
-	}, nil
+	}
+	if !requireCast {
+		return parsed, nil
+	}
+	castRaw := sections[tagCast]
+	if castRaw == "" {
+		return parsed, fmt.Errorf("cocreate cast missing")
+	}
+	if len([]byte(castRaw)) > coCreateCastMaxBytes {
+		return parsed, fmt.Errorf("cocreate cast exceeds %d bytes", coCreateCastMaxBytes)
+	}
+	decoder := json.NewDecoder(strings.NewReader(castRaw))
+	decoder.DisallowUnknownFields()
+	var cast domain.CoreCastContract
+	if err := decoder.Decode(&cast); err != nil {
+		return parsed, fmt.Errorf("cocreate cast invalid json: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return parsed, fmt.Errorf("cocreate cast contains trailing json content")
+	}
+	normalized, err := domain.NormalizeCoreCastContract(cast)
+	if err != nil {
+		return parsed, fmt.Errorf("cocreate cast invalid contract: %w", err)
+	}
+	parsed.CoreCast = &normalized
+	return parsed, nil
 }
 
-func rejectIncompleteCoCreateXML(raw string) error {
+func rejectIncompleteCoCreateXML(raw string, requireCast ...bool) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
 	}
-	for _, tag := range []string{tagReply, tagDraft, tagReady, tagSuggestions} {
+	tags := []string{tagReply, tagDraft, tagReady, tagSuggestions}
+	if len(requireCast) > 0 && requireCast[0] {
+		tags = []string{tagReply, tagDraft, tagCast, tagReady, tagSuggestions}
+	}
+	_, err := strictCoCreateSections(raw, tags)
+	return err
+}
+
+func strictCoCreateSections(raw string, tags []string) (map[string]string, error) {
+	remaining := strings.TrimSpace(raw)
+	sections := make(map[string]string, len(tags))
+	allTags := []string{tagReply, tagDraft, tagCast, tagReady, tagSuggestions}
+	for _, tag := range tags {
 		open := "<" + tag + ">"
 		closeTag := "</" + tag + ">"
-		hasOpen := strings.Contains(raw, open)
-		hasClose := strings.Contains(raw, closeTag)
-		if hasOpen && !hasClose {
-			return fmt.Errorf("cocreate response incomplete: missing %s", closeTag)
+		if !strings.HasPrefix(remaining, open) {
+			return nil, fmt.Errorf("cocreate response invalid: expected %s in protocol order", open)
 		}
-		if hasClose && !hasOpen {
-			return fmt.Errorf("cocreate response incomplete: missing %s", open)
+		remaining = remaining[len(open):]
+		closeIndex := strings.Index(remaining, closeTag)
+		if closeIndex < 0 {
+			return nil, fmt.Errorf("cocreate response incomplete: missing %s", closeTag)
 		}
+		content := remaining[:closeIndex]
+		for _, nested := range allTags {
+			if strings.Contains(content, "<"+nested+">") || strings.Contains(content, "</"+nested+">") {
+				return nil, fmt.Errorf("cocreate response invalid: nested or duplicate <%s> tag", nested)
+			}
+		}
+		sections[tag] = strings.TrimSpace(content)
+		remaining = strings.TrimSpace(remaining[closeIndex+len(closeTag):])
 	}
-	return nil
+	if remaining != "" {
+		return nil, fmt.Errorf("cocreate response invalid: content outside protocol sections")
+	}
+	return sections, nil
 }
 
 // splitCoCreateMarkers 按四个 XML 标签切分文本。
@@ -836,7 +926,7 @@ func extractTagContent(s, tag string) string {
 			return strings.TrimSpace(rest[:cIdx])
 		}
 		// 有开无闭 → 切到下一个已知开标签前
-		for _, other := range []string{"<reply>", "<draft>", "<ready>", "<suggestions>"} {
+		for _, other := range []string{"<reply>", "<draft>", "<cast>", "<ready>", "<suggestions>"} {
 			if other == open {
 				continue
 			}

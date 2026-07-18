@@ -1286,6 +1286,13 @@ func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelop
 	} else {
 		warn("characters", err)
 	}
+	if foundation, err := t.store.Foundation.Load(); err == nil {
+		if len(foundation.Relationships) > 0 {
+			envelope.Foundation["planned_relationships"] = append([]domain.CharacterRelationship(nil), foundation.Relationships...)
+		}
+	} else {
+		warn("planned_relationships", err)
+	}
 
 	if snapshots, err := t.store.Characters.LoadLatestSnapshots(); err == nil && len(snapshots) > 0 {
 		envelope.Foundation["character_snapshots"] = compactCharacterSnapshots(snapshots, maxContextCharacterSnapshots)

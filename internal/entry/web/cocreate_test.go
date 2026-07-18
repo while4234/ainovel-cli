@@ -80,6 +80,7 @@ func TestProjectCoCreateSuggestionsAndCommitUseDraftPrompt(t *testing.T) {
 		t.Fatalf("suggestions = %v", response.CoCreate.Suggestions)
 	}
 
+	confirmCurrentCoreCastForTest(t, server, manifest)
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -1043,6 +1044,7 @@ func TestProjectAdaptCoCreateLongFormCommitReturnsVolumeReview(t *testing.T) {
 		t.Fatalf("adapt begin status = %d body=%s", rec.Code, rec.Body.String())
 	}
 
+	confirmCurrentCoreCastForTest(t, server, manifest)
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -1409,7 +1411,7 @@ func TestProjectNormalCoCreateLegacyLogIgnoredWhenPlanningReviewExists(t *testin
 	}
 }
 
-func TestProjectCoCreateRestoresFromLegacyLog(t *testing.T) {
+func TestProjectCoCreateDoesNotRestoreBusinessStateFromRedactedLog(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Legacy CoCreate Restore")
@@ -1466,24 +1468,15 @@ func TestProjectCoCreateRestoresFromLegacyLog(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&restored); err != nil {
 		t.Fatalf("decode snapshot response: %v", err)
 	}
-	if restored.CoCreate == nil || !restored.CoCreate.Active {
-		t.Fatalf("restored co-create state = %+v, want active", restored.CoCreate)
+	if restored.CoCreate != nil {
+		t.Fatalf("redacted diagnostic log restored business state: %+v", restored.CoCreate)
 	}
-	if restored.CoCreate.Kind != webCoCreateKindAdapt || restored.CoCreate.SourceFile != "source.txt" {
-		t.Fatalf("restored adapt state kind=%q source=%q", restored.CoCreate.Kind, restored.CoCreate.SourceFile)
-	}
-	if restored.CoCreate.CanStart || restored.CoCreate.DraftPrompt != "## restored draft\n- keep current direction" {
-		t.Fatalf("restored draft/can_start = %q/%v", restored.CoCreate.DraftPrompt, restored.CoCreate.CanStart)
-	}
-	if len(restored.CoCreate.Messages) != 4 || restored.CoCreate.Messages[0].Role != "system" || restored.CoCreate.Messages[3].Content != "move the first period to high school" {
-		t.Fatalf("restored messages = %+v", restored.CoCreate.Messages)
-	}
-	if _, err := os.Stat(filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))); err != nil {
-		t.Fatalf("legacy restore should write checkpoint: %v", err)
+	if _, err := os.Stat(filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))); !os.IsNotExist(err) {
+		t.Fatalf("diagnostic log unexpectedly produced a durable checkpoint: %v", err)
 	}
 }
 
-func TestProjectRollbackToDraftRestoresCompletedAdaptationCoCreate(t *testing.T) {
+func TestProjectRollbackToDraftDoesNotRestoreFromDiagnosticLog(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Rollback Restore CoCreate")
@@ -1568,8 +1561,8 @@ func TestProjectRollbackToDraftRestoresCompletedAdaptationCoCreate(t *testing.T)
 	if err := json.NewDecoder(rollbackRec.Body).Decode(&rollbackResponse); err != nil {
 		t.Fatalf("decode rollback response: %v", err)
 	}
-	if rollbackResponse.CoCreate == nil || rollbackResponse.CoCreate.DraftPrompt != "## restored draft\n- keep current direction" {
-		t.Fatalf("rollback response co-create = %+v", rollbackResponse.CoCreate)
+	if rollbackResponse.CoCreate != nil {
+		t.Fatalf("rollback restored business state from diagnostic log: %+v", rollbackResponse.CoCreate)
 	}
 
 	snapshotReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
@@ -1581,11 +1574,8 @@ func TestProjectRollbackToDraftRestoresCompletedAdaptationCoCreate(t *testing.T)
 	if err := json.NewDecoder(snapshotRec.Body).Decode(&snapshot); err != nil {
 		t.Fatalf("decode snapshot: %v", err)
 	}
-	if snapshot.CoCreate == nil || snapshot.CoCreate.Kind != webCoCreateKindAdapt || !snapshot.CoCreate.Ready {
-		t.Fatalf("restored co-create = %+v", snapshot.CoCreate)
-	}
-	if snapshot.CoCreate.DraftPrompt != "## restored draft\n- keep current direction" || !snapshot.CoCreate.CanStart {
-		t.Fatalf("restored draft/can_start = %q/%v", snapshot.CoCreate.DraftPrompt, snapshot.CoCreate.CanStart)
+	if snapshot.CoCreate != nil {
+		t.Fatalf("snapshot restored business state from diagnostic log: %+v", snapshot.CoCreate)
 	}
 }
 
@@ -1606,6 +1596,7 @@ func TestProjectCoCreatePersistsTargetTotalWords(t *testing.T) {
 		t.Fatalf("begin status = %d body=%s", rec.Code, rec.Body.String())
 	}
 
+	confirmCurrentCoreCastForTest(t, server, manifest)
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -1896,6 +1887,7 @@ func TestProjectAdaptCoCreateLocksSelectedModeOnCommit(t *testing.T) {
 		t.Fatalf("adapt initial brief was not sent to model history: %+v", fake.lastCoCreateHistory)
 	}
 
+	confirmCurrentCoreCastForTest(t, server, manifest)
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -2448,6 +2440,7 @@ func TestProjectAdaptCoCreateCommitUsesAIUpdatedDraftBeforeProposal(t *testing.T
 		t.Fatalf("AdaptCoCreateStream calls before commit = %d, want 2", fake.adaptCoCreateCalls)
 	}
 
+	confirmCurrentCoreCastForTest(t, server, manifest)
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -2493,6 +2486,7 @@ func TestProjectAdaptCoCreateCommitRetryKeepsFinalDraftAfterProposalFailure(t *t
 		t.Fatalf("adapt send status = %d body=%s", rec.Code, rec.Body.String())
 	}
 
+	confirmCurrentCoreCastForTest(t, server, manifest)
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -2582,6 +2576,7 @@ func TestProjectAdaptCoCreateUsesAISupplementBeforeProposal(t *testing.T) {
 		t.Fatalf("repaired draft state = %+v", sendResponse.CoCreate)
 	}
 
+	confirmCurrentCoreCastForTest(t, server, manifest)
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -2637,6 +2632,7 @@ func TestProjectAdaptCoCreateAIUpdatePreservesLongDraftBeforeProposal(t *testing
 		t.Fatalf("AdaptCoCreateStream calls after supplement repair = %d, want 3", fake.adaptCoCreateCalls)
 	}
 
+	confirmCurrentCoreCastForTest(t, server, manifest)
 	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -2910,6 +2906,74 @@ func webCoCreateReply(message, draft string, ready bool, suggestions ...string) 
 		Ready:       ready,
 		Suggestions: suggestions,
 		Raw:         "<reply>" + message + "</reply><draft>" + draft + "</draft><ready>true</ready><suggestions></suggestions>",
+	}
+}
+
+func confirmCurrentCoreCastForTest(t *testing.T, server *Server, manifest ProjectManifest) {
+	t.Helper()
+	snapshotReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/snapshot", nil)
+	snapshotRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(snapshotRec, snapshotReq)
+	var snapshot struct {
+		CoCreate webCoCreateState `json:"cocreate"`
+	}
+	if err := json.NewDecoder(snapshotRec.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode core cast snapshot: %v", err)
+	}
+	state := snapshot.CoCreate
+	candidate := completeWebCoreCast()
+	if state.Kind == webCoCreateKindAdapt {
+		st := storepkg.NewStore(manifest.OutputDir)
+		if intent, err := st.Adaptation.LoadCoCreateIntent(); err != nil {
+			t.Fatal(err)
+		} else if intent == nil {
+			intent = &domain.AdaptationCoCreateIntent{Version: 1, RawRequest: "test adaptation intent", Granularity: state.AdaptMode, RewritePolicy: state.RewritePolicy}
+			intent.IntentHash = adaptpkg.CoCreateIntentHash(*intent)
+			if err := st.Adaptation.SaveCoCreateIntent(*intent); err != nil {
+				t.Fatal(err)
+			}
+		}
+		candidate.Mode = domain.CoreCastModeAdaptation
+		candidate.Members = nil
+		candidate.SourceDispositions = nil
+		for index, source := range state.SourceMajorCharacters {
+			importance := domain.CoreCastImportanceMajorSupport
+			if index == 0 {
+				importance = domain.CoreCastImportanceProtagonist
+			}
+			member := completeWebCoreCast().Members[0]
+			member.Character.ID = "target-" + source.ID
+			member.Character.Name = source.Name
+			member.Importance = importance
+			member.Origin = domain.CoreCastOriginSource
+			member.SourceCharacterIDs = []string{source.ID}
+			candidate.Members = append(candidate.Members, member)
+			candidate.SourceDispositions = append(candidate.SourceDispositions, domain.SourceCharacterDisposition{
+				SourceCharacterID: source.ID, Action: domain.SourceDispositionKeep, TargetCharacterIDs: []string{member.Character.ID},
+			})
+		}
+		if len(candidate.Members) == 0 {
+			candidate = completeWebCoreCast()
+			candidate.Mode = domain.CoreCastModeAdaptation
+			candidate.Members[0].InclusionRationale = "explicit original adaptation lead"
+		}
+	}
+	expected := int64(0)
+	if state.CoreCast != nil {
+		expected = state.CoreCast.Revision
+	}
+	updated := coreCastRequest(t, server, http.MethodPut, manifest.ID, "cocreate/core-cast", map[string]any{
+		"expected_revision": expected, "core_cast": candidate,
+	})
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update test core cast status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	state = decodeCoreCastState(t, updated)
+	confirmed := coreCastRequest(t, server, http.MethodPost, manifest.ID, "cocreate/core-cast/confirm", map[string]any{
+		"expected_revision": state.CoreCast.Revision, "content_signature": state.CastSignature,
+	})
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirm test core cast status=%d body=%s", confirmed.Code, confirmed.Body.String())
 	}
 }
 
