@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 `c75104b` `fix: allow granular writer recovery batches`:
+  the atomic `edit_chapter` batch now accepts up to 24 non-overlapping local
+  edits. Live Writer analysis found that preserving every plot beat, key
+  exchange, emotional landing, and hook while removing roughly 600 redundant
+  runes required about 20 small cuts; the former 12-item cap forced it to keep
+  reconsidering a few overly broad cuts instead of invoking the tool. The
+  larger batch keeps the mutation atomic and exact while favoring many gentle
+  edits over quality-reducing deletions. Twenty-edit ten-run regressions, full
+  Tools, Agents, Host Flow, and Host suites, vet, and diff checks passed.
 - 2026-07-19 `6665cc6` `fix: retain writer recovery across dispatches`:
   Host Resume now opens a durable-draft recovery lease in the Flow dispatcher.
   Every subagent boundary in that resumed run continues through `RouteResume`
