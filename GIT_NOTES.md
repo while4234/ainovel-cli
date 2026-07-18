@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `afaa00b` `fix: expose recovered polish draft state`:
+  single-chapter `read_chapter` results now include a hash of the complete
+  canonical content. Draft reads also expose the final hash,
+  `differs_from_final`, and an explicit `polish_state`, so a resumed Writer can
+  preserve an already-polished draft and proceed to same-version validation
+  without repeatedly rereading and comparing the whole chapter. No chapter
+  content is compressed or omitted by this change. Focused ten-run
+  regressions, the full Tools suite, vet, and diff checks passed.
 - 2026-07-18 `c44fb79` `fix: make repeated chapter edits idempotent`:
   `edit_chapter` now returns `already_applied=true` when and only when the full
   non-empty replacement already exists and the requested old text is gone.
