@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -45,6 +47,63 @@ func TestEditChapterAppliesEdit(t *testing.T) {
 	}
 	if strings.Contains(got, "指节发白") {
 		t.Fatalf("old text should be replaced, got %q", got)
+	}
+}
+
+func TestEditChapterUpdatesCanonicalDraftAfterStructureMigration(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := s.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		Index: 1,
+		Title: "第一卷",
+		Arcs: []domain.ArcOutline{{
+			Index:    1,
+			Title:    "第一弧",
+			Chapters: []domain.OutlineEntry{{Chapter: 1, Title: "第一章"}},
+		}},
+	}}); err != nil {
+		t.Fatalf("SaveLayeredOutline: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, "她记得一句不该出现的旧台词。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	args := json.RawMessage(`{"chapter":1,"old_string":"不该出现的旧台词","new_string":"露台上真实发生的问答"}`)
+	if _, err := NewEditChapterTool(s).Execute(context.Background(), args); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	draft, err := s.Drafts.LoadDraft(1)
+	if err != nil {
+		t.Fatalf("LoadDraft: %v", err)
+	}
+	if draft != "她记得一句露台上真实发生的问答。" {
+		t.Fatalf("canonical draft was not updated: %q", draft)
+	}
+	legacy, err := os.ReadFile(filepath.Join(dir, "drafts", "01.draft.md"))
+	if err != nil {
+		t.Fatalf("ReadFile legacy draft: %v", err)
+	}
+	if string(legacy) != draft {
+		t.Fatalf("legacy/canonical draft diverged: legacy=%q canonical=%q", legacy, draft)
+	}
+	legacyPath := filepath.Join(dir, "drafts", "01.draft.md")
+	if err := os.WriteFile(legacyPath, []byte("stale legacy draft"), 0o644); err != nil {
+		t.Fatalf("WriteFile stale legacy draft: %v", err)
+	}
+	reopened := store.NewStore(dir)
+	canonical, err := reopened.Drafts.LoadDraft(1)
+	if err != nil {
+		t.Fatalf("LoadDraft after reopen: %v", err)
+	}
+	if canonical != draft {
+		t.Fatalf("canonical draft did not retain edit: got=%q want=%q", canonical, draft)
 	}
 }
 

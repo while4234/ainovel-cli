@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 
 	"github.com/voocel/agentcore/schema"
@@ -109,6 +111,9 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 	if err != nil {
 		return nil, fmt.Errorf("apply edit: %w: %w", errs.ErrToolPrecondition, err)
 	}
+	if err := t.syncEditedDraft(a.Chapter); err != nil {
+		return nil, err
+	}
 
 	if _, err := t.store.Checkpoints.AppendArtifact(
 		domain.ChapterScope(a.Chapter), "edit",
@@ -144,7 +149,7 @@ func (t *EditChapterTool) ensureDraft(chapter int) error {
 		return fmt.Errorf("load draft: %w: %w", errs.ErrStoreRead, err)
 	}
 	if draft != "" {
-		return nil
+		return t.saveEditableDraft(chapter, draft)
 	}
 	text, err := t.store.Drafts.LoadChapterText(chapter)
 	if err != nil {
@@ -155,6 +160,25 @@ func (t *EditChapterTool) ensureDraft(chapter int) error {
 	}
 	if err := t.store.Drafts.SaveDraft(chapter, text); err != nil {
 		return fmt.Errorf("seed draft from chapter: %w: %w", errs.ErrStoreWrite, err)
+	}
+	return nil
+}
+
+func (t *EditChapterTool) saveEditableDraft(chapter int, content string) error {
+	if err := t.store.Drafts.SaveDraft(chapter, content); err != nil {
+		return fmt.Errorf("prepare editable draft: %w: %w", errs.ErrStoreWrite, err)
+	}
+	return nil
+}
+
+func (t *EditChapterTool) syncEditedDraft(chapter int) error {
+	path := filepath.Join(t.store.Dir(), "drafts", fmt.Sprintf("%02d.draft.md", chapter))
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read edited draft: %w: %w", errs.ErrStoreRead, err)
+	}
+	if err := t.store.Drafts.SaveDraft(chapter, string(content)); err != nil {
+		return fmt.Errorf("sync edited draft: %w: %w", errs.ErrStoreWrite, err)
 	}
 	return nil
 }

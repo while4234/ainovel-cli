@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `(pending)` `fix: sync canonical chapter edits`: `edit_chapter`
+  now synchronizes the migration-aware canonical draft before and after the
+  legacy-path edit operation. Previously the tool reported a successful diff
+  only in `drafts/{chapter}.draft.md`, while `read_chapter`, validation, and
+  commit continued reading the unchanged canonical draft. The resulting false
+  retry loop eventually triggered whole-chapter rewrites and context overflow.
+  A migrated-structure regression proves the edited canonical draft survives a
+  reopen even when the legacy mirror is deliberately made stale. Full Tools
+  tests, focused five-run regressions, vet, and diff checks passed.
 - 2026-07-18 `90a0fc0` `fix: bound arc review dispatches`: arc-end Editor
   reviews now use a 5,000-rune whole-chapter batch budget instead of 12,000
   runes. Each routed batch explicitly reads only its assigned final chapter
