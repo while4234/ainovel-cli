@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-18 `(pending)` `fix: sync canonical chapter edits`: `edit_chapter`
+- 2026-07-18 `c691a6c` `fix: sync canonical chapter edits`: `edit_chapter`
   now synchronizes the migration-aware canonical draft before and after the
   legacy-path edit operation. Previously the tool reported a successful diff
   only in `drafts/{chapter}.draft.md`, while `read_chapter`, validation, and
