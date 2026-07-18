@@ -261,6 +261,7 @@ describe('co-create UI state', () => {
   });
 
   it('shows global co-create only for first normal/adaptation creation or unfinished recovery', () => {
+    expect(shouldShowGlobalCoCreate({ snapshot: null, coCreate: null, planningReview: null })).toBe(true);
     expect(shouldShowGlobalCoCreate({ snapshot: { phase: 'init' }, coCreate: createCoCreateState() })).toBe(true);
     expect(shouldShowGlobalCoCreate({ snapshot: { phase: 'writing' }, coCreate: { ...createCoCreateState(), status: 'started' } })).toBe(false);
     expect(shouldShowGlobalCoCreate({ snapshot: { phase: 'writing' }, coCreate: { ...createCoCreateState(), kind: 'adapt', active: true } })).toBe(true);

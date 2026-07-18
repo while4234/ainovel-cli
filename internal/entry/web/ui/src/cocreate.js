@@ -29,21 +29,25 @@ export function createCoCreateState() {
   };
 }
 
-export function shouldShowGlobalCoCreate({ snapshot = {}, coCreate = {}, planningReview = {} } = {}) {
-  const phase = String(snapshot.Phase || snapshot.phase || '').trim().toLowerCase();
-  const kind = String(coCreate.kind || 'normal').trim().toLowerCase();
+export function shouldShowGlobalCoCreate(options = {}) {
+  const { snapshot, coCreate, planningReview } = options || {};
+  const safeSnapshot = snapshot || {};
+  const safeCoCreate = coCreate || {};
+  const safePlanningReview = planningReview || {};
+  const phase = String(safeSnapshot.Phase || safeSnapshot.phase || '').trim().toLowerCase();
+  const kind = String(safeCoCreate.kind || 'normal').trim().toLowerCase();
   if (kind === 'continuation') return false;
   const supportedFlow = kind === 'normal' || kind === 'adapt';
-  const unfinished = supportedFlow && coCreate.status !== 'started' && Boolean(
-    coCreate.active ||
-    coCreate.intakeActive ||
-    coCreate.failed ||
-    coCreate.streamThinking ||
-    coCreate.streamReply ||
-    (Array.isArray(coCreate.messages) && coCreate.messages.length)
+  const unfinished = supportedFlow && safeCoCreate.status !== 'started' && Boolean(
+    safeCoCreate.active ||
+    safeCoCreate.intakeActive ||
+    safeCoCreate.failed ||
+    safeCoCreate.streamThinking ||
+    safeCoCreate.streamReply ||
+    (Array.isArray(safeCoCreate.messages) && safeCoCreate.messages.length)
   );
   const firstCreationWindow = phase === '' || phase === 'init' || phase === 'premise' || phase === 'outline';
-  return Boolean(planningReview.active || unfinished || firstCreationWindow);
+  return Boolean(safePlanningReview.active || unfinished || firstCreationWindow);
 }
 
 export function coCreateStateFromResponse(response, previous = createCoCreateState(), options = {}) {
