@@ -145,6 +145,7 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 			"next_step":        "当前进行中草稿超出字数预算，未执行非分段编辑。立即结束本轮；Host 将指定唯一行段与 budget_segment 后再派发局部编辑。",
 		})
 	}
+	var skippedBudgetEdits []int
 	if a.BudgetSegment != nil {
 		window, outside := currentWriterBudgetWindow(t.store, a.Chapter, current)
 		if !outside || *a.BudgetSegment != window.Segment {
@@ -156,18 +157,26 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 		}
 		lines := strings.Split(current, "\n")
 		segmentText := strings.Join(lines[window.FromLine-1:window.ToLine], "\n")
+		validEdits := make([]chapterTextEdit, 0, len(a.Edits))
 		for index, edit := range a.Edits {
 			if strings.Count(segmentText, edit.OldString) != 1 {
-				return json.Marshal(map[string]any{
-					"chapter": a.Chapter, "changed": false, "word_count": len([]rune(current)),
-					"deferred_to_host": true, "expected_budget_segment": window.Segment,
-					"next_step": fmt.Sprintf("edits[%d] 不完全属于 Host 当前指定行段；未执行任何修改。立即结束本轮，由 Host 重新派发。", index),
-				})
+				skippedBudgetEdits = append(skippedBudgetEdits, index)
+				continue
 			}
+			validEdits = append(validEdits, edit)
 		}
+		if len(validEdits) == 0 {
+			return json.Marshal(map[string]any{
+				"chapter": a.Chapter, "changed": false, "word_count": len([]rune(current)),
+				"deferred_to_host": true, "expected_budget_segment": window.Segment,
+				"skipped_budget_edit_indices": skippedBudgetEdits,
+				"next_step":                   "没有任何 old_string 在 Host 当前指定行段内唯一精确匹配，未执行修改。立即结束本轮，由 Host 重新派发。",
+			})
+		}
+		a.Edits = validEdits
 	}
 	if batchMode {
-		return t.executeBatch(a.Chapter, current, a.Edits, a.BudgetSegment)
+		return t.executeBatch(a.Chapter, current, a.Edits, a.BudgetSegment, skippedBudgetEdits)
 	}
 	// Recovery and context compaction can make a weak model repeat the exact
 	// same patch. Treat only a provably completed replacement as an idempotent
@@ -217,7 +226,7 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 	return json.Marshal(passthrough)
 }
 
-func (t *EditChapterTool) executeBatch(chapter int, current string, edits []chapterTextEdit, budgetSegment *int) (json.RawMessage, error) {
+func (t *EditChapterTool) executeBatch(chapter int, current string, edits []chapterTextEdit, budgetSegment *int, skippedBudgetEdits []int) (json.RawMessage, error) {
 	updated, changed, alreadyApplied, err := applyChapterEditBatch(current, edits)
 	if err != nil {
 		return nil, err
@@ -240,6 +249,10 @@ func (t *EditChapterTool) executeBatch(chapter int, current string, edits []chap
 		"edit_count":            changed,
 		"already_applied_count": alreadyApplied,
 		"next_step":             t.nextStepAfterEdit(),
+	}
+	if len(skippedBudgetEdits) > 0 {
+		payload["skipped_budget_edit_indices"] = skippedBudgetEdits
+		payload["skipped_budget_edit_count"] = len(skippedBudgetEdits)
 	}
 	if changed == 0 {
 		payload["already_applied"] = true

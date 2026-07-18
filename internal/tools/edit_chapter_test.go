@@ -218,6 +218,44 @@ func TestEditChapterBudgetSegmentAllowsParagraphMergeInsideHostSegment(t *testin
 	}
 }
 
+func TestEditChapterBudgetSegmentSkipsInvalidOldStringAndAppliesValidSubset(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 1, InProgressChapter: 1}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	content := strings.Repeat("x", 120) + " 林舒然哼出一声笑。倒计时还在。"
+	if err := s.Drafts.SaveDraft(1, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	args := json.RawMessage(`{"chapter":1,"budget_segment":0,"edits":[{"old_string":"她哼出一声笑。","new_string":"她笑了。"},{"old_string":"倒计时还在。","new_string":"计时还在。"}]}`)
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Changed                bool  `json:"changed"`
+		EditCount              int   `json:"edit_count"`
+		SkippedBudgetEditCount int   `json:"skipped_budget_edit_count"`
+		SkippedIndices         []int `json:"skipped_budget_edit_indices"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || !payload.Changed || payload.EditCount != 1 ||
+		payload.SkippedBudgetEditCount != 1 || len(payload.SkippedIndices) != 1 || payload.SkippedIndices[0] != 0 {
+		t.Fatalf("valid subset was not applied atomically: %+v err=%v raw=%s", payload, err, raw)
+	}
+	got, loadErr := s.Drafts.LoadDraft(1)
+	if loadErr != nil || !strings.Contains(got, "计时还在。") || strings.Contains(got, "倒计时还在。") {
+		t.Fatalf("valid subset missing from draft: got=%q err=%v", got, loadErr)
+	}
+}
+
 func TestEditChapterOutOfBudgetDefersUnsegmentedEditToHost(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)
