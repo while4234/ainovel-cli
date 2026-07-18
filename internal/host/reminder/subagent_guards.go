@@ -62,7 +62,13 @@ func newCheckpointDeltaGuardFunc(st *store.Store, agentName string, requiredStep
 			if cp.Seq <= baseline {
 				break
 			}
-			if _, ok := need[cp.Step]; ok {
+			_, required := need[cp.Step]
+			// A Host-owned word-budget segment is a complete Writer dispatch,
+			// even though the chapter itself is not ready to commit yet. Let the
+			// Writer return so Coordinator/Router can issue the next durable
+			// segment instead of injecting validation reminders into this run.
+			budgetSegmentComplete := agentName == "writer" && strings.HasPrefix(cp.Step, "word_budget_edit_segment_")
+			if required || budgetSegmentComplete {
 				consecutive.Store(0)
 				return agentcore.StopDecision{Allow: true}
 			}

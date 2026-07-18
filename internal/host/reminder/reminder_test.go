@@ -335,6 +335,22 @@ func TestWriterStopGuardRechecksStaleDeAIBatchBeforeAdaptation(t *testing.T) {
 	}
 }
 
+func TestWriterStopGuardAllowsCompletedHostWordBudgetSegment(t *testing.T) {
+	s := newTestStore(t)
+	guard := NewWriterStopGuard(s)
+	if _, err := s.Checkpoints.Append(domain.ChapterScope(47), "word_budget_edit_segment_5", "drafts/47.draft.md", "sha256:segment"); err != nil {
+		t.Fatalf("append segment checkpoint: %v", err)
+	}
+
+	decision := guard(context.Background(), agentcore.StopInfo{
+		TurnIndex: 1,
+		Message:   agentcore.Message{StopReason: agentcore.StopReasonStop},
+	})
+	if !decision.Allow || decision.Escalate || decision.InjectMessage != "" {
+		t.Fatalf("completed Host segment must return to router without validation reminder: %#v", decision)
+	}
+}
+
 // TestStopGuard_NonConsecutiveTurnResetsCounter 验证：两次 block 之间 TurnIndex
 // 不相邻（中间 LLM 做了 tool call 或用户 resume）时，consecutive 计数重置。
 func TestStopGuard_NonConsecutiveTurnResetsCounter(t *testing.T) {
