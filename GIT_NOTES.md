@@ -57,7 +57,9 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   change before validation and commit. An unchanged polish draft returns a
   structured, non-error rejection with the same targeted guidance; it no
   longer orders `draft_chapter` whole rewrites or sends a passed de-AI report
-  to `repair_de_ai_batch`. Focused ten-run regressions, full Tools/Host flow
+  to `repair_de_ai_batch`. Recovery dispatches also preserve a draft that
+  already contains a prior local edit instead of demanding an extra edit just
+  to satisfy a call count. Focused ten-run regressions, full Tools/Host flow
   suites, and vet passed before live redeployment.
 - 2026-07-18 `ade5c27` `fix: preserve valid writer tool history`: Writer
   context compaction now keeps the original schema-valid arguments for bounded
