@@ -35,6 +35,9 @@ func currentWriterBudgetWindow(st *store.Store, chapter int, content string) (wr
 	if err != nil || progress == nil || progress.InProgressChapter != chapter {
 		return writerBudgetWindow{}, false
 	}
+	if progress.Flow == domain.FlowPolishing || len(progress.PendingRewrites) > 0 {
+		return writerBudgetWindow{}, false
+	}
 	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
 	if !ok || runtime.CurrentChapter.Chapter == 0 {
 		return writerBudgetWindow{}, false

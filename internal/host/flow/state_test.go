@@ -87,6 +87,43 @@ func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 	}
 }
 
+func TestLoadStateExcludesPendingPolishFromWriterBudgetRecovery(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	const draft = "completed chapter awaiting a small targeted polish"
+	if err := st.Drafts.SaveDraft(5, draft); err != nil {
+		t.Fatal(err)
+	}
+	budget := domain.NewWordBudget(1000, "test").WithPlannedChapters(20)
+	if err := st.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowPolishing,
+		CompletedChapters: []int{1, 2, 3, 4, 5},
+		InProgressChapter: 5,
+		PendingRewrites:   []int{5},
+		TotalChapters:     20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := LoadState(st)
+	if !state.InProgressDraftExists || state.InProgressWordCount != len([]rune(draft)) {
+		t.Fatalf("in-progress polish draft facts were not loaded: %+v", state)
+	}
+	if state.InProgressWordMin != 0 || state.InProgressWordMax != 0 || state.InProgressWordBudgetValid {
+		t.Fatalf("pending polish was incorrectly assigned creation budget facts: %+v", state)
+	}
+	got := Route(state)
+	if got == nil || got.Agent != "writer" || got.Chapter != 5 || !strings.Contains(got.Task, "edit_chapter") {
+		t.Fatalf("pending polish did not route directly to writer: %+v", got)
+	}
+}
+
 func TestLoadStateUsesArcReviewCheckpointWhenReviewChapterDiffers(t *testing.T) {
 	st := storepkg.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

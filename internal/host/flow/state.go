@@ -115,13 +115,8 @@ func loadWriterResumeState(s *State, st *storepkg.Store, progress *domain.Progre
 	if checkpoint := st.Checkpoints.LatestByStep(domain.ChapterScope(chapter), "consistency_check"); checkpoint != nil {
 		s.InProgressConsistencyValid = checkpoint.Digest == "sha256:"+draftSHA
 	}
-	if meta, metaErr := st.RunMeta.Load(); metaErr == nil && meta != nil && meta.WordBudget != nil {
-		if runtime, ok := meta.WordBudget.Runtime(progress, chapter); ok {
-			s.InProgressWordMin = runtime.CurrentChapter.RecommendedMinWords
-			s.InProgressWordMax = runtime.CurrentChapter.RecommendedMaxWords
-			s.InProgressWordBudgetValid = s.InProgressWordCount >= s.InProgressWordMin &&
-				s.InProgressWordCount <= s.InProgressWordMax
-		}
+	if progress.Flow != domain.FlowPolishing && len(progress.PendingRewrites) == 0 {
+		loadWriterWordBudgetState(s, st, progress, chapter)
 	}
 
 	s.InProgressDeAIState = writerDeAIStateMissing
@@ -138,6 +133,17 @@ func loadWriterResumeState(s *State, st *storepkg.Store, progress *domain.Progre
 		return
 	}
 	s.InProgressDeAIState = writerDeAIStateFailed
+}
+
+func loadWriterWordBudgetState(s *State, st *storepkg.Store, progress *domain.Progress, chapter int) {
+	if meta, metaErr := st.RunMeta.Load(); metaErr == nil && meta != nil && meta.WordBudget != nil {
+		if runtime, ok := meta.WordBudget.Runtime(progress, chapter); ok {
+			s.InProgressWordMin = runtime.CurrentChapter.RecommendedMinWords
+			s.InProgressWordMax = runtime.CurrentChapter.RecommendedMaxWords
+			s.InProgressWordBudgetValid = s.InProgressWordCount >= s.InProgressWordMin &&
+				s.InProgressWordCount <= s.InProgressWordMax
+		}
+	}
 }
 
 func loadOriginalSkeletonState(s *State, st *storepkg.Store, review *domain.PlanningReview) {
