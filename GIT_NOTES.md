@@ -46,6 +46,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 `de0497b` `fix: restore writer within current word budget`:
+  the one-shot Writer recovery state now loads the canonical draft rune count
+  and the exact dynamic chapter range used by the commit gate. If an
+  interrupted draft is outside that range, recovery instructs one grounded
+  `edit_chapter` pass over the existing draft, preserving every key plot beat,
+  character choice, emotional payoff, and ending hook while removing only
+  redundant material (or filling a necessary bridge). It explicitly forbids a
+  whole-chapter rewrite. Normal new-chapter routing and chapter-level polishing
+  are unchanged. This fixes the live chapter 45 recovery whose stale draft was
+  4,292 words against a 2,550-3,703 range and otherwise would reach the commit
+  gate without enough information to repair locally. Focused ten-run
+  regressions, the full Host and Host Flow suites, vet, and diff checks passed.
 - 2026-07-19 `ce08323` `fix: resume writer from durable draft stage`:
   the one-shot post-Resume route now inspects the in-progress canonical draft,
   latest chapter checkpoint, current-draft de-AI audit, and consistency digest.
