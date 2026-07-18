@@ -150,9 +150,10 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 	}
 	fullContent := content
 	originalRunes := len([]rune(fullContent))
+	outOfBudgetDraft := a.Source == "draft" && currentDraftOutsideWordBudget(t.store, a.Chapter, originalRunes)
 	segmentFrom, segmentTo := 0, 0
 	if a.FromLine > 0 || a.ToLine > 0 {
-		if a.Source != "draft" || !t.wordBudgetLineSegmentAllowed(a.Chapter, originalRunes) {
+		if !outOfBudgetDraft {
 			return nil, fmt.Errorf("from_line/to_line are only available for the current out-of-budget draft")
 		}
 		lines := strings.Split(fullContent, "\n")
@@ -162,6 +163,14 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 		segmentFrom = a.FromLine
 		segmentTo = min(a.ToLine, len(lines))
 		content = strings.Join(lines[segmentFrom-1:segmentTo], "\n")
+	} else if outOfBudgetDraft {
+		return json.Marshal(map[string]any{
+			"chapter":          a.Chapter,
+			"source":           a.Source,
+			"word_count":       originalRunes,
+			"deferred_to_host": true,
+			"next_step":        "当前进行中草稿超出字数预算，整章回读未执行。立即结束本轮；Host 将指定唯一行段后再派发读取与局部编辑。",
+		})
 	}
 	var truncated bool
 	if a.MaxRunes > 0 {
@@ -211,12 +220,15 @@ func (t *ReadChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 	return json.Marshal(result)
 }
 
-func (t *ReadChapterTool) wordBudgetLineSegmentAllowed(chapter, wordCount int) bool {
-	meta, err := t.store.RunMeta.Load()
+func currentDraftOutsideWordBudget(st *store.Store, chapter, wordCount int) bool {
+	if st == nil {
+		return false
+	}
+	meta, err := st.RunMeta.Load()
 	if err != nil || meta == nil || meta.WordBudget == nil {
 		return false
 	}
-	progress, err := t.store.Progress.Load()
+	progress, err := st.Progress.Load()
 	if err != nil || progress == nil || progress.InProgressChapter != chapter {
 		return false
 	}

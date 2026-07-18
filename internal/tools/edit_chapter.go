@@ -135,6 +135,15 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 	if err != nil {
 		return nil, fmt.Errorf("load current draft before edit: %w: %w", errs.ErrStoreRead, err)
 	}
+	if a.BudgetSegment == nil && currentDraftOutsideWordBudget(t.store, a.Chapter, len([]rune(current))) {
+		return json.Marshal(map[string]any{
+			"chapter":          a.Chapter,
+			"changed":          false,
+			"word_count":       len([]rune(current)),
+			"deferred_to_host": true,
+			"next_step":        "当前进行中草稿超出字数预算，未执行非分段编辑。立即结束本轮；Host 将指定唯一行段与 budget_segment 后再派发局部编辑。",
+		})
+	}
 	if batchMode {
 		return t.executeBatch(a.Chapter, current, a.Edits, a.BudgetSegment)
 	}

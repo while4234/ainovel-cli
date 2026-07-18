@@ -117,6 +117,43 @@ func TestReadChapterDraftLineSegmentKeepsFullDraftIdentity(t *testing.T) {
 	}
 }
 
+func TestReadChapterDraftDefersFullOutOfBudgetReadToHost(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	const content = "line one\nline two\nline three\nline four"
+	if err := s.Drafts.SaveDraft(3, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 3, InProgressChapter: 3}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(300, "test").WithPlannedChapters(3)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	raw, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(`{"chapter":3,"source":"draft"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Content        string `json:"content"`
+		DeferredToHost bool   `json:"deferred_to_host"`
+		NextStep       string `json:"next_step"`
+		WordCount      int    `json:"word_count"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !payload.DeferredToHost || payload.Content != "" || payload.WordCount != len([]rune(content)) ||
+		!strings.Contains(payload.NextStep, "Host 将指定唯一行段") {
+		t.Fatalf("full out-of-budget read was not deferred: %+v", payload)
+	}
+}
+
 func TestReadChapterDraftLineSegmentRejectsInBudgetDraft(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

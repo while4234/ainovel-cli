@@ -60,6 +60,9 @@ func TestEditChapterBatchAppliesMultipleEditsAndReportsWordBudget(t *testing.T) 
 	if err := s.Progress.Init("test", 1); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 1, InProgressChapter: 1}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
 	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
 	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
 		t.Fatalf("SetWordBudget: %v", err)
@@ -71,7 +74,8 @@ func TestEditChapterBatchAppliesMultipleEditsAndReportsWordBudget(t *testing.T) 
 		t.Fatalf("SaveDraft: %v", err)
 	}
 	args, _ := json.Marshal(map[string]any{
-		"chapter": 1,
+		"chapter":        1,
+		"budget_segment": 0,
 		"edits": []map[string]string{
 			{"old_string": first, "new_string": "x"},
 			{"old_string": second, "new_string": "y"},
@@ -136,7 +140,7 @@ func TestEditChapterBudgetSegmentPersistsRecoveryCheckpoint(t *testing.T) {
 	}
 }
 
-func TestEditChapterOutOfBudgetReportsCountWithoutReread(t *testing.T) {
+func TestEditChapterOutOfBudgetDefersUnsegmentedEditToHost(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)
 	if err := s.Init(); err != nil {
@@ -144,6 +148,9 @@ func TestEditChapterOutOfBudgetReportsCountWithoutReread(t *testing.T) {
 	}
 	if err := s.Progress.Init("test", 1); err != nil {
 		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 1, InProgressChapter: 1}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
 	}
 	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
 	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
@@ -161,17 +168,21 @@ func TestEditChapterOutOfBudgetReportsCountWithoutReread(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	var payload struct {
-		WordCount        int    `json:"word_count"`
-		WordBudgetPassed bool   `json:"word_budget_passed"`
-		NextStep         string `json:"next_step"`
+		Changed        bool   `json:"changed"`
+		DeferredToHost bool   `json:"deferred_to_host"`
+		WordCount      int    `json:"word_count"`
+		NextStep       string `json:"next_step"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if payload.WordCount != 141 || payload.WordBudgetPassed ||
-		!strings.Contains(payload.NextStep, "立即结束本轮") ||
-		!strings.Contains(payload.NextStep, "Host 将按行段派发") {
-		t.Fatalf("out-of-budget feedback is incomplete: %+v", payload)
+	if payload.Changed || !payload.DeferredToHost || payload.WordCount != len([]rune(content)) ||
+		!strings.Contains(payload.NextStep, "Host 将指定唯一行段") {
+		t.Fatalf("unsegmented out-of-budget edit was not deferred: %+v", payload)
+	}
+	got, err := s.Drafts.LoadDraft(1)
+	if err != nil || got != content {
+		t.Fatalf("deferred edit changed draft: got=%q err=%v", got, err)
 	}
 }
 
