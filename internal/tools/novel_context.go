@@ -49,7 +49,7 @@ const (
 	contextSimulationModeNormal     = "normal"
 	contextSimulationModeReinforced = "reinforced"
 	writerChapterContextBudgetBytes = 60 * 1024
-	writerChapterSourceBudgetBytes  = 36 * 1024
+	writerChapterSourceBudgetBytes  = 28 * 1024
 	writerPolishingContextBytes     = 24 * 1024
 	planningContextBudgetBytes      = 60 * 1024
 	planningContextSourceBytes      = 42 * 1024
@@ -682,13 +682,13 @@ func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpos
 	}
 	// New writing and substantive rewrites retain the core writing references,
 	// with deterministic source limits rather than a post-build truncation pass.
-	addWithLimit("consistency", t.refs.Consistency, 400)
-	addWithLimit("hook_techniques", t.refs.HookTechniques, 300)
-	addWithLimit("quality_checklist", t.refs.QualityChecklist, 300)
+	addWithLimit("consistency", t.refs.Consistency, 200)
+	addWithLimit("hook_techniques", t.refs.HookTechniques, 200)
+	addWithLimit("quality_checklist", t.refs.QualityChecklist, 200)
 	// This is a core prose constraint, not an optional chapter-one reference.
 	// Previously the bundle loaded AntiAITone but never placed it in Writer or
 	// Editor context, so its most important long-form instructions were inert.
-	addWithLimit("anti_ai_tone", t.refs.AntiAITone, 800)
+	addWithLimit("anti_ai_tone", t.refs.AntiAITone, 400)
 	if chapter <= 3 {
 		add("chapter_guide", t.refs.ChapterGuide)
 		add("dialogue_writing", t.refs.DialogueWriting)

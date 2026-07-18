@@ -89,7 +89,7 @@ func newWriterValidationPhaseStrategy(cfg corecontext.ToolResultMicrocompactConf
 func (s *writerValidationPhaseStrategy) Name() string { return "writer_validation_phase" }
 
 func (s *writerValidationPhaseStrategy) Apply(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
-	if !hasWriterValidationReceipt(view) && !hasPersistedWriterDraftReceipt(view) {
+	if !hasWriterValidationReceipt(view) && !hasPersistedWriterDraftReceipt(view) && !hasDuplicateWriterContextResults(view) {
 		return view, corecontext.StrategyResult{Name: s.Name()}, nil
 	}
 	return s.compact(ctx, transcript, view, budget)
@@ -125,6 +125,19 @@ func hasWriterValidationReceipt(msgs []agentcore.AgentMessage) bool {
 
 func hasPersistedWriterDraftReceipt(msgs []agentcore.AgentMessage) bool {
 	return hasToolResult(msgs, isPersistedWriterDraftTool)
+}
+
+func hasDuplicateWriterContextResults(msgs []agentcore.AgentMessage) bool {
+	count := 0
+	for _, candidate := range collectWriterToolResults(msgs) {
+		if candidate.toolName == "novel_context" && !candidate.alreadyCleared {
+			count++
+			if count >= 2 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isPersistedWriterDraftTool(name string) bool {
@@ -203,7 +216,11 @@ func collectWriterToolResults(msgs []agentcore.AgentMessage) []writerToolResultC
 		}
 		if message.Role == agentcore.RoleAssistant {
 			for _, call := range message.ToolCalls() {
-				pending[call.ID] = pendingCall{assistantIndex: index, toolName: call.Name, key: call.Name + "\x00" + string(call.Args)}
+				key := call.Name + "\x00" + string(call.Args)
+				if call.Name == "novel_context" {
+					key = call.Name
+				}
+				pending[call.ID] = pendingCall{assistantIndex: index, toolName: call.Name, key: key}
 			}
 			continue
 		}

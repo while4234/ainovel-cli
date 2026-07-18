@@ -102,6 +102,18 @@ func TestWriterPhaseKeepsContextAndDraftUntilValidation(t *testing.T) {
 	}
 }
 
+func TestWriterPhaseDeduplicatesRepeatedCurrentContextBeforeBoundary(t *testing.T) {
+	messages := writerPhaseMessages(t, "novel_context", "novel_context")
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied || countCompactedToolResults(view) != 1 {
+		t.Fatalf("duplicate current context result=%+v compacted=%d", result, countCompactedToolResults(view))
+	}
+}
+
 func TestWriterManagerCommitsValidationPhaseBeforeProviderProjection(t *testing.T) {
 	messages := writerPhaseMessages(t, "novel_context", "read_chapter", "check_consistency")
 	engine := newContextManager(contextManagerConfig{

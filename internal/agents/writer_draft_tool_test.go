@@ -70,6 +70,37 @@ func TestWriterContextToolRejectsFullCrossChapterWorkPackage(t *testing.T) {
 	}
 }
 
+func TestWriterReadChapterToolBoundsPriorContinuityTail(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 50); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.StartChapter(41); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	if err := st.Drafts.SaveFinalChapter(40, strings.Repeat("前章连续性正文。", 300)); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	tool := newWriterReadChapterTool(tools.NewReadChapterTool(st), st)
+	raw, err := tool.Execute(t.Context(), json.RawMessage(`{"chapter":40,"source":"final"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		ReturnedRunes int  `json:"returned_runes"`
+		Truncated     bool `json:"truncated"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Truncated || payload.ReturnedRunes > writerPriorChapterMaxRunes+3 {
+		t.Fatalf("prior chapter was not bounded: %+v", payload)
+	}
+}
+
 func TestCoordinatorContextToolDefaultsToProgressStatus(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

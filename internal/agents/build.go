@@ -169,7 +169,7 @@ func BuildCoordinator(
 	}
 	writerTools := []agentcore.Tool{
 		newWriterContextTool(contextTool, store),
-		readChapter,
+		newWriterReadChapterTool(readChapter, store),
 		revisionFenceWrites(store.Revisions, tools.NewPlanChapterTool(store)),
 		revisionFenceWrites(store.Revisions, newWriterDraftChapterTool(store)),
 		revisionFenceWrites(store.Revisions, tools.NewEditChapterTool(store)),
@@ -691,6 +691,66 @@ func (t *coordinatorContextTool) Execute(ctx context.Context, args json.RawMessa
 
 func newWriterContextTool(inner *tools.ContextTool, st *store.Store) agentcore.Tool {
 	return &writerContextTool{inner: inner, store: st}
+}
+
+const writerPriorChapterMaxRunes = 600
+
+type writerReadChapterTool struct {
+	inner agentcore.Tool
+	store *store.Store
+}
+
+func newWriterReadChapterTool(inner agentcore.Tool, st *store.Store) agentcore.Tool {
+	return &writerReadChapterTool{inner: inner, store: st}
+}
+
+func (t *writerReadChapterTool) Name() string { return t.inner.Name() }
+func (t *writerReadChapterTool) Description() string {
+	return t.inner.Description() + " Writer reads the active draft in full; prior chapters are continuity tails capped by the runtime because the active work package already contains previous_tail and recent summaries."
+}
+func (t *writerReadChapterTool) Label() string {
+	if labeled, ok := t.inner.(agentcore.ToolLabeler); ok {
+		return labeled.Label()
+	}
+	return t.inner.Name()
+}
+func (t *writerReadChapterTool) Schema() map[string]any { return t.inner.Schema() }
+func (t *writerReadChapterTool) ReadOnly(args json.RawMessage) bool {
+	if readOnly, ok := t.inner.(agentcore.ReadOnlyTool); ok {
+		return readOnly.ReadOnly(args)
+	}
+	return true
+}
+func (t *writerReadChapterTool) ConcurrencySafe(args json.RawMessage) bool {
+	if safe, ok := t.inner.(agentcore.ConcurrencySafeTool); ok {
+		return safe.ConcurrencySafe(args)
+	}
+	return true
+}
+func (t *writerReadChapterTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(args, &raw); err != nil {
+		return t.inner.Execute(ctx, args)
+	}
+	activeChapter := inferWriterDraftChapter(t.store)
+	requestedChapter := positiveChapter(raw["chapter"])
+	if requestedChapter <= 0 || activeChapter <= 0 || requestedChapter == activeChapter {
+		return t.inner.Execute(ctx, args)
+	}
+	var requestedMax int
+	_ = json.Unmarshal(raw["max_runes"], &requestedMax)
+	if requestedMax <= 0 || requestedMax > writerPriorChapterMaxRunes {
+		encodedMax, err := json.Marshal(writerPriorChapterMaxRunes)
+		if err != nil {
+			return nil, err
+		}
+		raw["max_runes"] = encodedMax
+	}
+	nextArgs, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("bound prior read_chapter args: %w", err)
+	}
+	return t.inner.Execute(ctx, nextArgs)
 }
 
 func (t *writerContextTool) Name() string { return t.inner.Name() }

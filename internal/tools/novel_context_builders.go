@@ -939,10 +939,10 @@ func (t *ContextTool) buildChapterSimulationProfile(result map[string]any, purpo
 			Writer: compact.RoleGuidance.Writer,
 		},
 	}
-	itemLimit := 2
-	if purpose == chapterContextPolishing {
-		itemLimit = 1
-	}
+	// One representative signal from each style/pacing category is enough at
+	// chapter execution time: the signed chapter contract owns plot and hook
+	// design, while deterministic validators own exact prose findings.
+	itemLimit := 1
 	chapterProfile.Style = compactPolishingSimulationStyle(chapterProfile.Style, itemLimit)
 	chapterProfile.PacingDensity = compactPolishingSimulationPacing(chapterProfile.PacingDensity, itemLimit)
 	chapterProfile.RoleGuidance.Writer = compactStringList(chapterProfile.RoleGuidance.Writer, itemLimit, 60)
