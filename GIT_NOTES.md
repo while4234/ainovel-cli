@@ -46,12 +46,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-18 `pending` `fix: isolate workflow progress by project`:
+- 2026-07-18 `129648f` / `eba8e26` `fix: isolate workflow progress by project`:
   removes the project-keyed remount path that accumulated duplicate workflow
   cards across snapshot updates, resets retained progress when the project ID
-  changes, and adds component lifecycle coverage. All 269 UI tests, focused Go
-  regressions, production builds, service restart smoke checks, and a four-step
-  live project-switch DOM check passed; port 9898 runs the rebuilt service.
+  changes, and adds StrictMode component lifecycle coverage. The consolidated
+  main history passes all 271 UI tests, the full Go suite, `go vet ./...`, the
+  production build, and a four-step live project-switch DOM check. The rebuilt
+  service is running on port 9898. Final runtime inspection found that the local
+  project store had independently fallen from 25 visible projects to one while
+  validation was running; no recoverable copies were present in the app trash,
+  user Recycle Bin, archive, or user-profile search, so that data-state anomaly
+  must not be mistaken for a source-control rollback target.
 - 2026-07-16 `8175a364` `fix: consume repaired chapter audit failures`:
   prevents normal-original outline review from repeatedly dispatching the same
   repaired chapter. Successful `repair_arc` saves now consume the failed audit
