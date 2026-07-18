@@ -68,7 +68,7 @@ func TestWriterToolResultsCompactByValidationPhase(t *testing.T) {
 			agentcore.ToolResultMsg(callID, []byte(fmt.Sprintf(`"%s"`, strings.Repeat(toolName+" evidence ", 300))), false),
 		)
 	}
-	strategy := corecontext.NewToolResultMicrocompact(*writerToolResultMicrocompactConfig())
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
 	view, result, err := strategy.Apply(context.Background(), messages, messages, corecontext.Budget{})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -88,6 +88,118 @@ func TestWriterToolResultsCompactByValidationPhase(t *testing.T) {
 			t.Fatalf("recent validation result at index %d was compacted", index)
 		}
 	}
+}
+
+func TestWriterPhaseKeepsContextAndDraftUntilValidation(t *testing.T) {
+	messages := writerPhaseMessages(t, "novel_context", "read_chapter")
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Applied || countCompactedToolResults(view) != 0 {
+		t.Fatalf("pre-validation evidence must remain intact: result=%+v compacted=%d", result, countCompactedToolResults(view))
+	}
+}
+
+func TestWriterManagerCommitsValidationPhaseBeforeProviderProjection(t *testing.T) {
+	messages := writerPhaseMessages(t, "novel_context", "read_chapter", "check_consistency")
+	engine := newContextManager(contextManagerConfig{
+		ContextWindow:    96_000,
+		ReserveTokens:    8_000,
+		KeepRecentTokens: 12_000,
+		Agent:            "writer",
+		CommitOnProject:  true,
+	})
+	manager := newWriterContextManager(engine, *writerToolResultMicrocompactConfig())
+	projection, err := manager.Project(t.Context(), messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !projection.ShouldCommit || len(projection.CommitMessages) == 0 {
+		t.Fatalf("validation boundary must commit before provider call: %+v", projection)
+	}
+	if countCompactedToolResults(projection.CommitMessages) != 1 {
+		t.Fatalf("committed compacted results=%d, want 1", countCompactedToolResults(projection.CommitMessages))
+	}
+}
+
+func TestWriterManagerUsesPhaseEvictionForOverflowRecovery(t *testing.T) {
+	messages := writerPhaseMessages(t, "novel_context", "read_chapter", "check_consistency")
+	engine := newContextManager(contextManagerConfig{
+		ContextWindow:    96_000,
+		ReserveTokens:    8_000,
+		KeepRecentTokens: 12_000,
+		Agent:            "writer",
+		CommitOnProject:  true,
+	})
+	manager := newWriterContextManager(engine, *writerToolResultMicrocompactConfig())
+	recovery, err := manager.RecoverOverflow(t.Context(), messages, errors.New("compiled request crossed production boundary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovery.Changed || !recovery.ShouldCommit || recovery.Strategy != "writer_validation_phase" {
+		t.Fatalf("unexpected recovery: %+v", recovery)
+	}
+	if countCompactedToolResults(recovery.View) != 1 {
+		t.Fatalf("recovered compacted results=%d, want 1", countCompactedToolResults(recovery.View))
+	}
+}
+
+func TestWriterOverflowRecoveryEvictsWholePriorPhase(t *testing.T) {
+	messages := []agentcore.AgentMessage{agentcore.UserMsg(strings.Repeat("baseline ", 2_200))}
+	for index, toolName := range []string{"novel_context", "read_chapter", "check_consistency"} {
+		callID := fmt.Sprintf("boundary-%d", index)
+		repetitions := 900
+		if toolName == "read_chapter" {
+			repetitions = 400
+		}
+		if toolName == "check_consistency" {
+			repetitions = 80
+		}
+		messages = append(messages,
+			agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.ToolCallBlock(agentcore.ToolCall{ID: callID, Name: toolName, Args: []byte(`{"chapter":39}`)})}},
+			agentcore.ToolResultMsg(callID, []byte(fmt.Sprintf(`"%s"`, strings.Repeat(toolName+" evidence ", repetitions))), false),
+		)
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.ForceApply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied || countCompactedToolResults(view) != 1 {
+		t.Fatalf("forced phase eviction result=%+v compacted=%d", result, countCompactedToolResults(view))
+	}
+	compiled, err := compileAgentInput(toLLMMessages(t, view), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compiled) >= 40*1024 {
+		t.Fatalf("post-phase request=%d bytes, want at least 20 KiB production headroom", len(compiled))
+	}
+}
+
+func writerPhaseMessages(t *testing.T, tools ...string) []agentcore.AgentMessage {
+	t.Helper()
+	messages := []agentcore.AgentMessage{agentcore.UserMsg("polish chapter")}
+	for index, toolName := range tools {
+		callID := fmt.Sprintf("phase-helper-%d", index)
+		messages = append(messages,
+			agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.ToolCallBlock(agentcore.ToolCall{ID: callID, Name: toolName, Args: []byte(`{"chapter":39}`)})}},
+			agentcore.ToolResultMsg(callID, []byte(`"evidence"`), false),
+		)
+	}
+	return messages
+}
+
+func toLLMMessages(t *testing.T, messages []agentcore.AgentMessage) []agentcore.Message {
+	t.Helper()
+	converted := corecontext.NewEngine(corecontext.EngineConfig{ContextWindow: 96_000}).ConvertToLLM(messages)
+	if len(converted) == 0 {
+		t.Fatal("converted Writer prompt is empty")
+	}
+	return converted
 }
 
 func TestContextSummaryKeepsChineseToolResultsValidUTF8(t *testing.T) {

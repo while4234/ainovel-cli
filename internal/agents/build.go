@@ -350,7 +350,8 @@ func BuildCoordinator(
 			// /model 切换 writer 后下一章自动用新窗口。
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentWriter)
-			return newContextManager(contextManagerConfig{
+			microcompact := writerToolResultMicrocompactConfig()
+			engine := newContextManager(contextManagerConfig{
 				Model:            model,
 				Store:            store,
 				ContextWindow:    window,
@@ -358,7 +359,7 @@ func BuildCoordinator(
 				KeepRecentTokens: 12_000,
 				Agent:            "writer",
 				CommitOnProject:  true,
-				ToolMicrocompact: writerToolResultMicrocompactConfig(),
+				ToolMicrocompact: microcompact,
 				ExtraStrategies: []corecontext.Strategy{
 					ctxpack.NewStoreSummaryCompact(ctxpack.StoreSummaryCompactConfig{
 						Store:            store,
@@ -374,6 +375,7 @@ func BuildCoordinator(
 				},
 				OnSummaryRetry: onSummaryRetry,
 			})
+			return newWriterContextManager(engine, *microcompact)
 		},
 	}
 
@@ -470,11 +472,10 @@ func BuildCoordinator(
 }
 
 func writerToolResultMicrocompactConfig() *corecontext.ToolResultMicrocompactConfig {
-	// Writer consumes tools in phases: context + draft, consistency receipt,
-	// then de-AI/adaptation receipts. Once a third distinct result arrives, the
-	// earlier source result has already served its phase and can be cleared from
-	// the projected request. Keeping the default five retained every large result
-	// until the final validation turn and made request size depend on chapter
+	// A validation boundary carries at most two recent results into the next
+	// Writer phase (normally the draft plus its receipt, or two receipts).
+	// Earlier context remains durable in the Store and can be re-read on demand;
+	// retaining every source result makes the compiled request grow with chapter
 	// length and report wording.
 	return &corecontext.ToolResultMicrocompactConfig{
 		KeepRecent:    2,
