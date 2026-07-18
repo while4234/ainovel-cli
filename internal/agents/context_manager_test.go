@@ -233,6 +233,84 @@ func TestWriterManagerUsesPhaseEvictionForOverflowRecovery(t *testing.T) {
 	}
 }
 
+func TestWriterPhaseDropsNewestNovelContextAfterValidation(t *testing.T) {
+	checkCallID := "failed-de-ai-check"
+	contextCallID := "oversized-late-context"
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("continue chapter validation"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: checkCallID, Name: "check_de_ai", Args: []byte(`{"chapter":45}`)}),
+		}},
+		agentcore.ToolResultMsg(checkCallID, []byte(`{"chapter":45,"passed":false,"finding":"repair punctuation"}`), false),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: contextCallID, Name: "novel_context", Args: []byte(`{"chapter":45}`)}),
+		}},
+		agentcore.ToolResultMsg(contextCallID, []byte(fmt.Sprintf(`{"working_memory":%q}`, strings.Repeat("full project context ", 12_000))), false),
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatal("post-validation novel_context must not cross the next provider boundary")
+	}
+	contextResult := view[4].(agentcore.Message)
+	if contextResult.Metadata["compacted_tool_result"] != true || !strings.Contains(contextResult.TextContent(), "Prior Writer phase cleared") {
+		t.Fatalf("newest novel_context remained protected after validation: %+v", contextResult)
+	}
+	checkResult := view[2].(agentcore.Message)
+	if !strings.Contains(checkResult.TextContent(), `"passed":false`) {
+		t.Fatalf("latest validation receipt was not preserved: %q", checkResult.TextContent())
+	}
+	compiled, err := compileAgentInput(toLLMMessages(t, view), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compiled) >= 20*1024 {
+		t.Fatalf("post-validation request=%d bytes, newest project context was not bounded", len(compiled))
+	}
+}
+
+func TestWriterOverflowRecoveryDropsNewestNovelContext(t *testing.T) {
+	readCallID := "current-draft"
+	contextCallID := "overflowing-context"
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("continue chapter repair"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: readCallID, Name: "read_chapter", Args: []byte(`{"chapter":45,"source":"draft"}`)}),
+		}},
+		agentcore.ToolResultMsg(readCallID, []byte(`{"chapter":45,"content":"current draft evidence"}`), false),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: contextCallID, Name: "novel_context", Args: []byte(`{"chapter":45}`)}),
+		}},
+		agentcore.ToolResultMsg(contextCallID, []byte(fmt.Sprintf(`{"working_memory":%q}`, strings.Repeat("oversized context ", 12_000))), false),
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.ForceApply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatal("overflow recovery must evict the newest novel_context result")
+	}
+	if contextResult := view[4].(agentcore.Message); contextResult.Metadata["compacted_tool_result"] != true {
+		t.Fatalf("overflow recovery protected the largest newest result: %+v", contextResult)
+	}
+	if readResult := view[2].(agentcore.Message); !strings.Contains(readResult.TextContent(), "current draft evidence") {
+		t.Fatalf("overflow recovery lost the current draft evidence: %q", readResult.TextContent())
+	}
+	compiled, err := compileAgentInput(toLLMMessages(t, view), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compiled) >= 20*1024 {
+		t.Fatalf("overflow recovery request=%d bytes, want deterministic headroom", len(compiled))
+	}
+}
+
 func TestWriterPhaseCompactsPersistedDraftArgumentsImmediately(t *testing.T) {
 	callID := "draft-write"
 	messages := []agentcore.AgentMessage{

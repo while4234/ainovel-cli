@@ -106,14 +106,14 @@ func (s *writerValidationPhaseStrategy) ForceApply(ctx context.Context, transcri
 	// Crossing the exact production boundary is an emergency phase split. Keep
 	// only the newest tool result; every chapter/context payload is durable and
 	// can be re-read, while retrying the same oversized pair cannot recover.
-	return compactWriterPhase(view, 1, s.clearedMessage, false)
+	return compactWriterPhase(view, 1, s.clearedMessage, false, true)
 }
 
 func (s *writerValidationPhaseStrategy) compact(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget, preferOriginalContext bool) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
 	_ = ctx
 	_ = transcript
 	_ = budget
-	return compactWriterPhase(view, s.keepRecent, s.clearedMessage, preferOriginalContext)
+	return compactWriterPhase(view, s.keepRecent, s.clearedMessage, preferOriginalContext, hasWriterValidationReceipt(view))
 }
 
 func hasWriterValidationReceipt(msgs []agentcore.AgentMessage) bool {
@@ -163,14 +163,20 @@ type writerToolResultCandidate struct {
 	alreadyCleared bool
 }
 
-func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMessage string, preferOriginalContext bool) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
+func compactWriterPhase(
+	view []agentcore.AgentMessage,
+	keepRecent int,
+	clearedMessage string,
+	preferOriginalContext bool,
+	dropNovelContext bool,
+) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
 	out := cloneWriterMessages(view)
 	candidates := collectWriterToolResults(out)
 	if len(candidates) == 0 {
 		return view, corecontext.StrategyResult{Name: "writer_validation_phase"}, nil
 	}
 
-	protected := protectRecentWriterResults(candidates, keepRecent, preferOriginalContext)
+	protected := protectRecentWriterResults(candidates, keepRecent, preferOriginalContext, dropNovelContext)
 	compactCalls := make(map[string]struct{})
 	collapseCalls := make(map[string]struct{})
 	completedCalls := make(map[string]struct{}, len(candidates))
@@ -185,6 +191,9 @@ func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMe
 		if isPersistedWriterDraftTool(candidate.toolName) {
 			compactCalls[candidate.callID] = struct{}{}
 			collapseCalls[candidate.callID] = struct{}{}
+		}
+		if dropNovelContext && candidate.toolName == "novel_context" {
+			compactCalls[candidate.callID] = struct{}{}
 		}
 		if _, keep := protected[candidate.resultIndex]; keep {
 			continue
@@ -299,7 +308,12 @@ func writerToolResultKey(name string, args json.RawMessage) string {
 	}
 }
 
-func protectRecentWriterResults(candidates []writerToolResultCandidate, keepRecent int, preferOriginalContext bool) map[int]struct{} {
+func protectRecentWriterResults(
+	candidates []writerToolResultCandidate,
+	keepRecent int,
+	preferOriginalContext bool,
+	dropNovelContext bool,
+) map[int]struct{} {
 	protected := make(map[int]struct{}, keepRecent)
 	seen := make(map[string]struct{}, keepRecent)
 	if preferOriginalContext && keepRecent > 1 {
@@ -318,7 +332,7 @@ func protectRecentWriterResults(candidates []writerToolResultCandidate, keepRece
 	}
 	for index := len(candidates) - 1; index >= 0 && len(protected) < keepRecent; index-- {
 		candidate := candidates[index]
-		if candidate.alreadyCleared {
+		if candidate.alreadyCleared || (dropNovelContext && candidate.toolName == "novel_context") {
 			continue
 		}
 		if _, duplicate := seen[candidate.key]; duplicate {
