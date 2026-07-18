@@ -50,6 +50,64 @@ func TestEditChapterAppliesEdit(t *testing.T) {
 	}
 }
 
+func TestEditChapterRepeatedPatchIsIdempotent(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 10); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	const content = "订单备注里已经写明：按设计师署名，不按品牌。"
+	if err := s.Drafts.SaveDraft(2, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	args := json.RawMessage(`{"chapter":2,"old_string":"加粗去掉订单备注","new_string":"订单备注里已经写明：按设计师署名，不按品牌。"}`)
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("repeated patch must be an idempotent no-op: %v", err)
+	}
+	var payload struct {
+		AlreadyApplied bool   `json:"already_applied"`
+		Changed        bool   `json:"changed"`
+		NextStep       string `json:"next_step"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !payload.AlreadyApplied || payload.Changed {
+		t.Fatalf("unexpected idempotent payload: %+v", payload)
+	}
+	if !strings.Contains(payload.NextStep, "check_consistency") {
+		t.Fatalf("idempotent retry lost validation guidance: %q", payload.NextStep)
+	}
+	got, err := s.Drafts.LoadDraft(2)
+	if err != nil || got != content {
+		t.Fatalf("idempotent retry changed draft: got=%q err=%v", got, err)
+	}
+}
+
+func TestEditChapterMissingOldAndNewTextStillFails(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 10); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(2, "当前草稿没有目标句段。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	args := json.RawMessage(`{"chapter":2,"old_string":"模型抄错的原文","new_string":"并不存在的目标新文"}`)
+	if _, err := NewEditChapterTool(s).Execute(context.Background(), args); err == nil {
+		t.Fatal("unrelated missing text must remain a hard matching error")
+	}
+}
+
 func TestEditChapterUpdatesCanonicalDraftAfterStructureMigration(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

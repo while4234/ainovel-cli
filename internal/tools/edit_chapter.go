@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/voocel/agentcore/schema"
 	agentcoretools "github.com/voocel/agentcore/tools"
@@ -96,6 +97,23 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 	// Seed：drafts 不存在时从 chapters 复制一份作为起点
 	if err := t.ensureDraft(a.Chapter); err != nil {
 		return nil, err
+	}
+	current, err := t.store.Drafts.LoadDraft(a.Chapter)
+	if err != nil {
+		return nil, fmt.Errorf("load current draft before edit: %w: %w", errs.ErrStoreRead, err)
+	}
+	// Recovery and context compaction can make a weak model repeat the exact
+	// same patch. Treat only a provably completed replacement as an idempotent
+	// no-op: the old text is gone and the complete non-empty new text is already
+	// present. All other mismatches still reach EditTool and remain hard errors.
+	if a.NewString != "" && !strings.Contains(current, a.OldString) && strings.Contains(current, a.NewString) {
+		return json.Marshal(map[string]any{
+			"chapter":         a.Chapter,
+			"already_applied": true,
+			"changed":         false,
+			"message":         "相同的局部修改已存在于当前草稿，无需重复写入。",
+			"next_step":       t.nextStepAfterEdit(),
+		})
 	}
 	// 委托 agentcore.EditTool 完成找-换
 	subArgs, _ := json.Marshal(map[string]any{
