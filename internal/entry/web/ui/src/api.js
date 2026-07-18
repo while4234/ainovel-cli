@@ -698,6 +698,27 @@ export function commitCoCreate(projectId) {
   });
 }
 
+export function updateCoreCast(projectId, coreCast, expectedRevision) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/core-cast`, {
+    method: 'PUT',
+    body: JSON.stringify({ core_cast: coreCast, expected_revision: expectedRevision })
+  });
+}
+
+export function confirmCoreCast(projectId, expectedRevision, contentSignature) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/core-cast/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({ expected_revision: expectedRevision, content_signature: contentSignature })
+  });
+}
+
+export function unconfirmCoreCast(projectId, expectedRevision) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/core-cast/unconfirm`, {
+    method: 'POST',
+    body: JSON.stringify({ expected_revision: expectedRevision })
+  });
+}
+
 export function confirmCoCreatePlanning(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/confirm`, {
     method: 'POST',

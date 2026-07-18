@@ -67,23 +67,37 @@ type Host struct {
 	doneMu     sync.Mutex
 	doneClosed bool
 
-	mu                      sync.Mutex
-	adaptationPreflightMu   sync.Mutex
-	lifecycle               lifecycle
-	autoResumeAttempts      int
-	autoResumeCompleted     int
-	autoResumeInFlight      bool
-	normalFlowLease         *storepkg.NormalFlowLease
-	normalFlowActionRefs    int
-	normalFlowScopedRefs    int
-	normalFlowRunOwned      bool
-	normalFlowCoCreateOwned bool
-	closed                  bool
-	cocreating              bool // 阶段共创占用：paused 窗口内堵住 import/simulate/continue 的并发介入
-	closeOnce               sync.Once
+	mu                              sync.Mutex
+	adaptationPreflightMu           sync.Mutex
+	lifecycle                       lifecycle
+	autoResumeAttempts              int
+	autoResumeCompleted             int
+	autoResumeInFlight              bool
+	normalFlowLease                 *storepkg.NormalFlowLease
+	normalFlowActionRefs            int
+	normalFlowScopedRefs            int
+	normalFlowRunOwned              bool
+	normalFlowCoCreateOwned         bool
+	startingRun                     *hostStartingRun
+	adaptationConfirmationFailpoint func(string) error
+	closed                          bool
+	cocreating                      bool // 阶段共创占用：paused 窗口内堵住 import/simulate/continue 的并发介入
+	closeOnce                       sync.Once
 }
 
 type lifecycle string
+
+type hostStartingRun struct {
+	host              *Host
+	cancel            context.CancelFunc
+	ready             chan struct{}
+	beforeLifecycle   lifecycle
+	beforeAborting    bool
+	beforeMessages    []agentcore.Message
+	prompted          bool
+	aborted           bool
+	confirmationMutex bool
+}
 
 const (
 	lifecycleIdle      lifecycle = "idle"
@@ -362,6 +376,9 @@ func (h *Host) StartPrepared(promptText string) error {
 	if promptText == "" {
 		return fmt.Errorf("prompt is required")
 	}
+	if err := RequireCoreCastGate(h.store, domain.CoreCastModeNormal, true); err != nil {
+		return err
+	}
 	if err := h.budget.Refuse(); err != nil {
 		return err
 	}
@@ -455,6 +472,9 @@ func (h *Host) BuildAdaptationProposalContext(ctx context.Context, options adapt
 	if options.Brief == "" {
 		return nil, fmt.Errorf("adaptation brief is required")
 	}
+	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 	return adapt.BuildAdaptationProposalContext(ctx, h.adaptationDeps(), options)
 }
 
@@ -479,6 +499,9 @@ func (h *Host) BuildAdaptationProposalVolumesContext(ctx context.Context, option
 	if options.Brief == "" {
 		return nil, fmt.Errorf("adaptation brief is required")
 	}
+	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 	return adapt.BuildAdaptationProposalVolumesContext(ctx, h.adaptationDeps(), options)
 }
 
@@ -500,6 +523,9 @@ func (h *Host) ReviseAdaptationProposalContext(ctx context.Context, options adap
 	h.mu.Unlock()
 
 	if err := h.budget.Refuse(); err != nil {
+		return nil, err
+	}
+	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
 		return nil, err
 	}
 	return adapt.ReviseAdaptationProposalContext(ctx, h.adaptationDeps(), options)
@@ -525,6 +551,9 @@ func (h *Host) ReviseAdaptationVolumeReviewContext(ctx context.Context, options 
 	if err := h.budget.Refuse(); err != nil {
 		return nil, err
 	}
+	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 	return adapt.ReviseAdaptationVolumeReviewContext(ctx, h.adaptationDeps(), options)
 }
 
@@ -548,6 +577,9 @@ func (h *Host) BuildAdaptationProposalDetailsContext(ctx context.Context, option
 	if err := h.budget.Refuse(); err != nil {
 		return nil, err
 	}
+	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 	return adapt.BuildAdaptationProposalDetailsContext(ctx, h.adaptationDeps(), options)
 }
 
@@ -566,11 +598,26 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 	if err := h.budget.Refuse(); err != nil {
 		return nil, err
 	}
+	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
 	ownership, err := h.acquireNormalFlowOwnership("host:confirm-adaptation")
 	if err != nil {
 		return nil, err
 	}
 	defer ownership.Release()
+	startupCtx, startupCancel := context.WithCancel(context.Background())
+	startup, err := h.beginHostStartingRun(ownership, startupCancel)
+	if err != nil {
+		startupCancel()
+		return nil, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			startup.rollback()
+		}
+	}()
 	proposal, err := h.store.Adaptation.LoadProposal()
 	if err != nil {
 		return nil, err
@@ -581,18 +628,42 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 	if err := adapt.ValidateProposalOutlineUniqueness(*proposal); err != nil {
 		return nil, err
 	}
-	if err := h.store.Checkpoints.Reset(); err != nil {
-		return nil, fmt.Errorf("reset checkpoints: %w", err)
-	}
-	if err := h.store.Adaptation.ResetGenerated(); err != nil {
-		return nil, fmt.Errorf("reset generated adaptation state: %w", err)
-	}
-	if err := h.store.Progress.Init("", len(proposal.Chapters)); err != nil {
-		return nil, fmt.Errorf("init progress: %w", err)
-	}
-
-	plan, err := adapt.ConfirmAdaptationProposal(context.Background(), h.adaptationDeps(), *proposal)
+	var plan *domain.AdaptationPlan
+	err = h.store.WithAdaptationConfirmationTransaction(func() error {
+		var persistErr error
+		plan, persistErr = h.persistAdaptationConfirmationSteps(*proposal)
+		if persistErr != nil {
+			return persistErr
+		}
+		runCtx, contextErr := h.normalFlowContext(agents.WithExecutionBarrier(startupCtx, startup.ready))
+		if contextErr != nil {
+			return contextErr
+		}
+		if h.coordinator == nil {
+			return fmt.Errorf("coordinator is unavailable")
+		}
+		if contextErr := startupCtx.Err(); contextErr != nil {
+			return contextErr
+		}
+		if promptErr := h.coordinator.Prompt(runCtx, BuildAdaptationStartPrompt(*plan)); promptErr != nil {
+			return fmt.Errorf("prompt: %w", promptErr)
+		}
+		startup.prompted = true
+		// Keep Host admission locked from the final abort check through durable
+		// transaction completion and publication of the start transition.
+		h.mu.Lock()
+		if h.startingRun != startup || startup.aborted || startupCtx.Err() != nil || h.lifecycle != lifecycleRunning {
+			h.mu.Unlock()
+			return context.Canceled
+		}
+		startup.confirmationMutex = true
+		return nil
+	})
 	if err != nil {
+		if startup.confirmationMutex {
+			startup.confirmationMutex = false
+			h.mu.Unlock()
+		}
 		return nil, err
 	}
 	slog.Info("start adaptation",
@@ -604,24 +675,106 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 	)
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: "start adaptation", Level: "info"})
 	h.refreshWriterRestore()
-	h.observer.setAborting(false)
 	h.router.ResetRepeat()
 	h.router.Enable()
-	runCtx, err := h.normalFlowContext(context.Background())
-	if err != nil {
+	h.router.Dispatch()
+	h.startingRun = nil
+	startup.confirmationMutex = false
+	h.mu.Unlock()
+	go h.waitDone()
+	close(startup.ready)
+	started = true
+	return plan, nil
+}
+
+func (h *Host) beginHostStartingRun(ownership *normalFlowOwnership, cancel context.CancelFunc) (*hostStartingRun, error) {
+	startup := &hostStartingRun{host: h, cancel: cancel, ready: make(chan struct{})}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.lifecycle == lifecycleRunning {
+		return nil, fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		return nil, fmt.Errorf("co-create is active")
+	}
+	transferred := false
+	ownership.once.Do(func() {
+		if ownership.host == h && h.normalFlowLease != nil && h.normalFlowScopedRefs > 0 {
+			h.normalFlowRunOwned = true
+			h.normalFlowScopedRefs--
+			transferred = true
+		}
+	})
+	if !transferred {
+		return nil, fmt.Errorf("normal flow ownership is unavailable")
+	}
+	startup.beforeLifecycle = h.lifecycle
+	startup.beforeAborting = h.observer.aborting.Load()
+	if h.coordinator != nil {
+		startup.beforeMessages = h.coordinator.ExportMessages()
+	}
+	h.lifecycle = lifecycleRunning
+	h.startingRun = startup
+	h.observer.setAborting(false)
+	return startup, nil
+}
+
+func (s *hostStartingRun) rollback() {
+	if s == nil || s.host == nil {
+		return
+	}
+	s.cancel()
+	if s.prompted && s.host.coordinator != nil {
+		s.host.coordinator.WaitForIdle()
+		_ = s.host.coordinator.ImportMessages(s.beforeMessages)
+	}
+	h := s.host
+	h.mu.Lock()
+	if h.startingRun != s {
+		h.mu.Unlock()
+		return
+	}
+	h.startingRun = nil
+	h.normalFlowRunOwned = false
+	if s.aborted {
+		h.lifecycle = lifecyclePaused
+		h.observer.setAborting(true)
+	} else {
+		h.lifecycle = s.beforeLifecycle
+		h.observer.setAborting(s.beforeAborting)
+	}
+	lease := h.detachUnusedNormalFlowLeaseLocked()
+	h.mu.Unlock()
+	h.releaseDetachedNormalFlowLease(lease)
+}
+
+func (h *Host) persistAdaptationConfirmation(proposal domain.AdaptationPlan) (*domain.AdaptationPlan, error) {
+	var plan *domain.AdaptationPlan
+	if err := h.store.WithAdaptationConfirmationTransaction(func() error {
+		var err error
+		plan, err = h.persistAdaptationConfirmationSteps(proposal)
+		return err
+	}); err != nil {
 		return nil, err
 	}
-	if err := h.coordinator.Prompt(runCtx, BuildAdaptationStartPrompt(*plan)); err != nil {
-		return nil, fmt.Errorf("prompt: %w", err)
-	}
-	h.router.Dispatch()
-
-	h.mu.Lock()
-	h.lifecycle = lifecycleRunning
-	h.mu.Unlock()
-	ownership.TransferToRun()
-	go h.waitDone()
 	return plan, nil
+}
+
+func (h *Host) persistAdaptationConfirmationSteps(proposal domain.AdaptationPlan) (*domain.AdaptationPlan, error) {
+	if resetErr := h.store.Checkpoints.Reset(); resetErr != nil {
+		return nil, fmt.Errorf("reset checkpoints: %w", resetErr)
+	}
+	if resetErr := h.store.Adaptation.ResetGenerated(); resetErr != nil {
+		return nil, fmt.Errorf("reset generated adaptation state: %w", resetErr)
+	}
+	if initErr := h.store.Progress.Init("", len(proposal.Chapters)); initErr != nil {
+		return nil, fmt.Errorf("init progress: %w", initErr)
+	}
+	confirmed, confirmErr := adapt.ConfirmAdaptationProposal(context.Background(), h.adaptationDeps(), proposal)
+	if confirmErr != nil {
+		return nil, confirmErr
+	}
+	return confirmed, nil
 }
 
 func (h *Host) adaptationDeps() adapt.Deps {
@@ -637,10 +790,11 @@ func (h *Host) adaptationDeps() adapt.Deps {
 	cfg := h.cfg
 	h.mu.Unlock()
 	return adapt.Deps{
-		Store:     h.store,
-		LLM:       llm,
-		Auditor:   auditor,
-		ModelName: modelName,
+		Store:                 h.store,
+		LLM:                   llm,
+		Auditor:               auditor,
+		ModelName:             modelName,
+		ConfirmationFailpoint: h.adaptationConfirmationFailpoint,
 		ModelForStage: func(stage string) imp.LLMChat {
 			return h.models.ForStageWithFailover(stage, h.reportAdaptationFailover)
 		},
@@ -685,6 +839,9 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 		return "", fmt.Errorf("阶段共创进行中，请先结束共创")
 	}
 	h.mu.Unlock()
+	if err := RequireManagedCoreCastGate(h.store, true); err != nil {
+		return "", err
+	}
 	if !keepNormalFlowLease {
 		if h.coordinator != nil {
 			h.coordinator.WaitForIdle()
@@ -1151,8 +1308,12 @@ func (h *Host) Abort() bool {
 func (h *Host) abortWithEvent(summary, level string) bool {
 	h.mu.Lock()
 	running := h.lifecycle == lifecycleRunning
+	startup := h.startingRun
 	if running {
 		h.lifecycle = lifecyclePaused
+		if startup != nil {
+			startup.aborted = true
+		}
 	}
 	h.mu.Unlock()
 	if !running {
@@ -1161,6 +1322,9 @@ func (h *Host) abortWithEvent(summary, level string) bool {
 	// 置位必须在 coordinator.Abort 之前：cancel 传播会立刻引发 stream init / subagent
 	// 失败事件，observer 凭此标志识别为 abort 衍生噪声并抑制。
 	h.observer.setAborting(true)
+	if startup != nil {
+		startup.cancel()
+	}
 	h.coordinator.Abort()
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Level: level})
 	return true

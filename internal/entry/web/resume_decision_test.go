@@ -1,12 +1,71 @@
 package web
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
+
+func TestLegacyNormalCoCreateCheckpointLoadsButCannotResumeWithoutDurableCoreCastBinding(t *testing.T) {
+	outputDir := t.TempDir()
+	st := storepkg.NewStore(outputDir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := newWebCoCreateSession(webCoCreateBeginRequest{Kind: webCoCreateKindNormal, Initial: "legacy draft"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(legacy.checkpoint(time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointPath := filepath.Join(outputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))
+	if err := os.MkdirAll(filepath.Dir(checkpointPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(checkpointPath, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	session, err := NewProjectSession(ProjectManifest{ID: "legacy-cocreate", OutputDir: outputDir}, newFakeProjectHost())
+	if err != nil {
+		t.Fatalf("legacy checkpoint should remain loadable: %v", err)
+	}
+	defer session.Close()
+	if state := session.CoCreateState(); state == nil || state.Kind != webCoCreateKindNormal {
+		t.Fatalf("legacy checkpoint was not exposed as recoverable state: %+v", state)
+	}
+	if binding, err := st.CoreCast.LoadGateBinding(); err != nil || binding != nil {
+		t.Fatalf("loading legacy checkpoint synthesized durable gate binding: binding=%+v err=%v", binding, err)
+	}
+
+	decision, err := session.AutoResumeDecision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Disposition != AutoResumeBlocked || decision.ReasonCode != "core_cast_gate_blocked" || decision.Action != "" {
+		t.Fatalf("legacy auto-resume decision = %+v", decision)
+	}
+	executed, err := session.ExecuteAutoResume(context.Background(), decision.StateFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Disposition != AutoResumeBlocked || executed.Action != "" {
+		t.Fatalf("legacy auto-resume execution = %+v", executed)
+	}
+	if _, err := session.Resume(); err == nil || !strings.Contains(err.Error(), "core cast gate binding does not exist") {
+		t.Fatalf("legacy ProjectSession.Resume error = %v", err)
+	}
+}
 
 type fakeAutoResumeRevisionPolicy struct{}
 
@@ -50,6 +109,7 @@ func TestAutoResumeDecisionPreservesAdaptationReviewGates(t *testing.T) {
 			if err := st.Init(); err != nil {
 				t.Fatalf("Init: %v", err)
 			}
+			installConfirmedNormalCoreCastGate(t, st)
 			switch tt.stage {
 			case domain.AdaptationPlanningStageSkeletonGenerating:
 				if err := st.Adaptation.SaveProposalRuntime(domain.AdaptationProposalRuntime{
@@ -103,6 +163,7 @@ func TestAutoResumeDecisionContinuationReviewDoesNotAdvance(t *testing.T) {
 	if err := storepkg.NewStore(outputDir).Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	installConfirmedNormalCoreCastGate(t, storepkg.NewStore(outputDir))
 	fake := newFakeProjectHost()
 	fake.continuationSnapshot = testContinuationSnapshot(domain.ContinuationStageReadyToWrite, 7)
 	session, err := NewProjectSession(ProjectManifest{ID: "continuation", OutputDir: outputDir}, fake)
@@ -117,6 +178,26 @@ func TestAutoResumeDecisionContinuationReviewDoesNotAdvance(t *testing.T) {
 	}
 	if decision.Disposition != AutoResumeWaitUser || decision.Action != "" {
 		t.Fatalf("decision = %+v, want wait_user", decision)
+	}
+}
+
+func installConfirmedNormalCoreCastGate(t *testing.T, st *storepkg.Store) {
+	t.Helper()
+	binding, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{
+		Mode: domain.CoreCastModeNormal, DraftRevision: 1, DraftHash: "auto-resume-test-draft",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := completeWebCoreCast()
+	candidate.DraftRevision = binding.DraftRevision
+	candidate.DraftHash = binding.DraftHash
+	saved, err := st.CoreCast.SaveCAS(candidate, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.CoreCast.ConfirmCAS(saved.Revision, saved.ContentSignature, nil, nil, nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

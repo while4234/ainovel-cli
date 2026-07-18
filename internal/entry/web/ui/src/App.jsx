@@ -47,6 +47,7 @@ import {
   buildAdaptationProposal,
   cancelCoCreate,
   commitCoCreate,
+  confirmCoreCast,
   confirmCoCreatePlanning,
   confirmAdaptationProposal,
   confirmAdaptationProposalDetails,
@@ -148,7 +149,9 @@ import {
   uploadCodexAuthFile,
   uploadContinuationSource,
   uploadSimulationLibrary,
-  uploadSimulationFiles
+  uploadSimulationFiles,
+  updateCoreCast,
+  unconfirmCoreCast
 } from './api.js';
 import { AuditRunWorkbench } from './AuditRunWorkbench.jsx';
 import {
@@ -184,6 +187,7 @@ import { createWorkbenchState, eventStatus, mergeSnapshotUpdate, reduceWebEvent,
 import { nextSSEReconnectDelay, parseSSEMessage } from './sse.js';
 import { cacheHitLabel, usageConfidence, usageCoverage } from './usage-ui.js';
 import { UsageObservabilityTable } from './usage-observability.jsx';
+import { CoreCastEditor } from './components/CoreCastEditor.jsx';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 export const PROJECT_OPEN_TIMEOUT_MS = 90_000;
@@ -3671,6 +3675,39 @@ export default function App() {
     }
   };
 
+  const updateCoreCastFlow = async (contract) => {
+    if (!activeProject?.id || !contract || busy || coCreateRequestBusy) return;
+    const projectId = activeProject.id;
+    try {
+      const data = await updateCoreCast(projectId, contract, coCreate.coreCast?.revision || 0);
+      if (isCurrentProject(projectId)) setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      if (isCurrentProject(projectId)) setCoCreate((previous) => coCreateStateFromError(err, previous));
+    }
+  };
+
+  const confirmCoreCastFlow = async () => {
+    if (!activeProject?.id || !coCreate.coreCast || busy || coCreateRequestBusy) return;
+    const projectId = activeProject.id;
+    try {
+      const data = await confirmCoreCast(projectId, coCreate.coreCast.revision, coCreate.castSignature);
+      if (isCurrentProject(projectId)) setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      if (isCurrentProject(projectId)) setCoCreate((previous) => coCreateStateFromError(err, previous));
+    }
+  };
+
+  const unconfirmCoreCastFlow = async () => {
+    if (!activeProject?.id || !coCreate.coreCast || busy || coCreateRequestBusy) return;
+    const projectId = activeProject.id;
+    try {
+      const data = await unconfirmCoreCast(projectId, coCreate.coreCast.revision);
+      if (isCurrentProject(projectId)) setCoCreate((previous) => coCreateStateFromResponse(data, previous));
+    } catch (err) {
+      if (isCurrentProject(projectId)) setCoCreate((previous) => coCreateStateFromError(err, previous));
+    }
+  };
+
   const confirmCoCreatePlanningRun = async () => {
     if (!activeProject?.id || !coCreatePlanningReview.pending || busy || projectRunning) {
       return;
@@ -4930,6 +4967,9 @@ export default function App() {
               onRevise={reviseCoCreateMessage}
               onResolveDecision={resolveCoCreateDecisionFlow}
               onCommit={commitCoCreateFlow}
+              onCoreCastSave={updateCoreCastFlow}
+              onCoreCastConfirm={confirmCoreCastFlow}
+              onCoreCastUnconfirm={unconfirmCoreCastFlow}
               onConfirmPlanning={confirmCoCreatePlanningRun}
               onRevisePlanning={reviseCoCreatePlanningRun}
               onCancel={cancelCoCreateFlow}
@@ -6226,6 +6266,9 @@ function CoCreatePanel({
   onRevise,
   onResolveDecision = () => {},
   onCommit,
+  onCoreCastSave = () => {},
+  onCoreCastConfirm = () => {},
+  onCoreCastUnconfirm = () => {},
   onConfirmPlanning = () => {},
   onRevisePlanning = () => {},
   onCancel,
@@ -6394,6 +6437,20 @@ function CoCreatePanel({
           </div>
         ) : null}
       </section>
+
+      {hasBackendSession && (coCreate.kind === 'normal' || coCreate.kind === 'adapt') ? (
+        <CoreCastEditor
+          mode={coCreate.kind}
+          value={coCreate.coreCast}
+          completion={coCreate.castCompletion}
+          confirmed={coCreate.castConfirmed}
+          sourceMajorCharacters={coCreate.sourceMajorCharacters}
+          busy={busy}
+          onSave={onCoreCastSave}
+          onConfirm={onCoreCastConfirm}
+          onUnconfirm={onCoreCastUnconfirm}
+        />
+      ) : null}
 
       {workspaceTranscript ? (
         suggestionList ? <section className="cocreate-section cocreate-side-suggestion-section">{suggestionList}</section> : null

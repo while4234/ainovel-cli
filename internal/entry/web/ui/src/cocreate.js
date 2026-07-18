@@ -25,7 +25,13 @@ export function createCoCreateState() {
     modeLocked: false,
     briefing: null,
     pendingDecisions: [],
-    blockedReason: ''
+    blockedReason: '',
+    coreCast: null,
+    sourceMajorCharacters: [],
+    castCompletion: { complete: false, missing: [], blocking_reasons: [] },
+    castConfirmed: false,
+    castSignature: '',
+    blockingReasons: []
   };
 }
 
@@ -116,6 +122,12 @@ export function coCreateStateFromBackend(data, previous = createCoCreateState(),
     briefing: data.briefing || null,
     pendingDecisions,
     blockedReason: data.blocked_reason || '',
+    coreCast: data.core_cast || null,
+    sourceMajorCharacters: Array.isArray(data.source_major_characters) ? data.source_major_characters : [],
+    castCompletion: data.cast_completion || { complete: false, missing: [], blocking_reasons: [] },
+    castConfirmed: Boolean(data.cast_confirmed),
+    castSignature: data.cast_signature || '',
+    blockingReasons: Array.isArray(data.blocking_reasons) ? data.blocking_reasons : [],
     input: options.preserveInput ? previous.input : '',
     inputSource: options.preserveInput ? previous.inputSource || '' : ''
   };

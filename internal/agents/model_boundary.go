@@ -22,6 +22,55 @@ type diagnosticModel struct {
 	task  string
 }
 
+type executionBarrierContextKey struct{}
+
+// WithExecutionBarrier delays the coordinator's provider call until Host has
+// committed the matching lifecycle, event, router, and ownership state.
+func WithExecutionBarrier(ctx context.Context, ready <-chan struct{}) context.Context {
+	if ready == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, executionBarrierContextKey{}, ready)
+}
+
+type executionBarrierModel struct {
+	agentcore.ChatModel
+}
+
+func WithExecutionBarrierModel(model agentcore.ChatModel) agentcore.ChatModel {
+	if model == nil {
+		return nil
+	}
+	return &executionBarrierModel{ChatModel: model}
+}
+
+func (m *executionBarrierModel) Generate(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	if err := waitForExecutionBarrier(ctx); err != nil {
+		return nil, err
+	}
+	return m.ChatModel.Generate(ctx, messages, tools, opts...)
+}
+
+func (m *executionBarrierModel) GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	if err := waitForExecutionBarrier(ctx); err != nil {
+		return nil, err
+	}
+	return m.ChatModel.GenerateStream(ctx, messages, tools, opts...)
+}
+
+func waitForExecutionBarrier(ctx context.Context) error {
+	ready, _ := ctx.Value(executionBarrierContextKey{}).(<-chan struct{})
+	if ready == nil {
+		return nil
+	}
+	select {
+	case <-ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func withProductionAgentBoundary(model agentcore.ChatModel, st *store.Store, task string) agentcore.ChatModel {
 	if model == nil {
 		return nil

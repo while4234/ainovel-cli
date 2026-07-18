@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -135,6 +136,7 @@ type FoundationStore struct {
 	projectMu     *sync.RWMutex
 	failpoint     func(string) error
 	lifecycleHook func(string)
+	coreCast      *CoreCastStore
 }
 
 func newFoundationStore(io *IO) *FoundationStore {
@@ -241,6 +243,14 @@ func (s *FoundationStore) validateLegacyProjectionSetUnlocked() error {
 // SaveCAS atomically replaces all foundation sections when expectedRevision
 // still matches. A read-only legacy aggregate has revision zero.
 func (s *FoundationStore) SaveCAS(candidate domain.StoryFoundation, expectedRevision int64) (domain.StoryFoundation, error) {
+	return s.saveCAS(candidate, expectedRevision, false)
+}
+
+func (s *FoundationStore) saveCoreCastCAS(candidate domain.StoryFoundation, expectedRevision int64) (domain.StoryFoundation, error) {
+	return s.saveCAS(candidate, expectedRevision, true)
+}
+
+func (s *FoundationStore) saveCAS(candidate domain.StoryFoundation, expectedRevision int64, coreCastAuthorized bool) (domain.StoryFoundation, error) {
 	epoch := s.lifecycle.captureMutationEpoch()
 	s.runLifecycleHook(foundationLifecycleMutationEntered)
 	s.projectMu.Lock()
@@ -258,7 +268,7 @@ func (s *FoundationStore) SaveCAS(candidate domain.StoryFoundation, expectedRevi
 	if current.Revision != expectedRevision {
 		return domain.StoryFoundation{}, &FoundationConflictError{Expected: expectedRevision, Actual: current.Revision}
 	}
-	return s.commitCandidateUnlocked(current, candidate, canonicalExists)
+	return s.commitCandidateUnlocked(current, candidate, canonicalExists, coreCastAuthorized)
 }
 
 func (s *FoundationStore) UpdatePremise(content string) error {
@@ -301,16 +311,21 @@ func (s *FoundationStore) updateSection(change func(*domain.StoryFoundation)) (d
 	}
 	candidate := domain.CloneStoryFoundation(current)
 	change(&candidate)
-	return s.commitCandidateUnlocked(current, candidate, canonicalExists)
+	return s.commitCandidateUnlocked(current, candidate, canonicalExists, false)
 }
 
-func (s *FoundationStore) commitCandidateUnlocked(current, candidate domain.StoryFoundation, canonicalExists bool) (domain.StoryFoundation, error) {
+func (s *FoundationStore) commitCandidateUnlocked(current, candidate domain.StoryFoundation, canonicalExists, coreCastAuthorized bool) (domain.StoryFoundation, error) {
 	candidate.SchemaVersion = domain.StoryFoundationSchemaVersion
 	candidate.Revision = current.Revision
 	candidate.UpdatedAt = current.UpdatedAt
 	normalized, err := domain.NormalizeStoryFoundation(candidate)
 	if err != nil {
 		return domain.StoryFoundation{}, fmt.Errorf("normalize story foundation candidate: %w", err)
+	}
+	if !coreCastAuthorized {
+		if err := s.validateCoreCastAuthorityUnlocked(normalized); err != nil {
+			return domain.StoryFoundation{}, err
+		}
 	}
 	currentContent, err := domain.FoundationContentSignature(current)
 	if err != nil {
@@ -337,6 +352,34 @@ func (s *FoundationStore) commitCandidateUnlocked(current, candidate domain.Stor
 		return domain.StoryFoundation{}, err
 	}
 	return normalized, nil
+}
+
+func (s *FoundationStore) validateCoreCastAuthorityUnlocked(candidate domain.StoryFoundation) error {
+	if s.coreCast == nil {
+		return nil
+	}
+	contract, err := s.coreCast.loadUnlocked()
+	if err != nil {
+		return fmt.Errorf("validate confirmed core cast authority: %w", err)
+	}
+	if contract == nil || contract.ConfirmedSignature != contract.ContentSignature ||
+		contract.PublishReceipt.Status != "published" || contract.PublishReceipt.ContentSignature != contract.ContentSignature {
+		return nil
+	}
+	expected := domain.CloneStoryFoundation(candidate)
+	expected.Characters = domain.ContractCharacters(*contract)
+	expected.Relationships = append([]domain.CharacterRelationship{}, contract.PlannedRelationships...)
+	expected.RelationshipsReviewed = true
+	expected, err = domain.NormalizeStoryFoundation(expected)
+	if err != nil {
+		return fmt.Errorf("normalize confirmed core cast projection: %w", err)
+	}
+	if !reflect.DeepEqual(candidate.Characters, expected.Characters) ||
+		!reflect.DeepEqual(candidate.Relationships, expected.Relationships) ||
+		candidate.RelationshipsReviewed != expected.RelationshipsReviewed {
+		return fmt.Errorf("confirmed core cast is authoritative for story foundation characters and relationships")
+	}
+	return nil
 }
 
 func (s *FoundationStore) loadForWriteUnlocked() (domain.StoryFoundation, bool, error) {

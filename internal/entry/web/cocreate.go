@@ -27,6 +27,7 @@ const (
 
 	webCoCreateCheckpointVersion = 1
 	adaptDecisionDraftBatchSize  = 4
+	maxCoCreateJSONBodyBytes     = 1 << 20
 	adaptDecisionDraftMarker     = "Internal adaptation decision draft batch"
 
 	stageCoCreateOpener            = "我先暂停一下，想和你一起规划接下来的走向。"
@@ -168,47 +169,68 @@ type webCoCreateLogEntry struct {
 }
 
 type webCoCreateState struct {
-	Kind             string                              `json:"kind"`
-	Active           bool                                `json:"active"`
-	Messages         []webCoCreateMessage                `json:"messages"`
-	DraftPrompt      string                              `json:"draft_prompt"`
-	Ready            bool                                `json:"ready"`
-	Suggestions      []string                            `json:"suggestions"`
-	StreamThinking   string                              `json:"stream_thinking,omitempty"`
-	StreamReply      string                              `json:"stream_reply,omitempty"`
-	AdaptMode        string                              `json:"adapt_mode,omitempty"`
-	RewritePolicy    string                              `json:"rewrite_policy,omitempty"`
-	WordTolerance    float64                             `json:"word_tolerance,omitempty"`
-	TargetTotalWords int                                 `json:"target_total_words,omitempty"`
-	SourceFile       string                              `json:"source_file,omitempty"`
-	Proposal         *domain.AdaptationPlan              `json:"proposal,omitempty"`
-	VolumeReview     *domain.AdaptationVolumeReview      `json:"volume_review,omitempty"`
-	CanStart         bool                                `json:"can_start"`
-	ModeLocked       bool                                `json:"mode_locked,omitempty"`
-	Failed           bool                                `json:"failed,omitempty"`
-	CommittedLabel   string                              `json:"committed_label,omitempty"`
-	Briefing         *webCoCreateBriefingState           `json:"briefing,omitempty"`
-	PendingDecisions []domain.AdaptationBriefingDecision `json:"pending_decisions,omitempty"`
-	BlockedReason    string                              `json:"blocked_reason,omitempty"`
+	Kind                  string                              `json:"kind"`
+	Active                bool                                `json:"active"`
+	Messages              []webCoCreateMessage                `json:"messages"`
+	DraftPrompt           string                              `json:"draft_prompt"`
+	Ready                 bool                                `json:"ready"`
+	Suggestions           []string                            `json:"suggestions"`
+	StreamThinking        string                              `json:"stream_thinking,omitempty"`
+	StreamReply           string                              `json:"stream_reply,omitempty"`
+	AdaptMode             string                              `json:"adapt_mode,omitempty"`
+	RewritePolicy         string                              `json:"rewrite_policy,omitempty"`
+	WordTolerance         float64                             `json:"word_tolerance,omitempty"`
+	TargetTotalWords      int                                 `json:"target_total_words,omitempty"`
+	SourceFile            string                              `json:"source_file,omitempty"`
+	Proposal              *domain.AdaptationPlan              `json:"proposal,omitempty"`
+	VolumeReview          *domain.AdaptationVolumeReview      `json:"volume_review,omitempty"`
+	CanStart              bool                                `json:"can_start"`
+	ModeLocked            bool                                `json:"mode_locked,omitempty"`
+	Failed                bool                                `json:"failed,omitempty"`
+	CommittedLabel        string                              `json:"committed_label,omitempty"`
+	Briefing              *webCoCreateBriefingState           `json:"briefing,omitempty"`
+	PendingDecisions      []domain.AdaptationBriefingDecision `json:"pending_decisions,omitempty"`
+	BlockedReason         string                              `json:"blocked_reason,omitempty"`
+	CoreCast              *domain.CoreCastContract            `json:"core_cast,omitempty"`
+	SourceMajorCharacters []domain.SourceMajorCharacter       `json:"source_major_characters"`
+	CastCompletion        domain.CoreCastCompletionResult     `json:"cast_completion"`
+	CastConfirmed         bool                                `json:"cast_confirmed"`
+	CastSignature         string                              `json:"cast_signature,omitempty"`
+	BlockingReasons       []string                            `json:"blocking_reasons"`
+}
+
+type webCoreCastUpdateRequest struct {
+	ExpectedRevision int64                   `json:"expected_revision"`
+	CoreCast         domain.CoreCastContract `json:"core_cast"`
+}
+
+type webCoreCastConfirmRequest struct {
+	ExpectedRevision int64  `json:"expected_revision"`
+	ContentSignature string `json:"content_signature"`
 }
 
 type webCoCreateSession struct {
-	kind                   string
-	session                *startup.CoCreateSession
-	messages               []webCoCreateMessage
-	nextMessageSeq         int
-	failed                 bool
-	sourceFile             string
-	sourcePath             string
-	adaptGranularity       string
-	adaptRewritePolicy     string
-	adaptWordTolerance     float64
-	targetTotalWords       int
-	adaptationProposal     *domain.AdaptationPlan
-	adaptationVolumeReview *domain.AdaptationVolumeReview
-	draftConsolidated      bool
-	adaptationBriefing     *domain.AdaptationCoCreateBriefing
-	expectedRevision       int
+	kind                    string
+	session                 *startup.CoCreateSession
+	messages                []webCoCreateMessage
+	nextMessageSeq          int
+	failed                  bool
+	sourceFile              string
+	sourcePath              string
+	adaptGranularity        string
+	adaptRewritePolicy      string
+	adaptWordTolerance      float64
+	targetTotalWords        int
+	adaptationProposal      *domain.AdaptationPlan
+	adaptationVolumeReview  *domain.AdaptationVolumeReview
+	draftConsolidated       bool
+	adaptationBriefing      *domain.AdaptationCoCreateBriefing
+	expectedRevision        int
+	coreCast                *domain.CoreCastContract
+	sourceCharacters        []domain.SourceMajorCharacter
+	sourceMajorCharacters   []domain.SourceMajorCharacter
+	sourceResolutionMissing []domain.CoreCastMissingItem
+	castError               string
 }
 
 type webCoCreateBriefingState struct {
@@ -1099,6 +1121,24 @@ func (s *webCoCreateSession) appendInternalUser(text string) error {
 func (s *webCoCreateSession) applyReply(reply host.CoCreateReply) {
 	historyIndex := len(s.session.History())
 	s.session.ApplyReply(reply)
+	if reply.CoreCast != nil && (s.kind == webCoCreateKindNormal || s.kind == webCoCreateKindAdapt) {
+		cast := *reply.CoreCast
+		cast.DraftRevision = s.session.DraftRevision()
+		cast.DraftHash = s.session.DraftHash()
+		if s.kind == webCoCreateKindAdapt {
+			cast.Mode = domain.CoreCastModeAdaptation
+			if s.adaptationBriefing != nil {
+				cast.SourceSignature = strings.TrimSpace(s.adaptationBriefing.SourceSignature)
+				cast.AdaptationIntentHash = strings.TrimSpace(s.adaptationBriefing.IntentHash)
+			}
+		} else {
+			cast.Mode = domain.CoreCastModeNormal
+			cast.SourceSignature = ""
+			cast.AdaptationIntentHash = ""
+		}
+		s.coreCast = &cast
+		s.castError = ""
+	}
 	s.draftConsolidated = false
 	if text := strings.TrimSpace(reply.Message); text != "" {
 		s.messages = append(s.messages, s.newMessage("assistant", text, "", historyIndex))
@@ -1457,6 +1497,33 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		return webCoCreateState{}
 	}
 	canStart := s.session.CanStart()
+	completion := s.castCompletion()
+	blockingReasons := append([]string(nil), completion.BlockingReasons...)
+	castConfirmed := false
+	castSignature := ""
+	if s.coreCast != nil {
+		castSignature = s.coreCast.ContentSignature
+		castConfirmed = castSignature != "" && s.coreCast.ConfirmedSignature == castSignature
+	}
+	if s.requiresCoreCast() {
+		if s.coreCast == nil {
+			blockingReasons = append(blockingReasons, "core cast contract is required")
+		} else {
+			if s.coreCast.DraftRevision != s.session.DraftRevision() || s.coreCast.DraftHash != s.session.DraftHash() {
+				blockingReasons = append(blockingReasons, "core cast belongs to an older co-create draft")
+			}
+			if !castConfirmed {
+				blockingReasons = append(blockingReasons, "confirm the current core cast signature")
+			}
+			if s.kind == webCoCreateKindAdapt && s.adaptationBriefing != nil &&
+				(s.coreCast.SourceSignature != strings.TrimSpace(s.adaptationBriefing.SourceSignature) || s.coreCast.AdaptationIntentHash != strings.TrimSpace(s.adaptationBriefing.IntentHash)) {
+				blockingReasons = append(blockingReasons, "core cast source or adaptation intent binding is stale")
+			}
+		}
+		if !completion.Complete || len(blockingReasons) > 0 {
+			canStart = false
+		}
+	}
 	if needsRepair, _ := s.currentDraftNeedsRepair(); needsRepair {
 		canStart = false
 	}
@@ -1470,29 +1537,187 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		canStart = false
 		blockedReason = "resolve adaptation briefing decisions before draft generation"
 	}
-	return webCoCreateState{
-		Kind:             s.kind,
-		Active:           true,
-		Messages:         webCoCreateDisplayMessages(s.kind, s.messages),
-		DraftPrompt:      s.draftPrompt(),
-		Ready:            s.session.Ready(),
-		Suggestions:      append([]string(nil), s.session.Suggestions()...),
-		StreamThinking:   s.session.StreamThinking(),
-		StreamReply:      normalizeWebCoCreateText(s.kind, s.session.StreamReply()),
-		AdaptMode:        s.adaptGranularity,
-		RewritePolicy:    s.adaptRewritePolicy,
-		WordTolerance:    s.adaptWordTolerance,
-		TargetTotalWords: s.targetTotalWords,
-		SourceFile:       s.sourceFile,
-		Proposal:         s.adaptationProposal,
-		VolumeReview:     s.adaptationVolumeReview,
-		CanStart:         canStart,
-		ModeLocked:       s.kind == webCoCreateKindAdapt,
-		Failed:           s.failed,
-		Briefing:         briefingState,
-		PendingDecisions: pendingDecisions,
-		BlockedReason:    blockedReason,
+	if len(blockingReasons) > 0 && blockedReason == "" {
+		blockedReason = blockingReasons[0]
 	}
+	return webCoCreateState{
+		Kind:                  s.kind,
+		Active:                true,
+		Messages:              webCoCreateDisplayMessages(s.kind, s.messages),
+		DraftPrompt:           s.draftPrompt(),
+		Ready:                 s.session.Ready(),
+		Suggestions:           append([]string(nil), s.session.Suggestions()...),
+		StreamThinking:        s.session.StreamThinking(),
+		StreamReply:           normalizeWebCoCreateText(s.kind, s.session.StreamReply()),
+		AdaptMode:             s.adaptGranularity,
+		RewritePolicy:         s.adaptRewritePolicy,
+		WordTolerance:         s.adaptWordTolerance,
+		TargetTotalWords:      s.targetTotalWords,
+		SourceFile:            s.sourceFile,
+		Proposal:              s.adaptationProposal,
+		VolumeReview:          s.adaptationVolumeReview,
+		CanStart:              canStart,
+		ModeLocked:            s.kind == webCoCreateKindAdapt,
+		Failed:                s.failed,
+		Briefing:              briefingState,
+		PendingDecisions:      pendingDecisions,
+		BlockedReason:         blockedReason,
+		CoreCast:              cloneWebCoreCast(s.coreCast),
+		SourceMajorCharacters: append([]domain.SourceMajorCharacter(nil), s.sourceMajorCharacters...),
+		CastCompletion:        completion,
+		CastConfirmed:         castConfirmed,
+		CastSignature:         castSignature,
+		BlockingReasons:       blockingReasons,
+	}
+}
+
+func (s *Server) handleProjectCoreCast(w http.ResponseWriter, r *http.Request, id, action string) {
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	var state webCoCreateState
+	switch action {
+	case "update":
+		if r.Method != http.MethodPut {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req webCoreCastUpdateRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid core cast request: "+err.Error())
+			return
+		}
+		state, err = session.UpdateCoreCast(req.CoreCast, req.ExpectedRevision)
+	case "confirm":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req webCoreCastConfirmRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid core cast confirmation: "+err.Error())
+			return
+		}
+		state, err = session.ConfirmCoreCast(req.ExpectedRevision, req.ContentSignature)
+	case "unconfirm":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req webCoreCastConfirmRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid core cast unconfirm request: "+err.Error())
+			return
+		}
+		state, err = session.UnconfirmCoreCast(req.ExpectedRevision)
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeCoreCastActionError(w, err, state)
+		return
+	}
+	writeCoCreateResponse(w, manifest, session, state)
+}
+
+func writeCoreCastActionError(w http.ResponseWriter, err error, state webCoCreateState) {
+	status := http.StatusInternalServerError
+	code := "core_cast_storage_error"
+	message := "core cast operation failed"
+	details := map[string]any{}
+	var revisionConflict *storepkg.CoreCastConflictError
+	var signatureConflict *storepkg.CoreCastSignatureConflictError
+	var validation *storepkg.CoreCastValidationError
+	switch {
+	case errors.As(err, &revisionConflict):
+		status = http.StatusConflict
+		code = "core_cast_revision_conflict"
+		message = err.Error()
+		details["latest_revision"] = revisionConflict.Actual
+		details["latest_signature"] = revisionConflict.Signature
+		details["cast_completion"] = state.CastCompletion
+	case errors.As(err, &signatureConflict):
+		status = http.StatusConflict
+		code = "core_cast_signature_conflict"
+		message = err.Error()
+		details["latest_revision"] = signatureConflict.Revision
+		details["latest_signature"] = signatureConflict.Actual
+		details["cast_completion"] = state.CastCompletion
+	case errors.As(err, &validation):
+		status = http.StatusUnprocessableEntity
+		code = "core_cast_invalid"
+		message = err.Error()
+	case strings.Contains(err.Error(), "stale") || strings.Contains(err.Error(), "gate") || strings.Contains(err.Error(), "does not exist"):
+		status = http.StatusConflict
+		code = "core_cast_gate_conflict"
+		message = err.Error()
+	}
+	details["code"] = code
+	details["message"] = message
+	writeJSON(w, status, map[string]any{"error": details, "cocreate": state})
+}
+
+func (s *webCoCreateSession) requiresCoreCast() bool {
+	return s != nil && (s.kind == webCoCreateKindNormal || s.kind == webCoCreateKindAdapt)
+}
+
+func (s *webCoCreateSession) coreCastResumeExempt() bool {
+	return s != nil && (s.kind == webCoCreateKindStage || s.kind == webCoCreateKindContinuation)
+}
+
+func (s *webCoCreateSession) castCompletion() domain.CoreCastCompletionResult {
+	if s == nil || !s.requiresCoreCast() {
+		return domain.CoreCastCompletionResult{Complete: true, Missing: []domain.CoreCastMissingItem{}, BlockingReasons: []string{}}
+	}
+	if s.coreCast == nil {
+		missing := []domain.CoreCastMissingItem{{Code: "core_cast_required", Description: "core cast contract is required"}}
+		return webCoreCastCompletionWithExtra(domain.CoreCastCompletionResult{}, missing)
+	}
+	result := domain.CoreCastCompletion(*s.coreCast, s.sourceCharacters, s.sourceMajorCharacters)
+	return webCoreCastCompletionWithExtra(result, s.sourceResolutionMissing)
+}
+
+func webCoreCastCompletionWithExtra(base domain.CoreCastCompletionResult, extra []domain.CoreCastMissingItem) domain.CoreCastCompletionResult {
+	if len(extra) == 0 {
+		if base.Missing == nil {
+			base.Missing = []domain.CoreCastMissingItem{}
+		}
+		if base.BlockingReasons == nil {
+			base.BlockingReasons = []string{}
+		}
+		return base
+	}
+	base.Missing = append(base.Missing, extra...)
+	seen := make(map[string]struct{}, len(base.BlockingReasons))
+	for _, reason := range base.BlockingReasons {
+		seen[reason] = struct{}{}
+	}
+	for _, item := range extra {
+		if _, ok := seen[item.Description]; !ok {
+			base.BlockingReasons = append(base.BlockingReasons, item.Description)
+			seen[item.Description] = struct{}{}
+		}
+	}
+	base.Complete = false
+	return base
+}
+
+func cloneWebCoreCast(value *domain.CoreCastContract) *domain.CoreCastContract {
+	if value == nil {
+		return nil
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var clone domain.CoreCastContract
+	if json.Unmarshal(payload, &clone) != nil {
+		return nil
+	}
+	return &clone
 }
 
 func coCreateBriefingState(briefing *domain.AdaptationCoCreateBriefing) *webCoCreateBriefingState {
@@ -1808,7 +2033,26 @@ func decodeJSONBody(r *http.Request, target any) error {
 		return nil
 	}
 	defer r.Body.Close()
-	if err := json.NewDecoder(r.Body).Decode(target); err != nil && !errors.Is(err, io.EOF) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxCoCreateJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) > maxCoCreateJSONBodyBytes {
+		return fmt.Errorf("request body exceeds %d bytes", maxCoCreateJSONBodyBytes)
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("request body must contain exactly one JSON value")
+		}
 		return err
 	}
 	return nil
@@ -1819,14 +2063,26 @@ func decodeJSONBodyRaw(r *http.Request, target any) (json.RawMessage, error) {
 		return json.RawMessage(`{}`), nil
 	}
 	defer r.Body.Close()
-	raw, err := io.ReadAll(r.Body)
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxCoCreateJSONBodyBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) > maxCoCreateJSONBodyBytes {
+		return nil, fmt.Errorf("request body exceeds %d bytes", maxCoCreateJSONBodyBytes)
 	}
 	if len(strings.TrimSpace(string(raw))) == 0 {
 		raw = []byte(`{}`)
 	}
-	if err := json.Unmarshal(raw, target); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("request body must contain exactly one JSON value")
+		}
 		return nil, err
 	}
 	return json.RawMessage(raw), nil

@@ -208,7 +208,17 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   workflow stage. Automatic-switch events now classify real quota and timeout
   errors and avoid repeating the full switch summary in their detail. Focused
   Go and UI regressions plus the production Vite build passed.
-- 2026-07-18 `pending` `feat: establish canonical story foundation`:
+- 2026-07-18 `pending` `feat: enforce confirmed core cast`:
+  adds the five-section CoreCast contract, persisted semantic draft/source/intent
+  gates, strict confirmation APIs, target-cast-authoritative Foundation
+  publication, complete formal start/resume protection, structured adaptation
+  mappings, and transaction-safe adaptation confirmation startup. Four fresh
+  fix/re-review rounds closed bypass, overwrite, stale-binding, strict parsing,
+  recovery, late-failure, and coordinator-start ordering findings. Focused
+  changed-package/direct-boundary Go/UI tests, targeted race tests, Vite build,
+  gofmt/diff and sensitive-path gates passed; unrelated full suites were not
+  repeated under the user's incremental-validation rule.
+- 2026-07-18 `a2acfaa5` `feat: establish canonical story foundation`:
   adds the canonical `StoryFoundation` domain and recoverable CAS-backed store,
   stable legacy migration/projections, planned-relationship isolation, and
   clone/rollback lifecycle safety. Three independent fix/re-review rounds

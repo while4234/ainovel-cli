@@ -9,6 +9,44 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
+func TestCoCreateCastProtocolIsRequiredOnlyForNormalAndAdaptation(t *testing.T) {
+	validCast := `{"version":1,"mode":"normal","draft_revision":1,"members":[],"planned_relationships":[],"source_dispositions":[]}`
+	raw := "<reply>ok</reply><draft>draft</draft><cast>" + validCast + "</cast><ready>true</ready><suggestions></suggestions>"
+	reply, err := parseCoCreateResponseForProtocol(raw, true)
+	if err != nil || reply.CoreCast == nil {
+		t.Fatalf("five-part parse = %+v, %v", reply, err)
+	}
+	if _, err := parseCoCreateResponseForProtocol("<reply>ok</reply><draft>draft</draft><ready>true</ready><suggestions></suggestions>", true); err == nil {
+		t.Fatal("normal/adaptation response without cast was accepted")
+	}
+	stage, err := parseCoCreateResponseForProtocol("<reply>ok</reply><draft>draft</draft><ready>true</ready><suggestions></suggestions>", false)
+	if err != nil || stage.CoreCast != nil {
+		t.Fatalf("four-part stage parse = %+v, %v", stage, err)
+	}
+	if !strings.Contains(coCreateSystemPrompt, "<cast>") || !strings.Contains(adaptCoCreateSystemPrompt, "<cast>") {
+		t.Fatal("normal/adaptation prompts do not require cast")
+	}
+	if strings.Contains(stageCoCreateSystemPrompt, "<cast>") {
+		t.Fatal("stage protocol was forced to include cast")
+	}
+}
+
+func TestCoCreateCastProtocolRejectsDuplicateInvalidAndOversizedCast(t *testing.T) {
+	validCast := `{"version":1,"mode":"normal","draft_revision":1,"members":[],"planned_relationships":[],"source_dispositions":[]}`
+	duplicate := "<reply>ok</reply><draft>draft</draft><cast>" + validCast + "</cast><cast>" + validCast + "</cast><ready>false</ready><suggestions></suggestions>"
+	if err := rejectIncompleteCoCreateXML(duplicate, true); err == nil {
+		t.Fatal("duplicate cast tag was accepted")
+	}
+	invalid := "<reply>ok</reply><draft>draft</draft><cast>{</cast><ready>false</ready><suggestions></suggestions>"
+	if _, err := parseCoCreateResponseForProtocol(invalid, true); err == nil {
+		t.Fatal("invalid cast json was accepted")
+	}
+	oversized := "<reply>ok</reply><draft>draft</draft><cast>" + strings.Repeat(" ", coCreateCastMaxBytes+1) + "{}</cast><ready>false</ready><suggestions></suggestions>"
+	if _, err := parseCoCreateResponseForProtocol(oversized, true); err == nil {
+		t.Fatal("oversized cast was accepted")
+	}
+}
+
 func TestParseSuggestionsStripsListMarkersAndCapsResults(t *testing.T) {
 	got := parseSuggestions(`
 <uggestions>
@@ -121,7 +159,14 @@ func TestRejectIncompleteCoCreateXML(t *testing.T) {
 			t.Fatalf("rejectIncompleteCoCreateXML(%q) = nil, want error", raw)
 		}
 	}
-	if err := rejectIncompleteCoCreateXML("plain natural language"); err != nil {
-		t.Fatalf("plain fallback should remain allowed: %v", err)
+	for _, raw := range []string{
+		"plain natural language",
+		"outside<reply>ok</reply><draft>plan</draft><ready>true</ready><suggestions></suggestions>",
+		"<draft>plan</draft><reply>ok</reply><ready>true</ready><suggestions></suggestions>",
+		"<reply><draft>nested</draft></reply><draft>plan</draft><ready>true</ready><suggestions></suggestions>",
+	} {
+		if err := rejectIncompleteCoCreateXML(raw); err == nil {
+			t.Fatalf("strict protocol accepted %q", raw)
+		}
 	}
 }
