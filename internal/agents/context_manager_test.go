@@ -243,7 +243,7 @@ func TestWriterPhaseCompactsPersistedDraftArgumentsImmediately(t *testing.T) {
 				ID: callID, Name: "draft_chapter", Args: []byte(fmt.Sprintf(`{"chapter":39,"content":%q}`, strings.Repeat("chapter prose ", 1_200))),
 			}),
 		}},
-		agentcore.ToolResultMsg(callID, []byte(`{"written":true,"chapter":39}`), false),
+		agentcore.ToolResultMsg(callID, []byte(`{"written":true,"chapter":39,"word_budget_passed":true,"next_step":"read_chapter then validate"}`), false),
 	}
 	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
 	before := corecontext.EstimateTotal(messages)
@@ -261,8 +261,10 @@ func TestWriterPhaseCompactsPersistedDraftArgumentsImmediately(t *testing.T) {
 	if assistant.ThinkingContent() != "" {
 		t.Fatal("completed drafting rationale must not cross the persisted-write boundary")
 	}
-	if !strings.Contains(assistant.TextContent(), "Prior Writer phase cleared") {
-		t.Fatalf("collapsed draft turn lost its durable-state marker: %q", assistant.TextContent())
+	if !strings.Contains(assistant.TextContent(), "Latest completed Writer write receipt") ||
+		!strings.Contains(assistant.TextContent(), `"word_budget_passed":true`) ||
+		!strings.Contains(assistant.TextContent(), "read_chapter then validate") {
+		t.Fatalf("collapsed draft turn lost its actionable receipt: %q", assistant.TextContent())
 	}
 	for _, message := range view {
 		if typed, ok := message.(agentcore.Message); ok && typed.Role == agentcore.RoleTool {

@@ -174,6 +174,7 @@ func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMe
 	compactCalls := make(map[string]struct{})
 	collapseCalls := make(map[string]struct{})
 	completedCalls := make(map[string]struct{}, len(candidates))
+	writeReceipts := latestWriterWriteReceipt(out, candidates)
 	applied := false
 	for _, candidate := range candidates {
 		completedCalls[candidate.callID] = struct{}{}
@@ -199,7 +200,7 @@ func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMe
 	}
 
 	var historyChanged bool
-	out, historyChanged = compactWriterToolHistory(out, compactCalls, collapseCalls, completedCalls, clearedMessage)
+	out, historyChanged = compactWriterToolHistory(out, compactCalls, collapseCalls, completedCalls, writeReceipts, clearedMessage)
 	applied = applied || historyChanged
 	if !applied {
 		return view, corecontext.StrategyResult{Name: "writer_validation_phase"}, nil
@@ -209,6 +210,28 @@ func compactWriterPhase(view []agentcore.AgentMessage, keepRecent int, clearedMe
 		TokensSaved: max(0, corecontext.EstimateTotal(view)-corecontext.EstimateTotal(out)),
 		Name:        "writer_validation_phase",
 	}, nil
+}
+
+func latestWriterWriteReceipt(msgs []agentcore.AgentMessage, candidates []writerToolResultCandidate) map[string]string {
+	for index := len(candidates) - 1; index >= 0; index-- {
+		candidate := candidates[index]
+		if candidate.alreadyCleared || !isPersistedWriterDraftTool(candidate.toolName) {
+			continue
+		}
+		message, ok := msgs[candidate.resultIndex].(agentcore.Message)
+		if !ok {
+			return nil
+		}
+		result := strings.TrimSpace(message.TextContent())
+		if result == "" {
+			return nil
+		}
+		return map[string]string{
+			candidate.callID: "[Latest completed Writer write receipt; do not copy this text as tool arguments.]\n" +
+				"tool=" + candidate.toolName + "\nresult=" + result,
+		}
+	}
+	return nil
 }
 
 func collectWriterToolResults(msgs []agentcore.AgentMessage) []writerToolResultCandidate {
@@ -317,6 +340,7 @@ func compactWriterToolHistory(
 	callIDs map[string]struct{},
 	collapseCalls map[string]struct{},
 	completedCalls map[string]struct{},
+	writeReceipts map[string]string,
 	clearedMessage string,
 ) ([]agentcore.AgentMessage, bool) {
 	out := make([]agentcore.AgentMessage, 0, len(msgs))
@@ -365,9 +389,13 @@ func compactWriterToolHistory(
 		messageChanged := false
 		if collapsedCall || (hasCall && (allCallsCompacted || allCallsCompleted)) {
 			filtered := make([]agentcore.ContentBlock, 0, len(content))
+			var receiptTexts []string
 			for _, block := range content {
 				if block.Type == agentcore.ContentToolCall && block.ToolCall != nil {
 					if _, collapse := collapseCalls[block.ToolCall.ID]; collapse {
+						if receipt := writeReceipts[block.ToolCall.ID]; receipt != "" {
+							receiptTexts = append(receiptTexts, receipt)
+						}
 						messageChanged = true
 						continue
 					}
@@ -383,6 +411,9 @@ func compactWriterToolHistory(
 				filtered = append(filtered, block)
 			}
 			content = filtered
+			for _, receipt := range receiptTexts {
+				content = append(content, agentcore.TextBlock(receipt))
+			}
 		}
 		if hasCall && allCallsCompacted {
 			if len(content) == 0 {
