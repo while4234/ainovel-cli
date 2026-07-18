@@ -46,6 +46,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 `ce08323` `fix: resume writer from durable draft stage`:
+  the one-shot post-Resume route now inspects the in-progress canonical draft,
+  latest chapter checkpoint, current-draft de-AI audit, and consistency digest.
+  When a draft exists it dispatches a validation-stage recovery contract that
+  forbids `plan_chapter`, `draft_chapter`, and unrelated chapter reads; it
+  resumes bounded de-AI repair, then performs one project-context load and
+  same-draft consistency checks before commit. Normal new-chapter and ongoing
+  synchronous routes are unchanged. This fixes the live interruption where an
+  existing chapter 45 draft at `de_ai_check` was redispatched as generic
+  “write chapter 45,” moved backward to `plan`, and risked another whole rewrite.
+  Focused ten-run regressions, the full Host Flow suite, vet, and diff checks
+  passed.
 - 2026-07-19 `58f18c5` `fix: evict late writer project context`:
   once Writer validation has begun, `novel_context` results are no longer
   eligible for the protected recent-result slots; current-draft evidence and
