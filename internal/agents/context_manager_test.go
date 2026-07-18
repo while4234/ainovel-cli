@@ -114,6 +114,69 @@ func TestWriterPhaseDeduplicatesRepeatedCurrentContextBeforeBoundary(t *testing.
 	}
 }
 
+func TestWriterPhaseBoundsRepeatedContinuityReadsBeforeBoundary(t *testing.T) {
+	messages := []agentcore.AgentMessage{agentcore.UserMsg("write chapter 41")}
+	for index, spec := range []struct {
+		name string
+		args string
+	}{
+		{name: "novel_context", args: `{"chapter":41}`},
+		{name: "read_chapter", args: `{"chapter":39}`},
+		{name: "read_chapter", args: `{"chapter":40}`},
+	} {
+		callID := fmt.Sprintf("continuity-%d", index)
+		messages = append(messages,
+			agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+				agentcore.ThinkingBlock(strings.Repeat("historical lookup rationale ", 200)),
+				agentcore.ToolCallBlock(agentcore.ToolCall{ID: callID, Name: spec.name, Args: []byte(spec.args)}),
+			}},
+			agentcore.ToolResultMsg(callID, []byte(fmt.Sprintf(`"%s"`, strings.Repeat(spec.name+" evidence ", 300))), false),
+		)
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatal("a second normal continuity read must advance the bounded evidence slot")
+	}
+	if got := countCompactedToolResults(view); got != 1 {
+		t.Fatalf("compacted results=%d, want only the older continuity read", got)
+	}
+	if compacted := view[4].(agentcore.Message); compacted.Metadata["compacted_tool_result"] != true {
+		t.Fatalf("older continuity result was retained: %+v", compacted.Metadata)
+	}
+	if contextResult := view[2].(agentcore.Message); contextResult.Metadata["compacted_tool_result"] == true {
+		t.Fatal("active novel_context must remain available while drafting")
+	}
+	if newestRead := view[6].(agentcore.Message); newestRead.Metadata["compacted_tool_result"] == true {
+		t.Fatal("newest continuity tail must remain available")
+	}
+}
+
+func TestWriterPhaseKeepsDistinctAdaptationSourceReads(t *testing.T) {
+	messages := []agentcore.AgentMessage{agentcore.UserMsg("adapt chapter")}
+	for index, chapter := range []int{12, 13} {
+		callID := fmt.Sprintf("source-%d", index)
+		args := []byte(fmt.Sprintf(`{"source":"source","chapter":%d}`, chapter))
+		messages = append(messages,
+			agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.ToolCallBlock(agentcore.ToolCall{ID: callID, Name: "read_chapter", Args: args})}},
+			agentcore.ToolResultMsg(callID, []byte(`"source evidence"`), false),
+		)
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Applied || countCompactedToolResults(view) != 0 {
+		t.Fatalf("distinct adaptation source reads must remain intact: result=%+v", result)
+	}
+}
+
 func TestWriterManagerCommitsValidationPhaseBeforeProviderProjection(t *testing.T) {
 	messages := writerPhaseMessages(t, "novel_context", "read_chapter", "check_consistency")
 	engine := newContextManager(contextManagerConfig{

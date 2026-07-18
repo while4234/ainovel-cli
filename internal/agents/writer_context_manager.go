@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	"github.com/voocel/agentcore"
 	corecontext "github.com/voocel/agentcore/context"
@@ -128,14 +129,15 @@ func hasPersistedWriterDraftReceipt(msgs []agentcore.AgentMessage) bool {
 }
 
 func hasDuplicateWriterContextResults(msgs []agentcore.AgentMessage) bool {
-	count := 0
+	seen := make(map[string]struct{})
 	for _, candidate := range collectWriterToolResults(msgs) {
-		if candidate.toolName == "novel_context" && !candidate.alreadyCleared {
-			count++
-			if count >= 2 {
-				return true
-			}
+		if candidate.alreadyCleared || (candidate.toolName != "novel_context" && candidate.toolName != "read_chapter") {
+			continue
 		}
+		if _, duplicate := seen[candidate.key]; duplicate {
+			return true
+		}
+		seen[candidate.key] = struct{}{}
 	}
 	return false
 }
@@ -216,10 +218,7 @@ func collectWriterToolResults(msgs []agentcore.AgentMessage) []writerToolResultC
 		}
 		if message.Role == agentcore.RoleAssistant {
 			for _, call := range message.ToolCalls() {
-				key := call.Name + "\x00" + string(call.Args)
-				if call.Name == "novel_context" {
-					key = call.Name
-				}
+				key := writerToolResultKey(call.Name, call.Args)
 				pending[call.ID] = pendingCall{assistantIndex: index, toolName: call.Name, key: key}
 			}
 			continue
@@ -242,6 +241,31 @@ func collectWriterToolResults(msgs []agentcore.AgentMessage) []writerToolResultC
 		})
 	}
 	return candidates
+}
+
+func writerToolResultKey(name string, args json.RawMessage) string {
+	switch name {
+	case "novel_context":
+		// There is only one active Writer work package. Repeating the call cannot
+		// add evidence and must not multiply the largest payload in the turn.
+		return name
+	case "read_chapter":
+		var raw struct {
+			Source string `json:"source"`
+		}
+		if json.Unmarshal(args, &raw) == nil && strings.EqualFold(strings.TrimSpace(raw.Source), "source") {
+			// Adaptation can legitimately need distinct source chapters. Exact
+			// duplicate reads are still collapsible, while different source refs
+			// retain their own evidence.
+			return name + "\x00source\x00" + string(args)
+		}
+		// Normal creation already receives previous_tail and recent summaries in
+		// novel_context. Older/final/draft reads are a single bounded continuity
+		// evidence slot, so only the newest result crosses the provider boundary.
+		return name + "\x00continuity"
+	default:
+		return name + "\x00" + string(args)
+	}
 }
 
 func protectRecentWriterResults(candidates []writerToolResultCandidate, keepRecent int) map[int]struct{} {
