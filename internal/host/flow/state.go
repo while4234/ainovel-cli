@@ -102,12 +102,21 @@ func loadWriterResumeState(s *State, st *storepkg.Store, progress *domain.Progre
 		return
 	}
 	s.InProgressDraftExists = true
+	s.InProgressWordCount = len([]rune(draft))
 	draftSHA := storepkg.TextSHA256(draft)
 	if checkpoint := st.Checkpoints.Latest(domain.ChapterScope(chapter)); checkpoint != nil {
 		s.InProgressCheckpoint = checkpoint.Step
 	}
 	if checkpoint := st.Checkpoints.LatestByStep(domain.ChapterScope(chapter), "consistency_check"); checkpoint != nil {
 		s.InProgressConsistencyValid = checkpoint.Digest == "sha256:"+draftSHA
+	}
+	if meta, metaErr := st.RunMeta.Load(); metaErr == nil && meta != nil && meta.WordBudget != nil {
+		if runtime, ok := meta.WordBudget.Runtime(progress, chapter); ok {
+			s.InProgressWordMin = runtime.CurrentChapter.RecommendedMinWords
+			s.InProgressWordMax = runtime.CurrentChapter.RecommendedMaxWords
+			s.InProgressWordBudgetValid = s.InProgressWordCount >= s.InProgressWordMin &&
+				s.InProgressWordCount <= s.InProgressWordMax
+		}
 	}
 
 	s.InProgressDeAIState = writerDeAIStateMissing

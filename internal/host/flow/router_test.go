@@ -417,6 +417,10 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 		InProgressCheckpoint:       "plan",
 		InProgressDeAIState:        writerDeAIStateFailed,
 		InProgressConsistencyValid: false,
+		InProgressWordCount:        4292,
+		InProgressWordMin:          2550,
+		InProgressWordMax:          3703,
+		InProgressWordBudgetValid:  false,
 	}
 
 	if normal := Route(state); normal == nil || normal.Task != "写第 5 章" {
@@ -430,6 +434,9 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 		"恢复第 5 章现有草稿",
 		"checkpoint=plan",
 		"de_ai=failed",
+		"word_count=4292",
+		"word_budget=2550-3703",
+		"edit_chapter",
 		"禁止调用 plan_chapter 或 draft_chapter",
 		"禁止读取其他章节",
 		`read_chapter(chapter=5, source="draft")`,

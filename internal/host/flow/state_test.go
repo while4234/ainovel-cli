@@ -49,6 +49,10 @@ func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	budget := domain.NewWordBudget(1000, "test").WithPlannedChapters(20)
+	if err := st.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := st.Checkpoints.Append(domain.ChapterScope(5), "plan", "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +70,11 @@ func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 	if !state.InProgressDraftExists || state.InProgressCheckpoint != "plan" ||
 		state.InProgressDeAIState != writerDeAIStateFailed || !state.InProgressConsistencyValid {
 		t.Fatalf("in-progress recovery facts were not loaded: %+v", state)
+	}
+	if state.InProgressWordCount != len([]rune(draft)) ||
+		state.InProgressWordMin != 45 || state.InProgressWordMax != 55 ||
+		state.InProgressWordBudgetValid {
+		t.Fatalf("in-progress word budget facts were not loaded: %+v", state)
 	}
 }
 

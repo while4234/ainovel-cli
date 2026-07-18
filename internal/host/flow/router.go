@@ -75,6 +75,10 @@ type State struct {
 	InProgressCheckpoint       string
 	InProgressDeAIState        string
 	InProgressConsistencyValid bool
+	InProgressWordCount        int
+	InProgressWordMin          int
+	InProgressWordMax          int
+	InProgressWordBudgetValid  bool
 }
 
 const (
@@ -270,12 +274,20 @@ func RouteResume(s State) *Instruction {
 	if s.AdaptationActive {
 		adaptationStep = "；若本书处于改编模式，还必须在同一版草稿上通过 check_adaptation"
 	}
+	wordRepairStep := ""
+	if s.InProgressWordMin > 0 && s.InProgressWordMax >= s.InProgressWordMin && !s.InProgressWordBudgetValid {
+		wordRepairStep = fmt.Sprintf(
+			"当前草稿 %d 字，不在 %d-%d 字区间；回读后先用 edit_chapter 做有依据的局部删减或补足，只处理冗余解释、重复动作或缺失的必要承接，保留全部关键情节、人物选择、情感落点和章末钩子，直到进入区间。禁止为字数整章重写。",
+			s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax,
+		)
+	}
 	return &Instruction{
 		Agent: "writer",
 		Task: fmt.Sprintf(
-			"恢复第 %d 章现有草稿（checkpoint=%s，de_ai=%s，consistency_current=%t）。当前草稿是唯一工作版本：禁止调用 plan_chapter 或 draft_chapter，禁止读取其他章节，禁止重复调用 novel_context。先且只先调用一次 read_chapter(chapter=%d, source=\"draft\")，再调用 check_de_ai；若有 repair finding，依据刚回读的当前原文用 repair_de_ai_batch 做一小批唯一精确替换并立即复检，过期 old_string 让工具跳过，不要重放旧批次，直到 check_de_ai 通过。随后调用 novel_context(chapter=%d) 一次并在同一版草稿上通过 check_consistency%s；任何后续改稿都要重新完成这些检查。最后直接 commit_chapter，不要重新规划或整章重写。",
+			"恢复第 %d 章现有草稿（checkpoint=%s，de_ai=%s，consistency_current=%t，word_count=%d，word_budget=%d-%d，word_budget_current=%t）。当前草稿是唯一工作版本：禁止调用 plan_chapter 或 draft_chapter，禁止读取其他章节，禁止重复调用 novel_context。先且只先调用一次 read_chapter(chapter=%d, source=\"draft\")。%s随后调用 check_de_ai；若有 repair finding，依据刚回读的当前原文用 repair_de_ai_batch 做一小批唯一精确替换并立即复检，过期 old_string 让工具跳过，不要重放旧批次，直到 check_de_ai 通过。随后调用 novel_context(chapter=%d) 一次并在同一版草稿上通过 check_consistency%s；任何后续改稿都要重新完成这些检查。最后直接 commit_chapter，不要重新规划或整章重写。",
 			chapter, resumeFact(s.InProgressCheckpoint), resumeFact(s.InProgressDeAIState), s.InProgressConsistencyValid,
-			chapter, chapter, adaptationStep,
+			s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax, s.InProgressWordBudgetValid,
+			chapter, wordRepairStep, chapter, adaptationStep,
 		),
 		Reason:  fmt.Sprintf("恢复第 %d 章已有草稿的当前验证阶段", chapter),
 		Chapter: chapter,
