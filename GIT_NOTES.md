@@ -46,6 +46,19 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 `324f17f` `fix: batch writer recovery edits before validation`:
+  `edit_chapter` now accepts an optional atomic batch of 1-12 unique,
+  non-overlapping exact replacements after a single grounded chapter read.
+  Every single or batched edit reports the current draft rune count and the
+  same dynamic budget used by the commit gate; an out-of-budget receipt tells
+  Writer to reuse the original read evidence instead of reading the whole
+  chapter again. The recovery route explicitly selects that batch form and
+  forbids budget-confirmation rereads. Existing single-edit calls, normal new
+  chapters, and chapter-level polishing remain unchanged. This fixes the live
+  recovery where a first 29-rune trim returned no remaining budget, causing
+  Writer to reread all 4,263 runes and begin rebuilding the same context loop.
+  Focused ten-run regressions, the full Tools, Agents, Host Flow, and Host
+  suites, vet, and diff checks passed.
 - 2026-07-19 `de0497b` `fix: restore writer within current word budget`:
   the one-shot Writer recovery state now loads the canonical draft rune count
   and the exact dynamic chapter range used by the commit gate. If an
