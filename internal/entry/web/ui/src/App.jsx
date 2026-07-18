@@ -835,6 +835,8 @@ export default function App() {
   const [composerText, setComposerText] = useState('');
   const [steerText, setSteerText] = useState('');
   const [sideView, setSideView] = useState('status');
+  const [centerView, setCenterView] = useState('writing');
+  const [manuscriptControlsTarget, setManuscriptControlsTarget] = useState(null);
   const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
   const [toolDrawerOpen, setToolDrawerOpen] = useState(false);
   const [simulation, setSimulation] = useState(createSimulationState);
@@ -2076,6 +2078,11 @@ export default function App() {
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       if (reportResumeNoOp) {
         setError(resumeNoOpMessage(data));
+        if (data.recovery?.required) {
+          setCenterView('manuscript');
+          setSideView('manuscript');
+          setToolDrawerOpen(true);
+        }
       }
     } catch (err) {
       setError(err.message);
@@ -4282,6 +4289,7 @@ export default function App() {
   const showCoCreateWorkspace = sideView === 'cocreate' && !showCoCreatePlanningWorkspace && hasCoCreateWorkspaceContent(coCreate);
   const openTool = (view) => {
     setSideView(view);
+    if (view === 'manuscript') setCenterView('manuscript');
     setToolDrawerOpen(true);
   };
 
@@ -4719,10 +4727,17 @@ export default function App() {
 
         <WorkflowProgressPanel projectId={activeProject?.id || ''} snapshot={snapshot} />
         <ManuscriptWorkspace
+          active={centerView === 'manuscript'}
+          controlsTarget={manuscriptControlsTarget}
           key={activeProject?.id || 'no-project-manuscript'}
           projectId={activeProject?.id || ''}
+          onReturnToWriting={() => {
+            setCenterView('writing');
+            if (sideView === 'manuscript') setSideView('status');
+          }}
           onDiscussionReady={(message) => {
             setCoCreate((previous) => appendCoCreateInput(previous, message));
+            setCenterView('writing');
             setSideView('cocreate');
             setToolDrawerOpen(true);
           }}
@@ -4730,7 +4745,7 @@ export default function App() {
 
         {error ? <div className="error-banner">{error}</div> : null}
 
-        <div className="workbench-stack">
+        {centerView === 'writing' ? <><div className="workbench-stack">
           <section
             className={`stream-area ${showContinuationWorkspace || showAdaptationProposalWorkspace || showCoCreatePlanningWorkspace || showOutlineRevisionWorkspace ? 'proposal-workspace-output' : showCoCreateWorkspace ? 'cocreate-workspace-output' : showChapterRevisionWorkspace ? 'chapter-revision-workspace-output' : ''}`}
             aria-label={showContinuationWorkspace ? '小说续写审稿区' : showAdaptationProposalWorkspace ? '改编提案审稿区' : showOutlineRevisionWorkspace ? '章节细纲预览区' : showChapterRevisionWorkspace ? '单章返工预览区' : '实时创作流'}
@@ -4807,14 +4822,18 @@ export default function App() {
             {projectRunning ? <PauseCircle size={16} /> : quickStartAvailable ? <Play size={16} /> : <Send size={16} />}
             {projectRunning ? '暂停' : quickStartAvailable ? '启动' : '继续'}
           </button>
-        </form>
+        </form></> : null}
       </main>
 
-      <aside className={`status-pane ${toolDrawerOpen ? 'mobile-open' : ''}`} aria-label="创作与高级工具">
+      <aside className={`status-pane ${sideView === 'manuscript' ? 'manuscript-active' : ''} ${toolDrawerOpen ? 'mobile-open' : ''}`} aria-label="创作与高级工具">
         <div className="side-tabs" role="tablist" aria-label="工作台工具">
           <button aria-selected={sideView === 'status'} className={sideView === 'status' ? 'active' : ''} onClick={() => openTool('status')} role="tab" title="状态" type="button">
             <CircleDot size={16} />
             状态
+          </button>
+          <button aria-selected={sideView === 'manuscript'} className={sideView === 'manuscript' ? 'active' : ''} onClick={() => openTool('manuscript')} role="tab" title="专业稿件" type="button">
+            <BookOpen size={16} />
+            稿件
           </button>
           <button aria-selected={sideView === 'cocreate'} className={sideView === 'cocreate' ? 'active' : ''} onClick={() => openTool('cocreate')} role="tab" title="共创" type="button">
             <MessageSquareText size={16} />
@@ -4870,7 +4889,9 @@ export default function App() {
           <button className="mobile-drawer-close" onClick={() => setToolDrawerOpen(false)} type="button">
             <X size={16} /> 关闭工具
           </button>
-          {sideView === 'status' ? (
+          {sideView === 'manuscript' ? (
+            <div ref={setManuscriptControlsTarget} className="manuscript-controls-host" />
+          ) : sideView === 'status' ? (
             <StatusPanel
               snapshot={snapshot}
               activeProject={activeProject}

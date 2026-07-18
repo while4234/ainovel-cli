@@ -52,16 +52,17 @@ type WorkflowNextAction struct {
 }
 
 type WorkflowProgress struct {
-	Workflow     string              `json:"workflow"`
-	RunID        string              `json:"run_id"`
-	Revision     int                 `json:"revision"`
-	Status       WorkflowStatus      `json:"status"`
-	CurrentStep  string              `json:"current_step"`
-	Steps        []WorkflowStep      `json:"steps"`
-	NextAction   *WorkflowNextAction `json:"next_action,omitempty"`
-	Recoverable  bool                `json:"recoverable"`
-	Error        string              `json:"error,omitempty"`
-	CurrentModel string              `json:"current_model,omitempty"`
+	Workflow        string              `json:"workflow"`
+	RunID           string              `json:"run_id"`
+	Revision        int                 `json:"revision"`
+	Status          WorkflowStatus      `json:"status"`
+	CurrentStep     string              `json:"current_step"`
+	Steps           []WorkflowStep      `json:"steps"`
+	NextAction      *WorkflowNextAction `json:"next_action,omitempty"`
+	Recoverable     bool                `json:"recoverable"`
+	Error           string              `json:"error,omitempty"`
+	CurrentProvider string              `json:"current_provider,omitempty"`
+	CurrentModel    string              `json:"current_model,omitempty"`
 }
 
 // WebSnapshot preserves the legacy flat host snapshot while adding the
@@ -112,7 +113,8 @@ func (s *ProjectSession) attachCurrentWorkflowModel(progress *WorkflowProgress) 
 	if stage == "" {
 		return
 	}
-	_, model, _ := s.host.CurrentModelSelection(bootstrap.StageRouteKey(stage))
+	provider, model, _ := s.host.CurrentModelSelection(bootstrap.StageRouteKey(stage))
+	progress.CurrentProvider = strings.TrimSpace(provider)
 	progress.CurrentModel = strings.TrimSpace(model)
 }
 

@@ -638,6 +638,36 @@ func TestManuscriptWorkspaceHistoryIsMetadataOnly(t *testing.T) {
 	}
 }
 
+func TestManuscriptRecoveryEndpointReturnsSafeRetryableMetadata(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(method, "/api/projects/p/manuscript/workspace/recovery", nil)
+		server.handleManuscriptRecovery(recorder, request, st)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body=%s", method, recorder.Code, recorder.Body.String())
+		}
+		body := recorder.Body.String()
+		if strings.Contains(body, st.Dir()) || strings.Contains(body, "journal") {
+			t.Fatalf("%s leaked recovery internals: %s", method, body)
+		}
+		var response struct {
+			Recovered bool                              `json:"recovered"`
+			Recovery  storepkg.ManuscriptRecoveryStatus `json:"recovery"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if !response.Recovered || response.Recovery.Required {
+			t.Fatalf("%s response = %+v", method, response)
+		}
+	}
+}
+
 func TestManuscriptTreeAndReviewHistoryDoNotTruncateAtOneHundred(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), testTempDir(t))
 	defer server.Close()

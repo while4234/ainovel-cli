@@ -150,6 +150,7 @@ func BuildCoordinator(
 	recordUsage UsageRecorder,
 	onFlowBoundary FlowBoundaryHook,
 	onSummaryRetry SummaryRetryHook,
+	onFailover bootstrap.FailoverReporter,
 ) (*agentcore.Agent, *tools.AskUserTool, *ctxpack.WriterRestorePack, *corecontext.ContextEngine, ApplyThinking, error) {
 	// 共享工具
 	contextTool := tools.NewContextToolWithOptions(store, bundle.References, cfg.Style, tools.ContextToolOptions{
@@ -200,7 +201,6 @@ func BuildCoordinator(
 		return nil, nil, nil, nil, nil, err
 	}
 
-	// Provider failover 只记日志,不通知宿主
 	reportFailover := func(ev bootstrap.FailoverEvent) {
 		slog.Warn("provider 切换",
 			"module", "agent",
@@ -210,6 +210,9 @@ func BuildCoordinator(
 			"to", fmt.Sprintf("%s/%s", ev.ToProvider, ev.ToModel),
 			"err", ev.Err,
 		)
+		if onFailover != nil {
+			onFailover(ev)
+		}
 	}
 
 	// Architect 的一次自主 run 可能连续完成设定、骨架和首批细纲，不能在

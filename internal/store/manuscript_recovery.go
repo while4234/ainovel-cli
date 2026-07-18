@@ -9,10 +9,11 @@ import (
 // ManuscriptRecoveryStatus is metadata-only and safe to expose to Web reads.
 // It never includes manuscript content, local paths, or journal payloads.
 type ManuscriptRecoveryStatus struct {
-	Required bool     `json:"required"`
-	Class    string   `json:"class,omitempty"`
-	Owners   []string `json:"owners,omitempty"`
-	Message  string   `json:"message,omitempty"`
+	Required  bool     `json:"required"`
+	Class     string   `json:"class,omitempty"`
+	Owners    []string `json:"owners,omitempty"`
+	Message   string   `json:"message,omitempty"`
+	Retryable bool     `json:"retryable"`
 }
 
 // ManuscriptRecoveryStatus reports durable owners in the same outer-to-inner
@@ -34,17 +35,21 @@ func (s *Store) ManuscriptRecoveryState() ManuscriptRecoveryStatus {
 	if s.manuscriptPublicationRecoveryErr != nil {
 		owners = append(owners, "manuscript_publication")
 	}
-	if s.recoveryErr != nil && len(owners) == 0 {
+	if s.publicationAuthorityRecoveryErr != nil {
+		owners = append(owners, "publication_authority")
+	}
+	if s.structureMigrationRecoveryErr != nil {
 		owners = append(owners, "structure_migration")
 	}
 	if len(owners) == 0 {
 		return ManuscriptRecoveryStatus{}
 	}
 	return ManuscriptRecoveryStatus{
-		Required: true,
-		Class:    "publication_recovery_required",
-		Owners:   owners,
-		Message:  "durable manuscript recovery must complete before writes resume",
+		Required:  true,
+		Class:     "publication_recovery_required",
+		Owners:    owners,
+		Message:   "durable manuscript recovery must complete before writes resume",
+		Retryable: true,
 	}
 }
 

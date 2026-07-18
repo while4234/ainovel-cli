@@ -111,7 +111,11 @@ export function WorkflowProgressPanel({ projectId = '', snapshot }) {
   const currentMessage = String(currentStep?.message || '').trim();
   const workflowLabel = workflowLabels[progress.workflow] || '创作流程';
   const statusLabel = statusLabels[progress.status] || '状态未知';
+  const currentProvider = progress.status === 'running' ? String(progress.current_provider || '').trim() : '';
   const currentModel = progress.status === 'running' ? String(progress.current_model || '').trim() : '';
+  const currentRoute = currentProvider && currentModel
+    ? `后端：${currentProvider} · 模型：${currentModel}`
+    : currentModel ? `模型：${currentModel}` : '';
   const nextAction = progress.next_action?.label || (progress.status === 'completed' ? '已全部完成' : '等待当前步骤更新');
 
   return (
@@ -122,7 +126,7 @@ export function WorkflowProgressPanel({ projectId = '', snapshot }) {
           <h3 id="workflow-progress-title">创作流程</h3>
         </div>
         <span className="workflow-progress-status" role="status" aria-live="polite">
-          {statusLabel}{currentModel ? ` · ${currentModel}` : ''}
+          {statusLabel}{currentRoute ? ` · ${currentRoute}` : ''}
         </span>
       </header>
 

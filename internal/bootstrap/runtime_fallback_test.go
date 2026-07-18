@@ -311,6 +311,9 @@ func TestExplicitRoleFailoverMissingTokenSwitchesImmediately(t *testing.T) {
 	if len(reports) != 1 || reports[0].Reason != "auth_failed" {
 		t.Fatalf("failover reports = %+v, want one auth_failed report", reports)
 	}
+	if provider, model := primary.Current(); provider != "deepseek-suifeng-1" || model != "deepseek-v4-pro" {
+		t.Fatalf("current route = %s/%s, want switched fallback route", provider, model)
+	}
 }
 
 func TestRuntimeAutoSwitchGatewayErrorSwitchesImmediately(t *testing.T) {

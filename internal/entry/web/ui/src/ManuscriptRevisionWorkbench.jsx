@@ -26,7 +26,7 @@ export function resolveRefreshedManuscriptRevision(preferredRevision, activeRevi
   return { ...active, revision: details.revision, stage: details.stage, publication_status: details.publication_status, last_error_class: details.last_error_class, recovery_class: details.recovery_class, queue: details.queue, batches: details.batches };
 }
 
-export function ManuscriptRevisionWorkbench({ projectId }) {
+export function ManuscriptRevisionWorkbench({ projectId, controlsOnly = false, selectedChapterId = '' }) {
   const [opened, setOpened] = useState(false);
   const [tree, setTree] = useState(null);
   const [stableId, setStableId] = useState('');
@@ -49,7 +49,7 @@ export function ManuscriptRevisionWorkbench({ projectId }) {
     if (!projectId) return;
     const nextTree = await getManuscriptTree(projectId);
     setTree(nextTree);
-    const nextStableId = stableId || flattenChapters(nextTree.tree)[0]?.id || '';
+    const nextStableId = selectedChapterId || stableId || flattenChapters(nextTree.tree)[0]?.id || '';
     setStableId(nextStableId);
     if (nextStableId) setChapter(await getManuscriptChapter(projectId, nextStableId));
     if (isTerminalManuscriptRevision(preferredRevision)) setLastTerminalStage(preferredRevision.stage);
@@ -81,6 +81,12 @@ export function ManuscriptRevisionWorkbench({ projectId }) {
     setStableId(nextStableId); setError(''); setErrorClass('');
     try { setChapter(await getManuscriptChapter(projectId, nextStableId)); } catch (cause) { setError(cause?.message || String(cause)); }
   }
+
+  useEffect(() => {
+    if (!selectedChapterId || selectedChapterId === stableId) return;
+    setStableId(selectedChapterId);
+    if (tree) void selectChapter(selectedChapterId);
+  }, [selectedChapterId]);
 
   const command = (action, extra = {}) => commandManuscriptRevision(projectId, {
     action,
@@ -122,14 +128,14 @@ export function ManuscriptRevisionWorkbench({ projectId }) {
       <div aria-live="polite" role="status">{status || (revision ? `阶段：${revision.stage}；发布：${revision.publication_status}` : (lastTerminalStage ? `上一修订已${lastTerminalStage}，可开始新修订` : '尚无活动修订'))}</div>
       {revision?.recovery_class ? <div className="error-banner" role="alert"><strong>恢复类别：{revision.recovery_class}</strong></div> : null}
       {error ? <div className="error-banner" role="alert"><strong>恢复类别：{errorClass}</strong><div>{error}</div></div> : null}
-      <div className="manuscript-current-candidate">
+      {!controlsOnly ? <><div className="manuscript-current-candidate">
         <article><h3>当前正式正文</h3><pre>{chapter?.chapter?.content || '请选择可读章节'}</pre></article>
         <article><h3>候选正文</h3><pre>{selectedCandidate?.content || '尚未生成候选正文'}</pre></article>
       </div>
       <section aria-label="签名审核结果">
         <h3>审核发现与恢复信息</h3>
         {selectedCandidate?.audit?.findings?.length ? <ul>{selectedCandidate.audit.findings.map((finding) => <li key={finding}>{finding}</li>)}</ul> : <p>尚无可显示的签名审核发现</p>}
-      </section>
+      </section></> : null}
     </details>
   );
 }

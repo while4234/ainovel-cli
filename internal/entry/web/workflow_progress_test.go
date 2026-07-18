@@ -96,8 +96,8 @@ func TestWorkflowProgressReportsTheRunningStageModel(t *testing.T) {
 		TotalChapters:  10,
 		CompletedCount: 2,
 	})
-	if progress.CurrentStep != "writing" || progress.CurrentModel != "model-a" {
-		t.Fatalf("running progress = step %q model %q, want writing/model-a", progress.CurrentStep, progress.CurrentModel)
+	if progress.CurrentStep != "writing" || progress.CurrentProvider != "openrouter" || progress.CurrentModel != "model-a" {
+		t.Fatalf("running progress = step %q route %q/%q, want writing/openrouter/model-a", progress.CurrentStep, progress.CurrentProvider, progress.CurrentModel)
 	}
 }
 
@@ -137,8 +137,8 @@ func TestWorkflowProgressReportsNormalPlanningModel(t *testing.T) {
 			Kind:   domain.PlanningReviewKindBlueprint,
 		},
 	})
-	if progress.CurrentStep != "volume_plan" || progress.Status != WorkflowStatusRunning || progress.CurrentModel != "model-a" {
-		t.Fatalf("planning progress = step %q status %q model %q, want volume_plan/running/model-a", progress.CurrentStep, progress.Status, progress.CurrentModel)
+	if progress.CurrentStep != "volume_plan" || progress.Status != WorkflowStatusRunning || progress.CurrentProvider != "openrouter" || progress.CurrentModel != "model-a" {
+		t.Fatalf("planning progress = step %q status %q route %q/%q, want volume_plan/running/openrouter/model-a", progress.CurrentStep, progress.Status, progress.CurrentProvider, progress.CurrentModel)
 	}
 }
 

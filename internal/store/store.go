@@ -18,6 +18,9 @@ type Store struct {
 
 	recoveryMu                       sync.Mutex
 	recoveryErr                      error
+	authorityRecoveryErr             error
+	publicationAuthorityRecoveryErr  error
+	structureMigrationRecoveryErr    error
 	commandRecoveryErr               error
 	publicationRecoveryErr           error
 	manuscriptPublicationRecoveryErr error
@@ -50,39 +53,11 @@ type Store struct {
 
 // NewStore 创建状态管理器，dir 为小说输出根目录。
 func NewStore(dir string) *Store {
-	rootAuthorityRecoveryErr := recoverExpansionAuthorityRootLifecycle()
-	_, authorityOrphanRecoveryErr := ReconcileExpansionAuthorityOrphans()
+	authorityRecoveryErr := recoverExpansionAuthorityGlobal()
 	identity := newStructureIdentity(dir)
 	migration := newStructureMigration(dir)
 	revisions := NewRevisionStore(dir)
-	var authorityCreationRecoveryErr, authorityRotationRecoveryErr error
-	var authorityProjectRecoveryErr error
-	authorityRootDir, authorityRootDirErr := expansionAuthorityRootDir()
-	if authorityRootDirErr != nil {
-		authorityProjectRecoveryErr = authorityRootDirErr
-	} else if _, err := os.Stat(authorityRootDir); err == nil {
-		// Global creation recovery above already discovers first-publication
-		// journals. Do not create a project transaction lock for unrelated,
-		// read-only legacy projects that have never owned an authority.
-		if _, trustErr := os.Stat(revisions.io.path(expansionPublicationTrustFile)); trustErr == nil {
-			authorityProjectRecoveryErr = revisions.withRevisionTransaction(func() error {
-				authorityCreationRecoveryErr = withExpansionAuthorityRootOperation(func() error {
-					return recoverExpansionAuthorityCreationForOutputLocked(dir)
-				})
-				if authorityCreationRecoveryErr != nil {
-					return authorityCreationRecoveryErr
-				}
-				authorityRotationRecoveryErr = withExpansionAuthorityRootOperation(func() error {
-					return recoverExpansionAuthorityRotationForOutputLocked(dir)
-				})
-				return authorityRotationRecoveryErr
-			})
-		} else if !os.IsNotExist(trustErr) {
-			authorityProjectRecoveryErr = trustErr
-		}
-	} else if !os.IsNotExist(err) {
-		authorityProjectRecoveryErr = err
-	}
+	publicationAuthorityRecoveryErr := recoverExpansionAuthorityProjectForOutput(dir, revisions)
 	migration.recoverWithRevisionFence = revisions.withLegacyMutation
 	io := newIO(dir)
 	outline := NewOutlineStore(io, identity, migration)
@@ -128,7 +103,10 @@ func NewStore(dir string) *Store {
 	store.commandRecoveryErr = commandRecoveryErr
 	store.publicationRecoveryErr = publicationRecoveryErr
 	store.manuscriptPublicationRecoveryErr = manuscriptPublicationRecoveryErr
-	store.recoveryErr = errors.Join(rootAuthorityRecoveryErr, authorityOrphanRecoveryErr, authorityProjectRecoveryErr, authorityCreationRecoveryErr, authorityRotationRecoveryErr, commandRecoveryErr, publicationRecoveryErr, manuscriptPublicationRecoveryErr, structureRecoveryErr)
+	store.authorityRecoveryErr = authorityRecoveryErr
+	store.publicationAuthorityRecoveryErr = publicationAuthorityRecoveryErr
+	store.structureMigrationRecoveryErr = structureRecoveryErr
+	store.refreshRecoveryErrorLocked()
 	// Recover before constructing cache-bearing sub-stores such as checkpoints;
 	// otherwise they could retain the pre-transaction file generation in memory.
 	store.Checkpoints = newCheckpointStore(io, store.recoveryErr == nil)
@@ -149,7 +127,7 @@ func (s *Store) RecoverStructureMigration() error {
 	if s.commandRecoveryErr != nil {
 		if err := s.WithAdaptationRevisionCommand(func() error { return nil }); err != nil {
 			s.commandRecoveryErr = err
-			s.recoveryErr = err
+			s.refreshRecoveryErrorLocked()
 			return err
 		}
 		s.commandRecoveryErr = nil
@@ -157,7 +135,7 @@ func (s *Store) RecoverStructureMigration() error {
 	if s.publicationRecoveryErr != nil {
 		if err := s.recoverNormalRevisionPublication(); err != nil {
 			s.publicationRecoveryErr = err
-			s.recoveryErr = err
+			s.refreshRecoveryErrorLocked()
 			return err
 		}
 		s.publicationRecoveryErr = nil
@@ -165,23 +143,81 @@ func (s *Store) RecoverStructureMigration() error {
 	if s.manuscriptPublicationRecoveryErr != nil {
 		if err := s.recoverManuscriptPublication(); err != nil {
 			s.manuscriptPublicationRecoveryErr = err
-			s.recoveryErr = err
+			s.refreshRecoveryErrorLocked()
 			return err
 		}
 		s.manuscriptPublicationRecoveryErr = nil
 	}
-	if err := recoverStructureMigrationIfPending(s.Revisions, s.Outline.migration, "recover pending structure migration"); err != nil {
-		s.recoveryErr = err
+	s.authorityRecoveryErr = recoverExpansionAuthorityGlobal()
+	s.publicationAuthorityRecoveryErr = recoverExpansionAuthorityProjectForOutput(s.dir, s.Revisions)
+	s.structureMigrationRecoveryErr = recoverStructureMigrationIfPending(s.Revisions, s.Outline.migration, "recover pending structure migration")
+	s.refreshRecoveryErrorLocked()
+	projectRecoveryErr := errors.Join(
+		s.publicationAuthorityRecoveryErr,
+		s.commandRecoveryErr,
+		s.publicationRecoveryErr,
+		s.manuscriptPublicationRecoveryErr,
+		s.structureMigrationRecoveryErr,
+	)
+	if projectRecoveryErr != nil {
 		if s.Checkpoints != nil {
 			s.Checkpoints.invalidateCache()
 		}
-		return err
+		return projectRecoveryErr
 	}
+	// Global authority maintenance remains fail-closed for a newly opened
+	// store's checkpoint cache, but it does not make this project's manuscript
+	// unsafe to write once all project-owned journals are clean.
 	s.recoveryErr = nil
 	if s.Checkpoints != nil {
 		s.Checkpoints.loadFromDisk()
 	}
 	return nil
+}
+
+func recoverExpansionAuthorityGlobal() error {
+	rootErr := recoverExpansionAuthorityRootLifecycle()
+	_, orphanErr := ReconcileExpansionAuthorityOrphans()
+	return errors.Join(rootErr, orphanErr)
+}
+
+func recoverExpansionAuthorityProjectForOutput(dir string, revisions *RevisionStore) error {
+	var projectErr error
+	authorityRootDir, authorityRootDirErr := expansionAuthorityRootDir()
+	if authorityRootDirErr != nil {
+		projectErr = authorityRootDirErr
+	} else if _, err := os.Stat(authorityRootDir); err == nil {
+		// Avoid a project transaction for read-only legacy projects that never
+		// owned an expansion authority.
+		if _, trustErr := os.Stat(revisions.io.path(expansionPublicationTrustFile)); trustErr == nil {
+			projectErr = revisions.withRevisionTransaction(func() error {
+				if err := withExpansionAuthorityRootOperation(func() error {
+					return recoverExpansionAuthorityCreationForOutputLocked(dir)
+				}); err != nil {
+					return err
+				}
+				return withExpansionAuthorityRootOperation(func() error {
+					return recoverExpansionAuthorityRotationForOutputLocked(dir)
+				})
+			})
+		} else if !os.IsNotExist(trustErr) {
+			projectErr = trustErr
+		}
+	} else if !os.IsNotExist(err) {
+		projectErr = err
+	}
+	return projectErr
+}
+
+func (s *Store) refreshRecoveryErrorLocked() {
+	s.recoveryErr = errors.Join(
+		s.authorityRecoveryErr,
+		s.publicationAuthorityRecoveryErr,
+		s.commandRecoveryErr,
+		s.publicationRecoveryErr,
+		s.manuscriptPublicationRecoveryErr,
+		s.structureMigrationRecoveryErr,
+	)
 }
 
 func recoverStructureMigrationIfPending(revisions *RevisionStore, migration *structureMigration, operation string) error {

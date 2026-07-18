@@ -183,6 +183,10 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 			Kind:     "empty_context_summary",
 			Level:    "warn",
 		})
+	}, func(event bootstrap.FailoverEvent) {
+		if h != nil {
+			h.reportModelFailover(event)
+		}
 	})
 	if buildErr != nil {
 		usageCancel()
@@ -4617,12 +4621,78 @@ func (h *Host) reportAdaptationFailover(ev bootstrap.FailoverEvent) {
 	if !strings.HasPrefix(ev.Reason, bootstrap.RuntimeFallbackPoolReasonPrefix) {
 		h.promoteAdaptationFailoverTarget(ev)
 	}
+	h.recordModelFailoverEvent("改编准备", ev)
+}
+
+func (h *Host) reportModelFailover(ev bootstrap.FailoverEvent) {
+	h.recordModelFailoverEvent(modelFailoverRoleLabel(ev.Role), ev)
+}
+
+func (h *Host) recordModelFailoverEvent(roleLabel string, ev bootstrap.FailoverEvent) {
+	from := modelRouteLabel(ev.FromProvider, ev.FromModel)
+	to := modelRouteLabel(ev.ToProvider, ev.ToModel)
+	if from == to || from == "" || to == "" {
+		return
+	}
+	reason := modelFailoverReasonLabel(ev.Reason)
+	summary := fmt.Sprintf("模型自动切换（%s）：%s → %s", roleLabel, from, to)
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
-		Summary:  fmt.Sprintf("改编准备模型切换：%s -> %s（%s）", from, to, ev.Reason),
+		Agent:    ev.Role,
+		Summary:  summary,
+		Detail:   fmt.Sprintf("%s；原因：%s", summary, reason),
+		Kind:     "model_auto_switch",
 		Level:    "warn",
 	})
+}
+
+func modelRouteLabel(provider, model string) string {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if provider == "" {
+		return model
+	}
+	if model == "" {
+		return provider
+	}
+	return provider + "/" + model
+}
+
+func modelFailoverRoleLabel(role string) string {
+	normalized := strings.ToLower(strings.TrimSpace(role))
+	switch {
+	case strings.Contains(normalized, "writing"), strings.Contains(normalized, "writer"):
+		return "正文写作"
+	case strings.Contains(normalized, "review"), strings.Contains(normalized, "editor"):
+		return "质量审核"
+	case strings.Contains(normalized, "skeleton"), strings.Contains(normalized, "architect"):
+		return "结构规划"
+	case strings.Contains(normalized, "coordinator"):
+		return "流程协调"
+	default:
+		return "创作任务"
+	}
+}
+
+func modelFailoverReasonLabel(reason string) string {
+	normalized := strings.ToLower(strings.TrimSpace(reason))
+	switch {
+	case strings.Contains(normalized, "rate"):
+		return "服务限流"
+	case strings.Contains(normalized, "timeout"), strings.Contains(normalized, "stream_idle"):
+		return "响应超时"
+	case strings.Contains(normalized, "network"), strings.Contains(normalized, "disconnect"):
+		return "网络连接失败"
+	case strings.Contains(normalized, "empty"):
+		return "模型返回空内容"
+	case strings.Contains(normalized, "gateway"), strings.Contains(normalized, "unavailable"):
+		return "服务暂不可用"
+	case normalized == "":
+		return "当前后端不可用"
+	default:
+		return "当前后端不可用"
+	}
 }
 
 func (h *Host) promoteAdaptationFailoverTarget(ev bootstrap.FailoverEvent) {

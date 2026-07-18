@@ -835,11 +835,18 @@ func (s *Server) handleProjectResume(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 	snapshot := session.WebSnapshot()
+	var recovery *storepkg.ManuscriptRecoveryStatus
+	if !snapshot.IsRunning {
+		if decision, decisionErr := session.AutoResumeDecision(); decisionErr == nil {
+			recovery = decision.Recovery
+		}
+	}
 	writeJSON(w, http.StatusOK, projectActionResponse{
 		Project:  manifest,
 		Snapshot: snapshot,
 		Label:    label,
 		Running:  snapshot.IsRunning,
+		Recovery: recovery,
 	})
 }
 
@@ -1067,12 +1074,13 @@ func compactProjectSnapshotHistory(history WebEventHistory) WebEventHistory {
 }
 
 type projectActionResponse struct {
-	Project  ProjectManifest     `json:"project"`
-	Snapshot any                 `json:"snapshot"`
-	Label    string              `json:"label,omitempty"`
-	Running  bool                `json:"running"`
-	Revision *apiChapterRevision `json:"revision,omitempty"`
-	Export   *apiExportResult    `json:"export,omitempty"`
+	Project  ProjectManifest                    `json:"project"`
+	Snapshot any                                `json:"snapshot"`
+	Label    string                             `json:"label,omitempty"`
+	Running  bool                               `json:"running"`
+	Revision *apiChapterRevision                `json:"revision,omitempty"`
+	Export   *apiExportResult                   `json:"export,omitempty"`
+	Recovery *storepkg.ManuscriptRecoveryStatus `json:"recovery,omitempty"`
 }
 
 type projectChapterOutlineRevisionResponse struct {

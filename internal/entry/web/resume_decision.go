@@ -32,12 +32,13 @@ const (
 )
 
 type AutoResumeDecision struct {
-	Disposition      AutoResumeDisposition `json:"disposition"`
-	Action           string                `json:"action,omitempty"`
-	ReasonCode       string                `json:"reason_code"`
-	Label            string                `json:"label"`
-	StateFingerprint string                `json:"state_fingerprint"`
-	WorkflowRevision int                   `json:"workflow_revision,omitempty"`
+	Disposition      AutoResumeDisposition              `json:"disposition"`
+	Action           string                             `json:"action,omitempty"`
+	ReasonCode       string                             `json:"reason_code"`
+	Label            string                             `json:"label"`
+	StateFingerprint string                             `json:"state_fingerprint"`
+	WorkflowRevision int                                `json:"workflow_revision,omitempty"`
+	Recovery         *storepkg.ManuscriptRecoveryStatus `json:"recovery,omitempty"`
 }
 
 type autoResumeState struct {
@@ -78,11 +79,9 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 		return makeAutoResumeDecision(autoResumeState{Disposition: AutoResumeNoWork, Reason: "missing_output_dir"}, "项目没有可恢复目录"), nil
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
-	if recovery := st.ManuscriptRecoveryState(); recovery.Required {
-		return makeAutoResumeDecision(
-			autoResumeState{Disposition: AutoResumeBlocked, Reason: "publication_recovery_required"},
-			"正式稿件恢复尚未完成，当前只允许读取",
-		), nil
+	if err := st.RequireManuscriptWriteReady(); err != nil {
+		recovery := st.ManuscriptRecoveryState()
+		return makeRecoveryAutoResumeDecision(recovery), nil
 	}
 	if active, err := st.Revisions.Active(); err != nil {
 		return blockedAutoResume("revision_read_failed", err), nil
@@ -239,4 +238,21 @@ func makeAutoResumeDecision(state autoResumeState, label string) AutoResumeDecis
 
 func blockedAutoResume(reason string, err error) AutoResumeDecision {
 	return makeAutoResumeDecision(autoResumeState{Disposition: AutoResumeBlocked, Reason: reason}, "无法安全判断恢复状态："+err.Error())
+}
+
+func makeRecoveryAutoResumeDecision(recovery storepkg.ManuscriptRecoveryStatus) AutoResumeDecision {
+	if !recovery.Required {
+		recovery = storepkg.ManuscriptRecoveryStatus{
+			Required: true,
+			Class:    "publication_recovery_required",
+			Owners:   []string{"unknown"},
+			Message:  "durable manuscript recovery could not be verified",
+		}
+	}
+	decision := makeAutoResumeDecision(
+		autoResumeState{Disposition: AutoResumeBlocked, Reason: "publication_recovery_required"},
+		"正式稿件恢复尚未完成，当前只允许读取",
+	)
+	decision.Recovery = &recovery
+	return decision
 }

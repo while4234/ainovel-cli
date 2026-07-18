@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `pending` `feat: redesign manuscript workspace`:
+  moves all manuscript selection and writing controls into the right tool panel,
+  keeps formal/candidate/outline/review/history content in the central reader,
+  automatically completes paginated chapters with a bounded DOM window, fixes
+  the `重生v4` recovery false positive without weakening publication safety, and
+  exposes the actual provider/model plus durable sanitized automatic-failover
+  events. All 277 UI tests, the affected Go packages, the production build, 19
+  desktop/mobile Playwright scenarios, restart smoke checks, recovery inspection,
+  and live `重生v4` browser acceptance passed.
 - 2026-07-18 `7992979` `fix: restore outline details and trash actions`:
   loads complete outline fields only when the writing-side chapter preview is
   explicitly opened, keeps large trash lists internally scrollable with the

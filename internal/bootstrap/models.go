@@ -644,7 +644,7 @@ func (m *failoverModel) Generate(ctx context.Context, messages []agentcore.Messa
 	if !ok {
 		return nil, err
 	}
-	m.reportFailover(current, next, reason, err)
+	m.switchTo(current, next, reason, err)
 	return next.model.Generate(ctx, messages, tools, opts...)
 }
 
@@ -663,7 +663,7 @@ func (m *failoverModel) GenerateStream(ctx context.Context, messages []agentcore
 			if !fallbackUsed {
 				if next, reason, ok := m.pickFallback(current, err); ok {
 					fallbackUsed = true
-					m.reportFailover(current, next, reason, err)
+					m.switchTo(current, next, reason, err)
 					current = next
 					goto retry
 				}
@@ -687,7 +687,7 @@ func (m *failoverModel) GenerateStream(ctx context.Context, messages []agentcore
 				if ev.Err != nil && !forwarded && !fallbackUsed {
 					if next, reason, ok := m.pickFallback(current, ev.Err); ok {
 						fallbackUsed = true
-						m.reportFailover(current, next, reason, ev.Err)
+						m.switchTo(current, next, reason, ev.Err)
 						current = next
 						goto retry
 					}
@@ -774,6 +774,11 @@ func (m *failoverModel) reportFailover(from, to modelTarget, reason string, err 
 			Err:          err,
 		})
 	}
+}
+
+func (m *failoverModel) switchTo(from, to modelTarget, reason string, err error) {
+	m.primary.Swap(to.provider, to.name, to.model)
+	m.reportFailover(from, to, reason, err)
 }
 
 func (m *failoverModel) startAttempt(ctx context.Context, target modelTarget, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, *agentcore.LLMResponse, error) {

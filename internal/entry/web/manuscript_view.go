@@ -51,6 +51,8 @@ func manuscriptRevisionMetadataList(items []domain.ManuscriptRevisionRuntime) []
 
 func (s *Server) handleManuscriptWorkspaceRoute(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, service *host.ManuscriptRevisionService, action string) bool {
 	switch {
+	case action == "manuscript/workspace/recovery":
+		s.handleManuscriptRecovery(w, r, st)
 	case action == "manuscript/workspace/tree":
 		s.handleManuscriptWorkspaceTree(w, r, manifest, st, service)
 	case action == "manuscript/workspace/history":
@@ -71,6 +73,22 @@ func (s *Server) handleManuscriptWorkspaceRoute(w http.ResponseWriter, r *http.R
 		return false
 	}
 	return true
+}
+
+func (s *Server) handleManuscriptRecovery(w http.ResponseWriter, r *http.Request, st *storepkg.Store) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	recovered := true
+	if r.Method == http.MethodPost {
+		recovered = st.RequireManuscriptWriteReady() == nil
+	}
+	status := st.ManuscriptRecoveryState()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"recovered": recovered && !status.Required,
+		"recovery":  status,
+	})
 }
 
 func (s *Server) handleManuscriptWorkspaceTree(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, service *host.ManuscriptRevisionService) {
