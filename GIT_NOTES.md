@@ -46,6 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-18 `9accf0e` `fix: scope writer context by workflow`: gives
+  polishing a chapter-owned source profile (current outline/contract, review
+  brief, draft state, relevant continuity, prose/style constraints) instead of
+  loading Architect planning and duplicate mirrors. The real chapter-39 tool
+  payload falls from 128,720 to 22,165 bytes without post-build truncation;
+  ordinary next-chapter writing is source-bounded to 31,008 bytes. Streaming
+  model deltas now also mark the actual Agent working so the workflow badge
+  follows the provider/model handling the live request before tool execution.
+  Full tool tests, Agent/Web integration tests, focused Host/UI regressions,
+  and the production UI build passed.
 - 2026-07-18 `0fe1942d` `fix: show active backend route`: the running
   workflow badge now follows the most recently working Agent route and names
   that Agent (for example, 正文写作 or 流程协调), so its provider/model
