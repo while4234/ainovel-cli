@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-19 real `重生v4` five-chapter continuation acceptance: Coordinator
+- 2026-07-19 `bff8910` real `重生v4` five-chapter continuation acceptance: Coordinator
   model switching and route restoration now preserve the safe 64,000-token
   profile bound instead of expanding to the configured million-token window.
   Production-boundary recovery prioritizes a deterministic durable-store
