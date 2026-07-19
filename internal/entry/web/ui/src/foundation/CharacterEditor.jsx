@@ -35,6 +35,8 @@ export function CharacterEditor({ value, coreCast, disabled, errors = {}, onChan
     globalThis.requestAnimationFrame?.(() => addRef.current?.focus());
   };
 
+  if (disabled) return <section aria-labelledby="foundation-character-heading"><div className="foundation-section-head"><h2 id="foundation-character-heading">全部角色（只读）</h2></div><div className="foundation-editor-list">{value.map((character, index) => <article className="foundation-editor-card readonly-card" key={character.id || index}><h3>{character.name || `角色 ${index + 1}`}{isCoreCharacter(character, coreCast) ? <span className="foundation-badge risk">核心</span> : null}</h3><dl><div><dt>身份 / 职责</dt><dd>{character.role || '—'}</dd></div><div><dt>目标</dt><dd>{character.goal || '—'}</dd></div><div><dt>动机</dt><dd>{character.motivation || '—'}</dd></div><div><dt>冲突</dt><dd>{character.conflict || '—'}</dd></div><div><dt>角色弧</dt><dd>{character.arc || '—'}</dd></div><div><dt>描述</dt><dd>{character.description || '—'}</dd></div></dl></article>)}</div></section>;
+
   return <section aria-labelledby="foundation-character-heading">
     <div className="foundation-section-head"><div><h2 id="foundation-character-heading">全部角色</h2><p>核心角色删除会触发高风险提示；最终影响与是否可应用以服务端 preview 为准。</p></div>
       <button ref={addRef} className="tool-button" disabled={disabled} type="button" onClick={() => onChange([...value, newFoundationCharacter()])}>添加角色</button>

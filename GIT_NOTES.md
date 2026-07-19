@@ -46,6 +46,25 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 legacy Foundation recovery batch on
+  `codex/legacy-foundation-recovery`: legacy started projects now expose an
+  explicit snapshot/preview/confirm recovery flow that deterministically binds
+  existing StoryFoundation data to a current CoreCast gate without rewriting
+  prose. Source-analysis completion now validates the source file, manifest,
+  reusable chapter reports, signed SourceFoundation metadata, dossier version,
+  character/world content, and the distinction between a missing relationship
+  analysis and an explicitly reviewed empty result. The Web UI adds diagnostic
+  repair/forced-reanalysis actions, cost estimates and second confirmation,
+  atomic failed-run restoration, automatic novel-library writeback, semantic
+  SourceFoundation/target states, and a staged “clone and replan” path that
+  resets active work while retaining old output as a read-only reference.
+  Focused recovery/diagnostic/replan/force-rollback Go tests, relevant-package
+  vet, 43 UI files / 323 tests, the production UI build, and diff checks pass.
+  The unfiltered Go packages still hit the already-recorded legacy fixtures
+  that omit current CoreCast/target-Foundation gates, expansion-auditor setup,
+  and artifact workflow revisions; no original runtime novels were used by the
+  repair tests. The rebuilt Web service serves the new bundle and project API
+  with HTTP 200 on port 9898 against the unchanged runtime root.
 - 2026-07-19 `21e4082` `fix: repair word budget without rewriting drafts`:
   normal `draft_chapter` and `commit_chapter` word-budget rejections no longer
   instruct Writer to call `draft_chapter(mode=write)` and replace the entire

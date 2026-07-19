@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -544,7 +545,7 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
 		t.Fatalf("SaveSourceReports: %v", err)
 	}
-	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{
+	foundation := currentSourceFoundationFixture(sourceManifest, reports, domain.AdaptationSourceFoundation{
 		Premise: "source premise",
 		Characters: []domain.Character{{
 			Name:        "Ari",
@@ -571,7 +572,8 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 				}},
 			}},
 		}},
-	}); err != nil {
+	})
+	if err := st.Adaptation.SaveSourceFoundation(foundation); err != nil {
 		t.Fatalf("SaveSourceFoundation: %v", err)
 	}
 	batch := domain.AdaptationCoCreateDossierBatch{
@@ -593,11 +595,38 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 		SourceSignature:    store.AdaptationSourceSignature(sourceManifest),
 		BatchSize:          adaptengine.CoCreateDossierBatchSize,
 		BatchRuneLimit:     adaptengine.CoCreateDossierBatchRuneLimit,
+		RelationshipMap:    []domain.AdaptationRelationshipSignal{},
 		Batches:            []domain.AdaptationCoCreateDossierBatch{batch},
 	}); err != nil {
 		t.Fatalf("SaveCoCreateDossier: %v", err)
 	}
 	return sourcePath
+}
+
+func currentSourceFoundationFixture(
+	manifest domain.AdaptationSourceManifest,
+	reports []domain.AdaptationSourceReport,
+	foundation domain.AdaptationSourceFoundation,
+) domain.AdaptationSourceFoundation {
+	ordered := append([]domain.AdaptationSourceReport(nil), reports...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].Chapter < ordered[j].Chapter
+	})
+	reportData, err := json.Marshal(struct {
+		Version int                             `json:"version"`
+		Reports []domain.AdaptationSourceReport `json:"reports"`
+	}{Version: 1, Reports: ordered})
+	if err != nil {
+		panic(err)
+	}
+	foundation.Version = 1
+	foundation.SourcePath = manifest.SourcePath
+	foundation.SourceChapterCount = manifest.ChapterCount
+	foundation.SourceSignature = store.AdaptationSourceSignature(manifest)
+	foundation.ReportSignature = store.TextSHA256(string(reportData))
+	foundation.PromptVersion = "test-source-foundation-v1"
+	foundation.BatchRuneLimit = 1
+	return foundation
 }
 
 func writeContaminatedCoCreateProgress(t *testing.T, root string) {

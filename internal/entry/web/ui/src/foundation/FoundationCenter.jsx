@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { CoreCastEditor } from '../components/CoreCastEditor.jsx';
-import { applyFoundation, foundationError, foundationIdempotencyKey, loadFoundation, previewFoundation, retryFoundation } from './foundationApi.js';
+import { applyFoundation, applyLegacyRecovery, foundationError, foundationIdempotencyKey, loadFoundation, previewFoundation, previewLegacyRecovery, retryFoundation } from './foundationApi.js';
 import { canApplyFoundation, createFoundationState, foundationReducer } from './foundationReducer.js';
 import { cloneFoundation, sourceMajorCharacters } from './foundationModel.js';
 import { FoundationOverview } from './FoundationOverview.jsx';
@@ -19,6 +19,7 @@ const tabs = [
 export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenReview }) {
   const [state, dispatch] = useReducer(foundationReducer, projectId, createFoundationState);
   const [tab, setTab] = useState('overview');
+  const [recovery, setRecovery] = useState({ status: 'idle', preview: null, error: '' });
   const versionRef = useRef(0);
   const abortRef = useRef(null);
   const applyKeyRef = useRef({ previewID: '', key: '' });
@@ -43,6 +44,7 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
   useEffect(() => {
     versionRef.current += 1;
     setTab('overview');
+    setRecovery({ status: 'idle', preview: null, error: '' });
     applyKeyRef.current = { previewID: '', key: '' };
     load();
     return () => { versionRef.current += 1; abortRef.current?.abort(); };
@@ -122,9 +124,31 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
     } catch (error) { dispatch({ type: 'retry_failed', ...requestContext(), error: foundationError(error) }); }
   };
 
+  const openRecovery = async () => {
+    setRecovery({ status: 'loading', preview: null, error: '' });
+    try {
+      const response = await previewLegacyRecovery(projectId);
+      setRecovery({ status: 'preview', preview: response.preview, error: '' });
+    } catch (error) {
+      setRecovery({ status: 'error', preview: null, error: foundationError(error).message });
+    }
+  };
+  const confirmRecovery = async () => {
+    if (!recovery.preview || recovery.preview.conflicts?.length || !recovery.preview.completion?.complete) return;
+    setRecovery((current) => ({ ...current, status: 'applying', error: '' }));
+    try {
+      await applyLegacyRecovery(projectId, recovery.preview);
+      setRecovery({ status: 'done', preview: null, error: '' });
+      await load();
+    } catch (error) {
+      setRecovery((current) => ({ ...current, status: 'preview', error: foundationError(error).message }));
+    }
+  };
+
   return <div className="foundation-center">
     <header className="foundation-header"><div><span className="eyebrow">StoryFoundation</span><h1>设定中心</h1><p>统一管理原创与改编的目标故事设定；SourceFoundation 始终只读。</p></div><button className="tool-button" type="button" onClick={onClose}>返回创作</button></header>
     <div className="foundation-state-strip" aria-live="polite" role="status"><strong>{statusLabel(state.status)}</strong><span>target rev {state.server.baseRevision}</span>{state.server.readonlyReason ? <span>只读原因：{state.server.readonlyReason}</span> : null}</div>
+    {state.server.recoveryAvailable ? <div className="warning-note legacy-recovery-callout"><span>检测到已开始正文的旧项目缺少新版 CoreCast 绑定。恢复前会生成快照和可审阅候选，不会改写正文。</span><button className="tool-button accent" type="button" onClick={openRecovery}>修复并恢复创作</button></div> : null}
     {state.error ? <div className="error-banner" role="alert"><strong>{state.error.code}</strong><span>{state.error.message}</span></div> : null}
     {state.illegalAction ? <div className="warning-note" role="status">{state.illegalAction}</div> : null}
     {state.status === 'stale' ? <div className="foundation-stale" role="alert"><strong>服务器基线已变化，草稿仍完整保留。</strong><span>先加载最新基线，再用当前草稿重新生成 preview。</span><button className="tool-button" disabled={!state.staleServer} type="button" onClick={() => dispatch({ type: 'rebase_stale', ...requestContext() })}>以最新基线重新对比</button></div> : null}
@@ -139,7 +163,27 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
       {tab === 'preview' ? <FoundationPreview preview={state.preview} dirty={state.status === 'dirty'} disabled={['previewing', 'applying'].includes(state.status)} canApply={canApplyFoundation(state)} onPreview={runPreview} onApply={runApply} /> : null}
       {tab === 'revision' ? <FoundationRevisionStatus server={state.server} status={state.status} busy={['applying', 'auditing', 'regenerating'].includes(state.status)} onRefresh={() => load({ preserveStale: state.status === 'stale' })} onRetry={runRetry} onOpenReview={() => onOpenReview?.(state.server.mode)} /> : null}
     </main>
+    {recovery.status !== 'idle' && recovery.status !== 'done' ? <LegacyRecoveryDialog recovery={recovery} onClose={() => setRecovery({ status: 'idle', preview: null, error: '' })} onConfirm={confirmRecovery} /> : null}
     <footer className="foundation-actions"><span>{state.status === 'dirty' ? '有未预览的设定修改' : state.status === 'preview_ready' ? '预览已持久化，可应用' : '服务端状态已同步'}</span><button className="tool-button accent" disabled={state.status !== 'dirty' || !state.validation.valid} type="button" onClick={runPreview}>预览差异与影响</button></footer>
+  </div>;
+}
+
+function LegacyRecoveryDialog({ recovery, onClose, onConfirm }) {
+  const preview = recovery.preview;
+  return <div className="dialog-backdrop" onMouseDown={onClose}>
+    <div aria-modal="true" className="compact-dialog legacy-recovery-dialog" onMouseDown={(event) => event.stopPropagation()} role="dialog">
+      <h2>修复并恢复创作</h2>
+      {recovery.status === 'loading' ? <p>正在从旧 StoryFoundation 构建只读恢复候选……</p> : null}
+      {recovery.error ? <div className="error-banner" role="alert">{recovery.error}</div> : null}
+      {preview ? <>
+        <dl className="foundation-metrics"><div><dt>模式</dt><dd>{preview.mode}</dd></div><div><dt>Foundation revision</dt><dd>{preview.foundation_revision}</dd></div><div><dt>Foundation 签名</dt><dd>{preview.foundation_audit_signature?.slice(0, 12)}</dd></div><div><dt>CoreCast 签名</dt><dd>{preview.candidate?.content_signature?.slice(0, 12)}</dd></div></dl>
+        <h3>恢复字段与来源</h3><ul>{preview.recovered?.map((item) => <li key={item.field}><strong>{item.field}</strong>：{item.value || '—'} <small>{item.provenance} · {item.confidence}</small></li>)}</ul>
+        <h3>缺失与冲突</h3>{preview.conflicts?.length ? <ul className="field-error">{preview.conflicts.map((item) => <li key={item}>{item}</li>)}</ul> : <p>未发现阻断性冲突。</p>}
+        {preview.completion?.missing?.length ? <ul>{preview.completion.missing.map((item) => <li key={`${item.code}-${item.member_id || ''}`}>{item.description}</li>)}</ul> : null}
+        <h3>应用影响</h3><ul>{preview.impact?.map((item) => <li key={item}>{item}</li>)}</ul>
+      </> : null}
+      <div className="dialog-actions"><button className="tool-button" onClick={onClose} type="button">取消</button><button className="tool-button accent" disabled={!preview?.completion?.complete || preview?.conflicts?.length || recovery.status === 'applying'} onClick={onConfirm} type="button">{recovery.status === 'applying' ? '正在应用……' : '我已审阅，确认修复'}</button></div>
+    </div>
   </div>;
 }
 

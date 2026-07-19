@@ -5,6 +5,7 @@ export function FoundationOverview({ server, draft, disabled, premiseError, onPr
   const planning = server.planningReview;
   return <div className="foundation-overview-grid">
     <section className="foundation-card" aria-labelledby="foundation-overview-target">
+      {!server.targetAvailable ? <div className="warning-note"><strong>目标 StoryFoundation 尚未生成</strong><ol><li>补全并验证 SourceFoundation</li><li>完成改编意图与 CoreCast</li><li>生成目标设定并人工确认</li></ol></div> : null}
       <h3 id="foundation-overview-target">目标 StoryFoundation</h3>
       <dl className="foundation-metrics">
         <Metric label="模式" value={server.mode === 'adaptation' ? '改编' : '原创'} />
@@ -31,6 +32,7 @@ function SourceFoundation({ source, server }) {
   const members = Array.isArray(server.coreCast?.members) ? server.coreCast.members : [];
   const targetByID = new Map(members.map((member) => [member?.character?.id, member]));
   return <section className="foundation-card source-foundation" aria-labelledby="foundation-overview-source">
+    {server.sourceAnalysis ? <div className={`analysis-diagnostic ${server.sourceAnalysis.complete ? 'complete' : 'incomplete'}`}><strong>{server.sourceAnalysis.complete ? '源作分析完整' : '源作分析需要补全'}</strong><span>报告 {server.sourceAnalysis.report_count || 0}/{server.sourceAnalysis.chapter_count || 0} · 完整角色 {server.sourceAnalysis.complete_character_count || 0} · 关系 {server.sourceAnalysis.relationship_count || 0}</span>{server.sourceAnalysis.issues?.length ? <ul>{server.sourceAnalysis.issues.map((issue) => <li key={issue.code}>{issue.message}</li>)}</ul> : null}</div> : null}
     <div className="foundation-card-title">
       <h3 id="foundation-overview-source">SourceFoundation（只读）</h3>
       <span className="foundation-badge readonly">不可写入</span>

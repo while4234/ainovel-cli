@@ -1,4 +1,4 @@
-import { applyProjectFoundation, getProjectFoundation, previewProjectFoundation, retryProjectFoundation } from '../api.js';
+import { applyLegacyFoundationRecovery, applyProjectFoundation, getProjectFoundation, previewLegacyFoundationRecovery, previewProjectFoundation, retryProjectFoundation } from '../api.js';
 
 export async function loadFoundation(projectId, signal) {
   return getProjectFoundation(projectId, { signal });
@@ -14,6 +14,14 @@ export async function applyFoundation(projectId, previewId, idempotencyKey, sign
 
 export async function retryFoundation(projectId, idempotencyKey, signal) {
   return retryProjectFoundation(projectId, idempotencyKey, { signal });
+}
+
+export async function previewLegacyRecovery(projectId, signal) {
+  return previewLegacyFoundationRecovery(projectId, { signal });
+}
+
+export async function applyLegacyRecovery(projectId, preview, signal) {
+  return applyLegacyFoundationRecovery(projectId, preview, { signal });
 }
 
 export function foundationError(error) {

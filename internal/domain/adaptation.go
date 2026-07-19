@@ -118,7 +118,7 @@ type AdaptationCoCreateDossier struct {
 	PlotThreads        []string                           `json:"plot_threads,omitempty"`
 	CharacterArcs      []string                           `json:"character_arcs,omitempty"`
 	WorldConstraints   []string                           `json:"world_constraints,omitempty"`
-	RelationshipMap    []AdaptationRelationshipSignal     `json:"relationship_map,omitempty"`
+	RelationshipMap    []AdaptationRelationshipSignal     `json:"relationship_map"`
 	HeroineSignals     []AdaptationRelationshipSignal     `json:"heroine_signals,omitempty"`
 	AmbiguityRisks     []AdaptationRelationshipRisk       `json:"ambiguity_risks,omitempty"`
 	CoupleMilestones   []AdaptationRelationshipSignal     `json:"couple_milestones,omitempty"`

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -43,10 +44,11 @@ func (e adaptationPausedError) Error() string {
 }
 
 type apiAdaptationStatus struct {
-	SourceFile     *apiUploadedFile     `json:"source_file,omitempty"`
-	AnalysisStatus string               `json:"analysis_status"`
-	AnalysisEvents []apiAdaptationEvent `json:"analysis_events,omitempty"`
-	Message        string               `json:"message,omitempty"`
+	SourceFile         *apiUploadedFile                `json:"source_file,omitempty"`
+	AnalysisStatus     string                          `json:"analysis_status"`
+	AnalysisEvents     []apiAdaptationEvent            `json:"analysis_events,omitempty"`
+	AnalysisDiagnostic *adapt.SourceAnalysisDiagnostic `json:"analysis_diagnostic,omitempty"`
+	Message            string                          `json:"message,omitempty"`
 }
 
 type adaptationProposalRequestMeta struct {
@@ -112,7 +114,7 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 		writeProjectSessionError(w, err)
 		return
 	}
-	sourcePath, err := adaptationSourcePathFromRequest(r, manifest)
+	sourcePath, analyzeRequest, err := adaptationSourcePathFromRequest(r, manifest)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -123,7 +125,23 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 		writeAdaptationActionError(w, err, nil)
 		return
 	}
-	if status.AnalysisStatus == "done" {
+	mode := strings.TrimSpace(analyzeRequest.Mode)
+	if mode == "" {
+		mode = "complete_missing"
+	}
+	if mode != "complete_missing" && mode != "force" {
+		writeError(w, http.StatusBadRequest, "分析模式必须是 complete_missing 或 force")
+		return
+	}
+	if mode == "force" && !analyzeRequest.ConfirmForce {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"code": "force_confirmation_required", "message": "强制重新分析会重新执行全部分析调用，必须在查看调用估算后再次确认"}, "diagnostic": status.AnalysisDiagnostic})
+		return
+	}
+	if analyzeRequest.ExpectedSourceSignature != "" && (status.AnalysisDiagnostic == nil || analyzeRequest.ExpectedSourceSignature != status.AnalysisDiagnostic.SourceSignature) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "source_signature_stale", "message": "原文签名已变化，请刷新诊断后重试"}})
+		return
+	}
+	if mode == "complete_missing" && status.AnalysisStatus == "done" {
 		matches, err := preparedAdaptationSourceMatches(manifest, sourcePath)
 		if err != nil {
 			writeAdaptationActionError(w, err, status.AnalysisEvents)
@@ -155,10 +173,32 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	}
-	if err := session.StartPrepareAdaptationSourceWithCompletion(sourcePath, func() error {
+	var restoreForce func(error) error
+	if mode == "force" {
+		var prepareErr error
+		restoreForce, prepareErr = stageForceAdaptationAnalysis(manifest)
+		if prepareErr != nil {
+			writeAdaptationActionError(w, prepareErr, status.AnalysisEvents)
+			return
+		}
+	}
+	onSuccess := func() error {
+		fresh, diagnosticErr := projectAdaptationStatus(manifest, false)
+		if diagnosticErr != nil {
+			return diagnosticErr
+		}
+		if fresh.AnalysisDiagnostic == nil || !fresh.AnalysisDiagnostic.Complete {
+			return fmt.Errorf("分析任务结束，但产物诊断仍未通过")
+		}
 		_, err := s.autoSaveAnalyzedNovel(session, manifest, sourcePath)
 		return err
-	}); err != nil {
+	}
+	if err := session.StartPrepareAdaptationSourceWithCallbacks(sourcePath, onSuccess, restoreForce); err != nil {
+		if restoreForce != nil {
+			if restoreErr := restoreForce(err); restoreErr != nil {
+				err = errors.Join(err, restoreErr)
+			}
+		}
 		writeAdaptationActionError(w, err, nil)
 		return
 	}
@@ -572,21 +612,28 @@ func ensureAdaptationCoCreateBriefingReady(ctx context.Context, session *Project
 	return nil
 }
 
-func adaptationSourcePathFromRequest(r *http.Request, manifest ProjectManifest) (string, error) {
-	var req struct {
-		SourceFile string `json:"source_file"`
-	}
+type adaptationAnalyzeRequest struct {
+	SourceFile              string `json:"source_file"`
+	Mode                    string `json:"mode,omitempty"`
+	ConfirmForce            bool   `json:"confirm_force,omitempty"`
+	ExpectedSourceSignature string `json:"expected_source_signature,omitempty"`
+}
+
+func adaptationSourcePathFromRequest(r *http.Request, manifest ProjectManifest) (string, adaptationAnalyzeRequest, error) {
+	var req adaptationAnalyzeRequest
 	if r.Body != nil {
 		defer r.Body.Close()
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			return "", fmt.Errorf("invalid adaptation analyze request: %w", err)
+			return "", req, fmt.Errorf("invalid adaptation analyze request: %w", err)
 		}
 	}
 	sourceDir := projectAdaptationUploadDir(manifest)
 	if strings.TrimSpace(req.SourceFile) == "" {
-		return onlyAdaptationSourcePath(sourceDir)
+		path, err := onlyAdaptationSourcePath(sourceDir)
+		return path, req, err
 	}
-	return adaptationSourcePathFromName(req.SourceFile, manifest, true)
+	path, err := adaptationSourcePathFromName(req.SourceFile, manifest, true)
+	return path, req, err
 }
 
 func adaptationSourcePathFromName(sourceFile string, manifest ProjectManifest, allowInfer bool) (string, error) {
@@ -616,6 +663,41 @@ func adaptationSourcePathFromName(sourceFile string, manifest ProjectManifest, a
 		return "", fmt.Errorf("adaptation source file %q is a directory", name)
 	}
 	return sourcePath, nil
+}
+
+// stageForceAdaptationAnalysis removes the current analysis by atomic rename.
+// The returned callback restores it after any failed, paused, or cancelled run.
+func stageForceAdaptationAnalysis(manifest ProjectManifest) (func(error) error, error) {
+	active := filepath.Join(manifest.OutputDir, "meta", "adaptation")
+	if _, err := os.Stat(active); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	backupRoot := filepath.Join(manifest.OutputDir, "meta", "adaptation_backups")
+	if err := os.MkdirAll(backupRoot, 0o755); err != nil {
+		return nil, fmt.Errorf("创建强制分析备份目录失败：%w", err)
+	}
+	backup := filepath.Join(backupRoot, time.Now().UTC().Format("20060102T150405.000000000Z")+"-force-analysis")
+	if err := os.Rename(active, backup); err != nil {
+		return nil, fmt.Errorf("暂存旧分析失败：%w", err)
+	}
+	var once sync.Once
+	var restoreErr error
+	restore := func(_ error) error {
+		once.Do(func() {
+			if err := os.RemoveAll(active); err != nil {
+				restoreErr = fmt.Errorf("清理失败分析产物失败：%w", err)
+				return
+			}
+			if err := os.Rename(backup, active); err != nil {
+				restoreErr = fmt.Errorf("恢复旧分析失败：%w", err)
+			}
+		})
+		return restoreErr
+	}
+	return restore, nil
 }
 
 func onlyAdaptationSourcePath(sourceDir string) (string, error) {
@@ -692,7 +774,12 @@ func projectAdaptationStatus(manifest ProjectManifest, analysisRunning bool) (ap
 			return status, err
 		}
 		status.SourceFile = sourceFile
-		status.AnalysisStatus = adaptationAnalysisStatus(st, adaptationManifest)
+		diagnostic, diagnosticErr := adapt.DiagnoseSourceAnalysis(st, adapt.Prompts{}, "")
+		if diagnosticErr != nil {
+			return status, diagnosticErr
+		}
+		status.AnalysisDiagnostic = &diagnostic
+		status.AnalysisStatus = adaptationAnalysisStatus(&diagnostic)
 		status.Message = adaptationStatusMessage(status.AnalysisStatus)
 		status.AnalysisEvents = adaptationStatusEvents(status.AnalysisStatus, adaptationManifest.ChapterCount)
 		applyRunning()
@@ -711,23 +798,14 @@ func projectAdaptationStatus(manifest ProjectManifest, analysisRunning bool) (ap
 	return status, nil
 }
 
-func adaptationAnalysisStatus(st *storepkg.Store, manifest *domain.AdaptationSourceManifest) string {
-	if manifest == nil || manifest.ChapterCount <= 0 {
+func adaptationAnalysisStatus(diagnostic *adapt.SourceAnalysisDiagnostic) string {
+	if diagnostic == nil || diagnostic.ChapterCount <= 0 {
 		return "idle"
 	}
-	reports, err := st.Adaptation.LoadCompleteSourceReports()
-	if err != nil || len(reports) != manifest.ChapterCount {
-		return "paused"
+	if diagnostic.Complete {
+		return "done"
 	}
-	foundation, err := st.Adaptation.LoadSourceFoundation()
-	if err != nil || foundation == nil {
-		return "paused"
-	}
-	current, err := st.Adaptation.CoCreateDossierCurrent(adapt.CoCreateDossierPromptVersion, adapt.CoCreateDossierBatchSize, adapt.CoCreateDossierBatchRuneLimit)
-	if err != nil || !current {
-		return "paused"
-	}
-	return "done"
+	return "paused"
 }
 
 func preparedAdaptationSourceMatches(manifest ProjectManifest, sourcePath string) (bool, error) {

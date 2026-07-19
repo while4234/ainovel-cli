@@ -12,6 +12,7 @@ export function WorldRuleEditor({ value, disabled, errors = {}, onChange }) {
     if (value[index].strength === 'hard') setWarning('删除 hard rule 属于高风险变更；服务端可能要求全书重新审查。');
     onChange(value.filter((_, itemIndex) => itemIndex !== index));
   };
+  if (disabled) return <section aria-labelledby="foundation-rule-heading"><div className="foundation-section-head"><h2 id="foundation-rule-heading">世界规则（只读）</h2></div><div className="foundation-editor-list">{value.map((rule, index) => <article className="foundation-editor-card readonly-card" key={rule.id || index}><h3>{rule.title || `规则 ${index + 1}`} <span className={`foundation-badge ${rule.strength === 'hard' ? 'risk' : ''}`}>{rule.strength}</span></h3><p>{rule.rule || '—'}</p>{rule.boundary ? <details><summary>边界与例外</summary><p>{rule.boundary}</p></details> : null}</article>)}</div></section>;
   return <section aria-labelledby="foundation-rule-heading">
     <div className="foundation-section-head"><div><h2 id="foundation-rule-heading">世界规则</h2><p>前端只提示 hard/soft 风险，不自行决定局部影响。</p></div><button className="tool-button" disabled={disabled} type="button" onClick={() => onChange([...value, newFoundationWorldRule()])}>添加规则</button></div>
     {warning ? <div className="warning-note" role="status">{warning}</div> : null}

@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	adaptengine "github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -30,13 +31,14 @@ type LibraryService struct {
 }
 
 type apiLibraryItem struct {
-	Name         string    `json:"name"`
-	FileName     string    `json:"file_name,omitempty"`
-	Size         int64     `json:"size,omitempty"`
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
-	SourceCount  int       `json:"source_count,omitempty"`
-	ChapterCount int       `json:"chapter_count,omitempty"`
-	SourceFile   string    `json:"source_file,omitempty"`
+	Name         string                                `json:"name"`
+	FileName     string                                `json:"file_name,omitempty"`
+	Size         int64                                 `json:"size,omitempty"`
+	UpdatedAt    time.Time                             `json:"updated_at,omitempty"`
+	SourceCount  int                                   `json:"source_count,omitempty"`
+	ChapterCount int                                   `json:"chapter_count,omitempty"`
+	SourceFile   string                                `json:"source_file,omitempty"`
+	Analysis     *adaptengine.SourceAnalysisDiagnostic `json:"analysis,omitempty"`
 }
 
 type novelLibraryManifest struct {
@@ -495,16 +497,26 @@ func (s *LibraryService) ListNovelEntries(query string) ([]apiLibraryItem, error
 		if query != "" && !strings.Contains(strings.ToLower(manifest.Name), query) {
 			continue
 		}
-		items = append(items, apiLibraryItem{
+		item := apiLibraryItem{
 			Name:         manifest.Name,
 			FileName:     entry.Name(),
 			UpdatedAt:    manifest.UpdatedAt,
 			ChapterCount: manifest.ChapterCount,
 			SourceFile:   manifest.SourceFile,
-		})
+		}
+		if diagnostic, diagnosticErr := diagnoseNovelLibraryEntry(filepath.Join(s.NovelDir(), entry.Name())); diagnosticErr == nil {
+			item.Analysis = &diagnostic
+		} else {
+			item.Analysis = &adaptengine.SourceAnalysisDiagnostic{Version: adaptengine.SourceAnalysisDiagnosticVersion, Status: "invalid", Complete: false, Issues: []adaptengine.SourceAnalysisIssue{{Code: "diagnostic_failed", Message: diagnosticErr.Error(), Recoverable: true}}}
+		}
+		items = append(items, item)
 	}
 	sortLibraryItems(items)
 	return items, nil
+}
+
+func diagnoseNovelLibraryEntry(entryRoot string) (adaptengine.SourceAnalysisDiagnostic, error) {
+	return adaptengine.DiagnoseSourceAnalysis(storepkg.NewStore(entryRoot), adaptengine.Prompts{}, "")
 }
 
 func (s *LibraryService) SaveNovelFromProject(manifest ProjectManifest, name, sourceFile string) (apiLibraryItem, error) {

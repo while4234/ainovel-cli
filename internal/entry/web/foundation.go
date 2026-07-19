@@ -145,6 +145,53 @@ func (s *Server) handleProjectFoundation(w http.ResponseWriter, r *http.Request,
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "revision": runtime})
+	case "foundation/recovery/preview":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		preview, err := host.PreviewLegacyRecovery(storepkg.NewStore(manifest.OutputDir))
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "legacy_recovery_blocked", "message": err.Error()}})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "preview": preview})
+	case "foundation/recovery/apply":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var request struct {
+			PreviewID                string `json:"preview_id"`
+			FoundationRevision       int64  `json:"foundation_revision"`
+			FoundationAuditSignature string `json:"foundation_audit_signature"`
+			ExplicitlyConfirmed      bool   `json:"explicitly_confirmed"`
+		}
+		if err := decodeFoundationJSONBody(r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "恢复请求格式无效："+err.Error())
+			return
+		}
+		if !request.ExplicitlyConfirmed {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"code": "explicit_confirmation_required", "message": "必须在查看恢复内容、来源、冲突和影响后显式确认"}})
+			return
+		}
+		projectSession, _, err := s.sessions.Open(id)
+		if err != nil {
+			writeProjectSessionError(w, err)
+			return
+		}
+		unlock, err := projectSession.beginActionKind("legacy_foundation_recovery")
+		if err != nil {
+			writeProjectLifecycleError(w, err)
+			return
+		}
+		preview, err := host.ApplyLegacyRecovery(storepkg.NewStore(manifest.OutputDir), request.PreviewID, request.FoundationRevision, request.FoundationAuditSignature)
+		unlock()
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "legacy_recovery_failed", "message": err.Error()}})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "recovery": preview, "message": "旧项目设定已恢复并重新绑定，可以继续创作"})
 	default:
 		http.NotFound(w, r)
 	}

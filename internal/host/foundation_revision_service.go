@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	adaptengine "github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -41,22 +42,35 @@ func (e *FoundationRevisionError) Error() string {
 func (e *FoundationRevisionError) Unwrap() error { return e.Err }
 
 type FoundationState struct {
-	Mode               string                               `json:"mode"`
-	SourceFoundation   any                                  `json:"source_foundation,omitempty"`
-	TargetFoundation   domain.StoryFoundation               `json:"target_foundation"`
-	Editable           bool                                 `json:"editable"`
-	ReadonlyReason     string                               `json:"readonly_reason,omitempty"`
-	BaseRevision       int64                                `json:"base_revision"`
-	BaseAuditSignature string                               `json:"base_audit_signature"`
-	CoreCastSignature  string                               `json:"core_cast_signature"`
-	CoreCast           *domain.CoreCastContract             `json:"core_cast,omitempty"`
-	CoreCastCompletion *domain.CoreCastCompletionResult     `json:"core_cast_completion,omitempty"`
-	CoreCastConfirmed  bool                                 `json:"core_cast_confirmed"`
-	ModeSpecific       *domain.FoundationAdaptationBaseline `json:"mode_specific,omitempty"`
-	ModeSpecificError  string                               `json:"mode_specific_error,omitempty"`
-	ActiveRevision     *domain.FoundationRevisionRuntime    `json:"active_revision,omitempty"`
-	PlanningReview     *domain.PlanningReview               `json:"planning_review,omitempty"`
-	AllowedOperations  []string                             `json:"allowed_operations"`
+	Mode               string                                `json:"mode"`
+	SourceFoundation   any                                   `json:"source_foundation,omitempty"`
+	TargetFoundation   domain.StoryFoundation                `json:"target_foundation"`
+	Editable           bool                                  `json:"editable"`
+	ReadonlyReason     string                                `json:"readonly_reason,omitempty"`
+	BaseRevision       int64                                 `json:"base_revision"`
+	BaseAuditSignature string                                `json:"base_audit_signature"`
+	CoreCastSignature  string                                `json:"core_cast_signature"`
+	CoreCast           *domain.CoreCastContract              `json:"core_cast,omitempty"`
+	CoreCastCompletion *domain.CoreCastCompletionResult      `json:"core_cast_completion,omitempty"`
+	CoreCastConfirmed  bool                                  `json:"core_cast_confirmed"`
+	ModeSpecific       *domain.FoundationAdaptationBaseline  `json:"mode_specific,omitempty"`
+	ModeSpecificError  string                                `json:"mode_specific_error,omitempty"`
+	ActiveRevision     *domain.FoundationRevisionRuntime     `json:"active_revision,omitempty"`
+	PlanningReview     *domain.PlanningReview                `json:"planning_review,omitempty"`
+	AllowedOperations  []string                              `json:"allowed_operations"`
+	SourceAnalysis     *adaptengine.SourceAnalysisDiagnostic `json:"source_analysis,omitempty"`
+	TargetAvailable    bool                                  `json:"target_available"`
+	TargetCompleteness FoundationCompleteness                `json:"target_completeness"`
+	RecoveryAvailable  bool                                  `json:"recovery_available"`
+	NextActions        []string                              `json:"next_actions"`
+}
+
+type FoundationCompleteness struct {
+	Complete          bool `json:"complete"`
+	MissingCount      int  `json:"missing_count"`
+	CharacterCount    int  `json:"character_count"`
+	RelationshipCount int  `json:"relationship_count"`
+	WorldRuleCount    int  `json:"world_rule_count"`
 }
 
 type FoundationPreviewRequest struct {
@@ -101,7 +115,11 @@ func (s *FoundationRevisionService) State() (*FoundationState, error) {
 	var sourceFoundation *domain.AdaptationSourceFoundation
 	var adaptationContext *adaptationFoundationContext
 	var adaptationContextErr error
-	if s.store.Adaptation.Exists() {
+	sourceManifest, sourceManifestErr := s.store.Adaptation.LoadSourceManifest()
+	if sourceManifestErr != nil {
+		return nil, sourceManifestErr
+	}
+	if sourceManifest != nil {
 		mode = "adaptation"
 		sourceFoundation, err = s.store.Adaptation.LoadSourceFoundation()
 		source = sourceFoundation
@@ -111,7 +129,25 @@ func (s *FoundationRevisionService) State() (*FoundationState, error) {
 			adaptationContextErr = err
 		}
 	}
-	state := &FoundationState{Mode: mode, SourceFoundation: source, TargetFoundation: target, BaseRevision: target.Revision, BaseAuditSignature: auditSignature, AllowedOperations: []string{"get"}}
+	state := &FoundationState{
+		Mode: mode, SourceFoundation: source, TargetFoundation: target,
+		BaseRevision: target.Revision, BaseAuditSignature: auditSignature,
+		AllowedOperations: []string{"get"}, NextActions: []string{},
+	}
+	state.TargetCompleteness = foundationCompleteness(target)
+	state.TargetAvailable = target.Revision > 0 || strings.TrimSpace(target.Premise) != "" || len(target.Characters) > 0 || len(target.WorldRules) > 0
+	if mode == "adaptation" {
+		diagnostic, diagnosticErr := adaptengine.DiagnoseSourceAnalysis(s.store, adaptengine.Prompts{}, "")
+		if diagnosticErr != nil {
+			return nil, diagnosticErr
+		}
+		state.SourceAnalysis = &diagnostic
+		if !diagnostic.Complete {
+			state.NextActions = append(state.NextActions, "complete_source_analysis")
+		} else if !state.TargetAvailable {
+			state.NextActions = append(state.NextActions, "enter_adaptation_intent", "confirm_core_cast", "generate_target_foundation")
+		}
+	}
 	if contract != nil {
 		state.CoreCastSignature = contract.ContentSignature
 		state.CoreCast = contract
@@ -149,7 +185,45 @@ func (s *FoundationRevisionService) State() (*FoundationState, error) {
 	if state.ActiveRevision != nil && state.ActiveRevision.Stage == "failed" {
 		state.AllowedOperations = append(state.AllowedOperations, "retry")
 	}
+	gate, gateErr := s.store.CoreCast.LoadGateBinding()
+	if gateErr != nil {
+		return nil, gateErr
+	}
+	state.RecoveryAvailable = s.bodyFilesStarted() && gate == nil
+	if state.RecoveryAvailable {
+		state.AllowedOperations = append(state.AllowedOperations, "legacy_recovery")
+		state.NextActions = appendUniqueFoundationAction(state.NextActions, "repair_and_resume")
+	}
 	return state, nil
+}
+
+func foundationCompleteness(value domain.StoryFoundation) FoundationCompleteness {
+	missing := 0
+	if strings.TrimSpace(value.Premise) == "" {
+		missing++
+	}
+	if len(value.Characters) == 0 {
+		missing++
+	}
+	if !value.RelationshipsReviewed {
+		missing++
+	}
+	if len(value.WorldRules) == 0 {
+		missing++
+	}
+	return FoundationCompleteness{
+		Complete: missing == 0, MissingCount: missing, CharacterCount: len(value.Characters),
+		RelationshipCount: len(value.Relationships), WorldRuleCount: len(value.WorldRules),
+	}
+}
+
+func appendUniqueFoundationAction(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func (s *FoundationRevisionService) foundationCoreCastCompletion(mode string, contract domain.CoreCastContract, source *domain.AdaptationSourceFoundation) domain.CoreCastCompletionResult {

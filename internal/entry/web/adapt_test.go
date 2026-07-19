@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -278,7 +279,16 @@ func TestProjectSnapshotRequiresCurrentCoCreateDossierForDoneAnalysis(t *testing
 	if err := st.Adaptation.SaveSourceReports([]domain.AdaptationSourceReport{report}); err != nil {
 		t.Fatalf("SaveSourceReports: %v", err)
 	}
-	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{Premise: "source", Characters: []domain.Character{}, WorldRules: []domain.WorldRule{}}); err != nil {
+	reports := []domain.AdaptationSourceReport{report}
+	if err := st.Adaptation.SaveSourceFoundation(currentSourceFoundationFixture(sourceManifest, reports, domain.AdaptationSourceFoundation{
+		Premise: "source",
+		Characters: []domain.Character{{
+			Name: "Ari",
+			Role: "lead",
+			Arc:  "changes under pressure",
+		}},
+		WorldRules: []domain.WorldRule{{Category: "world", Rule: "rule", Boundary: "boundary"}},
+	})); err != nil {
 		t.Fatalf("SaveSourceFoundation: %v", err)
 	}
 
@@ -304,6 +314,7 @@ func TestProjectSnapshotRequiresCurrentCoCreateDossierForDoneAnalysis(t *testing
 		SourceSignature:    storepkg.AdaptationSourceSignature(sourceManifest),
 		BatchSize:          adaptpkg.CoCreateDossierBatchSize,
 		BatchRuneLimit:     adaptpkg.CoCreateDossierBatchRuneLimit,
+		RelationshipMap:    []domain.AdaptationRelationshipSignal{},
 		Batches: []domain.AdaptationCoCreateDossierBatch{
 			{Index: 1, SourceFrom: 1, SourceTo: 1, SourceSignature: storepkg.AdaptationDossierBatchSpecs(sourceManifest, adaptpkg.CoCreateDossierBatchSize, adaptpkg.CoCreateDossierBatchRuneLimit)[0].SourceSignature},
 		},
@@ -321,7 +332,49 @@ func TestProjectSnapshotRequiresCurrentCoCreateDossierForDoneAnalysis(t *testing
 		t.Fatalf("decode second snapshot response: %v", err)
 	}
 	if response.Adaptation.AnalysisStatus != "done" {
-		t.Fatalf("analysis status with dossier = %q, want done", response.Adaptation.AnalysisStatus)
+		t.Fatalf("analysis status with dossier = %q, want done; diagnostic=%+v", response.Adaptation.AnalysisStatus, response.Adaptation.AnalysisDiagnostic)
+	}
+}
+
+func TestStageForceAdaptationAnalysisRestoresOldArtifactsAfterFailure(t *testing.T) {
+	root := testTempDir(t)
+	manifest := ProjectManifest{OutputDir: filepath.Join(root, "output")}
+	active := filepath.Join(manifest.OutputDir, "meta", "adaptation")
+	oldArtifact := filepath.Join(active, "source_reports.json")
+	if err := os.MkdirAll(active, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldArtifact, []byte("old analysis"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restore, err := stageForceAdaptationAnalysis(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restore == nil {
+		t.Fatal("force analysis did not create a restore callback")
+	}
+	if _, err := os.Stat(oldArtifact); !os.IsNotExist(err) {
+		t.Fatalf("old analysis was not staged: %v", err)
+	}
+	if err := os.MkdirAll(active, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(active, "partial.json"), []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := restore(errors.New("forced run failed")); err != nil {
+		t.Fatal(err)
+	}
+	if err := restore(errors.New("duplicate failure callback")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(oldArtifact)
+	if err != nil || string(data) != "old analysis" {
+		t.Fatalf("old analysis was not restored: %q %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(active, "partial.json")); !os.IsNotExist(err) {
+		t.Fatalf("partial force output survived rollback: %v", err)
 	}
 }
 
