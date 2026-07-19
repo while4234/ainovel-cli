@@ -52,3 +52,48 @@ func TestFoundationApplyRejectsClientImpact(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestFoundationPreviewRejectsSourcePatchModeAndUnknownFields(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	manifest, err := server.store.CreateProject("Foundation Target Only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := map[string]string{
+		"source":   `{"expected_base_revision":0,"expected_base_audit_signature":"audit","candidate":{},"source_foundation":{"premise":"attack"}}`,
+		"patch":    `{"expected_base_revision":0,"expected_base_audit_signature":"audit","candidate":{},"patch":[{"op":"replace","path":"/source/premise","value":"attack"}]}`,
+		"mode":     `{"expected_base_revision":0,"expected_base_audit_signature":"audit","candidate":{},"mode":"normal"}`,
+		"unknown":  `{"expected_base_revision":0,"expected_base_audit_signature":"audit","candidate":{"premise":"target","source":"attack"}}`,
+		"trailing": `{"expected_base_revision":0,"expected_base_audit_signature":"audit","candidate":{}} {"source":"attack"}`,
+	}
+	for name, body := range requests {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/foundation/preview", bytes.NewBufferString(body))
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestFoundationRetryRejectsClientControlledSourceOrMode(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	manifest, err := server.store.CreateProject("Foundation Retry Target Only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		`{"idempotency_key":"retry","source_foundation":{"premise":"attack"}}`,
+		`{"idempotency_key":"retry","mode":"normal"}`,
+		`{"idempotency_key":"retry","patch":[]}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/foundation/retry", bytes.NewBufferString(body))
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+}

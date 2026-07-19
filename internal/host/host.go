@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -503,6 +504,61 @@ func (h *Host) BuildAdaptationProposalVolumesContext(ctx context.Context, option
 		return nil, err
 	}
 	return adapt.BuildAdaptationProposalVolumesContext(ctx, h.adaptationDeps(), options)
+}
+
+func (h *Host) BuildAdaptationProposalVolumesForFoundationRevision(ctx context.Context, options adapt.ProposalOptions) (*adapt.ProposalStageResult, error) {
+	if err := h.admitFoundationAdaptationWork(); err != nil {
+		return nil, err
+	}
+	options.Brief = strings.TrimSpace(options.Brief)
+	if options.Brief == "" {
+		return nil, fmt.Errorf("adaptation brief is required")
+	}
+	return adapt.BuildAdaptationProposalVolumesContext(ctx, h.adaptationDeps(), options)
+}
+
+func (h *Host) BuildAdaptationProposalDetailsForFoundationRevision(ctx context.Context) (*domain.AdaptationPlan, error) {
+	if err := h.admitFoundationAdaptationWork(); err != nil {
+		return nil, err
+	}
+	return adapt.BuildAdaptationProposalDetailsContext(ctx, h.adaptationDeps(), adapt.ProposalDetailsOptions{})
+}
+
+func (h *Host) ConfirmAdaptationProposalForFoundationRevision() (*domain.AdaptationPlan, error) {
+	if err := h.admitFoundationAdaptationWork(); err != nil {
+		return nil, err
+	}
+	proposal, err := h.store.Adaptation.LoadProposal()
+	if err != nil || proposal == nil {
+		return nil, errors.Join(fmt.Errorf("adaptation proposal is required"), err)
+	}
+	if err := adapt.ValidateProposalOutlineUniqueness(*proposal); err != nil {
+		return nil, err
+	}
+	var confirmed *domain.AdaptationPlan
+	err = h.store.WithAdaptationConfirmationTransaction(func() error {
+		var confirmErr error
+		confirmed, confirmErr = adapt.ConfirmAdaptationProposal(context.Background(), h.adaptationDeps(), *proposal)
+		return confirmErr
+	})
+	return confirmed, err
+}
+
+func (h *Host) admitFoundationAdaptationWork() error {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return fmt.Errorf("host is closed")
+	}
+	if h.lifecycle == lifecycleRunning || h.cocreating {
+		h.mu.Unlock()
+		return fmt.Errorf("host is busy")
+	}
+	h.mu.Unlock()
+	if err := h.budget.Refuse(); err != nil {
+		return err
+	}
+	return RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true)
 }
 
 func (h *Host) ReviseAdaptationProposalContext(ctx context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error) {

@@ -21,6 +21,10 @@ const (
 	FoundationErrorEvidence       = "foundation_dependency_evidence_missing"
 	FoundationErrorRecovery       = "foundation_recovery_failed"
 	FoundationErrorModeNotEnabled = "foundation_mode_not_enabled"
+	FoundationErrorSourceStale    = "foundation_source_stale"
+	FoundationErrorCoreCast       = "foundation_core_cast_reconfirmation_required"
+	FoundationErrorPlanReview     = "foundation_plan_reconfirmation_required"
+	FoundationErrorSourceMutation = "foundation_source_mutation_forbidden"
 )
 
 type FoundationRevisionError struct {
@@ -37,17 +41,19 @@ func (e *FoundationRevisionError) Error() string {
 func (e *FoundationRevisionError) Unwrap() error { return e.Err }
 
 type FoundationState struct {
-	Mode               string                            `json:"mode"`
-	SourceFoundation   any                               `json:"source_foundation,omitempty"`
-	TargetFoundation   domain.StoryFoundation            `json:"target_foundation"`
-	Editable           bool                              `json:"editable"`
-	ReadonlyReason     string                            `json:"readonly_reason,omitempty"`
-	BaseRevision       int64                             `json:"base_revision"`
-	BaseAuditSignature string                            `json:"base_audit_signature"`
-	CoreCastSignature  string                            `json:"core_cast_signature"`
-	ActiveRevision     *domain.FoundationRevisionRuntime `json:"active_revision,omitempty"`
-	PlanningReview     *domain.PlanningReview            `json:"planning_review,omitempty"`
-	AllowedOperations  []string                          `json:"allowed_operations"`
+	Mode               string                               `json:"mode"`
+	SourceFoundation   any                                  `json:"source_foundation,omitempty"`
+	TargetFoundation   domain.StoryFoundation               `json:"target_foundation"`
+	Editable           bool                                 `json:"editable"`
+	ReadonlyReason     string                               `json:"readonly_reason,omitempty"`
+	BaseRevision       int64                                `json:"base_revision"`
+	BaseAuditSignature string                               `json:"base_audit_signature"`
+	CoreCastSignature  string                               `json:"core_cast_signature"`
+	ModeSpecific       *domain.FoundationAdaptationBaseline `json:"mode_specific,omitempty"`
+	ModeSpecificError  string                               `json:"mode_specific_error,omitempty"`
+	ActiveRevision     *domain.FoundationRevisionRuntime    `json:"active_revision,omitempty"`
+	PlanningReview     *domain.PlanningReview               `json:"planning_review,omitempty"`
+	AllowedOperations  []string                             `json:"allowed_operations"`
 }
 
 type FoundationPreviewRequest struct {
@@ -89,16 +95,26 @@ func (s *FoundationRevisionService) State() (*FoundationState, error) {
 	}
 	mode := "normal"
 	var source any
+	var adaptationContext *adaptationFoundationContext
+	var adaptationContextErr error
 	if s.store.Adaptation.Exists() {
 		mode = "adaptation"
 		source, err = s.store.Adaptation.LoadSourceFoundation()
-		if err != nil {
-			return nil, err
+		if err == nil {
+			adaptationContext, adaptationContextErr = loadAdaptationFoundationContext(s.store)
+		} else {
+			adaptationContextErr = err
 		}
 	}
 	state := &FoundationState{Mode: mode, SourceFoundation: source, TargetFoundation: target, BaseRevision: target.Revision, BaseAuditSignature: auditSignature, AllowedOperations: []string{"get"}}
 	if contract != nil {
 		state.CoreCastSignature = contract.ContentSignature
+	}
+	if adaptationContext != nil {
+		baseline := adaptationContext.Baseline
+		state.ModeSpecific = &baseline
+	} else if adaptationContextErr != nil {
+		state.ModeSpecificError = adaptationContextErr.Error()
 	}
 	state.PlanningReview, err = s.store.RunMeta.PlanningReview()
 	if err != nil {
@@ -113,7 +129,11 @@ func (s *FoundationRevisionService) State() (*FoundationState, error) {
 			return nil, err
 		}
 	}
-	state.Editable, state.ReadonlyReason = s.editability(mode, state.PlanningReview, state.ActiveRevision)
+	state.Editable, state.ReadonlyReason = s.editability(mode, state.PlanningReview, state.ActiveRevision, adaptationContext)
+	if mode == "adaptation" && adaptationContext == nil && adaptationContextErr != nil {
+		state.Editable = false
+		state.ReadonlyReason = adaptationReadonlyBaselineReason(adaptationContextErr)
+	}
 	if state.Editable {
 		state.AllowedOperations = []string{"get", "preview", "apply"}
 	}
@@ -128,9 +148,6 @@ func (s *FoundationRevisionService) Preview(request FoundationPreviewRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	if state.Mode == "adaptation" {
-		return nil, foundationError(FoundationErrorModeNotEnabled, "adaptation Foundation revision will be enabled in PR-06")
-	}
 	if request.ExpectedBaseRevision != state.BaseRevision || strings.TrimSpace(request.ExpectedBaseAuditSignature) != state.BaseAuditSignature {
 		return nil, foundationError(FoundationErrorStale, "Foundation base revision or audit signature changed")
 	}
@@ -144,11 +161,21 @@ func (s *FoundationRevisionService) Preview(request FoundationPreviewRequest) (*
 	if err != nil {
 		return nil, err
 	}
+	var adaptationContext *adaptationFoundationContext
+	coreReconfirmed := false
+	if state.Mode == "adaptation" {
+		adaptationContext, err = loadAdaptationFoundationContext(s.store)
+		if err != nil {
+			return nil, foundationError(FoundationErrorReadonly, err.Error())
+		}
+		contract = &adaptationContext.Contract
+		coreReconfirmed = adaptationCoreCastMatchesCandidate(normalized, adaptationContext.Contract)
+	}
 	diff, err := domain.ComputeFoundationDiff(state.TargetFoundation, normalized, contract)
 	if err != nil {
 		return nil, foundationError(FoundationErrorInvalid, err.Error())
 	}
-	if normalizeErr == nil && !diff.CoreCastReconfirmation && contract != nil {
+	if normalizeErr == nil && (!diff.CoreCastReconfirmation || coreReconfirmed) && contract != nil {
 		if err := domain.ValidateFoundationComplete(normalized, *contract); err != nil {
 			validation.Valid = false
 			validation.Errors = append(validation.Errors, err.Error())
@@ -172,12 +199,15 @@ func (s *FoundationRevisionService) Preview(request FoundationPreviewRequest) (*
 			dependencies = nil
 		}
 	}
-	if diff.CoreCastReconfirmation {
+	if diff.CoreCastReconfirmation && !coreReconfirmed {
 		validation.Warnings = append(validation.Warnings, "confirm the revised CoreCastContract before applying this Foundation candidate")
 	}
 	impact, err := domain.AnalyzeFoundationImpact(diff, dependencies)
 	if err != nil {
 		return nil, err
+	}
+	if adaptationContext != nil {
+		impact = analyzeAdaptationFoundationImpact(impact, diff, dependencies, adaptationContext.Contract, coreReconfirmed)
 	}
 	fence, err := s.store.Revisions.SnapshotFence()
 	if err != nil {
@@ -193,8 +223,13 @@ func (s *FoundationRevisionService) Preview(request FoundationPreviewRequest) (*
 		Version: domain.FoundationRevisionSchemaVersion, ProjectMode: state.Mode, BaseRevision: state.BaseRevision,
 		BaseAuditSignature: state.BaseAuditSignature, BaseCoreCastSignature: state.CoreCastSignature, BasePlanningSignature: planningSignature,
 		Generation: fence.Generation, Base: state.TargetFoundation, Candidate: normalized, CandidateSignature: candidateSignature, Diff: diff, Impact: impact,
-		Validation: validation, CanApply: state.Editable && validation.Valid && !diff.CoreCastReconfirmation && len(diff.Changes) > 0,
+		Validation: validation, CanApply: state.Editable && validation.Valid && !impact.RequiresCoreCastConfirmation && len(diff.Changes) > 0,
 		ReadonlyReason: state.ReadonlyReason, CreatedAt: now.Format(time.RFC3339Nano), ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339Nano),
+	}
+	if adaptationContext != nil {
+		baseline := adaptationContext.Baseline
+		baseline.CoreCastReconfirmed = coreReconfirmed
+		preview.AdaptationBaseline = &baseline
 	}
 	if dependencies != nil {
 		preview.DependencySnapshotSignature = dependencies.Signature
@@ -222,10 +257,13 @@ func (s *FoundationRevisionService) Apply(request FoundationApplyRequest) (*doma
 	if err != nil {
 		return nil, foundationError(FoundationErrorStale, err.Error())
 	}
-	if preview.ProjectMode != "normal" {
-		return nil, foundationError(FoundationErrorModeNotEnabled, "adaptation Foundation revision will be enabled in PR-06")
+	if preview.ProjectMode != "normal" && preview.ProjectMode != "adaptation" {
+		return nil, foundationError(FoundationErrorInvalid, "unsupported Foundation project mode")
 	}
 	if !preview.CanApply {
+		if preview.Impact.RequiresCoreCastConfirmation {
+			return nil, foundationError(FoundationErrorCoreCast, "the Foundation candidate requires a newly confirmed matching CoreCastContract")
+		}
 		return nil, foundationError(FoundationErrorReadonly, "persisted Foundation preview is not applicable")
 	}
 	if err := s.validatePreviewCurrent(*preview); err != nil {
@@ -249,7 +287,7 @@ func (s *FoundationRevisionService) Apply(request FoundationApplyRequest) (*doma
 		return nil, err
 	}
 	now := domain.RevisionTimestamp()
-	runtime := domain.FoundationRevisionRuntime{Version: domain.FoundationRevisionSchemaVersion, RevisionID: session.ID, SessionID: session.ID, PreviewID: preview.ID, ProjectMode: "normal", Stage: "applying", Attempt: 1, Generation: session.Generation, Impact: preview.Impact, CreatedAt: now, UpdatedAt: now}
+	runtime := domain.FoundationRevisionRuntime{Version: domain.FoundationRevisionSchemaVersion, RevisionID: session.ID, SessionID: session.ID, PreviewID: preview.ID, ProjectMode: preview.ProjectMode, Stage: "applying", Attempt: 1, Generation: session.Generation, Impact: preview.Impact, CreatedAt: now, UpdatedAt: now}
 	if err := s.store.FoundationRevisions.SaveRuntime(runtime); err != nil {
 		return nil, err
 	}
@@ -286,6 +324,19 @@ func (s *FoundationRevisionService) Retry(idempotencyKey string) (*domain.Founda
 	preview, err := s.store.FoundationRevisions.LoadPreview(runtime.PreviewID)
 	if err != nil {
 		return nil, foundationError(FoundationErrorRecovery, err.Error())
+	}
+	if preview.ProjectMode == "adaptation" {
+		validate := s.validateAdaptationBaselineCurrent
+		if runtime.Publication != nil {
+			validate = s.validateAdaptationRecoveryBaseline
+		}
+		if err := validate(*preview); err != nil {
+			return nil, err
+		}
+	} else if runtime.Publication == nil {
+		if err := s.validatePreviewCurrent(*preview); err != nil {
+			return nil, err
+		}
 	}
 	session, err := s.store.Revisions.LoadSession(runtime.SessionID)
 	if err != nil {
@@ -330,6 +381,112 @@ func (s *FoundationRevisionService) MarkRegenerationFailure(cause error) error {
 	runtime.ResumeStage = "regenerating"
 	s.failRuntime(runtime, cause)
 	return nil
+}
+
+func (s *FoundationRevisionService) MarkAdaptationRegenerationReady() error {
+	runtime, err := s.store.FoundationRevisions.LoadRuntime()
+	if err != nil || runtime == nil || runtime.ProjectMode != "adaptation" || runtime.Stage != "regenerating" {
+		return errors.Join(foundationError(FoundationErrorRecovery, "no regenerating adaptation Foundation revision is active"), err)
+	}
+	workflow, err := s.store.Adaptation.LoadPlanningWorkflow()
+	if err != nil || workflow == nil {
+		return errors.Join(foundationError(FoundationErrorRecovery, "adaptation regeneration workflow is missing"), err)
+	}
+	switch workflow.Stage {
+	case domain.AdaptationPlanningStageVolumeReviewPending, domain.AdaptationPlanningStageProposalReviewPending:
+	default:
+		return foundationError(FoundationErrorRecovery, "adaptation regeneration did not reach an existing review checkpoint")
+	}
+	if runtime.Impact.Adaptation != nil && runtime.Impact.Adaptation.RequiresAdaptationPlanConfirmation {
+		runtime.Stage = "awaiting_adaptation_plan_confirmation"
+	} else {
+		runtime.Stage = "awaiting_outline_approval"
+	}
+	runtime.ResumeStage, runtime.UpdatedAt = "", domain.RevisionTimestamp()
+	return s.store.FoundationRevisions.SaveRuntime(*runtime)
+}
+
+// CompleteAdaptationReview closes the same Foundation session only after the
+// existing adaptation proposal confirmation has persisted a confirmed plan.
+// The caller must have run the normal source-fidelity/target/outline gates;
+// this method records their exact confirmed-plan signature and never starts
+// prose generation.
+func (s *FoundationRevisionService) CompleteAdaptationReview() error {
+	runtime, err := s.store.FoundationRevisions.LoadRuntime()
+	if err != nil || runtime == nil || runtime.ProjectMode != "adaptation" ||
+		(runtime.Stage != "awaiting_adaptation_plan_confirmation" && runtime.Stage != "awaiting_outline_approval") {
+		return errors.Join(foundationError(FoundationErrorPlanReview, "adaptation Foundation revision is not awaiting proposal or outline confirmation"), err)
+	}
+	preview, err := s.store.FoundationRevisions.LoadPreview(runtime.PreviewID)
+	if err != nil {
+		return err
+	}
+	current, err := loadAdaptationFoundationContext(s.store)
+	if err != nil {
+		return foundationError(FoundationErrorSourceStale, err.Error())
+	}
+	if current.Baseline.SourceSignature != preview.AdaptationBaseline.SourceSignature || current.Baseline.SourceManifestSignature != preview.AdaptationBaseline.SourceManifestSignature ||
+		current.Baseline.AdaptationIntentHash != preview.AdaptationBaseline.AdaptationIntentHash || current.Contract.ContentSignature != preview.BaseCoreCastSignature {
+		return foundationError(FoundationErrorSourceStale, "adaptation source, intent, or CoreCast changed during regeneration")
+	}
+	if current.Workflow.Stage != domain.AdaptationPlanningStageConfirmed || current.Plan.Status != domain.AdaptationPlanStatusConfirmed ||
+		!domain.AdaptationOutlineQualityPassed(current.Plan) {
+		return foundationError(FoundationErrorPlanReview, "confirmed adaptation plan with passed outline quality audit is required")
+	}
+	auditReport, err := validateAdaptationFoundationPlanningAudits(s.store, current, preview.Candidate)
+	if err != nil {
+		return foundationError(FoundationErrorPlanReview, err.Error())
+	}
+	session, err := s.store.Revisions.LoadSession(runtime.SessionID)
+	if err != nil {
+		return err
+	}
+	policy := domain.FoundationRevisionPolicy{}
+	if session.Stage == domain.RevisionStageCandidateGenerating && len(session.Approvals) == 1 {
+		payload, marshalErr := json.Marshal(current.Plan)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		session, err = s.store.Revisions.SubmitCandidate(policy, storepkg.SubmitRevisionCandidateInput{
+			SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "foundation/adaptation-plan/" + runtime.PreviewID,
+			Artifacts: []storepkg.CandidateArtifactInput{{ArtifactID: domain.FoundationPlanningArtifactID, ArtifactKind: domain.FoundationAdaptationPlanningArtifactKind, Payload: payload}},
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if session.Stage == domain.RevisionStageCandidateAudit && len(session.Approvals) == 1 {
+		if len(session.AuditExpectations) != 1 {
+			return fmt.Errorf("adaptation Foundation planning audit expectation is missing")
+		}
+		expected := session.AuditExpectations[0]
+		session, err = s.store.Revisions.RecordAudit(policy, storepkg.RevisionAuditInput{
+			RevisionMutationInput: storepkg.RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "foundation/adaptation-audits/" + runtime.PreviewID},
+			CandidateSignature:    session.CandidateSignature,
+			Evidence:              []domain.RevisionAuditEvidence{{Scope: expected.Scope, ScopeID: expected.ScopeID, ContentSignature: expected.ContentSignature, Passed: true, Report: auditReport}},
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if session.Stage != domain.RevisionStageApprovalPending || len(session.Approvals) != 1 {
+		return fmt.Errorf("adaptation Foundation review stopped at %q", session.Stage)
+	}
+	stage := session.CurrentApprovalStage()
+	if stage == nil || stage.ID != "outline_approval" {
+		return fmt.Errorf("adaptation Foundation final approval stage is missing")
+	}
+	session, err = s.store.Revisions.ApproveStage(policy, storepkg.RevisionApprovalInput{
+		RevisionMutationInput: storepkg.RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "foundation/adaptation-approval/" + runtime.PreviewID}, StageID: stage.ID,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := s.store.Revisions.Publish(policy, storepkg.RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "foundation/adaptation-complete/" + runtime.PreviewID}); err != nil {
+		return err
+	}
+	runtime.Stage, runtime.ResumeStage, runtime.UpdatedAt = "completed", "", domain.RevisionTimestamp()
+	return s.store.FoundationRevisions.SaveRuntime(*runtime)
 }
 
 func (s *FoundationRevisionService) ApproveOutline() error {
@@ -454,6 +611,33 @@ func (s *FoundationRevisionService) continueApply(runtime *domain.FoundationRevi
 	if err := s.runHook("after_publication"); err != nil {
 		return nil, err
 	}
+	if preview.ProjectMode == "adaptation" {
+		validate := s.validateAdaptationBaselineCurrent
+		if runtime.Attempt > 1 {
+			validate = s.validateAdaptationRecoveryBaseline
+		}
+		if err := validate(*preview); err != nil {
+			return nil, err
+		}
+		if err := s.approveFoundationApply(runtime.SessionID, preview); err != nil {
+			return nil, err
+		}
+		auditSignature, err := domain.FoundationAuditSignature(preview.Candidate)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.store.WithFoundationAdaptationRevisionCommand(runtime.SessionID, "rebind-target", func() error {
+			_, rebindErr := s.store.RebindAdaptationTargetFoundationForRevision(runtime.SessionID, runtime.Publication.FoundationRevision, auditSignature)
+			return rebindErr
+		}); err != nil {
+			return nil, err
+		}
+		runtime.Stage, runtime.ResumeStage, runtime.UpdatedAt = "regenerating", "", domain.RevisionTimestamp()
+		if err := s.store.FoundationRevisions.SaveRuntime(*runtime); err != nil {
+			return nil, err
+		}
+		return runtime, nil
+	}
 	dependencies, _ := s.store.FoundationRevisions.LoadDependencies()
 	if dependencies != nil && dependencies.Signature != preview.DependencySnapshotSignature {
 		dependencies = nil
@@ -561,6 +745,11 @@ func (s *FoundationRevisionService) approveFoundationApply(sessionID string, pre
 }
 
 func (s *FoundationRevisionService) validatePreviewCurrent(preview domain.FoundationRevisionPreview) error {
+	if preview.ProjectMode == "adaptation" {
+		if err := s.validateAdaptationBaselineCurrent(preview); err != nil {
+			return err
+		}
+	}
 	state, err := s.State()
 	if err != nil {
 		return err
@@ -584,10 +773,49 @@ func (s *FoundationRevisionService) validatePreviewCurrent(preview domain.Founda
 	return nil
 }
 
-func (s *FoundationRevisionService) editability(mode string, review *domain.PlanningReview, runtime *domain.FoundationRevisionRuntime) (bool, string) {
-	if mode == "adaptation" {
-		return false, "adaptation_foundation_revision_not_enabled"
+func (s *FoundationRevisionService) validateAdaptationBaselineCurrent(preview domain.FoundationRevisionPreview) error {
+	if preview.ProjectMode != "adaptation" || preview.AdaptationBaseline == nil {
+		return foundationError(FoundationErrorInvalid, "adaptation Foundation preview baseline is missing")
 	}
+	current, err := loadAdaptationFoundationContext(s.store)
+	if err != nil {
+		return adaptationBaselineLoadError(err)
+	}
+	expected := *preview.AdaptationBaseline
+	actual := current.Baseline
+	actual.CoreCastReconfirmed = adaptationCoreCastMatchesCandidate(preview.Candidate, current.Contract)
+	if expected.SourceSignature != actual.SourceSignature || expected.SourceManifestSignature != actual.SourceManifestSignature {
+		return foundationError(FoundationErrorSourceStale, "adaptation source signature changed")
+	}
+	if expected.AdaptationIntentHash != actual.AdaptationIntentHash || expected.WorkflowRevision != actual.WorkflowRevision || expected.WorkflowStage != actual.WorkflowStage ||
+		expected.PlanSemanticSignature != actual.PlanSemanticSignature || expected.PlanStoryContractSignature != actual.PlanStoryContractSignature || expected.PlanOutlineQualitySignature != actual.PlanOutlineQualitySignature {
+		return foundationError(FoundationErrorStale, "adaptation intent, workflow, or plan semantic baseline changed")
+	}
+	if expected.CoreCastReconfirmed != actual.CoreCastReconfirmed || preview.BaseCoreCastSignature != current.Contract.ContentSignature {
+		return foundationError(FoundationErrorStale, "adaptation CoreCast confirmation changed")
+	}
+	return nil
+}
+
+func (s *FoundationRevisionService) validateAdaptationRecoveryBaseline(preview domain.FoundationRevisionPreview) error {
+	if preview.ProjectMode != "adaptation" || preview.AdaptationBaseline == nil {
+		return foundationError(FoundationErrorInvalid, "adaptation Foundation preview baseline is missing")
+	}
+	current, err := loadAdaptationFoundationContext(s.store)
+	if err != nil {
+		return adaptationBaselineLoadError(err)
+	}
+	expected := preview.AdaptationBaseline
+	if expected.SourceSignature != current.Baseline.SourceSignature || expected.SourceManifestSignature != current.Baseline.SourceManifestSignature {
+		return foundationError(FoundationErrorSourceStale, "adaptation source signature changed during recovery")
+	}
+	if expected.AdaptationIntentHash != current.Baseline.AdaptationIntentHash || preview.BaseCoreCastSignature != current.Contract.ContentSignature {
+		return foundationError(FoundationErrorStale, "adaptation intent or CoreCast changed during recovery")
+	}
+	return nil
+}
+
+func (s *FoundationRevisionService) editability(mode string, review *domain.PlanningReview, runtime *domain.FoundationRevisionRuntime, adaptationContext *adaptationFoundationContext) (bool, string) {
 	progress, err := s.store.Progress.Load()
 	if err != nil {
 		return false, "progress_unavailable"
@@ -606,9 +834,6 @@ func (s *FoundationRevisionService) editability(mode string, review *domain.Plan
 	if s.bodyFilesStarted() {
 		return false, "body_started"
 	}
-	if review == nil || (review.Kind != domain.PlanningReviewKindBlueprint && review.Kind != domain.PlanningReviewKindVolumeSplit && review.Kind != domain.PlanningReviewKindChapterOutline) {
-		return false, "planning_stage_not_editable"
-	}
 	if runtime != nil && runtime.Active() {
 		return false, "active_foundation_revision"
 	}
@@ -618,6 +843,25 @@ func (s *FoundationRevisionService) editability(mode string, review *domain.Plan
 	}
 	if active != nil {
 		return false, "active_revision"
+	}
+	if mode == "adaptation" {
+		if adaptationContext == nil {
+			return false, "adaptation_baseline_unavailable"
+		}
+		if !adaptationFoundationEditableStage(adaptationContext.Workflow.Stage) {
+			return false, "adaptation_workflow_not_safely_paused"
+		}
+		adaptationReview, err := s.store.Adaptation.LoadTargetFoundationReview()
+		if err != nil || adaptationReview == nil || adaptationReview.State != domain.AdaptationFoundationReviewApproved {
+			return false, "adaptation_foundation_confirmation_invalid"
+		}
+		if adaptationReview.Binding.SourceSignature != adaptationContext.Contract.SourceSignature || adaptationReview.Binding.AdaptationIntentHash != adaptationContext.Baseline.AdaptationIntentHash {
+			return false, "adaptation_foundation_source_binding_stale"
+		}
+		return true, ""
+	}
+	if review == nil || (review.Kind != domain.PlanningReviewKindBlueprint && review.Kind != domain.PlanningReviewKindVolumeSplit && review.Kind != domain.PlanningReviewKindChapterOutline) {
+		return false, "planning_stage_not_editable"
 	}
 	if err := s.store.RequireConfirmedFoundation(); err != nil {
 		return false, "foundation_confirmation_invalid"

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -115,6 +116,76 @@ func TestFoundationRevisionReceiptRejectsKeyReuse(t *testing.T) {
 	}
 	if _, _, err := st.FoundationRevisions.LoadReceipt("key", "fingerprint-b"); err == nil {
 		t.Fatal("idempotency key reuse was accepted")
+	}
+}
+
+func TestFoundationAdaptationOwnerAllowsTargetPlanningButRejectsSourceWrites(t *testing.T) {
+	st := NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	impact, err := domain.FoundationRevisionImpact(signedFoundationImpactForStoreTest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := domain.FoundationRevisionPolicy{}
+	session, err := st.Revisions.Start(policy, StartRevisionInput{Intent: "adapt target Foundation", Impact: impact, PreviewSignature: domain.ContentSignature([]byte("preview")), IdempotencyKey: "owner-start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err = st.Revisions.ApproveImpact(policy, RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "owner-impact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(domain.StoryFoundation{SchemaVersion: 1, Premise: "target", Characters: []domain.Character{{ID: "hero", Name: "Hero"}}, WorldRules: []domain.WorldRule{{ID: "rule", Rule: "rule", Strength: domain.WorldRuleStrengthSoft}}})
+	session, err = st.Revisions.SubmitCandidate(policy, SubmitRevisionCandidateInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "owner-candidate", Artifacts: []CandidateArtifactInput{{ArtifactID: domain.FoundationArtifactID, ArtifactKind: domain.FoundationArtifactKind, Payload: payload}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := session.AuditExpectations[0]
+	session, err = st.Revisions.RecordAudit(policy, RevisionAuditInput{RevisionMutationInput: RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "owner-audit"}, CandidateSignature: session.CandidateSignature, Evidence: []domain.RevisionAuditEvidence{{Scope: expected.Scope, ScopeID: expected.ScopeID, ContentSignature: expected.ContentSignature, Passed: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err = st.Revisions.ApproveStage(policy, RevisionApprovalInput{RevisionMutationInput: RevisionMutationInput{SessionID: session.ID, ExpectedRevision: session.Revision, IdempotencyKey: "owner-approve"}, StageID: "foundation_apply"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = st.WithFoundationAdaptationRevisionCommand(session.ID, "test-target-owner", func() error {
+		if _, workflowErr := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageSkeletonGenerating, -1); workflowErr != nil {
+			return workflowErr
+		}
+		if sourceErr := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{Premise: "forbidden"}); sourceErr == nil {
+			return errors.New("SourceFoundation write was accepted")
+		}
+		if manifestErr := st.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{}); manifestErr == nil {
+			return errors.New("source manifest write was accepted")
+		}
+		if _, chapterErr := st.Adaptation.SaveSourceChapter(1, "forbidden", "forbidden"); chapterErr == nil {
+			return errors.New("source chapter write was accepted")
+		}
+		if reportsErr := st.Adaptation.SaveSourceReports([]domain.AdaptationSourceReport{{Chapter: 1, Summary: "forbidden"}}); reportsErr == nil {
+			return errors.New("source report write was accepted")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source, err := st.Adaptation.LoadSourceFoundation(); err != nil || source != nil {
+		t.Fatalf("source=%+v err=%v", source, err)
+	}
+}
+
+func TestFoundationAdaptationCommandFenceRecoversWithoutParallelSession(t *testing.T) {
+	st := NewStore(t.TempDir())
+	owner, err := st.Revisions.claimCommandFence("revision", "foundation-adaptation/regenerate", domain.ContentSignature([]byte("revision")))
+	if err != nil || owner == nil {
+		t.Fatalf("owner=%+v err=%v", owner, err)
+	}
+	reopened := NewStore(st.Dir())
+	if current, err := reopened.Revisions.currentCommandOwner(); err != nil || current != nil {
+		t.Fatalf("recovered owner=%+v err=%v", current, err)
 	}
 }
 

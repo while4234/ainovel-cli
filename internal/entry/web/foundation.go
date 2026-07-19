@@ -3,6 +3,9 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -36,6 +39,11 @@ func (s *Server) handleProjectFoundation(w http.ResponseWriter, r *http.Request,
 		}
 		var request host.FoundationPreviewRequest
 		if err := decodeFoundationJSONBody(r, &request); err != nil {
+			if foundationSourceMutationAttempt(err) {
+				log.Printf("foundation source mutation attempt rejected project=%s endpoint=preview", id)
+				writeFoundationRevisionError(w, &host.FoundationRevisionError{Code: host.FoundationErrorSourceMutation, Err: errors.New("Foundation preview accepts only a complete target candidate")})
+				return
+			}
 			writeError(w, http.StatusBadRequest, "invalid Foundation preview request: "+err.Error())
 			return
 		}
@@ -52,6 +60,11 @@ func (s *Server) handleProjectFoundation(w http.ResponseWriter, r *http.Request,
 		}
 		var request host.FoundationApplyRequest
 		if err := decodeFoundationJSONBody(r, &request); err != nil {
+			if foundationSourceMutationAttempt(err) {
+				log.Printf("foundation source mutation attempt rejected project=%s endpoint=apply", id)
+				writeFoundationRevisionError(w, &host.FoundationRevisionError{Code: host.FoundationErrorSourceMutation, Err: errors.New("Foundation apply accepts only preview_id and idempotency_key")})
+				return
+			}
 			writeError(w, http.StatusBadRequest, "invalid Foundation apply request: "+err.Error())
 			return
 		}
@@ -72,9 +85,15 @@ func (s *Server) handleProjectFoundation(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		if runtime.Stage == "regenerating" {
-			if _, err := projectSession.ResumeFoundationRevision(); err != nil {
-				_ = service.MarkRegenerationFailure(err)
-				writeFoundationRevisionError(w, &host.FoundationRevisionError{Code: host.FoundationErrorRecovery, Err: err})
+			var resumeErr error
+			if runtime.ProjectMode == "adaptation" {
+				_, resumeErr = projectSession.ResumeAdaptationFoundationRevision()
+			} else {
+				_, resumeErr = projectSession.ResumeFoundationRevision()
+			}
+			if resumeErr != nil {
+				_ = service.MarkRegenerationFailure(resumeErr)
+				writeFoundationRevisionError(w, &host.FoundationRevisionError{Code: host.FoundationErrorRecovery, Err: resumeErr})
 				return
 			}
 		}
@@ -88,6 +107,11 @@ func (s *Server) handleProjectFoundation(w http.ResponseWriter, r *http.Request,
 			IdempotencyKey string `json:"idempotency_key"`
 		}
 		if err := decodeFoundationJSONBody(r, &request); err != nil {
+			if foundationSourceMutationAttempt(err) {
+				log.Printf("foundation source mutation attempt rejected project=%s endpoint=retry", id)
+				writeFoundationRevisionError(w, &host.FoundationRevisionError{Code: host.FoundationErrorSourceMutation, Err: errors.New("Foundation retry accepts only idempotency_key")})
+				return
+			}
 			writeError(w, http.StatusBadRequest, "invalid Foundation retry request: "+err.Error())
 			return
 		}
@@ -108,9 +132,15 @@ func (s *Server) handleProjectFoundation(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		if runtime.Stage == "regenerating" {
-			if _, err := projectSession.ResumeFoundationRevision(); err != nil {
-				_ = service.MarkRegenerationFailure(err)
-				writeFoundationRevisionError(w, &host.FoundationRevisionError{Code: host.FoundationErrorRecovery, Err: err})
+			var resumeErr error
+			if runtime.ProjectMode == "adaptation" {
+				_, resumeErr = projectSession.ResumeAdaptationFoundationRevision()
+			} else {
+				_, resumeErr = projectSession.ResumeFoundationRevision()
+			}
+			if resumeErr != nil {
+				_ = service.MarkRegenerationFailure(resumeErr)
+				writeFoundationRevisionError(w, &host.FoundationRevisionError{Code: host.FoundationErrorRecovery, Err: resumeErr})
 				return
 			}
 		}
@@ -123,7 +153,27 @@ func (s *Server) handleProjectFoundation(w http.ResponseWriter, r *http.Request,
 func decodeFoundationJSONBody(r *http.Request, target any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(target)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("request body must contain exactly one JSON object")
+		}
+		return err
+	}
+	return nil
+}
+
+func foundationSourceMutationAttempt(err error) bool {
+	message := strings.ToLower(fmt.Sprint(err))
+	for _, field := range []string{`"source"`, `"source_foundation"`, `"patch"`, `"mode"`} {
+		if strings.Contains(message, field) {
+			return true
+		}
+	}
+	return strings.Contains(message, "exactly one json object")
 }
 
 func writeFoundationRevisionError(w http.ResponseWriter, err error) {
@@ -134,7 +184,7 @@ func writeFoundationRevisionError(w http.ResponseWriter, err error) {
 	}
 	status := http.StatusConflict
 	switch classified.Code {
-	case host.FoundationErrorInvalid:
+	case host.FoundationErrorInvalid, host.FoundationErrorSourceMutation:
 		status = http.StatusBadRequest
 	case host.FoundationErrorModeNotEnabled, host.FoundationErrorReadonly:
 		status = http.StatusConflict

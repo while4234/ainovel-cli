@@ -322,3 +322,56 @@ func adaptationFoundationBindingMismatch(expected, current domain.AdaptationFoun
 		return nil
 	}
 }
+
+// RebindAdaptationTargetFoundationForRevision advances only the target-side
+// review binding after a Foundation RevisionSession has published its target
+// candidate. It is intentionally callable only under the narrow Foundation
+// adaptation command fence and never touches source artifacts.
+func (s *Store) RebindAdaptationTargetFoundationForRevision(sessionID string, foundationRevision int64, targetAuditSignature string) (*domain.AdaptationFoundationReview, error) {
+	if s == nil || s.Revisions == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	var rebound *domain.AdaptationFoundationReview
+	err := s.Revisions.withRevisionTransaction(func() error {
+		state, err := s.Revisions.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		active, ok := state.Sessions[state.ActiveSessionID]
+		if !ok || active.ID != strings.TrimSpace(sessionID) || !foundationAdaptationCommandAllows(state, "change planning workflow") {
+			return fmt.Errorf("Foundation revision %q does not own adaptation target rebinding", sessionID)
+		}
+		review, err := s.Adaptation.LoadTargetFoundationReview()
+		if err != nil || review == nil || review.State != domain.AdaptationFoundationReviewApproved {
+			return fmt.Errorf("approved adaptation target Foundation review is required: %w", err)
+		}
+		workflow, err := s.Adaptation.LoadPlanningWorkflow()
+		if err != nil || workflow == nil {
+			return fmt.Errorf("adaptation workflow is required: %w", err)
+		}
+		binding, target, _, err := s.CurrentAdaptationFoundationBinding(workflow.Revision)
+		if err != nil {
+			return err
+		}
+		if target.Revision != foundationRevision || binding.TargetFoundationAuditSignature != strings.TrimSpace(targetAuditSignature) {
+			return fmt.Errorf("published adaptation target Foundation binding is stale")
+		}
+		if review.FoundationRevision == foundationRevision && adaptationFoundationBindingMismatch(review.Binding, binding) == nil {
+			copy := *review
+			rebound = &copy
+			return nil
+		}
+		review.FoundationRevision = foundationRevision
+		review.Binding = binding
+		review.Generation++
+		review.ConfirmedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		review.UpdatedAt = review.ConfirmedAt
+		if err := s.Adaptation.saveTargetFoundationReview(*review); err != nil {
+			return err
+		}
+		copy := *review
+		rebound = &copy
+		return nil
+	})
+	return rebound, err
+}

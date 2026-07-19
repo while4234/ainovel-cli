@@ -232,7 +232,8 @@ func (s *RevisionStore) withLegacyMigrationMutation(operation string, migration 
 		if err != nil {
 			return fmt.Errorf("read active revision before %s: %w", operation, err)
 		}
-		if state.ActiveSessionID != "" {
+		foundationAdaptationOwned := foundationAdaptationCommandAllows(state, operation)
+		if state.ActiveSessionID != "" && !foundationAdaptationOwned {
 			return fmt.Errorf("legacy adaptation formal write %q is blocked by active revision %s: %w", operation, state.ActiveSessionID, ErrActiveRevisionBlocksNormalFlow)
 		}
 		if manuscriptID, err := activeManuscriptRevisionID(s.io); err != nil {
@@ -240,7 +241,7 @@ func (s *RevisionStore) withLegacyMigrationMutation(operation string, migration 
 		} else if manuscriptID != "" {
 			return fmt.Errorf("legacy formal write %q is blocked by active manuscript revision %s: %w", operation, manuscriptID, ErrActiveRevisionBlocksNormalFlow)
 		}
-		if state.CommandFence != nil {
+		if state.CommandFence != nil && !foundationAdaptationOwned {
 			return fmt.Errorf("legacy adaptation formal write %q is blocked by prepared service command %q: %w", operation, state.CommandFence.Operation, ErrRevisionCommandInProgress)
 		}
 		if migration != nil {
@@ -250,6 +251,27 @@ func (s *RevisionStore) withLegacyMigrationMutation(operation string, migration 
 		}
 		return mutation()
 	})
+}
+
+func foundationAdaptationCommandAllows(state *revisionState, operation string) bool {
+	if state == nil || state.CommandFence == nil || !strings.HasPrefix(state.CommandFence.Operation, "foundation-adaptation/") {
+		return false
+	}
+	active, ok := state.Sessions[state.ActiveSessionID]
+	if !ok || active.Mode != domain.RevisionModeFoundation || active.Stage != domain.RevisionStageCandidateGenerating || len(active.Approvals) != 1 {
+		return false
+	}
+	switch strings.TrimSpace(operation) {
+	case "change planning workflow",
+		"save proposal", "save volume review", "restore volume review", "clear volume review",
+		"save proposal runtime", "clear proposal runtime", "clear proposal workflow",
+		"save layered outline", "save flat outline", "save story compass",
+		"save adaptation audit", "save adaptation audit run", "mark audit run applied", "save adaptation audit repair",
+		"save confirmed plan", "write formal progress":
+		return true
+	default:
+		return false
+	}
 }
 
 type NormalFlowLease struct {

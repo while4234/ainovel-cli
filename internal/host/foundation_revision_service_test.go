@@ -1,17 +1,21 @@
 package host
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
-func TestFoundationRevisionServiceExplicitlyIsolatesAdaptationPreview(t *testing.T) {
+func TestFoundationRevisionServiceFailsClosedForIncompleteAdaptationBaseline(t *testing.T) {
 	st := storepkg.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
@@ -26,8 +30,335 @@ func TestFoundationRevisionServiceExplicitlyIsolatesAdaptationPreview(t *testing
 	service := NewFoundationRevisionService(st)
 	_, err := service.Preview(FoundationPreviewRequest{})
 	var classified *FoundationRevisionError
-	if !errors.As(err, &classified) || classified.Code != FoundationErrorModeNotEnabled {
+	if !errors.As(err, &classified) || classified.Code != FoundationErrorStale {
 		t.Fatalf("preview error = %T %v", err, err)
+	}
+}
+
+func TestAdaptationFoundationPreviewApplyAndRetryPreserveSource(t *testing.T) {
+	st, base := newConfirmedAdaptationFoundationRevisionStore(t)
+	service := NewFoundationRevisionService(st)
+	candidate := domain.CloneStoryFoundation(base)
+	candidate.Characters = append(candidate.Characters, domain.Character{ID: "support", Name: "Support", Role: "guide", Description: "helps the lead"})
+	baseAudit, _ := domain.FoundationAuditSignature(base)
+	sourcePath := filepath.Join(st.Dir(), "meta", "adaptation", "source_foundation.json")
+	sourceBefore, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := service.Preview(FoundationPreviewRequest{ExpectedBaseRevision: base.Revision, ExpectedBaseAuditSignature: baseAudit, Candidate: candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.ProjectMode != "adaptation" || preview.AdaptationBaseline == nil || preview.Impact.Adaptation == nil || !preview.CanApply {
+		t.Fatalf("adaptation preview=%+v", preview)
+	}
+	service.SetApplyHookForTesting(func(stage string) error {
+		if stage == "after_publication" {
+			return errors.New("injected adaptation rebuild failure")
+		}
+		return nil
+	})
+	if _, err := service.Apply(FoundationApplyRequest{PreviewID: preview.ID, IdempotencyKey: "adaptation-apply"}); err == nil {
+		t.Fatal("injected failure was ignored")
+	}
+	published, err := st.Foundation.Load()
+	if err != nil || published.Revision != base.Revision+1 {
+		t.Fatalf("published=%+v err=%v", published, err)
+	}
+	service.SetApplyHookForTesting(nil)
+	retried, err := service.Retry("adaptation-retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.ProjectMode != "adaptation" || retried.Stage != "regenerating" || retried.SessionID == "" {
+		t.Fatalf("retry=%+v", retried)
+	}
+	if err := st.WithFoundationAdaptationRevisionCommand(retried.SessionID, "partial-regeneration", func() error {
+		plan, loadErr := st.Adaptation.LoadPlan()
+		if loadErr != nil || plan == nil {
+			return errors.Join(loadErr, fmt.Errorf("plan is required"))
+		}
+		binding, loadErr := st.CurrentAdaptationArtifactBinding()
+		if loadErr != nil {
+			return loadErr
+		}
+		plan.FoundationBinding = &binding
+		plan.Brief = "partially regenerated proposal"
+		return st.Adaptation.SaveProposal(*plan)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MarkRegenerationFailure(errors.New("injected failure after partial proposal")); err != nil {
+		t.Fatal(err)
+	}
+	partialRetried, err := service.Retry("adaptation-partial-retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partialRetried.SessionID != retried.SessionID || partialRetried.Stage != "regenerating" {
+		t.Fatalf("partial retry created a new session or lost its resume boundary: before=%+v after=%+v", retried, partialRetried)
+	}
+	after, err := st.Foundation.Load()
+	if err != nil || after.Revision != published.Revision {
+		t.Fatalf("retry republished target: %+v err=%v", after, err)
+	}
+	sourceAfter, err := os.ReadFile(sourcePath)
+	if err != nil || !bytes.Equal(sourceBefore, sourceAfter) {
+		t.Fatalf("SourceFoundation changed during apply/retry: err=%v", err)
+	}
+}
+
+func TestAdaptationFoundationPreviewStalesOnBoundContextChanges(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, *storepkg.Store)
+		code   string
+	}{
+		{name: "plan", mutate: func(t *testing.T, st *storepkg.Store) {
+			plan, err := st.Adaptation.LoadPlan()
+			if err != nil || plan == nil {
+				t.Fatalf("plan=%+v err=%v", plan, err)
+			}
+			plan.Brief += " changed"
+			if err := st.Adaptation.SavePlan(*plan); err != nil {
+				t.Fatal(err)
+			}
+		}, code: FoundationErrorStale},
+		{name: "intent", mutate: func(t *testing.T, st *storepkg.Store) {
+			intent, err := st.Adaptation.LoadCoCreateIntent()
+			if err != nil || intent == nil {
+				t.Fatalf("intent=%+v err=%v", intent, err)
+			}
+			intent.RawRequest = "changed adaptation intent"
+			intent.IntentHash = domain.ContentSignature([]byte(intent.RawRequest))
+			if err := st.Adaptation.SaveCoCreateIntent(*intent); err != nil {
+				t.Fatal(err)
+			}
+		}, code: FoundationErrorStale},
+		{name: "workflow", mutate: func(t *testing.T, st *storepkg.Store) {
+			workflow, err := st.Adaptation.LoadPlanningWorkflow()
+			if err != nil || workflow == nil {
+				t.Fatalf("workflow=%+v err=%v", workflow, err)
+			}
+			if _, err := st.Adaptation.SetPlanningWorkflowStage(workflow.Stage, workflow.Revision); err != nil {
+				t.Fatal(err)
+			}
+		}, code: FoundationErrorStale},
+		{name: "target_foundation", mutate: func(t *testing.T, st *storepkg.Store) {
+			target, err := st.Foundation.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			target.Premise += " changed outside preview"
+			if _, err := st.Foundation.SaveRevisionCAS(target, target.Revision); err != nil {
+				t.Fatal(err)
+			}
+		}, code: FoundationErrorStale},
+		{name: "core_cast", mutate: func(t *testing.T, st *storepkg.Store) {
+			contract, err := st.CoreCast.Load()
+			if err != nil || contract == nil {
+				t.Fatalf("contract=%+v err=%v", contract, err)
+			}
+			contract.Members[0].MainlineFunction = "changed outside preview"
+			saved, err := st.CoreCast.SaveCAS(*contract, contract.Revision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := st.CoreCast.ConfirmCAS(saved.Revision, saved.ContentSignature, nil, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+		}, code: FoundationErrorStale},
+		{name: "source_manifest", mutate: func(t *testing.T, st *storepkg.Store) {
+			manifest, err := st.Adaptation.LoadSourceManifest()
+			if err != nil || manifest == nil {
+				t.Fatalf("manifest=%+v err=%v", manifest, err)
+			}
+			manifest.Chapters[0].SHA256 = domain.ContentSignature([]byte("changed source chapter"))
+			if err := st.Adaptation.SaveSourceManifest(*manifest); err != nil {
+				t.Fatal(err)
+			}
+		}, code: FoundationErrorSourceStale},
+		{name: "source", mutate: func(t *testing.T, st *storepkg.Store) {
+			path := filepath.Join(st.Dir(), "meta", "adaptation", "source_foundation.json")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data = bytes.Replace(data, []byte("source premise"), []byte("source changed"), 1)
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, code: FoundationErrorSourceStale},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			st, base := newConfirmedAdaptationFoundationRevisionStore(t)
+			service := NewFoundationRevisionService(st)
+			candidate := domain.CloneStoryFoundation(base)
+			candidate.Characters = append(candidate.Characters, domain.Character{ID: "support", Name: "Support", Role: "guide", Description: "helps"})
+			audit, _ := domain.FoundationAuditSignature(base)
+			preview, err := service.Preview(FoundationPreviewRequest{ExpectedBaseRevision: base.Revision, ExpectedBaseAuditSignature: audit, Candidate: candidate})
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(t, st)
+			_, err = service.Apply(FoundationApplyRequest{PreviewID: preview.ID, IdempotencyKey: "stale-" + test.name})
+			var classified *FoundationRevisionError
+			if !errors.As(err, &classified) || classified.Code != test.code {
+				t.Fatalf("apply error=%T %v", err, err)
+			}
+		})
+	}
+}
+
+func TestAdaptationFoundationRecoveryRejectsSourceChangeAfterPublication(t *testing.T) {
+	st, base := newConfirmedAdaptationFoundationRevisionStore(t)
+	service := NewFoundationRevisionService(st)
+	candidate := domain.CloneStoryFoundation(base)
+	candidate.Characters = append(candidate.Characters, domain.Character{ID: "support", Name: "Support", Role: "guide", Description: "helps"})
+	audit, _ := domain.FoundationAuditSignature(base)
+	preview, err := service.Preview(FoundationPreviewRequest{ExpectedBaseRevision: base.Revision, ExpectedBaseAuditSignature: audit, Candidate: candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetApplyHookForTesting(func(stage string) error {
+		if stage == "after_publication" {
+			return errors.New("stop after target publication")
+		}
+		return nil
+	})
+	if _, err := service.Apply(FoundationApplyRequest{PreviewID: preview.ID, IdempotencyKey: "published-source-stale"}); err == nil {
+		t.Fatal("publication failpoint was ignored")
+	}
+	service.SetApplyHookForTesting(nil)
+	sourcePath := filepath.Join(st.Dir(), "meta", "adaptation", "source_foundation.json")
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, bytes.Replace(source, []byte("source premise"), []byte("changed premise"), 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Retry("published-source-stale-retry")
+	var classified *FoundationRevisionError
+	if !errors.As(err, &classified) || classified.Code != FoundationErrorSourceStale {
+		t.Fatalf("retry error=%T %v", err, err)
+	}
+	published, loadErr := st.Foundation.Load()
+	if loadErr != nil || published.Revision != base.Revision+1 {
+		t.Fatalf("target publication changed during rejected recovery: foundation=%+v err=%v", published, loadErr)
+	}
+}
+
+func TestAdaptationFoundationCoreChangeRequiresMatchingConfirmedContract(t *testing.T) {
+	st, base := newConfirmedAdaptationFoundationRevisionStore(t)
+	candidate := domain.CloneStoryFoundation(base)
+	candidate.Characters[0].Goal = "a changed core goal"
+	audit, _ := domain.FoundationAuditSignature(base)
+	preview, err := NewFoundationRevisionService(st).Preview(FoundationPreviewRequest{ExpectedBaseRevision: base.Revision, ExpectedBaseAuditSignature: audit, Candidate: candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.CanApply || preview.Impact.Adaptation == nil || !preview.Impact.Adaptation.RequiresCoreCastReconfirmation {
+		t.Fatalf("preview=%+v", preview)
+	}
+}
+
+func TestAdaptationFoundationCoreChangeAcceptsRealReconfirmation(t *testing.T) {
+	st, base := newConfirmedAdaptationFoundationRevisionStore(t)
+	candidate := domain.CloneStoryFoundation(base)
+	candidate.Characters[0].Goal = "a changed core goal"
+	contract, err := st.CoreCast.Load()
+	if err != nil || contract == nil {
+		t.Fatalf("contract=%+v err=%v", contract, err)
+	}
+	contract.Members[0].Character.Goal = candidate.Characters[0].Goal
+	saved, err := st.CoreCast.SaveCAS(*contract, contract.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, completion, err := st.CoreCast.ConfirmCAS(saved.Revision, saved.ContentSignature, nil, nil, nil); err != nil || !completion.Complete {
+		t.Fatalf("completion=%+v err=%v", completion, err)
+	}
+	audit, _ := domain.FoundationAuditSignature(base)
+	preview, err := NewFoundationRevisionService(st).Preview(FoundationPreviewRequest{ExpectedBaseRevision: base.Revision, ExpectedBaseAuditSignature: audit, Candidate: candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.CanApply || preview.AdaptationBaseline == nil || !preview.AdaptationBaseline.CoreCastReconfirmed || preview.Impact.RequiresCoreCastConfirmation {
+		t.Fatalf("preview=%+v", preview)
+	}
+}
+
+func TestAdaptationFoundationReviewCompletionUsesSameSessionAndDoesNotStartBody(t *testing.T) {
+	st, base := newConfirmedAdaptationFoundationRevisionStore(t)
+	service := NewFoundationRevisionService(st)
+	candidate := domain.CloneStoryFoundation(base)
+	candidate.Characters = append(candidate.Characters, domain.Character{ID: "support", Name: "Support", Role: "guide", Description: "helps"})
+	audit, _ := domain.FoundationAuditSignature(base)
+	preview, err := service.Preview(FoundationPreviewRequest{ExpectedBaseRevision: base.Revision, ExpectedBaseAuditSignature: audit, Candidate: candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := service.Apply(FoundationApplyRequest{PreviewID: preview.ID, IdempotencyKey: "complete-adaptation"})
+	if err != nil || runtime.Stage != "regenerating" {
+		t.Fatalf("runtime=%+v err=%v", runtime, err)
+	}
+	err = st.WithFoundationAdaptationRevisionCommand(runtime.SessionID, "test-regeneration", func() error {
+		workflow, loadErr := st.Adaptation.LoadPlanningWorkflow()
+		if loadErr != nil || workflow == nil {
+			return errors.Join(loadErr, fmt.Errorf("workflow is required"))
+		}
+		if _, loadErr = st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageSkeletonGenerating, workflow.Revision); loadErr != nil {
+			return loadErr
+		}
+		plan, loadErr := st.Adaptation.LoadPlan()
+		if loadErr != nil || plan == nil {
+			return errors.Join(loadErr, fmt.Errorf("plan is required"))
+		}
+		binding, loadErr := st.CurrentAdaptationArtifactBinding()
+		if loadErr != nil {
+			return loadErr
+		}
+		plan.FoundationBinding = &binding
+		plan.Brief = "revalidated target outline"
+		domain.MarkAdaptationOutlineQualityPassedWithLayers(plan, domain.ContentSignature([]byte("layered-audit")))
+		if loadErr = st.Adaptation.SaveProposal(*plan); loadErr != nil {
+			return loadErr
+		}
+		_, loadErr = st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageProposalReviewPending, -1)
+		return loadErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MarkAdaptationRegenerationReady(); err != nil {
+		t.Fatal(err)
+	}
+	err = st.WithFoundationAdaptationRevisionCommand(runtime.SessionID, "test-confirmation", func() error {
+		proposal, loadErr := st.Adaptation.LoadProposal()
+		if loadErr != nil || proposal == nil {
+			return errors.Join(loadErr, fmt.Errorf("proposal is required"))
+		}
+		_, loadErr = adapt.ConfirmAdaptationProposal(context.Background(), adapt.Deps{Store: st}, *proposal)
+		return loadErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CompleteAdaptationReview(); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := st.Revisions.Active(); err != nil || active != nil {
+		t.Fatalf("active=%+v err=%v", active, err)
+	}
+	finalRuntime, err := st.FoundationRevisions.LoadRuntime()
+	if err != nil || finalRuntime == nil || finalRuntime.SessionID != runtime.SessionID || finalRuntime.Stage != "completed" {
+		t.Fatalf("runtime=%+v err=%v", finalRuntime, err)
+	}
+	progress, err := st.Progress.Load()
+	if err != nil || progress == nil || progress.Phase != domain.PhaseOutline || progress.CurrentChapter != 0 || len(progress.CompletedChapters) != 0 {
+		t.Fatalf("body started unexpectedly: progress=%+v err=%v", progress, err)
 	}
 }
 
@@ -338,4 +669,78 @@ func newConfirmedFoundationRevisionStore(t *testing.T) (*storepkg.Store, domain.
 
 func contractCharactersForFoundationTest(contract domain.CoreCastContract) []domain.Character {
 	return domain.ContractCharacters(contract)
+}
+
+func newConfirmedAdaptationFoundationRevisionStore(t *testing.T) (*storepkg.Store, domain.StoryFoundation) {
+	t.Helper()
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	manifest := domain.AdaptationSourceManifest{SourcePath: "source.txt", ChapterCount: 1, Chapters: []domain.AdaptationSource{{Chapter: 1, Title: "Source", SHA256: domain.ContentSignature([]byte("source chapter"))}}}
+	if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{Version: 1, SourceSignature: storepkg.AdaptationSourceSignature(manifest), Premise: "source premise", Characters: []domain.Character{{ID: "source-hero", Name: "Source Hero"}}, WorldRules: []domain.WorldRule{{ID: "source-rule", Category: "other", Rule: "source rule"}}}); err != nil {
+		t.Fatal(err)
+	}
+	intent := domain.AdaptationCoCreateIntent{Version: 1, RawRequest: "adapt faithfully", IntentHash: domain.ContentSignature([]byte("adaptation intent"))}
+	if err := st.Adaptation.SaveCoCreateIntent(intent); err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageTargetFoundationGenerating, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{Mode: domain.CoreCastModeAdaptation, DraftRevision: 1, DraftHash: "adaptation-draft", SourceSignature: storepkg.AdaptationSourceSignature(manifest), AdaptationIntentHash: intent.IntentHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := domain.CoreCastContract{Version: domain.CoreCastContractVersion, Mode: domain.CoreCastModeAdaptation, DraftRevision: binding.DraftRevision, DraftHash: binding.DraftHash, SourceSignature: binding.SourceSignature, AdaptationIntentHash: binding.AdaptationIntentHash, Members: []domain.CoreCastMember{{Character: domain.Character{ID: "hero", Name: "Hero", Role: "lead", Description: "target hero", Goal: "protect home", Motivation: "duty", Conflict: "fear", Arc: "grow", Traits: []string{"brave"}, Constraints: []string{"no betrayal"}}, Importance: domain.CoreCastImportanceProtagonist, Origin: domain.CoreCastOriginOriginal, MainlineFunction: "lead", InclusionRationale: "new adaptation protagonist", NoCoreRelationships: true}}}
+	savedContract, err := st.CoreCast.SaveCAS(contract, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.CoreCast.ConfirmCAS(savedContract.Revision, savedContract.ContentSignature, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	target, err := st.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.Premise = "target premise"
+	target.WorldRules = []domain.WorldRule{{ID: "target-rule", Category: "other", Rule: "target rule", Strength: domain.WorldRuleStrengthSoft}}
+	review, err := st.SaveAdaptationTargetFoundationCandidate(target, workflow.Revision, "adaptation brief", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, _ := domain.FoundationAuditSignature(current)
+	if _, err := st.ConfirmAdaptationTargetFoundation(current.Revision, audit); err != nil {
+		t.Fatal(err)
+	}
+	planBinding := review.Binding
+	planBinding.TargetFoundationAuditSignature = audit
+	chapterID := domain.LegacyStructureID("adaptation-foundation-test", domain.StructureKindChapter, "1")
+	plan := domain.AdaptationPlan{FoundationBinding: &planBinding, Granularity: domain.AdaptationGranularityChapter, RewritePolicy: "faithful", Brief: "adaptation brief", Chapters: []domain.AdaptationChapterPlan{{OutlineEntry: domain.OutlineEntry{ID: chapterID, CoreEvent: "event", Scenes: []string{"scene"}, Hook: "hook"}, Chapter: 1, Title: "Target", SourceChapters: []int{1}, SourceRange: domain.SourceRange{From: 1, To: 1}}}}
+	if err := st.Adaptation.SavePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Save(&domain.Progress{Phase: domain.PhaseOutline, Layered: true}); err != nil {
+		t.Fatal(err)
+	}
+	current, err = st.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workflow == nil {
+		t.Fatal(fmt.Errorf("workflow is missing"))
+	}
+	return st, current
 }

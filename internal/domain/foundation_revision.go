@@ -11,14 +11,15 @@ import (
 )
 
 const (
-	FoundationRevisionSchemaVersion              = 1
-	FoundationRevisionPolicyID                   = "ainovel.foundation-revision"
-	FoundationRevisionPolicyVersion              = "1"
-	RevisionModeFoundation          RevisionMode = "foundation"
-	FoundationArtifactID                         = "story-foundation"
-	FoundationArtifactKind                       = "foundation"
-	FoundationPlanningArtifactID                 = "foundation-planning-snapshot"
-	FoundationPlanningArtifactKind               = "foundation-planning"
+	FoundationRevisionSchemaVersion                       = 1
+	FoundationRevisionPolicyID                            = "ainovel.foundation-revision"
+	FoundationRevisionPolicyVersion                       = "1"
+	RevisionModeFoundation                   RevisionMode = "foundation"
+	FoundationArtifactID                                  = "story-foundation"
+	FoundationArtifactKind                                = "foundation"
+	FoundationPlanningArtifactID                          = "foundation-planning-snapshot"
+	FoundationPlanningArtifactKind                        = "foundation-planning"
+	FoundationAdaptationPlanningArtifactKind              = "foundation-adaptation-planning"
 )
 
 type FoundationEntityType string
@@ -135,6 +136,8 @@ type FoundationDependency struct {
 	FoundationSignature       string               `json:"foundation_signature"`
 	DependentContentSignature string               `json:"dependent_content_signature"`
 	EvidenceSource            string               `json:"evidence_source"`
+	SourceAnchorIDs           []string             `json:"source_anchor_ids,omitempty"`
+	ContractIDs               []string             `json:"contract_ids,omitempty"`
 }
 
 type FoundationDependencyManifest struct {
@@ -211,17 +214,59 @@ type FoundationAuditScope struct {
 }
 
 type FoundationImpact struct {
-	Version                        int                      `json:"version"`
-	EvidenceLevel                  string                   `json:"evidence_level"`
-	FullBook                       bool                     `json:"full_book"`
-	AffectedVolumeIDs              []string                 `json:"affected_volume_ids,omitempty"`
-	AffectedArcIDs                 []string                 `json:"affected_arc_ids,omitempty"`
-	AffectedChapterIDs             []string                 `json:"affected_chapter_ids,omitempty"`
-	Reasons                        []FoundationImpactReason `json:"reasons"`
-	RequiredAudits                 []FoundationAuditScope   `json:"required_audits"`
-	RequiresCoreCastConfirmation   bool                     `json:"requires_core_cast_confirmation"`
-	RequiresFoundationConfirmation bool                     `json:"requires_foundation_confirmation"`
-	Signature                      string                   `json:"signature"`
+	Version                        int                         `json:"version"`
+	EvidenceLevel                  string                      `json:"evidence_level"`
+	FullBook                       bool                        `json:"full_book"`
+	AffectedVolumeIDs              []string                    `json:"affected_volume_ids,omitempty"`
+	AffectedArcIDs                 []string                    `json:"affected_arc_ids,omitempty"`
+	AffectedChapterIDs             []string                    `json:"affected_chapter_ids,omitempty"`
+	Reasons                        []FoundationImpactReason    `json:"reasons"`
+	RequiredAudits                 []FoundationAuditScope      `json:"required_audits"`
+	RequiresCoreCastConfirmation   bool                        `json:"requires_core_cast_confirmation"`
+	RequiresFoundationConfirmation bool                        `json:"requires_foundation_confirmation"`
+	Adaptation                     *FoundationAdaptationImpact `json:"adaptation,omitempty"`
+	Signature                      string                      `json:"signature"`
+}
+
+// FoundationAdaptationImpact augments the common target-Foundation impact.
+// It contains only target planning consequences and immutable source/contract
+// references; source evidence is never represented as a writable artifact.
+type FoundationAdaptationImpact struct {
+	EvidenceLevel                      string   `json:"evidence_level"`
+	SourceAnchorIDs                    []string `json:"source_anchor_ids,omitempty"`
+	ContractIDs                        []string `json:"contract_ids,omitempty"`
+	ExpansionReasons                   []string `json:"expansion_reasons,omitempty"`
+	RequiresCoreCastReconfirmation     bool     `json:"requires_core_cast_reconfirmation"`
+	RequiresAdaptationPlanConfirmation bool     `json:"requires_adaptation_plan_confirmation"`
+	SourceFidelityReview               bool     `json:"source_fidelity_review"`
+	TargetConsistencyReview            bool     `json:"target_consistency_review"`
+	CharacterMappingReview             bool     `json:"character_mapping_review"`
+	PlanContractReview                 bool     `json:"plan_contract_review"`
+	OutlineQualityReview               bool     `json:"outline_quality_review"`
+	AffectedProposal                   bool     `json:"affected_proposal"`
+	AffectedOutline                    bool     `json:"affected_outline"`
+}
+
+type FoundationAdaptationBaseline struct {
+	SourceSignature             string `json:"source_signature"`
+	SourceManifestSignature     string `json:"source_manifest_signature"`
+	AdaptationIntentHash        string `json:"adaptation_intent_hash"`
+	WorkflowRevision            int    `json:"workflow_revision"`
+	WorkflowStage               string `json:"workflow_stage"`
+	PlanSemanticSignature       string `json:"plan_semantic_signature"`
+	PlanStoryContractSignature  string `json:"plan_story_contract_signature"`
+	PlanOutlineQualitySignature string `json:"plan_outline_quality_signature"`
+	CoreCastReconfirmed         bool   `json:"core_cast_reconfirmed"`
+}
+
+func (b FoundationAdaptationBaseline) Validate() error {
+	if len(b.SourceSignature) != 64 || len(b.SourceManifestSignature) != 64 ||
+		strings.TrimSpace(b.AdaptationIntentHash) == "" || b.WorkflowRevision <= 0 ||
+		strings.TrimSpace(b.WorkflowStage) == "" || len(b.PlanSemanticSignature) != 64 ||
+		len(b.PlanStoryContractSignature) != 64 || len(b.PlanOutlineQualitySignature) != 64 {
+		return fmt.Errorf("adaptation Foundation baseline is incomplete")
+	}
+	return nil
 }
 
 type FoundationPreviewValidation struct {
@@ -231,26 +276,27 @@ type FoundationPreviewValidation struct {
 }
 
 type FoundationRevisionPreview struct {
-	Version                     int                         `json:"version"`
-	ID                          string                      `json:"id"`
-	ProjectMode                 string                      `json:"project_mode"`
-	BaseRevision                int64                       `json:"base_revision"`
-	BaseAuditSignature          string                      `json:"base_audit_signature"`
-	BaseCoreCastSignature       string                      `json:"base_core_cast_signature"`
-	BasePlanningSignature       string                      `json:"base_planning_signature"`
-	Generation                  uint64                      `json:"generation"`
-	Base                        StoryFoundation             `json:"base"`
-	Candidate                   StoryFoundation             `json:"candidate"`
-	CandidateSignature          string                      `json:"candidate_signature"`
-	Diff                        FoundationDiff              `json:"diff"`
-	Impact                      FoundationImpact            `json:"impact"`
-	DependencySnapshotSignature string                      `json:"dependency_snapshot_signature,omitempty"`
-	Validation                  FoundationPreviewValidation `json:"validation"`
-	CanApply                    bool                        `json:"can_apply"`
-	ReadonlyReason              string                      `json:"readonly_reason,omitempty"`
-	CreatedAt                   string                      `json:"created_at"`
-	ExpiresAt                   string                      `json:"expires_at"`
-	Signature                   string                      `json:"signature"`
+	Version                     int                           `json:"version"`
+	ID                          string                        `json:"id"`
+	ProjectMode                 string                        `json:"project_mode"`
+	BaseRevision                int64                         `json:"base_revision"`
+	BaseAuditSignature          string                        `json:"base_audit_signature"`
+	BaseCoreCastSignature       string                        `json:"base_core_cast_signature"`
+	BasePlanningSignature       string                        `json:"base_planning_signature"`
+	AdaptationBaseline          *FoundationAdaptationBaseline `json:"adaptation_baseline,omitempty"`
+	Generation                  uint64                        `json:"generation"`
+	Base                        StoryFoundation               `json:"base"`
+	Candidate                   StoryFoundation               `json:"candidate"`
+	CandidateSignature          string                        `json:"candidate_signature"`
+	Diff                        FoundationDiff                `json:"diff"`
+	Impact                      FoundationImpact              `json:"impact"`
+	DependencySnapshotSignature string                        `json:"dependency_snapshot_signature,omitempty"`
+	Validation                  FoundationPreviewValidation   `json:"validation"`
+	CanApply                    bool                          `json:"can_apply"`
+	ReadonlyReason              string                        `json:"readonly_reason,omitempty"`
+	CreatedAt                   string                        `json:"created_at"`
+	ExpiresAt                   string                        `json:"expires_at"`
+	Signature                   string                        `json:"signature"`
 }
 
 func (p FoundationRevisionPreview) Validate() error {
@@ -275,6 +321,16 @@ func (p FoundationRevisionPreview) Validate() error {
 	}
 	if p.Base.Revision != p.BaseRevision {
 		return fmt.Errorf("foundation preview base revision mismatch")
+	}
+	if p.ProjectMode == "adaptation" {
+		if p.AdaptationBaseline == nil {
+			return fmt.Errorf("adaptation Foundation preview baseline is missing")
+		}
+		if err := p.AdaptationBaseline.Validate(); err != nil {
+			return err
+		}
+	} else if p.AdaptationBaseline != nil {
+		return fmt.Errorf("normal Foundation preview contains adaptation baseline")
 	}
 	unsigned := p
 	unsigned.Signature = ""
@@ -393,6 +449,16 @@ func (i FoundationImpact) Validate() error {
 	if i.Signature != ContentSignature(payload) {
 		return fmt.Errorf("foundation impact signature mismatch")
 	}
+	if i.Adaptation != nil {
+		if strings.TrimSpace(i.Adaptation.EvidenceLevel) == "" {
+			return fmt.Errorf("adaptation Foundation impact evidence level is required")
+		}
+		if i.RequiresFoundationConfirmation && (!i.Adaptation.SourceFidelityReview || !i.Adaptation.TargetConsistencyReview ||
+			!i.Adaptation.CharacterMappingReview || !i.Adaptation.PlanContractReview || !i.Adaptation.OutlineQualityReview ||
+			!i.Adaptation.AffectedProposal || !i.Adaptation.AffectedOutline) {
+			return fmt.Errorf("adaptation Foundation impact requires source-fidelity, target-consistency, character-mapping, plan-contract, proposal, and outline review")
+		}
+	}
 	return nil
 }
 
@@ -422,7 +488,7 @@ func (FoundationRevisionPolicy) ValidateCandidate(session RevisionSession, versi
 			version := &versions[index]
 			switch version.ArtifactID {
 			case FoundationPlanningArtifactID:
-				if version.ArtifactKind != FoundationPlanningArtifactKind || planning != nil {
+				if (version.ArtifactKind != FoundationPlanningArtifactKind && version.ArtifactKind != FoundationAdaptationPlanningArtifactKind) || planning != nil {
 					return fmt.Errorf("foundation planning candidate is duplicated or has the wrong kind")
 				}
 				planning = version
@@ -437,9 +503,19 @@ func (FoundationRevisionPolicy) ValidateCandidate(session RevisionSession, versi
 		if planning == nil || (len(session.Approvals) == 1 && len(versions) != 1) || (len(session.Approvals) >= 2 && len(versions) != 2) {
 			return fmt.Errorf("foundation planning stage requires its canonical planning snapshot")
 		}
-		var volumes []VolumeOutline
-		if err := json.Unmarshal(planning.Payload, &volumes); err != nil || len(volumes) == 0 {
-			return fmt.Errorf("foundation planning candidate is invalid: %w", err)
+		if planning.ArtifactKind == FoundationAdaptationPlanningArtifactKind {
+			var plan AdaptationPlan
+			if err := json.Unmarshal(planning.Payload, &plan); err != nil {
+				return fmt.Errorf("decode adaptation Foundation planning candidate: %w", err)
+			}
+			if plan.Status != AdaptationPlanStatusConfirmed || len(plan.Chapters) == 0 || !AdaptationOutlineQualityPassed(plan) {
+				return fmt.Errorf("adaptation Foundation planning candidate must be confirmed and carry a passed outline-quality receipt")
+			}
+		} else {
+			var volumes []VolumeOutline
+			if err := json.Unmarshal(planning.Payload, &volumes); err != nil || len(volumes) == 0 {
+				return fmt.Errorf("foundation planning candidate is invalid: %w", err)
+			}
 		}
 		return nil
 	}
@@ -462,7 +538,11 @@ func (FoundationRevisionPolicy) AuditExpectations(_ RevisionSession, versions []
 	}
 	scope := "foundation"
 	if versions[0].ArtifactID == FoundationPlanningArtifactID {
-		scope = "planning"
+		if versions[0].ArtifactKind == FoundationAdaptationPlanningArtifactKind {
+			scope = "adaptation_planning"
+		} else {
+			scope = "planning"
+		}
 	}
 	return []RevisionAuditExpectation{{
 		Scope: scope, ScopeID: versions[0].ArtifactID, ContentSignature: versions[0].ContentSignature,
@@ -486,6 +566,13 @@ func (FoundationRevisionPolicy) Route(session RevisionSession) (*RevisionRoute, 
 	if session.Stage != RevisionStageCandidateGenerating || len(session.Approvals) != 1 {
 		return nil, nil
 	}
+	for _, item := range session.Impact.Items {
+		if item.ArtifactKind == FoundationAdaptationPlanningArtifactKind {
+			// Adaptation regeneration is driven by the existing adaptation proposal
+			// pipeline under the Foundation revision's narrow mutation owner.
+			return nil, nil
+		}
+	}
 	return &RevisionRoute{Agent: "architect_long", Task: "continue the existing original-planning repair and signed audit route", Reason: "foundation_revision_planning", SessionID: session.ID, Revision: session.Revision, Generation: session.Generation}, nil
 }
 
@@ -497,6 +584,10 @@ func FoundationRevisionImpact(value FoundationImpact) (RevisionImpact, error) {
 	items := []RevisionImpactItem{
 		{ArtifactID: FoundationArtifactID, ArtifactKind: FoundationArtifactKind, Change: "publish reviewed canonical Foundation", Requirement: StructureImpactRequired, Cause: StructureImpactContentDependency},
 		{ArtifactID: FoundationPlanningArtifactID, ArtifactKind: FoundationPlanningArtifactKind, Change: "repair and re-audit affected original planning", Requirement: StructureImpactRequired, Cause: StructureImpactContentDependency},
+	}
+	if value.Adaptation != nil {
+		items[1].ArtifactKind = FoundationAdaptationPlanningArtifactKind
+		items[1].Change = "regenerate and re-audit affected adaptation proposal and outline"
 	}
 	if value.FullBook {
 		items = append(items, RevisionImpactItem{ArtifactID: "book", ArtifactKind: "book", Change: "rebuild planning from revised foundation", Requirement: StructureImpactRequired, Cause: StructureImpactContentDependency})
