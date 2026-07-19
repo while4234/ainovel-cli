@@ -773,7 +773,7 @@ func (s *Store) ensureNormalPlanningReview(kind string, state rollbackState) err
 	if err != nil {
 		return err
 	}
-	return s.RunMeta.SetPlanningReview(review)
+	return s.RunMeta.setPlanningReviewAuthoritative(review)
 }
 
 func rollbackPlanningReview(kind string, state rollbackState) (*domain.PlanningReview, error) {

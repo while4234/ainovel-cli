@@ -12,10 +12,11 @@ import (
 
 // WorldStore 管理时间线、伏笔、人物关系、状态变化、世界规则、风格规则、审阅和交接。
 type WorldStore struct {
-	io                 *IO
-	foundation         *FoundationStore
-	migration          *structureMigration
-	withFormalMutation func(string, *structureMigration, func() error) error
+	io                            *IO
+	foundation                    *FoundationStore
+	migration                     *structureMigration
+	withFormalMutation            func(string, *structureMigration, func() error) error
+	withFoundationGenerationGuard func(string, func() error) error
 }
 
 func NewWorldStore(io *IO, migrations ...*structureMigration) *WorldStore {
@@ -686,7 +687,10 @@ func (s *WorldStore) LoadStateChanges() ([]domain.StateChange, error) {
 // SaveWorldRules 全量写入 world_rules.json + world_rules.md（原子写入）。
 func (s *WorldStore) SaveWorldRules(rules []domain.WorldRule) error {
 	if s.foundation != nil {
-		return s.foundation.UpdateWorldRules(rules)
+		if s.withFoundationGenerationGuard != nil {
+			return s.withFoundationGenerationGuard("save foundation world rules", func() error { return s.foundation.updateWorldRules(rules) })
+		}
+		return s.foundation.updateWorldRules(rules)
 	}
 	return s.io.WithWriteLock(func() error {
 		if err := s.io.WriteJSONUnlocked("world_rules.json", rules); err != nil {

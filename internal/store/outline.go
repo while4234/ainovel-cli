@@ -11,11 +11,13 @@ import (
 
 // OutlineStore 管理故事前提、大纲（扁平/分层）和指南针。
 type OutlineStore struct {
-	io                 *IO
-	foundation         *FoundationStore
-	identity           structureIdentity
-	migration          *structureMigration
-	withLegacyMutation func(string, *structureMigration, func() error) error
+	io                        *IO
+	foundation                *FoundationStore
+	identity                  structureIdentity
+	migration                 *structureMigration
+	withLegacyMutation        func(string, *structureMigration, func() error) error
+	withFormalGate            func(string, func() error) error
+	guardFoundationGeneration func(string, func() error) error
 }
 
 func NewOutlineStore(io *IO, identity structureIdentity, migrations ...*structureMigration) *OutlineStore {
@@ -29,7 +31,7 @@ func NewOutlineStore(io *IO, identity structureIdentity, migrations ...*structur
 // SavePremise 保存故事前提到 premise.md。
 func (s *OutlineStore) SavePremise(content string) error {
 	if s.foundation != nil {
-		return s.foundation.UpdatePremise(content)
+		return s.withFoundationGenerationGuard("save premise", func() error { return s.foundation.updatePremise(content) })
 	}
 	return s.io.WriteMarkdown("premise.md", content)
 }
@@ -49,7 +51,9 @@ func (s *OutlineStore) LoadPremise() (string, error) {
 
 // SaveOutline 同时保存 outline.json 和 outline.md（原子写入）。
 func (s *OutlineStore) SaveOutline(entries []domain.OutlineEntry) error {
-	return s.withLegacyFormalMutation("save flat outline", func() error { return s.saveOutline(entries) })
+	return s.withLegacyFormalMutation("save flat outline", func() error {
+		return s.withAuthoritativeFormalGate("save flat outline", func() error { return s.saveOutline(entries) })
+	})
 }
 
 func (s *OutlineStore) saveOutline(entries []domain.OutlineEntry) error {
@@ -152,7 +156,9 @@ func (s *OutlineStore) GetChapterOutline(chapter int) (*domain.OutlineEntry, err
 
 // SaveLayeredOutline 保存分层大纲（长篇模式，原子写入）。
 func (s *OutlineStore) SaveLayeredOutline(volumes []domain.VolumeOutline) error {
-	return s.withLegacyFormalMutation("save layered outline", func() error { return s.saveLayeredOutline(volumes) })
+	return s.withLegacyFormalMutation("save layered outline", func() error {
+		return s.withAuthoritativeFormalGate("save layered outline", func() error { return s.saveLayeredOutline(volumes) })
+	})
 }
 
 func (s *OutlineStore) saveLayeredOutline(volumes []domain.VolumeOutline) error {
@@ -254,6 +260,20 @@ func (s *OutlineStore) withLegacyFormalMutation(operation string, mutation func(
 	return s.withLegacyMutation(operation, s.migration, mutation)
 }
 
+func (s *OutlineStore) withAuthoritativeFormalGate(operation string, mutation func() error) error {
+	if s.withFormalGate == nil {
+		return mutation()
+	}
+	return s.withFormalGate(operation, mutation)
+}
+
+func (s *OutlineStore) withFoundationGenerationGuard(operation string, mutation func() error) error {
+	if s.guardFoundationGeneration == nil {
+		return mutation()
+	}
+	return s.guardFoundationGeneration(operation, mutation)
+}
+
 func outlineMigrationPayloads(entries []domain.OutlineEntry, layered []domain.VolumeOutline) ([]migrationPayload, error) {
 	payloads := make([]migrationPayload, 0, 4)
 	outlineJSON, err := json.MarshalIndent(entries, "", "  ")
@@ -297,7 +317,9 @@ func layeredOutlineMigrationPayloads(volumes []domain.VolumeOutline) ([]migratio
 
 // ClearLayeredOutline 清理分层大纲文件。
 func (s *OutlineStore) ClearLayeredOutline() error {
-	return s.withLegacyFormalMutation("clear layered outline", s.clearLayeredOutline)
+	return s.withLegacyFormalMutation("clear layered outline", func() error {
+		return s.withAuthoritativeFormalGate("clear layered outline", s.clearLayeredOutline)
+	})
 }
 
 func (s *OutlineStore) clearLayeredOutline() error {
@@ -791,7 +813,11 @@ func (s *OutlineStore) SaveCompass(compass domain.StoryCompass) error {
 	if compass.EndingDirection == "" {
 		return fmt.Errorf("ending_direction 不能为空")
 	}
-	return s.io.WriteJSON("meta/compass.json", compass)
+	return s.withLegacyFormalMutation("save story compass", func() error {
+		return s.withAuthoritativeFormalGate("save story compass", func() error {
+			return s.io.WriteJSON("meta/compass.json", compass)
+		})
+	})
 }
 
 // LoadCompass 读取终局方向指南针。

@@ -1529,6 +1529,138 @@ func rollbackTestWebAdaptationProposal() domain.AdaptationPlan {
 	}
 }
 
+func TestConfirmCoCreateFoundationResumeFailureRestoresRetryablePendingStateAcrossRestart(t *testing.T) {
+	outputDir := t.TempDir()
+	pending := pendingFoundationReviewForWebTest(t, outputDir)
+	firstHost := newFakeProjectHost()
+	firstHost.resumeErr = errors.New("injected resume failure")
+	first, err := NewProjectSession(ProjectManifest{ID: "foundation-retry", OutputDir: outputDir}, firstHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.ConfirmCoCreateFoundation(pending.FoundationRevision, pending.FoundationAuditSignature); err == nil || !strings.Contains(err.Error(), "injected resume failure") {
+		t.Fatalf("first confirmation error=%v", err)
+	}
+	first.Close()
+
+	restartedStore := storepkg.NewStore(outputDir)
+	restored, err := restartedStore.RunMeta.PlanningReview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored == nil || restored.Status != domain.PlanningReviewStatusPending || restored.FoundationStatus != domain.FoundationReviewStatusPending || restored.FoundationConfirmedAt != "" {
+		t.Fatalf("resume failure persisted non-retryable state: %+v", restored)
+	}
+
+	secondHost := newFakeProjectHost()
+	second, err := NewProjectSession(ProjectManifest{ID: "foundation-retry", OutputDir: outputDir}, secondHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if _, err := second.ConfirmCoCreateFoundation(restored.FoundationRevision, restored.FoundationAuditSignature); err != nil {
+		t.Fatalf("retry after restart failed: %v", err)
+	}
+	finalReview, err := storepkg.NewStore(outputDir).RunMeta.PlanningReview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalReview == nil || finalReview.Status != domain.PlanningReviewStatusCollecting || finalReview.Kind != domain.PlanningReviewKindBlueprint ||
+		finalReview.FoundationStatus != domain.FoundationReviewStatusApproved || finalReview.FoundationConfirmedAt == "" {
+		t.Fatalf("successful retry did not advance to approved blueprint: %+v", finalReview)
+	}
+}
+
+func TestConfirmCoCreateFoundationStaleFailureRollbackPreservesNewerRevise(t *testing.T) {
+	outputDir := t.TempDir()
+	pending := pendingFoundationReviewForWebTest(t, outputDir)
+	fake := newFakeProjectHost()
+	fake.resumeStarted = make(chan struct{})
+	fake.releaseResume = make(chan struct{})
+	fake.resumeErr = errors.New("injected late resume failure")
+	session, err := NewProjectSession(ProjectManifest{ID: "foundation-stale-rollback", OutputDir: outputDir}, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	confirmDone := make(chan error, 1)
+	go func() {
+		_, confirmErr := session.ConfirmCoCreateFoundation(pending.FoundationRevision, pending.FoundationAuditSignature)
+		confirmDone <- confirmErr
+	}()
+	select {
+	case <-fake.resumeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("confirmation did not reach Host resume after atomic persistence")
+	}
+	revised, err := storepkg.NewStore(outputDir).ReviseFoundation("newer feedback must survive stale rollback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(fake.releaseResume)
+	if err := <-confirmDone; err == nil || !strings.Contains(err.Error(), "injected late resume failure") {
+		t.Fatalf("confirmation failure=%v", err)
+	}
+	current, err := storepkg.NewStore(outputDir).RunMeta.PlanningReview()
+	if err != nil || current == nil || current.FoundationGeneration != pending.FoundationGeneration+1 ||
+		current.FoundationFeedback != revised.FoundationFeedback || current.FoundationStatus != domain.FoundationReviewStatusCollecting {
+		t.Fatalf("stale rollback overwrote newer revise: review=%+v err=%v", current, err)
+	}
+}
+
+func pendingFoundationReviewForWebTest(t *testing.T, outputDir string) *domain.PlanningReview {
+	t.Helper()
+	st := storepkg.NewStore(outputDir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{Mode: domain.CoreCastModeNormal, DraftRevision: 1, DraftHash: "draft-hash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := domain.CoreCastContract{
+		Version: domain.CoreCastContractVersion, Mode: domain.CoreCastModeNormal, DraftRevision: binding.DraftRevision, DraftHash: binding.DraftHash,
+		Members: []domain.CoreCastMember{{
+			Character:  domain.Character{ID: "lin", Name: "Lin", Role: "hero", Goal: "save home", Motivation: "duty", Conflict: "fear", Arc: "accept leadership", Traits: []string{"brave"}, Constraints: []string{"will not betray friends"}},
+			Importance: domain.CoreCastImportanceProtagonist, Origin: domain.CoreCastOriginOriginal, MainlineFunction: "drives the central conflict", NoCoreRelationships: true,
+		}},
+	}
+	saved, err := st.CoreCast.SaveCAS(contract, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.CoreCast.ConfirmCAS(saved.Revision, saved.ContentSignature, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	review := &domain.PlanningReview{Brief: "retry fixture", StartPrompt: "start"}
+	if _, err := st.BeginFoundationReview(review); err != nil {
+		t.Fatal(err)
+	}
+	fence := &storepkg.FoundationGenerationFence{Generation: review.FoundationGeneration, BaseRevision: review.FoundationBaseRevision}
+	foundation, err := st.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.SaveFoundationPremise(fence, "A complete premise"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.SaveFoundationCharacters(fence, foundation.Characters); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.SaveFoundationRelationships(fence, foundation.Relationships); err != nil {
+		t.Fatal(err)
+	}
+	review, err = st.SaveFoundationWorldRules(fence, []domain.WorldRule{{ID: "rule-1", Rule: "No reset", Strength: domain.WorldRuleStrengthHard}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return review
+}
+
 type fakeProjectHost struct {
 	mu sync.Mutex
 

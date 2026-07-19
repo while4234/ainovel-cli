@@ -41,7 +41,7 @@ func StructureTopologySignature(volumes []VolumeOutline) string {
 // BindOriginalPlanningAudit captures the exact topology and scoped content
 // reviewed by an original-fiction audit. It never accepts or emits source-
 // novel fields.
-func BindOriginalPlanningAudit(audit *OriginalPlanningAudit, volumes []VolumeOutline) error {
+func BindOriginalPlanningAudit(audit *OriginalPlanningAudit, volumes []VolumeOutline, foundationSignatures ...string) error {
 	if audit == nil {
 		return fmt.Errorf("original planning audit is required")
 	}
@@ -66,6 +66,9 @@ func BindOriginalPlanningAudit(audit *OriginalPlanningAudit, volumes []VolumeOut
 	}
 	audit.StructureSignature = StructureTopologySignature(structure)
 	audit.ContentSignature = ContentSignature(payload)
+	if len(foundationSignatures) > 0 {
+		audit.FoundationSignature = strings.TrimSpace(foundationSignatures[0])
+	}
 	return nil
 }
 
@@ -163,8 +166,14 @@ func validateOriginalPlanningBindingStructure(scope string, volumes []VolumeOutl
 	return nil
 }
 
-func OriginalPlanningAuditCurrent(audit OriginalPlanningAudit, volumes []VolumeOutline) bool {
+func OriginalPlanningAuditCurrent(audit OriginalPlanningAudit, volumes []VolumeOutline, foundationSignature string) bool {
 	if audit.Verdict != "pass" {
+		return false
+	}
+	if strings.TrimSpace(audit.FoundationSignature) == "" {
+		return false
+	}
+	if audit.FoundationSignature != strings.TrimSpace(foundationSignature) {
 		return false
 	}
 	return OriginalPlanningAuditBindingCurrent(audit, volumes)

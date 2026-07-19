@@ -105,14 +105,14 @@ func TestFoundationReviewMarkerDoesNotIncreaseSemanticRevision(t *testing.T) {
 	relationships := []domain.CharacterRelationship{{
 		ID: "bond", SourceCharacterID: "lin", TargetCharacterID: "mara", Type: domain.RelationshipTypeAlly,
 	}}
-	if err := store.Foundation.UpdateRelationships(relationships, false); err != nil {
+	if err := store.Foundation.updateRelationships(relationships, false); err != nil {
 		t.Fatal(err)
 	}
 	before, err := store.Foundation.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Foundation.UpdateRelationships(relationships, true); err != nil {
+	if err := store.Foundation.updateRelationships(relationships, true); err != nil {
 		t.Fatal(err)
 	}
 	after, err := store.Foundation.Load()
@@ -345,7 +345,7 @@ func TestPlannedRelationshipsDoNotTouchRuntimeOrAdaptationSource(t *testing.T) {
 	}
 	sourceSignatureBefore := fileDigest(sourceBytesBefore)
 	planned := []domain.CharacterRelationship{{SourceCharacterID: "lin", TargetCharacterID: "mara", Type: domain.RelationshipTypeAlly}}
-	if err := store.Foundation.UpdateRelationships(planned, false); err != nil {
+	if err := store.Foundation.updateRelationships(planned, false); err != nil {
 		t.Fatal(err)
 	}
 	gotRuntime, err := store.World.LoadRelationships()

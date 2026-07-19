@@ -885,6 +885,9 @@ func (s *ProjectSession) StartQuick(text string, targetTotalWords int) error {
 	if err := host.RequireCoreCastGate(storepkg.NewStore(s.manifest.OutputDir), domain.CoreCastModeNormal, true); err != nil {
 		return err
 	}
+	if err := storepkg.NewStore(s.manifest.OutputDir).RequireConfirmedFoundation(); err != nil {
+		return err
+	}
 
 	plan, err := startup.PrepareQuick(startup.Request{
 		Mode:             startup.ModeQuick,
@@ -2193,7 +2196,7 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 		if err != nil {
 			return state.apiState(), err
 		}
-		if err := s.prepareNormalCoCreateDraft(plan, ""); err != nil {
+		if err := s.prepareNormalFoundationGeneration(plan, ""); err != nil {
 			return state.apiState(), err
 		}
 	}
@@ -2203,6 +2206,31 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 	api.Active = false
 	s.AppendSnapshot()
 	return api, nil
+}
+
+func (s *ProjectSession) prepareNormalFoundationGeneration(plan startup.Plan, createdAt string) error {
+	if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
+		return err
+	}
+	if err := s.persistWordBudget(plan.WordBudget); err != nil {
+		return err
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	review, err := s.normalCoCreatePlanningReview(plan, createdAt, domain.PlanningReviewStatusCollecting)
+	if err != nil {
+		return err
+	}
+	transition, err := st.BeginFoundationReview(review)
+	if err != nil {
+		return fmt.Errorf("begin foundation review: %w", err)
+	}
+	if err := s.host.StartPrepared(plan.StartPrompt); err != nil {
+		if rollbackErr := st.RollbackFoundationReview(transition); rollbackErr != nil {
+			return fmt.Errorf("start prepared: %v; rollback foundation review: %w", err, rollbackErr)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *ProjectSession) commitContinuationCoCreate(ctx context.Context) (webCoCreateState, error) {
@@ -2342,6 +2370,9 @@ func (s *ProjectSession) prepareNormalCoCreateDraft(plan startup.Plan, createdAt
 }
 
 func (s *ProjectSession) prepareNormalCoCreatePlanning(plan startup.Plan, createdAt string, rollback *domain.PlanningReview) error {
+	if err := storepkg.NewStore(s.manifest.OutputDir).RequireConfirmedFoundation(); err != nil {
+		return err
+	}
 	if err := s.host.PrepareUserRules(plan.RawPrompt); err != nil {
 		return err
 	}
@@ -2364,8 +2395,16 @@ func (s *ProjectSession) prepareNormalCoCreatePlanning(plan startup.Plan, create
 }
 
 func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan, createdAt, status string) error {
+	review, err := s.normalCoCreatePlanningReview(plan, createdAt, status)
+	if err != nil {
+		return err
+	}
+	return storepkg.NewStore(s.manifest.OutputDir).RunMeta.SetPlanningReview(review)
+}
+
+func (s *ProjectSession) normalCoCreatePlanningReview(plan startup.Plan, createdAt, status string) (*domain.PlanningReview, error) {
 	if s == nil {
-		return fmt.Errorf("project session is nil")
+		return nil, fmt.Errorf("project session is nil")
 	}
 	st := storepkg.NewStore(s.manifest.OutputDir)
 	budget := plan.WordBudget
@@ -2394,7 +2433,27 @@ func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan, cre
 		CreatedAt:        createdAt,
 		UpdatedAt:        now,
 	}
-	return st.RunMeta.SetPlanningReview(review)
+	if existing, err := st.RunMeta.PlanningReview(); err == nil && existing != nil {
+		preserveFoundationReviewBinding(review, existing)
+	} else if err != nil {
+		return nil, err
+	}
+	return review, nil
+}
+
+func preserveFoundationReviewBinding(target, source *domain.PlanningReview) {
+	if target == nil || source == nil {
+		return
+	}
+	target.FoundationStatus = source.FoundationStatus
+	target.FoundationRevision = source.FoundationRevision
+	target.FoundationAuditSignature = source.FoundationAuditSignature
+	target.CoreCastSignature = source.CoreCastSignature
+	target.FoundationGeneration = source.FoundationGeneration
+	target.FoundationBaseRevision = source.FoundationBaseRevision
+	target.FoundationSections = append([]string(nil), source.FoundationSections...)
+	target.FoundationFeedback = source.FoundationFeedback
+	target.FoundationConfirmedAt = source.FoundationConfirmedAt
 }
 
 func (s *ProjectSession) clearNormalCoCreatePlanningReview() error {
@@ -2433,6 +2492,9 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, req webCoCr
 		return fmt.Errorf("finish the active co-create session before revising the planning review")
 	}
 	st := storepkg.NewStore(s.manifest.OutputDir)
+	if err := st.RequireConfirmedFoundation(); err != nil {
+		return err
+	}
 	review, err := st.RunMeta.PlanningReview()
 	if err != nil {
 		return fmt.Errorf("read planning review: %w", err)
@@ -2804,6 +2866,9 @@ func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
 	defer unlock()
 
 	st := storepkg.NewStore(s.manifest.OutputDir)
+	if err := st.RequireConfirmedFoundation(); err != nil {
+		return "", err
+	}
 	review, err := st.RunMeta.PlanningReview()
 	if err != nil {
 		return "", fmt.Errorf("read planning review: %w", err)
@@ -2850,7 +2915,13 @@ func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
 			return "", fmt.Errorf("planning foundation is incomplete: %s", strings.Join(missing, ", "))
 		}
 	}
-	if err := st.RunMeta.ClearPlanningReview(); err != nil {
+	if review.FoundationStatus == domain.FoundationReviewStatusApproved {
+		review.Status = domain.PlanningReviewStatusApproved
+		review.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := st.RunMeta.SetPlanningReview(review); err != nil {
+			return "", fmt.Errorf("retain approved foundation binding: %w", err)
+		}
+	} else if err := st.RunMeta.ClearPlanningReview(); err != nil {
 		return "", fmt.Errorf("clear planning review: %w", err)
 	}
 	if review.Kind != domain.PlanningReviewKindVolumeSplit {
@@ -2870,6 +2941,49 @@ func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
 	label, err := s.host.Resume()
 	s.AppendSnapshot()
 	return label, err
+}
+
+func (s *ProjectSession) ConfirmCoCreateFoundation(expectedRevision int64, expectedAuditSignature string) (string, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	_, transition, err := st.ConfirmFoundationForPlanning(expectedRevision, expectedAuditSignature)
+	if err != nil {
+		return "", err
+	}
+	label, err := s.host.Resume()
+	if err != nil {
+		if rollbackErr := st.RollbackFoundationConfirmation(transition); rollbackErr != nil {
+			var reviewErr *storepkg.FoundationReviewError
+			if !errors.As(rollbackErr, &reviewErr) || reviewErr.Code != storepkg.FoundationReviewErrorStale {
+				return "", errors.Join(err, fmt.Errorf("restore retryable pending foundation review: %w", rollbackErr))
+			}
+		}
+		return "", err
+	}
+	s.AppendSnapshot()
+	return label, nil
+}
+
+func (s *ProjectSession) ReviseCoCreateFoundation(feedback string) (string, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	if _, err := st.ReviseFoundation(feedback); err != nil {
+		return "", err
+	}
+	label, err := s.host.Resume()
+	if err != nil {
+		return "", err
+	}
+	s.AppendSnapshot()
+	return label, nil
 }
 
 func normalDetailedOutlineInstruction(targetWords int) string {

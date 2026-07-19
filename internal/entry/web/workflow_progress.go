@@ -171,7 +171,7 @@ func currentWorkflowModelStage(step string) string {
 		return bootstrap.StageCoCreate
 	case "source", "source_baseline", "analysis":
 		return bootstrap.StageSourceAnalysis
-	case "structure", "volume_plan", "proposal", "volumes":
+	case "foundation", "structure", "volume_plan", "proposal", "volumes":
 		return bootstrap.StageSkeleton
 	case "planning_review", "chapter_outline", "proposal_review", "outlines":
 		return bootstrap.StageDetailOutline
@@ -227,6 +227,7 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 		{ID: "creative_intent", Label: "创意输入", Status: WorkflowStatusIdle},
 		{ID: "structure", Label: "篇幅与结构", Status: WorkflowStatusIdle},
 		{ID: "clarification", Label: "澄清决策", Status: WorkflowStatusIdle},
+		{ID: "foundation", Label: "完整设定确认", Status: WorkflowStatusIdle},
 		{ID: "volume_plan", Label: "分卷规划与审核", Status: WorkflowStatusIdle},
 		{ID: "chapter_outline", Label: "章节细纲与审核", Status: WorkflowStatusIdle},
 		{ID: "writing", Label: "正文创作", Status: WorkflowStatusIdle, Current: snapshot.CompletedCount, Total: snapshot.TotalChapters},
@@ -305,6 +306,12 @@ func normalPlanningReviewProgress(progress WorkflowProgress, review *host.Planni
 		status = WorkflowStatusWaitingConfirmation
 	}
 	switch review.Kind {
+	case domain.PlanningReviewKindFoundation:
+		var action *WorkflowNextAction
+		if status == WorkflowStatusWaitingConfirmation {
+			action = nextWorkflowAction(progress, "confirm_foundation", "确认完整设定", true)
+		}
+		return "foundation", status, action
 	case domain.PlanningReviewKindBlueprint:
 		var action *WorkflowNextAction
 		if status == WorkflowStatusWaitingConfirmation {

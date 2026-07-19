@@ -1,7 +1,9 @@
 package store
 
 import (
+	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -14,9 +16,20 @@ func NewRunMetaStore(io *IO) *RunMetaStore { return &RunMetaStore{io: io} }
 
 // Save 保存运行元信息到 meta/run.json。
 func (s *RunMetaStore) Save(meta domain.RunMeta) error {
-	s.io.mu.Lock()
-	defer s.io.mu.Unlock()
-	return s.saveUnlocked(meta)
+	return s.io.WithWriteLock(func() error {
+		current, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		var currentReview *domain.PlanningReview
+		if current != nil {
+			currentReview = current.PlanningReview
+		}
+		if err := validateOrdinaryPlanningReviewTransition(currentReview, meta.PlanningReview); err != nil {
+			return fmt.Errorf("save run metadata: %w", err)
+		}
+		return s.saveUnlocked(meta)
+	})
 }
 
 // Load 读取运行元信息。
@@ -161,14 +174,69 @@ func (s *RunMetaStore) SetPlanningReview(review *domain.PlanningReview) error {
 		if meta == nil {
 			meta = &domain.RunMeta{}
 		}
-		if review == nil {
-			meta.PlanningReview = nil
-			return s.saveUnlocked(*meta)
+		if err := validateOrdinaryPlanningReviewTransition(meta.PlanningReview, review); err != nil {
+			return err
 		}
-		cp := *review
-		meta.PlanningReview = &cp
-		return s.saveUnlocked(*meta)
+		return s.setPlanningReviewUnlocked(meta, review)
 	})
+}
+
+func (s *RunMetaStore) setPlanningReviewAuthoritative(review *domain.PlanningReview) error {
+	return s.io.WithWriteLock(func() error {
+		meta, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if meta == nil {
+			meta = &domain.RunMeta{}
+		}
+		return s.setPlanningReviewUnlocked(meta, review)
+	})
+}
+
+func (s *RunMetaStore) setPlanningReviewUnlocked(meta *domain.RunMeta, review *domain.PlanningReview) error {
+	if review == nil {
+		meta.PlanningReview = nil
+		return s.saveUnlocked(*meta)
+	}
+	cp := *review
+	cp.FoundationSections = append([]string(nil), review.FoundationSections...)
+	meta.PlanningReview = &cp
+	return s.saveUnlocked(*meta)
+}
+
+func validateOrdinaryPlanningReviewTransition(current, next *domain.PlanningReview) error {
+	if !planningReviewHasFoundationAuthority(current) && !planningReviewHasFoundationAuthority(next) {
+		return nil
+	}
+	if current == nil || next == nil || current.FoundationStatus != domain.FoundationReviewStatusApproved ||
+		next.FoundationStatus != domain.FoundationReviewStatusApproved || next.Kind == domain.PlanningReviewKindFoundation ||
+		!sameFoundationAuthorityBinding(current, next) {
+		return fmt.Errorf("foundation authority is Store-owned and cannot be created, cleared, or replaced by ordinary RunMeta persistence")
+	}
+	return nil
+}
+
+func planningReviewHasFoundationAuthority(review *domain.PlanningReview) bool {
+	return review != nil && (review.FoundationStatus != "" || review.FoundationRevision != 0 ||
+		review.FoundationAuditSignature != "" || review.CoreCastSignature != "" ||
+		review.FoundationGeneration != 0 || review.FoundationBaseRevision != 0 ||
+		len(review.FoundationSections) != 0 || review.FoundationFeedback != "" || review.FoundationConfirmedAt != "")
+}
+
+func sameFoundationAuthorityBinding(left, right *domain.PlanningReview) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	return left.FoundationStatus == right.FoundationStatus &&
+		left.FoundationRevision == right.FoundationRevision &&
+		left.FoundationAuditSignature == right.FoundationAuditSignature &&
+		left.CoreCastSignature == right.CoreCastSignature &&
+		left.FoundationGeneration == right.FoundationGeneration &&
+		left.FoundationBaseRevision == right.FoundationBaseRevision &&
+		left.FoundationFeedback == right.FoundationFeedback &&
+		left.FoundationConfirmedAt == right.FoundationConfirmedAt &&
+		slices.Equal(left.FoundationSections, right.FoundationSections)
 }
 
 func (s *RunMetaStore) PlanningReview() (*domain.PlanningReview, error) {
@@ -177,6 +245,7 @@ func (s *RunMetaStore) PlanningReview() (*domain.PlanningReview, error) {
 		return nil, err
 	}
 	cp := *meta.PlanningReview
+	cp.FoundationSections = append([]string(nil), meta.PlanningReview.FoundationSections...)
 	return &cp, nil
 }
 

@@ -14,8 +14,9 @@ import (
 const originalPlanningAuditsFile = "meta/original_planning/audits.json"
 
 type OriginalPlanningAuditStore struct {
-	io      *IO
-	outline *OutlineStore
+	io                     *IO
+	outline                *OutlineStore
+	withApprovedFoundation func(func(int64, string) error) error
 }
 
 type OriginalPlanningWork struct {
@@ -50,15 +51,26 @@ func (s *OriginalPlanningAuditStore) Load() ([]domain.OriginalPlanningAudit, err
 }
 
 func (s *OriginalPlanningAuditStore) Save(audit domain.OriginalPlanningAudit) error {
-	if audit.Verdict == "pass" && (audit.StructureSignature == "" || audit.ContentSignature == "") && s.outline != nil {
-		volumes, err := s.outline.LoadLayeredOutline()
-		if err != nil {
-			return err
+	if audit.Verdict == "pass" && s.outline != nil {
+		if s.withApprovedFoundation == nil {
+			return fmt.Errorf("approved story foundation authority is required to save a passing original planning audit")
 		}
-		if err := domain.BindOriginalPlanningAudit(&audit, volumes); err != nil {
-			return err
-		}
+		return s.withApprovedFoundation(func(foundationRevision int64, foundationSignature string) error {
+			volumes, err := s.outline.LoadLayeredOutline()
+			if err != nil {
+				return err
+			}
+			if err := domain.BindOriginalPlanningAudit(&audit, volumes, foundationSignature); err != nil {
+				return err
+			}
+			audit.FoundationRevision = foundationRevision
+			return s.save(audit)
+		})
 	}
+	return s.save(audit)
+}
+
+func (s *OriginalPlanningAuditStore) save(audit domain.OriginalPlanningAudit) error {
 	return s.io.WithWriteLock(func() error {
 		var audits []domain.OriginalPlanningAudit
 		if err := s.io.ReadJSONUnlocked(originalPlanningAuditsFile, &audits); err != nil && !os.IsNotExist(err) {
@@ -127,22 +139,30 @@ func (s *OriginalPlanningAuditStore) loadCurrent() ([]domain.OriginalPlanningAud
 	if err != nil || s.outline == nil {
 		return audits, err
 	}
-	volumes, err := s.outline.LoadLayeredOutline()
-	if err != nil {
-		return nil, err
+	if s.withApprovedFoundation == nil {
+		return nil, fmt.Errorf("approved story foundation authority is required to load current original planning audits")
 	}
-	current := make([]domain.OriginalPlanningAudit, 0, len(audits))
-	for _, audit := range audits {
-		if audit.Verdict == "pass" && domain.OriginalPlanningAuditCurrent(audit, volumes) {
-			current = append(current, audit)
-			continue
+	var current []domain.OriginalPlanningAudit
+	err = s.withApprovedFoundation(func(foundationRevision int64, foundationSignature string) error {
+		volumes, loadErr := s.outline.LoadLayeredOutline()
+		if loadErr != nil {
+			return loadErr
 		}
-		legacyUnsignedRevise := audit.Verdict == "revise" && (audit.StructureSignature == "" || audit.ContentSignature == "")
-		if audit.Verdict == "revise" && (legacyUnsignedRevise || domain.OriginalPlanningAuditBindingCurrent(audit, volumes)) {
-			current = append(current, audit)
+		current = make([]domain.OriginalPlanningAudit, 0, len(audits))
+		for _, audit := range audits {
+			if audit.Verdict == "pass" && audit.FoundationRevision == foundationRevision &&
+				domain.OriginalPlanningAuditCurrent(audit, volumes, foundationSignature) {
+				current = append(current, audit)
+				continue
+			}
+			legacyUnsignedRevise := audit.Verdict == "revise" && (audit.StructureSignature == "" || audit.ContentSignature == "")
+			if audit.Verdict == "revise" && (legacyUnsignedRevise || domain.OriginalPlanningAuditBindingCurrent(audit, volumes)) {
+				current = append(current, audit)
+			}
 		}
-	}
-	return current, nil
+		return nil
+	})
+	return current, err
 }
 
 // NextWork returns the next bounded generation/audit action. The order is

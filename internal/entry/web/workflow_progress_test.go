@@ -60,6 +60,24 @@ func TestNormalWorkflowProgressWaitsForPlanningConfirmation(t *testing.T) {
 	}
 }
 
+func TestNormalWorkflowProgressPresentsFoundationCheckpointBeforeFormalOutline(t *testing.T) {
+	progress := normalWorkflowProgress("project-foundation", host.UISnapshot{
+		PlanningReview: &host.PlanningReviewSummary{
+			Status: domain.PlanningReviewStatusPending,
+			Kind:   domain.PlanningReviewKindFoundation,
+		},
+	}, nil)
+	if progress.CurrentStep != "foundation" || progress.Status != WorkflowStatusWaitingConfirmation {
+		t.Fatalf("foundation progress = step %q status %q", progress.CurrentStep, progress.Status)
+	}
+	if progress.NextAction == nil || progress.NextAction.ID != "confirm_foundation" || !progress.NextAction.RequiresConfirmation {
+		t.Fatalf("foundation next action = %+v", progress.NextAction)
+	}
+	if got := currentWorkflowModelStage("foundation"); got != bootstrap.StageSkeleton {
+		t.Fatalf("foundation model stage = %q, want %q", got, bootstrap.StageSkeleton)
+	}
+}
+
 func TestNormalWorkflowProgressPlanningReviewSupersedesStaleCoCreateFailure(t *testing.T) {
 	snapshot := host.UISnapshot{PlanningReview: &host.PlanningReviewSummary{
 		Status: domain.PlanningReviewStatusPending,

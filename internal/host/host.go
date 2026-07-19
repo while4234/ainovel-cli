@@ -1955,6 +1955,16 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 	if rules, _ := h.store.World.LoadWorldRules(); len(rules) > 0 {
 		snap.WorldRules = append([]domain.WorldRule(nil), rules...)
 	}
+	if foundation, err := h.store.Foundation.Load(); err == nil {
+		snap.PlannedRelationships = append([]domain.CharacterRelationship(nil), foundation.Relationships...)
+		snap.FoundationAuditSignature, _ = domain.FoundationAuditSignature(foundation)
+		if contract, loadErr := h.store.CoreCast.Load(); loadErr == nil && contract != nil {
+			for _, member := range contract.Members {
+				snap.CoreCharacterIDs = append(snap.CoreCharacterIDs, member.Character.ID)
+			}
+			snap.CoreCastPreserved = domain.ValidateFoundationPreservesCoreCast(foundation, *contract) == nil
+		}
+	}
 	if ledger, _ := h.store.Cast.Load(); len(ledger) > 0 {
 		snap.SupportingCount = len(ledger)
 		recent, _ := h.store.Cast.RecentActive(5)

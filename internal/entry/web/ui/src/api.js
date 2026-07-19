@@ -726,6 +726,20 @@ export function confirmCoCreatePlanning(projectId) {
   });
 }
 
+export function confirmCoCreateFoundation(projectId, expectedRevision, auditSignature) {
+	return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/foundation/confirm`, {
+		method: 'POST',
+		body: JSON.stringify({ expected_revision: expectedRevision, audit_signature: auditSignature })
+	});
+}
+
+export function reviseCoCreateFoundation(projectId, feedback) {
+	return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/foundation/revise`, {
+		method: 'POST',
+		body: JSON.stringify({ feedback })
+	});
+}
+
 export function reviseCoCreatePlanning(projectId, payload = {}) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/planning/revise`, {
     method: 'POST',

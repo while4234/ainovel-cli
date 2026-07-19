@@ -91,25 +91,109 @@ func TestProjectCoCreateSuggestionsAndCommitUseDraftPrompt(t *testing.T) {
 	if fake.prepareRulesCalls != 1 || fake.preparedRulesPrompt != "## 主题\n- 月城追凶" {
 		t.Fatalf("PrepareUserRules calls=%d prompt=%q", fake.prepareRulesCalls, fake.preparedRulesPrompt)
 	}
-	if fake.startPreparedCalls != 0 {
-		t.Fatalf("commit must stop at the proposal checkpoint; StartPrepared calls = %d, want 0", fake.startPreparedCalls)
+	if fake.startPreparedCalls != 1 {
+		t.Fatalf("commit must start Foundation generation after CoreCast confirmation; StartPrepared calls = %d, want 1", fake.startPreparedCalls)
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
 	review, err := st.RunMeta.PlanningReview()
-	if err != nil || review == nil || review.Status != domain.PlanningReviewStatusPending || review.Kind != domain.PlanningReviewKindBlueprint {
+	if err != nil || review == nil || review.Status != domain.PlanningReviewStatusCollecting || review.Kind != domain.PlanningReviewKindFoundation {
 		t.Fatalf("planning checkpoint = %+v err=%v", review, err)
 	}
 	if !strings.Contains(review.StartPrompt, "[创作要求]\n## 主题\n- 月城追凶") {
 		t.Fatalf("saved start prompt should wrap draft prompt, got %q", review.StartPrompt)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/confirm", bytes.NewBufferString(`{}`))
-	rec = httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || fake.startPreparedCalls != 1 {
-		t.Fatalf("generate proposal status=%d calls=%d body=%s", rec.Code, fake.startPreparedCalls, rec.Body.String())
-	}
 	if _, err := os.Stat(filepath.Join(manifest.OutputDir, filepath.FromSlash(webCoCreateCheckpointRelPath))); !os.IsNotExist(err) {
 		t.Fatalf("co-create checkpoint should be cleared after commit, stat err=%v", err)
+	}
+}
+
+func TestInitialFoundationStartFailureIsRetryableInSameSession(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Foundation Start Retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply("ready", "## Premise\n- Retry startup", true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"normal","initial":"retry startup"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("begin status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	confirmCurrentCoreCastForTest(t, server, manifest)
+	fake.startPreparedErr = errors.New("injected initial startup failure")
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("failed startup unexpectedly succeeded: %s", rec.Body.String())
+	}
+	assertInitialFoundationStartRolledBack(t, manifest.OutputDir)
+
+	fake.startPreparedErr = nil
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("same-session retry status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.startPreparedCalls != 2 {
+		t.Fatalf("StartPrepared calls=%d, want 2", fake.startPreparedCalls)
+	}
+}
+
+func TestInitialFoundationStartFailureIsRetryableAfterSessionReopen(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Foundation Restart Retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply("ready", "## Premise\n- Retry after reopen", true)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"normal","initial":"retry after reopen"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("begin status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	confirmCurrentCoreCastForTest(t, server, manifest)
+	fake.startPreparedErr = errors.New("injected initial startup failure")
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/commit", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("failed startup unexpectedly succeeded: %s", rec.Body.String())
+	}
+	assertInitialFoundationStartRolledBack(t, manifest.OutputDir)
+
+	reopenedHost := newFakeProjectHost()
+	reopened, err := NewProjectSession(manifest, reopenedHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.cocreate == nil {
+		t.Fatal("reopened session did not restore the co-create checkpoint")
+	}
+	if _, err := reopened.CommitCoCreate(context.Background()); err != nil {
+		t.Fatalf("reopened-session retry: %v", err)
+	}
+	if reopenedHost.startPreparedCalls != 1 {
+		t.Fatalf("reopened StartPrepared calls=%d, want 1", reopenedHost.startPreparedCalls)
+	}
+}
+
+func assertInitialFoundationStartRolledBack(t *testing.T, outputDir string) {
+	t.Helper()
+	review, err := storepkg.NewStore(outputDir).RunMeta.PlanningReview()
+	if err != nil {
+		t.Fatalf("load rolled-back review: review=%+v err=%v", review, err)
+	}
+	if review != nil {
+		t.Fatalf("initial Foundation start was not exactly rolled back: %+v", review)
 	}
 }
 
@@ -123,17 +207,16 @@ func TestProjectCoCreatePlanningRevisionRegeneratesPendingPlan(t *testing.T) {
 	fake := installFakeSession(t, server, manifest)
 	fake.cocreateReply = webCoCreateReply("updated plan", "## Revised\n- Make the heroine proactive\n- Shorten the opening", true)
 	st := storepkg.NewStore(manifest.OutputDir)
-	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
-		Status:           domain.PlanningReviewStatusPending,
-		Kind:             domain.PlanningReviewKindChapterOutline,
-		Brief:            "## Old\n- Slow opening\n- Passive heroine",
-		StartPrompt:      "old start prompt",
-		TargetTotalWords: 5000,
-		CreatedAt:        "2026-07-05T00:00:00Z",
-		UpdatedAt:        "2026-07-05T00:01:00Z",
-	}); err != nil {
-		t.Fatalf("seed planning review: %v", err)
-	}
+	establishWebApprovedNormalFoundationFixture(t, st)
+	setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+		review.Status = domain.PlanningReviewStatusPending
+		review.Kind = domain.PlanningReviewKindChapterOutline
+		review.Brief = "## Old\n- Slow opening\n- Passive heroine"
+		review.StartPrompt = "old start prompt"
+		review.TargetTotalWords = 5000
+		review.CreatedAt = "2026-07-05T00:00:00Z"
+		review.UpdatedAt = "2026-07-05T00:01:00Z"
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/planning/revise", bytes.NewBufferString(`{"feedback":"make the heroine proactive and shorten the opening"}`))
 	rec := httptest.NewRecorder()
@@ -184,6 +267,7 @@ func TestProjectCoCreatePlanningRevisionTargetsSingleChapter(t *testing.T) {
 	fake := installFakeSession(t, server, manifest)
 	fake.cocreateReply = webCoCreateReply("updated chapter plan", "## Revised\n- Give chapter two a sharper reversal", true)
 	st := storepkg.NewStore(manifest.OutputDir)
+	establishWebApprovedNormalFoundationFixture(t, st)
 	seedChapters := []domain.OutlineEntry{
 		{Chapter: 1, Title: "Opening", CoreEvent: "A slow start", Hook: "a choice", Scenes: []string{"arrival"}},
 		{Chapter: 2, Title: "Reversal", CoreEvent: "The heroine takes charge", Hook: "a consequence", Scenes: []string{"confrontation"}},
@@ -196,17 +280,15 @@ func TestProjectCoCreatePlanningRevisionTargetsSingleChapter(t *testing.T) {
 	if err := st.Outline.SaveOutline(seedChapters); err != nil {
 		t.Fatalf("seed flat outline: %v", err)
 	}
-	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
-		Status:           domain.PlanningReviewStatusPending,
-		Kind:             domain.PlanningReviewKindChapterOutline,
-		Brief:            "## Old\n- Chapter 2 lacks agency",
-		StartPrompt:      "old start prompt",
-		TargetTotalWords: 8000,
-		CreatedAt:        "2026-07-05T00:00:00Z",
-		UpdatedAt:        "2026-07-05T00:01:00Z",
-	}); err != nil {
-		t.Fatalf("seed planning review: %v", err)
-	}
+	setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+		review.Status = domain.PlanningReviewStatusPending
+		review.Kind = domain.PlanningReviewKindChapterOutline
+		review.Brief = "## Old\n- Chapter 2 lacks agency"
+		review.StartPrompt = "old start prompt"
+		review.TargetTotalWords = 8000
+		review.CreatedAt = "2026-07-05T00:00:00Z"
+		review.UpdatedAt = "2026-07-05T00:01:00Z"
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/planning/revise", bytes.NewBufferString(`{"instruction":"tighten chapter two around the reversal","scope":"chapter","chapter":2}`))
 	rec := httptest.NewRecorder()
@@ -243,20 +325,19 @@ func TestProjectCoCreatePlanningConfirmStartsBlueprintGeneration(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 	st := storepkg.NewStore(manifest.OutputDir)
+	establishWebApprovedNormalFoundationFixture(t, st)
 	if err := st.RunMeta.SetWordBudget(domain.NewWordBudget(100_000, domain.WordBudgetSourceAPI)); err != nil {
 		t.Fatalf("seed word budget: %v", err)
 	}
-	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
-		Status:           domain.PlanningReviewStatusPending,
-		Kind:             domain.PlanningReviewKindBlueprint,
-		Brief:            "## Draft plan before structured planning",
-		StartPrompt:      "start prompt",
-		TargetTotalWords: 0,
-		CreatedAt:        "2026-07-05T00:00:00Z",
-		UpdatedAt:        "2026-07-05T00:01:00Z",
-	}); err != nil {
-		t.Fatalf("seed planning review: %v", err)
-	}
+	setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+		review.Status = domain.PlanningReviewStatusPending
+		review.Kind = domain.PlanningReviewKindBlueprint
+		review.Brief = "## Draft plan before structured planning"
+		review.StartPrompt = "start prompt"
+		review.TargetTotalWords = 0
+		review.CreatedAt = "2026-07-05T00:00:00Z"
+		review.UpdatedAt = "2026-07-05T00:01:00Z"
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/confirm", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
@@ -279,9 +360,7 @@ func TestProjectCoCreatePlanningConfirmVolumeReviewResumesAuditedBatchRouter(t *
 	}
 	fake := installFakeSession(t, server, manifest)
 	st := storepkg.NewStore(manifest.OutputDir)
-	_ = st.Outline.SavePremise("# Audited original")
-	_ = st.Characters.Save([]domain.Character{{Name: "Heroine", Role: "lead", Description: "chooses her own future"}})
-	_ = st.World.SaveWorldRules([]domain.WorldRule{{Category: "society", Rule: "choices have consequences", Boundary: "no reset"}})
+	establishWebApprovedNormalFoundationFixture(t, st)
 	_ = st.Outline.SaveCompass(domain.StoryCompass{EndingDirection: "earned independence"})
 	_ = st.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
 		Index: 1, Title: "Choice", Theme: "Agency", Arcs: []domain.ArcOutline{
@@ -289,9 +368,12 @@ func TestProjectCoCreatePlanningConfirmVolumeReviewResumesAuditedBatchRouter(t *
 			{Index: 2, Title: "Countermove", Goal: "build an alternative", EstimatedChapters: 3},
 		},
 	}})
-	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{Status: domain.PlanningReviewStatusPending, Kind: domain.PlanningReviewKindVolumeSplit, Brief: "audited original", TargetTotalWords: 30_000}); err != nil {
-		t.Fatal(err)
-	}
+	setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+		review.Status = domain.PlanningReviewStatusPending
+		review.Kind = domain.PlanningReviewKindVolumeSplit
+		review.Brief = "audited original"
+		review.TargetTotalWords = 30_000
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/confirm", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
@@ -318,6 +400,7 @@ func TestProjectCoCreatePlanningRevisionTargetsOneVolumeAndReentersAudit(t *test
 	fake := installFakeSession(t, server, manifest)
 	fake.cocreateReply = webCoCreateReply("updated final volume", "## Revised\n- Close every promised plot in volume three", true)
 	st := storepkg.NewStore(manifest.OutputDir)
+	establishWebApprovedNormalFoundationFixture(t, st)
 	volumes := []domain.VolumeOutline{
 		{Index: 1, Title: "Opening", Theme: "survival", Arcs: []domain.ArcOutline{{Index: 1, Title: "A", Goal: "escape", EstimatedChapters: 3}, {Index: 2, Title: "B", Goal: "counter", EstimatedChapters: 3}}},
 		{Index: 2, Title: "Middle", Theme: "power", Arcs: []domain.ArcOutline{{Index: 1, Title: "C", Goal: "return", EstimatedChapters: 3}, {Index: 2, Title: "D", Goal: "challenge", EstimatedChapters: 3}}},
@@ -326,9 +409,12 @@ func TestProjectCoCreatePlanningRevisionTargetsOneVolumeAndReentersAudit(t *test
 	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{Status: domain.PlanningReviewStatusPending, Kind: domain.PlanningReviewKindVolumeSplit, Brief: "audited original", TargetTotalWords: 100_000}); err != nil {
-		t.Fatal(err)
-	}
+	setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+		review.Status = domain.PlanningReviewStatusPending
+		review.Kind = domain.PlanningReviewKindVolumeSplit
+		review.Brief = "audited original"
+		review.TargetTotalWords = 100_000
+	})
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/planning/revise", bytes.NewBufferString(`{"scope":"volume","volume_index":3,"instruction":"make the final volume close every main plot"}`))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
@@ -503,6 +589,7 @@ func TestNormalRevisionProductionPreviewHandlerUsesRealStageAcrossLifecycle(t *t
 			}
 			installFakeSession(t, server, manifest)
 			st := storepkg.NewStore(manifest.OutputDir)
+			establishWebApprovedNormalFoundationFixture(t, st)
 			vol := domain.LegacyStructureID("handler-"+string(stage), domain.StructureKindVolume, "vol")
 			arc := domain.LegacyStructureID("handler-"+string(stage), domain.StructureKindArc, "arc")
 			ch1 := domain.LegacyStructureID("handler-"+string(stage), domain.StructureKindChapter, "ch-1")
@@ -521,9 +608,17 @@ func TestNormalRevisionProductionPreviewHandlerUsesRealStageAcrossLifecycle(t *t
 			}
 			switch stage {
 			case domain.ManuscriptStageProposalComplete:
-				_ = st.RunMeta.SetPlanningReview(&domain.PlanningReview{Status: domain.PlanningReviewStatusPending, Kind: domain.PlanningReviewKindVolumeSplit, Brief: "proposal"})
+				setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+					review.Status = domain.PlanningReviewStatusPending
+					review.Kind = domain.PlanningReviewKindVolumeSplit
+					review.Brief = "proposal"
+				})
 			case domain.ManuscriptStageOutlineComplete:
-				_ = st.RunMeta.SetPlanningReview(&domain.PlanningReview{Status: domain.PlanningReviewStatusPending, Kind: domain.PlanningReviewKindChapterOutline, Brief: "outline"})
+				setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+					review.Status = domain.PlanningReviewStatusPending
+					review.Kind = domain.PlanningReviewKindChapterOutline
+					review.Brief = "outline"
+				})
 			default:
 				_ = st.Progress.UpdatePhase(domain.PhaseWriting)
 				if stage == domain.ManuscriptStageComplete {
@@ -616,6 +711,7 @@ func TestNormalRevisionHTTPRecoversCrashedPublicationAndRejectsReplay(t *testing
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
+	establishWebApprovedNormalFoundationFixture(t, st)
 	volumeID := domain.LegacyStructureID("http-publication", domain.StructureKindVolume, "volume")
 	arcID := domain.LegacyStructureID("http-publication", domain.StructureKindArc, "arc")
 	chapter1 := domain.LegacyStructureID("http-publication", domain.StructureKindChapter, "chapter-1")

@@ -650,6 +650,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectCoreCast(w, r, id, "confirm")
 	case "cocreate/core-cast/unconfirm":
 		s.handleProjectCoreCast(w, r, id, "unconfirm")
+	case "cocreate/foundation/confirm":
+		s.handleProjectFoundationReview(w, r, id, "confirm")
+	case "cocreate/foundation/revise":
+		s.handleProjectFoundationReview(w, r, id, "revise")
 	case "cocreate/planning/revise":
 		s.handleProjectCoCreatePlanningRevise(w, r, id)
 	case "cocreate/revision/preview":

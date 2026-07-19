@@ -77,9 +77,14 @@ func (t *SaveOriginalPlanningAuditTool) Execute(_ context.Context, args json.Raw
 	if err != nil {
 		return nil, fmt.Errorf("load original planning audit structure: %w", err)
 	}
-	if err := domain.BindOriginalPlanningAudit(&audit, volumes); err != nil {
+	foundationRevision, foundationSignature, err := t.store.CurrentApprovedFoundationBinding()
+	if err != nil {
+		return nil, fmt.Errorf("foundation confirmation gate: %w: %w", errs.ErrToolPrecondition, err)
+	}
+	if err := domain.BindOriginalPlanningAudit(&audit, volumes, foundationSignature); err != nil {
 		return nil, fmt.Errorf("bind original planning audit: %w: %w", errs.ErrToolPrecondition, err)
 	}
+	audit.FoundationRevision = foundationRevision
 	if err := validateOriginalPlanningAuditEvidence(t.store, audit); err != nil {
 		return nil, fmt.Errorf("original planning audit evidence: %w: %w", errs.ErrToolPrecondition, err)
 	}
@@ -323,10 +328,14 @@ func findOriginalSkeletonBookBatch(st *store.Store, fromVolume, toVolume int) (*
 	if err != nil {
 		return nil, err
 	}
+	foundationRevision, foundationSignature, err := st.CurrentApprovedFoundationBinding()
+	if err != nil {
+		return nil, err
+	}
 	for i := range audits {
 		audit := &audits[i]
-		if audit.Scope == "skeleton_book_batch" && audit.FromVolume == fromVolume && audit.ToVolume == toVolume &&
-			domain.OriginalPlanningAuditCurrent(*audit, volumes) {
+		if audit.Scope == "skeleton_book_batch" && audit.FromVolume == fromVolume && audit.ToVolume == toVolume && audit.FoundationRevision == foundationRevision &&
+			domain.OriginalPlanningAuditCurrent(*audit, volumes, foundationSignature) {
 			return audit, nil
 		}
 	}

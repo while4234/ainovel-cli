@@ -215,6 +215,7 @@ func TestSaveFoundationMissingTypeCompletesFoundationWhenOnlyPremiseMissing(t *t
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 	if err := store.Progress.Init("novel", 0); err != nil {
 		t.Fatalf("Init progress: %v", err)
 	}
@@ -231,6 +232,7 @@ func TestSaveFoundationMissingTypeCompletesFoundationWhenOnlyPremiseMissing(t *t
 		{
 			"type": "characters",
 			"content": []map[string]any{
+				confirmedCoreCharacterToolFixture(),
 				{"name": "林岚", "role": "私家侦探", "description": "冷静但有伤痕", "arc": "从控制到承认失控", "traits": []string{"敏锐"}},
 			},
 		},
@@ -276,6 +278,7 @@ func TestSaveFoundationInfersTypeWhenFoundationAlreadyComplete(t *testing.T) {
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 	if err := store.Progress.Init("novel", 0); err != nil {
 		t.Fatalf("Init progress: %v", err)
 	}
@@ -284,9 +287,12 @@ func TestSaveFoundationInfersTypeWhenFoundationAlreadyComplete(t *testing.T) {
 	for _, step := range []map[string]any{
 		{"type": "premise", "content": "# 夜审暗潮\n\n## 题材和基调\n短篇悬疑。"},
 		{"type": "outline", "content": []map[string]any{{"chapter": 1, "title": "初次对峙", "core_event": "审问", "hook": "反问"}}},
-		{"type": "characters", "content": []map[string]any{{"name": "林岚", "role": "侦探", "description": "敏锐", "arc": "转变", "traits": []string{"冷静"}}}},
+		{"type": "characters", "content": []map[string]any{confirmedCoreCharacterToolFixture(), {"name": "林岚", "role": "侦探", "description": "敏锐", "arc": "转变", "traits": []string{"冷静"}}}},
 		{"type": "world_rules", "content": []map[string]any{{"category": "society", "rule": "证据必须可追溯", "boundary": "不能凭空破案"}}},
 	} {
+		if step["type"] == "outline" {
+			approveFoundationToolFixture(t, store)
+		}
 		args, _ := json.Marshal(step)
 		if _, err := tool.Execute(context.Background(), args); err != nil {
 			t.Fatalf("Execute setup %v: %v", step["type"], err)
@@ -295,6 +301,7 @@ func TestSaveFoundationInfersTypeWhenFoundationAlreadyComplete(t *testing.T) {
 
 	args, err := json.Marshal(map[string]any{
 		"content": []map[string]any{
+			confirmedCoreCharacterToolFixture(),
 			{"name": "林岚", "role": "侦探", "description": "更新后的角色描述", "arc": "继续转变", "traits": []string{"冷静", "执着"}},
 		},
 	})
@@ -408,6 +415,7 @@ func TestSaveFoundationOutlineComputesWordBudget(t *testing.T) {
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 	if err := store.Progress.Init("test", 0); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
@@ -465,6 +473,7 @@ func TestSaveFoundationOutlineRejectsRepeatedLongTitle(t *testing.T) {
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 
 	tool := NewSaveFoundationTool(store)
 	args, err := json.Marshal(map[string]any{
@@ -501,6 +510,7 @@ func TestSaveFoundationOutlineRequiresReviewForBorderlineSimilarity(t *testing.T
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 	entries := []map[string]any{
 		{
 			"chapter":    1,
@@ -557,6 +567,7 @@ func TestSaveFoundationLayeredOutlineRejectsRepeatedLongTitle(t *testing.T) {
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 
 	tool := NewSaveFoundationTool(store)
 	args, err := json.Marshal(map[string]any{
@@ -603,6 +614,7 @@ func TestSaveFoundationExpandArcRejectsRepeatedLongTitle(t *testing.T) {
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 	if err := store.Progress.Init("test", 0); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
@@ -654,6 +666,7 @@ func TestSaveFoundationOutlineClearsLayeredStateWhenDowngrading(t *testing.T) {
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 	if err := store.Progress.Init("test", 0); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
@@ -724,6 +737,7 @@ func TestSaveFoundationOutlinePlansWordBudget(t *testing.T) {
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 	budget := domain.NewWordBudget(5000, "test")
 	if err := store.RunMeta.SetWordBudget(budget); err != nil {
 		t.Fatalf("SetWordBudget: %v", err)
@@ -763,6 +777,7 @@ func TestSaveFoundationAppendVolume(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, s)
 	if err := s.Progress.Init("test", 0); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
@@ -822,6 +837,7 @@ func TestSaveFoundationRepairArc(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, s)
 	if err := s.Progress.Save(&domain.Progress{Phase: domain.PhaseWriting, Flow: domain.FlowWriting, Layered: true}); err != nil {
 		t.Fatalf("Save progress: %v", err)
 	}
@@ -885,6 +901,7 @@ func TestSaveFoundationRepairArcRange(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, s)
 	if err := s.Progress.Save(&domain.Progress{Phase: domain.PhaseWriting, Flow: domain.FlowWriting, Layered: true}); err != nil {
 		t.Fatalf("Save progress: %v", err)
 	}
@@ -1027,6 +1044,7 @@ func TestSaveFoundationUpdateCompass(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, s)
 
 	tool := NewSaveFoundationTool(s)
 	args, _ := json.Marshal(map[string]any{
@@ -1060,6 +1078,7 @@ func TestSaveFoundationUpdateCompassOverridesLastUpdated(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, s)
 	if err := s.Progress.Save(&domain.Progress{
 		NovelName:         "光斑",
 		Phase:             domain.PhaseWriting,
@@ -1114,6 +1133,7 @@ func TestSaveFoundationAcceptsDirectJSONArrayContent(t *testing.T) {
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 
 	tool := NewSaveFoundationTool(store)
 	args, err := json.Marshal(map[string]any{
@@ -1152,6 +1172,7 @@ func TestSaveFoundationNormalizesNonPositiveOutlineChapters(t *testing.T) {
 	if err := store.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	approveFoundationToolFixture(t, store)
 
 	tool := NewSaveFoundationTool(store)
 	args, err := json.Marshal(map[string]any{
@@ -1298,6 +1319,7 @@ func TestSaveFoundationLongNormalPlanningUsesVolumeAndBatchedChapterReviews(t *t
 	if err := st.World.SaveWorldRules([]domain.WorldRule{{Category: "society", Rule: "Actions have public consequences", Boundary: "No consequence-free reset"}}); err != nil {
 		t.Fatalf("SaveWorldRules: %v", err)
 	}
+	collectApprovedFoundationBlueprintFixture(t, st)
 	alreadySavedPremiseArgs, _ := json.Marshal(map[string]any{"type": "premise", "content": "# Replaced before skeleton"})
 	if _, err := NewSaveFoundationTool(st).Execute(context.Background(), alreadySavedPremiseArgs); err == nil || !strings.Contains(err.Error(), "already persisted and locked") {
 		t.Fatalf("expected existing premise to be locked during blueprint recovery, got %v", err)
@@ -1471,6 +1493,7 @@ func TestSaveFoundationRepairVolumeKeepsBudgetAndInvalidatesSkeletonAudit(t *tes
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
+	collectApprovedFoundationBlueprintFixture(t, st)
 	if err := st.Progress.Init("repair skeleton", 18); err != nil {
 		t.Fatal(err)
 	}
@@ -1479,9 +1502,6 @@ func TestSaveFoundationRepairVolumeKeepsBudgetAndInvalidatesSkeletonAudit(t *tes
 		{Index: 2, Title: "False ending", Theme: "open another mystery", Arcs: []domain.ArcOutline{{Index: 1, Title: "C", Goal: "find a clue", EstimatedChapters: 3}, {Index: 2, Title: "D", Goal: "start another hunt", EstimatedChapters: 3}}},
 	}
 	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindBlueprint}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.OriginalPlanningAudits.Save(domain.OriginalPlanningAudit{Scope: "skeleton_volume", Volume: 1, Verdict: "pass"}); err != nil {

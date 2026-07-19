@@ -741,6 +741,11 @@ func (t *ContextTool) foundationStatus() map[string]any {
 	if len(missing) > 0 {
 		status["missing"] = missing
 	}
+	if review, err := t.store.RunMeta.PlanningReview(); err == nil && review != nil && review.FoundationStatus != "" {
+		status["review_status"] = review.FoundationStatus
+		status["generation"] = review.FoundationGeneration
+		status["confirmed"] = t.store.RequireConfirmedFoundation() == nil
+	}
 	return status
 }
 

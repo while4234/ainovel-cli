@@ -55,6 +55,7 @@ func TestSaveOriginalPlanningAuditAcceptsChapterScopeID(t *testing.T) {
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
+	approveFoundationToolFixture(t, st)
 	chapterID := domain.LegacyStructureID("audit-tool-test", domain.StructureKindChapter, "volume-1/arc-1/chapter-1")
 	if err := st.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
 		ID: domain.LegacyStructureID("audit-tool-test", domain.StructureKindVolume, "volume-1"), Index: 1, Title: "Opening", Theme: "survival",

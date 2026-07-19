@@ -241,6 +241,9 @@ func routeOriginalPlanning(s State) *Instruction {
 	if review == nil || review.Status != domain.PlanningReviewStatusCollecting {
 		return nil
 	}
+	if review.Kind == domain.PlanningReviewKindFoundation {
+		return routeOriginalFoundation(review)
+	}
 	if review.Kind == domain.PlanningReviewKindBlueprint {
 		if s.SkeletonPlanningWork != nil {
 			return routeOriginalSkeletonAudit(s.SkeletonPlanningWork)
@@ -318,6 +321,42 @@ func routeOriginalPlanning(s State) *Instruction {
 		return &Instruction{Agent: "editor", Reason: "分批审核已完成，需以审核摘要进行全书总审", Task: fmt.Sprintf(
 			"完成原创小说全书细纲总审。禁止加载全书原始细纲，只使用这些已通过的每2卷分批报告：%s，并调用 novel_context(scope=planning) 核对 premise、人物、世界规则、指南针和分卷骨架。检查主线闭环、人物成长闭环、伏笔回收、高潮梯度与节奏、世界规则一致、题材辨识度、结局兑现。调用 save_original_planning_audit(scope=book)，dimensions 必须恰含 mainline_closure、character_closure、setup_payoff、escalation_pacing、world_consistency、originality、ending_delivery。任何重大问题必须定位卷弧返修；只有全部维度不低于7且无重大问题才能 pass。",
 			w.Evidence)}
+	}
+	return nil
+}
+
+func routeOriginalFoundation(review *domain.PlanningReview) *Instruction {
+	if review == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(review.FoundationSections))
+	for _, section := range review.FoundationSections {
+		seen[section] = struct{}{}
+	}
+	feedback := strings.TrimSpace(review.FoundationFeedback)
+	feedbackContract := ""
+	if feedback != "" {
+		feedbackContract = " Apply this user revision feedback: " + feedback + "."
+	}
+	fenceContract := fmt.Sprintf(
+		" Use foundation_generation=%d and foundation_base_revision=%d exactly as supplied for this generation; never reuse these values after a stale or busy response without reading the latest route.",
+		review.FoundationGeneration,
+		review.FoundationBaseRevision,
+	)
+	for _, section := range domain.FoundationGenerationSections {
+		if _, ok := seen[section]; ok {
+			continue
+		}
+		switch section {
+		case "premise":
+			return &Instruction{Agent: "architect_long", Reason: "完整 StoryFoundation 的 premise 待生成", Task: "Read novel_context(scope=planning), then call save_foundation(type=premise) exactly once with the complete canonical premise. Preserve the confirmed CoreCast identities, functions, goals and relationship constraints; do not generate any outline." + fenceContract + feedbackContract}
+		case "characters":
+			return &Instruction{Agent: "architect_long", Reason: "完整 StoryFoundation 的角色档案待补全", Task: "Read novel_context(scope=planning), then call save_foundation(type=characters) exactly once. Return every confirmed core character byte-for-semantic-byte with the same stable ID, identity, role, goal, motivation, conflict, arc, voice, traits and constraints; supporting characters may be added with new stable IDs. Do not generate any outline." + fenceContract + feedbackContract}
+		case "planned_relationships":
+			return &Instruction{Agent: "architect_long", Reason: "完整 StoryFoundation 的计划关系待补全", Task: "Read novel_context(scope=planning), then call save_foundation(type=planned_relationships) exactly once. Preserve every confirmed core relationship unchanged and add only necessary pre-writing planned relationships using stable character IDs. These are not runtime relationship_state. Do not generate any outline." + fenceContract + feedbackContract}
+		case "world_rules":
+			return &Instruction{Agent: "architect_long", Reason: "完整 StoryFoundation 的世界规则待补全", Task: "Read novel_context(scope=planning), then call save_foundation(type=world_rules) exactly once with complete hard and soft world rules. Hard rules are inviolable constraints. Preserve the confirmed CoreCast and do not generate any outline." + fenceContract + feedbackContract}
+		}
 	}
 	return nil
 }

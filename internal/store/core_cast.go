@@ -246,6 +246,22 @@ func (s *CoreCastStore) UnconfirmCAS(expectedRevision int64) (domain.CoreCastCon
 // When a prior attempt reached Foundation but not the receipt write, section
 // equality makes the retry record a receipt without increasing Foundation revision.
 func (s *CoreCastStore) PublishConfirmed(foundation *FoundationStore, sourceCharacters, sourceMajor []domain.SourceMajorCharacter, sourceResolutionMissing []domain.CoreCastMissingItem) (domain.CoreCastContract, error) {
+	if foundation == nil {
+		return domain.CoreCastContract{}, fmt.Errorf("story foundation store is required")
+	}
+	if foundation.withSemanticMutation == nil {
+		return s.publishConfirmed(foundation, sourceCharacters, sourceMajor, sourceResolutionMissing)
+	}
+	var published domain.CoreCastContract
+	err := foundation.withSemanticMutation("publish confirmed core cast to story foundation", func() error {
+		var err error
+		published, err = s.publishConfirmed(foundation, sourceCharacters, sourceMajor, sourceResolutionMissing)
+		return err
+	})
+	return published, err
+}
+
+func (s *CoreCastStore) publishConfirmed(foundation *FoundationStore, sourceCharacters, sourceMajor []domain.SourceMajorCharacter, sourceResolutionMissing []domain.CoreCastMissingItem) (domain.CoreCastContract, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, err := s.requireCurrentUnlocked()

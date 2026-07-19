@@ -48,8 +48,13 @@ func (s *Store) ReviseChapterOutline(chapter int, revised domain.OutlineEntry) e
 }
 
 func (s *Store) reviseFlatChapterOutline(chapter int, revised domain.OutlineEntry) error {
+	s.Foundation.lifecycle.reviewMu.Lock()
+	defer s.Foundation.lifecycle.reviewMu.Unlock()
 	s.crossMu.Lock()
 	defer s.crossMu.Unlock()
+	if err := s.requireAuthoritativeFormalMutationLocked("revise flat chapter outline"); err != nil {
+		return err
+	}
 
 	entries, err := s.Outline.LoadOutline()
 	if err != nil {

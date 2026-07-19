@@ -1197,6 +1197,9 @@ func (t *ContextTool) buildArchitectPlanning(envelope *architectContextEnvelope,
 		if contract := newCreativeBriefContract(runMeta.PlanningReview.Brief); contract != nil {
 			envelope.Planning["creative_brief"] = contract
 		}
+		if feedback := strings.TrimSpace(runMeta.PlanningReview.FoundationFeedback); feedback != "" {
+			envelope.Planning["foundation_revision_feedback"] = feedback
+		}
 	}
 
 	var layered []domain.VolumeOutline
@@ -1205,15 +1208,15 @@ func (t *ContextTool) buildArchitectPlanning(envelope *architectContextEnvelope,
 		layered = l
 		envelope.Planning["layered_outline"] = compactLayeredOutlineForPlanning(layered, progress)
 		var skeletonArcs []map[string]any
-		for _, v := range layered {
-			for _, a := range v.Arcs {
-				if !a.IsExpanded() {
+		for _, volume := range layered {
+			for _, arc := range volume.Arcs {
+				if !arc.IsExpanded() {
 					skeletonArcs = append(skeletonArcs, map[string]any{
-						"volume":             v.Index,
-						"arc":                a.Index,
-						"title":              truncateRunes(a.Title, 80),
-						"goal":               truncateRunes(a.Goal, maxContextSummaryRunes),
-						"estimated_chapters": a.EstimatedChapters,
+						"volume":             volume.Index,
+						"arc":                arc.Index,
+						"title":              truncateRunes(arc.Title, 80),
+						"goal":               truncateRunes(arc.Goal, maxContextSummaryRunes),
+						"estimated_chapters": arc.EstimatedChapters,
 					})
 				}
 			}
@@ -1268,7 +1271,12 @@ func (t *ContextTool) completionSignals(layered []domain.VolumeOutline, compass 
 }
 
 func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelope, warn func(string, error)) {
-	if premise, err := t.store.Outline.LoadPremise(); err == nil && premise != "" {
+	foundation, foundationErr := t.store.Foundation.Load()
+	if foundationErr != nil {
+		warn("story_foundation", foundationErr)
+	}
+	premise := foundation.Premise
+	if premise != "" {
 		if sections := parsePremiseSections(premise); len(sections) > 0 {
 			envelope.Foundation["premise_sections"] = compactPremiseSections(sections, 900)
 		}
@@ -1277,32 +1285,41 @@ func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelop
 			tier = meta.PlanningTier
 		}
 		envelope.Foundation["premise_structure"] = premiseStructure(premise, tier)
-	} else {
-		warn("premise", err)
 	}
-
-	if chars, err := t.store.Characters.Load(); err == nil && chars != nil {
-		envelope.Foundation["characters"] = compactCharacters(chars, maxContextCharacters)
-	} else {
-		warn("characters", err)
-	}
-	if foundation, err := t.store.Foundation.Load(); err == nil {
-		if len(foundation.Relationships) > 0 {
-			envelope.Foundation["planned_relationships"] = append([]domain.CharacterRelationship(nil), foundation.Relationships...)
+	if foundation.Revision > 0 {
+		envelope.Foundation["foundation_revision"] = foundation.Revision
+		if signature, err := domain.FoundationAuditSignature(foundation); err == nil {
+			envelope.Foundation["foundation_audit_signature"] = signature
 		}
-	} else {
-		warn("planned_relationships", err)
 	}
+	if len(foundation.Characters) > 0 {
+		envelope.Foundation["characters"] = compactCharacters(foundation.Characters, maxContextCharacters)
+	}
+	if len(foundation.Relationships) > 0 {
+		envelope.Foundation["planned_relationships"] = append([]domain.CharacterRelationship(nil), foundation.Relationships...)
+	}
+	envelope.Foundation["relationship_contract"] = "planned_relationships are pre-writing canonical intent; relationship_state is runtime chapter evidence and must never replace or rewrite the plan"
 
 	if snapshots, err := t.store.Characters.LoadLatestSnapshots(); err == nil && len(snapshots) > 0 {
 		envelope.Foundation["character_snapshots"] = compactCharacterSnapshots(snapshots, maxContextCharacterSnapshots)
 	} else {
 		warn("character_snapshots", err)
 	}
-	if rules, err := t.store.World.LoadWorldRules(); err == nil && len(rules) > 0 {
-		envelope.Foundation["world_rules"] = compactWorldRules(rules, 40)
-	} else {
-		warn("world_rules", err)
+	if len(foundation.WorldRules) > 0 {
+		// Architect already receives each rule's category, strength and boundary.
+		// Keep the canonical prefix source-bounded for mature projects instead of
+		// relying on a lossy post-build JSON trim.
+		rules := compactWorldRules(foundation.WorldRules, 24)
+		envelope.Foundation["world_rules"] = rules
+		var hard []domain.WorldRule
+		for _, rule := range rules {
+			if rule.Strength == domain.WorldRuleStrengthHard {
+				hard = append(hard, rule)
+			}
+		}
+		if len(hard) > 0 {
+			envelope.Foundation["hard_world_rule_constraints"] = hard
+		}
 	}
 	if foreshadow, err := t.store.World.LoadActiveForeshadow(); err == nil && len(foreshadow) > 0 {
 		envelope.Foundation["foreshadow_ledger"] = compactForeshadowEntries(foreshadow, maxContextForeshadowEntries)

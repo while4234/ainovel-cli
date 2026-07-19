@@ -95,9 +95,15 @@ func NewStore(dir string) *Store {
 		CoreCast:               newCoreCastStore(newIO(dir)),
 	}
 	foundation.coreCast = store.CoreCast
+	foundation.withSemanticMutation = store.withUnfencedFoundationGenerationGuard
+	store.OriginalPlanningAudits.withApprovedFoundation = store.withApprovedFoundationBinding
 	store.Outline.foundation = foundation
+	store.Outline.withFormalGate = store.withAuthoritativeFormalMutation
+	store.Outline.guardFoundationGeneration = store.withUnfencedFoundationGenerationGuard
 	store.Characters.foundation = foundation
+	store.Characters.withFoundationGenerationGuard = store.withUnfencedFoundationGenerationGuard
 	store.World.foundation = foundation
+	store.World.withFoundationGenerationGuard = store.withUnfencedFoundationGenerationGuard
 	store.Progress.withLegacyMutation = revisions.withLegacyMigrationMutation
 	store.Drafts.withFormalMutation = revisions.withLegacyMigrationMutation
 	store.Summaries.withFormalMutation = revisions.withLegacyMigrationMutation
@@ -324,6 +330,93 @@ func (s *Store) Init() error {
 
 // ── 跨域协调方法 ──
 
+func (s *Store) withAuthoritativeFormalMutation(operation string, mutation func() error) error {
+	if s == nil || mutation == nil {
+		return fmt.Errorf("store mutation is required for %s", operation)
+	}
+	s.Foundation.lifecycle.reviewMu.Lock()
+	defer s.Foundation.lifecycle.reviewMu.Unlock()
+	s.crossMu.Lock()
+	defer s.crossMu.Unlock()
+	requiresGate, err := s.requiresNormalFoundationGateLocked()
+	if err != nil {
+		return err
+	}
+	if requiresGate {
+		if err := s.RequireConfirmedFoundation(); err != nil {
+			return fmt.Errorf("%s is blocked by foundation confirmation gate: %w", operation, err)
+		}
+	}
+	return mutation()
+}
+
+func (s *Store) withUnfencedFoundationGenerationGuard(operation string, mutation func() error) error {
+	if s == nil || mutation == nil {
+		return fmt.Errorf("store mutation is required for %s", operation)
+	}
+	s.Foundation.lifecycle.reviewMu.Lock()
+	defer s.Foundation.lifecycle.reviewMu.Unlock()
+	review, err := s.RunMeta.PlanningReview()
+	if err != nil {
+		return err
+	}
+	if review != nil && review.Kind == domain.PlanningReviewKindFoundation &&
+		review.Status == domain.PlanningReviewStatusCollecting && review.FoundationStatus == domain.FoundationReviewStatusCollecting {
+		return &FoundationReviewError{Code: FoundationReviewErrorStale, Err: fmt.Errorf("%s requires the current foundation generation token", operation), Review: review}
+	}
+	// Keep the decision and semantic mutation atomic against review start.
+	// Callers that own a revision transaction therefore preserve the global
+	// revision -> review -> Store/project order.
+	return mutation()
+}
+
+func (s *Store) requireAuthoritativeFormalMutationLocked(operation string) error {
+	requiresGate, err := s.requiresNormalFoundationGateLocked()
+	if err != nil {
+		return err
+	}
+	if !requiresGate {
+		return nil
+	}
+	if err := s.RequireConfirmedFoundation(); err != nil {
+		return fmt.Errorf("%s is blocked by foundation confirmation gate: %w", operation, err)
+	}
+	return nil
+}
+
+func (s *Store) requiresNormalFoundationGateLocked() (bool, error) {
+	binding, err := s.CoreCast.LoadGateBinding()
+	if err != nil {
+		return false, fmt.Errorf("load core cast mode for foundation gate: %w", err)
+	}
+	if binding == nil {
+		return false, nil
+	}
+	switch binding.Mode {
+	case domain.CoreCastModeNormal:
+		return true, nil
+	case domain.CoreCastModeAdaptation:
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown core cast mode %q", binding.Mode)
+	}
+}
+
+func (s *Store) withApprovedFoundationBinding(use func(int64, string) error) error {
+	if s == nil || use == nil {
+		return fmt.Errorf("approved foundation binding callback is required")
+	}
+	s.Foundation.lifecycle.reviewMu.Lock()
+	defer s.Foundation.lifecycle.reviewMu.Unlock()
+	s.crossMu.Lock()
+	defer s.crossMu.Unlock()
+	revision, signature, err := s.currentApprovedFoundationBindingLocked()
+	if err != nil {
+		return err
+	}
+	return use(revision, signature)
+}
+
 // ExpandArc 将骨架弧展开为详细章节（Outline + Progress 联动）。
 func (s *Store) ExpandArc(volumeIdx, arcIdx int, chapters []domain.OutlineEntry) error {
 	requestID, err := migrationRequestIdentity("expand_arc", struct {
@@ -335,8 +428,13 @@ func (s *Store) ExpandArc(volumeIdx, arcIdx int, chapters []domain.OutlineEntry)
 		return err
 	}
 	return s.Revisions.withLegacyMigrationMutation("expand adaptation arc", s.Outline.migration, func() error {
+		s.Foundation.lifecycle.reviewMu.Lock()
+		defer s.Foundation.lifecycle.reviewMu.Unlock()
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
+		if err := s.requireAuthoritativeFormalMutationLocked("expand arc"); err != nil {
+			return err
+		}
 		return s.saveLayeredStructureMutation("expand_arc", requestID, false, false, "", "", nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 			return s.Outline.expandArc(existing, volumeIdx, arcIdx, chapters)
 		})
@@ -350,8 +448,13 @@ func (s *Store) AppendVolume(vol domain.VolumeOutline) error {
 		return err
 	}
 	return s.Revisions.withLegacyMigrationMutation("append adaptation volume", s.Outline.migration, func() error {
+		s.Foundation.lifecycle.reviewMu.Lock()
+		defer s.Foundation.lifecycle.reviewMu.Unlock()
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
+		if err := s.requireAuthoritativeFormalMutationLocked("append volume"); err != nil {
+			return err
+		}
 		return s.saveLayeredStructureMutation("append_volume", requestID, false, true, "", "", nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 			return s.Outline.appendVolume(existing, vol)
 		})
@@ -367,8 +470,13 @@ func (s *Store) AppendSkeletonVolume(vol domain.VolumeOutline) error {
 		return err
 	}
 	return s.Revisions.withLegacyMigrationMutation("append adaptation skeleton volume", s.Outline.migration, func() error {
+		s.Foundation.lifecycle.reviewMu.Lock()
+		defer s.Foundation.lifecycle.reviewMu.Unlock()
 		s.crossMu.Lock()
 		defer s.crossMu.Unlock()
+		if err := s.requireAuthoritativeFormalMutationLocked("append skeleton volume"); err != nil {
+			return err
+		}
 		return s.saveLayeredStructureMutation("append_skeleton_volume", requestID, true, false, "", "", nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 			return s.Outline.appendSkeletonVolume(existing, vol)
 		})

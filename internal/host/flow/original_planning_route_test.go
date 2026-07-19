@@ -25,6 +25,23 @@ func TestRouteOriginalPlanningAlternatesGenerationAndIndependentAudit(t *testing
 	}
 }
 
+func TestRouteOriginalPlanningBuildsFoundationBeforeAnyOutline(t *testing.T) {
+	state := State{PlanningReview: &domain.PlanningReview{
+		Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindFoundation,
+		FoundationStatus: domain.FoundationReviewStatusCollecting, FoundationGeneration: 2,
+		FoundationSections: []string{"premise", "characters"}, FoundationFeedback: "make the hard rules explicit",
+	}}
+	instruction := routeOriginalPlanning(state)
+	if instruction == nil || instruction.Agent != "architect_long" {
+		t.Fatalf("instruction = %+v", instruction)
+	}
+	for _, want := range []string{"planned_relationships", "stable character IDs", "not runtime relationship_state", "foundation_generation=2", "foundation_base_revision=0", "make the hard rules explicit", "Do not generate any outline"} {
+		if !strings.Contains(instruction.Task, want) {
+			t.Fatalf("task missing %q: %s", want, instruction.Task)
+		}
+	}
+}
+
 func TestRouteOriginalPlanningChapterAuditCarriesStableScopeAndRepairLocation(t *testing.T) {
 	state := State{
 		Progress:       &domain.Progress{Phase: domain.PhaseOutline},

@@ -7,7 +7,7 @@ import (
 )
 
 func TestOriginalPlanningPassIsNotReusedAfterScopedContentChanges(t *testing.T) {
-	st := NewStore(t.TempDir())
+	st := approvedFoundationReviewTestStore(t)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestOriginalPlanningPassIsNotReusedAfterScopedContentChanges(t *testing.T) 
 }
 
 func TestSkeletonAuditProjectsDetailedChaptersOutOfItsSignature(t *testing.T) {
-	st := NewStore(t.TempDir())
+	st := approvedFoundationReviewTestStore(t)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +72,54 @@ func TestSkeletonAuditProjectsDetailedChaptersOutOfItsSignature(t *testing.T) {
 	}
 }
 
+func TestOriginalPlanningAuditBindsFoundationAndFailsClosedWhenFoundationChanges(t *testing.T) {
+	st := approvedFoundationReviewTestStore(t)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	volumes := originalAuditSignatureStructure()
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	audit := domain.OriginalPlanningAudit{Scope: "arc", Volume: 1, Arc: 1, FromChapter: 1, ToChapter: 1, Verdict: "pass", Summary: "bound"}
+	if err := st.OriginalPlanningAudits.Save(audit); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.OriginalPlanningAudits.Get("arc", 1, 1)
+	if err != nil || current == nil || current.FoundationRevision <= 0 || current.FoundationSignature == "" {
+		t.Fatalf("foundation-bound audit = %+v err=%v", current, err)
+	}
+	if err := st.Foundation.updatePremise("a changed canonical premise"); err != nil {
+		t.Fatal(err)
+	}
+	if stale, err := st.OriginalPlanningAudits.Get("arc", 1, 1); foundationReviewCode(err) != FoundationReviewErrorStale || stale != nil {
+		t.Fatalf("foundation-stale audit did not fail closed: stale=%+v err=%v", stale, err)
+	}
+}
+
+func TestOriginalPlanningAuditRejectsLegacyPassWithoutFoundationSignature(t *testing.T) {
+	st := approvedFoundationReviewTestStore(t)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	volumes := originalAuditSignatureStructure()
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	audit := domain.OriginalPlanningAudit{Scope: "arc", Volume: 1, Arc: 1, FromChapter: 1, ToChapter: 1, Verdict: "pass", Summary: "legacy"}
+	if err := domain.BindOriginalPlanningAudit(&audit, volumes); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.OriginalPlanningAudits.io.WriteJSON(originalPlanningAuditsFile, []domain.OriginalPlanningAudit{audit}); err != nil {
+		t.Fatal(err)
+	}
+	if legacy, err := st.OriginalPlanningAudits.Get("arc", 1, 1); err != nil || legacy != nil {
+		t.Fatalf("legacy unsigned pass was reused: legacy=%+v err=%v", legacy, err)
+	}
+}
+
 func TestInvalidateRepairConsumesFailedChapterAudit(t *testing.T) {
-	st := NewStore(t.TempDir())
+	st := approvedFoundationReviewTestStore(t)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +161,7 @@ func TestInvalidateRepairConsumesFailedChapterAudit(t *testing.T) {
 }
 
 func TestNextWorkIgnoresFailedChapterAuditAfterContentChanges(t *testing.T) {
-	st := NewStore(t.TempDir())
+	st := approvedFoundationReviewTestStore(t)
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}

@@ -32,7 +32,7 @@ func NewSaveFoundationTool(store *store.Store, gates ...CompletionGate) *SaveFou
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
 func (t *SaveFoundationTool) Description() string {
-	return "保存小说基础设定（premise/outline/characters/planned_relationships/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?, from_chapter?, to_chapter?}。type 可选 premise / outline / layered_outline / characters / planned_relationships / world_rules / expand_arc / repair_arc / repair_volume / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。planned_relationships 必须使用 characters 中的稳定 ID，且只保存创作前计划关系，不写入 relationship_state。expand_arc 展开骨架弧的详细章节（需 volume + arc，普通原创审核规划每批严格 3-4 章）；repair_arc 修复已展开弧；repair_volume 按自动审核或用户意见完整替换一个尚未展开的分卷骨架且不得改变该卷预估总章数；append_volume 追加新卷（普通原创分卷规划阶段每次只追加一个骨架卷，每弧3-4章）；update_compass 更新终局方向；complete_book 宣告全书完结。scale 可选，仅允许 short / mid / long。"
+	return "保存小说基础设定（premise/outline/characters/planned_relationships/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。Foundation 生成轮次中的 premise / characters / planned_relationships / world_rules 必须原样携带 Host 指令给出的 foundation_generation 与 foundation_base_revision；旧轮次、重复或并发响应会被拒绝。type 可选 premise / outline / layered_outline / characters / planned_relationships / world_rules / expand_arc / repair_arc / repair_volume / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。planned_relationships 必须使用 characters 中的稳定 ID，且只保存创作前计划关系，不写入 relationship_state。expand_arc 展开骨架弧的详细章节（需 volume + arc，普通原创审核规划每批严格 3-4 章）；repair_arc 修复已展开弧；repair_volume 按自动审核或用户意见完整替换一个尚未展开的分卷骨架且不得改变该卷预估总章数；append_volume 追加新卷（普通原创分卷规划阶段每次只追加一个骨架卷，每弧3-4章）；update_compass 更新终局方向；complete_book 宣告全书完结。scale 可选，仅允许 short / mid / long。"
 }
 func (t *SaveFoundationTool) Label() string { return "保存设定" }
 
@@ -47,6 +47,8 @@ func (t *SaveFoundationTool) Schema() map[string]any {
 			"description": "内容。premise 传 Markdown 字符串；其他类型直接传 JSON 数组或对象即可，也兼容传 JSON 字符串。expand_arc / repair_arc 时传章节数组。",
 		}).Required(),
 		schema.Property("scale", schema.Enum("规划级别", "short", "mid", "long")),
+		schema.Property("foundation_generation", schema.Int("Foundation 生成轮次；生成四个 Foundation section 时必须与 Host 指令完全一致")),
+		schema.Property("foundation_base_revision", schema.Int("Foundation 生成轮次的固定基础 revision；生成四个 Foundation section 时必须与 Host 指令完全一致")),
 		schema.Property("volume", schema.Int("目标卷序号（expand_arc / repair_arc 时必传）")),
 		schema.Property("arc", schema.Int("目标弧序号（expand_arc / repair_arc 时必传）")),
 		schema.Property("from_chapter", schema.Int("repair_arc 局部修复窗口起始全局章节号；由 Host 指令提供时必须原样传入")),
@@ -59,14 +61,16 @@ func (t *SaveFoundationTool) Schema() map[string]any {
 
 func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
-		Type    string                           `json:"type"`
-		Content json.RawMessage                  `json:"content"`
-		Scale   string                           `json:"scale"`
-		Volume  int                              `json:"volume"`
-		Arc     int                              `json:"arc"`
-		From    int                              `json:"from_chapter"`
-		To      int                              `json:"to_chapter"`
-		Review  []outlineSimilarityReviewVerdict `json:"similarity_review"`
+		Type                   string                           `json:"type"`
+		Content                json.RawMessage                  `json:"content"`
+		Scale                  string                           `json:"scale"`
+		Volume                 int                              `json:"volume"`
+		Arc                    int                              `json:"arc"`
+		From                   int                              `json:"from_chapter"`
+		To                     int                              `json:"to_chapter"`
+		Review                 []outlineSimilarityReviewVerdict `json:"similarity_review"`
+		FoundationGeneration   int64                            `json:"foundation_generation"`
+		FoundationBaseRevision int64                            `json:"foundation_base_revision"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
@@ -92,6 +96,11 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, fmt.Errorf("formal save_foundation type=%s is blocked by active revision %s; use NormalRevisionService candidates: %w", a.Type, active.ID, errs.ErrToolPrecondition)
 		}
 	}
+	if !t.store.Adaptation.Active() && requiresConfirmedFoundation(a.Type) {
+		if err := t.store.RequireConfirmedFoundation(); err != nil {
+			return nil, fmt.Errorf("save_foundation type=%s is blocked by foundation confirmation gate: %w", a.Type, err)
+		}
+	}
 	if a.Scale != "" {
 		switch domain.PlanningTier(a.Scale) {
 		case domain.PlanningTierShort, domain.PlanningTierMid, domain.PlanningTierLong:
@@ -104,6 +113,11 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	}
 
 	result := map[string]any{"saved": true, "type": a.Type, "scale": a.Scale}
+	var generationReview *domain.PlanningReview
+	var generationFence *store.FoundationGenerationFence
+	if a.FoundationGeneration != 0 || a.FoundationBaseRevision != 0 {
+		generationFence = &store.FoundationGenerationFence{Generation: a.FoundationGeneration, BaseRevision: a.FoundationBaseRevision}
+	}
 
 	if t.store.Adaptation.Active() && (a.Type == "append_volume" || a.Type == "expand_arc") {
 		return nil, fmt.Errorf("改编模式已由 confirmed plan 锁定章节规模，不允许 %s；如需增删或重排章节，请重新生成规模提案并确认: %w", a.Type, errs.ErrToolPrecondition)
@@ -138,7 +152,8 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, err
 		}
 		name := domain.ExtractNovelNameFromPremise(content)
-		if err := t.store.Outline.SavePremise(content); err != nil {
+		generationReview, err = t.store.SaveFoundationPremise(generationFence, content)
+		if err != nil {
 			return nil, fmt.Errorf("save premise: %w: %w", errs.ErrStoreWrite, err)
 		}
 		if name != "" {
@@ -220,7 +235,8 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := t.validateCreativeBriefCharacters(chars); err != nil {
 			return nil, err
 		}
-		if err := t.store.Characters.Save(chars); err != nil {
+		generationReview, err = t.store.SaveFoundationCharacters(generationFence, chars)
+		if err != nil {
 			return nil, fmt.Errorf("save characters: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["count"] = len(chars)
@@ -230,7 +246,8 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := decode("planned_relationships", &relationships); err != nil {
 			return nil, err
 		}
-		if err := t.store.Foundation.UpdateRelationships(relationships, false); err != nil {
+		generationReview, err = t.store.SaveFoundationRelationships(generationFence, relationships)
+		if err != nil {
 			return nil, fmt.Errorf("save planned_relationships: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["count"] = len(relationships)
@@ -240,7 +257,8 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := decode("world_rules", &rules); err != nil {
 			return nil, err
 		}
-		if err := t.store.World.SaveWorldRules(rules); err != nil {
+		generationReview, err = t.store.SaveFoundationWorldRules(generationFence, rules)
+		if err != nil {
 			return nil, fmt.Errorf("save world_rules: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["count"] = len(rules)
@@ -459,6 +477,18 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	if _, err := t.store.Checkpoints.AppendArtifact(scope, a.Type, foundationArtifact(a.Type)); err != nil {
 		return nil, fmt.Errorf("checkpoint foundation %s: %w: %w", a.Type, errs.ErrStoreWrite, err)
 	}
+	if generationReview != nil {
+		result["foundation_generation"] = generationReview.FoundationGeneration
+		result["foundation_base_revision"] = generationReview.FoundationBaseRevision
+		result["foundation_review_status"] = generationReview.FoundationStatus
+		result["foundation_revision"] = generationReview.FoundationRevision
+		result["foundation_audit_signature"] = generationReview.FoundationAuditSignature
+		if generationReview.FoundationStatus == domain.FoundationReviewStatusPending {
+			result["planning_review"] = generationReview.Status
+			result["planning_review_kind"] = generationReview.Kind
+			result["foundation_ready"] = true
+		}
+	}
 
 	// 返回剩余未完成项，引导 Architect 继续或结束；
 	// 齐全时一次性把 phase 推进到 writing，避免 Coordinator 再回来派单。
@@ -471,6 +501,9 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		reviewReady := false
 		nextKind := review.Kind
 		switch review.Kind {
+		case domain.PlanningReviewKindFoundation:
+			// The fenced section mutation owns the candidate-complete transition.
+			reviewReady = false
 		case domain.PlanningReviewKindBlueprint:
 			if t.requiresLayeredPlanning() {
 				var reviewErr error
@@ -517,13 +550,35 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			result["foundation_ready"] = true
 		}
 	} else if ready {
-		if p, _ := t.store.Progress.Load(); p != nil &&
-			p.Phase != domain.PhaseWriting && p.Phase != domain.PhaseComplete {
-			_ = t.store.Progress.UpdatePhase(domain.PhaseWriting)
-			result["phase"] = string(domain.PhaseWriting)
+		if p, _ := t.store.Progress.Load(); p != nil {
+			if p.Phase != domain.PhaseWriting && p.Phase != domain.PhaseComplete {
+				_ = t.store.Progress.UpdatePhase(domain.PhaseWriting)
+				p.Phase = domain.PhaseWriting
+			}
+			if p.Phase == domain.PhaseWriting {
+				result["phase"] = string(domain.PhaseWriting)
+			}
 		}
 	}
 	return json.Marshal(result)
+}
+
+func isFoundationGenerationSection(typeName string) bool {
+	switch typeName {
+	case "premise", "characters", "planned_relationships", "world_rules":
+		return true
+	default:
+		return false
+	}
+}
+
+func requiresConfirmedFoundation(typeName string) bool {
+	switch typeName {
+	case "outline", "layered_outline", "expand_arc", "repair_arc", "repair_volume", "append_volume", "update_compass":
+		return true
+	default:
+		return false
+	}
 }
 
 func (t *SaveFoundationTool) validateCreativeBriefPremise(content string) error {
