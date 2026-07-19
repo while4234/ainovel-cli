@@ -49,6 +49,9 @@ type FoundationState struct {
 	BaseRevision       int64                                `json:"base_revision"`
 	BaseAuditSignature string                               `json:"base_audit_signature"`
 	CoreCastSignature  string                               `json:"core_cast_signature"`
+	CoreCast           *domain.CoreCastContract             `json:"core_cast,omitempty"`
+	CoreCastCompletion *domain.CoreCastCompletionResult     `json:"core_cast_completion,omitempty"`
+	CoreCastConfirmed  bool                                 `json:"core_cast_confirmed"`
 	ModeSpecific       *domain.FoundationAdaptationBaseline `json:"mode_specific,omitempty"`
 	ModeSpecificError  string                               `json:"mode_specific_error,omitempty"`
 	ActiveRevision     *domain.FoundationRevisionRuntime    `json:"active_revision,omitempty"`
@@ -95,11 +98,13 @@ func (s *FoundationRevisionService) State() (*FoundationState, error) {
 	}
 	mode := "normal"
 	var source any
+	var sourceFoundation *domain.AdaptationSourceFoundation
 	var adaptationContext *adaptationFoundationContext
 	var adaptationContextErr error
 	if s.store.Adaptation.Exists() {
 		mode = "adaptation"
-		source, err = s.store.Adaptation.LoadSourceFoundation()
+		sourceFoundation, err = s.store.Adaptation.LoadSourceFoundation()
+		source = sourceFoundation
 		if err == nil {
 			adaptationContext, adaptationContextErr = loadAdaptationFoundationContext(s.store)
 		} else {
@@ -109,6 +114,10 @@ func (s *FoundationRevisionService) State() (*FoundationState, error) {
 	state := &FoundationState{Mode: mode, SourceFoundation: source, TargetFoundation: target, BaseRevision: target.Revision, BaseAuditSignature: auditSignature, AllowedOperations: []string{"get"}}
 	if contract != nil {
 		state.CoreCastSignature = contract.ContentSignature
+		state.CoreCast = contract
+		completion := s.foundationCoreCastCompletion(mode, *contract, sourceFoundation)
+		state.CoreCastCompletion = &completion
+		state.CoreCastConfirmed = completion.Complete && contract.ContentSignature != "" && contract.ConfirmedSignature == contract.ContentSignature
 	}
 	if adaptationContext != nil {
 		baseline := adaptationContext.Baseline
@@ -141,6 +150,39 @@ func (s *FoundationRevisionService) State() (*FoundationState, error) {
 		state.AllowedOperations = append(state.AllowedOperations, "retry")
 	}
 	return state, nil
+}
+
+func (s *FoundationRevisionService) foundationCoreCastCompletion(mode string, contract domain.CoreCastContract, source *domain.AdaptationSourceFoundation) domain.CoreCastCompletionResult {
+	if mode != "adaptation" || source == nil {
+		return domain.CoreCastCompletion(contract, nil, nil)
+	}
+	sourceCharacters := domain.ResolveSourceCharacters(*source)
+	dossier, err := s.store.Adaptation.LoadCoCreateDossier()
+	if err != nil || dossier == nil {
+		result := domain.CoreCastCompletion(contract, sourceCharacters, nil)
+		result.Complete = false
+		result.BlockingReasons = append(result.BlockingReasons, "adaptation source dossier is unavailable")
+		result.Missing = append(result.Missing, domain.CoreCastMissingItem{Code: "source_dossier_unavailable", Description: "adaptation source dossier is unavailable"})
+		return result
+	}
+	sourceMajor, sourceMissing := domain.ResolveSourceMajorCharacters(*source, *dossier)
+	result := domain.CoreCastCompletion(contract, sourceCharacters, sourceMajor)
+	for _, missing := range sourceMissing {
+		duplicate := false
+		for _, existing := range result.Missing {
+			if existing.Code == missing.Code && existing.MemberID == missing.MemberID && existing.SourceID == missing.SourceID {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		result.Missing = append(result.Missing, missing)
+		result.BlockingReasons = append(result.BlockingReasons, missing.Description)
+	}
+	result.Complete = len(result.Missing) == 0
+	return result
 }
 
 func (s *FoundationRevisionService) Preview(request FoundationPreviewRequest) (*domain.FoundationRevisionPreview, error) {

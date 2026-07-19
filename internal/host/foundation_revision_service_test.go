@@ -15,6 +15,41 @@ import (
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
+func TestFoundationStateExposesReadonlyCoreCastContractForUnifiedUI(t *testing.T) {
+	st, _ := newConfirmedFoundationRevisionStore(t)
+	state, err := NewFoundationRevisionService(st).State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CoreCast == nil || state.CoreCast.ContentSignature == "" {
+		t.Fatalf("CoreCast was not exposed: %+v", state)
+	}
+	if !state.CoreCastConfirmed || state.CoreCast.ConfirmedSignature != state.CoreCast.ContentSignature {
+		t.Fatalf("CoreCast confirmation was not exposed: %+v", state.CoreCast)
+	}
+	if state.CoreCastCompletion == nil || !state.CoreCastCompletion.Complete {
+		t.Fatalf("CoreCast completion was not exposed: %+v", state.CoreCastCompletion)
+	}
+}
+
+func TestAdaptationFoundationStateDoesNotReportCompletionWithoutPersistedSourceDossier(t *testing.T) {
+	st, _ := newConfirmedAdaptationFoundationRevisionStore(t)
+	state, err := NewFoundationRevisionService(st).State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CoreCastCompletion == nil || state.CoreCastCompletion.Complete || state.CoreCastConfirmed {
+		t.Fatalf("adaptation CoreCast completion ignored missing source evidence: completion=%+v confirmed=%v", state.CoreCastCompletion, state.CoreCastConfirmed)
+	}
+	found := false
+	for _, missing := range state.CoreCastCompletion.Missing {
+		found = found || missing.Code == "source_dossier_unavailable"
+	}
+	if !found {
+		t.Fatalf("missing source dossier was not explained: %+v", state.CoreCastCompletion)
+	}
+}
+
 func TestFoundationRevisionServiceFailsClosedForIncompleteAdaptationBaseline(t *testing.T) {
 	st := storepkg.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

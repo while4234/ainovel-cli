@@ -148,12 +148,13 @@ export function getProjectResumeSchedule(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/resume-schedule`);
 }
 
-export function getProjectFoundation(projectId) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation`);
+export function getProjectFoundation(projectId, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation`, options);
 }
 
-export function previewProjectFoundation(projectId, expectedBaseRevision, expectedBaseAuditSignature, candidate) {
+export function previewProjectFoundation(projectId, expectedBaseRevision, expectedBaseAuditSignature, candidate, options = {}) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/preview`, {
+    ...options,
     method: 'POST',
     body: JSON.stringify({
       expected_base_revision: expectedBaseRevision,
@@ -163,15 +164,17 @@ export function previewProjectFoundation(projectId, expectedBaseRevision, expect
   });
 }
 
-export function applyProjectFoundation(projectId, previewId, idempotencyKey = newIdempotencyKey('foundation-apply')) {
+export function applyProjectFoundation(projectId, previewId, idempotencyKey = newIdempotencyKey('foundation-apply'), options = {}) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/apply`, {
+    ...options,
     method: 'POST',
     body: JSON.stringify({ preview_id: previewId, idempotency_key: idempotencyKey })
   });
 }
 
-export function retryProjectFoundation(projectId, idempotencyKey = newIdempotencyKey('foundation-retry')) {
+export function retryProjectFoundation(projectId, idempotencyKey = newIdempotencyKey('foundation-retry'), options = {}) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/retry`, {
+    ...options,
     method: 'POST',
     body: JSON.stringify({ idempotency_key: idempotencyKey })
   });

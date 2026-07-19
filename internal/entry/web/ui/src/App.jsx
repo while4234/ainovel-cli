@@ -190,6 +190,7 @@ import { nextSSEReconnectDelay, parseSSEMessage } from './sse.js';
 import { cacheHitLabel, usageConfidence, usageCoverage } from './usage-ui.js';
 import { UsageObservabilityTable } from './usage-observability.jsx';
 import { CoreCastEditor } from './components/CoreCastEditor.jsx';
+import { FoundationCenter } from './foundation/FoundationCenter.jsx';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 export const PROJECT_OPEN_TIMEOUT_MS = 90_000;
@@ -4726,6 +4727,16 @@ export default function App() {
           <div className="toolbar-actions">
             <StatusPill status={connection} />
             <button
+              aria-pressed={centerView === 'foundation'}
+              className={`tool-button ${centerView === 'foundation' ? 'accent' : ''}`}
+              disabled={!activeProject || projectOpen.status === 'loading'}
+              onClick={() => { setCenterView('foundation'); setToolDrawerOpen(false); }}
+              type="button"
+            >
+              <Database size={16} />
+              设定中心
+            </button>
+            <button
               className="tool-button"
               disabled={!activeProject || projectBusy}
               onClick={() => openProject(activeProject)}
@@ -4810,6 +4821,22 @@ export default function App() {
             if (sideView === 'manuscript') setSideView('status');
           }}
         />
+
+        {centerView === 'foundation' ? <FoundationCenter
+          key={activeProject?.id || 'no-project-foundation'}
+          projectId={activeProject?.id || ''}
+          onClose={() => setCenterView('writing')}
+          onOpenCoreCast={() => {
+            setCenterView('writing');
+            setSideView('cocreate');
+            setToolDrawerOpen(true);
+          }}
+          onOpenReview={(mode) => {
+            setCenterView('writing');
+            setSideView(mode === 'adaptation' ? 'adapt' : 'cocreate');
+            setToolDrawerOpen(true);
+          }}
+        /> : null}
 
         {error ? <div className="error-banner">{error}</div> : null}
 
