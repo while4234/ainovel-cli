@@ -59,7 +59,7 @@ func (t *SaveFoundationTool) Schema() map[string]any {
 	)
 }
 
-func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
 		Type                   string                           `json:"type"`
 		Content                json.RawMessage                  `json:"content"`
@@ -87,13 +87,24 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		a.Type = inferred
 	}
+	var foundationOwner *store.FoundationPlanningOwner
 	if blocksDuringActiveRevision(a.Type) {
 		active, activeErr := t.store.Revisions.Active()
 		if activeErr != nil {
 			return nil, fmt.Errorf("read active revision before formal outline write: %w", activeErr)
 		}
 		if active != nil {
-			return nil, fmt.Errorf("formal save_foundation type=%s is blocked by active revision %s; use NormalRevisionService candidates: %w", a.Type, active.ID, errs.ErrToolPrecondition)
+			if active.Mode != domain.RevisionModeFoundation || (a.Type != "repair_arc" && a.Type != "repair_volume") {
+				return nil, fmt.Errorf("formal save_foundation type=%s is blocked by active revision %s; use revision-owned candidates: %w", a.Type, active.ID, errs.ErrToolPrecondition)
+			}
+			artifactID, err := foundationRepairArtifactID(t.store, a.Type, a.Volume, a.Arc)
+			if err != nil {
+				return nil, fmt.Errorf("resolve Foundation repair scope: %w", err)
+			}
+			foundationOwner, err = t.store.Revisions.AuthorizeFoundationPlanning(ctx, artifactID)
+			if err != nil {
+				return nil, fmt.Errorf("authorize Foundation repair: %w: %w", errs.ErrToolPrecondition, err)
+			}
 		}
 	}
 	if !t.store.Adaptation.Active() && requiresConfirmedFoundation(a.Type) {
@@ -298,8 +309,14 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if err := validateGeneratedOutline(fmt.Sprintf("repair_arc V%d A%d", a.Volume, a.Arc), chapters, a.Review); err != nil {
 			return nil, err
 		}
-		if err := t.store.RepairArcOutlineRange(a.Volume, a.Arc, a.From, a.To, chapters); err != nil {
-			return nil, fmt.Errorf("repair arc: %w: %w", errs.ErrStoreWrite, err)
+		var repairErr error
+		if foundationOwner != nil {
+			repairErr = t.store.RepairArcOutlineRangeForFoundationRevision(foundationOwner, a.Volume, a.Arc, a.From, a.To, chapters)
+		} else {
+			repairErr = t.store.RepairArcOutlineRange(a.Volume, a.Arc, a.From, a.To, chapters)
+		}
+		if repairErr != nil {
+			return nil, fmt.Errorf("repair arc: %w: %w", errs.ErrStoreWrite, repairErr)
 		}
 		if err := t.store.OriginalPlanningAudits.InvalidateRepair(a.Volume, a.Arc, a.From, a.To); err != nil {
 			return nil, fmt.Errorf("invalidate repaired outline audits: %w: %w", errs.ErrStoreWrite, err)
@@ -392,11 +409,17 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if !found {
 			return nil, fmt.Errorf("repair_volume V%d not found: %w", a.Volume, errs.ErrToolPrecondition)
 		}
-		if err := t.store.Outline.SaveLayeredOutline(volumes); err != nil {
-			return nil, fmt.Errorf("save repaired volume skeleton: %w", err)
-		}
-		if err := t.store.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
-			return nil, fmt.Errorf("save repaired flattened outline: %w", err)
+		if foundationOwner != nil {
+			if err := t.store.RepairSkeletonVolumeForFoundationRevision(foundationOwner, repaired); err != nil {
+				return nil, fmt.Errorf("save Foundation-owned repaired volume skeleton: %w", err)
+			}
+		} else {
+			if err := t.store.Outline.SaveLayeredOutline(volumes); err != nil {
+				return nil, fmt.Errorf("save repaired volume skeleton: %w", err)
+			}
+			if err := t.store.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+				return nil, fmt.Errorf("save repaired flattened outline: %w", err)
+			}
 		}
 		if err := t.store.OriginalPlanningAudits.InvalidateSkeletonRepair(a.Volume); err != nil {
 			return nil, fmt.Errorf("invalidate repaired skeleton audits: %w", err)
@@ -624,6 +647,27 @@ func blocksDuringActiveRevision(kind string) bool {
 	default:
 		return false
 	}
+}
+
+func foundationRepairArtifactID(st *store.Store, kind string, volumeIndex, arcIndex int) (string, error) {
+	volumes, err := st.Outline.LoadLayeredOutline()
+	if err != nil {
+		return "", err
+	}
+	for _, volume := range volumes {
+		if volume.Index != volumeIndex {
+			continue
+		}
+		if kind == "repair_volume" {
+			return volume.ID, nil
+		}
+		for _, arc := range volume.Arcs {
+			if arc.Index == arcIndex {
+				return arc.ID, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("repair target V%d/A%d is missing", volumeIndex, arcIndex)
 }
 
 func planningReviewKindForFoundation(st *store.Store) string {

@@ -305,8 +305,14 @@ type OriginalPlanningAudit struct {
 	ContentSignature    string `json:"content_signature,omitempty"`
 	FoundationRevision  int64  `json:"foundation_revision,omitempty"`
 	FoundationSignature string `json:"foundation_signature,omitempty"`
-	Attempt             int    `json:"attempt"`
-	UpdatedAt           string `json:"updated_at"`
+	// FoundationEntityRefs and FoundationProjectionSignature preserve an
+	// unaffected audit only when structured dependency evidence proves that
+	// the exact Foundation projection it used is unchanged. The historical
+	// whole-Foundation signature is never rewritten.
+	FoundationEntityRefs          []string `json:"foundation_entity_refs,omitempty"`
+	FoundationProjectionSignature string   `json:"foundation_projection_signature,omitempty"`
+	Attempt                       int      `json:"attempt"`
+	UpdatedAt                     string   `json:"updated_at"`
 }
 
 type OriginalPlanningAuditDimension struct {

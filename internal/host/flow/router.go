@@ -31,6 +31,7 @@ type Instruction struct {
 type State struct {
 	RevisionActive bool
 	RevisionRoute  *domain.RevisionRoute
+	RevisionMode   domain.RevisionMode
 
 	Progress             *domain.Progress
 	PlanningReview       *domain.PlanningReview
@@ -91,6 +92,15 @@ func Route(s State) *Instruction {
 	// stages intentionally return no instruction while still blocking every
 	// ordinary planning/writing route below.
 	if s.RevisionActive {
+		if s.RevisionMode == domain.RevisionModeFoundation {
+			ordinary := s
+			ordinary.RevisionActive = false
+			ordinary.RevisionRoute = nil
+			if instruction := routeOriginalPlanning(ordinary); instruction != nil && s.RevisionRoute != nil {
+				instruction.Fence = storepkg.RevisionFence{Generation: s.RevisionRoute.Generation, SessionID: s.RevisionRoute.SessionID, Revision: s.RevisionRoute.Revision}
+				return instruction
+			}
+		}
 		if s.RevisionRoute == nil {
 			return nil
 		}

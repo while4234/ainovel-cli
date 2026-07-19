@@ -218,54 +218,64 @@ func (s *Store) RepairArcOutline(volumeIdx, arcIdx int, chapters []domain.Outlin
 // historical full-arc repair behavior.
 func (s *Store) RepairArcOutlineRange(volumeIdx, arcIdx, fromChapter, toChapter int, chapters []domain.OutlineEntry) error {
 	return s.Revisions.withLegacyMigrationMutation("repair adaptation outline", s.Outline.migration, func() error {
-		s.Foundation.lifecycle.reviewMu.Lock()
-		defer s.Foundation.lifecycle.reviewMu.Unlock()
-		s.crossMu.Lock()
-		defer s.crossMu.Unlock()
-		if err := s.requireAuthoritativeFormalMutationLocked("repair arc outline"); err != nil {
-			return err
-		}
-
-		prepared, err := s.previewRepairedArcEntries(volumeIdx, arcIdx, fromChapter, toChapter, chapters)
-		if err != nil {
-			return err
-		}
-		if err := s.validateRepairParentBatch(volumeIdx, arcIdx, fromChapter, toChapter, chapters); err != nil {
-			return err
-		}
-		if err := s.saveOutlineRepairFinalizationRange(volumeIdx, arcIdx, fromChapter, toChapter, prepared, outlineRepairFinalizationStagePrepared); err != nil {
-			return err
-		}
-
-		s.Outline.io.mu.Lock()
-		_, repaired, err := s.Outline.replaceArcChapterRangeUnlocked(volumeIdx, arcIdx, fromChapter, toChapter, chapters)
-		s.Outline.io.mu.Unlock()
-		if err != nil {
-			_ = s.clearOutlineRepairFinalization()
-			return err
-		}
-		if err := s.saveOutlineRepairFinalizationRange(volumeIdx, arcIdx, fromChapter, toChapter, repaired, outlineRepairFinalizationStageOutlineReplaced); err != nil {
-			return err
-		}
-
-		progress, err := s.finalizeOutlineRepair(volumeIdx, arcIdx, repaired)
-		if err != nil {
-			return err
-		}
-
-		nextBatch, err := s.scanDuplicateOutlineRepairBatch(progress)
-		if err != nil {
-			return err
-		}
-		if nextBatch == nil {
-			if err := s.saveCleanOutlineDuplicateScan(progress, volumeIdx, arcIdx); err != nil {
-				return err
-			}
-		} else if err := s.clearOutlineDuplicateScan(); err != nil {
-			return err
-		}
-		return nil
+		return s.repairArcOutlineRange(volumeIdx, arcIdx, fromChapter, toChapter, chapters)
 	})
+}
+
+func (s *Store) RepairArcOutlineRangeForFoundationRevision(owner *FoundationPlanningOwner, volumeIdx, arcIdx, fromChapter, toChapter int, chapters []domain.OutlineEntry) error {
+	return s.Revisions.withFoundationPlanningMutation(owner, "repair Foundation-owned outline", s.Outline.migration, func() error {
+		return s.repairArcOutlineRange(volumeIdx, arcIdx, fromChapter, toChapter, chapters)
+	})
+}
+
+func (s *Store) repairArcOutlineRange(volumeIdx, arcIdx, fromChapter, toChapter int, chapters []domain.OutlineEntry) error {
+	s.Foundation.lifecycle.reviewMu.Lock()
+	defer s.Foundation.lifecycle.reviewMu.Unlock()
+	s.crossMu.Lock()
+	defer s.crossMu.Unlock()
+	if err := s.requireAuthoritativeFormalMutationLocked("repair arc outline"); err != nil {
+		return err
+	}
+
+	prepared, err := s.previewRepairedArcEntries(volumeIdx, arcIdx, fromChapter, toChapter, chapters)
+	if err != nil {
+		return err
+	}
+	if err := s.validateRepairParentBatch(volumeIdx, arcIdx, fromChapter, toChapter, chapters); err != nil {
+		return err
+	}
+	if err := s.saveOutlineRepairFinalizationRange(volumeIdx, arcIdx, fromChapter, toChapter, prepared, outlineRepairFinalizationStagePrepared); err != nil {
+		return err
+	}
+
+	s.Outline.io.mu.Lock()
+	_, repaired, err := s.Outline.replaceArcChapterRangeUnlocked(volumeIdx, arcIdx, fromChapter, toChapter, chapters)
+	s.Outline.io.mu.Unlock()
+	if err != nil {
+		_ = s.clearOutlineRepairFinalization()
+		return err
+	}
+	if err := s.saveOutlineRepairFinalizationRange(volumeIdx, arcIdx, fromChapter, toChapter, repaired, outlineRepairFinalizationStageOutlineReplaced); err != nil {
+		return err
+	}
+
+	progress, err := s.finalizeOutlineRepair(volumeIdx, arcIdx, repaired)
+	if err != nil {
+		return err
+	}
+
+	nextBatch, err := s.scanDuplicateOutlineRepairBatch(progress)
+	if err != nil {
+		return err
+	}
+	if nextBatch == nil {
+		if err := s.saveCleanOutlineDuplicateScan(progress, volumeIdx, arcIdx); err != nil {
+			return err
+		}
+	} else if err := s.clearOutlineDuplicateScan(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) previewRepairedArcEntries(volumeIdx, arcIdx, fromChapter, toChapter int, chapters []domain.OutlineEntry) ([]domain.OutlineEntry, error) {

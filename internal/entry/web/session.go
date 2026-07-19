@@ -188,6 +188,10 @@ type normalFlowActionHost interface {
 	BeginNormalFlowAction(string) (func(), error)
 }
 
+type foundationRevisionRouteHost interface {
+	ResumeFoundationRevision() (string, error)
+}
+
 type scheduledResumeHost interface {
 	ScheduledResumeEnabled() bool
 	SetScheduledResumeEnabled(bool) error
@@ -1073,6 +1077,18 @@ func (s *ProjectSession) Resume() (string, error) {
 	defer unlock()
 
 	label, err := s.host.Resume()
+	if err == nil {
+		s.AppendSnapshot()
+	}
+	return label, err
+}
+
+func (s *ProjectSession) ResumeFoundationRevision() (string, error) {
+	runner, ok := s.host.(foundationRevisionRouteHost)
+	if !ok {
+		return "", fmt.Errorf("Foundation revision route is unavailable")
+	}
+	label, err := runner.ResumeFoundationRevision()
 	if err == nil {
 		s.AppendSnapshot()
 	}
@@ -2884,6 +2900,16 @@ func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
 	if review == nil || review.Status != domain.PlanningReviewStatusPending {
 		return "", fmt.Errorf("no pending co-create planning review")
 	}
+	if active, activeErr := st.Revisions.Active(); activeErr != nil {
+		return "", fmt.Errorf("read active revision before planning approval: %w", activeErr)
+	} else if active != nil {
+		if active.Mode != domain.RevisionModeFoundation {
+			return "", fmt.Errorf("planning approval is blocked by active revision %s", active.ID)
+		}
+		if err := host.NewFoundationRevisionService(st).ApproveOutline(); err != nil {
+			return "", fmt.Errorf("approve Foundation-owned outline revision: %w", err)
+		}
+	}
 	switch review.Kind {
 	case domain.PlanningReviewKindBlueprint:
 		rollback := *review
@@ -2995,6 +3021,10 @@ func (s *ProjectSession) ConfirmCoCreateFoundation(expectedRevision int64, expec
 	_, transition, err := st.ConfirmFoundationForPlanning(expectedRevision, expectedAuditSignature)
 	if err != nil {
 		return "", err
+	}
+	if active, activeErr := st.Revisions.Active(); activeErr == nil && active != nil && active.Mode == domain.RevisionModeFoundation {
+		s.AppendSnapshot()
+		return "Foundation approved; active revision is awaiting outline regeneration and approval", nil
 	}
 	label, err := s.host.Resume()
 	if err != nil {

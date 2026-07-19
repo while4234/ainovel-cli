@@ -746,6 +746,15 @@ func (t *ContextTool) foundationStatus() map[string]any {
 		status["generation"] = review.FoundationGeneration
 		status["confirmed"] = t.store.RequireConfirmedFoundation() == nil
 	}
+	if dependencies, err := t.store.FoundationRevisions.LoadDependencies(); err == nil && dependencies != nil {
+		status["dependency_evidence"] = map[string]any{
+			"version": dependencies.Version, "signature": dependencies.Signature,
+			"foundation_signature": dependencies.FoundationSignature, "count": len(dependencies.Entries),
+		}
+	}
+	if runtime, err := t.store.FoundationRevisions.LoadRuntime(); err == nil && runtime != nil && runtime.Active() {
+		status["active_revision"] = map[string]any{"id": runtime.RevisionID, "stage": runtime.Stage, "impact_signature": runtime.Impact.Signature}
+	}
 	return status
 }
 

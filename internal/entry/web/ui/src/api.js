@@ -148,6 +148,35 @@ export function getProjectResumeSchedule(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/resume-schedule`);
 }
 
+export function getProjectFoundation(projectId) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation`);
+}
+
+export function previewProjectFoundation(projectId, expectedBaseRevision, expectedBaseAuditSignature, candidate) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/preview`, {
+    method: 'POST',
+    body: JSON.stringify({
+      expected_base_revision: expectedBaseRevision,
+      expected_base_audit_signature: expectedBaseAuditSignature,
+      candidate
+    })
+  });
+}
+
+export function applyProjectFoundation(projectId, previewId, idempotencyKey = newIdempotencyKey('foundation-apply')) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/apply`, {
+    method: 'POST',
+    body: JSON.stringify({ preview_id: previewId, idempotency_key: idempotencyKey })
+  });
+}
+
+export function retryProjectFoundation(projectId, idempotencyKey = newIdempotencyKey('foundation-retry')) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/retry`, {
+    method: 'POST',
+    body: JSON.stringify({ idempotency_key: idempotencyKey })
+  });
+}
+
 export function setProjectResumeSchedule(projectId, enabled) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/resume-schedule`, {
     method: 'PUT',

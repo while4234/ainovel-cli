@@ -62,7 +62,7 @@ func (t *SaveOriginalPlanningAuditTool) Schema() map[string]any {
 	)
 }
 
-func (t *SaveOriginalPlanningAuditTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *SaveOriginalPlanningAuditTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	if t.store == nil {
 		return nil, fmt.Errorf("store is required")
 	}
@@ -72,6 +72,22 @@ func (t *SaveOriginalPlanningAuditTool) Execute(_ context.Context, args json.Raw
 	}
 	if err := validateOriginalPlanningAudit(audit); err != nil {
 		return nil, fmt.Errorf("invalid original planning audit: %w: %w", errs.ErrToolArgs, err)
+	}
+	var foundationOwner *store.FoundationPlanningOwner
+	if active, activeErr := t.store.Revisions.Active(); activeErr != nil {
+		return nil, fmt.Errorf("read active revision before planning audit: %w", activeErr)
+	} else if active != nil {
+		if active.Mode != domain.RevisionModeFoundation {
+			return nil, fmt.Errorf("planning audit is blocked by active revision %s: %w", active.ID, errs.ErrToolPrecondition)
+		}
+		artifactID, scopeErr := foundationAuditArtifactID(t.store, audit)
+		if scopeErr != nil {
+			return nil, fmt.Errorf("resolve Foundation audit scope: %w", scopeErr)
+		}
+		foundationOwner, scopeErr = t.store.Revisions.AuthorizeFoundationPlanning(ctx, artifactID)
+		if scopeErr != nil {
+			return nil, fmt.Errorf("authorize Foundation planning audit: %w: %w", errs.ErrToolPrecondition, scopeErr)
+		}
 	}
 	volumes, err := t.store.Outline.LoadLayeredOutline()
 	if err != nil {
@@ -89,8 +105,14 @@ func (t *SaveOriginalPlanningAuditTool) Execute(_ context.Context, args json.Raw
 		return nil, fmt.Errorf("original planning audit evidence: %w: %w", errs.ErrToolPrecondition, err)
 	}
 	audit.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := t.store.OriginalPlanningAudits.Save(audit); err != nil {
-		return nil, fmt.Errorf("save original planning audit: %w: %w", errs.ErrStoreWrite, err)
+	var saveErr error
+	if foundationOwner != nil {
+		saveErr = t.store.OriginalPlanningAudits.SaveForFoundationRevision(foundationOwner, audit)
+	} else {
+		saveErr = t.store.OriginalPlanningAudits.Save(audit)
+	}
+	if saveErr != nil {
+		return nil, fmt.Errorf("save original planning audit: %w: %w", errs.ErrStoreWrite, saveErr)
 	}
 	artifact := "meta/original_planning/audits.json"
 	if _, err := t.store.Checkpoints.AppendArtifact(domain.GlobalScope(), "original_planning_audit", artifact); err != nil {
@@ -390,4 +412,31 @@ func originalPlanningAuditKey(audit domain.OriginalPlanningAudit) string {
 	default:
 		return "book"
 	}
+}
+
+func foundationAuditArtifactID(st *store.Store, audit domain.OriginalPlanningAudit) (string, error) {
+	if audit.ScopeID != "" {
+		return audit.ScopeID, nil
+	}
+	if audit.Scope == "book" || audit.Scope == "book_batch" || audit.Scope == "skeleton_book" || audit.Scope == "skeleton_book_batch" {
+		return "book", nil
+	}
+	volumes, err := st.Outline.LoadLayeredOutline()
+	if err != nil {
+		return "", err
+	}
+	for _, volume := range volumes {
+		if volume.Index != audit.Volume {
+			continue
+		}
+		if audit.Scope == "volume" || audit.Scope == "skeleton_volume" {
+			return volume.ID, nil
+		}
+		for _, arc := range volume.Arcs {
+			if arc.Index == audit.Arc {
+				return arc.ID, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("audit scope %s V%d/A%d is missing", audit.Scope, audit.Volume, audit.Arc)
 }

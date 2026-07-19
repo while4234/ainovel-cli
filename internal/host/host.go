@@ -827,6 +827,64 @@ func (h *Host) Resume() (string, error) {
 	return h.resume(false)
 }
 
+// ResumeFoundationRevision starts only the router owned by the current
+// Foundation RevisionSession. It never acquires a normal-flow lease, and the
+// dispatcher revalidates the persisted session fence before every dispatch.
+func (h *Host) ResumeFoundationRevision() (string, error) {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return "", fmt.Errorf("host is closed")
+	}
+	if h.lifecycle == lifecycleRunning {
+		h.mu.Unlock()
+		return "", fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		h.mu.Unlock()
+		return "", fmt.Errorf("co-create is in progress")
+	}
+	h.mu.Unlock()
+	active, err := h.store.Revisions.Active()
+	if err != nil || active == nil || active.Mode != domain.RevisionModeFoundation || active.Stage != domain.RevisionStageCandidateGenerating {
+		if err != nil {
+			return "", fmt.Errorf("load active Foundation planning revision: %w", err)
+		}
+		return "", fmt.Errorf("active Foundation planning revision is required")
+	}
+	if err := h.store.RequireConfirmedFoundation(); err != nil {
+		return "", err
+	}
+	if h.coordinator != nil {
+		h.coordinator.WaitForIdle()
+	}
+	prompt, label, err := buildResumePrompt(h.store)
+	if err != nil {
+		return "", err
+	}
+	if label == "" {
+		label = "repairing planning after Foundation revision"
+		prompt = label
+	}
+	h.refreshWriterRestore()
+	h.observer.setAborting(false)
+	h.router.ResetRepeat()
+	h.router.Enable()
+	fence := storepkg.RevisionFence{Generation: active.Generation, SessionID: active.ID, Revision: active.Revision}
+	h.mu.Lock()
+	h.lifecycle = lifecycleRunning
+	h.mu.Unlock()
+	if err := h.coordinator.Prompt(storepkg.ContextWithRevisionFence(context.Background(), fence), prompt); err != nil {
+		h.mu.Lock()
+		h.lifecycle = lifecycleIdle
+		h.mu.Unlock()
+		return "", fmt.Errorf("resume Foundation revision: %w", err)
+	}
+	h.router.DispatchFollowUp()
+	go h.waitDone()
+	return label, nil
+}
+
 func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	h.mu.Lock()
 	if h.closed {

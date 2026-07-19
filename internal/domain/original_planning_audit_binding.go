@@ -179,6 +179,17 @@ func OriginalPlanningAuditCurrent(audit OriginalPlanningAudit, volumes []VolumeO
 	return OriginalPlanningAuditBindingCurrent(audit, volumes)
 }
 
+func OriginalPlanningAuditCurrentWithFoundation(audit OriginalPlanningAudit, volumes []VolumeOutline, foundation StoryFoundation, foundationSignature string) bool {
+	if OriginalPlanningAuditCurrent(audit, volumes, foundationSignature) {
+		return true
+	}
+	if audit.Verdict != "pass" || len(audit.FoundationEntityRefs) == 0 || strings.TrimSpace(audit.FoundationProjectionSignature) == "" || !OriginalPlanningAuditBindingCurrent(audit, volumes) {
+		return false
+	}
+	current, err := FoundationProjectionSignature(foundation, audit.FoundationEntityRefs)
+	return err == nil && current == audit.FoundationProjectionSignature
+}
+
 // OriginalPlanningAuditBindingCurrent reports whether the reviewed structure
 // and content still match, independently of the audit verdict.
 func OriginalPlanningAuditBindingCurrent(audit OriginalPlanningAudit, volumes []VolumeOutline) bool {

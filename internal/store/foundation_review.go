@@ -424,6 +424,43 @@ func (s *Store) CurrentFoundationAuditSignature() (string, error) {
 	return domain.FoundationAuditSignature(foundation)
 }
 
+// MarkFoundationRevisionPending invalidates the previous human confirmation
+// after a canonical revision publication without manufacturing a new audit or
+// confirmation signature.
+func (s *Store) MarkFoundationRevisionPending() error {
+	foundation, err := s.Foundation.Load()
+	if err != nil {
+		return err
+	}
+	auditSignature, err := domain.FoundationAuditSignature(foundation)
+	if err != nil {
+		return err
+	}
+	contract, err := s.CoreCast.Load()
+	if err != nil {
+		return err
+	}
+	review, err := s.RunMeta.PlanningReview()
+	if err != nil {
+		return err
+	}
+	if review == nil {
+		return fmt.Errorf("planning review is required for foundation revision")
+	}
+	copy := clonePlanningReview(*review)
+	copy.Kind = domain.PlanningReviewKindFoundation
+	copy.Status = domain.PlanningReviewStatusPending
+	copy.FoundationStatus = domain.FoundationReviewStatusPending
+	copy.FoundationRevision = foundation.Revision
+	copy.FoundationAuditSignature = auditSignature
+	copy.FoundationConfirmedAt = ""
+	if contract != nil {
+		copy.CoreCastSignature = contract.ContentSignature
+	}
+	copy.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	return s.RunMeta.setPlanningReviewAuthoritative(&copy)
+}
+
 func (s *Store) CurrentApprovedFoundationBinding() (int64, string, error) {
 	s.Foundation.lifecycle.reviewMu.Lock()
 	defer s.Foundation.lifecycle.reviewMu.Unlock()

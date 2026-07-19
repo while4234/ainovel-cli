@@ -25,6 +25,23 @@ func TestRouteOriginalPlanningAlternatesGenerationAndIndependentAudit(t *testing
 	}
 }
 
+func TestFoundationRevisionUsesExistingOriginalPlanningRepairRouteWithFence(t *testing.T) {
+	state := State{
+		RevisionActive: true, RevisionMode: domain.RevisionModeFoundation,
+		RevisionRoute:        &domain.RevisionRoute{Agent: "architect_long", Task: "fallback", SessionID: "foundation-revision", Revision: 7, Generation: 11},
+		Progress:             &domain.Progress{Phase: domain.PhaseOutline},
+		PlanningReview:       &domain.PlanningReview{Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindVolumeSplit},
+		OriginalPlanningWork: &storepkg.OriginalPlanningWork{Kind: "repair_arc", Volume: 2, Arc: 1, FromChapter: 9, ToChapter: 12, Audit: &domain.OriginalPlanningAudit{Summary: "Foundation changed"}},
+	}
+	got := Route(state)
+	if got == nil || got.Agent != "architect_long" || !strings.Contains(got.Task, "repair_arc") {
+		t.Fatalf("Foundation repair route = %+v", got)
+	}
+	if got.Fence.SessionID != "foundation-revision" || got.Fence.Revision != 7 || got.Fence.Generation != 11 {
+		t.Fatalf("Foundation repair fence = %+v", got.Fence)
+	}
+}
+
 func TestRouteOriginalPlanningBuildsFoundationBeforeAnyOutline(t *testing.T) {
 	state := State{PlanningReview: &domain.PlanningReview{
 		Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindFoundation,

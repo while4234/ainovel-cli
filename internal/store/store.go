@@ -50,6 +50,7 @@ type Store struct {
 	OriginalPlanningAudits *OriginalPlanningAuditStore
 	Foundation             *FoundationStore
 	CoreCast               *CoreCastStore
+	FoundationRevisions    *FoundationRevisionStore
 
 	crossMu                  sync.Mutex // 保护跨域原子操作
 	adaptationConfirmationMu sync.Mutex
@@ -94,10 +95,13 @@ func NewStore(dir string) *Store {
 		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir), outline),
 		Foundation:             foundation,
 		CoreCast:               newCoreCastStore(newIO(dir)),
+		FoundationRevisions:    NewFoundationRevisionStore(newIO(dir)),
 	}
 	foundation.coreCast = store.CoreCast
 	foundation.withSemanticMutation = store.withUnfencedFoundationGenerationGuard
 	store.OriginalPlanningAudits.withApprovedFoundation = store.withApprovedFoundationBinding
+	store.OriginalPlanningAudits.foundation = foundation
+	store.OriginalPlanningAudits.revisions = revisions
 	store.Outline.foundation = foundation
 	store.Outline.withFormalGate = store.withAuthoritativeFormalMutation
 	store.Outline.guardFoundationGeneration = store.withUnfencedFoundationGenerationGuard
@@ -480,6 +484,34 @@ func (s *Store) AppendSkeletonVolume(vol domain.VolumeOutline) error {
 		}
 		return s.saveLayeredStructureMutation("append_skeleton_volume", requestID, true, false, "", "", nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
 			return s.Outline.appendSkeletonVolume(existing, vol)
+		})
+	})
+}
+
+// RepairSkeletonVolumeForFoundationRevision is the narrow formal-write path
+// owned by a fenced Foundation repair turn. Ordinary callers retain the active
+// revision firewall and cannot construct FoundationPlanningOwner.
+func (s *Store) RepairSkeletonVolumeForFoundationRevision(owner *FoundationPlanningOwner, repaired domain.VolumeOutline) error {
+	requestID, err := migrationRequestIdentity("foundation_revision_repair_volume", repaired)
+	if err != nil {
+		return err
+	}
+	return s.Revisions.withFoundationPlanningMutation(owner, "repair Foundation-owned skeleton volume", s.Outline.migration, func() error {
+		s.Foundation.lifecycle.reviewMu.Lock()
+		defer s.Foundation.lifecycle.reviewMu.Unlock()
+		s.crossMu.Lock()
+		defer s.crossMu.Unlock()
+		if err := s.requireAuthoritativeFormalMutationLocked("repair Foundation-owned skeleton volume"); err != nil {
+			return err
+		}
+		return s.saveLayeredStructureMutation("foundation_revision_repair_volume", requestID, true, false, "", "", nil, func(existing []domain.VolumeOutline) ([]domain.VolumeOutline, error) {
+			for index := range existing {
+				if existing[index].ID == owner.artifactID && existing[index].Index == repaired.Index {
+					existing[index] = repaired
+					return existing, nil
+				}
+			}
+			return nil, fmt.Errorf("Foundation-owned volume %q was not found", owner.artifactID)
 		})
 	})
 }

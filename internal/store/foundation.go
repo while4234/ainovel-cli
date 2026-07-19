@@ -205,6 +205,11 @@ func WithCloneReadyStoryFoundationSnapshot(dir string, copySnapshot func() error
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect source story foundation transaction: %w", err)
 	}
+	if runtime, err := NewFoundationRevisionStore(newIO(dir)).LoadRuntime(); err != nil {
+		return fmt.Errorf("inspect source Foundation revision before clone: %w", err)
+	} else if runtime != nil && runtime.Active() {
+		return fmt.Errorf("source project has an active Foundation revision %s; complete or cancel it before cloning", runtime.RevisionID)
+	}
 	if err := store.validateProjectionSetUnlocked(); err != nil {
 		return fmt.Errorf("source story foundation is not clone-ready: %w", err)
 	}
@@ -253,6 +258,22 @@ func (s *FoundationStore) SaveCAS(candidate domain.StoryFoundation, expectedRevi
 	err := s.withSemanticMutation("save story foundation", func() error {
 		var err error
 		saved, err = s.saveCAS(candidate, expectedRevision, false)
+		return err
+	})
+	return saved, err
+}
+
+// SaveRevisionCAS is the Foundation-revision authority. It permits a reviewed
+// candidate to replace confirmed core fields while retaining the same
+// crash-recoverable canonical/projection journal used by ordinary saves.
+func (s *FoundationStore) SaveRevisionCAS(candidate domain.StoryFoundation, expectedRevision int64) (domain.StoryFoundation, error) {
+	if s.withSemanticMutation == nil {
+		return s.saveCAS(candidate, expectedRevision, true)
+	}
+	var saved domain.StoryFoundation
+	err := s.withSemanticMutation("publish reviewed foundation revision", func() error {
+		var err error
+		saved, err = s.saveCAS(candidate, expectedRevision, true)
 		return err
 	})
 	return saved, err

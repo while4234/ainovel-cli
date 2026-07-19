@@ -29,6 +29,18 @@ import (
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
+func TestProjectSessionFoundationRevisionRunnerPropagatesLaunchFailure(t *testing.T) {
+	runnerErr := errors.New("Foundation router unavailable")
+	fake := &fakeProjectHost{foundationRevisionResumeErr: runnerErr}
+	session := &ProjectSession{host: fake}
+	if _, err := session.ResumeFoundationRevision(); !errors.Is(err, runnerErr) {
+		t.Fatalf("ResumeFoundationRevision error=%v", err)
+	}
+	if fake.foundationRevisionResumeCalls != 1 {
+		t.Fatalf("Foundation revision runner calls=%d", fake.foundationRevisionResumeCalls)
+	}
+}
+
 func TestSessionManagerReusesActiveProjectHostConcurrently(t *testing.T) {
 	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
 	manifest, err := store.CreateProject("Concurrent Session")
@@ -1669,40 +1681,42 @@ type fakeProjectHost struct {
 	manuscriptActionClarifications []host.ManuscriptActionClarification
 	manuscriptActionRequests       []host.ManuscriptActionClarificationRequest
 
-	resumeStarted              chan struct{}
-	resumeStartedOnce          sync.Once
-	releaseResume              chan struct{}
-	resumeErr                  error
-	reviseChapterErr           error
-	reviseChapterOutlineErr    error
-	continueErr                error
-	steerErr                   error
-	simulateErr                error
-	importErr                  error
-	importNovelErr             error
-	adaptAnalyzeErr            error
-	adaptProposalErr           error
-	adaptBriefingErr           error
-	adaptConfirmErr            error
-	adaptStartErr              error
-	continuationErr            error
-	exportErr                  error
-	rollbackPreviewErr         error
-	rollbackErr                error
-	cocreateErr                error
-	stageCoCreateErr           error
-	adaptCoCreateErr           error
-	prepareUserRulesErr        error
-	prepareExternalRulesErr    error
-	setWordBudgetErr           error
-	startPreparedErr           error
-	resumeFromCoCreateErr      error
-	requireAnalyzedAdaptSource bool
-	blockAdaptAnalyze          bool
-	blockAdaptProposal         bool
-	blockSimulate              bool
+	resumeStarted               chan struct{}
+	resumeStartedOnce           sync.Once
+	releaseResume               chan struct{}
+	resumeErr                   error
+	foundationRevisionResumeErr error
+	reviseChapterErr            error
+	reviseChapterOutlineErr     error
+	continueErr                 error
+	steerErr                    error
+	simulateErr                 error
+	importErr                   error
+	importNovelErr              error
+	adaptAnalyzeErr             error
+	adaptProposalErr            error
+	adaptBriefingErr            error
+	adaptConfirmErr             error
+	adaptStartErr               error
+	continuationErr             error
+	exportErr                   error
+	rollbackPreviewErr          error
+	rollbackErr                 error
+	cocreateErr                 error
+	stageCoCreateErr            error
+	adaptCoCreateErr            error
+	prepareUserRulesErr         error
+	prepareExternalRulesErr     error
+	setWordBudgetErr            error
+	startPreparedErr            error
+	resumeFromCoCreateErr       error
+	requireAnalyzedAdaptSource  bool
+	blockAdaptAnalyze           bool
+	blockAdaptProposal          bool
+	blockSimulate               bool
 
 	resumeCalls                            int
+	foundationRevisionResumeCalls          int
 	reviseChapterCalls                     int
 	reviseChapterOutlineCalls              int
 	continueCalls                          int
@@ -1977,6 +1991,16 @@ func (f *fakeProjectHost) Resume() (string, error) {
 		return "", f.resumeErr
 	}
 	return "resume test label", nil
+}
+
+func (f *fakeProjectHost) ResumeFoundationRevision() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.foundationRevisionResumeCalls++
+	if f.foundationRevisionResumeErr != nil {
+		return "", f.foundationRevisionResumeErr
+	}
+	return "Foundation repair route started", nil
 }
 
 func (f *fakeProjectHost) ReviseChapter(req host.ChapterRevisionRequest) (host.ChapterRevisionResult, error) {
