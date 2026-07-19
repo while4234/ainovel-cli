@@ -46,6 +46,19 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 follow-up to `487f44db`: the live `重生v4` recovery exposed two
+  sparse-legacy compatibility gaps. Core roles recorded as exact `女主` / `男主`
+  were not recognized, while phrases such as `男主父亲` must remain excluded;
+  and the old character cards lacked newer CoreCast-required goal, motivation,
+  conflict, voice, arc, and constraint fields. Recovery now identifies precise
+  lead labels, fills only empty fields with explicit “preserve existing prose,
+  outline, and StoryFoundation” compatibility fences, and recovers exact
+  core-to-core runtime relationship evidence from `relationship_state.json`.
+  Safe-copy legacy tests and Host vet pass. The real project was then repaired
+  through the snapshot-backed confirmed API: two leads and the chapter-48
+  relationship were recovered, Foundation advanced to revision 1, CoreCast is
+  confirmed, and aggregate chapter/draft hashes remained unchanged. Web was
+  rebuilt and returns HTTP 200 on port 9898.
 - 2026-07-19 legacy Foundation recovery batch on
   `codex/legacy-foundation-recovery`: legacy started projects now expose an
   explicit snapshot/preview/confirm recovery flow that deterministically binds

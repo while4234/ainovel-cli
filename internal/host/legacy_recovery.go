@@ -68,27 +68,35 @@ func PreviewLegacyRecovery(st *storepkg.Store) (LegacyRecoveryPreview, error) {
 	draftHash := domain.ContentSignature([]byte(fmt.Sprintf("legacy-recovery:v1:%s:%d", audit, foundation.Revision)))
 	candidate := domain.CoreCastContract{
 		Version: domain.CoreCastContractVersion, Mode: mode, DraftRevision: 1, DraftHash: draftHash,
-		PlannedRelationships: append([]domain.CharacterRelationship(nil), foundation.Relationships...),
 	}
 	recovered := []LegacyRecoveryField{{Field: "premise", Value: foundation.Premise, Provenance: "StoryFoundation.premise", Confidence: "exact"}}
 	for _, character := range foundation.Characters {
 		if !legacyCoreCharacter(character) {
 			continue
 		}
+		character, compatibilityFields := completeLegacyRecoveryCharacter(character)
+		recovered = append(recovered, compatibilityFields...)
 		importance := domain.CoreCastImportanceMajorSupport
 		if legacyProtagonist(character) {
 			importance = domain.CoreCastImportanceProtagonist
 		}
-		member := domain.CoreCastMember{
+		candidate.Members = append(candidate.Members, domain.CoreCastMember{
 			Character: character, Importance: importance, Origin: domain.CoreCastOriginOriginal,
-			MainlineFunction: strings.TrimSpace(character.Role), NoCoreRelationships: len(foundation.Relationships) == 0,
-		}
+			MainlineFunction: strings.TrimSpace(character.Role),
+		})
 		if mode == domain.CoreCastModeAdaptation {
-			member.InclusionRationale = "来自旧项目已确认的目标 StoryFoundation"
+			candidate.Members[len(candidate.Members)-1].InclusionRationale = "来自旧项目已确认的目标 StoryFoundation"
 		}
-		candidate.Members = append(candidate.Members, member)
 		recovered = append(recovered, LegacyRecoveryField{Field: "character." + character.ID, Value: character.Name, Provenance: "StoryFoundation.characters", Confidence: "exact"})
 	}
+	candidate.PlannedRelationships = legacyFoundationRelationships(foundation.Relationships, candidate.Members)
+	runtimeRelationships, relationshipFields, err := legacyRuntimeRelationships(st, candidate.Members, candidate.PlannedRelationships)
+	if err != nil {
+		return LegacyRecoveryPreview{}, fmt.Errorf("读取旧项目运行时关系失败：%w", err)
+	}
+	candidate.PlannedRelationships = append(candidate.PlannedRelationships, runtimeRelationships...)
+	recovered = append(recovered, relationshipFields...)
+	markLegacyRelationshipDeclarations(candidate.Members, candidate.PlannedRelationships)
 	var sourceCharacters, sourceMajor []domain.SourceMajorCharacter
 	var sourceMissing []domain.CoreCastMissingItem
 	conflicts := []string{}
@@ -280,9 +288,146 @@ func legacyCoreCharacter(character domain.Character) bool {
 	return tier == "core" || tier == "important" || legacyProtagonist(character)
 }
 
+func completeLegacyRecoveryCharacter(character domain.Character) (domain.Character, []LegacyRecoveryField) {
+	const provenance = "旧项目已写正文、现有大纲与 StoryFoundation 的兼容约束"
+	fields := make([]LegacyRecoveryField, 0, 6)
+	apply := func(field string, target *string, value string) {
+		if strings.TrimSpace(*target) != "" {
+			return
+		}
+		*target = value
+		fields = append(fields, LegacyRecoveryField{
+			Field: "character." + character.ID + "." + field, Value: value,
+			Provenance: provenance, Confidence: "compatibility_fence",
+		})
+	}
+	apply("goal", &character.Goal, "保持旧项目已写正文与现有大纲中已确立的角色目标")
+	apply("motivation", &character.Motivation, "保持旧项目已写正文与现有大纲中已确立的角色动机")
+	apply("conflict", &character.Conflict, "保持旧项目已写正文与现有大纲中已确立的角色冲突")
+	apply("arc", &character.Arc, "保持旧项目已写正文与现有大纲中已确立的角色弧线")
+	if len(character.Traits) == 0 && strings.TrimSpace(character.Voice) == "" {
+		character.Voice = "保持旧项目已写正文中的既有语言与行为风格"
+		fields = append(fields, LegacyRecoveryField{
+			Field: "character." + character.ID + ".voice", Value: character.Voice,
+			Provenance: provenance, Confidence: "compatibility_fence",
+		})
+	}
+	if len(character.Constraints) == 0 {
+		character.Constraints = []string{"不得偏离旧项目已写正文、现有大纲与 StoryFoundation"}
+		fields = append(fields, LegacyRecoveryField{
+			Field: "character." + character.ID + ".constraints", Value: character.Constraints[0],
+			Provenance: provenance, Confidence: "compatibility_fence",
+		})
+	}
+	return character, fields
+}
+
+func legacyFoundationRelationships(relationships []domain.CharacterRelationship, members []domain.CoreCastMember) []domain.CharacterRelationship {
+	memberIDs := make(map[string]struct{}, len(members))
+	for _, member := range members {
+		memberIDs[member.Character.ID] = struct{}{}
+	}
+	out := make([]domain.CharacterRelationship, 0, len(relationships))
+	for _, relationship := range relationships {
+		_, sourceExists := memberIDs[relationship.SourceCharacterID]
+		_, targetExists := memberIDs[relationship.TargetCharacterID]
+		if sourceExists && targetExists {
+			out = append(out, relationship)
+		}
+	}
+	return out
+}
+
+func legacyRuntimeRelationships(
+	st *storepkg.Store,
+	members []domain.CoreCastMember,
+	existing []domain.CharacterRelationship,
+) ([]domain.CharacterRelationship, []LegacyRecoveryField, error) {
+	entries, err := st.World.LoadRelationships()
+	if err != nil {
+		return nil, nil, err
+	}
+	memberByName := make(map[string]string, len(members)*2)
+	for _, member := range members {
+		for _, label := range append([]string{member.Character.Name}, member.Character.Aliases...) {
+			if label = strings.ToLower(strings.TrimSpace(label)); label != "" {
+				memberByName[label] = member.Character.ID
+			}
+		}
+	}
+	seen := make(map[string]struct{}, len(existing)+len(entries))
+	for _, relationship := range existing {
+		seen[legacyRelationshipPair(relationship.SourceCharacterID, relationship.TargetCharacterID)] = struct{}{}
+	}
+	var recovered []domain.CharacterRelationship
+	var fields []LegacyRecoveryField
+	for _, entry := range entries {
+		sourceID := memberByName[strings.ToLower(strings.TrimSpace(entry.CharacterA))]
+		targetID := memberByName[strings.ToLower(strings.TrimSpace(entry.CharacterB))]
+		if sourceID == "" || targetID == "" || sourceID == targetID {
+			continue
+		}
+		key := legacyRelationshipPair(sourceID, targetID)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		relationship := domain.CharacterRelationship{
+			SourceCharacterID: sourceID, TargetCharacterID: targetID,
+			Type: domain.RelationshipTypeOther, Direction: domain.RelationshipDirectionBidirectional,
+			Status: domain.RelationshipStatusActive, Label: "旧项目运行时关系",
+			Description: strings.TrimSpace(entry.Relation), Since: fmt.Sprintf("第%d章", entry.Chapter),
+			Constraints: []string{"保持旧项目已写正文中的既有关系连续性"},
+		}
+		recovered = append(recovered, relationship)
+		fields = append(fields, LegacyRecoveryField{
+			Field: "relationship." + sourceID + "." + targetID, Value: relationship.Description,
+			Provenance: fmt.Sprintf("relationship_state.json 第%d章", entry.Chapter), Confidence: "exact",
+		})
+	}
+	return recovered, fields, nil
+}
+
+func markLegacyRelationshipDeclarations(members []domain.CoreCastMember, relationships []domain.CharacterRelationship) {
+	connected := make(map[string]struct{}, len(relationships)*2)
+	for _, relationship := range relationships {
+		connected[relationship.SourceCharacterID] = struct{}{}
+		connected[relationship.TargetCharacterID] = struct{}{}
+	}
+	for index := range members {
+		_, hasRelationship := connected[members[index].Character.ID]
+		members[index].NoCoreRelationships = !hasRelationship
+	}
+}
+
+func legacyRelationshipPair(left, right string) string {
+	if left > right {
+		left, right = right, left
+	}
+	return left + "\x00" + right
+}
+
 func legacyProtagonist(character domain.Character) bool {
 	role := strings.ToLower(strings.TrimSpace(character.Role))
-	return strings.Contains(role, "主角") || strings.Contains(role, "protagonist") || strings.Contains(role, "lead")
+	labels := strings.FieldsFunc(role, func(value rune) bool {
+		switch value {
+		case '/', '／', ',', '，', '、', ';', '；', '|', '·', '(', ')', '（', '）', '[', ']', '【', '】', ':', '：':
+			return true
+		default:
+			return value == ' ' || value == '\t' || value == '\r' || value == '\n'
+		}
+	})
+	for _, label := range labels {
+		switch label {
+		case "主角", "女主", "男主", "核心主角", "第一主角", "双主角",
+			"protagonist", "co-protagonist", "lead", "hero", "heroine", "female_lead", "male_lead":
+			return true
+		}
+		if strings.HasSuffix(label, "主角") {
+			return true
+		}
+	}
+	return false
 }
 
 func legacyMatchingTargetIDs(source domain.SourceMajorCharacter, members []domain.CoreCastMember) []string {
