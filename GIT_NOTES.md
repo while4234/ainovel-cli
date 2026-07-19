@@ -46,6 +46,19 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 StoryFoundation development batch, PR-03 through PR-08 (local
+  commits only; review and publication intentionally deferred): PR-03
+  `4c574fd7` adds the original Foundation checkpoint; PR-04 `0c721f7c` adds the
+  adaptation source/target checkpoint; PR-05 `35702fc1` adds the normal
+  persisted preview/apply/retry and planning-repair lifecycle; PR-06
+  `42074655` adapts that same lifecycle to target-only adaptation revisions;
+  PR-07 `82a1d618` adds the dual-mode Foundation Center; PR-08 `a447261c` adds
+  the planned-relationship graph, schema-v2 migration, E2E, recovery, release
+  assets, and licensing. Focused Go/race, 323 UI tests, 44-passed/2-skipped
+  Playwright, vet, build, and diff checks passed at the final checkpoint. The
+  repository-wide Go suite still has the previously recorded legacy fixture,
+  modeldiag inventory, tools gate/context-budget, and long host-race baseline
+  failures; see `.codex/pr-pipeline/story-foundation/PR-08-dev-summary.md`.
 - 2026-07-18 `f9c7738` `fix: preserve targeted polish at word gate`: when
   an already-completed chapter misses its configured word range during
   polishing, the structured rejection now tells Writer to retain the complete
