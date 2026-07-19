@@ -46,6 +46,20 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 real `重生v4` five-chapter continuation acceptance: Coordinator
+  model switching and route restoration now preserve the safe 64,000-token
+  profile bound instead of expanding to the configured million-token window.
+  Production-boundary recovery prioritizes a deterministic durable-store
+  summary and, when forced, restarts from the latest user intent rather than
+  depending on a provider summary call that can time out or fail quota. Editor
+  arc/arc-batch tasks now require an arc-scoped checkpoint, so a chapter-level
+  `save_review` cannot falsely finish the task and loop the arc review. The
+  real repaired project resumed its existing chapter-50 draft, completed
+  chapters 49-53 from the original chapter-48 baseline, wrote per-chapter
+  summaries, and stopped idle at chapter 54 with no recovery error. Full Agents,
+  focused Host/Reminder/Flow tests, relevant vet, diff checks, production build,
+  and live snapshot verification passed; the unfiltered Host suite was stopped
+  after a silent multi-minute `host.test.exe` hang with no assertion output.
 - 2026-07-19 follow-up to `487f44db`: the live `重生v4` recovery exposed two
   sparse-legacy compatibility gaps. Core roles recorded as exact `女主` / `男主`
   were not recognized, while phrases such as `男主父亲` must remain excluded;

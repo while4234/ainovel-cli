@@ -2,6 +2,7 @@ package ctxpack
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -110,6 +111,64 @@ func TestStoreSummaryCompactApplyFallsBackWhenStoreDataInsufficient(t *testing.T
 	}
 	if len(out) != len(msgs) {
 		t.Fatalf("expected messages unchanged, got %d", len(out))
+	}
+}
+
+func TestStoreSummaryCompactForceApplyKeepsLatestTurnWhenNormalCutCannotCompact(t *testing.T) {
+	s := seededWriterStore(t)
+	strategy := NewStoreSummaryCompact(StoreSummaryCompactConfig{
+		Store:            s,
+		KeepRecentTokens: 1_000_000,
+	})
+	msgs := []agentcore.AgentMessage{
+		agentcore.UserMsg(strings.Repeat("old context ", 2_000)),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.TextBlock(strings.Repeat("old response ", 2_000)),
+		}},
+		agentcore.UserMsg("resume the current persisted chapter"),
+	}
+
+	out, result, err := strategy.ForceApply(t.Context(), msgs, msgs, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatal("expected forced durable-store compaction to apply")
+	}
+	if len(out) != 2 || out[1].(agentcore.Message).TextContent() != "resume the current persisted chapter" {
+		t.Fatalf("expected summary plus latest user turn, got %#v", out)
+	}
+}
+
+func TestStoreSummaryCompactForceApplyCompactsSingleUserToolTranscript(t *testing.T) {
+	s := seededWriterStore(t)
+	strategy := NewStoreSummaryCompact(StoreSummaryCompactConfig{
+		Store:            s,
+		KeepRecentTokens: 1_000_000,
+	})
+	msgs := []agentcore.AgentMessage{agentcore.UserMsg(strings.Repeat("resume workflow ", 2_000))}
+	for index := range 4 {
+		callID := fmt.Sprintf("call-%d", index)
+		msgs = append(msgs,
+			agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+				agentcore.ToolCallBlock(agentcore.ToolCall{ID: callID, Name: "subagent", Args: []byte(`{"agent":"writer"}`)}),
+			}},
+			agentcore.ToolResultMsg(callID, []byte(strings.Repeat("writer result ", 1_000)), false),
+		)
+	}
+
+	out, result, err := strategy.ForceApply(t.Context(), msgs, msgs, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied || result.TokensSaved <= 0 {
+		t.Fatalf("expected forced tool-transcript compaction, got %+v", result)
+	}
+	if got, before := corecontext.EstimateTotal(out), corecontext.EstimateTotal(msgs); got >= before {
+		t.Fatalf("forced view tokens=%d, want below %d", got, before)
+	}
+	if _, ok := out[0].(corecontext.ContextSummary); !ok {
+		t.Fatalf("expected durable summary first, got %T", out[0])
 	}
 }
 

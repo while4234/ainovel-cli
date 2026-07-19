@@ -43,7 +43,7 @@ func (s *StoreSummaryCompactStrategy) Apply(ctx context.Context, _ []agentcore.A
 	if budget.Window <= 0 || budget.Tokens <= budget.Threshold {
 		return view, corecontext.StrategyResult{Name: s.Name()}, nil
 	}
-	return s.apply(ctx, view, budget)
+	return s.apply(ctx, view, budget, false)
 }
 
 func (s *StoreSummaryCompactStrategy) ForceApply(ctx context.Context, transcript []agentcore.AgentMessage, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
@@ -51,10 +51,10 @@ func (s *StoreSummaryCompactStrategy) ForceApply(ctx context.Context, transcript
 	if len(base) == 0 {
 		base = view
 	}
-	return s.apply(ctx, base, budget)
+	return s.apply(ctx, base, budget, true)
 }
 
-func (s *StoreSummaryCompactStrategy) apply(_ context.Context, msgs []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
+func (s *StoreSummaryCompactStrategy) apply(_ context.Context, msgs []agentcore.AgentMessage, budget corecontext.Budget, forced bool) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
 	if s.store == nil || len(msgs) == 0 {
 		return msgs, corecontext.StrategyResult{Name: s.Name()}, nil
 	}
@@ -67,16 +67,36 @@ func (s *StoreSummaryCompactStrategy) apply(_ context.Context, msgs []agentcore.
 		return msgs, corecontext.StrategyResult{Name: s.Name()}, nil
 	}
 
-	cut := findStoreSummaryCutPoint(msgs, s.keepRecentTokens)
-	if cut.isSplitTurn && cut.turnStartIndex > 0 {
-		cut.firstKeptIndex = cut.turnStartIndex
-		cut.isSplitTurn = false
-	}
-	if cut.firstKeptIndex <= 0 || cut.firstKeptIndex >= len(msgs) {
-		return msgs, corecontext.StrategyResult{Name: s.Name()}, nil
+	var toKeep []agentcore.AgentMessage
+	compactedCount := 0
+	isSplitTurn := false
+	if forced {
+		// Production-boundary recovery must materially shrink even a coordinator
+		// transcript that contains one initial user message followed by many tool
+		// turns. The durable store summary already carries completed workflow
+		// facts, so retain only the latest user intent and restart the tool loop
+		// from that clean boundary.
+		if latestUser := latestUserTurnStart(msgs); latestUser >= 0 {
+			toKeep = []agentcore.AgentMessage{msgs[latestUser]}
+			compactedCount = len(msgs) - 1
+		} else {
+			toKeep = []agentcore.AgentMessage{agentcore.UserMsg("Continue the current persisted workflow from the durable project state above.")}
+			compactedCount = len(msgs)
+		}
+	} else {
+		cut := findStoreSummaryCutPoint(msgs, s.keepRecentTokens)
+		if cut.isSplitTurn && cut.turnStartIndex > 0 {
+			cut.firstKeptIndex = cut.turnStartIndex
+			cut.isSplitTurn = false
+		}
+		if cut.firstKeptIndex <= 0 || cut.firstKeptIndex >= len(msgs) {
+			return msgs, corecontext.StrategyResult{Name: s.Name()}, nil
+		}
+		toKeep = append([]agentcore.AgentMessage(nil), msgs[cut.firstKeptIndex:]...)
+		compactedCount = cut.firstKeptIndex
+		isSplitTurn = cut.isSplitTurn
 	}
 
-	toKeep := append([]agentcore.AgentMessage(nil), msgs[cut.firstKeptIndex:]...)
 	tokensBefore := corecontext.EstimateTotal(msgs)
 	result := make([]agentcore.AgentMessage, 0, 1+len(toKeep))
 	result = append(result, corecontext.ContextSummary{
@@ -96,9 +116,9 @@ func (s *StoreSummaryCompactStrategy) apply(_ context.Context, msgs []agentcore.
 		TokensAfter:    tokensAfter,
 		MessagesBefore: len(msgs),
 		MessagesAfter:  len(result),
-		CompactedCount: cut.firstKeptIndex,
+		CompactedCount: compactedCount,
 		KeptCount:      len(toKeep),
-		IsSplitTurn:    cut.isSplitTurn,
+		IsSplitTurn:    isSplitTurn,
 		SummaryLen:     len([]rune(summary)),
 		Duration:       time.Millisecond,
 	}
@@ -112,6 +132,15 @@ func (s *StoreSummaryCompactStrategy) apply(_ context.Context, msgs []agentcore.
 		Name:        s.Name(),
 		Info:        info,
 	}, nil
+}
+
+func latestUserTurnStart(msgs []agentcore.AgentMessage) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if message, ok := msgs[i].(agentcore.Message); ok && message.Role == agentcore.RoleUser {
+			return i
+		}
+	}
+	return -1
 }
 
 type storeSummaryCutResult struct {

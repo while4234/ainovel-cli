@@ -421,4 +421,32 @@ func TestEditorStopGuard_TaskAware(t *testing.T) {
 			t.Fatal("review task must be satisfied by a review checkpoint")
 		}
 	})
+
+	t.Run("arc review task blocks chapter-scoped review", func(t *testing.T) {
+		s := newTestStore(t)
+		guard := NewEditorStopGuard(s, `对第 5 卷第 1 弧做弧级评审（scope="arc"）`)
+		if _, err := s.Checkpoints.Append(domain.ChapterScope(52), "review", "reviews/ch52.json", "d1"); err != nil {
+			t.Fatalf("append chapter review: %v", err)
+		}
+		if d := guard(context.Background(), normalStop); d.Allow {
+			t.Fatal("arc review task must not accept a chapter-scoped review")
+		}
+	})
+
+	t.Run("arc batch task requires arc-scoped batch checkpoint", func(t *testing.T) {
+		s := newTestStore(t)
+		guard := NewEditorStopGuard(s, `save_review(scope="arc_batch", volume=5, arc=1, batch_from=49, batch_to=52)`)
+		if _, err := s.Checkpoints.Append(domain.ChapterScope(52), "review", "reviews/ch52.json", "d1"); err != nil {
+			t.Fatalf("append chapter review: %v", err)
+		}
+		if d := guard(context.Background(), normalStop); d.Allow {
+			t.Fatal("arc batch task must not accept a chapter-scoped review")
+		}
+		if _, err := s.Checkpoints.Append(domain.ArcScope(5, 1), "arc_review_batch", "reviews/v05a01-b49-52.json", "d2"); err != nil {
+			t.Fatalf("append arc batch review: %v", err)
+		}
+		if d := guard(context.Background(), normalStop); !d.Allow {
+			t.Fatal("arc batch task must accept an arc-scoped batch checkpoint")
+		}
+	})
 }

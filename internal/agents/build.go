@@ -70,6 +70,13 @@ func boundedAgentContextWindow(modelName string, modelWindow int, agent promptco
 	return window, reserve
 }
 
+// CoordinatorContextBudget returns the same model-profile bounded budget used
+// when the Coordinator is first built. Host model-route changes must reuse this
+// calculation instead of restoring the provider-advertised window directly.
+func CoordinatorContextBudget(modelName string, modelWindow int) (int, int) {
+	return boundedAgentContextWindow(modelName, modelWindow, promptcompile.AgentCoordinator)
+}
+
 func modelProfileRole(agent promptcompile.Agent) modelprofile.Role {
 	switch agent {
 	case promptcompile.AgentCoordinator:
@@ -411,17 +418,14 @@ func BuildCoordinator(
 
 	subagentTool := subagent.New(architectShort, architectLong, writer, editor)
 
-	coordinatorContextWindow, coordinatorReserve := boundedAgentContextWindow(coordinatorModelName, coordinatorContextWindow, promptcompile.AgentCoordinator)
-	coordinatorEngine := newContextManager(contextManagerConfig{
-		Model:            coordinatorModel,
-		Store:            store,
-		ContextWindow:    coordinatorContextWindow,
-		ReserveTokens:    coordinatorReserve,
-		KeepRecentTokens: 8_000,
-		Agent:            "coordinator",
-		CommitOnProject:  true,
-		OnSummaryRetry:   onSummaryRetry,
-	})
+	coordinatorContextWindow, coordinatorReserve := CoordinatorContextBudget(coordinatorModelName, coordinatorContextWindow)
+	coordinatorEngine := newCoordinatorContextManager(
+		coordinatorModel,
+		store,
+		coordinatorContextWindow,
+		coordinatorReserve,
+		onSummaryRetry,
+	)
 
 	coordinatorPrompt := bundle.Prompts.Coordinator + "\n\nCoordinator tool ownership contract: Coordinator itself only has `subagent`, `novel_context`, `save_user_rules`, and `reopen_book`. It does not directly own Writer tools such as `read_chapter`, `check_consistency`, `check_adaptation`, or `commit_chapter`; those are available inside the Writer subagent. Never tell the user that those Writer tools are missing merely because they are absent from Coordinator's own interface. After a Writer or Editor subagent returns, follow the Host route and dispatch the next required subagent; do not perform Writer checks yourself."
 	agent := agentcore.NewAgent(
@@ -471,6 +475,31 @@ func BuildCoordinator(
 	}
 
 	return agent, askUser, restore, coordinatorEngine, applyThinking, nil
+}
+
+func newCoordinatorContextManager(
+	model agentcore.ChatModel,
+	st *store.Store,
+	contextWindow int,
+	reserveTokens int,
+	onSummaryRetry SummaryRetryHook,
+) *corecontext.ContextEngine {
+	return newContextManager(contextManagerConfig{
+		Model:            model,
+		Store:            st,
+		ContextWindow:    contextWindow,
+		ReserveTokens:    reserveTokens,
+		KeepRecentTokens: 8_000,
+		Agent:            "coordinator",
+		CommitOnProject:  true,
+		LeadingStrategies: []corecontext.Strategy{
+			ctxpack.NewStoreSummaryCompact(ctxpack.StoreSummaryCompactConfig{
+				Store:            st,
+				KeepRecentTokens: 8_000,
+			}),
+		},
+		OnSummaryRetry: onSummaryRetry,
+	})
 }
 
 func writerToolResultMicrocompactConfig() *corecontext.ToolResultMicrocompactConfig {
