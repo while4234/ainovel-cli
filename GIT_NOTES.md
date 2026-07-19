@@ -46,6 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 `511add1` cloned-project rollback lease fix: Web cloning still
+  holds the source project's normal-flow action lease for copy consistency, but
+  the isolated staging clone now discards that process-local capability and
+  advances its revision generation before installation. Durable revision
+  history is preserved, source ownership remains intact, and a cloned writing
+  project can immediately preview and confirm rollback without the copied
+  `web:action` lease reporting a false conflict. The end-to-end HTTP clone,
+  preview, confirm, and source-isolation regression passes, along with focused
+  clone/rollback/lease recovery tests, Web/Store vet, production rebuild, and a
+  live read-only preview of `重生v4 - 副本`. Web is healthy on port 9898.
 - 2026-07-19 `bff8910` real `重生v4` five-chapter continuation acceptance: Coordinator
   model switching and route restoration now preserve the safe 64,000-token
   profile bound instead of expanding to the configured million-token window.
