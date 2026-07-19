@@ -9,7 +9,14 @@ import (
 	"strings"
 )
 
-const StoryFoundationSchemaVersion = 1
+const (
+	StoryFoundationSchemaVersion       = 2
+	legacyStoryFoundationSchemaVersion = 1
+	// Version 2 only renames mutual to bidirectional and adds undirected.
+	// Retaining audit schema 1 keeps legacy mutual/bidirectional signatures
+	// stable while the stored representation migrates on its next real save.
+	storyFoundationAuditSchemaVersion = 1
+)
 
 type WorldRuleStrength string
 
@@ -33,8 +40,11 @@ const (
 type RelationshipDirection string
 
 const (
-	RelationshipDirectionDirected RelationshipDirection = "directed"
-	RelationshipDirectionMutual   RelationshipDirection = "mutual"
+	RelationshipDirectionDirected      RelationshipDirection = "directed"
+	RelationshipDirectionBidirectional RelationshipDirection = "bidirectional"
+	RelationshipDirectionUndirected    RelationshipDirection = "undirected"
+	// RelationshipDirectionMutual is accepted only as a legacy wire value.
+	RelationshipDirectionMutual RelationshipDirection = "mutual"
 )
 
 type RelationshipStatus string
@@ -123,9 +133,10 @@ func NormalizeStoryFoundation(in StoryFoundation) (StoryFoundation, error) {
 	if out.SchemaVersion == 0 {
 		out.SchemaVersion = StoryFoundationSchemaVersion
 	}
-	if out.SchemaVersion != StoryFoundationSchemaVersion {
+	if out.SchemaVersion != legacyStoryFoundationSchemaVersion && out.SchemaVersion != StoryFoundationSchemaVersion {
 		return StoryFoundation{}, fmt.Errorf("story foundation schema version %d is unsupported", out.SchemaVersion)
 	}
+	out.SchemaVersion = StoryFoundationSchemaVersion
 	out.Premise = strings.TrimSpace(out.Premise)
 
 	claims := make(map[string]string)
@@ -196,9 +207,7 @@ func NormalizeStoryFoundation(in StoryFoundation) (StoryFoundation, error) {
 		relation.Since = strings.TrimSpace(relation.Since)
 		relation.Tags = normalizedStrings(relation.Tags)
 		relation.Constraints = normalizedStrings(relation.Constraints)
-		if relation.Direction == "" {
-			relation.Direction = RelationshipDirectionMutual
-		}
+		relation.Direction = NormalizeRelationshipDirection(relation.Direction)
 		if relation.Status == "" {
 			relation.Status = RelationshipStatusPlanned
 		}
@@ -268,7 +277,7 @@ func ValidateStoryFoundation(value StoryFoundation) error {
 		if !validRelationshipType(relation.Type) {
 			return fmt.Errorf("relationship %q has invalid type %q", relation.ID, relation.Type)
 		}
-		if relation.Direction != RelationshipDirectionDirected && relation.Direction != RelationshipDirectionMutual {
+		if !validRelationshipDirection(relation.Direction) {
 			return fmt.Errorf("relationship %q has invalid direction %q", relation.ID, relation.Direction)
 		}
 		if !validRelationshipStatus(relation.Status) {
@@ -291,12 +300,18 @@ func FoundationContentSignature(value StoryFoundation) (string, error) {
 		return "", err
 	}
 	normalized = canonicalFoundationCollections(normalized)
+	signatureValue := CloneStoryFoundation(normalized)
+	for i := range signatureValue.Relationships {
+		if signatureValue.Relationships[i].Direction == RelationshipDirectionBidirectional {
+			signatureValue.Relationships[i].Direction = RelationshipDirectionMutual
+		}
+	}
 	payload := struct {
 		Premise       string                  `json:"premise"`
 		Characters    []Character             `json:"characters"`
 		Relationships []CharacterRelationship `json:"relationships"`
 		WorldRules    []WorldRule             `json:"world_rules"`
-	}{normalized.Premise, normalized.Characters, normalized.Relationships, normalized.WorldRules}
+	}{signatureValue.Premise, signatureValue.Characters, signatureValue.Relationships, signatureValue.WorldRules}
 	return jsonSignature(payload)
 }
 
@@ -310,7 +325,7 @@ func FoundationAuditSignature(value StoryFoundation) (string, error) {
 	return jsonSignature(struct {
 		SchemaVersion int    `json:"schema_version"`
 		Content       string `json:"content_signature"`
-	}{StoryFoundationSchemaVersion, content})
+	}{storyFoundationAuditSchemaVersion, content})
 }
 
 func FoundationReviewConfirmationSignature(value StoryFoundation) (string, error) {
@@ -387,10 +402,30 @@ func stableFoundationID(prefix, seed string) string {
 func relationshipSemanticKey(relation CharacterRelationship) string {
 	source := relation.SourceCharacterID
 	target := relation.TargetCharacterID
-	if relation.Direction == RelationshipDirectionMutual && target < source {
+	direction := NormalizeRelationshipDirection(relation.Direction)
+	if direction != RelationshipDirectionDirected && target < source {
 		source, target = target, source
 	}
-	return strings.Join([]string{source, target, string(relation.Type), string(relation.Direction)}, "\x00")
+	return strings.Join([]string{source, target, string(relation.Type), string(direction)}, "\x00")
+}
+
+// NormalizeRelationshipDirection centralizes the legacy wire migration.
+func NormalizeRelationshipDirection(value RelationshipDirection) RelationshipDirection {
+	switch value {
+	case "", RelationshipDirectionMutual:
+		return RelationshipDirectionBidirectional
+	default:
+		return value
+	}
+}
+
+func validRelationshipDirection(value RelationshipDirection) bool {
+	switch value {
+	case RelationshipDirectionDirected, RelationshipDirectionBidirectional, RelationshipDirectionUndirected:
+		return true
+	default:
+		return false
+	}
 }
 
 func validRelationshipType(value RelationshipType) bool {

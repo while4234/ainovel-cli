@@ -161,10 +161,10 @@ func TestCoreCastGateBindingAndPublishedFoundationAuthority(t *testing.T) {
 	if _, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Foundation.UpdateCharacters([]domain.Character{{ID: "other", Name: "Other"}}); err == nil {
+	if err := st.Foundation.updateCharacters([]domain.Character{{ID: "other", Name: "Other"}}); err == nil {
 		t.Fatal("published core cast characters were overwritten")
 	}
-	if err := st.Foundation.UpdatePremise("premise remains architect-owned"); err != nil {
+	if err := st.Foundation.updatePremise("premise remains architect-owned"); err != nil {
 		t.Fatalf("unrelated foundation section was blocked: %v", err)
 	}
 }

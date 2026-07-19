@@ -830,6 +830,47 @@ func (s *Store) WithAdaptationRevisionCommand(fn func() error) error {
 	})
 }
 
+// WithFoundationAdaptationRevisionCommand grants a narrow, durable command
+// fence to the existing adaptation proposal/audit pipeline while a Foundation
+// RevisionSession remains the sole active session. The legacy mutation gate
+// below permits only target planning operations; every immutable source write
+// remains blocked even while this command is running.
+func (s *Store) WithFoundationAdaptationRevisionCommand(sessionID, operation string, fn func() error) error {
+	if s == nil || s.Revisions == nil || fn == nil {
+		return fmt.Errorf("Foundation adaptation revision command is required")
+	}
+	sessionID, operation = strings.TrimSpace(sessionID), strings.TrimSpace(operation)
+	if sessionID == "" || operation == "" {
+		return fmt.Errorf("Foundation adaptation revision command identity is required")
+	}
+	return s.withAdaptationRevisionCommandLock(func() error {
+		if err := s.recoverAdaptationRevisionCommand(); err != nil {
+			return err
+		}
+		commandOperation := "foundation-adaptation/" + operation
+		fingerprint := domain.ContentSignature([]byte(sessionID + "\x00" + commandOperation))
+		owner, err := s.Revisions.claimCommandFence(sessionID, commandOperation, fingerprint)
+		if err != nil {
+			return err
+		}
+		if err := s.Revisions.withRevisionTransaction(func() error {
+			state, loadErr := s.Revisions.loadUnlocked()
+			if loadErr != nil {
+				return loadErr
+			}
+			active, ok := state.Sessions[state.ActiveSessionID]
+			if !ok || active.ID != sessionID || active.Mode != domain.RevisionModeFoundation ||
+				active.Stage != domain.RevisionStageCandidateGenerating || len(active.Approvals) != 1 {
+				return fmt.Errorf("Foundation revision %q does not own adaptation regeneration", sessionID)
+			}
+			return nil
+		}); err != nil {
+			return errors.Join(err, owner.releaseCommandFence())
+		}
+		return errors.Join(fn(), owner.releaseCommandFence())
+	})
+}
+
 // WithPreparedAdaptationRevisionCommand reserves shared revision/normal-flow
 // ownership before the service snapshot is captured. The durable fence remains
 // until rollback or receipt-backed cleanup has removed every recovery artifact.

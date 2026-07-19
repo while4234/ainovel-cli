@@ -22,6 +22,9 @@ profile.cov
 node_modules/
 build/
 .cache/
+test-results/
+playwright-report/
+blob-report/
 .venv/
 __pycache__/
 

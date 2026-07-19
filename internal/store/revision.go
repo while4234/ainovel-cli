@@ -139,6 +139,83 @@ type RevisionStore struct {
 	publicationOwner *RevisionPublicationOwner
 }
 
+// FoundationPlanningOwner is an opaque, single-session capability derived
+// from the router fence carried by a dispatched Foundation repair turn.
+type FoundationPlanningOwner struct {
+	revisions  *RevisionStore
+	sessionID  string
+	revision   int
+	generation uint64
+	artifactID string
+}
+
+func (s *RevisionStore) AuthorizeFoundationPlanning(ctx context.Context, artifactID string) (*FoundationPlanningOwner, error) {
+	fence, ok := RevisionFenceFromContext(ctx)
+	if !ok || strings.TrimSpace(fence.SessionID) == "" || fence.LeaseToken != "" {
+		return nil, ErrActiveRevisionBlocksNormalFlow
+	}
+	artifactID = strings.TrimSpace(artifactID)
+	var owner *FoundationPlanningOwner
+	err := s.withRevisionTransaction(func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		session, exists := state.Sessions[fence.SessionID]
+		if !exists || state.ActiveSessionID != session.ID || state.Generation != fence.Generation || session.Revision != fence.Revision ||
+			session.Generation != fence.Generation || session.Mode != domain.RevisionModeFoundation || session.PolicyID != domain.FoundationRevisionPolicyID ||
+			session.Stage != domain.RevisionStageCandidateGenerating || len(session.Approvals) != 1 {
+			return ErrActiveRevisionBlocksNormalFlow
+		}
+		allowed := false
+		hasPlanningImpact := false
+		for _, item := range session.Impact.Items {
+			if item.ArtifactID == domain.FoundationPlanningArtifactID {
+				hasPlanningImpact = true
+			}
+			if item.ArtifactID == artifactID {
+				allowed = true
+			}
+		}
+		// The existing original-planning audit route finishes by aggregating
+		// every scoped result into the book audit. The planning-impact marker
+		// authorizes that aggregate only; it must not make arbitrary artifact
+		// identifiers writable when a full-book impact is present.
+		if artifactID == "book" && hasPlanningImpact {
+			allowed = true
+		}
+		if !allowed {
+			return fmt.Errorf("Foundation planning artifact %q is outside the approved impact", artifactID)
+		}
+		owner = &FoundationPlanningOwner{revisions: s, sessionID: session.ID, revision: session.Revision, generation: session.Generation, artifactID: artifactID}
+		return nil
+	})
+	return owner, err
+}
+
+func (s *RevisionStore) withFoundationPlanningMutation(owner *FoundationPlanningOwner, operation string, migration *structureMigration, mutation func() error) error {
+	if owner == nil || owner.revisions == nil || !revisionStoresShareProject(s, owner.revisions) {
+		return ErrActiveRevisionBlocksNormalFlow
+	}
+	return s.withRevisionTransaction(func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		session, exists := state.Sessions[owner.sessionID]
+		if !exists || state.ActiveSessionID != owner.sessionID || state.Generation != owner.generation || session.Revision != owner.revision ||
+			session.Generation != owner.generation || session.Stage != domain.RevisionStageCandidateGenerating || len(session.Approvals) != 1 {
+			return ErrActiveRevisionBlocksNormalFlow
+		}
+		if migration != nil {
+			if err := migration.recoverWithinRevisionTransaction(); err != nil {
+				return fmt.Errorf("recover structure migration before %s: %w", operation, err)
+			}
+		}
+		return mutation()
+	})
+}
+
 func (s *RevisionStore) withLegacyMutation(operation string, mutation func() error) error {
 	return s.withLegacyMigrationMutation(operation, nil, mutation)
 }
@@ -155,7 +232,8 @@ func (s *RevisionStore) withLegacyMigrationMutation(operation string, migration 
 		if err != nil {
 			return fmt.Errorf("read active revision before %s: %w", operation, err)
 		}
-		if state.ActiveSessionID != "" {
+		foundationAdaptationOwned := foundationAdaptationCommandAllows(state, operation)
+		if state.ActiveSessionID != "" && !foundationAdaptationOwned {
 			return fmt.Errorf("legacy adaptation formal write %q is blocked by active revision %s: %w", operation, state.ActiveSessionID, ErrActiveRevisionBlocksNormalFlow)
 		}
 		if manuscriptID, err := activeManuscriptRevisionID(s.io); err != nil {
@@ -163,7 +241,7 @@ func (s *RevisionStore) withLegacyMigrationMutation(operation string, migration 
 		} else if manuscriptID != "" {
 			return fmt.Errorf("legacy formal write %q is blocked by active manuscript revision %s: %w", operation, manuscriptID, ErrActiveRevisionBlocksNormalFlow)
 		}
-		if state.CommandFence != nil {
+		if state.CommandFence != nil && !foundationAdaptationOwned {
 			return fmt.Errorf("legacy adaptation formal write %q is blocked by prepared service command %q: %w", operation, state.CommandFence.Operation, ErrRevisionCommandInProgress)
 		}
 		if migration != nil {
@@ -173,6 +251,27 @@ func (s *RevisionStore) withLegacyMigrationMutation(operation string, migration 
 		}
 		return mutation()
 	})
+}
+
+func foundationAdaptationCommandAllows(state *revisionState, operation string) bool {
+	if state == nil || state.CommandFence == nil || !strings.HasPrefix(state.CommandFence.Operation, "foundation-adaptation/") {
+		return false
+	}
+	active, ok := state.Sessions[state.ActiveSessionID]
+	if !ok || active.Mode != domain.RevisionModeFoundation || active.Stage != domain.RevisionStageCandidateGenerating || len(active.Approvals) != 1 {
+		return false
+	}
+	switch strings.TrimSpace(operation) {
+	case "change planning workflow",
+		"save proposal", "save volume review", "restore volume review", "clear volume review",
+		"save proposal runtime", "clear proposal runtime", "clear proposal workflow",
+		"save layered outline", "save flat outline", "save story compass",
+		"save adaptation audit", "save adaptation audit run", "mark audit run applied", "save adaptation audit repair",
+		"save confirmed plan", "write formal progress":
+		return true
+	default:
+		return false
+	}
 }
 
 type NormalFlowLease struct {

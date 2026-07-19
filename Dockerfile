@@ -1,3 +1,13 @@
+FROM node:24-alpine AS web-builder
+
+WORKDIR /src/internal/entry/web/ui
+
+COPY internal/entry/web/ui/package.json internal/entry/web/ui/package-lock.json ./
+RUN npm ci
+
+COPY internal/entry/web/ui ./
+RUN npm run build
+
 FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
 
 WORKDIR /src
@@ -11,6 +21,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+
+COPY --from=web-builder /src/internal/entry/web/static ./internal/entry/web/static
 
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" \
@@ -42,6 +54,8 @@ VOLUME ["/home/ainovel/.ainovel", "/var/lib/ainovel"]
 COPY --from=builder /out/ainovel-cli /usr/local/bin/ainovel-cli
 COPY --from=builder /out/expansion-auditor /usr/local/bin/expansion-auditor
 COPY --from=builder /out/manuscript-completion-auditor /usr/local/bin/manuscript-completion-auditor
+COPY --from=builder /src/LICENSE /usr/share/licenses/ainovel/LICENSE
+COPY --from=builder /src/THIRD_PARTY_LICENSES.md /usr/share/licenses/ainovel/THIRD_PARTY_LICENSES.md
 
 # Runtime is deliberately non-root. An administrator-owned bootstrap job must
 # provision the mounted authority volume before this container starts.

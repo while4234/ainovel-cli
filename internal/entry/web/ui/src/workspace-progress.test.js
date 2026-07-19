@@ -116,6 +116,8 @@ describe('co-create begin payload helpers', () => {
     expect(isProjectScopedResponseCurrent('project-1', 'project-1')).toBe(true);
     expect(isProjectScopedResponseCurrent('project-1', 'project-2')).toBe(false);
     expect(isProjectScopedResponseCurrent('', 'project-1')).toBe(false);
+    expect(isProjectScopedResponseCurrent('project-1', 'project-1', 3, 3)).toBe(true);
+    expect(isProjectScopedResponseCurrent('project-1', 'project-1', 2, 3)).toBe(false);
   });
 
   it('does not treat a recommended co-create decision option as selected before user action', () => {
@@ -1086,6 +1088,80 @@ describe('workspace progress state', () => {
     expect(collecting.pending).toBe(false);
     expect(collecting.collecting).toBe(true);
     expect(collecting.revising).toBe(true);
+  });
+
+  it('projects the canonical foundation checkpoint into core and support review sections', () => {
+    const review = getCoCreatePlanningReview({
+      PlanningReview: {
+        Status: 'pending',
+        Kind: 'foundation',
+        FoundationStatus: 'pending',
+        FoundationRevision: 7,
+        FoundationAuditSignature: 'audit-7',
+        CoreCastSignature: 'core-3',
+        FoundationGeneration: 2,
+        FoundationFeedback: 'raise the cost'
+      },
+      Premise: 'A courier must expose a sealed city.',
+      CoreCharacterIDs: ['lead'],
+      CoreCastPreserved: true,
+      CharacterDetails: [
+        { id: 'lead', name: 'Lin', goal: 'expose the city', arc: 'trust allies' },
+        { id: 'support', name: 'Mo', role: 'witness' }
+      ],
+      PlannedRelationships: [{ id: 'rel-1', source_character_id: 'lead', target_character_id: 'support', status: 'planned' }],
+      WorldRules: [
+        { id: 'hard-1', rule: 'No resurrection', strength: 'hard' },
+        { id: 'soft-1', rule: 'Rain marks transitions', strength: 'soft' }
+      ]
+    });
+
+    expect(review.active).toBe(true);
+    expect(review.foundationRevision).toBe(7);
+    expect(review.foundationAuditSignature).toBe('audit-7');
+    expect(review.coreCastPreserved).toBe(true);
+    expect(review.coreCharacters.map((item) => item.id)).toEqual(['lead']);
+    expect(review.supportingCharacters.map((item) => item.id)).toEqual(['support']);
+    expect(review.plannedRelationships).toHaveLength(1);
+    expect(review.hardWorldRules.map((item) => item.id)).toEqual(['hard-1']);
+    expect(review.softWorldRules.map((item) => item.id)).toEqual(['soft-1']);
+    expect(review.foundationFeedback).toBe('raise the cost');
+  });
+
+  it('keeps adaptation source evidence read-only and target foundation reviewable', () => {
+    const review = getCoCreatePlanningReview({
+      AdaptationFoundationReview: {
+        State: 'pending', FoundationRevision: 4, Generation: 2,
+        Binding: {
+          SourceSignature: 'source-signature', TargetFoundationAuditSignature: 'target-audit',
+          CoreCastSignature: 'cast-signature', AdaptationIntentHash: 'intent-hash', WorkflowRevision: 7
+        }
+      },
+      AdaptationSourceFoundation: {
+        Premise: 'immutable source premise', WorldRules: [{ ID: 'source-rule', Rule: 'source fact' }]
+      },
+      AdaptationCoreCast: {
+        SourceDispositions: [{ SourceCharacterID: 'source-lead', Action: 'rename', TargetCharacterIDs: ['target-lead'] }]
+      },
+      TargetFoundation: {
+        Premise: 'target decision',
+        Characters: [{ ID: 'target-lead', Name: 'Target Lead', Role: 'hero' }],
+        Relationships: [],
+        WorldRules: [{ ID: 'target-rule', Rule: 'target decision rule', Strength: 'hard' }]
+      }
+    });
+
+    expect(review.active).toBe(true);
+    expect(review.adaptation).toBe(true);
+    expect(review.sourcePremise).toBe('immutable source premise');
+    expect(review.premise).toBe('target decision');
+    expect(review.sourceSignature).toBe('source-signature');
+    expect(review.foundationAuditSignature).toBe('target-audit');
+    expect(review.sourceWorldRules[0].Rule).toBe('source fact');
+    expect(review.sourceDispositions).toEqual([
+      { SourceCharacterID: 'source-lead', Action: 'rename', TargetCharacterIDs: ['target-lead'] }
+    ]);
+    expect(review.hardWorldRules[0].Rule).toBe('target decision rule');
   });
 
   it('restores visible adaptation proposal state from a co-create commit snapshot', () => {

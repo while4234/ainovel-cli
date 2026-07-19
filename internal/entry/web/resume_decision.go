@@ -125,6 +125,11 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 		return blockedAutoResume("planning_review_read_failed", err), nil
 	} else if review != nil && review.Status == domain.PlanningReviewStatusPending {
 		return makeAutoResumeDecision(autoResumeState{Disposition: AutoResumeWaitUser, Reason: "planning_review_pending"}, "规划等待用户审核"), nil
+	} else if review != nil && review.FoundationStatus != "" &&
+		!(review.Kind == domain.PlanningReviewKindFoundation && review.FoundationStatus == domain.FoundationReviewStatusCollecting) {
+		if err := st.RequireConfirmedFoundation(); err != nil {
+			return blockedAutoResume("foundation_gate_blocked", err), nil
+		}
 	}
 
 	workflow, err := st.Adaptation.LoadPlanningWorkflow()
@@ -134,6 +139,12 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 	if workflow != nil {
 		state := autoResumeState{Revision: workflow.Revision}
 		switch workflow.Stage {
+		case domain.AdaptationPlanningStageTargetFoundationGenerating:
+			state.Disposition, state.Reason = AutoResumeWaitUser, "adaptation_target_foundation_generation_interrupted"
+			return makeAutoResumeDecision(state, "目标 StoryFoundation 生成中断，请重试当前共创提交或修订"), nil
+		case domain.AdaptationPlanningStageFoundationReviewPending:
+			state.Disposition, state.Reason = AutoResumeWaitUser, "adaptation_foundation_review_pending"
+			return makeAutoResumeDecision(state, "目标 StoryFoundation 等待用户审核"), nil
 		case domain.AdaptationPlanningStageSkeletonGenerating:
 			action, actionErr := pendingAdaptationProposalResumeAction(st)
 			if actionErr != nil {
@@ -230,8 +241,17 @@ func (s *ProjectSession) ExecuteAutoResume(ctx context.Context, expectedFingerpr
 	s.mu.Unlock()
 	if !cocreate.coreCastResumeExempt() {
 		if strings.TrimSpace(outputDir) != "" {
-			if gateErr := host.RequireManagedCoreCastGate(storepkg.NewStore(outputDir), true); gateErr != nil {
+			st := storepkg.NewStore(outputDir)
+			if gateErr := host.RequireManagedCoreCastGate(st, true); gateErr != nil {
 				return blockedAutoResume("core_cast_gate_blocked", gateErr), nil
+			}
+			if review, reviewErr := st.RunMeta.PlanningReview(); reviewErr != nil {
+				return blockedAutoResume("planning_review_read_failed", reviewErr), nil
+			} else if review != nil && review.FoundationStatus != "" &&
+				!(review.Kind == domain.PlanningReviewKindFoundation && review.FoundationStatus == domain.FoundationReviewStatusCollecting) {
+				if gateErr := st.RequireConfirmedFoundation(); gateErr != nil {
+					return blockedAutoResume("foundation_gate_blocked", gateErr), nil
+				}
 			}
 		}
 	}

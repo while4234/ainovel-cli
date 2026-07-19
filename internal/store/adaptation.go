@@ -18,23 +18,24 @@ import (
 )
 
 const (
-	adaptationRootDir              = "meta/adaptation"
-	adaptationBackupDir            = "meta/adaptation_backups"
-	adaptationSourceChapterDir     = adaptationRootDir + "/source_chapters"
-	adaptationSourceReportDir      = adaptationRootDir + "/source_reports"
-	adaptationSourceReportsFile    = adaptationRootDir + "/source_reports.json"
-	adaptationSourceFoundationFile = adaptationRootDir + "/source_foundation.json"
-	adaptationSourceFoundationDir  = adaptationRootDir + "/source_foundation_batches"
-	adaptationCoCreateDossierFile  = adaptationRootDir + "/cocreate_dossier.json"
-	adaptationCoCreateBatchDir     = adaptationRootDir + "/cocreate_dossier_batches"
-	adaptationCoCreateIntentFile   = adaptationRootDir + "/cocreate_intent.json"
-	adaptationCoCreateBriefingFile = adaptationRootDir + "/cocreate_briefing.json"
-	adaptationCoCreateBriefingDir  = adaptationRootDir + "/cocreate_briefing_batches"
-	adaptationCheckDir             = adaptationRootDir + "/checks"
-	adaptationProposalFile         = adaptationRootDir + "/proposal.json"
-	adaptationVolumeReviewFile     = adaptationRootDir + "/proposal_volume_review.json"
-	adaptationProposalRuntimeFile  = adaptationRootDir + "/proposal_runtime.json"
-	adaptationPlanFile             = adaptationRootDir + "/plan.json"
+	adaptationRootDir                    = "meta/adaptation"
+	adaptationBackupDir                  = "meta/adaptation_backups"
+	adaptationSourceChapterDir           = adaptationRootDir + "/source_chapters"
+	adaptationSourceReportDir            = adaptationRootDir + "/source_reports"
+	adaptationSourceReportsFile          = adaptationRootDir + "/source_reports.json"
+	adaptationSourceFoundationFile       = adaptationRootDir + "/source_foundation.json"
+	adaptationSourceFoundationDir        = adaptationRootDir + "/source_foundation_batches"
+	adaptationCoCreateDossierFile        = adaptationRootDir + "/cocreate_dossier.json"
+	adaptationCoCreateBatchDir           = adaptationRootDir + "/cocreate_dossier_batches"
+	adaptationCoCreateIntentFile         = adaptationRootDir + "/cocreate_intent.json"
+	adaptationCoCreateBriefingFile       = adaptationRootDir + "/cocreate_briefing.json"
+	adaptationCoCreateBriefingDir        = adaptationRootDir + "/cocreate_briefing_batches"
+	adaptationCheckDir                   = adaptationRootDir + "/checks"
+	adaptationProposalFile               = adaptationRootDir + "/proposal.json"
+	adaptationVolumeReviewFile           = adaptationRootDir + "/proposal_volume_review.json"
+	adaptationProposalRuntimeFile        = adaptationRootDir + "/proposal_runtime.json"
+	adaptationPlanFile                   = adaptationRootDir + "/plan.json"
+	adaptationTargetFoundationReviewFile = adaptationRootDir + "/target_foundation_review.json"
 )
 
 // AdaptationStore keeps source-novel snapshots and adaptation validation data.
@@ -188,7 +189,8 @@ func (s *AdaptationStore) ResetGenerated() error {
 			if err != nil {
 				return err
 			}
-			if err := s.io.RemoveFileUnlocked(adaptationPlanningWorkflowFile); err != nil {
+			err = s.io.RemoveFileUnlocked(adaptationPlanningWorkflowFile)
+			if err != nil {
 				return err
 			}
 			return os.RemoveAll(s.io.path(adaptationCheckDir))
@@ -1166,7 +1168,7 @@ func (s *AdaptationStore) ClearProposal() error {
 			if err := s.io.RemoveFileUnlocked(adaptationProposalRuntimeFile); err != nil {
 				return err
 			}
-			return s.io.RemoveFileUnlocked(adaptationPlanningWorkflowFile)
+			return nil
 		})
 	})
 }

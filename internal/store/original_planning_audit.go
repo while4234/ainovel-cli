@@ -14,8 +14,20 @@ import (
 const originalPlanningAuditsFile = "meta/original_planning/audits.json"
 
 type OriginalPlanningAuditStore struct {
-	io      *IO
-	outline *OutlineStore
+	io                     *IO
+	outline                *OutlineStore
+	foundation             *FoundationStore
+	revisions              *RevisionStore
+	withApprovedFoundation func(func(int64, string) error) error
+}
+
+func (s *OriginalPlanningAuditStore) SaveForFoundationRevision(owner *FoundationPlanningOwner, audit domain.OriginalPlanningAudit) error {
+	if s == nil || s.revisions == nil {
+		return fmt.Errorf("Foundation planning revision store is required")
+	}
+	return s.revisions.withFoundationPlanningMutation(owner, "save Foundation-owned planning audit", nil, func() error {
+		return s.save(audit)
+	})
 }
 
 type OriginalPlanningWork struct {
@@ -50,15 +62,26 @@ func (s *OriginalPlanningAuditStore) Load() ([]domain.OriginalPlanningAudit, err
 }
 
 func (s *OriginalPlanningAuditStore) Save(audit domain.OriginalPlanningAudit) error {
-	if audit.Verdict == "pass" && (audit.StructureSignature == "" || audit.ContentSignature == "") && s.outline != nil {
-		volumes, err := s.outline.LoadLayeredOutline()
-		if err != nil {
-			return err
+	if audit.Verdict == "pass" && s.outline != nil {
+		if s.withApprovedFoundation == nil {
+			return fmt.Errorf("approved story foundation authority is required to save a passing original planning audit")
 		}
-		if err := domain.BindOriginalPlanningAudit(&audit, volumes); err != nil {
-			return err
-		}
+		return s.withApprovedFoundation(func(foundationRevision int64, foundationSignature string) error {
+			volumes, err := s.outline.LoadLayeredOutline()
+			if err != nil {
+				return err
+			}
+			if err := domain.BindOriginalPlanningAudit(&audit, volumes, foundationSignature); err != nil {
+				return err
+			}
+			audit.FoundationRevision = foundationRevision
+			return s.save(audit)
+		})
 	}
+	return s.save(audit)
+}
+
+func (s *OriginalPlanningAuditStore) save(audit domain.OriginalPlanningAudit) error {
 	return s.io.WithWriteLock(func() error {
 		var audits []domain.OriginalPlanningAudit
 		if err := s.io.ReadJSONUnlocked(originalPlanningAuditsFile, &audits); err != nil && !os.IsNotExist(err) {
@@ -127,22 +150,186 @@ func (s *OriginalPlanningAuditStore) loadCurrent() ([]domain.OriginalPlanningAud
 	if err != nil || s.outline == nil {
 		return audits, err
 	}
+	if s.withApprovedFoundation == nil {
+		return nil, fmt.Errorf("approved story foundation authority is required to load current original planning audits")
+	}
+	var current []domain.OriginalPlanningAudit
+	err = s.withApprovedFoundation(func(foundationRevision int64, foundationSignature string) error {
+		volumes, loadErr := s.outline.LoadLayeredOutline()
+		if loadErr != nil {
+			return loadErr
+		}
+		foundation, foundationErr := s.foundation.Load()
+		if foundationErr != nil {
+			return foundationErr
+		}
+		current = make([]domain.OriginalPlanningAudit, 0, len(audits))
+		for _, audit := range audits {
+			if audit.Verdict == "pass" && ((audit.FoundationRevision == foundationRevision && domain.OriginalPlanningAuditCurrent(audit, volumes, foundationSignature)) ||
+				domain.OriginalPlanningAuditCurrentWithFoundation(audit, volumes, foundation, foundationSignature)) {
+				current = append(current, audit)
+				continue
+			}
+			legacyUnsignedRevise := audit.Verdict == "revise" && (audit.StructureSignature == "" || audit.ContentSignature == "")
+			if audit.Verdict == "revise" && (legacyUnsignedRevise || domain.OriginalPlanningAuditBindingCurrent(audit, volumes)) {
+				current = append(current, audit)
+			}
+		}
+		return nil
+	})
+	return current, err
+}
+
+// InvalidateFoundationRevision removes affected audit scopes and attaches a
+// stable-ID Foundation projection only to otherwise-current, unaffected
+// evidence. It never rewrites the historical whole-Foundation signature.
+func (s *OriginalPlanningAuditStore) InvalidateFoundationRevision(base, candidate domain.StoryFoundation, impact domain.FoundationImpact, dependencies *domain.FoundationDependencyManifest) error {
+	return s.io.WithWriteLock(func() error {
+		var audits []domain.OriginalPlanningAudit
+		if err := s.io.ReadJSONUnlocked(originalPlanningAuditsFile, &audits); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if impact.FullBook || dependencies == nil {
+			return s.io.RemoveFileUnlocked(originalPlanningAuditsFile)
+		}
+		changed := make(map[string]bool)
+		for _, id := range impact.AffectedVolumeIDs {
+			changed[id] = true
+		}
+		for _, id := range impact.AffectedArcIDs {
+			changed[id] = true
+		}
+		for _, id := range impact.AffectedChapterIDs {
+			changed[id] = true
+		}
+		kept := make([]domain.OriginalPlanningAudit, 0, len(audits))
+		for _, audit := range audits {
+			if audit.Scope == "book" || audit.Scope == "book_batch" || audit.Scope == "skeleton_book" || audit.Scope == "skeleton_book_batch" || changed[audit.ScopeID] {
+				continue
+			}
+			refs := make([]string, 0)
+			for _, entry := range dependencies.Entries {
+				if entry.DependentArtifactID == audit.ScopeID {
+					refs = append(refs, string(entry.SourceEntityType)+":"+entry.SourceEntityID)
+				}
+			}
+			if len(refs) == 0 {
+				continue
+			}
+			before, err1 := domain.FoundationProjectionSignature(base, refs)
+			after, err2 := domain.FoundationProjectionSignature(candidate, refs)
+			if err1 != nil || err2 != nil || before != after {
+				continue
+			}
+			audit.FoundationEntityRefs = refs
+			audit.FoundationProjectionSignature = before
+			kept = append(kept, audit)
+		}
+		if len(kept) == 0 {
+			return s.io.RemoveFileUnlocked(originalPlanningAuditsFile)
+		}
+		return s.io.WriteJSONUnlocked(originalPlanningAuditsFile, kept)
+	})
+}
+
+// QueueFoundationRepair converts an approved Foundation impact into the
+// existing original-planning repair queue. The normal router remains the only
+// generator: these signed revise findings merely identify the scopes it must
+// repair and subsequently re-audit.
+func (s *OriginalPlanningAuditStore) QueueFoundationRepair(impact domain.FoundationImpact) (string, error) {
+	if s == nil || s.outline == nil || s.foundation == nil {
+		return "", fmt.Errorf("original planning repair stores are required")
+	}
 	volumes, err := s.outline.LoadLayeredOutline()
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	current := make([]domain.OriginalPlanningAudit, 0, len(audits))
-	for _, audit := range audits {
-		if audit.Verdict == "pass" && domain.OriginalPlanningAuditCurrent(audit, volumes) {
-			current = append(current, audit)
-			continue
+	if len(volumes) == 0 {
+		return domain.PlanningReviewKindBlueprint, nil
+	}
+	foundation, err := s.foundation.Load()
+	if err != nil {
+		return "", err
+	}
+	foundationSignature, err := domain.FoundationAuditSignature(foundation)
+	if err != nil {
+		return "", err
+	}
+	queue := func(audit domain.OriginalPlanningAudit) error {
+		if err := domain.BindOriginalPlanningAudit(&audit, volumes, foundationSignature); err != nil {
+			return err
 		}
-		legacyUnsignedRevise := audit.Verdict == "revise" && (audit.StructureSignature == "" || audit.ContentSignature == "")
-		if audit.Verdict == "revise" && (legacyUnsignedRevise || domain.OriginalPlanningAuditBindingCurrent(audit, volumes)) {
-			current = append(current, audit)
+		audit.FoundationRevision = foundation.Revision
+		return s.save(audit)
+	}
+	if impact.FullBook {
+		for _, volume := range volumes {
+			if err := queue(foundationRepairAudit("skeleton_volume", volume.ID, volume.Index, 1, 0, 0)); err != nil {
+				return "", err
+			}
+		}
+		return domain.PlanningReviewKindBlueprint, nil
+	}
+	volumeIDs := make(map[string]struct{}, len(impact.AffectedVolumeIDs))
+	arcIDs := make(map[string]struct{}, len(impact.AffectedArcIDs))
+	chapterIDs := make(map[string]struct{}, len(impact.AffectedChapterIDs))
+	for _, id := range impact.AffectedVolumeIDs {
+		volumeIDs[id] = struct{}{}
+	}
+	for _, id := range impact.AffectedArcIDs {
+		arcIDs[id] = struct{}{}
+	}
+	for _, id := range impact.AffectedChapterIDs {
+		chapterIDs[id] = struct{}{}
+	}
+	nextChapter := 1
+	for _, volume := range volumes {
+		if _, affected := volumeIDs[volume.ID]; affected {
+			if err := queue(foundationRepairAudit("skeleton_volume", volume.ID, volume.Index, 1, 0, 0)); err != nil {
+				return "", err
+			}
+		}
+		for _, arc := range volume.Arcs {
+			count := len(arc.Chapters)
+			if count == 0 {
+				count = arc.EstimatedChapters
+			}
+			from, to := nextChapter, nextChapter+count-1
+			if _, affected := arcIDs[arc.ID]; affected {
+				if err := queue(foundationRepairAudit("arc", arc.ID, volume.Index, arc.Index, from, to)); err != nil {
+					return "", err
+				}
+			}
+			for offset, chapter := range arc.Chapters {
+				if _, affected := chapterIDs[chapter.ID]; affected {
+					number := from + offset
+					if err := queue(foundationRepairAudit("chapter", chapter.ID, volume.Index, arc.Index, number, number)); err != nil {
+						return "", err
+					}
+				}
+			}
+			nextChapter = to + 1
 		}
 	}
-	return current, nil
+	if len(volumeIDs) > 0 {
+		return domain.PlanningReviewKindBlueprint, nil
+	}
+	return domain.PlanningReviewKindVolumeSplit, nil
+}
+
+func foundationRepairAudit(scope, scopeID string, volume, arc, fromChapter, toChapter int) domain.OriginalPlanningAudit {
+	return domain.OriginalPlanningAudit{
+		Scope: scope, ScopeID: scopeID, Volume: volume, Arc: arc, FromChapter: fromChapter, ToChapter: toChapter,
+		Verdict: "revise", Summary: "StoryFoundation revision invalidated this planning scope",
+		Issues: []domain.OriginalPlanningAuditIssue{{
+			Severity: "major", Volume: volume, Arc: arc, FromChapter: fromChapter, ToChapter: toChapter,
+			Description:       "the planning scope predates the approved StoryFoundation revision",
+			RepairInstruction: "repair this scope against the current canonical StoryFoundation, then rerun every required signed planning audit",
+		}},
+	}
 }
 
 // NextWork returns the next bounded generation/audit action. The order is

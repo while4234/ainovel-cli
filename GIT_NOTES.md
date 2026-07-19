@@ -187,6 +187,23 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   `{"_context_compacted":true}` sentinel that weaker models copied into new
   tool calls. Agent, Tools, and Host flow tests plus vet passed before live
   redeployment.
+- 2026-07-19 StoryFoundation development batch, PR-03 through PR-08, integrated
+  onto the latest `origin/main`: PR-03
+  `4c574fd7` adds the original Foundation checkpoint; PR-04 `0c721f7c` adds the
+  adaptation source/target checkpoint; PR-05 `35702fc1` adds the normal
+  persisted preview/apply/retry and planning-repair lifecycle; PR-06
+  `42074655` adapts that same lifecycle to target-only adaptation revisions;
+  PR-07 `82a1d618` adds the dual-mode Foundation Center; PR-08 `a447261c` adds
+  the planned-relationship graph, schema-v2 migration, E2E, recovery, release
+  assets, and licensing. After integration, the focused Foundation/CoreCast/
+  clone/rollback/migration tests passed in domain, store, host, and Web; all
+  323 UI tests, production UI build, Go build, vet, and diff checks also
+  passed. The unfiltered Go suite still has the previously recorded legacy
+  fixtures that do not establish the new confirmation gates, plus the known
+  tools context-budget baseline; see
+  `.codex/pr-pipeline/story-foundation/PR-08-dev-summary.md`.
+  The final PR-08 build was deployed from its worktree to the unchanged
+  `novels-preview` runtime root; Web smoke validation passed on port 9898.
 - 2026-07-18 `f9c7738` `fix: preserve targeted polish at word gate`: when
   an already-completed chapter misses its configured word range during
   polishing, the structured rejection now tells Writer to retain the complete

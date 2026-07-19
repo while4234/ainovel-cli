@@ -171,7 +171,7 @@ func currentWorkflowModelStage(step string) string {
 		return bootstrap.StageCoCreate
 	case "source", "source_baseline", "analysis":
 		return bootstrap.StageSourceAnalysis
-	case "structure", "volume_plan", "proposal", "volumes":
+	case "foundation", "structure", "volume_plan", "proposal", "volumes":
 		return bootstrap.StageSkeleton
 	case "planning_review", "chapter_outline", "proposal_review", "outlines":
 		return bootstrap.StageDetailOutline
@@ -227,6 +227,7 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 		{ID: "creative_intent", Label: "创意输入", Status: WorkflowStatusIdle},
 		{ID: "structure", Label: "篇幅与结构", Status: WorkflowStatusIdle},
 		{ID: "clarification", Label: "澄清决策", Status: WorkflowStatusIdle},
+		{ID: "foundation", Label: "完整设定确认", Status: WorkflowStatusIdle},
 		{ID: "volume_plan", Label: "分卷规划与审核", Status: WorkflowStatusIdle},
 		{ID: "chapter_outline", Label: "章节细纲与审核", Status: WorkflowStatusIdle},
 		{ID: "writing", Label: "正文创作", Status: WorkflowStatusIdle, Current: snapshot.CompletedCount, Total: snapshot.TotalChapters},
@@ -305,6 +306,12 @@ func normalPlanningReviewProgress(progress WorkflowProgress, review *host.Planni
 		status = WorkflowStatusWaitingConfirmation
 	}
 	switch review.Kind {
+	case domain.PlanningReviewKindFoundation:
+		var action *WorkflowNextAction
+		if status == WorkflowStatusWaitingConfirmation {
+			action = nextWorkflowAction(progress, "confirm_foundation", "确认完整设定", true)
+		}
+		return "foundation", status, action
 	case domain.PlanningReviewKindBlueprint:
 		var action *WorkflowNextAction
 		if status == WorkflowStatusWaitingConfirmation {
@@ -336,6 +343,7 @@ func adaptationWorkflowProgress(
 		{ID: "source", Label: "原文导入", Status: WorkflowStatusIdle},
 		{ID: "analysis", Label: "原文分析", Status: WorkflowStatusIdle},
 		{ID: "contract", Label: "改编契约", Status: WorkflowStatusIdle},
+		{ID: "target_foundation", Label: "目标设定", Status: WorkflowStatusIdle},
 		{ID: "proposal_review", Label: "章节细纲与审核", Status: WorkflowStatusIdle},
 		{ID: "writing", Label: "正文创作", Status: WorkflowStatusIdle, Current: snapshot.CompletedCount, Total: snapshot.TotalChapters},
 		{ID: "quality_audit", Label: "质量审计", Status: WorkflowStatusIdle},
@@ -377,9 +385,27 @@ func adaptationWorkflowProgress(
 			progress.Steps = setStep(progress.Steps, progress.CurrentStep, WorkflowStatusFailed, 0, 0, progress.Error)
 			progress.NextAction = nextWorkflowAction(progress, "retry_cocreate", "重试改编共创", false)
 		case coCreate.CanStart:
-			progress.NextAction = nextWorkflowAction(progress, "commit_adaptation_contract", "确认契约并生成提案", true)
+			progress.NextAction = nextWorkflowAction(progress, "commit_adaptation_contract", "确认契约并生成目标设定", true)
 		default:
 			progress.NextAction = nextWorkflowAction(progress, "continue_adaptation_cocreate", "继续改编共创", true)
+		}
+		return progress
+	}
+	if review := snapshot.AdaptationFoundationReview; review != nil &&
+		(review.State == domain.AdaptationFoundationReviewPending || review.State == domain.AdaptationFoundationReviewGenerating || review.State == domain.AdaptationFoundationReviewReadonly) {
+		progress.CurrentStep = "target_foundation"
+		progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
+		progress.Status = WorkflowStatusWaitingConfirmation
+		message := "目标 StoryFoundation 等待审核"
+		switch review.State {
+		case domain.AdaptationFoundationReviewGenerating:
+			progress.Status, message = WorkflowStatusRunning, "正在生成目标 StoryFoundation"
+		case domain.AdaptationFoundationReviewReadonly:
+			message = "目标 StoryFoundation 已因正文存在而只读：" + review.ReadonlyReason
+		}
+		progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, message)
+		if review.State == domain.AdaptationFoundationReviewPending {
+			progress.NextAction = nextWorkflowAction(progress, "confirm_foundation", "确认目标 StoryFoundation", true)
 		}
 		return progress
 	}

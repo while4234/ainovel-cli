@@ -16,6 +16,10 @@ let failDelayedTree = false;
 let delayNextChapter = false;
 let manuscriptPhase = 'writing';
 let manuscriptActionDialogue = null;
+let foundationScenario = 'normal';
+let foundationRevision = 3;
+let foundationLastRequest = null;
+let delayFoundationProjectA = false;
 const streams = new Set();
 let expansionMetadata = await fetch('http://127.0.0.1:4182/api/test/expansion-metadata').then((response) => response.json());
 const json = (response, status, body, headers = {}) => {
@@ -24,6 +28,32 @@ const json = (response, status, body, headers = {}) => {
 		response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers });
 		response.end(JSON.stringify(body));
 	} catch { /* aborted race-test requests are intentionally discarded */ }
+};
+const readJSON = (request) => new Promise((resolve, reject) => {
+	let raw = '';
+	request.on('data', (chunk) => { raw += chunk; });
+	request.on('end', () => { try { resolve(JSON.parse(raw || '{}')); } catch (error) { reject(error); } });
+});
+const targetFoundation = (projectID = 'foundation-project-a') => ({
+	schema_version: 2, revision: foundationRevision, premise: projectID.endsWith('-b') ? '项目 B 的目标故事' : '项目 A 的目标故事',
+	characters: [{ id: 'hero', name: '林舟', aliases: ['阿舟'], role: '主角', description: '守护城市', arc: '学会信任', traits: ['坚定'], tier: 'core', faction: '守夜人', goal: '阻止灾难', motivation: '责任', conflict: '不信任盟友', voice: '简洁', constraints: ['不背叛'], notes: '' }, ...(foundationScenario === 'graph' ? [
+		{ id: 'ally', name: '闻溪', aliases: [], role: '盟友', description: '', arc: '', traits: [], tier: 'major', faction: '守夜人', goal: '', motivation: '', conflict: '', voice: '', constraints: [], notes: '' },
+		{ id: 'rival', name: '贺沉', aliases: [], role: '对手', description: '', arc: '', traits: [], tier: 'support', faction: '旧王庭', goal: '', motivation: '', conflict: '', voice: '', constraints: [], notes: '' }
+	] : [])],
+	relationships: foundationScenario === 'graph' ? [
+		{ id: 'rel-directed', source_character_id: 'hero', target_character_id: 'ally', type: 'mentor', label: '引路', direction: 'directed', status: 'active', tags: [], constraints: [] },
+		{ id: 'rel-undirected', source_character_id: 'ally', target_character_id: 'rival', type: 'rival', label: '', direction: 'undirected', status: 'planned', tags: [], constraints: [] }
+	] : [], relationships_reviewed: true,
+	world_rules: [{ id: 'rule-1', title: '能力代价', category: 'magic', rule: '每次施法都会失去记忆', boundary: '不可无代价复活', strength: 'hard', priority: 10, tags: ['代价'] }]
+});
+const sourceFoundation = { source_signature: 'source-signature-1234567890', source_chapter_count: 20, premise: '原著世界里旧王归来', characters: [{ id: 'source-hero', name: '原著林舟' }], world_rules: [{ id: 'source-rule', title: '原著规则', category: 'magic', rule: '魔法源自血脉', boundary: '血脉不可伪造', strength: 'hard' }] };
+const coreCast = { version: 1, mode: 'adaptation', members: [{ character: targetFoundation().characters[0], importance: 'protagonist', origin: 'source', mainline_function: '推进主线', source_character_ids: ['source-hero'], inclusion_rationale: '保留原著主角', no_core_relationships: true }], planned_relationships: [], source_dispositions: [{ source_character_id: 'source-hero', action: 'rename', target_character_ids: ['hero'], rationale: '目标世界改名' }], content_signature: 'core-signature', confirmed_signature: 'core-signature' };
+const foundationState = (projectID) => {
+	const active = foundationScenario === 'failed' ? { revision_id: 'revision-failed', session_id: 'revision-failed', preview_id: 'preview-browser', stage: 'failed', resume_stage: 'candidate_generating', attempt: 1, generation: 8, last_error_class: 'foundation_recovery_failed', last_error: '安全的测试失败', updated_at: '2026-07-19T00:00:00Z' }
+		: foundationScenario === 'active' ? { revision_id: 'revision-active', session_id: 'revision-active', preview_id: 'preview-browser', stage: 'regenerating', attempt: 2, generation: 9, updated_at: '2026-07-19T00:00:00Z' } : null;
+	const readonly = foundationScenario === 'readonly';
+	const adaptation = foundationScenario === 'adaptation';
+	return { project: { id: projectID, name: projectID }, foundation: { mode: adaptation ? 'adaptation' : 'normal', ...(adaptation ? { source_foundation: sourceFoundation, mode_specific: { source_signature: sourceFoundation.source_signature } } : {}), target_foundation: targetFoundation(projectID), editable: !readonly && !active, readonly_reason: readonly ? 'body_files_started' : active ? 'active_foundation_revision' : '', base_revision: foundationRevision, base_audit_signature: `audit-${foundationRevision}`, core_cast_signature: 'core-signature', core_cast: coreCast, core_cast_completion: { complete: true, missing: [], blocking_reasons: [] }, core_cast_confirmed: true, active_revision: active, planning_review: { state: 'confirmed', revision: 2 }, allowed_operations: foundationScenario === 'failed' ? ['get', 'retry'] : !readonly && !active ? ['get', 'preview', 'apply'] : ['get'] } };
 };
 const tree = () => ({ phase: manuscriptPhase, mode: 'adaptation', structure_revision: expansionMetadata.structure_revision, structure_signature: expansionMetadata.structure_signature, active_revision: { revision_id: revisionId, stage: 'audit_pending' }, nodes: [{ kind: 'volume', stable_id: 'vol_0123456789abcdef0123456789abcdef', display_label: '第一卷', state: 'planned', children: [{ kind: 'arc', stable_id: 'arc_0123456789abcdef0123456789abcdef', display_label: '第一故事弧', state: 'planned', children: [{ kind: 'chapter', stable_id: chapterId, display_order: 1, display_label: '真实后端长章', state: 'review_pending', has_current: true, has_candidate: true, has_history: true, content_signature: 'outline-signature', target_display: '目标第 1 章', source_display: '原著第 7–8 章' }] }] }] });
 const extraTreeChapters = Array.from({ length: 129 }, (_, index) => ({
@@ -48,7 +78,27 @@ const server = http.createServer(async (request, response) => {
 	response.on('error', () => {});
   const url = new URL(request.url, `http://${request.headers.host}`), path = url.pathname;
   if (path === '/health') return json(response, 200, { ok: true });
-	if (path === '/api/test/reset' && request.method === 'POST') { generation = 1; manuscriptPhase = 'writing'; manuscriptActionDialogue = null; failNextChapter = false; historyTombstoned = false; delayNextHistory = false; delayNextTree = false; failDelayedTree = false; delayNextChapter = false; return json(response, 200, { reset: true }); }
+	if (path === '/api/test/reset' && request.method === 'POST') { generation = 1; manuscriptPhase = 'writing'; manuscriptActionDialogue = null; failNextChapter = false; historyTombstoned = false; delayNextHistory = false; delayNextTree = false; failDelayedTree = false; delayNextChapter = false; foundationScenario = 'normal'; foundationRevision = 3; foundationLastRequest = null; delayFoundationProjectA = false; return json(response, 200, { reset: true }); }
+	if (path === '/api/test/foundation/scenario' && request.method === 'POST') { foundationScenario = url.searchParams.get('value') || 'normal'; return json(response, 200, { scenario: foundationScenario }); }
+	if (path === '/api/test/foundation/delay-project-a' && request.method === 'POST') { delayFoundationProjectA = true; return json(response, 200, { delayed: true }); }
+	if (path === '/api/test/foundation/last-request') return json(response, 200, foundationLastRequest || {});
+	const foundationMatch = path.match(/^\/api\/projects\/(foundation-project-[ab])\/foundation(?:\/(preview|apply|retry))?$/);
+	if (foundationMatch) {
+		const projectID = foundationMatch[1], action = foundationMatch[2] || 'get';
+		if (action === 'get') {
+			const body = foundationState(projectID);
+			if (projectID.endsWith('-a') && delayFoundationProjectA) { delayFoundationProjectA = false; setTimeout(() => json(response, 200, body), 450); return; }
+			return json(response, 200, body);
+		}
+		const body = await readJSON(request); foundationLastRequest = { action, body, project_id: projectID };
+		if (action === 'preview') {
+			if (foundationScenario === 'stale') { foundationScenario = 'normal'; foundationRevision += 1; return json(response, 409, { error: { code: 'foundation_stale', message: '服务器 Foundation 已变化' } }); }
+			const coreChanged = !body.candidate?.characters?.some((character) => character.id === 'hero' && character.name === '林舟');
+			return json(response, 200, { preview: { version: 1, id: 'preview-browser', project_mode: foundationScenario === 'adaptation' ? 'adaptation' : 'normal', base_revision: foundationRevision, candidate: body.candidate, candidate_signature: 'candidate-signature', diff: { changes: [{ entity_type: 'premise', entity_id: 'premise', kind: 'modified', changed_fields: ['premise'], high_risk: true }, ...(coreChanged ? [{ entity_type: 'character', entity_id: 'hero', kind: 'removed', core_cast_affected: true, high_risk: true }] : [])], core_cast_reconfirmation: coreChanged }, impact: { evidence_level: 'structured', full_book: coreChanged, affected_volume_ids: ['volume-1'], affected_arc_ids: ['arc-1'], affected_chapter_ids: ['chapter-1'], reasons: [{ code: coreChanged ? 'core_cast_changed' : 'structured_dependency', required: true, entity_ids: ['premise:premise'] }], required_audits: [{ scope: 'chapter', scope_id: 'chapter-1', from_chapter: 1, to_chapter: 1, required: true }], requires_core_cast_confirmation: coreChanged, requires_foundation_confirmation: true, ...(foundationScenario === 'adaptation' ? { adaptation: { evidence_level: 'structured', source_anchor_ids: ['source-1'], contract_ids: ['contract-1'], expansion_reasons: [], requires_core_cast_reconfirmation: coreChanged, requires_adaptation_plan_confirmation: true, source_fidelity_review: true, target_consistency_review: true, character_mapping_review: true, plan_contract_review: true, outline_quality_review: true, affected_proposal: true, affected_outline: true } } : {}) }, validation: { valid: true, errors: [], warnings: [] }, can_apply: !coreChanged } });
+		}
+		if (action === 'apply') return json(response, 200, { revision: { revision_id: 'revision-applied', session_id: 'revision-applied', preview_id: body.preview_id, stage: 'awaiting_outline_approval', attempt: 1, generation: 10, updated_at: '2026-07-19T00:00:01Z' } });
+		if (action === 'retry') return json(response, 200, { revision: { revision_id: 'revision-failed', session_id: 'revision-failed', preview_id: 'preview-browser', stage: 'regenerating', attempt: 2, generation: 8, updated_at: '2026-07-19T00:00:02Z' } });
+	}
 	if (path === '/api/test/refresh-expansion-metadata' && request.method === 'POST') { expansionMetadata = await fetch('http://127.0.0.1:4182/api/test/expansion-metadata').then((result) => result.json()); generation += 1; return json(response, 200, expansionMetadata); }
 	if (path === '/api/test/phase-complete' && request.method === 'POST') { manuscriptPhase = 'complete'; generation += 1; return json(response, 200, { phase: manuscriptPhase }); }
 	if (path === '/api/test/tombstone-history' && request.method === 'POST') { historyTombstoned = true; return json(response, 200, { tombstoned: true }); }

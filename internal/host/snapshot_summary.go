@@ -49,13 +49,21 @@ func planningReviewSummary(review *domain.PlanningReview) *PlanningReviewSummary
 		return nil
 	}
 	return &PlanningReviewSummary{
-		Loaded:           true,
-		Status:           review.Status,
-		Kind:             review.Kind,
-		Brief:            review.Brief,
-		TargetTotalWords: review.TargetTotalWords,
-		CreatedAt:        review.CreatedAt,
-		UpdatedAt:        review.UpdatedAt,
+		Loaded:                   true,
+		Status:                   review.Status,
+		Kind:                     review.Kind,
+		Brief:                    review.Brief,
+		TargetTotalWords:         review.TargetTotalWords,
+		CreatedAt:                review.CreatedAt,
+		UpdatedAt:                review.UpdatedAt,
+		FoundationStatus:         review.FoundationStatus,
+		FoundationRevision:       review.FoundationRevision,
+		FoundationAuditSignature: review.FoundationAuditSignature,
+		CoreCastSignature:        review.CoreCastSignature,
+		FoundationGeneration:     review.FoundationGeneration,
+		FoundationBaseRevision:   review.FoundationBaseRevision,
+		FoundationFeedback:       review.FoundationFeedback,
+		FoundationConfirmedAt:    review.FoundationConfirmedAt,
 	}
 }
 

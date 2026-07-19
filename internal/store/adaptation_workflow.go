@@ -16,6 +16,9 @@ const adaptationPlanningWorkflowFile = adaptationRootDir + "/planning_workflow.j
 func (s *AdaptationStore) LoadPlanningWorkflow() (*domain.AdaptationPlanningWorkflow, error) {
 	var workflow domain.AdaptationPlanningWorkflow
 	if err := s.io.ReadJSON(adaptationPlanningWorkflowFile, &workflow); err == nil {
+		if workflow.Version == 1 {
+			return s.inferLegacyPlanningWorkflow()
+		}
 		if err := workflow.Validate(); err != nil {
 			return nil, err
 		}
@@ -28,10 +31,21 @@ func (s *AdaptationStore) LoadPlanningWorkflow() (*domain.AdaptationPlanningWork
 
 func (s *AdaptationStore) inferLegacyPlanningWorkflow() (*domain.AdaptationPlanningWorkflow, error) {
 	stage := domain.AdaptationPlanningStage("")
-	if plan, err := s.LoadPlan(); err != nil {
+	if review, err := s.LoadTargetFoundationReview(); err != nil {
+		return nil, err
+	} else if review != nil {
+		switch review.State {
+		case domain.AdaptationFoundationReviewGenerating:
+			stage = domain.AdaptationPlanningStageTargetFoundationGenerating
+		case domain.AdaptationFoundationReviewPending, domain.AdaptationFoundationReviewApproved, domain.AdaptationFoundationReviewReadonly:
+			stage = domain.AdaptationPlanningStageFoundationReviewPending
+		}
+	} else if plan, err := s.LoadPlan(); err != nil {
 		return nil, err
 	} else if plan != nil {
-		stage = domain.AdaptationPlanningStageConfirmed
+		// A legacy plan is not evidence that the target StoryFoundation was
+		// explicitly reviewed.  It must pass the new checkpoint first.
+		stage = domain.AdaptationPlanningStageTargetFoundationGenerating
 	} else if proposal, err := s.LoadProposal(); err != nil {
 		return nil, err
 	} else if proposal != nil {

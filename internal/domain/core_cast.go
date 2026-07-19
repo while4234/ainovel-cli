@@ -161,9 +161,7 @@ func NormalizeCoreCastContract(value CoreCastContract) (CoreCastContract, error)
 		relation.Since = strings.TrimSpace(relation.Since)
 		relation.Tags = normalizedStrings(relation.Tags)
 		relation.Constraints = normalizedStrings(relation.Constraints)
-		if relation.Direction == "" {
-			relation.Direction = RelationshipDirectionMutual
-		}
+		relation.Direction = NormalizeRelationshipDirection(relation.Direction)
 		if relation.Status == "" {
 			relation.Status = RelationshipStatusPlanned
 		}
@@ -208,6 +206,12 @@ func CoreCastContentSignature(value CoreCastContract) (string, error) {
 }
 
 func coreCastContentSignature(value CoreCastContract) (string, error) {
+	relationships := append([]CharacterRelationship(nil), value.PlannedRelationships...)
+	for i := range relationships {
+		if relationships[i].Direction == RelationshipDirectionBidirectional {
+			relationships[i].Direction = RelationshipDirectionMutual
+		}
+	}
 	return jsonSignature(struct {
 		Version              int                          `json:"version"`
 		Mode                 CoreCastMode                 `json:"mode"`
@@ -218,7 +222,7 @@ func coreCastContentSignature(value CoreCastContract) (string, error) {
 		Members              []CoreCastMember             `json:"members"`
 		Relationships        []CharacterRelationship      `json:"planned_relationships"`
 		Dispositions         []SourceCharacterDisposition `json:"source_dispositions,omitempty"`
-	}{value.Version, value.Mode, value.DraftRevision, value.DraftHash, value.SourceSignature, value.AdaptationIntentHash, value.Members, value.PlannedRelationships, value.SourceDispositions})
+	}{value.Version, value.Mode, value.DraftRevision, value.DraftHash, value.SourceSignature, value.AdaptationIntentHash, value.Members, relationships, value.SourceDispositions})
 }
 
 func CoreCastCompletion(contract CoreCastContract, sourceCharacters, sourceMajor []SourceMajorCharacter) CoreCastCompletionResult {
@@ -323,8 +327,7 @@ func CoreCastCompletion(contract CoreCastContract, sourceCharacters, sourceMajor
 		if relationship.SourceCharacterID == relationship.TargetCharacterID {
 			missing = appendMissing(missing, "relationship_self_loop", relationship.SourceCharacterID, "", "core relationship cannot be a self loop")
 		}
-		if !validRelationshipType(relationship.Type) || !validRelationshipStatus(relationship.Status) ||
-			(relationship.Direction != RelationshipDirectionDirected && relationship.Direction != RelationshipDirectionMutual) {
+		if !validRelationshipType(relationship.Type) || !validRelationshipStatus(relationship.Status) || !validRelationshipDirection(relationship.Direction) {
 			missing = appendMissing(missing, "relationship_invalid", "", "", fmt.Sprintf("relationship %q has invalid controlled fields", relationship.ID))
 		}
 		key := relationshipSemanticKey(relationship)

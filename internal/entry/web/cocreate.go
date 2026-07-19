@@ -209,6 +209,17 @@ type webCoreCastConfirmRequest struct {
 	ContentSignature string `json:"content_signature"`
 }
 
+type webFoundationConfirmRequest struct {
+	ExpectedRevision int64           `json:"expected_revision"`
+	AuditSignature   string          `json:"audit_signature"`
+	SourceFoundation json.RawMessage `json:"source_foundation,omitempty"`
+}
+
+type webFoundationReviseRequest struct {
+	Feedback         string          `json:"feedback"`
+	SourceFoundation json.RawMessage `json:"source_foundation,omitempty"`
+}
+
 type webCoCreateSession struct {
 	kind                    string
 	session                 *startup.CoCreateSession
@@ -444,6 +455,88 @@ func (s *Server) handleProjectCoCreateConfirm(w http.ResponseWriter, r *http.Req
 		"running":  session.Snapshot().IsRunning,
 		"label":    label,
 	})
+}
+
+func (s *Server) handleProjectFoundationReview(w http.ResponseWriter, r *http.Request, id, action string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	var label string
+	switch action {
+	case "confirm":
+		var req webFoundationConfirmRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid foundation confirmation: "+err.Error())
+			return
+		}
+		if len(req.SourceFoundation) > 0 && string(req.SourceFoundation) != "null" {
+			writeError(w, http.StatusUnprocessableEntity, "source_foundation is read-only and cannot be submitted")
+			return
+		}
+		label, err = session.ConfirmCoCreateFoundation(req.ExpectedRevision, req.AuditSignature)
+	case "revise":
+		var req webFoundationReviseRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid foundation revision: "+err.Error())
+			return
+		}
+		if len(req.SourceFoundation) > 0 && string(req.SourceFoundation) != "null" {
+			writeError(w, http.StatusUnprocessableEntity, "source_foundation is read-only and cannot be submitted")
+			return
+		}
+		label, err = session.ReviseCoCreateFoundation(req.Feedback)
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeFoundationReviewError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project": manifest, "snapshot": session.WebSnapshot(), "running": session.Snapshot().IsRunning, "label": label,
+	})
+}
+
+func writeFoundationReviewError(w http.ResponseWriter, err error) {
+	status := http.StatusConflict
+	code := storepkg.FoundationReviewErrorStage
+	var adaptationErr *storepkg.AdaptationFoundationReviewError
+	if errors.As(err, &adaptationErr) {
+		if adaptationErr.Code == storepkg.AdaptationFoundationErrorValidation || adaptationErr.Code == storepkg.AdaptationFoundationErrorReadonly {
+			status = http.StatusUnprocessableEntity
+		}
+		writeJSON(w, status, map[string]any{"error": map[string]any{
+			"code": adaptationErr.Code, "message": err.Error(), "latest": adaptationErr.Review,
+		}})
+		return
+	}
+	var reviewErr *storepkg.FoundationReviewError
+	if errors.As(err, &reviewErr) {
+		code = reviewErr.Code
+		if code == storepkg.FoundationReviewErrorValidation {
+			status = http.StatusUnprocessableEntity
+		}
+		writeJSON(w, status, map[string]any{"error": map[string]any{
+			"code": code, "message": err.Error(), "latest": reviewErr.Review,
+		}})
+		return
+	}
+	if errors.Is(err, ErrSessionActionInProgress) || strings.Contains(strings.ToLower(err.Error()), "already running") || strings.Contains(strings.ToLower(err.Error()), "busy") {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{
+			"code": storepkg.FoundationReviewErrorBusy, "message": err.Error(),
+		}})
+		return
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{
+		"code": "foundation_storage_error", "message": err.Error(),
+	}})
 }
 
 func (s *Server) handleProjectCoCreatePlanningRevise(w http.ResponseWriter, r *http.Request, id string) {

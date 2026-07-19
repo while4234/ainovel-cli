@@ -838,3 +838,8 @@ permission drift, and record ABA fail closed without deleting evidence.
 MIT
 
 本项目积极参与并认可 [linux.do 社区](https://linux.do/)。
+# StoryFoundation 设定中心
+
+Web 设定中心以 canonical `StoryFoundation` 管理原创与改编目标故事的 premise、稳定 ID 角色、计划关系和世界规则。普通与改编流程都必须先完成 `CoreCastContract` 和 Foundation 显式确认，才能进入正式规划；改编的 `SourceFoundation` 永久只读，正文开始后 target Foundation 也只读。
+
+计划关系图谱基于 `@xyflow/react`，只映射 `StoryFoundation.relationships`，不读取正文 runtime `relationship_state`。图上的 connect/删除只进入本地 dirty draft，正式写入仍必须经过服务端 signed preview，再以 `preview_id + idempotency_key` apply。使用说明、恢复语义、隐私边界和故障排查见 [设定中心文档](docs/story-foundation-center.md)，发布验收见 [StoryFoundation 发布检查清单](docs/story-foundation-release-checklist.md)，依赖许可证见 [第三方许可证](THIRD_PARTY_LICENSES.md)。

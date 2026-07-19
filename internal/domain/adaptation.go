@@ -263,6 +263,7 @@ type AdaptationResolvedDecision struct {
 
 // AdaptationPlan is the durable contract for rewriting the source as a new book.
 type AdaptationPlan struct {
+	FoundationBinding        *AdaptationFoundationBinding   `json:"foundation_binding,omitempty"`
 	Granularity              string                         `json:"granularity"`
 	ModePolicy               AdaptationModePolicy           `json:"mode_policy,omitempty"`
 	Status                   string                         `json:"status"`
@@ -307,14 +308,16 @@ type AdaptationBudgetRepairRecord struct {
 type AdaptationPlanningStage string
 
 const (
-	AdaptationPlanningStageSkeletonGenerating    AdaptationPlanningStage = "skeleton_generating"
-	AdaptationPlanningStageVolumeReviewPending   AdaptationPlanningStage = "volume_review_pending"
-	AdaptationPlanningStageDetailsGenerating     AdaptationPlanningStage = "details_generating"
-	AdaptationPlanningStageProposalReviewPending AdaptationPlanningStage = "proposal_review_pending"
-	AdaptationPlanningStageConfirmed             AdaptationPlanningStage = "confirmed"
+	AdaptationPlanningStageTargetFoundationGenerating AdaptationPlanningStage = "target_foundation_generating"
+	AdaptationPlanningStageFoundationReviewPending    AdaptationPlanningStage = "foundation_review_pending"
+	AdaptationPlanningStageSkeletonGenerating         AdaptationPlanningStage = "skeleton_generating"
+	AdaptationPlanningStageVolumeReviewPending        AdaptationPlanningStage = "volume_review_pending"
+	AdaptationPlanningStageDetailsGenerating          AdaptationPlanningStage = "details_generating"
+	AdaptationPlanningStageProposalReviewPending      AdaptationPlanningStage = "proposal_review_pending"
+	AdaptationPlanningStageConfirmed                  AdaptationPlanningStage = "confirmed"
 )
 
-const AdaptationPlanningWorkflowVersion = 1
+const AdaptationPlanningWorkflowVersion = 2
 
 type AdaptationPlanningWorkflow struct {
 	Version   int                     `json:"version"`
@@ -325,7 +328,9 @@ type AdaptationPlanningWorkflow struct {
 
 func (s AdaptationPlanningStage) Valid() bool {
 	switch s {
-	case AdaptationPlanningStageSkeletonGenerating,
+	case AdaptationPlanningStageTargetFoundationGenerating,
+		AdaptationPlanningStageFoundationReviewPending,
+		AdaptationPlanningStageSkeletonGenerating,
 		AdaptationPlanningStageVolumeReviewPending,
 		AdaptationPlanningStageDetailsGenerating,
 		AdaptationPlanningStageProposalReviewPending,
@@ -362,6 +367,7 @@ type AdaptationProposalRuntime struct {
 	WordTolerance      float64                                  `json:"word_tolerance,omitempty"`
 	TargetChapterCount int                                      `json:"target_chapter_count"`
 	CoCreateDependency *AdaptationProposalCoCreateDependency    `json:"co_create_dependency,omitempty"`
+	FoundationBinding  *AdaptationFoundationBinding             `json:"foundation_binding,omitempty"`
 	Skeleton           *AdaptationProposalRuntimeOutline        `json:"skeleton,omitempty"`
 	SkeletonBatches    []AdaptationProposalRuntimeSkeletonBatch `json:"skeleton_batches,omitempty"`
 	CompletedBatches   []AdaptationProposalRuntimeBatch         `json:"completed_batches,omitempty"`
@@ -497,19 +503,20 @@ type AdaptationProposalRuntimeBatch struct {
 // AdaptationVolumeReview is the user-visible high-level planning checkpoint
 // before detailed chapter outlines are generated.
 type AdaptationVolumeReview struct {
-	Status             string                 `json:"status"`
-	UpdatedAt          string                 `json:"updated_at,omitempty"`
-	Brief              string                 `json:"brief"`
-	SourcePath         string                 `json:"source_path,omitempty"`
-	SourceChapterCount int                    `json:"source_chapter_count,omitempty"`
-	Granularity        string                 `json:"granularity"`
-	RewritePolicy      string                 `json:"rewrite_policy"`
-	WordTolerance      float64                `json:"word_tolerance,omitempty"`
-	TargetChapterCount int                    `json:"target_chapter_count"`
-	MainlineRules      []string               `json:"mainline_rules,omitempty"`
-	RelationshipGoals  []string               `json:"relationship_goals,omitempty"`
-	Volumes            []AdaptationVolumePlan `json:"volumes"`
-	Planner            *AdaptationPlannerMeta `json:"planner,omitempty"`
+	FoundationBinding  *AdaptationFoundationBinding `json:"foundation_binding,omitempty"`
+	Status             string                       `json:"status"`
+	UpdatedAt          string                       `json:"updated_at,omitempty"`
+	Brief              string                       `json:"brief"`
+	SourcePath         string                       `json:"source_path,omitempty"`
+	SourceChapterCount int                          `json:"source_chapter_count,omitempty"`
+	Granularity        string                       `json:"granularity"`
+	RewritePolicy      string                       `json:"rewrite_policy"`
+	WordTolerance      float64                      `json:"word_tolerance,omitempty"`
+	TargetChapterCount int                          `json:"target_chapter_count"`
+	MainlineRules      []string                     `json:"mainline_rules,omitempty"`
+	RelationshipGoals  []string                     `json:"relationship_goals,omitempty"`
+	Volumes            []AdaptationVolumePlan       `json:"volumes"`
+	Planner            *AdaptationPlannerMeta       `json:"planner,omitempty"`
 }
 
 // AdaptationVolumePlan is the planner's durable high-level grouping for a

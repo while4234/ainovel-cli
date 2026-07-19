@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -105,14 +106,14 @@ func TestFoundationReviewMarkerDoesNotIncreaseSemanticRevision(t *testing.T) {
 	relationships := []domain.CharacterRelationship{{
 		ID: "bond", SourceCharacterID: "lin", TargetCharacterID: "mara", Type: domain.RelationshipTypeAlly,
 	}}
-	if err := store.Foundation.UpdateRelationships(relationships, false); err != nil {
+	if err := store.Foundation.updateRelationships(relationships, false); err != nil {
 		t.Fatal(err)
 	}
 	before, err := store.Foundation.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Foundation.UpdateRelationships(relationships, true); err != nil {
+	if err := store.Foundation.updateRelationships(relationships, true); err != nil {
 		t.Fatal(err)
 	}
 	after, err := store.Foundation.Load()
@@ -121,6 +122,83 @@ func TestFoundationReviewMarkerDoesNotIncreaseSemanticRevision(t *testing.T) {
 	}
 	if after.Revision != before.Revision || !after.RelationshipsReviewed {
 		t.Fatalf("review-only update changed revision or was not saved: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestFoundationV1DirectionMigrationIsReadOnlyUntilSaveAndKeepsRevision(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	saved, err := store.Foundation.SaveCAS(domain.StoryFoundation{
+		Characters: []domain.Character{{ID: "lin", Name: "Lin"}, {ID: "mara", Name: "Mara"}},
+		Relationships: []domain.CharacterRelationship{{
+			ID: "bond", SourceCharacterID: "lin", TargetCharacterID: "mara", Type: domain.RelationshipTypeAlly,
+			Direction: domain.RelationshipDirectionBidirectional,
+		}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy domain.StoryFoundation
+	if err := newIO(dir).ReadJSON(foundationCanonicalFile, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy.SchemaVersion = 1
+	legacy.Relationships[0].Direction = domain.RelationshipDirectionMutual
+	canonical, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relationships, err := json.MarshalIndent(legacy.Relationships, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, foundationCanonicalFile), canonical, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "planned_relationships.json"), relationships, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var manifest foundationProjectionManifest
+	if err := newIO(dir).ReadJSON(foundationManifestFile, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Files[foundationCanonicalFile] = fileDigest(canonical)
+	manifest.Files["planned_relationships.json"] = fileDigest(relationships)
+	if err := newIO(dir).WriteJSON(foundationManifestFile, manifest); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, foundationCanonicalFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != domain.StoryFoundationSchemaVersion || loaded.Relationships[0].Direction != domain.RelationshipDirectionBidirectional {
+		t.Fatalf("loaded migration = %+v", loaded)
+	}
+	afterLoad, err := os.ReadFile(filepath.Join(dir, foundationCanonicalFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, afterLoad) {
+		t.Fatal("read-only load wrote the schema migration")
+	}
+	migrated, err := store.Foundation.SaveCAS(loaded, loaded.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.Revision != saved.Revision {
+		t.Fatalf("representation-only migration changed revision: %d -> %d", saved.Revision, migrated.Revision)
+	}
+	var persisted domain.StoryFoundation
+	if err := newIO(dir).ReadJSON(foundationCanonicalFile, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.SchemaVersion != domain.StoryFoundationSchemaVersion || persisted.Relationships[0].Direction != domain.RelationshipDirectionBidirectional {
+		t.Fatalf("persisted migration = %+v", persisted)
 	}
 }
 
@@ -345,7 +423,7 @@ func TestPlannedRelationshipsDoNotTouchRuntimeOrAdaptationSource(t *testing.T) {
 	}
 	sourceSignatureBefore := fileDigest(sourceBytesBefore)
 	planned := []domain.CharacterRelationship{{SourceCharacterID: "lin", TargetCharacterID: "mara", Type: domain.RelationshipTypeAlly}}
-	if err := store.Foundation.UpdateRelationships(planned, false); err != nil {
+	if err := store.Foundation.updateRelationships(planned, false); err != nil {
 		t.Fatal(err)
 	}
 	gotRuntime, err := store.World.LoadRelationships()

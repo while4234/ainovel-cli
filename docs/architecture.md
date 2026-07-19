@@ -528,3 +528,17 @@ adaptation outer command
 ```
 
 锁序保持 `revision transaction -> migration -> artifact IO`，同一路径只获取一次 revision transaction。任何 owner 恢复失败时 current read 仍可用，写入口和 auto/scheduled/manual resume 均停在 `publication_recovery_required`。详见 [manuscript-revision-architecture.md](manuscript-revision-architecture.md)。
+# StoryFoundation 规范边界
+
+`StoryFoundation` 是 target premise、characters、planned relationships、world rules 的规范真相；同名 Markdown/JSON 文件是一个 journaled transaction 的投影。`CoreCastContract` 先于 Foundation 且保持角色/核心关系权威。改编的 `SourceFoundation` 是不可变来源证据，target Foundation 才能进入统一 preview/apply/retry revision pipeline。
+
+```text
+UI draft（列表/关系图谱）
+  → POST foundation/preview（server diff + dependency evidence + signed preview）
+  → POST foundation/apply（preview_id + idempotency_key）
+  → Foundation CAS + publication receipt
+  → normal planning repair / adaptation proposal regeneration
+  → planning review + human outline confirmation
+```
+
+图谱坐标位于 localStorage 的 project/audit digest namespace，不进入 draft、candidate fingerprint 或 Foundation audit。`planned relationships` 与正文 `relationship_state` 是隔离的数据模型。Foundation transaction、pending journal、revision receipt、clone snapshot lock 和 rollback lifecycle 共享明确锁序；恢复先于正式写，无法安全推断时 fail closed。完整产品流程与发布矩阵见 [story-foundation-center.md](story-foundation-center.md) 和 [story-foundation-release-checklist.md](story-foundation-release-checklist.md)。

@@ -10,7 +10,7 @@ import {
   sourceDispositionActions
 } from '../coreCast.js';
 
-export function CoreCastEditor({ mode = 'normal', value, completion, confirmed, sourceMajorCharacters = [], busy, onSave, onConfirm, onUnconfirm }) {
+export function CoreCastEditor({ mode = 'normal', value, completion, confirmed, sourceMajorCharacters = [], busy, readOnly = false, onSave, onConfirm, onUnconfirm }) {
   const [draft, setDraft] = useState(() => normalizeCoreCast(value, mode));
   const [relationships, setRelationships] = useState('[]');
   const [dirty, setDirty] = useState(false);
@@ -37,6 +37,35 @@ export function CoreCastEditor({ mode = 'normal', value, completion, confirmed, 
       setError(err?.message || '角色契约 JSON 无效');
     }
   };
+
+  if (readOnly) {
+    return (
+      <section className="cocreate-section core-cast-editor" aria-label="核心角色契约只读视图">
+        <div className="section-title"><strong>核心角色确认</strong><span>{confirmed ? '已确认' : '未确认'}</span></div>
+        {draft.members.length ? draft.members.map((member, index) => (
+          <article className="core-cast-member" key={member.character.id || index}>
+            <h3>{member.character.name || `角色 ${index + 1}`}</h3>
+            <dl className="foundation-metrics">
+              <div><dt>ID</dt><dd>{member.character.id || '—'}</dd></div>
+              <div><dt>importance</dt><dd>{member.importance}</dd></div>
+              <div><dt>origin</dt><dd>{member.origin}</dd></div>
+              <div><dt>身份</dt><dd>{member.character.role || '—'}</dd></div>
+              <div><dt>主线功能</dt><dd>{member.mainline_function || '—'}</dd></div>
+              <div><dt>来源 ID</dt><dd>{member.source_character_ids.join('、') || '原创角色'}</dd></div>
+              <div><dt>纳入理由</dt><dd>{member.inclusion_rationale || '—'}</dd></div>
+              <div><dt>目标 / 动机</dt><dd>{[member.character.goal, member.character.motivation].filter(Boolean).join(' / ') || '—'}</dd></div>
+              <div><dt>冲突 / 角色弧</dt><dd>{[member.character.conflict, member.character.arc].filter(Boolean).join(' / ') || '—'}</dd></div>
+              <div><dt>特质</dt><dd>{member.character.traits.join('、') || '—'}</dd></div>
+              <div><dt>语言风格</dt><dd>{member.character.voice || '—'}</dd></div>
+              <div><dt>约束</dt><dd>{member.character.constraints.join('、') || '—'}</dd></div>
+            </dl>
+          </article>
+        )) : <div className="empty-state">暂无 CoreCast 成员</div>}
+        {mode === 'adapt' && draft.source_dispositions.length ? <div className="core-cast-dispositions"><strong>来源角色处置</strong>{draft.source_dispositions.map((item) => <p key={item.source_character_id}>{item.source_character_id} · {item.action} → {item.target_character_ids.join('、') || '不映射'} {item.rationale ? `· ${item.rationale}` : ''}</p>)}</div> : null}
+        {completion?.missing?.length ? <ul className="core-cast-missing">{completion.missing.map((item, index) => <li key={`${item.code}-${item.member_id || item.source_id || index}`}>{item.description}</li>)}</ul> : null}
+      </section>
+    );
+  }
 
   return (
     <section className="cocreate-section core-cast-editor" aria-label="核心角色确认">

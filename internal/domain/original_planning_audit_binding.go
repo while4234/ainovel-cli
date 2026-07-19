@@ -41,7 +41,7 @@ func StructureTopologySignature(volumes []VolumeOutline) string {
 // BindOriginalPlanningAudit captures the exact topology and scoped content
 // reviewed by an original-fiction audit. It never accepts or emits source-
 // novel fields.
-func BindOriginalPlanningAudit(audit *OriginalPlanningAudit, volumes []VolumeOutline) error {
+func BindOriginalPlanningAudit(audit *OriginalPlanningAudit, volumes []VolumeOutline, foundationSignatures ...string) error {
 	if audit == nil {
 		return fmt.Errorf("original planning audit is required")
 	}
@@ -66,6 +66,9 @@ func BindOriginalPlanningAudit(audit *OriginalPlanningAudit, volumes []VolumeOut
 	}
 	audit.StructureSignature = StructureTopologySignature(structure)
 	audit.ContentSignature = ContentSignature(payload)
+	if len(foundationSignatures) > 0 {
+		audit.FoundationSignature = strings.TrimSpace(foundationSignatures[0])
+	}
 	return nil
 }
 
@@ -163,11 +166,28 @@ func validateOriginalPlanningBindingStructure(scope string, volumes []VolumeOutl
 	return nil
 }
 
-func OriginalPlanningAuditCurrent(audit OriginalPlanningAudit, volumes []VolumeOutline) bool {
+func OriginalPlanningAuditCurrent(audit OriginalPlanningAudit, volumes []VolumeOutline, foundationSignature string) bool {
 	if audit.Verdict != "pass" {
 		return false
 	}
+	if strings.TrimSpace(audit.FoundationSignature) == "" {
+		return false
+	}
+	if audit.FoundationSignature != strings.TrimSpace(foundationSignature) {
+		return false
+	}
 	return OriginalPlanningAuditBindingCurrent(audit, volumes)
+}
+
+func OriginalPlanningAuditCurrentWithFoundation(audit OriginalPlanningAudit, volumes []VolumeOutline, foundation StoryFoundation, foundationSignature string) bool {
+	if OriginalPlanningAuditCurrent(audit, volumes, foundationSignature) {
+		return true
+	}
+	if audit.Verdict != "pass" || len(audit.FoundationEntityRefs) == 0 || strings.TrimSpace(audit.FoundationProjectionSignature) == "" || !OriginalPlanningAuditBindingCurrent(audit, volumes) {
+		return false
+	}
+	current, err := FoundationProjectionSignature(foundation, audit.FoundationEntityRefs)
+	return err == nil && current == audit.FoundationProjectionSignature
 }
 
 // OriginalPlanningAuditBindingCurrent reports whether the reviewed structure

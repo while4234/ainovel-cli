@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -505,6 +506,61 @@ func (h *Host) BuildAdaptationProposalVolumesContext(ctx context.Context, option
 	return adapt.BuildAdaptationProposalVolumesContext(ctx, h.adaptationDeps(), options)
 }
 
+func (h *Host) BuildAdaptationProposalVolumesForFoundationRevision(ctx context.Context, options adapt.ProposalOptions) (*adapt.ProposalStageResult, error) {
+	if err := h.admitFoundationAdaptationWork(); err != nil {
+		return nil, err
+	}
+	options.Brief = strings.TrimSpace(options.Brief)
+	if options.Brief == "" {
+		return nil, fmt.Errorf("adaptation brief is required")
+	}
+	return adapt.BuildAdaptationProposalVolumesContext(ctx, h.adaptationDeps(), options)
+}
+
+func (h *Host) BuildAdaptationProposalDetailsForFoundationRevision(ctx context.Context) (*domain.AdaptationPlan, error) {
+	if err := h.admitFoundationAdaptationWork(); err != nil {
+		return nil, err
+	}
+	return adapt.BuildAdaptationProposalDetailsContext(ctx, h.adaptationDeps(), adapt.ProposalDetailsOptions{})
+}
+
+func (h *Host) ConfirmAdaptationProposalForFoundationRevision() (*domain.AdaptationPlan, error) {
+	if err := h.admitFoundationAdaptationWork(); err != nil {
+		return nil, err
+	}
+	proposal, err := h.store.Adaptation.LoadProposal()
+	if err != nil || proposal == nil {
+		return nil, errors.Join(fmt.Errorf("adaptation proposal is required"), err)
+	}
+	if err := adapt.ValidateProposalOutlineUniqueness(*proposal); err != nil {
+		return nil, err
+	}
+	var confirmed *domain.AdaptationPlan
+	err = h.store.WithAdaptationConfirmationTransaction(func() error {
+		var confirmErr error
+		confirmed, confirmErr = adapt.ConfirmAdaptationProposal(context.Background(), h.adaptationDeps(), *proposal)
+		return confirmErr
+	})
+	return confirmed, err
+}
+
+func (h *Host) admitFoundationAdaptationWork() error {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return fmt.Errorf("host is closed")
+	}
+	if h.lifecycle == lifecycleRunning || h.cocreating {
+		h.mu.Unlock()
+		return fmt.Errorf("host is busy")
+	}
+	h.mu.Unlock()
+	if err := h.budget.Refuse(); err != nil {
+		return err
+	}
+	return RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true)
+}
+
 func (h *Host) ReviseAdaptationProposalContext(ctx context.Context, options adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error) {
 	release, err := h.beginNormalFlowMutation()
 	if err != nil {
@@ -687,6 +743,13 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 	return plan, nil
 }
 
+func (h *Host) GenerateAdaptationTargetFoundationContext(ctx context.Context, options adapt.TargetFoundationOptions) (*domain.AdaptationFoundationReview, error) {
+	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
+	return adapt.GenerateTargetFoundation(ctx, h.adaptationDeps(), options)
+}
+
 func (h *Host) beginHostStartingRun(ownership *normalFlowOwnership, cancel context.CancelFunc) (*hostStartingRun, error) {
 	startup := &hostStartingRun{host: h, cancel: cancel, ready: make(chan struct{})}
 	h.mu.Lock()
@@ -818,6 +881,64 @@ func (h *Host) adaptationDeps() adapt.Deps {
 // Resume 恢复模式：从 checkpoint + progress 生成 resume prompt 并启动。
 func (h *Host) Resume() (string, error) {
 	return h.resume(false)
+}
+
+// ResumeFoundationRevision starts only the router owned by the current
+// Foundation RevisionSession. It never acquires a normal-flow lease, and the
+// dispatcher revalidates the persisted session fence before every dispatch.
+func (h *Host) ResumeFoundationRevision() (string, error) {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return "", fmt.Errorf("host is closed")
+	}
+	if h.lifecycle == lifecycleRunning {
+		h.mu.Unlock()
+		return "", fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		h.mu.Unlock()
+		return "", fmt.Errorf("co-create is in progress")
+	}
+	h.mu.Unlock()
+	active, err := h.store.Revisions.Active()
+	if err != nil || active == nil || active.Mode != domain.RevisionModeFoundation || active.Stage != domain.RevisionStageCandidateGenerating {
+		if err != nil {
+			return "", fmt.Errorf("load active Foundation planning revision: %w", err)
+		}
+		return "", fmt.Errorf("active Foundation planning revision is required")
+	}
+	if err := h.store.RequireConfirmedFoundation(); err != nil {
+		return "", err
+	}
+	if h.coordinator != nil {
+		h.coordinator.WaitForIdle()
+	}
+	prompt, label, err := buildResumePrompt(h.store)
+	if err != nil {
+		return "", err
+	}
+	if label == "" {
+		label = "repairing planning after Foundation revision"
+		prompt = label
+	}
+	h.refreshWriterRestore()
+	h.observer.setAborting(false)
+	h.router.ResetRepeat()
+	h.router.Enable()
+	fence := storepkg.RevisionFence{Generation: active.Generation, SessionID: active.ID, Revision: active.Revision}
+	h.mu.Lock()
+	h.lifecycle = lifecycleRunning
+	h.mu.Unlock()
+	if err := h.coordinator.Prompt(storepkg.ContextWithRevisionFence(context.Background(), fence), prompt); err != nil {
+		h.mu.Lock()
+		h.lifecycle = lifecycleIdle
+		h.mu.Unlock()
+		return "", fmt.Errorf("resume Foundation revision: %w", err)
+	}
+	h.router.DispatchFollowUp()
+	go h.waitDone()
+	return label, nil
 }
 
 func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
@@ -1889,6 +2010,39 @@ func (h *Host) fillContextStatus(snap *UISnapshot) {
 
 // fillDetails 填充详情区:设定、角色、最近 commit/review/摘要。
 func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
+	if source, _ := h.store.Adaptation.LoadSourceFoundation(); source != nil {
+		snap.AdaptationSourceFoundation = source
+	}
+	if coreCast, _ := h.store.CoreCast.Load(); coreCast != nil && coreCast.Mode == domain.CoreCastModeAdaptation {
+		coreCastCopy := *coreCast
+		snap.AdaptationCoreCast = &coreCastCopy
+	}
+	if review, _ := h.store.Adaptation.LoadTargetFoundationReview(); review != nil {
+		snap.AdaptationFoundationReview = review
+		if target, err := h.store.Foundation.Load(); err == nil {
+			targetCopy := domain.CloneStoryFoundation(target)
+			snap.TargetFoundation = &targetCopy
+		}
+	}
+	if workflow, _ := h.store.Adaptation.LoadPlanningWorkflow(); workflow != nil {
+		snap.AdaptationPlanningWorkflow = workflow
+		if snap.AdaptationFoundationReview == nil && workflow.Stage == domain.AdaptationPlanningStageTargetFoundationGenerating && snap.AdaptationSourceFoundation != nil {
+			state := domain.AdaptationFoundationReviewGenerating
+			reason := ""
+			if progress != nil && (len(progress.CompletedChapters) > 0 || progress.TotalWordCount > 0) {
+				state = domain.AdaptationFoundationReviewReadonly
+				reason = "正文已经存在；本期只展示迁移状态，不回退或改写目标设定"
+			}
+			snap.AdaptationFoundationReview = &domain.AdaptationFoundationReview{
+				Version: domain.AdaptationFoundationReviewVersion, State: state,
+				ReadonlyReason: reason, BlockingReasons: []string{"legacy adaptation requires explicit target Foundation checkpoint"},
+			}
+			if target, err := h.store.Foundation.Load(); err == nil {
+				targetCopy := domain.CloneStoryFoundation(target)
+				snap.TargetFoundation = &targetCopy
+			}
+		}
+	}
 	if review, _ := h.store.Adaptation.LoadVolumeReview(); review != nil {
 		snap.AdaptationVolumeReview = review
 		snap.VolumeReviewSummary = adaptationVolumeReviewSummary(review)
@@ -1955,6 +2109,16 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 	}
 	if rules, _ := h.store.World.LoadWorldRules(); len(rules) > 0 {
 		snap.WorldRules = append([]domain.WorldRule(nil), rules...)
+	}
+	if foundation, err := h.store.Foundation.Load(); err == nil {
+		snap.PlannedRelationships = append([]domain.CharacterRelationship(nil), foundation.Relationships...)
+		snap.FoundationAuditSignature, _ = domain.FoundationAuditSignature(foundation)
+		if contract, loadErr := h.store.CoreCast.Load(); loadErr == nil && contract != nil {
+			for _, member := range contract.Members {
+				snap.CoreCharacterIDs = append(snap.CoreCharacterIDs, member.Character.ID)
+			}
+			snap.CoreCastPreserved = domain.ValidateFoundationPreservesCoreCast(foundation, *contract) == nil
+		}
 	}
 	if ledger, _ := h.store.Cast.Load(); len(ledger) > 0 {
 		snap.SupportingCount = len(ledger)

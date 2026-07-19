@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -70,6 +69,9 @@ type foundationMutationEpoch struct {
 
 type foundationProjectLifecycle struct {
 	projectMu sync.RWMutex
+	// reviewMu serializes a Foundation generation and its durable checkpoint
+	// across every Store instance opened for the same project.
+	reviewMu sync.Mutex
 	// Even epochs accept mutations. A rollback advances to an odd epoch before
 	// taking projectMu and advances again only after releasing it.
 	epoch atomic.Uint64
@@ -131,12 +133,13 @@ type foundationJournal struct {
 // FoundationStore owns one cross-section lock and one recoverable transaction
 // for the canonical foundation and every compatibility projection.
 type FoundationStore struct {
-	io            *IO
-	lifecycle     *foundationProjectLifecycle
-	projectMu     *sync.RWMutex
-	failpoint     func(string) error
-	lifecycleHook func(string)
-	coreCast      *CoreCastStore
+	io                   *IO
+	lifecycle            *foundationProjectLifecycle
+	projectMu            *sync.RWMutex
+	withSemanticMutation func(string, func() error) error
+	failpoint            func(string) error
+	lifecycleHook        func(string)
+	coreCast             *CoreCastStore
 }
 
 func newFoundationStore(io *IO) *FoundationStore {
@@ -202,6 +205,11 @@ func WithCloneReadyStoryFoundationSnapshot(dir string, copySnapshot func() error
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect source story foundation transaction: %w", err)
 	}
+	if runtime, err := NewFoundationRevisionStore(newIO(dir)).LoadRuntime(); err != nil {
+		return fmt.Errorf("inspect source Foundation revision before clone: %w", err)
+	} else if runtime != nil && runtime.Active() {
+		return fmt.Errorf("source project has an active Foundation revision %s; complete or cancel it before cloning", runtime.RevisionID)
+	}
 	if err := store.validateProjectionSetUnlocked(); err != nil {
 		return fmt.Errorf("source story foundation is not clone-ready: %w", err)
 	}
@@ -243,7 +251,32 @@ func (s *FoundationStore) validateLegacyProjectionSetUnlocked() error {
 // SaveCAS atomically replaces all foundation sections when expectedRevision
 // still matches. A read-only legacy aggregate has revision zero.
 func (s *FoundationStore) SaveCAS(candidate domain.StoryFoundation, expectedRevision int64) (domain.StoryFoundation, error) {
-	return s.saveCAS(candidate, expectedRevision, false)
+	if s.withSemanticMutation == nil {
+		return s.saveCAS(candidate, expectedRevision, false)
+	}
+	var saved domain.StoryFoundation
+	err := s.withSemanticMutation("save story foundation", func() error {
+		var err error
+		saved, err = s.saveCAS(candidate, expectedRevision, false)
+		return err
+	})
+	return saved, err
+}
+
+// SaveRevisionCAS is the Foundation-revision authority. It permits a reviewed
+// candidate to replace confirmed core fields while retaining the same
+// crash-recoverable canonical/projection journal used by ordinary saves.
+func (s *FoundationStore) SaveRevisionCAS(candidate domain.StoryFoundation, expectedRevision int64) (domain.StoryFoundation, error) {
+	if s.withSemanticMutation == nil {
+		return s.saveCAS(candidate, expectedRevision, true)
+	}
+	var saved domain.StoryFoundation
+	err := s.withSemanticMutation("publish reviewed foundation revision", func() error {
+		var err error
+		saved, err = s.saveCAS(candidate, expectedRevision, true)
+		return err
+	})
+	return saved, err
 }
 
 func (s *FoundationStore) saveCoreCastCAS(candidate domain.StoryFoundation, expectedRevision int64) (domain.StoryFoundation, error) {
@@ -271,17 +304,17 @@ func (s *FoundationStore) saveCAS(candidate domain.StoryFoundation, expectedRevi
 	return s.commitCandidateUnlocked(current, candidate, canonicalExists, coreCastAuthorized)
 }
 
-func (s *FoundationStore) UpdatePremise(content string) error {
+func (s *FoundationStore) updatePremise(content string) error {
 	_, err := s.updateSection(func(value *domain.StoryFoundation) { value.Premise = content })
 	return err
 }
 
-func (s *FoundationStore) UpdateCharacters(characters []domain.Character) error {
+func (s *FoundationStore) updateCharacters(characters []domain.Character) error {
 	_, err := s.updateSection(func(value *domain.StoryFoundation) { value.Characters = characters })
 	return err
 }
 
-func (s *FoundationStore) UpdateRelationships(relationships []domain.CharacterRelationship, reviewed bool) error {
+func (s *FoundationStore) updateRelationships(relationships []domain.CharacterRelationship, reviewed bool) error {
 	_, err := s.updateSection(func(value *domain.StoryFoundation) {
 		value.Relationships = relationships
 		value.RelationshipsReviewed = reviewed
@@ -289,7 +322,7 @@ func (s *FoundationStore) UpdateRelationships(relationships []domain.CharacterRe
 	return err
 }
 
-func (s *FoundationStore) UpdateWorldRules(rules []domain.WorldRule) error {
+func (s *FoundationStore) updateWorldRules(rules []domain.WorldRule) error {
 	_, err := s.updateSection(func(value *domain.StoryFoundation) { value.WorldRules = rules })
 	return err
 }
@@ -343,7 +376,7 @@ func (s *FoundationStore) commitCandidateUnlocked(current, candidate domain.Stor
 		normalized.Revision = current.Revision + 1
 		normalized.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	if canonicalExists && !semanticChanged && foundationsEqualForStorage(current, normalized) {
+	if canonicalExists && !semanticChanged && foundationsEqualForStorage(current, normalized) && !s.canonicalFoundationNeedsMigrationUnlocked() {
 		if err := s.verifyCommittedUnlocked(current); err == nil {
 			return current, nil
 		}
@@ -352,6 +385,22 @@ func (s *FoundationStore) commitCandidateUnlocked(current, candidate domain.Stor
 		return domain.StoryFoundation{}, err
 	}
 	return normalized, nil
+}
+
+func (s *FoundationStore) canonicalFoundationNeedsMigrationUnlocked() bool {
+	var persisted domain.StoryFoundation
+	if err := s.io.ReadJSON(foundationCanonicalFile, &persisted); err != nil {
+		return true
+	}
+	if persisted.SchemaVersion != domain.StoryFoundationSchemaVersion {
+		return true
+	}
+	for _, relationship := range persisted.Relationships {
+		if relationship.Direction == "" || relationship.Direction == domain.RelationshipDirectionMutual {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *FoundationStore) validateCoreCastAuthorityUnlocked(candidate domain.StoryFoundation) error {
@@ -366,18 +415,8 @@ func (s *FoundationStore) validateCoreCastAuthorityUnlocked(candidate domain.Sto
 		contract.PublishReceipt.Status != "published" || contract.PublishReceipt.ContentSignature != contract.ContentSignature {
 		return nil
 	}
-	expected := domain.CloneStoryFoundation(candidate)
-	expected.Characters = domain.ContractCharacters(*contract)
-	expected.Relationships = append([]domain.CharacterRelationship{}, contract.PlannedRelationships...)
-	expected.RelationshipsReviewed = true
-	expected, err = domain.NormalizeStoryFoundation(expected)
-	if err != nil {
-		return fmt.Errorf("normalize confirmed core cast projection: %w", err)
-	}
-	if !reflect.DeepEqual(candidate.Characters, expected.Characters) ||
-		!reflect.DeepEqual(candidate.Relationships, expected.Relationships) ||
-		candidate.RelationshipsReviewed != expected.RelationshipsReviewed {
-		return fmt.Errorf("confirmed core cast is authoritative for story foundation characters and relationships")
+	if err := domain.ValidateFoundationPreservesCoreCast(candidate, *contract); err != nil {
+		return fmt.Errorf("confirmed core cast is authoritative for story foundation characters and relationships: %w", err)
 	}
 	return nil
 }
@@ -765,8 +804,10 @@ func renderPlannedRelationships(relations []domain.CharacterRelationship) string
 	builder.WriteString("# 计划人物关系\n\n")
 	for _, relation := range relations {
 		arrow := "→"
-		if relation.Direction == domain.RelationshipDirectionMutual {
+		if relation.Direction == domain.RelationshipDirectionBidirectional || relation.Direction == domain.RelationshipDirectionMutual {
 			arrow = "↔"
+		} else if relation.Direction == domain.RelationshipDirectionUndirected {
+			arrow = "—"
 		}
 		fmt.Fprintf(&builder, "- **%s %s %s**：%s", relation.SourceCharacterID, arrow, relation.TargetCharacterID, relation.Type)
 		if relation.Label != "" {

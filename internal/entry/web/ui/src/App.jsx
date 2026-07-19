@@ -48,6 +48,7 @@ import {
   cancelCoCreate,
   commitCoCreate,
   confirmCoreCast,
+	confirmCoCreateFoundation,
   confirmCoCreatePlanning,
   confirmAdaptationProposal,
   confirmAdaptationProposalDetails,
@@ -106,6 +107,7 @@ import {
   reviseChapter,
   reviseChapterOutline,
   reviseCoCreatePlanning,
+	reviseCoCreateFoundation,
   reviseCoCreate,
   reviseContinuationOutlines,
   reviseContinuationProposal,
@@ -188,6 +190,7 @@ import { nextSSEReconnectDelay, parseSSEMessage } from './sse.js';
 import { cacheHitLabel, usageConfidence, usageCoverage } from './usage-ui.js';
 import { UsageObservabilityTable } from './usage-observability.jsx';
 import { CoreCastEditor } from './components/CoreCastEditor.jsx';
+import { FoundationCenter } from './foundation/FoundationCenter.jsx';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 export const PROJECT_OPEN_TIMEOUT_MS = 90_000;
@@ -777,9 +780,15 @@ export function restoreProjectWorkbenchSnapshot(previous = createWorkbenchState(
   };
 }
 
-export function isProjectScopedResponseCurrent(projectId, activeProjectId) {
+export function isProjectScopedResponseCurrent(projectId, activeProjectId, requestEpoch, currentEpoch) {
   const expectedProjectId = String(projectId || '').trim();
-  return Boolean(expectedProjectId) && expectedProjectId === String(activeProjectId || '').trim();
+  if (!expectedProjectId || expectedProjectId !== String(activeProjectId || '').trim()) {
+    return false;
+  }
+  if (requestEpoch === undefined || currentEpoch === undefined) {
+    return true;
+  }
+  return requestEpoch === currentEpoch;
 }
 
 export function resumeNoOpMessage(response = {}) {
@@ -869,6 +878,7 @@ export default function App() {
   const projectOpenAbortRef = useRef(null);
   const activeProjectIdRef = useRef('');
   const planningReviewHydrationProjectRef = useRef('');
+	const planningMutationSeqRef = useRef(0);
   const outlineRevisionHydrationRef = useRef('');
 
   const snapshot = workbench.snapshot;
@@ -3714,8 +3724,17 @@ export default function App() {
     }
     setBusy(true);
     setCoCreate((previous) => ({ ...previous, status: 'running', error: '', startMessage: '' }));
+    const projectId = activeProject.id;
+    const projectEpoch = projectOpenSeqRef.current;
+    const requestSeq = ++planningMutationSeqRef.current;
+    const requestIsCurrent = () => isCurrentProject(projectId) &&
+      isProjectScopedResponseCurrent(projectId, activeProjectIdRef.current, projectEpoch, projectOpenSeqRef.current) &&
+      requestSeq === planningMutationSeqRef.current;
     try {
-      const data = await confirmCoCreatePlanning(activeProject.id);
+      const data = coCreatePlanningReview.kind === 'foundation'
+        ? await confirmCoCreateFoundation(projectId, coCreatePlanningReview.foundationRevision, coCreatePlanningReview.foundationAuditSignature)
+        : await confirmCoCreatePlanning(projectId);
+      if (!requestIsCurrent()) return;
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setCoCreate((previous) => ({
         ...previous,
@@ -3727,14 +3746,14 @@ export default function App() {
       }));
     } catch (err) {
       try {
-        const snapshotData = await getSnapshot(activeProject.id);
-        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
+        const snapshotData = await getSnapshot(projectId);
+        if (requestIsCurrent()) setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
       } catch {
         // Keep the confirmation error visible if snapshot refresh also fails.
       }
-      setCoCreate((previous) => ({ ...previous, status: 'error', error: err.message }));
+      if (requestIsCurrent()) setCoCreate((previous) => ({ ...previous, status: 'error', error: err.message }));
     } finally {
-      setBusy(false);
+      if (requestIsCurrent()) setBusy(false);
     }
   };
 
@@ -3742,7 +3761,10 @@ export default function App() {
     if (!activeProject?.id || !coCreatePlanningReview.pending || busy || projectRunning) {
       return;
     }
-    const payload = buildCoCreatePlanningRevisionPayload(planningRevision, coCreatePlanningReview);
+    const foundationFeedback = String(planningRevision?.feedback || '').trim();
+    const payload = coCreatePlanningReview.kind === 'foundation'
+      ? { ok: Boolean(foundationFeedback), error: '请输入 Foundation 修改意见', body: { feedback: foundationFeedback } }
+      : buildCoCreatePlanningRevisionPayload(planningRevision, coCreatePlanningReview);
     if (!payload.ok) {
       setPlanningRevision((previous) => ({
         ...previous,
@@ -3753,6 +3775,12 @@ export default function App() {
       return;
     }
     setBusy(true);
+    const projectId = activeProject.id;
+    const projectEpoch = projectOpenSeqRef.current;
+    const requestSeq = ++planningMutationSeqRef.current;
+    const requestIsCurrent = () => isCurrentProject(projectId) &&
+      isProjectScopedResponseCurrent(projectId, activeProjectIdRef.current, projectEpoch, projectOpenSeqRef.current) &&
+      requestSeq === planningMutationSeqRef.current;
     setPlanningRevision((previous) => ({
       ...previous,
       status: 'running',
@@ -3760,7 +3788,10 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await reviseCoCreatePlanning(activeProject.id, payload.body);
+      const data = coCreatePlanningReview.kind === 'foundation'
+        ? await reviseCoCreateFoundation(projectId, foundationFeedback)
+        : await reviseCoCreatePlanning(projectId, payload.body);
+      if (!requestIsCurrent()) return;
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setPlanningRevision({
         feedback: '',
@@ -3780,19 +3811,19 @@ export default function App() {
       }));
     } catch (err) {
       try {
-        const snapshotData = await getSnapshot(activeProject.id);
-        setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
+        const snapshotData = await getSnapshot(projectId);
+        if (requestIsCurrent()) setWorkbench((previous) => ({ ...previous, snapshot: snapshotData.snapshot || previous.snapshot }));
       } catch {
         // Keep the revision error visible if snapshot refresh also fails.
       }
-      setPlanningRevision((previous) => ({
+      if (requestIsCurrent()) setPlanningRevision((previous) => ({
         ...previous,
         status: 'error',
         message: '',
         error: err.message
       }));
     } finally {
-      setBusy(false);
+      if (requestIsCurrent()) setBusy(false);
     }
   };
 
@@ -4696,6 +4727,16 @@ export default function App() {
           <div className="toolbar-actions">
             <StatusPill status={connection} />
             <button
+              aria-pressed={centerView === 'foundation'}
+              className={`tool-button ${centerView === 'foundation' ? 'accent' : ''}`}
+              disabled={!activeProject || projectOpen.status === 'loading'}
+              onClick={() => { setCenterView('foundation'); setToolDrawerOpen(false); }}
+              type="button"
+            >
+              <Database size={16} />
+              设定中心
+            </button>
+            <button
               className="tool-button"
               disabled={!activeProject || projectBusy}
               onClick={() => openProject(activeProject)}
@@ -4780,6 +4821,22 @@ export default function App() {
             if (sideView === 'manuscript') setSideView('status');
           }}
         />
+
+        {centerView === 'foundation' ? <FoundationCenter
+          key={activeProject?.id || 'no-project-foundation'}
+          projectId={activeProject?.id || ''}
+          onClose={() => setCenterView('writing')}
+          onOpenCoreCast={() => {
+            setCenterView('writing');
+            setSideView('cocreate');
+            setToolDrawerOpen(true);
+          }}
+          onOpenReview={(mode) => {
+            setCenterView('writing');
+            setSideView(mode === 'adaptation' ? 'adapt' : 'cocreate');
+            setToolDrawerOpen(true);
+          }}
+        /> : null}
 
         {error ? <div className="error-banner">{error}</div> : null}
 
@@ -6338,6 +6395,62 @@ function CoCreatePanel({
     const confirmAction = coCreatePlanningConfirmAction(planningReview);
     const revisionStatus = planningRevision?.status || 'idle';
     const reviewStatus = planningReview.collecting ? 'running' : planningReview.pending ? 'ready' : 'idle';
+	if (planningReview.kind === 'foundation') {
+		return (
+			<div className="side-content proposal-side-panel foundation-review-panel">
+				{coCreate.error ? <div className="error-banner compact">{coCreate.error}</div> : null}
+				{planningRevision?.error ? <div className="error-banner compact">{planningRevision.error}</div> : null}
+				<section className="simulation-section planning-review-card">
+					<div className="section-title"><BookOpen size={17} /><span>{planningReview.adaptation ? '改编双层 Foundation 检查点' : 'StoryFoundation 检查点'}</span></div>
+					<div className="proposal-side-summary">
+						<strong>{planningReview.collecting ? '生成中' : '待确认'}</strong>
+						<span>Revision {planningReview.foundationRevision || '—'} / Generation {planningReview.foundationGeneration || 1}</span>
+						<span>CoreCast 保持校验：{planningReview.coreCastPreserved ? '通过' : '未通过'}</span>
+					</div>
+					{planningReview.premise ? <p>{planningReview.premise}</p> : <p className="muted">正在补全 premise…</p>}
+					<small>Audit {planningReview.foundationAuditSignature ? `${planningReview.foundationAuditSignature.slice(0, 12)}…` : '待生成'}</small>
+				</section>
+				{planningReview.adaptation ? <section className="simulation-section source-foundation-readonly">
+					<div className="section-title"><Database size={17} /><span>SourceFoundation（只读证据）</span></div>
+					<p>{planningReview.sourcePremise || '暂无来源 premise 摘要'}</p>
+					<small>Source {planningReview.sourceSignature ? `${planningReview.sourceSignature.slice(0, 12)}…` : '待校验'} · 不会随目标修订写回</small>
+					<strong>原著规则</strong>
+					<ul>{planningReview.sourceWorldRules.length ? planningReview.sourceWorldRules.map((rule) => <li key={textValue(rule, 'ID', 'id', 'Rule', 'rule')}>{textValue(rule, 'Rule', 'rule')}</li>) : <li>暂无</li>}</ul>
+					<strong>原著角色去向 / 目标映射</strong>
+					<ul>{planningReview.sourceDispositions.length ? planningReview.sourceDispositions.map((disposition) => {
+						const sourceID = textValue(disposition, 'SourceCharacterID', 'sourceCharacterId', 'source_character_id');
+						const action = textValue(disposition, 'Action', 'action');
+						const targets = arrayValue(disposition, 'TargetCharacterIDs', 'targetCharacterIds', 'target_character_ids').map(String);
+						return <li key={`${sourceID}:${action}`}>{sourceID} → {action}{targets.length ? ` → ${targets.join('、')}` : ''}</li>;
+					}) : <li>暂无</li>}</ul>
+				</section> : null}
+				<section className="simulation-section">
+					<div className="section-title"><CircleDot size={17} /><span>角色</span></div>
+					<strong>核心角色</strong>
+					<ul>{planningReview.coreCharacters.map((character) => <li key={textValue(character, 'ID', 'id')}>{textValue(character, 'Name', 'name')}：{textValue(character, 'Role', 'role')}</li>)}</ul>
+					<strong>普通配角</strong>
+					<ul>{planningReview.supportingCharacters.length ? planningReview.supportingCharacters.map((character) => <li key={textValue(character, 'ID', 'id')}>{textValue(character, 'Name', 'name')}：{textValue(character, 'Role', 'role')}</li>) : <li>暂无</li>}</ul>
+				</section>
+				<section className="simulation-section">
+					<div className="section-title"><ListRestart size={17} /><span>计划关系</span></div>
+					<ul>{planningReview.plannedRelationships.length ? planningReview.plannedRelationships.map((relationship) => <li key={textValue(relationship, 'ID', 'id')}>{textValue(relationship, 'SourceCharacterID', 'source_character_id')} → {textValue(relationship, 'TargetCharacterID', 'target_character_id')} / {textValue(relationship, 'Type', 'type')}</li>) : <li>暂无</li>}</ul>
+				</section>
+				<section className="simulation-section">
+					<div className="section-title"><Database size={17} /><span>世界规则</span></div>
+					<strong>Hard（不可违反）</strong>
+					<ul>{planningReview.hardWorldRules.map((rule) => <li key={textValue(rule, 'ID', 'id')}>{textValue(rule, 'Rule', 'rule')}</li>)}</ul>
+					<strong>Soft</strong>
+					<ul>{planningReview.softWorldRules.length ? planningReview.softWorldRules.map((rule) => <li key={textValue(rule, 'ID', 'id')}>{textValue(rule, 'Rule', 'rule')}</li>) : <li>暂无</li>}</ul>
+				</section>
+				{planningReview.pending ? <section className="simulation-section proposal-revision-section">
+					<label>修改意见<textarea value={planningRevision?.feedback || ''} onChange={(event) => setPlanningRevision((previous) => ({ ...previous, feedback: event.target.value, error: '' }))} /></label>
+					<button className="tool-button full-width" disabled={busy || !String(planningRevision?.feedback || '').trim()} onClick={() => runWithWindowScrollPreserved(onRevisePlanning)} type="button"><Pencil size={16} />按意见重新生成</button>
+					<button className="tool-button accent full-width" disabled={!canConfirmPlanning || !planningReview.coreCastPreserved || planningReview.readonly} onClick={() => runWithWindowScrollPreserved(onConfirmPlanning)} type="button"><Check size={16} />确认当前 Target Foundation</button>
+				</section> : <div className="workflow-status running"><strong>生成中</strong><span>Architect 正在补全完整 Foundation；任何正式 outline 均已在服务端封锁。</span></div>}
+				{planningReview.readonly ? <div className="error-banner compact">只读：{planningReview.readonlyReason}</div> : null}
+			</div>
+		);
+	}
     return (
       <div className="side-content proposal-side-panel">
         {coCreate.error ? <div className="error-banner compact">{coCreate.error}</div> : null}
@@ -10768,25 +10881,56 @@ export function getCreativeBlueprint(snapshot) {
 }
 
 export function getCoCreatePlanningReview(snapshot) {
-  const review = objectValue(snapshot, 'PlanningReview', 'planningReview', 'planning_review');
-  const status = textValue(review, 'Status', 'status');
+	const adaptationReview = objectValue(snapshot, 'AdaptationFoundationReview', 'adaptationFoundationReview', 'adaptation_foundation_review');
+	const adaptationState = textValue(adaptationReview, 'State', 'state');
+	const adaptationActive = ['pending', 'generating', 'readonly'].includes(adaptationState);
+	const review = adaptationActive ? adaptationReview : objectValue(snapshot, 'PlanningReview', 'planningReview', 'planning_review');
+	const status = textValue(review, 'Status', 'status');
   const chapters = getSnapshotOutlineRows(snapshot);
   const volumes = normalizeCoCreatePlanningVolumes(
     arrayValue(snapshot, 'LayeredOutline', 'layeredOutline', 'layered_outline'),
     chapters
   );
-  const kind = textValue(review, 'Kind', 'kind');
-  const pending = status === 'pending';
-  const collecting = status === 'collecting';
-  return {
-    loaded: Boolean(review),
-    active: pending || collecting,
+	const kind = adaptationActive ? 'foundation' : textValue(review, 'Kind', 'kind');
+	const pending = adaptationActive ? adaptationState === 'pending' : status === 'pending';
+	const collecting = adaptationActive ? adaptationState === 'generating' : status === 'collecting';
+	const targetFoundation = objectValue(snapshot, 'TargetFoundation', 'targetFoundation', 'target_foundation');
+	const sourceFoundation = objectValue(snapshot, 'AdaptationSourceFoundation', 'adaptationSourceFoundation', 'adaptation_source_foundation', 'SourceFoundation', 'sourceFoundation', 'source_foundation');
+	const adaptationCoreCast = objectValue(snapshot, 'AdaptationCoreCast', 'adaptationCoreCast', 'adaptation_core_cast');
+	const adaptationBinding = objectValue(adaptationReview, 'Binding', 'binding');
+	const coreCharacterIDs = arrayValue(snapshot, 'CoreCharacterIDs', 'coreCharacterIds', 'core_character_ids').map(String);
+	const coreCharacterSet = new Set(coreCharacterIDs);
+	const characters = adaptationActive ? arrayValue(targetFoundation, 'Characters', 'characters') : arrayValue(snapshot, 'CharacterDetails', 'characterDetails', 'character_details');
+	return {
+		loaded: Boolean(review),
+		active: adaptationActive || pending || collecting,
+		adaptation: adaptationActive,
+		readonly: adaptationState === 'readonly',
+		readonlyReason: textValue(adaptationReview, 'ReadonlyReason', 'readonlyReason', 'readonly_reason'),
     pending,
     collecting,
     revising: collecting,
     status,
     kind,
     kindLabel: coCreatePlanningKindLabel(kind),
+	foundationStatus: textValue(review, 'FoundationStatus', 'foundationStatus', 'foundation_status'),
+		foundationRevision: numberValue(review, 'FoundationRevision', 'foundationRevision', 'foundation_revision'),
+		foundationAuditSignature: textValue(review, 'FoundationAuditSignature', 'foundationAuditSignature', 'foundation_audit_signature') || textValue(adaptationBinding, 'TargetFoundationAuditSignature', 'targetFoundationAuditSignature', 'target_foundation_audit_signature'),
+		coreCastSignature: textValue(review, 'CoreCastSignature', 'coreCastSignature', 'core_cast_signature') || textValue(adaptationBinding, 'CoreCastSignature', 'coreCastSignature', 'core_cast_signature'),
+		sourceSignature: textValue(adaptationBinding, 'SourceSignature', 'sourceSignature', 'source_signature'),
+	foundationGeneration: numberValue(review, 'FoundationGeneration', 'foundationGeneration', 'foundation_generation'),
+	foundationFeedback: textValue(review, 'FoundationFeedback', 'foundationFeedback', 'foundation_feedback'),
+	foundationConfirmedAt: textValue(review, 'FoundationConfirmedAt', 'foundationConfirmedAt', 'foundation_confirmed_at'),
+		premise: adaptationActive ? textValue(targetFoundation, 'Premise', 'premise') : textValue(snapshot, 'PremiseFull', 'premiseFull', 'premise_full', 'Premise', 'premise'),
+		sourcePremise: textValue(sourceFoundation, 'Premise', 'premise'),
+		sourceWorldRules: arrayValue(sourceFoundation, 'WorldRules', 'worldRules', 'world_rules'),
+		sourceDispositions: arrayValue(adaptationCoreCast, 'SourceDispositions', 'sourceDispositions', 'source_dispositions'),
+	coreCharacters: characters.filter((character) => coreCharacterSet.has(textValue(character, 'ID', 'id'))),
+	supportingCharacters: characters.filter((character) => !coreCharacterSet.has(textValue(character, 'ID', 'id'))),
+		plannedRelationships: adaptationActive ? arrayValue(targetFoundation, 'Relationships', 'relationships') : arrayValue(snapshot, 'PlannedRelationships', 'plannedRelationships', 'planned_relationships'),
+		hardWorldRules: (adaptationActive ? arrayValue(targetFoundation, 'WorldRules', 'worldRules', 'world_rules') : arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules')).filter((rule) => textValue(rule, 'Strength', 'strength') === 'hard'),
+		softWorldRules: (adaptationActive ? arrayValue(targetFoundation, 'WorldRules', 'worldRules', 'world_rules') : arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules')).filter((rule) => textValue(rule, 'Strength', 'strength') === 'soft'),
+		coreCastPreserved: adaptationActive || Boolean(valueByKey(snapshot, 'CoreCastPreserved', 'coreCastPreserved', 'core_cast_preserved')),
     brief: textValue(review, 'Brief', 'brief'),
     targetTotalWords: numberValue(review, 'TargetTotalWords', 'targetTotalWords', 'target_total_words'),
     createdAt: textValue(review, 'CreatedAt', 'createdAt', 'created_at'),
@@ -10828,7 +10972,9 @@ function normalizeCoCreatePlanningVolumes(volumes, chapters = []) {
 }
 
 function coCreatePlanningKindLabel(kind = '') {
-  switch (String(kind || '').trim()) {
+	switch (String(kind || '').trim()) {
+	case 'foundation':
+		return 'StoryFoundation 待审核';
     case 'volume_split':
       return '分卷规划待审核';
     case 'chapter_outline':

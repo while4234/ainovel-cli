@@ -10,9 +10,10 @@ import (
 
 // CharacterStore 管理角色档案和状态快照。
 type CharacterStore struct {
-	io         *IO
-	outline    *OutlineStore // 只读依赖，用于快照遍历
-	foundation *FoundationStore
+	io                            *IO
+	outline                       *OutlineStore // 只读依赖，用于快照遍历
+	foundation                    *FoundationStore
+	withFoundationGenerationGuard func(string, func() error) error
 }
 
 func NewCharacterStore(io *IO, outline *OutlineStore) *CharacterStore {
@@ -22,7 +23,10 @@ func NewCharacterStore(io *IO, outline *OutlineStore) *CharacterStore {
 // Save 同时保存 characters.json 和 characters.md（原子写入）。
 func (s *CharacterStore) Save(chars []domain.Character) error {
 	if s.foundation != nil {
-		return s.foundation.UpdateCharacters(chars)
+		if s.withFoundationGenerationGuard != nil {
+			return s.withFoundationGenerationGuard("save foundation characters", func() error { return s.foundation.updateCharacters(chars) })
+		}
+		return s.foundation.updateCharacters(chars)
 	}
 	return s.io.WithWriteLock(func() error {
 		if err := s.io.WriteJSONUnlocked("characters.json", chars); err != nil {

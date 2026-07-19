@@ -3,6 +3,8 @@ version: 2
 
 before:
   hooks:
+    - npm --prefix internal/entry/web/ui ci
+    - npm --prefix internal/entry/web/ui run build
     - go mod tidy
 
 builds:
@@ -67,6 +69,7 @@ archives:
     files:
       - README.md
       - LICENSE
+      - THIRD_PARTY_LICENSES.md
       - scripts/install-authority-windows.ps1
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_

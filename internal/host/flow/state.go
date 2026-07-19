@@ -23,6 +23,7 @@ func LoadState(store *storepkg.Store) State {
 		s.RevisionActive = true
 	} else if active != nil {
 		s.RevisionActive = true
+		s.RevisionMode = active.Mode
 		if active.Route != nil {
 			route := *active.Route
 			s.RevisionRoute = &route

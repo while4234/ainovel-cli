@@ -43,6 +43,7 @@ const (
 	PlanningReviewKindBlueprint      = "blueprint"
 	PlanningReviewKindVolumeSplit    = "volume_split"
 	PlanningReviewKindChapterOutline = "chapter_outline"
+	PlanningReviewKindFoundation     = "foundation"
 )
 
 // Progress 进度追踪，持久化到 meta/progress.json。
@@ -263,13 +264,22 @@ type RunMeta struct {
 // PlanningReview is the normal co-create planning gate. It lets Web show the
 // saved blueprint for user review before the writer starts drafting.
 type PlanningReview struct {
-	Status           string `json:"status"`
-	Kind             string `json:"kind,omitempty"`
-	Brief            string `json:"brief,omitempty"`
-	StartPrompt      string `json:"start_prompt,omitempty"`
-	TargetTotalWords int    `json:"target_total_words,omitempty"`
-	CreatedAt        string `json:"created_at,omitempty"`
-	UpdatedAt        string `json:"updated_at,omitempty"`
+	Status                   string   `json:"status"`
+	Kind                     string   `json:"kind,omitempty"`
+	Brief                    string   `json:"brief,omitempty"`
+	StartPrompt              string   `json:"start_prompt,omitempty"`
+	TargetTotalWords         int      `json:"target_total_words,omitempty"`
+	FoundationStatus         string   `json:"foundation_status,omitempty"`
+	FoundationRevision       int64    `json:"foundation_revision,omitempty"`
+	FoundationAuditSignature string   `json:"foundation_audit_signature,omitempty"`
+	CoreCastSignature        string   `json:"core_cast_signature,omitempty"`
+	FoundationGeneration     int64    `json:"foundation_generation,omitempty"`
+	FoundationBaseRevision   int64    `json:"foundation_base_revision,omitempty"`
+	FoundationSections       []string `json:"foundation_sections,omitempty"`
+	FoundationFeedback       string   `json:"foundation_feedback,omitempty"`
+	FoundationConfirmedAt    string   `json:"foundation_confirmed_at,omitempty"`
+	CreatedAt                string   `json:"created_at,omitempty"`
+	UpdatedAt                string   `json:"updated_at,omitempty"`
 }
 
 // OriginalPlanningAudit records an automated quality gate for a normal-original
@@ -291,10 +301,18 @@ type OriginalPlanningAudit struct {
 	Issues      []OriginalPlanningAuditIssue     `json:"issues,omitempty"`
 	// StructureSignature binds every pass to the current stable-ID topology.
 	// ContentSignature binds it to the exact outline content in its audit scope.
-	StructureSignature string `json:"structure_signature,omitempty"`
-	ContentSignature   string `json:"content_signature,omitempty"`
-	Attempt            int    `json:"attempt"`
-	UpdatedAt          string `json:"updated_at"`
+	StructureSignature  string `json:"structure_signature,omitempty"`
+	ContentSignature    string `json:"content_signature,omitempty"`
+	FoundationRevision  int64  `json:"foundation_revision,omitempty"`
+	FoundationSignature string `json:"foundation_signature,omitempty"`
+	// FoundationEntityRefs and FoundationProjectionSignature preserve an
+	// unaffected audit only when structured dependency evidence proves that
+	// the exact Foundation projection it used is unchanged. The historical
+	// whole-Foundation signature is never rewritten.
+	FoundationEntityRefs          []string `json:"foundation_entity_refs,omitempty"`
+	FoundationProjectionSignature string   `json:"foundation_projection_signature,omitempty"`
+	Attempt                       int      `json:"attempt"`
+	UpdatedAt                     string   `json:"updated_at"`
 }
 
 type OriginalPlanningAuditDimension struct {

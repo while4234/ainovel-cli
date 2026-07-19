@@ -482,6 +482,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectStart(w, r, id)
 	case "pause":
 		s.handleProjectPause(w, r, id)
+	case "foundation", "foundation/preview", "foundation/apply", "foundation/retry":
+		s.handleProjectFoundation(w, r, id, action)
 	case "rollback/preview":
 		s.handleProjectRollbackPreview(w, r, id)
 	case "rollback":
@@ -650,6 +652,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectCoreCast(w, r, id, "confirm")
 	case "cocreate/core-cast/unconfirm":
 		s.handleProjectCoreCast(w, r, id, "unconfirm")
+	case "cocreate/foundation/confirm":
+		s.handleProjectFoundationReview(w, r, id, "confirm")
+	case "cocreate/foundation/revise":
+		s.handleProjectFoundationReview(w, r, id, "revise")
 	case "cocreate/planning/revise":
 		s.handleProjectCoCreatePlanningRevise(w, r, id)
 	case "cocreate/revision/preview":

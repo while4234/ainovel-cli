@@ -148,6 +148,38 @@ export function getProjectResumeSchedule(projectId) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/resume-schedule`);
 }
 
+export function getProjectFoundation(projectId, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation`, options);
+}
+
+export function previewProjectFoundation(projectId, expectedBaseRevision, expectedBaseAuditSignature, candidate, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/preview`, {
+    ...options,
+    method: 'POST',
+    body: JSON.stringify({
+      expected_base_revision: expectedBaseRevision,
+      expected_base_audit_signature: expectedBaseAuditSignature,
+      candidate
+    })
+  });
+}
+
+export function applyProjectFoundation(projectId, previewId, idempotencyKey = newIdempotencyKey('foundation-apply'), options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/apply`, {
+    ...options,
+    method: 'POST',
+    body: JSON.stringify({ preview_id: previewId, idempotency_key: idempotencyKey })
+  });
+}
+
+export function retryProjectFoundation(projectId, idempotencyKey = newIdempotencyKey('foundation-retry'), options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/retry`, {
+    ...options,
+    method: 'POST',
+    body: JSON.stringify({ idempotency_key: idempotencyKey })
+  });
+}
+
 export function setProjectResumeSchedule(projectId, enabled) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/resume-schedule`, {
     method: 'PUT',
@@ -724,6 +756,20 @@ export function confirmCoCreatePlanning(projectId) {
     method: 'POST',
     body: JSON.stringify({})
   });
+}
+
+export function confirmCoCreateFoundation(projectId, expectedRevision, auditSignature) {
+	return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/foundation/confirm`, {
+		method: 'POST',
+		body: JSON.stringify({ expected_revision: expectedRevision, audit_signature: auditSignature })
+	});
+}
+
+export function reviseCoCreateFoundation(projectId, feedback) {
+	return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/foundation/revise`, {
+		method: 'POST',
+		body: JSON.stringify({ feedback })
+	});
 }
 
 export function reviseCoCreatePlanning(projectId, payload = {}) {
