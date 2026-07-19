@@ -36,6 +36,50 @@ func TestStoryFoundationLegacyJSONCompatibilityAndStableIDs(t *testing.T) {
 	}
 }
 
+func TestStoryFoundationV1MutualMigrationIsIdempotentAndSignatureStable(t *testing.T) {
+	legacy := StoryFoundation{
+		SchemaVersion: legacyStoryFoundationSchemaVersion,
+		Characters:    []Character{{ID: "lin", Name: "Lin"}, {ID: "mara", Name: "Mara"}},
+		Relationships: []CharacterRelationship{{
+			ID: "bond", SourceCharacterID: "lin", TargetCharacterID: "mara",
+			Type: RelationshipTypeAlly, Direction: RelationshipDirectionMutual,
+		}},
+	}
+	migrated, err := NormalizeStoryFoundation(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.SchemaVersion != StoryFoundationSchemaVersion || migrated.Relationships[0].Direction != RelationshipDirectionBidirectional {
+		t.Fatalf("migration = %+v", migrated)
+	}
+	again, err := NormalizeStoryFoundation(migrated)
+	if err != nil || again.Relationships[0].Direction != RelationshipDirectionBidirectional {
+		t.Fatalf("second migration = %+v, %v", again, err)
+	}
+	legacySignature, err := FoundationContentSignature(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentSignature, err := FoundationContentSignature(migrated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentSignature != legacySignature {
+		t.Fatalf("legacy semantic signature drifted: %s != %s", legacySignature, currentSignature)
+	}
+}
+
+func TestStoryFoundationDirectionsAreDistinctControlledSemantics(t *testing.T) {
+	base := StoryFoundation{Characters: []Character{{ID: "lin", Name: "Lin"}, {ID: "mara", Name: "Mara"}}}
+	for _, direction := range []RelationshipDirection{RelationshipDirectionDirected, RelationshipDirectionBidirectional, RelationshipDirectionUndirected} {
+		candidate := CloneStoryFoundation(base)
+		candidate.Relationships = []CharacterRelationship{{ID: string(direction), SourceCharacterID: "lin", TargetCharacterID: "mara", Type: RelationshipTypeAlly, Direction: direction}}
+		if _, err := NormalizeStoryFoundation(candidate); err != nil {
+			t.Fatalf("direction %q rejected: %v", direction, err)
+		}
+	}
+}
+
 func TestStoryFoundationNormalizationRejectsAmbiguousIdentityAndRelationships(t *testing.T) {
 	tests := []struct {
 		name  string

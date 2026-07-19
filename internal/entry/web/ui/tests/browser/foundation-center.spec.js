@@ -108,3 +108,67 @@ test('项目切换 fence 丢弃项目 A 的迟到响应，移动端按钮可达'
     expect(await page.locator('body').evaluate((body) => body.scrollWidth <= body.clientWidth + 1)).toBe(true);
   }
 });
+
+test('计划关系图谱使用 StoryFoundation 稳定 ID、筛选/布局隔离并让 connect 只进入 preview 草稿', async ({ page }, testInfo) => {
+  await page.request.post('/api/test/foundation/scenario?value=graph');
+  await page.reload();
+  await page.getByRole('tab', { name: '计划关系' }).click();
+  if (testInfo.project.name === 'mobile') {
+    await expect(page.getByRole('button', { name: '关系列表' })).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('button', { name: '关系图谱' }).click();
+  }
+  const canvas = page.getByLabel('StoryFoundation 计划关系图谱');
+  await expect(canvas).toHaveAttribute('data-source', 'StoryFoundation.relationships');
+  await expect(canvas.locator('.react-flow__node')).toHaveCount(3);
+  await expect(canvas).toContainText('引路 · 单向 · 生效');
+  await expect(canvas).toContainText('rival · 无向 · 计划');
+  await expect(page.getByLabel('图例')).toContainText('边标签同时显示类型、方向和状态');
+
+  const factionFilter = page.locator('.foundation-graph-filters label').filter({ hasText: '阵营' }).locator('select');
+  await factionFilter.selectOption('旧王庭');
+  await expect(canvas.locator('.react-flow__node')).toHaveCount(1);
+  await factionFilter.selectOption('');
+  const heroNode = canvas.locator('.react-flow__node[data-id="hero"]');
+  await heroNode.click();
+  await page.getByRole('button', { name: '聚焦所选角色一跳邻居' }).click();
+  await expect(canvas.locator('.react-flow__node')).toHaveCount(2);
+  await page.getByRole('button', { name: '取消一跳聚焦' }).click();
+
+  if (testInfo.project.name === 'desktop') {
+    await expect(canvas.locator('.react-flow__minimap')).toBeVisible();
+    const box = await heroNode.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 35, box.y + box.height / 2 + 20, { steps: 4 });
+    await page.mouse.up();
+    const stored = await page.evaluate(() => {
+      const key = Object.keys(localStorage).find((item) => item.startsWith('foundation-graph-layout:foundation-project-a:'));
+      return { key, value: key ? localStorage.getItem(key) : null };
+    });
+    expect(stored.value).toContain('node_coordinates');
+    expect(stored.key).not.toContain('audit-3');
+    expect(stored.value).not.toContain('audit-3');
+    expect(stored.value).not.toContain('项目 A 的目标故事');
+    expect(stored.value).not.toContain('林舟');
+  } else {
+    await expect(page.getByRole('button', { name: '返回关系列表' })).toBeInViewport();
+    expect(await page.locator('body').evaluate((body) => body.scrollWidth <= body.clientWidth + 1)).toBe(true);
+    return;
+  }
+
+  const allySource = canvas.locator('.react-flow__node[data-id="ally"] .react-flow__handle.source');
+  const heroTarget = canvas.locator('.react-flow__node[data-id="hero"] .react-flow__handle.target');
+  const sourceBox = await allySource.boundingBox();
+  const targetBox = await heroTarget.boundingBox();
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.getByText('有修改', { exact: true })).toBeVisible();
+  const previewRequest = page.waitForRequest((request) => request.url().endsWith('/foundation/preview'));
+  await page.getByRole('button', { name: '预览差异与影响' }).click();
+  const previewBody = (await previewRequest).postDataJSON();
+  expect(previewBody.candidate.relationships).toHaveLength(3);
+  expect(previewBody.candidate.relationships.at(-1)).toEqual(expect.objectContaining({ source_character_id: 'ally', target_character_id: 'hero', direction: 'directed' }));
+  expect(previewBody).not.toHaveProperty('relationship_state');
+});

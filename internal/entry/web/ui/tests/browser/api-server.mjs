@@ -35,9 +35,15 @@ const readJSON = (request) => new Promise((resolve, reject) => {
 	request.on('end', () => { try { resolve(JSON.parse(raw || '{}')); } catch (error) { reject(error); } });
 });
 const targetFoundation = (projectID = 'foundation-project-a') => ({
-	schema_version: 1, revision: foundationRevision, premise: projectID.endsWith('-b') ? '项目 B 的目标故事' : '项目 A 的目标故事',
-	characters: [{ id: 'hero', name: '林舟', aliases: ['阿舟'], role: '主角', description: '守护城市', arc: '学会信任', traits: ['坚定'], tier: 'core', faction: '守夜人', goal: '阻止灾难', motivation: '责任', conflict: '不信任盟友', voice: '简洁', constraints: ['不背叛'], notes: '' }],
-	relationships: [], relationships_reviewed: true,
+	schema_version: 2, revision: foundationRevision, premise: projectID.endsWith('-b') ? '项目 B 的目标故事' : '项目 A 的目标故事',
+	characters: [{ id: 'hero', name: '林舟', aliases: ['阿舟'], role: '主角', description: '守护城市', arc: '学会信任', traits: ['坚定'], tier: 'core', faction: '守夜人', goal: '阻止灾难', motivation: '责任', conflict: '不信任盟友', voice: '简洁', constraints: ['不背叛'], notes: '' }, ...(foundationScenario === 'graph' ? [
+		{ id: 'ally', name: '闻溪', aliases: [], role: '盟友', description: '', arc: '', traits: [], tier: 'major', faction: '守夜人', goal: '', motivation: '', conflict: '', voice: '', constraints: [], notes: '' },
+		{ id: 'rival', name: '贺沉', aliases: [], role: '对手', description: '', arc: '', traits: [], tier: 'support', faction: '旧王庭', goal: '', motivation: '', conflict: '', voice: '', constraints: [], notes: '' }
+	] : [])],
+	relationships: foundationScenario === 'graph' ? [
+		{ id: 'rel-directed', source_character_id: 'hero', target_character_id: 'ally', type: 'mentor', label: '引路', direction: 'directed', status: 'active', tags: [], constraints: [] },
+		{ id: 'rel-undirected', source_character_id: 'ally', target_character_id: 'rival', type: 'rival', label: '', direction: 'undirected', status: 'planned', tags: [], constraints: [] }
+	] : [], relationships_reviewed: true,
 	world_rules: [{ id: 'rule-1', title: '能力代价', category: 'magic', rule: '每次施法都会失去记忆', boundary: '不可无代价复活', strength: 'hard', priority: 10, tags: ['代价'] }]
 });
 const sourceFoundation = { source_signature: 'source-signature-1234567890', source_chapter_count: 20, premise: '原著世界里旧王归来', characters: [{ id: 'source-hero', name: '原著林舟' }], world_rules: [{ id: 'source-rule', title: '原著规则', category: 'magic', rule: '魔法源自血脉', boundary: '血脉不可伪造', strength: 'hard' }] };

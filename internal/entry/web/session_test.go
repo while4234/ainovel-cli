@@ -1515,8 +1515,8 @@ func TestProjectSessionResumeDoesNotRestartStaleAnalysisAfterProposalRollback(t 
 	defer session.Close()
 
 	label, err := session.Resume()
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "core cast gate binding does not exist") {
+		t.Fatalf("legacy rollback without CoreCast was not blocked: label=%q err=%v", label, err)
 	}
 	if fake.adaptAnalyzeCalls != 0 {
 		t.Fatalf("adaptation analysis calls = %d, want 0", fake.adaptAnalyzeCalls)
@@ -1524,8 +1524,8 @@ func TestProjectSessionResumeDoesNotRestartStaleAnalysisAfterProposalRollback(t 
 	if fake.resumeCalls != 0 {
 		t.Fatalf("host resume calls = %d, want 0", fake.resumeCalls)
 	}
-	if !strings.Contains(label, "用户") {
-		t.Fatalf("label = %q, want proposal review wait label", label)
+	if label != "" {
+		t.Fatalf("blocked legacy rollback label = %q, want empty", label)
 	}
 }
 

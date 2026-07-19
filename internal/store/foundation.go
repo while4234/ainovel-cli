@@ -376,7 +376,7 @@ func (s *FoundationStore) commitCandidateUnlocked(current, candidate domain.Stor
 		normalized.Revision = current.Revision + 1
 		normalized.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	if canonicalExists && !semanticChanged && foundationsEqualForStorage(current, normalized) {
+	if canonicalExists && !semanticChanged && foundationsEqualForStorage(current, normalized) && !s.canonicalFoundationNeedsMigrationUnlocked() {
 		if err := s.verifyCommittedUnlocked(current); err == nil {
 			return current, nil
 		}
@@ -385,6 +385,22 @@ func (s *FoundationStore) commitCandidateUnlocked(current, candidate domain.Stor
 		return domain.StoryFoundation{}, err
 	}
 	return normalized, nil
+}
+
+func (s *FoundationStore) canonicalFoundationNeedsMigrationUnlocked() bool {
+	var persisted domain.StoryFoundation
+	if err := s.io.ReadJSON(foundationCanonicalFile, &persisted); err != nil {
+		return true
+	}
+	if persisted.SchemaVersion != domain.StoryFoundationSchemaVersion {
+		return true
+	}
+	for _, relationship := range persisted.Relationships {
+		if relationship.Direction == "" || relationship.Direction == domain.RelationshipDirectionMutual {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *FoundationStore) validateCoreCastAuthorityUnlocked(candidate domain.StoryFoundation) error {
@@ -788,8 +804,10 @@ func renderPlannedRelationships(relations []domain.CharacterRelationship) string
 	builder.WriteString("# 计划人物关系\n\n")
 	for _, relation := range relations {
 		arrow := "→"
-		if relation.Direction == domain.RelationshipDirectionMutual {
+		if relation.Direction == domain.RelationshipDirectionBidirectional || relation.Direction == domain.RelationshipDirectionMutual {
 			arrow = "↔"
+		} else if relation.Direction == domain.RelationshipDirectionUndirected {
+			arrow = "—"
 		}
 		fmt.Fprintf(&builder, "- **%s %s %s**：%s", relation.SourceCharacterID, arrow, relation.TargetCharacterID, relation.Type)
 		if relation.Label != "" {

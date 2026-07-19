@@ -189,6 +189,10 @@ func (s *AdaptationStore) ResetGenerated() error {
 			if err != nil {
 				return err
 			}
+			err = s.io.RemoveFileUnlocked(adaptationPlanningWorkflowFile)
+			if err != nil {
+				return err
+			}
 			return os.RemoveAll(s.io.path(adaptationCheckDir))
 		}); err != nil {
 			return err

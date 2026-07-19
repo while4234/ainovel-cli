@@ -1,5 +1,5 @@
 const relationshipTypes = ['ally', 'rival', 'family', 'romantic', 'mentor', 'professional', 'other'];
-const relationshipDirections = ['directed', 'mutual'];
+const relationshipDirections = ['directed', 'bidirectional', 'undirected'];
 const relationshipStatuses = ['planned', 'active', 'strained', 'broken', 'resolved'];
 const ruleStrengths = ['hard', 'soft'];
 
@@ -77,7 +77,7 @@ export function normalizeRelationship(value = {}) {
     target_character_id: String(value.target_character_id || ''),
     type: relationshipTypes.includes(value.type) ? value.type : 'other',
     label: String(value.label || ''),
-    direction: relationshipDirections.includes(value.direction) ? value.direction : 'mutual',
+		direction: normalizeRelationshipDirection(value.direction),
     status: relationshipStatuses.includes(value.status) ? value.status : 'planned',
     description: String(value.description || ''),
     since: String(value.since || ''),
@@ -202,5 +202,10 @@ function clientID(kind) {
 }
 
 function array(value) {
-  return Array.isArray(value) ? value : [];
+	return Array.isArray(value) ? value : [];
+}
+
+function normalizeRelationshipDirection(value) {
+	if (value === 'mutual' || !value) return 'bidirectional';
+	return relationshipDirections.includes(value) ? value : 'bidirectional';
 }
