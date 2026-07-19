@@ -211,6 +211,51 @@ func PersistFoundationPreservingCast(ctx context.Context, st *store.Store, scale
 	return persistFoundation(ctx, st, scale, fr, true)
 }
 
+// PersistAdaptationOutline materializes only the confirmed proposal's outline,
+// compass, and progress.  The already-approved target StoryFoundation is read
+// as an input and is never rewritten during proposal confirmation.
+func PersistAdaptationOutline(_ context.Context, st *store.Store, scale domain.PlanningTier, fr *FoundationResult) error {
+	if st == nil || fr == nil {
+		return fmt.Errorf("store and adaptation outline are required")
+	}
+	if err := st.RunMeta.SetPlanningTier(scale); err != nil {
+		return fmt.Errorf("save planning tier: %w", err)
+	}
+	if err := st.Outline.SaveLayeredOutline(fr.Volumes); err != nil {
+		return fmt.Errorf("save layered outline: %w", err)
+	}
+	if err := st.Outline.SaveOutline(domain.FlattenOutline(fr.Volumes)); err != nil {
+		return fmt.Errorf("save flattened outline: %w", err)
+	}
+	if err := st.Progress.UpdatePhase(domain.PhaseOutline); err != nil {
+		return fmt.Errorf("set outline phase: %w", err)
+	}
+	if err := st.Progress.SetTotalChapters(domain.TotalChapters(fr.Volumes)); err != nil {
+		return fmt.Errorf("set total chapters: %w", err)
+	}
+	if err := st.Progress.SetLayered(true); err != nil {
+		return fmt.Errorf("set layered planning: %w", err)
+	}
+	if len(fr.Volumes) > 0 && len(fr.Volumes[0].Arcs) > 0 {
+		if err := st.Progress.UpdateVolumeArc(fr.Volumes[0].Index, fr.Volumes[0].Arcs[0].Index); err != nil {
+			return fmt.Errorf("set current volume and arc: %w", err)
+		}
+	}
+	if _, err := st.Checkpoints.AppendArtifact(domain.GlobalScope(), "layered_outline", "layered_outline.json"); err != nil {
+		return fmt.Errorf("checkpoint layered outline: %w", err)
+	}
+	if fr.Compass == nil {
+		return fmt.Errorf("adaptation compass is required")
+	}
+	if err := st.Outline.SaveCompass(*fr.Compass); err != nil {
+		return fmt.Errorf("save compass: %w", err)
+	}
+	if _, err := st.Checkpoints.AppendArtifact(domain.GlobalScope(), "compass", "meta/compass.json"); err != nil {
+		return fmt.Errorf("checkpoint compass: %w", err)
+	}
+	return nil
+}
+
 func persistFoundation(ctx context.Context, st *store.Store, scale domain.PlanningTier, fr *FoundationResult, preserveCast bool) error {
 	if fr == nil {
 		return fmt.Errorf("nil foundation result")

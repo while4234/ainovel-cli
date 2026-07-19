@@ -139,6 +139,12 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 	if workflow != nil {
 		state := autoResumeState{Revision: workflow.Revision}
 		switch workflow.Stage {
+		case domain.AdaptationPlanningStageTargetFoundationGenerating:
+			state.Disposition, state.Reason = AutoResumeWaitUser, "adaptation_target_foundation_generation_interrupted"
+			return makeAutoResumeDecision(state, "目标 StoryFoundation 生成中断，请重试当前共创提交或修订"), nil
+		case domain.AdaptationPlanningStageFoundationReviewPending:
+			state.Disposition, state.Reason = AutoResumeWaitUser, "adaptation_foundation_review_pending"
+			return makeAutoResumeDecision(state, "目标 StoryFoundation 等待用户审核"), nil
 		case domain.AdaptationPlanningStageSkeletonGenerating:
 			action, actionErr := pendingAdaptationProposalResumeAction(st)
 			if actionErr != nil {

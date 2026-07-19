@@ -687,6 +687,13 @@ func (h *Host) ConfirmAdaptationProposal() (*domain.AdaptationPlan, error) {
 	return plan, nil
 }
 
+func (h *Host) GenerateAdaptationTargetFoundationContext(ctx context.Context, options adapt.TargetFoundationOptions) (*domain.AdaptationFoundationReview, error) {
+	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
+		return nil, err
+	}
+	return adapt.GenerateTargetFoundation(ctx, h.adaptationDeps(), options)
+}
+
 func (h *Host) beginHostStartingRun(ownership *normalFlowOwnership, cancel context.CancelFunc) (*hostStartingRun, error) {
 	startup := &hostStartingRun{host: h, cancel: cancel, ready: make(chan struct{})}
 	h.mu.Lock()
@@ -1888,6 +1895,39 @@ func (h *Host) fillContextStatus(snap *UISnapshot) {
 
 // fillDetails 填充详情区:设定、角色、最近 commit/review/摘要。
 func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
+	if source, _ := h.store.Adaptation.LoadSourceFoundation(); source != nil {
+		snap.AdaptationSourceFoundation = source
+	}
+	if coreCast, _ := h.store.CoreCast.Load(); coreCast != nil && coreCast.Mode == domain.CoreCastModeAdaptation {
+		coreCastCopy := *coreCast
+		snap.AdaptationCoreCast = &coreCastCopy
+	}
+	if review, _ := h.store.Adaptation.LoadTargetFoundationReview(); review != nil {
+		snap.AdaptationFoundationReview = review
+		if target, err := h.store.Foundation.Load(); err == nil {
+			targetCopy := domain.CloneStoryFoundation(target)
+			snap.TargetFoundation = &targetCopy
+		}
+	}
+	if workflow, _ := h.store.Adaptation.LoadPlanningWorkflow(); workflow != nil {
+		snap.AdaptationPlanningWorkflow = workflow
+		if snap.AdaptationFoundationReview == nil && workflow.Stage == domain.AdaptationPlanningStageTargetFoundationGenerating && snap.AdaptationSourceFoundation != nil {
+			state := domain.AdaptationFoundationReviewGenerating
+			reason := ""
+			if progress != nil && (len(progress.CompletedChapters) > 0 || progress.TotalWordCount > 0) {
+				state = domain.AdaptationFoundationReviewReadonly
+				reason = "正文已经存在；本期只展示迁移状态，不回退或改写目标设定"
+			}
+			snap.AdaptationFoundationReview = &domain.AdaptationFoundationReview{
+				Version: domain.AdaptationFoundationReviewVersion, State: state,
+				ReadonlyReason: reason, BlockingReasons: []string{"legacy adaptation requires explicit target Foundation checkpoint"},
+			}
+			if target, err := h.store.Foundation.Load(); err == nil {
+				targetCopy := domain.CloneStoryFoundation(target)
+				snap.TargetFoundation = &targetCopy
+			}
+		}
+	}
 	if review, _ := h.store.Adaptation.LoadVolumeReview(); review != nil {
 		snap.AdaptationVolumeReview = review
 		snap.VolumeReviewSummary = adaptationVolumeReviewSummary(review)

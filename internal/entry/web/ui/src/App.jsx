@@ -6374,7 +6374,7 @@ function CoCreatePanel({
 				{coCreate.error ? <div className="error-banner compact">{coCreate.error}</div> : null}
 				{planningRevision?.error ? <div className="error-banner compact">{planningRevision.error}</div> : null}
 				<section className="simulation-section planning-review-card">
-					<div className="section-title"><BookOpen size={17} /><span>StoryFoundation 检查点</span></div>
+					<div className="section-title"><BookOpen size={17} /><span>{planningReview.adaptation ? '改编双层 Foundation 检查点' : 'StoryFoundation 检查点'}</span></div>
 					<div className="proposal-side-summary">
 						<strong>{planningReview.collecting ? '生成中' : '待确认'}</strong>
 						<span>Revision {planningReview.foundationRevision || '—'} / Generation {planningReview.foundationGeneration || 1}</span>
@@ -6383,6 +6383,20 @@ function CoCreatePanel({
 					{planningReview.premise ? <p>{planningReview.premise}</p> : <p className="muted">正在补全 premise…</p>}
 					<small>Audit {planningReview.foundationAuditSignature ? `${planningReview.foundationAuditSignature.slice(0, 12)}…` : '待生成'}</small>
 				</section>
+				{planningReview.adaptation ? <section className="simulation-section source-foundation-readonly">
+					<div className="section-title"><Database size={17} /><span>SourceFoundation（只读证据）</span></div>
+					<p>{planningReview.sourcePremise || '暂无来源 premise 摘要'}</p>
+					<small>Source {planningReview.sourceSignature ? `${planningReview.sourceSignature.slice(0, 12)}…` : '待校验'} · 不会随目标修订写回</small>
+					<strong>原著规则</strong>
+					<ul>{planningReview.sourceWorldRules.length ? planningReview.sourceWorldRules.map((rule) => <li key={textValue(rule, 'ID', 'id', 'Rule', 'rule')}>{textValue(rule, 'Rule', 'rule')}</li>) : <li>暂无</li>}</ul>
+					<strong>原著角色去向 / 目标映射</strong>
+					<ul>{planningReview.sourceDispositions.length ? planningReview.sourceDispositions.map((disposition) => {
+						const sourceID = textValue(disposition, 'SourceCharacterID', 'sourceCharacterId', 'source_character_id');
+						const action = textValue(disposition, 'Action', 'action');
+						const targets = arrayValue(disposition, 'TargetCharacterIDs', 'targetCharacterIds', 'target_character_ids').map(String);
+						return <li key={`${sourceID}:${action}`}>{sourceID} → {action}{targets.length ? ` → ${targets.join('、')}` : ''}</li>;
+					}) : <li>暂无</li>}</ul>
+				</section> : null}
 				<section className="simulation-section">
 					<div className="section-title"><CircleDot size={17} /><span>角色</span></div>
 					<strong>核心角色</strong>
@@ -6404,8 +6418,9 @@ function CoCreatePanel({
 				{planningReview.pending ? <section className="simulation-section proposal-revision-section">
 					<label>修改意见<textarea value={planningRevision?.feedback || ''} onChange={(event) => setPlanningRevision((previous) => ({ ...previous, feedback: event.target.value, error: '' }))} /></label>
 					<button className="tool-button full-width" disabled={busy || !String(planningRevision?.feedback || '').trim()} onClick={() => runWithWindowScrollPreserved(onRevisePlanning)} type="button"><Pencil size={16} />按意见重新生成</button>
-					<button className="tool-button accent full-width" disabled={!canConfirmPlanning || !planningReview.coreCastPreserved} onClick={() => runWithWindowScrollPreserved(onConfirmPlanning)} type="button"><Check size={16} />确认当前 Foundation</button>
+					<button className="tool-button accent full-width" disabled={!canConfirmPlanning || !planningReview.coreCastPreserved || planningReview.readonly} onClick={() => runWithWindowScrollPreserved(onConfirmPlanning)} type="button"><Check size={16} />确认当前 Target Foundation</button>
 				</section> : <div className="workflow-status running"><strong>生成中</strong><span>Architect 正在补全完整 Foundation；任何正式 outline 均已在服务端封锁。</span></div>}
+				{planningReview.readonly ? <div className="error-banner compact">只读：{planningReview.readonlyReason}</div> : null}
 			</div>
 		);
 	}
@@ -10839,22 +10854,32 @@ export function getCreativeBlueprint(snapshot) {
 }
 
 export function getCoCreatePlanningReview(snapshot) {
-  const review = objectValue(snapshot, 'PlanningReview', 'planningReview', 'planning_review');
-  const status = textValue(review, 'Status', 'status');
+	const adaptationReview = objectValue(snapshot, 'AdaptationFoundationReview', 'adaptationFoundationReview', 'adaptation_foundation_review');
+	const adaptationState = textValue(adaptationReview, 'State', 'state');
+	const adaptationActive = ['pending', 'generating', 'readonly'].includes(adaptationState);
+	const review = adaptationActive ? adaptationReview : objectValue(snapshot, 'PlanningReview', 'planningReview', 'planning_review');
+	const status = textValue(review, 'Status', 'status');
   const chapters = getSnapshotOutlineRows(snapshot);
   const volumes = normalizeCoCreatePlanningVolumes(
     arrayValue(snapshot, 'LayeredOutline', 'layeredOutline', 'layered_outline'),
     chapters
   );
-  const kind = textValue(review, 'Kind', 'kind');
-  const pending = status === 'pending';
-  const collecting = status === 'collecting';
+	const kind = adaptationActive ? 'foundation' : textValue(review, 'Kind', 'kind');
+	const pending = adaptationActive ? adaptationState === 'pending' : status === 'pending';
+	const collecting = adaptationActive ? adaptationState === 'generating' : status === 'collecting';
+	const targetFoundation = objectValue(snapshot, 'TargetFoundation', 'targetFoundation', 'target_foundation');
+	const sourceFoundation = objectValue(snapshot, 'AdaptationSourceFoundation', 'adaptationSourceFoundation', 'adaptation_source_foundation', 'SourceFoundation', 'sourceFoundation', 'source_foundation');
+	const adaptationCoreCast = objectValue(snapshot, 'AdaptationCoreCast', 'adaptationCoreCast', 'adaptation_core_cast');
+	const adaptationBinding = objectValue(adaptationReview, 'Binding', 'binding');
 	const coreCharacterIDs = arrayValue(snapshot, 'CoreCharacterIDs', 'coreCharacterIds', 'core_character_ids').map(String);
 	const coreCharacterSet = new Set(coreCharacterIDs);
-	const characters = arrayValue(snapshot, 'CharacterDetails', 'characterDetails', 'character_details');
-  return {
-    loaded: Boolean(review),
-    active: pending || collecting,
+	const characters = adaptationActive ? arrayValue(targetFoundation, 'Characters', 'characters') : arrayValue(snapshot, 'CharacterDetails', 'characterDetails', 'character_details');
+	return {
+		loaded: Boolean(review),
+		active: adaptationActive || pending || collecting,
+		adaptation: adaptationActive,
+		readonly: adaptationState === 'readonly',
+		readonlyReason: textValue(adaptationReview, 'ReadonlyReason', 'readonlyReason', 'readonly_reason'),
     pending,
     collecting,
     revising: collecting,
@@ -10862,19 +10887,23 @@ export function getCoCreatePlanningReview(snapshot) {
     kind,
     kindLabel: coCreatePlanningKindLabel(kind),
 	foundationStatus: textValue(review, 'FoundationStatus', 'foundationStatus', 'foundation_status'),
-	foundationRevision: numberValue(review, 'FoundationRevision', 'foundationRevision', 'foundation_revision'),
-	foundationAuditSignature: textValue(review, 'FoundationAuditSignature', 'foundationAuditSignature', 'foundation_audit_signature'),
-	coreCastSignature: textValue(review, 'CoreCastSignature', 'coreCastSignature', 'core_cast_signature'),
+		foundationRevision: numberValue(review, 'FoundationRevision', 'foundationRevision', 'foundation_revision'),
+		foundationAuditSignature: textValue(review, 'FoundationAuditSignature', 'foundationAuditSignature', 'foundation_audit_signature') || textValue(adaptationBinding, 'TargetFoundationAuditSignature', 'targetFoundationAuditSignature', 'target_foundation_audit_signature'),
+		coreCastSignature: textValue(review, 'CoreCastSignature', 'coreCastSignature', 'core_cast_signature') || textValue(adaptationBinding, 'CoreCastSignature', 'coreCastSignature', 'core_cast_signature'),
+		sourceSignature: textValue(adaptationBinding, 'SourceSignature', 'sourceSignature', 'source_signature'),
 	foundationGeneration: numberValue(review, 'FoundationGeneration', 'foundationGeneration', 'foundation_generation'),
 	foundationFeedback: textValue(review, 'FoundationFeedback', 'foundationFeedback', 'foundation_feedback'),
 	foundationConfirmedAt: textValue(review, 'FoundationConfirmedAt', 'foundationConfirmedAt', 'foundation_confirmed_at'),
-	premise: textValue(snapshot, 'PremiseFull', 'premiseFull', 'premise_full', 'Premise', 'premise'),
+		premise: adaptationActive ? textValue(targetFoundation, 'Premise', 'premise') : textValue(snapshot, 'PremiseFull', 'premiseFull', 'premise_full', 'Premise', 'premise'),
+		sourcePremise: textValue(sourceFoundation, 'Premise', 'premise'),
+		sourceWorldRules: arrayValue(sourceFoundation, 'WorldRules', 'worldRules', 'world_rules'),
+		sourceDispositions: arrayValue(adaptationCoreCast, 'SourceDispositions', 'sourceDispositions', 'source_dispositions'),
 	coreCharacters: characters.filter((character) => coreCharacterSet.has(textValue(character, 'ID', 'id'))),
 	supportingCharacters: characters.filter((character) => !coreCharacterSet.has(textValue(character, 'ID', 'id'))),
-	plannedRelationships: arrayValue(snapshot, 'PlannedRelationships', 'plannedRelationships', 'planned_relationships'),
-	hardWorldRules: arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules').filter((rule) => textValue(rule, 'Strength', 'strength') === 'hard'),
-	softWorldRules: arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules').filter((rule) => textValue(rule, 'Strength', 'strength') === 'soft'),
-	coreCastPreserved: Boolean(valueByKey(snapshot, 'CoreCastPreserved', 'coreCastPreserved', 'core_cast_preserved')),
+		plannedRelationships: adaptationActive ? arrayValue(targetFoundation, 'Relationships', 'relationships') : arrayValue(snapshot, 'PlannedRelationships', 'plannedRelationships', 'planned_relationships'),
+		hardWorldRules: (adaptationActive ? arrayValue(targetFoundation, 'WorldRules', 'worldRules', 'world_rules') : arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules')).filter((rule) => textValue(rule, 'Strength', 'strength') === 'hard'),
+		softWorldRules: (adaptationActive ? arrayValue(targetFoundation, 'WorldRules', 'worldRules', 'world_rules') : arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules')).filter((rule) => textValue(rule, 'Strength', 'strength') === 'soft'),
+		coreCastPreserved: adaptationActive || Boolean(valueByKey(snapshot, 'CoreCastPreserved', 'coreCastPreserved', 'core_cast_preserved')),
     brief: textValue(review, 'Brief', 'brief'),
     targetTotalWords: numberValue(review, 'TargetTotalWords', 'targetTotalWords', 'target_total_words'),
     createdAt: textValue(review, 'CreatedAt', 'createdAt', 'created_at'),

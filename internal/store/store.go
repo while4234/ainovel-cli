@@ -51,7 +51,8 @@ type Store struct {
 	Foundation             *FoundationStore
 	CoreCast               *CoreCastStore
 
-	crossMu sync.Mutex // 保护跨域原子操作
+	crossMu                  sync.Mutex // 保护跨域原子操作
+	adaptationConfirmationMu sync.Mutex
 }
 
 // NewStore 创建状态管理器，dir 为小说输出根目录。

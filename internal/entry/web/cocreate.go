@@ -210,12 +210,14 @@ type webCoreCastConfirmRequest struct {
 }
 
 type webFoundationConfirmRequest struct {
-	ExpectedRevision int64  `json:"expected_revision"`
-	AuditSignature   string `json:"audit_signature"`
+	ExpectedRevision int64           `json:"expected_revision"`
+	AuditSignature   string          `json:"audit_signature"`
+	SourceFoundation json.RawMessage `json:"source_foundation,omitempty"`
 }
 
 type webFoundationReviseRequest struct {
-	Feedback string `json:"feedback"`
+	Feedback         string          `json:"feedback"`
+	SourceFoundation json.RawMessage `json:"source_foundation,omitempty"`
 }
 
 type webCoCreateSession struct {
@@ -473,11 +475,19 @@ func (s *Server) handleProjectFoundationReview(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusBadRequest, "invalid foundation confirmation: "+err.Error())
 			return
 		}
+		if len(req.SourceFoundation) > 0 && string(req.SourceFoundation) != "null" {
+			writeError(w, http.StatusUnprocessableEntity, "source_foundation is read-only and cannot be submitted")
+			return
+		}
 		label, err = session.ConfirmCoCreateFoundation(req.ExpectedRevision, req.AuditSignature)
 	case "revise":
 		var req webFoundationReviseRequest
 		if err := decodeJSONBody(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid foundation revision: "+err.Error())
+			return
+		}
+		if len(req.SourceFoundation) > 0 && string(req.SourceFoundation) != "null" {
+			writeError(w, http.StatusUnprocessableEntity, "source_foundation is read-only and cannot be submitted")
 			return
 		}
 		label, err = session.ReviseCoCreateFoundation(req.Feedback)
@@ -497,6 +507,16 @@ func (s *Server) handleProjectFoundationReview(w http.ResponseWriter, r *http.Re
 func writeFoundationReviewError(w http.ResponseWriter, err error) {
 	status := http.StatusConflict
 	code := storepkg.FoundationReviewErrorStage
+	var adaptationErr *storepkg.AdaptationFoundationReviewError
+	if errors.As(err, &adaptationErr) {
+		if adaptationErr.Code == storepkg.AdaptationFoundationErrorValidation || adaptationErr.Code == storepkg.AdaptationFoundationErrorReadonly {
+			status = http.StatusUnprocessableEntity
+		}
+		writeJSON(w, status, map[string]any{"error": map[string]any{
+			"code": adaptationErr.Code, "message": err.Error(), "latest": adaptationErr.Review,
+		}})
+		return
+	}
 	var reviewErr *storepkg.FoundationReviewError
 	if errors.As(err, &reviewErr) {
 		code = reviewErr.Code

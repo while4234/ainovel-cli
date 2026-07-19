@@ -104,7 +104,7 @@ type Deps struct {
 	PromptTokenCounter                             promptcompile.TokenCounter
 	ModelName                                      string
 	ModelForStage                                  func(string) imp.LLMChat
-	ConfirmationFailpoint                         func(string) error
+	ConfirmationFailpoint                          func(string) error
 }
 
 func (d Deps) foundationMergeBatchRunes() int {
@@ -992,6 +992,9 @@ func prepareProposalPlannerInputs(ctx context.Context, deps Deps, opts ProposalO
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if _, err := deps.Store.RequireConfirmedAdaptationFoundation(); err != nil {
+		return opts, nil, nil, nil, fmt.Errorf("adaptation target foundation gate: %w", err)
+	}
 	opts.Brief = strings.TrimSpace(opts.Brief)
 	if opts.Brief == "" {
 		return opts, nil, nil, nil, fmt.Errorf("adaptation brief is required")
@@ -1046,6 +1049,9 @@ func BuildAdaptationProposalContext(ctx context.Context, deps Deps, opts Proposa
 	if !domain.AdaptationOutlineQualityPassed(proposal) {
 		domain.MarkAdaptationOutlineQualityPassed(&proposal)
 	}
+	if err := bindAdaptationPlanFoundation(deps, &proposal); err != nil {
+		return nil, err
+	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编提案已生成，正在保存：%d 章", len(proposal.Chapters)), nil)
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation proposal: %w", err)
@@ -1078,6 +1084,9 @@ func BuildAdaptationProposalVolumesContext(ctx context.Context, deps Deps, opts 
 		return nil, fmt.Errorf("build %s adaptation volume review: %w", opts.Granularity, err)
 	}
 	review := volumeReviewFromSkeleton(opts, manifest, skeleton)
+	if err := bindAdaptationVolumeFoundation(deps, &review); err != nil {
+		return nil, err
+	}
 	if err := validateAdaptationVolumeReview(review, manifest); err != nil {
 		return nil, fmt.Errorf("validate adaptation volume review: %w", err)
 	}
@@ -1125,6 +1134,9 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 	if deps.Store == nil {
 		return nil, fmt.Errorf("store is required")
 	}
+	if _, err := deps.Store.RequireConfirmedAdaptationFoundation(); err != nil {
+		return nil, fmt.Errorf("adaptation target foundation gate: %w", err)
+	}
 	if deps.LLM == nil {
 		return nil, fmt.Errorf("planner llm is required for adaptation proposal revision")
 	}
@@ -1160,7 +1172,7 @@ func ReviseAdaptationProposalContext(ctx context.Context, deps Deps, opts Propos
 	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, from, to, fmt.Sprintf("准备修订改编提案：第 %d-%d 章", from, to), nil)
 
-	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+	systemPrompt := adaptationPlannerSystemPrompt(deps)
 	if systemPrompt == "" {
 		systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested proposal revision."
 	}
@@ -1234,6 +1246,9 @@ func ReviseAdaptationVolumeReviewContext(ctx context.Context, deps Deps, opts Pr
 	if deps.Store == nil {
 		return nil, fmt.Errorf("store is required")
 	}
+	if _, err := deps.Store.RequireConfirmedAdaptationFoundation(); err != nil {
+		return nil, fmt.Errorf("adaptation target foundation gate: %w", err)
+	}
 	if deps.LLM == nil {
 		return nil, fmt.Errorf("planner llm is required for adaptation volume review revision")
 	}
@@ -1270,7 +1285,7 @@ func ReviseAdaptationVolumeReviewContext(ctx context.Context, deps Deps, opts Pr
 	if err != nil {
 		return nil, err
 	}
-	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+	systemPrompt := adaptationPlannerSystemPrompt(deps)
 	if systemPrompt == "" {
 		systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested volume review revision."
 	}
@@ -1323,6 +1338,9 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 	ctx = modeldiag.WithStore(ctx, deps.Store)
 	if deps.Store == nil {
 		return nil, fmt.Errorf("store is required")
+	}
+	if _, err := deps.Store.RequireConfirmedAdaptationFoundation(); err != nil {
+		return nil, fmt.Errorf("adaptation target foundation gate: %w", err)
 	}
 	if deps.LLM == nil {
 		return nil, fmt.Errorf("planner llm is required for adaptation proposal details")
@@ -1395,6 +1413,9 @@ func BuildAdaptationProposalDetailsContext(ctx context.Context, deps Deps, opts 
 		return nil, fmt.Errorf("chapter detail audit layers are incomplete; proposal cannot enter review")
 	}
 	domain.MarkAdaptationOutlineQualityPassedWithLayers(&proposal, digest)
+	if err := bindAdaptationPlanFoundation(deps, &proposal); err != nil {
+		return nil, err
+	}
 	emitAdaptProgress(opts.EmitProgress, StagePlan, len(proposal.Chapters), len(proposal.Chapters), fmt.Sprintf("改编章节细纲已生成，正在保存：%d 章", len(proposal.Chapters)), nil)
 	if err := deps.Store.Adaptation.SaveProposal(proposal); err != nil {
 		return nil, fmt.Errorf("save adaptation proposal: %w", err)
@@ -1633,6 +1654,9 @@ func finalizeRevisedAdaptationProposal(
 	updated.Planner.Notes = append(updated.Planner.Notes,
 		fmt.Sprintf("proposal revised for target %s (%d-%d): %s", firstNonEmptyString(strings.TrimSpace(opts.Target), fmt.Sprintf("%d-%d", from, to)), from, to, opts.Instruction),
 	)
+	if err := bindAdaptationPlanFoundation(deps, &updated); err != nil {
+		return nil, err
+	}
 	if err := deps.Store.Adaptation.SaveProposal(updated); err != nil {
 		return nil, fmt.Errorf("save revised adaptation proposal: %w", err)
 	}
@@ -2089,7 +2113,7 @@ func repairVolumeReviewBudgetSplitsBeforeDetails(
 		rangeRepairAttempts[rangeKey]++
 		minTargetTo := originalBatch.TargetFrom + budgetErr.MinChapters - 1
 		expansionMaxTo := max(originalBatch.TargetTo+adaptationPlannerRevisionExpansionMax, minTargetTo)
-		systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+		systemPrompt := adaptationPlannerSystemPrompt(deps)
 		if systemPrompt == "" {
 			systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested volume review budget repair."
 		}
@@ -3144,7 +3168,7 @@ func buildPlanFromPlannerSingle(
 	if deps.LLM == nil {
 		return zero, fmt.Errorf("planner llm is required for %s adaptation proposals", opts.Granularity)
 	}
-	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+	systemPrompt := adaptationPlannerSystemPrompt(deps)
 	if systemPrompt == "" {
 		systemPrompt = "# Adaptation Planner\n\nReturn only one JSON adaptation plan proposal."
 	}
@@ -3296,7 +3320,7 @@ func buildPlannerVolumeSkeleton(
 	if deps.LLM == nil {
 		return zero, nil, fmt.Errorf("planner llm is required for %s adaptation proposals", opts.Granularity)
 	}
-	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+	systemPrompt := adaptationPlannerSystemPrompt(deps)
 	if systemPrompt == "" {
 		systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested adaptation planning step."
 	}
@@ -4363,7 +4387,7 @@ func buildPlanFromPlannerSkeletonDetailsWithFinalRepairs(
 		runtime = newPlannerProposalRuntime(opts, manifest, skeleton.TargetChapterCount)
 		runtime.Skeleton = plannerRuntimeOutlineFromSkeleton(skeleton)
 	}
-	systemPrompt := strings.TrimSpace(deps.Prompts.Planner)
+	systemPrompt := adaptationPlannerSystemPrompt(deps)
 	if systemPrompt == "" {
 		systemPrompt = "# Adaptation Planner\n\nReturn only JSON for the requested adaptation planning step."
 	}
@@ -4724,9 +4748,38 @@ func savePlannerProposalRuntime(deps Deps, runtime *domain.AdaptationProposalRun
 	if err := bindProposalCoCreateDependency(deps, runtime); err != nil {
 		return err
 	}
+	binding, err := deps.Store.CurrentAdaptationArtifactBinding()
+	if err != nil {
+		return fmt.Errorf("bind proposal runtime to target foundation: %w", err)
+	}
+	runtime.FoundationBinding = &binding
 	runtime.Version = adaptationProposalRuntimeVersion
 	runtime.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	return deps.Store.Adaptation.SaveProposalRuntime(*runtime)
+}
+
+func bindAdaptationPlanFoundation(deps Deps, plan *domain.AdaptationPlan) error {
+	if plan == nil || deps.Store == nil {
+		return fmt.Errorf("adaptation plan and store are required")
+	}
+	binding, err := deps.Store.CurrentAdaptationArtifactBinding()
+	if err != nil {
+		return fmt.Errorf("bind adaptation plan to target foundation: %w", err)
+	}
+	plan.FoundationBinding = &binding
+	return nil
+}
+
+func bindAdaptationVolumeFoundation(deps Deps, review *domain.AdaptationVolumeReview) error {
+	if review == nil || deps.Store == nil {
+		return fmt.Errorf("adaptation volume review and store are required")
+	}
+	binding, err := deps.Store.CurrentAdaptationArtifactBinding()
+	if err != nil {
+		return fmt.Errorf("bind adaptation volume review to target foundation: %w", err)
+	}
+	review.FoundationBinding = &binding
+	return nil
 }
 
 func plannerSkeletonFromRuntime(runtime *domain.AdaptationProposalRuntime) plannerSkeleton {
@@ -9531,12 +9584,9 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 	if err := ValidateProposalOutlineUniqueness(proposal); err != nil {
 		return nil, err
 	}
-	sourceFoundation, err := deps.Store.Adaptation.LoadSourceFoundation()
+	targetFoundation, err := deps.Store.Foundation.Load()
 	if err != nil {
-		return nil, fmt.Errorf("load source foundation: %w", err)
-	}
-	if sourceFoundation == nil {
-		return nil, fmt.Errorf("source foundation missing; import source first")
+		return nil, fmt.Errorf("load confirmed target foundation: %w", err)
 	}
 
 	proposal.Status = domain.AdaptationPlanStatusConfirmed
@@ -9549,9 +9599,17 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 	if err := ValidateAdaptationOutlineQuality(&proposal, manifest); err != nil {
 		return nil, err
 	}
+	if _, err := deps.Store.RequireConfirmedAdaptationFoundation(); err != nil {
+		return nil, fmt.Errorf("adaptation target foundation gate: %w", err)
+	}
+	if err := deps.Store.ValidateAdaptationArtifactBinding(proposal.FoundationBinding); err != nil {
+		return nil, fmt.Errorf("adaptation proposal binding: %w", err)
+	}
 	domain.MarkAdaptationOutlineQualityPassed(&proposal)
-	fr := toFoundationResult(sourceFoundation)
-	fr.Premise = adaptationPremise(fr.Premise, proposal.Brief, proposal)
+	fr := &imp.FoundationResult{
+		Premise: targetFoundation.Premise, Characters: targetFoundation.Characters,
+		WorldRules: targetFoundation.WorldRules,
+	}
 	fr.Volumes = adaptationTargetVolumes(proposal)
 	if err := validateAdaptationGeneratedParentBatches(fr.Volumes); err != nil {
 		return nil, err
@@ -9562,8 +9620,8 @@ func ConfirmAdaptationProposal(ctx context.Context, deps Deps, proposal domain.A
 			EstimatedScale:  fmt.Sprintf("%d chapters", len(proposal.Chapters)),
 		}
 	}
-	if err := imp.PersistFoundationPreservingCast(ctx, deps.Store, planningTier(len(proposal.Chapters)), fr); err != nil {
-		return nil, fmt.Errorf("persist adaptation foundation: %w", err)
+	if err := imp.PersistAdaptationOutline(ctx, deps.Store, planningTier(len(proposal.Chapters)), fr); err != nil {
+		return nil, fmt.Errorf("persist adaptation outline from confirmed target foundation: %w", err)
 	}
 	if deps.ConfirmationFailpoint != nil {
 		if err := deps.ConfirmationFailpoint("after_foundation"); err != nil {

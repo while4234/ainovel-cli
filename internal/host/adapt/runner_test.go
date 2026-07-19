@@ -58,11 +58,12 @@ func TestPrepareRunWorksAfterResetGenerated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveSourceChapter: %v", err)
 	}
-	if err := st.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{
+	manifest := domain.AdaptationSourceManifest{
 		SourcePath:   "source.txt",
 		ChapterCount: 1,
 		Chapters:     []domain.AdaptationSource{source},
-	}); err != nil {
+	}
+	if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
 		t.Fatalf("SaveSourceManifest: %v", err)
 	}
 	if err := st.Adaptation.SaveSourceFoundation(testSourceFoundation()); err != nil {
@@ -97,6 +98,7 @@ func TestPrepareRunWorksAfterResetGenerated(t *testing.T) {
 	}
 
 	brief := "chapter rewrite with warmer relationship beats"
+	seedConfirmedAdaptationTargetFoundation(t, st, manifest, brief)
 	plan, err := PrepareRun(context.Background(), Deps{Store: st}, brief)
 	if err != nil {
 		t.Fatalf("PrepareRun: %v", err)
@@ -170,6 +172,7 @@ func TestConfirmAdaptationProposalPersistsTargetOutlinesAndProgress(t *testing.T
 			},
 		},
 	}
+	proposal.FoundationBinding = seedDirectConfirmedAdaptationTargetFoundation(t, st, 3, proposal.Brief)
 
 	confirmed, err := ConfirmAdaptationProposal(context.Background(), Deps{Store: st}, proposal)
 	if err != nil {
@@ -241,6 +244,7 @@ func TestConfirmAdaptationProposalRejectsDuplicateTargetOutlines(t *testing.T) {
 			},
 		},
 	}
+	proposal.FoundationBinding = seedDirectConfirmedAdaptationTargetFoundation(t, st, 2, proposal.Brief)
 
 	_, err := ConfirmAdaptationProposal(context.Background(), Deps{Store: st}, proposal)
 	if err == nil {
@@ -323,6 +327,7 @@ func TestConfirmAdaptationProposalRejectsDuplicateParentBatch(t *testing.T) {
 		}},
 		Chapters: chapters,
 	}
+	proposal.FoundationBinding = seedDirectConfirmedAdaptationTargetFoundation(t, st, 2, proposal.Brief)
 
 	_, err := ConfirmAdaptationProposal(context.Background(), Deps{Store: st}, proposal)
 	if err == nil {
@@ -350,11 +355,12 @@ func TestBuildAdaptationProposalChapterPreserveDetailsUsesSourceRuneRanges(t *te
 	if err != nil {
 		t.Fatalf("SaveSourceChapter 3: %v", err)
 	}
-	if err := st.Adaptation.SaveSourceManifest(domain.AdaptationSourceManifest{
+	manifest := domain.AdaptationSourceManifest{
 		SourcePath:   "source.txt",
 		ChapterCount: 3,
 		Chapters:     []domain.AdaptationSource{source1, source2, source3},
-	}); err != nil {
+	}
+	if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
 		t.Fatalf("SaveSourceManifest: %v", err)
 	}
 	if err := st.Adaptation.SaveSourceFoundation(testSourceFoundation()); err != nil {
@@ -373,6 +379,7 @@ func TestBuildAdaptationProposalChapterPreserveDetailsUsesSourceRuneRanges(t *te
 	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
 		t.Fatalf("SaveSourceReports: %v", err)
 	}
+	seedConfirmedAdaptationTargetFoundation(t, st, manifest, "逐章保留原著细节")
 
 	proposal, err := BuildAdaptationProposal(Deps{Store: st}, ProposalOptions{
 		Brief:         "逐章保留原著细节",
@@ -6161,7 +6168,99 @@ func seedPreparedAdaptationSource(t *testing.T, st *store.Store, runeCounts []in
 		t.Fatalf("SaveSourceReports: %v", err)
 	}
 	seedCoCreateDossier(t, st, manifest)
+	seedConfirmedAdaptationTargetFoundation(t, st, manifest, "test adaptation intent")
 	return reports
+}
+
+func seedConfirmedAdaptationTargetFoundation(t *testing.T, st *store.Store, manifest domain.AdaptationSourceManifest, brief string) {
+	t.Helper()
+	intent := BuildCoCreateIntent(brief, domain.AdaptationGranularityArc, domain.AdaptationRewriteFullRewrite, DefaultWordTolerance)
+	if err := st.Adaptation.SaveCoCreateIntent(intent); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := st.CoreCast.SaveGateBinding(store.CoreCastGateBinding{
+		Mode: domain.CoreCastModeAdaptation, DraftRevision: 1, DraftHash: "test-draft",
+		SourceSignature: store.AdaptationSourceSignature(manifest), AdaptationIntentHash: intent.IntentHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := domain.CoreCastContract{
+		Version: domain.CoreCastContractVersion, Mode: domain.CoreCastModeAdaptation,
+		DraftRevision: binding.DraftRevision, DraftHash: binding.DraftHash,
+		SourceSignature: binding.SourceSignature, AdaptationIntentHash: binding.AdaptationIntentHash,
+		Members: []domain.CoreCastMember{{
+			Character:  domain.Character{ID: "ari", Name: "Ari", Role: "protagonist", Goal: "complete the adaptation", Motivation: "duty", Conflict: "source pressure", Arc: "chooses a target future", Traits: []string{"resolute"}, Constraints: []string{"respects source evidence"}},
+			Importance: domain.CoreCastImportanceProtagonist, Origin: domain.CoreCastOriginOriginal,
+			MainlineFunction: "drives the target mainline", InclusionRationale: "confirmed adaptation lead", NoCoreRelationships: true,
+		}},
+	}
+	saved, err := st.CoreCast.SaveCAS(contract, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.CoreCast.ConfirmCAS(saved.Revision, saved.ContentSignature, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageTargetFoundationGenerating, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := GenerateTargetFoundation(context.Background(), Deps{Store: st}, TargetFoundationOptions{Brief: brief, ExpectedWorkflowRevision: workflow.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ConfirmAdaptationTargetFoundation(review.FoundationRevision, review.Binding.TargetFoundationAuditSignature); err != nil {
+		t.Fatal(err)
+	}
+	current, err := st.Adaptation.LoadPlanningWorkflow()
+	if err != nil || current == nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageSkeletonGenerating, current.Revision); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedDirectConfirmedAdaptationTargetFoundation(t *testing.T, st *store.Store, chapterCount int, brief string) *domain.AdaptationFoundationBinding {
+	t.Helper()
+	sources := make([]domain.AdaptationSource, 0, chapterCount)
+	reports := make([]domain.AdaptationSourceReport, 0, chapterCount)
+	for chapter := 1; chapter <= chapterCount; chapter++ {
+		source, err := st.Adaptation.SaveSourceChapter(chapter, fmt.Sprintf("Source %d", chapter), fmt.Sprintf("source body %d", chapter))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources = append(sources, source)
+		report := domain.AdaptationSourceReport{Chapter: chapter, Title: source.Title, SourceSHA256: source.SHA256, Summary: "source summary", KeyEvents: []string{"source event"}}
+		if err := st.Adaptation.SaveSourceReport(report); err != nil {
+			t.Fatal(err)
+		}
+		reports = append(reports, report)
+	}
+	manifest := domain.AdaptationSourceManifest{SourcePath: "source.txt", ChapterCount: chapterCount, Chapters: sources}
+	if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if foundation, err := st.Adaptation.LoadSourceFoundation(); err != nil {
+		t.Fatal(err)
+	} else if foundation == nil {
+		if err := st.Adaptation.SaveSourceFoundation(testSourceFoundation()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
+		t.Fatal(err)
+	}
+	seedConfirmedAdaptationTargetFoundation(t, st, manifest, brief)
+	binding, err := st.CurrentAdaptationArtifactBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &binding
 }
 
 func seedCoCreateDossier(t *testing.T, st *store.Store, manifest domain.AdaptationSourceManifest) {

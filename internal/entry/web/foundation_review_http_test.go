@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/assets"
@@ -188,6 +189,28 @@ func TestWriteFoundationReviewErrorReturnsStableCodeAndLatestReview(t *testing.T
 	}
 	if response.Error.Code != storepkg.FoundationReviewErrorStale || response.Error.Latest == nil || response.Error.Latest.FoundationRevision != 9 {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestFoundationReviewHTTPRejectsSourceFoundationMutation(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), t.TempDir())
+	defer server.Close()
+	project, err := server.store.CreateProject("Readonly Source Foundation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installFakeSession(t, server, project)
+	for _, action := range []string{"confirm", "revise"} {
+		body := []byte(`{"feedback":"tamper","source_foundation":{"premise":"tampered"}}`)
+		if action == "confirm" {
+			body = []byte(`{"expected_revision":1,"audit_signature":"forged","source_foundation":{"premise":"tampered"}}`)
+		}
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/projects/"+project.ID+"/cocreate/foundation/"+action, bytes.NewReader(body))
+		server.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), "read-only") {
+			t.Fatalf("%s status=%d body=%s", action, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 

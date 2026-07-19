@@ -2484,6 +2484,22 @@ func (f *fakeProjectHost) BuildAdaptationProposalContext(ctx context.Context, op
 	}, nil
 }
 
+func (f *fakeProjectHost) GenerateAdaptationTargetFoundationContext(_ context.Context, options adapt.TargetFoundationOptions) (*domain.AdaptationFoundationReview, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.adaptProposalErr != nil {
+		return nil, f.adaptProposalErr
+	}
+	return &domain.AdaptationFoundationReview{
+		Version: domain.AdaptationFoundationReviewVersion, State: domain.AdaptationFoundationReviewPending,
+		FoundationRevision: 1, Generation: 1, Brief: options.Brief, UpdatedAt: "test",
+		Binding: domain.AdaptationFoundationBinding{
+			SourceSignature: "test-source", TargetFoundationAuditSignature: "test-target",
+			CoreCastSignature: "test-cast", AdaptationIntentHash: "test-intent", WorkflowRevision: options.ExpectedWorkflowRevision + 1,
+		},
+	}, nil
+}
+
 func (f *fakeProjectHost) BuildAdaptationProposalVolumesContext(ctx context.Context, options adapt.ProposalOptions) (*adapt.ProposalStageResult, error) {
 	proposal, err := f.BuildAdaptationProposalContext(ctx, options)
 	if err != nil {

@@ -142,6 +142,7 @@ type projectHost interface {
 	ReviseAdaptationProposalContext(context.Context, adapt.ProposalRevisionOptions) (*domain.AdaptationPlan, error)
 	ReviseAdaptationVolumeReviewContext(context.Context, adapt.ProposalRevisionOptions) (*domain.AdaptationVolumeReview, error)
 	BuildAdaptationProposalDetailsContext(context.Context, adapt.ProposalDetailsOptions) (*domain.AdaptationPlan, error)
+	GenerateAdaptationTargetFoundationContext(context.Context, adapt.TargetFoundationOptions) (*domain.AdaptationFoundationReview, error)
 	ConfirmAdaptationProposal() (*domain.AdaptationPlan, error)
 	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
 	Export(context.Context, exp.Options) (*exp.Result, error)
@@ -1186,6 +1187,20 @@ func pendingAdaptationProposalResumeAction(st *storepkg.Store) (*webResumeAction
 		return nil, fmt.Errorf("load adaptation proposal runtime: %w", err)
 	}
 	if runtime == nil {
+		if workflow != nil && workflow.Stage == domain.AdaptationPlanningStageSkeletonGenerating {
+			review, reviewErr := st.Adaptation.LoadTargetFoundationReview()
+			intent, intentErr := st.Adaptation.LoadCoCreateIntent()
+			manifest, manifestErr := st.Adaptation.LoadSourceManifest()
+			if reviewErr != nil || intentErr != nil || manifestErr != nil {
+				return nil, errors.Join(reviewErr, intentErr, manifestErr)
+			}
+			if review != nil && review.State == domain.AdaptationFoundationReviewApproved && intent != nil && manifest != nil {
+				return &webResumeAction{Kind: webResumeActionAdaptationProposal, Label: "恢复：生成改编提案", ProposalOptions: adapt.ProposalOptions{
+					Brief: review.Brief, SourcePath: manifest.SourcePath, Granularity: intent.Granularity,
+					RewritePolicy: intent.RewritePolicy, WordTolerance: intent.WordTolerance,
+				}}, nil
+			}
+		}
 		return nil, nil
 	}
 	if workflow != nil && workflow.Stage != domain.AdaptationPlanningStageSkeletonGenerating {
@@ -2329,22 +2344,15 @@ func (s *ProjectSession) commitAdaptCoCreate(ctx context.Context) (webCoCreateSt
 		s.saveCoCreateCheckpoint()
 	}
 
-	result, err := s.buildAdaptationProposalVolumes(actionCtx, adapt.ProposalOptions{
-		Brief:         state.draftPrompt(),
-		SourcePath:    state.sourcePath,
-		Granularity:   state.adaptGranularity,
-		RewritePolicy: state.adaptRewritePolicy,
-		WordTolerance: state.adaptWordTolerance,
-	})
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	workflow, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageTargetFoundationGenerating, -1)
 	if err != nil {
 		return state.apiState(), err
 	}
-	if result != nil && result.VolumeReview != nil {
-		state.adaptationVolumeReview = result.VolumeReview
-		state.adaptationProposal = adaptationVolumeReviewAsPlan(*result.VolumeReview)
-	} else if result != nil {
-		state.adaptationProposal = result.Proposal
-		state.adaptationVolumeReview = nil
+	if _, err := s.host.GenerateAdaptationTargetFoundationContext(actionCtx, adapt.TargetFoundationOptions{
+		Brief: state.draftPrompt(), ExpectedWorkflowRevision: workflow.Revision,
+	}); err != nil {
+		return state.apiState(), err
 	}
 	api := state.apiState()
 	s.cocreate = nil
@@ -2950,6 +2958,40 @@ func (s *ProjectSession) ConfirmCoCreateFoundation(expectedRevision int64, expec
 	}
 	defer unlock()
 	st := storepkg.NewStore(s.manifest.OutputDir)
+	if adaptationReview, loadErr := st.Adaptation.LoadTargetFoundationReview(); loadErr != nil {
+		return "", loadErr
+	} else if adaptationReview != nil {
+		if _, err := st.ConfirmAdaptationTargetFoundation(expectedRevision, expectedAuditSignature); err != nil {
+			return "", err
+		}
+		workflow, err := st.Adaptation.LoadPlanningWorkflow()
+		if err != nil || workflow == nil {
+			return "", fmt.Errorf("load adaptation foundation workflow: %w", err)
+		}
+		if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageSkeletonGenerating, workflow.Revision); err != nil {
+			return "", err
+		}
+		manifest, err := st.Adaptation.LoadSourceManifest()
+		if err != nil || manifest == nil {
+			return "", fmt.Errorf("load adaptation source manifest: %w", err)
+		}
+		intent, err := st.Adaptation.LoadCoCreateIntent()
+		if err != nil || intent == nil {
+			return "", fmt.Errorf("load adaptation intent: %w", err)
+		}
+		result, err := s.buildAdaptationProposalVolumes(context.Background(), adapt.ProposalOptions{
+			Brief: adaptationReview.Brief, SourcePath: manifest.SourcePath, Granularity: intent.Granularity,
+			RewritePolicy: intent.RewritePolicy, WordTolerance: intent.WordTolerance,
+		})
+		if err != nil {
+			return "", err
+		}
+		s.AppendSnapshot()
+		if result != nil && result.VolumeReview != nil {
+			return "target foundation approved; adaptation volume skeleton awaits review", nil
+		}
+		return "target foundation approved; adaptation proposal awaits review", nil
+	}
 	_, transition, err := st.ConfirmFoundationForPlanning(expectedRevision, expectedAuditSignature)
 	if err != nil {
 		return "", err
@@ -2975,6 +3017,25 @@ func (s *ProjectSession) ReviseCoCreateFoundation(feedback string) (string, erro
 	}
 	defer unlock()
 	st := storepkg.NewStore(s.manifest.OutputDir)
+	if adaptationReview, loadErr := st.Adaptation.LoadTargetFoundationReview(); loadErr != nil {
+		return "", loadErr
+	} else if adaptationReview != nil {
+		generating, err := st.MarkAdaptationTargetFoundationPending(feedback)
+		if err != nil {
+			return "", err
+		}
+		workflow, err := st.Adaptation.LoadPlanningWorkflow()
+		if err != nil || workflow == nil {
+			return "", fmt.Errorf("load adaptation foundation revision workflow: %w", err)
+		}
+		if _, err := s.host.GenerateAdaptationTargetFoundationContext(context.Background(), adapt.TargetFoundationOptions{
+			Brief: generating.Brief, Feedback: feedback, ExpectedWorkflowRevision: workflow.Revision,
+		}); err != nil {
+			return "", err
+		}
+		s.AppendSnapshot()
+		return "adaptation target foundation regenerated for review", nil
+	}
 	if _, err := st.ReviseFoundation(feedback); err != nil {
 		return "", err
 	}

@@ -102,35 +102,40 @@ type UISnapshot struct {
 	CachePerModel []AgentCacheStat
 
 	// 基础设定
-	Premise                  string
-	PremiseFull              string
-	Outline                  []OutlineSnapshot
-	Characters               []string
-	CharacterDetails         []domain.Character
-	WorldRules               []domain.WorldRule
-	PlannedRelationships     []domain.CharacterRelationship
-	FoundationAuditSignature string
-	CoreCharacterIDs         []string
-	CoreCastPreserved        bool
-	SupportingCount          int      // 配角名册中的次要角色总数
-	RecentSupporting         []string // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
-	Layered                  bool
-	LayeredOutline           []LayeredVolumeSnapshot
-	CurrentVolumeArc         string
-	NextVolumeTitle          string
-	CompassDirection         string
-	CompassScale             string
-	SimulationProfile        *domain.SimulationCompactProfile
-	SimulationSummary        *SimulationProfileSummary
-	CreativeBlueprint        *CreativeBlueprintSummary
-	PlanningReview           *PlanningReviewSummary
-	Continuation             *domain.ContinuationSnapshot
-	AdaptationVolumeReview   *domain.AdaptationVolumeReview
-	AdaptationProposal       *domain.AdaptationPlan
-	AdaptationPlan           *domain.AdaptationPlan
-	VolumeReviewSummary      *AdaptationVolumeReviewSummary
-	ProposalSummary          *AdaptationPlanSummary
-	AdaptationSummary        *AdaptationPlanSummary
+	Premise                    string
+	PremiseFull                string
+	Outline                    []OutlineSnapshot
+	Characters                 []string
+	CharacterDetails           []domain.Character
+	WorldRules                 []domain.WorldRule
+	PlannedRelationships       []domain.CharacterRelationship
+	FoundationAuditSignature   string
+	CoreCharacterIDs           []string
+	CoreCastPreserved          bool
+	SupportingCount            int      // 配角名册中的次要角色总数
+	RecentSupporting           []string // 最近活跃的次要角色（最多 5 个，按 LastSeenChapter 倒序）
+	Layered                    bool
+	LayeredOutline             []LayeredVolumeSnapshot
+	CurrentVolumeArc           string
+	NextVolumeTitle            string
+	CompassDirection           string
+	CompassScale               string
+	SimulationProfile          *domain.SimulationCompactProfile
+	SimulationSummary          *SimulationProfileSummary
+	CreativeBlueprint          *CreativeBlueprintSummary
+	PlanningReview             *PlanningReviewSummary
+	Continuation               *domain.ContinuationSnapshot
+	AdaptationVolumeReview     *domain.AdaptationVolumeReview
+	AdaptationProposal         *domain.AdaptationPlan
+	AdaptationPlan             *domain.AdaptationPlan
+	VolumeReviewSummary        *AdaptationVolumeReviewSummary
+	ProposalSummary            *AdaptationPlanSummary
+	AdaptationSummary          *AdaptationPlanSummary
+	AdaptationSourceFoundation *domain.AdaptationSourceFoundation
+	AdaptationCoreCast         *domain.CoreCastContract
+	TargetFoundation           *domain.StoryFoundation
+	AdaptationFoundationReview *domain.AdaptationFoundationReview
+	AdaptationPlanningWorkflow *domain.AdaptationPlanningWorkflow
 
 	// 详情
 	LastCommitSummary  string

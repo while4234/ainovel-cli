@@ -28,7 +28,7 @@ func TestConfirmAdaptationProposalCommitsHostBeforeCoordinatorExecution(t *testi
 		t.Fatal(err)
 	}
 	seedAdaptationConfirmationGate(t, st)
-	if err := st.Adaptation.SaveProposal(adaptationConfirmationProposalFixture()); err != nil {
+	if err := st.Adaptation.SaveProposal(adaptationConfirmationProposalFixture(t, st)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -113,7 +113,7 @@ func TestConfirmAdaptationProposalFastTerminalOrdering(t *testing.T) {
 				t.Fatal(err)
 			}
 			seedAdaptationConfirmationGate(t, st)
-			if err := st.Adaptation.SaveProposal(adaptationConfirmationProposalFixture()); err != nil {
+			if err := st.Adaptation.SaveProposal(adaptationConfirmationProposalFixture(t, st)); err != nil {
 				t.Fatal(err)
 			}
 			model := &terminalStartupModel{err: tc.modelErr}
@@ -166,7 +166,7 @@ func TestConfirmAdaptationProposalRollsBackRejectedLaunchAndRetries(t *testing.T
 		t.Fatal(err)
 	}
 	beforeFoundation := seedAdaptationConfirmationGate(t, st)
-	proposal := adaptationConfirmationProposalFixture()
+	proposal := adaptationConfirmationProposalFixture(t, st)
 	if err := st.Adaptation.SaveProposal(proposal); err != nil {
 		t.Fatal(err)
 	}
@@ -267,8 +267,8 @@ func TestConfirmAdaptationProposalRollsBackRejectedLaunchAndRetries(t *testing.T
 		!reflect.DeepEqual(afterRetry.Relationships, beforeFoundation.Relationships) || !afterRetry.RelationshipsReviewed {
 		t.Fatalf("retry replaced authoritative target cast: %+v", afterRetry)
 	}
-	if afterRetry.Revision != beforeFoundation.Revision+1 {
-		t.Fatalf("failed launch plus retry advanced Foundation revision %d -> %d, want exactly one revision",
+	if afterRetry.Revision != beforeFoundation.Revision {
+		t.Fatalf("failed launch plus retry changed confirmed target Foundation revision %d -> %d",
 			beforeFoundation.Revision, afterRetry.Revision)
 	}
 	if err := st.Progress.UpdatePhase(domain.PhaseComplete); err != nil {
@@ -289,33 +289,8 @@ func TestPersistAdaptationConfirmationRollsBackLateFailureAndPreservesPublishedT
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
-	targetFoundation := domain.StoryFoundation{
-		Premise: "target premise before confirmation",
-		Characters: []domain.Character{
-			{ID: "target-lin", Name: "Target Lin"},
-			{ID: "target-mara", Name: "Target Mara"},
-		},
-		Relationships: []domain.CharacterRelationship{{
-			ID: "target-alliance", SourceCharacterID: "target-lin", TargetCharacterID: "target-mara",
-			Type: domain.RelationshipTypeAlly, Direction: domain.RelationshipDirectionDirected, Status: domain.RelationshipStatusPlanned,
-		}},
-		RelationshipsReviewed: true,
-	}
-	beforeFoundation, err := st.Foundation.SaveCAS(targetFoundation, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{
-		Premise: "source premise",
-		Characters: []domain.Character{
-			{ID: "source-lin", Name: "Source Lin"},
-			{ID: "source-mara", Name: "Source Mara"},
-		},
-		WorldRules: []domain.WorldRule{{ID: "source-rule", Category: "other", Title: "Source Rule", Rule: "source-only rule", Boundary: "immutable source evidence"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	proposal := adaptationConfirmationProposalFixture()
+	beforeFoundation := seedAdaptationConfirmationGate(t, st)
+	proposal := adaptationConfirmationProposalFixture(t, st)
 	if err := st.Adaptation.SaveProposal(proposal); err != nil {
 		t.Fatal(err)
 	}
@@ -390,8 +365,8 @@ func TestPersistAdaptationConfirmationRollsBackLateFailureAndPreservesPublishedT
 		!reflect.DeepEqual(afterRetry.Relationships, beforeFoundation.Relationships) || !afterRetry.RelationshipsReviewed {
 		t.Fatalf("target cast was replaced by source cast: %+v", afterRetry)
 	}
-	if afterRetry.Revision != beforeFoundation.Revision+1 {
-		t.Fatalf("foundation revision after retry = %d, want %d", afterRetry.Revision, beforeFoundation.Revision+1)
+	if afterRetry.Revision != beforeFoundation.Revision {
+		t.Fatalf("proposal confirmation changed target foundation revision: got %d, want %d", afterRetry.Revision, beforeFoundation.Revision)
 	}
 	if _, err := h.persistAdaptationConfirmation(proposal); err != nil {
 		t.Fatalf("idempotent retry: %v", err)
@@ -433,8 +408,9 @@ func TestHostResumeFailsClosedWithoutDurableCoreCastBinding(t *testing.T) {
 	}
 }
 
-func adaptationConfirmationProposalFixture() domain.AdaptationPlan {
-	return domain.AdaptationPlan{
+func adaptationConfirmationProposalFixture(t *testing.T, st *storepkg.Store) domain.AdaptationPlan {
+	t.Helper()
+	plan := domain.AdaptationPlan{
 		Granularity: domain.AdaptationGranularityArc, Status: domain.AdaptationPlanStatusProposal,
 		RewritePolicy: domain.AdaptationRewriteFullRewrite,
 		Brief:         "recast the source story around the published target characters",
@@ -443,6 +419,10 @@ func adaptationConfirmationProposalFixture() domain.AdaptationPlan {
 			{Chapter: 2, Title: "Target Turn", SourceChapters: []int{2}, OutlineEntry: domain.OutlineEntry{CoreEvent: "The target alliance changes the plan.", Hook: "A new threat appears.", Scenes: []string{"archive"}}},
 		},
 	}
+	if binding, err := st.CurrentAdaptationArtifactBinding(); err == nil {
+		plan.FoundationBinding = &binding
+	}
+	return plan
 }
 
 func seedAdaptationConfirmationGate(t *testing.T, st *storepkg.Store) domain.StoryFoundation {
@@ -513,6 +493,26 @@ func seedAdaptationConfirmationGate(t *testing.T, st *storepkg.Store) domain.Sto
 		t.Fatal(err)
 	}
 	if _, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageTargetFoundationGenerating, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := adapt.GenerateTargetFoundation(context.Background(), adapt.Deps{Store: st}, adapt.TargetFoundationOptions{
+		Brief: "recast around target characters", ExpectedWorkflowRevision: workflow.Revision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ConfirmAdaptationTargetFoundation(review.FoundationRevision, review.Binding.TargetFoundationAuditSignature); err != nil {
+		t.Fatal(err)
+	}
+	currentWorkflow, err := st.Adaptation.LoadPlanningWorkflow()
+	if err != nil || currentWorkflow == nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageSkeletonGenerating, currentWorkflow.Revision); err != nil {
 		t.Fatal(err)
 	}
 	foundation, err := st.Foundation.Load()

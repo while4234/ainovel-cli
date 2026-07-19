@@ -1128,6 +1128,42 @@ describe('workspace progress state', () => {
     expect(review.foundationFeedback).toBe('raise the cost');
   });
 
+  it('keeps adaptation source evidence read-only and target foundation reviewable', () => {
+    const review = getCoCreatePlanningReview({
+      AdaptationFoundationReview: {
+        State: 'pending', FoundationRevision: 4, Generation: 2,
+        Binding: {
+          SourceSignature: 'source-signature', TargetFoundationAuditSignature: 'target-audit',
+          CoreCastSignature: 'cast-signature', AdaptationIntentHash: 'intent-hash', WorkflowRevision: 7
+        }
+      },
+      AdaptationSourceFoundation: {
+        Premise: 'immutable source premise', WorldRules: [{ ID: 'source-rule', Rule: 'source fact' }]
+      },
+      AdaptationCoreCast: {
+        SourceDispositions: [{ SourceCharacterID: 'source-lead', Action: 'rename', TargetCharacterIDs: ['target-lead'] }]
+      },
+      TargetFoundation: {
+        Premise: 'target decision',
+        Characters: [{ ID: 'target-lead', Name: 'Target Lead', Role: 'hero' }],
+        Relationships: [],
+        WorldRules: [{ ID: 'target-rule', Rule: 'target decision rule', Strength: 'hard' }]
+      }
+    });
+
+    expect(review.active).toBe(true);
+    expect(review.adaptation).toBe(true);
+    expect(review.sourcePremise).toBe('immutable source premise');
+    expect(review.premise).toBe('target decision');
+    expect(review.sourceSignature).toBe('source-signature');
+    expect(review.foundationAuditSignature).toBe('target-audit');
+    expect(review.sourceWorldRules[0].Rule).toBe('source fact');
+    expect(review.sourceDispositions).toEqual([
+      { SourceCharacterID: 'source-lead', Action: 'rename', TargetCharacterIDs: ['target-lead'] }
+    ]);
+    expect(review.hardWorldRules[0].Rule).toBe('target decision rule');
+  });
+
   it('restores visible adaptation proposal state from a co-create commit snapshot', () => {
     const snapshot = {
       ProposalSummary: {

@@ -10,6 +10,7 @@ import (
 var adaptationConfirmationPaths = []string{
 	adaptationProposalFile, adaptationVolumeReviewFile, adaptationProposalRuntimeFile,
 	adaptationPlanFile, adaptationPlanningWorkflowFile, adaptationCheckDir,
+	adaptationTargetFoundationReviewFile,
 	structureRootDir,
 	"meta/run.json", "meta/progress.json", checkpointsFile,
 	foundationCanonicalFile, foundationRootDir,
@@ -30,13 +31,17 @@ func (s *Store) WithAdaptationConfirmationTransaction(fn func() error) error {
 	if s == nil || fn == nil {
 		return fmt.Errorf("adaptation confirmation transaction requires store and callback")
 	}
+	s.adaptationConfirmationMu.Lock()
+	defer s.adaptationConfirmationMu.Unlock()
 	s.crossMu.Lock()
-	defer s.crossMu.Unlock()
 	snapshot, err := s.captureAdaptationConfirmationBeforeImage()
+	s.crossMu.Unlock()
 	if err != nil {
 		return err
 	}
 	if err := fn(); err != nil {
+		s.crossMu.Lock()
+		defer s.crossMu.Unlock()
 		if rollbackErr := s.restoreAdaptationConfirmationBeforeImage(snapshot); rollbackErr != nil {
 			return fmt.Errorf("adaptation confirmation failed: %v; rollback failed: %w", err, rollbackErr)
 		}
