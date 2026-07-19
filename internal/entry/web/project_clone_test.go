@@ -1076,6 +1076,69 @@ func TestCloneProjectHandlerCreatesIndependentProject(t *testing.T) {
 	}
 }
 
+func TestCloneProjectHandlerCloneCanRollback(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	source, err := server.store.CreateProject("Rollback Source")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	cloneTestWriteFile(t, filepath.Join(source.OutputDir, "premise.md"), []byte("rollback foundation"))
+	cloneTestWriteJSON(t, filepath.Join(source.OutputDir, "outline.json"), []domain.OutlineEntry{{Chapter: 1, Title: "Cloned outline"}})
+	sourceChapter := filepath.Join(source.OutputDir, "chapters", "01.md")
+	cloneTestWriteFile(t, sourceChapter, []byte("cloned chapter"))
+	cloneTestWriteJSON(t, filepath.Join(source.OutputDir, "meta", "progress.json"), &domain.Progress{
+		Phase:             domain.PhaseWriting,
+		CurrentChapter:    2,
+		TotalChapters:     2,
+		CompletedChapters: []int{1},
+	})
+
+	cloneReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+source.ID+"/clone", bytes.NewBufferString(`{"name":"Rollback Copy"}`))
+	cloneRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(cloneRec, cloneReq)
+	if cloneRec.Code != http.StatusCreated {
+		t.Fatalf("clone status = %d body=%s", cloneRec.Code, cloneRec.Body.String())
+	}
+	var cloneResponse struct {
+		Project ProjectManifest `json:"project"`
+	}
+	if err := json.NewDecoder(cloneRec.Body).Decode(&cloneResponse); err != nil {
+		t.Fatalf("decode clone response: %v", err)
+	}
+
+	previewReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+cloneResponse.Project.ID+"/rollback/preview", nil)
+	previewRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(previewRec, previewReq)
+	if previewRec.Code != http.StatusOK {
+		t.Fatalf("rollback preview status = %d body=%s", previewRec.Code, previewRec.Body.String())
+	}
+	var previewResponse struct {
+		Rollback domain.RollbackPreview `json:"rollback"`
+	}
+	if err := json.NewDecoder(previewRec.Body).Decode(&previewResponse); err != nil {
+		t.Fatalf("decode rollback preview: %v", err)
+	}
+	if !previewResponse.Rollback.CanRollback || previewResponse.Rollback.PreviewHash == "" {
+		t.Fatalf("rollback preview = %+v", previewResponse.Rollback)
+	}
+
+	rollbackBody := `{"confirm":true,"preview_hash":"` + previewResponse.Rollback.PreviewHash + `"}`
+	rollbackReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+cloneResponse.Project.ID+"/rollback", bytes.NewBufferString(rollbackBody))
+	rollbackRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rollbackRec, rollbackReq)
+	if rollbackRec.Code != http.StatusOK {
+		t.Fatalf("rollback status = %d body=%s", rollbackRec.Code, rollbackRec.Body.String())
+	}
+	clonedStore := storepkg.NewStore(cloneResponse.Project.OutputDir)
+	if text, err := clonedStore.Drafts.LoadChapterText(1); err != nil || text != "" {
+		t.Fatalf("cloned chapter survived rollback: text=%q err=%v", text, err)
+	}
+	if text := string(cloneTestReadFile(t, sourceChapter)); text != "cloned chapter" {
+		t.Fatalf("source chapter changed after clone rollback: %q", text)
+	}
+}
+
 func TestCloneProjectHandlerRejectsRunningProject(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

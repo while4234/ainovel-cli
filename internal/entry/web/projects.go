@@ -222,6 +222,10 @@ func (s *ProjectStore) cloneProject(sourceID, name string, replan bool) (Project
 	if err := rebaseClonedProjectJSON(stagingRoot, source.RootDir, finalRoot); err != nil {
 		return ProjectManifest{}, err
 	}
+	cloneOutput := filepath.Join(stagingRoot, "output")
+	if err := storepkg.NewRevisionStore(cloneOutput).ResetClonedNormalFlowLease(); err != nil {
+		return ProjectManifest{}, fmt.Errorf("reset cloned normal-flow lease: %w", err)
+	}
 	if replan {
 		if err := prepareReplanningClone(stagingRoot); err != nil {
 			return ProjectManifest{}, fmt.Errorf("prepare replanning clone: %w", err)

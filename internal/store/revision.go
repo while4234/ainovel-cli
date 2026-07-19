@@ -380,6 +380,37 @@ func (s *RevisionStore) ReleaseNormalFlow(token string) error {
 	})
 }
 
+// ResetClonedNormalFlowLease removes a process-local capability from an
+// isolated project clone. It must never be called for the source project: the
+// generation bump deliberately invalidates every normal-flow fence copied with
+// the staging tree while preserving durable revision history.
+func (s *RevisionStore) ResetClonedNormalFlowLease() error {
+	if s == nil || s.io == nil {
+		return fmt.Errorf("revision store is required")
+	}
+	if _, err := os.Stat(s.io.path(revisionStateFile)); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return s.withRevisionTransaction(func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if state.NormalLease == nil {
+			return nil
+		}
+		state.NormalLease = nil
+		state.Generation++
+		if err := validateRevisionState(state); err != nil {
+			return err
+		}
+		return s.io.WriteJSON(revisionStateFile, state)
+	})
+}
+
 func (s *RevisionStore) FenceForNormalFlow(token string) (RevisionFence, error) {
 	var fence RevisionFence
 	err := s.withRevisionTransaction(func() error {
