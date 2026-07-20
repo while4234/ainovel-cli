@@ -4858,7 +4858,13 @@ export default function App() {
                   review={coCreatePlanningReview}
                 />
               ) : showCoCreateWorkspace ? (
-                <CoCreateWorkspace coCreate={coCreate} />
+                <CoCreateWorkspace
+                  busy={projectBusy}
+                  coCreate={coCreate}
+                  onCoreCastSave={updateCoreCastFlow}
+                  onCoreCastConfirm={confirmCoreCastFlow}
+                  onCoreCastUnconfirm={unconfirmCoreCastFlow}
+                />
               ) : showOutlineRevisionWorkspace ? (
                 <OutlineChapterRevisionWorkspace selected={selectedOutlineRevisionView} />
               ) : showChapterRevisionWorkspace ? (
@@ -5024,9 +5030,6 @@ export default function App() {
               onRevise={reviseCoCreateMessage}
               onResolveDecision={resolveCoCreateDecisionFlow}
               onCommit={commitCoCreateFlow}
-              onCoreCastSave={updateCoreCastFlow}
-              onCoreCastConfirm={confirmCoreCastFlow}
-              onCoreCastUnconfirm={unconfirmCoreCastFlow}
               onConfirmPlanning={confirmCoCreatePlanningRun}
               onRevisePlanning={reviseCoCreatePlanningRun}
               onCancel={cancelCoCreateFlow}
@@ -5201,6 +5204,7 @@ function hasCoCreateWorkspaceContent(coCreate) {
   return Boolean(
     coCreate?.streamThinking ||
       coCreate?.streamReply ||
+      coCreate?.coreCast ||
       (Array.isArray(coCreate?.messages) && coCreate.messages.some((message) => message?.role !== 'system' && message?.content))
   );
 }
@@ -5476,7 +5480,7 @@ function PlanningRevisionControls({ busy, compact = false, disabled = false, onR
   );
 }
 
-function CoCreateWorkspace({ coCreate }) {
+function CoCreateWorkspace({ coCreate, busy = false, onCoreCastSave, onCoreCastConfirm, onCoreCastUnconfirm }) {
   const threadRef = useRef(null);
   const bottomRef = useRef(null);
   const messages = Array.isArray(coCreate.messages)
@@ -5524,6 +5528,29 @@ function CoCreateWorkspace({ coCreate }) {
           </div>
           <pre>{coCreate.streamReply}</pre>
         </article>
+      ) : null}
+      {coCreate.draftPrompt ? (
+        <section className="cocreate-workspace-draft" aria-labelledby="cocreate-workspace-draft-title">
+          <div>
+            <span className="eyebrow">AI 整理结果</span>
+            <h2 id="cocreate-workspace-draft-title">当前创作方案</h2>
+            <p>这是即将交给写作流程的方案摘要。继续在右侧补充意见，AI 会更新这里的内容。</p>
+          </div>
+          <pre>{coCreate.draftPrompt}</pre>
+        </section>
+      ) : null}
+      {coCreate.coreCast && (coCreate.kind === 'normal' || coCreate.kind === 'adapt') ? (
+        <CoreCastEditor
+          mode={coCreate.kind}
+          value={coCreate.coreCast}
+          completion={coCreate.castCompletion}
+          confirmed={coCreate.castConfirmed}
+          sourceMajorCharacters={coCreate.sourceMajorCharacters}
+          busy={busy}
+          onSave={onCoreCastSave}
+          onConfirm={onCoreCastConfirm}
+          onUnconfirm={onCoreCastUnconfirm}
+        />
       ) : null}
       <div className="cocreate-workspace-bottom" aria-hidden="true" ref={bottomRef} />
     </div>
@@ -6323,9 +6350,6 @@ function CoCreatePanel({
   onRevise,
   onResolveDecision = () => {},
   onCommit,
-  onCoreCastSave = () => {},
-  onCoreCastConfirm = () => {},
-  onCoreCastUnconfirm = () => {},
   onConfirmPlanning = () => {},
   onRevisePlanning = () => {},
   onCancel,
@@ -6361,6 +6385,7 @@ function CoCreatePanel({
   const canConfirmPlanning = Boolean(activeProject && !busy && planningReview.pending);
   const visibleSuggestions = coCreate.suggestions.slice(0, 3);
   const showDraftWorkspace = Boolean(coCreate.ready || hasDraftPrompt);
+  const showSideDraftPreview = showDraftWorkspace && !workspaceTranscript;
   const suggestionList = visibleSuggestions.length ? (
     <div
       className={`suggestion-list ${workspaceTranscript ? 'cocreate-side-suggestions' : 'cocreate-dialog-suggestions'}`}
@@ -6523,7 +6548,7 @@ function CoCreatePanel({
           </button>
           <button className="tool-button" disabled={!canBeginAdapt} onClick={() => onBegin('adapt')} type="button">
             <FileText size={16} />
-            Adapt
+            改编
           </button>
         </div> : null}
         {coCreate.modeLocked ? (
@@ -6550,20 +6575,6 @@ function CoCreatePanel({
           </div>
         ) : null}
       </section>
-
-      {hasBackendSession && (coCreate.kind === 'normal' || coCreate.kind === 'adapt') ? (
-        <CoreCastEditor
-          mode={coCreate.kind}
-          value={coCreate.coreCast}
-          completion={coCreate.castCompletion}
-          confirmed={coCreate.castConfirmed}
-          sourceMajorCharacters={coCreate.sourceMajorCharacters}
-          busy={busy}
-          onSave={onCoreCastSave}
-          onConfirm={onCoreCastConfirm}
-          onUnconfirm={onCoreCastUnconfirm}
-        />
-      ) : null}
 
       {workspaceTranscript ? (
         suggestionList ? <section className="cocreate-section cocreate-side-suggestion-section">{suggestionList}</section> : null
@@ -6756,12 +6767,12 @@ function CoCreatePanel({
         </div>
         </form>
 
-        <section className={`cocreate-section ${showDraftWorkspace ? '' : 'cocreate-status-compact'}`}>
+        <section className={`cocreate-section ${showSideDraftPreview ? '' : 'cocreate-status-compact'}`}>
         <div className={`workflow-status ${coCreate.status}`}>
           <strong>{coCreateStatusText(coCreate.status, coCreate.ready, hasDraftPrompt)}</strong>
           <span>{coCreateStatusDetail(coCreate)}</span>
         </div>
-        {showDraftWorkspace ? (
+        {showSideDraftPreview ? (
         <div className="draft-preview">
           {coCreate.draftPrompt ? <pre>{coCreate.draftPrompt}</pre> : <span className="muted">AI 会在这里整理 draft prompt</span>}
         </div>

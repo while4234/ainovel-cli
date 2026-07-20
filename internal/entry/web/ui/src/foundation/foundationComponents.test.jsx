@@ -14,10 +14,34 @@ describe('foundation components', () => {
     expect(markup).toContain('目标故事前提');
   });
 
-  it('复用 CoreCastEditor 的只读模式展示 importance/origin/source IDs', () => {
+  it('核心角色只读模式展示中文重要性和来源角色', () => {
     const markup = renderToStaticMarkup(<CoreCastEditor readOnly mode="adapt" value={{ members: [{ character: { id: 'hero', name: '林舟', traits: [], constraints: [] }, importance: 'protagonist', origin: 'source', source_character_ids: ['source-1'] }] }} confirmed />);
-    expect(markup).toContain('protagonist');
+    expect(markup).toContain('主角');
     expect(markup).toContain('source-1');
-    expect(markup).not.toContain('保存角色契约');
+    expect(markup).not.toContain('保存修改');
+  });
+
+  it('核心角色编辑器在工作区解释修改流程并隐藏原始 JSON', () => {
+    const markup = renderToStaticMarkup(<CoreCastEditor mode="normal" value={{ members: [{ character: { id: 'hero', name: '林舟', role: '主角', traits: ['冷静'], constraints: ['不背叛同伴'] }, importance: 'protagonist', origin: 'original' }], planned_relationships: [] }} completion={{ complete: false, missing: [{ code: 'goal_required', member_id: 'hero', description: 'goal is required' }] }} />);
+    expect(markup).toContain('核心角色工作区');
+    expect(markup).toContain('先改角色');
+    expect(markup).toContain('角色重要性');
+    expect(markup).toContain('主角');
+    expect(markup).toContain('请填写角色目标');
+    expect(markup).not.toContain('核心计划关系（JSON）');
+    expect(markup).not.toContain('&gt;protagonist&lt;');
+  });
+
+  it('角色较多时一页只渲染一个角色表单并提供直接分页', () => {
+    const markup = renderToStaticMarkup(<CoreCastEditor mode="normal" value={{ members: [
+      { character: { id: 'hero', name: '林舟', role: '主角', traits: ['冷静'], constraints: ['不背叛同伴'] }, importance: 'protagonist', origin: 'original' },
+      { character: { id: 'rival', name: '顾念', role: '对手', traits: ['敏锐'], constraints: ['不轻易认输'] }, importance: 'antagonist', origin: 'original' }
+    ], planned_relationships: [] }} completion={{ complete: false, missing: [] }} />);
+    expect(markup).toContain('第 1 项，共 2 项');
+    expect(markup).toContain('林舟');
+    expect(markup).toContain('顾念');
+    expect(markup).toContain('角色 1 代号');
+    expect(markup).not.toContain('角色 2 代号');
+    expect((markup.match(/core-cast-member-card/g) || [])).toHaveLength(1);
   });
 });

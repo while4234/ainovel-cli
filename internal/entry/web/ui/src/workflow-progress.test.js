@@ -104,6 +104,19 @@ describe('unified workflow progress', () => {
     expect(markup).toContain('2/4');
   });
 
+  it('translates the core-role confirmation instruction shown to users', () => {
+    const markup = renderToStaticMarkup(createElement(WorkflowProgressPanel, {
+      snapshot: { workflow_progress: progress({
+        steps: [
+          { id: 'idea', label: '创意输入', status: 'completed' },
+          { id: 'review', label: '设定与规划审核', status: 'waiting_confirmation', message: 'confirm the current core cast signature' }
+        ]
+      }) }
+    }));
+    expect(markup).toContain('请检查并确认当前核心角色与关系');
+    expect(markup).not.toContain('confirm the current core cast signature');
+  });
+
   it('shows the durable background action and refresh recovery state', () => {
     const markup = renderToStaticMarkup(createElement(WorkflowProgressPanel, {
       snapshot: {

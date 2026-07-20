@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { newCoreCastMember, normalizeCoreCast, setCoreCastDisposition, setCoreCastMemberField, setCoreCastMemberSourceID } from './coreCast.js';
+import {
+  coreCastImportanceLabels,
+  newCoreCastMember,
+  newCoreCastRelationship,
+  normalizeCoreCast,
+  setCoreCastDisposition,
+  setCoreCastMemberField,
+  setCoreCastMemberSourceID,
+  setCoreCastRelationshipField
+} from './coreCast.js';
 
 describe('core cast reusable state boundary', () => {
   it('normalizes absent backend values without inventing confirmation state', () => {
@@ -38,4 +47,32 @@ describe('core cast reusable state boundary', () => {
     expect(disposed.source_dispositions[0]).toEqual(expect.objectContaining({ source_character_id: 'source-lin', action: 'keep', target_character_ids: ['target-lin'] }));
     expect(base.members[0].source_character_ids).toEqual([]);
   });
+
+  it('edits planned relationships as structured data instead of raw JSON', () => {
+    const base = normalizeCoreCast({
+      members: [
+        { character: { id: 'hero', name: '主角' } },
+        { character: { id: 'rival', name: '对手' }, importance: 'antagonist' }
+      ],
+      planned_relationships: [newCoreCastRelationship()]
+    });
+    const changed = setCoreCastRelationshipField(base, 0, 'source_character_id', 'hero');
+    const completed = setCoreCastRelationshipField(changed, 0, 'target_character_id', 'rival');
+    expect(completed.planned_relationships[0]).toEqual(expect.objectContaining({
+      source_character_id: 'hero',
+      target_character_id: 'rival',
+      direction: 'bidirectional',
+      status: 'planned'
+    }));
+    expect(base.planned_relationships[0].source_character_id).toBe('');
+  });
+
+  it('provides Chinese labels without changing persisted enum values', () => {
+    expect(coreCastImportanceLabels.protagonist).toBe('主角');
+    expect(normalizeCoreCastMemberImportance('protagonist')).toBe('protagonist');
+  });
 });
+
+function normalizeCoreCastMemberImportance(importance) {
+  return normalizeCoreCast({ members: [{ importance }] }).members[0].importance;
+}

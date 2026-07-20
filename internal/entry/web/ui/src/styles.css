@@ -870,6 +870,37 @@ h2 {
   font-weight: 800;
 }
 
+.cocreate-workspace-draft {
+  background: var(--surface-solid);
+  border: 1px solid rgba(15, 111, 109, 0.22);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.cocreate-workspace-draft h2 {
+  margin: 2px 0 4px;
+}
+
+.cocreate-workspace-draft p {
+  color: var(--muted);
+  margin: 0;
+}
+
+.cocreate-workspace-draft pre {
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  line-height: 1.65;
+  margin: 0;
+  max-height: min(52vh, 520px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 14px;
+  white-space: pre-wrap;
+}
+
 .muted,
 .empty-state,
 .no-project span {

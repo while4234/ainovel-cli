@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState } from 'react';
 import { foundationOptions, newFoundationRelationship, normalizeRelationship } from './foundationModel.js';
 import { FoundationGraphErrorBoundary } from './FoundationGraphErrorBoundary.jsx';
+import { relationshipDirectionLabels, relationshipStatusLabels, relationshipTypeLabels } from '../coreCast.js';
 
 const RelationshipGraph = lazy(() => import('./RelationshipGraph.jsx').then((module) => ({ default: module.RelationshipGraph })));
 
@@ -20,9 +21,9 @@ export function RelationshipEditor({ projectId, auditSignature, coreCast, value,
       <label><span>ID（只读）</span><input readOnly value={relationship.id} /></label>
       <SelectField label="起点角色" value={relationship.source_character_id} error={errors[`relationships.${index}.source_character_id`]} disabled={disabled} onChange={(next) => update(index, 'source_character_id', next)}><option value="">选择角色</option>{characters.map((character) => <option key={character.id} value={character.id}>{character.name || character.id}</option>)}</SelectField>
       <SelectField label="终点角色" value={relationship.target_character_id} error={errors[`relationships.${index}.target_character_id`]} disabled={disabled} onChange={(next) => update(index, 'target_character_id', next)}><option value="">选择角色</option>{characters.map((character) => <option key={character.id} value={character.id}>{character.name || character.id}</option>)}</SelectField>
-      <SelectField label="方向" value={relationship.direction} disabled={disabled} onChange={(next) => update(index, 'direction', next)}>{foundationOptions.relationshipDirections.map((option) => <option key={option}>{option}</option>)}</SelectField>
-      <SelectField label="类型" value={relationship.type} disabled={disabled} onChange={(next) => update(index, 'type', next)}>{foundationOptions.relationshipTypes.map((option) => <option key={option}>{option}</option>)}</SelectField>
-      <SelectField label="状态" value={relationship.status} disabled={disabled} onChange={(next) => update(index, 'status', next)}>{foundationOptions.relationshipStatuses.map((option) => <option key={option}>{option}</option>)}</SelectField>
+      <SelectField label="方向" value={relationship.direction} disabled={disabled} onChange={(next) => update(index, 'direction', next)}>{foundationOptions.relationshipDirections.map((option) => <option key={option} value={option}>{relationshipDirectionLabels[option] || option}</option>)}</SelectField>
+      <SelectField label="类型" value={relationship.type} disabled={disabled} onChange={(next) => update(index, 'type', next)}>{foundationOptions.relationshipTypes.map((option) => <option key={option} value={option}>{relationshipTypeLabels[option] || option}</option>)}</SelectField>
+      <SelectField label="状态" value={relationship.status} disabled={disabled} onChange={(next) => update(index, 'status', next)}>{foundationOptions.relationshipStatuses.map((option) => <option key={option} value={option}>{relationshipStatusLabels[option] || option}</option>)}</SelectField>
       {['label', 'description', 'since', 'tags', 'constraints'].map((field) => <label key={field}><span>{relationshipLabel(field)}</span><input disabled={disabled} value={Array.isArray(relationship[field]) ? relationship[field].join(', ') : relationship[field]} onChange={(event) => update(index, field, event.target.value)} /></label>)}
       <button className="tool-button danger-ghost" disabled={disabled} type="button" onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}>删除关系</button>
 		</fieldset>)}</div> : null}

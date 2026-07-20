@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-20 `pending` `feat: redesign core cast workspace`: moves editable
+  CoreCast content and the long AI draft out of the right inspector into the
+  central co-create workspace. Roles, planned relationships, and adaptation
+  source dispositions now have separate views with direct pagination and only
+  one item rendered per page. Raw relationship JSON and visible English enum
+  labels are replaced by structured Chinese forms, completeness badges, editing
+  guidance, and clear save/confirm semantics. All 328 UI tests and the production
+  build pass; live Playwright validation on `重生` confirmed five-role and
+  six-relationship pagination. Web was rebuilt and restarted on port 9898.
 - 2026-07-20 `f5d3264` `fix: recover malformed cocreate responses`: ordinary
   co-create now gives malformed XML/CoreCast JSON and length-truncated protocol
   responses up to two bounded repair attempts. The system prompt enumerates the

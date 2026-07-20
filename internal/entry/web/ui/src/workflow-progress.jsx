@@ -43,6 +43,10 @@ const activeAgentLabels = {
   auditor: '质量审核'
 };
 
+const workflowMessageLabels = {
+  'confirm the current core cast signature': '请检查并确认当前核心角色与关系'
+};
+
 export function workflowProgressFromSnapshot(snapshot) {
   const value = snapshot?.workflow_progress || snapshot?.WorkflowProgress;
   if (!value || !Array.isArray(value.steps) || value.steps.length === 0) {
@@ -116,7 +120,8 @@ export function WorkflowProgressPanel({ projectId = '', snapshot }) {
 
   const percent = workflowOverallPercent(progress);
   const currentStep = progress.steps.find((step) => step?.id === progress.current_step);
-  const currentMessage = String(currentStep?.message || '').trim();
+  const rawCurrentMessage = String(currentStep?.message || '').trim();
+  const currentMessage = workflowMessageLabels[rawCurrentMessage] || rawCurrentMessage;
   const workflowLabel = workflowLabels[progress.workflow] || '创作流程';
   const statusLabel = statusLabels[progress.status] || '状态未知';
   const currentAgent = progress.status === 'running' ? String(progress.current_agent || '').trim().toLowerCase() : '';

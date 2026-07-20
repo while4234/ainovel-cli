@@ -1,4 +1,5 @@
 import { shortSignature } from './foundationModel.js';
+import { sourceDispositionLabels } from '../coreCast.js';
 
 export function FoundationOverview({ server, draft, disabled, premiseError, onPremiseChange, onOpenCoreCast }) {
   const runtime = server.activeRevision;
@@ -16,10 +17,10 @@ export function FoundationOverview({ server, draft, disabled, premiseError, onPr
         <Metric label="可编辑" value={server.editable ? '是' : `否：${server.readonlyReason || '未说明'}`} />
         <Metric label="活动修订" value={runtime ? `${runtime.stage} · ${runtime.revision_id || runtime.session_id}` : '无'} />
         <Metric label="规划审核" value={planning ? `${planning.state || planning.status || 'pending'} · rev ${planning.revision || 0}` : '无'} />
-        <Metric label="CoreCast" value={server.coreCastConfirmed ? '已确认' : '需要确认'} />
+        <Metric label="核心角色" value={server.coreCastConfirmed ? '已确认' : '需要确认'} />
       </dl>
       <label className="foundation-premise-field"><span>目标故事前提</span><textarea aria-invalid={Boolean(premiseError)} disabled={disabled} value={draft.premise} onChange={(event) => onPremiseChange(event.target.value)} />{premiseError ? <small className="field-error">{premiseError}</small> : null}</label>
-      {!server.coreCastConfirmed ? <button className="tool-button" type="button" onClick={onOpenCoreCast}>前往现有 CoreCast 确认</button> : null}
+      {!server.coreCastConfirmed ? <button className="tool-button" type="button" onClick={onOpenCoreCast}>前往共创工作区确认</button> : null}
     </section>
 
     {server.mode === 'adaptation' ? <SourceFoundation source={server.sourceFoundation} server={server} /> : null}
@@ -45,7 +46,7 @@ function SourceFoundation({ source, server }) {
     <h4>来源主要角色处置与映射</h4>
     {dispositions.length ? <ul className="foundation-read-list">{dispositions.map((item) => <li key={item.source_character_id}>
       <strong>{sourceName(source, item.source_character_id)}</strong>
-      <span>{item.action} → {item.target_character_ids?.map((id) => targetByID.get(id)?.character?.name || id).join('、') || '不映射'}</span>
+      <span>{sourceDispositionLabels[item.action] || item.action} → {item.target_character_ids?.map((id) => targetByID.get(id)?.character?.name || id).join('、') || '不映射'}</span>
       {item.rationale ? <small>{item.rationale}</small> : null}
     </li>)}</ul> : <p className="muted">暂无已确认的来源角色处置。</p>}
     <h4>原著规则</h4>

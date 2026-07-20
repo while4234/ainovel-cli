@@ -25,6 +25,7 @@ build/
 test-results/
 playwright-report/
 blob-report/
+.playwright-cli/
 .venv/
 __pycache__/
 
