@@ -57,7 +57,7 @@ export function CoreCastEditor({ mode = 'normal', value, completion, confirmed, 
   };
 
   if (readOnly) {
-    return <ReadOnlyCoreCast value={draft} completion={completion} confirmed={confirmed} mode={mode} />;
+    return <ReadOnlyCoreCast value={draft} completion={completion} confirmed={confirmed} mode={mode} sourceMajorCharacters={sourceMajorCharacters} />;
   }
 
   const activeMember = draft.members[activeMemberIndex];
@@ -344,10 +344,10 @@ function CompletionNotice({ completion }) {
   return <div className="core-cast-missing" role="alert"><strong>还需要补充 {missing.length} 项</strong><ul>{missing.map((item, index) => <li key={`${item.code}-${item.member_id || item.source_id || index}`}>{missingItemLabel(item)}</li>)}</ul></div>;
 }
 
-function ReadOnlyCoreCast({ value, completion, confirmed, mode }) {
+function ReadOnlyCoreCast({ value, completion, confirmed, mode, sourceMajorCharacters }) {
   return (
     <section className="core-cast-editor core-cast-readonly" aria-label="核心角色只读视图">
-      <div className="core-cast-section-heading"><div><h2>核心角色</h2><p>这是当前已保存内容。需要修改时，请返回共创工作区。</p></div><span className={`core-cast-status ${confirmed ? 'confirmed' : 'pending'}`}>{confirmed ? '已确认' : '未确认'}</span></div>
+      <div className="core-cast-section-heading"><div><h2>核心角色</h2><p>{value.members.length ? '这是当前已保存内容。需要修改时，请返回共创工作区。' : mode === 'adapt' && sourceMajorCharacters.length ? '目标核心角色尚未保存，先展示已经完成分析的来源角色。' : '当前还没有已保存的核心角色。'}</p></div><span className={`core-cast-status ${confirmed ? 'confirmed' : 'pending'}`}>{confirmed ? '已确认' : '未确认'}</span></div>
       <div className="core-cast-readonly-list">{value.members.length ? value.members.map((member, index) => <article key={member.character.id || index}>
         <header><h3>{member.character.name || `角色 ${index + 1}`}</h3><span>{coreCastImportanceLabels[member.importance] || member.importance}</span></header>
         <dl className="foundation-metrics">
@@ -358,11 +358,22 @@ function ReadOnlyCoreCast({ value, completion, confirmed, mode }) {
           <Metric label="性格 / 语言" value={[member.character.traits.join('、'), member.character.voice].filter(Boolean).join(' / ')} /><Metric label="写作约束" value={member.character.constraints.join('、')} />
           {mode === 'adapt' ? <Metric label="对应源作角色" value={member.source_character_ids.join('、')} /> : null}
         </dl>
-      </article>) : <div className="core-cast-empty">暂无核心角色</div>}</div>
+      </article>) : <SourceCharacterCandidates mode={mode} characters={sourceMajorCharacters} />}</div>
       {value.planned_relationships.length ? <div className="core-cast-readonly-relations"><h3>核心关系</h3>{value.planned_relationships.map((relationship, index) => <p key={relationship.id || index}>{memberName(value.members, relationship.source_character_id)} — {relationshipTypeLabels[relationship.type] || relationship.type} — {memberName(value.members, relationship.target_character_id)}</p>)}</div> : null}
       <CompletionNotice completion={completion} />
     </section>
   );
+}
+
+function SourceCharacterCandidates({ mode, characters = [] }) {
+  if (mode !== 'adapt' || !characters.length) return <div className="core-cast-empty">暂无核心角色</div>;
+  return <section className="core-cast-source-candidates" aria-label="来源分析角色">
+    <div className="core-cast-empty"><strong>目标核心角色尚未生成</strong><span>以下人物来自已经完成的原著分析。进入共创工作区后，将其映射或改写为目标故事的核心角色。</span></div>
+    <div className="core-cast-readonly-list">{characters.map((character, index) => <article key={character.id || character.name || index}>
+      <header><h3>{character.name || `来源角色 ${index + 1}`}</h3><span>来源分析角色</span></header>
+      <dl className="foundation-metrics"><Metric label="来源角色代号" value={character.id} /><Metric label="别名" value={(character.aliases || []).join('、')} /></dl>
+    </article>)}</div>
+  </section>;
 }
 
 function Field({ label, required = false, help = '', children }) {

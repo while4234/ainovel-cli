@@ -32,6 +32,50 @@ func TestFoundationStateExposesReadonlyCoreCastContractForUnifiedUI(t *testing.T
 	}
 }
 
+func TestFoundationStateRecognizesPreparedAdaptationBeforePlanExists(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	manifest := domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: 1,
+		Chapters: []domain.AdaptationSource{{
+			Chapter: 1,
+			Title:   "Source",
+			SHA256:  domain.ContentSignature([]byte("source chapter")),
+		}},
+	}
+	if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	source := domain.AdaptationSourceFoundation{
+		Version:            1,
+		SourceSignature:    storepkg.AdaptationSourceSignature(manifest),
+		SourceChapterCount: 1,
+		Premise:            "source premise",
+		Characters:         []domain.Character{{ID: "source-hero", Name: "Source Hero", Role: "lead"}},
+	}
+	if err := st.Adaptation.SaveSourceFoundation(source); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := NewFoundationRevisionService(st).State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Mode != "adaptation" {
+		t.Fatalf("mode = %q, want adaptation", state.Mode)
+	}
+	got, ok := state.SourceFoundation.(*domain.AdaptationSourceFoundation)
+	if !ok || got == nil || len(got.Characters) != 1 || got.Characters[0].Name != "Source Hero" {
+		t.Fatalf("source foundation was not exposed before plan creation: %#v", state.SourceFoundation)
+	}
+	if state.Editable {
+		t.Fatal("prepared source without a confirmed target Foundation must remain readonly")
+	}
+}
+
 func TestAdaptationFoundationStateDoesNotReportCompletionWithoutPersistedSourceDossier(t *testing.T) {
 	st, _ := newConfirmedAdaptationFoundationRevisionStore(t)
 	state, err := NewFoundationRevisionService(st).State()

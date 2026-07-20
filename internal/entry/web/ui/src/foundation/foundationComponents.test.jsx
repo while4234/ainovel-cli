@@ -6,12 +6,14 @@ import { FoundationOverview } from './FoundationOverview.jsx';
 
 describe('foundation components', () => {
   it('adaptation 同时显示 source 只读与 target 数据', () => {
-    const markup = renderToStaticMarkup(<FoundationOverview server={{ mode: 'adaptation', baseRevision: 2, baseAuditSignature: 'abcdef012345', editable: true, sourceFoundation: { premise: '原著前提', source_signature: 'source123456', characters: [], world_rules: [] }, modeSpecific: {}, coreCast: { members: [], source_dispositions: [] } }} draft={{ premise: '目标前提', characters: [], relationships: [], world_rules: [] }} onPremiseChange={() => {}} />);
+    const markup = renderToStaticMarkup(<FoundationOverview server={{ mode: 'adaptation', baseRevision: 2, baseAuditSignature: 'abcdef012345', editable: true, sourceFoundation: { premise: '原著前提', source_signature: 'source123456', characters: [{ id: 'source-hero', name: '原著主角', role: '主角', description: '推动原著主线' }], world_rules: [] }, modeSpecific: {}, coreCast: { members: [], source_dispositions: [] } }} draft={{ premise: '目标前提', characters: [], relationships: [], world_rules: [] }} onPremiseChange={() => {}} />);
     expect(markup).toContain('SourceFoundation（只读）');
     expect(markup).toContain('不可写入');
     expect(markup).toContain('原著前提');
     expect(markup).toContain('目标前提');
     expect(markup).toContain('目标故事前提');
+    expect(markup).toContain('来源角色档案');
+    expect(markup).toContain('原著主角');
   });
 
   it('核心角色只读模式展示中文重要性和来源角色', () => {
@@ -19,6 +21,14 @@ describe('foundation components', () => {
     expect(markup).toContain('主角');
     expect(markup).toContain('source-1');
     expect(markup).not.toContain('保存修改');
+  });
+
+  it('目标核心角色尚未生成时展示来源分析角色', () => {
+    const markup = renderToStaticMarkup(<CoreCastEditor readOnly mode="adapt" value={{ members: [] }} sourceMajorCharacters={[{ id: 'source-hero', name: '原著主角', aliases: ['阿原'] }]} />);
+    expect(markup).toContain('目标核心角色尚未生成');
+    expect(markup).toContain('原著主角');
+    expect(markup).toContain('来源分析角色');
+    expect(markup).toContain('阿原');
   });
 
   it('核心角色编辑器在工作区解释修改流程并隐藏原始 JSON', () => {

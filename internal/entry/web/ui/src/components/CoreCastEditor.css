@@ -340,6 +340,11 @@
   gap: 14px;
 }
 
+.core-cast-source-candidates {
+  display: grid;
+  gap: 14px;
+}
+
 .core-cast-member-card,
 .core-cast-relationship-card,
 .core-cast-disposition-list fieldset,

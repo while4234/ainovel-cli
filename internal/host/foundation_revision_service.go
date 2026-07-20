@@ -101,7 +101,11 @@ func (s *FoundationRevisionService) State() (*FoundationState, error) {
 	var sourceFoundation *domain.AdaptationSourceFoundation
 	var adaptationContext *adaptationFoundationContext
 	var adaptationContextErr error
-	if s.store.Adaptation.Exists() {
+	sourceManifest, err := s.store.Adaptation.LoadSourceManifest()
+	if err != nil {
+		return nil, err
+	}
+	if s.store.Adaptation.Exists() || sourceManifest != nil {
 		mode = "adaptation"
 		sourceFoundation, err = s.store.Adaptation.LoadSourceFoundation()
 		source = sourceFoundation

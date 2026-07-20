@@ -43,6 +43,12 @@ function SourceFoundation({ source, server }) {
       <Metric label="来源规则" value={source?.world_rules?.length || 0} />
     </dl>
     <h4>原著前提</h4><p className="foundation-long-text">{source?.premise || '未提供'}</p>
+    <h4>来源角色档案</h4>
+    {(source?.characters || []).length ? <ul className="foundation-read-list">{source.characters.map((character, index) => <li key={character.id || character.name || index}>
+      <strong>{character.name || character.id || `来源角色 ${index + 1}`}</strong>
+      <span>{[character.role, character.description].filter(Boolean).join(' · ') || '暂无角色说明'}</span>
+      {character.aliases?.length ? <small>别名：{character.aliases.join('、')}</small> : null}
+    </li>)}</ul> : <p className="muted">来源分析尚未生成角色档案。</p>}
     <h4>来源主要角色处置与映射</h4>
     {dispositions.length ? <ul className="foundation-read-list">{dispositions.map((item) => <li key={item.source_character_id}>
       <strong>{sourceName(source, item.source_character_id)}</strong>
