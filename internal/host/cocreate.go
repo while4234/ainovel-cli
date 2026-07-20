@@ -102,12 +102,28 @@ const coCreateProtocolTail = `
 - <ready> 只写 true 或 false，不要写 true|false。只要当前 <draft> 已经可以直接交给创作引擎执行，或你没有必须继续追问的关键问题，就必须填 true；只有还缺少会阻塞执行的核心信息时才填 false。
 - <ready>true</ready> 时 <suggestions> 可以为空（保留空标签 <suggestions></suggestions> 即可）。`
 
+const coCreateCastJSONFieldContract = `JSON 字段必须严格使用以下白名单，不得添加 age、gender、appearance、background 等未列出的字段：
+- 顶层：version, mode, draft_revision, draft_hash, source_signature, adaptation_intent_hash, members, planned_relationships, source_dispositions。
+- version 必须是 JSON 数字 1；mode 只能是字符串 normal（普通原创）或 adaptation（改编），禁止使用 original、creative、adapt 等别名；draft_revision 必须是 JSON 整数。
+- member：character, importance, origin, mainline_function, source_character_ids, inclusion_rationale, no_core_relationships。
+- character：id, name, aliases, role, description, arc, traits, tier, faction, goal, motivation, conflict, voice, constraints, notes。年龄、性别、外貌、经历等信息必须写入 description 或 notes，不得自创字段。
+- aliases、traits、constraints、source_character_ids、tags、target_character_ids 都必须是 JSON 字符串数组，哪怕只有一项也不得写成单个字符串；no_core_relationships 必须是 JSON 布尔值。
+- planned_relationship：id, source_character_id, target_character_id, type, label, direction, status, description, since, tags, constraints。
+- source_disposition：source_character_id, action, target_character_ids, rationale。
+所有字符串字段必须使用 JSON 字符串，不得使用 null；没有内容的可选字段应省略或使用空字符串/空数组。
+关系 type 只能是 ally/rival/family/romantic/mentor/professional/other；direction 只能是 directed/bidirectional/undirected；status 只能是 planned/active/strained/broken/resolved。`
+
 const coCreateCastProtocolTail = `
 <cast>
 严格 JSON 的 CoreCastContract 草稿。不得使用 Markdown 代码围栏。必须包含 version=1、mode、members、planned_relationships、source_dispositions。
 members 每项必须包含 character、importance、origin、mainline_function、source_character_ids、inclusion_rationale、no_core_relationships；character 使用完整角色字段。
 importance 只能是 protagonist/co_protagonist/major_pov/antagonist/love_interest/major_support/user_important。
 origin 只能是 original/source；source disposition action 只能是 keep/rename/merge/split/exclude。
+` + coCreateCastJSONFieldContract + `
+完整性要求：
+- 每个 member.character.constraints 必须至少包含 1 条非空、可执行的关键约束，不得使用空数组。
+- 每个 member 必须至少出现在 1 条 planned_relationships 中；确实没有核心关系时，才把该 member.no_core_relationships 设为 true。
+- 字段内容要简洁，避免在 description、arc、notes 之间重复同一信息，以免响应超过输出上限。
 </cast>
 ` + coCreateProtocolTail
 
@@ -177,6 +193,7 @@ const (
 
 const (
 	coCreateMaxAttempts              = retrypolicy.MaxAttempts
+	coCreateMaxStructureRepairs      = 2
 	coCreateMaxTokens                = 2048
 	coCreateSuggestionJudgeMaxTokens = 256
 	coCreateModelRole                = "architect"
@@ -281,14 +298,13 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 
 	var raw, thinking strings.Builder
 	var attempts int
+	var structureRepairs int
 	var retryErrors []string
 	var stopReason agentcore.StopReason
 	var diagnosticStore *store.Store
 	if len(diagnosticStores) > 0 {
 		diagnosticStore = diagnosticStores[0]
 	}
-	diagnosticPayload, _ := json.Marshal(msgs[1:])
-
 	// 排查 "cocreate empty response" 等偶发问题需要看到模型实际返回什么。
 	// 每轮全程落盘到 <output>/meta/sessions/cocreate.jsonl，与正式创作的 session 日志同位。
 	start := time.Now()
@@ -339,6 +355,7 @@ retry:
 	stopReason = ""
 	streamed = false
 	done = false
+	diagnosticPayload, _ := json.Marshal(msgs[1:])
 	recorder, budgetErr := modeldiag.Begin(modeldiag.Request{Store: diagnosticStore, Task: "cocreate_stream", Batch: attempts, System: compiledSystem, User: diagnosticPayload, InputLimitBytes: manuscriptCompiledRequestBudgetBytes, OutputLimitTokens: maxTokens, SelectorCounts: map[string]int{"messages": len(msgs)}})
 	if budgetErr != nil {
 		return CoCreateReply{}, budgetErr
@@ -417,7 +434,11 @@ retry:
 	}
 	if stopReason == agentcore.StopReasonLength {
 		_ = recorder.Finish(modeldiag.StatusTruncated, raw.String(), responseUsage)
-		return CoCreateReply{}, fmt.Errorf("cocreate response truncated: stop_reason=%s", stopReason)
+		truncationErr := fmt.Errorf("cocreate response truncated: stop_reason=%s", stopReason)
+		if prepareCoCreateTruncationRepair(ctx, truncationErr, raw.String(), strings.Contains(sysPrompt, "<cast>"), attempts, &structureRepairs, &retryErrors, &msgs, onProgress) {
+			goto retry
+		}
+		return CoCreateReply{}, truncationErr
 	}
 
 	// Channel fallback：思考型模型（R1/GLM-Z1/QwQ 等）偶发把完整答案写进
@@ -433,11 +454,17 @@ retry:
 	requireCast := strings.Contains(sysPrompt, "<cast>")
 	if err := rejectIncompleteCoCreateXML(rawText, requireCast); err != nil {
 		_ = recorder.Finish(modeldiag.StatusInvalidSchema, rawText, responseUsage)
+		if prepareCoCreateStructureRepair(ctx, err, rawText, requireCast, attempts, &structureRepairs, &retryErrors, &msgs, onProgress) {
+			goto retry
+		}
 		return CoCreateReply{}, err
 	}
 	reply, err = parseCoCreateResponseForProtocol(rawText, requireCast)
 	if err != nil {
 		_ = recorder.Finish(modeldiag.StatusDecodeError, rawText, responseUsage)
+		if prepareCoCreateStructureRepair(ctx, err, rawText, requireCast, attempts, &structureRepairs, &retryErrors, &msgs, onProgress) {
+			goto retry
+		}
 		return reply, err
 	}
 	if err == nil && len(reply.Suggestions) == 0 {
@@ -508,6 +535,85 @@ func prepareCoCreateRetry(ctx context.Context, err error, attempt int, onProgres
 		return false, err
 	}
 	return true, nil
+}
+
+func prepareCoCreateStructureRepair(
+	ctx context.Context,
+	err error,
+	rawText string,
+	requireCast bool,
+	attempt int,
+	structureRepairs *int,
+	retryErrors *[]string,
+	msgs *[]agentcore.Message,
+	onProgress func(kind, text string),
+) bool {
+	return prepareCoCreateProtocolRepair(
+		ctx, err, rawText, attempt, structureRepairs, retryErrors, msgs, onProgress,
+		coCreateStructureRepairInstruction(err, requireCast),
+	)
+}
+
+func prepareCoCreateTruncationRepair(
+	ctx context.Context,
+	err error,
+	rawText string,
+	requireCast bool,
+	attempt int,
+	structureRepairs *int,
+	retryErrors *[]string,
+	msgs *[]agentcore.Message,
+	onProgress func(kind, text string),
+) bool {
+	return prepareCoCreateProtocolRepair(
+		ctx, err, rawText, attempt, structureRepairs, retryErrors, msgs, onProgress,
+		coCreateTruncationRepairInstruction(requireCast),
+	)
+}
+
+func prepareCoCreateProtocolRepair(
+	ctx context.Context,
+	err error,
+	rawText string,
+	attempt int,
+	structureRepairs *int,
+	retryErrors *[]string,
+	msgs *[]agentcore.Message,
+	onProgress func(kind, text string),
+	instruction string,
+) bool {
+	if ctx.Err() != nil || err == nil || structureRepairs == nil || msgs == nil ||
+		attempt >= coCreateMaxAttempts || *structureRepairs >= coCreateMaxStructureRepairs {
+		return false
+	}
+	*structureRepairs++
+	if retryErrors != nil {
+		*retryErrors = append(*retryErrors, err.Error())
+	}
+	clearCoCreateProgress(onProgress)
+	*msgs = append(*msgs,
+		assistantMsg(clipCoCreatePromptText(rawText, 16000)),
+		agentcore.UserMsg(instruction),
+	)
+	return true
+}
+
+func coCreateStructureRepairInstruction(err error, requireCast bool) string {
+	protocol := "请重新输出完整的 <reply><draft><ready><suggestions> 四段协议；不要只输出修补片段。"
+	if requireCast {
+		protocol = "请重新输出完整的 <reply><draft><cast><ready><suggestions> 五段协议；不要只输出修补后的 JSON。\n" + coCreateCastJSONFieldContract
+	}
+	return "上一条响应未通过机器协议校验：" + clipCoCreatePromptText(err.Error(), 600) + "\n" +
+		protocol + "\n保留已经形成的创作结论，只修复协议和字段；标签外不要输出任何内容。"
+}
+
+func coCreateTruncationRepairInstruction(requireCast bool) string {
+	protocol := "请重新输出完整的 <reply><draft><ready><suggestions> 四段协议。"
+	if requireCast {
+		protocol = "请重新输出完整的 <reply><draft><cast><ready><suggestions> 五段协议。\n" + coCreateCastJSONFieldContract
+	}
+	return "上一条响应因超过输出上限而被截断。现在进入紧凑修复批次：\n" + protocol +
+		"\n保留已经形成的全部创作结论，但压缩表达；reply 最多 120 字，draft 只保留冻结结论和未决项，角色字段每项用一个短句，避免解释、重复和铺陈。标签外不要输出任何内容。"
 }
 
 func shouldRetryCoCreate(ctx context.Context, err error, attempt int) bool {
@@ -847,12 +953,24 @@ func parseCoCreateResponseForProtocol(raw string, requireCast bool) (CoCreateRep
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return parsed, fmt.Errorf("cocreate cast contains trailing json content")
 	}
+	cast.Mode = normalizeGeneratedCoreCastMode(cast.Mode)
 	normalized, err := domain.NormalizeCoreCastContract(cast)
 	if err != nil {
 		return parsed, fmt.Errorf("cocreate cast invalid contract: %w", err)
 	}
 	parsed.CoreCast = &normalized
 	return parsed, nil
+}
+
+func normalizeGeneratedCoreCastMode(mode domain.CoreCastMode) domain.CoreCastMode {
+	switch strings.ToLower(strings.TrimSpace(string(mode))) {
+	case "original", "creative":
+		return domain.CoreCastModeNormal
+	case "adapt":
+		return domain.CoreCastModeAdaptation
+	default:
+		return mode
+	}
 }
 
 func rejectIncompleteCoCreateXML(raw string, requireCast ...bool) error {

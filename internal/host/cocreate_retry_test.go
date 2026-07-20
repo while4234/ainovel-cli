@@ -124,6 +124,45 @@ func TestCoCreateStreamRetriesProviderGatewayError(t *testing.T) {
 	}
 }
 
+func TestCoCreateStreamRepairsUnknownCoreCastField(t *testing.T) {
+	invalid := "<reply>ok</reply><draft>## plan</draft><cast>" +
+		`{"version":1,"mode":"normal","draft_revision":1,"members":[{"character":{"name":"Lin","age":25},"importance":"protagonist","origin":"original","mainline_function":"lead"}],"planned_relationships":[],"source_dispositions":[]}` +
+		"</cast><ready>true</ready><suggestions></suggestions>"
+	valid := "<reply>ok</reply><draft>## plan</draft><cast>" +
+		`{"version":1,"mode":"normal","draft_revision":1,"members":[],"planned_relationships":[],"source_dispositions":[]}` +
+		"</cast><ready>true</ready><suggestions></suggestions>"
+	model := &scriptedCoCreateModel{streams: [][]agentcore.StreamEvent{
+		{{Type: agentcore.StreamEventTextDelta, Delta: invalid}, {Type: agentcore.StreamEventDone}},
+		{{Type: agentcore.StreamEventTextDelta, Delta: valid}, {Type: agentcore.StreamEventDone}},
+	}}
+
+	reply, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		time.Second,
+		bootstrap.DefaultCoCreateMaxTokens,
+		coCreateSystemPrompt,
+		[]CoCreateMessage{{Role: "user", Content: "start"}},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("coCreateStream: %v", err)
+	}
+	if model.streamCalls != 2 || reply.CoreCast == nil {
+		t.Fatalf("stream calls = %d, reply = %+v", model.streamCalls, reply)
+	}
+	if len(model.streamMessages) != 2 || len(model.streamMessages[1]) < 4 {
+		t.Fatalf("repair messages = %+v", model.streamMessages)
+	}
+	repairText := model.streamMessages[1][len(model.streamMessages[1])-1].TextContent()
+	for _, want := range []string{`unknown field "age"`, "完整的 <reply><draft><cast><ready><suggestions> 五段协议", "年龄、性别、外貌、经历等信息必须写入 description 或 notes"} {
+		if !strings.Contains(repairText, want) {
+			t.Fatalf("repair instruction missing %q: %s", want, repairText)
+		}
+	}
+}
+
 func TestCoCreateStreamGivesEachRetryItsOwnTimeout(t *testing.T) {
 	restore := stubCoCreateRetrySleep(t)
 	defer restore()
@@ -216,14 +255,54 @@ func TestCoCreateStreamSkipsSuggestionJudgeWhenSuggestionsAreExplicit(t *testing
 	}
 }
 
-func TestCoCreateStreamRejectsDoneWithLengthStop(t *testing.T) {
+func TestCoCreateStreamRepairsDoneWithLengthStop(t *testing.T) {
 	model := &scriptedCoCreateModel{
-		streams: [][]agentcore.StreamEvent{{
-			{Type: agentcore.StreamEventTextDelta, Delta: "<reply>ok</reply><draft>partial"},
-			{Type: agentcore.StreamEventDone, StopReason: agentcore.StopReasonLength},
-		}},
+		streams: [][]agentcore.StreamEvent{
+			{
+				{Type: agentcore.StreamEventTextDelta, Delta: "<reply>ok</reply><draft>partial"},
+				{Type: agentcore.StreamEventDone, StopReason: agentcore.StopReasonLength},
+			},
+			{
+				{Type: agentcore.StreamEventTextDelta, Delta: validCoCreateXML("compact")},
+				{Type: agentcore.StreamEventDone},
+			},
+		},
 		generateResponses: []string{`{"suggestions":["不应使用"]}`},
 	}
+
+	reply, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		time.Second,
+		bootstrap.DefaultCoCreateMaxTokens,
+		"system",
+		[]CoCreateMessage{{Role: "user", Content: "start"}},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("coCreateStream: %v", err)
+	}
+	if reply.Message != "compact" || model.streamCalls != 2 {
+		t.Fatalf("reply=%+v stream calls=%d", reply, model.streamCalls)
+	}
+	if model.generateCalls != 1 {
+		t.Fatalf("suggestion judge calls = %d, want 1 after successful repair", model.generateCalls)
+	}
+	repairText := model.streamMessages[1][len(model.streamMessages[1])-1].TextContent()
+	for _, want := range []string{"紧凑修复批次", "reply 最多 120 字", "保留已经形成的全部创作结论"} {
+		if !strings.Contains(repairText, want) {
+			t.Fatalf("truncation repair instruction missing %q: %s", want, repairText)
+		}
+	}
+}
+
+func TestCoCreateStreamRejectsRepeatedLengthStops(t *testing.T) {
+	truncated := []agentcore.StreamEvent{
+		{Type: agentcore.StreamEventTextDelta, Delta: "<reply>ok</reply><draft>partial"},
+		{Type: agentcore.StreamEventDone, StopReason: agentcore.StopReasonLength},
+	}
+	model := &scriptedCoCreateModel{streams: [][]agentcore.StreamEvent{truncated, truncated, truncated}}
 
 	_, err := coCreateStream(
 		context.Background(),
@@ -238,17 +317,18 @@ func TestCoCreateStreamRejectsDoneWithLengthStop(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "truncated") {
 		t.Fatalf("err = %v, want truncated error", err)
 	}
-	if model.generateCalls != 0 {
-		t.Fatalf("suggestion judge calls = %d, want 0", model.generateCalls)
+	if model.streamCalls != 1+coCreateMaxStructureRepairs {
+		t.Fatalf("stream calls = %d, want initial response plus %d repairs", model.streamCalls, coCreateMaxStructureRepairs)
 	}
 }
 
 func TestCoCreateStreamRejectsIncompleteXML(t *testing.T) {
+	incomplete := []agentcore.StreamEvent{
+		{Type: agentcore.StreamEventTextDelta, Delta: "<reply>ok</reply><draft>partial"},
+		{Type: agentcore.StreamEventDone},
+	}
 	model := &scriptedCoCreateModel{
-		streams: [][]agentcore.StreamEvent{{
-			{Type: agentcore.StreamEventTextDelta, Delta: "<reply>ok</reply><draft>partial"},
-			{Type: agentcore.StreamEventDone},
-		}},
+		streams: [][]agentcore.StreamEvent{incomplete, incomplete, incomplete},
 	}
 
 	_, err := coCreateStream(
@@ -263,6 +343,9 @@ func TestCoCreateStreamRejectsIncompleteXML(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("err = %v, want incomplete XML error", err)
+	}
+	if model.streamCalls != 1+coCreateMaxStructureRepairs {
+		t.Fatalf("stream calls = %d, want initial response plus %d repairs", model.streamCalls, coCreateMaxStructureRepairs)
 	}
 }
 
@@ -361,6 +444,7 @@ func TestCoCreateStreamGatewayErrorDoesNotLeakHTML(t *testing.T) {
 type scriptedCoCreateModel struct {
 	streams           [][]agentcore.StreamEvent
 	generateResponses []string
+	streamMessages    [][]agentcore.Message
 	streamCalls       int
 	generateCalls     int
 }
@@ -405,8 +489,9 @@ func (m *scriptedCoCreateModel) Generate(context.Context, []agentcore.Message, [
 	}}, nil
 }
 
-func (m *scriptedCoCreateModel) GenerateStream(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+func (m *scriptedCoCreateModel) GenerateStream(_ context.Context, messages []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
 	ch := make(chan agentcore.StreamEvent, 8)
+	m.streamMessages = append(m.streamMessages, append([]agentcore.Message(nil), messages...))
 	if m.streamCalls >= len(m.streams) {
 		close(ch)
 		return ch, nil

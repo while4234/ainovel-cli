@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-20 pending `fix: recover malformed cocreate responses`: ordinary
+  co-create now gives malformed XML/CoreCast JSON and length-truncated protocol
+  responses up to two bounded repair attempts. The system prompt enumerates the
+  exact CoreCast field/type contract, requires non-empty character constraints
+  and relationship coverage, and the model boundary normalizes common mode
+  aliases while formal persistence remains strict. Focused `TestCoCreate` tests
+  pass. Live recovery of the existing `重生` prompt produced a ready 300,000-word
+  plan with five constrained characters and six relationships; Web was rebuilt
+  and restarted on port 9898.
 - 2026-07-19 `21e4082` `fix: repair word budget without rewriting drafts`:
   normal `draft_chapter` and `commit_chapter` word-budget rejections no longer
   instruct Writer to call `draft_chapter(mode=write)` and replace the entire

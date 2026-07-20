@@ -41,9 +41,44 @@ func TestCoCreateCastProtocolRejectsDuplicateInvalidAndOversizedCast(t *testing.
 	if _, err := parseCoCreateResponseForProtocol(invalid, true); err == nil {
 		t.Fatal("invalid cast json was accepted")
 	}
+	unknownField := "<reply>ok</reply><draft>draft</draft><cast>" +
+		`{"version":1,"mode":"normal","draft_revision":1,"members":[{"character":{"name":"Lin","age":25},"importance":"protagonist","origin":"original","mainline_function":"lead"}],"planned_relationships":[],"source_dispositions":[]}` +
+		"</cast><ready>false</ready><suggestions></suggestions>"
+	if _, err := parseCoCreateResponseForProtocol(unknownField, true); err == nil || !strings.Contains(err.Error(), `unknown field "age"`) {
+		t.Fatalf("unknown cast field error = %v", err)
+	}
 	oversized := "<reply>ok</reply><draft>draft</draft><cast>" + strings.Repeat(" ", coCreateCastMaxBytes+1) + "{}</cast><ready>false</ready><suggestions></suggestions>"
 	if _, err := parseCoCreateResponseForProtocol(oversized, true); err == nil {
 		t.Fatal("oversized cast was accepted")
+	}
+}
+
+func TestCoCreateCastPromptDefinesExactCharacterFieldBoundary(t *testing.T) {
+	for _, want := range []string{
+		"character：id, name, aliases, role, description, arc, traits, tier, faction, goal, motivation, conflict, voice, constraints, notes",
+		"不得添加 age、gender、appearance、background",
+		"年龄、性别、外貌、经历等信息必须写入 description 或 notes",
+		"mode 只能是字符串 normal（普通原创）或 adaptation（改编）",
+		"constraints、source_character_ids、tags、target_character_ids 都必须是 JSON 字符串数组",
+	} {
+		if !strings.Contains(coCreateCastProtocolTail, want) {
+			t.Fatalf("cast protocol missing exact field guidance %q", want)
+		}
+	}
+}
+
+func TestCoCreateCastParserNormalizesCommonModelModeAliases(t *testing.T) {
+	for alias, want := range map[string]domain.CoreCastMode{
+		"original": domain.CoreCastModeNormal,
+		"creative": domain.CoreCastModeNormal,
+		"adapt":    domain.CoreCastModeAdaptation,
+	} {
+		cast := `{"version":1,"mode":"` + alias + `","draft_revision":1,"members":[],"planned_relationships":[],"source_dispositions":[]}`
+		raw := "<reply>ok</reply><draft>draft</draft><cast>" + cast + "</cast><ready>true</ready><suggestions></suggestions>"
+		reply, err := parseCoCreateResponseForProtocol(raw, true)
+		if err != nil || reply.CoreCast == nil || reply.CoreCast.Mode != want {
+			t.Fatalf("mode alias %q = %+v, %v; want %q", alias, reply.CoreCast, err, want)
+		}
 	}
 }
 
