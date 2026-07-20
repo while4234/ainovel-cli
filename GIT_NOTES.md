@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-20 `9e4eac1` `fix: expose analyzed source roles in foundation center`:
+  Foundation state now recognizes a prepared adaptation as soon as its source
+  manifest exists, instead of waiting for `plan.json`. Before target CoreCast
+  generation, the center exposes the read-only SourceFoundation, lists source
+  character dossiers, and shows source-role candidates in the CoreCast tab
+  without persisting them as target-story roles. Host/Web tests, all 329 UI
+  tests, the production build, a `main` push, restart, and live `梦中` API/asset
+  probes passed; Web is running on port 9898 as PID 31548.
 - 2026-07-20 `2513dfa` `feat: redesign core cast workspace`: moves editable
   CoreCast content and the long AI draft out of the right inspector into the
   central co-create workspace. Roles, planned relationships, and adaptation
