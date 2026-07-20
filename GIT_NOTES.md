@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-20 `pending` `feat: redesign core cast workspace`: moves editable
+- 2026-07-20 `2513dfa` `feat: redesign core cast workspace`: moves editable
   CoreCast content and the long AI draft out of the right inspector into the
   central co-create workspace. Roles, planned relationships, and adaptation
   source dispositions now have separate views with direct pagination and only
