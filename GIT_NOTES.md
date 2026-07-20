@@ -46,6 +46,24 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-20 `81d7396` `fix: prevent foundation tabs from shrinking`:
+  all direct Foundation-center chrome outside the scrolling panel now keeps its
+  intrinsic height, and the tab row has a 38px minimum height. This prevents
+  `概览` / `核心角色` and the other tabs from being vertically clipped when the
+  workflow header leaves limited space. The exact live 2048x1024 layout changed
+  from a 10.2px tab row with `fullyVisible=false` to 42px with
+  `fullyVisible=true`; all 14 desktop/mobile Foundation browser cases passed.
+  `main` was pushed and Web restarted on port 9898 as PID 34384.
+- 2026-07-20 `08f398b` `fix: show complete source roles without layout overlap`:
+  Foundation CoreCast fallback cards now preserve and display the analyzed
+  source character's role, description, traits, arc, goals, motivation,
+  conflict, voice, constraints, faction, and notes instead of reducing each
+  character to a name and aliases. The Foundation center now keeps its header
+  and action footer in normal layout while only the content panel scrolls, so
+  neither the top title nor the final role/rule content is covered. All 330 UI
+  tests, the production build, and 14 desktop/mobile Playwright cases passed;
+  live `梦中` validation found four detailed source roles and clean bottom
+  geometry. `main` was pushed and Web restarted on port 9898 as PID 9376.
 - 2026-07-20 `9e4eac1` `fix: expose analyzed source roles in foundation center`:
   Foundation state now recognizes a prepared adaptation as soon as its source
   manifest exists, instead of waiting for `plan.json`. Before target CoreCast
