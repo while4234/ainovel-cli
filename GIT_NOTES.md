@@ -46,12 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-20 pending `fix: sync completed legacy novel backfills`: loaded
+- 2026-07-20 `e50298a` `fix: sync completed legacy novel backfills`: loaded
   legacy-library analyses no longer reopen the project and reclassify the
   completed package while the Web normal-flow lease is still held. A cleanly
   completed analysis stream now proceeds directly to the existing validated,
   atomic library replacement. Focused legacy-load/backfill tests and Web vet
-  pass; live old-v2 to current-v3 library acceptance is pending deployment.
+  pass. Live acceptance loaded the old `梦中的女孩` v2/two-batch entry into a
+  fresh project, regenerated all three v3 batches under the current
+  architecture, emitted one successful `novel_sync` and no sync error, and
+  atomically updated the 17-chapter library entry to v3/40000/three batches.
 - 2026-07-19 `21e4082` `fix: repair word budget without rewriting drafts`:
   normal `draft_chapter` and `commit_chapter` word-budget rejections no longer
   instruct Writer to call `draft_chapter(mode=write)` and replace the entire
