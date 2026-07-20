@@ -24,11 +24,20 @@ describe('foundation components', () => {
   });
 
   it('目标核心角色尚未生成时展示来源分析角色', () => {
-    const markup = renderToStaticMarkup(<CoreCastEditor readOnly mode="adapt" value={{ members: [] }} sourceMajorCharacters={[{ id: 'source-hero', name: '原著主角', aliases: ['阿原'] }]} />);
+    const markup = renderToStaticMarkup(<CoreCastEditor readOnly mode="adapt" value={{ members: [] }} sourceMajorCharacters={[{
+      id: 'source-hero', name: '原著主角', aliases: ['阿原'], role: '主角 / 调查者', description: '追查失踪真相',
+      traits: ['冷静', '执着'], arc: '从怀疑到承担', goal: '找到证据', motivation: '守护家人', conflict: '不敢信任同伴',
+      voice: '克制', constraints: ['不主动伤害无辜'], faction: '调查组', notes: '保留左手旧伤'
+    }]} />);
     expect(markup).toContain('目标核心角色尚未生成');
     expect(markup).toContain('原著主角');
     expect(markup).toContain('来源分析角色');
     expect(markup).toContain('阿原');
+    expect(markup).toContain('主角 / 调查者');
+    expect(markup).toContain('追查失踪真相');
+    expect(markup).toContain('冷静、执着');
+    expect(markup).toContain('从怀疑到承担');
+    expect(markup).toContain('不主动伤害无辜');
   });
 
   it('核心角色编辑器在工作区解释修改流程并隐藏原始 JSON', () => {

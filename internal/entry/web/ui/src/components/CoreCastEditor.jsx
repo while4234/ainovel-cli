@@ -371,7 +371,15 @@ function SourceCharacterCandidates({ mode, characters = [] }) {
     <div className="core-cast-empty"><strong>目标核心角色尚未生成</strong><span>以下人物来自已经完成的原著分析。进入共创工作区后，将其映射或改写为目标故事的核心角色。</span></div>
     <div className="core-cast-readonly-list">{characters.map((character, index) => <article key={character.id || character.name || index}>
       <header><h3>{character.name || `来源角色 ${index + 1}`}</h3><span>来源分析角色</span></header>
-      <dl className="foundation-metrics"><Metric label="来源角色代号" value={character.id} /><Metric label="别名" value={(character.aliases || []).join('、')} /></dl>
+      <dl className="foundation-metrics core-cast-source-details">
+        <Metric label="来源角色代号" value={character.id} /><Metric label="身份 / 职责" value={character.role} />
+        <Metric label="别名" value={(character.aliases || []).join('、')} /><Metric label="阵营" value={character.faction} />
+        <Metric label="人物介绍" value={character.description} wide /><Metric label="性格特征" value={(character.traits || []).join('、')} wide />
+        <Metric label="人物弧光" value={character.arc} wide /><Metric label="目标" value={character.goal} />
+        <Metric label="动机" value={character.motivation} /><Metric label="核心冲突" value={character.conflict} />
+        <Metric label="语言风格" value={character.voice} /><Metric label="写作约束" value={(character.constraints || []).join('、')} wide />
+        <Metric label="补充备注" value={character.notes} wide />
+      </dl>
     </article>)}</div>
   </section>;
 }
@@ -381,7 +389,7 @@ function Field({ label, required = false, help = '', children }) {
 }
 
 function RequiredMark() { return <em aria-label="必填">必填</em>; }
-function Metric({ label, value }) { return <div><dt>{label}</dt><dd>{value || '—'}</dd></div>; }
+function Metric({ label, value, wide = false }) { return <div className={wide ? 'core-cast-metric-wide' : undefined}><dt>{label}</dt><dd>{value || '—'}</dd></div>; }
 function memberOptions(members) { return members.map((member) => <option key={member.character.id} value={member.character.id}>{member.character.name || member.character.id}</option>); }
 function optionElements(options, labels) { return options.map((option) => <option key={option} value={option}>{labels[option] || option}</option>); }
 function memberName(members, id) { return members.find((member) => member.character.id === id)?.character.name || id || '未选择角色'; }

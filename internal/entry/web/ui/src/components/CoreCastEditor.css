@@ -345,6 +345,15 @@
   gap: 14px;
 }
 
+.core-cast-source-details dd {
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.core-cast-source-details .core-cast-metric-wide {
+  grid-column: 1 / -1;
+}
+
 .core-cast-member-card,
 .core-cast-relationship-card,
 .core-cast-disposition-list fieldset,

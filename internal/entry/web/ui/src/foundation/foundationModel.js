@@ -166,7 +166,18 @@ export function sourceMajorCharacters(sourceFoundation) {
   return array(sourceFoundation?.characters).map((character) => ({
     id: String(character?.id || ''),
     name: String(character?.name || ''),
-    aliases: uniqueStrings(character?.aliases)
+    aliases: uniqueStrings(character?.aliases),
+    role: String(character?.role || ''),
+    description: String(character?.description || ''),
+    arc: String(character?.arc || ''),
+    traits: uniqueStrings(character?.traits),
+    goal: String(character?.goal || ''),
+    motivation: String(character?.motivation || ''),
+    conflict: String(character?.conflict || ''),
+    voice: String(character?.voice || ''),
+    constraints: uniqueStrings(character?.constraints),
+    faction: String(character?.faction || ''),
+    notes: String(character?.notes || '')
   })).filter((character) => character.id || character.name);
 }
 

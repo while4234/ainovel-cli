@@ -41,7 +41,7 @@ test('改编 SourceFoundation 只读并展示映射、source-fidelity 与 Adapta
   await expect(page.getByRole('heading', { name: 'SourceFoundation（只读）' })).toBeVisible();
   const sourceCard = page.locator('.source-foundation');
   await expect(sourceCard.getByText('原著世界里旧王归来')).toBeVisible();
-  await expect(sourceCard.getByText(/rename.*林舟/)).toBeVisible();
+  await expect(sourceCard.getByText(/改名保留.*林舟/)).toBeVisible();
   await expect(sourceCard.locator('input, textarea, select')).toHaveCount(0);
   await page.getByRole('tab', { name: '世界规则' }).click();
   await page.getByLabel('规则正文').fill('目标世界能力必须付出代价');
@@ -54,6 +54,32 @@ test('改编 SourceFoundation 只读并展示映射、source-fidelity 与 Adapta
   await expect(page.getByText('影响 CoreCast')).toBeVisible();
   await expect(page.getByText('重确认 CoreCast').locator('..').first()).toContainText('需要');
   await expect(page.getByRole('button', { name: '应用当前 preview ID' })).toBeDisabled();
+});
+
+test('仅有来源分析时核心角色显示完整人物资料且固定栏不遮挡内容', async ({ page }) => {
+  await page.request.post('/api/test/foundation/scenario?value=source-only');
+  await page.reload();
+  await page.getByRole('tab', { name: '核心角色' }).click();
+  await expect(page.getByRole('heading', { name: '原著林舟' })).toBeVisible();
+  await expect(page.getByText('旧王继承人')).toBeVisible();
+  await expect(page.getByText('背负流亡王庭的秘密，追查城市灾变。')).toBeVisible();
+  await expect(page.getByText('冷静、执着')).toBeVisible();
+  await expect(page.getByText('从独行到信任盟友')).toBeVisible();
+
+  const layout = await page.locator('.foundation-center').evaluate((center) => {
+    const header = center.querySelector('.foundation-header').getBoundingClientRect();
+    const panel = center.querySelector('.foundation-panel');
+    const actions = center.querySelector('.foundation-actions').getBoundingClientRect();
+    panel.scrollTop = panel.scrollHeight;
+    const panelBox = panel.getBoundingClientRect();
+    const lastCard = panel.querySelector('.core-cast-readonly article:last-of-type').getBoundingClientRect();
+    return {
+      headerVisible: header.top >= center.getBoundingClientRect().top,
+      panelEndsBeforeActions: panelBox.bottom <= actions.top + 1,
+      lastCardEndsInsidePanel: lastCard.bottom <= panelBox.bottom + 1
+    };
+  });
+  expect(layout).toEqual({ headerVisible: true, panelEndsBeforeActions: true, lastCardEndsInsidePanel: true });
 });
 
 test('stale 409 保留草稿并以服务器新 revision 重新对比', async ({ page }) => {

@@ -1,4 +1,4 @@
-.foundation-center { box-sizing: border-box; display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 14px; overflow: auto; padding: 20px; }
+.foundation-center { box-sizing: border-box; display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 14px; overflow: hidden; padding: 20px; }
 .foundation-header, .foundation-section-head, .foundation-actions, .foundation-card-title, .foundation-state-strip, .foundation-apply-bar { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
 .foundation-header h1, .foundation-section-head h2 { margin: 2px 0 4px; }
 .foundation-header p, .foundation-section-head p { margin: 0; color: var(--muted, #697386); }
@@ -11,7 +11,7 @@
 .foundation-tabs { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 3px; }
 .foundation-tabs button { background: transparent; border: 1px solid var(--border, #d8dee8); border-radius: 8px; cursor: pointer; flex: 0 0 auto; padding: 8px 12px; }
 .foundation-tabs button.active { background: var(--accent, #335cff); color: white; }
-.foundation-panel { min-height: 280px; }
+.foundation-panel { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 2px 6px 24px 2px; scrollbar-gutter: stable; }
 .foundation-overview-grid, .foundation-preview-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); }
 .foundation-card, .foundation-editor-card, .foundation-preview-empty { border: 1px solid var(--border, #d8dee8); border-radius: 12px; padding: 14px; min-width: 0; }
 .foundation-card h3, .foundation-card h4 { margin-top: 0; }
@@ -52,7 +52,8 @@
 .foundation-graph-node span { color: #566276; font-size: 11px; }
 .foundation-graph-summary { color: var(--muted, #697386); margin: 0; }
 .foundation-graph-fallback { border: 1px solid #d9a321; border-radius: 10px; background: #fff8e5; padding: 14px; }
-.foundation-apply-bar, .foundation-actions { background: var(--surface, #fff); border-top: 1px solid var(--border, #d8dee8); bottom: 0; padding: 12px 0; position: sticky; z-index: 2; }
+.foundation-apply-bar, .foundation-actions { background: var(--surface, #fff); border-top: 1px solid var(--border, #d8dee8); padding: 12px 0 0; }
+.foundation-actions { flex: 0 0 auto; }
 .foundation-dialog-backdrop { align-items: center; background: rgb(0 0 0 / 45%); display: flex; inset: 0; justify-content: center; padding: 18px; position: fixed; z-index: 100; }
 .foundation-dialog { background: var(--surface, white); border-radius: 12px; max-width: 480px; padding: 20px; width: 100%; }
 .foundation-loading { align-items: center; justify-content: center; }

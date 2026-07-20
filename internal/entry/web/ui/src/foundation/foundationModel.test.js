@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { candidateFingerprint, newFoundationCharacter, normalizeFoundationResponse, validateFoundationDraft } from './foundationModel.js';
+import { candidateFingerprint, newFoundationCharacter, normalizeFoundationResponse, sourceMajorCharacters, validateFoundationDraft } from './foundationModel.js';
 
 const complete = {
   schema_version: 1, revision: 4, premise: '目标故事',
@@ -23,6 +23,18 @@ describe('foundation model', () => {
     const response = normalizeFoundationResponse({ foundation: { target_foundation: complete } });
     expect(response.targetFoundation.characters[0].aliases).toEqual(['阿舟']);
     expect(candidateFingerprint({ ...complete, updated_at: 'before' })).toBe(candidateFingerprint({ ...complete, updated_at: 'after' }));
+  });
+
+  it('来源主要角色保留分析生成的完整人物资料', () => {
+    expect(sourceMajorCharacters({ characters: [{
+      name: '原著主角', role: '主角 / 调查者', description: '追查失踪真相', arc: '从怀疑到承担',
+      traits: ['冷静', '冷静', '执着'], goal: '找到证据', motivation: '守护家人', conflict: '不敢信任同伴',
+      voice: '克制', constraints: ['不主动伤害无辜'], faction: '调查组', notes: '保留左手旧伤'
+    }] })[0]).toEqual(expect.objectContaining({
+      role: '主角 / 调查者', description: '追查失踪真相', arc: '从怀疑到承担', traits: ['冷静', '执着'],
+      goal: '找到证据', motivation: '守护家人', conflict: '不敢信任同伴', voice: '克制',
+      constraints: ['不主动伤害无辜'], faction: '调查组', notes: '保留左手旧伤'
+    }));
   });
 
   it('定位悬空关系与缺失规则字段', () => {
