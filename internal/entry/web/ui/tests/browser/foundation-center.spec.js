@@ -68,6 +68,8 @@ test('仅有来源分析时核心角色显示完整人物资料且固定栏不�
 
   const layout = await page.locator('.foundation-center').evaluate((center) => {
     const header = center.querySelector('.foundation-header').getBoundingClientRect();
+    const tabs = center.querySelector('.foundation-tabs').getBoundingClientRect();
+    const tabButtons = [...center.querySelectorAll('.foundation-tabs button')].map((button) => button.getBoundingClientRect());
     const panel = center.querySelector('.foundation-panel');
     const actions = center.querySelector('.foundation-actions').getBoundingClientRect();
     panel.scrollTop = panel.scrollHeight;
@@ -75,11 +77,12 @@ test('仅有来源分析时核心角色显示完整人物资料且固定栏不�
     const lastCard = panel.querySelector('.core-cast-readonly article:last-of-type').getBoundingClientRect();
     return {
       headerVisible: header.top >= center.getBoundingClientRect().top,
+      tabsFullyVisible: tabButtons.every((button) => button.top >= tabs.top && button.bottom <= tabs.bottom),
       panelEndsBeforeActions: panelBox.bottom <= actions.top + 1,
       lastCardEndsInsidePanel: lastCard.bottom <= panelBox.bottom + 1
     };
   });
-  expect(layout).toEqual({ headerVisible: true, panelEndsBeforeActions: true, lastCardEndsInsidePanel: true });
+  expect(layout).toEqual({ headerVisible: true, tabsFullyVisible: true, panelEndsBeforeActions: true, lastCardEndsInsidePanel: true });
 });
 
 test('stale 409 保留草稿并以服务器新 revision 重新对比', async ({ page }) => {

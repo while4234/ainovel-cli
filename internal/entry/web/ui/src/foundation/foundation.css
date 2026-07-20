@@ -1,4 +1,5 @@
 .foundation-center { box-sizing: border-box; display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 14px; overflow: hidden; padding: 20px; }
+.foundation-center > :not(.foundation-panel) { flex: 0 0 auto; }
 .foundation-header, .foundation-section-head, .foundation-actions, .foundation-card-title, .foundation-state-strip, .foundation-apply-bar { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
 .foundation-header h1, .foundation-section-head h2 { margin: 2px 0 4px; }
 .foundation-header p, .foundation-section-head p { margin: 0; color: var(--muted, #697386); }
@@ -8,7 +9,7 @@
 .foundation-validation-summary, .foundation-validation.invalid { border-color: #d65b5b; background: #fff1f0; }
 .foundation-validation.valid { border-color: #4b9b6f; background: #edf9f1; }
 .foundation-validation-summary ul, .foundation-validation ul { margin: 6px 0 0; }
-.foundation-tabs { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 3px; }
+.foundation-tabs { display: flex; gap: 4px; min-height: 38px; overflow-x: auto; padding-bottom: 3px; }
 .foundation-tabs button { background: transparent; border: 1px solid var(--border, #d8dee8); border-radius: 8px; cursor: pointer; flex: 0 0 auto; padding: 8px 12px; }
 .foundation-tabs button.active { background: var(--accent, #335cff); color: white; }
 .foundation-panel { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 2px 6px 24px 2px; scrollbar-gutter: stable; }
