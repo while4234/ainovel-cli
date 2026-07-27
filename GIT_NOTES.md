@@ -46,6 +46,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-27 `pending` `feat: add complete character card contract`:
+  upgrades StoryFoundation to schema v3 with contrast, key-backstory,
+  chapter-zero initial-state, and knowledge-boundary semantics; adds one
+  deterministic tiered completeness API; adds a signature-bound lifecycle,
+  review-finding, confirmation, and full-cast source-mapping sidecar contract;
+  preserves supporting cast when publishing CoreCast; and covers v1/v2
+  read-only compatibility, idempotent migration, cloning, JSON/signature/diff,
+  staleness, source mapping, CAS persistence, and legacy snapshots/relations.
+  Focused domain/store tests and the CLI build pass. The full repository run
+  reached existing Web failures caused by missing CoreCast gate fixtures and
+  an unavailable expansion-auditor command; no PR-01 package failed.
 - 2026-07-20 `81d7396` `fix: prevent foundation tabs from shrinking`:
   all direct Foundation-center chrome outside the scrolling panel now keeps its
   intrinsic height, and the tab row has a 38px minimum height. This prevents

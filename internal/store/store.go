@@ -50,6 +50,7 @@ type Store struct {
 	OriginalPlanningAudits *OriginalPlanningAuditStore
 	Foundation             *FoundationStore
 	CoreCast               *CoreCastStore
+	CharacterCards         *CharacterCardStore
 	FoundationRevisions    *FoundationRevisionStore
 
 	crossMu                  sync.Mutex // 保护跨域原子操作
@@ -95,6 +96,7 @@ func NewStore(dir string) *Store {
 		OriginalPlanningAudits: NewOriginalPlanningAuditStore(newIO(dir), outline),
 		Foundation:             foundation,
 		CoreCast:               newCoreCastStore(newIO(dir)),
+		CharacterCards:         newCharacterCardStore(newIO(dir)),
 		FoundationRevisions:    NewFoundationRevisionStore(newIO(dir)),
 	}
 	foundation.coreCast = store.CoreCast

@@ -102,6 +102,38 @@ func renderCharacters(chars []domain.Character) string {
 		if len(c.Traits) > 0 {
 			fmt.Fprintf(&b, "**特征**：%s\n\n", strings.Join(c.Traits, "、"))
 		}
+		for _, contrast := range c.ContrastDetails {
+			fmt.Fprintf(&b, "**反差**：%s → %s\n\n", contrast.Surface, contrast.Depth)
+		}
+		for _, backstory := range c.KeyBackstory {
+			fmt.Fprintf(&b, "**关键过往**：%s（影响：%s）\n\n", backstory.Event, backstory.Impact)
+		}
+		if c.InitialState != nil {
+			parts := []string{c.InitialState.Identity, c.InitialState.Situation, c.InitialState.Emotion}
+			parts = append(parts, c.InitialState.Resources...)
+			parts = append(parts, c.InitialState.Relationships)
+			fmt.Fprintf(&b, "**初始状态**：%s\n\n", strings.Join(nonEmptyCharacterCardParts(parts), "；"))
+		}
+		if c.KnowledgeBoundary != nil {
+			fmt.Fprintf(
+				&b,
+				"**知识边界**：已知[%s]；未知[%s]；误解[%s]；禁止提前知道[%s]\n\n",
+				strings.Join(c.KnowledgeBoundary.Known, "、"),
+				strings.Join(c.KnowledgeBoundary.Unknown, "、"),
+				strings.Join(c.KnowledgeBoundary.Misconceptions, "、"),
+				strings.Join(c.KnowledgeBoundary.Forbidden, "、"),
+			)
+		}
 	}
 	return b.String()
+}
+
+func nonEmptyCharacterCardParts(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }

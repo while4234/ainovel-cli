@@ -129,21 +129,7 @@ func NormalizeCoreCastContract(value CoreCastContract) (CoreCastContract, error)
 
 	for i := range out.Members {
 		member := &out.Members[i]
-		member.Character.ID = strings.TrimSpace(member.Character.ID)
-		member.Character.Name = strings.TrimSpace(member.Character.Name)
-		member.Character.Role = strings.TrimSpace(member.Character.Role)
-		member.Character.Description = strings.TrimSpace(member.Character.Description)
-		member.Character.Arc = strings.TrimSpace(member.Character.Arc)
-		member.Character.Goal = strings.TrimSpace(member.Character.Goal)
-		member.Character.Motivation = strings.TrimSpace(member.Character.Motivation)
-		member.Character.Conflict = strings.TrimSpace(member.Character.Conflict)
-		member.Character.Voice = strings.TrimSpace(member.Character.Voice)
-		member.Character.Tier = strings.TrimSpace(member.Character.Tier)
-		member.Character.Faction = strings.TrimSpace(member.Character.Faction)
-		member.Character.Notes = strings.TrimSpace(member.Character.Notes)
-		member.Character.Aliases = normalizedStrings(member.Character.Aliases)
-		member.Character.Traits = normalizedStrings(member.Character.Traits)
-		member.Character.Constraints = normalizedStrings(member.Character.Constraints)
+		normalizeCharacter(&member.Character)
 		member.MainlineFunction = strings.TrimSpace(member.MainlineFunction)
 		member.InclusionRationale = strings.TrimSpace(member.InclusionRationale)
 		member.SourceCharacterIDs = normalizedStrings(member.SourceCharacterIDs)
@@ -411,18 +397,46 @@ func ResolveSourceMajorCharacters(source AdaptationSourceFoundation, dossier Ada
 func ContractCharacters(contract CoreCastContract) []Character {
 	characters := make([]Character, 0, len(contract.Members))
 	for _, member := range contract.Members {
-		characters = append(characters, member.Character)
+		characters = append(characters, CloneCharacter(member.Character))
 	}
 	return characters
+}
+
+// ApplyCoreCastToFoundation replaces the confirmed core subset while
+// preserving supporting characters and relationships outside that subset.
+func ApplyCoreCastToFoundation(foundation StoryFoundation, contract CoreCastContract) StoryFoundation {
+	out := CloneStoryFoundation(foundation)
+	coreIDs := make(map[string]struct{}, len(contract.Members))
+	for _, member := range contract.Members {
+		coreIDs[member.Character.ID] = struct{}{}
+	}
+	characters := make([]Character, 0, len(out.Characters)+len(contract.Members))
+	for _, character := range out.Characters {
+		if _, core := coreIDs[character.ID]; !core {
+			characters = append(characters, character)
+		}
+	}
+	characters = append(characters, ContractCharacters(contract)...)
+	relationships := make([]CharacterRelationship, 0, len(out.Relationships)+len(contract.PlannedRelationships))
+	for _, relationship := range out.Relationships {
+		_, sourceCore := coreIDs[relationship.SourceCharacterID]
+		_, targetCore := coreIDs[relationship.TargetCharacterID]
+		if !sourceCore || !targetCore {
+			relationships = append(relationships, relationship)
+		}
+	}
+	relationships = append(relationships, contract.PlannedRelationships...)
+	out.Characters = characters
+	out.Relationships = relationships
+	out.RelationshipsReviewed = true
+	return out
 }
 
 func cloneCoreCastContract(in CoreCastContract) CoreCastContract {
 	out := in
 	out.Members = append([]CoreCastMember(nil), in.Members...)
 	for i := range out.Members {
-		out.Members[i].Character.Aliases = append([]string(nil), in.Members[i].Character.Aliases...)
-		out.Members[i].Character.Traits = append([]string(nil), in.Members[i].Character.Traits...)
-		out.Members[i].Character.Constraints = append([]string(nil), in.Members[i].Character.Constraints...)
+		out.Members[i].Character = CloneCharacter(in.Members[i].Character)
 		out.Members[i].SourceCharacterIDs = append([]string(nil), in.Members[i].SourceCharacterIDs...)
 	}
 	out.PlannedRelationships = append([]CharacterRelationship(nil), in.PlannedRelationships...)

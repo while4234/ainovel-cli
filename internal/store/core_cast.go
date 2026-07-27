@@ -277,9 +277,7 @@ func (s *CoreCastStore) publishConfirmed(foundation *FoundationStore, sourceChar
 		return domain.CoreCastContract{}, fmt.Errorf("load story foundation for core cast publish: %w", err)
 	}
 	candidate := domain.CloneStoryFoundation(formal)
-	candidate.Characters = domain.ContractCharacters(*current)
-	candidate.Relationships = append([]domain.CharacterRelationship(nil), current.PlannedRelationships...)
-	candidate.RelationshipsReviewed = true
+	candidate = domain.ApplyCoreCastToFoundation(candidate, *current)
 	published, err := foundation.saveCoreCastCAS(candidate, formal.Revision)
 	if err != nil {
 		return domain.CoreCastContract{}, fmt.Errorf("publish core cast to story foundation: %w", err)

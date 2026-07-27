@@ -10,9 +10,12 @@ import (
 )
 
 const (
-	StoryFoundationSchemaVersion       = 2
-	legacyStoryFoundationSchemaVersion = 1
+	StoryFoundationSchemaVersion         = 3
+	legacyStoryFoundationSchemaVersion   = 1
+	previousStoryFoundationSchemaVersion = 2
 	// Version 2 only renames mutual to bidirectional and adds undirected.
+	// Version 3 adds optional complete-character-card fields. Empty v1/v2
+	// fields remain omitted so legacy semantic signatures stay stable.
 	// Retaining audit schema 1 keeps legacy mutual/bidirectional signatures
 	// stable while the stored representation migrates on its next real save.
 	storyFoundationAuditSchemaVersion = 1
@@ -101,10 +104,7 @@ func CloneStoryFoundation(in StoryFoundation) StoryFoundation {
 	if in.Characters != nil {
 		out.Characters = make([]Character, len(in.Characters))
 		for i := range in.Characters {
-			out.Characters[i] = in.Characters[i]
-			out.Characters[i].Aliases = append([]string(nil), in.Characters[i].Aliases...)
-			out.Characters[i].Traits = append([]string(nil), in.Characters[i].Traits...)
-			out.Characters[i].Constraints = append([]string(nil), in.Characters[i].Constraints...)
+			out.Characters[i] = CloneCharacter(in.Characters[i])
 		}
 	}
 	if in.Relationships != nil {
@@ -133,7 +133,9 @@ func NormalizeStoryFoundation(in StoryFoundation) (StoryFoundation, error) {
 	if out.SchemaVersion == 0 {
 		out.SchemaVersion = StoryFoundationSchemaVersion
 	}
-	if out.SchemaVersion != legacyStoryFoundationSchemaVersion && out.SchemaVersion != StoryFoundationSchemaVersion {
+	if out.SchemaVersion != legacyStoryFoundationSchemaVersion &&
+		out.SchemaVersion != previousStoryFoundationSchemaVersion &&
+		out.SchemaVersion != StoryFoundationSchemaVersion {
 		return StoryFoundation{}, fmt.Errorf("story foundation schema version %d is unsupported", out.SchemaVersion)
 	}
 	out.SchemaVersion = StoryFoundationSchemaVersion
@@ -160,6 +162,7 @@ func NormalizeStoryFoundation(in StoryFoundation) (StoryFoundation, error) {
 			character.Traits = []string{}
 		}
 		character.Constraints = normalizedStrings(character.Constraints)
+		normalizeCharacterCardFields(character)
 		if character.Name == "" {
 			return StoryFoundation{}, fmt.Errorf("character %d name is required", i)
 		}
@@ -236,6 +239,19 @@ func ValidateStoryFoundation(value StoryFoundation) error {
 	for _, character := range value.Characters {
 		if character.ID == "" || character.Name == "" {
 			return fmt.Errorf("character id and name are required")
+		}
+		if _, err := normalizedCharacterTier(character.Tier); err != nil {
+			return fmt.Errorf("character %q: %w", character.ID, err)
+		}
+		for _, contrast := range character.ContrastDetails {
+			if contrast.Surface == "" || contrast.Depth == "" {
+				return fmt.Errorf("character %q contrast details require surface and depth", character.ID)
+			}
+		}
+		for _, backstory := range character.KeyBackstory {
+			if backstory.Event == "" || backstory.Impact == "" {
+				return fmt.Errorf("character %q key backstory requires event and impact", character.ID)
+			}
 		}
 		if _, exists := characterIDs[character.ID]; exists {
 			return fmt.Errorf("duplicate character id %q", character.ID)

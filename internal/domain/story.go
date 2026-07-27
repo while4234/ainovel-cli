@@ -20,21 +20,57 @@ type OutlineEntry struct {
 
 // Character 角色档案。
 type Character struct {
-	ID          string   `json:"id,omitempty"`
-	Name        string   `json:"name"`
-	Aliases     []string `json:"aliases,omitempty"` // 别名/称号/绰号（如"废物少年"、"炎哥"）
-	Role        string   `json:"role"`
-	Description string   `json:"description"`
-	Arc         string   `json:"arc"`
-	Traits      []string `json:"traits"`
-	Tier        string   `json:"tier,omitempty"` // core / important / secondary / decorative（默认 important）
-	Faction     string   `json:"faction,omitempty"`
-	Goal        string   `json:"goal,omitempty"`
-	Motivation  string   `json:"motivation,omitempty"`
-	Conflict    string   `json:"conflict,omitempty"`
-	Voice       string   `json:"voice,omitempty"`
-	Constraints []string `json:"constraints,omitempty"`
-	Notes       string   `json:"notes,omitempty"`
+	ID                string                      `json:"id,omitempty"`
+	Name              string                      `json:"name"`
+	Aliases           []string                    `json:"aliases,omitempty"` // 别名/称号/绰号（如"废物少年"、"炎哥"）
+	Role              string                      `json:"role"`
+	Description       string                      `json:"description"`
+	Arc               string                      `json:"arc"`
+	Traits            []string                    `json:"traits"`
+	Tier              string                      `json:"tier,omitempty"` // core / important / secondary / decorative（默认 important）
+	Faction           string                      `json:"faction,omitempty"`
+	Goal              string                      `json:"goal,omitempty"`
+	Motivation        string                      `json:"motivation,omitempty"`
+	Conflict          string                      `json:"conflict,omitempty"`
+	Voice             string                      `json:"voice,omitempty"`
+	Constraints       []string                    `json:"constraints,omitempty"`
+	ContrastDetails   []CharacterContrastDetail   `json:"contrast_details,omitempty"`
+	KeyBackstory      []CharacterBackstory        `json:"key_backstory,omitempty"`
+	InitialState      *CharacterInitialState      `json:"initial_state,omitempty"`
+	KnowledgeBoundary *CharacterKnowledgeBoundary `json:"knowledge_boundary,omitempty"`
+	Notes             string                      `json:"notes,omitempty"`
+}
+
+// CharacterContrastDetail captures a usable difference between a character's
+// outward presentation and less visible behavior or motives.
+type CharacterContrastDetail struct {
+	Surface string `json:"surface"`
+	Depth   string `json:"depth"`
+}
+
+// CharacterBackstory keeps only past events that affect present choices,
+// relationships, or beliefs.
+type CharacterBackstory struct {
+	Event  string `json:"event"`
+	Impact string `json:"impact"`
+}
+
+// CharacterInitialState is the chapter-zero baseline for a character.
+type CharacterInitialState struct {
+	Identity      string   `json:"identity,omitempty"`
+	Situation     string   `json:"situation,omitempty"`
+	Emotion       string   `json:"emotion,omitempty"`
+	Resources     []string `json:"resources,omitempty"`
+	Relationships string   `json:"relationships,omitempty"`
+}
+
+// CharacterKnowledgeBoundary separates known facts from unknown,
+// misunderstood, and deliberately withheld information.
+type CharacterKnowledgeBoundary struct {
+	Known          []string `json:"known,omitempty"`
+	Unknown        []string `json:"unknown,omitempty"`
+	Misconceptions []string `json:"misconceptions,omitempty"`
+	Forbidden      []string `json:"forbidden,omitempty"`
 }
 
 // VolumeOutline 卷级大纲（长篇分层模式）。
