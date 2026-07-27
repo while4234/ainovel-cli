@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -232,32 +231,87 @@ func isEmptyJSONText(raw json.RawMessage) bool {
 }
 
 func decodeTemporaryRoles(raw json.RawMessage) ([]domain.TemporaryCharacterNeed, error) {
-	var values []json.RawMessage
-	if err := json.Unmarshal(raw, &values); err != nil {
-		var single string
-		if stringErr := json.Unmarshal(raw, &single); stringErr != nil {
-			return nil, err
-		}
-		values = []json.RawMessage{json.RawMessage(strconv.Quote(single))}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
 	}
-	roles := make([]domain.TemporaryCharacterNeed, 0, len(values))
-	for _, value := range values {
-		var role string
-		if err := json.Unmarshal(value, &role); err == nil {
-			if strings.TrimSpace(role) != "" {
-				roles = append(roles, domain.TemporaryCharacterNeed{Role: role})
+	roles := make([]domain.TemporaryCharacterNeed, 0)
+	var collect func(any, bool) error
+	collect = func(current any, nested bool) error {
+		switch typed := current.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				roles = append(roles, domain.TemporaryCharacterNeed{Role: typed})
 			}
-			continue
+			return nil
+		case map[string]any:
+			encoded, err := json.Marshal(typed)
+			if err != nil {
+				return err
+			}
+			var need domain.TemporaryCharacterNeed
+			if err := json.Unmarshal(encoded, &need); err != nil {
+				return err
+			}
+			if strings.TrimSpace(need.Role) != "" {
+				roles = append(roles, need)
+			}
+			return nil
+		case []any:
+			if nested && temporaryRoleTuple(typed) {
+				need, err := decodeTemporaryRoleTuple(typed)
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(need.Role) != "" {
+					roles = append(roles, need)
+				}
+				return nil
+			}
+			for _, item := range typed {
+				if err := collect(item, true); err != nil {
+					return err
+				}
+			}
+			return nil
+		default:
+			return fmt.Errorf("expected temporary role string, object or tuple, got %T", current)
 		}
-		var need domain.TemporaryCharacterNeed
-		if err := json.Unmarshal(value, &need); err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(need.Role) != "" {
-			roles = append(roles, need)
-		}
+	}
+	if err := collect(value, false); err != nil {
+		return nil, err
 	}
 	return roles, nil
+}
+
+func temporaryRoleTuple(items []any) bool {
+	if len(items) == 0 || len(items) > 4 {
+		return false
+	}
+	for _, item := range items {
+		switch item.(type) {
+		case []any, map[string]any:
+			return false
+		}
+	}
+	return true
+}
+
+func decodeTemporaryRoleTuple(items []any) (domain.TemporaryCharacterNeed, error) {
+	fields := []string{"role", "scene", "purpose", "important"}
+	values := make(map[string]any, len(items))
+	for index, item := range items {
+		values[fields[index]] = item
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return domain.TemporaryCharacterNeed{}, err
+	}
+	var need domain.TemporaryCharacterNeed
+	if err := json.Unmarshal(encoded, &need); err != nil {
+		return domain.TemporaryCharacterNeed{}, err
+	}
+	return need, nil
 }
 
 func decodeOutlineScenes(raw json.RawMessage) ([]string, error) {

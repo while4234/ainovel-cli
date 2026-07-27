@@ -183,3 +183,30 @@ func TestDecodeOutlineEntriesExpandsCompactBeatTuplesWithoutDataLoss(t *testing.
 		t.Fatalf("relationship beat tuple changed: %+v", entry.RelationshipBeats)
 	}
 }
+
+func TestDecodeOutlineEntriesExpandsCompactTemporaryRoleTuplesWithoutDataLoss(t *testing.T) {
+	entries, err := decodeOutlineEntries("repair_arc chapters", `[{
+		"chapter":35,
+		"title":"封锁",
+		"core_event":"安保制度升级",
+		"hook":"换岗名单出现",
+		"scenes":["门厅封锁","卧室护理"],
+		"temporary_roles":[
+			["保镖","门厅封锁","执行新门禁",true],
+			["护士","卧室护理","完成上药",false]
+		]
+	}]`)
+	if err != nil {
+		t.Fatalf("decodeOutlineEntries: %v", err)
+	}
+	roles := entries[0].TemporaryRoles
+	if len(roles) != 2 ||
+		roles[0].Role != "保镖" ||
+		roles[0].Scene != "门厅封锁" ||
+		roles[0].Purpose != "执行新门禁" ||
+		!roles[0].Important ||
+		roles[1].Role != "护士" ||
+		roles[1].Important {
+		t.Fatalf("temporary role tuples changed: %+v", roles)
+	}
+}
