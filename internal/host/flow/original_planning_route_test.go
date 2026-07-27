@@ -129,14 +129,39 @@ func TestRouteOriginalPlanningChapterAuditCarriesStableScopeAndRepairLocation(t 
 }
 
 func TestRouteOriginalPlanningBookAuditUsesDigestOnly(t *testing.T) {
+	largeEvidence := strings.Repeat(`{"scope":"book_batch","summary":"durable detailed audit evidence"},`, 2_000)
 	state := State{
 		Progress:             &domain.Progress{Phase: domain.PhaseOutline},
 		PlanningReview:       &domain.PlanningReview{Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindVolumeSplit},
-		OriginalPlanningWork: &storepkg.OriginalPlanningWork{Kind: "audit_book", Evidence: `[{"scope":"book_batch","summary":"V1-V2 pass"}]`},
+		OriginalPlanningWork: &storepkg.OriginalPlanningWork{Kind: "audit_book", Evidence: largeEvidence},
 	}
 	got := Route(state)
 	if got == nil || got.Agent != "editor" || !strings.Contains(got.Task, "禁止加载全书原始细纲") {
 		t.Fatalf("book audit route = %+v", got)
+	}
+	if strings.Contains(got.Task, largeEvidence[:256]) || len(got.Task) > 4096 {
+		t.Fatalf("book audit task repeated durable evidence: %d bytes", len(got.Task))
+	}
+}
+
+func TestRouteOriginalPlanningDetailedAggregateAuditsReferenceDurableEvidence(t *testing.T) {
+	largeEvidence := strings.Repeat(`{"scope":"arc","summary":"durable detailed audit evidence"},`, 2_000)
+	for _, work := range []*storepkg.OriginalPlanningWork{
+		{Kind: "audit_volume", Volume: 7, Evidence: largeEvidence},
+		{Kind: "audit_book_batch", FromVolume: 7, ToVolume: 8, Evidence: largeEvidence},
+	} {
+		state := State{
+			Progress:             &domain.Progress{Phase: domain.PhaseOutline},
+			PlanningReview:       &domain.PlanningReview{Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindVolumeSplit},
+			OriginalPlanningWork: work,
+		}
+		got := Route(state)
+		if got == nil || got.Agent != "editor" {
+			t.Fatalf("%s route = %+v", work.Kind, got)
+		}
+		if strings.Contains(got.Task, largeEvidence[:256]) || len(got.Task) > 4096 {
+			t.Fatalf("%s task repeated durable evidence: %d bytes", work.Kind, len(got.Task))
+		}
 	}
 }
 

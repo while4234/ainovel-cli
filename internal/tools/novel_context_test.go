@@ -1332,6 +1332,43 @@ func TestCompactSkeletonAuditIndexScalesWithoutDroppingBatchCoverage(t *testing.
 	}
 }
 
+func TestCompactSkeletonAuditIndexCarriesDetailedAggregateEvidence(t *testing.T) {
+	audits := []domain.OriginalPlanningAudit{
+		{
+			Scope: "arc", Volume: 7, Arc: 1, Verdict: "pass", Summary: "弧一完成因果推进",
+			Dimensions: []domain.OriginalPlanningAuditDimension{{Name: "causal_progression", Score: 8}},
+		},
+		{
+			Scope: "arc", Volume: 7, Arc: 2, Verdict: "pass", Summary: "弧二兑现人物选择",
+			Dimensions: []domain.OriginalPlanningAuditDimension{{Name: "character_logic", Score: 8.5}},
+		},
+		{
+			Scope: "volume", Volume: 7, Verdict: "pass", Summary: "第七卷结构与高潮通过",
+			Dimensions: []domain.OriginalPlanningAuditDimension{{Name: "climax_payoff", Score: 8}},
+		},
+		{
+			Scope: "book_batch", FromVolume: 7, ToVolume: 8, Verdict: "pass",
+			Summary:    "第七至八卷因果承接与伏笔传递通过",
+			Dimensions: []domain.OriginalPlanningAuditDimension{{Name: "cross_volume_continuity", Score: 8}},
+		},
+	}
+
+	volume := compactSkeletonAuditIndex(audits, 7, 7)
+	if len(volume) != 3 ||
+		volume[0]["arc"] != 1 ||
+		volume[1]["arc"] != 2 ||
+		volume[2]["scope"] != "volume" {
+		t.Fatalf("detailed volume audit evidence = %+v", volume)
+	}
+	global := compactSkeletonAuditIndex(audits, 0, 0)
+	if len(global) != 1 ||
+		global[0]["scope"] != "book_batch" ||
+		global[0]["from_volume"] != 7 ||
+		global[0]["to_volume"] != 8 {
+		t.Fatalf("detailed global audit evidence = %+v", global)
+	}
+}
+
 func TestContextToolSelectedMemoryRecallsStoryThreadsAndReviewLessons(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

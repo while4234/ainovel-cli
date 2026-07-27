@@ -659,13 +659,15 @@ func compactSkeletonAuditIndex(
 			continue
 		}
 		if fromVolume > 0 {
-			if audit.Scope == "skeleton_volume" &&
+			if (audit.Scope == "skeleton_volume" ||
+				audit.Scope == "arc" ||
+				audit.Scope == "volume") &&
 				audit.Volume >= fromVolume && audit.Volume <= toVolume {
 				selected = append(selected, audit)
 			}
 			continue
 		}
-		if audit.Scope == "skeleton_book_batch" {
+		if audit.Scope == "skeleton_book_batch" || audit.Scope == "book_batch" {
 			selected = append(selected, audit)
 		}
 	}
@@ -679,6 +681,9 @@ func compactSkeletonAuditIndex(
 		}
 		if audit.Volume > 0 {
 			entry["volume"] = audit.Volume
+		}
+		if audit.Arc > 0 {
+			entry["arc"] = audit.Arc
 		}
 		if audit.FromVolume > 0 {
 			entry["from_volume"] = audit.FromVolume

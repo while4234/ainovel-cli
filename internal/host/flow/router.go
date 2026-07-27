@@ -540,16 +540,14 @@ func routeOriginalPlanning(s State) *Instruction {
 			w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
 	case "audit_volume":
 		return &Instruction{Agent: "editor", Reason: "逐弧审核已完成，需归并分卷质量审核", Task: fmt.Sprintf(
-			"作为专业原创小说审稿人审核第%d卷。不得一次重读整卷细纲；以下是已经逐弧分批通过、带章节证据索引的报告：%s。调用 novel_context(scope=planning) 只核对分卷骨架、人物和字数预算；仅有明确疑点时才定向调用一次 novel_context(scope=outline_range)，且范围最多4章。检查全卷结构节奏、主题与核心冲突、高潮兑现、人物弧阶段成果、规划内容能否承载目标字数、下一卷驱动力。调用 save_original_planning_audit(scope=volume, volume=%d)，dimensions 必须恰含 structure_pacing、theme_conflict、climax_payoff、character_arc、budget_capacity、next_volume_drive。问题必须定位到具体卷弧并给出可执行修复指令。",
-			w.Volume, w.Evidence, w.Volume)}
+			"作为专业原创小说审稿人审核第%d卷。不得一次重读整卷细纲，也不得要求 Host 把逐弧报告正文重复塞入任务；调用 novel_context(scope=planning) 读取本卷骨架、人物、字数预算及权威逐弧审核索引。仅有明确疑点时才定向调用一次 novel_context(scope=outline_range)，且范围最多4章。检查全卷结构节奏、主题与核心冲突、高潮兑现、人物弧阶段成果、规划内容能否承载目标字数、下一卷驱动力。调用 save_original_planning_audit(scope=volume, volume=%d)，dimensions 必须恰含 structure_pacing、theme_conflict、climax_payoff、character_arc、budget_capacity、next_volume_drive。问题必须定位到具体卷弧并给出可执行修复指令。",
+			w.Volume, w.Volume)}
 	case "audit_book_batch":
 		return &Instruction{Agent: "editor", Reason: "全书审核按每批最多2卷归并", Task: fmt.Sprintf(
-			"分批进行原创全书细纲审核，本次只归并第%d-%d卷（最多2卷），不得读取全书原始细纲。已通过的卷级报告：%s。调用 novel_context(scope=planning) 核对指南针和卷间骨架，检查卷间因果承接、冲突升级、人物成长连续性、伏笔传递、节奏平衡与原创性。调用 save_original_planning_audit(scope=book_batch, from_volume=%d, to_volume=%d)，dimensions 必须恰含 cross_volume_continuity、escalation、character_progression、setup_payoff、pacing_balance、originality。发现问题须定位到具体卷弧。",
-			w.FromVolume, w.ToVolume, w.Evidence, w.FromVolume, w.ToVolume)}
+			"分批进行原创全书细纲审核，本次只归并第%d-%d卷（最多2卷），不得读取全书原始细纲，也不得要求 Host 把卷级报告正文重复塞入任务。调用 novel_context(scope=planning) 读取该批卷间骨架、指南针及权威卷级审核索引，检查卷间因果承接、冲突升级、人物成长连续性、伏笔传递、节奏平衡与原创性。调用 save_original_planning_audit(scope=book_batch, from_volume=%d, to_volume=%d)，dimensions 必须恰含 cross_volume_continuity、escalation、character_progression、setup_payoff、pacing_balance、originality。发现问题须定位到具体卷弧。",
+			w.FromVolume, w.ToVolume, w.FromVolume, w.ToVolume)}
 	case "audit_book":
-		return &Instruction{Agent: "editor", Reason: "分批审核已完成，需以审核摘要进行全书总审", Task: fmt.Sprintf(
-			"完成原创小说全书细纲总审。禁止加载全书原始细纲，只使用这些已通过的每2卷分批报告：%s，并调用 novel_context(scope=planning) 核对 premise、人物、世界规则、指南针和分卷骨架。检查主线闭环、人物成长闭环、伏笔回收、高潮梯度与节奏、世界规则一致、题材辨识度、结局兑现。调用 save_original_planning_audit(scope=book)，dimensions 必须恰含 mainline_closure、character_closure、setup_payoff、escalation_pacing、world_consistency、originality、ending_delivery。任何重大问题必须定位卷弧返修；只有全部维度不低于7且无重大问题才能 pass。",
-			w.Evidence)}
+		return &Instruction{Agent: "editor", Reason: "分批审核已完成，需以审核摘要进行全书总审", Task: "完成原创小说全书细纲总审。禁止加载全书原始细纲，也不得要求 Host 把全部已通过报告正文重复塞入任务；调用 novel_context(scope=planning) 读取权威分批审核索引，并核对 premise、人物、世界规则、指南针和全部分卷骨架索引。检查主线闭环、人物成长闭环、伏笔回收、高潮梯度与节奏、世界规则一致、题材辨识度、结局兑现。调用 save_original_planning_audit(scope=book)，dimensions 必须恰含 mainline_closure、character_closure、setup_payoff、escalation_pacing、world_consistency、originality、ending_delivery。任何重大问题必须定位卷弧返修；只有全部维度不低于7且无重大问题才能 pass。"}
 	}
 	return nil
 }
