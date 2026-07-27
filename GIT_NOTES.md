@@ -46,6 +46,19 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-27 `pending` `feat: integrate characters into writing loop`:
+  gives outline entries, chapter contracts, review findings, summaries,
+  snapshots, relationships, and state changes stable Character IDs; builds a
+  deterministic ID-first 16 KiB chapter workset with bounded full/compressed
+  cards, relevant dynamic state, and visible static/dynamic conflicts; and
+  validates knowledge, voice, motivation, relationship, arc, supporting-role,
+  and adaptation-source constraints before commit. Repeated temporary roles
+  enter a durable independent Character analyze/review promotion workflow with
+  idempotent explicit confirmation, and the writing router blocks Writer until
+  the same Character Agent owns and completes that gate. Focused domain/store/
+  tools/flow tests, modified-package vet, and the CLI build pass. The full
+  repository run reproduces the documented assets, Web/CoreCast,
+  Host/adaptation, model-inventory, and five Tools baseline failures.
 - 2026-07-27 `pending` `feat: integrate adaptation character workflow`:
   imports canonical full Character profiles with strict legacy migration,
   derives a deterministic bounded source-character index, and gates every

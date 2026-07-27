@@ -42,6 +42,7 @@ func LoadState(store *storepkg.Store) State {
 		}
 	}
 	loadCharacterWorkflowState(&s, store)
+	loadCastPromotionState(&s, store)
 	progress, err := store.Progress.Load()
 	if err != nil || progress == nil {
 		return s
@@ -94,6 +95,19 @@ func LoadState(store *storepkg.Store) State {
 	}
 
 	return s
+}
+
+func loadCastPromotionState(state *State, st *storepkg.Store) {
+	if state == nil || st == nil {
+		return
+	}
+	pending, err := st.Cast.PendingPromotions()
+	if err != nil || len(pending) == 0 {
+		return
+	}
+	entry := pending[0]
+	state.CastPromotionEntry = &entry
+	state.CastPromotion, _ = st.Cast.LoadPromotionWorkflow()
 }
 
 func loadCharacterWorkflowState(state *State, st *storepkg.Store) {

@@ -1124,6 +1124,20 @@ func (t *ContextTool) buildChapterEpisodicMemory(envelope *chapterContextEnvelop
 	} else if err != nil {
 		warn("recent_cast", err)
 	}
+	if pending, err := t.store.Cast.PendingPromotions(); err == nil && len(pending) > 0 {
+		tasks := make([]map[string]any, 0, len(pending))
+		for _, entry := range pending {
+			tasks = append(tasks, map[string]any{
+				"name": entry.Name, "aliases": entry.Aliases,
+				"brief_role": entry.BriefRole, "appearance_count": entry.AppearanceCount,
+				"appearance_chapters": entry.AppearanceChapters,
+				"reason":              entry.PromotionReason, "route": "character",
+			})
+		}
+		envelope.Episodic["character_promotion_tasks"] = tasks
+	} else if err != nil {
+		warn("character_promotion_tasks", err)
+	}
 
 	if state.progress != nil && state.progress.TotalChapters > 30 && state.currentEntry != nil {
 		if related := t.buildRelatedChapters(

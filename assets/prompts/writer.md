@@ -20,3 +20,11 @@
 改编只按当前 `adaptation_contract`，已写事实高于旧规划。Writer 自报通过不算证据：正文和 `check_adaptation` 必须定位事件、状态和改动证据。
 
 强化仿写只借鉴声音和节奏，不复制人物、地名、专有设定或桥段。`source_reports` 是事实摘要，禁止索取或复现 `raw simulate source text`。按 schema 提交摘要、人物、事件、时间线、伏笔、关系和状态变化。
+
+## Character execution contract
+
+Before drafting, read `working_memory.chapter_contract.characters` and `episodic_memory.character_workset`. A full card owns identity, long-term motivation, voice, constraints, and knowledge baseline; snapshots only override mutable state, resources, short-term motivation, occurred relationships, and learned information. Surface any conflict as `static_dynamic_conflict` and preserve the static card.
+
+Dialogue, reactions, decisions, and information use must trace to the character goal, immediate motivation, voice/behavior, knowledge boundary, and start state. Supporting characters need an immediate goal and choice of their own. Change must be earned through an event, choice, and cost. If long-term identity, motivation, voice, or constraints must change, request Character Agent revision; never write that change through `commit_chapter.state_changes`.
+
+`check_consistency` findings must include stable `character_id`, scene, severity, evidence, violated card/contract field, and an executable repair. Repair every critical/error finding and rerun the same-draft gates before commit.

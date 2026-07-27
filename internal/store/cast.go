@@ -1,9 +1,11 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
@@ -20,6 +22,8 @@ type CastStore struct{ io *IO }
 func NewCastStore(io *IO) *CastStore { return &CastStore{io: io} }
 
 const castLedgerPath = "meta/cast_ledger.json"
+
+const CastPromotionAppearanceThreshold = 3
 
 // Load 读取配角名册。文件不存在时返回空切片。
 func (s *CastStore) Load() ([]domain.CastEntry, error) {
@@ -68,6 +72,12 @@ func (s *CastStore) DeleteChapterAppearances(chapters []int) error {
 			entry.AppearanceCount = len(entry.AppearanceChapters)
 			entry.FirstSeenChapter = entry.AppearanceChapters[0]
 			entry.LastSeenChapter = entry.AppearanceChapters[len(entry.AppearanceChapters)-1]
+			if entry.PromotionStatus == "pending" &&
+				entry.PromotionReason == "repeated_appearance" &&
+				entry.AppearanceCount < CastPromotionAppearanceThreshold {
+				entry.PromotionStatus = ""
+				entry.PromotionReason = ""
+			}
 			filtered = append(filtered, entry)
 		}
 		return s.io.WriteJSONUnlocked(castLedgerPath, filtered)
@@ -144,6 +154,11 @@ func (s *CastStore) MergeAppearances(
 						entry.BriefRole = br
 					}
 				}
+				if !entry.Promoted && entry.PromotionStatus == "" &&
+					entry.AppearanceCount >= CastPromotionAppearanceThreshold {
+					entry.PromotionStatus = "pending"
+					entry.PromotionReason = "repeated_appearance"
+				}
 				continue
 			}
 			entries = append(entries, domain.CastEntry{
@@ -156,6 +171,91 @@ func (s *CastStore) MergeAppearances(
 			})
 		}
 		return s.io.WriteJSONUnlocked(castLedgerPath, entries)
+	})
+}
+
+// RequestPromotion marks a ledger character for the shared Character Agent.
+// Exact retries are idempotent and never create a second ledger entry.
+func (s *CastStore) RequestPromotion(name, reason string) error {
+	name = strings.TrimSpace(name)
+	reason = strings.TrimSpace(reason)
+	if name == "" {
+		return fmt.Errorf("cast promotion name is required")
+	}
+	if reason == "" {
+		reason = "user_requested"
+	}
+	return s.io.WithWriteLock(func() error {
+		var entries []domain.CastEntry
+		if err := s.io.ReadJSONUnlocked(castLedgerPath, &entries); err != nil {
+			return err
+		}
+		for index := range entries {
+			if entries[index].Name != name && !slices.Contains(entries[index].Aliases, name) {
+				continue
+			}
+			if entries[index].Promoted {
+				return nil
+			}
+			entries[index].PromotionStatus = "pending"
+			entries[index].PromotionReason = reason
+			return s.io.WriteJSONUnlocked(castLedgerPath, entries)
+		}
+		return fmt.Errorf("cast entry %q not found", name)
+	})
+}
+
+// PendingPromotions returns deterministic work for the same Character Agent.
+func (s *CastStore) PendingPromotions() ([]domain.CastEntry, error) {
+	entries, err := s.Load()
+	if err != nil {
+		return nil, err
+	}
+	pending := make([]domain.CastEntry, 0)
+	for _, entry := range entries {
+		if !entry.Promoted && entry.PromotionStatus == "pending" {
+			pending = append(pending, entry)
+		}
+	}
+	sort.SliceStable(pending, func(i, j int) bool {
+		if pending[i].FirstSeenChapter != pending[j].FirstSeenChapter {
+			return pending[i].FirstSeenChapter < pending[j].FirstSeenChapter
+		}
+		return pending[i].Name < pending[j].Name
+	})
+	return pending, nil
+}
+
+// MarkPromoted links the ledger entry to the explicitly confirmed canonical
+// Character ID. It never publishes or edits the character card itself.
+func (s *CastStore) MarkPromoted(name, characterID string) error {
+	name = strings.TrimSpace(name)
+	characterID = strings.TrimSpace(characterID)
+	if name == "" || characterID == "" {
+		return fmt.Errorf("cast promotion name and character ID are required")
+	}
+	return s.io.WithWriteLock(func() error {
+		var entries []domain.CastEntry
+		if err := s.io.ReadJSONUnlocked(castLedgerPath, &entries); err != nil {
+			return err
+		}
+		for index := range entries {
+			entry := &entries[index]
+			if entry.Name != name && !slices.Contains(entry.Aliases, name) {
+				continue
+			}
+			if entry.Promoted {
+				if entry.TargetCharacterID == characterID {
+					return nil
+				}
+				return fmt.Errorf("cast entry %q is already linked to %q", name, entry.TargetCharacterID)
+			}
+			entry.Promoted = true
+			entry.PromotionStatus = "promoted"
+			entry.TargetCharacterID = characterID
+			return s.io.WriteJSONUnlocked(castLedgerPath, entries)
+		}
+		return fmt.Errorf("cast entry %q not found", name)
 	})
 }
 

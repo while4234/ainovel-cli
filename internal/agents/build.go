@@ -174,6 +174,8 @@ func BuildCoordinator(
 		tools.NewCharacterContextTool(store, characterRuns),
 		revisionFenceWrites(store.Revisions, tools.NewSaveCharacterCandidateTool(store, characterRuns)),
 		revisionFenceWrites(store.Revisions, tools.NewSaveCharacterReviewTool(store, characterRuns)),
+		revisionFenceWrites(store.Revisions, tools.NewSaveCastPromotionCandidateTool(store)),
+		revisionFenceWrites(store.Revisions, tools.NewSaveCastPromotionReviewTool(store)),
 	}
 	writerTools := []agentcore.Tool{
 		newWriterContextTool(contextTool, store),
@@ -209,7 +211,8 @@ func BuildCoordinator(
 		return nil, nil, nil, nil, nil, err
 	}
 	if err := validateAgentToolRegistry("character", characterTools,
-		"character_context", "save_character_candidate", "save_character_review"); err != nil {
+		"character_context", "save_character_candidate", "save_character_review",
+		"save_cast_promotion_candidate", "save_cast_promotion_review"); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 
@@ -366,7 +369,8 @@ func BuildCoordinator(
 		ToolsAreIdempotent: true,
 		OnMessage:          onMsg,
 		StopAfterToolResult: func(toolName string, _ json.RawMessage) bool {
-			return toolName == "save_character_candidate" || toolName == "save_character_review"
+			return toolName == "save_character_candidate" || toolName == "save_character_review" ||
+				toolName == "save_cast_promotion_candidate" || toolName == "save_cast_promotion_review"
 		},
 		ContextManagerFactory: func(agentcore.ChatModel) agentcore.ContextManager {
 			window, reserve := boundedCharacterContextWindow(cfg, models)

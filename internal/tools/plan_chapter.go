@@ -31,6 +31,24 @@ func (t *PlanChapterTool) ReadOnly(_ json.RawMessage) bool        { return false
 func (t *PlanChapterTool) ConcurrencySafe(_ json.RawMessage) bool { return false }
 
 func (t *PlanChapterTool) Schema() map[string]any {
+	characterContractSchema := schema.Object(
+		schema.Property("character_id", schema.String("confirmed StoryFoundation character ID")).Required(),
+		schema.Property("beat", schema.String("matching outline character beat")),
+		schema.Property("scene", schema.String("scene locator")),
+		schema.Property("goal", schema.String("immediate chapter or scene goal")).Required(),
+		schema.Property("immediate_motivation", schema.String("why the character pursues this goal now")).Required(),
+		schema.Property("start_state", schema.String("dynamic state at chapter start")).Required(),
+		schema.Property("allowed_changes", schema.Array("runtime state changes allowed in this chapter", schema.String(""))),
+		schema.Property("voice_behavior", schema.Array("actionable voice and behavior cues", schema.String(""))).Required(),
+		schema.Property("known", schema.Array("information known at chapter start", schema.String(""))),
+		schema.Property("unknown", schema.Array("information still unknown", schema.String(""))),
+		schema.Property("misconceptions", schema.Array("current misconceptions", schema.String(""))),
+		schema.Property("may_learn", schema.Array("information that may be acquired on-page", schema.String(""))),
+		schema.Property("must_preserve", schema.Array("static identity and behavior constraints", schema.String(""))).Required(),
+		schema.Property("relationship_start", schema.String("runtime relationship starting point")),
+		schema.Property("relationship_advance", schema.String("expected evidence-backed progress")),
+		schema.Property("forbidden_jumps", schema.Array("relationship or state jumps forbidden without transition", schema.String(""))),
+	)
 	return schema.Object(
 		schema.Property("chapter", schema.Int("chapter number")).Required(),
 		schema.Property("title", schema.String("chapter title")).Required(),
@@ -46,6 +64,7 @@ func (t *PlanChapterTool) Schema() map[string]any {
 		schema.Property("emotion_target", schema.String("optional target reader emotion")),
 		schema.Property("payoff_points", schema.Array("optional payoff points", schema.String(""))),
 		schema.Property("hook_goal", schema.String("optional hook goal")),
+		schema.Property("character_contracts", schema.Array("per-character executable contracts; required when outline has stable character IDs", characterContractSchema)),
 	)
 }
 
@@ -75,6 +94,9 @@ func (t *PlanChapterTool) Execute(_ context.Context, args json.RawMessage) (json
 		return nil, err
 	}
 	plan = t.enrichAdaptationContract(plan)
+	if err := t.validateCharacterContracts(&plan); err != nil {
+		return nil, err
+	}
 
 	if err := t.store.Drafts.SaveChapterPlan(plan); err != nil {
 		return nil, fmt.Errorf("save chapter plan: %w", err)
@@ -187,20 +209,21 @@ func appendUniqueStrings(items []string, extra ...string) []string {
 
 func decodeChapterPlanArgs(args json.RawMessage) (domain.ChapterPlan, error) {
 	var a struct {
-		Chapter          int      `json:"chapter"`
-		Title            string   `json:"title"`
-		Goal             string   `json:"goal"`
-		Conflict         string   `json:"conflict"`
-		Hook             string   `json:"hook"`
-		EmotionArc       string   `json:"emotion_arc"`
-		Notes            string   `json:"notes"`
-		RequiredBeats    []string `json:"required_beats"`
-		ForbiddenMoves   []string `json:"forbidden_moves"`
-		ContinuityChecks []string `json:"continuity_checks"`
-		EvaluationFocus  []string `json:"evaluation_focus"`
-		EmotionTarget    string   `json:"emotion_target"`
-		PayoffPoints     []string `json:"payoff_points"`
-		HookGoal         string   `json:"hook_goal"`
+		Chapter            int                               `json:"chapter"`
+		Title              string                            `json:"title"`
+		Goal               string                            `json:"goal"`
+		Conflict           string                            `json:"conflict"`
+		Hook               string                            `json:"hook"`
+		EmotionArc         string                            `json:"emotion_arc"`
+		Notes              string                            `json:"notes"`
+		RequiredBeats      []string                          `json:"required_beats"`
+		ForbiddenMoves     []string                          `json:"forbidden_moves"`
+		ContinuityChecks   []string                          `json:"continuity_checks"`
+		EvaluationFocus    []string                          `json:"evaluation_focus"`
+		EmotionTarget      string                            `json:"emotion_target"`
+		PayoffPoints       []string                          `json:"payoff_points"`
+		HookGoal           string                            `json:"hook_goal"`
+		CharacterContracts []domain.ChapterCharacterContract `json:"character_contracts"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return domain.ChapterPlan{}, err
@@ -222,6 +245,7 @@ func decodeChapterPlanArgs(args json.RawMessage) (domain.ChapterPlan, error) {
 			EmotionTarget:    a.EmotionTarget,
 			PayoffPoints:     a.PayoffPoints,
 			HookGoal:         a.HookGoal,
+			Characters:       a.CharacterContracts,
 		},
 	}, nil
 }

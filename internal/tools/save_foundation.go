@@ -222,6 +222,10 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		if err := decode("outline", &entries); err != nil {
 			return nil, err
 		}
+		entries, err = t.prepareOutlineCharacters(entries)
+		if err != nil {
+			return nil, err
+		}
 		normalizeOutlineEntryChapters(entries)
 		if err := validateGeneratedOutline("outline", entries, a.Review); err != nil {
 			return nil, err
@@ -244,6 +248,9 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 	case "layered_outline":
 		var volumes []domain.VolumeOutline
 		if err := decode("layered_outline", &volumes); err != nil {
+			return nil, err
+		}
+		if err := t.prepareLayeredOutlineCharacters(volumes); err != nil {
 			return nil, err
 		}
 		if err := validateGeneratedLayeredOutline(volumes, a.Review); err != nil {
@@ -323,6 +330,10 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		if err := decode("expand_arc chapters", &chapters); err != nil {
 			return nil, err
 		}
+		chapters, err = t.prepareOutlineCharacters(chapters)
+		if err != nil {
+			return nil, err
+		}
 		if err := validateGeneratedOutline(fmt.Sprintf("expand_arc V%d A%d", a.Volume, a.Arc), chapters, a.Review); err != nil {
 			return nil, err
 		}
@@ -345,6 +356,10 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 		var chapters []domain.OutlineEntry
 		if err := decode("repair_arc chapters", &chapters); err != nil {
+			return nil, err
+		}
+		chapters, err = t.prepareOutlineCharacters(chapters)
+		if err != nil {
 			return nil, err
 		}
 		if err := validateGeneratedOutline(fmt.Sprintf("repair_arc V%d A%d", a.Volume, a.Arc), chapters, a.Review); err != nil {
@@ -643,6 +658,39 @@ func requiresConfirmedFoundation(typeName string) bool {
 	default:
 		return false
 	}
+}
+
+func (t *SaveFoundationTool) prepareOutlineCharacters(entries []domain.OutlineEntry) ([]domain.OutlineEntry, error) {
+	foundation, err := t.store.Foundation.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load confirmed StoryFoundation for outline characters: %w", err)
+	}
+	prepared, err := domain.PrepareOutlineCharacters(entries, foundation.Characters)
+	if err != nil {
+		if gapErr, ok := err.(*domain.OutlineCharacterGapError); ok {
+			payload, _ := json.Marshal(gapErr.Gaps)
+			return nil, fmt.Errorf("outline_character_gaps=%s: %w", payload, errs.ErrToolPrecondition)
+		}
+		return nil, err
+	}
+	return prepared, nil
+}
+
+func (t *SaveFoundationTool) prepareLayeredOutlineCharacters(volumes []domain.VolumeOutline) error {
+	for volumeIndex := range volumes {
+		for arcIndex := range volumes[volumeIndex].Arcs {
+			chapters := volumes[volumeIndex].Arcs[arcIndex].Chapters
+			if len(chapters) == 0 {
+				continue
+			}
+			prepared, err := t.prepareOutlineCharacters(chapters)
+			if err != nil {
+				return err
+			}
+			volumes[volumeIndex].Arcs[arcIndex].Chapters = prepared
+		}
+	}
+	return nil
 }
 
 func (t *SaveFoundationTool) validateCreativeBriefPremise(content string) error {

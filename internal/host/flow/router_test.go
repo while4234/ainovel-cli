@@ -29,6 +29,36 @@ func TestRoute_NilProgress(t *testing.T) {
 	}
 }
 
+func TestRoute_CastPromotionUsesCharacterAnalyzeThenIndependentReview(t *testing.T) {
+	entry := &domain.CastEntry{Name: "Keeper", PromotionStatus: "pending"}
+	analyze := Route(State{CastPromotionEntry: entry, Progress: writingProgress(nil, domain.FlowWriting)})
+	if analyze == nil || analyze.Agent != "character" || !strings.Contains(analyze.Task, "save_cast_promotion_candidate") {
+		t.Fatalf("analyze route = %+v", analyze)
+	}
+	review := Route(State{
+		CastPromotionEntry: entry,
+		CastPromotion: &domain.CastPromotionWorkflow{
+			LedgerName: "Keeper", Status: domain.CastPromotionCandidateReady,
+			CandidateDigest: "1234567890abcdef",
+		},
+		Progress: writingProgress(nil, domain.FlowWriting),
+	})
+	if review == nil || review.Agent != "character" || !strings.Contains(review.Task, "save_cast_promotion_review") {
+		t.Fatalf("review route = %+v", review)
+	}
+	wait := Route(State{
+		CastPromotionEntry: entry,
+		CastPromotion: &domain.CastPromotionWorkflow{
+			LedgerName: "Keeper", Status: domain.CastPromotionReviewPassed,
+			CandidateDigest: "1234567890abcdef",
+		},
+		Progress: writingProgress(nil, domain.FlowWriting),
+	})
+	if wait != nil {
+		t.Fatalf("review-passed promotion should await user confirmation, got %+v", wait)
+	}
+}
+
 func TestRoute_AdaptationCharactersUseSharedAnalyzeAndReviewRuns(t *testing.T) {
 	state := State{
 		AdaptationCharacterPending: true,

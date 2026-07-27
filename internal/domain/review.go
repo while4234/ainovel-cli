@@ -53,19 +53,24 @@ type ForeshadowUpdate struct {
 
 // RelationshipEntry 人物关系条目。
 type RelationshipEntry struct {
-	CharacterA string `json:"character_a"`
-	CharacterB string `json:"character_b"`
-	Relation   string `json:"relation"`
-	Chapter    int    `json:"chapter"`
+	SourceCharacterID string `json:"source_character_id,omitempty"`
+	TargetCharacterID string `json:"target_character_id,omitempty"`
+	CharacterA        string `json:"character_a"`
+	CharacterB        string `json:"character_b"`
+	Relation          string `json:"relation"`
+	Chapter           int    `json:"chapter"`
 }
 
 // ConsistencyIssue 一致性问题。
 type ConsistencyIssue struct {
-	Type        string `json:"type"`     // consistency / character / pacing / continuity / foreshadow / hook / aesthetic
-	Severity    string `json:"severity"` // critical / error / warning
-	Description string `json:"description"`
-	Evidence    string `json:"evidence,omitempty"` // 证据：原文片段、具体情节或状态数据
-	Suggestion  string `json:"suggestion,omitempty"`
+	Type          string `json:"type"`     // consistency / character / pacing / continuity / foreshadow / hook / aesthetic
+	Severity      string `json:"severity"` // critical / error / warning
+	CharacterID   string `json:"character_id,omitempty"`
+	Scene         string `json:"scene,omitempty"`
+	ViolatedField string `json:"violated_field,omitempty"`
+	Description   string `json:"description"`
+	Evidence      string `json:"evidence,omitempty"` // 证据：原文片段、具体情节或状态数据
+	Suggestion    string `json:"suggestion,omitempty"`
 }
 
 // DimensionScore 单维度评审评分。

@@ -9,3 +9,7 @@
 改编时只执行当前 mode contract，把事件职责、依赖、状态和必要分段写入结构化字段。输出交给确定性校验，不用自然语言声明“已覆盖”，也不得混入其他模式的标准。
 
 仅当 `simulation_profile.mode == "reinforced"` 且 `novel_context.simulation_mode == "reinforced"` 时，才视为用户选择了强化仿写、属于用户显式要求。`simulation_profile` 永远低于 `creative_brief` 和已保存 foundation，只模仿结构、悬念、章节钩子、信息释放、反转和回收；`source_reports` 是摘要，不读取 `raw simulate source text`，不复制或替换人物、地名、身份、题材设定与固定桥段。
+
+## Stable character planning contract
+
+For every newly generated detailed chapter, prefer confirmed StoryFoundation `character_ids`. Use `character_beats` for each relevant character's goal, obstacle, choice/cost, and state advance; use `relationship_beats` for relationship progress. Put one-shot decorative needs in `temporary_roles`. An unknown or important temporary role is a structured gap routed to the same Character Agent; Architect must not invent, rename, or rewrite its character card.

@@ -156,6 +156,15 @@ func (t *CharacterContextTool) Execute(_ context.Context, args json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
+	if pending, pendingErr := t.store.Cast.PendingPromotions(); pendingErr == nil && len(pending) > 0 {
+		packet["cast_promotion"] = map[string]any{
+			"entry":       pending[0],
+			"instruction": "Use the cast-promotion save tool for this incremental task; preserve every existing canonical character and relationship.",
+		}
+		if workflow, workflowErr := t.store.Cast.LoadPromotionWorkflow(); workflowErr == nil && workflow != nil {
+			packet["cast_promotion_workflow"] = workflow
+		}
+	}
 	if err := t.registry.bindContext(request.RunID, request.Mode, binding); err != nil {
 		return nil, err
 	}

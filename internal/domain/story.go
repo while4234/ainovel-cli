@@ -8,14 +8,47 @@ type Novel struct {
 
 // OutlineEntry 大纲条目，对应一章。
 type OutlineEntry struct {
-	ID              string                    `json:"id,omitempty"`
-	Chapter         int                       `json:"chapter"`
-	Title           string                    `json:"title"`
-	CoreEvent       string                    `json:"core_event"`
-	Hook            string                    `json:"hook"`
-	Scenes          []string                  `json:"scenes"`
-	DramaticFacts   *ExpansionDramaticFactSet `json:"dramatic_facts,omitempty"`
-	ExpansionOrigin *ExpansionOrigin          `json:"expansion_origin,omitempty"`
+	ID                string                    `json:"id,omitempty"`
+	Chapter           int                       `json:"chapter"`
+	Title             string                    `json:"title"`
+	CoreEvent         string                    `json:"core_event"`
+	Hook              string                    `json:"hook"`
+	Scenes            []string                  `json:"scenes"`
+	CharacterIDs      []string                  `json:"character_ids,omitempty"`
+	CharacterBeats    []OutlineCharacterBeat    `json:"character_beats,omitempty"`
+	RelationshipBeats []OutlineRelationshipBeat `json:"relationship_beats,omitempty"`
+	TemporaryRoles    []TemporaryCharacterNeed  `json:"temporary_roles,omitempty"`
+	DramaticFacts     *ExpansionDramaticFactSet `json:"dramatic_facts,omitempty"`
+	ExpansionOrigin   *ExpansionOrigin          `json:"expansion_origin,omitempty"`
+}
+
+// OutlineCharacterBeat binds chapter intent to a confirmed character ID.
+type OutlineCharacterBeat struct {
+	CharacterID string `json:"character_id"`
+	Scene       string `json:"scene,omitempty"`
+	Goal        string `json:"goal,omitempty"`
+	Obstacle    string `json:"obstacle,omitempty"`
+	ChoiceCost  string `json:"choice_cost,omitempty"`
+	Advance     string `json:"advance,omitempty"`
+}
+
+// OutlineRelationshipBeat describes intended runtime relationship progress.
+type OutlineRelationshipBeat struct {
+	RelationshipID    string `json:"relationship_id,omitempty"`
+	SourceCharacterID string `json:"source_character_id"`
+	TargetCharacterID string `json:"target_character_id"`
+	Scene             string `json:"scene,omitempty"`
+	Start             string `json:"start,omitempty"`
+	ExpectedAdvance   string `json:"expected_advance,omitempty"`
+	ForbiddenJump     string `json:"forbidden_jump,omitempty"`
+}
+
+// TemporaryCharacterNeed authorizes a bounded unnamed or decorative role.
+type TemporaryCharacterNeed struct {
+	Role      string `json:"role"`
+	Scene     string `json:"scene,omitempty"`
+	Purpose   string `json:"purpose,omitempty"`
+	Important bool   `json:"important,omitempty"`
 }
 
 // Character 角色档案。
@@ -147,6 +180,10 @@ func ProjectOutlineOrder(entries []OutlineEntry) []OutlineEntry {
 	for i := range entries {
 		projected[i] = entries[i]
 		projected[i].Scenes = append([]string(nil), entries[i].Scenes...)
+		projected[i].CharacterIDs = append([]string(nil), entries[i].CharacterIDs...)
+		projected[i].CharacterBeats = append([]OutlineCharacterBeat(nil), entries[i].CharacterBeats...)
+		projected[i].RelationshipBeats = append([]OutlineRelationshipBeat(nil), entries[i].RelationshipBeats...)
+		projected[i].TemporaryRoles = append([]TemporaryCharacterNeed(nil), entries[i].TemporaryRoles...)
 		projected[i].Chapter = i + 1
 	}
 	return projected
@@ -169,6 +206,10 @@ func ProjectLayeredOutlineOrder(volumes []VolumeOutline) []VolumeOutline {
 			for chapterIndex := range arc.Chapters {
 				entry := arc.Chapters[chapterIndex]
 				entry.Scenes = append([]string(nil), entry.Scenes...)
+				entry.CharacterIDs = append([]string(nil), entry.CharacterIDs...)
+				entry.CharacterBeats = append([]OutlineCharacterBeat(nil), entry.CharacterBeats...)
+				entry.RelationshipBeats = append([]OutlineRelationshipBeat(nil), entry.RelationshipBeats...)
+				entry.TemporaryRoles = append([]TemporaryCharacterNeed(nil), entry.TemporaryRoles...)
 				entry.Chapter = chapter
 				projected[volumeIndex].Arcs[arcIndex].Chapters[chapterIndex] = entry
 				chapter++

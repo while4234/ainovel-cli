@@ -15,3 +15,5 @@ Return only JSON compatible with the additive adaptation plan contract:
 - Follow only the injected current-mode contract when interpreting source coverage and `source_runes`; never infer rules from another adaptation mode.
 
 Preserve compatibility: do not rename or remove existing plan fields, and do not require the new fields when loading older plans.
+
+Each new target chapter should use confirmed target StoryFoundation `character_ids`, `character_beats`, and `relationship_beats`. Unknown important roles are structured Character Agent gaps, never planner-created cards.

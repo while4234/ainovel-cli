@@ -16,21 +16,44 @@ type ChapterPlan struct {
 // ChapterContract 是 Writer 和 Editor 共享的章节验收契约。
 // 它定义本章必须完成的推进项、禁止越界项以及审阅关注点。
 type ChapterContract struct {
-	RequiredBeats    []string `json:"required_beats,omitempty"`    // 本章必须落地的推进项
-	ForbiddenMoves   []string `json:"forbidden_moves,omitempty"`   // 本章明确不能发生的推进
-	ContinuityChecks []string `json:"continuity_checks,omitempty"` // 本章需特别核对的连续性点
-	EvaluationFocus  []string `json:"evaluation_focus,omitempty"`  // Editor 需要重点检查的点
-	EmotionTarget    string   `json:"emotion_target,omitempty"`    // 可选：本章希望读者主要感受到的情绪
-	PayoffPoints     []string `json:"payoff_points,omitempty"`     // 可选：关键章希望回应的情节点/兑现点
-	HookGoal         string   `json:"hook_goal,omitempty"`         // 可选：章末钩子希望驱动的追读欲望
+	RequiredBeats    []string                   `json:"required_beats,omitempty"`    // 本章必须落地的推进项
+	ForbiddenMoves   []string                   `json:"forbidden_moves,omitempty"`   // 本章明确不能发生的推进
+	ContinuityChecks []string                   `json:"continuity_checks,omitempty"` // 本章需特别核对的连续性点
+	EvaluationFocus  []string                   `json:"evaluation_focus,omitempty"`  // Editor 需要重点检查的点
+	EmotionTarget    string                     `json:"emotion_target,omitempty"`    // 可选：本章希望读者主要感受到的情绪
+	PayoffPoints     []string                   `json:"payoff_points,omitempty"`     // 可选：关键章希望回应的情节点/兑现点
+	HookGoal         string                     `json:"hook_goal,omitempty"`         // 可选：章末钩子希望驱动的追读欲望
+	Characters       []ChapterCharacterContract `json:"characters,omitempty"`
+}
+
+// ChapterCharacterContract is the executable character boundary shared by
+// Planner, Writer, Editor, and continuity checks.
+type ChapterCharacterContract struct {
+	CharacterID         string   `json:"character_id"`
+	Beat                string   `json:"beat,omitempty"`
+	Scene               string   `json:"scene,omitempty"`
+	Goal                string   `json:"goal"`
+	ImmediateMotivation string   `json:"immediate_motivation"`
+	StartState          string   `json:"start_state"`
+	AllowedChanges      []string `json:"allowed_changes,omitempty"`
+	VoiceBehavior       []string `json:"voice_behavior"`
+	Known               []string `json:"known,omitempty"`
+	Unknown             []string `json:"unknown,omitempty"`
+	Misconceptions      []string `json:"misconceptions,omitempty"`
+	MayLearn            []string `json:"may_learn,omitempty"`
+	MustPreserve        []string `json:"must_preserve"`
+	RelationshipStart   string   `json:"relationship_start,omitempty"`
+	RelationshipAdvance string   `json:"relationship_advance,omitempty"`
+	ForbiddenJumps      []string `json:"forbidden_jumps,omitempty"`
 }
 
 // ChapterSummary 章节摘要，供后续章节的上下文窗口使用。
 type ChapterSummary struct {
-	Chapter    int      `json:"chapter"`
-	Summary    string   `json:"summary"`
-	Characters []string `json:"characters"`
-	KeyEvents  []string `json:"key_events"`
+	Chapter      int      `json:"chapter"`
+	Summary      string   `json:"summary"`
+	Characters   []string `json:"characters"`
+	CharacterIDs []string `json:"character_ids,omitempty"`
+	KeyEvents    []string `json:"key_events"`
 }
 
 // ArcSummary 弧级摘要，弧结束时由 Editor 生成。
@@ -52,13 +75,15 @@ type VolumeSummary struct {
 
 // CharacterSnapshot 角色状态快照，弧边界时记录。
 type CharacterSnapshot struct {
-	Volume     int    `json:"volume"`
-	Arc        int    `json:"arc"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	Power      string `json:"power,omitempty"`
-	Motivation string `json:"motivation"`
-	Relations  string `json:"relations,omitempty"`
+	Volume      int      `json:"volume"`
+	Arc         int      `json:"arc"`
+	CharacterID string   `json:"character_id,omitempty"`
+	Name        string   `json:"name"`
+	Status      string   `json:"status"`
+	Power       string   `json:"power,omitempty"`
+	Motivation  string   `json:"motivation"`
+	Relations   string   `json:"relations,omitempty"`
+	Known       []string `json:"known,omitempty"`
 }
 
 // OutlineFeedback Writer 对大纲的反馈，提交章节时可选。
@@ -80,8 +105,9 @@ type WritingStyleRules struct {
 
 // CharacterVoice 单个角色的对话风格规则。
 type CharacterVoice struct {
-	Name  string   `json:"name"`
-	Rules []string `json:"rules"` // 2-3 条语言特征规则，每条 ≤30 字
+	CharacterID string   `json:"character_id,omitempty"`
+	Name        string   `json:"name"`
+	Rules       []string `json:"rules"` // 2-3 条语言特征规则，每条 ≤30 字
 }
 
 // RelatedChapter 推荐回读的相关章节。

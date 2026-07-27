@@ -28,3 +28,7 @@
 仅当 `simulation_profile.mode == "reinforced"` 且 `novel_context.simulation_mode == "reinforced"` 时，才视为用户选择了强化仿写、属于用户显式要求。检查画像漂移，以及复制、人物/地名/专有设定和固定桥段风险。`source_reports` 仅供事实核对，不读取或引用 `raw simulate source text`。
 
 不要输出空洞表扬，不要自己修改正文。
+
+## Character review contract
+
+Check OOC/constraint violations, voice homogenization or drift, missing causal links between motivation and choice, knowledge leaks or premature knowledge, relationship jumps without transition, arc progress against the outline character beat, important supporting characters reduced to delivery tools, static-card/dynamic-snapshot conflicts, and adaptation source facts confused with target adaptation decisions. Every character finding must include stable `character_id`, chapter/scene, severity, evidence, violated card/contract field, and executable repair. Blocking findings must enter the existing polish/rewrite loop.

@@ -557,36 +557,21 @@ func sliceLen(v any) int {
 // loadFilteredCharacters 按 Tier 和场景出场过滤角色。
 // core/important 始终返回；secondary/decorative 只在当前章节大纲提及时返回。
 func (t *ContextTool) loadFilteredCharacters(result map[string]any, chapter int, warn func(string, error)) {
-	chars, err := t.store.Characters.Load()
+	workset, err := t.buildCharacterWorkset(chapter)
 	if err != nil {
-		warn("characters", err)
+		warn("character_workset", err)
+		result["character_workset_warning"] = "bounded character workset unavailable; no unbounded fallback was injected"
 		return
 	}
-	if len(chars) == 0 {
+	if len(workset.Full) == 0 && len(workset.Compressed) == 0 {
 		return
 	}
-
-	// 获取当前章节大纲的场景描述，用于匹配次要角色
-	entry, err := t.store.Outline.GetChapterOutline(chapter)
-	if err != nil {
-		warn("current_chapter_outline", err)
-		result["characters"] = compactCharacters(chars, maxContextCharacters)
-		return
+	result["character_workset"] = workset
+	// Compatibility mirror for existing prompts and old model fixtures.
+	result["characters"] = workset.Full
+	if len(workset.Snapshots) > 0 {
+		result["character_snapshots"] = workset.Snapshots
 	}
-	sceneText := strings.Join(entry.Scenes, " ") + " " + entry.CoreEvent + " " + entry.Title
-
-	var filtered []domain.Character
-	for _, c := range chars {
-		switch c.Tier {
-		case "secondary", "decorative":
-			if matchCharacter(sceneText, c) {
-				filtered = append(filtered, c)
-			}
-		default: // core, important, 或未设置
-			filtered = append(filtered, c)
-		}
-	}
-	result["characters"] = compactCharacters(filtered, maxContextCharacters)
 }
 
 // matchCharacter 检查场景文本中是否包含角色的正式名或任一别名。
@@ -650,8 +635,7 @@ func (t *ContextTool) loadLayeredSummaries(result map[string]any, chapter, summa
 func (t *ContextTool) loadLayeredCharacters(result map[string]any, chapter int, warn func(string, error)) {
 	snapshots, err := t.store.Characters.LoadLatestSnapshots()
 	if err == nil && len(snapshots) > 0 {
-		result["character_snapshots"] = compactCharacterSnapshots(snapshots, maxContextCharacterSnapshots)
-		// 同时保留原始设定中的 core/important 角色（快照可能不含新登场角色）
+		// The bounded workset joins only relevant snapshots by stable ID.
 		t.loadFilteredCharacters(result, chapter, warn)
 		return
 	}

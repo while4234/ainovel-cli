@@ -21,7 +21,10 @@ type CastEntry struct {
 	AppearanceChapters []int `json:"appearance_chapters"`
 	// Promoted 标记此条目已升格到 characters.json。RecentActive 会跳过这些条目，
 	// 避免与核心档案重复召回。当前升格通道未实现，字段为预留 hook。
-	Promoted bool `json:"promoted,omitempty"`
+	Promoted          bool   `json:"promoted,omitempty"`
+	PromotionStatus   string `json:"promotion_status,omitempty"`
+	PromotionReason   string `json:"promotion_reason,omitempty"`
+	TargetCharacterID string `json:"target_character_id,omitempty"`
 }
 
 // CastIntro 是 Writer 在 commit_chapter 时对新出场角色的简介声明。

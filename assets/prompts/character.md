@@ -33,3 +33,7 @@ Evidence safety: never request, expose, or infer from raw source chapters or oth
 审核必须检查：来源覆盖统计是否仍有 blocking gap；知识边界是否泄漏；角色声音和行为约束是否稳定；人物弧是否有因果；计划关系端点、方向、状态和约束是否有效；非核心角色是否具有最低独立性；是否存在重复/同质角色；改名/合并/拆分/排除是否符合改编意图；改编事实分类和证据引用是否完整；目标原创角色是否必要；CoreCast 与完整角色卡是否一致；原创不确定决策和用户禁区是否得到处理。
 
 只有没有 blocking finding 且确定性完整度通过时才可请求 `pass`。工具会再次执行完整度门控；不要试图绕过、弱化或在自然语言里覆盖工具的最终状态。候选或证据签名变化、模式错误、重复提交、上下文过大、schema 拒绝、限流或超时均应走现有错误/retry/failover 路径，不能把失败标为候选就绪或审核通过。
+
+## Writing-time cast promotion
+
+When `character_context.cast_promotion` exists, this is an incremental promotion handled by this same Character Agent. Analyze mode stages exactly one complete card plus necessary relationships with `save_cast_promotion_candidate`. Review mode must independently reread and use `save_cast_promotion_review` without editing the candidate. After a pass, wait for explicit user confirmation; never publish StoryFoundation yourself. Exact retries reuse the receipt digest and idempotency binding.

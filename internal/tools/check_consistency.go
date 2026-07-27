@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -34,14 +35,26 @@ func (t *CheckConsistencyTool) ReadOnly(_ json.RawMessage) bool        { return 
 func (t *CheckConsistencyTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 
 func (t *CheckConsistencyTool) Schema() map[string]any {
+	findingSchema := schema.Object(
+		schema.Property("type", schema.Enum("character finding type", "ooc", "voice_drift", "motivation_break", "knowledge_leak", "relationship_jump", "arc_beat_miss", "supporting_character_flat", "static_dynamic_conflict", "adaptation_source_confusion")).Required(),
+		schema.Property("severity", schema.Enum("severity", "critical", "error", "warning")).Required(),
+		schema.Property("character_id", schema.String("stable character ID")).Required(),
+		schema.Property("scene", schema.String("chapter or scene locator")).Required(),
+		schema.Property("evidence", schema.String("concise draft evidence")).Required(),
+		schema.Property("violated_field", schema.String("character card, knowledge boundary, outline beat, or chapter contract field")).Required(),
+		schema.Property("description", schema.String("what is inconsistent")).Required(),
+		schema.Property("suggestion", schema.String("executable repair instruction")).Required(),
+	)
 	return schema.Object(
 		schema.Property("chapter", schema.Int("要检查的章节号")).Required(),
+		schema.Property("findings", schema.Array("structured character and continuity findings; [] means no finding", findingSchema)).Required(),
 	)
 }
 
 func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
-		Chapter int `json:"chapter"`
+		Chapter  int                       `json:"chapter"`
+		Findings []domain.ConsistencyIssue `json:"findings"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
@@ -57,17 +70,34 @@ func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) 
 	if content == "" {
 		return nil, fmt.Errorf("no content found for chapter %d: %w", a.Chapter, errs.ErrToolPrecondition)
 	}
+	if err := t.validateCharacterFindings(a.Chapter, a.Findings); err != nil {
+		return nil, err
+	}
+	blocking := false
+	for _, finding := range a.Findings {
+		if finding.Severity == "critical" || finding.Severity == "error" {
+			blocking = true
+			break
+		}
+	}
 	result := map[string]any{
 		"chapter":      a.Chapter,
 		"word_count":   wordCount,
 		"draft_sha256": store.TextSHA256(content),
-		"reviewed":     true,
+		"reviewed":     !blocking,
+		"passed":       !blocking,
+		"findings":     a.Findings,
 		"review_against": []string{
 			"novel_context.working_memory.chapter_contract",
 			"novel_context.episodic_memory",
 			"the current read_chapter draft",
 		},
 		"next_step": "If the comparison found a contradiction, edit the draft and rerun all checks; otherwise continue the same-draft validation sequence.",
+	}
+	if blocking {
+		result["blocking"] = true
+		result["next_step"] = "Apply every critical/error repair instruction to the current draft, then rerun check_consistency and all same-draft gates. Do not commit."
+		return json.Marshal(result)
 	}
 
 	if _, err := t.store.Checkpoints.AppendArtifact(
@@ -78,4 +108,28 @@ func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) 
 	}
 
 	return json.Marshal(result)
+}
+
+func (t *CheckConsistencyTool) validateCharacterFindings(chapter int, findings []domain.ConsistencyIssue) error {
+	foundation, err := t.store.Foundation.Load()
+	if err != nil {
+		return fmt.Errorf("load StoryFoundation for consistency findings: %w", err)
+	}
+	ids := make(map[string]struct{}, len(foundation.Characters))
+	for _, character := range foundation.Characters {
+		ids[character.ID] = struct{}{}
+	}
+	for index, finding := range findings {
+		if _, ok := ids[strings.TrimSpace(finding.CharacterID)]; !ok {
+			return fmt.Errorf("findings[%d].character_id %q is not in StoryFoundation: %w", index, finding.CharacterID, errs.ErrToolArgs)
+		}
+		if strings.TrimSpace(finding.Scene) == "" ||
+			strings.TrimSpace(finding.Evidence) == "" ||
+			strings.TrimSpace(finding.ViolatedField) == "" ||
+			strings.TrimSpace(finding.Description) == "" ||
+			strings.TrimSpace(finding.Suggestion) == "" {
+			return fmt.Errorf("findings[%d] requires scene, evidence, violated_field, description, and suggestion: %w", index, errs.ErrToolArgs)
+		}
+	}
+	return nil
 }

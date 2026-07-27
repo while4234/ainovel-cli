@@ -34,14 +34,17 @@ func (t *SaveArcSummaryTool) ConcurrencySafe(_ json.RawMessage) bool { return fa
 
 func (t *SaveArcSummaryTool) Schema() map[string]any {
 	snapshotSchema := schema.Object(
-		schema.Property("name", schema.String("角色名")).Required(),
+		schema.Property("character_id", schema.String("stable StoryFoundation character ID; preferred over name")),
+		schema.Property("name", schema.String("角色名（旧 name-only 兼容）")),
 		schema.Property("status", schema.String("当前状态（存活/受伤/失踪等）")).Required(),
 		schema.Property("power", schema.String("能力变化")),
 		schema.Property("motivation", schema.String("当前动机")).Required(),
 		schema.Property("relations", schema.String("关键关系变化")),
+		schema.Property("known", schema.Array("information learned by this point", schema.String(""))),
 	)
 	voiceSchema := schema.Object(
-		schema.Property("name", schema.String("角色名")).Required(),
+		schema.Property("character_id", schema.String("stable StoryFoundation character ID")),
+		schema.Property("name", schema.String("角色名（旧 name-only 兼容）")),
 		schema.Property("rules", schema.Array("2-3 条语言特征规则（每条 ≤30 字）", schema.String(""))).Required(),
 	)
 	styleRulesSchema := schema.Object(
@@ -80,6 +83,9 @@ func (t *SaveArcSummaryTool) Execute(_ context.Context, args json.RawMessage) (j
 		return nil, fmt.Errorf("volume and arc must be > 0: %w", errs.ErrToolArgs)
 	}
 	if err := validateArcSummaryStyleRules(a.StyleRules); err != nil {
+		return nil, err
+	}
+	if err := t.normalizeSnapshotIDs(a.CharacterSnapshots, a.StyleRules); err != nil {
 		return nil, err
 	}
 
@@ -152,8 +158,8 @@ func validateArcSummaryStyleRules(rules *arcSummaryStyleRules) error {
 		return fmt.Errorf("style_rules.dialogue is required when style_rules is provided; expected array of objects {name, rules}: %w", errs.ErrToolArgs)
 	}
 	for i, voice := range rules.Dialogue {
-		if strings.TrimSpace(voice.Name) == "" {
-			return fmt.Errorf("style_rules.dialogue[%d].name is required: %w", i, errs.ErrToolArgs)
+		if strings.TrimSpace(voice.Name) == "" && strings.TrimSpace(voice.CharacterID) == "" {
+			return fmt.Errorf("style_rules.dialogue[%d] requires character_id or legacy name: %w", i, errs.ErrToolArgs)
 		}
 		if len(voice.Rules) == 0 {
 			return fmt.Errorf("style_rules.dialogue[%d].rules is required: %w", i, errs.ErrToolArgs)

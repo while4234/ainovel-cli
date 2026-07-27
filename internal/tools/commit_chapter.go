@@ -57,12 +57,15 @@ func (t *CommitChapterTool) Schema() map[string]any {
 		schema.Property("description", schema.String("伏笔描述（仅 plant 时必需）")),
 	)
 	relationshipSchema := schema.Object(
-		schema.Property("character_a", schema.String("角色 A")).Required(),
-		schema.Property("character_b", schema.String("角色 B")).Required(),
+		schema.Property("source_character_id", schema.String("stable source character ID; preferred over name")),
+		schema.Property("target_character_id", schema.String("stable target character ID; preferred over name")),
+		schema.Property("character_a", schema.String("角色 A（旧 name-only 兼容）")),
+		schema.Property("character_b", schema.String("角色 B（旧 name-only 兼容）")),
 		schema.Property("relation", schema.String("当前关系描述")).Required(),
 	)
 	stateChangeSchema := schema.Object(
-		schema.Property("entity", schema.String("角色名或实体名")).Required(),
+		schema.Property("character_id", schema.String("stable character ID for character state; preferred over entity name")),
+		schema.Property("entity", schema.String("角色名或实体名（旧 name-only 兼容）")),
 		schema.Property("field", schema.String("变化属性")).Required(),
 		schema.Property("old_value", schema.String("变化前的值")),
 		schema.Property("new_value", schema.String("变化后的值")).Required(),
@@ -76,7 +79,8 @@ func (t *CommitChapterTool) Schema() map[string]any {
 	return schema.Object(
 		schema.Property("chapter", schema.Int("章节号")).Required(),
 		schema.Property("summary", schema.String("本章内容摘要（200字以内）")).Required(),
-		schema.Property("characters", schema.Array("本章出场角色名", schema.String(""))).Required(),
+		schema.Property("characters", schema.Array("本章出场角色名（旧 name-only 兼容）", schema.String(""))),
+		schema.Property("character_ids", schema.Array("本章出场角色的稳定 StoryFoundation ID", schema.String(""))),
 		schema.Property("key_events", schema.Array("本章关键事件", schema.String(""))).Required(),
 		schema.Property("timeline_events", schema.Array("本章时间线事件", timelineSchema)),
 		schema.Property("foreshadow_updates", schema.Array("伏笔操作", foreshadowSchema)),
@@ -97,6 +101,7 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		Chapter             int                        `json:"chapter"`
 		Summary             string                     `json:"summary"`
 		Characters          []string                   `json:"characters"`
+		CharacterIDs        []string                   `json:"character_ids"`
 		KeyEvents           []string                   `json:"key_events"`
 		TimelineEvents      []domain.TimelineEvent     `json:"timeline_events"`
 		ForeshadowUpdates   []domain.ForeshadowUpdate  `json:"foreshadow_updates"`
@@ -112,6 +117,9 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	}
 	if a.Chapter <= 0 {
 		return nil, fmt.Errorf("chapter must be > 0: %w", errs.ErrToolArgs)
+	}
+	if err := t.validateDynamicCharacterUpdates(a.CharacterIDs, a.RelationshipChanges, a.StateChanges); err != nil {
+		return nil, err
 	}
 	if t.store.Progress.IsChapterCompleted(a.Chapter) {
 		// 清理可能残留的 PendingCommit（崩溃发生在 ProgressMarked 之后、ClearPendingCommit 之前）
@@ -217,10 +225,11 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 
 	// 3. 保存摘要
 	summary := domain.ChapterSummary{
-		Chapter:    a.Chapter,
-		Summary:    a.Summary,
-		Characters: a.Characters,
-		KeyEvents:  a.KeyEvents,
+		Chapter:      a.Chapter,
+		Summary:      a.Summary,
+		Characters:   a.Characters,
+		CharacterIDs: a.CharacterIDs,
+		KeyEvents:    a.KeyEvents,
 	}
 	if err := t.store.Summaries.SaveSummary(summary); err != nil {
 		return nil, fmt.Errorf("save summary: %w: %w", errs.ErrStoreWrite, err)

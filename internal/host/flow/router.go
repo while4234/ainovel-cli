@@ -64,6 +64,8 @@ type State struct {
 	CharacterBinding           domain.CharacterCardBinding
 	CharacterStateErr          string
 	AdaptationCharacterPending bool
+	CastPromotionEntry         *domain.CastEntry
+	CastPromotion              *domain.CastPromotionWorkflow
 
 	OutlineRepair *storepkg.OutlineRepairBatch
 
@@ -144,6 +146,9 @@ func Route(s State) *Instruction {
 				Revision:   s.RevisionRoute.Revision,
 			},
 		}
+	}
+	if s.CastPromotionEntry != nil {
+		return routeCastPromotion(s)
 	}
 	if route := routeAdaptationCharacters(s); route != nil {
 		return route
@@ -281,6 +286,40 @@ func Route(s State) *Instruction {
 
 	// 12. 正常续写
 	return s.nextChapterInstruction(p, "续写下一章")
+}
+
+func routeCastPromotion(state State) *Instruction {
+	if state.CastPromotionEntry == nil {
+		return nil
+	}
+	workflow := state.CastPromotion
+	if workflow == nil || workflow.LedgerName != state.CastPromotionEntry.Name ||
+		workflow.Status == domain.CastPromotionPending ||
+		workflow.Status == domain.CastPromotionReviewNeedsChange {
+		return &Instruction{
+			Agent: "character",
+			Task: fmt.Sprintf(
+				`{"run_id":"cast-promotion-analyze-%s","mode":"analyze","instruction":"Read character_context, then use save_cast_promotion_candidate for ledger character %q. Produce one complete canonical card plus only relevant relationships; preserve the existing Foundation."}`,
+				shortCharacterRouteDigest(state.CastPromotionEntry.Name, "cast"),
+				state.CastPromotionEntry.Name,
+			),
+			Reason: "persistent cast character requires incremental Character Agent analyze",
+		}
+	}
+	if workflow.Status == domain.CastPromotionCandidateReady {
+		return &Instruction{
+			Agent: "character",
+			Task: fmt.Sprintf(
+				`{"run_id":"cast-promotion-review-%s","mode":"review","instruction":"Independently read character_context and review the staged cast promotion. Use save_cast_promotion_review with candidate_digest=%q; do not edit or publish the candidate."}`,
+				shortCharacterRouteDigest(workflow.CandidateDigest, "candidate"),
+				workflow.CandidateDigest,
+			),
+			Reason: "cast promotion candidate requires an independent Character Agent review run",
+		}
+	}
+	// review_passed intentionally blocks automatic writing until explicit user
+	// confirmation publishes the card and links the ledger entry.
+	return nil
 }
 
 // RouteResume refines routing while a Resume recovery lease is active. A
