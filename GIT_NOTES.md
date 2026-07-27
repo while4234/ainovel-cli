@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-27 `pending` `fix: deduplicate co-create request context`:
+  canonicalizes the transient co-create model view on every round while
+  preserving every user turn, every visible Agent reply, and the latest
+  complete cumulative draft. Superseded draft copies, legacy cast JSON already
+  persisted in the Character workspace, and stale suggestion payloads are no
+  longer resent. The live `插翅难飞` request fell from a rejected 61,618 bytes
+  to a completed 12,723 bytes; visible recovery, final restart persistence,
+  focused Host/Web tests, UI/Go builds, and runtime smoke checks passed.
 - 2026-07-27 `pending` `feat: add character card workspace`:
   replaces the split core/all-character screens with one stable-ID character
   card workspace, including v3 field groups, search/filter/sort, guarded

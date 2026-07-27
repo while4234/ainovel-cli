@@ -282,19 +282,7 @@ func coCreateStream(ctx context.Context, models *bootstrap.ModelSet, sessions *s
 	model := models.ForStageWithFailover(bootstrap.StageCoCreate, nil)
 	modelIdentity := newCoCreateModelIdentity(model)
 	compiledSystem := globalprompt.Apply(sysPrompt)
-	msgs := []agentcore.Message{agentcore.SystemMsg(compiledSystem)}
-	for _, item := range history {
-		content := strings.TrimSpace(item.Content)
-		if content == "" {
-			continue
-		}
-		switch strings.ToLower(strings.TrimSpace(item.Role)) {
-		case "assistant":
-			msgs = append(msgs, assistantMsg(content))
-		default:
-			msgs = append(msgs, agentcore.UserMsg(content))
-		}
-	}
+	msgs := compileCoCreateMessages(compiledSystem, history)
 
 	var raw, thinking strings.Builder
 	var attempts int
@@ -474,6 +462,102 @@ retry:
 		return CoCreateReply{}, diagnosticErr
 	}
 	return reply, err
+}
+
+// compileCoCreateMessages canonicalizes only the transient model view on every
+// turn. The durable checkpoint keeps the complete conversation. Every user
+// turn and visible assistant reply remains present, while superseded copies of
+// cumulative drafts and separately persisted legacy casts are not resent.
+func compileCoCreateMessages(compiledSystem string, history []CoCreateMessage) []agentcore.Message {
+	return coCreateAgentMessages(compiledSystem, compactCoCreateHistory(history))
+}
+
+func coCreateAgentMessages(compiledSystem string, history []CoCreateMessage) []agentcore.Message {
+	messages := []agentcore.Message{agentcore.SystemMsg(compiledSystem)}
+	for _, item := range history {
+		content := strings.TrimSpace(item.Content)
+		if content == "" {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(item.Role)) {
+		case "assistant":
+			messages = append(messages, assistantMsg(content))
+		default:
+			messages = append(messages, agentcore.UserMsg(content))
+		}
+	}
+	return messages
+}
+
+func coCreateCompiledRequestBytes(compiledSystem string, messages []agentcore.Message) int {
+	if len(messages) <= 1 {
+		return len(compiledSystem)
+	}
+	payload, err := json.Marshal(messages[1:])
+	if err != nil {
+		return len(compiledSystem)
+	}
+	return len(compiledSystem) + len(payload)
+}
+
+func compactCoCreateHistory(history []CoCreateMessage) []CoCreateMessage {
+	latestDraftIndex := latestCoCreateDraftIndex(history)
+	if latestDraftIndex < 0 {
+		return append([]CoCreateMessage(nil), history...)
+	}
+
+	compacted := make([]CoCreateMessage, 0, len(history))
+	for index, message := range history {
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(message.Role), "assistant") {
+			content = compactCoCreateAssistantContext(content, index == latestDraftIndex)
+			if content == "" {
+				continue
+			}
+		}
+		compacted = append(compacted, CoCreateMessage{Role: message.Role, Content: content})
+	}
+	return compacted
+}
+
+func latestCoCreateDraftIndex(history []CoCreateMessage) int {
+	for index := len(history) - 1; index >= 0; index-- {
+		message := history[index]
+		if strings.EqualFold(strings.TrimSpace(message.Role), "assistant") &&
+			strings.TrimSpace(extractTagContent(message.Content, tagDraft)) != "" {
+			return index
+		}
+	}
+	return -1
+}
+
+func compactCoCreateAssistantContext(content string, includeDraft bool) string {
+	reply := strings.TrimSpace(extractTagContent(content, tagReply))
+	if !includeDraft {
+		if reply == "" {
+			return strings.TrimSpace(content)
+		}
+		return "<reply>" + reply + "</reply>"
+	}
+	draft := strings.TrimSpace(extractTagContent(content, tagDraft))
+	if draft == "" {
+		return ""
+	}
+	ready := strings.ToLower(strings.TrimSpace(extractTagContent(content, tagReady)))
+	if ready != "true" {
+		ready = "false"
+	}
+	return strings.Join([]string{
+		"<reply>" + reply + "</reply>",
+		"<draft>",
+		draft,
+		"</draft>",
+		"<ready>" + ready + "</ready>",
+		"<suggestions></suggestions>",
+	}, "\n")
 }
 
 func coCreatePromptRequiresCast(prompt string) bool {
