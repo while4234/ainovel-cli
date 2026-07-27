@@ -1,13 +1,179 @@
 package host
 
 import (
+	"context"
+	"encoding/json"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	adaptpkg "github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
 )
+
+func TestAdaptationCharacterWorkflowPublishesCompleteCastAndTargetFoundation(t *testing.T) {
+	st, sourceBefore := adaptationCharacterWorkflowStore(t)
+	registry := tools.NewCharacterRunRegistry()
+	analyzeBinding := adaptationCharacterContextBinding(t, st, registry, "adaptation-analyze", tools.CharacterRunAnalyze)
+
+	hero := completeHostCharacter()
+	hero.ID = "target-hero"
+	friend := completeHostCharacter()
+	friend.ID = "target-friend"
+	friend.Name = "Zhou Ning"
+	friend.Role = "recurring friend"
+	friend.Tier = string(domain.CharacterTierSecondary)
+	friend.Goal = "Recover the missing evidence."
+	friend.Motivation = "Protect the protagonist."
+	friend.Conflict = ""
+	mentor := completeHostCharacter()
+	mentor.ID = "target-mentor"
+	mentor.Name = "Mentor Shen"
+	mentor.Role = "mentor"
+	mentor.Tier = string(domain.CharacterTierSecondary)
+	mentor.Goal = "Correct an old failure."
+	mentor.Motivation = "Accept responsibility."
+	mentor.Conflict = ""
+	original := completeHostCharacter()
+	original.ID = "target-original"
+	original.Name = "Archivist Qiao"
+	original.Role = "target-original archive custodian"
+	original.Tier = string(domain.CharacterTierSecondary)
+	original.Goal = "Keep the archive auditable."
+	original.Motivation = "Prevent another cover-up."
+	original.Conflict = ""
+
+	relationships := []domain.CharacterRelationship{
+		{
+			ID: "rel-friend", SourceCharacterID: hero.ID, TargetCharacterID: friend.ID,
+			Type: domain.RelationshipTypeAlly, Direction: domain.RelationshipDirectionBidirectional,
+			Status: domain.RelationshipStatusPlanned, Description: "They recover evidence together.",
+		},
+		{
+			ID: "rel-mentor", SourceCharacterID: mentor.ID, TargetCharacterID: hero.ID,
+			Type: domain.RelationshipTypeMentor, Direction: domain.RelationshipDirectionDirected,
+			Status: domain.RelationshipStatusPlanned, Description: "The mentor transfers responsibility without leaking future knowledge.",
+		},
+		{
+			ID: "rel-archivist", SourceCharacterID: original.ID, TargetCharacterID: friend.ID,
+			Type: domain.RelationshipTypeProfessional, Direction: domain.RelationshipDirectionDirected,
+			Status: domain.RelationshipStatusPlanned, Description: "The archivist verifies the friend's evidence chain.",
+		},
+	}
+	mappings := []domain.CharacterSourceMapping{
+		adaptationMapping("map-hero", domain.CharacterSourceKeep, []string{"src-hero"}, []string{hero.ID}, domain.CharacterSourceAdaptationDecision),
+		adaptationMapping("map-friend", domain.CharacterSourceKeep, []string{"src-friend"}, []string{friend.ID}, domain.CharacterSourceAdaptationDecision),
+		adaptationMapping("map-mentor", domain.CharacterSourceKeep, []string{"src-mentor"}, []string{mentor.ID}, domain.CharacterSourceAdaptationDecision),
+		adaptationMapping("map-passerby", domain.CharacterSourceExclude, []string{"src-passerby"}, nil, domain.CharacterSourceAdaptationDecision),
+		adaptationMapping("map-original", domain.CharacterSourceTargetOriginal, nil, []string{original.ID}, domain.CharacterSourceOriginalAddition),
+	}
+	analyzeRequest := map[string]any{
+		"run_id": "adaptation-analyze", "mode": "analyze", "idempotency_key": "adaptation-analyze-key",
+		"base_revision":        analyzeBinding.Candidate.FoundationRevision,
+		"base_audit_signature": analyzeBinding.Candidate.FoundationAuditSignature,
+		"candidate_digest":     analyzeBinding.Candidate.CharacterContentDigest,
+		"input_digest":         analyzeBinding.InputDigest,
+		"analysis_summary":     "Complete source-backed cast with explicit decorative exclusion and one target-original function.",
+		"characters":           []domain.Character{hero, friend, mentor, original},
+		"relationships":        relationships, "relationships_reviewed": true, "source_mappings": mappings,
+	}
+	if _, err := tools.NewSaveCharacterCandidateTool(st, registry).Execute(
+		context.Background(), mustCharacterJSON(t, analyzeRequest),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// A new process can recover the staged candidate and continue with a
+	// distinct independent review run.
+	st = storepkg.NewStore(st.Dir())
+	registry = tools.NewCharacterRunRegistry()
+	reviewBinding := adaptationCharacterContextBinding(t, st, registry, "adaptation-review", tools.CharacterRunReview)
+	reviewRequest := map[string]any{
+		"run_id": "adaptation-review", "mode": "review", "idempotency_key": "adaptation-review-key",
+		"base_revision":        reviewBinding.Candidate.FoundationRevision,
+		"base_audit_signature": reviewBinding.Candidate.FoundationAuditSignature,
+		"candidate_digest":     reviewBinding.Candidate.CharacterContentDigest,
+		"input_digest":         reviewBinding.InputDigest,
+		"verdict":              "pass", "summary": "Independent source fidelity, coverage, completeness, knowledge, and relationship review passed.",
+		"findings": []domain.CharacterCardReviewFinding{},
+	}
+	if _, err := tools.NewSaveCharacterReviewTool(st, registry).Execute(
+		context.Background(), mustCharacterJSON(t, reviewRequest),
+	); err != nil {
+		t.Fatal(err)
+	}
+	candidate, lifecycle, binding, err := tools.CurrentCharacterWorkflow(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle.Coverage == nil || lifecycle.Coverage.BlockingGaps != 0 ||
+		lifecycle.Coverage.ExplicitlyExcluded != 1 {
+		t.Fatalf("coverage = %+v", lifecycle.Coverage)
+	}
+	if lifecycle.ReviewStatus != domain.CharacterCardReviewPassed {
+		t.Fatalf("review status=%s findings=%+v completeness=%+v", lifecycle.ReviewStatus, lifecycle.Findings, lifecycle.Completeness)
+	}
+	confirmRequest := CharacterConfirmationRequest{
+		ExpectedCandidateRevision: candidate.Revision,
+		CandidateDigest:           binding.Candidate.CharacterContentDigest,
+		IdempotencyKey:            "adaptation-confirm-key",
+	}
+	firstConfirmation, err := ConfirmOriginalCharacterCandidate(st, confirmRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryConfirmation, err := ConfirmOriginalCharacterCandidate(st, confirmRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retryConfirmation.Idempotent ||
+		retryConfirmation.FoundationRevision != firstConfirmation.FoundationRevision ||
+		retryConfirmation.CandidateRevision != firstConfirmation.CandidateRevision {
+		t.Fatalf("adaptation confirmation retry=%+v first=%+v", retryConfirmation, firstConfirmation)
+	}
+
+	workflow, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageTargetFoundationGenerating, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetReview, err := adaptpkg.GenerateTargetFoundation(context.Background(), adaptpkg.Deps{Store: st}, adaptpkg.TargetFoundationOptions{
+		Brief: "Preserve the complete reviewed cast.", ExpectedWorkflowRevision: workflow.Revision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := st.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(target.Characters) != 4 || !foundationHasCharacter(target, "target-friend") ||
+		!foundationHasCharacter(target, "target-mentor") || !foundationHasCharacter(target, "target-original") {
+		t.Fatalf("target cast = %+v", target.Characters)
+	}
+	if foundationHasCharacter(target, "src-passerby") {
+		t.Fatalf("excluded passerby entered target cast: %+v", target.Characters)
+	}
+	if !target.RelationshipsReviewed || len(target.Relationships) != len(relationships) {
+		t.Fatalf("reviewed relationships were not preserved: %+v", target.Relationships)
+	}
+	reboundCandidate, reboundLifecycle, reboundBinding, err := tools.CurrentCharacterWorkflow(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reboundCandidate.Foundation.Revision != targetReview.FoundationRevision ||
+		reboundLifecycle.ConfirmationStatus != domain.CharacterCardConfirmed ||
+		reboundLifecycle.Candidate != reboundBinding.Candidate ||
+		reboundLifecycle.ReviewedCandidate != reboundBinding.Candidate {
+		t.Fatalf("target Foundation did not rebind confirmed Character state: candidate=%+v lifecycle=%+v binding=%+v", reboundCandidate, reboundLifecycle, reboundBinding)
+	}
+	sourceAfter, err := st.Adaptation.LoadSourceFoundation()
+	if err != nil || !reflect.DeepEqual(sourceBefore, sourceAfter) {
+		t.Fatalf("SourceFoundation mutated: before=%+v after=%+v err=%v", sourceBefore, sourceAfter, err)
+	}
+}
 
 func TestConfirmOriginalCharacterCandidatePublishesReviewedCandidateAndIsIdempotent(t *testing.T) {
 	st, candidate, binding := stagedOriginalCharacterWorkflow(t)
@@ -212,4 +378,181 @@ func completeHostCharacter() domain.Character {
 			Misconceptions: []string{"her father left the city"}, Forbidden: []string{"leader identity"},
 		},
 	}
+}
+
+func adaptationCharacterWorkflowStore(
+	t *testing.T,
+) (*storepkg.Store, *domain.AdaptationSourceFoundation) {
+	t.Helper()
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	sourceOne, err := st.Adaptation.SaveSourceChapter(1, "Opening", "bounded source fixture one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceTwo, err := st.Adaptation.SaveSourceChapter(2, "Turn", "bounded source fixture two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := domain.AdaptationSourceManifest{
+		SourcePath: "fixture.txt", ChapterCount: 2,
+		Chapters: []domain.AdaptationSource{sourceOne, sourceTwo},
+	}
+	if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	sourceSignature := storepkg.AdaptationSourceSignature(manifest)
+	sourceFoundation := domain.AdaptationSourceFoundation{
+		Version: 1, SourceSignature: sourceSignature, Premise: "# Source\n\nA bounded source fixture.",
+		Characters: []domain.Character{
+			{ID: "src-hero", Name: "Lin Che", Role: "source protagonist", Traits: []string{"disciplined"}},
+			{ID: "src-friend", Name: "Zhou Ning", Role: "recurring friend", Goal: "recover evidence", Traits: []string{"loyal"}},
+			{ID: "src-mentor", Name: "Mentor Shen", Role: "mentor", Motivation: "correct an old failure", Traits: []string{"careful"}},
+			{ID: "src-passerby", Name: "路人", Role: "路人", Traits: []string{}},
+		},
+		WorldRules: []domain.WorldRule{{
+			Category: "society", Rule: "Evidence must remain auditable.", Boundary: "No unsupported source claims.",
+		}},
+	}
+	if err := st.Adaptation.SaveSourceFoundation(sourceFoundation); err != nil {
+		t.Fatal(err)
+	}
+	reports := []domain.AdaptationSourceReport{
+		{
+			Chapter: 1, Title: sourceOne.Title, SourceSHA256: sourceOne.SHA256,
+			Summary: "Lin Che begins the investigation.", Characters: []string{"Lin Che", "Zhou Ning", "路人"},
+			CharacterFacts: []string{"Zhou Ning independently protects the evidence."},
+			KeyEvents:      []string{"Lin Che and Zhou Ning preserve the first record."},
+			Relationships: []domain.RelationshipEntry{{
+				CharacterA: "Lin Che", CharacterB: "Zhou Ning", Relation: "recurring allies",
+			}},
+		},
+		{
+			Chapter: 2, Title: sourceTwo.Title, SourceSHA256: sourceTwo.SHA256,
+			Summary: "Mentor Shen accepts responsibility.", Characters: []string{"Lin Che", "Zhou Ning", "Mentor Shen"},
+			CharacterFacts: []string{"Mentor Shen acts to correct an old failure."},
+			KeyEvents:      []string{"Mentor Shen transfers the archive to Lin Che."},
+			StateChanges: []domain.StateChange{{
+				Entity: "Mentor Shen", Field: "stance", OldValue: "silent", NewValue: "helps Lin Che", Reason: "accepts responsibility",
+			}},
+		},
+	}
+	for _, report := range reports {
+		if err := st.Adaptation.SaveSourceReport(report); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Adaptation.SaveCoCreateDossier(domain.AdaptationCoCreateDossier{
+		Version: 1, SourceSignature: sourceSignature,
+		Batches: []domain.AdaptationCoCreateDossierBatch{{
+			MajorCharacters: []string{"Lin Che"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	intentHash := strings.Repeat("b", 64)
+	if err := st.Adaptation.SaveCoCreateIntent(domain.AdaptationCoCreateIntent{
+		Version: 1, RawRequest: "Preserve the cast evidence.", IntentHash: intentHash,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{
+		Mode: domain.CoreCastModeAdaptation, DraftRevision: 1, DraftHash: "fixture-draft",
+		SourceSignature: sourceSignature, AdaptationIntentHash: intentHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hero := completeHostCharacter()
+	hero.ID = "target-hero"
+	saved, err := st.CoreCast.SaveCAS(domain.CoreCastContract{
+		Version: domain.CoreCastContractVersion, Mode: domain.CoreCastModeAdaptation,
+		DraftRevision: gate.DraftRevision, DraftHash: gate.DraftHash,
+		SourceSignature: gate.SourceSignature, AdaptationIntentHash: gate.AdaptationIntentHash,
+		Members: []domain.CoreCastMember{{
+			Character: hero, Importance: domain.CoreCastImportanceProtagonist,
+			Origin: domain.CoreCastOriginOriginal, MainlineFunction: "drives the target investigation",
+			InclusionRationale: "confirmed adaptation protagonist", NoCoreRelationships: true,
+		}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.CoreCast.ConfirmCAS(saved.Revision, saved.ContentSignature, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, err := st.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, before
+}
+
+func adaptationCharacterContextBinding(
+	t *testing.T,
+	st *storepkg.Store,
+	registry *tools.CharacterRunRegistry,
+	runID string,
+	mode tools.CharacterRunMode,
+) domain.CharacterCardBinding {
+	t.Helper()
+	if _, err := tools.NewCharacterContextTool(st, registry).Execute(
+		context.Background(),
+		mustCharacterJSON(t, map[string]any{"run_id": runID, "mode": mode}),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if mode == tools.CharacterRunAnalyze {
+		_, binding, _, _, err := tools.CurrentCharacterCanonicalBinding(st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return binding
+	}
+	_, _, binding, err := tools.CurrentCharacterWorkflow(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding
+}
+
+func adaptationMapping(
+	id string,
+	action domain.CharacterSourceMappingAction,
+	sourceIDs, targetIDs []string,
+	kind domain.CharacterSourceEvidenceKind,
+) domain.CharacterSourceMapping {
+	return domain.CharacterSourceMapping{
+		ID: id, Action: action, SourceCharacterIDs: sourceIDs, TargetCharacterIDs: targetIDs,
+		Rationale: "fixture adaptation decision",
+		Evidence: []domain.CharacterSourceEvidence{{
+			Kind: kind, Reference: "fixture.character-index", Summary: "bounded fixture evidence",
+		}},
+	}
+}
+
+func mustCharacterJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func foundationHasCharacter(foundation domain.StoryFoundation, id string) bool {
+	for _, character := range foundation.Characters {
+		if character.ID == id {
+			return true
+		}
+	}
+	return false
 }

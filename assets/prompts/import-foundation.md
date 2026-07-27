@@ -57,17 +57,30 @@ Markdown 字符串。第一行必须是从原文反推出的真实书名 `# 实�
 
 ### === CHARACTERS ===
 
-JSON 数组。每个角色字段类型严格如下：
+JSON 数组。每个角色只使用实际 `domain.Character` schema；无证据字段留空或省略：
 
 ```json
 [
   {
+    "id": "稳定角色 ID；同名异人必须不同",
     "name": "字符串",
     "aliases": ["可选别名/称号"],
     "role": "主角 / 反派 / 盟友 / 配角 / 提及",
     "description": "整体描述（身份、外貌、底色）",
-    "arc": "整段角色弧线（用'前期…后期…'描述，**字符串**不是对象）",
-    "traits": ["特质1", "特质2"]
+    "arc": "截至导入正文已经发生的变化，不预写未来终点",
+    "traits": ["特质1", "特质2"],
+    "tier": "core / important / secondary / decorative",
+    "faction": "势力或空字符串",
+    "goal": "已有文本支持的外部目标或空字符串",
+    "motivation": "已有文本支持的内在动机或空字符串",
+    "conflict": "已有冲突或空字符串",
+    "voice": "语言或行为特征或空字符串",
+    "constraints": ["行为或知识约束"],
+    "contrast_details": [{"surface":"可观察表象","depth":"有证据的深层反差"}],
+    "key_backstory": [{"event":"已发生且影响当前选择的事件","impact":"当前影响"}],
+    "initial_state": {"identity":"","situation":"","emotion":"","resources":[],"relationships":""},
+    "knowledge_boundary": {"known":[],"unknown":[],"misconceptions":[],"forbidden":[]},
+    "notes": "不确定性或证据边界"
   }
 ]
 ```
@@ -75,6 +88,7 @@ JSON 数组。每个角色字段类型严格如下：
 要求：
 - 至少包含主角与正文中所有有名字、有动机的重要角色。
 - arc 反映已发生章节中此角色的实际变化，不要预设未发生的弧线。
+- 不得输出 `goals` 或字符串数组式 `relationships`；关系事实由逐章报告和后续计划关系契约消费。
 
 ### === WORLD_RULES ===
 

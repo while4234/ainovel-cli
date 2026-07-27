@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 )
 
@@ -96,6 +97,7 @@ func mergeSourceChapterAnalyses(analyses []*imp.ChapterAnalysis) *imp.ChapterAna
 			summaries = append(summaries, summary)
 		}
 		out.Characters = appendUniqueStrings(out.Characters, analysis.Characters...)
+		out.CharacterProfiles = appendUniqueCharacterProfiles(out.CharacterProfiles, analysis.CharacterProfiles...)
 		out.CharacterFacts = appendUniqueStrings(out.CharacterFacts, analysis.CharacterFacts...)
 		out.KeyEvents = appendUniqueStrings(out.KeyEvents, analysis.KeyEvents...)
 		out.WorldRules = appendUniqueStrings(out.WorldRules, analysis.WorldRules...)
@@ -111,6 +113,76 @@ func mergeSourceChapterAnalyses(analyses []*imp.ChapterAnalysis) *imp.ChapterAna
 		}
 	}
 	out.Summary = clipText(strings.Join(summaries, "；"), 200)
+	return out
+}
+
+func appendUniqueCharacterProfiles(existing []domain.Character, values ...domain.Character) []domain.Character {
+	seen := make(map[string]int, len(existing)+len(values))
+	for index, character := range existing {
+		seen[characterProfileIdentity(character)] = index
+	}
+	for _, character := range values {
+		key := characterProfileIdentity(character)
+		if key == "" {
+			continue
+		}
+		if index, exists := seen[key]; exists {
+			existing[index] = richerCharacterProfile(existing[index], character)
+			continue
+		}
+		seen[key] = len(existing)
+		existing = append(existing, domain.CloneCharacter(character))
+	}
+	return existing
+}
+
+func characterProfileIdentity(character domain.Character) string {
+	if id := strings.ToLower(strings.TrimSpace(character.ID)); id != "" {
+		return "id:" + id
+	}
+	if name := strings.ToLower(strings.TrimSpace(character.Name)); name != "" {
+		return "name:" + name
+	}
+	return ""
+}
+
+func richerCharacterProfile(current, incoming domain.Character) domain.Character {
+	out := domain.CloneCharacter(current)
+	fill := func(target *string, value string) {
+		if strings.TrimSpace(*target) == "" {
+			*target = strings.TrimSpace(value)
+		}
+	}
+	fill(&out.ID, incoming.ID)
+	fill(&out.Name, incoming.Name)
+	fill(&out.Role, incoming.Role)
+	fill(&out.Description, incoming.Description)
+	fill(&out.Arc, incoming.Arc)
+	fill(&out.Tier, incoming.Tier)
+	fill(&out.Faction, incoming.Faction)
+	fill(&out.Goal, incoming.Goal)
+	fill(&out.Motivation, incoming.Motivation)
+	fill(&out.Conflict, incoming.Conflict)
+	fill(&out.Voice, incoming.Voice)
+	fill(&out.Notes, incoming.Notes)
+	out.Aliases = appendUniqueStrings(out.Aliases, incoming.Aliases...)
+	out.Traits = appendUniqueStrings(out.Traits, incoming.Traits...)
+	out.Constraints = appendUniqueStrings(out.Constraints, incoming.Constraints...)
+	if out.InitialState == nil && incoming.InitialState != nil {
+		state := *incoming.InitialState
+		state.Resources = append([]string(nil), incoming.InitialState.Resources...)
+		out.InitialState = &state
+	}
+	if out.KnowledgeBoundary == nil && incoming.KnowledgeBoundary != nil {
+		boundary := *incoming.KnowledgeBoundary
+		boundary.Known = append([]string(nil), incoming.KnowledgeBoundary.Known...)
+		boundary.Unknown = append([]string(nil), incoming.KnowledgeBoundary.Unknown...)
+		boundary.Misconceptions = append([]string(nil), incoming.KnowledgeBoundary.Misconceptions...)
+		boundary.Forbidden = append([]string(nil), incoming.KnowledgeBoundary.Forbidden...)
+		out.KnowledgeBoundary = &boundary
+	}
+	out.ContrastDetails = append(out.ContrastDetails, incoming.ContrastDetails...)
+	out.KeyBackstory = append(out.KeyBackstory, incoming.KeyBackstory...)
 	return out
 }
 

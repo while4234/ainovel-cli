@@ -59,3 +59,44 @@ func TestTargetFoundationRevisionBlocksSkeletonUntilReconfirmed(t *testing.T) {
 		t.Fatalf("unconfirmed target foundation allowed skeleton: %v", err)
 	}
 }
+
+func TestLegacyCoreCastOnlyTargetRequiresNonCoreCharacterCompletion(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	reports := seedPreparedAdaptationSource(t, st, []int{40, 60})
+	source, err := st.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.Characters = append(source.Characters,
+		domain.Character{ID: "source-friend", Name: "Recurring Friend", Role: "friend", Goal: "protect the evidence", Traits: []string{"loyal"}},
+		domain.Character{ID: "source-mentor", Name: "Source Mentor", Role: "mentor", Motivation: "repair an old failure", Traits: []string{"careful"}},
+	)
+	if err := st.Adaptation.SaveSourceFoundation(*source); err != nil {
+		t.Fatal(err)
+	}
+	for index := range reports {
+		reports[index].Characters = []string{"Recurring Friend", "Source Mentor"}
+		reports[index].KeyEvents = append(reports[index].KeyEvents, "Recurring Friend and Source Mentor change the mainline")
+		if err := st.Adaptation.SaveSourceReport(reports[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkAdaptationTargetFoundationPending("complete the non-core cast"); err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := st.Adaptation.LoadPlanningWorkflow()
+	if err != nil || workflow == nil {
+		t.Fatalf("workflow=%+v err=%v", workflow, err)
+	}
+	if _, err := GenerateTargetFoundation(context.Background(), Deps{Store: st}, TargetFoundationOptions{
+		Brief: "complete cast", ExpectedWorkflowRevision: workflow.Revision,
+	}); err == nil || !strings.Contains(err.Error(), "shared Character Agent") {
+		t.Fatalf("legacy non-core completion err = %v", err)
+	}
+}

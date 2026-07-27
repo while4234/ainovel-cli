@@ -46,6 +46,20 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-27 `pending` `feat: integrate adaptation character workflow`:
+  imports canonical full Character profiles with strict legacy migration,
+  derives a deterministic bounded source-character index, and gates every
+  decision-required core or non-core source role behind explicit
+  keep/rename/merge/split/exclude mappings. Adaptation co-create now routes the
+  same Character Agent through analyze, independent review, explicit
+  confirmation, and only then Target Foundation generation; the complete
+  reviewed cast and relationships survive publication, SourceFoundation stays
+  read-only, and the lifecycle is rebound to the new canonical revision.
+  Focused schema, alias/homonym, merge/split/exclude, coverage, restart,
+  idempotency, stale-input, legacy, Web-routing, and full-cast fixtures pass;
+  `go build ./cmd/ainovel-cli` passes. The full repository run reproduces the
+  documented assets, Web/CoreCast, Host/adaptation, model-inventory, and five
+  Tools baseline failures.
 - 2026-07-27 `pending` `feat: integrate original character workflow`:
   changes normal co-create to a four-section creative brief while migrating
   legacy cast output as an unconfirmed seed; stages full Character candidates,

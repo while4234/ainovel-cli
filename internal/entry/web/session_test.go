@@ -709,12 +709,11 @@ func TestProjectSessionBuildAdaptationProposalShowsRunningAndCancels(t *testing.
 	}
 }
 
-func TestProjectSessionAdaptCoCreateCommitCanBeCanceledFromCoCreateCancel(t *testing.T) {
+func TestProjectSessionAdaptCoCreateCommitStartsCharacterWorkflowBeforeProposal(t *testing.T) {
 	fake := newFakeProjectHost()
 	fake.snapshot = hostpkgSnapshotIdle()
-	fake.adaptProposalStarted = make(chan struct{})
-	fake.blockAdaptProposal = true
 	session := newTestSessionWithHost("project-1", fake)
+	session.manifest.OutputDir = t.TempDir()
 	draft := strings.Join([]string{
 		"## Adapt Mode",
 		"granularity=arc",
@@ -742,36 +741,97 @@ func TestProjectSessionAdaptCoCreateCommitCanBeCanceledFromCoCreateCancel(t *tes
 		adaptWordTolerance: 0,
 		draftConsolidated:  true,
 	}
-
-	commitErr := make(chan error, 1)
-	go func() {
-		_, err := session.CommitCoCreate(context.Background())
-		commitErr <- err
-	}()
-
-	select {
-	case <-fake.adaptProposalStarted:
-	case <-time.After(time.Second):
-		t.Fatal("adapt co-create proposal generation did not start")
+	st := storepkg.NewStore(session.manifest.OutputDir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	manifest := domain.AdaptationSourceManifest{
+		ChapterCount: 1,
+		Chapters: []domain.AdaptationSource{{
+			Chapter: 1, SHA256: strings.Repeat("a", 64),
+		}},
+	}
+	if err := st.Adaptation.SaveSourceManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	sourceSignature := storepkg.AdaptationSourceSignature(manifest)
+	intent := domain.AdaptationCoCreateIntent{
+		Version: 1, RawRequest: "Preserve the source protagonist.",
+	}
+	intent.IntentHash = adapt.CoCreateIntentHash(intent)
+	if err := st.Adaptation.SaveCoCreateIntent(intent); err != nil {
+		t.Fatal(err)
+	}
+	sourceFoundation := domain.AdaptationSourceFoundation{
+		Version: 1, SourceSignature: sourceSignature,
+		Characters: []domain.Character{{ID: "lin", Name: "Lin", Role: "source protagonist"}},
+	}
+	if err := st.Adaptation.SaveSourceFoundation(sourceFoundation); err != nil {
+		t.Fatal(err)
+	}
+	dossierSpec := storepkg.AdaptationDossierBatchSpecs(
+		manifest, adapt.CoCreateDossierBatchSize, adapt.CoCreateDossierBatchRuneLimit,
+	)[0]
+	dossier := domain.AdaptationCoCreateDossier{
+		Version: 1, PromptVersion: adapt.CoCreateDossierPromptVersion,
+		SourceSignature: sourceSignature, SourceChapterCount: manifest.ChapterCount,
+		BatchSize: adapt.CoCreateDossierBatchSize, BatchRuneLimit: adapt.CoCreateDossierBatchRuneLimit,
+		Batches: []domain.AdaptationCoCreateDossierBatch{{
+			Index: dossierSpec.Index, SourceFrom: dossierSpec.SourceFrom, SourceTo: dossierSpec.SourceTo,
+			SourceSignature: dossierSpec.SourceSignature, MajorCharacters: []string{"Lin"},
+		}},
+	}
+	if err := st.Adaptation.SaveCoCreateDossier(dossier); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{
+		Mode:                 domain.CoreCastModeAdaptation,
+		DraftRevision:        session.cocreate.session.DraftRevision(),
+		DraftHash:            session.cocreate.session.DraftHash(),
+		SourceSignature:      sourceSignature,
+		AdaptationIntentHash: intent.IntentHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := completeWebCoreCast()
+	contract.Mode = domain.CoreCastModeAdaptation
+	contract.DraftRevision = gate.DraftRevision
+	contract.DraftHash = gate.DraftHash
+	contract.SourceSignature = gate.SourceSignature
+	contract.AdaptationIntentHash = gate.AdaptationIntentHash
+	contract.Members[0].Origin = domain.CoreCastOriginSource
+	contract.Members[0].SourceCharacterIDs = []string{"lin"}
+	contract.Members[0].InclusionRationale = "preserve the source protagonist"
+	contract.SourceDispositions = []domain.SourceCharacterDisposition{{
+		SourceCharacterID: "lin", Action: domain.SourceDispositionKeep,
+		TargetCharacterIDs: []string{"lin"}, Rationale: "preserve the source protagonist",
+	}}
+	saved, err := st.CoreCast.SaveCAS(contract, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceCharacters := domain.ResolveSourceCharacters(sourceFoundation)
+	sourceMajor, missing := domain.ResolveSourceMajorCharacters(sourceFoundation, dossier)
+	if _, _, err := st.CoreCast.ConfirmCAS(saved.Revision, saved.ContentSignature, sourceCharacters, sourceMajor, missing); err != nil {
+		t.Fatal(err)
 	}
 
-	state, err := session.CancelCoCreate()
+	state, err := session.CommitCoCreate(context.Background())
 	if err != nil {
-		t.Fatalf("CancelCoCreate should cancel running proposal, got %v", err)
+		t.Fatalf("CommitCoCreate: %v", err)
 	}
 	if state.Active {
-		t.Fatalf("CancelCoCreate should close the co-create session after canceling proposal")
+		t.Fatalf("committed adaptation co-create should be inactive: %+v", state)
 	}
 	if session.cocreate != nil {
-		t.Fatalf("session co-create state should be cleared after cancellation")
+		t.Fatal("committed adaptation co-create state was not cleared")
 	}
-	select {
-	case err := <-commitErr:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("commit error = %v, want context.Canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("adapt co-create commit did not stop after cancel")
+	if fake.adaptStartCalls != 1 || fake.startPreparedPrompt != draft {
+		t.Fatalf("Character workflow start calls=%d brief=%q", fake.adaptStartCalls, fake.startPreparedPrompt)
+	}
+	if fake.adaptProposalCalls != 0 {
+		t.Fatalf("adaptation proposal ran before Character confirmation: calls=%d", fake.adaptProposalCalls)
 	}
 }
 
@@ -2449,6 +2509,14 @@ func (f *fakeProjectHost) StartAdaptationPreparedWithOptions(options adapt.Propo
 	if f.requireAnalyzedAdaptSource && options.SourcePath != f.adaptSourcePath {
 		return fmt.Errorf("adaptation source %q has not completed analysis", options.SourcePath)
 	}
+	return f.adaptStartErr
+}
+
+func (f *fakeProjectHost) StartAdaptationCharacterWorkflow(brief string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adaptStartCalls++
+	f.startPreparedPrompt = brief
 	return f.adaptStartErr
 }
 

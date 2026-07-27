@@ -23,6 +23,7 @@ var (
 type ChapterAnalysis struct {
 	Summary             string
 	Characters          []string
+	CharacterProfiles   []domain.Character
 	CharacterFacts      []string
 	KeyEvents           []string
 	WorldRules          []string
@@ -136,7 +137,7 @@ func buildAnalyzerUserPrompt(
 	charactersBlock = cleanLLMText(charactersBlock)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "请分析第 %d 章正文，输出 9 个 === TAG === 段。\n\n", chapter)
+	fmt.Fprintf(&sb, "请分析第 %d 章正文，输出 11 个 === TAG === 段。\n\n", chapter)
 	if title != "" {
 		fmt.Fprintf(&sb, "章节标题：%s\n\n", title)
 	}
@@ -205,6 +206,9 @@ func parseAnalyzerOutput(text string) (*ChapterAnalysis, error) {
 	}
 	if len(a.Characters) == 0 {
 		return nil, fmt.Errorf("characters array is empty")
+	}
+	if err := decodeCharactersJSON("character_profiles", env["CHARACTER_PROFILES"], &a.CharacterProfiles, true); err != nil {
+		return nil, err
 	}
 	if err := decodeOptionalArray("character_facts", env["CHARACTER_FACTS"], &a.CharacterFacts); err != nil {
 		return nil, err

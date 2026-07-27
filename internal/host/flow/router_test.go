@@ -29,6 +29,39 @@ func TestRoute_NilProgress(t *testing.T) {
 	}
 }
 
+func TestRoute_AdaptationCharactersUseSharedAnalyzeAndReviewRuns(t *testing.T) {
+	state := State{
+		AdaptationCharacterPending: true,
+		CharacterBinding: domain.CharacterCardBinding{
+			InputDigest: strings.Repeat("a", 64),
+		},
+	}
+	analyze := Route(state)
+	if analyze == nil || analyze.Agent != "character" ||
+		!strings.Contains(analyze.Task, `"mode":"analyze"`) ||
+		!strings.Contains(analyze.Task, `"project_mode":"adaptation"`) {
+		t.Fatalf("adaptation analyze route = %+v", analyze)
+	}
+
+	state.CharacterCandidate = &domain.CharacterCardCandidate{}
+	state.CharacterLifecycle = &domain.CharacterCardLifecycle{
+		AnalysisStatus: domain.CharacterCardAnalysisCandidateReady,
+		ReviewStatus:   domain.CharacterCardReviewNotReviewed,
+	}
+	state.CharacterBinding.Candidate.CharacterContentDigest = strings.Repeat("b", 64)
+	review := Route(state)
+	if review == nil || review.Agent != "character" ||
+		!strings.Contains(review.Task, `"mode":"review"`) ||
+		!strings.Contains(review.Task, `"project_mode":"adaptation"`) {
+		t.Fatalf("adaptation review route = %+v", review)
+	}
+
+	state.CharacterLifecycle.ReviewStatus = domain.CharacterCardReviewPassed
+	if got := Route(state); got != nil {
+		t.Fatalf("passing adaptation review should wait for user confirmation, got %+v", got)
+	}
+}
+
 func TestRoute_PhaseComplete(t *testing.T) {
 	s := State{Progress: &domain.Progress{Phase: domain.PhaseComplete}}
 	if got := Route(s); got != nil {

@@ -454,6 +454,7 @@ type CharacterCardLifecycle struct {
 	SubmissionDigest    string                            `json:"submission_digest,omitempty"`
 	Error               *CharacterCardError               `json:"error,omitempty"`
 	SourceMappings      []CharacterSourceMapping          `json:"source_mappings"`
+	Coverage            *AdaptationCharacterCoverage      `json:"coverage,omitempty"`
 	CreatedAt           string                            `json:"created_at,omitempty"`
 	UpdatedAt           string                            `json:"updated_at,omitempty"`
 }
@@ -506,11 +507,13 @@ func ProjectCharacterCandidateCoreCast(
 	}
 
 	var findings []CharacterCardReviewFinding
+	var normalizedExisting *CoreCastContract
 	if existing != nil && existing.ConfirmedSignature != "" {
 		confirmed, normalizeErr := NormalizeCoreCastContract(*existing)
 		if normalizeErr != nil {
 			return CoreCastContract{}, nil, normalizeErr
 		}
+		normalizedExisting = &confirmed
 		for _, member := range confirmed.Members {
 			candidate, ok := core[member.Character.ID]
 			if !ok || !reflect.DeepEqual(candidate, member.Character) {
@@ -536,6 +539,12 @@ func ProjectCharacterCandidateCoreCast(
 	}
 	sort.Strings(ids)
 	members := make([]CoreCastMember, 0, len(ids))
+	existingMembers := make(map[string]CoreCastMember)
+	if normalizedExisting != nil {
+		for _, member := range normalizedExisting.Members {
+			existingMembers[member.Character.ID] = member
+		}
+	}
 	relationshipCount := make(map[string]int, len(ids))
 	coreRelationships := make([]CharacterRelationship, 0)
 	for _, relationship := range normalized.Relationships {
@@ -556,22 +565,42 @@ func ProjectCharacterCandidateCoreCast(
 		if strings.Contains(role, "主角") || strings.Contains(role, "protagonist") || index == 0 {
 			importance = CoreCastImportanceProtagonist
 		}
-		members = append(members, CoreCastMember{
+		member := CoreCastMember{
 			Character:           character,
 			Importance:          importance,
 			Origin:              CoreCastOriginOriginal,
 			MainlineFunction:    character.Role,
 			InclusionRationale:  "projected from reviewed full character candidate",
 			NoCoreRelationships: relationshipCount[id] == 0 && normalized.RelationshipsReviewed,
-		})
+		}
+		if existingMember, ok := existingMembers[id]; ok {
+			member.Importance = existingMember.Importance
+			member.Origin = existingMember.Origin
+			member.MainlineFunction = existingMember.MainlineFunction
+			member.InclusionRationale = existingMember.InclusionRationale
+			member.SourceCharacterIDs = append([]string(nil), existingMember.SourceCharacterIDs...)
+		}
+		members = append(members, member)
 	}
-	projected, err := NormalizeCoreCastContract(CoreCastContract{
+	projectedValue := CoreCastContract{
 		Version:              CoreCastContractVersion,
 		Mode:                 CoreCastModeNormal,
 		Members:              members,
 		PlannedRelationships: coreRelationships,
 		SourceDispositions:   []SourceCharacterDisposition{},
-	})
+	}
+	if normalizedExisting != nil && normalizedExisting.Mode == CoreCastModeAdaptation {
+		projectedValue.Mode = CoreCastModeAdaptation
+		projectedValue.DraftRevision = normalizedExisting.DraftRevision
+		projectedValue.DraftHash = normalizedExisting.DraftHash
+		projectedValue.SourceSignature = normalizedExisting.SourceSignature
+		projectedValue.AdaptationIntentHash = normalizedExisting.AdaptationIntentHash
+		projectedValue.SourceDispositions = append(
+			[]SourceCharacterDisposition(nil),
+			normalizedExisting.SourceDispositions...,
+		)
+	}
+	projected, err := NormalizeCoreCastContract(projectedValue)
 	return projected, findings, err
 }
 
@@ -677,6 +706,11 @@ func NormalizeCharacterCardLifecycle(value CharacterCardLifecycle) (CharacterCar
 	}
 	if out.SourceMappings == nil {
 		out.SourceMappings = []CharacterSourceMapping{}
+	}
+	if out.Coverage != nil {
+		sort.Slice(out.Coverage.Decisions, func(i, j int) bool {
+			return out.Coverage.Decisions[i].SourceCharacterID < out.Coverage.Decisions[j].SourceCharacterID
+		})
 	}
 	if out.Error != nil {
 		out.Error.Class = strings.TrimSpace(out.Error.Class)
@@ -786,6 +820,14 @@ func ValidateCharacterSourceCoverage(
 	mappings []CharacterSourceMapping,
 	sourceCharacterIDs, targetCharacterIDs []string,
 ) error {
+	allowedSources := make(map[string]struct{}, len(sourceCharacterIDs))
+	for _, sourceID := range normalizedStrings(sourceCharacterIDs) {
+		allowedSources[sourceID] = struct{}{}
+	}
+	allowedTargets := make(map[string]struct{}, len(targetCharacterIDs))
+	for _, targetID := range normalizedStrings(targetCharacterIDs) {
+		allowedTargets[targetID] = struct{}{}
+	}
 	sourceClaims := make(map[string]string)
 	targetClaims := make(map[string]struct{})
 	for _, mapping := range mappings {
@@ -795,12 +837,18 @@ func ValidateCharacterSourceCoverage(
 			return err
 		}
 		for _, sourceID := range normalized.SourceCharacterIDs {
+			if _, exists := allowedSources[sourceID]; !exists {
+				return fmt.Errorf("mapping %q references unknown source character %q", normalized.ID, sourceID)
+			}
 			if owner, exists := sourceClaims[sourceID]; exists && owner != normalized.ID {
 				return fmt.Errorf("source character %q has conflicting mappings %q and %q", sourceID, owner, normalized.ID)
 			}
 			sourceClaims[sourceID] = normalized.ID
 		}
 		for _, targetID := range normalized.TargetCharacterIDs {
+			if _, exists := allowedTargets[targetID]; !exists {
+				return fmt.Errorf("mapping %q references unknown target character %q", normalized.ID, targetID)
+			}
 			targetClaims[targetID] = struct{}{}
 		}
 	}
@@ -905,6 +953,17 @@ func validateCharacterCardLifecycle(value CharacterCardLifecycle) error {
 	}
 	if value.SubmissionDigest != "" && len(value.SubmissionDigest) != 64 {
 		return fmt.Errorf("character card submission digest is invalid")
+	}
+	if value.Coverage != nil {
+		if value.Mode != CharacterCardProjectAdaptation {
+			return fmt.Errorf("only adaptation character cards may store source coverage")
+		}
+		if value.Coverage.SourceTotal < 0 || value.Coverage.DecisionRequired < 0 ||
+			value.Coverage.Mapped < 0 || value.Coverage.ExplicitlyExcluded < 0 ||
+			value.Coverage.Pending < 0 || value.Coverage.BlockingGaps < 0 ||
+			value.Coverage.SourceTotal != len(value.Coverage.Decisions) {
+			return fmt.Errorf("adaptation character coverage counts are invalid")
+		}
 	}
 	findingIDs := make(map[string]struct{}, len(value.Findings))
 	for _, finding := range value.Findings {
@@ -1056,6 +1115,14 @@ func cloneCharacterCardLifecycle(in CharacterCardLifecycle) CharacterCardLifecyc
 	if in.Error != nil {
 		value := *in.Error
 		out.Error = &value
+	}
+	if in.Coverage != nil {
+		value := *in.Coverage
+		value.Decisions = append([]AdaptationCharacterCoverageDecision(nil), in.Coverage.Decisions...)
+		for i := range value.Decisions {
+			value.Decisions[i].Reasons = append([]string(nil), in.Coverage.Decisions[i].Reasons...)
+		}
+		out.Coverage = &value
 	}
 	return out
 }

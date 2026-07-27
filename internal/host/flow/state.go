@@ -97,16 +97,34 @@ func LoadState(store *storepkg.Store) State {
 }
 
 func loadCharacterWorkflowState(state *State, st *storepkg.Store) {
-	if state == nil || st == nil || state.PlanningReview == nil ||
-		state.PlanningReview.Kind != domain.PlanningReviewKindFoundation {
+	if state == nil || st == nil {
 		return
 	}
+	originalPending := state.PlanningReview != nil &&
+		state.PlanningReview.Kind == domain.PlanningReviewKindFoundation
+	adaptationPending := false
+	if workflow, err := st.Adaptation.LoadPlanningWorkflow(); err == nil && workflow != nil &&
+		workflow.Stage == domain.AdaptationPlanningStageTargetFoundationGenerating {
+		if coreCast, coreErr := st.CoreCast.Load(); coreErr == nil && coreCast != nil &&
+			coreCast.Mode == domain.CoreCastModeAdaptation {
+			adaptationPending = true
+		}
+	}
+	if !originalPending && !adaptationPending {
+		return
+	}
+	state.AdaptationCharacterPending = adaptationPending
 	candidate, lifecycle, binding, err := tools.CurrentCharacterWorkflow(st)
 	state.CharacterCandidate = candidate
 	state.CharacterLifecycle = lifecycle
 	state.CharacterBinding = binding
 	if err != nil {
 		state.CharacterStateErr = err.Error()
+		_, canonicalBinding, _, _, canonicalErr := tools.CurrentCharacterCanonicalBinding(st)
+		if canonicalErr == nil {
+			state.CharacterBinding = canonicalBinding
+		}
+	} else if candidate == nil {
 		_, canonicalBinding, _, _, canonicalErr := tools.CurrentCharacterCanonicalBinding(st)
 		if canonicalErr == nil {
 			state.CharacterBinding = canonicalBinding

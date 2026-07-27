@@ -10,6 +10,17 @@
 
 实际出场角色名 JSON 字符串数组，不含仅被提及者。
 
+=== CHARACTER_PROFILES ===
+
+本章正文能够支持的结构化角色事实 JSON 数组。旧角色只填写本章新增或更新且有证据的字段；同名异人必须给不同 `id`，改名或称号放入 `aliases`。每项仅使用实际 `domain.Character` 字段：
+
+`{id,name,aliases,role,description,arc,traits,tier,faction,goal,motivation,conflict,voice,constraints,contrast_details,key_backstory,initial_state,knowledge_boundary,notes}`
+
+- `arc` 只总结截至本章已经发生的变化，不臆造未来成长终点。
+- `initial_state` 表示首次可靠出场时的身份、处境、情绪、资源和关系。
+- `knowledge_boundary` 只写本章可证实的已知、未知、误解和禁用信息。
+- 无证据字段留空字符串、空数组或省略；不得输出 `goals`、`relationships` 等漂移字段。
+
 === CHARACTER_FACTS ===
 
 身份、动机、能力、压力、关系状态及其变化的 JSON 字符串数组。
@@ -46,4 +57,4 @@ JSON 数组，每项 `{entity,field,old_value,new_value,reason}`；首次出现�
 
 只输出 `quest/fire/constellation` 之一。
 
-所有结论必须能在本章正文中定位。不要用现实常识覆盖小说设定；不要臆造正文未出现的关系、因果或状态。
+所有结论必须能在本章正文中定位。不要用现实常识覆盖小说设定；不要臆造正文未出现的关系、因果、状态或成长终点。

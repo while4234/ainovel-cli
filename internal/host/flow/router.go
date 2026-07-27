@@ -59,10 +59,11 @@ type State struct {
 	// 基础设定缺项（规划阶段的补齐信号）。
 	FoundationMissing []string
 
-	CharacterCandidate *domain.CharacterCardCandidate
-	CharacterLifecycle *domain.CharacterCardLifecycle
-	CharacterBinding   domain.CharacterCardBinding
-	CharacterStateErr  string
+	CharacterCandidate         *domain.CharacterCardCandidate
+	CharacterLifecycle         *domain.CharacterCardLifecycle
+	CharacterBinding           domain.CharacterCardBinding
+	CharacterStateErr          string
+	AdaptationCharacterPending bool
 
 	OutlineRepair *storepkg.OutlineRepairBatch
 
@@ -143,6 +144,9 @@ func Route(s State) *Instruction {
 				Revision:   s.RevisionRoute.Revision,
 			},
 		}
+	}
+	if route := routeAdaptationCharacters(s); route != nil {
+		return route
 	}
 	p := s.Progress
 	if p == nil {
@@ -509,6 +513,37 @@ func routeOriginalFoundation(state State, review *domain.PlanningReview) *Instru
 		}
 	}
 	return nil
+}
+
+func routeAdaptationCharacters(state State) *Instruction {
+	if !state.AdaptationCharacterPending {
+		return nil
+	}
+	routing := originalCharacterRouteState(state)
+	switch routing.Status {
+	case "analyze":
+		return &Instruction{
+			Agent: "character",
+			Task: fmt.Sprintf(
+				`{"run_id":"character-adaptation-analyze-%s","mode":"%s","project_mode":"adaptation","instruction":"Generate the complete source-mapped core and non-core target cast from the persisted adaptation brief and bounded source character index. Do not publish StoryFoundation."}`,
+				routing.RunSuffix,
+				tools.CharacterRunAnalyze,
+			),
+			Reason: "改编来源角色索引与简报已就绪，完整角色候选待统一 Character Agent 分析",
+		}
+	case "review":
+		return &Instruction{
+			Agent: "character",
+			Task: fmt.Sprintf(
+				`{"run_id":"character-adaptation-review-%s","mode":"%s","project_mode":"adaptation","instruction":"Independently review source coverage, mapping fidelity, complete character cards, knowledge boundaries, and planned relationships. Re-read character_context and do not modify the candidate."}`,
+				routing.RunSuffix,
+				tools.CharacterRunReview,
+			),
+			Reason: "改编完整角色候选已就绪，待同一 Character Agent 独立审核 run",
+		}
+	default:
+		return nil
+	}
 }
 
 func routeOriginalCharacters(state State) *Instruction {

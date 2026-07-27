@@ -153,6 +153,10 @@ func ConfirmOriginalCharacterCandidate(
 			return CharacterConfirmationResult{}, fmt.Errorf("character candidate deterministic completeness is not passing")
 		}
 	}
+	if lifecycle.Mode == domain.CharacterCardProjectAdaptation &&
+		(lifecycle.Coverage == nil || lifecycle.Coverage.BlockingGaps > 0) {
+		return CharacterConfirmationResult{}, fmt.Errorf("adaptation character candidate source coverage is incomplete")
+	}
 	projected, conflicts, err := domain.ProjectCharacterCandidateCoreCast(candidate.Foundation, currentCoreCast(st))
 	if err != nil {
 		return CharacterConfirmationResult{}, err
@@ -198,23 +202,31 @@ func ConfirmOriginalCharacterCandidate(
 		return CharacterConfirmationResult{}, fmt.Errorf("confirm projected CoreCast: %w", err)
 	}
 
-	review, err := st.RunMeta.PlanningReview()
-	if err != nil {
-		return CharacterConfirmationResult{}, err
-	}
-	if review == nil {
-		return CharacterConfirmationResult{}, fmt.Errorf("Foundation generation is missing")
-	}
-	published, _, err := st.PublishOriginalCharacterCandidate(
-		storepkg.FoundationGenerationFence{
-			Generation:   review.FoundationGeneration,
-			BaseRevision: review.FoundationBaseRevision,
-		},
-		candidate.Foundation,
-		candidate.Base.Candidate.FoundationRevision,
-	)
-	if err != nil {
-		return CharacterConfirmationResult{}, fmt.Errorf("publish character candidate: %w", err)
+	var published domain.StoryFoundation
+	if lifecycle.Mode == domain.CharacterCardProjectAdaptation {
+		published, err = st.Foundation.SaveCAS(candidate.Foundation, canonical.Revision)
+		if err != nil {
+			return CharacterConfirmationResult{}, fmt.Errorf("publish adaptation character candidate: %w", err)
+		}
+	} else {
+		review, reviewErr := st.RunMeta.PlanningReview()
+		if reviewErr != nil {
+			return CharacterConfirmationResult{}, reviewErr
+		}
+		if review == nil {
+			return CharacterConfirmationResult{}, fmt.Errorf("Foundation generation is missing")
+		}
+		published, _, err = st.PublishOriginalCharacterCandidate(
+			storepkg.FoundationGenerationFence{
+				Generation:   review.FoundationGeneration,
+				BaseRevision: review.FoundationBaseRevision,
+			},
+			candidate.Foundation,
+			candidate.Base.Candidate.FoundationRevision,
+		)
+		if err != nil {
+			return CharacterConfirmationResult{}, fmt.Errorf("publish character candidate: %w", err)
+		}
 	}
 	published, err = st.Foundation.Load()
 	if err != nil {

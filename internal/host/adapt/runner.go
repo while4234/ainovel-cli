@@ -10036,19 +10036,20 @@ func toSourceReport(chapter int, title string, analysis *imp.ChapterAnalysis) do
 		return domain.AdaptationSourceReport{Chapter: chapter, Title: title}
 	}
 	return domain.AdaptationSourceReport{
-		Chapter:        chapter,
-		Title:          title,
-		Summary:        analysis.Summary,
-		Characters:     append([]string(nil), analysis.Characters...),
-		CharacterFacts: append([]string(nil), analysis.CharacterFacts...),
-		KeyEvents:      append([]string(nil), analysis.KeyEvents...),
-		WorldRules:     append([]string(nil), analysis.WorldRules...),
-		HookType:       analysis.HookType,
-		DominantStrand: analysis.DominantStrand,
-		Timeline:       append([]domain.TimelineEvent(nil), analysis.TimelineEvents...),
-		Foreshadow:     append([]domain.ForeshadowUpdate(nil), analysis.ForeshadowUpdates...),
-		Relationships:  append([]domain.RelationshipEntry(nil), analysis.RelationshipChanges...),
-		StateChanges:   append([]domain.StateChange(nil), analysis.StateChanges...),
+		Chapter:           chapter,
+		Title:             title,
+		Summary:           analysis.Summary,
+		Characters:        append([]string(nil), analysis.Characters...),
+		CharacterProfiles: append([]domain.Character(nil), analysis.CharacterProfiles...),
+		CharacterFacts:    append([]string(nil), analysis.CharacterFacts...),
+		KeyEvents:         append([]string(nil), analysis.KeyEvents...),
+		WorldRules:        append([]string(nil), analysis.WorldRules...),
+		HookType:          analysis.HookType,
+		DominantStrand:    analysis.DominantStrand,
+		Timeline:          append([]domain.TimelineEvent(nil), analysis.TimelineEvents...),
+		Foreshadow:        append([]domain.ForeshadowUpdate(nil), analysis.ForeshadowUpdates...),
+		Relationships:     append([]domain.RelationshipEntry(nil), analysis.RelationshipChanges...),
+		StateChanges:      append([]domain.StateChange(nil), analysis.StateChanges...),
 	}
 }
 

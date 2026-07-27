@@ -359,12 +359,36 @@ func writePartialCharacters(sb *strings.Builder, characters []domain.Character) 
 			continue
 		}
 		role := compactFact(character.Role, 80)
-		desc := compactFact(firstNonEmpty([]string{character.Description, character.Arc}, ""), foundationPartialFactRunes)
-		if role != "" || desc != "" {
-			fmt.Fprintf(sb, "  - %s (%s): %s\n", name, role, desc)
-			continue
+		fmt.Fprintf(sb, "  - %s", name)
+		if len(character.Aliases) > 0 {
+			fmt.Fprintf(sb, " [aliases: %s]", strings.Join(compactList(character.Aliases, 8, 80), ", "))
 		}
-		fmt.Fprintf(sb, "  - %s\n", name)
+		if role != "" {
+			fmt.Fprintf(sb, " (%s)", role)
+		}
+		for _, fact := range []struct {
+			label string
+			value string
+		}{
+			{"description", character.Description},
+			{"arc-so-far", character.Arc},
+			{"goal", character.Goal},
+			{"motivation", character.Motivation},
+			{"conflict", character.Conflict},
+			{"voice", character.Voice},
+			{"notes", character.Notes},
+		} {
+			if value := compactFact(fact.value, foundationPartialFactRunes); value != "" {
+				fmt.Fprintf(sb, " / %s: %s", fact.label, value)
+			}
+		}
+		if len(character.Traits) > 0 {
+			fmt.Fprintf(sb, " / traits: %s", strings.Join(compactList(character.Traits, 8, 80), ", "))
+		}
+		if len(character.Constraints) > 0 {
+			fmt.Fprintf(sb, " / constraints: %s", strings.Join(compactList(character.Constraints, 8, 100), ", "))
+		}
+		fmt.Fprintln(sb)
 	}
 }
 
@@ -507,11 +531,8 @@ func parseFoundationMergeOutput(text string) (*FoundationResult, error) {
 	}
 
 	var characters []domain.Character
-	if err := decodeJSON("characters", env["CHARACTERS"], &characters); err != nil {
+	if err := decodeCharactersJSON("characters", env["CHARACTERS"], &characters, false); err != nil {
 		return nil, err
-	}
-	if len(characters) == 0 {
-		return nil, fmt.Errorf("characters array is empty")
 	}
 
 	var worldRules []domain.WorldRule

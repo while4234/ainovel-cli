@@ -159,11 +159,8 @@ func parseFoundationOutput(text string, expectChapters int) (*FoundationResult, 
 	}
 
 	var characters []domain.Character
-	if err := decodeJSON("characters", env["CHARACTERS"], &characters); err != nil {
+	if err := decodeCharactersJSON("characters", env["CHARACTERS"], &characters, false); err != nil {
 		return nil, err
-	}
-	if len(characters) == 0 {
-		return nil, fmt.Errorf("characters array is empty")
 	}
 
 	var worldRules []domain.WorldRule

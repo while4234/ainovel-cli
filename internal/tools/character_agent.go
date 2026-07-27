@@ -284,7 +284,11 @@ func (t *SaveCharacterCandidateTool) Execute(_ context.Context, args json.RawMes
 		return nil, fmt.Errorf("original character candidate must not fabricate source mappings: %w", errs.ErrToolArgs)
 	}
 	if projectMode == domain.CharacterCardProjectAdaptation {
-		sourceIDs := adaptationSourceCharacterIDs(t.store)
+		index, indexErr := buildAdaptationSourceCharacterIndex(t.store, coreCast)
+		if indexErr != nil {
+			return nil, indexErr
+		}
+		sourceIDs := adaptationSourceCharacterIDs(index)
 		targetIDs := foundationCharacterIDs(normalized)
 		if err := domain.ValidateCharacterSourceCoverage(request.SourceMappings, sourceIDs, targetIDs); err != nil {
 			return nil, fmt.Errorf("adaptation character source coverage: %w: %w", errs.ErrToolArgs, err)
@@ -297,6 +301,18 @@ func (t *SaveCharacterCandidateTool) Execute(_ context.Context, args json.RawMes
 	completeness, err := domain.EvaluateCharacterCardCompleteness(normalized, &projected)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate character candidate completeness: %w", err)
+	}
+	var coverage *domain.AdaptationCharacterCoverage
+	if projectMode == domain.CharacterCardProjectAdaptation {
+		index, indexErr := buildAdaptationSourceCharacterIndex(t.store, coreCast)
+		if indexErr != nil {
+			return nil, indexErr
+		}
+		evaluated, coverageErr := domain.EvaluateAdaptationCharacterCoverage(index, request.SourceMappings)
+		if coverageErr != nil {
+			return nil, fmt.Errorf("evaluate adaptation character coverage: %w", coverageErr)
+		}
+		coverage = &evaluated
 	}
 	expectedCandidateRevision := int64(0)
 	if existingCandidate != nil {
@@ -341,6 +357,7 @@ func (t *SaveCharacterCandidateTool) Execute(_ context.Context, args json.RawMes
 		IdempotencyKey:     strings.TrimSpace(request.IdempotencyKey),
 		SubmissionDigest:   submissionDigest,
 		SourceMappings:     request.SourceMappings,
+		Coverage:           coverage,
 		CreatedAt:          createdAt,
 	}
 	savedLifecycle, err := t.store.CharacterCards.SaveCAS(lifecycle, expectedLifecycleRevision, savedBinding)
@@ -440,6 +457,19 @@ func (t *SaveCharacterReviewTool) Execute(_ context.Context, args json.RawMessag
 	}
 	findings = append(findings, projectionFindings...)
 	findings = appendCompletenessFindings(findings, completeness)
+	var coverage *domain.AdaptationCharacterCoverage
+	if lifecycle.Mode == domain.CharacterCardProjectAdaptation {
+		index, indexErr := buildAdaptationSourceCharacterIndex(t.store, coreCast)
+		if indexErr != nil {
+			return nil, indexErr
+		}
+		evaluated, coverageErr := domain.EvaluateAdaptationCharacterCoverage(index, lifecycle.SourceMappings)
+		if coverageErr != nil {
+			return nil, fmt.Errorf("evaluate reviewed adaptation character coverage: %w", coverageErr)
+		}
+		coverage = &evaluated
+		findings = appendCoverageFindings(findings, evaluated)
+	}
 	finalStatus := domain.CharacterCardReviewPassed
 	if request.Verdict != "pass" || hasBlockingCharacterFinding(findings) {
 		finalStatus = domain.CharacterCardReviewNeedsRevision
@@ -466,6 +496,7 @@ func (t *SaveCharacterReviewTool) Execute(_ context.Context, args json.RawMessag
 	reviewed.ReviewedInputDigest = binding.InputDigest
 	reviewed.ReviewSummary = strings.TrimSpace(request.Summary)
 	reviewed.Findings = findings
+	reviewed.Coverage = coverage
 	reviewed.ConfirmationStatus = domain.CharacterCardUnconfirmed
 	reviewed.RunID = strings.TrimSpace(request.RunID)
 	reviewed.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
@@ -750,10 +781,10 @@ func currentCharacterInputs(
 		return inputs, mode, fmt.Errorf("load adaptation character source foundation: %w", err)
 	}
 	if sourceFoundation != nil {
-		inputs.SourceFoundation = sourceFoundation.SourceSignature
-		if inputs.SourceFoundation == "" {
-			inputs.SourceFoundation = signatureForCharacterInput(sourceFoundation)
-		}
+		// SourceSignature identifies the imported manuscript, while the full
+		// snapshot digest invalidates character work when source facts change
+		// without a manifest change.
+		inputs.SourceFoundation = signatureForCharacterInput(sourceFoundation)
 	}
 	intent, err := st.Adaptation.LoadCoCreateIntent()
 	if err != nil {
@@ -775,11 +806,23 @@ func currentCharacterInputs(
 		return inputs, mode, fmt.Errorf("load adaptation character briefing: %w", err)
 	}
 	appendNamedCharacterSignature(&inputs, "adaptation_briefing", briefing)
+	characterBrief, err := st.Adaptation.LoadCharacterBrief()
+	if err != nil {
+		return inputs, mode, fmt.Errorf("load adaptation character brief: %w", err)
+	}
+	if characterBrief != nil {
+		inputs.CreativeBrief = signatureForCharacterInput(characterBrief)
+	}
 	reports, err := st.Adaptation.LoadCompleteSourceReports()
 	if err != nil {
 		return inputs, mode, fmt.Errorf("load adaptation character reports: %w", err)
 	}
 	appendNamedCharacterSignature(&inputs, "source_reports", reports)
+	index, err := domain.BuildAdaptationSourceCharacterIndex(sourceFoundation, reports, dossier, coreCast)
+	if err != nil {
+		return inputs, mode, fmt.Errorf("build adaptation source character index signature: %w", err)
+	}
+	appendNamedCharacterSignature(&inputs, "source_character_index", index)
 	return inputs, mode, nil
 }
 
@@ -815,18 +858,41 @@ func buildAdaptationCharacterEvidence(st *store.Store) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load adaptation briefing: %w", err)
 	}
+	characterBrief, err := st.Adaptation.LoadCharacterBrief()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation character brief: %w", err)
+	}
 	reports, err := st.Adaptation.LoadCompleteSourceReports()
 	if err != nil {
 		return nil, fmt.Errorf("load adaptation source reports: %w", err)
 	}
+	coreCast, err := st.CoreCast.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load adaptation core cast: %w", err)
+	}
+	index, err := domain.BuildAdaptationSourceCharacterIndex(sourceFoundation, reports, dossier, coreCast)
+	if err != nil {
+		return nil, fmt.Errorf("build adaptation source character index: %w", err)
+	}
+	var mappings []domain.CharacterSourceMapping
+	if candidate, lifecycle, _, workflowErr := CurrentCharacterWorkflow(st); workflowErr == nil && candidate != nil && lifecycle != nil {
+		mappings = lifecycle.SourceMappings
+	}
+	coverage, err := domain.EvaluateAdaptationCharacterCoverage(index, mappings)
+	if err != nil {
+		return nil, fmt.Errorf("evaluate adaptation source character coverage: %w", err)
+	}
 	return map[string]any{
-		"source_foundation": sourceFoundation,
-		"dossier":           compactCharacterDossier(dossier),
-		"intent":            intent,
-		"briefing":          compactCharacterBriefing(briefing),
-		"chapter_reports":   compactCharacterReports(reports),
-		"report_count":      len(reports),
-		"reports_truncated": len(reports) > characterContextReportLimit,
+		"source_foundation":         sourceFoundation,
+		"source_character_index":    index,
+		"source_character_coverage": coverage,
+		"dossier":                   compactCharacterDossier(dossier),
+		"intent":                    intent,
+		"briefing":                  compactCharacterBriefing(briefing),
+		"adaptation_brief":          characterBrief,
+		"chapter_reports":           compactCharacterReports(reports),
+		"report_count":              len(reports),
+		"reports_truncated":         len(reports) > characterContextReportLimit,
 	}, nil
 }
 
@@ -914,12 +980,32 @@ func limitSlice[T any](values []T, limit int) []T {
 	return append([]T(nil), values...)
 }
 
-func adaptationSourceCharacterIDs(st *store.Store) []string {
+func buildAdaptationSourceCharacterIndex(
+	st *store.Store,
+	coreCast *domain.CoreCastContract,
+) (domain.AdaptationSourceCharacterIndex, error) {
 	source, err := st.Adaptation.LoadSourceFoundation()
-	if err != nil || source == nil {
-		return nil
+	if err != nil {
+		return domain.AdaptationSourceCharacterIndex{}, fmt.Errorf("load source foundation for character index: %w", err)
 	}
-	return foundationCharacterIDs(domain.StoryFoundation{Characters: source.Characters})
+	reports, err := st.Adaptation.LoadCompleteSourceReports()
+	if err != nil {
+		return domain.AdaptationSourceCharacterIndex{}, fmt.Errorf("load source reports for character index: %w", err)
+	}
+	dossier, err := st.Adaptation.LoadCoCreateDossier()
+	if err != nil {
+		return domain.AdaptationSourceCharacterIndex{}, fmt.Errorf("load source dossier for character index: %w", err)
+	}
+	return domain.BuildAdaptationSourceCharacterIndex(source, reports, dossier, coreCast)
+}
+
+func adaptationSourceCharacterIDs(index domain.AdaptationSourceCharacterIndex) []string {
+	ids := make([]string, 0, len(index.Characters))
+	for _, character := range index.Characters {
+		ids = append(ids, character.ID)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func foundationCharacterIDs(foundation domain.StoryFoundation) []string {
@@ -998,6 +1084,39 @@ func appendCompletenessFindings(
 			})
 			existing[id] = struct{}{}
 		}
+	}
+	sort.Slice(findings, func(i, j int) bool { return findings[i].ID < findings[j].ID })
+	return findings
+}
+
+func appendCoverageFindings(
+	findings []domain.CharacterCardReviewFinding,
+	coverage domain.AdaptationCharacterCoverage,
+) []domain.CharacterCardReviewFinding {
+	existing := make(map[string]struct{}, len(findings))
+	for _, finding := range findings {
+		existing[finding.ID] = struct{}{}
+	}
+	for _, decision := range coverage.Decisions {
+		if !decision.Blocking {
+			continue
+		}
+		id := "coverage:" + decision.SourceCharacterID
+		if _, exists := existing[id]; exists {
+			continue
+		}
+		findings = append(findings, domain.CharacterCardReviewFinding{
+			ID:              id,
+			Scope:           domain.CharacterCardFindingGlobal,
+			Location:        "source_mappings",
+			Severity:        domain.CharacterCardSeverityBlocking,
+			IssueType:       "source_character_coverage",
+			Description:     fmt.Sprintf("应覆盖的来源角色 %s 缺少映射或排除决定", decision.CanonicalName),
+			EvidenceSummary: strings.Join(decision.Reasons, "；"),
+			Suggestion:      "补充 keep/rename/merge/split/exclude 决定并重新独立审核",
+			Blocking:        true,
+		})
+		existing[id] = struct{}{}
 	}
 	sort.Slice(findings, func(i, j int) bool { return findings[i].ID < findings[j].ID })
 	return findings

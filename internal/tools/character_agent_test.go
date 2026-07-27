@@ -248,6 +248,60 @@ func TestCharacterContextIsBoundedAndNeverLoadsRawAdaptationText(t *testing.T) {
 	}
 }
 
+func TestAdaptationCharacterCandidateBecomesStaleWhenInputsChange(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *store.Store)
+	}{
+		{
+			name: "source foundation",
+			mutate: func(t *testing.T, st *store.Store) {
+				source, err := st.Adaptation.LoadSourceFoundation()
+				if err != nil {
+					t.Fatal(err)
+				}
+				source.Premise = "changed source fact"
+				if err := st.Adaptation.SaveSourceFoundation(*source); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "adaptation intent",
+			mutate: func(t *testing.T, st *store.Store) {
+				if err := st.Adaptation.SaveCoCreateIntent(domain.AdaptationCoCreateIntent{
+					Version: 1, RawRequest: "changed adaptation brief", IntentHash: strings.Repeat("c", 64),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "core cast disposition",
+			mutate: func(t *testing.T, st *store.Store) {
+				core, err := st.CoreCast.Load()
+				if err != nil {
+					t.Fatal(err)
+				}
+				core.Members[0].MainlineFunction = "changed confirmed core function"
+				if _, err := st.CoreCast.SaveCAS(*core, core.Revision); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			st := stagedAdaptationCharacterToolStore(t)
+			test.mutate(t, st)
+			if _, _, _, err := CurrentCharacterWorkflow(st); err == nil ||
+				!strings.Contains(strings.ToLower(err.Error()), "stale") {
+				t.Fatalf("stale workflow err = %v", err)
+			}
+		})
+	}
+}
+
 func TestCharacterToolsExposeStrictSchemas(t *testing.T) {
 	st := characterToolStore(t)
 	registry := NewCharacterRunRegistry()
@@ -275,6 +329,55 @@ func characterToolStore(t *testing.T) *store.Store {
 		Relationships: []domain.CharacterRelationship{},
 	}, 0)
 	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func stagedAdaptationCharacterToolStore(t *testing.T) *store.Store {
+	t.Helper()
+	st := characterToolStore(t)
+	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{
+		Version: 1, SourceSignature: strings.Repeat("a", 64), Premise: "source premise",
+		Characters: []domain.Character{{
+			ID: "source-hero", Name: "原著主角", Role: "主角", Description: "source fact",
+			Arc: "source arc", Traits: []string{"冷静"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Adaptation.SaveCoCreateIntent(domain.AdaptationCoCreateIntent{
+		Version: 1, RawRequest: "保留主线", IntentHash: strings.Repeat("b", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	core := domain.CoreCastContract{
+		Version: domain.CoreCastContractVersion, Mode: domain.CoreCastModeAdaptation,
+		DraftRevision: 1, DraftHash: "draft", SourceSignature: strings.Repeat("a", 64),
+		AdaptationIntentHash: strings.Repeat("b", 64),
+		Members: []domain.CoreCastMember{{
+			Character: completeCharacterCandidate()[0], Importance: domain.CoreCastImportanceProtagonist,
+			Origin: domain.CoreCastOriginOriginal, MainlineFunction: "drives target story",
+			InclusionRationale: "confirmed target lead", NoCoreRelationships: true,
+		}},
+	}
+	if _, err := st.CoreCast.SaveCAS(core, 0); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewCharacterRunRegistry()
+	binding := readCharacterContext(t, st, registry, "adaptation-stale-analyze", CharacterRunAnalyze)
+	request := candidateRequest("adaptation-stale-analyze", "adaptation-stale-key", binding, completeCharacterCandidate())
+	request.SourceMappings = []domain.CharacterSourceMapping{{
+		ID: "map-source-hero", Action: domain.CharacterSourceKeep,
+		SourceCharacterIDs: []string{"source-hero"}, TargetCharacterIDs: []string{completeCharacterCandidate()[0].ID},
+		Rationale: "keep source lead",
+		Evidence: []domain.CharacterSourceEvidence{{
+			Kind: domain.CharacterSourceAdaptationDecision, Reference: "fixture.intent", Summary: "keep decision",
+		}},
+	}}
+	if _, err := NewSaveCharacterCandidateTool(st, registry).Execute(
+		context.Background(), characterJSON(t, request),
+	); err != nil {
 		t.Fatal(err)
 	}
 	return st

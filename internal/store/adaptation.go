@@ -36,6 +36,7 @@ const (
 	adaptationProposalRuntimeFile        = adaptationRootDir + "/proposal_runtime.json"
 	adaptationPlanFile                   = adaptationRootDir + "/plan.json"
 	adaptationTargetFoundationReviewFile = adaptationRootDir + "/target_foundation_review.json"
+	adaptationCharacterBriefFile         = adaptationRootDir + "/character_brief.json"
 )
 
 // AdaptationStore keeps source-novel snapshots and adaptation validation data.
@@ -561,6 +562,40 @@ func (s *AdaptationStore) LoadCoCreateIntent() (*domain.AdaptationCoCreateIntent
 		return nil, err
 	}
 	return &intent, nil
+}
+
+func (s *AdaptationStore) SaveCharacterBrief(brief domain.AdaptationCharacterBrief) error {
+	brief.Brief = strings.TrimSpace(brief.Brief)
+	brief.SourceSignature = strings.TrimSpace(brief.SourceSignature)
+	brief.IntentHash = strings.TrimSpace(brief.IntentHash)
+	brief.CoreCastSignature = strings.TrimSpace(brief.CoreCastSignature)
+	if brief.Version != 1 || brief.Brief == "" || len(brief.SourceSignature) != 64 ||
+		len(brief.IntentHash) != 64 || len(brief.CoreCastSignature) != 64 {
+		return fmt.Errorf("adaptation character brief is incomplete")
+	}
+	return s.withLegacyFormalMutation(
+		"save adaptation character brief",
+		func() error { return s.io.WriteJSON(adaptationCharacterBriefFile, brief) },
+	)
+}
+
+func (s *AdaptationStore) LoadCharacterBrief() (*domain.AdaptationCharacterBrief, error) {
+	var brief domain.AdaptationCharacterBrief
+	if err := s.io.ReadJSON(adaptationCharacterBriefFile, &brief); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	brief.Brief = strings.TrimSpace(brief.Brief)
+	brief.SourceSignature = strings.TrimSpace(brief.SourceSignature)
+	brief.IntentHash = strings.TrimSpace(brief.IntentHash)
+	brief.CoreCastSignature = strings.TrimSpace(brief.CoreCastSignature)
+	if brief.Version != 1 || brief.Brief == "" || len(brief.SourceSignature) != 64 ||
+		len(brief.IntentHash) != 64 || len(brief.CoreCastSignature) != 64 {
+		return nil, fmt.Errorf("adaptation character brief is incomplete")
+	}
+	return &brief, nil
 }
 
 func (s *AdaptationStore) SaveCoCreateBriefing(briefing domain.AdaptationCoCreateBriefing) error {

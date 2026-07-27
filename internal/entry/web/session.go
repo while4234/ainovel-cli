@@ -29,6 +29,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/host/sim"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
+	"github.com/voocel/ainovel-cli/internal/tools"
 )
 
 var (
@@ -143,6 +144,7 @@ type projectHost interface {
 	ReviseAdaptationVolumeReviewContext(context.Context, adapt.ProposalRevisionOptions) (*domain.AdaptationVolumeReview, error)
 	BuildAdaptationProposalDetailsContext(context.Context, adapt.ProposalDetailsOptions) (*domain.AdaptationPlan, error)
 	GenerateAdaptationTargetFoundationContext(context.Context, adapt.TargetFoundationOptions) (*domain.AdaptationFoundationReview, error)
+	StartAdaptationCharacterWorkflow(string) error
 	ConfirmAdaptationProposal() (*domain.AdaptationPlan, error)
 	StartAdaptationPreparedWithOptions(adapt.ProposalOptions) error
 	Export(context.Context, exp.Options) (*exp.Result, error)
@@ -2481,13 +2483,11 @@ func (s *ProjectSession) commitAdaptCoCreate(ctx context.Context) (webCoCreateSt
 	}
 
 	st := storepkg.NewStore(s.manifest.OutputDir)
-	workflow, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageTargetFoundationGenerating, -1)
+	_, err = st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageTargetFoundationGenerating, -1)
 	if err != nil {
 		return state.apiState(), err
 	}
-	if _, err := s.host.GenerateAdaptationTargetFoundationContext(actionCtx, adapt.TargetFoundationOptions{
-		Brief: state.draftPrompt(), ExpectedWorkflowRevision: workflow.Revision,
-	}); err != nil {
+	if err := s.host.StartAdaptationCharacterWorkflow(state.draftPrompt()); err != nil {
 		return state.apiState(), err
 	}
 	api := state.apiState()
@@ -4041,6 +4041,37 @@ func (s *ProjectSession) ConfirmCharacterCandidate(
 	)
 	if err != nil {
 		return host.CharacterConfirmationResult{}, err
+	}
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	coreCast, coreCastErr := st.CoreCast.Load()
+	if coreCastErr != nil {
+		return result, fmt.Errorf("character candidate published but CoreCast mode cannot be read: %w", coreCastErr)
+	}
+	_, lifecycle, _, workflowErr := tools.CurrentCharacterWorkflow(st)
+	adaptationCharacterWorkflow := coreCast != nil && coreCast.Mode == domain.CoreCastModeAdaptation
+	if adaptationCharacterWorkflow && workflowErr != nil {
+		return result, fmt.Errorf("character candidate published but adaptation Character state is stale: %w", workflowErr)
+	}
+	if adaptationCharacterWorkflow && (lifecycle == nil || lifecycle.Mode != domain.CharacterCardProjectAdaptation) {
+		return result, fmt.Errorf("character candidate published but adaptation Character lifecycle is missing")
+	}
+	if adaptationCharacterWorkflow {
+		workflow, loadErr := st.Adaptation.LoadPlanningWorkflow()
+		if loadErr != nil || workflow == nil ||
+			workflow.Stage != domain.AdaptationPlanningStageTargetFoundationGenerating {
+			return result, fmt.Errorf("character candidate published but adaptation target workflow is not current: %w", loadErr)
+		}
+		brief, loadErr := st.Adaptation.LoadCharacterBrief()
+		if loadErr != nil || brief == nil {
+			return result, fmt.Errorf("character candidate published but adaptation character brief is missing: %w", loadErr)
+		}
+		if _, generateErr := s.host.GenerateAdaptationTargetFoundationContext(context.Background(), adapt.TargetFoundationOptions{
+			Brief: brief.Brief, ExpectedWorkflowRevision: workflow.Revision,
+		}); generateErr != nil {
+			return result, fmt.Errorf("character candidate published but target Foundation generation failed: %w", generateErr)
+		}
+		s.AppendSnapshot()
+		return result, nil
 	}
 	if _, resumeErr := s.host.Resume(); resumeErr != nil {
 		return result, fmt.Errorf("character candidate published but planning resume failed: %w", resumeErr)

@@ -420,6 +420,80 @@ func (h *Host) StartPrepared(promptText string) error {
 	return nil
 }
 
+// StartAdaptationCharacterWorkflow starts the shared Character Agent before
+// target Foundation generation. It preserves immutable source-analysis
+// checkpoints and persists the confirmed adaptation brief as signed evidence.
+func (h *Host) StartAdaptationCharacterWorkflow(promptText string) error {
+	h.mu.Lock()
+	if h.lifecycle == lifecycleRunning {
+		h.mu.Unlock()
+		return fmt.Errorf("already running")
+	}
+	if h.cocreating {
+		h.mu.Unlock()
+		return fmt.Errorf("co-create is active")
+	}
+	h.mu.Unlock()
+	if err := h.refuseNormalFlowDuringRevision(); err != nil {
+		return err
+	}
+	promptText = strings.TrimSpace(promptText)
+	if promptText == "" {
+		return fmt.Errorf("adaptation character brief is required")
+	}
+	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
+		return err
+	}
+	if err := h.budget.Refuse(); err != nil {
+		return err
+	}
+	ownership, err := h.acquireNormalFlowOwnership("host:start-adaptation-character")
+	if err != nil {
+		return err
+	}
+	defer ownership.Release()
+	manifest, err := h.store.Adaptation.LoadSourceManifest()
+	if err != nil || manifest == nil {
+		return fmt.Errorf("adaptation source manifest is required: %w", err)
+	}
+	intent, err := h.store.Adaptation.LoadCoCreateIntent()
+	if err != nil || intent == nil {
+		return fmt.Errorf("adaptation intent is required: %w", err)
+	}
+	coreCast, err := h.store.CoreCast.Load()
+	if err != nil || coreCast == nil {
+		return fmt.Errorf("adaptation CoreCast is required: %w", err)
+	}
+	if err := h.store.Adaptation.SaveCharacterBrief(domain.AdaptationCharacterBrief{
+		Version: 1, Brief: promptText,
+		SourceSignature: storepkg.AdaptationSourceSignature(*manifest),
+		IntentHash:      intent.IntentHash, CoreCastSignature: coreCast.ContentSignature,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		return err
+	}
+	if err := h.store.Progress.Init("", 0); err != nil {
+		return fmt.Errorf("init adaptation character progress: %w", err)
+	}
+	h.observer.setAborting(false)
+	h.router.ResetRepeat()
+	h.router.Enable()
+	runCtx, err := h.normalFlowContext(context.Background())
+	if err != nil {
+		return err
+	}
+	if err := h.coordinator.Prompt(runCtx, "Complete the persisted adaptation Character Agent workflow before target Foundation planning."); err != nil {
+		return fmt.Errorf("prompt adaptation character workflow: %w", err)
+	}
+	h.router.Dispatch()
+	h.mu.Lock()
+	h.lifecycle = lifecycleRunning
+	h.mu.Unlock()
+	ownership.TransferToRun()
+	go h.waitDone()
+	return nil
+}
+
 // StartAdaptationPrepared uses an analyzed source snapshot plus a confirmed
 // adaptation brief to prepare the new book foundation and enter writing.
 func (h *Host) StartAdaptationPrepared(brief string) error {

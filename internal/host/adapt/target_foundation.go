@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/tools"
 )
 
 func adaptationPlannerSystemPrompt(deps Deps) string {
@@ -60,12 +61,118 @@ func GenerateTargetFoundation(_ context.Context, deps Deps, opts TargetFoundatio
 		return nil, err
 	}
 	candidate := domain.CloneStoryFoundation(current)
-	candidate.Characters = domain.ContractCharacters(contract)
-	candidate.Relationships = append([]domain.CharacterRelationship(nil), contract.PlannedRelationships...)
-	candidate.RelationshipsReviewed = false
+	characterCandidate, lifecycle, binding, workflowErr := tools.CurrentCharacterWorkflow(deps.Store)
+	usesCharacterWorkflow := false
+	switch {
+	case workflowErr == nil && characterCandidate != nil && lifecycle != nil:
+		if lifecycle.Mode != domain.CharacterCardProjectAdaptation ||
+			lifecycle.AnalysisStatus != domain.CharacterCardAnalysisCandidateReady ||
+			lifecycle.ReviewStatus != domain.CharacterCardReviewPassed ||
+			lifecycle.ConfirmationStatus != domain.CharacterCardConfirmed ||
+			lifecycle.Candidate != binding.Candidate ||
+			lifecycle.ReviewedCandidate != binding.Candidate ||
+			lifecycle.ReviewedInputDigest != binding.InputDigest {
+			return nil, fmt.Errorf("current reviewed adaptation Character Agent candidate is required")
+		}
+		candidate.Characters = append([]domain.Character(nil), characterCandidate.Foundation.Characters...)
+		candidate.Relationships = append([]domain.CharacterRelationship(nil), characterCandidate.Foundation.Relationships...)
+		candidate.RelationshipsReviewed = characterCandidate.Foundation.RelationshipsReviewed
+		usesCharacterWorkflow = true
+	case characterCandidate != nil || lifecycle != nil:
+		return nil, fmt.Errorf("adaptation Character Agent candidate is stale: %w", workflowErr)
+	default:
+		// Legacy CoreCast-only projects keep their already-published target
+		// baseline. They are not silently collapsed on every regeneration.
+		// When no target cast exists, CoreCast is projected once as a migration
+		// seed and remains explicitly unreviewed until Character Agent runs.
+		if len(candidate.Characters) == 0 {
+			candidate.Characters = domain.ContractCharacters(contract)
+			candidate.Relationships = append([]domain.CharacterRelationship(nil), contract.PlannedRelationships...)
+		}
+		if err := requireLegacyAdaptationCoverageSeed(deps, contract); err != nil {
+			return nil, err
+		}
+	}
+	if !usesCharacterWorkflow {
+		candidate.RelationshipsReviewed = false
+	}
 	candidate.Premise = targetFoundationPremise(source.Premise, opts.Brief, opts.Feedback)
 	candidate.WorldRules = targetFoundationWorldRules(source.WorldRules, opts.Feedback)
-	return deps.Store.SaveAdaptationTargetFoundationCandidate(candidate, opts.ExpectedWorkflowRevision, opts.Brief, opts.Feedback)
+	review, err := deps.Store.SaveAdaptationTargetFoundationCandidate(candidate, opts.ExpectedWorkflowRevision, opts.Brief, opts.Feedback)
+	if err != nil {
+		return nil, err
+	}
+	if usesCharacterWorkflow {
+		if err := rebindPublishedAdaptationCharacters(deps, characterCandidate, lifecycle); err != nil {
+			return nil, fmt.Errorf("rebind confirmed adaptation characters: %w", err)
+		}
+	}
+	return review, nil
+}
+
+func rebindPublishedAdaptationCharacters(
+	deps Deps,
+	candidate *domain.CharacterCardCandidate,
+	lifecycle *domain.CharacterCardLifecycle,
+) error {
+	canonical, binding, inputs, _, err := tools.CurrentCharacterCanonicalBinding(deps.Store)
+	if err != nil {
+		return err
+	}
+	binding, err = domain.CharacterCardBindingFromFoundation(canonical, inputs)
+	if err != nil {
+		return err
+	}
+
+	reboundCandidate := *candidate
+	reboundCandidate.Foundation = canonical
+	reboundCandidate.Base = binding
+	savedCandidate, err := deps.Store.CharacterCards.SaveCandidateCAS(reboundCandidate, candidate.Revision)
+	if err != nil {
+		return err
+	}
+
+	reboundLifecycle := *lifecycle
+	reboundLifecycle.Candidate = binding.Candidate
+	reboundLifecycle.Inputs = binding.Inputs
+	reboundLifecycle.InputDigest = binding.InputDigest
+	reboundLifecycle.ReviewedCandidate = binding.Candidate
+	reboundLifecycle.ReviewedInputDigest = binding.InputDigest
+	if _, err := deps.Store.CharacterCards.SaveCAS(reboundLifecycle, lifecycle.Revision, binding); err != nil {
+		return err
+	}
+	*candidate = savedCandidate
+	return nil
+}
+
+func requireLegacyAdaptationCoverageSeed(deps Deps, contract domain.CoreCastContract) error {
+	source, err := deps.Store.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return fmt.Errorf("load legacy adaptation source character evidence: %w", err)
+	}
+	reports, err := deps.Store.Adaptation.LoadCompleteSourceReports()
+	if err != nil {
+		return fmt.Errorf("load legacy adaptation source reports: %w", err)
+	}
+	dossier, err := deps.Store.Adaptation.LoadCoCreateDossier()
+	if err != nil {
+		return fmt.Errorf("load legacy adaptation dossier: %w", err)
+	}
+	index, err := domain.BuildAdaptationSourceCharacterIndex(source, reports, dossier, &contract)
+	if err != nil {
+		return fmt.Errorf("build legacy adaptation source character index: %w", err)
+	}
+	coverage, err := domain.EvaluateAdaptationCharacterCoverage(index, nil)
+	if err != nil {
+		return err
+	}
+	if coverage.DecisionRequired > len(contract.Members) {
+		return fmt.Errorf(
+			"legacy CoreCast-only target has %d decision-required source characters but only %d core members; run the shared Character Agent to map non-core characters",
+			coverage.DecisionRequired, len(contract.Members),
+		)
+	}
+	return nil
 }
 
 func targetFoundationPremise(sourcePremise, brief, feedback string) string {

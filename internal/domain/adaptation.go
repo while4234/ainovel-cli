@@ -48,21 +48,22 @@ type AdaptationSource struct {
 
 // AdaptationSourceReport stores source-chapter analysis for adaptation planning.
 type AdaptationSourceReport struct {
-	Chapter        int                 `json:"chapter"`
-	Title          string              `json:"title"`
-	SourceSHA256   string              `json:"source_sha256,omitempty"`
-	Summary        string              `json:"summary"`
-	Characters     []string            `json:"characters,omitempty"`
-	CharacterFacts []string            `json:"character_facts,omitempty"`
-	KeyEvents      []string            `json:"key_events,omitempty"`
-	SourceEvents   []AdaptationEvent   `json:"source_events,omitempty"`
-	WorldRules     []string            `json:"world_rules,omitempty"`
-	HookType       string              `json:"hook_type,omitempty"`
-	DominantStrand string              `json:"dominant_strand,omitempty"`
-	Timeline       []TimelineEvent     `json:"timeline,omitempty"`
-	Foreshadow     []ForeshadowUpdate  `json:"foreshadow,omitempty"`
-	Relationships  []RelationshipEntry `json:"relationships,omitempty"`
-	StateChanges   []StateChange       `json:"state_changes,omitempty"`
+	Chapter           int                 `json:"chapter"`
+	Title             string              `json:"title"`
+	SourceSHA256      string              `json:"source_sha256,omitempty"`
+	Summary           string              `json:"summary"`
+	Characters        []string            `json:"characters,omitempty"`
+	CharacterProfiles []Character         `json:"character_profiles,omitempty"`
+	CharacterFacts    []string            `json:"character_facts,omitempty"`
+	KeyEvents         []string            `json:"key_events,omitempty"`
+	SourceEvents      []AdaptationEvent   `json:"source_events,omitempty"`
+	WorldRules        []string            `json:"world_rules,omitempty"`
+	HookType          string              `json:"hook_type,omitempty"`
+	DominantStrand    string              `json:"dominant_strand,omitempty"`
+	Timeline          []TimelineEvent     `json:"timeline,omitempty"`
+	Foreshadow        []ForeshadowUpdate  `json:"foreshadow,omitempty"`
+	Relationships     []RelationshipEntry `json:"relationships,omitempty"`
+	StateChanges      []StateChange       `json:"state_changes,omitempty"`
 }
 
 // AdaptationSourceFoundation is the reusable foundation inferred from the source.
@@ -186,6 +187,15 @@ type AdaptationCoCreateIntent struct {
 	PreserveRules     []string `json:"preserve_rules,omitempty"`
 	IntentHash        string   `json:"intent_hash,omitempty"`
 	GeneratedAt       string   `json:"generated_at,omitempty"`
+}
+
+type AdaptationCharacterBrief struct {
+	Version           int    `json:"version"`
+	Brief             string `json:"brief"`
+	SourceSignature   string `json:"source_signature"`
+	IntentHash        string `json:"intent_hash"`
+	CoreCastSignature string `json:"core_cast_signature"`
+	UpdatedAt         string `json:"updated_at,omitempty"`
 }
 
 // AdaptationCoCreateBriefing is the intent-driven, second-level compression

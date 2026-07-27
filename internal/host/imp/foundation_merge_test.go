@@ -52,6 +52,41 @@ func TestMergeFoundationFromReportsBatchedSplitsAndRetries(t *testing.T) {
 	}
 }
 
+func TestFoundationMergeCharacterDecoderMigratesLegacyFieldsWithoutSilentLoss(t *testing.T) {
+	envelope := testFoundationMergeEnvelope("Legacy")
+	envelope = replaceEnvelopeBody(t, envelope, "CHARACTERS", `[
+	  {
+	    "name":"Hero",
+	    "role":"lead",
+	    "description":"tracks source causality",
+	    "arc":"keeps moving",
+	    "traits":["focused"],
+	    "goals":["find the truth","protect the witness"],
+	    "relationships":["trusts Mentor"]
+	  }
+	]`)
+	result, err := parseFoundationMergeOutput(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Characters) != 1 ||
+		result.Characters[0].Goal != "find the truth；protect the witness" ||
+		!strings.Contains(result.Characters[0].Notes, "trusts Mentor") {
+		t.Fatalf("migrated character = %+v", result.Characters)
+	}
+}
+
+func TestFoundationMergeCharacterDecoderRejectsUnknownDriftField(t *testing.T) {
+	envelope := testFoundationMergeEnvelope("Unknown")
+	envelope = replaceEnvelopeBody(t, envelope, "CHARACTERS", `[
+	  {"name":"Hero","role":"lead","description":"x","arc":"y","traits":[],"future_destiny":"invented"}
+	]`)
+	if _, err := parseFoundationMergeOutput(envelope); err == nil ||
+		!strings.Contains(err.Error(), "unsupported field") {
+		t.Fatalf("unknown drift err = %v", err)
+	}
+}
+
 func testSourceReport(chapter int, title, marker string) domain.AdaptationSourceReport {
 	return domain.AdaptationSourceReport{
 		Chapter:        chapter,

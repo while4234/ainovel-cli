@@ -71,6 +71,32 @@ func TestParseAnalyzer_Valid(t *testing.T) {
 	}
 }
 
+func TestParseAnalyzer_CharacterProfilesUseCanonicalSchema(t *testing.T) {
+	input := strings.Replace(
+		validAnalyzerEnvelope,
+		"=== KEY_EVENTS ===",
+		`=== CHARACTER_PROFILES ===
+[{"id":"source-lin","name":"Lin Wan","aliases":["Editor Lin"],"role":"investigator","description":"Tracks an anonymous lead.","arc":"Learns to share evidence.","traits":["careful"],"tier":"core","goal":"Identify the sender.","motivation":"Protect the missing witnesses.","conflict":"The archive is compromised.","voice":"Evidence-first.","notes":"Bounded chapter observation.","constraints":["Cannot know the sender yet."]}]
+
+=== KEY_EVENTS ===`,
+		1,
+	)
+	got, err := parseAnalyzerOutput(input)
+	if err != nil {
+		t.Fatalf("parse profiles: %v", err)
+	}
+	if len(got.CharacterProfiles) != 1 {
+		t.Fatalf("profiles = %+v", got.CharacterProfiles)
+	}
+	profile := got.CharacterProfiles[0]
+	if profile.ID != "source-lin" || profile.Name != "Lin Wan" ||
+		profile.Goal != "Identify the sender." ||
+		profile.Motivation != "Protect the missing witnesses." ||
+		len(profile.Aliases) != 1 || len(profile.Constraints) != 1 {
+		t.Fatalf("canonical profile fields were not preserved: %+v", profile)
+	}
+}
+
 func TestParseAnalyzer_AcceptsLegacyTimelineStringItems(t *testing.T) {
 	input := `=== SUMMARY ===
 summary
