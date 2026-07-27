@@ -1407,6 +1407,22 @@ func TestSaveFoundationLongNormalPlanningUsesVolumeAndBatchedChapterReviews(t *t
 	auditTool := NewSaveOriginalPlanningAuditTool(st)
 	saveAudit := func(payload map[string]any) map[string]any {
 		t.Helper()
+		observed := []map[string]any{}
+		if scope, _ := payload["scope"].(string); scope == "chapter" || scope == "arc" {
+			from, _ := payload["from_chapter"].(int)
+			to, _ := payload["to_chapter"].(int)
+			for chapter := from; chapter <= to; chapter++ {
+				entry, err := st.Outline.GetChapterOutline(chapter)
+				if err != nil {
+					t.Fatalf("load chapter %d scene evidence: %v", chapter, err)
+				}
+				observed = append(observed, map[string]any{
+					"chapter": chapter,
+					"count":   len(entry.Scenes),
+				})
+			}
+		}
+		payload["observed_scene_counts"] = observed
 		args, _ := json.Marshal(payload)
 		raw, err := auditTool.Execute(context.Background(), args)
 		if err != nil {

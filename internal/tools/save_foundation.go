@@ -184,7 +184,7 @@ func rebindConfirmedCharacterWorkflow(st *store.Store) error {
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
 func (t *SaveFoundationTool) Description() string {
-	return "保存小说基础设定（premise/outline/characters/planned_relationships/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。Foundation 生成轮次中的 premise / characters / planned_relationships / world_rules 必须原样携带 Host 指令给出的 foundation_generation 与 foundation_base_revision；旧轮次、重复或并发响应会被拒绝。type 可选 premise / outline / layered_outline / characters / planned_relationships / world_rules / expand_arc / repair_arc / repair_volume / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。planned_relationships 必须使用 characters 中的稳定 ID，且只保存创作前计划关系，不写入 relationship_state。expand_arc 展开骨架弧的详细章节（需 volume + arc，普通原创审核规划每批严格 3-4 章）；repair_arc 修复已展开弧；repair_volume 按自动审核或用户意见完整替换一个尚未展开的分卷骨架且不得改变该卷预估总章数；append_volume 追加新卷（普通原创分卷规划阶段每次只追加一个骨架卷，每弧3-4章）；update_compass 更新终局方向；complete_book 宣告全书完结。scale 可选，仅允许 short / mid / long。"
+	return "保存小说基础设定（premise/outline/characters/planned_relationships/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。Foundation 生成轮次中的 premise / characters / planned_relationships / world_rules 必须原样携带 Host 指令给出的 foundation_generation 与 foundation_base_revision；旧轮次、重复或并发响应会被拒绝。type 可选 premise / outline / layered_outline / characters / planned_relationships / world_rules / expand_arc / repair_arc / repair_volume / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。planned_relationships 必须使用 characters 中的稳定 ID，且只保存创作前计划关系，不写入 relationship_state。outline/expand_arc/repair_arc 的 character_beats 必须使用稳定 character_id，relationship_beats 必须使用已确认 relationship_id 及其 source_character_id/target_character_id，不能用姓名代替 ID。expand_arc 展开骨架弧的详细章节（需 volume + arc，普通原创审核规划每批严格 3-4 章）；repair_arc 修复已展开弧；repair_volume 按自动审核或用户意见完整替换一个尚未展开的分卷骨架且不得改变该卷预估总章数；append_volume 追加新卷（普通原创分卷规划阶段每次只追加一个骨架卷，每弧3-4章）；update_compass 更新终局方向；complete_book 宣告全书完结。scale 可选，仅允许 short / mid / long。"
 }
 func (t *SaveFoundationTool) Label() string { return "保存设定" }
 
@@ -780,7 +780,11 @@ func (t *SaveFoundationTool) prepareOutlineCharacters(entries []domain.OutlineEn
 	if err != nil {
 		return nil, fmt.Errorf("load confirmed StoryFoundation for outline characters: %w", err)
 	}
-	prepared, err := domain.PrepareOutlineCharacters(entries, foundation.Characters)
+	prepared, err := domain.PrepareOutlineCharactersWithRelationships(
+		entries,
+		foundation.Characters,
+		foundation.Relationships,
+	)
 	if err != nil {
 		if gapErr, ok := err.(*domain.OutlineCharacterGapError); ok {
 			payload, _ := json.Marshal(gapErr.Gaps)

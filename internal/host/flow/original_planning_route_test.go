@@ -20,8 +20,16 @@ func TestRouteOriginalPlanningAlternatesGenerationAndIndependentAudit(t *testing
 	}
 	base.OriginalPlanningWork = &storepkg.OriginalPlanningWork{Kind: "audit_arc", Volume: 2, Arc: 1, FromChapter: 9, ToChapter: 12}
 	audit := Route(base)
-	if audit == nil || audit.Agent != "editor" || !strings.Contains(audit.Task, "save_original_planning_audit") || !strings.Contains(audit.Task, "禁止扩大本批范围") {
+	if audit == nil || audit.Agent != "editor" || !strings.Contains(audit.Task, "save_original_planning_audit") || !strings.Contains(audit.Task, "扩大本批范围") {
 		t.Fatalf("audit route = %+v", audit)
+	}
+	for _, want := range []string{"outline_scope.scene_counts", "observed_scene_counts", "全部场景", "决定胜负的证据"} {
+		if !strings.Contains(audit.Task, want) {
+			t.Fatalf("audit route omitted quality evidence %q: %s", want, audit.Task)
+		}
+	}
+	if got := len([]byte(audit.Task)); got > 1800 {
+		t.Fatalf("audit route used %d bytes; keep the instruction bounded so the complete four-chapter evidence pack fits", got)
 	}
 }
 
@@ -110,7 +118,9 @@ func TestRouteOriginalPlanningChapterAuditCarriesStableScopeAndRepairLocation(t 
 	}
 	for _, want := range []string{
 		"第2卷第3弧", "scope_id=当前章节稳定ID", "volume=2", "arc=3",
-		"from_volume=0", "from_chapter=9", "issues=[]", "issues 首项必须填写 volume=2、arc=3",
+		"from_volume=0", "from_chapter=9", "issues=[]", "issues 首项填写 volume=2、arc=3",
+		"novel_context(scope=planning_audit, volume=2, arc=3, from=9, to=9)",
+		"outline_scope.scene_counts", "observed_scene_counts",
 	} {
 		if !strings.Contains(got.Task, want) {
 			t.Fatalf("chapter audit task missing %q: %s", want, got.Task)
@@ -144,7 +154,7 @@ func TestRouteOriginalPlanningUsesScopedDetailAndReviewContexts(t *testing.T) {
 		{
 			name: "audit arc",
 			work: &storepkg.OriginalPlanningWork{Kind: "audit_arc", Volume: 4, Arc: 1, FromChapter: 37, ToChapter: 40},
-			want: "novel_context(scope=planning_detail, volume=4, arc=1)",
+			want: "novel_context(scope=planning_audit, volume=4, arc=1, from=37, to=40)",
 		},
 		{
 			name: "audit volume",
@@ -170,6 +180,11 @@ func TestRouteOriginalPlanningUsesScopedDetailAndReviewContexts(t *testing.T) {
 			}
 			if strings.Contains(got.Task, "novel_context(scope=planning)") {
 				t.Fatalf("route retained generic planning scope: %s", got.Task)
+			}
+			if tt.work.Kind == "expand_arc" &&
+				(!strings.Contains(got.Task, "稳定 relationship_id") ||
+					!strings.Contains(got.Task, "source_character_id/target_character_id")) {
+				t.Fatalf("expand route omitted stable relationship contract: %s", got.Task)
 			}
 		})
 	}

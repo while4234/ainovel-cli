@@ -18,6 +18,7 @@ func TestSaveOriginalPlanningAuditSchemaIsStrictCompatible(t *testing.T) {
 	requireRequiredFields(t, toolSchema,
 		"scope", "scope_id", "volume", "arc", "from_volume", "to_volume",
 		"from_chapter", "to_chapter", "verdict", "summary", "dimensions", "issues",
+		"observed_scene_counts",
 	)
 	requireAllPropertiesRequired(t, toolSchema)
 
@@ -32,7 +33,7 @@ func TestSaveOriginalPlanningAuditSchemaIsStrictCompatible(t *testing.T) {
 	if got := scopeID["type"]; got != "string" {
 		t.Fatalf("scope_id type = %v, want string", got)
 	}
-	for _, field := range []string{"dimensions", "issues"} {
+	for _, field := range []string{"dimensions", "issues", "observed_scene_counts"} {
 		arraySchema, ok := properties[field].(map[string]any)
 		if !ok {
 			t.Fatalf("%s schema missing: %#v", field, properties[field])
@@ -44,6 +45,8 @@ func TestSaveOriginalPlanningAuditSchemaIsStrictCompatible(t *testing.T) {
 		requireAllPropertiesRequired(t, itemSchema)
 		if field == "dimensions" {
 			requireRequiredFields(t, itemSchema, "name", "score", "comment")
+		} else if field == "observed_scene_counts" {
+			requireRequiredFields(t, itemSchema, "chapter", "count")
 		} else {
 			requireRequiredFields(t, itemSchema, "severity", "volume", "arc", "from_chapter", "to_chapter", "description", "repair_instruction")
 		}
@@ -71,8 +74,9 @@ func TestSaveOriginalPlanningAuditAcceptsChapterScopeID(t *testing.T) {
 		"scope": "chapter", "scope_id": chapterID, "from_chapter": 1, "to_chapter": 1,
 		"volume": 0, "arc": 0, "from_volume": 0, "to_volume": 0,
 		"verdict": "pass", "summary": "the current chapter is causally complete",
-		"dimensions": originalAuditTestDimensions("causal_value", "character_logic", "continuity", "scene_progression", "hook_and_pacing", "originality"),
-		"issues":     []map[string]any{},
+		"dimensions":            originalAuditTestDimensions("causal_value", "character_logic", "continuity", "scene_progression", "hook_and_pacing", "originality"),
+		"issues":                []map[string]any{},
+		"observed_scene_counts": []map[string]any{{"chapter": 1, "count": 1}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +91,48 @@ func TestSaveOriginalPlanningAuditAcceptsChapterScopeID(t *testing.T) {
 	}
 	if len(audits) != 1 || audits[0].ScopeID != chapterID {
 		t.Fatalf("saved chapter audit = %+v, want scope_id %q", audits, chapterID)
+	}
+}
+
+func TestSaveOriginalPlanningAuditRejectsContradictoryObservedSceneCount(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	approveFoundationToolFixture(t, st)
+	chapterID := domain.LegacyStructureID("audit-scene-count", domain.StructureKindChapter, "volume-1/arc-1/chapter-1")
+	if err := st.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		ID: domain.LegacyStructureID("audit-scene-count", domain.StructureKindVolume, "volume-1"), Index: 1,
+		Arcs: []domain.ArcOutline{{
+			ID: domain.LegacyStructureID("audit-scene-count", domain.StructureKindArc, "volume-1/arc-1"), Index: 1,
+			Chapters: []domain.OutlineEntry{{
+				ID: chapterID, Chapter: 1, Title: "Evidence", CoreEvent: "complete chain",
+				Hook: "handoff", Scenes: []string{"one", "two", "three", "four", "five"},
+			}},
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	args, err := json.Marshal(map[string]any{
+		"scope": "chapter", "scope_id": chapterID, "from_chapter": 1, "to_chapter": 1,
+		"volume": 0, "arc": 0, "from_volume": 0, "to_volume": 0,
+		"verdict": "revise", "summary": "claims the evidence is incomplete",
+		"dimensions": originalAuditTestDimensions(
+			"causal_value", "character_logic", "continuity",
+			"scene_progression", "hook_and_pacing", "originality",
+		),
+		"issues": []map[string]any{{
+			"severity": "blocking", "volume": 1, "arc": 1,
+			"from_chapter": 1, "to_chapter": 1,
+			"description": "claims scenes are missing", "repair_instruction": "add scenes",
+		}},
+		"observed_scene_counts": []map[string]any{{"chapter": 1, "count": 3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSaveOriginalPlanningAuditTool(st).Execute(context.Background(), args); err == nil {
+		t.Fatal("expected contradictory scene count to be rejected")
 	}
 }
 

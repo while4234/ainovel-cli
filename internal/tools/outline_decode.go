@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -61,6 +62,33 @@ func decodeOutlineEntry(raw json.RawMessage) (domain.OutlineEntry, error) {
 	}
 	sceneRaw := fields["scenes"]
 	delete(fields, "scenes")
+	temporaryRolesRaw := fields["temporary_roles"]
+	delete(fields, "temporary_roles")
+	if err := normalizeOutlineBeatAliases(
+		fields,
+		"character_beats",
+		[]string{"character_id", "scene", "goal", "obstacle", "choice_cost", "advance"},
+		map[string][]string{
+			"advance": {"state_advance", "progress", "state_change"},
+		},
+	); err != nil {
+		return domain.OutlineEntry{}, fmt.Errorf("character_beats: %w", err)
+	}
+	if err := normalizeOutlineBeatAliases(
+		fields,
+		"relationship_beats",
+		[]string{
+			"relationship_id", "source_character_id", "target_character_id",
+			"scene", "start", "expected_advance", "forbidden_jump",
+		},
+		map[string][]string{
+			"start":            {"initial_state", "before"},
+			"expected_advance": {"progress", "advance", "state_advance", "relationship_change"},
+			"forbidden_jump":   {"boundary", "forbidden", "must_not"},
+		},
+	); err != nil {
+		return domain.OutlineEntry{}, fmt.Errorf("relationship_beats: %w", err)
+	}
 	withoutScenes, err := json.Marshal(fields)
 	if err != nil {
 		return domain.OutlineEntry{}, err
@@ -75,7 +103,161 @@ func decodeOutlineEntry(raw json.RawMessage) (domain.OutlineEntry, error) {
 			return domain.OutlineEntry{}, fmt.Errorf("scenes: %w", err)
 		}
 	}
+	if len(temporaryRolesRaw) > 0 && !bytes.Equal(bytes.TrimSpace(temporaryRolesRaw), []byte("null")) {
+		entry.TemporaryRoles, err = decodeTemporaryRoles(temporaryRolesRaw)
+		if err != nil {
+			return domain.OutlineEntry{}, fmt.Errorf("temporary_roles: %w", err)
+		}
+	}
 	return entry, nil
+}
+
+func normalizeOutlineBeatAliases(
+	fields map[string]json.RawMessage,
+	field string,
+	tupleFields []string,
+	aliases map[string][]string,
+) error {
+	raw, ok := fields[field]
+	if !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+	beats, err := decodeOutlineBeatObjects(raw, tupleFields)
+	if err != nil {
+		return err
+	}
+	for _, beat := range beats {
+		for canonical, alternatives := range aliases {
+			if value, exists := beat[canonical]; exists && !isEmptyJSONText(value) {
+				continue
+			}
+			for _, alternative := range alternatives {
+				value, exists := beat[alternative]
+				if !exists || isEmptyJSONText(value) {
+					continue
+				}
+				beat[canonical] = value
+				break
+			}
+		}
+	}
+	normalized, err := json.Marshal(beats)
+	if err != nil {
+		return err
+	}
+	fields[field] = normalized
+	return nil
+}
+
+func decodeOutlineBeatObjects(
+	raw json.RawMessage,
+	tupleFields []string,
+) ([]map[string]json.RawMessage, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	beats := make([]map[string]json.RawMessage, 0)
+	var collect func(any) error
+	collect = func(current any) error {
+		switch typed := current.(type) {
+		case []any:
+			if outlineBeatTuple(typed) {
+				if len(typed) > len(tupleFields) {
+					return fmt.Errorf(
+						"beat tuple has %d fields, expected at most %d",
+						len(typed),
+						len(tupleFields),
+					)
+				}
+				beat := make(map[string]json.RawMessage, len(typed))
+				for index, item := range typed {
+					encoded, err := json.Marshal(item)
+					if err != nil {
+						return err
+					}
+					if !isEmptyJSONText(encoded) {
+						beat[tupleFields[index]] = encoded
+					}
+				}
+				beats = append(beats, beat)
+				return nil
+			}
+			for _, item := range typed {
+				if err := collect(item); err != nil {
+					return err
+				}
+			}
+			return nil
+		case map[string]any:
+			encoded, err := json.Marshal(typed)
+			if err != nil {
+				return err
+			}
+			var beat map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &beat); err != nil {
+				return err
+			}
+			beats = append(beats, beat)
+			return nil
+		default:
+			return fmt.Errorf("expected beat object or nested array, got %T", current)
+		}
+	}
+	if err := collect(value); err != nil {
+		return nil, err
+	}
+	return beats, nil
+}
+
+func outlineBeatTuple(items []any) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		switch item.(type) {
+		case []any, map[string]any:
+			return false
+		}
+	}
+	return true
+}
+
+func isEmptyJSONText(raw json.RawMessage) bool {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return true
+	}
+	var text string
+	return json.Unmarshal(raw, &text) == nil && strings.TrimSpace(text) == ""
+}
+
+func decodeTemporaryRoles(raw json.RawMessage) ([]domain.TemporaryCharacterNeed, error) {
+	var values []json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil {
+		var single string
+		if stringErr := json.Unmarshal(raw, &single); stringErr != nil {
+			return nil, err
+		}
+		values = []json.RawMessage{json.RawMessage(strconv.Quote(single))}
+	}
+	roles := make([]domain.TemporaryCharacterNeed, 0, len(values))
+	for _, value := range values {
+		var role string
+		if err := json.Unmarshal(value, &role); err == nil {
+			if strings.TrimSpace(role) != "" {
+				roles = append(roles, domain.TemporaryCharacterNeed{Role: role})
+			}
+			continue
+		}
+		var need domain.TemporaryCharacterNeed
+		if err := json.Unmarshal(value, &need); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(need.Role) != "" {
+			roles = append(roles, need)
+		}
+	}
+	return roles, nil
 }
 
 func decodeOutlineScenes(raw json.RawMessage) ([]string, error) {

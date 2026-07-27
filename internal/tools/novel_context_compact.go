@@ -169,6 +169,42 @@ func compactWorldRulesForPlanningReview(rules []domain.WorldRule) []map[string]a
 	return out
 }
 
+func compactRelationshipsForPlanningAudit(
+	relationships []domain.CharacterRelationship,
+) [][]any {
+	out := make([][]any, 0, len(relationships))
+	for _, relationship := range relationships {
+		out = append(out, []any{
+			relationship.ID,
+			relationship.SourceCharacterID,
+			relationship.TargetCharacterID,
+			relationship.Type,
+			relationship.Direction,
+			relationship.Status,
+			truncateRunes(relationship.Label, 55),
+			truncateRunes(relationship.Description, 60),
+			truncateRunes(relationship.Since, 30),
+			compactStringList(relationship.Tags, 4, 25),
+			compactStringList(relationship.Constraints, 3, 35),
+		})
+	}
+	return out
+}
+
+func compactWorldRulesForPlanningAudit(worldRules []domain.WorldRule) [][]any {
+	out := make([][]any, 0, len(worldRules))
+	for _, rule := range worldRules {
+		out = append(out, []any{
+			rule.ID,
+			rule.Category,
+			rule.Strength,
+			truncateRunes(rule.Rule, 30),
+			truncateRunes(rule.Boundary, 8),
+		})
+	}
+	return out
+}
+
 const (
 	maxContextOutlineTextRunes         = 120
 	maxContextOutlineScenes            = 3
@@ -213,6 +249,86 @@ func compactOutlineEntries(entries []domain.OutlineEntry) []domain.OutlineEntry 
 		out = append(out, compactOutlineEntry(entry))
 	}
 	return out
+}
+
+// compactOutlineEntriesForPlanningAudit keeps every structured fact needed by
+// an editorial verdict while removing prose repetition between core_event,
+// scenes and per-character beats. Unlike the nearby-outline projection it
+// retains every scene, character beat and relationship beat in the requested
+// window; only individual descriptions are bounded.
+func compactOutlineEntriesForPlanningAudit(entries []domain.OutlineEntry) []map[string]any {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		item := map[string]any{
+			"id":          entry.ID,
+			"chapter":     entry.Chapter,
+			"title":       truncateRunes(entry.Title, 80),
+			"core_event":  truncateRunes(entry.CoreEvent, 300),
+			"hook":        truncateRunes(entry.Hook, 160),
+			"scene_count": len(entry.Scenes),
+			"scenes":      compactStringList(entry.Scenes, len(entry.Scenes), 160),
+		}
+		if len(entry.CharacterIDs) > 0 {
+			item["character_ids"] = entry.CharacterIDs
+		}
+		if len(entry.CharacterBeats) > 0 {
+			beats := make([][]any, 0, len(entry.CharacterBeats))
+			for _, beat := range entry.CharacterBeats {
+				beats = append(beats, compactPlanningAuditCharacterBeat(beat))
+			}
+			item["character_beats"] = beats
+		}
+		if len(entry.RelationshipBeats) > 0 {
+			beats := make([][]any, 0, len(entry.RelationshipBeats))
+			for _, beat := range entry.RelationshipBeats {
+				beats = append(beats, compactPlanningAuditRelationshipBeat(beat))
+			}
+			item["relationship_beats"] = beats
+		}
+		if len(entry.TemporaryRoles) > 0 {
+			roles := make([][]any, 0, len(entry.TemporaryRoles))
+			for _, role := range entry.TemporaryRoles {
+				roles = append(roles, []any{
+					truncateRunes(role.Role, 50),
+					truncateRunes(role.Scene, 60),
+					truncateRunes(role.Purpose, 80),
+					role.Important,
+				})
+			}
+			item["temporary_roles"] = roles
+		}
+		if entry.DramaticFacts != nil {
+			item["dramatic_facts"] = entry.DramaticFacts
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func compactPlanningAuditCharacterBeat(beat domain.OutlineCharacterBeat) []any {
+	return []any{
+		beat.CharacterID,
+		truncateRunes(beat.Scene, 60),
+		truncateRunes(beat.Goal, 75),
+		truncateRunes(beat.Obstacle, 75),
+		truncateRunes(beat.ChoiceCost, 90),
+		truncateRunes(beat.Advance, 90),
+	}
+}
+
+func compactPlanningAuditRelationshipBeat(beat domain.OutlineRelationshipBeat) []any {
+	return []any{
+		beat.RelationshipID,
+		beat.SourceCharacterID,
+		beat.TargetCharacterID,
+		truncateRunes(beat.Scene, 60),
+		truncateRunes(beat.Start, 60),
+		truncateRunes(beat.ExpectedAdvance, 90),
+		truncateRunes(beat.ForbiddenJump, 80),
+	}
 }
 
 func compactChapterPlan(plan domain.ChapterPlan) domain.ChapterPlan {
@@ -562,13 +678,55 @@ func compactLayeredOutlineForPlanningDetail(
 				"target":        arc.Index == targetArc,
 			}
 			if arc.IsExpanded() {
-				arcPayload["chapters"] = compactOutlineEntries(arc.Chapters)
+				if arc.Index == targetArc {
+					arcPayload["chapters"] = compactOutlineEntries(arc.Chapters)
+				} else if arc.Index == targetArc-1 {
+					arcPayload["chapter_evidence"] = compactCompletedArcForPlanningDetail(arc.Chapters)
+					arcPayload["chapter_evidence_schema"] = []string{
+						"id", "chapter", "title", "core_event", "hook",
+						"character_ids", "relationship_advances",
+					}
+				} else {
+					arcPayload["chapter_index"] = compactCompletedArcChapterIndex(arc.Chapters)
+					arcPayload["chapter_index_schema"] = []string{"id", "chapter", "title"}
+				}
 			}
 			arcs = append(arcs, arcPayload)
 			globalChapter += count
 		}
 		payload["arcs"] = arcs
 		out = append(out, payload)
+	}
+	return out
+}
+
+func compactCompletedArcChapterIndex(entries []domain.OutlineEntry) [][]any {
+	out := make([][]any, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, []any{entry.ID, entry.Chapter, truncateRunes(entry.Title, 60)})
+	}
+	return out
+}
+
+func compactCompletedArcForPlanningDetail(entries []domain.OutlineEntry) [][]any {
+	out := make([][]any, 0, len(entries))
+	for _, entry := range entries {
+		relationshipAdvances := make([][]string, 0, len(entry.RelationshipBeats))
+		for _, beat := range entry.RelationshipBeats {
+			relationshipAdvances = append(relationshipAdvances, []string{
+				beat.RelationshipID,
+				truncateRunes(beat.ExpectedAdvance, 55),
+			})
+		}
+		out = append(out, []any{
+			entry.ID,
+			entry.Chapter,
+			truncateRunes(entry.Title, 60),
+			truncateRunes(entry.CoreEvent, 220),
+			truncateRunes(entry.Hook, 110),
+			entry.CharacterIDs,
+			relationshipAdvances,
+		})
 	}
 	return out
 }

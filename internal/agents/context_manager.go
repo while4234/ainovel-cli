@@ -33,6 +33,135 @@ type contextManagerConfig struct {
 	OnSummaryRetry   SummaryRetryHook
 }
 
+// forceToolResultMicrocompact adapts agentcore's lossless tool-result
+// microcompactor for byte-boundary overflow recovery. Agentcore's stock
+// strategy is threshold-only; production also has a stricter compiled-byte
+// boundary that can be crossed before token estimates request compaction.
+type forceToolResultMicrocompact struct {
+	strategy *corecontext.ToolResultMicrocompactStrategy
+}
+
+// coordinatorLatestHostTurnCheckpoint is the Coordinator's overflow recovery
+// boundary. Every Host instruction is derived from durable workflow state, so
+// older dispatch instructions and their subagent replies are superseded once a
+// newer Host turn exists. Keeping only the latest turn preserves the exact
+// current repair/audit task while preventing persisted audit JSON from being
+// repeated across every subsequent dispatch.
+type coordinatorLatestHostTurnCheckpoint struct{}
+
+func (coordinatorLatestHostTurnCheckpoint) Name() string {
+	return "coordinator_latest_host_turn"
+}
+
+func (s coordinatorLatestHostTurnCheckpoint) Apply(
+	_ context.Context,
+	_ []agentcore.AgentMessage,
+	view []agentcore.AgentMessage,
+	_ corecontext.Budget,
+) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
+	return view, corecontext.StrategyResult{Name: s.Name()}, nil
+}
+
+func (s coordinatorLatestHostTurnCheckpoint) ForceApply(
+	_ context.Context,
+	_ []agentcore.AgentMessage,
+	view []agentcore.AgentMessage,
+	_ corecontext.Budget,
+) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
+	for index := len(view) - 1; index >= 0; index-- {
+		message, ok := view[index].(agentcore.Message)
+		if !ok || message.Role != agentcore.RoleUser {
+			continue
+		}
+		if index == 0 {
+			return view, corecontext.StrategyResult{Name: s.Name()}, nil
+		}
+		next := append([]agentcore.AgentMessage(nil), view[index:]...)
+		return next, corecontext.StrategyResult{
+			Applied:     true,
+			TokensSaved: corecontext.EstimateTotal(view) - corecontext.EstimateTotal(next),
+			Name:        s.Name(),
+		}, nil
+	}
+	return view, corecontext.StrategyResult{Name: s.Name()}, nil
+}
+
+type latestHostTurnContextManager struct {
+	*corecontext.ContextEngine
+	checkpoint coordinatorLatestHostTurnCheckpoint
+}
+
+func newLatestHostTurnContextManager(engine *corecontext.ContextEngine) *latestHostTurnContextManager {
+	return &latestHostTurnContextManager{
+		ContextEngine: engine,
+		checkpoint:    coordinatorLatestHostTurnCheckpoint{},
+	}
+}
+
+func (m *latestHostTurnContextManager) Project(
+	ctx context.Context,
+	messages []agentcore.AgentMessage,
+) (agentcore.ContextProjection, error) {
+	view, result, err := m.checkpoint.ForceApply(ctx, messages, messages, corecontext.Budget{})
+	if err != nil {
+		return agentcore.ContextProjection{}, err
+	}
+	if !result.Applied {
+		return m.ContextEngine.Project(ctx, messages)
+	}
+	projection, err := m.ContextEngine.Project(ctx, view)
+	if err != nil {
+		return agentcore.ContextProjection{}, err
+	}
+	if projection.Messages == nil {
+		projection.Messages = view
+	}
+	projection.ShouldCommit = true
+	projection.CommitMessages = projection.Messages
+	return projection, nil
+}
+
+func newForceToolResultMicrocompact(
+	cfg corecontext.ToolResultMicrocompactConfig,
+) *forceToolResultMicrocompact {
+	return &forceToolResultMicrocompact{
+		strategy: corecontext.NewToolResultMicrocompact(cfg),
+	}
+}
+
+func (s *forceToolResultMicrocompact) Name() string {
+	return "force_tool_result_microcompact"
+}
+
+func (s *forceToolResultMicrocompact) Apply(
+	ctx context.Context,
+	transcript []agentcore.AgentMessage,
+	view []agentcore.AgentMessage,
+	budget corecontext.Budget,
+) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
+	return s.compact(ctx, transcript, view, budget)
+}
+
+func (s *forceToolResultMicrocompact) ForceApply(
+	ctx context.Context,
+	transcript []agentcore.AgentMessage,
+	view []agentcore.AgentMessage,
+	budget corecontext.Budget,
+) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
+	return s.compact(ctx, transcript, view, budget)
+}
+
+func (s *forceToolResultMicrocompact) compact(
+	ctx context.Context,
+	transcript []agentcore.AgentMessage,
+	view []agentcore.AgentMessage,
+	budget corecontext.Budget,
+) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
+	next, result, err := s.strategy.Apply(ctx, transcript, view, budget)
+	result.Name = s.Name()
+	return next, result, err
+}
+
 func newContextManager(cfg contextManagerConfig) *corecontext.ContextEngine {
 	var sc corecontext.FullSummaryConfig
 	if cfg.Summary != nil {

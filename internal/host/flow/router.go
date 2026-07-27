@@ -296,7 +296,7 @@ func scopeOriginalPlanningInstruction(instruction *Instruction, state State) *In
 	work := state.OriginalPlanningWork
 	replacement := ""
 	switch work.Kind {
-	case "expand_arc", "repair_arc", "audit_arc":
+	case "expand_arc":
 		replacement = fmt.Sprintf(
 			"novel_context(scope=planning_detail, volume=%d, arc=%d)",
 			work.Volume,
@@ -516,21 +516,28 @@ func routeOriginalPlanning(s State) *Instruction {
 	switch w.Kind {
 	case "expand_arc":
 		return &Instruction{Agent: "architect_long", Reason: "下一批3-4章原创细纲待生成", Task: fmt.Sprintf(
-			"展开普通原创细纲第%d卷第%d弧：调用 novel_context(scope=planning) 核对人物、规则、前后弧、已通过的分卷契约和字数预算；本批严格生成%d章（第%d-%d章，且永远不超过4章），再调用 save_foundation(type=expand_arc, volume=%d, arc=%d)。每章 core_event 必须明确写出本章目标、主动阻力、关键选择及代价、不可逆结果、人物/关系/信息状态变化；scenes 必须是可写成约3000-5000字的递进场景，不是同一事件的重复表述；hook 必须由本章结果自然产生并给下一章新的行动问题。各章功能不得重复，情感推进必须改变主线决策，不得参考原著。",
+			"展开普通原创细纲第%d卷第%d弧：调用 novel_context(scope=planning) 核对人物、规则、前后弧、已通过的分卷契约和字数预算；本批严格生成%d章（第%d-%d章，且永远不超过4章），再调用 save_foundation(type=expand_arc, volume=%d, arc=%d)。每章 core_event 必须明确写出本章目标、主动阻力、关键选择及代价、不可逆结果、人物/关系/信息状态变化；character_beats 必须引用上下文中的稳定 character_id，relationship_beats 必须引用稳定 relationship_id 及其 source_character_id/target_character_id，禁止用姓名代替 ID；scenes 必须是可写成约3000-5000字的递进场景，不是同一事件的重复表述；hook 必须由本章结果自然产生并给下一章新的行动问题。各章功能不得重复，情感推进必须改变主线决策，不得参考原著。",
 			w.Volume, w.Arc, w.ToChapter-w.FromChapter+1, w.FromChapter, w.ToChapter, w.Volume, w.Arc)}
 	case "repair_arc":
 		payload, _ := json.Marshal(w.Audit)
 		return &Instruction{Agent: "architect_long", Reason: "原创细纲自动审核要求定点返修", Task: fmt.Sprintf(
-			"原创细纲审核未通过，只修复第%d卷第%d弧内第%d-%d章。审核报告：%s。调用 novel_context(scope=planning) 和 novel_context(scope=outline_range, from=%d, to=%d) 核对证据，只返回这个窗口的%d章并调用 save_foundation(type=repair_arc, volume=%d, arc=%d, from_chapter=%d, to_chapter=%d)。不得改写同弧兄弟章节；逐条落实 repair_instruction，不得分析原著。",
-			w.Volume, w.Arc, w.FromChapter, w.ToChapter, payload, w.FromChapter, w.ToChapter, w.ToChapter-w.FromChapter+1, w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
+			"原创细纲审核未通过，只修复第%d卷第%d弧内第%d-%d章。审核报告：%s。只调用一次 novel_context(scope=planning_audit, volume=%d, arc=%d, from=%d, to=%d) 获取该窗口原文与全部规范化审核依据，只返回这个窗口的%d章并调用 save_foundation(type=repair_arc, volume=%d, arc=%d, from_chapter=%d, to_chapter=%d)。character_beats 与 relationship_beats 必须使用上下文中的稳定角色/关系 ID，禁止用姓名代替 ID；不得改写同弧兄弟章节；逐条落实 repair_instruction，不得分析原著。",
+			w.Volume, w.Arc, w.FromChapter, w.ToChapter, payload,
+			w.Volume, w.Arc, w.FromChapter, w.ToChapter,
+			w.ToChapter-w.FromChapter+1, w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
 	case "audit_chapter":
 		return &Instruction{Agent: "editor", Reason: "修订章节需独立签名审核", Task: fmt.Sprintf(
-			"只审核第%d卷第%d弧普通原创第%d章当前细纲。调用 novel_context(scope=outline_range, from=%d, to=%d)，不得读取正文、原著或扩大范围。然后调用 save_original_planning_audit(scope=chapter, scope_id=当前章节稳定ID, volume=%d, arc=%d, from_volume=0, to_volume=0, from_chapter=%d, to_chapter=%d)；必须按 causal_value、character_logic、continuity、scene_progression、hook_and_pacing、originality 六维审核。通过时 verdict=pass 且 issues=[]；不通过时 verdict=revise，issues 首项必须填写 volume=%d、arc=%d、from_chapter=%d、to_chapter=%d、问题描述和定点修复指令。",
-			w.Volume, w.Arc, w.FromChapter, w.FromChapter, w.ToChapter, w.Volume, w.Arc, w.FromChapter, w.ToChapter, w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
+			"只审核第%d卷第%d弧原创第%d章。调用 novel_context(scope=planning_audit, volume=%d, arc=%d, from=%d, to=%d)，禁止正文、原著和扩窗；按 outline_scope.scene_counts 清点全部场景，并在 observed_scene_counts 原样回传。调用 save_original_planning_audit(scope=chapter, scope_id=当前章节稳定ID, volume=%d, arc=%d, from_volume=0, to_volume=0, from_chapter=%d, to_chapter=%d)，按 causal_value、character_logic、continuity、scene_progression、hook_and_pacing、originality 六维审核。通过须 verdict=pass、issues=[]；不通过须 verdict=revise，issues 首项填写 volume=%d、arc=%d、from_chapter=%d、to_chapter=%d、证据问题和定点修复指令。",
+			w.Volume, w.Arc, w.FromChapter,
+			w.Volume, w.Arc, w.FromChapter, w.ToChapter,
+			w.Volume, w.Arc, w.FromChapter, w.ToChapter,
+			w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
 	case "audit_arc":
 		return &Instruction{Agent: "editor", Reason: "本批原创细纲需独立弧级审核", Task: fmt.Sprintf(
-			"作为专业原创小说审稿人，分批审核第%d卷第%d弧的第%d-%d章（本批%d章）。只调用 novel_context(scope=planning) 与 novel_context(scope=outline_range, from=%d, to=%d)，禁止读取正文或任何原著，禁止扩大本批范围。检查目标-阻力-选择-结果因果链、人物动机与状态变化、每章独立推进价值、前后连续性、节奏钩子、套路化与批次重复。必须额外核对世界规则与时间线：重生、穿越、回档前的物理实体不能无来源出现在当前时间线；任何决定高潮胜负的证据都必须在本批或已确认前文中有可验证来源与前置动作，不能在回收章临时发明。然后调用 save_original_planning_audit(scope=arc, volume=%d, arc=%d, from_chapter=%d, to_chapter=%d)，dimensions 必须恰含 causal_progression、character_logic、chapter_value、continuity、hook_and_pacing、originality。任一维度低于7或存在重大问题必须 verdict=revise，并把首个问题精确定位到本卷本弧及修复指令。",
-			w.Volume, w.Arc, w.FromChapter, w.ToChapter, w.ToChapter-w.FromChapter+1, w.FromChapter, w.ToChapter, w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
+			"审核原创细纲第%d卷第%d弧第%d-%d章（%d章）。仅调用一次 novel_context(scope=planning_audit, volume=%d, arc=%d, from=%d, to=%d)，以返回的全部场景、本卷契约及角色/关系/规则为证据；禁止读取正文、原著或扩大本批范围。先按 outline_scope.scene_counts 逐章清点所有场景，并在 observed_scene_counts 原样回传。逐章核对目标-阻力-选择-结果、人物动机/状态、独立推进价值、连续性、节奏钩子和批次重复；核对世界规则与时间线，回档前实体不得无来源出现，决定胜负的证据必须有本批或已确认前文的来源与前置动作。调用 save_original_planning_audit(scope=arc, volume=%d, arc=%d, from_chapter=%d, to_chapter=%d)，dimensions 恰含 causal_progression、character_logic、chapter_value、continuity、hook_and_pacing、originality。任一维度低于7或有重大问题须 verdict=revise，首个问题须定位本卷本弧并给出定点修复指令。",
+			w.Volume, w.Arc, w.FromChapter, w.ToChapter, w.ToChapter-w.FromChapter+1,
+			w.Volume, w.Arc, w.FromChapter, w.ToChapter,
+			w.Volume, w.Arc, w.FromChapter, w.ToChapter)}
 	case "audit_volume":
 		return &Instruction{Agent: "editor", Reason: "逐弧审核已完成，需归并分卷质量审核", Task: fmt.Sprintf(
 			"作为专业原创小说审稿人审核第%d卷。不得一次重读整卷细纲；以下是已经逐弧分批通过、带章节证据索引的报告：%s。调用 novel_context(scope=planning) 只核对分卷骨架、人物和字数预算；仅有明确疑点时才定向调用一次 novel_context(scope=outline_range)，且范围最多4章。检查全卷结构节奏、主题与核心冲突、高潮兑现、人物弧阶段成果、规划内容能否承载目标字数、下一卷驱动力。调用 save_original_planning_audit(scope=volume, volume=%d)，dimensions 必须恰含 structure_pacing、theme_conflict、climax_payoff、character_arc、budget_capacity、next_volume_drive。问题必须定位到具体卷弧并给出可执行修复指令。",

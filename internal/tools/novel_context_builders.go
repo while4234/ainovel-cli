@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -293,22 +294,174 @@ func (t *ContextTool) scopePlanningReviewContext(result map[string]any, volume, 
 
 	foundation, _ := result["foundation_memory"].(map[string]any)
 	if foundation != nil {
+		allCharactersFocused := false
 		if characters, ok := foundation["characters"].([]domain.Character); ok {
 			focused := planningReviewCharacterFocus(characters, planning)
 			foundation["character_index"] = compactCharacterIndexForPlanningReview(characters)
 			foundation["character_index_schema"] = []string{"id", "name", "role", "tier", "faction"}
 			foundation["characters"] = compactCharacterContractsForPlanningReview(characters, focused)
+			allCharactersFocused = len(focused) == len(characters)
 		}
 		if rules, ok := foundation["world_rules"].([]domain.WorldRule); ok {
 			foundation["world_rules"] = compactWorldRulesForPlanningReview(rules)
 		}
+		if canonical, loadErr := t.store.Foundation.Load(); loadErr == nil {
+			foundation["planned_relationships"] = compactRelationshipsForPlanningAudit(canonical.Relationships)
+			foundation["relationship_schema"] = []string{
+				"id", "source_character_id", "target_character_id", "type", "direction",
+				"status", "label", "description", "since", "tags", "constraints",
+			}
+			foundation["world_rules"] = compactWorldRulesForPlanningAudit(canonical.WorldRules)
+			foundation["world_rule_schema"] = []string{"id", "category", "strength", "rule", "boundary"}
+		}
 		delete(foundation, "character_snapshots")
+		delete(foundation, "hard_world_rule_constraints")
+		delete(foundation, "relationship_contract")
+		delete(foundation, "premise_structure")
+		delete(foundation, "foundation_status")
+		delete(foundation, "foundation_revision")
+		delete(foundation, "foundation_audit_signature")
+		if allCharactersFocused {
+			delete(foundation, "character_index")
+			delete(foundation, "character_index_schema")
+		}
 	}
 	// Architect templates do not provide evidence for an Editor verdict. The
 	// Editor prompt and audit tool schema already define the scoring contract.
 	delete(result, "reference_pack")
+	delete(result, "memory_policy")
+	delete(result, "word_budget")
 	result["context_profile"] = "planning_review"
 	return nil
+}
+
+// scopePlanningAuditContext builds one self-contained evidence pack for a
+// detailed arc audit or a bounded repair. It combines compact canonical facts
+// with the exact 1-4 chapter window in one tool result, so Editor quality does
+// not depend on stacking planning_detail and outline_range payloads.
+func (t *ContextTool) scopePlanningAuditContext(
+	result map[string]any,
+	volume, arc, from, to int,
+	warn func(string, error),
+) error {
+	if volume <= 0 || arc <= 0 || from <= 0 || to < from {
+		return fmt.Errorf("planning_audit requires positive volume, arc and inclusive from/to")
+	}
+	if to-from+1 > 4 {
+		return fmt.Errorf("planning_audit accepts at most four chapters")
+	}
+	layered, err := t.store.Outline.LoadLayeredOutline()
+	if err != nil {
+		return fmt.Errorf("load layered outline for planning_audit: %w", err)
+	}
+	_, targetArc, arcFrom, arcTo, ok := findPlanningDetailTarget(layered, volume, arc)
+	if !ok {
+		return fmt.Errorf("planning_audit target V%d A%d does not exist", volume, arc)
+	}
+	if from < arcFrom || to > arcTo {
+		return fmt.Errorf(
+			"planning_audit range %d-%d is outside V%d A%d (%d-%d)",
+			from, to, volume, arc, arcFrom, arcTo,
+		)
+	}
+	if err := t.scopePlanningReviewContext(result, volume, 0, 0); err != nil {
+		return err
+	}
+	arcEntries := make([]domain.OutlineEntry, 0, len(targetArc.Chapters))
+	for index, entry := range targetArc.Chapters {
+		entry.Chapter = arcFrom + index
+		arcEntries = append(arcEntries, entry)
+	}
+	entries := outlineEntriesInRange(arcEntries, from, to)
+	// repair_arc persists the authoritative repaired chapters to the flat
+	// outline before the layered planning skeleton is refreshed. Prefer that
+	// newer flat window when it is complete, otherwise retain the layered arc.
+	if flat, flatErr := t.store.Outline.LoadOutline(); flatErr == nil && len(flat) > 0 {
+		repaired := outlineEntriesInRange(normalizeOutlineEntries(flat), from, to)
+		if len(repaired) == to-from+1 {
+			entries = repaired
+		}
+	}
+	result["outline"] = compactOutlineEntriesForPlanningAudit(entries)
+	sceneCounts := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		sceneCounts[strconv.Itoa(entry.Chapter)] = len(entry.Scenes)
+	}
+	result["outline_scope"] = map[string]any{
+		"mode":                 "planning_audit_range",
+		"from":                 from,
+		"to":                   to,
+		"returned_chapters":    len(entries),
+		"scene_counts":         sceneCounts,
+		"total_arc_chapters":   len(targetArc.Chapters),
+		"full_outline_omitted": true,
+	}
+	result["outline_character_beat_schema"] = []string{
+		"character_id", "scene", "goal", "obstacle", "choice_cost", "advance",
+	}
+	result["outline_relationship_beat_schema"] = []string{
+		"relationship_id", "source_character_id", "target_character_id",
+		"scene", "start", "expected_advance", "forbidden_jump",
+	}
+	result["outline_temporary_role_schema"] = []string{"role", "scene", "purpose", "important"}
+
+	planning, _ := result["planning_memory"].(map[string]any)
+	if planning != nil {
+		removePlanningReviewNearbyChapters(planning["layered_outline"])
+		delete(planning, "volume_summaries")
+		delete(planning, "completion_signals")
+		planning["review_scope"] = map[string]any{
+			"kind":         "detailed_arc",
+			"volume":       volume,
+			"arc":          arc,
+			"from_chapter": from,
+			"to_chapter":   to,
+			"content_path": "outline",
+			"quality_contract": "Audit the supplied chapters against every represented canonical " +
+				"character, relationship, world-rule and passed volume contract. The explicit scene_count " +
+				"and outline_scope.scene_counts values are authoritative; inspect every supplied scene and " +
+				"do not infer omitted prose.",
+		}
+	}
+	foundation, _ := result["foundation_memory"].(map[string]any)
+	if foundation != nil {
+		if canonical, loadErr := t.store.Foundation.Load(); loadErr == nil {
+			foundation["planned_relationships"] = compactRelationshipsForPlanningAudit(canonical.Relationships)
+			foundation["relationship_schema"] = []string{
+				"id", "source_character_id", "target_character_id", "type", "direction",
+				"status", "label", "description", "since", "tags", "constraints",
+			}
+			foundation["world_rules"] = compactWorldRulesForPlanningAudit(canonical.WorldRules)
+			foundation["world_rule_schema"] = []string{"id", "category", "strength", "rule", "boundary"}
+		}
+		delete(foundation, "character_index")
+		delete(foundation, "character_index_schema")
+		delete(foundation, "hard_world_rule_constraints")
+		delete(foundation, "relationship_contract")
+		delete(foundation, "premise_structure")
+		delete(foundation, "foundation_status")
+		delete(foundation, "foundation_revision")
+		delete(foundation, "foundation_audit_signature")
+	}
+	delete(result, "memory_policy")
+	result["context_profile"] = "planning_audit"
+	return nil
+}
+
+func removePlanningReviewNearbyChapters(value any) {
+	volumes, ok := value.([]map[string]any)
+	if !ok {
+		return
+	}
+	for _, volume := range volumes {
+		arcs, ok := volume["arcs"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, arc := range arcs {
+			delete(arc, "nearby_chapters")
+		}
+	}
 }
 
 // scopePlanningDetailContext derives a fresh, high-fidelity Architect view for
@@ -352,6 +505,9 @@ func (t *ContextTool) scopePlanningDetailContext(result map[string]any, volume, 
 	if audit := selectSkeletonVolumeAudit(t.store, volume); audit != nil {
 		planning["approved_volume_audit"] = compactPlanningDetailAudit(*audit)
 	}
+	if audits := selectPassedPriorArcAudits(t.store, volume, arc); len(audits) > 0 {
+		planning["approved_prior_arc_audits"] = audits
+	}
 	delete(planning, "volume_summaries")
 	delete(planning, "completion_signals")
 
@@ -362,22 +518,39 @@ func (t *ContextTool) scopePlanningDetailContext(result map[string]any, volume, 
 	}
 	if canonical, loadErr := t.store.Foundation.Load(); loadErr == nil {
 		foundation["characters"] = compactCharacterContractsForPlanningDetail(canonical.Characters)
-		foundation["planned_relationships"] = compactRelationshipsForPlanningDetail(canonical.Relationships)
-		foundation["world_rules"] = compactWorldRulesForPlanningDetail(canonical.WorldRules)
-		hardIDs := make([]string, 0, len(canonical.WorldRules))
-		for _, rule := range canonical.WorldRules {
-			if rule.Strength == domain.WorldRuleStrengthHard {
-				hardIDs = append(hardIDs, rule.ID)
-			}
+		foundation["planned_relationships"] = compactRelationshipsForPlanningAudit(canonical.Relationships)
+		foundation["relationship_schema"] = []string{
+			"id", "source_character_id", "target_character_id", "type", "direction",
+			"status", "label", "description", "since", "tags", "constraints",
 		}
-		if len(hardIDs) > 0 {
-			foundation["hard_world_rule_constraints"] = hardIDs
-		}
+		foundation["world_rules"] = compactWorldRulesForPlanningAudit(canonical.WorldRules)
+		foundation["world_rule_schema"] = []string{"id", "category", "strength", "rule", "boundary"}
 	}
 	delete(foundation, "character_snapshots")
 	delete(foundation, "foreshadow_ledger")
+	delete(foundation, "hard_world_rule_constraints")
+	delete(foundation, "relationship_contract")
+	delete(foundation, "premise_structure")
+	delete(foundation, "foundation_status")
+	delete(foundation, "foundation_revision")
+	delete(foundation, "foundation_audit_signature")
+	delete(result, "memory_policy")
 	result["context_profile"] = "planning_detail"
 	return nil
+}
+
+// deduplicatePlanningDetailContext retains the structured prose constraints and
+// points the Architect at the already-present creative brief instead of
+// carrying the same startup prompt twice.
+func deduplicatePlanningDetailContext(result map[string]any) {
+	working, _ := result["working_memory"].(map[string]any)
+	if working != nil {
+		if userRules, ok := working["user_rules"].(map[string]any); ok {
+			delete(userRules, "preferences")
+			userRules["preferences_source"] = "planning_memory.creative_brief"
+		}
+	}
+	delete(result, "word_budget")
 }
 
 func findPlanningDetailTarget(
@@ -417,6 +590,33 @@ func selectSkeletonVolumeAudit(st *store.Store, volume int) *domain.OriginalPlan
 		}
 	}
 	return nil
+}
+
+func selectPassedPriorArcAudits(
+	st *store.Store,
+	volume, targetArc int,
+) []map[string]any {
+	if st == nil || st.OriginalPlanningAudits == nil {
+		return nil
+	}
+	audits, err := st.OriginalPlanningAudits.Load()
+	if err != nil {
+		return nil
+	}
+	latest := make(map[int]domain.OriginalPlanningAudit)
+	for _, audit := range audits {
+		if audit.Scope == "arc" && audit.Volume == volume &&
+			audit.Arc > 0 && audit.Arc < targetArc && audit.Verdict == "pass" {
+			latest[audit.Arc] = audit
+		}
+	}
+	out := make([]map[string]any, 0, len(latest))
+	for arc := 1; arc < targetArc; arc++ {
+		if audit, ok := latest[arc]; ok {
+			out = append(out, compactPlanningDetailAudit(audit))
+		}
+	}
+	return out
 }
 
 func compactPlanningDetailAudit(audit domain.OriginalPlanningAudit) map[string]any {

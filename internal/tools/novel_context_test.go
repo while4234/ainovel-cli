@@ -907,14 +907,45 @@ func TestContextToolPlanningDetailKeepsCanonicalFactsAndScalesToFiveMillionWords
 	}
 	volumes := make([]domain.VolumeOutline, 0, 160)
 	for volume := 1; volume <= 160; volume++ {
+		arcs := []domain.ArcOutline{
+			{Index: 1, Title: "进入", Goal: strings.Repeat("目标、阻力、选择、代价和结果。", 20), EstimatedChapters: 4},
+			{Index: 2, Title: "转折", Goal: strings.Repeat("人物、关系和信息状态递进。", 20), EstimatedChapters: 4},
+			{Index: 3, Title: "兑现", Goal: strings.Repeat("高潮兑现并生成下一卷行动问题。", 20), EstimatedChapters: 4},
+		}
+		if volume == 80 {
+			chapters := make([]domain.OutlineEntry, 0, 4)
+			for chapter := 1; chapter <= 4; chapter++ {
+				chapters = append(chapters, domain.OutlineEntry{
+					ID: fmt.Sprintf("ch_%032x", chapter), Chapter: 949 + chapter - 1,
+					Title:     fmt.Sprintf("前弧证据章%d", chapter),
+					CoreEvent: strings.Repeat("前弧目标、阻力、选择、代价、结果及信息变化。", 20),
+					Hook:      strings.Repeat("前弧结果生成下一章行动问题。", 12),
+					Scenes:    []string{strings.Repeat("完整递进场景。", 30)},
+					CharacterIDs: []string{
+						characters[0].ID, characters[1].ID,
+					},
+					CharacterBeats: []domain.OutlineCharacterBeat{{
+						CharacterID: characters[0].ID,
+						Goal:        strings.Repeat("前弧目标。", 20),
+						Obstacle:    strings.Repeat("前弧阻力。", 20),
+						ChoiceCost:  strings.Repeat("前弧选择代价。", 20),
+						Advance:     strings.Repeat("前弧状态推进。", 20),
+					}},
+					RelationshipBeats: []domain.OutlineRelationshipBeat{{
+						RelationshipID:    relationships[0].ID,
+						SourceCharacterID: relationships[0].SourceCharacterID,
+						TargetCharacterID: relationships[0].TargetCharacterID,
+						ExpectedAdvance:   strings.Repeat("前弧关系推进。", 20),
+					}},
+				})
+			}
+			arcs[0].EstimatedChapters = 0
+			arcs[0].Chapters = chapters
+		}
 		volumes = append(volumes, domain.VolumeOutline{
 			Index: volume, Title: fmt.Sprintf("第%03d卷", volume),
 			Theme: strings.Repeat("本卷核心冲突、不可逆结果与下卷交棒。", 15),
-			Arcs: []domain.ArcOutline{
-				{Index: 1, Title: "进入", Goal: strings.Repeat("目标、阻力、选择、代价和结果。", 20), EstimatedChapters: 4},
-				{Index: 2, Title: "转折", Goal: strings.Repeat("人物、关系和信息状态递进。", 20), EstimatedChapters: 4},
-				{Index: 3, Title: "兑现", Goal: strings.Repeat("高潮兑现并生成下一卷行动问题。", 20), EstimatedChapters: 4},
-			},
+			Arcs:  arcs,
 		})
 	}
 	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
@@ -935,6 +966,13 @@ func TestContextToolPlanningDetailKeepsCanonicalFactsAndScalesToFiveMillionWords
 			Severity: "minor", Arc: 2, Description: "执行动作需要落到场景。",
 			RepairInstruction: "细纲中明确助理执行与商业异常的证据链。",
 		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.OriginalPlanningAudits.Save(domain.OriginalPlanningAudit{
+		Scope: "arc", Volume: 80, Arc: 1, FromChapter: 949, ToChapter: 952, Verdict: "pass",
+		Summary:    "prior arc passed with verified causal and relationship handoff",
+		Dimensions: []domain.OriginalPlanningAuditDimension{{Name: "continuity", Score: 8.5, Comment: "handoff verified"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -966,11 +1004,16 @@ func TestContextToolPlanningDetailKeepsCanonicalFactsAndScalesToFiveMillionWords
 	for _, required := range []string{
 		`"context_profile":"planning_detail"`, `"detail-character-4"`,
 		`"detail-relationship-6"`, `"detail-rule-25"`, `"approved_volume_audit"`,
-		"助理执行落地动作", "商业异常", `"volume":80`, `"arc":2`, `[160,`,
+		`"approved_prior_arc_audits"`, `"chapter_evidence_schema"`,
+		"prior arc passed", "助理执行落地动作", "商业异常",
+		`"volume":80`, `"arc":2`, `[160,`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("planning detail context is missing %q", required)
 		}
+	}
+	if strings.Contains(text, `"character_beats"`) {
+		t.Fatal("planning detail repeated completed-arc character beats instead of its passed handoff evidence")
 	}
 	var payload struct {
 		Planning struct {
@@ -986,6 +1029,37 @@ func TestContextToolPlanningDetailKeepsCanonicalFactsAndScalesToFiveMillionWords
 	}
 	if len(payload.Planning.Layered) != 3 {
 		t.Fatalf("detail body covered %d volumes, want previous/current/next", len(payload.Planning.Layered))
+	}
+}
+
+func TestCompactPlanningDetailKeepsFullEvidenceOnlyForImmediatePriorArc(t *testing.T) {
+	chapter := func(number int, title string) domain.OutlineEntry {
+		return domain.OutlineEntry{
+			ID: fmt.Sprintf("ch_%032x", number), Chapter: number, Title: title,
+			CoreEvent: "目标、阻力、选择、代价、结果与信息变化",
+			Hook:      "由结果生成下一章行动问题",
+			CharacterBeats: []domain.OutlineCharacterBeat{{
+				CharacterID: "hero", Goal: "目标", Advance: "推进",
+			}},
+		}
+	}
+	payload := compactLayeredOutlineForPlanningDetail([]domain.VolumeOutline{{
+		Index: 1,
+		Arcs: []domain.ArcOutline{
+			{Index: 1, Chapters: []domain.OutlineEntry{chapter(1, "已封存前史")}},
+			{Index: 2, Chapters: []domain.OutlineEntry{chapter(2, "直接承接弧")}},
+			{Index: 3, EstimatedChapters: 4, Title: "当前目标弧"},
+		},
+	}}, 1, 3)
+	arcs := payload[0]["arcs"].([]map[string]any)
+	if _, ok := arcs[0]["chapter_index"]; !ok {
+		t.Fatalf("older arc did not collapse to its audited chapter index: %+v", arcs[0])
+	}
+	if _, ok := arcs[0]["chapter_evidence"]; ok {
+		t.Fatalf("older arc repeated detailed handoff evidence: %+v", arcs[0])
+	}
+	if _, ok := arcs[1]["chapter_evidence"]; !ok {
+		t.Fatalf("immediate prior arc lost direct handoff evidence: %+v", arcs[1])
 	}
 }
 
@@ -1059,6 +1133,151 @@ func TestContextToolPlanningReviewIsEditorBoundedWithoutDroppingCanonicalFacts(t
 	}
 	if strings.Contains(text, `"reference_pack"`) {
 		t.Fatal("planning review must not carry Architect-only templates")
+	}
+}
+
+func TestContextToolPlanningAuditCombinesFourChaptersAndCanonicalFactsAtBookScale(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	characters := make([]domain.Character, 0, 4)
+	for index := 1; index <= 4; index++ {
+		characters = append(characters, domain.Character{
+			ID: fmt.Sprintf("audit-character-%d", index), Name: fmt.Sprintf("审核角色%d", index),
+			Role: strings.Repeat("不可替代职责", 10), Tier: "core",
+			Goal: strings.Repeat("长期目标", 15), Motivation: strings.Repeat("核心动机", 15),
+			Conflict: strings.Repeat("因果冲突", 15), Arc: strings.Repeat("阶段成长", 20),
+			Constraints: []string{"不得越过已确认的信息边界"},
+		})
+	}
+	relationships := make([]domain.CharacterRelationship, 0, 6)
+	pairs := [][2]int{{0, 1}, {1, 2}, {2, 3}, {3, 0}, {0, 2}, {1, 3}}
+	for index, pair := range pairs {
+		relationships = append(relationships, domain.CharacterRelationship{
+			ID:                fmt.Sprintf("audit-relationship-%d", index+1),
+			SourceCharacterID: characters[pair[0]].ID,
+			TargetCharacterID: characters[pair[1]].ID,
+			Type:              domain.RelationshipTypeOther, Direction: domain.RelationshipDirectionDirected,
+			Status: domain.RelationshipStatusPlanned, Label: "改变主线选择的关系",
+			Constraints: []string{"关系变化必须来自可见选择"},
+		})
+	}
+	worldRules := make([]domain.WorldRule, 0, 25)
+	for index := 1; index <= 25; index++ {
+		worldRules = append(worldRules, domain.WorldRule{
+			ID: fmt.Sprintf("audit-rule-%02d", index), Category: "continuity",
+			Rule:     "时间线、证据来源与人物知识必须可验证",
+			Boundary: "全书", Strength: domain.WorldRuleStrengthHard,
+		})
+	}
+	if _, err := st.Foundation.SaveCAS(domain.StoryFoundation{
+		Premise:    strings.Repeat("用户确认的故事前提与终局承诺。", 40),
+		Characters: characters, Relationships: relationships,
+		RelationshipsReviewed: true, WorldRules: worldRules,
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	volumes := make([]domain.VolumeOutline, 0, 160)
+	for volume := 1; volume <= 160; volume++ {
+		arcs := []domain.ArcOutline{
+			{Index: 1, Title: "进入", Goal: "建立目标、阻力与行动代价", EstimatedChapters: 4},
+			{Index: 2, Title: "转折", Goal: "人物选择改变关系和信息状态", EstimatedChapters: 4},
+			{Index: 3, Title: "兑现", Goal: "兑现高潮并交棒下一阶段", EstimatedChapters: 4},
+		}
+		if volume == 80 {
+			chapters := make([]domain.OutlineEntry, 0, 4)
+			for chapter := 0; chapter < 4; chapter++ {
+				chapters = append(chapters, domain.OutlineEntry{
+					ID:      fmt.Sprintf("ch_%032x", chapter+1),
+					Chapter: 949 + chapter, Title: fmt.Sprintf("审核章%d", chapter+1),
+					CoreEvent: strings.Repeat("目标、主动阻力、关键选择与代价、不可逆结果。", 20),
+					Hook:      strings.Repeat("由本章结果生成下一章行动问题。", 12),
+					Scenes: []string{
+						strings.Repeat("场景一递进动作与信息变化。", 15),
+						strings.Repeat("场景二选择及关系后果。", 15),
+						strings.Repeat("场景三不可逆收束。", 15),
+						"scene-four-mandatory-aftercare",
+						"scene-five-mandatory-handoff",
+					},
+					CharacterIDs: []string{characters[0].ID, characters[1].ID},
+					CharacterBeats: []domain.OutlineCharacterBeat{{
+						CharacterID: characters[0].ID,
+						Goal:        "本章可验证目标",
+						Obstacle:    "主动阻力",
+						ChoiceCost:  "选择与代价",
+						Advance:     "状态不可逆推进",
+					}},
+					RelationshipBeats: []domain.OutlineRelationshipBeat{{
+						RelationshipID:    relationships[0].ID,
+						SourceCharacterID: relationships[0].SourceCharacterID,
+						TargetCharacterID: relationships[0].TargetCharacterID,
+						ExpectedAdvance:   "关系变化影响下一章选择",
+					}},
+				})
+			}
+			arcs[0].EstimatedChapters = 0
+			arcs[0].Chapters = chapters
+		}
+		volumes = append(volumes, domain.VolumeOutline{
+			Index: volume, Title: fmt.Sprintf("第%03d卷", volume),
+			Theme: "入卷状态、核心冲突、不可逆成果与出卷交棒", Arcs: arcs,
+		})
+	}
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	progress, _ := st.Progress.Load()
+	if progress == nil {
+		progress = &domain.Progress{Phase: domain.PhaseOutline, TotalChapters: 1920}
+	}
+	progress.Layered = true
+	progress.CurrentVolume = 80
+	progress.CurrentArc = 1
+	progress.CurrentChapter = 949
+	if err := st.Progress.Save(progress); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := NewContextTool(st, References{}, "default").Execute(
+		context.Background(),
+		json.RawMessage(`{"scope":"planning_audit","volume":80,"arc":1,"from":949,"to":952}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > planningAuditContextSourceBytes {
+		t.Fatalf("planning audit context = %d bytes, want <= %d", len(raw), planningAuditContextSourceBytes)
+	}
+	text := string(raw)
+	for _, required := range []string{
+		`"audit-character-4"`,
+		`"audit-relationship-6"`,
+		`"audit-rule-25"`,
+		`"relationship_schema"`,
+		`"world_rule_schema"`,
+		`"ch_00000000000000000000000000000004"`,
+		`"scene-five-mandatory-handoff"`,
+		`"scene_count":5`,
+		`"scene_counts":{"949":5,"950":5,"951":5,"952":5}`,
+		`"outline_character_beat_schema"`,
+		`"outline_relationship_beat_schema"`,
+		`"audit-character-1"`,
+		`"audit-relationship-1"`,
+		`"关系变化影响下一章选择"`,
+		`"from_chapter":949`,
+		`"to_chapter":952`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("planning audit context is missing %s", required)
+		}
+	}
+	if strings.Contains(text, `"nearby_chapters"`) || strings.Contains(text, `"reference_pack"`) {
+		t.Fatal("planning audit duplicated chapters or Architect-only references")
+	}
+	if strings.Contains(text, `"user_rules"`) || strings.Contains(text, `"simulation_profile"`) {
+		t.Fatal("planning audit must not duplicate prose-only rules or generic simulation guidance")
 	}
 }
 

@@ -54,6 +54,45 @@ func TestWriterContextProjectionCommitsCompactedBaseline(t *testing.T) {
 	}
 }
 
+func TestArchitectOverflowRecoveryKeepsValidationErrorAndClearsPriorContext(t *testing.T) {
+	messages := []agentcore.AgentMessage{agentcore.UserMsg("expand one arc")}
+	for index, toolName := range []string{"novel_context", "save_foundation"} {
+		callID := fmt.Sprintf("architect-%d", index)
+		messages = append(messages,
+			agentcore.Message{
+				Role: agentcore.RoleAssistant,
+				Content: []agentcore.ContentBlock{agentcore.ToolCallBlock(agentcore.ToolCall{
+					ID: callID, Name: toolName, Args: []byte(fmt.Sprintf(`{"batch":%d}`, index)),
+				})},
+			},
+			agentcore.ToolResultMsg(callID, []byte(fmt.Sprintf(`"%s"`, strings.Repeat(toolName+" evidence ", 500))), index == 1),
+		)
+	}
+	cfg := architectToolResultMicrocompactConfig()
+	manager := newContextManager(contextManagerConfig{
+		ContextWindow:    96_000,
+		ReserveTokens:    12_000,
+		ToolMicrocompact: cfg,
+		ExtraStrategies: []corecontext.Strategy{
+			newForceToolResultMicrocompact(*cfg),
+		},
+	})
+	recovery, err := manager.RecoverOverflow(t.Context(), messages, agentcore.ErrContextOverflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovery.Changed || recovery.Strategy != "force_tool_result_microcompact" {
+		t.Fatal("expected prior Architect context to be compacted")
+	}
+	view := recovery.View
+	if first := view[2].(agentcore.Message); first.Metadata["compacted_tool_result"] != true {
+		t.Fatalf("prior context result was retained: %+v", first.Metadata)
+	}
+	if latest := view[4].(agentcore.Message); latest.Metadata["compacted_tool_result"] == true {
+		t.Fatalf("latest validation error was cleared: %+v", latest.Metadata)
+	}
+}
+
 func TestWriterToolResultsCompactByValidationPhase(t *testing.T) {
 	messages := []agentcore.AgentMessage{agentcore.UserMsg("polish chapter 39")}
 	for index, toolName := range []string{"novel_context", "read_chapter", "check_consistency", "check_de_ai"} {
@@ -230,6 +269,79 @@ func TestWriterManagerUsesPhaseEvictionForOverflowRecovery(t *testing.T) {
 	}
 	if countCompactedToolResults(recovery.View) != 2 {
 		t.Fatalf("recovered compacted results=%d, want 2", countCompactedToolResults(recovery.View))
+	}
+}
+
+func TestCoordinatorForcedRecoveryKeepsOnlyLatestHostTurn(t *testing.T) {
+	messages := []agentcore.AgentMessage{agentcore.UserMsg("continue planning")}
+	for index, toolName := range []string{"subagent", "subagent"} {
+		callID := fmt.Sprintf("coordinator-%d", index)
+		messages = append(messages,
+			agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+				agentcore.ToolCallBlock(agentcore.ToolCall{
+					ID: callID, Name: toolName, Args: []byte(fmt.Sprintf(
+						`{"task":%q}`, strings.Repeat(fmt.Sprintf("audit-%d-", index), 500),
+					)),
+				}),
+			}},
+			agentcore.ToolResultMsg(callID, []byte(fmt.Sprintf(
+				`{"receipt":%q}`, strings.Repeat(fmt.Sprintf("durable-%d-", index), 400),
+			)), false),
+			agentcore.UserMsg(fmt.Sprintf(
+				"[Host command] audit chapter %d: %s",
+				index+13,
+				strings.Repeat(fmt.Sprintf("evidence-%d-", index), 500),
+			)),
+		)
+	}
+	strategy := coordinatorLatestHostTurnCheckpoint{}
+	view, result, err := strategy.ForceApply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatal("forced Coordinator recovery did not checkpoint the latest Host turn")
+	}
+	if len(view) != 1 {
+		t.Fatalf("recovered messages=%d, want only the current Host instruction", len(view))
+	}
+	if text := view[0].(agentcore.Message).TextContent(); !strings.Contains(text, "audit chapter 14") ||
+		!strings.Contains(text, "evidence-1-") {
+		t.Fatalf("latest Host instruction was not preserved exactly: %q", text)
+	}
+	compiled, err := compileAgentInput(toLLMMessages(t, view), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compiled) >= 20*1024 {
+		t.Fatalf("recovered Coordinator turn=%d bytes, want deterministic headroom", len(compiled))
+	}
+}
+
+func TestLatestHostTurnManagerCommitsFreshTaskBeforeProjection(t *testing.T) {
+	engine := newContextManager(contextManagerConfig{
+		ContextWindow:   96_000,
+		ReserveTokens:   12_000,
+		CommitOnProject: true,
+	})
+	manager := newLatestHostTurnContextManager(engine)
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("audit stale chapter"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: "old", Name: "novel_context", Args: []byte(`{}`)}),
+		}},
+		agentcore.ToolResultMsg("old", []byte(strings.Repeat("stale evidence ", 2_000)), false),
+		agentcore.UserMsg("audit current repaired chapter"),
+	}
+	projection, err := manager.Project(t.Context(), messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !projection.ShouldCommit || len(projection.CommitMessages) != 1 {
+		t.Fatalf("fresh Host turn was not committed: %+v", projection)
+	}
+	if text := projection.CommitMessages[0].(agentcore.Message).TextContent(); text != "audit current repaired chapter" {
+		t.Fatalf("wrong Host task survived: %q", text)
 	}
 }
 

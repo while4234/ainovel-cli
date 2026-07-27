@@ -584,6 +584,7 @@ func TestCommitChapterLayeredReopenRecompletesDespiteOpenThread(t *testing.T) {
 	if err := s.Progress.Init("test", 0); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
+	approveFoundationToolFixture(t, s)
 
 	// 单卷单弧两章，全部展开
 	foundation := NewSaveFoundationTool(s)
@@ -819,6 +820,7 @@ func TestCommitChapterLayeredRejectsOutOfRangeChapter(t *testing.T) {
 	if err := s.Progress.Init("test", 0); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
+	approveFoundationToolFixture(t, s)
 
 	// 建一份 layered_outline，只有 1 卷 1 弧 1 章
 	foundation := NewSaveFoundationTool(s)
@@ -878,6 +880,7 @@ func TestCommitChapterLayeredWaitsForReviewWhenDone(t *testing.T) {
 	if err := s.Progress.Init("test", 0); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
+	approveFoundationToolFixture(t, s)
 
 	// 单卷单弧两章，全部展开（无骨架弧）
 	foundation := NewSaveFoundationTool(s)
@@ -955,6 +958,7 @@ func TestCommitChapterLayeredNoAutoCompleteWithOpenThreads(t *testing.T) {
 	if err := s.Progress.Init("test", 0); err != nil {
 		t.Fatalf("InitProgress: %v", err)
 	}
+	approveFoundationToolFixture(t, s)
 
 	foundation := NewSaveFoundationTool(s)
 	layeredArgs, _ := json.Marshal(map[string]any{

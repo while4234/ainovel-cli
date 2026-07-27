@@ -315,6 +315,7 @@ func BuildCoordinator(
 		return reminder.NewArchitectStopGuard(store)
 	}
 	architectThinking, _ := ResolveThinkingForModel(architectModel, roleThinking(cfg, "architect"))
+	architectMicrocompact := architectToolResultMicrocompactConfig()
 	architectShort := subagent.Config{
 		Name:               "architect_short",
 		Description:        "短篇规划师：为单卷、单冲突、高密度故事生成紧凑设定与扁平大纲",
@@ -334,7 +335,14 @@ func BuildCoordinator(
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentArchitect)
-			return newContextManager(contextManagerConfig{Model: model, Store: store, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_short", OnSummaryRetry: onSummaryRetry})
+			return newLatestHostTurnContextManager(newContextManager(contextManagerConfig{
+				Model: model, Store: store, ContextWindow: window, ReserveTokens: reserve,
+				KeepRecentTokens: 14_000, Agent: "architect_short", CommitOnProject: true,
+				ToolMicrocompact: architectMicrocompact, OnSummaryRetry: onSummaryRetry,
+				ExtraStrategies: []corecontext.Strategy{
+					newForceToolResultMicrocompact(*architectMicrocompact),
+				},
+			}))
 		},
 	}
 	architectLong := subagent.Config{
@@ -353,7 +361,14 @@ func BuildCoordinator(
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentArchitect)
-			return newContextManager(contextManagerConfig{Model: model, Store: store, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_long", OnSummaryRetry: onSummaryRetry})
+			return newLatestHostTurnContextManager(newContextManager(contextManagerConfig{
+				Model: model, Store: store, ContextWindow: window, ReserveTokens: reserve,
+				KeepRecentTokens: 14_000, Agent: "architect_long", CommitOnProject: true,
+				ToolMicrocompact: architectMicrocompact, OnSummaryRetry: onSummaryRetry,
+				ExtraStrategies: []corecontext.Strategy{
+					newForceToolResultMicrocompact(*architectMicrocompact),
+				},
+			}))
 		},
 	}
 
@@ -469,12 +484,21 @@ func BuildCoordinator(
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentEditor)
-			return newContextManager(contextManagerConfig{Model: model, Store: store, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 18_000, Agent: "editor", OnSummaryRetry: onSummaryRetry})
+			microcompact := editorToolResultMicrocompactConfig()
+			return newLatestHostTurnContextManager(newContextManager(contextManagerConfig{
+				Model: model, Store: store, ContextWindow: window, ReserveTokens: reserve,
+				KeepRecentTokens: 18_000, Agent: "editor", CommitOnProject: true,
+				ToolMicrocompact: microcompact, OnSummaryRetry: onSummaryRetry,
+				ExtraStrategies: []corecontext.Strategy{
+					newForceToolResultMicrocompact(*microcompact),
+				},
+			}))
 		},
 	}
 
 	subagentTool := subagent.New(architectShort, architectLong, character, writer, editor)
 
+	coordinatorMicrocompact := coordinatorToolResultMicrocompactConfig()
 	coordinatorContextWindow, coordinatorReserve := boundedAgentContextWindow(coordinatorModelName, coordinatorContextWindow, promptcompile.AgentCoordinator)
 	coordinatorEngine := newContextManager(contextManagerConfig{
 		Model:            coordinatorModel,
@@ -484,7 +508,11 @@ func BuildCoordinator(
 		KeepRecentTokens: 8_000,
 		Agent:            "coordinator",
 		CommitOnProject:  true,
-		OnSummaryRetry:   onSummaryRetry,
+		ToolMicrocompact: coordinatorMicrocompact,
+		ExtraStrategies: []corecontext.Strategy{
+			coordinatorLatestHostTurnCheckpoint{},
+		},
+		OnSummaryRetry: onSummaryRetry,
 	})
 
 	coordinatorPrompt := bundle.Prompts.Coordinator + "\n\nCoordinator tool ownership contract: Coordinator itself only has `subagent`, `novel_context`, `save_user_rules`, and `reopen_book`. It does not directly own Writer tools such as `read_chapter`, `check_consistency`, `check_adaptation`, or `commit_chapter`; those are available inside the Writer subagent. Never tell the user that those Writer tools are missing merely because they are absent from Coordinator's own interface. After a Writer or Editor subagent returns, follow the Host route and dispatch the next required subagent; do not perform Writer checks yourself."
@@ -503,7 +531,7 @@ func BuildCoordinator(
 		// subagent 是流程主通道；真实错误应显式返回给 Host，而不是在单次 run 内永久禁用工具。
 		agentcore.WithMaxToolErrors(0),
 		agentcore.WithMaxRetries(subagentMaxRetries),
-		agentcore.WithContextManager(coordinatorEngine),
+		agentcore.WithContextManager(newLatestHostTurnContextManager(coordinatorEngine)),
 		agentcore.WithStopGuard(reminder.NewStopGuard(store, nil)),
 		agentcore.WithMiddlewares(flowBoundaryMiddleware(onFlowBoundary)),
 		// phase=complete 时硬拦截 subagent 派发，防止 Writer 死循环。
@@ -549,6 +577,40 @@ func writerToolResultMicrocompactConfig() *corecontext.ToolResultMicrocompactCon
 	return &corecontext.ToolResultMicrocompactConfig{
 		KeepRecent:    2,
 		IdleThreshold: 5 * time.Minute,
+	}
+}
+
+// Architect batches intentionally keep the newest tool result only. A detail
+// planning turn first loads a large authoritative context and then submits a
+// sizeable save_foundation payload. If validation rejects that payload, forced
+// context recovery must clear the older context result while retaining the
+// proposed outline and the precise validation error needed for a lossless
+// correction. The next fresh batch can always reload authoritative context.
+func architectToolResultMicrocompactConfig() *corecontext.ToolResultMicrocompactConfig {
+	return &corecontext.ToolResultMicrocompactConfig{
+		KeepRecent:     1,
+		ClearedMessage: "[Prior Architect tool result cleared; authoritative context remains in the current proposal and can be reloaded with novel_context.]",
+	}
+}
+
+func coordinatorToolResultMicrocompactConfig() *corecontext.ToolResultMicrocompactConfig {
+	// Host routes are reconstructed from durable project state before every
+	// turn. Keep only the newest subagent/context receipt; older generated
+	// outlines and audit reports are already persisted and otherwise make the
+	// long-running Coordinator request grow once per arc.
+	return &corecontext.ToolResultMicrocompactConfig{
+		KeepRecent:     1,
+		ClearedMessage: "[Prior Coordinator tool result cleared; authoritative outline, audits and progress remain in durable project state.]",
+	}
+}
+
+func editorToolResultMicrocompactConfig() *corecontext.ToolResultMicrocompactConfig {
+	// An evidence mismatch intentionally asks Editor to reload planning_audit.
+	// Keep the newest evidence/error only so the superseded 20-30 KB evidence
+	// pack cannot make the corrective provider call cross the byte boundary.
+	return &corecontext.ToolResultMicrocompactConfig{
+		KeepRecent:     1,
+		ClearedMessage: "[Prior Editor evidence cleared; reload returned the authoritative current outline and the audit tool preserves the exact evidence mismatch.]",
 	}
 }
 

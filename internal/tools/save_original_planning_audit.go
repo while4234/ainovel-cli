@@ -18,6 +18,11 @@ import (
 // excludes adaptation/source-fidelity criteria.
 type SaveOriginalPlanningAuditTool struct{ store *store.Store }
 
+type observedPlanningSceneCount struct {
+	Chapter int `json:"chapter"`
+	Count   int `json:"count"`
+}
+
 func NewSaveOriginalPlanningAuditTool(st *store.Store) *SaveOriginalPlanningAuditTool {
 	return &SaveOriginalPlanningAuditTool{store: st}
 }
@@ -46,6 +51,10 @@ func (t *SaveOriginalPlanningAuditTool) Schema() map[string]any {
 		schema.Property("description", schema.String("有证据的问题描述")).Required(),
 		schema.Property("repair_instruction", schema.String("可执行的定点修复指令")).Required(),
 	)
+	observedSceneCountSchema := schema.Object(
+		schema.Property("chapter", schema.Int("planning_audit 返回的章节号")).Required(),
+		schema.Property("count", schema.Int("该章明确返回的 scene_count；不得凭摘要猜测")).Required(),
+	)
 	return schema.Object(
 		schema.Property("scope", schema.Enum("审核层级", "skeleton_volume", "skeleton_book_batch", "skeleton_book", "chapter", "arc", "volume", "book_batch", "book")).Required(),
 		schema.Property("scope_id", schema.String("chapter 必须填写 novel_context 返回的当前章节稳定 ID；其他 scope 传空字符串")).Required(),
@@ -59,6 +68,13 @@ func (t *SaveOriginalPlanningAuditTool) Schema() map[string]any {
 		schema.Property("summary", schema.String("有证据的审核结论")).Required(),
 		schema.Property("dimensions", schema.Array("审核维度数组", dimensionSchema)).Required(),
 		schema.Property("issues", schema.Array("问题数组；pass 且无问题时传 []", issueSchema)).Required(),
+		schema.Property(
+			"observed_scene_counts",
+			schema.Array(
+				"chapter/arc 细纲审核必须逐章回传 planning_audit 的 scene_count；其他 scope 传 []",
+				observedSceneCountSchema,
+			),
+		).Required(),
 	)
 }
 
@@ -66,10 +82,14 @@ func (t *SaveOriginalPlanningAuditTool) Execute(ctx context.Context, args json.R
 	if t.store == nil {
 		return nil, fmt.Errorf("store is required")
 	}
-	var audit domain.OriginalPlanningAudit
-	if err := json.Unmarshal(args, &audit); err != nil {
+	var input struct {
+		domain.OriginalPlanningAudit
+		ObservedSceneCounts []observedPlanningSceneCount `json:"observed_scene_counts"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
 		return nil, fmt.Errorf("invalid original planning audit: %w: %w", errs.ErrToolArgs, err)
 	}
+	audit := input.OriginalPlanningAudit
 	if err := validateOriginalPlanningAudit(audit); err != nil {
 		return nil, fmt.Errorf("invalid original planning audit: %w: %w", errs.ErrToolArgs, err)
 	}
@@ -99,6 +119,13 @@ func (t *SaveOriginalPlanningAuditTool) Execute(ctx context.Context, args json.R
 	}
 	if err := domain.BindOriginalPlanningAudit(&audit, volumes, foundationSignature); err != nil {
 		return nil, fmt.Errorf("bind original planning audit: %w: %w", errs.ErrToolPrecondition, err)
+	}
+	if err := validateObservedPlanningSceneCounts(
+		volumes,
+		audit,
+		input.ObservedSceneCounts,
+	); err != nil {
+		return nil, fmt.Errorf("original planning audit scene evidence: %w: %w", errs.ErrToolPrecondition, err)
 	}
 	audit.FoundationRevision = foundationRevision
 	if err := validateOriginalPlanningAuditEvidence(t.store, audit); err != nil {
@@ -163,6 +190,73 @@ func (t *SaveOriginalPlanningAuditTool) Execute(ctx context.Context, args json.R
 		result["planning_review_kind"] = domain.PlanningReviewKindVolumeSplit
 	}
 	return json.Marshal(result)
+}
+
+func validateObservedPlanningSceneCounts(
+	volumes []domain.VolumeOutline,
+	audit domain.OriginalPlanningAudit,
+	observed []observedPlanningSceneCount,
+) error {
+	if audit.Scope != "chapter" && audit.Scope != "arc" {
+		return nil
+	}
+	expected := make(map[int]int, audit.ToChapter-audit.FromChapter+1)
+	nextChapter := 1
+	for _, volume := range volumes {
+		for _, arc := range volume.Arcs {
+			count := len(arc.Chapters)
+			if count == 0 {
+				count = arc.EstimatedChapters
+			}
+			for index, chapter := range arc.Chapters {
+				number := nextChapter + index
+				if number >= audit.FromChapter && number <= audit.ToChapter {
+					expected[number] = len(chapter.Scenes)
+				}
+			}
+			nextChapter += count
+		}
+	}
+	if len(expected) != audit.ToChapter-audit.FromChapter+1 {
+		return fmt.Errorf(
+			"detailed outline range %d-%d is incomplete",
+			audit.FromChapter,
+			audit.ToChapter,
+		)
+	}
+	actual := make(map[int]int, len(observed))
+	for _, item := range observed {
+		if _, duplicate := actual[item.Chapter]; duplicate {
+			return fmt.Errorf("chapter %d scene_count was submitted more than once", item.Chapter)
+		}
+		actual[item.Chapter] = item.Count
+	}
+	for chapter := audit.FromChapter; chapter <= audit.ToChapter; chapter++ {
+		count, ok := actual[chapter]
+		if !ok {
+			return fmt.Errorf(
+				"chapter %d scene_count is required; reload planning_audit and inspect every scene",
+				chapter,
+			)
+		}
+		if count != expected[chapter] {
+			return fmt.Errorf(
+				"chapter %d observed scene_count=%d contradicts durable outline scene_count=%d; "+
+					"reload planning_audit and audit every supplied scene before resubmitting",
+				chapter,
+				count,
+				expected[chapter],
+			)
+		}
+	}
+	if len(actual) != len(expected) {
+		return fmt.Errorf(
+			"observed_scene_counts must contain exactly chapters %d-%d",
+			audit.FromChapter,
+			audit.ToChapter,
+		)
+	}
+	return nil
 }
 
 var originalPlanningAuditDimensions = map[string][]string{
