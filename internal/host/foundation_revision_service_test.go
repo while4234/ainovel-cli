@@ -13,6 +13,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
+	"github.com/voocel/ainovel-cli/internal/tools"
 )
 
 func TestFoundationStateExposesReadonlyCoreCastContractForUnifiedUI(t *testing.T) {
@@ -29,6 +30,40 @@ func TestFoundationStateExposesReadonlyCoreCastContractForUnifiedUI(t *testing.T
 	}
 	if state.CoreCastCompletion == nil || !state.CoreCastCompletion.Complete {
 		t.Fatalf("CoreCast completion was not exposed: %+v", state.CoreCastCompletion)
+	}
+}
+
+func TestFoundationCharacterChangeRequiresCurrentPassingCharacterReview(t *testing.T) {
+	st, base := newConfirmedFoundationRevisionStore(t)
+	service := NewFoundationRevisionService(st)
+	candidate := domain.CloneStoryFoundation(base)
+	candidate.Characters[0].Description = "changed without a Character Agent review"
+	audit, err := domain.FoundationAuditSignature(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := service.Preview(FoundationPreviewRequest{
+		ExpectedBaseRevision:       base.Revision,
+		ExpectedBaseAuditSignature: audit,
+		Candidate:                  candidate,
+	})
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if preview.CanApply {
+		t.Fatalf("character-changing preview unexpectedly applyable: %+v", preview.Validation)
+	}
+	if _, err := service.Apply(FoundationApplyRequest{
+		PreviewID:      preview.ID,
+		IdempotencyKey: "apply-without-character-review",
+	}); err == nil {
+		t.Fatal("Apply accepted a character change without a current passing review")
+	} else {
+		var classified *FoundationRevisionError
+		if !errors.As(err, &classified) || classified.Code != FoundationErrorCharacterReview {
+			t.Fatalf("Apply error = %T %v", err, err)
+		}
 	}
 }
 
@@ -119,6 +154,7 @@ func TestAdaptationFoundationPreviewApplyAndRetryPreserveSource(t *testing.T) {
 	service := NewFoundationRevisionService(st)
 	candidate := domain.CloneStoryFoundation(base)
 	candidate.Characters = append(candidate.Characters, domain.Character{ID: "support", Name: "Support", Role: "guide", Description: "helps the lead"})
+	stagePassingFoundationCharacterReview(t, st, candidate)
 	baseAudit, _ := domain.FoundationAuditSignature(base)
 	sourcePath := filepath.Join(st.Dir(), "meta", "adaptation", "source_foundation.json")
 	sourceBefore, err := os.ReadFile(sourcePath)
@@ -275,6 +311,7 @@ func TestAdaptationFoundationPreviewStalesOnBoundContextChanges(t *testing.T) {
 			service := NewFoundationRevisionService(st)
 			candidate := domain.CloneStoryFoundation(base)
 			candidate.Characters = append(candidate.Characters, domain.Character{ID: "support", Name: "Support", Role: "guide", Description: "helps"})
+			stagePassingFoundationCharacterReview(t, st, candidate)
 			audit, _ := domain.FoundationAuditSignature(base)
 			preview, err := service.Preview(FoundationPreviewRequest{ExpectedBaseRevision: base.Revision, ExpectedBaseAuditSignature: audit, Candidate: candidate})
 			if err != nil {
@@ -295,6 +332,7 @@ func TestAdaptationFoundationRecoveryRejectsSourceChangeAfterPublication(t *test
 	service := NewFoundationRevisionService(st)
 	candidate := domain.CloneStoryFoundation(base)
 	candidate.Characters = append(candidate.Characters, domain.Character{ID: "support", Name: "Support", Role: "guide", Description: "helps"})
+	stagePassingFoundationCharacterReview(t, st, candidate)
 	audit, _ := domain.FoundationAuditSignature(base)
 	preview, err := service.Preview(FoundationPreviewRequest{ExpectedBaseRevision: base.Revision, ExpectedBaseAuditSignature: audit, Candidate: candidate})
 	if err != nil {
@@ -359,6 +397,7 @@ func TestAdaptationFoundationCoreChangeAcceptsRealReconfirmation(t *testing.T) {
 	if _, completion, err := st.CoreCast.ConfirmCAS(saved.Revision, saved.ContentSignature, nil, nil, nil); err != nil || !completion.Complete {
 		t.Fatalf("completion=%+v err=%v", completion, err)
 	}
+	stagePassingFoundationCharacterReview(t, st, candidate)
 	audit, _ := domain.FoundationAuditSignature(base)
 	preview, err := NewFoundationRevisionService(st).Preview(FoundationPreviewRequest{ExpectedBaseRevision: base.Revision, ExpectedBaseAuditSignature: audit, Candidate: candidate})
 	if err != nil {
@@ -374,6 +413,7 @@ func TestAdaptationFoundationReviewCompletionUsesSameSessionAndDoesNotStartBody(
 	service := NewFoundationRevisionService(st)
 	candidate := domain.CloneStoryFoundation(base)
 	candidate.Characters = append(candidate.Characters, domain.Character{ID: "support", Name: "Support", Role: "guide", Description: "helps"})
+	stagePassingFoundationCharacterReview(t, st, candidate)
 	audit, _ := domain.FoundationAuditSignature(base)
 	preview, err := service.Preview(FoundationPreviewRequest{ExpectedBaseRevision: base.Revision, ExpectedBaseAuditSignature: audit, Candidate: candidate})
 	if err != nil {
@@ -748,6 +788,55 @@ func newConfirmedFoundationRevisionStore(t *testing.T) (*storepkg.Store, domain.
 
 func contractCharactersForFoundationTest(contract domain.CoreCastContract) []domain.Character {
 	return domain.ContractCharacters(contract)
+}
+
+func stagePassingFoundationCharacterReview(
+	t *testing.T,
+	st *storepkg.Store,
+	candidate domain.StoryFoundation,
+) {
+	t.Helper()
+	_, canonicalBinding, inputs, coreCast, err := tools.CurrentCharacterCanonicalBinding(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, _, err := domain.ProjectCharacterCandidateCoreCast(candidate, coreCast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := st.CharacterCards.SaveCandidateCAS(domain.CharacterCardCandidate{
+		Version:       domain.CharacterCardCandidateVersion,
+		Base:          canonicalBinding,
+		Foundation:    candidate,
+		ProjectedCast: projected,
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := domain.CharacterCardBindingFromFoundation(saved.Foundation, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = st.CharacterCards.SaveCAS(domain.CharacterCardLifecycle{
+		Version:             domain.CharacterCardLifecycleVersion,
+		Mode:                domain.CharacterCardProjectAdaptation,
+		Candidate:           binding.Candidate,
+		Inputs:              binding.Inputs,
+		InputDigest:         binding.InputDigest,
+		AnalysisSummary:     "fixture Character Agent analysis",
+		Completeness:        []domain.CharacterCardCompletenessResult{},
+		AnalysisStatus:      domain.CharacterCardAnalysisCandidateReady,
+		ReviewStatus:        domain.CharacterCardReviewPassed,
+		ReviewedCandidate:   binding.Candidate,
+		ReviewedInputDigest: binding.InputDigest,
+		ReviewSummary:       "fixture independent Character Agent review",
+		Findings:            []domain.CharacterCardReviewFinding{},
+		ConfirmationStatus:  domain.CharacterCardUnconfirmed,
+		SourceMappings:      []domain.CharacterSourceMapping{},
+	}, 0, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newConfirmedAdaptationFoundationRevisionStore(t *testing.T) (*storepkg.Store, domain.StoryFoundation) {

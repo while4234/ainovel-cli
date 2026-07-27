@@ -153,7 +153,7 @@ func BuildCoordinator(
 	onFlowBoundary FlowBoundaryHook,
 	onSummaryRetry SummaryRetryHook,
 	onFailover bootstrap.FailoverReporter,
-) (*agentcore.Agent, *tools.AskUserTool, *ctxpack.WriterRestorePack, *corecontext.ContextEngine, ApplyThinking, error) {
+) (*agentcore.Agent, *subagent.Tool, *tools.AskUserTool, *ctxpack.WriterRestorePack, *corecontext.ContextEngine, ApplyThinking, error) {
 	// 共享工具
 	contextTool := tools.NewContextToolWithOptions(store, bundle.References, cfg.Style, tools.ContextToolOptions{
 		SimulationMode: cfg.EffectiveSimulationMode(),
@@ -199,21 +199,21 @@ func BuildCoordinator(
 	}
 	if err := validateAgentToolRegistry("architect", architectTools,
 		"novel_context", "save_foundation"); err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	if err := validateAgentToolRegistry("writer", writerTools,
 		"novel_context", "read_chapter", "plan_chapter", "draft_chapter", "edit_chapter", "repair_de_ai_batch",
 		"check_consistency", "check_adaptation", "check_de_ai", "commit_chapter"); err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	if err := validateAgentToolRegistry("editor", editorTools,
 		"novel_context", "read_chapter", "save_original_planning_audit", "save_review", "save_arc_summary", "save_volume_summary"); err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	if err := validateAgentToolRegistry("character", characterTools,
 		"character_context", "save_character_candidate", "save_character_review",
 		"save_cast_promotion_candidate", "save_cast_promotion_review"); err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 
 	reportFailover := func(ev bootstrap.FailoverEvent) {
@@ -537,7 +537,7 @@ func BuildCoordinator(
 		}
 	}
 
-	return agent, askUser, restore, coordinatorEngine, applyThinking, nil
+	return agent, subagentTool, askUser, restore, coordinatorEngine, applyThinking, nil
 }
 
 func writerToolResultMicrocompactConfig() *corecontext.ToolResultMicrocompactConfig {

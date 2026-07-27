@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -75,6 +76,35 @@ func (s *CharacterCardStore) SaveCandidateCAS(
 		return domain.CharacterCardCandidate{}, fmt.Errorf("save character card candidate: %w", err)
 	}
 	return normalized, nil
+}
+
+// DiscardCandidate removes only the staged Character Agent candidate and its
+// lifecycle sidecar. Canonical StoryFoundation and immutable adaptation source
+// data are never touched.
+func (s *CharacterCardStore) DiscardCandidate(expectedDigest string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, err := s.loadCandidateUnlocked()
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return os.ErrNotExist
+	}
+	digest, err := domain.CharacterCardContentDigest(existing.Foundation)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(expectedDigest) != digest {
+		return fmt.Errorf("character candidate digest is stale")
+	}
+	if err := s.io.RemoveFile(characterCardCandidateFile); err != nil {
+		return fmt.Errorf("discard character card candidate: %w", err)
+	}
+	if err := s.io.RemoveFile(characterCardLifecycleFile); err != nil {
+		return fmt.Errorf("discard character card lifecycle: %w", err)
+	}
+	return nil
 }
 
 func newCharacterCardStore(io *IO) *CharacterCardStore {

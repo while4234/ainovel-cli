@@ -97,3 +97,44 @@ func TestFoundationRetryRejectsClientControlledSourceOrMode(t *testing.T) {
 		}
 	}
 }
+
+func TestCharacterWorkspaceHTTPRejectsSourceMutationAndUnknownFields(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	manifest, err := server.store.CreateProject("Character Workspace Strict JSON")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installFakeSession(t, server, manifest)
+
+	for name, body := range map[string]string{
+		"source": `{
+			"expected_base_revision":0,
+			"expected_base_audit_signature":"audit",
+			"idempotency_key":"analyze-source",
+			"scope":{"character_ids":[]},
+			"candidate_digest":"digest",
+			"source_foundation":{"premise":"attack"}
+		}`,
+		"unknown": `{
+			"expected_base_revision":0,
+			"expected_base_audit_signature":"audit",
+			"idempotency_key":"analyze-unknown",
+			"scope":{"character_ids":[]},
+			"candidate_digest":"digest",
+			"unexpected":true
+		}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/projects/"+manifest.ID+"/foundation/characters/analyze",
+				bytes.NewBufferString(body),
+			)
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}

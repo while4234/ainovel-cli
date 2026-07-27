@@ -41,6 +41,7 @@ type CharacterRunRegistry struct {
 type characterRunState struct {
 	Mode      CharacterRunMode
 	Context   domain.CharacterCardBinding
+	Attempt   int
 	Submitted bool
 	Tool      string
 }
@@ -49,18 +50,31 @@ func NewCharacterRunRegistry() *CharacterRunRegistry {
 	return &CharacterRunRegistry{runs: make(map[string]characterRunState)}
 }
 
-func (r *CharacterRunRegistry) bindContext(runID string, mode CharacterRunMode, binding domain.CharacterCardBinding) error {
+func (r *CharacterRunRegistry) bindContextAttempt(
+	runID string,
+	mode CharacterRunMode,
+	binding domain.CharacterCardBinding,
+	attempt int,
+) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	state, exists := r.runs[runID]
 	if exists && state.Mode != mode {
 		return fmt.Errorf("character run %q is already bound to mode %q: %w", runID, state.Mode, errs.ErrToolConflict)
 	}
+	if exists && attempt > state.Attempt {
+		state.Submitted = false
+		state.Tool = ""
+	}
+	if exists && attempt < state.Attempt {
+		return fmt.Errorf("character run %q attempt %d is stale: %w", runID, attempt, errs.ErrToolConflict)
+	}
 	if state.Submitted {
 		return fmt.Errorf("character run %q already submitted through %s: %w", runID, state.Tool, errs.ErrToolConflict)
 	}
 	state.Mode = mode
 	state.Context = binding
+	state.Attempt = attempt
 	r.runs[runID] = state
 	return nil
 }
@@ -152,7 +166,7 @@ func (t *CharacterContextTool) Execute(_ context.Context, args json.RawMessage) 
 	if err := validateCharacterRunIdentity(request.RunID, request.Mode); err != nil {
 		return nil, err
 	}
-	packet, binding, err := buildCharacterContext(t.store, request.Mode)
+	packet, binding, err := buildCharacterContext(t.store, request.RunID, request.Mode)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +179,13 @@ func (t *CharacterContextTool) Execute(_ context.Context, args json.RawMessage) 
 			packet["cast_promotion_workflow"] = workflow
 		}
 	}
-	if err := t.registry.bindContext(request.RunID, request.Mode, binding); err != nil {
+	attempt := 0
+	if workspaceRun, loadErr := t.store.CharacterWorkspace.Load(request.RunID); loadErr != nil {
+		return nil, fmt.Errorf("load Character workspace attempt: %w", loadErr)
+	} else if workspaceRun != nil {
+		attempt = workspaceRun.Attempt
+	}
+	if err := t.registry.bindContextAttempt(request.RunID, request.Mode, binding, attempt); err != nil {
 		return nil, err
 	}
 	packet["run_id"] = strings.TrimSpace(request.RunID)
@@ -593,10 +613,41 @@ func characterReviewResult(
 	})
 }
 
-func buildCharacterContext(st *store.Store, mode CharacterRunMode) (map[string]any, domain.CharacterCardBinding, error) {
+func buildCharacterContext(st *store.Store, runID string, mode CharacterRunMode) (map[string]any, domain.CharacterCardBinding, error) {
 	foundation, binding, _, projectMode, coreCast, err := currentCharacterRunBinding(st, mode)
 	if err != nil {
 		return nil, domain.CharacterCardBinding{}, err
+	}
+	workspaceRun, err := st.CharacterWorkspace.Load(runID)
+	if err != nil {
+		return nil, domain.CharacterCardBinding{}, fmt.Errorf("load Character workspace run: %w", err)
+	}
+	if workspaceRun != nil {
+		expectedMode := domain.CharacterWorkspaceAnalyze
+		if mode == CharacterRunReview {
+			expectedMode = domain.CharacterWorkspaceReview
+		}
+		bindingMatches := workspaceRun.Base.Candidate == binding.Candidate
+		if mode == CharacterRunReview {
+			candidate, candidateErr := st.CharacterCards.LoadCandidate()
+			if candidateErr != nil {
+				return nil, domain.CharacterCardBinding{},
+					fmt.Errorf("load Character workspace review candidate: %w", candidateErr)
+			}
+			bindingMatches = candidate != nil &&
+				candidate.Base.Candidate == workspaceRun.Base.Candidate &&
+				candidate.Base.InputDigest == workspaceRun.Base.InputDigest &&
+				workspaceRun.InputCandidateDigest == binding.Candidate.CharacterContentDigest
+		}
+		if workspaceRun.Mode != expectedMode ||
+			!bindingMatches ||
+			workspaceRun.Base.InputDigest != binding.InputDigest {
+			return nil, domain.CharacterCardBinding{},
+				fmt.Errorf("Character workspace run binding is stale or mode-mismatched: %w", errs.ErrToolConflict)
+		}
+		if mode == CharacterRunAnalyze {
+			foundation = domain.CloneStoryFoundation(workspaceRun.InputCandidate)
+		}
 	}
 	lifecycle, err := st.CharacterCards.Load(binding)
 	if err != nil {
@@ -628,6 +679,15 @@ func buildCharacterContext(st *store.Store, mode CharacterRunMode) (map[string]a
 			"raw_source_included": false,
 			"review_must_reread":  mode == CharacterRunReview,
 		},
+	}
+	if workspaceRun != nil {
+		packet["workspace_request"] = map[string]any{
+			"run_id":                      workspaceRun.RunID,
+			"requested_character_ids":     workspaceRun.RequestedCharacterIDs,
+			"instruction":                 workspaceRun.Instruction,
+			"allow_supporting_characters": workspaceRun.AllowSupportingCharacters,
+			"input_candidate_digest":      workspaceRun.InputCandidateDigest,
+		}
 	}
 	if projectMode == domain.CharacterCardProjectAdaptation {
 		adaptation, adaptationErr := buildAdaptationCharacterEvidence(st)

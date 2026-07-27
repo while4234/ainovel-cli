@@ -58,6 +58,9 @@ const (
 	projectActionKindSimulationImport   = "simulation_import"
 	projectActionKindSimulationUpload   = "simulation_upload"
 	projectActionKindSemanticAudit      = "semantic_audit"
+	projectActionKindCharacterAnalyze   = "character_analyze"
+	projectActionKindCharacterReview    = "character_review"
+	projectActionKindCharacterRetry     = "character_retry"
 	webCoCreateCheckpointRelPath        = "meta/sessions/web-cocreate-checkpoint.json"
 	webCoCreateLogRelPath               = "meta/sessions/cocreate.jsonl"
 	webEventSeqRelPath                  = "meta/runtime/web-event-seq.json"
@@ -211,6 +214,10 @@ type manuscriptRevisionHost interface {
 
 type manuscriptActionDialogueHost interface {
 	ClarifyManuscriptAction(context.Context, host.ManuscriptActionClarificationRequest) (host.ManuscriptActionClarification, error)
+}
+
+type characterWorkspaceHost interface {
+	CharacterWorkspaceService() *host.CharacterWorkspaceService
 }
 
 func (s *ProjectSession) ManuscriptRevisionService() *host.ManuscriptRevisionService {
@@ -547,6 +554,7 @@ type ProjectSession struct {
 	host                projectHost
 	normalRevisions     *host.NormalRevisionService
 	adaptationRevisions *host.AdaptationRevisionService
+	characterWorkspace  *host.CharacterWorkspaceService
 	expansionPlanner    *host.ExpansionPlanner
 	expansionAuditorErr error
 
@@ -590,6 +598,12 @@ func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession
 		subscribers:         make(map[chan WebEvent]struct{}),
 		sequencePath:        sequencePath,
 	}
+	if characterHost, ok := h.(characterWorkspaceHost); ok {
+		session.characterWorkspace = characterHost.CharacterWorkspaceService()
+	}
+	if session.characterWorkspace == nil {
+		session.characterWorkspace = host.NewCharacterWorkspaceService(storepkg.NewStore(manifest.OutputDir), nil)
+	}
 	if expansionHost, ok := h.(interface{ ExpansionPlanner() *host.ExpansionPlanner }); ok {
 		client, clientErr := expansionauditorclient.New()
 		if clientErr != nil {
@@ -616,6 +630,13 @@ func NewProjectSession(manifest ProjectManifest, h projectHost) (*ProjectSession
 	}
 	go session.pump()
 	return session, nil
+}
+
+func (s *ProjectSession) CharacterWorkspaceService() *host.CharacterWorkspaceService {
+	if s == nil {
+		return nil
+	}
+	return s.characterWorkspace
 }
 
 func (s *ProjectSession) ExpansionPlanner() *host.ExpansionPlanner {
@@ -4331,6 +4352,15 @@ func sessionActionAgentSnapshot(kind string) (host.AgentSnapshot, bool) {
 			TaskKind:  kind,
 			Summary:   "正在导入仿写画像",
 			Tool:      "导入仿写画像",
+			UpdatedAt: now,
+		}, true
+	case projectActionKindCharacterAnalyze, projectActionKindCharacterReview, projectActionKindCharacterRetry:
+		return host.AgentSnapshot{
+			Name:      "character",
+			State:     "running",
+			TaskKind:  kind,
+			Summary:   "Character Agent is analyzing or reviewing the workspace",
+			Tool:      "character_workspace",
 			UpdatedAt: now,
 		}, true
 	default:

@@ -484,6 +484,9 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectPause(w, r, id)
 	case "foundation", "foundation/preview", "foundation/apply", "foundation/retry":
 		s.handleProjectFoundation(w, r, id, action)
+	case "foundation/characters", "foundation/characters/analyze", "foundation/characters/review",
+		"foundation/characters/retry", "foundation/characters/discard":
+		s.handleProjectFoundationCharacters(w, r, id, action)
 	case "rollback/preview":
 		s.handleProjectRollbackPreview(w, r, id)
 	case "rollback":

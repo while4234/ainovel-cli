@@ -41,23 +41,25 @@ import (
 // 职责：启动/恢复/干预注入/事件投影/模型管理。
 // 不做任何调度决策，不做空闲续跑。
 type Host struct {
-	cfg               bootstrap.Config
-	bundle            assets.Bundle
-	store             *storepkg.Store
-	models            *bootstrap.ModelSet
-	coordinator       *agentcore.Agent
-	coordinatorCtxMgr *corecontext.ContextEngine // 切 default/coordinator 模型时联动 SetContextWindow + SetReserveTokens
-	thinkingApplier   agents.ApplyThinking       // /model 调推理强度时联动 live agent（coordinator + 子代理）
-	askUser           *tools.AskUserTool
-	writerRestore     *ctxpack.WriterRestorePack
-	observer          *observer
-	router            *flow.Dispatcher
-	usage             *UsageTracker
-	usageCancel       context.CancelFunc // 停掉 autoSaveLoop 并触发最后一次 flush
-	budget            *BudgetSentinel    // 预算政策；未启用为 nil（方法 nil 安全）
-	budgetDetach      func()
-	pricingRefresh    *modelreg.PricingRefresh
-	notifier          *notify.Notifier // 无人值守告警；未启用为 nil（Send nil 安全）
+	cfg                bootstrap.Config
+	bundle             assets.Bundle
+	store              *storepkg.Store
+	models             *bootstrap.ModelSet
+	coordinator        *agentcore.Agent
+	characterAgent     agentcore.Tool
+	characterWorkspace *CharacterWorkspaceService
+	coordinatorCtxMgr  *corecontext.ContextEngine // 切 default/coordinator 模型时联动 SetContextWindow + SetReserveTokens
+	thinkingApplier    agents.ApplyThinking       // /model 调推理强度时联动 live agent（coordinator + 子代理）
+	askUser            *tools.AskUserTool
+	writerRestore      *ctxpack.WriterRestorePack
+	observer           *observer
+	router             *flow.Dispatcher
+	usage              *UsageTracker
+	usageCancel        context.CancelFunc // 停掉 autoSaveLoop 并触发最后一次 flush
+	budget             *BudgetSentinel    // 预算政策；未启用为 nil（方法 nil 安全）
+	budgetDetach       func()
+	pricingRefresh     *modelreg.PricingRefresh
+	notifier           *notify.Notifier // 无人值守告警；未启用为 nil（Send nil 安全）
 
 	events   chan Event
 	streamCh chan string
@@ -122,6 +124,9 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	if err := store.Init(); err != nil {
 		return nil, fmt.Errorf("init store: %w", err)
 	}
+	if err := store.CharacterWorkspace.RecoverInterrupted(); err != nil {
+		return nil, fmt.Errorf("recover Character Agent workspace: %w", err)
+	}
 	// The de-AI stage is enabled when a Host owns a project. This deliberately
 	// leaves already committed legacy chapters intact, while every newly drafted
 	// or resumed chapter receives the same post-writing gate.
@@ -168,7 +173,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 
 	var router *flow.Dispatcher
 	var budget *BudgetSentinel
-	coordinator, askUser, restore, coordinatorCtxMgr, applyThinking, buildErr := agents.BuildCoordinator(cfg, store, models, bundle, usage.Record, func(string) {
+	coordinator, characterAgent, askUser, restore, coordinatorCtxMgr, applyThinking, buildErr := agents.BuildCoordinator(cfg, store, models, bundle, usage.Record, func(string) {
 		if budget != nil && budget.HandleBoundary() {
 			return
 		}
@@ -218,6 +223,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		store:             store,
 		models:            models,
 		coordinator:       coordinator,
+		characterAgent:    characterAgent,
 		coordinatorCtxMgr: coordinatorCtxMgr,
 		thinkingApplier:   applyThinking,
 		askUser:           askUser,
@@ -270,6 +276,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	if err := store.RunMeta.Init(cfg.Style, cfg.Provider, cfg.ModelName); err != nil {
 		slog.Error("初始化运行元信息失败", "module", "boot", "err", err)
 	}
+	h.characterWorkspace = NewCharacterWorkspaceService(store, h)
 
 	return h, nil
 }

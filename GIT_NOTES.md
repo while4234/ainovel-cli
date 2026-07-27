@@ -46,6 +46,19 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-27 `pending` `feat: expose durable character agent workspace`:
+  adds persistent, restart-recoverable Character Agent analyze/review runs with
+  exact idempotency, scoped target-only drafts, single-active-run exclusion,
+  safe failure/retry/discard receipts, model-route telemetry, and bounded
+  status projections. Strict Foundation Character HTTP APIs launch the existing
+  Character subagent through background actions without routing orchestration
+  through a model; unknown/source-controlled inputs are rejected. Foundation
+  preview/apply now requires an exact current passing independent Character
+  review for character or relationship changes. Focused fake-agent,
+  restart/exclusion, strict-HTTP, retry, Character regression, and Foundation
+  regression tests pass, as do CLI/Web compile gates and modified-package vet.
+  The project wrapper still exits 1 after successful commands because the
+  pre-existing live Web process locks `web-9898.stderr.log` during cleanup.
 - 2026-07-27 `pending` `feat: integrate characters into writing loop`:
   gives outline entries, chapter contracts, review findings, summaries,
   snapshots, relationships, and state changes stable Character IDs; builds a

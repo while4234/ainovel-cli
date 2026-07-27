@@ -11,20 +11,22 @@ import (
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
+	"github.com/voocel/ainovel-cli/internal/tools"
 )
 
 const (
-	FoundationErrorStale          = "foundation_stale"
-	FoundationErrorReadonly       = "foundation_readonly"
-	FoundationErrorBusy           = "foundation_busy"
-	FoundationErrorInvalid        = "foundation_invalid_candidate"
-	FoundationErrorEvidence       = "foundation_dependency_evidence_missing"
-	FoundationErrorRecovery       = "foundation_recovery_failed"
-	FoundationErrorModeNotEnabled = "foundation_mode_not_enabled"
-	FoundationErrorSourceStale    = "foundation_source_stale"
-	FoundationErrorCoreCast       = "foundation_core_cast_reconfirmation_required"
-	FoundationErrorPlanReview     = "foundation_plan_reconfirmation_required"
-	FoundationErrorSourceMutation = "foundation_source_mutation_forbidden"
+	FoundationErrorStale           = "foundation_stale"
+	FoundationErrorReadonly        = "foundation_readonly"
+	FoundationErrorBusy            = "foundation_busy"
+	FoundationErrorInvalid         = "foundation_invalid_candidate"
+	FoundationErrorEvidence        = "foundation_dependency_evidence_missing"
+	FoundationErrorRecovery        = "foundation_recovery_failed"
+	FoundationErrorModeNotEnabled  = "foundation_mode_not_enabled"
+	FoundationErrorSourceStale     = "foundation_source_stale"
+	FoundationErrorCoreCast        = "foundation_core_cast_reconfirmation_required"
+	FoundationErrorPlanReview      = "foundation_plan_reconfirmation_required"
+	FoundationErrorSourceMutation  = "foundation_source_mutation_forbidden"
+	FoundationErrorCharacterReview = "foundation_character_review_required"
 )
 
 type FoundationRevisionError struct {
@@ -230,6 +232,12 @@ func (s *FoundationRevisionService) Preview(request FoundationPreviewRequest) (*
 		validation.Valid = false
 		validation.Errors = append(validation.Errors, "premise, characters, and world rules are required")
 	}
+	if normalizeErr == nil && foundationDiffTouchesCharacters(diff) {
+		if reviewErr := s.requireCurrentCharacterReview(normalized); reviewErr != nil {
+			validation.Valid = false
+			validation.Errors = append(validation.Errors, reviewErr.Error())
+		}
+	}
 	dependencies, dependencyErr := s.store.FoundationRevisions.LoadDependencies()
 	if dependencyErr != nil {
 		validation.Warnings = append(validation.Warnings, dependencyErr.Error())
@@ -306,14 +314,19 @@ func (s *FoundationRevisionService) Apply(request FoundationApplyRequest) (*doma
 	if preview.ProjectMode != "normal" && preview.ProjectMode != "adaptation" {
 		return nil, foundationError(FoundationErrorInvalid, "unsupported Foundation project mode")
 	}
+	if err := s.validatePreviewCurrent(*preview); err != nil {
+		return nil, err
+	}
+	if foundationDiffTouchesCharacters(preview.Diff) {
+		if err := s.requireCurrentCharacterReview(preview.Candidate); err != nil {
+			return nil, foundationError(FoundationErrorCharacterReview, err.Error())
+		}
+	}
 	if !preview.CanApply {
 		if preview.Impact.RequiresCoreCastConfirmation {
 			return nil, foundationError(FoundationErrorCoreCast, "the Foundation candidate requires a newly confirmed matching CoreCastContract")
 		}
 		return nil, foundationError(FoundationErrorReadonly, "persisted Foundation preview is not applicable")
-	}
-	if err := s.validatePreviewCurrent(*preview); err != nil {
-		return nil, err
 	}
 	revisionImpact, err := domain.FoundationRevisionImpact(preview.Impact)
 	if err != nil {
@@ -346,6 +359,55 @@ func (s *FoundationRevisionService) Apply(request FoundationApplyRequest) (*doma
 		return nil, err
 	}
 	return result, nil
+}
+
+func (s *FoundationRevisionService) requireCurrentCharacterReview(
+	candidate domain.StoryFoundation,
+) error {
+	canonical, canonicalBinding, inputs, _, err := tools.CurrentCharacterCanonicalBinding(s.store)
+	if err != nil {
+		return err
+	}
+	if canonical.Revision != candidate.Revision {
+		return fmt.Errorf("Character review base revision is stale")
+	}
+	staged, err := s.store.CharacterCards.LoadCandidate()
+	if err != nil {
+		return err
+	}
+	if staged == nil || staged.Base.Candidate != canonicalBinding.Candidate ||
+		staged.Base.InputDigest != canonicalBinding.InputDigest {
+		return fmt.Errorf("a current persisted Character candidate is required")
+	}
+	stagedDigest, err := domain.CharacterCardContentDigest(staged.Foundation)
+	if err != nil {
+		return err
+	}
+	candidateBinding, err := domain.CharacterCardBindingFromFoundation(candidate, inputs)
+	if err != nil {
+		return err
+	}
+	if stagedDigest != candidateBinding.Candidate.CharacterContentDigest {
+		return fmt.Errorf("the Foundation candidate changed after Character review")
+	}
+	lifecycle, err := s.store.CharacterCards.Load(candidateBinding)
+	if err != nil {
+		return err
+	}
+	if lifecycle == nil || !currentCharacterReviewPassed(*lifecycle, candidateBinding) {
+		return fmt.Errorf("character changes require a current passing independent Character review")
+	}
+	return nil
+}
+
+func foundationDiffTouchesCharacters(diff domain.FoundationDiff) bool {
+	for _, change := range diff.Changes {
+		if change.EntityType == domain.FoundationEntityCharacter ||
+			change.EntityType == domain.FoundationEntityRelationship {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *FoundationRevisionService) Retry(idempotencyKey string) (*domain.FoundationRevisionRuntime, error) {
