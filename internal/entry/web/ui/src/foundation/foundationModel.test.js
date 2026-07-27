@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { candidateFingerprint, newFoundationCharacter, normalizeFoundationResponse, sourceMajorCharacters, validateFoundationDraft } from './foundationModel.js';
+import {
+  acceptAllCharacterCandidates, candidateFingerprint, characterFieldDiff, duplicateFoundationCharacter,
+  filterAndSortCharacters, mergeCharacterField, newFoundationCharacter, normalizeCharacter,
+  normalizeCharacterWorkspace, normalizeFoundationResponse, sourceMajorCharacters, validateFoundationDraft
+} from './foundationModel.js';
 
 const complete = {
   schema_version: 1, revision: 4, premise: '目标故事',
@@ -46,5 +50,51 @@ describe('foundation model', () => {
 
   it('新建角色直接使用不会与服务端稳定前缀冲突的 UUID ID', () => {
     expect(newFoundationCharacter().id).toMatch(/^char-/);
+  });
+
+  it('完整角色字段 round-trip，不丢反差、小传、初始状态和知识边界', () => {
+    const character = normalizeCharacter({
+      id: 'hero', name: '林舟', role: '主角', tier: 'core',
+      contrast_details: [{ surface: '冷静', depth: '害怕失去同伴' }],
+      key_backstory: [{ event: '旧城失守', impact: '拒绝轻信承诺' }],
+      initial_state: { identity: '守夜人', situation: '被停职', emotion: '克制', resources: ['旧地图'], relationships: '与导师决裂' },
+      knowledge_boundary: { known: ['灾变将至'], unknown: ['导师身份'], misconceptions: ['父亲背叛'], forbidden: ['终局真相'] }
+    });
+    expect(normalizeCharacter(character)).toEqual(character);
+    expect(character.initial_state.resources).toEqual(['旧地图']);
+    expect(character.knowledge_boundary.forbidden).toEqual(['终局真相']);
+  });
+
+  it('候选按稳定 ID 对齐并支持逐字段与安全全量合并', () => {
+    const current = [normalizeCharacter({ id: 'hero', name: '林舟', role: '主角', voice: '克制' })];
+    const candidate = normalizeCharacter({ ...current[0], voice: '短句', goal: '守城' });
+    expect(characterFieldDiff(current[0], candidate).map((item) => item.field)).toEqual(['goal', 'voice']);
+    expect(mergeCharacterField(current, candidate, 'voice')[0]).toEqual(expect.objectContaining({ id: 'hero', voice: '短句', goal: '' }));
+    const merged = acceptAllCharacterCandidates(current, { characters: [candidate, { id: 'ally', name: '夏岚', role: '盟友' }] });
+    expect(merged.map((item) => item.id)).toEqual(['hero', 'ally']);
+    expect(duplicateFoundationCharacter(current[0]).id).not.toBe('hero');
+  });
+
+  it('服务端完整度、finding、来源映射和未知可选字段安全降级', () => {
+    const workspace = normalizeCharacterWorkspace({ character_workspace: {
+      mode: 'adaptation', current: { foundation: complete }, current_digest: 'digest',
+      completeness: [{ character_id: 'hero', tier: 'core', status: 'complete', missing: [] }],
+      source_mappings: [{ id: 'map', action: 'rename', source_character_ids: ['source'], target_character_ids: ['hero'], evidence: [{ reference: '第3章', summary: '守城' }] }],
+      findings: [{ id: 'f', scope: 'character', character_id: 'hero', location: 'voice', severity: 'unexpected', description: '描述' }],
+      allowed_operations: ['analyze']
+    } });
+    expect(workspace.completenessByID.hero.status).toBe('complete');
+    expect(workspace.sourceMappings[0].action).toBe('rename');
+    expect(workspace.findings[0].severity).toBe('warning');
+  });
+
+  it('搜索/筛选/排序保持稳定 ID 选择所需身份', () => {
+    const characters = [
+      normalizeCharacter({ id: 'support', name: '夏岚', aliases: ['小岚'], role: '调查者', faction: '守夜人', tier: 'secondary' }),
+      normalizeCharacter({ id: 'hero', name: '林舟', role: '主角', faction: '旧王庭', tier: 'core' })
+    ];
+    expect(filterAndSortCharacters(characters, { query: '小岚', coreIDs: new Set(['hero']) }).map((item) => item.id)).toEqual(['support']);
+    expect(filterAndSortCharacters(characters, { tier: 'core', coreIDs: new Set(['hero']) }).map((item) => item.id)).toEqual(['hero']);
+    expect(filterAndSortCharacters(characters, { sort: 'core', coreIDs: new Set(['hero']) })[0].id).toBe('hero');
   });
 });

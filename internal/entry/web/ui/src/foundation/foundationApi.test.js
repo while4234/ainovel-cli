@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyFoundation, foundationError, previewFoundation, retryFoundation } from './foundationApi.js';
+import {
+  analyzeCharacters, applyFoundation, characterCandidateDigest, foundationError, loadCharacterWorkspace,
+  previewFoundation, retryFoundation, reviewCharacters
+} from './foundationApi.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -30,5 +33,49 @@ describe('foundation API adapter', () => {
 
   it('保留统一错误 envelope 的 code 与安全 message', () => {
     expect(foundationError({ data: { error: { code: 'foundation_stale', message: 'changed' } } })).toEqual({ code: 'foundation_stale', message: 'changed' });
+  });
+
+  it('Character analyze 发送 target-only 草稿、稳定 scope、幂等键和 digest', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ character_workspace: {} }), { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const candidate = {
+      schema_version: 3, revision: 7, premise: '目标',
+      characters: [{ id: 'hero', name: '林舟', role: '主角', description: '', arc: '', traits: [], constraints: [], contrast_details: [{ surface: '冷静', depth: '恐惧' }] }],
+      relationships: [], relationships_reviewed: true, world_rules: [],
+      source_foundation: { premise: '绝不能写回' }
+    };
+    await analyzeCharacters('p', { baseRevision: 7, baseAuditSignature: 'audit' }, candidate, {
+      characterIDs: ['hero'], instruction: '补全动机', allowSupportingCharacters: true, idempotencyKey: 'analyze-key'
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toEqual(expect.objectContaining({
+      expected_base_revision: 7, expected_base_audit_signature: 'audit', idempotency_key: 'analyze-key',
+      scope: { character_ids: ['hero'] }, instruction: '补全动机', allow_supporting_characters: true
+    }));
+    expect(body.candidate).not.toHaveProperty('source_foundation');
+    expect(body.candidate.characters[0].contrast_details).toEqual([{ surface: '冷静', depth: '恐惧' }]);
+    expect(body.candidate_digest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('Character review 保留来源映射引用但不发送 SourceFoundation，并透传 abort signal', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ character_workspace: {} }), { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const candidate = { schema_version: 3, revision: 1, premise: '目标', characters: [{ id: 'hero', name: '林舟', role: '主角', traits: [] }], relationships: [], world_rules: [] };
+    await reviewCharacters('p', { baseRevision: 1, baseAuditSignature: 'audit' }, candidate, {
+      sourceMappings: [{ id: 'map', action: 'keep', source_character_ids: ['source'], target_character_ids: ['hero'] }],
+      idempotencyKey: 'review-key', signal: controller.signal
+    });
+    const [, options] = fetchMock.mock.calls[0];
+    expect(options.signal).toBe(controller.signal);
+    expect(JSON.parse(options.body).source_mappings[0].source_character_ids).toEqual(['source']);
+    await loadCharacterWorkspace('p', 'run/a', controller.signal);
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/projects/p/foundation/characters?run_id=run%2Fa');
+  });
+
+  it('candidate digest 对服务端规范化排序稳定', async () => {
+    const left = { characters: [{ id: 'b', name: '乙', role: '配角', traits: ['冷静', '敏锐'] }, { id: 'a', name: '甲', role: '主角', traits: [] }], relationships: [] };
+    const right = { characters: [{ id: 'a', name: '甲', role: '主角', traits: [] }, { id: 'b', name: '乙', role: '配角', traits: ['敏锐', '冷静'] }], relationships: [] };
+    expect(await characterCandidateDigest(left)).toBe(await characterCandidateDigest(right));
   });
 });

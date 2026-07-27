@@ -1,4 +1,4 @@
-import { candidateFingerprint, cloneFoundation, normalizeFoundationResponse, validateFoundationDraft } from './foundationModel.js';
+import { candidateFingerprint, cloneFoundation, normalizeCharacterWorkspace, normalizeFoundationResponse, validateFoundationDraft } from './foundationModel.js';
 
 export const foundationStatuses = [
   'loading', 'clean', 'dirty', 'previewing', 'preview_ready', 'applying', 'auditing',
@@ -18,6 +18,9 @@ export function createFoundationState(projectId = '') {
     previewFingerprint: '',
     validation: { valid: true, fields: {}, summary: [] },
     error: null,
+    characterWorkspace: null,
+    characterWorkspaceError: null,
+    characterReviewStale: false,
     staleServer: null,
     applyIdempotencyKey: '',
     illegalAction: ''
@@ -42,6 +45,9 @@ export function foundationReducer(state, action) {
         draftFingerprint: candidateFingerprint(base),
         validation: validateFoundationDraft(base),
         error: null,
+        characterWorkspace: null,
+        characterWorkspaceError: null,
+        characterReviewStale: false,
         staleServer: null
       };
     }
@@ -61,10 +67,22 @@ export function foundationReducer(state, action) {
         previewFingerprint: '',
         validation: validateFoundationDraft(draft),
         error: null,
+        characterReviewStale: state.characterReviewStale || Boolean(state.characterWorkspace?.findings?.length || state.characterWorkspace?.run?.mode === 'review'),
         applyIdempotencyKey: '',
         illegalAction: ''
       };
     }
+    case 'character_workspace_success':
+      return {
+        ...state,
+        characterWorkspace: normalizeCharacterWorkspace(action.response),
+        characterWorkspaceError: null,
+        characterReviewStale: action.forceReviewStale ? true : action.preserveReviewStale ? state.characterReviewStale : false
+      };
+    case 'character_workspace_failed':
+      return { ...state, characterWorkspaceError: action.error };
+    case 'character_workspace_clear_error':
+      return { ...state, characterWorkspaceError: null };
     case 'preview_start':
       if (state.status !== 'dirty' || !state.validation.valid) return reject(state, '只有通过本地校验的修改草稿可以预览');
       return { ...state, status: 'previewing', error: null, illegalAction: '' };

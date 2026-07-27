@@ -8,10 +8,10 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('原创完整 candidate → 服务端 preview → apply 使用持久化 preview ID 与 idempotency key', async ({ page }) => {
-  await page.getByRole('tab', { name: '全部角色' }).click();
+  await page.getByRole('tab', { name: '角色卡' }).click();
   await expect(page.getByLabel('姓名')).toHaveValue('林舟');
   await page.getByRole('tab', { name: '概览' }).click();
-  await page.getByRole('tab', { name: '全部角色' }).press('Home');
+  await page.getByRole('tab', { name: '角色卡' }).press('Home');
   await expect(page.getByRole('tab', { name: '概览' })).toBeFocused();
   // Premise editing lives in the target draft through the editor model; add a rule change to dirty the candidate.
   await page.getByRole('tab', { name: '世界规则' }).click();
@@ -48,7 +48,7 @@ test('改编 SourceFoundation 只读并展示映射、source-fidelity 与 Adapta
   await page.getByRole('button', { name: '预览差异与影响' }).click();
   await expect(page.getByText('改编影响与 source-fidelity')).toBeVisible();
   await expect(page.getByText('重确认 AdaptationPlan').locator('..')).toContainText('需要');
-  await page.getByRole('tab', { name: '全部角色' }).click();
+  await page.getByRole('tab', { name: '角色卡' }).click();
   await page.getByLabel('姓名').fill('林舟（目标修订）');
   await page.getByRole('button', { name: '预览差异与影响' }).click();
   await expect(page.getByText('影响 CoreCast')).toBeVisible();
@@ -56,15 +56,16 @@ test('改编 SourceFoundation 只读并展示映射、source-fidelity 与 Adapta
   await expect(page.getByRole('button', { name: '应用当前 preview ID' })).toBeDisabled();
 });
 
-test('仅有来源分析时核心角色显示完整人物资料且固定栏不遮挡内容', async ({ page }) => {
+test('仅有来源分析时统一角色卡显示只读来源证据且固定栏不遮挡内容', async ({ page }) => {
   await page.request.post('/api/test/foundation/scenario?value=source-only');
   await page.reload();
-  await page.getByRole('tab', { name: '核心角色' }).click();
-  await expect(page.getByRole('heading', { name: '原著林舟' })).toBeVisible();
+  await page.getByRole('tab', { name: '角色卡' }).click();
+  await expect(page.getByRole('heading', { name: '林舟' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '来源映射与证据（只读）' })).toBeVisible();
+  await expect(page.getByText('原著林舟')).toBeVisible();
   await expect(page.getByText('旧王继承人')).toBeVisible();
   await expect(page.getByText('背负流亡王庭的秘密，追查城市灾变。')).toBeVisible();
-  await expect(page.getByText('冷静、执着')).toBeVisible();
-  await expect(page.getByText('从独行到信任盟友')).toBeVisible();
+  await expect(page.getByText('原著角色在灾变中守城。')).toBeVisible();
 
   const layout = await page.locator('.foundation-center').evaluate((center) => {
     const header = center.querySelector('.foundation-header').getBoundingClientRect();
@@ -74,7 +75,7 @@ test('仅有来源分析时核心角色显示完整人物资料且固定栏不�
     const actions = center.querySelector('.foundation-actions').getBoundingClientRect();
     panel.scrollTop = panel.scrollHeight;
     const panelBox = panel.getBoundingClientRect();
-    const lastCard = panel.querySelector('.core-cast-readonly article:last-of-type').getBoundingClientRect();
+    const lastCard = panel.querySelector('.finding-panel').getBoundingClientRect();
     return {
       headerVisible: header.top >= center.getBoundingClientRect().top,
       tabsFullyVisible: tabButtons.every((button) => button.top >= tabs.top && button.bottom <= tabs.bottom),
@@ -83,6 +84,63 @@ test('仅有来源分析时核心角色显示完整人物资料且固定栏不�
     };
   });
   expect(layout).toEqual({ headerVisible: true, tabsFullyVisible: true, panelEndsBeforeActions: true, lastCardEndsInsidePanel: true });
+});
+
+test('角色分析候选按字段接受、审核 finding 定位并在继续编辑后 stale', async ({ page }) => {
+  await page.getByRole('tab', { name: '角色卡' }).click();
+  await expect(page.getByRole('heading', { name: '角色卡工作台' })).toBeVisible();
+  await expect(page.locator('.character-status-badge').filter({ hasText: '完整' }).first()).toBeVisible();
+  const analyzeRequest = page.waitForRequest((request) => request.url().endsWith('/foundation/characters/analyze'));
+  await page.getByLabel('本轮补充要求（可选）').fill('让语言更可执行');
+  await page.getByRole('button', { name: '分析当前角色' }).click();
+  const analyzeBody = (await analyzeRequest).postDataJSON();
+  expect(analyzeBody.scope.character_ids).toEqual(['hero']);
+  expect(analyzeBody.candidate.characters[0].id).toBe('hero');
+  expect(analyzeBody.candidate_digest).toMatch(/^[a-f0-9]{64}$/);
+  expect(analyzeBody).not.toHaveProperty('source_foundation');
+  await expect(page.getByRole('heading', { name: 'Agent 候选比较' })).toBeVisible();
+  const voiceCompare = page.locator('.candidate-field-list article').filter({ hasText: '语言风格' });
+  await expect(voiceCompare).toContainText('克制、精确');
+  await voiceCompare.getByRole('button', { name: '接受此字段' }).click();
+  const acceptDialog = page.getByRole('alertdialog', { name: '接受核心角色字段？' });
+  await expect(acceptDialog).toBeVisible();
+  await acceptDialog.getByRole('button', { name: '接受此字段' }).click();
+  await page.getByRole('button', { name: '表演约束' }).click();
+  await expect(page.getByLabel('语言风格')).toHaveValue('克制、精确，以短句下判断');
+
+  await page.getByRole('button', { name: '审核全部角色' }).click();
+  await expect(page.getByText('语言风格仍不够可执行')).toBeVisible();
+  await page.getByRole('button', { name: /警告.*林舟.*语言风格仍不够可执行/s }).click();
+  await expect(page.getByLabel('语言风格')).toBeFocused();
+  await page.getByLabel('语言风格').fill('短句判断，避免解释性独白');
+  await expect(page.getByText(/旧角色审核立即标记为 stale/)).toBeVisible();
+});
+
+test('核心角色在统一工作区可编辑并由高风险 preview 门控；离开时保护草稿', async ({ page }) => {
+  await page.getByRole('tab', { name: '角色卡' }).click();
+  await page.getByLabel('姓名').fill('林舟（新身份）');
+  await page.getByRole('button', { name: '返回创作' }).click();
+  await expect(page.getByRole('alertdialog', { name: '离开并保留未发布草稿？' })).toBeVisible();
+  await page.getByRole('button', { name: '继续编辑' }).click();
+  await expect(page.getByLabel('姓名')).toHaveValue('林舟（新身份）');
+  await page.getByRole('button', { name: '预览差异与影响' }).click();
+  await expect(page.getByText('影响 CoreCast')).toBeVisible();
+  await expect(page.getByRole('button', { name: '应用当前 preview ID' })).toBeDisabled();
+});
+
+test('Character Agent 失败可用同一草稿安全重试且不会重复提交候选', async ({ page }) => {
+  await page.request.post('/api/test/foundation/scenario?value=character-error');
+  await page.reload();
+  await page.getByRole('tab', { name: '角色卡' }).click();
+  await page.getByRole('button', { name: '分析并补全全部角色' }).click();
+  await expect(page.getByText('安全的 Character Agent 测试失败')).toBeVisible();
+  const retryRequest = page.waitForRequest((request) => request.url().endsWith('/foundation/characters/retry'));
+  await page.getByRole('button', { name: '安全重试' }).click();
+  const body = (await retryRequest).postDataJSON();
+  expect(body.run_id).toBe('character-analyze-browser');
+  expect(body.candidate_digest).toMatch(/^[a-f0-9]{64}$/);
+  expect(body).not.toHaveProperty('candidate');
+  await expect(page.getByText('角色分析 · 已完成')).toBeVisible();
 });
 
 test('stale 409 保留草稿并以服务器新 revision 重新对比', async ({ page }) => {

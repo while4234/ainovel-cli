@@ -850,6 +850,8 @@ export default function App() {
   const [steerText, setSteerText] = useState('');
   const [sideView, setSideView] = useState('status');
   const [centerView, setCenterView] = useState('writing');
+  const [foundationDraftDirty, setFoundationDraftDirty] = useState(false);
+  const [pendingFoundationProject, setPendingFoundationProject] = useState(null);
   const [manuscriptControlsTarget, setManuscriptControlsTarget] = useState(null);
   const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
   const [toolDrawerOpen, setToolDrawerOpen] = useState(false);
@@ -880,6 +882,7 @@ export default function App() {
   const planningReviewHydrationProjectRef = useRef('');
 	const planningMutationSeqRef = useRef(0);
   const outlineRevisionHydrationRef = useRef('');
+  const forceFoundationProjectOpenRef = useRef('');
 
   const snapshot = workbench.snapshot;
   const continuationSnapshot = useMemo(
@@ -1569,6 +1572,12 @@ export default function App() {
     if (!projectId) {
       return;
     }
+    const forced = forceFoundationProjectOpenRef.current === projectId;
+    if (forced) forceFoundationProjectOpenRef.current = '';
+    if (!forced && centerView === 'foundation' && foundationDraftDirty && projectId !== activeProject?.id) {
+      setPendingFoundationProject({ project, trigger: document.activeElement });
+      return;
+    }
     const requestSeq = projectOpenSeqRef.current + 1;
     projectOpenSeqRef.current = requestSeq;
     projectOpenAbortRef.current?.abort();
@@ -1658,7 +1667,7 @@ export default function App() {
         projectOpenAbortRef.current = null;
       }
     }
-  }, [isCurrentProject, resetProjectScopedState]);
+  }, [activeProject?.id, centerView, foundationDraftDirty, isCurrentProject, resetProjectScopedState]);
 
   useEffect(() => {
     if (!activeProject?.id) {
@@ -4825,6 +4834,7 @@ export default function App() {
         {centerView === 'foundation' ? <FoundationCenter
           key={activeProject?.id || 'no-project-foundation'}
           projectId={activeProject?.id || ''}
+          onDirtyChange={setFoundationDraftDirty}
           onClose={() => setCenterView('writing')}
           onOpenCoreCast={() => {
             setCenterView('writing');
@@ -4835,6 +4845,21 @@ export default function App() {
             setCenterView('writing');
             setSideView(mode === 'adaptation' ? 'adapt' : 'cocreate');
             setToolDrawerOpen(true);
+          }}
+        /> : null}
+        {pendingFoundationProject ? <FoundationProjectSwitchDialog
+          project={pendingFoundationProject.project}
+          onCancel={() => {
+            const trigger = pendingFoundationProject.trigger;
+            setPendingFoundationProject(null);
+            globalThis.requestAnimationFrame?.(() => trigger?.focus());
+          }}
+          onConfirm={() => {
+            const project = pendingFoundationProject.project;
+            forceFoundationProjectOpenRef.current = project.id;
+            setPendingFoundationProject(null);
+            setFoundationDraftDirty(false);
+            openProject(project);
           }}
         /> : null}
 
@@ -12423,4 +12448,35 @@ function formatBytes(value) {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function FoundationProjectSwitchDialog({ project, onCancel, onConfirm }) {
+  const cancelRef = useRef(null);
+  const dialogRef = useRef(null);
+  useEffect(() => {
+    cancelRef.current?.focus();
+    const keydown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCancel();
+      }
+      if (event.key === 'Tab') {
+        const buttons = [...(dialogRef.current?.querySelectorAll('button:not(:disabled)') || [])];
+        if (event.shiftKey && document.activeElement === buttons[0]) {
+          event.preventDefault();
+          buttons.at(-1)?.focus();
+        } else if (!event.shiftKey && document.activeElement === buttons.at(-1)) {
+          event.preventDefault();
+          buttons[0]?.focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', keydown);
+    return () => document.removeEventListener('keydown', keydown);
+  }, [onCancel]);
+  return <div className="foundation-dialog-backdrop" role="presentation"><div aria-describedby="foundation-project-switch-description" aria-labelledby="foundation-project-switch-title" aria-modal="true" className="foundation-dialog" ref={dialogRef} role="alertdialog">
+    <h3 id="foundation-project-switch-title">切换项目并离开未发布草稿？</h3>
+    <p id="foundation-project-switch-description">切换到“{project?.name || project?.id}”会关闭当前设定中心；未通过 preview/apply 的页面草稿不会写入服务器。</p>
+    <div className="inline-actions"><button ref={cancelRef} className="tool-button" type="button" onClick={onCancel}>留在当前项目</button><button className="tool-button danger" type="button" onClick={onConfirm}>确认切换项目</button></div>
+  </div></div>;
 }

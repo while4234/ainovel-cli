@@ -180,6 +180,43 @@ export function retryProjectFoundation(projectId, idempotencyKey = newIdempotenc
   });
 }
 
+export function getProjectFoundationCharacters(projectId, runId = '', options = {}) {
+  const query = runId ? `?run_id=${encodeURIComponent(runId)}` : '';
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/characters${query}`, options);
+}
+
+export function analyzeProjectFoundationCharacters(projectId, payload, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/characters/analyze`, {
+    ...options,
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function reviewProjectFoundationCharacters(projectId, payload, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/characters/review`, {
+    ...options,
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function retryProjectFoundationCharacters(projectId, payload, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/characters/retry`, {
+    ...options,
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function discardProjectFoundationCharacters(projectId, payload, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/characters/discard`, {
+    ...options,
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
 export function setProjectResumeSchedule(projectId, enabled) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/resume-schedule`, {
     method: 'PUT',

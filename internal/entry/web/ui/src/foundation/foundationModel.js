@@ -2,13 +2,27 @@ const relationshipTypes = ['ally', 'rival', 'family', 'romantic', 'mentor', 'pro
 const relationshipDirections = ['directed', 'bidirectional', 'undirected'];
 const relationshipStatuses = ['planned', 'active', 'strained', 'broken', 'resolved'];
 const ruleStrengths = ['hard', 'soft'];
+const characterTiers = ['core', 'important', 'secondary', 'decorative'];
+const characterReviewStatuses = ['passed', 'needs_revision', 'stale', 'not_reviewed'];
+const sourceMappingActions = ['keep', 'rename', 'merge', 'split', 'exclude', 'target_original'];
 
 export const foundationOptions = {
   relationshipTypes,
   relationshipDirections,
   relationshipStatuses,
-  ruleStrengths
+  ruleStrengths,
+  characterTiers,
+  characterReviewStatuses,
+  sourceMappingActions
 };
+
+export const characterFieldGroups = [
+  { id: 'identity', label: '身份', fields: ['name', 'aliases', 'role', 'tier', 'faction'] },
+  { id: 'core', label: '人物核心', fields: ['description', 'traits', 'contrast_details', 'key_backstory'] },
+  { id: 'drive', label: '驱动与弧', fields: ['goal', 'motivation', 'conflict', 'arc'] },
+  { id: 'performance', label: '表演约束', fields: ['voice', 'constraints', 'knowledge_boundary'] },
+  { id: 'initial', label: '初始状态与备注', fields: ['initial_state', 'notes'] }
+];
 
 export function cloneFoundation(value) {
   return JSON.parse(JSON.stringify(value || {}));
@@ -66,8 +80,163 @@ export function normalizeCharacter(value = {}) {
     conflict: String(value.conflict || ''),
     voice: String(value.voice || ''),
     constraints: uniqueStrings(value.constraints),
+    contrast_details: array(value.contrast_details).map((item) => ({
+      surface: String(item?.surface || ''),
+      depth: String(item?.depth || '')
+    })).filter((item) => item.surface || item.depth),
+    key_backstory: array(value.key_backstory).map((item) => ({
+      event: String(item?.event || ''),
+      impact: String(item?.impact || '')
+    })).filter((item) => item.event || item.impact),
+    initial_state: normalizeInitialState(value.initial_state),
+    knowledge_boundary: normalizeKnowledgeBoundary(value.knowledge_boundary),
     notes: String(value.notes || '')
   };
+}
+
+export function normalizeCharacterWorkspace(response = {}) {
+  const workspace = response.character_workspace || response;
+  const completeness = array(workspace.completeness).map((item) => ({
+    character_id: String(item?.character_id || ''),
+    tier: characterTiers.includes(item?.tier) ? item.tier : 'important',
+    status: item?.status === 'complete' ? 'complete' : 'incomplete',
+    missing: array(item?.missing).map((missing) => ({
+      code: String(missing?.code || ''),
+      field: String(missing?.field || ''),
+      severity: normalizeSeverity(missing?.severity),
+      description: String(missing?.description || '')
+    }))
+  }));
+  return {
+    mode: workspace.mode === 'adaptation' ? 'adaptation' : 'original',
+    baseRevision: Number(workspace.base_revision || 0),
+    baseAuditSignature: String(workspace.base_audit_signature || ''),
+    currentDigest: String(workspace.current_digest || ''),
+    current: normalizeCharacterCandidate(workspace.current),
+    candidate: workspace.candidate ? normalizeCharacterCandidate(workspace.candidate) : null,
+    run: workspace.run ? normalizeCharacterRun(workspace.run) : null,
+    completeness,
+    completenessByID: Object.fromEntries(completeness.map((item) => [item.character_id, item])),
+    coverage: normalizeSourceCoverage(workspace.source_coverage),
+    sourceMappings: array(workspace.source_mappings).map(normalizeSourceMapping),
+    findings: array(workspace.findings).map(normalizeFinding),
+    diff: normalizeCharacterDiff(workspace.diff),
+    allowedOperations: array(workspace.allowed_operations).map(String),
+    staleReason: String(workspace.stale_reason || ''),
+    readonlyReason: String(workspace.readonly_reason || ''),
+    busyReason: String(workspace.busy_reason || ''),
+    error: workspace.error ? {
+      code: String(workspace.error.class || 'character_workspace_error'),
+      message: String(workspace.error.message || '角色工作区请求失败')
+    } : null
+  };
+}
+
+export function characterFieldDiff(current, candidate) {
+  const left = normalizeCharacter(current);
+  const right = normalizeCharacter(candidate);
+  return characterFieldGroups.flatMap((group) => group.fields
+    .filter((field) => JSON.stringify(left[field]) !== JSON.stringify(right[field]))
+    .map((field) => ({
+      field,
+      group: group.id,
+      before: cloneFoundation(left[field]),
+      after: cloneFoundation(right[field])
+    })));
+}
+
+export function mergeCharacterField(characters, candidate, field) {
+  return array(characters).map((character) => character.id === candidate?.id
+    ? normalizeCharacter({ ...character, [field]: cloneFoundation(candidate[field]) })
+    : character);
+}
+
+export function mergeCharacterCandidate(characters, candidate) {
+  const normalized = normalizeCharacter(candidate);
+  const found = array(characters).some((character) => character.id === normalized.id);
+  return found
+    ? array(characters).map((character) => character.id === normalized.id ? normalized : character)
+    : [...array(characters), normalized];
+}
+
+export function acceptAllCharacterCandidates(characters, candidateFoundation) {
+  const candidates = new Map(array(candidateFoundation?.characters).map((character) => {
+    const normalized = normalizeCharacter(character);
+    return [normalized.id, normalized];
+  }));
+  const merged = array(characters).map((character) => candidates.get(character.id) || character);
+  for (const [id, candidate] of candidates) {
+    if (!merged.some((character) => character.id === id)) merged.push(candidate);
+  }
+  return merged;
+}
+
+export function duplicateFoundationCharacter(character) {
+  return normalizeCharacter({
+    ...cloneFoundation(character),
+    id: clientID('character'),
+    name: `${String(character?.name || '未命名角色')}（副本）`
+  });
+}
+
+export function filterAndSortCharacters(characters, options = {}) {
+  const query = String(options.query || '').trim().toLocaleLowerCase();
+  const tier = String(options.tier || 'all');
+  const core = String(options.core || 'all');
+  const completeness = String(options.completeness || 'all');
+  const review = String(options.review || 'all');
+  const source = String(options.source || 'all');
+  const coreIDs = options.coreIDs instanceof Set ? options.coreIDs : new Set();
+  const completenessByID = options.completenessByID || {};
+  const findings = array(options.findings);
+  const mappingByTargetID = options.mappingByTargetID || {};
+  const reviewByID = (id) => reviewStatusForCharacter(id, findings, options.reviewStale, options.reviewCompleted);
+  const matches = array(characters).filter((character) => {
+    const normalized = normalizeCharacter(character);
+    const searchable = [normalized.name, ...normalized.aliases, normalized.role, normalized.faction].join('\n').toLocaleLowerCase();
+    const isCore = coreIDs.has(normalized.id) || normalized.tier === 'core';
+    const complete = completenessByID[normalized.id]?.status === 'complete';
+    const sourceAction = mappingByTargetID[normalized.id]?.action || 'unmapped';
+    return (!query || searchable.includes(query)) &&
+      (tier === 'all' || normalized.tier === tier) &&
+      (core === 'all' || (core === 'core') === isCore) &&
+      (completeness === 'all' || (completeness === 'complete') === complete) &&
+      (review === 'all' || reviewByID(normalized.id) === review) &&
+      (source === 'all' || sourceAction === source);
+  });
+  const sort = String(options.sort || 'core');
+  const modifiedByID = options.modifiedByID || {};
+  const tierRank = { core: 0, important: 1, secondary: 2, decorative: 3 };
+  return matches.sort((left, right) => {
+    if (sort === 'name') return left.name.localeCompare(right.name, 'zh-CN');
+    if (sort === 'recent') return Number(modifiedByID[right.id] || 0) - Number(modifiedByID[left.id] || 0) || left.name.localeCompare(right.name, 'zh-CN');
+    if (sort === 'gaps') {
+      const gap = (completenessByID[right.id]?.missing?.length || 0) - (completenessByID[left.id]?.missing?.length || 0);
+      if (gap) return gap;
+    }
+    if (sort === 'tier') {
+      const rank = (tierRank[left.tier] ?? 9) - (tierRank[right.tier] ?? 9);
+      if (rank) return rank;
+    }
+    const coreRank = Number(!(coreIDs.has(left.id) || left.tier === 'core')) - Number(!(coreIDs.has(right.id) || right.tier === 'core'));
+    if (coreRank) return coreRank;
+    return (tierRank[left.tier] ?? 9) - (tierRank[right.tier] ?? 9) || left.name.localeCompare(right.name, 'zh-CN');
+  });
+}
+
+export function sourceMappingByTargetID(mappings) {
+  const result = {};
+  for (const mapping of array(mappings)) {
+    for (const id of array(mapping.target_character_ids)) result[id] = mapping;
+  }
+  return result;
+}
+
+export function reviewStatusForCharacter(characterID, findings, stale = false, reviewed = false) {
+  if (stale) return 'stale';
+  const scoped = array(findings).filter((finding) => finding.character_id === characterID);
+  if (!scoped.length) return reviewed ? 'passed' : 'not_reviewed';
+  return 'needs_revision';
 }
 
 export function normalizeRelationship(value = {}) {
@@ -199,6 +368,131 @@ function uniqueStrings(value) {
     seen.add(key);
     return true;
   });
+}
+
+function normalizeInitialState(value) {
+  if (!value || typeof value !== 'object') return null;
+  const result = {
+    identity: String(value.identity || ''),
+    situation: String(value.situation || ''),
+    emotion: String(value.emotion || ''),
+    resources: uniqueStrings(value.resources),
+    relationships: String(value.relationships || '')
+  };
+  return Object.values(result).some((item) => Array.isArray(item) ? item.length : item) ? result : null;
+}
+
+function normalizeKnowledgeBoundary(value) {
+  if (!value || typeof value !== 'object') return null;
+  const result = {
+    known: uniqueStrings(value.known),
+    unknown: uniqueStrings(value.unknown),
+    misconceptions: uniqueStrings(value.misconceptions),
+    forbidden: uniqueStrings(value.forbidden)
+  };
+  return Object.values(result).some((item) => item.length) ? result : null;
+}
+
+function normalizeCharacterCandidate(value = {}) {
+  return {
+    revision: Number(value.revision || 0),
+    digest: String(value.digest || ''),
+    foundation: normalizeFoundation(value.foundation)
+  };
+}
+
+function normalizeCharacterRun(value = {}) {
+  return {
+    run_id: String(value.run_id || ''),
+    mode: value.mode === 'review' ? 'review' : 'analyze',
+    status: String(value.status || ''),
+    stage: String(value.stage || ''),
+    requested_character_ids: array(value.requested_character_ids).map(String),
+    instruction: String(value.instruction || ''),
+    allow_supporting_characters: Boolean(value.allow_supporting_characters),
+    input_candidate_digest: String(value.input_candidate_digest || ''),
+    attempt: Number(value.attempt || 0),
+    model_route: String(value.model_route || ''),
+    error: value.error ? { code: String(value.error.class || ''), message: String(value.error.message || '') } : null,
+    created_at: String(value.created_at || ''),
+    updated_at: String(value.updated_at || ''),
+    finished_at: String(value.finished_at || ''),
+    duration_ms: Number(value.duration_ms || 0)
+  };
+}
+
+function normalizeSeverity(value) {
+  return value === 'blocking' ? 'blocking' : value === 'information' ? 'information' : 'warning';
+}
+
+function normalizeFinding(value = {}) {
+  return {
+    id: String(value.id || ''),
+    scope: value.scope === 'character' ? 'character' : 'global',
+    character_id: String(value.character_id || ''),
+    location: String(value.location || ''),
+    severity: normalizeSeverity(value.severity),
+    issue_type: String(value.issue_type || ''),
+    description: String(value.description || ''),
+    evidence_summary: String(value.evidence_summary || ''),
+    suggestion: String(value.suggestion || ''),
+    blocking: Boolean(value.blocking)
+  };
+}
+
+function normalizeSourceMapping(value = {}) {
+  return {
+    id: String(value.id || ''),
+    action: sourceMappingActions.includes(value.action) ? value.action : 'target_original',
+    source_character_ids: array(value.source_character_ids).map(String),
+    target_character_ids: array(value.target_character_ids).map(String),
+    rationale: String(value.rationale || ''),
+    evidence: array(value.evidence).map((item) => ({
+      kind: String(item?.kind || ''),
+      reference: String(item?.reference || ''),
+      summary: String(item?.summary || '')
+    }))
+  };
+}
+
+function normalizeSourceCoverage(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    source_total: Number(value.source_total || 0),
+    decision_required: Number(value.decision_required || 0),
+    mapped: Number(value.mapped || 0),
+    explicitly_excluded: Number(value.explicitly_excluded || 0),
+    pending: Number(value.pending || 0),
+    blocking_gaps: Number(value.blocking_gaps || 0),
+    decisions: array(value.decisions).map((item) => ({
+      source_character_id: String(item?.source_character_id || ''),
+      canonical_name: String(item?.canonical_name || ''),
+      suggested_tier: String(item?.suggested_tier || ''),
+      decision_required: Boolean(item?.decision_required),
+      reasons: array(item?.reasons).map(String),
+      mapping_id: String(item?.mapping_id || ''),
+      action: String(item?.action || ''),
+      pending: Boolean(item?.pending),
+      blocking: Boolean(item?.blocking)
+    }))
+  };
+}
+
+function normalizeCharacterDiff(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    changes: array(value.changes).map((item) => ({
+      entity_type: String(item?.entity_type || ''),
+      entity_id: String(item?.entity_id || ''),
+      kind: String(item?.kind || ''),
+      changed_fields: array(item?.changed_fields).map(String),
+      high_risk: Boolean(item?.high_risk),
+      core_cast_affected: Boolean(item?.core_cast_affected)
+    })),
+    core_cast_reconfirmation: Boolean(value.core_cast_reconfirmation),
+    foundation_reconfirmation: Boolean(value.foundation_reconfirmation),
+    signature: String(value.signature || '')
+  };
 }
 
 function addError(fields, summary, path, message) {

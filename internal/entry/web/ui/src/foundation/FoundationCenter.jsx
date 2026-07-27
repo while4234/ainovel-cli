@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { CoreCastEditor } from '../components/CoreCastEditor.jsx';
-import { applyFoundation, foundationError, foundationIdempotencyKey, loadFoundation, previewFoundation, retryFoundation } from './foundationApi.js';
+import {
+  analyzeCharacters, applyFoundation, discardCharacterWorkspace, foundationError, foundationIdempotencyKey,
+  loadCharacterWorkspace, loadFoundation, previewFoundation, retryCharacterWorkspace, retryFoundation, reviewCharacters
+} from './foundationApi.js';
 import { canApplyFoundation, createFoundationState, foundationReducer } from './foundationReducer.js';
-import { cloneFoundation, sourceMajorCharacters } from './foundationModel.js';
+import { cloneFoundation } from './foundationModel.js';
 import { FoundationOverview } from './FoundationOverview.jsx';
 import { CharacterEditor } from './CharacterEditor.jsx';
 import { RelationshipEditor } from './RelationshipEditor.jsx';
@@ -12,16 +14,22 @@ import { FoundationRevisionStatus } from './FoundationRevisionStatus.jsx';
 import './foundation.css';
 
 const tabs = [
-  ['overview', '概览'], ['core', '核心角色'], ['characters', '全部角色'], ['relationships', '计划关系'],
+  ['overview', '概览'], ['characters', '角色卡'], ['relationships', '计划关系'],
   ['rules', '世界规则'], ['preview', '差异与影响'], ['revision', '修订状态']
 ];
 
-export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenReview }) {
+export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenReview, onDirtyChange }) {
   const [state, dispatch] = useReducer(foundationReducer, projectId, createFoundationState);
   const [tab, setTab] = useState('overview');
+  const [characterSubmitting, setCharacterSubmitting] = useState(false);
   const versionRef = useRef(0);
+  const stateRef = useRef(state);
+  const characterSubmittingRef = useRef(false);
   const abortRef = useRef(null);
+  const characterAbortRef = useRef(null);
   const applyKeyRef = useRef({ previewID: '', key: '' });
+  const [closeRequested, setCloseRequested] = useState(null);
+  stateRef.current = state;
 
   const requestContext = useCallback(() => ({ projectId, requestVersion: versionRef.current }), [projectId]);
   const load = useCallback(async ({ preserveStale = false, preserveBusy = false, classifiedError = null } = {}) => {
@@ -40,13 +48,33 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
     }
   }, [projectId]);
 
+  const loadCharacters = useCallback(async ({ preserveReviewStale = false, runId = '' } = {}) => {
+    const version = versionRef.current;
+    const controller = new AbortController();
+    characterAbortRef.current?.abort();
+    characterAbortRef.current = controller;
+    try {
+      const response = await loadCharacterWorkspace(projectId, runId, controller.signal);
+      if (controller.signal.aborted || version !== versionRef.current) return;
+      dispatch({ type: 'character_workspace_success', projectId, requestVersion: version, response, preserveReviewStale });
+    } catch (error) {
+      if (controller.signal.aborted || version !== versionRef.current) return;
+      dispatch({ type: 'character_workspace_failed', projectId, requestVersion: version, error: foundationError(error) });
+    }
+  }, [projectId]);
+
   useEffect(() => {
     versionRef.current += 1;
-    setTab('overview');
+    setTab(legacyFoundationTab());
     applyKeyRef.current = { previewID: '', key: '' };
     load();
-    return () => { versionRef.current += 1; abortRef.current?.abort(); };
+    return () => { versionRef.current += 1; abortRef.current?.abort(); characterAbortRef.current?.abort(); };
   }, [projectId, load]);
+
+  useEffect(() => {
+    if (!state.server || !state.draft) return;
+    loadCharacters({ preserveReviewStale: state.characterReviewStale });
+  }, [state.server?.baseRevision, state.server?.baseAuditSignature, loadCharacters]);
 
   useEffect(() => {
     if (!['applying', 'auditing', 'regenerating'].includes(state.status)) return undefined;
@@ -64,6 +92,29 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
     poll();
     return () => { cancelled = true; globalThis.clearInterval(timer); };
   }, [projectId, requestContext, state.status, state.server?.activeRevision?.updated_at]);
+
+  useEffect(() => {
+    const run = state.characterWorkspace?.run;
+    if (!['queued', 'running'].includes(run?.status)) return undefined;
+    const timer = globalThis.setInterval(() => loadCharacters({ preserveReviewStale: state.characterReviewStale, runId: run.run_id }), 1500);
+    return () => globalThis.clearInterval(timer);
+  }, [state.characterWorkspace?.run?.run_id, state.characterWorkspace?.run?.status, state.characterReviewStale, loadCharacters]);
+
+  useEffect(() => {
+    const protect = (event) => {
+      if (!hasUnpublishedFoundationDraft(state.status)) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    globalThis.addEventListener?.('beforeunload', protect);
+    return () => globalThis.removeEventListener?.('beforeunload', protect);
+  }, [state.status]);
+
+  useEffect(() => {
+    onDirtyChange?.(hasUnpublishedFoundationDraft(state.status));
+  }, [state.status, onDirtyChange]);
+
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   useEffect(() => {
     if (state.status === 'completed') onOpenReview?.(state.server?.mode);
@@ -121,9 +172,68 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
       dispatch({ type: 'retry_success', ...requestContext(), revision: response.revision });
     } catch (error) { dispatch({ type: 'retry_failed', ...requestContext(), error: foundationError(error) }); }
   };
+  const runCharacterOperation = async (operation, mode = '') => {
+    if (characterSubmittingRef.current) return;
+    const version = versionRef.current;
+    const submittedFingerprint = state.draftFingerprint;
+    const controller = new AbortController();
+    characterAbortRef.current?.abort();
+    characterAbortRef.current = controller;
+    characterSubmittingRef.current = true;
+    setCharacterSubmitting(true);
+    dispatch({ type: 'character_workspace_clear_error', ...requestContext() });
+    try {
+      const response = await operation(controller.signal);
+      if (version !== versionRef.current || controller.signal.aborted) return;
+      const changedDuringRequest = stateRef.current.draftFingerprint !== submittedFingerprint;
+      dispatch({
+        type: 'character_workspace_success', ...requestContext(), response,
+        preserveReviewStale: stateRef.current.characterReviewStale,
+        forceReviewStale: changedDuringRequest && mode === 'review'
+      });
+    } catch (error) {
+      if (version !== versionRef.current || controller.signal.aborted) return;
+      const classified = foundationError(error);
+      dispatch({ type: 'character_workspace_failed', ...requestContext(), error: classified });
+      if (classified.code.includes('stale')) await load({ preserveStale: true });
+    } finally {
+      if (version === versionRef.current) {
+        characterSubmittingRef.current = false;
+        setCharacterSubmitting(false);
+      }
+    }
+  };
+  const runCharacterAnalyze = (options) => runCharacterOperation((signal) => analyzeCharacters(
+    projectId, state.server, cloneFoundation(state.draft),
+    { ...options, idempotencyKey: foundationIdempotencyKey('character-analyze'), signal }
+  ), 'analyze');
+  const runCharacterReview = () => runCharacterOperation((signal) => reviewCharacters(
+    projectId, state.server, cloneFoundation(state.draft),
+    {
+      candidateRevision: 0,
+      sourceMappings: state.characterWorkspace?.sourceMappings || [],
+      idempotencyKey: foundationIdempotencyKey('character-review'),
+      signal
+    }
+  ), 'review');
+  const runCharacterRetry = () => runCharacterOperation((signal) => retryCharacterWorkspace(
+    projectId, state.server, state.characterWorkspace.run,
+    foundationIdempotencyKey('character-retry'), signal
+  ), 'retry');
+  const runCharacterDiscard = () => runCharacterOperation((signal) => discardCharacterWorkspace(
+    projectId, state.server, state.characterWorkspace,
+    foundationIdempotencyKey('character-discard'), signal
+  ), 'discard');
+  const requestClose = (event) => {
+    if (hasUnpublishedFoundationDraft(state.status)) setCloseRequested(event.currentTarget);
+    else onClose?.();
+  };
+  const characterWorkspace = state.characterWorkspace
+    ? { ...state.characterWorkspace, reviewStale: state.characterReviewStale, error: state.characterWorkspaceError || state.characterWorkspace.error }
+    : state.characterWorkspaceError ? { error: state.characterWorkspaceError, reviewStale: state.characterReviewStale } : null;
 
   return <div className="foundation-center">
-    <header className="foundation-header"><div><span className="eyebrow">StoryFoundation</span><h1>设定中心</h1><p>统一管理原创与改编的目标故事设定；SourceFoundation 始终只读。</p></div><button className="tool-button" type="button" onClick={onClose}>返回创作</button></header>
+    <header className="foundation-header"><div><span className="eyebrow">StoryFoundation</span><h1>设定中心</h1><p>统一管理原创与改编的目标故事设定；SourceFoundation 始终只读。</p></div><button className="tool-button" type="button" onClick={requestClose}>返回创作</button></header>
     <div className="foundation-state-strip" aria-live="polite" role="status"><strong>{statusLabel(state.status)}</strong><span>target rev {state.server.baseRevision}</span>{state.server.readonlyReason ? <span>只读原因：{state.server.readonlyReason}</span> : null}</div>
     {state.error ? <div className="error-banner" role="alert"><strong>{state.error.code}</strong><span>{state.error.message}</span></div> : null}
     {state.illegalAction ? <div className="warning-note" role="status">{state.illegalAction}</div> : null}
@@ -132,14 +242,24 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
     <nav aria-label="设定中心区域" className="foundation-tabs" role="tablist">{tabs.map(([id, label], index) => <button aria-controls={`foundation-panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} id={`foundation-tab-${id}`} key={id} role="tab" tabIndex={tab === id ? 0 : -1} type="button" onClick={() => setTab(id)} onKeyDown={(event) => moveTab(event, index, setTab)}>{label}</button>)}</nav>
     <main aria-labelledby={`foundation-tab-${tab}`} className="foundation-panel" id={`foundation-panel-${tab}`} role="tabpanel">
       {tab === 'overview' ? <FoundationOverview server={state.server} draft={state.draft} disabled={disabled} premiseError={state.validation.fields.premise} onPremiseChange={(premise) => edit({ premise })} onOpenCoreCast={onOpenCoreCast} /> : null}
-      {tab === 'core' ? <><div className="foundation-section-head"><div><h2>核心角色（当前已保存）</h2><p>这里用于总览。需要修改时回到共创工作区，按角色卡内的中文说明编辑、保存并重新确认。</p></div><button className="tool-button" type="button" onClick={onOpenCoreCast}>回到共创工作区修改</button></div><CoreCastEditor readOnly mode={state.server.mode === 'adaptation' ? 'adapt' : 'normal'} value={state.server.coreCast} completion={state.server.coreCastCompletion} confirmed={state.server.coreCastConfirmed} sourceMajorCharacters={sourceMajorCharacters(state.server.sourceFoundation)} /></> : null}
-      {tab === 'characters' ? <CharacterEditor value={state.draft.characters} coreCast={state.server.coreCast} disabled={disabled} errors={state.validation.fields} onChange={(characters) => edit({ characters })} /> : null}
+      {tab === 'characters' ? <CharacterEditor
+        value={state.draft.characters} coreCast={state.server.coreCast}
+        mode={state.server.mode} sourceFoundation={state.server.sourceFoundation}
+        relationships={state.draft.relationships} disabled={disabled} dirty={state.status === 'dirty'}
+        errors={state.validation.fields} workspace={characterWorkspace} workspaceLoading={!state.characterWorkspace && !state.characterWorkspaceError}
+        agentBusy={characterSubmitting}
+        onChange={(characters) => edit({ characters })}
+        onOpenRelationships={() => setTab('relationships')}
+        onAnalyze={runCharacterAnalyze} onReview={runCharacterReview}
+        onRetry={runCharacterRetry} onDiscard={runCharacterDiscard}
+      /> : null}
 		{tab === 'relationships' ? <RelationshipEditor projectId={projectId} auditSignature={state.server.baseAuditSignature} coreCast={state.server.coreCast} value={state.draft.relationships} characters={state.draft.characters} reviewed={state.draft.relationships_reviewed} disabled={disabled} errors={state.validation.fields} onChange={(relationships) => edit({ relationships })} onReviewedChange={(relationships_reviewed) => edit({ relationships_reviewed })} /> : null}
       {tab === 'rules' ? <WorldRuleEditor value={state.draft.world_rules} disabled={disabled} errors={state.validation.fields} onChange={(world_rules) => edit({ world_rules })} /> : null}
       {tab === 'preview' ? <FoundationPreview preview={state.preview} dirty={state.status === 'dirty'} disabled={['previewing', 'applying'].includes(state.status)} canApply={canApplyFoundation(state)} onPreview={runPreview} onApply={runApply} /> : null}
       {tab === 'revision' ? <FoundationRevisionStatus server={state.server} status={state.status} busy={['applying', 'auditing', 'regenerating'].includes(state.status)} onRefresh={() => load({ preserveStale: state.status === 'stale' })} onRetry={runRetry} onOpenReview={() => onOpenReview?.(state.server.mode)} /> : null}
     </main>
     <footer className="foundation-actions"><span>{state.status === 'dirty' ? '有未预览的设定修改' : state.status === 'preview_ready' ? '预览已持久化，可应用' : '服务端状态已同步'}</span><button className="tool-button accent" disabled={state.status !== 'dirty' || !state.validation.valid} type="button" onClick={runPreview}>预览差异与影响</button></footer>
+    {closeRequested ? <CloseDraftDialog trigger={closeRequested} onCancel={() => setCloseRequested(null)} onConfirm={() => { setCloseRequested(null); onClose?.(); }} /> : null}
   </div>;
 }
 
@@ -150,3 +270,46 @@ function moveTab(event, index, setTab) {
   const id = tabs[next][0]; setTab(id); globalThis.requestAnimationFrame?.(() => document.getElementById(`foundation-tab-${id}`)?.focus());
 }
 function statusLabel(status) { return ({ loading: '加载中', clean: '已同步', dirty: '有修改', previewing: '正在预览', preview_ready: '预览就绪', applying: '正在应用', auditing: '正在审查', regenerating: '正在重新生成', awaiting_outline_approval: '等待大纲 / 提案确认', completed: '已完成', failed: '修订失败', stale: '基线已过期', readonly: '只读' })[status] || status; }
+function hasUnpublishedFoundationDraft(status) { return ['dirty', 'previewing', 'preview_ready'].includes(status); }
+
+function legacyFoundationTab() {
+  const location = globalThis.location;
+  const requested = new URLSearchParams(location?.search || '').get('foundation_tab') || String(location?.hash || '').replace(/^#/, '');
+  if (requested === 'core' || requested === 'all-characters' || requested === 'characters') return 'characters';
+  return tabs.some(([id]) => id === requested) ? requested : 'overview';
+}
+
+function CloseDraftDialog({ trigger, onCancel, onConfirm }) {
+  const cancelRef = useRef(null);
+  const dialogRef = useRef(null);
+  useEffect(() => {
+    cancelRef.current?.focus();
+    const keydown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCancel();
+        globalThis.requestAnimationFrame?.(() => trigger?.focus());
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(dialogRef.current?.querySelectorAll('button:not(:disabled)') || []);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', keydown);
+    return () => document.removeEventListener('keydown', keydown);
+  }, [onCancel, trigger]);
+  return <div className="foundation-dialog-backdrop" role="presentation"><div ref={dialogRef} aria-describedby="foundation-close-description" aria-labelledby="foundation-close-title" aria-modal="true" className="foundation-dialog" role="alertdialog">
+    <h3 id="foundation-close-title">离开并保留未发布草稿？</h3>
+    <p id="foundation-close-description">当前修改尚未通过 Foundation preview/apply 发布。离开后页面内草稿不会自动保存到服务器。</p>
+    <div className="inline-actions"><button ref={cancelRef} className="tool-button" type="button" onClick={onCancel}>继续编辑</button><button className="tool-button danger" type="button" onClick={onConfirm}>确认离开</button></div>
+  </div></div>;
+}

@@ -72,4 +72,31 @@ describe('foundation reducer', () => {
     expect(switched.projectId).toBe('p2');
     expect(switched.status).toBe('loading');
   });
+
+  it('Character workspace 轮询只更新 sidecar，绝不覆盖正在编辑的 Foundation draft', () => {
+    let state = foundationReducer(loaded(), { type: 'edit', projectId: 'p1', requestVersion: 2, draft: { ...candidate, characters: [{ ...candidate.characters[0], voice: '用户草稿' }] } });
+    state = foundationReducer(state, {
+      type: 'character_workspace_success', projectId: 'p1', requestVersion: 2,
+      response: { character_workspace: {
+        current: { foundation: candidate }, candidate: { foundation: { ...candidate, characters: [{ ...candidate.characters[0], voice: '旧服务器候选' }] } },
+        run: { run_id: 'run', mode: 'analyze', status: 'running', stage: 'running' }, completeness: [], findings: [], source_mappings: []
+      } }
+    });
+    expect(state.draft.characters[0].voice).toBe('用户草稿');
+    expect(state.characterWorkspace.candidate.foundation.characters[0].voice).toBe('旧服务器候选');
+  });
+
+  it('编辑后立即把已有 Character review 标为 stale', () => {
+    let state = foundationReducer(loaded(), {
+      type: 'character_workspace_success', projectId: 'p1', requestVersion: 2,
+      response: { character_workspace: { current: { foundation: candidate }, completeness: [], findings: [{ id: 'finding', character_id: 'hero' }], source_mappings: [] } }
+    });
+    state = foundationReducer(state, { type: 'edit', projectId: 'p1', requestVersion: 2, draft: { ...candidate, premise: '修改后' } });
+    expect(state.characterReviewStale).toBe(true);
+    const polled = foundationReducer(state, {
+      type: 'character_workspace_success', projectId: 'p1', requestVersion: 2, preserveReviewStale: true,
+      response: { character_workspace: { current: { foundation: candidate }, completeness: [], findings: [], source_mappings: [] } }
+    });
+    expect(polled.characterReviewStale).toBe(true);
+  });
 });

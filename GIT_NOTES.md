@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-27 `pending` `feat: add character card workspace`:
+  replaces the split core/all-character screens with one stable-ID character
+  card workspace, including v3 field groups, search/filter/sort, guarded
+  duplicate/delete/high-risk edits, and responsive accessible navigation.
+  Integrates the durable Character Agent analyze/review/retry/discard APIs with
+  target-only digests, non-destructive polling, selective candidate acceptance,
+  finding navigation, stale-review signaling, and read-only adaptation source
+  evidence. Vitest passes 344 tests, the production UI build passes, and the
+  focused Playwright desktop/mobile suite passes 20 tests.
 - 2026-07-27 `pending` `feat: expose durable character agent workspace`:
   adds persistent, restart-recoverable Character Agent analyze/review runs with
   exact idempotency, scoped target-only drafts, single-active-run exclusion,

@@ -20,6 +20,10 @@ let foundationScenario = 'normal';
 let foundationRevision = 3;
 let foundationLastRequest = null;
 let delayFoundationProjectA = false;
+let characterRun = null;
+let characterCandidate = null;
+let characterFindings = [];
+let characterPolls = 0;
 const streams = new Set();
 let expansionMetadata = await fetch('http://127.0.0.1:4182/api/test/expansion-metadata').then((response) => response.json());
 const json = (response, status, body, headers = {}) => {
@@ -56,6 +60,34 @@ const foundationState = (projectID) => {
 	const adaptation = foundationScenario === 'adaptation' || sourceOnly;
 	return { project: { id: projectID, name: projectID }, foundation: { mode: adaptation ? 'adaptation' : 'normal', ...(adaptation ? { source_foundation: sourceFoundation, mode_specific: { source_signature: sourceFoundation.source_signature } } : {}), target_foundation: targetFoundation(projectID), editable: !readonly && !active && !sourceOnly, readonly_reason: sourceOnly ? 'adaptation_intent_unavailable' : readonly ? 'body_files_started' : active ? 'active_foundation_revision' : '', base_revision: foundationRevision, base_audit_signature: `audit-${foundationRevision}`, core_cast_signature: sourceOnly ? '' : 'core-signature', ...(sourceOnly ? {} : { core_cast: coreCast, core_cast_completion: { complete: true, missing: [], blocking_reasons: [] } }), core_cast_confirmed: !sourceOnly, active_revision: active, planning_review: { state: 'confirmed', revision: 2 }, allowed_operations: foundationScenario === 'failed' ? ['get', 'retry'] : !readonly && !active && !sourceOnly ? ['get', 'preview', 'apply'] : ['get'] } };
 };
+const characterWorkspaceState = (projectID) => {
+	const foundation = targetFoundation(projectID);
+	const adaptation = foundationScenario === 'adaptation' || foundationScenario === 'source-only';
+	return {
+		project: { id: projectID, name: projectID },
+		character_workspace: {
+			mode: adaptation ? 'adaptation' : 'original',
+			base_revision: foundationRevision,
+			base_audit_signature: `audit-${foundationRevision}`,
+			current_digest: 'a'.repeat(64),
+			current: { revision: foundationRevision, digest: 'a'.repeat(64), foundation },
+			...(characterCandidate ? { candidate: { revision: 4, digest: 'b'.repeat(64), foundation: characterCandidate } } : {}),
+			...(characterRun ? { run: characterRun } : {}),
+			completeness: foundation.characters.map((character) => ({
+				character_id: character.id, tier: character.tier || 'important',
+				status: character.id === 'hero' ? 'complete' : 'incomplete',
+				missing: character.id === 'hero' ? [] : [{ code: 'goal_required', field: 'goal', severity: 'blocking', description: '需要目标' }]
+			})),
+			...(adaptation ? {
+				source_coverage: { source_total: 1, decision_required: 1, mapped: 1, explicitly_excluded: 0, pending: 0, blocking_gaps: 0, decisions: [] },
+				source_mappings: [{ id: 'map-hero', action: 'rename', source_character_ids: ['source-hero'], target_character_ids: ['hero'], rationale: '目标世界改名', evidence: [{ kind: 'source_fact', reference: '第 3 章', summary: '原著角色在灾变中守城。' }] }]
+			} : { source_mappings: [] }),
+			findings: characterFindings,
+			diff: characterCandidate ? { version: 1, changes: [{ entity_type: 'character', entity_id: 'hero', kind: 'modified', changed_fields: ['voice'], high_risk: false }], core_cast_reconfirmation: false, foundation_reconfirmation: true, signature: 'diff-character' } : undefined,
+			allowed_operations: characterRun?.status === 'running' ? [] : characterRun?.status === 'failed' ? ['analyze', 'review', 'retry', 'discard'] : characterCandidate ? ['analyze', 'review', 'discard'] : ['analyze', 'review']
+		}
+	};
+};
 const tree = () => ({ phase: manuscriptPhase, mode: 'adaptation', structure_revision: expansionMetadata.structure_revision, structure_signature: expansionMetadata.structure_signature, active_revision: { revision_id: revisionId, stage: 'audit_pending' }, nodes: [{ kind: 'volume', stable_id: 'vol_0123456789abcdef0123456789abcdef', display_label: '第一卷', state: 'planned', children: [{ kind: 'arc', stable_id: 'arc_0123456789abcdef0123456789abcdef', display_label: '第一故事弧', state: 'planned', children: [{ kind: 'chapter', stable_id: chapterId, display_order: 1, display_label: '真实后端长章', state: 'review_pending', has_current: true, has_candidate: true, has_history: true, content_signature: 'outline-signature', target_display: '目标第 1 章', source_display: '原著第 7–8 章' }] }] }] });
 const extraTreeChapters = Array.from({ length: 129 }, (_, index) => ({
   kind: 'chapter', stable_id: `ch_${(index + 2).toString(16).padStart(32, '0')}`, display_order: index + 2,
@@ -79,10 +111,47 @@ const server = http.createServer(async (request, response) => {
 	response.on('error', () => {});
   const url = new URL(request.url, `http://${request.headers.host}`), path = url.pathname;
   if (path === '/health') return json(response, 200, { ok: true });
-	if (path === '/api/test/reset' && request.method === 'POST') { generation = 1; manuscriptPhase = 'writing'; manuscriptActionDialogue = null; failNextChapter = false; historyTombstoned = false; delayNextHistory = false; delayNextTree = false; failDelayedTree = false; delayNextChapter = false; foundationScenario = 'normal'; foundationRevision = 3; foundationLastRequest = null; delayFoundationProjectA = false; return json(response, 200, { reset: true }); }
+	if (path === '/api/test/reset' && request.method === 'POST') { generation = 1; manuscriptPhase = 'writing'; manuscriptActionDialogue = null; failNextChapter = false; historyTombstoned = false; delayNextHistory = false; delayNextTree = false; failDelayedTree = false; delayNextChapter = false; foundationScenario = 'normal'; foundationRevision = 3; foundationLastRequest = null; delayFoundationProjectA = false; characterRun = null; characterCandidate = null; characterFindings = []; characterPolls = 0; return json(response, 200, { reset: true }); }
 	if (path === '/api/test/foundation/scenario' && request.method === 'POST') { foundationScenario = url.searchParams.get('value') || 'normal'; return json(response, 200, { scenario: foundationScenario }); }
 	if (path === '/api/test/foundation/delay-project-a' && request.method === 'POST') { delayFoundationProjectA = true; return json(response, 200, { delayed: true }); }
 	if (path === '/api/test/foundation/last-request') return json(response, 200, foundationLastRequest || {});
+	const characterMatch = path.match(/^\/api\/projects\/(foundation-project-[ab])\/foundation\/characters(?:\/(analyze|review|retry|discard))?$/);
+	if (characterMatch) {
+		const projectID = characterMatch[1], action = characterMatch[2] || 'get';
+		if (action === 'get') {
+			if (characterRun?.status === 'running' && ++characterPolls >= 1) characterRun = { ...characterRun, status: 'completed', stage: 'completed', finished_at: '2026-07-27T08:00:02Z', updated_at: '2026-07-27T08:00:02Z' };
+			return json(response, 200, characterWorkspaceState(projectID));
+		}
+		const body = await readJSON(request);
+		foundationLastRequest = { action: `character-${action}`, body, project_id: projectID };
+		if (action === 'analyze') {
+			const input = body.candidate || targetFoundation(projectID);
+			characterCandidate = {
+				...input,
+				characters: input.characters.map((character) => character.id === 'hero' ? { ...character, voice: '克制、精确，以短句下判断', contrast_details: [{ surface: '冷静', depth: '害怕再次失去同伴' }] } : character)
+			};
+			characterRun = { run_id: 'character-analyze-browser', mode: 'analyze', status: 'running', stage: 'running', requested_character_ids: body.scope?.character_ids || [], instruction: body.instruction || '', allow_supporting_characters: body.allow_supporting_characters, input_candidate_digest: body.candidate_digest, attempt: 1, model_route: 'character_analysis', created_at: '2026-07-27T08:00:00Z', updated_at: '2026-07-27T08:00:01Z' };
+			characterPolls = 0;
+			if (foundationScenario === 'character-error') characterRun = { ...characterRun, status: 'failed', stage: 'failed', error: { class: 'character_agent_failed', message: '安全的 Character Agent 测试失败' } };
+			return json(response, 202, { run_id: characterRun.run_id, ...characterWorkspaceState(projectID) });
+		}
+		if (action === 'review') {
+			characterCandidate = body.candidate;
+			characterFindings = [{ id: 'finding-voice', scope: 'character', character_id: 'hero', location: 'voice', severity: 'warning', issue_type: 'voice', description: '语言风格仍不够可执行', evidence_summary: '当前只有抽象形容词。', suggestion: '补充句式和禁用表达。', blocking: false }];
+			characterRun = { run_id: 'character-review-browser', mode: 'review', status: 'running', stage: 'running', input_candidate_digest: body.candidate_digest, attempt: 1, model_route: 'character_review', created_at: '2026-07-27T08:01:00Z', updated_at: '2026-07-27T08:01:01Z' };
+			characterPolls = 0;
+			return json(response, 202, { run_id: characterRun.run_id, ...characterWorkspaceState(projectID) });
+		}
+		if (action === 'retry') {
+			characterRun = { ...(characterRun || {}), status: 'running', stage: 'running', attempt: Number(characterRun?.attempt || 1) + 1 };
+			characterPolls = 0;
+			return json(response, 202, characterWorkspaceState(projectID));
+		}
+		if (action === 'discard') {
+			characterCandidate = null; characterRun = { ...(characterRun || {}), status: 'discarded', stage: 'discarded' };
+			return json(response, 200, characterWorkspaceState(projectID));
+		}
+	}
 	const foundationMatch = path.match(/^\/api\/projects\/(foundation-project-[ab])\/foundation(?:\/(preview|apply|retry))?$/);
 	if (foundationMatch) {
 		const projectID = foundationMatch[1], action = foundationMatch[2] || 'get';
