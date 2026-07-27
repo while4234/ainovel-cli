@@ -26,7 +26,7 @@ func NewCheckConsistencyTool(store *store.Store) *CheckConsistencyTool {
 
 func (t *CheckConsistencyTool) Name() string { return "check_consistency" }
 func (t *CheckConsistencyTool) Description() string {
-	return "记录当前草稿已按 novel_context 的章节契约与连续性证据完成一致性审核。必须先 novel_context(chapter=N) 并 read_chapter，再调用本工具"
+	return "记录当前草稿已按 novel_context 的章节契约与连续性证据完成一致性审核。必须先 novel_context(chapter=N) 并 read_chapter；逐场景核对契约中的时间、地点、POV、人物、事件顺序、信息边界和不可逆结果。只有全部核对无矛盾时 findings 才能为空"
 }
 func (t *CheckConsistencyTool) Label() string { return "一致性检查" }
 

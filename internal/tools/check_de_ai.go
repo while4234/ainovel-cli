@@ -28,7 +28,7 @@ func NewCheckDeAITool(store *store.Store) *CheckDeAITool { return &CheckDeAITool
 
 func (t *CheckDeAITool) Name() string { return "check_de_ai" }
 func (t *CheckDeAITool) Description() string {
-	return "独立去AI化审校：读取当前草稿，检查正文标题泄漏、破折号、排比、模板反应、比喻和叙述缓冲词；返回可直接定位的原文 examples，修改后必须重新调用。"
+	return "独立去AI化审校：仅在当前草稿已通过 check_consistency 后运行；检查正文标题泄漏、破折号、排比、模板反应、比喻和叙述缓冲词；返回可直接定位的原文 examples，修改后必须重新调用。"
 }
 func (t *CheckDeAITool) Label() string                          { return "去AI化审校" }
 func (t *CheckDeAITool) ReadOnly(_ json.RawMessage) bool        { return false }
@@ -59,6 +59,13 @@ func (t *CheckDeAITool) Execute(_ context.Context, args json.RawMessage) (json.R
 	}
 	if content == "" {
 		return nil, fmt.Errorf("no content found for chapter %d: %w", request.Chapter, errs.ErrToolPrecondition)
+	}
+	if checkpoint := t.store.Checkpoints.LatestByStep(domain.ChapterScope(request.Chapter), "consistency_check"); checkpoint == nil ||
+		checkpoint.Digest != "sha256:"+store.TextSHA256(content) {
+		return nil, fmt.Errorf(
+			"第 %d 章当前草稿尚未通过一致性审核。先调用 novel_context(chapter=%d)，逐场景核对章节契约中的时间、地点、视角、人物、事件顺序与不可逆结果，再 read_chapter 并调用 check_consistency；修正全部 critical/error finding 后才能 check_de_ai: %w",
+			request.Chapter, request.Chapter, errs.ErrToolPrecondition,
+		)
 	}
 
 	report := deai.Analyze(content)

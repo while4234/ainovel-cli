@@ -473,11 +473,18 @@ func (t *CommitChapterTool) ensureDeAIGate(chapter int, content string) error {
 	if !enabled {
 		return nil
 	}
+	consistency := t.store.Checkpoints.LatestByStep(domain.ChapterScope(chapter), "consistency_check")
+	digest := store.TextSHA256(content)
+	if consistency == nil {
+		return fmt.Errorf("第 %d 章尚未完成一致性审核。先调用 novel_context、read_chapter 和 check_consistency，逐场景核对时间、地点、视角、人物、事件顺序与不可逆结果，再执行去AI化和提交: %w", chapter, errs.ErrToolPrecondition)
+	}
+	if consistency.Digest != "sha256:"+digest {
+		return fmt.Errorf("第 %d 章在一致性审核后已修改，旧审核不再适用。请对当前草稿重新调用 check_consistency；通过后再执行 check_de_ai 和 commit_chapter: %w", chapter, errs.ErrToolPrecondition)
+	}
 	audit, err := t.store.DeAI.LoadAudit(chapter)
 	if err != nil {
 		return fmt.Errorf("load de-AI audit: %w: %w", errs.ErrStoreRead, err)
 	}
-	digest := store.TextSHA256(content)
 	if audit == nil {
 		return fmt.Errorf("第 %d 章尚未完成独立去AI化审校。先调用 check_de_ai；如有问题，按报告做段落级修复并在最终草稿上重新检查: %w", chapter, errs.ErrToolPrecondition)
 	}

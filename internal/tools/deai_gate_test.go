@@ -19,6 +19,7 @@ func TestEnsureDeAIGateRequiresMatchingPassingAudit(t *testing.T) {
 	if err := s.Drafts.SaveDraft(1, content); err != nil {
 		t.Fatal(err)
 	}
+	recordCurrentConsistency(t, s, 1)
 	commit := NewCommitChapterTool(s)
 	if err := commit.ensureDeAIGate(1, content); err == nil {
 		t.Fatal("missing audit should block commit")
@@ -46,6 +47,7 @@ func TestEnsureDeAIGateDirectsFailedAuditToBatchRepairBeforeRewrite(t *testing.T
 	if err := s.Drafts.SaveDraft(1, content); err != nil {
 		t.Fatal(err)
 	}
+	recordCurrentConsistency(t, s, 1)
 	if _, err := NewCheckDeAITool(s).Execute(t.Context(), []byte(`{"chapter":1}`)); err != nil {
 		t.Fatal(err)
 	}

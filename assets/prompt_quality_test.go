@@ -19,7 +19,7 @@ func TestCompactRolePromptsRetainQualityCapabilities(t *testing.T) {
 		{
 			name: "writer", prompt: bundle.Prompts.Writer,
 			policy: promptreview.Policy{Role: "writer", MaxTokens: 2500, ForbiddenPhrases: []string{"Chapter 模式", "Arc 模式", "Free 模式"}, Capabilities: []promptreview.Capability{
-				{ID: "workflow", Description: "plan/draft/check/commit workflow", AnyOf: []string{"check_consistency"}},
+				{ID: "workflow", Description: "plan/draft/check/commit workflow", AnyOf: []string{"Never call `check_de_ai` before"}},
 				{ID: "full_prose", Description: "complete prose must be persisted", AnyOf: []string{"完整正文"}},
 				{ID: "state", Description: "causal and relationship state continuity", AnyOf: []string{"关系变化有事件前因"}},
 				{ID: "anti_ai", Description: "human-like prose correction", AnyOf: []string{"解释性复盘"}},
@@ -27,6 +27,8 @@ func TestCompactRolePromptsRetainQualityCapabilities(t *testing.T) {
 				{ID: "dialogue_voice", Description: "dialogue reflects identity and pressure", AnyOf: []string{"身份、利益和当下压力"}},
 				{ID: "adaptation_evidence", Description: "independent adaptation evidence", AnyOf: []string{"Writer 自报通过不算证据"}},
 				{ID: "simulation", Description: "reinforced simulation safety boundary", AnyOf: []string{"raw simulate source text"}},
+				{ID: "chapter_contract", Description: "scene-level chapter contract review", AnyOf: []string{"chronology, named locations, POV"}},
+				{ID: "draft_budget", Description: "draft within the persisted chapter budget", AnyOf: []string{"90-95% of `recommended_max_words`"}},
 			}},
 		},
 		{

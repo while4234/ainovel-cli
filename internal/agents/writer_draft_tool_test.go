@@ -199,6 +199,9 @@ func TestWriterChapterInferenceToolAddsActiveChapter(t *testing.T) {
 	if err := st.Drafts.SaveDraft(41, strings.Repeat("自然叙事句子。", 500)); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
+	if _, err := st.Checkpoints.AppendArtifact(domain.ChapterScope(41), "consistency_check", "drafts/41.draft.md"); err != nil {
+		t.Fatalf("consistency checkpoint: %v", err)
+	}
 	tool := newWriterChapterInferenceTool(tools.NewCheckDeAITool(st), st)
 	raw, err := tool.Execute(t.Context(), json.RawMessage(`{}`))
 	if err != nil {

@@ -794,6 +794,7 @@ func TestEditChapterAllowsExactRepairWhenDeAIReportHasMultipleKinds(t *testing.T
 	if err := s.Drafts.SaveDraft(1, content); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
+	recordCurrentConsistency(t, s, 1)
 	if _, err := NewCheckDeAITool(s).Execute(context.Background(), json.RawMessage(`{"chapter":1}`)); err != nil {
 		t.Fatalf("check_de_ai: %v", err)
 	}
