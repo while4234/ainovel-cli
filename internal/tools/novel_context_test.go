@@ -1204,16 +1204,20 @@ func TestContextToolPlanningAuditCombinesFourChaptersAndCanonicalFactsAtBookScal
 					CharacterIDs: []string{characters[0].ID, characters[1].ID},
 					CharacterBeats: []domain.OutlineCharacterBeat{{
 						CharacterID: characters[0].ID,
-						Goal:        "本章可验证目标",
-						Obstacle:    "主动阻力",
-						ChoiceCost:  "选择与代价",
-						Advance:     "状态不可逆推进",
+						Scene:       strings.Repeat("对应场景不可丢失。", 20),
+						Goal:        strings.Repeat("本章可验证目标。", 20),
+						Obstacle:    strings.Repeat("主动阻力。", 20),
+						ChoiceCost:  strings.Repeat("选择与代价。", 20),
+						Advance:     strings.Repeat("状态不可逆推进。", 20),
 					}},
 					RelationshipBeats: []domain.OutlineRelationshipBeat{{
 						RelationshipID:    relationships[0].ID,
 						SourceCharacterID: relationships[0].SourceCharacterID,
 						TargetCharacterID: relationships[0].TargetCharacterID,
+						Scene:             strings.Repeat("关系所在场景。", 20),
+						Start:             strings.Repeat("关系起始状态。", 20),
 						ExpectedAdvance:   "关系变化影响下一章选择",
+						ForbiddenJump:     strings.Repeat("禁止关系跨级。", 20),
 					}},
 				})
 			}

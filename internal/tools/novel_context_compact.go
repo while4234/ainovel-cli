@@ -260,16 +260,26 @@ func compactOutlineEntriesForPlanningAudit(entries []domain.OutlineEntry) []map[
 	if len(entries) == 0 {
 		return nil
 	}
+	coreEventLimit, hookLimit, sceneLimit := 300, 160, 160
+	denseBatch := len(entries) >= 4
+	if denseBatch {
+		// Four fully structured chapters are the largest permitted audit
+		// window. Keep every scene and beat, but use a tighter semantic
+		// projection for prose that is already represented in those fields.
+		// This reserves request headroom for the complete canonical
+		// character/relationship/rule evidence rather than splitting an arc.
+		coreEventLimit, hookLimit, sceneLimit = 220, 110, 125
+	}
 	out := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
 		item := map[string]any{
 			"id":          entry.ID,
 			"chapter":     entry.Chapter,
 			"title":       truncateRunes(entry.Title, 80),
-			"core_event":  truncateRunes(entry.CoreEvent, 300),
-			"hook":        truncateRunes(entry.Hook, 160),
+			"core_event":  truncateRunes(entry.CoreEvent, coreEventLimit),
+			"hook":        truncateRunes(entry.Hook, hookLimit),
 			"scene_count": len(entry.Scenes),
-			"scenes":      compactStringList(entry.Scenes, len(entry.Scenes), 160),
+			"scenes":      compactStringList(entry.Scenes, len(entry.Scenes), sceneLimit),
 		}
 		if len(entry.CharacterIDs) > 0 {
 			item["character_ids"] = entry.CharacterIDs
@@ -277,14 +287,14 @@ func compactOutlineEntriesForPlanningAudit(entries []domain.OutlineEntry) []map[
 		if len(entry.CharacterBeats) > 0 {
 			beats := make([][]any, 0, len(entry.CharacterBeats))
 			for _, beat := range entry.CharacterBeats {
-				beats = append(beats, compactPlanningAuditCharacterBeat(beat))
+				beats = append(beats, compactPlanningAuditCharacterBeat(beat, denseBatch))
 			}
 			item["character_beats"] = beats
 		}
 		if len(entry.RelationshipBeats) > 0 {
 			beats := make([][]any, 0, len(entry.RelationshipBeats))
 			for _, beat := range entry.RelationshipBeats {
-				beats = append(beats, compactPlanningAuditRelationshipBeat(beat))
+				beats = append(beats, compactPlanningAuditRelationshipBeat(beat, denseBatch))
 			}
 			item["relationship_beats"] = beats
 		}
@@ -308,26 +318,34 @@ func compactOutlineEntriesForPlanningAudit(entries []domain.OutlineEntry) []map[
 	return out
 }
 
-func compactPlanningAuditCharacterBeat(beat domain.OutlineCharacterBeat) []any {
+func compactPlanningAuditCharacterBeat(beat domain.OutlineCharacterBeat, denseBatch bool) []any {
+	sceneLimit, goalLimit, obstacleLimit, choiceLimit, advanceLimit := 60, 75, 75, 90, 90
+	if denseBatch {
+		sceneLimit, goalLimit, obstacleLimit, choiceLimit, advanceLimit = 50, 60, 60, 75, 75
+	}
 	return []any{
 		beat.CharacterID,
-		truncateRunes(beat.Scene, 60),
-		truncateRunes(beat.Goal, 75),
-		truncateRunes(beat.Obstacle, 75),
-		truncateRunes(beat.ChoiceCost, 90),
-		truncateRunes(beat.Advance, 90),
+		truncateRunes(beat.Scene, sceneLimit),
+		truncateRunes(beat.Goal, goalLimit),
+		truncateRunes(beat.Obstacle, obstacleLimit),
+		truncateRunes(beat.ChoiceCost, choiceLimit),
+		truncateRunes(beat.Advance, advanceLimit),
 	}
 }
 
-func compactPlanningAuditRelationshipBeat(beat domain.OutlineRelationshipBeat) []any {
+func compactPlanningAuditRelationshipBeat(beat domain.OutlineRelationshipBeat, denseBatch bool) []any {
+	sceneLimit, startLimit, advanceLimit, forbiddenLimit := 60, 60, 90, 80
+	if denseBatch {
+		sceneLimit, startLimit, advanceLimit, forbiddenLimit = 50, 50, 75, 65
+	}
 	return []any{
 		beat.RelationshipID,
 		beat.SourceCharacterID,
 		beat.TargetCharacterID,
-		truncateRunes(beat.Scene, 60),
-		truncateRunes(beat.Start, 60),
-		truncateRunes(beat.ExpectedAdvance, 90),
-		truncateRunes(beat.ForbiddenJump, 80),
+		truncateRunes(beat.Scene, sceneLimit),
+		truncateRunes(beat.Start, startLimit),
+		truncateRunes(beat.ExpectedAdvance, advanceLimit),
+		truncateRunes(beat.ForbiddenJump, forbiddenLimit),
 	}
 }
 
