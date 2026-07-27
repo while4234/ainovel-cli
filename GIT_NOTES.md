@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-27 `pending` `fix: deduplicate co-create request context`:
+- 2026-07-27 `2ed4f77` `fix: deduplicate co-create request context`:
   canonicalizes the transient co-create model view on every round while
   preserving every user turn, every visible Agent reply, and the latest
   complete cumulative draft. Superseded draft copies, legacy cast JSON already
