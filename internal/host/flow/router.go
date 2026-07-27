@@ -669,16 +669,15 @@ func routeOriginalSkeletonAudit(w *storepkg.OriginalPlanningWork) *Instruction {
 			w.Volume, payload, w.Volume)}
 	case "audit_skeleton_volume":
 		return &Instruction{Agent: "editor", Reason: "用户审核前先逐卷审核原创分卷骨架", Task: fmt.Sprintf(
-			"作为专业原创小说审稿人，只审核第%d卷分卷骨架。调用 novel_context(scope=planning)，不得生成细纲、不得参考原著。检查本卷功能与不可逆推进、弧间因果、人物阶段成长、主动反派与冲突升级、篇幅承载、卷高潮兑现和进出状态；若为终卷还必须检查全部主线/人物/伏笔/结局闭环，非终卷则检查有效交棒。调用 save_original_planning_audit(scope=skeleton_volume, volume=%d)，dimensions 必须恰含 volume_function、arc_causality、character_progression、conflict_escalation、budget_capacity、payoff_and_handoff。任一维度低于7、内容明显写不满预算、重复调查、或终卷只开新线不收束，必须 revise 并定位到具体卷弧。",
-			w.Volume, w.Volume)}
+			"作为专业原创小说审稿人，只审核第%d卷分卷骨架。调用 novel_context(scope=planning_review, volume=%d)，不得生成细纲、不得参考原著。检查本卷功能与不可逆推进、弧间因果、人物阶段成长、主动反派与冲突升级、篇幅承载、卷高潮兑现和进出状态；若为终卷还必须检查全部主线/人物/伏笔/结局闭环，非终卷则检查有效交棒。调用 save_original_planning_audit(scope=skeleton_volume, volume=%d)，dimensions 必须恰含 volume_function、arc_causality、character_progression、conflict_escalation、budget_capacity、payoff_and_handoff。任一维度低于7、内容明显写不满预算、重复调查、或终卷只开新线不收束，必须 revise 并定位到具体卷弧。",
+			w.Volume, w.Volume, w.Volume)}
 	case "audit_skeleton_book_batch":
 		return &Instruction{Agent: "editor", Reason: "分卷骨架按最多两卷分批审核", Task: fmt.Sprintf(
-			"审核原创分卷骨架第%d-%d卷（最多2卷），只使用已通过的逐卷报告：%s，并调用 novel_context(scope=planning) 核对相邻卷骨架。检查卷间因果、冲突升级、人物成长、伏笔传递与回收、节奏分配和情节类型多样性。调用 save_original_planning_audit(scope=skeleton_book_batch, from_volume=%d, to_volume=%d)，dimensions 必须恰含 cross_volume_continuity、escalation、character_progression、setup_payoff、pacing_balance、plot_diversity；发现重大问题必须 revise 并定位问题卷弧。",
-			w.FromVolume, w.ToVolume, w.Evidence, w.FromVolume, w.ToVolume)}
+			"审核原创分卷骨架第%d-%d卷（最多2卷）。逐卷审核报告已经权威落盘，不得要求 Host 将报告正文重复塞入任务；调用 novel_context(scope=planning_review, from_volume=%d, to_volume=%d) 读取该批完整骨架、逐卷审核摘要和跨卷连续性证据。检查卷间因果、冲突升级、人物成长、伏笔传递与回收、节奏分配和情节类型多样性。调用 save_original_planning_audit(scope=skeleton_book_batch, from_volume=%d, to_volume=%d)，dimensions 必须恰含 cross_volume_continuity、escalation、character_progression、setup_payoff、pacing_balance、plot_diversity；发现重大问题必须 revise 并定位问题卷弧。",
+			w.FromVolume, w.ToVolume, w.FromVolume, w.ToVolume, w.FromVolume, w.ToVolume)}
 	case "audit_skeleton_book":
 		return &Instruction{Agent: "editor", Reason: "用户审核前完成原创分卷全书总审", Task: fmt.Sprintf(
-			"完成原创小说分卷骨架全书总审。禁止一次加载未来详细细纲，只使用这些已通过的分批报告：%s，并调用 novel_context(scope=planning) 核对 premise、人物、规则、指南针、总字数与全部分卷骨架。检查所有创作承诺是否都有卷弧承载、主线完整闭环、人物弧完整、伏笔回收、卷级高潮梯度、篇幅合理、题材辨识度和终卷结局兑现。调用 save_original_planning_audit(scope=skeleton_book)，dimensions 必须恰含 mainline_completeness、ending_closure、character_arc_completeness、setup_payoff、volume_balance、budget_capacity、originality。任何维度低于7、任何承诺无承载、或终卷没有真正结束全书都必须 revise；全部通过后系统才允许用户审核分卷。",
-			w.Evidence)}
+			"完成原创小说分卷骨架全书总审。禁止一次加载未来详细细纲，也不得要求 Host 将全部已通过报告正文重复塞入任务；调用 novel_context(scope=planning_review) 读取权威分批审核索引，并核对 premise、人物、规则、指南针、总字数与全部分卷索引；开篇卷与终卷保留完整骨架，中间卷以已通过分批报告为权威证据。检查所有创作承诺是否都有卷弧承载、主线完整闭环、人物弧完整、伏笔回收、卷级高潮梯度、篇幅合理、题材辨识度和终卷结局兑现。调用 save_original_planning_audit(scope=skeleton_book)，dimensions 必须恰含 mainline_completeness、ending_closure、character_arc_completeness、setup_payoff、volume_balance、budget_capacity、originality。任何维度低于7、任何承诺无承载、或终卷没有真正结束全书都必须 revise；全部通过后系统才允许用户审核分卷。")}
 	}
 	return nil
 }

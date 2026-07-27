@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   acceptAllCharacterCandidates, candidateFingerprint, characterFieldDiff, duplicateFoundationCharacter,
   filterAndSortCharacters, mergeCharacterField, newFoundationCharacter, normalizeCharacter,
-  normalizeCharacterWorkspace, normalizeFoundationResponse, sourceMajorCharacters, validateFoundationDraft
+  normalizeCharacterWorkspace, normalizeFoundationResponse, normalizeWorldRule, sourceMajorCharacters, validateFoundationDraft
 } from './foundationModel.js';
 
 const complete = {
@@ -13,6 +13,12 @@ const complete = {
 };
 
 describe('foundation model', () => {
+  it('按稳定 sr_/hr_ ID 恢复旧项目规则强度，不让错误重试把 soft 全显示成 hard', () => {
+    expect(normalizeWorldRule({ id: 'sr_escape_tension', strength: 'hard' }).strength).toBe('soft');
+    expect(normalizeWorldRule({ id: 'hr_identity_lock', strength: 'soft' }).strength).toBe('hard');
+    expect(normalizeWorldRule({ id: 'rule-neutral', strength: 'soft' }).strength).toBe('soft');
+  });
+
   it('映射 normal/adaptation DTO 且保留 source 只读数据', () => {
     const normal = normalizeFoundationResponse({ foundation: { mode: 'normal', target_foundation: complete, editable: true, allowed_operations: ['get', 'preview'] } });
     expect(normal.mode).toBe('normal');

@@ -217,6 +217,14 @@ export function discardProjectFoundationCharacters(projectId, payload, options =
   });
 }
 
+export function confirmProjectCharacterCards(projectId, payload, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/character-cards/confirm`, {
+    ...options,
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
 export function setProjectResumeSchedule(projectId, enabled) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/resume-schedule`, {
     method: 'PUT',

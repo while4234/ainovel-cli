@@ -7,6 +7,70 @@ import (
 	"github.com/voocel/ainovel-cli/internal/rules"
 )
 
+func compactCharactersForPlanningReview(characters []domain.Character) []map[string]any {
+	return compactCharacterContractsForPlanningReview(characters, nil)
+}
+
+func compactCharacterIndexForPlanningReview(characters []domain.Character) [][]any {
+	out := make([][]any, 0, len(characters))
+	for _, character := range characters {
+		out = append(out, []any{
+			character.ID,
+			character.Name,
+			truncateRunes(character.Role, 20),
+			character.Tier,
+			truncateRunes(character.Faction, 16),
+		})
+	}
+	return out
+}
+
+func compactCharacterContractsForPlanningReview(
+	characters []domain.Character,
+	focused map[string]bool,
+) []map[string]any {
+	out := make([]map[string]any, 0, len(characters))
+	for _, character := range characters {
+		if focused != nil && !focused[character.ID] {
+			continue
+		}
+		item := map[string]any{
+			"id":          character.ID,
+			"name":        character.Name,
+			"role":        truncateRunes(character.Role, 35),
+			"tier":        character.Tier,
+			"faction":     truncateRunes(character.Faction, 25),
+			"goal":        truncateRunes(character.Goal, 35),
+			"motivation":  truncateRunes(character.Motivation, 35),
+			"conflict":    truncateRunes(character.Conflict, 35),
+			"arc":         truncateRunes(character.Arc, 40),
+			"constraints": compactStringList(character.Constraints, 2, 28),
+		}
+		if character.KnowledgeBoundary != nil {
+			item["knowledge_locks"] = map[string]any{
+				"unknown":   compactStringList(character.KnowledgeBoundary.Unknown, 1, 30),
+				"forbidden": compactStringList(character.KnowledgeBoundary.Forbidden, 1, 30),
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func compactWorldRulesForPlanningReview(rules []domain.WorldRule) []map[string]any {
+	out := make([]map[string]any, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, map[string]any{
+			"id":       rule.ID,
+			"category": rule.Category,
+			"strength": rule.Strength,
+			"rule":     truncateRunes(rule.Rule, 30),
+			"boundary": truncateRunes(rule.Boundary, 8),
+		})
+	}
+	return out
+}
+
 const (
 	maxContextOutlineTextRunes         = 120
 	maxContextOutlineScenes            = 3
@@ -31,7 +95,6 @@ const (
 	maxContextSourceReports            = 6
 	maxContextSourceReportItemRunes    = 90
 	maxContextSourceReportSummaryRunes = 140
-	maxContextPlanningVolumes          = 12
 	maxContextPlanningVolumeSummaries  = 6
 )
 
@@ -93,11 +156,63 @@ func compactCharacters(chars []domain.Character, maxItems int) []domain.Characte
 	limit := min(len(chars), maxItems)
 	out := make([]domain.Character, 0, limit)
 	for _, c := range chars[:limit] {
-		c.Description = truncateRunes(c.Description, maxContextCharacterTextRunes)
-		c.Arc = truncateRunes(c.Arc, maxContextCharacterTextRunes)
-		c.Traits = compactStringList(c.Traits, 8, 60)
-		c.Aliases = compactStringList(c.Aliases, 8, 40)
+		c.Role = truncateRunes(c.Role, 60)
+		c.Description = truncateRunes(c.Description, 100)
+		c.Arc = truncateRunes(c.Arc, 100)
+		c.Traits = compactStringList(c.Traits, 4, 35)
+		c.Aliases = compactStringList(c.Aliases, 5, 30)
+		c.Goal = truncateRunes(c.Goal, 80)
+		c.Motivation = truncateRunes(c.Motivation, 80)
+		c.Conflict = truncateRunes(c.Conflict, 80)
+		c.Voice = truncateRunes(c.Voice, 60)
+		c.Constraints = compactStringList(c.Constraints, 3, 60)
+		c.Notes = ""
+		if len(c.ContrastDetails) > 1 {
+			c.ContrastDetails = c.ContrastDetails[:1]
+		}
+		for idx := range c.ContrastDetails {
+			c.ContrastDetails[idx].Surface = truncateRunes(c.ContrastDetails[idx].Surface, 60)
+			c.ContrastDetails[idx].Depth = truncateRunes(c.ContrastDetails[idx].Depth, 70)
+		}
+		if len(c.KeyBackstory) > 1 {
+			c.KeyBackstory = c.KeyBackstory[:1]
+		}
+		for idx := range c.KeyBackstory {
+			c.KeyBackstory[idx].Event = truncateRunes(c.KeyBackstory[idx].Event, 60)
+			c.KeyBackstory[idx].Impact = truncateRunes(c.KeyBackstory[idx].Impact, 70)
+		}
+		// Chapter-zero state is writer-owned context. The Architect receives
+		// the role/goal/arc/constraints above plus compact knowledge locks.
+		c.InitialState = nil
+		if c.KnowledgeBoundary != nil {
+			knowledge := *c.KnowledgeBoundary
+			knowledge.Known = compactStringList(knowledge.Known, 1, 50)
+			knowledge.Unknown = compactStringList(knowledge.Unknown, 1, 50)
+			knowledge.Misconceptions = compactStringList(knowledge.Misconceptions, 1, 50)
+			knowledge.Forbidden = compactStringList(knowledge.Forbidden, 1, 50)
+			c.KnowledgeBoundary = &knowledge
+		}
 		out = append(out, c)
+	}
+	return out
+}
+
+func compactCharacterRelationships(
+	relationships []domain.CharacterRelationship,
+	maxItems int,
+) []domain.CharacterRelationship {
+	if len(relationships) == 0 || maxItems <= 0 {
+		return nil
+	}
+	limit := min(len(relationships), maxItems)
+	out := make([]domain.CharacterRelationship, 0, limit)
+	for _, relationship := range relationships[:limit] {
+		relationship.Label = truncateRunes(relationship.Label, 70)
+		relationship.Description = truncateRunes(relationship.Description, 100)
+		relationship.Since = truncateRunes(relationship.Since, 70)
+		relationship.Tags = compactStringList(relationship.Tags, 5, 40)
+		relationship.Constraints = compactStringList(relationship.Constraints, 3, 60)
+		out = append(out, relationship)
 	}
 	return out
 }
@@ -268,8 +383,80 @@ func compactLayeredOutlineForPlanning(volumes []domain.VolumeOutline, progress *
 	if len(volumes) == 0 {
 		return nil
 	}
-	limit := min(len(volumes), maxContextPlanningVolumes)
-	out := make([]map[string]any, 0, limit)
+	focus := make(map[int]bool, 4)
+	focus[volumes[0].Index] = true
+	if progress != nil && progress.CurrentVolume > 0 {
+		focus[progress.CurrentVolume-1] = true
+		focus[progress.CurrentVolume] = true
+		focus[progress.CurrentVolume+1] = true
+	} else {
+		focus[volumes[max(len(volumes)-2, 0)].Index] = true
+		focus[volumes[len(volumes)-1].Index] = true
+	}
+	return compactLayeredOutlineWithFocus(volumes, progress, focus)
+}
+
+func compactVolumeHistoryIndex(volumes []domain.VolumeOutline) [][]any {
+	out := make([][]any, 0, len(volumes))
+	for _, volume := range volumes {
+		chapterCount := 0
+		for _, arc := range volume.Arcs {
+			if arc.IsExpanded() {
+				chapterCount += len(arc.Chapters)
+			} else {
+				chapterCount += arc.EstimatedChapters
+			}
+		}
+		out = append(out, []any{
+			volume.Index,
+			truncateRunes(volume.Title, 12),
+			chapterCount,
+			len(volume.Arcs),
+		})
+	}
+	return out
+}
+
+func compactVolumeThemeMilestones(volumes []domain.VolumeOutline) [][]any {
+	out := make([][]any, 0, len(volumes)/10+2)
+	for index, volume := range volumes {
+		if index != 0 && index != len(volumes)-1 && (index+1)%10 != 0 {
+			continue
+		}
+		out = append(out, []any{volume.Index, truncateRunes(volume.Theme, 25)})
+	}
+	return out
+}
+
+func compactLayeredOutlineForPlanningReviewVolumes(
+	volumes []domain.VolumeOutline,
+	progress *domain.Progress,
+	fromVolume int,
+	toVolume int,
+) []map[string]any {
+	focus := make(map[int]bool, max(toVolume-fromVolume+3, 1))
+	if fromVolume == 0 && toVolume == 0 {
+		// Whole-book review consumes the already-passed batch reports supplied
+		// by Host. Keep the opening and ending books detailed and represent the
+		// complete middle as a stable index.
+		if len(volumes) > 0 {
+			focus[volumes[0].Index] = true
+			focus[volumes[len(volumes)-1].Index] = true
+		}
+	} else {
+		for index := fromVolume; index <= toVolume; index++ {
+			focus[index] = true
+		}
+	}
+	return compactLayeredOutlineWithFocus(volumes, progress, focus)
+}
+
+func compactLayeredOutlineWithFocus(
+	volumes []domain.VolumeOutline,
+	progress *domain.Progress,
+	focus map[int]bool,
+) []map[string]any {
+	out := make([]map[string]any, 0, len(focus))
 	globalChapter := 1
 	currentChapter := 0
 	currentVolume := 0
@@ -283,7 +470,19 @@ func compactLayeredOutlineForPlanning(volumes []domain.VolumeOutline, progress *
 		currentArc = progress.CurrentArc
 	}
 
-	for _, volume := range volumes[:limit] {
+	for _, volume := range volumes {
+		volumeChapterCount := 0
+		for _, arc := range volume.Arcs {
+			if arc.IsExpanded() {
+				volumeChapterCount += len(arc.Chapters)
+			} else {
+				volumeChapterCount += arc.EstimatedChapters
+			}
+		}
+		if !focus[volume.Index] {
+			globalChapter += volumeChapterCount
+			continue
+		}
 		volumePayload := map[string]any{
 			"index": volume.Index,
 			"title": truncateRunes(volume.Title, 80),

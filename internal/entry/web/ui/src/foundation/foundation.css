@@ -47,10 +47,10 @@
 .foundation-graph-filters .foundation-graph-check input { width: auto; }
 .foundation-graph-legend { border: 1px solid var(--border, #d8dee8); border-radius: 8px; color: var(--muted, #58657a); font-size: 12px; padding: 8px 10px; }
 .foundation-graph-canvas { border: 1px solid var(--border, #d8dee8); border-radius: 12px; height: min(62vh, 680px); min-height: 420px; overflow: hidden; }
-.foundation-graph-canvas .react-flow__node { border-radius: 10px; min-width: 150px; padding: 9px; }
-.foundation-graph-canvas .react-flow__edge-text { font-size: 11px; }
+.foundation-graph-canvas .react-flow__node { border-radius: 10px; box-sizing: border-box; padding: 9px; width: 240px; }
+.foundation-graph-canvas .react-flow__edge-text { font-size: 11px; paint-order: stroke; stroke: var(--surface, #fff); stroke-width: 4px; stroke-linejoin: round; }
 .foundation-graph-node { display: grid; gap: 2px; text-align: left; }
-.foundation-graph-node span { color: #566276; font-size: 11px; }
+.foundation-graph-node span { color: #566276; font-size: 11px; overflow-wrap: anywhere; }
 .foundation-graph-summary { color: var(--muted, #697386); margin: 0; }
 .foundation-graph-fallback { border: 1px solid #d9a321; border-radius: 10px; background: #fff8e5; padding: 14px; }
 .foundation-apply-bar, .foundation-actions { background: var(--surface, #fff); border-top: 1px solid var(--border, #d8dee8); padding: 12px 0 0; }

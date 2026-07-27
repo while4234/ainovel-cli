@@ -3,8 +3,18 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { CoreCastEditor } from '../components/CoreCastEditor.jsx';
 import { FoundationOverview } from './FoundationOverview.jsx';
+import { FoundationLoadFailure } from './FoundationCenter.jsx';
+import { CharacterEditor } from './CharacterEditor.jsx';
 
 describe('foundation components', () => {
+  it('renders a recoverable error instead of an endless loading state', () => {
+    const markup = renderToStaticMarkup(<FoundationLoadFailure error={{ message: 'signature mismatch' }} onRetry={() => {}} />);
+    expect(markup).toContain('StoryFoundation 加载失败');
+    expect(markup).toContain('signature mismatch');
+    expect(markup).toContain('重试');
+    expect(markup).not.toContain('正在加载 StoryFoundation');
+  });
+
   it('adaptation 同时显示 source 只读与 target 数据', () => {
     const markup = renderToStaticMarkup(<FoundationOverview server={{ mode: 'adaptation', baseRevision: 2, baseAuditSignature: 'abcdef012345', editable: true, sourceFoundation: { premise: '原著前提', source_signature: 'source123456', characters: [{ id: 'source-hero', name: '原著主角', role: '主角', description: '推动原著主线' }], world_rules: [] }, modeSpecific: {}, coreCast: { members: [], source_dispositions: [] } }} draft={{ premise: '目标前提', characters: [], relationships: [], world_rules: [] }} onPremiseChange={() => {}} />);
     expect(markup).toContain('SourceFoundation（只读）');
@@ -62,5 +72,66 @@ describe('foundation components', () => {
     expect(markup).toContain('角色 1 代号');
     expect(markup).not.toContain('角色 2 代号');
     expect((markup.match(/core-cast-member-card/g) || [])).toHaveLength(1);
+  });
+
+  it('只读规划阶段仍展示待确认角色候选并允许显式确认', () => {
+    const candidate = {
+      id: 'support-shen',
+      name: '沈辞',
+      role: '男主心腹助理',
+      tier: 'important',
+      aliases: [],
+      traits: ['可靠'],
+      constraints: ['不替代主角决策']
+    };
+    const markup = renderToStaticMarkup(<CharacterEditor
+      value={[]}
+      relationships={[]}
+      disabled
+      onChange={() => {}}
+      workspace={{
+        mode: 'original',
+        allowedOperations: ['confirm'],
+        confirmationStatus: 'unconfirmed',
+        candidate: { foundation: { characters: [candidate], relationships: [] } },
+        run: { mode: 'review', status: 'completed' },
+        completenessByID: { 'support-shen': { status: 'complete', missing: [] } },
+        findings: []
+      }}
+    />);
+    expect(markup).toContain('沈辞');
+    expect(markup).toContain('男主心腹助理');
+    expect(markup).toMatch(/<button class="tool-button accent" type="button"><svg[^>]*>[\s\S]*确认本轮角色候选<\/button>/);
+  });
+
+  it('已确认角色审核按稳定角色去重统计并显示通过', () => {
+    const characters = [
+      { id: 'lead', name: '主角', role: '主角', tier: 'core', aliases: [], traits: [], constraints: [] },
+      { id: 'support', name: '助理', role: '配角', tier: 'important', aliases: [], traits: [], constraints: [] }
+    ];
+    const completeness = [
+      { character_id: 'lead', status: 'complete', missing: [] },
+      { character_id: 'support', status: 'complete', missing: [] },
+      { character_id: 'lead', status: 'complete', missing: null },
+      { character_id: 'support', status: 'complete', missing: null }
+    ];
+    const markup = renderToStaticMarkup(<CharacterEditor
+      value={characters}
+      relationships={[]}
+      disabled
+      onChange={() => {}}
+      workspace={{
+        mode: 'original',
+        confirmationStatus: 'confirmed',
+        completeness,
+        completenessByID: Object.fromEntries(completeness.map((item) => [item.character_id, item])),
+        findings: []
+      }}
+    />);
+
+    expect(markup).toContain('完整 2/2');
+    expect(markup).not.toContain('完整 4/2');
+    expect(markup).toContain('通过');
+    expect(markup).not.toContain('未审核');
   });
 });

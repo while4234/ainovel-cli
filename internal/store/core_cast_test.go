@@ -41,6 +41,64 @@ func TestCoreCastStoreCASConfirmationAndSemanticInvalidation(t *testing.T) {
 	}
 }
 
+func TestCoreCastRepairLegacyUnconfirmedSignaturePreservesDraft(t *testing.T) {
+	st := NewStore(t.TempDir())
+	saved, err := st.CoreCast.SaveCAS(storeCompleteNormalCoreCast(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := saved
+	legacy.DraftRevision++
+	legacy.DraftHash = "legacy-normalization-changed"
+	if err := st.CoreCast.io.WriteJSON(coreCastContractFile, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CoreCast.Load(); !errors.Is(err, ErrCoreCastContentSignatureMismatch) {
+		t.Fatalf("legacy signature load error = %v", err)
+	}
+	migrated, err := st.CoreCast.RepairLegacyUnconfirmedSignature()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.Revision != legacy.Revision+1 ||
+		migrated.DraftRevision != legacy.DraftRevision ||
+		migrated.DraftHash != legacy.DraftHash ||
+		len(migrated.Members) != len(legacy.Members) ||
+		migrated.ContentSignature == legacy.ContentSignature {
+		t.Fatalf("migrated legacy draft = %+v", migrated)
+	}
+	if reloaded, err := st.CoreCast.Load(); err != nil || reloaded.ContentSignature != migrated.ContentSignature {
+		t.Fatalf("reloaded migrated draft = %+v err=%v", reloaded, err)
+	}
+}
+
+func TestCoreCastLoadWithLegacySignatureRepairPreservesUnconfirmedDraft(t *testing.T) {
+	st := NewStore(t.TempDir())
+	saved, err := st.CoreCast.SaveCAS(storeCompleteNormalCoreCast(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := saved
+	legacy.DraftRevision++
+	legacy.DraftHash = "legacy-normalization-changed"
+	if err := st.CoreCast.io.WriteJSON(coreCastContractFile, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := st.CoreCast.LoadWithLegacySignatureRepair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated == nil ||
+		migrated.Revision != legacy.Revision+1 ||
+		migrated.DraftRevision != legacy.DraftRevision ||
+		migrated.DraftHash != legacy.DraftHash ||
+		len(migrated.Members) != len(legacy.Members) ||
+		migrated.ContentSignature == legacy.ContentSignature {
+		t.Fatalf("migrated legacy draft = %+v", migrated)
+	}
+}
+
 func TestCoreCastConcurrentSaveAllowsOneRevisionWinner(t *testing.T) {
 	dir := t.TempDir()
 	first := NewStore(dir)
@@ -125,6 +183,33 @@ func TestCoreCastPublishIsIdempotentAndDoesNotWriteAdaptationSource(t *testing.T
 	}
 	if retried.Revision != published.Revision || afterRetry.Revision != formal.Revision {
 		t.Fatalf("idempotent retry advanced revisions: contract %d->%d foundation %d->%d", published.Revision, retried.Revision, formal.Revision, afterRetry.Revision)
+	}
+	_, err = st.BeginOriginalCharacterReview(&domain.PlanningReview{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil || review == nil {
+		t.Fatalf("load active Foundation review: review=%+v err=%v", review, err)
+	}
+	reviewedCandidate := domain.CloneStoryFoundation(formal)
+	reviewedCandidate.RelationshipsReviewed = true
+	if _, _, err := st.PublishOriginalCharacterCandidate(
+		FoundationGenerationFence{
+			Generation:   review.FoundationGeneration,
+			BaseRevision: review.FoundationBaseRevision,
+		},
+		reviewedCandidate,
+		review.FoundationBaseRevision,
+	); err != nil {
+		t.Fatal(err)
+	}
+	retriedDuringGeneration, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("already-published cast should bypass the active generation mutation guard: %v", err)
+	}
+	if retriedDuringGeneration.Revision != published.Revision {
+		t.Fatalf("generation-time idempotent retry advanced contract revision: %d -> %d", published.Revision, retriedDuringGeneration.Revision)
 	}
 	sourceAfter, err := os.ReadFile(sourcePath)
 	if err != nil {

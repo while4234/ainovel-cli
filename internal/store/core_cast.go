@@ -12,6 +12,8 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
+var ErrCoreCastContentSignatureMismatch = errors.New("core cast content signature does not match persisted content")
+
 const (
 	coreCastContractFile = "meta/cocreate/core_cast_contract.json"
 	coreCastGateFile     = "meta/cocreate/core_cast_gate.json"
@@ -75,6 +77,24 @@ func (s *CoreCastStore) Load() (*domain.CoreCastContract, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.loadUnlocked()
+}
+
+// LoadWithLegacySignatureRepair loads the current contract and, only when the
+// persisted value is an unconfirmed and unpublished legacy draft, refreshes
+// the signature produced by an older normalization contract. Confirmed or
+// published evidence continues to fail closed.
+func (s *CoreCastStore) LoadWithLegacySignatureRepair() (*domain.CoreCastContract, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.loadUnlocked()
+	if !errors.Is(err, ErrCoreCastContentSignatureMismatch) {
+		return current, err
+	}
+	repaired, err := s.repairLegacyUnconfirmedSignatureUnlocked()
+	if err != nil {
+		return nil, err
+	}
+	return &repaired, nil
 }
 
 func (s *CoreCastStore) LoadGateBinding() (*CoreCastGateBinding, error) {
@@ -188,6 +208,42 @@ func (s *CoreCastStore) SaveCAS(candidate domain.CoreCastContract, expectedRevis
 	return normalized, nil
 }
 
+// RepairLegacyUnconfirmedSignature migrates an unconfirmed legacy draft whose
+// signature was produced by an older normalization contract. Confirmed or
+// published evidence is never repaired through this path.
+func (s *CoreCastStore) RepairLegacyUnconfirmedSignature() (domain.CoreCastContract, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.repairLegacyUnconfirmedSignatureUnlocked()
+}
+
+func (s *CoreCastStore) repairLegacyUnconfirmedSignatureUnlocked() (domain.CoreCastContract, error) {
+	var value domain.CoreCastContract
+	if err := s.io.ReadJSON(coreCastContractFile, &value); err != nil {
+		return domain.CoreCastContract{}, fmt.Errorf("load legacy core cast contract: %w", err)
+	}
+	if strings.TrimSpace(value.ConfirmedSignature) != "" ||
+		strings.TrimSpace(value.PublishReceipt.Status) != "" ||
+		strings.TrimSpace(value.PublishReceipt.ContentSignature) != "" {
+		return domain.CoreCastContract{}, fmt.Errorf("confirmed or published core cast evidence cannot be signature-migrated")
+	}
+	normalized, err := domain.NormalizeCoreCastContract(value)
+	if err != nil {
+		return domain.CoreCastContract{}, fmt.Errorf("normalize legacy core cast contract: %w", err)
+	}
+	if strings.TrimSpace(value.ContentSignature) == normalized.ContentSignature {
+		return normalized, nil
+	}
+	normalized.Revision = value.Revision + 1
+	normalized.ConfirmedSignature = ""
+	normalized.ConfirmedAt = ""
+	normalized.PublishReceipt = domain.CoreCastPublishReceipt{}
+	if err := s.io.WriteJSON(coreCastContractFile, normalized); err != nil {
+		return domain.CoreCastContract{}, fmt.Errorf("migrate legacy core cast signature: %w", err)
+	}
+	return normalized, nil
+}
+
 func (s *CoreCastStore) ConfirmCAS(expectedRevision int64, expectedSignature string, sourceCharacters, sourceMajor []domain.SourceMajorCharacter, sourceResolutionMissing []domain.CoreCastMissingItem) (domain.CoreCastContract, domain.CoreCastCompletionResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -249,6 +305,11 @@ func (s *CoreCastStore) PublishConfirmed(foundation *FoundationStore, sourceChar
 	if foundation == nil {
 		return domain.CoreCastContract{}, fmt.Errorf("story foundation store is required")
 	}
+	if published, ok, err := s.currentPublication(foundation); err != nil {
+		return domain.CoreCastContract{}, err
+	} else if ok {
+		return published, nil
+	}
 	if foundation.withSemanticMutation == nil {
 		return s.publishConfirmed(foundation, sourceCharacters, sourceMajor, sourceResolutionMissing)
 	}
@@ -259,6 +320,57 @@ func (s *CoreCastStore) PublishConfirmed(foundation *FoundationStore, sourceChar
 		return err
 	})
 	return published, err
+}
+
+// currentPublication recognizes an already-applied receipt before entering the
+// Foundation semantic-mutation guard. This matters during a Foundation
+// generation round: Character confirmation publishes the cast with the round
+// token, while Resume revalidates the same gate without owning that token.
+func (s *CoreCastStore) currentPublication(foundation *FoundationStore) (domain.CoreCastContract, bool, error) {
+	s.mu.Lock()
+	current, err := s.requireCurrentUnlocked()
+	if err != nil {
+		s.mu.Unlock()
+		return domain.CoreCastContract{}, false, err
+	}
+	snapshot := *current
+	s.mu.Unlock()
+	if snapshot.PublishReceipt.Status != "published" ||
+		snapshot.PublishReceipt.ContentSignature != snapshot.ContentSignature {
+		return domain.CoreCastContract{}, false, nil
+	}
+	formal, err := foundation.Load()
+	if err != nil {
+		return domain.CoreCastContract{}, false, fmt.Errorf("load story foundation for core cast receipt: %w", err)
+	}
+	expected := domain.ApplyCoreCastToFoundation(formal, snapshot)
+	charactersEqual, err := domain.StoryFoundationSectionEqual(formal, expected, domain.FoundationSectionCharacters)
+	if err != nil {
+		return domain.CoreCastContract{}, false, err
+	}
+	relationshipsEqual, err := domain.StoryFoundationSectionEqual(formal, expected, domain.FoundationSectionRelationships)
+	if err != nil {
+		return domain.CoreCastContract{}, false, err
+	}
+	reviewedEqual, err := domain.StoryFoundationSectionEqual(formal, expected, domain.FoundationSectionRelationshipsReviewed)
+	if err != nil {
+		return domain.CoreCastContract{}, false, err
+	}
+	if !charactersEqual || !relationshipsEqual || !reviewedEqual {
+		return domain.CoreCastContract{}, false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	latest, err := s.requireCurrentUnlocked()
+	if err != nil {
+		return domain.CoreCastContract{}, false, err
+	}
+	if latest.Revision != snapshot.Revision ||
+		latest.ContentSignature != snapshot.ContentSignature ||
+		latest.PublishReceipt != snapshot.PublishReceipt {
+		return domain.CoreCastContract{}, false, nil
+	}
+	return *latest, true, nil
 }
 
 func (s *CoreCastStore) publishConfirmed(foundation *FoundationStore, sourceCharacters, sourceMajor []domain.SourceMajorCharacter, sourceResolutionMissing []domain.CoreCastMissingItem) (domain.CoreCastContract, error) {
@@ -312,7 +424,7 @@ func (s *CoreCastStore) loadUnlocked() (*domain.CoreCastContract, error) {
 	}
 	// Persisted signatures are evidence. Recompute and fail closed on tampering.
 	if strings.TrimSpace(value.ContentSignature) != normalized.ContentSignature {
-		return nil, fmt.Errorf("core cast content signature does not match persisted content")
+		return nil, ErrCoreCastContentSignatureMismatch
 	}
 	return &normalized, nil
 }

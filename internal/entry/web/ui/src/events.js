@@ -57,7 +57,30 @@ export function mergeSnapshotUpdate(previousSnapshot, incomingSnapshot, workflow
     incomingSnapshot.WorkflowProgress ||
     previousSnapshot?.workflow_progress ||
     previousSnapshot?.WorkflowProgress;
-  return mergeWorkflowProgress(preserveOutlineDetails(previousSnapshot, incomingSnapshot), progress);
+  const withPlanningDetails = preservePlanningReviewDetails(previousSnapshot, incomingSnapshot);
+  return mergeWorkflowProgress(preserveOutlineDetails(previousSnapshot, withPlanningDetails), progress);
+}
+
+// Compact SSE snapshots intentionally omit heavyweight Foundation collections.
+// While the user is reviewing a complete Foundation, retain the full payload
+// loaded by the project-open request instead of flashing empty roles/rules.
+export function preservePlanningReviewDetails(previousSnapshot, incomingSnapshot) {
+  if (!previousSnapshot || !incomingSnapshot || !isPendingFoundationReview(incomingSnapshot)) {
+    return incomingSnapshot;
+  }
+  const next = { ...incomingSnapshot };
+  for (const keys of [
+    ['CharacterDetails', 'character_details'],
+    ['WorldRules', 'world_rules'],
+    ['PlannedRelationships', 'planned_relationships'],
+    ['CoreCharacterIDs', 'core_character_ids']
+  ]) {
+    preserveNonEmptyArray(next, previousSnapshot, keys);
+  }
+  for (const keys of [['PremiseFull', 'premise_full'], ['Premise', 'premise']]) {
+    preserveNonEmptyText(next, previousSnapshot, keys);
+  }
+  return next;
 }
 
 // SSE snapshots deliberately omit heavyweight chapter detail. Preserve the
@@ -94,6 +117,31 @@ export function preserveOutlineDetails(previousSnapshot, incomingSnapshot) {
     };
   });
   return { ...incomingSnapshot, [incomingKey]: outline };
+}
+
+function isPendingFoundationReview(snapshot) {
+  const review = snapshot?.PlanningReview || snapshot?.planning_review;
+  const kind = String(review?.Kind ?? review?.kind ?? '').trim();
+  const status = String(review?.Status ?? review?.status ?? '').trim();
+  return kind === 'foundation' && (status === 'pending' || status === 'collecting');
+}
+
+function preserveNonEmptyArray(target, source, keys) {
+  const targetKey = keys.find((key) => Array.isArray(target[key]));
+  const sourceKey = keys.find((key) => Array.isArray(source[key]) && source[key].length > 0);
+  if (!sourceKey || (targetKey && target[targetKey].length > 0)) {
+    return;
+  }
+  target[targetKey || sourceKey] = source[sourceKey];
+}
+
+function preserveNonEmptyText(target, source, keys) {
+  const targetKey = keys.find((key) => typeof target[key] === 'string');
+  const sourceKey = keys.find((key) => String(source[key] || '').trim());
+  if (!sourceKey || (targetKey && String(target[targetKey] || '').trim())) {
+    return;
+  }
+  target[targetKey || sourceKey] = source[sourceKey];
 }
 
 function outlineChapter(row) {

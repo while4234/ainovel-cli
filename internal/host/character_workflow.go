@@ -161,6 +161,9 @@ func ConfirmOriginalCharacterCandidate(
 	if err != nil {
 		return CharacterConfirmationResult{}, err
 	}
+	if err := bindConfirmedCharacterCoreCast(st, &projected, lifecycle.Mode); err != nil {
+		return CharacterConfirmationResult{}, err
+	}
 	for _, finding := range conflicts {
 		if finding.Blocking || finding.Severity == domain.CharacterCardSeverityBlocking {
 			return CharacterConfirmationResult{}, fmt.Errorf("CoreCast conflict blocks character confirmation: %s", finding.Description)
@@ -273,4 +276,46 @@ func currentCoreCast(st *storepkg.Store) *domain.CoreCastContract {
 		return nil
 	}
 	return value
+}
+
+func bindConfirmedCharacterCoreCast(
+	st *storepkg.Store,
+	projected *domain.CoreCastContract,
+	mode domain.CharacterCardProjectMode,
+) error {
+	gate, err := st.CoreCast.LoadGateBinding()
+	if err != nil {
+		return fmt.Errorf("load Character confirmation binding: %w", err)
+	}
+	if gate == nil {
+		if mode == domain.CharacterCardProjectOriginal {
+			return nil
+		}
+		if projected.Mode == domain.CoreCastModeAdaptation &&
+			projected.DraftRevision > 0 &&
+			strings.TrimSpace(projected.DraftHash) != "" &&
+			len(strings.TrimSpace(projected.SourceSignature)) == 64 &&
+			len(strings.TrimSpace(projected.AdaptationIntentHash)) == 64 {
+			return nil
+		}
+		return fmt.Errorf("adaptation Character confirmation binding is missing")
+	}
+	expectedMode := domain.CoreCastModeNormal
+	if mode == domain.CharacterCardProjectAdaptation {
+		expectedMode = domain.CoreCastModeAdaptation
+	}
+	if gate.Mode != expectedMode {
+		return fmt.Errorf("Character confirmation binding mode is stale")
+	}
+	projected.Mode = expectedMode
+	projected.DraftRevision = gate.DraftRevision
+	projected.DraftHash = gate.DraftHash
+	if expectedMode == domain.CoreCastModeAdaptation {
+		projected.SourceSignature = gate.SourceSignature
+		projected.AdaptationIntentHash = gate.AdaptationIntentHash
+	} else {
+		projected.SourceSignature = ""
+		projected.AdaptationIntentHash = ""
+	}
+	return nil
 }

@@ -6488,14 +6488,14 @@ function CoCreatePanel({
 				<section className="simulation-section">
 					<div className="section-title"><Database size={17} /><span>世界规则</span></div>
 					<strong>Hard（不可违反）</strong>
-					<ul>{planningReview.hardWorldRules.map((rule) => <li key={textValue(rule, 'ID', 'id')}>{textValue(rule, 'Rule', 'rule')}</li>)}</ul>
+					<ul>{planningReview.hardWorldRules.length ? planningReview.hardWorldRules.map((rule) => <li key={textValue(rule, 'ID', 'id')}>{textValue(rule, 'Rule', 'rule')}</li>) : <li>暂无</li>}</ul>
 					<strong>Soft</strong>
 					<ul>{planningReview.softWorldRules.length ? planningReview.softWorldRules.map((rule) => <li key={textValue(rule, 'ID', 'id')}>{textValue(rule, 'Rule', 'rule')}</li>) : <li>暂无</li>}</ul>
 				</section>
 				{planningReview.pending ? <section className="simulation-section proposal-revision-section">
 					<label>修改意见<textarea value={planningRevision?.feedback || ''} onChange={(event) => setPlanningRevision((previous) => ({ ...previous, feedback: event.target.value, error: '' }))} /></label>
 					<button className="tool-button full-width" disabled={busy || !String(planningRevision?.feedback || '').trim()} onClick={() => runWithWindowScrollPreserved(onRevisePlanning)} type="button"><Pencil size={16} />按意见重新生成</button>
-					<button className="tool-button accent full-width" disabled={!canConfirmPlanning || !planningReview.coreCastPreserved || planningReview.readonly} onClick={() => runWithWindowScrollPreserved(onConfirmPlanning)} type="button"><Check size={16} />确认当前 Target Foundation</button>
+					<button className="tool-button accent full-width" disabled={!canConfirmPlanning || !planningReview.coreCastPreserved || planningReview.readonly} onClick={() => runWithWindowScrollPreserved(onConfirmPlanning)} type="button"><Check size={16} />确认当前完整设定</button>
 				</section> : <div className="workflow-status running"><strong>生成中</strong><span>Architect 正在补全完整 Foundation；任何正式 outline 均已在服务端封锁。</span></div>}
 				{planningReview.readonly ? <div className="error-banner compact">只读：{planningReview.readonlyReason}</div> : null}
 			</div>
@@ -10765,7 +10765,7 @@ function normalizeCoCreateNumberText(text) {
   return String(text || '')
     .replace(/[，,](?=\d{3}\b)/g, '')
     .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
-    .replace(/[零〇一二两兩三四五六七八九十百千万萬]+(?=\s*(?:字|words?|runes?|万|萬|w|W|k|K|千))/g, (match) => {
+    .replace(/[零〇一二两兩三四五六七八九十百千]+(?:万|萬)?(?=\s*(?:字|words?|runes?|万|萬|w|W|k|K|千))/g, (match) => {
       const value = chineseNumberToArabic(match);
       return value > 0 ? String(value) : match;
     });
@@ -10964,8 +10964,8 @@ export function getCoCreatePlanningReview(snapshot) {
 	coreCharacters: characters.filter((character) => coreCharacterSet.has(textValue(character, 'ID', 'id'))),
 	supportingCharacters: characters.filter((character) => !coreCharacterSet.has(textValue(character, 'ID', 'id'))),
 		plannedRelationships: adaptationActive ? arrayValue(targetFoundation, 'Relationships', 'relationships') : arrayValue(snapshot, 'PlannedRelationships', 'plannedRelationships', 'planned_relationships'),
-		hardWorldRules: (adaptationActive ? arrayValue(targetFoundation, 'WorldRules', 'worldRules', 'world_rules') : arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules')).filter((rule) => textValue(rule, 'Strength', 'strength') === 'hard'),
-		softWorldRules: (adaptationActive ? arrayValue(targetFoundation, 'WorldRules', 'worldRules', 'world_rules') : arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules')).filter((rule) => textValue(rule, 'Strength', 'strength') === 'soft'),
+		hardWorldRules: (adaptationActive ? arrayValue(targetFoundation, 'WorldRules', 'worldRules', 'world_rules') : arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules')).filter((rule) => coCreateWorldRuleStrength(rule) === 'hard'),
+		softWorldRules: (adaptationActive ? arrayValue(targetFoundation, 'WorldRules', 'worldRules', 'world_rules') : arrayValue(snapshot, 'WorldRules', 'worldRules', 'world_rules')).filter((rule) => coCreateWorldRuleStrength(rule) === 'soft'),
 		coreCastPreserved: adaptationActive || Boolean(valueByKey(snapshot, 'CoreCastPreserved', 'coreCastPreserved', 'core_cast_preserved')),
     brief: textValue(review, 'Brief', 'brief'),
     targetTotalWords: numberValue(review, 'TargetTotalWords', 'targetTotalWords', 'target_total_words'),
@@ -10975,6 +10975,17 @@ export function getCoCreatePlanningReview(snapshot) {
     chapters,
     volumes
   };
+}
+
+export function coCreateWorldRuleStrength(rule) {
+  const strength = textValue(rule, 'Strength', 'strength').toLowerCase();
+  const id = textValue(rule, 'ID', 'id').toLowerCase();
+  // One historical retry path serialized grouped hr_/sr_ rules as a bare
+  // array and defaulted every item to hard. Preserve explicit non-legacy
+  // values, but recover the stable semantic group for those known IDs.
+  if (id.startsWith('sr_')) return 'soft';
+  if (id.startsWith('hr_')) return 'hard';
+  return strength;
 }
 
 function normalizeCoCreatePlanningVolumes(volumes, chapters = []) {

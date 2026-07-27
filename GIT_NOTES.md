@@ -46,6 +46,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-27 `pending` `fix: preserve long-form co-create planning context`:
+  restores the confirmed Character/Foundation workflow without discarding prior
+  co-create decisions, bounds transient coordinator/subagent receipts, and makes
+  original volume planning/audit read durable scoped context instead of
+  recursively embedding prior drafts and audit JSON. The live `插翅难飞`
+  project retains revision 3 with 4 complete roles, 6 relationships, and 25
+  rules; it generated and independently passed all 5 volume skeletons (55
+  planned chapters), survived a Web service restart, and stops at the explicit
+  volume-review gate with zero detailed chapters. Stress coverage preserves
+  audit/index facts for a 5,000,000-word, 160-volume plan within bounded model
+  context. Focused agents/flow/tools/store tests, frontend tests/build, live
+  browser checks, and restart persistence checks pass.
 - 2026-07-27 `2ed4f77` `fix: deduplicate co-create request context`:
   canonicalizes the transient co-create model view on every round while
   preserving every user turn, every visible Agent reply, and the latest

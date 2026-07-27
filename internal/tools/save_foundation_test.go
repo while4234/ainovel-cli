@@ -22,6 +22,59 @@ func TestSaveFoundationSchemaAllowsMissingType(t *testing.T) {
 	}
 }
 
+func TestDecodeWorldRulesAcceptsGroupedHardAndSoftObject(t *testing.T) {
+	rules, err := decodeWorldRules(`{
+		"hard_rules":[{"id":"identity","category":"identity","rule":"Confirmed identities never drift."}],
+		"soft_rules":[{"id":"tone","category":"tone","rule":"Prefer restrained narration."}],
+		"setting_summary":{"era":"modern"},
+		"scale":"long"
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 2 ||
+		rules[0].Strength != domain.WorldRuleStrengthHard ||
+		rules[1].Strength != domain.WorldRuleStrengthSoft {
+		t.Fatalf("grouped rules = %+v", rules)
+	}
+}
+
+func TestDecodeWorldRulesInfersLegacyArrayStrengthFromStableID(t *testing.T) {
+	rules, err := decodeWorldRules(`[
+		{"id":"hr_identity","rule":"Identity is stable."},
+		{"id":"sr_tone","rule":"Prefer restrained narration."},
+		{"id":"custom","rule":"Historical unknown IDs remain compatible."},
+		{"id":"sr_explicit","rule":"Explicit values win.","strength":"hard"}
+	]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rules[0].Strength != domain.WorldRuleStrengthHard ||
+		rules[1].Strength != domain.WorldRuleStrengthSoft ||
+		rules[2].Strength != "" ||
+		rules[3].Strength != domain.WorldRuleStrengthHard {
+		t.Fatalf("array rules = %+v", rules)
+	}
+}
+
+func TestDecodeLayeredOutlineAcceptsSingleAndGroupedObjects(t *testing.T) {
+	for name, content := range map[string]string{
+		"single":  `{"index":1,"title":"Opening","theme":"Pressure"}`,
+		"grouped": `{"volumes":[{"index":2,"title":"Escalation","theme":"Cost"}]}`,
+		"wrapped": `{"volume":{"index":3,"title":"Payoff","theme":"Choice"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			volumes, err := decodeLayeredOutline(content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(volumes) != 1 || volumes[0].Index == 0 || volumes[0].Title == "" {
+				t.Fatalf("volumes = %+v", volumes)
+			}
+		})
+	}
+}
+
 func TestSaveFoundationPersistsPlannedRelationshipsByStableIDOnly(t *testing.T) {
 	st := store.NewStore(testStoreDir(t))
 	if err := st.Init(); err != nil {

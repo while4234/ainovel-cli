@@ -226,6 +226,10 @@ describe('co-create begin payload helpers', () => {
       targetTotalWordsChoice: 'custom',
       customTargetTotalWords: '300000'
     });
+    expect(inferCoCreateIntakeFromInitial('目标20万字，target_total_words=200000')).toMatchObject({
+      targetTotalWords: 200000,
+      customTargetTotalWords: '200000'
+    });
   });
 
   it('requires confirmation for vague length labels and per-chapter counts', () => {
@@ -1112,7 +1116,9 @@ describe('workspace progress state', () => {
       PlannedRelationships: [{ id: 'rel-1', source_character_id: 'lead', target_character_id: 'support', status: 'planned' }],
       WorldRules: [
         { id: 'hard-1', rule: 'No resurrection', strength: 'hard' },
-        { id: 'soft-1', rule: 'Rain marks transitions', strength: 'soft' }
+        { id: 'soft-1', rule: 'Rain marks transitions', strength: 'soft' },
+        { id: 'hr_identity', rule: 'Identity is stable', strength: 'soft' },
+        { id: 'sr_tone', rule: 'Prefer restrained narration', strength: 'hard' }
       ]
     });
 
@@ -1123,8 +1129,8 @@ describe('workspace progress state', () => {
     expect(review.coreCharacters.map((item) => item.id)).toEqual(['lead']);
     expect(review.supportingCharacters.map((item) => item.id)).toEqual(['support']);
     expect(review.plannedRelationships).toHaveLength(1);
-    expect(review.hardWorldRules.map((item) => item.id)).toEqual(['hard-1']);
-    expect(review.softWorldRules.map((item) => item.id)).toEqual(['soft-1']);
+    expect(review.hardWorldRules.map((item) => item.id)).toEqual(['hard-1', 'hr_identity']);
+    expect(review.softWorldRules.map((item) => item.id)).toEqual(['soft-1', 'sr_tone']);
     expect(review.foundationFeedback).toBe('raise the cost');
   });
 

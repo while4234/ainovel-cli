@@ -88,13 +88,6 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 		return makeAutoResumeDecision(autoResumeState{Disposition: AutoResumeNoWork, Reason: "missing_output_dir"}, "项目没有可恢复目录"), nil
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
-	if err := host.RequireManagedCoreCastGate(st, false); err != nil {
-		return blockedAutoResume("core_cast_gate_blocked", err), nil
-	}
-	if err := st.RequireManuscriptWriteReady(); err != nil {
-		recovery := st.ManuscriptRecoveryState()
-		return makeRecoveryAutoResumeDecision(recovery), nil
-	}
 	if active, err := st.Revisions.Active(); err != nil {
 		return blockedAutoResume("revision_read_failed", err), nil
 	} else if active != nil {
@@ -110,6 +103,13 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 			autoResumeState{Disposition: AutoResumeBlocked, Reason: "active_manuscript_revision", Revision: active.Revision},
 			"正文修订等待签名审核或人工确认",
 		), nil
+	}
+	if err := host.RequireManagedCoreCastGate(st, false); err != nil {
+		return blockedAutoResume("core_cast_gate_blocked", err), nil
+	}
+	if err := st.RequireManuscriptWriteReady(); err != nil {
+		recovery := st.ManuscriptRecoveryState()
+		return makeRecoveryAutoResumeDecision(recovery), nil
 	}
 	progress, err := st.Progress.Load()
 	if err != nil {

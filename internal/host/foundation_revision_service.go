@@ -94,7 +94,7 @@ func (s *FoundationRevisionService) State() (*FoundationState, error) {
 	if err != nil {
 		return nil, err
 	}
-	contract, err := s.store.CoreCast.Load()
+	contract, err := s.store.CoreCast.LoadWithLegacySignatureRepair()
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +205,7 @@ func (s *FoundationRevisionService) Preview(request FoundationPreviewRequest) (*
 		validation.Errors = []string{normalizeErr.Error()}
 		normalized = request.Candidate
 	}
-	contract, err := s.store.CoreCast.Load()
+	contract, err := s.store.CoreCast.LoadWithLegacySignatureRepair()
 	if err != nil {
 		return nil, err
 	}
@@ -754,7 +754,7 @@ func (s *FoundationRevisionService) continueApply(runtime *domain.FoundationRevi
 		return nil, err
 	}
 	if preview.Diff.CoreCastReconfirmation {
-		if contract, err := s.store.CoreCast.Load(); err != nil {
+		if contract, err := s.store.CoreCast.LoadWithLegacySignatureRepair(); err != nil {
 			return nil, err
 		} else if contract != nil && contract.ConfirmedSignature != "" {
 			if _, err := s.store.CoreCast.UnconfirmCAS(contract.Revision); err != nil {

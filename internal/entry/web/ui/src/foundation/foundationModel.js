@@ -122,6 +122,7 @@ export function normalizeCharacterWorkspace(response = {}) {
     findings: array(workspace.findings).map(normalizeFinding),
     diff: normalizeCharacterDiff(workspace.diff),
     allowedOperations: array(workspace.allowed_operations).map(String),
+    confirmationStatus: String(workspace.confirmation_status || ''),
     staleReason: String(workspace.stale_reason || ''),
     readonlyReason: String(workspace.readonly_reason || ''),
     busyReason: String(workspace.busy_reason || ''),
@@ -256,13 +257,19 @@ export function normalizeRelationship(value = {}) {
 }
 
 export function normalizeWorldRule(value = {}) {
+  const id = String(value.id || '');
+  const legacyStrength = id.toLowerCase().startsWith('sr_')
+    ? 'soft'
+    : id.toLowerCase().startsWith('hr_')
+      ? 'hard'
+      : '';
   return {
-    id: String(value.id || ''),
+    id,
     title: String(value.title || ''),
     category: String(value.category || 'other'),
     rule: String(value.rule || ''),
     boundary: String(value.boundary || ''),
-    strength: ruleStrengths.includes(value.strength) ? value.strength : 'hard',
+    strength: legacyStrength || (ruleStrengths.includes(value.strength) ? value.strength : 'hard'),
     priority: Number.isFinite(Number(value.priority)) ? Number(value.priority) : 0,
     tags: uniqueStrings(value.tags)
   };

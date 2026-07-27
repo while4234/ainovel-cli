@@ -1604,33 +1604,18 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 	if s == nil {
 		return webCoCreateState{}
 	}
+	var legacyCoreCast *domain.CoreCastContract
+	if s.supportsLegacyCoreCast() {
+		legacyCoreCast = cloneWebCoreCast(s.coreCast)
+	}
 	canStart := s.session.CanStart()
 	completion := s.castCompletion()
-	blockingReasons := append([]string(nil), completion.BlockingReasons...)
+	blockingReasons := []string{}
 	castConfirmed := false
 	castSignature := ""
-	if s.coreCast != nil {
-		castSignature = s.coreCast.ContentSignature
-		castConfirmed = castSignature != "" && s.coreCast.ConfirmedSignature == castSignature
-	}
-	if s.requiresCoreCast() {
-		if s.coreCast == nil {
-			blockingReasons = append(blockingReasons, "core cast contract is required")
-		} else {
-			if s.coreCast.DraftRevision != s.session.DraftRevision() || s.coreCast.DraftHash != s.session.DraftHash() {
-				blockingReasons = append(blockingReasons, "core cast belongs to an older co-create draft")
-			}
-			if !castConfirmed {
-				blockingReasons = append(blockingReasons, "confirm the current core cast signature")
-			}
-			if s.kind == webCoCreateKindAdapt && s.adaptationBriefing != nil &&
-				(s.coreCast.SourceSignature != strings.TrimSpace(s.adaptationBriefing.SourceSignature) || s.coreCast.AdaptationIntentHash != strings.TrimSpace(s.adaptationBriefing.IntentHash)) {
-				blockingReasons = append(blockingReasons, "core cast source or adaptation intent binding is stale")
-			}
-		}
-		if !completion.Complete || len(blockingReasons) > 0 {
-			canStart = false
-		}
+	if legacyCoreCast != nil {
+		castSignature = legacyCoreCast.ContentSignature
+		castConfirmed = castSignature != "" && legacyCoreCast.ConfirmedSignature == castSignature
 	}
 	if needsRepair, _ := s.currentDraftNeedsRepair(); needsRepair {
 		canStart = false
@@ -1670,7 +1655,7 @@ func (s *webCoCreateSession) apiState() webCoCreateState {
 		Briefing:              briefingState,
 		PendingDecisions:      pendingDecisions,
 		BlockedReason:         blockedReason,
-		CoreCast:              cloneWebCoreCast(s.coreCast),
+		CoreCast:              legacyCoreCast,
 		SourceMajorCharacters: append([]domain.SourceMajorCharacter(nil), s.sourceMajorCharacters...),
 		CastCompletion:        completion,
 		CastConfirmed:         castConfirmed,
@@ -1823,7 +1808,9 @@ func writeCoreCastActionError(w http.ResponseWriter, err error, state webCoCreat
 	writeJSON(w, status, map[string]any{"error": details, "cocreate": state})
 }
 
-func (s *webCoCreateSession) requiresCoreCast() bool {
+// supportsLegacyCoreCast keeps old five-section checkpoints editable while new
+// co-create responses leave all Character ownership to the Character Agent.
+func (s *webCoCreateSession) supportsLegacyCoreCast() bool {
 	return s != nil && s.kind == webCoCreateKindAdapt
 }
 
@@ -1832,12 +1819,8 @@ func (s *webCoCreateSession) coreCastResumeExempt() bool {
 }
 
 func (s *webCoCreateSession) castCompletion() domain.CoreCastCompletionResult {
-	if s == nil || !s.requiresCoreCast() {
+	if s == nil || !s.supportsLegacyCoreCast() || s.coreCast == nil {
 		return domain.CoreCastCompletionResult{Complete: true, Missing: []domain.CoreCastMissingItem{}, BlockingReasons: []string{}}
-	}
-	if s.coreCast == nil {
-		missing := []domain.CoreCastMissingItem{{Code: "core_cast_required", Description: "core cast contract is required"}}
-		return webCoreCastCompletionWithExtra(domain.CoreCastCompletionResult{}, missing)
 	}
 	result := domain.CoreCastCompletion(*s.coreCast, s.sourceCharacters, s.sourceMajorCharacters)
 	return webCoreCastCompletionWithExtra(result, s.sourceResolutionMissing)

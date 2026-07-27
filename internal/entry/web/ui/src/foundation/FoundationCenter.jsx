@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import {
-  analyzeCharacters, applyFoundation, discardCharacterWorkspace, foundationError, foundationIdempotencyKey,
+  analyzeCharacters, applyFoundation, confirmCharacterCandidate, discardCharacterWorkspace, foundationError, foundationIdempotencyKey,
   loadCharacterWorkspace, loadFoundation, previewFoundation, retryCharacterWorkspace, retryFoundation, reviewCharacters
 } from './foundationApi.js';
 import { canApplyFoundation, createFoundationState, foundationReducer } from './foundationReducer.js';
@@ -121,6 +121,9 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
   }, [state.status, state.server?.mode, onOpenReview]);
 
   if (!projectId) return <div className="foundation-center empty-state">请先打开项目。</div>;
+  if (state.status === 'failed' && (!state.server || !state.draft)) {
+    return <FoundationLoadFailure error={state.error} onRetry={() => load()} />;
+  }
   if (state.status === 'loading' || !state.server || !state.draft) return <div className="foundation-center foundation-loading" aria-live="polite" role="status">正在加载 StoryFoundation…</div>;
 
   const disabled = !state.server.editable || ['previewing', 'applying', 'auditing', 'regenerating', 'awaiting_outline_approval', 'completed', 'failed', 'stale', 'readonly'].includes(state.status);
@@ -224,6 +227,16 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
     projectId, state.server, state.characterWorkspace,
     foundationIdempotencyKey('character-discard'), signal
   ), 'discard');
+  const runCharacterConfirm = () => runCharacterOperation(async (signal) => {
+    await confirmCharacterCandidate(
+      projectId,
+      state.characterWorkspace?.candidate,
+      foundationIdempotencyKey('character-confirm'),
+      signal
+    );
+    await load();
+    return loadCharacterWorkspace(projectId, '', signal);
+  }, 'confirm');
   const requestClose = (event) => {
     if (hasUnpublishedFoundationDraft(state.status)) setCloseRequested(event.currentTarget);
     else onClose?.();
@@ -251,7 +264,7 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
         onChange={(characters) => edit({ characters })}
         onOpenRelationships={() => setTab('relationships')}
         onAnalyze={runCharacterAnalyze} onReview={runCharacterReview}
-        onRetry={runCharacterRetry} onDiscard={runCharacterDiscard}
+        onRetry={runCharacterRetry} onDiscard={runCharacterDiscard} onConfirm={runCharacterConfirm}
       /> : null}
 		{tab === 'relationships' ? <RelationshipEditor projectId={projectId} auditSignature={state.server.baseAuditSignature} coreCast={state.server.coreCast} value={state.draft.relationships} characters={state.draft.characters} reviewed={state.draft.relationships_reviewed} disabled={disabled} errors={state.validation.fields} onChange={(relationships) => edit({ relationships })} onReviewedChange={(relationships_reviewed) => edit({ relationships_reviewed })} /> : null}
       {tab === 'rules' ? <WorldRuleEditor value={state.draft.world_rules} disabled={disabled} errors={state.validation.fields} onChange={(world_rules) => edit({ world_rules })} /> : null}
@@ -261,6 +274,16 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
     <footer className="foundation-actions"><span>{state.status === 'dirty' ? '有未预览的设定修改' : state.status === 'preview_ready' ? '预览已持久化，可应用' : '服务端状态已同步'}</span><button className="tool-button accent" disabled={state.status !== 'dirty' || !state.validation.valid} type="button" onClick={runPreview}>预览差异与影响</button></footer>
     {closeRequested ? <CloseDraftDialog trigger={closeRequested} onCancel={() => setCloseRequested(null)} onConfirm={() => { setCloseRequested(null); onClose?.(); }} /> : null}
   </div>;
+}
+
+export function FoundationLoadFailure({ error, onRetry }) {
+  return (
+    <div className="foundation-center empty-state" role="alert">
+      <strong>StoryFoundation 加载失败</strong>
+      <span>{error?.message || '无法读取当前项目设定，请重试。'}</span>
+      <button className="primary-button" type="button" onClick={onRetry}>重试</button>
+    </div>
+  );
 }
 
 function moveTab(event, index, setTab) {

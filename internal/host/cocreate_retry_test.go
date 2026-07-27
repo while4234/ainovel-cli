@@ -179,7 +179,7 @@ func TestCoCreateStreamRepairsUnknownCoreCastField(t *testing.T) {
 		t.Fatalf("repair messages = %+v", model.streamMessages)
 	}
 	repairText := model.streamMessages[1][len(model.streamMessages[1])-1].TextContent()
-	for _, want := range []string{`unknown field "age"`, "完整的 <reply><draft><cast><ready><suggestions> 五段协议", "年龄、性别、外貌、经历等信息必须写入 description 或 notes"} {
+	for _, want := range []string{`unknown field "age"`, "完整的 <reply><draft><ready><suggestions> 四段协议"} {
 		if !strings.Contains(repairText, want) {
 			t.Fatalf("repair instruction missing %q: %s", want, repairText)
 		}

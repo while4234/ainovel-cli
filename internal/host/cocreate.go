@@ -64,7 +64,7 @@ const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用�
 - preserve_details：仅适用于 chapter；原著细节优先，未受改编目标影响的剧情/段落允许复用原文，受影响部分再重写，并使用 source 字数容差。
 - 上面是解释表，不是 draft 内容模板；draft 的"## 改编模式"只写第一条用户消息中的当前模式字段和当前模式说明，不要写 rewrite_policy_rule=chapter=>preserve_details;arc/free=>full_rewrite 这类所有模式混在一起的规则串。
 
-每一轮回复严格按以下 XML 格式输出，包含五个标签，依次出现，每个标签都必须有正确的开闭标签：
+每一轮回复严格按以下 XML 格式输出，包含四个标签，依次出现，每个标签都必须有正确的开闭标签。不要输出 <cast>；来源角色处置和目标角色意图只能作为交给 Character Agent 的未审核约束写入 <draft>：
 
 <reply>
 给用户看的中文自然回复：先回应用户的改编意图，再最多提出 1 到 2 个当前最关键的问题。如果改编目标已足够明确，告诉用户可以按 Ctrl+S 开始改编。
@@ -77,7 +77,7 @@ const adaptCoCreateSystemPrompt = `你是一个小说"改编共创"助手。用�
 
 每一轮都要在已有结论上累积更新，吸收用户最新意图；即使本轮没有新增也要把完整 brief 原样再写一次。
 </draft>
-` + coCreateCastProtocolTail
+` + coCreateProtocolTail
 
 // coCreateProtocolTail 是两种共创模式共用的输出协议尾部（<ready> / <suggestions> + 输出规范）。
 // 两模式只在开场语境与 <draft> 语义上不同，协议完全一致。
@@ -112,20 +112,6 @@ const coCreateCastJSONFieldContract = `JSON 字段必须严格使用以下白名
 - source_disposition：source_character_id, action, target_character_ids, rationale。
 所有字符串字段必须使用 JSON 字符串，不得使用 null；没有内容的可选字段应省略或使用空字符串/空数组。
 关系 type 只能是 ally/rival/family/romantic/mentor/professional/other；direction 只能是 directed/bidirectional/undirected；status 只能是 planned/active/strained/broken/resolved。`
-
-const coCreateCastProtocolTail = `
-<cast>
-严格 JSON 的 CoreCastContract 草稿。不得使用 Markdown 代码围栏。必须包含 version=1、mode、members、planned_relationships、source_dispositions。
-members 每项必须包含 character、importance、origin、mainline_function、source_character_ids、inclusion_rationale、no_core_relationships；character 使用完整角色字段。
-importance 只能是 protagonist/co_protagonist/major_pov/antagonist/love_interest/major_support/user_important。
-origin 只能是 original/source；source disposition action 只能是 keep/rename/merge/split/exclude。
-` + coCreateCastJSONFieldContract + `
-完整性要求：
-- 每个 member.character.constraints 必须至少包含 1 条非空、可执行的关键约束，不得使用空数组。
-- 每个 member 必须至少出现在 1 条 planned_relationships 中；确实没有核心关系时，才把该 member.no_core_relationships 设为 true。
-- 字段内容要简洁，避免在 description、arc、notes 之间重复同一信息，以免响应超过输出上限。
-</cast>
-` + coCreateProtocolTail
 
 func coCreateSystemPromptWithSimulation(st *store.Store, mode string) string {
 	return appendSimulationCoCreatePrompt(coCreateSystemPrompt, st, mode)

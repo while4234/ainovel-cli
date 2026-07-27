@@ -492,7 +492,7 @@ func BuildCoordinator(
 		agentcore.WithModel(coordinatorModel),
 		agentcore.WithSystemPrompt(globalprompt.Apply(coordinatorPrompt)),
 		agentcore.WithTools(
-			subagentTool,
+			newWorkflowSubagentTool(subagentTool),
 			newCoordinatorContextTool(contextTool),
 			revisionFenceWrites(store.Revisions, tools.NewSaveUserRulesTool(userRulesSvc)),
 			revisionFenceWrites(store.Revisions, tools.NewReopenBookTool(store)),
@@ -761,6 +761,65 @@ type writerContextTool struct {
 
 type coordinatorContextTool struct {
 	inner *tools.ContextTool
+}
+
+// workflowSubagentTool keeps the Coordinator on the Host-owned synchronous
+// route. The generic agentcore tool also exposes background/team/parallel
+// modes, but those modes bypass the novel workflow checkpoint contract and a
+// model can occasionally select them despite an exact Host instruction.
+type workflowSubagentTool struct {
+	inner agentcore.Tool
+}
+
+func newWorkflowSubagentTool(inner agentcore.Tool) agentcore.Tool {
+	return &workflowSubagentTool{inner: inner}
+}
+
+func (t *workflowSubagentTool) Name() string { return t.inner.Name() }
+func (t *workflowSubagentTool) Description() string {
+	return "Run exactly one Host-directed novel workflow subagent synchronously. Provide only agent and task."
+}
+func (t *workflowSubagentTool) Schema() map[string]any {
+	schema := t.inner.Schema()
+	properties, _ := schema["properties"].(map[string]any)
+	for _, key := range []string{"tasks", "chain", "background", "description", "team_name", "name", "color"} {
+		delete(properties, key)
+	}
+	schema["required"] = []string{"agent", "task"}
+	return schema
+}
+func (t *workflowSubagentTool) ReadOnly(json.RawMessage) bool        { return false }
+func (t *workflowSubagentTool) ConcurrencySafe(json.RawMessage) bool { return false }
+func (t *workflowSubagentTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	var request struct {
+		Agent string `json:"agent"`
+		Task  string `json:"task"`
+		Model string `json:"model,omitempty"`
+	}
+	if err := json.Unmarshal(args, &request); err != nil {
+		return nil, err
+	}
+	canonical, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	result, err := t.inner.Execute(ctx, canonical)
+	if err != nil {
+		return result, err
+	}
+	// Workflow subagents persist their authoritative result before returning.
+	// The Host derives the next route from that durable checkpoint, so replaying
+	// the full model output into Coordinator history only makes long planning
+	// runs grow once per volume.
+	return json.Marshal(struct {
+		Completed  bool   `json:"completed"`
+		Agent      string `json:"agent"`
+		Checkpoint string `json:"checkpoint"`
+	}{
+		Completed:  true,
+		Agent:      request.Agent,
+		Checkpoint: "persisted; Host will route from the durable project state",
+	})
 }
 
 func newCoordinatorContextTool(inner *tools.ContextTool) agentcore.Tool {

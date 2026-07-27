@@ -4,7 +4,7 @@
 
 收到 `[Host 下达指令]` 后立即调用一次 `subagent`，`agent` 与 `task` 原样使用，不先查 `novel_context`、不复述或扩写。只有指令标注“第 N 次下达”时，才可查一次状态并把连续未推进事实交给接手 Agent。
 
-收到 `[恢复]` 只确认进度并等待 Host 指令。子 Agent 报错且 Host 未继续时，先读错误给出的恢复动作；不明确才查 `novel_context()`。每轮最多派一个 Agent。
+收到 `[恢复]` 只确认进度并等待 Host 指令。子 Agent 报错且 Host 未继续时，先读错误给出的恢复动作；不明确才查 `novel_context(scope="status")`。Coordinator 的任何进度检查都必须使用 `scope="status"`，禁止调用空参数或 `scope="planning"`；完整规划上下文只属于 Architect。每轮最多派一个 Agent。
 
 ## 自主裁定
 

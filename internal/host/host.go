@@ -186,6 +186,14 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 			h.stopForPlanningReview()
 			return
 		}
+		// Character review is a durable human-confirmation boundary. Stop the
+		// active Coordinator immediately after the review subagent persists a
+		// passing result; otherwise the same model turn can freelance an
+		// Architect dispatch before the user has published the candidate.
+		if h != nil && characterConfirmationPending(store) {
+			h.stopForCharacterConfirmation()
+			return
+		}
 		if router != nil {
 			router.Dispatch()
 		}
@@ -384,9 +392,6 @@ func (h *Host) StartPrepared(promptText string) error {
 	if promptText == "" {
 		return fmt.Errorf("prompt is required")
 	}
-	if err := RequireCoreCastGate(h.store, domain.CoreCastModeNormal, true); err != nil {
-		return err
-	}
 	if err := h.budget.Refuse(); err != nil {
 		return err
 	}
@@ -448,9 +453,6 @@ func (h *Host) StartAdaptationCharacterWorkflow(promptText string) error {
 	if promptText == "" {
 		return fmt.Errorf("adaptation character brief is required")
 	}
-	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
-		return err
-	}
 	if err := h.budget.Refuse(); err != nil {
 		return err
 	}
@@ -468,13 +470,17 @@ func (h *Host) StartAdaptationCharacterWorkflow(promptText string) error {
 		return fmt.Errorf("adaptation intent is required: %w", err)
 	}
 	coreCast, err := h.store.CoreCast.Load()
-	if err != nil || coreCast == nil {
-		return fmt.Errorf("adaptation CoreCast is required: %w", err)
+	if err != nil {
+		return fmt.Errorf("load optional legacy adaptation CoreCast seed: %w", err)
+	}
+	coreCastSignature := ""
+	if coreCast != nil {
+		coreCastSignature = coreCast.ContentSignature
 	}
 	if err := h.store.Adaptation.SaveCharacterBrief(domain.AdaptationCharacterBrief{
 		Version: 1, Brief: promptText,
 		SourceSignature: storepkg.AdaptationSourceSignature(*manifest),
-		IntentHash:      intent.IntentHash, CoreCastSignature: coreCast.ContentSignature,
+		IntentHash:      intent.IntentHash, CoreCastSignature: coreCastSignature,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		return err
@@ -554,6 +560,9 @@ func (h *Host) BuildAdaptationProposalContext(ctx context.Context, options adapt
 	if options.Brief == "" {
 		return nil, fmt.Errorf("adaptation brief is required")
 	}
+	if _, _, err := adapt.ValidatePreparedSource(h.store, options.SourcePath); err != nil {
+		return nil, err
+	}
 	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
 		return nil, err
 	}
@@ -580,6 +589,9 @@ func (h *Host) BuildAdaptationProposalVolumesContext(ctx context.Context, option
 	options.Brief = strings.TrimSpace(options.Brief)
 	if options.Brief == "" {
 		return nil, fmt.Errorf("adaptation brief is required")
+	}
+	if _, _, err := adapt.ValidatePreparedSource(h.store, options.SourcePath); err != nil {
+		return nil, err
 	}
 	if err := RequireCoreCastGate(h.store, domain.CoreCastModeAdaptation, true); err != nil {
 		return nil, err
@@ -908,8 +920,8 @@ func (h *Host) persistAdaptationConfirmationSteps(proposal domain.AdaptationPlan
 	if resetErr := h.store.Checkpoints.Reset(); resetErr != nil {
 		return nil, fmt.Errorf("reset checkpoints: %w", resetErr)
 	}
-	if resetErr := h.store.Adaptation.ResetGenerated(); resetErr != nil {
-		return nil, fmt.Errorf("reset generated adaptation state: %w", resetErr)
+	if resetErr := h.store.Adaptation.ResetConfirmedArtifactsForProposal(); resetErr != nil {
+		return nil, fmt.Errorf("reset confirmed adaptation artifacts: %w", resetErr)
 	}
 	if initErr := h.store.Progress.Init("", len(proposal.Chapters)); initErr != nil {
 		return nil, fmt.Errorf("init progress: %w", initErr)
@@ -1041,6 +1053,9 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 		return "", fmt.Errorf("阶段共创进行中，请先结束共创")
 	}
 	h.mu.Unlock()
+	if err := h.ensureContinuationWritingAllowed(); err != nil {
+		return "", err
+	}
 	if err := RequireManagedCoreCastGate(h.store, true); err != nil {
 		return "", err
 	}
@@ -1070,10 +1085,6 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	if meta, loadErr := h.store.RunMeta.Load(); loadErr == nil && meta != nil {
 		pendingSteer = meta.PendingSteer
 	}
-	if err := h.ensureContinuationWritingAllowed(); err != nil {
-		return "", err
-	}
-
 	if _, err := h.store.ReconcilePendingRewriteProgress(); err != nil {
 		return "", err
 	}
@@ -1553,6 +1564,46 @@ func (h *Host) stopForPlanningReview() bool {
 		Time:     time.Now(),
 		Category: "SYSTEM",
 		Summary:  "规划自动审核完成，等待用户审核",
+		Level:    "success",
+	})
+	return true
+}
+
+func characterConfirmationPending(st *storepkg.Store) bool {
+	if st == nil {
+		return false
+	}
+	candidate, lifecycle, binding, err := tools.CurrentCharacterWorkflow(st)
+	if err != nil || candidate == nil || lifecycle == nil {
+		return false
+	}
+	return lifecycle.AnalysisStatus == domain.CharacterCardAnalysisCandidateReady &&
+		lifecycle.ReviewStatus == domain.CharacterCardReviewPassed &&
+		lifecycle.ConfirmationStatus == domain.CharacterCardUnconfirmed &&
+		lifecycle.Candidate == binding.Candidate &&
+		lifecycle.ReviewedCandidate == binding.Candidate &&
+		lifecycle.ReviewedInputDigest == binding.InputDigest
+}
+
+// stopForCharacterConfirmation ends the active run at the persisted reviewed
+// candidate. ConfirmCharacterCandidate publishes it and resumes the normal
+// planning route; no Architect is allowed to run before that explicit action.
+func (h *Host) stopForCharacterConfirmation() bool {
+	h.mu.Lock()
+	running := h.lifecycle == lifecycleRunning
+	if running {
+		h.lifecycle = lifecycleIdle
+	}
+	h.mu.Unlock()
+	if !running {
+		return false
+	}
+	h.observer.setAborting(true)
+	h.coordinator.Abort()
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  "角色独立审核已通过，等待用户确认并发布本轮角色候选",
 		Level:    "success",
 	})
 	return true

@@ -9,7 +9,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-func TestCoCreateCastProtocolIsOptionalLegacySeedForNormalAndRequiredForAdaptation(t *testing.T) {
+func TestCoCreateCastProtocolIsOptionalLegacySeedForAllNewCoCreateModes(t *testing.T) {
 	validCast := `{"version":1,"mode":"normal","draft_revision":1,"members":[],"planned_relationships":[],"source_dispositions":[]}`
 	raw := "<reply>ok</reply><draft>draft</draft><cast>" + validCast + "</cast><ready>true</ready><suggestions></suggestions>"
 	reply, err := parseCoCreateResponseForProtocol(raw, false)
@@ -20,8 +20,9 @@ func TestCoCreateCastProtocolIsOptionalLegacySeedForNormalAndRequiredForAdaptati
 	if err != nil || normal.CoreCast != nil {
 		t.Fatalf("normal four-part parse = %+v, %v", normal, err)
 	}
-	if _, err := parseCoCreateResponseForProtocol("<reply>ok</reply><draft>draft</draft><ready>true</ready><suggestions></suggestions>", true); err == nil {
-		t.Fatal("adaptation response without cast was accepted")
+	adaptation, err := parseCoCreateResponseForProtocol("<reply>ok</reply><draft>draft</draft><ready>true</ready><suggestions></suggestions>", false)
+	if err != nil || adaptation.CoreCast != nil {
+		t.Fatalf("adaptation four-part parse = %+v, %v", adaptation, err)
 	}
 	stage, err := parseCoCreateResponseForProtocol("<reply>ok</reply><draft>draft</draft><ready>true</ready><suggestions></suggestions>", false)
 	if err != nil || stage.CoreCast != nil {
@@ -33,11 +34,11 @@ func TestCoCreateCastProtocolIsOptionalLegacySeedForNormalAndRequiredForAdaptati
 	if coCreatePromptRequiresCast(coCreateSystemPrompt) {
 		t.Fatal("normal prompt was misclassified as requiring a final cast")
 	}
-	if !strings.Contains(adaptCoCreateSystemPrompt, "<cast>\n") {
-		t.Fatal("adaptation prompt does not require cast")
+	if strings.Contains(adaptCoCreateSystemPrompt, "\n<cast>\n") {
+		t.Fatal("adaptation prompt still requires a cast")
 	}
-	if !coCreatePromptRequiresCast(adaptCoCreateSystemPrompt) {
-		t.Fatal("adaptation prompt was misclassified as optional cast")
+	if coCreatePromptRequiresCast(adaptCoCreateSystemPrompt) {
+		t.Fatal("adaptation prompt was misclassified as requiring a cast")
 	}
 	if strings.Contains(stageCoCreateSystemPrompt, "<cast>") {
 		t.Fatal("stage protocol was forced to include cast")
@@ -77,8 +78,8 @@ func TestCoCreateCastPromptDefinesExactCharacterFieldBoundary(t *testing.T) {
 		"mode 只能是字符串 normal（普通原创）或 adaptation（改编）",
 		"constraints、source_character_ids、tags、target_character_ids 都必须是 JSON 字符串数组",
 	} {
-		if !strings.Contains(coCreateCastProtocolTail, want) {
-			t.Fatalf("cast protocol missing exact field guidance %q", want)
+		if !strings.Contains(coCreateCastJSONFieldContract, want) {
+			t.Fatalf("legacy cast compatibility boundary missing exact field guidance %q", want)
 		}
 	}
 }

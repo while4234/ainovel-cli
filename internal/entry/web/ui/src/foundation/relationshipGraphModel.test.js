@@ -45,7 +45,10 @@ describe('planned relationship graph model', () => {
     expect(limited.nodes).toHaveLength(5);
     expect(all.nodes).toHaveLength(100);
     expect(all.edges).toHaveLength(300);
-    expect(deterministicGraphPositions(largeCharacters)).toEqual(deterministicGraphPositions([...largeCharacters].reverse()));
+    const positions = deterministicGraphPositions(largeCharacters);
+    expect(positions).toEqual(deterministicGraphPositions([...largeCharacters].reverse()));
+    expect(positions['character-001'].x - positions['character-000'].x).toBe(430);
+    expect(positions['character-010'].y - positions['character-000'].y).toBe(250);
   });
 
   it('isolates layout by project and audit signature and persists coordinates only', () => {

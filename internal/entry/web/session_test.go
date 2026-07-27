@@ -1424,6 +1424,7 @@ func TestProjectSessionResumeContinuesAdaptationProposalRuntime(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveProposalRuntime: %v", err)
 	}
+	installConfirmedNormalCoreCastGate(t, st)
 
 	fake := newFakeProjectHost()
 	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: outputDir}, fake)
@@ -1479,6 +1480,7 @@ func TestProjectSessionResumeContinuesAdaptationProposalDetails(t *testing.T) {
 	if _, err := st.Adaptation.SetPlanningWorkflowStage(domain.AdaptationPlanningStageDetailsGenerating, -1); err != nil {
 		t.Fatalf("SetPlanningWorkflowStage: %v", err)
 	}
+	installConfirmedNormalCoreCastGate(t, st)
 
 	fake := newFakeProjectHost()
 	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: outputDir}, fake)
@@ -1517,6 +1519,7 @@ func TestProjectSessionResumeDoesNotCrossLegacyAdaptationVolumeReview(t *testing
 	}); err != nil {
 		t.Fatalf("SaveVolumeReview: %v", err)
 	}
+	installConfirmedNormalCoreCastGate(t, st)
 
 	action, err := pendingAdaptationProposalResumeAction(st)
 	if err != nil {

@@ -9,8 +9,59 @@ import (
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/errs"
+	"github.com/voocel/ainovel-cli/internal/rules"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
+
+func TestOriginalCharacterContextDeduplicatesLegacyCastAndStartupPrompt(t *testing.T) {
+	st := characterToolStore(t)
+	brief := "必须出现心腹助理沈辞，冷面能干；保留全部角色约束。"
+	startPrompt := "[创作要求]\n" + brief
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status: "collecting", Kind: "foundation", Brief: brief,
+		StartPrompt: startPrompt, TargetTotalWords: 200000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UserRules.Save(&rules.Snapshot{
+		Version: rules.SnapshotVersion, Status: rules.StatusDegraded,
+		Structured:  rules.Structured{ChapterWords: &rules.WordRange{Min: 3000, Max: 5000}},
+		Preferences: "[startup_prompt]\n" + startPrompt,
+		Sources:     []string{"system_defaults", "startup_prompt"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	core := domain.CoreCastContract{
+		Version: domain.CoreCastContractVersion, Mode: domain.CoreCastModeNormal,
+		DraftRevision: 1, DraftHash: "legacy-draft",
+		Members: []domain.CoreCastMember{{
+			Character: completeCharacterCandidate()[0], Importance: domain.CoreCastImportanceProtagonist,
+			Origin: domain.CoreCastOriginOriginal, MainlineFunction: "legacy role",
+			InclusionRationale: "legacy seed", NoCoreRelationships: true,
+		}},
+	}
+	if _, err := st.CoreCast.SaveCAS(core, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	packet, _, err := buildCharacterContext(st, "bounded-original", CharacterRunAnalyze)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Count(text, brief) != 1 {
+		t.Fatalf("brief occurrence count = %d; packet=%s", strings.Count(text, brief), text)
+	}
+	if _, exposed := packet["core_cast"]; strings.Contains(text, `"start_prompt"`) || exposed ||
+		!strings.Contains(text, `"legacy_core_cast_binding"`) ||
+		!strings.Contains(text, `"target_total_words":200000`) {
+		t.Fatalf("original packet was not compacted safely: %s", text)
+	}
+}
 
 func TestCharacterToolsAnalyzeAndIndependentReview(t *testing.T) {
 	st := characterToolStore(t)
@@ -79,6 +130,87 @@ func TestCharacterCandidateEditInvalidatesPriorReview(t *testing.T) {
 	if lifecycle == nil || lifecycle.ReviewStatus != domain.CharacterCardReviewStale ||
 		lifecycle.ConfirmationStatus != domain.CharacterCardUnconfirmed {
 		t.Fatalf("edited candidate lifecycle = %+v", lifecycle)
+	}
+}
+
+func TestRebindConfirmedCharacterWorkflowIgnoresPremiseOnlyRevision(t *testing.T) {
+	st := characterToolStore(t)
+	published, err := st.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	published.Characters = completeCharacterCandidate()
+	published.RelationshipsReviewed = true
+	published, err = st.Foundation.SaveCAS(published, published.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, binding, inputs, _, err := CurrentCharacterCanonicalBinding(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err = domain.CharacterCardBindingFromFoundation(published, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := st.CharacterCards.SaveCandidateCAS(domain.CharacterCardCandidate{
+		Version:    domain.CharacterCardCandidateVersion,
+		Base:       binding,
+		Foundation: published,
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeness, err := domain.EvaluateCharacterCardCompleteness(published, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := st.CharacterCards.SaveCAS(domain.CharacterCardLifecycle{
+		Version:             domain.CharacterCardLifecycleVersion,
+		Mode:                domain.CharacterCardProjectOriginal,
+		Candidate:           binding.Candidate,
+		Inputs:              binding.Inputs,
+		InputDigest:         binding.InputDigest,
+		Completeness:        completeness,
+		AnalysisStatus:      domain.CharacterCardAnalysisCandidateReady,
+		ReviewStatus:        domain.CharacterCardReviewPassed,
+		ReviewedCandidate:   binding.Candidate,
+		ReviewedInputDigest: binding.InputDigest,
+		ConfirmationStatus:  domain.CharacterCardConfirmed,
+		RunID:               "confirmed-run",
+		IdempotencyKey:      "confirmed-key",
+		SubmissionDigest:    strings.Repeat("a", 64),
+	}, 0, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := domain.CloneStoryFoundation(published)
+	updated.Premise = "A newly generated premise that does not change the cast."
+	if _, err := st.Foundation.SaveCAS(updated, published.Revision); err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, _, _, currentErr := CurrentCharacterWorkflow(store.NewStore(st.Dir()))
+			errs <- currentErr
+		}()
+	}
+	for range 2 {
+		if currentErr := <-errs; currentErr != nil {
+			t.Fatal(currentErr)
+		}
+	}
+	reboundCandidate, reboundLifecycle, reboundBinding, err := CurrentCharacterWorkflow(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reboundCandidate.Revision <= candidate.Revision ||
+		reboundLifecycle.Revision <= lifecycle.Revision ||
+		reboundLifecycle.ConfirmationStatus != domain.CharacterCardConfirmed ||
+		reboundLifecycle.Candidate != reboundBinding.Candidate ||
+		reboundLifecycle.ReviewedCandidate != reboundBinding.Candidate {
+		t.Fatalf("rebound candidate=%+v lifecycle=%+v binding=%+v", reboundCandidate, reboundLifecycle, reboundBinding)
 	}
 }
 
@@ -351,17 +483,28 @@ func stagedAdaptationCharacterToolStore(t *testing.T) *store.Store {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	gate, err := st.CoreCast.SaveGateBinding(store.CoreCastGateBinding{
+		Mode: domain.CoreCastModeAdaptation, DraftRevision: 1, DraftHash: "draft",
+		SourceSignature: strings.Repeat("a", 64), AdaptationIntentHash: strings.Repeat("b", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	core := domain.CoreCastContract{
 		Version: domain.CoreCastContractVersion, Mode: domain.CoreCastModeAdaptation,
-		DraftRevision: 1, DraftHash: "draft", SourceSignature: strings.Repeat("a", 64),
-		AdaptationIntentHash: strings.Repeat("b", 64),
+		DraftRevision: gate.DraftRevision, DraftHash: gate.DraftHash, SourceSignature: gate.SourceSignature,
+		AdaptationIntentHash: gate.AdaptationIntentHash,
 		Members: []domain.CoreCastMember{{
 			Character: completeCharacterCandidate()[0], Importance: domain.CoreCastImportanceProtagonist,
 			Origin: domain.CoreCastOriginOriginal, MainlineFunction: "drives target story",
 			InclusionRationale: "confirmed target lead", NoCoreRelationships: true,
 		}},
 	}
-	if _, err := st.CoreCast.SaveCAS(core, 0); err != nil {
+	saved, err := st.CoreCast.SaveCAS(core, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.CoreCast.ConfirmCAS(saved.Revision, saved.ContentSignature, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	registry := NewCharacterRunRegistry()

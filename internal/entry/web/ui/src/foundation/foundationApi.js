@@ -1,6 +1,7 @@
 import {
   analyzeProjectFoundationCharacters,
   applyProjectFoundation,
+  confirmProjectCharacterCards,
   discardProjectFoundationCharacters,
   getProjectFoundation,
   getProjectFoundationCharacters,
@@ -78,6 +79,14 @@ export function discardCharacterWorkspace(projectId, server, workspace, idempote
     expected_base_audit_signature: server.baseAuditSignature,
     run_id: workspace.run?.run_id || '',
     candidate_digest: workspace.candidate?.digest || workspace.currentDigest,
+    idempotency_key: idempotencyKey
+  }, { signal });
+}
+
+export function confirmCharacterCandidate(projectId, candidate, idempotencyKey, signal) {
+  return confirmProjectCharacterCards(projectId, {
+    expected_candidate_revision: Number(candidate?.revision || 0),
+    candidate_digest: String(candidate?.digest || ''),
     idempotency_key: idempotencyKey
   }, { signal });
 }

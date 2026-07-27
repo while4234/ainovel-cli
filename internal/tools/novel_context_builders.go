@@ -215,6 +215,190 @@ func (t *ContextTool) buildSimulationProfile(result map[string]any, sectionKey s
 	}
 }
 
+func (t *ContextTool) buildPlanningReviewSimulationProfile(result map[string]any, warn func(string, error)) {
+	profile, err := t.store.Simulation.Load()
+	if err != nil {
+		warn("simulation_profile", err)
+		return
+	}
+	compact := t.compactArchitectSimulationProfile(profile)
+	if compact == nil {
+		return
+	}
+	// Skeleton review needs the same structural signals as Architect, but the
+	// role-specific instruction must belong to Editor rather than Architect.
+	full := t.compactSimulationProfile(profile)
+	if full != nil {
+		compact.RoleGuidance = domain.SimulationRoleGuidance{
+			Editor: compactStringList(full.RoleGuidance.Editor, 1, 60),
+		}
+	}
+	section, ok := result["planning_memory"].(map[string]any)
+	if !ok {
+		section = map[string]any{}
+		result["planning_memory"] = section
+	}
+	section["simulation_profile"] = compact
+	result["simulation_profile"] = true
+	if t.simulationMode == contextSimulationModeReinforced {
+		result["simulation_mode"] = contextSimulationModeReinforced
+	}
+}
+
+// scopePlanningReviewContext derives an Editor-owned model view from the full
+// canonical planning context. It never mutates the persisted Foundation. All
+// characters, relationships and rules remain represented, while rich
+// character biography fields and out-of-scope volume bodies are replaced by
+// stable review facts so an audit cannot overflow before it starts.
+func (t *ContextTool) scopePlanningReviewContext(result map[string]any, volume, fromVolume, toVolume int) error {
+	if volume > 0 {
+		if fromVolume > 0 || toVolume > 0 {
+			return fmt.Errorf("planning_review accepts volume or from_volume/to_volume, not both")
+		}
+		fromVolume, toVolume = volume, volume
+	}
+	if (fromVolume == 0) != (toVolume == 0) || fromVolume < 0 || toVolume < fromVolume {
+		return fmt.Errorf("planning_review requires a valid inclusive volume range")
+	}
+
+	planning, _ := result["planning_memory"].(map[string]any)
+	if planning != nil {
+		if layered, err := t.store.Outline.LoadLayeredOutline(); err == nil && len(layered) > 0 {
+			progress, _ := t.store.Progress.Load()
+			planning["layered_outline"] = compactLayeredOutlineForPlanningReviewVolumes(
+				layered,
+				progress,
+				fromVolume,
+				toVolume,
+			)
+			planning["volume_history_index"] = compactVolumeHistoryIndex(layered)
+			planning["volume_history_index_schema"] = []string{"index", "title", "chapter_count", "arc_count"}
+			planning["volume_theme_milestones"] = compactVolumeThemeMilestones(layered)
+			planning["volume_theme_milestones_schema"] = []string{"index", "theme"}
+		}
+		if audits, err := t.store.OriginalPlanningAudits.Load(); err == nil {
+			planning["planning_audit_index"] = compactSkeletonAuditIndex(
+				audits,
+				fromVolume,
+				toVolume,
+			)
+		}
+		planning["review_scope"] = map[string]any{
+			"kind":        "volume_skeleton",
+			"from_volume": fromVolume,
+			"to_volume":   toVolume,
+		}
+	}
+
+	foundation, _ := result["foundation_memory"].(map[string]any)
+	if foundation != nil {
+		if characters, ok := foundation["characters"].([]domain.Character); ok {
+			focused := planningReviewCharacterFocus(characters, planning)
+			foundation["character_index"] = compactCharacterIndexForPlanningReview(characters)
+			foundation["character_index_schema"] = []string{"id", "name", "role", "tier", "faction"}
+			foundation["characters"] = compactCharacterContractsForPlanningReview(characters, focused)
+		}
+		if rules, ok := foundation["world_rules"].([]domain.WorldRule); ok {
+			foundation["world_rules"] = compactWorldRulesForPlanningReview(rules)
+		}
+		delete(foundation, "character_snapshots")
+	}
+	// Architect templates do not provide evidence for an Editor verdict. The
+	// Editor prompt and audit tool schema already define the scoring contract.
+	delete(result, "reference_pack")
+	result["context_profile"] = "planning_review"
+	return nil
+}
+
+func compactSkeletonAuditIndex(
+	audits []domain.OriginalPlanningAudit,
+	fromVolume, toVolume int,
+) []map[string]any {
+	selected := make([]domain.OriginalPlanningAudit, 0, len(audits))
+	for _, audit := range audits {
+		if audit.Verdict != "pass" {
+			continue
+		}
+		if fromVolume > 0 {
+			if audit.Scope == "skeleton_volume" &&
+				audit.Volume >= fromVolume && audit.Volume <= toVolume {
+				selected = append(selected, audit)
+			}
+			continue
+		}
+		if audit.Scope == "skeleton_book_batch" {
+			selected = append(selected, audit)
+		}
+	}
+
+	index := make([]map[string]any, 0, len(selected))
+	for position, audit := range selected {
+		entry := map[string]any{
+			"scope":     audit.Scope,
+			"verdict":   audit.Verdict,
+			"min_score": minimumPlanningAuditScore(audit.Dimensions),
+		}
+		if audit.Volume > 0 {
+			entry["volume"] = audit.Volume
+		}
+		if audit.FromVolume > 0 {
+			entry["from_volume"] = audit.FromVolume
+			entry["to_volume"] = audit.ToVolume
+		}
+		// Small books retain every editorial summary. Huge books retain all
+		// verdict/range/score facts, plus representative summaries across the
+		// sequence, so global continuity remains visible without linear prose
+		// growth from every prior audit.
+		if len(selected) <= 12 ||
+			position < 3 ||
+			position >= len(selected)-3 ||
+			position%max(1, len(selected)/6) == 0 {
+			entry["summary"] = truncateRunes(audit.Summary, 240)
+		}
+		index = append(index, entry)
+	}
+	return index
+}
+
+func minimumPlanningAuditScore(dimensions []domain.OriginalPlanningAuditDimension) float64 {
+	if len(dimensions) == 0 {
+		return 0
+	}
+	minimum := dimensions[0].Score
+	for _, dimension := range dimensions[1:] {
+		if dimension.Score < minimum {
+			minimum = dimension.Score
+		}
+	}
+	return minimum
+}
+
+func planningReviewCharacterFocus(
+	characters []domain.Character,
+	planning map[string]any,
+) map[string]bool {
+	focused := make(map[string]bool)
+	text := ""
+	if planning != nil {
+		text = fmt.Sprint(planning["layered_outline"])
+	}
+	for _, character := range characters {
+		if strings.Contains(text, character.Name) ||
+			character.Tier == "core" ||
+			character.Tier == "protagonist" ||
+			len(characters) <= 8 {
+			focused[character.ID] = true
+		}
+	}
+	for _, character := range characters {
+		if len(focused) >= 3 {
+			break
+		}
+		focused[character.ID] = true
+	}
+	return focused
+}
+
 func (t *ContextTool) compactArchitectSimulationProfile(profile *domain.SimulationProfile) *domain.SimulationCompactProfile {
 	compact := t.compactSimulationProfile(profile)
 	if compact == nil {
@@ -587,8 +771,8 @@ func compactWorldRules(rules []domain.WorldRule, maxRules int) []domain.WorldRul
 	limit := min(len(rules), maxRules)
 	out := make([]domain.WorldRule, 0, limit)
 	for _, rule := range rules[:limit] {
-		rule.Rule = truncateRunes(rule.Rule, 220)
-		rule.Boundary = truncateRunes(rule.Boundary, 160)
+		rule.Rule = truncateRunes(rule.Rule, 75)
+		rule.Boundary = truncateRunes(rule.Boundary, 20)
 		out = append(out, rule)
 	}
 	return out
@@ -1221,23 +1405,10 @@ func (t *ContextTool) buildArchitectPlanning(envelope *architectContextEnvelope,
 	if l, err := t.store.Outline.LoadLayeredOutline(); err == nil && len(l) > 0 {
 		layered = l
 		envelope.Planning["layered_outline"] = compactLayeredOutlineForPlanning(layered, progress)
-		var skeletonArcs []map[string]any
-		for _, volume := range layered {
-			for _, arc := range volume.Arcs {
-				if !arc.IsExpanded() {
-					skeletonArcs = append(skeletonArcs, map[string]any{
-						"volume":             volume.Index,
-						"arc":                arc.Index,
-						"title":              truncateRunes(arc.Title, 80),
-						"goal":               truncateRunes(arc.Goal, maxContextSummaryRunes),
-						"estimated_chapters": arc.EstimatedChapters,
-					})
-				}
-			}
-		}
-		if len(skeletonArcs) > 0 {
-			envelope.Planning["skeleton_arcs"] = skeletonArcs
-		}
+		envelope.Planning["volume_history_index"] = compactVolumeHistoryIndex(layered)
+		envelope.Planning["volume_history_index_schema"] = []string{"index", "title", "chapter_count", "arc_count"}
+		envelope.Planning["volume_theme_milestones"] = compactVolumeThemeMilestones(layered)
+		envelope.Planning["volume_theme_milestones_schema"] = []string{"index", "theme"}
 	} else {
 		warn("layered_outline", err)
 	}
@@ -1292,7 +1463,7 @@ func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelop
 	premise := foundation.Premise
 	if premise != "" {
 		if sections := parsePremiseSections(premise); len(sections) > 0 {
-			envelope.Foundation["premise_sections"] = compactPremiseSections(sections, 900)
+			envelope.Foundation["premise_sections"] = compactPremiseSections(sections, 180)
 		}
 		tier := domain.PlanningTier("")
 		if meta, err := t.store.RunMeta.Load(); err == nil && meta != nil {
@@ -1310,7 +1481,10 @@ func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelop
 		envelope.Foundation["characters"] = compactCharacters(foundation.Characters, maxContextCharacters)
 	}
 	if len(foundation.Relationships) > 0 {
-		envelope.Foundation["planned_relationships"] = append([]domain.CharacterRelationship(nil), foundation.Relationships...)
+		envelope.Foundation["planned_relationships"] = compactCharacterRelationships(
+			foundation.Relationships,
+			maxContextRelationships,
+		)
 	}
 	envelope.Foundation["relationship_contract"] = "planned_relationships are pre-writing canonical intent; relationship_state is runtime chapter evidence and must never replace or rewrite the plan"
 
@@ -1323,16 +1497,19 @@ func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelop
 		// Architect already receives each rule's category, strength and boundary.
 		// Keep the canonical prefix source-bounded for mature projects instead of
 		// relying on a lossy post-build JSON trim.
-		rules := compactWorldRules(foundation.WorldRules, 24)
+		rules := compactWorldRules(foundation.WorldRules, 25)
 		envelope.Foundation["world_rules"] = rules
-		var hard []domain.WorldRule
+		var hardIDs []string
 		for _, rule := range rules {
 			if rule.Strength == domain.WorldRuleStrengthHard {
-				hard = append(hard, rule)
+				hardIDs = append(hardIDs, rule.ID)
 			}
 		}
-		if len(hard) > 0 {
-			envelope.Foundation["hard_world_rule_constraints"] = hard
+		if len(hardIDs) > 0 {
+			// world_rules already carries the canonical rule text, category,
+			// boundary and strength. Keep only stable IDs in this hard-only
+			// index so the same long rules are not serialized twice.
+			envelope.Foundation["hard_world_rule_constraints"] = hardIDs
 		}
 	}
 	if foreshadow, err := t.store.World.LoadActiveForeshadow(); err == nil && len(foreshadow) > 0 {

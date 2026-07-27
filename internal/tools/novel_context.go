@@ -46,18 +46,19 @@ type ContextTool struct {
 }
 
 const (
-	contextSimulationModeNormal     = "normal"
-	contextSimulationModeReinforced = "reinforced"
-	writerChapterContextBudgetBytes = 60 * 1024
-	writerChapterSourceBudgetBytes  = 28 * 1024
-	writerPolishingContextBytes     = 24 * 1024
-	writerRecoveryContextBytes      = 8 * 1024
-	planningContextBudgetBytes      = 60 * 1024
-	planningContextSourceBytes      = 42 * 1024
-	nearbyOutlineBeforeChapters     = 2
-	nearbyOutlineAfterChapters      = 3
-	maxOutlineRangeChapters         = 80
-	maxDetailedArcOutlineChapters   = 40
+	contextSimulationModeNormal      = "normal"
+	contextSimulationModeReinforced  = "reinforced"
+	writerChapterContextBudgetBytes  = 60 * 1024
+	writerChapterSourceBudgetBytes   = 28 * 1024
+	writerPolishingContextBytes      = 24 * 1024
+	writerRecoveryContextBytes       = 8 * 1024
+	planningContextBudgetBytes       = 60 * 1024
+	planningContextSourceBytes       = 32 * 1024
+	planningReviewContextSourceBytes = 28 * 1024
+	nearbyOutlineBeforeChapters      = 2
+	nearbyOutlineAfterChapters       = 3
+	maxOutlineRangeChapters          = 80
+	maxDetailedArcOutlineChapters    = 40
 )
 
 type ContextToolOptions struct {
@@ -82,7 +83,8 @@ func NewContextToolWithOptions(store *store.Store, refs References, style string
 func (t *ContextTool) Name() string { return "novel_context" }
 func (t *ContextTool) Description() string {
 	return "获取小说当前状态和创作上下文。" +
-		"不传 chapter：返回 progress_status（phase/flow/next_chapter/pending_rewrites 等进度字段）+ 基础设定，用于判断下一步该做什么。" +
+		"Coordinator 判断下一步必须使用 scope=status，只返回轻量 progress_status。" +
+		"Architect 使用 scope=planning 获取有界基础设定；不要用 planning 做普通进度轮询。" +
 		"传 chapter=N：额外返回该章的前情摘要、伏笔、角色状态、风格规则等写作上下文。" +
 		"scope=summary：返回指定章节范围的摘要证据包，供弧摘要/卷摘要复用，避免无差别重读正文"
 }
@@ -94,21 +96,25 @@ func (t *ContextTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 
 func (t *ContextTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("scope", schema.Enum("Context scope. Empty defaults to chapter when chapter is set, otherwise planning. status returns progress only; summary returns a compact evidence pack for an inclusive chapter range.", "chapter", "outline_range", "summary", "planning", "status")),
+		schema.Property("scope", schema.Enum("Context scope. Empty defaults to chapter when chapter is set, otherwise planning. planning_review is the Editor-only bounded view for a volume skeleton review. status returns progress only; summary returns a compact evidence pack for an inclusive chapter range.", "chapter", "outline_range", "summary", "planning", "planning_review", "status")),
 		schema.Property("from", schema.Int("First chapter for scope=outline_range.")),
 		schema.Property("to", schema.Int("Last chapter for scope=outline_range.")),
-		schema.Property("volume", schema.Int("Volume number for scope=summary when generating a volume summary.")),
+		schema.Property("volume", schema.Int("Volume number for scope=summary or a single-volume planning_review.")),
+		schema.Property("from_volume", schema.Int("First volume for a planning_review batch.")),
+		schema.Property("to_volume", schema.Int("Last volume for a planning_review batch.")),
 		schema.Property("chapter", schema.Int("章节号。不传则返回进度状态和基础设定（Coordinator 用于判断下一步）；传入则额外返回该章的写作上下文（Writer 用）")),
 	)
 }
 
 func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
-		Chapter int    `json:"chapter"`
-		Scope   string `json:"scope"`
-		From    int    `json:"from"`
-		To      int    `json:"to"`
-		Volume  int    `json:"volume"`
+		Chapter    int    `json:"chapter"`
+		Scope      string `json:"scope"`
+		From       int    `json:"from"`
+		To         int    `json:"to"`
+		Volume     int    `json:"volume"`
+		FromVolume int    `json:"from_volume"`
+		ToVolume   int    `json:"to_volume"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -140,6 +146,13 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		}
 	case "summary":
 		if err := t.buildSummaryEvidenceContext(result, a.From, a.To, a.Volume, warn); err != nil {
+			return nil, err
+		}
+	case "planning_review":
+		t.buildProgressStatus(result)
+		t.buildArchitectContext(result, warn)
+		t.buildAdaptationPlanningContext(result, warn)
+		if err := t.scopePlanningReviewContext(result, a.Volume, a.FromVolume, a.ToVolume); err != nil {
 			return nil, err
 		}
 	case "chapter":
@@ -174,9 +187,11 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		t.buildChapterSimulationProfile(result, chapterPurpose, warn)
 	} else if scope == "planning" {
 		t.buildSimulationProfile(result, "planning_memory", warn)
+	} else if scope == "planning_review" {
+		t.buildPlanningReviewSimulationProfile(result, warn)
 	}
 
-	if scope == "chapter" || scope == "planning" {
+	if scope == "chapter" || scope == "planning" || scope == "planning_review" {
 		t.buildUserRules(result)
 		t.buildWordBudget(result, a.Chapter)
 	}
@@ -205,6 +220,8 @@ func normalizeContextScope(scope string, chapter int) string {
 		return "planning"
 	case "planning":
 		return "planning"
+	case "planning_review":
+		return "planning_review"
 	case "status":
 		return "status"
 	default:

@@ -15,6 +15,7 @@ import (
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/errs"
+	"github.com/voocel/ainovel-cli/internal/rules"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -326,6 +327,9 @@ func (t *SaveCharacterCandidateTool) Execute(_ context.Context, args json.RawMes
 	projected, projectionFindings, err := domain.ProjectCharacterCandidateCoreCast(normalized, coreCast)
 	if err != nil {
 		return nil, fmt.Errorf("project character candidate core cast: %w", err)
+	}
+	if err := bindCharacterCoreCastProjection(t.store, &projected, projectMode); err != nil {
+		return nil, err
 	}
 	completeness, err := domain.EvaluateCharacterCardCompleteness(normalized, &projected)
 	if err != nil {
@@ -672,8 +676,6 @@ func buildCharacterContext(st *store.Store, runID string, mode CharacterRunMode)
 		"current_characters":     foundation.Characters,
 		"current_relationships":  foundation.Relationships,
 		"relationships_reviewed": foundation.RelationshipsReviewed,
-		"core_cast":              coreCast,
-		"user_constraints":       userRules,
 		"lifecycle":              lifecycle,
 		"evidence_policy": map[string]any{
 			"raw_source_included": false,
@@ -690,6 +692,10 @@ func buildCharacterContext(st *store.Store, runID string, mode CharacterRunMode)
 		}
 	}
 	if projectMode == domain.CharacterCardProjectAdaptation {
+		packet["core_cast"] = coreCast
+		if userRules != nil {
+			packet["user_constraints"] = userRules.Payload()
+		}
 		adaptation, adaptationErr := buildAdaptationCharacterEvidence(st)
 		if adaptationErr != nil {
 			return nil, domain.CharacterCardBinding{}, adaptationErr
@@ -700,9 +706,46 @@ func buildCharacterContext(st *store.Store, runID string, mode CharacterRunMode)
 		if reviewErr != nil {
 			return nil, domain.CharacterCardBinding{}, fmt.Errorf("load original character brief: %w", reviewErr)
 		}
-		packet["creative_brief"] = review
+		packet["creative_brief"] = compactOriginalCharacterBrief(review)
+		packet["user_constraints"] = compactOriginalCharacterRules(userRules, review)
+		if coreCast != nil {
+			packet["legacy_core_cast_binding"] = map[string]any{
+				"content_signature": coreCast.ContentSignature,
+				"draft_revision":    coreCast.DraftRevision,
+				"draft_hash":        coreCast.DraftHash,
+				"authoritative":     false,
+			}
+		}
 	}
 	return packet, binding, nil
+}
+
+func compactOriginalCharacterBrief(review *domain.PlanningReview) any {
+	if review == nil {
+		return nil
+	}
+	return map[string]any{
+		"brief":              review.Brief,
+		"target_total_words": review.TargetTotalWords,
+		"status":             review.Status,
+	}
+}
+
+func compactOriginalCharacterRules(userRules *rules.Snapshot, review *domain.PlanningReview) map[string]any {
+	if userRules == nil {
+		return map[string]any{}
+	}
+	payload := userRules.Payload()
+	preferences, _ := payload["preferences"].(string)
+	if review != nil {
+		for _, duplicate := range []string{review.StartPrompt, review.Brief} {
+			if duplicate = strings.TrimSpace(duplicate); duplicate != "" {
+				preferences = strings.ReplaceAll(preferences, duplicate, "")
+			}
+		}
+	}
+	payload["preferences"] = strings.TrimSpace(preferences)
+	return payload
 }
 
 // CurrentCharacterWorkflow returns durable Character state for deterministic
@@ -723,7 +766,21 @@ func CurrentCharacterWorkflow(st *store.Store) (
 	}
 	foundation, binding, _, _, _, err := currentCharacterRunBinding(st, CharacterRunReview)
 	if err != nil {
-		return candidate, nil, domain.CharacterCardBinding{}, err
+		// A confirmed publication remains authoritative when Architect changes
+		// only premise/world rules. Repair the persisted Foundation revision
+		// binding once, then re-read through the normal strict path. Genuine
+		// character, relationship, CoreCast, or input changes still fail closed.
+		if rebindErr := rebindConfirmedCharacterWorkflow(st); rebindErr != nil {
+			return candidate, nil, domain.CharacterCardBinding{}, err
+		}
+		candidate, err = st.CharacterCards.LoadCandidate()
+		if err != nil || candidate == nil {
+			return candidate, nil, domain.CharacterCardBinding{}, err
+		}
+		foundation, binding, _, _, _, err = currentCharacterRunBinding(st, CharacterRunReview)
+		if err != nil {
+			return candidate, nil, domain.CharacterCardBinding{}, err
+		}
 	}
 	binding, err = domain.CharacterCardBindingFromFoundation(foundation, binding.Inputs)
 	if err != nil {
@@ -798,7 +855,7 @@ func currentCharacterBinding(
 		return domain.StoryFoundation{}, domain.CharacterCardBinding{}, domain.CharacterCardInputSignatures{}, "", nil,
 			fmt.Errorf("load character foundation: %w", err)
 	}
-	coreCast, err := st.CoreCast.Load()
+	coreCast, err := st.CoreCast.LoadWithLegacySignatureRepair()
 	if err != nil {
 		return domain.StoryFoundation{}, domain.CharacterCardBinding{}, domain.CharacterCardInputSignatures{}, "", nil,
 			fmt.Errorf("load character core cast: %w", err)
@@ -824,6 +881,14 @@ func currentCharacterInputs(
 	if coreCast != nil {
 		inputs.CoreCast = coreCast.ContentSignature
 		if coreCast.Mode == domain.CoreCastModeAdaptation {
+			mode = domain.CharacterCardProjectAdaptation
+		}
+	} else {
+		gate, err := st.CoreCast.LoadGateBinding()
+		if err != nil {
+			return inputs, mode, fmt.Errorf("load character CoreCast gate binding: %w", err)
+		}
+		if (gate != nil && gate.Mode == domain.CoreCastModeAdaptation) || st.Adaptation.Exists() {
 			mode = domain.CharacterCardProjectAdaptation
 		}
 	}
@@ -895,6 +960,48 @@ func currentCharacterInputs(
 	return inputs, mode, nil
 }
 
+func bindCharacterCoreCastProjection(
+	st *store.Store,
+	projected *domain.CoreCastContract,
+	mode domain.CharacterCardProjectMode,
+) error {
+	gate, err := st.CoreCast.LoadGateBinding()
+	if err != nil {
+		return fmt.Errorf("load Character gate binding: %w", err)
+	}
+	if gate == nil {
+		if mode == domain.CharacterCardProjectOriginal {
+			return nil
+		}
+		if projected.Mode == domain.CoreCastModeAdaptation &&
+			projected.DraftRevision > 0 &&
+			strings.TrimSpace(projected.DraftHash) != "" &&
+			len(strings.TrimSpace(projected.SourceSignature)) == 64 &&
+			len(strings.TrimSpace(projected.AdaptationIntentHash)) == 64 {
+			return nil
+		}
+		return fmt.Errorf("adaptation Character gate binding is missing")
+	}
+	expectedMode := domain.CoreCastModeNormal
+	if mode == domain.CharacterCardProjectAdaptation {
+		expectedMode = domain.CoreCastModeAdaptation
+	}
+	if gate.Mode != expectedMode {
+		return fmt.Errorf("Character gate binding mode is stale")
+	}
+	projected.Mode = expectedMode
+	projected.DraftRevision = gate.DraftRevision
+	projected.DraftHash = gate.DraftHash
+	if expectedMode == domain.CoreCastModeAdaptation {
+		projected.SourceSignature = gate.SourceSignature
+		projected.AdaptationIntentHash = gate.AdaptationIntentHash
+	} else {
+		projected.SourceSignature = ""
+		projected.AdaptationIntentHash = ""
+	}
+	return nil
+}
+
 func appendNamedCharacterSignature(inputs *domain.CharacterCardInputSignatures, name string, value any) {
 	if value == nil {
 		return
@@ -935,7 +1042,7 @@ func buildAdaptationCharacterEvidence(st *store.Store) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load adaptation source reports: %w", err)
 	}
-	coreCast, err := st.CoreCast.Load()
+	coreCast, err := st.CoreCast.LoadWithLegacySignatureRepair()
 	if err != nil {
 		return nil, fmt.Errorf("load adaptation core cast: %w", err)
 	}

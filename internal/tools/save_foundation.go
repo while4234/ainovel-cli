@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/voocel/agentcore/schema"
@@ -35,6 +36,8 @@ func NewSaveFoundationTool(store *store.Store, gates ...CompletionGate) *SaveFou
 type ArchitectSaveFoundationTool struct {
 	inner *SaveFoundationTool
 }
+
+var confirmedCharacterRebindLocks sync.Map
 
 func NewArchitectSaveFoundationTool(store *store.Store, gates ...CompletionGate) *ArchitectSaveFoundationTool {
 	return &ArchitectSaveFoundationTool{inner: NewSaveFoundationTool(store, gates...)}
@@ -68,7 +71,115 @@ func (t *ArchitectSaveFoundationTool) Execute(ctx context.Context, args json.Raw
 			errs.ErrToolPrecondition,
 		)
 	}
-	return t.inner.Execute(ctx, args)
+	if !t.inner.store.Adaptation.Active() {
+		if err := requireConfirmedOriginalCharacterWorkflow(t.inner.store); err != nil {
+			return nil, fmt.Errorf(
+				"Architect must wait for the Character Agent candidate, independent review, and explicit user confirmation before writing Foundation section %q: %w: %w",
+				strings.TrimSpace(request.Type),
+				errs.ErrToolPrecondition,
+				err,
+			)
+		}
+	}
+	result, err := t.inner.Execute(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	switch strings.TrimSpace(request.Type) {
+	case "premise", "world_rules":
+		if !t.inner.store.Adaptation.Active() {
+			if err := rebindConfirmedCharacterWorkflow(t.inner.store); err != nil {
+				return nil, fmt.Errorf(
+					"Foundation section %q was saved but the confirmed Character workflow could not be rebound: %w",
+					strings.TrimSpace(request.Type),
+					err,
+				)
+			}
+		}
+	}
+	return result, nil
+}
+
+func requireConfirmedOriginalCharacterWorkflow(st *store.Store) error {
+	candidate, lifecycle, binding, err := CurrentCharacterWorkflow(st)
+	if err != nil {
+		return err
+	}
+	if candidate == nil || lifecycle == nil {
+		return fmt.Errorf("character candidate or lifecycle is missing")
+	}
+	if lifecycle.AnalysisStatus != domain.CharacterCardAnalysisCandidateReady ||
+		lifecycle.ReviewStatus != domain.CharacterCardReviewPassed ||
+		lifecycle.ConfirmationStatus != domain.CharacterCardConfirmed ||
+		lifecycle.Candidate != binding.Candidate ||
+		lifecycle.ReviewedCandidate != binding.Candidate ||
+		lifecycle.ReviewedInputDigest != binding.InputDigest {
+		return fmt.Errorf("character workflow is not currently reviewed and confirmed")
+	}
+	return nil
+}
+
+// rebindConfirmedCharacterWorkflow advances the Character candidate and
+// lifecycle to a canonical Foundation revision whose character and
+// relationship content is unchanged. Premise/world-rule generation must not
+// invalidate an already reviewed and user-confirmed cast.
+func rebindConfirmedCharacterWorkflow(st *store.Store) error {
+	lockKey := strings.ToLower(strings.TrimSpace(st.Dir()))
+	lockValue, _ := confirmedCharacterRebindLocks.LoadOrStore(lockKey, &sync.Mutex{})
+	rebindLock := lockValue.(*sync.Mutex)
+	rebindLock.Lock()
+	defer rebindLock.Unlock()
+
+	candidate, err := st.CharacterCards.LoadCandidate()
+	if err != nil {
+		return err
+	}
+	if candidate == nil {
+		return fmt.Errorf("character candidate is missing")
+	}
+	lifecycle, err := st.CharacterCards.Load(candidate.Base)
+	if err != nil {
+		return err
+	}
+	if lifecycle == nil ||
+		lifecycle.AnalysisStatus != domain.CharacterCardAnalysisCandidateReady ||
+		lifecycle.ReviewStatus != domain.CharacterCardReviewPassed ||
+		lifecycle.ConfirmationStatus != domain.CharacterCardConfirmed ||
+		lifecycle.Candidate != candidate.Base.Candidate ||
+		lifecycle.ReviewedCandidate != candidate.Base.Candidate ||
+		lifecycle.ReviewedInputDigest != candidate.Base.InputDigest {
+		return fmt.Errorf("character workflow is not a confirmed publication")
+	}
+	canonical, _, inputs, _, err := CurrentCharacterCanonicalBinding(st)
+	if err != nil {
+		return err
+	}
+	rebound, err := domain.CharacterCardBindingFromFoundation(canonical, inputs)
+	if err != nil {
+		return err
+	}
+	if rebound.Candidate.CharacterContentDigest != candidate.Base.Candidate.CharacterContentDigest ||
+		rebound.InputDigest != candidate.Base.InputDigest {
+		return fmt.Errorf("canonical character content or Character inputs changed")
+	}
+	reboundCandidate := *candidate
+	reboundCandidate.Foundation = canonical
+	reboundCandidate.Base = rebound
+	savedCandidate, err := st.CharacterCards.SaveCandidateCAS(reboundCandidate, candidate.Revision)
+	if err != nil {
+		return err
+	}
+	reboundLifecycle := *lifecycle
+	reboundLifecycle.Candidate = rebound.Candidate
+	reboundLifecycle.Inputs = rebound.Inputs
+	reboundLifecycle.InputDigest = rebound.InputDigest
+	reboundLifecycle.ReviewedCandidate = rebound.Candidate
+	reboundLifecycle.ReviewedInputDigest = rebound.InputDigest
+	if _, err := st.CharacterCards.SaveCAS(reboundLifecycle, lifecycle.Revision, rebound); err != nil {
+		return err
+	}
+	*candidate = savedCandidate
+	return nil
 }
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
@@ -246,9 +357,9 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 
 	case "layered_outline":
-		var volumes []domain.VolumeOutline
-		if err := decode("layered_outline", &volumes); err != nil {
-			return nil, err
+		volumes, decodeErr := decodeLayeredOutline(content)
+		if decodeErr != nil {
+			return nil, decodeErr
 		}
 		if err := t.prepareLayeredOutlineCharacters(volumes); err != nil {
 			return nil, err
@@ -312,8 +423,9 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		result["count"] = len(relationships)
 
 	case "world_rules":
-		var rules []domain.WorldRule
-		if err := decode("world_rules", &rules); err != nil {
+		rules, decodeErr := decodeWorldRules(content)
+		if decodeErr != nil {
+			err = decodeErr
 			return nil, err
 		}
 		generationReview, err = t.store.SaveFoundationWorldRules(generationFence, rules)
@@ -945,6 +1057,76 @@ func decodeFoundationJSON(typeName, content string, out any) error {
 		return fmt.Errorf("parse %s JSON (line %d col %d): %w — %s", typeName, line, col, err, hint)
 	}
 	return fmt.Errorf("parse %s JSON: %w — %s", typeName, err, hint)
+}
+
+func decodeWorldRules(content string) ([]domain.WorldRule, error) {
+	var rules []domain.WorldRule
+	if err := json.Unmarshal([]byte(content), &rules); err == nil {
+		inferLegacyWorldRuleStrengths(rules)
+		return rules, nil
+	}
+	var grouped struct {
+		HardRules []domain.WorldRule `json:"hard_rules"`
+		SoftRules []domain.WorldRule `json:"soft_rules"`
+	}
+	if err := json.Unmarshal([]byte(content), &grouped); err != nil {
+		return nil, decodeFoundationJSON("world_rules", content, &rules)
+	}
+	if len(grouped.HardRules) == 0 && len(grouped.SoftRules) == 0 {
+		return nil, fmt.Errorf("parse world_rules JSON: expected an array or an object containing hard_rules/soft_rules: %w", errs.ErrToolArgs)
+	}
+	for idx := range grouped.HardRules {
+		grouped.HardRules[idx].Strength = domain.WorldRuleStrengthHard
+	}
+	for idx := range grouped.SoftRules {
+		grouped.SoftRules[idx].Strength = domain.WorldRuleStrengthSoft
+	}
+	rules = append(rules, grouped.HardRules...)
+	rules = append(rules, grouped.SoftRules...)
+	return rules, nil
+}
+
+func decodeLayeredOutline(content string) ([]domain.VolumeOutline, error) {
+	var volumes []domain.VolumeOutline
+	if err := json.Unmarshal([]byte(content), &volumes); err == nil {
+		return volumes, nil
+	}
+	var grouped struct {
+		Volumes []domain.VolumeOutline `json:"volumes"`
+		Volume  *domain.VolumeOutline  `json:"volume"`
+	}
+	if err := json.Unmarshal([]byte(content), &grouped); err == nil {
+		if len(grouped.Volumes) > 0 {
+			return grouped.Volumes, nil
+		}
+		if grouped.Volume != nil {
+			return []domain.VolumeOutline{*grouped.Volume}, nil
+		}
+	}
+	var single domain.VolumeOutline
+	if err := json.Unmarshal([]byte(content), &single); err == nil &&
+		(single.Index > 0 || strings.TrimSpace(single.ID) != "" || strings.TrimSpace(single.Title) != "") {
+		return []domain.VolumeOutline{single}, nil
+	}
+	return nil, decodeFoundationJSON("layered_outline", content, &volumes)
+}
+
+// inferLegacyWorldRuleStrengths keeps the array form compatible with prompts
+// that identify rule groups by their stable hr_/sr_ IDs but omit strength.
+// Unknown IDs retain the historical hard default during Foundation
+// normalization; explicit strength always wins.
+func inferLegacyWorldRuleStrengths(rules []domain.WorldRule) {
+	for idx := range rules {
+		if rules[idx].Strength != "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(strings.ToLower(strings.TrimSpace(rules[idx].ID)), "sr_"):
+			rules[idx].Strength = domain.WorldRuleStrengthSoft
+		case strings.HasPrefix(strings.ToLower(strings.TrimSpace(rules[idx].ID)), "hr_"):
+			rules[idx].Strength = domain.WorldRuleStrengthHard
+		}
+	}
 }
 
 func offsetToLineCol(s string, offset int) (int, int) {

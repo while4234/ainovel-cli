@@ -108,6 +108,7 @@ type CharacterWorkspaceState struct {
 	Findings           []domain.CharacterCardReviewFinding      `json:"findings"`
 	Diff               *domain.FoundationDiff                   `json:"diff,omitempty"`
 	AllowedOperations  []string                                 `json:"allowed_operations"`
+	ConfirmationStatus domain.CharacterCardConfirmationStatus   `json:"confirmation_status,omitempty"`
 	StaleReason        string                                   `json:"stale_reason,omitempty"`
 	ReadonlyReason     string                                   `json:"readonly_reason,omitempty"`
 	BusyReason         string                                   `json:"busy_reason,omitempty"`
@@ -160,6 +161,10 @@ func (s *CharacterWorkspaceService) State(runID string) (*CharacterWorkspaceStat
 		Findings:          []domain.CharacterCardReviewFinding{},
 		AllowedOperations: []string{"analyze"},
 	}
+	state.Completeness, err = domain.EvaluateCharacterCardCompleteness(current, coreCast)
+	if err != nil {
+		return nil, fmt.Errorf("evaluate current character migration state: %w", err)
+	}
 	candidate, err := s.store.CharacterCards.LoadCandidate()
 	if err != nil {
 		return nil, err
@@ -188,6 +193,7 @@ func (s *CharacterWorkspaceService) State(runID string) (*CharacterWorkspaceStat
 			state.SourceMappings = append(state.SourceMappings, lifecycle.SourceMappings...)
 			state.Findings = append(state.Findings, lifecycle.Findings...)
 			state.Error = cloneCharacterError(lifecycle.Error)
+			state.ConfirmationStatus = lifecycle.ConfirmationStatus
 			if lifecycle.AnalysisStatus == domain.CharacterCardAnalysisStale ||
 				lifecycle.ReviewStatus == domain.CharacterCardReviewStale ||
 				candidate.Base.Candidate != binding.Candidate ||
@@ -196,6 +202,9 @@ func (s *CharacterWorkspaceService) State(runID string) (*CharacterWorkspaceStat
 			}
 			if currentCharacterReviewPassed(*lifecycle, candidateBinding) {
 				state.AllowedOperations = append(state.AllowedOperations, "preview")
+				if lifecycle.ConfirmationStatus != domain.CharacterCardConfirmed {
+					state.AllowedOperations = append(state.AllowedOperations, "confirm")
+				}
 			}
 		}
 		state.AllowedOperations = append(state.AllowedOperations, "review", "discard")

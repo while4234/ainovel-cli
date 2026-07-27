@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/agents"
@@ -94,7 +95,9 @@ func TestCharacterWorkspaceServiceAnalyzeReviewAndRetry(t *testing.T) {
 		t.Fatalf("State review: %v", err)
 	}
 	if reviewState.Run == nil || reviewState.Run.Status != domain.CharacterWorkspaceCompleted ||
-		!containsString(reviewState.AllowedOperations, "preview") {
+		!containsString(reviewState.AllowedOperations, "preview") ||
+		!containsString(reviewState.AllowedOperations, "confirm") ||
+		reviewState.ConfirmationStatus != domain.CharacterCardUnconfirmed {
 		t.Fatalf("review state = %#v", reviewState)
 	}
 
@@ -128,6 +131,57 @@ func TestCharacterWorkspaceServiceAnalyzeReviewAndRetry(t *testing.T) {
 	}
 	if err := service.Execute(context.Background(), retryRun.RunID); err != nil {
 		t.Fatalf("Execute retry: %v", err)
+	}
+}
+
+func TestCharacterWorkspaceStateLazilyReportsLegacyCardCompletenessWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	st := storepkg.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := st.Foundation.SaveRevisionCAS(domain.StoryFoundation{
+		SchemaVersion: domain.StoryFoundationSchemaVersion,
+		Premise:       "A legacy project remains readable while its character card awaits review.",
+		Characters: []domain.Character{{
+			ID: "legacy-lead", Name: "Legacy Lead", Role: "protagonist",
+			Description: "An older sparse character card.", Traits: []string{"careful"},
+			Tier: string(domain.CharacterTierCore),
+		}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := NewCharacterWorkspaceService(st, nil).State("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Completeness) != 1 ||
+		state.Completeness[0].CharacterID != "legacy-lead" ||
+		state.Completeness[0].Status != domain.CharacterCardIncomplete ||
+		len(state.Completeness[0].Missing) == 0 {
+		t.Fatalf("legacy completeness = %+v", state.Completeness)
+	}
+
+	restarted := storepkg.NewStore(dir)
+	reloadedState, err := NewCharacterWorkspaceService(restarted, nil).State("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloadedFoundation, err := restarted.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(state.Completeness, reloadedState.Completeness) ||
+		reloadedFoundation.Revision != legacy.Revision {
+		t.Fatalf(
+			"lazy migration changed across reload: before=%+v after=%+v revision=%d want=%d",
+			state.Completeness,
+			reloadedState.Completeness,
+			reloadedFoundation.Revision,
+			legacy.Revision,
+		)
 	}
 }
 

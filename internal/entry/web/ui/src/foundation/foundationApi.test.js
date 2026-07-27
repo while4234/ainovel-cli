@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  analyzeCharacters, applyFoundation, characterCandidateDigest, foundationError, loadCharacterWorkspace,
+  analyzeCharacters, applyFoundation, characterCandidateDigest, confirmCharacterCandidate, foundationError, loadCharacterWorkspace,
   previewFoundation, retryFoundation, reviewCharacters
 } from './foundationApi.js';
 
@@ -33,6 +33,18 @@ describe('foundation API adapter', () => {
 
   it('保留统一错误 envelope 的 code 与安全 message', () => {
     expect(foundationError({ data: { error: { code: 'foundation_stale', message: 'changed' } } })).toEqual({ code: 'foundation_stale', message: 'changed' });
+  });
+
+  it('Character confirm 只发送审核通过候选的版本、digest 与幂等键', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ character: {} }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await confirmCharacterCandidate('p', { revision: 8, digest: 'abc123' }, 'confirm-key');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/projects/p/character-cards/confirm');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      expected_candidate_revision: 8,
+      candidate_digest: 'abc123',
+      idempotency_key: 'confirm-key'
+    });
   });
 
   it('Character analyze 发送 target-only 草稿、稳定 scope、幂等键和 digest', async () => {

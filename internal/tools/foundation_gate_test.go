@@ -52,6 +52,23 @@ func TestSaveFoundationFormalOutlineRequiresCurrentFoundationConfirmation(t *tes
 	}
 }
 
+func TestArchitectCannotWriteFoundationBeforeCharacterConfirmation(t *testing.T) {
+	st := confirmedCoreCastToolStore(t)
+	if _, err := st.BeginFoundationReview(&domain.PlanningReview{Brief: "complete creative brief"}); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{
+		"type":                     "premise",
+		"content":                  "# Premise\nLocked until character confirmation.",
+		"foundation_generation":    1,
+		"foundation_base_revision": 1,
+	})
+	if _, err := NewArchitectSaveFoundationTool(st).Execute(context.Background(), args); err == nil ||
+		!strings.Contains(err.Error(), "must wait for the Character Agent") {
+		t.Fatalf("Architect wrote before Character confirmation: %v", err)
+	}
+}
+
 func TestArchitectContextUsesCanonicalFoundationAndSeparatesRuntimeRelationships(t *testing.T) {
 	st := confirmedCoreCastToolStore(t)
 	review := &domain.PlanningReview{Brief: "canonical context", StartPrompt: "start"}

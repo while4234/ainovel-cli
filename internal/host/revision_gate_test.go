@@ -254,6 +254,7 @@ func TestWaitDoneRetainsRunOwnershipAcrossSuccessfulAdaptationRepair(t *testing.
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	seedAdaptationConfirmationGate(t, st)
 	if err := st.Progress.Init("adaptation repair ownership", 1); err != nil {
 		t.Fatalf("init progress: %v", err)
 	}

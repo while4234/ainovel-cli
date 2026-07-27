@@ -7,6 +7,7 @@ import {
   mergeWorkflowProgress,
   mergeEventRows,
   preserveOutlineDetails,
+  preservePlanningReviewDetails,
   reduceWebEvent,
   reduceWebEvents,
   startStreamRound
@@ -136,6 +137,50 @@ describe('web event reducer', () => {
     expect(next.Outline[0].Hook).toBe('完整钩子');
     expect(next.Outline[0].Scenes).toEqual(['场景一', '场景二']);
     expect(next.Outline[0].WordBudget.TargetWords).toBe(3030);
+  });
+
+  it('preserves full Foundation review details across compact SSE snapshots', () => {
+    const previous = {
+      PlanningReview: { Kind: 'foundation', Status: 'pending' },
+      PremiseFull: '完整设定',
+      CharacterDetails: [{ id: 'lead', name: '主角' }],
+      WorldRules: [{ id: 'rule', rule: '规则' }],
+      PlannedRelationships: [{ id: 'rel', source_character_id: 'lead', target_character_id: 'support' }],
+      CoreCharacterIDs: ['lead']
+    };
+    const incoming = {
+      RuntimeState: 'idle',
+      PlanningReview: { Kind: 'foundation', Status: 'pending' },
+      PremiseFull: '',
+      CharacterDetails: [],
+      WorldRules: [],
+      PlannedRelationships: [],
+      CoreCharacterIDs: []
+    };
+
+    const next = preservePlanningReviewDetails(previous, incoming);
+
+    expect(next.RuntimeState).toBe('idle');
+    expect(next.PremiseFull).toBe('完整设定');
+    expect(next.CharacterDetails).toEqual(previous.CharacterDetails);
+    expect(next.WorldRules).toEqual(previous.WorldRules);
+    expect(next.PlannedRelationships).toEqual(previous.PlannedRelationships);
+    expect(next.CoreCharacterIDs).toEqual(['lead']);
+  });
+
+  it('allows Foundation details to clear after confirmation', () => {
+    const previous = {
+      PlanningReview: { Kind: 'foundation', Status: 'pending' },
+      CharacterDetails: [{ id: 'lead' }],
+      WorldRules: [{ id: 'rule' }]
+    };
+    const incoming = {
+      PlanningReview: { Kind: 'volume_split', Status: 'collecting' },
+      CharacterDetails: [],
+      WorldRules: []
+    };
+
+    expect(preservePlanningReviewDetails(previous, incoming)).toBe(incoming);
   });
 
   it('does not drop workflow progress across consecutive snapshot events', () => {

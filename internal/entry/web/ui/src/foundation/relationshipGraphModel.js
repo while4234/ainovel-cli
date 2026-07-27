@@ -1,4 +1,4 @@
-export const FOUNDATION_GRAPH_LAYOUT_VERSION = 1;
+export const FOUNDATION_GRAPH_LAYOUT_VERSION = 2;
 export const FOUNDATION_GRAPH_LARGE_THRESHOLD = 80;
 
 export const defaultRelationshipGraphFilters = Object.freeze({
@@ -92,8 +92,8 @@ export function deterministicGraphPositions(characters = []) {
   const sorted = [...characters].sort((left, right) => String(left.id).localeCompare(String(right.id)));
   const columns = Math.max(1, Math.ceil(Math.sqrt(sorted.length)));
   return Object.fromEntries(sorted.map((character, index) => [String(character.id), {
-    x: (index % columns) * 230,
-    y: Math.floor(index / columns) * 150
+    x: (index % columns) * 430,
+    y: Math.floor(index / columns) * 250
   }]));
 }
 

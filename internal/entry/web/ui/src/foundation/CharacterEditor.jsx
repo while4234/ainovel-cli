@@ -23,7 +23,7 @@ const fieldLabels = {
 export function CharacterEditor({
   value, coreCast, mode = 'normal', sourceFoundation, relationships = [], disabled, dirty = false,
   errors = {}, workspace, workspaceLoading = false, agentBusy = false, onChange, onOpenRelationships,
-  onAnalyze, onReview, onRetry, onDiscard
+  onAnalyze, onReview, onRetry, onDiscard, onConfirm
 }) {
   const [selectedID, setSelectedID] = useState('');
   const [query, setQuery] = useState('');
@@ -37,18 +37,26 @@ export function CharacterEditor({
   const addRef = useRef(null);
 
   const coreIDs = useMemo(() => new Set((coreCast?.members || []).map((member) => String(member?.character?.id || ''))), [coreCast]);
-  const reviewCompleted = workspace?.run?.mode === 'review' && workspace?.run?.status === 'completed';
+  const reviewCompleted = workspace?.confirmationStatus === 'confirmed' ||
+    (workspace?.run?.mode === 'review' && workspace?.run?.status === 'completed');
   const mappingsByTargetID = useMemo(() => sourceMappingByTargetID(workspace?.sourceMappings), [workspace?.sourceMappings]);
-  const visible = useMemo(() => filterAndSortCharacters(value, {
+  const candidateCharacters = workspace?.candidate?.foundation?.characters || [];
+  const candidateByID = useMemo(() => new Map(candidateCharacters.map((character) => [character.id, character])), [candidateCharacters]);
+  const displayCharacters = useMemo(() => {
+    const currentIDs = new Set(value.map((character) => character.id));
+    return [...value, ...candidateCharacters.filter((character) => !currentIDs.has(character.id))];
+  }, [value, candidateCharacters]);
+  const visible = useMemo(() => filterAndSortCharacters(displayCharacters, {
     ...filters, query, coreIDs, completenessByID: workspace?.completenessByID,
     findings: workspace?.findings, reviewStale: workspace?.reviewStale, reviewCompleted, mappingByTargetID: mappingsByTargetID, modifiedByID
-  }), [value, filters, query, coreIDs, workspace?.completenessByID, workspace?.findings, workspace?.reviewStale, reviewCompleted, mappingsByTargetID, modifiedByID]);
-  const selected = value.find((character) => character.id === selectedID) || null;
+  }), [displayCharacters, filters, query, coreIDs, workspace?.completenessByID, workspace?.findings, workspace?.reviewStale, reviewCompleted, mappingsByTargetID, modifiedByID]);
+  const selected = displayCharacters.find((character) => character.id === selectedID) || null;
+  const selectedIsCandidateOnly = Boolean(selected && !value.some((character) => character.id === selected.id));
 
   useEffect(() => {
-    if (selectedID && value.some((character) => character.id === selectedID)) return;
-    setSelectedID(visible[0]?.id || value[0]?.id || '');
-  }, [selectedID, value, visible]);
+    if (selectedID && displayCharacters.some((character) => character.id === selectedID)) return;
+    setSelectedID(visible[0]?.id || displayCharacters[0]?.id || '');
+  }, [selectedID, displayCharacters, visible]);
 
   const updateSelected = (updater) => {
     if (!selected) return;
@@ -90,10 +98,8 @@ export function CharacterEditor({
     onChange(remaining);
     setSelectedID(remaining[Math.min(Math.max(index, 0), remaining.length - 1)]?.id || '');
   };
-  const candidateCharacters = workspace?.candidate?.foundation?.characters || [];
-  const candidateByID = useMemo(() => new Map(candidateCharacters.map((character) => [character.id, character])), [candidateCharacters]);
   const selectedCandidate = selected ? candidateByID.get(selected.id) : null;
-  const selectedDiff = selectedCandidate && selected ? characterFieldDiff(selected, selectedCandidate) : [];
+  const selectedDiff = selectedCandidate && selected && !selectedIsCandidateOnly ? characterFieldDiff(selected, selectedCandidate) : [];
   const acceptCharacter = (candidate, trigger) => {
     const highRisk = candidate.tier === 'core' || coreIDs.has(candidate.id) || workspace?.diff?.changes?.some((change) => change.entity_id === candidate.id && change.high_risk);
     const apply = () => {
@@ -141,7 +147,7 @@ export function CharacterEditor({
     globalThis.requestAnimationFrame?.(() => fieldRefs.current[`${finding.character_id}:${field}`]?.focus());
   };
 
-  const empty = !value.length;
+  const empty = !displayCharacters.length;
   const noMatch = !empty && !visible.length;
   return <section aria-labelledby="foundation-character-heading" className="character-workspace">
     <div className="foundation-section-head character-workspace-head">
@@ -154,10 +160,10 @@ export function CharacterEditor({
     {workspace?.reviewStale ? <div className="warning-note" role="status"><AlertTriangle size={16} />草稿已修改，旧角色审核立即标记为 stale；请在当前草稿上重新审核。</div> : null}
     {workspaceLoading ? <div className="character-workspace-skeleton" aria-live="polite" role="status">正在加载角色完整度与审核状态…</div> : null}
     <CharacterAgentPanel
-      selected={selected} workspace={workspace} disabled={disabled || agentBusy} dirty={dirty}
+      selected={selected} workspace={workspace} disabled={agentBusy} dirty={dirty}
       instruction={instruction} allowSupporting={allowSupporting}
       onInstructionChange={setInstruction} onAllowSupportingChange={setAllowSupporting}
-      onAnalyze={onAnalyze} onReview={onReview} onRetry={onRetry} onDiscard={onDiscard}
+      onAnalyze={onAnalyze} onReview={onReview} onRetry={onRetry} onDiscard={onDiscard} onConfirm={onConfirm}
     />
     {workspace?.error ? <div className="error-banner" role="alert"><strong>{workspace.error.code}</strong><span>{workspace.error.message}</span></div> : null}
     {mode === 'adaptation' ? <SourceCoverage coverage={workspace?.coverage} onFilterPending={() => setFilters({ ...filters, source: 'unmapped' })} /> : null}
@@ -191,7 +197,7 @@ export function CharacterEditor({
         {!selected ? <div className="empty-state">从左侧选择角色查看详情。</div> : <>
           <header className="character-detail-header">
             <div><span className="eyebrow">{selected.id}</span><h3>{selected.name || '未命名角色'}</h3><p>{selected.role || '尚未填写故事职责'}</p></div>
-            <button className="tool-button danger-ghost" disabled={disabled} type="button" onClick={(event) => requestDelete(selected, event.currentTarget)}><Trash2 size={16} />删除</button>
+            <button className="tool-button danger-ghost" disabled={disabled || selectedIsCandidateOnly} type="button" onClick={(event) => requestDelete(selected, event.currentTarget)}><Trash2 size={16} />删除</button>
           </header>
           <div className="character-status-row">
             <StatusBadge icon={<UserRound size={14} />} text={tierLabels[selected.tier] || '重要'} tone={selected.tier === 'core' ? 'risk' : ''} />
@@ -199,36 +205,43 @@ export function CharacterEditor({
             <StatusBadge icon={<ShieldCheck size={14} />} text={`审核：${reviewLabels[reviewStatusForCharacter(selected.id, workspace?.findings, workspace?.reviewStale, reviewCompleted)]}`} />
             {modifiedByID[selected.id] ? <StatusBadge icon={<CircleAlert size={14} />} text="未保存修改" tone="warning" /> : null}
           </div>
+          {selectedIsCandidateOnly ? <div className="warning-note" role="status"><Sparkles size={16} />Character Agent 候选（尚未发布）；确认本轮角色候选后才会写入 StoryFoundation。</div> : null}
           <CharacterForm
-            character={selected} disabled={disabled} errors={errors} index={value.findIndex((item) => item.id === selected.id)}
+            character={selected} disabled={disabled || selectedIsCandidateOnly} errors={errors} index={value.findIndex((item) => item.id === selected.id)}
             expanded={expanded} setExpanded={setExpanded} fieldRefs={fieldRefs}
             onChange={updateSelected}
           />
-          <RelationshipSummary character={selected} relationships={relationships} characters={value} onOpen={onOpenRelationships} />
+          <RelationshipSummary
+            character={selected}
+            relationships={selectedIsCandidateOnly ? workspace?.candidate?.foundation?.relationships || [] : relationships}
+            characters={displayCharacters}
+            onOpen={onOpenRelationships}
+          />
           {mode === 'adaptation' ? <SourceMappingPanel mapping={mappingsByTargetID[selected.id]} sourceFoundation={sourceFoundation} /> : null}
           <CharacterCompleteness value={workspace?.completenessByID?.[selected.id]} onFocus={focusFinding} characterID={selected.id} />
-          <CandidateDiff
+          {!selectedIsCandidateOnly ? <CandidateDiff
             current={selected} candidate={selectedCandidate} diff={selectedDiff} workspace={workspace}
             disabled={disabled} onAcceptField={acceptField}
             onAcceptCharacter={acceptCharacter} onAcceptAll={acceptAllSafe}
-          />
+          /> : null}
         </>}
       </article>
     </div>
-    <FindingPanel findings={workspace?.findings} characters={value} completeness={workspace?.completeness} stale={workspace?.reviewStale} onFocus={focusFinding} />
+    <FindingPanel findings={workspace?.findings} characters={displayCharacters} completeness={workspace?.completeness} stale={workspace?.reviewStale} onFocus={focusFinding} />
     {pendingDialog ? <ModalDialog {...pendingDialog} onClose={() => setPendingDialog(null)} /> : null}
   </section>;
 }
 
 function CharacterAgentPanel({
   selected, workspace, disabled, dirty, instruction, allowSupporting,
-  onInstructionChange, onAllowSupportingChange, onAnalyze, onReview, onRetry, onDiscard
+  onInstructionChange, onAllowSupportingChange, onAnalyze, onReview, onRetry, onDiscard, onConfirm
 }) {
   const run = workspace?.run;
   const running = ['queued', 'running'].includes(run?.status);
   const failed = ['failed', 'interrupted'].includes(run?.status);
   const canAnalyze = workspace?.allowedOperations?.includes('analyze') && !disabled && !running;
   const canReview = workspace?.allowedOperations?.includes('review') && !disabled && !running;
+  const canConfirm = workspace?.allowedOperations?.includes('confirm') && !disabled && !running;
   return <section className="character-agent-panel" aria-labelledby="character-agent-heading">
     <div className="character-agent-copy"><Bot size={20} /><div><h3 id="character-agent-heading">Character Agent</h3><p>分析/补全创建候选；审核只产生状态与 finding。两者都不会静默改写当前草稿；重新分析会创建新候选，本轮拒绝项不会自动接受。</p></div></div>
     <div className="character-agent-controls">
@@ -243,6 +256,7 @@ function CharacterAgentPanel({
         <button className="tool-button accent" disabled={!canAnalyze} type="button" onClick={() => onAnalyze?.({ characterIDs: [], instruction, allowSupportingCharacters: allowSupporting })}><Sparkles size={16} />分析并补全全部角色</button>
         <button className="tool-button" disabled={!canAnalyze || !selected} type="button" onClick={() => onAnalyze?.({ characterIDs: [selected.id], instruction, allowSupportingCharacters: allowSupporting })}><UserRound size={16} />分析当前角色</button>
         <button className="tool-button" disabled={!canReview} type="button" onClick={() => onReview?.()}><FileSearch size={16} />审核全部角色</button>
+        <button className="tool-button accent" disabled={!canConfirm} type="button" onClick={() => onConfirm?.()}><Check size={16} />确认本轮角色候选</button>
       </div>
     </div>
     {run ? <div className={`character-run-status ${run.status}`} aria-live="polite" role="status">
@@ -426,6 +440,12 @@ function CandidateDiff({ current, candidate, diff, workspace, disabled, onAccept
 
 function FindingPanel({ findings = [], characters, completeness = [], stale, onFocus }) {
   const names = new Map(characters.map((item) => [item.id, item.name]));
+  const completeCharacterIDs = new Set(
+    completeness
+      .filter((item) => item.status === 'complete')
+      .map((item) => String(item.character_id || ''))
+      .filter((id) => names.has(id))
+  );
   const counts = {
     passed: characters.filter((character) => !findings.some((item) => item.character_id === character.id)).length,
     blocking: findings.filter((item) => item.blocking || item.severity === 'blocking').length,
@@ -434,7 +454,7 @@ function FindingPanel({ findings = [], characters, completeness = [], stale, onF
   };
   return <section className="finding-panel" aria-labelledby="character-findings-heading">
     <div className="foundation-section-head"><div><h3 id="character-findings-heading">角色审核 finding</h3><p>{stale ? '这些 finding 来自旧草稿，仅作参考；修复不代表模型建议已自动应用。' : '点击问题可选择角色、展开语义分组并聚焦对应字段。'}</p></div>
-      <div className="finding-counts"><span>通过 {counts.passed}</span><span>阻塞 {counts.blocking}</span><span>警告 {counts.warning}</span><span>信息 {counts.information}</span><span>完整 {completeness.filter((item) => item.status === 'complete').length}/{characters.length}</span></div>
+      <div className="finding-counts"><span>通过 {counts.passed}</span><span>阻塞 {counts.blocking}</span><span>警告 {counts.warning}</span><span>信息 {counts.information}</span><span>完整 {completeCharacterIDs.size}/{characters.length}</span></div>
     </div>
     {!findings.length ? <div className="empty-state"><ShieldCheck size={22} /><span>尚无审核 finding。</span></div> : <div className="finding-list">{[...findings].sort(severitySort).map((finding) => <button className={`finding-card ${finding.severity}`} key={finding.id} type="button" onClick={() => onFocus(finding)}>
       <span className="finding-card-title"><strong>{finding.blocking ? '阻塞' : finding.severity === 'warning' ? '警告' : '信息'}</strong><span>{names.get(finding.character_id) || (finding.scope === 'global' ? '全局' : finding.character_id)}</span></span>

@@ -15,95 +15,42 @@ import (
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
-func TestCoreCastHTTPConfirmationGateAndFoundationPublish(t *testing.T) {
+func TestNormalCoCreateRejectsLegacyCoreCastHTTPMutation(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()
 	manifest, err := server.store.CreateProject("Core Cast Gate")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake := installFakeSession(t, server, manifest)
+	installFakeSession(t, server, manifest)
 	session, _, err := server.sessions.Open(manifest.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	session.cocreate = readyCoreCastWebSession()
+	legacy := completeWebCoreCast()
+	session.cocreate.coreCast = &legacy
+	if state := session.cocreate.apiState(); state.CoreCast != nil || !state.CanStart {
+		t.Fatalf("normal migration exposed stale legacy CoreCast or blocked Character start: %+v", state)
+	}
 
-	candidate := completeWebCoreCast()
 	update := coreCastRequest(t, server, http.MethodPut, manifest.ID, "cocreate/core-cast", map[string]any{
 		"expected_revision": 0,
-		"core_cast":         candidate,
+		"core_cast":         completeWebCoreCast(),
 	})
-	if update.Code != http.StatusOK {
-		t.Fatalf("update status=%d body=%s", update.Code, update.Body.String())
+	if update.Code == http.StatusOK {
+		t.Fatalf("normal co-create accepted legacy CoreCast mutation: %s", update.Body.String())
 	}
-	state := decodeCoreCastState(t, update)
-	if state.CanStart || state.CastConfirmed || state.CoreCast == nil {
-		t.Fatalf("unconfirmed state = %+v", state)
+	stored, err := storepkg.NewStore(manifest.OutputDir).CoreCast.Load()
+	if err != nil {
+		t.Fatal(err)
 	}
-	unknown := coreCastRequest(t, server, http.MethodPut, manifest.ID, "cocreate/core-cast", map[string]any{
-		"expected_revision": state.CoreCast.Revision,
-		"core_cast":         candidate,
-		"can_start":         true,
-	})
-	if unknown.Code != http.StatusBadRequest {
-		t.Fatalf("unknown can_start field status=%d body=%s", unknown.Code, unknown.Body.String())
-	}
-
-	stale := coreCastRequest(t, server, http.MethodPost, manifest.ID, "cocreate/core-cast/confirm", map[string]any{
-		"expected_revision": state.CoreCast.Revision - 1,
-		"content_signature": state.CastSignature,
-	})
-	if stale.Code != http.StatusConflict || !bytes.Contains(stale.Body.Bytes(), []byte(`"code":"core_cast_revision_conflict"`)) {
-		t.Fatalf("stale confirm status=%d body=%s", stale.Code, stale.Body.String())
-	}
-
-	confirmed := coreCastRequest(t, server, http.MethodPost, manifest.ID, "cocreate/core-cast/confirm", map[string]any{
-		"expected_revision": state.CoreCast.Revision,
-		"content_signature": state.CastSignature,
-	})
-	if confirmed.Code != http.StatusOK {
-		t.Fatalf("confirm status=%d body=%s", confirmed.Code, confirmed.Body.String())
-	}
-	state = decodeCoreCastState(t, confirmed)
-	if !state.CanStart || !state.CastConfirmed {
-		t.Fatalf("confirmed state = %+v", state)
-	}
-
-	candidate.Members[0].Character.Arc = "a changed arc"
-	changed := coreCastRequest(t, server, http.MethodPut, manifest.ID, "cocreate/core-cast", map[string]any{
-		"expected_revision": state.CoreCast.Revision,
-		"core_cast":         candidate,
-	})
-	if changed.Code != http.StatusOK {
-		t.Fatalf("changed update status=%d body=%s", changed.Code, changed.Body.String())
-	}
-	state = decodeCoreCastState(t, changed)
-	if state.CanStart || state.CastConfirmed {
-		t.Fatal("semantic edit did not invalidate confirmation")
-	}
-
-	bypass := coreCastRequest(t, server, http.MethodPost, manifest.ID, "cocreate/commit", map[string]any{"can_start": true})
-	if bypass.Code == http.StatusOK || fake.prepareRulesCalls != 0 {
-		t.Fatalf("forged commit bypassed gate: status=%d calls=%d body=%s", bypass.Code, fake.prepareRulesCalls, bypass.Body.String())
-	}
-
-	confirmed = coreCastRequest(t, server, http.MethodPost, manifest.ID, "cocreate/core-cast/confirm", map[string]any{
-		"expected_revision": state.CoreCast.Revision,
-		"content_signature": state.CastSignature,
-	})
-	state = decodeCoreCastState(t, confirmed)
-	commit := coreCastRequest(t, server, http.MethodPost, manifest.ID, "cocreate/commit", map[string]any{})
-	if commit.Code != http.StatusOK {
-		t.Fatalf("commit status=%d body=%s", commit.Code, commit.Body.String())
-	}
-	formal, err := storepkg.NewStore(manifest.OutputDir).Foundation.Load()
-	if err != nil || len(formal.Characters) != 1 || formal.Characters[0].Arc != "a changed arc" {
-		t.Fatalf("published foundation=%+v err=%v", formal, err)
+	if stored != nil {
+		t.Fatalf("rejected normal CoreCast mutation persisted state: %+v", stored)
 	}
 }
 
-func TestOldCheckpointWithoutCoreCastRestoresBlocked(t *testing.T) {
+func TestOldNormalCheckpointWithoutCoreCastRestoresForCharacterWorkflow(t *testing.T) {
 	checkpoint := webCoCreateCheckpoint{
 		Version: webCoCreateCheckpointVersion,
 		Kind:    webCoCreateKindNormal,
@@ -117,8 +64,8 @@ func TestOldCheckpointWithoutCoreCastRestoresBlocked(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := state.apiState()
-	if api.CanStart || api.CastConfirmed || api.CastCompletion.Complete {
-		t.Fatalf("legacy checkpoint bypassed core cast gate: %+v", api)
+	if !api.CanStart || api.CastConfirmed || !api.CastCompletion.Complete {
+		t.Fatalf("normal checkpoint did not migrate to Character-owned cast: %+v", api)
 	}
 }
 

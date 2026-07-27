@@ -194,14 +194,36 @@ func TestRouteOriginalPlanningMarksBudgetCompletingAppendAsFinal(t *testing.T) {
 }
 
 func TestRouteOriginalPlanningAuditsSkeletonBeforeUserReview(t *testing.T) {
+	largeEvidence := strings.Repeat(`{"scope":"skeleton_book_batch","summary":"durable audit evidence"},`, 2000)
 	state := State{
 		Progress:             &domain.Progress{Phase: domain.PhaseOutline, Layered: true, TotalChapters: 33},
 		PlanningReview:       &domain.PlanningReview{Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindBlueprint},
-		SkeletonPlanningWork: &storepkg.OriginalPlanningWork{Kind: "audit_skeleton_book", Evidence: `[{"scope":"skeleton_book_batch"}]`},
+		SkeletonPlanningWork: &storepkg.OriginalPlanningWork{Kind: "audit_skeleton_book", Evidence: largeEvidence},
 	}
 	got := Route(state)
 	if got == nil || got.Agent != "editor" || !strings.Contains(got.Task, "skeleton_book") || !strings.Contains(got.Task, "终卷没有真正结束全书") {
 		t.Fatalf("skeleton final audit route = %+v", got)
+	}
+	if strings.Contains(got.Task, largeEvidence[:256]) || len(got.Task) > 4096 {
+		t.Fatalf("skeleton final audit task repeated durable evidence: %d bytes", len(got.Task))
+	}
+}
+
+func TestRouteOriginalPlanningBatchAuditReferencesDurableEvidence(t *testing.T) {
+	largeEvidence := strings.Repeat(`{"scope":"skeleton_volume","summary":"durable audit evidence"},`, 2000)
+	state := State{
+		Progress:       &domain.Progress{Phase: domain.PhaseOutline, Layered: true, TotalChapters: 33},
+		PlanningReview: &domain.PlanningReview{Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindBlueprint},
+		SkeletonPlanningWork: &storepkg.OriginalPlanningWork{
+			Kind: "audit_skeleton_book_batch", FromVolume: 7, ToVolume: 8, Evidence: largeEvidence,
+		},
+	}
+	got := Route(state)
+	if got == nil || got.Agent != "editor" || !strings.Contains(got.Task, "from_volume=7, to_volume=8") {
+		t.Fatalf("skeleton batch audit route = %+v", got)
+	}
+	if strings.Contains(got.Task, largeEvidence[:256]) || len(got.Task) > 4096 {
+		t.Fatalf("skeleton batch audit task repeated durable evidence: %d bytes", len(got.Task))
 	}
 }
 

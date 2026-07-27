@@ -177,6 +177,9 @@ func TestAdaptationCharacterWorkflowPublishesCompleteCastAndTargetFoundation(t *
 
 func TestConfirmOriginalCharacterCandidatePublishesReviewedCandidateAndIsIdempotent(t *testing.T) {
 	st, candidate, binding := stagedOriginalCharacterWorkflow(t)
+	if !characterConfirmationPending(st) {
+		t.Fatal("reviewed unconfirmed candidate did not open the user-confirmation boundary")
+	}
 	request := CharacterConfirmationRequest{
 		ExpectedCandidateRevision: candidate.Revision,
 		CandidateDigest:           binding.Candidate.CharacterContentDigest,
@@ -188,6 +191,9 @@ func TestConfirmOriginalCharacterCandidatePublishesReviewedCandidateAndIsIdempot
 	}
 	if first.Idempotent || first.FoundationRevision <= binding.Candidate.FoundationRevision {
 		t.Fatalf("first confirmation = %+v", first)
+	}
+	if characterConfirmationPending(st) {
+		t.Fatal("confirmed candidate left the user-confirmation boundary open")
 	}
 	published, err := st.Foundation.Load()
 	if err != nil {
@@ -204,6 +210,9 @@ func TestConfirmOriginalCharacterCandidatePublishesReviewedCandidateAndIsIdempot
 	if !slices.Contains(review.FoundationSections, "characters") ||
 		!slices.Contains(review.FoundationSections, "planned_relationships") {
 		t.Fatalf("Foundation sections = %+v", review.FoundationSections)
+	}
+	if err := RequireCoreCastGate(st, domain.CoreCastModeNormal, false); err != nil {
+		t.Fatalf("confirmed Character candidate did not publish the normal CoreCast gate: %v", err)
 	}
 
 	restarted := storepkg.NewStore(st.Dir())
@@ -289,6 +298,11 @@ func stagedOriginalCharacterWorkflow(
 		t.Fatal(err)
 	}
 	if _, err := st.BeginOriginalCharacterReview(&domain.PlanningReview{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{
+		Mode: domain.CoreCastModeNormal, DraftRevision: 1, DraftHash: "reviewed-original-brief",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	_, canonicalBinding, inputs, _, err := tools.CurrentCharacterCanonicalBinding(st)
@@ -461,32 +475,11 @@ func adaptationCharacterWorkflowStore(
 	}); err != nil {
 		t.Fatal(err)
 	}
-	gate, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{
+	_, err = st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{
 		Mode: domain.CoreCastModeAdaptation, DraftRevision: 1, DraftHash: "fixture-draft",
 		SourceSignature: sourceSignature, AdaptationIntentHash: intentHash,
 	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	hero := completeHostCharacter()
-	hero.ID = "target-hero"
-	saved, err := st.CoreCast.SaveCAS(domain.CoreCastContract{
-		Version: domain.CoreCastContractVersion, Mode: domain.CoreCastModeAdaptation,
-		DraftRevision: gate.DraftRevision, DraftHash: gate.DraftHash,
-		SourceSignature: gate.SourceSignature, AdaptationIntentHash: gate.AdaptationIntentHash,
-		Members: []domain.CoreCastMember{{
-			Character: hero, Importance: domain.CoreCastImportanceProtagonist,
-			Origin: domain.CoreCastOriginOriginal, MainlineFunction: "drives the target investigation",
-			InclusionRationale: "confirmed adaptation protagonist", NoCoreRelationships: true,
-		}},
-	}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := st.CoreCast.ConfirmCAS(saved.Revision, saved.ContentSignature, nil, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	before, err := st.Adaptation.LoadSourceFoundation()
