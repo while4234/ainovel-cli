@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `3d25cb0` `fix: isolate chapter execution context`:
+  keeps raw startup preferences durable for planning but omits their duplicate
+  replay once a signed chapter outline exists, retains validator-owned
+  structured rules, and bounds generic Writer references to representative
+  guidance. No unique chapter, character, or project fact is removed; tools,
+  Writer, and flow suites pass.
 - 2026-07-28 `2fcf577` `fix: deduplicate writer character context`:
   removes the legacy full-character mirror beside the authoritative bounded
   character workset. The live chapter-one package falls from 41,871 bytes to
