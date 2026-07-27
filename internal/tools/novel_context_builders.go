@@ -1503,10 +1503,13 @@ func (t *ContextTool) buildChapterSimulationProfile(result map[string]any, purpo
 }
 
 func compactPolishingSimulationStyle(style domain.SimulationStyle, maxItems int) domain.SimulationStyle {
-	style.NarrativeVoice = compactStringList(style.NarrativeVoice, maxItems, 60)
+	// Corpus viewpoint ownership is a source-story fact, not a reusable prose
+	// technique. The current chapter outline owns POV, so do not let a male- or
+	// female-led imitation corpus override the planned focal character.
+	style.NarrativeVoice = nil
 	style.SentenceRhythm = compactStringList(style.SentenceRhythm, maxItems, 60)
 	style.ProseTexture = compactStringList(style.ProseTexture, maxItems, 60)
-	style.Perspective = compactStringList(style.Perspective, maxItems, 60)
+	style.Perspective = nil
 	style.Mood = compactStringList(style.Mood, maxItems, 60)
 	style.DoNotCopy = compactStringList(style.DoNotCopy, maxItems, 60)
 	return style

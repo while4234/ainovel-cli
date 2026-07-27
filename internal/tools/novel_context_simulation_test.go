@@ -90,6 +90,53 @@ func TestContextToolInjectsCompactSimulationProfile(t *testing.T) {
 	}
 }
 
+func TestContextToolChapterSimulationDoesNotOverrideOutlineViewpoint(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	profile := domain.SimulationProfile{
+		Version: domain.SimulationProfileVersion,
+		Synthesis: domain.SimulationSynthesis{
+			Style: domain.SimulationStyle{
+				NarrativeVoice: []string{"strictly follow the male lead"},
+				Perspective:    []string{"never reveal the female lead's interior"},
+				SentenceRhythm: []string{"alternate compressed action and reflective pauses"},
+				ProseTexture:   []string{"use concrete sensory detail"},
+			},
+			RoleGuidance: domain.SimulationRoleGuidance{
+				Writer: []string{"borrow information-control technique only"},
+			},
+		},
+	}
+	if err := st.Simulation.Save(profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter: 1,
+		Title:   "Start",
+		Scenes:  []string{"scene one follows the female lead"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("test", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := NewContextTool(st, References{}, "default").Execute(t.Context(), json.RawMessage(`{"chapter":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("strictly follow the male lead")) ||
+		bytes.Contains(raw, []byte("never reveal the female lead")) {
+		t.Fatalf("chapter context leaked corpus viewpoint ownership: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte("alternate compressed action")) ||
+		!bytes.Contains(raw, []byte("concrete sensory detail")) {
+		t.Fatalf("chapter context lost reusable prose technique: %s", raw)
+	}
+}
+
 func TestContextToolReinforcedSimulationProfileUsesExpandedCompactProfile(t *testing.T) {
 	dir := testStoreDir(t)
 	st := store.NewStore(dir)

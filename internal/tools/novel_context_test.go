@@ -2277,6 +2277,72 @@ func TestContextToolLongChapterUsesWindowedOutline(t *testing.T) {
 	}
 }
 
+func TestContextToolChapterOneBoundsProductionSizedMultibyteReferences(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Outline.SavePremise(strings.Repeat("婚姻博弈与商业危机。", 300)); err != nil {
+		t.Fatalf("SavePremise: %v", err)
+	}
+	if err := s.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter:      1,
+		Title:        "开局",
+		CoreEvent:    strings.Repeat("林舒然在监控中醒来并寻找脱身机会。", 80),
+		Hook:         "苏瑾琛发现异常。",
+		Scenes:       []string{"病房对峙", "第一次试探", "留下后续承诺"},
+		CharacterIDs: []string{"lin_shuran", "su_jinchen"},
+	}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := s.Progress.Init("long", 55); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := s.Characters.Save([]domain.Character{
+		{ID: "lin_shuran", Name: "林舒然", Role: "主角"},
+		{ID: "su_jinchen", Name: "苏瑾琛", Role: "男主"},
+	}); err != nil {
+		t.Fatalf("Save characters: %v", err)
+	}
+	large := strings.Repeat("写作方法必须服务于当前章节事实与人物选择。", 700)
+	refs := References{
+		ChapterGuide:     large,
+		HookTechniques:   large,
+		QualityChecklist: large,
+		ChapterTemplate:  large,
+		Consistency:      large,
+		ContentExpansion: large,
+		DialogueWriting:  large,
+		StyleReference:   large,
+		AntiAITone:       large,
+	}
+
+	raw, err := NewContextTool(s, refs, "default").Execute(t.Context(), json.RawMessage(`{"chapter":1}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(raw) > writerChapterSourceBudgetBytes {
+		t.Fatalf("chapter-one production reference context = %d bytes, want <= %d", len(raw), writerChapterSourceBudgetBytes)
+	}
+	var payload struct {
+		Working    map[string]json.RawMessage `json:"working_memory"`
+		Episodic   map[string]json.RawMessage `json:"episodic_memory"`
+		References map[string]json.RawMessage `json:"reference_pack"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload.Working["current_chapter_outline"]; !ok {
+		t.Fatal("bounded context lost the authoritative current chapter outline")
+	}
+	if _, ok := payload.Episodic["character_workset"]; !ok {
+		t.Fatal("bounded context lost the canonical character workset")
+	}
+	if len(payload.References) == 0 {
+		t.Fatal("bounded context removed all quality guidance")
+	}
+}
+
 func TestContextToolExposesOnlyNearbyFutureChapterPromises(t *testing.T) {
 	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {

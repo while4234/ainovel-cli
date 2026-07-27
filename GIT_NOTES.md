@@ -46,6 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `pending` `fix: bind prose generation to chapter contracts`:
+  bounds production-sized multibyte Writer references without dropping story
+  facts, blocks Writer access to planning/status payloads, marks the active
+  chapter package as authoritative, rejects drafts and commits that contain no
+  canonical character required by the saved outline, and prevents a
+  male/female viewpoint inherited from imitation material from overriding the
+  chapter's planned POV. Focused Writer, context, simulation, tools, and flow
+  suites pass. The live project was transactionally rolled back from two
+  contaminated prose artifacts to the intact 55-chapter outline review gate;
+  full-book prose acceptance remains in progress.
 - 2026-07-27 `pending` `fix: bound high-fidelity detail planning`:
   adds an arc-scoped `planning_detail` context that keeps every canonical
   character, relationship, rule identity, current-volume skeleton, adjacent

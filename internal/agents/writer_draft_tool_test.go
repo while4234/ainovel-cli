@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
@@ -67,6 +68,47 @@ func TestWriterContextToolRejectsFullCrossChapterWorkPackage(t *testing.T) {
 	}
 	if len(raw) >= 2*1024 {
 		t.Fatalf("cross-chapter redirect=%d bytes, want compact tool guidance", len(raw))
+	}
+}
+
+func TestWriterContextToolRejectsPlanningScopeAndMarksActivePackageAuthoritative(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 2); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter: 1, Title: "Opening", CoreEvent: "The confirmed story begins",
+	}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	tool := newWriterContextTool(tools.NewContextTool(st, tools.References{}, "default"), st)
+
+	redirectRaw, err := tool.Execute(t.Context(), json.RawMessage(`{"scope":"planning"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var redirect map[string]any
+	if err := json.Unmarshal(redirectRaw, &redirect); err != nil {
+		t.Fatal(err)
+	}
+	if redirect["context_profile"] != "writer_scope_redirect" || redirect["full_context_loaded"] != false {
+		t.Fatalf("unexpected scope redirect: %+v", redirect)
+	}
+
+	activeRaw, err := tool.Execute(t.Context(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var active map[string]any
+	if err := json.Unmarshal(activeRaw, &active); err != nil {
+		t.Fatal(err)
+	}
+	contract, _ := active["writer_execution_contract"].(map[string]any)
+	if contract["authoritative"] != true || contract["never_invent_replacement"] != true {
+		t.Fatalf("missing authoritative Writer contract: %+v", contract)
 	}
 }
 
@@ -229,6 +271,79 @@ func TestWriterDraftChapterToolInfersInProgressChapter(t *testing.T) {
 	}
 }
 
+func TestWriterDraftChapterToolRejectsDraftWithoutRequiredCanonicalCharacter(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Characters.Save([]domain.Character{{
+		ID: "lin_shuran", Name: "林舒然", Aliases: []string{"舒然"},
+	}}); err != nil {
+		t.Fatalf("Save characters: %v", err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter: 1, Title: "Opening", CharacterIDs: []string{"lin_shuran"},
+	}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	tool := newWriterDraftChapterTool(st)
+
+	_, err := tool.Execute(t.Context(), writerDraftArgs(t, map[string]any{
+		"content": "沈渡在灰烬之城找到一枚星痕碎片。",
+		"mode":    "write",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "林舒然") {
+		t.Fatalf("expected canonical-character rejection, got %v", err)
+	}
+	if draft, _ := st.Drafts.LoadDraft(1); draft != "" {
+		t.Fatalf("rejected draft was persisted: %q", draft)
+	}
+
+	_, err = tool.Execute(t.Context(), writerDraftArgs(t, map[string]any{
+		"content": "林舒然推开会议室的门，决定直面今天的谈判。",
+		"mode":    "write",
+	}))
+	if err != nil {
+		t.Fatalf("canonical draft rejected: %v", err)
+	}
+}
+
+func TestWriterCommitWrapperRechecksPersistedDraftIdentity(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Characters.Save([]domain.Character{{
+		ID: "lin_shuran", Name: "林舒然",
+	}}); err != nil {
+		t.Fatalf("Save characters: %v", err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter: 1, CharacterIDs: []string{"lin_shuran"},
+	}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := st.Drafts.SaveDraft(1, "沈渡在灰烬之城找到星痕碎片。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	probe := &namedWriterProbeTool{name: "commit_chapter"}
+	tool := newWriterChapterInferenceTool(probe, st)
+	_, err := tool.Execute(t.Context(), json.RawMessage(`{"chapter":1}`))
+	if err == nil || !strings.Contains(err.Error(), "林舒然") {
+		t.Fatalf("expected commit identity rejection, got %v", err)
+	}
+	if probe.called {
+		t.Fatal("commit tool was called after identity rejection")
+	}
+}
+
 func TestWriterDraftChapterToolDoesNotInferAmbiguousRewriteQueue(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -293,3 +408,18 @@ func stringSliceContains(values []string, want string) bool {
 	}
 	return false
 }
+
+type namedWriterProbeTool struct {
+	name   string
+	called bool
+}
+
+func (t *namedWriterProbeTool) Name() string           { return t.name }
+func (t *namedWriterProbeTool) Description() string    { return t.name }
+func (t *namedWriterProbeTool) Schema() map[string]any { return map[string]any{} }
+func (t *namedWriterProbeTool) Execute(context.Context, json.RawMessage) (json.RawMessage, error) {
+	t.called = true
+	return json.RawMessage(`{"ok":true}`), nil
+}
+
+var _ agentcore.Tool = (*namedWriterProbeTool)(nil)

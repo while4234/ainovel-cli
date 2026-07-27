@@ -690,14 +690,11 @@ func (t *ContextTool) loadLayeredCharacters(result map[string]any, chapter int, 
 	t.loadFilteredCharacters(result, chapter, warn)
 }
 
-// writerReferences 返回写作参考资料。章节 1 返回全量，后续章节裁剪掉不再需要的模板。
+// writerReferences returns a compact procedural reference pack. Story facts
+// live in the signed chapter contract and episodic memory; generic guidance
+// must never displace that authoritative material at the provider boundary.
 func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpose) map[string]string {
 	refs := map[string]string{}
-	add := func(k, v string) {
-		if v != "" {
-			refs[k] = truncateRunes(v, 2600)
-		}
-	}
 	addWithLimit := func(k, v string, limit int) {
 		if v != "" {
 			refs[k] = truncateRunes(v, limit)
@@ -729,15 +726,15 @@ func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpos
 	// Editor context, so its most important long-form instructions were inert.
 	addWithLimit("anti_ai_tone", t.refs.AntiAITone, 400)
 	if chapter <= 3 {
-		add("chapter_guide", t.refs.ChapterGuide)
-		add("dialogue_writing", t.refs.DialogueWriting)
-		add("style_reference", t.refs.StyleReference)
+		addWithLimit("chapter_guide", t.refs.ChapterGuide, 400)
+		addWithLimit("dialogue_writing", t.refs.DialogueWriting, 300)
+		addWithLimit("style_reference", t.refs.StyleReference, 300)
 	}
 
 	// 仅首章加载的补充参考
 	if chapter <= 1 {
-		add("chapter_template", t.refs.ChapterTemplate)
-		add("content_expansion", t.refs.ContentExpansion)
+		addWithLimit("chapter_template", t.refs.ChapterTemplate, 250)
+		addWithLimit("content_expansion", t.refs.ContentExpansion, 300)
 	}
 	return refs
 }

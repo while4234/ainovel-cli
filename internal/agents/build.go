@@ -1051,6 +1051,9 @@ func (t *writerChapterInferenceTool) Execute(ctx context.Context, args json.RawM
 		return t.inner.Execute(ctx, args)
 	}
 	if hasPositiveChapter(raw["chapter"]) {
+		if err := t.validateCommitIdentity(positiveChapter(raw["chapter"])); err != nil {
+			return nil, err
+		}
 		return t.inner.Execute(ctx, args)
 	}
 	chapter := inferWriterDraftChapter(t.store)
@@ -1062,6 +1065,9 @@ func (t *writerChapterInferenceTool) Execute(ctx context.Context, args json.RawM
 		return nil, err
 	}
 	raw["chapter"] = encodedChapter
+	if err := t.validateCommitIdentity(chapter); err != nil {
+		return nil, err
+	}
 	nextArgs, err := json.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("augment %s args: %w", t.inner.Name(), err)
@@ -1069,9 +1075,20 @@ func (t *writerChapterInferenceTool) Execute(ctx context.Context, args json.RawM
 	return t.inner.Execute(ctx, nextArgs)
 }
 
+func (t *writerChapterInferenceTool) validateCommitIdentity(chapter int) error {
+	if t.inner.Name() != "commit_chapter" {
+		return nil
+	}
+	content, err := t.store.Drafts.LoadDraft(chapter)
+	if err != nil || strings.TrimSpace(content) == "" {
+		return nil
+	}
+	return validateWriterDraftIdentityContent(t.store, chapter, content)
+}
+
 func (t *writerContextTool) Name() string { return t.inner.Name() }
 func (t *writerContextTool) Description() string {
-	return t.inner.Description() + " Writer may load the full work package only for the active chapter; use read_chapter for prior-chapter continuity."
+	return t.inner.Description() + " Writer may load the full work package only for the active chapter. Planning/status scopes are unavailable to Writer. The returned outline and canonical character workset are authoritative; use read_chapter only for bounded prior-chapter continuity."
 }
 func (t *writerContextTool) Label() string { return t.inner.Label() }
 func (t *writerContextTool) Schema() map[string]any {
@@ -1090,7 +1107,13 @@ func (t *writerContextTool) Execute(ctx context.Context, args json.RawMessage) (
 		return t.inner.Execute(ctx, args)
 	}
 	if hasExplicitContextScope(raw["scope"]) {
-		return t.inner.Execute(ctx, args)
+		return json.Marshal(map[string]any{
+			"context_profile":      "writer_scope_redirect",
+			"full_context_loaded":  false,
+			"authoritative_source": "active chapter work package",
+			"do_not_retry_scope":   true,
+			"next_step":            "Call novel_context without scope. Writer must not load planning, planning_detail, planning_review, planning_audit, or status contexts.",
+		})
 	}
 	chapter := inferWriterDraftChapter(t.store)
 	requestedChapter := positiveChapter(raw["chapter"])
@@ -1106,7 +1129,7 @@ func (t *writerContextTool) Execute(ctx context.Context, args json.RawMessage) (
 				"next_step":                  fmt.Sprintf("Call novel_context(chapter=%d) for the active work package only; use read_chapter(chapter=%d) if prior prose is needed for continuity.", chapter, requestedChapter),
 			})
 		}
-		return t.inner.Execute(ctx, args)
+		return t.executeActiveChapterContext(ctx, args)
 	}
 	if chapter <= 0 {
 		return t.inner.Execute(ctx, args)
@@ -1120,7 +1143,28 @@ func (t *writerContextTool) Execute(ctx context.Context, args json.RawMessage) (
 	if err != nil {
 		return nil, fmt.Errorf("augment novel_context args: %w", err)
 	}
-	return t.inner.Execute(ctx, nextArgs)
+	return t.executeActiveChapterContext(ctx, nextArgs)
+}
+
+func (t *writerContextTool) executeActiveChapterContext(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	result, err := t.inner.Execute(ctx, args)
+	if err != nil {
+		return result, err
+	}
+	var payload map[string]any
+	if json.Unmarshal(result, &payload) != nil {
+		return result, nil
+	}
+	payload["writer_execution_contract"] = map[string]any{
+		"authoritative":                true,
+		"story_facts_source":           "working_memory.current_chapter_outline and episodic_memory.character_workset",
+		"never_invent_replacement":     true,
+		"planning_scope_forbidden":     true,
+		"plan_only_if_outline_missing": true,
+		"viewpoint_source":             "current chapter outline, never the imitation corpus",
+		"next_step":                    "Draft this exact chapter from the saved outline and canonical characters; do not replace its genre, setting, plot, or cast.",
+	}
+	return json.Marshal(payload)
 }
 
 func hasExplicitContextScope(raw json.RawMessage) bool {
@@ -1161,23 +1205,90 @@ func (t *writerDraftChapterTool) Execute(ctx context.Context, args json.RawMessa
 	if err := json.Unmarshal(args, &raw); err != nil {
 		return t.inner.Execute(ctx, args)
 	}
-	if hasPositiveChapter(raw["chapter"]) {
-		return t.inner.Execute(ctx, args)
+	chapter := positiveChapter(raw["chapter"])
+	if chapter <= 0 {
+		chapter = inferWriterDraftChapter(t.store)
 	}
-	chapter := inferWriterDraftChapter(t.store)
 	if chapter <= 0 {
 		return nil, fmt.Errorf("chapter is required and cannot be inferred from current writing state")
 	}
-	encodedChapter, err := json.Marshal(chapter)
-	if err != nil {
+	if err := validateWriterDraftIdentity(t.store, chapter, raw["content"]); err != nil {
 		return nil, err
 	}
-	raw["chapter"] = encodedChapter
+	if !hasPositiveChapter(raw["chapter"]) {
+		encodedChapter, err := json.Marshal(chapter)
+		if err != nil {
+			return nil, err
+		}
+		raw["chapter"] = encodedChapter
+	}
 	nextArgs, err := json.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("augment draft_chapter args: %w", err)
 	}
 	return t.inner.Execute(ctx, nextArgs)
+}
+
+func validateWriterDraftIdentity(st *store.Store, chapter int, rawContent json.RawMessage) error {
+	var content string
+	if json.Unmarshal(rawContent, &content) != nil || strings.TrimSpace(content) == "" {
+		return nil
+	}
+	return validateWriterDraftIdentityContent(st, chapter, content)
+}
+
+func validateWriterDraftIdentityContent(st *store.Store, chapter int, content string) error {
+	outline, err := st.Outline.LoadOutline()
+	if err != nil {
+		return nil
+	}
+	var requiredIDs []string
+	for _, entry := range outline {
+		if entry.Chapter != chapter {
+			continue
+		}
+		requiredIDs = append(requiredIDs, entry.CharacterIDs...)
+		for _, beat := range entry.CharacterBeats {
+			requiredIDs = append(requiredIDs, beat.CharacterID)
+		}
+		break
+	}
+	if len(requiredIDs) == 0 {
+		return nil
+	}
+	required := make(map[string]struct{}, len(requiredIDs))
+	for _, id := range requiredIDs {
+		required[strings.TrimSpace(id)] = struct{}{}
+	}
+	characters, err := st.Characters.Load()
+	if err != nil {
+		return nil
+	}
+	var expected []string
+	for _, character := range characters {
+		if _, ok := required[character.ID]; !ok {
+			continue
+		}
+		for _, name := range append([]string{character.Name}, character.Aliases...) {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			expected = append(expected, name)
+			if strings.Contains(content, name) {
+				return nil
+			}
+		}
+	}
+	if len(expected) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"draft chapter %d does not contain any canonical character required by the saved chapter outline (%s); reload novel_context for the active chapter and rewrite from the authoritative story contract: %w",
+		chapter,
+		strings.Join(expected, ", "),
+		errs.ErrToolArgs,
+	)
 }
 
 func hasPositiveChapter(raw json.RawMessage) bool {
