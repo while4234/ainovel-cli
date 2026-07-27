@@ -2338,6 +2338,9 @@ func TestContextToolChapterOneBoundsProductionSizedMultibyteReferences(t *testin
 	if _, ok := payload.Episodic["character_workset"]; !ok {
 		t.Fatal("bounded context lost the canonical character workset")
 	}
+	if _, ok := payload.Episodic["characters"]; ok {
+		t.Fatal("bounded context duplicated full character cards beside character_workset")
+	}
 	if len(payload.References) == 0 {
 		t.Fatal("bounded context removed all quality guidance")
 	}

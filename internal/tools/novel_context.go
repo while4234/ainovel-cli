@@ -613,8 +613,6 @@ func (t *ContextTool) loadFilteredCharacters(result map[string]any, chapter int,
 		return
 	}
 	result["character_workset"] = workset
-	// Compatibility mirror for existing prompts and old model fixtures.
-	result["characters"] = workset.Full
 	if len(workset.Snapshots) > 0 {
 		result["character_snapshots"] = workset.Snapshots
 	}
