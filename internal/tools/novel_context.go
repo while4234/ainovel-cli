@@ -212,7 +212,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	}
 
 	if scope == "chapter" || scope == "planning" || scope == "planning_detail" {
-		t.buildUserRules(result)
+		t.buildUserRules(result, scope == "chapter" && chapterContextHasAuthoritativeOutline(result))
 		t.buildWordBudget(result, a.Chapter)
 	} else if scope == "planning_review" {
 		t.buildWordBudget(result, a.Chapter)
@@ -230,6 +230,15 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 
 	result["_loading_summary"] = buildLoadingSummary(result, a.Chapter)
 	return json.Marshal(result)
+}
+
+func chapterContextHasAuthoritativeOutline(result map[string]any) bool {
+	working, ok := result["working_memory"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = working["current_chapter_outline"]
+	return ok
 }
 
 func normalizeContextScope(scope string, chapter int) string {
@@ -716,23 +725,23 @@ func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpos
 	}
 	// New writing and substantive rewrites retain the core writing references,
 	// with deterministic source limits rather than a post-build truncation pass.
-	addWithLimit("consistency", t.refs.Consistency, 200)
-	addWithLimit("hook_techniques", t.refs.HookTechniques, 200)
-	addWithLimit("quality_checklist", t.refs.QualityChecklist, 200)
+	addWithLimit("consistency", t.refs.Consistency, 120)
+	addWithLimit("hook_techniques", t.refs.HookTechniques, 100)
+	addWithLimit("quality_checklist", t.refs.QualityChecklist, 120)
 	// This is a core prose constraint, not an optional chapter-one reference.
 	// Previously the bundle loaded AntiAITone but never placed it in Writer or
 	// Editor context, so its most important long-form instructions were inert.
-	addWithLimit("anti_ai_tone", t.refs.AntiAITone, 400)
+	addWithLimit("anti_ai_tone", t.refs.AntiAITone, 180)
 	if chapter <= 3 {
-		addWithLimit("chapter_guide", t.refs.ChapterGuide, 400)
-		addWithLimit("dialogue_writing", t.refs.DialogueWriting, 300)
-		addWithLimit("style_reference", t.refs.StyleReference, 300)
+		addWithLimit("chapter_guide", t.refs.ChapterGuide, 180)
+		addWithLimit("dialogue_writing", t.refs.DialogueWriting, 120)
+		addWithLimit("style_reference", t.refs.StyleReference, 160)
 	}
 
 	// 仅首章加载的补充参考
 	if chapter <= 1 {
-		addWithLimit("chapter_template", t.refs.ChapterTemplate, 250)
-		addWithLimit("content_expansion", t.refs.ContentExpansion, 300)
+		addWithLimit("chapter_template", t.refs.ChapterTemplate, 80)
+		addWithLimit("content_expansion", t.refs.ContentExpansion, 120)
 	}
 	return refs
 }

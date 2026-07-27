@@ -158,7 +158,7 @@ func (t *ContextTool) buildProgressStatus(result map[string]any) {
 //
 // 注入策略：只给 LLM 看 structured + preferences——这两项才是创作时需要遵循的偏好。
 // sources / conflicts 是诊断信息（用户冲突排查），不进 LLM；由 CLI 启动诊断面板按需展示。
-func (t *ContextTool) buildUserRules(result map[string]any) {
+func (t *ContextTool) buildUserRules(result map[string]any, omitRedundantPreferences bool) {
 	snap, err := t.store.UserRules.Load()
 	if err != nil || snap == nil {
 		// 快照未生成（老书首次/异常）：退到代码内置默认，保证机械底线（字数/禁语/疲劳词）始终存在。
@@ -170,7 +170,17 @@ func (t *ContextTool) buildUserRules(result map[string]any) {
 		working = map[string]any{}
 		result["working_memory"] = working
 	}
-	working["user_rules"] = compactUserRulesPayload(snap.Payload())
+	payload := compactUserRulesPayload(snap.Payload())
+	if omitRedundantPreferences {
+		// Once a detailed chapter contract exists, the raw startup prompt has
+		// already been normalized into the confirmed foundation, character
+		// workset, chapter beats, and durable world rules. Replaying it here
+		// duplicates story facts and can crowd the signed chapter package out of
+		// provider byte limits. Keep the mechanical rules used by validators;
+		// the original preferences remain durable and available to planning.
+		delete(payload, "preferences")
+	}
+	working["user_rules"] = payload
 }
 
 func (t *ContextTool) buildWordBudget(result map[string]any, chapter int) {

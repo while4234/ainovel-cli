@@ -2335,6 +2335,16 @@ func TestContextToolChapterOneBoundsProductionSizedMultibyteReferences(t *testin
 	if _, ok := payload.Working["current_chapter_outline"]; !ok {
 		t.Fatal("bounded context lost the authoritative current chapter outline")
 	}
+	var userRules map[string]json.RawMessage
+	if err := json.Unmarshal(payload.Working["user_rules"], &userRules); err != nil {
+		t.Fatalf("decode bounded user rules: %v", err)
+	}
+	if _, ok := userRules["structured"]; !ok {
+		t.Fatal("bounded context lost mechanical user rules")
+	}
+	if _, ok := userRules["preferences"]; ok {
+		t.Fatal("bounded context replayed raw startup preferences already owned by the chapter contract")
+	}
 	if _, ok := payload.Episodic["character_workset"]; !ok {
 		t.Fatal("bounded context lost the canonical character workset")
 	}
