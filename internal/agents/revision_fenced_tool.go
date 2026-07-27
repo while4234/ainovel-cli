@@ -21,6 +21,22 @@ func revisionFenceWrites(revisions *store.RevisionStore, inner agentcore.Tool) a
 func (t *revisionFencedTool) Name() string           { return t.inner.Name() }
 func (t *revisionFencedTool) Description() string    { return t.inner.Description() }
 func (t *revisionFencedTool) Schema() map[string]any { return t.inner.Schema() }
+func (t *revisionFencedTool) StrictSchema() bool {
+	strict, ok := t.inner.(interface{ StrictSchema() bool })
+	return ok && strict.StrictSchema()
+}
+func (t *revisionFencedTool) ReadOnly(args json.RawMessage) bool {
+	if readOnly, ok := t.inner.(agentcore.ReadOnlyTool); ok {
+		return readOnly.ReadOnly(args)
+	}
+	return false
+}
+func (t *revisionFencedTool) ConcurrencySafe(args json.RawMessage) bool {
+	if safe, ok := t.inner.(agentcore.ConcurrencySafeTool); ok {
+		return safe.ConcurrencySafe(args)
+	}
+	return false
+}
 func (t *revisionFencedTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	fence, ok := store.RevisionFenceFromContext(ctx)
 	if !ok {

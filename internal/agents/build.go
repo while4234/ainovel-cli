@@ -76,6 +76,8 @@ func modelProfileRole(agent promptcompile.Agent) modelprofile.Role {
 		return modelprofile.RoleCoordinator
 	case promptcompile.AgentArchitect:
 		return modelprofile.RoleArchitect
+	case promptcompile.AgentCharacter:
+		return modelprofile.RoleCharacter
 	case promptcompile.AgentWriter:
 		return modelprofile.RoleWriter
 	case promptcompile.AgentEditor:
@@ -167,6 +169,12 @@ func BuildCoordinator(
 		contextTool,
 		revisionFenceWrites(store.Revisions, tools.NewSaveFoundationTool(store, completionGate)),
 	}
+	characterRuns := tools.NewCharacterRunRegistry()
+	characterTools := []agentcore.Tool{
+		tools.NewCharacterContextTool(store, characterRuns),
+		revisionFenceWrites(store.Revisions, tools.NewSaveCharacterCandidateTool(store, characterRuns)),
+		revisionFenceWrites(store.Revisions, tools.NewSaveCharacterReviewTool(store, characterRuns)),
+	}
 	writerTools := []agentcore.Tool{
 		newWriterContextTool(contextTool, store),
 		newWriterReadChapterTool(readChapter, store),
@@ -200,6 +208,10 @@ func BuildCoordinator(
 		"novel_context", "read_chapter", "save_original_planning_audit", "save_review", "save_arc_summary", "save_volume_summary"); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
+	if err := validateAgentToolRegistry("character", characterTools,
+		"character_context", "save_character_candidate", "save_character_review"); err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
 
 	reportFailover := func(ev bootstrap.FailoverEvent) {
 		slog.Warn("provider 切换",
@@ -218,15 +230,27 @@ func BuildCoordinator(
 	// Architect 的一次自主 run 可能连续完成设定、骨架和首批细纲，不能在
 	// run 中途换模型；以骨架规划阶段为主路由，未配置时继承 architect。
 	architectModel := models.ForStageWithFailover(bootstrap.StageSkeleton, reportFailover)
+	characterAnalysisModel := models.ForStageWithFailover(bootstrap.StageCharacterAnalysis, func(ev bootstrap.FailoverEvent) {
+		ev.Role = bootstrap.StageRouteKey(bootstrap.StageCharacterAnalysis)
+		reportFailover(ev)
+	})
+	characterReviewModel := models.ForStageWithFailover(bootstrap.StageCharacterReview, func(ev bootstrap.FailoverEvent) {
+		ev.Role = bootstrap.StageRouteKey(bootstrap.StageCharacterReview)
+		reportFailover(ev)
+	})
 	writerModel := models.ForStageWithFailover(bootstrap.StageWriting, reportFailover)
 	editorModel := models.ForStageWithFailover(bootstrap.StageReview, reportFailover)
 	coordinatorModel := models.ForRoleWithFailover("coordinator", reportFailover)
 	architectModel = NewToolCallRepairModel(architectModel)
+	characterAnalysisModel = NewToolCallRepairModel(characterAnalysisModel)
+	characterReviewModel = NewToolCallRepairModel(characterReviewModel)
 	writerModel = NewToolCallRepairModel(writerModel)
 	editorModel = NewToolCallRepairModel(editorModel)
 	coordinatorModel = NewToolCallRepairModel(coordinatorModel)
 	architectShortModel := withProductionAgentBoundary(architectModel, store, "agent_architect_short")
 	architectLongModel := withProductionAgentBoundary(architectModel, store, "agent_architect_long")
+	characterModel := newCharacterModeModel(characterAnalysisModel, characterReviewModel)
+	characterRuntimeModel := withProductionAgentBoundary(characterModel, store, "agent_character")
 	writerModel = withProductionAgentBoundary(writerModel, store, "agent_writer")
 	editorModel = withProductionAgentBoundary(editorModel, store, "agent_editor")
 	coordinatorModel = withProductionAgentBoundary(coordinatorModel, store, "agent_coordinator")
@@ -256,6 +280,14 @@ func BuildCoordinator(
 		}
 		if role == "editor" {
 			provider, name, _ := models.CurrentStageSelection(bootstrap.StageReview)
+			return provider, name
+		}
+		if role == "character" {
+			if characterModel.Mode() == tools.CharacterRunReview {
+				provider, name, _ := models.CurrentStageSelection(bootstrap.StageCharacterReview)
+				return provider, name
+			}
+			provider, name, _ := models.CurrentStageSelection(bootstrap.StageCharacterAnalysis)
 			return provider, name
 		}
 		provider, name, _ := models.CurrentSelection(role)
@@ -319,6 +351,34 @@ func BuildCoordinator(
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentArchitect)
 			return newContextManager(contextManagerConfig{Model: model, Store: store, ContextWindow: window, ReserveTokens: reserve, KeepRecentTokens: 14_000, Agent: "architect_long", OnSummaryRetry: onSummaryRetry})
+		},
+	}
+
+	character := subagent.Config{
+		Name:               "character",
+		Description:        "独立角色设计师：在分离的 analyze/review run 中生成或审核完整角色卡与计划关系",
+		Model:              characterRuntimeModel,
+		SystemPrompt:       globalprompt.Apply(bundle.Prompts.Character),
+		Tools:              characterTools,
+		MaxTurns:           16,
+		MaxRetries:         subagentMaxRetries,
+		ThinkingLevel:      resolvedRoleThinking(characterRuntimeModel, cfg, "character"),
+		ToolsAreIdempotent: true,
+		OnMessage:          onMsg,
+		StopAfterToolResult: func(toolName string, _ json.RawMessage) bool {
+			return toolName == "save_character_candidate" || toolName == "save_character_review"
+		},
+		ContextManagerFactory: func(agentcore.ChatModel) agentcore.ContextManager {
+			window, reserve := boundedCharacterContextWindow(cfg, models)
+			return newContextManager(contextManagerConfig{
+				Model:            characterRuntimeModel,
+				Store:            store,
+				ContextWindow:    window,
+				ReserveTokens:    reserve,
+				KeepRecentTokens: 16_000,
+				Agent:            "character",
+				OnSummaryRetry:   onSummaryRetry,
+			})
 		},
 	}
 
@@ -409,7 +469,7 @@ func BuildCoordinator(
 		},
 	}
 
-	subagentTool := subagent.New(architectShort, architectLong, writer, editor)
+	subagentTool := subagent.New(architectShort, architectLong, character, writer, editor)
 
 	coordinatorContextWindow, coordinatorReserve := boundedAgentContextWindow(coordinatorModelName, coordinatorContextWindow, promptcompile.AgentCoordinator)
 	coordinatorEngine := newContextManager(contextManagerConfig{
@@ -464,6 +524,9 @@ func BuildCoordinator(
 			level, _ = ResolveThinkingForModel(models.ForRole("architect"), level)
 			subagentTool.SetThinkingLevel("architect_short", level)
 			subagentTool.SetThinkingLevel("architect_long", level)
+		case "character":
+			level, _ = ResolveThinkingForModel(models.ForRole("character"), level)
+			subagentTool.SetThinkingLevel("character", level)
 		case "writer", "editor":
 			level, _ = ResolveThinkingForModel(models.ForRole(role), level)
 			subagentTool.SetThinkingLevel(role, level)
@@ -483,6 +546,21 @@ func writerToolResultMicrocompactConfig() *corecontext.ToolResultMicrocompactCon
 		KeepRecent:    2,
 		IdleThreshold: 5 * time.Minute,
 	}
+}
+
+func boundedCharacterContextWindow(cfg bootstrap.Config, models *bootstrap.ModelSet) (int, int) {
+	window := 0
+	for _, stage := range []string{bootstrap.StageCharacterAnalysis, bootstrap.StageCharacterReview} {
+		_, modelName, _ := models.CurrentStageSelection(stage)
+		modelWindow, _ := cfg.ResolveContextWindow(modelName)
+		if roleWindow := modelprofile.Resolve(modelName).ContextWindow(modelprofile.RoleCharacter); roleWindow > 0 {
+			modelWindow = min(modelWindow, roleWindow)
+		}
+		if modelWindow > 0 && (window == 0 || modelWindow < window) {
+			window = modelWindow
+		}
+	}
+	return window, bootstrap.CompactReserveTokens(window)
 }
 
 func validateAgentToolRegistry(role string, actual []agentcore.Tool, required ...string) error {

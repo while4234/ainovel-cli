@@ -25,6 +25,7 @@ type Prompts struct {
 	Coordinator                 string
 	ArchitectShort              string
 	ArchitectLong               string
+	Character                   string
 	Writer                      string
 	Editor                      string
 	ImportFoundation            string
@@ -127,6 +128,7 @@ func loadPrompts() Prompts {
 		Coordinator:                 loadRolePrompt("prompts/coordinator.md", "coordinator"),
 		ArchitectShort:              loadRolePrompt("prompts/architect-short.md", "architect"),
 		ArchitectLong:               loadRolePrompt("prompts/architect-long.md", "architect"),
+		Character:                   loadRolePrompt("prompts/character.md", "character"),
 		Writer:                      loadRolePrompt("prompts/writer.md", "writer"),
 		Editor:                      loadRolePrompt("prompts/editor.md", "editor"),
 		ImportFoundation:            loadSystemPrompt("prompts/import-foundation.md"),

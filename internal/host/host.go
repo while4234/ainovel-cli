@@ -2178,7 +2178,7 @@ func deriveStatusLabel(s UISnapshot) string {
 
 // ── 模型管理 ──
 
-var projectAgentModelRoles = []string{"coordinator", "architect", "writer", "editor", "auditor"}
+var projectAgentModelRoles = []string{"coordinator", "architect", "character", "writer", "editor", "auditor"}
 
 func (h *Host) selectRuntimeFallback(ctx context.Context, current bootstrap.ModelRef, attempted map[string]bool, cause error) (bootstrap.RuntimeFallbackTarget, bool) {
 	h.mu.Lock()
@@ -4182,7 +4182,7 @@ func validModelRole(role string) bool {
 		return false
 	}
 	switch normalized {
-	case "", "default", "coordinator", "architect", "writer", "editor", "auditor":
+	case "", "default", "coordinator", "architect", "character", "writer", "editor", "auditor":
 		return true
 	default:
 		return false
@@ -4201,7 +4201,7 @@ func validateAddedProviderModel(cfg bootstrap.Config, role, provider string, pc 
 
 // concreteThinkingRoles 是可应用推理强度的具体角色（与 agents.ApplyThinking 路由一致）。
 // 调 default 时按各角色 ResolveReasoningEffort 逐个重新应用。
-var concreteThinkingRoles = []string{"coordinator", "architect", "writer", "editor", "auditor"}
+var concreteThinkingRoles = []string{"coordinator", "architect", "character", "writer", "editor", "auditor"}
 
 // CurrentThinking 返回某角色当前生效的推理强度原始串（供 /model 面板同步当前值）。
 func (h *Host) CurrentThinking(role string) string {

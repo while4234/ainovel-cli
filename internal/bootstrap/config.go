@@ -378,26 +378,31 @@ type RoleConfig struct {
 
 // knownRoles 支持的角色名。
 var knownRoles = map[string]bool{
-	"coordinator":                      true,
-	"architect":                        true,
-	"writer":                           true,
-	"editor":                           true,
-	"auditor":                          true,
-	StageRouteKey(StageCoCreate):       true,
-	StageRouteKey(StageSourceAnalysis): true,
-	StageRouteKey(StageSkeleton):       true,
-	StageRouteKey(StageDetailOutline):  true,
-	StageRouteKey(StageWriting):        true,
-	StageRouteKey(StageReview):         true,
+	"coordinator":                         true,
+	"architect":                           true,
+	"character":                           true,
+	"writer":                              true,
+	"editor":                              true,
+	"auditor":                             true,
+	StageRouteKey(StageCoCreate):          true,
+	StageRouteKey(StageSourceAnalysis):    true,
+	StageRouteKey(StageSkeleton):          true,
+	StageRouteKey(StageDetailOutline):     true,
+	StageRouteKey(StageWriting):           true,
+	StageRouteKey(StageReview):            true,
+	StageRouteKey(StageCharacterAnalysis): true,
+	StageRouteKey(StageCharacterReview):   true,
 }
 
 const (
-	StageCoCreate       = "co_create"
-	StageSourceAnalysis = "source_analysis"
-	StageSkeleton       = "skeleton"
-	StageDetailOutline  = "detail_outline"
-	StageWriting        = "writing"
-	StageReview         = "review"
+	StageCoCreate          = "co_create"
+	StageSourceAnalysis    = "source_analysis"
+	StageSkeleton          = "skeleton"
+	StageDetailOutline     = "detail_outline"
+	StageWriting           = "writing"
+	StageReview            = "review"
+	StageCharacterAnalysis = "character_analysis"
+	StageCharacterReview   = "character_review"
 )
 
 var KnownModelStages = []string{
@@ -407,6 +412,8 @@ var KnownModelStages = []string{
 	StageDetailOutline,
 	StageWriting,
 	StageReview,
+	StageCharacterAnalysis,
+	StageCharacterReview,
 }
 
 func StageRouteKey(stage string) string {
@@ -421,6 +428,8 @@ func StageFallbackRole(stage string) string {
 		return "writer"
 	case StageReview:
 		return "editor"
+	case StageCharacterAnalysis, StageCharacterReview:
+		return "character"
 	default:
 		return "default"
 	}

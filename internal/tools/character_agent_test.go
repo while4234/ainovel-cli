@@ -1,0 +1,390 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
+	"github.com/voocel/ainovel-cli/internal/store"
+)
+
+func TestCharacterToolsAnalyzeAndIndependentReview(t *testing.T) {
+	st := characterToolStore(t)
+	registry := NewCharacterRunRegistry()
+	binding := readCharacterContext(t, st, registry, "analyze-1", CharacterRunAnalyze)
+	candidate := completeCharacterCandidate()
+	result := saveCharacterCandidate(t, st, registry, "analyze-1", "candidate-1", binding, candidate)
+	if result["saved"] != true || result["ready_for_review"] != true {
+		t.Fatalf("analyze result = %+v", result)
+	}
+	foundation, err := st.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if foundation.Premise != "locked premise" || len(foundation.WorldRules) != 1 ||
+		len(foundation.Characters) != 1 || foundation.Characters[0].Name != "林澈" {
+		t.Fatalf("candidate changed non-character foundation or missed cards: %+v", foundation)
+	}
+
+	reviewBinding := readCharacterContext(t, st, registry, "review-1", CharacterRunReview)
+	reviewResult := saveCharacterReview(t, st, registry, "review-1", "review-key-1", reviewBinding, "pass", nil)
+	if reviewResult["passed"] != true || reviewResult["final_status"] != string(domain.CharacterCardReviewPassed) {
+		t.Fatalf("review result = %+v", reviewResult)
+	}
+	lifecycle, err := st.CharacterCards.Load(reviewBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle == nil || lifecycle.RunID != "review-1" ||
+		lifecycle.ReviewedCandidate != reviewBinding.Candidate ||
+		lifecycle.ReviewedInputDigest != reviewBinding.InputDigest {
+		t.Fatalf("review lifecycle = %+v", lifecycle)
+	}
+}
+
+func TestCharacterReviewPassIsDowngradedByCompleteness(t *testing.T) {
+	st := characterToolStore(t)
+	registry := NewCharacterRunRegistry()
+	binding := readCharacterContext(t, st, registry, "analyze-incomplete", CharacterRunAnalyze)
+	incomplete := completeCharacterCandidate()
+	incomplete[0].Motivation = ""
+	saveCharacterCandidate(t, st, registry, "analyze-incomplete", "candidate-incomplete", binding, incomplete)
+
+	reviewBinding := readCharacterContext(t, st, registry, "review-incomplete", CharacterRunReview)
+	result := saveCharacterReview(t, st, registry, "review-incomplete", "review-incomplete-key", reviewBinding, "pass", nil)
+	if result["passed"] != false || result["final_status"] != string(domain.CharacterCardReviewNeedsRevision) {
+		t.Fatalf("incomplete review result = %+v", result)
+	}
+	findings, ok := result["findings"].([]any)
+	if !ok || len(findings) == 0 {
+		t.Fatalf("deterministic completeness finding missing: %+v", result)
+	}
+}
+
+func TestCharacterReviewRetryIsIdempotentOnlyForExactSubmission(t *testing.T) {
+	st := characterToolStore(t)
+	registry := NewCharacterRunRegistry()
+	binding := readCharacterContext(t, st, registry, "analyze-for-retry", CharacterRunAnalyze)
+	saveCharacterCandidate(t, st, registry, "analyze-for-retry", "candidate-for-retry", binding, completeCharacterCandidate())
+
+	reviewBinding := readCharacterContext(t, st, registry, "review-retry", CharacterRunReview)
+	request := reviewRequest("review-retry", "review-retry-key", reviewBinding, "pass", nil)
+	tool := NewSaveCharacterReviewTool(st, registry)
+	if _, err := tool.Execute(context.Background(), characterJSON(t, request)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := tool.Execute(context.Background(), characterJSON(t, request))
+	if err != nil {
+		t.Fatalf("exact review retry should be idempotent: %v", err)
+	}
+	var result map[string]any
+	if json.Unmarshal(raw, &result) != nil || result["idempotent"] != true {
+		t.Fatalf("review retry result = %s", raw)
+	}
+	request.Summary = "different review content"
+	if _, err := tool.Execute(context.Background(), characterJSON(t, request)); !errors.Is(err, errs.ErrToolConflict) {
+		t.Fatalf("changed review retry err = %v", err)
+	}
+}
+
+func TestCharacterToolsRejectModeDuplicateStaleAndUnknownFields(t *testing.T) {
+	t.Run("mode", func(t *testing.T) {
+		st := characterToolStore(t)
+		registry := NewCharacterRunRegistry()
+		binding := readCharacterContext(t, st, registry, "mode-run", CharacterRunAnalyze)
+		request := candidateRequest("mode-run", "mode-key", binding, completeCharacterCandidate())
+		request.Mode = CharacterRunReview
+		if _, err := NewSaveCharacterCandidateTool(st, registry).Execute(context.Background(), characterJSON(t, request)); !errors.Is(err, errs.ErrToolConflict) {
+			t.Fatalf("wrong mode err = %v", err)
+		}
+	})
+
+	t.Run("duplicate and idempotent retry", func(t *testing.T) {
+		st := characterToolStore(t)
+		registry := NewCharacterRunRegistry()
+		binding := readCharacterContext(t, st, registry, "duplicate-run", CharacterRunAnalyze)
+		request := candidateRequest("duplicate-run", "duplicate-key", binding, completeCharacterCandidate())
+		tool := NewSaveCharacterCandidateTool(st, registry)
+		if _, err := tool.Execute(context.Background(), characterJSON(t, request)); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := tool.Execute(context.Background(), characterJSON(t, request))
+		if err != nil {
+			t.Fatalf("exact retry should be idempotent: %v", err)
+		}
+		var result map[string]any
+		if json.Unmarshal(raw, &result) != nil || result["idempotent"] != true {
+			t.Fatalf("retry result = %s", raw)
+		}
+		request.IdempotencyKey = "different-key"
+		if _, err := tool.Execute(context.Background(), characterJSON(t, request)); !errors.Is(err, errs.ErrToolConflict) {
+			t.Fatalf("duplicate different key err = %v", err)
+		}
+	})
+
+	t.Run("stale", func(t *testing.T) {
+		st := characterToolStore(t)
+		registry := NewCharacterRunRegistry()
+		binding := readCharacterContext(t, st, registry, "stale-run", CharacterRunAnalyze)
+		foundation, _ := st.Foundation.Load()
+		foundation.Premise = "user edited premise"
+		if _, err := st.Foundation.SaveRevisionCAS(foundation, foundation.Revision); err != nil {
+			t.Fatal(err)
+		}
+		request := candidateRequest("stale-run", "stale-key", binding, completeCharacterCandidate())
+		if _, err := NewSaveCharacterCandidateTool(st, registry).Execute(context.Background(), characterJSON(t, request)); !errors.Is(err, errs.ErrToolConflict) ||
+			!strings.Contains(err.Error(), "stale") {
+			t.Fatalf("stale err = %v", err)
+		}
+	})
+
+	t.Run("unknown field", func(t *testing.T) {
+		tool := NewCharacterContextTool(characterToolStore(t), NewCharacterRunRegistry())
+		if _, err := tool.Execute(context.Background(), json.RawMessage(`{"run_id":"unknown","mode":"analyze","extra":true}`)); !errors.Is(err, errs.ErrToolArgs) {
+			t.Fatalf("unknown field err = %v", err)
+		}
+	})
+}
+
+func TestCharacterContextIsBoundedAndNeverLoadsRawAdaptationText(t *testing.T) {
+	st := characterToolStore(t)
+	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{
+		Version:         1,
+		SourceSignature: strings.Repeat("a", 64),
+		Characters: []domain.Character{{
+			ID: "source-hero", Name: "原著主角", Role: "主角", Description: "source fact",
+			Arc: "source arc", Traits: []string{"冷静"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Adaptation.SaveCoCreateIntent(domain.AdaptationCoCreateIntent{
+		Version: 1, RawRequest: "保留主线", IntentHash: strings.Repeat("b", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	contract := domain.CoreCastContract{
+		Version:              domain.CoreCastContractVersion,
+		Mode:                 domain.CoreCastModeAdaptation,
+		DraftRevision:        1,
+		DraftHash:            "draft",
+		SourceSignature:      strings.Repeat("a", 64),
+		AdaptationIntentHash: strings.Repeat("b", 64),
+		Members: []domain.CoreCastMember{{
+			Character:           completeCharacterCandidate()[0],
+			Importance:          domain.CoreCastImportanceProtagonist,
+			Origin:              domain.CoreCastOriginSource,
+			MainlineFunction:    "drives plot",
+			SourceCharacterIDs:  []string{"source-hero"},
+			NoCoreRelationships: true,
+		}},
+		PlannedRelationships: []domain.CharacterRelationship{},
+		SourceDispositions: []domain.SourceCharacterDisposition{{
+			SourceCharacterID:  "source-hero",
+			Action:             domain.SourceDispositionKeep,
+			TargetCharacterIDs: []string{completeCharacterCandidate()[0].ID},
+			Rationale:          "keep",
+		}},
+	}
+	if _, err := st.CoreCast.SaveCAS(contract, 0); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewCharacterRunRegistry()
+	raw, err := NewCharacterContextTool(st, registry).Execute(
+		context.Background(),
+		json.RawMessage(`{"run_id":"adapt-analyze","mode":"analyze"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "raw_source") && !strings.Contains(text, `"raw_source_included":false`) {
+		t.Fatalf("context exposed raw source marker: %s", text)
+	}
+	if !strings.Contains(text, `"project_mode":"adaptation"`) ||
+		!strings.Contains(text, `"source_foundation"`) ||
+		!strings.Contains(text, `"chapter_reports"`) {
+		t.Fatalf("adaptation evidence missing: %s", text)
+	}
+}
+
+func TestCharacterToolsExposeStrictSchemas(t *testing.T) {
+	st := characterToolStore(t)
+	registry := NewCharacterRunRegistry()
+	for name, tool := range map[string]interface{ StrictSchema() bool }{
+		"character_context":        NewCharacterContextTool(st, registry),
+		"save_character_candidate": NewSaveCharacterCandidateTool(st, registry),
+		"save_character_review":    NewSaveCharacterReviewTool(st, registry),
+	} {
+		if !tool.StrictSchema() {
+			t.Fatalf("%s is not strict", name)
+		}
+	}
+}
+
+func characterToolStore(t *testing.T) *store.Store {
+	t.Helper()
+	st := store.NewStore(testStoreDir(t))
+	_, err := st.Foundation.SaveRevisionCAS(domain.StoryFoundation{
+		SchemaVersion: domain.StoryFoundationSchemaVersion,
+		Premise:       "locked premise",
+		WorldRules: []domain.WorldRule{{
+			ID: "rule-1", Category: "physics", Rule: "magic has a cost", Strength: domain.WorldRuleStrengthHard,
+		}},
+		Characters:    []domain.Character{},
+		Relationships: []domain.CharacterRelationship{},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func completeCharacterCandidate() []domain.Character {
+	return []domain.Character{{
+		ID:          "char-lin-che",
+		Name:        "林澈",
+		Aliases:     []string{},
+		Role:        "调查者",
+		Description: "以追查真相为职业，也害怕真相伤害家人",
+		Arc:         "从控制信息到承担公开真相的后果",
+		Traits:      []string{"克制", "敏锐"},
+		Tier:        string(domain.CharacterTierCore),
+		Faction:     "",
+		Goal:        "查明失踪案",
+		Motivation:  "保护妹妹免受同样伤害",
+		Conflict:    "公开真相会摧毁家族声誉",
+		Voice:       "短句，先问证据再表态",
+		Constraints: []string{"不凭直觉指控无辜者"},
+		ContrastDetails: []domain.CharacterContrastDetail{{
+			Surface: "冷静", Depth: "面对妹妹时容易失去判断",
+		}},
+		KeyBackstory: []domain.CharacterBackstory{{
+			Event: "曾误判证人", Impact: "现在必须交叉验证每条线索",
+		}},
+		InitialState: &domain.CharacterInitialState{
+			Identity: "调查记者", Situation: "刚接到旧案新线索", Emotion: "戒备",
+			Resources: []string{"匿名档案"}, Relationships: "与妹妹疏远",
+		},
+		KnowledgeBoundary: &domain.CharacterKnowledgeBoundary{
+			Known: []string{"案件官方记录"}, Unknown: []string{"幕后主使"},
+			Misconceptions: []string{"父亲已经离开本城"}, Forbidden: []string{"幕后主使真实身份"},
+		},
+		Notes: "",
+	}}
+}
+
+func readCharacterContext(
+	t *testing.T,
+	st *store.Store,
+	registry *CharacterRunRegistry,
+	runID string,
+	mode CharacterRunMode,
+) domain.CharacterCardBinding {
+	t.Helper()
+	args := characterJSON(t, characterContextArgs{RunID: runID, Mode: mode})
+	if _, err := NewCharacterContextTool(st, registry).Execute(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+	_, binding, _, _, _, err := currentCharacterBinding(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding
+}
+
+func candidateRequest(
+	runID, key string,
+	binding domain.CharacterCardBinding,
+	characters []domain.Character,
+) saveCharacterCandidateArgs {
+	return saveCharacterCandidateArgs{
+		RunID: runID, Mode: CharacterRunAnalyze, IdempotencyKey: key,
+		BaseRevision:          binding.Candidate.FoundationRevision,
+		BaseAuditSignature:    binding.Candidate.FoundationAuditSignature,
+		CandidateDigest:       binding.Candidate.CharacterContentDigest,
+		InputDigest:           binding.InputDigest,
+		AnalysisSummary:       "generated from current evidence; uncertain choices are marked",
+		Characters:            characters,
+		Relationships:         []domain.CharacterRelationship{},
+		RelationshipsReviewed: true,
+		SourceMappings:        []domain.CharacterSourceMapping{},
+	}
+}
+
+func saveCharacterCandidate(
+	t *testing.T,
+	st *store.Store,
+	registry *CharacterRunRegistry,
+	runID, key string,
+	binding domain.CharacterCardBinding,
+	characters []domain.Character,
+) map[string]any {
+	t.Helper()
+	raw, err := NewSaveCharacterCandidateTool(st, registry).Execute(
+		context.Background(),
+		characterJSON(t, candidateRequest(runID, key, binding, characters)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func saveCharacterReview(
+	t *testing.T,
+	st *store.Store,
+	registry *CharacterRunRegistry,
+	runID, key string,
+	binding domain.CharacterCardBinding,
+	verdict string,
+	findings []domain.CharacterCardReviewFinding,
+) map[string]any {
+	t.Helper()
+	request := reviewRequest(runID, key, binding, verdict, findings)
+	raw, err := NewSaveCharacterReviewTool(st, registry).Execute(context.Background(), characterJSON(t, request))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func reviewRequest(
+	runID, key string,
+	binding domain.CharacterCardBinding,
+	verdict string,
+	findings []domain.CharacterCardReviewFinding,
+) saveCharacterReviewArgs {
+	if findings == nil {
+		findings = []domain.CharacterCardReviewFinding{}
+	}
+	return saveCharacterReviewArgs{
+		RunID: runID, Mode: CharacterRunReview, IdempotencyKey: key,
+		BaseRevision:       binding.Candidate.FoundationRevision,
+		BaseAuditSignature: binding.Candidate.FoundationAuditSignature,
+		CandidateDigest:    binding.Candidate.CharacterContentDigest,
+		InputDigest:        binding.InputDigest,
+		Verdict:            verdict, Summary: "independent review of current candidate and evidence", Findings: findings,
+	}
+}
+
+func characterJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}

@@ -4,6 +4,27 @@ import "testing"
 
 func boolPointer(value bool) *bool { return &value }
 
+func TestCharacterStagesRouteThroughCharacterRole(t *testing.T) {
+	for _, stage := range []string{StageCharacterAnalysis, StageCharacterReview} {
+		if got := StageFallbackRole(stage); got != "character" {
+			t.Fatalf("StageFallbackRole(%q)=%q, want character", stage, got)
+		}
+		found := false
+		for _, known := range KnownModelStages {
+			found = found || known == stage
+		}
+		if !found {
+			t.Fatalf("character stage %q is not a known model stage", stage)
+		}
+		if !knownRoles[StageRouteKey(stage)] {
+			t.Fatalf("character stage route %q is not accepted", StageRouteKey(stage))
+		}
+	}
+	if !knownRoles["character"] {
+		t.Fatal("character model role is not accepted")
+	}
+}
+
 func TestNormalizeResumeSchedule(t *testing.T) {
 	got, err := NormalizeResumeSchedule(ResumeScheduleConfig{
 		DailyTimes: []string{"16:00", "15:00", "16:00"},

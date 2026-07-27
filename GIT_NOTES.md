@@ -46,6 +46,19 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-27 `pending` `feat: add independent character agent`:
+  registers one Character subagent whose `analyze` and `review` modes run as
+  separate submissions routed through `character_analysis` and
+  `character_review`; adds a bounded signature-bound context tool plus strict
+  candidate/review save tools with revision fences, exact idempotency,
+  staleness rejection, deterministic completeness downgrades, and unified
+  original/adaptation source mappings; adds model/profile/prompt budgets,
+  config and Web model-route data sources, prompt guidance, embedded UI assets,
+  and focused acceptance coverage. The focused nine-package matrix, non-Web
+  modified-package suites, `go build ./...`, Web production build, and all 330
+  Vitest cases pass. Full Web regression still has inherited CoreCast-gate
+  fixture failures; a combined full run's host package was stopped after it
+  stalled.
 - 2026-07-27 `pending` `feat: add complete character card contract`:
   upgrades StoryFoundation to schema v3 with contrast, key-backstory,
   chapter-zero initial-state, and knowledge-boundary semantics; adds one

@@ -704,12 +704,14 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 		})
 	}
 	stageLabels := map[string]string{
-		bootstrap.StageCoCreate:       "首次/阶段共创",
-		bootstrap.StageSourceAnalysis: "资料分析",
-		bootstrap.StageSkeleton:       "骨架规划",
-		bootstrap.StageDetailOutline:  "详细提纲",
-		bootstrap.StageWriting:        "正文创作",
-		bootstrap.StageReview:         "审校与摘要",
+		bootstrap.StageCoCreate:          "首次/阶段共创",
+		bootstrap.StageSourceAnalysis:    "资料分析",
+		bootstrap.StageSkeleton:          "骨架规划",
+		bootstrap.StageDetailOutline:     "详细提纲",
+		bootstrap.StageWriting:           "正文创作",
+		bootstrap.StageReview:            "审校与摘要",
+		bootstrap.StageCharacterAnalysis: "角色分析",
+		bootstrap.StageCharacterReview:   "角色审核",
 	}
 	stages := make([]apiModelRoute, 0, len(bootstrap.KnownModelStages))
 	for _, stage := range bootstrap.KnownModelStages {
@@ -743,7 +745,7 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 			"xhigh",
 			"max",
 		},
-		ThinkingRule:    "default applies to coordinator, architect, writer, and editor unless that agent has its own model or reasoning setting",
+		ThinkingRule:    "default applies to coordinator, architect, character, writer, and editor unless that agent has its own model or reasoning setting",
 		ModelAutoSwitch: apiModelAutoSwitchFromConfig(autoSwitch),
 	}
 }

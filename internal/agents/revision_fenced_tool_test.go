@@ -38,3 +38,33 @@ func TestRevisionFencedToolRejectsQueuedWriteAfterOwnershipRelease(t *testing.T)
 		t.Fatal("stale queued write reached the writable tool")
 	}
 }
+
+func TestRevisionFencedToolPreservesToolCapabilities(t *testing.T) {
+	inner := capabilityTool{}
+	wrapped := revisionFenceWrites(store.NewRevisionStore(t.TempDir()), inner)
+
+	strict, ok := wrapped.(interface{ StrictSchema() bool })
+	if !ok || !strict.StrictSchema() {
+		t.Fatal("strict schema capability was not preserved")
+	}
+	readOnly, ok := wrapped.(agentcore.ReadOnlyTool)
+	if !ok || !readOnly.ReadOnly(nil) {
+		t.Fatal("read-only capability was not preserved")
+	}
+	safe, ok := wrapped.(agentcore.ConcurrencySafeTool)
+	if !ok || !safe.ConcurrencySafe(nil) {
+		t.Fatal("concurrency-safe capability was not preserved")
+	}
+}
+
+type capabilityTool struct{}
+
+func (capabilityTool) Name() string                         { return "capability" }
+func (capabilityTool) Description() string                  { return "capability" }
+func (capabilityTool) Schema() map[string]any               { return map[string]any{"type": "object"} }
+func (capabilityTool) StrictSchema() bool                   { return true }
+func (capabilityTool) ReadOnly(json.RawMessage) bool        { return true }
+func (capabilityTool) ConcurrencySafe(json.RawMessage) bool { return true }
+func (capabilityTool) Execute(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{"ok":true}`), nil
+}

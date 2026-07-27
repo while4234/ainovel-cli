@@ -65,7 +65,7 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 	if got := server.currentConfig().ModelName; got != "gpt-next" {
 		t.Fatalf("server default model = %q, want gpt-next", got)
 	}
-	for _, role := range []string{"coordinator", "architect", "writer", "editor", "auditor"} {
+	for _, role := range []string{"coordinator", "architect", "character", "writer", "editor", "auditor"} {
 		if route := findModelRoute(switched.Models.Roles, role); route.Provider != "openai" || route.Model != "gpt-next" || route.Explicit {
 			t.Fatalf("%s route after default switch = %+v", role, route)
 		}

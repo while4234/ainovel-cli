@@ -52,6 +52,7 @@ func TestLoadPromptsIncludeReinforcedSimulationGuidance(t *testing.T) {
 	cases := map[string]string{
 		"ArchitectShort": bundle.Prompts.ArchitectShort,
 		"ArchitectLong":  bundle.Prompts.ArchitectLong,
+		"Character":      bundle.Prompts.Character,
 		"Writer":         bundle.Prompts.Writer,
 		"Editor":         bundle.Prompts.Editor,
 	}
@@ -81,6 +82,26 @@ func TestLoadPromptsIncludeReinforcedSimulationGuidance(t *testing.T) {
 			if !strings.Contains(cases[name], want) {
 				t.Fatalf("%s prompt missing role reinforced guidance %q", name, want)
 			}
+		}
+	}
+}
+
+func TestCharacterPromptDefinesIndependentAnalyzeAndReviewRuns(t *testing.T) {
+	prompt := Load("").Prompts.Character
+	for _, want := range []string{
+		"Character Agent",
+		"mode=analyze",
+		"mode=review",
+		"character_context",
+		"save_character_candidate",
+		"save_character_review",
+		"source_fact",
+		"adaptation_decision",
+		"target_original_addition",
+		"raw source",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("character prompt missing %q", want)
 		}
 	}
 }

@@ -432,25 +432,28 @@ type CharacterCardError struct {
 // CharacterCardLifecycle is sidecar metadata. Character bodies and planned
 // relationships remain exclusively in StoryFoundation.
 type CharacterCardLifecycle struct {
-	Version             int                             `json:"version"`
-	Revision            int64                           `json:"revision"`
-	Mode                CharacterCardProjectMode        `json:"mode"`
-	Candidate           CharacterCardCandidateReference `json:"candidate"`
-	Inputs              CharacterCardInputSignatures    `json:"inputs"`
-	InputDigest         string                          `json:"input_digest"`
-	AnalysisStatus      CharacterCardAnalysisStatus     `json:"analysis_status"`
-	ReviewStatus        CharacterCardReviewStatus       `json:"review_status"`
-	ReviewedCandidate   CharacterCardCandidateReference `json:"reviewed_candidate"`
-	ReviewedInputDigest string                          `json:"reviewed_input_digest,omitempty"`
-	ReviewSummary       string                          `json:"review_summary,omitempty"`
-	Findings            []CharacterCardReviewFinding    `json:"findings"`
-	ConfirmationStatus  CharacterCardConfirmationStatus `json:"confirmation_status"`
-	RunID               string                          `json:"run_id,omitempty"`
-	IdempotencyKey      string                          `json:"idempotency_key,omitempty"`
-	Error               *CharacterCardError             `json:"error,omitempty"`
-	SourceMappings      []CharacterSourceMapping        `json:"source_mappings"`
-	CreatedAt           string                          `json:"created_at,omitempty"`
-	UpdatedAt           string                          `json:"updated_at,omitempty"`
+	Version             int                               `json:"version"`
+	Revision            int64                             `json:"revision"`
+	Mode                CharacterCardProjectMode          `json:"mode"`
+	Candidate           CharacterCardCandidateReference   `json:"candidate"`
+	Inputs              CharacterCardInputSignatures      `json:"inputs"`
+	InputDigest         string                            `json:"input_digest"`
+	AnalysisSummary     string                            `json:"analysis_summary,omitempty"`
+	Completeness        []CharacterCardCompletenessResult `json:"completeness"`
+	AnalysisStatus      CharacterCardAnalysisStatus       `json:"analysis_status"`
+	ReviewStatus        CharacterCardReviewStatus         `json:"review_status"`
+	ReviewedCandidate   CharacterCardCandidateReference   `json:"reviewed_candidate"`
+	ReviewedInputDigest string                            `json:"reviewed_input_digest,omitempty"`
+	ReviewSummary       string                            `json:"review_summary,omitempty"`
+	Findings            []CharacterCardReviewFinding      `json:"findings"`
+	ConfirmationStatus  CharacterCardConfirmationStatus   `json:"confirmation_status"`
+	RunID               string                            `json:"run_id,omitempty"`
+	IdempotencyKey      string                            `json:"idempotency_key,omitempty"`
+	SubmissionDigest    string                            `json:"submission_digest,omitempty"`
+	Error               *CharacterCardError               `json:"error,omitempty"`
+	SourceMappings      []CharacterSourceMapping          `json:"source_mappings"`
+	CreatedAt           string                            `json:"created_at,omitempty"`
+	UpdatedAt           string                            `json:"updated_at,omitempty"`
 }
 
 func CharacterCardBindingFromFoundation(
@@ -522,10 +525,12 @@ func NormalizeCharacterCardLifecycle(value CharacterCardLifecycle) (CharacterCar
 		return CharacterCardLifecycle{}, err
 	}
 	out.InputDigest = inputDigest
+	out.AnalysisSummary = strings.TrimSpace(out.AnalysisSummary)
 	out.ReviewedInputDigest = strings.TrimSpace(out.ReviewedInputDigest)
 	out.ReviewSummary = strings.TrimSpace(out.ReviewSummary)
 	out.RunID = strings.TrimSpace(out.RunID)
 	out.IdempotencyKey = strings.TrimSpace(out.IdempotencyKey)
+	out.SubmissionDigest = strings.TrimSpace(out.SubmissionDigest)
 	out.CreatedAt = strings.TrimSpace(out.CreatedAt)
 	out.UpdatedAt = strings.TrimSpace(out.UpdatedAt)
 	normalizeCandidateReference(&out.Candidate)
@@ -547,6 +552,9 @@ func NormalizeCharacterCardLifecycle(value CharacterCardLifecycle) (CharacterCar
 	sort.Slice(out.SourceMappings, func(i, j int) bool { return out.SourceMappings[i].ID < out.SourceMappings[j].ID })
 	if out.Findings == nil {
 		out.Findings = []CharacterCardReviewFinding{}
+	}
+	if out.Completeness == nil {
+		out.Completeness = []CharacterCardCompletenessResult{}
 	}
 	if out.SourceMappings == nil {
 		out.SourceMappings = []CharacterSourceMapping{}
@@ -776,6 +784,9 @@ func validateCharacterCardLifecycle(value CharacterCardLifecycle) error {
 	if value.Error != nil && (value.Error.Class == "" || value.Error.Message == "") {
 		return fmt.Errorf("character card error class and message are required")
 	}
+	if value.SubmissionDigest != "" && len(value.SubmissionDigest) != 64 {
+		return fmt.Errorf("character card submission digest is invalid")
+	}
 	findingIDs := make(map[string]struct{}, len(value.Findings))
 	for _, finding := range value.Findings {
 		if finding.ID == "" || finding.IssueType == "" || finding.Description == "" ||
@@ -912,6 +923,10 @@ func validCharacterCardConfirmationStatus(value CharacterCardConfirmationStatus)
 func cloneCharacterCardLifecycle(in CharacterCardLifecycle) CharacterCardLifecycle {
 	out := in
 	out.Inputs.Additional = append([]CharacterCardNamedSignature(nil), in.Inputs.Additional...)
+	out.Completeness = append([]CharacterCardCompletenessResult(nil), in.Completeness...)
+	for i := range out.Completeness {
+		out.Completeness[i].Missing = append([]CharacterCardMissingItem(nil), in.Completeness[i].Missing...)
+	}
 	out.Findings = append([]CharacterCardReviewFinding(nil), in.Findings...)
 	out.SourceMappings = append([]CharacterSourceMapping(nil), in.SourceMappings...)
 	for i := range out.SourceMappings {

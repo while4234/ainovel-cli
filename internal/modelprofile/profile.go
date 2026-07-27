@@ -9,6 +9,7 @@ type Role string
 const (
 	RoleCoordinator Role = "coordinator"
 	RoleArchitect   Role = "architect"
+	RoleCharacter   Role = "character"
 	RoleWriter      Role = "writer"
 	RoleEditor      Role = "editor"
 )
@@ -27,6 +28,7 @@ var defaultProfile = Profile{
 	ContextWindows: map[Role]int{
 		RoleCoordinator: 64_000,
 		RoleArchitect:   96_000,
+		RoleCharacter:   96_000,
 		RoleWriter:      96_000,
 		RoleEditor:      128_000,
 	},
@@ -44,6 +46,7 @@ var knownProfiles = []struct {
 			ContextWindows: map[Role]int{
 				RoleCoordinator: 64_000,
 				RoleArchitect:   96_000,
+				RoleCharacter:   96_000,
 				RoleWriter:      128_000,
 				RoleEditor:      128_000,
 			},
@@ -57,6 +60,7 @@ var knownProfiles = []struct {
 			ContextWindows: map[Role]int{
 				RoleCoordinator: 64_000,
 				RoleArchitect:   96_000,
+				RoleCharacter:   64_000,
 				RoleWriter:      64_000,
 				RoleEditor:      64_000,
 			},

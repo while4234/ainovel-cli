@@ -38,6 +38,7 @@ const actionStatusLabels = {
 const activeAgentLabels = {
   coordinator: '流程协调',
   architect: '结构规划',
+  character: '角色设计',
   writer: '正文写作',
   editor: '质量审核',
   auditor: '质量审核'

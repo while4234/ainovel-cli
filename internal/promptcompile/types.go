@@ -50,6 +50,7 @@ const (
 	AgentWriter         Agent = "writer"
 	AgentPlanner        Agent = "planner"
 	AgentArchitect      Agent = "architect"
+	AgentCharacter      Agent = "character"
 	AgentEditor         Agent = "editor"
 	AgentAuditor        Agent = "auditor"
 	AgentSourceAnalyzer Agent = "source_analyzer"
@@ -66,6 +67,7 @@ var defaultBudgets = map[Agent]Budget{
 	AgentWriter:         {TargetTokens: 24_000, HardTokens: 32_000},
 	AgentPlanner:        {TargetTokens: 28_000, HardTokens: 40_000},
 	AgentArchitect:      {TargetTokens: 28_000, HardTokens: 40_000},
+	AgentCharacter:      {TargetTokens: 32_000, HardTokens: 48_000},
 	AgentEditor:         {TargetTokens: 32_000, HardTokens: 48_000},
 	AgentAuditor:        {TargetTokens: 32_000, HardTokens: 48_000},
 	AgentSourceAnalyzer: {TargetTokens: 20_000, HardTokens: 28_000},
