@@ -46,7 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-28 `pending` `fix: bind prose generation to chapter contracts`:
+- 2026-07-28 `87aff42` `fix: clear stale generation sessions on rollback`:
+  makes rollback to a planning review remove Coordinator and subagent
+  generation histories while preserving the full co-create transcript. This
+  prevents a restarted Writer from inheriting characters and prose from an
+  abandoned novel after a transactional rollback. The targeted preservation
+  regression and the full `internal/store` suite pass.
+- 2026-07-28 `e0d3f281` `fix: bind prose generation to chapter contracts`:
   bounds production-sized multibyte Writer references without dropping story
   facts, blocks Writer access to planning/status payloads, marks the active
   chapter package as authoritative, rejects drafts and commits that contain no
