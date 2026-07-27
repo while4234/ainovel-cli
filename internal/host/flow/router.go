@@ -129,6 +129,7 @@ func Route(s State) *Instruction {
 			ordinary.RevisionActive = false
 			ordinary.RevisionRoute = nil
 			if instruction := routeOriginalPlanning(ordinary); instruction != nil && s.RevisionRoute != nil {
+				instruction = scopeOriginalPlanningInstruction(instruction, ordinary)
 				instruction.Fence = storepkg.RevisionFence{Generation: s.RevisionRoute.Generation, SessionID: s.RevisionRoute.SessionID, Revision: s.RevisionRoute.Revision}
 				return instruction
 			}
@@ -163,7 +164,7 @@ func Route(s State) *Instruction {
 		return nil
 	}
 	if route := routeOriginalPlanning(s); route != nil {
-		return route
+		return scopeOriginalPlanningInstruction(route, s)
 	}
 
 	// 2. 规划阶段由 Coordinator 裁定（选 architect_long/short + 补齐循环）
@@ -286,6 +287,40 @@ func Route(s State) *Instruction {
 
 	// 12. 正常续写
 	return s.nextChapterInstruction(p, "续写下一章")
+}
+
+func scopeOriginalPlanningInstruction(instruction *Instruction, state State) *Instruction {
+	if instruction == nil || state.OriginalPlanningWork == nil {
+		return instruction
+	}
+	work := state.OriginalPlanningWork
+	replacement := ""
+	switch work.Kind {
+	case "expand_arc", "repair_arc", "audit_arc":
+		replacement = fmt.Sprintf(
+			"novel_context(scope=planning_detail, volume=%d, arc=%d)",
+			work.Volume,
+			work.Arc,
+		)
+	case "audit_volume":
+		replacement = fmt.Sprintf("novel_context(scope=planning_review, volume=%d)", work.Volume)
+	case "audit_book_batch":
+		replacement = fmt.Sprintf(
+			"novel_context(scope=planning_review, from_volume=%d, to_volume=%d)",
+			work.FromVolume,
+			work.ToVolume,
+		)
+	case "audit_book":
+		replacement = "novel_context(scope=planning_review)"
+	}
+	if replacement != "" {
+		instruction.Task = strings.ReplaceAll(
+			instruction.Task,
+			"novel_context(scope=planning)",
+			replacement,
+		)
+	}
+	return instruction
 }
 
 func routeCastPromotion(state State) *Instruction {

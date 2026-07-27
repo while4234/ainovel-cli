@@ -54,6 +54,7 @@ const (
 	writerRecoveryContextBytes       = 8 * 1024
 	planningContextBudgetBytes       = 60 * 1024
 	planningContextSourceBytes       = 32 * 1024
+	planningDetailContextSourceBytes = 36 * 1024
 	planningReviewContextSourceBytes = 28 * 1024
 	nearbyOutlineBeforeChapters      = 2
 	nearbyOutlineAfterChapters       = 3
@@ -96,10 +97,11 @@ func (t *ContextTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 
 func (t *ContextTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("scope", schema.Enum("Context scope. Empty defaults to chapter when chapter is set, otherwise planning. planning_review is the Editor-only bounded view for a volume skeleton review. status returns progress only; summary returns a compact evidence pack for an inclusive chapter range.", "chapter", "outline_range", "summary", "planning", "planning_review", "status")),
+		schema.Property("scope", schema.Enum("Context scope. Empty defaults to chapter when chapter is set, otherwise planning. planning_detail is the Architect-only high-fidelity view for one volume/arc and requires volume+arc. planning_review is the Editor-only bounded view for a volume skeleton review. status returns progress only; summary returns a compact evidence pack for an inclusive chapter range.", "chapter", "outline_range", "summary", "planning", "planning_detail", "planning_review", "status")),
 		schema.Property("from", schema.Int("First chapter for scope=outline_range.")),
 		schema.Property("to", schema.Int("Last chapter for scope=outline_range.")),
-		schema.Property("volume", schema.Int("Volume number for scope=summary or a single-volume planning_review.")),
+		schema.Property("volume", schema.Int("Volume number for scope=summary, planning_detail, or a single-volume planning_review.")),
+		schema.Property("arc", schema.Int("Arc number for scope=planning_detail.")),
 		schema.Property("from_volume", schema.Int("First volume for a planning_review batch.")),
 		schema.Property("to_volume", schema.Int("Last volume for a planning_review batch.")),
 		schema.Property("chapter", schema.Int("章节号。不传则返回进度状态和基础设定（Coordinator 用于判断下一步）；传入则额外返回该章的写作上下文（Writer 用）")),
@@ -113,6 +115,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		From       int    `json:"from"`
 		To         int    `json:"to"`
 		Volume     int    `json:"volume"`
+		Arc        int    `json:"arc"`
 		FromVolume int    `json:"from_volume"`
 		ToVolume   int    `json:"to_volume"`
 	}
@@ -155,6 +158,13 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		if err := t.scopePlanningReviewContext(result, a.Volume, a.FromVolume, a.ToVolume); err != nil {
 			return nil, err
 		}
+	case "planning_detail":
+		t.buildProgressStatus(result)
+		t.buildArchitectContext(result, warn)
+		t.buildAdaptationPlanningContext(result, warn)
+		if err := t.scopePlanningDetailContext(result, a.Volume, a.Arc); err != nil {
+			return nil, err
+		}
 	case "chapter":
 		// Writer 路径：加载当前章工作包，长篇/大资料项目使用窗口化与源头压缩。
 		seed := newChapterContextEnvelope()
@@ -187,11 +197,13 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		t.buildChapterSimulationProfile(result, chapterPurpose, warn)
 	} else if scope == "planning" {
 		t.buildSimulationProfile(result, "planning_memory", warn)
+	} else if scope == "planning_detail" {
+		t.buildSimulationProfile(result, "planning_memory", warn)
 	} else if scope == "planning_review" {
 		t.buildPlanningReviewSimulationProfile(result, warn)
 	}
 
-	if scope == "chapter" || scope == "planning" || scope == "planning_review" {
+	if scope == "chapter" || scope == "planning" || scope == "planning_detail" || scope == "planning_review" {
 		t.buildUserRules(result)
 		t.buildWordBudget(result, a.Chapter)
 	}
@@ -220,6 +232,8 @@ func normalizeContextScope(scope string, chapter int) string {
 		return "planning"
 	case "planning":
 		return "planning"
+	case "planning_detail":
+		return "planning_detail"
 	case "planning_review":
 		return "planning_review"
 	case "status":

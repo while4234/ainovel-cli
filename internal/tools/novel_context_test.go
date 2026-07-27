@@ -854,6 +854,141 @@ func TestContextToolFiveMillionWordPlanningUsesCompleteHierarchicalVolumeIndex(t
 	}
 }
 
+func TestContextToolPlanningDetailKeepsCanonicalFactsAndScalesToFiveMillionWords(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	characters := make([]domain.Character, 0, 4)
+	for index := 1; index <= 4; index++ {
+		characters = append(characters, domain.Character{
+			ID: fmt.Sprintf("detail-character-%d", index), Name: fmt.Sprintf("核心角色%d", index),
+			Role: strings.Repeat("主线职责", 18), Description: strings.Repeat("人物身份与不可替换的行为逻辑。", 25),
+			Arc: strings.Repeat("阶段选择、代价与成长结果。", 22), Traits: []string{"表面冷静", "压力下坚持证据"},
+			Tier: "core", Goal: strings.Repeat("长期目标与本卷目标。", 18),
+			Motivation: strings.Repeat("核心动机及其来源。", 18), Conflict: strings.Repeat("内外冲突与不可回避的代价。", 18),
+			Voice: "克制、明确、不会使用另一角色的口头禅", Constraints: []string{"不得无理由改变阵营", "不得提前知道尚未揭示的信息"},
+			InitialState: &domain.CharacterInitialState{
+				Identity: "确认身份", Situation: "故事开始时的稳定处境", Emotion: "警惕",
+				Resources: []string{"合法资源", "秘密证据"}, Relationships: "依照已确认关系契约",
+			},
+			KnowledgeBoundary: &domain.CharacterKnowledgeBoundary{
+				Known: []string{"已知事实"}, Unknown: []string{"未知真相"},
+				Misconceptions: []string{"阶段误判"}, Forbidden: []string{"终局秘密"},
+			},
+		})
+	}
+	relationships := make([]domain.CharacterRelationship, 0, 6)
+	pairs := [][2]int{{0, 1}, {1, 2}, {2, 3}, {3, 0}, {0, 2}, {1, 3}}
+	for index := 0; index < 6; index++ {
+		relationships = append(relationships, domain.CharacterRelationship{
+			ID:                fmt.Sprintf("detail-relationship-%d", index+1),
+			SourceCharacterID: characters[pairs[index][0]].ID, TargetCharacterID: characters[pairs[index][1]].ID,
+			Type: domain.RelationshipTypeOther, Direction: domain.RelationshipDirectionDirected,
+			Status: domain.RelationshipStatusPlanned, Label: "会改变主线选择的关系",
+			Description: strings.Repeat("关系从当前状态向目标状态递进，不得跳变。", 12),
+			Constraints: []string{"必须通过可见选择改变关系"},
+		})
+	}
+	rules := make([]domain.WorldRule, 0, 25)
+	for index := 1; index <= 25; index++ {
+		rules = append(rules, domain.WorldRule{
+			ID: fmt.Sprintf("detail-rule-%02d", index), Category: "continuity",
+			Rule: strings.Repeat("规则正文及因果约束。", 18), Boundary: "适用于全部规划阶段",
+			Strength: domain.WorldRuleStrengthHard,
+		})
+	}
+	if _, err := st.Foundation.SaveCAS(domain.StoryFoundation{
+		Premise:    strings.Repeat("确认的故事前提、人物关系和结局承诺。", 80),
+		Characters: characters, Relationships: relationships,
+		RelationshipsReviewed: true, WorldRules: rules,
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	volumes := make([]domain.VolumeOutline, 0, 160)
+	for volume := 1; volume <= 160; volume++ {
+		volumes = append(volumes, domain.VolumeOutline{
+			Index: volume, Title: fmt.Sprintf("第%03d卷", volume),
+			Theme: strings.Repeat("本卷核心冲突、不可逆结果与下卷交棒。", 15),
+			Arcs: []domain.ArcOutline{
+				{Index: 1, Title: "进入", Goal: strings.Repeat("目标、阻力、选择、代价和结果。", 20), EstimatedChapters: 4},
+				{Index: 2, Title: "转折", Goal: strings.Repeat("人物、关系和信息状态递进。", 20), EstimatedChapters: 4},
+				{Index: 3, Title: "兑现", Goal: strings.Repeat("高潮兑现并生成下一卷行动问题。", 20), EstimatedChapters: 4},
+			},
+		})
+	}
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindVolumeSplit,
+		Brief: strings.Repeat("用户确认的共创事实必须持续落实。", 20),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	approveFoundationToolFixture(t, st)
+	if err := st.OriginalPlanningAudits.Save(domain.OriginalPlanningAudit{
+		Scope: "skeleton_volume", Volume: 80, Verdict: "pass",
+		Summary:    "第80卷审核通过，但细纲必须让助理执行落地动作，并呈现对手侧的具体商业异常。",
+		Dimensions: []domain.OriginalPlanningAuditDimension{{Name: "volume_function", Score: 8.5, Comment: "卷功能清晰"}},
+		Issues: []domain.OriginalPlanningAuditIssue{{
+			Severity: "minor", Arc: 2, Description: "执行动作需要落到场景。",
+			RepairInstruction: "细纲中明确助理执行与商业异常的证据链。",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := NewContextTool(st, References{}, "default").Execute(
+		context.Background(), json.RawMessage(`{"scope":"planning_detail","volume":80,"arc":2}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > planningDetailContextSourceBytes {
+		var diagnostic map[string]any
+		_ = json.Unmarshal(raw, &diagnostic)
+		planningBytes, _ := json.Marshal(diagnostic["planning_memory"])
+		foundationBytes, _ := json.Marshal(diagnostic["foundation_memory"])
+		foundation, _ := diagnostic["foundation_memory"].(map[string]any)
+		characterBytes, _ := json.Marshal(foundation["characters"])
+		relationshipBytes, _ := json.Marshal(foundation["planned_relationships"])
+		ruleBytes, _ := json.Marshal(foundation["world_rules"])
+		statusBytes, _ := json.Marshal(foundation["foundation_status"])
+		referenceBytes, _ := json.Marshal(diagnostic["reference_pack"])
+		workingBytes, _ := json.Marshal(diagnostic["working_memory"])
+		t.Fatalf(
+			"planning detail context = %d bytes, want <= %d (planning=%d foundation=%d chars=%d relationships=%d rules=%d status=%d references=%d working=%d)",
+			len(raw), planningDetailContextSourceBytes, len(planningBytes), len(foundationBytes), len(characterBytes), len(relationshipBytes), len(ruleBytes), len(statusBytes), len(referenceBytes), len(workingBytes),
+		)
+	}
+	text := string(raw)
+	for _, required := range []string{
+		`"context_profile":"planning_detail"`, `"detail-character-4"`,
+		`"detail-relationship-6"`, `"detail-rule-25"`, `"approved_volume_audit"`,
+		"助理执行落地动作", "商业异常", `"volume":80`, `"arc":2`, `[160,`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("planning detail context is missing %q", required)
+		}
+	}
+	var payload struct {
+		Planning struct {
+			Layered []map[string]any `json:"layered_outline"`
+			History [][]any          `json:"volume_history_index"`
+		} `json:"planning_memory"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Planning.History) != 160 {
+		t.Fatalf("history covered %d/160 volumes", len(payload.Planning.History))
+	}
+	if len(payload.Planning.Layered) != 3 {
+		t.Fatalf("detail body covered %d volumes, want previous/current/next", len(payload.Planning.Layered))
+	}
+}
+
 func TestContextToolPlanningReviewIsEditorBoundedWithoutDroppingCanonicalFacts(t *testing.T) {
 	st := store.NewStore(testStoreDir(t))
 	if err := st.Init(); err != nil {

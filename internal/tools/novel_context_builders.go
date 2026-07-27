@@ -7,6 +7,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/rules"
+	"github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/stylestat"
 )
 
@@ -308,6 +309,144 @@ func (t *ContextTool) scopePlanningReviewContext(result map[string]any, volume, 
 	delete(result, "reference_pack")
 	result["context_profile"] = "planning_review"
 	return nil
+}
+
+// scopePlanningDetailContext derives a fresh, high-fidelity Architect view for
+// one skeleton arc. The complete canonical Foundation remains durable; this
+// view keeps every character, planned relationship and world-rule identity
+// represented while replacing unrelated volume prose and runtime snapshots
+// with hierarchical indexes. Its size is therefore independent of book length.
+func (t *ContextTool) scopePlanningDetailContext(result map[string]any, volume, arc int) error {
+	if volume <= 0 || arc <= 0 {
+		return fmt.Errorf("planning_detail requires positive volume and arc")
+	}
+	layered, err := t.store.Outline.LoadLayeredOutline()
+	if err != nil {
+		return fmt.Errorf("load layered outline for planning_detail: %w", err)
+	}
+	_, _, fromChapter, toChapter, ok := findPlanningDetailTarget(layered, volume, arc)
+	if !ok {
+		return fmt.Errorf("planning_detail target V%d A%d does not exist", volume, arc)
+	}
+
+	planning, _ := result["planning_memory"].(map[string]any)
+	if planning == nil {
+		planning = make(map[string]any)
+		result["planning_memory"] = planning
+	}
+	planning["layered_outline"] = compactLayeredOutlineForPlanningDetail(layered, volume, arc)
+	planning["volume_history_index"] = compactVolumeHistoryIndex(layered)
+	planning["volume_history_index_schema"] = []string{"index", "title", "chapter_count", "arc_count"}
+	planning["volume_theme_milestones"] = compactVolumeThemeMilestones(layered)
+	planning["volume_theme_milestones_schema"] = []string{"index", "theme"}
+	planning["detail_scope"] = map[string]any{
+		"volume":        volume,
+		"arc":           arc,
+		"from_chapter":  fromChapter,
+		"to_chapter":    toChapter,
+		"chapter_count": toChapter - fromChapter + 1,
+		"content_path":  "planning_memory.layered_outline[target=true]",
+		"quality_contract": "Preserve every canonical character/rule/relationship fact and implement the passed " +
+			"volume audit. Generate only this arc; do not invent replacement identities.",
+	}
+	if audit := selectSkeletonVolumeAudit(t.store, volume); audit != nil {
+		planning["approved_volume_audit"] = compactPlanningDetailAudit(*audit)
+	}
+	delete(planning, "volume_summaries")
+	delete(planning, "completion_signals")
+
+	foundation, _ := result["foundation_memory"].(map[string]any)
+	if foundation == nil {
+		foundation = make(map[string]any)
+		result["foundation_memory"] = foundation
+	}
+	if canonical, loadErr := t.store.Foundation.Load(); loadErr == nil {
+		foundation["characters"] = compactCharacterContractsForPlanningDetail(canonical.Characters)
+		foundation["planned_relationships"] = compactRelationshipsForPlanningDetail(canonical.Relationships)
+		foundation["world_rules"] = compactWorldRulesForPlanningDetail(canonical.WorldRules)
+		hardIDs := make([]string, 0, len(canonical.WorldRules))
+		for _, rule := range canonical.WorldRules {
+			if rule.Strength == domain.WorldRuleStrengthHard {
+				hardIDs = append(hardIDs, rule.ID)
+			}
+		}
+		if len(hardIDs) > 0 {
+			foundation["hard_world_rule_constraints"] = hardIDs
+		}
+	}
+	delete(foundation, "character_snapshots")
+	delete(foundation, "foreshadow_ledger")
+	result["context_profile"] = "planning_detail"
+	return nil
+}
+
+func findPlanningDetailTarget(
+	volumes []domain.VolumeOutline,
+	volumeNumber, arcNumber int,
+) (domain.VolumeOutline, domain.ArcOutline, int, int, bool) {
+	chapter := 1
+	for _, volume := range volumes {
+		for _, arc := range volume.Arcs {
+			count := len(arc.Chapters)
+			if count == 0 {
+				count = arc.EstimatedChapters
+			}
+			from := chapter
+			to := chapter + max(count-1, 0)
+			if volume.Index == volumeNumber && arc.Index == arcNumber && count > 0 {
+				return volume, arc, from, to, true
+			}
+			chapter += count
+		}
+	}
+	return domain.VolumeOutline{}, domain.ArcOutline{}, 0, 0, false
+}
+
+func selectSkeletonVolumeAudit(st *store.Store, volume int) *domain.OriginalPlanningAudit {
+	if st == nil || st.OriginalPlanningAudits == nil {
+		return nil
+	}
+	audits, err := st.OriginalPlanningAudits.Load()
+	if err != nil {
+		return nil
+	}
+	for index := len(audits) - 1; index >= 0; index-- {
+		audit := audits[index]
+		if audit.Scope == "skeleton_volume" && audit.Volume == volume && audit.Verdict == "pass" {
+			return &audit
+		}
+	}
+	return nil
+}
+
+func compactPlanningDetailAudit(audit domain.OriginalPlanningAudit) map[string]any {
+	dimensions := make([]map[string]any, 0, len(audit.Dimensions))
+	for _, dimension := range audit.Dimensions {
+		dimensions = append(dimensions, map[string]any{
+			"name":    dimension.Name,
+			"score":   dimension.Score,
+			"comment": truncateRunes(dimension.Comment, 40),
+		})
+	}
+	issues := make([]map[string]any, 0, len(audit.Issues))
+	for _, issue := range audit.Issues {
+		issues = append(issues, map[string]any{
+			"severity":           issue.Severity,
+			"arc":                issue.Arc,
+			"from_chapter":       issue.FromChapter,
+			"to_chapter":         issue.ToChapter,
+			"description":        truncateRunes(issue.Description, 240),
+			"repair_instruction": truncateRunes(issue.RepairInstruction, 300),
+		})
+	}
+	return map[string]any{
+		"scope":      audit.Scope,
+		"volume":     audit.Volume,
+		"verdict":    audit.Verdict,
+		"summary":    truncateRunes(audit.Summary, 600),
+		"dimensions": dimensions,
+		"issues":     issues,
+	}
 }
 
 func compactSkeletonAuditIndex(

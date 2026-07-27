@@ -7,6 +7,104 @@ import (
 	"github.com/voocel/ainovel-cli/internal/rules"
 )
 
+func compactCharacterContractsForPlanningDetail(characters []domain.Character) []map[string]any {
+	out := make([]map[string]any, 0, len(characters))
+	for _, character := range characters {
+		item := map[string]any{
+			"id":          character.ID,
+			"name":        character.Name,
+			"aliases":     compactStringList(character.Aliases, 4, 25),
+			"role":        truncateRunes(character.Role, 35),
+			"tier":        character.Tier,
+			"faction":     truncateRunes(character.Faction, 30),
+			"description": truncateRunes(character.Description, 60),
+			"traits":      compactStringList(character.Traits, 4, 35),
+			"goal":        truncateRunes(character.Goal, 50),
+			"motivation":  truncateRunes(character.Motivation, 50),
+			"conflict":    truncateRunes(character.Conflict, 50),
+			"arc":         truncateRunes(character.Arc, 70),
+			"voice":       truncateRunes(character.Voice, 60),
+			"constraints": compactStringList(character.Constraints, 3, 45),
+		}
+		if len(character.ContrastDetails) > 0 {
+			contrasts := make([]map[string]string, 0, 1)
+			for _, detail := range character.ContrastDetails[:1] {
+				contrasts = append(contrasts, map[string]string{
+					"surface": truncateRunes(detail.Surface, 60),
+					"depth":   truncateRunes(detail.Depth, 70),
+				})
+			}
+			item["contrast_details"] = contrasts
+		}
+		if len(character.KeyBackstory) > 0 {
+			backstory := make([]map[string]string, 0, 1)
+			for _, detail := range character.KeyBackstory[:1] {
+				backstory = append(backstory, map[string]string{
+					"event":  truncateRunes(detail.Event, 60),
+					"impact": truncateRunes(detail.Impact, 70),
+				})
+			}
+			item["key_backstory"] = backstory
+		}
+		if character.InitialState != nil {
+			item["initial_state"] = map[string]any{
+				"identity":      truncateRunes(character.InitialState.Identity, 40),
+				"situation":     truncateRunes(character.InitialState.Situation, 50),
+				"emotion":       truncateRunes(character.InitialState.Emotion, 40),
+				"resources":     compactStringList(character.InitialState.Resources, 2, 40),
+				"relationships": truncateRunes(character.InitialState.Relationships, 50),
+			}
+		}
+		if character.KnowledgeBoundary != nil {
+			item["knowledge_boundary"] = map[string]any{
+				"known":          compactStringList(character.KnowledgeBoundary.Known, 1, 45),
+				"unknown":        compactStringList(character.KnowledgeBoundary.Unknown, 1, 45),
+				"misconceptions": compactStringList(character.KnowledgeBoundary.Misconceptions, 1, 45),
+				"forbidden":      compactStringList(character.KnowledgeBoundary.Forbidden, 1, 45),
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func compactRelationshipsForPlanningDetail(
+	relationships []domain.CharacterRelationship,
+) []map[string]any {
+	out := make([]map[string]any, 0, len(relationships))
+	for _, relationship := range relationships {
+		out = append(out, map[string]any{
+			"id":                  relationship.ID,
+			"source_character_id": relationship.SourceCharacterID,
+			"target_character_id": relationship.TargetCharacterID,
+			"type":                relationship.Type,
+			"label":               truncateRunes(relationship.Label, 60),
+			"direction":           relationship.Direction,
+			"status":              relationship.Status,
+			"description":         truncateRunes(relationship.Description, 70),
+			"since":               truncateRunes(relationship.Since, 40),
+			"tags":                compactStringList(relationship.Tags, 5, 35),
+			"constraints":         compactStringList(relationship.Constraints, 3, 40),
+		})
+	}
+	return out
+}
+
+func compactWorldRulesForPlanningDetail(rules []domain.WorldRule) []map[string]any {
+	out := make([]map[string]any, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, map[string]any{
+			"id":       rule.ID,
+			"category": rule.Category,
+			"strength": rule.Strength,
+			"rule":     truncateRunes(rule.Rule, 30),
+			"boundary": truncateRunes(rule.Boundary, 8),
+			"tags":     compactStringList(rule.Tags, 4, 30),
+		})
+	}
+	return out
+}
+
 func compactCharactersForPlanningReview(characters []domain.Character) []map[string]any {
 	return compactCharacterContractsForPlanningReview(characters, nil)
 }
@@ -394,6 +492,85 @@ func compactLayeredOutlineForPlanning(volumes []domain.VolumeOutline, progress *
 		focus[volumes[len(volumes)-1].Index] = true
 	}
 	return compactLayeredOutlineWithFocus(volumes, progress, focus)
+}
+
+func compactLayeredOutlineForPlanningDetail(
+	volumes []domain.VolumeOutline,
+	targetVolume, targetArc int,
+) []map[string]any {
+	out := make([]map[string]any, 0, 3)
+	globalChapter := 1
+	for _, volume := range volumes {
+		volumeCount := 0
+		for _, arc := range volume.Arcs {
+			count := len(arc.Chapters)
+			if count == 0 {
+				count = arc.EstimatedChapters
+			}
+			volumeCount += count
+		}
+		if volume.Index != targetVolume {
+			if volume.Index == targetVolume-1 || volume.Index == targetVolume+1 {
+				handoff := map[string]any{
+					"index":         volume.Index,
+					"title":         truncateRunes(volume.Title, 80),
+					"theme":         truncateRunes(volume.Theme, 80),
+					"chapter_count": volumeCount,
+					"handoff_only":  true,
+				}
+				if len(volume.Arcs) > 0 {
+					edge := volume.Arcs[0]
+					if volume.Index < targetVolume {
+						edge = volume.Arcs[len(volume.Arcs)-1]
+					}
+					handoff["edge_arc"] = map[string]any{
+						"index": edge.Index,
+						"title": truncateRunes(edge.Title, 60),
+						"goal":  truncateRunes(edge.Goal, 80),
+					}
+				}
+				out = append(out, handoff)
+			}
+			globalChapter += volumeCount
+			continue
+		}
+		payload := map[string]any{
+			"index": volume.Index,
+			"title": truncateRunes(volume.Title, 100),
+			"theme": truncateRunes(volume.Theme, 140),
+		}
+		arcs := make([]map[string]any, 0, len(volume.Arcs))
+		for _, arc := range volume.Arcs {
+			count := len(arc.Chapters)
+			if count == 0 {
+				count = arc.EstimatedChapters
+			}
+			from := globalChapter
+			to := globalChapter + max(count-1, 0)
+			goalLimit := 50
+			if arc.Index == targetArc {
+				goalLimit = 180
+			}
+			arcPayload := map[string]any{
+				"index":         arc.Index,
+				"title":         truncateRunes(arc.Title, 80),
+				"goal":          truncateRunes(arc.Goal, goalLimit),
+				"from":          from,
+				"to":            to,
+				"chapter_count": count,
+				"expanded":      arc.IsExpanded(),
+				"target":        arc.Index == targetArc,
+			}
+			if arc.IsExpanded() {
+				arcPayload["chapters"] = compactOutlineEntries(arc.Chapters)
+			}
+			arcs = append(arcs, arcPayload)
+			globalChapter += count
+		}
+		payload["arcs"] = arcs
+		out = append(out, payload)
+	}
+	return out
 }
 
 func compactVolumeHistoryIndex(volumes []domain.VolumeOutline) [][]any {

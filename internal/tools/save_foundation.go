@@ -329,8 +329,9 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		if t.collectingLongBlueprint() {
 			return nil, fmt.Errorf("long normal-original planning must save a layered volume skeleton before detailed chapters; flat outline is only for shorter works: %w", errs.ErrToolPrecondition)
 		}
-		var entries []domain.OutlineEntry
-		if err := decode("outline", &entries); err != nil {
+		entries, decodeErr := decodeOutlineEntries("outline", content)
+		if decodeErr != nil {
+			err = decodeErr
 			return nil, err
 		}
 		entries, err = t.prepareOutlineCharacters(entries)
@@ -438,8 +439,9 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		if a.Volume <= 0 || a.Arc <= 0 {
 			return nil, fmt.Errorf("expand_arc requires volume and arc parameters: %w", errs.ErrToolArgs)
 		}
-		var chapters []domain.OutlineEntry
-		if err := decode("expand_arc chapters", &chapters); err != nil {
+		chapters, decodeErr := decodeOutlineEntries("expand_arc chapters", content)
+		if decodeErr != nil {
+			err = decodeErr
 			return nil, err
 		}
 		chapters, err = t.prepareOutlineCharacters(chapters)
@@ -466,8 +468,9 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		if a.Volume <= 0 || a.Arc <= 0 {
 			return nil, fmt.Errorf("repair_arc requires volume and arc parameters: %w", errs.ErrToolArgs)
 		}
-		var chapters []domain.OutlineEntry
-		if err := decode("repair_arc chapters", &chapters); err != nil {
+		chapters, decodeErr := decodeOutlineEntries("repair_arc chapters", content)
+		if decodeErr != nil {
+			err = decodeErr
 			return nil, err
 		}
 		chapters, err = t.prepareOutlineCharacters(chapters)

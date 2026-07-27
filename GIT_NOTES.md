@@ -46,7 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-27 `pending` `fix: preserve long-form co-create planning context`:
+- 2026-07-27 `pending` `fix: bound high-fidelity detail planning`:
+  adds an arc-scoped `planning_detail` context that keeps every canonical
+  character, relationship, rule identity, current-volume skeleton, adjacent
+  handoff, and passed volume-audit requirement while scaling independently of
+  total book length. Structured scene objects are deterministically preserved
+  in the durable string-scene schema, detail generation/audits route through
+  bounded contexts, and the live `插翅难飞` V1/A1 context is 36,168 bytes
+  instead of replaying the complete planning history. Tools, flow, and agent
+  suites pass; live 55-chapter generation validation remains pending.
+- 2026-07-27 `2548860d` `fix: preserve long-form co-create planning context`:
   restores the confirmed Character/Foundation workflow without discarding prior
   co-create decisions, bounds transient coordinator/subagent receipts, and makes
   original volume planning/audit read durable scoped context instead of

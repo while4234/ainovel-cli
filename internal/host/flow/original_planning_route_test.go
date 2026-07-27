@@ -130,6 +130,51 @@ func TestRouteOriginalPlanningBookAuditUsesDigestOnly(t *testing.T) {
 	}
 }
 
+func TestRouteOriginalPlanningUsesScopedDetailAndReviewContexts(t *testing.T) {
+	tests := []struct {
+		name string
+		work *storepkg.OriginalPlanningWork
+		want string
+	}{
+		{
+			name: "expand arc",
+			work: &storepkg.OriginalPlanningWork{Kind: "expand_arc", Volume: 2, Arc: 3, FromChapter: 17, ToChapter: 20},
+			want: "novel_context(scope=planning_detail, volume=2, arc=3)",
+		},
+		{
+			name: "audit arc",
+			work: &storepkg.OriginalPlanningWork{Kind: "audit_arc", Volume: 4, Arc: 1, FromChapter: 37, ToChapter: 40},
+			want: "novel_context(scope=planning_detail, volume=4, arc=1)",
+		},
+		{
+			name: "audit volume",
+			work: &storepkg.OriginalPlanningWork{Kind: "audit_volume", Volume: 5},
+			want: "novel_context(scope=planning_review, volume=5)",
+		},
+		{
+			name: "audit book batch",
+			work: &storepkg.OriginalPlanningWork{Kind: "audit_book_batch", FromVolume: 7, ToVolume: 8},
+			want: "novel_context(scope=planning_review, from_volume=7, to_volume=8)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := State{
+				Progress:             &domain.Progress{Phase: domain.PhaseOutline},
+				PlanningReview:       &domain.PlanningReview{Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindVolumeSplit},
+				OriginalPlanningWork: tt.work,
+			}
+			got := Route(state)
+			if got == nil || !strings.Contains(got.Task, tt.want) {
+				t.Fatalf("route = %+v, want scoped context %q", got, tt.want)
+			}
+			if strings.Contains(got.Task, "novel_context(scope=planning)") {
+				t.Fatalf("route retained generic planning scope: %s", got.Task)
+			}
+		})
+	}
+}
+
 func TestRouteOriginalPlanningLocksFoundationAfterFirstSkeletonVolume(t *testing.T) {
 	state := State{
 		Progress:       &domain.Progress{Phase: domain.PhaseOutline, Layered: true, TotalChapters: 11},
