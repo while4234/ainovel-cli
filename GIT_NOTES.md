@@ -46,6 +46,11 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `2fcf577` `fix: deduplicate writer character context`:
+  removes the legacy full-character mirror beside the authoritative bounded
+  character workset. The live chapter-one package falls from 41,871 bytes to
+  23,926 bytes without removing any unique outline, role, rule, or imitation
+  technique; tools, Writer, and flow suites pass.
 - 2026-07-28 `87aff42` `fix: clear stale generation sessions on rollback`:
   makes rollback to a planning review remove Coordinator and subagent
   generation histories while preserving the full co-create transcript. This
