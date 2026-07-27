@@ -9,25 +9,41 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-func TestCoCreateCastProtocolIsRequiredOnlyForNormalAndAdaptation(t *testing.T) {
+func TestCoCreateCastProtocolIsOptionalLegacySeedForNormalAndRequiredForAdaptation(t *testing.T) {
 	validCast := `{"version":1,"mode":"normal","draft_revision":1,"members":[],"planned_relationships":[],"source_dispositions":[]}`
 	raw := "<reply>ok</reply><draft>draft</draft><cast>" + validCast + "</cast><ready>true</ready><suggestions></suggestions>"
-	reply, err := parseCoCreateResponseForProtocol(raw, true)
+	reply, err := parseCoCreateResponseForProtocol(raw, false)
 	if err != nil || reply.CoreCast == nil {
-		t.Fatalf("five-part parse = %+v, %v", reply, err)
+		t.Fatalf("legacy five-part parse = %+v, %v", reply, err)
+	}
+	normal, err := parseCoCreateResponseForProtocol("<reply>ok</reply><draft>draft</draft><ready>true</ready><suggestions></suggestions>", false)
+	if err != nil || normal.CoreCast != nil {
+		t.Fatalf("normal four-part parse = %+v, %v", normal, err)
 	}
 	if _, err := parseCoCreateResponseForProtocol("<reply>ok</reply><draft>draft</draft><ready>true</ready><suggestions></suggestions>", true); err == nil {
-		t.Fatal("normal/adaptation response without cast was accepted")
+		t.Fatal("adaptation response without cast was accepted")
 	}
 	stage, err := parseCoCreateResponseForProtocol("<reply>ok</reply><draft>draft</draft><ready>true</ready><suggestions></suggestions>", false)
 	if err != nil || stage.CoreCast != nil {
 		t.Fatalf("four-part stage parse = %+v, %v", stage, err)
 	}
-	if !strings.Contains(coCreateSystemPrompt, "<cast>") || !strings.Contains(adaptCoCreateSystemPrompt, "<cast>") {
-		t.Fatal("normal/adaptation prompts do not require cast")
+	if !strings.Contains(coCreateSystemPrompt, "##") || strings.Contains(coCreateSystemPrompt, "<cast>\n") {
+		t.Fatal("normal prompt does not define the four-section creative-brief protocol")
+	}
+	if coCreatePromptRequiresCast(coCreateSystemPrompt) {
+		t.Fatal("normal prompt was misclassified as requiring a final cast")
+	}
+	if !strings.Contains(adaptCoCreateSystemPrompt, "<cast>\n") {
+		t.Fatal("adaptation prompt does not require cast")
+	}
+	if !coCreatePromptRequiresCast(adaptCoCreateSystemPrompt) {
+		t.Fatal("adaptation prompt was misclassified as optional cast")
 	}
 	if strings.Contains(stageCoCreateSystemPrompt, "<cast>") {
 		t.Fatal("stage protocol was forced to include cast")
+	}
+	if legacy := LegacyCoCreateCast(raw); legacy == nil || legacy.Mode != domain.CoreCastModeNormal {
+		t.Fatalf("legacy CoreCast seed = %+v", legacy)
 	}
 }
 

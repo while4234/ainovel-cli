@@ -2120,6 +2120,27 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 			snap.CoreCastPreserved = domain.ValidateFoundationPreservesCoreCast(foundation, *contract) == nil
 		}
 	}
+	if candidate, lifecycle, binding, err := tools.CurrentCharacterWorkflow(h.store); err != nil {
+		snap.CharacterWorkflow = &CharacterWorkflowSummary{StateError: err.Error()}
+	} else if candidate != nil {
+		summary := &CharacterWorkflowSummary{
+			Candidate:         &candidate.Foundation,
+			CandidateRevision: candidate.Revision,
+			CandidateDigest:   binding.Candidate.CharacterContentDigest,
+		}
+		if lifecycle != nil {
+			summary.AnalysisStatus = lifecycle.AnalysisStatus
+			summary.ReviewStatus = lifecycle.ReviewStatus
+			summary.ConfirmationStatus = lifecycle.ConfirmationStatus
+			summary.Completeness = append([]domain.CharacterCardCompletenessResult(nil), lifecycle.Completeness...)
+			summary.Findings = append([]domain.CharacterCardReviewFinding(nil), lifecycle.Findings...)
+			if lifecycle.Error != nil {
+				copied := *lifecycle.Error
+				summary.Error = &copied
+			}
+		}
+		snap.CharacterWorkflow = summary
+	}
 	if ledger, _ := h.store.Cast.Load(); len(ledger) > 0 {
 		snap.SupportingCount = len(ledger)
 		recent, _ := h.store.Cast.RecentActive(5)

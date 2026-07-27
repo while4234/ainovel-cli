@@ -46,13 +46,49 @@ func TestRouteOriginalPlanningBuildsFoundationBeforeAnyOutline(t *testing.T) {
 	state := State{PlanningReview: &domain.PlanningReview{
 		Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindFoundation,
 		FoundationStatus: domain.FoundationReviewStatusCollecting, FoundationGeneration: 2,
-		FoundationSections: []string{"premise", "characters"}, FoundationFeedback: "make the hard rules explicit",
+		FoundationSections: []string{"premise"}, FoundationFeedback: "make the hard rules explicit",
 	}}
 	instruction := routeOriginalPlanning(state)
-	if instruction == nil || instruction.Agent != "architect_long" {
+	if instruction == nil || instruction.Agent != "character" || !strings.Contains(instruction.Task, `"mode":"analyze"`) {
 		t.Fatalf("instruction = %+v", instruction)
 	}
-	for _, want := range []string{"planned_relationships", "stable character IDs", "not runtime relationship_state", "foundation_generation=2", "foundation_base_revision=0", "make the hard rules explicit", "Do not generate any outline"} {
+
+	signature := strings.Repeat("a", 64)
+	state.CharacterBinding = domain.CharacterCardBinding{
+		Candidate: domain.CharacterCardCandidateReference{
+			FoundationRevision:       1,
+			FoundationAuditSignature: signature,
+			CharacterContentDigest:   signature,
+		},
+		InputDigest: signature,
+	}
+	state.CharacterCandidate = &domain.CharacterCardCandidate{Version: domain.CharacterCardCandidateVersion}
+	state.CharacterLifecycle = &domain.CharacterCardLifecycle{
+		AnalysisStatus:      domain.CharacterCardAnalysisCandidateReady,
+		ReviewStatus:        domain.CharacterCardReviewNotReviewed,
+		ConfirmationStatus:  domain.CharacterCardUnconfirmed,
+		ReviewedCandidate:   state.CharacterBinding.Candidate,
+		ReviewedInputDigest: state.CharacterBinding.InputDigest,
+	}
+	instruction = routeOriginalPlanning(state)
+	if instruction == nil || instruction.Agent != "character" || !strings.Contains(instruction.Task, `"mode":"review"`) {
+		t.Fatalf("review instruction = %+v", instruction)
+	}
+	state.CharacterLifecycle.ReviewStatus = domain.CharacterCardReviewNeedsRevision
+	if instruction = routeOriginalPlanning(state); instruction != nil {
+		t.Fatalf("needs-revision candidate should wait for user/Character revision, got %+v", instruction)
+	}
+	state.CharacterLifecycle.ReviewStatus = domain.CharacterCardReviewPassed
+	if instruction = routeOriginalPlanning(state); instruction != nil {
+		t.Fatalf("passing unconfirmed candidate should wait for user confirmation, got %+v", instruction)
+	}
+	state.CharacterLifecycle.ConfirmationStatus = domain.CharacterCardConfirmed
+	state.PlanningReview.FoundationSections = []string{"premise", "characters", "planned_relationships"}
+	instruction = routeOriginalPlanning(state)
+	if instruction == nil || instruction.Agent != "architect_long" {
+		t.Fatalf("post-confirmation instruction = %+v", instruction)
+	}
+	for _, want := range []string{"world_rules", "foundation_generation=2", "foundation_base_revision=0", "make the hard rules explicit", "do not generate any outline"} {
 		if !strings.Contains(instruction.Task, want) {
 			t.Fatalf("task missing %q: %s", want, instruction.Task)
 		}

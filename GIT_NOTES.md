@@ -46,6 +46,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-27 `pending` `feat: integrate original character workflow`:
+  changes normal co-create to a four-section creative brief while migrating
+  legacy cast output as an unconfirmed seed; stages full Character candidates,
+  runs an independent signature-bound review, waits for explicit user
+  confirmation, deterministically projects/confirms CoreCast, then publishes
+  the exact full candidate behind the active Foundation generation fence.
+  Architect is blocked from character/relationship ownership until the
+  Character gate passes. Durable candidate/lifecycle state, restart-safe exact
+  confirmation retries, Web edit/confirmation APIs and snapshot status, focused fake
+  model/routing/conflict/staleness tests, Go build, and the canonical Web UI's
+  330 tests/build pass. Five inherited `internal/tools` baseline tests remain
+  red (four Foundation-gate fixtures and one mature-context byte cap).
 - 2026-07-27 `pending` `feat: add independent character agent`:
   registers one Character subagent whose `analyze` and `review` modes run as
   separate submissions routed through `character_analysis` and

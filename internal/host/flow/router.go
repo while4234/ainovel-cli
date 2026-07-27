@@ -17,6 +17,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
+	"github.com/voocel/ainovel-cli/internal/tools"
 )
 
 // Instruction 指示 Host 下一步要求 Coordinator 调用的子代理与任务。
@@ -57,6 +58,11 @@ type State struct {
 
 	// 基础设定缺项（规划阶段的补齐信号）。
 	FoundationMissing []string
+
+	CharacterCandidate *domain.CharacterCardCandidate
+	CharacterLifecycle *domain.CharacterCardLifecycle
+	CharacterBinding   domain.CharacterCardBinding
+	CharacterStateErr  string
 
 	OutlineRepair *storepkg.OutlineRepairBatch
 
@@ -380,7 +386,7 @@ func routeOriginalPlanning(s State) *Instruction {
 		return nil
 	}
 	if review.Kind == domain.PlanningReviewKindFoundation {
-		return routeOriginalFoundation(review)
+		return routeOriginalFoundation(s, review)
 	}
 	if review.Kind == domain.PlanningReviewKindBlueprint {
 		if s.SkeletonPlanningWork != nil {
@@ -463,7 +469,7 @@ func routeOriginalPlanning(s State) *Instruction {
 	return nil
 }
 
-func routeOriginalFoundation(review *domain.PlanningReview) *Instruction {
+func routeOriginalFoundation(state State, review *domain.PlanningReview) *Instruction {
 	if review == nil {
 		return nil
 	}
@@ -481,6 +487,12 @@ func routeOriginalFoundation(review *domain.PlanningReview) *Instruction {
 		review.FoundationGeneration,
 		review.FoundationBaseRevision,
 	)
+	if instruction := routeOriginalCharacters(state); instruction != nil {
+		return instruction
+	}
+	if characterWorkflowBlocksArchitect(state) {
+		return nil
+	}
 	for _, section := range domain.FoundationGenerationSections {
 		if _, ok := seen[section]; ok {
 			continue
@@ -489,14 +501,86 @@ func routeOriginalFoundation(review *domain.PlanningReview) *Instruction {
 		case "premise":
 			return &Instruction{Agent: "architect_long", Reason: "完整 StoryFoundation 的 premise 待生成", Task: "Read novel_context(scope=planning), then call save_foundation(type=premise) exactly once with the complete canonical premise. Preserve the confirmed CoreCast identities, functions, goals and relationship constraints; do not generate any outline." + fenceContract + feedbackContract}
 		case "characters":
-			return &Instruction{Agent: "architect_long", Reason: "完整 StoryFoundation 的角色档案待补全", Task: "Read novel_context(scope=planning), then call save_foundation(type=characters) exactly once. Return every confirmed core character byte-for-semantic-byte with the same stable ID, identity, role, goal, motivation, conflict, arc, voice, traits and constraints; supporting characters may be added with new stable IDs. Do not generate any outline." + fenceContract + feedbackContract}
+			return nil
 		case "planned_relationships":
-			return &Instruction{Agent: "architect_long", Reason: "完整 StoryFoundation 的计划关系待补全", Task: "Read novel_context(scope=planning), then call save_foundation(type=planned_relationships) exactly once. Preserve every confirmed core relationship unchanged and add only necessary pre-writing planned relationships using stable character IDs. These are not runtime relationship_state. Do not generate any outline." + fenceContract + feedbackContract}
+			return nil
 		case "world_rules":
 			return &Instruction{Agent: "architect_long", Reason: "完整 StoryFoundation 的世界规则待补全", Task: "Read novel_context(scope=planning), then call save_foundation(type=world_rules) exactly once with complete hard and soft world rules. Hard rules are inviolable constraints. Preserve the confirmed CoreCast and do not generate any outline." + fenceContract + feedbackContract}
 		}
 	}
 	return nil
+}
+
+func routeOriginalCharacters(state State) *Instruction {
+	routing := originalCharacterRouteState(state)
+	switch routing.Status {
+	case "analyze":
+		return &Instruction{
+			Agent: "character",
+			Task: fmt.Sprintf(
+				`{"run_id":"character-analyze-%s","mode":"%s","project_mode":"original","instruction":"Generate one complete staged character candidate and planned relationships from the persisted creative brief. Do not publish StoryFoundation."}`,
+				routing.RunSuffix,
+				tools.CharacterRunAnalyze,
+			),
+			Reason: "原创创作简报已就绪，完整角色候选待独立分析",
+		}
+	case "review":
+		return &Instruction{
+			Agent: "character",
+			Task: fmt.Sprintf(
+				`{"run_id":"character-review-%s","mode":"%s","project_mode":"original","instruction":"Independently review the current persisted candidate. Re-read character_context and save findings without modifying the candidate."}`,
+				routing.RunSuffix,
+				tools.CharacterRunReview,
+			),
+			Reason: "原创角色候选已就绪，待独立审核",
+		}
+	default:
+		return nil
+	}
+}
+
+type originalCharacterRoutingState struct {
+	Status    string
+	RunSuffix string
+}
+
+func originalCharacterRouteState(state State) originalCharacterRoutingState {
+	if state.CharacterCandidate == nil || state.CharacterLifecycle == nil ||
+		state.CharacterStateErr != "" ||
+		state.CharacterLifecycle.AnalysisStatus != domain.CharacterCardAnalysisCandidateReady {
+		return originalCharacterRoutingState{
+			Status:    "analyze",
+			RunSuffix: shortCharacterRouteDigest(state.CharacterBinding.InputDigest, "initial"),
+		}
+	}
+	lifecycle := state.CharacterLifecycle
+	switch lifecycle.ReviewStatus {
+	case domain.CharacterCardReviewNotReviewed, domain.CharacterCardReviewStale,
+		domain.CharacterCardReviewFailed, domain.CharacterCardReviewInProgress:
+		return originalCharacterRoutingState{
+			Status:    "review",
+			RunSuffix: shortCharacterRouteDigest(state.CharacterBinding.Candidate.CharacterContentDigest, "candidate"),
+		}
+	default:
+		return originalCharacterRoutingState{}
+	}
+}
+
+func characterWorkflowBlocksArchitect(state State) bool {
+	lifecycle := state.CharacterLifecycle
+	return lifecycle == nil ||
+		lifecycle.ReviewStatus != domain.CharacterCardReviewPassed ||
+		lifecycle.ConfirmationStatus != domain.CharacterCardConfirmed ||
+		lifecycle.ReviewedCandidate != state.CharacterBinding.Candidate ||
+		lifecycle.ReviewedInputDigest != state.CharacterBinding.InputDigest
+}
+
+func shortCharacterRouteDigest(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 12 {
+		return value[:12]
+	}
+	return fallback
 }
 
 func routeOriginalSkeletonAudit(w *storepkg.OriginalPlanningWork) *Instruction {

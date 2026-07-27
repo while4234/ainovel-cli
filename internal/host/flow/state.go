@@ -8,6 +8,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	adaptpkg "github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
+	"github.com/voocel/ainovel-cli/internal/tools"
 )
 
 // LoadState 从 Store 读取 Route 所需的全部事实。
@@ -40,6 +41,7 @@ func LoadState(store *storepkg.Store) State {
 			}
 		}
 	}
+	loadCharacterWorkflowState(&s, store)
 	progress, err := store.Progress.Load()
 	if err != nil || progress == nil {
 		return s
@@ -92,6 +94,24 @@ func LoadState(store *storepkg.Store) State {
 	}
 
 	return s
+}
+
+func loadCharacterWorkflowState(state *State, st *storepkg.Store) {
+	if state == nil || st == nil || state.PlanningReview == nil ||
+		state.PlanningReview.Kind != domain.PlanningReviewKindFoundation {
+		return
+	}
+	candidate, lifecycle, binding, err := tools.CurrentCharacterWorkflow(st)
+	state.CharacterCandidate = candidate
+	state.CharacterLifecycle = lifecycle
+	state.CharacterBinding = binding
+	if err != nil {
+		state.CharacterStateErr = err.Error()
+		_, canonicalBinding, _, _, canonicalErr := tools.CurrentCharacterCanonicalBinding(st)
+		if canonicalErr == nil {
+			state.CharacterBinding = canonicalBinding
+		}
+	}
 }
 
 func loadWriterResumeState(s *State, st *storepkg.Store, progress *domain.Progress) {

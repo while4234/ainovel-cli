@@ -30,6 +30,47 @@ func NewSaveFoundationTool(store *store.Store, gates ...CompletionGate) *SaveFou
 	return &SaveFoundationTool{store: store, completionGate: completionGateFrom(gates)}
 }
 
+// ArchitectSaveFoundationTool keeps the reusable persistence tool intact while
+// enforcing the Architect role's narrower original-planning authority.
+type ArchitectSaveFoundationTool struct {
+	inner *SaveFoundationTool
+}
+
+func NewArchitectSaveFoundationTool(store *store.Store, gates ...CompletionGate) *ArchitectSaveFoundationTool {
+	return &ArchitectSaveFoundationTool{inner: NewSaveFoundationTool(store, gates...)}
+}
+
+func (t *ArchitectSaveFoundationTool) Name() string { return t.inner.Name() }
+func (t *ArchitectSaveFoundationTool) Description() string {
+	return t.inner.Description() +
+		" Architect authority excludes type=characters and type=planned_relationships; those sections are owned exclusively by the Character workflow."
+}
+func (t *ArchitectSaveFoundationTool) Label() string { return t.inner.Label() }
+func (t *ArchitectSaveFoundationTool) ReadOnly(args json.RawMessage) bool {
+	return t.inner.ReadOnly(args)
+}
+func (t *ArchitectSaveFoundationTool) ConcurrencySafe(args json.RawMessage) bool {
+	return t.inner.ConcurrencySafe(args)
+}
+func (t *ArchitectSaveFoundationTool) Schema() map[string]any { return t.inner.Schema() }
+func (t *ArchitectSaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	var request struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(args, &request); err != nil {
+		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
+	}
+	switch strings.TrimSpace(request.Type) {
+	case "characters", "planned_relationships":
+		return nil, fmt.Errorf(
+			"Architect cannot write Foundation section %q; dispatch Character Agent analyze/review and wait for explicit user confirmation: %w",
+			strings.TrimSpace(request.Type),
+			errs.ErrToolPrecondition,
+		)
+	}
+	return t.inner.Execute(ctx, args)
+}
+
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
 func (t *SaveFoundationTool) Description() string {
 	return "保存小说基础设定（premise/outline/characters/planned_relationships/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。Foundation 生成轮次中的 premise / characters / planned_relationships / world_rules 必须原样携带 Host 指令给出的 foundation_generation 与 foundation_base_revision；旧轮次、重复或并发响应会被拒绝。type 可选 premise / outline / layered_outline / characters / planned_relationships / world_rules / expand_arc / repair_arc / repair_volume / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。planned_relationships 必须使用 characters 中的稳定 ID，且只保存创作前计划关系，不写入 relationship_state。expand_arc 展开骨架弧的详细章节（需 volume + arc，普通原创审核规划每批严格 3-4 章）；repair_arc 修复已展开弧；repair_volume 按自动审核或用户意见完整替换一个尚未展开的分卷骨架且不得改变该卷预估总章数；append_volume 追加新卷（普通原创分卷规划阶段每次只追加一个骨架卷，每弧3-4章）；update_compass 更新终局方向；complete_book 宣告全书完结。scale 可选，仅允许 short / mid / long。"

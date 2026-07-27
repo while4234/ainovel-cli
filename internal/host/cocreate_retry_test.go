@@ -87,6 +87,29 @@ func TestCoCreateStreamRetriesTransientStreamEOF(t *testing.T) {
 	}
 }
 
+func TestOriginalCoCreateFakeModelCompletesWithoutFinalCast(t *testing.T) {
+	model := &scriptedCoCreateModel{streams: [][]agentcore.StreamEvent{{
+		{Type: agentcore.StreamEventTextDelta, Delta: coCreateXMLWithSuggestions("ready", "keep the investigator")},
+		{Type: agentcore.StreamEventDone},
+	}}}
+	reply, err := coCreateStream(
+		context.Background(),
+		newCoCreateModelSet(model),
+		nil,
+		time.Second,
+		bootstrap.DefaultCoCreateMaxTokens,
+		coCreateSystemPrompt,
+		[]CoCreateMessage{{Role: "user", Content: "a mystery about family loyalty"}},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.CoreCast != nil || reply.Prompt != "## plan" || !reply.Ready || model.streamCalls != 1 {
+		t.Fatalf("original fake-model reply = %+v, stream_calls=%d", reply, model.streamCalls)
+	}
+}
+
 func TestCoCreateStreamRetriesProviderGatewayError(t *testing.T) {
 	restore := stubCoCreateRetrySleep(t)
 	defer restore()

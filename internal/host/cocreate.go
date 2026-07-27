@@ -22,16 +22,16 @@ import (
 // 冷启动共创：从零澄清需求，产出整本书的创作指令。
 const coCreateSystemPrompt = `你是一个小说共创助手。你的任务不是直接开始写小说，而是通过多轮简短对话帮助用户澄清创作需求，并持续整理出一段可直接交给创作引擎的中文创作指令。
 
-每一轮回复严格按以下 XML 格式输出，包含五个标签，依次出现，每个标签都必须有正确的开闭标签：
+每一轮回复严格按以下 XML 格式输出，包含四个标签，依次出现，每个标签都必须有正确的开闭标签。不要输出 <cast>；角色意图只能作为尚未审核的创作简报约束写入 <draft>：
 
 <reply>
 给用户看的中文自然回复：先回应用户的输入，再最多提出 1 到 2 个当前最关键的问题。如果信息已足够开始创作，告诉用户可以按 Ctrl+S 开始。
 </reply>
 
 <draft>
-当前完整的创作指令草稿，使用 Markdown：直接从二级标题开始，例如 "## 主题"、"## 关键要素"、"## 待澄清信息"；用项目符号列出要点。每一轮都要在已有结论上**累积更新**，吸收用户最新意图；即使本轮没有新增也要把完整草稿原样再写一次——不要省略、不要写"（保持上一轮）"之类的占位。
+当前完整的创作指令草稿，使用 Markdown：直接从二级标题开始，例如 "## 主题"、"## 关键要素"、"## 角色意图"、"## 待澄清信息"；用项目符号列出要点。角色意图可记录主角类型、必须出现或禁止出现的角色、关系偏好、群像规模、禁区和用户已明确的角色事实，但必须明确它们是交给 Character Agent 的输入约束，不能伪装成已审核角色卡。每一轮都要在已有结论上**累积更新**，吸收用户最新意图；即使本轮没有新增也要把完整草稿原样再写一次——不要省略、不要写"（保持上一轮）"之类的占位。
 </draft>
-` + coCreateCastProtocolTail
+` + coCreateProtocolTail
 
 // 阶段共创：小说已写了一部分，规划"后续阶段"的走向。调用方需把当前故事状态摘要
 // 追加到本 prompt 之后（"## 当前故事状态" 段），让模型在已写内容的基础上规划。
@@ -435,7 +435,7 @@ retry:
 	if stopReason == agentcore.StopReasonLength {
 		_ = recorder.Finish(modeldiag.StatusTruncated, raw.String(), responseUsage)
 		truncationErr := fmt.Errorf("cocreate response truncated: stop_reason=%s", stopReason)
-		if prepareCoCreateTruncationRepair(ctx, truncationErr, raw.String(), strings.Contains(sysPrompt, "<cast>"), attempts, &structureRepairs, &retryErrors, &msgs, onProgress) {
+		if prepareCoCreateTruncationRepair(ctx, truncationErr, raw.String(), coCreatePromptRequiresCast(sysPrompt), attempts, &structureRepairs, &retryErrors, &msgs, onProgress) {
 			goto retry
 		}
 		return CoCreateReply{}, truncationErr
@@ -451,7 +451,7 @@ retry:
 			rawText = t
 		}
 	}
-	requireCast := strings.Contains(sysPrompt, "<cast>")
+	requireCast := coCreatePromptRequiresCast(sysPrompt)
 	if err := rejectIncompleteCoCreateXML(rawText, requireCast); err != nil {
 		_ = recorder.Finish(modeldiag.StatusInvalidSchema, rawText, responseUsage)
 		if prepareCoCreateStructureRepair(ctx, err, rawText, requireCast, attempts, &structureRepairs, &retryErrors, &msgs, onProgress) {
@@ -474,6 +474,10 @@ retry:
 		return CoCreateReply{}, diagnosticErr
 	}
 	return reply, err
+}
+
+func coCreatePromptRequiresCast(prompt string) bool {
+	return strings.Contains(prompt, "\n<cast>\n")
 }
 
 func judgeCoCreateSuggestions(ctx context.Context, model agentcore.ChatModel, reply CoCreateReply, diagnosticStores ...*store.Store) []string {
@@ -906,6 +910,18 @@ func parseCoCreateResponse(raw string) (CoCreateReply, error) {
 	return parseCoCreateResponseForProtocol(raw, false)
 }
 
+// LegacyCoCreateCast parses only a complete legacy five-section response. It
+// exists for checkpoint migration; the returned cast remains an unreviewed
+// Character Agent input seed.
+func LegacyCoCreateCast(raw string) *domain.CoreCastContract {
+	reply, err := parseCoCreateResponseForProtocol(raw, false)
+	if err != nil || reply.CoreCast == nil {
+		return nil
+	}
+	value := *reply.CoreCast
+	return &value
+}
+
 const coCreateCastMaxBytes = 128 * 1024
 
 func parseCoCreateResponseForProtocol(raw string, requireCast bool) (CoCreateReply, error) {
@@ -915,7 +931,8 @@ func parseCoCreateResponseForProtocol(raw string, requireCast bool) (CoCreateRep
 	}
 
 	tags := []string{tagReply, tagDraft, tagReady, tagSuggestions}
-	if requireCast {
+	hasLegacyCast := !requireCast && strings.Contains(raw, "<"+tagCast+">")
+	if requireCast || hasLegacyCast {
 		tags = []string{tagReply, tagDraft, tagCast, tagReady, tagSuggestions}
 	}
 	sections, err := strictCoCreateSections(raw, tags)
@@ -933,7 +950,7 @@ func parseCoCreateResponseForProtocol(raw string, requireCast bool) (CoCreateRep
 		Suggestions: parseSuggestions(sections[tagSuggestions]),
 		Raw:         raw,
 	}
-	if !requireCast {
+	if !requireCast && !hasLegacyCast {
 		return parsed, nil
 	}
 	castRaw := sections[tagCast]
@@ -979,7 +996,8 @@ func rejectIncompleteCoCreateXML(raw string, requireCast ...bool) error {
 		return nil
 	}
 	tags := []string{tagReply, tagDraft, tagReady, tagSuggestions}
-	if len(requireCast) > 0 && requireCast[0] {
+	if (len(requireCast) > 0 && requireCast[0]) ||
+		(len(requireCast) == 0 || !requireCast[0]) && strings.Contains(raw, "<"+tagCast+">") {
 		tags = []string{tagReply, tagDraft, tagCast, tagReady, tagSuggestions}
 	}
 	_, err := strictCoCreateSections(raw, tags)

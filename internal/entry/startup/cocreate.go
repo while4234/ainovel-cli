@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
 
@@ -19,18 +20,20 @@ type CoCreateSession struct {
 	streamReply     string
 	streamThinking  string
 	suggestions     []string
+	legacyCoreCast  *domain.CoreCastContract
 }
 
 type CoCreateSnapshot struct {
-	History         []host.CoCreateMessage `json:"history"`
-	DraftPrompt     string                 `json:"draft_prompt,omitempty"`
-	DraftHistoryLen int                    `json:"draft_history_len,omitempty"`
-	DraftRevision   int64                  `json:"draft_revision,omitempty"`
-	DraftHash       string                 `json:"draft_hash,omitempty"`
-	Ready           bool                   `json:"ready,omitempty"`
-	StreamReply     string                 `json:"stream_reply,omitempty"`
-	StreamThinking  string                 `json:"stream_thinking,omitempty"`
-	Suggestions     []string               `json:"suggestions,omitempty"`
+	History         []host.CoCreateMessage   `json:"history"`
+	DraftPrompt     string                   `json:"draft_prompt,omitempty"`
+	DraftHistoryLen int                      `json:"draft_history_len,omitempty"`
+	DraftRevision   int64                    `json:"draft_revision,omitempty"`
+	DraftHash       string                   `json:"draft_hash,omitempty"`
+	Ready           bool                     `json:"ready,omitempty"`
+	StreamReply     string                   `json:"stream_reply,omitempty"`
+	StreamThinking  string                   `json:"stream_thinking,omitempty"`
+	Suggestions     []string                 `json:"suggestions,omitempty"`
+	LegacyCoreCast  *domain.CoreCastContract `json:"legacy_core_cast,omitempty"`
 }
 
 func NewCoCreateSession(initial string) *CoCreateSession {
@@ -57,6 +60,17 @@ func NewCoCreateSessionFromSnapshot(snapshot CoCreateSnapshot) *CoCreateSession 
 		draftRevision++
 		draftHash = normalizedDraftHash(latestDraft)
 	}
+	legacyCoreCast := snapshot.LegacyCoreCast
+	if legacyCoreCast == nil {
+		for index := len(history) - 1; index >= 0; index-- {
+			if history[index].Role == "assistant" {
+				if candidate := host.LegacyCoCreateCast(history[index].Content); candidate != nil {
+					legacyCoreCast = candidate
+					break
+				}
+			}
+		}
+	}
 	return &CoCreateSession{
 		history:         history,
 		draftPrompt:     draftPrompt,
@@ -67,6 +81,7 @@ func NewCoCreateSessionFromSnapshot(snapshot CoCreateSnapshot) *CoCreateSession 
 		streamReply:     strings.TrimSpace(snapshot.StreamReply),
 		streamThinking:  strings.TrimSpace(snapshot.StreamThinking),
 		suggestions:     append([]string(nil), snapshot.Suggestions...),
+		legacyCoreCast:  legacyCoreCast,
 	}
 }
 
@@ -84,6 +99,7 @@ func (s *CoCreateSession) Snapshot() CoCreateSnapshot {
 		StreamReply:     s.streamReply,
 		StreamThinking:  s.streamThinking,
 		Suggestions:     append([]string(nil), s.suggestions...),
+		LegacyCoreCast:  s.LegacyCoreCast(),
 	}
 }
 
@@ -107,6 +123,7 @@ func (s *CoCreateSession) ResetHistory(history []host.CoCreateMessage) {
 	s.streamReply = ""
 	s.streamThinking = ""
 	s.suggestions = nil
+	s.legacyCoreCast = nil
 }
 
 func (s *CoCreateSession) ApplyReply(reply host.CoCreateReply) {
@@ -137,6 +154,10 @@ func (s *CoCreateSession) ApplyReply(reply host.CoCreateReply) {
 	s.ready = reply.Ready
 	// suggestions 直接覆盖（包括覆盖为空）：每轮的引导只对当下有意义。
 	s.suggestions = append(s.suggestions[:0], reply.Suggestions...)
+	if reply.CoreCast != nil {
+		value := *reply.CoreCast
+		s.legacyCoreCast = &value
+	}
 }
 
 func (s *CoCreateSession) AppendUser(text string) {
@@ -244,6 +265,14 @@ func (s *CoCreateSession) Suggestions() []string {
 		return nil
 	}
 	return s.suggestions
+}
+
+func (s *CoCreateSession) LegacyCoreCast() *domain.CoreCastContract {
+	if s == nil || s.legacyCoreCast == nil {
+		return nil
+	}
+	value := *s.legacyCoreCast
+	return &value
 }
 
 func (s *CoCreateSession) Ready() bool {

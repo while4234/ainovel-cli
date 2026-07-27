@@ -124,6 +124,7 @@ type UISnapshot struct {
 	SimulationSummary          *SimulationProfileSummary
 	CreativeBlueprint          *CreativeBlueprintSummary
 	PlanningReview             *PlanningReviewSummary
+	CharacterWorkflow          *CharacterWorkflowSummary
 	Continuation               *domain.ContinuationSnapshot
 	AdaptationVolumeReview     *domain.AdaptationVolumeReview
 	AdaptationProposal         *domain.AdaptationPlan
@@ -145,6 +146,19 @@ type UISnapshot struct {
 }
 
 // OutlineSnapshot 是大纲条目的展示摘要。
+type CharacterWorkflowSummary struct {
+	Candidate          *domain.StoryFoundation                  `json:"candidate,omitempty"`
+	CandidateRevision  int64                                    `json:"candidate_revision"`
+	CandidateDigest    string                                   `json:"candidate_digest,omitempty"`
+	AnalysisStatus     domain.CharacterCardAnalysisStatus       `json:"analysis_status"`
+	ReviewStatus       domain.CharacterCardReviewStatus         `json:"review_status"`
+	ConfirmationStatus domain.CharacterCardConfirmationStatus   `json:"confirmation_status"`
+	Completeness       []domain.CharacterCardCompletenessResult `json:"completeness,omitempty"`
+	Findings           []domain.CharacterCardReviewFinding      `json:"findings,omitempty"`
+	Error              *domain.CharacterCardError               `json:"error,omitempty"`
+	StateError         string                                   `json:"state_error,omitempty"`
+}
+
 type OutlineSnapshot struct {
 	Chapter          int
 	Title            string

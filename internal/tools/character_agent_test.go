@@ -26,8 +26,13 @@ func TestCharacterToolsAnalyzeAndIndependentReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	if foundation.Premise != "locked premise" || len(foundation.WorldRules) != 1 ||
-		len(foundation.Characters) != 1 || foundation.Characters[0].Name != "林澈" {
-		t.Fatalf("candidate changed non-character foundation or missed cards: %+v", foundation)
+		len(foundation.Characters) != 0 {
+		t.Fatalf("analyze mutated canonical Foundation: %+v", foundation)
+	}
+	staged, err := st.CharacterCards.LoadCandidate()
+	if err != nil || staged == nil || len(staged.Foundation.Characters) != 1 ||
+		staged.Foundation.Characters[0].Name != "林澈" {
+		t.Fatalf("staged candidate = %+v err=%v", staged, err)
 	}
 
 	reviewBinding := readCharacterContext(t, st, registry, "review-1", CharacterRunReview)
@@ -43,6 +48,37 @@ func TestCharacterToolsAnalyzeAndIndependentReview(t *testing.T) {
 		lifecycle.ReviewedCandidate != reviewBinding.Candidate ||
 		lifecycle.ReviewedInputDigest != reviewBinding.InputDigest {
 		t.Fatalf("review lifecycle = %+v", lifecycle)
+	}
+}
+
+func TestCharacterCandidateEditInvalidatesPriorReview(t *testing.T) {
+	st := characterToolStore(t)
+	registry := NewCharacterRunRegistry()
+	binding := readCharacterContext(t, st, registry, "analyze-edit", CharacterRunAnalyze)
+	saveCharacterCandidate(t, st, registry, "analyze-edit", "candidate-edit", binding, completeCharacterCandidate())
+	reviewBinding := readCharacterContext(t, st, registry, "review-edit", CharacterRunReview)
+	saveCharacterReview(t, st, registry, "review-edit", "review-edit-key", reviewBinding, "pass", nil)
+
+	candidate, err := st.CharacterCards.LoadCandidate()
+	if err != nil || candidate == nil {
+		t.Fatalf("candidate = %+v, %v", candidate, err)
+	}
+	candidate.Foundation.Characters[0].Goal = "Expose the conspiracy and rescue the missing witness."
+	projected, _, err := domain.ProjectCharacterCandidateCoreCast(candidate.Foundation, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.ProjectedCast = projected
+	if _, err := st.CharacterCards.SaveCandidateCAS(*candidate, candidate.Revision); err != nil {
+		t.Fatal(err)
+	}
+	_, lifecycle, _, err := CurrentCharacterWorkflow(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle == nil || lifecycle.ReviewStatus != domain.CharacterCardReviewStale ||
+		lifecycle.ConfirmationStatus != domain.CharacterCardUnconfirmed {
+		t.Fatalf("edited candidate lifecycle = %+v", lifecycle)
 	}
 }
 
@@ -290,7 +326,7 @@ func readCharacterContext(
 	if _, err := NewCharacterContextTool(st, registry).Execute(context.Background(), args); err != nil {
 		t.Fatal(err)
 	}
-	_, binding, _, _, _, err := currentCharacterBinding(st)
+	_, binding, _, _, _, err := currentCharacterRunBinding(st, mode)
 	if err != nil {
 		t.Fatal(err)
 	}

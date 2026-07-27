@@ -174,8 +174,8 @@ func NewSaveCharacterCandidateTool(st *store.Store, registry *CharacterRunRegist
 
 func (t *SaveCharacterCandidateTool) Name() string { return "save_character_candidate" }
 func (t *SaveCharacterCandidateTool) Description() string {
-	return "Analyze-mode only. Atomically replaces only StoryFoundation characters and planned relationships, " +
-		"then stores the signature-bound CharacterCard candidate lifecycle, completeness, rationale, and source mappings."
+	return "Analyze-mode only. Atomically stages characters and planned relationships without changing canonical StoryFoundation, " +
+		"then stores the signature-bound CharacterCard candidate lifecycle, completeness, CoreCast projection, rationale, and source mappings."
 }
 func (t *SaveCharacterCandidateTool) Label() string                        { return "保存角色候选" }
 func (t *SaveCharacterCandidateTool) ReadOnly(json.RawMessage) bool        { return false }
@@ -258,12 +258,21 @@ func (t *SaveCharacterCandidateTool) Execute(_ context.Context, args json.RawMes
 	if err != nil {
 		return nil, err
 	}
-	existing, err := t.store.CharacterCards.Load(binding)
+	existingCandidate, err := t.store.CharacterCards.LoadCandidate()
 	if err != nil {
-		return nil, fmt.Errorf("load character lifecycle before candidate save: %w", err)
+		return nil, fmt.Errorf("load staged character candidate before save: %w", err)
 	}
-	if characterCandidateRetryMatches(existing, request, normalized, binding, submissionDigest) {
-		return characterCandidateResult(*existing, binding, true)
+	if existingCandidate != nil {
+		existingBinding, bindErr := domain.CharacterCardBindingFromFoundation(existingCandidate.Foundation, inputs)
+		if bindErr == nil {
+			existing, loadErr := t.store.CharacterCards.Load(existingBinding)
+			if loadErr != nil {
+				return nil, fmt.Errorf("load character lifecycle before candidate retry: %w", loadErr)
+			}
+			if characterCandidateRetryMatches(existing, request, normalized, existingBinding, submissionDigest) {
+				return characterCandidateResult(*existing, existingBinding, true)
+			}
+		}
 	}
 	if err := requireCharacterBinding(request.BaseRevision, request.BaseAuditSignature, request.CandidateDigest, request.InputDigest, binding); err != nil {
 		return nil, err
@@ -281,19 +290,32 @@ func (t *SaveCharacterCandidateTool) Execute(_ context.Context, args json.RawMes
 			return nil, fmt.Errorf("adaptation character source coverage: %w: %w", errs.ErrToolArgs, err)
 		}
 	}
-	completeness, err := domain.EvaluateCharacterCardCompleteness(normalized, coreCast)
+	projected, projectionFindings, err := domain.ProjectCharacterCandidateCoreCast(normalized, coreCast)
+	if err != nil {
+		return nil, fmt.Errorf("project character candidate core cast: %w", err)
+	}
+	completeness, err := domain.EvaluateCharacterCardCompleteness(normalized, &projected)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate character candidate completeness: %w", err)
 	}
-	saved, err := t.store.Foundation.SaveRevisionCAS(normalized, current.Revision)
-	if err != nil {
-		return nil, fmt.Errorf("save character candidate conflict/stale: %w: %w", errs.ErrToolConflict, err)
+	expectedCandidateRevision := int64(0)
+	if existingCandidate != nil {
+		expectedCandidateRevision = existingCandidate.Revision
 	}
-	savedBinding, err := domain.CharacterCardBindingFromFoundation(saved, inputs)
+	staged, err := t.store.CharacterCards.SaveCandidateCAS(domain.CharacterCardCandidate{
+		Version:       domain.CharacterCardCandidateVersion,
+		Base:          binding,
+		Foundation:    normalized,
+		ProjectedCast: projected,
+	}, expectedCandidateRevision)
+	if err != nil {
+		return nil, fmt.Errorf("save staged character candidate conflict/stale: %w: %w", errs.ErrToolConflict, err)
+	}
+	savedBinding, err := domain.CharacterCardBindingFromFoundation(staged.Foundation, inputs)
 	if err != nil {
 		return nil, fmt.Errorf("bind saved character candidate: %w", err)
 	}
-	existing, err = t.store.CharacterCards.Load(savedBinding)
+	existing, err := t.store.CharacterCards.Load(savedBinding)
 	if err != nil {
 		return nil, fmt.Errorf("load character lifecycle after candidate save: %w", err)
 	}
@@ -313,7 +335,7 @@ func (t *SaveCharacterCandidateTool) Execute(_ context.Context, args json.RawMes
 		Completeness:       completeness,
 		AnalysisStatus:     domain.CharacterCardAnalysisCandidateReady,
 		ReviewStatus:       domain.CharacterCardReviewNotReviewed,
-		Findings:           []domain.CharacterCardReviewFinding{},
+		Findings:           projectionFindings,
 		ConfirmationStatus: domain.CharacterCardUnconfirmed,
 		RunID:              strings.TrimSpace(request.RunID),
 		IdempotencyKey:     strings.TrimSpace(request.IdempotencyKey),
@@ -387,7 +409,7 @@ func (t *SaveCharacterReviewTool) Execute(_ context.Context, args json.RawMessag
 	if err != nil {
 		return nil, err
 	}
-	foundation, binding, _, _, coreCast, err := currentCharacterBinding(t.store)
+	foundation, binding, _, _, coreCast, err := currentCharacterRunBinding(t.store, CharacterRunReview)
 	if err != nil {
 		return nil, err
 	}
@@ -399,11 +421,24 @@ func (t *SaveCharacterReviewTool) Execute(_ context.Context, args json.RawMessag
 		lifecycle.Candidate != binding.Candidate || lifecycle.InputDigest != binding.InputDigest {
 		return nil, fmt.Errorf("character candidate is missing or stale; run analyze first: %w", errs.ErrToolConflict)
 	}
-	completeness, err := domain.EvaluateCharacterCardCompleteness(foundation, coreCast)
+	candidate, err := t.store.CharacterCards.LoadCandidate()
+	if err != nil {
+		return nil, fmt.Errorf("load staged character candidate for review: %w", err)
+	}
+	if candidate == nil {
+		return nil, fmt.Errorf("staged character candidate is missing: %w", errs.ErrToolPrecondition)
+	}
+	projected := candidate.ProjectedCast
+	completeness, err := domain.EvaluateCharacterCardCompleteness(foundation, &projected)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate reviewed character completeness: %w", err)
 	}
 	findings := append([]domain.CharacterCardReviewFinding(nil), request.Findings...)
+	_, projectionFindings, projectionErr := domain.ProjectCharacterCandidateCoreCast(foundation, coreCast)
+	if projectionErr != nil {
+		return nil, fmt.Errorf("validate reviewed CoreCast projection: %w", projectionErr)
+	}
+	findings = append(findings, projectionFindings...)
 	findings = appendCompletenessFindings(findings, completeness)
 	finalStatus := domain.CharacterCardReviewPassed
 	if request.Verdict != "pass" || hasBlockingCharacterFinding(findings) {
@@ -519,7 +554,7 @@ func characterReviewResult(
 }
 
 func buildCharacterContext(st *store.Store, mode CharacterRunMode) (map[string]any, domain.CharacterCardBinding, error) {
-	foundation, binding, _, projectMode, coreCast, err := currentCharacterBinding(st)
+	foundation, binding, _, projectMode, coreCast, err := currentCharacterRunBinding(st, mode)
 	if err != nil {
 		return nil, domain.CharacterCardBinding{}, err
 	}
@@ -568,6 +603,84 @@ func buildCharacterContext(st *store.Store, mode CharacterRunMode) (map[string]a
 		packet["creative_brief"] = review
 	}
 	return packet, binding, nil
+}
+
+// CurrentCharacterWorkflow returns durable Character state for deterministic
+// Host routing without exposing model evidence or relying on Coordinator
+// interpretation.
+func CurrentCharacterWorkflow(st *store.Store) (
+	*domain.CharacterCardCandidate,
+	*domain.CharacterCardLifecycle,
+	domain.CharacterCardBinding,
+	error,
+) {
+	if st == nil {
+		return nil, nil, domain.CharacterCardBinding{}, fmt.Errorf("character workflow store is nil")
+	}
+	candidate, err := st.CharacterCards.LoadCandidate()
+	if err != nil || candidate == nil {
+		return candidate, nil, domain.CharacterCardBinding{}, err
+	}
+	foundation, binding, _, _, _, err := currentCharacterRunBinding(st, CharacterRunReview)
+	if err != nil {
+		return candidate, nil, domain.CharacterCardBinding{}, err
+	}
+	binding, err = domain.CharacterCardBindingFromFoundation(foundation, binding.Inputs)
+	if err != nil {
+		return candidate, nil, domain.CharacterCardBinding{}, err
+	}
+	lifecycle, err := st.CharacterCards.Load(binding)
+	return candidate, lifecycle, binding, err
+}
+
+func CurrentCharacterCanonicalBinding(
+	st *store.Store,
+) (
+	domain.StoryFoundation,
+	domain.CharacterCardBinding,
+	domain.CharacterCardInputSignatures,
+	*domain.CoreCastContract,
+	error,
+) {
+	foundation, binding, inputs, _, coreCast, err := currentCharacterBinding(st)
+	return foundation, binding, inputs, coreCast, err
+}
+
+func currentCharacterRunBinding(
+	st *store.Store,
+	mode CharacterRunMode,
+) (
+	domain.StoryFoundation,
+	domain.CharacterCardBinding,
+	domain.CharacterCardInputSignatures,
+	domain.CharacterCardProjectMode,
+	*domain.CoreCastContract,
+	error,
+) {
+	canonical, canonicalBinding, inputs, projectMode, coreCast, err := currentCharacterBinding(st)
+	if err != nil || mode != CharacterRunReview {
+		return canonical, canonicalBinding, inputs, projectMode, coreCast, err
+	}
+	candidate, err := st.CharacterCards.LoadCandidate()
+	if err != nil {
+		return domain.StoryFoundation{}, domain.CharacterCardBinding{}, inputs, projectMode, coreCast,
+			fmt.Errorf("load staged character candidate: %w", err)
+	}
+	if candidate == nil {
+		return domain.StoryFoundation{}, domain.CharacterCardBinding{}, inputs, projectMode, coreCast,
+			fmt.Errorf("review requires a staged character candidate: %w", errs.ErrToolPrecondition)
+	}
+	if candidate.Base.Candidate != canonicalBinding.Candidate ||
+		candidate.Base.InputDigest != canonicalBinding.InputDigest {
+		return domain.StoryFoundation{}, domain.CharacterCardBinding{}, inputs, projectMode, coreCast,
+			fmt.Errorf("staged character candidate is stale for current Foundation or inputs: %w", errs.ErrToolConflict)
+	}
+	binding, err := domain.CharacterCardBindingFromFoundation(candidate.Foundation, inputs)
+	if err != nil {
+		return domain.StoryFoundation{}, domain.CharacterCardBinding{}, inputs, projectMode, coreCast,
+			fmt.Errorf("bind staged character candidate: %w", err)
+	}
+	return candidate.Foundation, binding, inputs, projectMode, coreCast, nil
 }
 
 func currentCharacterBinding(

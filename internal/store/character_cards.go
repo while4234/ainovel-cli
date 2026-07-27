@@ -12,6 +12,7 @@ import (
 )
 
 const characterCardLifecycleFile = "meta/character_cards/lifecycle.json"
+const characterCardCandidateFile = "meta/character_cards/candidate.json"
 
 type CharacterCardLifecycleConflictError struct {
 	Expected int64
@@ -27,6 +28,53 @@ func (e *CharacterCardLifecycleConflictError) Error() string {
 type CharacterCardStore struct {
 	io *IO
 	mu sync.Mutex
+}
+
+func (s *CharacterCardStore) LoadCandidate() (*domain.CharacterCardCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadCandidateUnlocked()
+}
+
+func (s *CharacterCardStore) SaveCandidateCAS(
+	candidate domain.CharacterCardCandidate,
+	expectedRevision int64,
+) (domain.CharacterCardCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, err := s.loadCandidateUnlocked()
+	if err != nil {
+		return domain.CharacterCardCandidate{}, err
+	}
+	actual := int64(0)
+	if existing != nil {
+		actual = existing.Revision
+	}
+	if actual != expectedRevision {
+		return domain.CharacterCardCandidate{}, &CharacterCardLifecycleConflictError{
+			Expected: expectedRevision,
+			Actual:   actual,
+		}
+	}
+	normalized, err := normalizeCharacterCardCandidate(candidate)
+	if err != nil {
+		return domain.CharacterCardCandidate{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if existing == nil {
+		normalized.CreatedAt = now
+	} else {
+		normalized.CreatedAt = existing.CreatedAt
+	}
+	normalized.UpdatedAt = now
+	normalized.Revision = actual + 1
+	if existing != nil && characterCardCandidateEqual(*existing, normalized) {
+		return *existing, nil
+	}
+	if err := s.io.WriteJSON(characterCardCandidateFile, normalized); err != nil {
+		return domain.CharacterCardCandidate{}, fmt.Errorf("save character card candidate: %w", err)
+	}
+	return normalized, nil
 }
 
 func newCharacterCardStore(io *IO) *CharacterCardStore {
@@ -112,7 +160,59 @@ func (s *CharacterCardStore) loadUnlocked() (*domain.CharacterCardLifecycle, err
 	return &normalized, nil
 }
 
+func (s *CharacterCardStore) loadCandidateUnlocked() (*domain.CharacterCardCandidate, error) {
+	var value domain.CharacterCardCandidate
+	if err := s.io.ReadJSON(characterCardCandidateFile, &value); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load character card candidate: %w", err)
+	}
+	normalized, err := normalizeCharacterCardCandidate(value)
+	if err != nil {
+		return nil, fmt.Errorf("normalize persisted character card candidate: %w", err)
+	}
+	normalized.Revision = value.Revision
+	normalized.CreatedAt = value.CreatedAt
+	normalized.UpdatedAt = value.UpdatedAt
+	return &normalized, nil
+}
+
+func normalizeCharacterCardCandidate(value domain.CharacterCardCandidate) (domain.CharacterCardCandidate, error) {
+	if value.Version == 0 {
+		value.Version = domain.CharacterCardCandidateVersion
+	}
+	if value.Version != domain.CharacterCardCandidateVersion || value.Revision < 0 {
+		return domain.CharacterCardCandidate{}, fmt.Errorf("character card candidate contract is invalid")
+	}
+	foundation, err := domain.NormalizeStoryFoundation(value.Foundation)
+	if err != nil {
+		return domain.CharacterCardCandidate{}, fmt.Errorf("normalize character candidate foundation: %w", err)
+	}
+	value.Foundation = foundation
+	if len(value.ProjectedCast.Members) > 0 {
+		projected, normalizeErr := domain.NormalizeCoreCastContract(value.ProjectedCast)
+		if normalizeErr != nil {
+			return domain.CharacterCardCandidate{}, fmt.Errorf("normalize projected core cast: %w", normalizeErr)
+		}
+		value.ProjectedCast = projected
+	}
+	if value.Base.Candidate.FoundationRevision < 0 ||
+		len(value.Base.Candidate.FoundationAuditSignature) != 64 ||
+		len(value.Base.Candidate.CharacterContentDigest) != 64 ||
+		len(value.Base.InputDigest) != 64 {
+		return domain.CharacterCardCandidate{}, fmt.Errorf("character card candidate base binding is incomplete")
+	}
+	return value, nil
+}
+
 func characterCardLifecycleEqual(left, right domain.CharacterCardLifecycle) bool {
+	left.Revision, right.Revision = 0, 0
+	left.UpdatedAt, right.UpdatedAt = "", ""
+	return reflect.DeepEqual(left, right)
+}
+
+func characterCardCandidateEqual(left, right domain.CharacterCardCandidate) bool {
 	left.Revision, right.Revision = 0, 0
 	left.UpdatedAt, right.UpdatedAt = "", ""
 	return reflect.DeepEqual(left, right)

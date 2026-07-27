@@ -209,6 +209,19 @@ type webCoreCastConfirmRequest struct {
 	ContentSignature string `json:"content_signature"`
 }
 
+type webCharacterCandidateConfirmRequest struct {
+	ExpectedCandidateRevision int64  `json:"expected_candidate_revision"`
+	CandidateDigest           string `json:"candidate_digest"`
+	IdempotencyKey            string `json:"idempotency_key"`
+}
+
+type webCharacterCandidateEditRequest struct {
+	ExpectedCandidateRevision int64                          `json:"expected_candidate_revision"`
+	Characters                []domain.Character             `json:"characters"`
+	PlannedRelationships      []domain.CharacterRelationship `json:"planned_relationships"`
+	RelationshipsReviewed     bool                           `json:"relationships_reviewed"`
+}
+
 type webFoundationConfirmRequest struct {
 	ExpectedRevision int64           `json:"expected_revision"`
 	AuditSignature   string          `json:"audit_signature"`
@@ -934,9 +947,10 @@ func webCoCreateSessionFromCheckpoint(checkpoint webCoCreateCheckpoint) (*webCoC
 	if kind == webCoCreateKindAdapt {
 		adaptGranularity, adaptRewritePolicy, adaptWordTolerance = coCreateCheckpointAdaptOptions(checkpoint)
 	}
+	session := startup.NewCoCreateSessionFromSnapshot(checkpoint.Session)
 	return &webCoCreateSession{
 		kind:                   kind,
-		session:                startup.NewCoCreateSessionFromSnapshot(checkpoint.Session),
+		session:                session,
 		messages:               messages,
 		nextMessageSeq:         nextMessageSeq,
 		failed:                 checkpoint.Failed,
@@ -951,6 +965,7 @@ func webCoCreateSessionFromCheckpoint(checkpoint webCoCreateCheckpoint) (*webCoC
 		draftConsolidated:      checkpoint.DraftConsolidated,
 		adaptationBriefing:     checkpoint.AdaptationBriefing,
 		expectedRevision:       checkpoint.ExpectedRevision,
+		coreCast:               session.LegacyCoreCast(),
 	}, nil
 }
 
@@ -1716,6 +1731,61 @@ func (s *Server) handleProjectCoreCast(w http.ResponseWriter, r *http.Request, i
 	writeCoCreateResponse(w, manifest, session, state)
 }
 
+func (s *Server) handleProjectCharacterCandidateConfirm(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	var request webCharacterCandidateConfirmRequest
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid character confirmation: "+err.Error())
+		return
+	}
+	result, err := session.ConfirmCharacterCandidate(request)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":   manifest,
+		"character": result,
+		"runtime":   session.Snapshot(),
+	})
+}
+
+func (s *Server) handleProjectCharacterCandidate(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	session, manifest, err := s.sessions.Open(id)
+	if err != nil {
+		writeProjectSessionError(w, err)
+		return
+	}
+	var request webCharacterCandidateEditRequest
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid character edit: "+err.Error())
+		return
+	}
+	candidate, lifecycle, err := session.EditCharacterCandidate(request)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project":   manifest,
+		"candidate": candidate,
+		"lifecycle": lifecycle,
+		"runtime":   session.Snapshot(),
+	})
+}
+
 func writeCoreCastActionError(w http.ResponseWriter, err error, state webCoCreateState) {
 	status := http.StatusInternalServerError
 	code := "core_cast_storage_error"
@@ -1754,7 +1824,7 @@ func writeCoreCastActionError(w http.ResponseWriter, err error, state webCoCreat
 }
 
 func (s *webCoCreateSession) requiresCoreCast() bool {
-	return s != nil && (s.kind == webCoCreateKindNormal || s.kind == webCoCreateKindAdapt)
+	return s != nil && s.kind == webCoCreateKindAdapt
 }
 
 func (s *webCoCreateSession) coreCastResumeExempt() bool {

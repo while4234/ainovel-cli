@@ -167,7 +167,7 @@ func BuildCoordinator(
 
 	architectTools := []agentcore.Tool{
 		contextTool,
-		revisionFenceWrites(store.Revisions, tools.NewSaveFoundationTool(store, completionGate)),
+		revisionFenceWrites(store.Revisions, tools.NewArchitectSaveFoundationTool(store, completionGate)),
 	}
 	characterRuns := tools.NewCharacterRunRegistry()
 	characterTools := []agentcore.Tool{

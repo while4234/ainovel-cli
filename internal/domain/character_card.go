@@ -2,11 +2,13 @@ package domain
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 )
 
 const CharacterCardLifecycleVersion = 1
+const CharacterCardCandidateVersion = 1
 
 const (
 	characterCardEvidenceReferenceLimit = 256
@@ -454,6 +456,123 @@ type CharacterCardLifecycle struct {
 	SourceMappings      []CharacterSourceMapping          `json:"source_mappings"`
 	CreatedAt           string                            `json:"created_at,omitempty"`
 	UpdatedAt           string                            `json:"updated_at,omitempty"`
+}
+
+// CharacterCardCandidate is the durable staging boundary between Character
+// analysis and canonical StoryFoundation publication. Base binds the candidate
+// to the exact canonical Foundation and creative inputs that were analyzed.
+type CharacterCardCandidate struct {
+	Version       int                  `json:"version"`
+	Revision      int64                `json:"revision"`
+	Base          CharacterCardBinding `json:"base"`
+	Foundation    StoryFoundation      `json:"foundation"`
+	ProjectedCast CoreCastContract     `json:"projected_core_cast"`
+	CreatedAt     string               `json:"created_at,omitempty"`
+	UpdatedAt     string               `json:"updated_at,omitempty"`
+}
+
+// ProjectCharacterCandidateCoreCast deterministically selects the complete
+// candidate's core tier and the relationships wholly contained by that tier.
+// A confirmed legacy CoreCast is immutable input: semantic conflicts are
+// returned as blocking findings rather than silently resolved.
+func ProjectCharacterCandidateCoreCast(
+	foundation StoryFoundation,
+	existing *CoreCastContract,
+) (CoreCastContract, []CharacterCardReviewFinding, error) {
+	normalized, err := NormalizeStoryFoundation(foundation)
+	if err != nil {
+		return CoreCastContract{}, nil, err
+	}
+	core := make(map[string]Character)
+	for _, character := range normalized.Characters {
+		tier, tierErr := normalizedCharacterTier(character.Tier)
+		if tierErr != nil {
+			return CoreCastContract{}, nil, tierErr
+		}
+		if tier == CharacterTierCore {
+			core[character.ID] = CloneCharacter(character)
+		}
+	}
+	if len(core) == 0 {
+		return CoreCastContract{}, []CharacterCardReviewFinding{{
+			ID:          "core_cast:no_core_character",
+			Scope:       CharacterCardFindingGlobal,
+			Severity:    CharacterCardSeverityBlocking,
+			IssueType:   "core_cast_projection",
+			Description: "完整角色候选中没有 tier=core 的核心角色",
+			Suggestion:  "至少将一名主角标记为 core 后重新审核",
+			Blocking:    true,
+		}}, nil
+	}
+
+	var findings []CharacterCardReviewFinding
+	if existing != nil && existing.ConfirmedSignature != "" {
+		confirmed, normalizeErr := NormalizeCoreCastContract(*existing)
+		if normalizeErr != nil {
+			return CoreCastContract{}, nil, normalizeErr
+		}
+		for _, member := range confirmed.Members {
+			candidate, ok := core[member.Character.ID]
+			if !ok || !reflect.DeepEqual(candidate, member.Character) {
+				findings = append(findings, CharacterCardReviewFinding{
+					ID:              "core_cast:confirmed_conflict:" + member.Character.ID,
+					Scope:           CharacterCardFindingCharacter,
+					CharacterID:     member.Character.ID,
+					Location:        "projected_core_cast",
+					Severity:        CharacterCardSeverityBlocking,
+					IssueType:       "confirmed_core_cast_conflict",
+					Description:     "角色候选与已确认 CoreCast 核心事实冲突",
+					EvidenceSummary: "confirmed CoreCast member " + member.Character.ID,
+					Suggestion:      "由用户明确保留旧事实或修改候选后重新审核",
+					Blocking:        true,
+				})
+			}
+		}
+	}
+
+	ids := make([]string, 0, len(core))
+	for id := range core {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	members := make([]CoreCastMember, 0, len(ids))
+	relationshipCount := make(map[string]int, len(ids))
+	coreRelationships := make([]CharacterRelationship, 0)
+	for _, relationship := range normalized.Relationships {
+		if _, source := core[relationship.SourceCharacterID]; !source {
+			continue
+		}
+		if _, target := core[relationship.TargetCharacterID]; !target {
+			continue
+		}
+		coreRelationships = append(coreRelationships, relationship)
+		relationshipCount[relationship.SourceCharacterID]++
+		relationshipCount[relationship.TargetCharacterID]++
+	}
+	for index, id := range ids {
+		character := core[id]
+		importance := CoreCastImportanceMajorSupport
+		role := strings.ToLower(character.Role)
+		if strings.Contains(role, "主角") || strings.Contains(role, "protagonist") || index == 0 {
+			importance = CoreCastImportanceProtagonist
+		}
+		members = append(members, CoreCastMember{
+			Character:           character,
+			Importance:          importance,
+			Origin:              CoreCastOriginOriginal,
+			MainlineFunction:    character.Role,
+			InclusionRationale:  "projected from reviewed full character candidate",
+			NoCoreRelationships: relationshipCount[id] == 0 && normalized.RelationshipsReviewed,
+		})
+	}
+	projected, err := NormalizeCoreCastContract(CoreCastContract{
+		Version:              CoreCastContractVersion,
+		Mode:                 CoreCastModeNormal,
+		Members:              members,
+		PlannedRelationships: coreRelationships,
+		SourceDispositions:   []SourceCharacterDisposition{},
+	})
+	return projected, findings, err
 }
 
 func CharacterCardBindingFromFoundation(

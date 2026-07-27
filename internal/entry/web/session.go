@@ -2323,6 +2323,11 @@ func (s *ProjectSession) CommitCoCreate(ctx context.Context) (webCoCreateState, 
 	if err := s.cocreate.requireReadyDraft(); err != nil {
 		return webCoCreateState{}, err
 	}
+	if state.kind == webCoCreateKindNormal && state.coreCast != nil {
+		if err := s.persistReplyCoreCastLocked(host.CoCreateReply{CoreCast: state.coreCast}); err != nil {
+			return state.apiState(), fmt.Errorf("persist legacy CoreCast seed: %w", err)
+		}
+	}
 	if state.requiresCoreCast() {
 		if err := s.requireAndPublishCoreCastLocked(state); err != nil {
 			return state.apiState(), err
@@ -2366,7 +2371,7 @@ func (s *ProjectSession) prepareNormalFoundationGeneration(plan startup.Plan, cr
 	if err != nil {
 		return err
 	}
-	transition, err := st.BeginFoundationReview(review)
+	transition, err := st.BeginOriginalCharacterReview(review)
 	if err != nil {
 		return fmt.Errorf("begin foundation review: %w", err)
 	}
@@ -3893,7 +3898,8 @@ func (s *ProjectSession) refreshCoreCastLocked(state *webCoCreateSession, persis
 }
 
 func (s *ProjectSession) persistReplyCoreCastLocked(reply host.CoCreateReply) error {
-	if s.cocreate == nil || !s.cocreate.requiresCoreCast() || reply.CoreCast == nil {
+	if s.cocreate == nil || reply.CoreCast == nil ||
+		(s.cocreate.kind != webCoCreateKindNormal && s.cocreate.kind != webCoCreateKindAdapt) {
 		return nil
 	}
 	st := storepkg.NewStore(s.manifest.OutputDir)
@@ -4015,6 +4021,56 @@ func (s *ProjectSession) ConfirmCoreCast(expectedRevision int64, signature strin
 	api := state.apiState()
 	s.appendCoCreateState(api)
 	return api, nil
+}
+
+func (s *ProjectSession) ConfirmCharacterCandidate(
+	request webCharacterCandidateConfirmRequest,
+) (host.CharacterConfirmationResult, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return host.CharacterConfirmationResult{}, err
+	}
+	defer unlock()
+	result, err := host.ConfirmOriginalCharacterCandidate(
+		storepkg.NewStore(s.manifest.OutputDir),
+		host.CharacterConfirmationRequest{
+			ExpectedCandidateRevision: request.ExpectedCandidateRevision,
+			CandidateDigest:           request.CandidateDigest,
+			IdempotencyKey:            request.IdempotencyKey,
+		},
+	)
+	if err != nil {
+		return host.CharacterConfirmationResult{}, err
+	}
+	if _, resumeErr := s.host.Resume(); resumeErr != nil {
+		return result, fmt.Errorf("character candidate published but planning resume failed: %w", resumeErr)
+	}
+	s.AppendSnapshot()
+	return result, nil
+}
+
+func (s *ProjectSession) EditCharacterCandidate(
+	request webCharacterCandidateEditRequest,
+) (domain.CharacterCardCandidate, domain.CharacterCardLifecycle, error) {
+	unlock, err := s.beginAction()
+	if err != nil {
+		return domain.CharacterCardCandidate{}, domain.CharacterCardLifecycle{}, err
+	}
+	defer unlock()
+	candidate, lifecycle, err := host.EditOriginalCharacterCandidate(
+		storepkg.NewStore(s.manifest.OutputDir),
+		host.CharacterCandidateEditRequest{
+			ExpectedCandidateRevision: request.ExpectedCandidateRevision,
+			Characters:                request.Characters,
+			Relationships:             request.PlannedRelationships,
+			RelationshipsReviewed:     request.RelationshipsReviewed,
+		},
+	)
+	if err != nil {
+		return domain.CharacterCardCandidate{}, domain.CharacterCardLifecycle{}, err
+	}
+	s.AppendSnapshot()
+	return candidate, lifecycle, nil
 }
 
 func (s *ProjectSession) UnconfirmCoreCast(expectedRevision int64) (webCoCreateState, error) {

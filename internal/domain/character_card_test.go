@@ -328,6 +328,24 @@ func completeCharacterCardLifecycle(binding CharacterCardBinding) CharacterCardL
 	}
 }
 
+func TestProjectCharacterCandidateCoreCastReportsConfirmedConflict(t *testing.T) {
+	foundation := completeCharacterCardFoundation()
+	projected, findings, err := ProjectCharacterCandidateCoreCast(foundation, nil)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("initial projection = %+v, findings=%+v, err=%v", projected, findings, err)
+	}
+	projected.ConfirmedSignature = projected.ContentSignature
+	foundation.Characters[0].Goal = "abandon the city"
+	_, findings, err = ProjectCharacterCandidateCoreCast(foundation, &projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) == 0 || !findings[0].Blocking ||
+		findings[0].IssueType != "confirmed_core_cast_conflict" {
+		t.Fatalf("confirmed conflict findings = %+v", findings)
+	}
+}
+
 func sourceMapping(
 	id string,
 	action CharacterSourceMappingAction,

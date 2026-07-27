@@ -55,6 +55,18 @@ type FoundationReviewTransition struct {
 }
 
 func (s *Store) BeginFoundationReview(review *domain.PlanningReview) (*FoundationReviewTransition, error) {
+	return s.beginFoundationReview(review, true)
+}
+
+// BeginOriginalCharacterReview starts the new-original Foundation generation
+// before a CoreCast exists. Character analysis and confirmation own the
+// characters/relationships sections; Architect remains responsible for the
+// remaining planning sections.
+func (s *Store) BeginOriginalCharacterReview(review *domain.PlanningReview) (*FoundationReviewTransition, error) {
+	return s.beginFoundationReview(review, false)
+}
+
+func (s *Store) beginFoundationReview(review *domain.PlanningReview, requireCoreCast bool) (*FoundationReviewTransition, error) {
 	if s == nil || review == nil {
 		return nil, fmt.Errorf("foundation review is required")
 	}
@@ -76,7 +88,7 @@ func (s *Store) BeginFoundationReview(review *domain.PlanningReview) (*Foundatio
 			copy := clonePlanningReview(*current)
 			before = &copy
 		}
-		if err := s.beginFoundationReviewLocked(review); err != nil {
+		if err := s.beginFoundationReviewLocked(review, requireCoreCast); err != nil {
 			return err
 		}
 		transition = &FoundationReviewTransition{before: before, after: clonePlanningReview(*review)}
@@ -111,9 +123,11 @@ func (s *Store) RollbackFoundationReview(transition *FoundationReviewTransition)
 	})
 }
 
-func (s *Store) beginFoundationReviewLocked(review *domain.PlanningReview) error {
-	if _, err := s.requireConfirmedNormalCoreCast(); err != nil {
-		return &FoundationReviewError{Code: FoundationReviewErrorStage, Err: err, Review: review}
+func (s *Store) beginFoundationReviewLocked(review *domain.PlanningReview, requireCoreCast bool) error {
+	if requireCoreCast {
+		if _, err := s.requireConfirmedNormalCoreCast(); err != nil {
+			return &FoundationReviewError{Code: FoundationReviewErrorStage, Err: err, Review: review}
+		}
 	}
 	foundation, err := s.Foundation.Load()
 	if err != nil {
@@ -140,6 +154,86 @@ func (s *Store) beginFoundationReviewLocked(review *domain.PlanningReview) error
 	review.FoundationBaseRevision = foundation.Revision
 	review.UpdatedAt = now
 	return s.RunMeta.setPlanningReviewAuthoritative(review)
+}
+
+// PublishOriginalCharacterCandidate publishes the exact user-confirmed full
+// candidate behind the current Foundation generation fence. CoreCast must
+// already be confirmed, and a retry may only resume when canonical content is
+// already byte-for-byte equivalent to the same candidate.
+func (s *Store) PublishOriginalCharacterCandidate(
+	fence FoundationGenerationFence,
+	candidate domain.StoryFoundation,
+	expectedRevision int64,
+) (domain.StoryFoundation, *domain.PlanningReview, error) {
+	if s == nil {
+		return domain.StoryFoundation{}, nil, fmt.Errorf("store is nil")
+	}
+	s.Foundation.lifecycle.reviewMu.Lock()
+	defer s.Foundation.lifecycle.reviewMu.Unlock()
+	s.crossMu.Lock()
+	defer s.crossMu.Unlock()
+	review, err := s.RunMeta.PlanningReview()
+	if err != nil {
+		return domain.StoryFoundation{}, nil, err
+	}
+	if review == nil || review.Kind != domain.PlanningReviewKindFoundation ||
+		review.Status != domain.PlanningReviewStatusCollecting ||
+		review.FoundationStatus != domain.FoundationReviewStatusCollecting ||
+		fence.Generation != review.FoundationGeneration ||
+		fence.BaseRevision != review.FoundationBaseRevision ||
+		expectedRevision != review.FoundationBaseRevision {
+		return domain.StoryFoundation{}, review, &FoundationReviewError{
+			Code: FoundationReviewErrorStale,
+			Err:  fmt.Errorf("character candidate Foundation generation is stale"),
+		}
+	}
+	contract, err := s.CoreCast.Load()
+	if err != nil {
+		return domain.StoryFoundation{}, review, err
+	}
+	if contract == nil || contract.ConfirmedSignature == "" ||
+		contract.ConfirmedSignature != contract.ContentSignature {
+		return domain.StoryFoundation{}, review, &FoundationReviewError{
+			Code: FoundationReviewErrorValidation,
+			Err:  fmt.Errorf("projected CoreCast is not confirmed"),
+		}
+	}
+	current, err := s.Foundation.Load()
+	if err != nil {
+		return domain.StoryFoundation{}, review, err
+	}
+	published := current
+	currentDigest, currentDigestErr := domain.CharacterCardContentDigest(current)
+	candidateDigest, candidateDigestErr := domain.CharacterCardContentDigest(candidate)
+	alreadyPublished := currentDigestErr == nil && candidateDigestErr == nil &&
+		currentDigest == candidateDigest
+	if !alreadyPublished {
+		if current.Revision != expectedRevision {
+			return domain.StoryFoundation{}, review, &FoundationReviewError{
+				Code: FoundationReviewErrorStale,
+				Err:  fmt.Errorf("canonical Foundation changed before character publication"),
+			}
+		}
+		candidate.Revision = current.Revision
+		published, err = s.Foundation.saveCAS(candidate, current.Revision, true)
+		if err != nil {
+			return domain.StoryFoundation{}, review, err
+		}
+	}
+	if _, err := s.CoreCast.publishConfirmed(s.Foundation, nil, nil, nil); err != nil {
+		return domain.StoryFoundation{}, review, fmt.Errorf("record projected CoreCast publication: %w", err)
+	}
+	if !foundationSectionRecorded(review.FoundationSections, "characters") {
+		if _, err := s.recordFoundationSectionLocked(review, "characters"); err != nil {
+			return domain.StoryFoundation{}, review, err
+		}
+	}
+	if !foundationSectionRecorded(review.FoundationSections, "planned_relationships") {
+		if _, err := s.recordFoundationSectionLocked(review, "planned_relationships"); err != nil {
+			return domain.StoryFoundation{}, review, err
+		}
+	}
+	return published, review, nil
 }
 
 func (s *Store) SaveFoundationPremise(fence *FoundationGenerationFence, content string) (*domain.PlanningReview, error) {
@@ -368,7 +462,7 @@ func (s *Store) ReviseFoundation(feedback string) (*domain.PlanningReview, error
 			return &FoundationReviewError{Code: FoundationReviewErrorStage, Err: fmt.Errorf("foundation review cannot be revised in the current stage"), Review: review}
 		}
 		review.FoundationFeedback = feedback
-		return s.beginFoundationReviewLocked(review)
+		return s.beginFoundationReviewLocked(review, true)
 	})
 	return review, err
 }
