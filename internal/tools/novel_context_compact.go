@@ -261,6 +261,7 @@ func compactOutlineEntriesForPlanningAudit(entries []domain.OutlineEntry) []map[
 		return nil
 	}
 	coreEventLimit, hookLimit, sceneLimit := 300, 160, 160
+	temporaryRoleLimit, temporarySceneLimit, temporaryPurposeLimit := 50, 60, 80
 	denseBatch := len(entries) >= 4
 	if denseBatch {
 		// Four fully structured chapters are the largest permitted audit
@@ -268,7 +269,8 @@ func compactOutlineEntriesForPlanningAudit(entries []domain.OutlineEntry) []map[
 		// projection for prose that is already represented in those fields.
 		// This reserves request headroom for the complete canonical
 		// character/relationship/rule evidence rather than splitting an arc.
-		coreEventLimit, hookLimit, sceneLimit = 220, 110, 125
+		coreEventLimit, hookLimit, sceneLimit = 120, 60, 75
+		temporaryRoleLimit, temporarySceneLimit, temporaryPurposeLimit = 35, 40, 55
 	}
 	out := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
@@ -302,9 +304,9 @@ func compactOutlineEntriesForPlanningAudit(entries []domain.OutlineEntry) []map[
 			roles := make([][]any, 0, len(entry.TemporaryRoles))
 			for _, role := range entry.TemporaryRoles {
 				roles = append(roles, []any{
-					truncateRunes(role.Role, 50),
-					truncateRunes(role.Scene, 60),
-					truncateRunes(role.Purpose, 80),
+					truncateRunes(role.Role, temporaryRoleLimit),
+					truncateRunes(role.Scene, temporarySceneLimit),
+					truncateRunes(role.Purpose, temporaryPurposeLimit),
 					role.Important,
 				})
 			}
@@ -321,7 +323,7 @@ func compactOutlineEntriesForPlanningAudit(entries []domain.OutlineEntry) []map[
 func compactPlanningAuditCharacterBeat(beat domain.OutlineCharacterBeat, denseBatch bool) []any {
 	sceneLimit, goalLimit, obstacleLimit, choiceLimit, advanceLimit := 60, 75, 75, 90, 90
 	if denseBatch {
-		sceneLimit, goalLimit, obstacleLimit, choiceLimit, advanceLimit = 50, 60, 60, 75, 75
+		sceneLimit, goalLimit, obstacleLimit, choiceLimit, advanceLimit = 25, 30, 30, 40, 40
 	}
 	return []any{
 		beat.CharacterID,
@@ -336,7 +338,7 @@ func compactPlanningAuditCharacterBeat(beat domain.OutlineCharacterBeat, denseBa
 func compactPlanningAuditRelationshipBeat(beat domain.OutlineRelationshipBeat, denseBatch bool) []any {
 	sceneLimit, startLimit, advanceLimit, forbiddenLimit := 60, 60, 90, 80
 	if denseBatch {
-		sceneLimit, startLimit, advanceLimit, forbiddenLimit = 50, 50, 75, 65
+		sceneLimit, startLimit, advanceLimit, forbiddenLimit = 25, 25, 40, 35
 	}
 	return []any{
 		beat.RelationshipID,

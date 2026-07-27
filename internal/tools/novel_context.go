@@ -56,7 +56,7 @@ const (
 	planningContextSourceBytes       = 32 * 1024
 	planningDetailContextSourceBytes = 36 * 1024
 	planningReviewContextSourceBytes = 28 * 1024
-	planningAuditContextSourceBytes  = 30 * 1024
+	planningAuditContextSourceBytes  = 34 * 1024
 	nearbyOutlineBeforeChapters      = 2
 	nearbyOutlineAfterChapters       = 3
 	maxOutlineRangeChapters          = 80

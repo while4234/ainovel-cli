@@ -1189,6 +1189,28 @@ func TestContextToolPlanningAuditCombinesFourChaptersAndCanonicalFactsAtBookScal
 		if volume == 80 {
 			chapters := make([]domain.OutlineEntry, 0, 4)
 			for chapter := 0; chapter < 4; chapter++ {
+				characterBeats := make([]domain.OutlineCharacterBeat, 0, 4)
+				relationshipBeats := make([]domain.OutlineRelationshipBeat, 0, 4)
+				for beat := 0; beat < 4; beat++ {
+					characterBeats = append(characterBeats, domain.OutlineCharacterBeat{
+						CharacterID: characters[beat].ID,
+						Scene:       strings.Repeat("对应场景不可丢失。", 20),
+						Goal:        strings.Repeat("本章可验证目标。", 20),
+						Obstacle:    strings.Repeat("主动阻力。", 20),
+						ChoiceCost:  strings.Repeat("选择与代价。", 20),
+						Advance:     strings.Repeat("状态不可逆推进。", 20),
+					})
+					relationship := relationships[beat]
+					relationshipBeats = append(relationshipBeats, domain.OutlineRelationshipBeat{
+						RelationshipID:    relationship.ID,
+						SourceCharacterID: relationship.SourceCharacterID,
+						TargetCharacterID: relationship.TargetCharacterID,
+						Scene:             strings.Repeat("关系所在场景。", 20),
+						Start:             strings.Repeat("关系起始状态。", 20),
+						ExpectedAdvance:   "关系变化影响下一章选择",
+						ForbiddenJump:     strings.Repeat("禁止关系跨级。", 20),
+					})
+				}
 				chapters = append(chapters, domain.OutlineEntry{
 					ID:      fmt.Sprintf("ch_%032x", chapter+1),
 					Chapter: 949 + chapter, Title: fmt.Sprintf("审核章%d", chapter+1),
@@ -1201,24 +1223,9 @@ func TestContextToolPlanningAuditCombinesFourChaptersAndCanonicalFactsAtBookScal
 						"scene-four-mandatory-aftercare",
 						"scene-five-mandatory-handoff",
 					},
-					CharacterIDs: []string{characters[0].ID, characters[1].ID},
-					CharacterBeats: []domain.OutlineCharacterBeat{{
-						CharacterID: characters[0].ID,
-						Scene:       strings.Repeat("对应场景不可丢失。", 20),
-						Goal:        strings.Repeat("本章可验证目标。", 20),
-						Obstacle:    strings.Repeat("主动阻力。", 20),
-						ChoiceCost:  strings.Repeat("选择与代价。", 20),
-						Advance:     strings.Repeat("状态不可逆推进。", 20),
-					}},
-					RelationshipBeats: []domain.OutlineRelationshipBeat{{
-						RelationshipID:    relationships[0].ID,
-						SourceCharacterID: relationships[0].SourceCharacterID,
-						TargetCharacterID: relationships[0].TargetCharacterID,
-						Scene:             strings.Repeat("关系所在场景。", 20),
-						Start:             strings.Repeat("关系起始状态。", 20),
-						ExpectedAdvance:   "关系变化影响下一章选择",
-						ForbiddenJump:     strings.Repeat("禁止关系跨级。", 20),
-					}},
+					CharacterIDs:      []string{characters[0].ID, characters[1].ID},
+					CharacterBeats:    characterBeats,
+					RelationshipBeats: relationshipBeats,
 				})
 			}
 			arcs[0].EstimatedChapters = 0
