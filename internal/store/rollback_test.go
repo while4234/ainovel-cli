@@ -102,6 +102,91 @@ func TestRollbackConfirmedAdaptationRestoresProposalAndDeletesWritingArtifacts(t
 	}
 }
 
+func TestRollbackWritingClearsGenerationSessionsAndPreservesCoCreate(t *testing.T) {
+	dir := t.TempDir()
+	st := NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter:   1,
+		Title:     "Canonical chapter",
+		CoreEvent: "The approved cast carries out the planned event.",
+		Scenes:    []string{"The protagonist enters the approved opening scene."},
+	}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := st.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		CurrentChapter:    2,
+		InProgressChapter: 2,
+		TotalChapters:     2,
+		CompletedChapters: []int{1},
+	}); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+
+	coCreatePath := filepath.Join(dir, "meta", "sessions", "cocreate.jsonl")
+	coCreate := []byte("{\"role\":\"user\",\"content\":\"preserve this creative decision\"}\n")
+	if err := os.WriteFile(coCreatePath, coCreate, 0o644); err != nil {
+		t.Fatalf("write co-create session: %v", err)
+	}
+	coordinatorPath := filepath.Join(dir, "meta", "sessions", "coordinator.jsonl")
+	if err := os.WriteFile(coordinatorPath, []byte("stale coordinator history\n"), 0o644); err != nil {
+		t.Fatalf("write coordinator session: %v", err)
+	}
+	agentDir := filepath.Join(dir, "meta", "sessions", "agents")
+	if err := os.WriteFile(filepath.Join(agentDir, "writer-ch01.jsonl"), []byte("stale writer history\n"), 0o644); err != nil {
+		t.Fatalf("write writer session: %v", err)
+	}
+
+	preview, err := st.RollbackPreview()
+	if err != nil {
+		t.Fatalf("RollbackPreview: %v", err)
+	}
+	if !preview.CanRollback || preview.TargetStage != domain.RollbackStageChapterOutline {
+		t.Fatalf("preview = %+v, want chapter-outline target", preview)
+	}
+	for _, rel := range []string{"meta/sessions/coordinator.jsonl", "meta/sessions/agents"} {
+		if !slices.Contains(preview.DeletePaths, rel) {
+			t.Fatalf("preview delete paths = %v, want %s", preview.DeletePaths, rel)
+		}
+	}
+	if slices.Contains(preview.DeletePaths, "meta/sessions/cocreate.jsonl") {
+		t.Fatalf("preview must preserve co-create history: %v", preview.DeletePaths)
+	}
+
+	result, err := st.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: preview.PreviewHash})
+	if err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	if _, err := os.Stat(coordinatorPath); !os.IsNotExist(err) {
+		t.Fatalf("coordinator session remains after rollback: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(agentDir, "writer-ch01.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("writer session remains after rollback: %v", err)
+	}
+	agentEntries, err := os.ReadDir(agentDir)
+	if err != nil {
+		t.Fatalf("read recreated agent session directory: %v", err)
+	}
+	if len(agentEntries) != 0 {
+		t.Fatalf("recreated agent session directory is not empty: %v", agentEntries)
+	}
+	for _, rel := range []string{"meta/sessions/coordinator.jsonl", "meta/sessions/agents"} {
+		if !slices.Contains(result.DeletedPaths, rel) {
+			t.Fatalf("deleted paths = %v, want %s", result.DeletedPaths, rel)
+		}
+	}
+	got, err := os.ReadFile(coCreatePath)
+	if err != nil {
+		t.Fatalf("read preserved co-create session: %v", err)
+	}
+	if string(got) != string(coCreate) {
+		t.Fatalf("co-create session changed during rollback: got %q want %q", got, coCreate)
+	}
+}
+
 func TestRollbackAdaptationWithVolumesStopsAtVolumeReviewBeforeDraft(t *testing.T) {
 	st := NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

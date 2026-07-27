@@ -862,6 +862,8 @@ func writingDeletePathsWithoutRuntime() []string {
 		"meta/last_review.json",
 		"meta/outline_duplicate_scan.json",
 		"meta/outline_repair_finalization.json",
+		"meta/sessions/coordinator.jsonl",
+		"meta/sessions/agents",
 	}
 }
 
