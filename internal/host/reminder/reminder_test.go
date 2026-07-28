@@ -379,6 +379,31 @@ func TestWriterStopGuardAllowsCompletedHostWordBudgetSegment(t *testing.T) {
 	}
 }
 
+func TestWriterStopGuardAllowsOutOfBudgetDraftToReturnForHostRepair(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("init progress: %v", err)
+	}
+	if err := s.Progress.StartChapter(1); err != nil {
+		t.Fatalf("start chapter: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("set word budget: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, strings.Repeat("超", 140)); err != nil {
+		t.Fatalf("save over-budget draft: %v", err)
+	}
+
+	decision := NewWriterStopGuard(s)(context.Background(), agentcore.StopInfo{
+		TurnIndex: 1,
+		Message:   agentcore.Message{StopReason: agentcore.StopReasonStop},
+	})
+	if !decision.Allow || decision.Escalate || decision.InjectMessage != "" {
+		t.Fatalf("out-of-budget draft must return to Host-owned segment repair: %#v", decision)
+	}
+}
+
 // TestStopGuard_NonConsecutiveTurnResetsCounter 验证：两次 block 之间 TurnIndex
 // 不相邻（中间 LLM 做了 tool call 或用户 resume）时，consecutive 计数重置。
 func TestStopGuard_NonConsecutiveTurnResetsCounter(t *testing.T) {

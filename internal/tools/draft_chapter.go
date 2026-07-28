@@ -234,6 +234,7 @@ func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chap
 		return
 	}
 	result["word_budget_passed"] = false
+	result["deferred_to_host"] = true
 	direction := "低于"
 	if wordCount > maxWords {
 		direction = "高于"

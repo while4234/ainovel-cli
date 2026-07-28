@@ -55,6 +55,15 @@ func newCheckpointDeltaGuardFunc(st *store.Store, agentName string, requiredStep
 				"turn", info.TurnIndex, "stop_reason", info.Message.StopReason)
 			return agentcore.StopDecision{Allow: false, Escalate: true}
 		}
+		if agentName == "writer" && writerDraftNeedsBudgetRepair(st) {
+			// Normal-original drafts outside the current per-chapter budget are
+			// repaired by Host-owned bounded line segments. Let this Writer run
+			// return immediately; injecting consistency/commit reminders here
+			// makes the model hallucinate evidence because read_chapter correctly
+			// refuses a full over-budget replay.
+			consecutive.Store(0)
+			return agentcore.StopDecision{Allow: true}
+		}
 		// 倒序扫描：新 checkpoint 在尾部，遇到 <= baseline 即可 break。
 		all := st.Checkpoints.All()
 		for i := len(all) - 1; i >= 0; i-- {
@@ -83,6 +92,38 @@ func newCheckpointDeltaGuardFunc(st *store.Store, agentName string, requiredStep
 			"module", "host.reminder", "agent", agentName, "turn", info.TurnIndex, "consecutive", n)
 		return agentcore.StopDecision{Allow: false, InjectMessage: blockMsg()}
 	}
+}
+
+func writerDraftNeedsBudgetRepair(st *store.Store) bool {
+	if st == nil || st.Adaptation.Active() {
+		return false
+	}
+	progress, err := st.Progress.Load()
+	if err != nil || progress == nil {
+		return false
+	}
+	chapter := progress.InProgressChapter
+	if chapter <= 0 {
+		chapter = progress.CurrentChapter
+	}
+	if chapter <= 0 {
+		return false
+	}
+	_, wordCount, err := st.Drafts.LoadChapterContent(chapter)
+	if err != nil || wordCount <= 0 {
+		return false
+	}
+	meta, err := st.RunMeta.Load()
+	if err != nil || meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords <= 0 {
+		return false
+	}
+	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
+	if !ok || runtime.CurrentChapter.Chapter <= 0 {
+		return false
+	}
+	minWords := runtime.CurrentChapter.RecommendedMinWords
+	maxWords := runtime.CurrentChapter.RecommendedMaxWords
+	return (minWords > 0 && wordCount < minWords) || (maxWords > 0 && wordCount > maxWords)
 }
 
 // NewWriterStopGuard 要求 writer 本轮至少产生一次成功的 commit_chapter。

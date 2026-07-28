@@ -189,6 +189,9 @@ func TestDraftChapterReportsNormalWordBudget(t *testing.T) {
 	if result["word_budget_passed"] != false {
 		t.Fatalf("expected word budget failure, got %+v", result)
 	}
+	if result["deferred_to_host"] != true {
+		t.Fatalf("out-of-budget draft must return to Host before validation, got %+v", result)
+	}
 	if _, ok := result["word_budget"]; !ok {
 		t.Fatalf("expected word_budget payload, got %+v", result)
 	}

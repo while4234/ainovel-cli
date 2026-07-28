@@ -154,8 +154,8 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 	}
 	if len(checks) != len(outline.Scenes) {
 		return fmt.Errorf(
-			"scene_checks count %d does not match chapter %d contract scene count %d; read the current draft and submit exactly one grounded check per planned scene: %w",
-			len(checks), chapter, len(outline.Scenes), errs.ErrToolPrecondition,
+			"scene_checks count %d does not match chapter %d contract scene count %d; read the current draft and submit exactly one grounded check for each indexed planned scene (do not split paragraphs into extra scenes). expected_scene_contracts=%s: %w",
+			len(checks), chapter, len(outline.Scenes), indexedSceneContracts(outline.Scenes), errs.ErrToolPrecondition,
 		)
 	}
 	seen := make(map[int]struct{}, len(checks))
@@ -183,6 +183,17 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 		}
 	}
 	return nil
+}
+
+func indexedSceneContracts(scenes []string) string {
+	var result strings.Builder
+	for index, scene := range scenes {
+		if index > 0 {
+			result.WriteString(" | ")
+		}
+		fmt.Fprintf(&result, "%d:%s", index+1, strings.TrimSpace(scene))
+	}
+	return result.String()
 }
 
 func (t *CheckConsistencyTool) validateCharacterFindings(chapter int, findings []domain.ConsistencyIssue) error {
