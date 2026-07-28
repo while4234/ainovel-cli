@@ -46,6 +46,10 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `current HEAD` `fix: allow canonical relationship endpoints`:
+  permits the domain-owned `source_character_id` relationship endpoint through
+  the normal-manuscript firewall while continuing to reject adaptation source
+  collections. Focused firewall tests and `git diff --check` pass.
 - 2026-07-28 `current HEAD` `fix: strengthen manuscript authoring safeguards`:
   requires explicit gender for non-decorative characters, adds a narrow
   approved-foundation repair path for legacy missing gender, preserves

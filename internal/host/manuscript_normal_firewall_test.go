@@ -30,9 +30,12 @@ func TestNormalManuscriptFirewallRejectsForbiddenKeysRecursively(t *testing.T) {
 }
 
 func TestNormalManuscriptFirewallAllowsSimilarBusinessKeys(t *testing.T) {
-	payload := []byte(`{"resource":{"sourcebook":"catalog"},"adaptability":"high","adaptationist":"editor","sourcing":"local"}`)
+	payload := []byte(`{"resource":{"sourcebook":"catalog"},"adaptability":"high","adaptationist":"editor","sourcing":"local","relationship":{"source_character_id":"lin","target_character_id":"su"}}`)
 	if err := validateNormalManuscriptJSON(payload); err != nil {
 		t.Fatalf("legal similar fields rejected: %v", err)
+	}
+	if err := validateNormalManuscriptJSON([]byte(`{"source_character_ids":["source-lin"]}`)); err == nil {
+		t.Fatal("adaptation source character collection was accepted on the normal path")
 	}
 }
 

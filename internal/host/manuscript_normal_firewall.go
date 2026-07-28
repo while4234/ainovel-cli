@@ -105,6 +105,11 @@ func validateNormalManuscriptValue(value any) error {
 
 func normalManuscriptForbiddenKey(key string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(key))
+	// RelationshipEntry uses this canonical endpoint on both original and
+	// adaptation paths. It identifies a story character, not source material.
+	if normalized == "source_character_id" {
+		return false
+	}
 	for _, forbidden := range []string{"source", "adaptation"} {
 		if normalized == forbidden || strings.HasPrefix(normalized, forbidden+"_") || strings.HasPrefix(normalized, forbidden+"-") {
 			return true
