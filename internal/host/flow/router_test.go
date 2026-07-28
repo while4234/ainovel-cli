@@ -505,13 +505,20 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 		"禁止调用 plan_chapter 或 draft_chapter",
 		"禁止读取其他章节",
 		`read_chapter(chapter=5, source="draft")`,
+		`novel_context(chapter=5)`,
 		"repair_de_ai_batch",
 		"check_consistency",
+		"只有当前草稿的一致性检查通过后才能调用 check_de_ai",
+		"依次重新执行 check_consistency、check_de_ai",
+		"check_de_ai.commit_context",
 		"commit_chapter",
 	} {
 		if !strings.Contains(got.Task, want) {
 			t.Fatalf("resume task missing %q: %s", want, got.Task)
 		}
+	}
+	if strings.Index(got.Task, "check_consistency") > strings.Index(got.Task, "check_de_ai") {
+		t.Fatalf("resume task must run consistency before de-AI: %s", got.Task)
 	}
 }
 

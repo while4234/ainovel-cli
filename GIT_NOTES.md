@@ -46,6 +46,11 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `pending` `fix: stabilize resumed chapter validation`:
+  restores the required consistency-before-de-AI validation order for resumed
+  drafts, requires planned-scene evidence to follow narrative order, and bounds
+  scene-contract error feedback so a recoverable scene-count mistake cannot
+  inflate the Writer context with repeated full outline payloads.
 - 2026-07-28 `current HEAD` `fix: separate chapter word guidance from hard limits`:
   treats the dynamic per-chapter allocation and approximate book total as soft
   pacing guidance, while the saved user chapter range remains the only creation

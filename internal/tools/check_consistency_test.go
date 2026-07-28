@@ -98,3 +98,45 @@ func TestCheckConsistencyRejectsInventedSceneEvidence(t *testing.T) {
 		t.Fatalf("expected invented evidence to fail, got %v", err)
 	}
 }
+
+func TestCheckConsistencyRequiresEvidenceInPlannedSceneOrder(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter: 1,
+		Scenes:  []string{"清晨公寓", "午间公司"},
+	}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	draft := "# 第一章\n\n清晨公寓里，两人准备早餐。\n\n午间公司里，新同事完成报到。"
+	if err := st.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	_, err := NewCheckConsistencyTool(st).Execute(context.Background(), json.RawMessage(`{
+		"chapter":1,
+		"scene_checks":[
+			{"scene":1,"evidence":"午间公司里，新同事完成报到","time_and_place_match":true,"pov_match":true,"characters_match":true,"event_order_match":true,"knowledge_match":true,"irreversible_result_match":true},
+			{"scene":2,"evidence":"清晨公寓里，两人准备早餐","time_and_place_match":true,"pov_match":true,"characters_match":true,"event_order_match":true,"knowledge_match":true,"irreversible_result_match":true}
+		],
+		"findings":[]
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "not in planned scene order") {
+		t.Fatalf("expected out-of-order evidence to fail, got %v", err)
+	}
+}
+
+func TestCompactIndexedSceneContractsBoundsErrorContext(t *testing.T) {
+	scenes := []string{
+		"scene: 1; pov: hero; setting: home; summary: " + strings.Repeat("甲", 300),
+		"scene: 2; pov: rival; setting: office; summary: " + strings.Repeat("乙", 300),
+	}
+	got := compactIndexedSceneContracts(scenes)
+	if len([]rune(got)) > 205 {
+		t.Fatalf("compact contracts too large: %d runes", len([]rune(got)))
+	}
+	if !strings.Contains(got, "pov: hero") || !strings.Contains(got, "pov: rival") {
+		t.Fatalf("compact contracts lost identity labels: %q", got)
+	}
+}

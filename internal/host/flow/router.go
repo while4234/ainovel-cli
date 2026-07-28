@@ -378,7 +378,7 @@ func RouteResume(s State) *Instruction {
 	return &Instruction{
 		Agent: "writer",
 		Task: fmt.Sprintf(
-			"恢复第 %d 章现有草稿（checkpoint=%s，de_ai=%s，consistency_current=%t，word_count=%d，word_budget=%d-%d，word_budget_current=%t）。当前草稿是唯一工作版本：禁止调用 plan_chapter 或 draft_chapter，禁止读取其他章节，禁止重复调用 novel_context。先且只先调用一次 read_chapter(chapter=%d, source=\"draft\")，禁止传 from_line/to_line；任何修复落盘后都不要再次回读，直接复检。随后调用 check_de_ai；若有 repair finding，依据刚回读的当前原文用 repair_de_ai_batch 做一小批唯一精确替换并立即复检，过期 old_string 让工具跳过，不要重放旧批次，直到 check_de_ai 通过。随后调用 novel_context(chapter=%d) 一次并在同一版草稿上通过 check_consistency%s；任何后续改稿都要重新完成这些检查。最后直接 commit_chapter，不要重新规划或整章重写。",
+			"恢复第 %d 章现有草稿（checkpoint=%s，de_ai=%s，consistency_current=%t，word_count=%d，word_budget=%d-%d，word_budget_current=%t）。当前草稿是唯一工作版本：禁止调用 plan_chapter 或 draft_chapter，禁止读取其他章节。先调用 novel_context(chapter=%d) 一次加载权威章节契约，再且只再调用一次 read_chapter(chapter=%d, source=\"draft\")，禁止传 from_line/to_line；随后立即按计划场景序号逐项调用 check_consistency%s。只有当前草稿的一致性检查通过后才能调用 check_de_ai。若 check_de_ai 有 repair finding，依据已回读的当前原文用 repair_de_ai_batch 做一小批唯一精确替换，过期 old_string 让工具跳过，不要重放旧批次；每次改稿后依次重新执行 check_consistency、check_de_ai，直到同一版草稿同时通过。不要重复调用 novel_context 或 read_chapter。最后从最新 check_de_ai.commit_context 复制人物与章节元数据并直接 commit_chapter，不要凭记忆生成摘要，不要重新规划或整章重写。",
 			chapter, resumeFact(s.InProgressCheckpoint), resumeFact(s.InProgressDeAIState), s.InProgressConsistencyValid,
 			s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax, s.InProgressWordBudgetValid,
 			chapter, chapter, adaptationStep,

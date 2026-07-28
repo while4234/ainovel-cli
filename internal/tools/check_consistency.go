@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/voocel/agentcore/schema"
@@ -154,11 +155,12 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 	}
 	if len(checks) != len(outline.Scenes) {
 		return fmt.Errorf(
-			"scene_checks count %d does not match chapter %d contract scene count %d; read the current draft and submit exactly one grounded check for each indexed planned scene (do not split paragraphs into extra scenes). expected_scene_contracts=%s: %w",
-			len(checks), chapter, len(outline.Scenes), indexedSceneContracts(outline.Scenes), errs.ErrToolPrecondition,
+			"scene_checks count %d does not match chapter %d contract scene count %d; submit exactly one grounded check for each indexed planned scene, not each prose subsection. expected_scene_contracts=%s: %w",
+			len(checks), chapter, len(outline.Scenes), compactIndexedSceneContracts(outline.Scenes), errs.ErrToolPrecondition,
 		)
 	}
 	seen := make(map[int]struct{}, len(checks))
+	evidenceOffsets := make(map[int]int, len(checks))
 	for index, check := range checks {
 		if check.Scene < 1 || check.Scene > len(outline.Scenes) {
 			return fmt.Errorf("scene_checks[%d].scene %d is outside 1-%d: %w", index, check.Scene, len(outline.Scenes), errs.ErrToolArgs)
@@ -174,6 +176,7 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 				index, errs.ErrToolPrecondition,
 			)
 		}
+		evidenceOffsets[check.Scene] = strings.Index(content, evidence)
 		if !check.TimeAndPlaceMatch || !check.POVMatch || !check.CharactersMatch ||
 			!check.EventOrderMatch || !check.KnowledgeMatch || !check.IrreversibleMatch {
 			return fmt.Errorf(
@@ -182,18 +185,42 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 			)
 		}
 	}
+	orderedScenes := make([]int, 0, len(evidenceOffsets))
+	for scene := range evidenceOffsets {
+		orderedScenes = append(orderedScenes, scene)
+	}
+	sort.Ints(orderedScenes)
+	previousOffset := -1
+	for _, scene := range orderedScenes {
+		offset := evidenceOffsets[scene]
+		if offset <= previousOffset {
+			return fmt.Errorf(
+				"scene_checks evidence is not in planned scene order at scene %d; quote one representative passage from each planned scene in narrative order instead of mapping prose subsections to new scene numbers: %w",
+				scene, errs.ErrToolPrecondition,
+			)
+		}
+		previousOffset = offset
+	}
 	return nil
 }
 
-func indexedSceneContracts(scenes []string) string {
+func compactIndexedSceneContracts(scenes []string) string {
 	var result strings.Builder
 	for index, scene := range scenes {
 		if index > 0 {
 			result.WriteString(" | ")
 		}
-		fmt.Fprintf(&result, "%d:%s", index+1, strings.TrimSpace(scene))
+		fmt.Fprintf(&result, "%d:%s", index+1, truncateConsistencyContract(strings.TrimSpace(scene), 96))
 	}
 	return result.String()
+}
+
+func truncateConsistencyContract(value string, limit int) string {
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "…"
 }
 
 func (t *CheckConsistencyTool) validateCharacterFindings(chapter int, findings []domain.ConsistencyIssue) error {
