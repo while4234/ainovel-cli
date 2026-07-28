@@ -32,6 +32,7 @@ func importProfileWithOptions(ctx context.Context, deps Deps, path string, opts 
 	if err := ctx.Err(); err != nil {
 		return ImportResult{}, err
 	}
+	signatures := buildSimulationAnalysisSignatures(deps)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ImportResult{}, fmt.Errorf("read simulation profile failed")
@@ -44,8 +45,36 @@ func importProfileWithOptions(ctx context.Context, deps Deps, path string, opts 
 	if err != nil {
 		return ImportResult{}, err
 	}
-	if importedPortable != nil && existing == nil {
-		if err := deps.Store.Simulation.SavePortable(*importedPortable); err != nil {
+	if importedPortable != nil {
+		if existing == nil {
+			if err := deps.Store.Simulation.SavePortable(*importedPortable); err != nil {
+				return ImportResult{}, err
+			}
+			return ImportResult{
+				ProfilePath:     path,
+				ImportedSources: importedPortable.Corpus.SourceCount,
+			}, nil
+		}
+		existingPortable, err := deps.Store.Simulation.LoadPortable()
+		if err != nil {
+			return ImportResult{}, err
+		}
+		localEvidence, err := deps.Store.Simulation.LoadLocalEvidence()
+		if err != nil {
+			return ImportResult{}, err
+		}
+		if existingPortable == nil {
+			return ImportResult{}, fmt.Errorf("existing simulation profile is not portable")
+		}
+		if localEvidence != nil && localEvidence.ProfileDigest == existingPortable.ProfileDigest &&
+			(len(localEvidence.Sources) > 0 || len(localEvidence.SourceReports) > 0) {
+			return ImportResult{}, fmt.Errorf("cannot merge a portable-only profile into a project with local simulation evidence")
+		}
+		mergedPortable, err := domain.MergeSimulationPortableProfiles(*existingPortable, *importedPortable, time.Now())
+		if err != nil {
+			return ImportResult{}, err
+		}
+		if err := deps.Store.Simulation.SavePortable(mergedPortable); err != nil {
 			return ImportResult{}, err
 		}
 		return ImportResult{
@@ -65,7 +94,7 @@ func importProfileWithOptions(ctx context.Context, deps Deps, path string, opts 
 			return ImportResult{}, fmt.Errorf("read merge checkpoint: %w", err)
 		}
 		if checkpoint != nil {
-			if _, ok := validMergeCheckpoint(checkpoint, merged.SourceReports); !ok {
+			if _, ok := validMergeCheckpointWithSignature(checkpoint, merged.SourceReports, signatures.metadata.SynthesisSignature); !ok {
 				if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
 					return ImportResult{}, fmt.Errorf("clear stale merge checkpoint: %w", err)
 				}
@@ -75,7 +104,7 @@ func importProfileWithOptions(ctx context.Context, deps Deps, path string, opts 
 		onCheckpoint := opts.OnCheckpoint
 		if onCheckpoint == nil {
 			onCheckpoint = func(checkpoint mergeSynthesisCheckpoint) error {
-				domainCheckpoint := buildSimulationMergeCheckpoint(merged.SourceReports, maxMergePromptBytes, checkpoint, time.Now())
+				domainCheckpoint := buildSimulationMergeCheckpointWithSignature(merged.SourceReports, maxMergePromptBytes, signatures.metadata.SynthesisSignature, checkpoint, time.Now())
 				if domainCheckpoint == nil {
 					return nil
 				}
@@ -83,10 +112,11 @@ func importProfileWithOptions(ctx context.Context, deps Deps, path string, opts 
 			}
 		}
 		synthesis, err := mergeSynthesisBatchedWithOptions(ctx, deps.LLM, deps.Prompts.Merge, &merged, merged.SourceReports, mergeSynthesisOptions{
-			Call:         opts.Call,
-			Checkpoint:   checkpoint,
-			OnBatch:      opts.OnBatch,
-			OnCheckpoint: onCheckpoint,
+			Call:               opts.Call,
+			Checkpoint:         checkpoint,
+			SynthesisSignature: signatures.metadata.SynthesisSignature,
+			OnBatch:            opts.OnBatch,
+			OnCheckpoint:       onCheckpoint,
 		})
 		if err != nil {
 			return ImportResult{}, err

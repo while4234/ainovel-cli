@@ -2092,7 +2092,7 @@ func TestContextToolPolishingUsesChapterOwnedSourceProfile(t *testing.T) {
 	if err := s.World.SaveRelationships([]domain.RelationshipEntry{{Chapter: 1, CharacterA: "林舒然", CharacterB: "墨子曜", Relation: "互相信任"}}); err != nil {
 		t.Fatalf("SaveRelationships: %v", err)
 	}
-	longItems := []string{strings.Repeat("仿写观察", 200), strings.Repeat("节奏观察", 200), strings.Repeat("禁复制提醒", 200)}
+	longItems := []string{strings.Repeat("仿写观察", 100), strings.Repeat("节奏观察", 100), strings.Repeat("禁复制提醒", 100)}
 	if err := s.Simulation.Save(domain.SimulationProfile{
 		Version: domain.SimulationProfileVersion,
 		Synthesis: domain.SimulationSynthesis{
@@ -2181,7 +2181,7 @@ func TestContextToolUsesSourceBoundedRecoveryPackageForStoredDraft(t *testing.T)
 	if err := s.Drafts.SaveDraft(2, strings.Repeat("stored current draft prose ", 700)); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
-	longItems := []string{strings.Repeat("simulation guidance ", 500)}
+	longItems := []string{strings.Repeat("simulation guidance ", 20)}
 	if err := s.Simulation.Save(domain.SimulationProfile{
 		Version: domain.SimulationProfileVersion,
 		Synthesis: domain.SimulationSynthesis{

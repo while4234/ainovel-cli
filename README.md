@@ -444,18 +444,20 @@ POST /api/projects/{id}/models/apply-recommendation
 
 ```text
 output/novel/meta/simulation_profile.json        # v2 portable 画像
-output/novel/meta/simulation_evidence.local.json # 本项目专用逐篇证据与来源信息
+output/novel/meta/simulation_evidence.local.json # 本项目专用逐篇证据、来源信息与 safety index
 ```
 
-`simulation_profile.json` 默认使用 `simulation_profile.v2`，只保存脱敏 feature、摘要统计、能力/健康状态和安全签名占位，不包含绝对语料目录或逐篇报告，可安全用于画像库和跨项目导入。`simulation_evidence.local.json` 保留当前分析流程仍需的来源路径、来源明细和逐篇报告，只在本项目内读取，不进入画像库或 Agent 上下文。旧 `simulation_profile.v1` 仍可直接加载；首次成功写入时会确定性投影为 v2，并把旧 reports 分流到 local evidence。缺少分析签名的旧画像明确标记为 `legacy` / `analysis_signature_unknown`，不会冒充 fresh。
+`simulation_profile.json` 默认使用 `simulation_profile.v2`，只保存脱敏 feature、support/coverage/confidence、阶段/冲突、能力/健康状态和分析签名，不包含绝对语料目录、逐篇报告、专名或标志短语，可安全用于画像库和跨项目导入。`simulation_evidence.local.json` 保留当前分析流程仍需的来源路径、结构化逐篇报告和本地 safety index，只在本项目内读取，不进入画像库或 Agent 上下文。旧 `simulation_profile.v1` 仍可直接加载；首次成功写入时会确定性投影为 v2，并把旧 reports 分流到 local evidence。缺少分析签名的旧画像明确标记为 `legacy` / `analysis_signature_unknown`，不会冒充 fresh。
 
-再次分析时，会按 `relative_path + sha256` 跳过未变化文件；如果没有新增或变更内容，会提示“画像已是最新”并且不会调用 LLM。若已有画像且出现新增或修改文章，系统会在原画像基础上继续合成。
+再次分析时，会同时比较 `relative_path + sha256` 和 source-analysis signature。内容、source prompt/schema、窗口算法或分析模型变化时只重分析受影响文章；只有 merge/reducer/selection signature 变化时复用有效 reports，只做重合成。新增、修改和删除都会更新 corpus digest；删除来源会立即使旧画像和 checkpoint 失效，空语料目录会清除画像、本地证据和 checkpoint。相同 reports 的输入顺序不影响 feature ID、support、coverage、classification 或 evidence refs。
+
+Runner 对超过 15,000 rune 的单文件使用确定性的头/中/尾三窗口，并在 report 中记录实际 coverage 和 health；非正文、疑似二创、低覆盖及局部报告不会被当作全局稳定证据。可复制专名、罕见片段和标志短语只进入本地 safety index，供后续安全扫描使用，不会成为 Writer guidance。
 
 右侧栏也可以直接按文件名搜索语料。搜索只展示前 5 个 TXT 结果；点击“下载”后，后端通过 BaiduPCS-Go 下载、再次校验文件类型，并加入当前项目的 `simulate/` 目录。长文本沿用上传流程自动按章节拆分，随后可以直接点击“分析”。大力盘没有 TXT 结果时，Windows 版本会在后台以无界面 Edge/Chrome 尝试百度智能体兜底；不会打开或抢占用户正在使用的浏览器，兜底失败时明确显示“没有找到 TXT 文件”。
 
 私有发行版内置加密的搜索/下载凭据和固定版本的 BaiduPCS-Go 安装信息。首次使用会在运行时目录自动下载并校验 BaiduPCS-Go，另一台 Windows 电脑拉取并构建本仓库后不需要复制浏览器 profile、Cookie 或手工配置下载工具。内置密文与解密材料同仓库分发，只用于私有仓库的免配置部署，并不构成对仓库读取者的安全隔离；仓库访问权限必须保持私有。
 
-也可以在同一面板导入之前生成的画像，避免重复分析同一批文章。导入接受本功能生成的 `simulation_profile.v2` portable JSON，并在兼容窗口内继续接受 v1；v1 导入画像在进入画像库前会自动脱敏投影为 v2。只导入可信来源的画像文件；导入内容会成为后续 Agent 的上下文参考。画像会以 compact 形式注入 `novel_context`，Coordinator、Architect、Writer、Editor 都能读取；各 Agent 只借鉴结构、节奏、钩子和吸引读者手法，不复制原文表达或专有设定。
+也可以在同一面板导入之前生成的画像，避免重复分析同一批文章。导入接受本功能生成的 `simulation_profile.v2` portable JSON，并在兼容窗口内继续接受 v1；v1 导入画像在进入画像库前会自动脱敏投影为 v2。两个 portable-only 画像仅在分析签名兼容时按稳定 feature identity 和带命名空间的 provenance 合并；签名不兼容，或当前项目仍绑定 local evidence 时会明确拒绝，不再做字符串拼接。只导入可信来源的画像文件；导入内容会成为后续 Agent 的上下文参考。画像会以 compact 形式注入 `novel_context`，Coordinator、Architect、Writer、Editor 都能读取；各 Agent 只借鉴结构、节奏、钩子和吸引读者手法，不复制原文表达或专有设定。
 
 ### 普通仿写与强化仿写
 

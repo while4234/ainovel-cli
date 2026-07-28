@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -112,6 +113,51 @@ func (s *SimulationStore) SavePortable(profile domain.SimulationProfileV2) error
 		return err
 	}
 	return s.io.WriteFile(simulationProfilePath, data)
+}
+
+func (s *SimulationStore) LoadLocalEvidence() (*domain.SimulationLocalEvidence, error) {
+	data, err := s.io.ReadFile(simulationEvidencePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	evidence, err := domain.UnmarshalSimulationLocalEvidence(data)
+	if err != nil {
+		return nil, err
+	}
+	return &evidence, nil
+}
+
+// SaveAnalysis installs the bound local evidence before the portable profile.
+// A torn second write is fail-closed because Load ignores evidence whose digest
+// does not match the still-current portable artifact.
+func (s *SimulationStore) SaveAnalysis(profile domain.SimulationProfileV2, evidence domain.SimulationLocalEvidence) error {
+	if evidence.ProfileDigest != profile.ProfileDigest {
+		return fmt.Errorf("simulation evidence/profile digest mismatch")
+	}
+	portableData, err := domain.MarshalSimulationPortableProfile(profile)
+	if err != nil {
+		return err
+	}
+	evidenceData, err := domain.MarshalSimulationLocalEvidence(evidence)
+	if err != nil {
+		return err
+	}
+	if err := s.io.WriteFile(simulationEvidencePath, evidenceData); err != nil {
+		return err
+	}
+	return s.io.WriteFile(simulationProfilePath, portableData)
+}
+
+func (s *SimulationStore) Clear() error {
+	for _, path := range []string{simulationMergeCheckpointPath, simulationEvidencePath, simulationProfilePath} {
+		if err := s.io.RemoveFile(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SimulationStore) LoadMergeCheckpoint() (*domain.SimulationMergeCheckpoint, error) {

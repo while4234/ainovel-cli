@@ -17,6 +17,7 @@ type Deps struct {
 	LLM                        LLMChat
 	ModelCallMaxAttempts       int
 	StructureRepairMaxAttempts int
+	ModelIdentity              string
 	Prompts                    Prompts
 }
 

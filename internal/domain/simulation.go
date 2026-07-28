@@ -41,20 +41,47 @@ type SimulationSource struct {
 }
 
 type SimulationSourceReport struct {
-	RelativePath       string   `json:"relative_path,omitempty"`
-	SHA256             string   `json:"sha256,omitempty"`
-	Fingerprint        string   `json:"fingerprint,omitempty"`
-	AnalyzedAt         string   `json:"analyzed_at,omitempty"`
-	Title              string   `json:"title,omitempty"`
-	Summary            string   `json:"summary,omitempty"`
-	StyleObservations  []string `json:"style_observations,omitempty"`
-	CommonWords        []string `json:"common_words,omitempty"`
-	PlotPatterns       []string `json:"plot_patterns,omitempty"`
-	HookPatterns       []string `json:"hook_patterns,omitempty"`
-	PacingNotes        []string `json:"pacing_notes,omitempty"`
-	ReaderAppeal       []string `json:"reader_appeal,omitempty"`
-	ReusableTechniques []string `json:"reusable_techniques,omitempty"`
-	Warnings           []string `json:"warnings,omitempty"`
+	RelativePath       string                         `json:"relative_path,omitempty"`
+	SHA256             string                         `json:"sha256,omitempty"`
+	Fingerprint        string                         `json:"fingerprint,omitempty"`
+	AnalyzedAt         string                         `json:"analyzed_at,omitempty"`
+	AnalysisSignature  string                         `json:"analysis_signature,omitempty"`
+	ContentType        string                         `json:"content_type,omitempty"`
+	Coverage           *float64                       `json:"coverage,omitempty"`
+	Health             string                         `json:"health,omitempty"`
+	Title              string                         `json:"title,omitempty"`
+	Summary            string                         `json:"summary,omitempty"`
+	Candidates         []SimulationTechniqueCandidate `json:"candidates,omitempty"`
+	SafetyMarkers      []SimulationSafetyMarker       `json:"safety_markers,omitempty"`
+	StyleObservations  []string                       `json:"style_observations,omitempty"`
+	CommonWords        []string                       `json:"common_words,omitempty"`
+	PlotPatterns       []string                       `json:"plot_patterns,omitempty"`
+	HookPatterns       []string                       `json:"hook_patterns,omitempty"`
+	PacingNotes        []string                       `json:"pacing_notes,omitempty"`
+	ReaderAppeal       []string                       `json:"reader_appeal,omitempty"`
+	ReusableTechniques []string                       `json:"reusable_techniques,omitempty"`
+	Warnings           []string                       `json:"warnings,omitempty"`
+}
+
+// SimulationTechniqueCandidate is the validated, source-local input to the
+// deterministic evidence reducer. It contains an abstract technique only;
+// source wording and proper nouns belong in SafetyMarkers.
+type SimulationTechniqueCandidate struct {
+	Dimension   string   `json:"dimension"`
+	Statement   string   `json:"statement"`
+	Phases      []string `json:"phases,omitempty"`
+	Scope       string   `json:"scope,omitempty"`
+	Confidence  float64  `json:"confidence"`
+	Tendency    string   `json:"tendency"`
+	Safety      string   `json:"safety"`
+	Contradicts []string `json:"contradicts,omitempty"`
+}
+
+// SimulationSafetyMarker is project-local audit material. Portable profiles
+// never serialize these values.
+type SimulationSafetyMarker struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
 }
 
 type SimulationMergeCheckpoint struct {
@@ -65,6 +92,7 @@ type SimulationMergeCheckpoint struct {
 	ProcessedReportCount int                        `json:"processed_report_count,omitempty"`
 	ProcessedBatchCount  int                        `json:"processed_batch_count,omitempty"`
 	Reports              []SimulationReportIdentity `json:"reports,omitempty"`
+	SynthesisSignature   string                     `json:"synthesis_signature,omitempty"`
 	RollingSynthesis     SimulationSynthesis        `json:"rolling_synthesis,omitempty"`
 }
 

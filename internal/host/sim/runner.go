@@ -29,10 +29,11 @@ const (
 )
 
 type mergeSynthesisOptions struct {
-	Call         structuredJSONCallOptions
-	Checkpoint   *domain.SimulationMergeCheckpoint
-	OnBatch      func(mergeSynthesisProgress)
-	OnCheckpoint func(mergeSynthesisCheckpoint) error
+	Call               structuredJSONCallOptions
+	Checkpoint         *domain.SimulationMergeCheckpoint
+	SynthesisSignature string
+	OnBatch            func(mergeSynthesisProgress)
+	OnCheckpoint       func(mergeSynthesisCheckpoint) error
 }
 
 type mergeSynthesisProgress struct {
@@ -70,46 +71,63 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 			}
 		}
 
-		emit(StageScan, 0, 0, "扫描 simulate 语料...", nil)
+		signatures := buildSimulationAnalysisSignatures(deps)
+		emit(StageScan, 0, 0, "扫描 simulate 语料并计算分析签名...", nil)
 		sources, err := scanSources(opts.SourceDir)
 		if err != nil {
 			emit(StageError, 0, 0, "扫描 simulate 目录失败", err)
 			return
 		}
 		if len(sources) == 0 {
-			emit(StageError, 0, 0, "simulate 目录中没有可分析的 .txt/.md/.markdown 文件", fmt.Errorf("no simulation sources"))
+			if err := deps.Store.Simulation.Clear(); err != nil {
+				emit(StageError, 0, 0, "清除空语料画像失败", err)
+				return
+			}
+			emit(StageDone, 0, 0, "simulate 目录为空，已清除画像及本地证据", nil)
 			return
 		}
 
+		portable, err := deps.Store.Simulation.LoadPortable()
+		if err != nil {
+			emit(StageError, 0, len(sources), "读取画像元数据失败", err)
+			return
+		}
 		existing, err := deps.Store.Simulation.Load()
 		if err != nil {
 			emit(StageError, 0, len(sources), "读取既有画像失败", err)
 			return
 		}
 		existing, prunedExisting := pruneProfileToScannedSources(existing, sources)
-		pending := pendingSources(existing, sources)
-		if len(pending) > 0 {
+		if prunedExisting && existing != nil {
+			existing.Synthesis = domain.SimulationSynthesis{}
+		}
+		allowLegacyReports := portable != nil && portable.Analysis.Legacy
+		pending := pendingSourcesForSignature(existing, sources, signatures.metadata.SourceAnalysisSignature, allowLegacyReports)
+		synthesisSignatureChanged := portable == nil ||
+			portable.Analysis.SynthesisSignature != signatures.metadata.SynthesisSignature ||
+			portable.Analysis.AggregationSignature != signatures.metadata.AggregationSignature
+		needsSynthesis := prunedExisting || synthesisSignatureChanged || len(pending) > 0 || profileNeedsSynthesis(existing)
+		if portable != nil && portable.Health.State != "fresh" {
+			needsSynthesis = true
+		}
+		if len(pending) > 0 || prunedExisting || synthesisSignatureChanged {
 			if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
 				emit(StageError, 0, len(sources), "清理过期画像合并断点失败", err)
 				return
 			}
 		}
+		if len(pending) == 0 && !needsSynthesis {
+			emit(StageDone, 0, len(sources), "画像已是最新，语料与分析签名均未变化", nil)
+			return
+		}
 		if len(pending) == 0 {
-			if !profileNeedsSynthesis(existing) {
-				if prunedExisting && existing != nil {
-					if err := saveFinalSimulationProfile(deps.Store.Simulation, *existing); err != nil {
-						emit(StageError, 0, len(sources), "保存语料清理后的画像失败", err)
-						return
-					}
-				}
-				if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
-					emit(StageError, 0, len(sources), "清理过期画像合并断点失败", err)
-					return
-				}
-				emit(StageDone, 0, len(sources), "画像已是最新，未发现新增或变更文章", nil)
-				return
+			reason := "仅合成签名变化，复用有效逐篇报告重合成画像..."
+			if prunedExisting {
+				reason = "检测到语料删除，旧画像已失效，正在从剩余报告重合成..."
 			}
-			emit(StageMerge, len(sources), len(sources), "逐篇分析已完成，继续合成仿写画像...", nil)
+			emit(StageMerge, len(sources), len(sources), reason, nil)
+		} else {
+			emit(StageAnalyze, 0, len(pending), fmt.Sprintf("重算计划：重分析 %d 篇，随后重合成画像", len(pending)), nil)
 		}
 
 		reports := make([]domain.SimulationSourceReport, 0, len(pending))
@@ -118,8 +136,8 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 				emit(StageError, i, len(pending), "用户取消画像分析", err)
 				return
 			}
-			emit(StageAnalyze, i+1, len(pending), fmt.Sprintf("分析仿写语料 %d/%d：%s", i+1, len(pending), source.RelativePath), nil)
-			report, err := analyzeSourceWithOptions(ctx, deps.LLM, deps.Prompts.Source, source, structuredJSONCallOptions{
+			emit(StageAnalyze, i+1, len(pending), fmt.Sprintf("分析仿写语料 %d/%d", i+1, len(pending)), nil)
+			report, err := analyzeSourceWithSignatureOptions(ctx, deps.LLM, deps.Prompts.Source, source, signatures.metadata.SourceAnalysisSignature, structuredJSONCallOptions{
 				ModelCallMaxAttempts:       deps.modelCallMaxAttempts(),
 				StructureRepairMaxAttempts: deps.structureRepairMaxAttempts(),
 				OnRetry: func(ev structuredJSONRetryEvent) {
@@ -131,8 +149,14 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 				return
 			}
 			reports = append(reports, *report)
-			profile := buildProfile(existing, opts.SourceDir, []scannedSource{source}, []domain.SimulationSourceReport{*report}, existingSynthesis(existing), time.Now())
-			if err := deps.Store.Simulation.Save(profile); err != nil {
+			profile := buildProfile(existing, opts.SourceDir, []scannedSource{source}, []domain.SimulationSourceReport{*report}, domain.SimulationSynthesis{}, time.Now())
+			if err := saveSimulationAnalysisState(
+				deps.Store.Simulation,
+				profile,
+				signatures.metadata,
+				domain.SimulationProfileHealth{State: "stale", Reasons: []string{"synthesis_pending"}},
+				time.Now(),
+			); err != nil {
 				emit(StageError, i+1, len(pending), "保存逐篇分析进度失败", err)
 				return
 			}
@@ -147,7 +171,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 			return
 		}
 		if checkpoint != nil {
-			if _, ok := validMergeCheckpoint(checkpoint, allReports); !ok {
+			if _, ok := validMergeCheckpointWithSignature(checkpoint, allReports, signatures.metadata.SynthesisSignature); !ok {
 				if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
 					emit(StageError, mergeCurrent, mergeTotal, "清理过期画像合并断点失败", err)
 					return
@@ -172,9 +196,10 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 				}
 				emit(StageMerge, progress.Current, progress.Total, msg, nil)
 			},
-			Checkpoint: checkpoint,
+			Checkpoint:         checkpoint,
+			SynthesisSignature: signatures.metadata.SynthesisSignature,
 			OnCheckpoint: func(checkpoint mergeSynthesisCheckpoint) error {
-				domainCheckpoint := buildSimulationMergeCheckpoint(allReports, maxMergePromptBytes, checkpoint, time.Now())
+				domainCheckpoint := buildSimulationMergeCheckpointWithSignature(allReports, maxMergePromptBytes, signatures.metadata.SynthesisSignature, checkpoint, time.Now())
 				if domainCheckpoint == nil {
 					return nil
 				}
@@ -186,8 +211,18 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 			return
 		}
 		profile := buildProfile(existing, opts.SourceDir, nil, nil, *synthesis, time.Now())
-		if err := saveFinalSimulationProfile(deps.Store.Simulation, profile); err != nil {
+		if err := saveSimulationAnalysisState(
+			deps.Store.Simulation,
+			profile,
+			signatures.metadata,
+			domain.SimulationProfileHealth{State: "fresh"},
+			time.Now(),
+		); err != nil {
 			emit(StageError, mergeCurrent, mergeTotal, "保存仿写画像失败", err)
+			return
+		}
+		if err := deps.Store.Simulation.ClearMergeCheckpoint(); err != nil {
+			emit(StageError, mergeCurrent, mergeTotal, "清理已完成画像合并断点失败", err)
 			return
 		}
 		emit(StageDone, len(pending), len(pending), fmt.Sprintf("仿写画像已更新：新增/变更 %d 篇，累计 %d 篇", len(pending), len(profile.Corpus.Sources)), nil)
@@ -196,7 +231,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 }
 
 func AnalyzeSource(ctx context.Context, llm LLMChat, systemPrompt string, source scannedSource) (*domain.SimulationSourceReport, error) {
-	return analyzeSourceWithOptions(ctx, llm, systemPrompt, source, structuredJSONCallOptions{})
+	return analyzeSourceWithSignatureOptions(ctx, llm, systemPrompt, source, simulationSignature(systemPrompt, "unspecified"), structuredJSONCallOptions{})
 }
 
 func (d Deps) modelCallMaxAttempts() int {
@@ -229,31 +264,40 @@ func formatStructuredJSONRetryMessage(ev structuredJSONRetryEvent) string {
 }
 
 func analyzeSourceWithOptions(ctx context.Context, llm LLMChat, systemPrompt string, source scannedSource, opts structuredJSONCallOptions) (*domain.SimulationSourceReport, error) {
+	return analyzeSourceWithSignatureOptions(ctx, llm, systemPrompt, source, simulationSignature(systemPrompt, "unspecified"), opts)
+}
+
+func analyzeSourceWithSignatureOptions(ctx context.Context, llm LLMChat, systemPrompt string, source scannedSource, analysisSignature string, opts structuredJSONCallOptions) (*domain.SimulationSourceReport, error) {
 	if strings.TrimSpace(systemPrompt) == "" {
 		return nil, fmt.Errorf("source prompt is required")
 	}
+	userPrompt, coverage := buildStructuredSourceUserPrompt(source)
 	messages := []agentcore.Message{
 		agentcore.SystemMsg(systemPrompt),
-		agentcore.UserMsg(buildSourceUserPrompt(source)),
+		agentcore.UserMsg(userPrompt),
 	}
 	report, err := runStructuredJSONCall(ctx, llm, messages, func(text string) (domain.SimulationSourceReport, error) {
 		var report domain.SimulationSourceReport
 		if err := parseJSONPayload(text, &report); err != nil {
-			return report, fmt.Errorf("parse source report %s: %w", source.RelativePath, err)
+			return report, fmt.Errorf("parse source report: %w", err)
 		}
-		if strings.TrimSpace(report.Summary) == "" {
-			return report, fmt.Errorf("source report %s: summary is required", source.RelativePath)
+		ratio := coverage.Ratio
+		report.Coverage = &ratio
+		report.Health = reportHealthForCoverage(strings.ToLower(strings.TrimSpace(report.ContentType)), coverage)
+		if err := domain.NormalizeAndValidateSimulationSourceReport(&report); err != nil {
+			return report, fmt.Errorf("source report validation: %w", err)
 		}
 		return report, nil
 	}, opts)
 	if err != nil {
-		return nil, fmt.Errorf("analyze source %s: %w", source.RelativePath, err)
+		return nil, fmt.Errorf("analyze source: %w", err)
 	}
 	now := time.Now().Format(time.RFC3339)
 	report.RelativePath = source.RelativePath
 	report.SHA256 = source.SHA256
 	report.Fingerprint = source.Fingerprint
 	report.AnalyzedAt = now
+	report.AnalysisSignature = analysisSignature
 	return &report, nil
 }
 
@@ -279,7 +323,7 @@ func mergeSynthesisBatchedWithLimit(ctx context.Context, llm LLMChat, systemProm
 	processed := 0
 	batchIndex := 0
 	total := len(compactReports)
-	if checkpoint, ok := validMergeCheckpoint(opts.Checkpoint, reports); ok {
+	if checkpoint, ok := validMergeCheckpointWithSignature(opts.Checkpoint, reports, opts.SynthesisSignature); ok {
 		synthesis = checkpoint.RollingSynthesis
 		processed = checkpoint.ProcessedReportCount
 		batchIndex = checkpoint.ProcessedBatchCount
@@ -350,33 +394,6 @@ func mergeSynthesisWithOptions(ctx context.Context, llm LLMChat, systemPrompt st
 		return nil, fmt.Errorf("merge profile: %w", err)
 	}
 	return &synthesis, nil
-}
-
-func pendingSources(existing *domain.SimulationProfile, sources []scannedSource) []scannedSource {
-	if existing == nil {
-		return sources
-	}
-	known := make(map[string]struct{}, len(existing.SourceReports))
-	for _, report := range existing.SourceReports {
-		if strings.TrimSpace(report.Summary) == "" {
-			continue
-		}
-		fingerprint := strings.TrimSpace(report.Fingerprint)
-		if fingerprint == "" && report.RelativePath != "" && report.SHA256 != "" {
-			fingerprint = domain.SimulationSourceFingerprint(report.RelativePath, report.SHA256)
-		}
-		if fingerprint != "" {
-			known[fingerprint] = struct{}{}
-		}
-	}
-	var pending []scannedSource
-	for _, source := range sources {
-		if _, ok := known[source.Fingerprint]; ok {
-			continue
-		}
-		pending = append(pending, source)
-	}
-	return pending
 }
 
 func pruneProfileToScannedSources(existing *domain.SimulationProfile, sources []scannedSource) (*domain.SimulationProfile, bool) {
@@ -450,6 +467,10 @@ func saveFinalSimulationProfile(st interface {
 }
 
 func buildSimulationMergeCheckpoint(reports []domain.SimulationSourceReport, promptLimitBytes int, checkpoint mergeSynthesisCheckpoint, now time.Time) *domain.SimulationMergeCheckpoint {
+	return buildSimulationMergeCheckpointWithSignature(reports, promptLimitBytes, "", checkpoint, now)
+}
+
+func buildSimulationMergeCheckpointWithSignature(reports []domain.SimulationSourceReport, promptLimitBytes int, synthesisSignature string, checkpoint mergeSynthesisCheckpoint, now time.Time) *domain.SimulationMergeCheckpoint {
 	if checkpoint.ProcessedReportCount <= 0 || synthesisIsEmpty(checkpoint.Synthesis) {
 		return nil
 	}
@@ -471,12 +492,17 @@ func buildSimulationMergeCheckpoint(reports []domain.SimulationSourceReport, pro
 		TotalReportCount:     total,
 		ProcessedReportCount: processed,
 		ProcessedBatchCount:  checkpoint.ProcessedBatchCount,
-		Reports:              reportIdentitiesForMerge(reports),
+		Reports:              canonicalReportIdentities(reports),
+		SynthesisSignature:   synthesisSignature,
 		RollingSynthesis:     checkpoint.Synthesis,
 	}
 }
 
 func validMergeCheckpoint(checkpoint *domain.SimulationMergeCheckpoint, reports []domain.SimulationSourceReport) (*domain.SimulationMergeCheckpoint, bool) {
+	return validMergeCheckpointWithSignature(checkpoint, reports, "")
+}
+
+func validMergeCheckpointWithSignature(checkpoint *domain.SimulationMergeCheckpoint, reports []domain.SimulationSourceReport, synthesisSignature string) (*domain.SimulationMergeCheckpoint, bool) {
 	if checkpoint == nil {
 		return nil, false
 	}
@@ -489,7 +515,10 @@ func validMergeCheckpoint(checkpoint *domain.SimulationMergeCheckpoint, reports 
 	if checkpoint.ProcessedReportCount > len(reports) {
 		return nil, false
 	}
-	if !sameReportIdentities(checkpoint.Reports, reportIdentitiesForMerge(reports)) {
+	if checkpoint.SynthesisSignature != synthesisSignature {
+		return nil, false
+	}
+	if !sameReportIdentities(checkpoint.Reports, canonicalReportIdentities(reports)) {
 		return nil, false
 	}
 	return checkpoint, true
@@ -654,17 +683,6 @@ func sortProfile(profile *domain.SimulationProfile) {
 		}
 		return profile.SourceReports[i].RelativePath < profile.SourceReports[j].RelativePath
 	})
-}
-
-func buildSourceUserPrompt(source scannedSource) string {
-	payload := map[string]any{
-		"relative_path": source.RelativePath,
-		"sha256":        source.SHA256,
-		"size_bytes":    source.SizeBytes,
-		"content":       compactSourceContent(source.content),
-	}
-	data, _ := json.MarshalIndent(payload, "", "  ")
-	return "Analyze this simulation corpus source and return only the requested JSON object.\n\n" + string(data)
 }
 
 func buildMergeUserPrompt(existing *domain.SimulationProfile, reports []domain.SimulationSourceReport) string {
@@ -883,14 +901,4 @@ func compactMergeText(text string, maxRunes int) string {
 		return text
 	}
 	return string(runes[:maxRunes]) + "...[truncated]"
-}
-
-func compactSourceContent(s string) string {
-	runes := []rune(s)
-	if len(runes) <= maxSourceRunes {
-		return s
-	}
-	head := maxSourceRunes * 3 / 4
-	tail := maxSourceRunes - head
-	return string(runes[:head]) + "\n\n[...truncated...]\n\n" + string(runes[len(runes)-tail:])
 }

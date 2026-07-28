@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `pending` `feat: make simulation analysis evidence-aware`:
+  signs source analysis and synthesis layers, records deterministic source
+  coverage/content health, aggregates stable portable features in code, binds
+  checkpoints to canonical report identities and synthesis signatures, removes
+  deleted-source evidence, and keeps proper nouns/rare phrases in a project-local
+  safety index. Domain, simulation runner, simulation store, Host simulation,
+  Web simulation, assets, tools, and affected vet checks pass. The bounded
+  full store run timed out in an unrelated existing Windows `MoveFileEx`
+  continuation test; the simulation-focused store suite passes.
 - 2026-07-28 `this commit` `feat: add portable simulation profiles`:
   introduces strict `simulation_profile.v2` portable artifacts, separates
   source paths/reports into project-local evidence, preserves v1 loading and

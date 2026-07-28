@@ -214,8 +214,9 @@ func TestRunnerPersistsAnalyzedSourcesBeforeFailureAndResumes(t *testing.T) {
 	if profile == nil || len(profile.Corpus.Sources) != 2 || len(profile.SourceReports) != 2 {
 		t.Fatalf("partial profile should persist two successful sources: %+v", profile)
 	}
-	if !synthesisIsEmpty(profile.Synthesis) {
-		t.Fatalf("partial profile should not have synthesis yet: %+v", profile.Synthesis)
+	portable, err := st.Simulation.LoadPortable()
+	if err != nil || portable == nil || portable.Health.State != "stale" {
+		t.Fatalf("partial profile health = %+v, err = %v, want stale", portable, err)
 	}
 
 	resumeLLM := &scriptedLLM{responses: []string{
@@ -263,8 +264,9 @@ func TestRunnerResumesMergeWithoutReanalyzingCompletedSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load profile: %v", err)
 	}
-	if profile == nil || len(profile.SourceReports) != 2 || !synthesisIsEmpty(profile.Synthesis) {
-		t.Fatalf("merge-failed profile should keep reports but no synthesis: %+v", profile)
+	portable, portableErr := st.Simulation.LoadPortable()
+	if profile == nil || len(profile.SourceReports) != 2 || portableErr != nil || portable.Health.State != "stale" {
+		t.Fatalf("merge-failed profile should keep stale evidence: profile=%+v portable=%+v err=%v", profile, portable, portableErr)
 	}
 
 	resumeLLM := &scriptedLLM{responses: []string{validSynthesisJSON("merge only")}}
@@ -353,6 +355,19 @@ func TestRunnerFinalizesCompletedMergeCheckpointWithoutLLM(t *testing.T) {
 		t.Fatal(err)
 	}
 	reports := reportsForScannedSources(scanned)
+	deps := Deps{Prompts: Prompts{Source: "source prompt", Merge: "merge prompt"}}
+	signatures := buildSimulationAnalysisSignatures(deps)
+	for i := range reports {
+		coverage := 1.0
+		reports[i].AnalysisSignature = signatures.metadata.SourceAnalysisSignature
+		reports[i].ContentType = "body"
+		reports[i].Coverage = &coverage
+		reports[i].Health = "complete"
+		reports[i].Candidates = []domain.SimulationTechniqueCandidate{{
+			Dimension: "style.sentence_rhythm", Statement: "alternate sentence lengths",
+			Scope: "global", Confidence: 0.8, Tendency: "stable", Safety: "guidance",
+		}}
+	}
 	synthesis := synthesisFixture("complete checkpoint")
 	profile := domain.SimulationProfile{
 		Version:       domain.SimulationProfileVersion,
@@ -361,10 +376,10 @@ func TestRunnerFinalizesCompletedMergeCheckpointWithoutLLM(t *testing.T) {
 		Corpus:        domain.SimulationCorpusManifest{SourceDir: filepath.ToSlash(sourceDir), Sources: sourcesForScannedSources(scanned)},
 		SourceReports: reports,
 	}
-	if err := st.Simulation.Save(profile); err != nil {
+	if err := saveSimulationAnalysisState(st.Simulation, profile, signatures.metadata, domain.SimulationProfileHealth{State: "stale", Reasons: []string{"synthesis_pending"}}, time.Now()); err != nil {
 		t.Fatalf("save profile: %v", err)
 	}
-	checkpoint := buildSimulationMergeCheckpoint(reports, maxMergePromptBytes, mergeSynthesisCheckpoint{
+	checkpoint := buildSimulationMergeCheckpointWithSignature(reports, maxMergePromptBytes, signatures.metadata.SynthesisSignature, mergeSynthesisCheckpoint{
 		ProcessedReportCount: len(reports),
 		TotalReportCount:     len(reports),
 		ProcessedBatchCount:  1,
@@ -378,7 +393,17 @@ func TestRunnerFinalizesCompletedMergeCheckpointWithoutLLM(t *testing.T) {
 	}
 
 	llm := &scriptedLLM{}
-	drainRun(t, st, llm, sourceDir)
+	events, err := Run(context.Background(), Deps{
+		Store: st, LLM: llm, Prompts: deps.Prompts,
+	}, Options{SourceDir: sourceDir})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for event := range events {
+		if event.Err != nil {
+			t.Fatalf("simulate errored: %v", event.Err)
+		}
+	}
 	if got := llm.calls.Load(); got != 0 {
 		t.Fatalf("LLM calls = %d, want 0 because checkpoint already completed", got)
 	}
@@ -704,6 +729,20 @@ func longReportItems(prefix string, count int, repeatedRunes int) []string {
 func validSourceReportJSON(summary string) string {
 	return fmt.Sprintf(`{
   "summary": %q,
+  "content_type": "body",
+  "candidates": [{
+    "dimension": "style.sentence_rhythm",
+    "statement": "alternate concise impact beats with medium action lines",
+    "phases": ["chapter"],
+    "scope": "global",
+    "confidence": 0.9,
+    "tendency": "stable",
+    "safety": "guidance"
+  }],
+  "safety_markers": [{
+    "kind": "proper_noun",
+    "value": "SourceOnlyName"
+  }],
   "style_observations": ["close perspective", "sensory verbs"],
   "common_words": ["door", "shadow"],
   "plot_patterns": ["scene goal turns into a sharper dilemma"],

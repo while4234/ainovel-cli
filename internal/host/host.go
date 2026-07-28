@@ -5251,11 +5251,13 @@ func (h *Host) SimulateFromDir(ctx context.Context, dir string) (<-chan sim.Even
 	h.mu.Lock()
 	cfg := h.cfg
 	h.mu.Unlock()
+	sourceProvider, sourceModel, _ := h.models.CurrentStageSelection(bootstrap.StageSourceAnalysis)
 	deps := sim.Deps{
 		Store:                      h.store,
 		LLM:                        h.models.ForStage(bootstrap.StageSourceAnalysis),
 		ModelCallMaxAttempts:       cfg.ModelAutoSwitch.EffectiveNetworkMaxAttempts(),
 		StructureRepairMaxAttempts: cfg.EffectiveStructureRepairMaxAttempts(),
+		ModelIdentity:              strings.Trim(sourceProvider+"/"+sourceModel, "/"),
 		Prompts: sim.Prompts{
 			Source: h.bundle.Prompts.SimulationSource,
 			Merge:  h.bundle.Prompts.SimulationMerge,

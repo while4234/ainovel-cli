@@ -17,6 +17,7 @@ import (
 const (
 	SimulationPortableProfileVersion   = "simulation_profile.v2"
 	SimulationLocalEvidenceVersion     = "simulation_evidence.v1"
+	SimulationSafetyIndexVersion       = "simulation_safety_index.v1"
 	MaxSimulationProfileBytes          = 4 << 20
 	MaxSimulationFeatures              = 2048
 	MaxSimulationEvidenceSources       = 10000
@@ -47,6 +48,7 @@ type SimulationAnalysisMetadata struct {
 	SourceAnalysisSignature string `json:"source_analysis_signature,omitempty"`
 	SplitterSignature       string `json:"splitter_signature,omitempty"`
 	SchemaSignature         string `json:"schema_signature,omitempty"`
+	SynthesisSignature      string `json:"synthesis_signature,omitempty"`
 	AggregationSignature    string `json:"aggregation_signature,omitempty"`
 	ModelIdentity           string `json:"model_identity,omitempty"`
 	Legacy                  bool   `json:"legacy,omitempty"`
@@ -58,6 +60,7 @@ type SimulationFeature struct {
 	Statement         string   `json:"statement"`
 	Classification    string   `json:"classification"`
 	Phases            []string `json:"phases,omitempty"`
+	Scopes            []string `json:"scopes,omitempty"`
 	Roles             []string `json:"roles,omitempty"`
 	SupportCount      int      `json:"support_count"`
 	Coverage          *float64 `json:"coverage,omitempty"`
@@ -86,6 +89,20 @@ type SimulationLocalEvidence struct {
 	SourceDir     string                   `json:"source_dir,omitempty"`
 	Sources       []SimulationSource       `json:"sources,omitempty"`
 	SourceReports []SimulationSourceReport `json:"source_reports,omitempty"`
+	SafetyIndex   *SimulationSafetyIndex   `json:"safety_index,omitempty"`
+}
+
+type SimulationSafetyIndex struct {
+	Version   string                       `json:"version"`
+	UpdatedAt string                       `json:"updated_at"`
+	Entries   []SimulationSafetyIndexEntry `json:"entries,omitempty"`
+}
+
+type SimulationSafetyIndexEntry struct {
+	ID           string   `json:"id"`
+	Kind         string   `json:"kind"`
+	Value        string   `json:"value"`
+	EvidenceRefs []string `json:"evidence_refs"`
 }
 
 func ProjectSimulationProfileV1(profile SimulationProfile) (SimulationProfileV2, SimulationLocalEvidence, error) {
@@ -187,6 +204,7 @@ func ValidateSimulationProfileV2(profile *SimulationProfileV2) error {
 		profile.Analysis.SourceAnalysisSignature,
 		profile.Analysis.SplitterSignature,
 		profile.Analysis.SchemaSignature,
+		profile.Analysis.SynthesisSignature,
 		profile.Analysis.AggregationSignature,
 		profile.Analysis.ModelIdentity,
 	} {
@@ -261,6 +279,11 @@ func ValidateSimulationLocalEvidence(evidence *SimulationLocalEvidence) error {
 	}
 	if len(evidence.Sources) > MaxSimulationEvidenceSources || len(evidence.SourceReports) > MaxSimulationEvidenceSources {
 		return fmt.Errorf("simulation local evidence exceeds item limits")
+	}
+	if evidence.SafetyIndex != nil {
+		if err := validateSimulationSafetyIndex(evidence.SafetyIndex); err != nil {
+			return err
+		}
 	}
 	sourceIDs := make(map[string]struct{}, len(evidence.Sources))
 	for i, source := range evidence.Sources {
@@ -424,7 +447,7 @@ func validateSimulationFeature(index int, feature SimulationFeature) error {
 		return fmt.Errorf("simulation feature statement contains a local path")
 	}
 	switch feature.Classification {
-	case "stable", "local", "outlier", "legacy_unknown":
+	case "stable", "local", "outlier", "contradictory", "legacy_unknown":
 	default:
 		return fmt.Errorf("simulation feature classification is invalid")
 	}
@@ -445,7 +468,7 @@ func validateSimulationFeature(index int, feature SimulationFeature) error {
 	if feature.Confidence != nil && (*feature.Confidence < 0 || *feature.Confidence > 1) {
 		return fmt.Errorf("simulation feature confidence is out of range")
 	}
-	if hasDuplicateSimulationStrings(feature.Phases) || hasDuplicateSimulationStrings(feature.Roles) ||
+	if hasDuplicateSimulationStrings(feature.Phases) || hasDuplicateSimulationStrings(feature.Scopes) || hasDuplicateSimulationStrings(feature.Roles) ||
 		hasDuplicateSimulationStrings(feature.EvidenceRefs) || hasDuplicateSimulationStrings(feature.ContradictionRefs) {
 		return fmt.Errorf("simulation feature contains duplicate entries")
 	}
@@ -461,6 +484,13 @@ func validateSimulationFeature(index int, feature SimulationFeature) error {
 		case "coordinator", "architect", "writer", "editor":
 		default:
 			return fmt.Errorf("simulation feature role is invalid")
+		}
+	}
+	for _, scope := range feature.Scopes {
+		switch scope {
+		case "global", "opening", "middle", "ending", "scene":
+		default:
+			return fmt.Errorf("simulation feature scope is invalid")
 		}
 	}
 	return nil
@@ -494,6 +524,17 @@ func validateSimulationSourceReportSize(report SimulationSourceReport) error {
 			if utf8.RuneCountInString(item) > MaxSimulationEvidenceItemRunes {
 				return fmt.Errorf("simulation local report item exceeds length limit")
 			}
+		}
+	}
+	if len(report.Candidates) > MaxSimulationCandidatesPerReport || len(report.SafetyMarkers) > MaxSimulationSafetyMarkers {
+		return fmt.Errorf("simulation local report structured evidence exceeds item limit")
+	}
+	if len(report.Candidates) > 0 {
+		copyReport := report
+		copyReport.Candidates = append([]SimulationTechniqueCandidate(nil), report.Candidates...)
+		copyReport.SafetyMarkers = append([]SimulationSafetyMarker(nil), report.SafetyMarkers...)
+		if err := NormalizeAndValidateSimulationSourceReport(&copyReport); err != nil {
+			return err
 		}
 	}
 	return nil

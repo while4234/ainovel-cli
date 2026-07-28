@@ -58,6 +58,77 @@ func TestImportPortableProfilePreservesIdentityWithoutLocalEvidence(t *testing.T
 	}
 }
 
+func TestImportMergesCompatiblePortableOnlyProfilesByFeatureIdentity(t *testing.T) {
+	dir := t.TempDir()
+	st := store.NewStore(filepath.Join(dir, "novel"))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	left, _, err := domain.ProjectSimulationProfileV1(testProfile("a.txt", strings.Repeat("a", 64), "left"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, _, err := domain.ProjectSimulationProfileV1(testProfile("b.txt", strings.Repeat("b", 64), "right"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Simulation.SavePortable(left); err != nil {
+		t.Fatal(err)
+	}
+	data, err := domain.MarshalSimulationPortableProfile(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "portable.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ImportProfile(context.Background(), Deps{Store: st}, path)
+	if err != nil {
+		t.Fatalf("ImportProfile: %v", err)
+	}
+	merged, err := st.Simulation.LoadPortable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ImportedSources != 1 || merged == nil || merged.Corpus.SourceCount != 2 ||
+		merged.Health.State != "portable_only" || merged.Capabilities.LocalEvidence {
+		t.Fatalf("merged result=%+v profile=%+v", result, merged)
+	}
+}
+
+func TestImportRejectsIncompatiblePortableProfileMerge(t *testing.T) {
+	dir := t.TempDir()
+	st := store.NewStore(filepath.Join(dir, "novel"))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	left, _, _ := domain.ProjectSimulationProfileV1(testProfile("a.txt", strings.Repeat("a", 64), "left"))
+	right, _, _ := domain.ProjectSimulationProfileV1(testProfile("b.txt", strings.Repeat("b", 64), "right"))
+	left.Analysis.AggregationSignature = "aggregation-a"
+	right.Analysis.AggregationSignature = "aggregation-b"
+	if err := domain.SetSimulationProfileDigest(&left); err != nil {
+		t.Fatal(err)
+	}
+	if err := domain.SetSimulationProfileDigest(&right); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Simulation.SavePortable(left); err != nil {
+		t.Fatal(err)
+	}
+	data, err := domain.MarshalSimulationPortableProfile(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "incompatible.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportProfile(context.Background(), Deps{Store: st}, path); err == nil || !strings.Contains(err.Error(), "incompatible") {
+		t.Fatalf("incompatible import error = %v", err)
+	}
+}
+
 func TestImportProfileValidatesSchemaAndMergesByFingerprint(t *testing.T) {
 	dir := t.TempDir()
 	st := store.NewStore(filepath.Join(dir, "output", "novel"))
