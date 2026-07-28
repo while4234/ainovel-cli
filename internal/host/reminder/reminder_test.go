@@ -289,7 +289,7 @@ func TestSubAgentGuard_PreserveDetailsMissingEvidenceRepairsBeforeCommit(t *test
 	}
 }
 
-func TestWriterStopGuardRechecksStaleDeAIBatchBeforeAdaptation(t *testing.T) {
+func TestWriterStopGuardRechecksConsistencyBeforeStaleDeAIBatch(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.Progress.Init("test", 1); err != nil {
 		t.Fatalf("init progress: %v", err)
@@ -328,10 +328,38 @@ func TestWriterStopGuardRechecksStaleDeAIBatchBeforeAdaptation(t *testing.T) {
 	if err := s.DeAI.SaveAudit(deai.Audit{Chapter: 1, DraftSHA256: store.TextSHA256("旧草稿"), Passed: true}); err != nil {
 		t.Fatalf("save stale de-AI audit: %v", err)
 	}
+	if err := s.Adaptation.SaveCheck(domain.AdaptationCheck{
+		Chapter:     1,
+		DraftSHA256: store.TextSHA256(draft),
+		Passed:      true,
+	}); err != nil {
+		t.Fatalf("save adaptation check: %v", err)
+	}
 
 	message := writerStopBlockMessage(s)
-	if !strings.Contains(message, "尚未对当前草稿完成独立去AI化阶段") || !strings.Contains(message, "check_de_ai") {
-		t.Fatalf("stale de-AI audit should be rechecked first, got %q", message)
+	if !strings.Contains(message, "check_consistency") || strings.Contains(message, "下一次响应必须直接调用一次 check_de_ai") {
+		t.Fatalf("stale draft should recheck consistency before de-AI, got %q", message)
+	}
+}
+
+func TestWriterStopGuardRequiresCurrentConsistencyBeforeDeAI(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatalf("init progress: %v", err)
+	}
+	if err := s.Progress.StartChapter(1); err != nil {
+		t.Fatalf("start chapter: %v", err)
+	}
+	draft := "两年前机场初见，今天以同事身份入局。"
+	if err := s.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("save draft: %v", err)
+	}
+
+	message := writerStopBlockMessage(s)
+	for _, want := range []string{"check_consistency", "时间、地点、POV", "不要再次调用 novel_context", "arc_beat_miss"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("consistency reminder missing %q: %q", want, message)
+		}
 	}
 }
 

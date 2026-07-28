@@ -111,6 +111,9 @@ func writerStopBlockMessage(st *store.Store) string {
 	}
 	if !st.Adaptation.Active() {
 		if content, _, contentErr := st.Drafts.LoadChapterContent(chapter); contentErr == nil {
+			if msg := writerConsistencyCheckBlockMessage(st, chapter, content); msg != "" {
+				return msg
+			}
 			if msg := writerDeAICheckBlockMessage(st, chapter, content); msg != "" {
 				return msg
 			}
@@ -153,14 +156,10 @@ func writerStopBlockMessage(st *store.Store) string {
 			chapter, wordCount, chapterPlan.TargetMinRunes, chapterPlan.TargetMaxRunes,
 		)
 	}
-	// A previously checked de-AI audit that no longer matches the draft means a
-	// prose-repair batch just changed the text. Recheck that batch before the
-	// broader factual checks so the Writer gets a tight feedback loop. A brand
-	// new draft has no audit and still follows adaptation -> de-AI order.
-	if writerDeAIAuditRefreshesFirst(st, chapter, content) {
-		return writerDeAICheckBlockMessage(st, chapter, content)
-	}
 	if msg := writerAdaptationCheckBlockMessage(st, chapter, content, *chapterPlan); msg != "" {
+		return msg
+	}
+	if msg := writerConsistencyCheckBlockMessage(st, chapter, content); msg != "" {
 		return msg
 	}
 	if msg := writerDeAICheckBlockMessage(st, chapter, content); msg != "" {
@@ -169,16 +168,19 @@ func writerStopBlockMessage(st *store.Store) string {
 	return generic
 }
 
-func writerDeAIAuditRefreshesFirst(st *store.Store, chapter int, content string) bool {
-	if st == nil || st.DeAI == nil || chapter <= 0 || content == "" {
-		return false
+func writerConsistencyCheckBlockMessage(st *store.Store, chapter int, content string) string {
+	if st == nil || chapter <= 0 || content == "" {
+		return ""
 	}
-	enabled, err := st.DeAI.Enabled()
-	if err != nil || !enabled {
-		return false
+	digest := store.TextSHA256(content)
+	checkpoint := st.Checkpoints.LatestByStep(domain.ChapterScope(chapter), "consistency_check")
+	if checkpoint != nil && checkpoint.Digest == "sha256:"+digest {
+		return ""
 	}
-	audit, err := st.DeAI.LoadAudit(chapter)
-	return err == nil && audit != nil && audit.DraftSHA256 != store.TextSHA256(content)
+	return fmt.Sprintf(
+		"第 %d 章当前草稿尚未通过一致性审核，或审核后正文已改变。章节契约与草稿已经在本轮加载；下一次响应必须直接调用一次 check_consistency，不要再次调用 novel_context、read_chapter、draft_chapter 或 check_de_ai。逐场景核对时间、地点、POV、人物、事件顺序、信息边界、不可逆结果和下一章承接；语义相似但替换了既定起源事件或地点也必须报告为 blocking arc_beat_miss。修复全部 critical/error finding 并对同一版草稿复检通过后，才能进入后续校验。",
+		chapter,
+	)
 }
 
 func writerDeAICheckBlockMessage(st *store.Store, chapter int, content string) string {
