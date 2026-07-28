@@ -25,12 +25,17 @@ const (
 )
 
 type modelSpec struct {
-	Provider string
-	Model    string
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 func (s modelSpec) ID() string {
-	return sanitizePathPart(s.Provider + "__" + s.Model)
+	id := s.Provider + "__" + s.Model
+	if s.ReasoningEffort != "" {
+		id += "__" + s.ReasoningEffort
+	}
+	return sanitizePathPart(id)
 }
 
 type benchmarkCase struct {
@@ -69,8 +74,12 @@ type attemptRecord struct {
 type options struct {
 	ProjectRoot    string
 	OutputDir      string
+	ReportDir      string
 	ConfigPath     string
 	ModelSpecs     []modelSpec
+	Suite          string
+	JudgeSpec      modelSpec
+	AllConfigured  bool
 	CallsPerModel  int
 	DryRun         bool
 	RequestTimeout time.Duration
@@ -91,11 +100,16 @@ func main() {
 
 func parseOptions() (options, error) {
 	var rawModels string
+	var rawJudge string
 	var opts options
 	flag.StringVar(&opts.ProjectRoot, "project-root", "", "AINovel project root used as benchmark evidence")
 	flag.StringVar(&opts.OutputDir, "output", "", "benchmark result directory")
+	flag.StringVar(&opts.ReportDir, "report-output", "", "optional sanitized aggregate report directory")
 	flag.StringVar(&opts.ConfigPath, "config", "", "optional config override")
+	flag.StringVar(&opts.Suite, "suite", "context-window-v1", "benchmark suite: context-window-v1, stage-quality-v1, or writing-length-ab-v1")
 	flag.StringVar(&rawModels, "models", "deepseek-yuanyu-0/deepseek-v4-pro,grok-oauth/grok-4.5", "comma-separated provider/model pairs")
+	flag.BoolVar(&opts.AllConfigured, "all-configured", false, "benchmark every provider/model pair in the loaded config")
+	flag.StringVar(&rawJudge, "judge", "", "blind judge provider/model@reasoning for stage-quality-v1")
 	flag.IntVar(&opts.CallsPerModel, "max-calls-per-model", defaultCallsPerModel, "hard attempt cap for each model")
 	flag.DurationVar(&opts.RequestTimeout, "request-timeout", 5*time.Minute, "per-request timeout")
 	flag.DurationVar(&opts.Cooldown, "cooldown", 10*time.Second, "delay after each model request")
@@ -113,7 +127,7 @@ func parseOptions() (options, error) {
 	}
 	opts.ProjectRoot = projectRoot
 	if opts.OutputDir == "" {
-		opts.OutputDir = filepath.Join(projectRoot, ".ainovel", "benchmarks", "context-window-v1")
+		opts.OutputDir = filepath.Join(projectRoot, ".ainovel", "benchmarks", opts.Suite)
 	}
 	opts.OutputDir, err = filepath.Abs(opts.OutputDir)
 	if err != nil {
@@ -125,8 +139,8 @@ func parseOptions() (options, error) {
 	if opts.Cooldown < 0 {
 		return opts, errors.New("--cooldown must not be negative")
 	}
-	if opts.Concurrency <= 0 || opts.Concurrency > 3 {
-		return opts, errors.New("--concurrency-per-model must be between 1 and 3")
+	if opts.Concurrency <= 0 || opts.Concurrency > 5 {
+		return opts, errors.New("--concurrency-per-model must be between 1 and 5")
 	}
 	if opts.StartStagger < 0 {
 		return opts, errors.New("--start-stagger must not be negative")
@@ -135,6 +149,28 @@ func parseOptions() (options, error) {
 	if err != nil {
 		return opts, err
 	}
+	if strings.TrimSpace(rawJudge) != "" {
+		judges, parseErr := parseModelSpecs(rawJudge)
+		if parseErr != nil {
+			return opts, fmt.Errorf("parse --judge: %w", parseErr)
+		}
+		if len(judges) != 1 {
+			return opts, errors.New("--judge must contain exactly one provider/model")
+		}
+		opts.JudgeSpec = judges[0]
+	}
+	switch opts.Suite {
+	case "context-window-v1":
+		if opts.AllConfigured {
+			return opts, errors.New("--all-configured is only supported by stage-quality-v1")
+		}
+	case qualityBenchmarkVersion, writingLengthABVersion:
+		if opts.JudgeSpec.Model == "" && !opts.DryRun {
+			return opts, fmt.Errorf("--judge is required for %s", opts.Suite)
+		}
+	default:
+		return opts, fmt.Errorf("unknown --suite %q", opts.Suite)
+	}
 	return opts, nil
 }
 
@@ -142,11 +178,24 @@ func parseModelSpecs(raw string) ([]modelSpec, error) {
 	parts := strings.Split(raw, ",")
 	result := make([]modelSpec, 0, len(parts))
 	for _, part := range parts {
-		provider, model, ok := strings.Cut(strings.TrimSpace(part), "/")
-		if !ok || strings.TrimSpace(provider) == "" || strings.TrimSpace(model) == "" {
-			return nil, fmt.Errorf("invalid model spec %q; want provider/model", part)
+		value := strings.TrimSpace(part)
+		reasoning := ""
+		if at := strings.LastIndex(value, "@"); at >= 0 {
+			reasoning = strings.TrimSpace(value[at+1:])
+			value = strings.TrimSpace(value[:at])
+			if reasoning == "" {
+				return nil, fmt.Errorf("invalid model spec %q; reasoning effort is empty", part)
+			}
 		}
-		result = append(result, modelSpec{Provider: strings.TrimSpace(provider), Model: strings.TrimSpace(model)})
+		provider, model, ok := strings.Cut(value, "/")
+		if !ok || strings.TrimSpace(provider) == "" || strings.TrimSpace(model) == "" {
+			return nil, fmt.Errorf("invalid model spec %q; want provider/model@reasoning", part)
+		}
+		result = append(result, modelSpec{
+			Provider:        strings.TrimSpace(provider),
+			Model:           strings.TrimSpace(model),
+			ReasoningEffort: reasoning,
+		})
 	}
 	if len(result) == 0 {
 		return nil, errors.New("at least one model is required")
@@ -155,6 +204,12 @@ func parseModelSpecs(raw string) ([]modelSpec, error) {
 }
 
 func run(ctx context.Context, opts options) error {
+	if opts.Suite == writingLengthABVersion {
+		return runWritingLengthAB(ctx, opts)
+	}
+	if opts.Suite == qualityBenchmarkVersion {
+		return runStageQuality(ctx, opts)
+	}
 	corpus, err := loadCorpus(opts.ProjectRoot)
 	if err != nil {
 		return err
@@ -345,6 +400,9 @@ func runCase(
 	callCtx, cancel := context.WithTimeout(parent, opts.RequestTimeout)
 	defer cancel()
 	callOptions := []agentcore.CallOption{agentcore.WithMaxTokens(testCase.MaxOutputTokens)}
+	if testCaseReasoning := strings.TrimSpace(spec.ReasoningEffort); testCaseReasoning != "" {
+		callOptions = append(callOptions, agentcore.WithThinking(agentcore.ThinkingLevel(testCaseReasoning)))
+	}
 	if testCase.Structured {
 		callOptions = append(callOptions, agentcore.WithJSONMode())
 	}

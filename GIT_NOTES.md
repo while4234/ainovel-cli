@@ -46,6 +46,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `current HEAD` `feat: add full-stage model quality benchmark`:
+  extends the existing context benchmark with a resumable `stage-quality-v1`
+  suite covering all eight configurable stages, reasoning-aware arbitrary/all
+  configured model selection, deterministic hard checks, blinded independent
+  judging, sanitized reports, and three separate Writer validation/tool-repair
+  diagnostics. Also adds `writing-length-ab-v1` with explicit 2600–3200,
+  4000–4500, and 5000–5500 targets, a hard minimum-length gate, and a soft
+  upper target. The final three-way run ranks Grok xhigh 90.9, Grok high 90.7,
+  and DeepSeek 75.8 overall; high wins six stages while xhigh wins writing and
+  character analysis. The length stress test ranks high 59.1, xhigh 55.1, and
+  DeepSeek 50.2 after minimum-length gating.
 - 2026-07-28 `current HEAD` `fix: reject stale de-AI recovery tasks`:
   makes persisted de-AI recovery conditional on a same-draft
   `pending_de_ai_repair`; when that payload is absent or the repair receipt is
