@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   applyAdaptationProposalSnapshot,
@@ -33,6 +34,7 @@ import {
   getSnapshotOutlineRows,
   getSnapshotOutlineStructure,
   inferCoCreateIntakeFromInitial,
+  isExportActionBusy,
   isCoCreateDecisionAnswerComplete,
   isCoCreateDecisionPayloadComplete,
   isCoCreateRequestBusy,
@@ -54,6 +56,8 @@ import {
   simulationFilesFromResponse,
   simulationProfileSummaryText
 } from './App.jsx';
+
+const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
 
 describe('project opening', () => {
   it('allows cold project restoration to finish before reporting a timeout', () => {
@@ -152,6 +156,17 @@ describe('co-create begin payload helpers', () => {
     expect(buildExportSuggestedName({ path: '', format: 'txt' }, { name: '梦中的女孩改_v2' })).toBe('梦中的女孩改_v2.txt');
     expect(buildExportSuggestedName({ path: 'draft.epub', format: 'txt' }, { name: 'Book' })).toBe('draft.txt');
     expect(buildExportSuggestedName({ path: 'bad/name:*?', format: 'epub' }, { name: 'Book' })).toBe('name___.epub');
+  });
+
+  it('keeps export available while unrelated project work is running', () => {
+    expect(isExportActionBusy({ status: 'idle' })).toBe(false);
+    expect(isExportActionBusy({ status: 'done' })).toBe(false);
+    expect(isExportActionBusy({ status: 'running' })).toBe(true);
+  });
+
+  it('uses the standard browser download path without a native file picker', () => {
+    expect(appSource).not.toContain('showSaveFilePicker');
+    expect(appSource).toContain('导出已完成章节');
   });
 
   it('sends target_total_words for normal co-create only', () => {

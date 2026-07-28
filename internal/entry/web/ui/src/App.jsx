@@ -2656,17 +2656,7 @@ export default function App() {
       return;
     }
     const suggestedName = buildExportSuggestedName(exportJob, activeProject);
-    let target;
-    try {
-      target = await chooseExportSaveTarget(suggestedName, exportJob.format);
-    } catch (err) {
-      if (isFilePickerCancel(err)) {
-        return;
-      }
-      setExportJob((previous) => ({ ...previous, status: 'error', error: err.message || '选择保存位置失败' }));
-      return;
-    }
-    setBusy(true);
+    const target = { kind: 'download', name: suggestedName };
     setExportJob((previous) => ({ ...previous, status: 'running', result: null, message: '', error: '' }));
     try {
       const data = await exportProjectDownload(activeProject.id, {
@@ -2715,8 +2705,6 @@ export default function App() {
         }
       }
       setExportJob((previous) => ({ ...previous, status: 'error', audit: report, error: err.message }));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -5176,7 +5164,7 @@ export default function App() {
           ) : sideView === 'export' ? (
             <ExportPanel
               activeProject={activeProject}
-              busy={projectBusy}
+              busy={isExportActionBusy(exportJob)}
               exportJob={exportJob}
               setExportJob={setExportJob}
               onExport={runExport}
@@ -8592,7 +8580,7 @@ function ExportPanel({ activeProject, busy, exportJob, setExportJob, onExport })
           </div>
           <button className="tool-button accent full-width" disabled={!activeProject || busy} onClick={onExport} type="button">
             <Download size={16} />
-            选择位置并导出
+            导出已完成章节
           </button>
         </div>
         {exportJob.message ? <div className="success-note">{exportJob.message}</div> : null}
@@ -12358,16 +12346,12 @@ export function buildExportSuggestedName(exportJob = {}, activeProject = {}) {
   return `${name}${ext}`;
 }
 
+export function isExportActionBusy(exportJob = {}) {
+  return exportJob.status === 'running';
+}
+
 function exportExtensionForFormat(format) {
   return String(format || '').toLowerCase() === 'epub' ? '.epub' : '.txt';
-}
-
-function exportMimeType(format) {
-  return String(format || '').toLowerCase() === 'epub' ? 'application/epub+zip' : 'text/plain';
-}
-
-function exportPickerDescription(format) {
-  return String(format || '').toLowerCase() === 'epub' ? 'EPUB book' : 'Text file';
 }
 
 function sanitizeExportSuggestedName(name) {
@@ -12377,36 +12361,8 @@ function sanitizeExportSuggestedName(name) {
     .trim();
 }
 
-async function chooseExportSaveTarget(suggestedName, format) {
-  if (typeof window === 'undefined' || typeof window.showSaveFilePicker !== 'function') {
-    return { kind: 'download', name: suggestedName };
-  }
-  const ext = exportExtensionForFormat(format);
-  const handle = await window.showSaveFilePicker({
-    suggestedName,
-    types: [{
-      description: exportPickerDescription(format),
-      accept: { [exportMimeType(format)]: [ext] }
-    }]
-  });
-  return { kind: 'picker', handle, name: handle?.name || suggestedName };
-}
-
-function isFilePickerCancel(err) {
-  return err?.name === 'AbortError';
-}
-
 async function saveExportBlob(blob, target, fallbackName) {
   const fileName = target?.name || fallbackName || 'novel.txt';
-  if (target?.kind === 'picker' && target.handle) {
-    const writable = await target.handle.createWritable();
-    try {
-      await writable.write(blob);
-    } finally {
-      await writable.close();
-    }
-    return fileName;
-  }
   triggerBrowserDownload(blob, fileName);
   return fileName;
 }

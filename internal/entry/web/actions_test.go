@@ -534,6 +534,7 @@ func TestProjectExportDownloadReturnsBytesForBrowserSave(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	fake := installFakeSession(t, server, manifest)
+	fake.snapshot = host.UISnapshot{IsRunning: true, RuntimeState: "running"}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/export/download", bytes.NewBufferString(`{"path":"browser-book","format":"txt","from":1,"to":2}`))
 	rec := httptest.NewRecorder()
@@ -559,6 +560,9 @@ func TestProjectExportDownloadReturnsBytesForBrowserSave(t *testing.T) {
 	}
 	if body := rec.Body.String(); body != "fake export" {
 		t.Fatalf("export body = %q, want fake export", body)
+	}
+	if fake.abortCalls != 0 {
+		t.Fatalf("preview export must not interrupt active writing, abort calls = %d", fake.abortCalls)
 	}
 }
 
