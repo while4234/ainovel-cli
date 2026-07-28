@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/voocel/agentcore"
 	corecontext "github.com/voocel/agentcore/context"
@@ -1412,6 +1413,18 @@ func (t *writerDraftChapterTool) Execute(ctx context.Context, args json.RawMessa
 	if chapter <= 0 {
 		return nil, fmt.Errorf("chapter is required and cannot be inferred from current writing state")
 	}
+	if writerDraftWouldOverwriteActiveDraft(t.store, chapter, raw["mode"]) {
+		existing, _ := t.store.Drafts.LoadDraft(chapter)
+		return json.Marshal(map[string]any{
+			"chapter":          chapter,
+			"written":          false,
+			"deferred_to_host": true,
+			"draft_exists":     true,
+			"draft_skipped":    true,
+			"word_count":       utf8.RuneCountInString(existing),
+			"next_step":        "A durable draft already exists for this active chapter. Do not overwrite or re-plan it after a validation error. End this turn now; Host will resume from the saved draft and continue read_chapter/check_consistency/check_de_ai/commit_chapter. A full rewrite is allowed only through an explicit rewrite or polishing queue.",
+		})
+	}
 	if err := validateWriterDraftIdentity(t.store, chapter, raw["content"]); err != nil {
 		return nil, err
 	}
@@ -1427,6 +1440,27 @@ func (t *writerDraftChapterTool) Execute(ctx context.Context, args json.RawMessa
 		return nil, fmt.Errorf("augment draft_chapter args: %w", err)
 	}
 	return t.inner.Execute(ctx, nextArgs)
+}
+
+func writerDraftWouldOverwriteActiveDraft(st *store.Store, chapter int, rawMode json.RawMessage) bool {
+	if st == nil || chapter <= 0 {
+		return false
+	}
+	var mode string
+	if json.Unmarshal(rawMode, &mode) != nil || mode != "write" {
+		return false
+	}
+	existing, err := st.Drafts.LoadDraft(chapter)
+	if err != nil || strings.TrimSpace(existing) == "" {
+		return false
+	}
+	progress, err := st.Progress.Load()
+	if err != nil || progress == nil {
+		return true
+	}
+	authorizedRewrite := slices.Contains(progress.PendingRewrites, chapter) &&
+		(progress.Flow == domain.FlowRewriting || progress.Flow == domain.FlowPolishing)
+	return !authorizedRewrite
 }
 
 func validateWriterDraftIdentity(st *store.Store, chapter int, rawContent json.RawMessage) error {

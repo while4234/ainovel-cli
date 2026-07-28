@@ -480,6 +480,89 @@ func TestWriterDraftChapterToolInfersInProgressChapter(t *testing.T) {
 	}
 }
 
+func TestWriterDraftChapterToolDefersOverwriteOfActiveDraft(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 4); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.StartChapter(3); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	const saved = "authoritative chapter three prose"
+	if err := st.Drafts.SaveDraft(3, saved); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	raw, err := newWriterDraftChapterTool(st).Execute(t.Context(), writerDraftArgs(t, map[string]any{
+		"content": "replacement prose after a validation error",
+		"mode":    "write",
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result struct {
+		DeferredToHost bool `json:"deferred_to_host"`
+		DraftExists    bool `json:"draft_exists"`
+		DraftSkipped   bool `json:"draft_skipped"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !result.DeferredToHost || !result.DraftExists || !result.DraftSkipped {
+		t.Fatalf("active draft overwrite was not deferred: %s", raw)
+	}
+	if draft, _ := st.Drafts.LoadDraft(3); draft != saved {
+		t.Fatalf("active draft was overwritten: %q", draft)
+	}
+}
+
+func TestWriterDraftChapterToolAllowsExplicitQueuedRewrite(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 1); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.MarkChapterComplete(1, 9, "", ""); err != nil {
+		t.Fatalf("MarkChapterComplete: %v", err)
+	}
+	if err := st.Drafts.SaveDraft(1, "old prose"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	progress, err := st.Progress.Load()
+	if err != nil {
+		t.Fatalf("Load progress: %v", err)
+	}
+	progress.Flow = domain.FlowRewriting
+	progress.PendingRewrites = []int{1}
+	if err := st.Progress.Save(progress); err != nil {
+		t.Fatalf("Save progress: %v", err)
+	}
+
+	raw, err := newWriterDraftChapterTool(st).Execute(t.Context(), writerDraftArgs(t, map[string]any{
+		"chapter": 1,
+		"content": "authorized replacement prose",
+		"mode":    "write",
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if result["written"] != true {
+		t.Fatalf("queued rewrite was not written: %s", raw)
+	}
+	if draft, _ := st.Drafts.LoadDraft(1); draft != "authorized replacement prose" {
+		t.Fatalf("queued rewrite did not replace draft: %q", draft)
+	}
+}
+
 func TestWriterDraftChapterToolRejectsDraftWithoutRequiredCanonicalCharacter(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
