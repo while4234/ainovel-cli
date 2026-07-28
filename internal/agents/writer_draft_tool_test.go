@@ -265,6 +265,94 @@ func TestWriterReadChapterToolBoundsPriorContinuityTail(t *testing.T) {
 	}
 }
 
+func TestWriterReadChapterToolRedirectsOlderHistoryBeforeDraft(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 50); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.StartChapter(41); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	if err := st.Drafts.SaveFinalChapter(39, "older chapter prose that must not be loaded"); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	raw, err := newWriterReadChapterTool(tools.NewReadChapterTool(st), st).Execute(
+		t.Context(),
+		json.RawMessage(`{"chapter":39,"source":"final"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Chapter                    int    `json:"chapter"`
+		ActiveChapter              int    `json:"active_chapter"`
+		ContextProfile             string `json:"context_profile"`
+		Content                    string `json:"content"`
+		ContentLoaded              bool   `json:"content_loaded"`
+		ContinuityEvidenceComplete bool   `json:"continuity_evidence_complete"`
+		DoNotRetryForMore          bool   `json:"do_not_retry_for_more"`
+		Reason                     string `json:"reason"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Chapter != 39 || payload.ActiveChapter != 41 || payload.Content != "" || payload.ContentLoaded {
+		t.Fatalf("older history was loaded instead of redirected: %+v", payload)
+	}
+	if payload.ContextProfile != "prior_history_redirect" ||
+		!payload.ContinuityEvidenceComplete ||
+		!payload.DoNotRetryForMore ||
+		payload.Reason != "older_history_is_already_in_novel_context" {
+		t.Fatalf("older history redirect is incomplete: %+v", payload)
+	}
+}
+
+func TestWriterReadChapterToolRedirectsPriorHistoryAfterDraft(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 50); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.StartChapter(41); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	if err := st.Drafts.SaveFinalChapter(40, "adjacent prior prose that must not be reloaded"); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	if err := st.Drafts.SaveDraft(41, "current draft under validation"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	raw, err := newWriterReadChapterTool(tools.NewReadChapterTool(st), st).Execute(
+		t.Context(),
+		json.RawMessage(`{"chapter":40,"source":"final"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		ContextProfile string `json:"context_profile"`
+		Content        string `json:"content"`
+		ContentLoaded  bool   `json:"content_loaded"`
+		Reason         string `json:"reason"`
+		NextAction     string `json:"next_action"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ContextProfile != "prior_history_redirect" ||
+		payload.Content != "" ||
+		payload.ContentLoaded ||
+		payload.Reason != "active_draft_is_already_available" ||
+		!strings.Contains(payload.NextAction, "current draft") {
+		t.Fatalf("post-draft prior read was not redirected: %+v", payload)
+	}
+}
+
 func TestWriterReadChapterToolInfersCurrentDraftAndSource(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

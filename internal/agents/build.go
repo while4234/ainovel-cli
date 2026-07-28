@@ -935,7 +935,7 @@ func newWriterReadChapterTool(inner agentcore.Tool, st *store.Store) agentcore.T
 
 func (t *writerReadChapterTool) Name() string { return t.inner.Name() }
 func (t *writerReadChapterTool) Description() string {
-	return t.inner.Description() + " Writer reads the active draft in full; prior chapters are continuity tails capped by the runtime because the active work package already contains previous_tail and recent summaries. A bounded prior result is complete for continuity purposes: do not repeat the read or increase max_runes; proceed to plan_chapter or draft_chapter."
+	return t.inner.Description() + " Writer reads the active draft in full. Before a draft exists, only the immediately preceding chapter may be loaded as a bounded continuity tail; older history is already represented by novel_context. After a draft exists, prior-chapter reads return a lightweight continuity redirect because validation must use the current draft."
 }
 func (t *writerReadChapterTool) Label() string {
 	if labeled, ok := t.inner.(agentcore.ToolLabeler); ok {
@@ -989,6 +989,9 @@ func (t *writerReadChapterTool) Execute(ctx context.Context, args json.RawMessag
 		}
 		raw["source"] = encodedSource
 	}
+	if redirect, ok := t.redirectPriorChapterRead(activeChapter, requestedChapter); ok {
+		return redirect, nil
+	}
 	if requestedChapter > 0 && activeChapter > 0 && requestedChapter != activeChapter {
 		var requestedMax int
 		_ = json.Unmarshal(raw["max_runes"], &requestedMax)
@@ -1023,6 +1026,38 @@ func (t *writerReadChapterTool) Execute(ctx context.Context, args json.RawMessag
 	payload["do_not_retry_for_more"] = true
 	payload["hint"] = "This bounded tail is the complete prior-chapter evidence required for continuity; novel_context already includes previous_tail and recent summaries. Do not reread this or another prior chapter and do not increase max_runes. Proceed directly to plan_chapter or draft_chapter."
 	return json.Marshal(payload)
+}
+
+func (t *writerReadChapterTool) redirectPriorChapterRead(activeChapter, requestedChapter int) (json.RawMessage, bool) {
+	if t.store == nil || activeChapter <= 0 || requestedChapter <= 0 || requestedChapter >= activeChapter {
+		return nil, false
+	}
+	draft, _ := t.store.Drafts.LoadDraft(activeChapter)
+	draftExists := strings.TrimSpace(draft) != ""
+	if !draftExists && requestedChapter == activeChapter-1 {
+		return nil, false
+	}
+	reason := "older_history_is_already_in_novel_context"
+	nextAction := "Use novel_context recent summaries and previous_tail; if exact continuity evidence is still required, read only the immediately preceding chapter once."
+	if draftExists {
+		reason = "active_draft_is_already_available"
+		nextAction = "Read and validate the current draft; do not load any prior chapter."
+	}
+	payload := map[string]any{
+		"chapter":                      requestedChapter,
+		"active_chapter":               activeChapter,
+		"context_profile":              "prior_history_redirect",
+		"content_loaded":               false,
+		"continuity_evidence_complete": true,
+		"do_not_retry_for_more":        true,
+		"reason":                       reason,
+		"next_action":                  nextAction,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
 }
 
 func attachPendingDeAIRepair(st *store.Store, chapter int, result json.RawMessage) (json.RawMessage, error) {
