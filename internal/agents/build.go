@@ -1112,7 +1112,11 @@ func (t *writerChapterInferenceTool) Execute(ctx context.Context, args json.RawM
 		return t.inner.Execute(ctx, args)
 	}
 	if hasPositiveChapter(raw["chapter"]) {
-		if err := t.validateCommitIdentity(positiveChapter(raw["chapter"])); err != nil {
+		chapter := positiveChapter(raw["chapter"])
+		if deferred, ok := t.deferPlanForExistingDraft(chapter); ok {
+			return deferred, nil
+		}
+		if err := t.validateCommitIdentity(chapter); err != nil {
 			return nil, err
 		}
 		return t.inner.Execute(ctx, args)
@@ -1120,6 +1124,9 @@ func (t *writerChapterInferenceTool) Execute(ctx context.Context, args json.RawM
 	chapter := inferWriterDraftChapter(t.store)
 	if chapter <= 0 {
 		return nil, fmt.Errorf("chapter is required and cannot be inferred from current writing state")
+	}
+	if deferred, ok := t.deferPlanForExistingDraft(chapter); ok {
+		return deferred, nil
 	}
 	encodedChapter, err := json.Marshal(chapter)
 	if err != nil {
@@ -1134,6 +1141,27 @@ func (t *writerChapterInferenceTool) Execute(ctx context.Context, args json.RawM
 		return nil, fmt.Errorf("augment %s args: %w", t.inner.Name(), err)
 	}
 	return t.inner.Execute(ctx, nextArgs)
+}
+
+func (t *writerChapterInferenceTool) deferPlanForExistingDraft(chapter int) (json.RawMessage, bool) {
+	if t == nil || t.inner == nil || t.inner.Name() != "plan_chapter" || t.store == nil || chapter <= 0 {
+		return nil, false
+	}
+	draft, err := t.store.Drafts.LoadDraft(chapter)
+	if err != nil || strings.TrimSpace(draft) == "" {
+		return nil, false
+	}
+	payload, err := json.Marshal(map[string]any{
+		"deferred_to_host": true,
+		"chapter":          chapter,
+		"draft_exists":     true,
+		"plan_skipped":     true,
+		"next_step":        "The current draft is authoritative and must not be replaced by a new plan. Host will resume its validation checkpoint.",
+	})
+	if err != nil {
+		return nil, false
+	}
+	return payload, true
 }
 
 func (t *writerChapterInferenceTool) validateCommitIdentity(chapter int) error {

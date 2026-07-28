@@ -327,6 +327,44 @@ func TestWriterChapterInferenceToolAddsActiveChapter(t *testing.T) {
 	}
 }
 
+func TestWriterPlanDefersToHostWhenAuthoritativeDraftAlreadyExists(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 3); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.StartChapter(2); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	if err := st.Drafts.SaveDraft(2, "# 已落盘正文\n\n这一版正文必须保留。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	raw, err := newWriterChapterInferenceTool(tools.NewPlanChapterTool(st), st).Execute(
+		t.Context(),
+		json.RawMessage(`{"chapter":2,"title":"错误的新计划"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		DeferredToHost bool `json:"deferred_to_host"`
+		DraftExists    bool `json:"draft_exists"`
+		PlanSkipped    bool `json:"plan_skipped"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.DeferredToHost || !payload.DraftExists || !payload.PlanSkipped {
+		t.Fatalf("existing draft was not protected: %s", raw)
+	}
+	if plan, err := st.Drafts.LoadChapterPlan(2); err != nil || plan != nil {
+		t.Fatalf("new plan crossed authoritative draft boundary: plan=%+v err=%v", plan, err)
+	}
+}
+
 func TestCoordinatorContextToolDefaultsToProgressStatus(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
