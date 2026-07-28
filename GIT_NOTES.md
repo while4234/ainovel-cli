@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `this commit` `test: add offline simulation regression baseline`:
+  adds a repository-original synthetic corpus, identity-driven fake-LLM
+  analyze-to-gate evaluator, stable JSON/human reports, explicit payload and
+  bounded-performance budgets, leakage/stale negative tests, a network-free CI
+  job, and fixture/golden/provider-eval documentation. The evaluator passes
+  9/9 invariants twice with identical normalized reports; focused Go tests and
+  vet, 362 frontend tests, and the production UI build pass. Full `go test
+  ./...` retains three unrelated existing failures in Web adaptation checkpoint
+  preservation, Writer out-of-budget reminder routing, and model-call inventory.
 - 2026-07-29 `this commit` `feat: surface simulation profile diagnostics`:
   replaces the compact snapshot profile with a bounded, redacted canonical
   diagnostics summary; exposes health, coverage, feature, contract, check,

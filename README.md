@@ -484,6 +484,15 @@ Web 画像面板只读取后端 canonical diagnostics summary，不下载完整�
 
 Web UI 的上传入口会把仿写语料保存到当前项目的 `simulate/` 目录，把导入的画像 JSON 保存到当前项目的 `profiles/imported/` 目录；小说改编上传的原文保存在当前项目的 `uploads/adaptation/` 目录。这些文件不会被写入仓库，也不会混到其他 Web 项目里。点击“分析”后，语料内容会按所选模型/provider 的正常调用路径发送给模型生成画像；不要上传没有授权处理的私人文本。
 
+### 离线仿写回归基线
+
+运行 `.\scripts\run-simulation-e2e.ps1` 可使用仓库原创合成 fixture
+离线验证 analyze → profile → contract/context → check → commit gate 全链路。
+命令同时输出人类可读摘要和 `.cache/simulation-e2e/report.json`，失败时返回
+非零退出码；不需要网络、真实模型、浏览器账号或用户目录。指标边界、
+payload 预算、fixture/golden 更新规则及可选 provider eval 的授权要求见
+[`docs/simulation-e2e.md`](docs/simulation-e2e.md)。
+
 ## 导入
 
 在 Web 的“续写”面板上传已有小说，可以按章切分，再用 LLM 反推出前提 / 角色 / 世界观 / 分层大纲 / 指南针并逐章落盘。原文会作为已完成正文建立续写基线；导入完成后不会自动开写，需依次确认 Draft、提案/分卷以及章节细纲，审核通过后才从下一章继续。流程状态会持久化，刷新页面后仍可查看、重试或继续。
