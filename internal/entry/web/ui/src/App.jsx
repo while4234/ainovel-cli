@@ -9862,7 +9862,7 @@ function ModelPanel({
 				<option key={level || 'provider-default'} value={level}>{level || '服务默认'}</option>
 			  ))}
 			</select>
-			<small>{String(customModel.model || '').toLowerCase() === 'grok-4.5' ? 'Grok 4.5 支持 low / medium / high，默认 high，不能关闭思考。' : '切换到该模型时自动使用此深度；项目或创作阶段可以单独覆盖。'}</small>
+			<small>{String(customModel.model || '').toLowerCase() === 'grok-4.5' ? 'Grok 4.5 支持 low / medium / high / xhigh，默认 high，不能关闭思考。' : '切换到该模型时自动使用此深度；项目或创作阶段可以单独覆盖。'}</small>
 		  </label>
 		) : null}
         {editorTestMessage ? (
@@ -10378,12 +10378,12 @@ function modelReasoningEffortForProvider(providers = [], providerName = '', mode
 	return String(provider?.model_reasoning_efforts?.[model] || '').trim();
 }
 
-function reasoningLevelsForModel(model = '', provider = {}) {
+export function reasoningLevelsForModel(model = '', provider = {}) {
 	const normalizedModel = String(model || '').trim().toLowerCase();
 	const providerType = String(provider?.type || '').trim().toLowerCase();
 	const providerAuth = String(provider?.auth || '').trim().toLowerCase();
 	if (normalizedModel === 'grok-4.5') {
-		return ['', 'low', 'medium', 'high'];
+		return ['', 'low', 'medium', 'high', 'xhigh'];
 	}
 	if (normalizedModel.startsWith('gpt-') || providerAuth === 'codex' || (providerType === 'openai' && normalizedModel.includes('codex'))) {
 		return ['', 'off', 'low', 'medium', 'high', 'xhigh'];

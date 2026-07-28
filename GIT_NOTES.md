@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `current HEAD` `feat: support Grok 4.5 xhigh reasoning`:
+  adds `xhigh` to the Grok 4.5 compatibility provider capability and request
+  contract, exposes it only for Grok 4.5 in model and stage reasoning selectors,
+  and updates the settings guidance. Bootstrap tests and the 20 model-add UI
+  tests pass; the production UI build passes with only the existing large-chunk
+  warning. Live chapter 12 acceptance was paused at its durable de-AI repair
+  checkpoint before the deployment restart.
 - 2026-07-28 `current HEAD` `fix: remove manuscript end annotation`:
   removes the redundant “已显示本章真正结尾” helper text while preserving
   complete-chapter rendering and completed-only previous/next chapter controls.

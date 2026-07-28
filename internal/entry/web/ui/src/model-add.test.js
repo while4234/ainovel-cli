@@ -8,10 +8,16 @@ import {
   modelAddValidationMessage,
   modelAddModeDefaults,
   modelAddSaveTarget,
-  modelOptionsForProvider
+  modelOptionsForProvider,
+  reasoningLevelsForModel
 } from './App.jsx';
 
 describe('model add helpers', () => {
+  it('offers xhigh reasoning for Grok 4.5', () => {
+    expect(reasoningLevelsForModel('grok-4.5', { type: 'grok', auth: 'grok_oauth' }))
+      .toEqual(['', 'low', 'medium', 'high', 'xhigh']);
+  });
+
   it('builds a Grok OAuth provider config without API key fields', () => {
     const state = {
       mode: 'grok_oauth',

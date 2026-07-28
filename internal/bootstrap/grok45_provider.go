@@ -33,7 +33,7 @@ func newGrokProvider(model string, cfg compat.Config) (litellm.Provider, error) 
 		Capabilities: func(_ string, caps litellm.Capabilities) litellm.Capabilities {
 			caps.Thinking.Supported = litellm.SupportYes
 			caps.Thinking.Disable = litellm.SupportNo
-			caps.Thinking.Efforts = []string{"low", "medium", "high"}
+			caps.Thinking.Efforts = []string{"low", "medium", "high", "xhigh"}
 			caps.Thinking.BudgetTokens = litellm.SupportNo
 			caps.Thinking.IncludeOutput = litellm.SupportNo
 			caps.Structured.JSONSchema = litellm.SupportYes
@@ -56,10 +56,10 @@ func mapGrok45Thinking(thinking *litellm.Thinking, _ string) (map[string]any, er
 		return nil, fmt.Errorf("grok: reasoning cannot be disabled for grok-4.5")
 	}
 	switch thinking.Effort {
-	case "low", "medium", "high":
+	case "low", "medium", "high", "xhigh":
 		return map[string]any{"reasoning_effort": thinking.Effort}, nil
 	default:
-		return nil, fmt.Errorf("grok: unsupported grok-4.5 reasoning_effort %q; use low, medium, or high", thinking.Effort)
+		return nil, fmt.Errorf("grok: unsupported grok-4.5 reasoning_effort %q; use low, medium, high, or xhigh", thinking.Effort)
 	}
 }
 

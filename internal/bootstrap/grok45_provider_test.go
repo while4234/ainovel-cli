@@ -19,6 +19,19 @@ func TestMapGrok45ThinkingHigh(t *testing.T) {
 	}
 }
 
+func TestMapGrok45ThinkingXHigh(t *testing.T) {
+	body, err := mapGrok45Thinking(&litellm.Thinking{
+		Mode:   litellm.ThinkingEnabled,
+		Effort: "xhigh",
+	}, "grok-4.5")
+	if err != nil {
+		t.Fatalf("mapGrok45Thinking: %v", err)
+	}
+	if got := body["reasoning_effort"]; got != "xhigh" {
+		t.Fatalf("reasoning_effort = %#v, want xhigh", got)
+	}
+}
+
 func TestMapGrok45ThinkingCannotDisableReasoning(t *testing.T) {
 	_, err := mapGrok45Thinking(&litellm.Thinking{Mode: litellm.ThinkingDisabled}, "grok-4.5")
 	if err == nil {
