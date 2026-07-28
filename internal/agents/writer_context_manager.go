@@ -241,14 +241,15 @@ func isPersistedWriterDraftTool(name string) bool {
 }
 
 type writerToolResultCandidate struct {
-	resultIndex    int
-	assistantIndex int
-	callID         string
-	toolName       string
-	key            string
-	alreadyCleared bool
-	isError        bool
-	resultText     string
+	resultIndex      int
+	assistantIndex   int
+	callID           string
+	toolName         string
+	key              string
+	alreadyCleared   bool
+	isError          bool
+	errorFingerprint string
+	resultText       string
 }
 
 func compactWriterPhase(
@@ -289,6 +290,9 @@ func compactWriterPhase(
 		message := out[candidate.resultIndex].(agentcore.Message)
 		message.Content = []agentcore.ContentBlock{agentcore.TextBlock(clearedMessage)}
 		message.Metadata = cloneWriterMetadata(message.Metadata)
+		if candidate.isError {
+			message.Metadata[writerToolErrorFingerprintMetadata] = writerToolErrorFingerprint(candidate.toolName, candidate.resultText)
+		}
 		message.Metadata["compacted_tool_result"] = true
 		message.Metadata["compacted_tool_name"] = candidate.toolName
 		out[candidate.resultIndex] = message
@@ -360,17 +364,23 @@ func collectWriterToolResults(msgs []agentcore.AgentMessage) []writerToolResultC
 			continue
 		}
 		candidates = append(candidates, writerToolResultCandidate{
-			resultIndex:    index,
-			assistantIndex: call.assistantIndex,
-			callID:         callID,
-			toolName:       call.toolName,
-			key:            call.key,
-			alreadyCleared: message.Metadata["compacted_tool_result"] == true,
-			isError:        message.Metadata["is_error"] == true,
-			resultText:     strings.TrimSpace(message.TextContent()),
+			resultIndex:      index,
+			assistantIndex:   call.assistantIndex,
+			callID:           callID,
+			toolName:         call.toolName,
+			key:              call.key,
+			alreadyCleared:   message.Metadata["compacted_tool_result"] == true,
+			isError:          message.Metadata["is_error"] == true,
+			errorFingerprint: writerToolErrorFingerprintFromMetadata(message.Metadata),
+			resultText:       strings.TrimSpace(message.TextContent()),
 		})
 	}
 	return candidates
+}
+
+func writerToolErrorFingerprintFromMetadata(metadata map[string]any) string {
+	fingerprint, _ := metadata[writerToolErrorFingerprintMetadata].(string)
+	return strings.TrimSpace(fingerprint)
 }
 
 func writerToolResultKey(name string, args json.RawMessage) string {
@@ -591,6 +601,7 @@ func hasMatchingToolResult(msgs []agentcore.AgentMessage, matches func(string) b
 }
 
 const writerCleanRecoveryMarker = "[Writer clean recovery]"
+const writerToolErrorFingerprintMetadata = "writer_tool_error_fingerprint"
 
 var errWriterCleanRecoveryExhausted = errors.New("writer repeated tool-contract errors after clean recovery; restart from durable state")
 
@@ -611,11 +622,19 @@ func writerCleanRecoveryState(msgs []agentcore.AgentMessage) writerCleanRecovery
 	counts := make(map[string]int)
 	total := 0
 	for _, candidate := range collectWriterToolResults(msgs) {
-		if !candidate.isError || candidate.alreadyCleared {
+		if !candidate.isError {
 			continue
 		}
 		total++
-		fingerprint := writerToolErrorFingerprint(candidate.toolName, candidate.resultText)
+		fingerprint := candidate.errorFingerprint
+		if fingerprint == "" {
+			// Legacy compacted results predate persisted error fingerprints and
+			// no longer contain enough detail to classify safely.
+			if candidate.alreadyCleared {
+				continue
+			}
+			fingerprint = writerToolErrorFingerprint(candidate.toolName, candidate.resultText)
+		}
 		counts[fingerprint]++
 		if counts[fingerprint] >= 2 {
 			return writerCleanRecoveryDecision{restart: !afterCleanRecovery, exhausted: afterCleanRecovery}

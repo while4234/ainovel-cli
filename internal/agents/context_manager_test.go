@@ -698,6 +698,94 @@ func TestWriterPhaseCleanRestartsAfterRepeatedContractError(t *testing.T) {
 	}
 }
 
+func TestWriterPhaseCountsCompactedContractErrorTowardCleanRecovery(t *testing.T) {
+	firstCallID := "compacted-consistency-error"
+	firstResult := agentcore.ToolResultMsg(
+		firstCallID,
+		[]byte(`scene_checks[0].evidence is not an exact current-draft quote of at least 8 characters`),
+		true,
+	)
+	firstResult.Metadata["compacted_tool_result"] = true
+	firstResult.Metadata[writerToolErrorFingerprintMetadata] = "check_consistency:exact_quote"
+
+	secondCallID := "current-consistency-error"
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("write chapter 12"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{
+				ID: firstCallID, Name: "check_consistency", Args: []byte(`{"chapter":12}`),
+			}),
+		}},
+		firstResult,
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{
+				ID: secondCallID, Name: "check_consistency", Args: []byte(`{"chapter":12}`),
+			}),
+		}},
+		agentcore.ToolResultMsg(
+			secondCallID,
+			[]byte(`scene_checks[1].evidence is not an exact current-draft quote of at least 8 characters`),
+			true,
+		),
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied || result.Name != "writer_clean_error_recovery" {
+		t.Fatalf("compacted and current errors did not trigger clean recovery: %+v", result)
+	}
+	if len(view) != 2 {
+		t.Fatalf("clean recovery retained polluted history: %d messages", len(view))
+	}
+}
+
+func TestWriterPhasePersistsFingerprintWhenCompactingToolError(t *testing.T) {
+	errorCallID := "old-consistency-error"
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("write chapter 12"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{
+				ID: errorCallID, Name: "check_consistency", Args: []byte(`{"chapter":12}`),
+			}),
+		}},
+		agentcore.ToolResultMsg(
+			errorCallID,
+			[]byte(`scene_checks[0].evidence is not an exact current-draft quote of at least 8 characters`),
+			true,
+		),
+	}
+	for index, toolName := range []string{"novel_context", "read_chapter"} {
+		callID := fmt.Sprintf("newer-result-%d", index)
+		messages = append(messages,
+			agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+				agentcore.ToolCallBlock(agentcore.ToolCall{
+					ID: callID, Name: toolName, Args: []byte(`{"chapter":12}`),
+				}),
+			}},
+			agentcore.ToolResultMsg(callID, []byte(`{"ok":true}`), false),
+		)
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.ForceApply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatalf("expected old error result to be compacted: %+v", result)
+	}
+	compacted := view[2].(agentcore.Message)
+	if compacted.Metadata["compacted_tool_result"] != true {
+		t.Fatalf("old error result was not compacted: %+v", compacted.Metadata)
+	}
+	if got := compacted.Metadata[writerToolErrorFingerprintMetadata]; got != "check_consistency:exact_quote" {
+		t.Fatalf("error fingerprint = %v", got)
+	}
+}
+
 func TestWriterPhaseStopsPollutedDispatchAfterCleanRecoveryAlsoFails(t *testing.T) {
 	messages := []agentcore.AgentMessage{
 		agentcore.UserMsg("write chapter 12"),

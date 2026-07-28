@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `current HEAD` `fix: retain compacted writer error fingerprints`:
+  preserves only a normalized error-family fingerprint when Writer tool results
+  are microcompacted. Repeated exact-quote and other contract errors now count
+  across context compaction, so changing array indexes cannot bypass the
+  clean-context recovery threshold. Targeted Writer-phase and full agents tests
+  pass.
 - 2026-07-28 `current HEAD` `fix: order de-AI repair validation gates`:
   corrects the contradictory `repair_de_ai_batch` receipt that told Writer to
   call `check_de_ai` even though every prose mutation invalidates the required
