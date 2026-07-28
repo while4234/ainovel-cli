@@ -54,6 +54,9 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   recovery turn now retains its newly loaded chapter contract despite older
   validation receipts, and wholly missing planned scenes can be recorded as
   blocking findings instead of entering an impossible exact-quote retry loop.
+  Each new Host Writer dispatch also replaces stale prior Writer turns while
+  retaining in-dispatch reminders, preventing old failed validation attempts
+  from crossing the provider's compiled-request byte limit.
 - 2026-07-28 `current HEAD` `fix: separate chapter word guidance from hard limits`:
   treats the dynamic per-chapter allocation and approximate book total as soft
   pacing guidance, while the saved user chapter range remains the only creation

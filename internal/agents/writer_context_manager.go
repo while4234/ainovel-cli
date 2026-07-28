@@ -28,12 +28,26 @@ func newWriterContextManager(engine *corecontext.ContextEngine, cfg corecontext.
 }
 
 func (m *writerContextManager) Project(ctx context.Context, msgs []agentcore.AgentMessage) (agentcore.ContextProjection, error) {
-	view, result, err := m.phase.Apply(ctx, msgs, msgs, corecontext.Budget{})
+	active := latestWriterDispatchTurn(msgs)
+	view, result, err := m.phase.Apply(ctx, active, active, corecontext.Budget{})
 	if err != nil {
 		return agentcore.ContextProjection{}, err
 	}
 	if !result.Applied {
-		return m.ContextEngine.Project(ctx, msgs)
+		if len(active) == len(msgs) {
+			return m.ContextEngine.Project(ctx, msgs)
+		}
+		projection, projectErr := m.ContextEngine.Project(ctx, active)
+		if projectErr != nil {
+			return agentcore.ContextProjection{}, projectErr
+		}
+		if projection.Messages == nil {
+			projection.Messages = active
+		}
+		projection.ShouldCommit = true
+		projection.CommitMessages = projection.Messages
+		logWriterPhaseRewrite("host_dispatch_boundary", msgs, projection.Messages)
+		return projection, nil
 	}
 
 	projection, err := m.ContextEngine.Project(ctx, view)
@@ -50,7 +64,8 @@ func (m *writerContextManager) Project(ctx context.Context, msgs []agentcore.Age
 }
 
 func (m *writerContextManager) RecoverOverflow(ctx context.Context, msgs []agentcore.AgentMessage, cause error) (agentcore.ContextRecoveryResult, error) {
-	view, result, err := m.phase.ForceApply(ctx, msgs, msgs, corecontext.Budget{})
+	active := latestWriterDispatchTurn(msgs)
+	view, result, err := m.phase.ForceApply(ctx, active, active, corecontext.Budget{})
 	if err != nil {
 		return agentcore.ContextRecoveryResult{}, err
 	}
@@ -70,6 +85,22 @@ func (m *writerContextManager) RecoverOverflow(ctx context.Context, msgs []agent
 		CompactedCount: countCompactedToolResults(view),
 		KeptCount:      1,
 	}, nil
+}
+
+func latestWriterDispatchTurn(msgs []agentcore.AgentMessage) []agentcore.AgentMessage {
+	for index := len(msgs) - 1; index >= 0; index-- {
+		message, ok := msgs[index].(agentcore.Message)
+		if !ok || message.Role != agentcore.RoleUser {
+			continue
+		}
+		task := strings.TrimSpace(message.TextContent())
+		for _, prefix := range []string{"写第 ", "恢复第", "重写第 ", "打磨第 "} {
+			if strings.HasPrefix(task, prefix) {
+				return msgs[index:]
+			}
+		}
+	}
+	return msgs
 }
 
 type writerValidationPhaseStrategy struct {

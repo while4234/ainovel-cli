@@ -422,6 +422,55 @@ func TestWriterPhaseKeepsFreshRecoveryContractAfterHistoricalValidation(t *testi
 	}
 }
 
+func TestWriterManagerProjectsOnlyLatestHostDispatch(t *testing.T) {
+	engine := newContextManager(contextManagerConfig{
+		ContextWindow:   96_000,
+		ReserveTokens:   12_000,
+		CommitOnProject: true,
+	})
+	manager := newWriterContextManager(engine, *writerToolResultMicrocompactConfig())
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("恢复第 1 章旧草稿"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.TextBlock(strings.Repeat("stale writer history ", 5_000)),
+		}},
+		agentcore.UserMsg("第 1 章需要重新完成一致性检查"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.TextBlock(strings.Repeat("stale reminder response ", 2_000)),
+		}},
+		agentcore.UserMsg("恢复第 1 章现有草稿（checkpoint=consistency_check）"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: "fresh-context", Name: "novel_context", Args: []byte(`{"chapter":1}`)}),
+		}},
+		agentcore.ToolResultMsg("fresh-context", []byte(`{"chapter_contract":{"scenes":["scene 1","scene 2","scene 3","scene 4"]}}`), false),
+	}
+
+	projection, err := manager.Project(t.Context(), messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !projection.ShouldCommit {
+		t.Fatal("latest Writer dispatch must replace stale session history")
+	}
+	compiled, err := compileAgentInput(toLLMMessages(t, projection.Messages), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compiled) >= 10*1024 {
+		t.Fatalf("latest dispatch still contains stale Writer history: %d bytes", len(compiled))
+	}
+	var joined strings.Builder
+	for _, item := range projection.Messages {
+		if message, ok := item.(agentcore.Message); ok {
+			joined.WriteString(message.TextContent())
+		}
+	}
+	if strings.Contains(joined.String(), "stale writer history") ||
+		!strings.Contains(joined.String(), `"scene 4"`) {
+		t.Fatalf("wrong Writer dispatch projection: %q", joined.String())
+	}
+}
+
 func TestWriterOverflowRecoveryDropsNewestNovelContext(t *testing.T) {
 	readCallID := "current-draft"
 	contextCallID := "overflowing-context"
