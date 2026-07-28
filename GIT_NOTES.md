@@ -46,7 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-28 `pending` `fix: recover writer errors and manuscript views`:
+- 2026-07-28 `current HEAD` `fix: remove manuscript end annotation`:
+  removes the redundant “已显示本章真正结尾” helper text while preserving
+  complete-chapter rendering and completed-only previous/next chapter controls.
+  The targeted manuscript test and production UI build pass. Runtime acceptance
+  reached committed chapter 11 (volume 1 complete); chapter 12 remains
+  uncommitted because both configured model backends became unavailable. The
+  rebuilt Web service is ready on port 9898, the project remains safely idle,
+  and the served production bundle no longer contains the removed annotation.
+- 2026-07-28 `2e61e8ae` `fix: recover writer errors and manuscript views`:
   replaces repeated Writer tool-contract repair loops with a clean
   durable-state context after limited self-correction, prevents failed
   validation calls from advancing phase compaction, publishes the exact legal

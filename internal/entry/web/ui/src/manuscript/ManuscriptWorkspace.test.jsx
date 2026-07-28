@@ -99,7 +99,7 @@ describe('ManuscriptWorkspace', () => {
     expect(container.textContent).toContain('已加载 140 / 140 段');
     expect(api.loadManuscriptChunk).toHaveBeenCalledWith('p', 'c1', expect.objectContaining({ cursor: 40, limit: 100 }));
     expect(container.querySelectorAll('.manuscript-prose p')).toHaveLength(140);
-    expect(container.textContent).toContain('已显示本章真正结尾');
+    expect(container.textContent).not.toContain('已显示本章真正结尾');
   });
   it('shows actionable manuscript recovery metadata in the right controls', async () => {
     api.loadManuscriptRecovery.mockResolvedValue({ recovery: { required: true, retryable: true, owners: ['manuscript_publication'] } });

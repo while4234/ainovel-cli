@@ -11,7 +11,7 @@ export function ManuscriptReader({ chapter, busy, error, onMore, onRetry, onPrev
     </div>
     <div className="manuscript-prose">{paragraphs.map((paragraph, index) => <p data-paragraph-index={index + 1} key={`${index}-${paragraph.slice(0, 20)}`}>{paragraph}</p>)}</div>
     <div className="manuscript-chapter-end" role="status">
-      <p>{paragraphs.length < totalParagraphs ? '正文仍在加载，请稍候。' : '已显示本章真正结尾。'}</p>
+      {paragraphs.length < totalParagraphs ? <p>正文仍在加载，请稍候。</p> : null}
       <div className="manuscript-chapter-navigation" aria-label="章末章节导航">
         <button type="button" className="tool-button" disabled={!onPreviousChapter || paragraphs.length < totalParagraphs} onClick={onPreviousChapter}>上一章{previousChapterLabel ? `：${previousChapterLabel}` : ''}</button>
         <button type="button" className="tool-button" disabled={!onNextChapter || paragraphs.length < totalParagraphs} onClick={onNextChapter}>下一章{nextChapterLabel ? `：${nextChapterLabel}` : ''}</button>
