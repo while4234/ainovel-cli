@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `current HEAD` `fix: reject stale de-AI recovery tasks`:
+  makes persisted de-AI recovery conditional on a same-draft
+  `pending_de_ai_repair`; when that payload is absent or the repair receipt is
+  stale, Writer is explicitly routed through `check_consistency` before
+  `check_de_ai` and may repair only from the new report. Full host-flow and
+  tools package tests pass.
 - 2026-07-28 `current HEAD` `fix: retain compacted writer error fingerprints`:
   preserves only a normalized error-family fingerprint when Writer tool results
   are microcompacted. Repeated exact-quote and other contract errors now count

@@ -160,6 +160,43 @@ func TestRepairDeAIBatchSkipsStaleEntryAndAppliesCurrentMatches(t *testing.T) {
 	}
 }
 
+func TestRepairDeAIBatchStaleAuditRequiresConsistencyBeforeDeAI(t *testing.T) {
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	content := "# 第一章\n\n" + strings.Repeat("他停住——又向前走了一步。\n", 20)
+	if err := s.Drafts.SaveDraft(1, content); err != nil {
+		t.Fatal(err)
+	}
+	recordCurrentConsistency(t, s, 1)
+	if _, err := NewCheckDeAITool(s).Execute(context.Background(), json.RawMessage(`{"chapter":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Drafts.SaveDraft(1, content+"\n草稿已经变化。"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := NewRepairDeAIBatchTool(s).Execute(context.Background(), json.RawMessage(`{
+		"chapter":1,
+		"repairs":[{"old_string":"他停住——又向前走了一步。","new_string":"他停住，片刻后才向前走。"}]
+	}`))
+	if err == nil || !errors.Is(err, errs.ErrToolPrecondition) {
+		t.Fatalf("expected stale-audit precondition, got %v", err)
+	}
+	message := err.Error()
+	consistency := strings.Index(message, "check_consistency")
+	deAI := strings.Index(message, "check_de_ai")
+	if consistency < 0 || deAI < 0 || consistency >= deAI {
+		t.Fatalf("stale-audit recovery order is unclear: %q", message)
+	}
+	for _, want := range []string{"禁止重试修订", "只有新的 check_de_ai 返回 failed 报告后"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("stale-audit recovery missing %q: %q", want, message)
+		}
+	}
+}
+
 func TestRepairDeAIBatchTreatsFullyStaleBatchAsNoOp(t *testing.T) {
 	s := store.NewStore(t.TempDir())
 	if err := s.Init(); err != nil {

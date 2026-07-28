@@ -91,7 +91,10 @@ func (t *RepairDeAIBatchTool) Execute(_ context.Context, args json.RawMessage) (
 		return nil, fmt.Errorf("load draft: %w: %w", errs.ErrStoreRead, err)
 	}
 	if content == "" || audit.DraftSHA256 != store.TextSHA256(content) {
-		return nil, fmt.Errorf("第 %d 章草稿已在上次 check_de_ai 后变化；先重新审校再修订: %w", request.Chapter, errs.ErrToolPrecondition)
+		return nil, fmt.Errorf(
+			"第 %d 章草稿已在旧审核报告后变化；旧 repair_de_ai_batch 已失效，禁止重试修订。立即对当前草稿调用 check_consistency，通过后再调用 check_de_ai；只有新的 check_de_ai 返回 failed 报告后才能再次 repair_de_ai_batch: %w",
+			request.Chapter, errs.ErrToolPrecondition,
+		)
 	}
 	if _, outside := currentWriterBudgetWindow(t.store, request.Chapter, content); outside {
 		return json.Marshal(map[string]any{
