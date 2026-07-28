@@ -102,11 +102,11 @@ const coCreateProtocolTail = `
 - <ready> 只写 true 或 false，不要写 true|false。只要当前 <draft> 已经可以直接交给创作引擎执行，或你没有必须继续追问的关键问题，就必须填 true；只有还缺少会阻塞执行的核心信息时才填 false。
 - <ready>true</ready> 时 <suggestions> 可以为空（保留空标签 <suggestions></suggestions> 即可）。`
 
-const coCreateCastJSONFieldContract = `JSON 字段必须严格使用以下白名单，不得添加 age、gender、appearance、background 等未列出的字段：
+const coCreateCastJSONFieldContract = `JSON 字段必须严格使用以下白名单，不得添加 age、appearance、background 等未列出的字段：
 - 顶层：version, mode, draft_revision, draft_hash, source_signature, adaptation_intent_hash, members, planned_relationships, source_dispositions。
 - version 必须是 JSON 数字 1；mode 只能是字符串 normal（普通原创）或 adaptation（改编），禁止使用 original、creative、adapt 等别名；draft_revision 必须是 JSON 整数。
 - member：character, importance, origin, mainline_function, source_character_ids, inclusion_rationale, no_core_relationships。
-- character：id, name, aliases, role, description, arc, traits, tier, faction, goal, motivation, conflict, voice, constraints, notes。年龄、性别、外貌、经历等信息必须写入 description 或 notes，不得自创字段。
+- character：id, name, aliases, role, gender, description, arc, traits, tier, faction, goal, motivation, conflict, voice, constraints, notes。gender 必须为 male、female、nonbinary 或 unspecified；年龄、外貌、经历等信息必须写入 description 或 notes，不得自创字段。
 - aliases、traits、constraints、source_character_ids、tags、target_character_ids 都必须是 JSON 字符串数组，哪怕只有一项也不得写成单个字符串；no_core_relationships 必须是 JSON 布尔值。
 - planned_relationship：id, source_character_id, target_character_id, type, label, direction, status, description, since, tags, constraints。
 - source_disposition：source_character_id, action, target_character_ids, rationale。

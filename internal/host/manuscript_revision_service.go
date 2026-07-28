@@ -30,11 +30,12 @@ type ManuscriptPreview struct {
 }
 
 type ManuscriptCandidateInput struct {
-	ChapterID          string                     `json:"chapter_id"`
-	Prose              string                     `json:"prose"`
-	Sidecars           map[string]json.RawMessage `json:"sidecars"`
-	AuditSignature     string                     `json:"audit_signature,omitempty"`
-	DeferContractAudit bool                       `json:"-"`
+	ChapterID                string                     `json:"chapter_id"`
+	Prose                    string                     `json:"prose"`
+	Sidecars                 map[string]json.RawMessage `json:"sidecars"`
+	AuditSignature           string                     `json:"audit_signature,omitempty"`
+	DeferContractAudit       bool                       `json:"-"`
+	PreserveSemanticSidecars bool                       `json:"-"`
 }
 
 type ManualManuscriptCandidateRequest struct {
@@ -539,9 +540,11 @@ func (s *ManuscriptRevisionService) Preview(request ManuscriptPreviewRequest, id
 	return s.PreviewContext(context.Background(), request, idempotencyKey)
 }
 
-// SubmitManualCandidate puts an author's exact prose into the same signed,
-// auditable candidate workflow as an AI revision. It never calls the writer
-// and never publishes directly.
+// SubmitManualCandidate saves an author's exact prose through the signed
+// publication transaction without asking an AI to approve the author's own
+// edit. The server still verifies the loaded formal signature, binds the
+// candidate bytes and existing semantic sidecars, records an explicit
+// author-save audit receipt, and keeps the normal rollback/history trail.
 func (s *ManuscriptRevisionService) SubmitManualCandidate(ctx context.Context, request ManualManuscriptCandidateRequest, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
 	request.ChapterID = strings.TrimSpace(request.ChapterID)
 	request.ExpectedProseSHA = strings.TrimSpace(request.ExpectedProseSHA)
@@ -570,12 +573,68 @@ func (s *ManuscriptRevisionService) SubmitManualCandidate(ctx context.Context, r
 	if err != nil {
 		return nil, err
 	}
-	return s.SubmitCandidate(preview.Runtime.RevisionID, preview.Runtime.Revision, idempotencyKey+":candidate", ManuscriptCandidateInput{
-		ChapterID:          request.ChapterID,
-		Prose:              request.Prose,
-		Sidecars:           sidecars,
-		DeferContractAudit: true,
+	candidate, err := s.SubmitCandidate(preview.Runtime.RevisionID, preview.Runtime.Revision, idempotencyKey+":candidate", ManuscriptCandidateInput{
+		ChapterID:                request.ChapterID,
+		Prose:                    request.Prose,
+		Sidecars:                 sidecars,
+		DeferContractAudit:       true,
+		PreserveSemanticSidecars: true,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return s.publishExactAuthorSave(candidate, idempotencyKey)
+}
+
+func (s *ManuscriptRevisionService) publishExactAuthorSave(runtime *domain.ManuscriptRevisionRuntime, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	if runtime == nil {
+		return nil, fmt.Errorf("manual author-save runtime is unavailable")
+	}
+	if runtime.Stage == "completed" {
+		return runtime, nil
+	}
+	if runtime.Stage == "audit_pending" {
+		if len(runtime.Candidates) != 1 {
+			return nil, fmt.Errorf("manual author save requires exactly one candidate")
+		}
+		candidate := runtime.Candidates[0]
+		candidateSignature := manuscriptCandidateSignature(candidate)
+		artifact, err := s.persistAuditArtifact(
+			*runtime,
+			candidate,
+			candidateSignature,
+			true,
+			"作者手动精确保存：服务端已核对正式稿基线签名、候选正文哈希和现有语义侧车；本次不使用 AI 决定作者文本能否发布。",
+			candidate.AdaptationCheck,
+		)
+		if err != nil {
+			return nil, err
+		}
+		candidate.AuditSignature = candidateSignature
+		candidate.AuditArtifact = artifact
+		runtime, err = s.store.ManuscriptRevisions.Mutate(
+			runtime.RevisionID,
+			runtime.Revision,
+			idempotencyKey+":author-approve",
+			"author_exact_save",
+			candidateSignature,
+			func(current *domain.ManuscriptRevisionRuntime) error {
+				if current.Stage != "audit_pending" || len(current.Candidates) != 1 {
+					return fmt.Errorf("manual author save is not expected at stage %q", current.Stage)
+				}
+				current.Candidates[0] = candidate
+				current.Stage = "ready_to_publish"
+				return nil
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if runtime.Stage != "ready_to_publish" {
+		return nil, fmt.Errorf("manual author save cannot publish from stage %q", runtime.Stage)
+	}
+	return s.Publish(runtime.RevisionID, runtime.Revision, idempotencyKey+":publish")
 }
 
 func (s *ManuscriptRevisionService) currentChapterSidecars(chapterID string) (map[string]json.RawMessage, error) {
@@ -957,6 +1016,7 @@ func (s *ManuscriptRevisionService) SubmitCandidate(revisionID string, expectedR
 		ChapterID: input.ChapterID, DisplayChapter: candidateBaseline.DisplayChapter, Prose: prose, Sidecar: sidecar,
 		BaselineSignature: domain.ContentSignature(baselinePayload), ContractSignature: domain.ContentSignature(contractPayload), ContractArtifact: contractArtifact,
 		ContractEvidence: contractEvidence, OutlineSignature: outlineSignature, ModeSignature: manuscriptModeSignature(candidateBaseline),
+		PreserveSemanticSidecars: input.PreserveSemanticSidecars,
 	}
 	if runtime.Mode == domain.RevisionModeAdaptation {
 		err = (domain.AdaptationManuscriptPolicy{}).ValidateCandidate(candidate)

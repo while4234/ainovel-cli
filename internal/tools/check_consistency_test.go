@@ -360,7 +360,8 @@ func TestCheckConsistencyIndependentAuditFindsRepeatedKnownFact(t *testing.T) {
 		result.Findings[0].Type != "continuity_repeat" {
 		t.Fatalf("independent repeat was not blocking: %s", raw)
 	}
-	if model.calls != 1 || !strings.Contains(model.userPrompt, `"recent_summaries"`) {
+	if model.calls != 1 || !strings.Contains(model.userPrompt, `"recent_summaries"`) ||
+		!strings.Contains(model.userPrompt, "json") {
 		t.Fatalf("independent reviewer did not receive recent summaries: calls=%d", model.calls)
 	}
 }

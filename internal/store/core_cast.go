@@ -208,6 +208,82 @@ func (s *CoreCastStore) SaveCAS(candidate domain.CoreCastContract, expectedRevis
 	return normalized, nil
 }
 
+// CompleteMissingGenders fills omitted structured identity metadata on an
+// already confirmed contract. Existing values cannot be changed through this
+// path. The explicit correction is re-signed and remains published.
+func (s *CoreCastStore) CompleteMissingGenders(
+	expectedRevision int64,
+	genders map[string]string,
+	foundationRevision int64,
+) (domain.CoreCastContract, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.requireCurrentUnlocked()
+	if err != nil {
+		return domain.CoreCastContract{}, err
+	}
+	if current.Revision != expectedRevision {
+		return domain.CoreCastContract{}, coreCastRevisionConflict(expectedRevision, current.Revision, current, nil)
+	}
+	if current.ConfirmedSignature != current.ContentSignature ||
+		current.PublishReceipt.Status != "published" ||
+		current.PublishReceipt.ContentSignature != current.ContentSignature {
+		return domain.CoreCastContract{}, fmt.Errorf("missing-gender correction requires a confirmed published core cast")
+	}
+	candidate := *current
+	candidate.Members = append([]domain.CoreCastMember(nil), current.Members...)
+	pending := make(map[string]string, len(genders))
+	for id, gender := range genders {
+		id = strings.TrimSpace(id)
+		gender = strings.ToLower(strings.TrimSpace(gender))
+		switch gender {
+		case "male", "female", "nonbinary", "unspecified":
+		default:
+			return domain.CoreCastContract{}, fmt.Errorf("core character %q gender %q is invalid", id, gender)
+		}
+		pending[id] = gender
+	}
+	for index := range candidate.Members {
+		candidate.Members[index].Character = domain.CloneCharacter(current.Members[index].Character)
+		character := &candidate.Members[index].Character
+		gender, ok := pending[character.ID]
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(character.Gender) != "" {
+			return domain.CoreCastContract{}, fmt.Errorf("core character %q already has gender %q; identity correction cannot overwrite it", character.ID, character.Gender)
+		}
+		character.Gender = gender
+		delete(pending, character.ID)
+	}
+	if len(pending) > 0 {
+		for id := range pending {
+			return domain.CoreCastContract{}, fmt.Errorf("core character %q does not exist", id)
+		}
+	}
+	candidate.ConfirmedSignature = ""
+	candidate.ConfirmedAt = ""
+	candidate.PublishReceipt = domain.CoreCastPublishReceipt{}
+	normalized, err := domain.NormalizeCoreCastContract(candidate)
+	if err != nil {
+		return domain.CoreCastContract{}, &CoreCastValidationError{Err: err}
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	normalized.Revision = current.Revision + 1
+	normalized.ConfirmedSignature = normalized.ContentSignature
+	normalized.ConfirmedAt = now
+	normalized.PublishReceipt = domain.CoreCastPublishReceipt{
+		Status:             "published",
+		ContentSignature:   normalized.ContentSignature,
+		FoundationRevision: foundationRevision,
+		PublishedAt:        now,
+	}
+	if err := s.io.WriteJSON(coreCastContractFile, normalized); err != nil {
+		return domain.CoreCastContract{}, fmt.Errorf("save corrected core cast contract: %w", err)
+	}
+	return normalized, nil
+}
+
 // RepairLegacyUnconfirmedSignature migrates an unconfirmed legacy draft whose
 // signature was produced by an older normalization contract. Confirmed or
 // published evidence is never repaired through this path.

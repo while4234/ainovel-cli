@@ -125,6 +125,9 @@ func characterCardMissing(
 		require("name_required", "name", character.Name, "角色姓名不能为空")
 		require("role_required", "role", character.Role, "角色身份或故事职责不能为空")
 	}
+	requireGender := func() {
+		require("gender_required", "gender", character.Gender, "非装饰角色需要明确性别，以固定称谓与代词")
+	}
 	requireInitialState := func() {
 		if !hasCharacterInitialState(character.InitialState) {
 			missing = appendCharacterCardMissing(missing, "initial_state_required", "initial_state", "需要说明故事开始时的身份、处境、情绪、资源或主要关系")
@@ -139,6 +142,7 @@ func characterCardMissing(
 	switch tier {
 	case CharacterTierCore:
 		requireIdentity()
+		requireGender()
 		require("description_required", "description", character.Description, "核心角色需要人物描述")
 		require("goal_required", "goal", character.Goal, "核心角色需要外在目标")
 		require("motivation_required", "motivation", character.Motivation, "核心角色需要内在动机")
@@ -154,6 +158,7 @@ func characterCardMissing(
 		requireRelationship(true)
 	case CharacterTierImportant:
 		requireIdentity()
+		requireGender()
 		require("description_required", "description", character.Description, "重要角色需要说明其对主线的作用")
 		require("goal_required", "goal", character.Goal, "重要角色需要独立目标")
 		require("motivation_required", "motivation", character.Motivation, "重要角色需要独立动机")
@@ -166,6 +171,7 @@ func characterCardMissing(
 		requireRelationship(false)
 	case CharacterTierSecondary:
 		requireIdentity()
+		requireGender()
 		if character.Goal == "" && character.Motivation == "" {
 			missing = appendCharacterCardMissing(missing, "goal_or_motivation_required", "goal", "次要角色至少需要一个可驱动行为的目标或动机")
 		}

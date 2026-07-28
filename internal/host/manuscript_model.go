@@ -41,8 +41,32 @@ func (h *Host) ManuscriptRevisionService() *ManuscriptRevisionService {
 		return nil
 	}
 	writer := &modelManuscriptWriter{model: h.models.ForStageWithFailover(bootstrap.StageWriting, nil), prompts: h.bundle.Prompts, store: h.store}
-	auditor := &modelManuscriptAuditor{model: h.models.ForRoleWithFailover("auditor", nil), contractLocator: h.models.ForRoleWithFailover("contract_locator", nil), contractVerifier: h.models.ForRoleWithFailover("contract_verifier", nil), adaptationLocator: h.models.ForRoleWithFailover("adaptation_locator", nil), adaptationVerifier: h.models.ForRoleWithFailover("adaptation_semantic_verifier", nil), absenceVerifier: h.models.ForRoleWithFailover("whole_document_absence_verifier", nil), prompts: h.bundle.Prompts, store: h.store}
+	reviewModel := h.models.ForStageWithFailover(bootstrap.StageReview, nil)
+	auditor := &modelManuscriptAuditor{
+		model:              manuscriptReviewRoleModel(h.models, "auditor", reviewModel),
+		contractLocator:    manuscriptReviewRoleModel(h.models, "contract_locator", reviewModel),
+		contractVerifier:   manuscriptReviewRoleModel(h.models, "contract_verifier", reviewModel),
+		adaptationLocator:  manuscriptReviewRoleModel(h.models, "adaptation_locator", reviewModel),
+		adaptationVerifier: manuscriptReviewRoleModel(h.models, "adaptation_semantic_verifier", reviewModel),
+		absenceVerifier:    manuscriptReviewRoleModel(h.models, "whole_document_absence_verifier", reviewModel),
+		prompts:            h.bundle.Prompts,
+		store:              h.store,
+	}
 	return NewManuscriptRevisionServiceWithRuntime(h.store, writer, auditor)
+}
+
+func manuscriptReviewRoleModel(
+	models *bootstrap.ModelSet,
+	role string,
+	stageFallback agentcore.ChatModel,
+) agentcore.ChatModel {
+	if models == nil {
+		return stageFallback
+	}
+	if _, _, explicit := models.CurrentSelection(role); explicit {
+		return models.ForRoleWithFailover(role, nil)
+	}
+	return stageFallback
 }
 
 func (w *modelManuscriptWriter) PlanManuscriptRevision(ctx context.Context, baseline domain.ManuscriptBaseline, instruction string, kind domain.ManuscriptInstructionKind) (ManuscriptPlan, error) {

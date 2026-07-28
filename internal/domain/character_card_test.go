@@ -69,13 +69,13 @@ func TestCharacterCardCompletenessByTierAndCoreCastDeclaration(t *testing.T) {
 	foundation := completeCharacterCardFoundation()
 	foundation.Characters = append(foundation.Characters,
 		Character{
-			ID: "important", Name: "I", Role: "investigator", Tier: "important",
+			ID: "important", Name: "I", Role: "investigator", Gender: "female", Tier: "important",
 			Description: "uncovers the main conspiracy", Goal: "find proof", Motivation: "clear a name",
 			Conflict: "the witness lies", Arc: "trusts allies", Voice: "precise",
 			InitialState: &CharacterInitialState{Situation: "isolated"},
 		},
 		Character{
-			ID: "secondary", Name: "S", Role: "courier", Tier: "secondary",
+			ID: "secondary", Name: "S", Role: "courier", Gender: "male", Tier: "secondary",
 			Goal: "pay a debt", ContrastDetails: []CharacterContrastDetail{{Surface: "careless", Depth: "observant"}},
 			InitialState: &CharacterInitialState{Emotion: "anxious"},
 		},
@@ -115,6 +115,17 @@ func TestCharacterCardCompletenessByTierAndCoreCastDeclaration(t *testing.T) {
 	if secondary.Status != CharacterCardIncomplete ||
 		!hasCharacterCardMissingCode(secondary.Missing, "goal_or_motivation_required") {
 		t.Fatalf("secondary completeness = %+v", secondary)
+	}
+
+	missingGender := CloneStoryFoundation(foundation)
+	missingGender.Characters[0].Gender = ""
+	results, err = EvaluateCharacterCardCompleteness(missingGender, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != CharacterCardIncomplete ||
+		!hasCharacterCardMissingCode(results[0].Missing, "gender_required") {
+		t.Fatalf("missing gender was not blocking: %+v", results[0])
 	}
 
 	noRelationships := completeCharacterCardFoundation()
@@ -278,7 +289,7 @@ func completeCharacterCardFoundation() StoryFoundation {
 		Revision:      7,
 		Premise:       "A guarded heir must choose a side.",
 		Characters: []Character{{
-			ID: "core", Name: "Lin", Role: "protagonist", Description: "the hidden heir",
+			ID: "core", Name: "Lin", Role: "protagonist", Gender: "female", Description: "the hidden heir",
 			Arc: "accepts responsibility", Traits: []string{"guarded"}, Tier: "core",
 			Goal: "protect the city", Motivation: "repay a debt", Conflict: "truth endangers allies",
 			Voice: "brief and dry", Constraints: []string{"will not harm children"},

@@ -46,6 +46,35 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `current HEAD` `fix: strengthen manuscript authoring safeguards`:
+  requires explicit gender for non-decorative characters, adds a narrow
+  approved-foundation repair path for legacy missing gender, preserves
+  semantic sidecars during exact author-owned prose saves, strengthens
+  continuity and de-AI checks, and refreshes the manuscript editor wording and
+  production assets. Focused Go package tests, 360 frontend tests, the
+  production UI build, and `git diff --check` pass.
+- 2026-07-28 `d3f3cb4` `fix: export completed chapters during writing`:
+  decouples preview export from the global project busy state and uses the
+  standard browser download path instead of a native picker that silently
+  aborts in automation-controlled Chrome. Running or paused projects can export
+  their completed chapter subset without interrupting Writer. Frontend and
+  backend regressions pass, the Web service was rebuilt, and live download was
+  confirmed.
+- 2026-07-28 `current HEAD` `fix: regenerate severely oversized drafts`:
+  routes drafts more than 10% above the hard safety ceiling to a fresh Writer
+  context instead of repeated segment compression. The replacement candidate
+  targets the chapter's rolling recommended range while the wider hard range
+  remains an audit-only fence. The old draft remains authoritative on rejection
+  and is saved under `drafts/backups/` before a valid atomic replacement.
+  Smaller deviations keep the quality-preserving segment path. Every completed
+  de-AI repair batch now ends its Writer turn so the Host redispatches the
+  mandatory consistency-first validation from clean context.
+- 2026-07-28 `current HEAD` `fix: bound writer continuity reads`: permits one
+  bounded adjacent-chapter read only before a new draft exists. Older history,
+  and every prior-chapter read after the active draft is saved, now returns a
+  successful lightweight redirect to existing `novel_context` or the current
+  draft instead of loading more prose. Writer tool tests and the full
+  `internal/agents` suite pass.
 - 2026-07-28 `current HEAD` `feat: add full-stage model quality benchmark`:
   extends the existing context benchmark with a resumable `stage-quality-v1`
   suite covering all eight configurable stages, reasoning-aware arbitrary/all

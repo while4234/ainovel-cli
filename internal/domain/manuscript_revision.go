@@ -261,9 +261,13 @@ type ManuscriptCandidate struct {
 	ContractEvidence  ManuscriptContentRef      `json:"contract_evidence"`
 	OutlineSignature  string                    `json:"outline_signature"`
 	ModeSignature     string                    `json:"mode_signature"`
-	AuditSignature    string                    `json:"audit_signature,omitempty"`
-	AuditArtifact     *ManuscriptAuditArtifact  `json:"audit_artifact,omitempty"`
-	AdaptationCheck   *AdaptationCheck          `json:"adaptation_check,omitempty"`
+	// PreserveSemanticSidecars marks an author-owned prose-only save. The
+	// publication transaction updates formal prose while leaving summaries,
+	// world facts, character state, and relationship ledgers untouched.
+	PreserveSemanticSidecars bool                     `json:"preserve_semantic_sidecars,omitempty"`
+	AuditSignature           string                   `json:"audit_signature,omitempty"`
+	AuditArtifact            *ManuscriptAuditArtifact `json:"audit_artifact,omitempty"`
+	AdaptationCheck          *AdaptationCheck         `json:"adaptation_check,omitempty"`
 }
 
 func (c ManuscriptCandidate) Validate() error {

@@ -416,9 +416,9 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
   const totalParagraphs = current?.total_paragraphs || loadedParagraphs;
   async function finishManualEdit() {
     setManualEditing(false);
-    setNotice('手动修改已保存为候选稿；正式稿未被覆盖，请继续独立审核和作者批准。');
+    setNotice('手动修改已保存到正式稿，并已保留修改前的历史版本。');
     await refreshVisible();
-    setProseMode('candidate');
+    setProseMode('current');
   }
   const controls = <div className="manuscript-controls" aria-label="专业稿件控制面板">
     <header className="manuscript-controls-header">

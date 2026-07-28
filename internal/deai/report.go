@@ -43,6 +43,7 @@ type Metrics struct {
 	MeanSentenceRunes      float64 `json:"mean_sentence_runes"`
 	P90SentenceRunes       int     `json:"p90_sentence_runes"`
 	MeanParagraphRunes     float64 `json:"mean_paragraph_runes"`
+	MaxShortNarrativeRun   int     `json:"max_short_narrative_run"`
 	InvalidChapterTitles   int     `json:"invalid_chapter_titles"`
 	MarkdownSubheadings    int     `json:"markdown_subheadings"`
 	EmDashes               int     `json:"em_dashes"`
@@ -99,15 +100,17 @@ type Audit struct {
 }
 
 var (
-	sentenceSplitRE  = regexp.MustCompile(`[。！？!?]+`)
-	simileRE         = regexp.MustCompile(`像一|仿佛|如同|宛如|好似`)
-	correctionRE     = regexp.MustCompile(`不是[^。！？\n]{1,28}?[，、]?(?:而)?是`)
-	abstractHedgeRE  = regexp.MustCompile(`一种|某种|说不清|道不明|不知为何|难以言说|值得注意的是`)
-	reactionRE       = regexp.MustCompile(`沉默了|没有说话|没有回答|没有接话|没有回头`)
-	tripleParallelRE = regexp.MustCompile(`(?:没有|不是|不再|无法|不能)[^。！？\n]{0,32}[，、；](?:没有|不是|不再|无法|不能)[^。！？\n]{0,32}[，、；](?:没有|不是|不再|无法|不能)`)
-	manualSpecTermRE = regexp.MustCompile(`摄像头|麦克风|传感器|分辨率|像素|焦距|镜头|型号|协议|端口|缓存|服务器|SSID|红外|帧率|码率|存储|硬盘|带宽|覆盖率|安装`)
-	manualSpecDataRE = regexp.MustCompile(`(?i)\d+(?:\.\d+)?\s*(?:mm|cm|m|gb|tb|kbps|mbps|k|p|米|分钟|小时|次|度|%|％)?`)
-	numericAnchorRE  = regexp.MustCompile(`(?:^|[^\d])(\d{3,4})(?:[^\d]|$)`)
+	sentenceSplitRE      = regexp.MustCompile(`[。！？!?]+`)
+	simileRE             = regexp.MustCompile(`像一|仿佛|如同|宛如|好似`)
+	correctionRE         = regexp.MustCompile(`不是[^。！？\n]{1,28}?[，、]?(?:而)?是`)
+	abstractHedgeRE      = regexp.MustCompile(`一种|某种|说不清|道不明|不知为何|难以言说|值得注意的是`)
+	reactionRE           = regexp.MustCompile(`沉默了|没有说话|没有回答|没有接话|没有回头`)
+	tripleParallelRE     = regexp.MustCompile(`(?:没有|不是|不再|无法|不能)[^。！？\n]{0,32}[，、；](?:没有|不是|不再|无法|不能)[^。！？\n]{0,32}[，、；](?:没有|不是|不再|无法|不能)`)
+	manualSpecTermRE     = regexp.MustCompile(`摄像头|麦克风|传感器|分辨率|像素|焦距|镜头|型号|协议|端口|缓存|服务器|SSID|红外|帧率|码率|存储|硬盘|带宽|覆盖率|安装`)
+	manualProtocolTermRE = regexp.MustCompile(`抽查|核验|应答|活动区|禁止|触碰|违规|累计|取消|加锁|执行|签收|备档|权限|时段|阈值|流程|步骤|清单|编号|批次|记录|调试`)
+	manualConfigVerbRE   = regexp.MustCompile(`采用|配备|配置|设置|设为|加装|接入|回传|保留|覆盖|安装|调试|校准`)
+	manualSpecDataRE     = regexp.MustCompile(`(?i)(?:\d+(?:\.\d+)?\s*(?:mm|cm|m|gb|tb|kbps|mbps|k|p|米|分钟|小时|秒|次|度|层|号|组|%|％)?|[零〇一二两三四五六七八九十百半]+\s*(?:米|分钟|小时|秒|次|度|层|号|组))`)
+	numericAnchorRE      = regexp.MustCompile(`(?:^|[^\d])(\d{3,4})(?:[^\d]|$)`)
 )
 
 // Analyze measures the current chapter body. The first non-empty Markdown
@@ -136,6 +139,7 @@ func Analyze(text string) Report {
 		SubjectOpeningRuns:     subjectOpeningRuns(paragraphs),
 		ManualSpecParagraphs:   manualSpecParagraphs(paragraphs),
 		MaxNumericAnchorRepeat: maxNumericAnchorRepeat(body),
+		MaxShortNarrativeRun:   maxShortNarrativeRun(paragraphs),
 	}
 	metrics.MeanSentenceRunes, metrics.P90SentenceRunes = sentenceLengths(sentences)
 	metrics.MeanParagraphRunes = paragraphMean(paragraphs)
@@ -406,34 +410,38 @@ func findingsFor(m Metrics) []Finding {
 			RepairHint: "连续四段以上以“他/她/我”起笔会形成模型式匀速铺陈；合并同一动作链，并让物件、声音、对话或动作后果接管部分段首。",
 		})
 	}
-	if m.ManualSpecParagraphs > 1 {
+	if m.ManualSpecParagraphs > 0 {
 		findings = append(findings, Finding{
 			Code:       "manual_spec_exposition",
 			Severity:   SeverityRepair,
 			Actual:     m.ManualSpecParagraphs,
-			Limit:      1,
-			RepairHint: "删除型号、尺寸、协议、覆盖率和安装步骤的清单式说明；只保留会改变人物判断、关系或危险感的一两个细节。",
+			Limit:      0,
+			RepairHint: "删除型号、尺寸、协议、覆盖率、操作时限和执行规则的清单式说明；把必要信息藏进人物受阻、误判或选择，只保留会改变关系或危险感的一两个细节。",
 		})
 	}
-	if m.MaxNumericAnchorRepeat > 8 {
+	if m.MaxNumericAnchorRepeat > 5 {
 		findings = append(findings, Finding{
 			Code:       "numeric_anchor_overuse",
 			Severity:   SeverityRepair,
 			Actual:     m.MaxNumericAnchorRepeat,
-			Limit:      8,
+			Limit:      5,
 			RepairHint: "房号等数字地点在首次建立空间关系后，改用“对门、隔壁、屋内、走廊”等自然指代；只有换场或可能混淆时才重提编号。",
 		})
 	}
-	if m.MeanParagraphRunes > 0 && m.MeanParagraphRunes < 45 {
+	if (m.MeanParagraphRunes > 0 && m.MeanParagraphRunes < 45) || m.MaxShortNarrativeRun >= 3 {
 		severity := SeverityAttention
-		if m.MeanParagraphRunes < 30 && m.Paragraphs >= 20 {
+		actual := int(m.MeanParagraphRunes + 0.5)
+		limit := 45
+		if m.MaxShortNarrativeRun >= 5 {
 			severity = SeverityRepair
+			actual = m.MaxShortNarrativeRun
+			limit = 4
 		}
 		findings = append(findings, Finding{
 			Code:       "fragmented_paragraph_rhythm",
 			Severity:   severity,
-			Actual:     int(m.MeanParagraphRunes + 0.5),
-			Limit:      45,
+			Actual:     actual,
+			Limit:      limit,
 			RepairHint: "段落过碎时，合并同一动作链中的孤立短句；保留真正的冲击、转场和对白停顿。",
 		})
 	}
@@ -483,6 +491,36 @@ func splitParagraphs(text string) []string {
 		}
 	}
 	return paragraphs
+}
+
+func maxShortNarrativeRun(paragraphs []string) int {
+	maxRun := 0
+	currentRun := 0
+	for _, paragraph := range paragraphs {
+		trimmed := strings.TrimSpace(paragraph)
+		if isDialogueParagraph(trimmed) || utf8.RuneCountInString(trimmed) > 18 {
+			currentRun = 0
+			continue
+		}
+		currentRun++
+		if currentRun > maxRun {
+			maxRun = currentRun
+		}
+	}
+	return maxRun
+}
+
+func isDialogueParagraph(paragraph string) bool {
+	if paragraph == "" {
+		return false
+	}
+	_, size := utf8.DecodeRuneInString(paragraph)
+	switch paragraph[:size] {
+	case "“", "「", "『", "‘", "\"", "'":
+		return true
+	default:
+		return false
+	}
 }
 
 func splitSentences(text string) []string {
@@ -657,8 +695,11 @@ func manualSpecParagraphs(paragraphs []string) int {
 
 func isManualSpecParagraph(paragraph string) bool {
 	terms := manualSpecTermRE.FindAllString(paragraph, -1)
+	protocolTerms := manualProtocolTermRE.FindAllString(paragraph, -1)
 	data := manualSpecDataRE.FindAllString(paragraph, -1)
-	return len(terms) >= 2 || (len(terms) >= 1 && len(data) >= 2)
+	return len(terms) >= 2 ||
+		(len(terms) >= 1 && len(data) >= 2 && manualConfigVerbRE.MatchString(paragraph)) ||
+		(len(protocolTerms) >= 3 && len(data) >= 1)
 }
 
 func maxNumericAnchorRepeat(text string) int {

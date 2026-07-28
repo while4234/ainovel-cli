@@ -233,6 +233,34 @@ func TestCharacterReviewPassIsDowngradedByCompleteness(t *testing.T) {
 	}
 }
 
+func TestCharacterReviewPassIsBlockedByMissingGender(t *testing.T) {
+	st := characterToolStore(t)
+	registry := NewCharacterRunRegistry()
+	binding := readCharacterContext(t, st, registry, "analyze-missing-gender", CharacterRunAnalyze)
+	incomplete := completeCharacterCandidate()
+	incomplete[0].Gender = ""
+	saveCharacterCandidate(t, st, registry, "analyze-missing-gender", "candidate-missing-gender", binding, incomplete)
+
+	reviewBinding := readCharacterContext(t, st, registry, "review-missing-gender", CharacterRunReview)
+	result := saveCharacterReview(t, st, registry, "review-missing-gender", "review-missing-gender-key", reviewBinding, "pass", nil)
+	if result["passed"] != false || result["final_status"] != string(domain.CharacterCardReviewNeedsRevision) {
+		t.Fatalf("missing-gender review result = %+v", result)
+	}
+	findings, ok := result["findings"].([]any)
+	if !ok {
+		t.Fatalf("missing-gender findings = %#v", result["findings"])
+	}
+	for _, item := range findings {
+		finding, _ := item.(map[string]any)
+		id, _ := finding["id"].(string)
+		if strings.HasSuffix(id, ":gender_required") &&
+			finding["blocking"] == true {
+			return
+		}
+	}
+	t.Fatalf("blocking gender finding missing: %+v", result)
+}
+
 func TestCharacterReviewRetryIsIdempotentOnlyForExactSubmission(t *testing.T) {
 	st := characterToolStore(t)
 	registry := NewCharacterRunRegistry()

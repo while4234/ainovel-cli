@@ -77,7 +77,7 @@ func TestManuscriptRevisionPublishesSignedCandidateWithoutTouchingCurrentEarly(t
 	}
 }
 
-func TestSubmitManualCandidatePreservesExactAuthorProseAndFormalDraft(t *testing.T) {
+func TestSubmitManualCandidatePublishesExactAuthorProseWithoutModelApproval(t *testing.T) {
 	st, chapterID := seedManuscriptRevisionProject(t)
 	service := NewManuscriptRevisionServiceWithAuditor(st, passingManuscriptAuditor{})
 	baseline, _, err := service.CurrentChapter(chapterID)
@@ -91,27 +91,21 @@ func TestSubmitManualCandidatePreservesExactAuthorProseAndFormalDraft(t *testing
 	if err != nil {
 		t.Fatalf("SubmitManualCandidate: %v", err)
 	}
-	if runtime.Stage != "audit_pending" || len(runtime.Candidates) != 1 {
+	if runtime.Stage != "completed" || runtime.PublicationStatus != domain.ManuscriptPublicationCompleted || len(runtime.Candidates) != 1 {
 		t.Fatalf("manual runtime = %+v", runtime)
 	}
 	payload, err := st.ManuscriptRevisions.Content().Read(runtime.Candidates[0].Prose)
 	if err != nil || string(payload) != authorProse {
 		t.Fatalf("manual candidate prose = %q err=%v", payload, err)
 	}
-	if current, _ := st.Drafts.LoadChapterText(1); current != "旧正文" {
-		t.Fatalf("manual candidate changed formal prose early: %q", current)
+	if current, _ := st.Drafts.LoadChapterText(1); current != authorProse {
+		t.Fatalf("manual author save did not publish exact prose: %q", current)
 	}
-	pendingPayload, err := st.ManuscriptRevisions.Content().Read(runtime.Candidates[0].ContractEvidence)
-	if err != nil || !strings.Contains(string(pendingPayload), `"pending_independent_audit"`) {
-		t.Fatalf("manual candidate did not defer model audit: payload=%s err=%v", pendingPayload, err)
+	if runtime.Candidates[0].AuditArtifact == nil || runtime.Candidates[0].AuditArtifact.Validate() != nil {
+		t.Fatalf("manual author save did not retain a signed receipt: %+v", runtime.Candidates[0].AuditArtifact)
 	}
-	audited, err := service.RunAudit(t.Context(), runtime.RevisionID, runtime.Revision, "manual-audit")
-	if err != nil || audited.Stage != "final_approval_pending" {
-		t.Fatalf("deferred manual audit = %+v err=%v", audited, err)
-	}
-	boundPayload, err := st.ManuscriptRevisions.Content().Read(audited.Candidates[0].ContractEvidence)
-	if err != nil || strings.Contains(string(boundPayload), `"pending_independent_audit"`) {
-		t.Fatalf("manual contract evidence was not bound during audit: payload=%s err=%v", boundPayload, err)
+	if active, err := st.ManuscriptRevisions.Active(); err != nil || active != nil {
+		t.Fatalf("manual author save left an active revision: %+v err=%v", active, err)
 	}
 }
 

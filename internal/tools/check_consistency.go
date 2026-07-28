@@ -459,7 +459,7 @@ func (t *CheckConsistencyTool) auditCrossChapterContinuity(
 		ctx,
 		[]agentcore.Message{
 			agentcore.SystemMsg(continuityAuditSystemPrompt),
-			agentcore.UserMsg(string(payload)),
+			agentcore.UserMsg("Continuity audit input json:\n" + string(payload)),
 		},
 		nil,
 		agentcore.WithMaxTokens(2200),

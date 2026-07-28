@@ -112,6 +112,26 @@ func TestAnalyzeFlagsManualLikeSpecificationBlocks(t *testing.T) {
 	}
 }
 
+func TestAnalyzeFlagsOperationalRuleRecitalAsManualLike(t *testing.T) {
+	text := `# 第十七章
+
+“远程抽查，整点与错峰各一次。应答不得超过四十秒。活动区不变，异常直接记录。”`
+	report := Analyze(text)
+	if report.Metrics.ManualSpecParagraphs != 1 || report.Passed() {
+		t.Fatalf("operational rule recital must require repair: %+v", report)
+	}
+}
+
+func TestAnalyzeDoesNotTreatNarrativeServerReferenceAsManualLike(t *testing.T) {
+	text := `# 第十六章
+
+同一时刻，公司的服务器里，一封新邮件滑进收件箱。协作方第二次催促，限时四十八小时。`
+	report := Analyze(text)
+	if report.Metrics.ManualSpecParagraphs != 0 {
+		t.Fatalf("narrative server reference was misclassified: %+v", report)
+	}
+}
+
 func TestAnalyzeMakesSevereFragmentationBlocking(t *testing.T) {
 	var paragraphs []string
 	for index := 0; index < 24; index++ {
@@ -126,10 +146,23 @@ func TestAnalyzeMakesSevereFragmentationBlocking(t *testing.T) {
 	t.Fatalf("severe fragmentation was not blocking: %+v", report.Findings)
 }
 
+func TestAnalyzeDoesNotBlockDialogueHeavyChapterByMeanLengthAlone(t *testing.T) {
+	var paragraphs []string
+	for index := 0; index < 24; index++ {
+		paragraphs = append(paragraphs, "“我知道。”", "他看了她一眼，随后移开视线。")
+	}
+	report := Analyze("# 第一章\n\n" + strings.Join(paragraphs, "\n\n"))
+	for _, finding := range report.Findings {
+		if finding.Code == "fragmented_paragraph_rhythm" && finding.Severity == SeverityRepair {
+			t.Fatalf("dialogue rhythm must not be blocked by a low global mean: %+v", finding)
+		}
+	}
+}
+
 func TestAnalyzeFlagsRepeatedRoomNumberAnchors(t *testing.T) {
-	text := "# 第四章\n\n" + strings.Repeat("他从602走到604，对照602与604的位置。\n\n", 5)
+	text := "# 第四章\n\n" + strings.Repeat("他从602走到604，对照602与604的位置。\n\n", 3)
 	report := Analyze(text)
-	if report.Metrics.MaxNumericAnchorRepeat <= 8 {
+	if report.Metrics.MaxNumericAnchorRepeat <= 5 {
 		t.Fatalf("numeric anchor repeat = %d", report.Metrics.MaxNumericAnchorRepeat)
 	}
 	for _, finding := range report.Findings {

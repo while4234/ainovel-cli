@@ -46,7 +46,7 @@ export function ManuscriptManualEditor({ projectId, selectedId, chapter, onCance
     <header className="manuscript-manual-toolbar">
       <div>
         <h3>手动编辑正文</h3>
-        <p>保存后生成候选稿，不会直接覆盖正式稿。</p>
+        <p>保存后直接更新正式稿，并保留历史版本，方便随时回看或恢复。</p>
       </div>
       <div>
         <button type="button" className="tool-button" disabled={busy} onClick={onCancel}>取消</button>

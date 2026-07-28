@@ -72,9 +72,10 @@ func TestCoCreateCastProtocolRejectsDuplicateInvalidAndOversizedCast(t *testing.
 
 func TestCoCreateCastPromptDefinesExactCharacterFieldBoundary(t *testing.T) {
 	for _, want := range []string{
-		"character：id, name, aliases, role, description, arc, traits, tier, faction, goal, motivation, conflict, voice, constraints, notes",
-		"不得添加 age、gender、appearance、background",
-		"年龄、性别、外貌、经历等信息必须写入 description 或 notes",
+		"character：id, name, aliases, role, gender, description, arc, traits, tier, faction, goal, motivation, conflict, voice, constraints, notes",
+		"不得添加 age、appearance、background",
+		"gender 必须为 male、female、nonbinary 或 unspecified",
+		"年龄、外貌、经历等信息必须写入 description 或 notes",
 		"mode 只能是字符串 normal（普通原创）或 adaptation（改编）",
 		"constraints、source_character_ids、tags、target_character_ids 都必须是 JSON 字符串数组",
 	} {

@@ -157,6 +157,9 @@ func (s *Store) validateManuscriptPublicationPlan(candidates []domain.Manuscript
 	seenStableIDs := make(map[string]struct{}, len(candidates))
 	seenChapters := make(map[int]struct{}, len(candidates))
 	for _, candidate := range candidates {
+		if err := candidate.Validate(); err != nil {
+			return fmt.Errorf("invalid manuscript publication candidate %q: %w", candidate.ChapterID, err)
+		}
 		if _, duplicate := seenStableIDs[candidate.ChapterID]; duplicate {
 			return fmt.Errorf("duplicate stable ID %q in manuscript publication plan", candidate.ChapterID)
 		}
@@ -165,6 +168,9 @@ func (s *Store) validateManuscriptPublicationPlan(candidates []domain.Manuscript
 		}
 		seenStableIDs[candidate.ChapterID] = struct{}{}
 		seenChapters[candidate.DisplayChapter] = struct{}{}
+		if candidate.PreserveSemanticSidecars {
+			continue
+		}
 		var summary domain.ChapterSummary
 		var events []string
 		var timeline []domain.TimelineEvent
@@ -248,6 +254,12 @@ func (s *Store) applyManuscriptCandidate(runtime domain.ManuscriptRevisionRuntim
 	prose, err := s.ManuscriptRevisions.Content().Read(candidate.Prose)
 	if err != nil {
 		return err
+	}
+	if candidate.PreserveSemanticSidecars {
+		if runtime.OutlinePreview != nil {
+			return fmt.Errorf("prose-only author save cannot publish an outline change")
+		}
+		return s.Drafts.writeTextForChapter(candidate.DisplayChapter, "final.md", chapterFinalRel(candidate.DisplayChapter), prose)
 	}
 	var summary domain.ChapterSummary
 	var events []string
