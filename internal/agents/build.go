@@ -654,7 +654,16 @@ func validateAgentToolRegistry(role string, actual []agentcore.Tool, required ..
 func flowBoundaryMiddleware(onBoundary FlowBoundaryHook) agentcore.ToolMiddleware {
 	return func(ctx context.Context, call agentcore.ToolCall, next agentcore.ToolExecuteFunc) (json.RawMessage, error) {
 		out, err := next(ctx, call.Args)
-		if err == nil && onBoundary != nil && isFlowBoundaryTool(call.Name) {
+		// A subagent can persist a draft/checkpoint and then fail on a later
+		// turn (max turns, context overflow, provider stream error). Recompute
+		// the Host route even on that terminal error so the Coordinator receives
+		// the durable recovery instruction before it can reuse the stale task.
+		// Other boundary tools still require success.
+		boundaryReached := err == nil && isFlowBoundaryTool(call.Name)
+		if call.Name == "subagent" {
+			boundaryReached = true
+		}
+		if onBoundary != nil && boundaryReached {
 			onBoundary(call.Name)
 		}
 		return out, err
