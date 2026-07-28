@@ -55,6 +55,10 @@ type Metrics struct {
 	ReactionTemplates      int     `json:"reaction_templates"`
 	TripleParallelPatterns int     `json:"triple_parallel_patterns"`
 	RepeatedOpeningChains  int     `json:"repeated_opening_chains"`
+	AdjacentContradictions int     `json:"adjacent_contradictions"`
+	SubjectOpeningRuns     int     `json:"subject_opening_runs"`
+	ManualSpecParagraphs   int     `json:"manual_spec_paragraphs"`
+	MaxNumericAnchorRepeat int     `json:"max_numeric_anchor_repeat"`
 }
 
 // Report is the deterministic output of one post-draft pass.
@@ -101,6 +105,9 @@ var (
 	abstractHedgeRE  = regexp.MustCompile(`一种|某种|说不清|道不明|不知为何|难以言说|值得注意的是`)
 	reactionRE       = regexp.MustCompile(`沉默了|没有说话|没有回答|没有接话|没有回头`)
 	tripleParallelRE = regexp.MustCompile(`(?:没有|不是|不再|无法|不能)[^。！？\n]{0,32}[，、；](?:没有|不是|不再|无法|不能)[^。！？\n]{0,32}[，、；](?:没有|不是|不再|无法|不能)`)
+	manualSpecTermRE = regexp.MustCompile(`摄像头|麦克风|传感器|分辨率|像素|焦距|镜头|型号|协议|端口|缓存|服务器|SSID|红外|帧率|码率|存储|硬盘|带宽|覆盖率|安装`)
+	manualSpecDataRE = regexp.MustCompile(`(?i)\d+(?:\.\d+)?\s*(?:mm|cm|m|gb|tb|kbps|mbps|k|p|米|分钟|小时|次|度|%|％)?`)
+	numericAnchorRE  = regexp.MustCompile(`(?:^|[^\d])(\d{3,4})(?:[^\d]|$)`)
 )
 
 // Analyze measures the current chapter body. The first non-empty Markdown
@@ -125,6 +132,10 @@ func Analyze(text string) Report {
 		TripleParallelPatterns: countMatches(tripleParallelRE, body),
 		ThenParagraphOpeners:   countThenOpeners(paragraphs),
 		RepeatedOpeningChains:  repeatedOpeningChains(sentences),
+		AdjacentContradictions: adjacentContradictions(sentences),
+		SubjectOpeningRuns:     subjectOpeningRuns(paragraphs),
+		ManualSpecParagraphs:   manualSpecParagraphs(paragraphs),
+		MaxNumericAnchorRepeat: maxNumericAnchorRepeat(body),
 	}
 	metrics.MeanSentenceRunes, metrics.P90SentenceRunes = sentenceLengths(sentences)
 	metrics.MeanParagraphRunes = paragraphMean(paragraphs)
@@ -196,10 +207,26 @@ func findingExamples(code, text string) []string {
 			}
 		}
 	case "repeated_sentence_opening":
-		for _, sentence := range splitSentences(text) {
-			if openingKey(sentence) != "" {
-				examples = append(examples, truncateExample(sentence))
+		examples = repeatedOpeningChainExamples(splitSentences(text))
+	case "adjacent_contradiction":
+		sentences := splitSentences(text)
+		for index := 0; index+1 < len(sentences); index++ {
+			if oppositeAssertion(sentences[index], sentences[index+1]) {
+				examples = append(examples, truncateExample(sentences[index]+"。"+sentences[index+1]+"。"))
 			}
+		}
+	case "subject_opening_run":
+		examples = subjectOpeningRunExamples(splitParagraphs(text))
+	case "manual_spec_exposition":
+		for _, paragraph := range splitParagraphs(text) {
+			if isManualSpecParagraph(paragraph) {
+				examples = append(examples, truncateExample(paragraph))
+			}
+		}
+	case "numeric_anchor_overuse":
+		anchor, _ := dominantNumericAnchor(text)
+		if anchor != "" {
+			examples = examplesAroundLiteral(text, anchor)
 		}
 	}
 	return uniqueExamples(examples)
@@ -352,19 +379,59 @@ func findingsFor(m Metrics) []Finding {
 			RepairHint: "不要用“沉默了/没有回答”替代反应；为关键停顿换成带关系、目的或身体状态的具体行为。",
 		})
 	}
-	if m.RepeatedOpeningChains > 1 {
+	if m.RepeatedOpeningChains > 0 {
 		findings = append(findings, Finding{
 			Code:       "repeated_sentence_opening",
 			Severity:   SeverityRepair,
 			Actual:     m.RepeatedOpeningChains,
-			Limit:      1,
+			Limit:      0,
 			RepairHint: "拆开连续同起手句；改变观察焦点和句法，而不是只替换一个形容词。",
 		})
 	}
+	if m.AdjacentContradictions > 0 {
+		findings = append(findings, Finding{
+			Code:       "adjacent_contradiction",
+			Severity:   SeverityRepair,
+			Actual:     m.AdjacentContradictions,
+			Limit:      0,
+			RepairHint: "相邻句对同一事实作出肯定与否定时，保留符合人物当下认知的一句；若要表现转念，必须写出触发转变的新证据。",
+		})
+	}
+	if m.SubjectOpeningRuns > 0 {
+		findings = append(findings, Finding{
+			Code:       "subject_opening_run",
+			Severity:   SeverityRepair,
+			Actual:     m.SubjectOpeningRuns,
+			Limit:      0,
+			RepairHint: "连续四段以上以“他/她/我”起笔会形成模型式匀速铺陈；合并同一动作链，并让物件、声音、对话或动作后果接管部分段首。",
+		})
+	}
+	if m.ManualSpecParagraphs > 1 {
+		findings = append(findings, Finding{
+			Code:       "manual_spec_exposition",
+			Severity:   SeverityRepair,
+			Actual:     m.ManualSpecParagraphs,
+			Limit:      1,
+			RepairHint: "删除型号、尺寸、协议、覆盖率和安装步骤的清单式说明；只保留会改变人物判断、关系或危险感的一两个细节。",
+		})
+	}
+	if m.MaxNumericAnchorRepeat > 8 {
+		findings = append(findings, Finding{
+			Code:       "numeric_anchor_overuse",
+			Severity:   SeverityRepair,
+			Actual:     m.MaxNumericAnchorRepeat,
+			Limit:      8,
+			RepairHint: "房号等数字地点在首次建立空间关系后，改用“对门、隔壁、屋内、走廊”等自然指代；只有换场或可能混淆时才重提编号。",
+		})
+	}
 	if m.MeanParagraphRunes > 0 && m.MeanParagraphRunes < 45 {
+		severity := SeverityAttention
+		if m.MeanParagraphRunes < 30 && m.Paragraphs >= 20 {
+			severity = SeverityRepair
+		}
 		findings = append(findings, Finding{
 			Code:       "fragmented_paragraph_rhythm",
-			Severity:   SeverityAttention,
+			Severity:   severity,
 			Actual:     int(m.MeanParagraphRunes + 0.5),
 			Limit:      45,
 			RepairHint: "段落过碎时，合并同一动作链中的孤立短句；保留真正的冲击、转场和对白停顿。",
@@ -465,6 +532,18 @@ func repeatedOpeningChains(sentences []string) int {
 	return chains
 }
 
+func repeatedOpeningChainExamples(sentences []string) []string {
+	var examples []string
+	for index := 0; index+2 < len(sentences); index++ {
+		key := openingKey(sentences[index])
+		if key != "" && openingKey(sentences[index+1]) == key && openingKey(sentences[index+2]) == key {
+			examples = append(examples, truncateExample(strings.Join(sentences[index:index+3], "。")+"。"))
+			index += 2
+		}
+	}
+	return uniqueExamples(examples)
+}
+
 func openingKey(sentence string) string {
 	trimmed := strings.TrimLeft(strings.TrimSpace(sentence), "“”‘’\"'「」『』…—-，、；：")
 	runes := []rune(trimmed)
@@ -472,6 +551,140 @@ func openingKey(sentence string) string {
 		return ""
 	}
 	return string(runes[:3])
+}
+
+func adjacentContradictions(sentences []string) int {
+	count := 0
+	for index := 0; index+1 < len(sentences); index++ {
+		if oppositeAssertion(sentences[index], sentences[index+1]) {
+			count++
+		}
+	}
+	return count
+}
+
+func oppositeAssertion(left, right string) bool {
+	pairs := [][2]string{
+		{"不知道", "知道"},
+		{"不明白", "明白"},
+		{"不记得", "记得"},
+		{"不认识", "认识"},
+	}
+	left = compactAssertion(left)
+	right = compactAssertion(right)
+	for _, pair := range pairs {
+		leftNegative := strings.Replace(left, pair[0], pair[1], 1)
+		rightNegative := strings.Replace(right, pair[0], pair[1], 1)
+		if (leftNegative == right && leftNegative != left) || (rightNegative == left && rightNegative != right) {
+			return true
+		}
+	}
+	return false
+}
+
+func compactAssertion(value string) string {
+	return strings.Map(func(r rune) rune {
+		if strings.ContainsRune(" \t\r\n，、；：。“”‘’\"'！？?!", r) {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(value))
+}
+
+func subjectOpeningRuns(paragraphs []string) int {
+	runs := 0
+	current := ""
+	length := 0
+	for _, paragraph := range paragraphs {
+		subject := paragraphOpeningSubject(paragraph)
+		if subject == "" {
+			current, length = "", 0
+			continue
+		}
+		if subject == current {
+			length++
+		} else {
+			current, length = subject, 1
+		}
+		if length == 4 {
+			runs++
+		}
+	}
+	return runs
+}
+
+func subjectOpeningRunExamples(paragraphs []string) []string {
+	var examples []string
+	for index := 0; index+3 < len(paragraphs); index++ {
+		subject := paragraphOpeningSubject(paragraphs[index])
+		if subject == "" {
+			continue
+		}
+		matched := true
+		for next := index + 1; next <= index+3; next++ {
+			if paragraphOpeningSubject(paragraphs[next]) != subject {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			examples = append(examples, truncateExample(strings.Join(paragraphs[index:index+4], "\n")))
+			index += 3
+		}
+	}
+	return uniqueExamples(examples)
+}
+
+func paragraphOpeningSubject(paragraph string) string {
+	trimmed := strings.TrimLeft(strings.TrimSpace(paragraph), "“”‘’\"'「」『』…—-，、；：")
+	for _, subject := range []string{"他", "她", "我"} {
+		if strings.HasPrefix(trimmed, subject) {
+			return subject
+		}
+	}
+	return ""
+}
+
+func manualSpecParagraphs(paragraphs []string) int {
+	count := 0
+	for _, paragraph := range paragraphs {
+		if isManualSpecParagraph(paragraph) {
+			count++
+		}
+	}
+	return count
+}
+
+func isManualSpecParagraph(paragraph string) bool {
+	terms := manualSpecTermRE.FindAllString(paragraph, -1)
+	data := manualSpecDataRE.FindAllString(paragraph, -1)
+	return len(terms) >= 2 || (len(terms) >= 1 && len(data) >= 2)
+}
+
+func maxNumericAnchorRepeat(text string) int {
+	_, count := dominantNumericAnchor(text)
+	return count
+}
+
+func dominantNumericAnchor(text string) (string, int) {
+	counts := make(map[string]int)
+	for _, match := range numericAnchorRE.FindAllStringSubmatch(text, -1) {
+		if len(match) < 2 || isCalendarYear(match[1]) {
+			continue
+		}
+		counts[match[1]]++
+	}
+	anchor, count := "", 0
+	for candidate, candidateCount := range counts {
+		if candidateCount > count || (candidateCount == count && candidate < anchor) {
+			anchor, count = candidate, candidateCount
+		}
+	}
+	return anchor, count
+}
+
+func isCalendarYear(value string) bool {
+	return len(value) == 4 && value >= "1900" && value <= "2099"
 }
 
 func sentenceLengths(sentences []string) (float64, int) {

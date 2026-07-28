@@ -29,6 +29,8 @@ export function ManuscriptActionPanel({
   activeRevision,
   onReturnChapter,
   onChanged,
+  onManualEdit,
+  manualEditing = false,
 }) {
   const [type, setType] = useState('polish');
   const [instruction, setInstruction] = useState('');
@@ -65,7 +67,6 @@ export function ManuscriptActionPanel({
   useEffect(() => {
     if (!dialogue || terminal(dialogue.status)) setExpansion((old) => ({ ...old, referenceIds: selectedId ? [selectedId] : [] }));
   }, [selectedId]);
-
   async function run(task) {
     controller.current?.abort(); controller.current = new AbortController(); setBusy(true); setError('');
     try {
@@ -150,9 +151,16 @@ export function ManuscriptActionPanel({
 
     {!boundElsewhere && canBegin ? <section className="manuscript-action-compose" aria-label="修改、补剧情与扩写">
       <div className="manuscript-action-tabs" role="tablist" aria-label="稿件操作类型">
-        {[['polish', '润色'], ['rewrite', '改写'], ['expand', '补剧情 / 扩写']].map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={type === value} onClick={() => setType(value)}>{label}</button>)}
+        {[['polish', '润色'], ['rewrite', '改写'], ['expand', '补剧情 / 扩写'], ['manual', '手动编辑']].map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={type === value} onClick={() => setType(value)}>{label}</button>)}
       </div>
-      {type === 'expand'
+      {type === 'manual'
+        ? <div className="manuscript-action-form manuscript-manual-launcher">
+          <p>手动编辑会在中间正文区打开完整章节，右侧不再放置小型编辑框。</p>
+          <button type="button" disabled={busy || manualEditing || !current?.content_signature} onClick={onManualEdit}>
+            {manualEditing ? '正在编辑正文' : '在正文区开始编辑'}
+          </button>
+        </div>
+        : type === 'expand'
         ? <ExpansionForm value={expansion} onChange={setExpansion} onSubmit={begin} busy={busy} mode={mode} maxLength={1000} submitLabel="提交意见" busyLabel="正在判断是否需要澄清…" />
         : <form className="manuscript-action-form" onSubmit={(event) => { event.preventDefault(); void begin(); }}><label>修改意见<textarea required maxLength="1000" rows="4" value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder={type === 'polish' ? '例如：保留叙事信息，压缩重复表达，让节奏更利落' : '例如：重写冲突段落，让角色的选择更符合前文动机'} /></label><button type="submit" disabled={busy || !instruction.trim()}>{busy ? '正在判断是否需要澄清…' : '提交意见'}</button></form>}
       <p className="manuscript-action-safety">当前章节是唯一目标；AI 仅在会改变人物、剧情、结构或范围时追问。</p>

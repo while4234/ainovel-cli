@@ -29,7 +29,7 @@ func (s *Server) handleManuscriptRoute(w http.ResponseWriter, r *http.Request, i
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
 	service := host.NewManuscriptRevisionService(st)
-	if action == "manuscript/revision/preview" || action == "manuscript/revision/command" || strings.HasPrefix(action, "manuscript/workspace/restore") || strings.HasPrefix(action, "manuscript/expansion/") || strings.HasPrefix(action, "manuscript/actions/dialogues") {
+	if action == "manuscript/revision/preview" || action == "manuscript/revision/command" || strings.HasPrefix(action, "manuscript/workspace/restore") || strings.HasSuffix(action, "/manual-candidate") || strings.HasPrefix(action, "manuscript/expansion/") || strings.HasPrefix(action, "manuscript/actions/dialogues") {
 		session, _, openErr := s.sessions.Open(id)
 		if openErr != nil {
 			writeManuscriptError(w, openErr)

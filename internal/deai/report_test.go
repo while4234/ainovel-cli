@@ -64,3 +64,78 @@ func TestAnalyzeIncludesVerbatimRepairExamples(t *testing.T) {
 		t.Fatalf("dash examples = %+v", dash)
 	}
 }
+
+func TestAnalyzeFlagsAdjacentContradictionAndSubjectRun(t *testing.T) {
+	text := `# 第三章
+
+他不知道自己为什么要留着它。
+
+他知道自己为什么要留着它。
+
+他想起她站在窗边。
+
+他想起她低头看表。
+
+他想起她说过的话。
+
+他会搬到她对面去。`
+	report := Analyze(text)
+	if report.Metrics.AdjacentContradictions != 1 {
+		t.Fatalf("adjacent contradictions = %d", report.Metrics.AdjacentContradictions)
+	}
+	if report.Metrics.SubjectOpeningRuns == 0 {
+		t.Fatalf("expected subject opening run: %+v", report.Metrics)
+	}
+	for _, code := range []string{"adjacent_contradiction", "subject_opening_run", "repeated_sentence_opening"} {
+		found := false
+		for _, finding := range report.Findings {
+			found = found || finding.Code == code
+		}
+		if !found {
+			t.Fatalf("missing finding %q: %+v", code, report.Findings)
+		}
+	}
+}
+
+func TestAnalyzeFlagsManualLikeSpecificationBlocks(t *testing.T) {
+	text := `# 第四章
+
+摄像头采用 Sony IMX415 传感器，4K 分辨率，配 12mm 镜头，SSID 连续重试 3 次。
+
+安装麦克风后把缓存写入服务器，码率设为 8Mbps，存储保留 90 天。`
+	report := Analyze(text)
+	if report.Metrics.ManualSpecParagraphs != 2 {
+		t.Fatalf("manual spec paragraphs = %d", report.Metrics.ManualSpecParagraphs)
+	}
+	if report.Passed() {
+		t.Fatalf("manual-like exposition must require repair: %+v", report.Findings)
+	}
+}
+
+func TestAnalyzeMakesSevereFragmentationBlocking(t *testing.T) {
+	var paragraphs []string
+	for index := 0; index < 24; index++ {
+		paragraphs = append(paragraphs, "雨还在下。")
+	}
+	report := Analyze("# 第一章\n\n" + strings.Join(paragraphs, "\n\n"))
+	for _, finding := range report.Findings {
+		if finding.Code == "fragmented_paragraph_rhythm" && finding.Severity == SeverityRepair {
+			return
+		}
+	}
+	t.Fatalf("severe fragmentation was not blocking: %+v", report.Findings)
+}
+
+func TestAnalyzeFlagsRepeatedRoomNumberAnchors(t *testing.T) {
+	text := "# 第四章\n\n" + strings.Repeat("他从602走到604，对照602与604的位置。\n\n", 5)
+	report := Analyze(text)
+	if report.Metrics.MaxNumericAnchorRepeat <= 8 {
+		t.Fatalf("numeric anchor repeat = %d", report.Metrics.MaxNumericAnchorRepeat)
+	}
+	for _, finding := range report.Findings {
+		if finding.Code == "numeric_anchor_overuse" && len(finding.Examples) > 0 {
+			return
+		}
+	}
+	t.Fatalf("numeric anchor finding missing: %+v", report.Findings)
+}

@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManuscriptActionPanel } from './ManuscriptActionPanel.jsx';
+import { ManuscriptManualEditor } from './ManuscriptManualEditor.jsx';
 import * as api from './manuscript-api.js';
 
 vi.mock('./manuscript-api.js');
@@ -87,5 +88,30 @@ describe('ManuscriptActionPanel', () => {
     expect(container.textContent).toContain('操作仍绑定在第 3 章');
     await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === '返回原章节').click());
     expect(returnChapter).toHaveBeenCalledWith('ch-origin');
+  });
+
+  it('opens manual editing in the central prose workspace instead of the side panel', async () => {
+    const openEditor = vi.fn();
+    await act(async () => root.render(<ManuscriptActionPanel {...props} onManualEdit={openEditor} />)); await settle();
+    await act(async () => [...container.querySelectorAll('[role="tab"]')].find((button) => button.textContent === '手动编辑').click());
+    expect(container.querySelector('textarea[aria-label="章节正文"]')).toBeNull();
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === '在正文区开始编辑').click());
+    expect(openEditor).toHaveBeenCalledTimes(1);
+    expect(api.saveManualManuscriptCandidate).not.toHaveBeenCalled();
+  });
+
+  it('saves central manual edits as a signed candidate without using an AI dialogue', async () => {
+    const saved = vi.fn();
+    api.saveManualManuscriptCandidate.mockResolvedValue({ revision: { revision_id: 'manual-revision', stage: 'audit_pending' } });
+    await act(async () => root.render(<ManuscriptManualEditor projectId="project-1" selectedId="ch-1" chapter={{ content_signature: 'prose-sha', paragraphs: ['# 第一章', '原正文。'], total_paragraphs: 2 }} onSaved={saved} />)); await settle();
+    const textarea = container.querySelector('textarea[aria-label="章节正文"]');
+    await act(async () => setTextareaValue(textarea, '# 第一章\n\n作者改过的正文。'));
+    await act(async () => container.querySelector('#manuscript-manual-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))); await settle();
+    expect(api.saveManualManuscriptCandidate).toHaveBeenCalledWith('project-1', 'ch-1', expect.objectContaining({
+      content_signature: 'prose-sha',
+      prose: '# 第一章\n\n作者改过的正文。',
+    }), expect.any(AbortSignal));
+    expect(saved).toHaveBeenCalledWith(expect.objectContaining({ revision_id: 'manual-revision' }));
+    expect(api.createManuscriptActionDialogue).not.toHaveBeenCalled();
   });
 });

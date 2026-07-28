@@ -179,18 +179,7 @@ func BuildCoordinator(
 		revisionFenceWrites(store.Revisions, tools.NewSaveCastPromotionCandidateTool(store)),
 		revisionFenceWrites(store.Revisions, tools.NewSaveCastPromotionReviewTool(store)),
 	}
-	writerTools := []agentcore.Tool{
-		newWriterContextTool(contextTool, store),
-		newWriterReadChapterTool(readChapter, store),
-		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewPlanChapterTool(store), store)),
-		revisionFenceWrites(store.Revisions, newWriterDraftChapterTool(store)),
-		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewEditChapterTool(store), store)),
-		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewRepairDeAIBatchTool(store), store)),
-		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCheckConsistencyTool(store), store)),
-		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCheckAdaptationTool(store), store)),
-		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCheckDeAITool(store), store)),
-		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCommitChapterTool(store, completionGate), store)),
-	}
+	var writerTools []agentcore.Tool
 	editorTools := []agentcore.Tool{
 		contextTool,
 		readChapter,
@@ -201,11 +190,6 @@ func BuildCoordinator(
 	}
 	if err := validateAgentToolRegistry("architect", architectTools,
 		"novel_context", "save_foundation"); err != nil {
-		return nil, nil, nil, nil, nil, nil, err
-	}
-	if err := validateAgentToolRegistry("writer", writerTools,
-		"novel_context", "read_chapter", "plan_chapter", "draft_chapter", "edit_chapter", "repair_de_ai_batch",
-		"check_consistency", "check_adaptation", "check_de_ai", "commit_chapter"); err != nil {
 		return nil, nil, nil, nil, nil, nil, err
 	}
 	if err := validateAgentToolRegistry("editor", editorTools,
@@ -257,9 +241,27 @@ func BuildCoordinator(
 	characterModel := newCharacterModeModel(characterAnalysisModel, characterReviewModel)
 	characterRuntimeModel := withProductionAgentBoundary(characterModel, store, "agent_character")
 	writerModel = withProductionAgentBoundary(writerModel, store, "agent_writer")
+	continuityAuditorModel := withProductionAgentBoundary(editorModel, store, "continuity_auditor")
 	editorModel = withProductionAgentBoundary(editorModel, store, "agent_editor")
 	coordinatorModel = withProductionAgentBoundary(coordinatorModel, store, "agent_coordinator")
 	coordinatorModel = WithExecutionBarrierModel(coordinatorModel)
+	writerTools = []agentcore.Tool{
+		newWriterContextTool(contextTool, store),
+		newWriterReadChapterTool(readChapter, store),
+		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewPlanChapterTool(store), store)),
+		revisionFenceWrites(store.Revisions, newWriterDraftChapterTool(store)),
+		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewEditChapterTool(store), store)),
+		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewRepairDeAIBatchTool(store), store)),
+		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCheckConsistencyTool(store, continuityAuditorModel), store)),
+		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCheckAdaptationTool(store), store)),
+		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCheckDeAITool(store), store)),
+		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCommitChapterTool(store, completionGate), store)),
+	}
+	if err := validateAgentToolRegistry("writer", writerTools,
+		"novel_context", "read_chapter", "plan_chapter", "draft_chapter", "edit_chapter", "repair_de_ai_batch",
+		"check_consistency", "check_adaptation", "check_de_ai", "commit_chapter"); err != nil {
+		return nil, nil, nil, nil, nil, nil, err
+	}
 
 	// Coordinator 的 ContextManager 在 Agent 构造时一次性生成，按启动模型解析。
 	// 运行中 /model 切换到更小窗口的模型时，建议用户显式配置 context_window 兜底。

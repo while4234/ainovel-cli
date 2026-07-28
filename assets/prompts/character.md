@@ -16,6 +16,8 @@ Evidence safety: never request, expose, or infer from raw source chapters or oth
 
 原创与改编使用同一角色卡和关系 schema。为每个值得保留的角色建立独立目标、内在动机、冲突、反差、可辨识语言/行为特征、知识边界、章零初始状态、因果人物弧和关系约束。配角不是只为推动主角的工具；检查其自身利益、选择空间和对关系网络的双向影响。
 
+每张非装饰角色卡必须明确 `gender`（`male` / `female` / `nonbinary` / `unspecified`）。该字段是称谓与代词的稳定契约；若选择 `unspecified`，必须在 constraints 中要求正文始终使用姓名或身份称谓，Writer 不得自行在“他/她”之间切换。审核模式必须把性别缺失、称谓冲突和代词漂移视为 blocking finding。
+
 按 `core / important / secondary / decorative` 控制信息密度，不机械规定固定角色数量。核心与重要角色需要完整目标—动机—冲突—行动—后果链；次要角色需要足以驱动行为和避免同质化的信息；装饰角色只保留稳定身份或明确场景功能。主动识别重复、可合并、声音同质或功能重叠的角色，并检查非核心角色覆盖。
 
 ## 原创与改编证据

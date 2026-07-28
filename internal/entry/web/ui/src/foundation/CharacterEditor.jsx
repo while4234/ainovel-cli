@@ -10,10 +10,11 @@ import {
 } from './foundationModel.js';
 
 const tierLabels = { core: '核心', important: '重要', secondary: '次要', decorative: '装饰' };
+const genderLabels = { male: '男', female: '女', nonbinary: '非二元', unspecified: '未设定（正文使用姓名/称谓）' };
 const reviewLabels = { passed: '通过', needs_revision: '需修订', stale: '已过期', not_reviewed: '未审核' };
 const sourceLabels = { keep: '保留', rename: '改名', merge: '合并', split: '拆分', exclude: '排除', target_original: '目标原创', unmapped: '未映射' };
 const fieldLabels = {
-  name: '姓名', aliases: '别名', role: '故事职责', tier: '层级', faction: '阵营',
+  name: '姓名', aliases: '别名', role: '故事职责', gender: '性别 / 代词', tier: '层级', faction: '阵营',
   description: '人物描述', traits: '特质 / 核心标签', contrast_details: '反差细节', key_backstory: '人物小传',
   goal: '目标', motivation: '动机', conflict: '冲突', arc: '角色弧',
   voice: '语言风格', constraints: '行为 / 设定约束', knowledge_boundary: '知识边界',
@@ -309,6 +310,7 @@ function CharacterForm({ character, disabled, errors, index, expanded, setExpand
           <TextField label="姓名" field="name" value={character.name} disabled={disabled} error={errorFor('name')} inputRef={refFor('name')} onChange={(name) => onChange({ ...character, name })} />
           <TagEditor label="别名" value={character.aliases} disabled={disabled} inputRef={refFor('aliases')} onChange={(aliases) => onChange({ ...character, aliases })} />
           <TextField label="故事职责" field="role" value={character.role} disabled={disabled} error={errorFor('role')} inputRef={refFor('role')} onChange={(role) => onChange({ ...character, role })} />
+          <label><span>性别 / 代词</span><select ref={refFor('gender')} disabled={disabled} value={character.gender || 'unspecified'} onChange={(event) => onChange({ ...character, gender: event.target.value })}>{foundationOptions.characterGenders.map((gender) => <option key={gender} value={gender}>{genderLabels[gender]}</option>)}</select><small>未设定时，正文必须使用姓名或身份称谓，不得自行切换“他/她”。</small></label>
           <label><span>层级</span><select ref={refFor('tier')} disabled={disabled} value={character.tier || 'important'} onChange={(event) => onChange({ ...character, tier: event.target.value })}>{foundationOptions.characterTiers.map((tier) => <option key={tier} value={tier}>{tierLabels[tier]}</option>)}</select><small>core 变化属于高风险，会要求重新确认。</small></label>
           <TextField label="阵营" field="faction" value={character.faction} disabled={disabled} inputRef={refFor('faction')} onChange={(faction) => onChange({ ...character, faction })} />
         </> : null}

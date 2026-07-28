@@ -77,6 +77,44 @@ func TestManuscriptRevisionPublishesSignedCandidateWithoutTouchingCurrentEarly(t
 	}
 }
 
+func TestSubmitManualCandidatePreservesExactAuthorProseAndFormalDraft(t *testing.T) {
+	st, chapterID := seedManuscriptRevisionProject(t)
+	service := NewManuscriptRevisionServiceWithAuditor(st, passingManuscriptAuditor{})
+	baseline, _, err := service.CurrentChapter(chapterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorProse := manuscriptContractFixtureProse(baseline.NarrativeContract)
+	runtime, err := service.SubmitManualCandidate(t.Context(), ManualManuscriptCandidateRequest{
+		ChapterID: chapterID, ExpectedProseSHA: baseline.CurrentProseSHA256, Prose: authorProse,
+	}, "manual-candidate")
+	if err != nil {
+		t.Fatalf("SubmitManualCandidate: %v", err)
+	}
+	if runtime.Stage != "audit_pending" || len(runtime.Candidates) != 1 {
+		t.Fatalf("manual runtime = %+v", runtime)
+	}
+	payload, err := st.ManuscriptRevisions.Content().Read(runtime.Candidates[0].Prose)
+	if err != nil || string(payload) != authorProse {
+		t.Fatalf("manual candidate prose = %q err=%v", payload, err)
+	}
+	if current, _ := st.Drafts.LoadChapterText(1); current != "旧正文" {
+		t.Fatalf("manual candidate changed formal prose early: %q", current)
+	}
+	pendingPayload, err := st.ManuscriptRevisions.Content().Read(runtime.Candidates[0].ContractEvidence)
+	if err != nil || !strings.Contains(string(pendingPayload), `"pending_independent_audit"`) {
+		t.Fatalf("manual candidate did not defer model audit: payload=%s err=%v", pendingPayload, err)
+	}
+	audited, err := service.RunAudit(t.Context(), runtime.RevisionID, runtime.Revision, "manual-audit")
+	if err != nil || audited.Stage != "final_approval_pending" {
+		t.Fatalf("deferred manual audit = %+v err=%v", audited, err)
+	}
+	boundPayload, err := st.ManuscriptRevisions.Content().Read(audited.Candidates[0].ContractEvidence)
+	if err != nil || strings.Contains(string(boundPayload), `"pending_independent_audit"`) {
+		t.Fatalf("manual contract evidence was not bound during audit: payload=%s err=%v", boundPayload, err)
+	}
+}
+
 func TestRestoreHistoricalCandidateCreatesOneIdempotentAuditPendingRevision(t *testing.T) {
 	st, chapterID := seedManuscriptRevisionProject(t)
 	service := NewManuscriptRevisionServiceWithAuditor(st, passingManuscriptAuditor{})

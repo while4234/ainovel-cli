@@ -448,7 +448,7 @@
 
 .manuscript-action-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px;
 }
 
@@ -515,6 +515,70 @@
 .manuscript-action-dialogue > header span {
   color: var(--muted, #64748b);
   font-size: 12px;
+}
+
+.manuscript-manual-launcher p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.manuscript-manual-workspace {
+  display: grid;
+  min-height: calc(100vh - 260px);
+  gap: 14px;
+}
+
+.manuscript-manual-toolbar {
+  position: sticky;
+  z-index: 2;
+  top: -1px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .97);
+  box-shadow: var(--shadow-sm);
+}
+
+.manuscript-manual-toolbar h3,
+.manuscript-manual-toolbar p {
+  margin: 0;
+}
+
+.manuscript-manual-toolbar p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.manuscript-manual-toolbar > div:last-child {
+  display: flex;
+  gap: 8px;
+}
+
+.manuscript-manual-workspace form {
+  display: flex;
+  min-height: 0;
+}
+
+.manuscript-manual-workspace textarea {
+  width: 100%;
+  min-height: calc(100vh - 360px);
+  padding: 24px clamp(22px, 4vw, 52px);
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: #25323c;
+  font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  font-size: 16px;
+  line-height: 1.9;
+  letter-spacing: .018em;
 }
 
 .manuscript-action-message {

@@ -14,6 +14,7 @@ import (
 const (
 	productionAgentInputLimitBytes = 60 * 1024
 	writerAgentInputLimitBytes     = 96 * 1024
+	continuityAuditInputLimitBytes = 128 * 1024
 )
 
 // diagnosticModel owns the production boundary for one agent role. It checks
@@ -196,6 +197,13 @@ func (m *diagnosticModel) begin(messages []agentcore.Message, tools []agentcore.
 }
 
 func (m *diagnosticModel) inputLimitBytes() int {
+	if m.task == "continuity_auditor" {
+		// The independent comparison needs the current draft plus the adjacent
+		// committed chapter. Two maximum-sized Chinese chapters can exceed the
+		// generic planning boundary while remaining comfortably within review
+		// model context windows.
+		return continuityAuditInputLimitBytes
+	}
 	if m.task == "agent_writer" {
 		// Writer receives exactly one active chapter work package plus the
 		// current draft and validation tool schemas. That valid chapter-scoped

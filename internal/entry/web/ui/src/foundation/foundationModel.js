@@ -3,6 +3,7 @@ const relationshipDirections = ['directed', 'bidirectional', 'undirected'];
 const relationshipStatuses = ['planned', 'active', 'strained', 'broken', 'resolved'];
 const ruleStrengths = ['hard', 'soft'];
 const characterTiers = ['core', 'important', 'secondary', 'decorative'];
+const characterGenders = ['male', 'female', 'nonbinary', 'unspecified'];
 const characterReviewStatuses = ['passed', 'needs_revision', 'stale', 'not_reviewed'];
 const sourceMappingActions = ['keep', 'rename', 'merge', 'split', 'exclude', 'target_original'];
 
@@ -12,12 +13,13 @@ export const foundationOptions = {
   relationshipStatuses,
   ruleStrengths,
   characterTiers,
+  characterGenders,
   characterReviewStatuses,
   sourceMappingActions
 };
 
 export const characterFieldGroups = [
-  { id: 'identity', label: '身份', fields: ['name', 'aliases', 'role', 'tier', 'faction'] },
+  { id: 'identity', label: '身份', fields: ['name', 'aliases', 'role', 'gender', 'tier', 'faction'] },
   { id: 'core', label: '人物核心', fields: ['description', 'traits', 'contrast_details', 'key_backstory'] },
   { id: 'drive', label: '驱动与弧', fields: ['goal', 'motivation', 'conflict', 'arc'] },
   { id: 'performance', label: '表演约束', fields: ['voice', 'constraints', 'knowledge_boundary'] },
@@ -70,6 +72,7 @@ export function normalizeCharacter(value = {}) {
     name: String(value.name || ''),
     aliases: uniqueStrings(value.aliases),
     role: String(value.role || ''),
+    gender: characterGenders.includes(value.gender) ? value.gender : 'unspecified',
     description: String(value.description || ''),
     arc: String(value.arc || ''),
     traits: uniqueStrings(value.traits),
@@ -305,6 +308,7 @@ export function validateFoundationDraft(value) {
     const prefix = `characters.${index}`;
     if (!character.id.trim()) addError(fields, summary, `${prefix}.id`, `角色 ${index + 1} 缺少稳定 ID`);
     if (!character.name.trim()) addError(fields, summary, `${prefix}.name`, `角色 ${index + 1} 姓名不能为空`);
+    if (character.tier !== 'decorative' && character.gender === 'unspecified') addError(fields, summary, `${prefix}.gender`, `角色 ${index + 1} 需要明确性别；若确实不设定，请将其作为装饰角色或在角色约束中固定使用姓名/称谓`);
     if (characterIDs.has(character.id)) addError(fields, summary, `${prefix}.id`, `角色 ID ${character.id} 重复`);
     characterIDs.add(character.id);
     for (const label of [character.name, ...character.aliases]) {
@@ -344,6 +348,7 @@ export function sourceMajorCharacters(sourceFoundation) {
     name: String(character?.name || ''),
     aliases: uniqueStrings(character?.aliases),
     role: String(character?.role || ''),
+    gender: characterGenders.includes(character?.gender) ? character.gender : 'unspecified',
     description: String(character?.description || ''),
     arc: String(character?.arc || ''),
     traits: uniqueStrings(character?.traits),

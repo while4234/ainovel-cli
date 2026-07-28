@@ -57,6 +57,7 @@ type Character struct {
 	Name              string                      `json:"name"`
 	Aliases           []string                    `json:"aliases,omitempty"` // 别名/称号/绰号（如"废物少年"、"炎哥"）
 	Role              string                      `json:"role"`
+	Gender            string                      `json:"gender,omitempty"` // male / female / nonbinary / unspecified
 	Description       string                      `json:"description"`
 	Arc               string                      `json:"arc"`
 	Traits            []string                    `json:"traits"`

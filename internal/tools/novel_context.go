@@ -711,7 +711,7 @@ func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpos
 		// Polishing is a local prose operation. The exact anti-AI repair evidence
 		// remains available through check_de_ai; this pack supplies only stable
 		// prose constraints and the final quality checklist.
-		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 250)
+		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 900)
 		addWithLimit("quality_checklist", t.refs.QualityChecklist, 200)
 		return refs
 	}
@@ -719,7 +719,7 @@ func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpos
 		// A full current draft will be read beside this package. Keep only the
 		// stable validation constraints that are still needed after prose exists.
 		addWithLimit("consistency", t.refs.Consistency, 150)
-		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 150)
+		addWithLimit("anti_ai_tone", t.refs.AntiAITone, 900)
 		addWithLimit("quality_checklist", t.refs.QualityChecklist, 150)
 		return refs
 	}
@@ -731,7 +731,7 @@ func (t *ContextTool) writerReferences(chapter int, purpose chapterContextPurpos
 	// This is a core prose constraint, not an optional chapter-one reference.
 	// Previously the bundle loaded AntiAITone but never placed it in Writer or
 	// Editor context, so its most important long-form instructions were inert.
-	addWithLimit("anti_ai_tone", t.refs.AntiAITone, 180)
+	addWithLimit("anti_ai_tone", t.refs.AntiAITone, 900)
 	if chapter <= 3 {
 		addWithLimit("chapter_guide", t.refs.ChapterGuide, 180)
 		addWithLimit("dialogue_writing", t.refs.DialogueWriting, 120)

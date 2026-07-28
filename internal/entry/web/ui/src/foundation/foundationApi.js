@@ -142,6 +142,7 @@ function canonicalCharacter(value) {
     name: value.name.trim(),
     ...(value.aliases.length ? { aliases: canonicalStrings(value.aliases) } : {}),
     role: value.role.trim(),
+    gender: value.gender,
     description: value.description.trim(),
     arc: value.arc.trim(),
     traits: canonicalStrings(value.traits),

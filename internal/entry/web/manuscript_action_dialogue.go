@@ -558,7 +558,11 @@ func buildManuscriptActionContext(st *storepkg.Store, service *host.ManuscriptRe
 	if active != nil {
 		revisionSummary = manuscriptRevisionMetadata{RevisionID: active.RevisionID, Revision: active.Revision, Stage: active.Stage, UpdatedAt: active.UpdatedAt}
 	}
-	contextBundle := host.ManuscriptActionContext{Mode: string(baseline.Mode), ChapterID: chapterID, DisplayChapter: baseline.DisplayChapter, Prose: croppedProse, ProseCropped: cropped, ChapterOutline: chapterOutline, VolumeTitle: volumeTitle, ArcTitle: arcTitle, RevisionSummary: revisionSummary}
+	recentSummaries, err := st.Summaries.LoadRecentSummaries(baseline.DisplayChapter, 4)
+	if err != nil {
+		return host.ManuscriptActionContext{}, domain.ManuscriptBaseline{}, err
+	}
+	contextBundle := host.ManuscriptActionContext{Mode: string(baseline.Mode), ChapterID: chapterID, DisplayChapter: baseline.DisplayChapter, Prose: croppedProse, ProseCropped: cropped, ChapterOutline: chapterOutline, VolumeTitle: volumeTitle, ArcTitle: arcTitle, RevisionSummary: revisionSummary, RecentSummaries: recentSummaries}
 	if baseline.Mode == domain.RevisionModeAdaptation {
 		evidence, _, evidenceErr := adaptationDiscussionEvidence(st, chapterID, manuscriptDiscussionBudgetUnits-len([]rune(croppedProse)), baseline.AdaptationPlanSHA256, baseline.SourceManifestSHA256)
 		if evidenceErr != nil {

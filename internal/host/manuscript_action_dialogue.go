@@ -9,12 +9,13 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/modeldiag"
 )
 
 const manuscriptActionClarificationPrompt = `你是小说稿件修改需求澄清助手。你的职责不是修改正文，而是判断用户意见是否足以安全执行。
 
-只有当歧义会实质改变人物动机、剧情事实、结构安排或修改范围时才提问；措辞、节奏等普通细节直接按合理方式执行。不得询问系统已经提供的事实，不得要求用户重复正文。
+只有当歧义会实质改变人物动机、剧情事实、结构安排或修改范围时才提问；措辞、节奏等普通细节直接按合理方式执行。不得询问系统已经提供的事实，不得要求用户重复正文。涉及跨章连续性时，必须先使用 context.recent_summaries；已有摘要足以判断时直接给出 ready，不得反问作者上一章发生了什么。
 
 输出严格 JSON：
 {
@@ -29,17 +30,18 @@ const manuscriptActionClarificationPrompt = `你是小说稿件修改需求澄�
 // ManuscriptActionContext is built exclusively from authoritative project
 // artifacts. Browser-supplied prose never crosses this boundary.
 type ManuscriptActionContext struct {
-	Mode               string `json:"mode"`
-	ChapterID          string `json:"chapter_id"`
-	DisplayChapter     int    `json:"display_chapter"`
-	Prose              string `json:"prose"`
-	ProseCropped       bool   `json:"prose_cropped"`
-	ChapterOutline     any    `json:"chapter_outline,omitempty"`
-	VolumeTitle        string `json:"volume_title,omitempty"`
-	ArcTitle           string `json:"arc_title,omitempty"`
-	RevisionSummary    any    `json:"revision_summary,omitempty"`
-	AdaptationEvidence any    `json:"adaptation_evidence,omitempty"`
-	ContextSignature   string `json:"context_signature"`
+	Mode               string                  `json:"mode"`
+	ChapterID          string                  `json:"chapter_id"`
+	DisplayChapter     int                     `json:"display_chapter"`
+	Prose              string                  `json:"prose"`
+	ProseCropped       bool                    `json:"prose_cropped"`
+	ChapterOutline     any                     `json:"chapter_outline,omitempty"`
+	VolumeTitle        string                  `json:"volume_title,omitempty"`
+	ArcTitle           string                  `json:"arc_title,omitempty"`
+	RevisionSummary    any                     `json:"revision_summary,omitempty"`
+	RecentSummaries    []domain.ChapterSummary `json:"recent_summaries,omitempty"`
+	AdaptationEvidence any                     `json:"adaptation_evidence,omitempty"`
+	ContextSignature   string                  `json:"context_signature"`
 }
 
 type ManuscriptActionMessage struct {

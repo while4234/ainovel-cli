@@ -30,10 +30,17 @@ type ManuscriptPreview struct {
 }
 
 type ManuscriptCandidateInput struct {
-	ChapterID      string                     `json:"chapter_id"`
-	Prose          string                     `json:"prose"`
-	Sidecars       map[string]json.RawMessage `json:"sidecars"`
-	AuditSignature string                     `json:"audit_signature,omitempty"`
+	ChapterID          string                     `json:"chapter_id"`
+	Prose              string                     `json:"prose"`
+	Sidecars           map[string]json.RawMessage `json:"sidecars"`
+	AuditSignature     string                     `json:"audit_signature,omitempty"`
+	DeferContractAudit bool                       `json:"-"`
+}
+
+type ManualManuscriptCandidateRequest struct {
+	ChapterID        string `json:"chapter_id"`
+	ExpectedProseSHA string `json:"expected_prose_sha256"`
+	Prose            string `json:"prose"`
 }
 
 type ManuscriptRevisionService struct {
@@ -532,6 +539,126 @@ func (s *ManuscriptRevisionService) Preview(request ManuscriptPreviewRequest, id
 	return s.PreviewContext(context.Background(), request, idempotencyKey)
 }
 
+// SubmitManualCandidate puts an author's exact prose into the same signed,
+// auditable candidate workflow as an AI revision. It never calls the writer
+// and never publishes directly.
+func (s *ManuscriptRevisionService) SubmitManualCandidate(ctx context.Context, request ManualManuscriptCandidateRequest, idempotencyKey string) (*domain.ManuscriptRevisionRuntime, error) {
+	request.ChapterID = strings.TrimSpace(request.ChapterID)
+	request.ExpectedProseSHA = strings.TrimSpace(request.ExpectedProseSHA)
+	request.Prose = strings.TrimSpace(request.Prose)
+	if request.ChapterID == "" || request.ExpectedProseSHA == "" || request.Prose == "" {
+		return nil, fmt.Errorf("chapter_id, expected_prose_sha256 and prose are required")
+	}
+	baseline, _, err := s.CurrentChapter(request.ChapterID)
+	if err != nil {
+		return nil, err
+	}
+	if baseline.CurrentProseSHA256 != request.ExpectedProseSHA {
+		return nil, &domain.ManuscriptRevisionError{Class: "signature_drift", Err: fmt.Errorf("formal prose changed after the manual editor loaded")}
+	}
+	manual := *s
+	manual.writer = nil
+	preview, err := manual.PreviewContext(ctx, ManuscriptPreviewRequest{
+		ChapterID:   request.ChapterID,
+		Instruction: "作者手动修改正文；保持已批准的章节契约和现有语义侧车，保存为候选稿等待独立审核与人工批准",
+		Kind:        domain.ManuscriptInstructionPolish,
+	}, idempotencyKey+":preview")
+	if err != nil {
+		return nil, err
+	}
+	sidecars, err := s.currentChapterSidecars(request.ChapterID)
+	if err != nil {
+		return nil, err
+	}
+	return s.SubmitCandidate(preview.Runtime.RevisionID, preview.Runtime.Revision, idempotencyKey+":candidate", ManuscriptCandidateInput{
+		ChapterID:          request.ChapterID,
+		Prose:              request.Prose,
+		Sidecars:           sidecars,
+		DeferContractAudit: true,
+	})
+}
+
+func (s *ManuscriptRevisionService) currentChapterSidecars(chapterID string) (map[string]json.RawMessage, error) {
+	entry, chapter, _, err := s.resolveChapter(chapterID)
+	if err != nil {
+		return nil, err
+	}
+	summary, err := s.store.Summaries.LoadSummary(chapter)
+	if err != nil {
+		return nil, err
+	}
+	if summary == nil || strings.TrimSpace(summary.Summary) == "" {
+		summary = &domain.ChapterSummary{Chapter: chapter, Summary: entry.CoreEvent, KeyEvents: []string{entry.CoreEvent}}
+	}
+	events := append([]string(nil), summary.KeyEvents...)
+	if len(events) == 0 {
+		events = []string{entry.CoreEvent}
+	}
+	timeline, err := s.store.World.LoadTimeline()
+	if err != nil {
+		return nil, err
+	}
+	timeline = filterChapterValues(timeline, chapter, func(value domain.TimelineEvent) int { return value.Chapter })
+	if len(timeline) == 0 {
+		timeline = []domain.TimelineEvent{{Chapter: chapter, Event: entry.CoreEvent, Characters: append([]string(nil), summary.Characters...)}}
+	}
+	states, err := s.store.World.LoadStateChanges()
+	if err != nil {
+		return nil, err
+	}
+	states = filterChapterValues(states, chapter, func(value domain.StateChange) int { return value.Chapter })
+	relationships, err := s.store.World.LoadRelationships()
+	if err != nil {
+		return nil, err
+	}
+	relationships = filterChapterValues(relationships, chapter, func(value domain.RelationshipEntry) int { return value.Chapter })
+	foreshadow, err := s.store.World.LoadForeshadowLedger()
+	if err != nil {
+		return nil, err
+	}
+	foreshadow = filterValues(foreshadow, func(value domain.ForeshadowEntry) bool {
+		return value.PlantedAt == chapter || value.ResolvedAt == chapter
+	})
+	worldFacts, err := s.store.World.LoadWorldRules()
+	if err != nil {
+		return nil, err
+	}
+	snapshots, err := s.store.Characters.LoadLatestSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	carry := struct {
+		CharacterSnapshots []domain.CharacterSnapshot `json:"character_snapshots"`
+	}{CharacterSnapshots: snapshots}
+	values := map[string]any{
+		"summary": summary, "events": events, "timeline": timeline, "cast_state": states,
+		"relationships": relationships, "foreshadow": foreshadow, "world_facts": worldFacts, "carry_forward": carry,
+	}
+	result := make(map[string]json.RawMessage, len(values))
+	for name, value := range values {
+		payload, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("marshal current %s sidecar: %w", name, marshalErr)
+		}
+		result[name] = payload
+	}
+	return result, nil
+}
+
+func filterChapterValues[T any](values []T, chapter int, chapterOf func(T) int) []T {
+	return filterValues(values, func(value T) bool { return chapterOf(value) == chapter })
+}
+
+func filterValues[T any](values []T, keep func(T) bool) []T {
+	filtered := make([]T, 0, len(values))
+	for _, value := range values {
+		if keep(value) {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
 func (s *ManuscriptRevisionService) PreviewContext(ctx context.Context, request ManuscriptPreviewRequest, idempotencyKey string) (*ManuscriptPreview, error) {
 	if err := s.requireWriteReady(); err != nil {
 		return nil, err
@@ -774,43 +901,58 @@ func (s *ManuscriptRevisionService) SubmitCandidate(revisionID string, expectedR
 		return nil, err
 	}
 	contract.StateSHA256 = protectedState.aggregate()
-	structuredContractAuditor, ok := s.auditor.(ManuscriptStructuredContractAuditor)
-	if !ok {
-		return nil, fmt.Errorf("independent structured candidate contract auditor is unavailable")
-	}
 	contractTask := newManuscriptContractAuditTask(runtime.RevisionID, input.ChapterID, prose.SHA256, outlineSignature, entry, protectedState)
 	contractTask.AuthoritativeOutlineSHA256 = authoritativeOutlineSHA
 	contractTask.AuthoritativeStructureSHA256 = authoritativeStructureSHA
 	contractTask = signManuscriptContractAuditTask(contractTask)
-	contractDecision, err := structuredContractAuditor.AuditCandidateContract(context.Background(), contractTask, input.Prose)
-	if err != nil {
-		return nil, fmt.Errorf("independent candidate contract audit: %w", err)
-	}
-	if err := validateManuscriptContractAuditDecision(contractTask, contractDecision, input.Prose, contract); err != nil {
-		return nil, err
-	}
-	verificationTask := newManuscriptContractVerificationTask(contractTask, contractDecision)
-	verification, err := structuredContractAuditor.VerifyCandidateContract(context.Background(), verificationTask, contractDecision, contract, input.Prose)
-	if err != nil {
-		return nil, fmt.Errorf("independent candidate contract verifier: %w", err)
-	}
-	if err := validateManuscriptContractVerification(contractTask, contractDecision, verificationTask, verification, input.Prose, contract); err != nil {
-		return nil, err
-	}
-	contract = contractDecision.Contract
-	contractPayload, _ := json.Marshal(contract)
-	contractArtifact := newNarrativeContractArtifactWithProtectedState(contract, prose.SHA256, outlineSignature, protectedState)
 	expectedArtifact := candidateBaseline.ContractArtifact
 	if input.ChapterID == runtime.Baseline.ChapterID && runtime.OutlinePreview != nil {
 		expectedArtifact = newNarrativeContractArtifactWithProtectedState(contract, candidateBaseline.CurrentProseSHA256, outlineSignature, protectedState)
 	}
-	if err := compareNarrativeContractArtifacts(expectedArtifact, contractArtifact); err != nil {
-		return nil, err
+	var contractEvidence domain.ManuscriptContentRef
+	var contractArtifact domain.NarrativeContractArtifact
+	if input.DeferContractAudit {
+		contractArtifact = newNarrativeContractArtifactWithProtectedState(contract, prose.SHA256, outlineSignature, protectedState)
+		if err := compareNarrativeContractArtifacts(expectedArtifact, contractArtifact); err != nil {
+			return nil, err
+		}
+		contractEvidence, err = s.store.ManuscriptRevisions.Content().PutJSON(pendingManuscriptContractEvidence{
+			Version: 1, Status: "pending_independent_audit", Task: contractTask,
+		})
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		structuredContractAuditor, ok := s.auditor.(ManuscriptStructuredContractAuditor)
+		if !ok {
+			return nil, fmt.Errorf("independent structured candidate contract auditor is unavailable")
+		}
+		contractDecision, auditErr := structuredContractAuditor.AuditCandidateContract(context.Background(), contractTask, input.Prose)
+		if auditErr != nil {
+			return nil, fmt.Errorf("independent candidate contract audit: %w", auditErr)
+		}
+		if err := validateManuscriptContractAuditDecision(contractTask, contractDecision, input.Prose, contract); err != nil {
+			return nil, err
+		}
+		verificationTask := newManuscriptContractVerificationTask(contractTask, contractDecision)
+		verification, verifyErr := structuredContractAuditor.VerifyCandidateContract(context.Background(), verificationTask, contractDecision, contract, input.Prose)
+		if verifyErr != nil {
+			return nil, fmt.Errorf("independent candidate contract verifier: %w", verifyErr)
+		}
+		if err := validateManuscriptContractVerification(contractTask, contractDecision, verificationTask, verification, input.Prose, contract); err != nil {
+			return nil, err
+		}
+		contract = contractDecision.Contract
+		contractArtifact = newNarrativeContractArtifactWithProtectedState(contract, prose.SHA256, outlineSignature, protectedState)
+		if err := compareNarrativeContractArtifacts(expectedArtifact, contractArtifact); err != nil {
+			return nil, err
+		}
+		contractEvidence, err = s.storeServerCandidateContractEvidence(contract, prose, sidecar, contractArtifact, contractTask, contractDecision, verificationTask, verification)
+		if err != nil {
+			return nil, err
+		}
 	}
-	contractEvidence, err := s.storeServerCandidateContractEvidence(contract, prose, sidecar, contractArtifact, contractTask, contractDecision, verificationTask, verification)
-	if err != nil {
-		return nil, err
-	}
+	contractPayload, _ := json.Marshal(contract)
 	candidate := domain.ManuscriptCandidate{
 		ChapterID: input.ChapterID, DisplayChapter: candidateBaseline.DisplayChapter, Prose: prose, Sidecar: sidecar,
 		BaselineSignature: domain.ContentSignature(baselinePayload), ContractSignature: domain.ContentSignature(contractPayload), ContractArtifact: contractArtifact,
@@ -879,6 +1021,12 @@ type manuscriptContractEvidenceEnvelope struct {
 	AuditDecision        ManuscriptContractAuditDecision        `json:"audit_decision"`
 	VerificationTask     ManuscriptContractVerificationTask     `json:"verification_task"`
 	VerificationDecision ManuscriptContractVerificationDecision `json:"verification_decision"`
+}
+
+type pendingManuscriptContractEvidence struct {
+	Version int                         `json:"version"`
+	Status  string                      `json:"status"`
+	Task    ManuscriptContractAuditTask `json:"task"`
 }
 
 func (s *ManuscriptRevisionService) storeServerCandidateContractEvidence(contract domain.NarrativeContract, prose domain.ManuscriptContentRef, sidecar domain.ManuscriptSidecar, artifact domain.NarrativeContractArtifact, task ManuscriptContractAuditTask, decision ManuscriptContractAuditDecision, verificationTask ManuscriptContractVerificationTask, verification ManuscriptContractVerificationDecision) (domain.ManuscriptContentRef, error) {
@@ -1389,6 +1537,10 @@ func (s *ManuscriptRevisionService) RunAudit(ctx context.Context, revisionID str
 	if runtime.Revision != expectedRevision || runtime.Stage != "audit_pending" || len(runtime.Candidates) == 0 {
 		return nil, fmt.Errorf("signed audit is not expected for revision %d at stage %q", expectedRevision, runtime.Stage)
 	}
+	runtime, err = s.resolvePendingManualContractEvidence(ctx, runtime, idempotencyKey+":contract-evidence")
+	if err != nil {
+		return nil, err
+	}
 	if err := s.validateModeEvidence(*runtime); err != nil {
 		return nil, err
 	}
@@ -1487,7 +1639,7 @@ func (s *ManuscriptRevisionService) RunAudit(ctx context.Context, revisionID str
 		}
 		results = append(results, auditResult{candidateSignature, passed, strings.TrimSpace(report), candidateCheck, artifact})
 	}
-	return s.store.ManuscriptRevisions.Mutate(revisionID, expectedRevision, idempotencyKey, "record_audit", results, func(current *domain.ManuscriptRevisionRuntime) error {
+	return s.store.ManuscriptRevisions.Mutate(revisionID, runtime.Revision, idempotencyKey, "record_audit", results, func(current *domain.ManuscriptRevisionRuntime) error {
 		if current.Stage != "audit_pending" || len(current.Candidates) != len(results) {
 			return fmt.Errorf("signed audit is not expected at stage %q", current.Stage)
 		}
@@ -1512,6 +1664,88 @@ func (s *ManuscriptRevisionService) RunAudit(ctx context.Context, revisionID str
 			candidate.AuditSignature = manuscriptCandidateSignature(*candidate)
 		}
 		current.Stage = "final_approval_pending"
+		return nil
+	})
+}
+
+func (s *ManuscriptRevisionService) resolvePendingManualContractEvidence(
+	ctx context.Context,
+	runtime *domain.ManuscriptRevisionRuntime,
+	idempotencyKey string,
+) (*domain.ManuscriptRevisionRuntime, error) {
+	structured, ok := s.auditor.(ManuscriptStructuredContractAuditor)
+	if !ok {
+		return nil, fmt.Errorf("independent structured candidate contract auditor is unavailable")
+	}
+	prepared := append([]domain.ManuscriptCandidate(nil), runtime.Candidates...)
+	changed := false
+	for index := range prepared {
+		candidate := &prepared[index]
+		payload, err := s.store.ManuscriptRevisions.Content().Read(candidate.ContractEvidence)
+		if err != nil {
+			return nil, err
+		}
+		var pending pendingManuscriptContractEvidence
+		if json.Unmarshal(payload, &pending) != nil || pending.Status != "pending_independent_audit" {
+			continue
+		}
+		if pending.Version != 1 || pending.Task.RevisionID != runtime.RevisionID ||
+			pending.Task.ChapterID != candidate.ChapterID || pending.Task.CandidateSHA256 != candidate.Prose.SHA256 {
+			return nil, &domain.ManuscriptRevisionError{Class: "signature_drift", Err: fmt.Errorf("pending manual contract evidence identity drift")}
+		}
+		prosePayload, err := s.store.ManuscriptRevisions.Content().Read(candidate.Prose)
+		if err != nil || domain.ContentSignature(prosePayload) != candidate.Prose.SHA256 {
+			return nil, &domain.ManuscriptRevisionError{Class: "signature_drift", Err: fmt.Errorf("pending manual candidate prose drift")}
+		}
+		prose := string(prosePayload)
+		expected := narrativeContractFromEntry(pending.Task.Outline, nil)
+		expected.ChapterID = candidate.ChapterID
+		expected.OutlineSHA256 = candidate.OutlineSignature
+		expected.StateSHA256 = pending.Task.ProtectedStateSHA256
+		decision, err := structured.AuditCandidateContract(ctx, pending.Task, prose)
+		if err != nil {
+			return nil, fmt.Errorf("independent candidate contract audit: %w", err)
+		}
+		if err := validateManuscriptContractAuditDecision(pending.Task, decision, prose, expected); err != nil {
+			return nil, err
+		}
+		verificationTask := newManuscriptContractVerificationTask(pending.Task, decision)
+		verification, err := structured.VerifyCandidateContract(ctx, verificationTask, decision, expected, prose)
+		if err != nil {
+			return nil, fmt.Errorf("independent candidate contract verifier: %w", err)
+		}
+		if err := validateManuscriptContractVerification(pending.Task, decision, verificationTask, verification, prose, expected); err != nil {
+			return nil, err
+		}
+		contract := decision.Contract
+		state := manuscriptProtectedState{
+			Character:    pending.Task.ProtectedState["character_state"],
+			Relationship: pending.Task.ProtectedState["relationship_state"],
+			Timeline:     pending.Task.ProtectedState["timeline_state"],
+			Foreshadow:   pending.Task.ProtectedState["foreshadow_state"],
+		}
+		artifact := newNarrativeContractArtifactWithProtectedState(contract, candidate.Prose.SHA256, candidate.OutlineSignature, state)
+		if err := compareNarrativeContractArtifacts(candidate.ContractArtifact, artifact); err != nil {
+			return nil, err
+		}
+		evidence, err := s.storeServerCandidateContractEvidence(contract, candidate.Prose, candidate.Sidecar, artifact, pending.Task, decision, verificationTask, verification)
+		if err != nil {
+			return nil, err
+		}
+		contractPayload, _ := json.Marshal(contract)
+		candidate.ContractSignature = domain.ContentSignature(contractPayload)
+		candidate.ContractArtifact = artifact
+		candidate.ContractEvidence = evidence
+		changed = true
+	}
+	if !changed {
+		return runtime, nil
+	}
+	return s.store.ManuscriptRevisions.Mutate(runtime.RevisionID, runtime.Revision, idempotencyKey, "bind_manual_contract_evidence", prepared, func(current *domain.ManuscriptRevisionRuntime) error {
+		if current.Stage != "audit_pending" || len(current.Candidates) != len(prepared) {
+			return fmt.Errorf("manual contract evidence is not expected at stage %q", current.Stage)
+		}
+		current.Candidates = append([]domain.ManuscriptCandidate(nil), prepared...)
 		return nil
 	})
 }
@@ -2027,6 +2261,9 @@ func manuscriptSemanticSidecarEmpty(name string, value any) bool {
 		if object, ok := value.(map[string]any); ok {
 			return strings.TrimSpace(fmt.Sprint(object["summary"])) == ""
 		}
+	}
+	if name != "events" && name != "timeline" {
+		return false
 	}
 	switch typed := value.(type) {
 	case nil:

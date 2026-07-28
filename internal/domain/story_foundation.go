@@ -147,6 +147,7 @@ func NormalizeStoryFoundation(in StoryFoundation) (StoryFoundation, error) {
 		character.ID = strings.TrimSpace(character.ID)
 		character.Name = strings.TrimSpace(character.Name)
 		character.Role = strings.TrimSpace(character.Role)
+		character.Gender = strings.ToLower(strings.TrimSpace(character.Gender))
 		character.Description = strings.TrimSpace(character.Description)
 		character.Arc = strings.TrimSpace(character.Arc)
 		character.Tier = strings.TrimSpace(character.Tier)
@@ -165,6 +166,10 @@ func NormalizeStoryFoundation(in StoryFoundation) (StoryFoundation, error) {
 		normalizeCharacterCardFields(character)
 		if character.Name == "" {
 			return StoryFoundation{}, fmt.Errorf("character %d name is required", i)
+		}
+		if character.Gender != "" && character.Gender != "male" && character.Gender != "female" &&
+			character.Gender != "nonbinary" && character.Gender != "unspecified" {
+			return StoryFoundation{}, fmt.Errorf("character %d gender %q is invalid", i, character.Gender)
 		}
 		for _, label := range append([]string{character.Name}, character.Aliases...) {
 			key := normalizedIdentity(label)

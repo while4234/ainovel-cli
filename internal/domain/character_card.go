@@ -231,6 +231,7 @@ func normalizeCharacter(character *Character) {
 	character.ID = strings.TrimSpace(character.ID)
 	character.Name = strings.TrimSpace(character.Name)
 	character.Role = strings.TrimSpace(character.Role)
+	character.Gender = strings.ToLower(strings.TrimSpace(character.Gender))
 	character.Description = strings.TrimSpace(character.Description)
 	character.Arc = strings.TrimSpace(character.Arc)
 	character.Tier = strings.ToLower(strings.TrimSpace(character.Tier))

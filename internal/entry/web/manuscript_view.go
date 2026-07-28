@@ -441,6 +441,35 @@ func manuscriptRuntimeHasChapter(runtime domain.ManuscriptRevisionRuntime, stabl
 }
 
 func (s *Server) handleManuscriptWorkspaceChapter(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, st *storepkg.Store, service *host.ManuscriptRevisionService, rest string) {
+	if strings.HasSuffix(rest, "/manual-candidate") {
+		stableID := strings.TrimSuffix(rest, "/manual-candidate")
+		if r.Method != http.MethodPost {
+			writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if !manuscriptChapterStableIDPattern.MatchString(stableID) {
+			writeManuscriptRequestError(w, http.StatusBadRequest, "stable_id must be a chapter stable ID")
+			return
+		}
+		var request struct {
+			ContentSignature string `json:"content_signature"`
+			Prose            string `json:"prose"`
+			IdempotencyKey   string `json:"idempotency_key"`
+		}
+		if err := decodeJSONBody(r, &request); err != nil {
+			writeManuscriptRequestError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		runtime, err := service.SubmitManualCandidate(r.Context(), host.ManualManuscriptCandidateRequest{
+			ChapterID: stableID, ExpectedProseSHA: request.ContentSignature, Prose: request.Prose,
+		}, request.IdempotencyKey)
+		if err != nil {
+			writeManuscriptError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "revision": runtime})
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeManuscriptRequestError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return

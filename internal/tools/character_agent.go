@@ -1346,6 +1346,7 @@ func characterSchema() map[string]any {
 		schema.Property("name", schema.String("Character name")).Required(),
 		schema.Property("aliases", schema.Array("Aliases", schema.String(""))).Required(),
 		schema.Property("role", schema.String("Identity or story responsibility")).Required(),
+		schema.Property("gender", schema.Enum("Stable gender/pronoun contract", "male", "female", "nonbinary", "unspecified")).Required(),
 		schema.Property("description", schema.String("Character description")).Required(),
 		schema.Property("arc", schema.String("Causal character arc")).Required(),
 		schema.Property("traits", schema.Array("Distinct traits", schema.String(""))).Required(),

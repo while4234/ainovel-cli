@@ -3,11 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"unicode"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/errs"
@@ -19,7 +21,8 @@ import (
 // returns a receipt instead of echoing the draft and global state back into the
 // same model turn: novel_context + read_chapter are the authoritative inputs.
 type CheckConsistencyTool struct {
-	store *store.Store
+	store             *store.Store
+	continuityAuditor agentcore.ChatModel
 }
 
 type consistencySceneCheck struct {
@@ -33,13 +36,17 @@ type consistencySceneCheck struct {
 	IrreversibleMatch bool   `json:"irreversible_result_match"`
 }
 
-func NewCheckConsistencyTool(store *store.Store) *CheckConsistencyTool {
-	return &CheckConsistencyTool{store: store}
+func NewCheckConsistencyTool(store *store.Store, continuityAuditors ...agentcore.ChatModel) *CheckConsistencyTool {
+	var auditor agentcore.ChatModel
+	if len(continuityAuditors) > 0 {
+		auditor = continuityAuditors[0]
+	}
+	return &CheckConsistencyTool{store: store, continuityAuditor: auditor}
 }
 
 func (t *CheckConsistencyTool) Name() string { return "check_consistency" }
 func (t *CheckConsistencyTool) Description() string {
-	return "记录当前草稿已按 novel_context 的章节契约与连续性证据完成一致性审核。必须先 novel_context(chapter=N) 并 read_chapter；每个计划场景都必须提交一条可在当前草稿中精确找到的原文 evidence，并逐项核对时间地点、POV、人物、事件顺序、信息边界和不可逆结果。只有全部核对无矛盾时 findings 才能为空"
+	return "记录当前草稿已按 novel_context 的章节契约与连续性证据完成一致性审核。必须先 novel_context(chapter=N) 并 read_chapter；每个计划场景都必须提交可在草稿中精确找到的原文 evidence，并逐项核对时间地点、POV、人物身份与性别代词、事件顺序、信息边界和不可逆结果。还必须对照 recent_summaries：人物不得无触发地重复询问已经获知的事实，空间移动必须成立。只有全部核对无矛盾时 findings 才能为空"
 }
 func (t *CheckConsistencyTool) Label() string { return "一致性检查" }
 
@@ -59,7 +66,7 @@ func (t *CheckConsistencyTool) Schema() map[string]any {
 		schema.Property("irreversible_result_match", schema.Bool("该场景承担的不可逆结果或交接是否落地")).Required(),
 	)
 	findingSchema := schema.Object(
-		schema.Property("type", schema.Enum("character finding type", "ooc", "voice_drift", "motivation_break", "knowledge_leak", "relationship_jump", "arc_beat_miss", "supporting_character_flat", "static_dynamic_conflict", "adaptation_source_confusion")).Required(),
+		schema.Property("type", schema.Enum("character finding type", "ooc", "voice_drift", "motivation_break", "knowledge_leak", "relationship_jump", "arc_beat_miss", "supporting_character_flat", "static_dynamic_conflict", "continuity_repeat", "identity_pronoun_drift", "spatial_contradiction", "adaptation_source_confusion")).Required(),
 		schema.Property("severity", schema.Enum("severity", "critical", "error", "warning")).Required(),
 		schema.Property("character_id", schema.String("stable character ID")).Required(),
 		schema.Property("scene", schema.String("chapter or scene locator")).Required(),
@@ -106,7 +113,7 @@ func (t *CheckConsistencyTool) activeSceneContracts() (int, string) {
 	return len(outline.Scenes), compactIndexedSceneContracts(outline.Scenes)
 }
 
-func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *CheckConsistencyTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
 		Chapter     int                       `json:"chapter"`
 		SceneChecks []consistencySceneCheck   `json:"scene_checks"`
@@ -132,6 +139,11 @@ func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) 
 	if err := t.validateSceneChecks(a.Chapter, content, a.SceneChecks, a.Findings); err != nil {
 		return nil, err
 	}
+	independentFindings, err := t.auditCrossChapterContinuity(ctx, a.Chapter, content)
+	if err != nil {
+		return nil, fmt.Errorf("independent cross-chapter continuity audit: %w", err)
+	}
+	a.Findings = mergeConsistencyFindings(a.Findings, independentFindings)
 	blocking := false
 	for _, finding := range a.Findings {
 		if finding.Severity == "critical" || finding.Severity == "error" {
@@ -150,6 +162,7 @@ func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) 
 		"review_against": []string{
 			"novel_context.working_memory.chapter_contract",
 			"novel_context.episodic_memory",
+			"independent reviewer comparison with recent summaries and prior prose",
 			"the current read_chapter draft",
 		},
 		"next_step": "If the comparison found a contradiction, edit the draft and rerun all checks; otherwise continue the same-draft validation sequence.",
@@ -362,4 +375,212 @@ func (t *CheckConsistencyTool) validateCharacterFindings(chapter int, findings [
 		}
 	}
 	return nil
+}
+
+const continuityAuditSystemPrompt = `You are an independent Chinese-fiction continuity reviewer. You did not write the chapter.
+
+Review only these defect classes:
+- continuity_repeat: a character asks for or reconfirms a fact that the same character already learned, without a credible trigger such as doubt, deception, memory loss, or deliberate testing.
+- identity_pronoun_drift: a pronoun conflicts with the identified character's gender or changes the apparent referent.
+- spatial_contradiction: the same character's route, floor, room, or relative position cannot follow from the established location.
+
+Avoid false positives:
+1. Compare semantic roles, not just similar wording. For continuity_repeat, prior_actor means the character who knew the fact after the prior passage, and current_actor means the current asker; they must be the same person. prior_recipient/current_recipient mean the other participant. If the knower/asker changes, it is not a repeated question.
+2. New details are not repeats. Knowing that someone is engaged does not mean knowing the wedding date.
+3. A room number repeated as a stable anchor is not itself a spatial contradiction.
+4. Use the current draft as the only source of current_evidence. For a cross-chapter finding, prior_evidence must be an exact quote from prior_chapter_text.
+5. Return no finding when evidence or identity is uncertain.
+
+Return exactly one JSON object:
+{"findings":[{"type":"continuity_repeat|identity_pronoun_drift|spatial_contradiction","severity":"error|warning","character_id":"stable ID from characters","scene":"concise locator","current_evidence":"exact current-draft quote","prior_evidence":"exact prior-chapter quote or empty only for pronoun drift","prior_actor":"name","prior_recipient":"name","current_actor":"name","current_recipient":"name","description":"precise contradiction","suggestion":"minimal repair"}]}
+Use severity=error only for a definite contradiction.`
+
+type independentContinuityFinding struct {
+	Type             string `json:"type"`
+	Severity         string `json:"severity"`
+	CharacterID      string `json:"character_id"`
+	Scene            string `json:"scene"`
+	CurrentEvidence  string `json:"current_evidence"`
+	PriorEvidence    string `json:"prior_evidence"`
+	PriorActor       string `json:"prior_actor"`
+	PriorRecipient   string `json:"prior_recipient"`
+	CurrentActor     string `json:"current_actor"`
+	CurrentRecipient string `json:"current_recipient"`
+	Description      string `json:"description"`
+	Suggestion       string `json:"suggestion"`
+}
+
+func (t *CheckConsistencyTool) auditCrossChapterContinuity(
+	ctx context.Context,
+	chapter int,
+	currentContent string,
+) ([]domain.ConsistencyIssue, error) {
+	if t.continuityAuditor == nil {
+		return nil, nil
+	}
+	recentSummaries, err := t.store.Summaries.LoadRecentSummaries(chapter, 4)
+	if err != nil {
+		return nil, fmt.Errorf("load recent summaries: %w", err)
+	}
+	if chapter <= 1 || len(recentSummaries) == 0 {
+		return nil, nil
+	}
+	priorContent, err := t.store.Drafts.LoadChapterText(chapter - 1)
+	if err != nil {
+		return nil, fmt.Errorf("load prior chapter: %w", err)
+	}
+	if strings.TrimSpace(priorContent) == "" {
+		return nil, nil
+	}
+	foundation, err := t.store.Foundation.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load characters: %w", err)
+	}
+	characters := make([]map[string]string, 0, len(foundation.Characters))
+	for _, character := range foundation.Characters {
+		characters = append(characters, map[string]string{
+			"id":     character.ID,
+			"name":   character.Name,
+			"gender": character.Gender,
+		})
+	}
+	payload, err := json.Marshal(map[string]any{
+		"chapter":            chapter,
+		"characters":         characters,
+		"recent_summaries":   recentSummaries,
+		"prior_chapter":      chapter - 1,
+		"prior_chapter_text": priorContent,
+		"current_draft":      currentContent,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode audit input: %w", err)
+	}
+	response, err := t.continuityAuditor.Generate(
+		ctx,
+		[]agentcore.Message{
+			agentcore.SystemMsg(continuityAuditSystemPrompt),
+			agentcore.UserMsg(string(payload)),
+		},
+		nil,
+		agentcore.WithMaxTokens(2200),
+		agentcore.WithJSONMode(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil || strings.TrimSpace(response.Message.TextContent()) == "" {
+		return nil, errors.New("reviewer returned an empty response")
+	}
+	var output struct {
+		Findings []independentContinuityFinding `json:"findings"`
+	}
+	raw := extractConsistencyJSONObject(response.Message.TextContent())
+	if raw == "" {
+		return nil, errors.New("reviewer response does not contain a JSON object")
+	}
+	if err := json.Unmarshal([]byte(raw), &output); err != nil {
+		return nil, fmt.Errorf("decode reviewer response: %w", err)
+	}
+	return t.validateIndependentContinuityFindings(
+		currentContent,
+		priorContent,
+		foundation.Characters,
+		output.Findings,
+	)
+}
+
+func (t *CheckConsistencyTool) validateIndependentContinuityFindings(
+	currentContent string,
+	priorContent string,
+	characters []domain.Character,
+	findings []independentContinuityFinding,
+) ([]domain.ConsistencyIssue, error) {
+	characterIDs := make(map[string]struct{}, len(characters))
+	for _, character := range characters {
+		characterIDs[character.ID] = struct{}{}
+	}
+	allowedTypes := map[string]struct{}{
+		"continuity_repeat":      {},
+		"identity_pronoun_drift": {},
+		"spatial_contradiction":  {},
+	}
+	result := make([]domain.ConsistencyIssue, 0, len(findings))
+	for index, finding := range findings {
+		finding.Type = strings.TrimSpace(finding.Type)
+		if _, ok := allowedTypes[finding.Type]; !ok {
+			return nil, fmt.Errorf("findings[%d] has unsupported type %q", index, finding.Type)
+		}
+		if finding.Severity != "error" && finding.Severity != "warning" {
+			return nil, fmt.Errorf("findings[%d] has unsupported severity %q", index, finding.Severity)
+		}
+		if _, ok := characterIDs[strings.TrimSpace(finding.CharacterID)]; !ok {
+			return nil, fmt.Errorf("findings[%d] has unknown character_id %q", index, finding.CharacterID)
+		}
+		if strings.TrimSpace(finding.CurrentEvidence) == "" ||
+			!strings.Contains(currentContent, finding.CurrentEvidence) {
+			return nil, fmt.Errorf("findings[%d] current_evidence is not exact current-draft text", index)
+		}
+		if finding.Type != "identity_pronoun_drift" {
+			if strings.TrimSpace(finding.PriorEvidence) == "" ||
+				!strings.Contains(priorContent, finding.PriorEvidence) {
+				return nil, fmt.Errorf("findings[%d] prior_evidence is not exact prior-chapter text", index)
+			}
+			if strings.TrimSpace(finding.PriorActor) == "" ||
+				strings.TrimSpace(finding.CurrentActor) == "" {
+				return nil, fmt.Errorf("findings[%d] requires prior_actor and current_actor", index)
+			}
+		}
+		if finding.Type == "continuity_repeat" &&
+			!strings.EqualFold(strings.TrimSpace(finding.PriorActor), strings.TrimSpace(finding.CurrentActor)) {
+			// A role-swapped question is affirmative evidence that this is not
+			// the same character redundantly reacquiring the same fact. Ignore
+			// the model's false positive instead of making Writer retry it.
+			continue
+		}
+		if strings.TrimSpace(finding.Scene) == "" ||
+			strings.TrimSpace(finding.Description) == "" ||
+			strings.TrimSpace(finding.Suggestion) == "" {
+			return nil, fmt.Errorf("findings[%d] requires scene, description, and suggestion", index)
+		}
+		result = append(result, domain.ConsistencyIssue{
+			Type:          finding.Type,
+			Severity:      finding.Severity,
+			CharacterID:   finding.CharacterID,
+			Scene:         finding.Scene,
+			ViolatedField: "recent_summaries_and_prior_chapter",
+			Description:   finding.Description,
+			Evidence:      finding.CurrentEvidence,
+			Suggestion:    finding.Suggestion,
+		})
+	}
+	return result, nil
+}
+
+func extractConsistencyJSONObject(raw string) string {
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start < 0 || end <= start {
+		return ""
+	}
+	return raw[start : end+1]
+}
+
+func mergeConsistencyFindings(
+	writerFindings []domain.ConsistencyIssue,
+	independentFindings []domain.ConsistencyIssue,
+) []domain.ConsistencyIssue {
+	result := append([]domain.ConsistencyIssue(nil), writerFindings...)
+	seen := make(map[string]struct{}, len(result))
+	for _, finding := range result {
+		seen[finding.Type+"\x00"+finding.Evidence] = struct{}{}
+	}
+	for _, finding := range independentFindings {
+		key := finding.Type + "\x00" + finding.Evidence
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, finding)
+	}
+	return result
 }

@@ -8,6 +8,7 @@ import { RevisionHistory } from './RevisionHistory.jsx';
 import { RevisionStatus } from './RevisionStatus.jsx';
 import { ManuscriptReader } from './ManuscriptReader.jsx';
 import { ManuscriptActionPanel } from './ManuscriptActionPanel.jsx';
+import { ManuscriptManualEditor } from './ManuscriptManualEditor.jsx';
 import { ChapterCombobox } from './ChapterCombobox.jsx';
 import { invalidateManuscriptCache, invalidateManuscriptViews, loadManuscriptArtifact, loadManuscriptChunk, loadManuscriptHistory, loadManuscriptRecovery, loadManuscriptReviewDetail, loadManuscriptReviewPage, loadManuscriptTree, loadManuscriptVersion, previewManuscriptRestore, restoreManuscriptVersion, retryManuscriptRecovery } from './manuscript-api.js';
 import { flattenManuscriptTree, MANUSCRIPT_TABS, mergeParagraphChunk } from './manuscript-state.js';
@@ -29,6 +30,7 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
   const [tree, setTree] = useState([]), [selectedId, setSelectedId] = useState(''), [activeRevision, setActiveRevision] = useState(null);
   const [expansionMeta, setExpansionMeta] = useState({ phase: '', mode: 'normal', structureRevision: 1, structureSignature: '' }), [expansionLaunch, setExpansionLaunch] = useState(null);
   const [tab, setTab] = useState('prose'), [proseMode, setProseMode] = useState('current'), [current, setCurrent] = useState(null), [candidate, setCandidate] = useState(null);
+  const [manualEditing, setManualEditing] = useState(false);
   const [history, setHistory] = useState({ items: [], nextCursor: 0, hasMore: false }), [historyVersion, setHistoryVersion] = useState(null);
   const [restorePreview, setRestorePreview] = useState(null), [artifacts, setArtifacts] = useState({}), [reviewDetails, setReviewDetails] = useState({});
   const [artifactLoading, setArtifactLoading] = useState({}), [artifactErrors, setArtifactErrors] = useState({});
@@ -101,6 +103,7 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     setArtifacts({}); setArtifactLoading({}); setArtifactErrors({}); setReviewDetails({}); setDrawerOpen(false); setError(''); setNotice(''); setBusy(false);
     invalidateManuscriptCache(projectId);
     setProseMode('current'); setRecovery(null); setAutoLoading({ current: false, candidate: false });
+    setManualEditing(false);
     if (active && projectId) queueMicrotask(() => void loadTree());
   }, [projectId]);
   useEffect(() => {
@@ -208,6 +211,7 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     const busyOwner = beginBusy('chapter', request);
     const retainsLastSuccessful = stableId === selectedId && current?.stable_id === stableId;
     if (!refreshOnly) {
+      setManualEditing(false);
       setDrawerOpen(false);
       setSelectedId(stableId);
       if (!retainsLastSuccessful) { setCurrent(null); setCandidate(null); }
@@ -276,6 +280,7 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     await completeChapter(view, old);
   }
   async function chooseTab(next, force = false) {
+    if (next !== 'prose') setManualEditing(false);
     tabRef.current = next;
     setTab(next);
     if (['outline', 'volume', 'review'].includes(next) && (force || !artifacts[next])) {
@@ -409,6 +414,12 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
   const currentTabLabel = MANUSCRIPT_TABS.find(([id]) => id === tab)?.[1] || '正文';
   const loadedParagraphs = current?.paragraphs?.length || 0;
   const totalParagraphs = current?.total_paragraphs || loadedParagraphs;
+  async function finishManualEdit() {
+    setManualEditing(false);
+    setNotice('手动修改已保存为候选稿；正式稿未被覆盖，请继续独立审核和作者批准。');
+    await refreshVisible();
+    setProseMode('candidate');
+  }
   const controls = <div className="manuscript-controls" aria-label="专业稿件控制面板">
     <header className="manuscript-controls-header">
       <div><span className="eyebrow">专业稿件</span><h3>{node?.display_label || '选择章节'}</h3></div>
@@ -435,14 +446,14 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
       <strong>查看内容</strong>
       <div className="manuscript-view-picker" role="tablist" aria-label="稿件视图">{MANUSCRIPT_TABS.map(([id, label], index) => <button id={`manuscript-tab-${id}`} key={id} role="tab" aria-selected={tab === id} aria-controls={`manuscript-panel-${id}`} tabIndex={tab === id ? 0 : -1} onKeyDown={(event) => tabKeyDown(event, index)} onClick={() => void chooseTab(id)}>{label}</button>)}</div>
       {tab === 'prose' ? <div className="manuscript-prose-picker" aria-label="正文版本">
-        <button type="button" aria-pressed={proseMode === 'current'} onClick={() => setProseMode('current')}>正式稿</button>
-        <button type="button" disabled={!candidate} aria-pressed={proseMode === 'candidate'} onClick={() => setProseMode('candidate')}>候选稿</button>
-        <button type="button" disabled={!candidate} aria-pressed={proseMode === 'compare'} onClick={() => setProseMode('compare')}>正文对比</button>
+        <button type="button" aria-pressed={proseMode === 'current'} onClick={() => { setManualEditing(false); setProseMode('current'); }}>正式稿</button>
+        <button type="button" disabled={!candidate} aria-pressed={proseMode === 'candidate'} onClick={() => { setManualEditing(false); setProseMode('candidate'); }}>候选稿</button>
+        <button type="button" disabled={!candidate} aria-pressed={proseMode === 'compare'} onClick={() => { setManualEditing(false); setProseMode('compare'); }}>正文对比</button>
       </div> : null}
     </section>
     <section className="manuscript-control-card">
       <strong>正文操作</strong>
-      <ManuscriptActionPanel projectId={projectId} selectedId={selectedId} current={current} phase={expansionMeta.phase} mode={expansionMeta.mode} structureRevision={expansionMeta.structureRevision} structureSignature={expansionMeta.structureSignature} launchRequest={expansionLaunch} activeRevision={activeRevision} onReturnChapter={(stableId) => void selectChapter(stableId)} onChanged={() => void refreshVisible()} />
+      <ManuscriptActionPanel projectId={projectId} selectedId={selectedId} current={current} phase={expansionMeta.phase} mode={expansionMeta.mode} structureRevision={expansionMeta.structureRevision} structureSignature={expansionMeta.structureSignature} launchRequest={expansionLaunch} activeRevision={activeRevision} onReturnChapter={(stableId) => void selectChapter(stableId)} onChanged={() => void refreshVisible()} onManualEdit={() => { void chooseTab('prose'); setProseMode('current'); setManualEditing(true); queueMicrotask(() => contentScrollRef.current?.scrollTo({ top: 0 })); }} manualEditing={manualEditing} />
     </section>
   </div>;
 
@@ -455,7 +466,8 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     </header>
     <main ref={contentScrollRef} className="manuscript-content-scroll" inert={drawerOpen || undefined} onScroll={(event) => scrollPositionsRef.current.set(`${projectId}:${selectedId}:${tab}:${proseMode}`, event.currentTarget.scrollTop)}>
       <div className="manuscript-reading-surface" role="tabpanel" id={`manuscript-panel-${tab}`} aria-labelledby={`manuscript-tab-${tab}`} tabIndex="0">
-        {tab === 'prose' && proseMode === 'current' ? <section className="manuscript-prose-section"><h3>当前正式稿</h3><ManuscriptReader chapter={current} busy={autoLoading.current} error={error} onMore={() => more('current')} onRetry={() => selectChapter(selectedId)} onPreviousChapter={previousChapter ? () => selectChapter(previousChapter.stable_id) : null} previousChapterLabel={previousChapter?.display_label || ''} onNextChapter={nextChapter ? () => selectChapter(nextChapter.stable_id) : null} nextChapterLabel={nextChapter?.display_label || ''} /></section> : null}
+        {tab === 'prose' && proseMode === 'current' && manualEditing ? <ManuscriptManualEditor projectId={projectId} selectedId={selectedId} chapter={current} onCancel={() => setManualEditing(false)} onSaved={finishManualEdit} /> : null}
+        {tab === 'prose' && proseMode === 'current' && !manualEditing ? <section className="manuscript-prose-section"><h3>当前正式稿</h3><ManuscriptReader chapter={current} busy={autoLoading.current} error={error} onMore={() => more('current')} onRetry={() => selectChapter(selectedId)} onPreviousChapter={previousChapter ? () => selectChapter(previousChapter.stable_id) : null} previousChapterLabel={previousChapter?.display_label || ''} onNextChapter={nextChapter ? () => selectChapter(nextChapter.stable_id) : null} nextChapterLabel={nextChapter?.display_label || ''} /></section> : null}
         {tab === 'prose' && proseMode === 'candidate' ? <section className="manuscript-candidate manuscript-prose-section"><h3>候选稿 <span>尚未发布</span></h3>{candidate ? <ManuscriptReader chapter={candidate} busy={autoLoading.candidate} error={error} onMore={() => more('candidate')} onRetry={() => selectChapter(selectedId)} /> : <p className="empty-state">当前章节没有候选稿。</p>}</section> : null}
         {tab === 'prose' && proseMode === 'compare' ? <RevisionCompare current={current} candidate={candidate} busy={busy} currentBusy={autoLoading.current} candidateBusy={autoLoading.candidate} error={error} onMoreCurrent={() => more('current')} onMoreCandidate={() => more('candidate')} onRetry={() => selectChapter(selectedId)} /> : null}
         {tab === 'outline' ? <ManuscriptOutlineView artifact={artifacts.outline} busy={artifactLoading.outline} error={artifactErrors.outline} onRetry={() => {

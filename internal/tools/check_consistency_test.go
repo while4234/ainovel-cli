@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
@@ -323,3 +325,144 @@ func TestCheckConsistencyMissingMarkerRequiresBlockingFinding(t *testing.T) {
 		t.Fatalf("expected missing marker without finding to fail, got %v", err)
 	}
 }
+
+func TestCheckConsistencyIndependentAuditFindsRepeatedKnownFact(t *testing.T) {
+	st := prepareIndependentContinuityTestStore(t)
+	model := &consistencyAuditModel{response: `{"findings":[{
+		"type":"continuity_repeat",
+		"severity":"error",
+		"character_id":"su",
+		"scene":"coffee counter",
+		"current_evidence":"苏瑾琛问：“你结婚了吗？”",
+		"prior_evidence":"刘子昊说：“我订婚了，和未婚妻住一起。”",
+		"prior_actor":"苏瑾琛",
+		"prior_recipient":"刘子昊",
+		"current_actor":"苏瑾琛",
+		"current_recipient":"刘子昊",
+		"description":"苏瑾琛再次询问已经明确获知的婚恋状态",
+		"suggestion":"删除重复问答，保留后续婚期新信息"
+	}]}`}
+	raw, err := NewCheckConsistencyTool(st, model).Execute(
+		context.Background(),
+		json.RawMessage(`{"chapter":2,"scene_checks":[],"findings":[]}`),
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result struct {
+		Passed   bool                      `json:"passed"`
+		Findings []domain.ConsistencyIssue `json:"findings"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Passed || len(result.Findings) != 1 ||
+		result.Findings[0].Type != "continuity_repeat" {
+		t.Fatalf("independent repeat was not blocking: %s", raw)
+	}
+	if model.calls != 1 || !strings.Contains(model.userPrompt, `"recent_summaries"`) {
+		t.Fatalf("independent reviewer did not receive recent summaries: calls=%d", model.calls)
+	}
+}
+
+func TestCheckConsistencyIndependentAuditDropsRoleSwappedQuestionFalsePositive(t *testing.T) {
+	st := prepareIndependentContinuityTestStore(t)
+	model := &consistencyAuditModel{response: `{"findings":[{
+		"type":"continuity_repeat",
+		"severity":"error",
+		"character_id":"liu",
+		"scene":"coffee counter",
+		"current_evidence":"刘子昊问：“你住哪边？”",
+		"prior_evidence":"苏瑾琛问：“你现在住哪里？”",
+		"prior_actor":"苏瑾琛",
+		"prior_recipient":"刘子昊",
+		"current_actor":"刘子昊",
+		"current_recipient":"苏瑾琛",
+		"description":"两章都询问住址",
+		"suggestion":"删除当前问题"
+	}]}`}
+	raw, err := NewCheckConsistencyTool(st, model).Execute(
+		context.Background(),
+		json.RawMessage(`{"chapter":2,"scene_checks":[],"findings":[]}`),
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result struct {
+		Passed   bool                      `json:"passed"`
+		Findings []domain.ConsistencyIssue `json:"findings"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Passed || len(result.Findings) != 0 {
+		t.Fatalf("role-swapped question should not be a repeat: %s", raw)
+	}
+}
+
+func prepareIndependentContinuityTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Characters.Save([]domain.Character{
+		{ID: "liu", Name: "刘子昊", Gender: "male"},
+		{ID: "su", Name: "苏瑾琛", Gender: "male"},
+	}); err != nil {
+		t.Fatalf("Save characters: %v", err)
+	}
+	prior := "苏瑾琛问：“你现在住哪里？”\n\n刘子昊说：“我订婚了，和未婚妻住一起。”"
+	if err := st.Drafts.SaveFinalChapter(1, prior); err != nil {
+		t.Fatalf("SaveFinalChapter: %v", err)
+	}
+	if err := st.Summaries.SaveSummary(domain.ChapterSummary{
+		Chapter:    1,
+		Summary:    "苏瑾琛得知刘子昊已经订婚并与未婚妻同住。",
+		Characters: []string{"刘子昊", "苏瑾琛"},
+		KeyEvents:  []string{"刘子昊告知订婚事实"},
+	}); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+	current := "苏瑾琛问：“你结婚了吗？”\n\n刘子昊问：“你住哪边？”\n\n刘子昊又问：“你们什么时候结婚？”"
+	if err := st.Drafts.SaveDraft(2, current); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	return st
+}
+
+type consistencyAuditModel struct {
+	response   string
+	calls      int
+	userPrompt string
+}
+
+func (m *consistencyAuditModel) Generate(
+	_ context.Context,
+	messages []agentcore.Message,
+	_ []agentcore.ToolSpec,
+	_ ...agentcore.CallOption,
+) (*agentcore.LLMResponse, error) {
+	m.calls++
+	if len(messages) > 1 {
+		m.userPrompt = messages[1].TextContent()
+	}
+	return &agentcore.LLMResponse{Message: agentcore.Message{
+		Role:      agentcore.RoleAssistant,
+		Content:   []agentcore.ContentBlock{agentcore.TextBlock(m.response)},
+		Timestamp: time.Now(),
+	}}, nil
+}
+
+func (m *consistencyAuditModel) GenerateStream(
+	context.Context,
+	[]agentcore.Message,
+	[]agentcore.ToolSpec,
+	...agentcore.CallOption,
+) (<-chan agentcore.StreamEvent, error) {
+	stream := make(chan agentcore.StreamEvent)
+	close(stream)
+	return stream, nil
+}
+
+func (m *consistencyAuditModel) SupportsTools() bool { return false }

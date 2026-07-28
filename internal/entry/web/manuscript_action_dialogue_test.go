@@ -153,6 +153,35 @@ func TestManuscriptActionDialogueRejectsSignatureDriftAndCropsDeterministically(
 	}
 }
 
+func TestBuildManuscriptActionContextIncludesRecentSummaries(t *testing.T) {
+	server, _, st, chapterID, _, fake := seedManuscriptActionDialogueProject(t)
+	defer server.Close()
+	secondID := "ch_22222222222222222222222222222222"
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{
+		{ID: chapterID, Chapter: 1, Title: "第一章", CoreEvent: "确认订婚", Hook: "地址暴露", Scenes: []string{"确认事实"}},
+		{ID: secondID, Chapter: 2, Title: "第二章", CoreEvent: "继续接近", Hook: "家宴", Scenes: []string{"延续事实"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Drafts.SaveFinalChapter(2, "第二章正文"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Summaries.SaveSummary(domain.ChapterSummary{
+		Chapter:   1,
+		Summary:   "苏瑾琛已明确得知刘子昊订婚并与未婚妻同住。",
+		KeyEvents: []string{"刘子昊亲口说明订婚三个月"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	contextBundle, _, err := buildManuscriptActionContext(st, fake.manuscriptService, secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contextBundle.RecentSummaries) != 1 || !strings.Contains(contextBundle.RecentSummaries[0].Summary, "已明确得知") {
+		t.Fatalf("recent summaries missing from action context: %+v", contextBundle.RecentSummaries)
+	}
+}
+
 func seedManuscriptActionDialogueProject(t *testing.T) (*Server, ProjectManifest, *storepkg.Store, string, domain.ManuscriptBaseline, *fakeProjectHost) {
 	t.Helper()
 	server := NewServer(testWebConfig(t), assets.Load("default"), testTempDir(t))
