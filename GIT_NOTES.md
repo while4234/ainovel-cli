@@ -46,13 +46,23 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-28 `current HEAD` `feat: support Grok 4.5 xhigh reasoning`:
+- 2026-07-28 `current HEAD` `fix: restart writer after failed clean recovery`:
+  terminates the current Writer dispatch when repeated contract errors recur
+  after its one clean-context recovery, forcing Coordinator to create a fresh
+  Writer from durable state instead of carrying the second polluted repair
+  transcript. Writer package tests pass. Live chapter 12 recovery subsequently
+  corrected one isolated quote error, passed consistency, and advanced through
+  de-AI repair without returning to the five-error loop.
+- 2026-07-28 `3bbe73ff` `feat: support Grok 4.5 xhigh reasoning`:
   adds `xhigh` to the Grok 4.5 compatibility provider capability and request
   contract, exposes it only for Grok 4.5 in model and stage reasoning selectors,
   and updates the settings guidance. Bootstrap tests and the 20 model-add UI
   tests pass; the production UI build passes with only the existing large-chunk
-  warning. Live chapter 12 acceptance was paused at its durable de-AI repair
-  checkpoint before the deployment restart.
+  warning. After restart, a real project Grok OAuth request with `xhigh`
+  returned `model test passed`; the Grok model default and all seven current
+  Grok-backed stage routes were persisted as `xhigh`. Live chapter 12
+  acceptance remains paused at its durable de-AI repair checkpoint for the
+  user to resume.
 - 2026-07-28 `current HEAD` `fix: remove manuscript end annotation`:
   removes the redundant “已显示本章真正结尾” helper text while preserving
   complete-chapter rendering and completed-only previous/next chapter controls.

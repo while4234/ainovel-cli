@@ -698,6 +698,33 @@ func TestWriterPhaseCleanRestartsAfterRepeatedContractError(t *testing.T) {
 	}
 }
 
+func TestWriterPhaseStopsPollutedDispatchAfterCleanRecoveryAlsoFails(t *testing.T) {
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("write chapter 12"),
+		agentcore.UserMsg(writerCleanRecoveryMarker + "\nresume from durable state"),
+	}
+	for index := 0; index < 2; index++ {
+		callID := fmt.Sprintf("post-clean-consistency-error-%d", index)
+		messages = append(messages,
+			agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+				agentcore.ToolCallBlock(agentcore.ToolCall{
+					ID: callID, Name: "check_consistency", Args: []byte(`{"chapter":12}`),
+				}),
+			}},
+			agentcore.ToolResultMsg(callID, []byte(`scene_checks[2].evidence is not an exact current-draft quote of at least 8 characters`), true),
+		)
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	_, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if !errors.Is(err, errWriterCleanRecoveryExhausted) {
+		t.Fatalf("post-clean repeated errors must terminate the polluted dispatch, got %v", err)
+	}
+	if result.Name != "writer_clean_error_recovery_exhausted" {
+		t.Fatalf("unexpected recovery strategy: %+v", result)
+	}
+}
+
 func TestWriterValidationReceiptRequiresSuccessfulToolResult(t *testing.T) {
 	callID := "failed-check"
 	messages := []agentcore.AgentMessage{

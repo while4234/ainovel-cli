@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 
@@ -122,7 +123,11 @@ func (s *writerValidationPhaseStrategy) Name() string { return "writer_validatio
 
 func (s *writerValidationPhaseStrategy) Apply(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
 	currentTurn := currentWriterTurn(view)
-	if shouldCleanRestartWriterTurn(currentTurn) {
+	cleanRecovery := writerCleanRecoveryState(currentTurn)
+	if cleanRecovery.exhausted {
+		return view, corecontext.StrategyResult{Name: "writer_clean_error_recovery_exhausted"}, errWriterCleanRecoveryExhausted
+	}
+	if cleanRecovery.restart {
 		return cleanRestartWriterTurn(view)
 	}
 	hasValidation := hasWriterValidationReceipt(currentTurn)
@@ -587,11 +592,20 @@ func hasMatchingToolResult(msgs []agentcore.AgentMessage, matches func(string) b
 
 const writerCleanRecoveryMarker = "[Writer clean recovery]"
 
-func shouldCleanRestartWriterTurn(msgs []agentcore.AgentMessage) bool {
+var errWriterCleanRecoveryExhausted = errors.New("writer repeated tool-contract errors after clean recovery; restart from durable state")
+
+type writerCleanRecoveryDecision struct {
+	restart   bool
+	exhausted bool
+}
+
+func writerCleanRecoveryState(msgs []agentcore.AgentMessage) writerCleanRecoveryDecision {
+	afterCleanRecovery := false
 	for _, item := range msgs {
 		message, ok := item.(agentcore.Message)
 		if ok && message.Role == agentcore.RoleUser && strings.Contains(message.TextContent(), writerCleanRecoveryMarker) {
-			return false
+			afterCleanRecovery = true
+			break
 		}
 	}
 	counts := make(map[string]int)
@@ -604,10 +618,13 @@ func shouldCleanRestartWriterTurn(msgs []agentcore.AgentMessage) bool {
 		fingerprint := writerToolErrorFingerprint(candidate.toolName, candidate.resultText)
 		counts[fingerprint]++
 		if counts[fingerprint] >= 2 {
-			return true
+			return writerCleanRecoveryDecision{restart: !afterCleanRecovery, exhausted: afterCleanRecovery}
 		}
 	}
-	return total >= 4
+	if total >= 4 {
+		return writerCleanRecoveryDecision{restart: !afterCleanRecovery, exhausted: afterCleanRecovery}
+	}
+	return writerCleanRecoveryDecision{}
 }
 
 func writerToolErrorFingerprint(toolName, result string) string {
