@@ -1254,6 +1254,10 @@ func (t *writerContextTool) executeActiveChapterContext(ctx context.Context, arg
 		"next_step":                    "Draft this exact chapter from the saved outline and canonical characters; do not replace its genre, setting, plot, or cast.",
 	}
 	compactWriterCharacterWorkset(payload)
+	chapter := inferWriterDraftChapter(t.store)
+	if draft, loadErr := t.store.Drafts.LoadDraft(chapter); loadErr == nil && strings.TrimSpace(draft) != "" {
+		compactWriterRecoveryContext(payload)
+	}
 	return json.Marshal(payload)
 }
 
@@ -1312,6 +1316,54 @@ func compactWriterCharacterWorkset(payload map[string]any) {
 				"knowledge_boundary",
 			},
 		},
+	}
+}
+
+// compactWriterRecoveryContext removes drafting-only duplication once a full
+// draft exists. Validation still receives the exact chapter outline,
+// canonical character constraints, relationship/state deltas, user rules, and
+// style anchors. The draft itself arrives through read_chapter, so repeating
+// prior tails, future promises, simulation scaffolding, and source references
+// only consumes the provider's byte boundary without adding validation facts.
+func compactWriterRecoveryContext(payload map[string]any) {
+	if working, ok := payload["working_memory"].(map[string]any); ok {
+		keepMapKeys(working,
+			"current_chapter_outline",
+			"user_rules",
+			"word_budget",
+			"rewrite_brief",
+		)
+	}
+	if episodic, ok := payload["episodic_memory"].(map[string]any); ok {
+		keepMapKeys(episodic,
+			"character_workset",
+			"recent_state_changes",
+			"relationship_state",
+			"foreshadow_ledger",
+			"planning_tier",
+		)
+	}
+	if references, ok := payload["reference_pack"].(map[string]any); ok {
+		keepMapKeys(references, "style_anchors")
+	}
+	payload["writer_context_projection"] = map[string]any{
+		"mode":                 "existing_draft_validation",
+		"draft_source":         "read_chapter",
+		"story_contract_kept":  true,
+		"character_rules_kept": true,
+		"next_step":            "Read the current draft once, then validate or locally repair it. Do not replan or redraft merely because drafting-only context was omitted.",
+	}
+}
+
+func keepMapKeys(values map[string]any, keys ...string) {
+	allowed := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		allowed[key] = struct{}{}
+	}
+	for key := range values {
+		if _, keep := allowed[key]; !keep {
+			delete(values, key)
+		}
 	}
 }
 

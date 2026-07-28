@@ -165,6 +165,65 @@ func TestCompactWriterCharacterWorksetPreservesDecisionFieldsAndAllCharacters(t 
 	}
 }
 
+func TestCompactWriterRecoveryContextKeepsValidationAuthority(t *testing.T) {
+	payload := map[string]any{
+		"working_memory": map[string]any{
+			"current_chapter_outline": "exact contract",
+			"user_rules":              "reader rules",
+			"word_budget":             "soft target",
+			"rewrite_brief":           "local repair",
+			"previous_tail":           strings.Repeat("already represented prose", 500),
+			"future_chapter_promises": strings.Repeat("drafting scaffold", 500),
+			"simulation_profile":      strings.Repeat("drafting simulation", 500),
+		},
+		"episodic_memory": map[string]any{
+			"character_workset":    "canonical cast",
+			"recent_state_changes": "current state",
+			"relationship_state":   "current relationships",
+			"foreshadow_ledger":    "active promises",
+			"planning_tier":        "chapter",
+			"recent_summaries":     strings.Repeat("duplicated continuity", 500),
+		},
+		"reference_pack": map[string]any{
+			"style_anchors": "technique only",
+			"references":    strings.Repeat("source corpus duplication", 500),
+		},
+	}
+
+	compactWriterRecoveryContext(payload)
+	working := payload["working_memory"].(map[string]any)
+	for _, key := range []string{"current_chapter_outline", "user_rules", "word_budget", "rewrite_brief"} {
+		if _, ok := working[key]; !ok {
+			t.Fatalf("recovery lost working_memory.%s", key)
+		}
+	}
+	for _, removed := range []string{"previous_tail", "future_chapter_promises", "simulation_profile"} {
+		if _, ok := working[removed]; ok {
+			t.Fatalf("drafting-only working_memory.%s remained", removed)
+		}
+	}
+	episodic := payload["episodic_memory"].(map[string]any)
+	for _, key := range []string{"character_workset", "recent_state_changes", "relationship_state", "foreshadow_ledger"} {
+		if _, ok := episodic[key]; !ok {
+			t.Fatalf("recovery lost episodic_memory.%s", key)
+		}
+	}
+	references := payload["reference_pack"].(map[string]any)
+	if references["style_anchors"] != "technique only" {
+		t.Fatalf("style anchors were lost: %+v", references)
+	}
+	if _, ok := references["references"]; ok {
+		t.Fatal("source corpus duplication remained in validation context")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) >= 4*1024 {
+		t.Fatalf("recovery projection=%d bytes, expected deterministic headroom", len(raw))
+	}
+}
+
 func TestWriterReadChapterToolBoundsPriorContinuityTail(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
