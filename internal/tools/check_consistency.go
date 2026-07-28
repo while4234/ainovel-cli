@@ -49,7 +49,7 @@ func (t *CheckConsistencyTool) ConcurrencySafe(_ json.RawMessage) bool { return 
 func (t *CheckConsistencyTool) Schema() map[string]any {
 	sceneCheckSchema := schema.Object(
 		schema.Property("scene", schema.Int("章节契约中的场景序号，从 1 开始")).Required(),
-		schema.Property("evidence", schema.String("当前草稿中可精确检索的原文短句；不是概述")).Required(),
+		schema.Property("evidence", schema.String(`当前草稿中可精确检索的原文短句；不是概述。若计划场景完全缺失，必须填固定值 "MISSING_FROM_DRAFT"，把对应 match 字段设为 false，并添加同场景的 critical/error finding`)).Required(),
 		schema.Property("time_and_place_match", schema.Bool("时间与命名地点是否符合该场景契约")).Required(),
 		schema.Property("pov_match", schema.Bool("POV 是否符合该场景契约")).Required(),
 		schema.Property("characters_match", schema.Bool("参与人物及其身份是否符合该场景契约")).Required(),
@@ -94,10 +94,10 @@ func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) 
 	if content == "" {
 		return nil, fmt.Errorf("no content found for chapter %d: %w", a.Chapter, errs.ErrToolPrecondition)
 	}
-	if err := t.validateSceneChecks(a.Chapter, content, a.SceneChecks); err != nil {
+	if err := t.validateCharacterFindings(a.Chapter, a.Findings); err != nil {
 		return nil, err
 	}
-	if err := t.validateCharacterFindings(a.Chapter, a.Findings); err != nil {
+	if err := t.validateSceneChecks(a.Chapter, content, a.SceneChecks, a.Findings); err != nil {
 		return nil, err
 	}
 	blocking := false
@@ -142,6 +142,7 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 	chapter int,
 	content string,
 	checks []consistencySceneCheck,
+	findings []domain.ConsistencyIssue,
 ) error {
 	outline, err := t.store.Outline.GetChapterOutline(chapter)
 	if err != nil {
@@ -170,18 +171,34 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 		}
 		seen[check.Scene] = struct{}{}
 		evidence := strings.TrimSpace(check.Evidence)
+		allMatch := check.TimeAndPlaceMatch && check.POVMatch && check.CharactersMatch &&
+			check.EventOrderMatch && check.KnowledgeMatch && check.IrreversibleMatch
+		if !allMatch && evidence == "MISSING_FROM_DRAFT" {
+			if !hasBlockingSceneFinding(findings, check.Scene) {
+				return fmt.Errorf(
+					"scene_checks[%d] reports planned scene %d missing; add a critical/error finding with scene=\"scene %d\", violated_field naming the failed chapter-contract field, and an executable repair: %w",
+					index, check.Scene, check.Scene, errs.ErrToolPrecondition,
+				)
+			}
+			continue
+		}
 		if len([]rune(evidence)) < 8 || !strings.Contains(content, evidence) {
+			if !allMatch {
+				return fmt.Errorf(
+					"scene_checks[%d] reports a mismatch but evidence is not exact draft text. Quote the nearest conflicting passage, or use MISSING_FROM_DRAFT when planned scene %d is wholly absent and add a blocking finding: %w",
+					index, check.Scene, errs.ErrToolPrecondition,
+				)
+			}
 			return fmt.Errorf(
 				"scene_checks[%d].evidence is not an exact current-draft quote of at least 8 characters; call read_chapter and quote the draft, never invent or summarize evidence: %w",
 				index, errs.ErrToolPrecondition,
 			)
 		}
 		evidenceOffsets[check.Scene] = strings.Index(content, evidence)
-		if !check.TimeAndPlaceMatch || !check.POVMatch || !check.CharactersMatch ||
-			!check.EventOrderMatch || !check.KnowledgeMatch || !check.IrreversibleMatch {
+		if !allMatch && !hasBlockingSceneFinding(findings, check.Scene) {
 			return fmt.Errorf(
-				"scene_checks[%d] marks a chapter-contract dimension as failed; add a blocking finding and repair the draft before recording a passing consistency receipt: %w",
-				index, errs.ErrToolPrecondition,
+				"scene_checks[%d] marks a chapter-contract dimension as failed; add a critical/error finding with scene=\"scene %d\" and repair the draft before recording a passing consistency receipt: %w",
+				index, check.Scene, errs.ErrToolPrecondition,
 			)
 		}
 	}
@@ -202,6 +219,21 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 		previousOffset = offset
 	}
 	return nil
+}
+
+func hasBlockingSceneFinding(findings []domain.ConsistencyIssue, scene int) bool {
+	want := fmt.Sprintf("scene %d", scene)
+	for _, finding := range findings {
+		severity := strings.ToLower(strings.TrimSpace(finding.Severity))
+		if severity != "critical" && severity != "error" {
+			continue
+		}
+		locator := strings.ToLower(strings.TrimSpace(finding.Scene))
+		if locator == want || locator == fmt.Sprintf("%d", scene) {
+			return true
+		}
+	}
+	return false
 }
 
 func compactIndexedSceneContracts(scenes []string) string {

@@ -385,6 +385,43 @@ func TestWriterPhaseDropsNewestNovelContextAfterValidation(t *testing.T) {
 	}
 }
 
+func TestWriterPhaseKeepsFreshRecoveryContractAfterHistoricalValidation(t *testing.T) {
+	oldCheckID := "old-consistency"
+	newContextID := "fresh-context"
+	newReadID := "fresh-read"
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("old validation turn"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: oldCheckID, Name: "check_consistency", Args: []byte(`{"chapter":1}`)}),
+		}},
+		agentcore.ToolResultMsg(oldCheckID, []byte(`{"chapter":1,"passed":true}`), false),
+		agentcore.UserMsg("resume the current draft against the authoritative contract"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: newContextID, Name: "novel_context", Args: []byte(`{"chapter":1}`)}),
+		}},
+		agentcore.ToolResultMsg(newContextID, []byte(`{"chapter_contract":{"scenes":["scene 1","scene 2","scene 3","scene 4"]}}`), false),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: newReadID, Name: "read_chapter", Args: []byte(`{"chapter":1,"source":"draft"}`)}),
+		}},
+		agentcore.ToolResultMsg(newReadID, []byte(`{"content":"current chapter prose"}`), false),
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, _, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextResult := view[5].(agentcore.Message)
+	if contextResult.Metadata["compacted_tool_result"] == true ||
+		!strings.Contains(contextResult.TextContent(), `"scene 4"`) {
+		t.Fatalf("fresh recovery contract was cleared by a historical receipt: %+v", contextResult)
+	}
+	readResult := view[7].(agentcore.Message)
+	if !strings.Contains(readResult.TextContent(), "current chapter prose") {
+		t.Fatalf("fresh draft evidence was lost: %q", readResult.TextContent())
+	}
+}
+
 func TestWriterOverflowRecoveryDropsNewestNovelContext(t *testing.T) {
 	readCallID := "current-draft"
 	contextCallID := "overflowing-context"

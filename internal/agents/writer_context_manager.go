@@ -90,10 +90,11 @@ func newWriterValidationPhaseStrategy(cfg corecontext.ToolResultMicrocompactConf
 func (s *writerValidationPhaseStrategy) Name() string { return "writer_validation_phase" }
 
 func (s *writerValidationPhaseStrategy) Apply(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
-	hasValidation := hasWriterValidationReceipt(view)
-	hasPersistedDraft := hasPersistedWriterDraftReceipt(view)
-	hasDuplicateEvidence := hasDuplicateWriterContextResults(view)
-	hasCompletedRationale := hasCompletedWriterToolRationale(view)
+	currentTurn := currentWriterTurn(view)
+	hasValidation := hasWriterValidationReceipt(currentTurn)
+	hasPersistedDraft := hasPersistedWriterDraftReceipt(currentTurn)
+	hasDuplicateEvidence := hasDuplicateWriterContextResults(currentTurn)
+	hasCompletedRationale := hasCompletedWriterToolRationale(currentTurn)
 	if !hasValidation && !hasPersistedDraft && !hasDuplicateEvidence && !hasCompletedRationale {
 		return view, corecontext.StrategyResult{Name: s.Name()}, nil
 	}
@@ -149,7 +150,17 @@ func (s *writerValidationPhaseStrategy) compact(ctx context.Context, transcript,
 	_ = ctx
 	_ = transcript
 	_ = budget
-	return compactWriterPhase(view, s.keepRecent, s.clearedMessage, preferOriginalContext, hasWriterValidationReceipt(view))
+	return compactWriterPhase(view, s.keepRecent, s.clearedMessage, preferOriginalContext, hasWriterValidationReceipt(currentWriterTurn(view)))
+}
+
+func currentWriterTurn(msgs []agentcore.AgentMessage) []agentcore.AgentMessage {
+	for index := len(msgs) - 1; index >= 0; index-- {
+		message, ok := msgs[index].(agentcore.Message)
+		if ok && message.Role == agentcore.RoleUser {
+			return msgs[index:]
+		}
+	}
+	return msgs
 }
 
 func hasWriterValidationReceipt(msgs []agentcore.AgentMessage) bool {

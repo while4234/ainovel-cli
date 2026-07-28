@@ -50,7 +50,10 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   restores the required consistency-before-de-AI validation order for resumed
   drafts, requires planned-scene evidence to follow narrative order, and bounds
   scene-contract error feedback so a recoverable scene-count mistake cannot
-  inflate the Writer context with repeated full outline payloads.
+  inflate the Writer context with repeated full outline payloads. A fresh
+  recovery turn now retains its newly loaded chapter contract despite older
+  validation receipts, and wholly missing planned scenes can be recorded as
+  blocking findings instead of entering an impossible exact-quote retry loop.
 - 2026-07-28 `current HEAD` `fix: separate chapter word guidance from hard limits`:
   treats the dynamic per-chapter allocation and approximate book total as soft
   pacing guidance, while the saved user chapter range remains the only creation

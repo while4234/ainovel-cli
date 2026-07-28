@@ -140,3 +140,80 @@ func TestCompactIndexedSceneContractsBoundsErrorContext(t *testing.T) {
 		t.Fatalf("compact contracts lost identity labels: %q", got)
 	}
 }
+
+func TestCheckConsistencyRecordsMissingPlannedSceneAsBlockingFinding(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Characters.Save([]domain.Character{{
+		ID: "lin_shuran", Name: "林舒然",
+	}}); err != nil {
+		t.Fatalf("Save characters: %v", err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter: 1,
+		Scenes:  []string{"清晨公寓", "晚间公寓"},
+	}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := st.Drafts.SaveDraft(1, "# 第一章\n\n清晨公寓里，林舒然准备早餐。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	raw, err := NewCheckConsistencyTool(st).Execute(context.Background(), json.RawMessage(`{
+		"chapter":1,
+		"scene_checks":[
+			{"scene":1,"evidence":"清晨公寓里，林舒然准备早餐","time_and_place_match":true,"pov_match":true,"characters_match":true,"event_order_match":true,"knowledge_match":true,"irreversible_result_match":true},
+			{"scene":2,"evidence":"MISSING_FROM_DRAFT","time_and_place_match":false,"pov_match":false,"characters_match":false,"event_order_match":false,"knowledge_match":false,"irreversible_result_match":false}
+		],
+		"findings":[{
+			"type":"arc_beat_miss",
+			"severity":"error",
+			"character_id":"lin_shuran",
+			"scene":"scene 2",
+			"evidence":"MISSING_FROM_DRAFT",
+			"violated_field":"chapter_contract.scenes[2]",
+			"description":"晚间公寓场景缺失",
+			"suggestion":"在章末补写晚间公寓复盘与周末采买计划"
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("missing-scene finding should be recorded, got %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["passed"] != false || result["blocking"] != true {
+		t.Fatalf("missing scene must block consistency: %s", raw)
+	}
+	if st.Checkpoints.LatestByStep(domain.ChapterScope(1), "consistency_check") != nil {
+		t.Fatal("blocking missing scene must not create a passing checkpoint")
+	}
+}
+
+func TestCheckConsistencyMissingMarkerRequiresBlockingFinding(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter: 1,
+		Scenes:  []string{"晚间公寓"},
+	}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	if err := st.Drafts.SaveDraft(1, "# 第一章\n\n当前正文没有晚间场景。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	_, err := NewCheckConsistencyTool(st).Execute(context.Background(), json.RawMessage(`{
+		"chapter":1,
+		"scene_checks":[
+			{"scene":1,"evidence":"MISSING_FROM_DRAFT","time_and_place_match":false,"pov_match":false,"characters_match":false,"event_order_match":false,"knowledge_match":false,"irreversible_result_match":false}
+		],
+		"findings":[]
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "add a critical/error finding") {
+		t.Fatalf("expected missing marker without finding to fail, got %v", err)
+	}
+}
