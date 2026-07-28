@@ -1225,7 +1225,66 @@ func (t *writerContextTool) executeActiveChapterContext(ctx context.Context, arg
 		"viewpoint_source":             "current chapter outline, never the imitation corpus",
 		"next_step":                    "Draft this exact chapter from the saved outline and canonical characters; do not replace its genre, setting, plot, or cast.",
 	}
+	compactWriterCharacterWorkset(payload)
 	return json.Marshal(payload)
+}
+
+// compactWriterCharacterWorkset keeps every authoritative chapter character
+// and every field that can change prose decisions, but removes duplicated
+// biography prose that is already represented by the chapter-specific
+// contracts, relationship state, and recent state changes. This is a
+// structural projection rather than a summary: IDs, goals, voice, constraints,
+// and knowledge boundaries remain verbatim.
+func compactWriterCharacterWorkset(payload map[string]any) {
+	episodic, ok := payload["episodic_memory"].(map[string]any)
+	if !ok {
+		return
+	}
+	workset, ok := episodic["character_workset"].(map[string]any)
+	if !ok {
+		return
+	}
+	cards := make([]any, 0, 8)
+	for _, section := range []string{"full", "compressed"} {
+		items, _ := workset[section].([]any)
+		for _, item := range items {
+			card, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			projected := make(map[string]any, 12)
+			for _, key := range []string{
+				"id", "name", "aliases", "role", "tier", "faction",
+				"goal", "motivation", "conflict", "voice", "constraints",
+				"knowledge_boundary",
+			} {
+				if value, exists := card[key]; exists {
+					projected[key] = value
+				}
+			}
+			cards = append(cards, projected)
+		}
+	}
+	if len(cards) == 0 {
+		return
+	}
+	requestedIDs := any(nil)
+	if diagnostics, ok := workset["diagnostics"].(map[string]any); ok {
+		requestedIDs = diagnostics["requested_ids"]
+	}
+	episodic["character_workset"] = map[string]any{
+		"full": cards,
+		"diagnostics": map[string]any{
+			"requested_ids":  requestedIDs,
+			"selection_mode": "stable_id",
+			"projection":     "writer_quality_fields",
+			"preserved_fields": []string{
+				"id", "name", "aliases", "role", "tier", "faction",
+				"goal", "motivation", "conflict", "voice", "constraints",
+				"knowledge_boundary",
+			},
+		},
+	}
 }
 
 func hasExplicitContextScope(raw json.RawMessage) bool {

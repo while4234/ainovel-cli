@@ -112,6 +112,59 @@ func TestWriterContextToolRejectsPlanningScopeAndMarksActivePackageAuthoritative
 	}
 }
 
+func TestCompactWriterCharacterWorksetPreservesDecisionFieldsAndAllCharacters(t *testing.T) {
+	payload := map[string]any{
+		"episodic_memory": map[string]any{
+			"character_workset": map[string]any{
+				"full": []any{
+					map[string]any{
+						"id": "hero", "name": "主角", "role": "主角",
+						"goal": "完成本章目标", "voice": "克制", "constraints": []any{"不能泄密"},
+						"knowledge_boundary": map[string]any{"unknown": []any{"真相"}},
+						"description":        strings.Repeat("重复传记", 2_000),
+						"key_backstory":      []any{strings.Repeat("重复旧事", 1_000)},
+					},
+				},
+				"compressed": []any{
+					map[string]any{
+						"id": "support", "name": "配角", "role": "协助者",
+						"goal": "推进线索", "voice": "简洁", "constraints": []any{"不抢戏"},
+					},
+				},
+				"diagnostics": map[string]any{
+					"requested_ids": []any{"hero", "support"},
+				},
+			},
+		},
+	}
+
+	compactWriterCharacterWorkset(payload)
+	episodic := payload["episodic_memory"].(map[string]any)
+	workset := episodic["character_workset"].(map[string]any)
+	cards := workset["full"].([]any)
+	if len(cards) != 2 {
+		t.Fatalf("projected character count=%d, want 2", len(cards))
+	}
+	hero := cards[0].(map[string]any)
+	for _, key := range []string{"id", "name", "role", "goal", "voice", "constraints", "knowledge_boundary"} {
+		if _, ok := hero[key]; !ok {
+			t.Fatalf("decision field %q was lost: %+v", key, hero)
+		}
+	}
+	for _, duplicate := range []string{"description", "key_backstory"} {
+		if _, ok := hero[duplicate]; ok {
+			t.Fatalf("duplicated biography field %q crossed Writer boundary", duplicate)
+		}
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) >= 2*1024 {
+		t.Fatalf("projected workset=%d bytes, expected deterministic headroom", len(raw))
+	}
+}
+
 func TestWriterReadChapterToolBoundsPriorContinuityTail(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
