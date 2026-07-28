@@ -170,6 +170,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/models", s.handleModels)
 	mux.HandleFunc("/api/models/default", s.handleDefaultModel)
 	mux.HandleFunc("/api/models/switch", s.handleModelSwitch)
+	mux.HandleFunc("/api/models/thinking", s.handleGlobalModelThinking)
 	mux.HandleFunc("/api/models/cocreate-timeout", s.handleCoCreateTimeout)
 	mux.HandleFunc("/api/models/cocreate-max-tokens", s.handleCoCreateMaxTokens)
 	mux.HandleFunc("/api/models/retry-settings", s.handleRetrySettings)

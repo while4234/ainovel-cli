@@ -850,6 +850,20 @@ export function switchGlobalModel(role, provider, model) {
   });
 }
 
+export function inheritGlobalModel(role) {
+  return request('/api/models/switch', {
+    method: 'POST',
+    body: JSON.stringify({ role, inherit: true })
+  });
+}
+
+export function setGlobalThinking(role, level) {
+  return request('/api/models/thinking', {
+    method: 'POST',
+    body: JSON.stringify({ role, level })
+  });
+}
+
 export function switchGlobalDefaultModel(provider, model) {
   return request('/api/models/default', {
     method: 'POST',

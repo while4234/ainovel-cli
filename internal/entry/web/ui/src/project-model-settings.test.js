@@ -39,6 +39,18 @@ describe('project model settings panel', () => {
     expect(body).toContain('adaptationOutlineAuditRetryMaxAttempts');
   });
 
+  it('edits global stage defaults when no project is active', () => {
+    const switchBody = extractFunctionBody(appSource, 'switchModelRoute');
+    const inheritBody = extractFunctionBody(appSource, 'inheritModelRoute');
+    const thinkingBody = extractFunctionBody(appSource, 'changeThinking');
+
+    expect(switchBody).toContain('switchGlobalModel(role, provider, model)');
+    expect(inheritBody).toContain('inheritGlobalModel(role)');
+    expect(thinkingBody).toContain('setGlobalThinking(role, level)');
+    expect(appSource).toContain('const stages = modelConfig?.stages || []');
+    expect(appSource).toContain('当前未打开项目：这里保存全局阶段默认，新建项目会使用这些设置。');
+  });
+
   it('keeps same-named stage models distinguishable by provider', () => {
     expect(buildStageModelRouteOptions([
       { name: 'deepseek-suifeng', models: ['deepseek-v4-pro'] },

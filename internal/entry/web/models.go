@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/voocel/ainovel-cli/internal/agents"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/codexauth"
 	"github.com/voocel/ainovel-cli/internal/grokauth"
@@ -19,14 +20,15 @@ import (
 
 var modelConfigRoles = []string{"default", "coordinator", "architect", "character", "writer", "editor", "auditor"}
 
-var qualityFirstGrokStages = []string{
-	bootstrap.StageCoCreate,
-	bootstrap.StageSourceAnalysis,
-	bootstrap.StageSkeleton,
-	bootstrap.StageDetailOutline,
-	bootstrap.StageReview,
-	bootstrap.StageCharacterAnalysis,
-	bootstrap.StageCharacterReview,
+var globalModelStageLabels = map[string]string{
+	bootstrap.StageCoCreate:          "首次/阶段共创",
+	bootstrap.StageSourceAnalysis:    "资料分析",
+	bootstrap.StageSkeleton:          "骨架规划",
+	bootstrap.StageDetailOutline:     "详细提纲",
+	bootstrap.StageWriting:           "正文创作",
+	bootstrap.StageReview:            "审校与摘要",
+	bootstrap.StageCharacterAnalysis: "角色分析",
+	bootstrap.StageCharacterReview:   "角色审核",
 }
 
 const (
@@ -303,12 +305,20 @@ func (s *Server) handleModelSwitch(w http.ResponseWriter, r *http.Request) {
 		Role     string `json:"role"`
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
+		Inherit  bool   `json:"inherit"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	models, runtime, err := s.addGlobalProviderModel(req.Role, req.Provider, req.Model, bootstrap.ProviderConfig{})
+	var models apiModelConfig
+	var runtime map[string]any
+	var err error
+	if req.Inherit {
+		models, runtime, err = s.clearGlobalModelRoute(req.Role)
+	} else {
+		models, runtime, err = s.addGlobalProviderModel(req.Role, req.Provider, req.Model, bootstrap.ProviderConfig{})
+	}
 	if err != nil {
 		writeProjectLifecycleError(w, err)
 		return
@@ -317,6 +327,27 @@ func (s *Server) handleModelSwitch(w http.ResponseWriter, r *http.Request) {
 		"models":  models,
 		"runtime": runtime,
 	})
+}
+
+func (s *Server) handleGlobalModelThinking(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Role  string `json:"role"`
+		Level string `json:"level"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	models, runtime, err := s.setGlobalModelThinking(req.Role, req.Level)
+	if err != nil {
+		writeProjectLifecycleError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models, "runtime": runtime})
 }
 
 func (s *Server) handleCoCreateTimeout(w http.ResponseWriter, r *http.Request) {
@@ -576,7 +607,77 @@ func (s *Server) addGlobalProviderModel(role, provider, model string, pc bootstr
 		return apiModelConfig{}, nil, err
 	}
 	s.setCurrentConfig(cfg)
+	s.refreshProjectsAfterGlobalModelSettings(cfg)
 	return s.globalModelConfig(cfg), s.runtimePayload(cfg), nil
+}
+
+func (s *Server) clearGlobalModelRoute(role string) (apiModelConfig, map[string]any, error) {
+	role = normalizeModelRole(role)
+	if role == "" || role == "default" {
+		return apiModelConfig{}, nil, fmt.Errorf("default model route cannot inherit")
+	}
+	if !globalModelRoleAllowed(role) {
+		return apiModelConfig{}, nil, fmt.Errorf("unknown role %q", role)
+	}
+	cfg := s.currentConfig()
+	if cfg.Roles != nil {
+		rc := cfg.Roles[role]
+		rc.Provider = ""
+		rc.Model = ""
+		if globalRoleConfigEmpty(rc) {
+			delete(cfg.Roles, role)
+		} else {
+			cfg.Roles[role] = rc
+		}
+	}
+	if err := cfg.ValidateBase(); err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	if err := saveWebConfig(cfg); err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	s.setCurrentConfig(cfg)
+	s.refreshProjectsAfterGlobalModelSettings(cfg)
+	return s.globalModelConfig(cfg), s.runtimePayload(cfg), nil
+}
+
+func (s *Server) setGlobalModelThinking(role, level string) (apiModelConfig, map[string]any, error) {
+	role = normalizeModelRole(role)
+	if !globalModelRoleAllowed(role) {
+		return apiModelConfig{}, nil, fmt.Errorf("unknown role %q", role)
+	}
+	parsed, err := agents.ParseThinkingLevel(level)
+	if err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	cfg := s.currentConfig()
+	if role == "default" {
+		cfg.ReasoningEffort = string(parsed)
+	} else {
+		if cfg.Roles == nil {
+			cfg.Roles = make(map[string]bootstrap.RoleConfig)
+		}
+		rc := cfg.Roles[role]
+		rc.ReasoningEffort = string(parsed)
+		if globalRoleConfigEmpty(rc) {
+			delete(cfg.Roles, role)
+		} else {
+			cfg.Roles[role] = rc
+		}
+	}
+	if err := cfg.ValidateBase(); err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	if err := saveWebConfig(cfg); err != nil {
+		return apiModelConfig{}, nil, err
+	}
+	s.setCurrentConfig(cfg)
+	s.refreshProjectsAfterGlobalModelSettings(cfg)
+	return s.globalModelConfig(cfg), s.runtimePayload(cfg), nil
+}
+
+func globalRoleConfigEmpty(rc bootstrap.RoleConfig) bool {
+	return rc.Provider == "" && rc.Model == "" && rc.ReasoningEffort == "" && len(rc.Fallbacks) == 0
 }
 
 func (s *Server) addGlobalProviderModelWithProbe(ctx context.Context, role, provider, model string, pc bootstrap.ProviderConfig) (apiModelConfig, map[string]any, error) {
@@ -660,6 +761,11 @@ func globalModelRoleAllowed(role string) bool {
 			return true
 		}
 	}
+	for _, stage := range bootstrap.KnownModelStages {
+		if role == bootstrap.StageRouteKey(stage) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -690,9 +796,25 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 			ReasoningEffort: cfg.ResolveReasoningEffort(normalized),
 		})
 	}
+	stages := make([]apiModelRoute, 0, len(bootstrap.KnownModelStages))
+	for _, stage := range bootstrap.KnownModelStages {
+		key := bootstrap.StageRouteKey(stage)
+		fallbackRole := bootstrap.StageFallbackRole(stage)
+		provider, model, explicit := globalModelSelection(cfg, key, fallbackRole)
+		stages = append(stages, apiModelRoute{
+			Role:            key,
+			Label:           globalModelStageLabels[stage],
+			FallbackRole:    fallbackRole,
+			Provider:        provider,
+			Model:           model,
+			Explicit:        explicit,
+			ReasoningEffort: cfg.ResolveReasoningEffort(key),
+		})
+	}
 	return apiModelConfig{
 		Providers:                              outProviders,
 		Roles:                                  roles,
+		Stages:                                 stages,
 		ThinkingLevels:                         []string{"", "off", "low", "medium", "high", "xhigh", "max"},
 		ThinkingRule:                           "default applies to coordinator, architect, character, writer, editor, and auditor unless that agent has its own model or reasoning setting",
 		CoCreateTimeoutSeconds:                 cfg.EffectiveCoCreateTimeoutSeconds(),
@@ -702,6 +824,16 @@ func (s *Server) globalModelConfig(cfg bootstrap.Config) apiModelConfig {
 		AdaptationOutlineAuditRetryMaxAttempts: cfg.EffectiveAdaptationOutlineAuditRetryMaxAttempts(),
 		ModelAutoSwitch:                        apiModelAutoSwitchFromConfig(cfg.ModelAutoSwitch),
 	}
+}
+
+func globalModelSelection(cfg bootstrap.Config, role, fallbackRole string) (string, string, bool) {
+	if rc, ok := cfg.Roles[role]; ok && strings.TrimSpace(rc.Provider) != "" && strings.TrimSpace(rc.Model) != "" {
+		return strings.TrimSpace(rc.Provider), strings.TrimSpace(rc.Model), true
+	}
+	if rc, ok := cfg.Roles[fallbackRole]; ok && strings.TrimSpace(rc.Provider) != "" && strings.TrimSpace(rc.Model) != "" {
+		return strings.TrimSpace(rc.Provider), strings.TrimSpace(rc.Model), false
+	}
+	return strings.TrimSpace(cfg.Provider), strings.TrimSpace(cfg.ModelName), false
 }
 
 func apiProviderFromConfig(name string, pc bootstrap.ProviderConfig, models []string, autoSwitch bootstrap.ModelAutoSwitchConfig) apiModelProvider {
@@ -782,22 +914,23 @@ type configuredModelRoute struct {
 
 func recommendedNewProjectStageRoutes(cfg bootstrap.Config) map[string]bootstrap.RoleConfig {
 	grok := findConfiguredModelRoute(cfg, isGrok45Model, bootstrap.StageRouteKey(bootstrap.StageSkeleton), "architect", "editor")
-	deepseek := findConfiguredModelRoute(cfg, isDeepSeekV4ProModel, bootstrap.StageRouteKey(bootstrap.StageWriting), "writer")
-	if grok.model == "" && deepseek.model == "" {
-		return nil
-	}
 	if grok.model == "" {
-		grok = deepseek
-	}
-	if deepseek.model == "" {
-		deepseek = grok
+		return nil
 	}
 
 	routes := make(map[string]bootstrap.RoleConfig, len(bootstrap.KnownModelStages))
-	for _, stage := range qualityFirstGrokStages {
-		routes[stage] = bootstrap.RoleConfig{Provider: grok.provider, Model: grok.model}
+	for _, stage := range bootstrap.KnownModelStages {
+		if configured, ok := cfg.Roles[bootstrap.StageRouteKey(stage)]; ok &&
+			providerCanUseModel(cfg, configured.Provider, configured.Model) {
+			routes[stage] = configured
+			continue
+		}
+		routes[stage] = bootstrap.RoleConfig{
+			Provider:        grok.provider,
+			Model:           grok.model,
+			ReasoningEffort: "xhigh",
+		}
 	}
-	routes[bootstrap.StageWriting] = bootstrap.RoleConfig{Provider: deepseek.provider, Model: deepseek.model}
 	return routes
 }
 
@@ -831,11 +964,6 @@ func providerCanUseModel(cfg bootstrap.Config, provider, model string) bool {
 func isGrok45Model(model string) bool {
 	normalized := compactModelName(model)
 	return strings.Contains(normalized, "grok45")
-}
-
-func isDeepSeekV4ProModel(model string) bool {
-	normalized := compactModelName(model)
-	return strings.Contains(normalized, "deepseekv4pro")
 }
 
 func compactModelName(model string) string {

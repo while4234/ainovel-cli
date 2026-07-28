@@ -155,6 +155,61 @@ func TestGlobalModelSwitchRoutePersistsRole(t *testing.T) {
 	}
 }
 
+func TestGlobalStageModelAndThinkingPersist(t *testing.T) {
+	cfg := testWebConfig(t)
+	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")
+	cfg.Providers["grok-oauth"] = bootstrap.ProviderConfig{
+		Type: "openai", APIKey: "sk-test", Models: []string{"grok-4.5"},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	var initial struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodGet, "/api/models", "", &initial)
+	if len(initial.Models.Stages) != len(bootstrap.KnownModelStages) {
+		t.Fatalf("global stages = %d, want %d", len(initial.Models.Stages), len(bootstrap.KnownModelStages))
+	}
+
+	stageRole := bootstrap.StageRouteKey(bootstrap.StageWriting)
+	var switched struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/switch", `{"role":"stage:writing","provider":"grok-oauth","model":"grok-4.5"}`, &switched)
+	route := findModelRoute(switched.Models.Stages, stageRole)
+	if route.Provider != "grok-oauth" || route.Model != "grok-4.5" || !route.Explicit {
+		t.Fatalf("writing stage route = %+v", route)
+	}
+
+	var thinking struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/thinking", `{"role":"stage:writing","level":"xhigh"}`, &thinking)
+	route = findModelRoute(thinking.Models.Stages, stageRole)
+	if route.ReasoningEffort != "xhigh" {
+		t.Fatalf("writing stage reasoning = %q, want xhigh", route.ReasoningEffort)
+	}
+
+	var inherited struct {
+		Models apiModelConfig `json:"models"`
+	}
+	serveJSON(t, server.Handler(), http.MethodPost, "/api/models/switch", `{"role":"stage:writing","inherit":true}`, &inherited)
+	route = findModelRoute(inherited.Models.Stages, stageRole)
+	if route.Explicit || route.ReasoningEffort != "xhigh" {
+		t.Fatalf("inherited writing stage route = %+v, want inherited model with xhigh override", route)
+	}
+
+	saved, err := bootstrap.LoadConfigFile(cfg.PersistPath)
+	if err != nil {
+		t.Fatalf("LoadConfigFile: %v", err)
+	}
+	savedRoute := saved.Roles[stageRole]
+	if savedRoute.Provider != "" || savedRoute.Model != "" || savedRoute.ReasoningEffort != "xhigh" {
+		t.Fatalf("saved writing stage = %+v", savedRoute)
+	}
+}
+
 func TestGlobalCoCreateTimeoutPersists(t *testing.T) {
 	cfg := testWebConfig(t)
 	cfg.PersistPath = filepath.Join(testTempDir(t), "config.json")

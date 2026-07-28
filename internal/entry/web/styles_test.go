@@ -59,7 +59,7 @@ func TestCreateProjectWithStyleWritesProjectOverlay(t *testing.T) {
 	}
 }
 
-func TestCreateProjectUsesQualityFirstStageModelDefaults(t *testing.T) {
+func TestCreateProjectUsesGrokXHighForEveryStageByDefault(t *testing.T) {
 	cfg := testWebConfig(t)
 	cfg.Providers = map[string]bootstrap.ProviderConfig{
 		"deepseek-backend": {Type: "openai", APIKey: "sk-test", Models: []string{"deepseek-v4-pro"}},
@@ -81,15 +81,11 @@ func TestCreateProjectUsesQualityFirstStageModelDefaults(t *testing.T) {
 		t.Fatalf("decode manifest: %v", err)
 	}
 	overlay := readProjectOverlay(t, manifest)
-	for _, stage := range qualityFirstGrokStages {
+	for _, stage := range bootstrap.KnownModelStages {
 		route := overlay.Roles[bootstrap.StageRouteKey(stage)]
-		if route.Provider != "grok-backend" || route.Model != "grok-4.5" {
-			t.Fatalf("%s route = %+v, want grok-backend/grok-4.5", stage, route)
+		if route.Provider != "grok-backend" || route.Model != "grok-4.5" || route.ReasoningEffort != "xhigh" {
+			t.Fatalf("%s route = %+v, want grok-backend/grok-4.5@xhigh", stage, route)
 		}
-	}
-	writing := overlay.Roles[bootstrap.StageRouteKey(bootstrap.StageWriting)]
-	if writing.Provider != "deepseek-backend" || writing.Model != "deepseek-v4-pro" {
-		t.Fatalf("writing route = %+v, want deepseek-backend/deepseek-v4-pro", writing)
 	}
 }
 
@@ -116,9 +112,43 @@ func TestCreateProjectStageDefaultsFallBackToAvailableRecommendedModel(t *testin
 	overlay := readProjectOverlay(t, manifest)
 	for _, stage := range bootstrap.KnownModelStages {
 		route := overlay.Roles[bootstrap.StageRouteKey(stage)]
-		if route.Provider != "grok-backend" || route.Model != "grok-4.5" {
-			t.Fatalf("%s fallback route = %+v, want grok-backend/grok-4.5", stage, route)
+		if route.Provider != "grok-backend" || route.Model != "grok-4.5" || route.ReasoningEffort != "xhigh" {
+			t.Fatalf("%s fallback route = %+v, want grok-backend/grok-4.5@xhigh", stage, route)
 		}
+	}
+}
+
+func TestCreateProjectPrefersConfiguredGlobalStageDefaults(t *testing.T) {
+	cfg := testWebConfig(t)
+	cfg.Providers = map[string]bootstrap.ProviderConfig{
+		"deepseek-backend": {Type: "openai", APIKey: "sk-test", Models: []string{"deepseek-v4-pro"}},
+		"grok-backend":     {Type: "openai", APIKey: "sk-test", Models: []string{"grok-4.5"}},
+	}
+	cfg.Provider = "grok-backend"
+	cfg.ModelName = "grok-4.5"
+	cfg.Roles = map[string]bootstrap.RoleConfig{
+		bootstrap.StageRouteKey(bootstrap.StageWriting): {
+			Provider:        "deepseek-backend",
+			Model:           "deepseek-v4-pro",
+			ReasoningEffort: "high",
+		},
+	}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewBufferString(`{"name":"Configured Defaults"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var manifest ProjectManifest
+	if err := json.NewDecoder(rec.Body).Decode(&manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	writing := readProjectOverlay(t, manifest).Roles[bootstrap.StageRouteKey(bootstrap.StageWriting)]
+	if writing.Provider != "deepseek-backend" || writing.Model != "deepseek-v4-pro" || writing.ReasoningEffort != "high" {
+		t.Fatalf("writing route = %+v, want configured deepseek-v4-pro@high", writing)
 	}
 }
 

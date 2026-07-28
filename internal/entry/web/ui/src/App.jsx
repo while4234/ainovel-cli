@@ -84,6 +84,7 @@ import {
   getSetupStatus,
   getSnapshot,
   getSummarySnapshot,
+  inheritGlobalModel,
   inheritProjectModel,
   importSimulationProfile,
   listNovelLibrary,
@@ -127,6 +128,7 @@ import {
   setGlobalCoCreateMaxTokens,
   setGlobalCoCreateTimeout,
   setGlobalRetrySettings,
+  setGlobalThinking,
   setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
   setProjectRetrySettings,
@@ -141,6 +143,7 @@ import {
   startGrokLogin,
   steerProject,
   switchGlobalDefaultModel,
+  switchGlobalModel,
   switchProjectModel,
   testBackend,
   testGlobalProviderModel,
@@ -3878,17 +3881,26 @@ export default function App() {
   };
 
   const switchModelRoute = async (role, provider, model) => {
-    if (!activeProject?.id || !provider || !model) {
+    if (!role || !provider || !model) {
       return;
     }
     setBusy(true);
     setError('');
     try {
-      const data = await switchProjectModel(activeProject.id, role, provider, model);
+      const data = activeProject?.id
+        ? await switchProjectModel(activeProject.id, role, provider, model)
+        : await switchGlobalModel(role, provider, model);
       setModelConfig(data.models || modelConfig);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      const status = await getBackendStatus(activeProject.id);
-      setBackendStatus(status.backend || null);
+      if (data.runtime) {
+        setRuntime(data.runtime);
+      }
+      if (data.snapshot) {
+        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      }
+      if (activeProject?.id) {
+        const status = await getBackendStatus(activeProject.id);
+        setBackendStatus(status.backend || null);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -3897,17 +3909,26 @@ export default function App() {
   };
 
   const inheritModelRoute = async (role) => {
-    if (!activeProject?.id || !role || role === 'default') {
+    if (!role || role === 'default') {
       return;
     }
     setBusy(true);
     setError('');
     try {
-      const data = await inheritProjectModel(activeProject.id, role);
+      const data = activeProject?.id
+        ? await inheritProjectModel(activeProject.id, role)
+        : await inheritGlobalModel(role);
       setModelConfig(data.models || modelConfig);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      const status = await getBackendStatus(activeProject.id);
-      setBackendStatus(status.backend || null);
+      if (data.runtime) {
+        setRuntime(data.runtime);
+      }
+      if (data.snapshot) {
+        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      }
+      if (activeProject?.id) {
+        const status = await getBackendStatus(activeProject.id);
+        setBackendStatus(status.backend || null);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -3941,15 +3962,19 @@ export default function App() {
   };
 
   const changeThinking = async (role, level) => {
-    if (!activeProject?.id) {
-      return;
-    }
     setBusy(true);
     setError('');
     try {
-      const data = await setProjectThinking(activeProject.id, role, level);
+      const data = activeProject?.id
+        ? await setProjectThinking(activeProject.id, role, level)
+        : await setGlobalThinking(role, level);
       setModelConfig(data.models || modelConfig);
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      if (data.runtime) {
+        setRuntime(data.runtime);
+      }
+      if (data.snapshot) {
+        setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -8877,7 +8902,7 @@ function ModelPanel({
 }) {
   const config = runtime?.config || {};
   const roles = modelConfig?.roles || [];
-  const stages = activeProject?.id ? (modelConfig?.stages || []) : [];
+  const stages = modelConfig?.stages || [];
   const projectRoles = activeProject?.id ? roles.filter((route) => route.role !== 'default') : [];
   const providers = modelConfig?.providers || [];
   const levels = modelConfig?.thinking_levels || ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -9225,8 +9250,13 @@ function ModelPanel({
           <SlidersHorizontal size={17} />
           <span>创作阶段模型</span>
         </div>
+        <p className="muted">
+          {activeProject?.id
+            ? '这里保存当前项目的阶段路由；显式设置会覆盖全局默认。'
+            : '当前未打开项目：这里保存全局阶段默认，新建项目会使用这些设置。'}
+        </p>
         {stages.length === 0 ? (
-          <div className="empty-state">打开项目后可按阶段选择模型</div>
+          <div className="empty-state">当前配置没有可用的创作阶段模型</div>
         ) : (
           <div className="stage-model-list">
             {stages.map((route) => {
@@ -9252,7 +9282,7 @@ function ModelPanel({
                   }}
                 >
                   <option value={stageInheritedModelOption}>
-                    继承 {route.fallback_role || 'Agent'}（{defaultProvider} / {defaultModel}）
+                    继承 {route.fallback_role || 'Agent'}（{route.provider} / {route.model}）
                   </option>
                   {stageModelRouteOptions.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>

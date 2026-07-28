@@ -32,6 +32,7 @@ import {
   getGlobalModels,
   getContinuation,
   getProjectEvents,
+  inheritGlobalModel,
   inheritProjectModel,
   listNovelLibrary,
   listAdaptationAuditRuns,
@@ -65,6 +66,7 @@ import {
   setGlobalCoCreateMaxTokens,
   setGlobalCoCreateTimeout,
   setGlobalRetrySettings,
+  setGlobalThinking,
   setProjectCoCreateMaxTokens,
   setProjectCoCreateTimeout,
   setProjectRetrySettings,
@@ -625,6 +627,22 @@ describe('web API helpers', () => {
         provider: 'deepseek',
         model: 'deepseek-chat'
       })
+    }));
+  });
+
+  it('updates and inherits global stage routes and thinking', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ ok: true }));
+
+    await inheritGlobalModel('stage:writing');
+    await setGlobalThinking('stage:writing', 'xhigh');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/models/switch', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ role: 'stage:writing', inherit: true })
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/models/thinking', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ role: 'stage:writing', level: 'xhigh' })
     }));
   });
 
