@@ -137,6 +137,47 @@ func TestCheckConsistencyRejectsInventedSceneEvidence(t *testing.T) {
 	}
 }
 
+func TestCheckConsistencyAcceptsExactEvidenceAcrossParagraphWhitespace(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter: 1,
+		Scenes:  []string{"车内决定"},
+	}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+	draft := "# 第一章\n\n滨河路绕完一圈，车没有停。\n\n苏瑾琛靠在后排座椅上，闭着眼。\n"
+	if err := st.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	_, err := NewCheckConsistencyTool(st).Execute(context.Background(), json.RawMessage(`{
+		"chapter":1,
+		"scene_checks":[{
+			"scene":1,
+			"evidence":"滨河路绕完一圈，车没有停。苏瑾琛靠在后排座椅上，闭着眼。",
+			"time_and_place_match":true,
+			"pov_match":true,
+			"characters_match":true,
+			"event_order_match":true,
+			"knowledge_match":true,
+			"irreversible_result_match":true
+		}],
+		"findings":[]
+	}`))
+	if err != nil {
+		t.Fatalf("paragraph whitespace must not invalidate an otherwise exact quote: %v", err)
+	}
+}
+
+func TestFindConsistencyEvidenceStillRejectsParaphrase(t *testing.T) {
+	content := "滨河路绕完一圈，车没有停。\n\n苏瑾琛靠在后排座椅上，闭着眼。"
+	if _, found := findConsistencyEvidence(content, "滨河路绕完后，汽车没有停下。苏瑾琛闭目靠着后座。"); found {
+		t.Fatal("semantic paraphrase must not pass exact evidence matching")
+	}
+}
+
 func TestCheckConsistencyRequiresEvidenceInPlannedSceneOrder(t *testing.T) {
 	st := store.NewStore(testStoreDir(t))
 	if err := st.Init(); err != nil {

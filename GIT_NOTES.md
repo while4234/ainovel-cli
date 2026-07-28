@@ -46,7 +46,11 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-28 `pending` `fix: pin active scene validation schema`:
+- 2026-07-28 `pending` `fix: accept exact evidence across paragraphs`:
+  keeps consistency evidence text-and-punctuation exact while ignoring only
+  Unicode whitespace, so an otherwise verbatim quote spanning Markdown
+  paragraph breaks is not falsely rejected; paraphrases remain rejected.
+- 2026-07-28 `ffe9bb02` `fix: pin active scene validation schema`:
   publishes the active chapter's exact planned-scene count and compact indexed
   contracts in `check_consistency` JSON Schema, with equal `minItems` and
   `maxItems`, so Writer cannot confuse prose subsections with the four planned

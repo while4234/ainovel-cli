@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -213,7 +214,8 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 			}
 			continue
 		}
-		if len([]rune(evidence)) < 8 || !strings.Contains(content, evidence) {
+		evidenceOffset, evidenceFound := findConsistencyEvidence(content, evidence)
+		if len([]rune(normalizeConsistencyEvidence(evidence))) < 8 || !evidenceFound {
 			if !allMatch {
 				return fmt.Errorf(
 					"scene_checks[%d] reports a mismatch but evidence is not exact draft text. Quote the nearest conflicting passage, or use MISSING_FROM_DRAFT when planned scene %d is wholly absent and add a blocking finding: %w",
@@ -225,7 +227,7 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 				index, errs.ErrToolPrecondition,
 			)
 		}
-		evidenceOffsets[check.Scene] = strings.Index(content, evidence)
+		evidenceOffsets[check.Scene] = evidenceOffset
 		if !allMatch && !hasBlockingSceneFinding(findings, check.Scene) {
 			return fmt.Errorf(
 				"scene_checks[%d] marks a chapter-contract dimension as failed; add a critical/error finding with scene=\"scene %d\" and repair the draft before recording a passing consistency receipt: %w",
@@ -250,6 +252,28 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 		previousOffset = offset
 	}
 	return nil
+}
+
+func findConsistencyEvidence(content, evidence string) (int, bool) {
+	if offset := strings.Index(content, evidence); offset >= 0 {
+		return offset, true
+	}
+	normalizedContent := normalizeConsistencyEvidence(content)
+	normalizedEvidence := normalizeConsistencyEvidence(evidence)
+	if normalizedEvidence == "" {
+		return -1, false
+	}
+	offset := strings.Index(normalizedContent, normalizedEvidence)
+	return offset, offset >= 0
+}
+
+func normalizeConsistencyEvidence(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, value)
 }
 
 func hasBlockingSceneFinding(findings []domain.ConsistencyIssue, scene int) bool {
