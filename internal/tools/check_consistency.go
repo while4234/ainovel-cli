@@ -214,7 +214,7 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 			}
 			continue
 		}
-		evidenceOffset, evidenceFound := findConsistencyEvidence(content, evidence)
+		evidenceOffset, groundedEvidence, evidenceFound := groundConsistencyEvidence(content, evidence)
 		if len([]rune(normalizeConsistencyEvidence(evidence))) < 8 || !evidenceFound {
 			if !allMatch {
 				return fmt.Errorf(
@@ -227,6 +227,12 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 				index, errs.ErrToolPrecondition,
 			)
 		}
+		// Models occasionally wrap a valid verbatim anchor in a tiny
+		// paraphrased prefix or suffix (for example, replacing a character name
+		// with a pronoun). Preserve the strict grounding invariant while avoiding
+		// a wasteful retry: retain only the unique verbatim span found in the
+		// current draft.
+		checks[index].Evidence = groundedEvidence
 		evidenceOffsets[check.Scene] = evidenceOffset
 		if !allMatch && !hasBlockingSceneFinding(findings, check.Scene) {
 			return fmt.Errorf(
@@ -255,16 +261,40 @@ func (t *CheckConsistencyTool) validateSceneChecks(
 }
 
 func findConsistencyEvidence(content, evidence string) (int, bool) {
+	offset, _, found := groundConsistencyEvidence(content, evidence)
+	return offset, found
+}
+
+func groundConsistencyEvidence(content, evidence string) (int, string, bool) {
 	if offset := strings.Index(content, evidence); offset >= 0 {
-		return offset, true
+		return offset, evidence, true
 	}
 	normalizedContent := normalizeConsistencyEvidence(content)
 	normalizedEvidence := normalizeConsistencyEvidence(evidence)
 	if normalizedEvidence == "" {
-		return -1, false
+		return -1, "", false
 	}
-	offset := strings.Index(normalizedContent, normalizedEvidence)
-	return offset, offset >= 0
+	if offset := strings.Index(normalizedContent, normalizedEvidence); offset >= 0 {
+		return offset, evidence, true
+	}
+
+	// The contract only needs one exact quote of at least eight characters.
+	// If a longer submitted phrase contains a unique exact span, canonicalize
+	// to that span rather than rejecting the whole call because of a small
+	// model-added wrapper. Shorter matches and ambiguous repeated phrases still
+	// fail closed.
+	runes := []rune(strings.TrimSpace(evidence))
+	for width := min(len(runes), 32); width >= 8; width-- {
+		for start := 0; start+width <= len(runes); start++ {
+			candidate := string(runes[start : start+width])
+			offset := strings.Index(content, candidate)
+			if offset < 0 || strings.LastIndex(content, candidate) != offset {
+				continue
+			}
+			return offset, candidate, true
+		}
+	}
+	return -1, "", false
 }
 
 func normalizeConsistencyEvidence(value string) string {

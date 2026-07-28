@@ -178,6 +178,33 @@ func TestFindConsistencyEvidenceStillRejectsParaphrase(t *testing.T) {
 	}
 }
 
+func TestGroundConsistencyEvidenceCanonicalizesUniqueExactSpan(t *testing.T) {
+	content := "林舒然蹲在侧庭院的矮冬青后面，膝盖压在石砖上。"
+	offset, grounded, found := groundConsistencyEvidence(
+		content,
+		"她蹲在侧庭院的矮冬青后面，膝盖压在石砖上",
+	)
+	if !found {
+		t.Fatal("expected the unique verbatim span to ground the evidence")
+	}
+	if offset <= 0 {
+		t.Fatalf("offset = %d, want the grounded span after the character name", offset)
+	}
+	if grounded != "蹲在侧庭院的矮冬青后面，膝盖压在石砖上" {
+		t.Fatalf("grounded evidence = %q", grounded)
+	}
+	if !strings.Contains(content, grounded) {
+		t.Fatalf("grounded evidence is not verbatim draft text: %q", grounded)
+	}
+}
+
+func TestGroundConsistencyEvidenceRejectsAmbiguousShortAnchor(t *testing.T) {
+	content := "她推开房门走进院子。片刻后，她推开房门走进院子。"
+	if _, _, found := groundConsistencyEvidence(content, "随后她推开房门走进院子"); found {
+		t.Fatal("ambiguous repeated anchor must not be accepted")
+	}
+}
+
 func TestCheckConsistencyRequiresEvidenceInPlannedSceneOrder(t *testing.T) {
 	st := store.NewStore(testStoreDir(t))
 	if err := st.Init(); err != nil {
