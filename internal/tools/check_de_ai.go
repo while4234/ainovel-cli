@@ -21,7 +21,18 @@ type CheckDeAITool struct{ store *store.Store }
 
 type checkDeAIResult struct {
 	deai.Audit
-	RepairPlan deai.RepairPlan `json:"repair_plan"`
+	RepairPlan    deai.RepairPlan       `json:"repair_plan"`
+	CommitContext *chapterCommitContext `json:"commit_context,omitempty"`
+}
+
+type chapterCommitContext struct {
+	DraftSHA256  string   `json:"draft_sha256"`
+	Title        string   `json:"title"`
+	CoreEvent    string   `json:"core_event"`
+	Hook         string   `json:"hook"`
+	CharacterIDs []string `json:"character_ids"`
+	Characters   []string `json:"characters"`
+	Scenes       []string `json:"scenes"`
 }
 
 func NewCheckDeAITool(store *store.Store) *CheckDeAITool { return &CheckDeAITool{store: store} }
@@ -86,7 +97,39 @@ func (t *CheckDeAITool) Execute(_ context.Context, args json.RawMessage) (json.R
 		return nil, fmt.Errorf("checkpoint de-AI audit: %w: %w", errs.ErrStoreWrite, err)
 	}
 	return json.Marshal(checkDeAIResult{
-		Audit:      audit,
-		RepairPlan: report.RepairPlan(),
+		Audit:         audit,
+		RepairPlan:    report.RepairPlan(),
+		CommitContext: t.buildChapterCommitContext(request.Chapter, audit.DraftSHA256),
 	})
+}
+
+func (t *CheckDeAITool) buildChapterCommitContext(chapter int, digest string) *chapterCommitContext {
+	outline, err := t.store.Outline.GetChapterOutline(chapter)
+	if err != nil || outline == nil {
+		return nil
+	}
+	foundation, err := t.store.Foundation.Load()
+	if err != nil {
+		return nil
+	}
+	names := make(map[string]string, len(foundation.Characters))
+	for _, character := range foundation.Characters {
+		names[character.ID] = character.Name
+	}
+	characterIDs := append([]string(nil), outline.CharacterIDs...)
+	characters := make([]string, 0, len(characterIDs))
+	for _, id := range characterIDs {
+		if name := names[id]; name != "" {
+			characters = append(characters, name)
+		}
+	}
+	return &chapterCommitContext{
+		DraftSHA256:  digest,
+		Title:        outline.Title,
+		CoreEvent:    outline.CoreEvent,
+		Hook:         outline.Hook,
+		CharacterIDs: characterIDs,
+		Characters:   characters,
+		Scenes:       append([]string(nil), outline.Scenes...),
+	}
 }

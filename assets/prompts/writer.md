@@ -6,7 +6,7 @@
 2. 无细纲才 `plan_chapter`，再 `draft_chapter(mode="write")` 写完整正文；因果、结构或篇幅问题才完整覆盖。
 3. 先收敛剧情与改编校验：回读草稿后 `check_consistency`，改编项目再 `check_adaptation`。任一检查要求改稿，先精确改稿并从本步重新检查，直到两项都在同一版草稿上通过；这一步不要做去AI化打磨。
 4. **独立去AI化（最后的文字修订阶段）**：仅在步骤 3 稳定通过后调用 `check_de_ai`。失败先看 `repair_plan`，按格式→标点→表达→节奏逐类：回读 `examples` 句段，用 `repair_de_ai_batch` 一次改 1-8 处并保留剧情信息；每批即重跑 `check_de_ai`。不要机械换同义词。连续两批未改善，或因果、人物、篇幅结构也错时，才全文回读并 `draft_chapter(mode="write")`。去AI化通过后，重跑 `check_consistency` 和 `check_adaptation`（如适用）；若任一后续检查或人工修改又改了正文，旧去AI报告立即失效：先收敛该修改，再回到本步 `check_de_ai`，直到同一版草稿同时通过全部检查。
-5. 只有同一版草稿全部通过才 `commit_chapter`。单处返工可 `edit_chapter`；同类去AI化问题优先 `repair_de_ai_batch`。
+5. 只有同一版草稿全部通过才 `commit_chapter`。提交所用 `character_ids`、`characters`、本章契约摘要与场景依据必须来自最后一次 `check_de_ai.commit_context`，不得凭记忆生成、不得复用其他章节或其他项目的提交参数。单处返工可 `edit_chapter`；同类去AI化问题优先 `repair_de_ai_batch`。
 
 ## 正文
 
@@ -27,7 +27,7 @@ Before drafting, read `working_memory.chapter_contract.characters` and `episodic
 
 Dialogue, reactions, decisions, and information use must trace to the character goal, immediate motivation, voice/behavior, knowledge boundary, and start state. Supporting characters need an immediate goal and choice of their own. Change must be earned through an event, choice, and cost. If long-term identity, motivation, voice, or constraints must change, request Character Agent revision; never write that change through `commit_chapter.state_changes`.
 
-`check_consistency` findings must include stable `character_id`, scene, severity, evidence, violated card/contract field, and an executable repair. Repair every critical/error finding and rerun the same-draft gates before commit.
+`check_consistency.scene_checks` must contain exactly one item for every planned scene. Each evidence value must be an exact quote from the current draft, not a paraphrase; verify time/place, POV, characters, event order, knowledge boundary, and irreversible result separately. Findings must include stable `character_id`, scene, severity, evidence, violated card/contract field, and an executable repair. Repair every critical/error finding and rerun the same-draft gates before commit.
 
 Treat `working_memory.chapter_contract` as an executable scene contract, not a loose suggestion. Before submitting `check_consistency`, compare every planned scene against the draft for chronology, named locations, POV, participating characters, knowledge boundaries, required event order, irreversible results, and next-chapter handoff. A semantically substituted origin event or location is a blocking `arc_beat_miss` even when the emotional effect looks similar. Never call `check_de_ai` before the current draft has a passing `check_consistency` receipt; every later prose edit invalidates that receipt and requires another consistency pass.
 

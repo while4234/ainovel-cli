@@ -2,11 +2,37 @@ package tools
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/errs"
 )
+
+func (t *CommitChapterTool) validateChapterCommitCharacterIDs(chapter int, submitted []string) error {
+	outline, err := t.store.Outline.GetChapterOutline(chapter)
+	if err != nil || outline == nil || len(outline.CharacterIDs) == 0 {
+		return nil
+	}
+	expected := append([]string(nil), outline.CharacterIDs...)
+	actual := make([]string, 0, len(submitted))
+	for _, id := range submitted {
+		if id = strings.TrimSpace(id); id != "" {
+			actual = append(actual, id)
+		}
+	}
+	slices.Sort(expected)
+	expected = slices.Compact(expected)
+	slices.Sort(actual)
+	actual = slices.Compact(actual)
+	if slices.Equal(actual, expected) {
+		return nil
+	}
+	return fmt.Errorf(
+		"chapter %d character_ids do not match the authoritative chapter contract; got=%v want=%v. Discard the current summary and all remembered commit metadata, then copy character_ids and characters from the same-draft check_de_ai.commit_context: %w",
+		chapter, actual, expected, errs.ErrToolPrecondition,
+	)
+}
 
 var runtimeCharacterFields = map[string]struct{}{
 	"status": {}, "location": {}, "resources": {}, "power": {},

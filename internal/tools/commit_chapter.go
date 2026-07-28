@@ -37,6 +37,7 @@ type commitOutput struct {
 func (t *CommitChapterTool) Name() string { return "commit_chapter" }
 func (t *CommitChapterTool) Description() string {
 	return "提交章节终稿。加载草稿正文保存为终稿，更新时间线、伏笔、关系、角色状态和进度。" +
+		"character_ids 与 characters 必须直接使用同一版 check_de_ai 返回的 commit_context，禁止凭记忆生成或沿用其他项目人物。" +
 		"返回结构化事实：next_chapter / review_required / arc_end / volume_end / needs_expansion / book_complete / flow 等"
 }
 func (t *CommitChapterTool) Label() string { return "提交章节" }
@@ -117,6 +118,9 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	}
 	if a.Chapter <= 0 {
 		return nil, fmt.Errorf("chapter must be > 0: %w", errs.ErrToolArgs)
+	}
+	if err := t.validateChapterCommitCharacterIDs(a.Chapter, a.CharacterIDs); err != nil {
+		return nil, err
 	}
 	if err := t.validateDynamicCharacterUpdates(a.CharacterIDs, a.RelationshipChanges, a.StateChanges); err != nil {
 		return nil, err

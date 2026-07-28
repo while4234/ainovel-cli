@@ -83,3 +83,39 @@ func TestCheckDeAIRequiresCurrentConsistencyReceipt(t *testing.T) {
 		t.Fatal("expected stale consistency receipt to block de-AI")
 	}
 }
+
+func TestCheckDeAIReturnsCanonicalCommitContext(t *testing.T) {
+	characters := []domain.Character{
+		{ID: "lin_shuran", Name: "林舒然"},
+		{ID: "su_jinchen", Name: "苏瑾琛"},
+	}
+	s := characterLoopStore(t, characters, []domain.OutlineEntry{{
+		Chapter:      1,
+		Title:        "机场初见",
+		CoreEvent:    "苏瑾琛在机场第一次看见林舒然。",
+		Hook:         "执念开始。",
+		CharacterIDs: []string{"lin_shuran", "su_jinchen"},
+		Scenes:       []string{"机场到达厅初见"},
+	}})
+	if err := s.Drafts.SaveDraft(1, "# 第一章\n\n机场到达厅里，林舒然从苏瑾琛面前经过。"); err != nil {
+		t.Fatal(err)
+	}
+	recordCurrentConsistency(t, s, 1)
+	data, err := NewCheckDeAITool(s).Execute(context.Background(), json.RawMessage(`{"chapter":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		CommitContext chapterCommitContext `json:"commit_context"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.CommitContext.Title != "机场初见" ||
+		len(result.CommitContext.CharacterIDs) != 2 ||
+		result.CommitContext.CharacterIDs[0] != "lin_shuran" ||
+		result.CommitContext.Characters[1] != "苏瑾琛" ||
+		result.CommitContext.DraftSHA256 == "" {
+		t.Fatalf("unexpected commit context: %+v", result.CommitContext)
+	}
+}

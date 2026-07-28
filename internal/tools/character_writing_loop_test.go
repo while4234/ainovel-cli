@@ -163,3 +163,21 @@ func TestCommitDynamicStateRejectsStaticCharacterMutation(t *testing.T) {
 		t.Fatal("static character mutation was accepted")
 	}
 }
+
+func TestCommitCharacterIDsMustMatchChapterContract(t *testing.T) {
+	st := characterLoopStore(t, []domain.Character{
+		loopCharacter("lin_shuran", "林舒然", "core"),
+		loopCharacter("su_jinchen", "苏瑾琛", "core"),
+	}, []domain.OutlineEntry{{
+		Chapter:      1,
+		CharacterIDs: []string{"lin_shuran", "su_jinchen"},
+	}})
+	tool := NewCommitChapterTool(st)
+	err := tool.validateChapterCommitCharacterIDs(1, []string{"lengqiuyan", "linyuan"})
+	if err == nil || !strings.Contains(err.Error(), "check_de_ai.commit_context") {
+		t.Fatalf("expected cross-project character IDs to fail with recovery context, got %v", err)
+	}
+	if err := tool.validateChapterCommitCharacterIDs(1, []string{"su_jinchen", "lin_shuran"}); err != nil {
+		t.Fatalf("canonical character IDs should pass regardless of order: %v", err)
+	}
+}
