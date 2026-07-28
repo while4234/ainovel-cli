@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-28 `pending` `fix: accept exact evidence across paragraphs`:
+- 2026-07-28 `f0c72954` `fix: accept exact evidence across paragraphs`:
   keeps consistency evidence text-and-punctuation exact while ignoring only
   Unicode whitespace, so an otherwise verbatim quote spanning Markdown
   paragraph breaks is not falsely rejected; paraphrases remain rejected.
